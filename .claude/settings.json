@@ -1,0 +1,54 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import json; json.load\\(open\\('/home/komai/projects/devcontainer-template/.devcontainer/devcontainer.json'\\)\\); print\\('devcontainer.json: VALID'\\)\")",
+      "Bash(python3 -c \"import json; json.load\\(open\\('/home/komai/projects/devcontainer-template/.claude/settings.json'\\)\\); print\\('settings.json: VALID'\\)\")",
+      "Bash(git -C /home/komai/projects/devcontainer-template diff --no-color .devcontainer/devcontainer.json .claude/settings.json)",
+      "Bash(python3 -c ' *)"
+    ],
+    "deny": [
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(npm publish:*)",
+      "Bash(pnpm publish:*)",
+      "Bash(git config --global:*)",
+      "Bash(git push:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git remote remove:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(gh release delete:*)"
+    ],
+    "defaultMode": "bypassPermissions"
+  },
+  "model": "opus",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-review.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/discord-notify.py"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": ".claude/statusline.sh",
+    "padding": 0
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true
+  }
+}

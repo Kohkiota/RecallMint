@@ -1,0 +1,46 @@
+# Claude Code 設定 (settings.json と hooks/ 以外は配布しない)
+.claude/*
+!.claude/settings.json
+!.claude/statusline.sh
+!.claude/hooks/
+!.claude/hooks/**
+
+# Node.js
+node_modules/
+.pnpm-store/
+.env
+.env.local
+.env.production
+.env.*.local
+!.env.example
+
+# ビルド成果物
+dist/
+build/
+.next/
+out/
+
+# Stripe CLI
+.stripe/
+
+# Neon CLI per-repo context (personal, not for repo)
+.neon
+
+# OS/エディタ
+.DS_Store
+*.swp
+.vscode/settings.json
+
+# ログ
+*.log
+npm-debug.log*
+
+# Playwright MCP 実行ログ・スナップショット
+.playwright-mcp/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# OCR PoC (Phase 0b): fixture PDF と結果 JSON は commit しない
+scripts/ocr-poc/fixtures/
+scripts/ocr-poc/results/

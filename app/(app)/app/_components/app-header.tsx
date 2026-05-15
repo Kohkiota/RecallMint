@@ -1,0 +1,40 @@
+'use client'
+
+import Link from 'next/link'
+import { UserButton } from '@clerk/nextjs'
+import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
+
+export function AppHeader() {
+  return (
+    <header className="border-b border-slate-200 bg-white">
+      <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+        <Link
+          href="/app"
+          onClick={() => void revalidateAppPath('/app')}
+          className="text-lg font-bold text-slate-900 hover:text-slate-700"
+        >
+          Vocab App
+        </Link>
+        <nav className="flex items-center gap-4">
+          {/* Sprint A-2: vocab nav (単語 / 復習) 撤去。 mcq routes
+              (/exams, /study/smart, /study/practice) は後続 Sprint で実装後追加。 */}
+          <Link
+            href="/app/quiz"
+            onClick={() => void revalidateAppPath('/app/quiz')}
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            演習
+          </Link>
+          <Link
+            href="/app/settings"
+            onClick={() => void revalidateAppPath('/app/settings')}
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            設定
+          </Link>
+          <UserButton />
+        </nav>
+      </div>
+    </header>
+  )
+}
