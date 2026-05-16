@@ -185,7 +185,7 @@ DB INSERT 実装は Sprint A-3+)
 
 ### 2.4 Stripe price ID (env、 code touch 不要)
 
-`STRIPE_PRICE_ID_PRO_MONTHLY` env で参照、 `app/(app)/app/upgrade/actions.ts` 内で `process.env` 経由。 → env 値の書換のみで code touch 不要。
+`STRIPE_PRICE_PRO_MONTHLY` env で参照、 `app/(app)/app/upgrade/actions.ts` 内で `process.env` 経由。 → env 値の書換のみで code touch 不要。
 
 ---
 
@@ -318,7 +318,7 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand
 | `CLERK_WEBHOOK_SECRET` | Clerk webhook verify | Clerk Dashboard (deploy 後) |
 | `STRIPE_SECRET_KEY` | Stripe credentials | Stripe Dashboard |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook verify | Stripe CLI (local) / Stripe Dashboard (production) |
-| `STRIPE_PRICE_ID_PRO_MONTHLY` | Stripe Price object | Stripe Dashboard |
+| `STRIPE_PRICE_PRO_MONTHLY` | Stripe Price object | Stripe Dashboard |
 | `OPS_DISCORD_WEBHOOK_URL` | アプリのエラー通知 (lib/ops.ts notifyOps) | Discord channel webhook |
 | `CLAUDE_CODE_DISCORD_WEBHOOK_URL` | Claude Code Stop hook 通知 (.claude/hooks/discord-notify.py、 OPS と別 channel) | Discord channel webhook |
 | `GEMINI_API_KEY` | Gemini API (AI 機能あり時) | Google AI Studio |

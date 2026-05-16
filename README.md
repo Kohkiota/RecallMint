@@ -334,7 +334,7 @@ route + curl で関数経由 verify、 webhook 動作 verify は §3.4 別 patte
 | `STRIPE_SECRET_KEY` | <https://dashboard.stripe.com> | **`rk_test_...` Restricted Key** 推奨、 production = `sk_live_...` |
 | `STRIPE_PUBLISHABLE_KEY` | 同上 | `pk_test_...` (production = `pk_live_...`) |
 | `STRIPE_WEBHOOK_SECRET` | `stripe listen` or Dashboard | `whsec_...` |
-| `STRIPE_PRICE_ID_PRO_MONTHLY` | 同 → Products | `price_...` |
+| `STRIPE_PRICE_PRO_MONTHLY` | 同 → Products | `price_...` |
 | `GEMINI_API_KEY` | <https://aistudio.google.com/app/apikey> | **クレカ紐付けなし** で発行 (CLAUDE.md §AI-1) |
 | `GEMINI_DAILY_LIMIT` | 自分で決める | 整数 (default: 1000) |
 | `OPS_DISCORD_WEBHOOK_URL` | Discord channel → integration (アプリのエラー通知用) | 未設定で silent skip |

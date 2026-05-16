@@ -13,8 +13,8 @@ export async function createCheckoutSession() {
     throw new Error('USER_NOT_SYNCED')
   }
 
-  const priceId = process.env.STRIPE_PRICE_ID_PRO_MONTHLY
-  if (!priceId) throw new Error('STRIPE_PRICE_ID_PRO_MONTHLY is not set')
+  const priceId = process.env.STRIPE_PRICE_PRO_MONTHLY
+  if (!priceId) throw new Error('STRIPE_PRICE_PRO_MONTHLY is not set')
 
   const base = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
 
