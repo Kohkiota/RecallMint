@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Stripe from 'stripe'
 
-describe('Stripe client', () => {
+// VERCEL_ENV-aware key validation (CLAUDE.md §Stripe-1)。 lib/clerk.test.ts と同形式。
+// - production → live keys 必須、 test keys 拒否
+// - それ以外 (preview / development / undefined) → test keys 必須、 live keys 拒否
+
+describe('Stripe client - non-production (VERCEL_ENV undefined / preview / development)', () => {
   beforeEach(() => {
-    // vitest.setup.ts already calls vi.resetModules() in a global beforeEach,
-    // but we set the base value here so each test can mutate it cleanly
+    // 既知 baseline で start。 各テストで mutate して mode 強制を検証
     process.env.STRIPE_SECRET_KEY = 'sk_test_fake_for_tests'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_fake_for_tests'
+    delete process.env.VERCEL_ENV
   })
 
   it('Unset STRIPE_SECRET_KEY throws with message mentioning the key name', async () => {
@@ -13,36 +18,106 @@ describe('Stripe client', () => {
     await expect(import('./stripe')).rejects.toThrow(/STRIPE_SECRET_KEY/)
   })
 
-  it('sk_live_ key is rejected with message mentioning both rk_test_ and sk_test_', async () => {
+  it('Unset STRIPE_PUBLISHABLE_KEY throws with message mentioning the key name', async () => {
+    delete process.env.STRIPE_PUBLISHABLE_KEY
+    await expect(import('./stripe')).rejects.toThrow(/STRIPE_PUBLISHABLE_KEY/)
+  })
+
+  it('sk_live_ SECRET key is rejected with message mentioning both rk_test_ and sk_test_', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_live_abc123'
     await expect(import('./stripe')).rejects.toThrow(
       /rk_test_.*sk_test_|sk_test_.*rk_test_/,
     )
   })
 
-  it('rk_live_ key is rejected with message mentioning both rk_test_ and sk_test_', async () => {
+  it('rk_live_ SECRET key is rejected with message mentioning both rk_test_ and sk_test_', async () => {
     process.env.STRIPE_SECRET_KEY = 'rk_live_abc123'
     await expect(import('./stripe')).rejects.toThrow(
       /rk_test_.*sk_test_|sk_test_.*rk_test_/,
     )
   })
 
-  it('rk_test_ key is accepted and stripe is exported', async () => {
+  it('pk_live_ PUBLISHABLE key is rejected with message mentioning pk_test_', async () => {
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_live_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/pk_test_/)
+  })
+
+  it('rk_test_ + pk_test_ are accepted and stripe is exported', async () => {
     process.env.STRIPE_SECRET_KEY = 'rk_test_abc123'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_abc123'
     const mod = await import('./stripe')
     expect(mod.stripe).toBeDefined()
   })
 
-  it('sk_test_ key is accepted and stripe is exported', async () => {
+  it('sk_test_ + pk_test_ are accepted and stripe is exported', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_abc123'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_abc123'
     const mod = await import('./stripe')
     expect(mod.stripe).toBeDefined()
+  })
+
+  it('VERCEL_ENV=preview rejects sk_live_ (live keys not allowed outside production)', async () => {
+    process.env.VERCEL_ENV = 'preview'
+    process.env.STRIPE_SECRET_KEY = 'sk_live_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/sk_test_/)
+  })
+
+  it('VERCEL_ENV=preview rejects pk_live_ (live keys not allowed outside production)', async () => {
+    process.env.VERCEL_ENV = 'preview'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_live_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/pk_test_/)
+  })
+})
+
+describe('Stripe client - production (VERCEL_ENV=production)', () => {
+  beforeEach(() => {
+    process.env.VERCEL_ENV = 'production'
+    process.env.STRIPE_SECRET_KEY = 'sk_live_fake_for_tests'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_live_fake_for_tests'
+  })
+
+  it('Unset STRIPE_SECRET_KEY in prod throws with message mentioning the key name', async () => {
+    delete process.env.STRIPE_SECRET_KEY
+    await expect(import('./stripe')).rejects.toThrow(/STRIPE_SECRET_KEY/)
+  })
+
+  it('Unset STRIPE_PUBLISHABLE_KEY in prod throws with message mentioning the key name', async () => {
+    delete process.env.STRIPE_PUBLISHABLE_KEY
+    await expect(import('./stripe')).rejects.toThrow(/STRIPE_PUBLISHABLE_KEY/)
+  })
+
+  it('sk_live_ + pk_live_ are accepted and stripe is exported', async () => {
+    const mod = await import('./stripe')
+    expect(mod.stripe).toBeDefined()
+  })
+
+  it('rk_live_ + pk_live_ are accepted (Restricted Key path)', async () => {
+    process.env.STRIPE_SECRET_KEY = 'rk_live_abc123'
+    const mod = await import('./stripe')
+    expect(mod.stripe).toBeDefined()
+  })
+
+  it('sk_test_ SECRET key is rejected with message mentioning sk_live_', async () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/sk_live_/)
+  })
+
+  it('rk_test_ SECRET key is rejected with message mentioning rk_live_', async () => {
+    process.env.STRIPE_SECRET_KEY = 'rk_test_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/rk_live_/)
+  })
+
+  it('pk_test_ PUBLISHABLE key is rejected with message mentioning pk_live_', async () => {
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_abc123'
+    await expect(import('./stripe')).rejects.toThrow(/pk_live_/)
   })
 })
 
 describe('cancelWithRetry', () => {
   beforeEach(() => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_fake_for_tests'
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_fake_for_tests'
+    delete process.env.VERCEL_ENV
     vi.useFakeTimers()
   })
   afterEach(() => {
