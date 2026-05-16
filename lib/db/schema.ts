@@ -84,7 +84,10 @@ export const users = pgTable('users', {
   clerkId: text('clerk_id').notNull().unique(),
   email: text('email').notNull(),
   stripeCustomerId: text('stripe_customer_id').unique(),
-  plan: text('plan').$type<'free' | 'pro'>().notNull().default('free'),
+  plan: text('plan')
+    .$type<'free' | 'standard' | 'pro'>()
+    .notNull()
+    .default('free'),
   // subscription_status: Stripe emits more states (trialing, incomplete,
   // incomplete_expired, unpaid, paused). Webhook handler normalizes to these
   // 3 (trialing -> active, unpaid -> past_due, etc.) before writing.

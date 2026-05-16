@@ -40,6 +40,10 @@ export default async function Dashboard() {
 
       <DashboardActions dueCount={dueCount} />
 
+      {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
+          現状 'standard' ユーザーにも「Pro にアップグレード」リンクが出ない
+          (=== 'free' のため)。Standard → Pro アップグレード導線を Stripe
+          checkout 拡張 Sprint で追加。 */}
       {user.plan === 'free' && (
         <Link
           href="/app/upgrade"

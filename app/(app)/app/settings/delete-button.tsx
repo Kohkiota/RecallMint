@@ -104,6 +104,10 @@ export function DeleteAccountButton({ plan }: Props) {
       <div className="space-y-3">
         <div className="text-sm text-red-700 space-y-2">
           <p>アカウントを完全に削除します。元に戻せません。</p>
+          {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
+              'standard' は課金プランだが本分岐に該当せず注意書きが出ない。
+              Stripe checkout 拡張 Sprint で課金プラン (standard|pro) 共通の
+              削除注意文に修正。 */}
           {plan === 'pro' && (
             <p>
               現在 Pro プランをご利用中です。

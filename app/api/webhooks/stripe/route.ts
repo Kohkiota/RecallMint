@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { stripe } from '@/lib/stripe'
 import { getDb } from '@/lib/db'
 import { users, stripeEvents } from '@/lib/db/schema'
+import type { Plan } from '@/lib/auth/plan-limits'
 import { logger } from '@/lib/logger'
 import { notifyWebhookError } from '@/lib/ops'
 
@@ -78,8 +79,13 @@ function extractCustomerId(event: Stripe.Event): string | undefined {
   return undefined
 }
 
+// TODO(post-A-3.2): Standard plan 導入時に 'standard' 戻り値も追加。
+// STRIPE_PRICE_STANDARD_* に対応する subscription を sub.items.data[].price.id
+// で判定し 'standard' にマッピング。 現状は STRIPE_PRICE_PRO_* のみなので戻り値は
+// 実質 'free' | 'pro' の subset に narrowing しておく (Plan 型を拡張しても本関数の
+// 抜けに気付けるよう、 戻り値型を Extract で固定)。
 function normalizeSubStatus(s: Stripe.Subscription.Status): {
-  plan: 'free' | 'pro'
+  plan: Extract<Plan, 'free' | 'pro'>
   subscriptionStatus: 'active' | 'past_due' | 'canceled'
 } {
   switch (s) {

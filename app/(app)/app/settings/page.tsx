@@ -23,6 +23,9 @@ export default async function SettingsPage() {
         <h2 className="font-bold mb-2">プラン</h2>
         <Card>
           <CardContent>
+            {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
+                現状の三項演算子は 'standard' を Free 表示に誤分類する。
+                Stripe checkout 拡張 Sprint で plan ラベル lookup + CTA 分岐実装。 */}
             <p className="text-sm text-slate-700">
               現在: <span className="font-medium">{user.plan === 'pro' ? 'Pro プラン' : 'Free プラン'}</span>
             </p>
@@ -64,7 +67,7 @@ export default async function SettingsPage() {
         <Card className="ring-red-200">
           <CardContent>
             <p className="text-sm text-slate-700 mb-3">
-              アカウントを削除します。登録した単語と学習履歴は復元できません。
+              アカウントを削除します。登録したカードと学習履歴は復元できません。
             </p>
             <DeleteAccountButton plan={user.plan} />
           </CardContent>
