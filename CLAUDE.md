@@ -9,9 +9,9 @@ exams.property_schema) でドメイン中立、マルチテナント対応。
 リポジトリ: `Kohkiota/mcq-platform` (devcontainer-template + plan00
 SaaS template を起点に派生、vocab 機能は drop / mcq 機能を新規追加中)。
 
-**現フェーズ**: Phase 0b PoC 完全完了、Sprint A (DB migration +
-環境構築) 着手前。詳細は `docs/02-tech-spec.md` §14 改訂履歴
-(v0.6 + v0.6 続編) を参照。
+**現フェーズ**: Sprint A 系 (A-1a / A-2 / A-3.2) 完了、 本番初回 deploy 成功。 詳細は
+`docs/02-tech-spec.md` の data model / business logic 各章および sprint 個別 plan
+(`docs/plans/`) を参照、 全体ロードマップ / 改訂履歴 は Obsidian 管理。
 
 ## 技術スタック（固定）
 

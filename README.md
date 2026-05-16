@@ -10,10 +10,11 @@ vocab 機能 (FSRS 英単語学習 + AI 例文生成) は drop 予定、mcq 機�
 (教材 OCR / custom_props / shared_context / 画像プレースホルダ) を
 新規追加中。
 
-**現フェーズ**: Phase 0b PoC 完全完了、Sprint A (DB migration +
-環境構築) 着手前。Tech Spec 確定版は `docs/02-tech-spec.md` v0.6 +
-v0.6 続編。アーキテクチャ詳細は `docs/architecture-guide.md`
-(plan00 由来、Sprint A 進行に応じて mcq 用へ更新予定)。
+**現フェーズ**: Sprint A 系 (A-1a / A-2 / A-3.2) 完了、 本番初回 deploy 成功 (Stripe
+env-aware key 切替済)。 Tech Spec は `docs/02-tech-spec.md` (implementation reference、
+data model / API / business logic 等、 戦略系は Obsidian)、 全体ロードマップは Obsidian
+管理。 sprint 個別 plan は `docs/plans/` 配下。 アーキテクチャ詳細は
+`docs/architecture-guide.md` (plan00 由来、 Sprint 進行に応じて mcq 用へ更新中)。
 
 ---
 
