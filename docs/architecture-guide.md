@@ -246,7 +246,7 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand
 
 | path | 内容 | 判断 |
 |---|---|---|
-| `lib/stripe.ts` | env validation (`sk_test_` / `rk_test_` prefix) + Stripe client | env のみ書換 |
+| `lib/stripe.ts` | env validation (VERCEL_ENV-aware: prod = `*_live_*` / それ以外 = `*_test_*`) + Stripe client | env のみ書換 |
 | `app/(app)/app/upgrade/` | Stripe Checkout flow (page + actions) | 完全流用 (price ID env 書換のみ) |
 | `app/api/webhooks/stripe/route.ts` | Stripe webhook idempotency + subscription 状態同期 | 完全流用 |
 | `app/(app)/app/settings/` (一部) | Stripe Customer Portal session 生成 + 解約予約 UI | 完全流用 (削除 flow 部分は §4.3) |

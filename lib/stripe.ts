@@ -1,17 +1,60 @@
 import Stripe from 'stripe'
 
+// Stripe env prefix validation (CLAUDE.md §Stripe-1)。
+//
+// 環境依存 (lib/clerk.ts と同 pattern):
+// - `VERCEL_ENV === 'production'` → SECRET_KEY = `rk_live_` / `sk_live_`、
+//   PUBLISHABLE_KEY = `pk_live_` 必須、 test keys 拒否
+// - それ以外 (preview / development / undefined) → SECRET_KEY = `rk_test_` /
+//   `sk_test_`、 PUBLISHABLE_KEY = `pk_test_` 必須、 live keys 拒否
+//
+// 旧実装 (Sprint A-3.2 以前) は test keys 専用であったが、 本番デプロイで
+// `rk_live_` が弾かれて Vercel build 失敗するため lib/clerk.ts と同形式の
+// VERCEL_ENV-aware 検証に変更。 CLAUDE.md §Stripe 絶対ルールも同変更で env-aware
+// 文言に書換済。
+
 const key = process.env.STRIPE_SECRET_KEY
+const pk = process.env.STRIPE_PUBLISHABLE_KEY
+const isProd = process.env.VERCEL_ENV === 'production'
 
 if (!key) {
   throw new Error('STRIPE_SECRET_KEY is not set')
 }
 
-if (!key.startsWith('rk_test_') && !key.startsWith('sk_test_')) {
-  throw new Error(
-    `STRIPE_SECRET_KEY must start with rk_test_ or sk_test_. ` +
-      `Live keys (sk_live_ / rk_live_) are forbidden. ` +
-      `Got prefix: ${key.slice(0, 8)}...`,
-  )
+if (!pk) {
+  throw new Error('STRIPE_PUBLISHABLE_KEY is not set')
+}
+
+if (isProd) {
+  if (!key.startsWith('rk_live_') && !key.startsWith('sk_live_')) {
+    throw new Error(
+      `STRIPE_SECRET_KEY must start with rk_live_ or sk_live_ when VERCEL_ENV=production. ` +
+        `Test keys (rk_test_ / sk_test_) are not allowed in production. ` +
+        `Got prefix: ${key.slice(0, 8)}...`,
+    )
+  }
+  if (!pk.startsWith('pk_live_')) {
+    throw new Error(
+      `STRIPE_PUBLISHABLE_KEY must start with pk_live_ when VERCEL_ENV=production. ` +
+        `Test keys (pk_test_) are not allowed in production. ` +
+        `Got prefix: ${pk.slice(0, 8)}...`,
+    )
+  }
+} else {
+  if (!key.startsWith('rk_test_') && !key.startsWith('sk_test_')) {
+    throw new Error(
+      `STRIPE_SECRET_KEY must start with rk_test_ or sk_test_ in non-production environments. ` +
+        `Live keys (rk_live_ / sk_live_) are only permitted when VERCEL_ENV=production. ` +
+        `Got prefix: ${key.slice(0, 8)}...`,
+    )
+  }
+  if (!pk.startsWith('pk_test_')) {
+    throw new Error(
+      `STRIPE_PUBLISHABLE_KEY must start with pk_test_ in non-production environments. ` +
+        `Live keys (pk_live_) are only permitted when VERCEL_ENV=production. ` +
+        `Got prefix: ${pk.slice(0, 8)}...`,
+    )
+  }
 }
 
 // Spec: docs/superpowers/specs/2026-04-27-account-deletion-redesign.md §8.3

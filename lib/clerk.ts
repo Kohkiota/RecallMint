@@ -11,8 +11,7 @@
 //
 // Imported as a side-effect from middleware.ts (Edge runtime) and
 // lib/auth/ensure-user.ts (Node runtime) for dual-runtime fail-fast.
-// Mirrors the lib/stripe.ts pattern (※ Stripe は CLAUDE.md §Stripe-1/-2 により
-// 環境問わず test keys 専用、本 env-dependent pattern は適用しない)。
+// lib/stripe.ts も同 VERCEL_ENV-aware pattern (両者で形式統一)。
 
 const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 const sk = process.env.CLERK_SECRET_KEY

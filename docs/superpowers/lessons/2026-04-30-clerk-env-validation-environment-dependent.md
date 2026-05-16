@@ -81,7 +81,17 @@ Stripe など「live 切替を Claude Code に触らせたくない」サービ�
 
 ## 4. 参照
 
-- 関連実装: `lib/clerk.ts`, `lib/clerk.test.ts`
+- 関連実装: `lib/clerk.ts`, `lib/clerk.test.ts`, `lib/stripe.ts`, `lib/stripe.test.ts` (後者 2 つは 2026-05-16 追加、 §5 参照)
 - 関連 lesson: `docs/superpowers/lessons/2026-04-29-vercel-domain-confusion.md` (production domain 確定の話)
-- CLAUDE.md §Clerk-1 (本 lesson の sprint で「環境依存」に更新)
+- CLAUDE.md §Clerk-1 / §Stripe-1 (本 lesson の sprint で「環境依存」に更新、 後者は 2026-05-16 §5 で同 pattern 採用)
 - 関連 sprint: Phase 1 E-2 (Clerk production keys 切替、`docs/TODO.md` 参照)
+
+## 5. Update (2026-05-16): Stripe にも同 pattern 採用
+
+本 lesson §2.3 は当初「Stripe には適用しない (CLAUDE.md §Stripe-1 / -2 で live keys 全面禁止)」としていたが、 Sprint A-3.2 後の本番デプロイで `STRIPE_SECRET_KEY=rk_live_*` が起動時 validation で弾かれて Vercel build 失敗となり、 方針変更。
+
+`lib/stripe.ts` を `lib/clerk.ts` と同 `VERCEL_ENV`-aware pattern に書換、 CLAUDE.md §Stripe-1 も env-aware 文言に統一。 「人間が手動で本番切替」原則は維持 (Vercel env vars 設定は OT、 Claude Code は code 上の検証 logic のみ実装)。
+
+§2.3 の「課金 = 不可逆な金銭移動、 live キー漏洩リスクが極大」という分析自体は今も正しいが、 **「Claude Code が live key を validate logic で参照する」 ≠ 「Claude Code が live key を使って API を叩く」** という区別を当初混同していた。 前者は安全 (string prefix 比較のみ)、 後者は危険 (実 API 呼出)。 本 commit は前者のみを許可、 後者は依然禁止 (実 Stripe API 呼出は OT 環境変数経由のみ)。
+
+教訓: env validation の logic と API 実行の logic は別 layer。 前者を全面禁止すると production deploy 自体が阻害される。 「禁止」の粒度を慎重に設計すべき。

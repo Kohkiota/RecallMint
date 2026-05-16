@@ -38,19 +38,22 @@ API 仕様は Context7 MCP (`use context7`) から取得する。
 
 ## Stripe 取扱いの絶対ルール
 
-1. 使用するキーは **`sk_test_` または `rk_test_` で始まるもののみ**
-2. `sk_live_` / `rk_live_` / `pk_live_` の取り扱い禁止
-   - コード内で参照しない
-   - 設定ファイル・ドキュメント・コメント・テストにも書かない
-3. **アプリ起動時にキーのプレフィックス検証を必須実装**
-   `lib/stripe.ts` 冒頭で `sk_test_` / `rk_test_` 以外なら起動拒否
-4. Webhook の検証を省略しない（`stripe.webhooks.constructEvent` 使用必須）
-5. **Webhook は idempotency 必須**
+1. キーは `VERCEL_ENV` に応じて使い分け、 `lib/stripe.ts` で fail-fast 検証
+   - `VERCEL_ENV === 'production'` → SECRET_KEY = `rk_live_` / `sk_live_`、
+     PUBLISHABLE_KEY = `pk_live_` 必須 (test keys 拒否)
+   - それ以外 (preview / development / undefined) → SECRET_KEY = `rk_test_` /
+     `sk_test_`、 PUBLISHABLE_KEY = `pk_test_` 必須 (live keys 拒否)
+   - SECRET_KEY は **`rk_*` Restricted Key 推奨** (権限最小化)
+   - 旧仕様 (Sprint A-3.2 以前) は test keys 専用だったが本番 build 阻害のため
+     `lib/clerk.ts` と同 pattern に統一済
+2. Webhook の検証を省略しない（`stripe.webhooks.constructEvent` 使用必須）
+3. **Webhook は idempotency 必須**
    - `event.id` を `stripe_events` テーブルに保存、重複処理を弾く
    - エラー時も 200 を返す（Stripe の再送ループ防止）
    - タイムアウト 10 秒以内
-6. 本番環境への切替は人間が手動、Claude Code は関与しない
-7. Stripe CLI でのローカル webhook 転送のみ使用
+4. 本番環境への切替 (live key 発行 / Vercel env 設定 / Webhook endpoint 登録) は
+   人間が手動、Claude Code は関与しない
+5. Stripe CLI でのローカル webhook 転送のみ使用
    （本番 Webhook エンドポイント登録は人間が実施）
 
 ---
