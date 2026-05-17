@@ -8,6 +8,13 @@
       "when": 1778824028188,
       "tag": "0000_keen_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779005319711,
+      "tag": "0001_third_fat_cobra",
+      "breakpoints": true
     }
   ]
 }

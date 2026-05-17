@@ -48,6 +48,7 @@ describe('createBillingPortalSession', () => {
       subscriptionStatus: null,
       currentPeriodEnd: null,
       cancelAt: null,
+      billingInterval: null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       deletedAt: null,
     })
