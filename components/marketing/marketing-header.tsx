@@ -16,6 +16,12 @@ export function MarketingHeader() {
           <Logo />
         </Link>
         <nav className="flex items-center gap-3">
+          <Link
+            href="/pricing"
+            className="text-sm text-slate-700 hover:text-slate-900 underline-offset-2 hover:underline"
+          >
+            料金
+          </Link>
           <Button asChild variant="outline" size="sm">
             <Link href="/sign-in">ログイン</Link>
           </Button>
