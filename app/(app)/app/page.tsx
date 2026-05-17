@@ -40,16 +40,15 @@ export default async function Dashboard() {
 
       <DashboardActions dueCount={dueCount} />
 
-      {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
-          現状 'standard' ユーザーにも「Pro にアップグレード」リンクが出ない
-          (=== 'free' のため)。Standard → Pro アップグレード導線を Stripe
-          checkout 拡張 Sprint で追加。 */}
-      {user.plan === 'free' && (
+      {/* 最上位 (Pro 年額) 以外は upgrade CTA を表示。 Free / Standard 月年 /
+          Pro 月 すべてに上位選択肢があるため画一的に「アップグレード」と表示し、
+          具体的な上位 plan の選択は /app/upgrade page 内 toggle に委ねる。 */}
+      {!(user.plan === 'pro' && user.billingInterval === 'year') && (
         <Link
           href="/app/upgrade"
           className="block mt-4 text-center text-sm text-slate-600 underline"
         >
-          Pro にアップグレード
+          アップグレード
         </Link>
       )}
     </div>

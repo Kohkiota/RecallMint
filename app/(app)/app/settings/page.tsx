@@ -4,6 +4,7 @@ import { createBillingPortalSession } from './actions'
 import { DeleteAccountButton } from './delete-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { planLabelFor } from '@/lib/plan-catalog'
 
 // 解約予定日を日本語ロケールの YYYY/MM/DD 形式に整形する
 // Intl.DateTimeFormat を使い、ロケール依存の区切り文字を統一する
@@ -23,15 +24,11 @@ export default async function SettingsPage() {
         <h2 className="font-bold mb-2">プラン</h2>
         <Card>
           <CardContent>
-            {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
-                現状の三項演算子は 'standard' を Free 表示に誤分類する。
-                Stripe checkout 拡張 Sprint で plan ラベル lookup + CTA 分岐実装。 */}
             <p className="text-sm text-slate-700">
-              現在: <span className="font-medium">{user.plan === 'pro' ? 'Pro プラン' : 'Free プラン'}</span>
+              現在: <span className="font-medium">{planLabelFor(user.plan, user.billingInterval)}</span>
             </p>
-            {user.plan === 'pro' && user.cancelAt ? (
-              // 解約予約中: cancel_at != null が解約予約中の signal (cancelAtPeriodEnd は廃止)
-              // 終了予定日を amber で警告表示（通常の slate 表示より優先）
+            {user.plan !== 'free' && user.cancelAt ? (
+              // 解約予約中: cancel_at != null が解約予約中の signal
               <p className="text-xs text-amber-700 mt-1">
                 解約予約中、{formatCancelDate(user.cancelAt)} 終了
               </p>
@@ -40,23 +37,31 @@ export default async function SettingsPage() {
                 ステータス: {user.subscriptionStatus}
               </p>
             ) : null}
-            {user.plan === 'pro' ? (
-              <form action={createBillingPortalSession} className="mt-3">
-                <Button
-                  type="submit"
-                  variant="outline"
-                  size="sm"
-                  className="px-4 py-2 text-sm font-medium"
-                >
-                  お支払い・解約を管理
-                </Button>
-              </form>
-            ) : (
+            {user.plan === 'free' ? (
               <Button asChild size="sm" className="mt-3 px-4 py-2 text-sm font-medium">
-                <Link href="/app/upgrade">
-                  Pro にアップグレード
-                </Link>
+                <Link href="/app/upgrade">プランを選択</Link>
               </Button>
+            ) : (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <form action={createBillingPortalSession}>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    size="sm"
+                    className="px-4 py-2 text-sm font-medium"
+                  >
+                    お支払い・解約を管理
+                  </Button>
+                </form>
+                {/* Pro 年額以外 (= 最上位以外) は upgrade page でさらに上の plan に
+                    切替可能。 Pro 年額のときは upgrade page が /app へ redirect する
+                    ので CTA を表示しない。 */}
+                {!(user.plan === 'pro' && user.billingInterval === 'year') && (
+                  <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
+                    <Link href="/app/upgrade">アップグレード</Link>
+                  </Button>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
