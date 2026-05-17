@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { UserButton } from '@clerk/nextjs'
 import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
 
+// brand 名は hardcode (2026-05-17 SERVICE_NAME placeholder 撤回)、
+// RecallMint 固有値で固定。 別サービス流用は devcontainer-template repo で対応。
 export function AppHeader() {
   return (
     <header className="border-b border-slate-200 bg-white">
@@ -13,7 +15,7 @@ export function AppHeader() {
           onClick={() => void revalidateAppPath('/app')}
           className="text-lg font-bold text-slate-900 hover:text-slate-700"
         >
-          Vocab App
+          RecallMint
         </Link>
         <nav className="flex items-center gap-4">
           {/* Sprint A-2: vocab nav (単語 / 復習) 撤去。 mcq routes

@@ -45,8 +45,9 @@ describe('MarketingFooter (components/marketing/marketing-footer.tsx)', () => {
     expect(linkOpenTags.length).toBe(4)
   })
 
-  it('contains {{SERVICE_NAME}} placeholder for sed replacement', () => {
-    expect(src).toContain('{{SERVICE_NAME}}')
+  it('renders RecallMint brand hardcode (SERVICE_NAME placeholder 撤回後)', () => {
+    expect(src).toContain('RecallMint')
+    expect(src).not.toContain('{{SERVICE_NAME}}')
   })
 
   it('uses mt-auto for bottom push and border-top for separation', () => {
@@ -62,8 +63,9 @@ describe('Logo (components/brand/logo.tsx)', () => {
     expect(src).toMatch(/export function Logo\(\)/)
   })
 
-  it('uses {{SERVICE_NAME}} placeholder (sed 置換 system 相乗り)', () => {
-    expect(src).toContain('{{SERVICE_NAME}}')
+  it('renders RecallMint brand hardcode (SERVICE_NAME placeholder 撤回後)', () => {
+    expect(src).toContain('RecallMint')
+    expect(src).not.toContain('{{SERVICE_NAME}}')
   })
 })
 
@@ -93,9 +95,10 @@ describe('Terms page (app/(marketing)/terms/page.tsx)', () => {
     expect(src).toContain('第15条 (準拠法・裁判管轄)')
   })
 
-  it('contains key placeholders', () => {
+  it('contains key placeholders (12 placeholder 体制、 SERVICE_NAME は hardcode 化済)', () => {
     expect(src).toContain('{{COMPANY_NAME}}')
-    expect(src).toContain('{{SERVICE_NAME}}')
+    expect(src).not.toContain('{{SERVICE_NAME}}')
+    expect(src).toContain('RecallMint')
     expect(src).toContain('{{PRICE}}')
     expect(src).toContain('{{JURISDICTION}}')
     expect(src).toContain('{{LAST_UPDATED}}')

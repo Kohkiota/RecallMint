@@ -67,7 +67,7 @@ Logo は `components/brand/logo.tsx` で marketing / auth 共用 (Phase 2 で im
 components/
 ├── ui/             ← shadcn primitive (button / card / input / label / textarea = 5 file)
 ├── auth/           ← AuthHeader
-├── brand/          ← Logo (text、 {{SERVICE_NAME}} placeholder)
+├── brand/          ← Logo (text、 "RecallMint" hardcode、 2026-05-17 placeholder 撤回)
 └── marketing/      ← MarketingHeader / MarketingFooter / ContactForm (I-D)
 ```
 
@@ -191,38 +191,41 @@ DB INSERT 実装は Sprint A-3+)
 
 ## 3. Placeholder 置換 ({{...}} sed 一括置換 system)
 
-`docs/legal-placeholders.md` の sed 置換 system に乗せた **13 placeholder**。 Phase 1 E-4 で構築、 I-K で chrome callsite (Logo / MarketingFooter / top hero) に **{{SERVICE_NAME}} 拡張**。
+`docs/legal-placeholders.md` の sed 置換 system に乗せた **12 placeholder**
+(2026-05-17 SERVICE_NAME 撤回後)。 Phase 1 E-4 で構築、 法務 3 page に絞って
+本気運用切替時の fill-in 値 (戸籍名 / 連絡先 / 価格 / 制定日等) に使用。 chrome
+callsite (Logo / MarketingFooter / top hero) の brand 名は "RecallMint" hardcode。
 
-### 3.1 placeholder 一覧 (13 項目、 詳細は legal-placeholders.md §1)
+### 3.1 placeholder 一覧 (12 項目、 詳細は legal-placeholders.md §1)
 
-`{{SERVICE_NAME}}` / `{{COMPANY_NAME}}` / `{{OPERATOR_NAME}}` / `{{ADDRESS}}` / `{{PHONE}}` / `{{EMAIL}}` / `{{DOMAIN}}` / `{{PRICE}}` / `{{JURISDICTION}}` / `{{LAST_UPDATED}}` / `{{LAUNCH_DATE}}` / `{{DISCLOSURE_FEE}}` / `{{BUSINESS_HOURS}}`
+`{{COMPANY_NAME}}` / `{{OPERATOR_NAME}}` / `{{ADDRESS}}` / `{{PHONE}}` / `{{EMAIL}}` / `{{DOMAIN}}` / `{{PRICE}}` / `{{JURISDICTION}}` / `{{LAST_UPDATED}}` / `{{LAUNCH_DATE}}` / `{{DISCLOSURE_FEE}}` / `{{BUSINESS_HOURS}}`
 
-### 3.2 sed 対象 file (legal-placeholders.md L4-8、 I-K 同期済 6 file)
+### 3.2 sed 対象 file (法務 3 page、 SERVICE_NAME 撤回後の縮減)
 
-- `components/marketing/marketing-footer.tsx` (旧 `components/legal-footer.tsx` 廃止 → MarketingFooter に吸収)
-- `components/brand/logo.tsx` (chrome Logo の SERVICE_NAME placeholder)
-- `app/(marketing)/page.tsx` (top page hero h1 の SERVICE_NAME placeholder)
 - `app/(marketing)/terms/page.tsx`
 - `app/(marketing)/privacy/page.tsx`
 - `app/(marketing)/legal/page.tsx`
 
-### 3.3 sed 一括置換 (legal-placeholders.md §2.2、 13 placeholder × 6 file = 1 発で完結)
+(chrome / footer / logo / top hero は brand 名 hardcode のため sed 対象外)
+
+### 3.3 sed 一括置換 (legal-placeholders.md §2.2、 12 placeholder × 3 file = 1 発で完結)
 
 ```bash
-# values 準備 → export L_SERVICE_NAME='New Service' 等 (詳細は legal-placeholders.md §2.1)
-FILES="components/marketing/marketing-footer.tsx components/brand/logo.tsx app/\(marketing\)/page.tsx app/\(marketing\)/terms/page.tsx app/\(marketing\)/privacy/page.tsx app/\(marketing\)/legal/page.tsx"
-sed -i.bak "s|{{SERVICE_NAME}}|${L_SERVICE_NAME}|g" $FILES
-# ... 13 placeholder 全部
+# values 準備 → export L_COMPANY_NAME='<実名>' 等 (詳細は legal-placeholders.md §2.1)
+FILES="app/\(marketing\)/terms/page.tsx app/\(marketing\)/privacy/page.tsx app/\(marketing\)/legal/page.tsx"
+sed -i.bak "s|{{COMPANY_NAME}}|${L_COMPANY_NAME}|g" $FILES
+# ... 12 placeholder 全部
 ```
 
 ### 3.4 dry run (置換漏れ検出)
 
 ```bash
-grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand/
+grep -rn '{{[A-Z_]*}}' app/\(marketing\)/
 # 出力 0 件 = 全置換成功
 ```
 
-→ **sed 1 発で chrome / footer / 法務 page 全部の SaaS 名差し替え完了**。 Phase 2 抽出時の最大の負担減。
+→ **sed 1 発で法務 3 page 全部の personal value 差し替え完了**。 chrome 系の
+brand 表示は別系統 (hardcode) のため本手順とは独立。
 
 ---
 
@@ -283,9 +286,9 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand
 | path | 内容 | 判断 |
 |---|---|---|
 | `components/marketing/marketing-header.tsx` | Logo + Sign in/up button | 完全流用 (Logo は brand/ で差し替え) |
-| `components/marketing/marketing-footer.tsx` | © + 4 link 横並び | 完全流用 (`{{SERVICE_NAME}}` sed 置換) |
+| `components/marketing/marketing-footer.tsx` | © + 4 link 横並び | 完全流用 (brand 名は "RecallMint" hardcode、 別 SaaS では直接書換) |
 | `components/auth/auth-header.tsx` | Logo only | 完全流用 |
-| `components/brand/logo.tsx` | text logo (`{{SERVICE_NAME}}` placeholder) | image / svg 差し替え時に touch |
+| `components/brand/logo.tsx` | text logo ("RecallMint" hardcode、 2026-05-17 placeholder 撤回) | image / svg 差し替え時に touch |
 | `app/(marketing)/layout.tsx` / `app/(auth)/layout.tsx` | 各 RG layout | 完全流用 |
 | `app/(app)/app/_components/app-header.tsx` | AppHeader (5 link onClick revalidate) | link list / label の SaaS 別 customize |
 | `app/(app)/app/layout.tsx` | AppLayout (BFCacheGuard + main wrap) | 完全流用 |
@@ -294,8 +297,8 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand
 
 | path | 内容 | 判断 |
 |---|---|---|
-| `app/(marketing)/{terms, privacy, legal}/page.tsx` | 利用規約 / プライバシーポリシー / 特商法 各 page | placeholder 13 種を sed 置換するのみで完成 |
-| `docs/legal-placeholders.md` | 13 placeholder mapping + sed 一括手順 + 切替チェックリスト | 完全流用 |
+| `app/(marketing)/{terms, privacy, legal}/page.tsx` | 利用規約 / プライバシーポリシー / 特商法 各 page | placeholder 12 種を sed 置換するのみで完成 (SERVICE_NAME は hardcode 化済) |
+| `docs/legal-placeholders.md` | 12 placeholder mapping + sed 一括手順 + 切替チェックリスト | 完全流用 |
 
 ### 4.7 contact form (I-J + I-D で抽出済)
 
@@ -351,7 +354,7 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/ components/marketing/ components/brand
 
 ### Step 2: placeholder 置換 (sed 1 発)
 
-`docs/legal-placeholders.md §2` の手順で 13 placeholder を実値に sed 置換。 §3.4 dry run で残置 0 件確認。
+`docs/legal-placeholders.md §2` の手順で 12 placeholder を実値に sed 置換 (SERVICE_NAME は hardcode 済)。 §3.4 dry run で残置 0 件確認。
 
 ### Step 3: service-specific 部分の削除 / 書換
 
