@@ -91,6 +91,14 @@ export const users = pgTable('users', {
   // subscription_status: Stripe emits more states (trialing, incomplete,
   // incomplete_expired, unpaid, paused). Webhook handler normalizes to these
   // 3 (trialing -> active, unpaid -> past_due, etc.) before writing.
+  //
+  // 注: past_due は 2 つの semantics を兼ねる:
+  //   (a) past_due + plan IN ('standard','pro') = 初回支払失敗 retry 期間中、
+  //       grace window でアクセス保持
+  //   (b) past_due + plan='free'                = unpaid/incomplete 由来の
+  //       downgrade 完了後 (max retry 経過 or 初回支払未完了)
+  // downstream UI は (plan, subscriptionStatus) 組合せで区別する必要あり
+  // (route.ts resolvePlanFromSub 参照)。 4 値化 (unpaid 別立て) は v1.x 検討。
   subscriptionStatus: text('subscription_status').$type<
     'active' | 'past_due' | 'canceled'
   >(),
