@@ -10,10 +10,11 @@ vocab 機能 (FSRS 英単語学習 + AI 例文生成) は drop 予定、mcq 機�
 (教材 OCR / custom_props / shared_context / 画像プレースホルダ) を
 新規追加中。
 
-**現フェーズ**: Phase 0b PoC 完全完了、Sprint A (DB migration +
-環境構築) 着手前。Tech Spec 確定版は `docs/02-tech-spec.md` v0.6 +
-v0.6 続編。アーキテクチャ詳細は `docs/architecture-guide.md`
-(plan00 由来、Sprint A 進行に応じて mcq 用へ更新予定)。
+**現フェーズ**: Sprint A 系 (A-1a / A-2 / A-3.2) 完了、 本番初回 deploy 成功 (Stripe
+env-aware key 切替済)。 Tech Spec は `docs/02-tech-spec.md` (implementation reference、
+data model / API / business logic 等、 戦略系は Obsidian)、 全体ロードマップは Obsidian
+管理。 sprint 個別 plan は `docs/plans/` 配下。 アーキテクチャ詳細は
+`docs/architecture-guide.md` (plan00 由来、 Sprint 進行に応じて mcq 用へ更新中)。
 
 ---
 
@@ -75,14 +76,15 @@ template 利用者は以下の 5 箇所を自身の SaaS 名 / 説明に書換:
 
 | # | file path | 該当行 | 現値 | 変更指針 |
 |---|---|---|---|---|
-| 1 | `app/layout.tsx` | L10 metadata title | `単語帳学習アプリ` | 自身の SaaS 名 |
-| 2 | `app/layout.tsx` | L11 metadata description | `FSRS アルゴリズムによる英単語学習アプリ` | 自身の SaaS 説明文 |
-| 3 | `app/(marketing)/page.tsx` | L35 hero 説明 | `FSRS 忘却曲線で効率的に英単語を定着させる学習アプリ` | 自身の SaaS hero 文 (h1 は `{{SERVICE_NAME}}` placeholder 経由で sed 置換、 §3.7 参照) |
+| 1 | `app/layout.tsx` | metadata title | `RecallMint — AI OCR × FSRS 学習アプリ` | 自身の SaaS 名 / タグライン |
+| 2 | `app/layout.tsx` | metadata description | 「AI OCR で学習資料を取り込み...」 | 自身の SaaS 説明文 |
+| 3 | `app/(marketing)/page.tsx` | L33/L35 hero h1 + 説明 | `RecallMint` / 「AI OCR で学習資料を取り込み...」 | 自身の SaaS では h1 と説明文を直接書換 (2026-05-17 SERVICE_NAME placeholder 撤回後は hardcode) |
 | 4 | `package.json` | L2 name | `vocab-learning-app` | 自身の SaaS 名 (kebab-case) |
-| 5 | `app/(app)/app/_components/app-header.tsx` | L16 Logo 直書き | `Vocab App` | 自身の SaaS 名 (`components/brand/logo.tsx` 経由化推奨、 当面は両方書換が安全) |
+| 5 | `app/(app)/app/_components/app-header.tsx` | L17 Logo 直書き | `RecallMint` | 自身の SaaS では直接書換 (2026-05-17 SERVICE_NAME placeholder 撤回後は hardcode) |
 
-法務 page (`app/(marketing)/{terms,privacy,legal}/page.tsx`) は別途 13 placeholder
-sed 置換で完結。 詳細: `docs/legal-placeholders.md`
+法務 page (`app/(marketing)/{terms,privacy,legal}/page.tsx`) は別途 12 placeholder
+sed 置換で完結 (戸籍名 / 連絡先 / 価格 / 制定日等の本気運用切替時 fill-in 値)。
+詳細: `docs/legal-placeholders.md`
 
 vocab 機能側文言 (nav link / dashboard / settings 削除確認 / vocab page 全) は次案件
 base 利用者向け、 §3.8 で言及。
@@ -182,8 +184,9 @@ chrome 3 layer:
 - auth: `AuthHeader` (Logo only) + footer なし
 - app: `AppHeader` (5 link onClick revalidate + UserButton) + footer なし
 
-Logo は `components/brand/logo.tsx` で marketing / auth 共用、 placeholder
-`{{SERVICE_NAME}}` 経由で sed 置換。 13 placeholder 系の詳細: `docs/legal-placeholders.md`
+Logo は `components/brand/logo.tsx` で marketing / auth 共用、 brand 名は
+"RecallMint" hardcode (2026-05-17 SERVICE_NAME placeholder 撤回)。 残り 12
+placeholder 系 (法務 page 用) の詳細: `docs/legal-placeholders.md`
 
 ### 3.8 vocab 機能 = 次案件 base 拡張対象
 
@@ -376,6 +379,6 @@ stripe listen --forward-to localhost:3000/api/webhooks/stripe
 - `CLAUDE.md` — Stripe / Clerk / AI 絶対ルール、 Plan / Review / Commit 規約 (project root)
 - `docs/architecture-guide.md` — architecture canonical doc (path indexer + 役割境界 + Setup 手順)
 - `docs/TODO.md` — 全体 TODO + Phase 1 完結 record + Phase 2 整備 sprint record
-- `docs/legal-placeholders.md` — 13 placeholder mapping + sed 一括置換手順
+- `docs/legal-placeholders.md` — 12 placeholder mapping + sed 一括置換手順 (SERVICE_NAME は hardcode 化)
 - `docs/setup-notes.md` — scaffold 直後 3 点修正 (新 repo 起こし時)
 - `.env.example` — 環境変数 source of truth

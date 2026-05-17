@@ -6,9 +6,12 @@ import { cn } from "@/lib/utils";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
+// brand 名は hardcode (2026-05-17 SERVICE_NAME placeholder 撤回)。
+// RecallMint は具体的 project で template ではない、 別サービス流用は
+// devcontainer-template repo の責務に切り出し済。
 export const metadata: Metadata = {
-  title: '単語帳学習アプリ',
-  description: 'FSRS アルゴリズムによる英単語学習アプリ',
+  title: 'RecallMint — AI OCR × FSRS 学習アプリ',
+  description: 'AI OCR で学習資料を取り込み、 FSRS 忘却曲線で効率的に復習する MCQ 学習アプリ',
   // Phase 1 G-pwa-1 (N-baseline-12): manifest を Next.js が <link rel="manifest">
   // として自動 inject。骨格のみ (manifest + icons + theme color)、service worker
   // / offline cache / push 通知は Phase 2 検討。

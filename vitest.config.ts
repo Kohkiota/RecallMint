@@ -14,6 +14,8 @@ export default defineConfig({
       'tests/**/*.test.tsx',
       'app/**/*.test.ts',
       'app/**/*.test.tsx',
+      'components/**/*.test.ts',
+      'components/**/*.test.tsx',
       'instrumentation.test.ts',
     ],
   },

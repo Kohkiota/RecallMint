@@ -3,8 +3,12 @@
 import { redirect } from 'next/navigation'
 import { stripe } from '@/lib/stripe'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { priceIdFor, type PaidPlan, type BillingInterval } from '@/lib/stripe/price-mapping'
 
-export async function createCheckoutSession() {
+// 4 種類 (Standard×month/year × Pro×month/year) すべての Checkout 起動に対応。
+// 旧 createCheckoutSession (Pro monthly hardcode) は廃止、 form action から
+// hidden input で plan + interval を受け取る pattern に統一。
+export async function createCheckoutSession(formData: FormData): Promise<void> {
   const user = await getCurrentUser()
   if (!user) {
     // webhook race: DB row not yet synced. Throw with stable code so the
@@ -13,8 +17,18 @@ export async function createCheckoutSession() {
     throw new Error('USER_NOT_SYNCED')
   }
 
-  const priceId = process.env.STRIPE_PRICE_PRO_MONTHLY
-  if (!priceId) throw new Error('STRIPE_PRICE_PRO_MONTHLY is not set')
+  const plan = formData.get('plan')
+  const interval = formData.get('interval')
+  if (plan !== 'standard' && plan !== 'pro') {
+    throw new Error(`Invalid plan: ${String(plan)}`)
+  }
+  if (interval !== 'month' && interval !== 'year') {
+    throw new Error(`Invalid interval: ${String(interval)}`)
+  }
+
+  // priceIdFor は env 起点で fail-fast 検証済 (lib/stripe/price-mapping.ts)、
+  // 4 cell exhaustive なので runtime throw は到達しない想定。
+  const priceId = priceIdFor(plan as PaidPlan, interval as BillingInterval)
 
   const base = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
 

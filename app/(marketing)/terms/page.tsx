@@ -1,5 +1,7 @@
-// 利用規約。波括弧 2 重括り (例: COMPANY_NAME, PRICE 等) は docs/legal-placeholders.md
-// の sed 置換対象。JSX 内 `{'<key>'}` 表記は、そのまま literal 文字列を render する。
+// 利用規約。波括弧 2 重括り (例: {{COMPANY_NAME}}, {{PRICE}} 等の 12 placeholder)
+// は docs/legal-placeholders.md の sed 置換対象。JSX 内 `{'<key>'}` 表記は、
+// そのまま literal 文字列を render する。
+// SERVICE_NAME は 2026-05-17 placeholder 撤回、 RecallMint hardcode に統一。
 
 export const metadata = {
   title: '利用規約',
@@ -13,7 +15,7 @@ export default function TermsPage() {
 
       <p className="text-sm text-slate-700 leading-relaxed">
         本利用規約 (以下「本規約」といいます) は、{'{{COMPANY_NAME}}'} (以下
-        「当社」といいます) が提供する {'{{SERVICE_NAME}}'} (以下「本サービス」
+        「当社」といいます) が提供する RecallMint (以下「本サービス」
         といいます) の利用条件を定めるものです。利用者の皆さま (以下「ユーザー」
         といいます) には、本規約に従って本サービスをご利用いただきます。
       </p>
@@ -24,7 +26,7 @@ export default function TermsPage() {
           <li>本規約の内容と、規約外の説明等の内容に齟齬が生じた場合、本規約の規定が優先します。</li>
           <li>本規約において用いる用語の定義は次のとおりです。
             <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
-              <li>「本サービス」: 当社が提供する {'{{SERVICE_NAME}}'}</li>
+              <li>「本サービス」: 当社が提供する RecallMint</li>
               <li>「ユーザー」: 本規約に同意の上、本サービスを利用する個人</li>
             </ul>
           </li>

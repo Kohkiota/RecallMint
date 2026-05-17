@@ -4,8 +4,9 @@ import { stripe } from '@/lib/stripe'
 import { getDb } from '@/lib/db'
 import { users, stripeEvents } from '@/lib/db/schema'
 import type { Plan } from '@/lib/auth/plan-limits'
+import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { logger } from '@/lib/logger'
-import { notifyWebhookError } from '@/lib/ops'
+import { notifyOps, notifyWebhookError } from '@/lib/ops'
 
 export const runtime = 'nodejs'
 
@@ -79,32 +80,97 @@ function extractCustomerId(event: Stripe.Event): string | undefined {
   return undefined
 }
 
-// TODO(post-A-3.2): Standard plan 導入時に 'standard' 戻り値も追加。
-// STRIPE_PRICE_STANDARD_* に対応する subscription を sub.items.data[].price.id
-// で判定し 'standard' にマッピング。 現状は STRIPE_PRICE_PRO_* のみなので戻り値は
-// 実質 'free' | 'pro' の subset に narrowing しておく (Plan 型を拡張しても本関数の
-// 抜けに気付けるよう、 戻り値型を Extract で固定)。
-function normalizeSubStatus(s: Stripe.Subscription.Status): {
-  plan: Extract<Plan, 'free' | 'pro'>
-  subscriptionStatus: 'active' | 'past_due' | 'canceled'
-} {
+// Stripe.Subscription.Status (10 種) → 内部 subscriptionStatus (3 種) への純粋
+// マッピング。 plan / billingInterval は本関数では扱わない (price_id 解決と
+// 分離するため)。
+function normalizeSubStatus(
+  s: Stripe.Subscription.Status,
+): 'active' | 'past_due' | 'canceled' {
   switch (s) {
     case 'active':
     case 'trialing':
-      return { plan: 'pro', subscriptionStatus: 'active' }
+      return 'active'
     case 'past_due':
-      return { plan: 'pro', subscriptionStatus: 'past_due' }
     case 'unpaid':
-      return { plan: 'free', subscriptionStatus: 'past_due' }
+    case 'incomplete':
+      return 'past_due'
     case 'canceled':
     case 'incomplete_expired':
     case 'paused':
-      return { plan: 'free', subscriptionStatus: 'canceled' }
-    case 'incomplete':
-      return { plan: 'free', subscriptionStatus: 'past_due' }
+      return 'canceled'
     default:
-      return { plan: 'free', subscriptionStatus: 'canceled' }
+      return 'canceled'
   }
+}
+
+// status × price_id から (plan, billingInterval) を決定する一段高い resolver。
+// 「課金 active 系 (active/trialing/past_due) なら price_id から plan + interval、
+// それ以外 (unpaid/incomplete/canceled/incomplete_expired/paused) は free + NULL」
+// を表現する。
+//
+// 不明 price_id (env 設定漏れ / Stripe Dashboard 不一致) は notifyOps + free
+// fallback。 throw しない (Stripe 再送ループを起こさず、 OT 観測性のみ確保)。
+//
+// 注: 'past_due' は plan を維持する設計 (初回支払失敗 retry 期間中はユーザー
+// アクセスを保持、 'unpaid' = max retry 後にようやく downgrade)。 Sprint A-3.2
+// 以前の normalizeSubStatus 既存 mapping を踏襲。
+async function resolvePlanFromSub(
+  status: Stripe.Subscription.Status,
+  priceId: string | null,
+  ctx: { eventId: string; customerId: string },
+): Promise<{ plan: Plan; billingInterval: 'month' | 'year' | null }> {
+  const sub = normalizeSubStatus(status)
+  // canceled 相当 (canceled / incomplete_expired / paused) は plan=free 確定
+  if (sub === 'canceled') {
+    return { plan: 'free', billingInterval: null }
+  }
+  // unpaid / incomplete は past_due に正規化されるが downgrade 対象。
+  // (active/trialing/past_due のうち unpaid/incomplete だけは plan='free')。
+  // 元の status をもう一度見て判定 (normalizeSubStatus の単純化を維持するため
+  // ここで再分岐)。
+  if (status === 'unpaid' || status === 'incomplete') {
+    return { plan: 'free', billingInterval: null }
+  }
+  // active / trialing / past_due: price_id から plan + interval を解決
+  if (!priceId) {
+    await notifyOps('stripe sub missing price_id', {
+      ...ctx,
+      status,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    return { plan: 'free', billingInterval: null }
+  }
+  const mapping = resolveFromPriceId(priceId)
+  if (!mapping) {
+    await notifyOps('stripe sub unknown price_id', {
+      ...ctx,
+      status,
+      priceId,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    return { plan: 'free', billingInterval: null }
+  }
+  return { plan: mapping.plan, billingInterval: mapping.interval }
+}
+
+// subscription object から price_id / current_period_end / cancel_at を取り出す
+// 共通 helper。 API 2025-03-31.basil 以降は items.data[].current_period_end に
+// 移動している点に注意。
+function extractSubFields(sub: Stripe.Subscription): {
+  priceId: string | null
+  periodEnd: Date | null
+  cancelAt: Date | null
+} {
+  const item = sub.items.data[0]
+  const priceId = item?.price?.id ?? null
+  const itemPeriodEnd = item?.current_period_end
+  const periodEnd =
+    typeof itemPeriodEnd === 'number' ? new Date(itemPeriodEnd * 1000) : null
+  const cancelAt =
+    typeof sub.cancel_at === 'number' ? new Date(sub.cancel_at * 1000) : null
+  return { priceId, periodEnd, cancelAt }
 }
 
 async function handleEvent(event: Stripe.Event): Promise<void> {
@@ -116,7 +182,7 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       const customerId = typeof s.customer === 'string' ? s.customer : s.customer?.id
       if (!clerkId || !customerId) return
 
-      // Step 1: link customer to user (existing behavior)
+      // Step 1: link customer to user (既存挙動)
       await db
         .update(users)
         .set({ stripeCustomerId: customerId })
@@ -132,19 +198,23 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       const subRef = s.subscription
       if (subRef) {
         const subId = typeof subRef === 'string' ? subRef : subRef.id
+        // retrieve() が throw した場合 (Stripe 5xx / timeout)、 outer try に
+        // 流れて notifyWebhookError + 200 で完結する。 customerId link は
+        // Step 1 で既に成功しているので、 plan/status の同期は次に届く
+        // customer.subscription.created/.updated webhook で recover される
+        // (両 path とも独立 idempotent、 race defense の degraded mode)。
         const sub = await stripe.subscriptions.retrieve(subId)
-        const norm = normalizeSubStatus(sub.status)
-        // API 2025-03-31.basil 以降は items.data[].current_period_end に移動
-        const itemPeriodEnd = sub.items.data[0]?.current_period_end
-        const periodEnd =
-          typeof itemPeriodEnd === 'number' ? new Date(itemPeriodEnd * 1000) : null
-        const cancelAt =
-          typeof sub.cancel_at === 'number' ? new Date(sub.cancel_at * 1000) : null
+        const { priceId, periodEnd, cancelAt } = extractSubFields(sub)
+        const { plan, billingInterval } = await resolvePlanFromSub(sub.status, priceId, {
+          eventId: event.id,
+          customerId,
+        })
         await db
           .update(users)
           .set({
-            plan: norm.plan,
-            subscriptionStatus: norm.subscriptionStatus,
+            plan,
+            billingInterval,
+            subscriptionStatus: normalizeSubStatus(sub.status),
             currentPeriodEnd: periodEnd,
             cancelAt,
           })
@@ -156,18 +226,17 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
     case 'customer.subscription.updated': {
       const sub = event.data.object as Stripe.Subscription
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-      const norm = normalizeSubStatus(sub.status)
-      // API 2025-03-31.basil 以降は items.data[].current_period_end に移動
-      const itemPeriodEnd = sub.items.data[0]?.current_period_end
-      const periodEnd =
-        typeof itemPeriodEnd === 'number' ? new Date(itemPeriodEnd * 1000) : null
-      const cancelAt =
-        typeof sub.cancel_at === 'number' ? new Date(sub.cancel_at * 1000) : null
+      const { priceId, periodEnd, cancelAt } = extractSubFields(sub)
+      const { plan, billingInterval } = await resolvePlanFromSub(sub.status, priceId, {
+        eventId: event.id,
+        customerId,
+      })
       await db
         .update(users)
         .set({
-          plan: norm.plan,
-          subscriptionStatus: norm.subscriptionStatus,
+          plan,
+          billingInterval,
+          subscriptionStatus: normalizeSubStatus(sub.status),
           currentPeriodEnd: periodEnd,
           cancelAt,
         })
@@ -177,13 +246,14 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-      // subscription 削除時: plan/status をリセット、cancelAt をクリア。
-      // currentPeriodEnd は billing 履歴の記録として残す (touch しない)。
+      // subscription 削除時: plan/status/billingInterval をリセット、cancelAt を
+      // クリア。 currentPeriodEnd は billing 履歴の記録として残す (touch しない)。
       // cancelAtPeriodEnd は schema 廃止済み (cancel_at != null で解約予約判定)。
       await db
         .update(users)
         .set({
           plan: 'free',
+          billingInterval: null,
           subscriptionStatus: 'canceled',
           cancelAt: null,
         })

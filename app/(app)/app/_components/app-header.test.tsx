@@ -54,7 +54,7 @@ afterEach(() => {
 describe('AppHeader', () => {
   it('renders brand link to /app', () => {
     render(<AppHeader />)
-    const brand = screen.getByRole('link', { name: 'Vocab App' })
+    const brand = screen.getByRole('link', { name: 'RecallMint' })
     expect(brand).toHaveAttribute('href', '/app')
   })
 
@@ -74,7 +74,7 @@ describe('AppHeader', () => {
   // 残存 3 link すべてに onClick で revalidateAppPath が紐付き、
   // navigate 先 Router Cache を破棄する。click ごとに該当 path で 1 回 call。
   it.each([
-    { name: 'Vocab App', path: '/app' as const },
+    { name: 'RecallMint', path: '/app' as const },
     { name: '演習', path: '/app/quiz' as const },
     { name: '設定', path: '/app/settings' as const },
   ])('「$name」link click → revalidateAppPath($path) を 1 回 call', ({ name, path }) => {

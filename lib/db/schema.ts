@@ -91,12 +91,33 @@ export const users = pgTable('users', {
   // subscription_status: Stripe emits more states (trialing, incomplete,
   // incomplete_expired, unpaid, paused). Webhook handler normalizes to these
   // 3 (trialing -> active, unpaid -> past_due, etc.) before writing.
+  //
+  // 注: past_due は 2 つの semantics を兼ねる:
+  //   (a) past_due + plan IN ('standard','pro') = 初回支払失敗 retry 期間中、
+  //       grace window でアクセス保持
+  //   (b) past_due + plan='free'                = unpaid/incomplete 由来の
+  //       downgrade 完了後 (max retry 経過 or 初回支払未完了)
+  // downstream UI は (plan, subscriptionStatus) 組合せで区別する必要あり
+  // (route.ts resolvePlanFromSub 参照)。 4 値化 (unpaid 別立て) は v1.x 検討。
   subscriptionStatus: text('subscription_status').$type<
     'active' | 'past_due' | 'canceled'
   >(),
   currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
   // キャンセル予定日時: Stripe が返す cancel_at を保存。null = キャンセル予約なし。
   cancelAt: timestamp('cancel_at', { withTimezone: true }),
+  // 課金サイクル: NULL = 課金プランなし (free)、'month' = 月額、'year' = 年額。
+  // plan 軸 (free/standard/pro) と直交し、 機能差は plan のみが決定。 cycle は
+  // 表示・upsell・price_id 選択にのみ使用。 webhook で price_id → (plan, interval)
+  // を解決して同時更新 (lib/stripe/price-mapping.ts 参照)。
+  //
+  // Invariants (webhook handler + price-mapping で担保):
+  //   plan='free'                 ⇒ billingInterval IS NULL
+  //   plan IN ('standard','pro')  ⇒ billingInterval IN ('month','year')
+  // 例外: 本列導入 (2026-05-17) 以前の課金 user の billingInterval は NULL の
+  // まま、 次回 webhook 受信時に resync される (この transition window のみ
+  // paid plan && interval NULL が legal、 frontend は NULL を 'month' として
+  // 暫定表示する fallback 必須)。
+  billingInterval: text('billing_interval').$type<'month' | 'year'>(),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -1,5 +1,6 @@
-// プライバシーポリシー。波括弧 2 重括り (例: COMPANY_NAME, EMAIL 等) は
-// docs/legal-placeholders.md の sed 置換対象。
+// プライバシーポリシー。波括弧 2 重括り (例: {{COMPANY_NAME}}, {{EMAIL}} 等
+// の 12 placeholder) は docs/legal-placeholders.md の sed 置換対象。
+// SERVICE_NAME は 2026-05-17 placeholder 撤回、 RecallMint hardcode に統一。
 
 export const metadata = {
   title: 'プライバシーポリシー',
@@ -12,7 +13,7 @@ export default function PrivacyPage() {
       <h1 className="text-2xl font-bold text-slate-900">プライバシーポリシー</h1>
 
       <p className="text-sm text-slate-700 leading-relaxed">
-        {'{{COMPANY_NAME}}'} (以下「当社」といいます) は、当社が提供する {'{{SERVICE_NAME}}'} (以下「本サービス」といいます) における利用者の個人情報の取扱いについて、以下のとおりプライバシーポリシー (以下「本ポリシー」といいます) を定めます。
+        {'{{COMPANY_NAME}}'} (以下「当社」といいます) は、当社が提供する RecallMint (以下「本サービス」といいます) における利用者の個人情報の取扱いについて、以下のとおりプライバシーポリシー (以下「本ポリシー」といいます) を定めます。
       </p>
 
       <Section title="第1条 (基本方針)">

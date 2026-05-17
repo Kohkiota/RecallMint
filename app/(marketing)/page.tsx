@@ -30,9 +30,9 @@ export default async function Home() {
   // wrapper で実現 (spec §4.6 page 別 wrapper pattern)。
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4">
-      <h1 className="text-4xl font-bold text-slate-900 mb-4">{`{{SERVICE_NAME}}`}</h1>
+      <h1 className="text-4xl font-bold text-slate-900 mb-4">RecallMint</h1>
       <p className="text-slate-600 mb-8 text-center max-w-md">
-        FSRS 忘却曲線で効率的に英単語を定着させる学習アプリ
+        AI OCR で学習資料を取り込み、 FSRS 忘却曲線で効率的に復習する学習アプリ
       </p>
       <div className="flex gap-3">
         <Button asChild size="lg">

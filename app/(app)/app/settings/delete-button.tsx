@@ -104,13 +104,12 @@ export function DeleteAccountButton({ plan }: Props) {
       <div className="space-y-3">
         <div className="text-sm text-red-700 space-y-2">
           <p>アカウントを完全に削除します。元に戻せません。</p>
-          {/* TODO(post-A-3.2): 3 プラン (free/standard/pro) UI 対応。
-              'standard' は課金プランだが本分岐に該当せず注意書きが出ない。
-              Stripe checkout 拡張 Sprint で課金プラン (standard|pro) 共通の
-              削除注意文に修正。 */}
-          {plan === 'pro' && (
+          {plan !== 'free' && (
+            // 課金プラン (standard / pro) 共通の警告。 削除フロー (clerk webhook
+            // → stripe.subscriptions.list 全 cancel) は plan 非依存なので
+            // 文言も plan で分岐しない (Step 1 調査で確認済)。
             <p>
-              現在 Pro プランをご利用中です。
+              現在 課金プランをご利用中です。
               削除と同時に課金は停止し、残り期間の返金はありません。
               解約撤回・請求の確認は『お支払い・解約を管理』からも可能です。
             </p>
