@@ -885,7 +885,7 @@ components/
 | plan | OCR 上限 | unlock 機能 |
 |---|---|---|
 | Free | 月 30 問 | 1 試験まで |
-| Standard | 月 500 問 | 複数試験管理 / FSRS 全機能 / カスタムプロパティ無制限 |
+| Standard | 月 300 問 | 複数試験管理 / FSRS 全機能 / カスタムプロパティ無制限 |
 | Pro | 公平利用 | 複数デバイス同期 [v1.x] / エクスポート [v1.x] |
 
 具体的価格は Obsidian (価格戦略 doc) 参照。 Stripe Price ID は §10 環境変数。
