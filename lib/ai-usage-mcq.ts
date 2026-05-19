@@ -7,14 +7,27 @@
 // 状態前提:
 // - source_documents.status IN ('completed', 'processing') を集計対象とする。
 //   ('failed' は失敗 path で消費 0 扱い、 'uploading' は途中段階で集計対象外)
+// - status='processing' のうち STALE_THRESHOLD_MINUTES 以上経過したものは
+//   Vercel function timeout (Hobby 60s) 等で catch ブロックに到達せず status
+//   が更新されなかった残骸とみなし、 集計から除外する (S1.7 で追加)。
+//   仮に本当に処理中だったとしても、 Vercel function は long-running を許容
+//   しないため、 STALE_THRESHOLD を超えた processing は事実上失敗と扱って良い。
 // - JST 月境界 = 当月 1 日 00:00:00 JST 〜 翌月 1 日 00:00:00 JST 直前
 //   DB 上は created_at (UTC timestamptz) で比較するため、 月境界を UTC に変換した
 //   範囲で WHERE する。
 
-import { and, eq, gte, lt, inArray, sql } from 'drizzle-orm'
+import { and, eq, gte, lt, or, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { sourceDocuments } from '@/lib/db/schema'
 import { limitsFor, type Plan } from '@/lib/auth/plan-limits'
+
+// processing 残骸とみなす経過時間 (分)。 kickoff spec 通り 10 分。
+// 根拠: 典型的な OCR は Flash で 30-120 秒、 Pro fallback まで含めても 5-8 分。
+// 10 分超過 = ほぼ確実に function timeout で kill されたケース。
+// Vercel Pro plan の function timeout 900s (15 分) より短いため、 まれに正常
+// 実行中の処理を「stale」 として除外する false positive risk があるが、
+// 月次 page 計算に対する影響は限定的 (実害 = 「上限超過」 を 1 件分逃す程度)。
+export const STALE_PROCESSING_MINUTES = 10
 
 // JST 当月の境界 (UTC で表現) を返す。 now を渡すと test で任意時刻を注入可能。
 // 月境界判定の単位は JST 1 日 (UTC+9) で、 例えば「2026-05 月」 は
@@ -33,21 +46,41 @@ export function jstMonthBoundsUtc(now?: Date): { start: Date; end: Date } {
   return { start, end }
 }
 
-// 当月 (JST 月境界) の OCR ページ消費合計。 status IN ('completed', 'processing')
-// のみカウント。 NULL や 'failed' / 'uploading' は除外。
+// 「processing 残骸」 のカットオフ時刻 (これより前の processing 行は集計除外)。
+// `now` は test 注入用。 純粋関数として export し、 stale 判定の決定性を test 可能に。
+export function staleProcessingCutoff(now?: Date): Date {
+  return new Date(
+    (now ?? new Date()).getTime() - STALE_PROCESSING_MINUTES * 60 * 1000,
+  )
+}
+
+// 当月 (JST 月境界) の OCR ページ消費合計。 集計対象:
+//   - status='completed' の全 row
+//   - status='processing' のうち created_at が STALE_PROCESSING_MINUTES 以内の row
+// stale processing (timeout 残骸) は除外する。
+//
+// `now` は test 注入用。 stale 判定にも同じ値を使う (test の決定性のため)。
 export async function getCurrentMonthOcrPages(
   userId: string,
   now?: Date,
 ): Promise<number> {
   const db = getDb()
   const { start, end } = jstMonthBoundsUtc(now)
+  const cutoff = staleProcessingCutoff(now)
   const rows = await db
     .select({ total: sql<number>`COALESCE(SUM(${sourceDocuments.pagesProcessed}), 0)::int` })
     .from(sourceDocuments)
     .where(
       and(
         eq(sourceDocuments.userId, userId),
-        inArray(sourceDocuments.status, ['completed', 'processing'] as const),
+        // 集計対象 status: completed (確定) または processing かつ stale ではない
+        or(
+          eq(sourceDocuments.status, 'completed'),
+          and(
+            eq(sourceDocuments.status, 'processing'),
+            gte(sourceDocuments.createdAt, cutoff),
+          ),
+        ),
         gte(sourceDocuments.createdAt, start),
         lt(sourceDocuments.createdAt, end),
       ),
