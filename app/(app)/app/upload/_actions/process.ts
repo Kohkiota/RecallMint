@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { eq, and, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
@@ -11,6 +12,10 @@ import {
   type CardImage,
 } from '@/lib/db/schema'
 import { canRunOcr } from '@/lib/ai-usage-mcq'
+import {
+  incrementAiUsage,
+  getTodayAiUsageGlobal,
+} from '@/lib/ai-usage-counter'
 import { runOcrPipeline } from '@/lib/ai/ocr'
 import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
 import { notifyOps } from '@/lib/ops'
@@ -49,6 +54,7 @@ export type ProcessResultData = {
 //   INVALID_INPUT: formData の mode / examId / files が不正
 //   EXAM_NOT_FOUND: 既存 exam が見つからない / archived
 //   QUOTA_EXCEEDED: 月次 OCR ページ上限 超過
+//   GEMINI_DAILY_LIMIT_EXCEEDED: サービス全体の 1 日 Gemini call 上限超過 (S1.8)
 //   GEMINI_FAILED: OCR pipeline (Flash + Pro 両方) 失敗
 //   SAVE_FAILED:   OCR は成功したが DB 保存 (cards INSERT) 失敗
 //   OTHER:         上記いずれにも該当しない予期しないエラー
@@ -57,6 +63,7 @@ export type ProcessUploadErrorCode =
   | 'INVALID_INPUT'
   | 'EXAM_NOT_FOUND'
   | 'QUOTA_EXCEEDED'
+  | 'GEMINI_DAILY_LIMIT_EXCEEDED'
   | 'GEMINI_FAILED'
   | 'SAVE_FAILED'
   | 'OTHER'
@@ -92,6 +99,19 @@ const MAX_QUESTION_PREVIEW = 80
 // S1.7 改修: 失敗時の戻り値を code 付き構造化、 plan-limits 超過は exam INSERT /
 // source_documents INSERT を一切走らせずに早期 return (kickoff Critical 1)。
 export async function processUpload(
+  formData: FormData,
+): Promise<ProcessUploadResult> {
+  // S1.8: いずれの return path でも root layout 配下を一括 revalidate して
+  // 残量 banner (Server Component で fetch) を即時新値で render する。
+  // 内側 _processUpload は revalidate 責務を持たない (重複発火回避)。
+  try {
+    return await _processUpload(formData)
+  } finally {
+    revalidatePath('/', 'layout')
+  }
+}
+
+async function _processUpload(
   formData: FormData,
 ): Promise<ProcessUploadResult> {
   const user = await getCurrentUser()
@@ -163,6 +183,36 @@ export async function processUpload(
         limit: decision.limit,
         requested: decision.requested,
       },
+    }
+  }
+
+  // -- GEMINI_DAILY_LIMIT guard (サービス全体の日次 Gemini call 上限) --
+  // CLAUDE.md §AI API 絶対ルール 3: 無料枠運用前提の安全弁。 plan-limits 通過後、
+  // Gemini call 開始前に global counter (ai_usage.count) を読み比較。
+  // 上限 = 0 / 未設定 / NaN は guard off (本番では必ず設定する想定、 .env.example
+  // で 1000 を default 提示)。
+  // review I-4: 本番で env 未設定だと無制限になるリスクがあるため、 guard off に
+  // 落ちたケースを logger.warn で必ず可視化する。 OT が log で気付ける状態を担保。
+  const dailyLimit = parseDailyLimit(process.env.GEMINI_DAILY_LIMIT)
+  if (dailyLimit === null) {
+    logger.warn({
+      event: 'gemini.daily_limit.disabled',
+      raw: process.env.GEMINI_DAILY_LIMIT ?? null,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+    })
+  } else {
+    const todayCount = await getTodayAiUsageGlobal()
+    if (todayCount >= dailyLimit) {
+      return {
+        ok: false,
+        code: 'GEMINI_DAILY_LIMIT_EXCEEDED',
+        error:
+          '本日のサービス全体の利用上限に達しました。 明日以降にお試しください。',
+        details: {
+          current: todayCount,
+          limit: dailyLimit,
+        },
+      }
     }
   }
 
@@ -256,7 +306,14 @@ export async function processUpload(
 
   let pipelineResult
   try {
-    pipelineResult = await runOcrPipeline(geminiInputs)
+    pipelineResult = await runOcrPipeline(geminiInputs, {
+      // S1.8: 各 Gemini call 直前で ai_usage / ai_usage_users counter を加算。
+      // best-effort (counter DB エラーは pipeline 側で握りつぶす) のため、
+      // counter 失敗で OCR が中断することはない。
+      onAttempt: async () => {
+        await incrementAiUsage(user.id, 1)
+      },
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     await markFailed(sourceDocumentId, err)
@@ -377,6 +434,16 @@ export async function processUpload(
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   return s.slice(0, max) + '…'
+}
+
+// GEMINI_DAILY_LIMIT 環境変数を Number に変換。 未設定 / 不正値 / 0 以下は
+// null を返し guard を off にする (.env.example で 1000 を default 提示済、
+// 想定外の設定で本番が止まることを避ける)。
+function parseDailyLimit(raw: string | undefined): number | null {
+  if (!raw) return null
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n
 }
 
 async function markFailed(

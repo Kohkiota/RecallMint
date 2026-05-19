@@ -6,6 +6,9 @@ const {
   mockCanRunOcr,
   mockNotifyOps,
   mockPdfPageCount,
+  mockIncrementAiUsage,
+  mockGetTodayAiUsageGlobal,
+  mockRevalidatePath,
   dbState,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
@@ -13,6 +16,9 @@ const {
   mockCanRunOcr: vi.fn(),
   mockNotifyOps: vi.fn(),
   mockPdfPageCount: vi.fn(),
+  mockIncrementAiUsage: vi.fn(),
+  mockGetTodayAiUsageGlobal: vi.fn(),
+  mockRevalidatePath: vi.fn(),
   // DB chain mock — track which operations were called and return preset values.
   dbState: {
     insertedExams: [] as Array<{ name: string; userId: string }>,
@@ -36,6 +42,15 @@ vi.mock('@/lib/ai/ocr', () => ({
 
 vi.mock('@/lib/ai-usage-mcq', () => ({
   canRunOcr: mockCanRunOcr,
+}))
+
+vi.mock('@/lib/ai-usage-counter', () => ({
+  incrementAiUsage: mockIncrementAiUsage,
+  getTodayAiUsageGlobal: mockGetTodayAiUsageGlobal,
+}))
+
+vi.mock('next/cache', () => ({
+  revalidatePath: mockRevalidatePath,
 }))
 
 vi.mock('@/lib/ops', () => ({
@@ -130,6 +145,15 @@ beforeEach(() => {
   mockCanRunOcr.mockReset()
   mockNotifyOps.mockReset()
   mockPdfPageCount.mockReset()
+  mockIncrementAiUsage.mockReset()
+  mockGetTodayAiUsageGlobal.mockReset()
+  mockRevalidatePath.mockReset()
+  // 既定: ai_usage counter は無風 (上限未到達 / increment 成功)
+  mockGetTodayAiUsageGlobal.mockResolvedValue(0)
+  mockIncrementAiUsage.mockResolvedValue(undefined)
+  // GEMINI_DAILY_LIMIT は test 中で個別 override する場合がある
+  delete process.env.GEMINI_DAILY_LIMIT
+
   dbState.insertedExams = []
   dbState.insertedSourceDocs = []
   dbState.insertedCards = []
@@ -256,6 +280,88 @@ describe('processUpload', () => {
     expect(dbState.insertedCards).toHaveLength(1)
     expect(dbState.insertedCards[0].tags).toEqual([])
     expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('GEMINI_DAILY_LIMIT_EXCEEDED: global daily count >= limit → no DB writes, no OCR run', async () => {
+    process.env.GEMINI_DAILY_LIMIT = '5'
+    mockGetTodayAiUsageGlobal.mockResolvedValueOnce(5)
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('GEMINI_DAILY_LIMIT_EXCEEDED')
+      expect(result.error).toMatch(/本日のサービス全体の利用上限/)
+      expect(result.details).toMatchObject({ current: 5, limit: 5 })
+    }
+    expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+  })
+
+  it('GEMINI_DAILY_LIMIT unset → guard off (OCR proceeds even with high count)', async () => {
+    delete process.env.GEMINI_DAILY_LIMIT
+    mockGetTodayAiUsageGlobal.mockResolvedValueOnce(999_999)
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 1,
+      tokenUsage: [{ model: 'flash', inputTokens: 100, outputTokens: 10 }],
+    })
+    dbState.nextCardIds = ['card-1']
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(true)
+  })
+
+  it('processUpload always calls revalidatePath on completion (success path)', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 1,
+      tokenUsage: [{ model: 'flash', inputTokens: 100, outputTokens: 10 }],
+    })
+    dbState.nextCardIds = ['card-1']
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    await processUpload(fd)
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+  })
+
+  it('processUpload calls revalidatePath on early-return path (QUOTA_EXCEEDED)', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({
+      ok: false,
+      reason: 'exceeded',
+      current: 30,
+      limit: 30,
+      requested: 1,
+    })
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    await processUpload(fd)
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
   })
 
   it('OCR pipeline failure → GEMINI_FAILED with details, source_doc marked failed + notifyOps', async () => {
