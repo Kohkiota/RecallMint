@@ -1,8 +1,8 @@
 {
   "id": "/app",
-  "name": "Vocab App",
-  "short_name": "Vocab",
-  "description": "FSRS 忘却曲線で効率的に英単語を定着させる学習アプリ",
+  "name": "RecallMint",
+  "short_name": "RecallMint",
+  "description": "AI OCR で学習資料を取り込み、 FSRS 忘却曲線で効率的に復習する MCQ 学習アプリ",
   "start_url": "/app",
   "display": "standalone",
   "background_color": "#f8fafc",
@@ -11,21 +11,5 @@
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ],
-  "screenshots": [
-    {
-      "src": "/screenshots/desktop-home.png",
-      "sizes": "2240x1260",
-      "type": "image/png",
-      "form_factor": "wide",
-      "label": "単語一覧画面 (デスクトップ)"
-    },
-    {
-      "src": "/screenshots/mobile-home.png",
-      "sizes": "1313x2335",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "単語一覧画面 (モバイル)"
-    }
   ]
 }
