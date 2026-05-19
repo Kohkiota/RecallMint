@@ -277,9 +277,9 @@ MVP 確定 (Sprint 完了時) で以下を削除:
 
 本ドキュメント作成時点 (commit 確定後にこの節を更新):
 
-- schema mode 経路含む最終 commit: `<TODO: 削除直前の commit hash>`
-- PoC 完了状態の commit: `<TODO: prompt 推敲完了 commit hash>`
-- discover mode 一本化 commit: `<TODO: 削除実施 commit hash>`
+- schema mode 経路含む最終 commit: `26a1c4e` (prompt 推敲の最終 commit、 schema mode code がまだ残っていた最後の状態)
+- PoC 完了状態の commit: `469b23a` (本 research doc 作成時点、 PoC code 削除前の最終状態)
+- discover mode 一本化 commit: `0a5ec0d` (commit A: scripts/ocr-poc/ 削除) + `b4e62e2` (commit B: exams.property_schema 列 drop) の 2 commit セット
 
 ---
 
@@ -299,7 +299,9 @@ MVP 確定 (Sprint 完了時) で以下を削除:
 
 ### 7.2 関連 PoC commit
 
-- (TODO: PoC schema mode 実装の初期 commit、 PoC discover mode 追加 commit、 prompt 推敲の主要 commit)
+- `236a189` (Initial commit): PoC schema mode + discover mode 両経路を含む初版投入
+- `b12f86e` (chore(ocr-poc): simplify DISCOVER_CUSTOM_PROPS_RULES): 推敲対処 1、 自由キー命名 / 同義キー統一 / 具体例を削除して判断負荷を schema mode 並みに低減
+- `26a1c4e` (chore(ocr-poc): clarify question_text vs options[].text boundary): 推敲対処 2、 question_text 責務境界明確化 (正誤組合せ a〜d 記述の例外を明示)
 
 ### 7.3 関連 lessons
 
