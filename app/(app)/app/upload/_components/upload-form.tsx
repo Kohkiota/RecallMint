@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react'
 import Link from 'next/link'
+import { Loader2 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -74,6 +75,8 @@ export function UploadForm({
   )
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [, startTransition] = useTransition()
+  // 派生 flag: OCR Server Action 実行中。 UI controls の disable 判定に集約利用。
+  const isSubmitting = phase.kind === 'submitting'
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
   useEffect(() => {
@@ -318,6 +321,23 @@ export function UploadForm({
       onSubmit={handleSubmit}
       className="space-y-6"
     >
+      {isSubmitting && (
+        <section
+          role="status"
+          aria-live="polite"
+          className="rounded-md bg-slate-50 border border-slate-200 p-4 flex items-center gap-3"
+        >
+          <Loader2 className="h-5 w-5 animate-spin text-slate-700" aria-hidden="true" />
+          <div className="text-sm text-slate-700">
+            AI が問題を抽出しています… (30 秒〜数分かかります)
+            <br />
+            <span className="text-xs text-slate-500">
+              この画面を閉じたり戻ったりしないでください。
+            </span>
+          </div>
+        </section>
+      )}
+
       <section>
         <h2 className="text-lg font-bold mb-2">ファイルを選択</h2>
         <p className="text-sm text-slate-600 mb-3">
@@ -330,8 +350,9 @@ export function UploadForm({
           type="file"
           multiple
           accept="image/*,application/pdf"
+          disabled={isSubmitting}
           onChange={(e) => handleAdd(e.target.files)}
-          className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:font-medium"
+          className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         />
       </section>
 
@@ -383,6 +404,7 @@ export function UploadForm({
                       type="button"
                       variant="outline"
                       size="sm"
+                      disabled={isSubmitting}
                       onClick={() => removeEntry(e.id)}
                       className="w-full text-xs py-1"
                     >
@@ -407,8 +429,9 @@ export function UploadForm({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => setDestination({ mode: 'new' })}
-              className={`text-left rounded-xl border p-4 transition ${
+              className={`text-left rounded-xl border p-4 transition disabled:opacity-50 disabled:cursor-not-allowed ${
                 destination?.mode === 'new'
                   ? 'border-slate-900 bg-slate-900 text-white'
                   : 'border-slate-300 bg-white hover:border-slate-500'
@@ -421,11 +444,12 @@ export function UploadForm({
             </button>
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => {
                 // 既存 mode に切替、 examId 未選択のまま dropdown を出して選択を待つ
                 setDestination({ mode: 'existing', examId: '' })
               }}
-              className={`text-left rounded-xl border p-4 transition ${
+              className={`text-left rounded-xl border p-4 transition disabled:opacity-50 disabled:cursor-not-allowed ${
                 destination?.mode === 'existing'
                   ? 'border-slate-900 bg-slate-900 text-white'
                   : 'border-slate-300 bg-white hover:border-slate-500'
@@ -444,10 +468,11 @@ export function UploadForm({
               </label>
               <select
                 value={destination.examId}
+                disabled={isSubmitting}
                 onChange={(e) =>
                   setDestination({ mode: 'existing', examId: e.target.value })
                 }
-                className="block w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
+                className="block w-full rounded-md border border-slate-300 bg-white p-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">— 試験を選択 —</option>
                 {existingExams.map((exam, idx) => (
