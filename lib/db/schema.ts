@@ -263,6 +263,14 @@ export const cards = pgTable(
       .notNull()
       .default(sql`'{}'::jsonb`)
       .$type<Record<string, unknown>>(),
+    // ユーザー手動 tag (S3 で一括編集 UI を実装、 S1a で先打ちして cards
+    // INSERT を最初から tags=[] 込みで書く)。 default は空配列、 後付けで
+    // backfill 不要。 集合操作 (フィルタ / 一括 append / remove) は v1.x で
+    // GIN index 追加を検討、 MVP は SUM(reviews) 等で問題ない量を想定。
+    tags: text('tags')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     // 学習統計 (デノーマライズ、 mcq 新規追加)
     answered: boolean('answered').notNull().default(false),
     // NULL = 未回答
