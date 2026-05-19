@@ -15,6 +15,7 @@ import {
   TOTAL_UPLOAD_LIMIT_MB,
 } from '../_lib/constants'
 import { pdfPageCount } from '../_lib/pdf-page-count'
+import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import { processUpload, type ProcessResultData } from '../_actions/process'
 import { discardUpload } from '../_actions/discard'
 
@@ -77,12 +78,20 @@ export function UploadForm({
   const [, startTransition] = useTransition()
   // 派生 flag: OCR Server Action 実行中。 UI controls の disable 判定に集約利用。
   const isSubmitting = phase.kind === 'submitting'
+  // 重複した filename を 4 秒間 banner 表示するための transient state。
+  const [duplicateWarnings, setDuplicateWarnings] = useState<string[]>([])
+  const duplicateClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
+  // 重複警告の transient timer も unmount で確実 clear (stale fire 防止)。
   useEffect(() => {
     return () => {
       for (const e of entries) {
         if (e.kind === 'image' && 'thumbUrl' in e && e.thumbUrl) URL.revokeObjectURL(e.thumbUrl)
+      }
+      if (duplicateClearTimerRef.current) {
+        clearTimeout(duplicateClearTimerRef.current)
+        duplicateClearTimerRef.current = null
       }
     }
     // entries 依存 ではなく unmount のみ cleanup (removeEntry で個別 revoke 済)。
@@ -255,8 +264,25 @@ export function UploadForm({
 
   function handleAdd(filesList: FileList | null) {
     if (!filesList) return
+    const incoming = Array.from(filesList)
+    // 同一 filename (既存 + 同 batch 内) を弾く。 hash 比較は MVP 不要、
+    // filename 一致のみで判定。
+    const { unique, duplicates } = partitionByDuplicateFilename(
+      incoming,
+      entries.map((e) => ({ file: e.file })),
+    )
+    if (duplicates.length > 0) {
+      setDuplicateWarnings(duplicates)
+      if (duplicateClearTimerRef.current) {
+        clearTimeout(duplicateClearTimerRef.current)
+      }
+      duplicateClearTimerRef.current = setTimeout(() => {
+        setDuplicateWarnings([])
+        duplicateClearTimerRef.current = null
+      }, 4000)
+    }
     const newEntries: FileEntry[] = []
-    for (const file of Array.from(filesList)) {
+    for (const file of unique) {
       const id =
         typeof crypto !== 'undefined' && 'randomUUID' in crypto
           ? crypto.randomUUID()
@@ -410,6 +436,19 @@ export function UploadForm({
           onChange={(e) => handleAdd(e.target.files)}
           className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:font-medium disabled:opacity-50 disabled:cursor-not-allowed"
         />
+        {duplicateWarnings.length > 0 && (
+          <div
+            role="alert"
+            className="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-3"
+          >
+            同じファイル名が既に選択されています:
+            <ul className="list-disc list-inside mt-1">
+              {duplicateWarnings.map((name, i) => (
+                <li key={`${name}-${i}`} className="break-all">{name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       {entries.length > 0 && (
