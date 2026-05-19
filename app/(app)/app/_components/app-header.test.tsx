@@ -58,10 +58,11 @@ describe('AppHeader', () => {
     expect(brand).toHaveAttribute('href', '/app')
   })
 
-  it('renders 2 nav links with correct hrefs (演習 / 設定) — Sprint A-2 で vocab nav 撤去', () => {
+  it('renders 3 nav links with correct hrefs (アップロード / 演習 / 設定) — S1a でアップロード追加', () => {
     render(<AppHeader />)
     expect(screen.queryByRole('link', { name: '単語' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '復習' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'アップロード' })).toHaveAttribute('href', '/app/upload')
     expect(screen.getByRole('link', { name: '演習' })).toHaveAttribute('href', '/app/quiz')
     expect(screen.getByRole('link', { name: '設定' })).toHaveAttribute('href', '/app/settings')
   })
@@ -75,6 +76,7 @@ describe('AppHeader', () => {
   // navigate 先 Router Cache を破棄する。click ごとに該当 path で 1 回 call。
   it.each([
     { name: 'RecallMint', path: '/app' as const },
+    { name: 'アップロード', path: '/app/upload' as const },
     { name: '演習', path: '/app/quiz' as const },
     { name: '設定', path: '/app/settings' as const },
   ])('「$name」link click → revalidateAppPath($path) を 1 回 call', ({ name, path }) => {

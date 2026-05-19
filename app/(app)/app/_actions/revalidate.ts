@@ -7,11 +7,13 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 // 想定外の path を破棄されないようにする (本 sprint の Server Action は
 // `<Link onClick>` 経由のみ呼ばれる前提)。
 // Sprint A-2: /app/words / /app/review 撤去 (vocab frontend drop)。
+// S1a: /app/upload 追加 (OCR 起動 page)。
 // mcq routes (/exams, /study/smart, /study/practice, /cards/[id]) は後続 Sprint で追加。
 export type AppPath =
   | '/app'
   | '/app/settings'
   | '/app/quiz'
+  | '/app/upload'
 
 // auth gate は project 既存 convention に倣う:
 // - user row 不在 (post-sign-up sync race) → null → no-op
