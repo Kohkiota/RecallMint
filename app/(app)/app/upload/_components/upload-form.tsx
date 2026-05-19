@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
 import { Button } from '@/components/ui/button'
@@ -96,6 +97,7 @@ export function UploadForm({
   /** plan 名 (CTA で「Pro へアップグレード」 等の出し分けに使用) */
   plan: 'free' | 'standard' | 'pro'
 }) {
+  const router = useRouter()
   const [entries, setEntries] = useState<FileEntry[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   // exam 0 件なら destination は強制的に 'new' (UI 上の選択肢を出さない)。
@@ -459,6 +461,12 @@ export function UploadForm({
     void (async () => {
       await discardUpload(prevId)
       await runProcess()
+      // S1.8: 同 page 内 button のため別 path への navigation がない。
+      // discard / process Server Action 内で revalidatePath('/','layout') 済だが、
+      // 同 page を「再 render」 させるには client から router.refresh が必要。
+      // discard と process の delta を一括反映するため最後に 1 回だけ呼ぶ
+      // (中間 refresh はユーザーが submitting 中で見えないため無駄)。
+      router.refresh()
     })()
   }
 
@@ -487,6 +495,8 @@ export function UploadForm({
         await discardUpload(prevId)
         clearEntries()
         setPhase({ kind: 'idle' })
+        // S1.8: file 選択画面に戻った時点で残量 banner を新値で再 render。
+        router.refresh()
       })()
     } else {
       clearEntries()
@@ -540,18 +550,20 @@ export function UploadForm({
       </section>
 
       {isSubmitting && (
+        // S1.8: 中断 = 利用枠だけ消費されて cards が得られない事を強調するため
+        // amber 警告色 + alert role に格上げ。 amber は ResultPreview の破棄注意
+        // banner と統一感を持たせる。
         <section
-          role="status"
-          aria-live="polite"
-          className="rounded-md bg-slate-50 border border-slate-200 p-4 flex items-center gap-3"
+          role="alert"
+          aria-live="assertive"
+          className="rounded-md bg-amber-50 border border-amber-400 p-4 flex items-start gap-3"
         >
-          <Loader2 className="h-5 w-5 animate-spin text-slate-700" aria-hidden="true" />
-          <div className="text-sm text-slate-700">
-            AI が問題を抽出しています… (30 秒〜数分かかります)
-            <br />
-            <span className="text-xs text-slate-500">
-              この画面を閉じたり戻ったりしないでください。
-            </span>
+          <Loader2 className="h-5 w-5 animate-spin text-amber-700 mt-0.5 flex-shrink-0" aria-hidden="true" />
+          <div className="text-sm text-amber-900">
+            <p className="font-semibold">AI が問題を抽出しています… (30 秒〜数分かかります)</p>
+            <p className="mt-1">
+              ⚠ この画面を閉じたり戻ったりしないでください。 中断しても AI 抽出の利用枠は消費されます。
+            </p>
           </div>
         </section>
       )}
@@ -814,7 +826,10 @@ function ResultPreview({
 
       <div className="flex flex-col sm:flex-row gap-2">
         <Button asChild className="flex-1 py-3 text-base font-bold">
-          <Link href="/app">ダッシュボードに戻る</Link>
+          {/* S1.8: OCR 完了直後は「抽出 cards が試験単位で記録されたか」 を
+              user が確認したいため、 dashboard ではなく試験一覧に誘導する。
+              dashboard へは header の logo から戻れる。 */}
+          <Link href="/app/exams">試験一覧へ</Link>
         </Button>
         <Button
           type="button"
@@ -833,9 +848,19 @@ function ResultPreview({
           ファイルを変えて再試行
         </Button>
       </div>
-      <p className="text-xs text-slate-500">
-        「やり直し」 / 「ファイル変更」 を押すと、 ここまでの抽出結果は破棄されます。
-      </p>
+      {/* S1.8: 破棄系 button のリスク説明を amber 警告 banner に格上げ。
+          「破棄したら残量が戻る」 と誤解されないよう、 利用枠は戻らない旨を
+          明示する (Gemini API call は走り済 = ai_usage はカウント済)。 */}
+      <div
+        role="alert"
+        className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+      >
+        <p className="font-semibold">⚠ ご注意</p>
+        <p className="mt-1">
+          「同じファイルでやり直す」 / 「ファイルを変えて再試行」 を押すと、 ここまでの抽出結果は破棄されます。
+          ただし AI 抽出の利用枠は元に戻りません。
+        </p>
+      </div>
     </div>
   )
 }
