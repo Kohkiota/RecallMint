@@ -177,3 +177,109 @@ kickoff 「3-5 秒」 の中央値。 短すぎる (≤2 秒) と user が読み
   `2026-05-19-sprint-roadmap-review.md` (sprint 全体構成)
 - 関連 lib: `lucide-react` (既存 dep、 Loader2 icon)、 Browser 標準 API
   (beforeunload / popstate / history.pushState)
+
+---
+
+## Addendum (2026-05-19): 必須項目 1-3 動作不良の hotfix
+
+### 発覚
+
+本 mini-sprint 初回 push 後の staging smoke (https://stg.recallmint.nekotest.net/app/upload)
+で OT 実機検証:
+
+| シナリオ | 結果 |
+|---|---|
+| 必須 1 spinner 表示 | ❌ submit 後もスピナー / 文言が出ない |
+| 必須 2 controls disable | ❌ submit 中も全 controls が押せる |
+| 必須 3 beforeunload / popstate | ❌ タブ閉じ / 戻るで警告出ない |
+| 必須 4 同名 file reject | ✅ 動作 OK |
+
+共通点: 「OCR 処理中の `phase === 'submitting'` 状態に依存」 する UX 要素 (1-3)
+が全滅、 同期処理 + phase 非依存の同名 reject (4) のみ動く。
+
+### 根本原因
+
+`handleSubmit` で `startTransition(() => { void runProcess() })` を使っていた:
+
+```typescript
+// 旧コード (bug あり)
+function handleSubmit(e) {
+  e.preventDefault()
+  startTransition(() => {
+    void runProcess()   // runProcess 内で setPhase('submitting') を撃つ
+  })
+}
+
+async function runProcess() {
+  setPhase({ kind: 'submitting' })  // <-- transition priority で marked
+  const result = await processUpload(fd)  // <-- 30-120 秒待機
+  setPhase({ kind: 'success' })  // <-- urgent priority (startTransition の外)
+}
+```
+
+`startTransition` の callback 同期部分で実行される `setPhase('submitting')` は
+**transition priority** で marked される。 await 解決後の `setPhase('success')` は
+startTransition の外 = **urgent priority**。
+
+React 19 の concurrent renderer は「transition('submitting') + urgent('success')」
+というパターンで intermediate transition update を **coalesce / skip する仕様**
+(最新 state である success だけが commit される)。 結果、 phase は内部的に
+submitting を通過するが DOM には反映されず、 `isSubmitting === true` の render
+が走らない。 spinner banner も disabled prop も useEffect の listener attach も
+全て不発。
+
+### なぜ test で検出できなかったか
+
+mock の `processUpload` は async function だが instant resolve するため、
+React は transition / urgent の差を解決する間もなく success state に直行する。
+本 bug は **本物の Server Action (Vercel 経由の HTTPS round-trip + 30-120 秒の
+OCR 処理)** でしか顕在化しない、 concurrent renderer 特有の race。
+
+### 修正 (commit `01057f1`)
+
+`useTransition` を完全撤去、 phase 切替を全 urgent priority に統一:
+
+```typescript
+// 新コード
+function handleSubmit(e) {
+  e.preventDefault()
+  setPhase({ kind: 'submitting' })  // <-- urgent priority、 直ちに commit
+  void runProcess()
+}
+
+async function runProcess() {
+  // phase 切替の責務を放棄、 caller (handleSubmit/Retry) が submitting を
+  // 先に urgent で撃った後で呼ばれる前提
+  const fd = buildFormData()
+  const result = await processUpload(fd)
+  if (result.ok) setPhase({ kind: 'success', ... })  // urgent
+  else setPhase({ kind: 'error', ... })  // urgent
+}
+```
+
+`handleRetry` / `handleChangeFiles` も startTransition wrapper を撤去、
+共通方針 (caller が submitting を先に urgent で撃つ + 非同期は IIFE 投げ捨て) に
+整理。
+
+### 修正後の検証
+
+- pnpm test: 304 全 pass (mock test は元から transition 差を検出していなかった
+  ため、 修正後も全 pass、 staging 実機は OT 後追い検証必要)
+- pnpm build: 18 page 通過、 type check OK
+
+### OT 後追い検証 task
+
+修正 push 後、 再度 staging smoke で必須 1-3 が動くこと確認:
+
+1. submit 後 spinner 表示 + 文言「AI が問題を抽出しています…」 が出る
+2. submitting 中、 file picker / 削除 / 大ボタン / dropdown / submit 全て押せない
+3. submitting 中、 タブ閉じる + ブラウザ戻る で警告 dialog が出る
+4. (regression check) 同名 file reject は引き続き動く
+
+### lesson 候補
+
+「React 19 + Next.js 15 Server Action 文脈で、 同一 handler 内の `setPhase` を
+transition priority と urgent priority で混在させない (必ず urgent に統一する、
+もしくは全て transition に統一する)。 混在は intermediate state の coalesce で
+中間 render を skip させる」 という pattern を `docs/superpowers/lessons/` に
+1 lesson 化候補 (本 hotfix の後、 余裕があれば OT 判断で蒸溜)。
