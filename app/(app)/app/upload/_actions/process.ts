@@ -17,7 +17,6 @@ import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
 import { pdfPageCount } from '../_lib/pdf-page-count'
-import type { ActionResult } from '@/lib/actions/result'
 
 // FormData から受け取った投入先選択 (前端 Destination 型と整合)。
 type Destination =
@@ -45,27 +44,77 @@ export type ProcessResultData = {
   cards: ProcessedCard[]
 }
 
+// 失敗時の error code (UI 側で分岐に使用、 T4 詳細表示用 details も含む)。
+//   AUTH:          認証なし / user.id 取得失敗
+//   INVALID_INPUT: formData の mode / examId / files が不正
+//   EXAM_NOT_FOUND: 既存 exam が見つからない / archived
+//   QUOTA_EXCEEDED: 月次 OCR ページ上限 超過
+//   GEMINI_FAILED: OCR pipeline (Flash + Pro 両方) 失敗
+//   SAVE_FAILED:   OCR は成功したが DB 保存 (cards INSERT) 失敗
+//   OTHER:         上記いずれにも該当しない予期しないエラー
+export type ProcessUploadErrorCode =
+  | 'AUTH'
+  | 'INVALID_INPUT'
+  | 'EXAM_NOT_FOUND'
+  | 'QUOTA_EXCEEDED'
+  | 'GEMINI_FAILED'
+  | 'SAVE_FAILED'
+  | 'OTHER'
+
+// 開発環境 (staging / preview / development) のみで UI 表示する詳細情報。
+// production では client に渡されるが UI には表示されない (T4 環境変数判定)。
+export type ProcessUploadErrorDetails = {
+  rawError?: string
+  sourceDocumentId?: string
+  costYen?: number
+  modelChain?: string[]
+  // QUOTA_EXCEEDED 専用 fields
+  current?: number
+  limit?: number
+  requested?: number
+}
+
+export type ProcessUploadResult =
+  | { ok: true; data: ProcessResultData }
+  | {
+      ok: false
+      code: ProcessUploadErrorCode
+      error: string // user 向け文言
+      details?: ProcessUploadErrorDetails
+    }
+
 const MAX_QUESTION_PREVIEW = 80
 
 // 中央集約された Server Action。 案 B (kickoff §6) に従い、 OCR + cards INSERT を
 // 一気に行い preview に「保存済」 状態の cards を返す。 「やり直し」 は discard.ts
 // で source_document を消してから再呼び出しする。
+//
+// S1.7 改修: 失敗時の戻り値を code 付き構造化、 plan-limits 超過は exam INSERT /
+// source_documents INSERT を一切走らせずに早期 return (kickoff Critical 1)。
 export async function processUpload(
   formData: FormData,
-): Promise<ActionResult<ProcessResultData>> {
+): Promise<ProcessUploadResult> {
   const user = await getCurrentUser()
-  if (!user) return { ok: false, error: '認証が必要です' }
+  if (!user) return { ok: false, code: 'AUTH', error: '認証が必要です' }
 
   // -- formData parse --
   const mode = formData.get('mode')
   if (mode !== 'new' && mode !== 'existing') {
-    return { ok: false, error: '投入先が指定されていません' }
+    return {
+      ok: false,
+      code: 'INVALID_INPUT',
+      error: '投入先が指定されていません',
+    }
   }
   let destination: Destination
   if (mode === 'existing') {
     const examId = formData.get('examId')
     if (typeof examId !== 'string' || examId.length === 0) {
-      return { ok: false, error: '既存の試験が選択されていません' }
+      return {
+        ok: false,
+        code: 'INVALID_INPUT',
+        error: '既存の試験が選択されていません',
+      }
     }
     destination = { mode: 'existing', examId }
   } else {
@@ -77,7 +126,11 @@ export async function processUpload(
     (f): f is File => f instanceof File && f.size > 0,
   )
   if (files.length === 0) {
-    return { ok: false, error: 'ファイルが選択されていません' }
+    return {
+      ok: false,
+      code: 'INVALID_INPUT',
+      error: 'ファイルが選択されていません',
+    }
   }
 
   // -- 推定ページ数算出 (plan-limits 比較用) --
@@ -96,12 +149,20 @@ export async function processUpload(
   }
   if (totalPages === 0) totalPages = 1 // 念のため最低 1 ページ計上
 
-  // -- plan-limits enforce --
+  // -- plan-limits enforce (Critical: 他 DB 書き込み一切前に判定) --
+  // kickoff Critical 1: ここで return することで exam INSERT / source_documents
+  // INSERT が走らない (= staging で 134 page 越えが起きた場合の防止策)。
   const decision = await canRunOcr(user.id, user.plan, totalPages)
   if (!decision.ok) {
     return {
       ok: false,
+      code: 'QUOTA_EXCEEDED',
       error: `今月の OCR ページ上限に達しました (${decision.current}/${decision.limit} ページ使用済、 今回要求 ${decision.requested} ページ)。 来月までお待ちいただくか上位プランへ。`,
+      details: {
+        current: decision.current,
+        limit: decision.limit,
+        requested: decision.requested,
+      },
     }
   }
 
@@ -131,10 +192,18 @@ export async function processUpload(
       .where(and(eq(exams.id, destination.examId), eq(exams.userId, user.id)))
       .limit(1)
     if (found.length === 0) {
-      return { ok: false, error: '選択された試験が見つかりません' }
+      return {
+        ok: false,
+        code: 'EXAM_NOT_FOUND',
+        error: '選択された試験が見つかりません',
+      }
     }
     if (found[0].archivedAt !== null) {
-      return { ok: false, error: 'アーカイブ済の試験には追加できません' }
+      return {
+        ok: false,
+        code: 'EXAM_NOT_FOUND',
+        error: 'アーカイブ済の試験には追加できません',
+      }
     }
     examId = found[0].id
     examName = found[0].name
@@ -174,7 +243,15 @@ export async function processUpload(
     )
   } catch (err) {
     await markFailed(sourceDocumentId, err)
-    return { ok: false, error: 'ファイル読み込みに失敗しました' }
+    return {
+      ok: false,
+      code: 'OTHER',
+      error: 'ファイル読み込みに失敗しました',
+      details: {
+        rawError: err instanceof Error ? err.message : String(err),
+        sourceDocumentId,
+      },
+    }
   }
 
   let pipelineResult
@@ -197,7 +274,15 @@ export async function processUpload(
     logger.error({ event: 'ocr.pipeline.failed', sourceDocumentId, err })
     return {
       ok: false,
+      code: 'GEMINI_FAILED',
       error: '混み合っているようです、 少し時間をおいてからお試しください',
+      details: {
+        rawError: msg,
+        sourceDocumentId,
+        // OCR pipeline 失敗時は cost / model_chain が runOcrPipeline の throw 前に
+        // tokenUsage を tracking できていないため不明 (Flash retry 中の中断は
+        // pipeline 内部で握りつぶされる)。 cost / modelChain は OCR 成功側でのみ確定。
+      },
     }
   }
 
@@ -236,7 +321,17 @@ export async function processUpload(
       environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
       timestamp: new Date().toISOString(),
     })
-    return { ok: false, error: '抽出結果の保存に失敗しました' }
+    return {
+      ok: false,
+      code: 'SAVE_FAILED',
+      error: '抽出結果の保存に失敗しました',
+      details: {
+        rawError: err instanceof Error ? err.message : String(err),
+        sourceDocumentId,
+        costYen: pipelineResult.costYen,
+        modelChain: pipelineResult.modelChain.map(String),
+      },
+    }
   }
 
   // -- source_documents 完了更新 --

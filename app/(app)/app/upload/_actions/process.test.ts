@@ -148,37 +148,40 @@ beforeEach(() => {
 })
 
 describe('processUpload', () => {
-  it('returns error when no files provided', async () => {
+  it('returns INVALID_INPUT when no files provided', async () => {
     const fd = makeFormData({ mode: 'new', files: [] })
     const { processUpload } = await importProcess()
     const result = await processUpload(fd)
-    expect(result).toEqual({
-      ok: false,
-      error: 'ファイルが選択されていません',
-    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('INVALID_INPUT')
+      expect(result.error).toBe('ファイルが選択されていません')
+    }
   })
 
-  it('returns error when mode is missing', async () => {
+  it('returns INVALID_INPUT when mode is missing', async () => {
     const fd = makeFormData({ mode: null, files: [sampleImage] })
     const { processUpload } = await importProcess()
     const result = await processUpload(fd)
-    expect(result).toEqual({
-      ok: false,
-      error: '投入先が指定されていません',
-    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('INVALID_INPUT')
+      expect(result.error).toBe('投入先が指定されていません')
+    }
   })
 
-  it('returns error when mode=existing without examId', async () => {
+  it('returns INVALID_INPUT when mode=existing without examId', async () => {
     const fd = makeFormData({ mode: 'existing', files: [sampleImage] })
     const { processUpload } = await importProcess()
     const result = await processUpload(fd)
-    expect(result).toEqual({
-      ok: false,
-      error: '既存の試験が選択されていません',
-    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('INVALID_INPUT')
+      expect(result.error).toBe('既存の試験が選択されていません')
+    }
   })
 
-  it('plan-limits exceeded → error before OCR runs', async () => {
+  it('QUOTA_EXCEEDED → no DB writes, structured error with current/limit/requested', async () => {
     mockCanRunOcr.mockResolvedValueOnce({
       ok: false,
       reason: 'exceeded',
@@ -191,9 +194,19 @@ describe('processUpload', () => {
     const result = await processUpload(fd)
     expect(result.ok).toBe(false)
     if (!result.ok) {
+      expect(result.code).toBe('QUOTA_EXCEEDED')
       expect(result.error).toMatch(/今月の OCR ページ上限/)
+      expect(result.details).toEqual({
+        current: 30,
+        limit: 30,
+        requested: 1,
+      })
     }
     expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+    // kickoff Critical 1: 上限超過時は exam INSERT も source_documents INSERT も走らないこと
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+    expect(dbState.insertedCards).toHaveLength(0)
   })
 
   it('happy path (new exam): OCR success → exam INSERT + cards INSERT + sourceDoc completed', async () => {
@@ -245,7 +258,7 @@ describe('processUpload', () => {
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
-  it('OCR pipeline failure → source_doc marked failed + notifyOps + generic error to user', async () => {
+  it('OCR pipeline failure → GEMINI_FAILED with details, source_doc marked failed + notifyOps', async () => {
     mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
     mockRunOcrPipeline.mockRejectedValueOnce(
       new Error('OCR pipeline failed (Flash: x; Pro: y)'),
@@ -255,7 +268,10 @@ describe('processUpload', () => {
     const result = await processUpload(fd)
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('GEMINI_FAILED')
     expect(result.error).toMatch(/混み合っているようです/)
+    expect(result.details?.rawError).toMatch(/Flash: x; Pro: y/)
+    expect(result.details?.sourceDocumentId).toBeDefined()
     // source_doc was inserted then marked failed
     expect(dbState.insertedSourceDocs).toHaveLength(1)
     // markFailed updates with status:'failed'
