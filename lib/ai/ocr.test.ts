@@ -148,6 +148,54 @@ describe('runOcrPipeline', () => {
     expect(mockCallGemini).toHaveBeenCalledTimes(2)
   })
 
+  it('onAttempt callback fires once per Gemini call (success path: 1 Flash call)', async () => {
+    mockCallGemini.mockResolvedValueOnce({
+      text: validResponseText,
+      inputTokens: 1000,
+      outputTokens: 100,
+    })
+    const onAttempt = vi.fn()
+    const { runOcrPipeline } = await importOcr()
+    await runOcrPipeline([sampleFile], { onAttempt })
+    expect(onAttempt).toHaveBeenCalledTimes(1)
+    expect(onAttempt).toHaveBeenCalledWith('flash')
+  })
+
+  it('onAttempt callback fires for each retry + fallback (Flash 429 retry + Pro fallback = 3 calls)', async () => {
+    mockCallGemini
+      .mockRejectedValueOnce(new Error('429 Rate limit exceeded'))
+      .mockResolvedValueOnce({
+        text: emptyCardsResponseText,
+        inputTokens: 1000,
+        outputTokens: 100,
+      })
+      .mockResolvedValueOnce({
+        text: validResponseText,
+        inputTokens: 2000,
+        outputTokens: 500,
+      })
+    const onAttempt = vi.fn()
+    const { runOcrPipeline } = await importOcr()
+    await runOcrPipeline([sampleFile], { onAttempt })
+    // Flash 1st (429 → retry), Flash 2nd (success but 0 cards → Pro fallback), Pro 1st (success)
+    // ai_usage = 3 calls 計上
+    expect(onAttempt).toHaveBeenCalledTimes(3)
+    expect(onAttempt.mock.calls.map((c) => c[0])).toEqual(['flash', 'flash', 'pro'])
+  }, 10000)
+
+  it('onAttempt failure does not interrupt OCR pipeline (best-effort counter)', async () => {
+    mockCallGemini.mockResolvedValueOnce({
+      text: validResponseText,
+      inputTokens: 1000,
+      outputTokens: 100,
+    })
+    const onAttempt = vi.fn().mockRejectedValueOnce(new Error('DB write failed'))
+    const { runOcrPipeline } = await importOcr()
+    const result = await runOcrPipeline([sampleFile], { onAttempt })
+    expect(result.cards).toHaveLength(1)
+    expect(onAttempt).toHaveBeenCalledTimes(1)
+  })
+
   it('zod validation rejects malformed card (missing required field)', async () => {
     const malformedCard = { title: '問1' } // question_text / options 等 missing
     mockCallGemini

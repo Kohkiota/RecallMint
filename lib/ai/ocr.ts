@@ -84,9 +84,21 @@ async function callWithRetry(
   files: GeminiInputFile[],
   prompt: string,
   responseJsonSchema: Record<string, unknown>,
+  onAttempt?: (model: ModelKind) => Promise<void> | void,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   let lastErr: unknown
   for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt++) {
+    // onAttempt は callGemini 直前で発火。 成功・失敗・retry すべて 1 回ずつ計上
+    // するため retry 内側にも置く (Flash 1st + Flash retry × 2 + Pro 1st + Pro retry × 2
+    // 最大 6 回計上の可能性あり)。 callback 失敗 (例: DB エラー) で本処理を巻き
+    // 込まないよう try/catch で握りつぶし、 logger 委譲は caller 側に任せる。
+    if (onAttempt) {
+      try {
+        await onAttempt(model)
+      } catch {
+        // counter 書き込み失敗は OCR 本処理を止めない (ベストエフォート計上)
+      }
+    }
     try {
       return await callGemini({ model, files, prompt, responseJsonSchema })
     } catch (err) {
@@ -118,6 +130,12 @@ function parseAndValidate(text: string): ExtractedCard[] {
 
 export async function runOcrPipeline(
   files: GeminiInputFile[],
+  opts?: {
+    // 各 Gemini call (Flash 初回 + retry, Pro 初回 + retry すべて) の直前に
+    // 呼ばれる。 caller (Server Action) はここで ai_usage / ai_usage_users counter
+    // を加算する。 callback 失敗は内部で握りつぶす (ベストエフォート計上)。
+    onAttempt?: (model: ModelKind) => Promise<void> | void
+  },
 ): Promise<OcrPipelineResult> {
   const prompt = buildDiscoverPrompt()
   const schema = buildDiscoverResponseJsonSchema()
@@ -130,7 +148,7 @@ export async function runOcrPipeline(
   // Step 1: Flash with retry
   modelChain.push('flash')
   try {
-    const flash = await callWithRetry('flash', files, prompt, schema)
+    const flash = await callWithRetry('flash', files, prompt, schema, opts?.onAttempt)
     tokenUsage.push({
       model: 'flash',
       inputTokens: flash.inputTokens,
@@ -145,7 +163,7 @@ export async function runOcrPipeline(
     modelChain.push('pro')
     let pro
     try {
-      pro = await callWithRetry('pro', files, prompt, schema)
+      pro = await callWithRetry('pro', files, prompt, schema, opts?.onAttempt)
     } catch (proErr) {
       const proMsg = proErr instanceof Error ? proErr.message : String(proErr)
       throw new Error(
