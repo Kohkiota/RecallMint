@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import imageCompression from 'browser-image-compression'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { formatRelativeJa, type ActiveExam } from '@/lib/exams/list'
 import {
   MAX_IMAGE_FILE_MB,
   MAX_IMAGE_WIDTH_OR_HEIGHT,
@@ -12,6 +13,16 @@ import {
   TOTAL_UPLOAD_LIMIT_MB,
 } from '../_lib/constants'
 import { pdfPageCount } from '../_lib/pdf-page-count'
+
+// 投入先選択 state:
+//  - null: 未選択 (submit disable)
+//  - { mode: 'new' }: 新規 exam として保存 (仮 name は server side で確定)
+//  - { mode: 'existing', examId }: 既存 exam (examId 必須)
+//  - exam が 0 件のときは server side で「new」 固定として描画する
+export type Destination =
+  | null
+  | { mode: 'new' }
+  | { mode: 'existing'; examId: string }
 
 // 個別 file の処理状態。 'processing' = 圧縮 / page count 解析中、
 // 'ready' = 投入可、 'error' = 上限超過 / 解析失敗で使用不可。
@@ -36,9 +47,18 @@ function formatBytes(b: number): string {
   return `${(b / 1_000_000).toFixed(2)} MB`
 }
 
-export function UploadForm() {
+export function UploadForm({
+  existingExams,
+}: {
+  existingExams: ActiveExam[]
+}) {
   const [entries, setEntries] = useState<FileEntry[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // exam 0 件なら destination は強制的に 'new' (UI 上の選択肢を出さない)。
+  // 1 件以上あれば null 開始 (ユーザー選択を強制)。
+  const [destination, setDestination] = useState<Destination>(
+    existingExams.length === 0 ? { mode: 'new' } : null,
+  )
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
   useEffect(() => {
@@ -55,8 +75,16 @@ export function UploadForm() {
   const totalExceeded = totalBytes > TOTAL_UPLOAD_LIMIT_BYTES
   const anyProcessing = entries.some((e) => e.status === 'processing')
   const anyError = entries.some((e) => e.status === 'error')
+  const destinationReady =
+    destination !== null &&
+    (destination.mode === 'new' ||
+      (destination.mode === 'existing' && destination.examId.length > 0))
   const submitDisabled =
-    entries.length === 0 || anyProcessing || anyError || totalExceeded
+    entries.length === 0 ||
+    anyProcessing ||
+    anyError ||
+    totalExceeded ||
+    !destinationReady
 
   async function processImage(file: File, id: string) {
     try {
@@ -287,9 +315,74 @@ export function UploadForm() {
         </section>
       )}
 
+      {existingExams.length > 0 && (
+        <section>
+          <h2 className="text-lg font-bold mb-2">投入先を選択</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setDestination({ mode: 'new' })}
+              className={`text-left rounded-xl border p-4 transition ${
+                destination?.mode === 'new'
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white hover:border-slate-500'
+              }`}
+            >
+              <div className="font-bold mb-1">＋ 新規 exam として保存</div>
+              <div className="text-xs opacity-80">
+                試験名は「アップロード YYYY-MM-DD HH:mm」 の仮 name で作成、 後から編集可能
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // 既存 mode に切替、 examId 未選択のまま dropdown を出して選択を待つ
+                setDestination({ mode: 'existing', examId: '' })
+              }}
+              className={`text-left rounded-xl border p-4 transition ${
+                destination?.mode === 'existing'
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white hover:border-slate-500'
+              }`}
+            >
+              <div className="font-bold mb-1">既存 exam に追加</div>
+              <div className="text-xs opacity-80">
+                既存の試験を選んで cards を追加
+              </div>
+            </button>
+          </div>
+          {destination?.mode === 'existing' && (
+            <div className="mt-3">
+              <label className="block text-sm text-slate-700 mb-1">
+                追加先の試験を選択
+              </label>
+              <select
+                value={destination.examId}
+                onChange={(e) =>
+                  setDestination({ mode: 'existing', examId: e.target.value })
+                }
+                className="block w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
+              >
+                <option value="">— 試験を選択 —</option>
+                {existingExams.map((exam, idx) => (
+                  <option key={exam.id} value={exam.id}>
+                    {idx === 0 ? '【直近】 ' : ''}
+                    {exam.name} ({formatRelativeJa(exam.updatedAt)})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="pt-4">
         <Button type="submit" disabled={submitDisabled} className="w-full py-3 text-base font-bold">
-          {anyProcessing ? '処理中…' : 'AI で問題を抽出する'}
+          {anyProcessing
+            ? '処理中…'
+            : !destinationReady
+              ? '投入先を選択してください'
+              : 'AI で問題を抽出する'}
         </Button>
       </div>
     </form>
