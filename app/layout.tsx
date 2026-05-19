@@ -78,6 +78,17 @@ export default function RootLayout({
     <ClerkProvider
       signInFallbackRedirectUrl="/app"
       signUpFallbackRedirectUrl="/app"
+      appearance={{
+        // Clerk SDK v7 では terms / privacy URL は appearance.options 配下に
+        // 配置する (appearance.layout ではない、 公式 doc 確認済)。 SignIn /
+        // SignUp / UserButton 系 component の同意 link 表示に使用、 値は
+        // 内部 marketing route の現存 page を指す (12 placeholder は
+        // 残置のまま、 本番値 sed 一括置換は S8)。
+        options: {
+          termsPageUrl: '/terms',
+          privacyPageUrl: '/privacy',
+        },
+      }}
     >
       <html lang="ja" className={cn("font-sans", geist.variable)}>
         <body>{children}</body>
