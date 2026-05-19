@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
+import Link from 'next/link'
 import imageCompression from 'browser-image-compression'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -13,6 +14,8 @@ import {
   TOTAL_UPLOAD_LIMIT_MB,
 } from '../_lib/constants'
 import { pdfPageCount } from '../_lib/pdf-page-count'
+import { processUpload, type ProcessResultData } from '../_actions/process'
+import { discardUpload } from '../_actions/discard'
 
 // 投入先選択 state:
 //  - null: 未選択 (submit disable)
@@ -47,6 +50,16 @@ function formatBytes(b: number): string {
   return `${(b / 1_000_000).toFixed(2)} MB`
 }
 
+// phase: 'idle' = ファイル選択中 / 'submitting' = OCR 実行中 (server action 中) /
+// 'success' = preview 表示中 / 'error' = エラー表示中。
+// success / error は サーバー側で source_documents row が存在し、 やり直し時には
+// discardUpload(prevSourceDocumentId) を呼んで掃除する。
+type Phase =
+  | { kind: 'idle' }
+  | { kind: 'submitting' }
+  | { kind: 'success'; result: ProcessResultData }
+  | { kind: 'error'; message: string; lastSourceDocumentId?: string }
+
 export function UploadForm({
   existingExams,
 }: {
@@ -59,6 +72,8 @@ export function UploadForm({
   const [destination, setDestination] = useState<Destination>(
     existingExams.length === 0 ? { mode: 'new' } : null,
   )
+  const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
+  const [, startTransition] = useTransition()
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
   useEffect(() => {
@@ -224,12 +239,83 @@ export function UploadForm({
     })
   }
 
+  function buildFormData(): FormData {
+    const fd = new FormData()
+    if (destination?.mode === 'new') {
+      fd.set('mode', 'new')
+    } else if (destination?.mode === 'existing') {
+      fd.set('mode', 'existing')
+      fd.set('examId', destination.examId)
+    }
+    for (const e of entries) fd.append('files', e.file, e.file.name)
+    return fd
+  }
+
+  async function runProcess() {
+    const fd = buildFormData()
+    setPhase({ kind: 'submitting' })
+    const result = await processUpload(fd)
+    if (result.ok && result.data) {
+      setPhase({ kind: 'success', result: result.data })
+    } else {
+      setPhase({
+        kind: 'error',
+        message: !result.ok ? result.error : '予期しないエラー',
+        // server action 内で source_documents.status='failed' まで打って返している
+        // ため、 retry 時の discard 対象 id は不明 (failed row は user 視点で
+        // 見えない、 retry は新規 source_document を作るだけ)。
+      })
+    }
+  }
+
+  function handleSubmit(e: React.SyntheticEvent) {
+    e.preventDefault()
+    startTransition(() => {
+      void runProcess()
+    })
+  }
+
+  async function handleRetry() {
+    // 「やり直し」 = 直前の成功 source_document を消してから新規 process
+    if (phase.kind !== 'success') return
+    const prevId = phase.result.sourceDocumentId
+    setPhase({ kind: 'submitting' })
+    startTransition(async () => {
+      await discardUpload(prevId)
+      await runProcess()
+    })
+  }
+
+  function handleChangeFiles() {
+    // 「ファイル変更して再試行」 = state を idle に戻し、 entries は維持
+    // (file picker でユーザーが追加 / 削除可能)。 成功時に既に保存された
+    // source_document は user 視点で「破棄」 されるべきなので、 戻り操作でも
+    // discardUpload を呼んで cards も消す (UX: 「やっぱり違う」 を消すべき)。
+    if (phase.kind === 'success') {
+      const prevId = phase.result.sourceDocumentId
+      startTransition(async () => {
+        await discardUpload(prevId)
+        setPhase({ kind: 'idle' })
+      })
+    } else {
+      setPhase({ kind: 'idle' })
+    }
+  }
+
+  // 結果プレビュー (success state) は idle UI と排他で表示する。
+  if (phase.kind === 'success') {
+    return (
+      <ResultPreview
+        result={phase.result}
+        onRetry={handleRetry}
+        onChangeFiles={handleChangeFiles}
+      />
+    )
+  }
+
   return (
     <form
-      onSubmit={(e) => {
-        e.preventDefault()
-        // process Server Action 配線は task 9 で。 現状は no-op (送信 button 単独動作確認用)。
-      }}
+      onSubmit={handleSubmit}
       className="space-y-6"
     >
       <section>
@@ -376,15 +462,103 @@ export function UploadForm({
         </section>
       )}
 
+      {phase.kind === 'error' && (
+        <section className="rounded-md bg-red-50 border border-red-200 p-4">
+          <p className="text-sm text-red-700 mb-2">{phase.message}</p>
+          <p className="text-xs text-slate-700">
+            ファイルを変更して再度お試しください。
+          </p>
+        </section>
+      )}
+
       <div className="pt-4">
-        <Button type="submit" disabled={submitDisabled} className="w-full py-3 text-base font-bold">
-          {anyProcessing
-            ? '処理中…'
-            : !destinationReady
-              ? '投入先を選択してください'
-              : 'AI で問題を抽出する'}
+        <Button
+          type="submit"
+          disabled={submitDisabled || phase.kind === 'submitting'}
+          className="w-full py-3 text-base font-bold"
+        >
+          {phase.kind === 'submitting'
+            ? 'AI で抽出中… (1-2 分かかる場合があります)'
+            : anyProcessing
+              ? '処理中…'
+              : !destinationReady
+                ? '投入先を選択してください'
+                : 'AI で問題を抽出する'}
         </Button>
       </div>
     </form>
+  )
+}
+
+function ResultPreview({
+  result,
+  onRetry,
+  onChangeFiles,
+}: {
+  result: ProcessResultData
+  onRetry: () => void
+  onChangeFiles: () => void
+}) {
+  return (
+    <div className="space-y-6">
+      <section className="rounded-md bg-emerald-50 border border-emerald-200 p-4">
+        <h2 className="text-lg font-bold mb-1">
+          ✅ {result.cardsExtracted} 問を抽出しました
+        </h2>
+        <p className="text-sm text-slate-700">
+          試験「{result.examName}」 に保存されました。 推定 AI コスト ¥{result.ocrCostYen}{' '}
+          (モデル {result.modelChain.join(' → ')})。
+        </p>
+      </section>
+
+      <section>
+        <h3 className="font-bold mb-2">抽出結果のプレビュー</h3>
+        <ul className="space-y-2">
+          {result.cards.map((c) => (
+            <li key={c.id}>
+              <Card>
+                <CardContent className="p-3">
+                  <div className="font-medium text-sm mb-1">{c.title}</div>
+                  <div className="text-xs text-slate-700 mb-1">
+                    {c.questionTextSnippet}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    選択肢 {c.optionCount} 件
+                    {c.customPropKeys.length > 0 && (
+                      <span> / プロパティ: {c.customPropKeys.join(', ')}</span>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <Button asChild className="flex-1 py-3 text-base font-bold">
+          <Link href="/app">ダッシュボードに戻る</Link>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onRetry}
+          className="flex-1 py-3 text-base"
+        >
+          同じファイルでやり直す
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onChangeFiles}
+          className="flex-1 py-3 text-base"
+        >
+          ファイルを変えて再試行
+        </Button>
+      </div>
+      <p className="text-xs text-slate-500">
+        「やり直し」 / 「ファイル変更」 を押すと、 ここまでの抽出結果は破棄されます。
+      </p>
+    </div>
   )
 }
