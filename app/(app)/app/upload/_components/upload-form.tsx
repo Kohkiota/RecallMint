@@ -16,7 +16,12 @@ import {
 } from '../_lib/constants'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
-import { processUpload, type ProcessResultData } from '../_actions/process'
+import {
+  processUpload,
+  type ProcessResultData,
+  type ProcessUploadErrorCode,
+  type ProcessUploadErrorDetails,
+} from '../_actions/process'
 import { discardUpload } from '../_actions/discard'
 
 // 投入先選択 state:
@@ -52,6 +57,12 @@ function formatBytes(b: number): string {
   return `${(b / 1_000_000).toFixed(2)} MB`
 }
 
+const planLabelMap = {
+  free: 'Free プラン',
+  standard: 'Standard プラン',
+  pro: 'Pro プラン',
+} as const
+
 // phase: 'idle' = ファイル選択中 / 'submitting' = OCR 実行中 (server action 中) /
 // 'success' = preview 表示中 / 'error' = エラー表示中。
 // success / error は サーバー側で source_documents row が存在し、 やり直し時には
@@ -60,12 +71,30 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'submitting' }
   | { kind: 'success'; result: ProcessResultData }
-  | { kind: 'error'; message: string; lastSourceDocumentId?: string }
+  | {
+      kind: 'error'
+      message: string
+      code: ProcessUploadErrorCode | 'CLIENT_TIMEOUT'
+      details?: ProcessUploadErrorDetails
+      lastSourceDocumentId?: string
+    }
 
 export function UploadForm({
   existingExams,
+  currentMonthPages,
+  monthlyLimit,
+  remaining,
+  plan,
 }: {
   existingExams: ActiveExam[]
+  /** 当月 (JST 月境界) の OCR ページ消費 (Server fetch、 stale 排除済) */
+  currentMonthPages: number
+  /** plan 別 月次上限。 Pro は null (公平利用)。 */
+  monthlyLimit: number | null
+  /** 残量 = monthlyLimit - currentMonthPages。 Pro は null。 */
+  remaining: number | null
+  /** plan 名 (CTA で「Pro へアップグレード」 等の出し分けに使用) */
+  plan: 'free' | 'standard' | 'pro'
 }) {
   const [entries, setEntries] = useState<FileEntry[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -161,12 +190,29 @@ export function UploadForm({
     destination !== null &&
     (destination.mode === 'new' ||
       (destination.mode === 'existing' && destination.examId.length > 0))
+
+  // 合計 page 数 (PDF: pageCount / 画像: 1)。 ready / processing 含む (error 除く)。
+  // processing 中はまだ page count 不確定なので 0 扱い、 ready になり次第加算。
+  const totalRequestedPages = entries.reduce((sum, e) => {
+    if (e.status === 'error') return sum
+    if (e.kind === 'image') return sum + 1
+    if (e.kind === 'pdf' && e.status === 'ready') return sum + e.pageCount
+    return sum
+  }, 0)
+  // 残量超過判定 (Pro は remaining=null で常に false)。
+  const overQuota =
+    remaining !== null && totalRequestedPages > remaining
+  // 既に残量 0 で来た user (Pro 以外)。 file 選択前から submit 不可。
+  const alreadyAtQuota = remaining !== null && remaining === 0
+
   const submitDisabled =
     entries.length === 0 ||
     anyProcessing ||
     anyError ||
     totalExceeded ||
-    !destinationReady
+    !destinationReady ||
+    overQuota ||
+    alreadyAtQuota
 
   async function processImage(file: File, id: string) {
     try {
@@ -339,18 +385,55 @@ export function UploadForm({
   // **urgent priority** で先に撃つ責務を持つ)。 ここで setPhase を呼ぶと
   // 「submitting 」 が transition priority 化して React 19 のバッチング判定で
   // skip される (S1a 後の staging smoke で発覚した bug、 詳細は handoff doc)。
+  //
+  // S1.7 T6: client 側 90 秒 timeout を追加。 Vercel function が 60 秒で kill
+  // されても catch に届かない場合、 client が spinner 永続化しないよう defensive
+  // に切り上げ、 retry 誘導する。 server 側 source_documents は 10 分 stale 排除
+  // で集計から外れる (T1)。
   async function runProcess() {
     const fd = buildFormData()
-    const result = await processUpload(fd)
-    if (result.ok && result.data) {
-      setPhase({ kind: 'success', result: result.data })
-    } else {
+    let timedOut = false
+    const timeoutId = setTimeout(() => {
+      timedOut = true
       setPhase({
         kind: 'error',
-        message: !result.ok ? result.error : '予期しないエラー',
+        code: 'CLIENT_TIMEOUT',
+        message:
+          '処理がタイムアウトしました。 ファイルを変えて再試行してください。',
+        details: {
+          rawError: 'client 90s timeout exceeded',
+        },
+      })
+    }, 90_000)
+
+    let result
+    try {
+      result = await processUpload(fd)
+    } finally {
+      clearTimeout(timeoutId)
+    }
+
+    // timeout 発火後に server が遅れて応答した場合は state を上書きしない
+    // (ユーザーは既に「タイムアウト」 を見ている、 retry に進んでいる可能性あり)
+    if (timedOut) return
+
+    if (result.ok && result.data) {
+      setPhase({ kind: 'success', result: result.data })
+    } else if (!result.ok) {
+      setPhase({
+        kind: 'error',
+        message: result.error,
+        code: result.code,
+        details: result.details,
         // server action 内で source_documents.status='failed' まで打って返している
         // ため、 retry 時の discard 対象 id は不明 (failed row は user 視点で
         // 見えない、 retry は新規 source_document を作るだけ)。
+      })
+    } else {
+      setPhase({
+        kind: 'error',
+        message: '予期しないエラー',
+        code: 'OTHER',
       })
     }
   }
@@ -414,6 +497,35 @@ export function UploadForm({
       onSubmit={handleSubmit}
       className="space-y-6"
     >
+      {/* 月次 OCR 残量表示 (S1.7 T3)。 Pro (remaining=null) は「無制限」、
+          Free / Standard は「残り N / M」 を常時表示 + 0/M は警告色。 */}
+      <section
+        className={`rounded-md border p-3 text-sm ${
+          alreadyAtQuota
+            ? 'bg-amber-50 border-amber-200 text-amber-900'
+            : 'bg-slate-50 border-slate-200 text-slate-700'
+        }`}
+        aria-label="今月の OCR ページ残量"
+      >
+        {remaining === null ? (
+          <>今月の OCR ページ残量: <span className="font-bold">無制限</span> ({planLabelMap[plan]})</>
+        ) : (
+          <>
+            今月の OCR ページ残量: <span className="font-bold">{remaining}</span> / {monthlyLimit} ページ ({planLabelMap[plan]})
+            {currentMonthPages > 0 && (
+              <span className="ml-2 text-xs text-slate-500">
+                (使用済 {currentMonthPages} ページ)
+              </span>
+            )}
+          </>
+        )}
+        {alreadyAtQuota && (
+          <div className="mt-2 text-xs">
+            今月の OCR 上限に達しています。 来月までお待ちいただくか、 上位プランへのアップグレードをご検討ください。
+          </div>
+        )}
+      </section>
+
       {isSubmitting && (
         <section
           role="status"
@@ -465,8 +577,17 @@ export function UploadForm({
       {entries.length > 0 && (
         <section>
           <h3 className="font-medium mb-2 text-sm text-slate-700">
-            {entries.length} 件選択中 (合計 {formatBytes(totalBytes)} / 上限 {TOTAL_UPLOAD_LIMIT_MB} MB)
+            {entries.length} 件選択中 (合計 {formatBytes(totalBytes)} / 上限 {TOTAL_UPLOAD_LIMIT_MB} MB、 合計 {totalRequestedPages} ページ)
           </h3>
+          {overQuota && remaining !== null && (
+            <div
+              role="alert"
+              className="mb-3 rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900"
+            >
+              現在の選択 ({totalRequestedPages} ページ) は今月の残量 ({remaining} ページ) を超過します。
+              ファイルを削減するか、 上位プランへのアップグレードをご検討ください。
+            </div>
+          )}
           <ul className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {entries.map((e) => (
               <li key={e.id}>
@@ -594,11 +715,22 @@ export function UploadForm({
       )}
 
       {phase.kind === 'error' && (
-        <section className="rounded-md bg-red-50 border border-red-200 p-4">
-          <p className="text-sm text-red-700 mb-2">{phase.message}</p>
+        <section className="rounded-md bg-red-50 border border-red-200 p-4 space-y-2">
+          <p className="text-sm text-red-700">{phase.message}</p>
           <p className="text-xs text-slate-700">
             ファイルを変更して再度お試しください。
           </p>
+          {/* 開発用詳細 (staging / preview / development のみ表示、
+              NEXT_PUBLIC_VERCEL_ENV が 'production' 以外なら出す)。
+              build 時に環境変数が embed されるため、 production build には
+              この block は実質残らない (`if (false)` 相当で tree-shake)。 */}
+          {process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production' && (
+            <ErrorDetails
+              code={phase.code}
+              message={phase.message}
+              details={phase.details}
+            />
+          )}
         </section>
       )}
 
@@ -637,9 +769,10 @@ function ResultPreview({
           ✅ {result.cardsExtracted} 問を抽出しました
         </h2>
         <p className="text-sm text-slate-700">
-          試験「{result.examName}」 に保存されました。 推定 AI コスト ¥{result.ocrCostYen}{' '}
-          (モデル {result.modelChain.join(' → ')})。
+          試験「{result.examName}」 に保存されました。
         </p>
+        {/* S1.7 T5: preview からコスト表示を削除。 DB の ocr_cost_yen 保存 +
+            notifyOps 通知 + 詳細エラー (staging 表示) は維持。 */}
       </section>
 
       <section>
@@ -691,5 +824,52 @@ function ResultPreview({
         「やり直し」 / 「ファイル変更」 を押すと、 ここまでの抽出結果は破棄されます。
       </p>
     </div>
+  )
+}
+
+// 開発用 (staging / preview / dev) のみで render される詳細エラー section。
+// production では呼び出し側で render されない (`process.env.NEXT_PUBLIC_VERCEL_ENV`
+// 判定)。 ユーザー文言と独立に code / source_document_id / cost / model_chain /
+// rawError を expose し、 OT が画面だけで原因切り分け可能にする。
+function ErrorDetails({
+  code,
+  message,
+  details,
+}: {
+  code: ProcessUploadErrorCode | 'CLIENT_TIMEOUT'
+  message: string
+  details?: ProcessUploadErrorDetails
+}) {
+  const rows: Array<[string, string]> = [
+    ['code', code],
+    ['user message', message],
+  ]
+  if (details?.rawError) rows.push(['rawError', details.rawError])
+  if (details?.sourceDocumentId)
+    rows.push(['sourceDocumentId', details.sourceDocumentId])
+  if (details?.costYen !== undefined)
+    rows.push(['costYen', String(details.costYen)])
+  if (details?.modelChain)
+    rows.push(['modelChain', details.modelChain.join(' → ')])
+  if (details?.current !== undefined)
+    rows.push(['current', String(details.current)])
+  if (details?.limit !== undefined) rows.push(['limit', String(details.limit)])
+  if (details?.requested !== undefined)
+    rows.push(['requested', String(details.requested)])
+
+  return (
+    <details className="mt-3 rounded border border-slate-300 bg-slate-50 p-2">
+      <summary className="cursor-pointer text-xs font-mono text-slate-700 select-none">
+        詳細 (staging / dev only)
+      </summary>
+      <dl className="mt-2 text-xs font-mono text-slate-800 space-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="grid grid-cols-[140px_1fr] gap-2">
+            <dt className="text-slate-500 truncate">{k}</dt>
+            <dd className="break-all whitespace-pre-wrap">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   )
 }
