@@ -34,28 +34,6 @@ import {
 } from 'drizzle-orm/pg-core'
 
 // ---------------------------------------------------------------------------
-// Custom property schema types (exams.property_schema の TS 型)
-// ---------------------------------------------------------------------------
-export type PropertyType =
-  | 'single_select'
-  | 'multi_select'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'text'
-
-export type PropertyDef = {
-  name: string
-  type: PropertyType
-  select_options?: string[]
-  default_value?: unknown
-  is_system?: boolean
-  display_order: number
-}
-
-export type PropertySchema = PropertyDef[]
-
-// ---------------------------------------------------------------------------
 // Card-internal JSON types (cards.options / cards.images の TS 型)
 // ---------------------------------------------------------------------------
 export type CardOption = {
@@ -222,7 +200,7 @@ export const deletionFailures = pgTable('deletion_failures', {
 })
 
 // ---------------------------------------------------------------------------
-// exams (mcq 新規、property_schema が肝)
+// exams (mcq 新規)
 // hard delete (deleted_at なし、Sprint A-2 確定)。 archived_at で
 // ダウングレード時の自動アーカイブ (NULL = アクティブ)。
 // ---------------------------------------------------------------------------
@@ -234,10 +212,6 @@ export const exams = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    propertySchema: jsonb('property_schema')
-      .notNull()
-      .default(sql`'[]'::jsonb`)
-      .$type<PropertySchema>(),
     questionNoFormat: text('question_no_format').$type<
       'numeric' | 'hierarchical' | 'free'
     >(),
@@ -284,7 +258,7 @@ export const cards = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`)
       .$type<CardImage[]>(),
-    // カスタムプロパティ (exams.property_schema に従って格納)
+    // カスタムプロパティ (freeform key-value)
     customProps: jsonb('custom_props')
       .notNull()
       .default(sql`'{}'::jsonb`)

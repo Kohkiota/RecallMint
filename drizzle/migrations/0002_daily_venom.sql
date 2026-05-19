@@ -1,0 +1,1 @@
+ALTER TABLE "exams" DROP COLUMN "property_schema";
