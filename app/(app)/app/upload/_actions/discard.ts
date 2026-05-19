@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
@@ -14,6 +15,19 @@ import type { ActionResult } from '@/lib/actions/result'
 // 安全性: 削除前に source_documents.user_id と現在の user.id が一致することを
 // 確認する (他 user の data を消さない)。
 export async function discardUpload(
+  sourceDocumentId: string,
+): Promise<ActionResult> {
+  // S1.8: discard で source_documents が消える → 月次残量が「戻る」 ため、
+  // 戻り値前 (try/finally) で root layout 配下を一括 revalidate して
+  // 残量 banner を即時新値で render する。
+  try {
+    return await _discardUpload(sourceDocumentId)
+  } finally {
+    revalidatePath('/', 'layout')
+  }
+}
+
+async function _discardUpload(
   sourceDocumentId: string,
 ): Promise<ActionResult> {
   const user = await getCurrentUser()
