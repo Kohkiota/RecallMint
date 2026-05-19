@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Loader2 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
@@ -75,7 +75,6 @@ export function UploadForm({
     existingExams.length === 0 ? { mode: 'new' } : null,
   )
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
-  const [, startTransition] = useTransition()
   // 派生 flag: OCR Server Action 実行中。 UI controls の disable 判定に集約利用。
   const isSubmitting = phase.kind === 'submitting'
   // 重複した filename を 4 秒間 banner 表示するための transient state。
@@ -336,9 +335,12 @@ export function UploadForm({
     return fd
   }
 
+  // runProcess は phase 切替を行わない (caller が setPhase('submitting') を
+  // **urgent priority** で先に撃つ責務を持つ)。 ここで setPhase を呼ぶと
+  // 「submitting 」 が transition priority 化して React 19 のバッチング判定で
+  // skip される (S1a 後の staging smoke で発覚した bug、 詳細は handoff doc)。
   async function runProcess() {
     const fd = buildFormData()
-    setPhase({ kind: 'submitting' })
     const result = await processUpload(fd)
     if (result.ok && result.data) {
       setPhase({ kind: 'success', result: result.data })
@@ -353,22 +355,28 @@ export function UploadForm({
     }
   }
 
+  // handleSubmit / handleRetry / handleChangeFiles の共通方針:
+  //   1. phase 切替を **urgent priority** で行う (startTransition で wrap しない)
+  //   2. 非同期処理は IIFE / 直 await で投げ捨て、 await 後の setPhase は urgent
+  //   3. これにより React 19 の concurrent renderer が「submitting」 を必ず commit
+  //      する (submitting + success 両方 urgent priority のため、 中間 render が
+  //      coalesce されない)
+
   function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
-    startTransition(() => {
-      void runProcess()
-    })
+    setPhase({ kind: 'submitting' })
+    void runProcess()
   }
 
-  async function handleRetry() {
+  function handleRetry() {
     // 「やり直し」 = 直前の成功 source_document を消してから新規 process
     if (phase.kind !== 'success') return
     const prevId = phase.result.sourceDocumentId
     setPhase({ kind: 'submitting' })
-    startTransition(async () => {
+    void (async () => {
       await discardUpload(prevId)
       await runProcess()
-    })
+    })()
   }
 
   function handleChangeFiles() {
@@ -378,10 +386,13 @@ export function UploadForm({
     // discardUpload を呼んで cards も消す (UX: 「やっぱり違う」 を消すべき)。
     if (phase.kind === 'success') {
       const prevId = phase.result.sourceDocumentId
-      startTransition(async () => {
+      // discard 中も spinner を出すため一時的に submitting に。
+      // discard 完了 (通常 1 秒以内) で idle に戻る。
+      setPhase({ kind: 'submitting' })
+      void (async () => {
         await discardUpload(prevId)
         setPhase({ kind: 'idle' })
-      })
+      })()
     } else {
       setPhase({ kind: 'idle' })
     }
