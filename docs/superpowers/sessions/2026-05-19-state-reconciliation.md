@@ -344,3 +344,75 @@ single source of truth として一致するため、 次 sprint で「OCR pipel
 「学習 UX 実装」 の設計議論が docs 矛盾に振り回されない状態になる。 2 / 3 は
 読み手向けの整理で sprint 設計には影響しない (但し OCR sprint 完了後に整理する
 方が手戻り少ない可能性あり)。 4 / 5 は気が向いたら。
+
+---
+
+## Addendum (2026-05-19): C1 / C2 / C3 / I1 / I2 / I5 / I6 処理結果
+
+本 report 投入後、 OT kickoff で C1 + C2 + C3 + I1 + I2 + I5 + I6 を 1 commit で
+処理する task が走り、 以下を反映した:
+
+### C1 / C2 / C3 / I1 (Tech Spec 整合)
+
+- `docs/02-tech-spec.md`:
+  - §2.1 設計原則 #3 / #9 / #13 を schema.ts 整合に書換 (custom_props は freeform、
+    soft delete は users のみ、 削除追跡は v1.x 再評価)
+  - §2.2 行 85 `custom_property_definitions` の「§2.6 参照」 を research doc 参照に書換 (I1)
+  - §2.5.1 exams から property_schema 関連全削除 + archived_at 追記 + hard delete 確定
+    (C1 / C3)
+  - §2.5.2 cards から deleted_at / soft delete 節削除、 cards_due_idx を (user_id, due)
+    に修正、 custom_props 説明を freeform jsonb / discover mode に書換 (C2 / C1)
+  - §2.8 index 表 cards_due_idx column を `(user_id, due)` に修正 (C2)
+  - §2.9 クエリ例 4 件から `deleted_at IS NULL` 削除、 exam archived 除外クエリを 1 件追加 (C2 / C3)
+  - §3 routes から「プロパティタブ」 削除、 server action `updateExamPropertySchema` /
+    `addPropertyOption` を `archiveExam` 等に置換、 hard delete に統一 (C1 / C2 / C3)
+  - §4 module list から `lib/exams/property_schema.ts` / `PropertyFilters.tsx` /
+    `PropertySchemaEditor.tsx` 削除、 lib/ai/schemas/ocr_response.ts を discover mode 注記に
+    更新 (C1)
+  - §7 動的 responseSchema 注入を discover mode (`responseJsonSchema` + additionalProperties)
+    に書換 (C1)
+  - §8 Logic 1 / 3 / 4 / 5 から property_schema 自動注入 + `deleted_at IS NULL` 削除、
+    discover mode + freeform jsonb 前提に書換 (C1 / C2)
+  - §9 testing から property_schema 検証削除 (C1)
+  - §12 security から `exams.property_schema 50KB 上限` 削除 (C1)
+  - §13.14 削除追跡 (Anki graves 相当) を v1.x 追加検討項目に書換 (C2)
+- `docs/research/ocr-schema-vs-discover.md`:
+  - §5.1 / §7.1 の §2.6 参照を §2.2 + research doc 自体への参照に書換 (I1)
+  - §7.1 末尾の「Tech Spec 改訂予定」 メモを「2026-05-19 で整合済」 に更新
+
+### I2 (Tech Spec users SQL に billing_interval 追加 + §6 cycle 説明)
+
+- `docs/02-tech-spec.md:93-117`: users CREATE TABLE に `billing_interval text` 行追加、
+  設計メモに plan ⇔ billing_interval invariant + transition window 説明追記
+- `docs/02-tech-spec.md:835`: §6 課金章に「課金サイクル (monthly / yearly)」 段落を追加、
+  cycle ↔ plan 直交 / `lib/stripe/price-mapping.ts` 集中管理 / 不明 price_id 時 fallback の説明
+
+### I5 (handoff 2026-05-15 末尾 supersedes marker)
+
+- `docs/superpowers/sessions/2026-05-15-sprint-a2-a3.1-handoff.md` 末尾に 2026-05-19 追記
+  marker を追加。 「次に着手する Sprint: A-3.2」 を historical 表現に格下げ、 最新 state は
+  2026-05-17 系 2 handoff 参照、 `03-plan.md` は env-separation sprint で削除済の旨を明示
+
+### I6 (SERVICE_NAME placeholder grep)
+
+実行コマンド: `grep -rn "{{" app/ components/ 2>/dev/null` (および `app/(marketing)/`
+配下 legal 系 3 file 個別確認)。
+
+**結果: clean** (SERVICE_NAME 残置 0 件)。 想定通り `{{COMPANY_NAME}}` / `{{EMAIL}}` /
+`{{DISCLOSURE_FEE}}` / `{{LAST_UPDATED}}` / `{{LAUNCH_DATE}}` / `{{PRICE}}` /
+`{{JURISDICTION}}` / `{{BUSINESS_HOURS}}` / `{{DOMAIN}}` は legal 3 page
+(`app/(marketing)/{terms,privacy,legal}/page.tsx`) 内に意図的残置 (12 placeholder 体制、
+`docs/legal-placeholders.md` 整合)。
+
+`components/pricing/pricing-table.test.tsx` の `viewer={{ authenticated: ... }}` は
+JSX object literal の false positive、 placeholder ではない。
+`docs/superpowers/lessons/2026-04-30-clerk-production-domain-setup-pitfalls.md:100` の
+「§2.6」 は本 lesson 内の §2.6 (lib/clerk.ts validation 節) を指しており、 Tech Spec の
+orphan reference とは無関係。 残置として処置不要。
+
+### 未処理 (本 commit スコープ外)
+
+- Critical / Important で本 commit が対応するもの: C1 / C2 / C3 / I1 / I2 / I5 / I6
+- Important で別 sprint 送り: I3 (architecture-guide.md archive 化) / I4 (README §3 rewrite)
+- Minor 全件: M1 (dead code word.ts) / M2 (dead code gemini.ts) / M3 (quiz placeholder URL) /
+  M4 (drizzle baseline history) / M5 (schema.ts transition コメント)

@@ -215,7 +215,7 @@ MVP では案 B / C のいずれかが現実的。 prompt 改変 (案 A) は他�
 1. **品質確認済**: 5 試験実測でキー揺れ 0、 階層タグ取得 OK、 推測補完なし
 2. **DB シンプル化**: `exams.property_schema` 列が不要になり、 `cards.custom_props` (jsonb) のみで完結
 3. **UI シンプル化**: 試験単位の事前定義 UI が不要、 ユーザーは OCR 後にカード単位で自由編集
-4. **MVP との整合**: Tech Spec §2.6 「custom_property_definitions テーブル不採用」の方針と一致
+4. **MVP との整合**: Tech Spec §2.2 「custom_property_definitions テーブル不採用」の方針と一致
 5. **保守負荷低減**: PoC 期に併存していた schema mode の code 経路を削除でき、 保守対象が減る
 
 ### 5.2 schema mode 不採用の根拠
@@ -287,15 +287,13 @@ MVP 確定 (Sprint 完了時) で以下を削除:
 
 ### 7.1 関連 spec
 
-- Tech Spec §2.5.1 (exams テーブル)
-- Tech Spec §2.5.2 (cards.custom_props)
-- Tech Spec §2.2 「採否保留」テーブル一覧 行 85 (`custom_property_definitions`、 MVP 不採用)
-- Tech Spec §7 (Gemini Structured Output パターン)
-- Tech Spec §8 Logic 1 (OCR pipeline)
+- Tech Spec §2.5.1 (exams テーブル、 hard delete + archived_at 確定)
+- Tech Spec §2.5.2 (cards.custom_props、 freeform jsonb)
+- Tech Spec §2.2 「採否保留」テーブル一覧 (`custom_property_definitions`、 MVP 不採用 / 本 research doc を参照)
+- Tech Spec §7 (Gemini Structured Output、 discover mode 採用)
+- Tech Spec §8 Logic 1 (OCR pipeline、 discover mode 採用)
 
-> ※ Tech Spec §2.2 行 85 の `custom_property_definitions` 行末に「§2.6 参照」とあるが、 §2.6 という独立節は tech-spec に存在しない (orphan reference)。 OCR sprint の spec 改訂時に、 この参照先を本 research doc (`docs/research/ocr-schema-vs-discover.md`) に書き換える整理が必要。
-
-これらは OCR sprint で discover 一本化に整合する形で改訂予定 (MVP 段階)。
+Tech Spec 側は 2026-05-19 の state reconciliation commit で discover 一本化 + hard delete に整合させ済 (commit: docs(spec+sessions): align with schema.ts)。
 
 ### 7.2 関連 PoC commit
 
