@@ -58,11 +58,12 @@ describe('AppHeader', () => {
     expect(brand).toHaveAttribute('href', '/app')
   })
 
-  it('renders 3 nav links with correct hrefs (アップロード / 演習 / 設定) — S1a でアップロード追加', () => {
+  it('renders 4 nav links with correct hrefs (アップロード / 試験 / 演習 / 設定) — S1.7 で 試験 追加', () => {
     render(<AppHeader />)
     expect(screen.queryByRole('link', { name: '単語' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '復習' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'アップロード' })).toHaveAttribute('href', '/app/upload')
+    expect(screen.getByRole('link', { name: '試験' })).toHaveAttribute('href', '/app/exams')
     expect(screen.getByRole('link', { name: '演習' })).toHaveAttribute('href', '/app/quiz')
     expect(screen.getByRole('link', { name: '設定' })).toHaveAttribute('href', '/app/settings')
   })
@@ -77,6 +78,7 @@ describe('AppHeader', () => {
   it.each([
     { name: 'RecallMint', path: '/app' as const },
     { name: 'アップロード', path: '/app/upload' as const },
+    { name: '試験', path: '/app/exams' as const },
     { name: '演習', path: '/app/quiz' as const },
     { name: '設定', path: '/app/settings' as const },
   ])('「$name」link click → revalidateAppPath($path) を 1 回 call', ({ name, path }) => {

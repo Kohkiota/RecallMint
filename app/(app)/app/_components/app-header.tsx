@@ -19,13 +19,21 @@ export function AppHeader() {
         </Link>
         <nav className="flex items-center gap-4">
           {/* Sprint A-2: vocab nav (単語 / 復習) 撤去。 S1a: アップロード追加。
-              mcq routes (/exams, /study/smart, /study/practice) は後続 Sprint で実装後追加。 */}
+              S1.7: 試験 追加 (read-only viewer)。 残 mcq routes (/study/smart,
+              /study/practice) は後続 Sprint で実装後追加。 */}
           <Link
             href="/app/upload"
             onClick={() => void revalidateAppPath('/app/upload')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             アップロード
+          </Link>
+          <Link
+            href="/app/exams"
+            onClick={() => void revalidateAppPath('/app/exams')}
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            試験
           </Link>
           <Link
             href="/app/quiz"
