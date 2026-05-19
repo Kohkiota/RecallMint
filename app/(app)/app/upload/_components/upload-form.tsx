@@ -463,20 +463,33 @@ export function UploadForm({
   }
 
   function handleChangeFiles() {
-    // 「ファイル変更して再試行」 = state を idle に戻し、 entries は維持
-    // (file picker でユーザーが追加 / 削除可能)。 成功時に既に保存された
-    // source_document は user 視点で「破棄」 されるべきなので、 戻り操作でも
-    // discardUpload を呼んで cards も消す (UX: 「やっぱり違う」 を消すべき)。
+    // 「ファイル変更して再試行」 = state を idle に戻し、 entries も clear。
+    // ボタン文言が「ファイル変更」 なのに entries (サムネ) が残っていると UX が
+    // 一貫しないため、 entry の object URL を revoke してから空配列にリセットする
+    // (S1.7 review Important 4 で指摘)。 成功時の source_document は user 視点で
+    // 「破棄」 すべきなので discardUpload も呼ぶ。
+    const clearEntries = () => {
+      setEntries((prev) => {
+        for (const e of prev) {
+          if (e.kind === 'image' && 'thumbUrl' in e && e.thumbUrl) {
+            URL.revokeObjectURL(e.thumbUrl)
+          }
+        }
+        return []
+      })
+    }
     if (phase.kind === 'success') {
       const prevId = phase.result.sourceDocumentId
       // discard 中も spinner を出すため一時的に submitting に。
-      // discard 完了 (通常 1 秒以内) で idle に戻る。
+      // discard 完了 (通常 1 秒以内) で idle + entries clear。
       setPhase({ kind: 'submitting' })
       void (async () => {
         await discardUpload(prevId)
+        clearEntries()
         setPhase({ kind: 'idle' })
       })()
     } else {
+      clearEntries()
       setPhase({ kind: 'idle' })
     }
   }
