@@ -89,6 +89,62 @@ export function UploadForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // OCR submitting 中はタブ閉じる / リロード / ブラウザ戻る を block。
+  // 詳細:
+  //   - beforeunload: 標準 browser confirm dialog を発火 (modern browsers は
+  //     custom 文言を無視するが dialog 自体は出る)
+  //   - popstate: sentinel state pattern。 effect 入りで history.pushState で
+  //     ダミー entry を仕込み、 ユーザーが back を押すと popstate が発火する。
+  //     confirm で「中断する」 なら navigation を許可 (sentinel 消費済)、
+  //     「キャンセル」 なら history.pushState で sentinel を再配置して
+  //     現在 page に留まらせる
+  //   - Next.js Link クリックによる soft navigation は popstate を発火しない
+  //     ため block 対象外 (spinner banner の文言で expectation 設定)
+  useEffect(() => {
+    if (!isSubmitting) return
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      // returnValue は modern TS lib で deprecated marking されているが、
+      // 一部 legacy browser (Edge 旧 / Safari) は preventDefault のみでは dialog を
+      // 出さず returnValue を見るため、 cross-browser 互換のため維持。 MDN も
+      // 「set to empty string」 と案内している。 TS の deprecation hint
+      // (6385) は build を block しないため受け流す (eslint disable や
+      // ts-expect-error は他の警告で対応している file との一貫性を欠くため
+      // 不要、 コメントで意図を残すのみ)。
+      e.returnValue = ''
+    }
+
+    let sentinelActive = true
+    const handlePopState = () => {
+      if (!sentinelActive) return
+      const ok = window.confirm(
+        'AI 抽出を実行中です。 このまま戻ると抽出結果が失われる可能性があります。 中断して戻りますか?',
+      )
+      if (!ok) {
+        // sentinel を再配置し、 現在 page に留まらせる
+        window.history.pushState(null, '', window.location.href)
+      } else {
+        // 一度だけ「中断」 を許可、 以降の popstate (forward etc.) は block しない
+        sentinelActive = false
+      }
+    }
+
+    // sentinel state を仕込む (back を押されたときに popstate が発火する余地を作る)
+    window.history.pushState(null, '', window.location.href)
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('popstate', handlePopState)
+
+    return () => {
+      sentinelActive = false
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('popstate', handlePopState)
+      // sentinel push は cleanup で pop しない (タイミング次第で
+      // navigation を妨害する risk)。 ユーザーには「戻る」 を 1 回余分に押す
+      // 必要が残るが、 submitting 終了後の通常 page では問題なし。
+    }
+  }, [isSubmitting])
+
   const totalBytes = entries.reduce((s, e) => s + e.file.size, 0)
   const totalExceeded = totalBytes > TOTAL_UPLOAD_LIMIT_BYTES
   const anyProcessing = entries.some((e) => e.status === 'processing')
