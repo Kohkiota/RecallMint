@@ -1,7 +1,11 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useUser, useReverification } from '@clerk/nextjs'
+import {
+  isClerkRuntimeError,
+  isReverificationCancelledError,
+} from '@clerk/nextjs/errors'
 import type { User } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
 
@@ -22,6 +26,16 @@ export function DeleteAccountButton({ plan }: Props) {
   // user.delete() 後は useUser() の user が null になるため、削除前に userId を memorize する
   const [memoizedUserId, setMemoizedUserId] = useState<string | null>(null)
 
+  // user.delete() は Clerk 仕様上 sensitive action で、 session reverification
+  // (直近の再認証) を要求する。 自前 UI は prebuilt <UserProfile /> と違い SDK の
+  // 自動 handle が効かず、 生の user.delete() は 403 session_reverification_required
+  // で reject される。 useReverification で wrap すると、 Clerk が必要時に
+  // reverification modal を出し、 再認証後に元 request を自動 retry する。
+  // 詳細: docs/superpowers/lessons/2026-05-19-clerk-self-delete-requires-reverification.md
+  // user が null の場合 fetcher は undefined を返すが、 onConfirmDelete 冒頭の
+  // `if (!user) return` guard により deleteAccount() はそもそも呼ばれない。
+  const deleteAccount = useReverification(() => user?.delete())
+
   const onConfirmDelete = async () => {
     if (!user) return
     // memorize userId before calling user.delete() which nullifies useUser().user
@@ -29,11 +43,27 @@ export function DeleteAccountButton({ plan }: Props) {
     setPhase('deleting')
     setErrorMsg(null)
     try {
-      await user.delete()
+      await deleteAccount()
       setPhase('polling')
-    } catch {
-      // user.delete() reject: ClerkAPIResponseError または network error
-      setErrorMsg('削除に失敗しました。時間を置いて再度お試しください。')
+    } catch (err) {
+      // reverification modal を user がキャンセルした場合は「失敗」 ではなく
+      // 「中断」。 confirm phase に戻して再試行可能にし、 error message は出さない。
+      if (isClerkRuntimeError(err) && isReverificationCancelledError(err)) {
+        setMemoizedUserId(null)
+        setPhase('confirm')
+        return
+      }
+      // それ以外の reject (ClerkAPIResponseError / network error 等) は失敗扱い。
+      // 真因切り分けのため err を必ず console に出し、 staging では UI にも詳細を
+      // 露出する (production は汎用文言のまま、 内部情報を end user に見せない)。
+      console.error('[delete-button] user.delete() failed:', err)
+      const isStaging = process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production'
+      const detail = err instanceof Error ? err.message : String(err)
+      setErrorMsg(
+        isStaging
+          ? `削除に失敗しました: ${detail}`
+          : '削除に失敗しました。時間を置いて再度お試しください。',
+      )
       setPhase('error')
     }
   }
