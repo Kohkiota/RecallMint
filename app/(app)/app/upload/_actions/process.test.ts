@@ -24,6 +24,7 @@ const {
     insertedExams: [] as Array<{ name: string; userId: string }>,
     insertedSourceDocs: [] as Array<Record<string, unknown>>,
     insertedCards: [] as Array<Record<string, unknown>>,
+    insertedUploadRecords: [] as Array<Record<string, unknown>>,
     updatedSourceDocs: [] as Array<Record<string, unknown>>,
     selectedExam: null as { id: string; name: string; archivedAt: Date | null } | null,
     nextExamId: 'exam-new-id',
@@ -64,6 +65,9 @@ vi.mock('../_lib/pdf-page-count', () => ({
 // Chainable DB mock builder. Uses a real Promise-returning thenable to avoid
 // Proxy/then quirks. Each chain method returns the same chain object, and the
 // chain itself resolves to `returnValue` when awaited.
+// S1.9.1: transaction() を追加 (完了更新 + upload_records append、 markFailed が
+// transaction を使うため)。 tx は db と同じ API。 upload_records INSERT は
+// .returning() なしで await されるため .values() 自体を thenable にする。
 vi.mock('@/lib/db', () => {
   function chain(returnValue: unknown) {
     const obj: Record<string, unknown> = {}
@@ -75,8 +79,8 @@ vi.mock('@/lib/db', () => {
     ) => Promise.resolve(returnValue).then(onFulfilled, onRejected)
     return obj
   }
-  return {
-    getDb: () => ({
+  function dbApi() {
+    return {
       select: () => chain(dbState.selectedExam ? [dbState.selectedExam] : []),
       insert: () => ({
         values: (rows: unknown) => {
@@ -101,13 +105,18 @@ vi.mock('@/lib/db', () => {
                 userId: row.userId as string,
               })
               returnValue = [{ id: dbState.nextExamId }]
+            } else if ('status' in row) {
+              // upload_records (status 持ち / fileType・name なし)
+              dbState.insertedUploadRecords.push(row)
+              returnValue = []
             } else {
               returnValue = []
             }
           }
-          return {
-            returning: () => chain(returnValue),
-          }
+          // .values() 自体を awaitable に + .returning() も生やす
+          const c = chain(returnValue) as Record<string, unknown>
+          c.returning = () => chain(returnValue)
+          return c
         },
       }),
       update: () => ({
@@ -117,6 +126,14 @@ vi.mock('@/lib/db', () => {
         },
       }),
       delete: () => chain(undefined),
+    }
+  }
+  return {
+    getDb: () => ({
+      ...dbApi(),
+      transaction: async (
+        fn: (tx: ReturnType<typeof dbApi>) => Promise<unknown>,
+      ) => await fn(dbApi()),
     }),
   }
 })
@@ -157,6 +174,7 @@ beforeEach(() => {
   dbState.insertedExams = []
   dbState.insertedSourceDocs = []
   dbState.insertedCards = []
+  dbState.insertedUploadRecords = []
   dbState.updatedSourceDocs = []
   dbState.selectedExam = null
 
@@ -282,6 +300,13 @@ describe('processUpload', () => {
     expect(dbState.insertedCards).toHaveLength(1)
     expect(dbState.insertedCards[0].tags).toEqual([])
     expect(mockNotifyOps).not.toHaveBeenCalled()
+    // S1.9.1: 完了時 upload_records に status='completed' 行が append される
+    expect(dbState.insertedUploadRecords).toHaveLength(1)
+    expect(dbState.insertedUploadRecords[0]).toMatchObject({
+      userId: 'user-uuid',
+      status: 'completed',
+      pagesProcessed: 1,
+    })
   })
 
   it('GEMINI_DAILY_LIMIT_EXCEEDED: global daily count >= limit → no DB writes, no OCR run', async () => {
@@ -426,6 +451,12 @@ describe('processUpload', () => {
     expect(
       dbState.updatedSourceDocs.some((u) => u.status === 'failed'),
     ).toBe(true)
+    // S1.9.1: 失敗時も upload_records に status='failed' 行が append される
+    expect(dbState.insertedUploadRecords).toHaveLength(1)
+    expect(dbState.insertedUploadRecords[0]).toMatchObject({
+      userId: 'user-uuid',
+      status: 'failed',
+    })
     expect(mockNotifyOps).toHaveBeenCalledWith(
       'ocr pipeline failed',
       expect.objectContaining({

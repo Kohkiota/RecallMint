@@ -8,6 +8,7 @@ import {
   exams,
   cards,
   sourceDocuments,
+  uploadRecords,
   type CardOption,
   type CardImage,
 } from '@/lib/db/schema'
@@ -276,7 +277,6 @@ async function _processUpload(
       userId: user.id,
       examId,
       fileType,
-      fileUrl: null,
       filename,
       fileSizeBytes: totalSize,
       status: 'processing',
@@ -296,7 +296,14 @@ async function _processUpload(
       }),
     )
   } catch (err) {
-    await markFailed(sourceDocumentId, err)
+    // OCR 前の失敗: ページ消費なし・cost 0 で台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: 0,
+      ocrCostYen: 0,
+    })
     return {
       ok: false,
       code: 'OTHER',
@@ -320,7 +327,14 @@ async function _processUpload(
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await markFailed(sourceDocumentId, err)
+    // OCR pipeline 失敗: 完了 pages / cost は確定しないため 0 で台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: 0,
+      ocrCostYen: 0,
+    })
     await notifyOps('ocr pipeline failed', {
       userId: user.id,
       sourceDocumentId,
@@ -372,7 +386,14 @@ async function _processUpload(
       .values(cardRows)
       .returning({ id: cards.id, title: cards.title })
   } catch (err) {
-    await markFailed(sourceDocumentId, err)
+    // cards 保存失敗: OCR 自体は成功し cost が発生済のため実値を台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: totalPages,
+      ocrCostYen: pipelineResult.costYen,
+    })
     await notifyOps('cards insert failed after ocr success', {
       userId: user.id,
       sourceDocumentId,
@@ -395,17 +416,30 @@ async function _processUpload(
     }
   }
 
-  // -- source_documents 完了更新 --
-  await db
-    .update(sourceDocuments)
-    .set({
-      status: 'completed',
+  // -- source_documents 完了更新 + upload_records 台帳 append (1 transaction) --
+  // S1.9.1: source_documents UPDATE と upload_records INSERT を一蓮托生で
+  // commit/rollback する。 upload_records が月次 quota の集計元 (discard で
+  // 返金されない、 Bug A 解消の本体)。
+  await db.transaction(async (tx) => {
+    await tx
+      .update(sourceDocuments)
+      .set({
+        status: 'completed',
+        pagesProcessed: totalPages,
+        cardsExtracted: insertedCards.length,
+        ocrCostYen: pipelineResult.costYen,
+        completedAt: sql`now()`,
+      })
+      .where(eq(sourceDocuments.id, sourceDocumentId))
+    await tx.insert(uploadRecords).values({
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
       pagesProcessed: totalPages,
-      cardsExtracted: insertedCards.length,
       ocrCostYen: pipelineResult.costYen,
-      completedAt: sql`now()`,
+      status: 'completed',
     })
-    .where(eq(sourceDocuments.id, sourceDocumentId))
+  })
 
   // -- preview data の構築 --
   // 完全な card row を返すと payload が膨れる + 学習統計の RTC 不要のため、
@@ -451,17 +485,38 @@ function parseDailyLimit(raw: string | undefined): number | null {
   return n
 }
 
+// OCR 失敗時の後始末。 source_documents を status='failed' に更新し、 同 transaction
+// で upload_records にも status='failed' 行を append する (台帳として失敗も記録、
+// ただし月次 quota SUM は completed で絞るため消費には計上されない)。
+// best-effort: 失敗しても throw せず logger.warn のみ (OCR 失敗 path の二次被害防止)。
 async function markFailed(
   sourceDocumentId: string,
   err: unknown,
+  audit: {
+    userId: string
+    filename: string
+    fileSizeBytes: number
+    pagesProcessed: number
+    ocrCostYen: number
+  },
 ): Promise<void> {
   const db = getDb()
   const msg = err instanceof Error ? err.message : String(err)
   try {
-    await db
-      .update(sourceDocuments)
-      .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
-      .where(eq(sourceDocuments.id, sourceDocumentId))
+    await db.transaction(async (tx) => {
+      await tx
+        .update(sourceDocuments)
+        .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
+        .where(eq(sourceDocuments.id, sourceDocumentId))
+      await tx.insert(uploadRecords).values({
+        userId: audit.userId,
+        filename: audit.filename,
+        fileSizeBytes: audit.fileSizeBytes,
+        pagesProcessed: audit.pagesProcessed,
+        ocrCostYen: audit.ocrCostYen,
+        status: 'failed',
+      })
+    })
   } catch (updateErr) {
     // status='processing' のまま残るが、 ops 通知側で source_document_id を持つので
     // 後から OT が手動で update 可能。 巻き込み防止のため throw しない。

@@ -70,35 +70,9 @@ describe('getCurrentMonthOcrPages', () => {
   })
 })
 
-describe('staleProcessingCutoff (S1.7)', () => {
-  it('returns now - 10 minutes', async () => {
-    const { staleProcessingCutoff, STALE_PROCESSING_MINUTES } = await importModule()
-    const now = new Date('2026-05-19T05:00:00Z')
-    const cutoff = staleProcessingCutoff(now)
-    expect(STALE_PROCESSING_MINUTES).toBe(10)
-    expect(cutoff.toISOString()).toBe('2026-05-19T04:50:00.000Z')
-  })
-
-  it('falls back to current time when now is omitted', async () => {
-    const { staleProcessingCutoff } = await importModule()
-    const before = Date.now()
-    const cutoff = staleProcessingCutoff()
-    const after = Date.now()
-    // cutoff should fall between (before - 10min) and (after - 10min)
-    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - 10 * 60 * 1000)
-    expect(cutoff.getTime()).toBeLessThanOrEqual(after - 10 * 60 * 1000)
-  })
-
-  it('handles JST month boundary edge: stale cutoff might fall outside current month, which is fine (filter chains AND)', async () => {
-    // 月初の例: now = 2026-06-01 09:01 JST (= 00:01 UTC of June 1 JST = 2026-05-31T15:01Z)
-    // cutoff = 2026-05-31T14:51Z → 5 月内
-    // → 5 月の processing 残骸はカウントされない (cutoff < createdAt は false)、 6 月境界で除外され、 結果 6 月集計は正しく 0
-    const { staleProcessingCutoff } = await importModule()
-    const now = new Date('2026-05-31T15:01:00Z')
-    const cutoff = staleProcessingCutoff(now)
-    expect(cutoff.toISOString()).toBe('2026-05-31T14:51:00.000Z')
-  })
-})
+// S1.9.1: 集計元を upload_records に切替。 upload_records は完了/失敗時 append のみで
+// processing 状態の行が存在しないため、 旧 source_documents 方式の stale processing
+// 除外ロジック (staleProcessingCutoff / STALE_PROCESSING_MINUTES) は撤廃済。
 
 describe('canRunOcr', () => {
   it('Pro (limit=null) always ok with remaining=null', async () => {

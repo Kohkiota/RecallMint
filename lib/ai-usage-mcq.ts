@@ -1,33 +1,25 @@
-// 月次 OCR ページ消費 tracker + plan-limits enforce utility (S1a / S5 統合)。
+// 月次 OCR ページ消費 tracker + plan-limits enforce utility。
 //
-// source_documents.pages_processed (integer) を JST 月境界で SUM し、 plan-limits
-// (`lib/auth/plan-limits.ts`) の `ocrPagesPerMonth` と比較する。 Server Action
-// から呼ばれて、 上限超過時の OCR 起動を弾く。
+// S1.9.1: 集計元を source_documents から upload_records に切り替えた。
+// 旧方式 (source_documents.pages_processed の SUM) は discardUpload が
+// source_documents を物理削除すると SUM の集計元が消える = 月次 quota が
+// 「返金」 され、 「やり直す」 の繰り返しで月次上限を事実上バイパスできた
+// (Bug A)。 upload_records は OCR 完了 / 失敗時に append-only で記録され、
+// discard では一切 touch されないため、 月次消費は monotonic。
 //
-// 状態前提:
-// - source_documents.status IN ('completed', 'processing') を集計対象とする。
-//   ('failed' は失敗 path で消費 0 扱い、 'uploading' は途中段階で集計対象外)
-// - status='processing' のうち STALE_THRESHOLD_MINUTES 以上経過したものは
-//   Vercel function timeout (Hobby 60s) 等で catch ブロックに到達せず status
-//   が更新されなかった残骸とみなし、 集計から除外する (S1.7 で追加)。
-//   仮に本当に処理中だったとしても、 Vercel function は long-running を許容
-//   しないため、 STALE_THRESHOLD を超えた processing は事実上失敗と扱って良い。
-// - JST 月境界 = 当月 1 日 00:00:00 JST 〜 翌月 1 日 00:00:00 JST 直前
-//   DB 上は created_at (UTC timestamptz) で比較するため、 月境界を UTC に変換した
-//   範囲で WHERE する。
+// 集計仕様:
+// - upload_records.status = 'completed' の行のみ SUM 対象 (failed は台帳には
+//   残るが消費に計上しない)。
+// - JST 月境界 = 当月 1 日 00:00:00 JST 〜 翌月 1 日 00:00:00 JST 直前。
+//   DB 上は created_at (UTC timestamptz) で比較するため、 月境界を UTC に
+//   変換した範囲で WHERE する。
+// - upload_records は完了時 append のみで processing 状態の行が存在しないため、
+//   旧 source_documents 方式にあった「stale processing 除外」 ロジックは不要。
 
-import { and, eq, gte, lt, or, sql } from 'drizzle-orm'
+import { and, eq, gte, lt, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
-import { sourceDocuments } from '@/lib/db/schema'
+import { uploadRecords } from '@/lib/db/schema'
 import { limitsFor, type Plan } from '@/lib/auth/plan-limits'
-
-// processing 残骸とみなす経過時間 (分)。 kickoff spec 通り 10 分。
-// 根拠: 典型的な OCR は Flash で 30-120 秒、 Pro fallback まで含めても 5-8 分。
-// 10 分超過 = ほぼ確実に function timeout で kill されたケース。
-// Vercel Pro plan の function timeout 900s (15 分) より短いため、 まれに正常
-// 実行中の処理を「stale」 として除外する false positive risk があるが、
-// 月次 page 計算に対する影響は限定的 (実害 = 「上限超過」 を 1 件分逃す程度)。
-export const STALE_PROCESSING_MINUTES = 10
 
 // JST 当月の境界 (UTC で表現) を返す。 now を渡すと test で任意時刻を注入可能。
 // 月境界判定の単位は JST 1 日 (UTC+9) で、 例えば「2026-05 月」 は
@@ -46,43 +38,26 @@ export function jstMonthBoundsUtc(now?: Date): { start: Date; end: Date } {
   return { start, end }
 }
 
-// 「processing 残骸」 のカットオフ時刻 (これより前の processing 行は集計除外)。
-// `now` は test 注入用。 純粋関数として export し、 stale 判定の決定性を test 可能に。
-export function staleProcessingCutoff(now?: Date): Date {
-  return new Date(
-    (now ?? new Date()).getTime() - STALE_PROCESSING_MINUTES * 60 * 1000,
-  )
-}
-
-// 当月 (JST 月境界) の OCR ページ消費合計。 集計対象:
-//   - status='completed' の全 row
-//   - status='processing' のうち created_at が STALE_PROCESSING_MINUTES 以内の row
-// stale processing (timeout 残骸) は除外する。
-//
-// `now` は test 注入用。 stale 判定にも同じ値を使う (test の決定性のため)。
+// 当月 (JST 月境界) の OCR ページ消費合計。
+// upload_records のうち status='completed' かつ created_at が当月内の行の
+// pages_processed を SUM する。 `now` は test 注入用。
 export async function getCurrentMonthOcrPages(
   userId: string,
   now?: Date,
 ): Promise<number> {
   const db = getDb()
   const { start, end } = jstMonthBoundsUtc(now)
-  const cutoff = staleProcessingCutoff(now)
   const rows = await db
-    .select({ total: sql<number>`COALESCE(SUM(${sourceDocuments.pagesProcessed}), 0)::int` })
-    .from(sourceDocuments)
+    .select({
+      total: sql<number>`COALESCE(SUM(${uploadRecords.pagesProcessed}), 0)::int`,
+    })
+    .from(uploadRecords)
     .where(
       and(
-        eq(sourceDocuments.userId, userId),
-        // 集計対象 status: completed (確定) または processing かつ stale ではない
-        or(
-          eq(sourceDocuments.status, 'completed'),
-          and(
-            eq(sourceDocuments.status, 'processing'),
-            gte(sourceDocuments.createdAt, cutoff),
-          ),
-        ),
-        gte(sourceDocuments.createdAt, start),
-        lt(sourceDocuments.createdAt, end),
+        eq(uploadRecords.userId, userId),
+        eq(uploadRecords.status, 'completed'),
+        gte(uploadRecords.createdAt, start),
+        lt(uploadRecords.createdAt, end),
       ),
     )
   return Number(rows[0]?.total ?? 0)

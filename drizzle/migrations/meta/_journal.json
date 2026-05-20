@@ -29,6 +29,13 @@
       "when": 1779173546865,
       "tag": "0003_free_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779251755542,
+      "tag": "0004_organic_starhawk",
+      "breakpoints": true
     }
   ]
 }

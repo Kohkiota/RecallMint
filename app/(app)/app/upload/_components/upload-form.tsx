@@ -88,7 +88,7 @@ export function UploadForm({
   plan,
 }: {
   existingExams: ActiveExam[]
-  /** 当月 (JST 月境界) の OCR ページ消費 (Server fetch、 stale 排除済) */
+  /** 当月 (JST 月境界) の OCR ページ消費 (Server fetch、 upload_records SUM) */
   currentMonthPages: number
   /** plan 別 月次上限。 Pro は null (公平利用)。 */
   monthlyLimit: number | null
@@ -390,8 +390,9 @@ export function UploadForm({
   //
   // S1.7 T6: client 側 90 秒 timeout を追加。 Vercel function が 60 秒で kill
   // されても catch に届かない場合、 client が spinner 永続化しないよう defensive
-  // に切り上げ、 retry 誘導する。 server 側 source_documents は 10 分 stale 排除
-  // で集計から外れる (T1)。
+  // に切り上げ、 retry 誘導する。 timeout 時 source_documents は status='processing'
+  // のまま残骸化しうるが、 月次 quota は upload_records 集計 (S1.9.1) のため
+  // source_documents 残骸は消費に影響しない。
   async function runProcess() {
     const fd = buildFormData()
     let timedOut = false
