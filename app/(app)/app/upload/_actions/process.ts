@@ -94,8 +94,9 @@ export type ProcessUploadResult =
 const MAX_QUESTION_PREVIEW = 80
 
 // 中央集約された Server Action。 案 B (kickoff §6) に従い、 OCR + cards INSERT を
-// 一気に行い preview に「保存済」 状態の cards を返す。 「やり直し」 は discard.ts
-// で source_document を消してから再呼び出しする。
+// 一気に行い preview に「保存済」 状態の cards を返す。 OCR は完了時点で exam +
+// cards が DB 確定済 (S1.9.3 で「破棄して再アップロード」 を廃止、 不要 exam の
+// 削除は試験一覧の delete-exam action で行う)。
 //
 // S1.7 改修: 失敗時の戻り値を code 付き構造化、 plan-limits 超過は exam INSERT /
 // source_documents INSERT を一切走らせずに早期 return (kickoff Critical 1)。
@@ -415,8 +416,8 @@ async function _processUpload(
 
   // -- source_documents 完了更新 + upload_records 台帳 append (1 transaction) --
   // S1.9.1: source_documents UPDATE と upload_records INSERT を一蓮托生で
-  // commit/rollback する。 upload_records が月次 quota の集計元 (discard で
-  // 返金されない、 Bug A 解消の本体)。
+  // commit/rollback する。 upload_records が月次 quota の集計元 (append-only で
+  // 物理削除されないため返金が起きない、 Bug A 解消の本体)。
   await db.transaction(async (tx) => {
     await tx
       .update(sourceDocuments)
