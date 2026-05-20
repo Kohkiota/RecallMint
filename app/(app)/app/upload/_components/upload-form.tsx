@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
@@ -19,11 +18,9 @@ import { pdfPageCount } from '../_lib/pdf-page-count'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
   processUpload,
-  type ProcessResultData,
   type ProcessUploadErrorCode,
   type ProcessUploadErrorDetails,
 } from '../_actions/process'
-import { discardUpload } from '../_actions/discard'
 
 // 投入先選択 state:
 //  - null: 未選択 (submit disable)
@@ -65,19 +62,18 @@ const planLabelMap = {
 } as const
 
 // phase: 'idle' = ファイル選択中 / 'submitting' = OCR 実行中 (server action 中) /
-// 'success' = preview 表示中 / 'error' = エラー表示中。
-// success / error は サーバー側で source_documents row が存在し、 やり直し時には
-// discardUpload(prevSourceDocumentId) を呼んで掃除する。
+// 'error' = エラー表示中。
+// S1.9.2: 'success' phase を廃止。 OCR 成功時は preview を同 component で描画せず、
+// 独立 route /app/upload/result/[sourceDocumentId] に router.push で遷移する
+// (Bug B = 残量 banner stale 表示の構造解消、 page 遷移で fresh server render)。
 type Phase =
   | { kind: 'idle' }
   | { kind: 'submitting' }
-  | { kind: 'success'; result: ProcessResultData }
   | {
       kind: 'error'
       message: string
       code: ProcessUploadErrorCode | 'CLIENT_TIMEOUT'
       details?: ProcessUploadErrorDetails
-      lastSourceDocumentId?: string
     }
 
 export function UploadForm({
@@ -417,20 +413,19 @@ export function UploadForm({
     }
 
     // timeout 発火後に server が遅れて応答した場合は state を上書きしない
-    // (ユーザーは既に「タイムアウト」 を見ている、 retry に進んでいる可能性あり)
+    // (ユーザーは既に「タイムアウト」 を見ている)
     if (timedOut) return
 
     if (result.ok && result.data) {
-      setPhase({ kind: 'success', result: result.data })
+      // S1.9.2: OCR 成功 → result page に遷移。 phase は 'submitting' のまま
+      // にして navigation 完了まで spinner を出す (success phase は廃止)。
+      router.push(`/app/upload/result/${result.data.sourceDocumentId}`)
     } else if (!result.ok) {
       setPhase({
         kind: 'error',
         message: result.error,
         code: result.code,
         details: result.details,
-        // server action 内で source_documents.status='failed' まで打って返している
-        // ため、 retry 時の discard 対象 id は不明 (failed row は user 視点で
-        // 見えない、 retry は新規 source_document を作るだけ)。
       })
     } else {
       setPhase({
@@ -441,88 +436,16 @@ export function UploadForm({
     }
   }
 
-  // handleSubmit / handleRetry / handleChangeFiles の共通方針:
+  // handleSubmit の方針:
   //   1. phase 切替を **urgent priority** で行う (startTransition で wrap しない)
   //   2. 非同期処理は IIFE / 直 await で投げ捨て、 await 後の setPhase は urgent
   //   3. これにより React 19 の concurrent renderer が「submitting」 を必ず commit
-  //      する (submitting + success 両方 urgent priority のため、 中間 render が
-  //      coalesce されない)
+  //      する (S1a 後の staging smoke で発覚した bug の回避)
 
   function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
     setPhase({ kind: 'submitting' })
     void runProcess()
-  }
-
-  function handleRetry() {
-    // 「やり直し」 = 直前の成功 source_document を消してから新規 process
-    if (phase.kind !== 'success') return
-    const prevId = phase.result.sourceDocumentId
-    // S1.9: auto 作成 exam (mode==='new') なら discard 時に空 exam も掃除させる。
-    // 既存 exam への追加だった場合は undefined を渡し exam を残す。
-    const autoCreatedExamId = phase.result.examWasAutoCreated
-      ? phase.result.examId
-      : undefined
-    setPhase({ kind: 'submitting' })
-    void (async () => {
-      await discardUpload(prevId, autoCreatedExamId)
-      await runProcess()
-      // S1.8: 同 page 内 button のため別 path への navigation がない。
-      // discard / process Server Action 内で revalidatePath('/','layout') 済だが、
-      // 同 page を「再 render」 させるには client から router.refresh が必要。
-      // discard と process の delta を一括反映するため最後に 1 回だけ呼ぶ
-      // (中間 refresh はユーザーが submitting 中で見えないため無駄)。
-      router.refresh()
-    })()
-  }
-
-  function handleChangeFiles() {
-    // 「ファイル変更して再試行」 = state を idle に戻し、 entries も clear。
-    // ボタン文言が「ファイル変更」 なのに entries (サムネ) が残っていると UX が
-    // 一貫しないため、 entry の object URL を revoke してから空配列にリセットする
-    // (S1.7 review Important 4 で指摘)。 成功時の source_document は user 視点で
-    // 「破棄」 すべきなので discardUpload も呼ぶ。
-    const clearEntries = () => {
-      setEntries((prev) => {
-        for (const e of prev) {
-          if (e.kind === 'image' && 'thumbUrl' in e && e.thumbUrl) {
-            URL.revokeObjectURL(e.thumbUrl)
-          }
-        }
-        return []
-      })
-    }
-    if (phase.kind === 'success') {
-      const prevId = phase.result.sourceDocumentId
-      // S1.9: auto 作成 exam (mode==='new') なら discard 時に空 exam も掃除させる。
-      const autoCreatedExamId = phase.result.examWasAutoCreated
-        ? phase.result.examId
-        : undefined
-      // discard 中も spinner を出すため一時的に submitting に。
-      // discard 完了 (通常 1 秒以内) で idle + entries clear。
-      setPhase({ kind: 'submitting' })
-      void (async () => {
-        await discardUpload(prevId, autoCreatedExamId)
-        clearEntries()
-        setPhase({ kind: 'idle' })
-        // S1.8: file 選択画面に戻った時点で残量 banner を新値で再 render。
-        router.refresh()
-      })()
-    } else {
-      clearEntries()
-      setPhase({ kind: 'idle' })
-    }
-  }
-
-  // 結果プレビュー (success state) は idle UI と排他で表示する。
-  if (phase.kind === 'success') {
-    return (
-      <ResultPreview
-        result={phase.result}
-        onRetry={handleRetry}
-        onChangeFiles={handleChangeFiles}
-      />
-    )
   }
 
   return (
@@ -561,8 +484,8 @@ export function UploadForm({
 
       {isSubmitting && (
         // S1.8: 中断 = 利用枠だけ消費されて cards が得られない事を強調するため
-        // amber 警告色 + alert role に格上げ。 amber は ResultPreview の破棄注意
-        // banner と統一感を持たせる。
+        // amber 警告色 + alert role に格上げ。 amber は result page
+        // (result-actions.tsx) の破棄注意 banner と統一感を持たせる。
         <section
           role="alert"
           aria-live="assertive"
@@ -785,93 +708,6 @@ export function UploadForm({
         </Button>
       </div>
     </form>
-  )
-}
-
-function ResultPreview({
-  result,
-  onRetry,
-  onChangeFiles,
-}: {
-  result: ProcessResultData
-  onRetry: () => void
-  onChangeFiles: () => void
-}) {
-  return (
-    <div className="space-y-6">
-      <section className="rounded-md bg-emerald-50 border border-emerald-200 p-4">
-        <h2 className="text-lg font-bold mb-1">
-          ✅ {result.cardsExtracted} 問を抽出しました
-        </h2>
-        <p className="text-sm text-slate-700">
-          試験「{result.examName}」 に保存されました。
-        </p>
-        {/* S1.7 T5: preview からコスト表示を削除。 DB の ocr_cost_yen 保存 +
-            notifyOps 通知 + 詳細エラー (staging 表示) は維持。 */}
-      </section>
-
-      <section>
-        <h3 className="font-bold mb-2">抽出結果のプレビュー</h3>
-        <ul className="space-y-2">
-          {result.cards.map((c) => (
-            <li key={c.id}>
-              <Card>
-                <CardContent className="p-3">
-                  <div className="font-medium text-sm mb-1">{c.title}</div>
-                  <div className="text-xs text-slate-700 mb-1">
-                    {c.questionTextSnippet}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    選択肢 {c.optionCount} 件
-                    {c.customPropKeys.length > 0 && (
-                      <span> / プロパティ: {c.customPropKeys.join(', ')}</span>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <div className="flex flex-col sm:flex-row gap-2">
-        <Button asChild className="flex-1 py-3 text-base font-bold">
-          {/* S1.8: OCR 完了直後は「抽出 cards が試験単位で記録されたか」 を
-              user が確認したいため、 dashboard ではなく試験一覧に誘導する。
-              dashboard へは header の logo から戻れる。 */}
-          <Link href="/app/exams">試験一覧へ</Link>
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onRetry}
-          className="flex-1 py-3 text-base"
-        >
-          同じファイルでやり直す
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onChangeFiles}
-          className="flex-1 py-3 text-base"
-        >
-          ファイルを変えて再試行
-        </Button>
-      </div>
-      {/* S1.8: 破棄系 button のリスク説明を amber 警告 banner に格上げ。
-          「破棄したら残量が戻る」 と誤解されないよう、 利用枠は戻らない旨を
-          明示する (Gemini API call は走り済 = ai_usage はカウント済)。 */}
-      <div
-        role="alert"
-        className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
-      >
-        <p className="font-semibold">⚠ ご注意</p>
-        <p className="mt-1">
-          「同じファイルでやり直す」 / 「ファイルを変えて再試行」 を押すと、 ここまでの抽出結果は破棄されます。
-          ただし AI 抽出の利用枠は元に戻りません。
-        </p>
-      </div>
-    </div>
   )
 }
 

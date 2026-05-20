@@ -5,7 +5,7 @@
 
 import { and, count, desc, eq, isNull } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
-import { cards, exams } from '@/lib/db/schema'
+import { cards, exams, sourceDocuments } from '@/lib/db/schema'
 
 export type ActiveExam = {
   id: string
@@ -130,6 +130,73 @@ export async function getCardsForExam(
 function snippet(text: string, max: number): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '…'
+}
+
+// S1.9.2: OCR result page (/app/upload/result/[sourceDocumentId]) 用。
+// source_document を owner-scoped で取得し、 投入先 exam 名を JOIN で同時に引く。
+// 不在 / 他 user の場合は null (page 側で notFound())。
+export type SourceDocumentResult = {
+  id: string
+  examName: string
+}
+export async function getSourceDocumentForUser(
+  userId: string,
+  sourceDocumentId: string,
+): Promise<SourceDocumentResult | null> {
+  const db = getDb()
+  const rows = await db
+    .select({
+      id: sourceDocuments.id,
+      examName: exams.name,
+    })
+    .from(sourceDocuments)
+    .innerJoin(exams, eq(exams.id, sourceDocuments.examId))
+    .where(
+      and(
+        eq(sourceDocuments.id, sourceDocumentId),
+        eq(sourceDocuments.userId, userId),
+      ),
+    )
+    .limit(1)
+  return rows[0] ?? null
+}
+
+// S1.9.2: OCR result page 用。 当該 source_document が抽出した cards 一覧。
+// getCardsForExam と同じ CardListEntry 形だが、 source_document 単位で絞る。
+export async function getCardsForSourceDocument(
+  userId: string,
+  sourceDocumentId: string,
+): Promise<CardListEntry[]> {
+  const db = getDb()
+  const rows = await db
+    .select({
+      id: cards.id,
+      title: cards.title,
+      sortKey: cards.sortKey,
+      questionText: cards.questionText,
+      options: cards.options,
+      customProps: cards.customProps,
+      createdAt: cards.createdAt,
+    })
+    .from(cards)
+    .where(
+      and(
+        eq(cards.userId, userId),
+        eq(cards.sourceDocumentId, sourceDocumentId),
+      ),
+    )
+    .orderBy(cards.sortKey, cards.createdAt)
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    sortKey: r.sortKey,
+    questionTextSnippet: snippet(r.questionText, 80),
+    optionCount: Array.isArray(r.options) ? r.options.length : 0,
+    customPropKeys:
+      r.customProps && typeof r.customProps === 'object'
+        ? Object.keys(r.customProps as Record<string, unknown>)
+        : [],
+  }))
 }
 
 // 経過時間を「N 分前 / N 時間前 / N 日前 / N ヶ月前 / N 年前」 形式で返す。

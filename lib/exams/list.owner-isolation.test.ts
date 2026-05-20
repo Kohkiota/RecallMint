@@ -26,6 +26,7 @@ vi.mock('@/lib/db', () => {
       'from',
       'where',
       'leftJoin',
+      'innerJoin',
       'groupBy',
       'orderBy',
       'limit',
@@ -201,5 +202,61 @@ describe('getCardsForExam (owner isolation + snippet/keys derivation)', () => {
     expect(r[0].optionCount).toBe(0)
     expect(r[0].customPropKeys).toEqual([])
     expect(r[0].questionTextSnippet).toBe('short')
+  })
+})
+
+// S1.9.2: result page 用の新規 query 2 本。 owner-check 回帰防止。
+describe('getSourceDocumentForUser (owner isolation)', () => {
+  it('returns null when row not found (other user / unknown / discarded)', async () => {
+    dbState.queue = [[]]
+    const { getSourceDocumentForUser } = await importModule()
+    const r = await getSourceDocumentForUser('user-1', 'sdoc-unknown')
+    expect(r).toBeNull()
+  })
+
+  it('returns { id, examName } when found (own source_document)', async () => {
+    dbState.queue = [[{ id: 'sdoc-A', examName: 'My Exam' }]]
+    const { getSourceDocumentForUser } = await importModule()
+    const r = await getSourceDocumentForUser('user-1', 'sdoc-A')
+    expect(r).toEqual({ id: 'sdoc-A', examName: 'My Exam' })
+  })
+})
+
+describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)', () => {
+  it('returns empty array when no rows (other user / discarded source_document)', async () => {
+    dbState.queue = [[]]
+    const { getCardsForSourceDocument } = await importModule()
+    const r = await getCardsForSourceDocument('user-1', 'sdoc-A')
+    expect(r).toEqual([])
+  })
+
+  it('maps rows into list entries with snippet + option count + custom_props keys', async () => {
+    dbState.queue = [
+      [
+        {
+          id: 'card-1',
+          title: '問1',
+          sortKey: '001',
+          questionText: 'a'.repeat(120),
+          options: [
+            { id: 'a', text: 'A', is_correct: true },
+            { id: 'b', text: 'B', is_correct: false },
+          ],
+          customProps: { 試験回: '令和7' },
+          createdAt: new Date(),
+        },
+      ],
+    ]
+    const { getCardsForSourceDocument } = await importModule()
+    const r = await getCardsForSourceDocument('user-1', 'sdoc-A')
+    expect(r).toHaveLength(1)
+    expect(r[0]).toMatchObject({
+      id: 'card-1',
+      title: '問1',
+      sortKey: '001',
+      optionCount: 2,
+      customPropKeys: ['試験回'],
+    })
+    expect(r[0].questionTextSnippet.endsWith('…')).toBe(true)
   })
 })
