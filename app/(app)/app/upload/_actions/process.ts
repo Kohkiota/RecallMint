@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, gte } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import {
@@ -22,6 +22,7 @@ import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
+import { STALE_PROCESSING_MS } from '@/lib/exams/source-doc-status'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 
 // FormData から受け取った投入先選択 (前端 Destination 型と整合)。
@@ -226,9 +227,13 @@ async function _processUpload(
     }
 
     // (b) in-flight 行 check — 先行ジョブ走行中 (lock 解放済) の並列起動を弾く
-    // 15 分 window: processing 残骸 (stale orphan) による誤発火を防ぐ。
-    // markFailed / 完了 tx が実行されなかった source_document は 15 分後に guard を
-    // 通過できる (その後 OT が手動 update する想定、 S1.9.1 コメント参照)。
+    // STALE_PROCESSING_MS (= 15 分) window: processing 残骸 (stale orphan) による
+    // 誤発火を防ぐ。markFailed / 完了 tx が実行されなかった source_document は
+    // STALE_PROCESSING_MS 超過後に guard を通過できる
+    // (その後 OT が手動 update する想定、 S1.9.1 コメント参照)。
+    // STALE_PROCESSING_MS を source-doc-status.ts と共有することで、 UI guard
+    // (hasActiveProcessingUpload) と server guard の判定閾値が drift しない。
+    const inflightThreshold = new Date(Date.now() - STALE_PROCESSING_MS)
     const inflight = await tx
       .select({ id: sourceDocuments.id })
       .from(sourceDocuments)
@@ -236,7 +241,7 @@ async function _processUpload(
         and(
           eq(sourceDocuments.userId, user.id),
           eq(sourceDocuments.status, 'processing'),
-          sql`${sourceDocuments.createdAt} >= now() - interval '15 minutes'`,
+          gte(sourceDocuments.createdAt, inflightThreshold),
         ),
       )
       .limit(1)

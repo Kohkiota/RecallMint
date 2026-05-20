@@ -1,17 +1,18 @@
 // source-doc-status — 試験一覧ページ向け OCR 処理状態ヘルパー。
 //
-// 提供する 4 エクスポート:
-//   1. STALE_PROCESSING_MS  — timeout 判定の閾値定数
-//   2. deriveExamStatuses   — 純関数: rows → Map<examId, status>
-//   3. getExamStatusMap     — DB 取得 + deriveExamStatuses の組み合わせ
-//   4. reconcileStaleProcessing — best-effort DB cleanup (stale processing → failed)
+// 提供する 5 エクスポート:
+//   1. STALE_PROCESSING_MS         — timeout 判定の閾値定数
+//   2. deriveExamStatuses          — 純関数: rows → Map<examId, status>
+//   3. getExamStatusMap            — DB 取得 + deriveExamStatuses の組み合わせ
+//   4. reconcileStaleProcessing    — best-effort DB cleanup (stale processing → failed)
+//   5. hasActiveProcessingUpload   — /app/upload UI guard 用 in-flight 存在判定
 //
 // 設計方針:
 //   - 一覧ページの render を絶対に止めないため、DB 関数はすべて例外を握りつぶす。
 //   - 表示 fallback (deriveExamStatuses) と DB cleanup (reconcileStaleProcessing) を
 //     分離することで、cleanup 失敗時も表示は正しく維持される。
 
-import { and, eq, lt } from 'drizzle-orm'
+import { and, eq, gte, lt } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
@@ -191,5 +192,63 @@ export async function reconcileStaleProcessing(
       userId,
       err,
     })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// hasActiveProcessingUpload
+// ---------------------------------------------------------------------------
+// /app/upload ページの UI guard 用 helper。
+// 「current user に、15 分以内に作成された status='processing' の
+// source_documents が 1 件でもあるか」 を boolean で返す。
+//
+// 15 分 window の理由:
+//   stale orphan (reconcile 前の死骸: >15 分の processing 残骸) を
+//   「in-flight」 と誤判定しないための safety net。
+//   process.ts の server-side guard (in-flight check) と同じ条件
+//   (STALE_PROCESSING_MS を共有) で揃えることで、 UI guard と server guard の
+//   判定が drift しない。
+//
+// best-effort 設計:
+//   この helper は /app/upload の UI guard 用で、 UI guard は advisory な
+//   第一層に過ぎず、 真の enforcement は process.ts の server-side guard が担う。
+//   helper が DB エラーで失敗した場合は「form を出す」 側に倒し (false を返す)、
+//   ユーザーを不当にブロックしない。 実際の重複起動は server-side guard で弾かれる。
+//
+// index 利用:
+//   source_docs_status_idx (user_id, status) を直撃する軽量 query。
+//   SELECT は存在判定のみなので最小列 (id) + LIMIT 1 で十分。
+export async function hasActiveProcessingUpload(
+  userId: string,
+  now: Date = new Date(),
+): Promise<boolean> {
+  try {
+    const db = getDb()
+    // STALE_PROCESSING_MS (15 分) 以内に作成された processing 行があるか判定。
+    // 15 分より古い processing 行は stale orphan (reconcile 待ち) とみなし
+    // 「in-flight」として数えない。
+    const activeThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
+    const rows = await db
+      .select({ id: sourceDocuments.id })
+      .from(sourceDocuments)
+      .where(
+        and(
+          eq(sourceDocuments.userId, userId), // owner-scope 必須
+          eq(sourceDocuments.status, 'processing'),
+          gte(sourceDocuments.createdAt, activeThreshold), // 15 分以内のみ in-flight 扱い
+        ),
+      )
+      .limit(1)
+    return rows.length > 0
+  } catch (err) {
+    // best-effort: DB エラー時は warn のみ、throw しない。
+    // UI guard が失敗しても server-side guard が enforcement を担うため、
+    // false (= form を表示) 側に倒してユーザーを不当にブロックしない。
+    logger.warn({
+      event: 'source_documents.has_active_processing.failed',
+      userId,
+      err,
+    })
+    return false
   }
 }
