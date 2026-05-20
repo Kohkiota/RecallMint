@@ -12,7 +12,7 @@ import { ResultActions } from './_components/result-actions'
 // ため、 残量 banner stale 表示 (Bug B) が構造的に発生しない。
 //
 // 到達経路: processUpload 成功 → upload-form が router.push でここへ。
-// URL 直叩き (他 user / discard 済) は owner-scoped query が null → notFound()。
+// URL 直叩き (他 user のリソース) は owner-scoped query が null → notFound()。
 export default async function UploadResultPage({
   params,
 }: {
@@ -62,7 +62,7 @@ export default async function UploadResultPage({
         </ul>
       </section>
 
-      <ResultActions sourceDocumentId={sourceDoc.id} />
+      <ResultActions />
     </div>
   )
 }
