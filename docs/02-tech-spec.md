@@ -14,16 +14,16 @@
        ↓ HTTPS                 ↑ Service Worker (画像/カード本文ローカルキャッシュ)
 [ Next.js 15 App Router on Vercel Pro ]
        ├─ Server Actions (auth required) ──→ [ Neon Postgres ] (RLS / Drizzle ORM)
+       │    └─ processUpload (OCR: アップロードファイルを inline base64 で
+       │       Gemini に送信、同期処理。元ファイルは永続化しない)
        ├─ Server Action: submitContact     (お問い合わせ受付、API Route 不要)
        ├─ API Routes (外部 webhook 受信専用)
        │    ├─ /api/webhooks/clerk
        │    ├─ /api/webhooks/stripe
-       │    ├─ /api/ocr/process       (Vercel Function 60s、長尺は分割並列、β で Inngest 移行)
        │    └─ /api/admin/kill-check  (Cron)
-       ├─ Edge Middleware (Clerk auth)
-       └─ Pre-signed URL → クライアントから R2 直アップロード
+       └─ Edge Middleware (Clerk auth)
 
-[ Cloudflare R2 ]    画像 / 元 PDF（egress 無料）
+[ Cloudflare R2 ]    カード編集時の添付画像（egress 無料、将来機能）
 [ Gemini API ]       2.5 Flash 主軸 / 2.5 Pro フォールバック
 [ Stripe ]           ──webhook──→ /api/webhooks/stripe
 [ Clerk ]            ──webhook──→ /api/webhooks/clerk
@@ -37,9 +37,9 @@
 - **DB**: Neon (PostgreSQL 16) / Drizzle ORM、Row Level Security 有効
 - **決済**: Stripe（Subscription、Customer Portal）
 - **AI / OCR**: Gemini 2.5 Flash 主軸 + Gemini 2.5 Pro フォールバック（精度不足時）。Flash-Lite はコスト最重視時のフォールバック
-- **ストレージ**: Cloudflare R2（画像、egress 無料）。S3 互換 API
-- **ホスティング**: Vercel（Pro プラン $20/月、Function 60s）
-- **OCR ジョブ**: MVP は Vercel Function（最大 60s）で同期処理。50 ページ以上の PDF はクライアント主導で分割し並列 Function 呼び出し。β スケール時に Inngest / QStash 移行
+- **ストレージ**: Cloudflare R2（カード編集時の添付画像、egress 無料、S3 互換 API）。**将来機能** — OCR スキャン元ファイルは保存しない（inline base64 で Gemini に渡すのみ）
+- **ホスティング**: Vercel（Pro プラン $20/月、Function 900s）
+- **OCR ジョブ**: `processUpload` Server Action で同期処理。アップロードファイルは inline base64 で Gemini に送信し、結果を直接 return（永続化・ポーリングなし）。1 ファイル ≤ 150 ページ単発（CLAUDE.md 整合）
 - **PWA**: `next-pwa` + manifest.json + workbox（§9 で詳細化）
 - **監視**: Vercel Analytics + Discord webhook（自前 `/admin` ダッシュボードは v1.2、F-108）
 
@@ -51,17 +51,17 @@
 
 1. **PK は全テーブル `id` 統一**（plan00 既存スキーマで確認済、`gen_random_uuid()` で生成）
 2. **FK は `<table>_id` 形式**（例: `user_id`, `exam_id`, `card_id`）
-3. **試験ごとに変わるメタデータは jsonb に統合**（cards.custom_props と exams.property_schema）
+3. **試験ごとに変わるメタデータは freeform jsonb で持つ**（cards.custom_props のみ。 discover mode 一本化により事前定義 schema は不要、 AI が文書から自由なキー名で抽出する。 経緯: `docs/research/ocr-schema-vs-discover.md`）
 4. **学習統計はデノーマライズ**（reviews 履歴と並行して cards にスナップショット保持、ユーザー単位の学習日数は study_days に独立保持）
 5. **画像は R2 に保存、DB には URL/key のみ**（Anki 流、Postgres BLOB 不使用）
 6. **テキストフィールドは Markdown**（画像参照は `![](key)` で flat な images 配列を引く）
 7. **全テーブルに RLS** で user_id ベース分離（plan00 流用テーブルの RLS 状況は §13.7 で確認）
 8. **timestamp は `timestamp with time zone`**（plan00 既存スキーマと整合）
-9. **soft delete を採用**（plan00 既存で users / words に `deleted_at` 採用、cards にも踏襲）
+9. **soft delete は `users` のみ**（Stripe / audit retention 用、 `deleted_at`）。 他 (exams / cards / source_documents / study_days / contact_messages / ai_usage_users) は hard delete、 reviews は append-only。 個人情報削除依頼への対応容易性を優先 (Sprint A-2 確定、 `lib/db/schema.ts:11-17` コメント参照)
 10. **subscription 情報は users に統合**（plan00 既存、subscriptions 別テーブルなし）
 11. **plan00 既存命名を尊重**（`last_review` / `difficulty` / `state` integer 等、リネームしない）
 12. **append-only テーブル**: reviews は INSERT のみ（UPDATE / DELETE 禁止）。同期時の競合発生を完全に回避するための設計原則。v1.x で local-first 化したとき、複数デバイス間で reviews を競合なくマージできる
-13. **同期準備**: 同期対象テーブル（exams / cards / source_documents）は、UUID PK + updated_at + deleted_at（soft delete）+ クライアント採番可能 ID の 4 条件を満たし、v1.x の local-first 化を阻害しない設計とする（§13.14）
+13. **同期準備**: 同期対象テーブル（exams / cards / source_documents）は、UUID PK + updated_at + クライアント採番可能 ID の 3 条件を満たし、v1.x の local-first 化を阻害しない設計とする。 削除追跡 (Anki graves 相当) は MVP で hard delete 採用のため未対応、 v1.x で再評価（§13.14）
 14. **同期非対象**: ai_usage_users / study_days はサーバー側集計テーブル、同期対象外。クライアントから直接書き込まず、サーバー側で reviews 等から再計算する想定
 
 ### 2.2 テーブル一覧
@@ -69,8 +69,8 @@
 |区分|テーブル名|用途|状態|
 |---|---|---|---|
 |plan00 流用|`users`|認証・プラン情報・subscription 状態（統合）|変更なし|
-|plan00 流用|`ai_usage`|全体 AI 利用量集計（date PK）|変更なし|
-|plan00 流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）|count を「OCR 抽出問題数」として運用|
+|plan00 流用|`ai_usage`|全体 AI 利用量集計（date PK）。GEMINI_DAILY_LIMIT guard 用、count は Gemini API call 回数|変更なし|
+|plan00 流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）。count は Gemini API call 回数（S1.8 で配線、月次 OCR quota とは無関係）|変更なし|
 |plan00 流用|`clerk_events`|Clerk webhook 重複処理防止|変更なし|
 |plan00 流用|`stripe_events`|Stripe webhook 重複処理防止|変更なし|
 |plan00 流用|`deletion_failures`|アカウント削除失敗ログ|変更なし|
@@ -80,9 +80,10 @@
 |plan00 drop|`ai_examples`|vocab 専用例文、汎用化困難|drop（F-101 解説生成は v1.x で別テーブル新設）|
 |新規|`exams`|試験 + プロパティスキーマ|新設|
 |新規|`cards`|問題本体（words の置換）|新設|
-|新規|`source_documents`|アップロード元の管理|新設|
+|新規|`source_documents`|OCR ジョブの作業 / trace（exam と同寿命）|新設|
+|新規|`upload_records`|OCR 月次利用台帳（append-only、月次 quota 集計元）|S1.9.1 新設|
 |新規|`study_days`|ユーザー単位の学習日カレンダー|新設|
-|採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用、§2.6 参照|
+|採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用 (discover mode 一本化、 `docs/research/ocr-schema-vs-discover.md` 参照)|
 
 ### 2.3 plan00 流用テーブル（変更なし、参照のみ）
 
@@ -100,6 +101,7 @@ CREATE TABLE "users" (
   "subscription_status" text,
   "current_period_end" timestamp with time zone,
   "cancel_at" timestamp with time zone,
+  "billing_interval" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
   "deleted_at" timestamp with time zone,
@@ -113,7 +115,8 @@ CREATE TABLE "users" (
 - `id` PK（UUID）、本仕様原則と一致
 - `subscription_status` / `current_period_end` / `cancel_at` で subscription 状態を保持（別テーブル不要）
 - `deleted_at` で soft delete を実装（NULL = 有効、非 NULL = 削除済）
-- `plan` = 'free' / 'standard' / 'pro'
+- `plan` = 'free' / 'standard' / 'pro'（機能差は plan 軸のみで決定）
+- `billing_interval` = 'month' / 'year' / NULL。 NULL = 課金プランなし (free)、 'month' = 月額、 'year' = 年額。 plan 軸と直交し、 表示・upsell・price_id 選択のみに使用。 webhook で `price_id → (plan, interval)` を解決して同時更新（`lib/stripe/price-mapping.ts` 参照）。 invariant: `plan='free' ⇒ billing_interval IS NULL` / `plan IN ('standard','pro') ⇒ billing_interval IN ('month','year')`。 列導入 (2026-05-17) 以前の課金 user は次回 webhook 受信で resync
 
 #### 2.3.2 ai_usage（全体集計）
 
@@ -243,7 +246,7 @@ CREATE TABLE "deletion_failures" (
 
 #### 2.5.1 exams
 
-ユーザーごとに管理する試験。**カスタムプロパティスキーマ（property_schema）が本テーブルの肝**。
+ユーザーごとに管理する試験。 hard delete + `archived_at`（NULL = アクティブ、 非 NULL = ダウングレード時の自動アーカイブ）で運用。 カスタムプロパティのキー名は discover mode (OCR sprint) で AI が文書から自動発見し `cards.custom_props` に格納するため、 exams 側に schema 定義列は持たない（経緯: `docs/research/ocr-schema-vs-discover.md`）。
 
 ```typescript
 export const exams = pgTable('exams', {
@@ -252,83 +255,20 @@ export const exams = pgTable('exams', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  property_schema: jsonb('property_schema')
-    .notNull()
-    .default(sql`'[]'::jsonb`)
-    .$type<PropertySchema>(),
   question_no_format: text('question_no_format'),  // 'numeric' | 'hierarchical' | 'free' | NULL
+  archived_at: timestamp('archived_at', { withTimezone: true }),  // NULL = アクティブ
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  deleted_at: timestamp('deleted_at', { withTimezone: true }),  // plan00 流儀
 }, (t) => ({
   userIdx: index('exams_user_id_idx').on(t.user_id),
 }));
 ```
 
-property_schema の TypeScript 型:
+設計メモ:
 
-```typescript
-type PropertyType =
-  | 'single_select'
-  | 'multi_select'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'text';
-
-type PropertyDef = {
-  name: string;
-  type: PropertyType;
-  select_options?: string[];
-  default_value?: unknown;
-  is_system?: boolean;
-  display_order: number;
-};
-
-type PropertySchema = PropertyDef[];
-```
-
-property_schema の例:
-
-```json
-[
-  {
-    "name": "試験回",
-    "type": "single_select",
-    "select_options": ["試験1", "試験2", "試験3"],
-    "display_order": 1
-  },
-  {
-    "name": "ドメイン",
-    "type": "multi_select",
-    "select_options": ["EC2", "コンテナ", "RDS", "S3"],
-    "display_order": 2
-  },
-  {
-    "name": "重要度",
-    "type": "single_select",
-    "select_options": ["高", "中", "低", "無"],
-    "default_value": "無",
-    "display_order": 3
-  },
-  {
-    "name": "進捗",
-    "type": "single_select",
-    "select_options": ["未着手", "学習中", "完了"],
-    "default_value": "未着手",
-    "is_system": true,
-    "display_order": 4
-  }
-]
-```
-
-バリデーション（アプリ層）:
-
-- `name` は同一 exam 内でユニーク
-- `is_system: true` のプロパティはユーザー削除不可、値の上書きは可
-- 全 property_schema のサイズは 50KB 以内（DoS 防止）
-
-試験名サジェスト候補は `lib/exams/presets.ts` にハードコード（5-10 試験）。MVP では DB マスタ化しない。
+- hard delete + `archived_at` の使い分け: 通常削除は物理削除、 「ダウングレード時に超過 exam を自動非表示」 などの一括非表示は `archived_at = NOW()` で表現する。 archived_at の UX 詳細 (一覧画面での表示切替 / 復活操作等) は後 sprint で確定
+- カスタムプロパティのキー名・値は `cards.custom_props` (freeform jsonb) に分散して持つ。 試験単位の事前定義は不要 (discover mode 一本化、 §2.5.2 参照)
+- 試験名サジェスト候補は `lib/exams/presets.ts` にハードコード（5-10 試験）。 MVP では DB マスタ化しない
 
 #### 2.5.2 cards（メインテーブル）
 
@@ -380,13 +320,12 @@ export const cards = pgTable('cards', {
   learning_steps: integer('learning_steps').notNull().default(0),
   last_review: timestamp('last_review', { withTimezone: true }),
 
-  // 監査（plan00 流儀）
+  // 監査（hard delete、 Sprint A-2 確定）
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  deleted_at: timestamp('deleted_at', { withTimezone: true }),  // soft delete
 }, (t) => ({
   sortIdx: index('cards_sort_idx').on(t.user_id, t.exam_id, t.sort_key),
-  dueIdx: index('cards_due_idx').on(t.user_id, t.deleted_at, t.due),  // plan00 words_user_due_idx 踏襲
+  dueIdx: index('cards_due_idx').on(t.user_id, t.due),
   propsIdx: index('cards_props_gin_idx').using('gin', t.custom_props),
   answeredIdx: index('cards_answered_idx').on(t.user_id, t.exam_id, t.answered),
   examIdx: index('cards_exam_idx').on(t.exam_id),
@@ -414,7 +353,7 @@ type CardImage = {
 };
 ```
 
-custom_props の構造（exams.property_schema に従って格納）:
+custom_props の構造（discover mode で AI が文書から自由に抽出した freeform jsonb）:
 
 ```json
 {
@@ -425,7 +364,7 @@ custom_props の構造（exams.property_schema に従って格納）:
 }
 ```
 
-key は property_schema の `name`、value は `type` に応じた値（string / string[] / number / boolean / ISO date string）。
+key 名・値の制約は MVP では freeform (string / string[] が中心、 詳細は OCR sprint で確定)。 discover mode の挙動と key 揺れ評価は `docs/research/ocr-schema-vs-discover.md` 参照。
 
 state の値マッピング（plan00 既存踏襲）:
 
@@ -444,7 +383,7 @@ state の値マッピング（plan00 既存踏襲）:
 - `correct_answer_ids` は `options[].id` の部分集合、最低 1 個
 - `correct_answer_ids` は `options.is_correct` のデノーマ：書き込み時にアプリ側で同期（`options.filter(o => o.is_correct).map(o => o.id)`）
 - `images[i].key` は同一 card 内でユニーク
-- `custom_props` の各 key は exams.property_schema の `name` と一致（厳密チェックは v1.x、MVP は freeform 許容）
+- `custom_props` は freeform jsonb (discover mode で AI が抽出したキー名・値をそのまま格納、 厳密 schema チェックなし)
 - `custom_props` 全体サイズ 100KB 以内
 
 整合性チェック（編集ビューで警告表示）:
@@ -457,14 +396,18 @@ state の値マッピング（plan00 既存踏襲）:
 
 - `options.filter(o => o.is_correct).length` で自動判定（追加カラム不要）
 
-soft delete の運用:
+hard delete の運用:
 
-- `deleted_at IS NULL` で「有効なカード」を抽出
-- 削除は `UPDATE cards SET deleted_at = NOW()`、物理削除は通常実行しない
-- アカウント削除時は cascade で物理削除
-- 復元機能は MVP 不要（soft delete カラムだけ持って、UI は通常の物理削除と同じ挙動でよい）
+- 削除は `DELETE FROM cards WHERE id = ?` で物理削除（Sprint A-2 確定、 個人情報削除依頼への対応容易性を優先）
+- 削除カードの復元は MVP 不要
+- アカウント削除時は users → cards CASCADE で物理削除
+- reviews は `cards.id` ON DELETE CASCADE のため、 cards 物理削除で対応する review 履歴も消える。 月次総学習回数等の長期統計は study_days で別途保持（§2.5.4）
 
 #### 2.5.3 source_documents
+
+OCR ジョブの作業 / trace テーブル。exam とライフサイクルを共有し、exam 削除で
+FK CASCADE 連動削除される。**月次 quota 集計には使わない**（S1.9.1 で `upload_records`
+に分離）。アップロードファイル自体は inline base64 で Gemini に渡すのみで永続化しない。
 
 ```typescript
 export const sourceDocuments = pgTable('source_documents', {
@@ -476,29 +419,60 @@ export const sourceDocuments = pgTable('source_documents', {
     .notNull()
     .references(() => exams.id, { onDelete: 'cascade' }),
   file_type: text('file_type').notNull(),  // 'pdf' | 'image' | 'csv' | 'markdown'
-  file_url: text('file_url'),  // R2 URL、破棄前提なら NULL
   filename: text('filename').notNull(),
   file_size_bytes: integer('file_size_bytes').notNull(),
-  status: text('status').notNull().default('uploading'),
-    // 'uploading' | 'processing' | 'completed' | 'failed'
+  status: text('status').notNull().default('processing'),
+    // 'processing' | 'completed' | 'failed'（S1.9.1: 'uploading' 廃止）
   pages_processed: integer('pages_processed').notNull().default(0),
   pages_total: integer('pages_total'),
   cards_extracted: integer('cards_extracted').notNull().default(0),
-  ocr_cost_yen: integer('ocr_cost_yen'),
+  ocr_cost_yen: numeric('ocr_cost_yen', { precision: 10, scale: 4, mode: 'number' }),
   error_message: text('error_message'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   completed_at: timestamp('completed_at', { withTimezone: true }),
 }, (t) => ({
   userExamIdx: index('source_docs_user_exam_idx').on(t.user_id, t.exam_id),
-  statusIdx: index('source_docs_status_idx').on(t.user_id, t.status),  // 「処理中ジョブ存在チェック」用
+  statusIdx: index('source_docs_status_idx').on(t.user_id, t.status),
 }));
 ```
 
 設計メモ:
 
-- 同時実行制限はアプリ層で `WHERE user_id = ? AND status = 'processing' LIMIT 1` チェック
-- `file_url` NULL = OCR 完了後 R2 元ファイル破棄
-- `ocr_cost_yen` は完了時に算出
+- `ocr_cost_yen` は完了時に算出（S1.9.1: integer → numeric(10,4)、cost を小数で保持）
+- S1.9.1: `file_url` 列を drop（R2 にスキャン元を保存しない方針）。`status` から
+  `'uploading'`（R2 presigned upload 段階の状態）を廃止、inline 方式では到達経路なし
+
+#### 2.5.3a upload_records（OCR 月次利用台帳、S1.9.1 新設）
+
+`source_documents` が「OCR 作業テーブル（exam と同寿命、discard / cascade で消える）」
+と「月次 quota 集計元」 を兼ねていたため、discard の物理削除で quota が返金される
+構造欠陥があった（Bug A）。集計元を本テーブルに分離し、OCR 完了 / 失敗時に
+**append-only** で記録、discard では一切 touch しない。これにより月次消費は monotonic。
+
+```typescript
+export const uploadRecords = pgTable('upload_records', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  user_id: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  filename: text('filename').notNull(),
+  file_size_bytes: integer('file_size_bytes').notNull(),
+  pages_processed: integer('pages_processed').notNull().default(0),
+    // 月次 quota SUM の対象列（status='completed' の行のみ集計）
+  ocr_cost_yen: numeric('ocr_cost_yen', { precision: 10, scale: 4, mode: 'number' }),
+  status: text('status').notNull(),  // 'completed' | 'failed'
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  userCreatedIdx: index('upload_records_user_created_idx').on(t.user_id, t.created_at),
+}));
+```
+
+設計メモ:
+
+- `exam_id` を持たない（台帳は exam から独立、exam 削除の影響を受けない）
+- 月次 quota = 当月（JST 月境界）かつ `status='completed'` の `pages_processed` SUM
+- 失敗も `status='failed'` で append（台帳として正確、ただし quota SUM は completed で絞る）
+- append-only。discard / exam 削除のいずれでも削除されない
 
 #### 2.5.4 study_days（学習日カレンダー）
 
@@ -574,12 +548,13 @@ user_id = ?` 必須) で対応。 RLS 復活は v1.x で再評価 (multi-tenant 
 |---|---|---|---|
 |exams|`exams_user_id_idx`|(user_id)|ユーザーの試験一覧|
 |cards|`cards_sort_idx`|(user_id, exam_id, sort_key)|編集ビューのソート|
-|cards|`cards_due_idx`|(user_id, deleted_at, due)|スマート復習クエリ（plan00 words_user_due_idx 踏襲）|
+|cards|`cards_due_idx`|(user_id, due)|スマート復習クエリ|
 |cards|`cards_props_gin_idx`|GIN(custom_props)|カスタムプロパティでフィルタ|
 |cards|`cards_answered_idx`|(user_id, exam_id, answered)|カテゴリ別正答率集計|
 |cards|`cards_exam_idx`|(exam_id)|exam 削除 cascade 用|
 |source_documents|`source_docs_user_exam_idx`|(user_id, exam_id)|試験ごとの取込履歴|
 |source_documents|`source_docs_status_idx`|(user_id, status)|処理中ジョブ検出|
+|upload_records|`upload_records_user_created_idx`|(user_id, created_at)|月次 OCR 利用量 SUM|
 |study_days|(PK 複合)|(user_id, day)|学習日カレンダー|
 
 ### 2.9 よくあるクエリ例
@@ -589,7 +564,6 @@ user_id = ?` 必須) で対応。 RLS 復活は v1.x で再評価 (multi-tenant 
 ```sql
 SELECT * FROM cards
 WHERE user_id = $1 AND exam_id = $2
-  AND deleted_at IS NULL
   AND due IS NOT NULL AND due <= NOW()
 ORDER BY due ASC
 LIMIT 100;
@@ -607,7 +581,7 @@ SELECT
     / NULLIF(COUNT(*) FILTER (WHERE answered = true), 0) * 100, 1
   ) AS accuracy_pct
 FROM cards
-WHERE user_id = $1 AND exam_id = $2 AND deleted_at IS NULL
+WHERE user_id = $1 AND exam_id = $2
 GROUP BY custom_props->>'ドメイン'
 ORDER BY accuracy_pct ASC;  -- 苦手分野順
 ```
@@ -617,7 +591,6 @@ ORDER BY accuracy_pct ASC;  -- 苦手分野順
 ```sql
 SELECT * FROM cards
 WHERE user_id = $1 AND exam_id = $2
-  AND deleted_at IS NULL
   AND custom_props->>'重要度' = '高'
   AND (due IS NULL OR due <= NOW())
 ORDER BY RANDOM()
@@ -628,7 +601,7 @@ LIMIT 50;
 
 ```sql
 SELECT * FROM cards
-WHERE user_id = $1 AND exam_id = $2 AND deleted_at IS NULL
+WHERE user_id = $1 AND exam_id = $2
   AND custom_props->'ドメイン' @> '["EC2"]'::jsonb;
 ```
 
@@ -650,6 +623,16 @@ WHERE grp = (SELECT MAX(grp) FROM consecutive);
 
 または直近 N 日を順に走査（アプリ層で計算）。
 
+#### exam 一覧（archived を除外）
+
+```sql
+SELECT * FROM exams
+WHERE user_id = $1 AND archived_at IS NULL
+ORDER BY created_at DESC;
+```
+
+ダウングレード時等で archived_at が立った exam は通常一覧から除外。 「アーカイブ済を表示」 UI を出すかは後 sprint で確定。
+
 ### 2.10 ER 概略
 
 ```mermaid
@@ -658,6 +641,7 @@ erDiagram
   users ||--o{ cards : owns
   users ||--o{ reviews : has
   users ||--o{ source_documents : uploads
+  users ||--o{ upload_records : logs
   users ||--o{ ai_usage_users : uses
   users ||--o{ study_days : tracks
   users ||--o{ contact_messages : sends
@@ -666,6 +650,9 @@ erDiagram
   cards ||--o{ reviews : has
   source_documents ||--o{ cards : extracted_to
 ```
+
+`upload_records` は user にのみ紐づき、exam / source_documents とは関連を持たない
+（append-only な月次台帳。discard / exam 削除の cascade から独立させるための設計）。
 
 ---
 
@@ -684,11 +671,10 @@ erDiagram
 
 - `/dashboard` — 「今日の復習」「正答率」「連続学習日数」「最近のフラグ」
 - `/exams` — 試験一覧（追加・編集・削除）
-- `/exams/[id]` — その試験のカード一覧（タブ: カード / アップロード / インポート / プロパティ / 設定）
-    - **カードタブ**: フィルタ・検索・複数選択・一括操作（F-009）
+- `/exams/[id]` — その試験のカード一覧（タブ: カード / アップロード / インポート / 設定）
+    - **カードタブ**: フィルタ・検索・複数選択・一括操作（F-009）。 custom_props はカード単位で自由編集（discover mode で AI 抽出した値を編集可、 試験単位の事前定義 UI は不採用）
     - **アップロードタブ**: 写真／PDF アップロード（F-001）
     - **インポートタブ**: CSV / Markdown インポート（F-008）
-    - **プロパティタブ**: exams.property_schema の編集（プロパティ追加・選択肢編集）
 - `/study` — 学習セッション入口（「スマート復習」「問題演習」の 2 ボタン）
 - `/study/smart` — スマート復習モード（F-004、FSRS 自動出題）
 - `/study/practice` — 問題演習モード（F-004、フィルタ + 出題数 + 時間制限の設定 → 開始）
@@ -697,43 +683,48 @@ erDiagram
 
 ### Server Actions（`'use server'`）
 
-**試験 / プロパティスキーマ**:
+**試験**:
 
 - `createExam(input)` → `Result<Exam>`
 - `updateExam(id, input)` → `Result<Exam>`
-- `deleteExam(id)` → `Result<void>`（soft delete）
-- `updateExamPropertySchema(examId, schema)` → `Result<Exam>` — property_schema 全体を置換
-- `addPropertyOption(examId, propertyName, newOption)` → `Result<Exam>` — single/multi_select に選択肢追加（インクリメンタル）
+- `deleteExam(id)` → `Result<void>`（hard delete、 cards も CASCADE で物理削除）
+- `archiveExam(id)` → `Result<Exam>`（`archived_at = NOW()`、 ダウングレード時の自動アーカイブ等）
 
 **カード**:
 
 - `createCard(examId, input)` → `Result<Card>`
-- `updateCard(id, input)` → `Result<Card>` — custom_props / options / images もここで更新
-- `deleteCard(id)` → `Result<void>`（soft delete）
+- `updateCard(id, input)` → `Result<Card>` — custom_props / options / images もここで更新（custom_props はカード単位の freeform jsonb）
+- `deleteCard(id)` → `Result<void>`（hard delete）
 - `bulkUpdateCards(ids, action)` → `Result<{updated: number}>` (F-009)
     - action = `{type: 'setCustomProp', name, value} | {type: 'delete'} | {type: 'export'} | {type: 'resetStatus'}`
 
 **学習セッション (FSRS)**:
 
-- `getNextSmartReviewBatch(limit)` → `Result<Card[]>`（`due <= now()` を `due ASC`、`deleted_at IS NULL`）
+- `getNextSmartReviewBatch(limit)` → `Result<Card[]>`（`due <= now()` を `due ASC`）
 - `getPracticeBatch(filter)` → `Result<Card[]>` — filter は custom_props 値も指定可
 - `submitReview(cardId, isCorrect: boolean)` → `Result<{nextDue: Date}>` — MVP は 2 段階。内部で `rating = isCorrect ? 3 : 1` (integer)。reviews insert + cards 学習統計 + FSRS 値 + study_days upsert を 1 トランザクションで実行
 - `resetCardStatus(cardId)` → `Result<void>` — answered / last_correct / current_streak / FSRS 状態をリセット（reviews 履歴は残す）
 
-**画像アップロード**:
+**画像アップロード（将来機能、未実装）**:
 
 - `getImageUploadUrl(cardId, mimeType)` → `Result<{uploadUrl, key, expiresAt}>` — presigned URL 10 分有効、client → R2 直接アップロード用
 - `confirmImageUpload(cardId, key, url)` → `Result<Card>` — cards.images に追加
+- ※ カード編集時の画像添付（Logic 2）用。MVP 時点では未着手、`cards.images` 列のみ存在
 
-**ソースドキュメント / OCR**:
+**OCR（ソースドキュメント）**:
 
-- `startUpload(filename, mimeType, examId)` → `Result<{uploadUrl, sourceDocId, expiresAt}>`
-- `processSourceDoc(sourceDocId)` → `Result<void>` — OCR ジョブ起動。1 ユーザー同時 1 ジョブ制限
-- `getUploadStatus(sourceDocId)` → `Result<SourceDocument>` — 進捗ポーリング、3 秒間隔想定
+- `processUpload(formData)` → `ProcessUploadResult` — `/app/upload` の OCR Server Action。
+  クライアントから `FormData`（ファイル本体 + 投入先 exam）を受け取り、ファイルを
+  inline base64 化して Gemini に送信、cards を抽出・保存し、結果を直接 return する。
+  R2 / presigned URL / ポーリングは経由しない（同期処理）。プラン月次上限の enforce、
+  `source_documents` 記録、`upload_records` への台帳 append もここで行う
+- `discardUpload(sourceDocumentId, autoCreatedExamId?)` → `ActionResult` —
+  「やり直し」「ファイル変更」用。直前 OCR の cards / source_documents（mode='new'
+  なら exam ごと）を削除。`upload_records` は touch しない（月次消費は返金しない）
 
 **インポート (F-008)**:
 
-- `importCSV(examId, csvText)` → `Result<{imported, errors}>` — 未知の列を property_schema に自動追加、値を custom_props に格納
+- `importCSV(examId, csvText)` → `Result<{imported, errors}>` — 任意ヘッダ列の値を freeform jsonb として cards.custom_props に格納（mapping 詳細は v1.x で確定）
 - `importMarkdown(examId, mdText)` → `Result<{imported, errors}>`
 
 **お問い合わせ**:
@@ -748,18 +739,21 @@ erDiagram
 
 - `POST /api/webhooks/clerk` — `user.created` / `user.deleted` 同期
 - `POST /api/webhooks/stripe` — `subscription.created/updated/deleted`、`invoice.paid`
-- `POST /api/ocr/process` — OCR 実行（Vercel Function、最大 60s）
 - `POST /api/admin/kill-check` — Cron で kill 条件を毎日チェックし Discord 通知
 
-### 非同期処理戦略
+※ OCR は API Route ではなく `processUpload` Server Action で処理する（下記）。
 
-- **MVP**:
-    - 50 ページ未満 PDF / 写真 → Vercel Function 60s で同期処理
-    - 50 ページ以上 PDF → クライアント主導で 50 ページ単位に分割し並列 Function 呼び出し
-- **β スケール時**: 50 ページ以上を Inngest / QStash にオフロード、クライアントはポーリング継続
-- **Pre-signed Upload**: クライアント → R2 直接アップロード（Vercel 帯域消費を避ける）、有効期限 10 分
-- **進捗表示**: クライアントから `getUploadStatus` を 3 秒間隔ポーリング
-- **同時実行制限**: 1 ユーザー同時 1 ジョブ。`source_documents.status='processing'` の既存ジョブがあれば新規受付拒否
+### OCR 処理戦略
+
+- **MVP**: `processUpload` Server Action で同期処理。クライアントが `FormData` で
+  ファイル本体を送信 → サーバーで inline base64 化 → Gemini に送信 → 結果を直接 return。
+  R2 / presigned URL / 進捗ポーリングは経由しない
+- **入力上限**: 1 ファイル ≤ 150 ページ単発（Vercel Pro の Function timeout 900s で完結。
+  CLAUDE.md「1 ファイル ≤ 150 ページ単発で完結」 と整合）
+- **クライアント側 timeout**: 90 秒（サーバー応答が返らない場合に spinner を打ち切り
+  retry 誘導、S1.7）
+- **β スケール時**: さらなる長尺対応が必要になれば Inngest / QStash 等へのオフロードを
+  再検討（MVP scope 外）
 
 ---
 
@@ -809,27 +803,26 @@ lib/
   auth/
     clerk.ts
   users/
-    delete.ts             # アカウント削除フロー（Clerk → DB cascade → R2）
+    delete.ts             # アカウント削除フロー（Clerk → DB cascade）
   stripe/
     client.ts
     webhook.ts
   storage/
-    r2.ts                 # presigned URL 発行 / 削除
+    r2.ts                 # presigned URL 発行 / 削除（将来機能、カード添付画像用。未実装）
   ai/
     gemini.ts
     prompts/
-      ocr_extract.ts      # MVP: テキスト抽出のみ
+      ocr_extract.ts      # MVP: テキスト抽出 + discover mode で custom_props キー自動発見
     schemas/
-      ocr_response.ts     # Gemini Structured Output 用 JSON Schema、exams.property_schema を動的注入
+      ocr_response.ts     # Gemini Structured Output 用 JSON Schema（discover mode = additionalProperties で freeform custom_props）
   fsrs/
     scheduler.ts          # FSRS 6 アルゴリズム（plan00 流用）
   exams/
     presets.ts            # 試験名サジェスト候補（ハードコード）
-    property_schema.ts    # property_schema の検証・操作ヘルパ
   cards/
     review.ts             # review 完了時の transaction（reviews insert + cards 学習統計/FSRS update + study_days upsert）
   import/
-    csv.ts                # CSV パーサ + 未知列を property_schema に自動追加
+    csv.ts                # CSV パーサ（custom_props は freeform、 mapping 詳細は v1.x で確定）
     markdown.ts
   notify/
     discord.ts
@@ -839,12 +832,10 @@ components/
   ui/                     # shadcn/ui
   card/
     CardView.tsx          # Markdown レンダリング、![](key) → cards.images から url 解決
-    CardEditor.tsx        # クリップボードペースト + ドラッグ&ドロップ画像追加対応
+    CardEditor.tsx        # クリップボードペースト + ドラッグ&ドロップ画像追加対応 + custom_props 自由編集
     CardList.tsx          # 一覧 + 複数選択 + custom_props フィルタ
     BulkActionBar.tsx
-    PropertyFilters.tsx   # exams.property_schema を読んで動的にフィルタ UI を生成
-  exams/
-    PropertySchemaEditor.tsx  # property_schema の追加・編集 UI
+    PropertyFilters.tsx   # cards.custom_props 内の出現キーから動的にフィルタ UI を生成
   study/
     SmartReviewSession.tsx
     PracticeFilter.tsx
@@ -890,11 +881,17 @@ components/
 
 具体的価格は Obsidian (価格戦略 doc) 参照。 Stripe Price ID は §10 環境変数。
 
+### 課金サイクル (monthly / yearly)
+
+Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付き、 具体的割引率は Obsidian)。 `users.billing_interval` 列に `'month'` / `'year'` / NULL を記録。 plan 軸 (free / standard / pro) と直交し、 機能差は plan 単軸で決定 (cycle は表示・upsell・price_id 選択のみに使用)。 Stripe price_id ↔ (plan, interval) mapping は `lib/stripe/price-mapping.ts` で集中管理、 webhook で price_id 解決 + (plan, interval) 同時更新。 不明 price_id 受信時は notifyOps + plan='free' fallback (Stripe 再送ループ防止)。
+
 ### 紐付け
 
 - Stripe Customer ↔ users.id: `users.stripe_customer_id`
-- `users.plan` を webhook で更新
-- 上限チェックは `lib/db/queries/ai_usage.ts` で `ai_usage_users.count` の月次集計
+- `users.plan` / `users.billing_interval` を webhook で更新
+- 月次 OCR 上限チェックは `lib/ai-usage-mcq.ts` の `canRunOcr` / `getCurrentMonthOcrPages`
+  で、`upload_records` の当月（JST 月境界）かつ `status='completed'` 行の
+  `pages_processed` SUM を plan 別上限と比較（S1.9.1）
 
 ### Customer Portal
 
@@ -906,9 +903,13 @@ components/
 2. `clerkClient.users.deleteUser()` 呼び出し
 3. Webhook `user.deleted` 受信
 4. Stripe subscription cancel（`for await` で全件）
-5. R2 上の画像 / 元 PDF を全削除（`/users/{user_id}/` プレフィックス配下）
-6. DB cascade で cards / reviews / source_documents / study_days / ai_usage_users 等を削除
-7. plan00 で確立済みのフロー（webhook-driven）を流用
+5. DB cascade で exams / cards / reviews / source_documents / upload_records /
+   study_days / ai_usage_users 等を削除（users への FK ON DELETE CASCADE）
+6. plan00 で確立済みのフロー（webhook-driven）を流用
+
+※ OCR スキャン元ファイルは R2 等に保存しないため、ファイル削除ステップは不要。
+カード添付画像（将来機能）を R2 に保存する設計を実装する際は、本フローに
+`/users/{user_id}/` プレフィックス配下の R2 オブジェクト削除を追加する。
 
 ---
 
@@ -927,8 +928,8 @@ components/
 ### 呼び出し方式
 
 - Server Action / API Route から `@google/generative-ai` SDK
-- **Structured Output**: `responseMimeType: 'application/json'` + `responseSchema` を使用
-- **動的 responseSchema**: exams.property_schema を読み込み、custom_props のフィールドを responseSchema に注入する。これにより AI は exam ごとに正しいプロパティ構造で抽出する
+- **Structured Output (discover mode)**: `responseMimeType: 'application/json'` + `responseJsonSchema` (full JSON Schema) を使用。 `custom_props` は `additionalProperties` で AI が文書から自由なキー名で抽出できる構造とする。 OpenAPI subset の `responseSchema` 経路は採用しない (`additionalProperties` 未対応のため、 詳細: `docs/research/ocr-schema-vs-discover.md`)
+- 試験ごとの property_schema 事前定義は不要 (discover mode 一本化)
 - プロンプトは `lib/ai/prompts/ocr_extract.ts`、JSON Schema は `lib/ai/schemas/ocr_response.ts`
 
 ### フォールバック戦略
@@ -960,19 +961,27 @@ components/
 
 ### Logic 1: OCR テキスト抽出（MVP スコープ）
 
-- **入力**: PDF or 画像（R2 上の URL）、ユーザーの試験 ID
+- **入力**: PDF or 画像ファイル（クライアントから `FormData` で送信、R2 非経由）、投入先 exam
 - **出力**: `cards[]`（title / question_text / options / correct_answer_ids / explanation_text / sort_key / custom_props）
+- **実行**: `processUpload` Server Action で同期処理
 - **アルゴリズム**:
-    1. 試験の property_schema を取得 → responseSchema に注入
-    2. PDF サイズ判定:
-        - 50 ページ未満: そのまま Gemini に渡す（1 リクエスト）
-        - 50 ページ以上: pdf-lib で 50 ページずつ分割 → 並列 Function 呼び出し
-    3. Gemini に Structured Output で構造化指示
+    1. 認証 → ページ数推定 → 月次 quota enforce（`canRunOcr`、`upload_records` SUM 比較）
+       → GEMINI_DAILY_LIMIT guard
+    2. exam 確定（mode='new' なら INSERT、mode='existing' なら所有者検証）→
+       `source_documents` を `status='processing'` で INSERT
+    3. ファイルを `arrayBuffer` → base64 化し、Gemini に **inline base64** で送信。
+       Structured Output (discover mode) で構造化指示。AI は文書中に明示記載された
+       問題ごとのメタデータを自由なキー名で `custom_props` に抽出（推測補完は禁止、
+       経緯: `docs/research/ocr-schema-vs-discover.md`）
     4. レスポンスをパース → cards に挿入（`due = now()`, `state = 0`(new), `answered = false`）
-    5. `source_documents.status = 'completed'`、`pages_processed` / `cards_extracted` / `ocr_cost_yen` 更新
-- **画像は抽出しない**: ユーザーが後から編集ビューで手動添付
+    5. 1 transaction で `source_documents` を `status='completed'` に更新
+       （`pages_processed` / `cards_extracted` / `ocr_cost_yen`）+ `upload_records` に
+       `status='completed'` 行を append（月次台帳）。失敗時は両テーブルに failed 記録
+- **長尺方針**: 1 ファイル ≤ 150 ページ単発（Vercel Pro Function 900s で完結）。
+  ページ分割・並列呼び出しは行わない
+- **画像は抽出しない**: ユーザーが後から編集ビューで手動添付（Logic 2、将来機能）
 
-### Logic 2: 画像手動添付（MVP）
+### Logic 2: 画像手動添付（将来機能、未実装）
 
 - **トリガ**: 編集ビューでクリップボードペースト or ドラッグ&ドロップ
 - **アルゴリズム**:
@@ -1003,7 +1012,7 @@ components/
     
     ```sql
     SELECT * FROM cards
-    WHERE user_id = ? AND deleted_at IS NULL AND due <= now()
+    WHERE user_id = ? AND due <= now()
     ORDER BY due ASC LIMIT 100;
     ```
     
@@ -1015,13 +1024,13 @@ components/
 - **出力**: 該当 cards リスト + 出題順
 - SQL ベース、Drizzle で型安全。custom_props は `WHERE custom_props->>'重要度' = '高'` で絞り込み（GIN インデックス活用）
 - 出題順はランダム or 苦手優先（`last_correct = false` AND 直近誤答多い順）から選択可
-- `deleted_at IS NULL` で soft delete カードを除外
+- cards は hard delete のため、 削除済カードは物理的に存在しない (除外条件不要)
 
 ### Logic 5: CSV / Markdown インポート (F-008)
 
 - **CSV フォーマット**: ヘッダ `title, question_text, option_a, option_b, ..., correct_answer_ids, explanation_text` + 任意のカスタムプロパティ列
-    - **未知の列を自動でプロパティ化**: 例えば CSV に「ドメイン」列があり property_schema に未登録なら、type 推定（値の傾向から single_select / multi_select / text）して exams.property_schema に追加 → values を custom_props に格納
-    - 推定が外れた場合、ユーザーが後から property_schema 編集 UI で修正可能
+    - **custom_props 列の取り扱い**: 任意ヘッダ列の値をそのままキー名・値として `cards.custom_props` (freeform jsonb) に格納する。 試験単位の property_schema 事前定義は不要 (discover mode 一本化、 §2.5.1 参照)
+    - CSV import の詳細仕様 (型推定 / 列 mapping UI / 部分成功時の表示) は v1.x で確定。 MVP では「freeform 文字列で格納」 のシンプル運用
 - **Markdown フォーマット**: 公開ドキュメント `/legal/import-format` で明示
 - バリデーション失敗時は行番号 + エラー理由を返却、部分成功（成功した行だけ insert）
 
@@ -1152,9 +1161,9 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 |---|---|
 |エラーハンドリング|Result 型で全 Server Action / API ラップ、失敗時は Discord webhook 通知|
 |ロギング|`console` + Vercel Logs（保存 7 日）、エラーは Discord に転送|
-|テスト|vitest 単体（FSRS scheduler / OCR parser / CSV パーサ / property_schema 検証）、Playwright E2E（学習 / 課金 / インポート）|
+|テスト|vitest 単体（FSRS scheduler / OCR parser / CSV パーサ）、Playwright E2E（学習 / 課金 / インポート）|
 |CI/CD|GitHub Actions（main push で Vercel auto deploy、Preview 不使用）、PR で TypeScript / lint チェック|
-|OCR 進捗表示|クライアントから `getUploadStatus` を 3 秒間隔ポーリング|
+|OCR 進捗表示|`processUpload` Server Action の同期応答待ち（spinner 表示、クライアント側 90 秒 timeout）。ポーリングなし|
 |レート制限|Vercel Edge Middleware で IP / user 単位（OCR 過剰利用対策）|
 
 ---
@@ -1191,7 +1200,8 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 - **監視**: Vercel Analytics + Discord webhook（自前 `/admin` ダッシュボードは v1.2、F-108）
 - **バックアップ**:
     - Neon: 自動バックアップ（日次・7 日保持）
-    - R2: バージョニング有効、ライフサイクル 90 日
+    - R2: カード添付画像（将来機能）を保存する設計を実装する際にバージョニング有効化を検討。
+      OCR スキャン元ファイルは保存しないためバックアップ対象外
 - **ロールバック**: Vercel の Promote previous deployment ボタン
 - **Cron**: Vercel Cron で `/api/admin/kill-check` を毎日 06:00 JST 実行
 
@@ -1220,7 +1230,7 @@ R2 採用根拠は egress 無料。 S3 互換 API のため将来 S3 / 他 S3 �
 - [ ] R2: ユーザーごとに prefix（`users/{user_id}/...`）+ presigned URL 短寿命（10 分）
 - [ ] レート制限: Vercel Edge Middleware で IP / user 単位
 - [ ] LLM プロンプトインジェクション: ユーザー入力テキストはプロンプトに直接埋め込まず、JSON フィールドで分離
-- [ ] custom_props サイズ: cards.custom_props 全体で 100KB 上限、exams.property_schema 全体で 50KB 上限（DoS 防止）
+- [ ] custom_props サイズ: cards.custom_props 全体で 100KB 上限（DoS 防止）
 
 ---
 
@@ -1232,7 +1242,9 @@ R2 採用根拠は egress 無料。 S3 互換 API のため将来 S3 / 他 S3 �
 
 ### 13.3 長尺 PDF の OCR 処理
 
-Vercel Function 60s + 並列分割で完結するか、Inngest / QStash 等の background job が必要か。実装着手後に β で測定。
+MVP は 1 ファイル ≤ 150 ページ単発を Vercel Pro Function（900s）で完結させる。
+それを超える長尺需要が出た場合に Inngest / QStash 等の background job が必要か、
+β で測定して判断。
 
 ### 13.4 画像 OCR 自動切り抜きの v1.x 採否
 
@@ -1262,14 +1274,17 @@ AI に「title から sort_key を生成」させる際の正規化ルール（�
 
 Anki が証明している通り、ローカル SQLite + 増分同期は学習アプリの最適解。MVP は Postgres 一本だが、§2.1 の設計原則 12-14 により v1.x での local-first 移行を阻害しない設計を確定済。
 
-#### 既達成の準備条件（v0.5.1 時点）
+#### 既達成の準備条件（Sprint A-2 時点）
 
 - UUID PK（クライアント採番可、ID 衝突なし）
 - updated_at 全テーブル（差分同期の基準）
-- deleted_at（削除追跡、Anki の graves 相当）
 - reviews は append-only（競合不発生）
 - jsonb で柔軟スキーマ（schema migration の頻度低減）
 - 集計系テーブル（ai_usage_users / study_days）は同期対象外、サーバー側再計算
+
+#### v1.x で追加検討する準備条件
+
+- 削除追跡 (Anki の graves 相当): MVP は cards / exams / source_documents 等で hard delete を採用したため、 v1.x で local-first 化する際は別途 tombstone table or `deleted_at` 列の再導入を検討。 削除イベントを sync 越しに伝搬する仕組みが必要
 
 #### v1.x 実装の選択肢
 

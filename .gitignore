@@ -40,7 +40,3 @@ npm-debug.log*
 
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
-
-# OCR PoC (Phase 0b): fixture PDF と結果 JSON は commit しない
-scripts/ocr-poc/fixtures/
-scripts/ocr-poc/results/

@@ -15,6 +15,34 @@
       "when": 1779005319711,
       "tag": "0001_third_fat_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779119874154,
+      "tag": "0002_daily_venom",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779173546865,
+      "tag": "0003_free_killmonger",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779251755542,
+      "tag": "0004_organic_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1779259146622,
+      "tag": "0005_old_fallen_one",
+      "breakpoints": true
     }
   ]
 }

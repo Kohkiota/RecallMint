@@ -1,0 +1,527 @@
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import { eq, and, sql } from 'drizzle-orm'
+import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { getDb } from '@/lib/db'
+import {
+  exams,
+  cards,
+  sourceDocuments,
+  uploadRecords,
+  type CardOption,
+  type CardImage,
+} from '@/lib/db/schema'
+import { canRunOcr } from '@/lib/ai-usage-mcq'
+import {
+  incrementAiUsage,
+  getTodayAiUsageGlobal,
+} from '@/lib/ai-usage-counter'
+import { runOcrPipeline } from '@/lib/ai/ocr'
+import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
+import { notifyOps } from '@/lib/ops'
+import { logger } from '@/lib/logger'
+import { todayInJst } from '@/lib/jst'
+import { pdfPageCount } from '../_lib/pdf-page-count'
+
+// FormData から受け取った投入先選択 (前端 Destination 型と整合)。
+type Destination =
+  | { mode: 'new' }
+  | { mode: 'existing'; examId: string }
+
+// 結果プレビュー用の card subset (preview UI が render する read-only data)。
+// 完全な ExtractedCard をそのまま返すのではなく、 必要最小限に絞ることで
+// FormData → Server Action → Client への boundary serialization コスト削減。
+export type ProcessedCard = {
+  id: string
+  title: string
+  questionTextSnippet: string
+  optionCount: number
+  customPropKeys: string[]
+}
+
+export type ProcessResultData = {
+  sourceDocumentId: string
+  examId: string
+  examName: string
+  cardsExtracted: number
+  ocrCostYen: number
+  modelChain: string[]
+  cards: ProcessedCard[]
+}
+
+// 失敗時の error code (UI 側で分岐に使用、 T4 詳細表示用 details も含む)。
+//   AUTH:          認証なし / user.id 取得失敗
+//   INVALID_INPUT: formData の mode / examId / files が不正
+//   EXAM_NOT_FOUND: 既存 exam が見つからない / archived
+//   QUOTA_EXCEEDED: 月次 OCR ページ上限 超過
+//   GEMINI_DAILY_LIMIT_EXCEEDED: サービス全体の 1 日 Gemini call 上限超過 (S1.8)
+//   GEMINI_FAILED: OCR pipeline (Flash + Pro 両方) 失敗
+//   SAVE_FAILED:   OCR は成功したが DB 保存 (cards INSERT) 失敗
+//   OTHER:         上記いずれにも該当しない予期しないエラー
+export type ProcessUploadErrorCode =
+  | 'AUTH'
+  | 'INVALID_INPUT'
+  | 'EXAM_NOT_FOUND'
+  | 'QUOTA_EXCEEDED'
+  | 'GEMINI_DAILY_LIMIT_EXCEEDED'
+  | 'GEMINI_FAILED'
+  | 'SAVE_FAILED'
+  | 'OTHER'
+
+// 開発環境 (staging / preview / development) のみで UI 表示する詳細情報。
+// production では client に渡されるが UI には表示されない (T4 環境変数判定)。
+export type ProcessUploadErrorDetails = {
+  rawError?: string
+  sourceDocumentId?: string
+  costYen?: number
+  modelChain?: string[]
+  // QUOTA_EXCEEDED 専用 fields
+  current?: number
+  limit?: number
+  requested?: number
+}
+
+export type ProcessUploadResult =
+  | { ok: true; data: ProcessResultData }
+  | {
+      ok: false
+      code: ProcessUploadErrorCode
+      error: string // user 向け文言
+      details?: ProcessUploadErrorDetails
+    }
+
+const MAX_QUESTION_PREVIEW = 80
+
+// 中央集約された Server Action。 案 B (kickoff §6) に従い、 OCR + cards INSERT を
+// 一気に行い preview に「保存済」 状態の cards を返す。 「やり直し」 は discard.ts
+// で source_document を消してから再呼び出しする。
+//
+// S1.7 改修: 失敗時の戻り値を code 付き構造化、 plan-limits 超過は exam INSERT /
+// source_documents INSERT を一切走らせずに早期 return (kickoff Critical 1)。
+export async function processUpload(
+  formData: FormData,
+): Promise<ProcessUploadResult> {
+  // S1.8: いずれの return path でも root layout 配下を一括 revalidate して
+  // 残量 banner (Server Component で fetch) を即時新値で render する。
+  // 内側 _processUpload は revalidate 責務を持たない (重複発火回避)。
+  try {
+    return await _processUpload(formData)
+  } finally {
+    revalidatePath('/', 'layout')
+  }
+}
+
+async function _processUpload(
+  formData: FormData,
+): Promise<ProcessUploadResult> {
+  const user = await getCurrentUser()
+  if (!user) return { ok: false, code: 'AUTH', error: '認証が必要です' }
+
+  // -- formData parse --
+  const mode = formData.get('mode')
+  if (mode !== 'new' && mode !== 'existing') {
+    return {
+      ok: false,
+      code: 'INVALID_INPUT',
+      error: '投入先が指定されていません',
+    }
+  }
+  let destination: Destination
+  if (mode === 'existing') {
+    const examId = formData.get('examId')
+    if (typeof examId !== 'string' || examId.length === 0) {
+      return {
+        ok: false,
+        code: 'INVALID_INPUT',
+        error: '既存の試験が選択されていません',
+      }
+    }
+    destination = { mode: 'existing', examId }
+  } else {
+    destination = { mode: 'new' }
+  }
+
+  const fileEntries = formData.getAll('files')
+  const files: File[] = fileEntries.filter(
+    (f): f is File => f instanceof File && f.size > 0,
+  )
+  if (files.length === 0) {
+    return {
+      ok: false,
+      code: 'INVALID_INPUT',
+      error: 'ファイルが選択されていません',
+    }
+  }
+
+  // -- 推定ページ数算出 (plan-limits 比較用) --
+  let totalPages = 0
+  for (const file of files) {
+    if (file.type === 'application/pdf') {
+      try {
+        totalPages += await pdfPageCount(file)
+      } catch {
+        // PDF 解析失敗時は 1 ページとして扱い、 OCR 段階で本格的なエラーにする
+        totalPages += 1
+      }
+    } else if (file.type.startsWith('image/')) {
+      totalPages += 1
+    }
+  }
+  if (totalPages === 0) totalPages = 1 // 念のため最低 1 ページ計上
+
+  // -- plan-limits enforce (Critical: 他 DB 書き込み一切前に判定) --
+  // kickoff Critical 1: ここで return することで exam INSERT / source_documents
+  // INSERT が走らない (= staging で 134 page 越えが起きた場合の防止策)。
+  const decision = await canRunOcr(user.id, user.plan, totalPages)
+  if (!decision.ok) {
+    return {
+      ok: false,
+      code: 'QUOTA_EXCEEDED',
+      error: `今月の OCR ページ上限に達しました (${decision.current}/${decision.limit} ページ使用済、 今回要求 ${decision.requested} ページ)。 来月までお待ちいただくか上位プランへ。`,
+      details: {
+        current: decision.current,
+        limit: decision.limit,
+        requested: decision.requested,
+      },
+    }
+  }
+
+  // -- GEMINI_DAILY_LIMIT guard (サービス全体の日次 Gemini call 上限) --
+  // CLAUDE.md §AI API 絶対ルール 3: 無料枠運用前提の安全弁。 plan-limits 通過後、
+  // Gemini call 開始前に global counter (ai_usage.count) を読み比較。
+  // 上限 = 0 / 未設定 / NaN は guard off (本番では必ず設定する想定、 .env.example
+  // で 1000 を default 提示)。
+  // review I-4: 本番で env 未設定だと無制限になるリスクがあるため、 guard off に
+  // 落ちたケースを logger.warn で必ず可視化する。 OT が log で気付ける状態を担保。
+  const dailyLimit = parseDailyLimit(process.env.GEMINI_DAILY_LIMIT)
+  if (dailyLimit === null) {
+    logger.warn({
+      event: 'gemini.daily_limit.disabled',
+      raw: process.env.GEMINI_DAILY_LIMIT ?? null,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+    })
+  } else {
+    const todayCount = await getTodayAiUsageGlobal()
+    if (todayCount >= dailyLimit) {
+      return {
+        ok: false,
+        code: 'GEMINI_DAILY_LIMIT_EXCEEDED',
+        error:
+          '本日のサービス全体の利用上限に達しました。 明日以降にお試しください。',
+        details: {
+          current: todayCount,
+          limit: dailyLimit,
+        },
+      }
+    }
+  }
+
+  const db = getDb()
+
+  // -- exam 確定 (新規 INSERT or 既存 validate) --
+  let examId: string
+  let examName: string
+  if (destination.mode === 'new') {
+    // 仮 name は JST date + HH:mm 形式。 jst.ts は今日の YYYY-MM-DD のみ提供する
+    // ため、 HH:mm は自前で算出。 ユーザーは S2 で rename 可能 (kickoff scope)。
+    const today = todayInJst()
+    const nowJst = new Date(Date.now() + 9 * 3600 * 1000)
+    const hh = String(nowJst.getUTCHours()).padStart(2, '0')
+    const mm = String(nowJst.getUTCMinutes()).padStart(2, '0')
+    examName = `アップロード ${today} ${hh}:${mm}`
+    const inserted = await db
+      .insert(exams)
+      .values({ userId: user.id, name: examName })
+      .returning({ id: exams.id })
+    examId = inserted[0].id
+  } else {
+    // 既存 exam の所有者 + archived 状態を validate
+    const found = await db
+      .select({ id: exams.id, name: exams.name, archivedAt: exams.archivedAt })
+      .from(exams)
+      .where(and(eq(exams.id, destination.examId), eq(exams.userId, user.id)))
+      .limit(1)
+    if (found.length === 0) {
+      return {
+        ok: false,
+        code: 'EXAM_NOT_FOUND',
+        error: '選択された試験が見つかりません',
+      }
+    }
+    if (found[0].archivedAt !== null) {
+      return {
+        ok: false,
+        code: 'EXAM_NOT_FOUND',
+        error: 'アーカイブ済の試験には追加できません',
+      }
+    }
+    examId = found[0].id
+    examName = found[0].name
+  }
+
+  // -- source_documents INSERT (processing) --
+  const firstFile = files[0]
+  const filename =
+    files.length === 1 ? firstFile.name : `${firstFile.name} ほか ${files.length - 1} 件`
+  const fileType: 'pdf' | 'image' =
+    firstFile.type === 'application/pdf' ? 'pdf' : 'image'
+  const totalSize = files.reduce((s, f) => s + f.size, 0)
+  const sourceDocInsert = await db
+    .insert(sourceDocuments)
+    .values({
+      userId: user.id,
+      examId,
+      mode: destination.mode,
+      fileType,
+      filename,
+      fileSizeBytes: totalSize,
+      status: 'processing',
+      pagesTotal: totalPages,
+    })
+    .returning({ id: sourceDocuments.id })
+  const sourceDocumentId = sourceDocInsert[0].id
+
+  // -- OCR pipeline --
+  let geminiInputs: GeminiInputFile[]
+  try {
+    geminiInputs = await Promise.all(
+      files.map(async (f) => {
+        const buf = await f.arrayBuffer()
+        const data = Buffer.from(buf).toString('base64')
+        return { mimeType: f.type || 'application/octet-stream', data }
+      }),
+    )
+  } catch (err) {
+    // OCR 前の失敗: ページ消費なし・cost 0 で台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: 0,
+      ocrCostYen: 0,
+    })
+    return {
+      ok: false,
+      code: 'OTHER',
+      error: 'ファイル読み込みに失敗しました',
+      details: {
+        rawError: err instanceof Error ? err.message : String(err),
+        sourceDocumentId,
+      },
+    }
+  }
+
+  let pipelineResult
+  try {
+    pipelineResult = await runOcrPipeline(geminiInputs, {
+      // S1.8: 各 Gemini call 直前で ai_usage / ai_usage_users counter を加算。
+      // best-effort (counter DB エラーは pipeline 側で握りつぶす) のため、
+      // counter 失敗で OCR が中断することはない。
+      onAttempt: async () => {
+        await incrementAiUsage(user.id, 1)
+      },
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // OCR pipeline 失敗: 完了 pages / cost は確定しないため 0 で台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: 0,
+      ocrCostYen: 0,
+    })
+    await notifyOps('ocr pipeline failed', {
+      userId: user.id,
+      sourceDocumentId,
+      examId,
+      filename,
+      filesCount: files.length,
+      totalPages,
+      error: msg,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    logger.error({ event: 'ocr.pipeline.failed', sourceDocumentId, err })
+    return {
+      ok: false,
+      code: 'GEMINI_FAILED',
+      error: '混み合っているようです、 少し時間をおいてからお試しください',
+      details: {
+        rawError: msg,
+        sourceDocumentId,
+        // OCR pipeline 失敗時は cost / model_chain が runOcrPipeline の throw 前に
+        // tokenUsage を tracking できていないため不明 (Flash retry 中の中断は
+        // pipeline 内部で握りつぶされる)。 cost / modelChain は OCR 成功側でのみ確定。
+      },
+    }
+  }
+
+  // -- cards bulk INSERT (成功時) --
+  // ExtractedCard を cards row に変換、 sort_key を id 並びに利用しつつ
+  // 学習初期値 (FSRS) は default に任せる (schema 側 defaultNow / default 0)。
+  const cardRows = pipelineResult.cards.map((c) => ({
+    userId: user.id,
+    examId,
+    sourceDocumentId,
+    title: c.title,
+    sortKey: c.sort_key ?? null,
+    questionText: c.question_text,
+    options: c.options as CardOption[],
+    correctAnswerIds: c.correct_answer_ids,
+    explanationText: c.explanation_text ?? null,
+    images: (c.images ?? []) as CardImage[],
+    customProps: (c.custom_props ?? {}) as Record<string, unknown>,
+    tags: [] as string[],
+  }))
+
+  let insertedCards: { id: string; title: string }[] = []
+  try {
+    insertedCards = await db
+      .insert(cards)
+      .values(cardRows)
+      .returning({ id: cards.id, title: cards.title })
+  } catch (err) {
+    // cards 保存失敗: OCR 自体は成功し cost が発生済のため実値を台帳に failed 記録
+    await markFailed(sourceDocumentId, err, {
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: totalPages,
+      ocrCostYen: pipelineResult.costYen,
+    })
+    await notifyOps('cards insert failed after ocr success', {
+      userId: user.id,
+      sourceDocumentId,
+      examId,
+      cardsCount: cardRows.length,
+      error: err,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    return {
+      ok: false,
+      code: 'SAVE_FAILED',
+      error: '抽出結果の保存に失敗しました',
+      details: {
+        rawError: err instanceof Error ? err.message : String(err),
+        sourceDocumentId,
+        costYen: pipelineResult.costYen,
+        modelChain: pipelineResult.modelChain.map(String),
+      },
+    }
+  }
+
+  // -- source_documents 完了更新 + upload_records 台帳 append (1 transaction) --
+  // S1.9.1: source_documents UPDATE と upload_records INSERT を一蓮托生で
+  // commit/rollback する。 upload_records が月次 quota の集計元 (discard で
+  // 返金されない、 Bug A 解消の本体)。
+  await db.transaction(async (tx) => {
+    await tx
+      .update(sourceDocuments)
+      .set({
+        status: 'completed',
+        pagesProcessed: totalPages,
+        cardsExtracted: insertedCards.length,
+        ocrCostYen: pipelineResult.costYen,
+        completedAt: sql`now()`,
+      })
+      .where(eq(sourceDocuments.id, sourceDocumentId))
+    await tx.insert(uploadRecords).values({
+      userId: user.id,
+      filename,
+      fileSizeBytes: totalSize,
+      pagesProcessed: totalPages,
+      ocrCostYen: pipelineResult.costYen,
+      status: 'completed',
+    })
+  })
+
+  // -- preview data の構築 --
+  // 完全な card row を返すと payload が膨れる + 学習統計の RTC 不要のため、
+  // 表示専用の subset (id / title / question 抜粋 / option 数 / custom_props キー) に絞る。
+  const previewCards: ProcessedCard[] = insertedCards.map((row, idx) => {
+    const extracted = pipelineResult.cards[idx]
+    return {
+      id: row.id,
+      title: row.title,
+      questionTextSnippet: truncate(extracted.question_text, MAX_QUESTION_PREVIEW),
+      optionCount: extracted.options.length,
+      customPropKeys: Object.keys(extracted.custom_props ?? {}),
+    }
+  })
+
+  return {
+    ok: true,
+    data: {
+      sourceDocumentId,
+      examId,
+      examName,
+      cardsExtracted: insertedCards.length,
+      ocrCostYen: pipelineResult.costYen,
+      modelChain: pipelineResult.modelChain.map(String),
+      cards: previewCards,
+    },
+  }
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s
+  return s.slice(0, max) + '…'
+}
+
+// GEMINI_DAILY_LIMIT 環境変数を Number に変換。 未設定 / 不正値 / 0 以下は
+// null を返し guard を off にする (.env.example で 1000 を default 提示済、
+// 想定外の設定で本番が止まることを避ける)。
+function parseDailyLimit(raw: string | undefined): number | null {
+  if (!raw) return null
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n
+}
+
+// OCR 失敗時の後始末。 source_documents を status='failed' に更新し、 同 transaction
+// で upload_records にも status='failed' 行を append する (台帳として失敗も記録、
+// ただし月次 quota SUM は completed で絞るため消費には計上されない)。
+// best-effort: 失敗しても throw せず logger.warn のみ (OCR 失敗 path の二次被害防止)。
+async function markFailed(
+  sourceDocumentId: string,
+  err: unknown,
+  audit: {
+    userId: string
+    filename: string
+    fileSizeBytes: number
+    pagesProcessed: number
+    ocrCostYen: number
+  },
+): Promise<void> {
+  const db = getDb()
+  const msg = err instanceof Error ? err.message : String(err)
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(sourceDocuments)
+        .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
+        .where(eq(sourceDocuments.id, sourceDocumentId))
+      await tx.insert(uploadRecords).values({
+        userId: audit.userId,
+        filename: audit.filename,
+        fileSizeBytes: audit.fileSizeBytes,
+        pagesProcessed: audit.pagesProcessed,
+        ocrCostYen: audit.ocrCostYen,
+        status: 'failed',
+      })
+    })
+  } catch (updateErr) {
+    // status='processing' のまま残るが、 ops 通知側で source_document_id を持つので
+    // 後から OT が手動で update 可能。 巻き込み防止のため throw しない。
+    // S1.9.1: 月次 quota は upload_records 集計のため、 source_documents が
+    // processing 残骸として残っても消費計算には一切影響しない。
+    logger.warn({
+      event: 'source_documents.mark_failed.update_failed',
+      sourceDocumentId,
+      updateErr,
+    })
+  }
+}

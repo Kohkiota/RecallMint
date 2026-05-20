@@ -4,8 +4,8 @@
 
 多肢選択問題 PWA (mcq-platform)。学習資料 (テキスト/ノート/教材) を
 AI OCR で MCQ 化し、FSRS 忘却曲線で復習する学習アプリ。
-Notion 互換のカスタムプロパティ方式 (cards.custom_props /
-exams.property_schema) でドメイン中立、マルチテナント対応。
+Notion 互換のカスタムプロパティ方式 (cards.custom_props、freeform jsonb)
+でドメイン中立、マルチテナント対応。
 リポジトリ: `Kohkiota/mcq-platform` (devcontainer-template + plan00
 SaaS template を起点に派生、vocab 機能は drop / mcq 機能を新規追加中)。
 

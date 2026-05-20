@@ -3,4 +3,4 @@ Allow: /
 Disallow: /app/
 Disallow: /api/
 
-Sitemap: https://vocab.nekotest.net/sitemap.xml
+Sitemap: https://recallmint.nekotest.net/sitemap.xml

@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (12 tables, Sprint A-2 baseline)
+// Drizzle schema — mcq-platform (13 tables; S1.9.1 で upload_records 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -25,6 +25,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   real,
@@ -32,28 +33,6 @@ import {
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core'
-
-// ---------------------------------------------------------------------------
-// Custom property schema types (exams.property_schema の TS 型)
-// ---------------------------------------------------------------------------
-export type PropertyType =
-  | 'single_select'
-  | 'multi_select'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'text'
-
-export type PropertyDef = {
-  name: string
-  type: PropertyType
-  select_options?: string[]
-  default_value?: unknown
-  is_system?: boolean
-  display_order: number
-}
-
-export type PropertySchema = PropertyDef[]
 
 // ---------------------------------------------------------------------------
 // Card-internal JSON types (cards.options / cards.images の TS 型)
@@ -222,7 +201,7 @@ export const deletionFailures = pgTable('deletion_failures', {
 })
 
 // ---------------------------------------------------------------------------
-// exams (mcq 新規、property_schema が肝)
+// exams (mcq 新規)
 // hard delete (deleted_at なし、Sprint A-2 確定)。 archived_at で
 // ダウングレード時の自動アーカイブ (NULL = アクティブ)。
 // ---------------------------------------------------------------------------
@@ -234,10 +213,6 @@ export const exams = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    propertySchema: jsonb('property_schema')
-      .notNull()
-      .default(sql`'[]'::jsonb`)
-      .$type<PropertySchema>(),
     questionNoFormat: text('question_no_format').$type<
       'numeric' | 'hierarchical' | 'free'
     >(),
@@ -284,11 +259,19 @@ export const cards = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`)
       .$type<CardImage[]>(),
-    // カスタムプロパティ (exams.property_schema に従って格納)
+    // カスタムプロパティ (freeform key-value)
     customProps: jsonb('custom_props')
       .notNull()
       .default(sql`'{}'::jsonb`)
       .$type<Record<string, unknown>>(),
+    // ユーザー手動 tag (S3 で一括編集 UI を実装、 S1a で先打ちして cards
+    // INSERT を最初から tags=[] 込みで書く)。 default は空配列、 後付けで
+    // backfill 不要。 集合操作 (フィルタ / 一括 append / remove) は v1.x で
+    // GIN index 追加を検討、 MVP は SUM(reviews) 等で問題ない量を想定。
+    tags: text('tags')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     // 学習統計 (デノーマライズ、 mcq 新規追加)
     answered: boolean('answered').notNull().default(false),
     // NULL = 未回答
@@ -326,8 +309,10 @@ export const cards = pgTable(
 
 // ---------------------------------------------------------------------------
 // source_documents (OCR アップロード元の管理、hard delete)
-// 同時実行制限はアプリ層で `WHERE user_id = ? AND status = 'processing' LIMIT 1`
-// チェック。 file_url NULL = OCR 完了後 R2 元ファイル破棄済。
+// OCR ジョブの作業 / trace table。 exam とライフサイクルを共有し、 exam 削除で
+// FK CASCADE 連動削除される。 月次 quota 集計には使わない (S1.9.1 で upload_records
+// に分離)。 アップロードファイル自体は inline base64 で Gemini に渡すのみで永続化
+// しない (R2 非経由)。
 // ---------------------------------------------------------------------------
 export const sourceDocuments = pgTable(
   'source_documents',
@@ -339,20 +324,34 @@ export const sourceDocuments = pgTable(
     examId: uuid('exam_id')
       .notNull()
       .references(() => exams.id, { onDelete: 'cascade' }),
+    // S1.9.2: この upload が exam を新規作成したか (= 'new') / 既存 exam に
+    // 追加したか (= 'existing') を記録。 discard 時に「auto 作成 exam を
+    // cascade 削除するか / 既存 exam を残すか」 を server 側で DB から判定する
+    // 真実 source。 旧来 client が examWasAutoCreated を持ち回っていたのを廃止し、
+    // URL / client 改竄に対して堅牢化。 default なし = processUpload で必ず set。
+    mode: text('mode').$type<'new' | 'existing'>().notNull(),
     fileType: text('file_type')
       .$type<'pdf' | 'image' | 'csv' | 'markdown'>()
       .notNull(),
-    fileUrl: text('file_url'),
     filename: text('filename').notNull(),
     fileSizeBytes: integer('file_size_bytes').notNull(),
+    // S1.9.1: 'uploading' を廃止 (R2 presigned upload 段階の状態だったが、
+    // inline base64 方式では到達経路がない)。 processUpload は常に 'processing'
+    // で INSERT するため default も 'processing' に変更。
     status: text('status')
-      .$type<'uploading' | 'processing' | 'completed' | 'failed'>()
+      .$type<'processing' | 'completed' | 'failed'>()
       .notNull()
-      .default('uploading'),
+      .default('processing'),
     pagesProcessed: integer('pages_processed').notNull().default(0),
     pagesTotal: integer('pages_total'),
     cardsExtracted: integer('cards_extracted').notNull().default(0),
-    ocrCostYen: integer('ocr_cost_yen'),
+    // S1.9.1: integer → numeric(10,4)。 cost を小数で保持 (integer 切り捨ての
+    // 集計誤差を排除)。 mode:'number' で TS 上は number として読み書きする。
+    ocrCostYen: numeric('ocr_cost_yen', {
+      precision: 10,
+      scale: 4,
+      mode: 'number',
+    }),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -363,6 +362,41 @@ export const sourceDocuments = pgTable(
     index('source_docs_user_exam_idx').on(t.userId, t.examId),
     index('source_docs_status_idx').on(t.userId, t.status),
   ],
+)
+
+// ---------------------------------------------------------------------------
+// upload_records (OCR 月次利用台帳、S1.9.1 新設、append-only)
+// source_documents が「OCR 作業 table (exam と同寿命、 discard / cascade で消える)」
+// と「月次 quota 集計元」 を兼ねていたため、 discard 物理削除で quota が返金される
+// 構造欠陥があった (Bug A)。 集計元を本 table に分離し、 OCR 完了 / 失敗時に
+// append のみ、 discard では一切 touch しない。 これにより月次消費は monotonic。
+// exam_id は持たない (台帳は exam から独立、 exam 削除の影響を受けない)。
+// 月次 quota = 当月 (JST 月境界) かつ status='completed' の pages_processed SUM。
+// ---------------------------------------------------------------------------
+export const uploadRecords = pgTable(
+  'upload_records',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    fileSizeBytes: integer('file_size_bytes').notNull(),
+    // 月次 quota SUM の対象列 (status='completed' の行のみ集計)。
+    pagesProcessed: integer('pages_processed').notNull().default(0),
+    ocrCostYen: numeric('ocr_cost_yen', {
+      precision: 10,
+      scale: 4,
+      mode: 'number',
+    }),
+    // 失敗も台帳として append する (status='failed')。 quota SUM は completed で
+    // 絞るため failed 行は消費に計上されない。
+    status: text('status').$type<'completed' | 'failed'>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index('upload_records_user_created_idx').on(t.userId, t.createdAt)],
 )
 
 // ---------------------------------------------------------------------------
@@ -430,6 +464,8 @@ export type Card = typeof cards.$inferSelect
 export type NewCard = typeof cards.$inferInsert
 export type SourceDocument = typeof sourceDocuments.$inferSelect
 export type NewSourceDocument = typeof sourceDocuments.$inferInsert
+export type UploadRecord = typeof uploadRecords.$inferSelect
+export type NewUploadRecord = typeof uploadRecords.$inferInsert
 export type StudyDay = typeof studyDays.$inferSelect
 export type NewStudyDay = typeof studyDays.$inferInsert
 export type ContactMessage = typeof contactMessages.$inferSelect
