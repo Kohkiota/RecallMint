@@ -66,14 +66,20 @@ const planLabelMap = {
 // S1.9.2: 'success' phase を廃止。 OCR 成功時は preview を同 component で描画せず、
 // 独立 route /app/upload/result/[sourceDocumentId] に router.push で遷移する
 // (Bug B = 残量 banner stale 表示の構造解消、 page 遷移で fresh server render)。
+// S1.9.3: 'CLIENT_TIMEOUT' を廃止。 Vercel Pro 昇格で server maxDuration=600s に
+// 延長されたため、 client は server の完走をそのまま待つ方針に変更。
 type Phase =
   | { kind: 'idle' }
   | { kind: 'submitting' }
   | {
       kind: 'error'
       message: string
-      code: ProcessUploadErrorCode | 'CLIENT_TIMEOUT'
+      code: ProcessUploadErrorCode
       details?: ProcessUploadErrorDetails
+      // throw/catch 経由のエラーは「試験一覧で確認を」と案内するため、
+      // 「ファイルを変更して再試行」サブタイトルを非表示にする。
+      // (他の error path は retry hint を表示し続ける)
+      hideRetryHint?: boolean
     }
 
 export function UploadForm({
@@ -104,12 +110,19 @@ export function UploadForm({
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   // 派生 flag: OCR Server Action 実行中。 UI controls の disable 判定に集約利用。
   const isSubmitting = phase.kind === 'submitting'
+  // S1.9.3: submitting 開始から 90 秒経過したことを示す flag。
+  // phase とは独立した state で管理する。 90 秒を超えたら banner を「閉じてよい」
+  // 旨に切替え、 離脱ガード (beforeunload / popstate) も解除する。
+  // spinner 自体は isSubmitting が true の間ずっと表示し続ける。
+  const [longRunning, setLongRunning] = useState(false)
+  const longRunningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 重複した filename を 4 秒間 banner 表示するための transient state。
   const [duplicateWarnings, setDuplicateWarnings] = useState<string[]>([])
   const duplicateClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
-  // 重複警告の transient timer も unmount で確実 clear (stale fire 防止)。
+  // 重複警告の transient timer と longRunning timer も unmount で確実 clear
+  // (stale fire 防止)。
   useEffect(() => {
     return () => {
       for (const e of entries) {
@@ -119,12 +132,19 @@ export function UploadForm({
         clearTimeout(duplicateClearTimerRef.current)
         duplicateClearTimerRef.current = null
       }
+      if (longRunningTimerRef.current) {
+        clearTimeout(longRunningTimerRef.current)
+        longRunningTimerRef.current = null
+      }
     }
     // entries 依存 ではなく unmount のみ cleanup (removeEntry で個別 revoke 済)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // OCR submitting 中はタブ閉じる / リロード / ブラウザ戻る を block。
+  // OCR submitting 中 かつ longRunning でないときのみ、タブ閉じる / リロード /
+  // ブラウザ戻る を block。
+  // S1.9.3: 90 秒経過後 (longRunning=true) は「もう閉じても大丈夫」とユーザーに
+  // 案内するため、 ガードを解除する。 banner 文言も同タイミングで切替わる。
   // 詳細:
   //   - beforeunload: 標準 browser confirm dialog を発火 (modern browsers は
   //     custom 文言を無視するが dialog 自体は出る)
@@ -136,7 +156,7 @@ export function UploadForm({
   //   - Next.js Link クリックによる soft navigation は popstate を発火しない
   //     ため block 対象外 (spinner banner の文言で expectation 設定)
   useEffect(() => {
-    if (!isSubmitting) return
+    if (!isSubmitting || longRunning) return
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault()
@@ -178,7 +198,7 @@ export function UploadForm({
       // navigation を妨害する risk)。 ユーザーには「戻る」 を 1 回余分に押す
       // 必要が残るが、 submitting 終了後の通常 page では問題なし。
     }
-  }, [isSubmitting])
+  }, [isSubmitting, longRunning])
 
   const totalBytes = entries.reduce((s, e) => s + e.file.size, 0)
   const totalExceeded = totalBytes > TOTAL_UPLOAD_LIMIT_BYTES
@@ -384,43 +404,61 @@ export function UploadForm({
   // 「submitting 」 が transition priority 化して React 19 のバッチング判定で
   // skip される (S1a 後の staging smoke で発覚した bug、 詳細は handoff doc)。
   //
-  // S1.7 T6: client 側 90 秒 timeout を追加。 Vercel function が 60 秒で kill
-  // されても catch に届かない場合、 client が spinner 永続化しないよう defensive
-  // に切り上げ、 retry 誘導する。 timeout 時 source_documents は status='processing'
-  // のまま残骸化しうるが、 月次 quota は upload_records 集計 (S1.9.1) のため
-  // source_documents 残骸は消費に影響しない。
+  // S1.9.3: client 側 90 秒 timeout (error 化) を廃止。 Vercel Pro 昇格で
+  // server maxDuration=600s に延長されたため、 client は server の完走をそのまま
+  // 待つ方針に変更。 代わりに 90 秒経過後は longRunning=true にして banner 文言を
+  // 「閉じてよい」 旨に切替え、 離脱ガードも解除する。 spinner は submitting 中
+  // ずっと表示し続ける。
+  // processUpload が throw (504 / network error 等) した場合は catch で 'OTHER'
+  // error にして「試験一覧で確認を」 と案内する。 server 側では source_document が
+  // 作成済みの場合もあるため、 無条件に retry 誘導しない文言にする。
   async function runProcess() {
     const fd = buildFormData()
-    let timedOut = false
-    const timeoutId = setTimeout(() => {
-      timedOut = true
-      setPhase({
-        kind: 'error',
-        code: 'CLIENT_TIMEOUT',
-        message:
-          '処理がタイムアウトしました。 ファイルを変えて再試行してください。',
-        details: {
-          rawError: 'client 90s timeout exceeded',
-        },
-      })
+
+    // 90 秒経過したら longRunning=true にして banner / 離脱ガードを切替える。
+    // submitting が終わる (成功 / 失敗 / throw) 時点でタイマーを clear する。
+    longRunningTimerRef.current = setTimeout(() => {
+      setLongRunning(true)
     }, 90_000)
 
     let result
     try {
       result = await processUpload(fd)
+    } catch {
+      // 504 / network error 等、 server action が throw した場合。
+      // server 側で source_document が作成されている可能性があるため、
+      // 無条件再試行でなく「試験一覧で確認を」と案内する。
+      // hideRetryHint=true: このエラーメッセージは再試行を推奨しないため、
+      // 「ファイルを変更して再試行」サブタイトルを非表示にする (Fix 2)。
+      setLongRunning(false)
+      setPhase({
+        kind: 'error',
+        code: 'OTHER',
+        message:
+          '処理状況を確認できませんでした。「試験一覧」で結果をご確認ください。',
+        hideRetryHint: true,
+      })
+      return
     } finally {
-      clearTimeout(timeoutId)
+      // 成功・失敗どちらでも longRunning タイマーは不要になるので clear する。
+      // catch ブロック内で既に return した後でも finally は実行されるが、
+      // 二重 clear は無害。 setLongRunning(false) はここでは呼ばない:
+      // 成功時は router.push で遷移するため state は破棄され不要、かつ
+      // 90 秒後に longRunning=true になっていた場合に成功 → 「閉じないで」
+      // 文言に逆戻りするフラッシュを避ける (Fix 1)。
+      if (longRunningTimerRef.current) {
+        clearTimeout(longRunningTimerRef.current)
+        longRunningTimerRef.current = null
+      }
     }
-
-    // timeout 発火後に server が遅れて応答した場合は state を上書きしない
-    // (ユーザーは既に「タイムアウト」 を見ている)
-    if (timedOut) return
 
     if (result.ok && result.data) {
       // S1.9.2: OCR 成功 → result page に遷移。 phase は 'submitting' のまま
       // にして navigation 完了まで spinner を出す (success phase は廃止)。
+      // setLongRunning(false) は不要: component は router.push で破棄される。
       router.push(`/app/upload/result/${result.data.sourceDocumentId}`)
     } else if (!result.ok) {
+      setLongRunning(false)
       setPhase({
         kind: 'error',
         message: result.error,
@@ -428,6 +466,7 @@ export function UploadForm({
         details: result.details,
       })
     } else {
+      setLongRunning(false)
       setPhase({
         kind: 'error',
         message: '予期しないエラー',
@@ -444,6 +483,9 @@ export function UploadForm({
 
   function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
+    // 新しい submit は必ず longRunning=false から開始する。
+    // (前回の submit で longRunning=true になっていた場合の防御的リセット)
+    setLongRunning(false)
     setPhase({ kind: 'submitting' })
     void runProcess()
   }
@@ -486,6 +528,8 @@ export function UploadForm({
         // S1.8: 中断 = 利用枠だけ消費されて cards が得られない事を強調するため
         // amber 警告色 + alert role に格上げ。 amber は result page
         // (result-actions.tsx) の破棄注意 banner と統一感を持たせる。
+        // S1.9.3: 90 秒経過 (longRunning=true) で「もう閉じても大丈夫」旨に切替え。
+        // それまでは「閉じないでください」の従来文言を維持する。
         <section
           role="alert"
           aria-live="assertive"
@@ -493,10 +537,21 @@ export function UploadForm({
         >
           <Loader2 className="h-5 w-5 animate-spin text-amber-700 mt-0.5 flex-shrink-0" aria-hidden="true" />
           <div className="text-sm text-amber-900">
-            <p className="font-semibold">AI が問題を抽出しています… (30 秒〜数分かかります)</p>
-            <p className="mt-1">
-              ⚠ この画面を閉じたり戻ったりしないでください。 中断しても AI 抽出の利用枠は消費されます。
-            </p>
+            {longRunning ? (
+              <>
+                <p className="font-semibold">AI が問題を抽出しています。通常より時間がかかっています。</p>
+                <p className="mt-1">
+                  このまま閉じても、後で「試験一覧」から抽出結果を確認できます。
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-semibold">AI が問題を抽出しています… (30 秒〜数分かかります)</p>
+                <p className="mt-1">
+                  ⚠ この画面を閉じたり戻ったりしないでください。 中断しても AI 抽出の利用枠は消費されます。
+                </p>
+              </>
+            )}
           </div>
         </section>
       )}
@@ -675,9 +730,14 @@ export function UploadForm({
       {phase.kind === 'error' && (
         <section className="rounded-md bg-red-50 border border-red-200 p-4 space-y-2">
           <p className="text-sm text-red-700">{phase.message}</p>
-          <p className="text-xs text-slate-700">
-            ファイルを変更して再度お試しください。
-          </p>
+          {/* hideRetryHint=true (throw/catch 経由) のときは再試行サブタイトルを
+              非表示: メッセージが「試験一覧で確認を」なのに「再試行を」と
+              矛盾しないようにするため (Fix 2) */}
+          {!phase.hideRetryHint && (
+            <p className="text-xs text-slate-700">
+              ファイルを変更して再度お試しください。
+            </p>
+          )}
           {/* 開発用詳細 (staging / preview / development のみ表示、
               NEXT_PUBLIC_VERCEL_ENV が 'production' 以外なら出す)。
               build 時に環境変数が embed されるため、 production build には
@@ -720,7 +780,7 @@ function ErrorDetails({
   message,
   details,
 }: {
-  code: ProcessUploadErrorCode | 'CLIENT_TIMEOUT'
+  code: ProcessUploadErrorCode
   message: string
   details?: ProcessUploadErrorDetails
 }) {
