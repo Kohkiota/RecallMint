@@ -30,6 +30,10 @@ const {
     nextExamId: 'exam-new-id',
     nextSourceDocId: 'sdoc-id',
     nextCardIds: ['card-1', 'card-2'],
+    // S1.9.4: advisory xact lock の取得成否 (true = 取得成功、false = 他リクエストが保持中)
+    advisoryLockAcquired: true,
+    // S1.9.4: in-flight processing 行の有無 (null = 行なし = guard 通過)
+    inflightProcessingDoc: null as { id: string } | null,
   },
 }))
 
@@ -68,6 +72,10 @@ vi.mock('../_lib/pdf-page-count', () => ({
 // S1.9.1: transaction() を追加 (完了更新 + upload_records append、 markFailed が
 // transaction を使うため)。 tx は db と同じ API。 upload_records INSERT は
 // .returning() なしで await されるため .values() 自体を thenable にする。
+// S1.9.4: execute() を追加 (advisory xact lock の pg_try_advisory_xact_lock 呼び出し)。
+//         guard tx (1 回目の transaction 呼び出し) と後続 tx を呼び出し順で区別し、
+//         guard tx 内の select は in-flight check (1 回目) と exam validate (2 回目)
+//         を dbState.inflightProcessingDoc / dbState.selectedExam で使い分ける。
 vi.mock('@/lib/db', () => {
   function chain(returnValue: unknown) {
     const obj: Record<string, unknown> = {}
@@ -79,9 +87,34 @@ vi.mock('@/lib/db', () => {
     ) => Promise.resolve(returnValue).then(onFulfilled, onRejected)
     return obj
   }
-  function dbApi() {
+  function dbApi(isGuardTx = false) {
+    // guard tx 内の select 呼び出し順を追跡するカウンタ
+    //   0 回目 = in-flight check (source_documents WHERE status='processing')
+    //   1 回目 = exam validate (exams WHERE id=...) — existing mode のみ
+    let guardSelectCallCount = 0
     return {
-      select: () => chain(dbState.selectedExam ? [dbState.selectedExam] : []),
+      // S1.9.4: tx.execute() は QueryResult 形式 { rows: [{ locked: boolean }] } を返す
+      // 実装側が lockResult.rows[0]?.locked で読む形式に合わせる。
+      execute: (_sqlTemplate: unknown) =>
+        Promise.resolve({ rows: [{ locked: dbState.advisoryLockAcquired }] }),
+      select: () => {
+        let returnValue: unknown
+        if (isGuardTx) {
+          // guard tx 内: 呼び出し順で in-flight check / exam validate を区別
+          if (guardSelectCallCount === 0) {
+            returnValue = dbState.inflightProcessingDoc
+              ? [dbState.inflightProcessingDoc]
+              : []
+          } else {
+            returnValue = dbState.selectedExam ? [dbState.selectedExam] : []
+          }
+          guardSelectCallCount++
+        } else {
+          // guard tx 外: 完了 tx / markFailed tx など (select を使わないが念のため)
+          returnValue = dbState.selectedExam ? [dbState.selectedExam] : []
+        }
+        return chain(returnValue)
+      },
       insert: () => ({
         values: (rows: unknown) => {
           let returnValue: unknown
@@ -129,12 +162,25 @@ vi.mock('@/lib/db', () => {
     }
   }
   return {
-    getDb: () => ({
-      ...dbApi(),
-      transaction: async (
-        fn: (tx: ReturnType<typeof dbApi>) => Promise<unknown>,
-      ) => await fn(dbApi()),
-    }),
+    getDb: () => {
+      // getDb() が呼ばれるたびに localTxCallCount をリセットすることで、
+      // processUpload 呼び出し単位で「1 回目 = guard tx」判定が正しく動く。
+      // vi.mock factory は module-scope で一度だけ評価されるが、 getDb() は
+      // _processUpload 内で毎回呼ばれるため、 テスト間で count がリセットされる。
+      let localTxCallCount = 0
+      return {
+        ...dbApi(false),
+        transaction: async (
+          fn: (tx: ReturnType<typeof dbApi>) => Promise<unknown>,
+        ) => {
+          // 1 回目の transaction 呼び出し = guard tx (advisory lock + in-flight check)
+          // 2 回目以降 = 完了 tx または markFailed tx
+          const isGuardTx = localTxCallCount === 0
+          localTxCallCount++
+          return await fn(dbApi(isGuardTx) as ReturnType<typeof dbApi>)
+        },
+      }
+    },
   }
 })
 
@@ -177,6 +223,9 @@ beforeEach(() => {
   dbState.insertedUploadRecords = []
   dbState.updatedSourceDocs = []
   dbState.selectedExam = null
+  // S1.9.4: guard tx の既定値 (guard 通過状態)
+  dbState.advisoryLockAcquired = true
+  dbState.inflightProcessingDoc = null
 
   mockGetCurrentUser.mockResolvedValue({
     id: 'user-uuid',
@@ -464,5 +513,45 @@ describe('processUpload', () => {
         filename: 'photo.jpg',
       }),
     )
+  })
+
+  // S1.9.4: 並列 OCR ガード — advisory xact lock 取得失敗 (race loser)
+  it('UPLOAD_IN_PROGRESS when advisory lock fails → no exam/sourceDoc INSERT', async () => {
+    // advisory lock が false を返す = 別リクエストが同時にロックを保持している (ms 窓での race)
+    dbState.advisoryLockAcquired = false
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('UPLOAD_IN_PROGRESS')
+    expect(result.error).toMatch(/処理中の OCR/)
+    // guard 失敗: exam INSERT も source_documents INSERT も走らない
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+    expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+    // guard は plan-limits / daily-limit より前 → quota / daily チェックは走らない
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(mockGetTodayAiUsageGlobal).not.toHaveBeenCalled()
+  })
+
+  // S1.9.4: 並列 OCR ガード — in-flight processing 行が存在 (先行ジョブ走行中)
+  it('UPLOAD_IN_PROGRESS when in-flight processing doc exists → no exam/sourceDoc INSERT', async () => {
+    // in-flight 行が存在 = 15 分以内に別 OCR ジョブが source_documents を processing 状態で保持している
+    dbState.inflightProcessingDoc = { id: 'sdoc-inflight' }
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('UPLOAD_IN_PROGRESS')
+    expect(result.error).toMatch(/処理中の OCR/)
+    // guard 失敗: exam INSERT も source_documents INSERT も走らない
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+    expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+    // guard は plan-limits / daily-limit より前 → quota / daily チェックは走らない
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(mockGetTodayAiUsageGlobal).not.toHaveBeenCalled()
   })
 })

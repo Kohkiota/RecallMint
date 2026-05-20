@@ -51,18 +51,23 @@ export type ProcessResultData = {
 }
 
 // 失敗時の error code (UI 側で分岐に使用、 T4 詳細表示用 details も含む)。
-//   AUTH:          認証なし / user.id 取得失敗
-//   INVALID_INPUT: formData の mode / examId / files が不正
-//   EXAM_NOT_FOUND: 既存 exam が見つからない / archived
-//   QUOTA_EXCEEDED: 月次 OCR ページ上限 超過
+//   AUTH:                    認証なし / user.id 取得失敗
+//   INVALID_INPUT:           formData の mode / examId / files が不正
+//   EXAM_NOT_FOUND:          既存 exam が見つからない / archived
+//   UPLOAD_IN_PROGRESS:      同一 user の OCR ジョブが既に走行中 (S1.9.4)
+//                            advisory xact lock 取得失敗 (ms 窓の race) または
+//                            in-flight processing 行が存在 (先行ジョブ走行中) の
+//                            いずれかで発生する。
+//   QUOTA_EXCEEDED:          月次 OCR ページ上限 超過
 //   GEMINI_DAILY_LIMIT_EXCEEDED: サービス全体の 1 日 Gemini call 上限超過 (S1.8)
-//   GEMINI_FAILED: OCR pipeline (Flash + Pro 両方) 失敗
-//   SAVE_FAILED:   OCR は成功したが DB 保存 (cards INSERT) 失敗
-//   OTHER:         上記いずれにも該当しない予期しないエラー
+//   GEMINI_FAILED:           OCR pipeline (Flash + Pro 両方) 失敗
+//   SAVE_FAILED:             OCR は成功したが DB 保存 (cards INSERT) 失敗
+//   OTHER:                   上記いずれにも該当しない予期しないエラー
 export type ProcessUploadErrorCode =
   | 'AUTH'
   | 'INVALID_INPUT'
   | 'EXAM_NOT_FOUND'
+  | 'UPLOAD_IN_PROGRESS'
   | 'QUOTA_EXCEEDED'
   | 'GEMINI_DAILY_LIMIT_EXCEEDED'
   | 'GEMINI_FAILED'
@@ -156,6 +161,8 @@ async function _processUpload(
   }
 
   // -- 推定ページ数算出 (plan-limits 比較用) --
+  // DB を触らない file 解析のため、 advisory lock の前に行う。
+  // lock は guard transaction の中だけで保持し、 file I/O を含まない。
   let totalPages = 0
   for (const file of files) {
     if (file.type === 'application/pdf') {
@@ -171,117 +178,206 @@ async function _processUpload(
   }
   if (totalPages === 0) totalPages = 1 // 念のため最低 1 ページ計上
 
-  // -- plan-limits enforce (Critical: 他 DB 書き込み一切前に判定) --
-  // kickoff Critical 1: ここで return することで exam INSERT / source_documents
-  // INSERT が走らない (= staging で 134 page 越えが起きた場合の防止策)。
-  const decision = await canRunOcr(user.id, user.plan, totalPages)
-  if (!decision.ok) {
-    return {
-      ok: false,
-      code: 'QUOTA_EXCEEDED',
-      error: `今月の OCR ページ上限に達しました (${decision.current}/${decision.limit} ページ使用済、 今回要求 ${decision.requested} ページ)。 来月までお待ちいただくか上位プランへ。`,
-      details: {
-        current: decision.current,
-        limit: decision.limit,
-        requested: decision.requested,
-      },
-    }
-  }
-
-  // -- GEMINI_DAILY_LIMIT guard (サービス全体の日次 Gemini call 上限) --
-  // CLAUDE.md §AI API 絶対ルール 3: 無料枠運用前提の安全弁。 plan-limits 通過後、
-  // Gemini call 開始前に global counter (ai_usage.count) を読み比較。
-  // 上限 = 0 / 未設定 / NaN は guard off (本番では必ず設定する想定、 .env.example
-  // で 1000 を default 提示)。
-  // review I-4: 本番で env 未設定だと無制限になるリスクがあるため、 guard off に
-  // 落ちたケースを logger.warn で必ず可視化する。 OT が log で気付ける状態を担保。
-  const dailyLimit = parseDailyLimit(process.env.GEMINI_DAILY_LIMIT)
-  if (dailyLimit === null) {
-    logger.warn({
-      event: 'gemini.daily_limit.disabled',
-      raw: process.env.GEMINI_DAILY_LIMIT ?? null,
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
-    })
-  } else {
-    const todayCount = await getTodayAiUsageGlobal()
-    if (todayCount >= dailyLimit) {
-      return {
-        ok: false,
-        code: 'GEMINI_DAILY_LIMIT_EXCEEDED',
-        error:
-          '本日のサービス全体の利用上限に達しました。 明日以降にお試しください。',
-        details: {
-          current: todayCount,
-          limit: dailyLimit,
-        },
-      }
-    }
-  }
-
-  const db = getDb()
-
-  // -- exam 確定 (新規 INSERT or 既存 validate) --
-  let examId: string
-  let examName: string
-  if (destination.mode === 'new') {
-    // 仮 name は JST date + HH:mm 形式。 jst.ts は今日の YYYY-MM-DD のみ提供する
-    // ため、 HH:mm は自前で算出。 ユーザーは S2 で rename 可能 (kickoff scope)。
-    const today = todayInJst()
-    const nowJst = new Date(Date.now() + 9 * 3600 * 1000)
-    const hh = String(nowJst.getUTCHours()).padStart(2, '0')
-    const mm = String(nowJst.getUTCMinutes()).padStart(2, '0')
-    examName = `アップロード ${today} ${hh}:${mm}`
-    const inserted = await db
-      .insert(exams)
-      .values({ userId: user.id, name: examName })
-      .returning({ id: exams.id })
-    examId = inserted[0].id
-  } else {
-    // 既存 exam の所有者 + archived 状態を validate
-    const found = await db
-      .select({ id: exams.id, name: exams.name, archivedAt: exams.archivedAt })
-      .from(exams)
-      .where(and(eq(exams.id, destination.examId), eq(exams.userId, user.id)))
-      .limit(1)
-    if (found.length === 0) {
-      return {
-        ok: false,
-        code: 'EXAM_NOT_FOUND',
-        error: '選択された試験が見つかりません',
-      }
-    }
-    if (found[0].archivedAt !== null) {
-      return {
-        ok: false,
-        code: 'EXAM_NOT_FOUND',
-        error: 'アーカイブ済の試験には追加できません',
-      }
-    }
-    examId = found[0].id
-    examName = found[0].name
-  }
-
-  // -- source_documents INSERT (processing) --
+  // -- source_documents metadata (transaction 前に算出、lock 保持時間を最小化) --
   const firstFile = files[0]
   const filename =
     files.length === 1 ? firstFile.name : `${firstFile.name} ほか ${files.length - 1} 件`
   const fileType: 'pdf' | 'image' =
     firstFile.type === 'application/pdf' ? 'pdf' : 'image'
   const totalSize = files.reduce((s, f) => s + f.size, 0)
-  const sourceDocInsert = await db
-    .insert(sourceDocuments)
-    .values({
-      userId: user.id,
-      examId,
-      mode: destination.mode,
-      fileType,
-      filename,
-      fileSizeBytes: totalSize,
-      status: 'processing',
-      pagesTotal: totalPages,
-    })
-    .returning({ id: sourceDocuments.id })
-  const sourceDocumentId = sourceDocInsert[0].id
+
+  const db = getDb()
+
+  // ---------------------------------------------------------------------------
+  // -- guard transaction: advisory lock + in-flight check + quota + exam/sourceDoc INSERT --
+  // ---------------------------------------------------------------------------
+  // 「1 user 1 OCR ジョブ」 を 2 機構の併用で担保する:
+  //   (A) advisory xact lock: 同時起動 (ms 窓) の race を防ぐ。
+  //       pg_try_advisory_xact_lock はロック取得失敗時に false を返す (waiting しない)。
+  //       xact lock なので transaction commit/rollback で自動解放、明示的解放不要。
+  //   (B) in-flight 行 check: 先行ジョブが OCR 走行中 (lock は source_documents INSERT
+  //       の commit で既に解放済) の並列起動を弾く実効ルール。
+  //       15 分 window は stale orphan (>15 分 / reconcile 前) による誤発火を防ぐ安全網。
+  //
+  // advisory lock は source_documents INSERT と同一 transaction に含め、
+  // INSERT commit まで lock を保持する。 OCR pipeline (最大 600s) は transaction の
+  // 外で実行するため、 lock が OCR 本体に持ち込まれることはない。
+  //
+  // hashtext() 衝突は別 user の稀な直列化のみ (OCR queue に落ちる程度)、
+  // correctness には影響しないため許容 (user.id は UUID、衝突確率は無視できる)。
+
+  // guard transaction の戻り値を discriminated union で表現
+  type GuardTxResult =
+    | { outcome: 'in_progress' }
+    | { outcome: 'quota_exceeded'; current: number; limit: number; requested: number }
+    | { outcome: 'daily_limit_exceeded'; current: number; limit: number }
+    | { outcome: 'exam_not_found'; archived: boolean }
+    | { outcome: 'success'; examId: string; examName: string; sourceDocumentId: string }
+
+  const guardResult = await db.transaction(async (tx): Promise<GuardTxResult> => {
+    // (a) advisory xact lock — 同時起動 (ms 窓) の race loser を弾く
+    // execute() は QueryResult<T> を返すため .rows でデータ行を取り出す。
+    const lockResult = await tx.execute(
+      sql`SELECT pg_try_advisory_xact_lock(hashtext(${user.id})) AS locked`,
+    )
+    const locked = (lockResult.rows as Array<{ locked: boolean }>)[0]?.locked
+    if (!locked) {
+      return { outcome: 'in_progress' }
+    }
+
+    // (b) in-flight 行 check — 先行ジョブ走行中 (lock 解放済) の並列起動を弾く
+    // 15 分 window: processing 残骸 (stale orphan) による誤発火を防ぐ。
+    // markFailed / 完了 tx が実行されなかった source_document は 15 分後に guard を
+    // 通過できる (その後 OT が手動 update する想定、 S1.9.1 コメント参照)。
+    const inflight = await tx
+      .select({ id: sourceDocuments.id })
+      .from(sourceDocuments)
+      .where(
+        and(
+          eq(sourceDocuments.userId, user.id),
+          eq(sourceDocuments.status, 'processing'),
+          sql`${sourceDocuments.createdAt} >= now() - interval '15 minutes'`,
+        ),
+      )
+      .limit(1)
+    if (inflight.length > 0) {
+      return { outcome: 'in_progress' }
+    }
+
+    // (c) plan-limits guard — 月次 OCR ページ上限
+    // canRunOcr は内部で getDb() を使う純粋 read helper。 tx に属さなくてよい。
+    const decision = await canRunOcr(user.id, user.plan, totalPages)
+    if (!decision.ok) {
+      return {
+        outcome: 'quota_exceeded',
+        current: decision.current,
+        limit: decision.limit,
+        requested: decision.requested,
+      }
+    }
+
+    // (d) GEMINI_DAILY_LIMIT guard — サービス全体の日次 Gemini call 上限
+    // CLAUDE.md §AI API 絶対ルール 3: 無料枠運用前提の安全弁。
+    // guard off (null) のケースは logger.warn で可視化 (review I-4 準拠)。
+    const dailyLimit = parseDailyLimit(process.env.GEMINI_DAILY_LIMIT)
+    if (dailyLimit === null) {
+      logger.warn({
+        event: 'gemini.daily_limit.disabled',
+        raw: process.env.GEMINI_DAILY_LIMIT ?? null,
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      })
+    } else {
+      const todayCount = await getTodayAiUsageGlobal()
+      if (todayCount >= dailyLimit) {
+        return {
+          outcome: 'daily_limit_exceeded',
+          current: todayCount,
+          limit: dailyLimit,
+        }
+      }
+    }
+
+    // (e) exam 確定 (新規 INSERT or 既存 validate) + source_documents INSERT
+    // これらを advisory lock と同一 tx に含めることで、 lock が INSERT commit まで保持される。
+    // → lock 解放直後に in-flight 行 check が通過するため、 並列起動を確実に弾ける。
+    let resolvedExamId: string
+    let resolvedExamName: string
+    if (destination.mode === 'new') {
+      // 仮 name は JST date + HH:mm 形式。 ユーザーは S2 で rename 可能。
+      const today = todayInJst()
+      const nowJst = new Date(Date.now() + 9 * 3600 * 1000)
+      const hh = String(nowJst.getUTCHours()).padStart(2, '0')
+      const mm = String(nowJst.getUTCMinutes()).padStart(2, '0')
+      resolvedExamName = `アップロード ${today} ${hh}:${mm}`
+      const inserted = await tx
+        .insert(exams)
+        .values({ userId: user.id, name: resolvedExamName })
+        .returning({ id: exams.id })
+      resolvedExamId = inserted[0].id
+    } else {
+      // 既存 exam の所有者 + archived 状態を validate
+      const found = await tx
+        .select({ id: exams.id, name: exams.name, archivedAt: exams.archivedAt })
+        .from(exams)
+        .where(and(eq(exams.id, destination.examId), eq(exams.userId, user.id)))
+        .limit(1)
+      if (found.length === 0) {
+        return { outcome: 'exam_not_found', archived: false }
+      }
+      if (found[0].archivedAt !== null) {
+        return { outcome: 'exam_not_found', archived: true }
+      }
+      resolvedExamId = found[0].id
+      resolvedExamName = found[0].name
+    }
+
+    const sourceDocInsert = await tx
+      .insert(sourceDocuments)
+      .values({
+        userId: user.id,
+        examId: resolvedExamId,
+        mode: destination.mode,
+        fileType,
+        filename,
+        fileSizeBytes: totalSize,
+        status: 'processing',
+        pagesTotal: totalPages,
+      })
+      .returning({ id: sourceDocuments.id })
+
+    return {
+      outcome: 'success',
+      examId: resolvedExamId,
+      examName: resolvedExamName,
+      sourceDocumentId: sourceDocInsert[0].id,
+    }
+  })
+
+  // -- guard transaction 結果の分岐 --
+  if (guardResult.outcome === 'in_progress') {
+    return {
+      ok: false,
+      code: 'UPLOAD_IN_PROGRESS',
+      error:
+        '処理中の OCR があります。完了をお待ちいただくか『試験一覧』で状況をご確認ください。',
+    }
+  }
+  if (guardResult.outcome === 'quota_exceeded') {
+    return {
+      ok: false,
+      code: 'QUOTA_EXCEEDED',
+      error: `今月の OCR ページ上限に達しました (${guardResult.current}/${guardResult.limit} ページ使用済、 今回要求 ${guardResult.requested} ページ)。 来月までお待ちいただくか上位プランへ。`,
+      details: {
+        current: guardResult.current,
+        limit: guardResult.limit,
+        requested: guardResult.requested,
+      },
+    }
+  }
+  if (guardResult.outcome === 'daily_limit_exceeded') {
+    return {
+      ok: false,
+      code: 'GEMINI_DAILY_LIMIT_EXCEEDED',
+      error:
+        '本日のサービス全体の利用上限に達しました。 明日以降にお試しください。',
+      details: {
+        current: guardResult.current,
+        limit: guardResult.limit,
+      },
+    }
+  }
+  if (guardResult.outcome === 'exam_not_found') {
+    return {
+      ok: false,
+      code: 'EXAM_NOT_FOUND',
+      error: guardResult.archived
+        ? 'アーカイブ済の試験には追加できません'
+        : '選択された試験が見つかりません',
+    }
+  }
+
+  // outcome === 'success': guard 通過、 exam / source_documents INSERT 完了
+  const { examId, examName, sourceDocumentId } = guardResult
 
   // -- OCR pipeline --
   let geminiInputs: GeminiInputFile[]

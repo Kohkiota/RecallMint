@@ -464,6 +464,10 @@ export function UploadForm({
         message: result.error,
         code: result.code,
         details: result.details,
+        // UPLOAD_IN_PROGRESS はファイルの問題ではなく「並列 OCR 実行中」という
+        // 状態エラーなので、「ファイルを変更して再試行」サブタイトルは誤誘導になる。
+        // 他の error code (QUOTA_EXCEEDED / GEMINI_FAILED 等) は retry hint を出す。
+        hideRetryHint: result.code === 'UPLOAD_IN_PROGRESS',
       })
     } else {
       setLongRunning(false)
