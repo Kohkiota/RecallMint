@@ -10,6 +10,7 @@ import {
 } from '@/lib/exams/source-doc-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { DeleteExamButton } from './_components/delete-exam-button'
 
 // S1.7 T7: read-only exam 一覧 (archived_at IS NULL、 updated_at DESC)。
 // 編集 / 削除 / 並び替えなし、 S2 で正式 CRUD を実装する。
@@ -69,9 +70,12 @@ export default async function ExamsListPage() {
                         カード {exam.cardCount} 件 ・ 最終更新 {formatRelativeJa(exam.updatedAt)}
                       </div>
                     </div>
-                    <Button asChild variant="outline" size="sm">
-                      <Link href={`/app/exams/${exam.id}`}>詳細を見る</Link>
-                    </Button>
+                    <div className="flex items-start gap-2 shrink-0">
+                      <Button asChild variant="outline" size="sm">
+                        <Link href={`/app/exams/${exam.id}`}>詳細を見る</Link>
+                      </Button>
+                      <DeleteExamButton examId={exam.id} />
+                    </div>
                   </CardContent>
                 </Card>
               </li>

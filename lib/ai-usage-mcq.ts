@@ -1,11 +1,12 @@
 // 月次 OCR ページ消費 tracker + plan-limits enforce utility。
 //
 // S1.9.1: 集計元を source_documents から upload_records に切り替えた。
-// 旧方式 (source_documents.pages_processed の SUM) は discardUpload が
-// source_documents を物理削除すると SUM の集計元が消える = 月次 quota が
-// 「返金」 され、 「やり直す」 の繰り返しで月次上限を事実上バイパスできた
-// (Bug A)。 upload_records は OCR 完了 / 失敗時に append-only で記録され、
-// discard では一切 touch されないため、 月次消費は monotonic。
+// 旧方式 (source_documents.pages_processed の SUM) は、 当時存在した
+// 「破棄して再アップロード」 機能が source_documents を物理削除すると
+// SUM の集計元が消える = 月次 quota が「返金」 され、 「やり直す」 の
+// 繰り返しで月次上限を事実上バイパスできた (Bug A)。 upload_records は
+// OCR 完了 / 失敗時に append-only で記録され物理削除されないため、
+// 月次消費は monotonic (破棄機能自体も S1.9.3 で廃止済)。
 //
 // 集計仕様:
 // - upload_records.status = 'completed' の行のみ SUM 対象 (failed は台帳には
