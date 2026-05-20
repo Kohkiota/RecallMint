@@ -49,8 +49,9 @@ describe('runOcrPipeline', () => {
     expect(result.tokenUsage).toEqual([
       { model: 'flash', inputTokens: 1_000_000, outputTokens: 100_000 },
     ])
-    // Flash 1M input * $0.3 + 100k output * $2.5 = $0.55 * 150 = ¥83 (round)
-    expect(result.costYen).toBe(83)
+    // Flash 1M input * $0.3 + 100k output * $2.5 = $0.55 * 150 = ¥82.5
+    // (S1.9.2: integer 丸め廃止、 小数 4 桁保持)
+    expect(result.costYen).toBe(82.5)
     expect(mockCallGemini).toHaveBeenCalledTimes(1)
   })
 
