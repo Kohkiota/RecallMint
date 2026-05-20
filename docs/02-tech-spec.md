@@ -14,16 +14,16 @@
        ↓ HTTPS                 ↑ Service Worker (画像/カード本文ローカルキャッシュ)
 [ Next.js 15 App Router on Vercel Pro ]
        ├─ Server Actions (auth required) ──→ [ Neon Postgres ] (RLS / Drizzle ORM)
+       │    └─ processUpload (OCR: アップロードファイルを inline base64 で
+       │       Gemini に送信、同期処理。元ファイルは永続化しない)
        ├─ Server Action: submitContact     (お問い合わせ受付、API Route 不要)
        ├─ API Routes (外部 webhook 受信専用)
        │    ├─ /api/webhooks/clerk
        │    ├─ /api/webhooks/stripe
-       │    ├─ /api/ocr/process       (Vercel Function 60s、長尺は分割並列、β で Inngest 移行)
        │    └─ /api/admin/kill-check  (Cron)
-       ├─ Edge Middleware (Clerk auth)
-       └─ Pre-signed URL → クライアントから R2 直アップロード
+       └─ Edge Middleware (Clerk auth)
 
-[ Cloudflare R2 ]    画像 / 元 PDF（egress 無料）
+[ Cloudflare R2 ]    カード編集時の添付画像（egress 無料、将来機能）
 [ Gemini API ]       2.5 Flash 主軸 / 2.5 Pro フォールバック
 [ Stripe ]           ──webhook──→ /api/webhooks/stripe
 [ Clerk ]            ──webhook──→ /api/webhooks/clerk
@@ -37,9 +37,9 @@
 - **DB**: Neon (PostgreSQL 16) / Drizzle ORM、Row Level Security 有効
 - **決済**: Stripe（Subscription、Customer Portal）
 - **AI / OCR**: Gemini 2.5 Flash 主軸 + Gemini 2.5 Pro フォールバック（精度不足時）。Flash-Lite はコスト最重視時のフォールバック
-- **ストレージ**: Cloudflare R2（画像、egress 無料）。S3 互換 API
-- **ホスティング**: Vercel（Pro プラン $20/月、Function 60s）
-- **OCR ジョブ**: MVP は Vercel Function（最大 60s）で同期処理。50 ページ以上の PDF はクライアント主導で分割し並列 Function 呼び出し。β スケール時に Inngest / QStash 移行
+- **ストレージ**: Cloudflare R2（カード編集時の添付画像、egress 無料、S3 互換 API）。**将来機能** — OCR スキャン元ファイルは保存しない（inline base64 で Gemini に渡すのみ）
+- **ホスティング**: Vercel（Pro プラン $20/月、Function 900s）
+- **OCR ジョブ**: `processUpload` Server Action で同期処理。アップロードファイルは inline base64 で Gemini に送信し、結果を直接 return（永続化・ポーリングなし）。1 ファイル ≤ 150 ページ単発（CLAUDE.md 整合）
 - **PWA**: `next-pwa` + manifest.json + workbox（§9 で詳細化）
 - **監視**: Vercel Analytics + Discord webhook（自前 `/admin` ダッシュボードは v1.2、F-108）
 
@@ -69,8 +69,8 @@
 |区分|テーブル名|用途|状態|
 |---|---|---|---|
 |plan00 流用|`users`|認証・プラン情報・subscription 状態（統合）|変更なし|
-|plan00 流用|`ai_usage`|全体 AI 利用量集計（date PK）|変更なし|
-|plan00 流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）|count を「OCR 抽出問題数」として運用|
+|plan00 流用|`ai_usage`|全体 AI 利用量集計（date PK）。GEMINI_DAILY_LIMIT guard 用、count は Gemini API call 回数|変更なし|
+|plan00 流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）。count は Gemini API call 回数（S1.8 で配線、月次 OCR quota とは無関係）|変更なし|
 |plan00 流用|`clerk_events`|Clerk webhook 重複処理防止|変更なし|
 |plan00 流用|`stripe_events`|Stripe webhook 重複処理防止|変更なし|
 |plan00 流用|`deletion_failures`|アカウント削除失敗ログ|変更なし|
@@ -80,7 +80,8 @@
 |plan00 drop|`ai_examples`|vocab 専用例文、汎用化困難|drop（F-101 解説生成は v1.x で別テーブル新設）|
 |新規|`exams`|試験 + プロパティスキーマ|新設|
 |新規|`cards`|問題本体（words の置換）|新設|
-|新規|`source_documents`|アップロード元の管理|新設|
+|新規|`source_documents`|OCR ジョブの作業 / trace（exam と同寿命）|新設|
+|新規|`upload_records`|OCR 月次利用台帳（append-only、月次 quota 集計元）|S1.9.1 新設|
 |新規|`study_days`|ユーザー単位の学習日カレンダー|新設|
 |採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用 (discover mode 一本化、 `docs/research/ocr-schema-vs-discover.md` 参照)|
 
@@ -404,6 +405,10 @@ hard delete の運用:
 
 #### 2.5.3 source_documents
 
+OCR ジョブの作業 / trace テーブル。exam とライフサイクルを共有し、exam 削除で
+FK CASCADE 連動削除される。**月次 quota 集計には使わない**（S1.9.1 で `upload_records`
+に分離）。アップロードファイル自体は inline base64 で Gemini に渡すのみで永続化しない。
+
 ```typescript
 export const sourceDocuments = pgTable('source_documents', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -414,29 +419,60 @@ export const sourceDocuments = pgTable('source_documents', {
     .notNull()
     .references(() => exams.id, { onDelete: 'cascade' }),
   file_type: text('file_type').notNull(),  // 'pdf' | 'image' | 'csv' | 'markdown'
-  file_url: text('file_url'),  // R2 URL、破棄前提なら NULL
   filename: text('filename').notNull(),
   file_size_bytes: integer('file_size_bytes').notNull(),
-  status: text('status').notNull().default('uploading'),
-    // 'uploading' | 'processing' | 'completed' | 'failed'
+  status: text('status').notNull().default('processing'),
+    // 'processing' | 'completed' | 'failed'（S1.9.1: 'uploading' 廃止）
   pages_processed: integer('pages_processed').notNull().default(0),
   pages_total: integer('pages_total'),
   cards_extracted: integer('cards_extracted').notNull().default(0),
-  ocr_cost_yen: integer('ocr_cost_yen'),
+  ocr_cost_yen: numeric('ocr_cost_yen', { precision: 10, scale: 4, mode: 'number' }),
   error_message: text('error_message'),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   completed_at: timestamp('completed_at', { withTimezone: true }),
 }, (t) => ({
   userExamIdx: index('source_docs_user_exam_idx').on(t.user_id, t.exam_id),
-  statusIdx: index('source_docs_status_idx').on(t.user_id, t.status),  // 「処理中ジョブ存在チェック」用
+  statusIdx: index('source_docs_status_idx').on(t.user_id, t.status),
 }));
 ```
 
 設計メモ:
 
-- 同時実行制限はアプリ層で `WHERE user_id = ? AND status = 'processing' LIMIT 1` チェック
-- `file_url` NULL = OCR 完了後 R2 元ファイル破棄
-- `ocr_cost_yen` は完了時に算出
+- `ocr_cost_yen` は完了時に算出（S1.9.1: integer → numeric(10,4)、cost を小数で保持）
+- S1.9.1: `file_url` 列を drop（R2 にスキャン元を保存しない方針）。`status` から
+  `'uploading'`（R2 presigned upload 段階の状態）を廃止、inline 方式では到達経路なし
+
+#### 2.5.3a upload_records（OCR 月次利用台帳、S1.9.1 新設）
+
+`source_documents` が「OCR 作業テーブル（exam と同寿命、discard / cascade で消える）」
+と「月次 quota 集計元」 を兼ねていたため、discard の物理削除で quota が返金される
+構造欠陥があった（Bug A）。集計元を本テーブルに分離し、OCR 完了 / 失敗時に
+**append-only** で記録、discard では一切 touch しない。これにより月次消費は monotonic。
+
+```typescript
+export const uploadRecords = pgTable('upload_records', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  user_id: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  filename: text('filename').notNull(),
+  file_size_bytes: integer('file_size_bytes').notNull(),
+  pages_processed: integer('pages_processed').notNull().default(0),
+    // 月次 quota SUM の対象列（status='completed' の行のみ集計）
+  ocr_cost_yen: numeric('ocr_cost_yen', { precision: 10, scale: 4, mode: 'number' }),
+  status: text('status').notNull(),  // 'completed' | 'failed'
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  userCreatedIdx: index('upload_records_user_created_idx').on(t.user_id, t.created_at),
+}));
+```
+
+設計メモ:
+
+- `exam_id` を持たない（台帳は exam から独立、exam 削除の影響を受けない）
+- 月次 quota = 当月（JST 月境界）かつ `status='completed'` の `pages_processed` SUM
+- 失敗も `status='failed'` で append（台帳として正確、ただし quota SUM は completed で絞る）
+- append-only。discard / exam 削除のいずれでも削除されない
 
 #### 2.5.4 study_days（学習日カレンダー）
 
@@ -518,6 +554,7 @@ user_id = ?` 必須) で対応。 RLS 復活は v1.x で再評価 (multi-tenant 
 |cards|`cards_exam_idx`|(exam_id)|exam 削除 cascade 用|
 |source_documents|`source_docs_user_exam_idx`|(user_id, exam_id)|試験ごとの取込履歴|
 |source_documents|`source_docs_status_idx`|(user_id, status)|処理中ジョブ検出|
+|upload_records|`upload_records_user_created_idx`|(user_id, created_at)|月次 OCR 利用量 SUM|
 |study_days|(PK 複合)|(user_id, day)|学習日カレンダー|
 
 ### 2.9 よくあるクエリ例
@@ -604,6 +641,7 @@ erDiagram
   users ||--o{ cards : owns
   users ||--o{ reviews : has
   users ||--o{ source_documents : uploads
+  users ||--o{ upload_records : logs
   users ||--o{ ai_usage_users : uses
   users ||--o{ study_days : tracks
   users ||--o{ contact_messages : sends
@@ -612,6 +650,9 @@ erDiagram
   cards ||--o{ reviews : has
   source_documents ||--o{ cards : extracted_to
 ```
+
+`upload_records` は user にのみ紐づき、exam / source_documents とは関連を持たない
+（append-only な月次台帳。discard / exam 削除の cascade から独立させるための設計）。
 
 ---
 
@@ -664,16 +705,22 @@ erDiagram
 - `submitReview(cardId, isCorrect: boolean)` → `Result<{nextDue: Date}>` — MVP は 2 段階。内部で `rating = isCorrect ? 3 : 1` (integer)。reviews insert + cards 学習統計 + FSRS 値 + study_days upsert を 1 トランザクションで実行
 - `resetCardStatus(cardId)` → `Result<void>` — answered / last_correct / current_streak / FSRS 状態をリセット（reviews 履歴は残す）
 
-**画像アップロード**:
+**画像アップロード（将来機能、未実装）**:
 
 - `getImageUploadUrl(cardId, mimeType)` → `Result<{uploadUrl, key, expiresAt}>` — presigned URL 10 分有効、client → R2 直接アップロード用
 - `confirmImageUpload(cardId, key, url)` → `Result<Card>` — cards.images に追加
+- ※ カード編集時の画像添付（Logic 2）用。MVP 時点では未着手、`cards.images` 列のみ存在
 
-**ソースドキュメント / OCR**:
+**OCR（ソースドキュメント）**:
 
-- `startUpload(filename, mimeType, examId)` → `Result<{uploadUrl, sourceDocId, expiresAt}>`
-- `processSourceDoc(sourceDocId)` → `Result<void>` — OCR ジョブ起動。1 ユーザー同時 1 ジョブ制限
-- `getUploadStatus(sourceDocId)` → `Result<SourceDocument>` — 進捗ポーリング、3 秒間隔想定
+- `processUpload(formData)` → `ProcessUploadResult` — `/app/upload` の OCR Server Action。
+  クライアントから `FormData`（ファイル本体 + 投入先 exam）を受け取り、ファイルを
+  inline base64 化して Gemini に送信、cards を抽出・保存し、結果を直接 return する。
+  R2 / presigned URL / ポーリングは経由しない（同期処理）。プラン月次上限の enforce、
+  `source_documents` 記録、`upload_records` への台帳 append もここで行う
+- `discardUpload(sourceDocumentId, autoCreatedExamId?)` → `ActionResult` —
+  「やり直し」「ファイル変更」用。直前 OCR の cards / source_documents（mode='new'
+  なら exam ごと）を削除。`upload_records` は touch しない（月次消費は返金しない）
 
 **インポート (F-008)**:
 
@@ -692,18 +739,21 @@ erDiagram
 
 - `POST /api/webhooks/clerk` — `user.created` / `user.deleted` 同期
 - `POST /api/webhooks/stripe` — `subscription.created/updated/deleted`、`invoice.paid`
-- `POST /api/ocr/process` — OCR 実行（Vercel Function、最大 60s）
 - `POST /api/admin/kill-check` — Cron で kill 条件を毎日チェックし Discord 通知
 
-### 非同期処理戦略
+※ OCR は API Route ではなく `processUpload` Server Action で処理する（下記）。
 
-- **MVP**:
-    - 50 ページ未満 PDF / 写真 → Vercel Function 60s で同期処理
-    - 50 ページ以上 PDF → クライアント主導で 50 ページ単位に分割し並列 Function 呼び出し
-- **β スケール時**: 50 ページ以上を Inngest / QStash にオフロード、クライアントはポーリング継続
-- **Pre-signed Upload**: クライアント → R2 直接アップロード（Vercel 帯域消費を避ける）、有効期限 10 分
-- **進捗表示**: クライアントから `getUploadStatus` を 3 秒間隔ポーリング
-- **同時実行制限**: 1 ユーザー同時 1 ジョブ。`source_documents.status='processing'` の既存ジョブがあれば新規受付拒否
+### OCR 処理戦略
+
+- **MVP**: `processUpload` Server Action で同期処理。クライアントが `FormData` で
+  ファイル本体を送信 → サーバーで inline base64 化 → Gemini に送信 → 結果を直接 return。
+  R2 / presigned URL / 進捗ポーリングは経由しない
+- **入力上限**: 1 ファイル ≤ 150 ページ単発（Vercel Pro の Function timeout 900s で完結。
+  CLAUDE.md「1 ファイル ≤ 150 ページ単発で完結」 と整合）
+- **クライアント側 timeout**: 90 秒（サーバー応答が返らない場合に spinner を打ち切り
+  retry 誘導、S1.7）
+- **β スケール時**: さらなる長尺対応が必要になれば Inngest / QStash 等へのオフロードを
+  再検討（MVP scope 外）
 
 ---
 
@@ -753,12 +803,12 @@ lib/
   auth/
     clerk.ts
   users/
-    delete.ts             # アカウント削除フロー（Clerk → DB cascade → R2）
+    delete.ts             # アカウント削除フロー（Clerk → DB cascade）
   stripe/
     client.ts
     webhook.ts
   storage/
-    r2.ts                 # presigned URL 発行 / 削除
+    r2.ts                 # presigned URL 発行 / 削除（将来機能、カード添付画像用。未実装）
   ai/
     gemini.ts
     prompts/
@@ -839,7 +889,9 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 
 - Stripe Customer ↔ users.id: `users.stripe_customer_id`
 - `users.plan` / `users.billing_interval` を webhook で更新
-- 上限チェックは `lib/db/queries/ai_usage.ts` で `ai_usage_users.count` の月次集計
+- 月次 OCR 上限チェックは `lib/ai-usage-mcq.ts` の `canRunOcr` / `getCurrentMonthOcrPages`
+  で、`upload_records` の当月（JST 月境界）かつ `status='completed'` 行の
+  `pages_processed` SUM を plan 別上限と比較（S1.9.1）
 
 ### Customer Portal
 
@@ -851,9 +903,13 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 2. `clerkClient.users.deleteUser()` 呼び出し
 3. Webhook `user.deleted` 受信
 4. Stripe subscription cancel（`for await` で全件）
-5. R2 上の画像 / 元 PDF を全削除（`/users/{user_id}/` プレフィックス配下）
-6. DB cascade で cards / reviews / source_documents / study_days / ai_usage_users 等を削除
-7. plan00 で確立済みのフロー（webhook-driven）を流用
+5. DB cascade で exams / cards / reviews / source_documents / upload_records /
+   study_days / ai_usage_users 等を削除（users への FK ON DELETE CASCADE）
+6. plan00 で確立済みのフロー（webhook-driven）を流用
+
+※ OCR スキャン元ファイルは R2 等に保存しないため、ファイル削除ステップは不要。
+カード添付画像（将来機能）を R2 に保存する設計を実装する際は、本フローに
+`/users/{user_id}/` プレフィックス配下の R2 オブジェクト削除を追加する。
 
 ---
 
@@ -905,18 +961,27 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 
 ### Logic 1: OCR テキスト抽出（MVP スコープ）
 
-- **入力**: PDF or 画像（R2 上の URL）、ユーザーの試験 ID
+- **入力**: PDF or 画像ファイル（クライアントから `FormData` で送信、R2 非経由）、投入先 exam
 - **出力**: `cards[]`（title / question_text / options / correct_answer_ids / explanation_text / sort_key / custom_props）
+- **実行**: `processUpload` Server Action で同期処理
 - **アルゴリズム**:
-    1. PDF サイズ判定:
-        - 50 ページ未満: そのまま Gemini に渡す（1 リクエスト）
-        - 50 ページ以上: pdf-lib で 50 ページずつ分割 → 並列 Function 呼び出し
-    2. Gemini に Structured Output (discover mode) で構造化指示。 AI は文書中に明示記載された問題ごとのメタデータを自由なキー名で `custom_props` に抽出する (推測補完は禁止、 経緯: `docs/research/ocr-schema-vs-discover.md`)
-    3. レスポンスをパース → cards に挿入（`due = now()`, `state = 0`(new), `answered = false`）
-    4. `source_documents.status = 'completed'`、`pages_processed` / `cards_extracted` / `ocr_cost_yen` 更新
-- **画像は抽出しない**: ユーザーが後から編集ビューで手動添付
+    1. 認証 → ページ数推定 → 月次 quota enforce（`canRunOcr`、`upload_records` SUM 比較）
+       → GEMINI_DAILY_LIMIT guard
+    2. exam 確定（mode='new' なら INSERT、mode='existing' なら所有者検証）→
+       `source_documents` を `status='processing'` で INSERT
+    3. ファイルを `arrayBuffer` → base64 化し、Gemini に **inline base64** で送信。
+       Structured Output (discover mode) で構造化指示。AI は文書中に明示記載された
+       問題ごとのメタデータを自由なキー名で `custom_props` に抽出（推測補完は禁止、
+       経緯: `docs/research/ocr-schema-vs-discover.md`）
+    4. レスポンスをパース → cards に挿入（`due = now()`, `state = 0`(new), `answered = false`）
+    5. 1 transaction で `source_documents` を `status='completed'` に更新
+       （`pages_processed` / `cards_extracted` / `ocr_cost_yen`）+ `upload_records` に
+       `status='completed'` 行を append（月次台帳）。失敗時は両テーブルに failed 記録
+- **長尺方針**: 1 ファイル ≤ 150 ページ単発（Vercel Pro Function 900s で完結）。
+  ページ分割・並列呼び出しは行わない
+- **画像は抽出しない**: ユーザーが後から編集ビューで手動添付（Logic 2、将来機能）
 
-### Logic 2: 画像手動添付（MVP）
+### Logic 2: 画像手動添付（将来機能、未実装）
 
 - **トリガ**: 編集ビューでクリップボードペースト or ドラッグ&ドロップ
 - **アルゴリズム**:
@@ -1098,7 +1163,7 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 |ロギング|`console` + Vercel Logs（保存 7 日）、エラーは Discord に転送|
 |テスト|vitest 単体（FSRS scheduler / OCR parser / CSV パーサ）、Playwright E2E（学習 / 課金 / インポート）|
 |CI/CD|GitHub Actions（main push で Vercel auto deploy、Preview 不使用）、PR で TypeScript / lint チェック|
-|OCR 進捗表示|クライアントから `getUploadStatus` を 3 秒間隔ポーリング|
+|OCR 進捗表示|`processUpload` Server Action の同期応答待ち（spinner 表示、クライアント側 90 秒 timeout）。ポーリングなし|
 |レート制限|Vercel Edge Middleware で IP / user 単位（OCR 過剰利用対策）|
 
 ---
@@ -1135,7 +1200,8 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 - **監視**: Vercel Analytics + Discord webhook（自前 `/admin` ダッシュボードは v1.2、F-108）
 - **バックアップ**:
     - Neon: 自動バックアップ（日次・7 日保持）
-    - R2: バージョニング有効、ライフサイクル 90 日
+    - R2: カード添付画像（将来機能）を保存する設計を実装する際にバージョニング有効化を検討。
+      OCR スキャン元ファイルは保存しないためバックアップ対象外
 - **ロールバック**: Vercel の Promote previous deployment ボタン
 - **Cron**: Vercel Cron で `/api/admin/kill-check` を毎日 06:00 JST 実行
 
@@ -1176,7 +1242,9 @@ R2 採用根拠は egress 無料。 S3 互換 API のため将来 S3 / 他 S3 �
 
 ### 13.3 長尺 PDF の OCR 処理
 
-Vercel Function 60s + 並列分割で完結するか、Inngest / QStash 等の background job が必要か。実装着手後に β で測定。
+MVP は 1 ファイル ≤ 150 ページ単発を Vercel Pro Function（900s）で完結させる。
+それを超える長尺需要が出た場合に Inngest / QStash 等の background job が必要か、
+β で測定して判断。
 
 ### 13.4 画像 OCR 自動切り抜きの v1.x 採否
 
