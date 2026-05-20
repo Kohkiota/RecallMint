@@ -520,6 +520,8 @@ async function markFailed(
   } catch (updateErr) {
     // status='processing' のまま残るが、 ops 通知側で source_document_id を持つので
     // 後から OT が手動で update 可能。 巻き込み防止のため throw しない。
+    // S1.9.1: 月次 quota は upload_records 集計のため、 source_documents が
+    // processing 残骸として残っても消費計算には一切影響しない。
     logger.warn({
       event: 'source_documents.mark_failed.update_failed',
       sourceDocumentId,
