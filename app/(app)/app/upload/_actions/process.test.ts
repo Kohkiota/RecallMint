@@ -264,6 +264,8 @@ describe('processUpload', () => {
     expect(result.data?.modelChain).toEqual(['flash'])
     expect(result.data?.cards).toHaveLength(1)
     expect(result.data?.cards[0].customPropKeys).toEqual(['試験回'])
+    // mode='new' → exam を auto 作成したので examWasAutoCreated=true (S1.9)
+    expect(result.data?.examWasAutoCreated).toBe(true)
     // exam created with auto-name pattern
     expect(dbState.insertedExams).toHaveLength(1)
     expect(dbState.insertedExams[0].name).toMatch(/^アップロード \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
@@ -362,6 +364,46 @@ describe('processUpload', () => {
     const { processUpload } = await importProcess()
     await processUpload(fd)
     expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+  })
+
+  it('happy path (existing exam): no exam INSERT, examWasAutoCreated=false', async () => {
+    dbState.selectedExam = {
+      id: 'exam-existing',
+      name: '既存試験',
+      archivedAt: null,
+    }
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 2,
+      tokenUsage: [{ model: 'flash', inputTokens: 100, outputTokens: 10 }],
+    })
+    dbState.nextCardIds = ['card-1']
+    const fd = makeFormData({
+      mode: 'existing',
+      examId: 'exam-existing',
+      files: [sampleImage],
+    })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    // 既存 exam 利用 → exam INSERT は走らない
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(result.data?.examId).toBe('exam-existing')
+    expect(result.data?.examName).toBe('既存試験')
+    // mode='existing' → discard でも exam を残すため false (S1.9)
+    expect(result.data?.examWasAutoCreated).toBe(false)
   })
 
   it('OCR pipeline failure → GEMINI_FAILED with details, source_doc marked failed + notifyOps', async () => {

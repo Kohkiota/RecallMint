@@ -457,9 +457,14 @@ export function UploadForm({
     // 「やり直し」 = 直前の成功 source_document を消してから新規 process
     if (phase.kind !== 'success') return
     const prevId = phase.result.sourceDocumentId
+    // S1.9: auto 作成 exam (mode==='new') なら discard 時に空 exam も掃除させる。
+    // 既存 exam への追加だった場合は undefined を渡し exam を残す。
+    const autoCreatedExamId = phase.result.examWasAutoCreated
+      ? phase.result.examId
+      : undefined
     setPhase({ kind: 'submitting' })
     void (async () => {
-      await discardUpload(prevId)
+      await discardUpload(prevId, autoCreatedExamId)
       await runProcess()
       // S1.8: 同 page 内 button のため別 path への navigation がない。
       // discard / process Server Action 内で revalidatePath('/','layout') 済だが、
@@ -488,11 +493,15 @@ export function UploadForm({
     }
     if (phase.kind === 'success') {
       const prevId = phase.result.sourceDocumentId
+      // S1.9: auto 作成 exam (mode==='new') なら discard 時に空 exam も掃除させる。
+      const autoCreatedExamId = phase.result.examWasAutoCreated
+        ? phase.result.examId
+        : undefined
       // discard 中も spinner を出すため一時的に submitting に。
       // discard 完了 (通常 1 秒以内) で idle + entries clear。
       setPhase({ kind: 'submitting' })
       void (async () => {
-        await discardUpload(prevId)
+        await discardUpload(prevId, autoCreatedExamId)
         clearEntries()
         setPhase({ kind: 'idle' })
         // S1.8: file 選択画面に戻った時点で残量 banner を新値で再 render。
