@@ -282,14 +282,14 @@ describe('processUpload', () => {
     expect(result.data?.modelChain).toEqual(['flash'])
     expect(result.data?.cards).toHaveLength(1)
     expect(result.data?.cards[0].customPropKeys).toEqual(['試験回'])
-    // mode='new' → exam を auto 作成したので examWasAutoCreated=true (S1.9)
-    expect(result.data?.examWasAutoCreated).toBe(true)
     // exam created with auto-name pattern
     expect(dbState.insertedExams).toHaveLength(1)
     expect(dbState.insertedExams[0].name).toMatch(/^アップロード \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
     expect(dbState.insertedExams[0].userId).toBe('user-uuid')
     // source_document INSERT + later COMPLETED update
     expect(dbState.insertedSourceDocs).toHaveLength(1)
+    // S1.9.2: source_documents に mode='new' が記録される
+    expect(dbState.insertedSourceDocs[0].mode).toBe('new')
     expect(dbState.updatedSourceDocs).toHaveLength(1)
     expect(dbState.updatedSourceDocs[0]).toMatchObject({
       status: 'completed',
@@ -427,8 +427,8 @@ describe('processUpload', () => {
     expect(dbState.insertedExams).toHaveLength(0)
     expect(result.data?.examId).toBe('exam-existing')
     expect(result.data?.examName).toBe('既存試験')
-    // mode='existing' → discard でも exam を残すため false (S1.9)
-    expect(result.data?.examWasAutoCreated).toBe(false)
+    // S1.9.2: source_documents に mode='existing' が記録される
+    expect(dbState.insertedSourceDocs[0].mode).toBe('existing')
   })
 
   it('OCR pipeline failure → GEMINI_FAILED with details, source_doc marked failed + notifyOps', async () => {

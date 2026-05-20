@@ -324,6 +324,12 @@ export const sourceDocuments = pgTable(
     examId: uuid('exam_id')
       .notNull()
       .references(() => exams.id, { onDelete: 'cascade' }),
+    // S1.9.2: この upload が exam を新規作成したか (= 'new') / 既存 exam に
+    // 追加したか (= 'existing') を記録。 discard 時に「auto 作成 exam を
+    // cascade 削除するか / 既存 exam を残すか」 を server 側で DB から判定する
+    // 真実 source。 旧来 client が examWasAutoCreated を持ち回っていたのを廃止し、
+    // URL / client 改竄に対して堅牢化。 default なし = processUpload で必ず set。
+    mode: text('mode').$type<'new' | 'existing'>().notNull(),
     fileType: text('file_type')
       .$type<'pdf' | 'image' | 'csv' | 'markdown'>()
       .notNull(),

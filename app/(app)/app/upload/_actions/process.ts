@@ -44,10 +44,6 @@ export type ProcessResultData = {
   sourceDocumentId: string
   examId: string
   examName: string
-  // この upload で exam を新規 INSERT したか (destination.mode === 'new')。
-  // discard 時に「空の auto-created exam を一緒に消す」 判定に使う (S1.9 案 B)。
-  // 既存 exam への追加 (mode === 'existing') は false で、 discard でも exam を残す。
-  examWasAutoCreated: boolean
   cardsExtracted: number
   ocrCostYen: number
   modelChain: string[]
@@ -276,6 +272,7 @@ async function _processUpload(
     .values({
       userId: user.id,
       examId,
+      mode: destination.mode,
       fileType,
       filename,
       fileSizeBytes: totalSize,
@@ -461,7 +458,6 @@ async function _processUpload(
       sourceDocumentId,
       examId,
       examName,
-      examWasAutoCreated: destination.mode === 'new',
       cardsExtracted: insertedCards.length,
       ocrCostYen: pipelineResult.costYen,
       modelChain: pipelineResult.modelChain.map(String),

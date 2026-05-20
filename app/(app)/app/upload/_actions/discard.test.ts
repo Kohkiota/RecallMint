@@ -9,7 +9,8 @@ const {
   mockGetCurrentUser: vi.fn(),
   mockRevalidatePath: vi.fn(),
   dbState: {
-    selectFound: false,
+    // 所有者確認 SELECT が返す row。 null = 不在 (他 user / 削除済)。
+    foundRow: null as { id: string; examId: string; mode: string } | null,
     // 全 delete() (db 直 + transaction 内 tx 経由) の table を順序付きで record。
     deleteTables: [] as unknown[],
     transactionRan: false,
@@ -40,7 +41,7 @@ vi.mock('@/lib/db', () => {
   }
   return {
     getDb: () => ({
-      select: () => chain(dbState.selectFound ? [{ id: 'sdoc-id' }] : []),
+      select: () => chain(dbState.foundRow ? [dbState.foundRow] : []),
       // mode='new' の exam DELETE は transaction 外で db.delete を直接使う
       delete: recordingDelete,
       transaction: async (
@@ -60,7 +61,7 @@ async function importDiscard() {
 beforeEach(() => {
   mockGetCurrentUser.mockReset()
   mockRevalidatePath.mockReset()
-  dbState.selectFound = false
+  dbState.foundRow = null
   dbState.deleteTables = []
   dbState.transactionRan = false
   mockGetCurrentUser.mockResolvedValue({
@@ -74,63 +75,57 @@ beforeEach(() => {
   })
 })
 
+function deletedTableNames(): string[] {
+  return dbState.deleteTables.map((t) => getTableName(t as never))
+}
+
 describe('discardUpload', () => {
-  it('auth fail → revalidates, no deletes', async () => {
+  it('auth fail → revalidates /app/upload + /app/exams, no deletes', async () => {
     mockGetCurrentUser.mockResolvedValueOnce(null)
     const { discardUpload } = await importDiscard()
     const r = await discardUpload('sdoc-id')
     expect(r.ok).toBe(false)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams')
     expect(dbState.deleteTables).toHaveLength(0)
   })
 
   it('not-found (other user / already deleted) → silent ok + revalidate, no deletes', async () => {
-    dbState.selectFound = false
+    dbState.foundRow = null
     const { discardUpload } = await importDiscard()
-    const r = await discardUpload('sdoc-id', 'exam-uuid')
+    const r = await discardUpload('sdoc-id')
     expect(r.ok).toBe(true)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
     expect(dbState.deleteTables).toHaveLength(0)
     expect(dbState.transactionRan).toBe(false)
   })
 
-  it('mode=new (autoCreatedExamId): deletes exam only, source_documents + cards go via FK CASCADE', async () => {
-    dbState.selectFound = true
+  it("mode='new': deletes exam only; source_documents + cards go via FK CASCADE", async () => {
+    dbState.foundRow = { id: 'sdoc-id', examId: 'exam-uuid', mode: 'new' }
     const { discardUpload } = await importDiscard()
-    const r = await discardUpload('sdoc-id', 'exam-uuid')
+    const r = await discardUpload('sdoc-id')
     expect(r.ok).toBe(true)
     // exam 1 文のみ DELETE (cascade は DB 側、 アプリは cards/source_documents を消さない)
-    expect(dbState.deleteTables.map((t) => getTableName(t as never))).toEqual([
-      'exams',
-    ])
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+    expect(deletedTableNames()).toEqual(['exams'])
+    expect(dbState.transactionRan).toBe(false)
   })
 
-  it('mode=existing (no autoCreatedExamId): deletes cards + source_documents in a transaction, exam untouched', async () => {
-    dbState.selectFound = true
+  it("mode='existing': deletes cards + source_documents in a transaction, exam untouched", async () => {
+    dbState.foundRow = { id: 'sdoc-id', examId: 'exam-uuid', mode: 'existing' }
     const { discardUpload } = await importDiscard()
     const r = await discardUpload('sdoc-id')
     expect(r.ok).toBe(true)
     expect(dbState.transactionRan).toBe(true)
-    expect(dbState.deleteTables.map((t) => getTableName(t as never))).toEqual([
-      'cards',
-      'source_documents',
-    ])
-    // exams は触らない
-    expect(
-      dbState.deleteTables.map((t) => getTableName(t as never)),
-    ).not.toContain('exams')
+    expect(deletedTableNames()).toEqual(['cards', 'source_documents'])
+    expect(deletedTableNames()).not.toContain('exams')
   })
 
-  it('never touches upload_records (= 月次 quota は返金されない、 Bug A 解消)', async () => {
-    dbState.selectFound = true
+  it('never touches upload_records (= 月次 quota は返金されない、 Bug A 解消維持)', async () => {
     const { discardUpload } = await importDiscard()
-    // mode=new
-    await discardUpload('sdoc-id', 'exam-uuid')
-    // mode=existing
+    dbState.foundRow = { id: 'sdoc-id', examId: 'exam-uuid', mode: 'new' }
     await discardUpload('sdoc-id')
-    expect(
-      dbState.deleteTables.map((t) => getTableName(t as never)),
-    ).not.toContain('upload_records')
+    dbState.foundRow = { id: 'sdoc-id', examId: 'exam-uuid', mode: 'existing' }
+    await discardUpload('sdoc-id')
+    expect(deletedTableNames()).not.toContain('upload_records')
   })
 })
