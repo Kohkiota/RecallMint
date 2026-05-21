@@ -80,7 +80,7 @@ Minor 4 件 (いずれも未修正、 cosmetic / future-sprint):
 - 無関係 file の bare `§N.M` 参照 20+ 箇所は scope 外 → 別 docs-hygiene sprint。
 完了条件: code file の `docs/superpowers/specs` path hit 0 件 / `pnpm build` pass。
 
-## 裏取り (staging smoke) 結果
+## 裏取り (staging / production smoke) 結果
 
 決済 / Clerk webhook / 削除を伴う変更のため CLAUDE.md「重要 Fix の裏取り」に従い、
 review pass → commit (tag 無し) → OT staging smoke → `[reviewed]` amend の手順を実施。
@@ -106,17 +106,23 @@ review pass → commit (tag 無し) → OT staging smoke → `[reviewed]` amend 
 transient retry / permanent 分類の挙動は staging で意図的再現が不可能なため、
 route.test.ts の unit test 17 件 (fake timers) が担保。
 
+**Production smoke (main merge + 本番デプロイ後) — 全項目 OK**:
+- 本番環境で削除フロー完走: `/api/webhooks/clerk` POST 200 →
+  `/api/me/deletion-status` polling `completed` → `/sign-out-deleted` redirect 完走
+- D1 (cascade dormant) の解消を本番環境で最終確認。
+
 ## 既知の積み残し / follow-up (別 sprint)
 
 - **docs-hygiene sprint**: 無関係 file の bare `§N.M` spec 参照 20+ 箇所
   (route-groups §4.6 / structured-logger §3 / webhook-error-strengthening §2 /
   deletion-status §3.x 等) の整理。
-- **S1.9.6 以降**: Vercel cron による `deletion_failures` (`resolved_at IS NULL`)
-  自動 retry sweep (kickoff §不採用で別 sprint 化)。 実装時に T3 M-3 の
-  `isTransientDbError` 防御的 narrowing も併せて検討。
-- **記録のみ**: `vercel.json` は clerk webhook を `maxDuration: 60` に明示設定
-  (kickoff 設計前提の 600s と相違)。 launch 段階 (sub 数 0〜1) では budget 内で
-  問題なし。 整合は本 sprint scope 外。
+- **S1.9.6 cron sweep**: Vercel cron による `deletion_failures`
+  (`resolved_at IS NULL`) 自動 retry sweep (kickoff §不採用で別 sprint 化)。
+- **vercel.json maxDuration 整合**: clerk webhook が `maxDuration: 60` に明示設定
+  (kickoff 設計前提の 600s と相違)。 launch 段階 (sub 数 0〜1) は budget 内で問題なし。
+- **T3 M-3**: `isTransientDbError` の codeless-error 防御的 narrowing
+  (code-bug 由来 error の過剰 retry 回避)。 S1.9.6 cron sweep で本関数を再利用する
+  際に併せて検討。
 
 ## 検証コマンド
 
@@ -127,5 +133,8 @@ route.test.ts の unit test 17 件 (fake timers) が担保。
 ## sprint closure
 
 全 5 task 完了。 feat 3 commit は全て formal review (Critical 0) + OT staging smoke を
-経て `[reviewed]`。 develop に積み終わり (未 push、 push は OT 実施)。
-production 反映は develop → staging → main merge の通常フローで、 T2/T3 は同梱。
+経て `[reviewed]`。 staging smoke + production smoke の両方で削除フロー完走を確認し、
+D1 (cascade dormant) を解消。 358 unit test all green。
+develop → main は fast-forward merge 済 (本 closure commit も同梱)。 schema 変更なし
+(`failureKind` の `$type` union 拡張のみ = compile-time、 DB migration 不要)。
+origin への push は OT 実施。
