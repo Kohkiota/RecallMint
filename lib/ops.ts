@@ -1,4 +1,4 @@
-// Spec: docs/superpowers/specs/2026-04-27-account-deletion-redesign.md §6.3
+// 運用通知 helper。設計: tech-spec §6 (アカウント削除フローの失敗通知を含む)。
 // Operational notification helper. Posts a structured message to the Discord
 // channel configured via OPS_DISCORD_WEBHOOK_URL.
 //
@@ -59,7 +59,6 @@ export async function notifyOps(
 
 /**
  * Webhook handler の outer catch 専用 helper。
- * Spec: docs/superpowers/specs/2026-04-29-webhook-error-strengthening.md §2
  *
  * notifyOps を内側で呼び、payload shape を 4 callsite (Clerk / Stripe webhook)
  * で統一する。`environment` / `timestamp` は helper 内部で自動付与し、callsite に

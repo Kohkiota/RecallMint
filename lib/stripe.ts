@@ -57,8 +57,8 @@ if (isProd) {
   }
 }
 
-// Spec: docs/superpowers/specs/2026-04-27-account-deletion-redesign.md §8.3
-// hybrid retry の SDK part。stripe-node v22 の RequestSender._shouldRetry は
+// アカウント削除フロー (tech-spec §6) の Stripe cancel hybrid retry — SDK part。
+// stripe-node v22 の RequestSender._shouldRetry は
 // network error / 409 / 5xx のみ retry 対象 (HTTP 429 は SDK 対象外)。
 // SDK の Idempotency-Key 自動付与で cancel 含む全 API を安全に retry。
 //

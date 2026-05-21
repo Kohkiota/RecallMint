@@ -1,11 +1,10 @@
-// Spec §6.2 / §8.1-§8.5 / §6.3
-// Clerk webhook handler。Webhook 駆動再設計の主体 (Plan B B2)。
+// Clerk webhook handler。設計: tech-spec §6 (アカウント削除フロー) / §5 (認証同期)。
 //
 // Architecture:
 // 1. Svix 検証
 // 2. clerk_events idempotency INSERT (svix-id PK、duplicate なら 200 即 return)
 // 3. user.created → users INSERT ON CONFLICT DO NOTHING (既存挙動維持)
-//    user.deleted → DB deletedAt set + Stripe sub auto-pagination cancel
+//    user.deleted → Stripe sub cancel + soft delete + 子データ物理削除 (retry 付)
 // 4. outer catch で notifyOps explicit (Next.js onRequestError は uncaught 限定 fire)
 // 5. 200 強制 return (Clerk リトライ抑止、recovery は deletion_failures + 手動)
 
@@ -28,7 +27,7 @@ type ClerkEvent =
   | { type: 'user.deleted'; data: { id: string } }
   | { type: string; data: unknown }
 
-// Spec §8.4: cancel 対象 status。canceled / incomplete* / unpaid / paused は skip。
+// cancel 対象 status。canceled / incomplete* / unpaid / paused は skip。
 const CANCEL_TARGETS = new Set<Stripe.Subscription.Status>([
   'active',
   'trialing',
@@ -68,7 +67,7 @@ export async function POST(req: Request) {
 
   const db = getDb()
 
-  // Spec §8.1 layer 0: clerk_events idempotency. svix-id を PK として INSERT、
+  // clerk_events idempotency. svix-id を PK として INSERT、
   // duplicate なら 200 即 return (Clerk が同一 message を再配信した場合の skip)。
   const inserted = await db
     .insert(clerkEvents)
@@ -80,14 +79,14 @@ export async function POST(req: Request) {
   }
 
   // user.deleted / user.created は evt.data.id を持つ。outer catch で userId を
-  // 通知に含めて切り分け (Vercel logs / Neon SELECT) を簡素化 — spec §8.2。
+  // 通知に含めて切り分け (Vercel logs / Neon SELECT) を簡素化。
   const userId = (evt.data as { id?: string } | null | undefined)?.id
 
   try {
     await handleEvent(evt)
     return new Response('ok', { status: 200 })
   } catch (err) {
-    // Spec §8.2 + Phase 1 E-3 spec: outer catch で notifyWebhookError 経由 (Stripe 側
+    // outer catch で notifyWebhookError 経由 (Stripe 側
     // と payload shape 統一、env/timestamp 自動付与)。
     await notifyWebhookError({
       handler: 'clerk',
@@ -147,7 +146,7 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
     return
   }
 
-  // §6 / §8.4 / §8.5: customerId があれば Stripe sub cancel ループを実行する
+  // §6: customerId があれば Stripe sub cancel ループを実行する
   // (transaction 外。Stripe 失敗が記録されても DB transaction は forward-only で実行)。
   // customerId なし = Free プラン user → Stripe ループを skip して transaction へ進む。
   if (customerId) {
@@ -262,7 +261,7 @@ async function recordFailure(args: {
   })
 }
 
-// Spec §8.5: customer 削除済み判定。Stripe SDK の error code で narrow。
+// customer 削除済み判定。Stripe SDK の error code で narrow。
 function isCustomerMissing(err: unknown): boolean {
   return (
     err instanceof Stripe.errors.StripeInvalidRequestError &&

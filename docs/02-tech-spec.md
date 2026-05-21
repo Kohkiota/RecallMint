@@ -400,7 +400,7 @@ hard delete の運用:
 
 - 削除は `DELETE FROM cards WHERE id = ?` で物理削除（Sprint A-2 確定、 個人情報削除依頼への対応容易性を優先）
 - 削除カードの復元は MVP 不要
-- アカウント削除時は users → cards CASCADE で物理削除
+- アカウント削除時は exams DELETE の FK CASCADE で cards も物理削除（§6 削除フロー参照）
 - reviews は `cards.id` ON DELETE CASCADE のため、 cards 物理削除で対応する review 履歴も消える。 月次総学習回数等の長期統計は study_days で別途保持（§2.5.4）
 
 #### 2.5.3 source_documents
@@ -733,7 +733,7 @@ erDiagram
 
 **アカウント**:
 
-- `requestAccountDeletion()` → `Result<void>`（Clerk delete → webhook で cascade）
+- アカウント削除: `/settings` の削除ボタンが client `user.delete()` を呼び、Clerk webhook `user.deleted` 経由で削除フローが走る（§6 参照、専用 server action なし）
 
 ### API Routes（外部 webhook 受信専用）
 
@@ -802,8 +802,6 @@ lib/
       contact.ts
   auth/
     clerk.ts
-  users/
-    delete.ts             # アカウント削除フロー（Clerk → DB cascade）
   stripe/
     client.ts
     webhook.ts
@@ -863,7 +861,7 @@ components/
 - **セッション取得**:
     - Server: `auth()` from `@clerk/nextjs/server`
     - Client: `useUser()`, `useAuth()`
-- **DB 同期**: Webhook only（`user.created` で `users` insert、`user.deleted` で cascade）
+- **DB 同期**: Webhook only（`user.created` で `users` insert、`user.deleted` で soft delete + 子データ物理削除）
 - **認可方式**: 所有者チェック（`cards.user_id = auth().userId`）+ Postgres RLS
 - **管理者ロール**: v1.2 で /admin (F-108) 実装時に Clerk Public Metadata で付与
 
@@ -897,15 +895,29 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 
 - Stripe ホスト型、`/settings` から遷移
 
-### アカウント削除フロー（`lib/users/delete.ts`）
+### アカウント削除フロー（`app/api/webhooks/clerk/route.ts` の `handleUserDeleted`）
 
-1. ユーザーが `/settings` で削除リクエスト
-2. `clerkClient.users.deleteUser()` 呼び出し
-3. Webhook `user.deleted` 受信
-4. Stripe subscription cancel（`for await` で全件）
-5. DB cascade で exams / cards / reviews / source_documents / upload_records /
-   study_days / ai_usage_users 等を削除（users への FK ON DELETE CASCADE）
-6. plan00 で確立済みのフロー（webhook-driven）を流用
+削除ロジックは独立 file ではなく Clerk webhook handler に inline（S1.9.5 確定）。
+
+1. ユーザーが `/settings` の削除ボタンで削除リクエスト（client `user.delete()`、
+   Clerk の reverification を `useReverification` で処理）
+2. Clerk が user を削除 → Webhook `user.deleted` 発火
+3. `handleUserDeleted` が `users` を `clerk_id` で SELECT し内部 id / Stripe customer
+   を取得（0 行 = webhook 順序逆転で users 未同期 → notifyOps 通知して終了）
+4. Stripe subscription cancel（`for await` 全件、transaction 外。失敗は
+   `deletion_failures` 記録 + Discord 通知）
+5. DB transaction（transient error 時 最大 3 retry、backoff 500/1000/2000ms）:
+   - `users` は **soft delete**（`deleted_at` set）— Stripe webhook 遅延発火 /
+     audit retention のため物理削除しない
+   - `exams` / `study_days` / `contact_messages` を物理 DELETE。`exams` DELETE は
+     FK ON DELETE CASCADE で `cards` / `source_documents` / `reviews` を連動削除
+   - transaction 全失敗 → `deletion_failures`（`failure_kind='data_deletion'`）
+     記録 + Discord 通知（forward-only、rollback なし）
+6. **保持**（削除しない）: `upload_records` / `ai_usage_users`（不正追跡用）
+
+物理削除対象: exams / cards / source_documents / reviews / study_days /
+contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft delete のみで
+物理 cascade の前例なし）。
 
 ※ OCR スキャン元ファイルは R2 等に保存しないため、ファイル削除ステップは不要。
 カード添付画像（将来機能）を R2 に保存する設計を実装する際は、本フローに
@@ -1093,9 +1105,10 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 
 ### Logic 7: アカウント削除
 
-- §6 のフロー参照
-- plan00 で確立済みの webhook-driven 削除を流用
-- R2 削除時に `users/{user_id}/` プレフィックスで一括削除
+- §6 のアカウント削除フロー参照
+- soft delete（`users.deleted_at`）+ 子データ物理削除 + transient retry。
+  S1.9.5 で新規確立（plan00 は soft delete のみ）
+- R2 等の外部ストレージは未使用のためファイル削除ステップなし
 
 ---
 

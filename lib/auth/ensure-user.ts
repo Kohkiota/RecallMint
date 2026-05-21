@@ -25,8 +25,6 @@ import { UnauthenticatedError } from './errors'
  * per request before). React 19 cache() docs note that calling a memoized
  * function outside of a component will not use the cache — vitest tests
  * therefore execute the function each call, matching pre-wrap behavior.
- *
- * See spec docs/superpowers/specs/2026-04-26-webhook-only-user-sync-design.md §3.1
  */
 export const getCurrentUser = cache(
   async (): Promise<User | null> => {

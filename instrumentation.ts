@@ -1,5 +1,4 @@
-// Spec: docs/superpowers/specs/2026-04-27-account-deletion-redesign.md §6.3
-// Plan A Task A4
+// 運用通知 (notifyOps) の最終防護網。関連設計: tech-spec §6 アカウント削除フロー。
 //
 // Next.js 15 onRequestError フック。Server Action / page render の uncaught
 // error を notifyOps に流す最後の防護網。Webhook handler は内部で outer catch +

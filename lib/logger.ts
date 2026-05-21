@@ -21,8 +21,6 @@
  * Output JSON shape:
  *   {"level":"error","timestamp":"2026-05-03T...Z","environment":"production",
  *    "event":"webhook.stripe.bad_signature","err":{"name":"...","message":"...","stack":"..."}}
- *
- * Spec: docs/superpowers/specs/2026-05-03-phase1-g-6-structured-logger.md
  */
 
 type Level = 'info' | 'warn' | 'error'
