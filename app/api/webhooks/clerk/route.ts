@@ -191,27 +191,30 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
     }
   }
 
-  // §6: DB transaction — soft-delete users + hard-delete child tables.
-  // exams DELETE cascades to cards / source_documents / reviews via FK ON DELETE CASCADE.
+  // §6 / T3: DB transaction — soft-delete users + hard-delete child tables。
+  // exams DELETE cascades to cards / source_documents / reviews via FK ON DELETE CASCADE。
   // study_days / contact_messages have FK only to users.id and users is not hard-deleted,
   // so they require explicit DELETE here.
-  // retry なし (T3 で追加)。
-  try {
-    await db.transaction(async (tx) => {
+  // T3: transient DB error (deadlock / serialization / connection 切断) に対し最大 3 retry。
+  // permanent error (整合性違反等) は即中断。両者とも最終失敗時は recordFailure(data_deletion)。
+  await runTransactionWithRetry(
+    db,
+    async (tx) => {
       await tx.update(users).set({ deletedAt: sql`now()` }).where(eq(users.id, internalUserId))
       await tx.delete(exams).where(eq(exams.userId, internalUserId))
       await tx.delete(studyDays).where(eq(studyDays.userId, internalUserId))
       await tx.delete(contactMessages).where(eq(contactMessages.userId, internalUserId))
-    })
-  } catch (err) {
-    await recordFailure({
-      internalUserId,
-      clerkUserId,
-      subId: null,
-      kind: 'data_deletion',
-      errorMessage: String(err),
-    })
-  }
+    },
+    async (errorMessage) => {
+      await recordFailure({
+        internalUserId,
+        clerkUserId,
+        subId: null,
+        kind: 'data_deletion',
+        errorMessage,
+      })
+    },
+  )
 }
 
 /**
@@ -265,4 +268,65 @@ function isCustomerMissing(err: unknown): boolean {
     err instanceof Stripe.errors.StripeInvalidRequestError &&
     err.code === 'resource_missing'
   )
+}
+
+// §6 / T3: transient DB error 判定 (neon-serverless / pg error code ベース)。
+// transient = 再試行で回復しうるエラー (deadlock / serialization / connection 切断など)。
+// permanent = 整合性違反 (23xxx 等) は retry しても無意味なので即中断。
+// lib/ai/ocr.ts の isTransientError と同じ「local 非 export 関数」思想で実装。
+function isTransientDbError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code
+  if (!code) {
+    // code を持たない error = connection 切断系とみなして transient 扱い。
+    // pg driver が code を付けない場合があるため、code 不在 = transient が安全側。
+    return true
+  }
+  return (
+    code === '40001' || // serialization failure
+    code === '40P01' || // deadlock detected
+    code.startsWith('08') || // connection exception class
+    code === '57P01' || // admin shutdown
+    code === '57P02' || // crash shutdown
+    code === '57P03'   // cannot connect now
+  )
+}
+
+// §6 / T3: DB transaction を最大 3 retry (= 合計 4 試行) でラップする local 関数。
+// transient error (isTransientDbError=true) のときのみ retry、permanent は即中断。
+// backoff: retry1 前 500ms / retry2 前 1000ms / retry3 前 2000ms (ocr.ts callWithRetry と同値構造)。
+// transaction は idempotent (UPDATE deleted_at / DELETE WHERE は再実行安全) なので retry 安全。
+// Stripe cancel ループと recordFailure 本体はこの wrap 対象外。
+const MAX_DB_RETRIES = 3 // 初回 + 3 retries = 合計 4 試行
+
+async function runTransactionWithRetry(
+  db: ReturnType<typeof getDb>,
+  fn: Parameters<ReturnType<typeof getDb>['transaction']>[0],
+  onFailure: (errorMessage: string) => Promise<void>,
+): Promise<void> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= MAX_DB_RETRIES; attempt++) {
+    try {
+      await db.transaction(fn)
+      return // 成功
+    } catch (err) {
+      lastErr = err
+      const isTransient = isTransientDbError(err)
+      if (!isTransient || attempt === MAX_DB_RETRIES) {
+        // permanent error または retry 上限到達 → failure を記録して終了
+        const totalAttempts = attempt + 1
+        const code = (err as { code?: string } | null)?.code
+        const diagnosis = code
+          ? `pg error code ${code}: ${String(err)}`
+          : String(err)
+        await onFailure(
+          `data deletion failed after ${totalAttempts} attempt${totalAttempts === 1 ? '' : 's'} (${attempt} ${attempt === 1 ? 'retry' : 'retries'}): ${diagnosis}`,
+        )
+        return
+      }
+      const backoffMs = 500 * Math.pow(2, attempt) // 500 / 1000 / 2000
+      await new Promise((r) => setTimeout(r, backoffMs))
+    }
+  }
+  // ここには到達しないが TypeScript の exhaustiveness 対応
+  throw lastErr
 }

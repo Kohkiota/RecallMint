@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Stripe from 'stripe'
 
 // --- hoisted mocks ---
@@ -195,7 +195,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
-  it('transaction 失敗: recordFailure(kind=data_deletion) → notifyOps subject="user data deletion failure"', async () => {
+  it('transaction 失敗 (permanent error): recordFailure(kind=data_deletion) → notifyOps subject="user data deletion failure", retry なし', async () => {
+    // I-2 realistic harness: tx.update が permanent pg error (23505 = unique violation)
+    // を throw する。transaction callback が reject → retry せず即 recordFailure。
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
@@ -203,12 +205,23 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: null }]),
     )
-    // transaction が throw
-    mockDbTransaction.mockRejectedValueOnce(new Error('db connection lost'))
+    // tx.update が permanent error を throw (callback 内 statement reject = realistic)
+    const permanentErr = Object.assign(new Error('unique constraint violation'), { code: '23505' })
+    mockDbTransaction.mockImplementationOnce(
+      async (fn: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          update: vi.fn().mockImplementation(() => { throw permanentErr }),
+          delete: mockDbDelete,
+        }
+        return await fn(tx)
+      },
+    )
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_1' } }))
 
     expect(res.status).toBe(200)
+    // permanent → retry なし = transaction は 1 回のみ
+    expect(mockDbTransaction).toHaveBeenCalledTimes(1)
     // deletion_failures INSERT が呼ばれる
     expect(mockDbInsert).toHaveBeenCalledTimes(2)
     expect(mockNotifyOps).toHaveBeenCalledOnce()
@@ -335,6 +348,192 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(arg).not.toHaveProperty('timestamp')
     // recordFailure path (notifyOps) は別経路、本ケースでは発火しない
     expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  // ---- T3 retry テスト ----
+
+  describe('DB transaction retry (T3)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    // beforeEach でセットアップする共通の select / stripe ヘルパー
+    function setupUserAndNoStripe(userId = '00000000-0000-0000-0000-000000000099') {
+      mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
+      mockDbSelect.mockReturnValueOnce(chain([{ id: userId, stripeCustomerId: null }]))
+    }
+
+    it('① transient error (40P01 = deadlock) → 1 回失敗 → retry で成功', async () => {
+      mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r1' } })
+      setupUserAndNoStripe()
+
+      const transientErr = Object.assign(new Error('deadlock detected'), { code: '40P01' })
+      let callCount = 0
+      mockDbTransaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          callCount++
+          if (callCount === 1) {
+            // 1 回目: tx.update が transient error で throw
+            const tx = {
+              update: vi.fn().mockImplementation(() => { throw transientErr }),
+              delete: mockDbDelete,
+            }
+            return await fn(tx)
+          }
+          // 2 回目 (retry): 成功
+          const tx = { update: mockDbUpdate, delete: mockDbDelete }
+          mockDbUpdate.mockReturnValueOnce(chain(undefined))
+          mockDbDelete.mockReturnValue(chain(undefined))
+          return await fn(tx)
+        },
+      )
+
+      const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r1' } }))
+      // retry1 前の 500ms backoff を進める
+      await vi.advanceTimersByTimeAsync(500)
+      const res = await promise
+
+      expect(res.status).toBe(200)
+      expect(mockDbTransaction).toHaveBeenCalledTimes(2) // 初回 + 1 retry
+      expect(mockNotifyOps).not.toHaveBeenCalled() // 成功したので recordFailure なし
+    })
+
+    it('② transient error (40P01) で 4 回全失敗 → recordFailure(data_deletion), errorMessage に試行回数 + code', async () => {
+      mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r2' } })
+      setupUserAndNoStripe()
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+
+      const transientErr = Object.assign(new Error('deadlock detected'), { code: '40P01' })
+      mockDbTransaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            update: vi.fn().mockImplementation(() => { throw transientErr }),
+            delete: mockDbDelete,
+          }
+          return await fn(tx)
+        },
+      )
+
+      const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r2' } }))
+      // 3 回の retry backoff: 500ms + 1000ms + 2000ms
+      await vi.advanceTimersByTimeAsync(500 + 1000 + 2000)
+      const res = await promise
+
+      expect(res.status).toBe(200)
+      expect(mockDbTransaction).toHaveBeenCalledTimes(4) // 初回 + 3 retries
+      expect(mockNotifyOps).toHaveBeenCalledOnce()
+      expect(mockNotifyOps.mock.calls[0]![0]).toBe('user data deletion failure')
+      const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
+      expect(ctx.kind).toBe('data_deletion')
+      // errorMessage に試行回数と pg code が含まれる (I-3)
+      const errMsg = String(ctx.error)
+      expect(errMsg).toMatch(/4\s*(attempts|回)/)
+      expect(errMsg).toMatch(/40P01/)
+    })
+
+    it('③ permanent error (23505 = unique violation) → retry せず即 recordFailure', async () => {
+      mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r3' } })
+      setupUserAndNoStripe()
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+
+      const permanentErr = Object.assign(new Error('unique constraint'), { code: '23505' })
+      mockDbTransaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            update: vi.fn().mockImplementation(() => { throw permanentErr }),
+            delete: mockDbDelete,
+          }
+          return await fn(tx)
+        },
+      )
+
+      const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r3' } }))
+      // permanent は即中断 — timer を進めても retry が走らないことを確認
+      await vi.advanceTimersByTimeAsync(5000)
+      const res = await promise
+
+      expect(res.status).toBe(200)
+      expect(mockDbTransaction).toHaveBeenCalledTimes(1) // retry なし
+      expect(mockNotifyOps).toHaveBeenCalledOnce()
+      const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
+      expect(ctx.kind).toBe('data_deletion')
+      // errorMessage に pg code が含まれる (I-3)
+      expect(String(ctx.error)).toMatch(/23505/)
+    })
+
+    it.each([
+      ['40001 (serialization failure)', Object.assign(new Error('serialization failure'), { code: '40001' })],
+      ['08006 (connection failure)', Object.assign(new Error('connection failure'), { code: '08006' })],
+      ['57P01 (admin shutdown)', Object.assign(new Error('admin shutdown'), { code: '57P01' })],
+      ['code なし (connection 切断系)', new Error('connection closed unexpectedly')],
+    ])('④ transient code %s が retry される', async (_label, transientErr) => {
+      // 代表 transient codes が isTransientDbError=true → retry が発生し成功することを確認。
+      // vi.clearAllMocks を loop 内で呼ばず it.each で独立テストにする (fake timer との競合回避)。
+      mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r4' } })
+      setupUserAndNoStripe()
+
+      let callCount = 0
+      mockDbTransaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          callCount++
+          if (callCount === 1) {
+            // 1 回目: tx.update が transient error で throw
+            const tx = {
+              update: vi.fn().mockImplementation(() => { throw transientErr }),
+              delete: mockDbDelete,
+            }
+            return await fn(tx)
+          }
+          // 2 回目 (retry): 成功
+          mockDbUpdate.mockReturnValueOnce(chain(undefined))
+          mockDbDelete.mockReturnValue(chain(undefined))
+          const tx = { update: mockDbUpdate, delete: mockDbDelete }
+          return await fn(tx)
+        },
+      )
+
+      const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r4' } }))
+      await vi.advanceTimersByTimeAsync(500)
+      const res = await promise
+
+      expect(res.status).toBe(200)
+      // retry が 1 回発生 = 合計 2 回呼ばれる
+      expect(mockDbTransaction).toHaveBeenCalledTimes(2)
+      expect(mockNotifyOps).not.toHaveBeenCalled() // 成功したので recordFailure なし
+    })
+
+    it('⑤ errorMessage に試行回数 + pg code が含まれる (I-3 診断値検証)', async () => {
+      mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r5' } })
+      setupUserAndNoStripe()
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+
+      // permanent error で即停止 → errorMessage を検証
+      const pgErr = Object.assign(new Error('FK violation'), { code: '23503', detail: 'foreign key constraint' })
+      mockDbTransaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            update: vi.fn().mockImplementation(() => { throw pgErr }),
+            delete: mockDbDelete,
+          }
+          return await fn(tx)
+        },
+      )
+
+      const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r5' } }))
+      await vi.advanceTimersByTimeAsync(0)
+      const res = await promise
+
+      expect(res.status).toBe(200)
+      const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
+      const errMsg = String(ctx.error)
+      // I-3: pg code が明示されていること
+      expect(errMsg).toMatch(/23503/)
+      // I-3: 試行回数 1 (initial, no retries for permanent) が含まれること
+      expect(errMsg).toMatch(/1\s*(attempt|回)/)
+    })
   })
 
   it('page-level partial 失敗: canceledIds + offset を error_message に詰める + transaction 実行', async () => {
