@@ -68,7 +68,14 @@ if (isProd) {
 // HTTP 429 は spec §8.3 の application 層 retry (`cancelWithRetry` 下記) で別経路。
 // CLAUDE.md AI-5 (429 受信時即時停止) は Gemini 無料枠保護専用ルールで Stripe には
 // 適用しない (Stripe は paid API、Idempotency-Key 自動付与で retry 安全)。
-export const stripe = new Stripe(key, { maxNetworkRetries: 2 })
+//
+// `timeout: 10000` (10 秒): stripe-node の default は 80 秒。Vercel function には
+// maxDuration 上限があり、1 本の hung Stripe call が function 予算を食い潰すと
+// 同 handler 内の後続削除フロー (DB 物理削除等) が全滅する。10 秒で諦めることで
+// timeout は通常の Stripe API error として throw され、既存 per-sub catch →
+// recordFailure 経路に流れる。maxNetworkRetries: 2 の retry を含めても 最悪
+// ~35s 程度 (10s timeout × 3 試行 + retry 間 backoff) で確定し budget 計算可能。
+export const stripe = new Stripe(key, { maxNetworkRetries: 2, timeout: 10000 })
 
 // Spec §8.3 hybrid retry の application 層 part。HTTP 429 (StripeRateLimitError)
 // のみ 1 sec sleep + 1 retry の固定回数。指数バックオフは webhook handler の
