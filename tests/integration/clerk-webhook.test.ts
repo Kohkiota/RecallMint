@@ -11,6 +11,8 @@ function chain(resolveTo: unknown = undefined) {
   c.returning = vi.fn().mockReturnValue(c)
   c.set = vi.fn().mockReturnValue(c)
   c.where = vi.fn().mockReturnValue(c)
+  c.from = vi.fn().mockReturnValue(c)
+  c.limit = vi.fn().mockReturnValue(c)
   c.then = (onFulfilled: (v: unknown) => void) =>
     Promise.resolve(resolveTo).then(onFulfilled)
   return c
@@ -19,8 +21,14 @@ function chain(resolveTo: unknown = undefined) {
 vi.mock('@/lib/db', () => {
   const insert = vi.fn()
   const update = vi.fn()
+  const select = vi.fn()
+  const del = vi.fn()
+  // transaction: callback をそのまま実行する (tx は db と同 shape)
+  const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+    return await fn({ update, delete: del })
+  })
   return {
-    getDb: vi.fn(() => ({ insert, update })),
+    getDb: vi.fn(() => ({ insert, update, select, delete: del, transaction })),
   }
 })
 
@@ -100,13 +108,16 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.insert).toHaveBeenCalledTimes(2)
   })
 
-  it('handles user.deleted → clerk_events INSERT + users UPDATE + Stripe loop, 200', async () => {
+  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update + 3 delete) + 200', async () => {
     const db = vi.mocked(getDb)()
     vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'msg_x' }]) as never)
-    // users update returning [{stripeCustomerId: null}] → Stripe loop skip
-    vi.mocked(db.update).mockReturnValueOnce(
-      chain([{ stripeCustomerId: null }]) as never,
+    // SELECT users: customerId=null (Free プラン) → Stripe ループ skip
+    vi.mocked(db.select).mockReturnValueOnce(
+      chain([{ id: '00000000-0000-0000-0000-000000000001', stripeCustomerId: null }]) as never,
     )
+    // transaction 内: update users + delete exams + delete study_days + delete contact_messages
+    vi.mocked(db.update).mockReturnValue(chain(undefined) as never)
+    vi.mocked(db.delete).mockReturnValue(chain(undefined) as never)
     const body = JSON.stringify({
       type: 'user.deleted',
       data: { id: 'user_abc' },
@@ -114,8 +125,11 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     const req = signed(body)
     const res = await POST(req)
     expect(res.status).toBe(200)
-    expect(db.insert).toHaveBeenCalledTimes(1) // clerk_events のみ
-    expect(db.update).toHaveBeenCalledTimes(1) // users
+    expect(db.insert).toHaveBeenCalledTimes(1) // clerk_events のみ (Stripe skip, 失敗 0)
+    expect(db.select).toHaveBeenCalledTimes(1)  // users SELECT
+    expect(db.transaction).toHaveBeenCalledTimes(1)
+    expect(db.update).toHaveBeenCalledTimes(1)  // users soft-delete (inside transaction)
+    expect(db.delete).toHaveBeenCalledTimes(3)  // exams + study_days + contact_messages
   })
 
   it('unknown event type → clerk_events INSERT のみで no-op 200', async () => {

@@ -191,7 +191,7 @@ export const deletionFailures = pgTable('deletion_failures', {
   clerkId: text('clerk_id').notNull(),
   subId: text('sub_id'),
   failureKind: text('failure_kind')
-    .$type<'list' | 'cancel' | 'customer_missing'>()
+    .$type<'list' | 'cancel' | 'customer_missing' | 'data_deletion'>()
     .notNull(),
   errorMessage: text('error_message').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true })
