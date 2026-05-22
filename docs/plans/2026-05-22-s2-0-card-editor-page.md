@@ -37,8 +37,12 @@ develop → staging smoke → main の運用。
   (tag 無し) → **OT staging smoke 観察** → `git commit --amend` で `[reviewed]`。
   **T1 / T2 / T3** は 削除/決済/認証/外部副作用 に非該当 → review pass で即 `[reviewed]`。
   **T5 / T6** は docs (review・tag 不要)。
-- **scope 外** (S2.0 で touch しない): `custom_props` / `tags` 列 / `images` /
-  `sort_key` / FSRS state 列。
+- **scope 外** (S2.0 で touch しない、 いずれも別 sprint):
+  - memo 機能 (`user_memo` 等の新列追加) → 別 sprint
+  - 画像表示 / 挿入 / R2 連携 → 別 sprint。 `<Textarea>` は将来の画像対応を見越した
+    抽象化をせず通常 component で実装する
+  - 既存列 `cards.images` / `custom_props` / `tags` / `sort_key` / FSRS state 列は
+    一切 touch しない
 - commit のみ、 staging への push は OT 判断。
 
 ## ファイル構成
@@ -118,9 +122,12 @@ Modify `app/(app)/app/exams/[id]/page.tsx`
     戻る link = `/app/exams/{examId}`。 `<CardEditor>` に初期値を渡す。
   - `card-editor.tsx` (Client Component): title=`<Input>` / questionText・
     explanationText=`<Textarea>` / 各 option 行 = text `<Textarea>` + explanation
-    `<Textarea>` + 正答 toggle (native checkbox or `shadcn add checkbox`、 新規依存なし)
-    + 行削除 + 「選択肢を追加」。 並び替えは上下 button (drag は v1.x)。 単一/複数正答は
-    `options.filter(o=>o.is_correct).length` で表示切替 (内部 state は boolean 配列固定)。
+    `<Textarea>` + 正答 checkbox + 行削除 + 「選択肢を追加」。 並び替えは上下 button
+    (drag は v1.x)。 **正答 UI = pattern A**: 各 option 行に独立 checkbox を 1 つ置く
+    のみ。 mode 切替 button / 正答数指定 UI は持たず、 check 数で単一 (1) / 複数 (2+) /
+    正答 0 が自動的に決まる (UI 表示は check 数で morph しない)。 内部 state は boolean
+    配列固定。 checkbox は native `<input type=checkbox>` か `shadcn add checkbox`
+    (radix-ui 統合 package 経由、 新規依存なし) — import 可否を T3 着手時に確認。
     新規 option の id は card 内非衝突で採番 (既存が英字のみ→次英字 / 数字のみ→次数字 /
     それ以外→`opt-<n>`)。
   - 保存: 「保存」 button 明示 click のみ (auto-save 不採用)。 `useTransition` で
@@ -131,9 +138,10 @@ Modify `app/(app)/app/exams/[id]/page.tsx`
     in-app 離脱も guard。
   - exam 詳細 page: 各 card 行に `/app/cards/{card.id}` への「編集」 `<Link>` 追加
     (一覧側の削除 button は S2.0b、 本 sprint では追加しない)。
-- **完了条件**: test (初期描画 / option 追加・削除・上下 / 正答 toggle で単一↔複数の
-  表示切替 / 保存成功・失敗 / dirty 警告) 全 green。 Chrome DevTools モバイルビューで
-  崩れない。 `pnpm test` / `pnpm build` pass。 review Critical 0 → `[reviewed]`。
+- **完了条件**: test (初期描画 / option 追加・削除・上下移動 / 正答 checkbox toggle /
+  正答 0 で warning 表示 / 保存成功・失敗 / dirty 警告) 全 green。 Chrome DevTools
+  モバイルビューで崩れない。 `pnpm test` / `pnpm build` pass。 review Critical 0 →
+  `[reviewed]`。
 
 ### - [ ] T4: deleteCard server action + 削除 button
 
@@ -200,4 +208,5 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   (T2) / `ActionResult<{examId}>` (T4) / DB `CardOption` snake_case 変換 (T2)。
 - **placeholder**: なし。
 
-**最終行数: 203 行 / 上限 250。**
+**最終行数: 211 行 / 上限 250** (2026-05-22 改訂: memo / 画像対応を scope 外として明記、
+正答 UI を pattern A 確定。 schema 変更ゼロ・新規依存ゼロは不変)。
