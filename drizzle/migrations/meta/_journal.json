@@ -43,6 +43,13 @@
       "when": 1779259146622,
       "tag": "0005_old_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779460421699,
+      "tag": "0006_wet_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }

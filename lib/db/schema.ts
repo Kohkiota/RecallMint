@@ -304,6 +304,10 @@ export const cards = pgTable(
     index('cards_props_gin_idx').using('gin', t.customProps),
     index('cards_answered_idx').on(t.userId, t.examId, t.answered),
     index('cards_exam_idx').on(t.examId),
+    // C1 (S2.0c): source_document_id は FK (ON DELETE SET NULL) だが index が
+    // 無いと source_documents 削除時の SET NULL cascade が cards 全表 seq scan に
+    // なる。 owner-scoped な getCardsForSourceDocument の絞り込みも兼ねる。
+    index('cards_source_document_idx').on(t.sourceDocumentId),
   ],
 )
 
@@ -361,6 +365,10 @@ export const sourceDocuments = pgTable(
   (t) => [
     index('source_docs_user_exam_idx').on(t.userId, t.examId),
     index('source_docs_status_idx').on(t.userId, t.status),
+    // C2 (S2.0c): exam_id 単独の FK cascade 用。 source_docs_user_exam_idx は
+    // (user_id, exam_id) 複合で exam_id が非先頭のため、 exam 削除時の
+    // cascade (WHERE exam_id = ?) に使えず seq scan になる。
+    index('source_docs_exam_idx').on(t.examId),
   ],
 )
 
@@ -422,27 +430,33 @@ export const studyDays = pgTable(
 // user_id は nullable (未認証受付可、CASCADE で users hard delete に追随)。
 // 個人情報削除依頼対応のため hard delete。 DB INSERT 実装は Sprint A-3+。
 // ---------------------------------------------------------------------------
-export const contactMessages = pgTable('contact_messages', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  email: text('email').notNull(),
-  // default 'general': contact form (Sprint A-2 stub) は category 未提示で
-  // INSERT する想定。 form 側に category select 追加は Sprint A-3+ で実装、
-  // それまでは default で fallback。
-  category: text('category')
-    .$type<'general' | 'bug' | 'takedown' | 'billing' | 'other'>()
-    .notNull()
-    .default('general'),
-  subject: text('subject').notNull(),
-  body: text('body').notNull(),
-  status: text('status')
-    .$type<'open' | 'in_progress' | 'resolved'>()
-    .notNull()
-    .default('open'),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-})
+export const contactMessages = pgTable(
+  'contact_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    email: text('email').notNull(),
+    // default 'general': contact form (Sprint A-2 stub) は category 未提示で
+    // INSERT する想定。 form 側に category select 追加は Sprint A-3+ で実装、
+    // それまでは default で fallback。
+    category: text('category')
+      .$type<'general' | 'bug' | 'takedown' | 'billing' | 'other'>()
+      .notNull()
+      .default('general'),
+    subject: text('subject').notNull(),
+    body: text('body').notNull(),
+    status: text('status')
+      .$type<'open' | 'in_progress' | 'resolved'>()
+      .notNull()
+      .default('open'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  // C3 (S2.0c): user_id FK (ON DELETE CASCADE) 用 index。 user 削除時の
+  // cascade および clerk webhook の明示 delete が seq scan になるのを防ぐ。
+  (t) => [index('contact_messages_user_idx').on(t.userId)],
+)
 
 // ---------------------------------------------------------------------------
 // Type exports for downstream use
