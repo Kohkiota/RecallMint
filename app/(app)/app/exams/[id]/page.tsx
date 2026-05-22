@@ -9,8 +9,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 
-// S1.7 T7: read-only cards 一覧 + exam 詳細 header。
-// 編集 / 削除 / フィルタなし、 S2 で正式 CRUD を実装する。
+// 試験詳細 page: 各 card の全情報 (問題文 / 全選択肢 + 正誤 / 解説) を read-only
+// 展開表示 (S2.0 T7) + 各 card に編集 page への link (T3/T10)。
+// フィルタ / 一括操作は S2.0b。
 export default async function ExamDetailPage({
   params,
 }: {
@@ -72,12 +73,9 @@ export default async function ExamDetailPage({
                         )}
                         <span className="font-medium text-sm">{card.title}</span>
                       </div>
-                      <Link
-                        href={`/app/cards/${card.id}`}
-                        className="shrink-0 text-xs text-slate-600 underline hover:text-slate-900"
-                      >
-                        編集
-                      </Link>
+                      <Button asChild size="sm" className="shrink-0">
+                        <Link href={`/app/cards/${card.id}`}>編集</Link>
+                      </Button>
                     </div>
 
                     <div>
@@ -95,39 +93,27 @@ export default async function ExamDetailPage({
                         {card.options.map((opt) => (
                           <li
                             key={opt.id}
-                            className="rounded border border-border/60 p-2 text-sm"
+                            className={
+                              opt.is_correct
+                                ? 'rounded border border-emerald-300 bg-emerald-100 p-2 text-sm font-bold text-emerald-900'
+                                : 'rounded border border-border/60 p-2 text-sm text-slate-800'
+                            }
                           >
-                            <div className="flex items-start gap-2">
-                              {opt.is_correct && (
-                                <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
-                                  正解
-                                </span>
-                              )}
-                              <span className="whitespace-pre-wrap text-slate-800">
-                                <span className="font-medium text-slate-500">
-                                  {opt.id}:
-                                </span>{' '}
-                                {opt.text}
+                            <p className="whitespace-pre-wrap">
+                              <span className="mr-1.5">
+                                {opt.is_correct ? '○' : '×'}
                               </span>
-                            </div>
+                              <span className="mr-2">{opt.id}</span>
+                              {opt.text}
+                            </p>
                             {opt.explanation && (
-                              <p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">
+                              <p className="mt-1 whitespace-pre-wrap text-xs font-normal text-slate-500">
                                 解説: {opt.explanation}
                               </p>
                             )}
                           </li>
                         ))}
                       </ul>
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-medium text-slate-500">正解</p>
-                      <p className="mt-0.5 text-sm text-slate-800">
-                        {card.options
-                          .filter((o) => o.is_correct)
-                          .map((o) => o.id)
-                          .join(', ') || '未設定'}
-                      </p>
                     </div>
 
                     <div>

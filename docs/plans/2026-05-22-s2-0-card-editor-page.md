@@ -234,6 +234,23 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
 - **完了条件**: 両 page で ID + summary 表示。 `pnpm test` / `pnpm build` pass。
   review Critical 0。 read のみ → review pass で即 `[reviewed]`。
 
+### - [ ] T10: 表示改善 + dirty guard 撤廃 + 保存後リダイレクト (staging smoke 中の OT 追加)
+
+**Files:** Modify `app/(app)/app/exams/[id]/page.tsx`,
+`app/(app)/app/cards/[id]/_components/card-editor.tsx` (+ `.test.tsx`)
+
+- **目的**: 正誤の視認性向上と、 編集 page の保存導線簡素化。
+- **制約**: 試験詳細 page — 各選択肢に `○`/`×` prefix、 ID と本文は空白区切り、
+  正解選択肢の box のみ背景色 (emerald) + 太字、 T9 の「正解」 summary 行は削除、
+  編集 link を Button 化。 編集 page — 選択肢 label を ID のみに、 checkbox 文言
+  「正答」→「正解」、 「現在の正解」→「正解」 + 太字、 保存成功で試験詳細へ
+  `router.push`、 **dirty guard (beforeunload + 自前 confirm) を撤廃** (S2.0b inline
+  編集で dirty 概念が cell 単位に変わるため。 §再精査 ③ を T10 で打ち消す)。
+  read 表示 + UI 変更のみ、 server action / schema / 新規依存なし。
+- **完了条件**: 両 page の表示変更 + 保存後リダイレクト。 dirty guard 関連 test 削除 /
+  リダイレクト test 追加。 `pnpm test` / `pnpm build` pass。 review Critical 0。
+  副作用なし → review pass で即 `[reviewed]`。
+
 ---
 
 ## Self-review
@@ -241,7 +258,7 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
 - **spec coverage**: kickoff §1 → T3 (page) / §2 → T3 (編集 UI) / §3 → T2 (updateCard) /
   §4 → T1 (validation) / §5 → T4 (deleteCard) / §6 → T3 (編集 link) / §7 → 実施せず
   (下記 ①) / §tech-spec → T5。 staging smoke 中の OT 追加 → T7 (試験詳細の全情報表示) /
-  T8 (OCR debug log) / T9 (選択肢 ID + 正解 summary)。
+  T8 (OCR debug log) / T9 (選択肢 ID + 正解 summary) / T10 (表示改善 + dirty guard 撤廃)。
 - **再精査での改訂点**: ① kickoff §7 (AppPath に `/app/cards/[id]` 追加) は**実施しない**
   — `AppPath` / `revalidateAppPath` (`app/(app)/app/_actions/revalidate.ts`) は header
   nav の `<Link onClick>` client cache-busting 専用で dynamic route を literal にできず、
@@ -250,11 +267,13 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   なく card domain の新規 `lib/cards/get-card-for-edit.ts` に分離 (S2.0b の card 系
   query 追加先も兼ねる)。 ③ dirty guard は `beforeunload` のみだと App Router の in-app
   nav を捕捉できないため、 自前 breadcrumb / 戻る link に `confirm()` guard を併設。
+  → ただし **T10 で dirty guard 自体を撤廃** (S2.0b inline 編集と保存後リダイレクトを
+  踏まえた OT 判断)。 本 ③ は T3 時点の設計記録として残す。
 - **type 一貫性**: `UpdateCardInput` (T1 定義 → T2 / T3 で使用) / `ActionResult<void>`
   (T2) / `ActionResult<{examId}>` (T4) / DB `CardOption` snake_case 変換 (T2)。
 - **placeholder**: なし。
 
-**最終行数: 260 行 / 上限 250 超過** (2026-05-22 改訂: memo / 画像対応を scope 外明記、
-正答 UI pattern A 確定、 staging smoke 中に T7 / T8 / T9 を OT 追加。 上限 250 を 11 行
-超過するが 300 行 STOP 閾値内、 超過理由は smoke 由来の task 3 件追加で抽象度の問題では
-ないため分割不要と判断。 schema 変更ゼロ・新規依存ゼロは不変)。
+**最終行数: 279 行 / 上限 250 超過** (2026-05-22 改訂: memo / 画像対応を scope 外明記、
+正答 UI pattern A 確定、 staging smoke 中に T7 / T8 / T9 / T10 を OT 追加。 上限 250 を
+29 行超過するが 300 行 STOP 閾値内、 超過理由は smoke 由来の task 4 件追加で抽象度の
+問題ではないため分割不要と判断。 schema 変更ゼロ・新規依存ゼロは不変)。

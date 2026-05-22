@@ -2,15 +2,17 @@
 
 // card 編集 page の本体。 cards テーブルの editable 5 列
 // (title / question_text / options / correct_answer_ids / explanation_text) を
-// 編集する controlled form。 correct_answer_ids は持たず、 各 option の 正答
+// 編集する controlled form。 correct_answer_ids は持たず、 各 option の 正解
 // checkbox (pattern A: 行ごとに独立、 check 数で単一/複数/0 が自動的に決まる) から
 // server 側 updateCard が再生成する。
 //
-// 離脱 guard: dirty 時に beforeunload (タブ閉じ / リロード) と、 自前 breadcrumb /
-// 戻る link の confirm() で in-app 離脱を防ぐ。
+// 保存成功で試験詳細 page にリダイレクトする。 dirty guard (beforeunload /
+// 自前 confirm) は T10 で撤廃 — S2.0b の inline 編集で dirty 概念が cell 単位に
+// 変わるため page 全体 guard は持たない方針。 保存後リダイレクトで意義も薄い。
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import type { CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
@@ -66,7 +68,7 @@ function toEditorOptions(options: CardOption[]): EditorOption[] {
   }))
 }
 
-// dirty 判定用の安定スナップショット。
+// dirty 判定用の安定スナップショット (保存ボタンの活性判定に使う)。
 function serialize(
   title: string,
   questionText: string,
@@ -86,6 +88,7 @@ export function CardEditor({
   initialExplanationText,
   deleteSlot,
 }: CardEditorProps) {
+  const router = useRouter()
   const [title, setTitle] = useState(initialTitle)
   const [questionText, setQuestionText] = useState(initialQuestionText)
   const [options, setOptions] = useState<EditorOption[]>(() =>
@@ -94,8 +97,8 @@ export function CardEditor({
   const [explanationText, setExplanationText] = useState(
     initialExplanationText ?? '',
   )
-  // 保存成功時に現在値へ更新し、 dirty を false に戻す基準スナップショット。
-  const [baseline, setBaseline] = useState(() =>
+  // 初期スナップショット。 保存成功時はリダイレクトするため更新不要 (定数)。
+  const [baseline] = useState(() =>
     serialize(
       initialTitle,
       initialQuestionText,
@@ -103,37 +106,13 @@ export function CardEditor({
       initialExplanationText ?? '',
     ),
   )
-  const [message, setMessage] = useState<
-    { kind: 'success' | 'error'; text: string } | null
-  >(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const current = serialize(title, questionText, options, explanationText)
   const dirty = current !== baseline
   const correctIds = options.filter((o) => o.isCorrect).map((o) => o.id)
   const correctCount = correctIds.length
-
-  // dirty 時のみ beforeunload でタブ閉じ / リロードを警告。
-  useEffect(() => {
-    if (!dirty) return
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault()
-      // returnValue は modern TS lib で deprecated marking されているが、 一部
-      // legacy browser (Edge 旧 / Safari) は preventDefault のみでは dialog を
-      // 出さず returnValue を見るため cross-browser 互換で維持 (upload-form.tsx
-      // と同方針)。 TS deprecation hint 6385 は build を block しない。
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handler)
-    return () => window.removeEventListener('beforeunload', handler)
-  }, [dirty])
-
-  // breadcrumb / 戻る link の click を dirty なら confirm で guard。
-  const guardLeave = (e: React.MouseEvent) => {
-    if (dirty && !window.confirm('保存していない変更があります。移動しますか?')) {
-      e.preventDefault()
-    }
-  }
 
   const setOption = (index: number, patch: Partial<EditorOption>) => {
     setOptions((prev) =>
@@ -165,7 +144,7 @@ export function CardEditor({
   }
 
   const onSave = () => {
-    setMessage(null)
+    setErrorMsg(null)
     startTransition(async () => {
       const result = await updateCard(cardId, {
         title,
@@ -180,13 +159,10 @@ export function CardEditor({
         explanationText: explanationText || null,
       })
       if (result.ok) {
-        // baseline は server 応答ではなく現在の editor state から再計算する。
-        // server は空 explanation を省略保存するが editor は '' のまま保持するため、
-        // local state 基準にしないと保存直後に dirty が復活してしまう。
-        setBaseline(serialize(title, questionText, options, explanationText))
-        setMessage({ kind: 'success', text: '保存しました' })
+        // 保存成功 → 元の試験詳細 page へ自動遷移。
+        router.push(`/app/exams/${examId}`)
       } else {
-        setMessage({ kind: 'error', text: result.error })
+        setErrorMsg(result.error)
       }
     })
   }
@@ -194,21 +170,16 @@ export function CardEditor({
   return (
     <div className="space-y-6">
       <nav className="flex flex-wrap items-center gap-1 text-sm text-slate-600">
-        <Link href="/app" onClick={guardLeave} className="hover:text-slate-900">
+        <Link href="/app" className="hover:text-slate-900">
           ダッシュボード
         </Link>
         <span className="text-slate-400">/</span>
-        <Link
-          href="/app/exams"
-          onClick={guardLeave}
-          className="hover:text-slate-900"
-        >
+        <Link href="/app/exams" className="hover:text-slate-900">
           試験一覧
         </Link>
         <span className="text-slate-400">/</span>
         <Link
           href={`/app/exams/${examId}`}
-          onClick={guardLeave}
           className="hover:text-slate-900"
         >
           {examName}
@@ -249,7 +220,7 @@ export function CardEditor({
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-slate-500">
-                    選択肢 {opt.id}
+                    {opt.id}
                   </span>
                   <label className="flex items-center gap-1.5 text-sm font-medium">
                     <input
@@ -260,7 +231,7 @@ export function CardEditor({
                         setOption(i, { isCorrect: e.target.checked })
                       }
                     />
-                    正答
+                    正解
                   </label>
                 </div>
                 <div className="flex items-center gap-1">
@@ -317,9 +288,8 @@ export function CardEditor({
         </Button>
       </div>
 
-      <p className="text-sm text-slate-600">
-        現在の正解:{' '}
-        {correctIds.length > 0 ? correctIds.join(', ') : '未設定'}
+      <p className="text-sm font-bold text-slate-700">
+        正解: {correctIds.length > 0 ? correctIds.join(', ') : '未設定'}
       </p>
 
       <div className="space-y-2">
@@ -334,30 +304,18 @@ export function CardEditor({
 
       {correctCount === 0 && (
         <p className="text-sm text-amber-700">
-          正答が選択されていません。 このまま保存することもできます。
+          正解が選択されていません。 このまま保存することもできます。
         </p>
       )}
 
-      {message && (
-        <p
-          className={
-            message.kind === 'success'
-              ? 'text-sm text-emerald-700'
-              : 'text-sm text-red-600'
-          }
-        >
-          {message.text}
-        </p>
-      )}
+      {errorMsg && <p className="text-sm text-red-600">{errorMsg}</p>}
 
       <div className="flex flex-wrap gap-2">
         <Button type="button" onClick={onSave} disabled={!dirty || isPending}>
           {isPending ? '保存中…' : '保存'}
         </Button>
         <Button type="button" variant="outline" asChild>
-          <Link href={`/app/exams/${examId}`} onClick={guardLeave}>
-            試験に戻る
-          </Link>
+          <Link href={`/app/exams/${examId}`}>試験に戻る</Link>
         </Button>
       </div>
     </div>

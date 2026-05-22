@@ -32,8 +32,6 @@ export function DeleteCardButton({ cardId, examId }: Props) {
       if (result.ok) {
         // 削除成功 → 元の exam 詳細へ。 server が返す examId を優先 (prop と一致するはず)。
         // 遷移で本 component は unmount されるため phase 更新は不要。
-        // CardEditor の未保存 guard (beforeunload / breadcrumb confirm) は意図的に
-        // 経由しない — card 自体を削除するので未保存の編集内容は無意味なため。
         router.push(`/app/exams/${result.data?.examId ?? examId}`)
       } else {
         setErrorMsg(result.error)
