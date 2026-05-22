@@ -104,6 +104,9 @@ export default async function ExamDetailPage({
                                 </span>
                               )}
                               <span className="whitespace-pre-wrap text-slate-800">
+                                <span className="font-medium text-slate-500">
+                                  {opt.id}:
+                                </span>{' '}
                                 {opt.text}
                               </span>
                             </div>
@@ -115,6 +118,16 @@ export default async function ExamDetailPage({
                           </li>
                         ))}
                       </ul>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-slate-500">正解</p>
+                      <p className="mt-0.5 text-sm text-slate-800">
+                        {card.options
+                          .filter((o) => o.is_correct)
+                          .map((o) => o.id)
+                          .join(', ') || '未設定'}
+                      </p>
                     </div>
 
                     <div>

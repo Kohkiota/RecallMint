@@ -207,13 +207,41 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   の owner-isolation test を rich 形へ更新。 `pnpm test` / `pnpm build` pass。
   review Critical 0。 read のみ (削除/外部副作用なし) → review pass で即 `[reviewed]`。
 
+### - [ ] T8: OCR debug log (env gate 付き、 staging smoke 中の OT 追加)
+
+**Files:** Modify `lib/ai/clients/gemini.ts`, `lib/ai/clients/gemini.test.ts`
+(新規), `.env.example`
+
+- **目的**: OCR 抽出結果調査のため Gemini raw response を staging で log 可視化。
+  事前調査 `docs/superpowers/sessions/2026-05-22-ocr-response-logging-trace.md` 準拠。
+- **制約**: `callGemini` の `res.text` 取得直後、 `OCR_DEBUG_LOG==='1'` のときのみ
+  `logger.info({event:'ocr.gemini.response', model, textPreview, textLength})`。
+  `textPreview` は先頭 50000 字 truncate (Vercel log 行上限対策)。 env 未設定
+  (本番) は no-op。 `.env.example` に staging 専用の注記付きで追記。
+- **完了条件**: gate off で挙動不変・gate on で log する単体 test。 `pnpm test` /
+  `pnpm build` pass。 review Critical 0。 副作用なし → review pass で即 `[reviewed]`。
+
+### - [ ] T9: 選択肢 ID 表示 + 正解 summary (staging smoke 中の OT 追加)
+
+**Files:** Modify `app/(app)/app/exams/[id]/page.tsx`,
+`app/(app)/app/cards/[id]/_components/card-editor.tsx` (+ `.test.tsx`)
+
+- **目的**: 選択肢の識別子と正解が一目で分かるようにする。
+- **制約**: read 表示の追加のみ、 server action / schema 変更なし。 試験詳細 page で
+  各選択肢 text に option ID prefix + 解説直前に「正解」 summary。 card 編集 page で
+  各選択肢に option ID label + 解説直前に「現在の正解」 リアルタイム summary
+  (client state ベース)。 正答 0 は「未設定」 表示。 新規依存・新規 file なし。
+- **完了条件**: 両 page で ID + summary 表示。 `pnpm test` / `pnpm build` pass。
+  review Critical 0。 read のみ → review pass で即 `[reviewed]`。
+
 ---
 
 ## Self-review
 
 - **spec coverage**: kickoff §1 → T3 (page) / §2 → T3 (編集 UI) / §3 → T2 (updateCard) /
   §4 → T1 (validation) / §5 → T4 (deleteCard) / §6 → T3 (編集 link) / §7 → 実施せず
-  (下記 ①) / §tech-spec → T5。 staging smoke 中の OT 指摘 → T7 (試験詳細の全情報表示)。
+  (下記 ①) / §tech-spec → T5。 staging smoke 中の OT 追加 → T7 (試験詳細の全情報表示) /
+  T8 (OCR debug log) / T9 (選択肢 ID + 正解 summary)。
 - **再精査での改訂点**: ① kickoff §7 (AppPath に `/app/cards/[id]` 追加) は**実施しない**
   — `AppPath` / `revalidateAppPath` (`app/(app)/app/_actions/revalidate.ts`) は header
   nav の `<Link onClick>` client cache-busting 専用で dynamic route を literal にできず、
@@ -226,6 +254,7 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   (T2) / `ActionResult<{examId}>` (T4) / DB `CardOption` snake_case 変換 (T2)。
 - **placeholder**: なし。
 
-**最終行数: 231 行 / 上限 250** (2026-05-22 改訂: memo / 画像対応を scope 外として明記、
-正答 UI を pattern A 確定。 staging smoke 中に T7 = 試験詳細の全情報展開表示を OT 追加。
-schema 変更ゼロ・新規依存ゼロは不変)。
+**最終行数: 260 行 / 上限 250 超過** (2026-05-22 改訂: memo / 画像対応を scope 外明記、
+正答 UI pattern A 確定、 staging smoke 中に T7 / T8 / T9 を OT 追加。 上限 250 を 11 行
+超過するが 300 行 STOP 閾値内、 超過理由は smoke 由来の task 3 件追加で抽象度の問題では
+ないため分割不要と判断。 schema 変更ゼロ・新規依存ゼロは不変)。

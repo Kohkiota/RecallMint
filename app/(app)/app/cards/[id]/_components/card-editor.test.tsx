@@ -70,6 +70,26 @@ describe('CardEditor', () => {
     expect(screen.getByLabelText('選択肢 2 の本文')).toHaveValue('選択肢A')
   })
 
+  it('各選択肢に option ID label が表示される', () => {
+    render(<CardEditor {...baseProps} />)
+    expect(screen.getByText('選択肢 a')).toBeInTheDocument()
+    expect(screen.getByText('選択肢 b')).toBeInTheDocument()
+  })
+
+  it('現在の正解 summary が checkbox 状態にリアルタイム追従する', () => {
+    render(<CardEditor {...baseProps} />)
+    const summary = screen.getByText(/現在の正解:/)
+    // 初期: a のみ正答
+    expect(summary).toHaveTextContent(/^現在の正解: a$/)
+    // 選択肢 b も正答に → "a, b"
+    fireEvent.click(screen.getAllByRole('checkbox')[1])
+    expect(summary).toHaveTextContent(/^現在の正解: a, b$/)
+    // 両方外す → "未設定"
+    fireEvent.click(screen.getAllByRole('checkbox')[0])
+    fireEvent.click(screen.getAllByRole('checkbox')[1])
+    expect(summary).toHaveTextContent(/^現在の正解: 未設定$/)
+  })
+
   it('正答 checkbox を全て外すと正答 0 warning が出る', () => {
     render(<CardEditor {...baseProps} />)
     expect(

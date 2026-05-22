@@ -110,7 +110,8 @@ export function CardEditor({
 
   const current = serialize(title, questionText, options, explanationText)
   const dirty = current !== baseline
-  const correctCount = options.filter((o) => o.isCorrect).length
+  const correctIds = options.filter((o) => o.isCorrect).map((o) => o.id)
+  const correctCount = correctIds.length
 
   // dirty 時のみ beforeunload でタブ閉じ / リロードを警告。
   useEffect(() => {
@@ -246,17 +247,22 @@ export function CardEditor({
           {options.map((opt, i) => (
             <li key={opt.id} className="rounded-lg border border-border p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <label className="flex items-center gap-1.5 text-sm font-medium">
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-primary"
-                    checked={opt.isCorrect}
-                    onChange={(e) =>
-                      setOption(i, { isCorrect: e.target.checked })
-                    }
-                  />
-                  正答
-                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-slate-500">
+                    選択肢 {opt.id}
+                  </span>
+                  <label className="flex items-center gap-1.5 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={opt.isCorrect}
+                      onChange={(e) =>
+                        setOption(i, { isCorrect: e.target.checked })
+                      }
+                    />
+                    正答
+                  </label>
+                </div>
                 <div className="flex items-center gap-1">
                   <Button
                     type="button"
@@ -310,6 +316,11 @@ export function CardEditor({
           選択肢を追加
         </Button>
       </div>
+
+      <p className="text-sm text-slate-600">
+        現在の正解:{' '}
+        {correctIds.length > 0 ? correctIds.join(', ') : '未設定'}
+      </p>
 
       <div className="space-y-2">
         <Label htmlFor="card-explanation">解説 (任意)</Label>
