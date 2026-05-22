@@ -26,6 +26,9 @@ const {
     insertedCards: [] as Array<Record<string, unknown>>,
     insertedUploadRecords: [] as Array<Record<string, unknown>>,
     updatedSourceDocs: [] as Array<Record<string, unknown>>,
+    // B1 (S2.0c): exams.card_count 更新 set() を sourceDocuments 更新と分けて
+    // 記録する (mock の update() は set vals に cardCount を含むかで振り分ける)。
+    updatedExams: [] as Array<Record<string, unknown>>,
     selectedExam: null as { id: string; name: string; archivedAt: Date | null } | null,
     nextExamId: 'exam-new-id',
     nextSourceDocId: 'sdoc-id',
@@ -34,7 +37,8 @@ const {
     advisoryLockAcquired: true,
     // S1.9.4: in-flight processing 行の有無 (null = 行なし = guard 通過)
     inflightProcessingDoc: null as { id: string } | null,
-    // Min4 test: true のとき完了 tx (guard 後の最初の transaction) を強制 throw する
+    // Min4 test: true のとき完了 tx を強制 throw する (B1 後は guard / cards
+    // INSERT tx に続く 3 番目の transaction = txIndex 2)
     completionTxShouldFail: false,
   },
 }))
@@ -156,7 +160,10 @@ vi.mock('@/lib/db', () => {
       }),
       update: () => ({
         set: (vals: Record<string, unknown>) => {
-          dbState.updatedSourceDocs.push(vals)
+          // B1: card_count 更新 (set に cardCount を含む) は exams 更新、
+          // それ以外 (status 等) は source_documents 更新として振り分ける。
+          if ('cardCount' in vals) dbState.updatedExams.push(vals)
+          else dbState.updatedSourceDocs.push(vals)
           return chain(undefined)
         },
       }),
@@ -175,15 +182,16 @@ vi.mock('@/lib/db', () => {
         transaction: async (
           fn: (tx: ReturnType<typeof dbApi>) => Promise<unknown>,
         ) => {
-          // 1 回目の transaction 呼び出し = guard tx (advisory lock + in-flight check)
-          // 2 回目以降 = 完了 tx または markFailed tx
+          // txIndex 0 = guard tx (advisory lock + in-flight check)
+          // txIndex 1 = B1 cards INSERT tx (cards bulk + exams.card_count +N)
+          // txIndex 2 = 完了 tx (source_documents completed + upload_records)
           const isGuardTx = localTxCallCount === 0
           const txIndex = localTxCallCount
           localTxCallCount++
-          // Min4 test: 完了 tx (guard 後の最初の tx = index 1) を強制 throw。
-          // markFailed は別 getDb() インスタンスで localTxCallCount=0 から始まる
-          // ため index 1 にならず、 この強制 throw の影響を受けない。
-          if (txIndex === 1 && dbState.completionTxShouldFail) {
+          // Min4 test: 完了 tx (txIndex 2) を強制 throw。 markFailed は別 getDb()
+          // インスタンスで localTxCallCount=0 から始まるため txIndex 2 に達せず、
+          // この強制 throw の影響を受けない。
+          if (txIndex === 2 && dbState.completionTxShouldFail) {
             throw new Error('Neon connection lost during completion tx')
           }
           return await fn(dbApi(isGuardTx) as ReturnType<typeof dbApi>)
@@ -231,6 +239,7 @@ beforeEach(() => {
   dbState.insertedCards = []
   dbState.insertedUploadRecords = []
   dbState.updatedSourceDocs = []
+  dbState.updatedExams = []
   dbState.selectedExam = null
   // S1.9.4: guard tx の既定値 (guard 通過状態)
   dbState.advisoryLockAcquired = true
@@ -366,6 +375,44 @@ describe('processUpload', () => {
       status: 'completed',
       pagesProcessed: 1,
     })
+  })
+
+  it('B1: OCR 成功時 cards INSERT と同一 tx で exams.card_count を加算する', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文1',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+        {
+          title: '問2',
+          question_text: 'リード文2',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 3,
+      tokenUsage: [{ model: 'flash', inputTokens: 200, outputTokens: 20 }],
+    })
+    dbState.nextCardIds = ['card-1', 'card-2']
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(true)
+    // cards 2 件 INSERT → 同一 tx で exams.card_count 更新が 1 回入る
+    expect(dbState.insertedCards).toHaveLength(2)
+    expect(dbState.updatedExams).toHaveLength(1)
+    expect(dbState.updatedExams[0]).toHaveProperty('cardCount')
+    // updatedAt を明示 set し $onUpdate による updatedAt bump を抑止する
+    expect(dbState.updatedExams[0]).toHaveProperty('updatedAt')
   })
 
   it('GEMINI_DAILY_LIMIT_EXCEEDED: global daily count >= limit → no DB writes, no OCR run', async () => {

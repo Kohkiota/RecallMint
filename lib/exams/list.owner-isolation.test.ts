@@ -80,9 +80,12 @@ describe('getActiveExamsWithCardCount (owner isolation)', () => {
     ])
   })
 
-  it('coerces cardCount to number (drizzle count() may return bigint string)', async () => {
+  // B1 (S2.0c): cards への JOIN+GROUP BY 集計をやめ、 非正規化列
+  // exams.card_count (integer) を直読するようになった。 count() 集約由来の
+  // bigint 文字列を coerce する必要はなくなり、 列値をそのまま返す。
+  it('card_count 列を number としてそのまま返す (非正規化列を直読)', async () => {
     const now = new Date()
-    dbState.queue = [[{ id: 'x', name: 'X', updatedAt: now, cardCount: '42' }]]
+    dbState.queue = [[{ id: 'x', name: 'X', updatedAt: now, cardCount: 42 }]]
     const { getActiveExamsWithCardCount } = await importModule()
     const r = await getActiveExamsWithCardCount('user-1')
     expect(r[0].cardCount).toBe(42)

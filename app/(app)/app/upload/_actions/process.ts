@@ -480,10 +480,26 @@ async function _processUpload(
 
   let insertedCards: { id: string; title: string }[] = []
   try {
-    insertedCards = await db
-      .insert(cards)
-      .values(cardRows)
-      .returning({ id: cards.id, title: cards.title })
+    // B1 (S2.0c): cards bulk INSERT と exams.card_count += N を同一 transaction
+    // で実行し、 件数キャッシュ列が card 実体と乖離しないようにする。 examId は
+    // OCR の投入先 exam (mode='new' は直前に作成済 / 'existing' は既存)。
+    insertedCards = await db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(cards)
+        .values(cardRows)
+        .returning({ id: cards.id, title: cards.title })
+      await tx
+        .update(exams)
+        .set({
+          cardCount: sql`${exams.cardCount} + ${cardRows.length}`,
+          // card_count は派生キャッシュ。 更新で exams.updatedAt ($onUpdate) を
+          // 動かさず、 試験一覧の updatedAt DESC 順を card 増減で乱さない
+          // (B1 は perf 最適化であり list 並び順を変える feature ではない)。
+          updatedAt: sql`${exams.updatedAt}`,
+        })
+        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
+      return inserted
+    })
   } catch (err) {
     // cards 保存失敗: OCR 自体は成功し cost が発生済のため実値を台帳に failed 記録
     await markFailed(sourceDocumentId, err, {

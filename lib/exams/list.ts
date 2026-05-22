@@ -3,7 +3,7 @@
 // MVP では archived_at IS NULL の exam 一覧を updated_at DESC で取る。
 // archived UX 詳細 (一覧で archived を表示するか / 復元 button 等) は S2 で確定。
 
-import { and, count, desc, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq, isNull } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { cards, exams, sourceDocuments, type CardOption } from '@/lib/db/schema'
 
@@ -29,9 +29,12 @@ export async function getActiveExamsForUser(
   return rows
 }
 
-// S1.7 T7 用: 一覧 page で cards 件数を見せるための LEFT JOIN + GROUP BY query。
-// 別関数として分離した理由: 既存 getActiveExamsForUser は upload page も使用しており
-// count subquery を毎回付けると不要な負荷。
+// S1.7 T7 用: 一覧 page で cards 件数を見せる query。
+// B1 (S2.0c): cards への LEFT JOIN + GROUP BY 集計をやめ、 非正規化列
+// exams.card_count を直接読む。 件数の維持は card INSERT / DELETE 側
+// (process.ts の OCR bulk / delete-card.ts) が transaction で担保する。
+// getActiveExamsForUser と別関数なのは、 upload page が使う後者に card_count
+// 列まで載せる必要がないため。
 export type ExamWithCardCount = ActiveExam & { cardCount: number }
 export async function getActiveExamsWithCardCount(
   userId: string,
@@ -42,19 +45,12 @@ export async function getActiveExamsWithCardCount(
       id: exams.id,
       name: exams.name,
       updatedAt: exams.updatedAt,
-      cardCount: count(cards.id),
+      cardCount: exams.cardCount,
     })
     .from(exams)
-    .leftJoin(cards, eq(cards.examId, exams.id))
     .where(and(eq(exams.userId, userId), isNull(exams.archivedAt)))
-    .groupBy(exams.id, exams.name, exams.updatedAt)
     .orderBy(desc(exams.updatedAt))
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    updatedAt: r.updatedAt,
-    cardCount: Number(r.cardCount),
-  }))
+  return rows
 }
 
 // S1.7 T7 用: 詳細 page で exam + その user の所有確認をしつつ archived 状態も取る。

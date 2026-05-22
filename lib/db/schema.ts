@@ -217,6 +217,12 @@ export const exams = pgTable(
       'numeric' | 'hierarchical' | 'free'
     >(),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    // 非正規化 (B1 / S2.0c): この exam に属する cards 件数のキャッシュ列。
+    // 試験一覧の件数表示を cards への JOIN+GROUP BY 集計から定数読みに変える。
+    // card の INSERT (process.ts の OCR bulk) / DELETE (delete-card.ts) と
+    // 同一 transaction で増減する。 exam 削除時は exam 行ごと消えるため更新不要。
+    // 単体 card 作成 (createCard) は未実装、 実装時に +1 を同 tx で行うこと。
+    cardCount: integer('card_count').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
