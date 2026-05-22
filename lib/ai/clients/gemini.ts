@@ -6,6 +6,7 @@
 // 本 file は 1 回の API call の責務のみ。
 
 import { GoogleGenAI } from '@google/genai'
+import { logger } from '@/lib/logger'
 import { modelId, type ModelKind } from '../cost'
 
 let _ai: GoogleGenAI | null = null
@@ -65,6 +66,19 @@ export async function callGemini(
   })
   const text = res.text
   if (!text) throw new Error('Gemini returned empty response.text')
+
+  // OCR debug: OCR_DEBUG_LOG=1 (staging 専用) のときのみ raw response を log に出す。
+  // Vercel log の 1 行サイズ上限対策で先頭 50000 文字に truncate し、 元の長さは
+  // textLength に残す。 env 未設定 (本番デフォルト) は no-op。
+  if (process.env.OCR_DEBUG_LOG === '1') {
+    logger.info({
+      event: 'ocr.gemini.response',
+      model: input.model,
+      textPreview: text.slice(0, 50000),
+      textLength: text.length,
+    })
+  }
+
   const usage = res.usageMetadata ?? {}
   return {
     text,
