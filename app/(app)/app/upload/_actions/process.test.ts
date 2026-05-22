@@ -34,6 +34,8 @@ const {
     advisoryLockAcquired: true,
     // S1.9.4: in-flight processing 行の有無 (null = 行なし = guard 通過)
     inflightProcessingDoc: null as { id: string } | null,
+    // Min4 test: true のとき完了 tx (guard 後の最初の transaction) を強制 throw する
+    completionTxShouldFail: false,
   },
 }))
 
@@ -176,7 +178,14 @@ vi.mock('@/lib/db', () => {
           // 1 回目の transaction 呼び出し = guard tx (advisory lock + in-flight check)
           // 2 回目以降 = 完了 tx または markFailed tx
           const isGuardTx = localTxCallCount === 0
+          const txIndex = localTxCallCount
           localTxCallCount++
+          // Min4 test: 完了 tx (guard 後の最初の tx = index 1) を強制 throw。
+          // markFailed は別 getDb() インスタンスで localTxCallCount=0 から始まる
+          // ため index 1 にならず、 この強制 throw の影響を受けない。
+          if (txIndex === 1 && dbState.completionTxShouldFail) {
+            throw new Error('Neon connection lost during completion tx')
+          }
           return await fn(dbApi(isGuardTx) as ReturnType<typeof dbApi>)
         },
       }
@@ -226,6 +235,7 @@ beforeEach(() => {
   // S1.9.4: guard tx の既定値 (guard 通過状態)
   dbState.advisoryLockAcquired = true
   dbState.inflightProcessingDoc = null
+  dbState.completionTxShouldFail = false
 
   mockGetCurrentUser.mockResolvedValue({
     id: 'user-uuid',
@@ -553,5 +563,55 @@ describe('processUpload', () => {
     // guard は plan-limits / daily-limit より前 → quota / daily チェックは走らない
     expect(mockCanRunOcr).not.toHaveBeenCalled()
     expect(mockGetTodayAiUsageGlobal).not.toHaveBeenCalled()
+  })
+
+  // Min4 (S2.0.5 sprint): OCR + cards INSERT 成功後の完了 tx が throw した場合、
+  // 捕捉して markFailed で status='failed' を確定させる (stuck processing 防止)。
+  it('completion tx failure → SAVE_FAILED, source_doc を failed 更新 + notifyOps', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: {},
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 5,
+      tokenUsage: [{ model: 'flash', inputTokens: 1000, outputTokens: 100 }],
+    })
+    dbState.nextCardIds = ['card-1']
+    dbState.completionTxShouldFail = true
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('SAVE_FAILED')
+    expect(result.details?.sourceDocumentId).toBeDefined()
+    // OCR 成功 → cards は INSERT 済み
+    expect(dbState.insertedCards).toHaveLength(1)
+    // 完了 tx 失敗 → status='completed' update は無く、 markFailed の
+    // status='failed' update のみが入る
+    expect(
+      dbState.updatedSourceDocs.some((u) => u.status === 'completed'),
+    ).toBe(false)
+    expect(
+      dbState.updatedSourceDocs.some((u) => u.status === 'failed'),
+    ).toBe(true)
+    // markFailed が upload_records に failed 行を append (実 cost / pages を計上)
+    const failedRec = dbState.insertedUploadRecords.find(
+      (r) => r.status === 'failed',
+    )
+    expect(failedRec).toMatchObject({ pagesProcessed: 1, ocrCostYen: 5 })
+    // ops 通知が飛ぶ
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'completion transaction failed after ocr success',
+      expect.objectContaining({ userId: 'user-uuid' }),
+    )
   })
 })

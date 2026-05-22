@@ -519,26 +519,65 @@ async function _processUpload(
   // S1.9.1: source_documents UPDATE と upload_records INSERT を一蓮托生で
   // commit/rollback する。 upload_records が月次 quota の集計元 (append-only で
   // 物理削除されないため返金が起きない、 Bug A 解消の本体)。
-  await db.transaction(async (tx) => {
-    await tx
-      .update(sourceDocuments)
-      .set({
-        status: 'completed',
+  //
+  // Min4 (S2.0.5 sprint): 完了 tx の throw を try/catch で捕捉する。 cards INSERT
+  // は既に成功しているが、 ここ (status='completed' 更新 + upload_records 台帳)
+  // が Neon 瞬断等で失敗すると、 捕捉しない限り例外が caller に伝播し
+  // source_documents が 'processing' のまま残留する。 markFailed で status を
+  // 'failed' に確定させ、 stuck processing を防ぐ。
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(sourceDocuments)
+        .set({
+          status: 'completed',
+          pagesProcessed: totalPages,
+          cardsExtracted: insertedCards.length,
+          ocrCostYen: pipelineResult.costYen,
+          completedAt: sql`now()`,
+        })
+        .where(eq(sourceDocuments.id, sourceDocumentId))
+      await tx.insert(uploadRecords).values({
+        userId: user.id,
+        filename,
+        fileSizeBytes: totalSize,
         pagesProcessed: totalPages,
-        cardsExtracted: insertedCards.length,
         ocrCostYen: pipelineResult.costYen,
-        completedAt: sql`now()`,
+        status: 'completed',
       })
-      .where(eq(sourceDocuments.id, sourceDocumentId))
-    await tx.insert(uploadRecords).values({
+    })
+  } catch (err) {
+    // OCR + cards INSERT は成功済 (cost 発生済) のため、 markFailed には実値
+    // (pagesProcessed / ocrCostYen) を渡し台帳に failed として記録する。
+    await markFailed(sourceDocumentId, err, {
       userId: user.id,
       filename,
       fileSizeBytes: totalSize,
       pagesProcessed: totalPages,
       ocrCostYen: pipelineResult.costYen,
-      status: 'completed',
     })
-  })
+    await notifyOps('completion transaction failed after ocr success', {
+      userId: user.id,
+      sourceDocumentId,
+      examId,
+      cardsCount: insertedCards.length,
+      error: err,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    logger.error({ event: 'ocr.completion_tx.failed', sourceDocumentId, err })
+    return {
+      ok: false,
+      code: 'SAVE_FAILED',
+      error: '抽出結果の保存に失敗しました',
+      details: {
+        rawError: err instanceof Error ? err.message : String(err),
+        sourceDocumentId,
+        costYen: pipelineResult.costYen,
+        modelChain: pipelineResult.modelChain.map(String),
+      },
+    }
+  }
 
   // -- preview data の構築 --
   // 完全な card row を返すと payload が膨れる + 学習統計の RTC 不要のため、
