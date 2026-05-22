@@ -67,13 +67,29 @@ export type OcrPipelineResult = {
 
 const MAX_HTTP_RETRIES = 2 // 初回 + 2 retries = 計 3 attempts per model
 
-// SDK error の status code は文字列に含まれる前提 (本実装 SDK では code が
-// instance property に出ないことが多く、 message string match が pragmatic)。
+// SDK error の status code / status 文字列は message に含まれる前提 (本実装 SDK
+// では code が instance property に出ないことが多く、 message string match が
+// pragmatic)。
+
+// 429 (rate limit / quota 超過) 判定。 CLAUDE.md AI 絶対ルール 5「429 受信時は
+// 即時停止、 リトライ禁止」 の対象 — retry も Pro fallback もせず即 throw する。
+// 429 数字 / "rate limit" / RESOURCE_EXHAUSTED いずれかで判定。
+function isRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return (
+    /\b429\b/.test(msg) ||
+    /rate ?limit/i.test(msg) ||
+    /resource_exhausted/i.test(msg)
+  )
+}
+
+// transient (= 指数バックオフ retry 対象) な HTTP error 判定。
+// 429 は含めない — ルール 5 により即時停止扱い (isRateLimitError が担当)。
+// 5xx (500/502/503/504) と timeout / unavailable のみ retry する。
 function isTransientError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
   return (
-    /\b(429|500|502|503|504)\b/.test(msg) ||
-    /rate ?limit/i.test(msg) ||
+    /\b(500|502|503|504)\b/.test(msg) ||
     /timeout/i.test(msg) ||
     /unavailable/i.test(msg)
   )
@@ -103,8 +119,11 @@ async function callWithRetry(
       return await callGemini({ model, files, prompt, responseJsonSchema })
     } catch (err) {
       lastErr = err
+      // ルール 5: 429 (rate limit) は即時停止。 retry せず即 throw する。
+      if (isRateLimitError(err)) throw err
       if (!isTransientError(err) || attempt === MAX_HTTP_RETRIES) throw err
-      const backoffMs = 500 * Math.pow(2, attempt) // 500 / 1000 / 2000
+      // attempt2 (最終) は throw 済のため実待機は 500 / 1000 の 2 回のみ。
+      const backoffMs = 500 * Math.pow(2, attempt)
       await new Promise((r) => setTimeout(r, backoffMs))
     }
   }
@@ -158,6 +177,14 @@ export async function runOcrPipeline(
     if (cards.length === 0) throw new Error('Flash returned 0 cards')
   } catch (e) {
     flashError = e instanceof Error ? e.message : String(e)
+
+    // ルール 5: Flash が 429 (rate limit) なら Pro fallback もせず即停止する。
+    // Pro へ移ると rate-limit 中の API を再度叩くことになり「即時停止」 に反する。
+    if (isRateLimitError(e)) {
+      throw new Error(
+        `OCR pipeline failed (Flash rate limited, Pro fallback skipped): ${flashError}`,
+      )
+    }
 
     // Step 2: Pro fallback (HTTP retry も Pro 側で独立に適用)
     modelChain.push('pro')

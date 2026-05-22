@@ -9,6 +9,10 @@ import { GoogleGenAI } from '@google/genai'
 import { logger } from '@/lib/logger'
 import { modelId, type ModelKind } from '../cost'
 
+// CLAUDE.md AI 絶対ルール 6「タイムアウト必須 (30 秒)」。 1 回の Gemini call が
+// 30 秒以内に応答しなければ AbortController で client 側から打ち切る。
+const GEMINI_TIMEOUT_MS = 30_000
+
 let _ai: GoogleGenAI | null = null
 
 function getAi(): GoogleGenAI {
@@ -54,16 +58,37 @@ export async function callGemini(
     })),
     { text: input.prompt },
   ]
-  const res = await ai.models.generateContent({
-    model: modelId(input.model),
-    contents: [{ role: 'user', parts }],
-    config: {
-      responseMimeType: 'application/json',
-      // discover mode は additionalProperties が必要なため responseJsonSchema
-      // 経路を使う (OpenAPI subset の responseSchema 経路は非採用)。
-      responseJsonSchema: input.responseJsonSchema,
-    },
-  })
+  // 30 秒 timeout。 abortSignal で SDK の HTTP request を client 側から打ち切る
+  // (@google/genai GenerateContentConfig.abortSignal、 client-side cancel)。
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS)
+  let res
+  try {
+    res = await ai.models.generateContent({
+      model: modelId(input.model),
+      contents: [{ role: 'user', parts }],
+      config: {
+        responseMimeType: 'application/json',
+        // discover mode は additionalProperties が必要なため responseJsonSchema
+        // 経路を使う (OpenAPI subset の responseSchema 経路は非採用)。
+        responseJsonSchema: input.responseJsonSchema,
+        abortSignal: controller.signal,
+      },
+    })
+  } catch (err) {
+    // timeout 由来の abort は message に「timeout」 を含む error に正規化する。
+    // → ocr.ts の isTransientError が /timeout/i で retry 対象と判定し、
+    //   ルール 6 の指数バックオフ retry に乗せる。
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Gemini call timeout: ${GEMINI_TIMEOUT_MS}ms を超過しました`,
+      )
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
   const text = res.text
   if (!text) throw new Error('Gemini returned empty response.text')
 

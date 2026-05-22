@@ -118,9 +118,9 @@ describe('runOcrPipeline', () => {
     )
   })
 
-  it('transient 429 from Flash → exponential backoff retry → success on 2nd attempt', async () => {
+  it('transient 503 from Flash → exponential backoff retry → success on 2nd attempt', async () => {
     mockCallGemini
-      .mockRejectedValueOnce(new Error('429 Rate limit exceeded'))
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
       .mockResolvedValueOnce({
         text: validResponseText,
         inputTokens: 1000,
@@ -132,6 +132,37 @@ describe('runOcrPipeline', () => {
     expect(result.modelChain).toEqual(['flash'])
     expect(mockCallGemini).toHaveBeenCalledTimes(2)
   }, 10000)
+
+  // S2.0.5: 429 (rate limit) は CLAUDE.md AI ルール 5「即時停止・リトライ禁止」。
+  it('429 from Flash → 即時停止 (retry なし / Pro fallback なし / 1 call のみ)', async () => {
+    // mockRejectedValue で全 call が 429 を返す状況でも、 1 回呼んで即 throw する。
+    mockCallGemini.mockRejectedValue(new Error('429 Too Many Requests'))
+    const { runOcrPipeline } = await importOcr()
+    await expect(runOcrPipeline([sampleFile])).rejects.toThrow(/rate limited/i)
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+  })
+
+  it('rate limit error (429 数字なし) from Flash → 即時停止 (1 call のみ)', async () => {
+    mockCallGemini.mockRejectedValue(
+      new Error('Rate limit exceeded for this project'),
+    )
+    const { runOcrPipeline } = await importOcr()
+    await expect(runOcrPipeline([sampleFile])).rejects.toThrow(
+      /OCR pipeline failed/,
+    )
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+  })
+
+  it('RESOURCE_EXHAUSTED from Flash → 即時停止 (1 call のみ)', async () => {
+    mockCallGemini.mockRejectedValue(
+      new Error('[RESOURCE_EXHAUSTED] quota exceeded'),
+    )
+    const { runOcrPipeline } = await importOcr()
+    await expect(runOcrPipeline([sampleFile])).rejects.toThrow(
+      /OCR pipeline failed/,
+    )
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+  })
 
   it('non-transient error (e.g. invalid API key) from Flash → no retry → Pro fallback', async () => {
     mockCallGemini
@@ -162,9 +193,9 @@ describe('runOcrPipeline', () => {
     expect(onAttempt).toHaveBeenCalledWith('flash')
   })
 
-  it('onAttempt callback fires for each retry + fallback (Flash 429 retry + Pro fallback = 3 calls)', async () => {
+  it('onAttempt callback fires for each retry + fallback (Flash 503 retry + Pro fallback = 3 calls)', async () => {
     mockCallGemini
-      .mockRejectedValueOnce(new Error('429 Rate limit exceeded'))
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
       .mockResolvedValueOnce({
         text: emptyCardsResponseText,
         inputTokens: 1000,
@@ -178,7 +209,7 @@ describe('runOcrPipeline', () => {
     const onAttempt = vi.fn()
     const { runOcrPipeline } = await importOcr()
     await runOcrPipeline([sampleFile], { onAttempt })
-    // Flash 1st (429 → retry), Flash 2nd (success but 0 cards → Pro fallback), Pro 1st (success)
+    // Flash 1st (503 → retry), Flash 2nd (success but 0 cards → Pro fallback), Pro 1st (success)
     // ai_usage = 3 calls 計上
     expect(onAttempt).toHaveBeenCalledTimes(3)
     expect(onAttempt.mock.calls.map((c) => c[0])).toEqual(['flash', 'flash', 'pro'])

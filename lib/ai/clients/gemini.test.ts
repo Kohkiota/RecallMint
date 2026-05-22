@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // callGemini の test。 @google/genai SDK と logger は mock。
 // 主眼は OCR_DEBUG_LOG env gate: 未設定で no-op、 =1 で raw response を log する。
@@ -35,6 +35,11 @@ beforeEach(() => {
   mockLoggerInfo.mockReset()
   // env gate はデフォルト off。 各 test が必要なら個別に '1' を set する。
   delete process.env.OCR_DEBUG_LOG
+})
+
+afterEach(() => {
+  // timeout test が fake timers を使うため、 test ごとに real timers へ戻す。
+  vi.useRealTimers()
 })
 
 describe('callGemini', () => {
@@ -110,5 +115,42 @@ describe('callGemini', () => {
     const { callGemini } = await importCallGemini()
     const r = await callGemini(baseInput)
     expect(r.text).toBe('{"ok":true}')
+  })
+
+  // S2.0.5: CLAUDE.md AI ルール 6「タイムアウト必須 (30 秒)」。
+  it('30 秒応答が無ければ abort し timeout error を throw する', async () => {
+    vi.useFakeTimers()
+    // SDK mock は abortSignal を尊重し、 abort 時に reject する。
+    mockGenerateContent.mockImplementation(
+      (params: { config: { abortSignal: AbortSignal } }) =>
+        new Promise((_resolve, reject) => {
+          params.config.abortSignal.addEventListener('abort', () => {
+            reject(new Error('The request was aborted.'))
+          })
+        }),
+    )
+    const { callGemini } = await importCallGemini()
+    const promise = callGemini(baseInput)
+    const assertion = expect(promise).rejects.toThrow(/timeout/i)
+    // 30 秒経過 → setTimeout 発火 → controller.abort()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
+
+  it('30 秒未満で応答すれば timeout にならず通常どおり返る', async () => {
+    vi.useFakeTimers()
+    mockGenerateContent.mockResolvedValue({
+      text: '{"cards":[]}',
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20 },
+    })
+    const { callGemini } = await importCallGemini()
+    const r = await callGemini(baseInput)
+    expect(r).toEqual({ text: '{"cards":[]}', inputTokens: 10, outputTokens: 20 })
+  })
+
+  it('abort 以外の error は timeout に変換せずそのまま throw する', async () => {
+    mockGenerateContent.mockRejectedValue(new Error('500 Internal Server Error'))
+    const { callGemini } = await importCallGemini()
+    await expect(callGemini(baseInput)).rejects.toThrow(/500 Internal/)
   })
 })
