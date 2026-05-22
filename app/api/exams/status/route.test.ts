@@ -1,16 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import { sourceDocuments, type User } from '@/lib/db/schema'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 
 // ---------------------------------------------------------------------------
-// Fake db: select().from().where() chain で rows を返す / reject する。
-// mockRows は where mock を返し、owner-scope (user_id 絞り) を検証できるようにする。
+// Fake db: D1 (S2.0c) 以降は selectDistinctOn().from().where().orderBy() chain。
+// where mock を返し owner-scope (user_id 絞り) を検証できるようにする。
 // ---------------------------------------------------------------------------
-const { mockSelect } = vi.hoisted(() => ({ mockSelect: vi.fn() }))
+const { mockSelectDistinctOn } = vi.hoisted(() => ({
+  mockSelectDistinctOn: vi.fn(),
+}))
 
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(() => ({ select: mockSelect })),
+  getDb: vi.fn(() => ({ selectDistinctOn: mockSelectDistinctOn })),
 }))
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: vi.fn(),
@@ -38,18 +40,22 @@ type Row = {
   createdAt: Date
 }
 
-// rows を返す select chain を組み立て、where mock を返す。
+// rows を返す selectDistinctOn chain を組み立て、where mock を返す。
+// D1: chain は selectDistinctOn → from → where → orderBy (await で rows resolve)。
 function mockRows(rows: Row[]) {
-  const where = vi.fn().mockResolvedValue(rows)
-  mockSelect.mockReturnValue({
+  const orderBy = vi.fn().mockResolvedValue(rows)
+  const where = vi.fn().mockReturnValue({ orderBy })
+  mockSelectDistinctOn.mockReturnValue({
     from: vi.fn().mockReturnValue({ where }),
   })
-  return where
+  return { where, orderBy }
 }
 function mockDbError(err: Error) {
-  mockSelect.mockReturnValue({
+  mockSelectDistinctOn.mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockRejectedValue(err),
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockRejectedValue(err),
+      }),
     }),
   })
 }
@@ -68,7 +74,7 @@ describe('GET /api/exams/status', () => {
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'unauthenticated' })
     expect(res.headers.get('Cache-Control')).toContain('no-store')
-    expect(mockSelect).not.toHaveBeenCalled()
+    expect(mockSelectDistinctOn).not.toHaveBeenCalled()
   })
 
   it('users 行が未 sync (null) → 200 空 statuses、DB に触れない', async () => {
@@ -76,16 +82,30 @@ describe('GET /api/exams/status', () => {
     const res = await GET()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ statuses: {} })
-    expect(mockSelect).not.toHaveBeenCalled()
+    expect(mockSelectDistinctOn).not.toHaveBeenCalled()
   })
 
-  it('SELECT が owner-scope (user_id = 当該ユーザー) で絞られている', async () => {
+  it('SELECT が owner-scope (user_id) かつ DISTINCT ON (exam_id) で発行される', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    const where = mockRows([])
+    const { where, orderBy } = mockRows([])
     await GET()
+    // D1: exam ごと最新行のみ畳む DISTINCT ON (exam_id) + 3 列 projection。
+    expect(mockSelectDistinctOn).toHaveBeenCalledWith(
+      [sourceDocuments.examId],
+      expect.objectContaining({
+        examId: sourceDocuments.examId,
+        status: sourceDocuments.status,
+        createdAt: sourceDocuments.createdAt,
+      }),
+    )
     // テナント分離: where は eq(source_documents.user_id, 当該 user.id) で呼ばれる。
-    expect(where).toHaveBeenCalledWith(
-      eq(sourceDocuments.userId, 'user-uuid-1'),
+    expect(where).toHaveBeenCalledWith(eq(sourceDocuments.userId, 'user-uuid-1'))
+    // DISTINCT ON の正しさは ORDER BY 先頭列 = exam_id に依存する。
+    // created_at DESC が最新行を選ぶ tie-break。 順序が崩れると Postgres が
+    // runtime で reject するため、 引数を明示的に固定する。
+    expect(orderBy).toHaveBeenCalledWith(
+      sourceDocuments.examId,
+      desc(sourceDocuments.createdAt),
     )
   })
 

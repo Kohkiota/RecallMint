@@ -375,6 +375,16 @@ export const sourceDocuments = pgTable(
     // (user_id, exam_id) 複合で exam_id が非先頭のため、 exam 削除時の
     // cascade (WHERE exam_id = ?) に使えず seq scan になる。
     index('source_docs_exam_idx').on(t.examId),
+    // D1 (S2.0c): /api/exams/status の polling 用。 DISTINCT ON (exam_id)
+    // ORDER BY exam_id, created_at DESC を index 走査で解決する。 user_id 固定後
+    // は (exam_id, created_at DESC) 順で並ぶため、 exam ごと最新行を先頭で拾える。
+    // 註: source_docs_user_exam_idx (user_id, exam_id) は本 index の prefix で
+    // 冗長になる — drop は scope 外 (D1 は「追加」指定)、 follow-up で要検討。
+    index('source_docs_user_exam_created_idx').on(
+      t.userId,
+      t.examId,
+      t.createdAt.desc(),
+    ),
   ],
 )
 

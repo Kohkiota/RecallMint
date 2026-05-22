@@ -57,6 +57,13 @@
       "when": 1779460590017,
       "tag": "0007_fearless_sunset_bain",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779461208819,
+      "tag": "0008_safe_swarm",
+      "breakpoints": true
     }
   ]
 }

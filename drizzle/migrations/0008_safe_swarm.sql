@@ -1,0 +1,1 @@
+CREATE INDEX "source_docs_user_exam_created_idx" ON "source_documents" USING btree ("user_id","exam_id","created_at" DESC NULLS LAST);

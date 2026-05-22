@@ -12,7 +12,7 @@
 //   - 表示 fallback (deriveExamStatuses) と DB cleanup (reconcileStaleProcessing) を
 //     分離することで、cleanup 失敗時も表示は正しく維持される。
 
-import { and, eq, gte, lt } from 'drizzle-orm'
+import { and, desc, eq, gte, lt } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
@@ -91,9 +91,15 @@ export function deriveExamStatuses(
 // ---------------------------------------------------------------------------
 // getExamStatusMap
 // ---------------------------------------------------------------------------
-// ユーザーの source_documents を最小列で全件取得し、deriveExamStatuses に委譲。
-// status での絞り込みをしない理由: 「最新が completed かどうか」を正しく判定するには
-// すべての status の行が必要 (過去の failed + 最新 completed → 出さない、など)。
+// ユーザーの source_documents から exam ごと最新の 1 行を取得し、
+// deriveExamStatuses に委譲する。
+//
+// D1 (S2.0c): 旧実装は user の source_documents を全件取得し JS 側で exam ごと
+// 最新へ畳んでいた。 upload 履歴に比例して読む行が増えるため、
+// DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で DB 側に畳み、
+// exam 数ぶんの行だけ読む (source_docs_user_exam_created_idx を走査)。
+// status で絞り込まないのは従来どおり: 「最新が completed か」を判定するには
+// 最新行の status が必要で、 完了済 exam を取りこぼさないため。
 //
 // best-effort 設計:
 //   - DB エラーで一覧ページの render を止めないため全体を try-catch で包む。
@@ -105,13 +111,14 @@ export async function getExamStatusMap(
   try {
     const db = getDb()
     const rows = await db
-      .select({
+      .selectDistinctOn([sourceDocuments.examId], {
         examId: sourceDocuments.examId,
         status: sourceDocuments.status,
         createdAt: sourceDocuments.createdAt,
       })
       .from(sourceDocuments)
       .where(eq(sourceDocuments.userId, userId)) // owner-scope 必須
+      .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt))
     return deriveExamStatuses(rows, now)
   } catch (err) {
     // best-effort: 一時的な DB エラーで一覧ページの render を落とさないよう warn のみ。
