@@ -172,7 +172,8 @@ export async function getSourceDocumentForUser(
 }
 
 // S1.9.2: OCR result page 用。 当該 source_document が抽出した cards 一覧。
-// getCardsForExam と同じ CardListEntry 形だが、 source_document 単位で絞る。
+// snippet 表示型 CardListEntry を返す (S2.0 T7 で getCardsForExam は rich 型
+// ExamDetailCard に変更済、 本関数は upload result page 用に CardListEntry 据え置き)。
 export async function getCardsForSourceDocument(
   userId: string,
   sourceDocumentId: string,
