@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getCardForEdit } from '@/lib/cards/get-card-for-edit'
 import { CardEditor } from './_components/card-editor'
+import { DeleteCardButton } from './_components/delete-card-button'
 
 // S2.0: 個別 card 編集 page。 owner-scoped で card を取得し、 編集 UI
 // (CardEditor、 breadcrumb / 離脱 guard を内包する Client Component) に渡す。
@@ -27,6 +28,7 @@ export default async function CardEditPage({
       initialQuestionText={card.questionText}
       initialOptions={card.options}
       initialExplanationText={card.explanationText}
+      deleteSlot={<DeleteCardButton cardId={card.id} examId={card.examId} />}
     />
   )
 }

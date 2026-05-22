@@ -34,6 +34,8 @@ type CardEditorProps = {
   initialQuestionText: string
   initialOptions: CardOption[]
   initialExplanationText: string | null
+  // page header に差し込む削除 UI (server 側で組み立てた DeleteCardButton)。
+  deleteSlot?: React.ReactNode
 }
 
 // 新規 option の id を card 内で衝突しないように採番する。
@@ -82,6 +84,7 @@ export function CardEditor({
   initialQuestionText,
   initialOptions,
   initialExplanationText,
+  deleteSlot,
 }: CardEditorProps) {
   const [title, setTitle] = useState(initialTitle)
   const [questionText, setQuestionText] = useState(initialQuestionText)
@@ -213,7 +216,10 @@ export function CardEditor({
         <span className="font-medium text-slate-900">{title || '(無題)'}</span>
       </nav>
 
-      <h1 className="text-2xl font-bold">カードを編集</h1>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h1 className="text-2xl font-bold">カードを編集</h1>
+        {deleteSlot}
+      </div>
 
       <div className="space-y-2">
         <Label htmlFor="card-title">タイトル</Label>
