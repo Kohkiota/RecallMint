@@ -63,13 +63,21 @@ export default async function ExamDetailPage({
               <li key={card.id}>
                 <Card>
                   <CardContent className="p-3 space-y-1">
-                    <div className="flex items-center gap-2">
-                      {card.sortKey && (
-                        <span className="text-xs text-slate-500 font-mono shrink-0">
-                          {card.sortKey}
-                        </span>
-                      )}
-                      <span className="font-medium text-sm">{card.title}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {card.sortKey && (
+                          <span className="text-xs text-slate-500 font-mono shrink-0">
+                            {card.sortKey}
+                          </span>
+                        )}
+                        <span className="font-medium text-sm">{card.title}</span>
+                      </div>
+                      <Link
+                        href={`/app/cards/${card.id}`}
+                        className="shrink-0 text-xs text-slate-600 underline hover:text-slate-900"
+                      >
+                        編集
+                      </Link>
                     </div>
                     <p className="text-xs text-slate-700">
                       {card.questionTextSnippet}
