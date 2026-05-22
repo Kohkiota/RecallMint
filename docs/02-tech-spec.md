@@ -380,8 +380,11 @@ state の値マッピング（plan00 既存踏襲）:
 - `title` は空文字不可
 - `options` は最低 1 個、最大 50 個
 - `options[i].id` は同一 card 内でユニーク
-- `correct_answer_ids` は `options[].id` の部分集合、最低 1 個
+- `correct_answer_ids` は `options[].id` の部分集合
 - `correct_answer_ids` は `options.is_correct` のデノーマ：書き込み時にアプリ側で同期（`options.filter(o => o.is_correct).map(o => o.id)`）
+- **正答数 0 の扱い (S2.0 確定)**: `correct_answer_ids` 空 (= 正答未設定) も保存を許す。
+  OCR が正答未記載で取り込んだ card を user が後から正答付けするユースケースのため、
+  card 編集 page では「最低 1 個」 を強制せず警告表示に留める (`lib/validation/card.ts`)
 - `images[i].key` は同一 card 内でユニーク
 - `custom_props` は freeform jsonb (discover mode で AI が抽出したキー名・値をそのまま格納、 厳密 schema チェックなし)
 - `custom_props` 全体サイズ 100KB 以内
@@ -671,14 +674,20 @@ erDiagram
 
 - `/dashboard` — 「今日の復習」「正答率」「連続学習日数」「最近のフラグ」
 - `/exams` — 試験一覧（追加・編集・削除）
-- `/exams/[id]` — その試験のカード一覧（タブ: カード / アップロード / インポート / 設定）
-    - **カードタブ**: フィルタ・検索・複数選択・一括操作（F-009）。 custom_props はカード単位で自由編集（discover mode で AI 抽出した値を編集可、 試験単位の事前定義 UI は不採用）
-    - **アップロードタブ**: 写真／PDF アップロード（F-001）
-    - **インポートタブ**: CSV / Markdown インポート（F-008）
+- `/exams/[id]` — その試験のカード一覧
+    - **S2.0 実装**: 各 card の全情報 (問題文全文 / 全選択肢 + 正誤を `○`/`×` prefix と
+      正解選択肢の背景色・太字で表示 / 各選択肢の解説 / card 全体の解説) を read-only で
+      常時展開表示。 各 card に編集 page (`/cards/[id]`) への「編集」 ボタン。
+    - **S2.0b 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
+      検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
+      アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
 - `/study` — 学習セッション入口（「スマート復習」「問題演習」の 2 ボタン）
 - `/study/smart` — スマート復習モード（F-004、FSRS 自動出題）
 - `/study/practice` — 問題演習モード（F-004、フィルタ + 出題数 + 時間制限の設定 → 開始）
-- `/cards/[id]` — カード詳細編集（メモ・カスタムプロパティ・画像挿入）
+- `/cards/[id]` — カード編集 page (S2.0)。 既存 card の title / 問題文 / 選択肢
+  (本文・正解 checkbox・選択肢別解説) / card 全体解説 を編集 + card 単体削除。
+  保存成功で元の `/exams/[id]` へリダイレクト。 メモ / custom_props (tag) / 画像挿入は
+  S2.0 scope 外 (memo・画像は別 sprint、 tag は S2.0b)。
 - `/settings` — プラン管理、Customer Portal リンク、アカウント削除
 
 ### Server Actions（`'use server'`）
@@ -692,11 +701,18 @@ erDiagram
 
 **カード**:
 
-- `createCard(examId, input)` → `Result<Card>`
-- `updateCard(id, input)` → `Result<Card>` — custom_props / options / images もここで更新（custom_props はカード単位の freeform jsonb）
-- `deleteCard(id)` → `Result<void>`（hard delete）
-- `bulkUpdateCards(ids, action)` → `Result<{updated: number}>` (F-009)
-    - action = `{type: 'setCustomProp', name, value} | {type: 'delete'} | {type: 'export'} | {type: 'resetStatus'}`
+- `createCard(examId, input)` → `Result<Card>` — **S2.0 時点で未実装** (card 新規作成は
+  現状 OCR `processUpload` 経由のみ。 手動作成 UI は後 sprint)
+- `updateCard(cardId, input)` → `ActionResult` (S2.0 確定形) — `input` =
+  `{ title, questionText, options: {id, text, isCorrect, explanation?}[], explanationText: string | null }`。
+  owner-scoped UPDATE で title / question_text / options / explanation_text を更新。
+  `correct_answer_ids` は入力に含めず `options[].is_correct` から server 側で再生成。
+  custom_props / images は S2.0 では touch しない (custom_props は S2.0b の tag schema 移行で扱う)
+- `deleteCard(cardId)` → `ActionResult<{ examId }>` (S2.0 確定形) — hard delete。
+  `reviews` は `card_id` FK CASCADE で連動削除。 戻り値の `examId` で削除後の遷移先を決定
+- `bulkUpdateCards(ids, action)` → `Result<{updated: number}>` (F-009) — **S2.0b で再定義予定**。
+  現行案の `action='setCustomProp'` は custom_props 前提のため、 tag schema 移行 (S2.0b) と
+  同時に tag 操作 (付与 / 削除 / 値書換) へ再設計する
 
 **学習セッション (FSRS)**:
 
@@ -1196,6 +1212,7 @@ async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
 |`STRIPE_PRICE_PRO_MONTHLY`|Pro 月額|All|
 |`STRIPE_PRICE_PRO_YEARLY`|Pro 年額|All|
 |`GEMINI_API_KEY`|Google AI / Gemini|All|
+|`OCR_DEBUG_LOG`|`1` のとき Gemini raw response を log 出力 (OCR 抽出調査用、 staging のみ一時有効化、 本番未設定)|Staging 任意|
 |`R2_ACCOUNT_ID`|Cloudflare R2|All|
 |`R2_ACCESS_KEY_ID`|R2|All|
 |`R2_SECRET_ACCESS_KEY`|R2|All|
