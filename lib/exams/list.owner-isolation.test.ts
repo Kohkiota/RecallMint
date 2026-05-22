@@ -142,7 +142,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
   })
 })
 
-describe('getCardsForExam (owner isolation + snippet/keys derivation)', () => {
+describe('getCardsForExam (owner isolation + full detail mapping)', () => {
   it('returns empty array when no rows (other user exam or empty exam)', async () => {
     dbState.queue = [[]]
     const { getCardsForExam } = await importModule()
@@ -150,7 +150,11 @@ describe('getCardsForExam (owner isolation + snippet/keys derivation)', () => {
     expect(r).toEqual([])
   })
 
-  it('maps rows into list entries with snippet + option count + custom_props keys', async () => {
+  it('maps rows into full ExamDetailCard (question 全文 / options / explanation)', async () => {
+    const options = [
+      { id: 'a', text: '選択肢A', is_correct: true, explanation: 'A の解説' },
+      { id: 'b', text: '選択肢B', is_correct: false },
+    ]
     dbState.queue = [
       [
         {
@@ -158,31 +162,26 @@ describe('getCardsForExam (owner isolation + snippet/keys derivation)', () => {
           title: '問1',
           sortKey: '001',
           questionText: 'a'.repeat(120),
-          options: [
-            { id: 'a', text: 'A', is_correct: true },
-            { id: 'b', text: 'B', is_correct: false },
-          ],
-          customProps: { 試験回: '令和7' },
-          createdAt: new Date(),
+          options,
+          explanationText: 'カード全体の解説',
         },
       ],
     ]
     const { getCardsForExam } = await importModule()
     const r = await getCardsForExam('user-1', 'exam-A')
     expect(r).toHaveLength(1)
-    expect(r[0]).toMatchObject({
+    // snippet 化せず問題文全文・全選択肢・card 解説をそのまま返す
+    expect(r[0]).toEqual({
       id: 'card-1',
       title: '問1',
       sortKey: '001',
-      optionCount: 2,
-      customPropKeys: ['試験回'],
+      questionText: 'a'.repeat(120),
+      options,
+      explanationText: 'カード全体の解説',
     })
-    // 80 文字以内 + 末尾 '…' (snippet 内部実装)
-    expect(r[0].questionTextSnippet.endsWith('…')).toBe(true)
-    expect(r[0].questionTextSnippet.length).toBeLessThanOrEqual(81)
   })
 
-  it('handles null sortKey + non-array options defensively', async () => {
+  it('handles null sortKey + non-array options + null explanation defensively', async () => {
     dbState.queue = [
       [
         {
@@ -191,17 +190,16 @@ describe('getCardsForExam (owner isolation + snippet/keys derivation)', () => {
           sortKey: null,
           questionText: 'short',
           options: null, // DB schema 上 NOT NULL だが防御コード経路の確認
-          customProps: null,
-          createdAt: new Date(),
+          explanationText: null,
         },
       ],
     ]
     const { getCardsForExam } = await importModule()
     const r = await getCardsForExam('user-1', 'exam-A')
     expect(r[0].sortKey).toBeNull()
-    expect(r[0].optionCount).toBe(0)
-    expect(r[0].customPropKeys).toEqual([])
-    expect(r[0].questionTextSnippet).toBe('short')
+    expect(r[0].options).toEqual([])
+    expect(r[0].explanationText).toBeNull()
+    expect(r[0].questionText).toBe('short')
   })
 })
 

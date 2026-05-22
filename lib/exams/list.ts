@@ -5,7 +5,7 @@
 
 import { and, count, desc, eq, isNull } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
-import { cards, exams, sourceDocuments } from '@/lib/db/schema'
+import { cards, exams, sourceDocuments, type CardOption } from '@/lib/db/schema'
 
 export type ActiveExam = {
   id: string
@@ -85,9 +85,7 @@ export async function getExamByIdForUser(
   return rows[0] ?? null
 }
 
-// S1.7 T7 用: 詳細 page で表示する cards 一覧 (read-only)。
-// sort: sort_key (text) ASC NULLS LAST → createdAt ASC、 ユーザーが OCR 抽出時に
-// 振った文書順 (sort_key) を尊重。 sort_key 未設定の場合は createdAt 順。
+// CardListEntry: OCR result page (getCardsForSourceDocument) 用の snippet 表示型。
 export type CardListEntry = {
   id: string
   title: string
@@ -96,10 +94,25 @@ export type CardListEntry = {
   optionCount: number
   customPropKeys: string[]
 }
+
+// ExamDetailCard: 試験詳細 page (/app/exams/[id]) で 1 card の全情報を read-only
+// 展開表示するための型 (S2.0 T7)。 snippet ではなく問題文全文 / 全選択肢 + 各解説 /
+// card 全体解説をそのまま渡し、 OCR 投入結果を一目で把握できるようにする。
+export type ExamDetailCard = {
+  id: string
+  title: string
+  sortKey: string | null
+  questionText: string
+  options: CardOption[]
+  explanationText: string | null
+}
+
+// 試験詳細 page 用 cards 取得 (read-only、 owner-scoped)。
+// sort: sort_key (text) ASC NULLS LAST → created_at ASC で OCR 文書順を尊重。
 export async function getCardsForExam(
   userId: string,
   examId: string,
-): Promise<CardListEntry[]> {
+): Promise<ExamDetailCard[]> {
   const db = getDb()
   const rows = await db
     .select({
@@ -108,8 +121,7 @@ export async function getCardsForExam(
       sortKey: cards.sortKey,
       questionText: cards.questionText,
       options: cards.options,
-      customProps: cards.customProps,
-      createdAt: cards.createdAt,
+      explanationText: cards.explanationText,
     })
     .from(cards)
     .where(and(eq(cards.userId, userId), eq(cards.examId, examId)))
@@ -118,12 +130,10 @@ export async function getCardsForExam(
     id: r.id,
     title: r.title,
     sortKey: r.sortKey,
-    questionTextSnippet: snippet(r.questionText, 80),
-    optionCount: Array.isArray(r.options) ? r.options.length : 0,
-    customPropKeys:
-      r.customProps && typeof r.customProps === 'object'
-        ? Object.keys(r.customProps as Record<string, unknown>)
-        : [],
+    questionText: r.questionText,
+    // options は schema 上 NOT NULL だが防御的に配列チェック。
+    options: Array.isArray(r.options) ? r.options : [],
+    explanationText: r.explanationText,
   }))
 }
 

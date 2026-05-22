@@ -62,7 +62,7 @@ export default async function ExamDetailPage({
             {cards.map((card) => (
               <li key={card.id}>
                 <Card>
-                  <CardContent className="p-3 space-y-1">
+                  <CardContent className="p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex min-w-0 items-center gap-2">
                         {card.sortKey && (
@@ -79,15 +79,50 @@ export default async function ExamDetailPage({
                         編集
                       </Link>
                     </div>
-                    <p className="text-xs text-slate-700">
-                      {card.questionTextSnippet}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      選択肢 {card.optionCount} 件
-                      {card.customPropKeys.length > 0 && (
-                        <span> ・ プロパティ: {card.customPropKeys.join(', ')}</span>
-                      )}
-                    </p>
+
+                    <div>
+                      <p className="text-xs font-medium text-slate-500">問題文</p>
+                      <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-800">
+                        {card.questionText}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-slate-500">
+                        選択肢 ({card.options.length} 件)
+                      </p>
+                      <ul className="mt-1 space-y-1.5">
+                        {card.options.map((opt) => (
+                          <li
+                            key={opt.id}
+                            className="rounded border border-border/60 p-2 text-sm"
+                          >
+                            <div className="flex items-start gap-2">
+                              {opt.is_correct && (
+                                <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
+                                  正解
+                                </span>
+                              )}
+                              <span className="whitespace-pre-wrap text-slate-800">
+                                {opt.text}
+                              </span>
+                            </div>
+                            {opt.explanation && (
+                              <p className="mt-1 whitespace-pre-wrap text-xs text-slate-500">
+                                解説: {opt.explanation}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-slate-500">解説</p>
+                      <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-700">
+                        {card.explanationText ?? '(なし)'}
+                      </p>
+                    </div>
                   </CardContent>
                 </Card>
               </li>
