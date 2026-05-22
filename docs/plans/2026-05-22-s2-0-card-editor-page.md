@@ -189,13 +189,31 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   Minor 件数) と T4 の staging smoke 結果を含める。
 - **完了条件**: session log commit (docs)。 sprint 完了を OT に報告。
 
+### - [ ] T7: 試験詳細 page の全情報展開表示 (staging smoke 中の OT 追加)
+
+**Files:** Modify `lib/exams/list.ts`, `lib/exams/list.owner-isolation.test.ts`,
+`app/(app)/app/exams/[id]/page.tsx`
+
+- **目的**: OCR 投入 card の状態 (問題文全文 / 全選択肢 + 正答 + 各選択肢解説 /
+  card 全体解説) を試験詳細 page で一目把握できるようにする。 現状 snippet で
+  切れ、 解説有無の確認に DB 直見が必要な問題を解消。
+- **制約**: read-only、 server action 追加なし。 owner-scoped query 維持。
+  `getCardsForExam` を rich 型 `ExamDetailCard` (`questionText` 全文 / `options` /
+  `explanationText`) を返すよう変更する — 唯一の caller が当 page のため影響は
+  局所。 `getCardsForSourceDocument` / `CardListEntry` (upload result 用) は不変。
+  常時展開表示 (折りたたみなし)、 mobile 崩れなし。 編集 link は維持、 削除 button は
+  追加しない (S2.0b)。 新規依存・schema 変更なし。
+- **完了条件**: `/app/exams/[id]` で全 card の全情報が見える。 `getCardsForExam`
+  の owner-isolation test を rich 形へ更新。 `pnpm test` / `pnpm build` pass。
+  review Critical 0。 read のみ (削除/外部副作用なし) → review pass で即 `[reviewed]`。
+
 ---
 
 ## Self-review
 
 - **spec coverage**: kickoff §1 → T3 (page) / §2 → T3 (編集 UI) / §3 → T2 (updateCard) /
   §4 → T1 (validation) / §5 → T4 (deleteCard) / §6 → T3 (編集 link) / §7 → 実施せず
-  (下記 ①) / §tech-spec → T5。
+  (下記 ①) / §tech-spec → T5。 staging smoke 中の OT 指摘 → T7 (試験詳細の全情報表示)。
 - **再精査での改訂点**: ① kickoff §7 (AppPath に `/app/cards/[id]` 追加) は**実施しない**
   — `AppPath` / `revalidateAppPath` (`app/(app)/app/_actions/revalidate.ts`) は header
   nav の `<Link onClick>` client cache-busting 専用で dynamic route を literal にできず、
@@ -208,5 +226,6 @@ Modify `app/(app)/app/cards/[id]/page.tsx`
   (T2) / `ActionResult<{examId}>` (T4) / DB `CardOption` snake_case 変換 (T2)。
 - **placeholder**: なし。
 
-**最終行数: 211 行 / 上限 250** (2026-05-22 改訂: memo / 画像対応を scope 外として明記、
-正答 UI を pattern A 確定。 schema 変更ゼロ・新規依存ゼロは不変)。
+**最終行数: 231 行 / 上限 250** (2026-05-22 改訂: memo / 画像対応を scope 外として明記、
+正答 UI を pattern A 確定。 staging smoke 中に T7 = 試験詳細の全情報展開表示を OT 追加。
+schema 変更ゼロ・新規依存ゼロは不変)。
