@@ -3,15 +3,19 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
 import { limitsFor } from '@/lib/auth/plan-limits'
-import {
-  reconcileStaleProcessing,
-  hasActiveProcessingUpload,
-} from '@/lib/exams/source-doc-status'
+import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { UploadForm } from './_components/upload-form'
 
-// Server Component: 認証確認 → stale cleanup → in-flight 判定 → 分岐描画。
+// Server Component: 認証確認 → in-flight 判定 → 分岐描画。
+//
+// S2.0.7: render 冒頭の reconcileStaleProcessing 呼び出しを撤去した。
+//   無条件の書き込み tx (stale 0 件でも BEGIN/UPDATE/COMMIT) がページ遷移を
+//   ブロックしていたため。stale processing 残骸の DB cleanup は polling
+//   endpoint (/api/exams/status) が担う。hasActiveProcessingUpload は
+//   STALE_PROCESSING_MS (15 分) window を内蔵しており、reconcile 前の死骸を
+//   in-flight と誤判定しないため、reconcile 撤去後も判定は正しい。
 //
 // in-flight ジョブあり (hasActiveProcessingUpload = true):
 //   UploadForm を出さず「処理中」案内を表示する。
@@ -20,17 +24,9 @@ import { UploadForm } from './_components/upload-form'
 //
 // in-flight なし (false):
 //   従来どおり UploadForm を描画する (S1.7 T3 以降の既存ロジックを維持)。
-//
-// reconcileStaleProcessing は exams 一覧ページでも呼ばれており二重実行になるが、
-// UPDATE RETURNING による冪等設計 (S1.9.3 で確認済) のため安全。
 export default async function UploadPage() {
   const user = await getCurrentUser()
   if (!user) return null
-
-  // stale (>15 分) な processing 行を failed に変換してから in-flight 判定する。
-  // 死骸を先に片付けることで hasActiveProcessingUpload が誤 true を返さなくなる。
-  // best-effort (throw しない) のでエラーハンドリングは不要。
-  await reconcileStaleProcessing(user.id)
 
   const isProcessing = await hasActiveProcessingUpload(user.id)
 
