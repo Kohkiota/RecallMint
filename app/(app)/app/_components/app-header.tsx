@@ -19,8 +19,9 @@ export function AppHeader() {
         </Link>
         <nav className="flex items-center gap-4">
           {/* Sprint A-2: vocab nav (単語 / 復習) 撤去。 S1a: アップロード追加。
-              S1.7: 試験 追加 (read-only viewer)。 残 mcq routes (/study/smart,
-              /study/practice) は後続 Sprint で実装後追加。 */}
+              S1.7: 試験 追加 (read-only viewer)。
+              T6 (S2.1): 演習 (/app/quiz) 撤去、スマート復習 (/app/study/smart) 追加。
+              カスタム演習導線は S2.3 で追加予定。 */}
           <Link
             href="/app/upload"
             onClick={() => void revalidateAppPath('/app/upload')}
@@ -36,11 +37,11 @@ export function AppHeader() {
             試験
           </Link>
           <Link
-            href="/app/quiz"
-            onClick={() => void revalidateAppPath('/app/quiz')}
+            href="/app/study/smart"
+            onClick={() => void revalidateAppPath('/app/study/smart')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
-            演習
+            スマート復習
           </Link>
           <Link
             href="/app/settings"

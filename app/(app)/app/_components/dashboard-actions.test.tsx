@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // DashboardActions client component tests.
-// next/link onClick + revalidateAppPath wiring を 2 button × due 状態でカバー。
+// T6: 左 button href → /app/study/smart/session、右 button → disabled「カスタム演習（準備中）」
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
@@ -39,33 +39,40 @@ afterEach(() => {
 })
 
 describe('DashboardActions', () => {
-  it('dueCount > 0: スマート復習 active 表示 + 件数表示', () => {
+  it('dueCount > 0: スマート復習 link が href=/app/study/smart/session で表示', () => {
     render(<DashboardActions dueCount={3} />)
     const btn = screen.getByRole('link', { name: /スマート復習/ })
-    // Sprint A-2: /app/review 撤去、 /app/quiz placeholder に暫定リンク
-    expect(btn).toHaveAttribute('href', '/app/quiz')
+    expect(btn).toHaveAttribute('href', '/app/study/smart/session')
     expect(btn).toHaveTextContent('スマート復習（3件）')
   })
 
-  it('dueCount > 0: スマート復習 click → revalidateAppPath(/app/quiz) 1 回 call', () => {
+  it('dueCount > 0: スマート復習 click → revalidateAppPath(/app/study/smart/session) 1 回 call', () => {
     render(<DashboardActions dueCount={3} />)
     fireEvent.click(screen.getByRole('link', { name: /スマート復習/ }))
     expect(mockRevalidate).toHaveBeenCalledTimes(1)
-    expect(mockRevalidate).toHaveBeenCalledWith('/app/quiz')
+    expect(mockRevalidate).toHaveBeenCalledWith('/app/study/smart/session')
   })
 
-  it('dueCount === 0: 「復習完了！」 disabled 表示、スマート復習 link 不在', () => {
+  it('dueCount === 0: 「復習完了！」 表示、スマート復習 link 不在', () => {
     render(<DashboardActions dueCount={0} />)
     expect(screen.getByText('復習完了！')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /スマート復習/ })).not.toBeInTheDocument()
   })
 
-  it('問題演習 link は dueCount に関係なく常時表示 + click → revalidateAppPath(/app/quiz)', () => {
+  it('右 button は「カスタム演習（準備中）」label で disabled (dueCount > 0)', () => {
+    render(<DashboardActions dueCount={3} />)
+    const btn = screen.getByRole('button', { name: 'カスタム演習（準備中）' })
+    expect(btn).toBeDisabled()
+  })
+
+  it('右 button は「カスタム演習（準備中）」label で disabled (dueCount === 0)', () => {
     render(<DashboardActions dueCount={0} />)
-    const btn = screen.getByRole('link', { name: '問題演習' })
-    expect(btn).toHaveAttribute('href', '/app/quiz')
-    fireEvent.click(btn)
-    expect(mockRevalidate).toHaveBeenCalledTimes(1)
-    expect(mockRevalidate).toHaveBeenCalledWith('/app/quiz')
+    const btn = screen.getByRole('button', { name: 'カスタム演習（準備中）' })
+    expect(btn).toBeDisabled()
+  })
+
+  it('旧「問題演習」link は存在しない (T6 で disabled button に置換済)', () => {
+    render(<DashboardActions dueCount={0} />)
+    expect(screen.queryByRole('link', { name: '問題演習' })).not.toBeInTheDocument()
   })
 })

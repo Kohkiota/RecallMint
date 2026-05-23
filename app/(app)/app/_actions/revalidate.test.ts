@@ -29,7 +29,10 @@ describe('revalidateAppPath', () => {
   it.each<AppPath>([
     '/app',
     '/app/settings',
-    '/app/quiz',
+    '/app/upload',
+    '/app/exams',
+    '/app/study/smart',
+    '/app/study/smart/session',
   ])('user 存在時、path=%s で revalidatePath を 1 回呼ぶ', async (path) => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user_1' })
     await revalidateAppPath(path)

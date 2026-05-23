@@ -9,11 +9,10 @@ export function DashboardActions({ dueCount }: { dueCount: number }) {
     <div className="grid grid-cols-2 gap-3">
       {dueCount > 0 ? (
         <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
-          {/* /app/review (vocab) 撤去済。 後続 Sprint で /study/smart 実装後に切替予定、
-              現状は /app/quiz placeholder に暫定リンク。 */}
+          {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart/session に差替。 */}
           <Link
-            href="/app/quiz"
-            onClick={() => void revalidateAppPath('/app/quiz')}
+            href="/app/study/smart/session"
+            onClick={() => void revalidateAppPath('/app/study/smart/session')}
           >
             スマート復習（{dueCount}件）
           </Link>
@@ -23,13 +22,14 @@ export function DashboardActions({ dueCount }: { dueCount: number }) {
           復習完了！
         </div>
       )}
-      <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
-        <Link
-          href="/app/quiz"
-          onClick={() => void revalidateAppPath('/app/quiz')}
-        >
-          問題演習
-        </Link>
+      {/* T6 (S2.1): 右 button は /app/quiz 撤去に伴い disabled に。
+          href は S2.3 カスタム演習実装後に復活。 */}
+      <Button
+        size="lg"
+        className="w-full py-4 text-lg font-bold rounded-xl"
+        disabled
+      >
+        カスタム演習（準備中）
       </Button>
     </div>
   )
