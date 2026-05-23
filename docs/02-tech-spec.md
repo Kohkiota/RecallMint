@@ -743,12 +743,17 @@ erDiagram
   Client: `SessionRunner` 状態機械 (**S2.2**: `selecting → judged → finished`)。
   `submitReview` server action 呼出 (useTransition)、 集合一致は client 判定 (順序非依存、
   `equalSet` helper)。
-  - 通常モード (`fsrs_mode=false`): selecting で「回答する」押下時に即 submit
-    (rating=3 or 1) + judged 遷移、 「次へ」は純遷移。
-  - FSRS モード (`fsrs_mode=true`、 **S2.2.1 変更**): selecting で Again/Hard/Good/Easy
-    4 ボタンを直接表示 (回答 + rate 兼用、 空選択で disabled)。 押下時に submit +
-    judged 遷移、 「次へ」 で純遷移 (通常モードと統一)。 旧 S2.2 の 2-step (「回答する」
-    → judged → rate → 自動次へ) は廃止。
+  - selecting footer (**S2.2.2 で両モード共通化**): 「回答する」 1 個 (空選択 disabled、
+    押下時は判定 + judged 遷移のみ、 submit は呼ばない)。
+  - 通常モード (`fsrs_mode=false`) judged footer: 「次へ」 1 個。 押下で
+    `currentCorrect ? 3 : 1` を auto-rating として submit + 成功で自動次へ
+    (純遷移「次へ」 は廃止、 submit 成功時のみ次 card 遷移)。
+  - FSRS モード (`fsrs_mode=true`) judged footer: Again/Hard/Good/Easy 4 ボタン
+    (mobile 2x2 grid)。 押下で user 選択 rating を submit + 成功で自動次へ。
+  - 履歴: S2.2 T4 は「回答する」 即 submit + 「次へ」 純遷移、 S2.2.1 T1 は selecting で
+    4 rate ボタン回答兼用 (1-step)、 **S2.2.2 で両モード「回答する」 共通化 + judged で
+    mode 別 footer (2-step) に再変更**。 submit は両モード judged の操作 (次へ / rate)
+    押下時のみ。
   完了画面は `phase='finished'` 内部 state (別 page 不要)。
   B2 fix: 表示時に `stripPrefix(text, optId)` で `opt.text` 先頭の重複 ID prefix を除去
   (startsWith + ID 直後文字種判定、 年号系 `"1990s"` は保全)。
