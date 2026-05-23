@@ -1,22 +1,22 @@
 'use client'
 
-// SessionRunner — スマート復習 1 session を管理する Client Component (S2.2 T4 再設計)。
+// SessionRunner — スマート復習 1 session を管理する Client Component (S2.2.1 T1 再設計)。
 //
-// Phase machine: selecting → judged → (mode 別 submit + 遷移) → finished
+// Phase machine: selecting → judged → finished
 //
-// - selecting: 問題文 + 選択肢 (click toggle 可) + 「回答する」 button (空選択で disabled)
-// - judged: 解説 + 正解/不正解判定 + (通常モード) 「次へ」 純遷移 /
-//           (FSRS モード) Again/Hard/Good/Easy 押下で submit + 自動次へ
+// - selecting (通常): 問題文 + 選択肢 + 「回答する」 button (空選択 disabled)
+// - selecting (FSRS): 問題文 + 選択肢 + Again/Hard/Good/Easy 4 ボタン (空選択 disabled)
+//   4 ボタンが「回答 + rate」を兼ねる。 「回答する」 button は表示しない
+// - judged (両モード共通): 解説 + 正解/不正解判定 + 「次へ」 純遷移
 // - finished: 🎉 + 統計 + もう一度 / ダッシュボードへ
 //
 // 正解判定 = client 集合一致 (順序非依存)。 server 戻り値 data.correct は参照しない
 // (FSRS モードで user rating と判定値が乖離するため)。
 //
 // submit タイミング (mode 別):
-// - 通常モード: 「回答する」押下時に judged 遷移と同時に submit (rating=3 or 1)。
-//   解説を読む間に server 書き込みが完了し、 「次へ」 tap は純遷移。
-// - FSRS モード: 「回答する」 押下時は判定 + 解説表示のみ (未 submit)。
-//   rate ボタン押下で submit + 自動次へ。
+// - 通常モード: 「回答する」押下時に submit (rating=3 or 1) + judged 遷移
+// - FSRS モード: rate ボタン (1|2|3|4) 押下時に submit + judged 遷移
+// いずれも judged の「次へ」は純遷移 (submit を含まない)。
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
@@ -81,33 +81,18 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
   }
 
   // ---------------------------------------------------------------------------
-  // 「回答する」 押下
+  // submit + judged 遷移 (共通)。 通常モード「回答する」と FSRS rate ボタンから呼ぶ
   // ---------------------------------------------------------------------------
-  const handleAnswer = () => {
+  const submitAndJudge = (rating: Rating, correct: boolean) => {
     if (!current) return
-    const options: CardOption[] = Array.isArray(current.options) ? current.options : []
-    const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
-    const correct = equalSet(selectedIds, correctIds)
-
     setError(null)
-
-    if (fsrsMode) {
-      // FSRS: 判定 + 解説表示のみ。 rate 押下まで submit しない。
-      setCurrentCorrect(correct)
-      setPhase('judged')
-      return
-    }
-
-    // 通常モード: その場で submit (rating mapping: correct→3 / incorrect→1)。
-    const rating: Rating = correct ? 3 : 1
     setCurrentCorrect(correct)
     startTransition(async () => {
       const result = await submitReview(current.id, rating)
       if (!result.ok) {
         setError(result.error)
-        // submit 失敗時は判定 cache (currentCorrect) を破棄し selecting phase 維持。
-        // 同じ選択で 「回答する」 を再押下すれば retry できる (素出し error UI で UX 上十分、
-        // S2.2 T4 review I-3 で plan 緩和済)。
+        // 失敗時は判定 cache を破棄し selecting phase 維持。 同じ選択で再押下すれば retry できる
+        // (S2.2 T4 review I-3 plan 緩和、 S2.2.1 T1 で FSRS にも適用)
         setCurrentCorrect(null)
         return
       }
@@ -119,30 +104,27 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
     })
   }
 
-  // ---------------------------------------------------------------------------
-  // FSRS rate 押下
-  // ---------------------------------------------------------------------------
-  const handleRate = (rating: Rating) => {
+  // 通常モード 「回答する」: 集合一致 → correct→3 / incorrect→1 で submit
+  const handleAnswer = () => {
     if (!current) return
-    setError(null)
-    const correctAtSubmit = currentCorrect
-    startTransition(async () => {
-      const result = await submitReview(current.id, rating)
-      if (!result.ok) {
-        setError(result.error)
-        return
-      }
-      setTally((t) => ({
-        answered: t.answered + 1,
-        correct: t.correct + (correctAtSubmit ? 1 : 0),
-      }))
-      goNext()
-    })
+    const options: CardOption[] = Array.isArray(current.options) ? current.options : []
+    const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
+    const correct = equalSet(selectedIds, correctIds)
+    const rating: Rating = correct ? 3 : 1
+    submitAndJudge(rating, correct)
   }
 
-  // ---------------------------------------------------------------------------
-  // 通常モード 「次へ」 (純遷移、 submit を含まない)
-  // ---------------------------------------------------------------------------
+  // FSRS モード rate ボタン: 集合一致で正誤判定 (server 戻り値は使わず client 一本化)
+  // しつつ user 選択 rating でそのまま submit
+  const handleRateFsrs = (rating: Rating) => {
+    if (!current) return
+    const options: CardOption[] = Array.isArray(current.options) ? current.options : []
+    const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
+    const correct = equalSet(selectedIds, correctIds)
+    submitAndJudge(rating, correct)
+  }
+
+  // judged 「次へ」 純遷移 (両モード共通、 submit を含まない)
   const handleNext = () => {
     goNext()
   }
@@ -273,8 +255,8 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
         </p>
       )}
 
-      {/* selecting phase: 「回答する」 */}
-      {!isJudged && (
+      {/* selecting phase footer (mode 別) */}
+      {!isJudged && !fsrsMode && (
         <div className="flex justify-end">
           <Button
             onClick={handleAnswer}
@@ -286,47 +268,47 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
         </div>
       )}
 
-      {/* judged phase footer (mode 別) */}
-      {isJudged && !fsrsMode && (
-        <div className="flex justify-end">
-          <Button onClick={handleNext} className="w-full sm:w-auto">
-            次へ
-          </Button>
-        </div>
-      )}
-
-      {isJudged && fsrsMode && (
+      {!isJudged && fsrsMode && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Button
-            onClick={() => handleRate(1)}
-            disabled={pending}
+            onClick={() => handleRateFsrs(1)}
+            disabled={pending || selectedIds.length === 0}
             variant="outline"
             className="h-14 text-base font-semibold"
           >
             Again
           </Button>
           <Button
-            onClick={() => handleRate(2)}
-            disabled={pending}
+            onClick={() => handleRateFsrs(2)}
+            disabled={pending || selectedIds.length === 0}
             variant="outline"
             className="h-14 text-base font-semibold"
           >
             Hard
           </Button>
           <Button
-            onClick={() => handleRate(3)}
-            disabled={pending}
+            onClick={() => handleRateFsrs(3)}
+            disabled={pending || selectedIds.length === 0}
             className="h-14 text-base font-semibold"
           >
             Good
           </Button>
           <Button
-            onClick={() => handleRate(4)}
-            disabled={pending}
+            onClick={() => handleRateFsrs(4)}
+            disabled={pending || selectedIds.length === 0}
             variant="outline"
             className="h-14 text-base font-semibold border-emerald-300 text-emerald-700 hover:bg-emerald-50"
           >
             Easy
+          </Button>
+        </div>
+      )}
+
+      {/* judged phase footer (両モード共通、 純遷移) */}
+      {isJudged && (
+        <div className="flex justify-end">
+          <Button onClick={handleNext} className="w-full sm:w-auto">
+            次へ
           </Button>
         </div>
       )}
