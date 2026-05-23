@@ -83,6 +83,7 @@
 |新規|`source_documents`|OCR ジョブの作業 / trace（exam と同寿命）|新設|
 |新規|`upload_records`|OCR 月次利用台帳（append-only、月次 quota 集計元）|S1.9.1 新設|
 |新規|`study_days`|ユーザー単位の学習日カレンダー|新設|
+|新規|`user_settings`|ユーザーごとの学習設定 (session_limit)|S2.1 新設|
 |採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用 (discover mode 一本化、 `docs/research/ocr-schema-vs-discover.md` 参照)|
 
 ### 2.3 plan00 流用テーブル（変更なし、参照のみ）
@@ -482,48 +483,94 @@ export const uploadRecords = pgTable('upload_records', {
 ユーザー単位の学習日付ログ。**reviews と独立** で持つことで cards 削除の影響を受けない。
 
 ```typescript
-export const studyDays = pgTable('study_days', {
-  user_id: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  day: date('day').notNull(),  // JST 日付 'YYYY-MM-DD'
-  review_count: integer('review_count').notNull().default(0),
-  correct_count: integer('correct_count').notNull().default(0),
-}, (t) => ({
-  pk: primaryKey({ columns: [t.user_id, t.day] }),
-}));
+export const studyDays = pgTable(
+  'study_days',
+  {
+    user_id: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    day: date('day', { mode: 'string' }).notNull(),  // JST 日付 'YYYY-MM-DD'
+    review_count: integer('review_count').notNull().default(0),
+    correct_count: integer('correct_count').notNull().default(0),
+    distinct_card_count: integer('distinct_card_count').notNull().default(0),
+      // その日 (JST) に 1 回以上 rate された card のユニーク数。
+      // submitReviewTx が毎 review で `COUNT(DISTINCT card_id)` を再集計して
+      // UPSERT。 dashboard の「今日学習した枚数」 表示に使用
+  },
+  (t) => [primaryKey({ columns: [t.user_id, t.day] })],
+);
 ```
 
 設計メモ:
 
 - 複合 PK `(user_id, day)`、1 ユーザー 1 日 1 行
-- `day` は JST 日付
-- review 完了時に upsert:
+- `day` は JST 日付文字列 (mode: 'string')。 `submitReviewTx` が `todayInJst(now)` で確定
+- review 完了時に upsert（`submitReviewTx` 内で実行）:
 
 ```typescript
+// distinct_card_count は reviews 表の COUNT(DISTINCT card_id) で毎回再集計
+// (AT TIME ZONE 'Asia/Tokyo' で JST 境界を適用 — reviews.reviewed_at は timestamptz)
+const day = todayInJst(now)
+const distinct = await tx.execute(sql`
+  SELECT COUNT(DISTINCT card_id)::int AS c FROM reviews
+  WHERE user_id = ${userId}::uuid
+    AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
+`)
 await tx.insert(studyDays).values({
   user_id: userId,
-  day: todayJST,
+  day,
   review_count: 1,
-  correct_count: isCorrect ? 1 : 0,
+  correct_count: correct ? 1 : 0,
+  distinct_card_count: distinct,
 }).onConflictDoUpdate({
   target: [studyDays.user_id, studyDays.day],
   set: {
     review_count: sql`${studyDays.review_count} + 1`,
-    correct_count: sql`${studyDays.correct_count} + ${isCorrect ? 1 : 0}`,
+    correct_count: sql`${studyDays.correct_count} + ${correct ? 1 : 0}`,
+    distinct_card_count: distinct,  // 再集計値で上書き (incremental 不採用)
   },
 });
 ```
 
 出せる指標:
 
-- 連続学習日数（streak）: `day DESC` で連続日付を数える
+- 連続学習日数（streak）: `day DESC` で連続日付を数える。 `getReviewStatsForUser` が `study_days` 経由で計算 (reviews 直読みではない)
+- 今日学習したカード数: `distinct_card_count` を `study_days WHERE day = todayJST` で 1 行 SELECT
 - 直近 N 日のヒートマップ: `WHERE user_id = ? AND day >= today - N`
 - 最後に学習した日: `MAX(day)`
 - 月間総学習回数: `SUM(review_count)`
 - 月間正答率: `SUM(correct_count) / SUM(review_count)`
 
 ドメイン別 / 試験別の連続学習日数は MVP では出さない（ユーザー方針確定）。
+
+#### 2.5.5 user_settings（ユーザー学習設定、S2.1 新設）
+
+1 ユーザー 1 行の設定テーブル。 PK = `user_id`（1 user 1 行、UPSERT で lazy init）。
+初回保存時に INSERT、以降は UPDATE。 行が存在しない場合は `session_limit = 20` を
+アプリ側でデフォルト値として使用する。
+
+```typescript
+export const userSettings = pgTable('user_settings', {
+  user_id: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  session_limit: integer('session_limit').notNull().default(20),
+    // 1 session あたりの最大 card 数。 UI: 1〜200、preset [10, 20, 50]
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    // $onUpdate は onConflictDoUpdate では発火しないため、
+    // saveSessionLimit action が conflict set に updatedAt: new Date() を明示追加
+});
+```
+
+設計メモ:
+
+- PK = `user_id`（UUID、FK → users.id ON DELETE CASCADE）
+- `session_limit` default 20。 1〜200 の range。 `saveSessionLimit` server action が validate + UPSERT
+- lazy init: `/app/settings` page でも `/app/study/smart/session` page でも、
+  行不在時は `session_limit = 20` fallback で動作（INSERT は初回保存まで不要）
+- `$onUpdate` は Drizzle の onConflictDoUpdate では発火しないため、
+  conflict set に `updatedAt: new Date()` を明示追加（S2.1 T5 確定）
 
 ### 2.7 Row Level Security (RLS)
 
@@ -647,6 +694,7 @@ erDiagram
   users ||--o{ upload_records : logs
   users ||--o{ ai_usage_users : uses
   users ||--o{ study_days : tracks
+  users ||--o| user_settings : has
   users ||--o{ contact_messages : sends
   exams ||--o{ cards : contains
   exams ||--o{ source_documents : has
@@ -681,14 +729,22 @@ erDiagram
     - **S2.0b 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
       検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
       アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
-- `/study` — 学習セッション入口（「スマート復習」「問題演習」の 2 ボタン）
-- `/study/smart` — スマート復習モード（F-004、FSRS 自動出題）
-- `/study/practice` — 問題演習モード（F-004、フィルタ + 出題数 + 時間制限の設定 → 開始）
+- `/study/smart` — スマート復習モード入口 (S2.1 実装)。 説明文 + 「スマート復習を始める」
+  Link → `/study/smart/session`。 Client Component (revalidateAppPath で Router Cache をクリア)
+- `/study/smart/session` — スマート復習セッション画面 (S2.1 実装)。
+  Server Component: auth gate + `user_settings` SELECT (行不在で `session_limit=20` fallback)
+  + `getSessionCards` (全 exam 横断 due card、due ASC LIMIT session_limit) + 0 件分岐。
+  Client: `SessionRunner` 状態機械 (asking → showing-explanation → finished)。
+  `submitReview` server action 呼出 (useTransition)。
+  完了画面は `phase='finished'` 内部 state (別 page 不要)。
+- `/study/practice` — カスタム演習モード（S2.3 以降、現状 disabled ボタンで残置）
 - `/cards/[id]` — カード編集 page (S2.0)。 既存 card の title / 問題文 / 選択肢
   (本文・正解 checkbox・選択肢別解説) / card 全体解説 を編集 + card 単体削除。
   保存成功で元の `/exams/[id]` へリダイレクト。 メモ / custom_props (tag) / 画像挿入は
   S2.0 scope 外 (memo・画像は別 sprint、 tag は S2.0b)。
-- `/settings` — プラン管理、Customer Portal リンク、アカウント削除
+- `/settings` — プラン管理、Customer Portal リンク、アカウント削除。
+  **S2.1 追加**: 「学習設定」 section で `session_limit` (1〜200) を変更可能
+  (`SessionLimitForm` + `saveSessionLimit` action、 `user_settings` UPSERT)
 
 ### Server Actions（`'use server'`）
 
@@ -716,10 +772,20 @@ erDiagram
 
 **学習セッション (FSRS)**:
 
+- `submitReview(cardId, rating: RatingInt)` → `ActionResult<{ correct: boolean }>` (S2.1 確定形)。
+  `RatingInt = 1|2|3|4` (Again/Hard/Good/Easy)。 auth gate + validation +
+  `db.transaction(submitReviewTx)` wrap。 1 tx 内で cards / reviews / study_days を更新。
+  正解判定は `rating >= 2`。 `now` は server action 入口で `new Date()` を一本取りして tx に渡す
 - `getNextSmartReviewBatch(limit)` → `Result<Card[]>`（`due <= now()` を `due ASC`）
 - `getPracticeBatch(filter)` → `Result<Card[]>` — filter は custom_props 値も指定可
-- `submitReview(cardId, isCorrect: boolean)` → `Result<{nextDue: Date}>` — MVP は 2 段階。内部で `rating = isCorrect ? 3 : 1` (integer)。reviews insert + cards 学習統計 + FSRS 値 + study_days upsert を 1 トランザクションで実行
 - `resetCardStatus(cardId)` → `Result<void>` — answered / last_correct / current_streak / FSRS 状態をリセット（reviews 履歴は残す）
+
+**設定**:
+
+- `saveSessionLimit(value: number)` → `ActionResult<void>` (S2.1 確定形)。
+  auth gate / `Number.isInteger(value) && value >= 1 && value <= 200` validate /
+  `user_settings` UPSERT (target=userId)。 `revalidatePath('/app/settings')`。
+  DB error は `try/catch` → `logger.error` → `{ ok: false, error }` 変換
 
 **画像アップロード（将来機能、未実装）**:
 
@@ -1020,28 +1086,29 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
     5. テキストフィールドのカーソル位置に `![](key)` を挿入
 - **整合性チェック**: テキスト内の `![](key)` 全部が cards.images に存在するか / cards.images の全 key が参照されているか。不整合は編集ビューで警告表示（Anki の Check Media 相当）
 
-### Logic 3: FSRS 6 スケジューリング（plan00 流用）
+### Logic 3: FSRS 6 スケジューリング（plan00 流用、S2.1 確定形）
 
-- **入力**: card_id, isCorrect (boolean)（MVP）。v1.x で 4 段階対応
-    
-- **内部変換**: `rating = isCorrect ? 3 : 1` (integer、3=good / 1=again)
-    
+- **入力**: `cardId`, `rating: RatingInt` (1=Again / 2=Hard / 3=Good / 4=Easy)
+- **正解定義**: `rating >= 2`（Anki 互換、全コードで一貫使用）
 - **出力**: 次回 due 日時、新しい stability / difficulty / state（integer 0/1/2/3）
-    
-- **アルゴリズム**: FSRS-6 公式（plan00 既存実装を流用）
-    
-- **保存**（1 トランザクション）:
-    
-    - `reviews` テーブルに履歴ログ追加（rating integer）
-    - `cards.due` / `cards.stability` / `cards.difficulty` / `cards.state` / `cards.elapsed_days` / `cards.scheduled_days` / `cards.reps` / `cards.lapses` / `cards.learning_steps` / `cards.last_review` をデノーマライズ更新
-    - `cards.answered = true`, `cards.last_correct = isCorrect`, `cards.current_streak = isCorrect ? +1 : 0`
-    - `study_days` に upsert（review_count +1、correct_count += isCorrect ? 1 : 0）
-- **「スマート復習」キュー** (`/study/smart`):
+- **アルゴリズム**: FSRS-6 公式 (`ts-fsrs` ライブラリ、`rate(card, rating, now)`)
+- **now の一本取り**: `submitReview` server action 入口で `new Date()` を 1 回生成し、
+  `submitReviewTx` に渡す。 tx 内の全 step (rate / reviews INSERT / study_days UPSERT) が
+  同一 `now` を使用（時刻の不整合を防ぐ）
+- **保存**（1 トランザクション、`submitReviewTx` 純関数）:
+    - `cards` を owner-scoped SELECT → FSRS 列 + streak 関連
+    - `ts-fsrs` の `rate()` で次 state を計算
+    - `cards` UPDATE: FSRS 全列 + `answered = true` + `last_correct = (rating>=2)` +
+      `current_streak = correct ? +1 : 0`
+    - `reviews` INSERT (append-only)
+    - `study_days` UPSERT: `review_count +1` / `correct_count += (correct ? 1 : 0)` /
+      `distinct_card_count` = `COUNT(DISTINCT card_id)` 再集計（AT TIME ZONE 'Asia/Tokyo' で JST 境界適用。 この AT TIME ZONE は reviews.reviewed_at が timestamptz のため維持、 streak.ts とは別）
+- **「スマート復習」キュー** (`getSessionCards`、全 exam 横断):
     
     ```sql
     SELECT * FROM cards
     WHERE user_id = ? AND due <= now()
-    ORDER BY due ASC LIMIT 100;
+    ORDER BY due ASC LIMIT ?;  -- ? = user_settings.session_limit (default 20)
     ```
     
 
@@ -1062,60 +1129,36 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
 - **Markdown フォーマット**: 公開ドキュメント `/legal/import-format` で明示
 - バリデーション失敗時は行番号 + エラー理由を返却、部分成功（成功した行だけ insert）
 
-### Logic 6: カード学習統計の同期更新
+### Logic 6: カード学習統計の同期更新（S2.1 確定形）
 
-review 完了時に 1 トランザクション内で以下を一括 update:
+review 完了時に `submitReviewTx` 純関数が 1 tx で cards / reviews / study_days を一括更新。
+
+**streak / 今日の学習数の集計元 (T3 で変更)**:
+
+- **旧**: `reviews` を直読み + SQL 側 `AT TIME ZONE 'Asia/Tokyo'` で JST 日付を算出
+- **新**: `study_days` 経由 + TS 側 `todayInJst(now)` で JST today を確定
+  - `todayCardCount` = `study_days.distinct_card_count WHERE day = todayJST`
+  - `streak` = `study_days` の `review_count > 0` な直近 61 日の連続日数を `computeStreak` で計算
+  - SQL 側の `AT TIME ZONE 'Asia/Tokyo'` は `streak.ts` から完全削除。
+    `study_days.day` が既に JST date 文字列で保存されているため不要
+- `distinct_card_count` の意味: その日 (JST) に 1 回以上 rate されたユニーク card 数。
+  `submitReviewTx` が `COUNT(DISTINCT card_id) FROM reviews WHERE ... AT TIME ZONE 'Asia/Tokyo'`
+  で毎 review 後に再集計し UPSERT（incremental 更新ではなく全件再集計で正確性を保証）
+
+**`submitReviewTx` の実装概要** (`lib/cards/submit-review-tx.ts`):
 
 ```ts
-async function recordReview(cardId: string, rating: number /* 1|2|3|4 */) {
-  await db.transaction(async (tx) => {
-    // reviews 履歴 insert
-    await tx.insert(reviews).values({
-      card_id: cardId,
-      user_id: userId,
-      rating,
-      reviewed_at: now,
-    });
-
-    // FSRS 計算
-    const card = await tx.select(cards).where(eq(cards.id, cardId));
-    const isCorrect = rating >= 3;  // 3=good, 4=easy
-    const newFsrs = fsrs.calculate(card, rating);
-
-    // cards デノーマ + FSRS 値 update
-    await tx.update(cards).set({
-      // 学習統計
-      answered: true,
-      last_correct: isCorrect,
-      current_streak: isCorrect ? card.current_streak + 1 : 0,
-      // FSRS 値（plan00 既存命名）
-      due: newFsrs.due,
-      stability: newFsrs.stability,
-      difficulty: newFsrs.difficulty,
-      state: newFsrs.state,  // integer 0/1/2/3
-      elapsed_days: newFsrs.elapsed_days,
-      scheduled_days: newFsrs.scheduled_days,
-      reps: newFsrs.reps,
-      lapses: newFsrs.lapses,
-      learning_steps: newFsrs.learning_steps,
-      last_review: now,
-      updated_at: now,
-    }).where(eq(cards.id, cardId));
-
-    // study_days upsert
-    await tx.insert(studyDays).values({
-      user_id: userId,
-      day: todayJST,
-      review_count: 1,
-      correct_count: isCorrect ? 1 : 0,
-    }).onConflictDoUpdate({
-      target: [studyDays.user_id, studyDays.day],
-      set: {
-        review_count: sql`${studyDays.review_count} + 1`,
-        correct_count: sql`${studyDays.correct_count} + ${isCorrect ? 1 : 0}`,
-      },
-    });
-  });
+// now は submitReview server action 入口で一本取り、tx 内の全 step に同 instance を渡す
+async function submitReviewTx(tx, { userId, cardId, rating, now }) {
+  // (1) owner-scoped SELECT cards (FSRS 列 + streak 関連)
+  // (2) rate(fsrsCard, rating, now) → next state
+  // (3) cards UPDATE (FSRS 全列 + answered + last_correct + current_streak)
+  //     correct = rating >= 2
+  // (4) reviews INSERT (append-only, reviewedAt = now)
+  // (5) study_days UPSERT
+  //     distinct_card_count = COUNT(DISTINCT card_id) 再集計 (AT TIME ZONE 維持)
+  //     review_count +1 / correct_count += (correct ? 1 : 0)
+  return { correct }
 }
 ```
 
