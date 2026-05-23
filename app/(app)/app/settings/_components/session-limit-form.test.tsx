@@ -228,9 +228,11 @@ describe('SessionLimitForm', () => {
       render(<SessionLimitForm initial={20} />)
       fireEvent.click(screen.getByRole('button', { name: '保存' }))
       await screen.findByRole('status')
-      // preset button click で message を消す
+      // preset button click で message を消す (useEffect([value]) reset の microtask を待つ)
       fireEvent.click(screen.getByRole('button', { name: '10' }))
-      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      })
     })
 
     it('成功 message 表示後に input 変更 → message 消える', async () => {
@@ -238,7 +240,9 @@ describe('SessionLimitForm', () => {
       fireEvent.click(screen.getByRole('button', { name: '保存' }))
       await screen.findByRole('status')
       fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '30' } })
-      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      })
     })
   })
 })
