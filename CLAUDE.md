@@ -197,7 +197,8 @@ OT への chat 出力は以下構造を厳守。詳細 trace / log / 検証 step
 ### 構造
 
 1. **結論** (3-5 行): 何をやったか / 発見 / 次の一手
-2. **論点** (あれば、1 行 bullet 選択肢併記)
+2. **論点** (あれば、 text 番号付き bullet `A. / B. / C.` で 1 メッセージ提示。
+   AskUserQuestion 等の選択式 UI は使わない — OT は自由形式で全論点に一括返答する運用)
 3. **判断必要: yes / no** を明示
 4. **詳細 file path** (あれば)
 
@@ -226,6 +227,18 @@ OT への chat 出力は以下構造を厳守。詳細 trace / log / 検証 step
 
 - spec / plan / 実装報告 / retro 全 phase に適用
 - subagent 中間出力 / skill 内部 trace は対象外、最終 OT 提示時のみ本規律
+
+### smoke 確認が必要な時
+
+修復した Claude Code が確認手順を一番分かっているため、 実機 smoke 報告時は
+OT が何を試せばよいか具体的に並記すること:
+
+1. **確認 URL** (例: `/app/study/smart`)
+2. **確認手順** (例: 「opt 選択 → 回答する → 次へ で 3 枚連続消化」)
+3. **期待挙動** (例: 「最後 card で finished 画面 + 統計表示」)
+4. **mobile 要否** (Chrome DevTools mobile view が必要なら明示)
+
+「動作確認をしてください」 だけの丸投げは禁止。
 
 ### kickoff prompt 受領時
 
