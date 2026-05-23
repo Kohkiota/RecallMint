@@ -1,24 +1,29 @@
 // @vitest-environment jsdom
-// SmartStudyEntryPage tests.
+// SmartStudyPage tests (S2.2.1 T2 で session/page.tsx 統合)。
 //
-// page は server component (async function)。 getCurrentUser + db SELECT を
-// mock し、 await Page() で JSX を取得して render する。
-// I-1 regression guard: description に 'session_limit' を含めない。
-// I-2: 開始 button (client) click で revalidateAppPath が呼ばれる。
-// T3: 現在の session_limit を「XX 枚」で表示。
+// page は server component (async function)。 getCurrentUser + db SELECT +
+// getSessionCards を mock し、 await Page() で JSX を取得して render する。
+//
+// テスト観点:
+// - cards 0 件: 「ありません」 文言 + ダッシュボードリンク表示
+// - cards >= 1 件: SessionRunner が render される (SessionRunner は mock)
+// - userSettings 行不在で sessionLimit=20 / fsrsMode=false fallback
+//   (getSessionCards に渡される limit / SessionRunner の fsrsMode prop で verify)
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
+import type { Card } from '@/lib/db/schema'
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
-const { mockGetCurrentUser, settingsRowsState, mockRevalidate } = vi.hoisted(() => ({
-  mockGetCurrentUser: vi.fn(),
-  // SELECT chain が返す行を test ごとに差し替えるための可変 state
-  settingsRowsState: { rows: [] as Array<Record<string, unknown>> },
-  mockRevalidate: vi.fn(),
-}))
+const { mockGetCurrentUser, settingsRowsState, mockGetSessionCards, mockSessionRunner } =
+  vi.hoisted(() => ({
+    mockGetCurrentUser: vi.fn(),
+    settingsRowsState: { rows: [] as Array<Record<string, unknown>> },
+    mockGetSessionCards: vi.fn(),
+    mockSessionRunner: vi.fn(),
+  }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -36,27 +41,28 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
+vi.mock('@/lib/cards/get-session-cards', () => ({
+  getSessionCards: mockGetSessionCards,
+}))
+
+vi.mock('./_components/session-runner', () => ({
+  SessionRunner: (props: { cards: Card[]; fsrsMode: boolean }) => {
+    mockSessionRunner(props)
+    return (
+      <div data-testid="session-runner-mock">
+        cards={props.cards.length}/fsrsMode={String(props.fsrsMode)}
+      </div>
+    )
+  },
+}))
+
 vi.mock('next/link', () => ({
-  default: ({
-    href,
-    children,
-    onClick,
-  }: {
-    href: string
-    children: React.ReactNode
-    onClick?: (e: React.MouseEvent) => void
-  }) => (
-    <a href={href} onClick={onClick}>
-      {children}
-    </a>
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
+    <a href={href}>{children}</a>
   ),
 }))
 
-vi.mock('@/app/(app)/app/_actions/revalidate', () => ({
-  revalidateAppPath: mockRevalidate,
-}))
-
-import SmartStudyEntryPage from './page'
+import SmartStudyPage from './page'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -76,67 +82,106 @@ const fakeUser = {
   updatedAt: new Date('2026-01-01T00:00:00Z'),
 }
 
+function makeCard(id: string): Card {
+  return {
+    id,
+    userId: 'user-1',
+    examId: 'exam-1',
+    sourceDocumentId: null,
+    title: `q-${id}`,
+    sortKey: null,
+    questionText: 'q text',
+    options: [{ id: 'a', text: 'A', is_correct: true }],
+    correctAnswerIds: ['a'],
+    explanationText: null,
+    images: [],
+    customProps: {},
+    tags: [],
+    answered: false,
+    lastCorrect: null,
+    currentStreak: 0,
+    due: new Date('2020-01-01'),
+    stability: 0,
+    difficulty: 0,
+    elapsedDays: 0,
+    scheduledDays: 0,
+    reps: 0,
+    lapses: 0,
+    state: 0,
+    learningSteps: 0,
+    lastReview: null,
+    createdAt: new Date('2020-01-01'),
+    updatedAt: new Date('2020-01-01'),
+  } as Card
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   settingsRowsState.rows = []
   mockGetCurrentUser.mockResolvedValue(fakeUser)
+  mockGetSessionCards.mockResolvedValue([])
 })
 
 afterEach(() => {
   cleanup()
 })
 
-// Helper: async server component を await して render する
 async function renderPage() {
-  const ui = await SmartStudyEntryPage()
+  const ui = await SmartStudyPage()
   render(ui)
 }
 
-describe('SmartStudyEntryPage', () => {
-  it('タイトル・説明文・スタートリンクが正しく描画される', async () => {
-    settingsRowsState.rows = [{ sessionLimit: 20, fsrsMode: false }]
-    await renderPage()
-    expect(screen.getByRole('heading', { name: 'スマート復習' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'スマート復習を始める' })).toHaveAttribute(
-      'href',
-      '/app/study/smart/session',
-    )
-    expect(screen.getByText(/設定した上限枚数まで/)).toBeInTheDocument()
+describe('SmartStudyPage', () => {
+  it('未認証 (getCurrentUser → null) → null を返し render 不発火', async () => {
+    mockGetCurrentUser.mockResolvedValueOnce(null)
+    const ui = await SmartStudyPage()
+    expect(ui).toBeNull()
+    expect(mockGetSessionCards).not.toHaveBeenCalled()
   })
 
-  it('「スマート復習を始める」click で revalidateAppPath(/app/study/smart/session) が呼ばれる', async () => {
-    settingsRowsState.rows = [{ sessionLimit: 20, fsrsMode: false }]
+  it('cards 0 件 → 「ありません」案内 + ダッシュボードリンク表示', async () => {
+    mockGetSessionCards.mockResolvedValueOnce([])
     await renderPage()
-    fireEvent.click(screen.getByRole('link', { name: 'スマート復習を始める' }))
-    expect(mockRevalidate).toHaveBeenCalledTimes(1)
-    expect(mockRevalidate).toHaveBeenCalledWith('/app/study/smart/session')
+    expect(screen.getByText(/現在復習する card はありません/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ダッシュボードへ' })).toHaveAttribute('href', '/app')
+    // SessionRunner は render されない
+    expect(screen.queryByTestId('session-runner-mock')).not.toBeInTheDocument()
   })
 
-  it('説明文に "session_limit" という文字列が含まれない (I-1 regression guard)', async () => {
-    settingsRowsState.rows = [{ sessionLimit: 20, fsrsMode: false }]
+  it('cards >= 1 件 → SessionRunner が render される', async () => {
+    mockGetSessionCards.mockResolvedValueOnce([makeCard('c1'), makeCard('c2')])
+    settingsRowsState.rows = [{ sessionLimit: 30, fsrsMode: true }]
     await renderPage()
-    const description = screen.getByText(/設定した上限枚数まで/)
-    expect(description.textContent).not.toContain('session_limit')
+    expect(screen.getByTestId('session-runner-mock')).toBeInTheDocument()
+    expect(mockSessionRunner).toHaveBeenCalledOnce()
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.cards).toHaveLength(2)
+    expect(props.fsrsMode).toBe(true)
   })
 
-  describe('T3: 現在の session_limit 表示', () => {
-    it('sessionLimit=20 → 「20 枚」と表示', async () => {
-      settingsRowsState.rows = [{ sessionLimit: 20, fsrsMode: false }]
-      await renderPage()
-      expect(screen.getByText(/現在の設定:/)).toBeInTheDocument()
-      expect(screen.getByText('20 枚')).toBeInTheDocument()
-    })
+  it('userSettings 行不在 → sessionLimit=20 / fsrsMode=false fallback で SessionRunner に渡す', async () => {
+    settingsRowsState.rows = []
+    mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
+    await renderPage()
+    // getSessionCards に limit=20 が渡る
+    expect(mockGetSessionCards).toHaveBeenCalledWith('user-1', 20)
+    // SessionRunner には fsrsMode=false が渡る
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.fsrsMode).toBe(false)
+  })
 
-    it('sessionLimit=50 → 「50 枚」と表示', async () => {
-      settingsRowsState.rows = [{ sessionLimit: 50, fsrsMode: false }]
-      await renderPage()
-      expect(screen.getByText('50 枚')).toBeInTheDocument()
-    })
+  it('userSettings 行存在 (sessionLimit=50) → getSessionCards に limit=50 が渡る', async () => {
+    settingsRowsState.rows = [{ sessionLimit: 50, fsrsMode: false }]
+    mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
+    await renderPage()
+    expect(mockGetSessionCards).toHaveBeenCalledWith('user-1', 50)
+  })
 
-    it('user_settings 行不在 (0 件) → default 20 で「20 枚」と表示', async () => {
-      settingsRowsState.rows = []
-      await renderPage()
-      expect(screen.getByText('20 枚')).toBeInTheDocument()
-    })
+  it('userSettings 行存在 (fsrsMode=true) → SessionRunner に fsrsMode=true', async () => {
+    settingsRowsState.rows = [{ sessionLimit: 20, fsrsMode: true }]
+    mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
+    await renderPage()
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.fsrsMode).toBe(true)
   })
 })

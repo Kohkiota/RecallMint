@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // DashboardActions client component tests.
-// T6: 左 button href → /app/study/smart/session、右 button → disabled「カスタム演習（準備中）」
+// T6 (S2.1): 左 button href → /app/study/smart、右 button → disabled「カスタム演習（準備中）」
+// S2.2.1 T2: /app/study/smart/session 撤去で href / revalidate path を /app/study/smart に統合。
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
@@ -39,18 +40,18 @@ afterEach(() => {
 })
 
 describe('DashboardActions', () => {
-  it('dueCount > 0: スマート復習 link が href=/app/study/smart/session で表示', () => {
+  it('dueCount > 0: スマート復習 link が href=/app/study/smart で表示', () => {
     render(<DashboardActions dueCount={3} />)
     const btn = screen.getByRole('link', { name: /スマート復習/ })
-    expect(btn).toHaveAttribute('href', '/app/study/smart/session')
+    expect(btn).toHaveAttribute('href', '/app/study/smart')
     expect(btn).toHaveTextContent('スマート復習（3件）')
   })
 
-  it('dueCount > 0: スマート復習 click → revalidateAppPath(/app/study/smart/session) 1 回 call', () => {
+  it('dueCount > 0: スマート復習 click → revalidateAppPath(/app/study/smart) 1 回 call', () => {
     render(<DashboardActions dueCount={3} />)
     fireEvent.click(screen.getByRole('link', { name: /スマート復習/ }))
     expect(mockRevalidate).toHaveBeenCalledTimes(1)
-    expect(mockRevalidate).toHaveBeenCalledWith('/app/study/smart/session')
+    expect(mockRevalidate).toHaveBeenCalledWith('/app/study/smart')
   })
 
   it('dueCount === 0: 「復習完了！」 表示、スマート復習 link 不在', () => {

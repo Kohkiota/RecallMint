@@ -9,10 +9,10 @@ export function DashboardActions({ dueCount }: { dueCount: number }) {
     <div className="grid grid-cols-2 gap-3">
       {dueCount > 0 ? (
         <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
-          {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart/session に差替。 */}
+          {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart に差替 (S2.2.1 T2: /session 撤去で /app/study/smart に統合)。 */}
           <Link
-            href="/app/study/smart/session"
-            onClick={() => void revalidateAppPath('/app/study/smart/session')}
+            href="/app/study/smart"
+            onClick={() => void revalidateAppPath('/app/study/smart')}
           >
             スマート復習（{dueCount}件）
           </Link>

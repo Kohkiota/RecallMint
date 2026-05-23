@@ -1,19 +1,22 @@
-// スマート復習の入口 page (Server Component)。
+// スマート復習 page (Server Component、 S2.2.1 T2 で session/page.tsx 統合)。
 //
-// 認証 → user_settings.session_limit を取得 (行不在は 20 fallback) →
-// 「現在の設定: XX 枚」を表示し、 開始 button (client) を描画する。
-// I-2: client 側 button で revalidateAppPath を呼んで Router Cache を破棄。
+// 認証 → user_settings 取得 (session_limit / fsrsMode、 行不在は 20 / false fallback) →
+// due card 取得 → 0 件なら「ありません」案内 / あれば SessionRunner に渡す。
 
+import Link from 'next/link'
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings } from '@/lib/db/schema'
-import { Card, CardContent } from '@/components/ui/card'
-import { StartButton } from './_components/start-button'
+import { getSessionCards } from '@/lib/cards/get-session-cards'
+import { SessionRunner } from './_components/session-runner'
+import { Button } from '@/components/ui/button'
 
-export default async function SmartStudyEntryPage() {
+export default async function SmartStudyPage() {
   const user = await getCurrentUser()
-  // /app layout の auth gate が事前に弾くため null は基本想定外、 防御的 null check のみ。
+  // getCurrentUser は UnauthenticatedError を throw するが、
+  // /app layout の auth middleware が事前に guard するため、
+  // ここで null が返ることは基本ない。 防御的に null チェックのみ。
   if (!user) return null
 
   const db = getDb()
@@ -23,21 +26,25 @@ export default async function SmartStudyEntryPage() {
     .where(eq(userSettings.userId, user.id))
     .limit(1)
   const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
+  const fsrsMode = settingsRows[0]?.fsrsMode ?? false
 
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">スマート復習</h1>
-      <Card>
-        <CardContent className="pt-6">
-          <p className="text-sm text-slate-700">
-            設定した上限枚数まで、FSRS で due になった card を復習します。
-          </p>
-          <p className="mt-3 text-sm text-slate-600">
-            現在の設定: <span className="font-medium">{sessionLimit} 枚</span>
-          </p>
-          <StartButton />
-        </CardContent>
-      </Card>
-    </div>
-  )
+  const cards = await getSessionCards(user.id, sessionLimit)
+
+  if (cards.length === 0) {
+    return (
+      <div className="mx-auto max-w-xl space-y-6 px-4 py-12 text-center">
+        <h1 className="text-2xl font-bold">スマート復習</h1>
+        <p className="text-slate-600">
+          現在復習する card はありません。
+          <br />
+          すべての card を学習済みです。お疲れ様でした！
+        </p>
+        <Button asChild variant="outline">
+          <Link href="/app">ダッシュボードへ</Link>
+        </Button>
+      </div>
+    )
+  }
+
+  return <SessionRunner cards={cards} fsrsMode={fsrsMode} />
 }
