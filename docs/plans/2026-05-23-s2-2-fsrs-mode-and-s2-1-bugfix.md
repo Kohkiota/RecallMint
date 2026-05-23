@@ -98,6 +98,12 @@ Again/Hard/Good/Easy を直接押す上級モードを提供する。
     label「FSRSモード (上級)」、 デフォルト OFF、 session_limit form の下に配置。
   - `saveFsrsMode(boolean)`: server action。 `user_settings` を UPSERT で更新、
     既存 saveSessionLimit と同じ lazy init pattern (行不在時は INSERT)。
+    **重要**: drizzle の `$onUpdate(() => new Date())` は `onConflictDoUpdate`
+    では発火しない (S2.1 T5 review I-1 で発覚)。 conflict branch の `set` に
+    `updatedAt: new Date()` を **明示的に含める** こと。 既存 `saveSessionLimit`
+    が `set: { sessionLimit: value, updatedAt: new Date() }` としているのと同様、
+    `set: { fsrsMode: value, updatedAt: new Date() }` とする。 test 側も
+    `expect(conflictSet.updatedAt).toBeInstanceOf(Date)` で assert。
   - UI は server component (`page.tsx`) で現在値を取得、 form は client component。
 - **完了条件**: 新規 test (saveFsrsMode true/false UPSERT / session-limit input ゼロ
   ストリップ / fsrs-mode-form 初期値反映 + toggle 操作) green、 既存 test 全 pass、
