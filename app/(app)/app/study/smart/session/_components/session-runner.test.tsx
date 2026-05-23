@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
-// SessionRunner client component の test。
-// submitReview / next/navigation を mock して phase machine を検証する。
+// SessionRunner client component の test (S2.2 T4 全書換)。
+//
+// Phase machine: selecting → judged → finished
+// - selecting: opt click で selectedIds 更新、 「回答する」で判定 + submit (mode 別)
+// - judged: 解説 + (通常モード) 「次へ」 純遷移 / (FSRS) Again/Hard/Good/Easy 押下で submit + 自動次へ
+// - finished: 統計 + もう一度 / ダッシュボードへ
+//
+// submitReview / next/navigation は mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -69,7 +75,8 @@ function makeCard(overrides?: Partial<Card>): Card {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // Default: submitReview resolves successfully with correct=true
+  // submitReview のデフォルトは ok=true。 戻り値 data.correct は client では使わないため
+  // shape 互換性のためにのみ含める。
   mockSubmitReview.mockResolvedValue({ ok: true, data: { correct: true } })
 })
 
@@ -78,169 +85,460 @@ afterEach(() => {
 })
 
 // -----------------------------------------------------------------------
+// 共通 helper
+// -----------------------------------------------------------------------
+function clickOption(text: string) {
+  // opt は button role (selecting 中 click 可能)
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(text) }))
+}
+
+// -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
-describe('SessionRunner', () => {
-  it('初期描画: 問題文と rate buttons が表示される', () => {
-    render(<SessionRunner cards={[makeCard()]} />)
+describe('SessionRunner (selecting → judged → finished)', () => {
+  it('初期描画: 問題文 + 選択肢 + 「回答する」 button (disabled)', () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
     expect(screen.getByText('問題文テキスト')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /選択肢A/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /選択肢B/ })).toBeInTheDocument()
+    const submitBtn = screen.getByRole('button', { name: '回答する' })
+    expect(submitBtn).toBeDisabled()
+  })
+
+  it('opt click で selectedIds 追加、 再 click で削除 (toggle)', () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    const optA = screen.getByRole('button', { name: /選択肢A/ })
+    fireEvent.click(optA)
+    // selected 状態は aria-pressed で表現
+    expect(optA).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(optA)
+    expect(optA).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('1 件以上選択で 「回答する」 が enabled', () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
+  })
+
+  it('通常モード: 正答選択 → 「回答する」 で submitReview(rating=3) + judged 遷移', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+    await waitFor(() => {
+      expect(mockSubmitReview).toHaveBeenCalledWith('card-1', 3)
+    })
+    // judged phase: 解説 + 次へ
+    expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument()
+    expect(screen.getByText(/正解/)).toBeInTheDocument()
+  })
+
+  it('通常モード: 誤答選択 → 「回答する」 で submitReview(rating=1) + judged 遷移 + 不正解表示', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+    await waitFor(() => {
+      expect(mockSubmitReview).toHaveBeenCalledWith('card-1', 1)
+    })
+    expect(screen.getByText(/不正解/)).toBeInTheDocument()
+  })
+
+  it('通常モード: judged で 「次へ」 は submit を呼ばず idx を進めるだけ', async () => {
+    const cards = [
+      makeCard({ id: 'c1', questionText: '問1' }),
+      makeCard({ id: 'c2', questionText: '問2' }),
+    ]
+    render(<SessionRunner cards={cards} fsrsMode={false} />)
+
+    // Card 1: 回答する
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(mockSubmitReview).toHaveBeenCalledTimes(1))
+
+    // 「次へ」 押下は submit を呼ばない
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }))
+    expect(mockSubmitReview).toHaveBeenCalledTimes(1)
+
+    // 問2 に進んでいる
+    await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
+  })
+
+  it('FSRS モード: 「回答する」 時点では submitReview 未呼出、 4 rate button 表示', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+    // judged 遷移したが submit 未発火
+    await waitFor(() => {
+      expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
+    })
+    expect(mockSubmitReview).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Again' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Hard' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Good' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Easy' })).toBeInTheDocument()
+    // 「次へ」 は出さない (FSRS は rate 押下で自動次へ)
+    expect(screen.queryByRole('button', { name: '次へ' })).not.toBeInTheDocument()
   })
 
-  it('1 枚: rate(Good) → 解説表示 → 次へ → 完了画面 (1/1 正答率 100%)', async () => {
-    render(<SessionRunner cards={[makeCard()]} />)
+  it('FSRS モード: judged で Hard 押下 → submitReview(rating=2) + 自動次へ', async () => {
+    const cards = [
+      makeCard({ id: 'c1', questionText: '問1' }),
+      makeCard({ id: 'c2', questionText: '問2' }),
+    ]
+    render(<SessionRunner cards={cards} fsrsMode={true} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Hard' })).toBeInTheDocument())
 
-    // asking phase: rate Good
-    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
 
-    // showing-explanation phase
     await waitFor(() => {
-      expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
+      expect(mockSubmitReview).toHaveBeenCalledWith('c1', 2)
     })
-    expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument()
-
-    // 次へ → finished
-    fireEvent.click(screen.getByRole('button', { name: '次へ' }))
-
-    expect(screen.getByText(/1 枚/)).toBeInTheDocument()
-    expect(screen.getByText(/1 正解/)).toBeInTheDocument()
-    expect(screen.getByText(/100%/)).toBeInTheDocument()
-    expect(screen.getByText('🎉')).toBeInTheDocument()
+    // 自動で問2 に遷移 (selecting phase)
+    await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
   })
 
-  it('3 枚: Easy/Easy/Again → 完了画面 (3枚 / 2正解 / 67%)', async () => {
+  it('FSRS モード: judged で Again/Good/Easy 押下で submitReview(1|3|4)', async () => {
+    // Again ケース
+    {
+      const { unmount } = render(
+        <SessionRunner cards={[makeCard({ id: 'cA' })]} fsrsMode={true} />,
+      )
+      clickOption('選択肢A')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Again' })).toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: 'Again' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenLastCalledWith('cA', 1))
+      unmount()
+    }
+    // Good ケース
+    {
+      const { unmount } = render(
+        <SessionRunner cards={[makeCard({ id: 'cG' })]} fsrsMode={true} />,
+      )
+      clickOption('選択肢A')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Good' })).toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenLastCalledWith('cG', 3))
+      unmount()
+    }
+    // Easy ケース
+    {
+      render(<SessionRunner cards={[makeCard({ id: 'cE' })]} fsrsMode={true} />)
+      clickOption('選択肢A')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Easy' })).toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenLastCalledWith('cE', 4))
+    }
+  })
+
+  it('B2 fix: opt.id と一致する先頭 ID prefix (例 "1誤正正誤") を strip し、 ID は太字 span で 1 回だけ表示', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1誤正正誤', is_correct: false },
+        { id: '2', text: '2正解候補', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+
+    // text 表示は prefix が strip されている (本文に "1誤正正誤" は登場しない)
+    expect(screen.queryByText('1誤正正誤', { exact: true })).not.toBeInTheDocument()
+    // 本文部分は "誤正正誤" として描画
+    const opt1Btn = screen.getByRole('button', { name: /誤正正誤/ })
+    expect(opt1Btn).toBeInTheDocument()
+    // ID 1 を含む font-medium span が opt1Btn 内に 1 つだけ存在
+    const idSpans = opt1Btn.querySelectorAll('span.font-medium')
+    const idSpansWith1 = Array.from(idSpans).filter((s) => s.textContent === '1')
+    expect(idSpansWith1).toHaveLength(1)
+  })
+
+  it('B2 fix (review I-1 A 案): ID 直後が数字の場合は同一 token とみなし strip しない ("1990s" 保全)', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1990s', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    // "1990s" は元文字列のまま残る
+    const opt1Btn = screen.getByRole('button', { name: /1990s/ })
+    expect(opt1Btn).toBeInTheDocument()
+  })
+
+  it('B2 fix: "1) 答え" 形式 (ID + 閉じ括弧 + 半角 space) も strip', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1) 答え', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    const opt1Btn = screen.getByRole('button', { name: /^○?\s*1\s*答え$/ })
+    expect(opt1Btn).toBeInTheDocument()
+    // 元の "1) 答え" 全文は本文部分には残らない
+    expect(screen.queryByText('1) 答え', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('B2 fix: "1. 答え" 形式 (ID + 半角ドット) も strip', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1. 答え', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    expect(screen.queryByText('1. 答え', { exact: true })).not.toBeInTheDocument()
+    const opt1Btn = screen.getByRole('button', { name: /答え/ })
+    expect(opt1Btn).toBeInTheDocument()
+  })
+
+  it('B2 fix: "1 答え" 形式 (ID + 半角 space) も strip', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1 答え', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    expect(screen.queryByText('1 答え', { exact: true })).not.toBeInTheDocument()
+    const opt1Btn = screen.getByRole('button', { name: /答え/ })
+    expect(opt1Btn).toBeInTheDocument()
+  })
+
+  it('B2 fix: opt.text が opt.id で始まらない場合 (例 "単独") は strip しない', () => {
+    const card = makeCard({
+      options: [
+        { id: '1', text: '単独', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    const opt1Btn = screen.getByRole('button', { name: /単独/ })
+    expect(opt1Btn).toBeInTheDocument()
+  })
+
+  it('B2 fix: 2 桁 ID ("12誤正" + opt.id="12") も startsWith マッチで strip', () => {
+    const card = makeCard({
+      options: [
+        { id: '12', text: '12誤正', is_correct: false },
+        { id: '13', text: '13正解', is_correct: true },
+      ],
+      correctAnswerIds: ['13'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    expect(screen.queryByText('12誤正', { exact: true })).not.toBeInTheDocument()
+    const opt12Btn = screen.getByRole('button', { name: /誤正/ })
+    expect(opt12Btn).toBeInTheDocument()
+  })
+
+  it('B2 fix (review I-1 trade-off 犠牲ケース): "1.5g" は ID + ドット strip 規則に従い "5g" 表示 (OT 承認済)', () => {
+    // 犠牲ケース: opt.id="1" と text="1.5g" は startsWith マッチし、 直後が "." (非数字) なので
+    // strip 処理に進む。 A 案 trade-off として OT 承認済 (純数値先頭の単位付き文字列の犠牲)。
+    const card = makeCard({
+      options: [
+        { id: '1', text: '1.5g', is_correct: false },
+        { id: '2', text: '2正解', is_correct: true },
+      ],
+      correctAnswerIds: ['2'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    // 本文部分が "5g" として描画されている
+    const opt1Btn = screen.getByRole('button', { name: /5g/ })
+    expect(opt1Btn).toBeInTheDocument()
+    expect(screen.queryByText('1.5g', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('judged 後: 正答 opt に ○、 非正答 opt に × mark', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(screen.getByText('カード全体の解説')).toBeInTheDocument())
+
+    // 各 li に ○ / × mark
+    expect(screen.getByText('○')).toBeInTheDocument()
+    expect(screen.getByText('×')).toBeInTheDocument()
+  })
+
+  it('judged 後 opt click は無効 (selectedIds 変わらない)', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
+
+    // judged 中の opt click では再選択トグルが効かない
+    const optB = screen.getByRole('button', { name: /選択肢B/ })
+    // disabled になっているはず
+    expect(optB).toBeDisabled()
+  })
+
+  it('3 枚連続 (通常モード) → 完了画面 (3/2/67%)', async () => {
     const cards = [
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
       makeCard({ id: 'c3', questionText: '問3' }),
     ]
-    mockSubmitReview
-      .mockResolvedValueOnce({ ok: true, data: { correct: true } })  // Easy → correct
-      .mockResolvedValueOnce({ ok: true, data: { correct: true } })  // Easy → correct
-      .mockResolvedValueOnce({ ok: true, data: { correct: false } }) // Again → incorrect
+    render(<SessionRunner cards={cards} fsrsMode={false} />)
 
-    render(<SessionRunner cards={cards} />)
-
-    // Card 1: Easy (rating=4 → tally.correct++)
-    fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
+    // Card 1: 正答
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '次へ' }))
 
-    // Card 2: Easy
+    // Card 2: 正答
     await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '次へ' }))
 
-    // Card 3: Again (rating=1 → no tally.correct++)
+    // Card 3: 誤答
     await waitFor(() => expect(screen.getByText('問3')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Again' }))
+    clickOption('選択肢A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '次へ' }))
 
-    // finished: 3 answered / 2 correct / 67%
     await waitFor(() => {
+      expect(screen.getByText('🎉')).toBeInTheDocument()
       expect(screen.getByText(/3 枚/)).toBeInTheDocument()
       expect(screen.getByText(/2 正解/)).toBeInTheDocument()
       expect(screen.getByText(/67%/)).toBeInTheDocument()
     })
   })
 
-  it('submitReview ok:false → error UI 表示、 rate buttons は引き続き使える', async () => {
+  it('通常モード: submit error 時に error UI 表示、 判定結果は出さず selecting 維持で再試行可能', async () => {
     mockSubmitReview.mockResolvedValueOnce({ ok: false, error: 'サーバーエラー' })
-    render(<SessionRunner cards={[makeCard()]} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('サーバーエラー')
     })
 
-    // rate buttons should still be accessible for retry
-    expect(screen.getByRole('button', { name: 'Again' })).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Easy' })).not.toBeDisabled()
-  })
-
-  it('Easy click で submitReview の引数が rating=4', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'card-xyz' })]} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
-
+    // useTransition pending が false 復帰するまで待ってから enabled assert
     await waitFor(() => {
-      expect(mockSubmitReview).toHaveBeenCalledWith('card-xyz', 4)
+      expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     })
   })
 
-  it('Again click で submitReview の引数が rating=1', async () => {
-    mockSubmitReview.mockResolvedValueOnce({ ok: true, data: { correct: false } })
-    render(<SessionRunner cards={[makeCard({ id: 'card-abc' })]} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Again' }))
+  it('FSRS モード: rate submit error 時 rate button 残置 + error UI', async () => {
+    mockSubmitReview.mockResolvedValueOnce({ ok: false, error: 'rate 失敗' })
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Good' })).toBeInTheDocument())
 
+    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
     await waitFor(() => {
-      expect(mockSubmitReview).toHaveBeenCalledWith('card-abc', 1)
+      expect(screen.getByRole('alert')).toHaveTextContent('rate 失敗')
+    })
+    // 4 rate button が残っている (Good の disabled 解除は pending false まで待つ)
+    expect(screen.getByRole('button', { name: 'Again' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Good' })).not.toBeDisabled()
     })
   })
 
-  it('Hard click で submitReview の引数が rating=2 + 正解扱い (boundary)', async () => {
-    mockSubmitReview.mockResolvedValueOnce({ ok: true, data: { correct: true } })
-    render(<SessionRunner cards={[makeCard({ id: 'card-hard' })]} />)
+  it('card 切替で selectedIds / phase が reset (前 card の選択を引き継がない)', async () => {
+    const cards = [
+      makeCard({ id: 'c1', questionText: '問1' }),
+      makeCard({ id: 'c2', questionText: '問2' }),
+    ]
+    render(<SessionRunner cards={cards} fsrsMode={false} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
-
-    // submitReview called with rating=2
-    await waitFor(() => {
-      expect(mockSubmitReview).toHaveBeenCalledWith('card-hard', 2)
-    })
-
-    // advance to finished
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '次へ' }))
 
-    // Hard (rating=2) is "correct" on server side → 1/1/100%
-    await waitFor(() => {
-      expect(screen.getByText(/1 枚/)).toBeInTheDocument()
-      expect(screen.getByText(/1 正解/)).toBeInTheDocument()
-      expect(screen.getByText(/100%/)).toBeInTheDocument()
-    })
+    await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
+
+    // 問2 では 「回答する」 が再び disabled (selectedIds が空に reset)
+    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    // 全 opt の aria-pressed=false
+    const opts = screen.getAllByRole('button', { name: /選択肢/ })
+    opts.forEach((o) => expect(o).toHaveAttribute('aria-pressed', 'false'))
   })
 
   it('完了画面の「もう一度」で router.refresh が呼ばれる', async () => {
-    render(<SessionRunner cards={[makeCard()]} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '次へ' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '次へ' }))
-
     await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'もう一度' }))
     expect(mockRefresh).toHaveBeenCalledOnce()
   })
 
-  it('showing-explanation phase: 正解 option が emerald スタイルで表示される', async () => {
-    render(<SessionRunner cards={[makeCard()]} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
-    await waitFor(() => expect(screen.getByText('カード全体の解説')).toBeInTheDocument())
-
-    // 正解 option b の li に emerald クラスが付く
-    const optionItems = screen.getAllByRole('listitem')
-    const correctItem = optionItems.find((el) =>
-      el.className.includes('emerald'),
-    )
-    expect(correctItem).toBeDefined()
-  })
-
-  it('asking phase では解説テキストが表示されない', () => {
-    render(<SessionRunner cards={[makeCard()]} />)
-    expect(screen.queryByText('カード全体の解説')).not.toBeInTheDocument()
-  })
-
   it('カード進行インジケーター (1 / N) が表示される', () => {
     const cards = [makeCard({ id: 'c1' }), makeCard({ id: 'c2' })]
-    render(<SessionRunner cards={cards} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} />)
     expect(screen.getByText('1 / 2')).toBeInTheDocument()
+  })
+
+  it('集合一致 boundary: 複数正答 opt の片方だけ選択は incorrect', async () => {
+    const card = makeCard({
+      options: [
+        { id: 'a', text: '選択肢A', is_correct: true },
+        { id: 'b', text: '選択肢B', is_correct: true },
+        { id: 'c', text: '選択肢C', is_correct: false },
+      ],
+      correctAnswerIds: ['a', 'b'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(mockSubmitReview).toHaveBeenCalledWith('card-1', 1))
+    expect(screen.getByText(/不正解/)).toBeInTheDocument()
+  })
+
+  it('集合一致 boundary: 複数正答 opt を完全一致選択は correct', async () => {
+    const card = makeCard({
+      options: [
+        { id: 'a', text: '選択肢A', is_correct: true },
+        { id: 'b', text: '選択肢B', is_correct: true },
+        { id: 'c', text: '選択肢C', is_correct: false },
+      ],
+      correctAnswerIds: ['a', 'b'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(mockSubmitReview).toHaveBeenCalledWith('card-1', 3))
+    expect(screen.getByText(/^正解/)).toBeInTheDocument()
+  })
+
+  it('集合一致 boundary: 余剰 opt 選択 (正答 + 誤答) は incorrect', async () => {
+    const card = makeCard({
+      options: [
+        { id: 'a', text: '選択肢A', is_correct: true },
+        { id: 'b', text: '選択肢B', is_correct: false },
+      ],
+      correctAnswerIds: ['a'],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} />)
+    clickOption('選択肢A')
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(mockSubmitReview).toHaveBeenCalledWith('card-1', 1))
   })
 })

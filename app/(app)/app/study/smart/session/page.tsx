@@ -26,6 +26,7 @@ export default async function SessionPage() {
     .where(eq(userSettings.userId, user.id))
     .limit(1)
   const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
+  const fsrsMode = settingsRows[0]?.fsrsMode ?? false
 
   const cards = await getSessionCards(user.id, sessionLimit)
 
@@ -45,5 +46,5 @@ export default async function SessionPage() {
     )
   }
 
-  return <SessionRunner cards={cards} />
+  return <SessionRunner cards={cards} fsrsMode={fsrsMode} />
 }
