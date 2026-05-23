@@ -934,4 +934,66 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     expect(screen.getByText(/2 枚/)).toBeInTheDocument()
     expect(screen.getByText(/1 正解/)).toBeInTheDocument()
   })
+
+  // -------------------------------------------------------------------------
+  // S2.2.4: FSRS rate ボタン押下ハイライト
+  // -------------------------------------------------------------------------
+  describe('S2.2.4: FSRS rate ボタン押下ハイライト', () => {
+    it('rate 未押下 (lastRating=null) では 4 ボタンとも idle class (selected class なし)', async () => {
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Again' })).toBeInTheDocument())
+      // selected 用の bg-*-100 がついていない (idle の border-*-300 のみ)
+      expect(screen.getByRole('button', { name: 'Again' })).not.toHaveClass('bg-red-100')
+      expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('bg-orange-100')
+      expect(screen.getByRole('button', { name: 'Good' })).not.toHaveClass('bg-emerald-100')
+      expect(screen.getByRole('button', { name: 'Easy' })).not.toHaveClass('bg-blue-100')
+    })
+
+    it('Hard 押下後: Hard のみ orange selected class、 他 3 つは idle のまま', async () => {
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenCalledWith('c1', 2))
+      // Hard に selected class、 他は idle
+      expect(screen.getByRole('button', { name: 'Hard' })).toHaveClass('bg-orange-100')
+      expect(screen.getByRole('button', { name: 'Again' })).not.toHaveClass('bg-red-100')
+      expect(screen.getByRole('button', { name: 'Good' })).not.toHaveClass('bg-emerald-100')
+      expect(screen.getByRole('button', { name: 'Easy' })).not.toHaveClass('bg-blue-100')
+    })
+
+    it('Hard → Good に切替: Good に selected、 Hard は idle に戻る (前のハイライト解除)', async () => {
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenLastCalledWith('c1', 2))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Hard' })).toHaveClass('bg-orange-100'))
+      // Good に切替
+      fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+      await waitFor(() => expect(mockSubmitReview).toHaveBeenLastCalledWith('c1', 3))
+      // Good に selected + Hard が idle に戻る (lastRating 切替の re-render 完了待ち)
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Good' })).toHaveClass('bg-emerald-100')
+        expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('bg-orange-100')
+      })
+    })
+
+    it('リトライで lastRating=null 化、 再 judged 時 4 ボタンとも idle', async () => {
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Easy' })).toHaveClass('bg-blue-100'))
+      // リトライ → selecting → 再回答 → judged
+      fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      // 4 ボタンとも idle (lastRating=null に reset 済)
+      expect(screen.getByRole('button', { name: 'Easy' })).not.toHaveClass('bg-blue-100')
+      expect(screen.getByRole('button', { name: 'Again' })).not.toHaveClass('bg-red-100')
+    })
+  })
 })

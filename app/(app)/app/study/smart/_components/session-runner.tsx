@@ -55,6 +55,33 @@ function stripPrefix(text: string, optId: string): string {
   return after.replace(/^\s*[.)）]?\s*/, '')
 }
 
+// FSRS rate ボタンの className を rating 別 + 押下済 (lastRating 一致) で切替 (S2.2.4)。
+// 非選択: outline 風 (border + text 色) / 選択済: 背景 fill + 強コントラスト。
+const RATE_BUTTON_BASE = 'h-14 text-base font-semibold'
+const RATE_BUTTON_VARIANTS: Record<Rating, { selected: string; idle: string }> = {
+  1: {
+    selected: 'bg-red-100 text-red-900 border-red-400',
+    idle: 'border-red-300 text-red-700 hover:bg-red-50',
+  },
+  2: {
+    selected: 'bg-orange-100 text-orange-900 border-orange-400',
+    idle: 'border-orange-300 text-orange-700 hover:bg-orange-50',
+  },
+  3: {
+    selected: 'bg-emerald-100 text-emerald-900 border-emerald-400',
+    idle: 'border-emerald-300 text-emerald-700 hover:bg-emerald-50',
+  },
+  4: {
+    selected: 'bg-blue-100 text-blue-900 border-blue-400',
+    idle: 'border-blue-300 text-blue-700 hover:bg-blue-50',
+  },
+}
+
+function rateButtonClass(rating: Rating, selected: boolean): string {
+  const variant = RATE_BUTTON_VARIANTS[rating]
+  return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
+}
+
 export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
@@ -399,7 +426,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
               onClick={() => handleRateFsrs(1)}
               disabled={pending}
               variant="outline"
-              className="h-14 text-base font-semibold"
+              className={rateButtonClass(1, lastRating === 1)}
             >
               Again
             </Button>
@@ -407,7 +434,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
               onClick={() => handleRateFsrs(2)}
               disabled={pending}
               variant="outline"
-              className="h-14 text-base font-semibold"
+              className={rateButtonClass(2, lastRating === 2)}
             >
               Hard
             </Button>
@@ -415,7 +442,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
               onClick={() => handleRateFsrs(3)}
               disabled={pending}
               variant="outline"
-              className="h-14 text-base font-semibold"
+              className={rateButtonClass(3, lastRating === 3)}
             >
               Good
             </Button>
@@ -423,7 +450,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
               onClick={() => handleRateFsrs(4)}
               disabled={pending}
               variant="outline"
-              className="h-14 text-base font-semibold border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+              className={rateButtonClass(4, lastRating === 4)}
             >
               Easy
             </Button>
