@@ -9,13 +9,14 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 // Sprint A-2: /app/words / /app/review 撤去 (vocab frontend drop)。
 // S1a: /app/upload 追加 (OCR 起動 page)。
 // S1.7: /app/exams 追加 (read-only exam viewer、 S2 で正式 CRUD)。
-// 残 mcq routes (/study/smart, /study/practice, /cards/[id]) は後続 Sprint で追加。
+// T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart / /app/study/smart/session 追加。
+// S2.2.1 T2: /app/study/smart/session 撤去 (page を /app/study/smart に統合)。
 export type AppPath =
   | '/app'
   | '/app/settings'
-  | '/app/quiz'
   | '/app/upload'
   | '/app/exams'
+  | '/app/study/smart'
 
 // auth gate は project 既存 convention に倣う:
 // - user row 不在 (post-sign-up sync race) → null → no-op

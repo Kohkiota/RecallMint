@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { newCard, rate } from './fsrs'
+import { describe, it, expect, vi } from 'vitest'
+import { newCard, rate, scheduler } from './fsrs'
 
 describe('fsrs', () => {
   it('newCard returns state 0 (New)', () => {
@@ -30,5 +30,14 @@ describe('fsrs', () => {
   it('rate(5) throws invalid rating error', () => {
     const card = newCard()
     expect(() => rate(card, 5 as unknown as 1)).toThrow(/invalid rating/)
+  })
+
+  it('now を渡すと scheduler.next に伝播する', () => {
+    const card = newCard()
+    const fixedNow = new Date('2026-06-01T00:00:00Z')
+    const spy = vi.spyOn(scheduler, 'next')
+    rate(card, 3, fixedNow)
+    expect(spy).toHaveBeenCalledWith(card, fixedNow, expect.any(Number))
+    spy.mockRestore()
   })
 })

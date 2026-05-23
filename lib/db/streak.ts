@@ -49,38 +49,47 @@ function addDays(ymd: string, delta: number): string {
  * Fetch today's unique card count and current streak for a user.
  * Both values are JST-anchored: "today" is the JST calendar day.
  *
- * `todayCardCount` は その日 (JST 0 時起点) に 1 回でも rate された unique
- * card 数。 「もう一度」 連発で同 card を複数 rate しても 1 カウント
- * (Anki PC 互換、 COUNT(DISTINCT card_id) で集計)。
+ * Data source: `study_days` table (written by submitReviewTx on every rating).
+ * `study_days.day` は既に JST date 文字列で保存されているため、SQL 側での
+ * AT TIME ZONE 変換は不要。 TS 側で `todayInJst(now)` を使って today を確定する。
+ *
+ * `todayCardCount` は study_days.distinct_card_count (その日 1 回でも rate された
+ * unique card 数、submitReviewTx が毎 rate で再集計して UPSERT)。
  *
  * Returns `{ todayCardCount, streak }` for dashboard display.
  *
  * `userId` は users.id (UUID) — raw SQL bind では明示的に `::uuid` cast を付け
  * operator does not exist (uuid = text) を回避する。
+ *
+ * `now` optional 引数: 省略時は `new Date()` (本番)、テストでは固定 Date を注入して
+ * JST 境界を決定論的に検証できる。
  */
 export async function getReviewStatsForUser(
   userId: string,
+  now?: Date,
 ): Promise<{ todayCardCount: number; streak: number }> {
   const db = getDb()
-  const today = todayInJst()
+  const today = todayInJst(now)
 
-  // Count distinct cards reviewed today (JST). 同 card 複数 rate でも 1 カウント。
-  const todayRows = await db.execute<{ count: number }>(sql`
-    SELECT COUNT(DISTINCT card_id)::int AS count
-    FROM reviews
-    WHERE user_id = ${userId}::uuid
-      AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${today}::date
+  // Count distinct cards reviewed today (JST) via study_days.
+  // study_days.day は JST date 文字列なので AT TIME ZONE 変換不要。
+  const todayRow = await db.execute<{ c: number }>(sql`
+    SELECT distinct_card_count AS c FROM study_days
+    WHERE user_id = ${userId}::uuid AND day = ${today}
+    LIMIT 1
   `)
-  const todayCardCount = Number(todayRows.rows[0]?.count ?? 0)
+  const todayCardCount = Number(todayRow.rows[0]?.c ?? 0)
 
-  // Distinct JST review dates from the last 60 days (enough to resolve any
-  // realistic streak; MVP does not carry longer history for streak math).
+  // Streak 用: 直近 61 日 (today + 過去 60 日。 60 日 streak の境界安全マージン 1 日込み) で review_count > 0 の day を取得。
+  // >= lowerBound は lowerBound 当日を含む (61 日 window)。MVP 上限 60 日 streak を確実に検出するための設計判断。
+  // day は JST date 列なので文字列比較で下限を渡せる (AT TIME ZONE 不要)。
+  const lowerBound = addDays(today, -60)
   const dateRows = await db.execute<{ d: string }>(sql`
-    SELECT DISTINCT (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date::text AS d
-    FROM reviews
+    SELECT day::text AS d FROM study_days
     WHERE user_id = ${userId}::uuid
-      AND reviewed_at > now() - interval '60 days'
-    ORDER BY d DESC
+      AND day >= ${lowerBound}
+      AND review_count > 0
+    ORDER BY day DESC
   `)
   const dates = dateRows.rows.map((r) => r.d)
 

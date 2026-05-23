@@ -1,0 +1,1 @@
+ALTER TABLE "user_settings" ADD COLUMN "fsrs_mode" boolean DEFAULT false NOT NULL;

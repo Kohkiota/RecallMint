@@ -12,7 +12,7 @@ vi.mock('@clerk/nextjs', () => ({
 
 // next/link renders an <a> tag; mock to keep it simple and avoid Next.js
 // router context dependency in unit tests. onClick prop must be forwarded
-// so the I-1.7 revalidateAppPath wiring can be asserted.
+// so the revalidateAppPath wiring can be asserted.
 vi.mock('next/link', () => ({
   default: ({
     href,
@@ -58,13 +58,15 @@ describe('AppHeader', () => {
     expect(brand).toHaveAttribute('href', '/app')
   })
 
-  it('renders 4 nav links with correct hrefs (アップロード / 試験 / 演習 / 設定) — S1.7 で 試験 追加', () => {
+  it('renders nav links: アップロード / 試験 / スマート復習 / 設定 (演習 link は削除済)', () => {
     render(<AppHeader />)
+    // 旧「演習」 (/app/quiz) は T6 で削除
+    expect(screen.queryByRole('link', { name: '演習' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '単語' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '復習' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'アップロード' })).toHaveAttribute('href', '/app/upload')
     expect(screen.getByRole('link', { name: '試験' })).toHaveAttribute('href', '/app/exams')
-    expect(screen.getByRole('link', { name: '演習' })).toHaveAttribute('href', '/app/quiz')
+    expect(screen.getByRole('link', { name: 'スマート復習' })).toHaveAttribute('href', '/app/study/smart')
     expect(screen.getByRole('link', { name: '設定' })).toHaveAttribute('href', '/app/settings')
   })
 
@@ -73,13 +75,13 @@ describe('AppHeader', () => {
     expect(screen.getByTestId('user-button')).toBeInTheDocument()
   })
 
-  // 残存 3 link すべてに onClick で revalidateAppPath が紐付き、
+  // 全 nav link に onClick で revalidateAppPath が紐付き、
   // navigate 先 Router Cache を破棄する。click ごとに該当 path で 1 回 call。
   it.each([
     { name: 'RecallMint', path: '/app' as const },
     { name: 'アップロード', path: '/app/upload' as const },
     { name: '試験', path: '/app/exams' as const },
-    { name: '演習', path: '/app/quiz' as const },
+    { name: 'スマート復習', path: '/app/study/smart' as const },
     { name: '設定', path: '/app/settings' as const },
   ])('「$name」link click → revalidateAppPath($path) を 1 回 call', ({ name, path }) => {
     render(<AppHeader />)

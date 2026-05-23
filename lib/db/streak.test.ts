@@ -9,7 +9,6 @@ const { mockDb } = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({ getDb: () => mockDb }))
 
 import { computeStreak, getReviewStatsForUser } from './streak'
-import { todayInJst } from '@/lib/jst'
 
 describe('computeStreak', () => {
   it('空 → 0', () => {
@@ -43,46 +42,135 @@ describe('computeStreak', () => {
 
 // --------------------------------------------------------------------------
 // getReviewStatsForUser DB mock test
-// SQL string assertion は除外、 mock 戻り値が dashboard まで pipeline 通る
-// verification + return shape contract に限定。
-// 「同 card 複数 rate でも DISTINCT で 1 カウント」 の DB 実挙動統合検証は
-// production smoke で実施。
+// study_days 経由の実装 (T3): SQL に AT TIME ZONE は含まない。
+// mock 戻り値が dashboard まで pipeline 通る verification + return shape contract。
 // --------------------------------------------------------------------------
 describe('getReviewStatsForUser', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('test 1: 正常系 — mock の todayCardCount + streak が return される', async () => {
-    const today = todayInJst()
+  it('test 1: 正常系 — study_days の distinct_card_count と streak が return される', async () => {
+    // Fixed now: 2026-04-22 UTC 12:00 = JST 2026-04-22 21:00 → today = '2026-04-22'
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    // First execute: todayCardCount (SELECT distinct_card_count FROM study_days WHERE day = today)
+    // Second execute: streak dates (SELECT day FROM study_days WHERE ... review_count > 0)
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ count: 5 }] })
-      .mockResolvedValueOnce({ rows: [{ d: today }] })
+      .mockResolvedValueOnce({ rows: [{ c: 5 }] })
+      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
 
-    const res = await getReviewStatsForUser('user_1')
+    const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(5)
     expect(res.streak).toBe(1)
   })
 
-  it('test 2: 同 card 1 カウント (mock count=1 が dashboard に届く pipeline 検証)', async () => {
-    const today = todayInJst()
+  it('test 2: study_days 行不在 → todayCardCount = 0', async () => {
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    // No row for today in study_days
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ count: 1 }] })
-      .mockResolvedValueOnce({ rows: [{ d: today }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
 
-    const res = await getReviewStatsForUser('user_1')
-    expect(res.todayCardCount).toBe(1)
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.todayCardCount).toBe(0)
+    expect(res.streak).toBe(0)
   })
 
-  it('test 3: return shape contract — { todayCardCount, streak } 2 field、 旧 todayWordCount は存在しない', async () => {
-    const today = todayInJst()
+  it('test 3: study_days 行あり → distinct_card_count を読む', async () => {
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ count: 3 }] })
-      .mockResolvedValueOnce({ rows: [{ d: today }] })
+      .mockResolvedValueOnce({ rows: [{ c: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
 
-    const res = await getReviewStatsForUser('user_1')
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.todayCardCount).toBe(7)
+  })
+
+  it('test 4: streak 0 — study_days に review_count > 0 の行なし', async () => {
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [{ c: 0 }] })
+      .mockResolvedValueOnce({ rows: [] })
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.streak).toBe(0)
+  })
+
+  it('test 5: 連続日カウント — 3 日連続', async () => {
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [{ c: 3 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { d: '2026-04-22' },
+          { d: '2026-04-21' },
+          { d: '2026-04-20' },
+        ],
+      })
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.streak).toBe(3)
+  })
+
+  it('test 6: today missing — 昨日基点で streak 計算', async () => {
+    // today = '2026-04-22', but study_days has only yesterday and day before
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [] }) // no row for today
+      .mockResolvedValueOnce({
+        rows: [{ d: '2026-04-21' }, { d: '2026-04-20' }],
+      })
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.todayCardCount).toBe(0)
+    expect(res.streak).toBe(2) // yesterday + day before = 2
+  })
+
+  it('test 7: now 引数注入で時刻固定 — JST 変換確認 (UTC 14:59 = JST 23:59 同日、 翌日 00:00 境界手前)', async () => {
+    // UTC 2026-04-22T14:59:00Z = JST 2026-04-22T23:59:00+09:00 → today still '2026-04-22'
+    const fixedNow = new Date('2026-04-22T14:59:00Z')
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [{ c: 2 }] })
+      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.todayCardCount).toBe(2)
+  })
+
+  it('test 8: now 引数注入 — UTC 15:00 = JST 翌日 00:00 (境界)', async () => {
+    // UTC 2026-04-22T15:00:00Z = JST 2026-04-23T00:00:00+09:00 → today = '2026-04-23'
+    const fixedNow = new Date('2026-04-22T15:00:00Z')
+    // today for this call is '2026-04-23'
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [] }) // no study_days row for 2026-04-23
+      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] }) // yesterday has data
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
+    expect(res.todayCardCount).toBe(0)
+    // yesterday ('2026-04-22') present relative to today ('2026-04-23') → streak 1
+    expect(res.streak).toBe(1)
+  })
+
+  it('test 9: return shape contract — { todayCardCount, streak } 2 field', async () => {
+    const fixedNow = new Date('2026-04-22T12:00:00Z')
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [{ c: 3 }] })
+      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+
+    const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res).toHaveProperty('todayCardCount', 3)
     expect(res).toHaveProperty('streak', 1)
     expect(res).not.toHaveProperty('todayWordCount')
+  })
+
+  it('test 10: now 省略 (undefined) でも動く — 内部で new Date() を使う', async () => {
+    mockDb.execute
+      .mockResolvedValueOnce({ rows: [{ c: 1 }] })
+      .mockResolvedValueOnce({ rows: [] })
+
+    // Should not throw when now is omitted
+    const res = await getReviewStatsForUser('user_1')
+    expect(res).toHaveProperty('todayCardCount')
+    expect(res).toHaveProperty('streak')
   })
 })
