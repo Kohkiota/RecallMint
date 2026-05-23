@@ -55,24 +55,27 @@ function stripPrefix(text: string, optId: string): string {
   return after.replace(/^\s*[.)）]?\s*/, '')
 }
 
-// FSRS rate ボタンの className を rating 別 + 押下済 (lastRating 一致) で切替 (S2.2.4)。
-// 非選択: outline 風 (border + text 色) / 選択済: 背景 fill + 強コントラスト。
+// FSRS rate ボタンの className を rating 別 + 押下済 (lastRating 一致) で切替 (S2.2.4, S2.2.5)。
+// idle: outline 風 (border + text 色)、 button variant="outline" (bg-background ベース)。
+// selected: 濃色 fill + 白文字、 button variant="default" 側に当てて bg-primary を override。
+// S2.2.4 で bg-{c}-100 (薄色) を outline 上に重ねる方式だと bg-background と cn() merge で
+// 視覚的 fill が確実に出ない不具合があったため、 S2.2.5 で variant 切替 + 濃色 (bg-{c}-600) に変更。
 const RATE_BUTTON_BASE = 'h-14 text-base font-semibold'
 const RATE_BUTTON_VARIANTS: Record<Rating, { selected: string; idle: string }> = {
   1: {
-    selected: 'bg-red-100 text-red-900 border-red-400',
+    selected: 'bg-red-600 text-white border-red-600 hover:bg-red-700',
     idle: 'border-red-300 text-red-700 hover:bg-red-50',
   },
   2: {
-    selected: 'bg-orange-100 text-orange-900 border-orange-400',
+    selected: 'bg-orange-600 text-white border-orange-600 hover:bg-orange-700',
     idle: 'border-orange-300 text-orange-700 hover:bg-orange-50',
   },
   3: {
-    selected: 'bg-emerald-100 text-emerald-900 border-emerald-400',
+    selected: 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700',
     idle: 'border-emerald-300 text-emerald-700 hover:bg-emerald-50',
   },
   4: {
-    selected: 'bg-blue-100 text-blue-900 border-blue-400',
+    selected: 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700',
     idle: 'border-blue-300 text-blue-700 hover:bg-blue-50',
   },
 }
@@ -425,7 +428,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
             <Button
               onClick={() => handleRateFsrs(1)}
               disabled={pending}
-              variant="outline"
+              variant={lastRating === 1 ? 'default' : 'outline'}
               className={rateButtonClass(1, lastRating === 1)}
             >
               Again
@@ -433,7 +436,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
             <Button
               onClick={() => handleRateFsrs(2)}
               disabled={pending}
-              variant="outline"
+              variant={lastRating === 2 ? 'default' : 'outline'}
               className={rateButtonClass(2, lastRating === 2)}
             >
               Hard
@@ -441,7 +444,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
             <Button
               onClick={() => handleRateFsrs(3)}
               disabled={pending}
-              variant="outline"
+              variant={lastRating === 3 ? 'default' : 'outline'}
               className={rateButtonClass(3, lastRating === 3)}
             >
               Good
@@ -449,7 +452,7 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
             <Button
               onClick={() => handleRateFsrs(4)}
               disabled={pending}
-              variant="outline"
+              variant={lastRating === 4 ? 'default' : 'outline'}
               className={rateButtonClass(4, lastRating === 4)}
             >
               Easy
