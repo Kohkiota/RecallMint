@@ -1,7 +1,11 @@
 import Link from 'next/link'
+import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { getDb } from '@/lib/db'
+import { userSettings } from '@/lib/db/schema'
 import { createBillingPortalSession } from './actions'
 import { DeleteAccountButton } from './delete-button'
+import { SessionLimitForm } from './_components/session-limit-form'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { planLabelFor } from '@/lib/plan-catalog'
@@ -15,6 +19,15 @@ function formatCancelDate(date: Date): string {
 export default async function SettingsPage() {
   const user = await getCurrentUser()
   if (!user) return null
+
+  // 学習設定: user_settings を owner-scoped SELECT (行不在は sessionLimit=20 の暫定値)
+  const db = getDb()
+  const settingsRows = await db
+    .select()
+    .from(userSettings)
+    .where(eq(userSettings.userId, user.id))
+    .limit(1)
+  const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
 
   return (
     <div className="space-y-8">
@@ -63,6 +76,19 @@ export default async function SettingsPage() {
                 )}
               </div>
             )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* 学習設定 section — プランの次、危険な操作の前 */}
+      <section>
+        <h2 className="font-bold mb-2">学習設定</h2>
+        <Card>
+          <CardContent>
+            <p className="text-sm text-slate-700 mb-3">
+              1 セッションあたりの最大 card 数
+            </p>
+            <SessionLimitForm initial={sessionLimit} />
           </CardContent>
         </Card>
       </section>
