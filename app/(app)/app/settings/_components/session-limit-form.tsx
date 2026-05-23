@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
+import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { saveSessionLimit } from '../_actions/save-session-limit'
@@ -21,34 +22,38 @@ type Message = { kind: 'ok' | 'err'; text: string }
 export function SessionLimitForm({ initial }: { initial: number }) {
   const [value, setValue] = useState<string>(String(initial))
   const [message, setMessage] = useState<Message | null>(null)
+  // savedValue: 直近 saveSessionLimit が返した時点の value snapshot。
+  // message は render 時 value === savedValue のときだけ表示 (= value が変わった瞬間
+  // 自動的に非表示)。 useEffect / useLayoutEffect 経由 reset は React 19 transition と
+  // setState の interleave で race が残るため、 pure derived rendering で構造的に解消
+  // (S2.2.5: useEffect → useLayoutEffect でも 2/15 程度 flake が残った経緯あり)。
+  const [savedValue, setSavedValue] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
   // 現在 value を number に変換した値 (preset active 比較 / save 送信用)。
   // 非数値・空文字は NaN、 ボタン disabled / save 拒否で扱う。
   const numericValue = value === '' ? NaN : Number(value)
 
-  // value が変わったら message を reset (preset click / input change 共通)。
-  // useEffect 経由にして React 19 transition と setState の batching 順序に依らず
-  // deterministic に消す (S2.2 I-1 fix: 直接 setMessage(null) を並列に呼ぶと
-  // 1/6 程度で flake していた)。
-  useEffect(() => {
-    setMessage(null)
-  }, [value])
-
+  // flushSync で setValue を sync commit。 後段 derived rendering
+  // (value === savedValue の比較) が次 frame まで遅延せず、 transition pending 中の
+  // urgent update でも race なく即時反映される (S2.2.5 で derived state 化しても
+  // 1/15 残った flake を構造的に解消)。
   const handlePresetClick = (preset: Preset) => {
-    setValue(String(preset))
+    flushSync(() => setValue(String(preset)))
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // 先頭ゼロを strip (ただし "0" 単独 / "" は維持)。 (?=\d) で 1 桁の 0 を温存
     const stripped = e.target.value.replace(/^0+(?=\d)/, '')
-    setValue(stripped)
+    flushSync(() => setValue(stripped))
   }
 
   const handleSave = () => {
     setMessage(null)
+    const submittedValue = value
     startTransition(async () => {
       const result = await saveSessionLimit(numericValue)
+      setSavedValue(submittedValue)
       if (result.ok) {
         setMessage({ kind: 'ok', text: '保存しました' })
       } else {
@@ -92,8 +97,8 @@ export function SessionLimitForm({ initial }: { initial: number }) {
         保存
       </Button>
 
-      {/* Inline feedback message */}
-      {message && (
+      {/* Inline feedback message — value が savedValue と一致する間のみ表示 */}
+      {message && value === savedValue && (
         <p
           role={message.kind === 'err' ? 'alert' : 'status'}
           className={
