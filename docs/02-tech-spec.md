@@ -743,17 +743,29 @@ erDiagram
   Client: `SessionRunner` 状態機械 (**S2.2**: `selecting → judged → finished`)。
   `submitReview` server action 呼出 (useTransition)、 集合一致は client 判定 (順序非依存、
   `equalSet` helper)。
-  - selecting footer (**S2.2.2 で両モード共通化**): 「回答する」 1 個 (空選択 disabled、
-    押下時は判定 + judged 遷移のみ、 submit は呼ばない)。
-  - 通常モード (`fsrs_mode=false`) judged footer: 「次へ」 1 個。 押下で
-    `currentCorrect ? 3 : 1` を auto-rating として submit + 成功で自動次へ
-    (純遷移「次へ」 は廃止、 submit 成功時のみ次 card 遷移)。
-  - FSRS モード (`fsrs_mode=true`) judged footer: Again/Hard/Good/Easy 4 ボタン
-    (mobile 2x2 grid)。 押下で user 選択 rating を submit + 成功で自動次へ。
-  - 履歴: S2.2 T4 は「回答する」 即 submit + 「次へ」 純遷移、 S2.2.1 T1 は selecting で
-    4 rate ボタン回答兼用 (1-step)、 **S2.2.2 で両モード「回答する」 共通化 + judged で
-    mode 別 footer (2-step) に再変更**。 submit は両モード judged の操作 (次へ / rate)
-    押下時のみ。
+  - selecting footer (**S2.2.3 で 3 button 化**): `[← 前へ] [回答する (primary)] [次へ →]`
+    両モード共通。 「前へ」 idx=0 で disabled、 「回答する」 空選択で disabled (押下時は
+    判定 + judged 遷移のみ submit なし)、 「次へ」 常時 enable で submit せず idx+1 (スキップ)。
+  - 通常モード (`fsrs_mode=false`) judged footer (**S2.2.3 で 3 button 化**):
+    `[← 前へ] [↺ リトライ] [次へ → (primary)]`。 「次へ」 押下で auto-rating
+    (`currentCorrect ? 3 : 1`) submit + 成功で idx+1。 「前へ」 idx=0 で disabled、
+    「リトライ」 常時 enable で現 card selecting reset (submit なし)。
+  - FSRS モード (`fsrs_mode=true`) judged footer (**S2.2.3 で 4 rate + 3 nav の 2 段化**):
+    上段 Again/Hard/Good/Easy 4 ボタン (mobile 2x2 grid、 押下で user 選択 rating
+    submit + `lastRating` セット、 自動次へなし = judged 維持で上書き対応)。
+    下段 `[← 前へ] [↺ リトライ] [次へ → (primary)]` (「前へ」「次へ」 は `lastRating === null`
+    で disabled = rate 押下必須、 「次へ」 押下は submit せず純遷移、 「リトライ」 常時 enable
+    で `lastRating` も null に戻す)。
+  - **最後の card で「次へ」 (selecting / judged 通常 / FSRS judged のいずれか) 押下 → finished**。
+    「前へ」 「リトライ」 では finished 遷移しない。
+  - **tally 重複防止** (S2.2.3 T1 review I-1 fix): `submittedCardIds: Set<string>` で
+    「過去に submit 済みの card.id 集合」 を管理、 `isFirstSubmit = !submittedCardIds.has(cardId)`
+    で判定。 `resetCardState` は Set を touch しないため、 リトライ / 前へ後の再 submit でも
+    1 枚 1 カウントを構造的に担保。 server 側は submit-review-tx の UPDATE で常に最新
+    rating で上書き (二重登録なし)。
+  - 履歴: S2.2 T4 「回答する」 即 submit + 「次へ」 純遷移 → S2.2.1 T1 1-step (selecting で
+    4 rate 回答兼用) → S2.2.2 T1 「回答する」 共通化 + judged mode 別 footer (2-step) →
+    **S2.2.3 T1 3 button 化 (前後ナビ + リトライ + FSRS judged 2 段)**。
   完了画面は `phase='finished'` 内部 state (別 page 不要)。
   B2 fix: 表示時に `stripPrefix(text, optId)` で `opt.text` 先頭の重複 ID prefix を除去
   (startsWith + ID 直後文字種判定、 年号系 `"1990s"` は保全)。
