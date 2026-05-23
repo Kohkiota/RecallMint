@@ -733,19 +733,22 @@ erDiagram
     - **S2.0b 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
       検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
       アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
-- `/study/smart` — スマート復習モード入口 (S2.1 実装 / S2.2 server 化)。
-  **S2.2 変更**: Server Component に変更し `user_settings.session_limit` を SELECT
-  (行不在で 20 fallback)、 「現在の設定: XX 枚」をボタン上に表示。 開始ボタンは
-  `_components/start-button.tsx` (Client) に分離 (revalidateAppPath で Router Cache をクリア、
-  S2.1 T6 review I-2 fix を維持)
-- `/study/smart/session` — スマート復習セッション画面 (S2.1 実装 / S2.2 回答フロー再設計)。
+- `/study/smart` — スマート復習セッション画面 (S2.1 実装 / S2.2 回答フロー再設計 / S2.2.1 URL 統合)。
+  **S2.2.1 変更**: 旧入口画面 `/study/smart` (StartButton + 「現在の設定: XX 枚」 表示) は
+  廃止し、 旧 `/study/smart/session` の中身を直接 `/study/smart` に統合 (1 階層 flatten)。
+  dashboard / nav リンクは全て `/study/smart` に統一、 `revalidateAppPath` の AppPath
+  union からも `/app/study/smart/session` を削除。
   Server Component: auth gate + `user_settings` SELECT (`session_limit=20` / `fsrs_mode=false` fallback)
   + `getSessionCards` (全 exam 横断 due card、due ASC LIMIT session_limit) + 0 件分岐。
   Client: `SessionRunner` 状態機械 (**S2.2**: `selecting → judged → finished`)。
   `submitReview` server action 呼出 (useTransition)、 集合一致は client 判定 (順序非依存、
-  `equalSet` helper)。 通常モード = 「回答する」押下時に即 submit (rating=3 or 1) + judged 遷移、
-  「次へ」は純遷移。 FSRS モード = 「回答する」 押下で判定 + judged 遷移 (未 submit)、
-  Again/Hard/Good/Easy 押下で submit + 自動次へ。
+  `equalSet` helper)。
+  - 通常モード (`fsrs_mode=false`): selecting で「回答する」押下時に即 submit
+    (rating=3 or 1) + judged 遷移、 「次へ」は純遷移。
+  - FSRS モード (`fsrs_mode=true`、 **S2.2.1 変更**): selecting で Again/Hard/Good/Easy
+    4 ボタンを直接表示 (回答 + rate 兼用、 空選択で disabled)。 押下時に submit +
+    judged 遷移、 「次へ」 で純遷移 (通常モードと統一)。 旧 S2.2 の 2-step (「回答する」
+    → judged → rate → 自動次へ) は廃止。
   完了画面は `phase='finished'` 内部 state (別 page 不要)。
   B2 fix: 表示時に `stripPrefix(text, optId)` で `opt.text` 先頭の重複 ID prefix を除去
   (startsWith + ID 直後文字種判定、 年号系 `"1990s"` は保全)。
