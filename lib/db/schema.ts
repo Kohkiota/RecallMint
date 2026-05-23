@@ -4,7 +4,7 @@
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
 // (GDPR / 個人情報保護法削除依頼) で全関連データを連動削除するため)。
 // All user_id FKs (exams / cards / source_documents / study_days /
-// ai_usage_users / reviews / contact_messages) cascade on user deletion.
+// user_settings / ai_usage_users / reviews / contact_messages) cascade on user deletion.
 // source_documents → cards uses SET NULL (OCR source deletion preserves
 // extracted cards).
 // Only users uses soft delete (deleted_at) for Stripe/audit retention;
@@ -437,9 +437,29 @@ export const studyDays = pgTable(
     day: date('day', { mode: 'string' }).notNull(),
     reviewCount: integer('review_count').notNull().default(0),
     correctCount: integer('correct_count').notNull().default(0),
+    distinctCardCount: integer('distinct_card_count').notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.userId, t.day] })],
 )
+
+// ---------------------------------------------------------------------------
+// user_settings (ユーザー設定、S2.1 新設)
+// session_limit: 1 session あたりの最大 card 数 (default 20)。
+// PK = user_id (1 user 1 行、UPSERT で lazy init)。
+// ---------------------------------------------------------------------------
+export const userSettings = pgTable('user_settings', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  sessionLimit: integer('session_limit').notNull().default(20),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+})
 
 // ---------------------------------------------------------------------------
 // contact_messages (お問い合わせ、§2.3.7 仮構造 + Sprint A-2 確定)
@@ -498,5 +518,7 @@ export type UploadRecord = typeof uploadRecords.$inferSelect
 export type NewUploadRecord = typeof uploadRecords.$inferInsert
 export type StudyDay = typeof studyDays.$inferSelect
 export type NewStudyDay = typeof studyDays.$inferInsert
+export type UserSettings = typeof userSettings.$inferSelect
+export type NewUserSettings = typeof userSettings.$inferInsert
 export type ContactMessage = typeof contactMessages.$inferSelect
 export type NewContactMessage = typeof contactMessages.$inferInsert
