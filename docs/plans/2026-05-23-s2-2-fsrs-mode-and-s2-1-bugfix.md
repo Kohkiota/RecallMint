@@ -32,9 +32,18 @@ Again/Hard/Good/Easy を直接押す上級モードを提供する。
   /Good/Easy 押下 → 即 submit + 成功後自動で次 card へ」。 これにより通常モード
   では user が解説を読む間に server 書き込みが完了し、 「次へ」 tap での待機を
   ゼロにする。 FSRS モードは rate 選択を待ってから 1 度だけ submit する。
-- **B2 fix 方針**: `opt.text` 先頭に ID prefix (`"1"`, `"1. "`, `"1) "` 等) が
-  混入している既存 data に対し、 表示時に `text` 先頭の `^\d+\s*[\.\)）]?\s*` を
-  strip。 DB 側 data は触らない (data migration なし)。 ID 自体は先頭に太字 1 回のみ表示。
+- **B2 fix 方針** (S2.2 T4 review I-1 で修正): `opt.text` が `opt.id` で始まる
+  ケースのみ表示時に strip。 `stripPrefix(text, optId)` signature で、
+  (a) `text.startsWith(optId)` でなければそのまま返す、
+  (b) ID 直後の文字が **数字** なら同一数値 token の続き (例: `"1990s"`) として
+      strip しない、
+  (c) ID 直後が区切り (`.` / `)` / `）` / 空白) または非数字なら、
+      残り部分の `^\s*[.)）]?\s*` を strip。
+  これで `"1誤正正誤"` (opt.id="1") → `"誤正正誤"` ✅、 `"1990s"` → `"1990s"` 保全 ✅、
+  `"1) 答え"` → `"答え"` ✅。 `"1.5g"` (opt.id="1") は `"5g"` になる犠牲を許容
+  (単位系小数の頻度低と判断、 OT 承認済)。 DB 側 data は触らない (data migration なし)。
+  ID 自体は先頭に太字 1 回のみ表示。 旧版 `^\d+\s*[.)）]?\s*` の貪欲一致は
+  数字始まり正規本文 (年号 / 単位) を破壊するため T4 review で revert。
 - **scope 外** (kickoff 明示): 完了画面 UI / streak / study_days 列構造の変更なし。
   FSRS 数値計算 (rate / FSRS card update) は S2.1 のまま。 desiredRetention 設定不追加。
 
@@ -158,8 +167,11 @@ Again/Hard/Good/Easy を直接押す上級モードを提供する。
   - tally の `correct` インクリメントは client 判定値 (`currentCorrect`) を使用。
     server 戻り値 `data.correct` は参照しない (rating mapping 不一致を避けるため、
     本 sprint 設計判断の §Architecture 参照)。
-  - エラー時の挙動: submit 失敗で判定結果と解説の表示は維持し、 error UI を出す。
-    通常モードは「再試行」button、 FSRS モードは「もう一度 rate を押す」を案内。
+  - エラー時の挙動: submit 失敗で error UI を出す。 通常モードは selecting phase
+    を維持 (判定 cache 破棄、 同じ選択で「回答する」 再押下で retry)、 FSRS モード
+    は judged phase を維持 (rate ボタンを再押下で retry)。 専用 retry button や
+    案内文は **不要** (S2.2 T4 review I-3 で plan 緩和、 素出し error メッセージ
+    で UX 上同等、 session log で記録)。
 - **制約 (B2 fix)**:
   - opt 描画前に `opt.text.replace(/^\d+\s*[\.\)）]?\s*/, '')` で先頭の数値 prefix を strip。
   - ID は selecting phase / judged phase 共に `<span class="font-medium mr-2">{opt.id}</span>`
