@@ -83,7 +83,7 @@
 |新規|`source_documents`|OCR ジョブの作業 / trace（exam と同寿命）|新設|
 |新規|`upload_records`|OCR 月次利用台帳（append-only、月次 quota 集計元）|S1.9.1 新設|
 |新規|`study_days`|ユーザー単位の学習日カレンダー|新設|
-|新規|`user_settings`|ユーザーごとの学習設定 (session_limit)|S2.1 新設|
+|新規|`user_settings`|ユーザーごとの学習設定 (session_limit, fsrs_mode)|S2.1 新設 / S2.2 fsrs_mode 追加|
 |採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用 (discover mode 一本化、 `docs/research/ocr-schema-vs-discover.md` 参照)|
 
 ### 2.3 plan00 流用テーブル（変更なし、参照のみ）
@@ -543,11 +543,11 @@ await tx.insert(studyDays).values({
 
 ドメイン別 / 試験別の連続学習日数は MVP では出さない（ユーザー方針確定）。
 
-#### 2.5.5 user_settings（ユーザー学習設定、S2.1 新設）
+#### 2.5.5 user_settings（ユーザー学習設定、S2.1 新設 / S2.2 fsrs_mode 追加）
 
 1 ユーザー 1 行の設定テーブル。 PK = `user_id`（1 user 1 行、UPSERT で lazy init）。
-初回保存時に INSERT、以降は UPDATE。 行が存在しない場合は `session_limit = 20` を
-アプリ側でデフォルト値として使用する。
+初回保存時に INSERT、以降は UPDATE。 行が存在しない場合は `session_limit = 20` /
+`fsrs_mode = false` をアプリ側でデフォルト値として使用する。
 
 ```typescript
 export const userSettings = pgTable('user_settings', {
@@ -556,10 +556,13 @@ export const userSettings = pgTable('user_settings', {
     .references(() => users.id, { onDelete: 'cascade' }),
   session_limit: integer('session_limit').notNull().default(20),
     // 1 session あたりの最大 card 数。 UI: 1〜200、preset [10, 20, 50]
+  fsrs_mode: boolean('fsrs_mode').notNull().default(false),
+    // S2.2 追加。 false=通常 (client が rating を正解判定から自動マッピング: correct→3 / incorrect→1)、
+    // true=上級 (user が Again/Hard/Good/Easy を直接選択)
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     // $onUpdate は onConflictDoUpdate では発火しないため、
-    // saveSessionLimit action が conflict set に updatedAt: new Date() を明示追加
+    // saveSessionLimit / saveFsrsMode action が conflict set に updatedAt: new Date() を明示追加
 });
 ```
 
@@ -567,10 +570,11 @@ export const userSettings = pgTable('user_settings', {
 
 - PK = `user_id`（UUID、FK → users.id ON DELETE CASCADE）
 - `session_limit` default 20。 1〜200 の range。 `saveSessionLimit` server action が validate + UPSERT
-- lazy init: `/app/settings` page でも `/app/study/smart/session` page でも、
-  行不在時は `session_limit = 20` fallback で動作（INSERT は初回保存まで不要）
+- `fsrs_mode` default false。 `saveFsrsMode` server action が UPSERT (validation 不要、 boolean)
+- lazy init: `/app/settings` page でも `/app/study/smart/session` page でも `/app/study/smart` page でも、
+  行不在時は `session_limit = 20` / `fsrs_mode = false` fallback で動作（INSERT は初回保存まで不要）
 - `$onUpdate` は Drizzle の onConflictDoUpdate では発火しないため、
-  conflict set に `updatedAt: new Date()` を明示追加（S2.1 T5 確定）
+  conflict set に `updatedAt: new Date()` を明示追加（S2.1 T5 確定、 S2.2 T2 で同パターン再確認）
 
 ### 2.7 Row Level Security (RLS)
 
@@ -729,14 +733,22 @@ erDiagram
     - **S2.0b 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
       検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
       アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
-- `/study/smart` — スマート復習モード入口 (S2.1 実装)。 説明文 + 「スマート復習を始める」
-  Link → `/study/smart/session`。 Client Component (revalidateAppPath で Router Cache をクリア)
-- `/study/smart/session` — スマート復習セッション画面 (S2.1 実装)。
-  Server Component: auth gate + `user_settings` SELECT (行不在で `session_limit=20` fallback)
+- `/study/smart` — スマート復習モード入口 (S2.1 実装 / S2.2 server 化)。
+  **S2.2 変更**: Server Component に変更し `user_settings.session_limit` を SELECT
+  (行不在で 20 fallback)、 「現在の設定: XX 枚」をボタン上に表示。 開始ボタンは
+  `_components/start-button.tsx` (Client) に分離 (revalidateAppPath で Router Cache をクリア、
+  S2.1 T6 review I-2 fix を維持)
+- `/study/smart/session` — スマート復習セッション画面 (S2.1 実装 / S2.2 回答フロー再設計)。
+  Server Component: auth gate + `user_settings` SELECT (`session_limit=20` / `fsrs_mode=false` fallback)
   + `getSessionCards` (全 exam 横断 due card、due ASC LIMIT session_limit) + 0 件分岐。
-  Client: `SessionRunner` 状態機械 (asking → showing-explanation → finished)。
-  `submitReview` server action 呼出 (useTransition)。
+  Client: `SessionRunner` 状態機械 (**S2.2**: `selecting → judged → finished`)。
+  `submitReview` server action 呼出 (useTransition)、 集合一致は client 判定 (順序非依存、
+  `equalSet` helper)。 通常モード = 「回答する」押下時に即 submit (rating=3 or 1) + judged 遷移、
+  「次へ」は純遷移。 FSRS モード = 「回答する」 押下で判定 + judged 遷移 (未 submit)、
+  Again/Hard/Good/Easy 押下で submit + 自動次へ。
   完了画面は `phase='finished'` 内部 state (別 page 不要)。
+  B2 fix: 表示時に `stripPrefix(text, optId)` で `opt.text` 先頭の重複 ID prefix を除去
+  (startsWith + ID 直後文字種判定、 年号系 `"1990s"` は保全)。
 - `/study/practice` — カスタム演習モード（S2.3 以降、現状 disabled ボタンで残置）
 - `/cards/[id]` — カード編集 page (S2.0)。 既存 card の title / 問題文 / 選択肢
   (本文・正解 checkbox・選択肢別解説) / card 全体解説 を編集 + card 単体削除。
@@ -744,7 +756,10 @@ erDiagram
   S2.0 scope 外 (memo・画像は別 sprint、 tag は S2.0b)。
 - `/settings` — プラン管理、Customer Portal リンク、アカウント削除。
   **S2.1 追加**: 「学習設定」 section で `session_limit` (1〜200) を変更可能
-  (`SessionLimitForm` + `saveSessionLimit` action、 `user_settings` UPSERT)
+  (`SessionLimitForm` + `saveSessionLimit` action、 `user_settings` UPSERT)。
+  **S2.2 追加**: 同 section に「FSRSモード (上級)」 toggle を配置
+  (`FsrsModeForm` + `saveFsrsMode` action、 optimistic update + 失敗 rollback)。
+  S2.2 B1 fix: session_limit 入力欄の先頭ゼロ残り (例 `"030"` → `"30"`) を strip
 
 ### Server Actions（`'use server'`）
 
@@ -786,6 +801,10 @@ erDiagram
   auth gate / `Number.isInteger(value) && value >= 1 && value <= 200` validate /
   `user_settings` UPSERT (target=userId)。 `revalidatePath('/app/settings')`。
   DB error は `try/catch` → `logger.error` → `{ ok: false, error }` 変換
+- `saveFsrsMode(value: boolean)` → `ActionResult<{ fsrsMode: boolean }>` (S2.2 確定形)。
+  auth gate / `user_settings` UPSERT (target=userId、 conflict set に updatedAt 明示更新) /
+  `revalidatePath('/app/settings')`。 boolean なので validation 不要、 DB error は
+  `try/catch` → `logger.error` → `{ ok: false, error }` 変換
 
 **画像アップロード（将来機能、未実装）**:
 
@@ -1086,10 +1105,17 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
     5. テキストフィールドのカーソル位置に `![](key)` を挿入
 - **整合性チェック**: テキスト内の `![](key)` 全部が cards.images に存在するか / cards.images の全 key が参照されているか。不整合は編集ビューで警告表示（Anki の Check Media 相当）
 
-### Logic 3: FSRS 6 スケジューリング（plan00 流用、S2.1 確定形）
+### Logic 3: FSRS 6 スケジューリング（plan00 流用、S2.1 確定形 / S2.2 rating mapping 追記）
 
 - **入力**: `cardId`, `rating: RatingInt` (1=Again / 2=Hard / 3=Good / 4=Easy)
-- **正解定義**: `rating >= 2`（Anki 互換、全コードで一貫使用）
+- **正解定義 (server 側)**: `rating >= 2`（Anki 互換、`submitReviewTx` 内 study_days /
+  cards 列更新に使用、全コードで一貫使用）
+- **rating mapping (client 側、S2.2 追加)**: SessionRunner が `user_settings.fsrs_mode` で
+  分岐。 通常モード = 集合一致判定 (`equalSet`) で correct→3 (Good) / incorrect→1 (Again)
+  を自動算出し submit。 FSRS モード = user が直接 1/2/3/4 を選択して submit。
+  client 集合一致判定値 (`currentCorrect`) は tally と UI 表示の真実 source。 server 戻り値
+  `data.correct` は **参照しない** (FSRS モードで user rating と判定値が乖離するため、
+  例: ユーザーが選択肢を間違えたが Easy=4 を押した → client 判定=incorrect / server correct=true)
 - **出力**: 次回 due 日時、新しい stability / difficulty / state（integer 0/1/2/3）
 - **アルゴリズム**: FSRS-6 公式 (`ts-fsrs` ライブラリ、`rate(card, rating, now)`)
 - **now の一本取り**: `submitReview` server action 入口で `new Date()` を 1 回生成し、
