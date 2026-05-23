@@ -753,6 +753,9 @@ erDiagram
   - FSRS モード (`fsrs_mode=true`) judged footer (**S2.2.3 で 4 rate + 3 nav の 2 段化**):
     上段 Again/Hard/Good/Easy 4 ボタン (mobile 2x2 grid、 押下で user 選択 rating
     submit + `lastRating` セット、 自動次へなし = judged 維持で上書き対応)。
+    **S2.2.4 で押下ハイライト追加**: lastRating 連動で selected 状態に色付き背景 +
+    強コントラスト文字 (Again 赤 / Hard 橙 / Good 緑 / Easy 青、 Tailwind palette)、
+    別 rate 押下で前 highlight が自動解除 (lastRating 単一値切替で race なし)。
     下段 `[← 前へ] [↺ リトライ] [次へ → (primary)]` (「前へ」「次へ」 は `lastRating === null`
     で disabled = rate 押下必須、 「次へ」 押下は submit せず純遷移、 「リトライ」 常時 enable
     で `lastRating` も null に戻す)。
