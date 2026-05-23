@@ -9,7 +9,7 @@ import { z } from 'zod'
 // correct_answer_ids は本 schema に含めない — server action 側で is_correct から
 // 再生成する (options[].is_correct のデノーマ、 tech-spec §2.5.2)。
 
-const optionSchema = z.object({
+export const optionSchema = z.object({
   id: z.string().min(1, '選択肢の id は必須です'),
   text: z
     .string()
