@@ -191,6 +191,38 @@ describe('SessionLimitForm', () => {
     })
   })
 
+  describe('B1 fix: 先頭ゼロ strip', () => {
+    it('value="030" を change で渡すと先頭ゼロが strip され "30" になる', () => {
+      render(<SessionLimitForm initial={20} />)
+      const input = screen.getByRole('spinbutton')
+      fireEvent.change(input, { target: { value: '030' } })
+      expect(input).toHaveValue(30)
+      // (input value が "30" として表示される: HTML spinbutton は number 解釈で 30 を表示)
+    })
+
+    it('空文字 "" は維持される (ユーザーが全消ししたとき edit を許容)', () => {
+      render(<SessionLimitForm initial={20} />)
+      const input = screen.getByRole('spinbutton')
+      fireEvent.change(input, { target: { value: '' } })
+      // 空のときは value=null/"" (HTML spinbutton)
+      expect((input as HTMLInputElement).value).toBe('')
+    })
+
+    it('単一 "0" は維持される (1 桁の 0 は temporal に許可、 保存時に saveSessionLimit が弾く)', () => {
+      render(<SessionLimitForm initial={20} />)
+      const input = screen.getByRole('spinbutton')
+      fireEvent.change(input, { target: { value: '0' } })
+      expect((input as HTMLInputElement).value).toBe('0')
+    })
+
+    it('"007" → "7" にストリップ (複数桁前ゼロ)', () => {
+      render(<SessionLimitForm initial={20} />)
+      const input = screen.getByRole('spinbutton')
+      fireEvent.change(input, { target: { value: '007' } })
+      expect(input).toHaveValue(7)
+    })
+  })
+
   describe('次操作で message リセット', () => {
     it('成功 message 表示後に preset button click → message 消える', async () => {
       render(<SessionLimitForm initial={20} />)
