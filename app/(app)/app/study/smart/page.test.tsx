@@ -94,6 +94,7 @@ function makeCard(id: string): Card {
     options: [{ id: 'a', text: 'A', is_correct: true }],
     correctAnswerIds: ['a'],
     explanationText: null,
+    memo: null,
     images: [],
     customProps: {},
     tags: [],

@@ -261,6 +261,8 @@ export const cards = pgTable(
     options: jsonb('options').notNull().$type<CardOption[]>(),
     correctAnswerIds: jsonb('correct_answer_ids').notNull().$type<string[]>(),
     explanationText: text('explanation_text'),
+    // S2.0b-1: ユーザーが card 毎に自由メモを追記 (試験詳細 inline 編集で入力)。
+    memo: text('memo'),
     images: jsonb('images')
       .notNull()
       .default(sql`'[]'::jsonb`)
