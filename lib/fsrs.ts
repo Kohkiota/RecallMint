@@ -22,10 +22,10 @@ export function newCard(): Card {
   return createEmptyCard()
 }
 
-export function rate(card: Card, rating: RatingInt) {
+export function rate(card: Card, rating: RatingInt, now: Date = new Date()) {
   const enumVal = RATING_MAP[rating]
   if (enumVal === undefined) {
     throw new Error(`invalid rating: ${rating} (must be 1..4)`)
   }
-  return scheduler.next(card, new Date(), enumVal)
+  return scheduler.next(card, now, enumVal)
 }
