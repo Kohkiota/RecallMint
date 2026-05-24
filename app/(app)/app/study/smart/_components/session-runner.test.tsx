@@ -210,22 +210,27 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
   })
 
-  it('通常モード: 「次へ」 submit error 時 → judged 維持 + error 表示 + 「次へ」 再 enable で retry 可能', async () => {
+  it('通常モード: 「次へ」 submit error 時 (fire-and-forget): 次 card に即遷移 + error 表示 (judged 巻き戻さない)', async () => {
+    // fire-and-forget 化: 「次へ」 押下で submit 結果を待たず即 next card に進む。
+    // submit が失敗しても judged 巻き戻しなし、 失敗 error を次 card 上で表示する。
     mockSubmitReview.mockResolvedValueOnce({ ok: false, error: 'サーバーエラー' })
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    const cards = [
+      makeCard({ id: 'c1', questionText: '問1' }),
+      makeCard({ id: 'c2', questionText: '問2' }),
+    ]
+    render(<SessionRunner cards={cards} fsrsMode={false} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
-    expect(screen.getByRole('button', { name: NAME_NEXT })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
 
+    // 即 next card に遷移 (await なし、 fire-and-forget)
+    expect(screen.getByText('問2')).toBeInTheDocument()
+    // submit は呼ばれている
+    expect(mockSubmitReview).toHaveBeenCalledWith('c1', 3)
+
+    // submit 失敗の error が次 card 上に表示される
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('サーバーエラー')
-    })
-    // judged 維持
-    expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
-    expect(screen.getByText(/正解/)).toBeInTheDocument()
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
     })
   })
 
@@ -330,7 +335,10 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     }
   })
 
-  it('FSRS モード: rate submit error 時 → judged 維持 + error UI + 4 ボタン再 enable で retry', async () => {
+  it('FSRS モード: rate submit error 時 (fire-and-forget + Optimistic): judged 維持 + error UI + 4 ボタン enable のまま、 lastRating は optimistic セット済で 「次へ」 enable (user は次 card に進める)', async () => {
+    // Optimistic 化: rate click 時に lastRating は即セットされ、 server 失敗でも
+    // rollback しない (= last write wins、 user は次 card に進めるか rate 再押下で
+    // 上書き submit が可能)。 4 rate / 3 nav ボタンは pending で disable しない仕様。
     mockSubmitReview.mockResolvedValueOnce({ ok: false, error: 'rate 失敗' })
     render(<SessionRunner cards={[makeCard()]} fsrsMode={true} />)
     clickOption('選択肢B')
@@ -342,14 +350,14 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     })
     // judged 維持 (解説 + 4 ボタン残置)
     expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Again' })).not.toBeDisabled()
-      expect(screen.getByRole('button', { name: 'Hard' })).not.toBeDisabled()
-      expect(screen.getByRole('button', { name: 'Good' })).not.toBeDisabled()
-      expect(screen.getByRole('button', { name: 'Easy' })).not.toBeDisabled()
-    })
-    // submit 失敗 → lastRating は null のまま → 「次へ」 disabled
-    expect(screen.getByRole('button', { name: NAME_NEXT })).toBeDisabled()
+    // 4 ボタンは常時 enable (pending gate 撤回)、 再押下で上書き submit 可
+    expect(screen.getByRole('button', { name: 'Again' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Hard' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Good' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Easy' })).not.toBeDisabled()
+    // Optimistic: lastRating は click 時に Good 固定済、 「次へ」 enable
+    // (失敗時 rollback なし、 user は次に進める = MVP UX)
+    expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
   })
 
   it('B2 fix: opt.id と一致する先頭 ID prefix (例 "1誤正正誤") を strip し、 ID は太字 span で 1 回だけ表示', () => {
@@ -1001,6 +1009,125 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
         expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('bg-orange-600')
         expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('text-white')
       })
+    })
+
+    it('Optimistic: rate click 直後に selected fill が反映 (server 完了待ちなし、 fire-and-forget)', async () => {
+      // server resolve を意図的に保留 (pending Promise) しても、 click 同期で
+      // 即 selected fill class が反映されることを検証 (Optimistic UI 必須条件)。
+      let resolveSubmit!: () => void
+      mockSubmitReview.mockImplementationOnce(
+        () =>
+          new Promise<{ ok: true; data: { correct: boolean } }>((res) => {
+            resolveSubmit = () => res({ ok: true, data: { correct: true } })
+          }),
+      )
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+      // click 前は idle
+      expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('bg-orange-600')
+
+      // click 直後 (server resolve 未だ): 即 selected fill
+      fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+      expect(screen.getByRole('button', { name: 'Hard' })).toHaveClass('bg-orange-600')
+      expect(screen.getByRole('button', { name: 'Hard' })).toHaveClass('text-white')
+      // submit は fire 済
+      expect(mockSubmitReview).toHaveBeenCalledWith('c1', 2)
+
+      // 4 ボタン + 「次へ」 が pending で disable されないことを同時確認
+      // (rate4 / nav3 から pending gate を撤回した spec)
+      expect(screen.getByRole('button', { name: 'Again' })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Hard' })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Good' })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Easy' })).not.toBeDisabled()
+      expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
+
+      // 後片付け (テスト終了時の unhandled promise 防止)
+      resolveSubmit()
+    })
+
+    it('Optimistic: rate 連打中 (前 submit pending) でも 2 回目 submit が即発火、 highlight も切替 (= 連打可 / last write wins)', async () => {
+      // 1 回目 submit を hold、 2 回目 click した時点で 2 回目 submit が即 fire
+      // されることを検証。 旧実装 (useTransition + await) は 1 回目 await 完了まで
+      // 2 回目を受け付けない (= startTransition 抑止 or button disabled) ため、
+      // この test は fire-and-forget 化の確実な regression guard になる。
+      let resolveFirst!: () => void
+      let resolveSecond!: () => void
+      mockSubmitReview
+        .mockImplementationOnce(
+          () =>
+            new Promise<{ ok: true; data: { correct: boolean } }>((res) => {
+              resolveFirst = () => res({ ok: true, data: { correct: true } })
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise<{ ok: true; data: { correct: boolean } }>((res) => {
+              resolveSecond = () => res({ ok: true, data: { correct: true } })
+            }),
+        )
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+      // 1 回目 (Hard) click — server hold 中だが UI は即 selected
+      fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+      expect(mockSubmitReview).toHaveBeenCalledTimes(1)
+      expect(mockSubmitReview).toHaveBeenNthCalledWith(1, 'c1', 2)
+      expect(screen.getByRole('button', { name: 'Hard' })).toHaveClass('bg-orange-600')
+
+      // 2 回目 (Good) click — 1 回目 pending 中でも即 fire される
+      fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+      expect(mockSubmitReview).toHaveBeenCalledTimes(2)
+      expect(mockSubmitReview).toHaveBeenNthCalledWith(2, 'c1', 3)
+      // highlight は Good に切替 (Hard は idle に戻る)
+      expect(screen.getByRole('button', { name: 'Good' })).toHaveClass('bg-emerald-600')
+      expect(screen.getByRole('button', { name: 'Hard' })).not.toHaveClass('bg-orange-600')
+
+      // tally は初回 click のみ +1 (連打を 1 カウント固定)、 「次へ」 で finished へ
+      fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+      await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+      expect(screen.getByText(/1 枚/)).toBeInTheDocument()
+      // 後片付け
+      resolveFirst()
+      resolveSecond()
+    })
+
+    it('Optimistic 通常モード: 「次へ」 click で server 待たず即 next card (fire-and-forget) + 成功時 error が次 card に出ない', async () => {
+      // server resolve を hold した状態で「次へ」 を押下、 next card が即表示
+      // されることを検証 (旧実装 = useTransition await goNext では server resolve
+      // まで遷移しなかった)。 加えて成功 resolve 後に次 card 上に error が出ない
+      // ことを assert する (= ok:true 経路で setError が誤発火しないことの guard、
+      // 将来 refactor で意図せず alert 系を発火させた regression を捕捉する)。
+      let resolveSubmit!: () => void
+      mockSubmitReview.mockImplementationOnce(
+        () =>
+          new Promise<{ ok: true; data: { correct: boolean } }>((res) => {
+            resolveSubmit = () => res({ ok: true, data: { correct: true } })
+          }),
+      )
+      const cards = [
+        makeCard({ id: 'c1', questionText: '問1' }),
+        makeCard({ id: 'c2', questionText: '問2' }),
+      ]
+      render(<SessionRunner cards={cards} fsrsMode={false} />)
+      clickOption('選択肢B')
+      fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+      fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+
+      // 同期: 即 next card に遷移している (server resolve 未だ)
+      expect(screen.getByText('問2')).toBeInTheDocument()
+      expect(mockSubmitReview).toHaveBeenCalledWith('c1', 3)
+
+      // server resolve (ok:true) 後 microtask 経過させて、 次 card 上に error が
+      // 出ないことを確認 (setError on success の defensive guard)。
+      resolveSubmit()
+      await waitFor(() => {
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      })
+      // 次 card のまま (= 副作用で何かが起きていないことの再確認)
+      expect(screen.getByText('問2')).toBeInTheDocument()
     })
 
     it('リトライで lastRating=null 化、 再 judged 時 4 ボタンとも idle (fill なし)', async () => {
