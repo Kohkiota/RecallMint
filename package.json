@@ -60,15 +60,5 @@
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "bufferutil",
-      "utf-8-validate"
-    ],
-    "overrides": {
-      "uuid": "^14.0.0",
-      "postcss": "^8.5.10"
-    }
   }
 }

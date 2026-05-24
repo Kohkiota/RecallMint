@@ -1,0 +1,7 @@
+onlyBuiltDependencies:
+  - bufferutil
+  - utf-8-validate
+
+overrides:
+  uuid: ^14.0.0
+  postcss: ^8.5.10
