@@ -850,15 +850,22 @@ erDiagram
 
 **学習セッション (FSRS)**:
 
-- `submitReview(cardId, rating: RatingInt)` → `ActionResult<{ correct: boolean }>` (S2.1 確定形、 S2.0b-2 で `revalidatePath('/app')` 追加)。
+- `submitReview(cardId, rating: RatingInt)` → `ActionResult<{ correct: boolean }>` (S2.1 確定形)。
   `RatingInt = 1|2|3|4` (Again/Hard/Good/Easy)。 auth gate + validation +
   `db.transaction(submitReviewTx)` wrap。 1 tx 内で cards / reviews / study_days を更新。
   正解判定は `rating >= 2`。 `now` は server action 入口で `new Date()` を一本取りして tx に渡す。
-  **S2.0b-2 追加**: 成功時 (try 内成功 return 直前) で `revalidatePath('/app')` を 1 回
-  呼出して dashboard (`/app/page.tsx`) の `getReviewStatsForUser` cache を invalidate。
-  これによりスマート復習 session 完了後にダッシュボード戻り時の 「今日の枚数 / 連続日数」
-  反映漏れを解消。 失敗時 (catch 経由) は呼ばないので、 invalid な集計値で cache を
-  invalidate するリスクなし
+  **dashboard 反映機構** (S2.0b-2 T1 → fix `f1d8e55` で再設計): 当初 (`dbc6533`) は成功時に
+  `revalidatePath('/app')` を呼んで dashboard cache を invalidate していたが、 Next.js 15
+  の server action からの `revalidatePath` 呼出は active page (= `/app/study/smart`) の
+  RSC payload まで refresh させるため、 SessionRunner の `props.cards` が submit 直後に
+  変化 → idx=0 + judged 維持で 「次のカード」 が current として描画される regression が
+  発生し撤回。 現実装は dashboard (`/app/page.tsx`) が `getCurrentUser()` / DB SELECT で
+  構成される **dynamic page** で Next.js 15 default `staleTimes.dynamic = 0` により
+  client cache されない前提に依存し、 SessionRunner 完了画面の 「ダッシュボードへ」
+  **Link navigation** 時に server で fresh fetch される (= submit 時の明示 revalidate 不要)。
+  将来 `staleTimes` 上書きや ISR 化で前提が崩れる場合は dashboard 側に
+  `export const dynamic = 'force-dynamic'` 明示か、 SessionRunner unmount 時の
+  明示 invalidation 等の代替策が必要 (詳細経緯は session log postmortem 参照)
 - `getNextSmartReviewBatch(limit)` → `Result<Card[]>`（`due <= now()` を `due ASC`）
 - `getPracticeBatch(filter)` → `Result<Card[]>` — filter は custom_props 値も指定可
 - `resetCardStatus(cardId)` → `Result<void>` — answered / last_correct / current_streak / FSRS 状態をリセット（reviews 履歴は残す）

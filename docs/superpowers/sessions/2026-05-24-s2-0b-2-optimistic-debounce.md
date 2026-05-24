@@ -145,3 +145,113 @@ T3 でも同じ防御を新規実装時から適用 (StrictMode mountedRef reset
 short-circuit 条件 + 新 debounce test に regression case 同梱) したことで、
 T3 review は Critical / Important 共に 0 で 1 サイクル完了。 学びの横展開
 パターンとして再現性あり。
+
+## Postmortem: T1 `revalidatePath('/app')` regression と撤回 (fix `f1d8e55`)
+
+closure 後、 OT 実機で **スマート復習中にカードを 1 枚 submit した瞬間に
+次のカードが先に判定済表示で出る** regression を観測。 sprint 完了時点の
+T4 docs (`edde024`) は T1 で導入した `revalidatePath('/app')` を「dashboard
+反映漏れの fix」 として記述したまま reviewed/no-review 系列を closure
+していたため、 docs と実装の整合性も同時に崩れた。
+
+### 観測した症状
+
+1. `/app/study/smart` を開く → 1 枚目の選択肢を選び 「回答する」 押下
+2. judged footer (`[← 前へ] [↺ リトライ] [次へ → (primary)]`) 表示
+3. 「次へ」 押下 → 内部で `submitReview` server action 発火
+4. **submit 完了直後、 まだ navigation 前なのに 「2 枚目」 の選択肢 area が
+   `judged` 状態 (= 正誤 highlight + 解説表示) で描画される**
+5. ユーザは触っていないのに「次のカード」 が判定済として見えるため、
+   学習体験として完全に破綻
+
+### Root cause
+
+`submitReview` server action 末尾で `revalidatePath('/app')` を呼ぶと、
+Next.js 15 はその時点で **active page (= 呼出元 `/app/study/smart`) の
+RSC payload も再生成して client に push** する。 SessionRunner の
+`props.cards` は server で `getSessionCards()` の結果で確定するため、
+RSC payload の更新で `cards` 配列が変化 (= submit 済 card は due から
+外れて消える等)。 client 側 SessionRunner state は `idx` / `judged` を
+保持しているため、 「`cards[idx]` だけ別 card に差し変わった + judged
+は維持」 で **次の card が judged 状態で current に描画される** 不整合
+が起きた。 jsdom test では navigation を伴わないため再現せず、 670/670
+green でも見落とした類の bug。
+
+### 採用した fix (A 案)
+
+server action から `revalidatePath('/app')` を **削除**。 dashboard
+(`/app/page.tsx`) は `getCurrentUser()` / DB SELECT で構成される
+dynamic page で、 Next.js 15 default の `staleTimes.dynamic = 0` 設定
+により client side cache されない (= prefetch しない、 navigation 時に
+server で fresh fetch される) ため、 SessionRunner 完了画面の
+「ダッシュボードへ」 Link 押下 → server-side で `getReviewStatsForUser`
+を新規実行 → 最新統計 (今日の枚数 / 連続日数) で render される。
+**SessionRunner 内で再 fetch が発火しない** ため、 props.cards の中身は
+session 開始時の snapshot で固定され、 学習体験が安定する。
+
+### 代替案検討と却下理由
+
+- **B 案 (active page 除外)**: Next.js 15 では `revalidatePath` の対象を
+  「dashboard 関連 page 以外」 に絞る精密な API が無い (path は完全一致 or
+  layout 単位の 2 階層のみ、 「`/app` だけ revalidate / `/app/study/smart`
+  は除外」 は表現不能)。 採用不可
+- **C 案 (`router.refresh` を client 側で発火)**: dashboard 移動後に
+  client から refresh を撃つ案は、 (a) 移動先 page の mount 後に発火が必要
+  で UX 上 1 フレーム stale 表示が出る、 (b) Link navigation の標準動作と
+  二重 fetch になる。 採用不可
+- **D 案 (dashboard 側で `export const dynamic = 'force-dynamic'`)**: 既に
+  default `staleTimes.dynamic = 0` で同等動作のため冗長。 ただし将来
+  `staleTimes` を上書きする可能性に備えて tech-spec / code comment に
+  「staleTimes 変更時は force-dynamic 明示が必要」 と記載済
+
+### Fix の test 担保
+
+fix commit `f1d8e55` で:
+
+- `submit-review.test.ts` から `vi.mock('next/cache')` + `revalidatePath`
+  assert を削除 (mock import 行も unused 化したため削除)
+- 新規 test 追加なし。 regression 自体が jsdom で再現困難 (navigation +
+  RSC payload push を要する)、 かつ「`revalidatePath` を呼んでいない」 こと
+  は test では弱い (将来誰かが復活させた場合 negative-control 不在)
+- 代わりに `submit-review.ts` 冒頭 comment で **撤回理由** と **将来
+  staleTimes 変更時の注意** を docstring 化、 復活時に reviewer が気付ける
+  ようにした
+
+### 5 連続 green / build pass による安定性確認
+
+fix 後の全 test 一括 run を 5 回連続 (`pnpm test`) で全 pass。 sprint
+closure 時に観測した 1 件 flake (94% green) は再現しなかった。 tsc clean +
+`pnpm build` pass で本 fix の確定とした。
+
+### 学び
+
+1. **`revalidatePath` の scope を「active page も含む」 と読み替える**:
+   server action 起点の `revalidatePath` は path 一致範囲の RSC payload を
+   全て invalidate する。 user が今見ている page の RSC payload が submit
+   action で書き換わると client state と props の不整合が起きる、 という
+   semantics を `revalidatePath(path)` の docstring (旧) からは読み取り
+   にくく、 「dashboard 反映漏れ」 単体の対処として安易に投入したのが直接
+   原因。 今後、 study/answer 系 page で server action から `revalidatePath`
+   を撃つ際は、 active page の RSC payload に副作用が出ないことを
+   handler / props 設計で常に確認する
+2. **「dashboard の最新値 = revalidate が必要」 ではない**: Next.js 15
+   `staleTimes.dynamic = 0` default 下では、 dynamic page への Link
+   navigation は常に server で fresh fetch される。 「cache を invalidate
+   しないと古い値が見える」 という直感は、 client cache を持つ page
+   (static or `staleTimes` 上書き) でしか成立しない。 dashboard が dynamic
+   page である限り、 default `staleTimes` 設定では何もしなくて良い
+3. **jsdom test では navigation + RSC payload push の race が再現しない**:
+   今 sprint の 670/670 green は debounce / Optimistic UI / rollback 経路
+   の validation としては十分機能したが、 navigation を経由する RSC
+   payload race は jsdom では出ない盲点。 navigation を伴う server action
+   の影響は **OT 実機 smoke でのみ最終確認できる** と覚悟する。 closure
+   前の OT 実機 smoke は本 sprint では navigation を含む流れまでは行わず、
+   inline edit (試験詳細画面で固定) と 1 枚 submit + 完了画面到達までで
+   止めていた。 動作確認シナリオ 6 (「ダッシュボード反映」) は smoke 実施
+   できていれば事前に regression を捕捉できたはず、 今後は OT 向け smoke
+   シナリオの **navigation を跨ぐ確認** を closure 必須項目に格上げ
+4. **docs と実装の整合は fix commit 直後に同 sprint 内で完結する**:
+   今回 T4 で「`revalidatePath('/app')` 追加」 と書いた docs を fix
+   commit `f1d8e55` 直後に書き換えず、 別作業 (devcontainer 整理 `09495bf`)
+   が割り込んで宙吊りになった。 commit 順序として fix 直後に docs 更新
+   commit を投入する規律を入れる (本 commit が遅延 docs commit)
