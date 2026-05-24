@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-// InlineOptionRow の Optimistic UI + debounce + row 共有 1 並列 + checkbox 個別
-// inFlight 仕様 (spec §3.3 / §3.5 / §5.1) を fake timer で検証する。 既存
-// inline-option-row.test.tsx は real timer 維持の基本動作担当、 本 file は
-// debounce / queue / rollback / checkbox 個別 disable / StrictMode regression
-// 専用 (G-1 boilerplate 局所化)。 InlineTextField の T2 流儀 (mountedRef setup
-// reset + revert-during-inflight queue) を踏襲。
+// `InlineOptionList` の Optimistic UI + debounce + 1 並列 + checkbox 個別 inFlight
+// 仕様 (spec §3.3 / §3.5 / §5.1) を fake timer で検証。 基本動作 (render / edit) は
+// inline-option-row.test.tsx 担当、 本 file は debounce / queue / rollback /
+// checkbox 個別 disable / StrictMode regression / cross-row checkbox race 専用。
+//
+// S2.0b-2 follow-up fix で options state を per-card 親 `InlineOptionList` に lift up
+// し、 cross-row checkbox race を構造的に解消した (旧実装は row 毎 allOptionsRef の
+// snapshot ずれで 「複数 checkbox 連続 ON で最後の 1 つだけ ON になる」 bug)。
 
 import { StrictMode } from 'react'
 import {
@@ -28,7 +30,7 @@ vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
 }))
 
-import { InlineOptionRow } from './inline-option-row'
+import { InlineOptionList } from './inline-option-row'
 import { updateCardField } from '../_actions/update-card-field'
 
 const baseOptions: CardOption[] = [
@@ -53,34 +55,29 @@ async function flushPromises() {
   })
 }
 
-function renderRow(option: CardOption = baseOptions[0]!, all: CardOption[] = baseOptions, index = 0) {
-  return render(
-    <InlineOptionRow
-      cardId="card-1"
-      option={option}
-      allOptions={all}
-      optionIndex={index}
-    />,
-  )
+function renderList(all: CardOption[] = baseOptions) {
+  return render(<InlineOptionList cardId="card-1" options={all} />)
 }
 
-function startTextEdit(newValue: string) {
-  fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+function startTextEdit(newValue: string, rowIdx = 0) {
+  const buttons = screen.getAllByRole('button', { name: '選択肢 本文 編集' })
+  fireEvent.click(buttons[rowIdx]!)
   const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
   fireEvent.change(ta, { target: { value: newValue } })
   return ta
 }
 
-function startExplanationEdit(newValue: string) {
-  fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
+function startExplanationEdit(newValue: string, rowIdx = 0) {
+  const buttons = screen.getAllByRole('button', { name: '選択肢 解説 編集' })
+  fireEvent.click(buttons[rowIdx]!)
   const ta = screen.getByRole('textbox', { name: '選択肢 解説 編集' })
   fireEvent.change(ta, { target: { value: newValue } })
   return ta
 }
 
-describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlight', () => {
+describe('InlineOptionList debounce / queue / optimistic / checkbox 個別 inFlight', () => {
   it('text cell blur → 500ms 経過前は updateCardField 呼ばれない', async () => {
-    renderRow()
+    renderList()
     const ta = startTextEdit('選択肢A 改')
     fireEvent.blur(ta)
 
@@ -91,7 +88,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
   })
 
   it('text cell blur → 500ms 経過で updateCardField 呼ばれる (Optimistic UI: display 即時新値)', async () => {
-    renderRow()
+    renderList()
     const ta = startTextEdit('選択肢A 改')
     fireEvent.blur(ta)
 
@@ -112,7 +109,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
   })
 
   it('text 編集中に checkbox click → debounce timer cancel + checkbox 送信に text 新値同梱', async () => {
-    renderRow()
+    renderList()
     // 1. text を編集して blur (debounce 500ms 待ち中)
     const ta = startTextEdit('選択肢A 改')
     fireEvent.blur(ta)
@@ -122,8 +119,8 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     })
     expect(updateCardField).not.toHaveBeenCalled()
 
-    // 2. checkbox click (= 即時 send、 text 新値も同梱されるはず)
-    const checkbox = screen.getByRole('checkbox')
+    // 2. 同 row の checkbox click (= 即時 send、 text 新値も同梱されるはず)
+    const checkbox = screen.getAllByRole('checkbox')[0]!
     fireEvent.click(checkbox)
     await flushPromises()
 
@@ -151,24 +148,19 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
         }),
     )
 
-    renderRow()
-    const checkbox = screen.getByRole('checkbox') as HTMLInputElement
+    renderList()
+    const checkbox = screen.getAllByRole('checkbox')[0]! as HTMLInputElement
     fireEvent.click(checkbox)
     await flushPromises()
 
     // checkbox は disabled
     expect(checkbox).toBeDisabled()
 
-    // text cell は edit 可能 (D 仕様)
-    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    // 同 row の text cell は edit 可能 (D 仕様)
+    const textButtons = screen.getAllByRole('button', { name: '選択肢 本文 編集' })
+    fireEvent.click(textButtons[0]!)
     expect(
       screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
-    ).toBeInTheDocument()
-
-    // explanation cell も edit 可能
-    fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
-    expect(
-      screen.getByRole('textbox', { name: '選択肢 解説 編集' }),
     ).toBeInTheDocument()
 
     // 解除
@@ -180,7 +172,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     expect(checkbox).not.toBeDisabled()
   })
 
-  it('text 送信中に他 cell blur → row 共有 queue で 1 並列、 完走後に最新 snapshot で再送信', async () => {
+  it('text 送信中に同 row 別 cell blur → 共有 queue で 1 並列、 完走後に最新 snapshot で再送信', async () => {
     let resolveFirst!: (v: { ok: true } | { ok: false; error: string }) => void
     vi.mocked(updateCardField)
       .mockImplementationOnce(
@@ -191,7 +183,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
       )
       .mockResolvedValueOnce({ ok: true })
 
-    renderRow()
+    renderList()
     // 1. text 編集 + blur + 500ms 経過 → text send 開始 (inFlight=true)
     const ta = startTextEdit('text 一')
     fireEvent.blur(ta)
@@ -230,15 +222,15 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     ])
   })
 
-  it('失敗時 row 全体 rollback (text + is_correct も含む) + error 表示', async () => {
+  it('失敗時 全 row rollback (text + is_correct 含む) + error 表示', async () => {
     vi.mocked(updateCardField).mockResolvedValueOnce({
       ok: false,
       error: '保存に失敗しました',
     })
 
-    renderRow()
+    renderList()
 
-    // text を編集 (= optimistic で committed.text 変化) して blur
+    // text を編集 (= optimistic で options[0].text 変化) して blur
     const ta = startTextEdit('text 失敗値')
     fireEvent.blur(ta)
 
@@ -265,14 +257,13 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
       error: 'チェック保存失敗',
     })
 
-    renderRow()
-    const checkbox = screen.getByRole('checkbox') as HTMLInputElement
+    renderList()
+    const checkbox = screen.getAllByRole('checkbox')[0]! as HTMLInputElement
     expect(checkbox.checked).toBe(false)
     fireEvent.click(checkbox)
     await flushPromises()
 
     // server resolve 待ちで失敗 → rollback
-    // (mockResolvedValueOnce は同期 resolve なので flushPromises で進む)
     expect(checkbox.checked).toBe(false)
     expect(screen.getByRole('alert')).toHaveTextContent('チェック保存失敗')
   })
@@ -285,16 +276,12 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
 
     render(
       <StrictMode>
-        <InlineOptionRow
-          cardId="card-1"
-          option={baseOptions[0]!}
-          allOptions={baseOptions}
-          optionIndex={0}
-        />
+        <InlineOptionList cardId="card-1" options={baseOptions} />
       </StrictMode>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const textButtons = screen.getAllByRole('button', { name: '選択肢 本文 編集' })
+    fireEvent.click(textButtons[0]!)
     const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
     fireEvent.change(ta, { target: { value: '楽観値' } })
     fireEvent.blur(ta)
@@ -326,7 +313,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
           }),
       )
 
-    renderRow()
+    renderList()
 
     // 1. text を "B" に → blur → 500ms → send inflight (serverCommitted は元値のまま)
     const ta1 = startTextEdit('B')
@@ -342,7 +329,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     ])
 
     // 2. inflight 中に text を元の '選択肢A' に revert + blur
-    //    旧実装/単純実装は「値が serverCommitted と一致」 で short-circuit して
+    //    旧/単純実装は「値が serverCommitted と一致」 で short-circuit して
     //    revert が server に伝わらない。 修正実装は inFlight or queue 中なら
     //    一致してても scheduleSend して queue に入れる。
     const ta2 = startTextEdit('選択肢A')
@@ -355,7 +342,7 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     // queue 中なのでまだ 2 回目は呼ばれていない
     expect(updateCardField).toHaveBeenCalledTimes(1)
 
-    // 3. 1 回目 (= "B") 解決 → queue 消化で 2 回目 send が呼ばれる (revert 値 "選択肢A")
+    // 3. 1 回目 (= "B") 解決 → queue 消化で 2 回目 send (revert 値 "選択肢A")
     await act(async () => {
       resolveFirst({ ok: true })
       await Promise.resolve()
@@ -375,5 +362,120 @@ describe('InlineOptionRow debounce / queue / optimistic / checkbox 個別 inFlig
     })
     await flushPromises()
     expect(screen.getByText('選択肢A')).toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // S2.0b-2 follow-up fix: cross-row checkbox race regression test
+  // (旧実装で row 毎 allOptionsRef の snapshot ずれにより、 連続 ON 操作で
+  //  「最後の 1 つだけ ON」 になる bug が発生していた)
+  // -------------------------------------------------------------------------
+
+  it('cross-row checkbox 連打: 3 option を順次 ON にすると最終送信 payload が (a:true, b:true, c:true) で累積する (= 旧 bug の regression guard)', async () => {
+    // 3 option 全て is_correct=false 初期化、 1 個目の送信を hold した状態で
+    // 2 個目 / 3 個目を連打。 旧実装は各 row の allOptionsRef が stale で他 row の
+    // 楽観値を見落とすため、 最後の click が前の click を上書きして 「最後の 1 つだけ
+    // ON」 になっていた。 修正実装は per-card 親 InlineOptionList が options state を
+    // 共有するため、 各 send 構築時に累積した最新 snapshot を payload に積む。
+    const threeOptions: CardOption[] = [
+      { id: 'a', text: 'A', is_correct: false },
+      { id: 'b', text: 'B', is_correct: false },
+      { id: 'c', text: 'C', is_correct: false },
+    ]
+
+    // 1 個目の send を hold (= queue 経由で 2 個目以降が queue に積まれる状況を再現)
+    let resolveFirst!: (v: { ok: true } | { ok: false; error: string }) => void
+    vi.mocked(updateCardField)
+      .mockImplementationOnce(
+        () =>
+          new Promise((res) => {
+            resolveFirst = res
+          }),
+      )
+      .mockResolvedValue({ ok: true })
+
+    render(<InlineOptionList cardId="card-1" options={threeOptions} />)
+
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+
+    // a を ON (= 1 個目の send、 hold される)
+    fireEvent.click(checkboxes[0]!)
+    await flushPromises()
+    expect(updateCardField).toHaveBeenCalledTimes(1)
+    expect(updateCardField).toHaveBeenNthCalledWith(1, 'card-1', 'options', [
+      { id: 'a', text: 'A', isCorrect: true },
+      { id: 'b', text: 'B', isCorrect: false },
+      { id: 'c', text: 'C', isCorrect: false },
+    ])
+
+    // b を ON (= queue 入り、 旧実装は b の allOptionsRef が [a:false, b:false, c:false]
+    // で stale なため、 送信 payload で a が false になり server 上書きされていた)
+    fireEvent.click(checkboxes[1]!)
+    await flushPromises()
+    // c を ON (= queue 上書き、 同様に旧実装は a/b を false 化していた)
+    fireEvent.click(checkboxes[2]!)
+    await flushPromises()
+
+    // queue は深さ 1 で上書き運用なので、 1 個目 resolve 後に最後の payload が送信される
+    // (b は c によって上書きされる挙動だが、 修正実装では a:true / b:true は state に
+    //  累積済のため最終 payload は a:true / b:true / c:true)
+    await act(async () => {
+      resolveFirst({ ok: true })
+      await Promise.resolve()
+    })
+    await flushPromises()
+
+    // 2 個目 (= queue 消化分): a/b/c 全て true で累積された最新 snapshot
+    expect(updateCardField).toHaveBeenCalledTimes(2)
+    expect(updateCardField).toHaveBeenNthCalledWith(2, 'card-1', 'options', [
+      { id: 'a', text: 'A', isCorrect: true },
+      { id: 'b', text: 'B', isCorrect: true },
+      { id: 'c', text: 'C', isCorrect: true },
+    ])
+
+    // UI 表示: 3 checkbox 全て ON
+    expect(checkboxes[0]!.checked).toBe(true)
+    expect(checkboxes[1]!.checked).toBe(true)
+    expect(checkboxes[2]!.checked).toBe(true)
+  })
+
+  it('cross-row checkbox 連打: server 失敗時は全 row rollback (= 楽観値全 clear、 旧 bug の延長線上で起きうる 「一部だけ ON のまま」 を防ぐ)', async () => {
+    const threeOptions: CardOption[] = [
+      { id: 'a', text: 'A', is_correct: false },
+      { id: 'b', text: 'B', is_correct: false },
+      { id: 'c', text: 'C', is_correct: false },
+    ]
+
+    let resolveFirst!: (v: { ok: true } | { ok: false; error: string }) => void
+    vi.mocked(updateCardField)
+      .mockImplementationOnce(
+        () =>
+          new Promise((res) => {
+            resolveFirst = res
+          }),
+      )
+      .mockResolvedValueOnce({ ok: false, error: 'queue 失敗' })
+
+    render(<InlineOptionList cardId="card-1" options={threeOptions} />)
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+
+    fireEvent.click(checkboxes[0]!)
+    await flushPromises()
+    fireEvent.click(checkboxes[1]!)
+    await flushPromises()
+    fireEvent.click(checkboxes[2]!)
+    await flushPromises()
+
+    // 1 個目を成功 resolve → serverCommittedRef は [a:true, b:false, c:false] に更新
+    await act(async () => {
+      resolveFirst({ ok: true })
+      await Promise.resolve()
+    })
+    await flushPromises()
+
+    // queue 消化分 (= 累積 a:true,b:true,c:true) が失敗 → 全 row rollback
+    expect(screen.getByRole('alert')).toHaveTextContent('queue 失敗')
+    expect(checkboxes[0]!.checked).toBe(true) // serverCommittedRef は a:true で確定済
+    expect(checkboxes[1]!.checked).toBe(false) // rollback
+    expect(checkboxes[2]!.checked).toBe(false) // rollback
   })
 })

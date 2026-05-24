@@ -8,7 +8,7 @@
 import type { ExamDetailCard } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
-import { InlineOptionRow } from './inline-option-row'
+import { InlineOptionList } from './inline-option-row'
 
 type InlineCardListProps = {
   cards: ExamDetailCard[]
@@ -59,18 +59,9 @@ export function InlineCardList({ cards }: InlineCardListProps) {
                 <p className="text-xs font-medium text-slate-500">
                   選択肢 ({card.options.length} 件)
                 </p>
-                <ul className="mt-1 space-y-1.5">
-                  {card.options.map((opt, idx) => (
-                    <li key={opt.id}>
-                      <InlineOptionRow
-                        cardId={card.id}
-                        option={opt}
-                        allOptions={card.options}
-                        optionIndex={idx}
-                      />
-                    </li>
-                  ))}
-                </ul>
+                {/* per-card 親 InlineOptionList で options 共有 state を管理。
+                    cross-row checkbox race を構造的に解消 (S2.0b-2 follow-up fix)。 */}
+                <InlineOptionList cardId={card.id} options={card.options} />
               </div>
 
               <div>
