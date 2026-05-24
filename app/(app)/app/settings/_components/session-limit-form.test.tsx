@@ -228,7 +228,11 @@ describe('SessionLimitForm', () => {
       render(<SessionLimitForm initial={20} />)
       fireEvent.click(screen.getByRole('button', { name: '保存' }))
       await screen.findByRole('status')
-      // preset button click で message を消す (useEffect([value]) reset の microtask を待つ)
+      // transition が完全に idle (pending=false → input re-enable) になるまで待ってから
+      // preset click。 status 表示直後はまだ pending true な commit が残る微 race を回避。
+      await waitFor(() => {
+        expect(screen.getByRole('spinbutton')).not.toBeDisabled()
+      })
       fireEvent.click(screen.getByRole('button', { name: '10' }))
       await waitFor(() => {
         expect(screen.queryByRole('status')).not.toBeInTheDocument()
@@ -239,6 +243,10 @@ describe('SessionLimitForm', () => {
       render(<SessionLimitForm initial={20} />)
       fireEvent.click(screen.getByRole('button', { name: '保存' }))
       await screen.findByRole('status')
+      // transition idle 待ち (上同様、 React 19 transition pending settle 保証)
+      await waitFor(() => {
+        expect(screen.getByRole('spinbutton')).not.toBeDisabled()
+      })
       fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '30' } })
       await waitFor(() => {
         expect(screen.queryByRole('status')).not.toBeInTheDocument()
