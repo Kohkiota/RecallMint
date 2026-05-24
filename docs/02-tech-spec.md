@@ -734,9 +734,29 @@ erDiagram
       is_correct / explanation) を **常時 inline 編集** 可能に。 click → input/textarea →
       focus out で `updateCardField` 自動保存、 is_correct のみ checkbox 即時保存。
       「編集」 ボタンと `/cards/[id]` 遷移は廃止 (page 自体は残置)。 memo section を新規
-      表示。 値変更なしなら server 呼出 skip、 失敗時 inline error + retry 可能。
-      MVP 既知制約: 同 row 内の cell 並列編集 / 並行 server update 反映遅延は非対応
-      (v1.x で OCC / etag 検討)
+      表示。
+    - **S2.0b-2 で Optimistic UI + debounce + queue 化**: 上記 inline 編集の挙動を
+      根本変更。 focus out 直後に display mode 復帰 + 表示値を新値に **即時楽観反映**
+      (spinner なし、 useTransition 廃止)、 テキスト系は **500ms debounce** で
+      `updateCardField` 送信 (連続編集は timer reset で最後の値のみ)、 送信中に
+      さらに blur が来た場合は **queue (B-2、 最新値で再送信、 深さ 1 固定)**。 失敗時は
+      inline error + display を server 反映済値 (`serverCommittedRef`) に **rollback**、
+      edit mode には復帰しない。 checkbox は debounce なしで即時送信、 送信中は
+      **該当 checkbox のみ** disabled (同 row の text/explanation cell は edit 可能)、
+      テキスト編集中の checkbox click は **timer cancel + text 新値を同梱送信**。
+      実装は `inline-text-field.tsx` / `inline-option-row.tsx` で ref ベース
+      (`inFlightRef` / `pendingPayloadRef` / `debounceTimerRef` / `mountedRef`
+      + `serverCommittedRef`)。 mountedRef は Next.js `reactStrictMode: true` の
+      二重 effect 実行に対応するため setup で `=true` reset。 handleBlur の
+      no-change short-circuit は「真に何も飛んでなく queue も空、 かつ値が
+      serverCommitted と一致」 のみに限定 (in-flight 中の revert は queue に最新
+      意図を入れる、 さもないと server / display 不整合が起きる)。 値変更なしなら
+      server 呼出 skip、 row 内 cell race は **常に最新 committed snapshot で
+      payload 再構築 + row 共有 1 並列 + queue** で予防 (異なる InlineTextField
+      instance 間は並列許容)。
+      MVP 既知制約: 同 row 内の cell 並列編集は構造的に queue で 1 並列、 並行
+      server update (= 別 tab / 別 user) 反映遅延は非対応 (v1.x で OCC / etag 検討)。
+      失敗時 queue 中の他 cell 編集は silently 破棄される (UX 改善は follow-up)
     - **S2.0b-2 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
       検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
       アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
@@ -830,10 +850,15 @@ erDiagram
 
 **学習セッション (FSRS)**:
 
-- `submitReview(cardId, rating: RatingInt)` → `ActionResult<{ correct: boolean }>` (S2.1 確定形)。
+- `submitReview(cardId, rating: RatingInt)` → `ActionResult<{ correct: boolean }>` (S2.1 確定形、 S2.0b-2 で `revalidatePath('/app')` 追加)。
   `RatingInt = 1|2|3|4` (Again/Hard/Good/Easy)。 auth gate + validation +
   `db.transaction(submitReviewTx)` wrap。 1 tx 内で cards / reviews / study_days を更新。
-  正解判定は `rating >= 2`。 `now` は server action 入口で `new Date()` を一本取りして tx に渡す
+  正解判定は `rating >= 2`。 `now` は server action 入口で `new Date()` を一本取りして tx に渡す。
+  **S2.0b-2 追加**: 成功時 (try 内成功 return 直前) で `revalidatePath('/app')` を 1 回
+  呼出して dashboard (`/app/page.tsx`) の `getReviewStatsForUser` cache を invalidate。
+  これによりスマート復習 session 完了後にダッシュボード戻り時の 「今日の枚数 / 連続日数」
+  反映漏れを解消。 失敗時 (catch 経由) は呼ばないので、 invalid な集計値で cache を
+  invalidate するリスクなし
 - `getNextSmartReviewBatch(limit)` → `Result<Card[]>`（`due <= now()` を `due ASC`）
 - `getPracticeBatch(filter)` → `Result<Card[]>` — filter は custom_props 値も指定可
 - `resetCardStatus(cardId)` → `Result<void>` — answered / last_correct / current_streak / FSRS 状態をリセット（reviews 履歴は残す）
