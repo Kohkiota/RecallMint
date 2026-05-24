@@ -299,6 +299,7 @@ export const cards = pgTable('cards', {
   options: jsonb('options').notNull().$type<CardOption[]>(),
   correct_answer_ids: jsonb('correct_answer_ids').notNull().$type<string[]>(),
   explanation_text: text('explanation_text'),
+  memo: text('memo'),  // S2.0b-1 追加。 ユーザー自由メモ (試験詳細 inline 編集で入力)、 nullable
   images: jsonb('images').notNull().default(sql`'[]'::jsonb`).$type<CardImage[]>(),
 
   // カスタムプロパティ
@@ -727,10 +728,16 @@ erDiagram
 - `/dashboard` — 「今日の復習」「正答率」「連続学習日数」「最近のフラグ」
 - `/exams` — 試験一覧（追加・編集・削除）
 - `/exams/[id]` — その試験のカード一覧
-    - **S2.0 実装**: 各 card の全情報 (問題文全文 / 全選択肢 + 正誤を `○`/`×` prefix と
-      正解選択肢の背景色・太字で表示 / 各選択肢の解説 / card 全体の解説) を read-only で
-      常時展開表示。 各 card に編集 page (`/cards/[id]`) への「編集」 ボタン。
-    - **S2.0b 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
+    - **S2.0 実装** (旧): read-only 展開表示 + 各 card に「編集」 ボタンで `/cards/[id]` 遷移
+    - **S2.0b-1 で全面 inline 編集化**: 試験詳細画面で 5 テキスト field (sort_key /
+      title / question_text / explanation_text / memo) + 各選択肢 4 field (id / text /
+      is_correct / explanation) を **常時 inline 編集** 可能に。 click → input/textarea →
+      focus out で `updateCardField` 自動保存、 is_correct のみ checkbox 即時保存。
+      「編集」 ボタンと `/cards/[id]` 遷移は廃止 (page 自体は残置)。 memo section を新規
+      表示。 値変更なしなら server 呼出 skip、 失敗時 inline error + retry 可能。
+      MVP 既知制約: 同 row 内の cell 並列編集 / 並行 server update 反映遅延は非対応
+      (v1.x で OCC / etag 検討)
+    - **S2.0b-2 以降**: タブ構成 (カード / アップロード / インポート / 設定)、 フィルタ・
       検索・複数選択・一括操作 (F-009)、 tag 編集 (custom_props の tag schema 移行)。
       アップロード (F-001) は現状 `/upload` 独立 route、 インポート (F-008) は未実装。
 - `/study/smart` — スマート復習セッション画面 (S2.1 実装 / S2.2 回答フロー再設計 / S2.2.1 URL 統合)。
@@ -804,7 +811,17 @@ erDiagram
   `{ title, questionText, options: {id, text, isCorrect, explanation?}[], explanationText: string | null }`。
   owner-scoped UPDATE で title / question_text / options / explanation_text を更新。
   `correct_answer_ids` は入力に含めず `options[].is_correct` から server 側で再生成。
-  custom_props / images は S2.0 では touch しない (custom_props は S2.0b の tag schema 移行で扱う)
+  custom_props / images は S2.0 では touch しない (custom_props は S2.0b の tag schema 移行で扱う)。
+  本 action は `/app/cards/[id]` page (全 field 同時保存型) 専用、 試験詳細 inline
+  編集は `updateCardField` (下記) に分離。
+- `updateCardField(cardId, field, value)` → `ActionResult` (S2.0b-1 新設) —
+  試験詳細 inline 編集用の field 単位 owner-scoped UPDATE。 field union 6 種:
+  `'title' | 'sort_key' | 'question_text' | 'explanation_text' | 'memo' | 'options'`。
+  各 field の zod 検証は `lib/validation/card.ts` の対応 schema を再利用 (optionSchema
+  は本 sprint で export 化)。 field='options' のときは `CardOption[]` を受け取り
+  `correct_answer_ids` を server 側で再生成 (`updateCard` と同 logic)。 空文字
+  (sort_key / explanation_text / memo) は null に正規化。 成功時
+  `revalidatePath('/app/exams/${examId}')` + `revalidatePath('/app/cards/${cardId}')`。
 - `deleteCard(cardId)` → `ActionResult<{ examId }>` (S2.0 確定形) — hard delete。
   `reviews` は `card_id` FK CASCADE で連動削除。 戻り値の `examId` で削除後の遷移先を決定
 - `bulkUpdateCards(ids, action)` → `Result<{updated: number}>` (F-009) — **S2.0b で再定義予定**。
