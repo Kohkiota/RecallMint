@@ -40,7 +40,7 @@
 //   送信成功した row の値で server から新 prop が来た場合、 他 row の **未確定楽観値も
 //   同時に rollback されない** ように `setOptions(serverOptions)` は skip 条件付き。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
@@ -359,6 +359,12 @@ type InlineOptionCellProps = {
 
 // 表示値は props.value (row の option) を使い、 cell は edit 中の editValue / editing
 // のみ持つ。 error は親 (InlineOptionList) に集約。
+//
+// レイアウト (`InlineTextField` と同方針): display / edit の box 寸法 (border-box +
+// padding + 1px border + radius + min-height + width) を完全一致させて edit 切替時の
+// layout shift を防ぐ。 multiline (text / explanation) は rows 固定値を使わず
+// `useLayoutEffect` で scrollHeight に追従させて auto-resize。 縮む下限は min-h-11 が
+// CSS lower bound として効く。
 function InlineOptionCell({
   kind,
   ariaLabel,
@@ -384,6 +390,21 @@ function InlineOptionCell({
     setEditValue(value)
   }, [value, editing])
 
+  // multiline textarea の auto-resize: 編集中 + editValue 変化に追従して scrollHeight に
+  // 合わせる。 useLayoutEffect で paint 前に同期実行 (initial mount の 1 frame flicker
+  // 回避)。 縮む方向は min-h-11 が CSS lower bound として効くため display モードと
+  // 同じ最小高さ。 jsdom では scrollHeight が常に 0 だが、 inline style assign の事実は
+  // test で lock する (`InlineTextField` と同パターン)。
+  // single-line input (kind='id') では `el instanceof HTMLTextAreaElement` 判定で
+  // no-op になり安全。
+  useLayoutEffect(() => {
+    if (!editing) return
+    const el = inputRef.current
+    if (!(el instanceof HTMLTextAreaElement)) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [editing, editValue])
+
   const startEdit = () => {
     setEditing(true)
   }
@@ -402,6 +423,13 @@ function InlineOptionCell({
   }
 
   const multiline = kind !== 'id'
+
+  // display / edit で共通の box 寸法 (`InlineTextField` の sharedBoxChrome と同じ値)。
+  // textarea / input の default `rounded-lg px-3 py-2 text-base` は cn() / twMerge で
+  // `p-2 rounded-md + displayClassName 由来 font` に上書き。 display 側は
+  // `border border-transparent` で textarea の見える 1px border 分を予約する (1px
+  // shift 防止)。
+  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2'
 
   if (editing) {
     const commonProps = {
@@ -422,7 +450,9 @@ function InlineOptionCell({
             {...(commonProps as React.ComponentProps<typeof Textarea> & {
               ref: React.Ref<HTMLTextAreaElement>
             })}
-            rows={kind === 'explanation' ? 2 : 3}
+            // rows 固定値は使わない (useLayoutEffect が scrollHeight 追従で auto-resize)。
+            // resize-none + overflow-hidden で手動 resize handle と scrollbar を抑止。
+            className={`${sharedBoxChrome} resize-none overflow-hidden ${displayClassName ?? ''}`}
           />
         ) : (
           <Input
@@ -430,6 +460,7 @@ function InlineOptionCell({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
+            className={`${sharedBoxChrome} ${displayClassName ?? ''}`}
           />
         )}
       </div>
@@ -444,7 +475,7 @@ function InlineOptionCell({
       aria-label={ariaLabel}
       onClick={startEdit}
       onKeyDown={onKeyDown}
-      className={`min-h-11 cursor-text rounded-md p-2 transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
+      className={`${sharedBoxChrome} border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
         isEmpty ? 'text-slate-400 italic' : ''
       } ${displayClassName ?? ''}`}
     >

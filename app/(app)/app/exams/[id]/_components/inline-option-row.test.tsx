@@ -275,4 +275,150 @@ describe('InlineOptionRow (via InlineOptionList)', () => {
       ])
     })
   })
+
+  // ---------------------------------------------------------------------------
+  // S2.0b-2 follow-up: auto-resize + display/edit 寸法一致 regression
+  // (InlineOptionCell の 3 cell 種別 [id / text / explanation] を InlineTextField
+  //  と同じ auto-resize + sharedBoxChrome に揃える、 click → 編集切替時の layout
+  //  jump 解消)
+  // ---------------------------------------------------------------------------
+
+  it('text cell (multiline=true): textarea に rows attribute が無い (auto-resize 委譲)', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' }) as HTMLTextAreaElement
+    expect(ta.tagName).toBe('TEXTAREA')
+    expect(ta.hasAttribute('rows')).toBe(false)
+  })
+
+  it('explanation cell (multiline=true): textarea に rows attribute が無い', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 解説 編集' }) as HTMLTextAreaElement
+    expect(ta.tagName).toBe('TEXTAREA')
+    expect(ta.hasAttribute('rows')).toBe(false)
+  })
+
+  it('id cell (multiline=false): Input element で render、 useLayoutEffect は instanceof guard で no-op', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 id 編集' }))
+    const inputEl = screen.getByRole('textbox', { name: '選択肢 id 編集' })
+    expect(inputEl.tagName).toBe('INPUT')
+    // input には auto-resize 不要なので inline style.height は assign されない
+    expect((inputEl as HTMLInputElement).style.height).toBe('')
+  })
+
+  it('text / explanation textarea に resize-none + overflow-hidden が付与され、 手動 resize handle と scrollbar が抑止される', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const taText = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    expect(taText.className).toMatch(/resize-none/)
+    expect(taText.className).toMatch(/overflow-hidden/)
+    fireEvent.blur(taText) // text 編集 mode を抜けてから explanation を開く
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
+    const taExpl = screen.getByRole('textbox', { name: '選択肢 解説 編集' })
+    expect(taExpl.className).toMatch(/resize-none/)
+    expect(taExpl.className).toMatch(/overflow-hidden/)
+  })
+
+  it('text cell mount 時に useLayoutEffect で style.height が inline 設定される', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' }) as HTMLTextAreaElement
+    // useLayoutEffect の 'auto' → scrollHeight+'px' で inline style.height が assign される
+    // (jsdom では scrollHeight=0 で '0px'、 visible height は CSS min-h-11 が下限)
+    expect(ta.style.height).not.toBe('')
+    expect(ta.style.height).toMatch(/px$/)
+  })
+
+  it('text cell: editValue 変化で style.height が再 assign される (useLayoutEffect の [editing, editValue] dep を lock)', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' }) as HTMLTextAreaElement
+    // mount 時 height を意図的に clear して、 change で再 assign されることを必須化
+    // (dep array から editValue を抜くと再 assign されない = 必ず fail する形)
+    ta.style.height = ''
+    expect(ta.style.height).toBe('')
+    fireEvent.change(ta, { target: { value: '長い\n複数行\nテキスト' } })
+    expect(ta.style.height).not.toBe('')
+    expect(ta.style.height).toMatch(/px$/)
+  })
+
+  it('explanation cell: editValue 変化で style.height が再 assign される', () => {
+    renderSingle(baseOptions[0]!)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 解説 編集' }) as HTMLTextAreaElement
+    ta.style.height = ''
+    expect(ta.style.height).toBe('')
+    fireEvent.change(ta, { target: { value: 'a\nb\nc\nd' } })
+    expect(ta.style.height).not.toBe('')
+    expect(ta.style.height).toMatch(/px$/)
+  })
+
+  it('display / edit 共通: 3 cell 種別とも sharedBoxChrome (min-h-11 + p-2 + rounded-md) を持つ、 display は border-transparent 予約付き', () => {
+    renderSingle(baseOptions[0]!)
+    // id cell
+    const idBtn = screen.getByRole('button', { name: '選択肢 id 編集' })
+    expect(idBtn.className).toMatch(/min-h-11/)
+    expect(idBtn.className).toMatch(/\bp-2\b/)
+    expect(idBtn.className).toMatch(/rounded-md/)
+    expect(idBtn.className).toMatch(/border-transparent/)
+    fireEvent.click(idBtn)
+    const idInput = screen.getByRole('textbox', { name: '選択肢 id 編集' })
+    expect(idInput.className).toMatch(/min-h-11/)
+    expect(idInput.className).toMatch(/\bp-2\b/)
+    expect(idInput.className).toMatch(/rounded-md/)
+    fireEvent.blur(idInput)
+
+    // text cell
+    const textBtn = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(textBtn.className).toMatch(/min-h-11/)
+    expect(textBtn.className).toMatch(/\bp-2\b/)
+    expect(textBtn.className).toMatch(/rounded-md/)
+    expect(textBtn.className).toMatch(/border-transparent/)
+    fireEvent.click(textBtn)
+    const textTa = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    expect(textTa.className).toMatch(/min-h-11/)
+    expect(textTa.className).toMatch(/\bp-2\b/)
+    expect(textTa.className).toMatch(/rounded-md/)
+    fireEvent.blur(textTa)
+
+    // explanation cell
+    const explBtn = screen.getByRole('button', { name: '選択肢 解説 編集' })
+    expect(explBtn.className).toMatch(/min-h-11/)
+    expect(explBtn.className).toMatch(/\bp-2\b/)
+    expect(explBtn.className).toMatch(/rounded-md/)
+    expect(explBtn.className).toMatch(/border-transparent/)
+    fireEvent.click(explBtn)
+    const explTa = screen.getByRole('textbox', { name: '選択肢 解説 編集' })
+    expect(explTa.className).toMatch(/min-h-11/)
+    expect(explTa.className).toMatch(/\bp-2\b/)
+    expect(explTa.className).toMatch(/rounded-md/)
+  })
+
+  it('displayClassName が両モードに伝搬する (text cell の is_correct=true は emerald 色クラスが両モードに当たる)', () => {
+    // is_correct=true option を render すると、 text cell の displayClassName は
+    // `text-sm font-bold text-emerald-900` (inline-option-row.tsx 内 display 切替)。
+    renderSingle(baseOptions[0]!) // a: is_correct=true
+    const textBtn = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(textBtn.className).toMatch(/text-sm/)
+    expect(textBtn.className).toMatch(/font-bold/)
+    expect(textBtn.className).toMatch(/text-emerald-900/)
+    fireEvent.click(textBtn)
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    expect(ta.className).toMatch(/text-sm/)
+    expect(ta.className).toMatch(/font-bold/)
+    expect(ta.className).toMatch(/text-emerald-900/)
+  })
+
+  it('id cell displayClassName (font-mono) も両モードに伝搬', () => {
+    renderSingle(baseOptions[0]!)
+    const idBtn = screen.getByRole('button', { name: '選択肢 id 編集' })
+    expect(idBtn.className).toMatch(/font-mono/)
+    expect(idBtn.className).toMatch(/text-slate-700/)
+    fireEvent.click(idBtn)
+    const idInput = screen.getByRole('textbox', { name: '選択肢 id 編集' })
+    expect(idInput.className).toMatch(/font-mono/)
+    expect(idInput.className).toMatch(/text-slate-700/)
+  })
 })
