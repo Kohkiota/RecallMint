@@ -258,7 +258,9 @@ describe('InlineOptionRow', () => {
     expect(updateCardField).not.toHaveBeenCalled()
   })
 
-  it('pending 中は checkbox / 4 cell が disabled', async () => {
+  it('checkbox 送信中は該当 checkbox のみ disabled (text/explanation cell は edit 可能)', async () => {
+    // S2.0b-2 T3 仕様変更: row 全体 disable → checkbox 単体 disable + text/explanation
+    // cell は別 field なので race にならず行内同時 edit を許容 (spec §3.3 D)。
     let resolveAction!: (v: { ok: true } | { ok: false; error: string }) => void
     vi.mocked(updateCardField).mockImplementation(
       () =>
@@ -276,20 +278,25 @@ describe('InlineOptionRow', () => {
     )
     const checkbox = screen.getByRole('checkbox') as HTMLInputElement
     fireEvent.click(checkbox)
-    // pending 中: checkbox disabled
+    // 送信中: checkbox は disabled
     expect(checkbox).toBeDisabled()
-    // id / text / explanation の button も pending 中は click しても edit に入らない
-    fireEvent.click(screen.getByRole('button', { name: '選択肢 id 編集' }))
+    // text / explanation cell は edit 可能 (textarea が出現する)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
     expect(
-      screen.queryByRole('textbox', { name: '選択肢 id 編集' }),
-    ).not.toBeInTheDocument()
+      screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
+    expect(
+      screen.getByRole('textbox', { name: '選択肢 解説 編集' }),
+    ).toBeInTheDocument()
     resolveAction({ ok: true })
     await vi.waitFor(() => {
       expect(checkbox).not.toBeDisabled()
     })
   })
 
-  it('id 失敗時 edit mode 維持 + role="alert" で error 表示', async () => {
+  it('id 失敗時 display で旧値 + role="alert" で error 表示 (Optimistic UI: edit mode に戻らない)', async () => {
+    // S2.0b-2 T3 仕様変更: 失敗時 edit mode 維持 → display で旧値 rollback + error (E-1)。
     vi.mocked(updateCardField).mockResolvedValueOnce({
       ok: false,
       error: '選択肢の id は必須です',
@@ -310,9 +317,11 @@ describe('InlineOptionRow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       '選択肢の id は必須です',
     )
+    // edit mode には戻らず、 display で旧 id ('a') が表示される
     expect(
-      screen.getByRole('textbox', { name: '選択肢 id 編集' }),
-    ).toBeInTheDocument()
+      screen.queryByRole('textbox', { name: '選択肢 id 編集' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('a')).toBeInTheDocument()
   })
 
   it('a11y: checkbox に aria-label が付与される', () => {
