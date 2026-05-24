@@ -254,4 +254,138 @@ describe('InlineTextField (single-line)', () => {
     expect(btn.className).toMatch(/min-h-11/)
   })
 
+  // ---------------------------------------------------------------------------
+  // S2.0b-2 follow-up: auto-resize + display/edit 寸法一致 regression
+  // (textarea の rows 固定値撤回、 useLayoutEffect で scrollHeight に追従、
+  //  display と edit で box 寸法 [p-2 / rounded-md / min-h-11 / 1px border] 一致)
+  // ---------------------------------------------------------------------------
+
+  it('multiline=true: textarea に rows attribute が無い (rows 固定値を使わない仕様)', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="q"
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    // rows={4} 等の固定 attribute は **設定しない** こと (auto-resize 担当に委譲)
+    expect(ta.hasAttribute('rows')).toBe(false)
+  })
+
+  it('multiline=true: textarea に resize-none + overflow-hidden が付き、 手動 resize ハンドルと scrollbar が抑止される', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="q"
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(ta.className).toMatch(/resize-none/)
+    expect(ta.className).toMatch(/overflow-hidden/)
+  })
+
+  it('multiline=true: textarea mount 時に useLayoutEffect で style.height が auto → scrollHeight 経由で inline 設定される (jsdom では scrollHeight=0 で min-h-11 が下限)', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="複数行\nテキスト"
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    // useLayoutEffect が走った証拠: style.height が inline 設定されている
+    // (jsdom の scrollHeight は 0 で 'auto' → '0px' に設定されるが、 CSS min-h-11 が
+    //  下限として効くため visible height は 44px 以上が保証される)
+    expect(ta.style.height).not.toBe('')
+  })
+
+  it('multiline=true: 入力 (value 変化) で style.height が再計算される (useLayoutEffect が [editing, value] に追従)', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="短い"
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    // mount 時に assign された inline height を意図的に clear して、 value 変化に
+    // 連動した useLayoutEffect 再実行で再 assign されることを確実に検出できるよう
+    // にする。 これにより本 test は dep array から `value` を抜いた regression を
+    // 確実に fail させる (jsdom scrollHeight=0 でも空文字 → '0px' への再 assign は
+    // 区別可能、 review Minor #1 fix)。
+    ta.style.height = ''
+    expect(ta.style.height).toBe('')
+
+    // 改行を含む長い文字列に変更 → useLayoutEffect 再 run で height 再 assign
+    fireEvent.change(ta, {
+      target: { value: '長い\n複数行\nテキスト\n四行目\n五行目' },
+    })
+
+    // 再 assign 後は inline height が再び設定されている (jsdom 上では '0px' だが、
+    // 空文字でないことが「useLayoutEffect が走った」 ことの唯一の証跡)。
+    expect(ta.style.height).not.toBe('')
+    // 形式の sanity check (px 単位)
+    expect(ta.style.height).toMatch(/px$/)
+  })
+
+  it('display / edit 共通: box 寸法を揃える chrome (min-h-11 + p-2 + rounded-md) が両モードに付与される', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="q"
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    // display
+    const btn = screen.getByRole('button', { name: 'question 編集' })
+    expect(btn.className).toMatch(/min-h-11/)
+    expect(btn.className).toMatch(/\bp-2\b/)
+    expect(btn.className).toMatch(/rounded-md/)
+    // display は textarea の 1px border 分を border-transparent で予約
+    expect(btn.className).toMatch(/border-transparent/)
+
+    // edit
+    fireEvent.click(btn)
+    const ta = screen.getByRole('textbox')
+    expect(ta.className).toMatch(/min-h-11/)
+    expect(ta.className).toMatch(/\bp-2\b/)
+    expect(ta.className).toMatch(/rounded-md/)
+  })
+
+  it('display / edit 共通: displayClassName が両モードに伝搬する (font / 色を揃えるため)', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="title"
+        initialValue="t"
+        ariaLabel="title 編集"
+        displayClassName="text-sm font-medium text-slate-900"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'title 編集' })
+    expect(btn.className).toMatch(/text-sm/)
+    expect(btn.className).toMatch(/font-medium/)
+    expect(btn.className).toMatch(/text-slate-900/)
+    fireEvent.click(btn)
+    const input = screen.getByRole('textbox')
+    expect(input.className).toMatch(/text-sm/)
+    expect(input.className).toMatch(/font-medium/)
+    expect(input.className).toMatch(/text-slate-900/)
+  })
 })

@@ -8,8 +8,20 @@
 // 戻さない、 E-1)。
 // nullable field (sort_key / explanation_text / memo) は null → '' で初期化、
 // 空文字 → null 正規化は server 側 zod に任せる。
+//
+// レイアウト (S2.0b-2 follow-up): display / edit の box 寸法 (border-box + padding +
+// 1px border) を完全一致させて edit 切替時の layout shift を防ぐ。 display 側に
+// `border border-transparent` を入れて textarea / input の見える 1px border 分を
+// 予約。 textarea / input の default padding / radius / font-size は twMerge で
+// 表示モードと同じ値 (p-2 / rounded-md / displayClassName 由来 font) に上書き。
+//
+// multiline textarea は rows 固定値を使わず、 `useLayoutEffect` で mount 時 + value
+// 変化時に `style.height = 'auto'` → `style.height = scrollHeight + 'px'` を実行して
+// 内容に応じて auto-resize。 縮む方向は min-h-11 が下限となり display モードと一致。
+// useLayoutEffect (useEffect ではなく) を使うのは、 高さ調整を paint 前に同期実行
+// して初回 mount 時の 1 frame flicker を回避するため。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -69,6 +81,19 @@ export function InlineTextField({
       inputRef.current.focus()
     }
   }, [editing])
+
+  // multiline textarea の auto-resize: 編集中 + value 変化に追従して内容高さに合わせる。
+  // useLayoutEffect で paint 前に同期実行 (initial mount の 1 frame flicker 回避)。
+  // 縮む方向は min-h-11 が CSS 上の下限として効くため display モードと同じ最小高さ。
+  // jsdom では scrollHeight が常に 0 だが、 min-h-11 が下限を保証するため test に
+  // 影響なし (test では height の実測は assert しない)。
+  useLayoutEffect(() => {
+    if (!editing) return
+    const el = inputRef.current
+    if (!(el instanceof HTMLTextAreaElement)) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [editing, value])
 
   // initialValue が server revalidate 等で外部変化した時、 編集中 / 送信中 /
   // queue 中でなければ local state を新値に同期する。 上記いずれかなら user の
@@ -186,6 +211,14 @@ export function InlineTextField({
     scheduleSend(value)
   }
 
+  // display / edit で共通の box 寸法 (border-box + padding + 1px border + radius +
+  // 最小高さ + 幅)。 これを両モードで適用し layout shift を防ぐ。 textarea / input は
+  // ui/textarea.tsx / ui/input.tsx の default `rounded-lg px-3 py-2 text-base` を
+  // twMerge で上書きする (後から指定したクラスが勝つ、 `cn` 経由)。 textarea の見える
+  // `border border-input` は default のまま残し、 display は `border border-transparent`
+  // で 1px 分を予約。
+  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2'
+
   if (editing) {
     const commonProps = {
       'aria-label': ariaLabel,
@@ -205,7 +238,10 @@ export function InlineTextField({
             {...(commonProps as React.ComponentProps<typeof Textarea> & {
               ref: React.Ref<HTMLTextAreaElement>
             })}
-            rows={4}
+            // rows 固定値は使わない (auto-resize 担当の useLayoutEffect が scrollHeight に
+            // 追従させる)。 `resize-none overflow-hidden` で manual resize handle と
+            // scrollbar を抑止し、 親レイアウトと整合させる。
+            className={`${sharedBoxChrome} resize-none overflow-hidden ${displayClassName ?? ''}`}
           />
         ) : (
           <Input
@@ -213,6 +249,7 @@ export function InlineTextField({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
+            className={`${sharedBoxChrome} ${displayClassName ?? ''}`}
           />
         )}
         {error && (
@@ -235,7 +272,7 @@ export function InlineTextField({
         aria-label={ariaLabel}
         onClick={startEdit}
         onKeyDown={onKeyDown}
-        className={`min-h-11 cursor-text rounded-md p-2 transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
+        className={`${sharedBoxChrome} border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
           isEmpty ? 'text-slate-400 italic' : ''
         } ${displayClassName ?? ''}`}
       >
