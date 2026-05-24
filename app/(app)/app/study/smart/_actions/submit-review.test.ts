@@ -7,13 +7,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // -----------------------------------------------------------------------
 // Hoisted mocks
 // -----------------------------------------------------------------------
-const { mockGetCurrentUser, mockSubmitReviewTx, dbTransactionSpy, mockRevalidatePath } =
-  vi.hoisted(() => ({
+const { mockGetCurrentUser, mockSubmitReviewTx, dbTransactionSpy } = vi.hoisted(
+  () => ({
     mockGetCurrentUser: vi.fn(),
     mockSubmitReviewTx: vi.fn(),
     dbTransactionSpy: vi.fn(),
-    mockRevalidatePath: vi.fn(),
-  }))
+  }),
+)
 
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -27,10 +27,6 @@ vi.mock('@/lib/db', () => ({
   getDb: () => ({
     transaction: dbTransactionSpy,
   }),
-}))
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
 }))
 
 // -----------------------------------------------------------------------
@@ -57,7 +53,6 @@ beforeEach(() => {
   mockGetCurrentUser.mockReset()
   mockSubmitReviewTx.mockReset()
   dbTransactionSpy.mockReset()
-  mockRevalidatePath.mockReset()
   // デフォルト: 認証済みユーザー
   mockGetCurrentUser.mockResolvedValue(mockUser)
   // デフォルト: transaction が submitReviewTx を呼び出すように設定
@@ -127,14 +122,6 @@ describe('submitReview', () => {
     )
   })
 
-  it('成功時: revalidatePath("/app") を 1 回呼ぶ', async () => {
-    mockSubmitReviewTx.mockResolvedValueOnce({ correct: true })
-    const { submitReview } = await importAction()
-    await submitReview('card-1', 3)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
-    expect(mockRevalidatePath).toHaveBeenCalledTimes(1)
-  })
-
   // -----------------------------------------------------------------------
   // throw → ok:false 変換
   // -----------------------------------------------------------------------
@@ -150,13 +137,5 @@ describe('submitReview', () => {
     const { submitReview } = await importAction()
     const r = await submitReview('card-1', 3)
     expect(r).toEqual({ ok: false, error: 'カードが見つかりません' })
-  })
-
-  it('failure 時: revalidatePath を呼ばない', async () => {
-    mockSubmitReviewTx.mockRejectedValueOnce(new Error('card not found'))
-    const { submitReview } = await importAction()
-    const r = await submitReview('card-x', 3)
-    expect(r).toEqual({ ok: false, error: 'カードが見つかりません' })
-    expect(mockRevalidatePath).not.toHaveBeenCalled()
   })
 })

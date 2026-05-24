@@ -547,6 +547,20 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(mockRefresh).toHaveBeenCalledOnce()
   })
 
+  it('完了画面の「ダッシュボードへ」は /app への Link として render される (S2.0b-2 fix: submit 時 revalidatePath を撤回、 dynamic page default の navigation 経由 fresh fetch に委譲)', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+
+    // Button asChild + Link href="/app" で <a href="/app"> として render される。
+    // 純 navigation (router.refresh 不要 = navigation 先 cache に影響しないため、
+    // dashboard 側の dynamic page default 挙動で fresh fetch が走る)。
+    const dashLink = screen.getByRole('link', { name: 'ダッシュボードへ' })
+    expect(dashLink).toHaveAttribute('href', '/app')
+  })
+
   it('カード進行インジケーター (1 / N) が表示される', () => {
     const cards = [makeCard({ id: 'c1' }), makeCard({ id: 'c2' })]
     render(<SessionRunner cards={cards} fsrsMode={false} />)

@@ -260,6 +260,15 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
           >
             もう一度
           </Button>
+          {/* submit 時 revalidatePath('/app') 撤回 (S2.0b-2 fix) 後の dashboard 反映機構:
+              dashboard (`/app/page.tsx`) は getCurrentUser() / DB SELECT で構成される
+              dynamic page。 Next.js 15 default `staleTimes.dynamic = 0` で client cache
+              されないため、 navigation 時に server で fresh fetch → 「今日の枚数 /
+              連続日数」 が最新値で表示される。 router.refresh() は current route の
+              client cache 限定 invalidate (= /app/study/smart にしか効かない、 navigation
+              先には届かない) なので、 明示呼出は不要かつ unmount 直前の wasted server
+              request になる。 純 navigation なので Link で十分 (cmd+click / 中クリック /
+              右クリック URL コピー の標準 affordance も維持)。 */}
           <Button variant="outline" asChild className="w-full sm:w-auto">
             <Link href="/app">ダッシュボードへ</Link>
           </Button>
