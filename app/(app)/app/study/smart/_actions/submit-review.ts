@@ -8,6 +8,8 @@
 // - now の一本取り: 冒頭で Date を 1 つ作り、 submitReviewTx に渡して全 step で共有
 // - throw は catch して { ok: false, error: 'カードが見つかりません' } に変換
 
+import { revalidatePath } from 'next/cache'
+
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { logger } from '@/lib/logger'
@@ -38,6 +40,7 @@ export async function submitReview(
         now,
       }),
     )
+    revalidatePath('/app')
     return { ok: true, data: result }
   } catch (err) {
     logger.error({ event: 'submit_review.error', err, cardId, userId: user.id })
