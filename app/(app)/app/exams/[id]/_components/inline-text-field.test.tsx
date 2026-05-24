@@ -110,7 +110,7 @@ describe('InlineTextField (single-line)', () => {
     expect(screen.getByText('新タイトル')).toBeInTheDocument()
   })
 
-  it('値変更 + blur 失敗 → edit mode 維持 + role="alert" で error 表示', async () => {
+  it('値変更 + blur 失敗 → display mode で旧値 + role="alert" で error 表示 (rollback)', async () => {
     vi.mocked(updateCardField).mockResolvedValue({
       ok: false,
       error: 'タイトルは必須です',
@@ -128,11 +128,15 @@ describe('InlineTextField (single-line)', () => {
       target: { value: '' },
     })
     fireEvent.blur(screen.getByRole('textbox'))
+    // Optimistic UI: blur 直後は display + 楽観値 (= '')、 server 解決後に
+    // 旧値 '旧' に rollback + error 表示
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'タイトルは必須です',
     )
-    // edit mode 維持
-    expect(screen.getByRole('textbox')).toBeInTheDocument()
+    // display mode (edit には戻らない)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    // 旧値が表示されている
+    expect(screen.getByText('旧')).toBeInTheDocument()
   })
 
   it('値変更なし + blur → server 呼ばれない、 display mode 復帰', async () => {
@@ -250,34 +254,4 @@ describe('InlineTextField (single-line)', () => {
     expect(btn.className).toMatch(/min-h-11/)
   })
 
-  it('blur 後 server 解決前は再 click で再度 edit に入れない (pending 中)', async () => {
-    let resolveAction!: (v: { ok: true } | { ok: false; error: string }) => void
-    vi.mocked(updateCardField).mockImplementation(
-      () =>
-        new Promise((res) => {
-          resolveAction = res
-        }),
-    )
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="title"
-        initialValue="旧"
-        ariaLabel="title 編集"
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '新' },
-    })
-    fireEvent.blur(screen.getByRole('textbox'))
-    // pending 中: input は disabled
-    const input = screen.getByRole('textbox') as HTMLInputElement
-    expect(input).toBeDisabled()
-    // 解決
-    resolveAction({ ok: true })
-    await vi.waitFor(() => {
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    })
-  })
 })
