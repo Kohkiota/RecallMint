@@ -132,4 +132,65 @@ describe('InlineCardList', () => {
     expect(screen.queryAllByRole('button')).toHaveLength(0)
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
   })
+
+  // ---------------------------------------------------------------------------
+  // S2.0b-3: 選択肢ヘッダ横に正解サマリ表示
+  // ---------------------------------------------------------------------------
+
+  it('正解サマリ: 正解 1 件の card で 「○ 正解: <id>」 形式で表示される', () => {
+    // card-1 は正解 1 件 (id='a')、 card-2 も正解 1 件 (id='a')
+    render(<InlineCardList cards={cards} />)
+    const summaries = screen.getAllByText('○ 正解: a')
+    // 2 card 両方で表示されるはず
+    expect(summaries.length).toBe(2)
+  })
+
+  it('正解サマリ: 複数正解の card で 「○ 正解: a, b」 のように id を join 表示', () => {
+    const multiCorrect: ExamDetailCard[] = [
+      {
+        id: 'card-x',
+        title: '問X',
+        sortKey: null,
+        questionText: '問題文 X',
+        options: [
+          { id: 'a', text: 'A', is_correct: true },
+          { id: 'b', text: 'B', is_correct: true },
+          { id: 'c', text: 'C', is_correct: false },
+          { id: 'd', text: 'D', is_correct: true },
+        ],
+        explanationText: null,
+        memo: null,
+      },
+    ]
+    render(<InlineCardList cards={multiCorrect} />)
+    expect(screen.getByText('○ 正解: a, b, d')).toBeInTheDocument()
+  })
+
+  it('正解サマリ: 正解 0 件の card ではサマリ要素自体が非表示', () => {
+    const noCorrect: ExamDetailCard[] = [
+      {
+        id: 'card-y',
+        title: '問Y',
+        sortKey: null,
+        questionText: '問題文 Y',
+        options: [
+          { id: 'a', text: 'A', is_correct: false },
+          { id: 'b', text: 'B', is_correct: false },
+        ],
+        explanationText: null,
+        memo: null,
+      },
+    ]
+    render(<InlineCardList cards={noCorrect} />)
+    // 「○ 正解:」 を含むテキストが存在しないこと
+    expect(screen.queryByText(/正解:/)).not.toBeInTheDocument()
+  })
+
+  it('正解サマリ: emerald 系の font-medium クラスを持つ (text-emerald-700 + font-medium)', () => {
+    render(<InlineCardList cards={cards} />)
+    const summary = screen.getAllByText('○ 正解: a')[0]!
+    expect(summary.className).toMatch(/text-emerald-700/)
+    expect(summary.className).toMatch(/font-medium/)
+    expect(summary.className).toMatch(/text-base/)
+  })
 })

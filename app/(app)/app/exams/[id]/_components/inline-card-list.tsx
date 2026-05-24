@@ -56,11 +56,11 @@ export function InlineCardList({ cards }: InlineCardListProps) {
               </div>
 
               <div>
-                <p className="text-xs font-medium text-slate-500">
-                  選択肢 ({card.options.length} 件)
-                </p>
                 {/* per-card 親 InlineOptionList で options 共有 state を管理。
-                    cross-row checkbox race を構造的に解消 (S2.0b-2 follow-up fix)。 */}
+                    cross-row checkbox race を構造的に解消 (S2.0b-2 follow-up fix)。
+                    S2.0b-3: 選択肢ヘッダ + 正解サマリ も InlineOptionList 内に
+                    co-locate して **optimistic state 経由表示** に統一 (checkbox
+                    toggle で UI と summary が同時に即時更新、 revalidate lag を解消)。 */}
                 <InlineOptionList cardId={card.id} options={card.options} />
               </div>
 

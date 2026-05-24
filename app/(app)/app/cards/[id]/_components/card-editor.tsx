@@ -15,6 +15,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import type { CardOption } from '@/lib/db/schema'
+import { nextOptionId } from '@/lib/cards/next-option-id'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -40,24 +41,10 @@ type CardEditorProps = {
   deleteSlot?: React.ReactNode
 }
 
-// 新規 option の id を card 内で衝突しないように採番する。
-// 既存が英字のみ → 次の英字 / 数字のみ → 次の数字 / それ以外 (英字 z 枯渇含む)
-// → opt-N。 純粋関数なので単体 test 用に export する。
-export function nextOptionId(existing: string[]): string {
-  const taken = new Set(existing)
-  if (existing.length > 0 && existing.every((id) => /^[a-z]$/.test(id))) {
-    for (let c = 97; c <= 122; c++) {
-      const ch = String.fromCharCode(c)
-      if (!taken.has(ch)) return ch
-    }
-  }
-  if (existing.length > 0 && existing.every((id) => /^\d+$/.test(id))) {
-    return String(Math.max(...existing.map((id) => parseInt(id, 10))) + 1)
-  }
-  let n = 1
-  while (taken.has(`opt-${n}`)) n++
-  return `opt-${n}`
-}
+// `nextOptionId` は S2.0b-3 で `lib/cards/next-option-id.ts` に切り出し済 (試験詳細
+// page の inline 編集でも同じ採番 logic を使うため共通化)。 旧来の export 経路で
+// import していた caller (本 file の addOption と card-editor.test.tsx) は新 lib
+// から import する形に更新済。
 
 function toEditorOptions(options: CardOption[]): EditorOption[] {
   return options.map((o) => ({

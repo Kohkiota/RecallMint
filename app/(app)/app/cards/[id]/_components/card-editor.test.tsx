@@ -18,7 +18,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
 }))
 
-import { CardEditor, nextOptionId } from './card-editor'
+import { CardEditor } from './card-editor'
 import { updateCard } from '../_actions/update-card'
 
 const baseProps = {
@@ -147,25 +147,6 @@ describe('CardEditor', () => {
   })
 })
 
-describe('nextOptionId', () => {
-  it('英字のみ → 次の英字', () => {
-    expect(nextOptionId(['a', 'b', 'c'])).toBe('d')
-  })
-
-  it('数字のみ → 最大値 + 1', () => {
-    expect(nextOptionId(['1', '2', '3'])).toBe('4')
-  })
-
-  it('英字が z まで埋まったら opt-N に fallback', () => {
-    const az = Array.from({ length: 26 }, (_, i) =>
-      String.fromCharCode(97 + i),
-    )
-    expect(nextOptionId(az)).toBe('opt-1')
-  })
-
-  it('空 / 混在は opt-N、 既存 opt-N とは衝突しない', () => {
-    expect(nextOptionId([])).toBe('opt-1')
-    expect(nextOptionId(['a', '1'])).toBe('opt-1')
-    expect(nextOptionId(['opt-1', 'x'])).toBe('opt-2')
-  })
-})
+// `nextOptionId` の単体 test は S2.0b-3 で `lib/cards/next-option-id.test.ts` に
+// 移動済 (純粋関数 + 共通 util への切り出しに伴う)。 同 file には旧 4 ケースの
+// 移植 + 同等の coverage を保持。

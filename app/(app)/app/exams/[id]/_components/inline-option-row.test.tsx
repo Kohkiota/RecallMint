@@ -421,4 +421,284 @@ describe('InlineOptionRow (via InlineOptionList)', () => {
     expect(idInput.className).toMatch(/font-mono/)
     expect(idInput.className).toMatch(/text-slate-700/)
   })
+
+  // ---------------------------------------------------------------------------
+  // S2.0b-3: 選択肢 add / delete + auto-edit-on-mount
+  // ---------------------------------------------------------------------------
+
+  it('「+ 選択肢を追加」 button が list 末尾に描画される', () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    expect(
+      screen.getByRole('button', { name: '+ 選択肢を追加' }),
+    ).toBeInTheDocument()
+  })
+
+  it('削除 button が各 option row に描画される (aria-label="選択肢を削除", option 数と一致)', () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    const deleteBtns = screen.getAllByRole('button', { name: '選択肢を削除' })
+    expect(deleteBtns.length).toBe(2) // baseOptions.length === 2
+  })
+
+  it('options.length === 1 (削除すると 0 件) → 削除 button が disabled (server zod min(1) との整合)', () => {
+    renderSingle(baseOptions[0]!) // options = [baseOptions[0]] のみ
+    const delBtn = screen.getByRole('button', { name: '選択肢を削除' })
+    expect(delBtn).toBeDisabled()
+  })
+
+  it('options.length > 1 → 削除 button が enabled', () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    const deleteBtns = screen.getAllByRole('button', { name: '選択肢を削除' })
+    expect(deleteBtns[0]!).not.toBeDisabled()
+    expect(deleteBtns[1]!).not.toBeDisabled()
+  })
+
+  it('「+ 選択肢を追加」 click: 新 option が optimistic に末尾追加され、 text cell が即 edit mode に', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    // 追加前: text cell は 2 個 (display mode、 button)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' }).length,
+    ).toBe(2)
+    // textbox は存在しない (どこも編集中でない)
+    expect(
+      screen.queryByRole('textbox', { name: '選択肢 本文 編集' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+
+    // 追加後: text cell button は 2 個のまま (新 row の text cell は textbox)、
+    // text cell textbox が 1 個出現 (auto-edit on mount で edit 状態)
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' }).length,
+    ).toBe(2)
+  })
+
+  it('「+ 選択肢を追加」 click: 新 option の id は nextOptionId 規則に従う (英字のみ a,b → c)', () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    // baseOptions は ['a', 'b'] 英字のみ → 次は 'c'
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    // 新 row の id cell は display mode で 'c' が表示される (text cell は edit mode、
+    // id は display)。
+    expect(screen.getByText('c')).toBeInTheDocument()
+  })
+
+  it('追加 click 直後は server send されない (text 空のため optionSchema が reject する、 cell blur 経由の送信に委ねる)', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    // microtask flush
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+      ).toBeInTheDocument()
+    })
+    // updateCardField はまだ呼ばれていない (= 即時 send なし)
+    expect(updateCardField).not.toHaveBeenCalled()
+  })
+
+  it('追加後 text 入力 + blur → updateCardField に new option を含む payload が送信される', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    const ta = await screen.findByRole('textbox', { name: '選択肢 本文 編集' })
+    fireEvent.change(ta, { target: { value: '新しい選択肢' } })
+    fireEvent.blur(ta)
+    await vi.waitFor(() => {
+      expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+        { id: 'a', text: '選択肢A', isCorrect: true, explanation: 'A 理由' },
+        { id: 'b', text: '選択肢B', isCorrect: false },
+        { id: 'c', text: '新しい選択肢', isCorrect: false },
+      ])
+    })
+  })
+
+  it('削除 click: optimistic に row が消え、 updateCardField に filtered options が送信される', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    // 削除前: option B (id='b') の本文が表示されている
+    expect(screen.getByText('選択肢B')).toBeInTheDocument()
+
+    const deleteBtns = screen.getAllByRole('button', { name: '選択肢を削除' })
+    fireEvent.click(deleteBtns[1]!) // option B (idx=1) を削除
+
+    // 即時 optimistic: 選択肢B の表示が消える
+    await vi.waitFor(() => {
+      expect(screen.queryByText('選択肢B')).not.toBeInTheDocument()
+    })
+
+    // server には filtered (option A のみ) で送信
+    await vi.waitFor(() => {
+      expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+        { id: 'a', text: '選択肢A', isCorrect: true, explanation: 'A 理由' },
+      ])
+    })
+  })
+
+  it('削除失敗時 全 row rollback (削除した row が復帰) + error 表示', async () => {
+    vi.mocked(updateCardField).mockResolvedValueOnce({
+      ok: false,
+      error: '削除に失敗',
+    })
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    const deleteBtns = screen.getAllByRole('button', { name: '選択肢を削除' })
+    fireEvent.click(deleteBtns[1]!) // option B を削除
+
+    // 失敗後: 選択肢B が復帰、 error 表示
+    expect(await screen.findByRole('alert')).toHaveTextContent('削除に失敗')
+    expect(screen.getByText('選択肢B')).toBeInTheDocument()
+  })
+
+  it('連続追加: nextOptionId が衝突しない id を採番する (a, b → c → d)、 d の text cell も auto-edit on mount', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    expect(screen.getByText('c')).toBeInTheDocument()
+    // 'c' cell は auto-edit on mount で textbox state
+    expect(
+      screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+    ).toBeInTheDocument()
+    // 'c' を blur (= editing=false に戻す、 textbox 消失) してから 'd' を追加
+    fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 本文 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    expect(screen.getByText('d')).toBeInTheDocument()
+    // 'd' cell も auto-edit on mount で textbox が再出現 (autoEditOptionId が 'd' に
+    // 更新され、 'd' の新 cell mount で useState initializer が evaluated)
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // S2.0b-3 review I-1 / I-2 fix: ghost row (text='') を server payload から filter
+  // して、 別 row の操作で全 row rollback が誘発される bug を構造的に防ぐ
+  // ---------------------------------------------------------------------------
+
+  it('「+ 追加」 直後 (ghost text 空) で別 row の checkbox toggle: ghost は server payload から除外され、 checkbox 変更は反映される', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    // 1. 「+ 追加」 click → ghost 'c' 作成 (text='')、 auto-edit
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
+      ).toBeInTheDocument()
+    })
+
+    // 2. ghost を放置したまま別 row (option B) の checkbox を toggle
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    fireEvent.click(checkboxes[1]!) // option B (idx=1) を ON に
+
+    // 3. server payload には ghost が含まれず、 別 row の変更のみが送信される
+    await vi.waitFor(() => {
+      expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+        { id: 'a', text: '選択肢A', isCorrect: true, explanation: 'A 理由' },
+        { id: 'b', text: '選択肢B', isCorrect: true }, // toggled
+        // ghost 'c' は filter で除外
+      ])
+    })
+
+    // 4. error alert は出ない (ghost reject ではなく checkbox 変更が server に届くため)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('ghost cell を text 入力なく blur した場合: sanitized 後の payload が server-committed と一致するため send skip (network 節約 + no-op error なし)', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    const ta = await screen.findByRole('textbox', { name: '選択肢 本文 編集' })
+    // text 入力せずそのまま blur
+    fireEvent.blur(ta)
+
+    // 500ms 経過 + microtask flush しても updateCardField は呼ばれない
+    // (sanitized = [a, b] が serverCommittedRef = [a, b] と shallowEqual で skip)
+    await new Promise((r) => setTimeout(r, 600))
+    expect(updateCardField).not.toHaveBeenCalled()
+    // error alert も出ない
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    // ghost は local state には残っている (display で 'c' が見える)
+    expect(screen.getByText('c')).toBeInTheDocument()
+  })
+
+  it('ghost text 入力 + blur で sanitized 後 valid 化、 server 反映 → 通常 option に昇格', async () => {
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    const ta = await screen.findByRole('textbox', { name: '選択肢 本文 編集' })
+    fireEvent.change(ta, { target: { value: '昇格 text' } })
+    fireEvent.blur(ta)
+
+    // sanitized 後 ghost は valid (text='昇格 text')、 server に届く
+    await vi.waitFor(() => {
+      expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+        { id: 'a', text: '選択肢A', isCorrect: true, explanation: 'A 理由' },
+        { id: 'b', text: '選択肢B', isCorrect: false },
+        { id: 'c', text: '昇格 text', isCorrect: false },
+      ])
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // S2.0b-3 review I-3 fix: ヘッダ + 正解サマリは optimistic state 経由表示
+  // (checkbox toggle と同時に即時更新、 server revalidate (~200ms) を待たない)
+  // ---------------------------------------------------------------------------
+
+  it('正解サマリ + 選択肢 count が InlineOptionList 内に render され、 checkbox toggle で即時更新される (optimistic)', async () => {
+    // server resolve を hold (= revalidate が来ないとも仮定できる状況)
+    let resolveCheckbox!: (v: { ok: true } | { ok: false; error: string }) => void
+    vi.mocked(updateCardField).mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveCheckbox = res
+        }),
+    )
+
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    // 初期: option A は is_correct=true、 option B は false → サマリ "○ 正解: a"
+    expect(screen.getByText('○ 正解: a')).toBeInTheDocument()
+    // 選択肢 count
+    expect(screen.getByText('選択肢 (2 件)')).toBeInTheDocument()
+
+    // option B の checkbox を ON → サマリは即時 "○ 正解: a, b" に更新される
+    // (server resolve を待たない = optimistic)
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    fireEvent.click(checkboxes[1]!)
+
+    // 同期再 render 直後にサマリ更新を確認 (server hold 中、 revalidate なし)
+    await vi.waitFor(() => {
+      expect(screen.getByText('○ 正解: a, b')).toBeInTheDocument()
+    })
+    // 旧サマリは消えている
+    expect(screen.queryByText('○ 正解: a')).not.toBeInTheDocument()
+
+    // 後片付け
+    resolveCheckbox({ ok: true })
+  })
+
+  it('正解サマリ + count は optimistic options を反映 — 「+ 追加」 で count 即時 +1、 削除で count 即時 -1', async () => {
+    let resolveDelete!: (v: { ok: true } | { ok: false; error: string }) => void
+    vi.mocked(updateCardField).mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveDelete = res
+        }),
+    )
+
+    render(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    expect(screen.getByText('選択肢 (2 件)')).toBeInTheDocument()
+
+    // 「+ 追加」 → count 即時 3 件 (ghost 含む)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await vi.waitFor(() => {
+      expect(screen.getByText('選択肢 (3 件)')).toBeInTheDocument()
+    })
+
+    // 削除 (option B、 idx=1) → count 即時 2 件 (server hold 中で revalidate なし)
+    const deleteBtns = screen.getAllByRole('button', { name: '選択肢を削除' })
+    fireEvent.click(deleteBtns[1]!) // option B を削除
+    await vi.waitFor(() => {
+      expect(screen.getByText('選択肢 (2 件)')).toBeInTheDocument()
+    })
+
+    // 後片付け
+    resolveDelete({ ok: true })
+  })
 })

@@ -39,11 +39,26 @@
 //   options を上書きする。 in-flight / queue 中は skip (= 楽観値を保護) するが、 既に
 //   送信成功した row の値で server から新 prop が来た場合、 他 row の **未確定楽観値も
 //   同時に rollback されない** ように `setOptions(serverOptions)` は skip 条件付き。
+//
+// Ghost row (S2.0b-3):
+// - 「+ 選択肢を追加」 で local state に追加された text='' の optimistic row。 server
+//   zod `optionSchema.text.refine(.trim().length > 0)` で reject されるため、 send
+//   payload からは必ず filter する (`send` 入口の sanitized)。 local state には残し、
+//   user の編集中値 (cell editValue) を保護する。
+// - ghost 放置のまま user が無関係な操作 (別 row checkbox toggle / cell 編集 blur /
+//   delete) をした場合: 操作元 handler は ghost を含む snapshot を send に渡すが、
+//   filter で除外されて server に届かず、 別 row の変更だけが反映される (= bug 回避)。
+// - ghost に text 入力 + blur が来ると ghost の text が valid 化、 sanitized に
+//   含まれて server 反映 → 通常 option に昇格。
+// - ghost を放置したまま user が何もしない場合: 次の revalidate (= 別経路で
+//   serverOptions prop が変わった時) で `useEffect([serverOptions])` が in-flight /
+//   queue なし時に options を server 値に上書き、 ghost は自然消滅する。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
+import { nextOptionId } from '@/lib/cards/next-option-id'
 import { updateCardField } from '../_actions/update-card-field'
 
 // snake_case CardOption → camelCase (zod optionSchema が期待する形)。
@@ -106,6 +121,13 @@ export function InlineOptionList({
   const [checkboxInFlightByIdx, setCheckboxInFlightByIdx] = useState<
     Record<number, boolean>
   >({})
+  // S2.0b-3: 「+ 選択肢を追加」 直後に new row の text cell を自動で編集モード化する
+  // ための one-shot marker。 設定された option.id の text cell が初回 mount 時に
+  // editing=true で起動 (`InlineOptionCell.autoEditOnMount`)。 cell の useState
+  // initializer は mount 時のみ評価されるので、 一度 marker が消費された (= cell が
+  // 既に mount 済) 後に同 id が残っていても再 enter しない。 削除→再追加で同 id が
+  // 採番されて新 cell が再 mount された場合は再度 auto-edit する (= 期待挙動)。
+  const [autoEditOptionId, setAutoEditOptionId] = useState<string | null>(null)
 
   // server 確定値 (rollback target)。
   const serverCommittedRef = useRef<CardOption[]>(serverOptions)
@@ -143,19 +165,41 @@ export function InlineOptionList({
   }, [])
 
   const send = async (target: CardOption[]): Promise<void> => {
+    // S2.0b-3: text 空 ghost option (「+ 選択肢を追加」 後 user が typing せず残った
+    // optimistic row) は server zod `optionSchema.text.refine(.trim().length > 0)` で
+    // 必ず reject される。 ghost を server payload に混ぜると、 別 row の checkbox
+    // toggle / cell 編集 send 等で全 row rollback が誘発され、 user の意図した変更も
+    // 失われ「無関係な error alert」 が出る。 そのため send 入口で ghost を payload
+    // から filter する (local state には残す = user の編集中値保護、 ghost 自体は次の
+    // revalidate (in-flight 解消後の useEffect 同期) で消える spec 想定通り)。
+    const sanitized = target.filter((o) => o.text.trim().length > 0)
+    // sanitized が空 (全 row ghost) なら server に送る意味なし
+    if (sanitized.length === 0) return
+
+    // in-flight 中: 「serverCommittedRef との一致」 で short-circuit すると、 in-flight
+    // 完走後に serverCommittedRef が新値に更新される race で 「revert payload が同値判定
+    // で消える」 lost-write を起こす (T2 で発覚した revert-during-inflight 必須 #2)。
+    // よって in-flight 中は無条件で queue 入り、 queue 消化時の recursive send で改めて
+    // shallowEqual 判定する設計を維持する。
     if (inFlightRef.current) {
-      pendingPayloadRef.current = target
+      pendingPayloadRef.current = sanitized
       return
     }
+
+    // NOT in-flight: sanitized が server-committed と一致なら no-op (network 節約、
+    // ghost 単独 blur で空 send を抑止、 通常 cell の値変更なし blur も同じ経路)。
+    if (shallowEqualOptions(sanitized, serverCommittedRef.current)) return
+
     inFlightRef.current = true
-    const payload: ZodOption[] = target.map(toZodOption)
+    const payload: ZodOption[] = sanitized.map(toZodOption)
     const result = await updateCardField(cardId, 'options', payload)
     inFlightRef.current = false
 
     if (!mountedRef.current) return
 
     if (!result.ok) {
-      // 失敗 → 全 row rollback、 queue 破棄 (連続失敗 storm 防止)
+      // 失敗 → 全 row rollback、 queue 破棄 (連続失敗 storm 防止)。
+      // rollback target は serverCommittedRef (= ghost を含まない最新 server 確定値)。
       setError(result.error)
       setOptions(serverCommittedRef.current)
       optionsRef.current = serverCommittedRef.current
@@ -163,7 +207,7 @@ export function InlineOptionList({
       return
     }
 
-    serverCommittedRef.current = target
+    serverCommittedRef.current = sanitized
 
     if (pendingPayloadRef.current !== null) {
       const next = pendingPayloadRef.current
@@ -225,22 +269,88 @@ export function InlineOptionList({
     }
   }
 
+  // S2.0b-3 「+ 選択肢を追加」: 新規 option を optimistic に末尾追加 + auto-edit
+  // marker をセットして text cell を即編集 mode に。 server send は呼ばない
+  // (text='' は optionSchema の `.refine(s.trim().length > 0)` で reject されるため、
+  // 即時 send すると server error rollback で option が消える)。 user の text 入力
+  // → blur で handleCellSave 経由の通常 debounce + send にのせる。 user が typing
+  // 前に放置した optimistic ghost は次の revalidate (in-flight 無し時) で消える設計
+  // (= 「commit してない」 状態なので消えるのが正しい)。
+  const handleAddOption = () => {
+    const newId = nextOptionId(optionsRef.current.map((o) => o.id))
+    const newOption: CardOption = {
+      id: newId,
+      text: '',
+      is_correct: false,
+    }
+    const nextAll = [...optionsRef.current, newOption]
+    setOptions(nextAll)
+    optionsRef.current = nextAll
+    setError(null)
+    setAutoEditOptionId(newId)
+  }
+
+  // S2.0b-3 削除: optimistic 即時除去 + send。 失敗時は send が全 row rollback
+  // (= 削除した option も復活)。 options.length === 1 の case は UI 上 button が
+  // disabled で到達しないが、 server zod `min(1)` を defensive に local でも判定。
+  const handleDeleteOption = async (idx: number) => {
+    if (optionsRef.current.length <= 1) return
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current)
+      debounceTimerRef.current = null
+    }
+    const nextAll = optionsRef.current.filter((_, i) => i !== idx)
+    setOptions(nextAll)
+    optionsRef.current = nextAll
+    setError(null)
+    await send(nextAll)
+  }
+
+  const canDelete = options.length > 1
+
+  // S2.0b-3: 選択肢 count + 正解サマリは InlineOptionList 内で render。 親 InlineCardList
+  // が server props 由来で表示すると revalidate (~200ms) まで lag が出るが、 ここで
+  // optimistic `options` state から計算することで checkbox toggle と同時即時更新される。
+  // 正解 0 件 (全 is_correct=false) はサマリ要素自体を hide。
+  const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
+
   return (
     <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500">
+          選択肢 ({options.length} 件)
+        </p>
+        {correctIds.length > 0 && (
+          <p className="text-base font-medium text-emerald-700">
+            ○ 正解: {correctIds.join(', ')}
+          </p>
+        )}
+      </div>
       <ul className="mt-1 space-y-1.5">
         {options.map((opt, idx) => (
           <li key={opt.id}>
             <InlineOptionRow
               option={opt}
               checkboxInFlight={!!checkboxInFlightByIdx[idx]}
+              autoEditTextOnMount={opt.id === autoEditOptionId}
+              canDelete={canDelete}
               onCheckboxToggle={(nextChecked) =>
                 handleCheckboxToggle(idx, nextChecked)
               }
               onCellSave={(nextOption) => handleCellSave(idx, nextOption)}
+              onDelete={() => handleDeleteOption(idx)}
             />
           </li>
         ))}
       </ul>
+      {/* S2.0b-3 「+ 選択肢を追加」 ボタン。 list 末尾に常時 dashed border で表示。 */}
+      <button
+        type="button"
+        onClick={handleAddOption}
+        className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+      >
+        + 選択肢を追加
+      </button>
       {/* error は per-card 親レベルで 1 度だけ render (送信は 1 並列のため同時 2 件の
           失敗は発生しえない、 共有表示で UX 上も矛盾なし)。 旧実装は row 内に置いていた
           が、 lift-up 後は alert 多重 hit を避けるため list 直下に集約。 */}
@@ -260,19 +370,40 @@ export function InlineOptionList({
 type InlineOptionRowProps = {
   option: CardOption
   checkboxInFlight: boolean
+  // S2.0b-3: 「+ 選択肢を追加」 直後に new row の text cell を auto-edit するための
+  // marker。 InlineOptionCell の useState initializer に渡って mount 時のみ有効。
+  autoEditTextOnMount: boolean
+  // options.length === 1 の row では削除 button を disabled に。
+  canDelete: boolean
   onCheckboxToggle: (nextChecked: boolean) => void
   onCellSave: (nextOption: CardOption) => void
+  onDelete: () => void
 }
 
 // 内部実装: server boundary を跨いで使われないため、 function callback props を
 // 安全に取れる (= 'use client' top-level export 制約を回避するため un-export 化)。
 // テストでは `InlineOptionList` 経由で render する。 error は list level に集約済の
 // ため row props には載せない。
+//
+// レイアウト (S2.0b-3): CSS Grid で 1 つの explanation cell instance を viewport で
+// 配置場所だけ切替える。 二重 render を避けて editing / editValue 状態の divergence
+// を防ぐ。
+// - Mobile (md 未満): 4 列 grid `[auto / 5rem / 1fr / auto]`
+//     row 1: [✓] [id] [本文] [削除]
+//     row 2: [解説 col-span-full]
+// - Desktop (md 以上): 5 列 grid `[auto / 5rem / 1fr / 1fr / auto]`
+//     row 1: [✓] [id] [本文] [解説] [削除]
+// explanation は mobile で row-start-2 col-span-full、 desktop で md:row-start-1
+// md:col-start-4 md:col-span-1 と explicit 配置。 delete は mobile で auto-flow
+// (row 1 col 4)、 desktop で md:col-start-5 と explicit。
 function InlineOptionRow({
   option,
   checkboxInFlight,
+  autoEditTextOnMount,
+  canDelete,
   onCheckboxToggle,
   onCellSave,
+  onDelete,
 }: InlineOptionRowProps) {
   const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onCheckboxToggle(e.target.checked)
@@ -286,7 +417,7 @@ function InlineOptionRow({
           : 'rounded border border-border/60 p-2 text-sm'
       }
     >
-      <div className="flex flex-wrap items-start gap-2">
+      <div className="grid items-start gap-2 grid-cols-[auto_5rem_minmax(0,1fr)_auto] md:grid-cols-[auto_5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
         <label className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
           <input
             type="checkbox"
@@ -297,7 +428,7 @@ function InlineOptionRow({
             className="h-6 w-6 cursor-pointer accent-emerald-600"
           />
         </label>
-        <div className="w-20 shrink-0">
+        <div>
           <InlineOptionCell
             kind="id"
             ariaLabel="選択肢 id 編集"
@@ -307,7 +438,7 @@ function InlineOptionRow({
             placeholder="(id)"
           />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0">
           <InlineOptionCell
             kind="text"
             ariaLabel="選択肢 本文 編集"
@@ -318,27 +449,41 @@ function InlineOptionRow({
                 ? 'text-sm font-bold text-emerald-900'
                 : 'text-sm text-slate-800'
             }
+            autoEditOnMount={autoEditTextOnMount}
           />
         </div>
-      </div>
-      <div className="mt-1">
-        <InlineOptionCell
-          kind="explanation"
-          ariaLabel="選択肢 解説 編集"
-          value={option.explanation ?? ''}
-          onSave={(value) => {
-            // 空文字は jsonb から explanation key を drop する (payload bloat 防止、
-            // server zod は optional)。
-            if (value === '') {
-              const { explanation: _drop, ...rest } = option
-              onCellSave(rest)
-            } else {
-              onCellSave({ ...option, explanation: value })
-            }
-          }}
-          displayClassName="text-xs text-slate-600"
-          placeholder="解説 (クリックで追加)"
-        />
+        {/* explanation: mobile = row 2 全幅 / desktop = row 1 col 4 単独 */}
+        <div className="row-start-2 col-span-full min-w-0 md:row-start-1 md:col-start-4 md:col-span-1">
+          <InlineOptionCell
+            kind="explanation"
+            ariaLabel="選択肢 解説 編集"
+            value={option.explanation ?? ''}
+            onSave={(value) => {
+              // 空文字は jsonb から explanation key を drop する (payload bloat 防止、
+              // server zod は optional)。
+              if (value === '') {
+                const { explanation: _drop, ...rest } = option
+                onCellSave(rest)
+              } else {
+                onCellSave({ ...option, explanation: value })
+              }
+            }}
+            displayClassName="text-xs text-slate-600"
+            placeholder="解説 (クリックで追加)"
+          />
+        </div>
+        {/* delete: mobile = row 1 col 4 (auto-flow) / desktop = row 1 col 5 (explicit) */}
+        <button
+          type="button"
+          aria-label="選択肢を削除"
+          onClick={onDelete}
+          disabled={!canDelete}
+          className="md:col-start-5 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+        >
+          <span className="text-xl leading-none" aria-hidden="true">
+            ×
+          </span>
+        </button>
       </div>
     </div>
   )
@@ -355,6 +500,11 @@ type InlineOptionCellProps = {
   onSave: (value: string) => void
   displayClassName?: string
   placeholder?: string
+  // S2.0b-3: 「+ 選択肢を追加」 直後に new row の text cell を mount 即 edit にする
+  // ための one-shot marker。 useState initializer のみ参照し、 mount 後は無視 (= 親
+  // が後から true → false に変えても影響しない、 また cell の通常 blur で editing
+  // 状態が false に戻った後も同様)。
+  autoEditOnMount?: boolean
 }
 
 // 表示値は props.value (row の option) を使い、 cell は edit 中の editValue / editing
@@ -372,9 +522,14 @@ function InlineOptionCell({
   onSave,
   displayClassName,
   placeholder = '(クリックで追加)',
+  autoEditOnMount = false,
 }: InlineOptionCellProps) {
   const [editValue, setEditValue] = useState<string>(value)
-  const [editing, setEditing] = useState(false)
+  // initializer は mount 時のみ評価 (subsequent prop change は無視)。 これにより
+  // 「+ 追加」 で marker が立った状態で mount された cell のみ最初から editing=true、
+  // 既存 cell に後から marker が当たっても挙動変化なし、 cell の blur で editing=false
+  // に戻った後も再 edit しない (one-shot 性)。
+  const [editing, setEditing] = useState<boolean>(() => autoEditOnMount)
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
