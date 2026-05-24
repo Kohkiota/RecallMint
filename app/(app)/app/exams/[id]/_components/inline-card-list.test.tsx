@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 // InlineCardList client component の test。 試験詳細 page の card 一覧描画 +
 // 各 card の inline 編集 cell (sort_key / title / question / explanation / memo)
-// が含まれる。 「編集」 ボタンは廃止。
+// + 各 option の inline 編集 row (id / text / is_correct / explanation) が含まれる。
+// 「編集」 ボタンは廃止。
 //
-// 個別 InlineTextField は別 test で網羅、 本 test は一覧結合 (描画 / memo
-// section 存在 / 編集ボタン不在 / option 描画維持) を見る。 server action は mock。
+// 個別 InlineTextField / InlineOptionRow は別 test で網羅、 本 test は一覧結合
+// (描画 / memo section 存在 / 編集ボタン不在 / option inline 編集 cell 存在) を
+// 見る。 server action は mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
@@ -82,33 +84,52 @@ describe('InlineCardList', () => {
     // 2 件目の card label が描画されているか
     expect(screen.getByText('問2')).toBeInTheDocument()
     // explanation null → 解説 cell も placeholder 表示 (クリックで追加 等)
+    // card-level explanation + option-level explanation 共通 placeholder のため
+    // 複数件 hit を許容 (card-2 card 解説 + 各 option 未設定解説)。
     expect(
-      screen.getByText('解説 (クリックで追加)'),
-    ).toBeInTheDocument()
+      screen.getAllByText('解説 (クリックで追加)').length,
+    ).toBeGreaterThan(0)
   })
 
-  it('inline 編集対象 cell (sort_key / title / question / explanation / memo) を各 card 分 button として持つ', () => {
+  it('inline 編集対象 cell (sort_key / title / question / explanation / memo + option 3 cell × N) を button として持つ', () => {
     render(<InlineCardList cards={cards} />)
-    // card-1: 5 cells (sort_key / title / question / explanation / memo) = 5 inline button
-    // card-2: 5 cells (sort_key null も clickable cell)
-    // aria-label に「編集」 を含む button が 10 件
+    // card-1: 5 card cells + 2 options × 3 option cell (id/text/explanation) = 11
+    // card-2: 5 card cells + 1 option × 3 = 8
+    // 合計 19
     const editButtons = screen
       .getAllByRole('button')
       .filter((b) => /編集$/.test(b.getAttribute('aria-label') ?? ''))
-    expect(editButtons.length).toBe(10)
+    expect(editButtons.length).toBe(19)
   })
 
-  it('option の正解 marker (○ / ×) と本文 / 解説は read-only で維持', () => {
+  it('option は inline 編集化されている (本文 / 解説 / id が click 可能)', () => {
     render(<InlineCardList cards={cards} />)
+    // option の本文 / id / 解説 は inline 編集 cell として描画
     expect(screen.getByText('A 理由', { exact: false })).toBeInTheDocument()
-    // 正解 ○ marker
-    expect(screen.getAllByText('○').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('×').length).toBeGreaterThan(0)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' }).length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 id 編集' }).length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 解説 編集' }).length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('option ごとに is_correct checkbox が描画される (card-1 の正解 option は checked)', () => {
+    render(<InlineCardList cards={cards} />)
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    // card-1: 2 options + card-2: 1 option = 3
+    expect(checkboxes.length).toBe(3)
+    // checked は 2 件 (card-1 の A、 card-2 の A、 いずれも正解)
+    expect(checkboxes.filter((c) => c.checked).length).toBe(2)
   })
 
   it('空 cards でも crash しない (空 list を render)', () => {
     render(<InlineCardList cards={[]} />)
     // 何も描画されないが crash しない
     expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
   })
 })

@@ -1,13 +1,14 @@
 'use client'
 
 // 試験詳細 page (/app/exams/[id]) の cards 一覧 + 各 card の inline 編集 UI。
-// sort_key / title / question_text / explanation_text / memo の 5 text field を
-// InlineTextField cell に置き換える。 options 系 / 「編集」 ボタンへの遷移は廃止
-// (options 編集は T4 で別 dispatch、 全 inline で完結)。
+// sort_key / title / question_text / explanation_text / memo の 5 text field と
+// 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
+// できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
 import type { ExamDetailCard } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
+import { InlineOptionRow } from './inline-option-row'
 
 type InlineCardListProps = {
   cards: ExamDetailCard[]
@@ -59,27 +60,14 @@ export function InlineCardList({ cards }: InlineCardListProps) {
                   選択肢 ({card.options.length} 件)
                 </p>
                 <ul className="mt-1 space-y-1.5">
-                  {card.options.map((opt) => (
-                    <li
-                      key={opt.id}
-                      className={
-                        opt.is_correct
-                          ? 'rounded border border-emerald-300 bg-emerald-100 p-2 text-sm font-bold text-emerald-900'
-                          : 'rounded border border-border/60 p-2 text-sm text-slate-800'
-                      }
-                    >
-                      <p className="whitespace-pre-wrap">
-                        <span className="mr-1.5">
-                          {opt.is_correct ? '○' : '×'}
-                        </span>
-                        <span className="mr-2">{opt.id}</span>
-                        {opt.text}
-                      </p>
-                      {opt.explanation && (
-                        <p className="mt-1 whitespace-pre-wrap text-xs font-normal text-slate-500">
-                          解説: {opt.explanation}
-                        </p>
-                      )}
+                  {card.options.map((opt, idx) => (
+                    <li key={opt.id}>
+                      <InlineOptionRow
+                        cardId={card.id}
+                        option={opt}
+                        allOptions={card.options}
+                        optionIndex={idx}
+                      />
                     </li>
                   ))}
                 </ul>
