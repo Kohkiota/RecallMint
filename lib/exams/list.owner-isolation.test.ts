@@ -167,13 +167,14 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
           questionText: 'a'.repeat(120),
           options,
           explanationText: 'カード全体の解説',
+          memo: 'マイメモ',
         },
       ],
     ]
     const { getCardsForExam } = await importModule()
     const r = await getCardsForExam('user-1', 'exam-A')
     expect(r).toHaveLength(1)
-    // snippet 化せず問題文全文・全選択肢・card 解説をそのまま返す
+    // snippet 化せず問題文全文・全選択肢・card 解説・memo をそのまま返す
     expect(r[0]).toEqual({
       id: 'card-1',
       title: '問1',
@@ -181,10 +182,11 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
       questionText: 'a'.repeat(120),
       options,
       explanationText: 'カード全体の解説',
+      memo: 'マイメモ',
     })
   })
 
-  it('handles null sortKey + non-array options + null explanation defensively', async () => {
+  it('handles null sortKey + non-array options + null explanation + null memo defensively', async () => {
     dbState.queue = [
       [
         {
@@ -194,6 +196,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
           questionText: 'short',
           options: null, // DB schema 上 NOT NULL だが防御コード経路の確認
           explanationText: null,
+          memo: null,
         },
       ],
     ]
@@ -202,6 +205,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
     expect(r[0].sortKey).toBeNull()
     expect(r[0].options).toEqual([])
     expect(r[0].explanationText).toBeNull()
+    expect(r[0].memo).toBeNull()
     expect(r[0].questionText).toBe('short')
   })
 })

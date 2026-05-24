@@ -92,8 +92,8 @@ export type CardListEntry = {
 }
 
 // ExamDetailCard: 試験詳細 page (/app/exams/[id]) で 1 card の全情報を read-only
-// 展開表示するための型 (S2.0 T7)。 snippet ではなく問題文全文 / 全選択肢 + 各解説 /
-// card 全体解説をそのまま渡し、 OCR 投入結果を一目で把握できるようにする。
+// 展開表示するための型 (S2.0 T7)。 S2.0b-1 で memo (ユーザー自由メモ) を追加、
+// inline 編集 UI から click で表示/編集する。 nullable text 列。
 export type ExamDetailCard = {
   id: string
   title: string
@@ -101,6 +101,7 @@ export type ExamDetailCard = {
   questionText: string
   options: CardOption[]
   explanationText: string | null
+  memo: string | null
 }
 
 // 試験詳細 page 用 cards 取得 (read-only、 owner-scoped)。
@@ -118,6 +119,7 @@ export async function getCardsForExam(
       questionText: cards.questionText,
       options: cards.options,
       explanationText: cards.explanationText,
+      memo: cards.memo,
     })
     .from(cards)
     .where(and(eq(cards.userId, userId), eq(cards.examId, examId)))
@@ -130,6 +132,7 @@ export async function getCardsForExam(
     // options は schema 上 NOT NULL だが防御的に配列チェック。
     options: Array.isArray(r.options) ? r.options : [],
     explanationText: r.explanationText,
+    memo: r.memo,
   }))
 }
 

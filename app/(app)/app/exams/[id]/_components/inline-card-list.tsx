@@ -1,0 +1,119 @@
+'use client'
+
+// 試験詳細 page (/app/exams/[id]) の cards 一覧 + 各 card の inline 編集 UI。
+// sort_key / title / question_text / explanation_text / memo の 5 text field を
+// InlineTextField cell に置き換える。 options 系 / 「編集」 ボタンへの遷移は廃止
+// (options 編集は T4 で別 dispatch、 全 inline で完結)。
+
+import type { ExamDetailCard } from '@/lib/exams/list'
+import { Card, CardContent } from '@/components/ui/card'
+import { InlineTextField } from './inline-text-field'
+
+type InlineCardListProps = {
+  cards: ExamDetailCard[]
+}
+
+export function InlineCardList({ cards }: InlineCardListProps) {
+  return (
+    <ul className="space-y-2">
+      {cards.map((card) => (
+        <li key={card.id}>
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="w-28 shrink-0">
+                  <InlineTextField
+                    cardId={card.id}
+                    field="sort_key"
+                    initialValue={card.sortKey}
+                    ariaLabel="ソートキー 編集"
+                    placeholder="(キー)"
+                    displayClassName="text-xs font-mono text-slate-600"
+                  />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <InlineTextField
+                    cardId={card.id}
+                    field="title"
+                    initialValue={card.title}
+                    ariaLabel="タイトル 編集"
+                    displayClassName="text-sm font-medium text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-slate-500">問題文</p>
+                <InlineTextField
+                  cardId={card.id}
+                  field="question_text"
+                  initialValue={card.questionText}
+                  ariaLabel="問題文 編集"
+                  multiline
+                  displayClassName="text-sm text-slate-800"
+                />
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-slate-500">
+                  選択肢 ({card.options.length} 件)
+                </p>
+                <ul className="mt-1 space-y-1.5">
+                  {card.options.map((opt) => (
+                    <li
+                      key={opt.id}
+                      className={
+                        opt.is_correct
+                          ? 'rounded border border-emerald-300 bg-emerald-100 p-2 text-sm font-bold text-emerald-900'
+                          : 'rounded border border-border/60 p-2 text-sm text-slate-800'
+                      }
+                    >
+                      <p className="whitespace-pre-wrap">
+                        <span className="mr-1.5">
+                          {opt.is_correct ? '○' : '×'}
+                        </span>
+                        <span className="mr-2">{opt.id}</span>
+                        {opt.text}
+                      </p>
+                      {opt.explanation && (
+                        <p className="mt-1 whitespace-pre-wrap text-xs font-normal text-slate-500">
+                          解説: {opt.explanation}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-slate-500">解説</p>
+                <InlineTextField
+                  cardId={card.id}
+                  field="explanation_text"
+                  initialValue={card.explanationText}
+                  ariaLabel="解説 編集"
+                  multiline
+                  placeholder="解説 (クリックで追加)"
+                  displayClassName="text-sm text-slate-700"
+                />
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-slate-500">メモ</p>
+                <InlineTextField
+                  cardId={card.id}
+                  field="memo"
+                  initialValue={card.memo}
+                  ariaLabel="メモ 編集"
+                  multiline
+                  placeholder="メモ (クリックで追加)"
+                  displayClassName="text-sm text-slate-700"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </li>
+      ))}
+    </ul>
+  )
+}
