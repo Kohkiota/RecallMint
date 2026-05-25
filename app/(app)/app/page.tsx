@@ -46,6 +46,7 @@ export default async function Dashboard() {
       {!(user.plan === 'pro' && user.billingInterval === 'year') && (
         <Link
           href="/app/upgrade"
+          prefetch={false}
           className="block mt-4 text-center text-sm text-slate-600 underline"
         >
           アップグレード

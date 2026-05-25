@@ -63,7 +63,13 @@ export default async function ExamsListPage() {
                     </div>
                     <div className="flex items-start gap-2 shrink-0">
                       <Button asChild variant="outline" size="sm">
-                        <Link href={`/app/exams/${exam.id}`}>詳細を見る</Link>
+                        {/* S-perf-1: 試験一覧 N 件分の Link が viewport 内で
+                            並列 prefetch されると server SSR が N 件並列で走るため
+                            prefetch={false}。 click 時の navigation 自体は維持、
+                            遷移 fallback は loading.tsx で吸収。 */}
+                        <Link href={`/app/exams/${exam.id}`} prefetch={false}>
+                          詳細を見る
+                        </Link>
                       </Button>
                       <DeleteExamButton examId={exam.id} />
                     </div>

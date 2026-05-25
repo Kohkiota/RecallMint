@@ -120,24 +120,27 @@ export default async function SettingsPage() {
         <h2 className="font-bold mb-2">法的情報</h2>
         <Card>
           <CardContent>
+            {/* S-perf-1: 法的 4 link は閲覧率が低く、 全件 default prefetch すると
+                settings page 表示時の並列 RSC SSR を 4 件積み増す。 prefetch={false}
+                で抑制 (click 時の遷移は維持)。 */}
             <ul className="text-sm text-slate-700 space-y-2">
               <li>
-                <Link href="/contact" className="text-blue-700 hover:underline">
+                <Link href="/contact" prefetch={false} className="text-blue-700 hover:underline">
                   お問い合わせ
                 </Link>
               </li>
               <li>
-                <Link href="/terms" className="text-blue-700 hover:underline">
+                <Link href="/terms" prefetch={false} className="text-blue-700 hover:underline">
                   利用規約
                 </Link>
               </li>
               <li>
-                <Link href="/privacy" className="text-blue-700 hover:underline">
+                <Link href="/privacy" prefetch={false} className="text-blue-700 hover:underline">
                   プライバシーポリシー
                 </Link>
               </li>
               <li>
-                <Link href="/legal" className="text-blue-700 hover:underline">
+                <Link href="/legal" prefetch={false} className="text-blue-700 hover:underline">
                   特定商取引法に基づく表記
                 </Link>
               </li>

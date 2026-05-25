@@ -9,9 +9,11 @@ export function DashboardActions({ dueCount }: { dueCount: number }) {
     <div className="grid grid-cols-2 gap-3">
       {dueCount > 0 ? (
         <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
-          {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart に差替 (S2.2.1 T2: /session 撤去で /app/study/smart に統合)。 */}
+          {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart に差替 (S2.2.1 T2: /session 撤去で /app/study/smart に統合)。
+              S-perf-1: prefetch={false} で並列 RSC prefetch を抑制 (header 側と同方針)。 */}
           <Link
             href="/app/study/smart"
+            prefetch={false}
             onClick={() => void revalidateAppPath('/app/study/smart')}
           >
             スマート復習（{dueCount}件）
