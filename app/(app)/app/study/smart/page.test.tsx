@@ -17,6 +17,9 @@ import type { Card } from '@/lib/db/schema'
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
+// S-cache-1: page.tsx は SessionRunner を直接 render しなくなり、 client wrapper
+// `StudySessionHost` を介す (session_id を Dexie で採番してから SessionRunner を
+// mount するため)。 mock target を host に変えれば props verify は従来同様可能。
 const { mockGetCurrentUser, settingsRowsState, mockGetSessionCards, mockSessionRunner } =
   vi.hoisted(() => ({
     mockGetCurrentUser: vi.fn(),
@@ -45,8 +48,11 @@ vi.mock('@/lib/cards/get-session-cards', () => ({
   getSessionCards: mockGetSessionCards,
 }))
 
-vi.mock('./_components/session-runner', () => ({
-  SessionRunner: (props: { cards: Card[]; fsrsMode: boolean }) => {
+// S-cache-1: page.tsx は StudySessionHost を render する。 host が受け取る
+// `cards` / `fsrsMode` を従来の SessionRunner mock と同じ shape で受けて
+// 既存 assertion (`mockSessionRunner.mock.calls[0][0]` 等) を維持できる。
+vi.mock('./_components/study-session-host', () => ({
+  StudySessionHost: (props: { cards: Card[]; fsrsMode: boolean }) => {
     mockSessionRunner(props)
     return (
       <div data-testid="session-runner-mock">

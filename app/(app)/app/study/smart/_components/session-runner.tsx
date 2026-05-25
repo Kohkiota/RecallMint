@@ -49,13 +49,27 @@
 // 等) 中に submit が resolve しても、 React 18+ の setState on unmounted は silent
 // no-op (旧 warning は React 18 で削除済) のため害なし。 mountedRef は不要。
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
-import { submitReview } from '../_actions/submit-review'
+// S-cache-1 step 4: 旧 submitReview server action は bulk API 経路 (§14.8) に完全移行済。
+// 削除は review 通過後 (S-cache-2 以降)。 import / 使用箇所はコメントアウト維持 (移行軌跡保持)。
+// import { submitReview } from '../_actions/submit-review'
 import { equalSet } from '../_lib/equal-set'
+import {
+  completeStudySession,
+  countPendingAnswerEvents,
+  flushPendingEvents,
+  recordAnswerEvent,
+} from '@/lib/sync/review-events'
+
+// S-cache-1: pending answer_events がこの件数に達した時点で bulk flush。
+// §14.7.1 「pending 5 件以上 / セッション終了 / ネット復活 / アプリ起動・復帰」 の
+// 5 件しきい値。 他トリガー (ネット復活 / 起動・復帰 / visibilitychange) は
+// 後続 sprint で実装、 本 sprint は「5 件 / セッション終了」 のみ配線する。
+const FLUSH_THRESHOLD = 5
 
 type Phase = 'selecting' | 'judged' | 'finished'
 type Rating = 1 | 2 | 3 | 4
@@ -63,6 +77,10 @@ type Rating = 1 | 2 | 3 | 4
 type SessionRunnerProps = {
   cards: Card[]
   fsrsMode: boolean
+  // S-cache-1: 演習開始時に呼出 client が uuidv4 で発行する session_id。
+  // Dexie study_sessions の PK に対応、 全 answer_events を紐付ける。
+  // 親 (StudySessionHost) が Dexie に session 行を入れてから渡す。
+  sessionId: string
 }
 
 // opt.text 先頭に opt.id と同じ ID prefix が混入したケースのみ strip (B2 fix, S2.2 T4 review I-1)。
@@ -106,7 +124,7 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
+export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -235,17 +253,56 @@ export function SessionRunner({ cards, fsrsMode }: SessionRunnerProps) {
     //    次 card に進む。 FSRS rate は no-op で judged 維持。
     onAfter()
 
-    // 3) submitReview を fire-and-forget で発火。 await しないので UI は既に
-    //    次状態に進んでいる。 失敗時のみ error 表示 (state 巻き戻しなし)。
-    //    submitReview は内部で try/catch して必ず ActionResult を返す契約 (throw
-    //    しない、 _actions/submit-review.ts 参照) のため、 .catch は意図的に省略。
-    //    unhandled rejection は発生しない。
-    void submitReview(cardId, rating).then((result) => {
-      if (!result.ok) {
-        setError(result.error)
+    // 3) S-cache-1: Dexie answer_events に即 insert (debounce なし、 §14.7.1)、
+    //    pending が FLUSH_THRESHOLD に達したら bulk flush。 失敗は inline error に
+    //    出さず pending のまま次 flush で再試行 (= 旧 submitReview の error UI は
+    //    廃止、 セッション終了 useEffect の final flush でもう一度試行する)。
+    //    rating は通常モードは client 判定 (correct→3 / incorrect→1)、 FSRS モードは
+    //    user 選択値 (1-4) をそのまま payload に乗せて server に届ける。
+    void (async () => {
+      try {
+        await recordAnswerEvent({
+          session_id: sessionId,
+          card_id: cardId,
+          selected_answer_ids: [...selectedIds],
+          is_correct: correctSnapshot,
+          answered_at: new Date().toISOString(),
+          rating,
+        })
+        const pending = await countPendingAnswerEvents(sessionId)
+        if (pending >= FLUSH_THRESHOLD) {
+          await flushPendingEvents(sessionId)
+        }
+      } catch {
+        // Dexie write / flush の background 失敗は UI に出さず、 次 trigger で再試行。
       }
-    })
+    })()
+
+    // 4) [S-cache-1 step 4 でコメントアウト、 削除は S-cache-2 以降]
+    //    旧 submitReview fire-and-forget。 bulk API + Dexie に置換済。
+    // void submitReview(cardId, rating).then((result) => {
+    //   if (!result.ok) {
+    //     setError(result.error)
+    //   }
+    // })
   }
+
+  // ---------------------------------------------------------------------------
+  // S-cache-1: phase='finished' で study_sessions を completed に + final flush。
+  //   §14.7.1 「セッション終了 → bulk flush」 のトリガ。 失敗は silent (Dexie 側
+  //   pending が残るので次 session 開始や online 復帰時に拾える前提)。
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (phase !== 'finished') return
+    void (async () => {
+      try {
+        await completeStudySession(sessionId)
+      } catch {}
+      try {
+        await flushPendingEvents(sessionId)
+      } catch {}
+    })()
+  }, [phase, sessionId])
 
   // 通常モード「次へ」: client 判定結果から rating 自動決定 (correct→3 / incorrect→1)、
   // 即時 next card に遷移 + submit fire-and-forget (失敗時は次 card 上に error 表示)

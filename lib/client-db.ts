@@ -123,6 +123,8 @@ export type ClientStudySession = {
 }
 
 // answer_events: §14.4 準拠。 local_id は Dexie auto-increment、 event_id は冪等化キー。
+// rating は FSRS モードで user が選んだ 1-4 を保持し、 bulk payload に含めて server に
+// 届けるための optional 列 (Dexie schema の index 列ではない、 保存のみ)。
 export type ClientAnswerEvent = {
   local_id?: number
   event_id: string
@@ -132,6 +134,7 @@ export type ClientAnswerEvent = {
   is_correct: boolean
   answered_at: string
   elapsed_ms?: number
+  rating?: 1 | 2 | 3 | 4
   sync_status: SyncStatus
   last_attempted_at?: string | null
 }

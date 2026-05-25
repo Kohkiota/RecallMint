@@ -1,5 +1,9 @@
 import { beforeEach, vi } from 'vitest'
 import '@testing-library/jest-dom/vitest'
+// S-cache-1: Dexie / IndexedDB を使う test のための shim。 jsdom / node の
+// 両 environment で indexedDB / IDBKeyRange グローバルを供給する。 副作用 import
+// 1 行で全 test に適用される (Dexie を import しない test には影響なし)。
+import 'fake-indexeddb/auto'
 
 // Fake env defaults for tests — use ??= so real env values take precedence.
 // These prevent module-load-time validators (e.g. Stripe prefix check) from

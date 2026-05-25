@@ -9,7 +9,7 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
-import { SessionRunner } from './_components/session-runner'
+import { StudySessionHost } from './_components/study-session-host'
 import { Button } from '@/components/ui/button'
 
 export default async function SmartStudyPage() {
@@ -46,5 +46,7 @@ export default async function SmartStudyPage() {
     )
   }
 
-  return <SessionRunner cards={cards} fsrsMode={fsrsMode} />
+  // S-cache-1: StudySessionHost が client 側で session_id を採番 + Dexie に
+  // study_sessions 行を入れてから SessionRunner を render する。
+  return <StudySessionHost cards={cards} fsrsMode={fsrsMode} mode="smart" />
 }
