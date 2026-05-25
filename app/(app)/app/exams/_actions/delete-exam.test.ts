@@ -94,8 +94,10 @@ describe('deleteExam', () => {
     const { deleteExam } = await importDeleteExam()
     const r = await deleteExam('exam-uuid')
     expect(r.ok).toBe(false)
-    // revalidatePath は finally で必ず呼ばれる
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams')
+    // S-cache-2a: revalidatePath('/app/exams') は撤去 (server action 後の Next.js
+    // 自動 revalidate + router.refresh() 同居で redundant)。
+    // /app/upload (active exam dropdown 用 cross-page revalidate) のみ finally で呼ばれる。
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/app/exams')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
     expect(dbState.deleteTables).toHaveLength(0)
   })
@@ -130,11 +132,17 @@ describe('deleteExam', () => {
     expect(deletedTableNames()).toEqual(['exams'])
   })
 
-  it('revalidatePath is called for /app/exams and /app/upload', async () => {
+  it('revalidatePath is called for /app/upload only (S-cache-2a)', async () => {
+    // S-cache-2a: '/app/exams' は delete-exam-button.tsx の `router.refresh()` で
+    // 単独に同 path を更新するため、 server action 側の revalidatePath は redundant。
+    // '/app/upload' は upload page の active exam dropdown を更新する cross-page
+    // revalidate のため残置。
     const { deleteExam } = await importDeleteExam()
     await deleteExam('exam-uuid')
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams')
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/app/exams')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    // scope creep 検出 (review minor #4)
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(1)
   })
 
   it('does NOT touch cards or source_documents directly (CASCADE handles them)', async () => {

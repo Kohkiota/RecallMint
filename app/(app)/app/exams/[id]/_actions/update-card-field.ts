@@ -149,7 +149,13 @@ export async function updateCardField(
     const row = updated[0]
     if (!row) return { ok: false, error: 'カードが見つかりません' }
 
-    revalidatePath(`/app/exams/${row.examId}`)
+    // S-cache-2a: revalidatePath('/app/exams/[id]') は撤去。 Next.js 15 は client
+    // component から呼ばれた server action の完了後、 呼出元 route segment の
+    // server component を自動再実行して新 RSC tree を返す (inline-text-field /
+    // inline-option-row の `serverOptions` prop 更新が依存する機構)。 同 path への
+    // revalidatePath はこの自動再実行と重複し redundant。
+    // /app/cards/[cardId] は別 page (card 詳細) に影響するため cross-page revalidate
+    // を残置。
     revalidatePath(`/app/cards/${cardId}`)
     return { ok: true }
   } catch (err) {

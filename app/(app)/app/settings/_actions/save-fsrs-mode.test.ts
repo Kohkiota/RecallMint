@@ -93,7 +93,7 @@ describe('saveFsrsMode', () => {
     })
   })
 
-  describe('正常系: UPSERT (lazy init / 既存行 UPDATE)', () => {
+  describe('正常系: UPSERT (lazy init / 既存行 UPDATE) — S-cache-2a: revalidatePath 撤去', () => {
     beforeEach(() => {
       mockGetCurrentUser.mockResolvedValue(fakeUser)
     })
@@ -123,9 +123,9 @@ describe('saveFsrsMode', () => {
       expect(call.conflictSet.updatedAt).toBeInstanceOf(Date)
     })
 
-    it('UPSERT 後に revalidatePath("/app/settings") が呼ばれる', async () => {
+    it('UPSERT 後 revalidatePath は呼ばれない (S-cache-2a: 同 path、 fsrs-mode-form の router.refresh で吸収)', async () => {
       await saveFsrsMode(true)
-      expect(mockRevalidatePath).toHaveBeenCalledWith('/app/settings')
+      expect(mockRevalidatePath).not.toHaveBeenCalled()
     })
   })
 

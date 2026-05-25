@@ -459,7 +459,11 @@ describe('processUpload', () => {
     expect(result.ok).toBe(true)
   })
 
-  it('processUpload always calls revalidatePath on completion (success path)', async () => {
+  it('processUpload always calls revalidatePath on completion (success path) — S-cache-2a 縮小: /app/upload + /app', async () => {
+    // S-cache-2a: 旧来 `revalidatePath('/', 'layout')` は全 path 配下を一括 revalidate
+    // する過剰スコープ。 真に必要な cross-page 影響は 2 件:
+    //   - /app/upload (残量 banner 更新)
+    //   - /app (dashboard dueCount: 新規 card 投入で due 件数が増える)
     mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
     mockRunOcrPipeline.mockResolvedValueOnce({
       cards: [
@@ -480,10 +484,14 @@ describe('processUpload', () => {
     const fd = makeFormData({ mode: 'new', files: [sampleImage] })
     const { processUpload } = await importProcess()
     await processUpload(fd)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/', 'layout')
+    // 上記 2 path のみで scope creep を防ぐ (review minor #4 反映)
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(2)
   })
 
-  it('processUpload calls revalidatePath on early-return path (QUOTA_EXCEEDED)', async () => {
+  it('processUpload calls revalidatePath on early-return path (QUOTA_EXCEEDED) — S-cache-2a 縮小', async () => {
     mockCanRunOcr.mockResolvedValueOnce({
       ok: false,
       reason: 'exceeded',
@@ -494,7 +502,10 @@ describe('processUpload', () => {
     const fd = makeFormData({ mode: 'new', files: [sampleImage] })
     const { processUpload } = await importProcess()
     await processUpload(fd)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/', 'layout')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/', 'layout')
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(2)
   })
 
   it('happy path (existing exam): no exam INSERT, examWasAutoCreated=false', async () => {

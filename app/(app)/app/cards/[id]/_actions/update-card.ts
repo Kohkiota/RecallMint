@@ -50,7 +50,12 @@ export async function updateCard(
   const row = updated[0]
   if (!row) return { ok: false, error: 'カードが見つかりません' }
 
-  revalidatePath(`/app/cards/${cardId}`)
+  // S-cache-2a: revalidatePath('/app/cards/[id]') は撤去。 card-editor.tsx は保存成功時に
+  // `router.push('/app/exams/${examId}')` で exam 詳細へ遷移するため、 編集していた
+  // /app/cards/[id] 自体は unmount 経路で次回再訪時に fresh server fetch される
+  // (Next.js 15 default `staleTimes.dynamic = 0`)。 = 同 path への revalidatePath は
+  // 戻り先 cross-page revalidate と機能が重ならず純粋な no-op。
+  // /app/exams/[examId] は router.push 遷移先 (cross-page) のため revalidate を残置。
   revalidatePath(`/app/exams/${row.examId}`)
   return { ok: true }
 }

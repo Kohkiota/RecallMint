@@ -109,13 +109,18 @@ const MAX_QUESTION_PREVIEW = 80
 export async function processUpload(
   formData: FormData,
 ): Promise<ProcessUploadResult> {
-  // S1.8: いずれの return path でも root layout 配下を一括 revalidate して
-  // 残量 banner (Server Component で fetch) を即時新値で render する。
+  // S1.8 → S-cache-2a: 旧来 `revalidatePath('/', 'layout')` は全 path 配下を
+  // 一括 revalidate する過剰スコープだった。 真に必要な cross-page 影響は 2 件:
+  //   - /app/upload: 残量 banner (upload page.tsx の Server Component で fetch)
+  //   - /app: dashboard dueCount (新規 card 投入で due 件数が増えるため)
+  // upload 完了後は router.push で `/app/upload/result/[id]` に遷移するため、
+  // result page は revalidate 対象外で問題ない (page 自体は表示専用)。
   // 内側 _processUpload は revalidate 責務を持たない (重複発火回避)。
   try {
     return await _processUpload(formData)
   } finally {
-    revalidatePath('/', 'layout')
+    revalidatePath('/app/upload')
+    revalidatePath('/app')
   }
 }
 

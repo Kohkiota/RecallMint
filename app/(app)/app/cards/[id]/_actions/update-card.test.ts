@@ -146,11 +146,16 @@ describe('updateCard', () => {
     expect(mockRevalidatePath).not.toHaveBeenCalled()
   })
 
-  it('success → revalidates card page and exam page', async () => {
+  it('success → revalidates exam page only (S-cache-2a: card editor は /app/cards/[id] 上で同 path、 redundant)', async () => {
+    // S-cache-2a: card editor は保存成功時 `router.push('/app/exams/[id]')` で
+    // 遷移するため /app/cards/[id] は unmount 経路、 同 path への revalidatePath は
+    // no-op。 /app/exams/[examId] は router.push 遷移先 (cross-page) のため残置。
     const { updateCard } = await importUpdateCard()
     await updateCard('card-1', validInput)
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/cards/card-1')
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/app/cards/card-1')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams/exam-1')
+    // scope creep 検出 (review minor #4)
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(1)
   })
 
   it('option explanation: kept when set, omitted when absent', async () => {

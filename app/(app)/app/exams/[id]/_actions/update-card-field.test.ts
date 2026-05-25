@@ -277,11 +277,18 @@ describe('updateCardField', () => {
     expect(mockRevalidatePath).not.toHaveBeenCalled()
   })
 
-  it('success → revalidates exam page と card page (2 path)', async () => {
+  it('success → revalidates card page only (S-cache-2a: inline 編集は exam 詳細上、 /app/exams/[id] は同 path で redundant)', async () => {
+    // S-cache-2a: inline 編集は /app/exams/[id] 上で client component から server
+    // action を呼出。 Next.js 15 は完了後 呼出元 segment の server component を
+    // 自動再実行して新 RSC tree を返すため、 同 path への revalidatePath は redundant。
+    // /app/cards/[cardId] は別 page (card 詳細) で stale 可能性があるため cross-page
+    // revalidate を残置。
     const { updateCardField } = await importAction()
     await updateCardField('card-1', 'title', '問1')
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams/exam-1')
+    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/app/exams/exam-1')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/cards/card-1')
+    // scope creep 検出 (review minor #4)
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(1)
   })
 
   it('unknown field → { ok: false } で error 返却 (defensive)', async () => {

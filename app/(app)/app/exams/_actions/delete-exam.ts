@@ -20,13 +20,14 @@ import type { ActionResult } from '@/lib/actions/result'
 // 別途 SELECT で存在確認は行わない — DELETE の WHERE に user_id を含めれば
 // 他 user の行は消えないため、SELECT は冗長になる。
 export async function deleteExam(examId: string): Promise<ActionResult> {
-  // /app/upload も revalidate する理由: upload ページの「投入先を選択」 dropdown は
-  // active exam 一覧 (getActiveExamsForUser) に依存しており、exam 削除後に
-  // 即反映させる必要があるため。
+  // S-cache-2a: revalidatePath('/app/exams') は撤去。 削除ボタンは /app/exams 上で
+  // 押下され、 success 時に `delete-exam-button.tsx` の `router.refresh()` が
+  // 同 path を再 fetch するため、 同 path の revalidatePath は redundant。
+  // /app/upload は cross-page (upload page の「投入先を選択」 dropdown が active
+  // exam 一覧に依存) のため revalidate を残置。
   try {
     return await _deleteExam(examId)
   } finally {
-    revalidatePath('/app/exams')
     revalidatePath('/app/upload')
   }
 }

@@ -135,7 +135,7 @@ describe('saveSessionLimit', () => {
     })
   })
 
-  describe('正常系: UPSERT + revalidatePath', () => {
+  describe('正常系: UPSERT', () => {
     beforeEach(() => {
       mockGetCurrentUser.mockResolvedValue(fakeUser)
     })
@@ -164,9 +164,9 @@ describe('saveSessionLimit', () => {
       expect(call.conflictSet.updatedAt).toBeInstanceOf(Date)
     })
 
-    it('UPSERT 後に revalidatePath("/app/settings") が呼ばれる', async () => {
+    it('UPSERT 後 revalidatePath は呼ばれない (S-cache-2a: 同 path、 fsrs-mode-form の router.refresh で吸収)', async () => {
       await saveSessionLimit(30)
-      expect(mockRevalidatePath).toHaveBeenCalledWith('/app/settings')
+      expect(mockRevalidatePath).not.toHaveBeenCalled()
     })
   })
 

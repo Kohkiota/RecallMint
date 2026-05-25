@@ -32,9 +32,10 @@ export function DeleteExamButton({ examId }: Props) {
     startTransition(async () => {
       const result = await deleteExam(examId)
       if (result.ok) {
-        // server action 内で revalidatePath 済みだが、client router cache も
-        // 更新するため router.refresh() を呼ぶ。削除された exam 行ごと
-        // unmount されるため phase 更新は不要。
+        // S-cache-2a 以降: deleteExam server action は `/app/exams` を直接
+        // revalidate しないため、 同 path 上の試験一覧を更新する責務は本 component の
+        // `router.refresh()` が単独で負う (cross-page `/app/upload` のみ server action
+        // 側で revalidate)。 削除された exam 行ごと unmount されるため phase 更新は不要。
         router.refresh()
       } else {
         setErrorMsg(result.error)

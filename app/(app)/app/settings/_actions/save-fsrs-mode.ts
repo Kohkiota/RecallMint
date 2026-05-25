@@ -1,6 +1,5 @@
 'use server'
 
-import { revalidatePath } from 'next/cache'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings } from '@/lib/db/schema'
@@ -35,6 +34,9 @@ export async function saveFsrsMode(
     return { ok: false, error: '保存に失敗しました。しばらくしてからお試しください' }
   }
 
-  revalidatePath('/app/settings')
+  // S-cache-2a: revalidatePath('/app/settings') は撤去。 fsrs-mode-form は save 成功時に
+  // `router.refresh()` を明示呼出し、 /app/settings page の server component を再 render
+  // する (= server 派生 initial 値を fresh fetch)。 同 path への revalidatePath は
+  // router.refresh() と重複し redundant。
   return { ok: true, data: { fsrsMode: value } }
 }
