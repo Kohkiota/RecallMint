@@ -71,6 +71,7 @@ function makeCard(overrides?: Partial<Card>): Card {
     state: 0,
     learningSteps: 0,
     lastReview: null,
+    contentVersion: 0,
     createdAt: new Date('2020-01-01'),
     updatedAt: new Date('2020-01-01'),
     ...overrides,

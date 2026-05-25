@@ -1294,9 +1294,14 @@ async function submitReviewTx(tx, { userId, cardId, rating, now }) {
 |コンテンツ|戦略|キャッシュ名|上限|期限|
 |---|---|---|---|---|
 |画像（R2 origin）|`CacheFirst`|`card-images`|1500 entries / ~250MB|90 日|
-|カード本文（API レスポンス）|`StaleWhileRevalidate`|`card-data`|500 entries / ~30MB|30 日|
+|カード本文|**Dexie / IndexedDB が正本** (§14)|—|—|—|
 |静的アセット（JS / CSS / フォント）|`CacheFirst`|`static-assets`|unlimited|build hash で invalidation|
 |API（学習以外）|`NetworkFirst` with offline fallback|`api-runtime`|100 entries|1 日|
+
+> **§14 整合**: カード本文 (`cards.question_text` / `options` / `explanation_text` 等)
+> の正本は Dexie (IndexedDB)。 旧 `StaleWhileRevalidate` による `card-data` キャッシュは
+> **廃止**。 Cache Storage は画像と静的アセット専用とする。 Dexie の差分同期は §14.7 /
+> §14.8 で扱う。
 
 #### iOS 対策
 
@@ -1315,11 +1320,11 @@ async function submitReviewTx(tx, { userId, cardId, rating, now }) {
 - [x] manifest.json + apple-touch-icon
 - [x] Service Worker 登録（next-pwa）
 - [x] 画像 CacheFirst 戦略
-- [x] カード本文 StaleWhileRevalidate
+- [x] **カード本文は Dexie / IndexedDB が正本** (§14、 StaleWhileRevalidate は不採用)
 - [x] API NetworkFirst with offline fallback
 - [x] ホーム画面追加促進 UI（iOS Safari 検出）
 - [x] オフライン警告バナー
-- [x] LRU eviction（300MB 上限）
+- [x] LRU eviction（300MB 上限、 画像 Cache Storage のみ対象、 Dexie は §14 で別管理）
 
 #### MVP に入れない（v1.x 以降）
 
@@ -1444,43 +1449,252 @@ AI に「title から sort_key を生成」させる際の正規化ルール（�
 
 私のおすすめは **(B)** を MVP に含める。関連: cards.title_normalized text カラム追加で重複検知高速化。要判断。
 
-### 13.14 v1.x で local-first 化を検討
+### 13.14 local-first 設計 (Dexie) を MVP に含める
 
-Anki が証明している通り、ローカル SQLite + 増分同期は学習アプリの最適解。MVP は Postgres 一本だが、§2.1 の設計原則 12-14 により v1.x での local-first 移行を阻害しない設計を確定済。
+**決定**: local-first 設計 (Dexie / IndexedDB) は **MVP スコープに含める**。 v1.x 送り
+方針は撤回。 設計詳細は §14 を参照。
 
-#### 既達成の準備条件（Sprint A-2 時点）
+#### 採用方針 (MVP)
 
-- UUID PK（クライアント採番可、ID 衝突なし）
-- updated_at 全テーブル（差分同期の基準）
-- reviews は append-only（競合不発生）
-- jsonb で柔軟スキーマ（schema migration の頻度低減）
-- 集計系テーブル（ai_usage_users / study_days）は同期対象外、サーバー側再計算
+- **クライアント永続化**: IndexedDB を Dexie でラップ。 WASM SQLite + OPFS は採用しない
+  (MVP コスト最小化、 iOS 16.3 以下含む後方互換性、 既存 Drizzle / Postgres schema を
+  そのまま Dexie に reflect する設計簡素性を優先)
+- **同期方式**: 自前 bulk API (§14.8)、 競合解決は last-write-wins ベース + 冪等化キー
+  (`event_id` / `mutation_id`) で再送安全性を担保
+- **削除追跡 (graves)**: cards / exams / source_documents は MVP で hard delete を維持。
+  Dexie 側でも同期削除し、 削除済 id を sync_meta に短期保持して再 fetch 競合を防ぐ。
+  graves 専用 table は v1.x で再評価
 
-#### v1.x で追加検討する準備条件
+#### §2.1 設計原則との整合 (既達済)
 
-- 削除追跡 (Anki の graves 相当): MVP は cards / exams / source_documents 等で hard delete を採用したため、 v1.x で local-first 化する際は別途 tombstone table or `deleted_at` 列の再導入を検討。 削除イベントを sync 越しに伝搬する仕組みが必要
+- UUID PK (クライアント採番可、 ID 衝突なし)
+- `updated_at` 全テーブル (差分同期の基準)
+- `reviews` は append-only (競合不発生)
+- jsonb で柔軟スキーマ (schema migration の頻度低減)
+- 集計系テーブル (`ai_usage_users` / `study_days`) は同期対象外、 サーバー側再計算
 
-#### v1.x 実装の選択肢
+#### 追加で必要なもの (MVP で対応)
 
-- **(A) PowerSync / ElectricSQL 採用**: Postgres ↔ SQLite の双方向同期を既製ライブラリに任せる。実装コスト小、月額あり。Postgres スキーマほぼそのまま流用可
-- **(B) 自前 sync API（GPT 提案の updated_at + sync_status ベース）**: シンプル、`POST /sync/push` + `GET /sync/pull?since=...` の 2 エンドポイント。競合解決は last-write-wins
-- **(C) Anki 完コピ（USN ベース）**: 最も堅牢だが実装コスト大、商用 SaaS への適合に追加工数必要
+- `cards` / `exams` に `content_version integer NOT NULL default 0` 追加 (§14.9)
+- `study_sessions` / `answer_events` (Neon) 新設 (§14.9)
+- `event_id` / `mutation_id` UNIQUE 制約 (§14.9)
+- 同期トリガー: アプリ起動 / `visibilitychange` / `online` / 学習セッション完了 / 明示
+  「同期」 ボタン (iOS は Background Sync 未対応のため必須組合せ、 §14.7)
 
-#### クライアント側の永続化
+#### v1.x 以降で再評価する選択肢
 
-- **WASM SQLite + OPFS**: iOS 16.4+ 対応、数百 MB〜数 GB の容量、ネイティブ並みの性能
-- ライブラリ候補: `sqlocal` + Drizzle（Postgres 用 schema をほぼそのまま流用可）
-- iOS 16.3 以下のフォールバックは IndexedDB（劣化機能、または最新 iOS 推奨表示）
+- **WASM SQLite + OPFS への移行**: 数百 MB〜数 GB の規模が必要になった時点で検討
+- **PowerSync / ElectricSQL の採用**: 月額コストを許容して同期実装負担を外部化したい場合
+- **graves table (tombstone) 化**: 削除を遅延同期する複数デバイス利用率が一定を超えた場合
+- **Anki 完コピ (USN ベース)**: 採用見込み低 (実装コスト大)
 
-#### 同期トリガー
+---
 
-iOS は Background Sync 未対応のため、以下の組み合わせで実用上カバー:
+## 14. PWA ローカル保存・同期設計
 
-- アプリ起動時（最も確実）
-- 学習セッション完了時（mcq-platform に最適）
-- `visibilitychange` (タブ切替/非表示時)
-- 明示的「同期」ボタン（ユーザー安心 UX）
+> **位置付け**: 「スマホスリープ中に同期が動く前提で設計しない」 を起点に、 端末側 IndexedDB
+> (Dexie) を一次保存先に据えて回答イベント・編集 mutation を貯め、 通常時はサーバー同期、
+> スリープ・離脱時は少量だけ保険送信、 復帰・起動・ネット復活時に未同期を回収する設計。
+> 既存 §9.1 (PWA キャッシュ戦略) / §13.14 (v1.x で local-first 化を検討) / §2.1 設計原則
+> 12-14 (同期準備) と隣接する領域のため、 重複する観点は §14.10 で関係を整理する。
+> **適用スコープ (MVP 採否 / v1.x 送り) は未確定** — §14.10 で論点を明示。
 
-#### 判断のタイミング
+### 14.1 基本方針
 
-v1.x 着手時に β データ（速度・オフライン要望強度・複数デバイス利用率）を基に (A) / (B) / (C) を選択。Phase 0 リスク（OCR 精度・法務・ターゲット）が解消するまで投資は保留。
+スマホスリープ中に同期が動く前提で設計しない。
+まず端末 (Dexie) に保存 → 通常時にサーバー同期 → スリープ・離脱時は少量だけ保険送信 →
+復帰・起動・ネット復活時に未同期を回収する。
+
+### 14.2 ストレージ構成
+
+- **IndexedDB (Dexie)**: 問題文・選択肢・正答・解説・タグ・回答イベント・編集 mutation
+- **Cache Storage**: 画像・静的アセット
+
+### 14.3 Dexie スキーマ
+
+```js
+db.version(1).stores({
+  exams:          'id, user_id, updated_at, content_version',
+  cards:          'id, exam_id, user_id, due, updated_at, content_version, sync_status',
+  user_settings:  'user_id',
+  study_sessions: 'session_id, exam_id, mode, status, sync_status',
+  answer_events:  '++local_id, event_id, session_id, card_id, sync_status',
+  card_mutations: '++local_id, mutation_id, card_id, sync_status',
+  sync_meta:      'key',
+})
+```
+
+### 14.3a `study_sessions` フィールド (Dexie)
+
+| field | type | 備考 |
+|---|---|---|
+| `session_id` | string | uuidv4、 クライアント生成 (§14.3b) |
+| `exam_id` | string? | optional (全 exam 横断 smart の場合は未指定可) |
+| `mode` | `'smart' \| 'custom'` | |
+| `card_ids` | string[] | session 開始時に確定した出題対象 |
+| `query` | `Record<string, unknown>`? | 出題条件 (custom mode 時のフィルタ等) |
+| `started_at` | string | ISO8601 |
+| `completed_at` | string \| null? | optional |
+| `status` | `'active' \| 'completed' \| 'abandoned'` | |
+| `updated_at` | string | ISO8601、 §13.14 差分同期基準 |
+| `sync_status` | `'pending' \| 'syncing' \| 'synced' \| 'failed'` | |
+
+### 14.3b `study_sessions` の生成タイミング
+
+演習開始ボタン押下時に以下を順に実行:
+
+1. `card_ids` と出題条件 (query) を確定
+2. `session_id = uuidv4()` を生成
+3. Dexie `study_sessions` に insert (status='active')
+4. SessionRunner に `session_id` を props で渡す
+
+> 現行 SessionRunner は session 概念を持たず、 `useRef` 等での session 識別もしていない。
+> §14 移行時に props 経由で `session_id` を受け取り、 `answer_events.session_id` に
+> 紐付ける。 ライフサイクル: 演習完了で `status='completed'` + `completed_at` 更新、
+> アプリ離脱や時間経過放置は `status='abandoned'`。
+
+### 14.4 `answer_events` フィールド
+
+| field | type | 備考 |
+|---|---|---|
+| `event_id` | string | UUID、 冪等化キー |
+| `session_id` | string | |
+| `card_id` | string | |
+| `selected_answer_ids` | string[] | |
+| `is_correct` | boolean | |
+| `answered_at` | string | ISO8601 |
+| `elapsed_ms` | number? | optional |
+| `sync_status` | `'pending' \| 'syncing' \| 'synced' \| 'failed'` | |
+| `last_attempted_at` | string \| null | optional |
+
+### 14.5 `card_mutations` フィールド
+
+| field | type | 備考 |
+|---|---|---|
+| `mutation_id` | string | UUID、 冪等化キー |
+| `card_id` | string | |
+| `patch` | `Record<string, unknown>` | |
+| `edited_at` | string | |
+| `sync_status` | `'pending' \| 'syncing' \| 'synced' \| 'failed'` | |
+| `last_attempted_at` | string \| null | optional |
+
+### 14.6 patch 圧縮ルール
+
+- **圧縮可 (最新値で上書き)**: `title` / `question_text` / `explanation` / `note` /
+  `tags` / `flags` / `memo` / `custom_properties`
+- **順序保持 (append)**: option 追加 / 削除 / 並び替え、 `correct_answer_ids` 変更、
+  card 削除、 問題タイプ変更
+
+### 14.7 サーバー送信トリガー
+
+#### 14.7.1 問題演習
+
+- **回答時**: Dexie へ即保存 (debounce なし)
+- **bulk flush**: 以下のいずれかを満たした時に発火
+  - pending 5 件以上
+  - 最後の回答から 60 秒
+  - セッション終了
+  - ネット復活
+  - アプリ起動・復帰
+- **`visibilitychange` hidden / `pagehide`**: 少量だけ `sendBeacon` or keepalive
+  (送信後も pending のまま、 `last_attempted_at` のみ更新)
+- **`MAX_BEACON_PAYLOAD_BYTES = 48 * 1024`**
+
+#### 14.7.2 問題編集
+
+- **React state**: 即時更新
+- **Dexie 保存**: テキスト 300〜500ms debounce / タグ・フラグ即時〜100ms / 構造変更即時
+- **サーバー送信**: 2000ms debounce (同一 `card_id` ・ field 単位圧縮)
+- **flush**: 編集画面離脱 / ネット復活 / アプリ起動・復帰
+- **`visibilitychange` hidden / `pagehide`**: 少量だけ保険送信 (pending のまま)
+
+### 14.8 新設 API
+
+**`POST /api/review-events/bulk`**
+- `answer_events` に insert (`event_id` で冪等化)
+- `study_sessions` を upsert (`session_id` PK、 status / completed_at を最新値で更新)
+- FSRS 計算 ・ `cards` 更新 ・ `study_days` 更新を 1 tx で実行
+
+**`POST /api/card-mutations/bulk`**
+- `mutation_id` で冪等化
+- `cards` 更新 ・ `content_version` 更新
+
+### 14.9 Neon スキーマ追加
+
+- **既存 `reviews` は維持** (rating 履歴・FSRS 集計用、 append-only のまま変更なし)
+- **`cards` ・ `exams` に `content_version integer NOT NULL default 0` 追加**
+- **`study_sessions` (新設)**: 演習セッションのメタ情報
+  - `session_id` PK (uuid、 client 採番)
+  - `user_id` FK→users CASCADE
+  - `exam_id` FK→exams SET NULL (nullable)
+  - `mode` text<`'smart' | 'custom'`>
+  - `card_ids` jsonb (string[])、 default `'[]'`
+  - `query` jsonb (nullable)
+  - `started_at` timestamptz
+  - `completed_at` timestamptz (nullable)
+  - `status` text<`'active' | 'completed' | 'abandoned'`>、 default `'active'`
+  - `created_at` timestamptz NOT NULL DEFAULT now() (server 受領タイミング、 client
+    の `started_at` とは別)
+  - `updated_at` timestamptz NOT NULL DEFAULT now() `$onUpdate` (§13.14 全テーブル
+    更新基準、 bulk upsert の last-write-wins 判定 hook)
+- **`answer_events` (新設)**: 回答イベントの生ログ (`reviews` から分離、 rating ベース集計
+  は `reviews`、 選択肢ベース生ログは `answer_events` に二系統並走)
+  - `id` PK (uuid、 server 採番、 DEFAULT `gen_random_uuid()`)
+  - `event_id` UNIQUE NOT NULL (uuid、 client 採番、 冪等化キー)
+  - `session_id` FK→study_sessions SET NULL (session 削除でも event は保持)
+  - `card_id` FK→cards CASCADE
+  - `user_id` FK→users CASCADE
+  - `selected_answer_ids` jsonb (string[])、 default `'[]'`
+  - `is_correct` boolean
+  - `answered_at` timestamptz
+  - `elapsed_ms` integer (nullable)
+  - `sync_status` text<`'synced'`> NOT NULL DEFAULT `'synced'` (server 側集計用、
+    client の `SyncStatus` 4 値とは目的が異なる。 type narrow で他値混入を防ぐ)
+  - `created_at` timestamptz NOT NULL DEFAULT now() (server 受領タイミング、 client の
+    `answered_at` との乖離を track 可能)
+- **`card_mutations` (新設、 server 側)**: 編集 mutation 受領ログ + 冪等化 dedupe
+  - `id` PK (uuid、 server 採番、 DEFAULT `gen_random_uuid()`)
+  - `mutation_id` UNIQUE NOT NULL (uuid、 client 採番、 冪等化キー)
+  - `card_id` FK→cards CASCADE
+  - `user_id` FK→users CASCADE
+  - `patch` jsonb NOT NULL (§14.6 圧縮ルールに従う差分 payload)
+  - `edited_at` timestamptz NOT NULL (client 編集確定時刻)
+  - `applied_at` timestamptz (nullable、 server apply 時刻、 未 apply は NULL)
+  - `created_at` timestamptz NOT NULL DEFAULT now() (server 受領タイミング)
+
+### 14.10 使わないもの (anti-patterns)
+
+- `beforeunload` / `unload` を主同期にしない
+- `sendBeacon` 成功を `synced` 扱いにしない
+- タブ離脱時に大量データを送らない
+- スリープ中に JS タイマーが動く前提にしない
+
+### 14.11 決定事項 (既存仕様との関係)
+
+§14 に関する論点は以下で **すべて決定済**。 実装はこの方針に従う。
+
+- **A. §14 を MVP に含める** — §13.14 を更新済 (v1.x 送り撤回、 Dexie ベース local-first を
+  MVP 採用)。
+- **B. `reviews` テーブルは現状維持** — rating 履歴 + FSRS 集計用に append-only で温存。
+  回答の生ログ (`event_id` / `session_id` / `selected_answer_ids` / `elapsed_ms` 等) は
+  新設 `answer_events` (§14.9) に分離する。 `reviews` と `answer_events` は二系統並走。
+- **C. カード本文の正本は Dexie に一元化** — §9.1 を更新済。 旧 `StaleWhileRevalidate` の
+  `card-data` キャッシュは廃止。 Cache Storage は画像 ・ 静的アセット専用。
+- **D. `submitReview` / `updateCardField` server action は新 bulk API に完全移行** —
+  各 sprint 完了時に旧 server action を削除する (並走運用は採らない)。 移行順は実装 sprint
+  計画で確定。
+- **E. `session_id` はクライアント生成** — `uuidv4()` で発行し Dexie `study_sessions` に
+  保存 (§14.3a / §14.3b)。 `useRef` でのインメモリ session 識別は採用しない (Dexie 経由で
+  ライフサイクル管理 ・ サーバー同期する)。
+
+#### 既存実装の取り扱い (移行対象)
+
+- **`submitReview` server action** (`app/(app)/app/study/smart/_actions/submit-review.ts`):
+  →  `POST /api/review-events/bulk` + Dexie バッファリングに置換、 該当 sprint 完了時削除
+- **`updateCardField` server action** (`app/(app)/app/exams/[id]/_actions/update-card-field.ts`):
+  → `POST /api/card-mutations/bulk` + Dexie バッファリングに置換、 該当 sprint 完了時削除
+- **SessionRunner**: props で `session_id` を受け取り、 回答 click 時に Dexie
+  `answer_events` insert + `study_sessions` 更新。 fire-and-forget の server action 呼出は
+  Dexie write + bulk flush に置換
+- **InlineTextField / InlineOptionList**: 500ms debounce → Dexie 即時保存 (§14.7.2) +
+  server 2000ms debounce flush の二層構成に変更

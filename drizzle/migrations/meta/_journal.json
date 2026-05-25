@@ -85,6 +85,20 @@
       "when": 1779555422085,
       "tag": "0011_lively_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779697121489,
+      "tag": "0012_handy_ink",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779697798079,
+      "tag": "0013_purple_jack_power",
+      "breakpoints": true
     }
   ]
 }

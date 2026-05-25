@@ -223,6 +223,10 @@ export const exams = pgTable(
     // 同一 transaction で増減する。 exam 削除時は exam 行ごと消えるため更新不要。
     // 単体 card 作成 (createCard) は未実装、 実装時に +1 を同 tx で行うこと。
     cardCount: integer('card_count').notNull().default(0),
+    // S-cache-0 (§14.9): local-first 同期用の version 列。 server 側 bulk API が
+    // mutation 適用時に +1 する楽観ロック相当の数値。 client は受領済 version を
+    // 保持し、 push 時に比較に使う。
+    contentVersion: integer('content_version').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -297,6 +301,8 @@ export const cards = pgTable(
     state: integer('state').$type<0 | 1 | 2 | 3>().notNull().default(0),
     learningSteps: integer('learning_steps').notNull().default(0),
     lastReview: timestamp('last_review', { withTimezone: true }),
+    // S-cache-0 (§14.9): local-first 同期用の version 列 (exams と同様)。
+    contentVersion: integer('content_version').notNull().default(0),
     // 監査
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -500,6 +506,123 @@ export const contactMessages = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// study_sessions (S-cache-0 / §14.9 新設)
+// 演習セッションのメタ情報。 session_id は client (uuidv4) 採番、 PK。
+// answer_events.session_id の FK 参照先。 ライフサイクル: 演習開始で
+// 'active' 行を insert、 完了で 'completed' + completed_at 更新、 離脱/放置で
+// 'abandoned'。 server 側は bulk API 経由で受領した値を upsert する (client が
+// 真実 source)。
+// ---------------------------------------------------------------------------
+export const studySessions = pgTable(
+  'study_sessions',
+  {
+    sessionId: uuid('session_id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    examId: uuid('exam_id').references(() => exams.id, { onDelete: 'set null' }),
+    mode: text('mode').$type<'smart' | 'custom'>().notNull(),
+    cardIds: jsonb('card_ids')
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<string[]>(),
+    query: jsonb('query').$type<Record<string, unknown>>(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    status: text('status')
+      .$type<'active' | 'completed' | 'abandoned'>()
+      .notNull()
+      .default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // §13.14 設計原則「updated_at 全テーブル (差分同期の基準)」 に整合。
+    // status / completed_at 等の遷移ごとに $onUpdate で自動更新され、
+    // last-write-wins な bulk upsert (§14.8) の判定 hook となる。
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index('study_sessions_user_idx').on(t.userId, t.startedAt),
+    index('study_sessions_exam_idx').on(t.examId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// answer_events (S-cache-0 / §14.9 新設)
+// 回答イベントの生ログ。 reviews (rating 履歴) とは別系統で並走、 選択肢ベース
+// 生ログを保持する。 event_id UNIQUE で bulk API の冪等化を担保。
+// session_id は study_sessions に SET NULL FK (session 行が消えても event は残す)。
+// ---------------------------------------------------------------------------
+export const answerEvents = pgTable(
+  'answer_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: uuid('event_id').notNull().unique(),
+    sessionId: uuid('session_id').references(() => studySessions.sessionId, {
+      onDelete: 'set null',
+    }),
+    cardId: uuid('card_id')
+      .notNull()
+      .references(() => cards.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    selectedAnswerIds: jsonb('selected_answer_ids')
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<string[]>(),
+    isCorrect: boolean('is_correct').notNull(),
+    answeredAt: timestamp('answered_at', { withTimezone: true }).notNull(),
+    elapsedMs: integer('elapsed_ms'),
+    // server 側は受領確定のみを記録 (集計用途、 client の SyncStatus 4 値
+    // とは目的が異なる)。 .$type で 'synced' に narrow し、 bulk API 実装時に
+    // client SyncStatus を誤って書き込まないよう型 level で防ぐ。
+    syncStatus: text('sync_status').$type<'synced'>().notNull().default('synced'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('answer_events_user_idx').on(t.userId, t.answeredAt),
+    index('answer_events_card_idx').on(t.cardId, t.answeredAt),
+    index('answer_events_session_idx').on(t.sessionId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// card_mutations (S-cache-0 / §14.9 新設)
+// 編集 mutation の受領ログ + 冪等化 dedupe。 mutation_id UNIQUE で再送安全性を担保。
+// patch jsonb は client が確定した部分更新の payload (テキスト圧縮 / 順序保持構造の
+// 両方を内包、 server 側で apply する)。
+// ---------------------------------------------------------------------------
+export const cardMutations = pgTable(
+  'card_mutations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    mutationId: uuid('mutation_id').notNull().unique(),
+    cardId: uuid('card_id')
+      .notNull()
+      .references(() => cards.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    patch: jsonb('patch').notNull().$type<Record<string, unknown>>(),
+    editedAt: timestamp('edited_at', { withTimezone: true }).notNull(),
+    appliedAt: timestamp('applied_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('card_mutations_card_idx').on(t.cardId, t.editedAt),
+    index('card_mutations_user_idx').on(t.userId, t.editedAt),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -527,3 +650,9 @@ export type UserSettings = typeof userSettings.$inferSelect
 export type NewUserSettings = typeof userSettings.$inferInsert
 export type ContactMessage = typeof contactMessages.$inferSelect
 export type NewContactMessage = typeof contactMessages.$inferInsert
+export type StudySession = typeof studySessions.$inferSelect
+export type NewStudySession = typeof studySessions.$inferInsert
+export type AnswerEvent = typeof answerEvents.$inferSelect
+export type NewAnswerEvent = typeof answerEvents.$inferInsert
+export type CardMutation = typeof cardMutations.$inferSelect
+export type NewCardMutation = typeof cardMutations.$inferInsert
