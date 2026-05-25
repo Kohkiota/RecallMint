@@ -2,7 +2,6 @@
 
 import Link from 'next/link'
 import { UserButton } from '@clerk/nextjs'
-import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
 
 // brand 名は hardcode (2026-05-17 SERVICE_NAME placeholder 撤回)、
 // RecallMint 固有値で固定。 別サービス流用は devcontainer-template repo で対応。
@@ -12,6 +11,12 @@ import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
 // `docs/superpowers/lessons/2026-05-25-link-prefetch-amplifies-server-load.md`)。
 // click 時の navigation 自体は依然動作する (Next.js は prefetch=false でも
 // client-side navigation を行う)、 体感差は loading.tsx の即時 fallback で吸収。
+//
+// S-perf-2 (C-1): nav Link の `onClick={() => void revalidateAppPath(...)}` を全撤去。
+// T2.5 計測で「click → navigation RSC fetch + revalidate 後 RSC fetch」 が二重に
+// 走る性能バグを確認 (詳細は `docs/superpowers/plans/2026-05-25-s-perf-2.md` §T2.5)。
+// Next.js 15 default `staleTimes.dynamic = 0` で dynamic page は navigation 時に
+// 必ず fresh fetch されるため、 onClick による明示 revalidate は不要。
 export function AppHeader() {
   return (
     <header className="border-b border-slate-200 bg-white">
@@ -19,7 +24,6 @@ export function AppHeader() {
         <Link
           href="/app"
           prefetch={false}
-          onClick={() => void revalidateAppPath('/app')}
           className="text-lg font-bold text-slate-900 hover:text-slate-700"
         >
           RecallMint
@@ -32,7 +36,6 @@ export function AppHeader() {
           <Link
             href="/app/upload"
             prefetch={false}
-            onClick={() => void revalidateAppPath('/app/upload')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             アップロード
@@ -40,7 +43,6 @@ export function AppHeader() {
           <Link
             href="/app/exams"
             prefetch={false}
-            onClick={() => void revalidateAppPath('/app/exams')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             試験
@@ -48,7 +50,6 @@ export function AppHeader() {
           <Link
             href="/app/study/smart"
             prefetch={false}
-            onClick={() => void revalidateAppPath('/app/study/smart')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             スマート復習
@@ -56,7 +57,6 @@ export function AppHeader() {
           <Link
             href="/app/settings"
             prefetch={false}
-            onClick={() => void revalidateAppPath('/app/settings')}
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             設定

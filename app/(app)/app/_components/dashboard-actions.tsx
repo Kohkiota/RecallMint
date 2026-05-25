@@ -2,7 +2,6 @@
 
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
 
 export function DashboardActions({ dueCount }: { dueCount: number }) {
   return (
@@ -10,11 +9,12 @@ export function DashboardActions({ dueCount }: { dueCount: number }) {
       {dueCount > 0 ? (
         <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
           {/* T6 (S2.1): /app/quiz placeholder 撤去、 /app/study/smart に差替 (S2.2.1 T2: /session 撤去で /app/study/smart に統合)。
-              S-perf-1: prefetch={false} で並列 RSC prefetch を抑制 (header 側と同方針)。 */}
+              S-perf-1: prefetch={false} で並列 RSC prefetch を抑制 (header 側と同方針)。
+              S-perf-2 (C-1): revalidateAppPath onClick を撤去 (二重 RSC fetch 性能バグ修正、
+              詳細は docs/superpowers/plans/2026-05-25-s-perf-2.md §T2.5)。 */}
           <Link
             href="/app/study/smart"
             prefetch={false}
-            onClick={() => void revalidateAppPath('/app/study/smart')}
           >
             スマート復習（{dueCount}件）
           </Link>

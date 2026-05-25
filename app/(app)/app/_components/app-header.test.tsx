@@ -2,47 +2,37 @@
 // AppHeader component rendering tests.
 // Clerk SDK and Next.js Link are mocked so this runs in Node/jsdom without
 // a full Next.js context.
+//
+// S-perf-2 (C-1): nav Link の onClick={() => void revalidateAppPath(...)} を全撤去。
+// 「click で revalidateAppPath が呼ばれる」 系 test は削除済 (旧仕様)。
 
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { describe, it, expect, afterEach } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
+import { vi } from 'vitest'
 
 vi.mock('@clerk/nextjs', () => ({
   UserButton: () => <div data-testid="user-button" />,
 }))
 
 // next/link renders an <a> tag; mock to keep it simple and avoid Next.js
-// router context dependency in unit tests. onClick prop must be forwarded
-// so the revalidateAppPath wiring can be asserted.
+// router context dependency in unit tests.
 vi.mock('next/link', () => ({
   default: ({
     href,
     children,
     className,
-    onClick,
   }: {
     href: string
     children: React.ReactNode
     className?: string
-    onClick?: (e: React.MouseEvent) => void
   }) => (
-    <a href={href} className={className} onClick={onClick}>
+    <a href={href} className={className}>
       {children}
     </a>
   ),
 }))
 
-vi.mock('@/app/(app)/app/_actions/revalidate', () => ({
-  revalidateAppPath: vi.fn(),
-}))
-
 import { AppHeader } from './app-header'
-import { revalidateAppPath } from '@/app/(app)/app/_actions/revalidate'
-
-const mockRevalidate = revalidateAppPath as ReturnType<typeof vi.fn>
-
-beforeEach(() => {
-  vi.clearAllMocks()
-})
 
 // vitest.setup.ts runs vi.resetModules() in beforeEach which re-evaluates
 // modules but does not clean up jsdom DOM between tests. Explicit cleanup
@@ -73,20 +63,5 @@ describe('AppHeader', () => {
   it('renders UserButton', () => {
     render(<AppHeader />)
     expect(screen.getByTestId('user-button')).toBeInTheDocument()
-  })
-
-  // 全 nav link に onClick で revalidateAppPath が紐付き、
-  // navigate 先 Router Cache を破棄する。click ごとに該当 path で 1 回 call。
-  it.each([
-    { name: 'RecallMint', path: '/app' as const },
-    { name: 'アップロード', path: '/app/upload' as const },
-    { name: '試験', path: '/app/exams' as const },
-    { name: 'スマート復習', path: '/app/study/smart' as const },
-    { name: '設定', path: '/app/settings' as const },
-  ])('「$name」link click → revalidateAppPath($path) を 1 回 call', ({ name, path }) => {
-    render(<AppHeader />)
-    fireEvent.click(screen.getByRole('link', { name }))
-    expect(mockRevalidate).toHaveBeenCalledTimes(1)
-    expect(mockRevalidate).toHaveBeenCalledWith(path)
   })
 })
