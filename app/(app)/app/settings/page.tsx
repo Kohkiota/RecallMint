@@ -54,7 +54,8 @@ export default async function SettingsPage() {
             ) : null}
             {user.plan === 'free' ? (
               <Button asChild size="sm" className="mt-3 px-4 py-2 text-sm font-medium">
-                <Link href="/app/upgrade">プランを選択</Link>
+                {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
+                <Link href="/app/upgrade" prefetch={false}>プランを選択</Link>
               </Button>
             ) : (
               <div className="mt-3 flex flex-wrap gap-2">
@@ -73,7 +74,8 @@ export default async function SettingsPage() {
                     ので CTA を表示しない。 */}
                 {!(user.plan === 'pro' && user.billingInterval === 'year') && (
                   <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
-                    <Link href="/app/upgrade">アップグレード</Link>
+                    {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
+                    <Link href="/app/upgrade" prefetch={false}>アップグレード</Link>
                   </Button>
                 )}
               </div>
