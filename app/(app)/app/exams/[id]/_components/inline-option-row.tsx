@@ -40,7 +40,7 @@
 //   送信成功した row の値で server から新 prop が来た場合、 他 row の **未確定楽観値も
 //   同時に rollback されない** ように `setOptions(serverOptions)` は skip 条件付き。
 //
-// Ghost row (S2.0b-3):
+// Ghost row (S2.0b-3 + follow-up merge fix):
 // - 「+ 選択肢を追加」 で local state に追加された text='' の optimistic row。 server
 //   zod `optionSchema.text.refine(.trim().length > 0)` で reject されるため、 send
 //   payload からは必ず filter する (`send` 入口の sanitized)。 local state には残し、
@@ -50,9 +50,15 @@
 //   filter で除外されて server に届かず、 別 row の変更だけが反映される (= bug 回避)。
 // - ghost に text 入力 + blur が来ると ghost の text が valid 化、 sanitized に
 //   含まれて server 反映 → 通常 option に昇格。
-// - ghost を放置したまま user が何もしない場合: 次の revalidate (= 別経路で
-//   serverOptions prop が変わった時) で `useEffect([serverOptions])` が in-flight /
-//   queue なし時に options を server 値に上書き、 ghost は自然消滅する。
+// - revalidate (serverOptions prop 変化) では `useEffect([serverOptions])` が **merge
+//   戦略** で同期し、 server 確定値 + 「serverOptions に id がない local ghost」 を
+//   保持する。 これにより別 row の send 成功で起きる revalidate でも local の ghost
+//   が evict されない (旧実装は一括 setOptions(serverOptions) で ghost を含めて
+//   replace していたため、 「user が ghost を編集中に他 send が走ると ghost が消える」
+//   bug があった、 S2.0b-3 follow-up fix で解消)。
+// - 明示削除 (× button) は通常 row と同じ経路、 ghost を含む全 row 削除可能。
+// - 不要 ghost の cleanup: page reload / navigation で local state は破棄、 server
+//   は ghost を知らないため再表示なし。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
@@ -144,11 +150,28 @@ export function InlineOptionList({
 
   // 親再 fetch (revalidate) で serverOptions が変わったら state / serverCommittedRef
   // を同期。 send / queue 中は skip し楽観値を保護する。
+  //
+  // S2.0b-3 follow-up fix (連続追加 2 つ目が消える bug):
+  // 旧実装は `setOptions(serverOptions)` で local を一括上書きしていたが、 これは
+  // 「+ 選択肢を追加」 で local に追加された ghost (= server に存在しない、 text=''
+  // で未 commit な optimistic row) を 別 row の send 成功で起きる revalidate でも
+  // 静かに evict してしまう (= 「user が編集中の ghost が突然消える」 bug)。
+  // 修正: server に存在しない local ghost (id が serverOptions にない row) を保持
+  // した merge 戦略に変更。
+  // - serverOptions: 確定値、 そのまま全件取り込み
+  // - local ghost: serverOptions に id がない row だけ抽出して末尾に append
+  // serverCommittedRef は server 確定値のみ (ghost 含まず) を維持し、 send 失敗時の
+  // rollback / send 入口の shallowEqual 比較ベースとして純粋に保つ。 optionsRef は
+  // merged を反映し、 次の send が ghost を含む snapshot を build できるようにする
+  // (send 入口の filter で ghost は payload から除外される、 既存の防御は不変)。
   useEffect(() => {
     if (inFlightRef.current || pendingPayloadRef.current !== null) return
-    setOptions(serverOptions)
+    const serverIds = new Set(serverOptions.map((o) => o.id))
+    const localGhosts = optionsRef.current.filter((o) => !serverIds.has(o.id))
+    const merged: CardOption[] = [...serverOptions, ...localGhosts]
+    setOptions(merged)
     serverCommittedRef.current = serverOptions
-    optionsRef.current = serverOptions
+    optionsRef.current = merged
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverOptions])
 

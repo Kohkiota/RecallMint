@@ -478,4 +478,102 @@ describe('InlineOptionList debounce / queue / optimistic / checkbox 個別 inFli
     expect(checkboxes[1]!.checked).toBe(false) // rollback
     expect(checkboxes[2]!.checked).toBe(false) // rollback
   })
+
+  // -------------------------------------------------------------------------
+  // S2.0b-3 follow-up fix: 連続追加 2 つ目が消える bug の regression guard
+  // (useEffect([serverOptions]) を merge 戦略に変更し、 別 row の send 成功
+  //  + revalidate で local ghost が evict される旧 bug を構造解消)
+  // -------------------------------------------------------------------------
+
+  it('連続追加: c に text 入力 → blur → d 追加 → 500ms 経過で c-valid send 完了 → revalidate (props 更新) でも d-ghost が消えない (merge 戦略 regression)', async () => {
+    const { rerender } = renderList()
+
+    // 1. 「+ 追加」 で c-ghost 追加 (auto-edit on mount)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await flushPromises()
+    expect(screen.getByText('c')).toBeInTheDocument()
+
+    // 2. c に 'hello' 入力 + blur (scheduleSend で 500ms timer 起動)
+    const ta1 = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    fireEvent.change(ta1, { target: { value: 'hello' } })
+    fireEvent.blur(ta1)
+    await flushPromises()
+
+    // 3. すぐに「+ 追加」 で d-ghost 追加
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await flushPromises()
+    expect(screen.getByText('d')).toBeInTheDocument()
+    // 4 件: a / b / c (hello) / d-ghost
+    expect(screen.getByText('選択肢 (4 件)')).toBeInTheDocument()
+
+    // 4. 500ms 経過 → c-valid send 発火 + 完了
+    await act(async () => {
+      vi.advanceTimersByTime(500)
+    })
+    await flushPromises()
+    // server payload は [a, b, c-with-hello] (d-ghost は filter で除外)
+    expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+      { id: 'a', text: '選択肢A', isCorrect: false, explanation: 'A 理由' },
+      { id: 'b', text: '選択肢B', isCorrect: false },
+      { id: 'c', text: 'hello', isCorrect: false },
+    ])
+
+    // 5. 親 revalidate を simulate: serverOptions prop を server 確定値で再 render
+    const newServerOptions: CardOption[] = [
+      { id: 'a', text: '選択肢A', is_correct: false, explanation: 'A 理由' },
+      { id: 'b', text: '選択肢B', is_correct: false },
+      { id: 'c', text: 'hello', is_correct: false },
+    ]
+    rerender(
+      <InlineOptionList cardId="card-1" options={newServerOptions} />,
+    )
+    await flushPromises()
+
+    // 6. 旧実装 (一括 setOptions(serverOptions)) ではここで d-ghost が evict されて
+    //    「選択肢 (3 件)」 になっていた。 merge 戦略では d-ghost が末尾に保持されて
+    //    「選択肢 (4 件)」 のまま、 c (hello 反映済) も d (ghost のまま) も残る。
+    expect(screen.getByText('選択肢 (4 件)')).toBeInTheDocument()
+    expect(screen.getByText('hello')).toBeInTheDocument() // c 昇格済
+    expect(screen.getByText('d')).toBeInTheDocument() // d-ghost 残存
+
+    // 7. d-ghost の存在を id 表示で再確認 (4 row 全部 list 内に居る)
+    const idButtons = screen.getAllByRole('button', { name: '選択肢 id 編集' })
+    // a / b / c の 3 + d の id cell (d は edit mode の text cell を持つが id cell は
+    // display 状態のため idButtons に含まれる)
+    expect(idButtons.length).toBe(4)
+  })
+
+  it('merge 戦略: serverCommittedRef は merged ではなく server 確定値のみを保持 (= rollback target が ghost 含まないこと)', async () => {
+    const { rerender } = renderList()
+    // c-ghost 追加 (auto-edit)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await flushPromises()
+
+    // 親 revalidate を simulate (server 側は a, b のまま不変、 c は ghost で未送信)
+    rerender(<InlineOptionList cardId="card-1" options={baseOptions} />)
+    await flushPromises()
+
+    // 4 件は残らないが、 c-ghost は merge で保持される (server に id 'c' なし → ghost)
+    expect(screen.getByText('選択肢 (3 件)')).toBeInTheDocument()
+    expect(screen.getByText('c')).toBeInTheDocument()
+
+    // 次に c に text 入力 + blur で valid 化 → send
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    fireEvent.change(ta, { target: { value: 'cテキスト' } })
+    fireEvent.blur(ta)
+    await act(async () => {
+      vi.advanceTimersByTime(500)
+    })
+    await flushPromises()
+
+    // server payload は a, b, c (c が valid 化されて 3 件全部含まれる、 ghost なし)
+    expect(updateCardField).toHaveBeenCalledWith('card-1', 'options', [
+      { id: 'a', text: '選択肢A', isCorrect: false, explanation: 'A 理由' },
+      { id: 'b', text: '選択肢B', isCorrect: false },
+      { id: 'c', text: 'cテキスト', isCorrect: false },
+    ])
+    // = serverCommittedRef が a, b (ghost 含まず) の状態から差分なく付加された確認
+    // (もし serverCommittedRef に c-ghost を含めていたら shallowEqual 判定で skip され
+    //  send されない可能性があった)
+  })
 })
