@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
-import { limitsFor, type Plan } from '@/lib/auth/plan-limits'
+import { limitsForOrFree, type Plan } from '@/lib/auth/plan-limits'
 import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -84,7 +84,10 @@ export default async function UploadPage() {
     getActiveExamsForUser(userId),
     getCurrentMonthOcrPages(userId),
   ])
-  const monthlyLimit = limitsFor(plan).ocrPagesPerMonth
+  // C2 (S-perf-3 follow-up): `limitsFor` ではなく safety net 版を使う。 plan が
+  // null / 未知の文字列で runtime に漏れた場合 (JWT claim 不整合 / DB 値異常等)
+  // でも free fallback で画面クラッシュを防ぐ (詳細: lib/auth/plan-limits.ts)。
+  const monthlyLimit = limitsForOrFree(plan).ocrPagesPerMonth
   const remaining =
     monthlyLimit === null ? null : Math.max(monthlyLimit - currentMonthPages, 0)
 
