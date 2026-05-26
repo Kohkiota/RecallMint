@@ -23,6 +23,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, '.'),
+      // server-only package は default export で throw する runtime guard を持つ
+      // (`import 'server-only'` を client bundle で評価したら build を失敗させる仕様)。
+      // vitest は node env で評価するため、 そのままだと server-only を import する
+      // module の test が全て module load 時に throw する。 in-repo の no-op stub に
+      // alias して test 時に guard を無効化する (pnpm cache path 依存を回避)。
+      'server-only': path.resolve(__dirname, 'vitest-stubs/server-only.js'),
     },
   },
 })

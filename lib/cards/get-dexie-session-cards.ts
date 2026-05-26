@@ -15,7 +15,9 @@
 //   比較で十分。
 
 import { getClientDb, type ClientCard } from '@/lib/client-db'
-import { toCard } from '@/lib/db/cards-pull'
+// client component から transitive import されるため、 `@/lib/db/cards-pull` (server-
+// only) ではなく pure mapper module から直接 import する。
+import { toCard } from '@/lib/db/cards-mapper'
 import type { Card } from '@/lib/db/schema'
 
 export async function getDueCardsFromDexie(

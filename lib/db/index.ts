@@ -1,3 +1,8 @@
+// server limit guard — postgres-js / drizzle は net / tls / fs に依存するため client
+// bundle に入れてはならない。 import 'server-only' により、 client component から
+// 本 module が transitive import された時点で build を loud に失敗させる。
+import 'server-only'
+
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'

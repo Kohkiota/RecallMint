@@ -32,6 +32,7 @@
     "radix-ui": "^1.4.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "server-only": "^0.0.1",
     "shadcn": "^4.6.0",
     "stripe": "^22.0.2",
     "svix": "^1.91.1",

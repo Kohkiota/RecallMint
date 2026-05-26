@@ -6,7 +6,9 @@ import { Loader2 } from 'lucide-react'
 import imageCompression from 'browser-image-compression'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { formatRelativeJa, type ActiveExam } from '@/lib/exams/list'
+// client-safe な format helper + type を `@/lib/exams/format` から取る。
+// `@/lib/exams/list` 側は `server-only` 付きで DB 接続を引き込むため使用不可。
+import { formatRelativeJa, type ActiveExam } from '@/lib/exams/format'
 import {
   MAX_IMAGE_FILE_MB,
   MAX_IMAGE_WIDTH_OR_HEIGHT,
