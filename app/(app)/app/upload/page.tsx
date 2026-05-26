@@ -1,8 +1,8 @@
 import Link from 'next/link'
-import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
-import { limitsFor } from '@/lib/auth/plan-limits'
+import { limitsFor, type Plan } from '@/lib/auth/plan-limits'
 import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -24,11 +24,26 @@ import { UploadForm } from './_components/upload-form'
 //
 // in-flight なし (false):
 //   従来どおり UploadForm を描画する (S1.7 T3 以降の既存ロジックを維持)。
+//
+// C2: getAuthContext() で JWT 経由の dbUserId + plan 読込に切替、 users SELECT
+// を撤去。 dbUserId / plan いずれか undefined (JWT template 未浸透) なら
+// getCurrentUser() fallback に degrade する。 これにより /app/upload の Neon
+// users SELECT 1 件 (cold +2s) が剥がれる。
 export default async function UploadPage() {
-  const user = await getCurrentUser()
-  if (!user) return null
+  const ctx = await getAuthContext()
+  let userId: string | undefined = ctx.dbUserId
+  let plan: Plan | undefined = ctx.plan
+  // dbUserId / plan の片方が undefined なら、 整合のため両方とも DB 由来で揃える
+  // (= hybrid 由来を避けて読込 source を 1 系統に固定する設計判断、 review M2)。
+  // どちらか片方が JWT に乗っていても fallback で上書き、 結果として 1 SELECT。
+  if (userId === undefined || plan === undefined) {
+    const user = await getCurrentUser()
+    if (!user) return null
+    userId = user.id
+    plan = user.plan
+  }
 
-  const isProcessing = await hasActiveProcessingUpload(user.id)
+  const isProcessing = await hasActiveProcessingUpload(userId)
 
   // --- 共通ヘッダー ---
   const header = (
@@ -66,10 +81,10 @@ export default async function UploadPage() {
   // --- 通常描画: UploadForm ---
   // in-flight なし確定後に fetch する (処理中案内のときは不要な fetch を省く)。
   const [existingExams, currentMonthPages] = await Promise.all([
-    getActiveExamsForUser(user.id),
-    getCurrentMonthOcrPages(user.id),
+    getActiveExamsForUser(userId),
+    getCurrentMonthOcrPages(userId),
   ])
-  const monthlyLimit = limitsFor(user.plan).ocrPagesPerMonth
+  const monthlyLimit = limitsFor(plan).ocrPagesPerMonth
   const remaining =
     monthlyLimit === null ? null : Math.max(monthlyLimit - currentMonthPages, 0)
 
@@ -81,7 +96,7 @@ export default async function UploadPage() {
         currentMonthPages={currentMonthPages}
         monthlyLimit={monthlyLimit}
         remaining={remaining}
-        plan={user.plan}
+        plan={plan}
       />
     </div>
   )

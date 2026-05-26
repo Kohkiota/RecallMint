@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 import {
   formatRelativeJa,
   getActiveExamsWithCardCount,
@@ -21,13 +21,23 @@ import {
 //   残骸の DB cleanup は polling endpoint (/api/exams/status) が担う。
 //   処理中 / 失敗バッジは ExamStatusBadge (client) が初期値 statusMap を起点に
 //   polling で live 更新する (OCR 完了後にバッジが自動で消える)。
+//
+// C2: getAuthContext() で JWT 経由の dbUserId 読込に切替、 users SELECT を撤去。
+// JWT template 未浸透 / 旧セッションでは dbUserId undefined になるため、
+// getCurrentUser() への fallback で旧 path に degrade する。 backfill 完了後は
+// fallback path は traffic 上ほぼ発火しない。
 export default async function ExamsListPage() {
-  const user = await getCurrentUser()
-  if (!user) return null
+  const ctx = await getAuthContext()
+  let userId: string | undefined = ctx.dbUserId
+  if (userId === undefined) {
+    const user = await getCurrentUser()
+    if (!user) return null
+    userId = user.id
+  }
 
   const [exams, statusMap] = await Promise.all([
-    getActiveExamsWithCardCount(user.id),
-    getExamStatusMap(user.id),
+    getActiveExamsWithCardCount(userId),
+    getExamStatusMap(userId),
   ])
 
   return (
