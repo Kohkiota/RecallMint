@@ -16,6 +16,7 @@ import { users, clerkEvents, deletionFailures, exams, studyDays, contactMessages
 import { logger } from '@/lib/logger'
 import { stripe, cancelWithRetry } from '@/lib/stripe'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
+import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 
 export const runtime = 'nodejs'
 
@@ -104,10 +105,28 @@ async function handleEvent(evt: ClerkEvent): Promise<void> {
   if (evt.type === 'user.created') {
     const data = evt.data as { id: string; email_addresses?: { email_address: string }[] }
     const email = data.email_addresses?.[0]?.email_address ?? 'unknown@example.com'
-    await db
+    // .returning({id}) で INSERT 成立 (新規) と conflict (既存) を区別する。
+    // 新規時のみ Clerk publicMetadata を初期 sync (dbUserId + plan='free')。
+    // conflict 時 (= webhook re-fire 等で既に users 行が存在) は metadata sync を
+    // skip — 既存 metadata の plan 値を 'free' に上書きする race を防ぐ。
+    // 復旧経路: conflict path で metadata が欠落した user は (a) 次の user 由来
+    // webhook (Stripe subscription 系) で publicMetadata.plan が補填される、
+    // (b) consumer 側の getAuthContext() が dbUserId 未設定時に getCurrentUser()
+    // へ fallback する設計、 の 2 段で degraded mode を吸収する。 一斉復旧は
+    // 別途 backfill (後続 sprint の chore commit) で実施予定。
+    const inserted = await db
       .insert(users)
       .values({ clerkId: data.id, email })
       .onConflictDoNothing({ target: users.clerkId })
+      .returning({ id: users.id })
+    const dbUserId = inserted?.[0]?.id
+    if (dbUserId) {
+      await syncClerkPublicMetadata({
+        clerkId: data.id,
+        dbUserId,
+        plan: 'free',
+      })
+    }
     return
   }
   if (evt.type === 'user.deleted') {

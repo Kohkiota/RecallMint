@@ -13,6 +13,7 @@ const {
   mockCancelWithRetry,
   mockNotifyOps,
   mockNotifyWebhookError,
+  mockSyncClerkMetadata,
 } = vi.hoisted(() => ({
   mockSvixVerify: vi.fn(),
   mockDbInsert: vi.fn(),
@@ -24,6 +25,7 @@ const {
   mockCancelWithRetry: vi.fn().mockResolvedValue(undefined),
   mockNotifyOps: vi.fn().mockResolvedValue(undefined),
   mockNotifyWebhookError: vi.fn().mockResolvedValue(undefined),
+  mockSyncClerkMetadata: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
 vi.mock('svix', () => ({
@@ -56,6 +58,10 @@ vi.mock('@/lib/ops', () => ({
   notifyWebhookError: mockNotifyWebhookError,
 }))
 
+vi.mock('@/lib/auth/clerk-metadata', () => ({
+  syncClerkPublicMetadata: mockSyncClerkMetadata,
+}))
+
 import { POST } from './route'
 
 const SECRET = 'whsec_test_for_unit'
@@ -85,6 +91,7 @@ beforeEach(() => {
   process.env.CLERK_WEBHOOK_SECRET = SECRET
   mockNotifyOps.mockResolvedValue(undefined)
   mockCancelWithRetry.mockResolvedValue(undefined)
+  mockSyncClerkMetadata.mockResolvedValue({ ok: true })
   // デフォルト: transaction は callback をそのまま実行する (tx は db と同 shape)
   mockDbTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -113,6 +120,104 @@ function makeReq(body: unknown): Request {
 async function* asyncIterFrom<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) yield item
 }
+
+describe('Clerk webhook user.created (publicMetadata sync)', () => {
+  it('happy path: users INSERT returning {id} → syncClerkPublicMetadata が clerkId + dbUserId + plan=free で呼ばれる → 200', async () => {
+    mockSvixVerify.mockReturnValue({
+      type: 'user.created',
+      data: {
+        id: 'user_new',
+        email_addresses: [{ email_address: 'new@example.com' }],
+      },
+    })
+    // 1st insert = clerk_events idempotency
+    mockDbInsert
+      .mockReturnValueOnce(chain([{ id: 'msg_test_1' }]))
+      // 2nd insert = users INSERT、 returning [{id: db-uuid}]
+      .mockReturnValueOnce(
+        chain([{ id: '00000000-0000-0000-0000-000000000abc' }]),
+      )
+
+    const res = await POST(
+      makeReq({
+        type: 'user.created',
+        data: {
+          id: 'user_new',
+          email_addresses: [{ email_address: 'new@example.com' }],
+        },
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockSyncClerkMetadata).toHaveBeenCalledTimes(1)
+    expect(mockSyncClerkMetadata).toHaveBeenCalledWith({
+      clerkId: 'user_new',
+      dbUserId: '00000000-0000-0000-0000-000000000abc',
+      plan: 'free',
+    })
+  })
+
+  it('conflict path (returning []): users 行が既に存在 → syncClerkPublicMetadata は呼ばれない (re-fire 安全)', async () => {
+    // Clerk webhook の re-fire (同 svix-id ではないが users 行が他経路で先に作られた等)。
+    // 既存 publicMetadata が新規 webhook によって上書きされて plan が free に戻る race を防ぐ。
+    mockSvixVerify.mockReturnValue({
+      type: 'user.created',
+      data: {
+        id: 'user_dup',
+        email_addresses: [{ email_address: 'dup@example.com' }],
+      },
+    })
+    mockDbInsert
+      .mockReturnValueOnce(chain([{ id: 'msg_test_dup' }]))
+      // users INSERT ON CONFLICT DO NOTHING → returning []
+      .mockReturnValueOnce(chain([]))
+
+    const res = await POST(
+      makeReq({
+        type: 'user.created',
+        data: {
+          id: 'user_dup',
+          email_addresses: [{ email_address: 'dup@example.com' }],
+        },
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+  })
+
+  it('syncClerkPublicMetadata が ok:false でも webhook は 200 を返す (notifyOps は helper 側で発火)', async () => {
+    mockSvixVerify.mockReturnValue({
+      type: 'user.created',
+      data: {
+        id: 'user_meta_fail',
+        email_addresses: [{ email_address: 'mf@example.com' }],
+      },
+    })
+    mockDbInsert
+      .mockReturnValueOnce(chain([{ id: 'msg_test_2' }]))
+      .mockReturnValueOnce(
+        chain([{ id: '00000000-0000-0000-0000-000000000def' }]),
+      )
+    mockSyncClerkMetadata.mockResolvedValueOnce({ ok: false })
+
+    const res = await POST(
+      makeReq({
+        type: 'user.created',
+        data: {
+          id: 'user_meta_fail',
+          email_addresses: [{ email_address: 'mf@example.com' }],
+        },
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockSyncClerkMetadata).toHaveBeenCalledOnce()
+    // helper 内で notifyOps が発火 (本 file の mock は helper を mock しているので
+    // notifyOps は webhook handler 側からは呼ばれない)
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+})
 
 describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
   it('正常系: clerk_events INSERT → SELECT users → Stripe sub cancel × N → DB transaction (update + 3 delete) → 200', async () => {

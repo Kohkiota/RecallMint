@@ -7,6 +7,7 @@ import type { Plan } from '@/lib/auth/plan-limits'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { logger } from '@/lib/logger'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
+import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 
 export const runtime = 'nodejs'
 
@@ -209,7 +210,12 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           eventId: event.id,
           customerId,
         })
-        await db
+        // RETURNING で UPDATE matched 行数を判定する。 user.created webhook が
+        // checkout.session.completed より遅延した race では Step 1 link で
+        // 0 行 match → Step 2 でも 0 行 match。 この場合 Clerk publicMetadata
+        // を fire させない (= user.created 後着で plan='free' で clobber され、
+        // 結果的に "Clerk=standard / DB=free" の整合崩壊を防ぐ)。
+        const updated = await db
           .update(users)
           .set({
             plan,
@@ -219,6 +225,10 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
             cancelAt,
           })
           .where(eq(users.clerkId, clerkId))
+          .returning({ clerkId: users.clerkId })
+        if (updated?.[0]?.clerkId) {
+          await syncClerkPublicMetadata({ clerkId, plan })
+        }
       }
       return
     }
@@ -231,7 +241,10 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
         eventId: event.id,
         customerId,
       })
-      await db
+      // RETURNING で clerkId を取得し、 続けて Clerk publicMetadata sync。
+      // UPDATE が 0 行 match (= checkout.session.completed が先着していない race)
+      // のときは returning 空 → metadata sync skip。
+      const updated = await db
         .update(users)
         .set({
           plan,
@@ -241,6 +254,23 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           cancelAt,
         })
         .where(eq(users.stripeCustomerId, customerId))
+        .returning({ clerkId: users.clerkId })
+      const clerkId = updated?.[0]?.clerkId
+      if (clerkId) {
+        await syncClerkPublicMetadata({ clerkId, plan })
+      } else if (event.type === 'customer.subscription.updated') {
+        // .created の unlinked race は checkout.session.completed が後追いで救済
+        // するため alert 不要 (新規 sign-up の自然な ordering)。 .updated で
+        // unlinked は user operation 由来 (Portal 経由 plan 変更等) で stripeCustomerId
+        // 紐付き欠落 = OT 介入対象の anomaly なので notifyOps する。
+        await notifyOps('stripe sub event for unlinked customer', {
+          eventId: event.id,
+          customerId,
+          eventType: event.type,
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          timestamp: new Date().toISOString(),
+        })
+      }
       return
     }
     case 'customer.subscription.deleted': {
@@ -249,7 +279,7 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       // subscription 削除時: plan/status/billingInterval をリセット、cancelAt を
       // クリア。 currentPeriodEnd は billing 履歴の記録として残す (touch しない)。
       // cancelAtPeriodEnd は schema 廃止済み (cancel_at != null で解約予約判定)。
-      await db
+      const updated = await db
         .update(users)
         .set({
           plan: 'free',
@@ -258,6 +288,21 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           cancelAt: null,
         })
         .where(eq(users.stripeCustomerId, customerId))
+        .returning({ clerkId: users.clerkId })
+      const clerkId = updated?.[0]?.clerkId
+      if (clerkId) {
+        await syncClerkPublicMetadata({ clerkId, plan: 'free' })
+      } else {
+        // .deleted で unlinked は subscription を解約された user の row が消えて
+        // いるなど整合崩壊 = OT 介入対象。 .created と違い recover の経路がない。
+        await notifyOps('stripe sub event for unlinked customer', {
+          eventId: event.id,
+          customerId,
+          eventType: event.type,
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          timestamp: new Date().toISOString(),
+        })
+      }
       return
     }
     default:

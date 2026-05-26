@@ -52,6 +52,13 @@ vi.mock('@/lib/ops', () => ({
   notifyOps: vi.fn().mockResolvedValue(undefined),
 }))
 
+// I-4 fix: integration test でも clerk-metadata helper を mock。 mock しないと
+// route 内 syncClerkPublicMetadata が実 Clerk API call を試み、 ok:false が
+// silent 帰ってきて Coverage が 0 になる。
+vi.mock('@/lib/auth/clerk-metadata', () => ({
+  syncClerkPublicMetadata: vi.fn().mockResolvedValue({ ok: true }),
+}))
+
 import { POST } from '@/app/api/webhooks/stripe/route'
 
 const SECRET = 'whsec_stripe_test_fake'
@@ -364,10 +371,15 @@ describe('POST /api/webhooks/stripe', () => {
   // handler 内 throw → 200 swallow + notifyWebhookError 呼ばれる
   // (CLAUDE.md §Stripe-5: エラー時も 200 を返す、再送ループ防止)
   it('handler error → 200 swallow + notifyWebhookError 呼ばれる (handler/eventId/eventType/customerId)', async () => {
-    // Force the users update to throw, simulating a DB write failure
+    // Force the users update to throw, simulating a DB write failure。
+    // C1 publicMetadata sync 追加で `.returning()` が chain に挟まったため、
+    // where() の次に returning() で reject させる (旧来の where() reject pattern を
+    // 維持すると "where(...).returning is not a function" になり Error が変わる)。
     mockDb.update.mockImplementation(() => ({
       set: vi.fn(() => ({
-        where: vi.fn().mockRejectedValue(new Error('boom: db down')),
+        where: vi.fn(() => ({
+          returning: vi.fn().mockRejectedValue(new Error('boom: db down')),
+        })),
       })),
     }))
 
