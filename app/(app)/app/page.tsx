@@ -5,6 +5,7 @@ import { cards } from '@/lib/db/schema'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { DashboardActions } from './_components/dashboard-actions'
 import { DashboardStats } from './_components/dashboard-stats'
+import { PullTrigger } from './_components/pull-trigger'
 
 // S-perf-2 T4: stats (todayCardCount / streak) を `<DashboardStats />` 経由の
 // /api/dashboard/stats に分離。 dueCount は CTA enable 判定に必要なので server
@@ -24,6 +25,9 @@ export default async function Dashboard() {
 
   return (
     <div>
+      {/* S-local-2 (Phase α): mount 時に cards / exams を Dexie に background pull。
+          UI なし (return null)、 失敗 silent。 */}
+      <PullTrigger />
       <h1 className="text-2xl font-bold mb-4">こんにちは</h1>
 
       <DashboardStats />
