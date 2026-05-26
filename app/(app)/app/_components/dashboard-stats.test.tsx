@@ -1,128 +1,146 @@
 // @vitest-environment jsdom
-// DashboardStats client component test。
-// fetch を hoisted mock で差し替え、 loading skeleton / 成功 / 失敗 / abort を検証。
+// DashboardStats client component test (S-perf-3 で IDB 化、 fake-indexeddb seed
+// 形式に書き換え)。
+//
+// 検証観点:
+// - props は userId (DB UUID) + test 注入用 now
+// - useLiveQuery が undefined 中は skeleton (layout shift 防止、 aria-busy)
+// - Dexie study_days seed 後、 todayCardCount / streak が表示される
+// - 他 user の study_days は混入しない (tenant 分離)
+// - JST 境界 (UTC 14:59 / 15:00)
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
+import { DashboardStats } from './dashboard-stats'
 
-const originalFetch = globalThis.fetch
+function fakeStudyDay(overrides?: Partial<ClientStudyDay>): ClientStudyDay {
+  return {
+    user_id: 'user-1',
+    day: '2026-04-22',
+    review_count: 5,
+    correct_count: 3,
+    distinct_card_count: 4,
+    ...overrides,
+  }
+}
 
-beforeEach(() => {
-  vi.restoreAllMocks()
+beforeEach(async () => {
+  await getClientDb().study_days.clear()
 })
+
 afterEach(() => {
-  globalThis.fetch = originalFetch
   cleanup()
 })
 
-import { DashboardStats } from './dashboard-stats'
-
-describe('DashboardStats', () => {
-  it('mount 直後は skeleton (loading aria) を表示し、 値はまだ出ない', () => {
-    // 永遠 pending な fetch
-    globalThis.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch
-    render(<DashboardStats />)
+describe('DashboardStats (Dexie)', () => {
+  it('mount 直後 (useLiveQuery undefined): skeleton aria-busy を表示', () => {
+    render(<DashboardStats userId="user-1" />)
     expect(screen.getByRole('status', { name: /読み込み中/ })).toBeInTheDocument()
-    expect(screen.queryByText('7')).not.toBeInTheDocument()
   })
 
-  it('fetch 成功 → todayCardCount / streak を表示', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ todayCardCount: 7, streak: 4 }),
-    })) as unknown as typeof fetch
-    render(<DashboardStats />)
+  it('Dexie 空: todayCardCount=0 + streak=0 を表示', async () => {
+    render(
+      <DashboardStats
+        userId="user-1"
+        now={new Date('2026-04-22T12:00:00Z')}
+      />,
+    )
     await waitFor(() => {
-      expect(screen.getByText('7')).toBeInTheDocument()
-      expect(screen.getByText(/4\s*日/)).toBeInTheDocument()
+      expect(screen.getByText('今日の学習問題数')).toBeInTheDocument()
+      // 今日と streak で 0 が 2 箇所、 streak は "0 日" 表記
+      expect(screen.getByText('0', { selector: '.text-3xl' })).toBeInTheDocument()
+      expect(screen.getByText(/0\s*日/)).toBeInTheDocument()
     })
     // skeleton は消える
-    expect(screen.queryByRole('status', { name: /読み込み中/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('status', { name: /読み込み中/ }),
+    ).not.toBeInTheDocument()
   })
 
-  it('fetch !ok → 数値部分は "--" + inline error 表示', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: false,
-      status: 500,
-      json: async () => ({ error: 'internal' }),
-    })) as unknown as typeof fetch
-    render(<DashboardStats />)
+  it('今日 1 行: todayCardCount = distinct_card_count, streak = 1', async () => {
+    await getClientDb().study_days.bulkPut([
+      fakeStudyDay({
+        user_id: 'user-1',
+        day: '2026-04-22',
+        review_count: 5,
+        distinct_card_count: 7,
+      }),
+    ])
+    render(
+      <DashboardStats
+        userId="user-1"
+        now={new Date('2026-04-22T12:00:00Z')}
+      />,
+    )
     await waitFor(() => {
-      // 「--」 が 2 枚分 (today / streak) 出る
-      const dashes = screen.getAllByText('--')
-      expect(dashes.length).toBe(2)
-    })
-    expect(screen.getByRole('alert')).toHaveTextContent(/取得に失敗/)
-  })
-
-  it('fetch throw (network error) → "--" + inline error', async () => {
-    globalThis.fetch = vi.fn(async () => {
-      throw new Error('network')
-    }) as unknown as typeof fetch
-    render(<DashboardStats />)
-    await waitFor(() => {
-      expect(screen.getAllByText('--')).toHaveLength(2)
-      expect(screen.getByRole('alert')).toBeInTheDocument()
+      expect(screen.getByText('7')).toBeInTheDocument()
+      expect(screen.getByText(/1\s*日/)).toBeInTheDocument()
     })
   })
 
-  it('unmount 時に AbortSignal が abort され、 fetch reject 後も error UI を render しない', async () => {
-    // fetch を持ち越して unmount 後に reject 完了する形にし、 「unmount 後に setState
-    // で error phase に倒れる regression」 を確実に lock する (review Important #2)。
-    // 仕掛け: signal と reject を外部から取り出せる box (object 経由で
-    // TypeScript の let-narrow-to-never 推論を回避)。
-    const box: {
-      signal: AbortSignal | null
-      reject: ((err: Error) => void) | null
-    } = { signal: null, reject: null }
-    globalThis.fetch = vi.fn(
-      (_: RequestInfo | URL, init?: RequestInit) =>
-        new Promise((_resolve, reject) => {
-          box.signal = init?.signal ?? null
-          box.reject = (err) => reject(err)
-        }),
-    ) as unknown as typeof fetch
-
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { unmount, container } = render(<DashboardStats />)
-    // unmount 前は loading skeleton が出ている
-    expect(container.querySelector('[role="status"]')).not.toBeNull()
-    unmount()
-    // (a) AbortController.abort() が呼ばれて signal が aborted になった
-    expect(box.signal?.aborted).toBe(true)
-    // (b) fetch promise を AbortError で reject (実 fetch の挙動を模倣)
-    const abortErr = new Error('aborted')
-    ;(abortErr as Error & { name: string }).name = 'AbortError'
-    box.reject?.(abortErr)
-    await new Promise((r) => setTimeout(r, 20))
-    // (c) unmount 済なので DOM には何も残らない (= error phase に倒れていない)
-    expect(container.querySelector('[role="alert"]')).toBeNull()
-    expect(container.textContent).toBe('')
-    expect(errorSpy).not.toHaveBeenCalled()
-    errorSpy.mockRestore()
+  it('連続 3 日 → streak = 3', async () => {
+    await getClientDb().study_days.bulkPut([
+      fakeStudyDay({ user_id: 'user-1', day: '2026-04-22', distinct_card_count: 4 }),
+      fakeStudyDay({ user_id: 'user-1', day: '2026-04-21' }),
+      fakeStudyDay({ user_id: 'user-1', day: '2026-04-20' }),
+    ])
+    render(
+      <DashboardStats
+        userId="user-1"
+        now={new Date('2026-04-22T12:00:00Z')}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('4')).toBeInTheDocument()
+      expect(screen.getByText(/3\s*日/)).toBeInTheDocument()
+    })
   })
 
-  it('AbortError 早期 return が逆転していると error phase に倒れる (regression guard、 直前 test の positive signal 補強)', async () => {
-    // 上 test の対偶を assert: 「unmount **しない**まま AbortError が来た場合、
-    // 早期 return で error にならず、 そのまま loading のままになる」
-    // (= 早期 return の挙動 lock)。 もし catch から早期 return を消すと、
-    // この test は失敗する。
-    const box: { reject: ((err: Error) => void) | null } = { reject: null }
-    globalThis.fetch = vi.fn(
-      () =>
-        new Promise((_resolve, reject) => {
-          box.reject = (err) => reject(err)
-        }),
-    ) as unknown as typeof fetch
+  it('他 user の行は混入しない (tenant 分離)', async () => {
+    await getClientDb().study_days.bulkPut([
+      fakeStudyDay({
+        user_id: 'other-user',
+        day: '2026-04-22',
+        distinct_card_count: 99,
+      }),
+      fakeStudyDay({
+        user_id: 'user-1',
+        day: '2026-04-22',
+        distinct_card_count: 4,
+      }),
+    ])
+    render(
+      <DashboardStats
+        userId="user-1"
+        now={new Date('2026-04-22T12:00:00Z')}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('4')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('99')).not.toBeInTheDocument()
+  })
 
-    const { container } = render(<DashboardStats />)
-    const abortErr = new Error('aborted')
-    ;(abortErr as Error & { name: string }).name = 'AbortError'
-    box.reject?.(abortErr)
-    await new Promise((r) => setTimeout(r, 20))
-    // AbortError は早期 return で setState 不発火 → loading skeleton 維持
-    expect(container.querySelector('[role="status"]')).not.toBeNull()
-    expect(container.querySelector('[role="alert"]')).toBeNull()
+  it('JST 境界 UTC 15:00 (= JST 翌日 00:00): today は翌日扱い', async () => {
+    await getClientDb().study_days.bulkPut([
+      fakeStudyDay({
+        user_id: 'user-1',
+        day: '2026-04-22',
+        distinct_card_count: 8,
+      }),
+    ])
+    render(
+      <DashboardStats
+        userId="user-1"
+        now={new Date('2026-04-22T15:00:00Z')}
+      />,
+    )
+    // today = '2026-04-23' → 行なし → 0
+    // yesterday = '2026-04-22' (review_count > 0) → streak = 1 (yesterday 起点)
+    await waitFor(() => {
+      expect(screen.getByText('0', { selector: '.text-3xl' })).toBeInTheDocument()
+      expect(screen.getByText(/1\s*日/)).toBeInTheDocument()
+    })
   })
 })

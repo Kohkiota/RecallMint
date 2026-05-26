@@ -1,67 +1,39 @@
 'use client'
 
-// DashboardStats — dashboard の「今日の枚数 / 連続日数」 stats を mount 後に
-// `/api/dashboard/stats` から fetch する client component (S-perf-2 T4)。
+// DashboardStats — dashboard の「今日の枚数 / 連続日数」 stats を Dexie study_days
+// mirror から useLiveQuery で算出する client component (S-perf-3 / dashboard 高速化)。
 //
 // 設計判断:
-// - SWR / React Query は導入しない。 useEffect + AbortController の素朴実装。
-// - 失敗時は dash 表示 (`--`) + inline error。 dashboard 全体を壊さない
-//   (CTA / アップグレード link は機能維持)。
-// - unmount 時は AbortController で fetch を中止し、 setState race を防ぐ。
-//   React 18+ では setState on unmounted の warn は削除されたが、 同じ理由で
-//   abort することで「unmount 後に走る setState」 そのものを発生させない。
-// - skeleton は本体と同じ「2 列 grid + Card 風 div」 で寸法を揃え、 値表示時の
-//   layout shift を防ぐ。
+// - 旧 `/api/dashboard/stats` fetch は廃止 (server 側 2 SELECT による 2 秒台の待ち
+//   を撤去)。 route 自体は fallback 用に据置 (`app/api/dashboard/stats/route.ts`)。
+// - useLiveQuery で Dexie 変更を購読、 スマート復習で push された study_days 変化が
+//   そのまま反映 (= polling 不要、 PullTrigger 完了通知の側 channel も不要)。
+// - undefined 中は skeleton (layout shift 防止)。 確定後は値表示。
+// - server / client で streak / todayCount の数値が食い違わないよう、 server
+//   `lib/db/streak.ts` と同仕様の computeStreak を `lib/client/streak.ts` に port
+//   して共通利用 (実体は別ファイルだが contract が同じ)。
 
-import { useEffect, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { Card, CardContent } from '@/components/ui/card'
+import { getStreakStatsFromDexie } from '@/lib/client/streak'
 
-type Stats = {
-  todayCardCount: number
-  streak: number
-}
+export function DashboardStats({
+  userId,
+  now,
+}: {
+  userId: string
+  // test 注入用。 production では undefined → useLiveQuery 内部で都度 new Date()。
+  now?: Date
+}) {
+  const stats = useLiveQuery(
+    async () => getStreakStatsFromDexie(userId, now),
+    // userId のみ依存。 now は mount 時固定で十分 (dashboard が長時間開きっぱなしで
+    // 日付境界を跨ぐ稀ケースは streak が古い today で残るが、 user が画面再訪する
+    // 動線で自然に更新されるため許容)。
+    [userId],
+  )
 
-type State =
-  | { phase: 'loading' }
-  | { phase: 'ok'; stats: Stats }
-  | { phase: 'error'; message: string }
-
-export function DashboardStats() {
-  const [state, setState] = useState<State>({ phase: 'loading' })
-
-  useEffect(() => {
-    const controller = new AbortController()
-    void (async () => {
-      try {
-        const res = await fetch('/api/dashboard/stats', {
-          signal: controller.signal,
-          // Cache-Control: no-store は server 側で付与済、 client では cache=no-store
-          // を明示して proxy / SW 経路でも fresh を担保する。
-          cache: 'no-store',
-        })
-        if (!res.ok) {
-          setState({ phase: 'error', message: '取得に失敗しました' })
-          return
-        }
-        const body = (await res.json()) as Stats
-        setState({ phase: 'ok', stats: body })
-      } catch (err) {
-        // AbortError は unmount 由来の正常停止、 setState しない
-        if (
-          err instanceof Error &&
-          (err.name === 'AbortError' || controller.signal.aborted)
-        ) {
-          return
-        }
-        setState({ phase: 'error', message: '取得に失敗しました' })
-      }
-    })()
-    return () => {
-      controller.abort()
-    }
-  }, [])
-
-  if (state.phase === 'loading') {
+  if (stats === undefined) {
     return (
       <div
         role="status"
@@ -84,35 +56,22 @@ export function DashboardStats() {
     )
   }
 
-  const today = state.phase === 'ok' ? String(state.stats.todayCardCount) : '--'
-  const streak = state.phase === 'ok' ? state.stats.streak : null
-
   return (
     <div className="mb-6">
       <div className="grid grid-cols-2 gap-3">
         <Card>
           <CardContent>
             <div className="text-sm text-slate-600">今日の学習問題数</div>
-            <div className="text-3xl font-bold">{today}</div>
+            <div className="text-3xl font-bold">{stats.todayCardCount}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent>
             <div className="text-sm text-slate-600">連続日数</div>
-            <div className="text-3xl font-bold">
-              {streak !== null ? `${streak} 日` : '--'}
-            </div>
+            <div className="text-3xl font-bold">{stats.streak} 日</div>
           </CardContent>
         </Card>
       </div>
-      {state.phase === 'error' && (
-        <p
-          role="alert"
-          className="mt-2 rounded bg-amber-50 px-3 py-2 text-sm text-amber-700"
-        >
-          統計の{state.message}。 後ほど再読み込みしてください。
-        </p>
-      )}
     </div>
   )
 }
