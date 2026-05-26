@@ -230,35 +230,25 @@ OT への chat 出力は以下構造を厳守。詳細 trace / log / 検証 step
 
 ### smoke 確認が必要な時
 
-**実行担当 (原則: Claude Code、 例外時のみ OT 依頼)**:
+**実行担当**: 原則 Claude Code が DevTools MCP (chrome-devtools / playwright)
+で実行 (Network / IDB / console / snapshot の情報量が OT 目視より多い)。
+以下のみ OT 依頼:
 
-- **原則**: Claude Code が DevTools MCP (chrome-devtools / playwright)
-  経由で実機 smoke を実行する。 OT 側の手数を減らし、 DevTools 観察
-  (Network 順序 / IDB 行数 / console error / snapshot) で得られる情報量も
-  OT 目視より多くなるため。
-- **OT 依頼の例外**:
-  - **OCR / AI 等の課金 API call を伴う** smoke (誤呼び出しコスト回避)。
-    Gemini OCR 等を実走させる確認は OT に依頼する
-  - Claude Code 環境で再現できない / DevTools MCP で届かない条件
-    (例: 物理 mobile 実機の touch / push 通知受信 / Stripe 本番経路 /
-    OT account 専用の Clerk 設定検証)
-  - Claude Code が試行したが環境制約で頓挫した場合 (例: Network panel
-    offline 設定で Vercel Live iframe が原因で browser が chrome-error に
-    飛ぶ等) → その時点で OT に切替依頼
+- 課金 API 呼出を伴うもの (OCR / AI 実走系)
+- Claude Code 環境で届かない条件 (物理 mobile / push / Stripe 本番 /
+  OT 専用 Clerk 設定 等)
+- Claude Code が試行して環境制約で頓挫した場合 (例: Vercel Live iframe で
+  chrome-error に飛ぶ等) → 即切替依頼
 
-**手順整理 (Claude Code 実行 / OT 依頼いずれも共通)**:
-
-確認手順は次の 4 点を具体的に整理してから着手 / 提示する:
+**手順 (共通)**: 着手 / 依頼前に次を整理する。
 
 1. **確認 URL** (例: `/app/study/smart`)
 2. **確認手順** (例: 「opt 選択 → 回答する → 次へ で 3 枚連続消化」)
 3. **期待挙動** (例: 「最後 card で finished 画面 + 統計表示」)
 4. **mobile 要否** (Chrome DevTools mobile view が必要なら明示)
 
-OT 依頼時は上記をそのまま提示 (「動作確認をしてください」 だけの丸投げは禁止)。
-Claude Code 実行時は内部手順として整理してから着手し、 結果報告に DevTools
-証拠 (Network reqid 順序 / IDB 抜粋 / console error 有無 / snapshot 抜粋) を
-含めて OT に提示する。
+「動作確認をしてください」 だけの丸投げは禁止。 Claude Code 実行時は report に
+DevTools 証拠 (Network reqid 順序 / IDB 抜粋 / console / snapshot) を含める。
 
 ### kickoff prompt 受領時
 
