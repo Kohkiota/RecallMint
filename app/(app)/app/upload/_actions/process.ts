@@ -222,12 +222,12 @@ async function _processUpload(
 
   const guardResult = await db.transaction(async (tx): Promise<GuardTxResult> => {
     // (a) advisory xact lock — 同時起動 (ms 窓) の race loser を弾く
-    // postgres-js + drizzle: execute() は RowList<T[]> (Array-like) を返すため、
-    // 直接 index access する (旧 neon-serverless の .rows ラッピングは消失)。
-    const lockResult = await tx.execute(
+    // postgres-js + drizzle: execute<T>() は RowList<T[]> (Array-like) を返す。
+    // 旧 neon-serverless の .rows ラッピングは消失したので直接 index access。
+    const lockResult = await tx.execute<{ locked: boolean }>(
       sql`SELECT pg_try_advisory_xact_lock(hashtext(${user.id})) AS locked`,
     )
-    const locked = (lockResult as unknown as Array<{ locked: boolean }>)[0]?.locked
+    const locked = lockResult[0]?.locked
     if (!locked) {
       return { outcome: 'in_progress' }
     }

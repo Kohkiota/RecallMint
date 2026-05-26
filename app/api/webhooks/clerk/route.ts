@@ -288,7 +288,7 @@ function isCustomerMissing(err: unknown): boolean {
   )
 }
 
-// §6 / T3: transient DB error 判定 (neon-serverless / pg error code ベース)。
+// §6 / T3: transient DB error 判定 (postgres-js / pg SQLSTATE ベース)。
 // transient = 再試行で回復しうるエラー (deadlock / serialization / connection 切断など)。
 // permanent = 整合性違反 (23xxx 等) は retry しても無意味なので即中断。
 // lib/ai/ocr.ts の isTransientError と同じ「local 非 export 関数」思想で実装。
