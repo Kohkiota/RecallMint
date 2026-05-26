@@ -1,16 +1,18 @@
 import Link from 'next/link'
 import { and, count, eq, lte } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
-import { cards } from '@/lib/db/schema'
+import { cards, userSettings } from '@/lib/db/schema'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { DashboardActions } from './_components/dashboard-actions'
 import { DashboardStats } from './_components/dashboard-stats'
 import { PullTrigger } from './_components/pull-trigger'
+import { LocalSessionEntry } from './_components/local-session-entry'
 
 // S-perf-2 T4: stats (todayCardCount / streak) を `<DashboardStats />` 経由の
 // /api/dashboard/stats に分離。 dueCount は CTA enable 判定に必要なので server
 // SSR に残置 (1 SELECT で軽量、 cards_due_idx 走査)。 `getReviewStatsForUser`
 // import は撤去 (route.ts 内で呼ぶ)。
+// S-local-5: LocalSessionEntry 用に userSettings を取得 (smart page.tsx と同 fallback)。
 
 export default async function Dashboard() {
   const user = await getCurrentUser()
@@ -23,6 +25,15 @@ export default async function Dashboard() {
     .where(and(eq(cards.userId, user.id), lte(cards.due, new Date())))
   const dueCount = Number(dueRow?.c ?? 0)
 
+  // S-local-5: smart/page.tsx と同 pattern (行不在で 20 / false fallback)
+  const settingsRows = await db
+    .select()
+    .from(userSettings)
+    .where(eq(userSettings.userId, user.id))
+    .limit(1)
+  const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
+  const fsrsMode = settingsRows[0]?.fsrsMode ?? false
+
   return (
     <div>
       {/* S-local-2 (Phase α): mount 時に cards / exams を Dexie に background pull。
@@ -33,6 +44,15 @@ export default async function Dashboard() {
       <DashboardStats />
 
       <DashboardActions dueCount={dueCount} />
+
+      {/* S-local-5: 保存済みカードで復習 (Server reach 不要、 既存「スマート
+          復習（N件）」 link は無変更で残置)。 button click で overlay 内に
+          StudySessionHost を mount、 完了 / close で overlay 閉じる。 */}
+      <LocalSessionEntry
+        userId={user.id}
+        sessionLimit={sessionLimit}
+        fsrsMode={fsrsMode}
+      />
 
       {/* 最上位 (Pro 年額) 以外は upgrade CTA を表示。 Free / Standard 月年 /
           Pro 月 すべてに上位選択肢があるため画一的に「アップグレード」と表示し、

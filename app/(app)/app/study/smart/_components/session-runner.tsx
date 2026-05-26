@@ -86,6 +86,19 @@ type SessionRunnerProps = {
   // Dexie study_sessions の PK に対応、 全 answer_events を紐付ける。
   // 親 (StudySessionHost) が Dexie に session 行を入れてから渡す。
   sessionId: string
+  // S-local-5: 完了画面「ダッシュボードへ」 click の navigation を親が override
+  // するための optional callback。 未指定なら既存挙動 (`router.push('/app')`)。
+  // overlay (mounted-page client-only entry) モードでは親が overlay close 用の
+  // callback を渡し、 navigation を発生させない。 success path と warning 再
+  // click path の両方で利用される。
+  // 注: 名前末尾の "Action" は Server Action ではなく Next.js client-component
+  // function prop 命名規約 (型 lint 回避) に従ったもの。 実装は通常 callback。
+  onNavigateAction?: () => void
+  // S-local-5: 完了画面「もう一度」 button を非表示にする optional flag。
+  // 未指定 (false) なら既存挙動で表示。 overlay モードでは true を渡して
+  // hide (同 overlay 内連続 session は MVP 範囲外、 user は overlay 閉じて
+  // 再 button click で次 session 開始)。
+  hideRetry?: boolean
 }
 
 // opt.text 先頭に opt.id と同じ ID prefix が混入したケースのみ strip (B2 fix, S2.2 T4 review I-1)。
@@ -129,7 +142,13 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps) {
+export function SessionRunner({
+  cards,
+  fsrsMode,
+  sessionId,
+  onNavigateAction,
+  hideRetry = false,
+}: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -350,16 +369,22 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
     // - warning: 再 click は flush 再試行せず直接 push (dead-end 防止)
     // 二重 flush は useEffect (L295-305) の background flush と並走しても、
     // server event_id 冪等 + Dexie sync_status update 冪等で副作用なし。
+    // S-local-5: navigation 実体を override 可能に。 onNavigateAction が provided
+    // ならそれを呼び (overlay close 等)、 未指定なら既存の router.push('/app')。
+    const navigateAway = () => {
+      if (onNavigateAction) onNavigateAction()
+      else router.push('/app')
+    }
     const handleDashboardNav = async () => {
       if (navState === 'warning') {
-        router.push('/app')
+        navigateAway()
         return
       }
       setNavState('flushing')
       try {
         const result = await flushPendingEvents(sessionId)
         if (result.reachable && result.failedEventIds.length === 0) {
-          router.push('/app')
+          navigateAway()
           return
         }
         setNavState('warning')
@@ -379,12 +404,16 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
-          <Button
-            onClick={() => router.refresh()}
-            className="w-full sm:w-auto"
-          >
-            もう一度
-          </Button>
+          {/* S-local-5: hideRetry=true で「もう一度」 button を hide (overlay モード)。
+              default (false) で既存挙動。 */}
+          {!hideRetry && (
+            <Button
+              onClick={() => router.refresh()}
+              className="w-full sm:w-auto"
+            >
+              もう一度
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={handleDashboardNav}

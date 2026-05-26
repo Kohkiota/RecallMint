@@ -1357,3 +1357,79 @@ describe('SessionRunner (S-cache-3.1: 完了画面 flush gating)', () => {
     expect(mockPush).toHaveBeenCalledTimes(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// S-local-5 (mounted-page client-only entry): SessionRunner に optional prop
+// `onNavigate` / `hideRetry` を追加し、 完了画面のナビゲーション挙動を親が
+// override 可能にする。 default (prop 未指定) で既存挙動 100% 維持なので、
+// 既存 62+ test は無変更で通過する設計。
+// ---------------------------------------------------------------------------
+describe('SessionRunner (S-local-5: onNavigate / hideRetry props)', () => {
+  async function reachCompletion(extraProps: {
+    onNavigateAction?: () => void
+    hideRetry?: boolean
+  } = {}) {
+    render(
+      <SessionRunner
+        cards={[makeCard()]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+        {...extraProps}
+      />,
+    )
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
+  }
+
+  it('onNavigateAction 提供時: flush 成功後 callback 呼出 + router.push 不発火', async () => {
+    const onNavigateAction = vi.fn()
+    await reachCompletion({ onNavigateAction })
+    mockFlushPendingEvents.mockResolvedValueOnce({
+      attempted: 0,
+      syncedEventIds: [],
+      failedEventIds: [],
+      sessionSynced: true,
+      reachable: true,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+    await waitFor(() => expect(onNavigateAction).toHaveBeenCalledTimes(1))
+    expect(mockPush).not.toHaveBeenCalled()
+  })
+
+  it('onNavigateAction 提供時 + warning 再 click: callback 呼出 + router.push 不発火', async () => {
+    const onNavigateAction = vi.fn()
+    await reachCompletion({ onNavigateAction })
+    // 1 回目 click: 失敗 → warning
+    mockFlushPendingEvents.mockResolvedValueOnce({
+      attempted: 1,
+      syncedEventIds: [],
+      failedEventIds: ['evt-1'],
+      sessionSynced: false,
+      reachable: true,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+    await waitFor(() => expect(screen.getByText(/後で.*再送/)).toBeInTheDocument())
+    expect(onNavigateAction).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
+
+    // 2 回目 click (warning state): flush 再試行せず callback のみ呼出
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+    await waitFor(() => expect(onNavigateAction).toHaveBeenCalledTimes(1))
+    expect(mockPush).not.toHaveBeenCalled()
+  })
+
+  it('hideRetry={true}: 完了画面に「もう一度」 button が render されない', async () => {
+    await reachCompletion({ hideRetry: true })
+    expect(screen.queryByRole('button', { name: 'もう一度' })).not.toBeInTheDocument()
+    // 「ダッシュボードへ」 は引き続き表示
+    expect(screen.getByRole('button', { name: 'ダッシュボードへ' })).toBeInTheDocument()
+  })
+
+  it('hideRetry default (未指定): 「もう一度」 button が表示される (既存挙動)', async () => {
+    await reachCompletion({})
+    expect(screen.getByRole('button', { name: 'もう一度' })).toBeInTheDocument()
+  })
+})
