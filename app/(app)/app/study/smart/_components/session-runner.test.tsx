@@ -1384,41 +1384,47 @@ describe('SessionRunner (S-local-5: onNavigate / hideRetry props)', () => {
     await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
   }
 
-  it('onNavigateAction 提供時: flush 成功後 callback 呼出 + router.push 不発火', async () => {
+  it('onNavigateAction 提供時 (overlay mode): flush 待たず即 callback 呼出 + 「保存中...」 UI に切替わらない', async () => {
     const onNavigateAction = vi.fn()
     await reachCompletion({ onNavigateAction })
-    mockFlushPendingEvents.mockResolvedValueOnce({
-      attempted: 0,
-      syncedEventIds: [],
-      failedEventIds: [],
-      sessionSynced: true,
-      reachable: true,
-    })
+    // flush が hold されても 即 callback 呼出 (= overlay mode は await skip)
+    let resolveFlush: () => void = () => {}
+    mockFlushPendingEvents.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveFlush = () =>
+            res({
+              attempted: 0,
+              syncedEventIds: [],
+              failedEventIds: [],
+              sessionSynced: true,
+              reachable: true,
+            })
+        }),
+    )
     fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
-    await waitFor(() => expect(onNavigateAction).toHaveBeenCalledTimes(1))
+    // 同期に callback 呼出 (flush の resolve 待たない)
+    expect(onNavigateAction).toHaveBeenCalledTimes(1)
     expect(mockPush).not.toHaveBeenCalled()
+    // 「保存中...」 disabled UI には切替わらない (= setNavState('flushing') 呼ばれない、
+    // overlay mode では UI 即時 close 想定)
+    expect(
+      screen.queryByRole('button', { name: '保存中...' }),
+    ).not.toBeInTheDocument()
+    // 念のため後片付け (test 終了時の unhandled promise 防止)
+    resolveFlush()
   })
 
-  it('onNavigateAction 提供時 + warning 再 click: callback 呼出 + router.push 不発火', async () => {
+  it('onNavigateAction 提供時 (overlay mode): 完了画面 click は flush 呼出も warning state 遷移もせず即 callback (mock flush 戻り値非依存)', async () => {
     const onNavigateAction = vi.fn()
     await reachCompletion({ onNavigateAction })
-    // 1 回目 click: 失敗 → warning
-    mockFlushPendingEvents.mockResolvedValueOnce({
-      attempted: 1,
-      syncedEventIds: [],
-      failedEventIds: ['evt-1'],
-      sessionSynced: false,
-      reachable: true,
-    })
+    // overlay mode は click handler 内で flushPendingEvents を呼ばないため、 mock
+    // 戻り値の simulate は不要。 mock setup なしでも挙動が変わらないことを assert。
     fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
-    await waitFor(() => expect(screen.getByText(/後で.*再送/)).toBeInTheDocument())
-    expect(onNavigateAction).not.toHaveBeenCalled()
+    expect(onNavigateAction).toHaveBeenCalledTimes(1)
     expect(mockPush).not.toHaveBeenCalled()
-
-    // 2 回目 click (warning state): flush 再試行せず callback のみ呼出
-    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
-    await waitFor(() => expect(onNavigateAction).toHaveBeenCalledTimes(1))
-    expect(mockPush).not.toHaveBeenCalled()
+    // warning sub-text も出ない (= setNavState('warning') へ進まず、 user 介入不要)
+    expect(screen.queryByText(/後で.*再送/)).not.toBeInTheDocument()
   })
 
   it('hideRetry={true}: 完了画面に「もう一度」 button が render されない', async () => {

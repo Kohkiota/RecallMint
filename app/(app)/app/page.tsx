@@ -6,13 +6,14 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { DashboardActions } from './_components/dashboard-actions'
 import { DashboardStats } from './_components/dashboard-stats'
 import { PullTrigger } from './_components/pull-trigger'
-import { LocalSessionEntry } from './_components/local-session-entry'
 
 // S-perf-2 T4: stats (todayCardCount / streak) を `<DashboardStats />` 経由の
 // /api/dashboard/stats に分離。 dueCount は CTA enable 判定に必要なので server
 // SSR に残置 (1 SELECT で軽量、 cards_due_idx 走査)。 `getReviewStatsForUser`
 // import は撤去 (route.ts 内で呼ぶ)。
-// S-local-5: LocalSessionEntry 用に userSettings を取得 (smart page.tsx と同 fallback)。
+// S-local-5 UX refactor: DashboardActions に overlay 起動の責務を統合、 別途
+// LocalSessionEntry CTA は廃止。 必要な userSettings (sessionLimit / fsrsMode) は
+// DashboardActions に直接渡す。
 
 export default async function Dashboard() {
   const user = await getCurrentUser()
@@ -43,12 +44,8 @@ export default async function Dashboard() {
 
       <DashboardStats />
 
-      <DashboardActions dueCount={dueCount} />
-
-      {/* S-local-5: 保存済みカードで復習 (Server reach 不要、 既存「スマート
-          復習（N件）」 link は無変更で残置)。 button click で overlay 内に
-          StudySessionHost を mount、 完了 / close で overlay 閉じる。 */}
-      <LocalSessionEntry
+      <DashboardActions
+        dueCount={dueCount}
         userId={user.id}
         sessionLimit={sessionLimit}
         fsrsMode={fsrsMode}

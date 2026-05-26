@@ -369,22 +369,27 @@ export function SessionRunner({
     // - warning: 再 click は flush 再試行せず直接 push (dead-end 防止)
     // 二重 flush は useEffect (L295-305) の background flush と並走しても、
     // server event_id 冪等 + Dexie sync_status update 冪等で副作用なし。
-    // S-local-5: navigation 実体を override 可能に。 onNavigateAction が provided
-    // ならそれを呼び (overlay close 等)、 未指定なら既存の router.push('/app')。
-    const navigateAway = () => {
-      if (onNavigateAction) onNavigateAction()
-      else router.push('/app')
-    }
+    // S-local-5 UX refactor: overlay mode (onNavigateAction provided) では
+    // flush の完了を待たずに即 close する。 server 反映は useEffect 内 background
+    // flush (phase='finished' で発火、 L295-305) に委ね、 click → close の体感を
+    // 即時化する。 navigation を発生させない overlay mode では race を解消する
+    // 必要がない (= S-cache-3.1 await の race ガードが不要)。
+    // route mode (onNavigateAction 未指定、 /app/study/smart 直接訪問経由) では
+    // 既存 S-cache-3.1 の await flush → router.push 経路を維持する (M4 race 対策)。
     const handleDashboardNav = async () => {
+      if (onNavigateAction) {
+        onNavigateAction()
+        return
+      }
       if (navState === 'warning') {
-        navigateAway()
+        router.push('/app')
         return
       }
       setNavState('flushing')
       try {
         const result = await flushPendingEvents(sessionId)
         if (result.reachable && result.failedEventIds.length === 0) {
-          navigateAway()
+          router.push('/app')
           return
         }
         setNavState('warning')
