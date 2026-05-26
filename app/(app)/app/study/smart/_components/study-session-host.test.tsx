@@ -175,4 +175,74 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
     await waitFor(() => expect(mockGetDueCardsFromDexie).toHaveBeenCalled())
     expect(mockGetDueCardsFromDexie).toHaveBeenCalledWith('user-xyz', 42)
   })
+
+  // -------------------------------------------------------------------------
+  // S-local-4 (Phase γ): Dexie + server 両方 0 件 → empty UI 表示。 旧 page.tsx の
+  // 「ありません」 page を host 内に集約 (offline で server fetch fail → cards=[]
+  // 渡し + Dexie も 0 件のときの一元判断)。
+  // -------------------------------------------------------------------------
+
+  it('Dexie 0 件 + server cards 0 件 → empty UI 表示、 createStudySession は呼ばれない', async () => {
+    mockGetDueCardsFromDexie.mockResolvedValueOnce([])
+    const { getByText, getByRole } = render(
+      <StudySessionHost
+        cards={[]}
+        fsrsMode={false}
+        userId="user-1"
+        sessionLimit={20}
+        mode="smart"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getByText(/現在復習する card はありません/)).toBeInTheDocument()
+    })
+    // ダッシュボードへ link が表示される
+    expect(getByRole('link', { name: 'ダッシュボードへ' })).toHaveAttribute(
+      'href',
+      '/app',
+    )
+    // 空 session を作らない (Dexie write 不発火)
+    expect(mockCreateStudySession).not.toHaveBeenCalled()
+    // SessionRunner も render されない
+    expect(mockSessionRunner).not.toHaveBeenCalled()
+  })
+
+  it('Dexie 0 件 + server cards 1 件以上 → server fallback で SessionRunner (empty UI は出ない)', async () => {
+    mockGetDueCardsFromDexie.mockResolvedValueOnce([])
+    const serverCards = [fakeCard({ id: 'fallback-only' })]
+    const { queryByText } = render(
+      <StudySessionHost
+        cards={serverCards}
+        fsrsMode={false}
+        userId="user-1"
+        sessionLimit={20}
+        mode="smart"
+      />,
+    )
+
+    await waitFor(() => expect(mockSessionRunner).toHaveBeenCalled())
+    // empty UI は出ない (= server fallback で session 起動)
+    expect(queryByText(/現在復習する card はありません/)).not.toBeInTheDocument()
+    expect(mockCreateStudySession).toHaveBeenCalled()
+  })
+
+  it('Dexie throw + server cards 0 件 → silent fallback で empty UI', async () => {
+    mockGetDueCardsFromDexie.mockRejectedValueOnce(new Error('dexie boom'))
+    const { getByText } = render(
+      <StudySessionHost
+        cards={[]}
+        fsrsMode={false}
+        userId="user-1"
+        sessionLimit={20}
+        mode="smart"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getByText(/現在復習する card はありません/)).toBeInTheDocument()
+    })
+    expect(mockCreateStudySession).not.toHaveBeenCalled()
+    expect(mockSessionRunner).not.toHaveBeenCalled()
+  })
 })

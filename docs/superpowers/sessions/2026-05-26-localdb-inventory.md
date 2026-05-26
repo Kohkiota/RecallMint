@@ -46,7 +46,7 @@
 | **exams Dexie の read 元配線** | 同上 (試験一覧 `/app/exams` は server fetch) | 同上 | 試験一覧 page で Dexie exams 由来表示 (Phase β subset) |
 | **sync_meta read** | `lib/sync/sync-meta.ts:22-25` の `getSyncMeta` は test 内のみ | Δ pull 未実装で stale 判定 use case がまだない | Δ pull (since cursor) 実装時に活用 (Phase β 以降) |
 | **起動 / 復帰 / online トリガ** | `PullTrigger` は dashboard mount のみ | scope 制御で dashboard mount に絞った | visibilitychange / online event / app entry での pull 追加 (別 sprint) |
-| **offline 演習成立** | smart session 入口で server cards fetch が break point | cards local read + Dexie session + Dexie events が揃って初めて成立、 cards local read が未配線 | Phase β (smart session local cards read) + Phase γ (online-required 経路除去) |
+| **真の offline 演習成立** | browser → Vercel reach 不能では `/app/study/smart` の RSC / document fetch 自体が失敗、 Service Worker / app shell precache なし | S-local-4 で server reach 後の `getSessionCards()` failure fallback のみ達成 (= offline 演習 MVP の前段)。 真の offline navigation は RSC fetch を要するため未達 | Phase ε (Service Worker / app shell precache / route precache / mounted-page 内 client-only session 開始導線 等の中から選択、 別 sprint) |
 
 ---
 

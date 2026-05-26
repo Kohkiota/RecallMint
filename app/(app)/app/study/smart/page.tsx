@@ -1,16 +1,15 @@
 // スマート復習 page (Server Component、 S2.2.1 T2 で session/page.tsx 統合)。
 //
 // 認証 → user_settings 取得 (session_limit / fsrsMode、 行不在は 20 / false fallback) →
-// due card 取得 → 0 件なら「ありません」案内 / あれば SessionRunner に渡す。
+// due card 取得 → StudySessionHost に渡す。 cards 0 件 / server fetch fail の
+// empty UI 判定は host 側 (Dexie + server 両方 0 件のときの一元判断、 S-local-4)。
 
-import Link from 'next/link'
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
-import { userSettings } from '@/lib/db/schema'
+import { userSettings, type Card } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
 import { StudySessionHost } from './_components/study-session-host'
-import { Button } from '@/components/ui/button'
 
 export default async function SmartStudyPage() {
   const user = await getCurrentUser()
@@ -28,31 +27,24 @@ export default async function SmartStudyPage() {
   const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
   const fsrsMode = settingsRows[0]?.fsrsMode ?? false
 
-  const cards = await getSessionCards(user.id, sessionLimit)
-
-  if (cards.length === 0) {
-    return (
-      <div className="mx-auto max-w-xl space-y-6 px-4 py-12 text-center">
-        <h1 className="text-2xl font-bold">スマート復習</h1>
-        <p className="text-slate-600">
-          現在復習する card はありません。
-          <br />
-          すべての card を学習済みです。お疲れ様でした！
-        </p>
-        <Button asChild variant="outline">
-          <Link href="/app">ダッシュボードへ</Link>
-        </Button>
-      </div>
-    )
+  // S-local-4 (Phase γ): server fetch を try/catch、 throw 時 cards=[]。 これにより
+  // offline / server 5xx でも page render fail せず、 client (StudySessionHost) が
+  // Dexie cards で続行できる。 Dexie / server 両方 0 件のときの empty UI も host 側。
+  let serverCards: Card[] = []
+  try {
+    serverCards = await getSessionCards(user.id, sessionLimit)
+  } catch {
+    // silent: client が Dexie cards mirror で代替する
   }
 
   // S-cache-1: StudySessionHost が client 側で session_id を採番 + Dexie に
   // study_sessions 行を入れてから SessionRunner を render する。
   // S-local-3: userId / sessionLimit を渡し、 client が Dexie cards mirror から
   // 直接 due cards を引いて (mirror が空なら server cards で fallback)。
+  // S-local-4: cards=[] でも host に進む (empty UI 判定は host 内)。
   return (
     <StudySessionHost
-      cards={cards}
+      cards={serverCards}
       fsrsMode={fsrsMode}
       userId={user.id}
       sessionLimit={sessionLimit}

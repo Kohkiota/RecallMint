@@ -216,16 +216,29 @@ async function pullCards(): Promise<PullResult> {
 |-------|---------|-------|------|
 | **α** (S-local-2) | cards pull (read-only) + sync_meta | S | mirror 基盤、 即時利用無し |
 | **β** (S-local-3) | session-runner が cards を local 由来に切替 + due 判定 client 化 | M | online 体感向上、 offline 基盤 |
-| **γ** (S-local-4) | offline 演習成立 (online 不要で session 通る) | M-L | offline 演習 MVP 達成 |
+| **γ** (S-local-4) | server `getSessionCards()` failure fallback + empty UI 集約 (offline 演習 MVP の前段) | S-M | server reach OK での DB 起源障害耐性 |
 | **δ** (S-local-5+) | dueCount local projection (S-cache-3.2 相当) | S | dashboard race-free 強化 |
-| **ε** (将来) | Service Worker / app shell offline / image cache | L | 完全 PWA |
+| **ε** (将来) | Service Worker / app shell precache / mounted-page client session 等 — **真の offline 演習成立に必要** | L | 完全 PWA / 真の offline 演習 MVP 達成 |
 
-### 8.3 「最小」 と「演習成立」 の定義
+### 8.3 「演習成立」 の定義 (重要、 2026-05-26 amend で正確化)
 
-「最小 offline 演習」 = γ Phase の達成基準:
-- airplane mode で `/app/study/smart` を開く → cards が local から読まれて session 開始
-- 回答 → 判定 → 完了 → 「ダッシュボードへ」 で warning 表示 (= 既に S-cache-3.1)
-- 後で online 復帰 → bulk flush 自動 + cards re-pull
+**真の offline 演習成立** = browser が完全 offline (Vercel reach 不能) でも
+`/app/study/smart` への新規 navigation + session 起動 + 回答 + 完了 / 次 session
+起動が成立する状態。 達成には Phase ε (Service Worker / app shell precache /
+mounted-page client session 等) **完了が前提**。 当初の段階分けで γ に置いて
+いたが、 γ (S-local-4) は server reach 後の `getSessionCards()` 失敗 fallback
+のみ達成 (真の offline navigation は RSC fetch 必須のため不可) のため格下げ。
+
+γ 時点で達成:
+- server reach OK + DB 起源 throw 時の Dexie cards fallback
+- Dexie + server 両方 0 件のときの empty UI 一元判断
+
+γ 時点で **未達** (= ε で達成):
+- airplane mode (browser → Vercel reach 不能) での `/app/study/smart` 新規
+  navigation。 RSC / document fetch が必須のため Service Worker / route
+  precache なしには不可能
+- offline 中の dashboard 遷移 (S-cache-3.1 の `router.push('/app')` も RSC
+  fetch を要するため server reach 前提)
 
 ## 9. 既存 Dexie schema との差分
 

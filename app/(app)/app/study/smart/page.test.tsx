@@ -147,13 +147,26 @@ describe('SmartStudyPage', () => {
     expect(mockGetSessionCards).not.toHaveBeenCalled()
   })
 
-  it('cards 0 件 → 「ありません」案内 + ダッシュボードリンク表示', async () => {
+  it('cards 0 件 → StudySessionHost に cards=[] で進む (empty UI 表示は host 側で行う)', async () => {
+    // S-local-4: 旧 page.tsx で行っていた「ありません」 page 早期 return は撤回。
+    // Dexie cards との empty 判定は StudySessionHost に集約 (offline + 両方 0 件
+    // のときも host 内で empty UI を出すため)。
     mockGetSessionCards.mockResolvedValueOnce([])
     await renderPage()
-    expect(screen.getByText(/現在復習する card はありません/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'ダッシュボードへ' })).toHaveAttribute('href', '/app')
-    // SessionRunner は render されない
-    expect(screen.queryByTestId('session-runner-mock')).not.toBeInTheDocument()
+    expect(screen.getByTestId('session-runner-mock')).toBeInTheDocument()
+    expect(mockSessionRunner).toHaveBeenCalledOnce()
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.cards).toEqual([])
+  })
+
+  it('S-local-4: getSessionCards が throw (server fetch fail / offline) → cards=[] で StudySessionHost に進む', async () => {
+    mockGetSessionCards.mockRejectedValueOnce(new Error('network down'))
+    await renderPage()
+    // page render は成功 (no 500 / no error boundary 発火)
+    expect(screen.getByTestId('session-runner-mock')).toBeInTheDocument()
+    // cards は空配列で渡る → host 側で Dexie cards 試行 / empty UI 判定
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.cards).toEqual([])
   })
 
   it('cards >= 1 件 → SessionRunner が render される', async () => {
