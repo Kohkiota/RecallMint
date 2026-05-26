@@ -40,11 +40,6 @@ type StudySessionHostProps = {
   examId?: string
   // 'smart' (due card 横断) / 'custom' (将来用フィルタ session)。
   mode?: 'smart' | 'custom'
-  // S-local-5: SessionRunner に pass-through する optional props。
-  // 完了画面ナビゲーション override (= overlay close 用) + 「もう一度」 hide。
-  // 末尾 "Action" は Next.js client component fn prop 命名規約 (Server Action 非該当)。
-  onNavigateAction?: () => void
-  hideRetry?: boolean
 }
 
 export function StudySessionHost({
@@ -54,8 +49,6 @@ export function StudySessionHost({
   sessionLimit,
   examId,
   mode = 'smart',
-  onNavigateAction,
-  hideRetry,
 }: StudySessionHostProps) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [resolvedCards, setResolvedCards] = useState<Card[] | null>(null)
@@ -112,10 +105,6 @@ export function StudySessionHost({
     )
   }
   // S-local-4: Dexie + server 両方 0 件のとき empty UI。 旧 page.tsx の文言を維持。
-  // S-local-5 review fix: overlay モード (onNavigateAction provided) では Link 経由
-  // で /app に RSC navigate すると本 sprint の architectural premise (= server
-  // reach 不要で overlay close) に反する + offline で stuck。 callback 経由の
-  // button に切替えて navigation を発生させない。
   if (resolvedCards.length === 0) {
     return (
       <div className="mx-auto max-w-xl space-y-6 px-4 py-12 text-center">
@@ -125,15 +114,9 @@ export function StudySessionHost({
           <br />
           すべての card を学習済みです。お疲れ様でした！
         </p>
-        {onNavigateAction ? (
-          <Button variant="outline" onClick={onNavigateAction}>
-            ダッシュボードへ
-          </Button>
-        ) : (
-          <Button asChild variant="outline">
-            <Link href="/app">ダッシュボードへ</Link>
-          </Button>
-        )}
+        <Button asChild variant="outline">
+          <Link href="/app">ダッシュボードへ</Link>
+        </Button>
       </div>
     )
   }
@@ -149,8 +132,6 @@ export function StudySessionHost({
       cards={resolvedCards}
       fsrsMode={fsrsMode}
       sessionId={sessionId}
-      onNavigateAction={onNavigateAction}
-      hideRetry={hideRetry}
     />
   )
 }

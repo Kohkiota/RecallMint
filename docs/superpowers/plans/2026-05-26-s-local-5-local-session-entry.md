@@ -1,5 +1,13 @@
 # S-local-5 mounted-page client-only local session entry Implementation Plan
 
+> **⚠️ 方針撤回 (2026-05-26 同日):** S-local-5 で導入した overlay mode (DashboardActions
+> button + LocalSessionOverlay) は **完全撤回** された。 dashboard CTA は `299ef26` 時点
+> の `<Link href="/app/study/smart">` 経路に戻し、 SessionRunner / StudySessionHost の
+> optional props (`onNavigateAction` / `hideRetry`) も dead code として除去済。
+> `/app/study/smart` route は引き続き従来通り (S-cache-3.1 await flush gating + Link
+> 経由の Server Component route navigation) で動作する。 撤回理由は OT 方針判断
+> (overlay UX を別アプローチで再評価)。 以下の plan 本文は履歴として残置。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** `/app` (dashboard、 既に mount 済み = Server reach 不要) 上に **「保存済みカードで復習」** button を追加し、 click で Server Component route navigation を経由せず Client Component (`SessionRunner`) を overlay で mount する。 Dexie cards mirror 由来で session 開始 → 回答 → 完了 → overlay close で `/app` に戻る。 通信断状態でも session の開始 / 進行 / 完了 / Dexie pending 記録が成立する (= server reach 不要)。

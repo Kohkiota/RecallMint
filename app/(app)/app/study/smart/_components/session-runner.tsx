@@ -86,19 +86,6 @@ type SessionRunnerProps = {
   // Dexie study_sessions の PK に対応、 全 answer_events を紐付ける。
   // 親 (StudySessionHost) が Dexie に session 行を入れてから渡す。
   sessionId: string
-  // S-local-5: 完了画面「ダッシュボードへ」 click の navigation を親が override
-  // するための optional callback。 未指定なら既存挙動 (`router.push('/app')`)。
-  // overlay (mounted-page client-only entry) モードでは親が overlay close 用の
-  // callback を渡し、 navigation を発生させない。 success path と warning 再
-  // click path の両方で利用される。
-  // 注: 名前末尾の "Action" は Server Action ではなく Next.js client-component
-  // function prop 命名規約 (型 lint 回避) に従ったもの。 実装は通常 callback。
-  onNavigateAction?: () => void
-  // S-local-5: 完了画面「もう一度」 button を非表示にする optional flag。
-  // 未指定 (false) なら既存挙動で表示。 overlay モードでは true を渡して
-  // hide (同 overlay 内連続 session は MVP 範囲外、 user は overlay 閉じて
-  // 再 button click で次 session 開始)。
-  hideRetry?: boolean
 }
 
 // opt.text 先頭に opt.id と同じ ID prefix が混入したケースのみ strip (B2 fix, S2.2 T4 review I-1)。
@@ -142,13 +129,7 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({
-  cards,
-  fsrsMode,
-  sessionId,
-  onNavigateAction,
-  hideRetry = false,
-}: SessionRunnerProps) {
+export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -369,18 +350,7 @@ export function SessionRunner({
     // - warning: 再 click は flush 再試行せず直接 push (dead-end 防止)
     // 二重 flush は useEffect (L295-305) の background flush と並走しても、
     // server event_id 冪等 + Dexie sync_status update 冪等で副作用なし。
-    // S-local-5 UX refactor: overlay mode (onNavigateAction provided) では
-    // flush の完了を待たずに即 close する。 server 反映は useEffect 内 background
-    // flush (phase='finished' で発火、 L295-305) に委ね、 click → close の体感を
-    // 即時化する。 navigation を発生させない overlay mode では race を解消する
-    // 必要がない (= S-cache-3.1 await の race ガードが不要)。
-    // route mode (onNavigateAction 未指定、 /app/study/smart 直接訪問経由) では
-    // 既存 S-cache-3.1 の await flush → router.push 経路を維持する (M4 race 対策)。
     const handleDashboardNav = async () => {
-      if (onNavigateAction) {
-        onNavigateAction()
-        return
-      }
       if (navState === 'warning') {
         router.push('/app')
         return
@@ -409,16 +379,12 @@ export function SessionRunner({
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
-          {/* S-local-5: hideRetry=true で「もう一度」 button を hide (overlay モード)。
-              default (false) で既存挙動。 */}
-          {!hideRetry && (
-            <Button
-              onClick={() => router.refresh()}
-              className="w-full sm:w-auto"
-            >
-              もう一度
-            </Button>
-          )}
+          <Button
+            onClick={() => router.refresh()}
+            className="w-full sm:w-auto"
+          >
+            もう一度
+          </Button>
           <Button
             variant="outline"
             onClick={handleDashboardNav}

@@ -5,7 +5,7 @@
 // cards が「Dexie 由来」 か「server 由来」 かを assertion する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { render, cleanup, waitFor } from '@testing-library/react'
 import type { Card } from '@/lib/db/schema'
 
 const {
@@ -28,12 +28,7 @@ vi.mock('@/lib/sync/review-events', () => ({
   newId: mockNewId,
 }))
 vi.mock('./session-runner', () => ({
-  SessionRunner: (props: {
-    cards: Card[]
-    sessionId: string
-    onNavigateAction?: () => void
-    hideRetry?: boolean
-  }) => {
+  SessionRunner: (props: { cards: Card[]; sessionId: string }) => {
     mockSessionRunner(props)
     return <div data-testid="session-runner">runner</div>
   },
@@ -179,88 +174,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
 
     await waitFor(() => expect(mockGetDueCardsFromDexie).toHaveBeenCalled())
     expect(mockGetDueCardsFromDexie).toHaveBeenCalledWith('user-xyz', 42)
-  })
-
-  // -------------------------------------------------------------------------
-  // S-local-5: onNavigateAction / hideRetry を SessionRunner に pass-through
-  // -------------------------------------------------------------------------
-
-  it('S-local-5: onNavigateAction / hideRetry が SessionRunner に pass-through される', async () => {
-    const onNavigateAction = vi.fn()
-    render(
-      <StudySessionHost
-        cards={[fakeCard()]}
-        fsrsMode={false}
-        userId="user-1"
-        sessionLimit={20}
-        mode="smart"
-        onNavigateAction={onNavigateAction}
-        hideRetry={true}
-      />,
-    )
-    await waitFor(() => expect(mockSessionRunner).toHaveBeenCalled())
-    const lastCall = mockSessionRunner.mock.lastCall?.[0] as {
-      onNavigateAction?: () => void
-      hideRetry?: boolean
-    }
-    expect(lastCall.onNavigateAction).toBe(onNavigateAction)
-    expect(lastCall.hideRetry).toBe(true)
-  })
-
-  it('S-local-5 review fix: empty UI + onNavigateAction provided → button click で callback 呼出 (Link でなく)', async () => {
-    const onNavigateAction = vi.fn()
-    mockGetDueCardsFromDexie.mockResolvedValueOnce([])
-    const { findByRole, queryByRole } = render(
-      <StudySessionHost
-        cards={[]}
-        fsrsMode={false}
-        userId="user-1"
-        sessionLimit={20}
-        mode="smart"
-        onNavigateAction={onNavigateAction}
-      />,
-    )
-    // empty UI 内の button を await
-    const btn = await findByRole('button', { name: 'ダッシュボードへ' })
-    // Link (= <a>) ではなく button、 = callback 経路
-    expect(queryByRole('link', { name: 'ダッシュボードへ' })).not.toBeInTheDocument()
-    fireEvent.click(btn)
-    expect(onNavigateAction).toHaveBeenCalledTimes(1)
-  })
-
-  it('S-local-5 review fix: empty UI + onNavigateAction 未指定 → 既存 Link 経路維持', async () => {
-    mockGetDueCardsFromDexie.mockResolvedValueOnce([])
-    const { findByRole } = render(
-      <StudySessionHost
-        cards={[]}
-        fsrsMode={false}
-        userId="user-1"
-        sessionLimit={20}
-        mode="smart"
-      />,
-    )
-    // 未指定なら従来通り <Link>
-    const link = await findByRole('link', { name: 'ダッシュボードへ' })
-    expect(link).toHaveAttribute('href', '/app')
-  })
-
-  it('S-local-5: prop 未指定 → SessionRunner に undefined / undefined で渡る (既存挙動維持)', async () => {
-    render(
-      <StudySessionHost
-        cards={[fakeCard()]}
-        fsrsMode={false}
-        userId="user-1"
-        sessionLimit={20}
-        mode="smart"
-      />,
-    )
-    await waitFor(() => expect(mockSessionRunner).toHaveBeenCalled())
-    const lastCall = mockSessionRunner.mock.lastCall?.[0] as {
-      onNavigateAction?: () => void
-      hideRetry?: boolean
-    }
-    expect(lastCall.onNavigateAction).toBeUndefined()
-    expect(lastCall.hideRetry).toBeUndefined()
   })
 
   // -------------------------------------------------------------------------
