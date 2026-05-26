@@ -51,7 +51,6 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
 // S-cache-1 step 4: 旧 submitReview server action は bulk API 経路 (§14.8) に完全移行済。
@@ -73,6 +72,12 @@ const FLUSH_THRESHOLD = 5
 
 type Phase = 'selecting' | 'judged' | 'finished'
 type Rating = 1 | 2 | 3 | 4
+// S-cache-3.1: 完了画面「ダッシュボードへ」 click handler の状態。
+// - idle: 通常 (label = 「ダッシュボードへ」、 click で flush gating 開始)
+// - flushing: flush 中 (label = 「保存中...」、 disabled)
+// - warning: flush 失敗後 (label = 「ダッシュボードへ」、 sub-text + 再 click で
+//   flush 再試行せず直接 router.push、 dead-end 防止)
+type NavState = 'idle' | 'flushing' | 'warning'
 
 type SessionRunnerProps = {
   cards: Card[]
@@ -145,6 +150,11 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
     () => new Set(),
   )
   const [error, setError] = useState<string | null>(null)
+  // S-cache-3.1: 完了画面「ダッシュボードへ」 click → await flushPendingEvents →
+  // router.push('/app') の race gate 状態。 useEffect 内 background flush との
+  // 二重発火は server bulk endpoint の event_id ON CONFLICT + Dexie の
+  // markAnswerEventsSynced (anyOf 冪等) で副作用ゼロ。
+  const [navState, setNavState] = useState<NavState>('idle')
 
   const current = cards[idx]
 
@@ -335,6 +345,30 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
       tally.answered > 0
         ? Math.round((tally.correct / tally.answered) * 100)
         : 0
+    // S-cache-3.1: 「ダッシュボードへ」 click handler。
+    // - idle: flush を await し、 成功で push、 失敗で warning 表示
+    // - warning: 再 click は flush 再試行せず直接 push (dead-end 防止)
+    // 二重 flush は useEffect (L295-305) の background flush と並走しても、
+    // server event_id 冪等 + Dexie sync_status update 冪等で副作用なし。
+    const handleDashboardNav = async () => {
+      if (navState === 'warning') {
+        router.push('/app')
+        return
+      }
+      setNavState('flushing')
+      try {
+        const result = await flushPendingEvents(sessionId)
+        if (result.reachable && result.failedEventIds.length === 0) {
+          router.push('/app')
+          return
+        }
+        setNavState('warning')
+      } catch {
+        // flushPendingEvents は内部 try/catch で reject しない契約だが念のため
+        setNavState('warning')
+      }
+    }
+    const dashLabel = navState === 'flushing' ? '保存中...' : 'ダッシュボードへ'
     return (
       <div className="mx-auto max-w-xl space-y-6 px-4 py-8 text-center">
         <p className="text-5xl">🎉</p>
@@ -351,19 +385,20 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
           >
             もう一度
           </Button>
-          {/* submit 時 revalidatePath('/app') 撤回 (S2.0b-2 fix) 後の dashboard 反映機構:
-              dashboard (`/app/page.tsx`) は getCurrentUser() / DB SELECT で構成される
-              dynamic page。 Next.js 15 default `staleTimes.dynamic = 0` で client cache
-              されないため、 navigation 時に server で fresh fetch → 「今日の枚数 /
-              連続日数」 が最新値で表示される。 router.refresh() は current route の
-              client cache 限定 invalidate (= /app/study/smart にしか効かない、 navigation
-              先には届かない) なので、 明示呼出は不要かつ unmount 直前の wasted server
-              request になる。 純 navigation なので Link で十分 (cmd+click / 中クリック /
-              右クリック URL コピー の標準 affordance も維持)。 */}
-          <Button variant="outline" asChild className="w-full sm:w-auto">
-            <Link href="/app">ダッシュボードへ</Link>
+          <Button
+            variant="outline"
+            onClick={handleDashboardNav}
+            disabled={navState === 'flushing'}
+            className="w-full sm:w-auto"
+          >
+            {dashLabel}
           </Button>
         </div>
+        {navState === 'warning' && (
+          <p className="text-xs text-slate-500">
+            一部の回答を後で再送します
+          </p>
+        )}
       </div>
     )
   }

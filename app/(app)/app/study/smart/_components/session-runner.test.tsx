@@ -24,6 +24,7 @@ import type { Card } from '@/lib/db/schema'
 // lib/sync/review-events 経由の mockRecordAnswerEvent の is_correct に移譲)。
 const {
   mockRefresh,
+  mockPush,
   mockSubmitReview,
   mockRecordAnswerEvent,
   mockCountPendingAnswerEvents,
@@ -31,6 +32,7 @@ const {
   mockCompleteStudySession,
 } = vi.hoisted(() => ({
   mockRefresh: vi.fn(),
+  mockPush: vi.fn(),
   mockSubmitReview: vi.fn(),
   mockRecordAnswerEvent: vi.fn(),
   mockCountPendingAnswerEvents: vi.fn(),
@@ -39,7 +41,7 @@ const {
 }))
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: mockRefresh }),
+  useRouter: () => ({ refresh: mockRefresh, push: mockPush }),
 }))
 
 vi.mock('../_actions/submit-review', () => ({
@@ -594,18 +596,18 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(mockRefresh).toHaveBeenCalledOnce()
   })
 
-  it('完了画面の「ダッシュボードへ」は /app への Link として render される (S2.0b-2 fix: submit 時 revalidatePath を撤回、 dynamic page default の navigation 経由 fresh fetch に委譲)', async () => {
+  it('完了画面の「ダッシュボードへ」は button として render される (S-cache-3.1: Link 撤回、 click で flushPendingEvents を await してから push)', async () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
 
-    // Button asChild + Link href="/app" で <a href="/app"> として render される。
-    // 純 navigation (router.refresh 不要 = navigation 先 cache に影響しないため、
-    // dashboard 側の dynamic page default 挙動で fresh fetch が走る)。
-    const dashLink = screen.getByRole('link', { name: 'ダッシュボードへ' })
-    expect(dashLink).toHaveAttribute('href', '/app')
+    // S-cache-3.1: Link → Button onClick。 idle 時の label = 「ダッシュボードへ」、
+    // <a href> ではなく <button> として render され、 click で flush gating を経て
+    // router.push('/app') が呼ばれる (詳細は describe 'S-cache-3.1' 配下の test)。
+    expect(screen.queryByRole('link', { name: 'ダッシュボードへ' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ダッシュボードへ' })).toBeInTheDocument()
   })
 
   it('カード進行インジケーター (1 / N) が表示される', () => {
@@ -1245,5 +1247,113 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
         vi.clearAllMocks()
       }
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S-cache-3.1: 完了画面「ダッシュボードへ」 で flushPendingEvents を await して
+// から router.push('/app') に遷移する race ガード (M4 race の根本対策)。
+// 既存 useEffect 内 background flush (phase='finished' 時) は削除しない設計、
+// click 時にもう一度 flush を呼び二重 POST は server / Dexie 冪等で吸収する。
+// 詳細 spec: docs/superpowers/specs/2026-05-26-s-cache-3-design.md
+// ---------------------------------------------------------------------------
+describe('SessionRunner (S-cache-3.1: 完了画面 flush gating)', () => {
+  // 完了画面に到達するまでの共通 step (1 card 正答 → 次へ → finished)。
+  async function reachCompletion() {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+    // useEffect 内 background flush + completeStudySession が走り終わるまで待機
+    // (= 「click 時にもう一度 flush」 とのコール数差分を安定して測れる baseline)。
+    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
+  }
+
+  it('flush 成功時: 「ダッシュボードへ」 click → flush resolve 後に router.push("/app")', async () => {
+    await reachCompletion()
+    const flushCallsBefore = mockFlushPendingEvents.mock.calls.length
+
+    // click handler 内の flush を成功 resolve に固定
+    mockFlushPendingEvents.mockResolvedValueOnce({
+      attempted: 0,
+      syncedEventIds: [],
+      failedEventIds: [],
+      sessionSynced: true,
+      reachable: true,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+
+    // 追加 flush が 1 回呼ばれる + push は flush resolve 後
+    expect(mockFlushPendingEvents.mock.calls.length).toBe(flushCallsBefore + 1)
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/app'))
+    expect(mockPush).toHaveBeenCalledTimes(1)
+  })
+
+  it('flush 失敗時: warning UI 表示 + router.push 呼ばれず + 再 click で flush 再試行せず直接 push', async () => {
+    await reachCompletion()
+    const flushCallsBefore = mockFlushPendingEvents.mock.calls.length
+
+    // click handler 内の flush を部分失敗 (failedEventIds あり) に固定
+    mockFlushPendingEvents.mockResolvedValueOnce({
+      attempted: 1,
+      syncedEventIds: [],
+      failedEventIds: ['evt-1'],
+      sessionSynced: false,
+      reachable: true,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+
+    // flush は呼ばれた、 push はまだ
+    expect(mockFlushPendingEvents.mock.calls.length).toBe(flushCallsBefore + 1)
+    // warning sub-text 表示 + push 未呼出
+    await waitFor(() => expect(screen.getByText(/後で.*再送/)).toBeInTheDocument())
+    expect(mockPush).not.toHaveBeenCalled()
+
+    // 再 click: flush を再試行せず直接 push (dead-end 防止)
+    const flushCallsAfterFirstClick = mockFlushPendingEvents.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/app'))
+    expect(mockPush).toHaveBeenCalledTimes(1)
+    // 追加の flush 呼出なし
+    expect(mockFlushPendingEvents.mock.calls.length).toBe(flushCallsAfterFirstClick)
+  })
+
+  it('順序保証: flush resolve 前に router.push が呼ばれない + flushing 中は button disabled + "保存中..." 表示', async () => {
+    await reachCompletion()
+
+    // click handler 内の flush を hold (resolve しないと進まない)
+    let resolveFlush: () => void = () => {}
+    mockFlushPendingEvents.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveFlush = () =>
+            res({
+              attempted: 0,
+              syncedEventIds: [],
+              failedEventIds: [],
+              sessionSynced: true,
+              reachable: true,
+            })
+        }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'ダッシュボードへ' }))
+
+    // 同期: button label "保存中..." + disabled + push 未呼出
+    const flushingBtn = screen.getByRole('button', { name: '保存中...' })
+    expect(flushingBtn).toBeDisabled()
+    expect(mockPush).not.toHaveBeenCalled()
+
+    // hold 解除前に他の microtask を進めても push が漏れないことを確認
+    await new Promise((r) => setTimeout(r, 30))
+    expect(mockPush).not.toHaveBeenCalled()
+
+    // resolve → push 呼出
+    resolveFlush()
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/app'))
+    expect(mockPush).toHaveBeenCalledTimes(1)
   })
 })
