@@ -14,6 +14,7 @@
 import { useEffect } from 'react'
 import { pullAllCards } from '@/lib/sync/cards'
 import { pullAllExams } from '@/lib/sync/exams'
+import { pullAllStudyDays } from '@/lib/sync/study-days'
 
 export function PullTrigger(): null {
   useEffect(() => {
@@ -21,6 +22,11 @@ export function PullTrigger(): null {
       // silent: 次トリガで再試行
     })
     void pullAllExams().catch(() => {
+      // silent: 次トリガで再試行
+    })
+    // S-perf-3: dashboard streak / todayCount を Dexie 経由に切替するため、
+    // study_days mirror を並走 pull する。 失敗は他 helper と同様 silent。
+    void pullAllStudyDays().catch(() => {
       // silent: 次トリガで再試行
     })
   }, [])

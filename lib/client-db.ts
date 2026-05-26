@@ -157,6 +157,17 @@ export type ClientSyncMeta = {
   value: unknown
 }
 
+// study_days: server study_days table の mirror (S-perf-3 / dashboard 高速化)。
+// day は JST date 文字列 'YYYY-MM-DD'。 PK は複合 [user_id+day] (server 側 PK と同型)。
+// streak / todayCount を Dexie から算出するために pull。 直近 90 日のみ保持。
+export type ClientStudyDay = {
+  user_id: string
+  day: string
+  review_count: number
+  correct_count: number
+  distinct_card_count: number
+}
+
 // ---------------------------------------------------------------------------
 // Dexie DB
 // ---------------------------------------------------------------------------
@@ -169,6 +180,9 @@ export class ClientDb extends Dexie {
   answer_events!: Table<ClientAnswerEvent, number>
   card_mutations!: Table<ClientCardMutation, number>
   sync_meta!: Table<ClientSyncMeta, string>
+  // S-perf-3: server study_days を pull する mirror table (streak / todayCount 算出用)。
+  // 複合 PK `[user_id+day]` で server PK 構造と一致 (idempotent な bulkPut が成立)。
+  study_days!: Table<ClientStudyDay, [string, string]>
 
   constructor() {
     super('recallmint')
@@ -181,6 +195,11 @@ export class ClientDb extends Dexie {
       answer_events: '++local_id, event_id, session_id, card_id, sync_status',
       card_mutations: '++local_id, mutation_id, card_id, sync_status',
       sync_meta: 'key',
+    })
+    // v2 (S-perf-3): study_days mirror 追加。 既存 table の schema は変更せず、
+    // 新規 store のみ追加するため、 v1 → v2 upgrade は単純な store 追加で済む。
+    this.version(2).stores({
+      study_days: '[user_id+day], user_id, day',
     })
   }
 }
