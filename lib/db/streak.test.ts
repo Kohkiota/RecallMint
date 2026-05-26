@@ -55,9 +55,11 @@ describe('getReviewStatsForUser', () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     // First execute: todayCardCount (SELECT distinct_card_count FROM study_days WHERE day = today)
     // Second execute: streak dates (SELECT day FROM study_days WHERE ... review_count > 0)
+    // postgres-js: execute() は RowList<T[]> (Array-like) を返す。 旧 Neon の
+    // { rows: [...] } ラッピングは廃止。
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 5 }] })
-      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+      .mockResolvedValueOnce([{ c: 5 }])
+      .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(5)
@@ -67,9 +69,7 @@ describe('getReviewStatsForUser', () => {
   it('test 2: study_days 行不在 → todayCardCount = 0', async () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     // No row for today in study_days
-    mockDb.execute
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
+    mockDb.execute.mockResolvedValueOnce([]).mockResolvedValueOnce([])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(0)
@@ -79,8 +79,8 @@ describe('getReviewStatsForUser', () => {
   it('test 3: study_days 行あり → distinct_card_count を読む', async () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 7 }] })
-      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+      .mockResolvedValueOnce([{ c: 7 }])
+      .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(7)
@@ -89,8 +89,8 @@ describe('getReviewStatsForUser', () => {
   it('test 4: streak 0 — study_days に review_count > 0 の行なし', async () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 0 }] })
-      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce([{ c: 0 }])
+      .mockResolvedValueOnce([])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.streak).toBe(0)
@@ -99,14 +99,12 @@ describe('getReviewStatsForUser', () => {
   it('test 5: 連続日カウント — 3 日連続', async () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 3 }] })
-      .mockResolvedValueOnce({
-        rows: [
-          { d: '2026-04-22' },
-          { d: '2026-04-21' },
-          { d: '2026-04-20' },
-        ],
-      })
+      .mockResolvedValueOnce([{ c: 3 }])
+      .mockResolvedValueOnce([
+        { d: '2026-04-22' },
+        { d: '2026-04-21' },
+        { d: '2026-04-20' },
+      ])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.streak).toBe(3)
@@ -116,10 +114,8 @@ describe('getReviewStatsForUser', () => {
     // today = '2026-04-22', but study_days has only yesterday and day before
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [] }) // no row for today
-      .mockResolvedValueOnce({
-        rows: [{ d: '2026-04-21' }, { d: '2026-04-20' }],
-      })
+      .mockResolvedValueOnce([]) // no row for today
+      .mockResolvedValueOnce([{ d: '2026-04-21' }, { d: '2026-04-20' }])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(0)
@@ -130,8 +126,8 @@ describe('getReviewStatsForUser', () => {
     // UTC 2026-04-22T14:59:00Z = JST 2026-04-22T23:59:00+09:00 → today still '2026-04-22'
     const fixedNow = new Date('2026-04-22T14:59:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 2 }] })
-      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+      .mockResolvedValueOnce([{ c: 2 }])
+      .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(2)
@@ -142,8 +138,8 @@ describe('getReviewStatsForUser', () => {
     const fixedNow = new Date('2026-04-22T15:00:00Z')
     // today for this call is '2026-04-23'
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [] }) // no study_days row for 2026-04-23
-      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] }) // yesterday has data
+      .mockResolvedValueOnce([]) // no study_days row for 2026-04-23
+      .mockResolvedValueOnce([{ d: '2026-04-22' }]) // yesterday has data
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res.todayCardCount).toBe(0)
@@ -154,8 +150,8 @@ describe('getReviewStatsForUser', () => {
   it('test 9: return shape contract — { todayCardCount, streak } 2 field', async () => {
     const fixedNow = new Date('2026-04-22T12:00:00Z')
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 3 }] })
-      .mockResolvedValueOnce({ rows: [{ d: '2026-04-22' }] })
+      .mockResolvedValueOnce([{ c: 3 }])
+      .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
     const res = await getReviewStatsForUser('user_1', fixedNow)
     expect(res).toHaveProperty('todayCardCount', 3)
@@ -165,8 +161,8 @@ describe('getReviewStatsForUser', () => {
 
   it('test 10: now 省略 (undefined) でも動く — 内部で new Date() を使う', async () => {
     mockDb.execute
-      .mockResolvedValueOnce({ rows: [{ c: 1 }] })
-      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce([{ c: 1 }])
+      .mockResolvedValueOnce([])
 
     // Should not throw when now is omitted
     const res = await getReviewStatsForUser('user_1')

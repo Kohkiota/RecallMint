@@ -18,7 +18,9 @@ const { txState } = vi.hoisted(() => ({
       target: unknown
       set: Record<string, unknown>
     }>,
-    executeResult: { rows: [{ c: 1 }] } as { rows: { c: number }[] },
+    // postgres-js + drizzle: execute() は Array-like (RowList) を返す。 旧 Neon の
+    // `{ rows: [...] }` ラッピングは存在しない。
+    executeResult: [{ c: 1 }] as { c: number }[],
   },
 }))
 
@@ -142,7 +144,7 @@ beforeEach(() => {
   txState.updateCalls = []
   txState.insertCalls = []
   txState.conflictCalls = []
-  txState.executeResult = { rows: [{ c: 1 }] }
+  txState.executeResult = [{ c: 1 }]
 })
 
 describe('submitReviewTx', () => {
@@ -210,7 +212,7 @@ describe('submitReviewTx', () => {
 
   // ------- distinct_card_count 再集計 -------
   it('distinct_card_count は execute() 結果で上書きされる', async () => {
-    txState.executeResult = { rows: [{ c: 5 }] }
+    txState.executeResult = [{ c: 5 }]
     const tx = makeTx()
     const now = new Date('2026-05-23T10:00:00Z')
     await submitReviewTx(tx as never, {

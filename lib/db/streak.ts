@@ -78,7 +78,7 @@ export async function getReviewStatsForUser(
     WHERE user_id = ${userId}::uuid AND day = ${today}
     LIMIT 1
   `)
-  const todayCardCount = Number(todayRow.rows[0]?.c ?? 0)
+  const todayCardCount = Number(todayRow[0]?.c ?? 0)
 
   // Streak 用: 直近 61 日 (today + 過去 60 日。 60 日 streak の境界安全マージン 1 日込み) で review_count > 0 の day を取得。
   // >= lowerBound は lowerBound 当日を含む (61 日 window)。MVP 上限 60 日 streak を確実に検出するための設計判断。
@@ -91,7 +91,7 @@ export async function getReviewStatsForUser(
       AND review_count > 0
     ORDER BY day DESC
   `)
-  const dates = dateRows.rows.map((r) => r.d)
+  const dates = dateRows.map((r) => r.d)
 
   return { todayCardCount, streak: computeStreak(dates, today) }
 }

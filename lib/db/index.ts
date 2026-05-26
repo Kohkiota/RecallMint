@@ -1,28 +1,18 @@
-import { Pool, neonConfig } from '@neondatabase/serverless'
-import { drizzle } from 'drizzle-orm/neon-serverless'
-import ws from 'ws'
-import { logger } from '@/lib/logger'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import postgres from 'postgres'
 import * as schema from './schema'
-
-// Neon serverless requires WebSocket in Node runtime (not needed on Edge).
-neonConfig.webSocketConstructor = ws
 
 let _db: ReturnType<typeof drizzle<typeof schema>> | null = null
 
-/**
- * Lazy Drizzle client singleton using Neon serverless driver (WebSocket).
- * Supports transactions via `db.transaction()` and is safe for Vercel
- * serverless cold starts. Throws on first call if DATABASE_URL is unset.
- */
+// Supabase Transaction pooler への接続を想定。 prepare: false は Supabase pooler
+// (PgBouncer transaction mode) の要件で、 prepared statement キャッシュを無効化する。
 export function getDb() {
   if (_db) return _db
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is not set')
   }
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL })
-  // G-5-2 + G-6: capture idle client / re-connect errors via structured logger
-  pool.on('error', (err: Error) => logger.error({ event: 'db.pool.error', err }))
-  _db = drizzle(pool, { schema })
+  const client = postgres(process.env.DATABASE_URL, { prepare: false })
+  _db = drizzle(client, { schema })
   return _db
 }
 

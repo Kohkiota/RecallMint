@@ -99,10 +99,11 @@ vi.mock('@/lib/db', () => {
     //   1 回目 = exam validate (exams WHERE id=...) — existing mode のみ
     let guardSelectCallCount = 0
     return {
-      // S1.9.4: tx.execute() は QueryResult 形式 { rows: [{ locked: boolean }] } を返す
-      // 実装側が lockResult.rows[0]?.locked で読む形式に合わせる。
+      // postgres-js + drizzle: tx.execute() は RowList<T[]> (Array-like) を返す。
+      // 実装側が `(lockResult as unknown as Array<{ locked: boolean }>)[0]?.locked`
+      // で読む形式に合わせる (旧 Neon の `{ rows: [...] }` ラッピングは廃止)。
       execute: (_sqlTemplate: unknown) =>
-        Promise.resolve({ rows: [{ locked: dbState.advisoryLockAcquired }] }),
+        Promise.resolve([{ locked: dbState.advisoryLockAcquired }]),
       select: () => {
         let returnValue: unknown
         if (isGuardTx) {

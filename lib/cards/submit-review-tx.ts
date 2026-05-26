@@ -121,7 +121,7 @@ export async function submitReviewTx(
     WHERE user_id = ${userId}::uuid
       AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
   `)
-  const distinct = Number(distinctRows.rows[0]?.c ?? 0)
+  const distinct = Number(distinctRows[0]?.c ?? 0)
 
   await tx
     .insert(studyDays)
