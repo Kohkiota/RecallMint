@@ -56,3 +56,42 @@ export async function getAllCardsForUser(userId: string): Promise<ClientCard[]> 
   const rows = await db.select().from(cards).where(eq(cards.userId, userId))
   return rows.map(toClientCard)
 }
+
+// S-local-3 Task 1: ClientCard (Dexie) → Card (Drizzle inferSelect) の逆 mapping。
+// toClientCard の対称、 ISO 文字列 → Date 復元、 snake_case → camelCase、
+// sync_status drop。 smart session で Dexie cards を server Card 型に揃えて
+// session-runner に渡すために利用する。
+export function toCard(c: ClientCard): CardRow {
+  return {
+    id: c.id,
+    userId: c.user_id,
+    examId: c.exam_id,
+    sourceDocumentId: c.source_document_id ?? null,
+    title: c.title,
+    sortKey: c.sort_key ?? null,
+    questionText: c.question_text,
+    options: c.options,
+    correctAnswerIds: c.correct_answer_ids,
+    explanationText: c.explanation_text ?? null,
+    memo: c.memo ?? null,
+    images: c.images,
+    customProps: c.custom_props,
+    tags: c.tags,
+    answered: c.answered,
+    lastCorrect: c.last_correct ?? null,
+    currentStreak: c.current_streak,
+    due: new Date(c.due),
+    stability: c.stability,
+    difficulty: c.difficulty,
+    elapsedDays: c.elapsed_days,
+    scheduledDays: c.scheduled_days,
+    reps: c.reps,
+    lapses: c.lapses,
+    state: c.state,
+    learningSteps: c.learning_steps,
+    lastReview: c.last_review ? new Date(c.last_review) : null,
+    contentVersion: c.content_version,
+    createdAt: new Date(c.created_at),
+    updatedAt: new Date(c.updated_at),
+  }
+}

@@ -1,24 +1,32 @@
 'use client'
 
 // StudySessionHost — server `page.tsx` と client `SessionRunner` の中間に立ち、
-// 演習開始時に Dexie へ study_sessions 行を入れて session_id を採番する thin client
-// wrapper (S-cache-1)。 SessionRunner mount 前に session 行を確定させたいので
-// useEffect で write、 完了するまで Loading を出す。
+// 演習開始時の (1) cards 決定 (Dexie mirror 優先 + server fallback、 S-local-3)
+// と (2) Dexie study_sessions への session_id 採番 (S-cache-1) を担う thin wrapper。
+//
+// S-local-3 hybrid 戦略:
+// - mount 時に `getDueCardsFromDexie(userId, sessionLimit)` を試行
+// - 戻り値 >= 1 件: Dexie 由来 cards を使う (= mirror 経由の local read 経路)
+// - 戻り値 0 件 / throw: props.cards (server fetch fallback) を使う
+// - cards 確定後に createStudySession を呼んで session_id 採番、 SessionRunner mount
 //
 // 設計上の注意:
-// - mount 中に session を作る (`useEffect` ベース)。 React StrictMode 下では
-//   useEffect が 2 回走るが、 `cancelled` フラグで 2 回目の Dexie write は捨てる。
-// - mount 後の session_id 変化は React 規約上想定しない (cards 配列入替で再 mount
-//   する設計、 次回 session は親で remount する想定)。
+// - StrictMode 下の useEffect 2 回実行は cancelled flag で 2 回目の Dexie write を捨てる
+// - server SSR は維持 (page.tsx は無変更で動作)、 Dexie 由来は client 上書きという形
+// - silent fallback: Dexie 失敗時の console / UI 出力なし
 
 import { useEffect, useState } from 'react'
 import type { Card } from '@/lib/db/schema'
 import { createStudySession, newId } from '@/lib/sync/review-events'
+import { getDueCardsFromDexie } from '@/lib/cards/get-dexie-session-cards'
 import { SessionRunner } from './session-runner'
 
 type StudySessionHostProps = {
   cards: Card[]
   fsrsMode: boolean
+  // S-local-3: Dexie cards mirror から due cards を引き直すために必要。
+  userId: string
+  sessionLimit: number
   // 全 exam 横断 smart session では exam_id を指定しない (null になる)。
   // custom mode (将来) では絞り込み対象の exam_id を渡す。
   examId?: string
@@ -27,38 +35,54 @@ type StudySessionHostProps = {
 }
 
 export function StudySessionHost({
-  cards,
+  cards: serverCards,
   fsrsMode,
+  userId,
+  sessionLimit,
   examId,
   mode = 'smart',
 }: StudySessionHostProps) {
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [resolvedCards, setResolvedCards] = useState<Card[] | null>(null)
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
+      // (1) cards 決定: Dexie 優先、 0 件 / throw 時は server props で fallback
+      let chosen: Card[] = serverCards
+      try {
+        const dexieCards = await getDueCardsFromDexie(userId, sessionLimit)
+        if (dexieCards.length > 0) chosen = dexieCards
+      } catch {
+        // silent fallback
+      }
+      if (cancelled) return
+
+      // (2) Dexie に study_sessions 行を入れて session_id を採番。 失敗時は in-memory
+      //     only で進める (S-cache-1 既存設計を踏襲)。
       const id = newId()
       try {
         await createStudySession({
           session_id: id,
           ...(examId ? { exam_id: examId } : {}),
           mode,
-          card_ids: cards.map((c) => c.id),
+          card_ids: chosen.map((c) => c.id),
         })
       } catch {
-        // Dexie write 失敗時も session を進める (in-memory only、 同期は次起動で
-        // 諦める)。 sessionId を仮で発行して runner を走らせる。
+        // silent
       }
-      if (!cancelled) setSessionId(id)
+      if (cancelled) return
+      setResolvedCards(chosen)
+      setSessionId(id)
     })()
     return () => {
       cancelled = true
     }
-    // mount 時のみ。 cards / examId / mode の変化で再生成しない (= 1 session = 1 mount)。
+    // mount 時のみ。 props 変化で再生成しない (= 1 session = 1 mount、 既存挙動踏襲)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  if (sessionId === null) {
+  if (sessionId === null || resolvedCards === null) {
     return (
       <div className="mx-auto max-w-xl px-4 py-12 text-center text-sm text-slate-500">
         Loading…
@@ -66,6 +90,10 @@ export function StudySessionHost({
     )
   }
   return (
-    <SessionRunner cards={cards} fsrsMode={fsrsMode} sessionId={sessionId} />
+    <SessionRunner
+      cards={resolvedCards}
+      fsrsMode={fsrsMode}
+      sessionId={sessionId}
+    />
   )
 }

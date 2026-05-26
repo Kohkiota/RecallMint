@@ -48,5 +48,15 @@ export default async function SmartStudyPage() {
 
   // S-cache-1: StudySessionHost が client 側で session_id を採番 + Dexie に
   // study_sessions 行を入れてから SessionRunner を render する。
-  return <StudySessionHost cards={cards} fsrsMode={fsrsMode} mode="smart" />
+  // S-local-3: userId / sessionLimit を渡し、 client が Dexie cards mirror から
+  // 直接 due cards を引いて (mirror が空なら server cards で fallback)。
+  return (
+    <StudySessionHost
+      cards={cards}
+      fsrsMode={fsrsMode}
+      userId={user.id}
+      sessionLimit={sessionLimit}
+      mode="smart"
+    />
+  )
 }

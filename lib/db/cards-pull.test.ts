@@ -4,7 +4,8 @@
 // sync_status='synced' 固定が主要 assertion。
 
 import { describe, it, expect } from 'vitest'
-import { toClientCard } from './cards-pull'
+import { toClientCard, toCard } from './cards-pull'
+import type { ClientCard } from '@/lib/client-db'
 import type { cards } from './schema'
 
 type CardRow = typeof cards.$inferSelect
@@ -93,5 +94,108 @@ describe('toClientCard', () => {
     expect(out.scheduled_days).toBe(3)
     expect(out.learning_steps).toBe(1)
     expect(out.content_version).toBe(7)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S-local-3 Task 1: toCard reverse mapper (ClientCard → Card)。 toClientCard と
+// 対称、 ISO 文字列 → Date 復元、 snake_case → camelCase、 sync_status drop。
+// ---------------------------------------------------------------------------
+
+function fakeClient(overrides?: Partial<ClientCard>): ClientCard {
+  return {
+    id: 'card-1',
+    user_id: 'user-1',
+    exam_id: 'exam-1',
+    source_document_id: null,
+    title: 'Q',
+    sort_key: null,
+    question_text: 'Q',
+    options: [{ id: 'a', text: 'A', is_correct: true }],
+    correct_answer_ids: ['a'],
+    explanation_text: null,
+    memo: null,
+    images: [],
+    custom_props: {},
+    tags: [],
+    answered: false,
+    last_correct: null,
+    current_streak: 0,
+    due: '2026-05-26T10:00:00.000Z',
+    stability: 0,
+    difficulty: 0,
+    elapsed_days: 0,
+    scheduled_days: 0,
+    reps: 0,
+    lapses: 0,
+    state: 0,
+    learning_steps: 0,
+    last_review: null,
+    content_version: 0,
+    created_at: '2026-05-01T00:00:00.000Z',
+    updated_at: '2026-05-02T00:00:00.000Z',
+    sync_status: 'synced',
+    ...overrides,
+  }
+}
+
+describe('toCard (reverse mapper)', () => {
+  it('ISO 文字列を Date に復元、 sync_status は drop', () => {
+    const out = toCard(fakeClient())
+    expect(out.due).toEqual(new Date('2026-05-26T10:00:00.000Z'))
+    expect(out.createdAt).toEqual(new Date('2026-05-01T00:00:00.000Z'))
+    expect(out.updatedAt).toEqual(new Date('2026-05-02T00:00:00.000Z'))
+    expect(out.lastReview).toBeNull()
+    expect('sync_status' in out).toBe(false)
+  })
+
+  it('last_review が ISO 文字列なら Date に復元', () => {
+    const out = toCard(fakeClient({ last_review: '2026-05-25T05:00:00.000Z' }))
+    expect(out.lastReview).toEqual(new Date('2026-05-25T05:00:00.000Z'))
+  })
+
+  it('snake_case → camelCase の field rename', () => {
+    const out = toCard(
+      fakeClient({
+        user_id: 'u',
+        exam_id: 'e',
+        source_document_id: 'src',
+        sort_key: 'sk',
+        question_text: 'q',
+        correct_answer_ids: ['x'],
+        explanation_text: 'ex',
+        last_correct: true,
+        current_streak: 5,
+        elapsed_days: 2,
+        scheduled_days: 3,
+        learning_steps: 1,
+        content_version: 7,
+      }),
+    )
+    expect(out.userId).toBe('u')
+    expect(out.examId).toBe('e')
+    expect(out.sourceDocumentId).toBe('src')
+    expect(out.sortKey).toBe('sk')
+    expect(out.questionText).toBe('q')
+    expect(out.correctAnswerIds).toEqual(['x'])
+    expect(out.explanationText).toBe('ex')
+    expect(out.lastCorrect).toBe(true)
+    expect(out.currentStreak).toBe(5)
+    expect(out.elapsedDays).toBe(2)
+    expect(out.scheduledDays).toBe(3)
+    expect(out.learningSteps).toBe(1)
+    expect(out.contentVersion).toBe(7)
+  })
+
+  it('round-trip: ClientCard → Card → ClientCard で同一', () => {
+    const original = fakeClient({
+      last_review: '2026-05-25T05:00:00.000Z',
+      last_correct: true,
+      current_streak: 3,
+      stability: 1.5,
+      difficulty: 0.7,
+    })
+    const roundTripped = toClientCard(toCard(original))
+    expect(roundTripped).toEqual(original)
   })
 })
