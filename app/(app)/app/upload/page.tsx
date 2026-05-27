@@ -70,7 +70,7 @@ export default async function UploadPage() {
               処理状況は試験一覧で確認できます。
             </p>
             <Button asChild variant="outline">
-              <Link href="/app/exams">試験一覧を見る</Link>
+              <Link href="/app/exams" prefetch={false}>試験一覧を見る</Link>
             </Button>
           </CardContent>
         </Card>

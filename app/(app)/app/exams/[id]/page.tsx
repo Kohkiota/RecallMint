@@ -40,6 +40,7 @@ export default async function ExamDetailPage({
       <div>
         <Link
           href="/app/exams"
+          prefetch={false}
           className="text-sm text-slate-600 hover:text-slate-900"
         >
           ← 試験一覧
@@ -62,7 +63,7 @@ export default async function ExamDetailPage({
               <p className="text-sm text-slate-700">この試験にはまだカードがありません。</p>
               <div className="mt-3">
                 <Button asChild>
-                  <Link href="/app/upload">アップロードから追加</Link>
+                  <Link href="/app/upload" prefetch={false}>アップロードから追加</Link>
                 </Button>
               </div>
             </CardContent>

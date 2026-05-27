@@ -115,7 +115,7 @@ export function StudySessionHost({
           すべての card を学習済みです。お疲れ様でした！
         </p>
         <Button asChild variant="outline">
-          <Link href="/app">ダッシュボードへ</Link>
+          <Link href="/app" prefetch={false}>ダッシュボードへ</Link>
         </Button>
       </div>
     )

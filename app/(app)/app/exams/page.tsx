@@ -50,7 +50,7 @@ export default async function ExamsListPage() {
             <CardContent className="p-6 text-center space-y-3">
               <p className="text-slate-700">まだ試験がありません。</p>
               <Button asChild>
-                <Link href="/app/upload">アップロードから始める</Link>
+                <Link href="/app/upload" prefetch={false}>アップロードから始める</Link>
               </Button>
             </CardContent>
           </Card>

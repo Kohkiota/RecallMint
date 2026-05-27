@@ -221,7 +221,7 @@ function PricingCta({
   // upgrade: /app/upgrade に誘導 (toggle / plan 選択はそちらの page で再度行う)
   return (
     <Button asChild className="w-full">
-      <Link href="/app/upgrade">アップグレード</Link>
+      <Link href="/app/upgrade" prefetch={false}>アップグレード</Link>
     </Button>
   )
 }

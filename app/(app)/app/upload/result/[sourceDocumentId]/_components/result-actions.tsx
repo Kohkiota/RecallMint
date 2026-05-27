@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 export function ResultActions() {
   return (
     <Button asChild className="w-full py-3 text-base font-bold">
-      <Link href="/app/exams">保存して試験一覧へ</Link>
+      <Link href="/app/exams" prefetch={false}>保存して試験一覧へ</Link>
     </Button>
   )
 }
