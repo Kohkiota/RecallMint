@@ -1,6 +1,5 @@
 'use server'
 
-import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
@@ -154,9 +153,8 @@ export async function updateCardField(
     // server component を自動再実行して新 RSC tree を返す (inline-text-field /
     // inline-option-row の `serverOptions` prop 更新が依存する機構)。 同 path への
     // revalidatePath はこの自動再実行と重複し redundant。
-    // /app/cards/[cardId] は別 page (card 詳細) に影響するため cross-page revalidate
-    // を残置。
-    revalidatePath(`/app/cards/${cardId}`)
+    // (cache-fix roadmap ④-3: 旧 /app/cards/[id] page への cross-page revalidate
+    // も同 page 廃止に伴い撤去済)
     return { ok: true }
   } catch (err) {
     logger.error({

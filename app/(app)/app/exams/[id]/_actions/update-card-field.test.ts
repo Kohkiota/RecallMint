@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// updateCardField server action の test。 update-card.test.ts と同 mock pattern。
+// updateCardField server action の test (`/app/exams/[id]` inline 編集用)。
 // field 単位の更新と、 options の correct_answer_ids 自動再生成 / owner-scoped /
-// zod 検証 / revalidatePath 2 path / DB throw → ActionResult 変換を検証する。
+// zod 検証 / DB throw → ActionResult 変換を検証する。 旧 /app/cards/[id] page
+// 廃止 (cache-fix roadmap ④-3) に伴い revalidatePath は呼ばなくなったため、
+// success path の revalidate verify case は撤去済。
 
 const { mockGetCurrentUser, mockRevalidatePath, mockLoggerError, dbState } =
   vi.hoisted(() => ({
@@ -275,20 +277,6 @@ describe('updateCardField', () => {
     if (!r.ok) expect(r.error).toMatch(/保存に失敗しました/)
     expect(mockLoggerError).toHaveBeenCalled()
     expect(mockRevalidatePath).not.toHaveBeenCalled()
-  })
-
-  it('success → revalidates card page only (S-cache-2a: inline 編集は exam 詳細上、 /app/exams/[id] は同 path で redundant)', async () => {
-    // S-cache-2a: inline 編集は /app/exams/[id] 上で client component から server
-    // action を呼出。 Next.js 15 は完了後 呼出元 segment の server component を
-    // 自動再実行して新 RSC tree を返すため、 同 path への revalidatePath は redundant。
-    // /app/cards/[cardId] は別 page (card 詳細) で stale 可能性があるため cross-page
-    // revalidate を残置。
-    const { updateCardField } = await importAction()
-    await updateCardField('card-1', 'title', '問1')
-    expect(mockRevalidatePath).not.toHaveBeenCalledWith('/app/exams/exam-1')
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/cards/card-1')
-    // scope creep 検出 (review minor #4)
-    expect(mockRevalidatePath).toHaveBeenCalledTimes(1)
   })
 
   it('unknown field → { ok: false } で error 返却 (defensive)', async () => {

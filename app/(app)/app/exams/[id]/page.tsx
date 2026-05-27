@@ -11,9 +11,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { InlineCardList } from './_components/inline-card-list'
 
 // 試験詳細 page: 各 card の全情報 (sort_key / title / 問題文 / 選択肢 + 各解説 /
-// 解説 / メモ) を inline 編集 cell として展開 (S2.0b-1 T3)。 「編集」 ボタン経由の
-// /app/cards/[id] page への遷移は廃止 (全 inline で完結)、 ただし /app/cards/[id]
-// 自体は残置 (深い編集が要る場合の保険、 S2.0b-1 scope 外)。
+// 解説 / メモ) を inline 編集 cell として展開 (S2.0b-1 T3)。 旧 /app/cards/[id]
+// page は廃止済 (cache-fix roadmap ④-3)、 card 編集は全 inline で完結する。
 //
 // C2: getAuthContext() で JWT 経由の dbUserId 読込に切替、 users SELECT を撤去。
 // undefined 時は getCurrentUser() fallback。

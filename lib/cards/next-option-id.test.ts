@@ -1,7 +1,7 @@
-// `nextOptionId` 純粋関数の単体 test。 元は card-editor.test.tsx 内に同居していたが、
-// 共通 util への切り出し (S2.0b-3) に伴い本 file に移動。 caller は
-// `app/(app)/app/cards/[id]/_components/card-editor.tsx` (旧来) と
-// `app/(app)/app/exams/[id]/_components/inline-option-row.tsx` (S2.0b-3 新規)。
+// `nextOptionId` 純粋関数の単体 test。 元は旧 card-editor.test.tsx 内に同居して
+// いたが、 共通 util への切り出し (S2.0b-3) に伴い本 file に移動。 旧
+// card-editor.tsx は cache-fix roadmap ④-3 で廃止済、 現 caller は
+// `app/(app)/app/exams/[id]/_components/inline-option-row.tsx` のみ。
 
 import { describe, it, expect } from 'vitest'
 import { nextOptionId } from './next-option-id'

@@ -5,11 +5,11 @@
 // - 既存が全て数字のみ → max(id) + 1
 // - 上記いずれも該当しない (mix / 英字 z 枯渇 / 空 等) → `opt-N` (N=1 から重複しない最小値)
 //
-// 元実装は `app/(app)/app/cards/[id]/_components/card-editor.tsx` 内に閉じていたが、
-// 試験詳細 page の inline 編集 (S2.0b-3 で「+ 選択肢を追加」 機能) でも同じ採番が
-// 必要になり、 file を跨いで共有するため本 lib に切り出した。 同 file の caller は
-// `card-editor.tsx` の addOption と `inline-option-row.tsx` (InlineOptionList) の
-// 「+ 選択肢を追加」 handler の 2 箇所。
+// 元実装は旧 `app/(app)/app/cards/[id]/_components/card-editor.tsx` 内に閉じて
+// いたが、 試験詳細 page の inline 編集 (S2.0b-3 で「+ 選択肢を追加」 機能) でも
+// 同じ採番が必要になり、 file を跨いで共有するため本 lib に切り出した。 旧
+// card-editor.tsx は cache-fix roadmap ④-3 で廃止済、 現 caller は
+// `inline-option-row.tsx` (InlineOptionList) の「+ 選択肢を追加」 handler のみ。
 
 export function nextOptionId(existing: string[]): string {
   const taken = new Set(existing)
