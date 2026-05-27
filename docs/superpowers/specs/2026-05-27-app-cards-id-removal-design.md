@@ -3,8 +3,9 @@
 - 起票日: 2026-05-27
 - 種別: design spec (cache-fix roadmap ④-3)
 - 関連 roadmap: `docs/cache-fix-roadmap.md` §④-3
-- 状態: OT 承認済 (補足追記版で承認)
+- 状態: **実装完了** (commit `b73512b`、 2026-05-27)
 - 前 phase: phase 1 経路調査 (chat report、 commit なし) — UI 経路ゼロ + 副次依存 6 area + 部分削除境界を grep ベースで確定済
+- 後追い: 実装後の実態整合 (touch list 数値補正 + 進行中追加 scope) は本 doc §10 で反映
 
 ---
 
@@ -187,3 +188,72 @@ grep -rn "from '@/lib/validation/card'" --include="*.ts" --include="*.tsx"
 - LocalSync MVP の `card_mutations` push API 設計への影響 (削除完了後 LocalSync
   spec の scope を「inline 編集経路のみ」 に絞れる副次効果はあるが、 設計判断は
   LocalSync MVP spec で別途)
+
+---
+
+## 10. 実装結果 (実態整合の後追い反映)
+
+起票時 §1-§9 は起票 snapshot として保持。 実装 (`b73512b`) 完了後に発覚した
+spec / 実態の差分を本 section で補正する。 review (Critical 0 / Important 0 /
+Minor 5) の minor #3 で reviewer から「spec doc 自体の amend」 を recommend
+された範囲を主に反映。
+
+### 10.1 touch list 数値の補正
+
+| section | 起票時記載 | 実態 | 差分の根拠 |
+|---|---|---|---|
+| §1 結論サマリ | 自己参照 9 + 副次 5 = **13 file** | 自己参照 10 + 副次 7 = **17 file** | 起票時数え誤り (§ (a) 内訳合計 = 1+1+2+2+2+2 = 10) + 進行中追加 2 件 |
+| §3 In (a) | 自己参照 9 file | **自己参照 10 file** | 同上 (page+loading+actions(2)+actions test(2)+components(2)+components tests(2)) |
+| §3 In (b) | 4 file modify + 1 file delete | **3 file modify + 3 file delete + 2 file 副次 comment fix** | 進行中追加 + review minor 反映 |
+
+### 10.2 進行中追加 scope (OT 承認のもと本 commit に含めた範囲)
+
+brief「削除影響範囲 (関連 import / 関連 test) も同 commit で整理」 の解釈幅で
+追加した範囲。 spec 起票時に grep 漏れで未列挙だったもの。
+
+| # | file | 対処 | 根拠 |
+|---|---|---|---|
+| A | `lib/cards/get-card-for-edit.test.ts` | **delete** | `get-card-for-edit.ts` 削除に伴い import 切れで TS2307 × 3 発生、 helper file 削除に test file が追従するのが自然 |
+| B | `lib/validation/card.test.ts` | **全 delete** | 全 24 case が削除対象 export (`updateCardInputSchema` / `parseUpdateCardInput` / `UpdateCardInput`) の test、 `optionSchema` 単独 test は元々 file 内に不在 |
+| C | `update-card-field.test.ts` L280-292 case | **case 全体 delete** | spec §3 (b) #4 の「assertion 削除」 を OT 承認のもと「revalidate verify 専用 case の全削除」 に拡張。 残置すると it title (`success → revalidates ...`) が事実と矛盾 |
+| D | `update-card-field.ts:3` `revalidatePath` import | **撤去** | revalidate 行削除に伴い unused、 TS6133 警告で発覚 |
+| E | `lib/cards/next-option-id.ts` / `.test.ts` の comment | **caller 言及を更新** | 削除済 `card-editor.tsx` を caller として言及していたため、 同 sweep で comment を inline-option-row のみ言及に整理 (review minor #2) |
+
+### 10.3 残置 `optionSchema` の test coverage
+
+`lib/validation/card.test.ts` 全削除に伴い `optionSchema` の unit level test は
+喪失するが、 結合 level の coverage は以下で維持される:
+
+- `update-card-field.test.ts:216` `options: 正常 → snake_case 変換 + correct_answer_ids 再生成`
+- `update-card-field.test.ts:232` `options: 0 件で zod error`
+- `update-card-field.test.ts:240` `options: id 重複で zod error`
+
+これらが `optionsSchema` (`optionSchema` の array wrap) 経由で `optionSchema`
+を間接 verify する。 unit level の単独 test 追加は将来必要時に別 task で
+行うこととし、 本 task 範囲では coverage 妥当と判断 (OT 承認済)。
+
+### 10.4 §7 test 影響の実数
+
+起票時記載: 「~860 前後」 → 実数: **818 pass** (= baseline 873 − 55 case 減)。
+55 case 減の内訳:
+
+- 自己参照 4 test file 内の case 合計
+- `lib/validation/card.test.ts` 24 case
+- `lib/cards/get-card-for-edit.test.ts` の 3 case
+- `update-card-field.test.ts` L280-292 case 1 件
+
+### 10.5 review 結果
+
+- 経路: `superpowers:requesting-code-review` skill canonical (general-purpose
+  subagent + 厳格 prompt + template 改変なし)
+- Critical 0 / Important 0 / Minor 5 (詳細は commit `b73512b` の message 参照)
+- Minor 1 (test docstring stale) と Minor 2 (next-option-id comment stale) は
+  同 commit 内で fix、 Minor 4 (commit tag) は遵守、 Minor 5 (.not.toHaveBeenCalled)
+  は keep (regression guard)、 本 §10 は Minor 3 への対応
+
+### 10.6 裏取り判定
+
+該当なし (dead code 削除、 reducing side-effect)。 reviewer 明示確認: 「neither
+in the "決済 / 認証 / 削除 / 外部副作用" 裏取り category, failure mode = "削除済
+page が復活する" not data loss」 → OT 実機観察 gate 不要、 `[reviewed]` tag 即時
+付与済。
