@@ -1,0 +1,189 @@
+# /app/cards/[id] 廃止 設計 (design spec)
+
+- 起票日: 2026-05-27
+- 種別: design spec (cache-fix roadmap ④-3)
+- 関連 roadmap: `docs/cache-fix-roadmap.md` §④-3
+- 状態: OT 承認済 (補足追記版で承認)
+- 前 phase: phase 1 経路調査 (chat report、 commit なし) — UI 経路ゼロ + 副次依存 6 area + 部分削除境界を grep ベースで確定済
+
+---
+
+## 1. 結論サマリ
+
+`/app/cards/[id]` 個別 card 編集 page (S2.0 で導入、 その後 `/app/exams/[id]` 内
+の inline 編集が UX 主軸となり dead code 化) を、 自己参照 9 file + 副次依存
+4 area + lib 部分削除を含めて 1 commit で一括削除する。 UI 経路 (Link /
+router.push / redirect / form action) は phase 1 で **ゼロ確認済**、 削除に伴う
+inline 編集の RSC re-render 経路維持も Next.js 15 server action 自動再実行で
+担保済 (S-cache-2a 由来)、 代替経路追加不要。
+
+---
+
+## 2. 背景
+
+S2.0 で個別 card 編集 page (`/app/cards/[id]`) を作ったが、 その後 inline
+編集 (`/app/exams/[id]` 内で field 単位編集) が UX 主軸となり、 page への UI
+経路 (Link / push / redirect / form action) は全て撤去された。 現状の grep
+結果は (phase 1 で確認):
+
+- `href="/app/cards` / `router.push.*app/cards` / `redirect.*app/cards` /
+  `Link.*app/cards`: **0 件**
+- `app/(app)/app/exams/[id]/_components/inline-card-list.test.tsx:65` に
+  「『編集』 Link は DOM に存在しない」 を assert する test も既に固定済
+
+dead code 化した page と副次依存を残置すると、 LocalSync MVP 等の後続 sprint
+で scope 判定にノイズが入る。 削除は git revert で復活可能なので、 経路ゼロを
+確認した段階で削除に踏み切る方針。
+
+---
+
+## 3. Scope
+
+### In (touch list 13 file)
+
+#### (a) 自己参照 9 file (一括 rm)
+
+```
+app/(app)/app/cards/[id]/
+├── page.tsx                                          ← delete
+├── loading.tsx                                       ← delete
+├── _actions/update-card.ts            + .test.ts     ← delete
+├── _actions/delete-card.ts            + .test.ts     ← delete
+├── _components/card-editor.tsx        + .test.tsx    ← delete
+└── _components/delete-card-button.tsx + .test.tsx    ← delete
+```
+
+#### (b) 副次依存 4 file modify + 1 file delete
+
+| # | file | 変更 |
+|---|---|---|
+| 1 | `lib/cards/get-card-for-edit.ts` | **file 削除** (使用箇所 = 削除対象 page のみ、 grep 確定) |
+| 2 | `lib/validation/card.ts` | **部分削除** (§5 で境界明示) + docstring 更新 |
+| 3 | `app/(app)/app/exams/[id]/_actions/update-card-field.ts:159` | `revalidatePath` 行削除 + `:157-158` comment 更新 |
+| 4 | `app/(app)/app/exams/[id]/_actions/update-card-field.test.ts:284-289` | revalidatePath assertion 削除 |
+| 5 | `app/(app)/app/exams/[id]/page.tsx:15` | comment「`/app/cards/[id]` への遷移は廃止...」 を「page は廃止済、 全 inline で完結」 に書換 |
+
+### Out (YAGNI)
+
+- inline 編集 UI 自体の改修 (本 task は削除可否のみ)
+- 他 dead code への調査拡大 (本 task は `/app/cards/[id]` のみ)
+- 将来再導入の議論 (経路ゼロ確認済、 必要なら git revert で復活可能)
+- `/app/cards/[id]` 以外の `/app/exams/[id]` 内編集 UI の見直し
+
+---
+
+## 4. 残置 (整理しない)
+
+- **`app/(app)/app/exams/[id]/_components/inline-card-list.test.tsx:65`** の
+  「『編集』 Link は DOM に存在しない」 test
+  - **keep** (将来「うっかり Link 復活」 regression guard、 削除後の状態とも整合)
+  - test 名内の文言 (`Link to /app/cards/:id`) も **そのまま keep する** (= 過去
+    の経路名を明示することで「なぜこの assertion があるか」 の意図が読みやすい
+    まま維持される、 削除済 path を test 名に残すことの不都合は無視可能)
+
+---
+
+## 5. 部分削除境界 (lib/validation/card.ts)
+
+OT 追加指示により、 grep ベースで完全確定。
+
+### 確認 grep
+
+```
+grep -rn "from '@/lib/validation/card'" --include="*.ts" --include="*.tsx"
+```
+
+### export 別の対処
+
+| export | 唯一の importer | 削除可否 |
+|---|---|---|
+| `optionSchema` | `app/(app)/app/exams/[id]/_actions/update-card-field.ts:11` (inline 側) | **残す** |
+| `updateCardInputSchema` | `app/(app)/app/cards/[id]/_actions/update-card.ts:9` (削除対象) のみ | 削除 |
+| `UpdateCardInput` (type) | 同上 | 削除 |
+| `ParseUpdateCardResult` (type) | 同上 | 削除 |
+| `parseUpdateCardInput` (function) | 同上 | 削除 |
+
+### 残置後の docstring 方針
+
+冒頭 comment 「card 編集 page (/app/cards/[id]) の入力 validation」 を
+「inline 編集 (`/app/exams/[id]` 内 option 編集) の選択肢入力 validation」 に
+更新。 残置 export が `optionSchema` 1 個のみに narrow される事実を反映。
+
+---
+
+## 6. 削除に伴う代替経路不要の根拠
+
+`update-card-field.ts:159` の `revalidatePath('/app/cards/${cardId}')` を
+削除しても、 inline 編集の RSC re-render は **Next.js 15 の server action
+自動再実行**で維持される。 代替経路 (e.g. `router.refresh()` / 追加
+`revalidatePath`) を追加する必要なし。
+
+### 根拠 (同 file 既存 comment `:152-156` 由来、 S-cache-2a sprint で確立)
+
+> S-cache-2a: revalidatePath('/app/exams/[id]') は撤去。 Next.js 15 は client
+> component から呼ばれた server action の完了後、 **呼出元 route segment の
+> server component を自動再実行して新 RSC tree を返す** (inline-text-field /
+> inline-option-row の `serverOptions` prop 更新が依存する機構)。 同 path への
+> revalidatePath はこの自動再実行と重複し redundant。
+
+つまり:
+
+- 呼出元 `/app/exams/[id]` の RSC 再実行は **Next.js 15 server action 完了後
+  の組み込み挙動**で trigger (`revalidatePath` 経由ではない)
+- `:159` の `revalidatePath('/app/cards/${cardId}')` は「削除対象 page 専用の
+  cross-page revalidate」 で、 page 削除と共に意義喪失
+- 削除後の inline 編集挙動は S-cache-2a 確立済の自動再実行経路で完全維持
+
+### update-card-field.ts 内の他 `revalidatePath` 呼出
+
+**`:159` のみ**。 他 path への revalidate (例: `/app/exams/${examId}` 等) は
+本 file 内で呼んでいない (=最初から S-cache-2a 撤去後の状態)。
+
+---
+
+## 7. Test 影響
+
+### 削除される test (自己参照 4 file)
+
+- `app/(app)/app/cards/[id]/_actions/update-card.test.ts`
+- `app/(app)/app/cards/[id]/_actions/delete-card.test.ts`
+- `app/(app)/app/cards/[id]/_components/card-editor.test.tsx`
+- `app/(app)/app/cards/[id]/_components/delete-card-button.test.tsx`
+
+→ 推定 case 数: 873 → ~860 前後 (具体減数は実 file の case 数で確定、 完了条件
+は「全 pass」 が主、 件数減は副)。
+
+### 修正される test (1 file 1 案件)
+
+- `update-card-field.test.ts:284-289` の `mockRevalidatePath` assertion 削除
+  (= revalidatePath 自体を呼ばなくなる挙動と整合)
+
+### 追加する test (なし)
+
+- 「revalidatePath が呼ばれない」 ことを assert する case は不要
+  (= Next.js server action 自動再実行は仕様、 unit test で verify する対象でない)
+- 「Link が DOM に存在しない」 既存 test (inline-card-list.test.tsx:65) は keep
+  で regression guard 機能
+
+---
+
+## 8. 完了条件
+
+- `pnpm exec tsc --noEmit` clean
+- `pnpm test -- --run` 全 pass (削除後 case 数で全件 green)
+- `superpowers:requesting-code-review` skill canonical 経由 review:
+  Critical 0 / Important 0
+- 1 commit で完結 (brief 指示「同 commit で整理」 準拠)、 commit type は
+  `refactor(perf)` + `[reviewed]` tag (実装ロジック変更を含む refactor =
+  formal review 必須、 CLAUDE.md 該当条項準拠)
+
+---
+
+## 9. 非該当 (将来 task)
+
+- `/app/cards/[id]` の機能を別 path で再導入する設計 (現状 inline 編集で UX
+  完結、 再導入の motivation なし)
+- 他の dead code 棚卸し (例: vocab 撤去残骸、 旧 PoC code 等) — 本 task scope 外
+- LocalSync MVP の `card_mutations` push API 設計への影響 (削除完了後 LocalSync
+  spec の scope を「inline 編集経路のみ」 に絞れる副次効果はあるが、 設計判断は
+  LocalSync MVP spec で別途)
