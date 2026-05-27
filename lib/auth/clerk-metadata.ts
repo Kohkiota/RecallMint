@@ -10,8 +10,17 @@
 // - Clerk API 失敗時は throw せず ok:false で resolve、 notifyOps で観測性のみ確保
 //   (webhook handler の「常に 200 を返す」 不変条件と整合)。 stale な JWT plan は
 //   次回 webhook or backfill script で reconcile される。
+// - **404 のみ silent skip** (cache-fix roadmap ④-4): 既に削除済 / 存在しない user
+//   に対する metadata sync は「同期対象不在 = end state 一致 = success」 とみなし、
+//   notifyOps を fire しない。 戻り値は `ok:true` で caller の semantics と整合
+//   (backfill script の OK counter は「削除済 = backfill 不要」 を OK 側に振る)。
+//   主因は user.deleted webhook 処理中の race / 削除済 user 宛 Stripe webhook
+//   後着 / backfill script SELECT→PATCH 間の削除。 観測性は `console.debug` 1 行
+//   で確保 (Vercel function logs に raw 残置、 default log level の通常運用ノイズ
+//   には乗らない)。 設計: docs/superpowers/specs/2026-05-27-notify-ops-404-silent-skip-design.md
 
 import { clerkClient } from '@clerk/nextjs/server'
+import { isClerkAPIResponseError } from '@clerk/nextjs/errors'
 import { notifyOps } from '@/lib/ops'
 import type { Plan } from './plan-limits'
 
@@ -40,6 +49,14 @@ export async function syncClerkPublicMetadata(
     await client.users.updateUserMetadata(clerkId, { publicMetadata: metadata })
     return { ok: true }
   } catch (err) {
+    // Clerk 404 silent skip: user 不在 = 同期不要 (file header 失敗ポリシ参照)。
+    // notifyOps を fire せず、 軽量観測性のため console.debug 1 行だけ残す。
+    if (isClerkAPIResponseError(err) && err.status === 404) {
+      console.debug('clerk-metadata: user not found, skipped silently', {
+        clerkId,
+      })
+      return { ok: true }
+    }
     await notifyOps('clerk publicMetadata sync failed', {
       clerkId,
       keys: Object.keys(metadata),

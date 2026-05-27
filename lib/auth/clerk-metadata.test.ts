@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { ClerkAPIResponseError } from '@clerk/nextjs/errors'
 
 // ---------------------------------------------------------------------------
 // Clerk SDK + ops module を hoisted mock。 clerk webhook test 同 pattern。
@@ -85,5 +86,50 @@ describe('syncClerkPublicMetadata', () => {
     await expect(
       syncClerkPublicMetadata({ clerkId: 'user_1', dbUserId: 'db' }),
     ).resolves.toEqual({ ok: false })
+  })
+
+  // -------------------------------------------------------------------------
+  // cache-fix roadmap ④-4: Clerk Backend API 404 silent skip。
+  // 削除済 user に対する metadata sync は end state 一致 (= 同期不要) なので
+  // notifyOps を fire しない。 観測性は console.debug 1 行で確保 (Vercel
+  // function logs に raw 残置)。 設計: docs/superpowers/specs/2026-05-27-notify-ops-404-silent-skip-design.md
+  // -------------------------------------------------------------------------
+  describe('404 silent skip', () => {
+    let debugSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      // 404 path 専用の spy。 default level 出力されない console.debug を
+      // テスト中に拾うため、 mockImplementation で no-op 化しつつ呼出を記録。
+      debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    })
+
+    afterEach(() => {
+      debugSpy.mockRestore()
+    })
+
+    it('Clerk 404 では notifyOps を fire せず ok:true を返し、 console.debug を 1 回呼ぶ', async () => {
+      // ClerkAPIResponseError(status=404) を inject。 isClerkAPIResponseError
+      // type guard を通すために実 SDK class を使用。
+      const err = new ClerkAPIResponseError('Not Found', {
+        data: [],
+        status: 404,
+        clerkTraceId: 'test-trace',
+      })
+      mockUpdateUserMetadata.mockRejectedValueOnce(err)
+
+      const result = await syncClerkPublicMetadata({
+        clerkId: 'user_deleted',
+        plan: 'free',
+      })
+
+      // (1) notifyOps が呼ばれていない (silent skip の中核)
+      expect(mockNotifyOps).not.toHaveBeenCalled()
+      // (2) 戻り値は ok:true (user 不在 = 同期不要 = success の semantics)
+      expect(result).toEqual({ ok: true })
+      // (3) console.debug が 1 回呼出され、 第 1 引数に 'user not found' を含む
+      expect(debugSpy).toHaveBeenCalledTimes(1)
+      const [msg] = debugSpy.mock.calls[0]!
+      expect(String(msg)).toContain('user not found')
+    })
   })
 })
