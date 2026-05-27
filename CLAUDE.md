@@ -87,13 +87,22 @@ template 起点、 vocab drop / mcq 新規追加中)。
 
 ## Sprint kickoff のフロー規律 (skill skip 禁止)
 
-`brainstorming` / `writing-specs` / `writing-plans` の各 superpowers skill を
-Claude Code が独断で skip するのは禁止。 brief を「spec + plan 確定済」と
-解釈する判断は OT 専権。
+`brainstorming` / `writing-plans` の各 superpowers skill を Claude Code が
+独断で skip するのは禁止。 brief を「spec + plan 確定済」と解釈する判断は
+OT 専権。
+
+(註: superpowers 5.1.0 に **`writing-specs` skill は存在しない**。 spec 起草
+は `brainstorming` skill 内 step 6「Write design doc」 が担当し、
+`docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` への書込 + user review
+gate + `writing-plans` への transition も同 skill 内で完結する。 spec 起草
+だけ独立に行いたい場合は `brainstorming` skill を起動し、 clarifying
+questions step を skip して design step から入る運用とする。)
 
 **着手前宣言** (feat/fix 系 task の着手直前、 chat に明示):
 
 1. 現在 phase (brainstorming / spec / plan / execute / review)
+   - 「spec」 は `brainstorming` skill の output artifact、 独立 phase 名と
+     しては保持するが skill 起動は `brainstorming` を指す
 2. skill 起動方針: (A) full flow / (B) 部分 skip + 根拠 1 行 /
    (C) 全 skill skip + 根拠 1 行
 3. OT 承認要否
@@ -105,7 +114,8 @@ Claude Code が独断で skip するのは禁止。 brief を「spec + plan 確�
 **skip ミスに進行中気付いたら**: 即中断、 OT に「巻き戻し」か「継続承認」を
 仰ぐ。 cover up (黙って続行 / 後付け正当化) は禁止。
 
-(初出経緯: 2026-05-27 cache-fix roadmap ④-1 / ④-4 で skill 全 skip 発生)
+(初出経緯: 2026-05-27 cache-fix roadmap ④-1 / ④-4 で skill 全 skip 発生。
+同日 ④-3 で `writing-specs` skill 不在が発覚、 本文修正。)
 
 ---
 
