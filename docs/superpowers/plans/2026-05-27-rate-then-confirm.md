@@ -80,8 +80,13 @@ app/(app)/app/study/smart/_components/
 **制約**: 既存 helper (`makeCard` / `clickOption` / `NAME_*`) 再利用。 mock setup
 は `beforeEach` default で十分。 test 名に `(Step 3b)` suffix。
 
-**完了条件**: 新規 4 件のうち 1-3 が **未実装 source に対して赤**、 4 は既存挙動
-で緑。 既存 test 状態は Task 1 終了時から変化なし。
+**完了条件**: 新規 4 件すべてが **未実装 source に対して赤**。 1-3 は「次へ」/
+「前へ」 で submit 1 件を assert するため当然赤、 4 は spec §4.2 #4 文言
+(「mockRecordAnswerEvent 0 回」) を厳格に解釈する場合 rate Good 直後に fire 済
+の現 source 下で赤になる (= 当 plan 起草時の「4 は既存挙動で緑」 という記述は
+誤記。 現 source `handleRateFsrs → runSubmit → recordAnswerEvent fire` を見落と
+していた)。 4 は Task 3 完了で自動 green 化する forward-looking guard として機能。
+既存 test 状態は Task 1 終了時から変化なし。
 
 ---
 
