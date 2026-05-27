@@ -2,7 +2,6 @@ import Link from 'next/link'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { DashboardActions } from './_components/dashboard-actions'
 import { DashboardStats } from './_components/dashboard-stats'
-import { PullTrigger } from './_components/pull-trigger'
 
 // S-perf-3 (dashboard 高速化): dueCount の server SSR SELECT (cards WHERE
 // due <= now) を撤去。 DashboardActions と DashboardStats が Dexie mirror から
@@ -12,6 +11,11 @@ import { PullTrigger } from './_components/pull-trigger'
 // 残置: getCurrentUser() は user.id (= Dexie tenant key) + plan + billingInterval
 // (upgrade CTA hide 判定) を引くため必須。 旧 S-perf-2 T4 のコメント (JWT 未掲載
 // field 依存) と同方針で getAuthContext() への切替は見送る。
+//
+// PullTrigger: (app) 配下の deep link / reload / 内部 navigate のいずれでも 1 回
+// fire させるため、 配置は `app/(app)/app/layout.tsx` (= /app/* 共通 layout) に
+// 移動済 (cache-fix roadmap ④-1)。 同 layout 配下の navigation では re-mount
+// しないため重複発火しない。
 
 export default async function Dashboard() {
   const user = await getCurrentUser()
@@ -19,9 +23,6 @@ export default async function Dashboard() {
 
   return (
     <div>
-      {/* S-local-2 (Phase α): mount 時に cards / exams / study_days を Dexie に
-          background pull。 UI なし (return null)、 失敗 silent。 */}
-      <PullTrigger />
       <h1 className="text-2xl font-bold mb-4">こんにちは</h1>
 
       <DashboardStats userId={user.id} />
