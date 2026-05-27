@@ -13,13 +13,15 @@
 //   「リトライ」 で現 card を selecting reset (lastRating=null)、 submit なし
 //   「前へ」 で idx-1 + 前 card selecting reset (judged 状態を捨てる、 submit なし)
 // - judged (FSRS モード): 上段 4 rate (Again/Hard/Good/Easy) + 下段 3 button (前へ / リトライ / 次へ primary)
-//   rate 押下で **Optimistic + fire-and-forget** submit、 lastRating は click 時に即セット
-//   (server 完了待ちなし、 ボタンハイライト即時反映)。 連打可 = last write wins
-//   (rate ボタンは pending で disable しない、 「次へ」 のみ lastRating gate)。
-//   client tally は lastRating === null の初回押下時のみ +1 (連打を 1 カウントに固定)。
-//   「次へ」 は rate 後のみ enable、 押下で submit せず純遷移 (= 既に submit 済み)
+//   rate 押下は **state 更新のみ** (setLastRating + 初回 tally/submittedCardIds 加算)、
+//   Dexie write は発火しない。 lastRating は click 時即セットでハイライト即時反映、
+//   連打可 = last write wins (rate ボタンは pending で disable しない)。
+//   client tally は submittedCardIds で初回押下のみ +1 (連打を 1 カウントに固定)。
+//   実 submit (Dexie write) は judged + rated 状態で 「次へ」 / 「前へ」 押下時に
+//   lastRating で 1 件発火 (= rate-then-confirm 仕様、 spec §3.2 / §3.6)。
+//   「次へ」 は rate 後のみ enable、 押下で runSubmit(lastRating) + goNext
 //   「リトライ」 は常時 enable、 現 card を selecting reset (lastRating も null)
-//   「前へ」 は idx-1 + 前 card selecting reset (submit なし)
+//   「前へ」 は idx-1 + 前 card selecting reset (FSRS judged + rated でのみ submit)
 // - finished: 🎉 + 統計 + もう一度 / ダッシュボードへ
 //
 // 正解判定 = client 集合一致 (順序非依存)。 server 戻り値 data.correct は参照しない
@@ -28,8 +30,10 @@
 // submit タイミング (mode 別、 fire-and-forget):
 // - 通常モード: judged 「次へ」 押下時 (1 click で setLastRating/tally → 即 next card →
 //   submit を await せず発火、 失敗時のみ error 表示)
-// - FSRS モード: judged rate 押下時 (user 選択 rating で setLastRating → submit 発火、
-//   自動遷移なし、 連打可 = 同 card 上書き submit)
+// - FSRS モード: judged rate 押下では submit せず state 更新のみ。 実 submit は
+//   judged + rated 状態で 「次へ」 / 「前へ」 押下時に lastRating で 1 件発火
+//   (= rate-then-confirm、 spec §3.2 / §3.6)。 連打は state 上書きのみで Dexie
+//   write は走らない (= 確定タイミングで 1 件のみ record)。
 // 失敗時:
 // - rate / 通常モード「次へ」 共通: inline error 表示のみ、 state 巻き戻しなし
 // - 通常モード「次へ」 で submit 失敗時は既に次 card に遷移済 (= 巻き戻さず error のみ)
@@ -139,7 +143,8 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
   // lastRating: FSRS 判定後の rate 押下済 flag (null=未押下、 数値=押下済)
   // 通常モードでは「次へ」 submit 成功時にもセット (consistency 目的、 通常モードでは
   // button 再表示されないので機能影響なし)。 tally 重複防止の真実 source は
-  // submittedCardIds 側に移管したので、 ここでは「次へ」 button enable 制御専用。
+  // submittedCardIds 側に移管したので、 ここでは「次へ」 / 「前へ」 button enable
+  // 制御 + runSubmit の rating payload 兼用 (Step 3b、 spec §3.2)。
   const [lastRating, setLastRating] = useState<Rating | null>(null)
   // submittedCardIds: 「click 時点で 1 枚分の試行として確定された card.id 集合」。
   // tally +1 の真実 source。 fire-and-forget 化により add は click 同期で実行され、
@@ -216,10 +221,21 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
   }
 
   // ---------------------------------------------------------------------------
-  // 「前へ」: 両 phase 共通、 idx-1 + reset (submit なし、 idx=0 で no-op)
+  // 「前へ」: 両 phase 共有の handler。
+  // - FSRS judged + rated (= lastRating !== null) の場合のみ runSubmit で 1 件 Dexie write
+  //   + 前 card 遷移 (Step 3b、 詳細 spec §3.2 / §3.3)。
+  // - selecting / 通常 judged / FSRS rate 前 (= lastRating === null) は既存挙動維持
+  //   (submit 呼ばず goPrev のみ)。
+  // idx === 0 早期 return は runSubmit 空打ち防止 (goPrev 内にも guard あるが、
+  // 関数先頭で弾けば logical flow が読みやすい)。
   // ---------------------------------------------------------------------------
   const handlePrev = () => {
-    goPrev()
+    if (idx === 0) return
+    if (fsrsMode && phase === 'judged' && lastRating !== null) {
+      runSubmit(lastRating, () => goPrev())
+    } else {
+      goPrev()
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -322,19 +338,37 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
     runSubmit(rating, () => goNext())
   }
 
-  // FSRS モード judged rate 押下: user 選択 rating で fire-and-forget submit。
-  // setLastRating は runSubmit 内で同期的に発火するので、 ハイライトは click 時即時反映。
-  // 連打可 = 最後 rating で上書き submit (submit-review-tx の UPDATE で自然反映)。
+  // FSRS モード judged rate 押下: **state 更新のみ** (Dexie write しない)。
+  // 連打可 = 最後 rating で setLastRating 上書きのみ、 tally / submittedCardIds は
+  // 初回押下時のみ +1 (= runSubmit 内の isFirstSubmit gate と同一加算式を inline)。
+  // 実 submit (Dexie write) は judged + rated 状態で 「次へ」 / 「前へ」 押下時に
+  // 1 件発火 (= rate-then-confirm 仕様、 spec §3.2 / §3.6)。
   const handleRateFsrs = (rating: Rating) => {
-    runSubmit(rating, () => {
-      // judged 維持、 idx 前進なし
-    })
+    if (!current) return
+    if (currentCorrect === null) return
+    const cardId = current.id
+    const correctSnapshot = currentCorrect
+    const isFirstSubmit = !submittedCardIds.has(cardId)
+    setError(null)
+    if (isFirstSubmit) {
+      setTally((t) => ({
+        answered: t.answered + 1,
+        correct: t.correct + (correctSnapshot ? 1 : 0),
+      }))
+      setSubmittedCardIds((s) => new Set(s).add(cardId))
+    }
+    setLastRating(rating)
+    // Dexie write は handleNextFsrsAfterRate / handlePrev (FSRS judged + rated)
+    // に移譲 (Step 3b、 spec §3.2 / §3.6)
   }
 
-  // FSRS モード judged 「次へ」: rate 押下済 (= submit 済) を前提に submit せず純遷移
+  // FSRS モード judged 「次へ」: rate 押下済 (= lastRating セット済) の card を
+  // runSubmit で 1 件 Dexie write + 次 card 遷移 (Step 3b、 詳細 spec §3.2 / §3.6)。
+  // lastRating === null guard は defensive (UI で button disabled だが handler 内 guard も keep)。
+  // runSubmit 内 isFirstSubmit gate が二重加算を防止 (Task 3 で rate click 時に submittedCardIds.add 済)。
   const handleNextFsrsAfterRate = () => {
     if (lastRating === null) return
-    goNext()
+    runSubmit(lastRating, () => goNext())
   }
 
   // ---------------------------------------------------------------------------
