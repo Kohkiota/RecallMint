@@ -113,6 +113,60 @@ LocalSync MVP に着手する前に消化できる小タスク群。 各々独�
 
 ---
 
+## 4.5 🔬 Step 3a / 3b — bulk endpoint root cause 切り分け + FSRS rate 確定タイミング修正 (LocalSync MVP の前提整備)
+
+(2026-05-27 追加。 LocalSync MVP は card_mutations bulk push を新設する pattern
+で `/api/review-events/bulk` と同型のため、 既存 bulk の遅延要因を確定してから
+設計する。)
+
+### Step 3a: `/api/review-events/bulk` TTFB 10.7s root cause 切り分け (進行中)
+
+- **観測**: stg で TTFB 10,733 ms (body 1ms)、 finished phase 直後の background
+  flush で発生。 詳細は session log 計測予定
+- **着手**: timing log を一時 inject + Server-Timing header 経由で per-op
+  duration を取得する計測。 commit `8417e83 chore(perf): bulk endpoint 一時
+  timing log (TEMP-MEASURE) [no-review]` で実装、 origin/develop 反映済 (Vercel
+  stg auto deploy 反映済)
+- **未実施**: Playwright で 1 session 流して Server-Timing 取得 + 連続 invoke で
+  cold/warm 差観察 + EXPLAIN ANALYZE (dev DB 代替)
+- **計測完了後**: 別 commit で timing log を **必ず revert** (stg / production
+  をクリーンに戻す)
+
+### Step 3b (NEW): FSRS rate 確定タイミング修正 (致命的バグ修正)
+
+- **観測**: session-runner.tsx で FSRS rate click ごとに `recordAnswerEvent` を
+  fire-and-forget で発火 → rate 連打 = events 累積 → bulk POST に連打回数分の
+  events が乗る → server per-event serial transaction で TTFB が膨らむ
+- **影響**: client tally は 1 card 1 加算固定 (`submittedCardIds` Set で重複
+  防止) だが、 server reviews / study_days / cards.current_streak に **連打回数
+  分の累積**が発生。 1 card 1 操作の UX 期待と不整合
+- **OT 期待仕様**: rate click は state 更新のみ、 「次へ」 / 「前へ」 を押した
+  時点で **最後の rate 値で 1 件だけ submit**
+- **未着手**: 仕様変更 + 既累積データの整合性 (= reviews / study_days の過剰行を
+  どう扱うか) を含むため、 spec → plan → execute の正規 flow で着手予定
+
+### 進行順序 (2026-05-27 OT 議論結果)
+
+1. ④-2 prefetch={false} を origin/main に ff merge + push (= Step 2 完全 close)
+2. Step 3b (FSRS rate 確定タイミング修正) を先行 — events 累積を源流で解消すれば
+   bulk 内容が正常 size に戻り、 Step 3a 計測のノイズが減る
+3. Step 3a 計測再開 (timing log で per-op 計測 + EXPLAIN ANALYZE) — Step 3b 後
+   の正常 size payload で server-side 遅延要因を確定
+4. Step 3a で root cause 確定後、 LocalSync MVP (§5) の card_mutations bulk
+   push を同じ pattern で設計
+
+### push 反映 record (2026-05-27)
+
+- origin/develop = `8417e83`、 Step 2 ④-2 + 前後計測 session log + Step 3a
+  timing log まで stg に反映
+- origin/main = `dfe20fa`、 Step 2 のうち ④-1 / ④-3 / ④-4 + smoke session log
+  まで反映。 **④-2 はまだ main 未反映** (= OT 手動 ff merge + push 待ち)
+- Step 3a の timing log (`8417e83`) は **production には絶対 deploy しない**
+  方針、 計測完了後に revert commit を立てて origin/develop に push、 main 反映前
+  に revert を取り込む
+
+---
+
 ## 5. 🔜 LocalSync MVP — card 編集 / 削除の local-first 化 (Phase β-1)
 
 ### 5.1 スコープ確定事項 (2026-05-27 議論結果)
