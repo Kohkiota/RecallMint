@@ -275,30 +275,46 @@ async function processSession(
       )
 
       // ------------------------------------------------------------------
-      // Phase 2e — cards UPDATE × N (owner-scoped、 1 card 1 UPDATE)
-      // 単一 VALUES UPDATE は later task で実装。今は safe N-updates。
+      // Phase 2e — cards UPDATE (single VALUES UPDATE、owner-scoped)
+      // finalStates の全エントリを 1 round-trip で UPDATE する。
+      // UPDATE cards SET ... FROM (VALUES (...), ...) AS v(id, ...) WHERE
+      //   cards.id = v.id AND cards.user_id = $userId
       // ------------------------------------------------------------------
       await measure('update-cards', async () => {
-        for (const [cardId, final] of finalStates) {
-          await tx
-            .update(cards)
-            .set({
-              due: final.due,
-              stability: final.stability,
-              difficulty: final.difficulty,
-              elapsedDays: final.elapsedDays,
-              scheduledDays: final.scheduledDays,
-              reps: final.reps,
-              lapses: final.lapses,
-              state: final.state,
-              learningSteps: final.learningSteps,
-              lastReview: final.lastReview,
-              answered: final.answered,
-              lastCorrect: final.lastCorrect,
-              currentStreak: final.currentStreak,
-            })
-            .where(and(eq(cards.id, cardId), eq(cards.userId, user.id)))
-        }
+        if (finalStates.size === 0) return undefined
+
+        // per-card tuple リスト (VALUES 節用)
+        // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
+        // ::cast は静的リテラルのみ (安全)。
+        const rows = [...finalStates.entries()].map(([cardId, final]) =>
+          sql`(${cardId}::uuid, ${final.due}::timestamptz, ${final.stability}::real, ${final.difficulty}::real, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${final.lastReview}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
+        )
+        const valuesList = sql.join(rows, sql`, `)
+
+        await tx
+          .update(cards)
+          .set({
+            due: sql`v.due`,
+            stability: sql`v.stability`,
+            difficulty: sql`v.difficulty`,
+            elapsedDays: sql`v.elapsed_days`,
+            scheduledDays: sql`v.scheduled_days`,
+            reps: sql`v.reps`,
+            lapses: sql`v.lapses`,
+            state: sql`v.state`,
+            learningSteps: sql`v.learning_steps`,
+            lastReview: sql`v.last_review`,
+            answered: sql`v.answered`,
+            lastCorrect: sql`v.last_correct`,
+            currentStreak: sql`v.current_streak`,
+          })
+          .from(
+            sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
+          )
+          .where(
+            and(eq(cards.userId, user.id), sql`${cards.id} = v.id`),
+          )
+
         return undefined
       })
 

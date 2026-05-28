@@ -33,8 +33,18 @@ const { state } = vi.hoisted(() => ({
     // card_id が absent = orphan (not found)
     cardRows: new Map<string, Record<string, unknown>>(),
 
-    // cards UPDATE 記録: { cardId, set } を蓄積
-    cardUpdateCalls: [] as Array<{ cardId: string; set: Record<string, unknown> }>,
+    // cards UPDATE の single VALUES UPDATE キャプチャ。
+    // Phase 2e は 1 tx あたり最大 1 回しか呼ばれない。
+    // set: .set() に渡された object
+    // fromSql: .from() に渡された Drizzle SQL object (VALUES 節を含む)
+    // where: .where() に渡された条件 object
+    // callCount: update() が呼ばれた回数 (1 を期待)
+    bulkUpdateCapture: null as null | {
+      set: Record<string, unknown>
+      fromSql: unknown
+      where: unknown
+    },
+    bulkUpdateCallCount: 0,
 
     // reviews INSERT 記録
     reviewsInsertValues: null as null | Record<string, unknown>[],
@@ -155,40 +165,21 @@ function makeFakeTx(throwAfterInsert = false) {
       }
     },
 
-    // cards UPDATE chain — drizzle SQL fragment (and/eq) は circular ref を含むため
-    // JSON.stringify 不可。 queryChunks を再帰探索して UUID 文字列を取り出す。
-    update: (_table: unknown) => ({
-      set: (vals: Record<string, unknown>) => {
-        return {
-          where: (cond: unknown) => {
-            // drizzle SQL fragment の queryChunks を再帰探索して UUID 値を収集する。
-            // UUID-like string (8-4-4-4-12 hex) のうち先頭が cardId (eq(cards.id, cardId) の値)。
-            function collectUuids(obj: unknown, depth = 0): string[] {
-              if (depth > 8) return []
-              if (typeof obj === 'string') {
-                return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(obj)
-                  ? [obj]
-                  : []
-              }
-              if (Array.isArray(obj)) return obj.flatMap((x) => collectUuids(x, depth + 1))
-              if (obj && typeof obj === 'object') {
-                // drizzle Column (Symbol プロパティ多数) は depth 制限で止める
-                if (Object.getOwnPropertySymbols(obj).length > 0 && depth > 3) return []
-                return Object.values(obj as Record<string, unknown>).flatMap((x) =>
-                  collectUuids(x, depth + 1),
-                )
-              }
-              return []
-            }
-            const uuids = collectUuids(cond)
-            // uuids[0] = cardId (and の第 1 引数 eq(cards.id, ...) の値)
-            const cardId = uuids[0] ?? 'unknown'
-            state.cardUpdateCalls.push({ cardId, set: vals })
-            return Promise.resolve()
-          },
-        }
-      },
-    }),
+    // cards UPDATE chain — Phase 2e は単一 VALUES UPDATE (1 round-trip)。
+    // .set() → .from(sqlFragment) → .where() のチェーンを記録する。
+    update: (_table: unknown) => {
+      state.bulkUpdateCallCount++
+      return {
+        set: (vals: Record<string, unknown>) => ({
+          from: (fromSql: unknown) => ({
+            where: (cond: unknown) => {
+              state.bulkUpdateCapture = { set: vals, fromSql, where: cond }
+              return Promise.resolve()
+            },
+          }),
+        }),
+      }
+    },
 
     // study_days COUNT DISTINCT
     execute: (_query: unknown) =>
@@ -296,6 +287,131 @@ function makeValidPayload(
   }
 }
 
+// ---------------------------------------------------------------------------
+// VALUES デコーダ: Drizzle SQL object の queryChunks から Param.value を収集し、
+// 14 列 / tuple にチャンクして per-card state を復元する。
+//
+// 各 tuple のフィールド順 (route.ts と同一):
+//   [0] id (uuid string)
+//   [1] due (Date)
+//   [2] stability (number)
+//   [3] difficulty (number)
+//   [4] elapsedDays (number)
+//   [5] scheduledDays (number)
+//   [6] reps (number)
+//   [7] lapses (number)
+//   [8] state (number)
+//   [9] learningSteps (number)
+//   [10] lastReview (Date | null)
+//   [11] answered (boolean)
+//   [12] lastCorrect (boolean | null)
+//   [13] currentStreak (number)
+// ---------------------------------------------------------------------------
+const VALUES_COLS_PER_ROW = 14
+
+type DecodedCardTuple = {
+  id: string
+  due: unknown
+  stability: unknown
+  difficulty: unknown
+  elapsedDays: unknown
+  scheduledDays: unknown
+  reps: unknown
+  lapses: unknown
+  state: unknown
+  learningSteps: unknown
+  lastReview: unknown
+  answered: unknown
+  lastCorrect: unknown
+  currentStreak: unknown
+}
+
+// Drizzle SQL queryChunks を再帰探索してバインドパラメータ値を収集する。
+//
+// Drizzle の sql tagged template (`sql\`...\``) は ${value} を
+// queryChunks に**直接プリミティブ値として**格納する (Param ラッパーなし)。
+// StringChunk はクエリテキスト部分 ("::uuid," 等) なので除外する。
+// SQL インスタンスと sql.join の結果は再帰展開する。
+function collectParamValues(obj: unknown, depth = 0): unknown[] {
+  if (depth > 30) return []
+
+  // null は有効なパラメータ値 (lastReview, lastCorrect など)
+  if (obj === null) return [null]
+
+  if (obj === undefined) return []
+
+  // StringChunk: クエリテキスト部分 — スキップ
+  // StringChunk は .value が string[] (配列) を持つ
+  if (
+    typeof obj === 'object' &&
+    'value' in obj &&
+    Array.isArray((obj as Record<string, unknown>).value) &&
+    !(obj as Record<string, unknown>).queryChunks
+  ) {
+    return [] // StringChunk — not a param value
+  }
+
+  // SQL インスタンス: .queryChunks 配列を持つ
+  if (typeof obj === 'object' && obj !== null && 'queryChunks' in obj) {
+    const chunks = (obj as { queryChunks: unknown[] }).queryChunks
+    return chunks.flatMap((c) => collectParamValues(c, depth + 1))
+  }
+
+  // 配列 (sql.join の内部表現で使われる場合)
+  if (Array.isArray(obj)) {
+    return obj.flatMap((x) => collectParamValues(x, depth + 1))
+  }
+
+  // プリミティブ値 (string / number / boolean / Date) = バインドパラメータ
+  const t = typeof obj
+  if (t === 'string' || t === 'number' || t === 'boolean' || obj instanceof Date) {
+    return [obj]
+  }
+
+  // その他のオブジェクト (Column, Table など) はスキップ
+  return []
+}
+
+// fromSql (Drizzle SQL object) から per-card tuple の配列を復元する
+function decodeValuesFromSql(fromSql: unknown): DecodedCardTuple[] {
+  const params = collectParamValues(fromSql)
+  if (params.length % VALUES_COLS_PER_ROW !== 0) {
+    throw new Error(
+      `decodeValuesFromSql: expected params count to be multiple of ${VALUES_COLS_PER_ROW}, got ${params.length}`,
+    )
+  }
+  const tuples: DecodedCardTuple[] = []
+  for (let i = 0; i < params.length; i += VALUES_COLS_PER_ROW) {
+    tuples.push({
+      id: params[i] as string,
+      due: params[i + 1],
+      stability: params[i + 2],
+      difficulty: params[i + 3],
+      elapsedDays: params[i + 4],
+      scheduledDays: params[i + 5],
+      reps: params[i + 6],
+      lapses: params[i + 7],
+      state: params[i + 8],
+      learningSteps: params[i + 9],
+      lastReview: params[i + 10],
+      answered: params[i + 11],
+      lastCorrect: params[i + 12],
+      currentStreak: params[i + 13],
+    })
+  }
+  return tuples
+}
+
+// cardId でタプルを引く便利ラッパー
+function getCardTuple(cardId: string): DecodedCardTuple {
+  const capture = state.bulkUpdateCapture
+  if (!capture) throw new Error('bulkUpdateCapture is null — update was not called')
+  const tuples = decodeValuesFromSql(capture.fromSql)
+  const found = tuples.find((t) => t.id === cardId)
+  if (!found) throw new Error(`No tuple found for cardId=${cardId}`)
+  return found
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   state.sessionUpsertCalls = []
@@ -303,7 +419,8 @@ beforeEach(() => {
   state.answerEventInsertValues = null
   state.duplicateEventIds = new Set()
   state.cardRows = new Map()
-  state.cardUpdateCalls = []
+  state.bulkUpdateCapture = null
+  state.bulkUpdateCallCount = 0
   state.reviewsInsertValues = null
   state.studyDaysUpsertCalls = []
   state.executeDistinctResult = [{ c: 2 }]
@@ -438,12 +555,14 @@ describe('POST /api/review-events/bulk', () => {
       isCorrect: true,
     })
 
-    // cards UPDATE が 1 件 (VALID_CARD_ID に対して)
-    expect(state.cardUpdateCalls).toHaveLength(1)
-    expect(state.cardUpdateCalls[0].cardId).toBe(VALID_CARD_ID)
+    // cards UPDATE は 1 回の single VALUES UPDATE で発行される
+    expect(state.bulkUpdateCallCount).toBe(1)
+    expect(state.bulkUpdateCapture).not.toBeNull()
+    // VALUES の中に VALID_CARD_ID のタプルが含まれる
+    const tuple = getCardTuple(VALID_CARD_ID)
     // replayCard によって reps が 1 に増えているはず (初期 0 → 1 apply)
-    expect(state.cardUpdateCalls[0].set.reps).toBe(1)
-    expect(state.cardUpdateCalls[0].set.answered).toBe(true)
+    expect(tuple.reps).toBe(1)
+    expect(tuple.answered).toBe(true)
 
     // reviews INSERT
     expect(state.reviewsInsertValues).toHaveLength(1)
@@ -480,7 +599,7 @@ describe('POST /api/review-events/bulk', () => {
     // is_correct=false → derive rating=1
     expect(state.reviewsInsertValues![0]).toMatchObject({ rating: 1 })
     // lastCorrect = false (rating 1 < 2)
-    expect(state.cardUpdateCalls[0].set.lastCorrect).toBe(false)
+    expect(getCardTuple(VALID_CARD_ID).lastCorrect).toBe(false)
     // study_days: correctCount = 0
     expect(state.studyDaysUpsertCalls[0].values).toMatchObject({ correctCount: 0 })
   })
@@ -534,7 +653,8 @@ describe('POST /api/review-events/bulk', () => {
     // answer_events INSERT は試みる
     expect(state.answerEventInsertValues).toHaveLength(1)
     // FSRS apply は行われない (cards UPDATE / reviews INSERT なし)
-    expect(state.cardUpdateCalls).toHaveLength(0)
+    expect(state.bulkUpdateCallCount).toBe(0)
+    expect(state.bulkUpdateCapture).toBeNull()
     expect(state.reviewsInsertValues).toBeNull()
   })
 
@@ -624,9 +744,12 @@ describe('POST /api/review-events/bulk', () => {
     // orphan event_id だけ failed[]
     expect(body.failed).toEqual([VALID_EVENT_ID_2])
 
-    // VALID_CARD_ID のイベントは処理された
-    expect(state.cardUpdateCalls).toHaveLength(1)
-    expect(state.cardUpdateCalls[0].cardId).toBe(VALID_CARD_ID)
+    // VALID_CARD_ID のイベントは処理された (single VALUES UPDATE が 1 回)
+    expect(state.bulkUpdateCallCount).toBe(1)
+    // VALUES には VALID_CARD_ID のタプルのみ (orphan VALID_CARD_ID_2 は含まない)
+    const tuples = decodeValuesFromSql(state.bulkUpdateCapture!.fromSql)
+    expect(tuples).toHaveLength(1)
+    expect(tuples[0].id).toBe(VALID_CARD_ID)
     // reviews は VALID_CARD_ID 分のみ
     expect(state.reviewsInsertValues).toHaveLength(1)
     expect(state.reviewsInsertValues![0]).toMatchObject({ cardId: VALID_CARD_ID })
@@ -689,25 +812,24 @@ describe('POST /api/review-events/bulk', () => {
     // 3 events に対して reviews 行が 3 件
     expect(state.reviewsInsertValues).toHaveLength(3)
 
+    // single VALUES UPDATE が 1 回 (2 カード分の tuple を含む)
+    expect(state.bulkUpdateCallCount).toBe(1)
+    const allTuples = decodeValuesFromSql(state.bulkUpdateCapture!.fromSql)
+    expect(allTuples).toHaveLength(2)
+
     // VALID_CARD_ID は 2 events 適用 → reps = 2
-    const cardUpdate = state.cardUpdateCalls.find(
-      (c) => c.cardId === VALID_CARD_ID,
-    )
-    expect(cardUpdate).toBeDefined()
-    expect(cardUpdate!.set.reps).toBe(2)
+    const cardTuple = getCardTuple(VALID_CARD_ID)
+    expect(cardTuple.reps).toBe(2)
 
     // VALID_CARD_ID_2 は 1 event → reps = 1
-    const card2Update = state.cardUpdateCalls.find(
-      (c) => c.cardId === VALID_CARD_ID_2,
-    )
-    expect(card2Update).toBeDefined()
-    expect(card2Update!.set.reps).toBe(1)
+    const card2Tuple = getCardTuple(VALID_CARD_ID_2)
+    expect(card2Tuple.reps).toBe(1)
 
     // VALID_CARD_ID の 2 回目 apply は is_correct=true → lastCorrect=true
-    expect(cardUpdate!.set.lastCorrect).toBe(true)
+    expect(cardTuple.lastCorrect).toBe(true)
 
     // VALID_CARD_ID_2 は is_correct=false → lastCorrect=false
-    expect(card2Update!.set.lastCorrect).toBe(false)
+    expect(card2Tuple.lastCorrect).toBe(false)
   })
 
   it('payload 内 重複 event_id → 初回のみ apply (consumedSet で intra-payload dedup)', async () => {
@@ -736,10 +858,10 @@ describe('POST /api/review-events/bulk', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, failed: [] })
 
-    // 初回のみ apply: reviews 1 件、 cards UPDATE 1 件、 reps = 1 (二重 fold なら 2)
+    // 初回のみ apply: reviews 1 件、 single VALUES UPDATE 1 回、 reps = 1 (二重 fold なら 2)
     expect(state.reviewsInsertValues).toHaveLength(1)
-    expect(state.cardUpdateCalls).toHaveLength(1)
-    expect(state.cardUpdateCalls[0].set.reps).toBe(1)
+    expect(state.bulkUpdateCallCount).toBe(1)
+    expect(getCardTuple(VALID_CARD_ID).reps).toBe(1)
   })
 
   it('複数 JST day を跨ぐ events → study_days が day ごとに分かれて upsert される', async () => {
@@ -789,5 +911,69 @@ describe('POST /api/review-events/bulk', () => {
     const body = (await res.json()) as { ok: boolean; failed: string[] }
     expect(body.ok).toBe(true)
     expect(Array.isArray(body.failed)).toBe(true)
+  })
+
+  it('distinct-state: 2 cards with different event counts → single VALUES UPDATE contains BOTH cards with per-card-distinct final state', async () => {
+    // 2 枚のカードに異なる数の event を適用し、
+    // single VALUES UPDATE が 1 回だけ呼ばれ、
+    // VALUES 内の各タプルが独立した最終 state を持つことを検証する。
+    // cardA: 2 events (reps=2), cardB: 1 event (reps=1)
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    addCardRow(VALID_CARD_ID_2) // 2 枚目のカードも追加
+
+    const T1 = '2026-05-25T10:01:00.000Z'
+    const T2 = '2026-05-25T10:02:00.000Z'
+    const T3 = '2026-05-25T10:03:00.000Z'
+
+    const payload = makeValidPayload({
+      events: [
+        // cardA: 2 events
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'],
+          is_correct: true,
+          answered_at: T1,
+        },
+        {
+          event_id: VALID_EVENT_ID_3,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'],
+          is_correct: true,
+          answered_at: T3,
+        },
+        // cardB: 1 event
+        {
+          event_id: VALID_EVENT_ID_2,
+          card_id: VALID_CARD_ID_2,
+          selected_answer_ids: [],
+          is_correct: false,
+          answered_at: T2,
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, failed: [] })
+
+    // single VALUES UPDATE が 1 回だけ (N=2 cards でも 1 round-trip)
+    expect(state.bulkUpdateCallCount).toBe(1)
+
+    // VALUES 内に 2 card のタプルが入っている
+    const tuples = decodeValuesFromSql(state.bulkUpdateCapture!.fromSql)
+    expect(tuples).toHaveLength(2)
+
+    // cardA: 2 events 適用 → reps=2, lastCorrect=true (2 回目 is_correct=true)
+    const tupleA = getCardTuple(VALID_CARD_ID)
+    expect(tupleA.reps).toBe(2)
+    expect(tupleA.lastCorrect).toBe(true)
+    expect(tupleA.answered).toBe(true)
+
+    // cardB: 1 event 適用 → reps=1, lastCorrect=false (is_correct=false)
+    const tupleB = getCardTuple(VALID_CARD_ID_2)
+    expect(tupleB.reps).toBe(1)
+    expect(tupleB.lastCorrect).toBe(false)
+    expect(tupleB.answered).toBe(true)
   })
 })
