@@ -1,6 +1,6 @@
 // submitReviewTx — drizzle transaction 内で cards/reviews/study_days を一括更新する
 // 純関数 (副作用: DB 書き込みのみ、外部 API 不呼び出し)。
-// server action 入口 (submit-review.ts) から db.transaction() 経由で呼ばれる。
+// 現在の呼出元は bulk receiver (app/api/review-events/bulk/route.ts) の per-event tx。
 //
 // 「correct」定義: rating >= 2 (Again=不正解、Hard/Good/Easy=正解)。
 // now の一本取り: 呼び出し元が作った Date を受け取り、全 step に同 instance を渡す。

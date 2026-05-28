@@ -43,11 +43,10 @@
 //   将来 UX を厳密化する場合は cardId snapshot guard (`current?.id === capturedId`)
 //   または error 文字列に card idx を prefix する案がある。
 //
-// fire-and-forget の安全性根拠: submitReview server action は内部で try/catch して
-// 必ず `ActionResult` (`{ ok: true, data } | { ok: false, error }`) を返し、 throw
-// しない契約 (`_actions/submit-review.ts` 参照)。 ゆえに `.catch` 不要、 unhandled
-// promise rejection を発生させない。 next/cache の revalidate は同 action 内で
-// 撤回済 (S2.0b-2 fix `f1d8e55`) のため、 active page の RSC payload race も発生しない。
+// fire-and-forget の安全性根拠: runSubmit の Dexie write / flush は内部 async IIFE で
+// try/catch して握り潰す (失敗は pending のまま次 flush で retry)。 ゆえに呼出側で
+// `.catch` 不要、 unhandled promise rejection を発生させない。 server 反映は bulk API
+// 経路 (§14.8) が担い、 revalidate を使わないため active page の RSC payload race も起きない。
 //
 // unmount 中の fire-and-forget: SessionRunner unmount (完了画面からの navigation
 // 等) 中に submit が resolve しても、 React 18+ の setState on unmounted は silent
@@ -57,9 +56,6 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
-// S-cache-1 step 4: 旧 submitReview server action は bulk API 経路 (§14.8) に完全移行済。
-// 削除は review 通過後 (S-cache-2 以降)。 import / 使用箇所はコメントアウト維持 (移行軌跡保持)。
-// import { submitReview } from '../_actions/submit-review'
 import { equalSet } from '../_lib/equal-set'
 import {
   completeStudySession,
@@ -293,14 +289,6 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
         // Dexie write / flush の background 失敗は UI に出さず、 次 trigger で再試行。
       }
     })()
-
-    // 4) [S-cache-1 step 4 でコメントアウト、 削除は S-cache-2 以降]
-    //    旧 submitReview fire-and-forget。 bulk API + Dexie に置換済。
-    // void submitReview(cardId, rating).then((result) => {
-    //   if (!result.ok) {
-    //     setError(result.error)
-    //   }
-    // })
   }
 
   // ---------------------------------------------------------------------------

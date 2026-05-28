@@ -9,7 +9,7 @@
 //   下段 3 nav: 「← 前へ」 / 「↺ リトライ」 / 「次へ →」 (rate 後のみ enable、 submit なし純遷移)
 // - finished: 統計 + もう一度 / ダッシュボードへ
 //
-// submitReview / next/navigation は mock。
+// next/navigation / lib/sync/review-events は mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -18,14 +18,12 @@ import type { Card } from '@/lib/db/schema'
 // -----------------------------------------------------------------------
 // Hoisted mocks
 // -----------------------------------------------------------------------
-// S-cache-1: 旧 submitReview 経路は SessionRunner からコメントアウト済 (削除は
-// S-cache-2 以降)。 mockSubmitReview は backwards-compat に残すが、 各 test では
-// 「呼ばれていない」 ことを確認する assertion に置き換えてある (rating 検証は
-// lib/sync/review-events 経由の mockRecordAnswerEvent の is_correct に移譲)。
+// S-cache-1: 旧 submitReview server action は撤去済 (bulk API + Dexie 経路へ完全移行)。
+// submit 系の検証は lib/sync/review-events 経由の mockRecordAnswerEvent
+// (card_id / is_correct / 呼ばれない事) に一本化している。
 const {
   mockRefresh,
   mockPush,
-  mockSubmitReview,
   mockRecordAnswerEvent,
   mockCountPendingAnswerEvents,
   mockFlushPendingEvents,
@@ -34,7 +32,6 @@ const {
 } = vi.hoisted(() => ({
   mockRefresh: vi.fn(),
   mockPush: vi.fn(),
-  mockSubmitReview: vi.fn(),
   mockRecordAnswerEvent: vi.fn(),
   mockCountPendingAnswerEvents: vi.fn(),
   mockFlushPendingEvents: vi.fn(),
@@ -44,10 +41,6 @@ const {
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: mockRefresh, push: mockPush }),
-}))
-
-vi.mock('../_actions/submit-review', () => ({
-  submitReview: mockSubmitReview,
 }))
 
 vi.mock('@/lib/sync/review-events', () => ({
@@ -111,8 +104,6 @@ function makeCard(overrides?: Partial<Card>): Card {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // 旧 path (commented out)、 戻り値 shape のみ保持。
-  mockSubmitReview.mockResolvedValue({ ok: true, data: { correct: true } })
   // S-cache-1 新 path のデフォルト挙動 (success / pending 0 / flush no-op)。
   // 各 test は必要に応じて mockResolvedValueOnce で override する。
   mockRecordAnswerEvent.mockResolvedValue(undefined)
@@ -195,7 +186,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
-  it('通常モード: 「回答する」 押下時に submitReview は呼ばれず、 judged 遷移 + 解説 + 3 button (前へ/リトライ/次へ) 表示', async () => {
+  it('通常モード: 「回答する」 押下時に recordAnswerEvent は呼ばれず、 judged 遷移 + 解説 + 3 button (前へ/リトライ/次へ) 表示', async () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -209,7 +200,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     // 「回答する」 は judged では消える
     expect(screen.queryByRole('button', { name: '回答する' })).not.toBeInTheDocument()
     // submit は呼ばれない (判定のみ)
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   it('通常モード: 誤答選択 → 「回答する」 で判定のみ (submit せず) + 不正解表示', async () => {
@@ -218,10 +209,10 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
     expect(screen.getByText(/不正解/)).toBeInTheDocument()
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
-  it('通常モード: judged 「次へ」 で submitReview(rating=3) が呼ばれ次 card に遷移 (correct 時)', async () => {
+  it('通常モード: judged 「次へ」 で recordAnswerEvent(card_id) が呼ばれ次 card に遷移 (correct 時)', async () => {
     const cards = [
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
@@ -239,7 +230,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
   })
 
-  it('通常モード: judged 「次へ」 で submitReview(rating=1) (incorrect 時)', async () => {
+  it('通常モード: judged 「次へ」 で recordAnswerEvent が呼ばれる (incorrect 時)', async () => {
     const cards = [
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
@@ -255,9 +246,8 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
   })
 
-  // S-cache-1: submitReview の ActionResult error から setError → alert 表示する
-  // 経路は commented out で除去済。 Dexie 経路では flush 失敗時も pending のまま
-  // 次 trigger で retry し、 UI には error を出さない (silent retry)。
+  // S-cache-1: 旧 submitReview の error→alert UI は撤去済。 Dexie 経路では flush 失敗時も
+  // pending のまま次 trigger で retry し、 UI には error を出さない (silent retry)。
   // → このシナリオは新 path で「next card 即遷移 + alert なし」が期待挙動。
   it('通常モード: 「次へ」 押下で fire-and-forget recordAnswerEvent + 即 next card (error UI なし、 S-cache-1)', async () => {
     // Dexie 書込失敗を模擬 (実際はほぼ起きないが defensive)。
@@ -282,7 +272,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('FSRS モード: 「回答する」 押下時に submitReview は呼ばれず、 judged 遷移 + 4 rate + 3 nav (下段) 表示', async () => {
+  it('FSRS モード: 「回答する」 押下時に recordAnswerEvent は呼ばれず、 judged 遷移 + 4 rate + 3 nav (下段) 表示', async () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -304,7 +294,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(screen.getByRole('button', { name: NAME_NEXT })).toBeDisabled()
     expect(screen.getByRole('button', { name: NAME_RETRY })).not.toBeDisabled()
     // submit はまだ呼ばれない
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   it('FSRS モード (rate-then-confirm): Hard 押下では fire しない / 「次へ」 で rating=2 が fire', async () => {
@@ -736,7 +726,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     expect(screen.getByText('問2')).toBeInTheDocument()
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
     // 問2 では選択 reset → 「回答する」 disabled
     expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
   })
@@ -761,7 +751,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     // 「前へ」 (idx=0) は再 disabled
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeDisabled()
     // submit は呼ばれていない
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   it('selecting: 最後の card で「次へ」 押下 → finished phase', async () => {
@@ -771,7 +761,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     expect(screen.getByText('🎉')).toBeInTheDocument()
     // tally 0 (スキップなので answered 増えない)
     expect(screen.getByText(/0 枚/)).toBeInTheDocument()
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   // ---------------------------------------------------------------------
@@ -802,7 +792,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     const optB = screen.getByRole('button', { name: /選択肢B/ })
     expect(optB).toHaveAttribute('aria-pressed', 'false')
     // submit は呼ばれない
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   it('judged 通常モード: 「前へ」 押下 → idx-1 + selecting reset + submit なし', async () => {
@@ -824,7 +814,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
     expect(screen.queryByText('カード全体の解説')).not.toBeInTheDocument()
     // submit は呼ばれていない
-    expect(mockSubmitReview).not.toHaveBeenCalled()
+    expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
   })
 
   // ---------------------------------------------------------------------
