@@ -88,6 +88,13 @@ const payloadSchema = z.object({
 type BulkPayload = z.infer<typeof payloadSchema>
 type ParsedEvent = z.infer<typeof eventSchema>
 
+// FSRS rating を server が一元的に決める唯一の箇所。 payload 指定を優先し、 未指定は
+// is_correct から derive (true→Good(3) / false→Again(1))。 replay と study_days 集計の
+// 両方から呼ぶことで、 2 箇所で derive ロジックがズレる静かなバグを防ぐ。
+function deriveRating(ev: Pick<ParsedEvent, 'rating' | 'is_correct'>): RatingInt {
+  return ev.rating ?? (ev.is_correct ? 3 : 1)
+}
+
 // ---------------------------------------------------------------------------
 // processSession — 単一 tx で全 events を処理し failed[] を返す
 // ---------------------------------------------------------------------------
@@ -240,7 +247,7 @@ async function processSession(
           const initial = cardStateMap.get(cardId)!
           const replayEvents = groupEvents.map((ev) => ({
             // payload rating 優先、未指定は is_correct から derive
-            rating: (ev.rating ?? (ev.is_correct ? 3 : 1)) as RatingInt,
+            rating: deriveRating(ev),
             answeredAt: new Date(ev.answered_at),
           }))
           const { final, reviews: reviewsOut } = replayCard(initial, replayEvents)
@@ -327,7 +334,7 @@ async function processSession(
         const dayMap = new Map<string, DayCount>()
         for (const ev of eventsToApply) {
           const day = todayInJst(new Date(ev.answered_at))
-          const rating = (ev.rating ?? (ev.is_correct ? 3 : 1)) as RatingInt
+          const rating = deriveRating(ev)
           const existing = dayMap.get(day) ?? { total: 0, correct: 0 }
           existing.total += 1
           if (rating >= 2) existing.correct += 1
