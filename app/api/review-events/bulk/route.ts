@@ -106,6 +106,24 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: 'user_not_synced' }, { status: 401 })
   }
 
+  // [TEMP-MEASURE 2026-05-28 cache-fix 問題 3 Step 1] per-op timing 計測 (logger 出力)。
+  // production の log を汚さないため stg/preview/dev のみ出力。 計測 campaign 後に revert。
+  const measureEnabled = process.env.VERCEL_ENV !== 'production'
+  const timings: Record<string, number> = {}
+  const measure = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const t0 = performance.now()
+    try {
+      return await fn()
+    } finally {
+      timings[name] = Math.round(performance.now() - t0)
+    }
+  }
+  const tStart = performance.now()
+  // marker: deploy 反映 + logger 動作 + route 到達を 1 fetch で確認できる単独 marker。
+  if (measureEnabled) {
+    logger.info({ event: 'review_events.bulk.request', userId: user.id })
+  }
+
   // -- payload parse + validation --
   let body: unknown
   try {
@@ -128,7 +146,7 @@ export async function POST(req: Request): Promise<Response> {
   // PK = session_id。 同 session_id への再送は status / completed_at / card_ids を
   // 最新値で上書き (updated_at は $onUpdate で自動)。
   try {
-    await db
+    await measure('session-upsert', async () => db
       .insert(studySessions)
       .values({
         sessionId: session.session_id,
@@ -160,7 +178,7 @@ export async function POST(req: Request): Promise<Response> {
             : null,
           status: session.status,
         },
-      })
+      }))
   } catch (err) {
     logger.error({
       event: 'review_events.bulk.session_upsert_failed',
@@ -174,13 +192,13 @@ export async function POST(req: Request): Promise<Response> {
   // -- events 反映 (per-event tx) --
   const failed: string[] = []
 
-  for (const ev of events) {
+  for (const [i, ev] of events.entries()) {
     try {
-      await db.transaction(async (tx) => {
+      await measure(`event-${i}-tx`, async () => db.transaction(async (tx) => {
         // (1) answer_events INSERT、 event_id 重複は no-op。
         // returning() で実 insert 行を取り、 0 件なら duplicate と判定して
         // FSRS 適用を skip する (再送 idempotency)。
-        const inserted = await tx
+        const inserted = await measure(`event-${i}-insert`, async () => tx
           .insert(answerEvents)
           .values({
             eventId: ev.event_id,
@@ -193,7 +211,7 @@ export async function POST(req: Request): Promise<Response> {
             elapsedMs: ev.elapsed_ms ?? null,
           })
           .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ id: answerEvents.id })
+          .returning({ id: answerEvents.id }))
 
         // 重複 event_id (= 既に処理済 / 並列再送) は FSRS 再適用しない。
         if (inserted.length === 0) return
@@ -202,13 +220,13 @@ export async function POST(req: Request): Promise<Response> {
         // rating は payload 指定値を優先、 未指定時は is_correct から derive
         // (§route header 参照)。
         const rating: RatingInt = ev.rating ?? (ev.is_correct ? 3 : 1)
-        await submitReviewTx(tx, {
+        await measure(`event-${i}-submitTx`, async () => submitReviewTx(tx, {
           userId: user.id,
           cardId: ev.card_id,
           rating,
           now: new Date(ev.answered_at),
-        })
-      })
+        }, timings, `event-${i}`))
+      }))
     } catch (err) {
       // 個別 event 失敗は他 event を巻き込まない。 client は failed[] を見て
       // sync_status 未更新 = 次 flush で再試行する。
@@ -223,5 +241,15 @@ export async function POST(req: Request): Promise<Response> {
     }
   }
 
+  timings['total'] = Math.round(performance.now() - tStart)
+  if (measureEnabled) {
+    logger.info({
+      event: 'review_events.bulk.timing',
+      userId: user.id,
+      sessionId: session.session_id,
+      eventCount: events.length,
+      timings,
+    })
+  }
   return Response.json({ ok: true, failed }, { status: 200 })
 }
