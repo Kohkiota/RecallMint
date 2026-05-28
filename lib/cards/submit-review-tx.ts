@@ -30,24 +30,9 @@ export interface SubmitReviewTxResult {
 export async function submitReviewTx(
   tx: DrizzleTx,
   { userId, cardId, rating, now }: SubmitReviewTxParams,
-  // [TEMP-MEASURE 2026-05-27 cache-fix Step 3a] optional timings collector。
-  timingsOut?: Record<string, number>,
-  timingsPrefix?: string,
 ): Promise<SubmitReviewTxResult> {
-  const m = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-    if (!timingsOut) return fn()
-    const t0 = performance.now()
-    try {
-      return await fn()
-    } finally {
-      timingsOut[`${timingsPrefix ?? 'subtx'}-${name}`] = Math.round(
-        performance.now() - t0,
-      )
-    }
-  }
-
   // (1) owner-scoped SELECT cards (FSRS 列 + streak 関連)
-  const rows = await m('select-cards', async () => tx
+  const rows = await tx
     .select({
       id: cards.id,
       userId: cards.userId,
@@ -67,7 +52,7 @@ export async function submitReviewTx(
     })
     .from(cards)
     .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
-    .limit(1))
+    .limit(1)
 
   if (rows.length === 0) {
     throw new Error('card not found')
@@ -97,7 +82,7 @@ export async function submitReviewTx(
 
   // (3) cards UPDATE (FSRS 全列 + answered + last_correct + current_streak)
   const correct = rating >= 2
-  await m('update-cards', async () => tx
+  await tx
     .update(cards)
     .set({
       due: next.due,
@@ -115,15 +100,15 @@ export async function submitReviewTx(
       lastCorrect: correct,
       currentStreak: correct ? card.currentStreak + 1 : 0,
     })
-    .where(and(eq(cards.id, cardId), eq(cards.userId, userId))))
+    .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
 
   // (4) reviews INSERT (append-only)
-  await m('insert-reviews', async () => tx.insert(reviews).values({
+  await tx.insert(reviews).values({
     userId,
     cardId,
     rating,
     reviewedAt: now,
-  }))
+  })
 
   // (5) study_days UPSERT
   // 当日 (JST) の distinct card 数を reviews から再集計 (今回の INSERT を含む)。
@@ -131,14 +116,14 @@ export async function submitReviewTx(
   // (T3 で streak.ts から AT TIME ZONE を削除する方針だが、本箇所は reviews 表への
   // 直接集計のため維持: submit-review-tx の固有要件)
   const day = todayInJst(now)
-  const distinctRows = await m('select-distinct', async () => tx.execute(sql`
+  const distinctRows = await tx.execute(sql`
     SELECT COUNT(DISTINCT card_id)::int AS c FROM reviews
     WHERE user_id = ${userId}::uuid
       AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
-  `))
+  `)
   const distinct = Number(distinctRows[0]?.c ?? 0)
 
-  await m('upsert-study-days', async () => tx
+  await tx
     .insert(studyDays)
     .values({
       userId,
@@ -154,7 +139,7 @@ export async function submitReviewTx(
         correctCount: sql`${studyDays.correctCount} + ${correct ? 1 : 0}`,
         distinctCardCount: distinct,
       },
-    }))
+    })
 
   return { correct }
 }
