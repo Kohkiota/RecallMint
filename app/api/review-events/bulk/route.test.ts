@@ -976,4 +976,49 @@ describe('POST /api/review-events/bulk', () => {
     expect(tupleB.lastCorrect).toBe(false)
     expect(tupleB.answered).toBe(true)
   })
+
+  it('順序不変条件: 同 card の fold は payload 配列順で行われる (answered_at で sort しない)', async () => {
+    // 不変条件 #5 の guard。 payload index 0 = Again(rating 1, answered_at 後)、
+    // index 1 = Good(rating 3, answered_at 先) という「配列順と answered_at 順が逆」の
+    // payload を投げる。
+    // - payload 配列順 fold (Again→Good): streak 0→1、 lastCorrect=true (最後=Good)
+    // - もし answered_at 昇順に sort してしまうと (Good→Again): streak 1→0、 lastCorrect=false
+    // よって lastCorrect=true / currentStreak=1 を assert すれば、 answered_at sort 混入を検出できる。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const T_LATE = '2026-05-25T10:05:00.000Z'
+    const T_EARLY = '2026-05-25T10:01:00.000Z'
+
+    const payload = makeValidPayload({
+      events: [
+        {
+          event_id: VALID_EVENT_ID, // payload 先頭 = Again、 answered_at は後
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: [],
+          is_correct: false,
+          answered_at: T_LATE,
+          rating: 1,
+        },
+        {
+          event_id: VALID_EVENT_ID_2, // payload 2 番目 = Good、 answered_at は先
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'],
+          is_correct: true,
+          answered_at: T_EARLY,
+          rating: 3,
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, failed: [] })
+
+    const tuple = getCardTuple(VALID_CARD_ID)
+    // 2 events 適用
+    expect(tuple.reps).toBe(2)
+    // payload 順 (Again→Good) で fold → 最後の Good が支配的
+    expect(tuple.lastCorrect).toBe(true)
+    expect(tuple.currentStreak).toBe(1)
+  })
 })
