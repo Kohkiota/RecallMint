@@ -1,47 +1,50 @@
 // POST /api/review-events/bulk — S-cache-1 (§14.8) 新設。
 //
 // client (SessionRunner) が Dexie に貯めた answer_events を bulk flush する receiver。
-// study_sessions upsert + answer_events bulk insert + 既存 submit-review-tx 経由の
-// FSRS 反映 (cards UPDATE / reviews INSERT / study_days UPSERT) を担う。
+// study_sessions upsert + answer_events bulk insert + in-memory FSRS replay +
+// cards / reviews / study_days を ONE transaction で一括処理する。
+//
+// 旧実装 (per-event tx × N) を廃止し、単一 tx + replayCard fold に置き換え。
+// N=5 events で ~16s → ~2s 以内を目標。
 //
 // 冪等化:
 // - `session_id` は studySessions PK、 upsert (ON CONFLICT DO UPDATE) で
 //   completed_at / status / updated_at を最新値に重ね書き。
-// - `event_id` は answerEvents UNIQUE、 INSERT は ON CONFLICT DO NOTHING。
-//   重複 event は ANSWER_EVENT も FSRS 適用も skip (= 安全に再送可能)。
+// - `event_id` は answerEvents UNIQUE、 INSERT は ON CONFLICT DO NOTHING +
+//   returning() で実 insert 行のみ replay 対象とする。
+//   重複 event は FSRS 適用も skip (= 安全に再送可能)。
 //
 // 部分失敗ポリシ:
-// - 1 event の FSRS 反映失敗 (card 不在等) で他 event を巻き込まないため、 event
-//   毎に独立 transaction で処理。
-// - event tx 失敗時は event_id を `failed[]` に積み、 200 で返却 (client は
-//   sync_status 未更新 / next flush で再試行可)。
+// - orphan event (card が存在しない / 他 user 所有) → failed[] 収集、200 返却。
+// - events tx 全体が throw → tx rollback、全 applicable event を failed[] に追加、
+//   200 返却 (event_id 冪等性で次 flush は safe に再試行可)。
 // - study_sessions upsert 失敗は 500 (session 同期できないと flush 全体の整合が
 //   崩れるため、 client に retry を促す)。
 //
 // FSRS rating:
 // - payload の `events[].rating` (1|2|3|4 = Again/Hard/Good/Easy) を優先利用、
 //   未指定なら `is_correct ? 3 (Good) : 1 (Again)` に fallback で derive する。
-// - FSRS モードで user が選んだ Hard(2) / Easy(4) を payload に含めることで rating
-//   情報を server に届ける経路を確保 (旧 submitReview 経路依存を解消)。
-// - 通常モードは client 判定のみで rating を省略 (server fallback で 3/1 に解決) しても、
-//   client が明示的に 3/1 を送っても等価。
 //
 // 認可: middleware は /app(.*) のみ protect。 /api は素通しのため、 ここで Clerk
 // session 不在は 401 を返す。
 
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
 import {
   answerEvents,
+  cards,
+  reviews,
+  studyDays,
   studySessions,
   type User,
 } from '@/lib/db/schema'
-import { submitReviewTx } from '@/lib/cards/submit-review-tx'
+import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
 import type { RatingInt } from '@/lib/fsrs'
 import { logger } from '@/lib/logger'
+import { todayInJst } from '@/lib/jst'
 
 export const runtime = 'nodejs'
 
@@ -83,6 +86,287 @@ const payloadSchema = z.object({
 })
 
 type BulkPayload = z.infer<typeof payloadSchema>
+type ParsedEvent = z.infer<typeof eventSchema>
+
+// ---------------------------------------------------------------------------
+// processSession — 単一 tx で全 events を処理し failed[] を返す
+// ---------------------------------------------------------------------------
+// future: multi-session payload 対応の拡張ポイント。 今日は handler から 1 回だけ呼ぶ。
+
+async function processSession(
+  db: ReturnType<typeof getDb>,
+  user: User,
+  session: BulkPayload['session'],
+  events: ParsedEvent[],
+  measure: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
+): Promise<{ failed: string[] }> {
+  // events が空の場合は tx に入らず即返却
+  if (events.length === 0) {
+    return { failed: [] }
+  }
+
+  // Phase 1: orphan exclusion に使う distinct card_id セット
+  const distinctCardIds = [...new Set(events.map((e) => e.card_id))]
+
+  let orphanFailed: string[] = []
+  let txFailed: string[] = []
+
+  try {
+    await db.transaction(async (tx) => {
+      // ------------------------------------------------------------------
+      // Phase 1 — cards SELECT (owner-scoped)
+      // ------------------------------------------------------------------
+      const cardRows = await measure('select-cards', async () =>
+        tx
+          .select({
+            id: cards.id,
+            due: cards.due,
+            stability: cards.stability,
+            difficulty: cards.difficulty,
+            elapsedDays: cards.elapsedDays,
+            scheduledDays: cards.scheduledDays,
+            reps: cards.reps,
+            lapses: cards.lapses,
+            state: cards.state,
+            learningSteps: cards.learningSteps,
+            lastReview: cards.lastReview,
+            answered: cards.answered,
+            lastCorrect: cards.lastCorrect,
+            currentStreak: cards.currentStreak,
+          })
+          .from(cards)
+          .where(
+            and(
+              eq(cards.userId, user.id),
+              // owner-scoped IN 絞り込み — orphan / 他 user cards は返らない
+              inArray(cards.id, distinctCardIds),
+            ),
+          ),
+      )
+
+      // card_id → ReplayCardState マップを構築
+      const cardStateMap = new Map<string, ReplayCardState>()
+      for (const row of cardRows) {
+        cardStateMap.set(row.id, {
+          due: row.due,
+          stability: row.stability,
+          difficulty: row.difficulty,
+          elapsedDays: row.elapsedDays,
+          scheduledDays: row.scheduledDays,
+          reps: row.reps,
+          lapses: row.lapses,
+          state: row.state as 0 | 1 | 2 | 3,
+          learningSteps: row.learningSteps,
+          lastReview: row.lastReview,
+          answered: row.answered,
+          lastCorrect: row.lastCorrect,
+          currentStreak: row.currentStreak,
+        })
+      }
+
+      // orphan exclusion: card が返ってこなかった event は failed[] へ
+      const applicableEvents: ParsedEvent[] = []
+      for (const ev of events) {
+        if (!cardStateMap.has(ev.card_id)) {
+          orphanFailed.push(ev.event_id)
+        } else {
+          applicableEvents.push(ev)
+        }
+      }
+
+      // applicable events が 0 件なら write フェーズはスキップ
+      if (applicableEvents.length === 0) return
+
+      // ------------------------------------------------------------------
+      // Phase 2a — answer_events bulk INSERT (ON CONFLICT DO NOTHING)
+      // ------------------------------------------------------------------
+      const insertedRows = await measure('insert-events', async () =>
+        tx
+          .insert(answerEvents)
+          .values(
+            applicableEvents.map((ev) => ({
+              eventId: ev.event_id,
+              sessionId: session.session_id,
+              cardId: ev.card_id,
+              userId: user.id,
+              selectedAnswerIds: ev.selected_answer_ids,
+              isCorrect: ev.is_correct,
+              answeredAt: new Date(ev.answered_at),
+              elapsedMs: ev.elapsed_ms ?? null,
+            })),
+          )
+          .onConflictDoNothing({ target: answerEvents.eventId })
+          .returning({ eventId: answerEvents.eventId }),
+      )
+
+      // 実際に INSERT された event_id セット (duplicate は除外される)
+      const insertedEventIds = new Set(insertedRows.map((r) => r.eventId))
+
+      // ------------------------------------------------------------------
+      // Phase 2b — replay gating: payload 順を守りつつ dedup
+      // ------------------------------------------------------------------
+      // - insertedEventIds にある → 新規 insert 確定 → apply
+      // - ない → duplicate (既処理) → skip (failed には追加しない)
+      // - consumedSet: 同 payload 内の重複 event_id を最初の出現のみ apply
+      const consumedSet = new Set<string>()
+      const eventsToApply = applicableEvents.filter((ev) => {
+        if (!insertedEventIds.has(ev.event_id)) return false // duplicate → skip
+        if (consumedSet.has(ev.event_id)) return false // intra-payload dedup
+        consumedSet.add(ev.event_id)
+        return true
+      })
+
+      if (eventsToApply.length === 0) return
+
+      // ------------------------------------------------------------------
+      // Phase 2c — in-memory FSRS replay (per card group)
+      // ------------------------------------------------------------------
+      // card_id ごとにグループ化。 グループ内は payload 順を保持する。
+      type ReviewRow = { cardId: string; rating: RatingInt; reviewedAt: Date }
+      const allReviewRows: ReviewRow[] = []
+      // cards UPDATE に使う: cardId → final state
+      const finalStates = new Map<string, ReplayCardState>()
+
+      // グループ化 (insertion order で Map → payload 順保持)
+      const grouped = new Map<string, ParsedEvent[]>()
+      for (const ev of eventsToApply) {
+        const arr = grouped.get(ev.card_id) ?? []
+        arr.push(ev)
+        grouped.set(ev.card_id, arr)
+      }
+
+      await measure('replay', async () => {
+        for (const [cardId, groupEvents] of grouped) {
+          const initial = cardStateMap.get(cardId)!
+          const replayEvents = groupEvents.map((ev) => ({
+            // payload rating 優先、未指定は is_correct から derive
+            rating: (ev.rating ?? (ev.is_correct ? 3 : 1)) as RatingInt,
+            answeredAt: new Date(ev.answered_at),
+          }))
+          const { final, reviews: reviewsOut } = replayCard(initial, replayEvents)
+          finalStates.set(cardId, final)
+          // reviews 行を eventsToApply 順に戻すため groupEvents と reviewsOut を zip
+          for (let i = 0; i < groupEvents.length; i++) {
+            allReviewRows.push({
+              cardId,
+              rating: reviewsOut[i].rating,
+              reviewedAt: reviewsOut[i].reviewedAt,
+            })
+          }
+        }
+        return undefined
+      })
+
+      // reviews 行の順序は group 順 (card_id 初出順)。 study_days は eventsToApply から
+      // 別途集計するため、 reviews INSERT 順は最終結果に影響しない。
+
+      // ------------------------------------------------------------------
+      // Phase 2d — reviews bulk INSERT
+      // ------------------------------------------------------------------
+      await measure('insert-reviews', async () =>
+        tx.insert(reviews).values(
+          allReviewRows.map((r) => ({
+            userId: user.id,
+            cardId: r.cardId,
+            rating: r.rating,
+            reviewedAt: r.reviewedAt,
+          })),
+        ),
+      )
+
+      // ------------------------------------------------------------------
+      // Phase 2e — cards UPDATE × N (owner-scoped、 1 card 1 UPDATE)
+      // 単一 VALUES UPDATE は later task で実装。今は safe N-updates。
+      // ------------------------------------------------------------------
+      await measure('update-cards', async () => {
+        for (const [cardId, final] of finalStates) {
+          await tx
+            .update(cards)
+            .set({
+              due: final.due,
+              stability: final.stability,
+              difficulty: final.difficulty,
+              elapsedDays: final.elapsedDays,
+              scheduledDays: final.scheduledDays,
+              reps: final.reps,
+              lapses: final.lapses,
+              state: final.state,
+              learningSteps: final.learningSteps,
+              lastReview: final.lastReview,
+              answered: final.answered,
+              lastCorrect: final.lastCorrect,
+              currentStreak: final.currentStreak,
+            })
+            .where(and(eq(cards.id, cardId), eq(cards.userId, user.id)))
+        }
+        return undefined
+      })
+
+      // ------------------------------------------------------------------
+      // Phase 2f — study_days UPSERT (per JST day)
+      // ------------------------------------------------------------------
+      await measure('study-days', async () => {
+        // eventsToApply を JST date でグループ化して count 集計
+        type DayCount = { total: number; correct: number }
+        const dayMap = new Map<string, DayCount>()
+        for (const ev of eventsToApply) {
+          const day = todayInJst(new Date(ev.answered_at))
+          const rating = (ev.rating ?? (ev.is_correct ? 3 : 1)) as RatingInt
+          const existing = dayMap.get(day) ?? { total: 0, correct: 0 }
+          existing.total += 1
+          if (rating >= 2) existing.correct += 1
+          dayMap.set(day, existing)
+        }
+
+        for (const [day, counts] of dayMap) {
+          // reviews table から JST date 別 distinct card_id を再集計
+          // (今回の reviews INSERT を含む)
+          const distinctRows = await tx.execute(sql`
+            SELECT COUNT(DISTINCT card_id)::int AS c FROM reviews
+            WHERE user_id = ${user.id}::uuid
+              AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
+          `)
+          const distinct = Number(
+            ((distinctRows as unknown) as Array<{ c: unknown }>)[0]?.c ?? 0,
+          )
+
+          await tx
+            .insert(studyDays)
+            .values({
+              userId: user.id,
+              day,
+              reviewCount: counts.total,
+              correctCount: counts.correct,
+              distinctCardCount: distinct,
+            })
+            .onConflictDoUpdate({
+              target: [studyDays.userId, studyDays.day],
+              set: {
+                reviewCount: sql`${studyDays.reviewCount} + ${counts.total}`,
+                correctCount: sql`${studyDays.correctCount} + ${counts.correct}`,
+                distinctCardCount: distinct,
+              },
+            })
+        }
+        return undefined
+      })
+    })
+  } catch (err) {
+    // tx 内部で予期しないエラー → rollback 済み。 applicable events を全て failed に。
+    // orphan は既に orphanFailed に積んでいる。
+    logger.warn({
+      event: 'review_events.bulk.tx_failed',
+      sessionId: session.session_id,
+      userId: user.id,
+      err,
+    })
+    txFailed = events
+      .filter((ev) => !orphanFailed.includes(ev.event_id))
+      .map((ev) => ev.event_id)
+  }
+
+  return { failed: [...orphanFailed, ...txFailed] }
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -106,7 +390,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: 'user_not_synced' }, { status: 401 })
   }
 
-  // [TEMP-MEASURE 2026-05-28 cache-fix 問題 3 Step 1] per-op timing 計測 (logger 出力)。
+  // [TEMP-MEASURE 2026-05-28 cache-fix 問題 3 Step 1] per-phase timing 計測 (logger 出力)。
   // production の log を汚さないため stg/preview/dev のみ出力。 計測 campaign 後に revert。
   const measureEnabled = process.env.VERCEL_ENV !== 'production'
   const timings: Record<string, number> = {}
@@ -142,9 +426,10 @@ export async function POST(req: Request): Promise<Response> {
 
   const db = getDb()
 
-  // -- study_sessions upsert --
-  // PK = session_id。 同 session_id への再送は status / completed_at / card_ids を
+  // -- Phase 0: study_sessions upsert (events tx の外) --
+  // PK = session_id。 同 session_id への再送は status / completed_at を
   // 最新値で上書き (updated_at は $onUpdate で自動)。
+  // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
   try {
     await measure('session-upsert', async () => db
       .insert(studySessions)
@@ -189,57 +474,8 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: 'session_upsert_failed' }, { status: 500 })
   }
 
-  // -- events 反映 (per-event tx) --
-  const failed: string[] = []
-
-  for (const [i, ev] of events.entries()) {
-    try {
-      await measure(`event-${i}-tx`, async () => db.transaction(async (tx) => {
-        // (1) answer_events INSERT、 event_id 重複は no-op。
-        // returning() で実 insert 行を取り、 0 件なら duplicate と判定して
-        // FSRS 適用を skip する (再送 idempotency)。
-        const inserted = await measure(`event-${i}-insert`, async () => tx
-          .insert(answerEvents)
-          .values({
-            eventId: ev.event_id,
-            sessionId: session.session_id,
-            cardId: ev.card_id,
-            userId: user.id,
-            selectedAnswerIds: ev.selected_answer_ids,
-            isCorrect: ev.is_correct,
-            answeredAt: new Date(ev.answered_at),
-            elapsedMs: ev.elapsed_ms ?? null,
-          })
-          .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ id: answerEvents.id }))
-
-        // 重複 event_id (= 既に処理済 / 並列再送) は FSRS 再適用しない。
-        if (inserted.length === 0) return
-
-        // (2) FSRS 反映 (cards UPDATE + reviews INSERT + study_days UPSERT)。
-        // rating は payload 指定値を優先、 未指定時は is_correct から derive
-        // (§route header 参照)。
-        const rating: RatingInt = ev.rating ?? (ev.is_correct ? 3 : 1)
-        await measure(`event-${i}-submitTx`, async () => submitReviewTx(tx, {
-          userId: user.id,
-          cardId: ev.card_id,
-          rating,
-          now: new Date(ev.answered_at),
-        }, timings, `event-${i}`))
-      }))
-    } catch (err) {
-      // 個別 event 失敗は他 event を巻き込まない。 client は failed[] を見て
-      // sync_status 未更新 = 次 flush で再試行する。
-      logger.warn({
-        event: 'review_events.bulk.event_failed',
-        eventId: ev.event_id,
-        cardId: ev.card_id,
-        userId: user.id,
-        err,
-      })
-      failed.push(ev.event_id)
-    }
-  }
+  // -- Phase 1+2: events を単一 tx で処理 --
+  const { failed } = await processSession(db, user, session, events, measure)
 
   timings['total'] = Math.round(performance.now() - tStart)
   if (measureEnabled) {

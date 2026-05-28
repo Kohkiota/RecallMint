@@ -49,12 +49,12 @@ function addDays(ymd: string, delta: number): string {
  * Fetch today's unique card count and current streak for a user.
  * Both values are JST-anchored: "today" is the JST calendar day.
  *
- * Data source: `study_days` table (written by submitReviewTx on every rating).
+ * Data source: `study_days` table (bulk route /api/review-events/bulk が rate flush 毎に集計 UPSERT)。
  * `study_days.day` は既に JST date 文字列で保存されているため、SQL 側での
  * AT TIME ZONE 変換は不要。 TS 側で `todayInJst(now)` を使って today を確定する。
  *
  * `todayCardCount` は study_days.distinct_card_count (その日 1 回でも rate された
- * unique card 数、submitReviewTx が毎 rate で再集計して UPSERT)。
+ * unique card 数、bulk route が flush 毎に再集計して UPSERT)。
  *
  * Returns `{ todayCardCount, streak }` for dashboard display.
  *
