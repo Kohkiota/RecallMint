@@ -7,22 +7,56 @@
 - account: `komail9server+001@gmail.com` (IDB clear で clean state)
 - 実行手段: Playwright MCP + DevTools Network / PerformanceResourceTiming
 - before baseline: `docs/superpowers/sessions/2026-05-28-problem3-before-measurement.md` (per-event 版、 Function Duration 16.7〜17.4s)
-- **状態: BLOCKED (client 実走) — Playwright が stg Clerk sign-in に阻まれ未認証。 下記§0 参照。 OT の認証 hand-off or 手動実走待ち**
+- **状態: 🔴 CRITICAL — 認証は解決し smoke 実走したが、 smart session 1 で bulk write が real Postgres で全 event rollback (`failed[]` に 5 件全部)。 = bulk refactor は実 DB で機能していない。 perf 計測は suspend (rollback path の latency は無意味)。 root cause は Vercel log 待ち (§0)**
 
 ---
 
-## 0. 現状と blocker (停止理由)
+## 0. 🔴 CRITICAL FINDING — bulk write が real DB で rollback
 
-`git ls-remote origin refs/heads/develop` = `d06062c` を確認 → **refactor は remote develop に反映済**。 ただし以下 2 点で Claude Code 自走が停止:
+認証 (komail9server+001 + 新デバイス email code) を解決し、 clean state (IDB before:[recallmint]→clear、 answer_events=0 確認) で smart session 1 (cold) を実走。 結果:
 
-1. **認証 blocker (主因)**: Playwright で `https://stg.recallmint.nekotest.net/app` に navigate → `/sign-in` に redirect。 Clerk sign-in wall ("Sign in to recall-mint-dev" / Development mode、 Google OAuth or email+password)。 **Claude Code は account password / OAuth / OTP を保持せず認証不可**。 before 計測 (05:55-05:58) は認証済 Playwright session で実行されたが、 本 session の browser は fresh で未認証。
-   - → CLAUDE.md「Smoke 確認」の OT 依頼条件「Claude Code 環境で届かない条件 (OT 専用 Clerk 設定 等)」に該当。
-2. **deploy 反映 gate (未確認)**: remote develop = d06062c だが、 **stg Vercel が d06062c を build/deploy 完了して配信しているか**は未認証ゆえ未確認。 認証後に §2 の Function Duration が ~3s 付近なら反映済、 ~16s のままなら旧 per-event 版が配信中 (= 反映ずれ) と判定し、 OT に stg redeploy を要請する。
+- **POST `/api/review-events/bulk` → 200 だが body = `{"ok":true,"failed":[<5 event_id 全部>]}`**。 = server が 5 event 全部を `failed[]` に積んだ。
+- client 側: 全 5 event が `sync_status='pending'` のまま、 session も `pending` (= flush 失敗扱い、 次 flush で再送する状態)。 **実 DB には cards/reviews/study_days が 1 件も書かれていない (tx rollback)**。
+- payload は正常: `mode:'smart'`、 5 event すべて valid UUID card_id (smart review が配信した実 card)、 `rating:3`、 valid event_id。 → **orphan ではない** (orphan なら SELECT 1 回で ~0.5s の fast path のはず)。
+- Function Duration **4,019ms** (before 16.7-17.4s より速い → 新 bulk code は deploy 済、 ただし throw path)。 4s ≈ 数 statement 実行後に throw した時間 → **後段 phase (Phase 2e VALUES UPDATE or Phase 2f study_days) の実行時エラーで tx 全 rollback** と推定。
 
-**進め方 2 択 (OT 判断)**:
-- (A) OT が Playwright MCP browser に手動 sign-in (komail9server+001) → Claude Code が §1-3 の client 実走 + dump を継続。
-- (B) OT が §1 手順を手動実走し、 §2 表に Function Duration / 識別子を記入 → Claude Code が §3 解釈。
-どちらでも server per-phase timing は §4 で OT が Vercel log から取得 (before と同分担)。
+### なぜ unit test で出なかったか
+
+`route.test.ts` は `getDb`/`tx` を mock し、 **実 SQL を Postgres に投げない**。 SQL 文字列の `toSQL()` rendering は valid (下記検証済) でも、 **実行時に postgres-js (`prepare: false` / Supabase PgBouncer transaction mode、 `lib/db/index.ts`) が特定の構文を rejcet する**ケースは mock では検出不能。 = real-DB integration の穴。
+
+### toSQL() 検証 (Phase 2e VALUES UPDATE)
+
+ローカルで実 drizzle (postgres-js) を使い Phase 2e の生成 SQL を render → **構文・型・列順すべて valid**:
+```
+update "cards" set "answered"=v.answered, ..., "updated_at"=$1
+  from (VALUES ($2::uuid,$3::timestamptz,$4::real,...,$15::int), (...)) 
+  AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)
+  where ("cards"."user_id"=$30 and "cards"."id"=v.id)
+```
+VALUES tuple の cast 順 = `AS v(...)` の列順 = cards 列型、 SET の `v.col` mapping もすべて整合。 → **SQL 文字列は正しい。 失敗は実行時 (driver/PgBouncer 層)**。 確定診断には Postgres の実エラーメッセージが要る。
+
+### session 1 識別子 (OT の Vercel log 照合用 — 最優先)
+
+| 軸 | 値 |
+| --- | --- |
+| session_id | `e6ddf69f-c2ca-4afb-8d53-69e9460f8cdc` |
+| event_id (5) | `31217888` / `577d7899` / `c513dc27` / `cf0f0cfd` / `177d721e` |
+| x-vercel-id | `hnd1::iad1::nv9j5-1779984405963-df92d392b7d7` |
+| response date | Thu, 28 May 2026 16:06:49 GMT |
+| region | iad1 (function) |
+
+### OT への依頼 (root cause 確定)
+
+1. **Vercel function log で `event:"review_events.bulk.tx_failed"` の `err` を取得** (上記 session_id / 時刻帯 / x-vercel-id で照合)。 これが Postgres の実エラー (message + code) で、 どの phase / どの SQL が落ちたか即判明する。 加えて `review_events.bulk.timing` があれば、 どの per-phase まで到達したか (`update-cards` の前で止まったか後か) も分かる。
+2. **stg の deploy commit = `d06062c` か確認** (Vercel Deployments)。 万一 intermediate commit が live なら redeploy。
+
+→ `err` を貰い次第 root cause を確定し fix する (現状の強い suspect は Phase 2e VALUES UPDATE の実行時 reject、 次点 study_days)。 **fix 前に perf 再計測しても無意味なので §2-3 は suspend**。
+
+### 計測条件メモ (実走時の差分)
+
+- plan: **Standard / active** (before doc は「Free」記載だったが現アカウントは Standard。 bulk endpoint は plan 非依存なので latency 比較に影響なし)。
+- sessionLimit=5 / FSRS mode ON は設定画面で確認済 (before と一致)。
+- 実行時刻 16:xx GMT = JST 翌日 2026-05-29 01:xx (before は JST 2026-05-28)。 study_days の「今日」は別 JST 日 = clean slate。
 
 ---
 
