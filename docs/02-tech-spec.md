@@ -24,7 +24,7 @@
        └─ Edge Middleware (Clerk auth)
 
 [ Cloudflare R2 ]    カード編集時の添付画像（egress 無料、将来機能）
-[ Gemini API ]       2.5 Flash 主軸 / 2.5 Pro フォールバック
+[ Gemini API ]       2.5 Flash (S2.0.5 で Flash only 確定、Pro fallback 廃止)
 [ Stripe ]           ──webhook──→ /api/webhooks/stripe
 [ Clerk ]            ──webhook──→ /api/webhooks/clerk
 [ Discord webhook ]  ←── エラー / お問い合わせ / kill 閾値接近通知
@@ -36,10 +36,10 @@
 - **認証**: Clerk（OAuth + Email Magic Link）、JWT を Server Action で `auth()` 取得
 - **DB**: Neon (PostgreSQL 16) / Drizzle ORM、Row Level Security 有効
 - **決済**: Stripe（Subscription、Customer Portal）
-- **AI / OCR**: Gemini 2.5 Flash 主軸 + Gemini 2.5 Pro フォールバック（精度不足時）。Flash-Lite はコスト最重視時のフォールバック
+- **AI / OCR**: Gemini 2.5 Flash (S2.0.5 で Flash only 確定、Pro fallback 廃止)。Flash-Lite はコスト最重視時のフォールバック候補 (未採用)
 - **ストレージ**: Cloudflare R2（カード編集時の添付画像、egress 無料、S3 互換 API）。**将来機能** — OCR スキャン元ファイルは保存しない（inline base64 で Gemini に渡すのみ）
 - **ホスティング**: Vercel（Pro プラン $20/月、Function 900s）
-- **OCR ジョブ**: `processUpload` Server Action で同期処理。アップロードファイルは inline base64 で Gemini に送信し、結果を直接 return（永続化・ポーリングなし）。1 ファイル ≤ 150 ページ単発（CLAUDE.md 整合）
+- **OCR ジョブ**: `processUpload` Server Action で同期処理。アップロードファイルは inline base64 で Gemini に送信し、結果を直接 return（永続化・ポーリングなし）。per-file ≤ 40 ページ / per-upload 合計 ≤ 40 ページの 2 軸制限
 - **PWA**: `next-pwa` + manifest.json + workbox（§9 で詳細化）
 - **監視**: Vercel Analytics + Discord webhook（自前 `/admin` ダッシュボードは v1.2、F-108）
 
@@ -924,8 +924,7 @@ erDiagram
 - **MVP**: `processUpload` Server Action で同期処理。クライアントが `FormData` で
   ファイル本体を送信 → サーバーで inline base64 化 → Gemini に送信 → 結果を直接 return。
   R2 / presigned URL / 進捗ポーリングは経由しない
-- **入力上限**: 1 ファイル ≤ 150 ページ単発（Vercel Pro の Function timeout 900s で完結。
-  CLAUDE.md「1 ファイル ≤ 150 ページ単発で完結」 と整合）
+- **入力上限**: per-file ≤ 40 ページ（`MAX_PDF_PAGES`）/ per-upload 合計 ≤ 40 ページ（`OCR_MAX_PAGES`）の 2 軸。Vercel Pro Function 900s で完結
 - **クライアント側 timeout**: 90 秒（サーバー応答が返らない場合に spinner を打ち切り
   retry 誘導、S1.7）
 - **β スケール時**: さらなる長尺対応が必要になれば Inngest / QStash 等へのオフロードを
@@ -1122,9 +1121,10 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
 
 ### フォールバック戦略
 
-1. 第 1 試行: Gemini 2.5 Flash
-2. パース失敗 or 信頼度低（cards 抽出 0 件等） → Gemini 2.5 Pro 再試行
-3. それでも失敗 → ユーザーに手動編集 UI 提示
+> **S2.0.5 確定**: Flash only pipeline。Pro fallback は廃止。
+
+1. 第 1 試行: Gemini 2.5 Flash (timeout / network error は retry、具体値は §7「OCR pipeline タイムアウト・リトライ仕様」参照)
+2. リトライ上限 (3 attempts) 超過 or 非対象エラー → ユーザーにエラー表示 + 手動編集 UI 提示
 
 ### レート制限・コスト管理
 
@@ -1142,6 +1142,43 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
 
 - MVP では実装しない
 - 実装時に `lib/ai/prompts/explanation.ts`、AI 解説生成用テーブルを新設（plan00 の ai_examples は drop 済のため）
+
+### OCR pipeline タイムアウト・リトライ仕様 (S2.0.5 確定)
+
+> CLAUDE.md §「AI API 呼出」ルール 6 の具体値。 30s timeout が OCR では短すぎた反省を踏まえ、
+> pipeline 固有の具体値をここに集約する (CLAUDE.md 側は原則のみ)。
+
+#### タイムアウト
+
+| 項目 | 値 | 備考 |
+|---|---|---|
+| per-attempt timeout (Gemini call) | **220s** | `AbortController` + `setTimeout(abort, 220_000)` で fetch を打ち切る (timeout 時は "timeout" を含む Error に正規化) |
+| overall job deadline | **720s** | `Promise.race` で自前停止。Vercel Function `maxDuration=800s` のうち 80s を後処理 (cards INSERT + `markFailed`) に確保 |
+| クライアント側 spinner timeout | 90s | サーバー応答が返らない場合に spinner を打ち切り retry 誘導 (S1.7、 §3 OCR 処理戦略参照) |
+
+#### リトライ
+
+| 項目 | 値 |
+|---|---|
+| max attempts | **3** (初回 + retry 2 回、`MAX_HTTP_RETRIES=2` に対応) |
+| retry 対象 | 5xx (500/502/503/504)、timeout、network error (`ECONNRESET` / `ECONNREFUSED` / `ENOTFOUND` / `EAI_AGAIN` / `fetch failed` / `socket hang up`) |
+| retry 非対象 (即 throw) | 4xx (400/401/403/404)、**429 (即時停止、リトライ禁止、CLAUDE.md ルール 5)**、JSON parse failure、zod schema validation failure |
+
+#### バックオフ
+
+- `Retry-After` header が取得可能な場合は優先使用
+- static fallback: 1st retry = 5s + jitter(0–2s)、2nd retry = 20s + jitter(0–5s)
+
+#### ページ上限
+
+- 1 upload の合算 `totalPages` 上限: **40 ページ** (`OCR_MAX_PAGES=40`)
+- plan-limits (月次 OCR quota) とは別軸。pipeline の現実的制約 (Vercel Function timeout / Gemini token 上限への安全マージン)
+
+#### モデル構成
+
+- **Flash only pipeline**: `gemini-2.5-flash` のみ使用。Pro fallback は廃止
+- `lib/ai/cost.ts` の Pro 単価定義は将来の手動 Pro 再 OCR 余地として残置 (現行 pipeline では未使用)
+- §7「フォールバック戦略」の旧記述 (Flash → Pro → 手動編集) は本 sprint で廃止確定
 
 ---
 
@@ -1165,7 +1202,7 @@ contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft dele
     5. 1 transaction で `source_documents` を `status='completed'` に更新
        （`pages_processed` / `cards_extracted` / `ocr_cost_yen`）+ `upload_records` に
        `status='completed'` 行を append（月次台帳）。失敗時は両テーブルに failed 記録
-- **長尺方針**: 1 ファイル ≤ 150 ページ単発（Vercel Pro Function 900s で完結）。
+- **長尺方針**: per-file ≤ 40 ページ / per-upload 合計 ≤ 40 ページ（Vercel Pro Function 900s で完結）。
   ページ分割・並列呼び出しは行わない
 - **画像は抽出しない**: ユーザーが後から編集ビューで手動添付（Logic 2、将来機能）
 
@@ -1421,7 +1458,7 @@ R2 採用根拠は egress 無料。 S3 互換 API のため将来 S3 / 他 S3 �
 
 ### 13.3 長尺 PDF の OCR 処理
 
-MVP は 1 ファイル ≤ 150 ページ単発を Vercel Pro Function（900s）で完結させる。
+MVP は per-file ≤ 40 ページ / per-upload 合計 ≤ 40 ページを Vercel Pro Function（900s）で完結させる。
 それを超える長尺需要が出た場合に Inngest / QStash 等の background job が必要か、
 β で測定して判断。
 
