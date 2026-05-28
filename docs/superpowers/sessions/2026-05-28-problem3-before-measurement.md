@@ -40,11 +40,11 @@
 
 ### session 別
 
-| # | 種別 | Function Duration (PerformanceResourceTiming.duration ≒ TTFB) | x-vercel-id | session_id | response date (GMT) |
-|---|---|---|---|---|---|
-| 1 | cold | **17,426ms** | `z29sb-1779947749063` | `55d153cd-862d-4f1b-899b-286cd493d521` | 05:56:06 |
-| 2 | warm | **16,773ms** | `9d9fs-1779947823197` | `91eb3e3a-13f0-48e7-8458-321cb19734e9` | 05:57:19 |
-| 3 | warm | **16,746ms** | `g8vmx-1779947896993` | `276e052a-dc27-4601-baf5-58dcc02c3def` | 05:58:33 |
+| #   | 種別 | Function Duration (PerformanceResourceTiming.duration ≒ TTFB) | x-vercel-id           | session_id                             | response date (GMT) |
+| --- | ---- | ------------------------------------------------------------- | --------------------- | -------------------------------------- | ------------------- |
+| 1   | cold | **17,426ms**                                                  | `z29sb-1779947749063` | `55d153cd-862d-4f1b-899b-286cd493d521` | 05:56:06            |
+| 2   | warm | **16,773ms**                                                  | `9d9fs-1779947823197` | `91eb3e3a-13f0-48e7-8458-321cb19734e9` | 05:57:19            |
+| 3   | warm | **16,746ms**                                                  | `g8vmx-1779947896993` | `276e052a-dc27-4601-baf5-58dcc02c3def` | 05:58:33            |
 
 ### event_id 一覧 (OT の log 照合用)
 
@@ -95,13 +95,14 @@ stg の Vercel function log (Deployment → Functions → `/api/review-events/bu
 
 `event: "review_events.bulk.timing"` の log 行から `timings` オブジェクトを session ごとに dump:
 
-| 照合軸 | session 1 | session 2 | session 3 |
-|---|---|---|---|
-| 時刻帯 (GMT) | 05:55:48〜05:56:06 | 05:57:03〜05:57:19 | 05:58:16〜05:58:33 |
-| x-vercel-id | z29sb-1779947749063 | 9d9fs-1779947823197 | g8vmx-1779947896993 |
-| sessionId (log field) | 55d153cd-... | 91eb3e3a-... | 276e052a-... |
+| 照合軸                | session 1           | session 2           | session 3           |
+| --------------------- | ------------------- | ------------------- | ------------------- |
+| 時刻帯 (GMT)          | 05:55:48〜05:56:06  | 05:57:03〜05:57:19  | 05:58:16〜05:58:33  |
+| x-vercel-id           | z29sb-1779947749063 | 9d9fs-1779947823197 | g8vmx-1779947896993 |
+| sessionId (log field) | 55d153cd-...        | 91eb3e3a-...        | 276e052a-...        |
 
 取得すべき `timings` キー (各 session、 eventCount=5):
+
 - `session-upsert`
 - `event-0-tx` 〜 `event-4-tx` (= 各 event の transaction 全体)
 - `event-0-insert` 〜 `event-4-insert` (= answer_events INSERT)
