@@ -7,8 +7,12 @@
 //   bulk flush 時に upsert される)。
 // - `recordAnswerEvent`: 回答 click ごとに Dexie に event を即追加 (debounce なし)。
 // - `getPendingAnswerEvents`: sync_status='pending' を取得して flush 対象を返す。
+// - `getAllPendingAnswerEvents`: session 横断で全 pending を返す (group flush 用)。
 // - `flushPendingEvents`: pending を取り bulk API に送信、 成功した event_id を
 //   `synced` 化、 失敗 event_id は pending のまま (next flush で再試行)。
+//   in-flight 中の event_id は除外し、 並走 flush の二重送信を防ぐ。
+// - `flushAllPendingEvents`: 全 session の pending を session 別に並列 flush
+//   (session 完了時に過去 session の未送信残骸も含めて一括送信)。
 // - `completeStudySession`: status='completed' + completed_at を更新。
 //
 // 全 helper はブラウザ専用 (getClientDb が server で throw する)。
@@ -144,6 +148,13 @@ export async function getPendingAnswerEvents(
     : rows.filter((r) => r.session_id === sessionId)
 }
 
+// 全 session を横断して pending を返す named helper。 呼び出し側が「session 横断の
+// 全件取得」 であることを明示するために存在する (getPendingAnswerEvents() の薄い
+// 委譲)。 session 完了時の全 session group flush (flushAllPendingEvents) で利用される。
+export async function getAllPendingAnswerEvents(): Promise<ClientAnswerEvent[]> {
+  return getPendingAnswerEvents()
+}
+
 export async function countPendingAnswerEvents(
   sessionId?: string,
 ): Promise<number> {
@@ -164,6 +175,11 @@ async function markAnswerEventsSynced(eventIds: string[]): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const BULK_ENDPOINT = '/api/review-events/bulk'
+
+// event_id ごとの in-flight POST を追跡し、 同 event_id を含む並走 flush を排除する。
+// module scope で保持 (IDB には保存しない)。 test isolation のため export するが、
+// production コードからの直接操作は禁止 (flushPendingEvents の finally で必ず remove される)。
+export const inFlightEventIds = new Set<string>()
 
 export type FlushResult = {
   attempted: number
@@ -204,6 +220,28 @@ const defaultClient: BulkApiClient = {
   },
 }
 
+// 全 session の pending を session_id でまとめて並列 flush する。
+// セッション完了時に「完了 session 本体 + 過去 session の未送信残骸」を一括 sweep するために使う。
+// 個々の session flush は flushPendingEvents に委譲し、in-flight guard もそちらに任せる。
+// Promise.allSettled を使うため一部 session の失敗が他の session を止めない。
+export async function flushAllPendingEvents(
+  client: BulkApiClient = defaultClient,
+): Promise<FlushResult[]> {
+  const allPending = await getAllPendingAnswerEvents()
+
+  // session_id ごとに group 化 (pending 0 件の session はここには現れない)
+  const sessionIds = [...new Set(allPending.map((e) => e.session_id))]
+
+  const settled = await Promise.allSettled(
+    sessionIds.map((sessionId) => flushPendingEvents(sessionId, client)),
+  )
+
+  // reject した session は呼び出し側に巻き込まれないよう fulfilled のみを返す
+  return settled
+    .filter((r): r is PromiseFulfilledResult<FlushResult> => r.status === 'fulfilled')
+    .map((r) => r.value)
+}
+
 export async function flushPendingEvents(
   sessionId: string,
   client: BulkApiClient = defaultClient,
@@ -218,65 +256,92 @@ export async function flushPendingEvents(
       reachable: false,
     }
   }
-  const events = await getPendingAnswerEvents(sessionId)
-  // events 0 件でも、 session の status / completed_at を server に届けるため
-  // bulk API を呼ぶ価値がある (例: completed 遷移直後の flush)。
 
-  const payload = {
-    session: {
-      session_id: session.session_id,
-      ...(session.exam_id ? { exam_id: session.exam_id } : {}),
-      mode: session.mode,
-      card_ids: session.card_ids,
-      started_at: session.started_at,
-      ...(session.completed_at ? { completed_at: session.completed_at } : {}),
-      status: session.status,
-    },
-    events: events.map((e) => ({
-      event_id: e.event_id,
-      card_id: e.card_id,
-      selected_answer_ids: e.selected_answer_ids,
-      is_correct: e.is_correct,
-      answered_at: e.answered_at,
-      ...(e.elapsed_ms !== undefined ? { elapsed_ms: e.elapsed_ms } : {}),
-      ...(e.rating !== undefined ? { rating: e.rating } : {}),
-    })),
-  }
+  const pendingAll = await getPendingAnswerEvents(sessionId)
 
-  const response = await client.post(payload)
-  if (!response.ok || !response.body || response.body.ok !== true) {
-    // network / 4xx / 5xx 全般: server に届いていない / 受け入れられていない可能性。
-    // 何も sync 化しない (next flush で再試行)。
+  // 別の並走 flush が既に掴んでいる event_id を除外する。
+  // 「元 pending > 0 かつ除外後 0 件」は全件が他 flush の in-flight 中を意味するため
+  // POST を省略する。 pending=0 (session のみ flush) の並走は別途サーバー側 idempotency に委ねる。
+  const targets = pendingAll.filter((e) => !inFlightEventIds.has(e.event_id))
+  if (pendingAll.length > 0 && targets.length === 0) {
     return {
-      attempted: events.length,
+      attempted: 0,
       syncedEventIds: [],
-      failedEventIds: events.map((e) => e.event_id),
+      failedEventIds: [],
       sessionSynced: false,
-      reachable: response.status >= 400 && response.status < 600,
+      reachable: false,
     }
   }
 
-  const failedSet = new Set(response.body.failed ?? [])
-  const syncedEventIds = events
-    .map((e) => e.event_id)
-    .filter((id) => !failedSet.has(id))
-  const failedEventIds = events.map((e) => e.event_id).filter((id) => failedSet.has(id))
-
-  await markAnswerEventsSynced(syncedEventIds)
-  // session 側の sync_status は「該当 session 内全 event が synced」 になった時のみ
-  // 'synced' に倒す。 部分失敗中は pending のまま (event が残っている間は再送で
-  // session 側も自動的に再 upsert される)。
-  let sessionSynced = false
-  if (failedEventIds.length === 0) {
-    await markStudySessionSyncStatus(sessionId, 'synced')
-    sessionSynced = true
+  // targets の event_id を in-flight として登録し、 finally で必ず解放する。
+  for (const e of targets) {
+    inFlightEventIds.add(e.event_id)
   }
 
-  return {
-    attempted: events.length,
-    syncedEventIds,
-    failedEventIds,
-    sessionSynced,
-    reachable: true,
+  try {
+    const payload = {
+      session: {
+        session_id: session.session_id,
+        ...(session.exam_id ? { exam_id: session.exam_id } : {}),
+        mode: session.mode,
+        card_ids: session.card_ids,
+        started_at: session.started_at,
+        ...(session.completed_at ? { completed_at: session.completed_at } : {}),
+        status: session.status,
+      },
+      // events 0 件でも session の status / completed_at を server に届けるため
+      // bulk API を呼ぶ (例: completed 遷移直後の flush)。
+      events: targets.map((e) => ({
+        event_id: e.event_id,
+        card_id: e.card_id,
+        selected_answer_ids: e.selected_answer_ids,
+        is_correct: e.is_correct,
+        answered_at: e.answered_at,
+        ...(e.elapsed_ms !== undefined ? { elapsed_ms: e.elapsed_ms } : {}),
+        ...(e.rating !== undefined ? { rating: e.rating } : {}),
+      })),
+    }
+
+    const response = await client.post(payload)
+    if (!response.ok || !response.body || response.body.ok !== true) {
+      // network / 4xx / 5xx 全般: server に届いていない / 受け入れられていない可能性。
+      // 何も sync 化しない (next flush で再試行)。
+      return {
+        attempted: targets.length,
+        syncedEventIds: [],
+        failedEventIds: targets.map((e) => e.event_id),
+        sessionSynced: false,
+        reachable: response.status >= 400 && response.status < 600,
+      }
+    }
+
+    const failedSet = new Set(response.body.failed ?? [])
+    const syncedEventIds = targets
+      .map((e) => e.event_id)
+      .filter((id) => !failedSet.has(id))
+    const failedEventIds = targets.map((e) => e.event_id).filter((id) => failedSet.has(id))
+
+    await markAnswerEventsSynced(syncedEventIds)
+    // session 側の sync_status は「該当 session 内全 event が synced」 になった時のみ
+    // 'synced' に倒す。 部分失敗中は pending のまま (event が残っている間は再送で
+    // session 側も自動的に再 upsert される)。
+    let sessionSynced = false
+    if (failedEventIds.length === 0) {
+      await markStudySessionSyncStatus(sessionId, 'synced')
+      sessionSynced = true
+    }
+
+    return {
+      attempted: targets.length,
+      syncedEventIds,
+      failedEventIds,
+      sessionSynced,
+      reachable: true,
+    }
+  } finally {
+    // POST の成否にかかわらず解放し、 次回 invoke で再 pickup できるようにする。
+    for (const e of targets) {
+      inFlightEventIds.delete(e.event_id)
+    }
   }
 }

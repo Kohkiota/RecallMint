@@ -64,6 +64,7 @@ import { equalSet } from '../_lib/equal-set'
 import {
   completeStudySession,
   countPendingAnswerEvents,
+  flushAllPendingEvents,
   flushPendingEvents,
   recordAnswerEvent,
 } from '@/lib/sync/review-events'
@@ -76,12 +77,6 @@ const FLUSH_THRESHOLD = 5
 
 type Phase = 'selecting' | 'judged' | 'finished'
 type Rating = 1 | 2 | 3 | 4
-// S-cache-3.1: 完了画面「ダッシュボードへ」 click handler の状態。
-// - idle: 通常 (label = 「ダッシュボードへ」、 click で flush gating 開始)
-// - flushing: flush 中 (label = 「保存中...」、 disabled)
-// - warning: flush 失敗後 (label = 「ダッシュボードへ」、 sub-text + 再 click で
-//   flush 再試行せず直接 router.push、 dead-end 防止)
-type NavState = 'idle' | 'flushing' | 'warning'
 
 type SessionRunnerProps = {
   cards: Card[]
@@ -155,11 +150,6 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
     () => new Set(),
   )
   const [error, setError] = useState<string | null>(null)
-  // S-cache-3.1: 完了画面「ダッシュボードへ」 click → await flushPendingEvents →
-  // router.push('/app') の race gate 状態。 useEffect 内 background flush との
-  // 二重発火は server bulk endpoint の event_id ON CONFLICT + Dexie の
-  // markAnswerEventsSynced (anyOf 冪等) で副作用ゼロ。
-  const [navState, setNavState] = useState<NavState>('idle')
 
   const current = cards[idx]
 
@@ -314,9 +304,10 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
   }
 
   // ---------------------------------------------------------------------------
-  // S-cache-1: phase='finished' で study_sessions を completed に + final flush。
-  //   §14.7.1 「セッション終了 → bulk flush」 のトリガ。 失敗は silent (Dexie 側
-  //   pending が残るので次 session 開始や online 復帰時に拾える前提)。
+  // phase='finished' で study_sessions を completed に + 全 session group flush。
+  // §14.7.1 「セッション終了 → bulk flush」 のトリガ。
+  // completeStudySession で完了 status を Dexie に書いてから group flush する順序を維持。
+  // 失敗は silent (Dexie 側 pending が残るので次 session 開始や online 復帰時に拾える前提)。
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (phase !== 'finished') return
@@ -325,7 +316,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
         await completeStudySession(sessionId)
       } catch {}
       try {
-        await flushPendingEvents(sessionId)
+        await flushAllPendingEvents()
       } catch {}
     })()
   }, [phase, sessionId])
@@ -379,30 +370,6 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
       tally.answered > 0
         ? Math.round((tally.correct / tally.answered) * 100)
         : 0
-    // S-cache-3.1: 「ダッシュボードへ」 click handler。
-    // - idle: flush を await し、 成功で push、 失敗で warning 表示
-    // - warning: 再 click は flush 再試行せず直接 push (dead-end 防止)
-    // 二重 flush は useEffect (L295-305) の background flush と並走しても、
-    // server event_id 冪等 + Dexie sync_status update 冪等で副作用なし。
-    const handleDashboardNav = async () => {
-      if (navState === 'warning') {
-        router.push('/app')
-        return
-      }
-      setNavState('flushing')
-      try {
-        const result = await flushPendingEvents(sessionId)
-        if (result.reachable && result.failedEventIds.length === 0) {
-          router.push('/app')
-          return
-        }
-        setNavState('warning')
-      } catch {
-        // flushPendingEvents は内部 try/catch で reject しない契約だが念のため
-        setNavState('warning')
-      }
-    }
-    const dashLabel = navState === 'flushing' ? '保存中...' : 'ダッシュボードへ'
     return (
       <div className="mx-auto max-w-xl space-y-6 px-4 py-8 text-center">
         <p className="text-5xl">🎉</p>
@@ -421,18 +388,12 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
           </Button>
           <Button
             variant="outline"
-            onClick={handleDashboardNav}
-            disabled={navState === 'flushing'}
+            onClick={() => router.push('/app')}
             className="w-full sm:w-auto"
           >
-            {dashLabel}
+            ダッシュボードへ
           </Button>
         </div>
-        {navState === 'warning' && (
-          <p className="text-xs text-slate-500">
-            一部の回答を後で再送します
-          </p>
-        )}
       </div>
     )
   }

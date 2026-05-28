@@ -123,6 +123,8 @@ const VALID_EXAM_ID = '33333333-3333-4333-a333-333333333333'
 const VALID_CARD_ID = '44444444-4444-4444-a444-444444444444'
 const VALID_EVENT_ID = '55555555-5555-4555-a555-555555555555'
 const VALID_EVENT_ID_2 = '66666666-6666-4666-a666-666666666666'
+const VALID_EVENT_ID_3 = '77777777-7777-4777-a777-777777777777'
+const VALID_CARD_ID_2 = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 
 function makeReq(payload: unknown): Request {
   return new Request('http://localhost/api/review-events/bulk', {
@@ -476,5 +478,61 @@ describe('POST /api/review-events/bulk', () => {
     // 防ぐ defensive、 仮に attacker が自 user の id で insert しても他 user の
     // session_id と PK collision で UPDATE 経路に倒れ、 setWhere で hard reject)。
     expect(state.sessionUpsertCalls[0].values.userId).toBe(FAKE_USER.id)
+  })
+
+  it('F3: per-event tx loop が payload events 配列順で submitReviewTx を呼ぶ (同 card_id 複数回含む)', async () => {
+    // 同一 card に複数 events がある場合、 FSRS は answered_at 昇順 (= payload 順) で
+    // 適用されなければならない。 route の for-loop が配列順を保つことをここで固定する。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const T1 = '2026-05-25T10:01:00.000Z'
+    const T2 = '2026-05-25T10:02:00.000Z'
+    const T3 = '2026-05-25T10:03:00.000Z'
+
+    // payload: 同 card_id (VALID_CARD_ID) を t1, t3 で挟み、 別 card (VALID_CARD_ID_2) を t2 に配置。
+    // 順序保証は card_id が同一かどうかに関わらず配列インデックス順で成立する。
+    const payload = makeValidPayload({
+      events: [
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'],
+          is_correct: true,
+          answered_at: T1,
+        },
+        {
+          event_id: VALID_EVENT_ID_2,
+          card_id: VALID_CARD_ID_2,
+          selected_answer_ids: [],
+          is_correct: false,
+          answered_at: T2,
+        },
+        {
+          event_id: VALID_EVENT_ID_3,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'],
+          is_correct: true,
+          answered_at: T3,
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, failed: [] })
+
+    // 3 events がすべて新規 insert → submitReviewTx が 3 回呼ばれる。
+    expect(state.submitReviewTxCalls).toHaveLength(3)
+
+    // 呼出順が payload の events 配列順と一致すること。
+    // route は `now: new Date(ev.answered_at)` を渡すため、 now.toISOString() で追える。
+    expect(state.submitReviewTxCalls[0].cardId).toBe(VALID_CARD_ID)
+    expect(state.submitReviewTxCalls[0].now).toEqual(new Date(T1))
+
+    expect(state.submitReviewTxCalls[1].cardId).toBe(VALID_CARD_ID_2)
+    expect(state.submitReviewTxCalls[1].now).toEqual(new Date(T2))
+
+    expect(state.submitReviewTxCalls[2].cardId).toBe(VALID_CARD_ID)
+    expect(state.submitReviewTxCalls[2].now).toEqual(new Date(T3))
   })
 })
