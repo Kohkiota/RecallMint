@@ -1,16 +1,16 @@
-// OCR pipeline (Flash → HTTP retry → Pro fallback → JSON parse → zod validate)。
+// OCR pipeline (Flash → HTTP retry → JSON parse → zod validate)。
 //
 // 本 file は外部 SDK を直接触らず、 lib/ai/clients/gemini.ts の `callGemini` 経由で
 // API 呼び出しする。 test では `vi.mock('@/lib/ai/clients/gemini', ...)` で完全に
 // 差し替える前提。
 //
 // 設計:
-// - Flash → 同モデルで transient HTTP error は exponential backoff で最大 2 回 retry
-// - JSON parse 失敗 / cards=0 → Pro へ fallback (Pro 側でも HTTP retry 独立適用)
-// - Pro でも失敗 → throw (caller = Server Action 側で source_documents.status='failed'
-//   + notifyOps Discord + UI に 「混み合っています」 表示)
-// - cost は modelChain ベースで per-model token から合算 (Flash 試行 + Pro 試行
-//   両方計上、 PoC `--fallback` 挙動踏襲)
+// - Flash のみ使用。 transient HTTP error は exponential backoff で最大 2 回 retry する。
+// - JSON parse 失敗 / cards=0 / HTTP retry 尽き → 即 throw (Pro へ移らない)。
+//   caller (Server Action) 側で source_documents.status='failed' + notifyOps Discord
+//   + UI に「混み合っています」表示する。
+// - cost は Flash token usage のみ計上。
+// - 429 (rate limit) は callWithRetry 内で即 throw (retry も Pro fallback もしない)。
 
 import { z } from 'zod'
 import { buildDiscoverPrompt } from './prompts/ocr-extract'
@@ -18,7 +18,7 @@ import {
   buildDiscoverResponseJsonSchema,
   type ExtractedCard,
 } from './schemas/ocr-response'
-import { callGemini, type GeminiInputFile } from './clients/gemini'
+import { callGemini, parseRetryAfterMs, type GeminiInputFile } from './clients/gemini'
 import { estimateCostYen, type ModelKind } from './cost'
 
 // JSON Schema (Gemini 側 enforcement) に加え、 zod による runtime validation を
@@ -52,6 +52,22 @@ const responseSchema = z.object({
   cards: z.array(cardSchema),
 })
 
+// Vercel Pro function maxDuration は 800s。 pipeline 全体を 720s で自前停止し、
+// 残り ~80s を caller 後処理 (cards INSERT + markFailed + notifyOps 等) のバッファとして確保する。
+// ※ 800 - 720 = 80s が後処理余裕; Vercel ハード上限 900s より手前で自前停止する設計。
+export const OCR_OVERALL_DEADLINE_MS = 720_000
+
+// 全体 deadline 超過を通常の pipeline error と instanceof で識別するための専用 class。
+// process.ts が catch して timeout 処理経路に分岐するために使う。
+export class OcrDeadlineError extends Error {
+  constructor(message = `OCR pipeline exceeded overall deadline (${OCR_OVERALL_DEADLINE_MS}ms)`) {
+    super(message)
+    this.name = 'OcrDeadlineError'
+    // V8 以外 (e.g. SpiderMonkey) でも prototype chain を正しく繋ぐため明示設定。
+    Object.setPrototypeOf(this, OcrDeadlineError.prototype)
+  }
+}
+
 export type OcrPipelineResult = {
   cards: ExtractedCard[]
   modelChain: ModelKind[]
@@ -83,17 +99,37 @@ function isRateLimitError(err: unknown): boolean {
   )
 }
 
-// transient (= 指数バックオフ retry 対象) な HTTP error 判定。
+// transient (= backoff retry 対象) な error 判定。
 // 429 は含めない — ルール 5 により即時停止扱い (isRateLimitError が担当)。
-// 5xx (500/502/503/504) と timeout / unavailable のみ retry する。
+// 5xx (500/502/503/504) / timeout / unavailable に加え、 network layer の
+// 一時的断絶 (ECONNRESET / ECONNREFUSED / ENOTFOUND / EAI_AGAIN /
+// "fetch failed" / "socket hang up") も retry 対象とする。
+// これらは DNS 障害・接続断など外部要因で自然回復が期待できるため。
+// 注: 汎用 /\bnetwork\b/ は "403 Forbidden: API key network policy violation"
+// 等の非 transient 4xx を誤って retry 対象にするため除外。
 function isTransientError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
   return (
     /\b(500|502|503|504)\b/.test(msg) ||
     /timeout/i.test(msg) ||
-    /unavailable/i.test(msg)
+    /unavailable/i.test(msg) ||
+    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg) ||
+    /fetch failed/i.test(msg) ||
+    /socket hang up/i.test(msg)
   )
 }
+
+// backoff の静的待機時間。 attempt 0 (1 回目 retry 前) = 5s + jitter(0-2s)、
+// attempt 1 (2 回目 retry 前) = 20s + jitter(0-5s)。
+// Gemini の一時的 5xx / ネットワーク断は数秒〜十数秒で回復することが多く、
+// 旧 500ms/1000ms では再 429 を誘発するため十分な待機時間に延長。
+const BACKOFF_BASE_MS = [5_000, 20_000] as const
+const BACKOFF_JITTER_MAX_MS = [2_000, 5_000] as const
+
+// サーバー指示の Retry-After は任意の値 (例: 86400s) を返しうるため、
+// 上限なしで使うと per-attempt の 220s budget / pipeline 全体の 720s deadline を
+// 簡単に吹き飛ばす。 60s に clamp してサーバーコントロールな値を安全範囲に収める。
+const RETRY_AFTER_CAP_MS = 60_000
 
 async function callWithRetry(
   model: ModelKind,
@@ -101,13 +137,16 @@ async function callWithRetry(
   prompt: string,
   responseJsonSchema: Record<string, unknown>,
   onAttempt?: (model: ModelKind) => Promise<void> | void,
+  // rng は jitter 生成に使う乱数関数。 デフォルトは Math.random。
+  // test では固定値を渡して待機時間を決定論的に検証する。
+  rng: () => number = Math.random,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   let lastErr: unknown
   for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt++) {
     // onAttempt は callGemini 直前で発火。 成功・失敗・retry すべて 1 回ずつ計上
-    // するため retry 内側にも置く (Flash 1st + Flash retry × 2 + Pro 1st + Pro retry × 2
-    // 最大 6 回計上の可能性あり)。 callback 失敗 (例: DB エラー) で本処理を巻き
-    // 込まないよう try/catch で握りつぶし、 logger 委譲は caller 側に任せる。
+    // するため retry 内側にも置く (Flash 初回 + retry × 2 = 最大 3 回計上)。
+    // callback 失敗 (例: DB エラー) で本処理を巻き込まないよう try/catch で
+    // 握りつぶし、 logger 委譲は caller 側に任せる。
     if (onAttempt) {
       try {
         await onAttempt(model)
@@ -122,8 +161,13 @@ async function callWithRetry(
       // ルール 5: 429 (rate limit) は即時停止。 retry せず即 throw する。
       if (isRateLimitError(err)) throw err
       if (!isTransientError(err) || attempt === MAX_HTTP_RETRIES) throw err
-      // attempt2 (最終) は throw 済のため実待機は 500 / 1000 の 2 回のみ。
-      const backoffMs = 500 * Math.pow(2, attempt)
+      // Retry-After header があればサーバー指示を優先。 なければ static + jitter。
+      // SDK が現状 headers を露出しないため通常は null だが、 将来対応に備えて配線。
+      const retryAfterMs = parseRetryAfterMs(err)
+      const backoffMs =
+        retryAfterMs !== null
+          ? Math.min(retryAfterMs, RETRY_AFTER_CAP_MS)
+          : BACKOFF_BASE_MS[attempt] + rng() * BACKOFF_JITTER_MAX_MS[attempt]
       await new Promise((r) => setTimeout(r, backoffMs))
     }
   }
@@ -147,27 +191,33 @@ function parseAndValidate(text: string): ExtractedCard[] {
   return result.data.cards
 }
 
-export async function runOcrPipeline(
+// pipeline 本体。 runOcrPipeline の deadline wrapper から呼ばれる。
+// Flash retry / backoff / parse / validate を含む全処理。
+async function runPipelineInner(
   files: GeminiInputFile[],
   opts?: {
-    // 各 Gemini call (Flash 初回 + retry, Pro 初回 + retry すべて) の直前に
-    // 呼ばれる。 caller (Server Action) はここで ai_usage / ai_usage_users counter
-    // を加算する。 callback 失敗は内部で握りつぶす (ベストエフォート計上)。
     onAttempt?: (model: ModelKind) => Promise<void> | void
+    rng?: () => number
   },
 ): Promise<OcrPipelineResult> {
   const prompt = buildDiscoverPrompt()
   const schema = buildDiscoverResponseJsonSchema()
 
-  const modelChain: ModelKind[] = []
+  const modelChain: ModelKind[] = ['flash']
   const tokenUsage: OcrPipelineResult['tokenUsage'] = []
   let cards: ExtractedCard[] = []
   let flashError: string | undefined
 
-  // Step 1: Flash with retry
-  modelChain.push('flash')
+  // Flash with retry。 失敗 (HTTP error / JSON parse fail / 0 cards / 429) は即 throw。
   try {
-    const flash = await callWithRetry('flash', files, prompt, schema, opts?.onAttempt)
+    const flash = await callWithRetry(
+      'flash',
+      files,
+      prompt,
+      schema,
+      opts?.onAttempt,
+      opts?.rng,
+    )
     tokenUsage.push({
       model: 'flash',
       inputTokens: flash.inputTokens,
@@ -178,44 +228,15 @@ export async function runOcrPipeline(
   } catch (e) {
     flashError = e instanceof Error ? e.message : String(e)
 
-    // ルール 5: Flash が 429 (rate limit) なら Pro fallback もせず即停止する。
-    // Pro へ移ると rate-limit 中の API を再度叩くことになり「即時停止」 に反する。
+    // callWithRetry が re-throw した 429 のときのみここに到達する (rate limit 専用経路)。
+    // 0 cards / parse fail / HTTP retry 尽きは isRateLimitError=false のため下の
+    // 汎用 throw に落ちる。 いずれの失敗経路も Pro へは移らず即 throw する。
     if (isRateLimitError(e)) {
       throw new Error(
-        `OCR pipeline failed (Flash rate limited, Pro fallback skipped): ${flashError}`,
+        `OCR pipeline failed (Flash rate limited): ${flashError}`,
       )
     }
-
-    // Step 2: Pro fallback (HTTP retry も Pro 側で独立に適用)
-    modelChain.push('pro')
-    let pro
-    try {
-      pro = await callWithRetry('pro', files, prompt, schema, opts?.onAttempt)
-    } catch (proErr) {
-      const proMsg = proErr instanceof Error ? proErr.message : String(proErr)
-      throw new Error(
-        `OCR pipeline failed (Flash: ${flashError}; Pro: ${proMsg})`,
-      )
-    }
-    tokenUsage.push({
-      model: 'pro',
-      inputTokens: pro.inputTokens,
-      outputTokens: pro.outputTokens,
-    })
-    try {
-      cards = parseAndValidate(pro.text)
-    } catch (parseErr) {
-      const parseMsg =
-        parseErr instanceof Error ? parseErr.message : String(parseErr)
-      throw new Error(
-        `OCR pipeline failed (Flash: ${flashError}; Pro parse: ${parseMsg})`,
-      )
-    }
-    if (cards.length === 0) {
-      throw new Error(
-        `OCR pipeline failed (Flash: ${flashError}; Pro: 0 cards extracted)`,
-      )
-    }
+    throw new Error(`OCR pipeline failed (Flash: ${flashError})`)
   }
 
   const costYen = tokenUsage.reduce(
@@ -224,4 +245,36 @@ export async function runOcrPipeline(
   )
 
   return { cards, modelChain, costYen, flashError, tokenUsage }
+}
+
+export async function runOcrPipeline(
+  files: GeminiInputFile[],
+  opts?: {
+    // 各 Gemini call (Flash 初回 + retry すべて) の直前に呼ばれる。
+    // caller (Server Action) はここで ai_usage / ai_usage_users counter を加算する。
+    // callback 失敗は内部で握りつぶす (ベストエフォート計上)。
+    onAttempt?: (model: ModelKind) => Promise<void> | void
+    // backoff jitter 用乱数関数。 通常は省略 (Math.random)。
+    // test から固定値を渡すことで待機時間を決定論的に検証できる。
+    rng?: () => number
+  },
+): Promise<OcrPipelineResult> {
+  // Promise.race で pipeline と deadline timer を競わせ、先に決着した方の結果を返す。
+  // deadline 到達時は OcrDeadlineError を reject し、 caller が timeout 経路に分岐できる。
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  const deadlinePromise = new Promise<never>((_resolve, reject) => {
+    deadlineTimer = setTimeout(() => {
+      reject(new OcrDeadlineError())
+    }, OCR_OVERALL_DEADLINE_MS)
+  })
+
+  try {
+    return await Promise.race([runPipelineInner(files, opts), deadlinePromise])
+  } finally {
+    // 正常完了・pipeline throw・deadline いずれの経路でも必ず timer を解放する。
+    // 注: deadline race は外側 Promise を resolve/reject してタイマーを解放するだけであり、
+    // in-flight の Gemini fetch そのものはキャンセルしない。 実際の中断は per-attempt の
+    // 220s AbortController か Vercel function timeout に委ねられる。
+    clearTimeout(deadlineTimer)
+  }
 }

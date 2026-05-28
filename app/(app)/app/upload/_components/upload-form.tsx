@@ -16,6 +16,7 @@ import {
   TOTAL_UPLOAD_LIMIT_BYTES,
   TOTAL_UPLOAD_LIMIT_MB,
 } from '../_lib/constants'
+import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
@@ -68,7 +69,7 @@ const planLabelMap = {
 // S1.9.2: 'success' phase を廃止。 OCR 成功時は preview を同 component で描画せず、
 // 独立 route /app/upload/result/[sourceDocumentId] に router.push で遷移する
 // (Bug B = 残量 banner stale 表示の構造解消、 page 遷移で fresh server render)。
-// S1.9.3: 'CLIENT_TIMEOUT' を廃止。 Vercel Pro 昇格で server maxDuration=600s に
+// S1.9.3: 'CLIENT_TIMEOUT' を廃止。 Vercel Pro 昇格で server maxDuration=800s に
 // 延長されたため、 client は server の完走をそのまま待つ方針に変更。
 type Phase =
   | { kind: 'idle' }
@@ -224,6 +225,9 @@ export function UploadForm({
     remaining !== null && totalRequestedPages > remaining
   // 既に残量 0 で来た user (Pro 以外)。 file 選択前から submit 不可。
   const alreadyAtQuota = remaining !== null && remaining === 0
+  // OCR pipeline の 1 リクエスト上限 (plan-limits とは独立した別軸)。
+  // 超過時はファイルを分割して投入するよう案内する。
+  const overPageCap = totalRequestedPages > OCR_MAX_PAGES
 
   const submitDisabled =
     entries.length === 0 ||
@@ -232,7 +236,8 @@ export function UploadForm({
     totalExceeded ||
     !destinationReady ||
     overQuota ||
-    alreadyAtQuota
+    alreadyAtQuota ||
+    overPageCap
 
   async function processImage(file: File, id: string) {
     try {
@@ -288,7 +293,7 @@ export function UploadForm({
                   pageCount: pages,
                   originalSize: file.size,
                   status: 'error' as const,
-                  error: `PDF が ${pages} ページ (上限 ${MAX_PDF_PAGES} ページ)`,
+                  error: `PDF が ${pages} ページ (1 ファイル上限 ${MAX_PDF_PAGES} ページ)`,
                 }
               : e,
           ),
@@ -407,7 +412,7 @@ export function UploadForm({
   // skip される (S1a 後の staging smoke で発覚した bug、 詳細は handoff doc)。
   //
   // S1.9.3: client 側 90 秒 timeout (error 化) を廃止。 Vercel Pro 昇格で
-  // server maxDuration=600s に延長されたため、 client は server の完走をそのまま
+  // server maxDuration=800s に延長されたため、 client は server の完走をそのまま
   // 待つ方針に変更。 代わりに 90 秒経過後は longRunning=true にして banner 文言を
   // 「閉じてよい」 旨に切替え、 離脱ガードも解除する。 spinner は submitting 中
   // ずっと表示し続ける。
@@ -468,8 +473,10 @@ export function UploadForm({
         details: result.details,
         // UPLOAD_IN_PROGRESS はファイルの問題ではなく「並列 OCR 実行中」という
         // 状態エラーなので、「ファイルを変更して再試行」サブタイトルは誤誘導になる。
+        // PAGE_LIMIT_EXCEEDED は「ファイルを分けて投入」が正解であり、
+        // 「変更して再試行」は不適切なため同様に非表示にする。
         // 他の error code (QUOTA_EXCEEDED / GEMINI_FAILED 等) は retry hint を出す。
-        hideRetryHint: result.code === 'UPLOAD_IN_PROGRESS',
+        hideRetryHint: result.code === 'UPLOAD_IN_PROGRESS' || result.code === 'PAGE_LIMIT_EXCEEDED',
       })
     } else {
       setLongRunning(false)
@@ -565,9 +572,9 @@ export function UploadForm({
       <section>
         <h2 className="text-lg font-bold mb-2">ファイルを選択</h2>
         <p className="text-sm text-slate-600 mb-3">
-          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF はそのまま投入されます (最大 {MAX_PDF_PAGES} ページ)。
+          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF はそのまま投入されます。
           <br />
-          合計サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB。
+          1 ファイル最大 {MAX_PDF_PAGES} ページ、 合計 {OCR_MAX_PAGES} ページ・サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB まで。
         </p>
         <input
           ref={fileInputRef}
@@ -605,6 +612,15 @@ export function UploadForm({
             >
               現在の選択 ({totalRequestedPages} ページ) は今月の残量 ({remaining} ページ) を超過します。
               ファイルを削減するか、 上位プランへのアップグレードをご検討ください。
+            </div>
+          )}
+          {overPageCap && (
+            <div
+              role="alert"
+              className="mb-3 rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-800"
+            >
+              合計 {OCR_MAX_PAGES} ページまでアップロード可能です (現在 {totalRequestedPages} ページ)。
+              ファイルを分割して複数回に分けてアップロードしてください。
             </div>
           )}
           <ul className="grid grid-cols-2 sm:grid-cols-3 gap-3">

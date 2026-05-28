@@ -9,9 +9,11 @@ import { GoogleGenAI } from '@google/genai'
 import { logger } from '@/lib/logger'
 import { modelId, type ModelKind } from '../cost'
 
-// CLAUDE.md AI 絶対ルール 6「タイムアウト必須 (30 秒)」。 1 回の Gemini call が
-// 30 秒以内に応答しなければ AbortController で client 側から打ち切る。
-const GEMINI_TIMEOUT_MS = 30_000
+// OCR は複数ページを一括生成する重い処理であり数分かかることがあるため、
+// Vercel Pro function timeout (900s) に収まる範囲で十分な余裕を持った 220s に設定。
+// AbortController で client 側から打ち切り、 ocr.ts の isTransientError が
+// /timeout/i でマッチして retry 対象と判定できるよう message に "timeout" を残す。
+const GEMINI_TIMEOUT_MS = 220_000
 
 let _ai: GoogleGenAI | null = null
 
@@ -47,6 +49,44 @@ export type GeminiCallResult = {
   outputTokens: number
 }
 
+// @google/genai SDK の ApiError (generateContent が throw するクラス) は
+// status と message のみを持ち、 Retry-After header は SDK 内部の retry ループで
+// 消費されてユーザーコードに露出しない (index.mjs の retryRequest を確認済み)。
+// 将来 SDK が headers を公開した場合や、 headers を持つ APIError 系クラスが
+// 到達した場合に備えて、 Headers インターフェースを探索する実装にしている。
+// 現状の標準的な 429 パスでは null を返す。
+export function parseRetryAfterMs(err: unknown): number | null {
+  if (err == null || typeof err !== 'object') return null
+
+  // headers プロパティが Headers (Web API) であれば Retry-After 系 header を探す。
+  // retry-after-ms は非標準だが @google/genai 内部でも参照されている形式。
+  const maybeHeaders = (err as Record<string, unknown>).headers
+  if (maybeHeaders != null && typeof (maybeHeaders as Headers).get === 'function') {
+    const headers = maybeHeaders as Headers
+
+    const retryAfterMs = headers.get('retry-after-ms')
+    if (retryAfterMs) {
+      const ms = parseFloat(retryAfterMs)
+      if (!Number.isNaN(ms)) return ms > 0 ? ms : null
+    }
+
+    const retryAfter = headers.get('retry-after')
+    if (retryAfter) {
+      const seconds = parseFloat(retryAfter)
+      if (!Number.isNaN(seconds)) return seconds > 0 ? seconds * 1_000 : null
+
+      // HTTP date 形式 (例: "Wed, 21 Oct 2025 07:28:00 GMT")
+      const date = Date.parse(retryAfter)
+      if (!Number.isNaN(date)) {
+        const ms = date - Date.now()
+        return ms > 0 ? ms : null
+      }
+    }
+  }
+
+  return null
+}
+
 // 1 回の generateContent 呼び出し。 retry / fallback は pipeline 側担当。
 export async function callGemini(
   input: GeminiCallInput,
@@ -58,7 +98,7 @@ export async function callGemini(
     })),
     { text: input.prompt },
   ]
-  // 30 秒 timeout。 abortSignal で SDK の HTTP request を client 側から打ち切る
+  // AbortController で SDK の HTTP request を client 側から打ち切る
   // (@google/genai GenerateContentConfig.abortSignal、 client-side cancel)。
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS)

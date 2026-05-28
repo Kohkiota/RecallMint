@@ -47,9 +47,14 @@ vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
 }))
 
-vi.mock('@/lib/ai/ocr', () => ({
-  runOcrPipeline: mockRunOcrPipeline,
-}))
+vi.mock('@/lib/ai/ocr', async (importOriginal) => {
+  // importActual で実 OcrDeadlineError class を使う (instanceof が正しく動くために必要)。
+  const actual = await importOriginal<typeof import('@/lib/ai/ocr')>()
+  return {
+    runOcrPipeline: mockRunOcrPipeline,
+    OcrDeadlineError: actual.OcrDeadlineError,
+  }
+})
 
 vi.mock('@/lib/ai-usage-mcq', () => ({
   canRunOcr: mockCanRunOcr,
@@ -552,7 +557,7 @@ describe('processUpload', () => {
   it('OCR pipeline failure → GEMINI_FAILED with details, source_doc marked failed + notifyOps', async () => {
     mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
     mockRunOcrPipeline.mockRejectedValueOnce(
-      new Error('OCR pipeline failed (Flash: x; Pro: y)'),
+      new Error('OCR pipeline failed (Flash: x)'),
     )
     const fd = makeFormData({ mode: 'new', files: [sampleImage] })
     const { processUpload } = await importProcess()
@@ -561,7 +566,7 @@ describe('processUpload', () => {
     if (result.ok) throw new Error('expected fail')
     expect(result.code).toBe('GEMINI_FAILED')
     expect(result.error).toMatch(/混み合っているようです/)
-    expect(result.details?.rawError).toMatch(/Flash: x; Pro: y/)
+    expect(result.details?.rawError).toMatch(/Flash: x/)
     expect(result.details?.sourceDocumentId).toBeDefined()
     // source_doc was inserted then marked failed
     expect(dbState.insertedSourceDocs).toHaveLength(1)
@@ -672,5 +677,211 @@ describe('processUpload', () => {
       'completion transaction failed after ocr success',
       expect.objectContaining({ userId: 'user-uuid' }),
     )
+  })
+
+  it('OcrDeadlineError → GEMINI_FAILED with user-friendly message, errorMessage in source_doc is user-friendly', async () => {
+    const { OcrDeadlineError } = await import('@/lib/ai/ocr')
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockRejectedValueOnce(new OcrDeadlineError())
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('GEMINI_FAILED')
+    // user-friendly message (deadline 専用)
+    expect(result.error).toMatch(/処理時間が長すぎました/)
+    // source_documents.errorMessage も user-friendly (slice(0,500) は維持)
+    const failedUpdate = dbState.updatedSourceDocs.find((u) => u.status === 'failed')
+    expect(failedUpdate).toBeDefined()
+    expect(failedUpdate?.errorMessage).toMatch(/処理時間が長すぎました/)
+    // notifyOps は通常の OCR 失敗と同様に呼ばれる
+    // かつ技術的メッセージ (OcrDeadlineError 本文) を受け取る — user-friendly 文言が漏れていないことを確認
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'ocr pipeline failed',
+      expect.objectContaining({
+        userId: 'user-uuid',
+        error: expect.stringContaining('720000'),
+      }),
+    )
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'ocr pipeline failed',
+      expect.objectContaining({
+        error: expect.not.stringContaining('処理時間が長すぎました'),
+      }),
+    )
+  })
+
+  it('non-deadline OCR failure → GEMINI_FAILED with 混み合っている message (既存文言維持)', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockRejectedValueOnce(new Error('some transient error'))
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('GEMINI_FAILED')
+    expect(result.error).toMatch(/混み合っているようです/)
+    // user-friendly deadline message は出ない
+    expect(result.error).not.toMatch(/処理時間が長すぎました/)
+  })
+
+  // server-side hard cap (plan-limits とは独立)、 guard tx 前に early return
+  // OCR_MAX_PAGES を超えた場合は guard transaction より前に early return し、
+  // DB を一切触らない (exam / source_documents INSERT なし、 markFailed も不要)。
+  it('PAGE_LIMIT_EXCEEDED (41 pages): early return before guard tx, no DB writes', async () => {
+    // 41 枚の画像 = totalPages 41
+    const images = Array.from({ length: 41 }, (_, i) =>
+      new File(['img'], `page${i}.jpg`, { type: 'image/jpeg' }),
+    )
+    const fd = makeFormData({ mode: 'new', files: images })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('PAGE_LIMIT_EXCEEDED')
+    expect(result.error).toMatch(/\d+ ページ/)
+    // DB を一切触らない (guard transaction が呼ばれない)
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+    expect(dbState.insertedCards).toHaveLength(0)
+    expect(dbState.insertedUploadRecords).toHaveLength(0)
+    // plan-limits (canRunOcr) は呼ばれない (40-page check が先)
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+  })
+
+  it('PAGE_LIMIT_EXCEEDED boundary: 40 pages passes, 41 pages fails', async () => {
+    // 40 枚 → 通過 (canRunOcr + OCR を呼ぶ)
+    const images40 = Array.from({ length: 40 }, (_, i) =>
+      new File(['img'], `page${i}.jpg`, { type: 'image/jpeg' }),
+    )
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 0 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [],
+      modelChain: ['flash'],
+      costYen: 0,
+      tokenUsage: [],
+    })
+    dbState.nextCardIds = []
+    const fd40 = makeFormData({ mode: 'new', files: images40 })
+    const { processUpload } = await importProcess()
+    await processUpload(fd40)
+    // 40 pages は guard を通過して OCR pipeline に至る (= canRunOcr が呼ばれる)
+    expect(mockCanRunOcr).toHaveBeenCalledTimes(1)
+
+    // 41 枚 → PAGE_LIMIT_EXCEEDED
+    mockCanRunOcr.mockReset()
+    dbState.insertedExams = []
+    dbState.insertedSourceDocs = []
+    const images41 = Array.from({ length: 41 }, (_, i) =>
+      new File(['img'], `page${i}.jpg`, { type: 'image/jpeg' }),
+    )
+    const fd41 = makeFormData({ mode: 'new', files: images41 })
+    const result41 = await processUpload(fd41)
+    expect(result41.ok).toBe(false)
+    if (result41.ok) throw new Error('expected fail')
+    expect(result41.code).toBe('PAGE_LIMIT_EXCEEDED')
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+  })
+
+  it('PAGE_LIMIT_EXCEEDED: canRunOcr=ok でも 40 超で弾かれる (独立 check)', async () => {
+    // plan-limits は OK を返せる状態でも、 40 page 上限で独立に弾かれることを確認
+    mockCanRunOcr.mockResolvedValue({ ok: true, remaining: 100 })
+    const images = Array.from({ length: 41 }, (_, i) =>
+      new File(['img'], `page${i}.jpg`, { type: 'image/jpeg' }),
+    )
+    const fd = makeFormData({ mode: 'new', files: images })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('PAGE_LIMIT_EXCEEDED')
+    // canRunOcr は呼ばれない (40-page check が先に弾く)
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+  })
+
+  it('PAGE_LIMIT_EXCEEDED: revalidatePath は early return でも呼ばれる (finally ブロック)', async () => {
+    const images = Array.from({ length: 41 }, (_, i) =>
+      new File(['img'], `page${i}.jpg`, { type: 'image/jpeg' }),
+    )
+    const fd = makeFormData({ mode: 'new', files: images })
+    const { processUpload } = await importProcess()
+    await processUpload(fd)
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(2)
+  })
+
+  // server-side 合計サイズ上限 (client すり抜け防止)、 guard tx 前に early return。
+  // SIZE_LIMIT_EXCEEDED: totalSize > TOTAL_UPLOAD_LIMIT_BYTES (4MB) の場合、
+  // DB を一切触らずに返す (source_documents 未作成のため markFailed も不要)。
+  it('SIZE_LIMIT_EXCEEDED (5MB): early return before getDb, no DB writes', async () => {
+    // 5MB 相当のファイルを作る (File.size は content の byte 数で決まる)
+    const bigContent = new Uint8Array(5_000_001)
+    const bigFile = new File([bigContent], 'big.jpg', { type: 'image/jpeg' })
+    const fd = makeFormData({ mode: 'new', files: [bigFile] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('SIZE_LIMIT_EXCEEDED')
+    expect(result.error).toMatch(/4 MB/)
+    // DB を一切触らない (getDb / guard transaction が呼ばれない)
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+    expect(dbState.insertedCards).toHaveLength(0)
+    expect(dbState.insertedUploadRecords).toHaveLength(0)
+    // plan-limits / OCR pipeline は呼ばれない
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+  })
+
+  it('SIZE_LIMIT_EXCEEDED boundary: 4MB 以内は通過し OCR pipeline に至る', async () => {
+    // 4MB ぴったり (= TOTAL_UPLOAD_LIMIT_BYTES) → 通過
+    const content4mb = new Uint8Array(4_000_000)
+    const file4mb = new File([content4mb], 'ok.jpg', { type: 'image/jpeg' })
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [],
+      modelChain: ['flash'],
+      costYen: 0,
+      tokenUsage: [],
+    })
+    dbState.nextCardIds = []
+    const fd = makeFormData({ mode: 'new', files: [file4mb] })
+    const { processUpload } = await importProcess()
+    await processUpload(fd)
+    // 4MB 以内は size check を通過して OCR pipeline に至る (= canRunOcr が呼ばれる)
+    expect(mockCanRunOcr).toHaveBeenCalledTimes(1)
+  })
+
+  it('SIZE_LIMIT_EXCEEDED: page check と独立して弾く (40 ページ以内でもサイズ超過は弾く)', async () => {
+    // 1 枚の画像でも 5MB 超ならば PAGE_LIMIT_EXCEEDED とは無関係に弾かれる
+    const bigContent = new Uint8Array(5_000_001)
+    const bigFile = new File([bigContent], 'single-big.jpg', { type: 'image/jpeg' })
+    const fd = makeFormData({ mode: 'new', files: [bigFile] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    // SIZE_LIMIT_EXCEEDED (not PAGE_LIMIT_EXCEEDED) — totalPages=1 だが size で弾かれる
+    expect(result.code).toBe('SIZE_LIMIT_EXCEEDED')
+    expect(mockCanRunOcr).not.toHaveBeenCalled()
+    expect(dbState.insertedExams).toHaveLength(0)
+    expect(dbState.insertedSourceDocs).toHaveLength(0)
+  })
+
+  it('SIZE_LIMIT_EXCEEDED: revalidatePath は early return でも呼ばれる (finally ブロック)', async () => {
+    const bigContent = new Uint8Array(5_000_001)
+    const bigFile = new File([bigContent], 'big.jpg', { type: 'image/jpeg' })
+    const fd = makeFormData({ mode: 'new', files: [bigFile] })
+    const { processUpload } = await importProcess()
+    await processUpload(fd)
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
+    expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
+    expect(mockRevalidatePath).toHaveBeenCalledTimes(2)
   })
 })

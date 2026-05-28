@@ -17,13 +17,15 @@ import {
   incrementAiUsage,
   getTodayAiUsageGlobal,
 } from '@/lib/ai-usage-counter'
-import { runOcrPipeline } from '@/lib/ai/ocr'
+import { runOcrPipeline, OcrDeadlineError } from '@/lib/ai/ocr'
 import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
 import { STALE_PROCESSING_MS } from '@/lib/exams/source-doc-status'
 import { pdfPageCount } from '../_lib/pdf-page-count'
+import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
+import { TOTAL_UPLOAD_LIMIT_BYTES, TOTAL_UPLOAD_LIMIT_MB } from '../_lib/constants'
 
 // FormData から受け取った投入先選択 (前端 Destination 型と整合)。
 type Destination =
@@ -59,9 +61,11 @@ export type ProcessResultData = {
 //                            advisory xact lock 取得失敗 (ms 窓の race) または
 //                            in-flight processing 行が存在 (先行ジョブ走行中) の
 //                            いずれかで発生する。
+//   PAGE_LIMIT_EXCEEDED:     1 回の upload の合算 totalPages が OCR_MAX_PAGES (40) 超過
+//   SIZE_LIMIT_EXCEEDED:     1 回の upload の合算 totalSize が TOTAL_UPLOAD_LIMIT_BYTES (4MB) 超過
 //   QUOTA_EXCEEDED:          月次 OCR ページ上限 超過
 //   GEMINI_DAILY_LIMIT_EXCEEDED: サービス全体の 1 日 Gemini call 上限超過 (S1.8)
-//   GEMINI_FAILED:           OCR pipeline (Flash + Pro 両方) 失敗
+//   GEMINI_FAILED:           OCR pipeline (Flash) 失敗
 //   SAVE_FAILED:             OCR は成功したが DB 保存 (cards INSERT) 失敗
 //   OTHER:                   上記いずれにも該当しない予期しないエラー
 export type ProcessUploadErrorCode =
@@ -69,6 +73,8 @@ export type ProcessUploadErrorCode =
   | 'INVALID_INPUT'
   | 'EXAM_NOT_FOUND'
   | 'UPLOAD_IN_PROGRESS'
+  | 'PAGE_LIMIT_EXCEEDED'
+  | 'SIZE_LIMIT_EXCEEDED'
   | 'QUOTA_EXCEEDED'
   | 'GEMINI_DAILY_LIMIT_EXCEEDED'
   | 'GEMINI_FAILED'
@@ -184,6 +190,18 @@ async function _processUpload(
   }
   if (totalPages === 0) totalPages = 1 // 念のため最低 1 ページ計上
 
+  // -- 1 回の upload 上限チェック (plan-limits とは独立した実用上限) --
+  // Gemini タイムアウト制約由来の物理上限。 DB を触らない file 解析の直後・
+  // guard transaction の前に置くことで、 超過時は DB を一切触らずに返る。
+  if (totalPages > OCR_MAX_PAGES) {
+    return {
+      ok: false,
+      code: 'PAGE_LIMIT_EXCEEDED',
+      error:
+        `1 回のアップロードは合計 ${OCR_MAX_PAGES} ページまでです。 ファイルを分けてアップロードしてください`,
+    }
+  }
+
   // -- source_documents metadata (transaction 前に算出、lock 保持時間を最小化) --
   const firstFile = files[0]
   const filename =
@@ -191,6 +209,17 @@ async function _processUpload(
   const fileType: 'pdf' | 'image' =
     firstFile.type === 'application/pdf' ? 'pdf' : 'image'
   const totalSize = files.reduce((s, f) => s + f.size, 0)
+
+  // -- 合計サイズ上限チェック (client すり抜け対策、 DB を触らない metadata 算出の直後) --
+  // Vercel platform body 上限 4.5MB の手前で app-level に enforce する。
+  // client 側 totalExceeded チェックが回避された場合でも 4MB 超を弾く。
+  if (totalSize > TOTAL_UPLOAD_LIMIT_BYTES) {
+    return {
+      ok: false,
+      code: 'SIZE_LIMIT_EXCEEDED',
+      error: `合計サイズは ${TOTAL_UPLOAD_LIMIT_MB} MB までです。 ファイルを分けてアップロードしてください`,
+    }
+  }
 
   const db = getDb()
 
@@ -206,7 +235,7 @@ async function _processUpload(
   //       15 分 window は stale orphan (>15 分 / reconcile 前) による誤発火を防ぐ安全網。
   //
   // advisory lock は source_documents INSERT と同一 transaction に含め、
-  // INSERT commit まで lock を保持する。 OCR pipeline (最大 600s) は transaction の
+  // INSERT commit まで lock を保持する。 OCR pipeline (全体 deadline 720s) は transaction の
   // 外で実行するため、 lock が OCR 本体に持ち込まれることはない。
   //
   // hashtext() 衝突は別 user の稀な直列化のみ (OCR queue に落ちる程度)、
@@ -431,9 +460,18 @@ async function _processUpload(
       },
     })
   } catch (err) {
+    const isDeadline = err instanceof OcrDeadlineError
+    // deadline 超過はページ数過多が原因 → user が対処できる文言を返す。
+    // それ以外は一時的なサービス障害として既存文言を維持する。
+    const userMessage = isDeadline
+      ? '処理時間が長すぎました。ページ数を減らして再アップロードしてください'
+      : '混み合っているようです、 少し時間をおいてからお試しください'
     const msg = err instanceof Error ? err.message : String(err)
+    // deadline 時は source_documents.errorMessage も user-friendly にする
+    // (markFailed 内で err.message.slice(0,500) を保存するため、err を差し替える)。
+    const markFailedErr = isDeadline ? new Error(userMessage) : err
     // OCR pipeline 失敗: 完了 pages / cost は確定しないため 0 で台帳に failed 記録
-    await markFailed(sourceDocumentId, err, {
+    await markFailed(sourceDocumentId, markFailedErr, {
       userId: user.id,
       filename,
       fileSizeBytes: totalSize,
@@ -455,7 +493,7 @@ async function _processUpload(
     return {
       ok: false,
       code: 'GEMINI_FAILED',
-      error: '混み合っているようです、 少し時間をおいてからお試しください',
+      error: userMessage,
       details: {
         rawError: msg,
         sourceDocumentId,

@@ -6,7 +6,8 @@
 // `/Type /Page` が書かれるため、 近似 page 数として機能する。
 //
 // 制約: 暗号化 PDF / object stream で圧縮された PDF では正確に出ない可能性あり、
-// MVP の目的「150 page 超を弾く」 では実用上問題ない (off-by-few 許容)。
+// off-by-few は許容範囲内。 page 制限の強制はこの関数ではなく呼び出し側が担う
+// (per-file: MAX_PDF_PAGES=40 / per-upload 合計: OCR_MAX_PAGES=40)。
 
 export async function pdfPageCount(file: File): Promise<number> {
   const buffer = await file.arrayBuffer()

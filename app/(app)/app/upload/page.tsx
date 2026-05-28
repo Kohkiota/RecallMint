@@ -8,6 +8,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { UploadForm } from './_components/upload-form'
 
+// Server Actions の実行時間上限 (秒)。 maxDuration は呼び出し page の route
+// segment config に従うため、process.ts ('use server') ではなくここに宣言する。
+// Vercel Pro Function timeout (900s) 内で OCR pipeline deadline (720s) をカバーする。
+export const maxDuration = 800
+
 // Server Component: 認証確認 → in-flight 判定 → 分岐描画。
 //
 // S2.0.7: render 冒頭の reconcileStaleProcessing 呼び出しを撤去した。
