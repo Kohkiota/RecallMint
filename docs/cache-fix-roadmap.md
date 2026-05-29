@@ -1,7 +1,7 @@
 # RecallMint cache-fix ロードマップ
 
 - 起票日: 2026-05-27
-- 最終更新: 2026-05-27 (LocalSync MVP 設計議論完了)
+- 最終更新: 2026-05-29 (問題 2/3 クローズ反映 + Small Fix ④-1〜④-4 を実コード verify 済)
 - 種別: roadmap (perf / cache / local-first の進捗 + 未対応の集約)
 - スコープ: dashboard 体感速度 ~2,100ms → ~100ms を目指す、 5/26 計測 (stg-perf-measurement-pre-local-first) からの差分集約
 - 母艦 docs (詳細はこちら):
@@ -42,128 +42,78 @@
 | **streak / todayCount client 集計**               | `pull-trigger.tsx:29-31` (`pullAllStudyDays`) + DashboardActions / DashboardStats が Dexie 由来 (`page.tsx:27-29` でも user.id を渡すだけ)                                          | 同上                                                                        |
 | **S-local-3: smart session の Dexie 優先 read**   | `app/(app)/app/study/smart/page.tsx:33-38` (`getSessionCards()` try/catch、 throw 時 cards=[])、 `StudySessionHost` が Dexie cards mirror から read                                 | smart 復習の起動高速化、 server fail でも client で続行                     |
 | **Neon driver → postgres.js (Supabase 移行)**     | `lib/db/index.ts:6` (`import { drizzle } from 'drizzle-orm/postgres-js'`)、 直近 commit `b57af4d` / `fe3a2d2` / `df163e2`                                                           | cold start ~2s 問題の根本解消 (driver 切替済、 接続先 Supabase は env 依存) |
-| **PullTrigger を dashboard mount で fire**        | `app/(app)/app/_components/pull-trigger.tsx:14-34`、 `app/(app)/app/page.tsx:24` で `<PullTrigger />` 配置                                                                          | dashboard 訪問時に cards / exams / study_days を background pull            |
+| **PullTrigger を (app) layout mount で fire (④-1 済)** | `app/(app)/app/layout.tsx:51` で `<PullTrigger />` 配置 (page.tsx から layout へ移動済 = `/app/*` 全ページで発火)                                                                  | dashboard / smart 等 `/app/*` 全訪問で cards / exams / study_days を background pull |
 | **S-local-4: server fetch fail でも render 継続** | `app/(app)/app/study/smart/page.tsx:33-38` (catch 内 `serverCards = []`)、 host 側で empty UI 一元化                                                                                | offline / server 5xx 耐性                                                   |
-| **`<Link>` prefetch={false} (S-perf-1)**          | `app/(app)/app/_components/app-header.tsx` 全 nav link に `prefetch={false}` 適用済                                                                                                 | header nav 経由の RSC 9 並走を撤廃                                          |
+| **`<Link>` prefetch={false} (S-perf-1 / ④-2 済)**          | `app-header.tsx` 全 nav link + `page.tsx` / `exams/page.tsx:80` / `exams/[id]/page.tsx` / `settings/page.tsx` (法的 4 link) / `dashboard-actions.tsx:72` / `upload/page.tsx` 等に `prefetch={false}` 適用済                                                                                                 | header nav + 主要遷移 link の RSC 並走を撤廃                                          |
+| **問題 2: flush 並走重複の解消 (in-flight guard)** | `lib/sync/review-events.ts` の `inFlightEventIds` Set (event_id 単位で並走 flush 除外)、 commit `5e86839 fix(study) [reviewed]` / smoke `6eb8dc9`                                  | 経路 1↔2 の二重 POST 解消 (5 events を 1 POST に集約)                       |
+| **問題 3: bulk endpoint per-event tx → 単一 tx + bulk SQL** | `app/api/review-events/bulk/route.ts` (single tx + replayCard fold + cards VALUES UPDATE)、 Drizzle #5789 fix (`0e78ef0`) 含む。 closure `docs/superpowers/sessions/2026-05-29-problem3-bulk-refactor-closure.md` | smart session 完了時の bulk flush **16.7-17.4s → 4.8s** (stg smoke 確認)   |
 
 ---
 
-## 3. 🔜 Sprint Pre-investigation (LocalSync MVP の前提確認、 即実施)
+## 3. 🔜 Sprint Pre-investigation (LocalSync MVP の前提確認)
 
-LocalSync MVP の spec 確定前に Claude Code に調査させる項目。 commit なし、 session log のみ。
+**状態: 3 項目中 2 件は問題 3 で確定済 → 残は Clerk revokeSession 調査のみ (Sprint ⑤ の前段)。**
 
-**未対応タスク:**
+- [x] `study_sessions` の flush 実装状況確認 → **確定済**。 `/api/review-events/bulk` が session upsert (Phase 0、 tx 外) を完結。 問題 3 pre-investigation + 実 DB smoke で動作確認 (`docs/superpowers/sessions/2026-05-28-problem3-sync-layer-pre-investigation.md` 軸 1 / closure)
+- [x] 演習中の cards/options snapshot → **確定済**。 `session-runner.tsx` の React state (props.cards) で事実上 snapshot 成立、 専用 IDB table 不要 (§5.1 「割り切り」 と整合)
+- [ ] Clerk `revokeSession()` の即時性確認 (Context7 経由で公式 doc / JWT verification 挙動) → **未着手** (Sprint ⑤ の前段、 §6 に集約)
 
-- [ ] `study_sessions` の flush 実装状況確認 (既存 `/api/review-events/bulk` で session upsert 完結してるか)
-- [ ] 演習中の cards/options が IDB に確実に snapshot 保存されているか (React state による事実上 snapshot の構造確認)
-- [ ] Clerk `revokeSession()` の即時性確認 (Context7 経由で公式 doc / JWT verification 挙動)
-
-> 完了基準: session log 1 本 (`docs/superpowers/sessions/YYYY-MM-DD-localsync-pre-investigation.md`) に調査結果記載。
+> 残 1 件 (Clerk) は §6 Sprint ⑤ の pre-investigation と同一。 LocalSync MVP 着手の blocker ではない。
 
 ---
 
-## 4. 🔜 Sprint Small Fix (LocalSync と並行可、 即実施)
+## 4. ✅ Sprint Small Fix (④-1〜④-4 全完了、 2026-05-29 実コード verify 済)
 
-LocalSync MVP に着手する前に消化できる小タスク群。 各々独立、 並行進行可。
+LocalSync MVP の前段小タスク群。 4 件すべて実装済を grep / 実コードで確認。
 
-### ④-1. PullTrigger 全ページ配備 (page → layout 移動)
+### ④-1. PullTrigger 全ページ配備 → ✅ 済
 
-**問題:** PullTrigger は `/app` (dashboard) にしかなく、 `/app/study/smart` に直接アクセスすると IDB が空のまま演習開始。
+`<PullTrigger />` は `app/(app)/app/layout.tsx:51` に配置 (page.tsx → layout へ移動済)。 `/app/*` 全ページ
+(dashboard / smart / exams / upload 等) で mount fire = deep link / reload でも IDB pull が走る。 page.tsx 側の
+配置は撤去済 (残るのは `page.tsx:15` の説明 comment のみ)。
 
-**verify:** `app/(app)/app/page.tsx:24` のみに `<PullTrigger />` 配置、 `app/(app)/app/layout.tsx` には配置なし。
+### ④-2. `<Link prefetch={false}>` 漏れ → ✅ 済
 
-**未対応タスク:**
+app-header (5 nav link) に加え、 `page.tsx` / `exams/page.tsx:80` (試験リスト) / `exams/[id]/page.tsx` /
+`settings/page.tsx:130-145` (法的 4 link) / `dashboard-actions.tsx:72` (CTA) / `upload/page.tsx` /
+`study-session-host.tsx` 等、 roadmap で挙げた対象 link すべてに `prefetch={false}` 適用済。
 
-- [ ] `app/(app)/app/layout.tsx` に `<PullTrigger />` を移動 (`/app` 配下全ページで発火)
-- [ ] `app/(app)/app/page.tsx` から `<PullTrigger />` を削除
+### ④-3. `/app/cards/[id]` 廃止 → ✅ 済 (個別 page 撤去、 inline 編集に統合)
 
-> ※ rate-limit (TTL 5 分 skip) は LocalSync MVP の trigger 設計に内包するため、 ここでは単純移動のみ。
+`app/(app)/app/cards/` ディレクトリは**存在しない** (S2.0b-1 T3 で `/app/exams/[id]` の inline 編集 cell に統合)。
+`/app/cards` への live link / `router.push` はゼロ (残るのは `exams/[id]/page.tsx:14` / `update-card-field.ts:156`
+の歴史 comment のみ)。 inline 編集は `update-card-field.ts:143` の Drizzle 直 UPDATE で完結し、 旧 page に非依存。
 
-### ④-2. `<Link prefetch={false}>` 漏れ調査 + 追加
+### ④-4. `notifyOps` Not Found 修正 → ✅ 済
 
-**問題:** `app-header.tsx` は S-perf-1 で対応済だが、 他に prefetch=true のままの link が残存している可能性。
-
-**未対応タスク:**
-
-- [ ] footer / 法的 link (`/terms` / `/privacy` / `/legal` / `/contact`) の `<Link>` 確認
-- [ ] `/app/exams` の試験リスト link (`/app/exams/[id]` への遷移) 確認
-- [ ] dashboard CTA (`dashboard-actions.tsx`) 確認
-- [ ] 漏れがあれば `prefetch={false}` 追加
-
-### ④-3. `/app/cards/[id]` 廃止判断
-
-**問題:** 個別 card 編集 page (`/app/cards/[id]`) への到達経路が現状 UI に存在しないため、 不要なら削除。
-
-**未対応タスク:**
-
-- [ ] grep で `href="/app/cards/` / `router.push('/app/cards/` を全 component / page に対して検索
-- [ ] `app/(app)/app/cards/[id]/_actions/update-card.ts` / `delete-card.ts` の参照元確認 (`/app/exams/[id]` の inline 編集が依存していないか確認、 依存ありなら別 path に移管 or 削除対象から除外)
-- [ ] 経路ゼロ + 参照ゼロなら `app/(app)/app/cards/` 配下全削除 + 関連 test 削除
-- [ ] LocalSync MVP の spec から `/app/cards/[id]` 抑制対象を除外 (削除した場合)
-
-### ④-4. `notifyOps` Not Found エラー修正 (小)
-
-**問題:** 手動削除したユーザーに Stripe webhook が `updateUserMetadata()` を呼んで Not Found エラー。
-
-**verify:** `lib/auth/clerk-metadata.ts:38-51` の try/catch は **error 区別なし** で全て `ok:false + notifyOps` (404 silent skip 不在)。 caller は Stripe webhook (`app/api/webhooks/stripe/route.ts:230 / 260 / 294`)。
-
-**未対応タスク:**
-
-- [ ] `lib/auth/clerk-metadata.ts` の catch で Clerk 404 (`status === 404` or `clerkError === 'resource_not_found'`) を判定し silent skip に変更 (notifyOps fire しない)
+`lib/auth/clerk-metadata.ts:53-55` で Clerk user-not-found 時は `notifyOps` を fire せず `console.debug` 1 行のみ
+(silent skip)。 真の失敗時のみ `notifyOps` (`:60`)。 手動削除 user への Stripe webhook 由来の 404 spam を解消。
 
 ---
 
-## 4.5 🔬 Step 3a / 3b — bulk endpoint root cause 切り分け + FSRS rate 確定タイミング修正 (LocalSync MVP の前提整備)
+## 4.5 ✅ Step 3a / 3b — bulk endpoint root cause + FSRS rate 確定タイミング (両方クローズ済)
 
-(2026-05-27 追加。 LocalSync MVP は card_mutations bulk push を新設する pattern
-で `/api/review-events/bulk` と同型のため、 既存 bulk の遅延要因を確定してから
-設計する。)
+(2026-05-27 起票時は LocalSync MVP の前提整備として bulk 遅延要因の切り分けを予定。
+2026-05-28〜29 に問題 2 / 問題 3 として独立クローズした。)
 
-### Step 3a: `/api/review-events/bulk` TTFB 10.7s root cause 切り分け (進行中)
+### Step 3b → ✅ 問題 2 としてクローズ (flush in-flight guard)
 
-- **観測**: stg で TTFB 10,733 ms (body 1ms)、 finished phase 直後の background
-  flush で発生。 詳細は session log 計測予定
-- **着手**: timing log を一時 inject + Server-Timing header 経由で per-op
-  duration を取得する計測。 commit `8417e83 chore(perf): bulk endpoint 一時
-  timing log (TEMP-MEASURE) [no-review]` で実装、 origin/develop 反映済 (Vercel
-  stg auto deploy 反映済)
-- **未実施**: Playwright で 1 session 流して Server-Timing 取得 + 連続 invoke で
-  cold/warm 差観察 + EXPLAIN ANALYZE (dev DB 代替)
-- **計測完了後**: 別 commit で timing log を **必ず revert** (stg / production
-  をクリーンに戻す)
+旧 Step 3b (FSRS rate 連打で events 累積 → bulk 肥大) は問題 2 (flush 並走重複) として
+実装クローズ。 rate-then-confirm + `inFlightEventIds` の event_id 単位 guard で、 連打は state
+上書きのみ・確定時に 1 件 record・並走 flush の二重送信を排除。 commit `5e86839 fix(study) [reviewed]`、
+smoke `6eb8dc9`。 詳細: `docs/superpowers/sessions/2026-05-28-problem2-stg-smoke.md`。
 
-### Step 3b (NEW): FSRS rate 確定タイミング修正 (致命的バグ修正)
+### Step 3a → ✅ 問題 3 としてクローズ (bulk refactor)
 
-- **観測**: session-runner.tsx で FSRS rate click ごとに `recordAnswerEvent` を
-  fire-and-forget で発火 → rate 連打 = events 累積 → bulk POST に連打回数分の
-  events が乗る → server per-event serial transaction で TTFB が膨らむ
-- **影響**: client tally は 1 card 1 加算固定 (`submittedCardIds` Set で重複
-  防止) だが、 server reviews / study_days / cards.current_streak に **連打回数
-  分の累積**が発生。 1 card 1 操作の UX 期待と不整合
-- **OT 期待仕様**: rate click は state 更新のみ、 「次へ」 / 「前へ」 を押した
-  時点で **最後の rate 値で 1 件だけ submit**
-- **未着手**: 仕様変更 + 既累積データの整合性 (= reviews / study_days の過剰行を
-  どう扱うか) を含むため、 spec → plan → execute の正規 flow で着手予定
+旧 Step 3a (bulk TTFB 10-17s の root cause 切り分け) は問題 3 (bulk refactor) として完了。
+per-event serial transaction × N が主因と確定 → 単一 tx + in-memory FSRS replay (`replayCard`) +
+bulk SQL (cards VALUES 単一 UPDATE) に畳み、 stg smoke で **16.7-17.4s → 4.8s** (~3.5x)。
+途中、 実 Postgres で Drizzle #5789 (sql template に Date を embed → postgres-js encode で TypeError)
+に当たり、 観測強化 (serializeDbError) → ISO string bind 化で fix。 詳細:
+`docs/superpowers/sessions/2026-05-29-problem3-bulk-refactor-closure.md`。
 
-### 進行順序 (2026-05-27 OT 議論結果)
-
-1. ④-2 prefetch={false} を origin/main に ff merge + push (= Step 2 完全 close)
-2. Step 3b (FSRS rate 確定タイミング修正) を先行 — events 累積を源流で解消すれば
-   bulk 内容が正常 size に戻り、 Step 3a 計測のノイズが減る
-3. Step 3a 計測再開 (timing log で per-op 計測 + EXPLAIN ANALYZE) — Step 3b 後
-   の正常 size payload で server-side 遅延要因を確定
-4. Step 3a で root cause 確定後、 LocalSync MVP (§5) の card_mutations bulk
-   push を同じ pattern で設計
-
-### push 反映 record (2026-05-27)
-
-- origin/develop = `8417e83`、 Step 2 ④-2 + 前後計測 session log + Step 3a
-  timing log まで stg に反映
-- origin/main = `dfe20fa`、 Step 2 のうち ④-1 / ④-3 / ④-4 + smoke session log
-  まで反映。 **④-2 はまだ main 未反映** (= OT 手動 ff merge + push 待ち)
-- Step 3a の timing log (`8417e83`) は **production には絶対 deploy しない**
-  方針、 計測完了後に revert commit を立てて origin/develop に push、 main 反映前
-  に revert を取り込む
+> TEMP-MEASURE 計測コード (per-phase timing / `BULK_FULL_PARAMS_LOG`) は性能内訳確定後に撤去予定 (問題 3 closure §6)。
+> LocalSync MVP の card_mutations bulk push は本 bulk pattern (単一 tx + ON CONFLICT DO NOTHING + RETURNING 件数照合) を踏襲する。
 
 ---
 
@@ -216,17 +166,19 @@ LocalSync MVP に着手する前に消化できる小タスク群。 各々独�
 | 演習中 pull (IDB 書きつつ session に反映しない)   | 複雑化、 演習中は push-only mode で抑制                                |
 | layout `deletedAt` 撤去                           | Sprint ⑤ で別途、 LocalSync MVP の対象外                               |
 
-### 5.2 verify (現状の実装状態)
+### 5.2 verify (現状の実装状態、 2026-05-29 再確認)
 
-- Dexie schema (`lib/client-db.ts:144-152` の `ClientCardMutation` 型 + `:196` の store 定義 `card_mutations: '++local_id, mutation_id, card_id, sync_status'`) **定義済**
-- `lib/sync/` 配下に `card-mutations.ts` 不在 (`cards.ts` / `exams.ts` / `study-days.ts` / `review-events.ts` / `sync-meta.ts` のみ)
-- `app/api/card-mutations/` ディレクトリ不在 (`api/` 直下に `cards / exams / dashboard / me / review-events / study-days / webhooks` のみ)
-- server schema にも `card_mutations` table なし (`lib/db/schema.ts` で確認、 §13.14 設計のみ)
-- inline 編集 component (`update-card-field.ts` / `update-card.ts`) は Drizzle 直 UPDATE
+- Dexie schema (`lib/client-db.ts` の `ClientCardMutation` 型 + `:196` の store `card_mutations: '++local_id, mutation_id, card_id, sync_status'`) **定義済**
+- **server schema `card_mutations` table は存在する** — `lib/db/schema.ts:601` `cardMutations` pgTable (id / `mutation_id` UNIQUE / card_id / user_id / `patch` jsonb / edited_at / applied_at / created_at)、 migration `0012_handy_ink.sql` で適用済。 ← 5/27 時点の「table なし」 から進捗 (S-cache-0 で先打ち)
+- `lib/sync/card-mutations.ts` **不在** (`cards.ts` / `exams.ts` / `study-days.ts` / `review-events.ts` / `sync-meta.ts` のみ)
+- `app/api/card-mutations/bulk/route.ts` **不在** (api 直下に card-mutations dir なし)
+- inline 編集 (`update-card-field.ts:143` の `.update(cards).set(...)`) は **Drizzle 直 UPDATE のまま** (Dexie 書込 + card_mutations 経路は未配線)
+
+→ **schema (Dexie + server + migration) は scaffold 済、 sync layer (helper / bulk route / orchestrator) + inline 編集の local-first 化が未着手**。 注: 適用済 schema は `patch jsonb` のみで `type ('update'|'delete')` 列は持たない → delete の表現方法 (patch 内 flag か列追加か) は実装時に要設計。
 
 ### 5.3 未対応タスク
 
-- [ ] **server schema migration**: `card_mutations` table 追加 (`mutation_id text UNIQUE`、 `user_id`、 `card_id`、 `type ('update'|'delete')`、 `patch jsonb`、 `client_edited_at`、 `server_received_at`、 index 数本)
+- [x] **server schema migration**: `card_mutations` table は migration `0012_handy_ink.sql` で適用済 (`mutation_id` UNIQUE / user_id / card_id / `patch` jsonb / edited_at / applied_at + index)。 ※ `type ('update'|'delete')` 列は未追加 — delete 表現は実装時に要設計
 - [ ] **`/api/card-mutations/bulk` route 新規作成**: `app/api/review-events/bulk/route.ts` パターン参照、 ON CONFLICT DO NOTHING で冪等化、 mutation 受信時に `server_received_at = NOW()` を打刻、 cards UPDATE 0 rows affected で 4xx 返却
 - [ ] **`lib/sync/card-mutations.ts` 新規作成**: `review-events.ts` パターン参照、 pending push 関数 + sync_meta cursor
 - [ ] **`lib/sync/local-sync.ts` (orchestrator) 新規作成**: 5 trigger の制御 + Web Locks 排他 + 編集画面 / 演習画面の pull 抑制判定 + 24h pending silent drop
@@ -317,7 +269,7 @@ LocalSync MVP に着手する前に消化できる小タスク群。 各々独�
 
 | データ         | 状態                                                      | verify                                                               |
 | -------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
-| card_mutations | Dexie schema 定義済 / write 未配線 / bulk push API 未実装 | `lib/client-db.ts:196`、 `app/api/card-mutations/` 不在              |
+| card_mutations | Dexie + **server schema (migration 0012) 定義済** / sync helper・bulk route 未実装 / inline write 未配線 | `lib/client-db.ts:196`、 `lib/db/schema.ts:601`、 `app/api/card-mutations/` 不在 |
 | user_settings  | pull endpoint 自体なし                                    | `lib/client-db.ts:193` (schema あり) / `app/api/user-settings/` 不在 |
 
 ### mirror 自体なし (新規開発要)
@@ -339,23 +291,25 @@ LocalSync MVP に着手する前に消化できる小タスク群。 各々独�
 | LocalSync MVP 完了後 (card 編集 ~50ms / Δ pull / dirty 保護 / 編集画面 pull 抑制) | ~200ms 以下 |
 | ⑤ layout SELECT 撤去後 (deletedAt redirect 撤去 + revokeSession)                  | ~100ms 以下 |
 
+> 註 (2026-05-29): 上表は dashboard / page-load (体感終端) の軸。 問題 2/3 はこの page-load には直接影響しない**別軸 = 演習完了時の bulk flush latency** (`/api/review-events/bulk`) を **16.7-17.4s → 4.8s** に短縮 (問題 3、 stg cold 単発)。 演習完了 → `/app` 遷移直後の体感に効く。 page-load 数値 (~500ms 等) は再計測未実施につき 5/27 値据え置き。
+
 ---
 
-## 10. 進行順序
+## 10. 進行順序 (2026-05-29 更新)
 
 ```
-Sprint Pre-investigation (study_sessions / cards snapshot 確認 / Clerk revokeSession 調査)
-    ↓
-Sprint Small Fix (並行 4 タスク: PullTrigger 配備 / prefetch 漏れ / cards/[id] 廃止 / notifyOps 404)
-    ↓
-LocalSync MVP (card_mutations bulk push + Δ pull + 5 trigger + 編集画面 pull 抑制)
+✅ Sprint Pre-investigation (study_sessions / cards snapshot = 問題 3 で確定済、 残は Clerk revokeSession 調査のみ)
+✅ Sprint Small Fix (④-1〜④-4 全完了)
+✅ 問題 2 (flush in-flight guard) / 問題 3 (bulk refactor)
+    ↓ ここから未着手
+LocalSync MVP (card_mutations: server schema scaffold 済、 sync helper + bulk route + inline 編集 local-first 化が残)
     ↓
 Sprint ⑤ (Clerk revokeSession 調査 → layout deletedAt 撤去判断、 別軸で慎重に)
     ↓
 Sprint ⑥⑦ (source_documents / upload_records / user_settings mirror)
 ```
 
-Sprint Small Fix と LocalSync MVP は依存関係薄いので、 Sprint Small Fix の一部 (notifyOps 404 / prefetch 漏れ) は LocalSync MVP と並行可。
+註: cache 領域の進行順序は本 doc。 **全 sprint 横断** (試験セット手動作成 / S2.0.5 / S2.1 / S2.0b / Pro→Standard 等) の優先順位は `docs/next-sprints-priority.md` を参照。
 
 ---
 
