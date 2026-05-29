@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["hnd1"],
   "functions": {
     "app/api/webhooks/clerk/route.ts": { "maxDuration": 60 },
     "app/api/webhooks/stripe/route.ts": { "maxDuration": 60 }
