@@ -6,8 +6,6 @@ import {
   getCardsForExam,
   getExamByIdForUser,
 } from '@/lib/exams/list'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { InlineCardList } from './_components/inline-card-list'
 
 // 試験詳細 page: 各 card の全情報 (sort_key / title / 問題文 / 選択肢 + 各解説 /
@@ -57,20 +55,7 @@ export default async function ExamDetailPage({
 
       <section>
         <h2 className="text-lg font-bold mb-2">カード ({cards.length} 件)</h2>
-        {cards.length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-center">
-              <p className="text-sm text-slate-700">この試験にはまだカードがありません。</p>
-              <div className="mt-3">
-                <Button asChild>
-                  <Link href="/app/upload" prefetch={false}>アップロードから追加</Link>
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <InlineCardList cards={cards} examId={id} />
-        )}
+        <InlineCardList cards={cards} examId={id} />
       </section>
     </div>
   )

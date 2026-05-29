@@ -7,7 +7,9 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
@@ -46,6 +48,18 @@ export function InlineCardList({ cards, examId }: InlineCardListProps) {
 
   return (
     <div className="space-y-3">
+      {cards.length === 0 && (
+        <Card>
+          <CardContent className="p-6 text-center">
+            <p className="text-sm text-slate-700">この試験にはまだカードがありません。</p>
+            <div className="mt-3">
+              <Button asChild>
+                <Link href="/app/upload" prefetch={false}>アップロードから追加</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       <ul className="space-y-2">
         {cards.map((card) => (
         <li key={card.id}>

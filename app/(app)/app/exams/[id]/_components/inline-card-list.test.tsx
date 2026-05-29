@@ -288,6 +288,27 @@ describe('InlineCardList', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Bug A fix: 0 cards の時も「＋ カードを追加」 + empty-state hint を表示する
+// ---------------------------------------------------------------------------
+describe('InlineCardList 0-card empty state', () => {
+  it('cards=[] で「＋ カードを追加」 button と empty-state hint が両方表示される', () => {
+    render(<InlineCardList cards={[]} examId="exam-1" />)
+    // 「＋ カードを追加」 button は常に表示されなければならない
+    expect(
+      screen.getByRole('button', { name: '＋ カードを追加' }),
+    ).toBeInTheDocument()
+    // empty-state hint: 「まだカードがありません」 メッセージ
+    expect(
+      screen.getByText(/まだカードがありません/),
+    ).toBeInTheDocument()
+    // empty-state hint: 「アップロードから追加」 link (href /app/upload)
+    const uploadLink = screen.getByRole('link', { name: 'アップロードから追加' })
+    expect(uploadLink).toBeInTheDocument()
+    expect(uploadLink).toHaveAttribute('href', '/app/upload')
+  })
+})
+
 describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
   it('button click → createCard(examId) 呼出 + 成功で router.refresh()', async () => {
     render(<InlineCardList cards={cards} examId="exam-1" />)
