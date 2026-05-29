@@ -12,6 +12,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
 import { createCard } from '../_actions/create-card'
+import { DeleteCardButton } from './delete-card-button'
 
 type InlineCardListProps = {
   cards: ExamDetailCard[]
@@ -69,6 +70,9 @@ export function InlineCardList({ cards, examId }: InlineCardListProps) {
                     ariaLabel="タイトル 編集"
                     displayClassName="text-sm font-medium text-slate-900"
                   />
+                </div>
+                <div className="shrink-0">
+                  <DeleteCardButton cardId={card.id} />
                 </div>
               </div>
 

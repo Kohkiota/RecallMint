@@ -22,13 +22,18 @@ vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
 }))
 
-const { mockCreateCard, mockRouterRefresh } = vi.hoisted(() => ({
+const { mockCreateCard, mockDeleteCard, mockRouterRefresh } = vi.hoisted(() => ({
   mockCreateCard: vi.fn(),
+  mockDeleteCard: vi.fn(),
   mockRouterRefresh: vi.fn(),
 }))
 
 vi.mock('../_actions/create-card', () => ({
   createCard: mockCreateCard,
+}))
+
+vi.mock('../_actions/delete-card', () => ({
+  deleteCard: mockDeleteCard,
 }))
 
 vi.mock('next/navigation', () => ({
@@ -64,6 +69,7 @@ const cards: ExamDetailCard[] = [
 beforeEach(() => {
   vi.clearAllMocks()
   mockCreateCard.mockResolvedValue({ ok: true, data: { cardId: 'card-new' } })
+  mockDeleteCard.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -220,6 +226,65 @@ describe('InlineCardList', () => {
     expect(summary.className).toMatch(/text-emerald-700/)
     expect(summary.className).toMatch(/font-medium/)
     expect(summary.className).toMatch(/text-base/)
+  })
+
+  // ---------------------------------------------------------------------------
+  // S-delete: per-card 削除導線 (Task 5)
+  // ---------------------------------------------------------------------------
+
+  it('各 card に「削除」ボタンが描画される (2 cards → 2 個)', () => {
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    expect(deleteButtons.length).toBe(2)
+  })
+
+  it('「削除」ボタン click → confirm フェーズに遷移し「削除する」「キャンセル」が表示される', async () => {
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    fireEvent.click(deleteButtons[0]!)
+    expect(await screen.findByRole('button', { name: '削除する' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'キャンセル' })).toBeInTheDocument()
+  })
+
+  it('「削除する」click → deleteCard(card.id) が呼ばれる', async () => {
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    fireEvent.click(deleteButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+    await waitFor(() => {
+      expect(mockDeleteCard).toHaveBeenCalledWith('card-1')
+    })
+  })
+
+  it('deleteCard 成功 → router.refresh() が呼ばれる', async () => {
+    mockDeleteCard.mockResolvedValueOnce({ ok: true })
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    fireEvent.click(deleteButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+    await waitFor(() => {
+      expect(mockRouterRefresh).toHaveBeenCalled()
+    })
+  })
+
+  it('deleteCard 失敗 → inline error 表示、 router.refresh() しない', async () => {
+    mockDeleteCard.mockResolvedValueOnce({
+      ok: false,
+      error: 'カードの削除に失敗しました。',
+    })
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    fireEvent.click(deleteButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+    expect(
+      await screen.findByText('カードの削除に失敗しました。'),
+    ).toBeInTheDocument()
+    expect(mockRouterRefresh).not.toHaveBeenCalled()
+  })
+
+  it('空 cards では「削除」ボタンが存在しない', () => {
+    render(<InlineCardList cards={[]} examId="exam-1" />)
+    expect(screen.queryAllByRole('button', { name: '削除' })).toHaveLength(0)
   })
 })
 
