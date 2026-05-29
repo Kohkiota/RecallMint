@@ -42,6 +42,7 @@ import {
   type User,
 } from '@/lib/db/schema'
 import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
+import { serializeDbError } from '@/lib/db/serialize-db-error'
 import type { RatingInt } from '@/lib/fsrs'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
@@ -377,11 +378,14 @@ async function processSession(
   } catch (err) {
     // tx 内部で予期しないエラー → rollback 済み。 applicable events を全て failed に。
     // orphan は既に orphanFailed に積んでいる。
+    // [OBSERVABILITY A] native DB error を可視化するため serializeDbError で plain object 化。
+    // logger の expandError は Error instance を {name,message,stack} に潰すため、 そのまま
+    // 渡すと postgres-js の code/severity/detail/hint/constraint_name が消える。
     logger.warn({
       event: 'review_events.bulk.tx_failed',
       sessionId: session.session_id,
       userId: user.id,
-      err,
+      err: serializeDbError(err, { cardIds: events.map((e) => e.card_id) }),
     })
     txFailed = events
       .filter((ev) => !orphanFailed.includes(ev.event_id))
