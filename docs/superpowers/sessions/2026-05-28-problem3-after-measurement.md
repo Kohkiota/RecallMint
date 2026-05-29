@@ -97,6 +97,53 @@ Vercel function log で `event:"review_events.bulk.tx_failed"` を上記識別�
 
 ---
 
+## 0-final. fix 確証 smoke (B commit 0e78ef0 deploy 後) — ✅ 解決確認
+
+`0e78ef0` (Phase 2e timestamptz ISO bind 化 + RETURNING 件数検知、 Drizzle #5789 fix) deploy 後、
+同 stg / 同 account で 1 session (2026-05-29 03:12 GMT、 clean state、 sessionLimit=5 / FSRS ON)。
+
+### ✅ 結果: rollback 解消・全件成功
+- POST `/api/review-events/bulk` → **200 + `{"ok":true,"failed":[]}`** (前 2 回の failed[全5] から解消)
+- Dexie: 全 5 event `sync_status='synced'` / session `synced` (= flush 成功、 前回は全 pending)
+- RETURNING 件数照合: throw なし完走 (5 適用 = 5 returning、 正常パス確認)
+
+### correctness (実 DB 反映、 dashboard で確認)
+| 指標 | before smoke | after smoke |
+| --- | --- | --- |
+| 今日の学習問題数 | 0 | **5** (= 適用 5 distinct card、 study_days 反映) |
+| スマート復習 due 件数 | 50 件 | **45 件** (= 5 card の FSRS due 前進、 cards 反映) |
+| 連続日数 (streak) | 1 日 | **2 日** (本日学習計上) |
+
+→ cards / reviews / study_days すべて実 DB に commit された (rollback でなく成功)。
+
+### 性能 (1 数値、 cold sample)
+- Function Duration (PRT.duration ≒ TTFB) = **4,769ms**
+- **before 16.7〜17.4s → ~4.8s = 約 3.5x 改善**。 ただし spec 推定 ~3.2s より上振れ (単発 cold sample)。
+  - 註: 成功 path は失敗 path (~4.0s、 update-cards で throp) より長い = update-cards + study_days まで完走するため。
+  - ~3.2s との差の内訳 (study_days の per-day COUNT(DISTINCT)+upsert 往復 / Supabase pooler RTT / cold start) は
+    OT が Vercel log の `review_events.bulk.timing` per-phase で要確認。
+
+### OT 照合用識別子 (per-phase timing / paramsTypeDistribution 確認用)
+| 軸 | 値 |
+| --- | --- |
+| session_id | `59d09e4f-690f-4289-aa84-bd09b312149d` |
+| event_id (5) | `cbc8ebe2` / `f1eacac2` / `c357fbfa` / `fdaf053e` / `b5f01b64` |
+| x-vercel-id | `hnd1::iad1::z5kzd-1780024364198-d45fd02bc718` |
+| response date | Fri, 29 May 2026 03:12:48 GMT |
+
+OT が `review_events.bulk.timing` で確認すべき (fix 証跡):
+- `update-cards` が完走し `total` に乗っていること (前 2 回は throw で未完走)
+- `paramsTypeDistribution.date: 0` (Date が全部 ISO string 化された #5789 fix 証跡)
+- `paramsAnomaly.hasInvalidDate: false`
+- `review_events.bulk.tx_failed` log が出ていないこと
+
+### 達成判定
+- **correctness: ✅ 完全解決** (rollback 解消、 全件成功、 DB 反映確認)。
+- **性能: 大幅改善 (~3.5x) だが ~3.2s 推定より上振れ (~4.8s)**。 cold 単発のため断定不可、 per-phase 内訳と
+  warm 計測は別 task。 bulk 化の主目的 (per-event tx × N → 単一 tx) は機能し、 16s 級は解消。
+
+---
+
 ## 1. 計測手順 (before と厳密に同条件)
 
 = sessionLimit=5 / Free プラン / 5 events ちょうど (= FLUSH_THRESHOLD)。
