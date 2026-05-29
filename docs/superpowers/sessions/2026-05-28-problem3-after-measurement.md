@@ -60,6 +60,43 @@ VALUES tuple の cast 順 = `AS v(...)` の列順 = cards 列型、 SET の `v.c
 
 ---
 
+## 0-bis. 再 smoke (観測強化 a332b78 deploy 後) — Vercel log の err 取得用
+
+`a332b78` (serializeDbError 観測強化) deploy 後、 同 stg / 同 account で 1 session 再現
+(2026-05-29 02:04 GMT)。 **前回と同一の失敗を再現** (clean state → smart 5 問 Good → bulk POST が
+200 + failed[全 5])。 本 smoke の目的は「OT が Vercel function log `review_events.bulk.tx_failed` を
+引くための識別子確定」 (server log は client から見えないため)。
+
+### 再現確認 (client dump)
+- POST `/api/review-events/bulk` → **200 + `{"ok":true,"failed":[5 event 全部]}`** (前回と同じ rollback path)
+- Function Duration **4,187ms** (前回 4,019ms と同オーダー = throw path、 cards/reviews/study_days 未書込)
+- 全 5 event `sync_status='pending'` のまま (clean state: before:[recallmint]→clear、 answer_events=0 確認済)
+
+### OT 照合用識別子 (この session の log を引く)
+| 軸 | 値 |
+| --- | --- |
+| session_id | `cb466772-2927-444f-8c06-885d88e6d40c` |
+| event_id (5) | `d65004c5-6a73-4776-9415-060c731b3f8b` / `be8c1491-04e1-4537-accc-ee1371fbde19` / `45d2ed45-6c4e-4871-92fa-a932b6ce15d7` / `c77cec7b-b25b-4705-be39-ac4e58946a93` / `71a4dc9a-b0cf-467f-ae67-d19ce182f284` |
+| x-vercel-id | `hnd1::iad1::8mwxc-1780020275041-e695124d349d` |
+| response date | Fri, 29 May 2026 02:04:38 GMT |
+| region | iad1 (function) |
+
+### OT が取得すべき log (a332b78 で native error が plain object 化され見えるはず)
+Vercel function log で `event:"review_events.bulk.tx_failed"` を上記識別子で引き、 新 serializer 出力の
+**`err`** object を共有:
+- `err.message` (Drizzle wrap = `Failed query: ...`)
+- **`err.cause`** = postgres-js native (`code` SQLSTATE / `severity` / `detail` / `hint` / `position` /
+  `where` / `schema_name` / `table_name` / `column_name` / `constraint_name`) ← **root cause の核**
+- top-level に `err.code` 等が出ていればそれも
+- `err.paramsAnomaly {hasUndefined,hasNull,hasInvalidDate}` / `err.paramsTypeDistribution` /
+  `err.cardIds` / `err.paramsCount` (Preview に `BULK_FULL_PARAMS_LOG=1` 設定済なら `err.fullParams` も)
+- 併せて `event:"review_events.bulk.timing"` があれば到達 per-phase (`update-cards` の前で止まったか後か
+  = どの SQL で落ちたかの切り分け)
+
+→ `err.cause` の `code`+`detail` で root cause 確定 → B commit で対策。
+
+---
+
 ## 1. 計測手順 (before と厳密に同条件)
 
 = sessionLimit=5 / Free プラン / 5 events ちょうど (= FLUSH_THRESHOLD)。
