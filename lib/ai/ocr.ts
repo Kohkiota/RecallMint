@@ -20,6 +20,11 @@ import {
 } from './schemas/ocr-response'
 import { callGemini, parseRetryAfterMs, type GeminiInputFile } from './clients/gemini'
 import { estimateCostYen, type ModelKind } from './cost'
+import {
+  isRateLimitError,
+  isTransientError,
+  computeBackoffMs,
+} from '@/lib/retry/transient-error'
 
 // JSON Schema (Gemini 側 enforcement) に加え、 zod による runtime validation を
 // 別途行う。 SDK schema 強制が弱い field (custom_props の anyOf 等) や型 narrow
@@ -83,41 +88,8 @@ export type OcrPipelineResult = {
 
 const MAX_HTTP_RETRIES = 2 // 初回 + 2 retries = 計 3 attempts per model
 
-// SDK error の status code / status 文字列は message に含まれる前提 (本実装 SDK
-// では code が instance property に出ないことが多く、 message string match が
-// pragmatic)。
-
-// 429 (rate limit / quota 超過) 判定。 CLAUDE.md AI 絶対ルール 5「429 受信時は
-// 即時停止、 リトライ禁止」 の対象 — retry も Pro fallback もせず即 throw する。
-// 429 数字 / "rate limit" / RESOURCE_EXHAUSTED いずれかで判定。
-function isRateLimitError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return (
-    /\b429\b/.test(msg) ||
-    /rate ?limit/i.test(msg) ||
-    /resource_exhausted/i.test(msg)
-  )
-}
-
-// transient (= backoff retry 対象) な error 判定。
-// 429 は含めない — ルール 5 により即時停止扱い (isRateLimitError が担当)。
-// 5xx (500/502/503/504) / timeout / unavailable に加え、 network layer の
-// 一時的断絶 (ECONNRESET / ECONNREFUSED / ENOTFOUND / EAI_AGAIN /
-// "fetch failed" / "socket hang up") も retry 対象とする。
-// これらは DNS 障害・接続断など外部要因で自然回復が期待できるため。
-// 注: 汎用 /\bnetwork\b/ は "403 Forbidden: API key network policy violation"
-// 等の非 transient 4xx を誤って retry 対象にするため除外。
-function isTransientError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return (
-    /\b(500|502|503|504)\b/.test(msg) ||
-    /timeout/i.test(msg) ||
-    /unavailable/i.test(msg) ||
-    /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(msg) ||
-    /fetch failed/i.test(msg) ||
-    /socket hang up/i.test(msg)
-  )
-}
+// 429 / transient 判定は lib/retry/transient-error.ts に抽出 (review-events flush と
+// 共有)。 429 ≠ 503 (ルール 5) の分類はそちらの単体 test で担保。
 
 // backoff の静的待機時間。 attempt 0 (1 回目 retry 前) = 5s + jitter(0-2s)、
 // attempt 1 (2 回目 retry 前) = 20s + jitter(0-5s)。
@@ -167,7 +139,7 @@ async function callWithRetry(
       const backoffMs =
         retryAfterMs !== null
           ? Math.min(retryAfterMs, RETRY_AFTER_CAP_MS)
-          : BACKOFF_BASE_MS[attempt] + rng() * BACKOFF_JITTER_MAX_MS[attempt]
+          : computeBackoffMs(attempt, BACKOFF_BASE_MS, BACKOFF_JITTER_MAX_MS, rng)
       await new Promise((r) => setTimeout(r, backoffMs))
     }
   }

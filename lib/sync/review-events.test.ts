@@ -13,6 +13,7 @@ import {
   countPendingAnswerEvents,
   flushPendingEvents,
   flushAllPendingEvents,
+  dropStalePendingAnswerEvents,
   inFlightEventIds,
   newId,
   type BulkApiClient,
@@ -794,5 +795,132 @@ describe('flushAllPendingEvents', () => {
     // 戻り値には成功した 2 件の FlushResult が含まれ、reject の 1 件は除外される
     expect(results).toHaveLength(2)
     expect(results.every((r) => r.sessionSynced)).toBe(true)
+  })
+})
+
+describe('flushPendingEvents — httpStatus (retry 分類用)', () => {
+  function makeMockClient(
+    response: Awaited<ReturnType<BulkApiClient['post']>>,
+  ): BulkApiClient {
+    return { post: async () => response }
+  }
+
+  it('成功時は httpStatus=200', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: ['a'], is_correct: true,
+    })
+    const result = await flushPendingEvents(
+      sessionId,
+      makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } }),
+    )
+    expect(result.httpStatus).toBe(200)
+  })
+
+  it('5xx 失敗時は応答の status をそのまま httpStatus に載せる', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: [], is_correct: true,
+    })
+    const result = await flushPendingEvents(
+      sessionId,
+      makeMockClient({ ok: false, status: 503, body: null }),
+    )
+    expect(result.httpStatus).toBe(503)
+    expect(result.failedEventIds).toHaveLength(1)
+  })
+
+  it('network 失敗 (fetch throw) は httpStatus=0', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: [], is_correct: true,
+    })
+    const result = await flushPendingEvents(
+      sessionId,
+      makeMockClient({ ok: false, status: 0, body: null }),
+    )
+    expect(result.httpStatus).toBe(0)
+  })
+})
+
+describe('flushPendingEvents — last_attempted_at write 配線', () => {
+  it('flush 試行時に対象 event の last_attempted_at が書かれる (失敗で pending 残置でも記録)', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    const e1 = await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: ['a'], is_correct: true,
+    })
+    // 記録直後は未試行
+    expect(e1.last_attempted_at ?? null).toBeNull()
+
+    // 失敗 client で flush → event は pending のまま、 last_attempted_at は記録される
+    await flushPendingEvents(sessionId, { post: async () => ({ ok: false, status: 503, body: null }) })
+
+    const stored = await getClientDb().answer_events.where('event_id').equals(e1.event_id).first()
+    expect(stored).toBeDefined()
+    expect(typeof stored!.last_attempted_at).toBe('string')
+    // ISO8601 としてパース可能
+    expect(Number.isNaN(Date.parse(stored!.last_attempted_at!))).toBe(false)
+  })
+})
+
+describe('dropStalePendingAnswerEvents — 24h 超 silent drop', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+
+  it('answered_at が maxAge より古い pending を drop (sync_status=failed)、 新しいものは残す', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    const now = Date.parse('2026-05-29T12:00:00.000Z')
+
+    const oldEvent = await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: ['a'], is_correct: true,
+      answered_at: new Date(now - 25 * 60 * 60 * 1000).toISOString(), // 25h 前
+    })
+    const freshEvent = await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: ['b'], is_correct: false,
+      answered_at: new Date(now - 1 * 60 * 60 * 1000).toISOString(), // 1h 前
+    })
+
+    const dropped = await dropStalePendingAnswerEvents(now, DAY_MS)
+
+    // 戻り値に古い event_id が含まれる
+    expect(dropped).toEqual([oldEvent.event_id])
+
+    // 古い event は pending から外れ failed に、 新しい event は pending 維持
+    const pending = await getPendingAnswerEvents()
+    expect(pending.map((p) => p.event_id)).toEqual([freshEvent.event_id])
+    const stored = await getClientDb().answer_events.where('event_id').equals(oldEvent.event_id).first()
+    expect(stored!.sync_status).toBe('failed')
+  })
+
+  it('境界 (ちょうど maxAge) は drop しない / 古いものが無ければ空配列', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    const now = Date.parse('2026-05-29T12:00:00.000Z')
+    await recordAnswerEvent({
+      session_id: sessionId, card_id: newId(), selected_answer_ids: ['a'], is_correct: true,
+      answered_at: new Date(now - DAY_MS).toISOString(), // ちょうど 24h (境界は残す)
+    })
+    const dropped = await dropStalePendingAnswerEvents(now, DAY_MS)
+    expect(dropped).toEqual([])
+    expect(await countPendingAnswerEvents()).toBe(1)
+  })
+
+  it('synced / failed は走査対象外 (pending のみ drop)', async () => {
+    const sessionId = newId()
+    await createStudySession({ session_id: sessionId, mode: 'smart', card_ids: [] })
+    const now = Date.parse('2026-05-29T12:00:00.000Z')
+    const oldAnswered = new Date(now - 48 * 60 * 60 * 1000).toISOString()
+    // synced 済の古い event を直接 seed
+    await getClientDb().answer_events.add({
+      event_id: newId(), session_id: sessionId, card_id: newId(),
+      selected_answer_ids: [], is_correct: true, answered_at: oldAnswered,
+      sync_status: 'synced',
+    })
+    const dropped = await dropStalePendingAnswerEvents(now, DAY_MS)
+    expect(dropped).toEqual([])
   })
 })

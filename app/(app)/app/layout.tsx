@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { AppHeader } from './_components/app-header'
 import { BFCacheGuard } from './_components/bfcache-guard'
 import { PullTrigger } from './_components/pull-trigger'
+import { ReviewFlushTrigger } from './_components/review-flush-trigger'
 
 // webhook race（sign-up 直後 〜 user.created webhook 受信前の数秒）で
 // DB に行が無い間に表示する transitional UI。<meta http-equiv="refresh">
@@ -49,6 +50,10 @@ export default async function AppLayout({
           navigation では re-mount しないので重複発火しない。 deep link / reload /
           外部からの navigate でも 1 回 fire される。 UI なし、 失敗 silent。 */}
       <PullTrigger />
+      {/* 演習 push の保全 trigger。 演習画面を離れた後の未送信 pending を mount /
+          フォーカス復帰 / 再接続時に回復 flush する (Web Locks 多タブ排他 + transient
+          backoff retry + 24h drop は controller 側)。 UI なし、 失敗 silent。 */}
+      <ReviewFlushTrigger />
       <AppHeader />
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-8">
         {children}

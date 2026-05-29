@@ -170,6 +170,42 @@ async function markAnswerEventsSynced(eventIds: string[]): Promise<void> {
     .modify({ sync_status: 'synced' })
 }
 
+// flush 試行のたびに対象 event の last_attempted_at を打刻する (dormant 列の write
+// 配線)。 orchestrator の backoff は in-memory attempt counter で駆動するが、
+// 「最終試行からの経過」 を後から事実確認できるよう Dexie にも残す。
+async function markAnswerEventsAttempted(
+  eventIds: string[],
+  nowIso: string,
+): Promise<void> {
+  if (eventIds.length === 0) return
+  await getClientDb()
+    .answer_events.where('event_id')
+    .anyOf(eventIds)
+    .modify({ last_attempted_at: nowIso })
+}
+
+// 24h 超 pending の silent drop。 mount 時の古さ判定で呼ぶ (常駐監視はしない)。
+// answered_at (= 作成時刻、 常に set される) が now - maxAgeMs より厳密に古い pending を
+// sync_status='failed' に隔離し、 以降の自動 retry 対象から外す (物理削除はせず痕跡を残す)。
+// 境界 (ちょうど maxAgeMs) は残す。 drop した event_id を返す (呼出側の観測用)。
+export async function dropStalePendingAnswerEvents(
+  now: number,
+  maxAgeMs: number,
+): Promise<string[]> {
+  const cutoff = now - maxAgeMs
+  const pending = await getPendingAnswerEvents()
+  const staleIds = pending
+    .filter((e) => Date.parse(e.answered_at) < cutoff)
+    .map((e) => e.event_id)
+  if (staleIds.length > 0) {
+    await getClientDb()
+      .answer_events.where('event_id')
+      .anyOf(staleIds)
+      .modify({ sync_status: 'failed' })
+  }
+  return staleIds
+}
+
 // ---------------------------------------------------------------------------
 // bulk flush
 // ---------------------------------------------------------------------------
@@ -188,6 +224,9 @@ export type FlushResult = {
   sessionSynced: boolean
   // network / 4xx 5xx 失敗を区別 (true=API までは届いた、 false=fetch level fail)
   reachable: boolean
+  // POST の HTTP status (成功=200、 失敗=応答 status、 network 断 / POST 未試行=0)。
+  // orchestrator が 429 (即停止) / 5xx (transient retry) / 4xx (永続) を分類するために使う。
+  httpStatus: number
 }
 
 export type BulkApiClient = {
@@ -254,6 +293,7 @@ export async function flushPendingEvents(
       failedEventIds: [],
       sessionSynced: false,
       reachable: false,
+      httpStatus: 0,
     }
   }
 
@@ -270,6 +310,7 @@ export async function flushPendingEvents(
       failedEventIds: [],
       sessionSynced: false,
       reachable: false,
+      httpStatus: 0,
     }
   }
 
@@ -279,6 +320,12 @@ export async function flushPendingEvents(
   }
 
   try {
+    // 試行のたびに last_attempted_at を打刻 (dormant 列の write 配線)。
+    await markAnswerEventsAttempted(
+      targets.map((e) => e.event_id),
+      new Date().toISOString(),
+    )
+
     const payload = {
       session: {
         session_id: session.session_id,
@@ -312,6 +359,7 @@ export async function flushPendingEvents(
         failedEventIds: targets.map((e) => e.event_id),
         sessionSynced: false,
         reachable: response.status >= 400 && response.status < 600,
+        httpStatus: response.status,
       }
     }
 
@@ -337,6 +385,7 @@ export async function flushPendingEvents(
       failedEventIds,
       sessionSynced,
       reachable: true,
+      httpStatus: response.status,
     }
   } finally {
     // POST の成否にかかわらず解放し、 次回 invoke で再 pickup できるようにする。
