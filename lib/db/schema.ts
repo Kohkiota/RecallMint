@@ -31,6 +31,7 @@ import {
   real,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
 
@@ -623,6 +624,31 @@ export const cardMutations = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// tombstones (S-delete-0 / §1 新設)
+// exam・card 統合 tombstone テーブル。 対象行は物理削除済のため entityId に FK 不可。
+// userId FK は cascade (user 削除時に tombstone も連動削除)。
+// ---------------------------------------------------------------------------
+export const tombstones = pgTable(
+  'tombstones',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    entityType: text('entity_type').$type<'exam' | 'card'>().notNull(),
+    entityId: uuid('entity_id').notNull(), // FK 不可: 対象は物理削除済
+    deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('tombstones_user_deleted_idx').on(t.userId, t.deletedAt),
+    uniqueIndex('tombstones_entity_uq').on(t.entityType, t.entityId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -656,3 +682,5 @@ export type AnswerEvent = typeof answerEvents.$inferSelect
 export type NewAnswerEvent = typeof answerEvents.$inferInsert
 export type CardMutation = typeof cardMutations.$inferSelect
 export type NewCardMutation = typeof cardMutations.$inferInsert
+export type Tombstone = typeof tombstones.$inferSelect
+export type NewTombstone = typeof tombstones.$inferInsert
