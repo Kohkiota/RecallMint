@@ -117,6 +117,12 @@ questions step を skip して design step から入る運用とする。)
 (初出経緯: 2026-05-27 cache-fix roadmap ④-1 / ④-4 で skill 全 skip 発生。
 同日 ④-3 で `writing-specs` skill 不在が発覚、 本文修正。)
 
+### 実装方式 (既定: Subagent-Driven Development)
+
+plan 化後の実装は**原則すべて `superpowers:subagent-driven-development`** で行う
+(task 単位で fresh subagent + task 間 review)。 これを既定の実装方式とする。
+inline 一括実行 (`executing-plans`) は OT が明示選択した場合のみ。
+
 ---
 
 ## Review と Commit (最重要)
@@ -144,6 +150,12 @@ commit message 末尾:
 
 `.claude/hooks/check-review.sh` (Stop hook) が tag 無し commit を block する。
 手動無効化禁止。
+
+### ドキュメントの commit
+
+docs 配下の成果物 (spec / plan / session log / lessons / roadmap 等) は、 内容が
+確定したら**必ず commit する**。 確定済みドキュメントを未 commit のまま放置しない
+(`docs(_)` + `[no-review]`、 実装ロジック変更なしのため review skip 可)。
 
 ### Commit 直前の review ログ明示
 
