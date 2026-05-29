@@ -45,6 +45,8 @@ const { state } = vi.hoisted(() => ({
       where: unknown
     },
     bulkUpdateCallCount: 0,
+    // RETURNING の返却を test から差し替える (null = VALUES から全件 decode し件数一致)。
+    bulkUpdateReturnOverride: null as null | Array<{ id: string }>,
 
     // reviews INSERT 記録
     reviewsInsertValues: null as null | Record<string, unknown>[],
@@ -174,7 +176,17 @@ function makeFakeTx(throwAfterInsert = false) {
           from: (fromSql: unknown) => ({
             where: (cond: unknown) => {
               state.bulkUpdateCapture = { set: vals, fromSql, where: cond }
-              return Promise.resolve()
+              return {
+                // RETURNING cards.id 模倣。 override 未設定なら VALUES の card_id を全件返す
+                // (= finalStates と件数一致 → mismatch なし)。
+                returning: (_cols: unknown) => {
+                  if (state.bulkUpdateReturnOverride !== null) {
+                    return Promise.resolve(state.bulkUpdateReturnOverride)
+                  }
+                  const tuples = decodeValuesFromSql(fromSql)
+                  return Promise.resolve(tuples.map((t) => ({ id: t.id })))
+                },
+              }
             },
           }),
         }),
@@ -293,7 +305,7 @@ function makeValidPayload(
 //
 // 各 tuple のフィールド順 (route.ts と同一):
 //   [0] id (uuid string)
-//   [1] due (Date)
+//   [1] due (ISO string after #5789 fix、 旧 Date)
 //   [2] stability (number)
 //   [3] difficulty (number)
 //   [4] elapsedDays (number)
@@ -302,7 +314,7 @@ function makeValidPayload(
 //   [7] lapses (number)
 //   [8] state (number)
 //   [9] learningSteps (number)
-//   [10] lastReview (Date | null)
+//   [10] lastReview (ISO string | null after #5789 fix)
 //   [11] answered (boolean)
 //   [12] lastCorrect (boolean | null)
 //   [13] currentStreak (number)
@@ -421,6 +433,7 @@ beforeEach(() => {
   state.cardRows = new Map()
   state.bulkUpdateCapture = null
   state.bulkUpdateCallCount = 0
+  state.bulkUpdateReturnOverride = null
   state.reviewsInsertValues = null
   state.studyDaysUpsertCalls = []
   state.executeDistinctResult = [{ c: 2 }]
@@ -1020,5 +1033,22 @@ describe('POST /api/review-events/bulk', () => {
     // payload 順 (Again→Good) で fold → 最後の Good が支配的
     expect(tuple.lastCorrect).toBe(true)
     expect(tuple.currentStreak).toBe(1)
+  })
+
+  it('RETURNING 件数 mismatch (updated < finalStates) → throw → rollback → applicable 全件 failed[]', async () => {
+    // VALUES UPDATE の RETURNING が finalStates 未満を返す状況を mock で再現
+    // (実 DB では owner mismatch / 並行削除 等)。 件数照合で throw → tx rollback → failed 全件。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    // 1 card / 1 event。 RETURNING を空にして updated=0 vs expected=1 を作る。
+    state.bulkUpdateReturnOverride = []
+
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; failed: string[] }
+    expect(body.ok).toBe(true)
+    // applicable event が全件 failed[] に積まれる (再送で event_id 冪等が効く)
+    expect(body.failed).toEqual([VALID_EVENT_ID])
+    // UPDATE は 1 回呼ばれた (throw は件数照合段階)
+    expect(state.bulkUpdateCallCount).toBe(1)
   })
 })

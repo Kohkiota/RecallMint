@@ -96,6 +96,15 @@ function deriveRating(ev: Pick<ParsedEvent, 'rating' | 'is_correct'>): RatingInt
   return ev.rating ?? (ev.is_correct ? 3 : 1)
 }
 
+// Drizzle の sql template に JS Date を直接 embed すると postgres-js の timestamptz
+// serializer (OID 1184) が bypass され、 encode 経路で Buffer.byteLength(Date) が
+// TypeError (ERR_INVALID_ARG_TYPE) になる (Drizzle #5789、 2026-05-29 stg smoke で確定)。
+// timestamptz bind は ISO string 化してから embed する (::timestamptz cast で Postgres が
+// parse、 null は維持)。 helper は throw しない (Invalid Date guard は本 fix の scope 外)。
+function toPgTimestamptz(d: Date | null): string | null {
+  return d ? d.toISOString() : null
+}
+
 // ---------------------------------------------------------------------------
 // processSession — 単一 tx で全 events を処理し failed[] を返す
 // ---------------------------------------------------------------------------
@@ -294,12 +303,17 @@ async function processSession(
         // per-card tuple リスト (VALUES 節用)
         // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
         // ::cast は静的リテラルのみ (安全)。
+        // timestamptz (due / last_review) は ISO string 化してから embed (Drizzle #5789、
+        // toPgTimestamptz 参照)。 数値 / boolean / uuid はそのまま bind 可。
         const rows = [...finalStates.entries()].map(([cardId, final]) =>
-          sql`(${cardId}::uuid, ${final.due}::timestamptz, ${final.stability}::real, ${final.difficulty}::real, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${final.lastReview}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
+          sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::real, ${final.difficulty}::real, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
         )
         const valuesList = sql.join(rows, sql`, `)
 
-        await tx
+        // RETURNING cards.id で実 update 件数を取得し、 finalStates と不一致なら throw
+        // (tx rollback → 上位 catch が serializeDbError で log)。 SQL 成功で 0 rows update を
+        // 黙って通す事故の安全網。
+        const updated = await tx
           .update(cards)
           .set({
             due: sql`v.due`,
@@ -315,6 +329,8 @@ async function processSession(
             answered: sql`v.answered`,
             lastCorrect: sql`v.last_correct`,
             currentStreak: sql`v.current_streak`,
+            // updated_at も timestamptz bind。 $onUpdate の JS Date を ISO string で上書き (#5789)。
+            updatedAt: sql`${toPgTimestamptz(new Date())}::timestamptz`,
           })
           .from(
             sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
@@ -322,6 +338,21 @@ async function processSession(
           .where(
             and(eq(cards.userId, user.id), sql`${cards.id} = v.id`),
           )
+          .returning({ id: cards.id })
+
+        const updatedIds = new Set(updated.map((r) => r.id))
+        if (updatedIds.size !== finalStates.size) {
+          const missingCardIds = [...finalStates.keys()].filter(
+            (id) => !updatedIds.has(id),
+          )
+          const mismatch = new Error('bulk update card count mismatch')
+          Object.assign(mismatch, {
+            expected: finalStates.size,
+            updated: updatedIds.size,
+            missingCardIds,
+          })
+          throw mismatch
+        }
 
         return undefined
       })
