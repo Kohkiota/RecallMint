@@ -4,21 +4,24 @@ import { revalidatePath } from 'next/cache'
 import { and, eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
-import { exams } from '@/lib/db/schema'
+import { cards, exams, tombstones } from '@/lib/db/schema'
+import { logger } from '@/lib/logger'
+import { serializeDbError } from '@/lib/db/serialize-db-error'
 import type { ActionResult } from '@/lib/actions/result'
 
 // 試験一覧から exam を削除する server action。
 //
-// discard.ts の mode='new' 分岐 (exam 1 文 DELETE → FK CASCADE 連動削除) を
-// 転用。exam を owner-scoped で DELETE するだけで、FK CASCADE
-// (source_documents.exam_id / cards.exam_id = ON DELETE CASCADE、
-//  reviews.card_id = ON DELETE CASCADE) により紐づく全データを DB が
-// 連動削除する。アプリ側で cards / source_documents を個別に DELETE しない。
+// Task 6 (S-delete-0): _deleteExam を db.transaction に包み、
+// 削除前に tombstone (exam + 配下 card 全件) を網羅 INSERT する。
+//
+// Spec §4 の実行順序:
+//   1. exam 存在・owner 確認 SELECT → 0 行なら早期 return (idempotent)
+//   2. 配下 card id 列挙 (FK CASCADE で消える前に)
+//   3. tombstone 網羅 INSERT: exam(1件) + card(N件) を onConflictDoNothing で
+//   4. exams DELETE → FK CASCADE (source_documents/cards/reviews 連動削除)
 //
 // 安全性: WHERE user_id = ? で他 user の exam を構造的に保護。
 // 不在 / 他 user の examId は silent success (idempotent、 double-click 対策)。
-// 別途 SELECT で存在確認は行わない — DELETE の WHERE に user_id を含めれば
-// 他 user の行は消えないため、SELECT は冗長になる。
 export async function deleteExam(examId: string): Promise<ActionResult> {
   // S-cache-2a: revalidatePath('/app/exams') は撤去。 削除ボタンは /app/exams 上で
   // 押下され、 success 時に `delete-exam-button.tsx` の `router.refresh()` が
@@ -38,12 +41,63 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
 
   const db = getDb()
 
-  // owner-scoped 単一文 DELETE。FK CASCADE で source_documents / cards /
-  // reviews が連動削除される。不在 / 他 user の examId は WHERE が 0 行に
-  // マッチするだけで例外なし = silent success (idempotent)。
-  await db
-    .delete(exams)
-    .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
+  // 子 card id は catch 節の serializeDbError に渡すため tx 外に宣言しておく。
+  let childCardIds: string[] = []
 
-  return { ok: true }
+  try {
+    await db.transaction(async (tx) => {
+      // §4-1: exam 存在・owner 確認
+      // 0 行 = 不在 / 他 user → tombstone 挿入なしで早期 return (idempotent)。
+      const examRows = await tx
+        .select({ id: exams.id })
+        .from(exams)
+        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
+
+      if (examRows.length === 0) {
+        // 不在 / 他 user: silent success、tombstone は INSERT しない。
+        return
+      }
+
+      // §4-2: 配下 card id 列挙 (CASCADE で消える前に記録)
+      const childCards = await tx
+        .select({ id: cards.id })
+        .from(cards)
+        .where(and(eq(cards.examId, examId), eq(cards.userId, user.id)))
+
+      childCardIds = childCards.map((c) => c.id)
+
+      // §4-3: tombstone 網羅 INSERT (exam 1件 + 配下 card 全件)
+      // onConflictDoNothing で再削除時の UNIQUE 制約エラーを吸収。
+      const now = new Date()
+      const tombstoneRows = [
+        { userId: user.id, entityType: 'exam' as const, entityId: examId, deletedAt: now },
+        ...childCardIds.map((cardId) => ({
+          userId: user.id,
+          entityType: 'card' as const,
+          entityId: cardId,
+          deletedAt: now,
+        })),
+      ]
+
+      await tx.insert(tombstones).values(tombstoneRows).onConflictDoNothing()
+
+      // §4-4: exams DELETE → FK CASCADE (source_documents/cards/reviews 連動削除)
+      await tx
+        .delete(exams)
+        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
+    })
+
+    return { ok: true }
+  } catch (err) {
+    logger.error({
+      event: 'exams.delete.failed',
+      examId,
+      userId: user.id,
+      err: serializeDbError(err, { cardIds: childCardIds }),
+    })
+    return {
+      ok: false,
+      error: '試験の削除に失敗しました。しばらくしてから再度お試しください。',
+    }
+  }
 }

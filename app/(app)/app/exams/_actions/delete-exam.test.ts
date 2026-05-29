@@ -13,6 +13,21 @@ const {
     deleteTables: [] as unknown[],
     // .where() に渡された引数を record。
     whereArgs: [] as unknown[][],
+    // tombstones INSERT に渡された values rows を record。
+    insertedTombstoneRows: [] as unknown[],
+    // SELECT が走った table を順序付きで record (tx 内 select 用)。
+    selectTables: [] as unknown[],
+    // exam 存在確認の SELECT が返すスタブ値 (デフォルト = 1 行 = 存在する)。
+    examSelectResult: [{ id: 'exam-uuid' }] as unknown[],
+    // card 列挙 SELECT が返すスタブ値 (デフォルト = 2 枚)。
+    cardSelectResult: [
+      { id: 'card-uuid-1' },
+      { id: 'card-uuid-2' },
+    ] as unknown[],
+    // tx 内 select 呼出しカウンタ (0=exam確認, 1=card列挙)。beforeEach でリセット。
+    selectCallCount: 0,
+    // トランザクションが起動されたか。
+    txStarted: false,
   },
 }))
 
@@ -37,10 +52,54 @@ vi.mock('next/cache', () => ({
 }))
 
 vi.mock('@/lib/db', () => {
-  function chain(_returnValue?: unknown) {
+  // select チェーン: .from(table).where() → Promise<rows>
+  // selectCallCount は dbState 経由でリセット可能にする。
+  function makeSelectChain(): Record<string, unknown> {
     const obj: Record<string, unknown> = {}
     obj['where'] = (...args: unknown[]) => {
-      // .where() の引数を record しておく (テナント分離ガード検証用)
+      dbState.whereArgs.push(args)
+      return obj
+    }
+    obj.then = (
+      onFulfilled?: (v: unknown) => unknown,
+      onRejected?: (e: unknown) => unknown,
+    ) => {
+      // 呼出し順: 0 = exam 存在確認 SELECT、1 = card 列挙 SELECT
+      const result =
+        dbState.selectCallCount === 0
+          ? dbState.examSelectResult
+          : dbState.cardSelectResult
+      dbState.selectCallCount++
+      return Promise.resolve(result).then(onFulfilled, onRejected)
+    }
+    return obj
+  }
+
+  function makeInsertChain(table: unknown): Record<string, unknown> {
+    const obj: Record<string, unknown> = {}
+    obj['values'] = (rows: unknown[]) => {
+      // tombstones table への insert を記録
+      const name = getTableName(table as never)
+      if (name === 'tombstones') {
+        for (const row of rows) {
+          dbState.insertedTombstoneRows.push(row)
+        }
+      }
+      return obj
+    }
+    obj['onConflictDoNothing'] = () => {
+      return obj
+    }
+    obj.then = (
+      onFulfilled?: (v: unknown) => unknown,
+      onRejected?: (e: unknown) => unknown,
+    ) => Promise.resolve(undefined).then(onFulfilled, onRejected)
+    return obj
+  }
+
+  function chain() {
+    const obj: Record<string, unknown> = {}
+    obj['where'] = (...args: unknown[]) => {
       dbState.whereArgs.push(args)
       return obj
     }
@@ -50,13 +109,33 @@ vi.mock('@/lib/db', () => {
     ) => Promise.resolve(undefined).then(onFulfilled, onRejected)
     return obj
   }
+
   function recordingDelete(table: unknown) {
     dbState.deleteTables.push(table)
     return chain()
   }
+
+  function makeTx() {
+    return {
+      select: (_columns: unknown) => ({
+        from: (table: unknown) => {
+          dbState.selectTables.push(table)
+          return makeSelectChain()
+        },
+      }),
+      insert: (table: unknown) => makeInsertChain(table),
+      delete: recordingDelete,
+    }
+  }
+
   return {
     getDb: () => ({
+      // 非 tx パスの DELETE (auth fail 等で tx に入らない場合のフォールバック)
       delete: recordingDelete,
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+        dbState.txStarted = true
+        return fn(makeTx())
+      },
     }),
   }
 })
@@ -65,11 +144,21 @@ async function importDeleteExam() {
   return await import('./delete-exam')
 }
 
+function resetDbState() {
+  dbState.deleteTables = []
+  dbState.whereArgs = []
+  dbState.insertedTombstoneRows = []
+  dbState.selectTables = []
+  dbState.selectCallCount = 0
+  dbState.txStarted = false
+  dbState.examSelectResult = [{ id: 'exam-uuid' }]
+  dbState.cardSelectResult = [{ id: 'card-uuid-1' }, { id: 'card-uuid-2' }]
+}
+
 beforeEach(async () => {
   mockGetCurrentUser.mockReset()
   mockRevalidatePath.mockReset()
-  dbState.deleteTables = []
-  dbState.whereArgs = []
+  resetDbState()
   // eq スパイのコール履歴をリセット
   const { eq } = await import('drizzle-orm')
   vi.mocked(eq).mockClear()
@@ -123,13 +212,15 @@ describe('deleteExam', () => {
   })
 
   it('not-found / other-user examId → silent ok (idempotent, double-click safe)', async () => {
-    // DB の DELETE は行が存在しなくても例外を投げない (WHERE が 0 行にマッチするだけ)
-    // → { ok: true } で返すべき
+    // exam SELECT が 0 行を返す = 不在 / 他 user
+    dbState.examSelectResult = []
     const { deleteExam } = await importDeleteExam()
     const r = await deleteExam('nonexistent-exam-uuid')
     expect(r.ok).toBe(true)
-    // DELETE が走る (0 行マッチでも DB 側の話、アプリは成功扱い)
-    expect(deletedTableNames()).toEqual(['exams'])
+    // tombstone は INSERT されない (存在しない exam への tombstone 禁止)
+    expect(dbState.insertedTombstoneRows).toHaveLength(0)
+    // DELETE も走らない (exam が存在しないため tx 内で早期 return)
+    expect(deletedTableNames()).toEqual([])
   })
 
   it('revalidatePath is called for /app/upload only (S-cache-2a)', async () => {
@@ -150,5 +241,95 @@ describe('deleteExam', () => {
     await deleteExam('exam-uuid')
     expect(deletedTableNames()).not.toContain('cards')
     expect(deletedTableNames()).not.toContain('source_documents')
+  })
+
+  // ── tombstone 網羅 INSERT (Spec §4, Task 6) ──────────────────────────────
+
+  it('child cards enumerated → tombstone rows for exam(1) + each child card inserted, THEN exam deleted', async () => {
+    // デフォルト: examSelectResult=[{id:'exam-uuid'}], cardSelectResult=[card-1,card-2]
+    const { deleteExam } = await importDeleteExam()
+    const r = await deleteExam('exam-uuid')
+    expect(r.ok).toBe(true)
+
+    // tx が起動されている
+    expect(dbState.txStarted).toBe(true)
+
+    // tombstone は exam 1 件 + card 2 件 = 3 行
+    expect(dbState.insertedTombstoneRows).toHaveLength(3)
+
+    type TombstoneRow = {
+      userId: string
+      entityType: string
+      entityId: string
+      deletedAt: Date
+    }
+    const rows = dbState.insertedTombstoneRows as TombstoneRow[]
+
+    // exam tombstone
+    const examTombstone = rows.find((row) => row.entityType === 'exam')
+    expect(examTombstone).toBeDefined()
+    expect(examTombstone?.entityId).toBe('exam-uuid')
+    expect(examTombstone?.userId).toBe('user-uuid')
+    expect(examTombstone?.deletedAt).toBeInstanceOf(Date)
+
+    // card tombstone × 2
+    const cardTombstones = rows.filter((row) => row.entityType === 'card')
+    expect(cardTombstones).toHaveLength(2)
+    const cardIds = cardTombstones.map((r) => r.entityId)
+    expect(cardIds).toContain('card-uuid-1')
+    expect(cardIds).toContain('card-uuid-2')
+    cardTombstones.forEach((row) => {
+      expect(row.userId).toBe('user-uuid')
+      expect(row.deletedAt).toBeInstanceOf(Date)
+    })
+
+    // tombstone INSERT の後に exams DELETE が走る (順序確認)
+    expect(deletedTableNames()).toContain('exams')
+  })
+
+  it('exam 不在/他 user → NO tombstone inserted, idempotent { ok: true }', async () => {
+    dbState.examSelectResult = []
+    const { deleteExam } = await importDeleteExam()
+    const r = await deleteExam('other-user-exam-uuid')
+
+    expect(r.ok).toBe(true)
+    // tombstone は挿入されない
+    expect(dbState.insertedTombstoneRows).toHaveLength(0)
+    // exams DELETE も走らない
+    expect(deletedTableNames()).toHaveLength(0)
+  })
+
+  it('re-delete (same examId, already deleted) → onConflictDoNothing → no error', async () => {
+    // 1 回目削除シミュレーション: exam あり、card 2 枚
+    const { deleteExam } = await importDeleteExam()
+    const r1 = await deleteExam('exam-uuid')
+    expect(r1.ok).toBe(true)
+    expect(dbState.insertedTombstoneRows).toHaveLength(3)
+
+    // 2 回目: exam が既に物理削除済 → SELECT 0 行 → early return (idempotent)
+    resetDbState()
+    dbState.examSelectResult = []
+
+    const r2 = await deleteExam('exam-uuid')
+    expect(r2.ok).toBe(true)
+    // 2 回目は tombstone も DELETE も走らない
+    expect(dbState.insertedTombstoneRows).toHaveLength(0)
+    expect(deletedTableNames()).toHaveLength(0)
+  })
+
+  it('card なし exam → exam tombstone のみ 1 行 INSERT', async () => {
+    dbState.cardSelectResult = []
+    const { deleteExam } = await importDeleteExam()
+    const r = await deleteExam('exam-uuid')
+    expect(r.ok).toBe(true)
+
+    // tombstone は exam 1 件のみ
+    expect(dbState.insertedTombstoneRows).toHaveLength(1)
+    type TombstoneRow = { entityType: string; entityId: string; userId: string; deletedAt: Date }
+    const row = dbState.insertedTombstoneRows[0] as TombstoneRow
+    expect(row.entityType).toBe('exam')
+    expect(row.entityId).toBe('exam-uuid')
+    expect(row.userId).toBe('user-uuid')
+    expect(row.deletedAt).toBeInstanceOf(Date)
   })
 })
