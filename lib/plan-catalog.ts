@@ -55,7 +55,7 @@ export const FREE_PLAN: PlanCatalogEntry = Object.freeze({
   label: 'Free',
   monthlyYen: 0,
   yearlyYen: 0,
-  features: ['月 30 問まで AI OCR 取込', '1 試験まで', 'FSRS 基本機能'],
+  features: ['月 30 問まで AI OCR 取込', '試験・カードの作成は無制限', 'FSRS 基本機能'],
 })
 
 // 年額の月割り価格 (端数切り捨て) — UI バッジ「月あたり ¥X 相当」用。

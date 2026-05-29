@@ -8,6 +8,8 @@ import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { DeleteExamButton } from './_components/delete-exam-button'
+import { CreateExamForm } from './_components/create-exam-form'
+import { OpenCreateExamButton } from './_components/open-create-exam-button'
 import {
   ExamStatusBadge,
   ExamStatusProvider,
@@ -45,13 +47,22 @@ export default async function ExamsListPage() {
       <div className="space-y-6">
         <h1 className="text-2xl font-bold">試験一覧</h1>
 
+        {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
+        <CreateExamForm />
+
         {exams.length === 0 ? (
           <Card>
             <CardContent className="p-6 text-center space-y-3">
               <p className="text-slate-700">まだ試験がありません。</p>
-              <Button asChild>
-                <Link href="/app/upload" prefetch={false}>アップロードから始める</Link>
-              </Button>
+              {/* 空状態 CTA 2択 (spec §2.2): アップロード起点 / 手動作成起点。
+                  OpenCreateExamButton は page 上部の CreateExamForm の
+                  展開トリガーボタンに委譲する client component。 */}
+              <div className="flex flex-col sm:flex-row justify-center gap-3">
+                <Button asChild>
+                  <Link href="/app/upload" prefetch={false}>アップロードから始める</Link>
+                </Button>
+                <OpenCreateExamButton />
+              </div>
             </CardContent>
           </Card>
         ) : (
