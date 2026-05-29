@@ -69,7 +69,7 @@ export default async function ExamDetailPage({
             </CardContent>
           </Card>
         ) : (
-          <InlineCardList cards={cards} />
+          <InlineCardList cards={cards} examId={id} />
         )}
       </section>
     </div>

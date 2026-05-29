@@ -9,11 +9,30 @@
 // 見る。 server action は mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react'
 import type { ExamDetailCard } from '@/lib/exams/list'
 
 vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
+}))
+
+const { mockCreateCard, mockRouterRefresh } = vi.hoisted(() => ({
+  mockCreateCard: vi.fn(),
+  mockRouterRefresh: vi.fn(),
+}))
+
+vi.mock('../_actions/create-card', () => ({
+  createCard: mockCreateCard,
+}))
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: mockRouterRefresh }),
 }))
 
 import { InlineCardList } from './inline-card-list'
@@ -44,6 +63,7 @@ const cards: ExamDetailCard[] = [
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockCreateCard.mockResolvedValue({ ok: true, data: { cardId: 'card-new' } })
 })
 
 afterEach(() => {
@@ -52,7 +72,7 @@ afterEach(() => {
 
 describe('InlineCardList', () => {
   it('card 一覧を描画 (title / questionText / option / explanation / memo)', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     expect(screen.getByText('問1')).toBeInTheDocument()
     expect(screen.getByText('問2')).toBeInTheDocument()
     expect(screen.getByText('問題文 1')).toBeInTheDocument()
@@ -63,7 +83,7 @@ describe('InlineCardList', () => {
   })
 
   it('「編集」 ボタン (Link to /app/cards/:id) は DOM に存在しない', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     expect(
       screen.queryByRole('link', { name: '編集' }),
     ).not.toBeInTheDocument()
@@ -74,13 +94,13 @@ describe('InlineCardList', () => {
   })
 
   it('memo section が null card にも placeholder で表示される', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     // card-2 は memo null → placeholder「メモ (クリックで追加)」 を表示
     expect(screen.getByText('メモ (クリックで追加)')).toBeInTheDocument()
   })
 
   it('null sortKey / null explanationText の card も描画される (display 用 cell)', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     // 2 件目の card label が描画されているか
     expect(screen.getByText('問2')).toBeInTheDocument()
     // explanation null → 解説 cell も placeholder 表示 (クリックで追加 等)
@@ -92,7 +112,7 @@ describe('InlineCardList', () => {
   })
 
   it('inline 編集対象 cell (sort_key / title / question / explanation / memo + option 3 cell × N) を button として持つ', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     // card-1: 5 card cells + 2 options × 3 option cell (id/text/explanation) = 11
     // card-2: 5 card cells + 1 option × 3 = 8
     // 合計 19
@@ -103,7 +123,7 @@ describe('InlineCardList', () => {
   })
 
   it('option は inline 編集化されている (本文 / 解説 / id が click 可能)', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     // option の本文 / id / 解説 は inline 編集 cell として描画
     expect(screen.getByText('A 理由', { exact: false })).toBeInTheDocument()
     expect(
@@ -118,7 +138,7 @@ describe('InlineCardList', () => {
   })
 
   it('option ごとに is_correct checkbox が描画される (card-1 の正解 option は checked)', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
     // card-1: 2 options + card-2: 1 option = 3
     expect(checkboxes.length).toBe(3)
@@ -126,11 +146,19 @@ describe('InlineCardList', () => {
     expect(checkboxes.filter((c) => c.checked).length).toBe(2)
   })
 
-  it('空 cards でも crash しない (空 list を render)', () => {
-    render(<InlineCardList cards={[]} />)
-    // 何も描画されないが crash しない
-    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  it('空 cards でも crash しない (card 0 件 + 「＋ カードを追加」 のみ)', () => {
+    render(<InlineCardList cards={[]} examId="exam-1" />)
+    // card 由来の inline 編集 cell / checkbox は無いが crash しない。
+    // 「＋ カードを追加」 button のみ存在する。
+    expect(
+      screen
+        .queryAllByRole('button')
+        .filter((b) => /編集$/.test(b.getAttribute('aria-label') ?? '')),
+    ).toHaveLength(0)
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(
+      screen.getByRole('button', { name: '＋ カードを追加' }),
+    ).toBeInTheDocument()
   })
 
   // ---------------------------------------------------------------------------
@@ -139,7 +167,7 @@ describe('InlineCardList', () => {
 
   it('正解サマリ: 正解 1 件の card で 「○ 正解: <id>」 形式で表示される', () => {
     // card-1 は正解 1 件 (id='a')、 card-2 も正解 1 件 (id='a')
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     const summaries = screen.getAllByText('○ 正解: a')
     // 2 card 両方で表示されるはず
     expect(summaries.length).toBe(2)
@@ -162,7 +190,7 @@ describe('InlineCardList', () => {
         memo: null,
       },
     ]
-    render(<InlineCardList cards={multiCorrect} />)
+    render(<InlineCardList cards={multiCorrect} examId="exam-1" />)
     expect(screen.getByText('○ 正解: a, b, d')).toBeInTheDocument()
   })
 
@@ -181,16 +209,78 @@ describe('InlineCardList', () => {
         memo: null,
       },
     ]
-    render(<InlineCardList cards={noCorrect} />)
+    render(<InlineCardList cards={noCorrect} examId="exam-1" />)
     // 「○ 正解:」 を含むテキストが存在しないこと
     expect(screen.queryByText(/正解:/)).not.toBeInTheDocument()
   })
 
   it('正解サマリ: emerald 系の font-medium クラスを持つ (text-emerald-700 + font-medium)', () => {
-    render(<InlineCardList cards={cards} />)
+    render(<InlineCardList cards={cards} examId="exam-1" />)
     const summary = screen.getAllByText('○ 正解: a')[0]!
     expect(summary.className).toMatch(/text-emerald-700/)
     expect(summary.className).toMatch(/font-medium/)
     expect(summary.className).toMatch(/text-base/)
+  })
+})
+
+describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
+  it('button click → createCard(examId) 呼出 + 成功で router.refresh()', async () => {
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    await waitFor(() => {
+      expect(mockCreateCard).toHaveBeenCalledWith('exam-1')
+    })
+    await waitFor(() => {
+      expect(mockRouterRefresh).toHaveBeenCalled()
+    })
+  })
+
+  it('createCard 失敗 → inline error 表示、 router.refresh() しない', async () => {
+    mockCreateCard.mockResolvedValueOnce({
+      ok: false,
+      error: 'カードの追加に失敗しました。',
+    })
+    render(<InlineCardList cards={cards} examId="exam-1" />)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'カードの追加に失敗しました。',
+    )
+    expect(mockRouterRefresh).not.toHaveBeenCalled()
+  })
+
+  it('追加後 refresh で新 card が list に現れたら、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
+    // 実際の page では createCard 成功 → newCardId state set → router.refresh() で
+    // server component 再実行 → 新 card を含む cards prop で再描画される。 test では
+    // refresh を新 card 追加 rerender で模す。 新 card の問題文 cell が mount 時に
+    // autoEditOnMount=true で edit mode になる (既存 card は display のまま)。
+    const newCard: ExamDetailCard = {
+      id: 'card-new',
+      title: '新規カード 3',
+      sortKey: '3',
+      questionText: '(問題文を入力してください)',
+      options: [{ id: '1', text: '(選択肢1)', is_correct: false }],
+      explanationText: null,
+      memo: null,
+    }
+    mockCreateCard.mockResolvedValueOnce({
+      ok: true,
+      data: { cardId: 'card-new' },
+    })
+    // refresh が呼ばれたら新 card を cards に足して rerender (server 再 fetch を模す)
+    const { rerender } = render(
+      <InlineCardList cards={cards} examId="exam-1" />,
+    )
+    mockRouterRefresh.mockImplementation(() => {
+      rerender(
+        <InlineCardList cards={[...cards, newCard]} examId="exam-1" />,
+      )
+    })
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    // refresh 後、 新 card の問題文 cell のみ textbox (auto-edit)。 既存 2 card は display。
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('textbox', { name: '問題文 編集' }),
+      ).toHaveLength(1)
+    })
   })
 })

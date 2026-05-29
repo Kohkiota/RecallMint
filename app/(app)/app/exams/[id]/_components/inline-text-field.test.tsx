@@ -389,3 +389,56 @@ describe('InlineTextField (single-line)', () => {
     expect(input.className).toMatch(/text-slate-900/)
   })
 })
+
+describe('InlineTextField autoEditOnMount (S2.0b 「+ カードを追加」用)', () => {
+  it('autoEditOnMount: mount 時点で edit mode (textbox 描画 + auto-focus)', () => {
+    render(
+      <InlineTextField
+        cardId="card-new"
+        field="question_text"
+        initialValue="(問題文を入力してください)"
+        ariaLabel="問題文 編集"
+        multiline
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox', { name: '問題文 編集' })
+    expect(input).toBeInTheDocument()
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('autoEditOnMount 省略 / false: 通常通り display mode で mount', () => {
+    render(
+      <InlineTextField
+        cardId="card-1"
+        field="question_text"
+        initialValue="本文"
+        ariaLabel="問題文 編集"
+        multiline
+      />,
+    )
+    expect(
+      screen.queryByRole('textbox', { name: '問題文 編集' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('本文')).toBeInTheDocument()
+  })
+
+  it('one-shot: blur で display に戻った後、 prop が true のままでも再 edit しない', () => {
+    render(
+      <InlineTextField
+        cardId="card-new"
+        field="question_text"
+        initialValue="本文"
+        ariaLabel="問題文 編集"
+        multiline
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox', { name: '問題文 編集' })
+    fireEvent.blur(input)
+    // blur 後 display 復帰、 autoEditOnMount=true のままでも textbox は再出現しない
+    expect(
+      screen.queryByRole('textbox', { name: '問題文 編集' }),
+    ).not.toBeInTheDocument()
+  })
+})

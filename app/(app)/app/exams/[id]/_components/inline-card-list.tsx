@@ -5,19 +5,48 @@
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
+import { useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
+import { createCard } from '../_actions/create-card'
 
 type InlineCardListProps = {
   cards: ExamDetailCard[]
+  // route の [id] (試験 id)。 末尾「+ カードを追加」 で createCard に渡す。
+  examId: string
 }
 
-export function InlineCardList({ cards }: InlineCardListProps) {
+export function InlineCardList({ cards, examId }: InlineCardListProps) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  // createCard 成功直後に返る新 card id。 router.refresh() 後の再描画で、 該当 card の
+  // 問題文 cell に autoEditOnMount を当てて自動で編集モードにするための marker。
+  // (card の主体が問題文のため question_text cell のみに適用、 spec §3.5)
+  const [newCardId, setNewCardId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleAddCard = () => {
+    setError(null)
+    startTransition(async () => {
+      const result = await createCard(examId)
+      if (!result.ok) {
+        setError(result.error)
+        return
+      }
+      setNewCardId(result.data?.cardId ?? null)
+      // server component を再実行して新 card を含む list を取得 (inline cell の
+      // serverOptions 同期と同じ機構)。
+      router.refresh()
+    })
+  }
+
   return (
-    <ul className="space-y-2">
-      {cards.map((card) => (
+    <div className="space-y-3">
+      <ul className="space-y-2">
+        {cards.map((card) => (
         <li key={card.id}>
           <Card>
             <CardContent className="p-4 space-y-3">
@@ -52,6 +81,7 @@ export function InlineCardList({ cards }: InlineCardListProps) {
                   ariaLabel="問題文 編集"
                   multiline
                   displayClassName="text-sm text-slate-800"
+                  autoEditOnMount={card.id === newCardId}
                 />
               </div>
 
@@ -93,6 +123,26 @@ export function InlineCardList({ cards }: InlineCardListProps) {
           </Card>
         </li>
       ))}
-    </ul>
+      </ul>
+
+      {/* 末尾「+ カードを追加」: createCard で placeholder card を作成し、 refresh 後に
+          新 card の問題文 cell を auto-edit する。 inline-option-row の「+ 選択肢を追加」
+          と同じ dashed border スタイルに合わせる。 */}
+      <div>
+        <button
+          type="button"
+          onClick={handleAddCard}
+          disabled={isPending}
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isPending ? '追加中…' : '＋ カードを追加'}
+        </button>
+        {error && (
+          <p role="alert" className="mt-1 text-xs text-red-600">
+            {error}
+          </p>
+        )}
+      </div>
+    </div>
   )
 }

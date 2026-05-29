@@ -43,6 +43,11 @@ type InlineTextFieldProps = {
   placeholder?: string
   // display mode の追加 className (font / color 等 cell 表現を上書きするため)
   displayClassName?: string
+  // S2.0b 「+ カードを追加」 直後に new card の問題文 cell を mount 即 edit にする
+  // ための one-shot marker。 useState initializer のみ参照し、 mount 後は無視する
+  // (= 親が後から true → false に変えても影響なし、 cell の blur で editing が false
+  // に戻った後も再 edit しない)。 InlineOptionCell の autoEditOnMount と同方針。
+  autoEditOnMount?: boolean
 }
 
 const DEBOUNCE_MS = 500
@@ -55,6 +60,7 @@ export function InlineTextField({
   multiline = false,
   placeholder = '(クリックで追加)',
   displayClassName,
+  autoEditOnMount = false,
 }: InlineTextFieldProps) {
   const initialString = initialValue ?? ''
   // input 編集中の値
@@ -63,7 +69,10 @@ export function InlineTextField({
   // は serverCommittedRef からの rollback も含めて initialValue 由来の文字列を
   // そのまま使う (空文字判定は length === 0)。
   const [committedValue, setCommittedValue] = useState<string>(initialString)
-  const [editing, setEditing] = useState(false)
+  // initializer は mount 時のみ評価 (subsequent prop change は無視)。 one-shot 性は
+  // InlineOptionCell と同様: prop が後から true → false でも、 blur で editing=false に
+  // 戻った後も挙動変化なし。
+  const [editing, setEditing] = useState<boolean>(() => autoEditOnMount)
   const [error, setError] = useState<string | null>(null)
 
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
