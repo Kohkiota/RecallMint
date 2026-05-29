@@ -62,40 +62,55 @@ dead-write。これを「前回 cursor 以降の差分取得 + merge + tombstone
 
 ## 2. server 側変更点
 
-### 2.1 pull endpoint の `?since` 受領
+**統合 `/api/pull` endpoint を新設する** (§7-B 確定)。cards delta + exams delta + tombstone delta +
+ストリーム別 3 cursor (= 各 maxUpdatedAt/maxDeletedAt) を **1 round-trip** で返す。既存
+`/api/cards/pull`・`/api/exams/pull` は段階移行のうえ最終的に廃止する (§6 step 7)。
+
+### 2.1 統合 endpoint の `?since` 受領 (ストリーム別)
 
 現状: `cards/pull/route.ts:18` `GET(_req: Request)` は req を無視 (コメントに「Phase α は since 無視」明記)、
 `exams/pull/route.ts:13` 同様。DB 入口 `getAllCardsForUser` は `where(eq(cards.userId, userId))` のみ
 (`cards-pull.ts:22-26`)、`getAllExamsForUser` 同 (`exams-pull.ts:26-30`)。
 
 変更:
-- route で `new URL(req.url).searchParams.get('since')` を取り、ISO8601 として検証 (不正/欠落は「全件 = since 無し」に
-  fallback、= 初回 pull)。
-- DB 入口に `since?: string` を足し、`since` 指定時は `and(eq(userId), gte(cards.updatedAt, sinceDate))` を適用
-  (**inclusive `>=`**)。tombstone は別ストリーム (2.3)。
+- `/api/pull` route で `new URL(req.url).searchParams` から **ストリーム別の since を 3 本**受領
+  (例 `?since_cards=&since_exams=&since_tombstone=`)。各々 ISO8601 検証 (不正/欠落は当該ストリームのみ
+  「since 無し = 全件」に fallback、= 初回 pull)。
+- DB 入口に `since?: string` を足し、指定時は `and(eq(userId), gte(cards.updatedAt, sinceDate))` を適用
+  (**inclusive `>=`**)。exams 同様。tombstone は別ストリーム (2.3)。
 
-### 2.2 next-cursor (max) の算出
+### 2.2 next-cursor (max) の算出 — DB 入口が `{ rows, maxUpdatedAt }` を返す
 
-確定: next-cursor = 返却行の `max(対象列)`、0 件は据え置き (= client は cursor を更新しない)。
-算出場所は **§7 で選択肢提示** (推奨: DB 入口関数が `{ rows, maxUpdatedAt }` を返す)。route は `now` を捨て、
-`maxUpdatedAt` (0 件なら `null`) をレスポンスに載せる。
+確定 (§7-A): next-cursor = 返却行の `max(対象列)`、**算出は DB 入口関数**
+(`getAllCardsForUser`/`getAllExamsForUser` 相当) が `{ rows, maxUpdatedAt }` を返す形にする。
+WHERE 強制点に集約し、別クエリを足さず rows から max を取る。0 件は `maxUpdatedAt = null` →
+client は当該 cursor を据え置く。route は wall-clock `now` を**使わない**。
 
-レスポンス形 (案):
+統合レスポンス形 (案):
 ```
-{ cards: ClientCard[], maxUpdatedAt: string | null }   // cards/pull
-{ exams: ClientExam[], maxUpdatedAt: string | null }   // exams/pull
+{
+  cards:      ClientCard[],      // since_cards 以降の delta (inclusive)
+  exams:      ClientExam[],      // since_exams 以降の delta (inclusive)
+  tombstones: { entity_type: 'exam'|'card', entity_id: string, deleted_at: string }[],
+  cursors: {
+    cards:     string | null,    // max(cards.updated_at)、0 件は null
+    exams:     string | null,    // max(exams.updated_at)、0 件は null
+    tombstone: string | null,    // max(tombstones.deleted_at)、0 件は null
+  }
+}
 ```
-（`now` フィールドは廃止。client 側 helper の `typeof now === 'string'` validation (`sync/cards.ts:65`) を
-`maxUpdatedAt` 対応に変更。）
+（旧 endpoint の `now` フィールドは新 endpoint に持ち込まない。client 側 helper の
+`typeof now === 'string'` validation (`sync/cards.ts:65`) は新 endpoint 移行時に `cursors` 対応へ変更。）
 
-### 2.3 tombstone を返す形
+### 2.3 tombstone を返す形 — 統合 `/api/pull` に同梱 (1 ストリーム)
 
-tombstones は単一テーブルで `entity_type ('exam'|'card')` を持ち (`schema.ts:631-649`)、確定事項でも
-**deleted_at cursor は 1 ストリーム**。よって entity 別に分割せず 1 レスポンスで返すのが自然。
-**同梱 / 統合 endpoint のどちらを採るかは §7 で選択肢提示** (推奨: 統合 `/api/pull`)。
+確定 (§7-B): tombstones は単一テーブルで `entity_type ('exam'|'card')` を持ち (`schema.ts:631-649`)、
+**deleted_at cursor は 1 ストリーム**。統合レスポンスに entity 別に分割せず 1 配列で同梱する。
 - tombstone query: `WHERE user_id = ? AND deleted_at >= since_tombstone` (`tombstones_user_deleted_idx`
   (user_id, deleted_at) がそのまま効く)。返却に entity_type / entity_id / deleted_at。
-- next-cursor = `max(deleted_at)`、0 件据え置き。
+- next-cursor = `max(deleted_at)`、0 件 null で据え置き。
+- 不採用案 (記録のみ): tombstone 専用 endpoint / cards・exams pull への分割同梱 (後者は「deleted_at cursor 1 本」
+  と整合しづらい)。いずれも 1 round-trip / 1 tx merge の単純さに劣るため統合に確定。
 
 ### 2.4 クロック統一 (打刻箇所のみ `now()` 化、schema 不変)
 
@@ -134,13 +149,15 @@ tombstones は単一テーブルで `entity_type ('exam'|'card')` を持ち (`sc
 現状: `pullAllCards` (`sync/cards.ts:52-78`) / `pullAllExams` (`sync/exams.ts:39-65`) は
 `db.transaction('rw', ...) { clear(); bulkPut(); sync_meta.put(cursor) }`。失敗時は Dexie/sync_meta を
 touch しない不変性 (`cards.ts:55-67`)。
-変更 (失敗時不変性を維持したまま):
-- `clear()` を撤去し `bulkPut(rows)` のみ (Dexie bulkPut は PK=id の upsert)。
-- 同 tx 内で tombstone を entity_type 別に `bulkDelete(ids)` (cards 用 tx は card tombstone、exams 用は exam tombstone)。
-- 同 tx 内で 3 cursor を `setSyncMeta` (max を返した分のみ更新、0 件 null は据え置き)。
-- merge upsert + tombstone delete + cursor 更新を **1 tx** に包む (現状の atomic 失敗時不変性を踏襲)。
-- 統合 endpoint 案 (§7) を採る場合: cards/exams/tombstone を 1 レスポンスで受け、1 tx で
-  `db.transaction('rw', cards, exams, sync_meta)` にまとめる。
+変更 (統合 `/api/pull` 前提・失敗時不変性を維持したまま):
+- 統合レスポンス (cards / exams / tombstones / cursors) を **1 レスポンスで受け、1 tx に集約**:
+  `db.transaction('rw', db.cards, db.exams, db.sync_meta, ...)`。
+- `clear()` を撤去し cards/exams を `bulkPut(rows)` (Dexie bulkPut は PK=id の upsert)。
+- 同 tx 内で tombstones を entity_type 別に振り分けて `db.cards.bulkDelete(cardIds)` /
+  `db.exams.bulkDelete(examIds)`。
+- 同 tx 内で 3 cursor (cards / exams / tombstone) を `setSyncMeta`。`cursors.* === null` (0 件) の
+  ストリームは据え置き、非 null のみ更新。
+- 以上 (merge upsert + tombstone delete + 3 cursor 更新) を **1 tx** に包み、現状の atomic 失敗時不変性を踏襲。
 
 ### 3.3 pull-back 配線 (flush 成功フック)
 
@@ -149,10 +166,13 @@ push 完了経路: `createReviewFlushController.kick` (`review-flush.ts:192-224`
 レスポンスは `{ok, failed}` のみ (`bulk/route.ts:548`) で値を返さない → mirror 反映は再 pull が必須。
 変更:
 - `ControllerDeps` (`review-flush.ts:127-136`) に `onFlushed?: () => void` 相当を追加し、`outcome === 'ok'`
-  (および `study_days` も戻すなら同時) で pull-back kick。配線は `review-flush-trigger.tsx` 側で
-  `createReviewFlushController({ onFlushed: () => pullCardsDelta() })` を渡す。
-- pull-back は cards delta pull (FSRS 後の due/stability/updated_at) + study_days pull (確定事項「cards 等」)。
-  pull-back も 3.5 の in-flight guard / Web Locks を通す (二重 pull 防止)。
+  で pull-back kick。配線は `review-flush-trigger.tsx` 側で
+  `createReviewFlushController({ onFlushed: () => pullBack() })` を渡す。
+- pull-back の対象は **cards + study_days の両方** (§7-D 確定)。cards は統合 `/api/pull` の delta で FSRS 後の
+  due/stability/updated_at を引き戻す。study_days は**増分化しない方針を維持**しつつ、pull-back では
+  既存 `/api/study-days/pull` の **90 日 full-window 再取得を相乗り**させる (sync 方式は full-window 据え置き、
+  pull-back の契機に含めるだけ)。
+- pull-back も 3.5 の in-flight guard / Web Locks を通す (二重 pull 防止)。
 - dashboard dueCount は `useLiveQuery` (`dashboard-actions.tsx:33`) のため、pull-back の Dexie 書込が
   再 mount 不要で live 反映 (調査1 軸7)。
 
@@ -173,7 +193,7 @@ push 完了経路: `createReviewFlushController.kick` (`review-flush.ts:192-224`
   (`review-flush.ts:157-224`)。
 変更:
 - pull 用 lock 名 (例 `recallmint:pull`) で Web Locks を被せる。`resolveLocks`/`MinimalLockManager` は
-  push と共有できるよう必要なら共通 util へ抽出 (過度な抽象化は避け、まず複製でも可 — §7 ではなく plan 判断)。
+  push と共有できるよう必要なら共通 util へ抽出 (過度な抽象化は避け、まず複製でも可 — 後続 plan の実装判断)。
 - 1 タブ内 in-flight guard: pull orchestrator (cards/exams/tombstone を束ねる新 helper) に `running` flag を持たせ、
   実行中の重複 kick を coalesce (push controller と同型、軽量実装でよい)。
 - `ifAvailable:true` skip は、`useLiveQuery` のクロスタブ IDB 書込購読でリーダー 1 タブの書込が他タブへ伝播する
@@ -188,7 +208,7 @@ updated_at DESC、`lib/exams/list.ts:46`) と `getExamStatusMap(userId)` (OCR �
 name / `ExamStatusBadge` / cardCount / `formatRelativeJa(updatedAt)` / 詳細 Link / `DeleteExamButton` を描画。
 exams mirror を読む client は現状ゼロ (調査1 軸7)。
 
-変更 (切替範囲は §7 で選択肢提示、推奨: list 部分のみ client 抽出):
+変更 (§7-C 確定: list 部分のみ client 抽出):
 - `<ul>` の exam list 描画を client component (例 `ExamListLive`) に抽出し、`useLiveQuery` で Dexie から:
   - exams: `where archived_at IS NULL` 相当 (Dexie 上は `archived_at == null` filter) を updated_at DESC sort。
   - cardCount: cards mirror を `exam_id` で count (確定事項、`exams.card_count` 列は読まない)。
@@ -205,9 +225,12 @@ exams mirror を読む client は現状ゼロ (調査1 軸7)。
 
 | 領域 | 接続点 (file:関数/行) |
 |---|---|
-| cards pull route | `app/api/cards/pull/route.ts:18` GET / `lib/db/cards-pull.ts:22` getAllCardsForUser / `lib/db/cards-mapper.ts` toClientCard |
-| exams pull route | `app/api/exams/pull/route.ts:13` GET / `lib/db/exams-pull.ts:26` getAllExamsForUser / `:12` toClientExam |
+| 統合 pull endpoint (新設) | 新 `app/api/pull/route.ts` (cards/exams/tombstone delta + cursors を 1 round-trip) |
+| cards DB 入口 (`{rows,maxUpdatedAt}` 化) | `lib/db/cards-pull.ts:22` getAllCardsForUser / `lib/db/cards-mapper.ts` toClientCard |
+| exams DB 入口 (`{rows,maxUpdatedAt}` 化) | `lib/db/exams-pull.ts:26` getAllExamsForUser / `:12` toClientExam |
+| 旧 pull route (段階移行→廃止) | `app/api/cards/pull/route.ts:18` / `app/api/exams/pull/route.ts:13` |
 | tombstone query | `lib/db/schema.ts:631` tombstones / index `tombstones_user_deleted_idx` |
+| study-days pull (now 削除のみ) | `app/api/study-days/pull/route.ts:43` (`now` フィールド削除) / `lib/sync/study-days.ts:65` validation |
 | cursor (client) | `lib/sync/sync-meta.ts:12` SYNC_META_KEYS / `:21` getSyncMeta (未使用→新規 caller) |
 | 増分 merge | `lib/sync/cards.ts:52` pullAllCards / `lib/sync/exams.ts:39` pullAllExams |
 | クロック (a) | `app/(app)/app/exams/[id]/_actions/update-card-field.ts:142` |
@@ -221,49 +244,39 @@ exams mirror を読む client は現状ゼロ (調査1 軸7)。
 
 ---
 
-## 6. 実装順 素案 (依存関係順、粒度は大枠)
+## 6. 実装順 (依存関係順、各段で stg smoke、慎重に分割)
 
-1. **クロック統一** (§2.4): (a)(b)(c) の打刻を `now()` 化。schema 不変・単体で安全に先行可、後続 cursor の前提を作る。
-   既存 test (update-card-field / bulk route / delete-card / delete-exam) の updated_at/deleted_at 検証を
-   `now()` 経路に合わせて更新。
-2. **server pull の差分対応** (§2.1-2.3): DB 入口に `since` + `maxUpdatedAt` 返却、route の `?since` 受領、
-   tombstone 返却 (endpoint 形は §7 確定後)。`now` フィールド廃止。
-3. **client cursor read + 増分 merge** (§3.1-3.2): cursor 3 本独立 read/write、clear 撤去 + upsert +
-   tombstone bulkDelete を 1 tx。レスポンス validation を `maxUpdatedAt` に変更。
-4. **pull ガード + トリガー拡張** (§3.4-3.5): in-flight guard + Web Locks + visibility/online。
-5. **pull-back 配線** (§3.3): flush 成功フックに cards/study_days pull-back 相乗り。
-6. **exams Dexie 化 UI** (§4): 一覧 `<ul>` を `ExamListLive` に抽出、cardCount を cards mirror 算出。
+各段の完了時に **stg smoke を挟む**前提 (DevTools MCP で Network reqid 順序 / IDB 抜粋 / console を証跡化)。
+詳細タスク分割 (test 戦略・修正 logic 粒度) は後続 plan に委ねる。
 
-（各段で `superpowers:requesting-code-review` 必須経路 + `[reviewed]`。クロック (c)/削除・pull-back は
-CLAUDE.md「重要 Fix の裏取り」対象 = 削除/外部副作用に該当しうるため OT 実機確認後に [reviewed]。
-詳細タスク分割は後続 plan。)
+1. **クロック統一** (§2.4): (a) card inline 編集 / (b) 復習 bulk push / (c) tombstone の updated_at・deleted_at を
+   SQL `now()` 化。schema 不変・単体先行。既存 test (update-card-field / bulk route / delete-card / delete-exam) を
+   `now()` 経路へ更新。→ stg smoke。
+2. **統合 `/api/pull` 新設** (§2.1-2.3): cards delta + exams delta + tombstone delta + ストリーム別 3 cursor +
+   maxUpdatedAt、ストリーム別 `?since` 受領、inclusive (`>=`)、0 件据え置き。DB 入口を `{ rows, maxUpdatedAt }` 化。
+   既存 cards/exams/study-days pull はこの段では**残す**。新 endpoint を単体で検証。→ stg smoke。
+3. **client 切替** (§3.1-3.2): 統合 endpoint 参照 + 増分 merge (clear 撤去 → bulkPut upsert) +
+   tombstone bulkDelete + cursor 3 本 read/write を 1 tx。旧 endpoint からの移行。レスポンス validation を
+   `cursors`/`maxUpdatedAt` 対応へ。→ stg smoke。
+4. **pull ガード + トリガー** (§3.4-3.5): 1 タブ内 in-flight guard + 多タブ Web Locks (push 側流用、pull 用 lock 名) +
+   visibilitychange / online トリガー拡張。→ stg smoke。
+5. **pull-back 配線** (§3.3): flush 成功確定点フックに cards + study_days pull-back 相乗り。→ stg smoke。
+6. **exams Dexie 化 UI** (§4): 一覧 list を `ExamListLive` に抽出、card_count は cards mirror 算出。→ stg smoke。
+7. **後片付け**: 旧 `/api/cards/pull`・`/api/exams/pull` 廃止 + `study-days/pull` の `now` フィールド削除。→ stg smoke。
+
+（各段で feat/fix は `superpowers:requesting-code-review` 必須経路 + `[reviewed]`。クロック (c)/削除・pull-back は
+CLAUDE.md「重要 Fix の裏取り」対象 = 削除/外部副作用に該当しうるため OT 実機確認後に [reviewed]。）
 
 ---
 
-## 7. spec 段階で未確定の細部 (選択肢、OT 判断要)
+## 7. 旧 §7 未確定事項の確定結論 (全件確定済み)
 
-### 7-1. next-cursor (max) の算出場所
-- **(A) 推奨: DB 入口関数** (`getAllCardsForUser`/`getAllExamsForUser`) が `{ rows, maxUpdatedAt }` を返す。
-  WHERE 強制点に集約、追加クエリ不要 (rows から max)。
-- (B) route で map 後の `ClientCard[]` から `reduce` で max。
-- (C) SQL `max(updated_at)` を別 select (round-trip +1、却下寄り)。
+| 項目 | 確定 |
+|---|---|
+| **A. next-cursor 算出場所** | DB 入口関数 (`getAllCardsForUser`/`getAllExamsForUser` 相当) が `{ rows, maxUpdatedAt }` を返す。WHERE 強制点に集約、追加クエリなし。→ §2.2 反映済 |
+| **B. tombstone の返し方** | 統合 `/api/pull` に確定。cards delta + exams delta + tombstone delta + ストリーム別 3 cursor + maxUpdatedAt を 1 round-trip、client は 1 tx で merge。旧 `/api/cards/pull`・`/api/exams/pull` は段階移行のうえ最終廃止 (§6 step 7)。専用 endpoint 案・分割同梱案は不採用。→ §2/§3.2 反映済 |
+| **C. exams 一覧 UI 切替範囲** | list 部分のみ client 抽出 (`ExamListLive`) に確定。RSC は auth / statusMap / CreateExamForm / 空状態を保持。詳細 page はスコープ外。→ §4 反映済 |
+| **D. pull-back の対象** | cards + study_days の両方を戻すに確定。study_days は増分化しない方針を維持し、pull-back では 90 日 full-window 再取得を相乗り (sync 方式は full-window 据え置き)。→ §3.3 反映済 |
+| **E. study-days の `now`** | `study-days/pull` が返す `now` フィールドを削除するに確定。現状 dead-write (cursor として読まれていない) のため削除は無害で、3 endpoint の役割を明確化する掃除として §6 step 7 で実施。**削除で壊れる箇所が無いことは後続 plan で実コード確認する** (現時点の調査では `now` の read 側 caller は未検出だが、plan で grep 再確認を前提とする)。 |
 
-### 7-2. tombstone の返し方: 同梱 vs 統合 endpoint
-- **(A) 推奨: 統合 `/api/pull`** — cards delta + exams delta + tombstone delta + 3 cursor を 1 round-trip。
-  1 tx merge / 単一 Web Lock / スナップショット整合と相性良。既存 2 endpoint は段階移行 or 廃止。
-- (B) 既存 `/api/cards/pull`・`/api/exams/pull` を温存し、tombstone 専用 `/api/tombstones/pull` を新設
-  (tombstone 1 ストリームに合致、変更局所化)。cards/exams pull は tombstone を含まない。
-- (C) cards/pull が card tombstone、exams/pull が exam tombstone を同梱 (tombstone を 2 分割するため
-  「deleted_at cursor 1 本」確定事項と整合しづらい、却下寄り)。
-
-### 7-3. exams 一覧 UI の切替範囲
-- **(A) 推奨: list 部分のみ client 抽出** (`ExamListLive`)。RSC は statusMap/CreateExamForm/空状態を保持。
-- (B) page 全体を client 化 (OCR statusMap の初期 seed をどう client に渡すか追加検討要)。
-
-### 7-4. pull-back の対象範囲
-- flush 成功で cards のみ戻すか、study_days も戻すか (確定事項は「cards 等」)。study_days は据え置き方針だが
-  pull-back では full-window 再取得が安価なため同時取得を推奨 — OT 確認。
-
-### 7-5. `now` フィールド廃止に伴う既存 study_days helper
-- study_days は据え置きだが `study-days/pull` も `now` を返す (`study-days-pull` 経由)。本機能で cards/exams のみ
-  `maxUpdatedAt` に変える場合、study_days helper の validation を据え置くか統一するか (整合性のための軽微判断)。
+本 spec に未確定事項は残っていない (確定状態)。
