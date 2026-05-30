@@ -11,11 +11,12 @@
 
 import 'server-only'
 
-import { eq } from 'drizzle-orm'
+import { and, eq, gte, SQL } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { cards } from './schema'
 import type { ClientCard } from '@/lib/client-db'
 import { toClientCard } from './cards-mapper'
+import { maxIso } from './max-iso'
 
 export { toClientCard, toCard } from './cards-mapper'
 
@@ -23,4 +24,15 @@ export async function getAllCardsForUser(userId: string): Promise<ClientCard[]> 
   const db = getDb()
   const rows = await db.select().from(cards).where(eq(cards.userId, userId))
   return rows.map(toClientCard)
+}
+
+export async function getCardsDelta(
+  userId: string,
+  since?: Date,
+): Promise<{ rows: ClientCard[]; maxUpdatedAt: string | null }> {
+  const db = getDb()
+  const conds: SQL[] = [eq(cards.userId, userId)]
+  if (since) conds.push(gte(cards.updatedAt, since))
+  const rows = (await db.select().from(cards).where(and(...conds))).map(toClientCard)
+  return { rows, maxUpdatedAt: maxIso(rows.map((r) => r.updated_at)) }
 }
