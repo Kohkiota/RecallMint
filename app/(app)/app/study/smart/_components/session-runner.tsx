@@ -285,7 +285,11 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
         })
         const pending = await countPendingAnswerEvents(sessionId)
         if (pending >= FLUSH_THRESHOLD) {
-          await flushPendingEvents(sessionId)
+          const r = await flushPendingEvents(sessionId)
+          // daily=threshold のとき threshold flush が実 sync を担う(session 完了 flush は残件 0 で skip)。
+          // 実 sync 成功(syncedEventIds 非空 → classify 'ok')のときだけ pull-back して FSRS 値を mirror へ戻す。
+          // skip(attempted:0 → classify 'no-pending')や失敗では不発。
+          if (classifyFlushResults([r]) === 'ok') pullBack('threshold-flush')
         }
       } catch {
         // Dexie write / flush の background 失敗は UI に出さず、 次 trigger で再試行。

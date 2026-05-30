@@ -121,6 +121,7 @@ beforeEach(() => {
     failedEventIds: [],
     sessionSynced: true,
     reachable: true,
+    httpStatus: 0,
   })
   mockCompleteStudySession.mockResolvedValue(undefined)
   // flushAllPendingEvents は経路 2 (finished useEffect) で呼ばれる。 デフォルト success。
@@ -1565,16 +1566,18 @@ describe('rate-then-confirm (Step 3b)', () => {
 // よって session 完了 flush 成功点に直接 hook する。
 // classifyFlushResults は real を使い、 FlushResult 値で ok/非ok を end-to-end 検証。
 // ---------------------------------------------------------------------------
-describe('session 完了 flush 成功で pull-back', () => {
-  // 1 card 正答 → 次へ → finished まで共通駆動
-  async function reachFinished() {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
-    clickOption('選択肢B')
-    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
-    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
-    await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
-  }
 
+// 1 card 正答 → 次へ → finished まで共通駆動 (countPending を 5 にしておけば threshold も走る)。
+// pull-back 系 describe (session 完了 / threshold) で共有。
+async function reachFinished() {
+  render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+  clickOption('選択肢B')
+  fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+  fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+  await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+}
+
+describe('session 完了 flush 成功で pull-back', () => {
   it('完了 flush ok → pullBack("session-complete") が 1 回呼ばれる', async () => {
     // real classify → 'ok': attempted>0, failedEventIds empty, results non-empty
     mockFlushAllPendingEvents.mockResolvedValue([
@@ -1634,5 +1637,88 @@ describe('session 完了 flush 成功で pull-back', () => {
     await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 20))
     expect(mockPullBack).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// threshold flush で pull-back (Task 2, U6 反転)
+// daily=threshold(5枚) のとき threshold flush が実 sync を担う。
+// 実 sync 成功時のみ pull-back('threshold-flush')、skip/失敗では不発。
+// classifyFlushResults は real を使い FlushResult 値で end-to-end 検証。
+// ---------------------------------------------------------------------------
+describe('threshold flush で pull-back', () => {
+  it('threshold 実 sync → pullBack("threshold-flush") が呼ばれる', async () => {
+    // countPendingAnswerEvents >= FLUSH_THRESHOLD(5) → flushPendingEvents が実行される
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    // 実 sync: syncedEventIds 非空 → real classify → 'ok'
+    mockFlushPendingEvents.mockResolvedValue({
+      attempted: 1,
+      syncedEventIds: ['e1'],
+      failedEventIds: [],
+      sessionSynced: true,
+      reachable: true,
+      httpStatus: 200,
+    })
+
+    await reachFinished()
+
+    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('threshold-flush'))
+  })
+
+  it('threshold skip(attempted:0, syncedEventIds 空) → pullBack("threshold-flush") なし', async () => {
+    // countPendingAnswerEvents >= FLUSH_THRESHOLD(5) → flushPendingEvents が実行されるが skip
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    // skip: syncedEventIds 空 → real classify → 'no-pending'
+    mockFlushPendingEvents.mockResolvedValue({
+      attempted: 0,
+      syncedEventIds: [],
+      failedEventIds: [],
+      sessionSynced: false,
+      reachable: false,
+      httpStatus: 0,
+    })
+
+    await reachFinished()
+
+    // flushPendingEvents が呼ばれるまで待機 + macrotask 後
+    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockPullBack).not.toHaveBeenCalledWith('threshold-flush')
+  })
+
+  it('race regression: threshold=実 sync / session完了=skip → threshold のみ pull-back(1回)', async () => {
+    // threshold flush = 実 sync
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    mockFlushPendingEvents.mockResolvedValue({
+      attempted: 1,
+      syncedEventIds: ['e1'],
+      failedEventIds: [],
+      sessionSynced: true,
+      reachable: true,
+      httpStatus: 200,
+    })
+    // session 完了 flush = skip (attempted:0, syncedEventIds 空) → real classify → 'no-pending'
+    mockFlushAllPendingEvents.mockResolvedValue([
+      {
+        attempted: 0,
+        syncedEventIds: [],
+        failedEventIds: [],
+        sessionSynced: false,
+        reachable: false,
+        httpStatus: 0,
+      },
+    ])
+
+    await reachFinished()
+
+    // 両 flush が呼ばれるまで待機 + macrotask 後
+    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
+    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+
+    // threshold-flush のみ pull-back、session-complete は pull-back しない
+    expect(mockPullBack).toHaveBeenCalledWith('threshold-flush')
+    expect(mockPullBack).not.toHaveBeenCalledWith('session-complete')
+    expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 })
