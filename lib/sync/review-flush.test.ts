@@ -237,3 +237,96 @@ describe('createReviewFlushController — backoff retry', () => {
     expect(runGuarded).toHaveBeenCalledTimes(1) // retry 発火せず
   })
 })
+
+describe('createReviewFlushController — onFlushed フック', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('ok → onFlushed が 1 回呼ばれる', async () => {
+    const runGuarded = vi.fn(async () => 'ok' as FlushOutcome)
+    const onFlushed = vi.fn()
+    const ctrl = createReviewFlushController({
+      runGuarded,
+      onFlushed,
+      backoffBaseMs: [1_000],
+      backoffJitterMaxMs: [0],
+      maxRetries: 2,
+      rng: () => 0,
+    })
+    await ctrl.kick('mount')
+    expect(onFlushed).toHaveBeenCalledTimes(1)
+  })
+
+  it('no-pending → onFlushed は呼ばれない', async () => {
+    const runGuarded = vi.fn(async () => 'no-pending' as FlushOutcome)
+    const onFlushed = vi.fn()
+    const ctrl = createReviewFlushController({
+      runGuarded,
+      onFlushed,
+      backoffBaseMs: [1_000],
+      backoffJitterMaxMs: [0],
+      maxRetries: 2,
+      rng: () => 0,
+    })
+    await ctrl.kick('mount')
+    expect(onFlushed).not.toHaveBeenCalled()
+  })
+
+  it('transient → ok の retry で onFlushed が 1 回発火する (transient 時は不発)', async () => {
+    const outcomes: FlushOutcome[] = ['transient', 'ok']
+    let i = 0
+    const runGuarded = vi.fn(async () => outcomes[i++] ?? 'ok')
+    const onFlushed = vi.fn()
+    const ctrl = createReviewFlushController({
+      runGuarded,
+      onFlushed,
+      backoffBaseMs: [1_000],
+      backoffJitterMaxMs: [0],
+      maxRetries: 2,
+      rng: () => 0,
+    })
+    await ctrl.kick('mount') // transient → retry 予約、onFlushed は不発
+    expect(onFlushed).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000) // retry 発火 → ok → onFlushed 発火
+    expect(onFlushed).toHaveBeenCalledTimes(1)
+  })
+
+  it('lock-busy / rate-limited / permanent → onFlushed は呼ばれない', async () => {
+    for (const outcome of ['lock-busy', 'rate-limited', 'permanent'] as FlushOutcome[]) {
+      const runGuarded = vi.fn(async () => outcome)
+      const onFlushed = vi.fn()
+      const ctrl = createReviewFlushController({
+        runGuarded,
+        onFlushed,
+        backoffBaseMs: [1_000],
+        backoffJitterMaxMs: [0],
+        maxRetries: 2,
+        rng: () => 0,
+      })
+      await ctrl.kick('mount')
+      expect(onFlushed).not.toHaveBeenCalled()
+    }
+  })
+
+  it('onFlushed が throw しても kick は reject せず flush ループを壊さない', async () => {
+    // ok → onFlushed が throw → 握り潰されて clearTimer/attempt reset まで到達、
+    // coalesce 予約も drop されない (hook の失敗を flush 本体に波及させない)。
+    const runGuarded = vi.fn(async () => 'ok' as FlushOutcome)
+    const onFlushed = vi.fn(() => {
+      throw new Error('pull-back boom')
+    })
+    const ctrl = createReviewFlushController({
+      runGuarded,
+      onFlushed,
+      backoffBaseMs: [1_000],
+      backoffJitterMaxMs: [0],
+      maxRetries: 2,
+      rng: () => 0,
+    })
+    await expect(ctrl.kick('mount')).resolves.toBeUndefined()
+    expect(onFlushed).toHaveBeenCalledTimes(1)
+    // ループ健全性: 直後の kick も通常通り走る
+    await ctrl.kick('online')
+    expect(runGuarded).toHaveBeenCalledTimes(2)
+  })
+})

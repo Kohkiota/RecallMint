@@ -133,6 +133,10 @@ export type ControllerDeps = {
   maxRetries?: number
   rng?: () => number
   log?: (event: string, extra?: Record<string, unknown>) => void
+  // flush 成功 (outcome==='ok') 時の副作用フック (pull-back 起動用)。
+  // 同期 fire-and-forget で呼ぶ (中身は呼び元が非同期にする)。throw は kick 側で
+  // 握り潰すため flush retry ループを壊さないが、呼び元も例外を漏らさない実装が望ましい。
+  onFlushed?: () => void
 }
 
 export function createReviewFlushController(
@@ -153,6 +157,7 @@ export function createReviewFlushController(
     ((event: string, extra?: Record<string, unknown>) =>
       // extra を先に展開し event で必ず上書き (extra に event キーが来ても潰さない)。
       logger.info({ ...extra, event }))
+  const onFlushed = deps.onFlushed ?? (() => {})
 
   let attempt = 0
   let timer: TimerHandle | null = null
@@ -203,6 +208,15 @@ export function createReviewFlushController(
         rerunRequested = false
         const outcome = await runGuarded()
         log('review_events.flush.kick', { reason: currentReason, outcome })
+        // ok のみ発火: no-pending=サーバー未更新 / transient 等=未確定 のため pull-back 不要。
+        // hook の throw が retry/coalesce ループ (下記) を中断しないよう握り潰す。
+        if (outcome === 'ok') {
+          try {
+            onFlushed()
+          } catch {
+            // pull-back hook の失敗は flush 本体に波及させない (silent)。
+          }
+        }
         if (outcome === 'transient') {
           scheduleRetry()
         } else {
