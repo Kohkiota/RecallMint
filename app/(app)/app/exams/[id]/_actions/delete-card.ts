@@ -61,7 +61,7 @@ async function _deleteCard(cardId: string): Promise<ActionResult> {
           userId: user.id,
           entityType: 'card',
           entityId: cardId,
-          deletedAt: new Date(),
+          deletedAt: sql`now()`,
         })
         .onConflictDoNothing()
 

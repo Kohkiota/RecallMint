@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 
 // deleteCard server action の test (spec §3.4)。
 // tombstone(card) INSERT + card DELETE + cardCount -= 1 を同一 tx で実行。
@@ -10,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getTableName } from 'drizzle-orm'
 import { cards } from '@/lib/db/schema'
 
-const { mockGetCurrentUser, mockLoggerError, mockRevalidatePath, store, ctl } =
+const { mockGetCurrentUser, mockLoggerError, mockRevalidatePath, store, ctl, captured } =
   vi.hoisted(() => ({
     mockGetCurrentUser: vi.fn(),
     mockLoggerError: vi.fn(),
@@ -28,6 +30,10 @@ const { mockGetCurrentUser, mockLoggerError, mockRevalidatePath, store, ctl } =
       // tombstone onConflictDoNothing シミュレート: true なら tombstone INSERT をスキップ
       tombstoneAlreadyExists: false,
       throwInTx: false,
+    },
+    captured: {
+      // tombstone INSERT の .values() に渡された raw object を保持 (deletedAt 検証用)
+      tombstoneValues: null as Record<string, unknown> | null,
     },
   }))
 
@@ -83,6 +89,7 @@ vi.mock('@/lib/db', () => {
       values: (vals: Record<string, unknown>) => ({
         onConflictDoNothing: () => {
           // onConflictDoNothing シミュレート
+          captured.tombstoneValues = vals
           if (!ctl.tombstoneAlreadyExists) {
             store.tombstones.push({
               userId: vals.userId as string,
@@ -161,6 +168,7 @@ beforeEach(() => {
   store.tombstones = []
   ctl.tombstoneAlreadyExists = false
   ctl.throwInTx = false
+  captured.tombstoneValues = null
   mockGetCurrentUser.mockResolvedValue({
     id: 'user-1',
     clerkId: 'clerk-1',
@@ -315,5 +323,16 @@ describe('deleteCard', () => {
     const { deleteCard } = await importAction()
     await deleteCard('card-1')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/exams')
+  })
+
+  it('tombstone.deletedAt は DB クロック sql`now()` (増分 pull cursor 統一)', async () => {
+    // tombstone INSERT の .values() に渡された deletedAt が SQL 式で now() を含むこと
+    const { deleteCard } = await importAction()
+    await deleteCard('card-1')
+    const deletedAt = captured.tombstoneValues?.deletedAt
+    expect(deletedAt).toBeInstanceOf(SQL)
+    const q = new PgDialect().sqlToQuery(deletedAt as SQL)
+    expect(q.sql).toContain('now()')
+    expect(q.params).toHaveLength(0)
   })
 })
