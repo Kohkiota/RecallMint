@@ -249,6 +249,23 @@ exams mirror を読む client は現状ゼロ (調査1 軸7)。
 - **試験詳細 page (`exams/[id]/page.tsx` の `getCardsForExam`) は本機能スコープ外** (一覧のみ切替)。
   詳細は引き続き Postgres 直読み。
 
+> **実装時補正 (2026-05-30、step 6 実装で確定)**:
+> - **空状態 CTA は client (`ExamListLive`) が持つ**: exam 件数 (= 空状態判定) が Dexie 由来になるため、
+>   RSC でなく `ExamListLive` が skeleton / 空状態 CTA / list の 3 状態を持つ (CTA 部品 `OpenCreateExamButton` /
+>   アップロード Link は client で描画可)。RSC は auth / statusMap seed / `CreateExamForm` / 見出しを保持。
+> - **一覧に効くサーバー変更の即時反映 = 既存成功ハンドラへの `runGuardedPull` 相乗り**:
+>   list が Dexie 参照になり `router.refresh()` (RSC 再 render) では mirror が更新されないため、一覧の
+>   件数・表示に影響する 5 操作の既存成功ハンドラに `void runGuardedPull({reason}).catch(()=>{})` を 1 行相乗り
+>   させ mirror を pull で最新化する (新規 polling/検知/helper は作らない。既存 `router.refresh()`/`push()` は残す):
+>   - OCR 完了: `exam-status-live.tsx` の `hasCompletion`(processing→completed)分岐 (`'ocr-complete'`)。
+>   - 試験削除: `delete-exam-button.tsx` 削除成功 (`'exam-delete'`)。試験作成: `create-exam-form.tsx` 作成成功 (`'exam-create'`)。
+>   - カード追加: `inline-card-list.tsx` createCard 成功 (`'card-add'`)。カード削除: `delete-card-button.tsx` 削除成功 (`'card-delete'`)。
+>   - カード編集 (inline 編集、updated_at のみ変化) は一覧の試験名/件数に無影響のため相乗り対象外。
+>   - 削除の反映は **pull kick** で行う (optimistic local delete はしない = mirror は pull でのみ書く read-only 不変条件を維持)。
+>   - `pullBack` (study_days 同梱) でなく `runGuardedPull` 単体 (study_days は一覧に無関係)。
+> - dead 化した `getActiveExamsWithCardCount` + `ExamWithCardCount` は撤去 (caller は本 page のみ)。
+> - 流用棚卸し: `docs/superpowers/sessions/2026-05-30-incremental-pull-step6-reuse-inventory.md`。
+
 ---
 
 ## 5. 接続点一覧 (実コード)
