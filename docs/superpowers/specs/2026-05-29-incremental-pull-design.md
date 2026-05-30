@@ -184,15 +184,27 @@ push 完了経路: `createReviewFlushController.kick` (`review-flush.ts:192-224`
 > queue を drain する**ため、後続の controller.kick は `no-pending` を返し `onFlushed` が発火しない =
 > controller hook だけでは通常フローで pull-back が走らない (controller hook は「session を中断して離脱 →
 > 後で背景回復 flush が拾う」safety-net 経路でのみ発火)。
-> よって pull-back hook は **2 箇所**に置く:
-> - **(A) controller `onFlushed`** (`review-flush.ts`、`outcome==='ok'`) ── 背景回復 / 中断セッションの safety-net。
-> - **(B) session 完了 flush** (`session-runner.tsx` の `flushAllPendingEvents` 成功時、`classifyFlushResults===
->   'ok'`) ── 通常復習フロー。**5件閾値 flush (`flushPendingEvents`) には付けない** (mid-session の
->   study_days 無駄打ち回避、当該 session 表示は mount-once snapshot で mid-session 反映不要)。
-> 両 hook とも step 4 の `runGuardedPull` の in-flight guard で coalesce され二重 `/api/pull` にならない。
-> pull-back 実体は `lib/sync/pull-back.ts` の `pullBack(reason)` に集約。
-> (本 spec 起草時にこの 2 経路を把握しきれていなかった点の事後修正。詳細は
-> `docs/superpowers/plans/2026-05-30-incremental-pull-step5-pull-back-flush-hook.md` §⚠ / U5。)
+> よって pull-back hook は **各送信経路の末尾**に置く(下記）。
+>
+> **再々補正 (2026-05-30、step 5b 再設計 — stg smoke 観点1 FAIL を受けて)**: 上記初版(step 5)は
+> (B) を「session 完了 flush 成功 = `classifyFlushResults === 'ok'`」で発火させたが、**`classifyFlushResults`
+> が skip(in-flight 空振り = `attempted:0`)を `'ok'` と誤分類**するため、daily=5=`FLUSH_THRESHOLD` のとき
+> 5件閾値 flush と session 完了 flush が race し、完了 flush の in-flight-skip を `'ok'` と誤認して **bulk commit
+> 前に pull-back を premature 発火 → stale** を取った(`docs/superpowers/sessions/2026-05-30-incremental-pull-step5-pull-back-flush-hook-stg-smoke.md`)。
+> 再設計で **発火条件を「実際に events を send して成功した(`FlushResult.syncedEventIds` 非空)」に限定**する:
+> - `classifyFlushResults` の `'ok'` を「failed 無し **かつ** 実 sync ≥1 件」へ再定義(skip / session-only は
+>   `'no-pending'`、retry 分類は不変)。`syncedEventIds` は bulk POST が 200(= tx commit 後)を返した後にのみ
+>   set されるため、synced gate にすれば pull-back は構造的に必ず commit 後に走る。
+> - hook は **3 経路すべて**の末尾に置き、各々「実 sync 成功」でのみ発火(skip / 空振り / 失敗では不発):
+>   - **(A) controller `onFlushed`**(`review-flush.ts`、`outcome==='ok'`)── 背景回復 / 中断セッション safety-net。
+>   - **(B) session 完了 flush**(`session-runner.tsx` の `flushAllPendingEvents` 成功時、`classifyFlushResults==='ok'`)。
+>   - **(C) 5件閾値 flush**(`session-runner.tsx` の `flushPendingEvents` 成功時、`classifyFlushResults([r])==='ok'`)
+>     ── daily=threshold では threshold flush が実 sync を担うため必須(step 5 初版の「(C) には付けない」を撤回 / U6 反転)。
+> - race の正しい挙動: threshold flush が実 sync(→(C) で発火)/ 完了 flush は残件 0 で skip(→ 'no-pending' で不発)
+>   → **commit 後に 1 回だけ pull-back**。複数経路が近接発火しても step 4 `runGuardedPull` の in-flight guard で
+>   `/api/pull` は 1 本に coalesce。pull-back 実体は `lib/sync/pull-back.ts` の `pullBack(reason)`。
+> (詳細: pre-investigation `docs/superpowers/sessions/2026-05-30-incremental-pull-step5-pull-back-redesign-investigation.md`、
+> 再設計 plan `docs/superpowers/plans/2026-05-30-incremental-pull-step5b-pull-back-redesign.md`。)
 
 ### 3.4 トリガー拡張 (mount + visibilitychange + online)
 
@@ -254,7 +266,7 @@ exams mirror を読む client は現状ゼロ (調査1 軸7)。
 | クロック (a) | `app/(app)/app/exams/[id]/_actions/update-card-field.ts:142` |
 | クロック (b) | `app/api/review-events/bulk/route.ts:333` |
 | クロック (c) | `app/(app)/app/exams/[id]/_actions/delete-card.ts:64` / `_actions/delete-exam.ts:71` |
-| pull-back hook (2 経路、§3.3 補正) | (A) controller: `lib/sync/review-flush.ts` onFlushed (`outcome==='ok'`) / `ControllerDeps` / `review-flush-trigger.tsx` 配線 ; (B) session 完了: `session-runner.tsx` `flushAllPendingEvents` 成功時 (`classifyFlushResults==='ok'`) ; 実体 `lib/sync/pull-back.ts` `pullBack(reason)` |
+| pull-back hook (3 経路・実 sync gate、§3.3 再々補正) | 発火条件 = `classifyFlushResults==='ok'`(再定義: failed 無し かつ `syncedEventIds` 非空)。(A) controller: `lib/sync/review-flush.ts` onFlushed / `ControllerDeps` / `review-flush-trigger.tsx` ; (B) session 完了: `session-runner.tsx` `flushAllPendingEvents` 成功時 ; (C) 5件閾値: `session-runner.tsx` `flushPendingEvents` 成功時 (`classifyFlushResults([r])==='ok'`) ; 実体 `lib/sync/pull-back.ts` `pullBack(reason)` |
 | トリガー | `app/(app)/app/_components/pull-trigger.tsx:22` / push 同型は `review-flush-trigger.tsx:46-57` |
 | Web Locks 流用 | `lib/sync/review-flush.ts:33,64,78,90,102` / in-flight `lib/sync/review-events.ts:218` |
 | exams 一覧 UI | `app/(app)/app/exams/page.tsx:40-101` / `lib/exams/list.ts:46` / `lib/exams/format.ts` formatRelativeJa |
