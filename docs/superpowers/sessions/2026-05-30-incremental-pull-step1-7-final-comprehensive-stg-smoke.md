@@ -5,7 +5,7 @@
 - **位置づけ**: 増分 pull 化 step 1-7 の**最終総合確認**。step7 単体の掃除回帰だけでなく step 1-6 で構築した全機構を端から端まで実機確認。
 - **環境**: staging `https://stg.recallmint.nekotest.net`、chrome-devtools MCP(認証済セッション継続)、staging Supabase DB read-only 直読み(`.env.local` DATABASE_URL = staging DB と一致確認: smoke user `1231f42d…` の exams/cardCount/tombstone が一致)。
 - **deploy 反映確認**: `navigate(ignoreCache)` 後、deployment `dpl_1zFqPjFokxDkfktQ5DcpF4FRxh6n`。旧 `/api/cards/pull`・`/api/exams/pull` を直接 fetch → **両 404 (text/html)** = step7 deploy(route 削除)live を確証。
-- **結論**: **全 16 観点 PASS**。うち live 実機実証 13、code-invariance + 既 smoke PASS で担保 3(obs 1b/9-11、real データ非破壊のため)。
+- **結論**: **全 16 観点 PASS**。当初 live 実機実証 13 + code-invariance 担保 3(obs 1b/9-11)。**2026-05-30 追補で残り 3 観点(1b/9/11)も live 実機実証済 → 16/16 全て live**(末尾「追補」節 + `…step1-7-pullback-live-stg-smoke` 相当の証跡)。
 
 ## テストデータ局所化
 
@@ -18,7 +18,7 @@
 | # | 観点 | 結果 | 証跡 |
 |---|---|---|---|
 | 1a | card inline 編集 → updated_at = DB now() | **PASS** | smoke card 問題文を inline 編集。DB 直読みで updated_at `10:42:34.229`(created)→ **`10:43:12.379Z`**(編集)、created_at 不変。server 側 action の `sql\`now()\``= サーバー時系列(db_now 10:44:16)。IDB mirror は card 編集が pull 相乗り対象外(step6 仕様)のため pull まで旧値 = 設計どおり |
-| 1b | 復習 bulk push → updated_at = DB now() | **PASS (code-invariance)** | step1 で stg smoke 済 + step7 diff は `bulk/route.ts` 不触(`git diff 2b118ee..da022a5` に該当なし)。real card 非破壊のため本 session で live 再実行せず |
+| 1b | 復習 bulk push → updated_at = DB now() | **PASS (live、追補で実証)** | test card 5 枚を復習 bulk push → DB 直読みで 5 枚とも updated_at=`11:51:01.440Z`(`count(distinct)=1`= 単一 `now()`)、db_now 11:51:59 後 = サーバー時系列。per-card `last_review`(FSRS 値)とは別値。詳細「追補」観点1b |
 | 1c | tombstone deleted_at = DB now()、exam 削除は exam+配下 card 同一 tx now() | **PASS** | card 削除: tombstone `deleted_at=10:52:06.826Z`=DB now()(db_now 10:52:33)。exam 削除: exam tombstone と残 card tombstone が **同一 `deleted_at=10:53:09.549Z`**(`count(distinct deleted_at)=1`)= 同一 tx now()。両 entity 物理削除確認 |
 
 ### B. 統合 /api/pull + 増分 merge + cursor (step 2-3)
@@ -44,9 +44,9 @@
 
 | # | 観点 | 結果 | 証跡 |
 |---|---|---|---|
-| 9 | 通常復習 → bulk commit 後に pull-back、dueCount live 減少 | **PASS (code-invariance + step5b live PASS)** | step7 が pull-back code 不触 + step5b dedicated smoke が同 staging で本シナリオ PASS 済。依存 endpoint(`/api/pull` incremental・`/api/study-days/pull`)は本 session で live 健全確認 |
-| 10 | 実 sync gate(syncedEventIds 非空でのみ発火、premature 不発)| **PASS (code-invariance + live negative gate)** | **negative gate を live 観測**: `flush.kick outcome=no-pending`(msgid 10/22/25)に対し pull-back `/api/pull` は不発(発火 pull は PullTrigger 由来のみ)。`classifyFlushResults` synced-gate unit は green(1073 pass)。step7 が当該 code 不触 |
-| 11 | offline 失敗→不発、online 復帰→発火 | **PASS (code-invariance + step5b)** | 同上(pull-back code 不変・step5b PASS) |
+| 9 | 通常復習 → bulk commit 後に pull-back、dueCount live 減少 | **PASS (live、追補で実証)** | test 試験 5 枚を smart 復習(daily=threshold=5)→ 完了。Network: bulk POST **end 554ms(commit)→ pull-back `/api/pull` start 566ms**(commit 後・premature でない)。5 枚が FSRS 後値(reps 0→1/state→1/stability 2.307/due 11:58+)で mirror 反映、cards_cursor→11:51:01.440 前進。pull-back 1 本(threshold-flush 経路)。詳細「追補」観点9 |
+| 10 | 実 sync gate(syncedEventIds 非空でのみ発火、premature 不発)| **PASS (live、追補で実証)** | **positive**: 観点9 の threshold session で commit(554ms)後に pull-back(566ms)= premature 不発を live 実証。**negative**: offline flush 失敗時 pull-back 不発(追補 観点11)。step5 FAIL → step5b 構造修正の回帰確認 |
+| 11 | offline 失敗→不発、online 復帰→発火 | **PASS (live、追補で実証)** | **offline**: `navigator.onLine=false` で復習完了 → bulk POST 失敗(transfer 0)・**pull-back `/api/pull` 不発**・cards_cursor 据置(11:51:01.440)・pending 1 残置。**online 復帰**: `flush.kick reason=online outcome=ok`(msgid74)→ pull-back 発火 → cards_cursor→11:53:26.870 前進・pending drain・6 枚目 FSRS 後値反映。詳細「追補」観点11 |
 
 ### E. exams Dexie 化 UI + 5 操作 pull 相乗り (step 6)
 
@@ -72,4 +72,43 @@
 
 ## 結論
 
-増分 pull 化 step 1-7 の全 16 観点 PASS(live 13 / 担保 3)。step7 feat 相当の掃除 2 commit(`79f2cc6` 旧 endpoint 廃止+dead 入口撤去 / `da022a5` study-days now 撤去)を `[no-review]` → `[reviewed]` に書換(非 HEAD のため `git filter-branch --msg-filter` で当該 2 SHA のみ、diff 不変・Co-Authored-By 保持)。plan/spec/session の doc commit は `[no-review]` 据え置き。履歴書換のため OT の再 push は `--force-with-lease` 必須。test データ(step7-smoke + 2 card)は検証後削除済、real データ不触。**これにて増分 pull 化 step 1-7 完了**。
+増分 pull 化 step 1-7 の全 16 観点 PASS(当初 live 13 / 担保 3 → 追補で 16/16 live)。step7 feat 相当の掃除 2 commit(`79f2cc6` 旧 endpoint 廃止+dead 入口撤去 / `da022a5` study-days now 撤去)を `[no-review]` → `[reviewed]` に書換(非 HEAD のため `git filter-branch --msg-filter` で当該 2 SHA のみ、diff 不変・Co-Authored-By 保持)。plan/spec/session の doc commit は `[no-review]` 据え置き。履歴書換のため OT の再 push は `--force-with-lease` 必須。test データ(step7-smoke + 2 card)は検証後削除済、real データ不触。**これにて増分 pull 化 step 1-7 完了**。
+
+---
+
+## 追補(2026-05-30): code-invariance 担保だった 3 観点(1b/9/11)の live 実機実証 — 全 PASS
+
+当初 smoke で「real データ非破壊のため live 再実行せず」とした 3 観点を、**real card を一切 review せず**に live 実証した。これで 16/16 全観点が live 実機実証となる。
+
+### 局所化手法(real データ非破壊)
+
+- test 試験 `step7-pullback-smoke`(id `a7eaedfa-830c-4e63-abbe-70c5aafe4b04`)+ test card 6 枚を局所作成。
+- **smart session が最 overdue の real card 41 枚を優先する**問題を、**local Dexie mirror から real 52 card を削除(cache のみ・server 不触、incremental pull は updated_at < cursor のため復元しない)**して回避。これで session 対象が test card のみになる。server の real data は SELECT 以外一切触らない。
+- 検証後、test 試験を削除(tombstone)+ cursor clear → full pull で real 52 card を mirror へ復元。
+- 環境: deployment `dpl_1zFqPjFokxDkfktQ5DcpF4FRxh6n`(hard reload + 旧 `/api/cards/pull`=404 で確認)、sessionLimit=5 / `FLUSH_THRESHOLD`=5。
+
+### 観点1b(復習 push で updated_at = DB クロック)— PASS
+
+test 5 枚を smart 復習 → bulk push。DB 直読み: 5 枚とも `updated_at = 2026-05-30T11:51:01.440Z`、`count(distinct updated_at)=1`(= 単一 `sql\`now()\`` を batch 全件に適用)、db_now 11:51:59 後 = サーバー時系列内。per-card `last_review`(11:48〜11:51、FSRS 値・App 由来)とは別値で、cursor 列 `updated_at` のみ DB クロック化されていることを実証。
+
+### 観点9(通常復習 pull-back の positive-fire、commit 後発火)— PASS
+
+test 5 枚(daily=threshold=5)を smart 復習 → 完了。FSRS モードのため submit は「次へ」押下時(rate-then-confirm)。5 枚目「次へ」で 5th event 記録 → `pending>=5` threshold flush。**Network 順序(次へ click 起点 ms)**:
+- `/api/review-events/bulk` POST: start 27ms → **end 554ms(commit)**
+- `/api/study-days/pull`: start 564ms / `/api/pull`(pull-back): start **566ms** → end 1016ms
+
+→ **pull-back は bulk commit(554ms)後に発火(566ms)= premature でない**(step5 FAIL → step5b 構造修正の core 回帰)。pull-back は 1 本のみ(threshold-flush 経路が実 sync を担い、session-complete flush は残件 0 で no-op)。IDB: 5 枚が FSRS 後値(reps 0→1 / state 0→1 / stability 2.307 / due 11:58+ / last_review set)で mirror 反映、`myPendingEvents=0`、`cards_cursor`→`11:51:01.440` 前進。
+
+### 観点11(offline 失敗→不発、online 復帰→発火)— PASS
+
+6 枚目(未復習)で 1 枚 session。
+- **offline**(`emulate networkConditions=Offline`、`navigator.onLine=false`): 復習完了 → `/api/review-events/bulk` 試行のみ(dur 5ms / transferSize 0 = 失敗)、**pull-back `/api/pull` は不発**。IDB: `cards_cursor` 据置(`11:51:01.440`)、pending 1 残置、6 枚目 mirror 未更新(reps 0)。
+- **online 復帰**(network 復元): Console `review_events.flush.kick reason=online outcome=ok`(msgid74)= controller 背景回復 flush が実 sync 成功 → onFlushed → pull-back 発火。IDB: `cards_cursor`→`11:53:26.870` 前進、pending drain(0)、6 枚目 FSRS 後値反映(reps>0)。
+
+### クリーンアップ + real データ非破壊の最終確認
+
+- DB 直読み最終: realExams=2 / realCards=52(不変)、test 試験・card の server 行 = 0(物理削除)、**my session で real card は 1 枚も更新せず**(realCardsUpdatedToday=20 は本 session 前からの既存値)。
+- mirror 復元: cursor clear → full pull(`/api/pull` since 無し)で real 52 card 復帰、test 試験/card は mirror から消失。
+- **残留(read-only DB 制約で revert 不可・明示)**: 本日の `study_days` 集計が test 6 復習で +6(review_count 25→31、distinct_card_count 20→26)。実 review フローを動かす以上不可避で、DB write 不可のため revert せず。real card の FSRS / updated_at には影響なし。tombstone(test 試験+6 card)は永続記録として残置(設計どおり)。
+
+**結論(追補)**: 観点 1b / 9 / 11 を real データ非破壊で live 実証、全て PASS。**増分 pull 化 step 1-7 の最終総合 smoke は 16/16 全観点 live 実機実証で完了**。
