@@ -25,10 +25,11 @@
 
 ### 含む
 
-- **card 編集の書込を local-first 化**: 楽観 component state + Dexie 永続 outbox + 背景 flush。
-- **working set のスナップショット隔離** (演習と同型): 詳細入口で Dexie cards を 1 回読み、
-  component state で保持。進行中は mirror を再 read しない (`useLiveQuery` しない)。裏で pull が
-  走っても画面は不変。
+- **card 編集の書込を local-first 化**: IDB 直書き (Dexie 永続 outbox + cards mirror) + 背景 flush。
+- **詳細画面は cards mirror を `useLiveQuery` で直読み**: 表示の真実は IDB 一本 (component state の
+  二層管理を持たない)。編集も mirror へ optimistic 直書きし、表示は IDB 直読みで返ってくる。
+  入力中フィールドのカーソル保護は既存 inline component の dirty-guard (編集中 / 送信中は外部値で
+  上書きしない) を流用する。
 - **永続 outbox**: 既存の dormant な Dexie `card_mutations` table を活用 (`mutation_id` 冪等)。
   `(cardId, field)` 単位で coalesce — 最新値が pending を上書き、深さ 1 の永続版。
 - **送信口**: bulk endpoint。`s-local-1` 構想の `/api/card-mutations/bulk` を実装し、
@@ -44,11 +45,18 @@
   guard + Web Locks (`runGuardedFlush`)。
 - **入口 pull kick**: 詳細 mount で `runGuardedPull` を 1 回 kick。layout の `PullTrigger` は
   一覧 → 詳細の内部遷移で再発火しないため、入口 fresh pull を明示配線する。
+- **詳細画面 滞在中は ambient pull を suppress**: 詳細滞在中は layout 常駐 `PullTrigger` /
+  `runGuardedPull` の ambient 発火 (mount / visibilitychange / online) を止め、離脱で再開する。
+  mount で suppress on・unmount で必ず suppress off を **React cleanup に紐付け**、解除し忘れを
+  構造的に防ぐ。単一ユーザー前提のため、編集中に取り込むべき他者変更が存在せず、滞在中 pull を
+  止めても失うものがない (発生源から衝突を消す軽量解)。
 
 ### 含まない (defer)
 
 - **OCC** (`content_version` の +1 配線): 器は残置、v1.x。演習も持たない (対称)。
-- **詳細の `useLiveQuery` 化** (live mirror 参照): 隔離方式採用のため不要。
+- **複数人協働 / CRDT / field 単位 merge**: 本アプリは単一ユーザー前提のため、滞在中 pull-suppress
+  という軽量解で衝突を発生源から消す。将来 multi-user 化したら、pull-suppress は (Notion 等が採る)
+  協働マージへ置換が必要 (滞在中も他者変更を取り込む必要が出るため)。
 - **真の offline / Service Worker**。
 
 ## 3. 衝突方針
@@ -56,12 +64,13 @@
 ベストプラクティス裏取り (low-stakes・単一ユーザーは LWW + フィールド単位の自然マージが推奨、
 OCC/CRDT は overkill) に基づく。
 
-### ケース1: 自分の pull と自分の未送信 outbox のかち合い
+### ケース1: 自分の pull と自分の未送信編集のかち合い
 
-- flush 成功 → **pull-back** (演習と同型) で自分の確定値を mirror に引き戻す (時系列整合)。
-- 加えて、**pending outbox を持つ card は pull の `bulkPut` 対象から除外**する (軽量 dirty-guard を
-  mirror 層に置く)。drain 前に ambient pull が走っても、未送信編集を mirror 上で潰さない。
-- 「編集中 pull 抑止ゲート」は**新設しない** (隔離で画面は守られ、上記で mirror 衝突も防げる)。
+- **詳細滞在中は pull を suppress するため、自分の pull × 自分の編集の衝突はそもそも発生しない**
+  (発生源から消す)。滞在中に未送信編集を mirror 上で潰す ambient pull が走らないので、
+  `bulkPut` 除外 (dirty-guard) は不要 = 撤去。
+- flush 成功 → **pull-back** (演習と同型) は維持するが、位置づけは「離脱後 / suppress 再開後の
+  最新化」。自分の確定値を mirror に引き戻し時系列整合を取る。
 
 ### ケース2: 他デバイス変更との衝突
 
@@ -75,27 +84,25 @@ OCC/CRDT は overkill) に基づく。
 
 | 項目 | 演習 | 試験詳細 (本 spec) |
 |---|---|---|
-| working set | 入口 Dexie snapshot、再 read なし | 同型 (exam の cards を入口 read) |
-| 表示 | component state | 同型 (楽観編集も state) |
-| 書込 | `answer_events` outbox (append-only) | `card_mutations` outbox。update は自然冪等、`createCard` のみ client id + `ON CONFLICT` |
+| working set | 入口 Dexie snapshot、再 read なし | cards mirror を `useLiveQuery` で直読み (IDB 一本) |
+| 表示 | component state | IDB 直読み (component state 二層なし、編集も mirror 直書き) |
+| 書込 | `answer_events` outbox (append-only) | `card_mutations` outbox + mirror 直書き。update は自然冪等、`createCard` のみ client id + `ON CONFLICT` |
 | push | 5 件 / 完了 / ambient / retry | debounce-drain / ambient / retry |
-| pull | ambient + flush 後 pull-back | ambient (抑止せず、UI は観測しない) + 入口 kick |
+| pull | ambient + flush 後 pull-back | ambient (**滞在中は suppress**) + 入口 kick + 離脱後 pull-back |
 | 二重送信防止 | 冪等 key + in-flight + Web Locks | 同型 |
 | OCC | 無し (append-only) | defer (`content_version` の器は残置) |
 
-## 5. 要確認 (plan 前に OT 確認、claude.ai 推奨を併記)
+## 5. 確定事項 (旧「要確認」、全て確定済)
 
-- **送信口を bulk endpoint (`/api/card-mutations/bulk`) で確定してよいか**。既存 server action
-  直叩き継続も技術的には可。
-  → 推奨: bulk (dormant な `card_mutations` table + `s-local-1` 構想を活用、演習と対称)。
-- **ケース1 の手当てを「flush→pull-back + pending card は pull 除外」で確定してよいか**。
-  編集中 pull 抑止ゲート (案イ) は採らない。
-  → 推奨: pull-back + 除外。
-- **入口 pull kick を足してよいか**。
-  → 推奨: 足す。
-- **送信タイミングを debounce-drain + ambient + best-effort pagehide、interval なし、で確定して
-  よいか**。
-  → 推奨: この通り。
+- **送信口** = bulk endpoint (`/api/card-mutations/bulk`)。dormant な `card_mutations` table +
+  `s-local-1` 構想を活用、演習と対称。
+- **ケース1 の手当て** = 詳細滞在中の **pull-suppress** (発生源から衝突を消す)。flush→pull-back は
+  離脱後 / 再開後の最新化として維持。**pending card の pull 除外 (dirty-guard) は撤去** (suppress で
+  不要)。
+  (改訂註: 旧案「flush→pull-back + pending card pull 除外」は dirty-guard を mirror 層に持つ複雑さが
+  あり、単一ユーザー前提では滞在中 pull を止める方が単純。本改訂で pull-suppress に変更。)
+- **入口 pull kick** = 足す (詳細 mount で 1 回)。
+- **送信タイミング** = debounce-drain + ambient + best-effort pagehide、interval なし。
 
 ## 6. 参照
 
