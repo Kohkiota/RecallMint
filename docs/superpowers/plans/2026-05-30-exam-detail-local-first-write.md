@@ -4,7 +4,7 @@
 
 **Goal:** 試験詳細 (`/app/exams/[id]`) の card 編集を、演習側で確立した outbox/flush/pull-back 機構と対称な local-first (楽観 state + Dexie 永続 outbox + 背景 flush) にする。
 
-**Architecture:** 全 card write (field 更新 / 追加 / 削除) を Dexie `card_mutations` outbox に積み、新設 bulk endpoint `/api/card-mutations/bulk` に背景送信する。ドメインロジック (owner-scope UPDATE / `correct_answer_ids` 再生成 / `card_count` / tombstone) は既存 3 server action から共有内部関数に抽出して endpoint と共用。表示は入口で Dexie cards を 1 回 snapshot して component state で進める (再 read しない)。編集は mirror へ optimistic 書込 + outbox enqueue し、pull の `bulkPut` は pending card を除外 (dirty-guard) して未送信編集を守る。flush 成功で pull-back。送信 orchestrator は演習の `createReviewFlushController` を deps 注入で再利用 (lock 名のみ別)。
+**Architecture:** 全 card write (field 更新 / 追加 / 削除) を Dexie `card_mutations` outbox に積み、新設 bulk endpoint `/api/card-mutations/bulk` に背景送信する。ドメインロジック (owner-scope UPDATE / `correct_answer_ids` 再生成 / `card_count` / tombstone) は既存 3 server action から共有内部関数に抽出して endpoint と共用。表示は cards mirror を `useLiveQuery` で直読み (IDB 一本、component state 二層なし)。編集は mirror へ optimistic 直書き + outbox enqueue し、表示は IDB 直読みで返ってくる。詳細画面 滞在中は ambient pull を suppress (mount で止め、unmount で必ず戻す = React cleanup 紐付け) して、単一ユーザー前提で自分の pull × 自分の編集の衝突を発生源から消す。flush 成功で pull-back (離脱後 / 再開後の最新化)。送信 orchestrator は演習の `createReviewFlushController` を deps 注入で再利用 (lock 名のみ別)。
 
 **Tech Stack:** Next.js 15 App Router / Drizzle (Postgres) / Dexie (IndexedDB) / Web Locks / Vitest。
 
@@ -13,7 +13,7 @@
 - 命名 kebab/Pascal/camel/UPPER、import 順 外→内→相対、コメントは「なぜ」。TypeScript strict。
 - 各 task 完了条件は共通で「Vitest 該当 test 通過 + `pnpm build` 緑 + code-review Critical 0 + `[reviewed]` tag」。
 - 段階規律: 各 Stage = plan→実装→`[no-review]` 中間 commit→OT push→stg smoke→`[reviewed]` amend。Stage 完了で停止し OT 判断待ち。
-- defer (本 plan 対象外): OCC (`content_version` +1 配線、器のみ残置) / 詳細の `useLiveQuery` 化 / 真の offline・Service Worker。
+- defer (本 plan 対象外): OCC (`content_version` +1 配線、器のみ残置) / 複数人協働・CRDT・field 単位 merge (単一ユーザー前提で pull-suppress を採用、将来 multi-user 化時はマージへ置換要) / 真の offline・Service Worker。
 - 衝突方針: ケース2 (他デバイス) は field 単位 LWW、`options` は配列ごと後勝ち (部分マージ不可・低リスク許容)。打刻は DB `now()` 統一済 (増分 pull step1) で client 時計ずれ回避。
 
 ---
@@ -64,39 +64,39 @@
 
 ---
 
-## Stage 3: Pull-side 隔離 (dirty-guard) + 入口 pull kick
+## Stage 3: 詳細滞在中の pull-suppress + 入口 pull kick
 
-**Stage スコープ:** pull の `bulkPut` から pending outbox を持つ card を除外し、未送信編集を mirror 上で潰さない。詳細 mount で `runGuardedPull` を 1 回明示 kick。
-**区切り (smoke):** DevTools で pending mutation を持つ card を用意 → visibilitychange で pull 実行 → 当該 card の Dexie mirror 行が pull で上書きされない事を確認。詳細 page を開く → Network に入口 `/api/pull` 発火を確認。
-**依存:** Stage 2 (pending outbox の存在判定)。
+**Stage スコープ:** layout 常駐 `PullTrigger` / `runGuardedPull` の ambient 発火を、試験詳細 滞在中だけ止める suppress gate を新設。詳細 mount で suppress on・unmount で必ず off (cleanup 紐付け)。詳細 mount で `runGuardedPull` を 1 回明示 kick (入口 fresh pull) は維持。
+**区切り (smoke):** 詳細滞在中は visibilitychange / online で pull が発火しない / 離脱後は再び発火する / 入口で 1 回 pull が走る、を Network で確認。
+**依存:** なし (Stage 1/2 と独立。pull 機構のみに閉じる)。
 
-### Task 3.1: pullDelta の pending-card dirty-guard
-- **目的:** `lib/sync/pull.ts` の `pullDelta` tx 内 `db.cards.bulkPut(cards)` 前に、Dexie `card_mutations` の pending `card_id` 集合を取得し、その id を持つ incoming card を bulkPut 対象から除外する。
-- **制約:** tombstone bulkDelete・cursor write の不変条件は維持 (削除反映の唯一経路を壊さない)。除外は cards upsert のみに限定 (exam は対象外)。pending 解消後の次 pull で自然に最新化される設計を維持。
-- **完了条件:** pending card 除外 / 非 pending card は通常 upsert / tombstone・cursor 不変 の test 通過 + 共通条件。
+### Task 3.1: ambient pull の suppress gate
+- **目的:** layout 常駐 `PullTrigger` の ambient kick (mount / visibilitychange / online) を抑止できる suppress フラグを新設し、`PullTrigger` がフラグ on の間は `runGuardedPull` を呼ばないようにする。実装手段 (module-scope フラグ / React context / `usePathname` 判定) は最小のものを Generator 判断 (最有力: module-scope の `suppressAmbientPull` カウンタ + `PullTrigger` 側参照、test 容易性優先)。
+- **制約:** 入口 kick (Task 3.2) と flush 後 pull-back は suppress の対象外 (明示 kick は常に通す)。suppress 中の visibilitychange / online は「無視」であって queue しない (離脱後の次トリガで自然回復)。フラグ既定値は off。
+- **完了条件:** suppress on で ambient kick が `runGuardedPull` を呼ばない / off で呼ぶ / 明示 kick は on でも通る test 通過 + 共通条件。
 
-### Task 3.2: 詳細 mount の入口 pull kick
-- **目的:** 試験詳細 page 配下に client mount 1 回限りの `runGuardedPull({reason:'exam-detail-mount'})` kick を配線 (`InlineCardList` 等の既存 client 境界 or 専用小 component)。layout の `PullTrigger` は一覧→詳細の内部遷移で再発火しないため入口 fresh pull を明示する。
-- **制約:** fire-and-forget・silent (guard outcome は正常系)。UI は pull 結果を観測しない (snapshot 隔離を崩さない)。`useLiveQuery` 不使用。
-- **完了条件:** mount で `runGuardedPull` 1 回呼出 / 再 render で多重発火しない test 通過 + 共通条件。
+### Task 3.2: 詳細 mount/unmount への suppress 紐付け + 入口 kick
+- **目的:** 試験詳細 page 配下の client 境界に、mount で suppress on + `runGuardedPull({reason:'exam-detail-mount'})` を 1 回 kick、**unmount で必ず suppress off** を `useEffect` cleanup に紐付ける専用小 component (例 `exam-detail-pull-gate.tsx`) を新設し配線。
+- **制約:** cleanup での off は解除し忘れを構造的に防ぐ唯一経路 (early return / 例外でも React が cleanup を保証)。入口 kick は fire-and-forget・silent。StrictMode 二重 mount でも guard と冪等 off で副作用なし。
+- **完了条件:** mount で suppress on + kick 1 回 / unmount で suppress off / 二重 mount でも最終 off 保証 test 通過 + 共通条件。
 
 ---
 
 ## Stage 4: 編集 UI の local-first 化 (cutover)
 
-**Stage スコープ:** 入口 Dexie snapshot 読込 + 各編集操作を「optimistic state + mirror 楽観書込 + outbox enqueue」に切替。debounce を「送信遅延」から「drain」へ移設。server action 直叩きを撤去。
-**区切り (smoke):** 詳細 page で text/options 編集・カード追加・削除 → UI 即時反映 → reload で編集が永続 (Dexie) → 数秒後 server 反映 + 一覧の `card_count` 整合。mobile view 動作検証。
+**Stage スコープ:** cards mirror を `useLiveQuery` で直読み + 各編集操作を「mirror 楽観直書き + outbox enqueue」に統一 (component state 二層を撤去)。debounce を「送信遅延」から「drain」へ移設。server action 直叩きを撤去。
+**区切り (smoke):** 詳細 page で text/options 編集・カード追加・削除 → UI 即時反映 (IDB 直読み) → reload で編集が永続 (Dexie) → 数秒後 server 反映 + 一覧の `card_count` 整合。**背景 pull を再開させた状態 (離脱→再入場後) でも編集が IDB 直読みで正しく反映**。mobile view 動作検証。
 **依存:** Stage 1〜3 全て。
 
-### Task 4.1: 入口 cards snapshot 読込 (隔離)
-- **目的:** 詳細 page の cards 表示 source を、server fetch から **入口 Dexie 1 回読み** (mirror) に切替し component state 保持。`get-dexie-session-cards.ts` の入口読込パターンを手本に exam 単位 read helper を用意。Dexie 0 件は server fetch fallback。
-- **制約:** 進行中は再 read しない (`useLiveQuery` 禁止)。snapshot は immutable に扱い、編集は state 更新で表現。owner-scope。
-- **完了条件:** 入口 read → state 反映 / 背景 pull で画面不変 test 通過 + 共通条件。
+### Task 4.1: cards mirror を useLiveQuery で直読み
+- **目的:** 詳細 page の cards 表示 source を server fetch から **Dexie cards mirror の `useLiveQuery` 直読み** に切替 (exam 単位 + owner-scope + sort)。表示の真実を IDB 一本にし、component state の二層管理を撤去。Dexie 0 件 / SSR は server fetch を初期 fallback。
+- **制約:** 表示は IDB 直読みで返ってくるので楽観値の二重保持はしない。owner-scope。`useLiveQuery` の購読は詳細滞在中のみ (Stage3 の suppress で背景 pull は止まっているため購読更新は自分の編集起因のみ)。
+- **完了条件:** mirror 変化が live 反映 / exam filter・sort 正しい test 通過 + 共通条件。
 
-### Task 4.2: inline-text-field / inline-option-row を outbox 配線へ
-- **目的:** `inline-text-field.tsx` / `inline-option-row.tsx` の `send` を `updateCardField` 直叩きから「mirror 楽観 patch + `enqueueCardMutation` (op='update_field')」に置換。`scheduleSend` の 500ms debounce は**送信遅延ではなく outbox drain trigger** (`runGuardedCardMutationFlush`) に移設。失敗 rollback は outbox/mirror 不整合が出ない形に再構成。
-- **制約:** optimistic display は維持。coalesce で連続入力は最新値のみ pending。`correct_answer_ids` は server 再生成 (client は送らない、Stage1 踏襲)。
-- **完了条件:** 編集→state 即時反映 / debounce 後 drain / 失敗 rollback の test 通過 + 共通条件。
+### Task 4.2: inline-text-field / inline-option-row を mirror 直書き + outbox 配線へ
+- **目的:** `inline-text-field.tsx` / `inline-option-row.tsx` の `send` を `updateCardField` 直叩きから「**mirror 直書き (Dexie cards patch) + `enqueueCardMutation` (op='update_field')**」に置換。`scheduleSend` の 500ms debounce は**送信遅延ではなく outbox drain trigger** (`runGuardedCardMutationFlush`) に移設。表示は `useLiveQuery` で返るため component state への楽観二重書きは撤去。
+- **制約:** 入力中フィールドのカーソル保護は既存の編集中/送信中 dirty-guard (外部値で上書きしない) を流用。coalesce で連続入力は最新値のみ pending。`correct_answer_ids` は server 再生成 (client は送らない、Stage1 踏襲)。失敗時の rollback は mirror を server 確定値へ戻す形に再構成。
+- **完了条件:** 編集→mirror 直書き→live 反映 / debounce 後 drain / 失敗 rollback の test 通過 + 共通条件。
 
 ### Task 4.3: createCard / deleteCard の local-first 化
 - **目的:** `inline-card-list.tsx` の追加を client 生成 id + `buildEmptyCard` で mirror 即時 insert + outbox enqueue (op='create') + exam mirror の `card_count` 楽観 ++、`delete-card-button.tsx` の削除を mirror remove + outbox enqueue (op='delete') + `card_count` 楽観 --。server action 直叩き (`createCard`/`deleteCard`) と `revalidatePath` を撤去。
@@ -112,6 +112,6 @@
 
 ## Self-Review
 
-- **Spec coverage:** §2 含む全項目 = local-first write (S2/S4) / snapshot 隔離 (4.1) / 永続 outbox coalesce (2.1) / bulk endpoint 既存 logic 流用 (1.1-1.3) / createCard 冪等 (1.3+4.3) / 送信タイミング debounce-drain+ambient+pagehide+retry/429 (2.2-2.3,4.2) / 二重送信防止 (2.2) / 入口 pull kick (3.2)。§3 ケース1 = pull-back (2.3) + pending 除外 (3.1)。ケース2 LWW = field 単位 update (1.3) に内包 + 全体制約に明記。defer 3 項 = 全体制約に明記。漏れなし。
+- **Spec coverage:** §2 含む全項目 = local-first write (S2/S4) / `useLiveQuery` 直読み (4.1) / 永続 outbox coalesce (2.1) / bulk endpoint 既存 logic 流用 (1.1-1.3) / createCard 冪等 (1.3+4.3) / 送信タイミング debounce-drain+ambient+pagehide+retry/429 (2.2-2.3,4.2) / 二重送信防止 (2.2) / 入口 pull kick (3.2) / 詳細滞在中 pull-suppress (3.1+3.2)。§3 ケース1 = pull-suppress で衝突を発生源から消す (3.1) + flush 後 pull-back は離脱後最新化として維持 (2.3)。ケース2 LWW = field 単位 update (1.3) に内包 + 全体制約に明記。defer (OCC / 複数人協働・CRDT / offline) = 全体制約に明記。漏れなし。
 - **Type 一貫性:** `enqueueCardMutation`/`runGuardedCardMutationFlush`/`flushAllPendingCardMutations`/`applyCardFieldUpdate` 等を Stage 間で同名参照。`FlushResult`/`classifyFlushResults` は review-flush から再利用 (shape 互換)。
 - **Placeholder scan:** TBD / 「適切に」等なし。各 task に具体 file path・reuse 元・完了条件。
