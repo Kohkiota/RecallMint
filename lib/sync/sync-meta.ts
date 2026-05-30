@@ -10,12 +10,9 @@
 import { getClientDb } from '@/lib/client-db'
 
 export const SYNC_META_KEYS = {
-  lastCardPullAt: 'last_card_pull_at',
-  lastExamPullAt: 'last_exam_pull_at',
   // S-perf-3: study_days mirror pull の最終時刻 (dashboard streak / todayCount 算出用)。
   lastStudyDayPullAt: 'last_study_day_pull_at',
-  // 統合 /api/pull 増分 cursor (旧 lastCardPullAt/lastExamPullAt とは別 key)。
-  // 別 task で旧 key は掃除する。
+  // 統合 /api/pull 増分 cursor。
   cardsCursor: 'cards_cursor',
   examsCursor: 'exams_cursor',
   tombstoneCursor: 'tombstone_cursor',

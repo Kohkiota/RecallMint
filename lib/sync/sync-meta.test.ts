@@ -10,36 +10,38 @@ beforeEach(async () => {
 })
 
 describe('SYNC_META_KEYS', () => {
-  it('lastCardPullAt / lastExamPullAt の定数を持つ', () => {
-    expect(SYNC_META_KEYS.lastCardPullAt).toBe('last_card_pull_at')
-    expect(SYNC_META_KEYS.lastExamPullAt).toBe('last_exam_pull_at')
+  it('lastStudyDayPullAt / cardsCursor / examsCursor / tombstoneCursor の定数を持つ', () => {
+    expect(SYNC_META_KEYS.lastStudyDayPullAt).toBe('last_study_day_pull_at')
+    expect(SYNC_META_KEYS.cardsCursor).toBe('cards_cursor')
+    expect(SYNC_META_KEYS.examsCursor).toBe('exams_cursor')
+    expect(SYNC_META_KEYS.tombstoneCursor).toBe('tombstone_cursor')
   })
 })
 
 describe('getSyncMeta', () => {
   it('未 set の key は undefined', async () => {
-    const v = await getSyncMeta(SYNC_META_KEYS.lastCardPullAt)
+    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
     expect(v).toBeUndefined()
   })
 
   it('set した value を取得できる', async () => {
-    await setSyncMeta(SYNC_META_KEYS.lastCardPullAt, '2026-05-26T01:23:45.000Z')
-    const v = await getSyncMeta(SYNC_META_KEYS.lastCardPullAt)
+    await setSyncMeta(SYNC_META_KEYS.cardsCursor, '2026-05-26T01:23:45.000Z')
+    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
     expect(v).toBe('2026-05-26T01:23:45.000Z')
   })
 
   it('別 key は干渉しない', async () => {
-    await setSyncMeta(SYNC_META_KEYS.lastCardPullAt, 'card-iso')
-    await setSyncMeta(SYNC_META_KEYS.lastExamPullAt, 'exam-iso')
-    expect(await getSyncMeta(SYNC_META_KEYS.lastCardPullAt)).toBe('card-iso')
-    expect(await getSyncMeta(SYNC_META_KEYS.lastExamPullAt)).toBe('exam-iso')
+    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'cards-cursor-val')
+    await setSyncMeta(SYNC_META_KEYS.examsCursor, 'exams-cursor-val')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('cards-cursor-val')
+    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor)).toBe('exams-cursor-val')
   })
 })
 
 describe('setSyncMeta', () => {
   it('上書き update で値が更新される', async () => {
-    await setSyncMeta(SYNC_META_KEYS.lastCardPullAt, 'v1')
-    await setSyncMeta(SYNC_META_KEYS.lastCardPullAt, 'v2')
-    expect(await getSyncMeta(SYNC_META_KEYS.lastCardPullAt)).toBe('v2')
+    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'v1')
+    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'v2')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('v2')
   })
 })
