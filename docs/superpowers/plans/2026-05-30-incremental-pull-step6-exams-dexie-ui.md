@@ -1,26 +1,26 @@
-# 増分 pull Step 6「exams Dexie 化 UI(試験一覧)」 Implementation Plan
+# 増分 pull Step 6「exams Dexie 化 UI(試験一覧)」 Implementation Plan (改訂)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 試験一覧 UI を Postgres 直読み(`getActiveExamsWithCardCount` RSC)から **Dexie exams mirror の `useLiveQuery` 参照**へ切替え、step 1-5 で増分更新されるようになった exams mirror を初めて UI が読む(これまで dead read)。card_count は cards mirror から算出。
+**Goal:** 試験一覧 UI を Postgres 直読み(`getActiveExamsWithCardCount` RSC)から **Dexie exams mirror の `useLiveQuery` 参照**へ切替え、step 1-5 で増分更新されるようになった exams mirror を初めて UI が読む(これまで dead read)。card_count は cards mirror から算出。一覧件数・表示に効くサーバー変更(OCR 完了/試験作成・削除/カード追加・削除)の既存成功ハンドラに `runGuardedPull` を相乗りさせ、mirror を即時最新化する。
 
-**Architecture:** `<ul>` の exam list 描画を client component `ExamListLive`(`useLiveQuery`)に抽出。exams を `archived_at == null` filter + `updated_at` DESC sort、card_count は cards mirror を `exam_id` で集計。RSC(`exams/page.tsx`)は auth / OCR statusMap seed(`ExamStatusProvider`)/ `CreateExamForm` / 見出しを保持。3 状態(skeleton / 空状態 / list)は `ExamListLive` が持つ。mirror は pull 駆動のため、同一 page 上の exam 削除は mirror 反映に pull が要る(Task 2)。
+**Architecture:** `<ul>` の exam list 描画を client component `ExamListLive`(`useLiveQuery`)に抽出。exams を `archived_at == null` filter + `updated_at` DESC sort、card_count は cards mirror を 1 read して `exam_id` で JS 集計(N count query 回避)。RSC(`exams/page.tsx`)は auth / OCR statusMap seed(`ExamStatusProvider`)/ `CreateExamForm` / 見出しを保持。3 状態(skeleton / 空状態 / list)は `ExamListLive` が持つ。mirror は **pull でのみ書く**(read-only 不変条件)ため、一覧に効く 5 操作の既存成功ハンドラに `runGuardedPull` を fire-and-forget で 1 行相乗り(新規 polling/検知/helper は作らない)。
 
-**Tech Stack:** React, dexie-react-hooks `useLiveQuery`, Dexie, Vitest + jsdom + fake-indexeddb + @testing-library/react。新規ライブラリなし。
+**Tech Stack:** React, dexie-react-hooks `useLiveQuery`, Dexie, `runGuardedPull`(step4), Vitest + jsdom + fake-indexeddb + @testing-library/react。新規ライブラリなし。
 
-**位置づけ (spec 整合):** 確定 spec `docs/.../2026-05-29-incremental-pull-design.md` §4 / §6 step 6。exams mirror が dead read でなくなり、OT 当初動機「試験一覧の読取を軽くする(毎回 Postgres 直読みしない)」が実現。step 1-5(増分 pull/tombstone/pull-back)が前提。
+**位置づけ (spec 整合):** 確定 spec §4 / §6 step 6。流用棚卸し `docs/superpowers/sessions/2026-05-30-incremental-pull-step6-reuse-inventory.md`(U2/U4 とも新規不要、`runGuardedPull` 相乗りで足りる)を反映。step 1-5(増分 pull/tombstone/pull-back)が前提。
 
 ---
 
 ## 全体制約(各タスク共通、冒頭一度のみ)
 
 - **TDD**: 失敗 test 先行 → fail 確認 → 最小実装 → green → review → commit。test 実行 `pnpm test <path>`、型は `pnpm exec tsc --noEmit`。
-- **mirror は read-only(pull 上書きのみ)**: `ExamListLive` は Dexie を読むだけ。書込はしない(`ClientExam` は pull 専用 cache)。
-- **既存パターン踏襲**: `useLiveQuery` + skeleton は `dashboard-actions.tsx`(undefined → `role="status"` skeleton → data)を手本。card mirror read は `db.cards.where('user_id').equals(userId).toArray()` 形。
-- **client-safe 部品のみ client で使う**: `formatRelativeJa`(`@/lib/exams/format`、server 依存なし)/ `ExamStatusBadge`(context 購読)/ `DeleteExamButton`(既存 client)/ `OpenCreateExamButton`(既存 client)。`@/lib/exams/list`(`import 'server-only'`)は client から import しない。
-- **OCR statusMap は server seed 維持**: RSC が `getExamStatusMap` → `ExamStatusProvider initialStatuses`。`ExamListLive` はその内側で `ExamStatusBadge` を描画(context 流通)。Dexie 非対象。
-- **詳細 page(`exams/[id]`)はスコープ外**(一覧のみ切替、詳細は Postgres 直読み据え置き)。
-- **review/commit 規律**: feat は `superpowers:requesting-code-review` 必須経路。UI 読取切替(削除導線含む)→ 通常 review。step 1-5 運用に合わせ **review pass → `[no-review]` commit → UI stg smoke → `[reviewed]` amend**。
+- **mirror は read-only(pull 上書きのみ)**: `ExamListLive` は Dexie を読むだけ。削除等の反映も optimistic local delete はせず、**`runGuardedPull` 相乗りで pull 経由**にする(U4)。
+- **既存パターン踏襲**: `useLiveQuery` + skeleton は `dashboard-actions.tsx`(undefined → `role="status"` skeleton → data)。card mirror read は `db.cards.where('user_id').equals(userId).toArray()` 形。
+- **client-safe 部品のみ**: `formatRelativeJa`(`@/lib/exams/format`)/ `ExamStatusBadge` / `DeleteExamButton` / `OpenCreateExamButton`。`@/lib/exams/list`(`import 'server-only'`)は client から import しない。
+- **相乗りは「足すだけ」**: 既存の `router.refresh()` / `router.push()` は**残す**(RSC 部分・遷移を維持)。その隣に `void runGuardedPull({ reason }).catch(() => {})` を 1 行追加。`pullBack`(study_days 同梱)でなく `runGuardedPull` 単体。
+- **詳細 page(`exams/[id]`)の表示自体はスコープ外**。ただし詳細 page の card 追加/削除ハンドラには一覧件数最新化のため pull 相乗りを足す(下記 Task 2)。
+- **review/commit 規律**: feat は `superpowers:requesting-code-review` 必須経路。step 1-5 運用に合わせ **review pass → `[no-review]` commit → UI stg smoke → `[reviewed]` amend**。
 
 ---
 
@@ -28,13 +28,13 @@
 
 | 変更 file | 責務 |
 |---|---|
-| Create `app/(app)/app/exams/_components/exam-list-live.tsx` | client。`useLiveQuery` で exams(archived 除外・updated_at DESC)+ cards 集計 card_count を読む。3 状態(skeleton / 空状態 CTA / list)を描画。各行 name / `ExamStatusBadge` / cardCount / `formatRelativeJa` / 詳細 Link / `DeleteExamButton` |
+| Create `app/(app)/app/exams/_components/exam-list-live.tsx` | client。`useLiveQuery` で exams(archived 除外・updated_at DESC)+ cards 集計 card_count。3 状態(skeleton / 空状態 CTA / list)。各行 name / `ExamStatusBadge` / cardCount / `formatRelativeJa` / 詳細 Link / `DeleteExamButton` |
 | Create `app/(app)/app/exams/_components/exam-list-live.test.tsx` | fake-indexeddb + render。exams 読取 / card_count 算出 / archived 除外 / updated_at DESC / skeleton / 空状態 |
-| Modify `app/(app)/app/exams/page.tsx` | RSC: `getActiveExamsWithCardCount` 撤去。auth / `getExamStatusMap` → `ExamStatusProvider` / `CreateExamForm` / 見出しを保持し `<ExamListLive userId={userId} />` を描画。空状態判定は `ExamListLive` へ移譲 |
-| Modify `lib/exams/list.ts` | dead 化した `getActiveExamsWithCardCount` + `ExamWithCardCount` 型を撤去(caller は本 page のみ=切替で dead、dead-code-removal 方針)。`getActiveExamsForUser` は upload page が使用中のため不変 |
-| Modify `app/(app)/app/exams/_components/delete-exam-button.tsx` | 削除成功時に pull を kick し、mirror から tombstone 反映 → list が live に消える(Task 2) |
+| Modify `app/(app)/app/exams/page.tsx` | RSC: `getActiveExamsWithCardCount` 撤去。auth / statusMap / `ExamStatusProvider` / `CreateExamForm` / 見出し保持し `<ExamListLive userId={userId} />` 描画。空状態判定は `ExamListLive` へ移譲(U1) |
+| Modify `lib/exams/list.ts` | dead 化した `getActiveExamsWithCardCount` + `ExamWithCardCount` 撤去(caller は本 page のみ)。`getActiveExamsForUser`(upload page 使用)は不変 |
+| Modify `app/(app)/app/exams/_components/delete-exam-button.tsx`<br>`app/(app)/app/exams/_components/create-exam-form.tsx`<br>`app/(app)/app/exams/_components/exam-status-live.tsx`<br>`app/(app)/app/exams/[id]/_components/inline-card-list.tsx`<br>`app/(app)/app/exams/[id]/_components/delete-card-button.tsx` | 一覧に効く 5 操作の成功ハンドラに `runGuardedPull` を 1 行相乗り(Task 2) |
 
-**型・シグネチャ**: `ExamListLive({ userId }: { userId: string })`。`ClientExam`(`id/name/updated_at/archived_at?/card_count`)/ `ClientCard`(`exam_id/user_id`)は既存・不変。`runGuardedPull`(`@/lib/sync/pull`、step4)を再利用。
+**型・シグネチャ**: `ExamListLive({ userId }: { userId: string })`。`ClientExam`(`id/name/updated_at/archived_at?/card_count`)/ `ClientCard`(`exam_id/user_id`)既存・不変。`runGuardedPull`(`@/lib/sync/pull`、step4)再利用。reason 文字列: `'ocr-complete'` / `'exam-delete'` / `'exam-create'` / `'card-add'` / `'card-delete'`。
 
 ---
 
@@ -42,7 +42,7 @@
 
 **Files:** Create `exam-list-live.tsx` / Test `exam-list-live.test.tsx` / Modify `exams/page.tsx` / Modify `lib/exams/list.ts`
 
-**目的**: 試験一覧の `<ul>` を Dexie `useLiveQuery` 参照の client component に抽出し、card_count を cards mirror から算出。**制約**: mirror read-only、archived 除外・updated_at DESC、skeleton/空状態/list の 3 状態、表示要素(name/バッジ/件数/相対時刻/詳細Link/削除)を回帰なく踏襲。**完了条件**: 下記 test green + `pnpm build` 型/RSC エラーなし + `pnpm exec tsc --noEmit`。
+**目的**: 試験一覧の `<ul>` を Dexie `useLiveQuery` 参照の client component に抽出し、card_count を cards mirror から算出。**制約**: mirror read-only、archived 除外・updated_at DESC、skeleton/空状態/list の 3 状態、表示要素を回帰なく踏襲。**完了条件**: 下記 test green + `pnpm build` 成功(RSC/`server-only` 境界エラーなし)+ `pnpm exec tsc --noEmit`。
 
 **実装の骨子**(`exam-list-live.tsx`):
 ```tsx
@@ -50,67 +50,75 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { getClientDb } from '@/lib/client-db'
 import { formatRelativeJa } from '@/lib/exams/format'
-// ... Button/Card/Link/ExamStatusBadge/DeleteExamButton/OpenCreateExamButton import
+// Button/Card/Link/ExamStatusBadge/DeleteExamButton/OpenCreateExamButton import
 
 export function ExamListLive({ userId }: { userId: string }) {
   const exams = useLiveQuery(async () => {
     const db = getClientDb()
     const [allExams, allCards] = await Promise.all([
       db.exams.where('user_id').equals(userId).toArray(),
-      db.cards.where('user_id').equals(userId).toArray(), // 1 read + JS 集計 (N count query 回避)
+      db.cards.where('user_id').equals(userId).toArray(), // 1 read + JS 集計
     ])
     const countByExam = new Map<string, number>()
     for (const c of allCards) countByExam.set(c.exam_id, (countByExam.get(c.exam_id) ?? 0) + 1)
     return allExams
-      .filter((e) => e.archived_at == null)                       // archived_at IS NULL 相当 (== null は undefined も捕捉)
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))   // updated_at DESC (ISO string lexicographic)
+      .filter((e) => e.archived_at == null)                     // archived_at IS NULL 相当 (== null は undefined も捕捉)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) // updated_at DESC (ISO lexicographic)
       .map((e) => ({ id: e.id, name: e.name, updatedAt: e.updated_at, cardCount: countByExam.get(e.id) ?? 0 }))
   }, [userId])
 
   if (exams === undefined) return /* skeleton (role="status", animate-pulse、dashboard-actions と同型) */
-  if (exams.length === 0) return /* 空状態 CTA (アップロード Link + OpenCreateExamButton、現 page.tsx の空状態を移植) */
+  if (exams.length === 0) return /* 空状態 CTA (アップロード Link + OpenCreateExamButton、現 page.tsx 空状態を移植) */
   return /* <ul> 各行: name / <ExamStatusBadge examId={id}/> / カード {cardCount} 件・最終更新 {formatRelativeJa(new Date(updatedAt))} / 詳細 Link(prefetch=false) / <DeleteExamButton examId={id}/> */
 }
 ```
-- 現 `page.tsx` の `<ul>`(L69-101)と空状態(L53-67)の JSX を `ExamListLive` に移植(見た目・class・prefetch=false・文言を維持)。`formatRelativeJa(new Date(updatedAt))` で ISO string を Date 化。
-- `page.tsx` 改修: `getActiveExamsWithCardCount` import/呼出を撤去、`<ul>`/空状態 JSX を `<ExamListLive userId={userId} />` に置換。`ExamStatusProvider`/`CreateExamForm`/見出し/auth は保持。
-- `lib/exams/list.ts`: `getActiveExamsWithCardCount` + `ExamWithCardCount` を撤去(grep で本 page 以外 caller 無しを確認済 = dead)。
+- 現 `page.tsx` の `<ul>`(L69-101)と空状態(L53-67)JSX を `ExamListLive` に移植(class/prefetch=false/文言維持)。
+- `page.tsx`: `getActiveExamsWithCardCount` import/呼出を撤去、`<ul>`/空状態 を `<ExamListLive userId={userId} />` に置換。`ExamStatusProvider`/`CreateExamForm`/見出し/auth 保持。
+- `lib/exams/list.ts`: `getActiveExamsWithCardCount` + `ExamWithCardCount` 撤去(本 page 以外 caller 無し=dead)。
 
-- [ ] **Step 1: 失敗 test**(`exam-list-live.test.tsx`、`@vitest-environment jsdom` + fake-indexeddb。手本 = dashboard 系 useLiveQuery test）。seed: `db.exams` に active 2 + archived 1、`db.cards` に exam 別件数。検証:
-  1. **exams 読取 + card_count 算出**: render → `waitFor` で active exam 名 2 件表示、各行のカード件数 = seed の cards 数。
-  2. **archived 除外**: archived exam 名が表示されない。
-  3. **updated_at DESC**: 表示順が updated_at 降順(新しい exam が先)。
-  4. **空状態**: exams 0 件(active 0)→ 空状態 CTA(「まだ試験がありません。」等の文言/アップロード Link)表示。
-  5. **skeleton**: render 直後(useLiveQuery undefined)に `role="status"` skeleton、`waitFor` 後に list へ。
-  - `ExamStatusBadge` は `ExamStatusProvider` で wrap(空 statusMap)して context エラーを回避、または badge を含む最小 provider で render。`DeleteExamButton` は deleteExam action を mock(または render only)。
-- [ ] **Step 2: red** — `pnpm exec vitest run "app/(app)/app/exams/_components/exam-list-live.test.tsx"` → FAIL(未実装)。
-- [ ] **Step 3: 実装** — 骨子適用 + page.tsx 切替 + list.ts dead 撤去。
-- [ ] **Step 4: green** — 同 test 全 PASS。`pnpm exec tsc --noEmit` + `pnpm build`(RSC/`server-only` 境界エラーなし)確認。
+- [ ] **Step 1: 失敗 test**(`exam-list-live.test.tsx`、`@vitest-environment jsdom` + fake-indexeddb)。seed: `db.exams` active 2 + archived 1、`db.cards` exam 別件数。検証: (1) active exam 2 件表示 + 各行 card_count = seed cards 数、(2) archived 非表示、(3) updated_at DESC 順、(4) active 0 件 → 空状態 CTA、(5) render 直後 `role="status"` skeleton → `waitFor` で list。`ExamStatusBadge` は `ExamStatusProvider`(空 statusMap)で wrap、`DeleteExamButton` の `deleteExam` は mock。
+- [ ] **Step 2: red** — `pnpm exec vitest run "app/(app)/app/exams/_components/exam-list-live.test.tsx"` → FAIL。
+- [ ] **Step 3: 実装** — 骨子 + page.tsx 切替 + list.ts dead 撤去。
+- [ ] **Step 4: green** — 同 test PASS + `pnpm exec tsc --noEmit` + `pnpm build`。
 - [ ] **Step 5: commit** — `feat(exams): 試験一覧を Dexie mirror (useLiveQuery) 参照の ExamListLive に切替 + dead getActiveExamsWithCardCount 撤去` + `[no-review]`。
 
 ---
 
-## Task 2: exam 削除を Dexie-backed list に live 反映(pull kick)
+## Task 2: 一覧に効く 5 操作の成功ハンドラに `runGuardedPull` 相乗り
 
-**Files:** Modify `delete-exam-button.tsx` / Test `delete-exam-button.test.tsx`(無ければ Create)
+**Files:** Modify `delete-exam-button.tsx` / `create-exam-form.tsx` / `exam-status-live.tsx` / `inline-card-list.tsx` / `delete-card-button.tsx`(+ 各 test)
 
-**目的**: 一覧 page 上で exam を削除したとき、Dexie mirror から当該 exam が消えて list が live に更新されるようにする。**背景**: 削除は server で tombstone を作るが、mirror への反映は pull(tombstone bulkDelete)が要る。従来は `router.refresh()` で RSC が Postgres 再読込し即消えたが、list が Dexie 参照になったため `router.refresh()` では mirror が更新されず**削除した exam が残る**(回帰)。よって削除成功時に pull を kick して tombstone を取り込み、`useLiveQuery` が行を除去する。**制約**: 既存の confirm 2 段/`useTransition`/error UI は不変。`runGuardedPull`(step4、in-flight guard 付き)を再利用。失敗 silent。**完了条件**: 下記 test green + tsc。
+**目的**: 一覧件数・表示に影響するサーバー変更を即時 mirror に反映し、Dexie-backed 一覧を live 更新する。**背景**: list が Dexie 参照になり `router.refresh()`(RSC 再 render)では mirror が更新されない → 削除した exam が残る/新 card 件数が古い等の回帰を防ぐ。**制約**: 既存 `router.refresh()`/`router.push()` は残す。`runGuardedPull` を fire-and-forget で足すだけ(失敗 silent)。card 編集(updated_at のみ変化、一覧表示に無影響)は対象外。**完了条件**: 各 test green + tsc。
 
-**実装の骨子**(`delete-exam-button.tsx` の `onConfirmDelete` 成功分岐):
-```tsx
-if (result.ok) {
-  router.refresh() // statusMap seed 等 RSC 部分の更新は維持
-  // list は Dexie 参照のため、 tombstone を mirror に取り込んで行を消すために pull を kick。
-  void runGuardedPull({ reason: 'exam-delete' }).catch(() => {})
-}
-```
-`import { runGuardedPull } from '@/lib/sync/pull'`。
+**相乗り先と reason**(既存成功分岐に `void runGuardedPull({ reason }).catch(() => {})` を追加。import `from '@/lib/sync/pull'`):
 
-- [ ] **Step 1: 失敗 test** — `@/lib/sync/pull` の `runGuardedPull` を vi.mock、`deleteExam` action を mock(ok 返し)。検証: 削除確定(confirm → 削除する)→ `deleteExam` 成功 → `runGuardedPull` が `{ reason: 'exam-delete' }` で 1 回。失敗時(`ok:false`)は `runGuardedPull` 呼ばれない。既存の confirm/error 挙動 test があれば不変通過。
-- [ ] **Step 2: red** — 同 test → FAIL。
-- [ ] **Step 3: 実装** — 骨子適用。
-- [ ] **Step 4: green** — 同 test PASS + tsc。
-- [ ] **Step 5: commit** — `feat(exams): exam 削除時に pull を kick し Dexie-backed 一覧へ live 反映` + `[no-review]`。
+| # | file:行 | 既存ハンドラ | reason |
+|---|---|---|---|
+| 1 | `exam-status-live.tsx:80` | `hasCompletion(...)` true → `router.refresh()`(OCR 処理中→完了) | `'ocr-complete'` |
+| 2 | `delete-exam-button.tsx:39` | 削除成功 → `router.refresh()` | `'exam-delete'` |
+| 3 | `create-exam-form.tsx:41` | 作成成功 → `router.push(詳細)` | `'exam-create'` |
+| 4 | `inline-card-list.tsx:45` | createCard 成功 → `router.refresh()` | `'card-add'` |
+| 5 | `delete-card-button.tsx:33` | deleteCard 成功 → `router.refresh()` | `'card-delete'` |
+
+- [ ] **Step 1: 失敗 test** — 5 component の各 test で `@/lib/sync/pull` の `runGuardedPull` を vi.mock。各成功フロー(action mock を ok 返し)で `runGuardedPull` が該当 reason で 1 回呼ばれ、**既存の `router.refresh()`/`router.push()` も呼ばれる**ことを検証。失敗時(`ok:false`)は `runGuardedPull` 呼ばれない。OCR(#1)は `/api/exams/status` fetch mock で processing→completed 遷移を起こして `hasCompletion` true を発火させ、`runGuardedPull('ocr-complete')` を検証(既存 `exam-status-live` test の polling 駆動を流用)。既存 test は不変通過。
+- [ ] **Step 2: red** — 各 test FAIL。
+- [ ] **Step 3: 実装** — 5 箇所に 1 行ずつ追加。
+- [ ] **Step 4: green** — 全 test PASS + `pnpm exec tsc --noEmit`。
+- [ ] **Step 5: commit** — `feat(exams): 一覧に効く 5 操作(OCR完了/試験作成・削除/カード追加・削除)の成功時に runGuardedPull を相乗りし Dexie 一覧を live 反映` + `[no-review]`。
+
+---
+
+## Task 3: spec §4 を実態へ追記修正
+
+**Files:** Modify `docs/superpowers/specs/2026-05-29-incremental-pull-design.md`
+
+**目的**: §4 を実装実態に合わせる。**doc・[no-review]・review skip 可**。**完了条件**: §4 に以下追記。
+- 空状態 CTA は client(`ExamListLive`)が持つ(emptiness が Dexie 由来のため。U1)。
+- 一覧件数・表示に効くサーバー変更(OCR 完了/試験作成・削除/カード追加・削除)の既存成功ハンドラに `runGuardedPull` を相乗りし、mirror を即時最新化(card 編集は対象外)。削除は pull kick で反映(optimistic local delete はしない。U4)。
+- 流用棚卸し(`...step6-reuse-inventory.md`)へ参照。
+
+- [ ] **Step 1**: §4 に上記を追記。
+- [ ] **Step 2: commit** — `docs(spec): §4 を実態へ追記 (空状態 client 移譲 + 一覧に効く 5 操作への runGuardedPull 相乗り)` + `[no-review]`。
 
 ---
 
@@ -118,30 +126,30 @@ if (result.ok) {
 
 認証済 staging + DevTools(IDB `exams`/`cards`・Network `/api/pull`)。exams mirror を初めて読む段。
 
-1. **一覧が Dexie 参照で表示**: `/app/exams` 表示 → IDB `exams`/`cards` mirror から名前・件数・相対時刻が出る。Postgres 直読み時と**見た目・順序が一致**(updated_at DESC)。RSC は `getActiveExamsWithCardCount` を**呼ばない**(Network/DB で確認)。
-2. **増分 pull で更新が反映**: 別経路で exam を更新(または card 追加)→ reload/visibility で増分 pull → 一覧の件数/順序が live 更新(`useLiveQuery`)。
-3. **削除が一覧から消える(Task 2)**: 一覧で exam を削除 → tombstone → `runGuardedPull` で mirror から bulkDelete → **行が live に消える**(reload 不要)。IDB から当該 exam/cards 消失を確認。
-4. **card 件数 live 更新**: card 追加(OCR)/削除(詳細 page)後、pull トリガ(reload/visibility/online)で cards mirror 更新 → 一覧件数が live 反映。
-5. **archived 除外 / OCR バッジ**: archived 試験は出ない。処理中/失敗バッジは従来どおり `ExamStatusBadge` polling で表示・clear。
-6. **未 pull 時 skeleton**: mirror 未充足/初回 undefined で skeleton(layout shift なし)。
-7. **回帰**: Postgres 直読み→Dexie 読みで一覧の見た目・詳細遷移・削除・空状態 CTA が不変。
+1. **一覧が Dexie 参照で表示**: `/app/exams` → IDB mirror から名前・件数・相対時刻。Postgres 直読み時と見た目・順序一致(updated_at DESC)。`getActiveExamsWithCardCount` 不使用。
+2. **増分 pull で反映**: 別経路で exam 更新 → reload/visibility で増分 pull → 一覧 live 更新。
+3. **試験削除が即時消える**: 一覧で削除 → `runGuardedPull('exam-delete')` → tombstone bulkDelete → 行が live 消失(reload 不要)。
+4. **試験作成が即時出る**: 作成 → 詳細遷移 → 一覧に戻ると新 exam が出る(`runGuardedPull('exam-create')` で mirror に入る)。
+5. **カード追加/削除で件数 live 更新**: 詳細 page で card 追加/削除 → `runGuardedPull('card-add'/'card-delete')` → 一覧件数が live 反映。
+6. **OCR 完了で件数更新**: OCR 完了の既存 polling 遷移(`hasCompletion`)→ `runGuardedPull('ocr-complete')` → 新 card 件数反映。OCR バッジは従来どおり。
+7. **archived 除外 / skeleton / 回帰**: archived 非表示、未 pull 時 skeleton、見た目・詳細遷移・空状態 CTA 不変。
 
-全観点 PASS で 2 feat commit を `[reviewed]` へ amend(step 1-5 同手順 filter-branch)。FAIL は amend せず報告で停止。
+全観点 PASS で feat commit を `[reviewed]` へ amend(step 1-5 同手順 filter-branch)。FAIL は amend せず報告で停止。
 
 ---
 
 ## Self-Review(spec 整合)
 
-- §4(list 部分のみ client 抽出 / archived 除外・updated_at DESC / card_count は cards mirror 算出・`exams.card_count` 列読まない / RSC は auth・statusMap・CreateExamForm 保持 / `ExamStatusBadge` polling 維持 / skeleton / 詳細 page スコープ外)→ Task 1。
-- exams mirror が dead read でなくなる(OT 動機実現)→ Task 1。削除の live 反映 → Task 2。
-- placeholder なし。型整合: `ExamListLive`/`ClientExam`/`runGuardedPull` 一貫。dead code(`getActiveExamsWithCardCount`)撤去。
+- §4(list 部分のみ client 抽出 / archived 除外・updated_at DESC / card_count は cards mirror 集計 / RSC は auth・statusMap・CreateExamForm 保持 / `ExamStatusBadge` polling 維持 / skeleton / 詳細 page 表示スコープ外)→ Task 1。一覧に効く 5 操作の即時反映 → Task 2。空状態 client 移譲(U1)/ pull-kick 反映(U4)反映。
+- placeholder なし。型整合: `ExamListLive`/`ClientExam`/`runGuardedPull` 一貫。dead `getActiveExamsWithCardCount` 撤去。
+- spec §4 追記(Task 3)。
 
 ---
 
-## 実装前に確認・判断が要る点(spec/実コード食い違い・要 OT 認識)
+## 確定済み判断(U1/U2/U4・所与)
 
-- **U1(空状態 CTA の所在・確定)**: spec §4 は「RSC が空状態 CTA を保持」と記すが、**空状態判定は exam 件数 = Dexie 由来のため client(`ExamListLive`)に移る**必要がある。CTA 部品(`OpenCreateExamButton` / アップロード Link)は client で問題なく描画可。→ 本 plan は空状態を `ExamListLive` に移植(spec 文言の自然な具体化、機能不変)。
-- **U2(OCR 完了/card mutation の card_count 即時性・要 OT 判断)**: 従来 `ExamStatusProvider` の OCR 完了 `router.refresh()` が RSC で Postgres 件数を即再読込していたが、list が Dexie 参照になり **`router.refresh()` では件数が更新されない**(新 OCR cards は次 pull で mirror に入る)。本 plan は **既存の pull トリガ(reload/visibility/online)に委ねる**(smoke 観点4 は reload/visibility で検証)。**即時性が要るなら** `ExamStatusProvider` の completed 遷移で `runGuardedPull` を 1 回 kick する追加 task を提案(任意・OT 判断)。card 詳細 page の card 削除はスコープ外のため、その件数即時反映も同様にトリガ依存。**既定: トリガ依存(追加 kick なし)**。
-- **U3(card_count 算出方式・確定)**: cards mirror を 1 read(`where('user_id')`)+ JS で `exam_id` 集計(Map)。exam 数 × `where('exam_id').count()` の N round-trip は採らない(dashboard と同じ単一 read pattern、件数規模も小)。
-- **U4(削除の反映手段・要 OT 認識)**: Task 2 は **pull kick**(mirror を pull 駆動に保つ、tombstone が単一の削除経路)で記述。代替は **optimistic local delete**(`db.exams.delete`+`db.cards` 局所削除、即時だが mirror read-only 不変条件をわずかに破り次 pull で reconcile)。**既定: pull kick**(architectural 一貫)。OT が体感速度優先なら optimistic。
-- **`getActiveExamsForUser`(upload page 使用)/ 詳細 page / `ExamStatusBadge` polling / `formatRelativeJa`** は変更なし(確認済)。spec との食い違いは U1/U2 のみ(いずれも Dexie 化の自然な帰結)。
+- **U1(空状態の所在)**: client(`ExamListLive`)に移譲。spec 文言の自然な具体化(機能不変)。
+- **U2(一覧に効く操作の即時性)**: 5 操作の既存成功ハンドラに `runGuardedPull` 相乗り(新規検知/polling/helper なし)。card 編集は対象外。`router.refresh()`/`push` は残す。
+- **U3(card_count 算出)**: cards mirror 1 read + JS 集計(N count query 回避)。
+- **U4(削除反映)**: pull kick(`runGuardedPull('exam-delete')`)。optimistic local delete はしない(mirror read-only 不変条件維持)。
+- 食い違い: U1(空状態 client 移譲)/ §4 が当初「list 抽出のみ」想定で 5 操作相乗りまで明記していなかった点 → Task 3 で追記。所与方針内。
