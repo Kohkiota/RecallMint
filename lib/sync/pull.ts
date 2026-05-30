@@ -14,6 +14,7 @@
 
 import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
 import { getSyncMeta, SYNC_META_KEYS } from './sync-meta'
+import { logger } from '@/lib/logger'
 
 const PULL_ENDPOINT = '/api/pull'
 
@@ -143,4 +144,77 @@ export async function pullDelta(
   })
 
   return { ok: true, cardCount: cards.length, examCount: exams.length, tombstoneCount: tombstones.length }
+}
+
+// ---------------------------------------------------------------------------
+// runGuardedPull — in-flight guard + 多タブ Web Locks (ifAvailable skip)
+// ---------------------------------------------------------------------------
+
+// pull 同期用の単一固定 lock 名 (origin 内全タブ共有)。
+export const PULL_LOCK_NAME = 'recallmint:pull'
+
+export type PullGuardOutcome = 'ran' | 'inflight-skip' | 'lock-busy'
+
+// Web Locks の最小型 (lib.dom の LockManager から本 module が使う部分のみ)。
+// review-flush.ts の MinimalLockManager を手本に複製し、 callback 戻り値型を
+// Promise<PullGuardOutcome> に置き換えたもの (共通 util 抽出はしない = U2 採択)。
+type MinimalLockManager = {
+  request: (
+    name: string,
+    options: { ifAvailable?: boolean },
+    callback: (lock: unknown) => Promise<PullGuardOutcome>,
+  ) => Promise<PullGuardOutcome>
+}
+
+type GuardedPullDeps = {
+  reason?: string
+  pull?: () => Promise<PullDeltaResult>
+  locks?: MinimalLockManager | undefined
+}
+
+// 'locks' を明示指定すると navigator を見ない (undefined 指定で非対応 path を test 可能)。
+function resolveLocks(deps: GuardedPullDeps): MinimalLockManager | undefined {
+  if ('locks' in deps) return deps.locks
+  // defensive: navigator.locks の存在チェックのみ。
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks as unknown as MinimalLockManager
+  }
+  return undefined
+}
+
+// 1 タブ内の in-flight pull を skip するための module-scope フラグ。
+// 多タブ排他は Web Locks に委ねる。
+let pullInFlight = false
+
+// pullDelta を「1 タブ内 in-flight skip」+「多タブ Web Locks (ifAvailable skip)」で囲む。
+// in-flight guard を最外に置く理由: locks.request の呼出自体もスキップするため、
+// Lock API の非同期コストを払わずに即 return できる。
+// fallback (locks なし) は直接実行する理由: Web Locks 非対応環境でも pull を止めない。
+//   多重 pull は server 側 cursor 更新の冪等性で吸収される。
+export async function runGuardedPull(deps: GuardedPullDeps = {}): Promise<PullGuardOutcome> {
+  if (pullInFlight) {
+    logger.info({ event: 'pull.inflight_skip', reason: deps.reason })
+    return 'inflight-skip'
+  }
+  pullInFlight = true
+  try {
+    const pull = deps.pull ?? (() => pullDelta())
+    const locks = resolveLocks(deps)
+    if (!locks) {
+      // Web Locks 非対応 (defensive): lock なしで直接 pull。
+      await pull()
+      return 'ran'
+    }
+    return await locks.request(PULL_LOCK_NAME, { ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        // 他タブが lock を保持中 → pull せず即 return (queue で待たない)。
+        logger.info({ event: 'pull.lock_busy', lockName: PULL_LOCK_NAME, reason: deps.reason })
+        return 'lock-busy'
+      }
+      await pull()
+      return 'ran'
+    })
+  } finally {
+    pullInFlight = false
+  }
 }

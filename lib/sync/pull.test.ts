@@ -2,11 +2,13 @@
 // fake-indexeddb 経由で実 Dexie を動かし、 DI client mock で server response を制御。
 // 7 観点: upsert merge / tombstone bulkDelete / cursor read→path / cursor write /
 // cursor 据え置き / 失敗時不変性 / 0件全null。
+// + runGuardedPull 4 観点: lock granted / lock busy / fallback / in-flight coalesce。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
 import { SYNC_META_KEYS, getSyncMeta } from './sync-meta'
-import { pullDelta, type PullApiClient } from './pull'
+import { pullDelta, type PullApiClient, runGuardedPull, PULL_LOCK_NAME } from './pull'
+import type { PullDeltaResult, PullGuardOutcome } from './pull'
 
 // ---------------------------------------------------------------------------
 // Fake data factories
@@ -320,5 +322,102 @@ describe('pullDelta', () => {
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// runGuardedPull テスト
+// ---------------------------------------------------------------------------
+
+// fakeLocks ヘルパ (review-flush.test.ts の fakeLocks を手本に複製、
+// callback 戻り値型を pull.ts の PullGuardOutcome に置き換えたもの)。
+function fakeLocks(grant: boolean) {
+  const calls: { name: string; ifAvailable: boolean | undefined }[] = []
+  return {
+    calls,
+    request: (
+      name: string,
+      options: { ifAvailable?: boolean },
+      cb: (lock: unknown) => Promise<PullGuardOutcome>,
+    ): Promise<PullGuardOutcome> => {
+      calls.push({ name, ifAvailable: options.ifAvailable })
+      // grant=true: lock オブジェクトを渡す / grant=false: null (他タブ保持中)
+      return Promise.resolve(grant ? cb({ name }) : cb(null))
+    },
+  }
+}
+
+describe('runGuardedPull', () => {
+  // 観点 1: lock granted → ran、 pull が 1 回実行され PULL_LOCK_NAME + ifAvailable:true で呼ばれる
+  it('lock granted → outcome "ran"、 pull mock 1 回、 ifAvailable:true', async () => {
+    const pullResult: PullDeltaResult = { ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0 }
+    const pull = vi.fn(async () => pullResult)
+    const locks = fakeLocks(true)
+
+    const outcome = await runGuardedPull({ pull, locks })
+
+    expect(outcome).toBe('ran')
+    expect(pull).toHaveBeenCalledTimes(1)
+    expect(locks.calls[0]).toEqual({ name: PULL_LOCK_NAME, ifAvailable: true })
+  })
+
+  // 観点 2: ifAvailable skip (lock busy) → 'lock-busy'、 pull 未実行
+  it('lock busy → outcome "lock-busy"、 pull 未実行', async () => {
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 }))
+    const locks = fakeLocks(false)
+
+    const outcome = await runGuardedPull({ pull, locks })
+
+    expect(outcome).toBe('lock-busy')
+    expect(pull).not.toHaveBeenCalled()
+  })
+
+  // 観点 3: fallback (locks: undefined) → 'ran'、 pull 1 回 (lock 経由しない)
+  it('locks: undefined fallback → outcome "ran"、 pull 1 回', async () => {
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 }))
+
+    const outcome = await runGuardedPull({ pull, locks: undefined })
+
+    expect(outcome).toBe('ran')
+    expect(pull).toHaveBeenCalledTimes(1)
+  })
+
+  // 観点 4: in-flight coalesce — 1 本目 in-flight 中に 2 本目が即 'inflight-skip' を返す。
+  // resolve 後は再び 'ran' になる (pullInFlight が false に戻る)。
+  it('in-flight 中の 2 本目は即 "inflight-skip"、 resolve 後は再び "ran"', async () => {
+    let resolveDeferred!: (v: PullDeltaResult) => void
+    const deferred = new Promise<PullDeltaResult>((resolve) => {
+      resolveDeferred = resolve
+    })
+    let callCount = 0
+    const pull = vi.fn((): Promise<PullDeltaResult> => {
+      callCount += 1
+      // 1 回目: pending Promise (in-flight をシミュレート)
+      if (callCount === 1) return deferred
+      // 2 回目以降: 即解決
+      return Promise.resolve({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+    })
+    const locks = fakeLocks(true)
+
+    // 1 本目: await せずに開始 (in-flight)
+    const p1 = runGuardedPull({ pull, locks })
+
+    // 2 本目: 1 本目の pull が pending の間に同期的に呼ぶ → inflight-skip
+    const outcome2 = await runGuardedPull({ pull, locks })
+    expect(outcome2).toBe('inflight-skip')
+    // pull は 1 回しか呼ばれていない
+    expect(pull).toHaveBeenCalledTimes(1)
+
+    // 1 本目の pull を resolve → 'ran' で完了
+    resolveDeferred({ ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0 })
+    const outcome1 = await p1
+    expect(outcome1).toBe('ran')
+    expect(pull).toHaveBeenCalledTimes(1)
+
+    // pullInFlight が false に戻ったので 3 本目は 'ran'
+    const locks2 = fakeLocks(true)
+    const outcome3 = await runGuardedPull({ pull, locks: locks2 })
+    expect(outcome3).toBe('ran')
+    expect(pull).toHaveBeenCalledTimes(2)
   })
 })
