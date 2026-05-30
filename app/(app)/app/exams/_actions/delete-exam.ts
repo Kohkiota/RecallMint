@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { cards, exams, tombstones } from '@/lib/db/schema'
@@ -68,14 +68,16 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
 
       // §4-3: tombstone 網羅 INSERT (exam 1件 + 配下 card 全件)
       // onConflictDoNothing で再削除時の UNIQUE 制約エラーを吸収。
-      const now = new Date()
+      // deleted_at は DB クロック (sql`now()`) で統一: tx 内 now() は一定なので
+      // exam + 全 card tombstone が同一サーバー時刻で揃う。
+      // 増分 pull の削除反映 cursor は DB クロックで統一するため JS Date を廃止。
       const tombstoneRows = [
-        { userId: user.id, entityType: 'exam' as const, entityId: examId, deletedAt: now },
+        { userId: user.id, entityType: 'exam' as const, entityId: examId, deletedAt: sql`now()` },
         ...childCardIds.map((cardId) => ({
           userId: user.id,
           entityType: 'card' as const,
           entityId: cardId,
-          deletedAt: now,
+          deletedAt: sql`now()`,
         })),
       ]
 

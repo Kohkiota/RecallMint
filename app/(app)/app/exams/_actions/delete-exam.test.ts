@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getTableName } from 'drizzle-orm'
+import { getTableName, SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
+
+function expectNowSql(value: unknown) {
+  expect(value).toBeInstanceOf(SQL)
+  const q = new PgDialect().sqlToQuery(value as SQL)
+  expect(q.sql).toContain('now()')
+  expect(q.params).toHaveLength(0)
+}
 
 const {
   mockGetCurrentUser,
@@ -261,7 +269,7 @@ describe('deleteExam', () => {
       userId: string
       entityType: string
       entityId: string
-      deletedAt: Date
+      deletedAt: unknown
     }
     const rows = dbState.insertedTombstoneRows as TombstoneRow[]
 
@@ -270,7 +278,7 @@ describe('deleteExam', () => {
     expect(examTombstone).toBeDefined()
     expect(examTombstone?.entityId).toBe('exam-uuid')
     expect(examTombstone?.userId).toBe('user-uuid')
-    expect(examTombstone?.deletedAt).toBeInstanceOf(Date)
+    expectNowSql(examTombstone?.deletedAt)
 
     // card tombstone × 2
     const cardTombstones = rows.filter((row) => row.entityType === 'card')
@@ -280,7 +288,7 @@ describe('deleteExam', () => {
     expect(cardIds).toContain('card-uuid-2')
     cardTombstones.forEach((row) => {
       expect(row.userId).toBe('user-uuid')
-      expect(row.deletedAt).toBeInstanceOf(Date)
+      expectNowSql(row.deletedAt)
     })
 
     // tombstone INSERT の後に exams DELETE が走る (順序確認)
@@ -317,6 +325,19 @@ describe('deleteExam', () => {
     expect(deletedTableNames()).toHaveLength(0)
   })
 
+  it('all tombstone deletedAt are now() SQL expressions (DB clock, not JS Date)', async () => {
+    // exam 1件 + card 2件 = 3行すべての deletedAt が sql`now()` であることを検証。
+    // JS Date ではなく DB クロック(tx 内 now() 一定)に統一されていることを確認する。
+    const { deleteExam } = await importDeleteExam()
+    const r = await deleteExam('exam-uuid')
+    expect(r.ok).toBe(true)
+
+    expect(dbState.insertedTombstoneRows).toHaveLength(3)
+    for (const row of dbState.insertedTombstoneRows) {
+      expectNowSql((row as { deletedAt: unknown }).deletedAt)
+    }
+  })
+
   it('card なし exam → exam tombstone のみ 1 行 INSERT', async () => {
     dbState.cardSelectResult = []
     const { deleteExam } = await importDeleteExam()
@@ -325,11 +346,11 @@ describe('deleteExam', () => {
 
     // tombstone は exam 1 件のみ
     expect(dbState.insertedTombstoneRows).toHaveLength(1)
-    type TombstoneRow = { entityType: string; entityId: string; userId: string; deletedAt: Date }
+    type TombstoneRow = { entityType: string; entityId: string; userId: string; deletedAt: unknown }
     const row = dbState.insertedTombstoneRows[0] as TombstoneRow
     expect(row.entityType).toBe('exam')
     expect(row.entityId).toBe('exam-uuid')
     expect(row.userId).toBe('user-uuid')
-    expect(row.deletedAt).toBeInstanceOf(Date)
+    expectNowSql(row.deletedAt)
   })
 })
