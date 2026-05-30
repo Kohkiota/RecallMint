@@ -67,3 +67,35 @@
   (Task3/4 は削除裏取り、Task2 は FSRS 回帰確認込み) → OT に再 push 依頼で停止。
 - **いずれか FAIL** → amend せず症状/原因を報告して停止。
 - 本ログは「実施前 hand-off」。実施後に PASS/FAIL と証跡を追記 (または続編ログ) して再 commit する。
+
+---
+
+# 実施結果 (2026-05-30、全 5 観点 PASS)
+
+OT が staging URL (`https://stg.recallmint.nekotest.net/app`) + テスト account を提供、ブラウザは既ログイン済で
+ブロッカー1/2 解消。`.env.local` の `DATABASE_URL` が **staging DB と同一**であることを確認 (cards 52 件 /
+sample updated_at / 2 exams の card_count・updated_at が staging app の `/api/cards|exams/pull` と完全一致、
+DB `now()` ≈ server now) → ブロッカー3 解消、read-only SELECT で tombstone 検証可能に。
+全 mutation は staging アプリ (認証 UI、chrome-devtools MCP) 経由、DB は SELECT のみ。破壊的観点は**専用テストデータ**
+(test exam `clock-smoke-2026-05-30` = `4868b4ab…` + card 3 枚) で局所化し、既存 52 cards / 2 exams は削除せず。
+
+| 観点 | 結果 | 主要証跡 |
+|---|---|---|
+| 1 inline 編集 | **PASS** | test card1 (`f686e7f2`) の memo 編集 → `updated_at` `01:48:14.373Z`→`01:49:11.486Z` 前進 (DB 直読み一致、DB `now` `01:49:37Z` 直前の新鮮値)。**他列不変** (title/question_text/sort_key/reps/stability/state、特に `due` は `01:48:14.373Z` のまま) = `updated_at` のみ DB クロックで動いた |
+| 2 復習 push | **PASS** | スマート復習 5 問 → `POST /api/review-events/bulk` **200 `{"ok":true,"failed":[]}`** (reqid=164)。回答 5 cards の `updated_at` が **全件 `01:51:48.586Z` (distinct=1)** = 単一 bulk UPDATE の `now()`。**FSRS 回帰なし**: rating 分化を確認 — Good(3) stability `2.3065`/state→1、Again(1) `0.212`/due+1分、Easy(4) `8.2956`/state→2(Review)/due **+8日**。reps 0→1・last_review 設定 (pull/DB 一致) |
+| 3 card 削除 | **PASS** | test card3 (`3bba2ef0`) 削除 → tombstone `deleted_at=01:53:31.535Z` (marker `01:53:12.588Z` ～ DB `now` `01:53:48Z` の窓内 = DB クロック)。card 物理削除 (cards rows=0)、exam `card_count` 3→2、tombstone 重複なし (count=1) |
+| 4 exam 削除 | **PASS** | test exam 削除 → exam(`4868b4ab`)+card1(`f686e7f2`)+card2(`6c3ffdb6`) の tombstone が **全件 `deleted_at=01:54:25.445Z` (distinct=1)** = tx `now()` 一定。exam+cards CASCADE 物理削除、重複 tombstone なし |
+| 5 回帰 | **PASS** | owner-scope (pull/DB とも user `1231f42d` のみ)、idempotent (tombstone unique 重複なし; 再 delete-ok 経路は unit 済)、revalidate (一覧即時更新)、**exam.updated_at 凍結維持** (card 削除で card_count 3→2 だが「最終更新」不動)、FSRS 回帰なし |
+
+## クロック源についての honest note (再掲・実測で確認)
+- 観点4 の「全件同一 deleted_at」は**回帰ガード** (tx `now()` 一定性の維持) であり、それ単独では旧 App クロック実装
+  (`const now=new Date()` 使い回し) と区別できない。**DB クロックの裏取り**は「persisted timestamp が DB `now()` と
+  近接した新鮮なサーバー時刻で、app pull と DB 直読みで完全一致」+「送出 SQL が `now()` (code review 実証)」で成立。
+- App↔DB クロックの sub-second skew は黒箱で不可分。本 smoke の実質価値は **回帰がないことの全経路確証** で、
+  クロック源の正しさは unit + review + 本実測値の整合で担保。
+
+## 結論
+全 5 観点 PASS。Task2 (`1035af5`) の FSRS 回帰確認も成立。4 commit
+(`9115cfb`/`1035af5`/`ff7f704`/`af9b4e4`) を `[no-review]` → `[reviewed]` に書き換え (非 HEAD のため
+`git filter-branch --msg-filter` で当該 4 SHA のみ対象)。**履歴書き換えのため OT の再 push は force-push 必須**。
+test 用 exam/card は全て削除済 (残置なし)。復習で実 5 cards の FSRS が前進した副作用はテスト account の通常利用範囲。
