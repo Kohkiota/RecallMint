@@ -4,7 +4,7 @@
 // sync_status='synced' 固定が主要 assertion。
 
 import { describe, it, expect } from 'vitest'
-import { toClientCard, toCard } from './cards-pull'
+import { toClientCard, toCard } from './cards-mapper'
 import type { ClientCard } from '@/lib/client-db'
 import type { cards } from './schema'
 

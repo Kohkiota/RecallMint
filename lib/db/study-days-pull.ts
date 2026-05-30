@@ -5,7 +5,7 @@
 // 役割境界:
 // - getAllStudyDaysForUser: tenant 絞り込み + 直近 90 日 window 適用の唯一の入口。
 //   ここで `WHERE user_id` と `WHERE day >= lower` を強制し、 呼出側が条件を忘れる
-//   事故を防ぐ (cards-pull / getAllCardsForUser と同方針)。
+//   事故を防ぐ (cards-pull / getCardsDelta と同方針)。
 // - toClientStudyDay: pure mapper。 unit test で field rename を verify。
 // - studyDaysLowerBound: pure helper。 JST 算術 (todayInJst の 90 日前) を unit test
 //   可能な形で切り出す。

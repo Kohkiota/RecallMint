@@ -1,13 +1,12 @@
-// cards-pull — server cards テーブルから user 全 cards を取得し、 client (Dexie)
-// 用の ClientCard shape (snake_case + ISO8601 文字列) に変換する server-only module。
-// S-local-2 Task 2 で `/api/cards/pull` route が利用する。
+// cards-pull — server cards テーブルから client (Dexie) 用の ClientCard shape
+// (snake_case + ISO8601 文字列) に変換した差分を取得する server-only module。
+// 統合 `/api/pull` の delta 入口を提供する。
 //
 // 役割境界:
-// - getAllCardsForUser: tenant 絞り込み + Drizzle SELECT の唯一の入口。 ここで
+// - getCardsDelta: tenant 絞り込み + Drizzle SELECT の唯一の入口。 ここで
 //   `WHERE user_id` を強制し、 呼出側が条件を忘れて全 user を覗ける事故を防ぐ。
 // - pure mapper (toClientCard / toCard) は `./cards-mapper` に切り出し済。 client
-//   component から型変換だけ使いたい場合はそちらを直接 import すること。 本ファイル
-//   は backward compat のため re-export を提供する。
+//   component から型変換だけ使いたい場合はそちらを直接 import すること。
 
 import 'server-only'
 
@@ -17,14 +16,6 @@ import { cards } from './schema'
 import type { ClientCard } from '@/lib/client-db'
 import { toClientCard } from './cards-mapper'
 import { maxIso } from './max-iso'
-
-export { toClientCard, toCard } from './cards-mapper'
-
-export async function getAllCardsForUser(userId: string): Promise<ClientCard[]> {
-  const db = getDb()
-  const rows = await db.select().from(cards).where(eq(cards.userId, userId))
-  return rows.map(toClientCard)
-}
 
 export async function getCardsDelta(
   userId: string,
