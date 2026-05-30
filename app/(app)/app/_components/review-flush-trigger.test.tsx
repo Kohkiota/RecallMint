@@ -6,8 +6,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, waitFor } from '@testing-library/react'
 
-const { mockKick, mockStop, mockCreateController, mockDropStale } = vi.hoisted(
-  () => {
+const { mockKick, mockStop, mockCreateController, mockDropStale, mockPullBack } =
+  vi.hoisted(() => {
     const mockKick = vi.fn(async () => {})
     const mockStop = vi.fn()
     return {
@@ -15,15 +15,18 @@ const { mockKick, mockStop, mockCreateController, mockDropStale } = vi.hoisted(
       mockStop,
       mockCreateController: vi.fn(() => ({ kick: mockKick, stop: mockStop })),
       mockDropStale: vi.fn(async (_now: number, _maxAgeMs: number) => [] as string[]),
+      mockPullBack: vi.fn(),
     }
-  },
-)
+  })
 
 vi.mock('@/lib/sync/review-flush', () => ({
   createReviewFlushController: mockCreateController,
 }))
 vi.mock('@/lib/sync/review-events', () => ({
   dropStalePendingAnswerEvents: mockDropStale,
+}))
+vi.mock('@/lib/sync/pull-back', () => ({
+  pullBack: mockPullBack,
 }))
 
 import { ReviewFlushTrigger } from './review-flush-trigger'
@@ -77,5 +80,20 @@ describe('ReviewFlushTrigger', () => {
     // listener 解除済 → kick されない
     await new Promise((r) => setTimeout(r, 0))
     expect(mockKick).not.toHaveBeenCalled()
+  })
+
+  it('onFlushed が pull-back("flush") を配線している', () => {
+    render(<ReviewFlushTrigger />)
+    // createReviewFlushController は onFlushed を含む deps オブジェクトで呼ばれる
+    expect(mockCreateController).toHaveBeenCalledWith(
+      expect.objectContaining({ onFlushed: expect.any(Function) }),
+    )
+    // onFlushed を起動すると pullBack('flush') が 1 回呼ばれる
+    const deps = (mockCreateController.mock.calls[0] as unknown[])[0] as {
+      onFlushed: () => void
+    }
+    deps.onFlushed()
+    expect(mockPullBack).toHaveBeenCalledWith('flush')
+    expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 })

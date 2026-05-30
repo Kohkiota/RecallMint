@@ -8,6 +8,7 @@
 // - mount: 24h 超 pending を silent drop してから flush kick。
 // - visibilitychange(visible): フォーカス復帰時に kick。
 // - online: 再接続時に kick。
+// - flush 成功時に pull-back を相乗り (FSRS 後の値を mirror へ戻す)。
 //
 // controller の retry timer は module-scope (タブが開いている間のみ生存)。 unmount 時は
 // stop() で予約 timer を解除し、 listener も外す。 pending は Dexie に残置されたままでよい。
@@ -15,6 +16,7 @@
 import { useEffect } from 'react'
 import { createReviewFlushController } from '@/lib/sync/review-flush'
 import { dropStalePendingAnswerEvents } from '@/lib/sync/review-events'
+import { pullBack } from '@/lib/sync/pull-back'
 import { logger } from '@/lib/logger'
 
 // 24h 超の pending は mount 時の古さ判定で silent drop する (常駐監視はしない)。
@@ -22,7 +24,7 @@ const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 export function ReviewFlushTrigger() {
   useEffect(() => {
-    const controller = createReviewFlushController()
+    const controller = createReviewFlushController({ onFlushed: () => pullBack('flush') })
 
     // mount: 24h 超 pending を drop → flush kick。 失敗は UI に出さず silent。
     void (async () => {
