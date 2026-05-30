@@ -67,6 +67,25 @@ describe('classifyFlushResults', () => {
       classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 400, reachable: true })]),
     ).toBe('permanent')
   })
+
+  it('skip (attempted:0, syncedEventIds 空, failedEventIds 空) → no-pending (pull-back 対象外)', () => {
+    // in-flight 空振りは sync していないので 'ok' ではなく 'no-pending' に畳む (回帰核心)。
+    expect(classifyFlushResults([fr({ attempted: 0 })])).toBe('no-pending')
+  })
+
+  it('session-only (syncedEventIds 空 + sessionSynced:true, failed 空) → no-pending', () => {
+    // events なし・session のみ更新の場合も実 sync なし → pull-back 不要。
+    expect(
+      classifyFlushResults([fr({ attempted: 0, sessionSynced: true, httpStatus: 200 })]),
+    ).toBe('no-pending')
+  })
+
+  it('複数 result の一部でも syncedEventIds 非空なら → ok', () => {
+    // 1 件でも実 sync があれば pull-back 対象とする。
+    expect(
+      classifyFlushResults([fr({ syncedEventIds: ['a'] }), fr({ attempted: 0 })]),
+    ).toBe('ok')
+  })
 })
 
 describe('runGuardedFlush — Web Locks 排他', () => {

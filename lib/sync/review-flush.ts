@@ -52,7 +52,16 @@ function statusToSignal(status: number): string {
 export function classifyFlushResults(results: FlushResult[]): FlushOutcome {
   if (results.length === 0) return 'no-pending'
   const failures = results.filter((r) => r.failedEventIds.length > 0)
-  if (failures.length === 0) return 'ok'
+  if (failures.length === 0) {
+    // 'ok' = 実際に 1 件以上 sync できた場合のみ。 skip(in-flight 空振り)/ session-only
+    // (events 無し)は何も sync していない → pull-back 対象外なので 'no-pending' に畳む
+    // (controller の retry 挙動は 'ok'/'no-pending' 同分岐のため不変。pull-back gate のみ是正)。
+    // 部分成功(同一 result に synced + failed 共存)は上の failures フィルタで捕捉され
+    // 下の失敗分岐 (transient/permanent) へ進むため、 ここには来ない = pull-back 不発
+    // (一部 commit 済でも保守的に次 flush 完了に委ねる)。
+    const syncedAny = results.some((r) => r.syncedEventIds.length > 0)
+    return syncedAny ? 'ok' : 'no-pending'
+  }
 
   const signals = failures.map((r) => statusToSignal(r.httpStatus))
   if (signals.some(isRateLimitError)) return 'rate-limited'
