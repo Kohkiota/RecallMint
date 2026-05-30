@@ -36,30 +36,6 @@ export async function getActiveExamsForUser(
   return rows
 }
 
-// S1.7 T7 用: 一覧 page で cards 件数を見せる query。
-// B1 (S2.0c): cards への LEFT JOIN + GROUP BY 集計をやめ、 非正規化列
-// exams.card_count を直接読む。 件数の維持は card INSERT / DELETE 側
-// (process.ts の OCR bulk / delete-card.ts) が transaction で担保する。
-// getActiveExamsForUser と別関数なのは、 upload page が使う後者に card_count
-// 列まで載せる必要がないため。
-export type ExamWithCardCount = ActiveExam & { cardCount: number }
-export async function getActiveExamsWithCardCount(
-  userId: string,
-): Promise<ExamWithCardCount[]> {
-  const db = getDb()
-  const rows = await db
-    .select({
-      id: exams.id,
-      name: exams.name,
-      updatedAt: exams.updatedAt,
-      cardCount: exams.cardCount,
-    })
-    .from(exams)
-    .where(and(eq(exams.userId, userId), isNull(exams.archivedAt)))
-    .orderBy(desc(exams.updatedAt))
-  return rows
-}
-
 // S1.7 T7 用: 詳細 page で exam + その user の所有確認をしつつ archived 状態も取る。
 // 不在 / 他 user の場合は null を返す (詳細 page 側で notFound() に変換)。
 export type ExamDetail = {

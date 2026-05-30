@@ -1,19 +1,8 @@
-import Link from 'next/link'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
-import {
-  formatRelativeJa,
-  getActiveExamsWithCardCount,
-} from '@/lib/exams/list'
 import { getExamStatusMap } from '@/lib/exams/source-doc-status'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { DeleteExamButton } from './_components/delete-exam-button'
 import { CreateExamForm } from './_components/create-exam-form'
-import { OpenCreateExamButton } from './_components/open-create-exam-button'
-import {
-  ExamStatusBadge,
-  ExamStatusProvider,
-} from './_components/exam-status-live'
+import { ExamStatusProvider } from './_components/exam-status-live'
+import { ExamListLive } from './_components/exam-list-live'
 
 // S1.7 T7: read-only exam 一覧 (archived_at IS NULL、 updated_at DESC)。
 // 編集 / 削除 / 並び替えなし、 S2 で正式 CRUD を実装する。
@@ -37,10 +26,7 @@ export default async function ExamsListPage() {
     userId = user.id
   }
 
-  const [exams, statusMap] = await Promise.all([
-    getActiveExamsWithCardCount(userId),
-    getExamStatusMap(userId),
-  ])
+  const statusMap = await getExamStatusMap(userId)
 
   return (
     <ExamStatusProvider initialStatuses={Object.fromEntries(statusMap)}>
@@ -50,56 +36,9 @@ export default async function ExamsListPage() {
         {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
         <CreateExamForm />
 
-        {exams.length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-center space-y-3">
-              <p className="text-slate-700">まだ試験がありません。</p>
-              {/* 空状態 CTA 2択 (spec §2.2): アップロード起点 / 手動作成起点。
-                  OpenCreateExamButton は page 上部の CreateExamForm の
-                  展開トリガーボタンに委譲する client component。 */}
-              <div className="flex flex-col sm:flex-row justify-center gap-3">
-                <Button asChild>
-                  <Link href="/app/upload" prefetch={false}>アップロードから始める</Link>
-                </Button>
-                <OpenCreateExamButton />
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <ul className="space-y-2">
-            {exams.map((exam) => (
-              <li key={exam.id}>
-                <Card>
-                  <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{exam.name}</span>
-                        {/* 処理中 / 失敗バッジは client が polling で live 更新。
-                            completed exam は context に entry なし = 非表示。 */}
-                        <ExamStatusBadge examId={exam.id} />
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        カード {exam.cardCount} 件 ・ 最終更新 {formatRelativeJa(exam.updatedAt)}
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-2 shrink-0">
-                      <Button asChild variant="outline" size="sm">
-                        {/* S-perf-1: 試験一覧 N 件分の Link が viewport 内で
-                            並列 prefetch されると server SSR が N 件並列で走るため
-                            prefetch={false}。 click 時の navigation 自体は維持、
-                            遷移 fallback は loading.tsx で吸収。 */}
-                        <Link href={`/app/exams/${exam.id}`} prefetch={false}>
-                          詳細を見る
-                        </Link>
-                      </Button>
-                      <DeleteExamButton examId={exam.id} />
-                    </div>
-                  </CardContent>
-                </Card>
-              </li>
-            ))}
-          </ul>
-        )}
+        {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
+            useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。 */}
+        <ExamListLive userId={userId} />
       </div>
     </ExamStatusProvider>
   )

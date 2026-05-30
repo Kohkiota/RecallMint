@@ -56,42 +56,8 @@ beforeEach(() => {
   dbState.queue = []
 })
 
-describe('getActiveExamsWithCardCount (owner isolation)', () => {
-  it('returns empty array when no rows (other user / no exams)', async () => {
-    dbState.queue = [[]]
-    const { getActiveExamsWithCardCount } = await importModule()
-    const r = await getActiveExamsWithCardCount('user-1')
-    expect(r).toEqual([])
-  })
-
-  it('returns rows as-is (DB enforces WHERE userId)', async () => {
-    const now = new Date('2026-05-19T05:00:00Z')
-    dbState.queue = [
-      [
-        { id: 'exam-A', name: 'Exam A', updatedAt: now, cardCount: 5 },
-        { id: 'exam-B', name: 'Exam B', updatedAt: now, cardCount: 0 },
-      ],
-    ]
-    const { getActiveExamsWithCardCount } = await importModule()
-    const r = await getActiveExamsWithCardCount('user-1')
-    expect(r).toEqual([
-      { id: 'exam-A', name: 'Exam A', updatedAt: now, cardCount: 5 },
-      { id: 'exam-B', name: 'Exam B', updatedAt: now, cardCount: 0 },
-    ])
-  })
-
-  // B1 (S2.0c): cards への JOIN+GROUP BY 集計をやめ、 非正規化列
-  // exams.card_count (integer) を直読するようになった。 count() 集約由来の
-  // bigint 文字列を coerce する必要はなくなり、 列値をそのまま返す。
-  it('card_count 列を number としてそのまま返す (非正規化列を直読)', async () => {
-    const now = new Date()
-    dbState.queue = [[{ id: 'x', name: 'X', updatedAt: now, cardCount: 42 }]]
-    const { getActiveExamsWithCardCount } = await importModule()
-    const r = await getActiveExamsWithCardCount('user-1')
-    expect(r[0].cardCount).toBe(42)
-    expect(typeof r[0].cardCount).toBe('number')
-  })
-})
+// getActiveExamsWithCardCount は ExamListLive (Dexie useLiveQuery) への切替により撤去済。
+// 旧 test は同時に撤去 (dead code に対応)。
 
 describe('getExamByIdForUser (owner isolation)', () => {
   it('returns null when row not found (other user / unknown exam)', async () => {
