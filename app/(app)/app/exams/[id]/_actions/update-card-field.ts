@@ -1,6 +1,6 @@
 'use server'
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
@@ -141,7 +141,7 @@ export async function updateCardField(
   try {
     const updated = await db
       .update(cards)
-      .set(built.data)
+      .set({ ...built.data, updatedAt: sql`now()` })
       .where(and(eq(cards.id, cardId), eq(cards.userId, user.id)))
       .returning({ examId: cards.examId })
 

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 
 // updateCardField server action の test (`/app/exams/[id]` inline 編集用)。
 // field 単位の更新と、 options の correct_answer_ids 自動再生成 / owner-scoped /
@@ -113,7 +115,7 @@ describe('updateCardField', () => {
     const r = await updateCardField('card-1', 'title', '  問1  ')
     expect(r.ok).toBe(true)
     expect(getTableName(dbState.updateTable as never)).toBe('cards')
-    expect(dbState.setArg).toEqual({ title: '問1' })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ title: '問1' }))
   })
 
   it('title: 空文字で zod error', async () => {
@@ -136,21 +138,21 @@ describe('updateCardField', () => {
     const { updateCardField } = await importAction()
     const r = await updateCardField('card-1', 'sort_key', 'Q-01')
     expect(r.ok).toBe(true)
-    expect(dbState.setArg).toEqual({ sortKey: 'Q-01' })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ sortKey: 'Q-01' }))
   })
 
   it('sort_key: null OK', async () => {
     const { updateCardField } = await importAction()
     const r = await updateCardField('card-1', 'sort_key', null)
     expect(r.ok).toBe(true)
-    expect(dbState.setArg).toEqual({ sortKey: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ sortKey: null }))
   })
 
   it('sort_key: 空文字は null に正規化', async () => {
     const { updateCardField } = await importAction()
     const r = await updateCardField('card-1', 'sort_key', '')
     expect(r.ok).toBe(true)
-    expect(dbState.setArg).toEqual({ sortKey: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ sortKey: null }))
   })
 
   it('sort_key: 101 文字で zod error', async () => {
@@ -166,7 +168,7 @@ describe('updateCardField', () => {
     const { updateCardField } = await importAction()
     const r = await updateCardField('card-1', 'question_text', '問題本文')
     expect(r.ok).toBe(true)
-    expect(dbState.setArg).toEqual({ questionText: '問題本文' })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ questionText: '問題本文' }))
   })
 
   it('question_text: 空白のみで zod error', async () => {
@@ -181,30 +183,30 @@ describe('updateCardField', () => {
     const { updateCardField } = await importAction()
 
     await updateCardField('card-1', 'explanation_text', 'これは解説')
-    expect(dbState.setArg).toEqual({ explanationText: 'これは解説' })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ explanationText: 'これは解説' }))
 
     dbState.setArg = null
     await updateCardField('card-1', 'explanation_text', null)
-    expect(dbState.setArg).toEqual({ explanationText: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ explanationText: null }))
 
     dbState.setArg = null
     await updateCardField('card-1', 'explanation_text', '')
-    expect(dbState.setArg).toEqual({ explanationText: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ explanationText: null }))
   })
 
   it('memo: 正常 / null / 空文字は null', async () => {
     const { updateCardField } = await importAction()
 
     await updateCardField('card-1', 'memo', '個人メモ')
-    expect(dbState.setArg).toEqual({ memo: '個人メモ' })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ memo: '個人メモ' }))
 
     dbState.setArg = null
     await updateCardField('card-1', 'memo', null)
-    expect(dbState.setArg).toEqual({ memo: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ memo: null }))
 
     dbState.setArg = null
     await updateCardField('card-1', 'memo', '')
-    expect(dbState.setArg).toEqual({ memo: null })
+    expect(dbState.setArg).toEqual(expect.objectContaining({ memo: null }))
   })
 
   it('memo: 10001 文字で zod error', async () => {
@@ -222,13 +224,13 @@ describe('updateCardField', () => {
       { id: 'b', text: 'B', isCorrect: false },
     ])
     expect(r.ok).toBe(true)
-    expect(dbState.setArg).toEqual({
+    expect(dbState.setArg).toEqual(expect.objectContaining({
       options: [
         { id: 'a', text: 'A', is_correct: true, explanation: '理由' },
         { id: 'b', text: 'B', is_correct: false },
       ],
       correctAnswerIds: ['a'],
-    })
+    }))
   })
 
   it('options: 0 件で zod error', async () => {
@@ -289,5 +291,15 @@ describe('updateCardField', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toMatch(/フィールド/)
     expect(dbState.updateTable).toBeNull()
+  })
+
+  it('updated_at に now() SQL 式が渡される (DB クロック統一)', async () => {
+    const { updateCardField } = await importAction()
+    const r = await updateCardField('card-1', 'title', '問1')
+    expect(r.ok).toBe(true)
+    const updatedAt = dbState.setArg?.updatedAt
+    expect(updatedAt).toBeInstanceOf(SQL)
+    const rendered = new PgDialect().sqlToQuery(updatedAt as SQL).sql
+    expect(rendered).toContain('now()')
   })
 })
