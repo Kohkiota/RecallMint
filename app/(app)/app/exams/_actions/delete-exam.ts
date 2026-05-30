@@ -66,7 +66,7 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
 
       childCardIds = childCards.map((c) => c.id)
 
-      // §4-3: tombstone 網羅 INSERT (exam 1件 + 配下 card 全件)
+      // §4-3: tombstone 網羅 INSERT (exam 1件 + 配下 card 全件) — mirror 削除反映の不変条件: この tombstone が無いと client mirror から消えない（pull.ts 参照）
       // onConflictDoNothing で再削除時の UNIQUE 制約エラーを吸収。
       // deleted_at は DB クロック (sql`now()`) で統一: tx 内 now() は一定なので
       // exam + 全 card tombstone が同一サーバー時刻で揃う。

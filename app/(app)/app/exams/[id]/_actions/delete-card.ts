@@ -54,7 +54,7 @@ async function _deleteCard(cardId: string): Promise<ActionResult> {
 
       const examId = rows[0]!.examId
 
-      // 2. tombstone INSERT (.values() chainable — avoids Drizzle #5789 raw sql issue)
+      // 2. tombstone INSERT — mirror 削除反映の不変条件: この tombstone が無いと client mirror から消えない（pull.ts 参照）
       await tx
         .insert(tombstones)
         .values({
