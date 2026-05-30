@@ -29,6 +29,7 @@ const {
   mockFlushPendingEvents,
   mockFlushAllPendingEvents,
   mockCompleteStudySession,
+  mockPullBack,
 } = vi.hoisted(() => ({
   mockRefresh: vi.fn(),
   mockPush: vi.fn(),
@@ -37,6 +38,7 @@ const {
   mockFlushPendingEvents: vi.fn(),
   mockFlushAllPendingEvents: vi.fn(),
   mockCompleteStudySession: vi.fn(),
+  mockPullBack: vi.fn(),
 }))
 
 vi.mock('next/navigation', () => ({
@@ -49,6 +51,11 @@ vi.mock('@/lib/sync/review-events', () => ({
   flushPendingEvents: mockFlushPendingEvents,
   flushAllPendingEvents: mockFlushAllPendingEvents,
   completeStudySession: mockCompleteStudySession,
+}))
+
+// pullBack は mock (void)。classifyFlushResults は real を使う (@/lib/sync/review-flush は mock しない)。
+vi.mock('@/lib/sync/pull-back', () => ({
+  pullBack: mockPullBack,
 }))
 
 // 各 test の SessionRunner JSX に渡す session_id。 mock injection 済のため値は
@@ -1548,5 +1555,84 @@ describe('rate-then-confirm (Step 3b)', () => {
     expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
     expect(screen.queryByText('カード全体の解説')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Again' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// session 完了 flush 成功で pull-back (Task 4)
+// 通常の復習完了は session-runner が controller を通らず flushAllPendingEvents を
+// 直叩きするため、 controller hook (Task 3) だけでは pull-back が発火しない。
+// よって session 完了 flush 成功点に直接 hook する。
+// classifyFlushResults は real を使い、 FlushResult 値で ok/非ok を end-to-end 検証。
+// ---------------------------------------------------------------------------
+describe('session 完了 flush 成功で pull-back', () => {
+  // 1 card 正答 → 次へ → finished まで共通駆動
+  async function reachFinished() {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
+  }
+
+  it('完了 flush ok → pullBack("session-complete") が 1 回呼ばれる', async () => {
+    // real classify → 'ok': attempted>0, failedEventIds empty, results non-empty
+    mockFlushAllPendingEvents.mockResolvedValue([
+      {
+        attempted: 1,
+        syncedEventIds: ['e1'],
+        failedEventIds: [],
+        sessionSynced: true,
+        reachable: true,
+        httpStatus: 200,
+      },
+    ])
+
+    await reachFinished()
+
+    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('session-complete'))
+    expect(mockPullBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('完了 flush 非 ok (transient: 503) → pull-back なし', async () => {
+    // real classify → 'transient': failedEventIds 非空 + httpStatus 5xx (503) で isTransientError 一致
+    mockFlushAllPendingEvents.mockResolvedValue([
+      {
+        attempted: 1,
+        syncedEventIds: [],
+        failedEventIds: ['e1'],
+        sessionSynced: false,
+        reachable: true,
+        httpStatus: 503,
+      },
+    ])
+
+    await reachFinished()
+
+    // flushAllPendingEvents が呼ばれるまで待機してから pullBack 呼ばれていないことを確認
+    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockPullBack).not.toHaveBeenCalled()
+  })
+
+  it('完了 flush throw → pull-back なし (catch 内で握り潰される)', async () => {
+    mockFlushAllPendingEvents.mockRejectedValue(new Error('net'))
+
+    await reachFinished()
+
+    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockPullBack).not.toHaveBeenCalled()
+  })
+
+  it('完了 flush 0 件 (no-pending) → pull-back なし', async () => {
+    // 送る pending が無い (= 空配列) → real classify → 'no-pending'。 サーバー未更新のため pull-back 不要。
+    mockFlushAllPendingEvents.mockResolvedValue([])
+
+    await reachFinished()
+
+    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockPullBack).not.toHaveBeenCalled()
   })
 })

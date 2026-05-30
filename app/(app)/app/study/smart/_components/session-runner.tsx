@@ -64,6 +64,8 @@ import {
   flushPendingEvents,
   recordAnswerEvent,
 } from '@/lib/sync/review-events'
+import { classifyFlushResults } from '@/lib/sync/review-flush'
+import { pullBack } from '@/lib/sync/pull-back'
 
 // S-cache-1: pending answer_events がこの件数に達した時点で bulk flush。
 // §14.7.1 「pending 5 件以上 / セッション終了 / ネット復活 / アプリ起動・復帰」 の
@@ -304,7 +306,10 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
         await completeStudySession(sessionId)
       } catch {}
       try {
-        await flushAllPendingEvents()
+        const results = await flushAllPendingEvents()
+        // 通常復習はこの直叩き経路で queue を drain するため controller hook では拾えない。
+        // flush 成功 (全件 synced) のときのみ pull-back: FSRS 再計算後のサーバー値を mirror へ戻す。
+        if (classifyFlushResults(results) === 'ok') pullBack('session-complete')
       } catch {}
     })()
   }, [phase, sessionId])
