@@ -54,25 +54,21 @@ describe('GET /api/study-days/pull', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
       studyDays: ClientStudyDay[]
-      now: string
     }
     expect(body.studyDays).toEqual([])
-    expect(typeof body.now).toBe('string')
     expect(res.headers.get('Cache-Control')).toContain('no-store')
     expect(getAllStudyDaysForUser).not.toHaveBeenCalled()
   })
 
-  it('正常 (0 件): 空配列 + now は ISO8601 文字列', async () => {
+  it('正常 (0 件): 空配列', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     vi.mocked(getAllStudyDaysForUser).mockResolvedValue([])
     const res = await GET()
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
       studyDays: ClientStudyDay[]
-      now: string
     }
     expect(body.studyDays).toEqual([])
-    expect(body.now).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
   })
 
   it('正常 (N 件): studyDays 配列 + getAllStudyDaysForUser は user.id で呼ばれる', async () => {
@@ -86,7 +82,6 @@ describe('GET /api/study-days/pull', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
       studyDays: ClientStudyDay[]
-      now: string
     }
     expect(body.studyDays).toHaveLength(2)
     expect(body.studyDays[0]?.day).toBe('2026-05-25')

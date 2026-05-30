@@ -3,14 +3,13 @@
 // S-perf-3 (dashboard 高速化、 streak / todayCount を Dexie 経由に切替)。
 //
 // 役割境界:
-// - cards.ts / exams.ts と完全同 pattern (replace 戦略 + sync_meta update + 失敗時
-//   不変性)。 server endpoint は冪等 (90 日 window で常に full snapshot)、 client は
-//   clear + bulkPut でローカルを置き換える。
-// - 失敗時 (network throw / non-2xx / body 不正): Dexie / sync_meta いずれも touch
-//   しない。 dashboard 側は古い mirror を引き続き使う (= 一時的失敗は UX 影響なし)。
+// - replace 戦略 (clear + bulkPut) + 失敗時不変性。 server endpoint は冪等
+//   (90 日 window で常に full snapshot)、 client はローカルを置き換える。cursor は
+//   持たない (full-window snapshot replace のみ)。
+// - 失敗時 (network throw / non-2xx / body 不正): Dexie を touch しない。 dashboard
+//   側は古い mirror を引き続き使う (= 一時的失敗は UX 影響なし)。
 
 import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
-import { SYNC_META_KEYS } from './sync-meta'
 
 const STUDY_DAYS_PULL_ENDPOINT = '/api/study-days/pull'
 
@@ -20,7 +19,6 @@ export type PullApiClient = {
     status: number
     body: {
       studyDays?: ClientStudyDay[]
-      now?: string
       error?: string
     } | null
   }>
@@ -36,7 +34,7 @@ const defaultClient: PullApiClient = {
     try {
       const res = await fetch(path, { method: 'GET' })
       let body:
-        | { studyDays?: ClientStudyDay[]; now?: string; error?: string }
+        | { studyDays?: ClientStudyDay[]; error?: string }
         | null = null
       try {
         body = (await res.json()) as typeof body
@@ -62,21 +60,17 @@ export async function pullAllStudyDays(
   if (!response.ok || !response.body) {
     return { ok: false, count: 0 }
   }
-  const { studyDays, now } = response.body
-  if (!Array.isArray(studyDays) || typeof now !== 'string') {
+  const { studyDays } = response.body
+  if (!Array.isArray(studyDays)) {
     return { ok: false, count: 0 }
   }
 
   const db = getClientDb()
-  await db.transaction('rw', db.study_days, db.sync_meta, async () => {
+  await db.transaction('rw', db.study_days, async () => {
     await db.study_days.clear()
     if (studyDays.length > 0) {
       await db.study_days.bulkPut(studyDays)
     }
-    await db.sync_meta.put({
-      key: SYNC_META_KEYS.lastStudyDayPullAt,
-      value: now,
-    })
   })
   return { ok: true, count: studyDays.length }
 }

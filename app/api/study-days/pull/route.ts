@@ -31,18 +31,12 @@ export async function GET(): Promise<Response> {
   // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空配列を返す
   // (cards/pull / dashboard/stats と同 「安全側 0 件」 挙動)。
   if (!user) {
-    return Response.json(
-      { studyDays: [], now: new Date().toISOString() },
-      { status: 200, headers },
-    )
+    return Response.json({ studyDays: [] }, { status: 200, headers })
   }
 
   try {
     const studyDays = await getAllStudyDaysForUser(user.id)
-    return Response.json(
-      { studyDays, now: new Date().toISOString() },
-      { status: 200, headers },
-    )
+    return Response.json({ studyDays }, { status: 200, headers })
   } catch (err) {
     logger.warn({ event: 'api.study_days.pull.failed', userId: user.id, err })
     return Response.json({ error: 'internal' }, { status: 500, headers })

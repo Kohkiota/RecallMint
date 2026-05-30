@@ -10,8 +10,7 @@ beforeEach(async () => {
 })
 
 describe('SYNC_META_KEYS', () => {
-  it('lastStudyDayPullAt / cardsCursor / examsCursor / tombstoneCursor の定数を持つ', () => {
-    expect(SYNC_META_KEYS.lastStudyDayPullAt).toBe('last_study_day_pull_at')
+  it('cardsCursor / examsCursor / tombstoneCursor の定数を持つ', () => {
     expect(SYNC_META_KEYS.cardsCursor).toBe('cards_cursor')
     expect(SYNC_META_KEYS.examsCursor).toBe('exams_cursor')
     expect(SYNC_META_KEYS.tombstoneCursor).toBe('tombstone_cursor')
