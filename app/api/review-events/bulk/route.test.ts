@@ -7,7 +7,8 @@
 // submitReviewTx は削除済み; tx ops の record で assertする。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getTableName } from 'drizzle-orm'
+import { getTableName, SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import type { User } from '@/lib/db/schema'
 
@@ -1050,5 +1051,20 @@ describe('POST /api/review-events/bulk', () => {
     expect(body.failed).toEqual([VALID_EVENT_ID])
     // UPDATE は 1 回呼ばれた (throw は件数照合段階)
     expect(state.bulkUpdateCallCount).toBe(1)
+  })
+
+  it('now(): cards UPDATE の set.updatedAt が now() を含み Date param を bind しない (増分 pull cursor 統一)', async () => {
+    // 正常系: 1 event apply → cards UPDATE が走る。
+    // set.updatedAt が DB クロック (now()) を使い、 ISO bind しないことを検証する。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(200)
+    expect(state.bulkUpdateCapture).not.toBeNull()
+
+    const updatedAt = state.bulkUpdateCapture?.set?.updatedAt
+    expect(updatedAt).toBeInstanceOf(SQL)
+    const q = new PgDialect().sqlToQuery(updatedAt as SQL)
+    expect(q.sql).toContain('now()')
+    expect(q.params).toHaveLength(0) // Date param を bind していないこと
   })
 })

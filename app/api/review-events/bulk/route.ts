@@ -329,8 +329,8 @@ async function processSession(
             answered: sql`v.answered`,
             lastCorrect: sql`v.last_correct`,
             currentStreak: sql`v.current_streak`,
-            // updated_at も timestamptz bind。 $onUpdate の JS Date を ISO string で上書き (#5789)。
-            updatedAt: sql`${toPgTimestamptz(new Date())}::timestamptz`,
+            // DB クロックで打刻 (増分 pull cursor 統一、now() は DB 側評価で #5789 と無関係)。
+            updatedAt: sql`now()`,
           })
           .from(
             sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
