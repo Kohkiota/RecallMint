@@ -176,6 +176,24 @@ push 完了経路: `createReviewFlushController.kick` (`review-flush.ts:192-224`
 - dashboard dueCount は `useLiveQuery` (`dashboard-actions.tsx:33`) のため、pull-back の Dexie 書込が
   再 mount 不要で live 反映 (調査1 軸7)。
 
+> **実装時補正 (2026-05-30、step 5 実装で判明)**: 上記は pull-back hook を「controller の
+> `outcome === 'ok'` のみ」と記述していたが、実コードの flush 経路は **2 系統**ある:
+> (1) 背景回復 flush = `review-flush-trigger.tsx` → `controller.kick(mount/visibility/online)` (controller 経由)、
+> (2) session 内 flush = `session-runner.tsx` の `flushPendingEvents` (5件閾値) / `flushAllPendingEvents`
+> (session 完了) ── **後者は controller を通らず直叩き**。**通常の復習完了では session-runner が先に pending
+> queue を drain する**ため、後続の controller.kick は `no-pending` を返し `onFlushed` が発火しない =
+> controller hook だけでは通常フローで pull-back が走らない (controller hook は「session を中断して離脱 →
+> 後で背景回復 flush が拾う」safety-net 経路でのみ発火)。
+> よって pull-back hook は **2 箇所**に置く:
+> - **(A) controller `onFlushed`** (`review-flush.ts`、`outcome==='ok'`) ── 背景回復 / 中断セッションの safety-net。
+> - **(B) session 完了 flush** (`session-runner.tsx` の `flushAllPendingEvents` 成功時、`classifyFlushResults===
+>   'ok'`) ── 通常復習フロー。**5件閾値 flush (`flushPendingEvents`) には付けない** (mid-session の
+>   study_days 無駄打ち回避、当該 session 表示は mount-once snapshot で mid-session 反映不要)。
+> 両 hook とも step 4 の `runGuardedPull` の in-flight guard で coalesce され二重 `/api/pull` にならない。
+> pull-back 実体は `lib/sync/pull-back.ts` の `pullBack(reason)` に集約。
+> (本 spec 起草時にこの 2 経路を把握しきれていなかった点の事後修正。詳細は
+> `docs/superpowers/plans/2026-05-30-incremental-pull-step5-pull-back-flush-hook.md` §⚠ / U5。)
+
 ### 3.4 トリガー拡張 (mount + visibilitychange + online)
 
 現状: `pull-trigger.tsx:22` は `useEffect(..., [])` で mount 1 回のみ。push 側 `review-flush-trigger.tsx:46-57`
@@ -236,7 +254,7 @@ exams mirror を読む client は現状ゼロ (調査1 軸7)。
 | クロック (a) | `app/(app)/app/exams/[id]/_actions/update-card-field.ts:142` |
 | クロック (b) | `app/api/review-events/bulk/route.ts:333` |
 | クロック (c) | `app/(app)/app/exams/[id]/_actions/delete-card.ts:64` / `_actions/delete-exam.ts:71` |
-| pull-back hook | `lib/sync/review-flush.ts:213` (outcome==='ok') / `:127` ControllerDeps / `review-flush-trigger.tsx:25` |
+| pull-back hook (2 経路、§3.3 補正) | (A) controller: `lib/sync/review-flush.ts` onFlushed (`outcome==='ok'`) / `ControllerDeps` / `review-flush-trigger.tsx` 配線 ; (B) session 完了: `session-runner.tsx` `flushAllPendingEvents` 成功時 (`classifyFlushResults==='ok'`) ; 実体 `lib/sync/pull-back.ts` `pullBack(reason)` |
 | トリガー | `app/(app)/app/_components/pull-trigger.tsx:22` / push 同型は `review-flush-trigger.tsx:46-57` |
 | Web Locks 流用 | `lib/sync/review-flush.ts:33,64,78,90,102` / in-flight `lib/sync/review-events.ts:218` |
 | exams 一覧 UI | `app/(app)/app/exams/page.tsx:40-101` / `lib/exams/list.ts:46` / `lib/exams/format.ts` formatRelativeJa |
