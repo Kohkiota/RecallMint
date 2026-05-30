@@ -13,6 +13,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { deleteExam } from '@/app/(app)/app/exams/_actions/delete-exam'
+import { runGuardedPull } from '@/lib/sync/pull'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
@@ -37,6 +38,8 @@ export function DeleteExamButton({ examId }: Props) {
         // `router.refresh()` が単独で負う (cross-page `/app/upload` のみ server action
         // 側で revalidate)。 削除された exam 行ごと unmount されるため phase 更新は不要。
         router.refresh()
+        // 一覧が Dexie 参照のため、exam 削除後に mirror を pull で最新化する。
+        void runGuardedPull({ reason: 'exam-delete' }).catch(() => {})
       } else {
         setErrorMsg(result.error)
         setPhase('error')

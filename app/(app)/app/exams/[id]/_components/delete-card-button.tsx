@@ -11,6 +11,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { deleteCard } from '../_actions/delete-card'
+import { runGuardedPull } from '@/lib/sync/pull'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
@@ -31,6 +32,8 @@ export function DeleteCardButton({ cardId }: Props) {
       const result = await deleteCard(cardId)
       if (result.ok) {
         router.refresh()
+        // 一覧が Dexie 参照のため、カード削除後に mirror を pull で最新化する。
+        void runGuardedPull({ reason: 'card-delete' }).catch(() => {})
       } else {
         setErrorMsg(result.error)
         setPhase('error')

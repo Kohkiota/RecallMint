@@ -22,6 +22,14 @@ vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
 }))
 
+const { mockRunGuardedPull } = vi.hoisted(() => ({
+  mockRunGuardedPull: vi.fn().mockResolvedValue('ran'),
+}))
+
+vi.mock('@/lib/sync/pull', () => ({
+  runGuardedPull: mockRunGuardedPull,
+}))
+
 const { mockCreateCard, mockDeleteCard, mockRouterRefresh } = vi.hoisted(() => ({
   mockCreateCard: vi.fn(),
   mockDeleteCard: vi.fn(),
@@ -280,6 +288,7 @@ describe('InlineCardList', () => {
       await screen.findByText('カードの削除に失敗しました。'),
     ).toBeInTheDocument()
     expect(mockRouterRefresh).not.toHaveBeenCalled()
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
   })
 
   it('空 cards では「削除」ボタンが存在しない', () => {
@@ -319,6 +328,10 @@ describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
     await waitFor(() => {
       expect(mockRouterRefresh).toHaveBeenCalled()
     })
+    // 一覧が Dexie 参照のため mirror を pull で最新化
+    await waitFor(() => {
+      expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'card-add' })
+    })
   })
 
   it('createCard 失敗 → inline error 表示、 router.refresh() しない', async () => {
@@ -332,6 +345,7 @@ describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
       'カードの追加に失敗しました。',
     )
     expect(mockRouterRefresh).not.toHaveBeenCalled()
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
   })
 
   it('追加後 refresh で新 card が list に現れたら、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {

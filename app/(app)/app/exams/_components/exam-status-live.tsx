@@ -25,6 +25,7 @@ import {
   hasCompletion,
   processingIds,
 } from './exam-status-poll'
+import { runGuardedPull } from '@/lib/sync/pull'
 
 const POLL_INTERVAL_MS = 5000
 const STATUS_ENDPOINT = '/api/exams/status'
@@ -78,6 +79,8 @@ export function ExamStatusProvider({
         // processing → completed/failed 遷移時のみ、card 件数同期のため refresh。
         if (hasCompletion(prevProcessing, nextProcessing)) {
           router.refresh()
+          // 一覧が Dexie 参照のため、OCR 完了後に mirror を pull で最新化する。
+          void runGuardedPull({ reason: 'ocr-complete' }).catch(() => {})
         }
         prevProcessing = nextProcessing
 

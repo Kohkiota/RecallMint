@@ -15,6 +15,7 @@ import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
 import { createCard } from '../_actions/create-card'
 import { DeleteCardButton } from './delete-card-button'
+import { runGuardedPull } from '@/lib/sync/pull'
 
 type InlineCardListProps = {
   cards: ExamDetailCard[]
@@ -43,6 +44,8 @@ export function InlineCardList({ cards, examId }: InlineCardListProps) {
       // server component を再実行して新 card を含む list を取得 (inline cell の
       // serverOptions 同期と同じ機構)。
       router.refresh()
+      // 一覧が Dexie 参照のため、カード追加後に mirror を pull で最新化する。
+      void runGuardedPull({ reason: 'card-add' }).catch(() => {})
     })
   }
 
