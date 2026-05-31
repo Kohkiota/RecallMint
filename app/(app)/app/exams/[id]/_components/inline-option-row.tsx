@@ -122,6 +122,11 @@ export function InlineOptionList({
   }, [serverOptions])
 
   // unmount で timer clear。
+  // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の debounce
+  // drain は発火しないが、 enqueue は Dexie に同期 persist 済みのため、 次の ambient
+  // trigger (pagehide best-effort / visibilitychange / 次回 mount = Stage2
+  // card-mutation-flush-trigger) で drain される。 lost-write ではない (checkbox /
+  // delete は immediateDrain のため本 path に依存しない)。
   useEffect(() => {
     return () => {
       if (debounceTimerRef.current !== null) {

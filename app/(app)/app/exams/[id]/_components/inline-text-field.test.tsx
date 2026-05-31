@@ -280,6 +280,53 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     expect(mockEnqueue).not.toHaveBeenCalled()
   })
 
+  it('nullable field を空にして blur → mirror に null が書かれる (server 正規化と一致)', async () => {
+    await seedCard({ memo: '旧メモ' })
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue="旧メモ"
+        ariaLabel="memo 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'memo 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } })
+    fireEvent.blur(screen.getByRole('textbox'))
+
+    await vi.waitFor(async () => {
+      const row = await getClientDb().cards.get(CARD_ID)
+      expect(row?.memo).toBeNull()
+    })
+    // enqueue には raw '' が渡る (server 側 buildSetClause が '' → null 正規化する)。
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      card_id: CARD_ID,
+      op: 'update_field',
+      patch: { field: 'memo', value: '' },
+    })
+  })
+
+  it('non-nullable field (title) は空でも mirror に空文字を書く (null 化しない)', async () => {
+    await seedCard({ title: '旧' })
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } })
+    fireEvent.blur(screen.getByRole('textbox'))
+
+    await vi.waitFor(async () => {
+      const row = await getClientDb().cards.get(CARD_ID)
+      expect(row?.title).toBe('')
+    })
+  })
+
   it('null initial → 値入力 + blur → enqueue に新値 (memo field)', async () => {
     render(
       <InlineTextField

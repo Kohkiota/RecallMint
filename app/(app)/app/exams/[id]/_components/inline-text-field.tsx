@@ -60,6 +60,14 @@ type InlineTextFieldProps = {
 
 const DEBOUNCE_MS = 500
 
+// server (buildSetClause) が '' → null に正規化する nullable text 列。 mirror も
+// 同じ正規化をかけ、 楽観値を server 確定値に一致させる (pull-back での見た目反転防止)。
+const NULLABLE_FIELDS: ReadonlySet<InlineTextFieldName> = new Set([
+  'sort_key',
+  'explanation_text',
+  'memo',
+])
+
 export function InlineTextField({
   cardId,
   field,
@@ -113,6 +121,10 @@ export function InlineTextField({
   }, [initialValue])
 
   // unmount で timer clear (StrictMode 二重 effect でも単純な timer cleanup のみ)。
+  // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の drain は
+  // 発火しないが、 enqueue は Dexie に同期 persist 済みのため、 次の ambient trigger
+  // (pagehide best-effort / visibilitychange / 次回 mount = Stage2 card-mutation-flush-trigger)
+  // で drain される。 ここでの取りこぼしは lost-write ではない。
   useEffect(() => {
     return () => {
       if (debounceTimerRef.current !== null) {
@@ -128,7 +140,15 @@ export function InlineTextField({
     // mirror 直書き (楽観反映)。 enqueue/flush とは独立に await しない (失敗は
     // 次回 pull で reconcile)。 logger に残すのみ。
     // field ∈ ClientCard の snake_case 列名に 1:1 対応するため Partial<ClientCard> で型付け。
-    const mirrorPatch: Partial<ClientCard> = { [field]: target }
+    //
+    // なぜ正規化: nullable 列は server (buildSetClause) が '' → null に正規化するため、
+    // mirror にも同じ規則を適用して楽観値を server 確定値に一致させる (一致させないと
+    // 次の pull-back で '' → null へ見た目が反転する)。 server zod は trim しないので
+    // ここも strict な === '' で揃える。 enqueue に渡す raw 値は変えない (server 側で
+    // 正規化されるため、 raw を送って server contract に委ねる)。
+    const mirrorValue =
+      NULLABLE_FIELDS.has(field) && target === '' ? null : target
+    const mirrorPatch: Partial<ClientCard> = { [field]: mirrorValue }
     void getClientDb()
       .cards.update(cardId, mirrorPatch)
       .catch((err) => {
