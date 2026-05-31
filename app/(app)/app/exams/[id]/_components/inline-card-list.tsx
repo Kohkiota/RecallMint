@@ -7,8 +7,11 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useLiveQuery } from 'dexie-react-hooks'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
+import type { CardOption } from '@/lib/db/schema'
+import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
@@ -18,13 +21,69 @@ import { DeleteCardButton } from './delete-card-button'
 import { runGuardedPull } from '@/lib/sync/pull'
 
 type InlineCardListProps = {
-  cards: ExamDetailCard[]
+  // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
+  // server fetch 由来の初期値。 live query が一度でも解決したら (空配列でも) Dexie
+  // mirror を単一の真実とする。 「mirror 0 件なら server fallback」 はしない (Task
+  // 4.3 で local delete-all した card が server copy で復活するのを防ぐため)。
+  initialCards: ExamDetailCard[]
   // route の [id] (試験 id)。 末尾「+ カードを追加」 で createCard に渡す。
   examId: string
+  // owner-scope (全 read は WHERE user_id = ?)。 server page の auth() から受領。
+  userId: string
 }
 
-export function InlineCardList({ cards, examId }: InlineCardListProps) {
+// Dexie ClientCard (snake_case) → 子 inline 編集 component が消費する ExamDetailCard
+// 形 (camelCase) へ写像。 options は ClientCardOption ≡ CardOption (id/text/is_correct/
+// explanation?) のため as 経由でそのまま渡す。
+function toExamDetailCard(c: ClientCard): ExamDetailCard {
+  return {
+    id: c.id,
+    title: c.title,
+    sortKey: c.sort_key ?? null,
+    questionText: c.question_text,
+    options: Array.isArray(c.options) ? (c.options as CardOption[]) : [],
+    explanationText: c.explanation_text ?? null,
+    memo: c.memo ?? null,
+  }
+}
+
+// server (getCardsForExam) の `ORDER BY sort_key, created_at` を Dexie 配列上で再現。
+// Postgres ASC は NULL を末尾に置くため、 sort_key 非 null を辞書順 ASC で先に、
+// null は末尾、 同 key 内 (null 同士含む) は created_at ASC を tiebreak とする。
+function sortLikeServer(a: ClientCard, b: ClientCard): number {
+  const aKey = a.sort_key ?? null
+  const bKey = b.sort_key ?? null
+  if (aKey !== bKey) {
+    if (aKey === null) return 1 // null は後ろ (NULLS LAST)
+    if (bKey === null) return -1
+    return aKey < bKey ? -1 : 1
+  }
+  // 同 sort_key (null 同士含む): created_at ASC
+  if (a.created_at === b.created_at) return 0
+  return a.created_at < b.created_at ? -1 : 1
+}
+
+export function InlineCardList({
+  initialCards,
+  examId,
+  userId,
+}: InlineCardListProps) {
   const router = useRouter()
+  // 表示の真実は Dexie cards mirror の直読み (exam 単位 + owner-scope + server sort)。
+  // 詳細滞在中のみ購読 (component unmount で dexie-react-hooks が解除)。 deps が変化
+  // するまで同一 subscription。
+  const liveCards = useLiveQuery(async () => {
+    const db = getClientDb()
+    const rows = await db.cards.where('exam_id').equals(examId).toArray()
+    return rows
+      .filter((c) => c.user_id === userId)
+      .sort(sortLikeServer)
+      .map(toExamDetailCard)
+  }, [examId, userId])
+
+  // live query 未解決 (undefined) の間だけ server 由来の initialCards で bootstrap。
+  // 解決後 (空配列含む) は mirror を信頼。 二層 state は持たない。
+  const cards = liveCards ?? initialCards
   const [isPending, startTransition] = useTransition()
   // createCard 成功直後に返る新 card id。 router.refresh() 後の再描画で、 該当 card の
   // 問題文 cell に autoEditOnMount を当てて自動で編集モードにするための marker。

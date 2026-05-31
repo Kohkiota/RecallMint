@@ -59,7 +59,9 @@ export default async function ExamDetailPage({
 
       <section>
         <h2 className="text-lg font-bold mb-2">カード ({cards.length} 件)</h2>
-        <InlineCardList cards={cards} examId={id} />
+        {/* 表示は InlineCardList 内の Dexie mirror useLiveQuery 直読みが真実。
+            initialCards は SSR / mirror 未 hydrate 期間の bootstrap 用 fallback。 */}
+        <InlineCardList initialCards={cards} examId={id} userId={userId} />
       </section>
     </div>
   )

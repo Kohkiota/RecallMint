@@ -7,6 +7,11 @@
 // 個別 InlineTextField / InlineOptionRow は別 test で網羅、 本 test は一覧結合
 // (描画 / memo section 存在 / 編集ボタン不在 / option inline 編集 cell 存在) を
 // 見る。 server action は mock。
+//
+// Task 4.1: 表示 source は Dexie cards mirror の useLiveQuery 直読みに切替済。
+// 本 test の描画 assertion は live query 解決後の Dexie 表示を検証するため、
+// initialCards に渡す内容と同等の card を mirror に seed する (seedMirror)。
+// initialCards は SSR / mirror 未 hydrate 期間の fallback 用 prop。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
@@ -17,6 +22,7 @@ import {
   waitFor,
 } from '@testing-library/react'
 import type { ExamDetailCard } from '@/lib/exams/list'
+import { getClientDb, type ClientCard } from '@/lib/client-db'
 
 vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
@@ -50,6 +56,52 @@ vi.mock('next/navigation', () => ({
 
 import { InlineCardList } from './inline-card-list'
 
+const TEST_USER_ID = 'user-1'
+const TEST_EXAM_ID = 'exam-1'
+
+// ExamDetailCard (server 形) を Dexie ClientCard (snake_case) に写像して mirror に
+// seed する。 created_at は配列 index で単調増加させ、 server sort
+// (sort_key ASC NULLS LAST → created_at ASC) 上で initialCards の並びを保つ。
+function toClientCard(card: ExamDetailCard, idx: number): ClientCard {
+  return {
+    id: card.id,
+    user_id: TEST_USER_ID,
+    exam_id: TEST_EXAM_ID,
+    source_document_id: null,
+    title: card.title,
+    sort_key: card.sortKey,
+    question_text: card.questionText,
+    options: card.options,
+    correct_answer_ids: [],
+    explanation_text: card.explanationText,
+    memo: card.memo,
+    images: [],
+    custom_props: {},
+    tags: [],
+    answered: false,
+    last_correct: null,
+    current_streak: 0,
+    due: '2026-04-22T00:00:00.000Z',
+    stability: 0,
+    difficulty: 0,
+    elapsed_days: 0,
+    scheduled_days: 0,
+    reps: 0,
+    lapses: 0,
+    state: 0,
+    learning_steps: 0,
+    last_review: null,
+    content_version: 0,
+    created_at: `2026-04-${String(idx + 1).padStart(2, '0')}T00:00:00.000Z`,
+    updated_at: '2026-04-30T00:00:00.000Z',
+    sync_status: 'synced',
+  }
+}
+
+async function seedMirror(list: ExamDetailCard[]): Promise<void> {
+  await getClientDb().cards.bulkPut(list.map(toClientCard))
+}
+
 const cards: ExamDetailCard[] = [
   {
     id: 'card-1',
@@ -74,10 +126,11 @@ const cards: ExamDetailCard[] = [
   },
 ]
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   mockCreateCard.mockResolvedValue({ ok: true, data: { cardId: 'card-new' } })
   mockDeleteCard.mockResolvedValue({ ok: true })
+  await getClientDb().cards.clear()
 })
 
 afterEach(() => {
@@ -86,7 +139,7 @@ afterEach(() => {
 
 describe('InlineCardList', () => {
   it('card 一覧を描画 (title / questionText / option / explanation / memo)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     expect(screen.getByText('問1')).toBeInTheDocument()
     expect(screen.getByText('問2')).toBeInTheDocument()
     expect(screen.getByText('問題文 1')).toBeInTheDocument()
@@ -97,7 +150,7 @@ describe('InlineCardList', () => {
   })
 
   it('「編集」 ボタン (Link to /app/cards/:id) は DOM に存在しない', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     expect(
       screen.queryByRole('link', { name: '編集' }),
     ).not.toBeInTheDocument()
@@ -108,13 +161,13 @@ describe('InlineCardList', () => {
   })
 
   it('memo section が null card にも placeholder で表示される', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // card-2 は memo null → placeholder「メモ (クリックで追加)」 を表示
     expect(screen.getByText('メモ (クリックで追加)')).toBeInTheDocument()
   })
 
   it('null sortKey / null explanationText の card も描画される (display 用 cell)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // 2 件目の card label が描画されているか
     expect(screen.getByText('問2')).toBeInTheDocument()
     // explanation null → 解説 cell も placeholder 表示 (クリックで追加 等)
@@ -126,7 +179,7 @@ describe('InlineCardList', () => {
   })
 
   it('inline 編集対象 cell (sort_key / title / question / explanation / memo + option 3 cell × N) を button として持つ', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // card-1: 5 card cells + 2 options × 3 option cell (id/text/explanation) = 11
     // card-2: 5 card cells + 1 option × 3 = 8
     // 合計 19
@@ -137,7 +190,7 @@ describe('InlineCardList', () => {
   })
 
   it('option は inline 編集化されている (本文 / 解説 / id が click 可能)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // option の本文 / id / 解説 は inline 編集 cell として描画
     expect(screen.getByText('A 理由', { exact: false })).toBeInTheDocument()
     expect(
@@ -152,7 +205,7 @@ describe('InlineCardList', () => {
   })
 
   it('option ごとに is_correct checkbox が描画される (card-1 の正解 option は checked)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
     // card-1: 2 options + card-2: 1 option = 3
     expect(checkboxes.length).toBe(3)
@@ -161,7 +214,7 @@ describe('InlineCardList', () => {
   })
 
   it('空 cards でも crash しない (card 0 件 + 「＋ カードを追加」 のみ)', () => {
-    render(<InlineCardList cards={[]} examId="exam-1" />)
+    render(<InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />)
     // card 由来の inline 編集 cell / checkbox は無いが crash しない。
     // 「＋ カードを追加」 button のみ存在する。
     expect(
@@ -181,7 +234,7 @@ describe('InlineCardList', () => {
 
   it('正解サマリ: 正解 1 件の card で 「○ 正解: <id>」 形式で表示される', () => {
     // card-1 は正解 1 件 (id='a')、 card-2 も正解 1 件 (id='a')
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     const summaries = screen.getAllByText('○ 正解: a')
     // 2 card 両方で表示されるはず
     expect(summaries.length).toBe(2)
@@ -204,7 +257,7 @@ describe('InlineCardList', () => {
         memo: null,
       },
     ]
-    render(<InlineCardList cards={multiCorrect} examId="exam-1" />)
+    render(<InlineCardList initialCards={multiCorrect} examId="exam-1" userId="user-1" />)
     expect(screen.getByText('○ 正解: a, b, d')).toBeInTheDocument()
   })
 
@@ -223,13 +276,13 @@ describe('InlineCardList', () => {
         memo: null,
       },
     ]
-    render(<InlineCardList cards={noCorrect} examId="exam-1" />)
+    render(<InlineCardList initialCards={noCorrect} examId="exam-1" userId="user-1" />)
     // 「○ 正解:」 を含むテキストが存在しないこと
     expect(screen.queryByText(/正解:/)).not.toBeInTheDocument()
   })
 
   it('正解サマリ: emerald 系の font-medium クラスを持つ (text-emerald-700 + font-medium)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     const summary = screen.getAllByText('○ 正解: a')[0]!
     expect(summary.className).toMatch(/text-emerald-700/)
     expect(summary.className).toMatch(/font-medium/)
@@ -241,13 +294,13 @@ describe('InlineCardList', () => {
   // ---------------------------------------------------------------------------
 
   it('各 card に「削除」ボタンが描画される (2 cards → 2 個)', () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     const deleteButtons = screen.getAllByRole('button', { name: '削除' })
     expect(deleteButtons.length).toBe(2)
   })
 
   it('「削除」ボタン click → confirm フェーズに遷移し「削除する」「キャンセル」が表示される', async () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     const deleteButtons = screen.getAllByRole('button', { name: '削除' })
     fireEvent.click(deleteButtons[0]!)
     expect(await screen.findByRole('button', { name: '削除する' })).toBeInTheDocument()
@@ -255,8 +308,11 @@ describe('InlineCardList', () => {
   })
 
   it('「削除する」click → deleteCard(card.id) が呼ばれる', async () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
-    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    // 削除導線は async wait を挟むため、 live query 解決後も card が表示され続ける
+    // よう mirror に seed する (initialCards は undefined 期間 fallback のみ)。
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
     fireEvent.click(deleteButtons[0]!)
     fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
     await waitFor(() => {
@@ -266,8 +322,9 @@ describe('InlineCardList', () => {
 
   it('deleteCard 成功 → router.refresh() が呼ばれる', async () => {
     mockDeleteCard.mockResolvedValueOnce({ ok: true })
-    render(<InlineCardList cards={cards} examId="exam-1" />)
-    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
     fireEvent.click(deleteButtons[0]!)
     fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
     await waitFor(() => {
@@ -280,8 +337,9 @@ describe('InlineCardList', () => {
       ok: false,
       error: 'カードの削除に失敗しました。',
     })
-    render(<InlineCardList cards={cards} examId="exam-1" />)
-    const deleteButtons = screen.getAllByRole('button', { name: '削除' })
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
     fireEvent.click(deleteButtons[0]!)
     fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
     expect(
@@ -292,7 +350,7 @@ describe('InlineCardList', () => {
   })
 
   it('空 cards では「削除」ボタンが存在しない', () => {
-    render(<InlineCardList cards={[]} examId="exam-1" />)
+    render(<InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />)
     expect(screen.queryAllByRole('button', { name: '削除' })).toHaveLength(0)
   })
 })
@@ -302,7 +360,7 @@ describe('InlineCardList', () => {
 // ---------------------------------------------------------------------------
 describe('InlineCardList 0-card empty state', () => {
   it('cards=[] で「＋ カードを追加」 button と empty-state hint が両方表示される', () => {
-    render(<InlineCardList cards={[]} examId="exam-1" />)
+    render(<InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />)
     // 「＋ カードを追加」 button は常に表示されなければならない
     expect(
       screen.getByRole('button', { name: '＋ カードを追加' }),
@@ -320,7 +378,7 @@ describe('InlineCardList 0-card empty state', () => {
 
 describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
   it('button click → createCard(examId) 呼出 + 成功で router.refresh()', async () => {
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
     await waitFor(() => {
       expect(mockCreateCard).toHaveBeenCalledWith('exam-1')
@@ -339,7 +397,7 @@ describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
       ok: false,
       error: 'カードの追加に失敗しました。',
     })
-    render(<InlineCardList cards={cards} examId="exam-1" />)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'カードの追加に失敗しました。',
@@ -348,11 +406,11 @@ describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
     expect(mockRunGuardedPull).not.toHaveBeenCalled()
   })
 
-  it('追加後 refresh で新 card が list に現れたら、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
-    // 実際の page では createCard 成功 → newCardId state set → router.refresh() で
-    // server component 再実行 → 新 card を含む cards prop で再描画される。 test では
-    // refresh を新 card 追加 rerender で模す。 新 card の問題文 cell が mount 時に
-    // autoEditOnMount=true で edit mode になる (既存 card は display のまま)。
+  it('追加後 mirror に新 card が現れたら、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
+    // Task 4.1 後: 表示は Dexie mirror 直読み。 createCard 成功 → newCardId state set。
+    // 実 page では runGuardedPull が mirror に新 card を put し、 live query が拾って
+    // 再描画 → 新 card の問題文 cell が autoEditOnMount=true で edit mode になる。
+    // test では refresh で新 card を mirror に put して pull を模す (既存 card は display)。
     const newCard: ExamDetailCard = {
       id: 'card-new',
       title: '新規カード 3',
@@ -366,17 +424,23 @@ describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
       ok: true,
       data: { cardId: 'card-new' },
     })
-    // refresh が呼ばれたら新 card を cards に足して rerender (server 再 fetch を模す)
-    const { rerender } = render(
-      <InlineCardList cards={cards} examId="exam-1" />,
+    await seedMirror(cards)
+    render(
+      <InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />,
     )
+    // 既存 2 card が live query で表示されるまで待つ
+    await screen.findByText('問1')
+    // refresh が呼ばれたら新 card を mirror に追加 (server pull を模す)。
+    // created_at を既存 card より後にして server sort 末尾に配置。
     mockRouterRefresh.mockImplementation(() => {
-      rerender(
-        <InlineCardList cards={[...cards, newCard]} examId="exam-1" />,
-      )
+      void getClientDb().cards.put({
+        ...toClientCard(newCard, 0),
+        created_at: '2026-05-01T00:00:00.000Z',
+      })
     })
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    // refresh 後、 新 card の問題文 cell のみ textbox (auto-edit)。 既存 2 card は display。
+    // 新 card mirror 反映後、 新 card の問題文 cell のみ textbox (auto-edit)。
+    // 既存 2 card は display のまま。
     await waitFor(() => {
       expect(
         screen.getAllByRole('textbox', { name: '問題文 編集' }),
