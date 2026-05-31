@@ -22,14 +22,28 @@
 // - cards/exams は runGuardedPull (in-flight + Web Locks guard 付き pullDelta)
 // - study_days は旧 study-days/pull 経路で並走 (別 helper・別 tx、
 //   unguarded / idempotent full-replace / cursor race なし)
+//
+// suppress フラグ:
+// - isAmbientPullSuppressed() が true の間、 kick は何もせず return する。
+// - suppress は ambient kick (mount/visibilitychange/online) のみを止める。
+//   pullBack / 入口 kick が runGuardedPull を直接呼ぶ経路は flag を参照しないため
+//   suppress の対象外 (bypass は構造的に自明: flag は PullTrigger の kick 内でのみ読む)。
+// - suppress 中の ambient kick は queue しない。離脱後の次トリガで自然回復する。
 
 import { useEffect } from 'react'
 import { runGuardedPull } from '@/lib/sync/pull'
 import { pullAllStudyDays } from '@/lib/sync/study-days'
+import { isAmbientPullSuppressed } from '@/lib/sync/ambient-pull-suppress'
 
 export function PullTrigger(): null {
   useEffect(() => {
     const kick = (reason: string) => {
+      // ambient kick を suppress フラグで抑止。
+      // suppress 中は queue せず silent に skip する (離脱後の次トリガで自然回復)。
+      // 詳細滞在中は毎 visibilitychange/online でここを通るため、ログは出さない
+      // (本 component の silent 契約 + ログ spam 回避)。
+      if (isAmbientPullSuppressed()) return
+
       void runGuardedPull({ reason }).catch(() => {
         // silent: guard outcome (inflight-skip / lock-busy) は正常系、
         // network error は次トリガで再試行

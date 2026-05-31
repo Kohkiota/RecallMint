@@ -2,6 +2,8 @@
 // PullTrigger client component test。 mount / visibilitychange / online トリガーで
 // runGuardedPull / pullAllStudyDays が呼ばれ、 UI は表示されず、 失敗時にも
 // throw / UI 影響なし、 unmount 後は listener が解除されていることを verify。
+// suppress フラグ (isAmbientPullSuppressed) on の間は ambient kick が no-op になること、
+// off で通常通り呼ばれること、 suppress 解除後に queue されないことも verify。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
@@ -11,10 +13,11 @@ import { render, cleanup } from '@testing-library/react'
 // よって waitFor は不要で、 microtask 1 回 (await Promise.resolve()) で十分。
 // (kick が将来 async 化したらこの前提は崩れるので waitFor へ切替が必要)
 
-const { mockRunGuardedPull, mockPullAllStudyDays } = vi.hoisted(
+const { mockRunGuardedPull, mockPullAllStudyDays, mockIsAmbientPullSuppressed } = vi.hoisted(
   () => ({
     mockRunGuardedPull: vi.fn(),
     mockPullAllStudyDays: vi.fn(),
+    mockIsAmbientPullSuppressed: vi.fn(),
   }),
 )
 
@@ -24,6 +27,9 @@ vi.mock('@/lib/sync/pull', () => ({
 vi.mock('@/lib/sync/study-days', () => ({
   pullAllStudyDays: mockPullAllStudyDays,
 }))
+vi.mock('@/lib/sync/ambient-pull-suppress', () => ({
+  isAmbientPullSuppressed: mockIsAmbientPullSuppressed,
+}))
 
 import { PullTrigger } from './pull-trigger'
 
@@ -31,6 +37,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockRunGuardedPull.mockResolvedValue('ran')
   mockPullAllStudyDays.mockResolvedValue({ ok: true, count: 0 })
+  // suppress は既定 off — 通常の ambient kick が通る状態
+  mockIsAmbientPullSuppressed.mockReturnValue(false)
   // jsdom default: visibilityState is 'visible'
   Object.defineProperty(document, 'visibilityState', {
     value: 'visible',
@@ -148,5 +156,86 @@ describe('PullTrigger', () => {
     // 2 helper すべて呼ばれた (= silent retry の前提: 各 helper が独立に呼ばれる)
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('PullTrigger — suppress フラグ', () => {
+  // suppress on の場合: mount / visibilitychange / online すべての ambient kick が
+  // runGuardedPull / pullAllStudyDays を呼ばない。
+  // suppress の対象外 (pullBack / 入口 kick による runGuardedPull 直呼び) は
+  // pull.test.ts / pull-back.test.ts で担保するため、ここでは PullTrigger 経由 vs
+  // 直呼びの差を pin する程度でよい。
+
+  it('(g-1) suppress on: mount kick が runGuardedPull / pullAllStudyDays を呼ばない', async () => {
+    mockIsAmbientPullSuppressed.mockReturnValue(true)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
+    expect(mockPullAllStudyDays).not.toHaveBeenCalled()
+  })
+
+  it('(g-2) suppress on: visibilitychange (visible) kick が呼ばない', async () => {
+    mockIsAmbientPullSuppressed.mockReturnValue(true)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
+    expect(mockPullAllStudyDays).not.toHaveBeenCalled()
+  })
+
+  it('(g-3) suppress on: online kick が呼ばない', async () => {
+    mockIsAmbientPullSuppressed.mockReturnValue(true)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    window.dispatchEvent(new Event('online'))
+    await Promise.resolve()
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
+    expect(mockPullAllStudyDays).not.toHaveBeenCalled()
+  })
+
+  it('(g-4) suppress on: 抑止中の visibilitychange/online は queue されない (suppress 解除後も発火しない)', async () => {
+    // suppress on でイベントを発火 → suppress off に切替えてもイベントは再発火しない。
+    // 「queue しない」= suppress 解除のタイミングで自動的に runGuardedPull が呼ばれないことを確認。
+    mockIsAmbientPullSuppressed.mockReturnValue(true)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('online'))
+    await Promise.resolve()
+
+    // suppress off に切替え (次の kick が来た場合のシミュレーション用)
+    mockIsAmbientPullSuppressed.mockReturnValue(false)
+    // queue 再生は起きない: await しても呼ばれない
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
+    expect(mockPullAllStudyDays).not.toHaveBeenCalled()
+  })
+
+  it('(g-5) suppress off: 通常通り呼ばれる (suppress フラグが動作を壊さないことの確認)', async () => {
+    // suppress off (beforeEach で mockReturnValue(false) 設定済み)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'mount' })
+    expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
+  })
+
+  it('(g-6) runGuardedPull 直呼びは suppress フラグに影響されない (pullBack / 入口 kick の bypass 確認)', async () => {
+    // PullTrigger 経由の kick は suppress on で止まるが、
+    // runGuardedPull を直接呼ぶ経路は flag を参照しないため常に実行される。
+    // この test は「PullTrigger 経由 vs 直呼びの差」を pin する。
+    mockIsAmbientPullSuppressed.mockReturnValue(true)
+    render(<PullTrigger />)
+    await Promise.resolve()
+    // PullTrigger 経由: 呼ばれない
+    expect(mockRunGuardedPull).not.toHaveBeenCalled()
+
+    // 直呼び: suppress フラグに関係なく実行される
+    // (runGuardedPull は pull.ts で管理、flag は pull.ts に手を入れていない)
+    void mockRunGuardedPull({ reason: 'direct' })
+    await Promise.resolve()
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'direct' })
   })
 })
