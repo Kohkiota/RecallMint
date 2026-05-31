@@ -28,30 +28,26 @@ vi.mock('../_actions/update-card-field', () => ({
   updateCardField: vi.fn(),
 }))
 
-const { mockRunGuardedPull } = vi.hoisted(() => ({
-  mockRunGuardedPull: vi.fn().mockResolvedValue('ran'),
-}))
+// Task 4.3: create / delete は local-first (mirror insert/remove + outbox enqueue +
+// 即時 drain)。 server action / router.refresh / runGuardedPull は廃止。
+// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
+// fake-indexeddb の実 Dexie で assert する。 newId は実装を使い (DB に実 UUID を入れる)、
+// 採番値は spy で捕捉する。
+const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => {
+  return {
+    mockEnqueue: vi.fn(async () => ({}) as never),
+    mockFlush: vi.fn(async () => 'no-pending' as const),
+    mockNewId: vi.fn<() => string>(),
+    realNewId: { current: (): string => crypto.randomUUID() },
+  }
+})
 
-vi.mock('@/lib/sync/pull', () => ({
-  runGuardedPull: mockRunGuardedPull,
+vi.mock('@/lib/sync/card-mutations', () => ({
+  newId: mockNewId,
+  enqueueCardMutation: mockEnqueue,
 }))
-
-const { mockCreateCard, mockDeleteCard, mockRouterRefresh } = vi.hoisted(() => ({
-  mockCreateCard: vi.fn(),
-  mockDeleteCard: vi.fn(),
-  mockRouterRefresh: vi.fn(),
-}))
-
-vi.mock('../_actions/create-card', () => ({
-  createCard: mockCreateCard,
-}))
-
-vi.mock('../_actions/delete-card', () => ({
-  deleteCard: mockDeleteCard,
-}))
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: mockRouterRefresh }),
+vi.mock('@/lib/sync/card-mutation-flush', () => ({
+  runGuardedCardMutationFlush: mockFlush,
 }))
 
 import { InlineCardList } from './inline-card-list'
@@ -128,9 +124,10 @@ const cards: ExamDetailCard[] = [
 
 beforeEach(async () => {
   vi.clearAllMocks()
-  mockCreateCard.mockResolvedValue({ ok: true, data: { cardId: 'card-new' } })
-  mockDeleteCard.mockResolvedValue({ ok: true })
+  // newId は実 UUID を返す (Dexie の id 列に実値が入る)。 各 test で採番値を捕捉する。
+  mockNewId.mockImplementation(() => realNewId.current())
   await getClientDb().cards.clear()
+  await getClientDb().card_mutations.clear()
 })
 
 afterEach(() => {
@@ -307,46 +304,27 @@ describe('InlineCardList', () => {
     expect(screen.getByRole('button', { name: 'キャンセル' })).toBeInTheDocument()
   })
 
-  it('「削除する」click → deleteCard(card.id) が呼ばれる', async () => {
+  it('「削除する」click → mirror から card が remove され一覧から消える + drain', async () => {
     // 削除導線は async wait を挟むため、 live query 解決後も card が表示され続ける
     // よう mirror に seed する (initialCards は undefined 期間 fallback のみ)。
     await seedMirror(cards)
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    // card-1 が表示されているのを確認
+    await screen.findByText('問1')
     const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
     fireEvent.click(deleteButtons[0]!)
     fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+    // mirror から card-1 が消える → live query で一覧からも消える
+    await waitFor(async () => {
+      expect(await getClientDb().cards.get('card-1')).toBeUndefined()
+    })
     await waitFor(() => {
-      expect(mockDeleteCard).toHaveBeenCalledWith('card-1')
+      expect(screen.queryByText('問1')).not.toBeInTheDocument()
     })
-  })
-
-  it('deleteCard 成功 → router.refresh() が呼ばれる', async () => {
-    mockDeleteCard.mockResolvedValueOnce({ ok: true })
-    await seedMirror(cards)
-    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
-    const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
-    fireEvent.click(deleteButtons[0]!)
-    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+    // 即時 drain
     await waitFor(() => {
-      expect(mockRouterRefresh).toHaveBeenCalled()
+      expect(mockFlush).toHaveBeenCalled()
     })
-  })
-
-  it('deleteCard 失敗 → inline error 表示、 router.refresh() しない', async () => {
-    mockDeleteCard.mockResolvedValueOnce({
-      ok: false,
-      error: 'カードの削除に失敗しました。',
-    })
-    await seedMirror(cards)
-    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
-    const deleteButtons = await screen.findAllByRole('button', { name: '削除' })
-    fireEvent.click(deleteButtons[0]!)
-    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
-    expect(
-      await screen.findByText('カードの削除に失敗しました。'),
-    ).toBeInTheDocument()
-    expect(mockRouterRefresh).not.toHaveBeenCalled()
-    expect(mockRunGuardedPull).not.toHaveBeenCalled()
   })
 
   it('空 cards では「削除」ボタンが存在しない', () => {
@@ -376,75 +354,101 @@ describe('InlineCardList 0-card empty state', () => {
   })
 })
 
-describe('InlineCardList「＋ カードを追加」 (S2.0b)', () => {
-  it('button click → createCard(examId) 呼出 + 成功で router.refresh()', async () => {
-    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
-    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    await waitFor(() => {
-      expect(mockCreateCard).toHaveBeenCalledWith('exam-1')
-    })
-    await waitFor(() => {
-      expect(mockRouterRefresh).toHaveBeenCalled()
-    })
-    // 一覧が Dexie 参照のため mirror を pull で最新化
-    await waitFor(() => {
-      expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'card-add' })
-    })
-  })
+describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', () => {
+  // 採番される client id を捕捉するため、 newId mock を 1 回だけ固定値にする。
+  function captureNewId(id: string): void {
+    mockNewId.mockImplementationOnce(() => id)
+  }
 
-  it('createCard 失敗 → inline error 表示、 router.refresh() しない', async () => {
-    mockCreateCard.mockResolvedValueOnce({
-      ok: false,
-      error: 'カードの追加に失敗しました。',
-    })
-    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
-    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'カードの追加に失敗しました。',
-    )
-    expect(mockRouterRefresh).not.toHaveBeenCalled()
-    expect(mockRunGuardedPull).not.toHaveBeenCalled()
-  })
-
-  it('追加後 mirror に新 card が現れたら、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
-    // Task 4.1 後: 表示は Dexie mirror 直読み。 createCard 成功 → newCardId state set。
-    // 実 page では runGuardedPull が mirror に新 card を put し、 live query が拾って
-    // 再描画 → 新 card の問題文 cell が autoEditOnMount=true で edit mode になる。
-    // test では refresh で新 card を mirror に put して pull を模す (既存 card は display)。
-    const newCard: ExamDetailCard = {
-      id: 'card-new',
-      title: '新規カード 3',
-      sortKey: '3',
-      questionText: '(問題文を入力してください)',
-      options: [{ id: '1', text: '(選択肢1)', is_correct: false }],
-      explanationText: null,
-      memo: null,
-    }
-    mockCreateCard.mockResolvedValueOnce({
-      ok: true,
-      data: { cardId: 'card-new' },
-    })
+  it('button click → 完全な ClientCard を mirror に insert する (content + default)', async () => {
+    const NEW_ID = '99999999-9999-4999-8999-999999999999'
+    captureNewId(NEW_ID)
     await seedMirror(cards)
-    render(
-      <InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />,
-    )
-    // 既存 2 card が live query で表示されるまで待つ
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     await screen.findByText('問1')
-    // refresh が呼ばれたら新 card を mirror に追加 (server pull を模す)。
-    // created_at を既存 card より後にして server sort 末尾に配置。
-    mockRouterRefresh.mockImplementation(() => {
-      void getClientDb().cards.put({
-        ...toClientCard(newCard, 0),
-        created_at: '2026-05-01T00:00:00.000Z',
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+
+    await waitFor(async () => {
+      expect(await getClientDb().cards.get(NEW_ID)).toBeDefined()
+    })
+    const inserted = (await getClientDb().cards.get(NEW_ID))!
+    // content: buildEmptyCard 由来。 既存 sort_key は ['001', null] → null 除外後
+    // 全数字なので max(1)+1 = '2'。 count 2 → title は「新規カード 3」。
+    expect(inserted.user_id).toBe('user-1')
+    expect(inserted.exam_id).toBe('exam-1')
+    expect(inserted.title).toBe('新規カード 3')
+    expect(inserted.sort_key).toBe('2')
+    expect(inserted.question_text).toBe('(問題文を入力してください)')
+    expect(inserted.options).toEqual([
+      { id: '1', text: '(選択肢1)', is_correct: false },
+    ])
+    expect(inserted.correct_answer_ids).toEqual([])
+    // default の代表値
+    expect(inserted.answered).toBe(false)
+    expect(inserted.state).toBe(0)
+    expect(inserted.content_version).toBe(0)
+    expect(inserted.images).toEqual([])
+    expect(inserted.custom_props).toEqual({})
+    expect(inserted.tags).toEqual([])
+    expect(inserted.sync_status).toBe('pending')
+  })
+
+  it('button click → create mutation を enqueue (snake_case patch + camelCase options) + drain', async () => {
+    const NEW_ID = '88888888-8888-4888-8888-888888888888'
+    captureNewId(NEW_ID)
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    await screen.findByText('問1')
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+
+    await waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith({
+        card_id: NEW_ID,
+        op: 'create',
+        patch: {
+          exam_id: 'exam-1',
+          title: '新規カード 3',
+          sort_key: '2',
+          question_text: '(問題文を入力してください)',
+          options: [{ id: '1', text: '(選択肢1)', isCorrect: false }],
+          explanation_text: null,
+          memo: null,
+        },
       })
     })
+    await waitFor(() => {
+      expect(mockFlush).toHaveBeenCalled()
+    })
+  })
+
+  it('追加後 mirror に新 card が現れ、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
+    // local-first: mirror insert は同期反映、 newCardId set で当該 card の問題文 cell が
+    // autoEditOnMount=true で edit mode になる。 既存 2 card は display のまま。
+    const NEW_ID = '77777777-7777-4777-8777-777777777777'
+    captureNewId(NEW_ID)
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    await screen.findByText('問1')
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    // 新 card mirror 反映後、 新 card の問題文 cell のみ textbox (auto-edit)。
-    // 既存 2 card は display のまま。
+    // 新 card の問題文 cell のみ textbox (auto-edit)。 既存 2 card は display のまま。
     await waitFor(() => {
       expect(
         screen.getAllByRole('textbox', { name: '問題文 編集' }),
       ).toHaveLength(1)
     })
+  })
+
+  it('mirror insert が throw → inline error 表示、 enqueue / drain しない', async () => {
+    const spy = vi
+      .spyOn(getClientDb().cards, 'add')
+      .mockRejectedValueOnce(new Error('boom'))
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'カードの追加に失敗しました。',
+    )
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    expect(mockFlush).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

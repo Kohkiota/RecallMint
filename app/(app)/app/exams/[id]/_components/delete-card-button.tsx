@@ -1,17 +1,21 @@
 'use client'
 
-// per-card 削除ボタン (spec §3.4)。 confirm 2 段 UI + useTransition で
-// deleteCard server action を呼ぶ。
+// per-card 削除ボタン (spec §3.4)。 confirm 2 段 UI + local-first 削除。
 //
 // delete-exam-button.tsx と同じ 2-phase confirm パターン (idle → confirm →
 // deleting / error) を card 粒度に適用。 undo なし。
-// 成功時は router.refresh() で一覧を再取得 (tombstone + card 物理削除反映)。
+//
+// Task 4.3: server action 直叩き / router.refresh() を廃止し local-first 化。
+// mirror remove (楽観反映 → useLiveQuery が一覧から即座に消す) + outbox enqueue
+// (op='delete') + 即時 drain。 最後の 1 枚削除も許容 (guard なし)。 card_count は
+// mirror の card 行数で算出するため、 remove がそのまま件数表示に反映される
+// (exam.card_count は別 decrement しない。 真の確定値は server 適用後の pull-back で収束)。
 
 import { useState, useTransition } from 'react'
-import { useRouter } from 'next/navigation'
+import { getClientDb } from '@/lib/client-db'
+import { enqueueCardMutation } from '@/lib/sync/card-mutations'
+import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
 import { Button } from '@/components/ui/button'
-import { deleteCard } from '../_actions/delete-card'
-import { runGuardedPull } from '@/lib/sync/pull'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
@@ -20,7 +24,6 @@ interface Props {
 }
 
 export function DeleteCardButton({ cardId }: Props) {
-  const router = useRouter()
   const [phase, setPhase] = useState<Phase>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [, startTransition] = useTransition()
@@ -29,15 +32,22 @@ export function DeleteCardButton({ cardId }: Props) {
     setPhase('deleting')
     setErrorMsg(null)
     startTransition(async () => {
-      const result = await deleteCard(cardId)
-      if (result.ok) {
-        router.refresh()
-        // 一覧が Dexie 参照のため、カード削除後に mirror を pull で最新化する。
-        void runGuardedPull({ reason: 'card-delete' }).catch(() => {})
-      } else {
-        setErrorMsg(result.error)
+      try {
+        // mirror remove (楽観反映 → useLiveQuery が一覧から即座に消す)。
+        await getClientDb().cards.delete(cardId)
+      } catch {
+        setErrorMsg('カードの削除に失敗しました。')
         setPhase('error')
+        return
       }
+      // outbox enqueue (op='delete'、 patch は空 object で足りる)。
+      await enqueueCardMutation({
+        card_id: cardId,
+        op: 'delete',
+        patch: {},
+      }).catch(() => {})
+      // 即時 drain で delete を sync し、 pull-back で確定収束させる。
+      void runGuardedCardMutationFlush().catch(() => {})
     })
   }
 

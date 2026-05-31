@@ -5,20 +5,22 @@
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
-import { useState, useTransition } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import type { CardOption } from '@/lib/db/schema'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { buildEmptyCard } from '@/lib/cards/empty-card'
+import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
+import { newId, enqueueCardMutation } from '@/lib/sync/card-mutations'
+import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { logger } from '@/lib/logger'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
-import { createCard } from '../_actions/create-card'
 import { DeleteCardButton } from './delete-card-button'
-import { runGuardedPull } from '@/lib/sync/pull'
 
 type InlineCardListProps = {
   // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
@@ -26,7 +28,7 @@ type InlineCardListProps = {
   // mirror を単一の真実とする。 「mirror 0 件なら server fallback」 はしない (Task
   // 4.3 で local delete-all した card が server copy で復活するのを防ぐため)。
   initialCards: ExamDetailCard[]
-  // route の [id] (試験 id)。 末尾「+ カードを追加」 で createCard に渡す。
+  // route の [id] (試験 id)。 末尾「+ カードを追加」 の mirror insert / outbox patch に渡す。
   examId: string
   // owner-scope (全 read は WHERE user_id = ?)。 server page の auth() から受領。
   userId: string
@@ -68,7 +70,6 @@ export function InlineCardList({
   examId,
   userId,
 }: InlineCardListProps) {
-  const router = useRouter()
   // 表示の真実は Dexie cards mirror の直読み (exam 単位 + owner-scope + server sort)。
   // 詳細滞在中のみ購読 (component unmount で dexie-react-hooks が解除)。 deps が変化
   // するまで同一 subscription。
@@ -84,28 +85,76 @@ export function InlineCardList({
   // live query 未解決 (undefined) の間だけ server 由来の initialCards で bootstrap。
   // 解決後 (空配列含む) は mirror を信頼。 二層 state は持たない。
   const cards = liveCards ?? initialCards
-  const [isPending, startTransition] = useTransition()
-  // createCard 成功直後に返る新 card id。 router.refresh() 後の再描画で、 該当 card の
-  // 問題文 cell に autoEditOnMount を当てて自動で編集モードにするための marker。
-  // (card の主体が問題文のため question_text cell のみに適用、 spec §3.5)
+  // 追加直後に採番した client id。 mirror insert + useLiveQuery 再描画で該当 card の
+  // 問題文 cell に autoEditOnMount を当て、 自動で編集モードにするための marker。
+  // client 採番のため server round-trip なしで即時に edit mode へ入れる
+  // (card の主体が問題文のため question_text cell のみに適用、 spec §3.5)。
   const [newCardId, setNewCardId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // local-first 追加: client id を即時採番し、 mirror insert (楽観反映) +
+  // outbox enqueue (op='create') + 即時 drain。 server action 直叩き / refresh は廃止。
+  // card_count は exam list / 詳細 header いずれも mirror の card 行数で算出するため、
+  // mirror への insert がそのまま件数表示に反映される (exam.card_count は別 bump しない。
+  // 真の確定値は server 適用後の pull-back で収束)。
   const handleAddCard = () => {
     setError(null)
-    startTransition(async () => {
-      const result = await createCard(examId)
-      if (!result.ok) {
-        setError(result.error)
+    const cardId = newId()
+    const now = new Date().toISOString()
+    // 採番基準は現在の live cards (この exam の sort_key と件数)。
+    const empty = buildEmptyCard(
+      cards.map((c) => c.sortKey),
+      cards.length,
+    )
+    const card = buildNewClientCard({ cardId, userId, examId, empty, now })
+
+    void (async () => {
+      try {
+        await getClientDb().cards.add(card)
+      } catch (err) {
+        logger.warn({
+          event: 'card_inline.create_mirror_insert_failed',
+          cardId,
+          examId,
+          err: String(err),
+        })
+        setError('カードの追加に失敗しました。')
         return
       }
-      setNewCardId(result.data?.cardId ?? null)
-      // server component を再実行して新 card を含む list を取得 (inline cell の
-      // serverOptions 同期と同じ機構)。
-      router.refresh()
-      // 一覧が Dexie 参照のため、カード追加後に mirror を pull で最新化する。
-      void runGuardedPull({ reason: 'card-add' }).catch(() => {})
-    })
+
+      // outbox enqueue (snake_case patch + camelCase options)。 server は options の
+      // is_correct から correct_answer_ids を再生成するため patch に含めない。
+      await enqueueCardMutation({
+        card_id: cardId,
+        op: 'create',
+        patch: {
+          exam_id: examId,
+          title: empty.title,
+          sort_key: empty.sortKey,
+          question_text: empty.questionText,
+          options: empty.options.map((o) => ({
+            id: o.id,
+            text: o.text,
+            isCorrect: o.is_correct,
+            ...(o.explanation ? { explanation: o.explanation } : {}),
+          })),
+          explanation_text: null,
+          memo: null,
+        },
+      }).catch((err) => {
+        logger.warn({
+          event: 'card_inline.create_enqueue_failed',
+          cardId,
+          examId,
+          err: String(err),
+        })
+      })
+
+      // mirror insert 済の新 card の問題文 cell を auto-edit (client 採番のため即時)。
+      setNewCardId(cardId)
+      // 即時 drain で create を sync し、 pull-back で card_count を確定収束させる。
+      void runGuardedCardMutationFlush().catch(() => {})
+    })()
   }
 
   return (
@@ -205,17 +254,17 @@ export function InlineCardList({
       ))}
       </ul>
 
-      {/* 末尾「+ カードを追加」: createCard で placeholder card を作成し、 refresh 後に
-          新 card の問題文 cell を auto-edit する。 inline-option-row の「+ 選択肢を追加」
-          と同じ dashed border スタイルに合わせる。 */}
+      {/* 末尾「+ カードを追加」: client id 採番 + mirror insert + outbox enqueue で
+          placeholder card を即時追加し、 新 card の問題文 cell を auto-edit する。
+          mirror insert は同期的に反映されるため pending 表示は不要 (即時完了)。
+          inline-option-row の「+ 選択肢を追加」と同じ dashed border スタイルに合わせる。 */}
       <div>
         <button
           type="button"
           onClick={handleAddCard}
-          disabled={isPending}
           className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {isPending ? '追加中…' : '＋ カードを追加'}
+          ＋ カードを追加
         </button>
         {error && (
           <p role="alert" className="mt-1 text-xs text-red-600">
