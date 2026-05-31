@@ -141,10 +141,13 @@ export type ClientAnswerEvent = {
 
 // card_mutations: §14.5 準拠。 patch は §14.6 圧縮ルールに従い構築する (本 module は
 // schema のみ、 圧縮ロジック自体は別所で実装)。
+// op は bulk flush envelope の `op` フィールドと対応。 Dexie の index 列ではないため
+// version bump 不要 (store 文字列は index 宣言のみ; index 外 property は任意保存)。
 export type ClientCardMutation = {
   local_id?: number
   mutation_id: string
   card_id: string
+  op: 'update_field' | 'create' | 'delete'
   patch: Record<string, unknown>
   edited_at: string
   sync_status: SyncStatus
