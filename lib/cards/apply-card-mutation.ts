@@ -5,9 +5,10 @@
 // ActionResult 変換 / revalidatePath / logger / try/catch といった
 // HTTP/Next.js 関心事は一切持たない。
 //
-// 呼び出し元 (server action wrapper / bulk API) が tx を用意し、
-// この関数を tx 内で呼ぶことで、複数 op を単一 transaction に束ねられる。
-// (Task 1.2/1.3 bulk receiver 想定: 1 tx 内で複数 op を dispatch する)
+// 呼び出し元 (server action wrapper / bulk API) が executor を用意して渡す。
+// 旧 server action は db.transaction の tx (create/delete) または db 直 (update_field)
+// を、bulk receiver (/api/card-mutations/bulk) は mutation ごとに張る per-mutation tx を
+// 渡す (bulk は 1 tx に複数 op を束ねず、mutation 間独立の per-mutation tx 構成)。
 //
 // 制約: logic 不変。列・正規化・correct_answer_ids 再生成・
 // card_count 増減・tombstone onConflictDoNothing を一字一句保つ。
