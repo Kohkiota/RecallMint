@@ -7,6 +7,10 @@
 
 ## 0. 概要 / 利用シーン
 
+> ★ **重要設計リファレンス（同期サブシステム）**: IDB↔サーバー同期（offline-first / outbox / 増分 pull / 試験詳細 local-first 書込）の設計は以下 2 doc が canonical。同期周りを触る前に必読。
+> - [`recallmint-idb-sync-bestpractice-comparison.md`](./recallmint-idb-sync-bestpractice-comparison.md) — 定石との対応表 + 実装状況マトリクス（一次ソース付き設計根拠）
+> - [`recallmint-incremental-pull-steps.md`](./recallmint-incremental-pull-steps.md) — 増分 pull step 1-7 + 試験詳細 local-first Stage 1-4 の実装ステップ詳細
+
 本 doc は 2 用途で利用される。
 
 ### 用途 1: plan00 自身の architecture self-reference
