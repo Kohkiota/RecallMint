@@ -58,9 +58,10 @@ export default async function ExamDetailPage({
       </header>
 
       <section>
-        <h2 className="text-lg font-bold mb-2">カード ({cards.length} 件)</h2>
-        {/* 表示は InlineCardList 内の Dexie mirror useLiveQuery 直読みが真実。
-            initialCards は SSR / mirror 未 hydrate 期間の bootstrap 用 fallback。 */}
+        {/* 見出し「カード (N 件)」+ 表示は共に InlineCardList 内の Dexie mirror
+            useLiveQuery 直読みが真実。件数も同一 live 配列から算出するため追加/削除
+            直後も即時整合する (論点B)。initialCards は SSR / mirror 未 hydrate 期間の
+            bootstrap 用 fallback。 */}
         <InlineCardList initialCards={cards} examId={id} userId={userId} />
       </section>
     </div>

@@ -159,6 +159,11 @@ export function InlineCardList({
 
   return (
     <div className="space-y-3">
+      {/* 見出し件数は live `cards` (リスト本体と同一の useLiveQuery 配列) の length。
+          追加/削除直後も即時整合する (旧 SSR cards.length 由来の stale を解消、論点B)。
+          同一配列を数えるため double-count は構造的に発生しない (論点C: card_count
+          楽観更新は持たず cards mirror 計数に一本化)。 */}
+      <h2 className="text-lg font-bold">カード ({cards.length} 件)</h2>
       {cards.length === 0 && (
         <Card>
           <CardContent className="p-6 text-center">

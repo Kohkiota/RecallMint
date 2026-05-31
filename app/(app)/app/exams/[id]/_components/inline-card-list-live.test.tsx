@@ -238,3 +238,88 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
     expect(screen.getByText(/まだカードがありません/)).toBeInTheDocument()
   })
 })
+
+// 論点B: 見出し「カード (N 件)」を InlineCardList 内に lift し、リスト本体と同じ
+// live `cards` 配列の length で算出する。追加/削除直後も即時整合する (旧 SSR
+// cards.length 由来の stale を解消)。第 2 query を持たないため double-count しない。
+describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
+  it('見出しが mirror の live 件数を反映する', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+      fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
+    ])
+    render(<InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />)
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'カード (2 件)' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('mirror への add / remove で見出し件数が live 更新される', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+    ])
+    render(<InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />)
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'カード (1 件)' }),
+      ).toBeInTheDocument()
+    })
+    // 追加
+    await act(async () => {
+      await getClientDb().cards.put(
+        fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
+      )
+    })
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'カード (2 件)' }),
+      ).toBeInTheDocument()
+    })
+    // 削除
+    await act(async () => {
+      await getClientDb().cards.delete('c1')
+    })
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'カード (1 件)' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('live 解決前 (undefined 期間) は initialCards 件数を見出しに使う', async () => {
+    // mirror 空。initialCards に 2 件 → 初期 render で見出しは 2 件。
+    const initialCards: ExamDetailCard[] = [
+      {
+        id: 'i1',
+        title: 'A',
+        sortKey: null,
+        questionText: 'Q',
+        options: [],
+        explanationText: null,
+        memo: null,
+      },
+      {
+        id: 'i2',
+        title: 'B',
+        sortKey: null,
+        questionText: 'Q',
+        options: [],
+        explanationText: null,
+        memo: null,
+      },
+    ]
+    render(
+      <InlineCardList
+        initialCards={initialCards}
+        examId="exam-1"
+        userId="user-1"
+      />,
+    )
+    // 初期 (live undefined) は initialCards.length=2
+    expect(
+      screen.getByRole('heading', { name: 'カード (2 件)' }),
+    ).toBeInTheDocument()
+  })
+})
