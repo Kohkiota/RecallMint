@@ -101,7 +101,14 @@ function stripPrefix(text: string, optId: string): string {
 // selected: 濃色 fill + 白文字、 button variant="default" 側に当てて bg-primary を override。
 // S2.2.4 で bg-{c}-100 (薄色) を outline 上に重ねる方式だと bg-background と cn() merge で
 // 視覚的 fill が確実に出ない不具合があったため、 S2.2.5 で variant 切替 + 濃色 (bg-{c}-600) に変更。
-const RATE_BUTTON_BASE = 'h-14 text-base font-semibold'
+//
+// transition-none: 共通 Button base の `transition-all` を rate ボタンに限り上書きして
+// 色/背景の transition を切る。 これがないと rate 切替時に前選択 (濃色→outline) と
+// 新選択 (outline→濃色 fill) の 2 個が ~150ms cross-fade し、 色が滲んで「もっさり」体感に
+// なる。 setLastRating は元々同期即時だが見た目のフェードだけが遅延源だったため、 snap
+// 切替に倒す。 twMerge が後勝ちで base の transition-all を transition-none に解決する。
+// scope は rate ボタン 4 個のみ (RATE_BUTTON_BASE は rateButtonClass 経由でしか使われない)。
+const RATE_BUTTON_BASE = 'h-14 text-base font-semibold transition-none'
 const RATE_BUTTON_VARIANTS: Record<Rating, { selected: string; idle: string }> = {
   1: {
     selected: 'bg-red-600 text-white border-red-600 hover:bg-red-700',
