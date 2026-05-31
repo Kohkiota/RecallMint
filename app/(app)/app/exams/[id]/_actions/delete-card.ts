@@ -1,13 +1,12 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
-import { cards, exams, tombstones } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
 import { logger } from '@/lib/logger'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
+import { applyCardDelete } from '@/lib/cards/apply-card-mutation'
 
 // 試験詳細画面 (/app/exams/[id]) の per-card 削除 server action (spec §3.4)。
 //
@@ -20,6 +19,9 @@ import { serializeDbError } from '@/lib/db/serialize-db-error'
 // updatedAt は card 増減で動かさない (create-card.ts B1 と同方針)。
 // 最後の 1 枚も削除可 (no ≥1 guard、 空 exam を許容)。
 // owner-scope: cardId + userId 全 statement に含める。
+//
+// ドメイン core (applyCardDelete) は lib/cards/apply-card-mutation.ts に抽出済 (Task 1.1)。
+// この wrapper は認証 / transaction 境界 / ActionResult 変換 / logger / revalidatePath を担う。
 
 export async function deleteCard(cardId: string): Promise<ActionResult> {
   try {
@@ -41,44 +43,7 @@ async function _deleteCard(cardId: string): Promise<ActionResult> {
   const db = getDb()
   try {
     await db.transaction(async (tx) => {
-      // 1. card 取得: examId を得る (0 rows → idempotent return、tombstone スキップ)
-      const rows = await tx
-        .select({ examId: cards.examId })
-        .from(cards)
-        .where(and(eq(cards.id, cardId), eq(cards.userId, user.id)))
-
-      if (rows.length === 0) {
-        // 不在 / 他 user の card → silent success (idempotent、tombstone も挿入しない)
-        return
-      }
-
-      const examId = rows[0]!.examId
-
-      // 2. tombstone INSERT — mirror 削除反映の不変条件: この tombstone が無いと client mirror から消えない（pull.ts 参照）
-      await tx
-        .insert(tombstones)
-        .values({
-          userId: user.id,
-          entityType: 'card',
-          entityId: cardId,
-          deletedAt: sql`now()`,
-        })
-        .onConflictDoNothing()
-
-      // 3. card DELETE (owner-scoped)
-      await tx
-        .delete(cards)
-        .where(and(eq(cards.id, cardId), eq(cards.userId, user.id)))
-
-      // 4. exams.card_count -= 1 (GREATEST for negative guard)
-      //    updatedAt は card 増減で動かさない (create-card.ts §B1 と同方針)
-      await tx
-        .update(exams)
-        .set({
-          cardCount: sql`GREATEST(${exams.cardCount} - 1, 0)`,
-          updatedAt: sql`${exams.updatedAt}`,
-        })
-        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
+      await applyCardDelete(tx, cardId, user.id)
     })
 
     return { ok: true }

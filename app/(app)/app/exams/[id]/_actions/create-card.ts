@@ -1,14 +1,15 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
-import { cards, exams } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
-import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { logger } from '@/lib/logger'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
+import {
+  applyCardCreate,
+  EXAM_NOT_FOUND,
+} from '@/lib/cards/apply-card-mutation'
 
 // 試験詳細画面 (/app/exams/[id]) 末尾「+ カードを追加」用の card 手動作成 action。
 // placeholder 値 (edit zod を満たす最小 card、 lib/cards/empty-card.ts) を owner-scoped
@@ -21,9 +22,9 @@ import { serializeDbError } from '@/lib/db/serialize-db-error'
 // process.ts B1 と同方針)。
 //
 // 出題除外 filter は付けない (spec §3.2: 空 card も query 可能、 意図的設計)。
-
-// exam 0-row (不在 / 他 user) を tx 内で検出して rollback させるための sentinel。
-const EXAM_NOT_FOUND = Symbol('exam-not-found')
+//
+// ドメイン core (applyCardCreate) は lib/cards/apply-card-mutation.ts に抽出済 (Task 1.1)。
+// この wrapper は認証 / transaction 境界 / ActionResult 変換 / logger / revalidatePath を担う。
 
 export async function createCard(
   examId: string,
@@ -44,40 +45,7 @@ async function _createCard(
   const db = getDb()
   try {
     const result = await db.transaction(async (tx) => {
-      // 1. exam owner 確認 (0 rows → sentinel return で card insert させず rollback)
-      const ownerRows = await tx
-        .select({ id: exams.id })
-        .from(exams)
-        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
-      if (ownerRows.length === 0) return EXAM_NOT_FOUND
-
-      // 2. 既存 card の sortKey 集合と件数を取得 (placeholder 採番用)
-      const existing = await tx
-        .select({ sortKey: cards.sortKey })
-        .from(cards)
-        .where(and(eq(cards.examId, examId), eq(cards.userId, user.id)))
-      const existingSortKeys = existing.map((r) => r.sortKey)
-      const existingCount = existing.length
-
-      // 3. placeholder 値生成 (title/sortKey/questionText/options/correctAnswerIds)
-      const placeholder = buildEmptyCard(existingSortKeys, existingCount)
-
-      // 4. card INSERT (FSRS + due は schema default、 ここでは set しない)
-      const inserted = await tx
-        .insert(cards)
-        .values({ userId: user.id, examId, sourceDocumentId: null, ...placeholder })
-        .returning({ id: cards.id })
-
-      // 5. 同一 tx で card_count += 1 (整合保証の核心)
-      await tx
-        .update(exams)
-        .set({
-          cardCount: sql`${exams.cardCount} + 1`,
-          updatedAt: sql`${exams.updatedAt}`,
-        })
-        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
-
-      return inserted[0].id
+      return applyCardCreate(tx, examId, user.id)
     })
 
     if (result === EXAM_NOT_FOUND) {
