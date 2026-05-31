@@ -418,10 +418,17 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
   })
 
   it('追加後 mirror に新 card が現れ、 その問題文 cell のみ auto-edit (mount 即 textbox)', async () => {
-    // local-first: mirror insert は同期反映、 newCardId set で当該 card の問題文 cell が
-    // autoEditOnMount=true で edit mode になる。 既存 2 card は display のまま。
+    // 回帰 (Stage 4 smoke FAIL): handleAddCard は新 card cell が useLiveQuery 再 render で
+    // mount する前に newCardId を確定させねばならない (autoEditOnMount は one-shot
+    // useState 初期化子のため、 mount 時に newCardId が null だと display 固定になる)。
+    // enqueue を macrotask 遅延させ、 cards.add 由来の live 再 render が enqueue→
+    // setNewCardId より先に走る実機 (real IndexedDB) の競合を jsdom で決定的に再現する。
+    // setNewCardId が mirror insert より前なら本 test は green、 後なら red。
     const NEW_ID = '77777777-7777-4777-8777-777777777777'
     captureNewId(NEW_ID)
+    mockEnqueue.mockImplementationOnce(
+      () => new Promise((res) => setTimeout(() => res({} as never), 0)),
+    )
     await seedMirror(cards)
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     await screen.findByText('問1')
@@ -431,6 +438,36 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
       expect(
         screen.getAllByRole('textbox', { name: '問題文 編集' }),
       ).toHaveLength(1)
+    })
+  })
+
+  it('2 枚連続追加でも各々の問題文 cell が auto-edit する', async () => {
+    // 連続追加でも各 add で newCardId が mount 前に確定し、 両新 card が edit mode に。
+    // enqueue 遅延 (macrotask) を各 add 分 queue して実機の競合を再現する。
+    mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')
+    mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2')
+    mockEnqueue.mockImplementationOnce(
+      () => new Promise((res) => setTimeout(() => res({} as never), 0)),
+    )
+    mockEnqueue.mockImplementationOnce(
+      () => new Promise((res) => setTimeout(() => res({} as never), 0)),
+    )
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    await screen.findByText('問1')
+    // 1 枚目: 新 card の問題文 cell が auto-edit (textbox 1 つ)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('textbox', { name: '問題文 編集' }),
+      ).toHaveLength(1)
+    })
+    // 2 枚目: 2 枚目も auto-edit (既に edit 中の 1 枚目 + 2 枚目 = textbox 2 つ)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('textbox', { name: '問題文 編集' }),
+      ).toHaveLength(2)
     })
   })
 

@@ -108,6 +108,13 @@ export function InlineCardList({
     )
     const card = buildNewClientCard({ cardId, userId, examId, empty, now })
 
+    // 新 card cell が mirror insert 由来の useLiveQuery 再 render で mount する前に
+    // newCardId を確定させる。 autoEditOnMount は one-shot の useState 初期化子のため、
+    // cell mount 時に newCardId が未確定 (null) だと display 固定になり auto-edit が
+    // 起動しない (Stage 4 smoke で実機 IndexedDB の競合として発覚)。 client 採番で id は
+    // 手元にあり server round-trip 不要なので、 mirror insert / enqueue より前に set する。
+    setNewCardId(cardId)
+
     void (async () => {
       try {
         await getClientDb().cards.add(card)
@@ -150,8 +157,6 @@ export function InlineCardList({
         })
       })
 
-      // mirror insert 済の新 card の問題文 cell を auto-edit (client 採番のため即時)。
-      setNewCardId(cardId)
       // 即時 drain で create を sync し、 pull-back で card_count を確定収束させる。
       void runGuardedCardMutationFlush().catch(() => {})
     })()
