@@ -6,6 +6,7 @@ import {
   getCardsForExam,
   getExamByIdForUser,
 } from '@/lib/exams/list'
+import { ExamDetailPullGate } from './_components/exam-detail-pull-gate'
 import { InlineCardList } from './_components/inline-card-list'
 
 // 試験詳細 page: 各 card の全情報 (sort_key / title / 問題文 / 選択肢 + 各解説 /
@@ -44,6 +45,9 @@ export default async function ExamDetailPage({
           ← 試験一覧
         </Link>
       </div>
+
+      {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
+      <ExamDetailPullGate examId={id} />
 
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">{exam.name}</h1>
