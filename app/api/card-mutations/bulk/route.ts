@@ -1,4 +1,4 @@
-// POST /api/card-mutations/bulk — Task 1.2 (local-first 書込化)。
+// POST /api/card-mutations/bulk — Task 1.2/1.3 (local-first 書込化)。
 //
 // client (edit flow) が Dexie に貯めた card mutations を bulk flush する receiver。
 // /api/review-events/bulk と対称な envelope + 認証 + 冪等 gate + op dispatch 構造。
@@ -16,10 +16,10 @@
 //     (card 不在 → silent no-op) + tombstone onConflictDoNothing で担保する
 //     (spec: 「deleteCard は既に冪等」)。
 //
-// op 対応状況:
-// - update_field: buildSetClause(field, value) + applyCardFieldUpdate — 本 task で実装
-// - delete: applyCardDelete — 本 task で実装 (log INSERT なし、上記理由)
-// - create: TODO(Task1.3) — 本 task では未対応 → failed[] に倒す
+// op 対応状況 (Task 1.3 で全 op 実装完了):
+// - update_field: buildSetClause(field, value) + applyCardFieldUpdate
+// - delete: applyCardDelete (log INSERT なし、上記理由)
+// - create: applyCardCreateWithId (client 生成 cardId を PK に INSERT ON CONFLICT DO NOTHING)
 //
 // 部分失敗ポリシ:
 // - 各 mutation は独立した tx で処理し、 failed[] に積んで 200 返却。
@@ -27,6 +27,11 @@
 //   (mutation 間に依存がなく、 per-mutation tx が設計上自然)。
 // - orphan card (他 user / 不在) → その mutation を failed[]、 他は継続。
 // - 予期せぬ throw → serializeDbError で log、 その mutation を failed[]。
+//
+// per-op patch 検証:
+// - envelope 構造不正 (mutation_id 非 UUID 等) → 400 全体 reject (従来通り)。
+// - op 別 patch 不正 (create で必須フィールド欠如等) → per-mutation failed[]。
+//   理由: 1 件の patch 不正で batch 全体を落とさない (review-events と同じ部分失敗思想)。
 //
 // 認可: middleware は /app(.*) のみ protect。 /api は素通しのため、 ここで Clerk
 // session 不在は 401 を返す。
@@ -41,8 +46,10 @@ import {
   buildSetClause,
   applyCardFieldUpdate,
   applyCardDelete,
+  applyCardCreateWithId,
   type UpdateCardFieldName,
 } from '@/lib/cards/apply-card-mutation'
+import { optionSchema } from '@/lib/validation/card'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import { logger } from '@/lib/logger'
 
@@ -54,7 +61,61 @@ export const runtime = 'nodejs'
 
 // zod v4 記法: z.uuid() / z.iso.datetime() / z.enum([...]) を使う
 // (review-events/bulk route 踏襲)。
-// patch は op 別の詳細検証を Task 1.3 に委ね、 本 task では「object であること」だけ検証。
+//
+// per-op patch 検証 (Task 1.3):
+// - envelope 構造不正 → 400 (payloadSchema 全体 reject)
+// - op 別 patch 不正 → per-mutation failed[] (batch 全体を落とさない部分失敗思想)
+// - discriminatedUnion で op 別型安全を担保しつつ、
+//   patch 不正は per-mutation 分岐 (processMutation 内 safeParse) で吸収する。
+
+// update_field の patch: { field: UpdateCardFieldName, value: unknown }
+const updateFieldPatchSchema = z.object({
+  field: z.enum([
+    'title',
+    'sort_key',
+    'question_text',
+    'explanation_text',
+    'memo',
+    'options',
+  ]),
+  value: z.unknown(),
+})
+
+// TODO(follow-up): per-field schema を lib/validation/card-fields.ts 等に抽出し buildSetClause と共有 (現状は制約リテラルが二重定義で drift リスク)
+// create の patch: client が optimistic に組んだ card 内容
+// correct_answer_ids は含めない (server が options.is_correct から再生成)
+const createPatchSchema = z.object({
+  exam_id: z.uuid(),
+  title: z
+    .string()
+    .trim()
+    .min(1, 'タイトルは必須です')
+    .max(200, 'タイトルは 200 文字以内で入力してください'),
+  sort_key: z.string().max(100, 'ソートキーは 100 文字以内で入力してください').nullable(),
+  question_text: z
+    .string()
+    .max(10000, '問題文は 10000 文字以内で入力してください')
+    .refine((s) => s.trim().length > 0, { message: '問題文は必須です' }),
+  options: z
+    .array(optionSchema)
+    .min(1, '選択肢は最低 1 個必要です')
+    .max(50, '選択肢は最大 50 個までです')
+    .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
+      message: '選択肢の id が重複しています',
+    }),
+  explanation_text: z
+    .string()
+    .max(10000, '解説は 10000 文字以内で入力してください')
+    .nullable(),
+  memo: z.string().max(10000, 'メモは 10000 文字以内で入力してください').nullable(),
+})
+
+// delete の patch: 不要 (空 object 許容)
+const deletePatchSchema = z.record(z.string(), z.unknown())
+
+// envelope schema: patch は loose (object であること) だけ envelope レベルで検証。
+// op 別の詳細 patch 検証は processMutation 内で per-mutation safeParse する。
+// これにより 1 件の patch 不正で batch 全体を 400 reject しない。
 const mutationSchema = z.object({
   mutation_id: z.uuid(),
   card_id: z.uuid(),
@@ -69,6 +130,14 @@ const payloadSchema = z.object({
 })
 
 type ParsedMutation = z.infer<typeof mutationSchema>
+
+// ---------------------------------------------------------------------------
+// emptyToNull: nullable text 列の '' → null 正規化 helper。
+// buildSetClause (UPDATE path) と同じ正規化を create path にも適用し、
+// sort_key / explanation_text / memo の create/update 書込挙動を一致させる。
+// ---------------------------------------------------------------------------
+const emptyToNull = (v: string | null | undefined): string | null =>
+  v === '' ? null : (v ?? null)
 
 // ---------------------------------------------------------------------------
 // processMutation — 単一 mutation を tx 内で apply + (op に応じて) log INSERT する
@@ -91,20 +160,99 @@ async function processMutation(
     // ------------------------------------------------------------------
     // delete op: 冪等チェックと log INSERT をスキップし applyCardDelete のみ実行。
     // applyCardDelete は card 不在でも silent success (idempotent)。
+    // patch 検証: delete は patch 不要のため deletePatchSchema (loose object) で通す。
     // ------------------------------------------------------------------
     if (mutation.op === 'delete') {
+      const patchParsed = deletePatchSchema.safeParse(mutation.patch)
+      if (!patchParsed.success) {
+        // patch が object でない場合 (envelope レベルで弾かれるはずだが防御)
+        return 'failed'
+      }
       await applyCardDelete(tx, mutation.card_id, user.id)
       return 'applied'
     }
 
-    // create: TODO(Task1.3) — 本 task では未対応。 failed に倒す。
+    // ------------------------------------------------------------------
+    // create op: per-op patch 検証 → 冪等チェック → applyCardCreateWithId → log INSERT
+    // ------------------------------------------------------------------
     if (mutation.op === 'create') {
-      return 'failed'
+      // per-op patch 検証 (不正 patch は per-mutation failed — batch 全体を落とさない)
+      const patchParsed = createPatchSchema.safeParse(mutation.patch)
+      if (!patchParsed.success) {
+        return 'failed'
+      }
+      const p = patchParsed.data
+
+      // 冪等チェック: 同 mutation_id が既存なら skip
+      const existing = await tx
+        .select({ mutationId: cardMutations.mutationId })
+        .from(cardMutations)
+        .where(
+          and(
+            eq(cardMutations.mutationId, mutation.mutation_id),
+            eq(cardMutations.userId, user.id),
+          ),
+        )
+        .limit(1)
+
+      if (existing.length > 0) {
+        return 'skipped'
+      }
+
+      // options: camelCase (zod) → snake_case (CardOption)
+      const cardOptions = p.options.map((o) => ({
+        id: o.id,
+        text: o.text,
+        is_correct: o.isCorrect,
+        ...(o.explanation ? { explanation: o.explanation } : {}),
+      }))
+
+      const createResult = await applyCardCreateWithId(tx, user.id, {
+        cardId: mutation.card_id,
+        examId: p.exam_id,
+        title: p.title,
+        // buildSetClause (UPDATE path) と同じ正規化: '' → null。
+        // client が '' を送ると create と update で挙動が乖離するため揃える。
+        sortKey: emptyToNull(p.sort_key),
+        questionText: p.question_text,
+        options: cardOptions,
+        explanationText: emptyToNull(p.explanation_text),
+        memo: emptyToNull(p.memo),
+      })
+
+      if (createResult.examNotFound) {
+        // exam 不在 / owner mismatch → failed
+        return 'failed'
+      }
+
+      // card は exists (実 insert or ON CONFLICT skip 両方で card 行が存在)
+      // → log INSERT に進む (FK 制約を満たす)。
+      // create op の log も update_field と同じく onConflictDoNothing で書く
+      // (別 mutation_id で同 card を作り直した場合の race backstop)。
+      await tx
+        .insert(cardMutations)
+        .values({
+          mutationId: mutation.mutation_id,
+          cardId: mutation.card_id,
+          userId: user.id,
+          patch: mutation.patch,
+          editedAt: new Date(mutation.edited_at),
+          appliedAt: sql`now()`,
+        })
+        .onConflictDoNothing({ target: cardMutations.mutationId })
+
+      return 'applied'
     }
 
     // ------------------------------------------------------------------
-    // update_field: 冪等チェック → apply → log INSERT
+    // update_field: per-op patch 検証 → 冪等チェック → apply → log INSERT
     // ------------------------------------------------------------------
+
+    // per-op patch 検証 (不正 patch は per-mutation failed — batch 全体を落とさない)
+    const patchParsed = updateFieldPatchSchema.safeParse(mutation.patch)
+    if (!patchParsed.success) {
+      return 'failed'
+    }
 
     // 冪等チェック: 同 mutation_id (+ user_id) が既存なら skip
     const existing = await tx
@@ -123,20 +271,11 @@ async function processMutation(
       return 'skipped'
     }
 
-    // patch から field / value を取り出す (Task 1.3 で per-op zod 化予定)。
     // buildSetClause は必ず通す (correct_answer_ids 再生成 / validation のため)。
-    // field は unknown のまま受けて string に narrow してから UpdateCardFieldName に cast。
-    const fieldRaw: unknown = mutation.patch['field']
-    const value = mutation.patch['value']
-
-    if (typeof fieldRaw !== 'string') {
-      // patch.field が未指定 / 非 string → 検証失敗
-      return 'failed'
-    }
-
-    const clauseResult = buildSetClause(fieldRaw as UpdateCardFieldName, value)
+    const { field, value } = patchParsed.data
+    const clauseResult = buildSetClause(field as UpdateCardFieldName, value)
     if (!clauseResult.ok) {
-      // buildSetClause の validation 失敗
+      // buildSetClause の validation 失敗 (値の内容不正)
       return 'failed'
     }
 

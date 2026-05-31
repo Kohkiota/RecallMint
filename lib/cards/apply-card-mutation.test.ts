@@ -482,6 +482,186 @@ describe('applyCardDelete', () => {
 })
 
 // ---------------------------------------------------------------------------
+// applyCardCreateWithId
+// ---------------------------------------------------------------------------
+
+describe('applyCardCreateWithId', () => {
+  const store = {
+    exams: [] as { id: string; userId: string; cardCount: number }[],
+    cards: [] as { id: string; examId: string; userId: string }[],
+  }
+  const ctl = {
+    insertedValues: null as Record<string, unknown> | null,
+    // ON CONFLICT: null = 実 insert, 'conflict' = skip (no returning row)
+    insertConflict: false,
+  }
+
+  function makeTx() {
+    const tx: Record<string, unknown> = {}
+
+    tx.select = (_cols?: Record<string, unknown>) => ({
+      from: (table: unknown) => ({
+        where: () => {
+          const name = getTableName(table as never)
+          if (name === getTableName(exams)) {
+            return Promise.resolve(store.exams.map((e) => ({ id: e.id })))
+          }
+          return Promise.resolve([])
+        },
+      }),
+    })
+
+    tx.insert = () => ({
+      values: (vals: Record<string, unknown>) => ({
+        onConflictDoNothing: (_conf: unknown) => ({
+          returning: () => {
+            ctl.insertedValues = vals
+            if (ctl.insertConflict) {
+              // ON CONFLICT DO NOTHING → no row returned
+              return Promise.resolve([])
+            }
+            store.cards.push({ id: vals.id as string, examId: vals.examId as string, userId: vals.userId as string })
+            return Promise.resolve([{ id: vals.id }])
+          },
+        }),
+      }),
+    })
+
+    tx.update = () => ({
+      set: () => ({
+        where: () => {
+          for (const e of store.exams) e.cardCount += 1
+          return Promise.resolve(undefined)
+        },
+      }),
+    })
+
+    return tx as Parameters<
+      typeof import('./apply-card-mutation').applyCardCreateWithId
+    >[0]
+  }
+
+  const BASE_INPUT = {
+    cardId: 'card-client-1',
+    examId: 'exam-1',
+    title: '問1',
+    sortKey: 'Q-01',
+    questionText: '質問テキスト',
+    options: [
+      { id: 'a', text: 'A', is_correct: true },
+      { id: 'b', text: 'B', is_correct: false },
+    ],
+    explanationText: '解説',
+    memo: 'メモ',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    store.exams = [{ id: 'exam-1', userId: 'user-1', cardCount: 0 }]
+    store.cards = []
+    ctl.insertedValues = null
+    ctl.insertConflict = false
+  })
+
+  it('正常: { examNotFound: false, created: true } を返す', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    const result = await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    expect(result).toEqual({ examNotFound: false, created: true })
+  })
+
+  it('exam 不在 → { examNotFound: true, created: false }、card INSERT も card_count 更新もしない', async () => {
+    store.exams = []
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    const result = await applyCardCreateWithId(makeTx(), 'user-1', { ...BASE_INPUT, examId: 'exam-x' })
+    expect(result).toEqual({ examNotFound: true, created: false })
+    expect(ctl.insertedValues).toBeNull()
+    expect(store.cards.length).toBe(0)
+  })
+
+  it('INSERT 値: id = cardId (client 生成)、userId/examId/sourceDocumentId=null が含まれる', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const v = ctl.insertedValues!
+    expect(v.id).toBe('card-client-1')
+    expect(v.userId).toBe('user-1')
+    expect(v.examId).toBe('exam-1')
+    expect(v.sourceDocumentId).toBeNull()
+  })
+
+  it('INSERT 値: title/sortKey/questionText/explanationText/memo が含まれる', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const v = ctl.insertedValues!
+    expect(v.title).toBe('問1')
+    expect(v.sortKey).toBe('Q-01')
+    expect(v.questionText).toBe('質問テキスト')
+    expect(v.explanationText).toBe('解説')
+    expect(v.memo).toBe('メモ')
+  })
+
+  it('correct_answer_ids は client patch を信用せず options.is_correct から server 再生成 (改竄耐性)', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', {
+      ...BASE_INPUT,
+      options: [
+        { id: 'a', text: 'A', is_correct: true },
+        { id: 'b', text: 'B', is_correct: false },
+        { id: 'c', text: 'C', is_correct: true },
+      ],
+    })
+    const v = ctl.insertedValues!
+    // is_correct=true の id のみが correctAnswerIds に含まれる
+    expect(v.correctAnswerIds).toEqual(['a', 'c'])
+  })
+
+  it('実 insert 時: card_count += 1', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    expect(store.exams[0]!.cardCount).toBe(1)
+    expect(store.cards.length).toBe(1)
+  })
+
+  it('ON CONFLICT skip (同 cardId 再送): { created: false }、card_count 非加算', async () => {
+    ctl.insertConflict = true
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    const result = await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    expect(result).toEqual({ examNotFound: false, created: false })
+    // INSERT は呼ばれた (insertedValues が記録される)
+    expect(ctl.insertedValues).not.toBeNull()
+    // card_count は加算されない (二重加算防止)
+    expect(store.exams[0]!.cardCount).toBe(0)
+    expect(store.cards.length).toBe(0)
+  })
+
+  it('owner-scope: WHERE に eq(exams.id, examId) / eq(exams.userId, userId) が含まれる', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const sig = await eqSignature()
+    expect(sig).toContainEqual(['exams', 'id', 'exam-1'])
+    expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
+  })
+
+  it('owner-scope (exams UPDATE): 実 insert 時の card_count 更新 WHERE に eq(exams.id, examId) と eq(exams.userId, userId) が含まれる', async () => {
+    // exams SELECT (owner 確認) と exams UPDATE (card_count += 1) の両方で
+    // userId が WHERE に含まれることを assert する。
+    // SELECT owner-scope は上のテストで確認済み。ここでは UPDATE の owner-scope を担保。
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const sig = await eqSignature()
+    // exams.user_id = 'user-1' が eq spy に 1 回以上現れること
+    // (SELECT WHERE + UPDATE WHERE の両方が含まれるため、重複 containEqual で検証)
+    const examsUserIdCalls = sig.filter(
+      ([table, col, val]) => table === 'exams' && col === 'user_id' && val === 'user-1',
+    )
+    expect(examsUserIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
+    const examsIdCalls = sig.filter(
+      ([table, col, val]) => table === 'exams' && col === 'id' && val === 'exam-1',
+    )
+    expect(examsIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
+  })
+})
+
+// ---------------------------------------------------------------------------
 // buildSetClause (export 確認 + 代表ケース)
 // ---------------------------------------------------------------------------
 

@@ -231,6 +231,98 @@ export async function applyCardCreate(
 }
 
 // ---------------------------------------------------------------------------
+// applyCardCreateWithId
+// ---------------------------------------------------------------------------
+
+// create op の input 型。 client が optimistic に組んだ内容を server に送る。
+// correct_answer_ids は含めない — server が options.is_correct から再生成する。
+export interface ApplyCardCreateWithIdInput {
+  cardId: string
+  examId: string
+  title: string
+  sortKey: string | null
+  questionText: string
+  options: CardOption[]
+  explanationText: string | null
+  memo: string | null
+}
+
+// 戻り値の discriminant。route 側が分岐に使う。
+export type ApplyCardCreateWithIdResult =
+  | { examNotFound: true; created: false }
+  | { examNotFound: false; created: boolean } // created=false は ON CONFLICT skip
+
+/**
+ * client 生成 cardId を PK に INSERT ON CONFLICT (id) DO NOTHING し、
+ * 実 insert 時のみ exams.card_count += 1。
+ *
+ * 冪等化 (同 cardId 再送):
+ *   ON CONFLICT DO NOTHING → RETURNING が空 → created=false → card_count 非加算。
+ *
+ * owner-scope 担保:
+ *   exam owner 確認 → card INSERT に userId/examId → exams UPDATE に userId/examId。
+ *
+ * correct_answer_ids は client patch を信用せず options.is_correct から server 再生成
+ * (buildSetClause の options 分岐と同方針、client 改竄耐性)。
+ */
+export async function applyCardCreateWithId(
+  tx: DbExecutor,
+  userId: string,
+  input: ApplyCardCreateWithIdInput,
+): Promise<ApplyCardCreateWithIdResult> {
+  const { cardId, examId, title, sortKey, questionText, options, explanationText, memo } = input
+
+  // 1. exam owner 確認 (0 rows → INSERT しない、route 側に知らせる)
+  const ownerRows = await tx
+    .select({ id: exams.id })
+    .from(exams)
+    .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
+  if (ownerRows.length === 0) {
+    return { examNotFound: true, created: false }
+  }
+
+  // 2. correct_answer_ids を client patch から独立して再生成
+  //    (client が is_correct を改竄しても server 側で正規化される)
+  const correctAnswerIds = options.filter((o) => o.is_correct).map((o) => o.id)
+
+  // 3. cards INSERT: id = client 生成 cardId
+  //    ON CONFLICT (id) DO NOTHING — 同 cardId の再送は静かにスキップ
+  const inserted = await tx
+    .insert(cards)
+    .values({
+      id: cardId,
+      userId,
+      examId,
+      sourceDocumentId: null,
+      title,
+      sortKey,
+      questionText,
+      options,
+      correctAnswerIds,
+      explanationText,
+      memo,
+    })
+    .onConflictDoNothing({ target: cards.id })
+    .returning({ id: cards.id })
+
+  const created = inserted.length > 0
+
+  // 4. 実 insert 時のみ card_count += 1 (ON CONFLICT skip 時は非加算 — 二重加算防止)
+  //    updatedAt は据え置き (card 増減で動かさない、applyCardCreate と同方針)
+  if (created) {
+    await tx
+      .update(exams)
+      .set({
+        cardCount: sql`${exams.cardCount} + 1`,
+        updatedAt: sql`${exams.updatedAt}`,
+      })
+      .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
+  }
+
+  return { examNotFound: false, created }
+}
+
+// ---------------------------------------------------------------------------
 // applyCardDelete
 // ---------------------------------------------------------------------------
 

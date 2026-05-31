@@ -1,6 +1,6 @@
 // POST /api/card-mutations/bulk の unit test。
 // 実 DB は叩かず、 getCurrentUser / getDb を mock して route handler の制御フロー
-// (auth / zod / 冪等 gate / update_field / delete / orphan / create stub) を検証する。
+// (auth / zod / 冪等 gate / update_field / delete / create + per-op patch 検証) を検証する。
 //
 // 既存 review-events/bulk/route.test.ts の流儀に揃える:
 //   - vi.hoisted() で state object を共有
@@ -37,6 +37,16 @@ const { state } = vi.hoisted(() => ({
 
     // applyCardDelete の呼出記録
     cardDeleteCalls: [] as Array<{ cardId: string; userId: string }>,
+
+    // applyCardCreateWithId の mock 制御
+    cardCreateResults: new Map<
+      string,
+      { examNotFound: boolean; created: boolean }
+    >(),
+    cardCreateCalls: [] as Array<{
+      userId: string
+      input: Record<string, unknown>
+    }>,
 
     // buildSetClause の mock 制御
     // field → { ok: true/false, error?: string, data?: Record<string, unknown> }
@@ -94,6 +104,20 @@ vi.mock('@/lib/cards/apply-card-mutation', () => ({
   applyCardDelete: vi.fn(async (_tx: unknown, cardId: string, userId: string) => {
     state.cardDeleteCalls.push({ cardId, userId })
   }),
+  applyCardCreateWithId: vi.fn(
+    async (
+      _tx: unknown,
+      userId: string,
+      input: Record<string, unknown>,
+    ) => {
+      state.cardCreateCalls.push({ userId, input })
+      const key = input['cardId'] as string
+      const result = state.cardCreateResults.get(key)
+      if (result !== undefined) return result
+      // default: exam exists, card inserted successfully
+      return { examNotFound: false, created: true }
+    },
+  ),
 }))
 
 // getDb は fakeDb を返す
@@ -209,6 +233,18 @@ const VALID_CARD_ID_2 = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 const VALID_MUTATION_ID = '55555555-5555-4555-a555-555555555555'
 const VALID_MUTATION_ID_2 = '66666666-6666-4666-a666-666666666666'
 const VALID_MUTATION_ID_3 = '77777777-7777-4777-a777-777777777777'
+const VALID_EXAM_ID = 'eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee'
+
+// create op の有効な patch (per-op createPatchSchema に通るもの)
+const VALID_CREATE_PATCH = {
+  exam_id: VALID_EXAM_ID,
+  title: 'New Card',
+  sort_key: 'Q-01',
+  question_text: '問題テキスト',
+  options: [{ id: 'a', text: 'A', isCorrect: false }],
+  explanation_text: null,
+  memo: null,
+}
 
 function makeReq(payload: unknown): Request {
   return new Request('http://localhost/api/card-mutations/bulk', {
@@ -260,13 +296,14 @@ function makeCreateMutation(
     mutation_id: string
     card_id: string
     edited_at: string
+    patch: Record<string, unknown>
   }> = {},
 ) {
   return {
     mutation_id: overrides.mutation_id ?? VALID_MUTATION_ID,
     card_id: overrides.card_id ?? VALID_CARD_ID,
     op: 'create' as const,
-    patch: { title: 'New Card' },
+    patch: overrides.patch ?? VALID_CREATE_PATCH,
     edited_at: overrides.edited_at ?? '2026-05-30T10:00:00.000Z',
   }
 }
@@ -279,6 +316,8 @@ beforeEach(() => {
   state.cardFieldUpdateResults = new Map()
   state.cardFieldUpdateCalls = []
   state.cardDeleteCalls = []
+  state.cardCreateResults = new Map()
+  state.cardCreateCalls = []
   state.buildSetClauseResults = new Map()
   state.buildSetClauseCalls = []
   state.txShouldThrow = false
@@ -568,18 +607,148 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(state.mutationInsertValues).toBeNull()
   })
 
-  // --- create op (未実装 stub) ---
+  // --- create op ---
 
-  it('create op → failed[] に倒す (Task1.3 未対応)', async () => {
+  it('create 正常系: applyCardCreateWithId → log INSERT → applied:1', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const res = await POST(makeReq({ mutations: [makeCreateMutation()] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.ok).toBe(true)
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    // applyCardCreateWithId が呼ばれた (card_id + user.id + patch 内容)
+    expect(state.cardCreateCalls).toHaveLength(1)
+    expect(state.cardCreateCalls[0]).toMatchObject({
+      userId: FAKE_USER.id,
+      input: { cardId: VALID_CARD_ID, examId: VALID_EXAM_ID },
+    })
+
+    // log INSERT が呼ばれた (create op も log を書く)
+    expect(state.mutationInsertValues).not.toBeNull()
+    expect(state.mutationInsertValues).toMatchObject({
+      mutationId: VALID_MUTATION_ID,
+      cardId: VALID_CARD_ID,
+      userId: FAKE_USER.id,
+    })
+  })
+
+  it('create: 冪等再送 (同 mutation_id 既存) → gate skip, applied:0', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.existingMutationIds.add(VALID_MUTATION_ID)
+
+    const res = await POST(makeReq({ mutations: [makeCreateMutation()] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toHaveLength(0)
+
+    // gate skip: applyCardCreateWithId も log INSERT も呼ばれない
+    expect(state.cardCreateCalls).toHaveLength(0)
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
+  it('create: exam 不在 (examNotFound) → failed[]', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.cardCreateResults.set(VALID_CARD_ID, { examNotFound: true, created: false })
+
     const res = await POST(makeReq({ mutations: [makeCreateMutation()] }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
-    // applyCardFieldUpdate / applyCardDelete は呼ばれない
+
+    // log INSERT は行われない
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
+  it('create: patch 不正 (exam_id 欠如) → per-mutation failed[]、applyCardCreateWithId 呼ばれない', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const badPatch = { title: 'No exam id' } // exam_id が欠如
+    const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch: badPatch })] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    expect(state.cardCreateCalls).toHaveLength(0)
+  })
+
+  it('create: patch 不正 (question_text 欠如) → per-mutation failed[]', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const badPatch = {
+      exam_id: VALID_EXAM_ID,
+      title: 'Title',
+      sort_key: null,
+      // question_text が欠如
+      options: [{ id: 'a', text: 'A', isCorrect: false }],
+      explanation_text: null,
+      memo: null,
+    }
+    const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch: badPatch })] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    expect(state.cardCreateCalls).toHaveLength(0)
+  })
+
+  it("create: sort_key='' / explanation_text='' / memo='' → applyCardCreateWithId に null で渡す (buildSetClause UPDATE path と同じ正規化)", async () => {
+    // buildSetClause は UPDATE path で nullable text 列の '' → null を行う。
+    // create path でも同じ正規化が必要 (emptyToNull helper 経由)。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const patchWithEmpty = {
+      ...VALID_CREATE_PATCH,
+      sort_key: '',
+      explanation_text: '',
+      memo: '',
+    }
+    const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch: patchWithEmpty })] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    // applyCardCreateWithId に渡る input で '' が null に正規化されていること
+    expect(state.cardCreateCalls).toHaveLength(1)
+    const input = state.cardCreateCalls[0]!.input
+    expect(input['sortKey']).toBeNull()
+    expect(input['explanationText']).toBeNull()
+    expect(input['memo']).toBeNull()
+  })
+
+  it('create: ON CONFLICT skip (別 mutation_id 同 card_id) → { created: false } → log INSERT → applied:1', async () => {
+    // 同 card_id に別 mutation_id で再送: applyCardCreateWithId が created=false を返す
+    // (card 行は既存) が、log は書く (mutation_id は新規のため冪等 gate を通過)
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.cardCreateResults.set(VALID_CARD_ID, { examNotFound: false, created: false })
+
+    const res = await POST(makeReq({ mutations: [makeCreateMutation()] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    // log INSERT が呼ばれた (card は既存だが mutation_id は新規)
+    expect(state.mutationInsertValues).not.toBeNull()
+  })
+
+  it('update_field の per-op patch 検証: field が不正値 → per-mutation failed[]', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const badMutation = {
+      mutation_id: VALID_MUTATION_ID,
+      card_id: VALID_CARD_ID,
+      op: 'update_field' as const,
+      patch: { field: 'not_a_valid_field', value: 'x' },
+      edited_at: '2026-05-30T10:00:00.000Z',
+    }
+    const res = await POST(makeReq({ mutations: [badMutation] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    // applyCardFieldUpdate は呼ばれない
     expect(state.cardFieldUpdateCalls).toHaveLength(0)
-    expect(state.cardDeleteCalls).toHaveLength(0)
   })
 
   // --- 複数 mutations の独立処理 ---
