@@ -1,42 +1,52 @@
 'use client'
 
 // 試験詳細 page (/app/exams/[id]) の inline 編集 cell (1 field 用 reusable)。
-// Optimistic UI + debounce(500ms) + queue 設計 (spec §3.2)。
-// blur で display 即時反映 → 500ms 後に server send。 連続 blur は timer reset
-// で最後の値のみ送信、 進行中 send があれば queue 入りで完走後に再送信。
-// 失敗時は display を直前の server 値に rollback + error 表示 (edit mode に
-// 戻さない、 E-1)。
-// nullable field (sort_key / explanation_text / memo) は null → '' で初期化、
-// 空文字 → null 正規化は server 側 zod に任せる。
+//
+// Stage 4 (Task 4.2) で **local-first 書込**に cutover:
+// blur (commit) で即時に
+//   1. mirror 直書き  : getClientDb().cards.update(cardId, { [field]: value })
+//   2. outbox enqueue : enqueueCardMutation({ op: 'update_field', patch: { field, value } })
+// を実行し (= 楽観反映は Dexie cards mirror が単一の真実 source)、 server への
+// 実 drain は 500ms debounce 後に runGuardedCardMutationFlush() を 1 回叩くだけにする
+// (送信遅延ではなく drain trigger の debounce)。 display は親 (InlineCardList) の
+// useLiveQuery が mirror から返す値が initialValue として降りてくるため、 component 側で
+// committedValue を二重に持たない。
+//
+// rollback は pull-reconciliation に再構成: 拒否された編集は server に届かず、 server
+// 値は権威のまま、 次の pull/pull-back が server 値を mirror に bulkPut → value prop
+// 経由で降りてきて、 idle 時に dirty-guard useEffect が display を更新する。 component
+// 内の同期 rollback / inFlight / queue 機構は撤去した (flush engine が Web Locks +
+// in-flight Set + mutation_id UNIQUE で直列化・冪等化する)。
+//
+// 入力中フィールドのカーソル保護は既存の dirty-guard (編集中は外部 prop 値で value を
+// 上書きしない) を流用。
 //
 // レイアウト (S2.0b-2 follow-up): display / edit の box 寸法 (border-box + padding +
 // 1px border) を完全一致させて edit 切替時の layout shift を防ぐ。 display 側に
 // `border border-transparent` を入れて textarea / input の見える 1px border 分を
-// 予約。 textarea / input の default padding / radius / font-size は twMerge で
-// 表示モードと同じ値 (p-2 / rounded-md / displayClassName 由来 font) に上書き。
-//
-// multiline textarea は rows 固定値を使わず、 `useLayoutEffect` で mount 時 + value
-// 変化時に `style.height = 'auto'` → `style.height = scrollHeight + 'px'` を実行して
-// 内容に応じて auto-resize。 縮む方向は min-h-11 が下限となり display モードと一致。
-// useLayoutEffect (useEffect ではなく) を使うのは、 高さ調整を paint 前に同期実行
-// して初回 mount 時の 1 frame flicker を回避するため。
+// 予約。 multiline textarea は `useLayoutEffect` で auto-resize (paint 前同期実行で
+// 初回 mount の 1 frame flicker を回避)。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  updateCardField,
-  type UpdateCardFieldName,
-} from '../_actions/update-card-field'
+import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { enqueueCardMutation } from '@/lib/sync/card-mutations'
+import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { logger } from '@/lib/logger'
+
+// sort_key / title / question_text / explanation_text / memo は ClientCard の
+// snake_case 列名に 1:1 対応する (mirror patch のキーにそのまま使う)。
+type InlineTextFieldName =
+  | 'sort_key'
+  | 'title'
+  | 'question_text'
+  | 'explanation_text'
+  | 'memo'
 
 type InlineTextFieldProps = {
   cardId: string
-  // sort_key / title / question_text / explanation_text / memo のいずれか
-  // (options は別 dispatch、 本 component は単一 text 値のみ扱う)
-  field: Extract<
-    UpdateCardFieldName,
-    'sort_key' | 'title' | 'question_text' | 'explanation_text' | 'memo'
-  >
+  field: InlineTextFieldName
   initialValue: string | null
   ariaLabel: string
   multiline?: boolean
@@ -44,9 +54,7 @@ type InlineTextFieldProps = {
   // display mode の追加 className (font / color 等 cell 表現を上書きするため)
   displayClassName?: string
   // S2.0b 「+ カードを追加」 直後に new card の問題文 cell を mount 即 edit にする
-  // ための one-shot marker。 useState initializer のみ参照し、 mount 後は無視する
-  // (= 親が後から true → false に変えても影響なし、 cell の blur で editing が false
-  // に戻った後も再 edit しない)。 InlineOptionCell の autoEditOnMount と同方針。
+  // ための one-shot marker。 useState initializer のみ参照し、 mount 後は無視する。
   autoEditOnMount?: boolean
 }
 
@@ -63,26 +71,20 @@ export function InlineTextField({
   autoEditOnMount = false,
 }: InlineTextFieldProps) {
   const initialString = initialValue ?? ''
-  // input 編集中の値
+  // display + edit 共用の単一 optimistic state。 display は mirror (initialValue prop)
+  // から降りてくるが、 楽観反映の即時性 (mirror write → useLiveQuery 再評価までの 1
+  // tick lag) を埋めるため value を直接 display にも使う。 編集中でなければ dirty-guard
+  // useEffect が value ← initialValue に同期する。
   const [value, setValue] = useState<string>(initialString)
-  // display 表示値 (= optimistic 反映先)。 string 固定で内部保持し、 null 戻し
-  // は serverCommittedRef からの rollback も含めて initialValue 由来の文字列を
-  // そのまま使う (空文字判定は length === 0)。
-  const [committedValue, setCommittedValue] = useState<string>(initialString)
-  // initializer は mount 時のみ評価 (subsequent prop change は無視)。 one-shot 性は
-  // InlineOptionCell と同様: prop が後から true → false でも、 blur で editing=false に
-  // 戻った後も挙動変化なし。
+  // initializer は mount 時のみ評価 (subsequent prop change は無視、 one-shot 性)。
   const [editing, setEditing] = useState<boolean>(() => autoEditOnMount)
-  const [error, setError] = useState<string | null>(null)
 
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
-  // 最後に server で成功した値 (rollback target)。 初期値は initialString。
-  const serverCommittedRef = useRef<string>(initialString)
-  const inFlightRef = useRef<boolean>(false)
-  const pendingValueRef = useRef<string | null>(null)
+  // 直近 mirror 確定値 (= initialValue prop の string 化)。 値変更なし blur の
+  // no-op short-circuit 比較に使う (無駄な mirror write + enqueue を避ける)。
+  const mirrorValueRef = useRef<string>(initialString)
+  mirrorValueRef.current = initialString
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // unmount 後の setState を抑止 (cleanup race 防止)
-  const mountedRef = useRef<boolean>(true)
 
   // edit mode 切替時に auto-focus
   useEffect(() => {
@@ -93,9 +95,6 @@ export function InlineTextField({
 
   // multiline textarea の auto-resize: 編集中 + value 変化に追従して内容高さに合わせる。
   // useLayoutEffect で paint 前に同期実行 (initial mount の 1 frame flicker 回避)。
-  // 縮む方向は min-h-11 が CSS 上の下限として効くため display モードと同じ最小高さ。
-  // jsdom では scrollHeight が常に 0 だが、 min-h-11 が下限を保証するため test に
-  // 影響なし (test では height の実測は assert しない)。
   useLayoutEffect(() => {
     if (!editing) return
     const el = inputRef.current
@@ -104,31 +103,18 @@ export function InlineTextField({
     el.style.height = `${el.scrollHeight}px`
   }, [editing, value])
 
-  // initialValue が server revalidate 等で外部変化した時、 編集中 / 送信中 /
-  // queue 中でなければ local state を新値に同期する。 上記いずれかなら user の
-  // 編集 / 未確定送信を保護するため触らない。
+  // dirty-guard: 親 (useLiveQuery / mirror) 由来で initialValue が外部変化した時、
+  // 編集中でなければ value を新値に同期する (= pull-reconciliation の rollback path も
+  // ここを通る)。 編集中は user 入力を保護するため触らない。
   useEffect(() => {
-    if (
-      editing ||
-      inFlightRef.current ||
-      pendingValueRef.current !== null
-    ) {
-      return
-    }
-    setCommittedValue(initialString)
+    if (editing) return
     setValue(initialString)
-    serverCommittedRef.current = initialString
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialValue])
 
-  // mount / unmount 同期: setup で mountedRef=true reset、 cleanup で false + timer
-  // clear。 setup 側で reset しないと React Strict Mode (next.config.ts で有効) の
-  // 二重 effect 実行で initial mount cleanup 後に false 固定となり、 以降の send
-  // 内 setState (rollback / error / queue 完走) が全て skip される。
+  // unmount で timer clear (StrictMode 二重 effect でも単純な timer cleanup のみ)。
   useEffect(() => {
-    mountedRef.current = true
     return () => {
-      mountedRef.current = false
       if (debounceTimerRef.current !== null) {
         clearTimeout(debounceTimerRef.current)
         debounceTimerRef.current = null
@@ -136,51 +122,52 @@ export function InlineTextField({
     }
   }, [])
 
-  const send = async (target: string) => {
-    // 進行中 send があれば queue 入りで早期 return (B-2)
-    if (inFlightRef.current) {
-      pendingValueRef.current = target
-      return
-    }
-    inFlightRef.current = true
-    const result = await updateCardField(cardId, field, target)
-    inFlightRef.current = false
-
-    if (!mountedRef.current) return
-
-    if (!result.ok) {
-      // 失敗 → display rollback + error 表示、 queue は捨てる (連続失敗防止)
-      setError(result.error)
-      setCommittedValue(serverCommittedRef.current)
-      pendingValueRef.current = null
-      return
-    }
-
-    serverCommittedRef.current = target
-
-    // queue に残っていれば最新値で再送信
-    if (pendingValueRef.current !== null) {
-      const next = pendingValueRef.current
-      pendingValueRef.current = null
-      void send(next)
-    }
+  // commit: mirror 直書き + outbox enqueue を即時実行 (fire-and-forget)。
+  // server への drain は debounce 後 (scheduleDrain)。
+  const commit = (target: string) => {
+    // mirror 直書き (楽観反映)。 enqueue/flush とは独立に await しない (失敗は
+    // 次回 pull で reconcile)。 logger に残すのみ。
+    // field ∈ ClientCard の snake_case 列名に 1:1 対応するため Partial<ClientCard> で型付け。
+    const mirrorPatch: Partial<ClientCard> = { [field]: target }
+    void getClientDb()
+      .cards.update(cardId, mirrorPatch)
+      .catch((err) => {
+        logger.warn({
+          event: 'card_inline.mirror_update_failed',
+          cardId,
+          field,
+          err: String(err),
+        })
+      })
+    void enqueueCardMutation({
+      card_id: cardId,
+      op: 'update_field',
+      patch: { field, value: target },
+    }).catch((err) => {
+      logger.warn({
+        event: 'card_inline.enqueue_failed',
+        cardId,
+        field,
+        err: String(err),
+      })
+    })
+    scheduleDrain()
   }
 
-  const scheduleSend = (target: string) => {
+  // 500ms debounce 後に outbox drain を 1 回叩く (連続編集は timer reset で最後の
+  // commit から 500ms 後に 1 回)。 送信遅延ではなく drain trigger の debounce。
+  const scheduleDrain = () => {
     if (debounceTimerRef.current !== null) {
       clearTimeout(debounceTimerRef.current)
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void send(target)
+      void runGuardedCardMutationFlush().catch(() => {})
     }, DEBOUNCE_MS)
   }
 
   const startEdit = () => {
     setEditing(true)
-    // edit 開始時は error を残す (失敗直後の rollback display から再 click した
-    // ユーザーが何が起きたか把握できるよう)。 blur 時の handleBlur で必要に応じ
-    // クリアする。
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -192,40 +179,17 @@ export function InlineTextField({
   }
 
   const handleBlur = () => {
-    // 1. editing を即時 false に (display 復帰)
+    // editing を即時 false に (display 復帰)。
     setEditing(false)
-    // 2. 真に「飛んでる send も queue も無い + 値も serverCommitted と一致」
-    //    時のみ short-circuit。 in-flight or queue 中は値が一致していても
-    //    scheduleSend(value) して queue に最新意図を入れる。 そうしないと:
-    //    serverCommittedRef="A" → "B" 入力 blur → send("B") inflight → 即
-    //    "A" に戻し blur で短絡 → server に "B" 確定で display="A" との
-    //    不整合 (= 最新 revert がロスト) が起きる (spec §3.2 を拡張、
-    //    spec doc 自体の更新は T4 closure で controller が実施予定)。
-    const noPendingWork =
-      !inFlightRef.current && pendingValueRef.current === null
-    if (noPendingWork && value === serverCommittedRef.current) {
-      if (debounceTimerRef.current !== null) {
-        clearTimeout(debounceTimerRef.current)
-        debounceTimerRef.current = null
-      }
-      setCommittedValue(serverCommittedRef.current)
-      setError(null)
+    // 値変更なしなら mirror write + enqueue を skip (無駄な outbox 行を避ける)。
+    if (value === mirrorValueRef.current) {
       return
     }
-    // 3. display 即時反映 (Optimistic UI、 C-1)
-    setCommittedValue(value)
-    // 4. 前回 error クリア (新規 blur で再挑戦が始まる)
-    setError(null)
-    // 5. debounce 500ms 後に send (in-flight 中なら queue 経由で完走後に再送信)
-    scheduleSend(value)
+    commit(value)
   }
 
   // display / edit で共通の box 寸法 (border-box + padding + 1px border + radius +
-  // 最小高さ + 幅)。 これを両モードで適用し layout shift を防ぐ。 textarea / input は
-  // ui/textarea.tsx / ui/input.tsx の default `rounded-lg px-3 py-2 text-base` を
-  // twMerge で上書きする (後から指定したクラスが勝つ、 `cn` 経由)。 textarea の見える
-  // `border border-input` は default のまま残し、 display は `border border-transparent`
-  // で 1px 分を予約。
+  // 最小高さ + 幅)。 textarea / input の default は twMerge で表示モードと同じ値に上書き。
   const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2'
 
   if (editing) {
@@ -261,17 +225,12 @@ export function InlineTextField({
             className={`${sharedBoxChrome} ${displayClassName ?? ''}`}
           />
         )}
-        {error && (
-          <p role="alert" className="text-xs text-red-600">
-            {error}
-          </p>
-        )}
       </div>
     )
   }
 
   // display mode
-  const displayText = committedValue
+  const displayText = value
   const isEmpty = displayText.length === 0
   return (
     <div className="space-y-1">
@@ -291,11 +250,6 @@ export function InlineTextField({
           <span className="whitespace-pre-wrap break-words">{displayText}</span>
         )}
       </div>
-      {error && (
-        <p role="alert" className="text-xs text-red-600">
-          {error}
-        </p>
-      )}
     </div>
   )
 }

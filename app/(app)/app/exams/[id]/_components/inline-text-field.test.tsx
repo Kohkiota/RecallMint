@@ -1,48 +1,99 @@
 // @vitest-environment jsdom
-// InlineTextField client component の test。 試験詳細 page (/app/exams/[id]) の
-// inline 編集 cell。 click で edit、 blur で server action 呼出、 値変更なしは
-// server 呼ばず display 復帰、 失敗時は edit 維持 + error 表示。
+// InlineTextField client component の test (Stage 4 / Task 4.2 cutover 後)。
+// blur (commit) で mirror 直書き (Dexie cards.update) + outbox enqueue
+// (enqueueCardMutation, op='update_field')、 500ms debounce 後に
+// runGuardedCardMutationFlush で drain。 値変更なしは commit skip。 dirty-guard:
+// 編集中は外部 prop で value を上書きしない / idle 時は prop 変化で display 更新。
 //
-// server action は mock (update-card-field)。
+// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
+// fake-indexeddb の実 Dexie で assert する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { getClientDb } from '@/lib/client-db'
 
-vi.mock('../_actions/update-card-field', () => ({
-  updateCardField: vi.fn(),
+const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
+  mockEnqueue: vi.fn(async () => ({}) as never),
+  mockFlush: vi.fn(async () => 'no-pending' as const),
+}))
+
+vi.mock('@/lib/sync/card-mutations', () => ({
+  enqueueCardMutation: mockEnqueue,
+}))
+vi.mock('@/lib/sync/card-mutation-flush', () => ({
+  runGuardedCardMutationFlush: mockFlush,
 }))
 
 import { InlineTextField } from './inline-text-field'
-import { updateCardField } from '../_actions/update-card-field'
 
-beforeEach(() => {
+const CARD_ID = '11111111-1111-4111-8111-111111111111'
+
+// 各 test の前に cards mirror を clear し、 対象 card の base 行を 1 件 seed する
+// (mirror update の前提として行が存在している必要がある)。
+async function seedCard(fields: Partial<Record<string, unknown>> = {}) {
+  const db = getClientDb()
+  await db.cards.put({
+    id: CARD_ID,
+    user_id: 'user-1',
+    exam_id: 'exam-1',
+    title: '',
+    sort_key: null,
+    question_text: '',
+    options: [],
+    correct_answer_ids: [],
+    explanation_text: null,
+    memo: null,
+    images: [],
+    custom_props: {},
+    tags: [],
+    answered: false,
+    current_streak: 0,
+    due: '2026-01-01T00:00:00.000Z',
+    stability: 0,
+    difficulty: 0,
+    elapsed_days: 0,
+    scheduled_days: 0,
+    reps: 0,
+    lapses: 0,
+    state: 0,
+    learning_steps: 0,
+    content_version: 1,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    sync_status: 'synced',
+    ...fields,
+  } as never)
+}
+
+beforeEach(async () => {
   vi.clearAllMocks()
-  vi.mocked(updateCardField).mockResolvedValue({ ok: true })
+  vi.useRealTimers()
+  await getClientDb().cards.clear()
+  await seedCard()
 })
 
 afterEach(() => {
   cleanup()
 })
 
-describe('InlineTextField (single-line)', () => {
+describe('InlineTextField — render / edit 基本', () => {
   it('display モード: initialValue を rendering', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="問題タイトル"
         ariaLabel="title 編集"
       />,
     )
     expect(screen.getByText('問題タイトル')).toBeInTheDocument()
-    // 初期は input ではなく display 要素
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 
   it('null initialValue: placeholder を表示', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="sort_key"
         initialValue={null}
         ariaLabel="ソートキー 編集"
@@ -55,7 +106,7 @@ describe('InlineTextField (single-line)', () => {
   it('click で edit mode、 input が auto-focus + 初期値セット', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="問題タイトル"
         ariaLabel="title 編集"
@@ -64,143 +115,13 @@ describe('InlineTextField (single-line)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
     const input = screen.getByRole('textbox') as HTMLInputElement
     expect(input).toHaveValue('問題タイトル')
-    // jsdom auto-focus check
     expect(document.activeElement).toBe(input)
-  })
-
-  it('値変更 + blur → updateCardField が field + 新値で呼ばれる', async () => {
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="title"
-        initialValue="旧"
-        ariaLabel="title 編集"
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: '新タイトル' } })
-    fireEvent.blur(input)
-    await vi.waitFor(() => {
-      expect(updateCardField).toHaveBeenCalledWith(
-        'card-1',
-        'title',
-        '新タイトル',
-      )
-    })
-  })
-
-  it('値変更 + blur 成功 → display mode 復帰、 新値で render', async () => {
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="title"
-        initialValue="旧"
-        ariaLabel="title 編集"
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '新タイトル' },
-    })
-    fireEvent.blur(screen.getByRole('textbox'))
-    await vi.waitFor(() => {
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    })
-    expect(screen.getByText('新タイトル')).toBeInTheDocument()
-  })
-
-  it('値変更 + blur 失敗 → display mode で旧値 + role="alert" で error 表示 (rollback)', async () => {
-    vi.mocked(updateCardField).mockResolvedValue({
-      ok: false,
-      error: 'タイトルは必須です',
-    })
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="title"
-        initialValue="旧"
-        ariaLabel="title 編集"
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '' },
-    })
-    fireEvent.blur(screen.getByRole('textbox'))
-    // Optimistic UI: blur 直後は display + 楽観値 (= '')、 server 解決後に
-    // 旧値 '旧' に rollback + error 表示
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'タイトルは必須です',
-    )
-    // display mode (edit には戻らない)
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    // 旧値が表示されている
-    expect(screen.getByText('旧')).toBeInTheDocument()
-  })
-
-  it('値変更なし + blur → server 呼ばれない、 display mode 復帰', async () => {
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="title"
-        initialValue="旧"
-        ariaLabel="title 編集"
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    // 何も変更せず blur
-    fireEvent.blur(screen.getByRole('textbox'))
-    await vi.waitFor(() => {
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    })
-    expect(updateCardField).not.toHaveBeenCalled()
-  })
-
-  it('null initial: edit mode で空 input、 同じく空のまま blur → server 呼ばれない', async () => {
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="memo"
-        initialValue={null}
-        ariaLabel="memo 編集"
-        multiline
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'memo 編集' }))
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    expect(textarea).toHaveValue('')
-    fireEvent.blur(textarea)
-    await vi.waitFor(() => {
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    })
-    expect(updateCardField).not.toHaveBeenCalled()
-  })
-
-  it('null initial → 値入力 + blur → server に新値で呼出', async () => {
-    render(
-      <InlineTextField
-        cardId="card-1"
-        field="memo"
-        initialValue={null}
-        ariaLabel="memo 編集"
-        multiline
-      />,
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'memo 編集' }))
-    fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '初メモ' },
-    })
-    fireEvent.blur(screen.getByRole('textbox'))
-    await vi.waitFor(() => {
-      expect(updateCardField).toHaveBeenCalledWith('card-1', 'memo', '初メモ')
-    })
   })
 
   it('multiline=false: input を render', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -213,7 +134,7 @@ describe('InlineTextField (single-line)', () => {
   it('multiline=true: textarea を render', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -224,46 +145,171 @@ describe('InlineTextField (single-line)', () => {
     expect(screen.getByRole('textbox').tagName).toBe('TEXTAREA')
   })
 
-  it('edit mode 中 aria-label が input/textarea に付与される', () => {
+  it('edit mode 中 aria-label が input に付与される', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
-    expect(screen.getByRole('textbox')).toHaveAttribute(
-      'aria-label',
-      'title 編集',
-    )
+    expect(screen.getByRole('textbox')).toHaveAttribute('aria-label', 'title 編集')
   })
 
-  it('display mode の button が tap target を確保 (min-h クラス)', () => {
+  it('display mode の button が tap target を確保 (min-h-11)', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
       />,
     )
-    const btn = screen.getByRole('button', { name: 'title 編集' })
-    // tap target 44px 目安 (min-h-11 = 44px Tailwind)
-    expect(btn.className).toMatch(/min-h-11/)
+    expect(
+      screen.getByRole('button', { name: 'title 編集' }).className,
+    ).toMatch(/min-h-11/)
   })
+})
 
-  // ---------------------------------------------------------------------------
-  // S2.0b-2 follow-up: auto-resize + display/edit 寸法一致 regression
-  // (textarea の rows 固定値撤回、 useLayoutEffect で scrollHeight に追従、
-  //  display と edit で box 寸法 [p-2 / rounded-md / min-h-11 / 1px border] 一致)
-  // ---------------------------------------------------------------------------
-
-  it('multiline=true: textarea に rows attribute が無い (rows 固定値を使わない仕様)', () => {
+describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
+  it('値変更 + blur → mirror に patch が書かれる', async () => {
+    await seedCard({ title: '旧' })
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '新タイトル' },
+    })
+    fireEvent.blur(screen.getByRole('textbox'))
+
+    await vi.waitFor(async () => {
+      const row = await getClientDb().cards.get(CARD_ID)
+      expect(row?.title).toBe('新タイトル')
+    })
+  })
+
+  it('値変更 + blur → enqueueCardMutation が update_field / field / value で呼ばれる', async () => {
+    await seedCard({ title: '旧' })
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '新タイトル' },
+    })
+    fireEvent.blur(screen.getByRole('textbox'))
+
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith({
+        card_id: CARD_ID,
+        op: 'update_field',
+        patch: { field: 'title', value: '新タイトル' },
+      })
+    })
+  })
+
+  it('値変更 + blur → 楽観表示で display が新値に即時反映 (mirror lag を埋める)', async () => {
+    await seedCard({ title: '旧' })
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '新タイトル' },
+    })
+    fireEvent.blur(screen.getByRole('textbox'))
+    // blur 直後 (mirror/live 反映前) でも display は楽観値
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.getByText('新タイトル')).toBeInTheDocument()
+  })
+
+  it('値変更なし + blur → mirror write も enqueue もされない、 display 復帰', async () => {
+    await seedCard({ title: '旧' })
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    fireEvent.blur(screen.getByRole('textbox'))
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    })
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    // mirror は触られていない
+    const row = await getClientDb().cards.get(CARD_ID)
+    expect(row?.title).toBe('旧')
+  })
+
+  it('null initial → 空のまま blur → enqueue されない', async () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={null}
+        ariaLabel="memo 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'memo 編集' }))
+    fireEvent.blur(screen.getByRole('textbox'))
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    })
+    expect(mockEnqueue).not.toHaveBeenCalled()
+  })
+
+  it('null initial → 値入力 + blur → enqueue に新値 (memo field)', async () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={null}
+        ariaLabel="memo 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'memo 編集' }))
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '初メモ' },
+    })
+    fireEvent.blur(screen.getByRole('textbox'))
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith({
+        card_id: CARD_ID,
+        op: 'update_field',
+        patch: { field: 'memo', value: '初メモ' },
+      })
+    })
+  })
+})
+
+describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
+  it('multiline=true: textarea に rows attribute が無い', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -272,14 +318,13 @@ describe('InlineTextField (single-line)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement
-    // rows={4} 等の固定 attribute は **設定しない** こと (auto-resize 担当に委譲)
     expect(ta.hasAttribute('rows')).toBe(false)
   })
 
-  it('multiline=true: textarea に resize-none + overflow-hidden が付き、 手動 resize ハンドルと scrollbar が抑止される', () => {
+  it('multiline=true: resize-none + overflow-hidden が付く', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -292,28 +337,25 @@ describe('InlineTextField (single-line)', () => {
     expect(ta.className).toMatch(/overflow-hidden/)
   })
 
-  it('multiline=true: textarea mount 時に useLayoutEffect で style.height が auto → scrollHeight 経由で inline 設定される (jsdom では scrollHeight=0 で min-h-11 が下限)', () => {
+  it('multiline=true: mount 時に useLayoutEffect で style.height が inline 設定される', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
-        initialValue="複数行\nテキスト"
+        initialValue="複数行"
         ariaLabel="question 編集"
         multiline
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement
-    // useLayoutEffect が走った証拠: style.height が inline 設定されている
-    // (jsdom の scrollHeight は 0 で 'auto' → '0px' に設定されるが、 CSS min-h-11 が
-    //  下限として効くため visible height は 44px 以上が保証される)
     expect(ta.style.height).not.toBe('')
   })
 
-  it('multiline=true: 入力 (value 変化) で style.height が再計算される (useLayoutEffect が [editing, value] に追従)', () => {
+  it('multiline=true: value 変化で style.height が再 assign される ([editing, value] dep lock)', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="短い"
         ariaLabel="question 編集"
@@ -322,45 +364,30 @@ describe('InlineTextField (single-line)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement
-    // mount 時に assign された inline height を意図的に clear して、 value 変化に
-    // 連動した useLayoutEffect 再実行で再 assign されることを確実に検出できるよう
-    // にする。 これにより本 test は dep array から `value` を抜いた regression を
-    // 確実に fail させる (jsdom scrollHeight=0 でも空文字 → '0px' への再 assign は
-    // 区別可能、 review Minor #1 fix)。
     ta.style.height = ''
     expect(ta.style.height).toBe('')
-
-    // 改行を含む長い文字列に変更 → useLayoutEffect 再 run で height 再 assign
     fireEvent.change(ta, {
-      target: { value: '長い\n複数行\nテキスト\n四行目\n五行目' },
+      target: { value: '長い\n複数行\nテキスト' },
     })
-
-    // 再 assign 後は inline height が再び設定されている (jsdom 上では '0px' だが、
-    // 空文字でないことが「useLayoutEffect が走った」 ことの唯一の証跡)。
     expect(ta.style.height).not.toBe('')
-    // 形式の sanity check (px 単位)
     expect(ta.style.height).toMatch(/px$/)
   })
 
-  it('display / edit 共通: box 寸法を揃える chrome (min-h-11 + p-2 + rounded-md) が両モードに付与される', () => {
+  it('display / edit 共通 chrome (min-h-11 + p-2 + rounded-md + border-transparent)', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
         multiline
       />,
     )
-    // display
     const btn = screen.getByRole('button', { name: 'question 編集' })
     expect(btn.className).toMatch(/min-h-11/)
     expect(btn.className).toMatch(/\bp-2\b/)
     expect(btn.className).toMatch(/rounded-md/)
-    // display は textarea の 1px border 分を border-transparent で予約
     expect(btn.className).toMatch(/border-transparent/)
-
-    // edit
     fireEvent.click(btn)
     const ta = screen.getByRole('textbox')
     expect(ta.className).toMatch(/min-h-11/)
@@ -368,10 +395,10 @@ describe('InlineTextField (single-line)', () => {
     expect(ta.className).toMatch(/rounded-md/)
   })
 
-  it('display / edit 共通: displayClassName が両モードに伝搬する (font / 色を揃えるため)', () => {
+  it('displayClassName が両モードに伝搬する', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -390,11 +417,11 @@ describe('InlineTextField (single-line)', () => {
   })
 })
 
-describe('InlineTextField autoEditOnMount (S2.0b 「+ カードを追加」用)', () => {
-  it('autoEditOnMount: mount 時点で edit mode (textbox 描画 + auto-focus)', () => {
+describe('InlineTextField — autoEditOnMount (S2.0b 「+ カードを追加」用)', () => {
+  it('autoEditOnMount: mount 時点で edit mode (textbox + auto-focus)', () => {
     render(
       <InlineTextField
-        cardId="card-new"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="(問題文を入力してください)"
         ariaLabel="問題文 編集"
@@ -407,10 +434,10 @@ describe('InlineTextField autoEditOnMount (S2.0b 「+ カードを追加」用)'
     expect(document.activeElement).toBe(input)
   })
 
-  it('autoEditOnMount 省略 / false: 通常通り display mode で mount', () => {
+  it('autoEditOnMount 省略: 通常通り display mode で mount', () => {
     render(
       <InlineTextField
-        cardId="card-1"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="本文"
         ariaLabel="問題文 編集"
@@ -426,7 +453,7 @@ describe('InlineTextField autoEditOnMount (S2.0b 「+ カードを追加」用)'
   it('one-shot: blur で display に戻った後、 prop が true のままでも再 edit しない', () => {
     render(
       <InlineTextField
-        cardId="card-new"
+        cardId={CARD_ID}
         field="question_text"
         initialValue="本文"
         ariaLabel="問題文 編集"
@@ -436,7 +463,6 @@ describe('InlineTextField autoEditOnMount (S2.0b 「+ カードを追加」用)'
     )
     const input = screen.getByRole('textbox', { name: '問題文 編集' })
     fireEvent.blur(input)
-    // blur 後 display 復帰、 autoEditOnMount=true のままでも textbox は再出現しない
     expect(
       screen.queryByRole('textbox', { name: '問題文 編集' }),
     ).not.toBeInTheDocument()
