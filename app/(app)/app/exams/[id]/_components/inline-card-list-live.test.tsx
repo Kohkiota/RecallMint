@@ -11,7 +11,7 @@
 //   resolve 後は Dexie mirror が単一の真実 (initialCards に在って mirror に無い
 //   card は resolve 後に消える = length===0 永続 fallback でないことの証明)
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   render,
   screen,
@@ -22,23 +22,9 @@ import {
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import type { ExamDetailCard } from '@/lib/exams/list'
 
-// 子の inline 編集が触る server action / pull / 子 action は全 mock (本 test は
-// 表示 source のみ検証、 編集経路は別 test で網羅)。
-vi.mock('../_actions/update-card-field', () => ({
-  updateCardField: vi.fn(),
-}))
-vi.mock('../_actions/create-card', () => ({
-  createCard: vi.fn().mockResolvedValue({ ok: true, data: { cardId: 'x' } }),
-}))
-vi.mock('../_actions/delete-card', () => ({
-  deleteCard: vi.fn().mockResolvedValue({ ok: true }),
-}))
-vi.mock('@/lib/sync/pull', () => ({
-  runGuardedPull: vi.fn().mockResolvedValue('ran'),
-}))
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: vi.fn() }),
-}))
+// 本 test は表示 source (Dexie mirror live-read) のみ検証、 編集経路は別 test で
+// 網羅。 InlineCardList とその子は server action / pull / next/navigation を
+// 一切 import しないため (Task 4.x local-first cutover 済)、 mock は不要。
 
 import { InlineCardList } from './inline-card-list'
 

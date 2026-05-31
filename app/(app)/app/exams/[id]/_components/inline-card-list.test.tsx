@@ -24,10 +24,6 @@ import {
 import type { ExamDetailCard } from '@/lib/exams/list'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 
-vi.mock('../_actions/update-card-field', () => ({
-  updateCardField: vi.fn(),
-}))
-
 // Task 4.3: create / delete は local-first (mirror insert/remove + outbox enqueue +
 // 即時 drain)。 server action / router.refresh / runGuardedPull は廃止。
 // enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
