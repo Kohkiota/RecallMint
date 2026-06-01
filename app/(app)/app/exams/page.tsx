@@ -1,7 +1,5 @@
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
-import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 import { CreateExamForm } from './_components/create-exam-form'
-import { ExamStatusProvider } from '../_components/exam-status-live'
 import { ExamListLive } from './_components/exam-list-live'
 
 // S1.7 T7: read-only exam 一覧 (archived_at IS NULL、 updated_at DESC)。
@@ -26,20 +24,17 @@ export default async function ExamsListPage() {
     userId = user.id
   }
 
-  const statusMap = await getExamStatusMap(userId)
-
   return (
-    <ExamStatusProvider initialStatuses={Object.fromEntries(statusMap)}>
-      <div className="space-y-6">
-        <h1 className="text-2xl font-bold">試験一覧</h1>
+    <div className="space-y-6 md:space-y-3">
+      <h1 className="text-2xl font-bold">試験一覧</h1>
 
-        {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
-        <CreateExamForm />
+      {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
+      <CreateExamForm />
 
-        {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
-            useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。 */}
-        <ExamListLive userId={userId} />
-      </div>
-    </ExamStatusProvider>
+      {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
+          useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。
+          ExamStatusProvider は /app layout に常駐、badge はそこから context 購読。 */}
+      <ExamListLive userId={userId} />
+    </div>
   )
 }
