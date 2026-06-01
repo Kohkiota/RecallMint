@@ -210,7 +210,7 @@ export function InlineTextField({
 
   // display / edit で共通の box 寸法 (border-box + padding + 1px border + radius +
   // 最小高さ + 幅)。 textarea / input の default は twMerge で表示モードと同じ値に上書き。
-  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2'
+  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2 md:min-h-8 md:py-1'
 
   if (editing) {
     const commonProps = {

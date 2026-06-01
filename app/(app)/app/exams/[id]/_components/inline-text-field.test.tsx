@@ -420,7 +420,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     expect(ta.style.height).toMatch(/px$/)
   })
 
-  it('display / edit 共通 chrome (min-h-11 + p-2 + rounded-md + border-transparent)', () => {
+  it('display / edit 共通 chrome (min-h-11 + p-2 + rounded-md + border-transparent + md responsive)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
@@ -435,11 +435,15 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     expect(btn.className).toMatch(/\bp-2\b/)
     expect(btn.className).toMatch(/rounded-md/)
     expect(btn.className).toMatch(/border-transparent/)
+    expect(btn.className).toMatch(/md:min-h-8/)
+    expect(btn.className).toMatch(/md:py-1/)
     fireEvent.click(btn)
     const ta = screen.getByRole('textbox')
     expect(ta.className).toMatch(/min-h-11/)
     expect(ta.className).toMatch(/\bp-2\b/)
     expect(ta.className).toMatch(/rounded-md/)
+    expect(ta.className).toMatch(/md:min-h-8/)
+    expect(ta.className).toMatch(/md:py-1/)
   })
 
   it('displayClassName が両モードに伝搬する', () => {

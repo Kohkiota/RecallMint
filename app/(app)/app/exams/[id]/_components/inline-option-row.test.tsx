@@ -483,17 +483,21 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     expect(ta.style.height).toMatch(/px$/)
   })
 
-  it('display / edit 共通: 3 cell 種別とも sharedBoxChrome を持つ、 display は border-transparent', () => {
+  it('display / edit 共通: 3 cell 種別とも sharedBoxChrome を持つ、 display は border-transparent + md responsive', () => {
     renderSingle(baseOptions[0]!)
     const idBtn = screen.getByRole('button', { name: '選択肢 id 編集' })
     expect(idBtn.className).toMatch(/min-h-11/)
     expect(idBtn.className).toMatch(/\bp-2\b/)
     expect(idBtn.className).toMatch(/rounded-md/)
     expect(idBtn.className).toMatch(/border-transparent/)
+    expect(idBtn.className).toMatch(/md:min-h-8/)
+    expect(idBtn.className).toMatch(/md:py-1/)
     fireEvent.click(idBtn)
     const idInput = screen.getByRole('textbox', { name: '選択肢 id 編集' })
     expect(idInput.className).toMatch(/min-h-11/)
     expect(idInput.className).toMatch(/rounded-md/)
+    expect(idInput.className).toMatch(/md:min-h-8/)
+    expect(idInput.className).toMatch(/md:py-1/)
   })
 
   it('displayClassName が両モードに伝搬する (is_correct=true は emerald)', () => {

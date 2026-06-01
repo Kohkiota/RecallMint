@@ -496,7 +496,7 @@ function InlineOptionCell({
   const multiline = kind !== 'id'
 
   // display / edit で共通の box 寸法 (`InlineTextField` の sharedBoxChrome と同じ値)。
-  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2'
+  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2 md:min-h-8 md:py-1'
 
   if (editing) {
     const commonProps = {
