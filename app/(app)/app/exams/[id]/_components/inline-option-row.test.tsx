@@ -587,3 +587,60 @@ describe('InlineOptionCell — 末尾改行の display 補正 (<br>)', () => {
     expect(disp.textContent).toBe('\n')
   })
 })
+
+describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70d0714 回帰修正)', () => {
+  it('放置された空 ghost は serverOptions 更新 (pull-back) で drop され末尾に残らない', async () => {
+    const { rerender } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 空のまま追加 (ghost c)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await screen.findByText('c')
+    // さらに追加 (ghost d) → autoEditOptionId が d へ移り、c は「放置された空 ghost」に
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await screen.findByText('d')
+    // d を入力・確定して server へ反映された状態を rerender で模す (serverOptions に d 追加、c は無い)
+    rerender(
+      <InlineOptionList
+        cardId={CARD_ID}
+        options={[...baseOptions, { id: 'd', text: 'D本文', is_correct: false }]}
+      />,
+    )
+    // merge: c (空 かつ autoEdit=d でない) は drop。d は serverOptions に存在 → 残る
+    await vi.waitFor(() => {
+      expect(screen.queryByText('c')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('d')).toBeInTheDocument()
+  })
+
+  it('連続追加で片方を入力中、 別 commit の serverOptions 更新でも編集中 ghost は消えない (70d0714 保護)', async () => {
+    const { rerender } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 1 つ目追加 (ghost c) → 2 つ目追加 (ghost d, autoEdit=d)
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await screen.findByText('c')
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await screen.findByText('d')
+    // d の text cell に入力中 (blur しない = working-set には未保存、cell の editValue のみ)
+    const tas = screen.getAllByRole('textbox', { name: '選択肢 本文 編集' })
+    fireEvent.change(tas[tas.length - 1]!, { target: { value: 'D入力中' } })
+    // 別経路の commit で serverOptions が更新された状況を rerender で模す (c/d は server に未反映)
+    rerender(
+      <InlineOptionList
+        cardId={CARD_ID}
+        options={[
+          { id: 'a', text: '選択肢A 改', is_correct: true, explanation: 'A 理由' },
+          { id: 'b', text: '選択肢B', is_correct: false },
+        ]}
+      />,
+    )
+    // 編集中 ghost d (autoEdit) は保持され、textarea と入力値が失われない
+    await vi.waitFor(() => {
+      const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+      expect((ta as HTMLTextAreaElement).value).toBe('D入力中')
+    })
+    // 放置された空 ghost c は drop
+    expect(screen.queryByText('c')).not.toBeInTheDocument()
+  })
+})

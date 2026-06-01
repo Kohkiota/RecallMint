@@ -29,8 +29,12 @@
 // Ghost row (S2.0b-3 + follow-up merge fix): 「+ 選択肢を追加」 で working-set に
 // 追加された text='' の optimistic row。 server zod が reject するため commit payload
 // (mirror + enqueue 双方) からは sanitized で除外する。 working-set には残し user の
-// 編集中値を保護。 serverOptions prop 変化時は merge 戦略で「server にない local
-// ghost」 を末尾に保持して evict を防ぐ。
+// 編集中値を保護。 serverOptions prop 変化時の merge では、 server に無い local ghost の
+// うち「text あり (commit in-flight)」または「autoEditOptionId (+追加直後の編集対象)」
+// のみ末尾保持し、 放置された空 ghost は drop する (1-a fix。 70d0714 の typing 保護は
+// 維持しつつ末尾残留を解消)。 註: autoEditOptionId は add 時 set のみで reset しないため、
+// 「空 ghost 追加後に既存 row を編集」 した場合のみ空 ghost が autoEdit 扱いで残るが、
+// 永続化はされず報告 repro (連続 ghost 追加) の対象外。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
@@ -108,13 +112,22 @@ export function InlineOptionList({
   optionsRef.current = options
 
   // 親 (useLiveQuery / mirror) 由来で serverOptions が変わったら working-set を同期。
-  // merge 戦略: server 確定値 + 「serverOptions に id がない local ghost」 を保持して
-  // ghost evict を防ぐ (= pull-reconciliation の rollback path もここを通る)。
-  // serverCommittedRef は server 確定値のみ (ghost 含まず) を維持する。
+  // merge 戦略: server 確定値 + 「保持すべき local ghost」。
+  //   保持する ghost = serverOptions に id が無い working-set 行のうち、
+  //     (a) text あり = 入力済で commit が server へ未反映 (in-flight) → 失うと lost-write、 か
+  //     (b) id === autoEditOptionId = 「+ 追加」 直後の編集対象 (空でもこれから入力)
+  //   それ以外の **放置された空 ghost** (空 かつ 編集対象でない) は drop する。
+  // 70d0714 は全 ghost を末尾保持して「連続追加で入力中の 2 つ目が消える」race を直したが、
+  // 副作用で放置空 ghost が末尾に蓄積・後方移動していた (本 fix の対象)。(a)/(b) のみ保持で
+  // typing 保護を維持しつつ放置空を落とす。空は従来どおり永続化されない (sanitize は不変)。
   useEffect(() => {
     const serverIds = new Set(serverOptions.map((o) => o.id))
-    const localGhosts = optionsRef.current.filter((o) => !serverIds.has(o.id))
-    const merged: CardOption[] = [...serverOptions, ...localGhosts]
+    const keptGhosts = optionsRef.current.filter(
+      (o) =>
+        !serverIds.has(o.id) &&
+        (o.text.trim().length > 0 || o.id === autoEditOptionId),
+    )
+    const merged: CardOption[] = [...serverOptions, ...keptGhosts]
     setOptions(merged)
     serverCommittedRef.current = serverOptions
     optionsRef.current = merged
