@@ -24,6 +24,7 @@ import {
   type ProcessUploadErrorCode,
   type ProcessUploadErrorDetails,
 } from '../_actions/process'
+import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
 
 // 投入先選択 state:
 //  - null: 未選択 (submit disable)
@@ -500,6 +501,11 @@ export function UploadForm({
     // (前回の submit で longRunning=true になっていた場合の防御的リセット)
     setLongRunning(false)
     setPhase({ kind: 'submitting' })
+    // OCR 開始を layout 常駐 poller に通知する。
+    // processUpload は blocking で完了時にしか戻らないため、開始検知は client submit を起点にする。
+    // requestOcrPoll は同期関数で listener を呼ぶだけ (例外は内部 try/catch で隔離済み)。
+    // setPhase の urgent priority batching を壊さないよう setPhase 直後・runProcess 前に置く。
+    requestOcrPoll()
     void runProcess()
   }
 

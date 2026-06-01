@@ -34,6 +34,12 @@ vi.mock('../_lib/pdf-page-count', () => ({
   pdfPageCount: (f: File) => mockPdfPageCount(f),
 }))
 
+// ocr-poll-signal: requestOcrPoll が submit 時に呼ばれることを検証するためにモック
+vi.mock('@/lib/exams/ocr-poll-signal', () => ({
+  requestOcrPoll: vi.fn(),
+  subscribeOcrPoll: vi.fn(() => () => {}),
+}))
+
 // URL.createObjectURL / revokeObjectURL: jsdom に未実装のため stub
 Object.defineProperty(globalThis, 'URL', {
   value: {
@@ -53,6 +59,7 @@ if (!globalThis.crypto?.randomUUID) {
 
 import { UploadForm } from './upload-form'
 import { processUpload } from '../_actions/process'
+import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { MAX_PDF_PAGES } from '../_lib/constants'
 
@@ -392,5 +399,66 @@ describe('per-file 上限 (MAX_PDF_PAGES)', () => {
     // ページ制限も quota 超過もないため submit button は enabled になる。
     const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
     expect(btn).toBeEnabled()
+  })
+})
+
+// ─── requestOcrPoll kick テスト ───────────────────────────────────────────────
+
+describe('requestOcrPoll: submit 時に layout poller へ kick', () => {
+  it('submit 成功フローで requestOcrPoll が 1 回呼ばれる', async () => {
+    const mockedProcessUpload = vi.mocked(processUpload)
+    const mockedRequestOcrPoll = vi.mocked(requestOcrPoll)
+
+    // processUpload が ok を返す正常ケース (router.push に進む前に検証できれば十分)
+    // submit 後に longRunning タイマーが残らないよう resolved を即返す
+    mockedProcessUpload.mockResolvedValueOnce({
+      ok: true,
+      data: { sourceDocumentId: 'doc-123' },
+    } as Awaited<ReturnType<typeof processUpload>>)
+
+    // 1 ページ PDF で submit 可能な状態にする
+    mockPdfPageCount.mockResolvedValue(1)
+    await renderWithFiles([makePdf('test.pdf')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      // allow processUpload async resolution + state settle
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    // handleSubmit 内で setPhase 直後に 1 回だけ呼ばれることを確認
+    // synchronous — fires before runProcess
+    expect(mockedRequestOcrPoll).toHaveBeenCalledTimes(1)
+  })
+
+  it('server がエラーを返しても requestOcrPoll が 1 回呼ばれる (unconditional kick)', async () => {
+    // requestOcrPoll は setPhase({kind:'submitting'}) 直後、 runProcess の起動前に
+    // 無条件で呼ばれる。 成功 / 失敗に関わらず kick されることを確認する。
+    // (将来 success ブランチ内に移動したリファクタは本テストで検知される)
+    // B3 grace period 内に kick されるため、 server 結果には依存しない。
+    const mockedProcessUpload = vi.mocked(processUpload)
+    const mockedRequestOcrPoll = vi.mocked(requestOcrPoll)
+
+    // processUpload がサーバー側エラーを返すケース
+    mockedProcessUpload.mockResolvedValueOnce({
+      ok: false,
+      error: '現在 OCR を実行中です。',
+      code: 'UPLOAD_IN_PROGRESS',
+    } as Awaited<ReturnType<typeof processUpload>>)
+
+    mockPdfPageCount.mockResolvedValue(1)
+    await renderWithFiles([makePdf('test.pdf')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      // allow processUpload async resolution + state settle
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    // エラー結果でも kick は 1 回発火している — success-gated でないことを証明
+    // synchronous — fires before runProcess
+    expect(mockedRequestOcrPoll).toHaveBeenCalledTimes(1)
   })
 })
