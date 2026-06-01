@@ -500,6 +500,25 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     expect(idInput.className).toMatch(/md:py-1/)
   })
 
+  it('responsive スリム化: checkbox label に md:min-h-0/md:min-w-0 が付く', () => {
+    renderSingle(baseOptions[0]!)
+    const checkbox = screen.getByRole('checkbox')
+    const label = checkbox.closest('label')!
+    expect(label.className).toMatch(/min-h-11/)
+    expect(label.className).toMatch(/min-w-11/)
+    expect(label.className).toMatch(/md:min-h-0/)
+    expect(label.className).toMatch(/md:min-w-0/)
+  })
+
+  it('responsive スリム化: checkbox input に md:h-4/md:w-4 が付く', () => {
+    renderSingle(baseOptions[0]!)
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox.className).toMatch(/h-6/)
+    expect(checkbox.className).toMatch(/w-6/)
+    expect(checkbox.className).toMatch(/md:h-4/)
+    expect(checkbox.className).toMatch(/md:w-4/)
+  })
+
   it('displayClassName が両モードに伝搬する (is_correct=true は emerald)', () => {
     renderSingle(baseOptions[0]!)
     const textBtn = screen.getByRole('button', { name: '選択肢 本文 編集' })
@@ -519,5 +538,12 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     expect(
       screen.getByRole('textbox', { name: '選択肢 id 編集' }).className,
     ).toMatch(/font-mono/)
+  })
+
+  it('grid wrapper に md:gap-1 が付く (responsive スリム化)', () => {
+    const { container } = renderSingle(baseOptions[0]!)
+    const grid = container.querySelector('[class*="grid-cols-"]')
+    expect(grid).not.toBeNull()
+    expect(grid!.className).toMatch(/md:gap-1/)
   })
 })

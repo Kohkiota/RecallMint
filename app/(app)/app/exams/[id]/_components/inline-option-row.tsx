@@ -342,18 +342,18 @@ function InlineOptionRow({
     <div
       className={
         option.is_correct
-          ? 'rounded border border-emerald-300 bg-emerald-100 p-2 text-sm'
-          : 'rounded border border-border/60 p-2 text-sm'
+          ? 'rounded border border-emerald-300 bg-emerald-100 p-2 md:py-1 text-sm'
+          : 'rounded border border-border/60 p-2 md:py-1 text-sm'
       }
     >
-      <div className="grid items-start gap-2 grid-cols-[auto_5rem_minmax(0,1fr)_auto] md:grid-cols-[auto_5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
-        <label className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
+      <div className="grid items-start gap-2 md:gap-1 grid-cols-[auto_5rem_minmax(0,1fr)_auto] md:grid-cols-[auto_5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <label className="inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 cursor-pointer items-center justify-center">
           <input
             type="checkbox"
             aria-label="選択肢 正解フラグ 編集"
             checked={option.is_correct}
             onChange={handleCheckboxChange}
-            className="h-6 w-6 cursor-pointer accent-emerald-600"
+            className="h-6 w-6 md:h-4 md:w-4 cursor-pointer accent-emerald-600"
           />
         </label>
         <div>
@@ -406,9 +406,9 @@ function InlineOptionRow({
           aria-label="選択肢を削除"
           onClick={onDelete}
           disabled={!canDelete}
-          className="md:col-start-5 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+          className="md:col-start-5 inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
         >
-          <span className="text-xl leading-none" aria-hidden="true">
+          <span className="text-xl leading-none md:text-base" aria-hidden="true">
             ×
           </span>
         </button>
