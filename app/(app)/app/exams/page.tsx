@@ -1,7 +1,7 @@
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 import { CreateExamForm } from './_components/create-exam-form'
-import { ExamStatusProvider } from './_components/exam-status-live'
+import { ExamStatusProvider } from '../_components/exam-status-live'
 import { ExamListLive } from './_components/exam-list-live'
 
 // S1.7 T7: read-only exam 一覧 (archived_at IS NULL、 updated_at DESC)。

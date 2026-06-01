@@ -21,7 +21,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { DeleteExamButton } from './delete-exam-button'
 import { OpenCreateExamButton } from './open-create-exam-button'
-import { ExamStatusBadge } from './exam-status-live'
+import { ExamStatusBadge } from '../../_components/exam-status-live'
 
 export function ExamListLive({ userId }: { userId: string }) {
   const exams = useLiveQuery(async () => {

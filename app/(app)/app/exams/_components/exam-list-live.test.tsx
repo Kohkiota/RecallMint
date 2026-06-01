@@ -40,7 +40,7 @@ vi.mock('@/app/(app)/app/exams/_actions/delete-exam', () => ({
 // (initialStatuses={} でバッジなし → polling 不要 branch に入る)
 
 import { ExamListLive } from './exam-list-live'
-import { ExamStatusProvider } from './exam-status-live'
+import { ExamStatusProvider } from '../../_components/exam-status-live'
 
 // fetch mock (ExamStatusProvider の polling が万一走っても失敗しないよう)
 global.fetch = vi.fn().mockResolvedValue({
