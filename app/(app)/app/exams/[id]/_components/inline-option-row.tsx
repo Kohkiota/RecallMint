@@ -347,7 +347,7 @@ function InlineOptionRow({
       }
     >
       <div className="grid items-start gap-2 md:gap-1 grid-cols-[auto_5rem_minmax(0,1fr)_auto] md:grid-cols-[auto_5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
-        <label className="inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 cursor-pointer items-center justify-center">
+        <label className="inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:self-center cursor-pointer items-center justify-center">
           <input
             type="checkbox"
             aria-label="選択肢 正解フラグ 編集"
@@ -406,7 +406,7 @@ function InlineOptionRow({
           aria-label="選択肢を削除"
           onClick={onDelete}
           disabled={!canDelete}
-          className="md:col-start-5 inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+          className="md:col-start-5 inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:self-center shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
         >
           <span className="text-xl leading-none md:text-base" aria-hidden="true">
             ×
@@ -472,7 +472,10 @@ function InlineOptionCell({
     if (!editing) return
     const el = inputRef.current
     if (!(el instanceof HTMLTextAreaElement)) return
-    el.style.height = 'auto'
+    // '0px' で一旦潰してから scrollHeight を測る。 'auto' だと textarea 既定
+    // rows=2 の 2 行枠が clientHeight として残り scrollHeight=2 行で固定され、
+    // 1 行内容でも 2 行高さに膨らむ (display とズレる)。 '0px' なら真の内容高を返す。
+    el.style.height = '0px'
     el.style.height = `${el.scrollHeight}px`
   }, [editing, editValue])
 

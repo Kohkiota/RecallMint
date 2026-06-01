@@ -546,4 +546,14 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     expect(grid).not.toBeNull()
     expect(grid!.className).toMatch(/md:gap-1/)
   })
+
+  it('PC で checkbox label と削除ボタンが md:self-center (縦中央揃え) になる', () => {
+    renderSingle(baseOptions[0]!)
+    // grid は items-start のまま (本文セルは上端基準)、checkbox/削除だけ self-center で
+    // 縦中央に寄せる回帰 fix。md:min-h-0 で 16px に縮んでも行中央に来る。
+    const label = screen.getByRole('checkbox').closest('label')!
+    expect(label.className).toMatch(/md:self-center/)
+    const delBtn = screen.getByRole('button', { name: '選択肢を削除' })
+    expect(delBtn.className).toMatch(/md:self-center/)
+  })
 })

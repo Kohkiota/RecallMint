@@ -107,7 +107,10 @@ export function InlineTextField({
     if (!editing) return
     const el = inputRef.current
     if (!(el instanceof HTMLTextAreaElement)) return
-    el.style.height = 'auto'
+    // '0px' で一旦潰してから scrollHeight を測る。 'auto' だと textarea 既定
+    // rows=2 の 2 行枠が clientHeight として残り scrollHeight=2 行で固定され、
+    // 1 行内容でも 2 行高さに膨らむ (display とズレる)。 '0px' なら真の内容高を返す。
+    el.style.height = '0px'
     el.style.height = `${el.scrollHeight}px`
   }, [editing, value])
 
