@@ -163,7 +163,7 @@ export function InlineCardList({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 md:space-y-2">
       {/* 見出し件数は live `cards` (リスト本体と同一の useLiveQuery 配列) の length。
           追加/削除直後も即時整合する (旧 SSR cards.length 由来の stale を解消、論点B)。
           同一配列を数えるため double-count は構造的に発生しない (論点C: card_count
@@ -171,7 +171,7 @@ export function InlineCardList({
       <h2 className="text-lg font-bold">カード ({cards.length} 件)</h2>
       {cards.length === 0 && (
         <Card>
-          <CardContent className="p-6 text-center">
+          <CardContent className="p-6 md:p-4 text-center">
             <p className="text-sm text-slate-700">この試験にはまだカードがありません。</p>
             <div className="mt-3">
               <Button asChild>
@@ -185,7 +185,7 @@ export function InlineCardList({
         {cards.map((card) => (
         <li key={card.id}>
           <Card>
-            <CardContent className="p-4 space-y-3">
+            <CardContent className="p-4 space-y-3 md:p-2 md:space-y-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="w-28 shrink-0">
                   <InlineTextField

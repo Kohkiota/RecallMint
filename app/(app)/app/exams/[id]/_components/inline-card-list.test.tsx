@@ -485,3 +485,30 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     spy.mockRestore()
   })
 })
+
+// ---------------------------------------------------------------------------
+// A3: responsive spacing クラス回帰防止 (md: prefix の維持確認)
+// ---------------------------------------------------------------------------
+describe('InlineCardList responsive spacing (A3)', () => {
+  it('list wrapper が md:space-y-2 を持つ', () => {
+    const { container } = render(
+      <InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />,
+    )
+    // 最外 div: space-y-3 md:space-y-2
+    const wrapper = container.firstElementChild as HTMLElement
+    expect(wrapper.className).toMatch(/md:space-y-2/)
+  })
+
+  it('CardContent (各 card) が md:p-2 と md:space-y-1.5 を持つ', async () => {
+    await seedMirror(cards)
+    const { container } = render(
+      <InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />,
+    )
+    // useLiveQuery 解決を待つ
+    await screen.findByText('問1')
+    // ul > li > Card > CardContent を取得。 div[class*=md:p-2] を querySelectorAll で
+    const cardContents = container.querySelectorAll('[class*="md:p-2"]')
+    expect(cardContents.length).toBeGreaterThanOrEqual(1)
+    expect(cardContents[0]!.className).toMatch(/md:space-y-1\.5/)
+  })
+})

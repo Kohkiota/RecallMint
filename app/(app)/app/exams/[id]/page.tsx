@@ -35,7 +35,7 @@ export default async function ExamDetailPage({
   const cards = await getCardsForExam(userId, id)
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 md:space-y-3">
       <div>
         <Link
           href="/app/exams"
