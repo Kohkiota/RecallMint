@@ -1,0 +1,2 @@
+CREATE INDEX "cards_user_updated_id_idx" ON "cards" USING btree ("user_id","updated_at","id");--> statement-breakpoint
+CREATE INDEX "exams_user_updated_id_idx" ON "exams" USING btree ("user_id","updated_at","id");

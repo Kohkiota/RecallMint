@@ -236,7 +236,13 @@ export const exams = pgTable(
       .defaultNow()
       .$onUpdate(() => new Date()),
   },
-  (t) => [index('exams_user_id_idx').on(t.userId)],
+  (t) => [
+    index('exams_user_id_idx').on(t.userId),
+    // 増分 pull (getExamsDelta: WHERE user_id = ? AND updated_at >= ?) を全行 scan
+    // から range scan にする複合 index。 列順は user_id 等価 → updated_at 範囲 →
+    // id (将来の keyset pagination 前方互換、 cards と同方針)。
+    index('exams_user_updated_id_idx').on(t.userId, t.updatedAt, t.id),
+  ],
 )
 
 // ---------------------------------------------------------------------------
@@ -323,6 +329,12 @@ export const cards = pgTable(
     // 無いと source_documents 削除時の SET NULL cascade が cards 全表 seq scan に
     // なる。 owner-scoped な getCardsForSourceDocument の絞り込みも兼ねる。
     index('cards_source_document_idx').on(t.sourceDocumentId),
+    // 増分 pull (getCardsDelta: WHERE user_id = ? AND updated_at >= ?) を全行 scan
+    // から range scan にする複合 index。 列順は user_id 等価 → updated_at 範囲 →
+    // id。 id は将来の keyset pagination (ORDER BY updated_at, id + LIMIT) で index
+    // 再作成を避けるための前方互換 (現クエリは ORDER BY 無しのため機能上は
+    // (user_id, updated_at) で足りる)。
+    index('cards_user_updated_id_idx').on(t.userId, t.updatedAt, t.id),
   ],
 )
 
