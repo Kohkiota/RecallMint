@@ -557,3 +557,33 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     expect(delBtn.className).toMatch(/md:self-center/)
   })
 })
+
+describe('InlineOptionCell — 末尾改行の display 補正 (<br>)', () => {
+  it('本文末尾改行ありは display に <br> を 1 つ、 textContent は値そのまま', () => {
+    renderSingle({ id: 'a', text: 'あ\n\n', is_correct: false })
+    const disp = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    expect(disp.textContent).toBe('あ\n\n')
+  })
+
+  it('本文内部改行のみ (末尾が非改行) は <br> を足さない', () => {
+    renderSingle({ id: 'a', text: 'あ\nい', is_correct: false })
+    const disp = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(0)
+    expect(disp.textContent).toBe('あ\nい')
+  })
+
+  it('本文 単一末尾改行 (あ\\n) も <br> 1 個 (N=1)', () => {
+    renderSingle({ id: 'a', text: 'あ\n', is_correct: false })
+    const disp = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    expect(disp.textContent).toBe('あ\n')
+  })
+
+  it('本文 改行のみ (\\n) は空扱いせず display + <br>', () => {
+    renderSingle({ id: 'a', text: '\n', is_correct: false })
+    const disp = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    expect(disp.textContent).toBe('\n')
+  })
+})

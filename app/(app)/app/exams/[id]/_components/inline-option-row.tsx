@@ -551,7 +551,15 @@ function InlineOptionCell({
       {isEmpty ? (
         <span>{placeholder}</span>
       ) : (
-        <span className="whitespace-pre-wrap break-words">{value}</span>
+        <span className="whitespace-pre-wrap break-words">
+          {value}
+          {/* white-space:pre-wrap は末尾の単一改行に line box を作らず、 末尾改行を
+              持つ値が textarea(edit) より 1 行低く表示される。 末尾が改行のときだけ
+              装飾 <br> を 1 つ補い、 edit と行数/高さを一致させる (落とされるのは常に
+              最後の 1 行のみなので 1 個で N 個ぶん揃う)。 <br> は textContent に寄与
+              しないためコピーは値そのまま。 */}
+          {value.endsWith('\n') && <br aria-hidden="true" />}
+        </span>
       )}
     </div>
   )

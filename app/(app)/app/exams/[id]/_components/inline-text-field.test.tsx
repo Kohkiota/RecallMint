@@ -519,3 +519,68 @@ describe('InlineTextField — autoEditOnMount (S2.0b 「+ カードを追加」�
     ).not.toBeInTheDocument()
   })
 })
+
+describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
+  it('末尾改行ありの値は display に <br> を 1 つ補い、 textContent は値そのまま', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={'あ\n\n'}
+        ariaLabel="メモ 編集"
+        multiline
+      />,
+    )
+    const disp = screen.getByRole('button', { name: 'メモ 編集' })
+    // pre-wrap が落とす末尾 1 行を <br> 1 個で補う (末尾改行数 N に依らず常に 1 個)。
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    // コピー (textContent) は改行込みの値そのまま (<br> は寄与しない)。
+    expect(disp.textContent).toBe('あ\n\n')
+  })
+
+  it('内部改行のみ (末尾が非改行) は <br> を足さない', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={'あ\nい'}
+        ariaLabel="メモ 編集"
+        multiline
+      />,
+    )
+    const disp = screen.getByRole('button', { name: 'メモ 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(0)
+    expect(disp.textContent).toBe('あ\nい')
+  })
+
+  it('単一末尾改行 (あ\\n) も <br> 1 個で補う (N=1)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={'あ\n'}
+        ariaLabel="メモ 編集"
+        multiline
+      />,
+    )
+    const disp = screen.getByRole('button', { name: 'メモ 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    expect(disp.textContent).toBe('あ\n')
+  })
+
+  it('改行のみ (\\n) は空扱いせず display + <br> を出す', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="memo"
+        initialValue={'\n'}
+        ariaLabel="メモ 編集"
+        multiline
+      />,
+    )
+    // length===0 でないため placeholder ではなく値表示 (button) + <br> 補正。
+    const disp = screen.getByRole('button', { name: 'メモ 編集' })
+    expect(disp.querySelectorAll('br')).toHaveLength(1)
+    expect(disp.textContent).toBe('\n')
+  })
+})

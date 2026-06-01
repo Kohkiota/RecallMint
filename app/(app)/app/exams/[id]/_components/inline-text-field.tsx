@@ -270,7 +270,15 @@ export function InlineTextField({
         {isEmpty ? (
           <span>{placeholder}</span>
         ) : (
-          <span className="whitespace-pre-wrap break-words">{displayText}</span>
+          <span className="whitespace-pre-wrap break-words">
+            {displayText}
+            {/* white-space:pre-wrap は末尾の単一改行に line box を作らず、 末尾改行を
+                持つ値が textarea(edit) より 1 行低く表示される。 末尾が改行のときだけ
+                装飾 <br> を 1 つ補い、 edit と行数/高さを一致させる (落とされるのは
+                常に最後の 1 行のみなので 1 個で N 個ぶん揃う)。 <br> は textContent に
+                寄与しないためコピーは値そのまま。 */}
+            {displayText.endsWith('\n') && <br aria-hidden="true" />}
+          </span>
         )}
       </div>
     </div>
