@@ -223,6 +223,7 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
             subscriptionStatus: normalizeSubStatus(sub.status),
             currentPeriodEnd: periodEnd,
             cancelAt,
+            stripeSubscriptionId: sub.id,
           })
           .where(eq(users.clerkId, clerkId))
           .returning({ clerkId: users.clerkId })
@@ -252,6 +253,7 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           subscriptionStatus: normalizeSubStatus(sub.status),
           currentPeriodEnd: periodEnd,
           cancelAt,
+          stripeSubscriptionId: sub.id,
         })
         .where(eq(users.stripeCustomerId, customerId))
         .returning({ clerkId: users.clerkId })
@@ -286,6 +288,7 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           billingInterval: null,
           subscriptionStatus: 'canceled',
           cancelAt: null,
+          stripeSubscriptionId: null,
         })
         .where(eq(users.stripeCustomerId, customerId))
         .returning({ clerkId: users.clerkId })
@@ -303,6 +306,19 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           timestamp: new Date().toISOString(),
         })
       }
+      return
+    }
+    case 'invoice.payment_failed': {
+      // DB の plan/status は変更しない: plan/status は customer.subscription.updated
+      // が最終正。upgrade 即時課金失敗時は subscription が pending_update のまま旧
+      // price を維持するので、DB 据え置きで Stripe 側 actual current price と整合する。
+      const customerId = extractCustomerId(event)
+      await notifyOps('stripe invoice.payment_failed', {
+        eventId: event.id,
+        customerId,
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+        timestamp: new Date().toISOString(),
+      })
       return
     }
     default:

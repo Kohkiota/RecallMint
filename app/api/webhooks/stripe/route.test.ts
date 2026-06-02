@@ -229,7 +229,7 @@ describe('Stripe webhook: Standard 配線 + billing_interval', () => {
     // 足す」regression を弾く。
     const setArgs = (setCall.mock.calls[0][0] ?? {}) as Record<string, unknown>
     expect(Object.keys(setArgs).sort()).toEqual(
-      ['billingInterval', 'cancelAt', 'plan', 'subscriptionStatus'].sort(),
+      ['billingInterval', 'cancelAt', 'plan', 'stripeSubscriptionId', 'subscriptionStatus'].sort(),
     )
   })
 
@@ -345,6 +345,175 @@ describe('Stripe webhook: Standard 配線 + billing_interval', () => {
     })
     const res = await POST(makeReq({}))
     expect(res.status).toBe(400)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 4: subscription id 同期 + invoice.payment_failed + 正規化不変条件
+// ---------------------------------------------------------------------------
+describe('Stripe webhook: subscriptionId 同期', () => {
+  it('customer.subscription.created → set に stripeSubscriptionId = sub.id', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_subid_1',
+      type: 'customer.subscription.created',
+      data: { object: sub({ priceId: PRICE.STANDARD_MONTHLY, customerId: 'cus_subid_1' }) },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_subid_1' }))
+    expect(res.status).toBe(200)
+
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({ stripeSubscriptionId: 'sub_unit' }),
+    )
+  })
+
+  it('customer.subscription.updated → set に stripeSubscriptionId = sub.id', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_subid_2',
+      type: 'customer.subscription.updated',
+      data: { object: sub({ priceId: PRICE.PRO_YEARLY, customerId: 'cus_subid_2' }) },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_subid_2' }))
+    expect(res.status).toBe(200)
+
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({ stripeSubscriptionId: 'sub_unit' }),
+    )
+  })
+
+  it('customer.subscription.deleted → set に stripeSubscriptionId = null (plan=free 等は従来通り)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_subid_3',
+      type: 'customer.subscription.deleted',
+      data: { object: { customer: 'cus_subid_3' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_subid_3' }))
+    expect(res.status).toBe(200)
+
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: 'free',
+        billingInterval: null,
+        subscriptionStatus: 'canceled',
+        cancelAt: null,
+        stripeSubscriptionId: null,
+      }),
+    )
+  })
+
+  it('checkout.session.completed Step2 → set に stripeSubscriptionId = sub.id', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_subid_4',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          client_reference_id: 'user_clerk_subid_4',
+          customer: 'cus_subid_4',
+          subscription: 'sub_subid_4',
+        },
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain()).mockReturnValueOnce(chain())
+    mockSubscriptionsRetrieve.mockResolvedValueOnce(
+      sub({ priceId: PRICE.STANDARD_MONTHLY, customerId: 'cus_subid_4' }),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_subid_4' }))
+    expect(res.status).toBe(200)
+
+    // 2nd update (plan/status sync) の set に subscription id が含まれること
+    const secondSetCall = (mockDbUpdate.mock.results[1].value as { set: ReturnType<typeof vi.fn> })
+      .set
+    expect(secondSetCall).toHaveBeenCalledWith(
+      expect.objectContaining({ stripeSubscriptionId: 'sub_unit' }),
+    )
+  })
+})
+
+describe('Stripe webhook: invoice.payment_failed', () => {
+  it('DB の plan/status を変更しない + notifyOps + 200 (customer = string)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_pf_1',
+      type: 'invoice.payment_failed',
+      data: { object: { customer: 'cus_pf_1' } },
+    })
+    stubIdempotencyInsertOnce()
+
+    const res = await POST(makeReq({ id: 'evt_pf_1' }))
+    expect(res.status).toBe(200)
+
+    // DB plan/status は据え置き → update を一切呼ばない
+    expect(mockDbUpdate).not.toHaveBeenCalled()
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'stripe invoice.payment_failed',
+      expect.objectContaining({ eventId: 'evt_pf_1', customerId: 'cus_pf_1' }),
+    )
+    expect(mockNotifyWebhookError).not.toHaveBeenCalled()
+  })
+
+  it('customer が object 形式でも id を取り出す', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_pf_2',
+      type: 'invoice.payment_failed',
+      data: { object: { customer: { id: 'cus_pf_2' } } },
+    })
+    stubIdempotencyInsertOnce()
+
+    const res = await POST(makeReq({ id: 'evt_pf_2' }))
+    expect(res.status).toBe(200)
+
+    expect(mockDbUpdate).not.toHaveBeenCalled()
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'stripe invoice.payment_failed',
+      expect.objectContaining({ customerId: 'cus_pf_2' }),
+    )
+    expect(mockNotifyWebhookError).not.toHaveBeenCalled()
+  })
+})
+
+describe('Stripe webhook: 正規化不変条件 (pending_update 非昇格)', () => {
+  it('updated で pending_update に別 target price があっても DB plan は現 item price から正規化', async () => {
+    // 現 item price = STANDARD_MONTHLY、 pending_update.subscription_items の
+    // target = PRO_YEARLY。 現在プランは現 item price (standard) であるべきで、
+    // pending target (pro) に昇格してはならない。
+    const subObj = sub({ priceId: PRICE.STANDARD_MONTHLY, customerId: 'cus_pu_1' }) as Record<
+      string,
+      unknown
+    >
+    subObj.pending_update = {
+      subscription_items: [{ price: { id: PRICE.PRO_YEARLY } }],
+    }
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_pu_1',
+      type: 'customer.subscription.updated',
+      data: { object: subObj },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: 'user_clerk_pu_1' }]))
+
+    const res = await POST(makeReq({ id: 'evt_pu_1' }))
+    expect(res.status).toBe(200)
+
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: 'standard',
+        billingInterval: 'month',
+      }),
+    )
   })
 })
 
