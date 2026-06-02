@@ -1,9 +1,45 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type Stripe from 'stripe'
+
+// --- hoisted Stripe mock (route.test.ts と同 vi.mock 方式、実 API 禁止) ---
+const {
+  mockRetrieve,
+  mockList,
+  mockUpdate,
+  mockScheduleCreate,
+  mockScheduleUpdate,
+  mockScheduleRelease,
+} = vi.hoisted(() => ({
+  mockRetrieve: vi.fn(),
+  mockList: vi.fn(),
+  mockUpdate: vi.fn(),
+  mockScheduleCreate: vi.fn(),
+  mockScheduleUpdate: vi.fn(),
+  mockScheduleRelease: vi.fn(),
+}))
+
+vi.mock('@/lib/stripe', () => ({
+  stripe: {
+    subscriptions: {
+      retrieve: mockRetrieve,
+      list: mockList,
+      update: mockUpdate,
+    },
+    subscriptionSchedules: {
+      create: mockScheduleCreate,
+      update: mockScheduleUpdate,
+      release: mockScheduleRelease,
+    },
+  },
+}))
 
 import {
   classifyChange,
   getPendingState,
+  resolveActiveSubscription,
+  applyUpgrade,
+  scheduleDowngrade,
+  cancelScheduledDowngrade,
   NoSubscriptionError,
   AmbiguousSubscriptionError,
 } from './subscription'
@@ -186,5 +222,248 @@ describe('AmbiguousSubscriptionError', () => {
 
   it('name が AmbiguousSubscriptionError', () => {
     expect(new AmbiguousSubscriptionError('x').name).toBe('AmbiguousSubscriptionError')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stripe API 呼出関数群 (Task 3)
+// ---------------------------------------------------------------------------
+beforeEach(() => {
+  vi.clearAllMocks()
+})
+
+// helper: active subscription の最小 mock (customer は string / object 両対応)
+function makeRetrieveSub(opts: {
+  status?: Stripe.Subscription.Status
+  customer?: string | { id: string }
+  itemId?: string
+  priceId?: string
+}): Stripe.Subscription {
+  return {
+    id: 'sub_test',
+    status: opts.status ?? 'active',
+    customer: opts.customer ?? 'cus_test',
+    items: {
+      data: [{ id: opts.itemId ?? 'si_test', price: { id: opts.priceId ?? 'price_cur' } }],
+    },
+  } as unknown as Stripe.Subscription
+}
+
+describe('resolveActiveSubscription', () => {
+  describe('stripeSubscriptionId 有り', () => {
+    it('(a) status active + customer 一致 (string) → { sub, itemId }', async () => {
+      mockRetrieve.mockResolvedValueOnce(
+        makeRetrieveSub({ status: 'active', customer: 'cus_1', itemId: 'si_1' }),
+      )
+      const result = await resolveActiveSubscription({
+        stripeSubscriptionId: 'sub_1',
+        stripeCustomerId: 'cus_1',
+      })
+      expect(mockRetrieve).toHaveBeenCalledWith('sub_1')
+      expect(result.itemId).toBe('si_1')
+      expect(result.sub.id).toBe('sub_test')
+    })
+
+    it('(a2) customer が object {id} でも一致すれば OK', async () => {
+      mockRetrieve.mockResolvedValueOnce(
+        makeRetrieveSub({ status: 'trialing', customer: { id: 'cus_obj' }, itemId: 'si_obj' }),
+      )
+      const result = await resolveActiveSubscription({
+        stripeSubscriptionId: 'sub_obj',
+        stripeCustomerId: 'cus_obj',
+      })
+      expect(result.itemId).toBe('si_obj')
+    })
+
+    it('status past_due でも採用される', async () => {
+      mockRetrieve.mockResolvedValueOnce(
+        makeRetrieveSub({ status: 'past_due', customer: 'cus_pd' }),
+      )
+      const result = await resolveActiveSubscription({
+        stripeSubscriptionId: 'sub_pd',
+        stripeCustomerId: 'cus_pd',
+      })
+      expect(result.sub.status).toBe('past_due')
+    })
+
+    it('(b) customer 不一致 → AmbiguousSubscriptionError', async () => {
+      mockRetrieve.mockResolvedValueOnce(
+        makeRetrieveSub({ status: 'active', customer: 'cus_other' }),
+      )
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: 'sub_x',
+          stripeCustomerId: 'cus_mine',
+        }),
+      ).rejects.toThrow(AmbiguousSubscriptionError)
+    })
+
+    it('(c) status canceled → AmbiguousSubscriptionError', async () => {
+      mockRetrieve.mockResolvedValueOnce(
+        makeRetrieveSub({ status: 'canceled', customer: 'cus_c' }),
+      )
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: 'sub_c',
+          stripeCustomerId: 'cus_c',
+        }),
+      ).rejects.toThrow(AmbiguousSubscriptionError)
+    })
+
+    it('(h) items 空 → AmbiguousSubscriptionError', async () => {
+      const subNoItems = {
+        id: 'sub_noitem',
+        status: 'active',
+        customer: 'cus_ni',
+        items: { data: [] },
+      } as unknown as Stripe.Subscription
+      mockRetrieve.mockResolvedValueOnce(subNoItems)
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: 'sub_noitem',
+          stripeCustomerId: 'cus_ni',
+        }),
+      ).rejects.toThrow(AmbiguousSubscriptionError)
+    })
+  })
+
+  describe('stripeSubscriptionId 無し (fallback)', () => {
+    it('(d) list 1 本 → 採用', async () => {
+      mockList.mockResolvedValueOnce({
+        data: [makeRetrieveSub({ customer: 'cus_f', itemId: 'si_f' })],
+      })
+      const result = await resolveActiveSubscription({
+        stripeSubscriptionId: null,
+        stripeCustomerId: 'cus_f',
+      })
+      expect(mockList).toHaveBeenCalledWith({ customer: 'cus_f', status: 'active' })
+      expect(result.itemId).toBe('si_f')
+    })
+
+    it('(e) list 0 本 → NoSubscriptionError', async () => {
+      mockList.mockResolvedValueOnce({ data: [] })
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: null,
+          stripeCustomerId: 'cus_e',
+        }),
+      ).rejects.toThrow(NoSubscriptionError)
+    })
+
+    it('(f) list 2 本以上 → AmbiguousSubscriptionError (自動選択しない)', async () => {
+      mockList.mockResolvedValueOnce({
+        data: [makeRetrieveSub({}), makeRetrieveSub({})],
+      })
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: null,
+          stripeCustomerId: 'cus_2',
+        }),
+      ).rejects.toThrow(AmbiguousSubscriptionError)
+    })
+
+    it('(g) customerId も無し → NoSubscriptionError (list せず)', async () => {
+      await expect(
+        resolveActiveSubscription({
+          stripeSubscriptionId: null,
+          stripeCustomerId: null,
+        }),
+      ).rejects.toThrow(NoSubscriptionError)
+      expect(mockList).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('applyUpgrade', () => {
+  it('update を items/proration_behavior/payment_behavior + idempotencyKey で呼ぶ', async () => {
+    const returned = makeRetrieveSub({})
+    mockUpdate.mockResolvedValueOnce(returned)
+
+    const result = await applyUpgrade('sub_up', 'si_up', 'price_target', 'idem_up')
+
+    expect(mockUpdate).toHaveBeenCalledWith(
+      'sub_up',
+      {
+        items: [{ id: 'si_up', price: 'price_target' }],
+        proration_behavior: 'always_invoice',
+        payment_behavior: 'pending_if_incomplete',
+      },
+      { idempotencyKey: 'idem_up' },
+    )
+    expect(result).toBe(returned)
+  })
+})
+
+describe('scheduleDowngrade', () => {
+  // from_subscription で作られた schedule の phase[0] (現請求期間)
+  function makeCreatedSchedule(): Stripe.SubscriptionSchedule {
+    return {
+      id: 'sub_sched_1',
+      phases: [
+        {
+          start_date: 1750000000,
+          end_date: 1752592000,
+          items: [{ price: 'price_cur', quantity: 1 }],
+        },
+      ],
+    } as unknown as Stripe.SubscriptionSchedule
+  }
+
+  it('create=from_subscription、update=2 phase(現+次 none) end_behavior release、key は :create/:update で別', async () => {
+    mockScheduleCreate.mockResolvedValueOnce(makeCreatedSchedule())
+    const updated = { id: 'sub_sched_1' } as unknown as Stripe.SubscriptionSchedule
+    mockScheduleUpdate.mockResolvedValueOnce(updated)
+
+    const sub = makeRetrieveSub({ priceId: 'price_cur' })
+    const result = await scheduleDowngrade(sub, 'price_next', 'idem_dn')
+
+    // create: from_subscription + idempotencyKey ':create'
+    expect(mockScheduleCreate).toHaveBeenCalledWith(
+      { from_subscription: 'sub_test' },
+      { idempotencyKey: 'idem_dn:create' },
+    )
+
+    // update: 2 phase + release + idempotencyKey ':update'
+    expect(mockScheduleUpdate).toHaveBeenCalledWith(
+      'sub_sched_1',
+      {
+        end_behavior: 'release',
+        phases: [
+          {
+            start_date: 1750000000,
+            end_date: 1752592000,
+            items: [{ price: 'price_cur', quantity: 1 }],
+          },
+          {
+            items: [{ price: 'price_next', quantity: 1 }],
+            proration_behavior: 'none',
+          },
+        ],
+      },
+      { idempotencyKey: 'idem_dn:update' },
+    )
+
+    // create / update の idempotency key が別文字列であること
+    const createKey = mockScheduleCreate.mock.calls[0][1].idempotencyKey
+    const updateKey = mockScheduleUpdate.mock.calls[0][1].idempotencyKey
+    expect(createKey).not.toBe(updateKey)
+
+    expect(result).toBe(updated)
+  })
+})
+
+describe('cancelScheduledDowngrade', () => {
+  it('release を scheduleId + idempotencyKey で呼ぶ (cancel は使わない)', async () => {
+    const released = { id: 'sub_sched_r' } as unknown as Stripe.SubscriptionSchedule
+    mockScheduleRelease.mockResolvedValueOnce(released)
+
+    const result = await cancelScheduledDowngrade('sub_sched_r', 'idem_rel')
+
+    expect(mockScheduleRelease).toHaveBeenCalledWith(
+      'sub_sched_r',
+      {},
+      { idempotencyKey: 'idem_rel' },
+    )
+    expect(result).toBe(released)
   })
 })
