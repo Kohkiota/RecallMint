@@ -44,6 +44,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     clerkId: 'user_1',
     email: 'test@example.com',
     stripeCustomerId: null,
+    stripeSubscriptionId: null,
     plan: 'free',
     subscriptionStatus: null,
     currentPeriodEnd: null,

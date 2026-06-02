@@ -64,6 +64,9 @@ export const users = pgTable('users', {
   clerkId: text('clerk_id').notNull().unique(),
   email: text('email').notNull(),
   stripeCustomerId: text('stripe_customer_id').unique(),
+  // in-place プラン変更の識別 key。1 user 1 active subscription invariant を
+  // 保持し、subscription 系 webhook (created/updated/deleted) で populate/clear する。
+  stripeSubscriptionId: text('stripe_subscription_id').unique(),
   plan: text('plan')
     .$type<'free' | 'standard' | 'pro'>()
     .notNull()
