@@ -139,9 +139,12 @@
 
 **Files:** Modify `lib/stripe/subscription.ts` / Modify `lib/stripe/subscription.test.ts`。
 
-- **目的**: §4.4。`scheduleDowngrade` の `update` 呼出に `metadata:{ kind:'recallmint_downgrade', userId, targetPriceId, operationId }` を付与 (引数に userId/operationId 追加)。`releaseCompletedDowngrade(scheduleId, idempotencyKey)` を追加 (`subscriptionSchedules.release`、既 released/completed/not found は冪等成功扱い)。
-- **制約**: metadata は gate 必須条件にしない (デバッグ用)。`from_subscription` の create には metadata を付けない (update 側のみ)。release の冪等成功判定は Stripe error code (resource_missing / 既 released status) を捕捉。Stripe 全 mock。
-- **完了条件**: Vitest — metadata が update に乗る / releaseCompletedDowngrade が release 呼出 + 既 released で throw せず成功。**決済 touch → 裏取り経路** (tag 無し commit)。
+- **目的**: §4.4。`scheduleDowngrade` の `update` 呼出に `metadata:{ kind:'recallmint_downgrade', userId, targetPriceId, operationId }` を付与 (引数に userId/operationId 追加)。`releaseCompletedDowngrade(scheduleId, idempotencyKey)` を追加。
+- **制約**: metadata は gate 必須条件にしない (デバッグ用)。`from_subscription` の create には metadata を付けない (update 側のみ)。
+  - **`releaseCompletedDowngrade` の冪等主判定は status gate** (message regex ではない): release 前に `subscriptionSchedules.retrieve` し `status` で分岐 — `active`→current_phase null guard 通過後 release (戻り `'released'`) / `completed`/`released`/`canceled`→release せず no-op (`'already_terminal'`) / `not_started`→切替前なので release せず skip (`'skipped'`) / `active` かつ current_phase null→notifyOps + skip (`'skipped'`)。戻り値は `'released' | 'already_terminal' | 'skipped'`。
+  - idempotencyKey `autorelease:{scheduleId}` は短期 retry 用。message regex (already released/completed) + `resource_missing` は retrieve〜release race の**保険のみ** (コメント明記)。無関係 error は rethrow。位置づけ (主=status gate / retry=key / 保険=regex) をコメント。
+  - Stripe 全 mock。
+- **完了条件**: Vitest — metadata が update に乗る / status 各値で release 呼出有無と戻り値が正しい (active→released・terminal3種→already_terminal・not_started→skipped・active+current_phase null→skipped+notifyOps) / 保険: retrieve 後 release が resource_missing/already released を投げても resolve / 無関係 error は rethrow。**決済 touch → 裏取り経路** (tag 無し commit)。
 
 ### Task 11: action — 3 列 set/clear + DB 列ブロック
 
@@ -155,9 +158,9 @@
 
 **Files:** Modify `app/api/webhooks/stripe/route.ts` / Modify `app/api/webhooks/stripe/route.test.ts`。
 
-- **目的**: §6.4。`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` set 時のみ release gate を評価: #1 sub.schedule===DB===retrieve schedule.id / #2 status==='active' / #4 current_phase.start_date<=now / #5 items[0].price.id===scheduledTargetPriceId、#3 current_phase null は no-op/notifyOps。全充足で `releaseCompletedDowngrade` → 3 列 clear。`sub.schedule` が別 non-null id なら notifyOps。`subscription_schedule.released` handler 新規: 対象 user の 3 列を冪等 clear。`customer.subscription.deleted` の reset に 3 列 clear 追加。
-- **制約**: release idempotencyKey は `autorelease:{scheduleId}`。既存枠組み (署名/`stripe_events` 冪等/200) 不変。pending_update target を現在プランに昇格しない (§6.1) を維持。Stripe 全 mock。
-- **完了条件**: Vitest — #1〜#5 充足で release+clear / 不発効(#4)・target 未反映(#5) で release せず / #3 で no-op / released で冪等 clear / **release 成功+clear 失敗を `.released` が回収 (§6.4.1)** / 複数 `.updated` で release 冪等 / `.released` 先着→後着 `.updated` no-op / deleted で clear。**決済 touch → 裏取り経路** (tag 無し)。
+- **目的**: §6.4。`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` set 時のみ評価。**webhook 側 gate = #1 + #5**: #1 `sub.schedule`(id)===DB `scheduledDowngradeScheduleId` / #5 `sub.items[0].price.id`===`scheduledTargetPriceId`。両充足で `releaseCompletedDowngrade(scheduleId, 'autorelease:'+scheduleId)` に委譲 (status/#2/#3/#4 は同関数=T10 が担当)。**戻り値で clear 分岐**: `'released'`/`'already_terminal'`→3 列 clear / `'skipped'`→clear しない。`sub.schedule`=null は no-op (clear は released handler 担当)、別 non-null id は notifyOps。`subscription_schedule.released` handler 新規: schedule.id で対象 user を引き 3 列を冪等 clear。`customer.subscription.deleted` の reset に 3 列 clear 追加。
+- **制約**: 既存枠組み (署名/`stripe_events` 冪等/200) 不変。pending_update target を現在プランに昇格しない (§6.1) を維持。Stripe 全 mock。
+- **完了条件**: Vitest — #1+#5 充足→delegate / #5 未反映で delegate せず / delegate 結果 released・already_terminal で clear、skipped で clear しない / `sub.schedule` null で no-op・別 id で notifyOps / `subscription_schedule.released` で 3 列冪等 clear / **release 成功+clear 失敗を `.released` が回収 (§6.4.1)** / `.released` 先着→後着 `.updated` no-op / deleted で clear / 冪等。**決済 touch → 裏取り経路** (tag 無し)。
 
 ---
 

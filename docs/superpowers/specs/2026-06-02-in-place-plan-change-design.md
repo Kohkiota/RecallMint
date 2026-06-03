@@ -72,8 +72,17 @@ Stripe 呼出とビジネス判定を 1 ファイルに集約し、純粋部分�
   - **metadata** (`update` 側に付与。`from_subscription` の create は他 param 同時指定不可のため): `{ kind: 'recallmint_downgrade', userId, targetPriceId, operationId }`。**Stripe Dashboard デバッグ識別用**。release gate の必須条件にはしない (DB の `scheduledDowngradeScheduleId` 照合=#1 が対象確認の主役)。不一致時は notifyOps の補助情報に留める。
   - 呼出側 (changePlan) は本関数成功後、戻り schedule から `scheduleId` / `phases[0].end_date` を取り、DB の `scheduledDowngradeScheduleId` / `scheduledTargetPriceId` / `scheduledChangeEffectiveAt` を set する (§5.3 / §5.5 ブロックを即時有効化)。
 - `cancelScheduledDowngrade(scheduleId, idempotencyKey)`: `subscriptionSchedules.release(scheduleId)`。**ユーザーによる予約取消** (期末発効**前**)。schedule を解放し subscription を**現 phase で継続**。`subscriptionSchedules.cancel` は subscription 自体を cancel しうるため**使わない**。release 後 DB 3 列を clear (§6.4 と同じ clear。冪等)。
-- `releaseCompletedDowngrade(scheduleId, idempotencyKey)` (方針C, §6.4): 切替**発効後**の能動 release。同じく `subscriptionSchedules.release`。既に released/completed/not found なら**冪等 no-op で成功扱い**。失敗は notifyOps、次 webhook / admin resync で再実行可能。
-  - (cancel と complete の release は API 自体は同じ `release`。区別は「いつ・どの gate で呼ぶか」。実装は共通 helper + gate 分離で可。)
+- `releaseCompletedDowngrade(scheduleId, idempotencyKey)` (方針C, §6.4): 切替**発効後**の能動 release。**冪等の主判定は status gate** (message regex ではない)。
+  - **release 前に `subscriptionSchedules.retrieve(scheduleId)` し、`schedule.status` で分岐** (公式: release 可能 status は `not_started`/`active` のみ。status は `not_started`/`active`/`completed`/`released`/`canceled` の 5 値):
+    - `active`: current_phase の null guard を通し (current_phase は active 時のみ存在=nullable)、OK なら `subscriptionSchedules.release` を呼ぶ → 戻り `'released'`。
+    - `completed` / `released` / `canceled`: 既に autorelease 対象外 → **release を呼ばず no-op 成功** → 戻り `'already_terminal'`。
+    - `not_started`: release API 上は可能だが、autorelease は「ダウングレード適用後に外す」処理なので、**切替前の予約を誤消去しないため release せず skip** → 戻り `'skipped'`。
+    - `active` かつ `current_phase` が null: release せず `notifyOps` + skip → 戻り `'skipped'`。
+  - **idempotency key `autorelease:{scheduleId}` は短期 retry 用** (公式: idempotency key は ~24h で prune されうるため永続的二重防止には使えない)。永続的な二重防止は status gate が担う。
+  - **message regex (already released/completed) は最後の保険のみ**: retrieve〜release 呼出間の競合で別処理が先に外したケースの吸収に限定。正常系の主判定にはしない。`resource_missing` (race 中に消滅) も同様に保険として握る。
+  - **無関係な `StripeInvalidRequestError` / `StripeAPIError` 等は必ず rethrow** (→ 呼出側 webhook の outer catch → notifyWebhookError)。
+  - 位置づけ: **主判定=status gate / 短期 retry=idempotency key / 保険=regex**。コードコメントに明記。
+  - cancel (`cancelScheduledDowngrade`) と auto (`releaseCompletedDowngrade`) は API は同じ `release` だが gate が違う (cancel は status gate を課さずユーザー意図で即 release、auto は上記 status gate)。共通化するのは release 呼出 + 保険 catch の最小部分のみ。
 
 ---
 
@@ -130,17 +139,20 @@ Stripe 側変更済・DB 更新失敗時は、webhook 再送 または 次回 `r
 
 ### 6.4 ダウングレード release gate (方針C)
 
-`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` が set されている場合のみ評価する。**release を実行するのは下記 #1/#2/#4/#5 を全て満たす時だけ**:
+`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` が set されている場合のみ評価する。gate は **webhook 側 (#1/#5、sub+DB の context で判定)** と **`releaseCompletedDowngrade` 側 (status/#2/#3/#4、schedule retrieve が要る判定。§4.4)** に分担する:
 
-- **#1 schedule identity**: webhook の `sub.schedule` (id 抽出) === DB `scheduledDowngradeScheduleId`、かつ `subscriptionSchedules.retrieve(id)` した `schedule.id` とも一致。
-  - `sub.schedule` が **null** の場合 (release 後の `.updated` 等) は gate を抜けて no-op (clear は `subscription_schedule.released` が担当)。`sub.schedule` が **別の non-null id** の場合のみ mismatch として `notifyOps`。
-- **#2 status**: `schedule.status === 'active'`。
-- **#4 発効済**: `schedule.current_phase.start_date <= now` (期末を過ぎ target phase が発効済)。
-- **#5 target 反映**: `sub.items.data[0].price.id === user.scheduledTargetPriceId` (現 active price が target = ダウングレードが実際に効いた)。
+**webhook 側 gate (#1 + #5 を満たした時のみ delegate)**:
+- **#1 schedule identity**: webhook の `sub.schedule` (id 抽出) === DB `scheduledDowngradeScheduleId`。
+  - `sub.schedule` が **null** の場合 (release 後の `.updated` 等) は no-op (clear は `subscription_schedule.released` が担当)。`sub.schedule` が **別の non-null id** の場合のみ mismatch として `notifyOps`。
+- **#5 target 反映**: `sub.items.data[0].price.id === user.scheduledTargetPriceId` (現 active price が target = ダウングレードが実際に効いた)。**これが「切替が実際に起きた」決定的シグナル** (#4 の start_date だけでは phase0/phase1 を区別できないため #5 が主)。
 
-**#3 defensive guard (判定条件ではなく null safety)**: `schedule.current_phase` が null なら release せず no-op / `notifyOps`。status=active なら通常 current_phase はあるが、release 直後の response 等で null になりうるため guard を残す。
+#1 + #5 を満たしたら **`releaseCompletedDowngrade(scheduleId, idempotencyKey=autorelease:{scheduleId})` に委譲**。同関数が schedule を retrieve し status gate (#2 status active / #3 current_phase null guard / #4 start_date<=now) を適用して release/skip を判断し、結果を返す (§4.4)。
 
-満たした時: `releaseCompletedDowngrade(scheduleId, idempotencyKey)` (idempotencyKey は `autorelease:{scheduleId}` 等で固定可、release 自体が冪等) → 成功で **DB 3 列 clear** (`scheduledDowngradeScheduleId` / `scheduledTargetPriceId` / `scheduledChangeEffectiveAt`) → §5.5 ブロック解除。既に released/completed/not found は冪等成功扱いで clear に進む。release 失敗は `notifyOps`、次 webhook 再送 or admin resync で再実行。
+**結果別の DB clear**:
+- `'released'` / `'already_terminal'` (completed/released/canceled = 既に外れている): **DB 3 列 clear** (`scheduledDowngradeScheduleId` / `scheduledTargetPriceId` / `scheduledChangeEffectiveAt`) → §5.5 ブロック解除。
+- `'skipped'` (not_started = 切替前、または current_phase null): **clear しない** (予約を維持)。current_phase null は `notifyOps`。
+
+release 失敗 (無関係 error) は `releaseCompletedDowngrade` が rethrow → webhook outer catch → `notifyWebhookError` + 200。次 webhook 再送 or admin resync で再実行。
 
 **metadata は gate の必須条件にしない**。`schedule.metadata.kind/userId/targetPriceId/operationId` は Dashboard デバッグ用。DB 照合 (#1/#5) と不一致なら `notifyOps` の補助情報に留める。
 
@@ -148,7 +160,7 @@ Stripe 側変更済・DB 更新失敗時は、webhook 再送 または 次回 `r
 
 release は **`.updated` の gate** と、Stripe が release 成功時に発火する **`subscription_schedule.released`** の 2 経路が関与する。両者が競合・重複しても整合するよう以下を満たす:
 
-- **release 呼出の冪等**: gate は複数の `.updated` で繰り返し評価されうる。`releaseCompletedDowngrade` は idempotencyKey=`autorelease:{scheduleId}` を固定し、かつ「既に released/completed/resource_missing」を**冪等成功**として扱う。よって release が 2 回以上呼ばれても副作用は 1 回分。
+- **release 呼出の冪等**: gate は複数の `.updated` で繰り返し評価されうる。`releaseCompletedDowngrade` の **status gate (§4.4) が主たる冪等保証**: 2 回目以降は status が `released`/`completed` になっているため `'already_terminal'` no-op に落ちる。idempotencyKey=`autorelease:{scheduleId}` は ~24h の短期 retry 用、message regex は retrieve〜release 間 race の保険。三者で多重に吸収し、release の副作用は 1 回分。
 - **clear の冪等・順序非依存**: 3 列の clear は「set→null」で、既に null でも無害。`.updated` gate 経路と `.released` 経路のどちらが先でも結果は同じ。`.released` が先着して clear 済みなら、後着の `.updated` は `scheduledDowngradeScheduleId` が既に null = gate 評価対象外 (set されている場合のみ評価) で no-op。
 - **release 成功・DB clear 失敗の回収 (重要)**: gate で release が成功した直後に DB clear が失敗 (or `.updated` handler が clear 前後で throw) しても、release 成功により Stripe は `subscription_schedule.released` を発火する。同 handler が **schedule.id === `users.scheduledDowngradeScheduleId` で対象 user を引き 3 列を冪等 clear** するため、ブロックは最終的に解除される (= released webhook が clear の回収経路)。`.updated` handler の throw は既存の outer catch → `notifyWebhookError` + 200 で再送ループを防ぎ、回収は `.released` 側に委ねる。
 - **`.released` の対象引き**: event の `subscription_schedule.id` で `users` を引く。0 行 match (既 clear / 別経路で消滅) は冪等 no-op。
