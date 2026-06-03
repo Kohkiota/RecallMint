@@ -11,17 +11,28 @@ import {
 } from '@/lib/plan-catalog'
 import type { Plan } from '@/lib/auth/plan-limits'
 import type { BillingInterval } from '@/lib/stripe/price-mapping'
-import { createCheckoutSession } from './actions'
+import { createCheckoutSession, changePlan } from './actions'
 
 type Props = {
   userPlan: Plan
   userInterval: BillingInterval | null
+  // §5.5 ブロック条件の granular flags。T7/T8 が個別に再利用するため derive せず
+  // そのまま受け取る (blocked は本 component 内で OR 合成)。
+  hasPendingUpdate: boolean
+  cancelScheduled: boolean
+  hasScheduledDowngrade: boolean
 }
 
-// upgrade page 内の toggle + 2 plan cards。 月↔年 切替で価格 / CTA 状態を
-// 動的に再評価する。 「現在のプラン」「ダウングレード」は disabled CTA で
-// 表示 (cycle 変更は Stripe Customer Portal 経由を案内)。
-export function UpgradePlans({ userPlan, userInterval }: Props) {
+// プラン変更 page 内の toggle + 2 plan cards。月↔年 切替で価格 / CTA 状態を
+// 動的に再評価する。§7.1 で双方向化し、現プラン以外 (下位含む) は選択可能。
+// pending / 解約予約 / ダウングレード予約中 (§5.5) は全 CTA を disable し案内文を出す。
+export function UpgradePlans({
+  userPlan,
+  userInterval,
+  hasPendingUpdate,
+  cancelScheduled,
+  hasScheduledDowngrade,
+}: Props) {
   // 既存 paid user は同じ cycle を default 表示、 Free は月額 default。
   // rename setBillingInterval (cf. window.setInterval 衝突回避、 同 dir の
   // delete-button.tsx で window.setInterval を使うため shadow を避ける)。
@@ -29,6 +40,9 @@ export function UpgradePlans({ userPlan, userInterval }: Props) {
     userInterval === 'year' ? 'year' : 'month'
   const [interval, setBillingInterval] =
     useState<BillingInterval>(initialInterval)
+
+  // §5.5: 処理中の pending / 解約予約 / ダウングレード予約のいずれかで全変更を停止。
+  const blocked = hasPendingUpdate || cancelScheduled || hasScheduledDowngrade
 
   // toggle ラベルの割引率は catalog 起点 (price 改定時の自動追随)。
   // Standard と Pro は同じ割引率 (約 17%) を維持する建付け、 不一致時は
@@ -40,10 +54,16 @@ export function UpgradePlans({ userPlan, userInterval }: Props) {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-2">プランを選択</h1>
+      <h1 className="text-2xl font-bold mb-2">プラン変更</h1>
       <p className="text-sm text-slate-600 mb-4">
         現在のプラン: <span className="font-medium">{planLabelFor(userPlan, userInterval)}</span>
       </p>
+
+      {blocked && (
+        <p role="status" aria-live="polite" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
+          処理中の支払い完了 または 予約キャンセルを先に行ってください
+        </p>
+      )}
 
       {/* 月↔年 toggle (radio 風 segmented button) */}
       <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 mb-6">
@@ -67,17 +87,19 @@ export function UpgradePlans({ userPlan, userInterval }: Props) {
           interval={interval}
           userPlan={userPlan}
           userInterval={userInterval}
+          blocked={blocked}
         />
         <PlanCard
           plan="pro"
           interval={interval}
           userPlan={userPlan}
           userInterval={userInterval}
+          blocked={blocked}
         />
       </div>
 
       <p className="text-xs text-slate-500 mt-4">
-        同じプランの月↔年切替や解約は『お支払い・解約を管理』(設定 page) からお願いします。
+        プランの解約は『お支払い・解約を管理』(設定 page) からお願いします。
       </p>
     </div>
   )
@@ -113,11 +135,13 @@ function PlanCard({
   interval,
   userPlan,
   userInterval,
+  blocked,
 }: {
   plan: 'standard' | 'pro'
   interval: BillingInterval
   userPlan: Plan
   userInterval: BillingInterval | null
+  blocked: boolean
 }) {
   const entry = PAID_PLAN_CATALOG[plan]
   const price = interval === 'month' ? entry.monthlyYen : entry.yearlyYen
@@ -151,6 +175,7 @@ function PlanCard({
           interval={interval}
           userPlan={userPlan}
           userInterval={userInterval}
+          blocked={blocked}
         />
       </CardContent>
     </Card>
@@ -162,16 +187,19 @@ function CtaButton({
   interval,
   userPlan,
   userInterval,
+  blocked,
 }: {
   plan: 'standard' | 'pro'
   interval: BillingInterval
   userPlan: Plan
   userInterval: BillingInterval | null
+  blocked: boolean
 }) {
   // PlanCard 側と同じ rank 同値判定 (transition window で NULL=month 扱い)。
   const isCurrent = rank(userPlan, userInterval) === rank(plan, interval)
 
   if (isCurrent) {
+    // 現プランは §5.5 ブロックの有無に関わらず常に disabled。
     return (
       <Button disabled className="w-full">
         現在のプラン
@@ -179,30 +207,50 @@ function CtaButton({
     )
   }
 
-  // free → 全 upgrade、 standard → pro upgrade、 standard月 → standard年、
-  // pro月 → pro年 などすべて Stripe Checkout で新規 sub を開いた後 webhook で
-  // 旧 sub を proration cancel (Stripe 標準挙動)。
-  // 純粋な downgrade (pro → standard) は Customer Portal で実施 (本 page では disabled)。
-  const userRank = rank(userPlan, userInterval)
-  const targetRank = rank(plan, interval)
-  if (targetRank < userRank) {
+  // §7.1: 下位 (downgrade) も選択可。free / paid で経路が分かれる。
+  // free → Checkout で新規 sub、 paid → changePlan で in-place 変更。
+  if (userPlan === 'free') {
+    const ctaLabel = `${plan === 'standard' ? 'Standard' : 'Pro'} に加入`
     return (
-      <Button disabled variant="outline" className="w-full">
-        現在より下位プラン
-      </Button>
+      <form action={createCheckoutSession}>
+        <input type="hidden" name="plan" value={plan} />
+        <input type="hidden" name="interval" value={interval} />
+        <Button type="submit" className="w-full" disabled={blocked}>
+          {ctaLabel}
+        </Button>
+      </form>
     )
   }
 
-  const ctaLabel =
-    userPlan === 'free'
-      ? `${plan === 'standard' ? 'Standard' : 'Pro'} に加入`
-      : `${plan === 'standard' ? 'Standard' : 'Pro'} ${interval === 'year' ? '年額' : '月額'} にアップグレード`
+  return (
+    <PaidChangeForm plan={plan} interval={interval} blocked={blocked} />
+  )
+}
+
+// paid user の in-place プラン変更フォーム。operationId は §5.4 の操作単位 UUID で、
+// idempotency key の識別子。client で生成して hidden input に載せる。
+// T7: 確認 modal をここに被せる (modal で operationId を生成し confirm 後に submit
+// する形へ差し替え予定。本 task では直接 submit で動作する placeholder)。
+function PaidChangeForm({
+  plan,
+  interval,
+  blocked,
+}: {
+  plan: 'standard' | 'pro'
+  interval: BillingInterval
+  blocked: boolean
+}) {
+  // render ごとに 1 度だけ UUID を払い出す (submit 単位の一意性は十分、T7 で
+  // modal confirm 時生成へ移行)。
+  const [operationId] = useState(() => crypto.randomUUID())
+  const ctaLabel = `${plan === 'standard' ? 'Standard' : 'Pro'} ${interval === 'year' ? '年額' : '月額'} に変更`
 
   return (
-    <form action={createCheckoutSession}>
+    <form action={changePlan}>
       <input type="hidden" name="plan" value={plan} />
       <input type="hidden" name="interval" value={interval} />
-      <Button type="submit" className="w-full">
+      <input type="hidden" name="operationId" value={operationId} />
+      <Button type="submit" className="w-full" disabled={blocked}>
         {ctaLabel}
       </Button>
     </form>
@@ -219,4 +267,3 @@ function rank(plan: Plan, interval: BillingInterval | null): number {
   const cycle = interval === 'year' ? 1 : 0
   return base + cycle
 }
-
