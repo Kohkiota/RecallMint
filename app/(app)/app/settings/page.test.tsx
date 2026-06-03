@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 // SettingsPage (server component) のプラン section render test。
 //
-// 観点 (Task 8 §7.3):
-// - paid: 「プラン変更」(/app/upgrade) + 「お支払い・解約を管理」(Portal) の 2 ボタン
+// 観点 (Task 8 §7.3 + §7.4 拡張):
+// - 全 plan で「プラン変更」(/app/upgrade) CTA を常時表示 (free 限定の
+//   「プランを選択」 文言は廃止、 dashboard /app と同じ entry CTA 統一)
+// - paid: 「プラン変更」 + 「お支払い・解約を管理」(Portal) の 2 ボタン
 //   (Pro 年額の除外撤廃 → Pro 年額でも両方表示)
-// - free: 「プランを選択」維持 (Portal ボタンなし)
+// - free: 「プラン変更」 のみ (Portal ボタンなし。 free は Stripe customer
+//   不在で Portal session 作成が失敗しうる経路のため)
 //
 // getCurrentUser + db SELECT + 子 form / action を mock し await SettingsPage() で
 // JSX を取得して render する。
@@ -76,19 +79,22 @@ afterEach(() => {
 })
 
 describe('SettingsPage プラン section: entry 出し分け', () => {
-  it('free: 「プランを選択」を表示し、Portal / プラン変更ボタンは出さない', async () => {
+  it('free: 「プラン変更」 を /app/upgrade に表示 (Portal ボタンは出さない)', async () => {
     mockGetCurrentUser.mockResolvedValue(baseUser)
     render(await SettingsPage())
 
-    expect(screen.getByRole('link', { name: 'プランを選択' })).toHaveAttribute(
+    // §7.4 拡張: 全 plan で「プラン変更」 CTA を表示する。 旧 free 限定文言
+    // 「プランを選択」 は廃止。
+    expect(screen.getByRole('link', { name: 'プラン変更' })).toHaveAttribute(
       'href',
       '/app/upgrade',
     )
     expect(
-      screen.queryByRole('button', { name: 'お支払い・解約を管理' }),
+      screen.queryByRole('link', { name: 'プランを選択' }),
     ).not.toBeInTheDocument()
+    // Portal は paid 限定。 free では Stripe customer 不在のため出さない。
     expect(
-      screen.queryByRole('link', { name: 'プラン変更' }),
+      screen.queryByRole('button', { name: 'お支払い・解約を管理' }),
     ).not.toBeInTheDocument()
   })
 

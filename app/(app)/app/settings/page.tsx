@@ -90,13 +90,14 @@ export default async function SettingsPage() {
                 ステータス: {user.subscriptionStatus}
               </p>
             ) : null}
-            {user.plan === 'free' ? (
-              <Button asChild size="sm" className="mt-3 px-4 py-2 text-sm font-medium">
-                {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
-                <Link href="/app/upgrade" prefetch={false}>プランを選択</Link>
-              </Button>
-            ) : (
-              <div className="mt-3 flex flex-wrap gap-2">
+            {/* §7.3 + §7.4 拡張: 全 plan で「プラン変更」 CTA を常時表示し、
+                free 限定の「プランを選択」 文言は廃止 (entry CTA 文言の出し分け
+                を削除。 dashboard /app の §7.4 統一を settings にも波及)。
+                「お支払い・解約を管理」 (Portal) は paid 限定を維持 — free は
+                Stripe customer 不在で createBillingPortalSession が throw する
+                経路 (actions.ts:15-17)。 */}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {user.plan !== 'free' && (
                 <form action={createBillingPortalSession}>
                   <Button
                     type="submit"
@@ -107,15 +108,12 @@ export default async function SettingsPage() {
                     お支払い・解約を管理
                   </Button>
                 </form>
-                {/* §7.3: paid は entry を統一し、全 plan で「プラン変更」(/app/upgrade)
-                    を常時表示する (Pro 年額の除外は撤廃)。upgrade/downgrade の選択は
-                    upgrade page 内 toggle に委ねる。 */}
-                <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
-                  {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
-                  <Link href="/app/upgrade" prefetch={false}>プラン変更</Link>
-                </Button>
-              </div>
-            )}
+              )}
+              <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
+                {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
+                <Link href="/app/upgrade" prefetch={false}>プラン変更</Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </section>
