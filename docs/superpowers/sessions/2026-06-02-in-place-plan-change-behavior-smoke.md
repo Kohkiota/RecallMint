@@ -113,7 +113,8 @@ Customer Portal からの解約は実装上 **4-a (.updated 段階) → 4-b (.de
 
 > 註: Portal の cancel mode (即時 / 期末) は **Stripe Dashboard 側 Portal 設定の default (= end of billing period)** で決まり、 自前コードは `cancel_at_period_end` を制御しない (`createBillingPortalSession` は `portal_configuration` を渡さない、 `app/(app)/app/settings/actions.ts:7-24`)。 stg 観測の「期末予約」 はこの default の結果。
 
-### 4-a. Portal 解約ボタン直後 (.updated 段階、 期末予約成立) 〔系統 (b) DB 紐付き sub・clock なし〕
+### 4-a. Portal 解約ボタン直後 (.updated 段階、 期末予約成立) 〔系統 (b) DB 紐付き sub・clock なし〕 [PASS 2026-06-03]
+> 実機確認 (stg): `cancel_at` に set / `current_period_end` 同値 set / `plan` / `billing_interval` / `subscription_status='active'` / `sub_id` は据え置き (= free 化しない) を Supabase で目視確認。
 0-(b) の DB 紐付き sub (Standard 月) で Customer Portal から解約 → 期末予約成立 → `customer.subscription.updated` 受信 (この時点で sub は `status='active'` のまま、 `cancel_at_period_end=true`、 `cancel_at` に Unix 秒)。 handler: `route.ts:237-296`。
 **期待 (.updated 段階)**:
 - DB `users.cancel_at` に**予約日 (Date)** が set される。
@@ -123,7 +124,8 @@ Customer Portal からの解約は実装上 **4-a (.updated 段階) → 4-b (.de
 - Clerk publicMetadata は `plan` 据え置き値で再 sync (実質変化なし)。
 > 註: ここで free 化を期待してはならない。 free 化は期末到来後の **4-b (.deleted)** で起きる。 4-a は clock 不要で実時間即観測可能 (OT 既観測の挙動と一致)。
 
-### 4-b. 期末到来後 (.deleted 段階、 free 化確認) 〔系統 (c) 5-C 環境に相乗り〕
+### 4-b. 期末到来後 (.deleted 段階、 free 化確認) 〔系統 (c) 5-C 環境に相乗り〕 [PASS 2026-06-03 / 5-C step 9-11 経由]
+> 実機確認 (stg): 5-C step 9-11 で実施。 詳細は下記 5-C 続き section 参照。
 期末到来時に Stripe が `customer.subscription.deleted` を発火し、 自前 handler (`route.ts:298-334`) が DB を free 化する。 **実時間で期末まで待つのは現実的でない**ため、 **独立 setup を作らず 5-C の test clock 環境にステップとして相乗り**させる。 具体手順は **Smoke 5-C の step 9-11** (auto-release full path 検証完了後の独立追加ステップとして末尾配置)。
 **期待 (.deleted 段階)**:
 - DB `users.plan='free'` / `billing_interval=null` / `subscription_status='canceled'` / `cancel_at=null` / `stripe_subscription_id=null` / scheduled 3 列=null。
@@ -149,14 +151,16 @@ test clock sub (Clerk **未紐付け** = DB `users` 行なし) で **「Stripe �
    - **Discord / notifyOps に release 関連通知が来ない** (unlinked .updated の汎用通知 `'stripe sub event for unlinked customer'` が環境次第で発火しうるが、 release 系の通知は出ない)。
 4. 確認点: 前進後でも sub.schedule が `sched_XXX` のまま残ること = app は管理外 (unlinked) sub を release しない (安全挙動)。 自動 release が**発火する** full path の検証は **5-C** で実施 (linked + gate 充足で初めて app が release を発火する)。
 
-### Smoke 5-B — DB 3 列の set/clear 〔系統 (b) DB 紐付き sub〕
+### Smoke 5-B — DB 3 列の set/clear 〔系統 (b) DB 紐付き sub〕 [PASS 2026-06-03]
+> 実機確認 (stg): Pro 月 → Standard 月 のダウングレード予約で `scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の 3 列 set、 取消で 3 列 clear (null) を Supabase で確認。
 DB 紐付き sub (test clock 無し) で、 予約 → DB set、 取消 → DB clear を確認する。 切替発火 (時間前進) は見ない。
 
 1. **予約 (set)**: プラン変更 UI でダウングレードを予約 → Supabase で `users` の **`scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の 3 列が set** されること。
 2. **取消 (clear)**: 取消 banner から取消 → `subscriptionSchedules.release` → **3 列が clear (null)** されること。
 3. 註: 切替発効後の「3 列の自動 clear」は test clock が要るためここでは見ない。 これは **5-C の full path** で担保する (linked + clock で app が能動 release → 3 列 clear → §5.5 ブロック解除)。 **5-A は unlinked sub のため app の能動 release / DB clear は期待しない** (5-A は管理外 sub release 安全側の確認)。
 
-### Smoke 5-C — DB 紐付き × test clock × 自動 release full path 〔系統 (c) 手動 workaround〕
+### Smoke 5-C — DB 紐付き × test clock × 自動 release full path 〔系統 (c) 手動 workaround〕 [PASS 2026-06-03 / step 1-8]
+> 実機確認 (stg、 `+002` free): 空 test clock customer 紐付け → Pro 月 Checkout (`plan='pro'` set / `stripe_customer_id` 維持) → Pro 月 → Standard 月 ダウングレード予約 (3 列 set) → clock advance (`phases[0].end_date + 60 秒`) → `customer.subscription.updated` 受信 → app が `subscriptionSchedules.release` を能動発火 → `sub.schedule=null` / schedule status=`released` / `released_subscription` set / DB 3 列 clear / `plan='standard'` / §5.5 ブロック解除 (UI banner 消滅・CTA 再活性) を確認。 `billing_cycle_anchor` 不変。 二重 `released` は `releaseScheduleIdempotent` の status gate が吸収し副作用なし。
 方針C の **「webhook gate #1+#5 充足 → app が能動 release → DB 3 列 clear → §5.5 ブロック解除」 の full path** を実機で 1 経路通す。 5-A (Stripe 側のみ) と 5-B (DB 側のみ・clock なし) の隙間に残っていた「linked sub に clock を載せた full path」をここで埋める。 手動 setup で workaround するため **stg/test 限定、 本番コードに恒久裏口なし**。
 
 1. **CLI**: `stripe customers create -d test_clock=clock_XXX` で **空の test clock customer** を作成 (clock 配下、 sub なし)。 `cus_XXX` を控える。 (`-d` 形式 + 正規 param 名 `test_clock` で CLI 解釈事故を避ける)
@@ -178,7 +182,8 @@ DB 紐付き sub (test clock 無し) で、 予約 → DB set、 取消 → DB c
 
 ---
 
-#### 5-C 続き: 4-b (Portal 解約 → 期末到来 → free 化) の相乗り検証
+#### 5-C 続き: 4-b (Portal 解約 → 期末到来 → free 化) の相乗り検証 [PASS 2026-06-03 / step 9-11]
+> 実機確認 (stg、 5-C step 1-8 と同 user): Standard 月 active 状態で Portal 解約 → `cancel_at=8/3` set (4-a 中間状態を 5-C 環境でも再現、 `plan='standard'` 据え置き) → clock advance (`cancel_at + 60 秒`) → `customer.subscription.deleted` 受信 → DB free 化 (`plan='free'` / `billing_interval=null` / `subscription_status='canceled'` / `cancel_at=null` / `sub_id=null` / scheduled 3 列=null)、 `current_period_end=8/3` は履歴として残存 (破壊なし)。 Stripe sub `status=canceled` / `ended_at` set、 Clerk `publicMetadata.plan='free'` 同期も確認。
 step 1-8 で auto-release full path を確認した後、 **同じ test clock customer + DB 紐付き user 上で続けて** 4-b を観察する。 step 9-11 は step 1-8 とは独立した追加検証であり、 step 1-8 が NG で停止した場合は 4-b 相乗りも実施しない (5-C 本来の検証を優先)。 sub 状態は step 8 終了時点で Standard 月 (downgrade 発効後)、 schedule released、 DB 3 列 clear、 ブロック解除済。
 
 9. **(4-b 準備) アプリ `/app/settings` から Customer Portal を開き、 当該 sub (Standard 月) を解約**。 → `customer.subscription.updated` 受信 (期末予約)。 確認 (= **4-a の中間状態**を 5-C 環境でも再観測):
@@ -193,7 +198,7 @@ step 1-8 で auto-release full path を確認した後、 **同じ test clock cu
 
 **重点 NG (5-C / 4-b)**: 4-a 段階 (step 9) で plan が free 化してしまう (= 中間状態で free 化される実装バグ) / 4-b 段階 (step 11) で free 化が起きない / `current_period_end` が消える (= 履歴破壊) / scheduled 3 列が clear されない。 これが出たら `route.ts:237-296` (.updated handler) / `:298-334` (.deleted handler) を見直し。
 
-### Smoke 5-C-2 — ダウングレード予約 + Portal 解約 で DB 両方 set 成立 → 整合収束 〔系統 (c) 手動 workaround、 別 clock / 別 user〕
+### Smoke 5-C-2 — ダウングレード予約 + Portal 解約 で DB 両方 set 成立 → 整合収束 〔系統 (c) 手動 workaround、 別 clock / 別 user〕 [未実施 2026-06-03]
 **目的**: 調査で「ダウングレード予約 → Portal 解約」 path は changePlan ガードで塞がれず、 `.updated` handler の SET 句が scheduled 3 列を touched しない (`route.ts:252-261`) ため DB に `cancel_at` + scheduled 3 列が **両方 set** される状態が path 上成立しうる、 と判明。 アプリ handler は両方 set を冪等に解消し integrity を保つ (調査済) が、 **その前提となる「Stripe が schedule 付き sub の Portal cancel をどう扱うか」 はコードから判定不可** (調査の未確認点 1)。 ここで 1 経路通して実機確認する。
 
 > 註: 5-C-2 は **step 1-8 (auto-release full path) / step 9-11 (4-b) とは独立した別フロー**。 干渉を避けるため **別の空 clock customer + 別の free アカウント** で 1 から立てる (step 1-8 で使う `+002` とは分け、 sub 使い回しによる orphan / 混線を回避)。 系統 (c) の手動 workaround setup は同じ。
@@ -228,15 +233,17 @@ step 1-8 で auto-release full path を確認した後、 **同じ test clock cu
 ## UI smoke (T6-T8 実装後に実施、Smoke 1-5 と並行可)
 backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile view) を確認する。実装詳細: `docs/superpowers/sessions/2026-06-03-in-place-plan-change-impl-T11-T12-T6-T8.md`。
 
-- **U1 (entry 統一)**: 全 plan で entry CTA 文言を「プラン変更」 に統一 (settings page 統一 commit 反映済)。
+- **U1 (entry 統一)** [PASS 2026-06-03]: 全 plan で entry CTA 文言を「プラン変更」 に統一 (settings page 統一 commit 反映済)。
   - **paid** user の `/app/settings`: 「プラン変更」 + 「お支払い・解約を管理」 の **2 ボタン** (Pro 年額含む)。
   - **free** user の `/app/settings`: 「プラン変更」 **のみ** (Portal ボタンは paid 限定 — free は Stripe customer 不在で Portal session 作成が失敗しうるため)。 旧「プランを選択」 文言は廃止。
   - **`/app` 下部 CTA** (dashboard): 全 plan で「プラン変更」 表示 (Pro 年額含む、 §7.4 既統一)。
   - **遷移先**: free / paid とも `/app/upgrade` (= 同じ)。 着地後の page 内分岐 (free → Checkout / paid → in-place changePlan) は別レイヤーで残存。
-- **U2 (card 選択可否)**: `/app/upgrade` で現プランのみ disable「現在のプラン」、下位プランも選択可 (旧「現在より下位プラン」disable が消滅)。pro+year でも redirect されず page 表示。
-- **U3 (確認 modal)**: paid で上位/下位 card の CTA → 金額なし確認 modal。upgrade=「今すぐ差額が請求され…」/ downgrade=「現在の請求期間終了後に {plan} へ切り替わります…」。Esc / backdrop / キャンセルで閉、確認で changePlan 発火 → `/app?billing=upgrade|downgrade`。**mobile で modal が画面内に収まり tap 可能か**。
-- **U4 (予約中ブロック + 取消 banner)**: ダウングレード予約中 (DB `scheduled_downgrade_schedule_id` set) は全変更 CTA disable + 案内文、page 上部に短縮版 banner「**{tier} {interval}へ変更予約中（{date}）— 取消**」(例:「Standard 月額へ変更予約中（2026/7/1）— 取消」)。取消 → cancelDowngrade → 3 列 clear → 再操作可。日付が `Intl ja-JP` 整形。(T8-copy `234175a` で冗長版「Standard プラン 月額 への…」から短縮済)
-- **U5 (success banner)**: `/app?billing=new|upgrade|downgrade` 着地で対応文言 banner 表示・dismiss 可。Checkout success_url が `?billing=new` に。
+  - **案B (settings 予約表示) も PASS**: settings プラン欄に DB 予約 set 時の「{date} に {tier} {interval} へ変更予約中」 表示が出ることを確認。
+- **U2 (card 選択可否)** [PASS 2026-06-03]: `/app/upgrade` で現プランのみ disable「現在のプラン」、下位プランも選択可 (旧「現在より下位プラン」disable が消滅)。pro+year でも redirect されず page 表示。
+- **U3 (確認 modal)** [PASS 2026-06-03]: paid で上位/下位 card の CTA → 金額なし確認 modal。upgrade=「今すぐ差額が請求され…」/ downgrade=「現在の請求期間終了後に {plan} へ切り替わります…」。Esc / backdrop / キャンセルで閉、確認で changePlan 発火 → `/app?billing=upgrade|downgrade`。**mobile で modal が画面内に収まり tap 可能か** も確認。
+- **U4 (予約中ブロック + 取消 banner)** [PASS 2026-06-03]: ダウングレード予約中 (DB `scheduled_downgrade_schedule_id` set) は全変更 CTA disable + 案内文、page 上部に短縮版 banner「**{tier} {interval}へ変更予約中（{date}）— 取消**」(例:「Standard 月額へ変更予約中（2026/7/1）— 取消」)。取消 → cancelDowngrade → 3 列 clear → 再操作可。日付が `Intl ja-JP` 整形。(T8-copy `234175a` で冗長版「Standard プラン 月額 への…」から短縮済)
+  - **案A (notice 3 状態出し分け) も PASS**: ダウングレード予約のみ時に旧 blocked notice (「処理中の支払い完了 または 予約キャンセル…」) が消滅し、 banner のみ表示されることを確認。
+- **U5 (success banner)** [PASS 2026-06-03]: `?billing=new` (Checkout 後) / `?billing=downgrade` (変更後) で対応文言 banner 表示・dismiss 可を確認。 `?billing=upgrade` は未確認 (仕組み共通のため省略)。 Checkout success_url が `?billing=new` に。
 - 確認点: §5.5 ブロック中に UI で操作できる抜け道がない (server `changePlan` も同条件で `CHANGE_BLOCKED`)。
 - UI smoke U1-U5 は現状のままで可 (U4 の取消 banner 文言のみ上記短縮版に更新)。
 
