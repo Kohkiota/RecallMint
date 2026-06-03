@@ -30,7 +30,6 @@ curl -fsSL https://claude.ai/install.sh | bash -s stable
 export PATH="$HOME/.local/bin:$PATH"
 hash -r
 claude --version
-claude doctor || true
 
 echo "==> [4/8] Stripe CLI"
 if ! command -v stripe &> /dev/null; then
