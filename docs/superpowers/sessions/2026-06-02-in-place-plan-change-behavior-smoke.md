@@ -193,10 +193,46 @@ step 1-8 で auto-release full path を確認した後、 **同じ test clock cu
 
 **重点 NG (5-C / 4-b)**: 4-a 段階 (step 9) で plan が free 化してしまう (= 中間状態で free 化される実装バグ) / 4-b 段階 (step 11) で free 化が起きない / `current_period_end` が消える (= 履歴破壊) / scheduled 3 列が clear されない。 これが出たら `route.ts:237-296` (.updated handler) / `:298-334` (.deleted handler) を見直し。
 
+### Smoke 5-C-2 — ダウングレード予約 + Portal 解約 で DB 両方 set 成立 → 整合収束 〔系統 (c) 手動 workaround、 別 clock / 別 user〕
+**目的**: 調査で「ダウングレード予約 → Portal 解約」 path は changePlan ガードで塞がれず、 `.updated` handler の SET 句が scheduled 3 列を touched しない (`route.ts:252-261`) ため DB に `cancel_at` + scheduled 3 列が **両方 set** される状態が path 上成立しうる、 と判明。 アプリ handler は両方 set を冪等に解消し integrity を保つ (調査済) が、 **その前提となる「Stripe が schedule 付き sub の Portal cancel をどう扱うか」 はコードから判定不可** (調査の未確認点 1)。 ここで 1 経路通して実機確認する。
+
+> 註: 5-C-2 は **step 1-8 (auto-release full path) / step 9-11 (4-b) とは独立した別フロー**。 干渉を避けるため **別の空 clock customer + 別の free アカウント** で 1 から立てる (step 1-8 で使う `+002` とは分け、 sub 使い回しによる orphan / 混線を回避)。 系統 (c) の手動 workaround setup は同じ。
+
+1. **CLI**: `stripe customers create -d test_clock=clock_YYY` で **別の空 test clock customer** を作成 (step 1-8 の `clock_XXX` / `cus_XXX` とは別)。 `cus_YYY` を控える。
+2. **stg の app で `komail9server+001@gmail.com` (free) にログイン**。 Supabase で当該 user 行が `plan='free'` / `stripe_subscription_id=NULL` であることを事前確認 (前 smoke の paid 状態が残っていれば手動で戻す)。
+3. **Supabase で 001 の `stripe_customer_id` を手動更新**: `stripe_customer_id = cus_YYY` (step1 の空 clock customer)。 `stripe_subscription_id=NULL` / `plan='free'` / `billing_interval=NULL` も再確認。
+4. **アプリ `/app/upgrade` で Checkout (Pro 月、 test card `4242 4242 4242 4242`)** → 当該 test clock customer 配下に DB 紐付き sub。 webhook で `plan='pro'` / `billing_interval='month'` / `stripe_subscription_id=sub_...` が set されることを Supabase で確認。
+5. **アプリ UI で Pro 月 → Standard 月 のダウングレード予約**。 → Supabase で `scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の **3 列が set** されることを確認。
+6. **予約を残したまま (取消しない) `/app/settings` → Customer Portal で当該 sub を解約**。 → `customer.subscription.updated` 受信 (`cancel_at` set)。 確認 (= **両方 set 成立 + Stripe 側挙動観察 = 本 smoke の主目的**):
+   - **Stripe dashboard (= 調査未確認点 1 の実機確認)**: schedule attach 済の sub を Portal が cancel 受理したか。 受理した場合 `sub.schedule` の扱いを目視:
+     - (a) schedule 残ったまま (`sub.schedule = sched_XXX` 継続) → 期末発効時に gate #1 が DB と一致 → app が能動 release を発火しうる。
+     - (b) Stripe が schedule を即時 release した (`sub.schedule = null` / schedule status = `released`) → `.released` webhook 受信 → DB 3 列 clear。
+     - (c) Stripe が schedule を canceled にした (`sub.schedule = null` / schedule status = `canceled`) → `.released` webhook が出ないため `route.ts:348-361` の clear handler は走らない → DB 3 列残り、 後の `.deleted` handler (`:312-315`) で 3 列 clear される。
+     - (d) Portal が cancel を**拒否**した (= 解約できない) → DB 不変、 c-1 そのものが成立しない (アプリ実装は影響なし)。
+   - **Supabase**: `users.cancel_at` に**期末日 (Date)** が set + `users.current_period_end` に同値 (Date) が set + **scheduled 3 列も依然 set** (= DB 両方 set)。 `users.plan='pro'` / `users.billing_interval='month'` / `users.subscription_status='active'` / `users.stripe_subscription_id` は**据え置き**。
+   - **notifyOps**: Discord に gate mismatch 等の異常通知が**出ていない**こと (この時点では `.updated` の通常受信のみ、 mismatch 経路に入る場合は理由を記録)。
+7. **CLI で時間前進**: step 6 後、 まず `stripe subscriptions retrieve sub_XXX` で **`cancel_at` と `phases[0].end_date` の Unix 秒**を確認。 通常 default Portal cancel (期末予約) では `cancel_at == phases[0].end_date == current_period_end` で同値だが、 ズレがあれば早い方を採用。 `stripe test_helpers test_clocks advance <clock_id_YYY> -d frozen_time=<min(cancel_at, phases[0].end_date) + 60 秒>` で前進。 確認 (= **整合収束**):
+   - 発火 event の順序: `customer.subscription.updated` (ダウングレード発効 = item price 切替、 phases[0] 終了) と `customer.subscription.deleted` (解約発効) のどちらが先か / 両方発火するか / どちらか片方のみか を Stripe dashboard の event log で目視。
+   - **DB 最終状態の収束**:
+     - 「ダウングレード発効 → 解約」 順なら: 一旦 plan='standard' に切替 + scheduled 3 列 clear (`route.ts:412-425` か `:348-361` 経由) → その後 .deleted で plan='free' / 全 reset。
+     - 「解約発効 → ダウングレード発効」 順なら: .deleted で plan='free' / scheduled 3 列 clear (`route.ts:312-315`) + cancel_at=null / sub_id=null。 ダウングレード側は sub 消滅で発火しないか、 後着の `.updated` は unlinked customer 扱い (DB 行 stripeCustomerId が既に touched されていないため依然 hit はする — ただし plan='free' で normalize される)。
+     - 同タイミング (典型ケース) なら: 上記いずれかの順序になるが、 handler の冪等性で最終整合は保たれる。
+   - **Supabase で DB 最終状態を確認**: `users.plan='free'` (解約が最終的に効くため) / `users.billing_interval=null` / `users.subscription_status='canceled'` / `users.cancel_at=null` / `users.stripe_subscription_id=null` / scheduled 3 列=null / `current_period_end` は履歴として残る。 plan が 'standard' でも 'pro' でもなく **'free' に収束**することが正。
+   - **notifyOps**: 未処理の異常通知 (gate mismatch / unlinked sub event 等) が出ていないか確認。 出た場合は内容を記録 (`stripe release gate schedule mismatch` は step 6-(c)-(d) パスで出うる、 `stripe sub event for unlinked customer` は本来出ないが出たら anomaly)。
+8. **(option)** さらに clock を進めて残りのイベント (解約 or ダウングレードの後発分) が出ないかを確認、 最終状態が変動しないことを確認 (= 安定収束)。
+
+**重点 NG (5-C-2)**: DB が両方 set のまま収束しない (cancel_at + scheduled 3 列が clear されないまま放置される) / `users.plan` が free でも standard でも pro でもない不整合な値で止まる / notifyOps に未処理の異常 (gate mismatch で release も clear もされず handler が無言で諦める) が記録される。 これが出たら `route.ts:237-296` (.updated) / `:298-334` (.deleted) / `:348-361` (.released) / `:369-426` (`evaluateReleaseGate`) を見直し。
+
+> 註: 5-C-2 は **Stripe 側の Portal cancel × schedule 挙動の実機観察**が主目的。 アプリ handler の冪等性自体は調査済 + 5-A / 5-B / 5-C / 4-a / 4-b で個別カバー済のため、 step 6-7 で観測される Stripe 側挙動 (a)/(b)/(c)/(d) のうち**どれが起きたか**を記録するだけでも本 smoke の目的は達成される。
+
 ## UI smoke (T6-T8 実装後に実施、Smoke 1-5 と並行可)
 backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile view) を確認する。実装詳細: `docs/superpowers/sessions/2026-06-03-in-place-plan-change-impl-T11-T12-T6-T8.md`。
 
-- **U1 (entry 統一)**: paid user の `/app/settings` に「プラン変更」+「お支払い・解約を管理」2 ボタン / `/app` 下部 CTA が全 plan (pro+year 含む) で「プラン変更」表示。free は「プランを選択」のまま。
+- **U1 (entry 統一)**: 全 plan で entry CTA 文言を「プラン変更」 に統一 (settings page 統一 commit 反映済)。
+  - **paid** user の `/app/settings`: 「プラン変更」 + 「お支払い・解約を管理」 の **2 ボタン** (Pro 年額含む)。
+  - **free** user の `/app/settings`: 「プラン変更」 **のみ** (Portal ボタンは paid 限定 — free は Stripe customer 不在で Portal session 作成が失敗しうるため)。 旧「プランを選択」 文言は廃止。
+  - **`/app` 下部 CTA** (dashboard): 全 plan で「プラン変更」 表示 (Pro 年額含む、 §7.4 既統一)。
+  - **遷移先**: free / paid とも `/app/upgrade` (= 同じ)。 着地後の page 内分岐 (free → Checkout / paid → in-place changePlan) は別レイヤーで残存。
 - **U2 (card 選択可否)**: `/app/upgrade` で現プランのみ disable「現在のプラン」、下位プランも選択可 (旧「現在より下位プラン」disable が消滅)。pro+year でも redirect されず page 表示。
 - **U3 (確認 modal)**: paid で上位/下位 card の CTA → 金額なし確認 modal。upgrade=「今すぐ差額が請求され…」/ downgrade=「現在の請求期間終了後に {plan} へ切り替わります…」。Esc / backdrop / キャンセルで閉、確認で changePlan 発火 → `/app?billing=upgrade|downgrade`。**mobile で modal が画面内に収まり tap 可能か**。
 - **U4 (予約中ブロック + 取消 banner)**: ダウングレード予約中 (DB `scheduled_downgrade_schedule_id` set) は全変更 CTA disable + 案内文、page 上部に短縮版 banner「**{tier} {interval}へ変更予約中（{date}）— 取消**」(例:「Standard 月額へ変更予約中（2026/7/1）— 取消」)。取消 → cancelDowngrade → 3 列 clear → 再操作可。日付が `Intl ja-JP` 整形。(T8-copy `234175a` で冗長版「Standard プラン 月額 への…」から短縮済)
@@ -213,7 +249,7 @@ T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12
 - Claude Code は `[reviewed]` を**先付けしない** (smoke 通過が裏取り条件)。
 - Stop hook (`check-review.sh`) が tag 無し feat で turn 終了を妨げる場合は **bypass で通してよい** (保留中の正当状態)。hook の都合で `[reviewed]` を先付けするのは禁止。
 - `[reviewed]` は OT smoke 通過後に 10 commit へ `git rebase` で一括付与 (OT GO → Claude Code が提案・実行)。
-重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で app が unlinked sub を release してしまう (前進前後を問わず schedule が消える / release 関連 notifyOps が発火する)、Smoke 5-B で 3 列が set/clear されない、Smoke 5-C で自動 release が発火しない / DB 3 列が clear されない / §5.5 ブロックが解除されない、Smoke 4-a で plan が free 化する (中間状態で free 化する実装バグ)、Smoke 4-b で free 化が起きない / current_period_end が消える (履歴破壊)、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
+重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で app が unlinked sub を release してしまう (前進前後を問わず schedule が消える / release 関連 notifyOps が発火する)、Smoke 5-B で 3 列が set/clear されない、Smoke 5-C で自動 release が発火しない / DB 3 列が clear されない / §5.5 ブロックが解除されない、Smoke 4-a で plan が free 化する (中間状態で free 化する実装バグ)、Smoke 4-b で free 化が起きない / current_period_end が消える (履歴破壊)、Smoke 5-C-2 で DB が両方 set のまま収束しない / plan が free/standard/pro いずれでもない不整合値で止まる / 未処理の gate mismatch が記録される、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
 
 ---
 
