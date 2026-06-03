@@ -77,11 +77,20 @@ export function UpgradePlans({
         />
       )}
 
-      {blocked && (
+      {/* §5.5 notice の出し分け: blocked 自体は OR のままで全 CTA は disable
+          されるが、 notice は状態別に文言を分ける (旧版は支払い待ち向け文言が
+          ダウングレード予約のみの状態でも出ていた)。 hasScheduledDowngrade
+          のみは DowngradeReservationBanner が予約内容 + 取消ボタンを既に
+          表示するため、 追加 notice を出さない (冗長回避)。 */}
+      {hasPendingUpdate ? (
         <p role="status" aria-live="polite" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
-          処理中の支払い完了 または 予約キャンセルを先に行ってください
+          お支払いの処理中です。完了までお待ちください。
         </p>
-      )}
+      ) : cancelScheduled ? (
+        <p role="status" aria-live="polite" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
+          解約予約中です。プラン変更するには『お支払い・解約を管理』から予約を取り消してください。
+        </p>
+      ) : null}
 
       {/* 月↔年 toggle (radio 風 segmented button) */}
       <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 mb-6">
