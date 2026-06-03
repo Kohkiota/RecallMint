@@ -9,6 +9,7 @@ const {
   mockNotifyOps,
   mockNotifyWebhookError,
   mockSyncClerkMetadata,
+  mockReleaseCompletedDowngrade,
 } = vi.hoisted(() => ({
   mockConstructEvent: vi.fn(),
   mockDbInsert: vi.fn(),
@@ -17,6 +18,7 @@ const {
   mockNotifyOps: vi.fn().mockResolvedValue(undefined),
   mockNotifyWebhookError: vi.fn().mockResolvedValue(undefined),
   mockSyncClerkMetadata: vi.fn().mockResolvedValue({ ok: true }),
+  mockReleaseCompletedDowngrade: vi.fn().mockResolvedValue('released'),
 }))
 
 vi.mock('@/lib/db', () => ({
@@ -40,6 +42,10 @@ vi.mock('@/lib/ops', () => ({
 
 vi.mock('@/lib/auth/clerk-metadata', () => ({
   syncClerkPublicMetadata: mockSyncClerkMetadata,
+}))
+
+vi.mock('@/lib/stripe/subscription', () => ({
+  releaseCompletedDowngrade: mockReleaseCompletedDowngrade,
 }))
 
 import { POST } from './route'
@@ -77,6 +83,7 @@ beforeEach(() => {
   process.env.STRIPE_WEBHOOK_SECRET = SECRET
   mockNotifyOps.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
+  mockReleaseCompletedDowngrade.mockResolvedValue('released')
 })
 
 function makeReq(body: unknown): Request {
@@ -102,18 +109,23 @@ function sub({
   cycleEnd = 1779999999,
   cancelAt = null,
   customerId = 'cus_unit_test',
+  schedule = null,
 }: {
   priceId: string
   status?: string
   cycleEnd?: number
   cancelAt?: number | null
   customerId?: string
+  // §6.4 release gate #1: sub.schedule は string id / 展開 object / null で来うる。
+  // 既存 test は schedule 不要なので default null (gate を通っても no-op)。
+  schedule?: string | { id: string } | null
 }) {
   return {
     id: 'sub_unit',
     customer: customerId,
     status,
     cancel_at: cancelAt,
+    schedule,
     items: { data: [{ price: { id: priceId }, current_period_end: cycleEnd }] },
   }
 }
@@ -226,10 +238,19 @@ describe('Stripe webhook: Standard 配線 + billing_interval', () => {
     )
     // currentPeriodEnd は billing 履歴として touch しない契約 (route.ts §deleted)。
     // set 引数の key を厳密検証することで「うっかり currentPeriodEnd: null を
-    // 足す」regression を弾く。
+    // 足す」regression を弾く。 §6.4 で予約 3 列 clear を追加したのでそれらは含む。
     const setArgs = (setCall.mock.calls[0][0] ?? {}) as Record<string, unknown>
     expect(Object.keys(setArgs).sort()).toEqual(
-      ['billingInterval', 'cancelAt', 'plan', 'stripeSubscriptionId', 'subscriptionStatus'].sort(),
+      [
+        'billingInterval',
+        'cancelAt',
+        'plan',
+        'stripeSubscriptionId',
+        'subscriptionStatus',
+        'scheduledDowngradeScheduleId',
+        'scheduledTargetPriceId',
+        'scheduledChangeEffectiveAt',
+      ].sort(),
     )
   })
 
@@ -720,5 +741,359 @@ describe('Stripe webhook: Clerk publicMetadata sync', () => {
     const res = await POST(makeReq({ id: 'evt_meta_6' }))
     expect(res.status).toBe(200)
     expect(mockSyncClerkMetadata).toHaveBeenCalledOnce()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 12: ダウングレード発効後 release gate (§6.4) + subscription_schedule.released
+//
+// gate は customer.subscription.updated でのみ走る。plan-sync update の
+// returning に scheduledDowngradeScheduleId / scheduledTargetPriceId を載せ、
+// #1 (sub.schedule === DB scheduleId) かつ #5 (item price === target price) を
+// 充足したときのみ releaseCompletedDowngrade に委譲。戻り値で 3 列 clear 分岐。
+// ---------------------------------------------------------------------------
+
+// helper: gate test 用 plan-sync returning row (linked + 予約あり)。
+function gateRow(overrides: Record<string, unknown> = {}) {
+  return [
+    {
+      clerkId: 'user_gate',
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: PRICE.STANDARD_MONTHLY,
+      ...overrides,
+    },
+  ]
+}
+
+describe('Stripe webhook: release gate (§6.4)', () => {
+  it('#1 + #5 充足 → releaseCompletedDowngrade 委譲 / released で 3 列 clear', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_1',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_1',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockReleaseCompletedDowngrade.mockResolvedValueOnce('released')
+    // 1st = plan-sync (returning gateRow)、 2nd = clear update
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow())).mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_gate_1' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).toHaveBeenCalledWith('sched_x', 'autorelease:sched_x')
+    // 2nd update = 3 列 clear
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    const clearSet = (mockDbUpdate.mock.results[1].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(clearSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      }),
+    )
+  })
+
+  it('result = already_terminal でも 3 列 clear', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_2',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_2',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockReleaseCompletedDowngrade.mockResolvedValueOnce('already_terminal')
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow())).mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_gate_2' }))
+    expect(res.status).toBe(200)
+
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    const clearSet = (mockDbUpdate.mock.results[1].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(clearSet).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduledDowngradeScheduleId: null }),
+    )
+  })
+
+  it('result = skipped → clear しない (予約維持)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_3',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_3',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockReleaseCompletedDowngrade.mockResolvedValueOnce('skipped')
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+
+    const res = await POST(makeReq({ id: 'evt_gate_3' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).toHaveBeenCalledTimes(1)
+    // plan-sync の 1 回のみ。clear update なし。
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('#5 未反映 (item price !== target) → 委譲せず・clear なし', async () => {
+    // item price = PRO_YEARLY だが target = STANDARD_MONTHLY (まだ phase0)。
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_4',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.PRO_YEARLY,
+          customerId: 'cus_gate_4',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+
+    const res = await POST(makeReq({ id: 'evt_gate_4' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('sub.schedule = null (DB 予約あり) → no-op: 委譲なし・clear なし・mismatch notify なし', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_5',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_5',
+          schedule: null,
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+
+    const res = await POST(makeReq({ id: 'evt_gate_5' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+    // mismatch notify は出ない (schedule null は released handler 担当)。
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('sub.schedule = 別 non-null id → notifyOps (mismatch)・委譲なし・clear なし', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_6',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_6',
+          schedule: 'sched_other',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+
+    const res = await POST(makeReq({ id: 'evt_gate_6' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      expect.stringMatching(/schedule.*mismatch/i),
+      expect.objectContaining({ customerId: 'cus_gate_6' }),
+    )
+  })
+
+  it('DB scheduledDowngradeScheduleId null (予約なし) → gate 全 skip (sub.schedule あっても)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_7',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_gate_7',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(
+      chain([{ clerkId: 'user_gate', scheduledDowngradeScheduleId: null, scheduledTargetPriceId: null }]),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_gate_7' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('subscription_schedule.released → 3 列冪等 clear (where on scheduledDowngradeScheduleId)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_rel_1',
+      type: 'subscription_schedule.released',
+      data: { object: { id: 'sched_x' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: 'user_gate' }]))
+
+    const res = await POST(makeReq({ id: 'evt_rel_1' }))
+    expect(res.status).toBe(200)
+
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+    const clearSet = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(clearSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      }),
+    )
+  })
+
+  it('subscription_schedule.released で 0 行 match → 200・notifyOps なし (冪等)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_rel_2',
+      type: 'subscription_schedule.released',
+      data: { object: { id: 'sched_already_cleared' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([])) // 0 row
+
+    const res = await POST(makeReq({ id: 'evt_rel_2' }))
+    expect(res.status).toBe(200)
+
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+    expect(mockNotifyWebhookError).not.toHaveBeenCalled()
+  })
+
+  it('§6.4.1 recovery: released 後の clear 失敗を .released が回収', async () => {
+    // 1) .updated: delegate released → clear update が reject → outer catch で 200。
+    mockConstructEvent.mockReturnValueOnce({
+      id: 'evt_rec_1',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_rec',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockReleaseCompletedDowngrade.mockResolvedValueOnce('released')
+    const rejectingClear = chain()
+    rejectingClear.then = (_onF: unknown, onRej: (e: unknown) => void) =>
+      Promise.reject(new Error('clear failed')).then(undefined, onRej)
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow())).mockReturnValueOnce(rejectingClear)
+
+    const res1 = await POST(makeReq({ id: 'evt_rec_1' }))
+    expect(res1.status).toBe(200)
+    expect(mockNotifyWebhookError).toHaveBeenCalledTimes(1)
+
+    // 2) 別 .released event が clear を回収。
+    mockConstructEvent.mockReturnValueOnce({
+      id: 'evt_rec_2',
+      type: 'subscription_schedule.released',
+      data: { object: { id: 'sched_x' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: 'user_gate' }]))
+
+    const res2 = await POST(makeReq({ id: 'evt_rec_2' }))
+    expect(res2.status).toBe(200)
+    const recoverSet = (mockDbUpdate.mock.results[2].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(recoverSet).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduledDowngradeScheduleId: null }),
+    )
+  })
+
+  it('.released 先着 → 後着 .updated は no-op (plan-sync returning が予約 null)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_order_1',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_order',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    // .released 先着で既に clear 済 → plan-sync returning の予約列は null。
+    mockDbUpdate.mockReturnValueOnce(
+      chain([{ clerkId: 'user_gate', scheduledDowngradeScheduleId: null, scheduledTargetPriceId: null }]),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_order_1' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('customer.subscription.deleted → reset SET に 3 列 clear を含む', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_del_clear',
+      type: 'customer.subscription.deleted',
+      data: { object: { customer: 'cus_del_clear' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: 'user_gate' }]))
+
+    const res = await POST(makeReq({ id: 'evt_del_clear' }))
+    expect(res.status).toBe(200)
+
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: 'free',
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      }),
+    )
+  })
+
+  it('release gate: 委譲は customer.subscription.created では走らない', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_created_gate',
+      type: 'customer.subscription.created',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_created_gate',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+
+    const res = await POST(makeReq({ id: 'evt_created_gate' }))
+    expect(res.status).toBe(200)
+
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
   })
 })

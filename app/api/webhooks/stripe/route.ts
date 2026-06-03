@@ -8,6 +8,7 @@ import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { logger } from '@/lib/logger'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
+import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
 
 export const runtime = 'nodejs'
 
@@ -245,6 +246,9 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       // RETURNING で clerkId を取得し、 続けて Clerk publicMetadata sync。
       // UPDATE が 0 行 match (= checkout.session.completed が先着していない race)
       // のときは returning 空 → metadata sync skip。
+      // plan-sync の SET は予約 3 列を触らないため、 returning で既存の予約値
+      // (scheduledDowngradeScheduleId / scheduledTargetPriceId) をそのまま取り出せる。
+      // これを §6.4 release gate の照合材料に使う。
       const updated = await db
         .update(users)
         .set({
@@ -256,10 +260,26 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           stripeSubscriptionId: sub.id,
         })
         .where(eq(users.stripeCustomerId, customerId))
-        .returning({ clerkId: users.clerkId })
+        .returning({
+          clerkId: users.clerkId,
+          scheduledDowngradeScheduleId: users.scheduledDowngradeScheduleId,
+          scheduledTargetPriceId: users.scheduledTargetPriceId,
+        })
       const clerkId = updated?.[0]?.clerkId
       if (clerkId) {
         await syncClerkPublicMetadata({ clerkId, plan })
+        // §6.4 release gate: .updated でのみ、 かつ予約が存在するときだけ評価する。
+        // priceId は extractSubFields の現 item price (#5 の比較材料)。
+        if (event.type === 'customer.subscription.updated') {
+          await evaluateReleaseGate({
+            sub,
+            customerId,
+            priceId,
+            dbScheduleId: updated[0].scheduledDowngradeScheduleId ?? null,
+            dbTargetPriceId: updated[0].scheduledTargetPriceId ?? null,
+            eventId: event.id,
+          })
+        }
       } else if (event.type === 'customer.subscription.updated') {
         // .created の unlinked race は checkout.session.completed が後追いで救済
         // するため alert 不要 (新規 sign-up の自然な ordering)。 .updated で
@@ -289,6 +309,10 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
           subscriptionStatus: 'canceled',
           cancelAt: null,
           stripeSubscriptionId: null,
+          // subscription 消滅時は宙ぶらりんなダウングレード予約も無効なので clear。
+          scheduledDowngradeScheduleId: null,
+          scheduledTargetPriceId: null,
+          scheduledChangeEffectiveAt: null,
         })
         .where(eq(users.stripeCustomerId, customerId))
         .returning({ clerkId: users.clerkId })
@@ -321,8 +345,82 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       })
       return
     }
+    case 'subscription_schedule.released': {
+      // §6.4 / §6.4.1: schedule の release を最終正として 3 列を冪等 clear。
+      // .updated gate の clear 失敗や、 能動 release 後の取りこぼしを回収する
+      // recovery path。 0 行 match (既に clear 済) は正常な no-op。
+      const schedule = event.data.object as Stripe.SubscriptionSchedule
+      await db
+        .update(users)
+        .set({
+          scheduledDowngradeScheduleId: null,
+          scheduledTargetPriceId: null,
+          scheduledChangeEffectiveAt: null,
+        })
+        .where(eq(users.scheduledDowngradeScheduleId, schedule.id))
+      return
+    }
     default:
       // Unknown event — no-op. Caller still returns 200.
       return
+  }
+}
+
+// §6.4 release gate。 customer.subscription.updated で plan 同期後、 予約
+// (scheduledDowngradeScheduleId) が存在するときのみ呼ばれる。
+// #1 (sub.schedule === DB scheduleId) かつ #5 (現 item price === target price)
+// を充足したときに releaseCompletedDowngrade へ委譲し、 戻り値で 3 列 clear を分岐。
+// status/#2/#3/#4 の判定は releaseCompletedDowngrade (T10) が担う。
+async function evaluateReleaseGate(args: {
+  sub: Stripe.Subscription
+  customerId: string
+  priceId: string | null
+  dbScheduleId: string | null
+  dbTargetPriceId: string | null
+  eventId: string
+}): Promise<void> {
+  const { sub, customerId, priceId, dbScheduleId, dbTargetPriceId, eventId } = args
+  // 予約なし → gate 全 skip。
+  if (!dbScheduleId) return
+
+  // #1: sub.schedule は string id / 展開 object / null で来うる。
+  const subScheduleId =
+    typeof sub.schedule === 'string' ? sub.schedule : (sub.schedule?.id ?? null)
+
+  // schedule null は no-op (clear は subscription_schedule.released handler 担当)。
+  if (subScheduleId == null) return
+
+  // 別 non-null id は照合不一致 = OT 介入対象の anomaly。 委譲も clear もしない。
+  if (subScheduleId !== dbScheduleId) {
+    await notifyOps('stripe release gate schedule mismatch', {
+      eventId,
+      customerId,
+      subScheduleId,
+      dbScheduleId,
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+    return
+  }
+
+  // #5: 現 item price が target price に切り替わっているか。 未反映なら phase0 の
+  // ままで切替未発効 → 委譲しない (予約維持)。
+  if (priceId !== dbTargetPriceId) return
+
+  // #1 && #5 充足。 releaseCompletedDowngrade に委譲 (status gate は同関数が判定)。
+  // throw は外側 try に伝播させ notifyWebhookError + 200 で処理する (§6.4.1)。
+  const result = await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
+
+  // released / already_terminal は予約役目を終えたので 3 列 clear。
+  // skipped (not_started 等) は予約を維持する。
+  if (result === 'released' || result === 'already_terminal') {
+    await getDb()
+      .update(users)
+      .set({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      })
+      .where(eq(users.stripeCustomerId, customerId))
   }
 }
