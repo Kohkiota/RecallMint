@@ -75,6 +75,19 @@ Smoke 1-4 は基盤挙動 (即時 upgrade / schedule 作成 / 手動 release=予
 - **Smoke 5 (auto-release)**: Smoke 2 で schedule を張り test clock を phases[0].end_date 以降へ前進 → `customer.subscription.updated` 受信 → gate #1/#2/#4/#5 充足で app が `subscriptionSchedules.release` を発火 → `sub.schedule` が null → DB `users` の `scheduled_downgrade_schedule_id` 等 3 列が clear → §5.5 ブロック解除 (プラン変更 UI が再び操作可)。
 - 確認点: 発効前 (#4 false) は release されない / `subscription_schedule.released` 受信でも 3 列が冪等 clear / 二重 webhook で副作用なし。
 
+## UI smoke (T6-T8 実装後に実施、Smoke 1-5 と並行可)
+backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile view) を確認する。実装詳細: `docs/superpowers/sessions/2026-06-03-in-place-plan-change-impl-T11-T12-T6-T8.md`。
+
+- **U1 (entry 統一)**: paid user の `/app/settings` に「プラン変更」+「お支払い・解約を管理」2 ボタン / `/app` 下部 CTA が全 plan (pro+year 含む) で「プラン変更」表示。free は「プランを選択」のまま。
+- **U2 (card 選択可否)**: `/app/upgrade` で現プランのみ disable「現在のプラン」、下位プランも選択可 (旧「現在より下位プラン」disable が消滅)。pro+year でも redirect されず page 表示。
+- **U3 (確認 modal)**: paid で上位/下位 card の CTA → 金額なし確認 modal。upgrade=「今すぐ差額が請求され…」/ downgrade=「現在の請求期間終了後に {plan} へ切り替わります…」。Esc / backdrop / キャンセルで閉、確認で changePlan 発火 → `/app?billing=upgrade|downgrade`。**mobile で modal が画面内に収まり tap 可能か**。
+- **U4 (予約中ブロック + 取消 banner)**: ダウングレード予約中 (DB `scheduled_downgrade_schedule_id` set) は全変更 CTA disable + 案内文、page 上部に「{plan} へのダウングレード予約中 ({日付}) — 取消」banner。取消 → cancelDowngrade → 3 列 clear → 再操作可。日付が `Intl ja-JP` 整形。
+- **U5 (success banner)**: `/app?billing=new|upgrade|downgrade` 着地で対応文言 banner 表示・dismiss 可。Checkout success_url が `?billing=new` に。
+- 確認点: §5.5 ブロック中に UI で操作できる抜け道がない (server `changePlan` も同条件で `CHANGE_BLOCKED`)。
+- copy 確認: 取消 banner の plan ラベルが `planLabelFor` 由来で冗長 (「Standard プラン 月額 への…」) — 短縮要否を OT 判断。
+
 ## [reviewed] amend の段取り (改訂)
-方針C 採用に伴い、ダウングレードは「予約 → 期末切替 → **自動 release** → 通常 subscription 復帰」まで揃って完結する。よって **T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` の `[reviewed]` amend は、方針C タスク (T9-T12) 完了 + Smoke 1-5 通過後にまとめて実施**する (基盤だけ先に tag 付けしない)。
+方針C 採用に伴い、ダウングレードは「予約 → 期末切替 → **自動 release** → 通常 subscription 復帰」まで揃って完結する。よって **以下 9 commit の `[reviewed]` amend は、Smoke 1-5 + UI smoke (U1-U5) 通過後にまとめて実施**する (基盤だけ先に tag 付けしない):
+T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12 `7607134` / T6 `fea94c5` / T7 `6d0af95` / T8 `6d63a36`。
+(全実装 2026-06-03 完了。各 commit は spec compliance + code quality canonical review 通過済 = `[reviewed]` の実体は満たすが、決済/外部副作用の裏取りとして OT 実機 smoke を待つ。amend は連続 commit のため OT GO 後に `git rebase` で一括付与する。)
 重点 NG 条件: Smoke 2/3/5 で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5 で発効前に release される/3 列が clear されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
