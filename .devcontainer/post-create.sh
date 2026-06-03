@@ -11,20 +11,26 @@
 set -e
 
 echo "==> [1/8] npm global prefix"
-mkdir -p ~/.npm-global "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+mkdir -p ~/.npm-global ~/.local/bin "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 npm config set prefix ~/.npm-global
 
 if ! grep -q ".npm-global/bin" ~/.bashrc 2>/dev/null; then
-  echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
+  echo 'export PATH=~/.local/bin:~/.npm-global/bin:$PATH' >> ~/.bashrc
 fi
-export PATH=~/.npm-global/bin:$PATH
+export PATH=~/.local/bin:~/.npm-global/bin:$PATH
 
 echo "==> [2/8] pnpm"
 npm install -g pnpm
 pnpm config set store-dir ~/.local/share/pnpm-store
 
-echo "==> [3/8] Claude Code"
-npm install -g @anthropic-ai/claude-code
+echo "==> [3/8] Claude Code (native installer, stable channel)"
+# 旧 npm-global 版が残ると PATH 次第で拾われるので消す（冪等）
+npm uninstall -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
+curl -fsSL https://claude.ai/install.sh | bash -s stable
+export PATH="$HOME/.local/bin:$PATH"
+hash -r
+claude --version
+claude doctor || true
 
 echo "==> [4/8] Stripe CLI"
 if ! command -v stripe &> /dev/null; then

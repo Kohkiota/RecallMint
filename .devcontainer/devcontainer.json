@@ -54,6 +54,6 @@
 
   "remoteEnv": {
     "PNPM_HOME": "/root/.local/share/pnpm",
-    "PATH": "/root/.local/share/pnpm:/root/.npm-global/bin:${containerEnv:PATH}"
+    "PATH": "/root/.local/bin:/root/.local/share/pnpm:/root/.npm-global/bin:${containerEnv:PATH}"
   }
 }

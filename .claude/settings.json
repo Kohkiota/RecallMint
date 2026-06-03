@@ -25,6 +25,7 @@
     "defaultMode": "bypassPermissions"
   },
   "model": "opus",
+  "autoUpdatesChannel": "stable",
   "hooks": {
     "Stop": [
       {
