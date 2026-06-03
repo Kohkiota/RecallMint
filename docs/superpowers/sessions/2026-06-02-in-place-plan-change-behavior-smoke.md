@@ -108,9 +108,27 @@ stripe subscription_schedules release sched_XXX
 ```
 **期待**: schedule が release され、subscription は**現 price (Pro月) のまま継続**。ダウングレードは起きない。`sub.schedule` が null に戻る。**price / billing anchor が release 後も不変**であること (重点確認項目)。
 
-## 4. webhook sub id クリア (解約) 〔系統 (b) DB 紐付き sub〕
-Customer Portal から解約 → 期末 or 即時で `customer.subscription.deleted` 発火。
-**期待 (T4)**: DB `users.stripe_subscription_id` が `null` に、`plan='free'`, `subscription_status='canceled'`, `billing_interval=null`, `cancel_at=null`。`current_period_end` は履歴として残る。
+## 4. webhook sub id クリア (解約) — **実装上 2 段階**
+Customer Portal からの解約は実装上 **4-a (.updated 段階) → 4-b (.deleted 段階)** の 2 段階に分解される。 旧 doc は .deleted 後の最終状態のみ書いており、 4-a の中間状態 (cancel_at set / plan は据え置き) が欠けていたため OT 観測とズレていた。
+
+> 註: Portal の cancel mode (即時 / 期末) は **Stripe Dashboard 側 Portal 設定の default (= end of billing period)** で決まり、 自前コードは `cancel_at_period_end` を制御しない (`createBillingPortalSession` は `portal_configuration` を渡さない、 `app/(app)/app/settings/actions.ts:7-24`)。 stg 観測の「期末予約」 はこの default の結果。
+
+### 4-a. Portal 解約ボタン直後 (.updated 段階、 期末予約成立) 〔系統 (b) DB 紐付き sub・clock なし〕
+0-(b) の DB 紐付き sub (Standard 月) で Customer Portal から解約 → 期末予約成立 → `customer.subscription.updated` 受信 (この時点で sub は `status='active'` のまま、 `cancel_at_period_end=true`、 `cancel_at` に Unix 秒)。 handler: `route.ts:237-296`。
+**期待 (.updated 段階)**:
+- DB `users.cancel_at` に**予約日 (Date)** が set される。
+- DB `users.current_period_end` に**期末日 (Date)** が set される (`item.current_period_end` と同値、 通常 `cancel_at` と一致)。
+- DB `users.plan` / `users.billing_interval` / `users.subscription_status` (= `'active'`) / `users.stripe_subscription_id` は**据え置き** (= **free 化しない**)。
+- DB scheduled 3 列は SET 句外なので触らない。
+- Clerk publicMetadata は `plan` 据え置き値で再 sync (実質変化なし)。
+> 註: ここで free 化を期待してはならない。 free 化は期末到来後の **4-b (.deleted)** で起きる。 4-a は clock 不要で実時間即観測可能 (OT 既観測の挙動と一致)。
+
+### 4-b. 期末到来後 (.deleted 段階、 free 化確認) 〔系統 (c) 5-C 環境に相乗り〕
+期末到来時に Stripe が `customer.subscription.deleted` を発火し、 自前 handler (`route.ts:298-334`) が DB を free 化する。 **実時間で期末まで待つのは現実的でない**ため、 **独立 setup を作らず 5-C の test clock 環境にステップとして相乗り**させる。 具体手順は **Smoke 5-C の step 9-11** (auto-release full path 検証完了後の独立追加ステップとして末尾配置)。
+**期待 (.deleted 段階)**:
+- DB `users.plan='free'` / `billing_interval=null` / `subscription_status='canceled'` / `cancel_at=null` / `stripe_subscription_id=null` / scheduled 3 列=null。
+- DB `users.current_period_end` は**触らない** (履歴として残す、 `route.ts:302` の comment 明示)。
+- Clerk publicMetadata が `plan='free'` で sync される (`route.ts:319-321`)。
 
 ## 方針C 追加 (T12 実装後に実施する auto-release smoke)
 Smoke 1-4 は基盤挙動 (即時 upgrade / schedule 作成 / 手動 release=予約取消 / sub id 同期) を検証する。**方針C の「発効後 自動 release」** は webhook gate (spec §6.4) を要するため、T10-T12 実装後に別途 smoke する。
@@ -153,6 +171,23 @@ DB 紐付き sub (test clock 無し) で、 予約 → DB set、 取消 → DB c
 
 **重点 NG (5-C)**: 自動 release が発火しない (linked + gate 充足なのに schedule が残る) / DB 3 列が clear されない / §5.5 ブロックが解除されない。 これが出たら方針C の webhook gate 実装 (`app/api/webhooks/stripe/route.ts:369-426` / `lib/stripe/subscription.ts:269-` の `releaseCompletedDowngrade`) を見直し。
 
+---
+
+#### 5-C 続き: 4-b (Portal 解約 → 期末到来 → free 化) の相乗り検証
+step 1-8 で auto-release full path を確認した後、 **同じ test clock customer + DB 紐付き user 上で続けて** 4-b を観察する。 step 9-11 は step 1-8 とは独立した追加検証であり、 step 1-8 が NG で停止した場合は 4-b 相乗りも実施しない (5-C 本来の検証を優先)。 sub 状態は step 8 終了時点で Standard 月 (downgrade 発効後)、 schedule released、 DB 3 列 clear、 ブロック解除済。
+
+9. **(4-b 準備) アプリ `/app/settings` から Customer Portal を開き、 当該 sub (Standard 月) を解約**。 → `customer.subscription.updated` 受信 (期末予約)。 確認 (= **4-a の中間状態**を 5-C 環境でも再観測):
+   - Supabase: `users.cancel_at` に**期末日 (Date)** / `users.current_period_end` に同値 (Date) が set。
+   - Supabase: `users.plan='standard'` / `users.billing_interval='month'` / `users.subscription_status='active'` / `users.stripe_subscription_id` は**据え置き** (= free 化していない)。
+   - 4-a (系統 b) で既に確認済の挙動と同一なので、 ここは skip 可。 5-C 環境でも再現することの裏取りとして観察したい場合のみ実施。
+10. **CLI で時間前進**: `stripe test_helpers test_clocks advance <clock_id> -d frozen_time=<step 9 で set された current_period_end 以降の Unix 秒>` (step 6 の advance とは別の advance、 期末到来用)。
+11. **`customer.subscription.deleted` 受信 → DB free 化を確認** (= **4-b の最終状態**):
+    - Supabase: `users.plan='free'` / `users.billing_interval=null` / `users.subscription_status='canceled'` / `users.cancel_at=null` / `users.stripe_subscription_id=null` / scheduled 3 列=null。
+    - Supabase: `users.current_period_end` は**触らない (履歴として残る)**。
+    - Clerk dashboard で当該 user の `publicMetadata.plan='free'` で sync されていること。
+
+**重点 NG (5-C / 4-b)**: 4-a 段階 (step 9) で plan が free 化してしまう (= 中間状態で free 化される実装バグ) / 4-b 段階 (step 11) で free 化が起きない / `current_period_end` が消える (= 履歴破壊) / scheduled 3 列が clear されない。 これが出たら `route.ts:237-296` (.updated handler) / `:298-334` (.deleted handler) を見直し。
+
 ## UI smoke (T6-T8 実装後に実施、Smoke 1-5 と並行可)
 backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile view) を確認する。実装詳細: `docs/superpowers/sessions/2026-06-03-in-place-plan-change-impl-T11-T12-T6-T8.md`。
 
@@ -173,4 +208,16 @@ T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12
 - Claude Code は `[reviewed]` を**先付けしない** (smoke 通過が裏取り条件)。
 - Stop hook (`check-review.sh`) が tag 無し feat で turn 終了を妨げる場合は **bypass で通してよい** (保留中の正当状態)。hook の都合で `[reviewed]` を先付けするのは禁止。
 - `[reviewed]` は OT smoke 通過後に 10 commit へ `git rebase` で一括付与 (OT GO → Claude Code が提案・実行)。
-重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で発効前に release される (clock 前進前に schedule が消える)、Smoke 5-B で 3 列が set/clear されない、Smoke 5-C で自動 release が発火しない / DB 3 列が clear されない / §5.5 ブロックが解除されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
+重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で発効前に release される (clock 前進前に schedule が消える)、Smoke 5-B で 3 列が set/clear されない、Smoke 5-C で自動 release が発火しない / DB 3 列が clear されない / §5.5 ブロックが解除されない、Smoke 4-a で plan が free 化する (中間状態で free 化する実装バグ)、Smoke 4-b で free 化が起きない / current_period_end が消える (履歴破壊)、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
+
+---
+
+## 別件メモ (本 sprint smoke 対象外)
+解約まわりの実装挙動調査で判明したが、 本 sprint (プラン変更 in-place 化) の範囲外として記録のみ残す。 smoke 項目は立てない。
+
+- **Clerk アカウント削除フロー** (`app/api/webhooks/clerk/route.ts:132-235`): `user.deleted` 受信 → `stripe.subscriptions.cancel` で**即時 cancel** (期末予約ではない) → DB transaction で `users` を**論理削除** (`deleted_at=now()`) + `exams` / `study_days` / `contact_messages` を**物理削除** (`exams` の cascade で `cards` / `source_documents` / `reviews` も連鎖物理削除)。 **Stripe customer 自体は削除しない** (`stripe.customers.del` の呼出なし)。
+- **未確認 (cascade FK 持ち table の残置)**: `ai_usage_users` (`schema.ts:169`) / `user_preferences` (推定、 `:470`/`:489`) / `clerk_metadata_audit` 等 (`:548`/`:598`/`:637`/`:662`) は `users.id` に `onDelete: cascade` を持つが、 Clerk handler の明示 DELETE 対象外 + `users` 論理削除のため**残置されている**。 設計意図 (残置でよい / 漏れ) は本 sprint では確認しない。
+- **未確認 (GDPR 整合性)**: `stripe.customers.del` を呼ばないことが GDPR 等の deletion 要件と整合するか (設計判断の問題、 コードからは判定不能)。
+- **未確認 (削除フロー race)**: Clerk 削除と Stripe `.deleted` webhook の race で `syncClerkPublicMetadata` (`route.ts:321`) が削除済 Clerk user に対し呼ばれた時の error 挙動 (try/catch で swallow されるか)。 outer catch (`route.ts:55-67`) で 200 swallow される設計とは別問題。
+
+該当 file path: `app/api/webhooks/clerk/route.ts:132-235` / `lib/db/schema.ts:62-122, :130-` / `app/api/webhooks/stripe/route.ts:298-334`。
