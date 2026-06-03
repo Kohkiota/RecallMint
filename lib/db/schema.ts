@@ -67,6 +67,16 @@ export const users = pgTable('users', {
   // in-place プラン変更の識別 key。1 user 1 active subscription invariant を
   // 保持し、subscription 系 webhook (created/updated/deleted) で populate/clear する。
   stripeSubscriptionId: text('stripe_subscription_id').unique(),
+  // 方針C: ダウングレード予約 (subscription_schedule) のトラッキング 3 列。
+  // changePlan のダウングレード経路で set、release 完了 webhook で clear する。
+  // scheduledDowngradeScheduleId: ブロック条件の本体 (§5.5) + release 照合 #1 (§6.4)。
+  // scheduledTargetPriceId: 予約先 price。release 照合 #5 (§6.4) で使用。
+  // scheduledChangeEffectiveAt: schedule phase0 の end_date。UI 表示専用 (切替発効日時)。
+  scheduledDowngradeScheduleId: text('scheduled_downgrade_schedule_id'),
+  scheduledTargetPriceId: text('scheduled_target_price_id'),
+  scheduledChangeEffectiveAt: timestamp('scheduled_change_effective_at', {
+    withTimezone: true,
+  }),
   plan: text('plan')
     .$type<'free' | 'standard' | 'pro'>()
     .notNull()
