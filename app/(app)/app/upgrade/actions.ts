@@ -3,7 +3,9 @@
 import { redirect } from 'next/navigation'
 import { stripe } from '@/lib/stripe'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import type { User } from '@/lib/db/schema'
+import { getDb } from '@/lib/db'
+import { users, type User } from '@/lib/db/schema'
+import { eq } from 'drizzle-orm'
 import { rankPlan } from '@/lib/plan-catalog'
 import { notifyOps } from '@/lib/ops'
 import {
@@ -95,10 +97,16 @@ export async function changePlan(formData: FormData): Promise<void> {
   const resolved = await resolveActiveSubscriptionOrNotify(user)
   const { sub, itemId } = resolved
 
-  // 二重 submit / 同時変更 / 解約予約中は受け付けない (§5.5)。UI は事前に CTA を
-  // disable する前提だが、ここは防御層 (retrieve で都度判定、DB フラグは持たない)。
+  // 二重 submit / 同時変更 / 解約予約中は受け付けない (§5.5)。
+  // ダウングレード予約中かどうかは DB 列 (scheduledDowngradeScheduleId) で判定する。
+  // sub.schedule (pending.scheduleId) 単独をブロック条件にしてはいけない — DB 列が
+  // 真実 source で、Stripe schedule が存在しても DB 列が null なら続行する。
   const pending = getPendingState(sub)
-  if (pending.hasPendingUpdate || pending.scheduleId !== null || pending.cancelScheduled) {
+  if (
+    pending.hasPendingUpdate ||
+    user.scheduledDowngradeScheduleId != null ||
+    pending.cancelScheduled
+  ) {
     throw new Error('CHANGE_BLOCKED')
   }
 
@@ -118,10 +126,19 @@ export async function changePlan(formData: FormData): Promise<void> {
     await applyUpgrade(sub.id, itemId, targetPriceId, idempotencyKey)
     redirect('/app?billing=upgrade')
   } else {
-    await scheduleDowngrade(sub, targetPriceId, idempotencyKey, {
+    const schedule = await scheduleDowngrade(sub, targetPriceId, idempotencyKey, {
       userId: user.id,
       operationId,
     })
+    // §5.3: schedule 成功後すぐ DB 3 列を set してブロックを即時有効化する。
+    // redirect より前に書く (redirect は throw でフローを終了させるため、後に書くと
+    // DB write が実行されない)。end_date は Unix 秒 → Date 変換が必要。
+    const db = getDb()
+    await db.update(users).set({
+      scheduledDowngradeScheduleId: schedule.id,
+      scheduledTargetPriceId: targetPriceId,
+      scheduledChangeEffectiveAt: new Date(schedule.phases[0].end_date * 1000),
+    }).where(eq(users.id, user.id))
     redirect('/app?billing=downgrade')
   }
 }
@@ -149,6 +166,14 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
 
   const idempotencyKey = `cancelDowngrade:${user.id}:${operationId}`
   await cancelScheduledDowngrade(pending.scheduleId, idempotencyKey)
+  // §5.5 例外: release 成功後 DB 3 列を clear (null に set) する。
+  // redirect より前に書く (redirect は throw でフローを終了させる)。
+  const db = getDb()
+  await db.update(users).set({
+    scheduledDowngradeScheduleId: null,
+    scheduledTargetPriceId: null,
+    scheduledChangeEffectiveAt: null,
+  }).where(eq(users.id, user.id))
   redirect('/app/upgrade')
 }
 

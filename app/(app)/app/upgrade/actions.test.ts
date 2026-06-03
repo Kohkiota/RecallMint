@@ -9,16 +9,28 @@ const {
   mockScheduleDowngrade,
   mockCancelScheduledDowngrade,
   mockNotifyOps,
-} = vi.hoisted(() => ({
-  mockGetCurrentUser: vi.fn(),
-  mockCheckoutCreate: vi.fn(),
-  mockResolveActiveSubscription: vi.fn(),
-  mockGetPendingState: vi.fn(),
-  mockApplyUpgrade: vi.fn(),
-  mockScheduleDowngrade: vi.fn(),
-  mockCancelScheduledDowngrade: vi.fn(),
-  mockNotifyOps: vi.fn(),
-}))
+  mockDbUpdate,
+  mockDbSet,
+  mockDbWhere,
+} = vi.hoisted(() => {
+  // DB write chain: db.update(users).set({...}).where(eq(...))
+  const mockDbWhere = vi.fn().mockResolvedValue(undefined)
+  const mockDbSet = vi.fn(() => ({ where: mockDbWhere }))
+  const mockDbUpdate = vi.fn(() => ({ set: mockDbSet }))
+  return {
+    mockGetCurrentUser: vi.fn(),
+    mockCheckoutCreate: vi.fn(),
+    mockResolveActiveSubscription: vi.fn(),
+    mockGetPendingState: vi.fn(),
+    mockApplyUpgrade: vi.fn(),
+    mockScheduleDowngrade: vi.fn(),
+    mockCancelScheduledDowngrade: vi.fn(),
+    mockNotifyOps: vi.fn(),
+    mockDbUpdate,
+    mockDbSet,
+    mockDbWhere,
+  }
+})
 
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -52,6 +64,10 @@ vi.mock('@/lib/ops', () => ({
   notifyOps: mockNotifyOps,
 }))
 
+// getDb は changePlan downgrade + cancelDowngrade の DB write で呼ばれる。
+// singleton パターン (lib/db/index.ts) だが test では factory ごと差し替える。
+vi.mock('@/lib/db', () => ({ getDb: () => ({ update: mockDbUpdate }) }))
+
 vi.mock('next/navigation', () => ({
   redirect: (url: string) => {
     // Next.js の redirect は throw でフロー終了する semantics を持つので
@@ -60,6 +76,7 @@ vi.mock('next/navigation', () => ({
   },
 }))
 
+import { eq } from 'drizzle-orm'
 import {
   createCheckoutSession,
   changePlan,
@@ -69,6 +86,7 @@ import {
   NoSubscriptionError,
   AmbiguousSubscriptionError,
 } from '@/lib/stripe/subscription'
+import { users } from '@/lib/db/schema'
 
 const baseUser = {
   id: 'u_1',
@@ -80,6 +98,10 @@ const baseUser = {
   currentPeriodEnd: null,
   cancelAt: null,
   billingInterval: null,
+  // ダウングレード予約 3 列: 既存 test が「予約なし」状態を前提とするため null に初期化。
+  scheduledDowngradeScheduleId: null,
+  scheduledTargetPriceId: null,
+  scheduledChangeEffectiveAt: null,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
   deletedAt: null,
@@ -87,6 +109,11 @@ const baseUser = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // DB mock チェーンは vi.clearAllMocks で実装が消えるので毎回再登録する。
+  mockDbWhere.mockResolvedValue(undefined)
+  mockDbSet.mockReturnValue({ where: mockDbWhere })
+  mockDbUpdate.mockReturnValue({ set: mockDbSet })
+
   mockGetCurrentUser.mockResolvedValue(baseUser)
   mockCheckoutCreate.mockResolvedValue({ url: 'https://checkout.stripe.com/test/abc' })
   // changePlan/cancelDowngrade のデフォルト happy-path 値。各 test で上書きする。
@@ -100,7 +127,12 @@ beforeEach(() => {
     cancelScheduled: false,
   })
   mockApplyUpgrade.mockResolvedValue({ id: 'sub_1' })
-  mockScheduleDowngrade.mockResolvedValue({ id: 'sched_1' })
+  // scheduleDowngrade は phases[0].end_date (unix 秒) を含む SubscriptionSchedule を返す。
+  // 1893456000 = 2030-01-01T00:00:00Z (arbitrary future timestamp for test assertions)
+  mockScheduleDowngrade.mockResolvedValue({
+    id: 'sched_1',
+    phases: [{ end_date: 1893456000 }],
+  })
   mockCancelScheduledDowngrade.mockResolvedValue({ id: 'sched_1' })
   mockNotifyOps.mockResolvedValue(undefined)
 })
@@ -272,6 +304,32 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     expect(mockApplyUpgrade).not.toHaveBeenCalled()
   })
 
+  // §5.3: downgrade 後に 3 列を DB に set してブロックを即時有効化する。
+  it('downgrade 経路: scheduleDowngrade 成功後 DB 3 列を set (user スコープ)', async () => {
+    // scheduleDowngrade は { id, phases: [{ end_date }] } を返す (beforeEach で設定済)
+    await expect(
+      changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_set' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=downgrade')
+
+    expect(mockDbSet).toHaveBeenCalledWith({
+      scheduledDowngradeScheduleId: 'sched_1',
+      scheduledTargetPriceId: process.env.STRIPE_PRICE_STANDARD_MONTHLY,
+      // end_date (Unix 秒) → Date に変換
+      scheduledChangeEffectiveAt: new Date(1893456000 * 1000),
+    })
+    // user スコープ: where 句で user.id を使う
+    expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, baseUser.id))
+  })
+
+  // §5.3 回帰: upgrade 経路では DB write しない (3 列 set は downgrade 専用)。
+  it('upgrade 経路: DB 3 列は set しない', async () => {
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_up' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+
+    expect(mockDbSet).not.toHaveBeenCalled()
+  })
+
   it('hasPendingUpdate → CHANGE_BLOCKED、apply/schedule 未呼出', async () => {
     mockGetPendingState.mockReturnValue({
       hasPendingUpdate: true,
@@ -285,10 +343,17 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     expect(mockScheduleDowngrade).not.toHaveBeenCalled()
   })
 
-  it('scheduleId 有 → CHANGE_BLOCKED、apply/schedule 未呼出', async () => {
+  // §5.5: ブロック条件は DB 列 (scheduledDowngradeScheduleId != null)。
+  // pending.scheduleId 単独ではブロックしない (回帰テスト)。
+  it('DB 列 scheduledDowngradeScheduleId 有 → CHANGE_BLOCKED、apply/schedule 未呼出', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...paidUser,
+      scheduledDowngradeScheduleId: 'sched_existing',
+    })
+    // getPendingState は scheduleId: null を返しても DB 列だけでブロックされる
     mockGetPendingState.mockReturnValue({
       hasPendingUpdate: false,
-      scheduleId: 'sched_x',
+      scheduleId: null,
       cancelScheduled: false,
     })
     await expect(
@@ -296,6 +361,24 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     ).rejects.toThrow('CHANGE_BLOCKED')
     expect(mockApplyUpgrade).not.toHaveBeenCalled()
     expect(mockScheduleDowngrade).not.toHaveBeenCalled()
+    // DB write もされない
+    expect(mockDbSet).not.toHaveBeenCalled()
+  })
+
+  // §5.5 回帰: sub.schedule (pending.scheduleId) だけでは CHANGE_BLOCKED しない。
+  // DB 列が null であれば変更処理を続行する。
+  it('pending.scheduleId 有でも DB 列 null → ブロックせず処理続行 (upgrade 例)', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_from_stripe', // Stripe 側には schedule がある
+      cancelScheduled: false,
+    })
+    // user.scheduledDowngradeScheduleId は null (DB 列未設定)
+    // → ブロックされずに upgrade 処理が走る
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_1' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+    expect(mockApplyUpgrade).toHaveBeenCalled()
   })
 
   it('cancelScheduled → CHANGE_BLOCKED、apply/schedule 未呼出', async () => {
@@ -445,5 +528,24 @@ describe('cancelDowngrade: 予約取消', () => {
     await expect(
       cancelDowngrade(changeFd({ operationId: 'op_1' })),
     ).rejects.toThrow('USER_NOT_SYNCED')
+  })
+
+  // §5.5 例外: cancelScheduledDowngrade 成功後 DB 3 列を null に clear する。
+  it('cancelScheduledDowngrade 成功後 DB 3 列を clear (null set、user スコープ)', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_x',
+      cancelScheduled: false,
+    })
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_clear' })),
+    ).rejects.toThrow('__REDIRECT__:/app/upgrade')
+
+    expect(mockDbSet).toHaveBeenCalledWith({
+      scheduledDowngradeScheduleId: null,
+      scheduledTargetPriceId: null,
+      scheduledChangeEffectiveAt: null,
+    })
+    expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, baseUser.id))
   })
 })
