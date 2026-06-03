@@ -7,21 +7,23 @@
 
 > 注: これは UI 前の behavior-only smoke。我々の action 自体は UI(T6/7) 未実装のため、ここでは action が組み立てる API call を OT が Stripe CLI/dashboard で手動再現する。挙動が想定どおりなら amend → UI 実装へ。
 
-## ⚠️ 前提: 「DB 紐付き ⇄ test clock」 の両立不可 (smoke を 2 系統に分ける)
+## ⚠️ 前提: 「DB 紐付き ⇄ test clock」 の default 両立不可 (smoke を 3 系統に分ける)
 
-OT は **DB を Supabase ブラウザ / Stripe・Clerk をダッシュボード**で目視する。 ただし 1 つの subscription で「DB 列確認」と「時間前進」を**同時には満たせない**:
+OT は **DB を Supabase ブラウザ / Stripe・Clerk をダッシュボード**で目視する。 default 経路では 1 つの subscription で「DB 列確認」と「時間前進」を**同時には満たせない**:
 
 - **アプリ Checkout が作る customer** は Clerk 紐付き (= DB `users` 行あり) で DB 列を確認できるが、 **test clock 配下にできない** (時間を進められない)。
 - **Stripe CLI で作る test clock customer** は時間を進められるが **Clerk 未紐付け (unlinked)** で、 対応する DB `users` 行が無く DB 列を確認できない。
 
-よって本 smoke は目的別に **2 系統**で実施する (各手順の見出しにどちらかを明記):
+よって本 smoke は目的別に **3 系統**で実施する (各手順の見出しにどれかを明記):
 
-- **(a) Stripe 挙動・時間前進が要る確認** → **CLI test clock sub** を使う。
-  - 対象: Smoke 1 / 1b / 2 / 3、 および Smoke 5 の Stripe 側 (= 5-A)。
-- **(b) DB 列の set/clear・webhook→DB 同期の確認** → **アプリ Checkout の DB 紐付き sub** を使う。
+- **(a) Stripe 挙動・時間前進が要る確認** → **CLI test clock sub (unlinked)** を使う。
+  - 対象: Smoke 1 / 1b / 2 / 3、 および Smoke 5 の Stripe 側 + 管理外 sub release 安全 (= 5-A)。
+- **(b) DB 列の set/clear・webhook→DB 同期の確認** → **アプリ Checkout の DB 紐付き sub (clock なし)** を使う。
   - 対象: setup の `sub_id` 同期確認、 **1b-B (支払い失敗時の plan 非昇格)**、 Smoke 4 (解約)、 Smoke 5 の DB 側 (= 5-B)。
+- **(c) 自動 release full path 確認 (DB 紐付き × test clock 両立)** → 手動 setup で workaround (CLI で**空**の test clock customer 作成 → Supabase で当該 user 行の `stripe_customer_id` を当該 cus に手動更新 → アプリ Checkout で sub を作る)。 **stg/test 限定の手動操作**で、 本番コードには恒久的な裏口を作らない。
+  - 対象: Smoke 5 の自動 release full path (= 5-C)。
 
-> つまり「Stripe がどう動くか」は (a) で、「webhook を受けて DB がどう書き換わるか」は (b) で見る。 同一 sub で両方を見ようとしない。
+> つまり「Stripe がどう動くか」は (a) で、「webhook を受けて DB がどう書き換わるか」は (b) で、「方針C の自動 release が gate #1/#5 充足 → release 発火 → DB 3 列 clear → §5.5 ブロック解除まで通る full path」は (c) で見る。
 
 ## price ID (env、新 product)
 - Standard 月 `price_1TdqksJX13jw2LsMg1JPQYoe`
@@ -113,7 +115,7 @@ Customer Portal から解約 → 期末 or 即時で `customer.subscription.dele
 ## 方針C 追加 (T12 実装後に実施する auto-release smoke)
 Smoke 1-4 は基盤挙動 (即時 upgrade / schedule 作成 / 手動 release=予約取消 / sub id 同期) を検証する。**方針C の「発効後 自動 release」** は webhook gate (spec §6.4) を要するため、T10-T12 実装後に別途 smoke する。
 
-Smoke 5 は「DB 紐付き ⇄ test clock 両立不可」のため **5-A (Stripe 挙動・時間前進) と 5-B (DB 列 set/clear) に分割**する。
+Smoke 5 は default 経路の「DB 紐付き ⇄ test clock 両立不可」のため **5-A (Stripe 挙動・時間前進 + 管理外 sub release 安全) / 5-B (DB 列 set/clear) / 5-C (両立 workaround で自動 release full path) の 3 つに分割**する。
 
 ### Smoke 5-A — 自動 release の Stripe 挙動 + 発効前ブロック 〔系統 (a) test clock sub〕
 test clock sub で「発効前は release されない / 発効後にのみ release される」を**2 ステップに分けて**確認する。 DB 列は unlinked のため見ない (5-B で見る)。
@@ -129,7 +131,27 @@ DB 紐付き sub (test clock 無し) で、 予約 → DB set、 取消 → DB c
 
 1. **予約 (set)**: プラン変更 UI でダウングレードを予約 → Supabase で `users` の **`scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の 3 列が set** されること。
 2. **取消 (clear)**: 取消 banner から取消 → `subscriptionSchedules.release` → **3 列が clear (null)** されること。
-3. 註: 切替発効後の「3 列の自動 clear」は test clock が要るためここでは見ない。 これは **5-A の Stripe release 挙動 + `subscription_schedule.released` webhook の冪等 clear テスト**で担保する (発効 → released webhook → 3 列 clear の経路は同一ハンドラ)。
+3. 註: 切替発効後の「3 列の自動 clear」は test clock が要るためここでは見ない。 これは **5-A の Stripe release 挙動 + `subscription_schedule.released` webhook の冪等 clear テスト**で担保する (発効 → released webhook → 3 列 clear の経路は同一ハンドラ)。 **full path (linked + clock で app が能動 release → 3 列 clear → §5.5 ブロック解除) の実機担保は 5-C 参照**。
+
+### Smoke 5-C — DB 紐付き × test clock × 自動 release full path 〔系統 (c) 手動 workaround〕
+方針C の **「webhook gate #1+#5 充足 → app が能動 release → DB 3 列 clear → §5.5 ブロック解除」 の full path** を実機で 1 経路通す。 5-A (Stripe 側のみ) と 5-B (DB 側のみ・clock なし) の隙間に残っていた「linked sub に clock を載せた full path」をここで埋める。 手動 setup で workaround するため **stg/test 限定、 本番コードに恒久裏口なし**。
+
+1. **CLI**: `stripe customers create --test-clock <clock_id>` で **空の test clock customer** を作成 (clock 配下、 sub なし)。 `cus_XXX` を控える。
+   > ⚠️ **落とし穴 1 (既存 sub 持ち込み禁止)**: 0-(a) の Standard 月 入り customer を再利用しない。 既存 sub 持ち込みは Checkout で 2 本目の active sub を作り、 webhook が後勝ち上書きで 1 本目が DB から orphan 化する。 必ず empty な新規 customer を別に作る。
+2. **stg の app で `komail9server+002@gmail.com` (plan='free') にログイン**。 Supabase で当該 user 行が `plan='free'` / `stripe_subscription_id=NULL` であることを事前確認 (必要なら手動で戻す)。
+   > ⚠️ **落とし穴 2 (paid から始めない)**: paid アカウントだと `/app/upgrade` の CTA は Checkout ではなく `PaidChangeForm → changePlan` 経路になり、 本ルートが使えない。 必ず free から始める (`upgrade-plans.tsx:230-241` の `userPlan === 'free'` 分岐に乗せる)。
+3. **Supabase で当該 user 行の `stripe_customer_id` を手動更新**: `stripe_customer_id = cus_XXX` (step1 の空 clock customer)。 同時に `stripe_subscription_id=NULL` / `plan='free'` / `billing_interval=NULL` であることも再確認。
+4. **アプリ `/app/upgrade` で Checkout (Pro 月、 test card `4242 4242 4242 4242`)** → `createCheckoutSession` (`actions.ts:50-65`) が `customer: cus_XXX` を渡し、 当該 test clock customer 配下に sub が DB 紐付きで作られる。 webhook で `plan='pro'` / `billing_interval='month'` / `stripe_subscription_id=sub_...` が set されること、 `stripe_customer_id` が手入力値 (`cus_XXX`) のままなことを Supabase で確認。
+   > 註: Pro 月 から始めるのは、 5-C の主目的 (auto-release full path) に対して**途中の `applyUpgrade` / proration invoice を挟まず最短経路で downgrade 予約に進む**ため。 billing anchor の正常性検証は 5-A (Smoke 2/3/5-A) に委譲する。
+5. **アプリ UI で Pro 月 → Standard 月 のダウングレード予約**。 `PaidChangeForm → changePlan → scheduleDowngrade` 経路 (`actions.ts:72-145`)。 → Supabase で `scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の **3 列が set** されることを確認。
+6. **CLI で時間前進**: `stripe test_helpers test_clocks advance <clock_id> -d frozen_time=<phases[0].end_date 以降の Unix 秒>`。
+7. **`customer.subscription.updated` 受信 → gate #1+#5 充足 → app が `subscriptionSchedules.release` を能動発火**。 確認:
+   - **Stripe dashboard**: `sub.schedule = null` / schedule status = `released`。
+   - **Supabase**: `scheduled_downgrade_schedule_id` / `scheduled_target_price_id` / `scheduled_change_effective_at` の **3 列が clear (null)**。
+   - **アプリ UI**: §5.5 ブロックが解除され、 `/app/upgrade` で再びプラン変更 CTA が押せること (`PaidChangeForm` 上部に予約 banner が出ていないこと)。
+8. **(option)** `subscription_schedule.released` の二重 fire でも DB が冪等であること (`route.ts:348-361` の where 句で 0 行 match → no-op、 `notifyOps` 出さない)。
+
+**重点 NG (5-C)**: 自動 release が発火しない (linked + gate 充足なのに schedule が残る) / DB 3 列が clear されない / §5.5 ブロックが解除されない。 これが出たら方針C の webhook gate 実装 (`app/api/webhooks/stripe/route.ts:369-426` / `lib/stripe/subscription.ts:269-` の `releaseCompletedDowngrade`) を見直し。
 
 ## UI smoke (T6-T8 実装後に実施、Smoke 1-5 と並行可)
 backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile view) を確認する。実装詳細: `docs/superpowers/sessions/2026-06-03-in-place-plan-change-impl-T11-T12-T6-T8.md`。
@@ -151,4 +173,4 @@ T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12
 - Claude Code は `[reviewed]` を**先付けしない** (smoke 通過が裏取り条件)。
 - Stop hook (`check-review.sh`) が tag 無し feat で turn 終了を妨げる場合は **bypass で通してよい** (保留中の正当状態)。hook の都合で `[reviewed]` を先付けするのは禁止。
 - `[reviewed]` は OT smoke 通過後に 10 commit へ `git rebase` で一括付与 (OT GO → Claude Code が提案・実行)。
-重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で発効前に release される (clock 前進前に schedule が消える)、Smoke 5-B で 3 列が set/clear されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
+重点 NG 条件: Smoke 2/3/5-A で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5-A で発効前に release される (clock 前進前に schedule が消える)、Smoke 5-B で 3 列が set/clear されない、Smoke 5-C で自動 release が発火しない / DB 3 列が clear されない / §5.5 ブロックが解除されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
