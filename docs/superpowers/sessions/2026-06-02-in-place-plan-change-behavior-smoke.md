@@ -19,7 +19,7 @@ OT は **DB を Supabase ブラウザ / Stripe・Clerk をダッシュボード*
 - **(a) Stripe 挙動・時間前進が要る確認** → **CLI test clock sub** を使う。
   - 対象: Smoke 1 / 1b / 2 / 3、 および Smoke 5 の Stripe 側 (= 5-A)。
 - **(b) DB 列の set/clear・webhook→DB 同期の確認** → **アプリ Checkout の DB 紐付き sub** を使う。
-  - 対象: setup の `sub_id` 同期確認、 Smoke 4 (解約)、 Smoke 5 の DB 側 (= 5-B)。
+  - 対象: setup の `sub_id` 同期確認、 **1b-B (支払い失敗時の plan 非昇格)**、 Smoke 4 (解約)、 Smoke 5 の DB 側 (= 5-B)。
 
 > つまり「Stripe がどう動くか」は (a) で、「webhook を受けて DB がどう書き換わるか」は (b) で見る。 同一 sub で両方を見ようとしない。
 
@@ -53,11 +53,22 @@ stripe subscriptions update sub_XXX \
   -d proration_behavior=always_invoice \
   -d payment_behavior=pending_if_incomplete
 ```
-**期待 (成功時, 4242)**: 即時に差額 proration invoice が作成・支払われ、`items[0].price` が Pro月に。`customer.subscription.updated` webhook → DB `plan='pro'`, `billing_interval='month'`。`pending_update` は付かない。
+**期待 (成功時, 4242、Stripe 側のみ)**: 即時に差額 proration invoice が作成・支払われ、`items[0].price` が Pro月に。`pending_update` は付かない。
+> 確認対象は **Stripe 側のみ** (`subscription.items[0].price` / `pending_update` / `invoice`)。本 sub は test clock = Clerk 未紐付け = DB `users` 行なしのため **DB plan/billing_interval は確認しない**。DB 同期は **0-(b) / Smoke 4 / Smoke 5-B** で確認する。
 
-### 1b. 支払い失敗パス (旧 price 維持 + pending_update)
+### 1b. 支払い失敗パス (旧 price 維持 + pending_update) 〔系統 (a) test clock sub〕
 customer の default payment method を**失敗するテストカード**にして同じ update を実行 (例: `4000 0000 0000 0341` = attach 成功・charge 失敗、または Stripe Testing docs の decline card)。
-**期待**: invoice の支払いが失敗 → subscription は**更新されず旧 price (Standard月) を維持** + `sub.pending_update` がセット。DB `plan` は **standard のまま変化なし**。`invoice.payment_failed` webhook が飛び、DB 不変 + Discord (`notifyOps`) 通知が出る (T4)。
+**期待 (Stripe 側のみ)**: invoice の支払いが失敗 → subscription は**更新されず旧 price (Standard月) を維持** + `sub.pending_update` がセット。`invoice.payment_failed` イベント自体は発火する。
+> test clock sub は Clerk 未紐付けのため、**DB plan 据え置き / 自前 webhook が plan を昇格しないこと**はここでは見ない → **1b-B (系統 b)** で確認する。
+
+### 1b-B. 支払い失敗時に自前 webhook が plan を昇格しないこと 〔系統 (b) DB 紐付き sub〕
+0-(b) の DB 紐付き sub (Standard月) で、**customer と subscription の default_payment_method を失敗カード** (`pm_card_chargeCustomerFail` を customer + subscription **両方**に設定) にし、Smoke 1 と同じ `applyUpgrade` params を実行する。
+**期待**:
+- **Stripe 側**: `pending_update` が付き、`items[0].price` は**旧 price (Standard月) のまま**。
+- **DB 側**: `users.plan` / `users.billing_interval` が**旧値 (standard / month) のまま昇格しない** (= 自前 webhook は pending_update 付き `customer.subscription.updated` を受けても、現在プランを **actual current item price から正規化**し target price へ昇格させない、§6.1 正規化の実機確認)。
+- `invoice.payment_failed` → DB 不変 + Discord (`notifyOps`) 通知 (T4)。
+- **主目的**: 1b の「Stripe が旧 price を維持」に加え、**「自前 webhook が誤って plan を更新しない」を DB で確認**する点。
+> 註: 1b-B は sub に `pending_update` + 失敗カードを残すため、Smoke 4 / 5-B 用には**別の DB 紐付き sub を用意**するか、本 smoke 後に pending_update を解消 (正常カードで再 update or void invoice) + default_payment_method を戻してから進める。
 
 ## 2. scheduleDowngrade — 期末ダウングレード (例: Pro月 → Standard月) 〔系統 (a) test clock sub〕
 > Smoke 1 で Pro月 になっている前提。なっていなければ現 price を読み替え。
@@ -78,11 +89,14 @@ stripe subscription_schedules update sched_XXX \
   -d "phases[1][items][0][quantity]"=1 \
   -d "phases[1][proration_behavior]"=none
 ```
+> ⚠️ **注 (schedule update は phase を丸ごと再指定する)**: `subscription_schedules.update` は current/future phases を**丸ごと再指定**する API で、税 (`tax_rates`) / 割引 (`discounts`/`coupon`) / `trial` / `metadata` / `default_payment_method` / `collection_method` 等は**再投入しないと unset されうる**。現状の phase は price/quantity のみなので本手順で可。将来これら属性を使う場合は、retrieve した既存 phase / `default_settings` から保持値を再投入すること。
+
 **期待**:
-- step2 時点で**即時請求 / proration が発生しない** (現 phase は現 price 維持)。
-- `sub.schedule` に `sched_XXX` が付く (= getPendingState の scheduleId、以後 in-place 変更ブロック対象)。
-- **test clock を phases[0].end_date 以降に前進** → phase1 が有効化、price が Standard月 へ proration なしで切替。`customer.subscription.updated` webhook → DB `plan='standard'`。
-- **billing anchor / 次回請求日が切替後も変わらない**こと (start/end を明示指定したことで anchor がずれていないか = 重点確認項目)。
+- **schedule 作成直後 (step2)**: 即時請求 / proration が発生しない (現 phase は現 price 維持)。`billing_cycle_anchor` / `current_period_end` が**不変**。`sub.schedule` に `sched_XXX` が付く (= getPendingState の scheduleId、以後 in-place 変更ブロック対象)。
+- **test clock を phases[0].end_date 以降に前進 (phase1 発効後)**: `items[0].price` が target (Standard月) へ proration なしで切替。確認対象は **Stripe 側のみ** (test clock sub = Clerk 未紐付け = DB 行なし)。**DB 同期 (plan/billing_interval) はここでは見ない** → 発効 → DB 同期/3 列 clear は Smoke 5-A の Stripe 挙動 + Smoke 5-B / §6.4.1 released webhook で担保する。
+- **billing anchor の確認 (重点)**: 「期末をまたぐと `current_period_end` が次周期へ進むのは**正常**」であり、これを **anchor ずれと混同しない**。区別して見るべきは:
+  - ① 発効後も `billing_cycle_anchor` が **phase_start に意図せずリセットされていない**こと、
+  - ② **次回請求日が本来の月次サイクルから外れていない**こと (start/end を明示指定したことで anchor がずれていないか)。
 
 ## 3. cancelScheduledDowngrade — 予約取消 (release) 〔系統 (a) test clock sub〕
 > Smoke 2 で schedule がある状態 (test clock 前進前) で実行。
@@ -108,6 +122,7 @@ test clock sub で「発効前は release されない / 発効後にのみ rele
 2. **発効前 release されないこと (clock 前進前)**: この時点でもし `customer.subscription.updated` 等の webhook が来ても、 gate #4 (`current_phase.start_date <= now`) 未充足のため app は **release を発火しない**。 Stripe dashboard で `sub.schedule` が `sched_XXX` のまま (= 残っている) ことを確認。
 3. **発効後 release されること (clock 前進後)**: test clock を **`phases[0].end_date` 以降へ前進** → phase1 有効化 → `customer.subscription.updated` 受信 → gate #1/#2/#4/#5 充足で app が `subscriptionSchedules.release` を発火 → **`sub.schedule` が null**。 Stripe dashboard で schedule の **status=released** を目視。
 4. 確認点: 前進前は release されず (step2)、 前進後にのみ release される (step3) こと。 `subscription_schedule.released` の二重 webhook で副作用がないこと。
+5. **billing anchor (Smoke 2 と同基準)**: 発効後に `items[0].price` が target + `billing_cycle_anchor` が phase_start に意図せずリセットされていない + 次回請求日が本来の月次サイクルから外れていないこと (「期末をまたいで `current_period_end` が次周期へ進む」のは正常、anchor ずれと混同しない)。
 
 ### Smoke 5-B — DB 3 列の set/clear 〔系統 (b) DB 紐付き sub〕
 DB 紐付き sub (test clock 無し) で、 予約 → DB set、 取消 → DB clear を確認する。 切替発火 (時間前進) は見ない。
