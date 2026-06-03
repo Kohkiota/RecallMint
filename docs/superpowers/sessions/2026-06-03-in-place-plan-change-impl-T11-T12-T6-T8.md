@@ -30,7 +30,7 @@ spec: `docs/superpowers/specs/2026-06-02-in-place-plan-change-design.md` / plan:
 ## 記録のみ (未 fix の Minor / 設計上の trade-off)
 
 - T7: confirm-dialog は initial focus + Esc + backdrop のみ (full Tab focus-trap なし) = spec 許容範囲。backdrop は div+onClick (Esc で dismiss 可)。
-- T7: 予約取消 banner の plan ラベルが `planLabelFor` 由来で「Standard プラン 月額 へのダウングレード予約中…」と冗長 → **OT copy 判断待ち** (短縮「Standard」希望なら T8 系 follow-up)。
+- ~~T7: 予約取消 banner の plan ラベルが冗長~~ → **解決済 (commit `234175a`)**: OT 判断で「{tier} {interval}へ変更予約中（{date}）— 取消」形式に短縮 (例「Standard 月額へ変更予約中（2026/07/01）— 取消」)。「ダウングレード」語も廃し「変更予約」に統一。cosmetic copy、wiring 不変、tag 無し。
 - T8: legacy `?checkout=success` (deploy 跨ぎ in-flight Checkout) は banner 無視で no-op。webhook が plan 付与するため実害は success banner 欠落のみ・窓も極小 → 受容。
 - T8: `role="status"` は SSR 初期描画のため SR の auto-announce はされない (読み上げ順には載る)。
 - webhook の 3 列 clear predicate が 3 種 (`stripeCustomerId` / `scheduledDowngradeScheduleId` / `users.id`) — 1user:1sub 不変条件 (`stripeCustomerId` unique) 下で全て安全。
@@ -46,7 +46,5 @@ spec: `docs/superpowers/specs/2026-06-02-in-place-plan-change-design.md` / plan:
 
 1. **OT smoke 実行**: `docs/superpowers/sessions/2026-06-02-in-place-plan-change-behavior-smoke.md` の Smoke 1-5 (backend) + 本 doc 追記の UI smoke。
    課金 API 実走 + test clock 前進 + Stripe 本番/test 環境 = CLAUDE.md 上 OT 担当。
-2. **NG なし確認後**: T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12 `7607134` / T6 `fea94c5` / T7 `6d0af95` / T8 `6d63a36`
-   を `git commit --amend` (各 HEAD でなく対象 commit) で `[reviewed]` 追記。
-   ※ amend 順序/rebase が要るため、OT GO 後に Claude Code が `git rebase` で一括 [reviewed] 付与を提案する。
-3. copy 論点 (予約取消 banner の plan ラベル冗長) を OT が判断。
+2. **NG なし確認後**: 10 commit (T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12 `7607134` / T6 `fea94c5` / T7 `6d0af95` / T8 `6d63a36` / T8-copy `234175a`) に `[reviewed]` を `git rebase` で一括付与 (OT GO 後に Claude Code が提案・実行)。
+3. ~~copy 論点~~ → 解決済 (`234175a`)。Stop hook が tag 無しで turn 終了を妨げる場合は bypass 可 (smoke 待ちの正当状態、`[reviewed]` 先付け禁止)。

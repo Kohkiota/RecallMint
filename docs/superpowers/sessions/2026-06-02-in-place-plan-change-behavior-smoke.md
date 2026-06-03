@@ -87,7 +87,12 @@ backend smoke と別に、UI フロー (paid 在籍状態で DevTools mobile vie
 - copy 確認: 取消 banner の plan ラベルが `planLabelFor` 由来で冗長 (「Standard プラン 月額 への…」) — 短縮要否を OT 判断。
 
 ## [reviewed] amend の段取り (改訂)
-方針C 採用に伴い、ダウングレードは「予約 → 期末切替 → **自動 release** → 通常 subscription 復帰」まで揃って完結する。よって **以下 9 commit の `[reviewed]` amend は、Smoke 1-5 + UI smoke (U1-U5) 通過後にまとめて実施**する (基盤だけ先に tag 付けしない):
-T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12 `7607134` / T6 `fea94c5` / T7 `6d0af95` / T8 `6d63a36`。
+方針C 採用に伴い、ダウングレードは「予約 → 期末切替 → **自動 release** → 通常 subscription 復帰」まで揃って完結する。よって **以下 10 commit の `[reviewed]` amend は、Smoke 1-5 + UI smoke (U1-U5) 通過後にまとめて実施**する (基盤だけ先に tag 付けしない):
+T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` / T10 `0ca575e` / T11 `0416924` / T12 `7607134` / T6 `fea94c5` / T7 `6d0af95` / T8 `6d63a36` / T8-copy `234175a` (変更予約 banner 文言短縮)。
 (全実装 2026-06-03 完了。各 commit は spec compliance + code quality canonical review 通過済 = `[reviewed]` の実体は満たすが、決済/外部副作用の裏取りとして OT 実機 smoke を待つ。amend は連続 commit のため OT GO 後に `git rebase` で一括付与する。)
+
+**tag 無し commit と Stop hook の運用 (確定)**: 上記 10 commit は「OT smoke 待ちの意図的 tag 無し (裏取り保留)」が正。
+- Claude Code は `[reviewed]` を**先付けしない** (smoke 通過が裏取り条件)。
+- Stop hook (`check-review.sh`) が tag 無し feat で turn 終了を妨げる場合は **bypass で通してよい** (保留中の正当状態)。hook の都合で `[reviewed]` を先付けするのは禁止。
+- `[reviewed]` は OT smoke 通過後に 10 commit へ `git rebase` で一括付与 (OT GO → Claude Code が提案・実行)。
 重点 NG 条件: Smoke 2/3/5 で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5 で発効前に release される/3 列が clear されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。
