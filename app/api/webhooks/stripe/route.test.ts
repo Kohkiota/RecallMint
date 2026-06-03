@@ -872,7 +872,10 @@ describe('Stripe webhook: release gate (§6.4)', () => {
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it('sub.schedule = null (DB 予約あり) → no-op: 委譲なし・clear なし・mismatch notify なし', async () => {
+  it('§6.4.x 方向2: sub.schedule = null + DB に予約残存 → 3 列 clear (released webhook 取りこぼし保険)、 委譲なし・mismatch notify なし', async () => {
+    // Portal cancel が即時 release を引き起こすケース等の保険経路。 .released
+    // が endpoint 未購読 / Stripe 仕様で配信されない / 別デバイス race で取りこぼ
+    // される場合でも、 .updated は確実に配信されるためここで 3 列 clear する。
     mockConstructEvent.mockReturnValue({
       id: 'evt_gate_5',
       type: 'customer.subscription.updated',
@@ -885,14 +888,106 @@ describe('Stripe webhook: release gate (§6.4)', () => {
       },
     })
     stubIdempotencyInsertOnce()
-    mockDbUpdate.mockReturnValueOnce(chain(gateRow()))
+    // 1st = plan-sync (returning gateRow)、 2nd = 方向2 clear
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow())).mockReturnValueOnce(chain())
 
     const res = await POST(makeReq({ id: 'evt_gate_5' }))
     expect(res.status).toBe(200)
 
+    // releaseCompletedDowngrade は呼ばれない (sub.schedule==null = Stripe 側で
+    // 既に release 済 / 別経路で消滅、 委譲不要)。
     expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    // 方向2 で 3 列 clear UPDATE が走るため 2 回呼ばれる。
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    const clearSet = (mockDbUpdate.mock.results[1].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(clearSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      }),
+    )
+    // mismatch notify は出ない (sub.schedule==null は正常な「Stripe が既に release」
+    // 状態であり anomaly ではない)。
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('§6.4.x 方向2: Portal 解約シミュ (.updated + sub.schedule=null + cancel_at set + DB 予約残存) → cancel_at は plan-sync で set、 3 列 clear、 mismatch notify なし', async () => {
+    // 本番で観測された Portal 解約由来のシナリオ: Stripe が schedule を即時 release し、
+    // 同時に sub に cancel_at を set。 .released が配信されなくても、 .updated 経由で
+    // (a) plan-sync が cancel_at を set、 (b) 方向2 が scheduled 3 列を clear、 を
+    // 同一 webhook 受信内で完結させる。
+    const cancelAtUnix = 1750000000 // 任意の Unix 秒
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_portal_cancel',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          ...sub({
+            priceId: PRICE.STANDARD_MONTHLY,
+            customerId: 'cus_portal_cancel',
+            schedule: null,
+          }),
+          cancel_at: cancelAtUnix,
+          cancel_at_period_end: true,
+        },
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain(gateRow())).mockReturnValueOnce(chain())
+
+    const res = await POST(makeReq({ id: 'evt_gate_portal_cancel' }))
+    expect(res.status).toBe(200)
+
+    // 1st UPDATE = plan-sync。 SET 句に cancelAt が含まれていること (Date 化済)。
+    const planSyncSet = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(planSyncSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancelAt: new Date(cancelAtUnix * 1000),
+      }),
+    )
+    // 2nd UPDATE = 方向2 clear。 scheduled 3 列のみ touched。
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    const clearSet = (mockDbUpdate.mock.results[1].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(clearSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      }),
+    )
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('§6.4.x 方向2: 方向1 (.released) 先着 → 後着 .updated (sub.schedule=null) は方向2 に到達せず単一 clear に収束', async () => {
+    // .released が先に DB 3 列を clear (route.ts:348-361)、 その後 .updated が
+    // 後着するシナリオ。 後着 .updated では plan-sync の RETURNING が
+    // scheduledDowngradeScheduleId=null を返すため、 evaluateReleaseGate は
+    // dbScheduleId==null で全 skip し方向2 のコードに到達しない。
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_gate_released_first',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_released_first',
+          schedule: null,
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    // .released 先着で既に clear 済 → plan-sync RETURNING の予約列は null。
+    mockDbUpdate.mockReturnValueOnce(
+      chain([{ clerkId: 'user_gate', scheduledDowngradeScheduleId: null, scheduledTargetPriceId: null }]),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_gate_released_first' }))
+    expect(res.status).toBe(200)
+
+    // 方向2 の UPDATE は走らない (line 384 で全 skip)。 plan-sync の 1 回のみ。
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    // mismatch notify は出ない (schedule null は released handler 担当)。
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 

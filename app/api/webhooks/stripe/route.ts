@@ -387,8 +387,25 @@ async function evaluateReleaseGate(args: {
   const subScheduleId =
     typeof sub.schedule === 'string' ? sub.schedule : (sub.schedule?.id ?? null)
 
-  // schedule null は no-op (clear は subscription_schedule.released handler 担当)。
-  if (subScheduleId == null) return
+  // 方向2 (保険): sub.schedule == null かつ DB に予約残存 = Stripe が別経路で
+  // schedule を release した状態。 例: Portal cancel が即時 release を引き起こす
+  // (stg 観測)、 endpoint が `subscription_schedule.released` を購読していない、
+  // 別デバイス race で .released が取りこぼされる、 等。 .updated は確実に配信
+  // されるため、 ここで DB 3 列を冪等 clear する (方向1 = .released handler の
+  // 補完、 最後の砦)。 正常系の auto-release 後 .updated はこの handler に到達
+  // する前に line 384 (dbScheduleId==null) で早期 return するため非干渉、 .released
+  // 後着とのレースも両者 null SET で冪等。
+  if (subScheduleId == null) {
+    await getDb()
+      .update(users)
+      .set({
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+        scheduledChangeEffectiveAt: null,
+      })
+      .where(eq(users.stripeCustomerId, customerId))
+    return
+  }
 
   // 別 non-null id は照合不一致 = OT 介入対象の anomaly。 委譲も clear もしない。
   if (subScheduleId !== dbScheduleId) {
