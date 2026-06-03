@@ -130,7 +130,7 @@ Stripe 呼出とビジネス判定を 1 ファイルに集約し、純粋部分�
 ### 6.2 イベント別
 - `customer.subscription.created` / `.updated`: 既存の plan/status/interval/periodEnd/cancelAt 同期に加え **`stripeSubscriptionId = sub.id` を populate**。schedule 期末発火の `.updated` (新 price) は既存ロジックが current item price から自動反映。**さらに `.updated` では plan 同期後に §6.4 のダウングレード release gate を評価する**。
 - `customer.subscription.deleted`: 既存 reset (plan=free 等) に **`stripeSubscriptionId = null`** を追加。**ダウングレード 3 列も clear** (subscription 消滅時の取りこぼし防止)。
-- **`subscription_schedule.released` (新規, 方針C §6.4)**: schedule が release された確証イベント。対象 user の 3 列を**冪等に clear** (release gate での clear の取りこぼし対策)。
+- **`subscription_schedule.released` (新規, 方針C §6.4)**: schedule が release された確証イベント。対象 user の 3 列を**冪等に clear** (release gate での clear の取りこぼし対策)。 **ただし本イベントは best-effort** — 実機観測 (stg 2026-06-03) で Portal cancel 経由の即時 release では本イベントが配信されないケースが確認された (endpoint 設定 / Stripe 仕様 / 別デバイス race 等の複合要因)。 確実な救済路は `.updated` 側の方向2 (§6.4 / §6.4.1 参照)。
 - **`invoice.payment_failed` (新規追加、現状未処理)**: DB plan を**変更しない** (plan/status は `.updated` が最終正)。観測性のため `notifyOps`。upgrade 即時課金失敗時は pending_update のまま旧 price 維持 = DB 据え置きで整合。
 - pending update の applied / expired 系イベントは、必要に応じ監視対象に追加 (MVP では `.updated` の current price 正規化で収束するため任意。観測性目的なら notifyOps のみ)。
 
@@ -143,7 +143,7 @@ Stripe 側変更済・DB 更新失敗時は、webhook 再送 または 次回 `r
 
 **webhook 側 gate (#1 + #5 を満たした時のみ delegate)**:
 - **#1 schedule identity**: webhook の `sub.schedule` (id 抽出) === DB `scheduledDowngradeScheduleId`。
-  - `sub.schedule` が **null** の場合 (release 後の `.updated` 等) は no-op (clear は `subscription_schedule.released` が担当)。`sub.schedule` が **別の non-null id** の場合のみ mismatch として `notifyOps`。
+  - `sub.schedule` が **null** の場合 (release 後の `.updated` 等) は **方向2: DB 3 列を冪等 clear して return** (`.released` が来ないケースの救済路、 後述 §6.4.1)。 旧仕様の「`.released` が担当」 だけでは Portal cancel 経由等で取りこぼされうるため、 `.updated` 側でも安全網を持つ。 `sub.schedule` が **別の non-null id** の場合のみ mismatch として `notifyOps`。
 - **#5 target 反映**: `sub.items.data[0].price.id === user.scheduledTargetPriceId` (現 active price が target = ダウングレードが実際に効いた)。**これが「切替が実際に起きた」決定的シグナル** (#4 の start_date だけでは phase0/phase1 を区別できないため #5 が主)。
 
 #1 + #5 を満たしたら **`releaseCompletedDowngrade(scheduleId, idempotencyKey=autorelease:{scheduleId})` に委譲**。同関数が schedule を retrieve し status gate (#2 status active / #3 current_phase null guard / #4 start_date<=now) を適用して release/skip を判断し、結果を返す (§4.4)。
@@ -158,11 +158,12 @@ release 失敗 (無関係 error) は `releaseCompletedDowngrade` が rethrow →
 
 ### 6.4.1 冪等共存と回収 (二重実行吸収 / clear 失敗の回収)
 
-release は **`.updated` の gate** と、Stripe が release 成功時に発火する **`subscription_schedule.released`** の 2 経路が関与する。両者が競合・重複しても整合するよう以下を満たす:
+release は **`.updated` の gate (方向2 を含む)** と、Stripe が release 成功時に発火する **`subscription_schedule.released`** の 2 経路が関与する (= 方向1+方向2 の二重化、 2026-06-03 確定)。 両者が競合・重複しても整合するよう以下を満たす:
 
 - **release 呼出の冪等**: gate は複数の `.updated` で繰り返し評価されうる。`releaseCompletedDowngrade` の **status gate (§4.4) が主たる冪等保証**: 2 回目以降は status が `released`/`completed` になっているため `'already_terminal'` no-op に落ちる。idempotencyKey=`autorelease:{scheduleId}` は ~24h の短期 retry 用、message regex は retrieve〜release 間 race の保険。三者で多重に吸収し、release の副作用は 1 回分。
-- **clear の冪等・順序非依存**: 3 列の clear は「set→null」で、既に null でも無害。`.updated` gate 経路と `.released` 経路のどちらが先でも結果は同じ。`.released` が先着して clear 済みなら、後着の `.updated` は `scheduledDowngradeScheduleId` が既に null = gate 評価対象外 (set されている場合のみ評価) で no-op。
-- **release 成功・DB clear 失敗の回収 (重要)**: gate で release が成功した直後に DB clear が失敗 (or `.updated` handler が clear 前後で throw) しても、release 成功により Stripe は `subscription_schedule.released` を発火する。同 handler が **schedule.id === `users.scheduledDowngradeScheduleId` で対象 user を引き 3 列を冪等 clear** するため、ブロックは最終的に解除される (= released webhook が clear の回収経路)。`.updated` handler の throw は既存の outer catch → `notifyWebhookError` + 200 で再送ループを防ぎ、回収は `.released` 側に委ねる。
+- **clear の冪等・順序非依存**: 3 列の clear は「set→null」で、既に null でも無害。`.updated` gate 経路 / 方向2 経路 / `.released` 経路のいずれが先でも結果は同じ。 先着して clear 済みなら、後着 `.updated` は `scheduledDowngradeScheduleId` が既に null = gate 評価対象外 (set されている場合のみ評価) で no-op。
+- **方向2 (`.updated` 側救済路、 本命)**: `sub.schedule == null` かつ DB に予約残存を検知したら、 `evaluateReleaseGate` 内で **3 列を冪等 clear して return** する (`route.ts:386-` の早期 return を clear に置換)。 Portal cancel 経由の即時 release で `.released` が配信されない実機観測 (stg 2026-06-03) を受けて追加した安全網で、 `.updated` は確実に配信されるため**確実な救済路**。 正常系 (auto-release full path) では 1st clear (line 416-425) 後の次 `.updated` は `dbScheduleId == null` で早期 return し方向2 に到達しないため非干渉。
+- **方向1 (`.released` 経路、 best-effort)**: release 成功・DB clear 失敗の回収。 gate で release が成功した直後に DB clear が失敗 (or `.updated` handler が clear 前後で throw) しても、release 成功により Stripe は `subscription_schedule.released` を発火**する想定**。 同 handler が **schedule.id === `users.scheduledDowngradeScheduleId` で対象 user を引き 3 列を冪等 clear** する。 `.updated` handler の throw は既存の outer catch → `notifyWebhookError` + 200 で再送ループを防ぎ、回収を `.released` 側に委ねる。 ただし `.released` は endpoint 設定 / Stripe 仕様 / race で取りこぼされうる (上記方向2 の動機)、 → 方向1 単独では不十分で**方向2 と二重化**して初めて確実な救済となる。
 - **`.released` の対象引き**: event の `subscription_schedule.id` で `users` を引く。0 行 match (既 clear / 別経路で消滅) は冪等 no-op。
 
 (`stripe_events` による event 単位の冪等は従来どおり別軸で効く。上記は同一 release に対する **複数種 event / 部分失敗** の吸収を担保するもの。)
