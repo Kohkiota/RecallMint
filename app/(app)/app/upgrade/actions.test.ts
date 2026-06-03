@@ -267,6 +267,7 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
       { id: 'sub_1' },
       process.env.STRIPE_PRICE_STANDARD_MONTHLY,
       'changePlan:u_1:op_def',
+      { userId: 'u_1', operationId: 'op_def' },
     )
     expect(mockApplyUpgrade).not.toHaveBeenCalled()
   })

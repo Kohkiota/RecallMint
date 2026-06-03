@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type Stripe from 'stripe'
+import Stripe from 'stripe'
 
 // --- hoisted Stripe mock (route.test.ts と同 vi.mock 方式、実 API 禁止) ---
 const {
@@ -9,6 +9,8 @@ const {
   mockScheduleCreate,
   mockScheduleUpdate,
   mockScheduleRelease,
+  mockScheduleRetrieve,
+  mockNotifyOps,
 } = vi.hoisted(() => ({
   mockRetrieve: vi.fn(),
   mockList: vi.fn(),
@@ -16,6 +18,8 @@ const {
   mockScheduleCreate: vi.fn(),
   mockScheduleUpdate: vi.fn(),
   mockScheduleRelease: vi.fn(),
+  mockScheduleRetrieve: vi.fn(),
+  mockNotifyOps: vi.fn(),
 }))
 
 vi.mock('@/lib/stripe', () => ({
@@ -29,8 +33,13 @@ vi.mock('@/lib/stripe', () => ({
       create: mockScheduleCreate,
       update: mockScheduleUpdate,
       release: mockScheduleRelease,
+      retrieve: mockScheduleRetrieve,
     },
   },
+}))
+
+vi.mock('@/lib/ops', () => ({
+  notifyOps: mockNotifyOps,
 }))
 
 import {
@@ -40,6 +49,7 @@ import {
   applyUpgrade,
   scheduleDowngrade,
   cancelScheduledDowngrade,
+  releaseCompletedDowngrade,
   NoSubscriptionError,
   AmbiguousSubscriptionError,
 } from './subscription'
@@ -415,19 +425,28 @@ describe('scheduleDowngrade', () => {
     mockScheduleUpdate.mockResolvedValueOnce(updated)
 
     const sub = makeRetrieveSub({ priceId: 'price_cur' })
-    const result = await scheduleDowngrade(sub, 'price_next', 'idem_dn')
+    const result = await scheduleDowngrade(sub, 'price_next', 'idem_dn', {
+      userId: 'u_meta',
+      operationId: 'op_meta',
+    })
 
-    // create: from_subscription + idempotencyKey ':create'
+    // create: from_subscription + idempotencyKey ':create' (metadata は付けない)
     expect(mockScheduleCreate).toHaveBeenCalledWith(
       { from_subscription: 'sub_test' },
       { idempotencyKey: 'idem_dn:create' },
     )
 
-    // update: 2 phase + release + idempotencyKey ':update'
+    // update: 2 phase + release + metadata + idempotencyKey ':update'
     expect(mockScheduleUpdate).toHaveBeenCalledWith(
       'sub_sched_1',
       {
         end_behavior: 'release',
+        metadata: {
+          kind: 'recallmint_downgrade',
+          userId: 'u_meta',
+          targetPriceId: 'price_next',
+          operationId: 'op_meta',
+        },
         phases: [
           {
             start_date: 1750000000,
@@ -453,9 +472,10 @@ describe('scheduleDowngrade', () => {
 })
 
 describe('cancelScheduledDowngrade', () => {
-  it('release を scheduleId + idempotencyKey で呼ぶ (cancel は使わない)', async () => {
-    const released = { id: 'sub_sched_r' } as unknown as Stripe.SubscriptionSchedule
-    mockScheduleRelease.mockResolvedValueOnce(released)
+  it('release を scheduleId + idempotencyKey で呼ぶ (cancel は使わない)、戻り値 void', async () => {
+    mockScheduleRelease.mockResolvedValueOnce({
+      id: 'sub_sched_r',
+    } as unknown as Stripe.SubscriptionSchedule)
 
     const result = await cancelScheduledDowngrade('sub_sched_r', 'idem_rel')
 
@@ -464,6 +484,162 @@ describe('cancelScheduledDowngrade', () => {
       {},
       { idempotencyKey: 'idem_rel' },
     )
-    expect(result).toBe(released)
+    expect(result).toBeUndefined()
+  })
+
+  // 共通 helper 経由でも冪等成功扱いが効くこと (二重取消 / 既 release を吸収)。
+  it('既に released (resource_missing) でも throw せず resolve', async () => {
+    mockScheduleRelease.mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        code: 'resource_missing',
+        message: 'No such schedule',
+      } as never),
+    )
+    await expect(
+      cancelScheduledDowngrade('sub_sched_gone', 'idem_rel'),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe('releaseCompletedDowngrade (status gate)', () => {
+  // already released/completed 相当の StripeInvalidRequestError を組み立てる helper。
+  // Stripe SDK の error は raw error object 経由で生成する。
+  function stripeInvalidRequest(opts: {
+    code?: string
+    message: string
+  }): InstanceType<typeof Stripe.errors.StripeInvalidRequestError> {
+    return new Stripe.errors.StripeInvalidRequestError({
+      type: 'invalid_request_error',
+      code: opts.code,
+      message: opts.message,
+    } as never)
+  }
+
+  // retrieve が返す schedule の最小 mock。status + current_phase を制御する。
+  function makeSchedule(opts: {
+    status: Stripe.SubscriptionSchedule.Status
+    current_phase?: { start_date: number; end_date: number } | null
+  }): Stripe.SubscriptionSchedule {
+    return {
+      id: 'sub_sched_g',
+      status: opts.status,
+      current_phase:
+        opts.current_phase === undefined
+          ? { start_date: 1750000000, end_date: 1752592000 }
+          : opts.current_phase,
+    } as unknown as Stripe.SubscriptionSchedule
+  }
+
+  // --- status active: release を実行し 'released' を返す ---
+  it('(a) status active + current_phase 非 null → release 呼出 + 戻り released', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'active' }))
+    mockScheduleRelease.mockResolvedValueOnce({
+      id: 'sub_sched_g',
+    } as unknown as Stripe.SubscriptionSchedule)
+
+    const result = await releaseCompletedDowngrade('sub_sched_g', 'autorelease:sub_sched_g')
+
+    expect(mockScheduleRetrieve).toHaveBeenCalledWith('sub_sched_g')
+    expect(mockScheduleRelease).toHaveBeenCalledWith(
+      'sub_sched_g',
+      {},
+      { idempotencyKey: 'autorelease:sub_sched_g' },
+    )
+    expect(result).toBe('released')
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  // --- status active + current_phase null: release せず notifyOps + skip ---
+  it('(b) status active + current_phase null → release 呼ばず notifyOps + 戻り skipped', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(
+      makeSchedule({ status: 'active', current_phase: null }),
+    )
+
+    const result = await releaseCompletedDowngrade('sub_sched_np', 'autorelease:sub_sched_np')
+
+    expect(mockScheduleRelease).not.toHaveBeenCalled()
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(result).toBe('skipped')
+  })
+
+  // --- 終端 status: release せず already_terminal ---
+  it('(c) status completed → release 呼ばず already_terminal', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'completed' }))
+    const result = await releaseCompletedDowngrade('sub_sched_c', 'autorelease:sub_sched_c')
+    expect(mockScheduleRelease).not.toHaveBeenCalled()
+    expect(result).toBe('already_terminal')
+  })
+
+  it('(c2) status released → release 呼ばず already_terminal', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'released' }))
+    const result = await releaseCompletedDowngrade('sub_sched_r', 'autorelease:sub_sched_r')
+    expect(mockScheduleRelease).not.toHaveBeenCalled()
+    expect(result).toBe('already_terminal')
+  })
+
+  it('(c3) status canceled → release 呼ばず already_terminal', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'canceled' }))
+    const result = await releaseCompletedDowngrade('sub_sched_x', 'autorelease:sub_sched_x')
+    expect(mockScheduleRelease).not.toHaveBeenCalled()
+    expect(result).toBe('already_terminal')
+  })
+
+  // --- not_started: 切替前なので予約を消さず skip ---
+  it('(d) status not_started → release 呼ばず skipped (予約維持)', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(
+      makeSchedule({ status: 'not_started', current_phase: null }),
+    )
+    const result = await releaseCompletedDowngrade('sub_sched_ns', 'autorelease:sub_sched_ns')
+    expect(mockScheduleRelease).not.toHaveBeenCalled()
+    expect(result).toBe('skipped')
+  })
+
+  // --- 保険 catch: active 経路で release が冪等 error を投げても released に解決 ---
+  it('(e) active 経路で release が resource_missing でも released (race 保険)', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'active' }))
+    mockScheduleRelease.mockRejectedValueOnce(
+      stripeInvalidRequest({ code: 'resource_missing', message: 'No such schedule' }),
+    )
+    const result = await releaseCompletedDowngrade('sub_sched_g', 'autorelease:sub_sched_g')
+    expect(result).toBe('released')
+  })
+
+  it('(e2) active 経路で release が already released message でも released (race 保険)', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'active' }))
+    mockScheduleRelease.mockRejectedValueOnce(
+      stripeInvalidRequest({
+        message: 'This subscription schedule has already been released.',
+      }),
+    )
+    const result = await releaseCompletedDowngrade('sub_sched_g', 'autorelease:sub_sched_g')
+    expect(result).toBe('released')
+  })
+
+  // --- 無関係 error は rethrow ---
+  it('(f) active 経路で無関係 error (StripeAPIError) は rethrow', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'active' }))
+    const apiErr = new Stripe.errors.StripeAPIError({
+      type: 'api_error',
+      message: 'upstream down',
+    } as never)
+    mockScheduleRelease.mockRejectedValueOnce(apiErr)
+
+    await expect(
+      releaseCompletedDowngrade('sub_sched_g', 'autorelease:sub_sched_g'),
+    ).rejects.toBe(apiErr)
+  })
+
+  it('(f2) active 経路で別 code の InvalidRequest は rethrow', async () => {
+    mockScheduleRetrieve.mockResolvedValueOnce(makeSchedule({ status: 'active' }))
+    const other = stripeInvalidRequest({
+      code: 'parameter_invalid_empty',
+      message: 'some unrelated validation error',
+    })
+    mockScheduleRelease.mockRejectedValueOnce(other)
+
+    await expect(
+      releaseCompletedDowngrade('sub_sched_g', 'autorelease:sub_sched_g'),
+    ).rejects.toBe(other)
   })
 })

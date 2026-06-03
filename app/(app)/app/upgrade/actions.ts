@@ -118,7 +118,10 @@ export async function changePlan(formData: FormData): Promise<void> {
     await applyUpgrade(sub.id, itemId, targetPriceId, idempotencyKey)
     redirect('/app?billing=upgrade')
   } else {
-    await scheduleDowngrade(sub, targetPriceId, idempotencyKey)
+    await scheduleDowngrade(sub, targetPriceId, idempotencyKey, {
+      userId: user.id,
+      operationId,
+    })
     redirect('/app?billing=downgrade')
   }
 }

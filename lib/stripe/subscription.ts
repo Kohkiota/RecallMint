@@ -1,10 +1,11 @@
 // プラン変更判定の純粋ロジック / error 型 と、それを使う Stripe API 呼出関数群。
 // rankPlan の算出は lib/plan-catalog.ts に委譲し、本 file は rank 数値のみ受け取る (DRY)。
 
-import type Stripe from 'stripe'
+import Stripe from 'stripe'
 
 import { stripe } from '@/lib/stripe'
 import type { User } from '@/lib/db/schema'
+import { notifyOps } from '@/lib/ops'
 
 // ---------------------------------------------------------------------------
 // classifyChange
@@ -169,6 +170,7 @@ export async function scheduleDowngrade(
   sub: Stripe.Subscription,
   targetPriceId: string,
   idempotencyKey: string,
+  opts: { userId: string; operationId: string },
 ): Promise<Stripe.SubscriptionSchedule> {
   const item = sub.items.data[0]
   if (!item) throw new AmbiguousSubscriptionError('subscription has no items: ' + sub.id)
@@ -187,6 +189,16 @@ export async function scheduleDowngrade(
     schedule.id,
     {
       end_behavior: 'release',
+      // metadata は release gate (§6.4) の必須条件ではなく Stripe Dashboard 上で
+      // この schedule を識別するためのデバッグ補助情報。gate の主役は DB の
+      // scheduledDowngradeScheduleId 照合 (#1)。from_subscription の create は他
+      // param を同時指定できないため metadata は update 側にのみ付与する。
+      metadata: {
+        kind: 'recallmint_downgrade',
+        userId: opts.userId,
+        targetPriceId,
+        operationId: opts.operationId,
+      },
       phases: [
         {
           // 現 price を維持するだけで金額変動がないため proration_behavior 不要。
@@ -206,13 +218,109 @@ export async function scheduleDowngrade(
 }
 
 /**
- * 予約済みダウングレードの取消。release で schedule を解除し現 price を継続させる。
- * subscriptionSchedules.cancel は subscription 自体を cancel しうるため使わない。
+ * subscription schedule の release を冪等に行う共通 helper。
+ *
+ * 位置づけ: releaseCompletedDowngrade の冪等性の**主判定は status gate** (同関数で
+ * retrieve→status 分岐)。本 helper の message regex / resource_missing 握りは
+ * retrieve〜release 呼出**間の race** (別処理が先に release/削除した) を吸収する
+ * **保険**であって、正常系の主判定ではない。ユーザー取消 (cancelScheduledDowngrade)
+ * では status gate を課さないため、こちらは本 helper を直接の冪等経路として使う。
+ *
+ * 「既に release/complete 済」や「schedule が消えている (resource_missing)」は
+ * 「目的 (schedule が release 済) が既に達成された」状態なので throw せず正常
+ * return とし、それ以外の error のみ rethrow する (§6.4.1)。
+ *
+ * release(id, params, options) — idempotencyKey は params ではなく options 側。
+ */
+async function releaseScheduleIdempotent(
+  scheduleId: string,
+  idempotencyKey: string,
+): Promise<void> {
+  try {
+    await stripe.subscriptionSchedules.release(scheduleId, {}, { idempotencyKey })
+  } catch (err) {
+    if (isAlreadyReleasedOrMissing(err)) return
+    throw err
+  }
+}
+
+// 「既に release/complete 済」「schedule not found」を冪等成功として握る判定。
+// resource_missing は削除済 schedule、message の already released/completed は
+// 終端状態の schedule への再 release を表す (Stripe はこれらを 400 で返す)。
+function isAlreadyReleasedOrMissing(err: unknown): boolean {
+  if (!(err instanceof Stripe.errors.StripeInvalidRequestError)) return false
+  if (err.code === 'resource_missing') return true
+  const msg = err.message ?? ''
+  return /already\s+(been\s+)?(released|completed)/i.test(msg)
+}
+
+/**
+ * 予約済みダウングレードの取消 (期末発効**前**、ユーザー操作)。release で schedule を
+ * 解除し現 price を継続させる。subscriptionSchedules.cancel は subscription 自体を
+ * cancel しうるため使わない。冪等成功扱いは releaseScheduleIdempotent に委譲。
  */
 export async function cancelScheduledDowngrade(
   scheduleId: string,
   idempotencyKey: string,
-): Promise<Stripe.SubscriptionSchedule> {
-  // release(id, params, options) — idempotencyKey は params ではなく options 側。
-  return stripe.subscriptionSchedules.release(scheduleId, {}, { idempotencyKey })
+): Promise<void> {
+  await releaseScheduleIdempotent(scheduleId, idempotencyKey)
+}
+
+/**
+ * 切替**発効後**の能動 release (方針C, §6.4 / §4.4)。schedule の end_behavior は
+ * 'release' だが、確実に通常 subscription へ戻すため webhook gate から能動的に
+ * release する。gate は複数の .updated で繰り返し評価されうるため冪等性が要件。
+ *
+ * 冪等性の位置づけ (§4.4):
+ * - **主判定 = status gate**: release 前に retrieve し schedule.status で分岐する。
+ *   release 可能な status は `active` / `not_started` のみ (公式)。2 回目以降は
+ *   status が `released`/`completed` になっているため 'already_terminal' no-op に
+ *   落ち、release の副作用は 1 回分に収束する。
+ * - **短期 retry = idempotencyKey** (`autorelease:{scheduleId}`): ~24h で prune
+ *   されうるため永続的二重防止には使えない。短期 retry の重複吸収のみ。
+ * - **保険 = releaseScheduleIdempotent 内の message regex + resource_missing**:
+ *   retrieve〜release 呼出間の race 吸収のみ。正常系の主判定ではない。
+ *
+ * 戻り値:
+ * - 'released': active かつ current_phase 非 null で release を実行 (or race 保険で
+ *   既 release を吸収) した。
+ * - 'already_terminal': completed/released/canceled = 既に外れている (release せず)。
+ * - 'skipped': not_started (切替前で予約維持) / active だが current_phase null
+ *   (異常、notifyOps 後 release せず)。
+ */
+export async function releaseCompletedDowngrade(
+  scheduleId: string,
+  idempotencyKey: string,
+): Promise<'released' | 'already_terminal' | 'skipped'> {
+  const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId)
+
+  switch (schedule.status) {
+    case 'active': {
+      // current_phase は active 時のみ存在 (nullable)。null は異常状態のため
+      // 誤って release せず ops に通知して skip (予約を消さない安全側)。
+      if (schedule.current_phase == null) {
+        await notifyOps('autorelease: schedule active but current_phase null', {
+          scheduleId,
+          status: schedule.status,
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          timestamp: new Date().toISOString(),
+        })
+        return 'skipped'
+      }
+      // release + race 保険 (regex/resource_missing) は helper に委譲。
+      await releaseScheduleIdempotent(scheduleId, idempotencyKey)
+      return 'released'
+    }
+    case 'completed':
+    case 'released':
+    case 'canceled':
+      // 既に autorelease 対象外。release を呼ばず no-op 成功扱い。
+      return 'already_terminal'
+    case 'not_started':
+      // 切替前の予約。誤消去しないよう release せず維持。
+      return 'skipped'
+    default:
+      // status は上記 5 値で網羅だが、SDK の将来追加に備え安全側 (release しない)。
+      return 'skipped'
+  }
 }
