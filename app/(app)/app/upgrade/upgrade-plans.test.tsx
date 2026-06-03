@@ -214,22 +214,25 @@ describe('UpgradePlans', () => {
     expect(opAfter?.value).not.toBe('')
   })
 
-  it('ダウングレード予約中: banner に対象プラン + 日付 + 取消 form を表示', () => {
+  it('変更予約中: banner に短縮ラベル + 日付 + 取消 form を表示', () => {
     const { container } = renderPlans({
       userPlan: 'pro',
       userInterval: 'year',
       hasScheduledDowngrade: true,
-      scheduledTargetPlanLabel: 'Standard',
+      // page.tsx が tier + interval の短縮ラベルを渡す (例: "Standard 月額")。
+      scheduledTargetPlanLabel: 'Standard 月額',
       scheduledEffectiveDateLabel: '2026/07/01',
     })
-    // banner と blocked notice は両方 role="status"。ダウングレード予約中文言で
-    // banner を特定する。
+    // banner と blocked notice は両方 role="status"。変更予約中文言で banner を特定。
     const banner = screen
       .getAllByRole('status')
-      .find((el) => el.textContent?.includes('ダウングレード予約中'))!
+      .find((el) => el.textContent?.includes('変更予約中'))!
     expect(banner).toBeDefined()
-    expect(banner).toHaveTextContent('Standard')
-    expect(banner).toHaveTextContent('ダウングレード予約中')
+    // 「Standard 月額へ変更予約中（2026/07/01）— 取消」: 短縮ラベル + 全角括弧日付。
+    // フルラベル「プラン」は使わない。
+    expect(banner).toHaveTextContent('Standard 月額へ変更予約中')
+    expect(banner.textContent).not.toContain('プラン')
+    expect(banner.textContent).not.toContain('ダウングレード')
     expect(banner).toHaveTextContent('2026/07/01')
     // 取消ボタンは cancelDowngrade form 配下、blocked でも enabled
     const cancelBtn = screen.getByRole('button', { name: '取消' })

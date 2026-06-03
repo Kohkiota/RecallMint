@@ -4,7 +4,7 @@ import {
   getPendingState,
 } from '@/lib/stripe/subscription'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
-import { planLabelFor } from '@/lib/plan-catalog'
+import { PAID_PLAN_CATALOG } from '@/lib/plan-catalog'
 import { UpgradePlans } from './upgrade-plans'
 
 // 予約発効日を settings の formatCancelDate と同一形式 (ja-JP YYYY/MM/DD) で整形する。
@@ -46,16 +46,20 @@ export default async function UpgradePage() {
     }
   }
 
-  // ダウングレード予約中 banner 用の表示文字列を server で整形して渡す
+  // 変更予約 banner 用の表示文字列を server で整形して渡す
   // (client は price-mapping / Date 整形を持たない)。予約 price → (plan,interval) →
-  // ラベル、発効日 → ja-JP 整形。price 解決不能 / 日付 null は undefined で graceful。
+  // 短縮ラベル、発効日 → ja-JP 整形。price 解決不能 / 日付 null は undefined で graceful。
+  // banner は tier + interval のみ (例: "Standard 月額")。planLabelFor のフル
+  // 「Standard プラン 月額」は banner 文では冗長なため catalog の tier label を使う。
   let scheduledTargetPlanLabel: string | undefined
   let scheduledEffectiveDateLabel: string | undefined
   if (hasScheduledDowngrade) {
     if (user.scheduledTargetPriceId) {
       const mapping = resolveFromPriceId(user.scheduledTargetPriceId)
       if (mapping) {
-        scheduledTargetPlanLabel = planLabelFor(mapping.plan, mapping.interval)
+        const tier = PAID_PLAN_CATALOG[mapping.plan].label
+        const intervalText = mapping.interval === 'year' ? '年額' : '月額'
+        scheduledTargetPlanLabel = `${tier} ${intervalText}`
       }
     }
     if (user.scheduledChangeEffectiveAt) {

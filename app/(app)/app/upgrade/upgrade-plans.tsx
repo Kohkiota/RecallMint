@@ -336,9 +336,9 @@ function DowngradeReservationBanner({
   effectiveDateLabel?: string
 }) {
   const [operationId] = useState(() => crypto.randomUUID())
-  const planText = targetPlanLabel ?? 'ダウングレード先プラン'
-  // 発効日が null (timestamp 未確定) のケースは日付を省く。
-  const dateSuffix = effectiveDateLabel ? ` (${effectiveDateLabel})` : ''
+  const planText = targetPlanLabel ?? '変更先プラン'
+  // 発効日が null (timestamp 未確定) のケースは日付を省く。全角括弧で囲う。
+  const dateSuffix = effectiveDateLabel ? `（${effectiveDateLabel}）` : ''
 
   return (
     <div
@@ -346,7 +346,7 @@ function DowngradeReservationBanner({
       className="flex flex-wrap items-center gap-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4"
     >
       <span>
-        {planText} へのダウングレード予約中{dateSuffix}
+        {planText}へ変更予約中{dateSuffix} —
       </span>
       <form action={cancelDowngrade}>
         <input type="hidden" name="operationId" value={operationId} />
