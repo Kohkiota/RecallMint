@@ -70,6 +70,11 @@ stripe subscription_schedules release sched_XXX
 Customer Portal から解約 → 期末 or 即時で `customer.subscription.deleted` 発火。
 **期待 (T4)**: DB `users.stripe_subscription_id` が `null` に、`plan='free'`, `subscription_status='canceled'`, `billing_interval=null`, `cancel_at=null`。`current_period_end` は履歴として残る。
 
-## 確認できたら
-T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` を `git commit --amend` (または rebase) で各メッセージ末尾に ` [reviewed]` を追記 → その後 UI (T6-T8) に着手。
-重点 NG 条件: Smoke 2/3 で billing anchor がずれる、Smoke 1b で旧 price が維持されない、のいずれかが出たら設計見直し (UI 着手前に停止)。
+## 方針C 追加 (T12 実装後に実施する auto-release smoke)
+Smoke 1-4 は基盤挙動 (即時 upgrade / schedule 作成 / 手動 release=予約取消 / sub id 同期) を検証する。**方針C の「発効後 自動 release」** は webhook gate (spec §6.4) を要するため、T10-T12 実装後に別途 smoke する:
+- **Smoke 5 (auto-release)**: Smoke 2 で schedule を張り test clock を phases[0].end_date 以降へ前進 → `customer.subscription.updated` 受信 → gate #1/#2/#4/#5 充足で app が `subscriptionSchedules.release` を発火 → `sub.schedule` が null → DB `users` の `scheduled_downgrade_schedule_id` 等 3 列が clear → §5.5 ブロック解除 (プラン変更 UI が再び操作可)。
+- 確認点: 発効前 (#4 false) は release されない / `subscription_schedule.released` 受信でも 3 列が冪等 clear / 二重 webhook で副作用なし。
+
+## [reviewed] amend の段取り (改訂)
+方針C 採用に伴い、ダウングレードは「予約 → 期末切替 → **自動 release** → 通常 subscription 復帰」まで揃って完結する。よって **T3 `ab1a7d4` / T4 `f1b99ec` / T5 `e452db4` の `[reviewed]` amend は、方針C タスク (T9-T12) 完了 + Smoke 1-5 通過後にまとめて実施**する (基盤だけ先に tag 付けしない)。
+重点 NG 条件: Smoke 2/3/5 で billing anchor がずれる、Smoke 1b で旧 price が維持されない、Smoke 5 で発効前に release される/3 列が clear されない、のいずれかが出たら設計見直し (該当箇所の実装前に停止)。

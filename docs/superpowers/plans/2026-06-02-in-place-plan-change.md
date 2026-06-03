@@ -92,7 +92,7 @@
 - **目的**: §7.1。pro+year redirect 撤廃、paid の sub 状態取得、カード選択可否の刷新。
 - **制約**:
   - `page.tsx`: `user.plan==='pro' && billingInterval==='year'` の `/app` redirect を**撤廃**。paid は `resolveActiveSubscription`+`getPendingState` を server で呼び、pending/予約/解約予約 state を client に渡す。free はサブスク無 → Checkout 経路。
-  - `upgrade-plans.tsx`: 全プラン (Standard/Pro×月年 toggle、Pro 年額含む) 表示、**Free カード追加なし**。**現プランのみ disable** (rank 同値、interval NULL は month 同 rank 現行踏襲)。`targetRank<userRank → disabled` 分岐を**撤廃** (下位も選択可)。free→`createCheckoutSession`、paid→確認 modal→`changePlan`。pending/予約/解約予約中は全 CTA disable + 案内文 (§5.5)。label「プラン変更」。
+  - `upgrade-plans.tsx`: 全プラン (Standard/Pro×月年 toggle、Pro 年額含む) 表示、**Free カード追加なし**。**現プランのみ disable** (rank 同値、interval NULL は month 同 rank 現行踏襲)。`targetRank<userRank → disabled` 分岐を**撤廃** (下位も選択可)。free→`createCheckoutSession`、paid→確認 modal→`changePlan`。pending/予約/解約予約中は全 CTA disable + 案内文 (§5.5)。**ダウングレード予約の判定は DB 列 `scheduledDowngradeScheduleId`** (方針C)、pending/cancel は `getPendingState`。label「プラン変更」。
 - **完了条件**: render test — 現プラン disable、下位選択可、free は checkout form、paid は modal trigger、pending 時 全 disable。UI → DevTools 検証。+ 全体ルール完了条件。`[reviewed]`。
 
 ---
@@ -104,7 +104,7 @@
 - **目的**: §7.2 / §5.5。
 - **制約**:
   - `components/ui/` に dialog 無 → 軽量 custom modal を新規 (`window.confirm` 不可、世界観統一・テンプレ AI デザイン回避)。upgrade/downgrade 双方で**金額なし確認** (文言は §5.2「今すぐ差額が請求され…」/§5.3「現在の請求期間終了後に {plan} へ切り替わります…」)。confirm 時に operationId (UUID) を生成し form に載せる。
-  - 予約中: page 上部に「{plan} へのダウングレード予約中 ({date}) — 取消」→ `cancelDowngrade`。日付は `Intl.DateTimeFormat('ja-JP')` (settings の `formatCancelDate` と整合)。
+  - 予約中: page 上部に「{plan} へのダウングレード予約中 ({date}) — 取消」→ `cancelDowngrade`。日付は **`user.scheduledChangeEffectiveAt`** を `Intl.DateTimeFormat('ja-JP')` で整形 (settings の `formatCancelDate` と整合)。予約有無判定は **`user.scheduledDowngradeScheduleId != null`** (方針C, §5.5)。
 - **完了条件**: render test — modal open/confirm/cancel、banner 表示・取消 submit、focus/Esc の最低限 a11y。UI → DevTools 検証。+ 全体ルール完了条件。`[reviewed]`。
 
 ---
@@ -123,8 +123,47 @@
 
 ---
 
+## 方針C 追補タスク (T9–T12) — ダウングレード schedule の発効後 release
+
+> 背景: spec §3.1 / §6.4 / R5。2 phase open-ended schedule は自動終了せず `sub.schedule` が永続するため、切替発効後に webhook gate で能動 release し、ブロックは DB 列で管理する。T3/T4/T5 は実装済 (tag 無し) で、本追補が乗る。**T3/T4/T5 の `[reviewed]` amend は、T9–T12 完了 + 方針C 込みの combined OT smoke 通過後**にまとめて行う (発効後 release まで揃って初めてダウングレードが完結するため)。
+
+### Task 9: schema — ダウングレード予約トラッキング 3 列 (OT-gated migrate)
+
+**Files:** Modify `lib/db/schema.ts` (users) / Create drizzle migration (0017)。
+
+- **目的**: §3。`scheduledDowngradeScheduleId text` / `scheduledTargetPriceId text` / `scheduledChangeEffectiveAt timestamptz` を追加 (全て nullable)。
+- **制約**: `pnpm db:generate` のみ (列追加 + 副作用なしを目視)。**`db:migrate` は実行しない** (OT が stg→prod 手動、[[db-migrate-ot-gated]] と同段取り)。既存列不変。
+- **完了条件**: migration 生成、`pnpm build` 通過、既存 test green。`chore(db)` `[no-review]` 可。**この task 後に停止し OT migrate を待つ** (T1 と同じ)。
+
+### Task 10: domain — scheduleDowngrade metadata + releaseCompletedDowngrade
+
+**Files:** Modify `lib/stripe/subscription.ts` / Modify `lib/stripe/subscription.test.ts`。
+
+- **目的**: §4.4。`scheduleDowngrade` の `update` 呼出に `metadata:{ kind:'recallmint_downgrade', userId, targetPriceId, operationId }` を付与 (引数に userId/operationId 追加)。`releaseCompletedDowngrade(scheduleId, idempotencyKey)` を追加 (`subscriptionSchedules.release`、既 released/completed/not found は冪等成功扱い)。
+- **制約**: metadata は gate 必須条件にしない (デバッグ用)。`from_subscription` の create には metadata を付けない (update 側のみ)。release の冪等成功判定は Stripe error code (resource_missing / 既 released status) を捕捉。Stripe 全 mock。
+- **完了条件**: Vitest — metadata が update に乗る / releaseCompletedDowngrade が release 呼出 + 既 released で throw せず成功。**決済 touch → 裏取り経路** (tag 無し commit)。
+
+### Task 11: action — 3 列 set/clear + DB 列ブロック
+
+**Files:** Modify `app/(app)/app/upgrade/actions.ts` / Modify `app/(app)/app/upgrade/actions.test.ts`。
+
+- **目的**: §5.3 / §5.5。`changePlan` downgrade 経路で `scheduleDowngrade` 成功後、戻り schedule から `scheduledDowngradeScheduleId`=schedule.id / `scheduledTargetPriceId`=targetPriceId / `scheduledChangeEffectiveAt`=`phases[0].end_date` を `users` に set (user スコープ update)。ブロック判定を `user.scheduledDowngradeScheduleId != null`(DB 列) + `getPendingState` の hasPendingUpdate/cancelScheduled に変更。`cancelDowngrade` は `cancelScheduledDowngrade` 成功後 3 列 clear。
+- **制約**: ブロックは DB 列が主 (`sub.schedule != null` 単独不可)。user スコープ。Stripe/db mock。
+- **完了条件**: Vitest — downgrade で 3 列 set / scheduleId 残存でブロック / cancelDowngrade で clear。**決済 touch → 裏取り経路** (tag 無し)。
+
+### Task 12: webhook — release gate + subscription_schedule.released
+
+**Files:** Modify `app/api/webhooks/stripe/route.ts` / Modify `app/api/webhooks/stripe/route.test.ts`。
+
+- **目的**: §6.4。`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` set 時のみ release gate を評価: #1 sub.schedule===DB===retrieve schedule.id / #2 status==='active' / #4 current_phase.start_date<=now / #5 items[0].price.id===scheduledTargetPriceId、#3 current_phase null は no-op/notifyOps。全充足で `releaseCompletedDowngrade` → 3 列 clear。`sub.schedule` が別 non-null id なら notifyOps。`subscription_schedule.released` handler 新規: 対象 user の 3 列を冪等 clear。`customer.subscription.deleted` の reset に 3 列 clear 追加。
+- **制約**: release idempotencyKey は `autorelease:{scheduleId}`。既存枠組み (署名/`stripe_events` 冪等/200) 不変。pending_update target を現在プランに昇格しない (§6.1) を維持。Stripe 全 mock。
+- **完了条件**: Vitest — #1〜#5 充足で release+clear / 不発効(#4)・target 未反映(#5) で release せず / #3 で no-op / released で冪等 clear / deleted で clear / 冪等。**決済 touch → 裏取り経路** (tag 無し)。
+
+---
+
 ## Self-Review (spec 照合)
 
-- 全 spec §を task に割当済: §3→T1 / §4.1→T3 / §4.2-4.3→T2 / §4.4→T3 / §5→T5(logic)+T6/T7(UI) / §6→T4 / §7.1→T6 / §7.2→T7 / §7.3-7.5→T8 / §8 error→T3/T5 / §9 test→各 task / §10 env 変更なし / §11 R1→T8・R2→T7・R3→T6・R4→T5。
-- placeholder なし。型整合: `resolveActiveSubscription`/`classifyChange`/`getPendingState`/`applyUpgrade`/`scheduleDowngrade`/`cancelScheduledDowngrade` の名称を T2/T3/T5/T6 で一貫使用。
-- 決済 touch (T3/T4/T5) は裏取り経路を完了条件に明記。
+- 全 spec §を task に割当済: §3→T1+**T9** / §3.1→**T9-T12** / §4.1→T3 / §4.2-4.3→T2 / §4.4→T3+**T10** / §5→T5(logic)+T6/T7(UI)+**T11** / §6→T4 / §6.4→**T12** / §7.1→T6 / §7.2→T7 / §7.3-7.5→T8 / §8 error→T3/T5 / §9 test→各 task / §10 env 変更なし / §11 R1→T8・R2→T7・R3→T6・R4→T5・**R5→T9-T12**。
+- placeholder なし。型整合: `resolveActiveSubscription`/`classifyChange`/`getPendingState`/`applyUpgrade`/`scheduleDowngrade`/`cancelScheduledDowngrade`/**`releaseCompletedDowngrade`** の名称を一貫使用。`scheduleDowngrade` は metadata 用に userId/operationId 引数追加 (T10、呼出側 T11 と整合)。
+- 決済 touch (T3/T4/T5/**T10/T11/T12**) は裏取り経路を完了条件に明記。**T3/T4/T5 の `[reviewed]` amend は T9-T12 完了 + combined smoke 後**にまとめて実施。
+- 依存順: T9 (schema, OT migrate gate) → T10 (domain) → T11 (action)・T12 (webhook) → UI (T6/T7 は scheduledChangeEffectiveAt / DB 列ブロックを使用)。
