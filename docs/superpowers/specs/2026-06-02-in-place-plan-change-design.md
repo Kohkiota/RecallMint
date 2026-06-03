@@ -144,7 +144,16 @@ Stripe 側変更済・DB 更新失敗時は、webhook 再送 または 次回 `r
 
 **metadata は gate の必須条件にしない**。`schedule.metadata.kind/userId/targetPriceId/operationId` は Dashboard デバッグ用。DB 照合 (#1/#5) と不一致なら `notifyOps` の補助情報に留める。
 
-clear は `subscription_schedule.released` ハンドラでも冪等に行い (取りこぼし対策)、二重 clear は無害。
+### 6.4.1 冪等共存と回収 (二重実行吸収 / clear 失敗の回収)
+
+release は **`.updated` の gate** と、Stripe が release 成功時に発火する **`subscription_schedule.released`** の 2 経路が関与する。両者が競合・重複しても整合するよう以下を満たす:
+
+- **release 呼出の冪等**: gate は複数の `.updated` で繰り返し評価されうる。`releaseCompletedDowngrade` は idempotencyKey=`autorelease:{scheduleId}` を固定し、かつ「既に released/completed/resource_missing」を**冪等成功**として扱う。よって release が 2 回以上呼ばれても副作用は 1 回分。
+- **clear の冪等・順序非依存**: 3 列の clear は「set→null」で、既に null でも無害。`.updated` gate 経路と `.released` 経路のどちらが先でも結果は同じ。`.released` が先着して clear 済みなら、後着の `.updated` は `scheduledDowngradeScheduleId` が既に null = gate 評価対象外 (set されている場合のみ評価) で no-op。
+- **release 成功・DB clear 失敗の回収 (重要)**: gate で release が成功した直後に DB clear が失敗 (or `.updated` handler が clear 前後で throw) しても、release 成功により Stripe は `subscription_schedule.released` を発火する。同 handler が **schedule.id === `users.scheduledDowngradeScheduleId` で対象 user を引き 3 列を冪等 clear** するため、ブロックは最終的に解除される (= released webhook が clear の回収経路)。`.updated` handler の throw は既存の outer catch → `notifyWebhookError` + 200 で再送ループを防ぎ、回収は `.released` 側に委ねる。
+- **`.released` の対象引き**: event の `subscription_schedule.id` で `users` を引く。0 行 match (既 clear / 別経路で消滅) は冪等 no-op。
+
+(`stripe_events` による event 単位の冪等は従来どおり別軸で効く。上記は同一 release に対する **複数種 event / 部分失敗** の吸収を担保するもの。)
 
 ---
 

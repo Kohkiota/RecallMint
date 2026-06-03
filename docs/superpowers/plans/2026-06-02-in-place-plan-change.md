@@ -157,7 +157,7 @@
 
 - **目的**: §6.4。`customer.subscription.updated` で plan 同期後、`user.scheduledDowngradeScheduleId` set 時のみ release gate を評価: #1 sub.schedule===DB===retrieve schedule.id / #2 status==='active' / #4 current_phase.start_date<=now / #5 items[0].price.id===scheduledTargetPriceId、#3 current_phase null は no-op/notifyOps。全充足で `releaseCompletedDowngrade` → 3 列 clear。`sub.schedule` が別 non-null id なら notifyOps。`subscription_schedule.released` handler 新規: 対象 user の 3 列を冪等 clear。`customer.subscription.deleted` の reset に 3 列 clear 追加。
 - **制約**: release idempotencyKey は `autorelease:{scheduleId}`。既存枠組み (署名/`stripe_events` 冪等/200) 不変。pending_update target を現在プランに昇格しない (§6.1) を維持。Stripe 全 mock。
-- **完了条件**: Vitest — #1〜#5 充足で release+clear / 不発効(#4)・target 未反映(#5) で release せず / #3 で no-op / released で冪等 clear / deleted で clear / 冪等。**決済 touch → 裏取り経路** (tag 無し)。
+- **完了条件**: Vitest — #1〜#5 充足で release+clear / 不発効(#4)・target 未反映(#5) で release せず / #3 で no-op / released で冪等 clear / **release 成功+clear 失敗を `.released` が回収 (§6.4.1)** / 複数 `.updated` で release 冪等 / `.released` 先着→後着 `.updated` no-op / deleted で clear。**決済 touch → 裏取り経路** (tag 無し)。
 
 ---
 
