@@ -62,6 +62,9 @@ const baseUser = {
   billingInterval: null as 'month' | 'year' | null,
   cancelAt: null as Date | null,
   subscriptionStatus: null as string | null,
+  scheduledDowngradeScheduleId: null as string | null,
+  scheduledTargetPriceId: null as string | null,
+  scheduledChangeEffectiveAt: null as Date | null,
 }
 
 beforeEach(() => {
@@ -123,5 +126,96 @@ describe('SettingsPage プラン section: entry 出し分け', () => {
     expect(
       screen.getByRole('button', { name: 'お支払い・解約を管理' }),
     ).toBeInTheDocument()
+  })
+})
+
+describe('SettingsPage プラン section: 予約状態の表示', () => {
+  it('paid + cancelAt: 「解約予約中、 YYYY/MM/DD 終了」 を表示', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      cancelAt: new Date('2026-07-31T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    expect(screen.getByText(/解約予約中/)).toBeInTheDocument()
+    expect(screen.getByText(/2026\/07\/31/)).toBeInTheDocument()
+    // ダウングレード予約系の文言は出ない
+    expect(screen.queryByText(/変更予約中/)).not.toBeInTheDocument()
+    // ステータスは予約表示に置き換えられる (= 「ステータス: active」 は出さない)
+    expect(screen.queryByText(/ステータス:/)).not.toBeInTheDocument()
+  })
+
+  it('paid + scheduledDowngradeScheduleId (cancelAt なし): 「YYYY/MM/DD に Standard 月額 へ変更予約中」 を表示', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      scheduledDowngradeScheduleId: 'sched_x',
+      // vitest.setup.ts で fake env 設定済 (price_fake_standard_monthly)
+      scheduledTargetPriceId: 'price_fake_standard_monthly',
+      scheduledChangeEffectiveAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    expect(screen.getByText(/2026\/07\/01 に Standard 月額 へ変更予約中/)).toBeInTheDocument()
+    // 解約予約系の文言は出ない
+    expect(screen.queryByText(/解約予約中/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/ステータス:/)).not.toBeInTheDocument()
+  })
+
+  it('paid + cancelAt + scheduledDowngradeScheduleId 両方 set: cancelAt 優先 (解約予約中のみ表示)', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      cancelAt: new Date('2026-08-31T00:00:00.000Z'),
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: 'price_fake_standard_monthly',
+      scheduledChangeEffectiveAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    // cancelAt 優先で解約予約中のみ表示、 ダウングレード予約は出さない (defensive)。
+    expect(screen.getByText(/解約予約中/)).toBeInTheDocument()
+    expect(screen.getByText(/2026\/08\/31/)).toBeInTheDocument()
+    expect(screen.queryByText(/変更予約中/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/2026\/07\/01/)).not.toBeInTheDocument()
+  })
+
+  it('paid + scheduledDowngradeScheduleId + 不明 priceId: 「YYYY/MM/DD に 変更先プラン へ変更予約中」 にフォールバック', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: 'price_unknown_does_not_resolve',
+      scheduledChangeEffectiveAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    // resolveFromPriceId が null → 短縮ラベル不在 → "変更先プラン" にフォールバック
+    expect(screen.getByText(/2026\/07\/01 に 変更先プラン へ変更予約中/)).toBeInTheDocument()
+  })
+
+  it('paid + scheduledDowngradeScheduleId + effectiveAt なし: 「Standard 月額 へ変更予約中」 (日付なし)', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: 'price_fake_standard_monthly',
+      scheduledChangeEffectiveAt: null,
+    })
+    render(await SettingsPage())
+
+    // 日付不在 → date prefix なし、 ラベルのみ
+    expect(screen.getByText('Standard 月額 へ変更予約中')).toBeInTheDocument()
   })
 })

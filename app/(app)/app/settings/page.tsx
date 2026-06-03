@@ -9,10 +9,13 @@ import { SessionLimitForm } from './_components/session-limit-form'
 import { FsrsModeForm } from './_components/fsrs-mode-form'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { planLabelFor } from '@/lib/plan-catalog'
+import { PAID_PLAN_CATALOG, planLabelFor } from '@/lib/plan-catalog'
+import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 
-// 解約予定日を日本語ロケールの YYYY/MM/DD 形式に整形する
+// 解約予定日 / ダウングレード予約発効日を日本語ロケールの YYYY/MM/DD 形式に整形する
 // Intl.DateTimeFormat を使い、ロケール依存の区切り文字を統一する
+// (upgrade page にも同一 formatEffectiveDate があるが、 cross-module 結合を
+//  避けるため共有 helper 化せず複製する既存方針に従う、 upgrade/page.tsx:11-12 参照)
 function formatCancelDate(date: Date): string {
   return new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
@@ -31,6 +34,31 @@ export default async function SettingsPage() {
   const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
   const fsrsMode = settingsRows[0]?.fsrsMode ?? false
 
+  // ダウングレード予約 (方針C) の表示用ラベル整形。 cancelAt 優先のため、 cancelAt
+  // 不在で scheduledDowngradeScheduleId set のときだけ JSX 側で表示する。 ここでは
+  // price → 短縮ラベル ("Standard 月額") / date → YYYY/MM/DD を確定する。
+  // 整形パターンは upgrade page (app/(app)/app/upgrade/page.tsx:54-69) を inline
+  // 複製 (cross-module 結合を避ける既存方針)。
+  let scheduledTargetLabel: string | undefined
+  let scheduledEffectiveDate: string | undefined
+  if (
+    user.plan !== 'free' &&
+    !user.cancelAt &&
+    user.scheduledDowngradeScheduleId
+  ) {
+    if (user.scheduledTargetPriceId) {
+      const mapping = resolveFromPriceId(user.scheduledTargetPriceId)
+      if (mapping) {
+        const tier = PAID_PLAN_CATALOG[mapping.plan].label
+        const intervalText = mapping.interval === 'year' ? '年額' : '月額'
+        scheduledTargetLabel = `${tier} ${intervalText}`
+      }
+    }
+    if (user.scheduledChangeEffectiveAt) {
+      scheduledEffectiveDate = formatCancelDate(user.scheduledChangeEffectiveAt)
+    }
+  }
+
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold">設定</h1>
@@ -43,9 +71,19 @@ export default async function SettingsPage() {
               現在: <span className="font-medium">{planLabelFor(user.plan, user.billingInterval)}</span>
             </p>
             {user.plan !== 'free' && user.cancelAt ? (
-              // 解約予約中: cancel_at != null が解約予約中の signal
+              // 解約予約中: cancel_at != null が解約予約中の signal (最優先表示)。
+              // 「両方 set」 (解約予約 + ダウングレード予約) は path 上成立しうるが
+              // (調査済)、 cancelAt 優先 = 解約が最終決定とみなして表示する。
               <p className="text-xs text-amber-700 mt-1">
                 解約予約中、{formatCancelDate(user.cancelAt)} 終了
+              </p>
+            ) : user.plan !== 'free' && user.scheduledDowngradeScheduleId ? (
+              // 方針C ダウングレード予約中: scheduledDowngradeScheduleId が
+              // 真実 source。 cancelAt 不在のときのみ表示する (上の cancelAt 分岐に
+              // 落ちれば優先される)。
+              <p className="text-xs text-amber-700 mt-1">
+                {scheduledEffectiveDate ? `${scheduledEffectiveDate} に ` : ''}
+                {scheduledTargetLabel ?? '変更先プラン'} へ変更予約中
               </p>
             ) : user.subscriptionStatus ? (
               <p className="text-xs text-slate-500 mt-1">
