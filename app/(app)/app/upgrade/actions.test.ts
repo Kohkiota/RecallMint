@@ -219,6 +219,18 @@ describe('createCheckoutSession: 4 種類 (plan × interval) を Stripe Checkout
       }),
     )
   })
+
+  // R1: success_url を ?billing=new に統合 (旧 ?checkout=success を廃止)。
+  it('success_url は /app?billing=new (banner entry 統合)', async () => {
+    await expect(createCheckoutSession(fd('standard', 'month'))).rejects.toThrow(
+      /__REDIRECT__/,
+    )
+    expect(mockCheckoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: expect.stringMatching(/\/app\?billing=new$/),
+      }),
+    )
+  })
 })
 
 describe('createCheckoutSession: 不正入力 / 未同期 user 拒否', () => {

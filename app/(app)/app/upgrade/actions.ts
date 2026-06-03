@@ -56,7 +56,8 @@ export async function createCheckoutSession(formData: FormData): Promise<void> {
     // from the email on Checkout.
     customer: user.stripeCustomerId ?? undefined,
     customer_email: user.stripeCustomerId ? undefined : user.email,
-    success_url: `${base}/app?checkout=success`,
+    // R1: 成功 banner の entry を ?billing=new に統合 (旧 ?checkout=success を廃止)。
+    success_url: `${base}/app?billing=new`,
     cancel_url: `${base}/app/upgrade`,
   })
 

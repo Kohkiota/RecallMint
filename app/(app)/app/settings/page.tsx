@@ -69,15 +69,13 @@ export default async function SettingsPage() {
                     お支払い・解約を管理
                   </Button>
                 </form>
-                {/* Pro 年額以外 (= 最上位以外) は upgrade page でさらに上の plan に
-                    切替可能。 Pro 年額のときは upgrade page が /app へ redirect する
-                    ので CTA を表示しない。 */}
-                {!(user.plan === 'pro' && user.billingInterval === 'year') && (
-                  <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
-                    {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
-                    <Link href="/app/upgrade" prefetch={false}>アップグレード</Link>
-                  </Button>
-                )}
+                {/* §7.3: paid は entry を統一し、全 plan で「プラン変更」(/app/upgrade)
+                    を常時表示する (Pro 年額の除外は撤廃)。upgrade/downgrade の選択は
+                    upgrade page 内 toggle に委ねる。 */}
+                <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
+                  {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
+                  <Link href="/app/upgrade" prefetch={false}>プラン変更</Link>
+                </Button>
               </div>
             )}
           </CardContent>
