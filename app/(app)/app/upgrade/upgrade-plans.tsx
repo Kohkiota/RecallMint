@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   PAID_PLAN_CATALOG,
   planLabelFor,
@@ -11,7 +12,7 @@ import {
 } from '@/lib/plan-catalog'
 import type { Plan } from '@/lib/auth/plan-limits'
 import type { BillingInterval } from '@/lib/stripe/price-mapping'
-import { createCheckoutSession, changePlan } from './actions'
+import { createCheckoutSession, changePlan, cancelDowngrade } from './actions'
 
 type Props = {
   userPlan: Plan
@@ -21,6 +22,12 @@ type Props = {
   hasPendingUpdate: boolean
   cancelScheduled: boolean
   hasScheduledDowngrade: boolean
+  // ダウングレード予約中 (§5.5) の banner 表示用。hasScheduledDowngrade=true の
+  // ときのみ意味を持つ。label / date は server (page.tsx) で整形済の文字列を渡す
+  // (client は price-mapping / Date 整形ロジックを持たない)。date は null 不可避な
+  // ケースのため optional。
+  scheduledTargetPlanLabel?: string
+  scheduledEffectiveDateLabel?: string
 }
 
 // プラン変更 page 内の toggle + 2 plan cards。月↔年 切替で価格 / CTA 状態を
@@ -32,6 +39,8 @@ export function UpgradePlans({
   hasPendingUpdate,
   cancelScheduled,
   hasScheduledDowngrade,
+  scheduledTargetPlanLabel,
+  scheduledEffectiveDateLabel,
 }: Props) {
   // 既存 paid user は同じ cycle を default 表示、 Free は月額 default。
   // rename setBillingInterval (cf. window.setInterval 衝突回避、 同 dir の
@@ -58,6 +67,15 @@ export function UpgradePlans({
       <p className="text-sm text-slate-600 mb-4">
         現在のプラン: <span className="font-medium">{planLabelFor(userPlan, userInterval)}</span>
       </p>
+
+      {/* §5.5: ダウングレード予約中は page 上部に予約内容 + 取消を提示。blocked で
+          全変更 CTA は disabled になるが、取消だけは唯一の有効操作として enabled。 */}
+      {hasScheduledDowngrade && (
+        <DowngradeReservationBanner
+          targetPlanLabel={scheduledTargetPlanLabel}
+          effectiveDateLabel={scheduledEffectiveDateLabel}
+        />
+      )}
 
       {blocked && (
         <p role="status" aria-live="polite" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
@@ -223,37 +241,121 @@ function CtaButton({
   }
 
   return (
-    <PaidChangeForm plan={plan} interval={interval} blocked={blocked} />
+    <PaidChangeForm
+      plan={plan}
+      interval={interval}
+      userPlan={userPlan}
+      userInterval={userInterval}
+      blocked={blocked}
+    />
   )
 }
 
-// paid user の in-place プラン変更フォーム。operationId は §5.4 の操作単位 UUID で、
-// idempotency key の識別子。client で生成して hidden input に載せる。
-// T7: 確認 modal をここに被せる (modal で operationId を生成し confirm 後に submit
-// する形へ差し替え予定。本 task では直接 submit で動作する placeholder)。
+// paid user の in-place プラン変更フォーム。CTA は直接 submit せず確認 modal を開き、
+// confirm 時に fresh operationId を払い出して submit する。
+// operationId を confirm 時生成にする理由 (§5.4): per-mount 固定だと「開く→閉じる→
+// 別 plan を選び直す」操作で同一 UUID が別 intent に再利用され、idempotency key が
+// 衝突しうる。confirm = 1 操作の確定点なので、ここで都度生成するのが正しい単位。
 function PaidChangeForm({
   plan,
   interval,
+  userPlan,
+  userInterval,
   blocked,
 }: {
   plan: 'standard' | 'pro'
   interval: BillingInterval
+  userPlan: Plan
+  userInterval: BillingInterval | null
   blocked: boolean
 }) {
-  // render ごとに 1 度だけ UUID を払い出す (submit 単位の一意性は十分、T7 で
-  // modal confirm 時生成へ移行)。
-  const [operationId] = useState(() => crypto.randomUUID())
-  const ctaLabel = `${plan === 'standard' ? 'Standard' : 'Pro'} ${interval === 'year' ? '年額' : '月額'} に変更`
+  const [open, setOpen] = useState(false)
+  // confirm 時に生成した operationId を hidden input へ反映するための state。
+  const [operationId, setOperationId] = useState('')
+  const formRef = useRef<HTMLFormElement>(null)
+
+  const targetLabel = PAID_PLAN_CATALOG[plan].label
+  const ctaLabel = `${targetLabel} ${interval === 'year' ? '年額' : '月額'} に変更`
+
+  // upgrade / downgrade の向きは rank 比較で判定 (現プランより上位なら upgrade)。
+  // 文言だけが分岐し、submit 先 (changePlan) は同一 (action 側で再判定)。
+  const isUpgradeDir = rank(plan, interval) > rank(userPlan, userInterval)
+  const description = isUpgradeDir
+    ? '今すぐ差額が請求され、プランが変更されます'
+    : `現在の請求期間終了後に ${targetLabel} へ切り替わります。それまでは現在のプランを利用できます`
+
+  // confirm: fresh UUID を hidden input に載せてから form を submit する。
+  // setState は同期反映されないため、requestSubmit 前に DOM へ直接書き込む。
+  const onConfirm = () => {
+    const id = crypto.randomUUID()
+    setOperationId(id)
+    const input = formRef.current?.querySelector<HTMLInputElement>(
+      'input[name="operationId"]',
+    )
+    if (input) input.value = id
+    setOpen(false)
+    formRef.current?.requestSubmit()
+  }
 
   return (
-    <form action={changePlan}>
+    <form ref={formRef} action={changePlan}>
       <input type="hidden" name="plan" value={plan} />
       <input type="hidden" name="interval" value={interval} />
-      <input type="hidden" name="operationId" value={operationId} />
-      <Button type="submit" className="w-full" disabled={blocked}>
+      <input type="hidden" name="operationId" value={operationId} readOnly />
+      <Button
+        type="button"
+        className="w-full"
+        disabled={blocked}
+        onClick={() => {
+          if (!blocked) setOpen(true)
+        }}
+      >
         {ctaLabel}
       </Button>
+      <ConfirmDialog
+        open={open}
+        title={`${targetLabel} に変更しますか？`}
+        description={description}
+        confirmLabel="変更する"
+        onConfirm={onConfirm}
+        onCancel={() => setOpen(false)}
+      />
     </form>
+  )
+}
+
+// §5.5: ダウングレード予約中 banner。amber/slate の注意喚起トーン (blocked notice と
+// 統一)。取消は cancelDowngrade への直接 submit (benign / 可逆寄りなので二段確認不要)。
+// cancelDowngrade は operationId 必須 (未送信で MISSING_OPERATION_ID throw) のため、
+// render 毎の UUID を hidden input に載せる (取消は idempotent なので per-render で十分)。
+function DowngradeReservationBanner({
+  targetPlanLabel,
+  effectiveDateLabel,
+}: {
+  targetPlanLabel?: string
+  effectiveDateLabel?: string
+}) {
+  const [operationId] = useState(() => crypto.randomUUID())
+  const planText = targetPlanLabel ?? 'ダウングレード先プラン'
+  // 発効日が null (timestamp 未確定) のケースは日付を省く。
+  const dateSuffix = effectiveDateLabel ? ` (${effectiveDateLabel})` : ''
+
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-3 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4"
+    >
+      <span>
+        {planText} へのダウングレード予約中{dateSuffix}
+      </span>
+      <form action={cancelDowngrade}>
+        <input type="hidden" name="operationId" value={operationId} />
+        {/* blocked に依らず常時有効 (予約中で唯一の操作)。 */}
+        <Button type="submit" variant="outline" size="sm">
+          取消
+        </Button>
+      </form>
+    </div>
   )
 }
 

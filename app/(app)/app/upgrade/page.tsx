@@ -3,7 +3,20 @@ import {
   resolveActiveSubscription,
   getPendingState,
 } from '@/lib/stripe/subscription'
+import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
+import { planLabelFor } from '@/lib/plan-catalog'
 import { UpgradePlans } from './upgrade-plans'
+
+// 予約発効日を settings の formatCancelDate と同一形式 (ja-JP YYYY/MM/DD) で整形する。
+// 共有 helper 化せず複製するのは、settings との cross-module 結合を避けるため
+// (整形ロジックは trivial、片方の都合でもう片方が壊れる依存を作らない)。
+function formatEffectiveDate(date: Date): string {
+  return new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
 
 // §7.1: プラン変更 page は双方向 (upgrade / downgrade / 月年切替) になったため、
 // 最上位 (pro+year) への redirect は撤廃。paid user は sub 状態を server で取得し
@@ -33,6 +46,25 @@ export default async function UpgradePage() {
     }
   }
 
+  // ダウングレード予約中 banner 用の表示文字列を server で整形して渡す
+  // (client は price-mapping / Date 整形を持たない)。予約 price → (plan,interval) →
+  // ラベル、発効日 → ja-JP 整形。price 解決不能 / 日付 null は undefined で graceful。
+  let scheduledTargetPlanLabel: string | undefined
+  let scheduledEffectiveDateLabel: string | undefined
+  if (hasScheduledDowngrade) {
+    if (user.scheduledTargetPriceId) {
+      const mapping = resolveFromPriceId(user.scheduledTargetPriceId)
+      if (mapping) {
+        scheduledTargetPlanLabel = planLabelFor(mapping.plan, mapping.interval)
+      }
+    }
+    if (user.scheduledChangeEffectiveAt) {
+      scheduledEffectiveDateLabel = formatEffectiveDate(
+        user.scheduledChangeEffectiveAt,
+      )
+    }
+  }
+
   return (
     <UpgradePlans
       userPlan={user.plan}
@@ -40,6 +72,8 @@ export default async function UpgradePage() {
       hasPendingUpdate={hasPendingUpdate}
       cancelScheduled={cancelScheduled}
       hasScheduledDowngrade={hasScheduledDowngrade}
+      scheduledTargetPlanLabel={scheduledTargetPlanLabel}
+      scheduledEffectiveDateLabel={scheduledEffectiveDateLabel}
     />
   )
 }
