@@ -39,13 +39,14 @@ export default async function SettingsPage() {
   // price → 短縮ラベル ("Standard 月額") / date → YYYY/MM/DD を確定する。
   // 整形パターンは upgrade page (app/(app)/app/upgrade/page.tsx:54-69) を inline
   // 複製 (cross-module 結合を避ける既存方針)。
-  let scheduledTargetLabel: string | undefined
-  let scheduledEffectiveDate: string | undefined
-  if (
+  // 同条件を MF-4 (Portal ボタン非活性化) でも参照するため真偽値を 1 度だけ束ねる。
+  const isDowngradeReserved =
     user.plan !== 'free' &&
     !user.cancelAt &&
-    user.scheduledDowngradeScheduleId
-  ) {
+    user.scheduledDowngradeScheduleId != null
+  let scheduledTargetLabel: string | undefined
+  let scheduledEffectiveDate: string | undefined
+  if (isDowngradeReserved) {
     if (user.scheduledTargetPriceId) {
       const mapping = resolveFromPriceId(user.scheduledTargetPriceId)
       if (mapping) {
@@ -95,24 +96,36 @@ export default async function SettingsPage() {
                 を削除。 dashboard /app の §7.4 統一を settings にも波及)。
                 「お支払い・解約を管理」 (Portal) は paid 限定を維持 — free は
                 Stripe customer 不在で createBillingPortalSession が throw する
-                経路 (actions.ts:15-17)。 */}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {user.plan !== 'free' && (
-                <form action={createBillingPortalSession}>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    size="sm"
-                    className="px-4 py-2 text-sm font-medium"
-                  >
-                    お支払い・解約を管理
-                  </Button>
-                </form>
+                経路 (actions.ts:15-17)。
+                MF-4: ダウングレード予約中 (cancelAt 不在 かつ
+                scheduledDowngradeScheduleId set) は Portal ボタンを非活性化し
+                取消導線 (「プラン変更」 → upgrade page) へ誘導する誤操作防止 UX。
+                整合は webhook 方向2 で担保済のため client 表示のみ。 */}
+            <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {user.plan !== 'free' && (
+                  <form action={createBillingPortalSession}>
+                    <Button
+                      type="submit"
+                      variant="outline"
+                      size="sm"
+                      disabled={isDowngradeReserved}
+                      className="px-4 py-2 text-sm font-medium"
+                    >
+                      お支払い・解約を管理
+                    </Button>
+                  </form>
+                )}
+                <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
+                  {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
+                  <Link href="/app/upgrade" prefetch={false}>プラン変更</Link>
+                </Button>
+              </div>
+              {isDowngradeReserved && (
+                <p className="text-xs text-amber-700">
+                  ダウングレード予約中は支払い管理を開けません。先に「プラン変更」 から予約を取り消してください。
+                </p>
               )}
-              <Button asChild size="sm" className="px-4 py-2 text-sm font-medium">
-                {/* S-perf-1 follow-up: dashboard と同方針で /app/upgrade prefetch を切る。 */}
-                <Link href="/app/upgrade" prefetch={false}>プラン変更</Link>
-              </Button>
             </div>
           </CardContent>
         </Card>

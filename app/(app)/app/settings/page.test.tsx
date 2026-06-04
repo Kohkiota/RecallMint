@@ -225,3 +225,89 @@ describe('SettingsPage プラン section: 予約状態の表示', () => {
     expect(screen.getByText('Standard 月額 へ変更予約中')).toBeInTheDocument()
   })
 })
+
+describe('SettingsPage プラン section: MF-4 Portal ボタン非活性化', () => {
+  it('ダウングレード予約中: Portal ボタンが disabled + 取消誘導メッセージ表示', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: 'price_fake_standard_monthly',
+      scheduledChangeEffectiveAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    expect(
+      screen.getByRole('button', { name: 'お支払い・解約を管理' }),
+    ).toBeDisabled()
+    expect(
+      screen.getByText(/ダウングレード予約中は支払い管理を開けません/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/先に「プラン変更」 から/)).toBeInTheDocument()
+    // 「プラン変更」 ボタン (取消導線) は引き続き活性
+    expect(screen.getByRole('link', { name: 'プラン変更' })).toHaveAttribute(
+      'href',
+      '/app/upgrade',
+    )
+  })
+
+  it('paid + cancelAt のみ: Portal ボタンは活性 (解約予約取消は Portal で行うため)', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      cancelAt: new Date('2026-07-31T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    expect(
+      screen.getByRole('button', { name: 'お支払い・解約を管理' }),
+    ).not.toBeDisabled()
+    expect(
+      screen.queryByText(/ダウングレード予約中は支払い管理を開けません/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('paid + cancelAt + scheduledDowngradeScheduleId 両方 set: cancelAt 優先で Portal は活性', async () => {
+    // 「両方 set」 時は cancelAt 優先 = 解約が最終決定とみなす既存方針に揃え、
+    // Portal は活性のままにして解約予約取消の導線を残す (誤誘導防止)。
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+      cancelAt: new Date('2026-08-31T00:00:00.000Z'),
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: 'price_fake_standard_monthly',
+      scheduledChangeEffectiveAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    render(await SettingsPage())
+
+    expect(
+      screen.getByRole('button', { name: 'お支払い・解約を管理' }),
+    ).not.toBeDisabled()
+    expect(
+      screen.queryByText(/ダウングレード予約中は支払い管理を開けません/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('paid + 予約なし: Portal ボタンは活性 (回帰確認)', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...baseUser,
+      plan: 'pro',
+      billingInterval: 'month',
+      subscriptionStatus: 'active',
+    })
+    render(await SettingsPage())
+
+    expect(
+      screen.getByRole('button', { name: 'お支払い・解約を管理' }),
+    ).not.toBeDisabled()
+    expect(
+      screen.queryByText(/ダウングレード予約中は支払い管理を開けません/),
+    ).not.toBeInTheDocument()
+  })
+})
