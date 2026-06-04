@@ -558,6 +558,9 @@ export const studySessions = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // exam_id は set null (非 cascade)、 user.deleted 削除経路は user_id のみ。
+    // users は soft delete のため user_id cascade も発火せず、 handler 明示 DELETE
+    // が必須 (handler 集約コメント参照、 invariant test で網羅性検証)。
     examId: uuid('exam_id').references(() => exams.id, { onDelete: 'set null' }),
     mode: text('mode').$type<'smart' | 'custom'>().notNull(),
     cardIds: jsonb('card_ids')
@@ -599,6 +602,11 @@ export const answerEvents = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     eventId: uuid('event_id').notNull().unique(),
+    // session_id は set null (非削除経路)。 削除は card_id → cards (exams 経由
+    // cascade) または user_id (users soft delete のため発火せず、 cards 経由が
+    // 実経路) で行われるため、 handler に answer_events を明示 DELETE しない
+    // (= Group II、 二重記述しない)。 集約コメントは handler 側、 網羅性は
+    // invariant test で担保。
     sessionId: uuid('session_id').references(() => studySessions.sessionId, {
       onDelete: 'set null',
     }),

@@ -12,7 +12,19 @@ import { Webhook } from 'svix'
 import { eq, sql } from 'drizzle-orm'
 import Stripe from 'stripe'
 import { getDb } from '@/lib/db'
-import { users, clerkEvents, deletionFailures, exams, studyDays, contactMessages } from '@/lib/db/schema'
+import {
+  users,
+  clerkEvents,
+  deletionFailures,
+  exams,
+  studyDays,
+  contactMessages,
+  aiUsageUsers,
+  uploadRecords,
+  userSettings,
+  studySessions,
+  tombstones,
+} from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { stripe, cancelWithRetry } from '@/lib/stripe'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
@@ -209,16 +221,36 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
     }
   }
 
-  // §6 / T3: DB transaction — soft-delete users + GDPR PII scrub + hard-delete child tables。
-  // exams DELETE cascades to cards / source_documents / reviews via FK ON DELETE CASCADE。
-  // study_days / contact_messages have FK only to users.id and users is not hard-deleted,
-  // so they require explicit DELETE here.
+  // §6 / T3: DB transaction — users の soft delete + GDPR PII scrub + ユーザー
+  // 紐付き子テーブルの物理削除。
+  //
+  // 削除設計の集約コメント (なぜここに 8 テーブルを明示 DELETE するか):
+  // - users は soft delete (deleted_at set + email/clerk_id scrub) で物理削除しない
+  //   ため、 users.id への FK ON DELETE CASCADE は発火しない。
+  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 8 件)**: direct user_id FK で
+  //   users に cascade するテーブルのうち、 親 cascade chain がないもの。
+  //     exams / study_days / contact_messages / ai_usage_users / upload_records /
+  //     user_settings / study_sessions / tombstones
+  //   (study_sessions は exam_id が set null = 非経路、 user_id のみが削除 path)
+  // - **Group II (明示 DELETE しない、 = exams 経由で連鎖)**: cards / source_documents
+  //   は exam_id cascade で exams DELETE 時に連鎖、 reviews / answer_events /
+  //   card_mutations は cards cascade (= exams chain) で連鎖。 ここに二重に書かない。
+  // - 網羅性は invariant test (route.test.ts の「user_id direct cascade を持つ全テーブル
+  //   が handler の明示 DELETE に含まれる」 検証) が保証。 schema に user_id direct FK
+  //   の新テーブルを追加すると invariant test が落ちて気づける。
+  //
   // GDPR PII scrub: users 行は audit / correlation のため残置するが、 PII 列
   // (email, clerk_id) を NULL に上書きする。 stripe_customer_id は cus_xxx 単体で
   // 個人特定不能なため correlation key として保持。 NULL 上書きは値レベルで冪等、
   // webhook 再送は上位の clerk_events.event_id dedup で 1 回に絞られる。
+  //
   // T3: transient DB error (deadlock / serialization / connection 切断) に対し最大 3 retry。
   // permanent error (整合性違反等) は即中断。両者とも最終失敗時は recordFailure(data_deletion)。
+  //
+  // 削除順序: Group I は互いに FK 依存なし (全 table が direct user_id FK のみ) なので
+  // 任意。 Group II は exams DELETE 時点で同 transaction 内 cascade chain により連鎖
+  // 削除される (実行順序は PG が constraint check に従って決定、 ここでの記述順は
+  // パフォーマンス heuristic のみ、 正当性に依存しない)。
   await runTransactionWithRetry(
     db,
     async (tx) => {
@@ -229,6 +261,11 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
       await tx.delete(exams).where(eq(exams.userId, internalUserId))
       await tx.delete(studyDays).where(eq(studyDays.userId, internalUserId))
       await tx.delete(contactMessages).where(eq(contactMessages.userId, internalUserId))
+      await tx.delete(aiUsageUsers).where(eq(aiUsageUsers.userId, internalUserId))
+      await tx.delete(uploadRecords).where(eq(uploadRecords.userId, internalUserId))
+      await tx.delete(userSettings).where(eq(userSettings.userId, internalUserId))
+      await tx.delete(studySessions).where(eq(studySessions.userId, internalUserId))
+      await tx.delete(tombstones).where(eq(tombstones.userId, internalUserId))
     },
     async (errorMessage) => {
       await recordFailure({

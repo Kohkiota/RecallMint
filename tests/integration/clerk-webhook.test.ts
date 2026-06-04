@@ -115,7 +115,7 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     vi.mocked(db.select).mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-000000000001', stripeCustomerId: null }]) as never,
     )
-    // transaction 内: update users + delete exams + delete study_days + delete contact_messages
+    // transaction 内: update users (soft-delete + PII scrub) + delete Group I 8 子テーブル
     vi.mocked(db.update).mockReturnValue(chain(undefined) as never)
     vi.mocked(db.delete).mockReturnValue(chain(undefined) as never)
     const body = JSON.stringify({
@@ -128,8 +128,10 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.insert).toHaveBeenCalledTimes(1) // clerk_events のみ (Stripe skip, 失敗 0)
     expect(db.select).toHaveBeenCalledTimes(1)  // users SELECT
     expect(db.transaction).toHaveBeenCalledTimes(1)
-    expect(db.update).toHaveBeenCalledTimes(1)  // users soft-delete (inside transaction)
-    expect(db.delete).toHaveBeenCalledTimes(3)  // exams + study_days + contact_messages
+    expect(db.update).toHaveBeenCalledTimes(1)  // users soft-delete + scrub (inside transaction)
+    // Group I 8 件: exams + study_days + contact_messages + ai_usage_users +
+    // upload_records + user_settings + study_sessions + tombstones
+    expect(db.delete).toHaveBeenCalledTimes(8)
   })
 
   it('unknown event type → clerk_events INSERT のみで no-op 200', async () => {
