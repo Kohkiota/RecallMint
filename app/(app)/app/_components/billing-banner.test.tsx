@@ -1,18 +1,25 @@
 // @vitest-environment jsdom
 // BillingBanner: ?billing=<kind> を kind prop で受け取り種別文言を表示する
-// client banner の render test。kind→文言の lookup と dismiss 状態のみ持つので
-// Next router context 不要 (prop 注入のため useSearchParams/Suspense を避ける)。
+// client toast の render test。 kind→文言の lookup / dismiss 状態 /
+// auto-dismiss timer / URL クリーン (window.history.replaceState) を検証する。
+// Next router context は不要 (prop 注入 + history API 直接書換のため)。
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { act, render, screen, cleanup, fireEvent } from '@testing-library/react'
 
 import { BillingBanner } from './billing-banner'
 
-afterEach(() => {
-  cleanup()
+beforeEach(() => {
+  // 各 test は default URL から開始する (URL クリーン test 用に明示)。
+  window.history.replaceState(null, '', '/')
 })
 
-describe('BillingBanner', () => {
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
+
+describe('BillingBanner: 文言 lookup', () => {
   it('kind=new: 決済受付の文言を role="status" で表示', () => {
     render(<BillingBanner kind="new" />)
     const status = screen.getByRole('status')
@@ -51,11 +58,54 @@ describe('BillingBanner', () => {
     render(<BillingBanner kind={undefined} />)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
+})
 
-  it('閉じるボタンで banner が消える (キーボード到達可能な aria-label 付き)', () => {
+describe('BillingBanner: dismiss 経路', () => {
+  it('閉じるボタンで toast が消える (キーボード到達可能な aria-label 付き)', () => {
     render(<BillingBanner kind="new" />)
     const dismiss = screen.getByRole('button', { name: '閉じる' })
     fireEvent.click(dismiss)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('一定秒数経過で自動的に fade out → unmount する', () => {
+    vi.useFakeTimers()
+    render(<BillingBanner kind="new" />)
+    expect(screen.getByRole('status')).toBeInTheDocument()
+
+    // fade 開始: opacity-0 class が付与される
+    act(() => {
+      vi.advanceTimersByTime(4500)
+    })
+    expect(screen.getByRole('status').className).toContain('opacity-0')
+
+    // fade 完了で unmount
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
+describe('BillingBanner: URL クリーン (reload 再発火防止)', () => {
+  it('mount 時に ?billing= を URL から除去する (他クエリは保持)', () => {
+    window.history.replaceState(null, '', '/app?billing=new&other=keep')
+    render(<BillingBanner kind="new" />)
+    expect(window.location.pathname).toBe('/app')
+    expect(window.location.search).toBe('?other=keep')
+  })
+
+  it('?billing= 単独なら search が空になる', () => {
+    window.history.replaceState(null, '', '/app?billing=upgrade')
+    render(<BillingBanner kind="upgrade" />)
+    expect(window.location.pathname).toBe('/app')
+    expect(window.location.search).toBe('')
+  })
+
+  it('kind が無効で描画しない場合は URL を触らない', () => {
+    window.history.replaceState(null, '', '/app?billing=garbage&other=keep')
+    render(<BillingBanner kind="garbage" />)
+    // garbage は COPY 未登録 → useEffect は no-op、 query 維持
+    expect(window.location.search).toBe('?billing=garbage&other=keep')
   })
 })
