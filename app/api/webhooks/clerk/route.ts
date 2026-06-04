@@ -209,16 +209,23 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
     }
   }
 
-  // §6 / T3: DB transaction — soft-delete users + hard-delete child tables。
+  // §6 / T3: DB transaction — soft-delete users + GDPR PII scrub + hard-delete child tables。
   // exams DELETE cascades to cards / source_documents / reviews via FK ON DELETE CASCADE。
   // study_days / contact_messages have FK only to users.id and users is not hard-deleted,
   // so they require explicit DELETE here.
+  // GDPR PII scrub: users 行は audit / correlation のため残置するが、 PII 列
+  // (email, clerk_id) を NULL に上書きする。 stripe_customer_id は cus_xxx 単体で
+  // 個人特定不能なため correlation key として保持。 NULL 上書きは値レベルで冪等、
+  // webhook 再送は上位の clerk_events.event_id dedup で 1 回に絞られる。
   // T3: transient DB error (deadlock / serialization / connection 切断) に対し最大 3 retry。
   // permanent error (整合性違反等) は即中断。両者とも最終失敗時は recordFailure(data_deletion)。
   await runTransactionWithRetry(
     db,
     async (tx) => {
-      await tx.update(users).set({ deletedAt: sql`now()` }).where(eq(users.id, internalUserId))
+      await tx
+        .update(users)
+        .set({ deletedAt: sql`now()`, email: null, clerkId: null })
+        .where(eq(users.id, internalUserId))
       await tx.delete(exams).where(eq(exams.userId, internalUserId))
       await tx.delete(studyDays).where(eq(studyDays.userId, internalUserId))
       await tx.delete(contactMessages).where(eq(contactMessages.userId, internalUserId))
@@ -312,7 +319,8 @@ function isTransientDbError(err: unknown): boolean {
 // §6 / T3: DB transaction を最大 3 retry (= 合計 4 試行) でラップする local 関数。
 // transient error (isTransientDbError=true) のときのみ retry、permanent は即中断。
 // backoff: retry1 前 500ms / retry2 前 1000ms / retry3 前 2000ms (ocr.ts callWithRetry と同値構造)。
-// transaction は idempotent (UPDATE deleted_at / DELETE WHERE は再実行安全) なので retry 安全。
+// transaction は idempotent (UPDATE deleted_at + PII scrub (email/clerkId NULL → NULL = no-op) /
+// DELETE WHERE は再実行安全) なので retry 安全。
 // Stripe cancel ループと recordFailure 本体はこの wrap 対象外。
 const MAX_DB_RETRIES = 3 // 初回 + 3 retries = 合計 4 試行
 

@@ -220,7 +220,7 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
 })
 
 describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
-  it('正常系: clerk_events INSERT → SELECT users → Stripe sub cancel × N → DB transaction (update + 3 delete) → 200', async () => {
+  it('正常系: clerk_events INSERT → SELECT users → Stripe sub cancel × N → DB transaction (update + 3 delete) → 200 + scrub payload 含む', async () => {
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     // 1st insert = clerk_events idempotency (returning [{id}])
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }]))
@@ -236,7 +236,8 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
       ]),
     )
     // transaction 内: update users + delete exams + delete study_days + delete contact_messages
-    mockDbUpdate.mockReturnValue(chain(undefined))
+    const updateChain = chain(undefined)
+    mockDbUpdate.mockReturnValueOnce(updateChain)
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_1' } }))
@@ -253,6 +254,68 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
     expect(mockDbDelete).toHaveBeenCalledTimes(3)
     expect(mockNotifyOps).not.toHaveBeenCalled()
+    // 正常系でも scrub payload (email/clerkId NULL) が users UPDATE に乗ることを
+    // defense-in-depth で確認 — 専用 test (下) が削除された場合の二重保険。
+    expect(updateChain.set).toHaveBeenCalledTimes(1)
+    expect(updateChain.where).toHaveBeenCalledTimes(1)
+    const setArg = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
+    expect(setArg.email).toBeNull()
+    expect(setArg.clerkId).toBeNull()
+  })
+
+  it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で 3 子テーブル cascade DELETE も発火', async () => {
+    // GDPR 要件: users 行は監査 (deletion_failures.user_id FK / stripe correlation) の
+    // ため残置するが PII 列 (email, clerk_id) は退会と同じ transaction で NULL に
+    // 書き換える。 stripe_customer_id (cus_xxx) は個人特定不能で監査 correlation key
+    // のため保持 — SET 引数に含めない。
+    // 加えて、 scrub と 3 つの子テーブル DELETE (exams / studyDays / contactMessages)
+    // は同一 transaction 内で atomic に走る (= 部分 commit の漏れ無し) ことも本 test で
+    // 確認する。
+    mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_scrub' } })
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_scrub' }])) // clerk_events
+    mockDbSelect.mockReturnValueOnce(
+      chain([{ id: '00000000-0000-0000-0000-0000000000cc', stripeCustomerId: 'cus_keep' }]),
+    )
+    mockStripeListIterator.mockReturnValue(asyncIterFrom([])) // no subs
+    const updateChain = chain(undefined)
+    mockDbUpdate.mockReturnValueOnce(updateChain)
+    mockDbDelete.mockReturnValue(chain(undefined))
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_scrub' } }))
+
+    expect(res.status).toBe(200)
+    // scrub payload 検証
+    expect(updateChain.set).toHaveBeenCalledTimes(1)
+    expect(updateChain.where).toHaveBeenCalledTimes(1)
+    const setArg = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
+    expect(setArg.email).toBeNull()
+    expect(setArg.clerkId).toBeNull()
+    // deletedAt は sql`now()` (SQL chunk) — 値の存在のみ確認
+    expect(setArg.deletedAt).toBeDefined()
+    // stripe_customer_id は監査 correlation key として保持。 SET payload に
+    // 載せない (= キー自体不在)。
+    expect('stripeCustomerId' in setArg).toBe(false)
+    // atomicity: 同一 transaction 内で 3 子テーブル DELETE も発火していること
+    // (= 「scrub だけ通って子データが残る」 部分 commit を防ぐ)。
+    expect(mockDbTransaction).toHaveBeenCalledTimes(1)
+    expect(mockDbDelete).toHaveBeenCalledTimes(3)
+  })
+
+  it('GDPR scrub 冪等性: 同 svix-id 再送は clerk_events dedup で handler 不到達 → 二重 scrub 起きない', async () => {
+    // scrub は UPDATE SET email=null/clerkId=null で値レベルでは冪等だが、
+    // 二重実行自体が clerk_events.event_id (svix-id) PK の ON CONFLICT DO NOTHING
+    // で抑止される。 1 回目で returning [{id}]、 2 回目 (returning []) で early
+    // return = handler / tx.update に到達しない。
+    mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_scrub_dup' } })
+    mockDbInsert.mockReturnValueOnce(chain([])) // 2 回目: returning [] = dedup hit
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_scrub_dup' } }))
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('duplicate')
+    expect(mockDbSelect).not.toHaveBeenCalled()
+    expect(mockDbTransaction).not.toHaveBeenCalled()
+    expect(mockDbUpdate).not.toHaveBeenCalled()
   })
 
   it('users 未同期 (SELECT 0 行): notifyOps で観測性確保 + Stripe loop 不到達 + transaction 不到達 + 200', async () => {

@@ -50,12 +50,16 @@ export async function createCheckoutSession(formData: FormData): Promise<void> {
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: 1 }],
-    client_reference_id: user.clerkId,
+    // user.clerkId / user.email は GDPR PII scrub で nullable 化された
+    // (`lib/db/schema.ts` users)。 active な user (このルートに到達する) では
+    // 必ず非 null だが、 Stripe SDK signature が `string | undefined` を要求する
+    // ため null → undefined に narrow する。
+    client_reference_id: user.clerkId ?? undefined,
     // If the user already has a Stripe customer ID (e.g., from a prior upgrade
     // attempt or a cancelled sub), reuse it. Otherwise let Stripe create one
     // from the email on Checkout.
     customer: user.stripeCustomerId ?? undefined,
-    customer_email: user.stripeCustomerId ? undefined : user.email,
+    customer_email: user.stripeCustomerId ? undefined : (user.email ?? undefined),
     // R1: 成功 banner の entry を ?billing=new に統合 (旧 ?checkout=success を廃止)。
     success_url: `${base}/app?billing=new`,
     cancel_url: `${base}/app/upgrade`,

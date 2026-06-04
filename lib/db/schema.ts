@@ -9,6 +9,11 @@
 // extracted cards).
 // Only users uses soft delete (deleted_at) for Stripe/audit retention;
 // other tables use hard delete.
+// GDPR: users 行は audit/correlation のため残置するが、退会時に webhook handler
+// (app/api/webhooks/clerk/route.ts handleUserDeleted) で PII 列 (email, clerk_id)
+// を NULL に scrub する。 stripe_customer_id は cus_xxx 単体で個人特定不能なため
+// 監査 correlation key として保持する。 scrub は冪等 (NULL 上書き)、
+// clerk_events.event_id dedup と組み合わせて再送安全。
 //
 // ルール A: 全 timestamp は withTimezone: true (timestamptz 統一)。 date 型は
 // mode: 'string'。
@@ -54,15 +59,22 @@ export type CardImage = {
 }
 
 // ---------------------------------------------------------------------------
-// users (PK = id uuid; clerk_id is a UNIQUE NOT NULL connector)
+// users (PK = id uuid; clerk_id is a UNIQUE connector, nullable for GDPR scrub)
 // id (UUID) は internal PK (auth provider 非依存 identity)、 clerk_id は Clerk
-// session 連携 key (UNIQUE NOT NULL)。 soft delete via deleted_at (Stripe /
-// audit retention のため users のみ採用)。
+// session 連携 key (UNIQUE)。 soft delete via deleted_at (Stripe / audit
+// retention のため users のみ採用)。
+// GDPR PII scrub: 退会時 (handleUserDeleted) に email / clerk_id を NULL に
+// 上書きするため、両列とも nullable とする (PG UNIQUE は NULL を重複扱いしない
+// ので clerk_id は UNIQUE のまま保持)。 active な user 行では NOT NULL 相当
+// (INSERT path で必ず値を与える) という invariant を webhook handler 側で担保。
+// 同一 Clerk 元 user の revival は発生しない (Clerk は userId を一度限り採番)
+// ため、 scrub 済み行 (clerk_id=NULL) と新規 user.created (異なる新 clerk_id) は
+// ON CONFLICT 衝突せず、 新規行が作られて旧 scrub 行は audit として残る = 仕様通り。
 // ---------------------------------------------------------------------------
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
-  clerkId: text('clerk_id').notNull().unique(),
-  email: text('email').notNull(),
+  clerkId: text('clerk_id').unique(),
+  email: text('email'),
   stripeCustomerId: text('stripe_customer_id').unique(),
   // in-place プラン変更の識別 key。1 user 1 active subscription invariant を
   // 保持し、subscription 系 webhook (created/updated/deleted) で populate/clear する。

@@ -127,6 +127,13 @@
       "when": 1780453214292,
       "tag": "0017_lame_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1780573338081,
+      "tag": "0018_flowery_jackpot",
+      "breakpoints": true
     }
   ]
 }
