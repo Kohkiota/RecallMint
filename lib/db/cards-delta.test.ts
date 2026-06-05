@@ -25,8 +25,6 @@ const { mockRows } = vi.hoisted(() => {
     explanationText: string | null
     memo: string | null
     images: string[]
-    customProps: Record<string, unknown>
-    tags: string[]
     answered: boolean
     lastCorrect: boolean | null
     currentStreak: number
@@ -58,8 +56,6 @@ const { mockRows } = vi.hoisted(() => {
       explanationText: null,
       memo: null,
       images: [],
-      customProps: {},
-      tags: [],
       answered: false,
       lastCorrect: null,
       currentStreak: 0,
@@ -90,8 +86,6 @@ const { mockRows } = vi.hoisted(() => {
       explanationText: null,
       memo: null,
       images: [],
-      customProps: {},
-      tags: [],
       answered: true,
       lastCorrect: true,
       currentStreak: 1,
@@ -128,8 +122,6 @@ const CANNED_ROWS = [
     explanationText: null,
     memo: null,
     images: [],
-    customProps: {},
-    tags: [],
     answered: false,
     lastCorrect: null,
     currentStreak: 0,
@@ -160,8 +152,6 @@ const CANNED_ROWS = [
     explanationText: null,
     memo: null,
     images: [],
-    customProps: {},
-    tags: [],
     answered: true,
     lastCorrect: true,
     currentStreak: 1,

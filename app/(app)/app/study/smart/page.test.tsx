@@ -102,8 +102,6 @@ function makeCard(id: string): Card {
     explanationText: null,
     memo: null,
     images: [],
-    customProps: {},
-    tags: [],
     answered: false,
     lastCorrect: null,
     currentStreak: 0,

@@ -355,7 +355,6 @@ describe('processUpload', () => {
     expect(result.data?.ocrCostYen).toBe(5)
     expect(result.data?.modelChain).toEqual(['flash'])
     expect(result.data?.cards).toHaveLength(1)
-    expect(result.data?.cards[0].customPropKeys).toEqual(['試験回'])
     // exam created with auto-name pattern
     expect(dbState.insertedExams).toHaveLength(1)
     expect(dbState.insertedExams[0].name).toMatch(/^アップロード \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
@@ -370,9 +369,7 @@ describe('processUpload', () => {
       cardsExtracted: 1,
       ocrCostYen: 5,
     })
-    // cards INSERT contains tags=[]
     expect(dbState.insertedCards).toHaveLength(1)
-    expect(dbState.insertedCards[0].tags).toEqual([])
     expect(mockNotifyOps).not.toHaveBeenCalled()
     // S1.9.1: 完了時 upload_records に status='completed' 行が append される
     expect(dbState.insertedUploadRecords).toHaveLength(1)

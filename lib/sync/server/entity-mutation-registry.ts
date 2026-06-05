@@ -29,6 +29,14 @@ import {
   type UpdateCardFieldName,
 } from '@/lib/cards/apply-card-mutation'
 import { optionSchema } from '@/lib/validation/card'
+import {
+  applyTagCategoryCreate,
+  applyTagCategoryUpdate,
+  applyTagCategoryDelete,
+  applyTagOptionCreate,
+  applyTagOptionUpdate,
+  applyTagOptionDelete,
+} from '@/lib/tags/apply-tag-mutation'
 
 // ---------------------------------------------------------------------------
 // 共通型
@@ -180,14 +188,113 @@ const applyCardDeleteFn: EntityApplyFn = async (tx, userId, entityId, _patch) =>
 }
 
 // ---------------------------------------------------------------------------
+// tag_category entity — patch zod
+// ---------------------------------------------------------------------------
+
+// update_field の patch: { field: 'name' | 'color' | 'sort_key', value }
+// select_type は immutable のため allowlist 外。
+const tagCategoryUpdateFieldPatchSchema = z.object({
+  field: z.enum(['name', 'color', 'sort_key']),
+  value: z.unknown(),
+})
+
+// create の patch: client が optimistic に組んだ category 内容。
+const tagCategoryCreatePatchSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'カテゴリ名は必須です')
+    .max(100, 'カテゴリ名は 100 文字以内で入力してください'),
+  select_type: z.enum(['single', 'multi']),
+  color: z.string().max(50, 'color は 50 文字以内').nullable().optional(),
+  sort_key: z.string().max(100, 'sort_key は 100 文字以内').nullable().optional(),
+})
+
+const tagCategoryDeletePatchSchema = z.record(z.string(), z.unknown())
+
+// ---------------------------------------------------------------------------
+// tag_category entity — apply 関数 (apply-tag-mutation への薄い adapter)
+// ---------------------------------------------------------------------------
+
+const applyTagCategoryUpdateFn: EntityApplyFn = async (tx, userId, entityId, patch) => {
+  const { field, value } = patch as { field: 'name' | 'color' | 'sort_key'; value: unknown }
+  return await applyTagCategoryUpdate(tx, userId, entityId, { field, value })
+}
+
+const applyTagCategoryCreateFn: EntityApplyFn = async (tx, userId, entityId, patch) => {
+  const p = patch as z.infer<typeof tagCategoryCreatePatchSchema>
+  return await applyTagCategoryCreate(tx, userId, entityId, {
+    name: p.name,
+    select_type: p.select_type,
+    color: p.color ?? null,
+    sort_key: p.sort_key ?? null,
+  })
+}
+
+const applyTagCategoryDeleteFn: EntityApplyFn = async (tx, userId, entityId, _patch) => {
+  return await applyTagCategoryDelete(tx, userId, entityId)
+}
+
+// ---------------------------------------------------------------------------
+// tag_option entity — patch zod
+// ---------------------------------------------------------------------------
+
+// update_field の patch: { field: 'name' | 'color' | 'sort_key' | 'category_id', value }
+// category_id 移動は許容、 UNIQUE(category_id, name) 違反は apply 側で per-mutation failed。
+const tagOptionUpdateFieldPatchSchema = z.object({
+  field: z.enum(['name', 'color', 'sort_key', 'category_id']),
+  value: z.unknown(),
+})
+
+const tagOptionCreatePatchSchema = z.object({
+  category_id: z.uuid(),
+  name: z
+    .string()
+    .trim()
+    .min(1, 'オプション名は必須です')
+    .max(100, 'オプション名は 100 文字以内で入力してください'),
+  color: z.string().max(50, 'color は 50 文字以内').nullable().optional(),
+  sort_key: z.string().max(100, 'sort_key は 100 文字以内').nullable().optional(),
+})
+
+const tagOptionDeletePatchSchema = z.record(z.string(), z.unknown())
+
+// ---------------------------------------------------------------------------
+// tag_option entity — apply 関数
+// ---------------------------------------------------------------------------
+
+const applyTagOptionUpdateFn: EntityApplyFn = async (tx, userId, entityId, patch) => {
+  const { field, value } = patch as {
+    field: 'name' | 'color' | 'sort_key' | 'category_id'
+    value: unknown
+  }
+  return await applyTagOptionUpdate(tx, userId, entityId, { field, value })
+}
+
+const applyTagOptionCreateFn: EntityApplyFn = async (tx, userId, entityId, patch) => {
+  const p = patch as z.infer<typeof tagOptionCreatePatchSchema>
+  return await applyTagOptionCreate(tx, userId, entityId, {
+    category_id: p.category_id,
+    name: p.name,
+    color: p.color ?? null,
+    sort_key: p.sort_key ?? null,
+  })
+}
+
+const applyTagOptionDeleteFn: EntityApplyFn = async (tx, userId, entityId, _patch) => {
+  return await applyTagOptionDelete(tx, userId, entityId)
+}
+
+// ---------------------------------------------------------------------------
 // REGISTRY
 // ---------------------------------------------------------------------------
 
 /**
  * (entity_type, op) → registry entry の dispatch table。
  *
- * 後続 sprint で tag_category / tag_option 等を足すときは、 ここに entry を追加する
- * だけで bulk endpoint 側は無修正。
+ * Tag-1 で tag_category / tag_option を追加。 bulk endpoint 側は無修正で、 ここに entry を
+ * 追加するだけで client → server の双方向同期 (push: outbox → bulk → registry、
+ * pull: tag_categories / tag_options stream) が成立する。
  */
 export const ENTITY_MUTATION_REGISTRY: Record<
   string,
@@ -208,6 +315,37 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       // delete op は entity_mutations に log INSERT しない。
       // 理由: 監査 log としての価値が低く、 再送 dedupe は tombstone + 自然冪等で
       // 担保するため (audit log として記録不要)。 従来 card 経路の挙動を維持する。
+      skipLog: true,
+    },
+  },
+  tag_category: {
+    update_field: {
+      patch: tagCategoryUpdateFieldPatchSchema,
+      apply: applyTagCategoryUpdateFn,
+    },
+    create: {
+      patch: tagCategoryCreatePatchSchema,
+      apply: applyTagCategoryCreateFn,
+    },
+    delete: {
+      patch: tagCategoryDeletePatchSchema,
+      apply: applyTagCategoryDeleteFn,
+      // card と同方針: tombstone + idempotent apply で audit 不要、 log skip
+      skipLog: true,
+    },
+  },
+  tag_option: {
+    update_field: {
+      patch: tagOptionUpdateFieldPatchSchema,
+      apply: applyTagOptionUpdateFn,
+    },
+    create: {
+      patch: tagOptionCreatePatchSchema,
+      apply: applyTagOptionCreateFn,
+    },
+    delete: {
+      patch: tagOptionDeletePatchSchema,
+      apply: applyTagOptionDeleteFn,
       skipLog: true,
     },
   },

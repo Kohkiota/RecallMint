@@ -41,8 +41,6 @@ export function buildNewClientCard({
     memo: null,
     // jsonb / 配列 default (server schema 既定値)
     images: [],
-    custom_props: {},
-    tags: [],
     // 学習統計 default
     answered: false,
     last_correct: null,

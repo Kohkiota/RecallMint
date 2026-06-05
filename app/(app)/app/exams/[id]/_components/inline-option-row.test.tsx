@@ -47,8 +47,6 @@ async function seedCard(options: CardOption[]) {
     explanation_text: null,
     memo: null,
     images: [],
-    custom_props: {},
-    tags: [],
     answered: false,
     current_streak: 0,
     due: '2026-01-01T00:00:00.000Z',

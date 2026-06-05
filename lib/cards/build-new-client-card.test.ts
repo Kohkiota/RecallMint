@@ -66,8 +66,6 @@ describe('buildNewClientCard', () => {
       now: '2026-05-31T00:00:00.000Z',
     })
     expect(card.images).toEqual([])
-    expect(card.custom_props).toEqual({})
-    expect(card.tags).toEqual([])
     expect(card.source_document_id).toBeNull()
     expect(card.explanation_text).toBeNull()
     expect(card.memo).toBeNull()

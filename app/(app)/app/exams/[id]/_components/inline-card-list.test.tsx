@@ -68,8 +68,6 @@ function toClientCard(card: ExamDetailCard, idx: number): ClientCard {
     explanation_text: card.explanationText,
     memo: card.memo,
     images: [],
-    custom_props: {},
-    tags: [],
     answered: false,
     last_correct: null,
     current_streak: 0,
@@ -384,8 +382,6 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     expect(inserted.state).toBe(0)
     expect(inserted.content_version).toBe(0)
     expect(inserted.images).toEqual([])
-    expect(inserted.custom_props).toEqual({})
-    expect(inserted.tags).toEqual([])
     expect(inserted.sync_status).toBe('pending')
   })
 

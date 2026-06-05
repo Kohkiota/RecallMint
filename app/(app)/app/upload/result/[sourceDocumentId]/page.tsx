@@ -51,9 +51,6 @@ export default async function UploadResultPage({
                   </div>
                   <div className="text-xs text-slate-500">
                     選択肢 {c.optionCount} 件
-                    {c.customPropKeys.length > 0 && (
-                      <span> / プロパティ: {c.customPropKeys.join(', ')}</span>
-                    )}
                   </div>
                 </CardContent>
               </Card>

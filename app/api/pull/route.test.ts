@@ -5,8 +5,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import type { User } from '@/lib/db/schema'
-import type { ClientCard } from '@/lib/client-db'
-import type { ClientExam } from '@/lib/client-db'
+import type {
+  ClientCard,
+  ClientExam,
+  ClientTagCategory,
+  ClientTagOption,
+} from '@/lib/client-db'
 import type { ClientTombstone } from '@/lib/db/tombstones-pull'
 
 vi.mock('@/lib/auth/ensure-user', () => ({
@@ -21,6 +25,12 @@ vi.mock('@/lib/db/exams-pull', () => ({
 vi.mock('@/lib/db/tombstones-pull', () => ({
   getTombstonesDelta: vi.fn(),
 }))
+vi.mock('@/lib/db/tag-categories-pull', () => ({
+  getCategoriesDelta: vi.fn(),
+}))
+vi.mock('@/lib/db/tag-options-pull', () => ({
+  getOptionsDelta: vi.fn(),
+}))
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
@@ -29,6 +39,8 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getCardsDelta } from '@/lib/db/cards-pull'
 import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
+import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
+import { getOptionsDelta } from '@/lib/db/tag-options-pull'
 import { GET } from './route'
 
 const FAKE_USER = { id: 'user-uuid-1' } as unknown as User
@@ -37,7 +49,15 @@ const EMPTY_BODY = {
   cards: [],
   exams: [],
   tombstones: [],
-  cursors: { cards: null, exams: null, tombstone: null },
+  tag_categories: [],
+  tag_options: [],
+  cursors: {
+    cards: null,
+    exams: null,
+    tombstone: null,
+    tag_categories: null,
+    tag_options: null,
+  },
 }
 
 function fakeCardsDelta(
@@ -61,6 +81,20 @@ function fakeTombstonesDelta(
   return { rows, maxDeletedAt }
 }
 
+function fakeCategoriesDelta(
+  rows: ClientTagCategory[] = [],
+  maxUpdatedAt: string | null = null,
+) {
+  return { rows, maxUpdatedAt }
+}
+
+function fakeOptionsDelta(
+  rows: ClientTagOption[] = [],
+  maxUpdatedAt: string | null = null,
+) {
+  return { rows, maxUpdatedAt }
+}
+
 function fakeCard(overrides?: Partial<ClientCard>): ClientCard {
   return {
     id: 'card-1',
@@ -75,8 +109,6 @@ function fakeCard(overrides?: Partial<ClientCard>): ClientCard {
     explanation_text: null,
     memo: null,
     images: [],
-    custom_props: {},
-    tags: [],
     answered: false,
     last_correct: null,
     current_streak: 0,
@@ -173,6 +205,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     expect(res.status).toBe(200)
     expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
@@ -194,6 +228,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getTombstonesDelta).mockResolvedValue(
       fakeTombstonesDelta(tombstoneRows, '2026-05-03T00:00:00.000Z'),
     )
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -207,6 +243,8 @@ describe('GET /api/pull', () => {
       cards: '2026-05-02T00:00:00.000Z',
       exams: '2026-05-02T00:00:00.000Z',
       tombstone: '2026-05-03T00:00:00.000Z',
+      tag_categories: null,
+      tag_options: null,
     })
   })
 
@@ -215,6 +253,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     const body = await res.json()
     expect(body).toEqual(EMPTY_BODY)
@@ -228,6 +268,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(
       makeReq('http://x/api/pull?since_cards=2026-05-25T00%3A00%3A00.000Z'),
     )
@@ -245,6 +287,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(
       makeReq('http://x/api/pull?since_exams=2026-05-24T12%3A00%3A00.000Z'),
     )
@@ -261,6 +305,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(
       makeReq(
         'http://x/api/pull?since_tombstone=2026-05-23T06%3A00%3A00.000Z',
@@ -279,6 +325,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(
       makeReq(
         'http://x/api/pull?since_cards=2026-05-25T00%3A00%3A00.000Z&since_exams=2026-05-24T00%3A00%3A00.000Z&since_tombstone=2026-05-23T00%3A00%3A00.000Z',
@@ -303,6 +351,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq('http://x/api/pull?since_cards=bad'))
     expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
   })
@@ -312,6 +362,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq('http://x/api/pull'))
     expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
   })
@@ -324,6 +376,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq())
     expect(vi.mocked(getCardsDelta).mock.calls[0]![0]).toBe('user-uuid-1')
     expect(vi.mocked(getExamsDelta).mock.calls[0]![0]).toBe('user-uuid-1')
@@ -352,6 +406,8 @@ describe('GET /api/pull', () => {
     vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
     vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
     vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     expect(res.headers.get('cache-control')).toContain('no-store')
   })

@@ -213,7 +213,6 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
             { id: 'a', text: 'A', is_correct: true },
             { id: 'b', text: 'B', is_correct: false },
           ],
-          customProps: { 試験回: '令和7' },
           createdAt: new Date(),
         },
       ],
@@ -226,7 +225,6 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
       title: '問1',
       sortKey: '001',
       optionCount: 2,
-      customPropKeys: ['試験回'],
     })
     expect(r[0].questionTextSnippet.endsWith('…')).toBe(true)
   })

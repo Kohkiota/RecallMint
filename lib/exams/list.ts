@@ -65,13 +65,14 @@ export async function getExamByIdForUser(
 }
 
 // CardListEntry: OCR result page (getCardsForSourceDocument) 用の snippet 表示型。
+// Tag-1: customPropKeys は cards.custom_props DROP に伴い撤去。 タグ表示は Tag-4 で
+// tag_options 由来の値で再配線。
 export type CardListEntry = {
   id: string
   title: string
   sortKey: string | null
   questionTextSnippet: string
   optionCount: number
-  customPropKeys: string[]
 }
 
 // ExamDetailCard: 試験詳細 page (/app/exams/[id]) で 1 card の全情報を read-only
@@ -168,7 +169,6 @@ export async function getCardsForSourceDocument(
       sortKey: cards.sortKey,
       questionText: cards.questionText,
       options: cards.options,
-      customProps: cards.customProps,
       createdAt: cards.createdAt,
     })
     .from(cards)
@@ -185,10 +185,6 @@ export async function getCardsForSourceDocument(
     sortKey: r.sortKey,
     questionTextSnippet: snippet(r.questionText, 80),
     optionCount: Array.isArray(r.options) ? r.options.length : 0,
-    customPropKeys:
-      r.customProps && typeof r.customProps === 'object'
-        ? Object.keys(r.customProps as Record<string, unknown>)
-        : [],
   }))
 }
 

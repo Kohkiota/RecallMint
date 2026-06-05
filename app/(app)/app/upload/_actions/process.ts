@@ -35,12 +35,13 @@ type Destination =
 // 結果プレビュー用の card subset (preview UI が render する read-only data)。
 // 完全な ExtractedCard をそのまま返すのではなく、 必要最小限に絞ることで
 // FormData → Server Action → Client への boundary serialization コスト削減。
+// Tag-1: customPropKeys は cards.custom_props DROP に伴い撤去。 タグ表示は Tag-4 で
+// tag_options 由来の値を再配線する。
 export type ProcessedCard = {
   id: string
   title: string
   questionTextSnippet: string
   optionCount: number
-  customPropKeys: string[]
 }
 
 export type ProcessResultData = {
@@ -518,8 +519,10 @@ async function _processUpload(
     correctAnswerIds: c.correct_answer_ids,
     explanationText: c.explanation_text ?? null,
     images: (c.images ?? []) as CardImage[],
-    customProps: (c.custom_props ?? {}) as Record<string, unknown>,
-    tags: [] as string[],
+    // Tag-1: cards.custom_props / cards.tags を DROP したため書込列なし。
+    // Gemini discover の `c.custom_props` は Tag-3 で tag_categories / tag_options /
+    // card_tags に分解書込する設計。 OCR pipeline 本体 (Gemini 呼出 / options 抽出 /
+    // discover schema) は不変、 ここでの捨却に留める。
   }))
 
   let insertedCards: { id: string; title: string }[] = []
@@ -641,7 +644,7 @@ async function _processUpload(
 
   // -- preview data の構築 --
   // 完全な card row を返すと payload が膨れる + 学習統計の RTC 不要のため、
-  // 表示専用の subset (id / title / question 抜粋 / option 数 / custom_props キー) に絞る。
+  // 表示専用の subset (id / title / question 抜粋 / option 数) に絞る。
   const previewCards: ProcessedCard[] = insertedCards.map((row, idx) => {
     const extracted = pipelineResult.cards[idx]
     return {
@@ -649,7 +652,6 @@ async function _processUpload(
       title: row.title,
       questionTextSnippet: truncate(extracted.question_text, MAX_QUESTION_PREVIEW),
       optionCount: extracted.options.length,
-      customPropKeys: Object.keys(extracted.custom_props ?? {}),
     }
   })
 

@@ -14,6 +14,8 @@ export const SYNC_META_KEYS = {
   cardsCursor: 'cards_cursor',
   examsCursor: 'exams_cursor',
   tombstoneCursor: 'tombstone_cursor',
+  tagCategoriesCursor: 'tag_categories_cursor',
+  tagOptionsCursor: 'tag_options_cursor',
 } as const
 
 export type SyncMetaKey = (typeof SYNC_META_KEYS)[keyof typeof SYNC_META_KEYS]

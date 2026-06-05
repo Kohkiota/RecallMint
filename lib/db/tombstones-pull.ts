@@ -12,7 +12,7 @@ import { maxIso } from './max-iso'
 type TombstoneRow = typeof tombstones.$inferSelect
 
 export type ClientTombstone = {
-  entity_type: 'exam' | 'card'
+  entity_type: 'exam' | 'card' | 'tag_category' | 'tag_option'
   entity_id: string
   deleted_at: string
 }

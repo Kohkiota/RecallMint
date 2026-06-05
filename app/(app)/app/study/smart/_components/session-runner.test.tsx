@@ -89,8 +89,6 @@ function makeCard(overrides?: Partial<Card>): Card {
     explanationText: 'カード全体の解説',
     memo: null,
     images: [],
-    customProps: {},
-    tags: [],
     answered: false,
     lastCorrect: null,
     currentStreak: 0,

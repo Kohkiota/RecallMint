@@ -79,8 +79,6 @@ export type ClientCard = {
   explanation_text?: string | null
   memo?: string | null
   images: ClientCardImage[]
-  custom_props: Record<string, unknown>
-  tags: string[]
   answered: boolean
   last_correct?: boolean | null
   current_streak: number
@@ -142,9 +140,10 @@ export type ClientAnswerEvent = {
 }
 
 // entity_mutations (S-sync-1 で旧 card_mutations を汎用化): mutation-driven push の
-// 汎用 outbox row。 entity_type で対象 entity (現状 'card'、 将来 'tag_category' 等) を
+// 汎用 outbox row。 entity_type で対象 entity ('card' / 'tag_category' / 'tag_option') を
 // 識別し、 entity_id は対象 entity の PK。
-// op は registry (server) で定義される文字列、 card では 'update_field' | 'create' | 'delete'。
+// op は registry (server) で定義される文字列、 card では 'update_field' | 'create' | 'delete'、
+// tag_category / tag_option も同 3 op (Tag-1)。
 export type ClientEntityMutation = {
   local_id?: number
   mutation_id: string
@@ -155,6 +154,31 @@ export type ClientEntityMutation = {
   edited_at: string
   sync_status: SyncStatus
   last_attempted_at?: string | null
+}
+
+// tag_categories / tag_options (Tag-1): 試験横断のタグマスタ mirror。
+// server pull で同期する read-only mirror、 編集は entity_mutations 経由 (Tag-2 以降の UI で配線)。
+// select_type は作成後 immutable (server schema は text、 immutability は UI 担保)。
+export type ClientTagCategory = {
+  id: string
+  user_id: string
+  name: string
+  select_type: 'single' | 'multi'
+  color?: string | null
+  sort_key?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ClientTagOption = {
+  id: string
+  user_id: string
+  category_id: string
+  name: string
+  color?: string | null
+  sort_key?: string | null
+  created_at: string
+  updated_at: string
 }
 
 // sync_meta: key-value。 用途は呼出側に委ねる (例: last_pull_at / pending_count 等)。
@@ -193,6 +217,9 @@ export class ClientDb extends Dexie {
   // S-perf-3: server study_days を pull する mirror table (streak / todayCount 算出用)。
   // 複合 PK `[user_id+day]` で server PK 構造と一致 (idempotent な bulkPut が成立)。
   study_days!: Table<ClientStudyDay, [string, string]>
+  // Tag-1: 試験横断のタグマスタ mirror。 server pull で同期する read-only mirror。
+  tag_categories!: Table<ClientTagCategory, string>
+  tag_options!: Table<ClientTagOption, string>
 
   constructor() {
     super('recallmint')
@@ -220,6 +247,13 @@ export class ClientDb extends Dexie {
       card_mutations: null,
       entity_mutations:
         '++local_id, mutation_id, [entity_type+entity_id], sync_status',
+    })
+    // v4 (Tag-1): tag_categories / tag_options mirror store 追加。 既存 table の schema は
+    // 変更せず、 新規 store のみ追加するため、 v3 → v4 upgrade は単純な store 追加で済む。
+    // category_id index は「カテゴリ配下 option 列挙」 の Dexie query 用 (Tag-2 以降の UI で使用)。
+    this.version(4).stores({
+      tag_categories: 'id, user_id, updated_at',
+      tag_options: 'id, user_id, category_id, updated_at',
     })
   }
 }

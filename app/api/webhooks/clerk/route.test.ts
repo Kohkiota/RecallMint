@@ -250,9 +250,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_t')
     expect(mockCancelWithRetry).not.toHaveBeenCalledWith('sub_c')
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // transaction 内で update × 1 + delete × 9 (Group I 全件)
+    // transaction 内で update × 1 + delete × 10 (Group I 全件)
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(9)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
     // 正常系でも scrub payload (email/clerkId NULL) が users UPDATE に乗ることを
     // defense-in-depth で確認 — 専用 test (下) が削除された場合の二重保険。
@@ -263,15 +263,15 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(setArg.clerkId).toBeNull()
   })
 
-  it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で Group I 8 子テーブル DELETE も発火', async () => {
+  it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で Group I 10 子テーブル DELETE も発火', async () => {
     // GDPR 要件: users 行は監査 (deletion_failures.user_id FK / stripe correlation) の
     // ため残置するが PII 列 (email, clerk_id) は退会と同じ transaction で NULL に
     // 書き換える。 stripe_customer_id (cus_xxx) は個人特定不能で監査 correlation key
     // のため保持 — SET 引数に含めない。
-    // 加えて、 scrub と Group I の 8 子テーブル DELETE (exams / studyDays /
+    // 加えて、 scrub と Group I の 10 子テーブル DELETE (exams / studyDays /
     // contactMessages / aiUsageUsers / uploadRecords / userSettings /
-    // studySessions / tombstones) は同一 transaction 内で atomic に走る (= 部分
-    // commit の漏れ無し) ことも本 test で確認する。
+    // studySessions / tombstones / entityMutations / tagCategories) は同一 transaction 内で
+    // atomic に走る (= 部分 commit の漏れ無し) ことも本 test で確認する。
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_scrub' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_scrub' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
@@ -296,10 +296,10 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     // stripe_customer_id は監査 correlation key として保持。 SET payload に
     // 載せない (= キー自体不在)。
     expect('stripeCustomerId' in setArg).toBe(false)
-    // atomicity: 同一 transaction 内で Group I の 8 子テーブル DELETE も発火している
+    // atomicity: 同一 transaction 内で Group I の 10 子テーブル DELETE も発火している
     // こと (= 「scrub だけ通って子データが残る」 部分 commit を防ぐ)。
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(9)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
   })
 
   it('GDPR scrub 冪等性: 同 svix-id 再送は clerk_events dedup で handler 不到達 → 二重 scrub 起きない', async () => {
@@ -360,7 +360,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(9)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
@@ -781,7 +781,7 @@ describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
     expect(res.status).toBe(200)
 
     // 防御: handler が DELETE を 1 件も呼ばずに throughpath で抜けた regression
-    // (e.g. tx.delete を別 API に書き換え) を「漏れ 9 件」 でなく 「DELETE 自体ゼロ」 で
+    // (e.g. tx.delete を別 API に書き換え) を「漏れ N 件」 でなく 「DELETE 自体ゼロ」 で
     // 明示検知する (M1 defense-in-depth)。
     expect(deleteCallTargets.length).toBeGreaterThan(0)
     const actual = new Set(deleteCallTargets)

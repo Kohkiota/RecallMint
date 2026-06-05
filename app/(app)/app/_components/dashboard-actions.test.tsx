@@ -39,8 +39,6 @@ function fakeCard(overrides?: Partial<ClientCard>): ClientCard {
     explanation_text: null,
     memo: null,
     images: [],
-    custom_props: {},
-    tags: [],
     answered: false,
     last_correct: null,
     current_streak: 0,

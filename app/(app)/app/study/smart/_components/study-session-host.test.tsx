@@ -50,8 +50,6 @@ function fakeCard(overrides?: Partial<Card>): Card {
     explanationText: null,
     memo: null,
     images: [],
-    customProps: {},
-    tags: [],
     answered: false,
     lastCorrect: null,
     currentStreak: 0,

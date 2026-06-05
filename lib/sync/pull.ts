@@ -12,7 +12,13 @@
 // 必ず tombstone を INSERT すること (さもないと client mirror が stale 化する)。
 // → pull.ts 参照。 server 側の不変条件は delete-card.ts / delete-exam.ts にも明記。
 
-import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
+import {
+  getClientDb,
+  type ClientCard,
+  type ClientExam,
+  type ClientTagCategory,
+  type ClientTagOption,
+} from '@/lib/client-db'
 import { getSyncMeta, SYNC_META_KEYS } from './sync-meta'
 import { logger } from '@/lib/logger'
 
@@ -27,8 +33,20 @@ const PULL_ENDPOINT = '/api/pull'
 type PullResponse = {
   cards: ClientCard[]
   exams: ClientExam[]
-  tombstones: { entity_type: 'exam' | 'card'; entity_id: string; deleted_at: string }[]
-  cursors: { cards: string | null; exams: string | null; tombstone: string | null }
+  tombstones: {
+    entity_type: 'exam' | 'card' | 'tag_category' | 'tag_option'
+    entity_id: string
+    deleted_at: string
+  }[]
+  tag_categories: ClientTagCategory[]
+  tag_options: ClientTagOption[]
+  cursors: {
+    cards: string | null
+    exams: string | null
+    tombstone: string | null
+    tag_categories: string | null
+    tag_options: string | null
+  }
 }
 
 export type PullApiClient = {
@@ -44,9 +62,18 @@ export type PullDeltaResult = {
   cardCount: number
   examCount: number
   tombstoneCount: number
+  tagCategoryCount: number
+  tagOptionCount: number
 }
 
-const FAIL: PullDeltaResult = { ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0 }
+const FAIL: PullDeltaResult = {
+  ok: false,
+  cardCount: 0,
+  examCount: 0,
+  tombstoneCount: 0,
+  tagCategoryCount: 0,
+  tagOptionCount: 0,
+}
 
 // ---------------------------------------------------------------------------
 // defaultClient: fetch ラッパ。 throw → {ok:false,status:0,body:null}
@@ -77,16 +104,23 @@ export async function pullDelta(
   client: PullApiClient = defaultClient,
 ): Promise<PullDeltaResult> {
   // §1: cursor read + URLSearchParams 構築 (存在分のみ set)
-  const [sinceCards, sinceExams, sinceTombstone] = await Promise.all([
-    getSyncMeta(SYNC_META_KEYS.cardsCursor),
-    getSyncMeta(SYNC_META_KEYS.examsCursor),
-    getSyncMeta(SYNC_META_KEYS.tombstoneCursor),
-  ])
+  const [sinceCards, sinceExams, sinceTombstone, sinceTagCategories, sinceTagOptions] =
+    await Promise.all([
+      getSyncMeta(SYNC_META_KEYS.cardsCursor),
+      getSyncMeta(SYNC_META_KEYS.examsCursor),
+      getSyncMeta(SYNC_META_KEYS.tombstoneCursor),
+      getSyncMeta(SYNC_META_KEYS.tagCategoriesCursor),
+      getSyncMeta(SYNC_META_KEYS.tagOptionsCursor),
+    ])
 
   const params = new URLSearchParams()
   if (sinceCards !== undefined) params.set('since_cards', sinceCards)
   if (sinceExams !== undefined) params.set('since_exams', sinceExams)
   if (sinceTombstone !== undefined) params.set('since_tombstone', sinceTombstone)
+  if (sinceTagCategories !== undefined)
+    params.set('since_tag_categories', sinceTagCategories)
+  if (sinceTagOptions !== undefined)
+    params.set('since_tag_options', sinceTagOptions)
 
   const query = params.toString()
   const path = query ? `${PULL_ENDPOINT}?${query}` : PULL_ENDPOINT
@@ -104,11 +138,20 @@ export async function pullDelta(
   }
 
   // §3: shape 検証 (tx を開く前に完了 → 失敗時不変性)
-  const { cards, exams, tombstones, cursors } = response.body
+  const {
+    cards,
+    exams,
+    tombstones,
+    tag_categories: tagCategories,
+    tag_options: tagOptions,
+    cursors,
+  } = response.body
   if (
     !Array.isArray(cards) ||
     !Array.isArray(exams) ||
     !Array.isArray(tombstones) ||
+    !Array.isArray(tagCategories) ||
+    !Array.isArray(tagOptions) ||
     typeof cursors !== 'object' ||
     cursors === null
   ) {
@@ -117,33 +160,71 @@ export async function pullDelta(
 
   // §4: 1 tx で upsert + tombstone 削除 + cursor write
   const db = getClientDb()
-  await db.transaction('rw', db.cards, db.exams, db.sync_meta, async () => {
-    // upsert (clear なし = id-upsert のみ)
-    if (cards.length) await db.cards.bulkPut(cards)
-    if (exams.length) await db.exams.bulkPut(exams)
+  await db.transaction(
+    'rw',
+    [db.cards, db.exams, db.tag_categories, db.tag_options, db.sync_meta],
+    async () => {
+      // upsert (clear なし = id-upsert のみ)
+      if (cards.length) await db.cards.bulkPut(cards)
+      if (exams.length) await db.exams.bulkPut(exams)
+      // Tag-1: tag マスタの upsert は tombstone 適用 *前* に行う。
+      // 同 pull 内で「同 id の create + delete」 が同居しても、 後段の tombstone
+      // bulkDelete で正しく消える順序を保証する。
+      if (tagCategories.length) await db.tag_categories.bulkPut(tagCategories)
+      if (tagOptions.length) await db.tag_options.bulkPut(tagOptions)
 
-    // tombstone bulkDelete — mirror 削除反映の唯一経路。
-    // サーバー側で card/exam を物理削除する経路は必ず tombstone を INSERT すること
-    // (さもないと mirror が stale 化する)。不変条件は delete-card.ts / delete-exam.ts 参照。
-    const cardIds = tombstones
-      .filter((t) => t.entity_type === 'card')
-      .map((t) => t.entity_id)
-    const examIds = tombstones
-      .filter((t) => t.entity_type === 'exam')
-      .map((t) => t.entity_id)
-    if (cardIds.length) await db.cards.bulkDelete(cardIds)
-    if (examIds.length) await db.exams.bulkDelete(examIds)
+      // tombstone bulkDelete — mirror 削除反映の唯一経路。
+      // サーバー側で card/exam/tag_category/tag_option を物理削除する経路は必ず
+      // tombstone を INSERT すること (さもないと mirror が stale 化する)。
+      // 不変条件は delete-card.ts / delete-exam.ts / tag apply 関数 (registry) 参照。
+      const cardIds = tombstones
+        .filter((t) => t.entity_type === 'card')
+        .map((t) => t.entity_id)
+      const examIds = tombstones
+        .filter((t) => t.entity_type === 'exam')
+        .map((t) => t.entity_id)
+      const tagCategoryIds = tombstones
+        .filter((t) => t.entity_type === 'tag_category')
+        .map((t) => t.entity_id)
+      const tagOptionIds = tombstones
+        .filter((t) => t.entity_type === 'tag_option')
+        .map((t) => t.entity_id)
+      if (cardIds.length) await db.cards.bulkDelete(cardIds)
+      if (examIds.length) await db.exams.bulkDelete(examIds)
+      if (tagCategoryIds.length) await db.tag_categories.bulkDelete(tagCategoryIds)
+      if (tagOptionIds.length) await db.tag_options.bulkDelete(tagOptionIds)
 
-    // cursor write (非 null のみ。 null = 据え置き)
-    if (cursors.cards)
-      await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: cursors.cards })
-    if (cursors.exams)
-      await db.sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: cursors.exams })
-    if (cursors.tombstone)
-      await db.sync_meta.put({ key: SYNC_META_KEYS.tombstoneCursor, value: cursors.tombstone })
-  })
+      // cursor write (非 null のみ。 null = 据え置き)
+      if (cursors.cards)
+        await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: cursors.cards })
+      if (cursors.exams)
+        await db.sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: cursors.exams })
+      if (cursors.tombstone)
+        await db.sync_meta.put({
+          key: SYNC_META_KEYS.tombstoneCursor,
+          value: cursors.tombstone,
+        })
+      if (cursors.tag_categories)
+        await db.sync_meta.put({
+          key: SYNC_META_KEYS.tagCategoriesCursor,
+          value: cursors.tag_categories,
+        })
+      if (cursors.tag_options)
+        await db.sync_meta.put({
+          key: SYNC_META_KEYS.tagOptionsCursor,
+          value: cursors.tag_options,
+        })
+    },
+  )
 
-  return { ok: true, cardCount: cards.length, examCount: exams.length, tombstoneCount: tombstones.length }
+  return {
+    ok: true,
+    cardCount: cards.length,
+    examCount: exams.length,
+    tombstoneCount: tombstones.length,
+    tagCategoryCount: tagCategories.length,
+    tagOptionCount: tagOptions.length,
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,13 @@
 // + runGuardedPull 4 観点: lock granted / lock busy / fallback / in-flight coalesce。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
+import {
+  getClientDb,
+  type ClientCard,
+  type ClientExam,
+  type ClientTagCategory,
+  type ClientTagOption,
+} from '@/lib/client-db'
 import { SYNC_META_KEYS, getSyncMeta } from './sync-meta'
 import { pullDelta, type PullApiClient, runGuardedPull, PULL_LOCK_NAME } from './pull'
 import type { PullDeltaResult, PullGuardOutcome } from './pull'
@@ -28,8 +34,6 @@ function fakeClientCard(overrides?: Partial<ClientCard>): ClientCard {
     explanation_text: null,
     memo: null,
     images: [],
-    custom_props: {},
-    tags: [],
     answered: false,
     last_correct: null,
     current_streak: 0,
@@ -66,8 +70,10 @@ function fakeClientExam(overrides?: Partial<ClientExam>): ClientExam {
   }
 }
 
+type TombstoneEntityType = 'card' | 'exam' | 'tag_category' | 'tag_option'
+
 function fakeTombstone(
-  entity_type: 'card' | 'exam',
+  entity_type: TombstoneEntityType,
   entity_id: string,
   deleted_at = '2026-05-27T00:00:00.000Z',
 ) {
@@ -78,19 +84,41 @@ function emptyResponse(
   overrides?: Partial<{
     cards: ClientCard[]
     exams: ClientExam[]
-    tombstones: { entity_type: 'card' | 'exam'; entity_id: string; deleted_at: string }[]
-    cursors: { cards: string | null; exams: string | null; tombstone: string | null }
+    tombstones: { entity_type: TombstoneEntityType; entity_id: string; deleted_at: string }[]
+    tag_categories: ClientTagCategory[]
+    tag_options: ClientTagOption[]
+    cursors: Partial<{
+      cards: string | null
+      exams: string | null
+      tombstone: string | null
+      tag_categories: string | null
+      tag_options: string | null
+    }>
   }>,
 ) {
+  const { cursors: cursorOverrides, ...rest } = overrides ?? {}
   return {
     ok: true as const,
     status: 200,
     body: {
       cards: [] as ClientCard[],
       exams: [] as ClientExam[],
-      tombstones: [] as { entity_type: 'card' | 'exam'; entity_id: string; deleted_at: string }[],
-      cursors: { cards: null, exams: null, tombstone: null },
-      ...overrides,
+      tombstones: [] as {
+        entity_type: TombstoneEntityType
+        entity_id: string
+        deleted_at: string
+      }[],
+      tag_categories: [] as ClientTagCategory[],
+      tag_options: [] as ClientTagOption[],
+      ...rest,
+      cursors: {
+        cards: null,
+        exams: null,
+        tombstone: null,
+        tag_categories: null,
+        tag_options: null,
+        ...(cursorOverrides ?? {}),
+      },
     },
   }
 }
@@ -107,7 +135,13 @@ function mockClient(
 
 beforeEach(async () => {
   const db = getClientDb()
-  await Promise.all([db.cards.clear(), db.exams.clear(), db.sync_meta.clear()])
+  await Promise.all([
+    db.cards.clear(),
+    db.exams.clear(),
+    db.tag_categories.clear(),
+    db.tag_options.clear(),
+    db.sync_meta.clear(),
+  ])
 })
 
 // ---------------------------------------------------------------------------
@@ -133,7 +167,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 2, examCount: 0, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 2, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
 
     const rows = await db.cards.toArray()
     const ids = rows.map((r) => r.id).sort()
@@ -160,7 +194,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 2, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 2, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
 
     const rows = await db.exams.toArray()
     const ids = rows.map((r) => r.id).sort()
@@ -187,7 +221,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 2 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 2, tagCategoryCount: 0, tagOptionCount: 0 })
 
     const cardIds = (await db.cards.toArray()).map((r) => r.id)
     expect(cardIds).toEqual(['c1'])
@@ -265,7 +299,7 @@ describe('pullDelta', () => {
     const client: PullApiClient = { get: vi.fn().mockRejectedValue(new Error('network')) }
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
@@ -280,7 +314,7 @@ describe('pullDelta', () => {
     const client = mockClient({ ok: false, status: 500, body: null })
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
   })
@@ -303,7 +337,7 @@ describe('pullDelta', () => {
     })
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
   })
@@ -318,7 +352,7 @@ describe('pullDelta', () => {
     const client = mockClient(emptyResponse())
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
@@ -350,7 +384,7 @@ function fakeLocks(grant: boolean) {
 describe('runGuardedPull', () => {
   // 観点 1: lock granted → ran、 pull が 1 回実行され PULL_LOCK_NAME + ifAvailable:true で呼ばれる
   it('lock granted → outcome "ran"、 pull mock 1 回、 ifAvailable:true', async () => {
-    const pullResult: PullDeltaResult = { ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0 }
+    const pullResult: PullDeltaResult = { ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }
     const pull = vi.fn(async () => pullResult)
     const locks = fakeLocks(true)
 
@@ -363,7 +397,7 @@ describe('runGuardedPull', () => {
 
   // 観点 2: ifAvailable skip (lock busy) → 'lock-busy'、 pull 未実行
   it('lock busy → outcome "lock-busy"、 pull 未実行', async () => {
-    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 }))
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }))
     const locks = fakeLocks(false)
 
     const outcome = await runGuardedPull({ pull, locks })
@@ -374,7 +408,7 @@ describe('runGuardedPull', () => {
 
   // 観点 3: fallback (locks: undefined) → 'ran'、 pull 1 回 (lock 経由しない)
   it('locks: undefined fallback → outcome "ran"、 pull 1 回', async () => {
-    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 }))
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }))
 
     const outcome = await runGuardedPull({ pull, locks: undefined })
 
@@ -395,7 +429,7 @@ describe('runGuardedPull', () => {
       // 1 回目: pending Promise (in-flight をシミュレート)
       if (callCount === 1) return deferred
       // 2 回目以降: 即解決
-      return Promise.resolve({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0 })
+      return Promise.resolve({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     })
     const locks = fakeLocks(true)
 
@@ -409,7 +443,7 @@ describe('runGuardedPull', () => {
     expect(pull).toHaveBeenCalledTimes(1)
 
     // 1 本目の pull を resolve → 'ran' で完了
-    resolveDeferred({ ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0 })
+    resolveDeferred({ ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
     const outcome1 = await p1
     expect(outcome1).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(1)

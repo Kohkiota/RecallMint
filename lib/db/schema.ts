@@ -303,19 +303,6 @@ export const cards = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`)
       .$type<CardImage[]>(),
-    // カスタムプロパティ (freeform key-value)
-    customProps: jsonb('custom_props')
-      .notNull()
-      .default(sql`'{}'::jsonb`)
-      .$type<Record<string, unknown>>(),
-    // ユーザー手動 tag (S3 で一括編集 UI を実装、 S1a で先打ちして cards
-    // INSERT を最初から tags=[] 込みで書く)。 default は空配列、 後付けで
-    // backfill 不要。 集合操作 (フィルタ / 一括 append / remove) は v1.x で
-    // GIN index 追加を検討、 MVP は SUM(reviews) 等で問題ない量を想定。
-    tags: text('tags')
-      .array()
-      .notNull()
-      .default(sql`'{}'::text[]`),
     // 学習統計 (デノーマライズ、 mcq 新規追加)
     answered: boolean('answered').notNull().default(false),
     // NULL = 未回答
@@ -347,7 +334,6 @@ export const cards = pgTable(
   (t) => [
     index('cards_sort_idx').on(t.userId, t.examId, t.sortKey),
     index('cards_due_idx').on(t.userId, t.due),
-    index('cards_props_gin_idx').using('gin', t.customProps),
     index('cards_answered_idx').on(t.userId, t.examId, t.answered),
     index('cards_exam_idx').on(t.examId),
     // C1 (S2.0c): source_document_id は FK (ON DELETE SET NULL) だが index が
@@ -673,9 +659,107 @@ export const entityMutations = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// tag_categories (Tag-1 新設) — タグカテゴリのマスタ。試験横断 (全 exam 共通 1 空間)。
+// select_type は作成後 immutable (DB level は text のまま、 immutability は UI 担保)。
+// name は同 user 内で重複可 (別 id で同名共存、 OCR 流入で merge しない方針との整合)。
+// 削除は user_id direct cascade のため Group I (handler に明示 DELETE)。
+// 子 (tag_options / card_tags) は category_id 経由で連鎖削除される。
+// ---------------------------------------------------------------------------
+export const tagCategories = pgTable(
+  'tag_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    selectType: text('select_type').$type<'single' | 'multi'>().notNull(),
+    color: text('color'),
+    sortKey: text('sort_key'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    // pull delta 用 (WHERE user_id=? AND updated_at >= ?)
+    index('tag_categories_user_updated_idx').on(t.userId, t.updatedAt, t.id),
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// tag_options (Tag-1 新設) — タグカテゴリ配下の選択肢。
+// UNIQUE(category_id, name) で同カテゴリ内の重複を弾く (rename / category 間移動の
+// 衝突は per-mutation failed として client にフィードバック)。
+// category_id cascade のため、 tag_categories 削除で連動削除 (Group II)。
+// ---------------------------------------------------------------------------
+export const tagOptions = pgTable(
+  'tag_options',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => tagCategories.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    color: text('color'),
+    sortKey: text('sort_key'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index('tag_options_user_updated_idx').on(t.userId, t.updatedAt, t.id),
+    index('tag_options_category_idx').on(t.categoryId),
+    uniqueIndex('tag_options_category_name_uq').on(t.categoryId, t.name),
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// card_tags (Tag-1 新設) — card ↔ tag_option の junction。
+// 複合 PK (card_id, option_id)。 多重 cascade chain (card_id / option_id / user_id)
+// により Group II として扱う (user.deleted handler で明示 DELETE しない)。
+// Tag-1 では table のみ作成し、 client 側書込経路 (card outbox の whole-set field 相乗り) は
+// 未実装 (Tag-2 で実装)。 OCR 分解書込は Tag-3 で実装。
+// ---------------------------------------------------------------------------
+export const cardTags = pgTable(
+  'card_tags',
+  {
+    cardId: uuid('card_id')
+      .notNull()
+      .references(() => cards.id, { onDelete: 'cascade' }),
+    optionId: uuid('option_id')
+      .notNull()
+      .references(() => tagOptions.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardId, t.optionId] }),
+    index('card_tags_option_idx').on(t.optionId),
+    index('card_tags_user_idx').on(t.userId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // tombstones (S-delete-0 / §1 新設)
 // exam・card 統合 tombstone テーブル。 対象行は物理削除済のため entityId に FK 不可。
 // userId FK は cascade (user 削除時に tombstone も連動削除)。
+// Tag-1: entity_type に 'tag_category' | 'tag_option' を $type 拡張 (text 列なので
+// migration 不要、 型のみ)。
 // ---------------------------------------------------------------------------
 export const tombstones = pgTable(
   'tombstones',
@@ -684,7 +768,9 @@ export const tombstones = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    entityType: text('entity_type').$type<'exam' | 'card'>().notNull(),
+    entityType: text('entity_type')
+      .$type<'exam' | 'card' | 'tag_category' | 'tag_option'>()
+      .notNull(),
     entityId: uuid('entity_id').notNull(), // FK 不可: 対象は物理削除済
     deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true })
@@ -731,5 +817,11 @@ export type AnswerEvent = typeof answerEvents.$inferSelect
 export type NewAnswerEvent = typeof answerEvents.$inferInsert
 export type EntityMutation = typeof entityMutations.$inferSelect
 export type NewEntityMutation = typeof entityMutations.$inferInsert
+export type TagCategory = typeof tagCategories.$inferSelect
+export type NewTagCategory = typeof tagCategories.$inferInsert
+export type TagOption = typeof tagOptions.$inferSelect
+export type NewTagOption = typeof tagOptions.$inferInsert
+export type CardTag = typeof cardTags.$inferSelect
+export type NewCardTag = typeof cardTags.$inferInsert
 export type Tombstone = typeof tombstones.$inferSelect
 export type NewTombstone = typeof tombstones.$inferInsert
