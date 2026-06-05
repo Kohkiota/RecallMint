@@ -76,7 +76,9 @@ function makeCard(overrides?: Partial<Card>): Card {
     userId: 'user-1',
     examId: 'exam-1',
     sourceDocumentId: null,
-    title: '問1',
+    // default title は既存 test の questionText override 値 ('問1', '問2', ...) と
+    // 衝突しないユニーク値。 title 表示テストで明示的に上書きする場合のみ '問1' 等を使う。
+    title: 'カードタイトル既定',
     sortKey: null,
     questionText: '問題文テキスト',
     options: [
@@ -149,12 +151,12 @@ const NAME_RETRY = /リトライ/
 // Tests
 // -----------------------------------------------------------------------
 describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
-  it('初期描画: 問題文 + 選択肢 + 3 button (前へ disabled / 回答する disabled / 次へ enabled)', () => {
+  it('初期描画: 問題文 + 選択肢 + 3 button (前へ disabled / 回答する 常時 enabled / 次へ enabled)', () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByText('問題文テキスト')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /選択肢A/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /選択肢B/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     // idx=0 で「前へ」 disabled、 「次へ」 (skip) は常時 enabled
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeDisabled()
     expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
@@ -189,7 +191,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
 
   it('1 件以上選択で 「回答する」 が enabled (FSRS モードも同じ)', () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     clickOption('選択肢B')
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
@@ -358,8 +360,8 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
       expect.objectContaining({ card_id: 'c1', rating: 3 }),
     )
-    // selecting reset (「回答する」 disabled に戻る)
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    // selecting reset 後も「回答する」 は常時 enable (選択 0 件でも押下可)
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
   it('FSRS モード (rate-then-confirm): Again/Good/Easy 押下では 0 件 / 「次へ」 で rating=1|3|4 が 1 件 fire (連続 unmount)', async () => {
@@ -622,7 +624,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
 
     await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
 
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     const opts = screen.getAllByRole('button', { name: /選択肢/ })
     opts.forEach((o) => expect(o).toHaveAttribute('aria-pressed', 'false'))
   })
@@ -707,6 +709,64 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     await waitFor(() => expect(mockRecordAnswerEvent).toHaveBeenCalledWith(expect.objectContaining({ card_id: 'card-1' })))
   })
+
+  // -------------------------------------------------------------------------
+  // 出題 box の見出しは card.title (固定文字列 「問題」 ラベル廃止)
+  // -------------------------------------------------------------------------
+  it('出題画面: 出題 box に current.title が表示される (固定文字列「問題」 ではなく)', () => {
+    render(
+      <SessionRunner
+        cards={[makeCard({ title: '問109' })]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    expect(screen.getByText('問109')).toBeInTheDocument()
+    // 旧固定ラベルは消えている
+    expect(screen.queryByText('問題', { exact: true })).not.toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // 選択 0 件回答 (disabled 撤去後の挙動)
+  // -------------------------------------------------------------------------
+  it('選択 0 件回答 (正解あり card): 「回答する」 押下で 不正解判定 + judged 遷移 + 「次へ」 で rating=1 submit', async () => {
+    const cards = [
+      makeCard({ id: 'c1', questionText: '問1' }),
+      makeCard({ id: 'c2', questionText: '問2' }),
+    ]
+    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    // 何も選択せず 「回答する」
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    // equalSet([], ['b']) = false → 不正解
+    expect(screen.getByText(/不正解/)).toBeInTheDocument()
+    // judged 遷移: 「次へ」 で c1 を rating=1 で submit + 問2 へ
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    await waitFor(() =>
+      expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ card_id: 'c1', is_correct: false, rating: 1 }),
+      ),
+    )
+    await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
+  })
+
+  it('選択 0 件回答 (正解 0 件 card、 OCR 由来エッジケース): equalSet([], []) で正解判定 + judged 遷移', () => {
+    // OCR が正答未抽出のまま保存された card (全 opt is_correct=false)。
+    // validation/card.ts の意図的な「正答数下限なし」 仕様 (§2.5.2) と対応。
+    const card = makeCard({
+      options: [
+        { id: 'a', text: '選択肢A', is_correct: false },
+        { id: 'b', text: '選択肢B', is_correct: false },
+      ],
+      correctAnswerIds: [],
+    })
+    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    // equalSet([], []) = true → 「正解」 banner (現仕様、 ガード追加なし)
+    expect(screen.getByText(/^正解/)).toBeInTheDocument()
+    // judged footer 3 button が表示され、 次へ進める
+    expect(screen.getByRole('button', { name: NAME_NEXT })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: NAME_RETRY })).toBeInTheDocument()
+  })
 })
 
 // -----------------------------------------------------------------------
@@ -717,10 +777,10 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // selecting footer
   // ---------------------------------------------------------------------
 
-  it('selecting: idx=0 で「前へ」 disabled、 「回答する」 (空選択) disabled、 「次へ」 常時 enabled', () => {
+  it('selecting: idx=0 で「前へ」 disabled、 「回答する」 常時 enabled、 「次へ」 常時 enabled', () => {
     render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
   })
 
@@ -735,8 +795,8 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     expect(screen.getByText('問2')).toBeInTheDocument()
     expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
-    // 問2 では選択 reset → 「回答する」 disabled
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    // 問2 では選択 reset。 「回答する」 は常時 enable (新仕様)
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
   it('selecting: idx>=1 で「前へ」 enable、 押下で idx-1 + selectedIds reset', async () => {
@@ -794,7 +854,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
     // selecting に戻る (「回答する」 再表示、 解説非表示)
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     expect(screen.queryByText('カード全体の解説')).not.toBeInTheDocument()
     // 選択 reset
     const optB = screen.getByRole('button', { name: /選択肢B/ })
@@ -933,7 +993,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     // 「リトライ」 → selecting reset
     fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     // 4 rate ボタンは judged でしか出ないので消える
     expect(screen.queryByRole('button', { name: 'Again' })).not.toBeInTheDocument()
     // 再選択 → 回答 → judged で「次へ」 が rate 前 disabled に戻る (lastRating=null)
@@ -1011,7 +1071,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     })
     // リトライ → selecting reset (lastRating=null だが submittedCardIds は c1 保持)
     fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     // 再選択 → 回答 → Hard (state-only、 tally +1 しない: submittedCardIds に c1 既存)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1048,7 +1108,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     fireEvent.click(screen.getByRole('button', { name: NAME_PREV }))
     expect(screen.getByText('問1')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     // 問1 を再回答 (誤答) → 次へ (上書き submit rating=1、 tally は二重加算しない)
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1455,10 +1515,10 @@ describe('rate-then-confirm (Step 3b)', () => {
       ),
     )
     expect(mockRecordAnswerEvent).toHaveBeenCalledTimes(1)
-    // 選択肢 reset: 全 opt aria-pressed=false / 「回答する」 disabled
+    // 選択肢 reset: 全 opt aria-pressed=false / 「回答する」 は常時 enable のまま
     const opts = screen.getAllByRole('button', { name: /選択肢/ })
     opts.forEach((o) => expect(o).toHaveAttribute('aria-pressed', 'false'))
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
   it('FSRS 前へで戻った card で再回答 → 次へ で追加 1 件 (Step 3b)', async () => {
@@ -1501,7 +1561,7 @@ describe('rate-then-confirm (Step 3b)', () => {
       expect.objectContaining({ card_id: 'c2', rating: 3 }),
     )
     // 問1 戻り時 selecting reset を確認
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
 
     // 問1 再回答: 選択肢A (誤答) → 回答 → Hard → 次へ (submit 3: c1 rating=2 上書き)
     clickOption('選択肢A')
@@ -1551,9 +1611,9 @@ describe('rate-then-confirm (Step 3b)', () => {
     fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
     await new Promise((r) => setTimeout(r, 20))
     expect(mockRecordAnswerEvent).not.toHaveBeenCalled()
-    // selecting phase 復帰: 「回答する」 表示 + disabled (選択 reset) / 解説 + Again button 非表示
+    // selecting phase 復帰: 「回答する」 表示 (選択 reset、 常時 enable) / 解説 + Again button 非表示
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '回答する' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     expect(screen.queryByText('カード全体の解説')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Again' })).not.toBeInTheDocument()
   })

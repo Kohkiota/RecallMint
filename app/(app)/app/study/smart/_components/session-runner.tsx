@@ -419,9 +419,10 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
         </span>
       </div>
 
-      {/* 問題文 */}
+      {/* 問題文 (見出しは card.title。 試験詳細 inline-card-list の title 表示と
+          同じ class を当てて見え方を揃える) */}
       <div className="rounded-lg border border-border bg-slate-50 p-4">
-        <p className="text-xs font-medium text-slate-500">問題</p>
+        <p className="text-sm font-medium text-slate-900">{current.title}</p>
         <p className="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base">
           {current.questionText}
         </p>
@@ -510,9 +511,11 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
           >
             ← 前へ
           </Button>
+          {/* disabled 撤去: 選択 0 件でも押下可能。 正解あり card は equalSet で
+              不正解、 正解 0 件 card (OCR で正答未抽出) は equalSet([], []) で正解と
+              判定され、 いずれも judged 遷移して 「次へ」 で先に進める。 */}
           <Button
             onClick={handleAnswer}
-            disabled={selectedIds.length === 0}
             className="h-12"
           >
             回答する
