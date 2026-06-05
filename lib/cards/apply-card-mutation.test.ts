@@ -266,6 +266,18 @@ describe('applyCardCreate', () => {
     expect(v.correctAnswerIds).toEqual([])
   })
 
+  it('Tag-1 regression: INSERT 値に custom_props / customProps / tags キーを含めない', async () => {
+    // migration 0020 で cards.custom_props / cards.tags は DROP 済。
+    // re-introduction (placeholder の spread や buildEmptyCard の戻り値拡張) で
+    // 「列が存在しない」 で PG が reject するのを防ぐ regression gate。
+    const { applyCardCreate } = await import('./apply-card-mutation')
+    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
+    const keys = Object.keys(ctl.insertedValues!)
+    expect(keys).not.toContain('customProps')
+    expect(keys).not.toContain('custom_props')
+    expect(keys).not.toContain('tags')
+  })
+
   it('同一 tx で card_count += 1 される', async () => {
     const { applyCardCreate } = await import('./apply-card-mutation')
     await applyCardCreate(makeTx(), 'exam-1', 'user-1')

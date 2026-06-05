@@ -370,6 +370,14 @@ describe('processUpload', () => {
       ocrCostYen: 5,
     })
     expect(dbState.insertedCards).toHaveLength(1)
+    // Tag-1 regression: cards INSERT row に custom_props / customProps / tags 列を含めない。
+    // migration 0020 で cards.custom_props / cards.tags は DROP 済のため、 OCR の cardRows 構築から
+    // これらのキーを混入させると PG が「列が存在しない」 で reject する。 process.ts:511 の row
+    // 構築に custom_props / tags の re-introduction が無いかを規定する gate。
+    const insertedCardKeys = Object.keys(dbState.insertedCards[0])
+    expect(insertedCardKeys).not.toContain('customProps')
+    expect(insertedCardKeys).not.toContain('custom_props')
+    expect(insertedCardKeys).not.toContain('tags')
     expect(mockNotifyOps).not.toHaveBeenCalled()
     // S1.9.1: 完了時 upload_records に status='completed' 行が append される
     expect(dbState.insertedUploadRecords).toHaveLength(1)
