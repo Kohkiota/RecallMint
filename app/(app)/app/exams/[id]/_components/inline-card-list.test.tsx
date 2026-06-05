@@ -26,7 +26,7 @@ import { getClientDb, type ClientCard } from '@/lib/client-db'
 
 // Task 4.3: create / delete は local-first (mirror insert/remove + outbox enqueue +
 // 即時 drain)。 server action / router.refresh / runGuardedPull は廃止。
-// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
+// enqueueEntityMutation / runGuardedEntityMutationFlush は spy mock、 mirror write は
 // fake-indexeddb の実 Dexie で assert する。 newId は実装を使い (DB に実 UUID を入れる)、
 // 採番値は spy で捕捉する。
 const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => {
@@ -38,12 +38,12 @@ const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/lib/sync/card-mutations', () => ({
+vi.mock('@/lib/sync/entity-mutations', () => ({
   newId: mockNewId,
-  enqueueCardMutation: mockEnqueue,
+  enqueueEntityMutation: mockEnqueue,
 }))
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { InlineCardList } from './inline-card-list'
@@ -123,7 +123,7 @@ beforeEach(async () => {
   // newId は実 UUID を返す (Dexie の id 列に実値が入る)。 各 test で採番値を捕捉する。
   mockNewId.mockImplementation(() => realNewId.current())
   await getClientDb().cards.clear()
-  await getClientDb().card_mutations.clear()
+  await getClientDb().entity_mutations.clear()
 })
 
 afterEach(() => {
@@ -399,7 +399,7 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: NEW_ID,
+        entity_type: 'card', entity_id: NEW_ID,
         op: 'create',
         patch: {
           exam_id: 'exam-1',

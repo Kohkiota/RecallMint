@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // InlineTextField の Task 4.2 cutover 仕様を fake timer で検証する:
-// - commit (mirror write + enqueue) は blur で即時、 drain (runGuardedCardMutationFlush)
+// - commit (mirror write + enqueue) は blur で即時、 drain (runGuardedEntityMutationFlush)
 //   は 500ms debounce。
 // - 連続編集は最後の commit から 500ms 後に drain 1 回 (timer reset)。
 // - rapid consecutive edits は enqueue の coalesce (card_id + field) で pending 1 行
@@ -9,7 +9,7 @@
 //   idle 時は prop 変化で display 更新 (= pull-reconciliation rollback path)。
 //
 // enqueue は実 Dexie (fake-indexeddb) に書く実装に通し、 pending 行を assert する。
-// runGuardedCardMutationFlush は spy mock で drain 呼出を verify。
+// runGuardedEntityMutationFlush は spy mock で drain 呼出を verify。
 
 import {
   describe,
@@ -21,16 +21,16 @@ import {
 } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import { getClientDb } from '@/lib/client-db'
-import { getPendingCardMutations } from '@/lib/sync/card-mutations'
+import { getPendingEntityMutations } from '@/lib/sync/entity-mutations'
 
 const { mockFlush } = vi.hoisted(() => ({
   mockFlush: vi.fn(async () => 'no-pending' as const),
 }))
 
-// enqueueCardMutation は real 実装 (Dexie coalesce を verify するため)。
-// runGuardedCardMutationFlush のみ spy で差し替える。
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+// enqueueEntityMutation は real 実装 (Dexie coalesce を verify するため)。
+// runGuardedEntityMutationFlush のみ spy で差し替える。
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { InlineTextField } from './inline-text-field'
@@ -64,7 +64,7 @@ function enterEditAndChange(newValue: string) {
 beforeEach(async () => {
   mockFlush.mockClear()
   await getClientDb().cards.clear()
-  await getClientDb().card_mutations.clear()
+  await getClientDb().entity_mutations.clear()
   // setTimeout/clearTimeout のみ fake にして debounce timer を制御する。
   // Dexie (fake-indexeddb) は内部スケジューリングに real microtask を使うため、
   // 全 timer を fake にすると await db.* がハングする。 必要最小限だけ fake にする。
@@ -96,7 +96,7 @@ describe('InlineTextField commit / debounced drain', () => {
     await flushPromises()
 
     // enqueue は即時 → pending 行が既に存在
-    const pending = await getPendingCardMutations()
+    const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
     expect(pending[0]!.patch).toEqual({ field: 'title', value: '新' })
     // drain はまだ
@@ -136,7 +136,7 @@ describe('InlineTextField commit / debounced drain', () => {
     // Dexie に settle するのを待ってから次の編集に進む (coalesce を順序通りに観測)。
     const settle = async (expected: string) => {
       await vi.waitFor(async () => {
-        const pending = await getPendingCardMutations()
+        const pending = await getPendingEntityMutations()
         expect(pending).toHaveLength(1)
         expect(pending[0]!.patch).toEqual({ field: 'title', value: expected })
       })
@@ -149,7 +149,7 @@ describe('InlineTextField commit / debounced drain', () => {
     await settle('C')
 
     // 最終的に pending は 1 行 (coalesce)、 value は最新 'C'。
-    const pending = await getPendingCardMutations()
+    const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
     expect(pending[0]!.patch).toEqual({ field: 'title', value: 'C' })
   })

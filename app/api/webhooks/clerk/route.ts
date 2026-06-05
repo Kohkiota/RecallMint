@@ -24,6 +24,7 @@ import {
   userSettings,
   studySessions,
   tombstones,
+  entityMutations,
 } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { stripe, cancelWithRetry } from '@/lib/stripe'
@@ -227,14 +228,16 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   // 削除設計の集約コメント (なぜここに 8 テーブルを明示 DELETE するか):
   // - users は soft delete (deleted_at set + email/clerk_id scrub) で物理削除しない
   //   ため、 users.id への FK ON DELETE CASCADE は発火しない。
-  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 8 件)**: direct user_id FK で
+  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 9 件)**: direct user_id FK で
   //   users に cascade するテーブルのうち、 親 cascade chain がないもの。
   //     exams / study_days / contact_messages / ai_usage_users / upload_records /
-  //     user_settings / study_sessions / tombstones
+  //     user_settings / study_sessions / tombstones / entity_mutations
   //   (study_sessions は exam_id が set null = 非経路、 user_id のみが削除 path)
+  //   (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 旧 card_mutations の
+  //    時にあった cards cascade chain がなくなり、 Group I に昇格)
   // - **Group II (明示 DELETE しない、 = exams 経由で連鎖)**: cards / source_documents
-  //   は exam_id cascade で exams DELETE 時に連鎖、 reviews / answer_events /
-  //   card_mutations は cards cascade (= exams chain) で連鎖。 ここに二重に書かない。
+  //   は exam_id cascade で exams DELETE 時に連鎖、 reviews / answer_events は cards
+  //   cascade (= exams chain) で連鎖。 ここに二重に書かない。
   // - 網羅性は invariant test (route.test.ts の「user_id direct cascade を持つ全テーブル
   //   が handler の明示 DELETE に含まれる」 検証) が保証。 schema に user_id direct FK
   //   の新テーブルを追加すると invariant test が落ちて気づける。
@@ -266,6 +269,7 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
       await tx.delete(userSettings).where(eq(userSettings.userId, internalUserId))
       await tx.delete(studySessions).where(eq(studySessions.userId, internalUserId))
       await tx.delete(tombstones).where(eq(tombstones.userId, internalUserId))
+      await tx.delete(entityMutations).where(eq(entityMutations.userId, internalUserId))
     },
     async (errorMessage) => {
       await recordFailure({

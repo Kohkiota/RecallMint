@@ -13,8 +13,8 @@
 
 import { useState, useTransition } from 'react'
 import { getClientDb } from '@/lib/client-db'
-import { enqueueCardMutation } from '@/lib/sync/card-mutations'
-import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { Button } from '@/components/ui/button'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
@@ -41,13 +41,14 @@ export function DeleteCardButton({ cardId }: Props) {
         return
       }
       // outbox enqueue (op='delete'、 patch は空 object で足りる)。
-      await enqueueCardMutation({
-        card_id: cardId,
+      await enqueueEntityMutation({
+        entity_type: 'card',
+        entity_id: cardId,
         op: 'delete',
         patch: {},
       }).catch(() => {})
       // 即時 drain で delete を sync し、 pull-back で確定収束させる。
-      void runGuardedCardMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush().catch(() => {})
     })
   }
 

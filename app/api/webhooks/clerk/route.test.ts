@@ -250,9 +250,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_t')
     expect(mockCancelWithRetry).not.toHaveBeenCalledWith('sub_c')
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // transaction 内で update × 1 + delete × 8 (Group I 全件)
+    // transaction 内で update × 1 + delete × 9 (Group I 全件)
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(8)
+    expect(mockDbDelete).toHaveBeenCalledTimes(9)
     expect(mockNotifyOps).not.toHaveBeenCalled()
     // 正常系でも scrub payload (email/clerkId NULL) が users UPDATE に乗ることを
     // defense-in-depth で確認 — 専用 test (下) が削除された場合の二重保険。
@@ -299,7 +299,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     // atomicity: 同一 transaction 内で Group I の 8 子テーブル DELETE も発火している
     // こと (= 「scrub だけ通って子データが残る」 部分 commit を防ぐ)。
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(8)
+    expect(mockDbDelete).toHaveBeenCalledTimes(9)
   })
 
   it('GDPR scrub 冪等性: 同 svix-id 再送は clerk_events dedup で handler 不到達 → 二重 scrub 起きない', async () => {
@@ -360,7 +360,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(8)
+    expect(mockDbDelete).toHaveBeenCalledTimes(9)
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
@@ -781,7 +781,7 @@ describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
     expect(res.status).toBe(200)
 
     // 防御: handler が DELETE を 1 件も呼ばずに throughpath で抜けた regression
-    // (e.g. tx.delete を別 API に書き換え) を「漏れ 8 件」 でなく 「DELETE 自体ゼロ」 で
+    // (e.g. tx.delete を別 API に書き換え) を「漏れ 9 件」 でなく 「DELETE 自体ゼロ」 で
     // 明示検知する (M1 defense-in-depth)。
     expect(deleteCallTargets.length).toBeGreaterThan(0)
     const actual = new Set(deleteCallTargets)

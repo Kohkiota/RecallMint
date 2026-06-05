@@ -5,8 +5,8 @@
 // Stage 4 (Task 4.2) で **local-first 書込**に cutover (text field と同方針):
 // cell blur / checkbox toggle / add / delete の各 commit で即時に
 //   1. mirror 直書き  : getClientDb().cards.update(cardId, { options, correct_answer_ids })
-//   2. outbox enqueue : enqueueCardMutation({ op: 'update_field', patch: { field: 'options', value } })
-// を実行し、 server への実 drain は 500ms debounce 後に runGuardedCardMutationFlush()
+//   2. outbox enqueue : enqueueEntityMutation({ entity_type: 'card', op: 'update_field', patch: { field: 'options', value } })
+// を実行し、 server への実 drain は 500ms debounce 後に runGuardedEntityMutationFlush()
 // を 1 回叩く (送信遅延ではなく drain trigger の debounce)。
 // `value` は bulk endpoint の update_field/options が期待する camelCase ZodOption[]
 // (= buildSetClause の optionsSchema が受ける形)。 `correct_answer_ids` は mirror に
@@ -42,8 +42,8 @@ import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
 import { nextOptionId } from '@/lib/cards/next-option-id'
 import { getClientDb } from '@/lib/client-db'
-import { enqueueCardMutation } from '@/lib/sync/card-mutations'
-import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 
 // snake_case CardOption → camelCase (bulk endpoint の optionsSchema が期待する形)。
@@ -137,8 +137,8 @@ export function InlineOptionList({
   // unmount で timer clear。
   // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の debounce
   // drain は発火しないが、 enqueue は Dexie に同期 persist 済みのため、 次の ambient
-  // trigger (pagehide best-effort / visibilitychange / 次回 mount = Stage2
-  // card-mutation-flush-trigger) で drain される。 lost-write ではない (checkbox /
+  // trigger (pagehide best-effort / visibilitychange / 次回 mount =
+  // entity-mutation-flush-trigger) で drain される。 lost-write ではない (checkbox /
   // delete は immediateDrain のため本 path に依存しない)。
   useEffect(() => {
     return () => {
@@ -156,7 +156,7 @@ export function InlineOptionList({
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedCardMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush().catch(() => {})
     }, DEBOUNCE_MS)
   }
 
@@ -195,8 +195,9 @@ export function InlineOptionList({
 
     // outbox enqueue。 value は camelCase ZodOption[] (correct_answer_ids は含めない)。
     const payload: ZodOption[] = sanitized.map(toZodOption)
-    void enqueueCardMutation({
-      card_id: cardId,
+    void enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: cardId,
       op: 'update_field',
       patch: { field: 'options', value: payload },
     }).catch((err) => {
@@ -213,7 +214,7 @@ export function InlineOptionList({
         clearTimeout(debounceTimerRef.current)
         debounceTimerRef.current = null
       }
-      void runGuardedCardMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush().catch(() => {})
     } else {
       scheduleDrain()
     }

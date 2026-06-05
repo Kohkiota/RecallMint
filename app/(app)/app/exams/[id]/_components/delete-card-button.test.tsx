@@ -3,7 +3,7 @@
 // 削除確定で mirror から card を remove + outbox enqueue (op='delete') + 即時 drain。
 // 失敗時は error フェーズに遷移し enqueue / drain しない。
 //
-// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror remove は
+// enqueueEntityMutation / runGuardedEntityMutationFlush は spy mock、 mirror remove は
 // fake-indexeddb の実 Dexie で assert する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -15,11 +15,11 @@ const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
   mockFlush: vi.fn(async () => 'no-pending' as const),
 }))
 
-vi.mock('@/lib/sync/card-mutations', () => ({
-  enqueueCardMutation: mockEnqueue,
+vi.mock('@/lib/sync/entity-mutations', () => ({
+  enqueueEntityMutation: mockEnqueue,
 }))
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { DeleteCardButton } from './delete-card-button'
@@ -87,7 +87,7 @@ describe('DeleteCardButton', () => {
     // outbox に delete mutation を enqueue
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'delete',
         patch: {},
       })

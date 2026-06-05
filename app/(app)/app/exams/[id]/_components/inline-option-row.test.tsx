@@ -5,7 +5,7 @@
 // correct_answer_ids) + outbox enqueue (op='update_field', field='options',
 // value=camelCase ZodOption[])。 ghost row (text='') は sanitize で payload から除外。
 //
-// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
+// enqueueEntityMutation / runGuardedEntityMutationFlush は spy mock、 mirror write は
 // fake-indexeddb の実 Dexie で assert する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -18,11 +18,11 @@ const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
   mockFlush: vi.fn(async () => 'no-pending' as const),
 }))
 
-vi.mock('@/lib/sync/card-mutations', () => ({
-  enqueueCardMutation: mockEnqueue,
+vi.mock('@/lib/sync/entity-mutations', () => ({
+  enqueueEntityMutation: mockEnqueue,
 }))
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { InlineOptionList } from './inline-option-row'
@@ -122,7 +122,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 id 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -168,7 +168,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -193,7 +193,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -223,7 +223,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 本文 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -258,7 +258,7 @@ describe('InlineOptionList — checkbox toggle', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option b を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -359,7 +359,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     fireEvent.blur(ta)
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -397,7 +397,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option B を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',
@@ -420,7 +420,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     })
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
           field: 'options',

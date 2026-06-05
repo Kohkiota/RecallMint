@@ -639,22 +639,26 @@ export const answerEvents = pgTable(
 )
 
 // ---------------------------------------------------------------------------
-// card_mutations (S-cache-0 / §14.9 新設)
-// 編集 mutation の受領ログ + 冪等化 dedupe。 mutation_id UNIQUE で再送安全性を担保。
-// patch jsonb は client が確定した部分更新の payload (テキスト圧縮 / 順序保持構造の
-// 両方を内包、 server 側で apply する)。
+// entity_mutations (旧 card_mutations から汎用化、 S-sync-1)
+// mutation-driven push の汎用 outbox + 冪等化 dedupe ログ。 mutation_id UNIQUE で
+// 再送安全性を担保。 entity_type で対象 entity (card / 将来 tag_category 等) を識別、
+// entity_id は対象 entity の PK。 entity_type ごとに参照先 table が異なるため
+// entity_id に FK は付けず、 app 層 (apply registry) で整合保証する。
+// op は registry で定義する文字列 (現状 card: 'update_field' | 'create' | 'delete')。
+// patch jsonb は client が確定した部分更新 payload で、 server 側 registry の
+// apply 関数が解釈する。
 // ---------------------------------------------------------------------------
-export const cardMutations = pgTable(
-  'card_mutations',
+export const entityMutations = pgTable(
+  'entity_mutations',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     mutationId: uuid('mutation_id').notNull().unique(),
-    cardId: uuid('card_id')
-      .notNull()
-      .references(() => cards.id, { onDelete: 'cascade' }),
+    entityType: text('entity_type').notNull(),
+    entityId: uuid('entity_id').notNull(),
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    op: text('op').notNull(),
     patch: jsonb('patch').notNull().$type<Record<string, unknown>>(),
     editedAt: timestamp('edited_at', { withTimezone: true }).notNull(),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
@@ -663,8 +667,8 @@ export const cardMutations = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index('card_mutations_card_idx').on(t.cardId, t.editedAt),
-    index('card_mutations_user_idx').on(t.userId, t.editedAt),
+    index('entity_mutations_entity_idx').on(t.entityType, t.entityId, t.editedAt),
+    index('entity_mutations_user_idx').on(t.userId, t.editedAt),
   ],
 )
 
@@ -725,7 +729,7 @@ export type StudySession = typeof studySessions.$inferSelect
 export type NewStudySession = typeof studySessions.$inferInsert
 export type AnswerEvent = typeof answerEvents.$inferSelect
 export type NewAnswerEvent = typeof answerEvents.$inferInsert
-export type CardMutation = typeof cardMutations.$inferSelect
-export type NewCardMutation = typeof cardMutations.$inferInsert
+export type EntityMutation = typeof entityMutations.$inferSelect
+export type NewEntityMutation = typeof entityMutations.$inferInsert
 export type Tombstone = typeof tombstones.$inferSelect
 export type NewTombstone = typeof tombstones.$inferInsert

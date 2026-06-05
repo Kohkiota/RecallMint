@@ -1,6 +1,11 @@
-// POST /api/card-mutations/bulk の unit test。
+// POST /api/entity-mutations/bulk の unit test。
 // 実 DB は叩かず、 getCurrentUser / getDb を mock して route handler の制御フロー
-// (auth / zod / 冪等 gate / update_field / delete / create + per-op patch 検証) を検証する。
+// (auth / zod / 冪等 gate / registry dispatch / patch 検証) を検証する。
+//
+// S-sync-1 で旧 /api/card-mutations/bulk から汎用化。 envelope は entity_type +
+// entity_id を持ち、 per-mutation の (entity_type, op) で registry を引く。
+// 現状 registry に登録されている entity_type は 'card' のみで、 既存テストの挙動
+// (update_field / create / delete + 冪等 + 部分失敗 + log INSERT) を完全に維持する。
 //
 // 既存 review-events/bulk/route.test.ts の流儀に揃える:
 //   - vi.hoisted() で state object を共有
@@ -17,17 +22,17 @@ import type { User } from '@/lib/db/schema'
 // ---------------------------------------------------------------------------
 const { state } = vi.hoisted(() => ({
   state: {
-    // card_mutations SELECT (冪等チェック)
+    // entity_mutations SELECT (冪等チェック)
     // mutation_id をキーとして「既存ならそのエントリが返る」
     existingMutationIds: new Set<string>(),
 
-    // card_mutations INSERT 記録
+    // entity_mutations INSERT 記録
     mutationInsertValues: null as null | Record<string, unknown>,
     // onConflictDoNothing に渡された target 記録
     mutationInsertConflictTarget: null as null | unknown,
 
     // applyCardFieldUpdate の mock (lib/cards/apply-card-mutation をモック)
-    // card_id → found:true / false を制御
+    // entity_id (=card_id) → found:true / false を制御
     cardFieldUpdateResults: new Map<string, boolean>(),
     cardFieldUpdateCalls: [] as Array<{
       cardId: string
@@ -49,7 +54,6 @@ const { state } = vi.hoisted(() => ({
     }>,
 
     // buildSetClause の mock 制御
-    // field → { ok: true/false, error?: string, data?: Record<string, unknown> }
     buildSetClauseResults: new Map<
       string,
       { ok: true; data: Record<string, unknown> } | { ok: false; error: string }
@@ -80,7 +84,9 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
-// apply-card-mutation を mock (純関数の validation ロジックを test に引き込まない)
+// apply-card-mutation を mock (純関数の validation ロジックを test に引き込まない)。
+// registry は apply-card-mutation の関数を直接呼ぶため、 ここを mock すれば
+// registry の dispatch 経路も含めて検証できる。
 vi.mock('@/lib/cards/apply-card-mutation', () => ({
   buildSetClause: vi.fn((field: string, value: unknown) => {
     state.buildSetClauseCalls.push({ field, value })
@@ -130,14 +136,11 @@ vi.mock('@/lib/db', () => ({
 // ---------------------------------------------------------------------------
 
 // Drizzle の SQL オブジェクトから Param の値を再帰的に収集する。
-// 各 Param の .value (string) を配列で返す。
-// (Drizzle の queryChunks 構造は eq/and どちらでも同様に辿れる)
 function collectParamValues(cond: unknown): string[] {
   const results: string[] = []
   function walk(obj: unknown) {
     if (obj === null || typeof obj !== 'object') return
     const o = obj as Record<string, unknown>
-    // Param ノード: constructor.name === 'Param' かつ value: string
     if (
       typeof (obj as { constructor?: { name?: string } }).constructor?.name === 'string' &&
       (obj as { constructor: { name: string } }).constructor.name === 'Param' &&
@@ -146,11 +149,9 @@ function collectParamValues(cond: unknown): string[] {
       results.push(o['value'] as string)
       return
     }
-    // queryChunks 配列を再帰
     if ('queryChunks' in o && Array.isArray(o['queryChunks'])) {
       for (const chunk of o['queryChunks'] as unknown[]) walk(chunk)
     }
-    // 通常の配列
     if (Array.isArray(obj)) {
       for (const item of obj) walk(item)
     }
@@ -159,8 +160,6 @@ function collectParamValues(cond: unknown): string[] {
   return results
 }
 
-// and(eq(mutationId, id), eq(userId, uid)) から mutation_id の値を取り出す。
-// collectParamValues で全 Param 値を集め、existingMutationIds に含まれるものを探す。
 function extractMutationIdFromWhere(cond: unknown): string | null {
   const values = collectParamValues(cond)
   for (const v of values) {
@@ -178,7 +177,6 @@ function makeFakeTx(shouldThrow = false) {
             if (shouldThrow) throw new Error('tx forced throw')
             // where 条件から mutation_id を取り出し、existingMutationIds に含まれれば
             // 「既存」として 1 行返す。含まれなければ空配列 (新規)。
-            // これにより mixed batch (既存 A + 新規 B) を正確に表現できる。
             const found = extractMutationIdFromWhere(cond) !== null
             return Promise.resolve(found ? [{ mutationId: 'exists' }] : [])
           },
@@ -198,7 +196,7 @@ function makeFakeTx(shouldThrow = false) {
       return {
         values: (vals: Record<string, unknown>) => ({
           onConflictDoNothing: (conf: unknown) => {
-            if (tname === 'card_mutations') {
+            if (tname === 'entity_mutations') {
               state.mutationInsertValues = vals
               state.mutationInsertConflictTarget = conf
             }
@@ -224,7 +222,7 @@ const fakeDb = {
 // helpers
 // ---------------------------------------------------------------------------
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { cardMutations } from '@/lib/db/schema'
+import { entityMutations } from '@/lib/db/schema'
 import { POST } from './route'
 
 const FAKE_USER = { id: '11111111-1111-4111-a111-111111111111' } as unknown as User
@@ -235,7 +233,7 @@ const VALID_MUTATION_ID_2 = '66666666-6666-4666-a666-666666666666'
 const VALID_MUTATION_ID_3 = '77777777-7777-4777-a777-777777777777'
 const VALID_EXAM_ID = 'eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee'
 
-// create op の有効な patch (per-op createPatchSchema に通るもの)
+// create op の有効な patch (registry の cardCreatePatchSchema に通るもの)
 const VALID_CREATE_PATCH = {
   exam_id: VALID_EXAM_ID,
   title: 'New Card',
@@ -247,7 +245,7 @@ const VALID_CREATE_PATCH = {
 }
 
 function makeReq(payload: unknown): Request {
-  return new Request('http://localhost/api/card-mutations/bulk', {
+  return new Request('http://localhost/api/entity-mutations/bulk', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
@@ -257,7 +255,7 @@ function makeReq(payload: unknown): Request {
 function makeUpdateFieldMutation(
   overrides: Partial<{
     mutation_id: string
-    card_id: string
+    entity_id: string
     field: string
     value: unknown
     edited_at: string
@@ -265,8 +263,9 @@ function makeUpdateFieldMutation(
 ) {
   return {
     mutation_id: overrides.mutation_id ?? VALID_MUTATION_ID,
-    card_id: overrides.card_id ?? VALID_CARD_ID,
-    op: 'update_field' as const,
+    entity_type: 'card',
+    entity_id: overrides.entity_id ?? VALID_CARD_ID,
+    op: 'update_field',
     patch: {
       field: overrides.field ?? 'title',
       value: overrides.value ?? 'New Title',
@@ -278,14 +277,15 @@ function makeUpdateFieldMutation(
 function makeDeleteMutation(
   overrides: Partial<{
     mutation_id: string
-    card_id: string
+    entity_id: string
     edited_at: string
   }> = {},
 ) {
   return {
     mutation_id: overrides.mutation_id ?? VALID_MUTATION_ID,
-    card_id: overrides.card_id ?? VALID_CARD_ID,
-    op: 'delete' as const,
+    entity_type: 'card',
+    entity_id: overrides.entity_id ?? VALID_CARD_ID,
+    op: 'delete',
     patch: {},
     edited_at: overrides.edited_at ?? '2026-05-30T10:00:00.000Z',
   }
@@ -294,15 +294,16 @@ function makeDeleteMutation(
 function makeCreateMutation(
   overrides: Partial<{
     mutation_id: string
-    card_id: string
+    entity_id: string
     edited_at: string
     patch: Record<string, unknown>
   }> = {},
 ) {
   return {
     mutation_id: overrides.mutation_id ?? VALID_MUTATION_ID,
-    card_id: overrides.card_id ?? VALID_CARD_ID,
-    op: 'create' as const,
+    entity_type: 'card',
+    entity_id: overrides.entity_id ?? VALID_CARD_ID,
+    op: 'create',
     patch: overrides.patch ?? VALID_CREATE_PATCH,
     edited_at: overrides.edited_at ?? '2026-05-30T10:00:00.000Z',
   }
@@ -327,7 +328,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
-describe('POST /api/card-mutations/bulk', () => {
+describe('POST /api/entity-mutations/bulk', () => {
   // --- 認証 ---
 
   it('未ログイン (UnauthenticatedError) → 401 unauthenticated、 DB に触れない', async () => {
@@ -346,11 +347,11 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(state.mutationInsertValues).toBeNull()
   })
 
-  // --- zod validation ---
+  // --- zod validation (envelope) ---
 
   it('invalid JSON body → 400 invalid_json', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    const req = new Request('http://localhost/api/card-mutations/bulk', {
+    const req = new Request('http://localhost/api/entity-mutations/bulk', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: 'not-json',
@@ -366,7 +367,8 @@ describe('POST /api/card-mutations/bulk', () => {
       mutations: [
         {
           mutation_id: 'not-a-uuid',
-          card_id: VALID_CARD_ID,
+          entity_type: 'card',
+          entity_id: VALID_CARD_ID,
           op: 'update_field',
           patch: { field: 'title', value: 'x' },
           edited_at: '2026-05-30T10:00:00.000Z',
@@ -381,13 +383,16 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.issues.length).toBeGreaterThan(0)
   })
 
-  it('op が不正値 → 400 invalid_payload', async () => {
+  it('未知の (entity_type, op) → per-mutation failed (registry 不在)', async () => {
+    // envelope zod は op を string min(1) で通すため、 envelope レベルでは 400 にならない。
+    // registry に該当 entry がなければ per-mutation failed として扱う。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const payload = {
       mutations: [
         {
           mutation_id: VALID_MUTATION_ID,
-          card_id: VALID_CARD_ID,
+          entity_type: 'card',
+          entity_id: VALID_CARD_ID,
           op: 'unknown_op',
           patch: {},
           edited_at: '2026-05-30T10:00:00.000Z',
@@ -395,16 +400,40 @@ describe('POST /api/card-mutations/bulk', () => {
       ],
     }
     const res = await POST(makeReq(payload))
-    expect(res.status).toBe(400)
-    expect((await res.json() as { error: string }).error).toBe('invalid_payload')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+  })
+
+  it('未知の entity_type → per-mutation failed', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const payload = {
+      mutations: [
+        {
+          mutation_id: VALID_MUTATION_ID,
+          entity_type: 'unknown_entity',
+          entity_id: VALID_CARD_ID,
+          op: 'update_field',
+          patch: { field: 'title', value: 'x' },
+          edited_at: '2026-05-30T10:00:00.000Z',
+        },
+      ],
+    }
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
   })
 
   it('mutations 配列が 1001 件 → 400 invalid_payload (zod .max(1000))', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const mutations = Array.from({ length: 1001 }, (_, i) => ({
       mutation_id: `${i.toString().padStart(8, '0')}-0000-4000-a000-000000000000`,
-      card_id: VALID_CARD_ID,
-      op: 'delete' as const,
+      entity_type: 'card',
+      entity_id: VALID_CARD_ID,
+      op: 'delete',
       patch: {},
       edited_at: '2026-05-30T10:00:00.000Z',
     }))
@@ -420,7 +449,8 @@ describe('POST /api/card-mutations/bulk', () => {
       mutations: [
         {
           mutation_id: VALID_MUTATION_ID,
-          card_id: VALID_CARD_ID,
+          entity_type: 'card',
+          entity_id: VALID_CARD_ID,
           op: 'update_field',
           patch: 'not-an-object',
           edited_at: '2026-05-30T10:00:00.000Z',
@@ -437,7 +467,6 @@ describe('POST /api/card-mutations/bulk', () => {
   it('冪等: 同 mutation_id を 2 回 POST → 1 回目 applied:1、 2 回目 applied:0 (mutation log 1 行のみ)', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
 
-    // 1 回目: 新規 → apply + log INSERT
     const res1 = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
     expect(res1.status).toBe(200)
     const body1 = (await res1.json()) as { ok: boolean; applied: number; failed: string[] }
@@ -448,7 +477,6 @@ describe('POST /api/card-mutations/bulk', () => {
 
     // 2 回目: 同 mutation_id が existingMutationIds にあるとマーク → skip
     state.existingMutationIds.add(VALID_MUTATION_ID)
-    // 2 回目呼出の結果だけを確認できるよう、 1 回目の記録をリセット
     state.mutationInsertValues = null
     state.cardFieldUpdateCalls = []
 
@@ -457,37 +485,32 @@ describe('POST /api/card-mutations/bulk', () => {
     const body2 = (await res2.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body2.applied).toBe(0)
     expect(body2.failed).toHaveLength(0)
-    // 2 回目は apply も log INSERT もしない
     expect(state.cardFieldUpdateCalls).toHaveLength(0)
     expect(state.mutationInsertValues).toBeNull()
   })
 
   it('冪等 mixed batch: 既存 mutation + 新規 mutation → applied:1, skipped:1, log INSERT は新規分のみ', async () => {
-    // VALID_MUTATION_ID は既存 (skip)、 VALID_MUTATION_ID_2 は新規 (apply)。
-    // fake SELECT が mutation_id 単位で判定することを確認するテスト。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.existingMutationIds.add(VALID_MUTATION_ID) // 既存扱いにする
+    state.existingMutationIds.add(VALID_MUTATION_ID)
 
     const mutations = [
-      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, card_id: VALID_CARD_ID }),
-      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID_2, card_id: VALID_CARD_ID_2, field: 'title', value: 'New' }),
+      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, entity_id: VALID_CARD_ID }),
+      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID_2, entity_id: VALID_CARD_ID_2, field: 'title', value: 'New' }),
     ]
     const res = await POST(makeReq({ mutations }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
-    // 既存 1 件は skip (applied にカウントしない)、 新規 1 件は applied
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // applyCardFieldUpdate は新規分 (VALID_MUTATION_ID_2) だけ呼ばれる
     expect(state.cardFieldUpdateCalls).toHaveLength(1)
     expect(state.cardFieldUpdateCalls[0].cardId).toBe(VALID_CARD_ID_2)
 
-    // log INSERT は新規分のみ (VALID_MUTATION_ID_2)
     expect(state.mutationInsertValues).not.toBeNull()
     expect(state.mutationInsertValues).toMatchObject({
       mutationId: VALID_MUTATION_ID_2,
-      cardId: VALID_CARD_ID_2,
+      entityType: 'card',
+      entityId: VALID_CARD_ID_2,
     })
   })
 
@@ -502,23 +525,22 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // buildSetClause が field='title', value='Hello' で呼ばれた
     expect(state.buildSetClauseCalls).toHaveLength(1)
     expect(state.buildSetClauseCalls[0]).toMatchObject({ field: 'title', value: 'Hello' })
 
-    // applyCardFieldUpdate が user.id + card_id で呼ばれた
     expect(state.cardFieldUpdateCalls).toHaveLength(1)
     expect(state.cardFieldUpdateCalls[0]).toMatchObject({
       cardId: VALID_CARD_ID,
       userId: FAKE_USER.id,
     })
 
-    // log INSERT が呼ばれた
     expect(state.mutationInsertValues).not.toBeNull()
     expect(state.mutationInsertValues).toMatchObject({
       mutationId: VALID_MUTATION_ID,
-      cardId: VALID_CARD_ID,
+      entityType: 'card',
+      entityId: VALID_CARD_ID,
       userId: FAKE_USER.id,
+      op: 'update_field',
     })
   })
 
@@ -532,9 +554,7 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
 
-    // applyCardFieldUpdate は呼ばれない
     expect(state.cardFieldUpdateCalls).toHaveLength(0)
-    // log INSERT も行われない
     expect(state.mutationInsertValues).toBeNull()
   })
 
@@ -542,8 +562,9 @@ describe('POST /api/card-mutations/bulk', () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const mutation = {
       mutation_id: VALID_MUTATION_ID,
-      card_id: VALID_CARD_ID,
-      op: 'update_field' as const,
+      entity_type: 'card',
+      entity_id: VALID_CARD_ID,
+      op: 'update_field',
       patch: { value: 'something' }, // field キーなし
       edited_at: '2026-05-30T10:00:00.000Z',
     }
@@ -564,15 +585,15 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
 
-    // log INSERT は行われない (apply が failed)
     expect(state.mutationInsertValues).toBeNull()
   })
 
   // --- delete op ---
 
   it('delete 正常系: applyCardDelete → applied:1 (log INSERT なし)', async () => {
-    // card_mutations.card_id FK は ON DELETE CASCADE のため、card 削除後に log INSERT
-    // すると FK 違反になる。delete op は log INSERT をスキップする。
+    // delete op は registry の skipLog=true により log INSERT をスキップ。
+    // 監査 log としての価値が低く、 再送 dedupe は tombstone + 自然冪等で担保する
+    // (旧 card-mutations 経路の挙動を維持)。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const res = await POST(makeReq({ mutations: [makeDeleteMutation()] }))
     expect(res.status).toBe(200)
@@ -581,29 +602,22 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // applyCardDelete が user.id + card_id で呼ばれた
     expect(state.cardDeleteCalls).toHaveLength(1)
     expect(state.cardDeleteCalls[0]).toMatchObject({
       cardId: VALID_CARD_ID,
       userId: FAKE_USER.id,
     })
 
-    // delete op は log INSERT をスキップする (FK cascade で永続不可 + 自然冪等)
     expect(state.mutationInsertValues).toBeNull()
   })
 
   it('delete: idempotent — 存在しない card も applied:1 (applyCardDelete は silent success)、log INSERT なし', async () => {
-    // applyCardDelete は内部で 0-row の場合も throw しない (idempotent 設計)。
-    // よって delete op は常に applied:1 になる (orphan も含め)。
-    // delete の冪等性は log ではなく applyCardDelete の自然冪等で担保するため
-    // log INSERT はスキップされる。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const res = await POST(makeReq({ mutations: [makeDeleteMutation()] }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
-    // log INSERT は行われない
     expect(state.mutationInsertValues).toBeNull()
   })
 
@@ -618,19 +632,19 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // applyCardCreateWithId が呼ばれた (card_id + user.id + patch 内容)
     expect(state.cardCreateCalls).toHaveLength(1)
     expect(state.cardCreateCalls[0]).toMatchObject({
       userId: FAKE_USER.id,
       input: { cardId: VALID_CARD_ID, examId: VALID_EXAM_ID },
     })
 
-    // log INSERT が呼ばれた (create op も log を書く)
     expect(state.mutationInsertValues).not.toBeNull()
     expect(state.mutationInsertValues).toMatchObject({
       mutationId: VALID_MUTATION_ID,
-      cardId: VALID_CARD_ID,
+      entityType: 'card',
+      entityId: VALID_CARD_ID,
       userId: FAKE_USER.id,
+      op: 'create',
     })
   })
 
@@ -644,7 +658,6 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toHaveLength(0)
 
-    // gate skip: applyCardCreateWithId も log INSERT も呼ばれない
     expect(state.cardCreateCalls).toHaveLength(0)
     expect(state.mutationInsertValues).toBeNull()
   })
@@ -659,13 +672,12 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
 
-    // log INSERT は行われない
     expect(state.mutationInsertValues).toBeNull()
   })
 
   it('create: patch 不正 (exam_id 欠如) → per-mutation failed[]、applyCardCreateWithId 呼ばれない', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    const badPatch = { title: 'No exam id' } // exam_id が欠如
+    const badPatch = { title: 'No exam id' }
     const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch: badPatch })] }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
@@ -680,7 +692,6 @@ describe('POST /api/card-mutations/bulk', () => {
       exam_id: VALID_EXAM_ID,
       title: 'Title',
       sort_key: null,
-      // question_text が欠如
       options: [{ id: 'a', text: 'A', isCorrect: false }],
       explanation_text: null,
       memo: null,
@@ -693,9 +704,7 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(state.cardCreateCalls).toHaveLength(0)
   })
 
-  it("create: sort_key='' / explanation_text='' / memo='' → applyCardCreateWithId に null で渡す (buildSetClause UPDATE path と同じ正規化)", async () => {
-    // buildSetClause は UPDATE path で nullable text 列の '' → null を行う。
-    // create path でも同じ正規化が必要 (emptyToNull helper 経由)。
+  it("create: sort_key='' / explanation_text='' / memo='' → applyCardCreateWithId に null で渡す (UPDATE path と同じ正規化)", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const patchWithEmpty = {
       ...VALID_CREATE_PATCH,
@@ -709,7 +718,6 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // applyCardCreateWithId に渡る input で '' が null に正規化されていること
     expect(state.cardCreateCalls).toHaveLength(1)
     const input = state.cardCreateCalls[0]!.input
     expect(input['sortKey']).toBeNull()
@@ -717,9 +725,7 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(input['memo']).toBeNull()
   })
 
-  it('create: ON CONFLICT skip (別 mutation_id 同 card_id) → { created: false } → log INSERT → applied:1', async () => {
-    // 同 card_id に別 mutation_id で再送: applyCardCreateWithId が created=false を返す
-    // (card 行は既存) が、log は書く (mutation_id は新規のため冪等 gate を通過)
+  it('create: ON CONFLICT skip (別 mutation_id 同 entity_id) → { created: false } → log INSERT → applied:1', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     state.cardCreateResults.set(VALID_CARD_ID, { examNotFound: false, created: false })
 
@@ -729,7 +735,6 @@ describe('POST /api/card-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    // log INSERT が呼ばれた (card は既存だが mutation_id は新規)
     expect(state.mutationInsertValues).not.toBeNull()
   })
 
@@ -737,8 +742,9 @@ describe('POST /api/card-mutations/bulk', () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const badMutation = {
       mutation_id: VALID_MUTATION_ID,
-      card_id: VALID_CARD_ID,
-      op: 'update_field' as const,
+      entity_type: 'card',
+      entity_id: VALID_CARD_ID,
+      op: 'update_field',
       patch: { field: 'not_a_valid_field', value: 'x' },
       edited_at: '2026-05-30T10:00:00.000Z',
     }
@@ -747,7 +753,6 @@ describe('POST /api/card-mutations/bulk', () => {
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
-    // applyCardFieldUpdate は呼ばれない
     expect(state.cardFieldUpdateCalls).toHaveLength(0)
   })
 
@@ -756,8 +761,8 @@ describe('POST /api/card-mutations/bulk', () => {
   it('複数 mutations: update_field + delete が個別に処理される', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const mutations = [
-      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, card_id: VALID_CARD_ID }),
-      makeDeleteMutation({ mutation_id: VALID_MUTATION_ID_2, card_id: VALID_CARD_ID_2 }),
+      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, entity_id: VALID_CARD_ID }),
+      makeDeleteMutation({ mutation_id: VALID_MUTATION_ID_2, entity_id: VALID_CARD_ID_2 }),
     ]
     const res = await POST(makeReq({ mutations }))
     expect(res.status).toBe(200)
@@ -773,18 +778,17 @@ describe('POST /api/card-mutations/bulk', () => {
 
   it('複数 mutations: 一部 failed でも他は applied、 200 で返す (部分失敗)', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    // VALID_CARD_ID は orphan に設定
     state.cardFieldUpdateResults.set(VALID_CARD_ID, false)
 
     const mutations = [
-      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, card_id: VALID_CARD_ID }),
-      makeDeleteMutation({ mutation_id: VALID_MUTATION_ID_2, card_id: VALID_CARD_ID_2 }),
+      makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, entity_id: VALID_CARD_ID }),
+      makeDeleteMutation({ mutation_id: VALID_MUTATION_ID_2, entity_id: VALID_CARD_ID_2 }),
     ]
     const res = await POST(makeReq({ mutations }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
-    expect(body.applied).toBe(1) // delete は成功
-    expect(body.failed).toEqual([VALID_MUTATION_ID]) // update_field は失敗
+    expect(body.applied).toBe(1)
+    expect(body.failed).toEqual([VALID_MUTATION_ID])
   })
 
   it('mutations が空配列 → 200 applied:0 failed:[]', async () => {
@@ -808,18 +812,15 @@ describe('POST /api/card-mutations/bulk', () => {
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
-    // logger.warn が呼ばれた
     expect(state.loggerWarnCalls).toHaveLength(1)
     expect(state.loggerWarnCalls[0]).toMatchObject({
-      event: 'card_mutations.bulk.mutation_failed',
+      event: 'entity_mutations.bulk.mutation_failed',
       mutationId: VALID_MUTATION_ID,
+      entityType: 'card',
     })
   })
 
   it('tx throw が 1 件: 他の mutations は引き続き処理される', async () => {
-    // 3 件中 1 件だけ tx throw → 他 2 件は正常処理
-    // txShouldThrow は全 tx を throw させるため、 1 件だけ throw をシミュレートするには
-    // applyCardFieldUpdate を 1 件だけ throw させる。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const { applyCardFieldUpdate } = await import('@/lib/cards/apply-card-mutation')
     let callCount = 0
@@ -838,9 +839,8 @@ describe('POST /api/card-mutations/bulk', () => {
     const res = await POST(makeReq({ mutations }))
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
-    // 1 件目の update_field throw → failed、 delete は成功、 3 件目 update_field も成功
     expect(body.failed).toContain(VALID_MUTATION_ID)
-    expect(body.applied).toBe(2) // delete + 3rd update_field
+    expect(body.applied).toBe(2)
   })
 
   // --- response contract ---
@@ -860,11 +860,9 @@ describe('POST /api/card-mutations/bulk', () => {
   it('onConflictDoNothing target が mutation_id 列を指す (並走 race backstop)', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
-    // conflict target は { target: cardMutations.mutationId } — mutation_id 列を指す
     expect(state.mutationInsertConflictTarget).not.toBeNull()
     const target = (state.mutationInsertConflictTarget as Record<string, unknown>)['target']
-    // Drizzle column の .name は SQL 列名 (snake_case)
-    expect((target as { name: string }).name).toBe(cardMutations.mutationId.name)
+    expect((target as { name: string }).name).toBe(entityMutations.mutationId.name)
     expect((target as { name: string }).name).toBe('mutation_id')
   })
 
@@ -872,7 +870,6 @@ describe('POST /api/card-mutations/bulk', () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
     expect(state.mutationInsertValues).not.toBeNull()
-    // appliedAt は sql`now()` — オブジェクトであること (Date インスタンスでない)
     expect(typeof state.mutationInsertValues!['appliedAt']).toBe('object')
   })
 

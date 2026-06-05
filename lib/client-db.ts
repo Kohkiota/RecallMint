@@ -10,8 +10,10 @@
 // - answer_events: 演習中の回答 click で即時 insert (debounce なし、 §14.7.1)。
 //   bulk flush で /api/review-events/bulk に送信し、 server から sync OK を受領で
 //   sync_status='synced' へ。
-// - card_mutations: inline 編集の patch を貯める (§14.7.2)。 server 送信は 2000ms
-//   debounce、 mutation_id で冪等化。
+// - entity_mutations: mutation-driven push の汎用 outbox (S-sync-1 で旧 card_mutations
+//   から汎用化)。 entity_type + entity_id で対象 entity を識別、 server 送信は
+//   debounce、 mutation_id で冪等化。 現状の entity_type は 'card' のみ、 後続で
+//   タグマスター等を追加予定。
 // - sync_meta: 同期ステート (last pull cursor、 削除遅延キャッシュ等) の key-value。
 //
 // 型方針:
@@ -33,7 +35,7 @@ export type SyncStatus = 'pending' | 'syncing' | 'synced' | 'failed'
 // テーブル row 型
 // ---------------------------------------------------------------------------
 
-// exams: server から pull した最新確定値の cache。 編集は card_mutations 経由のため
+// exams: server から pull した最新確定値の cache。 編集は entity_mutations 経由のため
 // ローカルでは原則 read-only (pull 上書きのみ)。
 export type ClientExam = {
   id: string
@@ -139,15 +141,16 @@ export type ClientAnswerEvent = {
   last_attempted_at?: string | null
 }
 
-// card_mutations: §14.5 準拠。 patch は §14.6 圧縮ルールに従い構築する (本 module は
-// schema のみ、 圧縮ロジック自体は別所で実装)。
-// op は bulk flush envelope の `op` フィールドと対応。 Dexie の index 列ではないため
-// version bump 不要 (store 文字列は index 宣言のみ; index 外 property は任意保存)。
-export type ClientCardMutation = {
+// entity_mutations (S-sync-1 で旧 card_mutations を汎用化): mutation-driven push の
+// 汎用 outbox row。 entity_type で対象 entity (現状 'card'、 将来 'tag_category' 等) を
+// 識別し、 entity_id は対象 entity の PK。
+// op は registry (server) で定義される文字列、 card では 'update_field' | 'create' | 'delete'。
+export type ClientEntityMutation = {
   local_id?: number
   mutation_id: string
-  card_id: string
-  op: 'update_field' | 'create' | 'delete'
+  entity_type: string
+  entity_id: string
+  op: string
   patch: Record<string, unknown>
   edited_at: string
   sync_status: SyncStatus
@@ -181,7 +184,11 @@ export class ClientDb extends Dexie {
   user_settings!: Table<ClientUserSettings, string>
   study_sessions!: Table<ClientStudySession, string>
   answer_events!: Table<ClientAnswerEvent, number>
-  card_mutations!: Table<ClientCardMutation, number>
+  // S-sync-1: 旧 `card_mutations` を `entity_mutations` に汎用化。 entity_type +
+  // entity_id の複合 index で entity-scoped coalesce 検索を高速化する余地を持つ
+  // (現状の coalesce は sync_status 全 scan ベースで動くが、 将来 entity 数が増えた
+  // ときに `[entity_type+entity_id]` で取り出せるよう index を宣言)。
+  entity_mutations!: Table<ClientEntityMutation, number>
   sync_meta!: Table<ClientSyncMeta, string>
   // S-perf-3: server study_days を pull する mirror table (streak / todayCount 算出用)。
   // 複合 PK `[user_id+day]` で server PK 構造と一致 (idempotent な bulkPut が成立)。
@@ -203,6 +210,16 @@ export class ClientDb extends Dexie {
     // 新規 store のみ追加するため、 v1 → v2 upgrade は単純な store 追加で済む。
     this.version(2).stores({
       study_days: '[user_id+day], user_id, day',
+    })
+    // v3 (S-sync-1): card_mutations を entity_mutations に rename + 汎用化。
+    // stg は truncate 済 / アクティブユーザー 0 のため、 旧 store の保持データを
+    // migrate せず drop して新 store を空で start する (`card_mutations: null` で
+    // 旧 store を削除)。 client 側に残る pending mutation はこの upgrade で失われるが、
+    // 該当 user は 0 想定なので問題なし。
+    this.version(3).stores({
+      card_mutations: null,
+      entity_mutations:
+        '++local_id, mutation_id, [entity_type+entity_id], sync_status',
     })
   }
 }

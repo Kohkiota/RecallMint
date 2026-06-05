@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 // InlineTextField client component の test (Stage 4 / Task 4.2 cutover 後)。
 // blur (commit) で mirror 直書き (Dexie cards.update) + outbox enqueue
-// (enqueueCardMutation, op='update_field')、 500ms debounce 後に
-// runGuardedCardMutationFlush で drain。 値変更なしは commit skip。 dirty-guard:
+// (enqueueEntityMutation, op='update_field')、 500ms debounce 後に
+// runGuardedEntityMutationFlush で drain。 値変更なしは commit skip。 dirty-guard:
 // 編集中は外部 prop で value を上書きしない / idle 時は prop 変化で display 更新。
 //
-// enqueueCardMutation / runGuardedCardMutationFlush は spy mock、 mirror write は
+// enqueueEntityMutation / runGuardedEntityMutationFlush は spy mock、 mirror write は
 // fake-indexeddb の実 Dexie で assert する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -17,11 +17,11 @@ const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
   mockFlush: vi.fn(async () => 'no-pending' as const),
 }))
 
-vi.mock('@/lib/sync/card-mutations', () => ({
-  enqueueCardMutation: mockEnqueue,
+vi.mock('@/lib/sync/entity-mutations', () => ({
+  enqueueEntityMutation: mockEnqueue,
 }))
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { InlineTextField } from './inline-text-field'
@@ -196,7 +196,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     })
   })
 
-  it('値変更 + blur → enqueueCardMutation が update_field / field / value で呼ばれる', async () => {
+  it('値変更 + blur → enqueueEntityMutation が update_field / field / value で呼ばれる', async () => {
     await seedCard({ title: '旧' })
     render(
       <InlineTextField
@@ -214,7 +214,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: { field: 'title', value: '新タイトル' },
       })
@@ -301,7 +301,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     })
     // enqueue には raw '' が渡る (server 側 buildSetClause が '' → null 正規化する)。
     expect(mockEnqueue).toHaveBeenCalledWith({
-      card_id: CARD_ID,
+      entity_type: 'card', entity_id: CARD_ID,
       op: 'update_field',
       patch: { field: 'memo', value: '' },
     })
@@ -344,7 +344,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     fireEvent.blur(screen.getByRole('textbox'))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
-        card_id: CARD_ID,
+        entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: { field: 'memo', value: '初メモ' },
       })

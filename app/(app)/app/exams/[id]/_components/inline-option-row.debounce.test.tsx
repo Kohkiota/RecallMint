@@ -7,8 +7,8 @@
 // - dirty-guard: 編集中の cell は serverOptions prop 変化で clobber されない。
 // - ghost-preserving merge: serverOptions prop 変化で local ghost が evict されない。
 //
-// enqueueCardMutation は real 実装 (Dexie coalesce を verify)、
-// runGuardedCardMutationFlush のみ spy。 Dexie が internal scheduling に real microtask
+// enqueueEntityMutation は real 実装 (Dexie coalesce を verify)、
+// runGuardedEntityMutationFlush のみ spy。 Dexie が internal scheduling に real microtask
 // を使うため、 fake timer は setTimeout/clearTimeout のみに限定する。
 
 import {
@@ -22,14 +22,14 @@ import {
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import type { CardOption } from '@/lib/db/schema'
 import { getClientDb } from '@/lib/client-db'
-import { getPendingCardMutations } from '@/lib/sync/card-mutations'
+import { getPendingEntityMutations } from '@/lib/sync/entity-mutations'
 
 const { mockFlush } = vi.hoisted(() => ({
   mockFlush: vi.fn(async () => 'no-pending' as const),
 }))
 
-vi.mock('@/lib/sync/card-mutation-flush', () => ({
-  runGuardedCardMutationFlush: mockFlush,
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
 }))
 
 import { InlineOptionList } from './inline-option-row'
@@ -63,7 +63,7 @@ function startTextEdit(newValue: string, rowIdx = 0) {
 beforeEach(async () => {
   mockFlush.mockClear()
   await getClientDb().cards.clear()
-  await getClientDb().card_mutations.clear()
+  await getClientDb().entity_mutations.clear()
   // Dexie (fake-indexeddb) は real microtask を使うため、 debounce timer 制御に必要な
   // setTimeout/clearTimeout のみ fake にする。
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -100,7 +100,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     expect(screen.getByText('選択肢A 改')).toBeInTheDocument()
 
     await vi.waitFor(async () => {
-      const pending = await getPendingCardMutations()
+      const pending = await getPendingEntityMutations()
       expect(pending).toHaveLength(1)
       expect(pending[0]!.patch).toEqual({
         field: 'options',
@@ -140,7 +140,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     await flushPromises()
 
     await vi.waitFor(async () => {
-      const pending = await getPendingCardMutations()
+      const pending = await getPendingEntityMutations()
       expect(pending).toHaveLength(1)
       expect(pending[0]!.patch).toEqual({
         field: 'options',
@@ -164,7 +164,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     renderList()
     const settle = async (expectedText: string) => {
       await vi.waitFor(async () => {
-        const pending = await getPendingCardMutations()
+        const pending = await getPendingEntityMutations()
         expect(pending).toHaveLength(1)
         const value = pending[0]!.patch.value as { text: string }[]
         expect(value[0]!.text).toBe(expectedText)
@@ -177,7 +177,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     fireEvent.blur(startTextEdit('三'))
     await settle('三')
 
-    const pending = await getPendingCardMutations()
+    const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
   })
 })

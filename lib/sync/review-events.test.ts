@@ -27,7 +27,7 @@ beforeEach(async () => {
   await Promise.all([
     db.study_sessions.clear(),
     db.answer_events.clear(),
-    db.card_mutations.clear(),
+    db.entity_mutations.clear(),
     db.sync_meta.clear(),
     db.cards.clear(),
     db.exams.clear(),

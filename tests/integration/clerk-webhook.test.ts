@@ -108,7 +108,7 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.insert).toHaveBeenCalledTimes(2)
   })
 
-  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update + 3 delete) + 200', async () => {
+  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update + 9 delete) + 200', async () => {
     const db = vi.mocked(getDb)()
     vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'msg_x' }]) as never)
     // SELECT users: customerId=null (Free プラン) → Stripe ループ skip
@@ -129,9 +129,11 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.select).toHaveBeenCalledTimes(1)  // users SELECT
     expect(db.transaction).toHaveBeenCalledTimes(1)
     expect(db.update).toHaveBeenCalledTimes(1)  // users soft-delete + scrub (inside transaction)
-    // Group I 8 件: exams + study_days + contact_messages + ai_usage_users +
-    // upload_records + user_settings + study_sessions + tombstones
-    expect(db.delete).toHaveBeenCalledTimes(8)
+    // Group I 9 件: exams + study_days + contact_messages + ai_usage_users +
+    // upload_records + user_settings + study_sessions + tombstones + entity_mutations
+    // (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 cards cascade chain が
+    //  なくなり Group I に昇格)
+    expect(db.delete).toHaveBeenCalledTimes(9)
   })
 
   it('unknown event type → clerk_events INSERT のみで no-op 200', async () => {

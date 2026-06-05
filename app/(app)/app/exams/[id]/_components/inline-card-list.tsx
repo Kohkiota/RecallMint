@@ -13,8 +13,8 @@ import type { CardOption } from '@/lib/db/schema'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
-import { newId, enqueueCardMutation } from '@/lib/sync/card-mutations'
-import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { newId, enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -131,8 +131,9 @@ export function InlineCardList({
 
       // outbox enqueue (snake_case patch + camelCase options)。 server は options の
       // is_correct から correct_answer_ids を再生成するため patch に含めない。
-      await enqueueCardMutation({
-        card_id: cardId,
+      await enqueueEntityMutation({
+        entity_type: 'card',
+        entity_id: cardId,
         op: 'create',
         patch: {
           exam_id: examId,
@@ -158,7 +159,7 @@ export function InlineCardList({
       })
 
       // 即時 drain で create を sync し、 pull-back で card_count を確定収束させる。
-      void runGuardedCardMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush().catch(() => {})
     })()
   }
 

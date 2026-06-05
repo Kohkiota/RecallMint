@@ -5,9 +5,9 @@
 // Stage 4 (Task 4.2) で **local-first 書込**に cutover:
 // blur (commit) で即時に
 //   1. mirror 直書き  : getClientDb().cards.update(cardId, { [field]: value })
-//   2. outbox enqueue : enqueueCardMutation({ op: 'update_field', patch: { field, value } })
+//   2. outbox enqueue : enqueueEntityMutation({ entity_type: 'card', op: 'update_field', patch: { field, value } })
 // を実行し (= 楽観反映は Dexie cards mirror が単一の真実 source)、 server への
-// 実 drain は 500ms debounce 後に runGuardedCardMutationFlush() を 1 回叩くだけにする
+// 実 drain は 500ms debounce 後に runGuardedEntityMutationFlush() を 1 回叩くだけにする
 // (送信遅延ではなく drain trigger の debounce)。 display は親 (InlineCardList) の
 // useLiveQuery が mirror から返す値が initialValue として降りてくるため、 component 側で
 // committedValue を二重に持たない。
@@ -31,8 +31,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
-import { enqueueCardMutation } from '@/lib/sync/card-mutations'
-import { runGuardedCardMutationFlush } from '@/lib/sync/card-mutation-flush'
+import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 
 // sort_key / title / question_text / explanation_text / memo は ClientCard の
@@ -126,7 +126,7 @@ export function InlineTextField({
   // unmount で timer clear (StrictMode 二重 effect でも単純な timer cleanup のみ)。
   // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の drain は
   // 発火しないが、 enqueue は Dexie に同期 persist 済みのため、 次の ambient trigger
-  // (pagehide best-effort / visibilitychange / 次回 mount = Stage2 card-mutation-flush-trigger)
+  // (pagehide best-effort / visibilitychange / 次回 mount = entity-mutation-flush-trigger)
   // で drain される。 ここでの取りこぼしは lost-write ではない。
   useEffect(() => {
     return () => {
@@ -162,8 +162,9 @@ export function InlineTextField({
           err: String(err),
         })
       })
-    void enqueueCardMutation({
-      card_id: cardId,
+    void enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: cardId,
       op: 'update_field',
       patch: { field, value: target },
     }).catch((err) => {
@@ -185,7 +186,7 @@ export function InlineTextField({
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedCardMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush().catch(() => {})
     }, DEBOUNCE_MS)
   }
 

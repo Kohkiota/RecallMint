@@ -7,8 +7,10 @@
 //
 // 呼び出し元 (server action wrapper / bulk API) が executor を用意して渡す。
 // 旧 server action は db.transaction の tx (create/delete) または db 直 (update_field)
-// を、bulk receiver (/api/card-mutations/bulk) は mutation ごとに張る per-mutation tx を
+// を、bulk receiver (/api/entity-mutations/bulk) は mutation ごとに張る per-mutation tx を
 // 渡す (bulk は 1 tx に複数 op を束ねず、mutation 間独立の per-mutation tx 構成)。
+// bulk receiver は registry (lib/sync/server/entity-mutation-registry.ts) 経由で
+// 本ファイルの applyCardX 群を card entry として呼ぶ。
 //
 // 制約: logic 不変。列・正規化・correct_answer_ids 再生成・
 // card_count 増減・tombstone onConflictDoNothing を一字一句保つ。

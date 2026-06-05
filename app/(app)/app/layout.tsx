@@ -4,7 +4,7 @@ import { AppHeader } from './_components/app-header'
 import { BFCacheGuard } from './_components/bfcache-guard'
 import { PullTrigger } from './_components/pull-trigger'
 import { ReviewFlushTrigger } from './_components/review-flush-trigger'
-import { CardMutationFlushTrigger } from './_components/card-mutation-flush-trigger'
+import { EntityMutationFlushTrigger } from './_components/entity-mutation-flush-trigger'
 import { ExamStatusProvider } from './_components/exam-status-live'
 import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 
@@ -62,12 +62,13 @@ export default async function AppLayout({
             フォーカス復帰 / 再接続時に回復 flush する (Web Locks 多タブ排他 + transient
             backoff retry + 24h drop は controller 側)。 UI なし、 失敗 silent。 */}
         <ReviewFlushTrigger />
-        {/* card-mutation push の保全 trigger。 inline 編集後の未送信 pending を mount /
-            フォーカス復帰 / 再接続 / pagehide 時に回復 flush する。
-            ReviewFlushTrigger と同 controller (createReviewFlushController) を
-            deps 注入で card-mutation 用に再利用 (review-flush.ts 無変更)。
-            UI なし、 失敗 silent。 */}
-        <CardMutationFlushTrigger />
+        {/* entity-mutation push の保全 trigger (S-sync-1 で旧 card-mutation-flush-trigger を
+            汎用化、 配線は不変)。 inline 編集後の未送信 pending を mount / フォーカス復帰 /
+            再接続 / pagehide 時に回復 flush する。 ReviewFlushTrigger と同 controller
+            (createReviewFlushController) を deps 注入で entity-mutation 用に再利用
+            (review-flush.ts 無変更)。 全 entity_type の pending を 1 回の汎用 flush で
+            送信する (entity 別 trigger は持たない)。 UI なし、 失敗 silent。 */}
+        <EntityMutationFlushTrigger />
         <AppHeader />
         <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-8">
           {children}
