@@ -9,9 +9,10 @@
 // を実行し、 server への実 drain は 500ms debounce 後に runGuardedEntityMutationFlush()
 // を 1 回叩く (送信遅延ではなく drain trigger の debounce)。
 // `value` は bulk endpoint の update_field/options が期待する camelCase ZodOption[]
-// (= buildSetClause の optionsSchema が受ける形)。 `correct_answer_ids` は mirror に
-// 楽観反映するためだけに client 側で is_correct から derive し、 server には送らない
-// (server が再生成、 Stage1 踏襲)。
+// (= lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS.options handler 内の
+// optionsSchema が受ける形)。 `correct_answer_ids` は mirror に楽観反映するためだけ
+// に client 側で is_correct から derive し、 server には送らない (server が
+// CARD_FIELD_HANDLERS.options handler 内で is_correct から再生成、 Stage1 踏襲)。
 //
 // 構造:
 // - `InlineOptionList` (export): card 単位の親。 options working-set state (ghost row
@@ -47,7 +48,9 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 
 // snake_case CardOption → camelCase (bulk endpoint の optionsSchema が期待する形)。
-// server 側 buildSetClause が camelCase → snake_case に戻す。
+// server 側 lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS.options
+// handler が camelCase → snake_case に戻す (handler 内で is_correct / explanation
+// jsonb 形に詰め直す)。
 type ZodOption = {
   id: string
   text: string

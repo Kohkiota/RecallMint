@@ -22,12 +22,10 @@
 import { z } from 'zod'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import {
-  buildSetClause,
-  applyCardFieldUpdate,
   applyCardDelete,
   applyCardCreateWithId,
-  type UpdateCardFieldName,
 } from '@/lib/cards/apply-card-mutation'
+import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
 import { optionSchema } from '@/lib/validation/card'
 import {
   applyTagCategoryCreate,
@@ -80,19 +78,15 @@ export type RegistryEntry = {
 // card entity — patch zod
 // ---------------------------------------------------------------------------
 
-// update_field の patch: { field: UpdateCardFieldName, value: unknown }
-// field allowlist は buildSetClause 側 (apply-card-mutation.ts) と二重定義になっている
-// が、 drift を避けるため値の制約 (titleSchema 等) は buildSetClause 内に閉じ込め、
-// ここでは field の許容名のみ enum 化する。
+// update_field の patch envelope: { field: string, value: unknown }
+//
+// field allowlist は CARD_FIELD_HANDLERS (card-field-handlers.ts) の map key で
+// 自然に決まる。 ここで enum 固定すると新 field 追加時に 2 箇所書換になるため、
+// envelope は `field: z.string().min(1)` まで緩和し、 未知 field は dispatch 段
+// (`if (!handler) return 'failed'`) で per-mutation failed として弾く。
+// 値の内容検証は各 handler 内に閉じる (drift 防止)。
 const cardUpdateFieldPatchSchema = z.object({
-  field: z.enum([
-    'title',
-    'sort_key',
-    'question_text',
-    'explanation_text',
-    'memo',
-    'options',
-  ]),
+  field: z.string().min(1),
   value: z.unknown(),
 })
 
@@ -127,7 +121,7 @@ const cardCreatePatchSchema = z.object({
 // delete の patch: 不要 (空 object 許容)
 const cardDeletePatchSchema = z.record(z.string(), z.unknown())
 
-// buildSetClause (UPDATE path) と同じ正規化: '' → null。
+// card-field-handlers の text 列正規化と同じ: '' → null。
 // client が '' を送ると create と update で挙動が乖離するため揃える。
 const emptyToNull = (v: string | null | undefined): string | null =>
   v === '' ? null : (v ?? null)
@@ -137,20 +131,17 @@ const emptyToNull = (v: string | null | undefined): string | null =>
 // ---------------------------------------------------------------------------
 
 const applyCardUpdateField: EntityApplyFn = async (tx, userId, entityId, patch) => {
-  // registry は zod 通過後の patch を受け取るが、 型は unknown のまま渡されるので
-  // ここで再度 cast する (実 validation は registry の patch schema で実施済)。
-  const { field, value } = patch as { field: UpdateCardFieldName; value: unknown }
-  const clauseResult = buildSetClause(field, value)
-  if (!clauseResult.ok) {
-    // buildSetClause の validation 失敗 (値の内容不正) → per-mutation failed
+  // envelope zod 通過後の field/value。 envelope は `field: z.string().min(1)` まで
+  // 緩和してあり、 未知 field はここで dispatch lookup 失敗 → 'failed' で弾く
+  // (旧 enum 早期 reject の代替 gate)。
+  const { field, value } = patch as { field: string; value: unknown }
+  const handler = (CARD_FIELD_HANDLERS as Record<string, typeof CARD_FIELD_HANDLERS.title | undefined>)[field]
+  if (!handler) {
     return 'failed'
   }
-  const result = await applyCardFieldUpdate(tx, entityId, userId, clauseResult.data)
-  if (!result.found) {
-    // orphan / owner mismatch → 0 row
-    return 'failed'
-  }
-  return 'applied'
+  // 値検証 (zod) + 正規化 + cards owner-scoped UPDATE は handler に閉じ込め。
+  // 戻り値 'applied' | 'failed' をそのまま registry へ流す。
+  return await handler(tx, entityId, userId, value)
 }
 
 const applyCardCreate: EntityApplyFn = async (tx, userId, entityId, patch) => {

@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SQL } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 
-// apply-card-mutation.ts の純関数 (applyCardFieldUpdate / applyCardCreateWithId /
-// applyCardDelete + buildSetClause) の unit test。
+// apply-card-mutation.ts の純関数 (applyCardCreateWithId / applyCardDelete) の unit test。
+//
+// 旧 buildSetClause / applyCardFieldUpdate のテストは Tag-2a で
+// card-field-handlers.test.ts に同値移植され、 本ファイルからは撤去済。
 //
 // tx はモックオブジェクトとして渡す。 実 DB / 実 API は使わない。
 // owner-scope: cardId + userId / examId + userId が全 WHERE に含まれることを
@@ -57,109 +59,6 @@ async function eqSignature() {
     return [tableName, col.name, val] as [string, string, unknown]
   })
 }
-
-// ---------------------------------------------------------------------------
-// applyCardFieldUpdate
-// ---------------------------------------------------------------------------
-
-describe('applyCardFieldUpdate', () => {
-  // in-memory state for the mock tx
-  const txState = {
-    updateTable: null as unknown,
-    setArg: null as Record<string, unknown> | null,
-    whereArgs: [] as unknown[][],
-    returningRows: [] as Record<string, unknown>[],
-    throwOnReturning: false,
-  }
-
-  function makeTx() {
-    const obj: Record<string, unknown> = {}
-    obj.update = (table: unknown) => {
-      txState.updateTable = table
-      const chain: Record<string, unknown> = {}
-      chain.set = (arg: Record<string, unknown>) => {
-        txState.setArg = arg
-        return chain
-      }
-      chain.where = (...args: unknown[]) => {
-        txState.whereArgs.push(args)
-        return chain
-      }
-      chain.returning = () => {
-        if (txState.throwOnReturning) {
-          return Promise.reject(new Error('tx boom'))
-        }
-        return Promise.resolve(txState.returningRows)
-      }
-      return chain
-    }
-    return obj as Parameters<
-      typeof import('./apply-card-mutation').applyCardFieldUpdate
-    >[0]
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    txState.updateTable = null
-    txState.setArg = null
-    txState.whereArgs = []
-    txState.returningRows = [{ examId: 'exam-1' }]
-    txState.throwOnReturning = false
-  })
-
-  it('card が存在する場合 { found: true, examId } を返す', async () => {
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    const result = await applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', {
-      title: '問1',
-    })
-    expect(result).toEqual({ found: true, examId: 'exam-1' })
-  })
-
-  it('0 rows (カード不在 / 他 user) → { found: false }', async () => {
-    txState.returningRows = []
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    const result = await applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', {
-      title: '問1',
-    })
-    expect(result).toEqual({ found: false })
-  })
-
-  it('cards テーブルを UPDATE する', async () => {
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    await applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', { title: '問1' })
-    expect(getTableName(txState.updateTable as never)).toBe('cards')
-  })
-
-  it('setData が set() に渡され updatedAt: sql`now()` が付加される', async () => {
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    await applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', {
-      title: '問1',
-      sortKey: 'Q-01',
-    })
-    expect(txState.setArg).toMatchObject({ title: '問1', sortKey: 'Q-01' })
-    // updatedAt は SQL 式 now()
-    const updatedAt = txState.setArg?.updatedAt
-    expect(updatedAt).toBeInstanceOf(SQL)
-    const rendered = new PgDialect().sqlToQuery(updatedAt as SQL).sql
-    expect(rendered).toContain('now()')
-  })
-
-  it('owner-scope: WHERE に eq(cards.id, cardId) と eq(cards.userId, userId) が含まれる', async () => {
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    await applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', { title: '問1' })
-    const sig = await eqSignature()
-    expect(sig).toContainEqual(['cards', 'id', 'card-1'])
-    expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
-  })
-
-  it('tx.update が throw した場合は例外を再 throw する (wrapper 側で catch)', async () => {
-    txState.throwOnReturning = true
-    const { applyCardFieldUpdate } = await import('./apply-card-mutation')
-    await expect(
-      applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', { title: '問1' }),
-    ).rejects.toThrow('tx boom')
-  })
-})
 
 // ---------------------------------------------------------------------------
 // applyCardDelete
@@ -515,61 +414,6 @@ describe('applyCardCreateWithId', () => {
       ([table, col, val]) => table === 'exams' && col === 'id' && val === 'exam-1',
     )
     expect(examsIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
-  })
-})
-
-// ---------------------------------------------------------------------------
-// buildSetClause (export 確認 + 代表ケース)
-// ---------------------------------------------------------------------------
-
-describe('buildSetClause', () => {
-  it('export されている', async () => {
-    const mod = await import('./apply-card-mutation')
-    expect(typeof mod.buildSetClause).toBe('function')
-  })
-
-  it('title: 正常', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('title', '問1')
-    expect(r).toEqual({ ok: true, data: { title: '問1' } })
-  })
-
-  it('title: trim 適用', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('title', '  問1  ')
-    expect(r.ok).toBe(true)
-    if (r.ok) expect(r.data.title).toBe('問1')
-  })
-
-  it('title: 空文字 → { ok: false }', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('title', '')
-    expect(r.ok).toBe(false)
-  })
-
-  it('sort_key: 空文字 → null に正規化', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('sort_key', '')
-    expect(r.ok).toBe(true)
-    if (r.ok) expect(r.data.sortKey).toBeNull()
-  })
-
-  it('options: is_correct から correctAnswerIds を再生成する', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('options', [
-      { id: 'a', text: 'A', isCorrect: true },
-      { id: 'b', text: 'B', isCorrect: false },
-    ])
-    expect(r.ok).toBe(true)
-    if (r.ok) {
-      expect(r.data.correctAnswerIds).toEqual(['a'])
-    }
-  })
-
-  it('unknown field → { ok: false } (defensive)', async () => {
-    const { buildSetClause } = await import('./apply-card-mutation')
-    const r = buildSetClause('no_such_field' as 'title', 'x')
-    expect(r.ok).toBe(false)
   })
 })
 

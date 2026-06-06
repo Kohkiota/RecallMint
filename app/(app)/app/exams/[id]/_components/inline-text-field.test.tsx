@@ -297,7 +297,8 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
       const row = await getClientDb().cards.get(CARD_ID)
       expect(row?.memo).toBeNull()
     })
-    // enqueue には raw '' が渡る (server 側 buildSetClause が '' → null 正規化する)。
+    // enqueue には raw '' が渡る (server 側 CARD_FIELD_HANDLERS[field] handler が
+    // '' → null 正規化する。 lib/cards/card-field-handlers.ts 参照)。
     expect(mockEnqueue).toHaveBeenCalledWith({
       entity_type: 'card', entity_id: CARD_ID,
       op: 'update_field',

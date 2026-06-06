@@ -7,6 +7,12 @@
 // 現状 registry に登録されている entity_type は 'card' のみで、 既存テストの挙動
 // (update_field / create / delete + 冪等 + 部分失敗 + log INSERT) を完全に維持する。
 //
+// Tag-2a Task 2: update_field op は registry → CARD_FIELD_HANDLERS[field] の
+// dispatch 経路に変わったため、 mock 対象を旧 `buildSetClause` /
+// `applyCardFieldUpdate` から `CARD_FIELD_HANDLERS` 内の各 handler 関数に差し替える。
+// envelope は `field: z.string().min(1)` まで緩和されており、 未知 field は
+// dispatch 段で 'failed' になる (新 gate)。
+//
 // 既存 review-events/bulk/route.test.ts の流儀に揃える:
 //   - vi.hoisted() で state object を共有
 //   - vi.mock() で getCurrentUser / getDb / logger をモック
@@ -31,14 +37,18 @@ const { state } = vi.hoisted(() => ({
     // onConflictDoNothing に渡された target 記録
     mutationInsertConflictTarget: null as null | unknown,
 
-    // applyCardFieldUpdate の mock (lib/cards/apply-card-mutation をモック)
-    // entity_id (=card_id) → found:true / false を制御
-    cardFieldUpdateResults: new Map<string, boolean>(),
+    // CARD_FIELD_HANDLERS の handler 呼出記録 (registry dispatch 経路の検証用)。
+    // 旧 applyCardFieldUpdate の (cardId, userId, setData) 観測点の代替として、
+    // (cardId, userId, field, value) を保存する。
     cardFieldUpdateCalls: [] as Array<{
       cardId: string
       userId: string
-      setData: Record<string, unknown>
+      field: string
+      value: unknown
     }>,
+    // 個別 cardId で handler の戻り値を 'failed' に倒すための制御 (orphan / owner mismatch
+    // の擬似)。 未設定 cardId は default 'applied'。
+    cardFieldUpdateResults: new Map<string, 'applied' | 'failed'>(),
 
     // applyCardDelete の呼出記録
     cardDeleteCalls: [] as Array<{ cardId: string; userId: string }>,
@@ -52,13 +62,6 @@ const { state } = vi.hoisted(() => ({
       userId: string
       input: Record<string, unknown>
     }>,
-
-    // buildSetClause の mock 制御
-    buildSetClauseResults: new Map<
-      string,
-      { ok: true; data: Record<string, unknown> } | { ok: false; error: string }
-    >(),
-    buildSetClauseCalls: [] as Array<{ field: string; value: unknown }>,
 
     // tx を throw させるフラグ
     txShouldThrow: false,
@@ -84,29 +87,35 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
-// apply-card-mutation を mock (純関数の validation ロジックを test に引き込まない)。
-// registry は apply-card-mutation の関数を直接呼ぶため、 ここを mock すれば
-// registry の dispatch 経路も含めて検証できる。
-vi.mock('@/lib/cards/apply-card-mutation', () => ({
-  buildSetClause: vi.fn((field: string, value: unknown) => {
-    state.buildSetClauseCalls.push({ field, value })
-    const result = state.buildSetClauseResults.get(field)
-    if (result !== undefined) return result
-    // default: ok=true、 setData は { [field]: value }
-    return { ok: true, data: { [field]: value } }
-  }),
-  applyCardFieldUpdate: vi.fn(
-    async (
-      _tx: unknown,
-      cardId: string,
-      userId: string,
-      setData: Record<string, unknown>,
-    ) => {
-      state.cardFieldUpdateCalls.push({ cardId, userId, setData })
-      const found = state.cardFieldUpdateResults.get(cardId) ?? true
-      return { found, examId: 'exam-id-stub' }
+// card-field-handlers を mock。
+// registry (entity-mutation-registry.ts) は `CARD_FIELD_HANDLERS[field]` を引いて
+// 直接呼ぶため、 ここを spy 化すれば update_field の registry dispatch 経路を含めて
+// 検証できる (純関数の値検証 zod を test に引き込まない)。
+//
+// 各 handler は default 'applied'、 cardFieldUpdateResults map で個別 cardId を
+// 'failed' に倒せる。 呼出は cardFieldUpdateCalls に積む。
+vi.mock('@/lib/cards/card-field-handlers', () => {
+  const makeHandler = (field: string) =>
+    vi.fn(async (_tx: unknown, cardId: string, userId: string, value: unknown) => {
+      state.cardFieldUpdateCalls.push({ cardId, userId, field, value })
+      return state.cardFieldUpdateResults.get(cardId) ?? 'applied'
+    })
+  return {
+    CARD_FIELD_HANDLERS: {
+      title: makeHandler('title'),
+      sort_key: makeHandler('sort_key'),
+      question_text: makeHandler('question_text'),
+      explanation_text: makeHandler('explanation_text'),
+      memo: makeHandler('memo'),
+      options: makeHandler('options'),
     },
-  ),
+  }
+})
+
+// apply-card-mutation は create / delete 経路のみ mock。
+// (Tag-2a Task 1 で buildSetClause / applyCardFieldUpdate は撤去済み、
+// update_field 経路は CARD_FIELD_HANDLERS 経由で別 module 化された。)
+vi.mock('@/lib/cards/apply-card-mutation', () => ({
   applyCardDelete: vi.fn(async (_tx: unknown, cardId: string, userId: string) => {
     state.cardDeleteCalls.push({ cardId, userId })
   }),
@@ -223,6 +232,7 @@ const fakeDb = {
 // ---------------------------------------------------------------------------
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { entityMutations } from '@/lib/db/schema'
+import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
 import { POST } from './route'
 
 const FAKE_USER = { id: '11111111-1111-4111-a111-111111111111' } as unknown as User
@@ -314,15 +324,18 @@ beforeEach(() => {
   state.existingMutationIds = new Set()
   state.mutationInsertValues = null
   state.mutationInsertConflictTarget = null
-  state.cardFieldUpdateResults = new Map()
   state.cardFieldUpdateCalls = []
+  state.cardFieldUpdateResults = new Map()
   state.cardDeleteCalls = []
   state.cardCreateResults = new Map()
   state.cardCreateCalls = []
-  state.buildSetClauseResults = new Map()
-  state.buildSetClauseCalls = []
   state.txShouldThrow = false
   state.loggerWarnCalls = []
+  // CARD_FIELD_HANDLERS の各 spy も reset (vi.clearAllMocks は mock factory 内の
+  // vi.fn() もクリアするが、 後で mockImplementationOnce 等を上書きした場合に備える)。
+  for (const handler of Object.values(CARD_FIELD_HANDLERS)) {
+    vi.mocked(handler).mockClear()
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -516,7 +529,7 @@ describe('POST /api/entity-mutations/bulk', () => {
 
   // --- update_field op ---
 
-  it('update_field 正常系: buildSetClause → applyCardFieldUpdate → log INSERT + applied:1', async () => {
+  it('update_field 正常系: handler dispatch → applied → log INSERT + applied:1', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation({ field: 'title', value: 'Hello' })] }))
     expect(res.status).toBe(200)
@@ -525,13 +538,18 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(body.applied).toBe(1)
     expect(body.failed).toHaveLength(0)
 
-    expect(state.buildSetClauseCalls).toHaveLength(1)
-    expect(state.buildSetClauseCalls[0]).toMatchObject({ field: 'title', value: 'Hello' })
+    // registry dispatch: CARD_FIELD_HANDLERS.title が呼ばれた
+    expect(vi.mocked(CARD_FIELD_HANDLERS.title)).toHaveBeenCalledTimes(1)
+    // 他 field の handler は呼ばれていない
+    expect(vi.mocked(CARD_FIELD_HANDLERS.sort_key)).not.toHaveBeenCalled()
+    expect(vi.mocked(CARD_FIELD_HANDLERS.options)).not.toHaveBeenCalled()
 
     expect(state.cardFieldUpdateCalls).toHaveLength(1)
     expect(state.cardFieldUpdateCalls[0]).toMatchObject({
       cardId: VALID_CARD_ID,
       userId: FAKE_USER.id,
+      field: 'title',
+      value: 'Hello',
     })
 
     expect(state.mutationInsertValues).not.toBeNull()
@@ -544,9 +562,10 @@ describe('POST /api/entity-mutations/bulk', () => {
     })
   })
 
-  it('update_field: buildSetClause 失敗 → failed[]、 applyCardFieldUpdate は呼ばれない', async () => {
+  it("update_field: handler が 'failed' 返却 (値検証失敗の擬似) → failed[]、 log INSERT なし", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.buildSetClauseResults.set('title', { ok: false, error: '検証エラー' })
+    // title handler を 1 回だけ 'failed' に倒す (= zod safeParse 失敗を擬似)。
+    vi.mocked(CARD_FIELD_HANDLERS.title).mockResolvedValueOnce('failed')
 
     const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation({ field: 'title', value: '' })] }))
     expect(res.status).toBe(200)
@@ -554,11 +573,13 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
 
-    expect(state.cardFieldUpdateCalls).toHaveLength(0)
+    // handler は呼ばれた (dispatch は成功、 'failed' で返した)
+    expect(vi.mocked(CARD_FIELD_HANDLERS.title)).toHaveBeenCalledTimes(1)
+    // log INSERT は走らない
     expect(state.mutationInsertValues).toBeNull()
   })
 
-  it('update_field: patch.field が未指定 → failed[]', async () => {
+  it('update_field: patch.field が未指定 → envelope zod で失敗 → failed[]', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const mutation = {
       mutation_id: VALID_MUTATION_ID,
@@ -573,11 +594,16 @@ describe('POST /api/entity-mutations/bulk', () => {
     const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
+    // どの handler も呼ばれない
+    for (const handler of Object.values(CARD_FIELD_HANDLERS)) {
+      expect(vi.mocked(handler)).not.toHaveBeenCalled()
+    }
   })
 
-  it('update_field: orphan card (applyCardFieldUpdate found:false) → failed[]', async () => {
+  it("update_field: orphan card (handler 'failed' 返却) → failed[]、 log INSERT なし", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.cardFieldUpdateResults.set(VALID_CARD_ID, false)
+    // 該当 cardId のみ 'failed' を返す (= owner-scoped UPDATE で 0 row return の擬似)
+    state.cardFieldUpdateResults.set(VALID_CARD_ID, 'failed')
 
     const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
     expect(res.status).toBe(200)
@@ -585,6 +611,28 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(body.applied).toBe(0)
     expect(body.failed).toContain(VALID_MUTATION_ID)
 
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
+  it('update_field: 未知 field 名 → dispatch 段で per-mutation failed (handler 呼ばれず log INSERT なし)', async () => {
+    // Tag-2a の envelope 緩和: `field: z.string().min(1)` のため、 未知 field 名は
+    // envelope zod では弾けない。 代わりに registry の applyCardUpdateField が
+    // CARD_FIELD_HANDLERS[field] を lookup し、 未登録なら 'failed' を返す
+    // (旧 enum 早期 reject の代替 gate)。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const mutation = makeUpdateFieldMutation({ field: 'no_such_field', value: 'x' })
+
+    const res = await POST(makeReq({ mutations: [mutation] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+
+    // どの handler も呼ばれていない (dispatch lookup 失敗で即 failed)
+    for (const handler of Object.values(CARD_FIELD_HANDLERS)) {
+      expect(vi.mocked(handler)).not.toHaveBeenCalled()
+    }
+    // log INSERT も走らない (applied 扱いではないため)
     expect(state.mutationInsertValues).toBeNull()
   })
 
@@ -738,24 +786,6 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(state.mutationInsertValues).not.toBeNull()
   })
 
-  it('update_field の per-op patch 検証: field が不正値 → per-mutation failed[]', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    const badMutation = {
-      mutation_id: VALID_MUTATION_ID,
-      entity_type: 'card',
-      entity_id: VALID_CARD_ID,
-      op: 'update_field',
-      patch: { field: 'not_a_valid_field', value: 'x' },
-      edited_at: '2026-05-30T10:00:00.000Z',
-    }
-    const res = await POST(makeReq({ mutations: [badMutation] }))
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
-    expect(body.applied).toBe(0)
-    expect(body.failed).toContain(VALID_MUTATION_ID)
-    expect(state.cardFieldUpdateCalls).toHaveLength(0)
-  })
-
   // --- 複数 mutations の独立処理 ---
 
   it('複数 mutations: update_field + delete が個別に処理される', async () => {
@@ -778,7 +808,7 @@ describe('POST /api/entity-mutations/bulk', () => {
 
   it('複数 mutations: 一部 failed でも他は applied、 200 で返す (部分失敗)', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.cardFieldUpdateResults.set(VALID_CARD_ID, false)
+    state.cardFieldUpdateResults.set(VALID_CARD_ID, 'failed')
 
     const mutations = [
       makeUpdateFieldMutation({ mutation_id: VALID_MUTATION_ID, entity_id: VALID_CARD_ID }),
@@ -822,13 +852,12 @@ describe('POST /api/entity-mutations/bulk', () => {
 
   it('tx throw が 1 件: 他の mutations は引き続き処理される', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    const { applyCardFieldUpdate } = await import('@/lib/cards/apply-card-mutation')
-    let callCount = 0
-    vi.mocked(applyCardFieldUpdate).mockImplementation(async (_tx, cardId, userId, setData) => {
-      state.cardFieldUpdateCalls.push({ cardId, userId, setData })
-      callCount++
-      if (callCount === 1) throw new Error('first call throws')
-      return { found: true, examId: 'exam-id-stub' }
+    // title handler の 1 回目だけ throw、 2 回目以降は factory 既定 (return 'applied')。
+    // mockImplementationOnce のみ使うことで、 本 test 終了後に implementation が
+    // 永続的に上書きされる問題を避ける (clearAllMocks は mockImplementation を
+    // クリアしないため)。
+    vi.mocked(CARD_FIELD_HANDLERS.title).mockImplementationOnce(async () => {
+      throw new Error('first call throws')
     })
 
     const mutations = [

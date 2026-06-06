@@ -60,8 +60,10 @@ type InlineTextFieldProps = {
 
 const DEBOUNCE_MS = 500
 
-// server (buildSetClause) が '' → null に正規化する nullable text 列。 mirror も
-// 同じ正規化をかけ、 楽観値を server 確定値に一致させる (pull-back での見た目反転防止)。
+// server (lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS[field] handler、
+// 具体的には sort_key / explanation_text / memo の各 handler 内で '' → null 正規化)
+// が空文字を null に揃える nullable text 列。 mirror も同じ正規化をかけ、 楽観値を
+// server 確定値に一致させる (pull-back での見た目反転防止)。
 const NULLABLE_FIELDS: ReadonlySet<InlineTextFieldName> = new Set([
   'sort_key',
   'explanation_text',
@@ -144,7 +146,9 @@ export function InlineTextField({
     // 次回 pull で reconcile)。 logger に残すのみ。
     // field ∈ ClientCard の snake_case 列名に 1:1 対応するため Partial<ClientCard> で型付け。
     //
-    // なぜ正規化: nullable 列は server (buildSetClause) が '' → null に正規化するため、
+    // なぜ正規化: nullable 列は server (lib/cards/card-field-handlers.ts の
+    // CARD_FIELD_HANDLERS[field] handler、 sort_key / explanation_text / memo は
+    // handler 内で `r.data === '' ? null : r.data` 正規化) が '' を null に揃えるため、
     // mirror にも同じ規則を適用して楽観値を server 確定値に一致させる (一致させないと
     // 次の pull-back で '' → null へ見た目が反転する)。 server zod は trim しないので
     // ここも strict な === '' で揃える。 enqueue に渡す raw 値は変えない (server 側で
