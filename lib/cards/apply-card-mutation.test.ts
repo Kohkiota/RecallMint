@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SQL } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 
-// apply-card-mutation.ts の純関数 (applyCardFieldUpdate / applyCardCreate /
+// apply-card-mutation.ts の純関数 (applyCardFieldUpdate / applyCardCreateWithId /
 // applyCardDelete + buildSetClause) の unit test。
 //
 // tx はモックオブジェクトとして渡す。 実 DB / 実 API は使わない。
@@ -158,161 +158,6 @@ describe('applyCardFieldUpdate', () => {
     await expect(
       applyCardFieldUpdate(makeTx(), 'card-1', 'user-1', { title: '問1' }),
     ).rejects.toThrow('tx boom')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// applyCardCreate
-// ---------------------------------------------------------------------------
-
-describe('applyCardCreate', () => {
-  const store = {
-    exams: [] as { id: string; userId: string; cardCount: number }[],
-    cards: [] as Record<string, unknown>[],
-  }
-  const ctl = {
-    insertedValues: null as Record<string, unknown> | null,
-    nextCardId: 'card-new-1',
-  }
-
-  function makeTx() {
-    const tx: Record<string, unknown> = {}
-
-    tx.select = (_cols?: Record<string, unknown>) => ({
-      from: (table: unknown) => ({
-        where: () => {
-          const name = getTableName(table as never)
-          if (name === getTableName(exams)) {
-            return Promise.resolve(
-              store.exams.map((e) => ({ id: e.id })),
-            )
-          }
-          // cards: sortKey のみ
-          return Promise.resolve(
-            store.cards.map((c) => ({ sortKey: c.sortKey })),
-          )
-        },
-      }),
-    })
-
-    tx.insert = () => ({
-      values: (vals: Record<string, unknown>) => {
-        ctl.insertedValues = vals
-        return {
-          returning: () => {
-            const id = ctl.nextCardId
-            store.cards.push({ id, ...vals })
-            return Promise.resolve([{ id }])
-          },
-        }
-      },
-    })
-
-    tx.update = () => ({
-      set: () => ({
-        where: () => {
-          for (const e of store.exams) e.cardCount += 1
-          return Promise.resolve(undefined)
-        },
-      }),
-    })
-
-    return tx as Parameters<
-      typeof import('./apply-card-mutation').applyCardCreate
-    >[0]
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    store.exams = [{ id: 'exam-1', userId: 'user-1', cardCount: 0 }]
-    store.cards = []
-    ctl.insertedValues = null
-    ctl.nextCardId = 'card-new-1'
-  })
-
-  it('正常: 新 cardId を返す', async () => {
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    const result = await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    expect(result).toBe('card-new-1')
-  })
-
-  it('exam 不在 → EXAM_NOT_FOUND sentinel を返す', async () => {
-    store.exams = []
-    const { applyCardCreate, EXAM_NOT_FOUND } = await import(
-      './apply-card-mutation'
-    )
-    const result = await applyCardCreate(makeTx(), 'exam-x', 'user-1')
-    expect(result).toBe(EXAM_NOT_FOUND)
-  })
-
-  it('INSERT 値に userId / examId / sourceDocumentId: null が含まれる', async () => {
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    const v = ctl.insertedValues!
-    expect(v.userId).toBe('user-1')
-    expect(v.examId).toBe('exam-1')
-    expect(v.sourceDocumentId).toBeNull()
-  })
-
-  it('INSERT 値は placeholder: title/questionText 非空、 option 1 件以上、 correctAnswerIds=[]', async () => {
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    const v = ctl.insertedValues!
-    expect(typeof v.title).toBe('string')
-    expect((v.title as string).length).toBeGreaterThan(0)
-    expect((v.questionText as string).trim().length).toBeGreaterThan(0)
-    expect(Array.isArray(v.options)).toBe(true)
-    expect((v.options as unknown[]).length).toBeGreaterThanOrEqual(1)
-    expect(v.correctAnswerIds).toEqual([])
-  })
-
-  it('Tag-1 regression: INSERT 値に custom_props / customProps / tags キーを含めない', async () => {
-    // migration 0020 で cards.custom_props / cards.tags は DROP 済。
-    // re-introduction (placeholder の spread や buildEmptyCard の戻り値拡張) で
-    // 「列が存在しない」 で PG が reject するのを防ぐ regression gate。
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    const keys = Object.keys(ctl.insertedValues!)
-    expect(keys).not.toContain('customProps')
-    expect(keys).not.toContain('custom_props')
-    expect(keys).not.toContain('tags')
-  })
-
-  it('同一 tx で card_count += 1 される', async () => {
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    expect(store.exams[0]!.cardCount).toBe(1)
-    expect(store.cards.length).toBe(1)
-    // card_count === 実 card 件数 (spec §3.6 integrity)
-    expect(store.exams[0]!.cardCount).toBe(store.cards.length)
-  })
-
-  it('sortKey は既存 cards の末尾連番', async () => {
-    store.cards = [
-      { id: 'c1', sortKey: '1' },
-      { id: 'c2', sortKey: '2' },
-    ]
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    expect(ctl.insertedValues!.sortKey).toBe('3')
-  })
-
-  it('owner-scope: WHERE に eq(exams.id, examId) / eq(exams.userId, userId) / eq(cards.examId, examId) / eq(cards.userId, userId) が含まれる', async () => {
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-1', 'user-1')
-    const sig = await eqSignature()
-    expect(sig).toContainEqual(['exams', 'id', 'exam-1'])
-    expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
-    expect(sig).toContainEqual(['cards', 'exam_id', 'exam-1'])
-    expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
-  })
-
-  it('exam 不在時は card INSERT も card_count 更新も行われない', async () => {
-    store.exams = []
-    const { applyCardCreate } = await import('./apply-card-mutation')
-    await applyCardCreate(makeTx(), 'exam-x', 'user-1')
-    expect(store.cards.length).toBe(0)
-    expect(ctl.insertedValues).toBeNull()
   })
 })
 
@@ -728,15 +573,3 @@ describe('buildSetClause', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// UpdateCardFieldName: 型エクスポート確認 (実行時 check は不要、 型引数として利用)
-// ---------------------------------------------------------------------------
-
-describe('UpdateCardFieldName export', () => {
-  it('apply-card-mutation から UpdateCardFieldName が型 export されている', async () => {
-    // import して module に存在確認 (型なので実行時 check は不可; ここでは module load 確認のみ)
-    const mod = await import('./apply-card-mutation')
-    // EXAM_NOT_FOUND Symbol も export されている
-    expect(typeof mod.EXAM_NOT_FOUND).toBe('symbol')
-  })
-})

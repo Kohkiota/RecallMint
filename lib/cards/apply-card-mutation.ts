@@ -18,7 +18,6 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { cards, exams, tombstones, type CardOption } from '@/lib/db/schema'
-import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { optionSchema } from '@/lib/validation/card'
 import type { DB } from '@/lib/db'
 
@@ -172,65 +171,6 @@ export async function applyCardFieldUpdate(
   const row = updated[0]
   if (!row) return { found: false }
   return { found: true, examId: row.examId }
-}
-
-// ---------------------------------------------------------------------------
-// applyCardCreate
-// ---------------------------------------------------------------------------
-
-// tx 内で exam 不在 / 他 user を検出して呼び出し元に知らせる sentinel。
-// createCard server action が「試験が見つかりません」を返すために必要。
-export const EXAM_NOT_FOUND = Symbol('exam-not-found')
-export type ExamNotFound = typeof EXAM_NOT_FOUND
-
-/**
- * owner-scoped で placeholder card を INSERT し、同一 tx で exams.card_count += 1。
- * exam 不在 / 他 user の場合は EXAM_NOT_FOUND sentinel を返す (rollback させる)。
- * 返り値は新 cardId または EXAM_NOT_FOUND。
- *
- * spec §3.6: insert と increment を同一 tx に閉じることが件数整合の唯一の保証。
- */
-export async function applyCardCreate(
-  tx: DbExecutor,
-  examId: string,
-  userId: string,
-): Promise<string | ExamNotFound> {
-  // 1. exam owner 確認 (0 rows → sentinel return で card insert させず rollback)
-  const ownerRows = await tx
-    .select({ id: exams.id })
-    .from(exams)
-    .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
-  if (ownerRows.length === 0) return EXAM_NOT_FOUND
-
-  // 2. 既存 card の sortKey 集合と件数を取得 (placeholder 採番用)
-  const existing = await tx
-    .select({ sortKey: cards.sortKey })
-    .from(cards)
-    .where(and(eq(cards.examId, examId), eq(cards.userId, userId)))
-  const existingSortKeys = existing.map((r) => r.sortKey)
-  const existingCount = existing.length
-
-  // 3. placeholder 値生成 (title/sortKey/questionText/options/correctAnswerIds)
-  const placeholder = buildEmptyCard(existingSortKeys, existingCount)
-
-  // 4. card INSERT (FSRS + due は schema default、 ここでは set しない)
-  const inserted = await tx
-    .insert(cards)
-    .values({ userId, examId, sourceDocumentId: null, ...placeholder })
-    .returning({ id: cards.id })
-
-  // 5. 同一 tx で card_count += 1 (整合保証の核心)
-  // updatedAt は card 増減で動かさない (試験一覧の updatedAt DESC 順を乱さない、
-  // process.ts B1 と同方針)。
-  await tx
-    .update(exams)
-    .set({
-      cardCount: sql`${exams.cardCount} + 1`,
-      updatedAt: sql`${exams.updatedAt}`,
-    })
-    .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
-
-  return inserted[0].id
 }
 
 // ---------------------------------------------------------------------------
