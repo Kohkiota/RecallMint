@@ -10,7 +10,7 @@ Tag-4 を 4a/4b/4c/4d に分割した最初の sprint で、 ライト案を採�
 
 ### In scope (Tag-4a)
 - 独立 page `/app/tags` + nav 5 番目に「タグ」 link 追加 (`prefetch={false}`)
-- 左 1/3 カテゴリリスト + 右 2/3 option リスト の 2 column (`shadcn ResizablePanel`)、 mobile (< md) は タブ切替に fallback
+- 左 1/3 カテゴリリスト + 右 2/3 option リスト の 2 column (CSS grid `md:grid-cols-3` の `col-span-1` + `col-span-2`)、 mobile (< md) は `shadcn Tabs` 切替に fallback。 `react-resizable-panels` は導入せず (依存追加ゼロ方針)
 - カテゴリ: 追加 / リネーム (in-place) / 削除 (AlertDialog で影響範囲表示)、 `select_type` は作成時のみ選択 (immutable)
 - option: 追加 / リネーム (in-place) / 削除 (AlertDialog で影響範囲表示) / カラー変更 (pill クリック → palette popover) / カテゴリ間移動 (option の「カテゴリ変更」 ボタン → dropdown)
 - 固定 12 色 palette + 「色なし」 (= 13 selectable)
@@ -91,9 +91,10 @@ export const COLOR_NULL_CLASS = 'bg-slate-100 text-slate-700 border-slate-200'
 ## UI 仕様 (確定事項)
 
 ### 1. page レイアウト (1=A)
-- 左 1/3 カテゴリリスト + 右 2/3 option リスト、 `shadcn ResizablePanel` で境界線ドラッグ
-- mobile (< md breakpoint) は タブ切替 (カテゴリ / option の 1 active のみ表示)
-- カテゴリ row クリックで「active」 状態 → 右 panel に該当カテゴリ配下の option リスト切替
+- 左 1/3 カテゴリリスト + 右 2/3 option リスト (CSS grid `md:grid-cols-3` の `col-span-1` + `col-span-2`)。 境界線ドラッグなし (固定幅、 MVP として十分)
+- mobile (< md breakpoint) は `shadcn Tabs` で「カテゴリ」 「option」 の 1 active 切替
+- カテゴリ row クリックで「active」 状態 → 右 panel に該当カテゴリ配下の option リスト切替 (mobile では options tab に自動切替)
+- `react-resizable-panels` は導入せず (npm dependency 追加ゼロ方針)
 
 ### 2. in-place 編集 (2=A)
 - name: 既存 `inline-text-field` 流儀 (click → input 化 → blur で確定 + enqueue)
@@ -131,7 +132,7 @@ export const COLOR_NULL_CLASS = 'bg-slate-100 text-slate-700 border-slate-200'
   - title: 「option『{name}』 を削除しますか?」
   - 影響範囲: 「{M} 件の card に紐付いています」 ({M} は IDB count)
   - destructive button + cancel
-- AlertDialog は shadcn の標準 component
+- **既存 `components/ui/confirm-dialog.tsx` の `ConfirmDialog` を再利用** (a11y / focus / Esc / backdrop close 担保済の自前 portal-based component)。 影響範囲表示は `description: React.ReactNode` prop に JSX (count を含む文言) を渡す形で実現。 `delete-confirm-dialog.tsx` は ConfirmDialog の薄いラッパー (カテゴリ用 / option 用の文言差を吸収)。 shadcn の AlertDialog は導入せず
 
 ### 8. UNIQUE 違反のローカル + server 二段防御
 - option 作成 / リネーム / カテゴリ移動時:
