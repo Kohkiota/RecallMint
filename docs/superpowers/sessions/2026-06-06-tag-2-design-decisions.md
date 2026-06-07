@@ -136,26 +136,112 @@ Tag-2a 着手前に、 dead `applyCardCreate` (placeholder 採番版、
 
 ---
 
-## 4. Tag-2b: card_tags 独立 pull stream + cascade purge
+## 4. Tag-2b: card_tags 独立 pull stream + cards.updated_at bump 起点の取り直し (案 a 確定 2026-06-07)
 
-### 4.1 cards に derived 配列を埋めない判断
+### 4.1 cards に derived 配列を埋めない判断 (案 X 却下)
 
 §1.2 の通り cards.derived_array 案は将来の画像追加で再発する。 既存の
 `tag_categories` / `tag_options` / `exams` の独立 stream + Dexie 1:1 mirror
 形式に card_tags も合わせ、 pull / store / cursor の形を一律化する。
 
-### 4.2 削除 cascade を server bump せず client 自前 purge する判断
+### 4.2 同期穴の発見と案 a 確定
 
-- 案 P: option/card 削除時に server で `cards.updated_at = now()` を bump、
-  cards 行の re-pull 経由で card_tags 引きずり同期 → cards に derived 配列を
-  持つ場合の同期方式、 案 Y では使わない
-- 案 Q (採用): option/card の tombstone を client が受領した瞬間に、 client
-  側で `db.card_tags.where(...).delete()` を発行して mirror から purge
-- 案 Q の利点:
-  - cards.updated_at bump が不要 (card 編集と無関係な option 削除で card 行
-    を bump しなくて済む)
-  - 削除も last-write-wins に統一 (tombstone 自然冪等の延長)
-  - server 側 SQL を 1 文足さずに済む (削除 cascade は client の事後処理)
+当初 (本 doc 初版、 Tag-2a 完了時点) は「card_tags の created_at 増分
+pull + option/card tombstone 起点の client 自前 purge」 だけで完結する想定
+だった。 ところが Tag-2b 着手前の brainstorming (2026-06-07) で
+**「関連付けのみ外す」** ケース ── card / option 双方とも生存、 card_tags
+の行だけ消す (whole-set replace で `[A,B] → [A]` や `[A,B] → []`) ── が、
+同期 2 軸 (変更/追加 = updated_at/created_at 増分、 削除 = tombstone) の
+どちらにも乗らない **同期穴** であることが判明した。
+
+理由:
+
+- option / card 自体は削除されていないため、 どの tombstone も発生しない
+- card_tags の created_at 増分 pull は INSERT 行しか拾えないため、
+  「DELETE のみ」 や 「DELETE → 新集合 INSERT」 のうち「外れた option_id」
+  を別端末に伝えられない (減少が検知できない)
+
+確定方針 (**案 a**): 「card_tags をカードの属性として、 `cards.updated_at`
+起点で取り直す」。
+
+- **読み取り**: card_tags は独立 stream で IDB に 1:1 mirror (created_at
+  増分 + bulkPut)。 client は cards + card_tags + tag_options を
+  `useLiveQuery` で突き合わせて表示
+- **書き込み**: タグ編集は card への操作として扱う (entity_type='card' /
+  op='update_field' / field='tag_option_ids' / value=`uuid[]`)。 handler は
+  card_tags を whole-set replace (全 DELETE → 新集合 INSERT、 差分計算
+  なし)
+- **変更伝播**: whole-set replace の後に **`cards.updated_at` を bump**。
+  別端末は cards 増分 pull で「変更カード」 を検知 → そのカードの
+  card_tags を IDB から全削除 → card_tags 増分 pull の bulkPut で取り直す。
+  これにより「関連付け外し」 (減少) も伝わる
+- **削除伝播 (option / card 自体の削除)**: 既存の option / card tombstone
+  を client が受け取り、 道連れの card_tags を purge (option_id / card_id
+  で該当行削除)。 これは Tag-1 / 案 Y で既定の経路を踏襲
+
+### 4.3 却下した代替案: card_tags 専用 tombstone
+
+card_tags に独自 `id uuid PK` を振り (現在の複合 PK `[card_id, option_id]`
+→ 単一 PK)、 削除を card_tags 専用 tombstone (entity_type='card_tag') で
+伝える案。 一貫性 (全テーブルを独立エンティティとして同 2 軸に揃える) は
+高いが却下:
+
+1. whole-set replace のたびに「DELETE 行 − INSERT 行 = 外れた分」 を
+   差分計算して tombstone に書く処理が server handler に必要 (書き込みが
+   複雑化、 バグ源)
+2. card_tags への id 追加というスキーマ変更 (migration コスト + 既存複合
+   PK の置き換え)
+3. 付け替えのたびに tombstone 量産 (UI 1 操作 = 1 行外す → tombstone 1 件)、
+   tombstone 表の肥大化
+
+案 a は書き込みを **「全消し全入れ + updated_at bump」** に保ち、 複雑さを
+読み込み側の **「取り直し」** (これも全消し全入れで素朴) に寄せる。 両側
+とも差分を考えない素朴な操作で統一できる。
+
+### 4.4 一貫性の整理 (将来のため)
+
+案 a の一貫性の軸 = **「junction (結びつき表) は親エンティティにぶら下げる」**。
+card_tags は card の属性として cards 同期 (`cards.updated_at` 起点) に従う。
+
+将来の画像添付 (card ↔ image の結びつき = card_tags と同構造) も同じ
+**型紙** で実装する:
+
+- image を新しく付け / 外す → `cards.updated_at` bump
+- `card_images` は独立 pull stream + 「変更カードの card_images を全削除 →
+  取り直し」
+- junction 系は **全てこのパターン** で拡張する (= 将来 entity 追加時に
+  毎回 brainstorm し直さなくて済む)
+
+### 4.5 cards.updated_at bump の方針更新 (前回判断の巻き戻し)
+
+当初の sessions doc (本 doc 初版、 Tag-2a 完了時点) では:
+
+> 案 Y の利点: cards.updated_at bump が不要 (card 編集と無関係な option
+> 削除で card 行を bump しなくて済む)
+
+と書いていたが、 §4.2 の同期穴判明により判断を更新:
+
+- **タグ変更で `cards.updated_at` を bump する** が確定方針
+- タグは card の属性なので、 意味的にも自然 (= derived field の bump では
+  なく、 card の状態変化を表す bump)
+- option 自体の削除 (`tag_option` の DELETE) は **依然として
+  `cards.updated_at` を bump しない** (option 削除は card 編集ではない、
+  §4.2 「削除伝播」 経路で別途処理)
+
+つまり「card 編集経路 = bump」 / 「option / card の削除 cascade =
+bump しない」 で書き分ける。
+
+### 4.6 実装の骨子 (詳細は Tag-2b plan に展開)
+
+- server: `lib/db/card-tags-pull.ts` 新設 (`getCardTagsDelta(userId, since)`)、
+  `/api/pull/route.ts` の stream に追加
+- client: Dexie v5 で `card_tags` store 追加 (PK=`[card_id+option_id]`、
+  index `card_id` / `option_id` / `user_id`)
+- pull orchestrator (`lib/sync/pull.ts`): cards bulkPut で **変更カード
+  集合** を検知 → そのカードの card_tags を **事前に全削除** → card_tags
+  bulkPut で取り直し (= 案 a の核心)
+- 削除 cascade = client 自前 purge (option / card tombstone 受領時に
+  card_tags 該当行を delete)、 これは §4.2 と独立した経路
 
 ---
 
@@ -174,6 +260,10 @@ Tag-2a 着手前に、 dead `applyCardCreate` (placeholder 採番版、
 - value=`uuid[]` を受け、 option_id 全件の owner-scope 検証 (欠ければ
   per-mutation failed) → `DELETE card_tags WHERE card_id+user_id` →
   `INSERT (card_id, option_id, user_id)` × N
+- **whole-set replace 後に `cards.updated_at = sql\`now()\`` を bump**
+  (§4.5 確定)。 別端末は cards 増分 pull で変更カードを検知 → そのカード
+  の card_tags を IDB から全削除 → card_tags 増分 pull で取り直す経路に
+  乗る (= 案 a 起点)
 - coalesce: 同一 card_id の `tag_option_ids` は最新 value で上書き (既存
   update_field と同方針、 last-write-wins)
 - 冪等: 同一 value 再送も DELETE → INSERT は等価結果。 並走衝突は registry
