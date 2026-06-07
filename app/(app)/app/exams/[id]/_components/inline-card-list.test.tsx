@@ -13,6 +13,7 @@
 // initialCards に渡す内容と同等の card を mirror に seed する (seedMirror)。
 // initialCards は SSR / mirror 未 hydrate 期間の fallback 用 prop。
 
+import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   render,
@@ -44,6 +45,15 @@ vi.mock('@/lib/sync/entity-mutations', () => ({
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
+}))
+// Tag-4b-fix: CardTagsSection が Radix Popover を含む。 Radix の document event listener
+// 登録が useLiveQuery の発火順序に影響し timing-sensitive な test が壊れるため、
+// Popover を軽量 stub に差し替える。 本 test は tag UI の動作を検証しないため問題なし。
+vi.mock('@/components/ui/popover', () => ({
+  Popover: ({ children }: { children: React.ReactNode }) => children,
+  PopoverTrigger: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) =>
+    asChild ? children : <div>{children}</div>,
+  PopoverContent: () => null,
 }))
 
 import { InlineCardList } from './inline-card-list'

@@ -261,6 +261,7 @@ export function InlineCardList({
                     React.memo (CardTagsSection) で再描画 skip される。 */}
                 <CardTagsSection
                   cardId={card.id}
+                  userId={userId}
                   categories={categories}
                   options={options}
                   cardTags={tagsByCardId.get(card.id) ?? []}

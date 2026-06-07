@@ -404,16 +404,17 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Tag-4b Task 3: 4 store 一括 subscribe + CardTagsSection 配置の統合 test
+// Tag-4b-fix Task 5: 4 store 一括 subscribe + CardTagsSection 配置の統合 test
 // ---------------------------------------------------------------------------
 //
-// 検証観点:
+// 検証観点 (Tag-4b-fix Notion 方式 popover UI 後):
 // - 親が cards + tag_categories + tag_options + card_tags の 4 store を 1 useLiveQuery
 //   で読み、 各 card listitem に <CardTagsSection /> を render する
-// - カテゴリ 0 件: 全 card の section で「タグ管理ページでカテゴリを作成」 placeholder
-// - カテゴリ ≥1 件: 各 card に カテゴリ名 + 付与済 pill が描画される
+// - 「タグ」 h3 見出しが card 数だけ存在。 見出し横の「タグ管理 →」 link は廃止 (popover footer のみ)
+// - カテゴリ 0 件: placeholder は popover 内 (closed 時は見えない)。 「タグを追加」 button のみ
+// - カテゴリ ≥1 件: 付与済タグのみバッジ表示 (未付与 category row は表示しない)
 // - cardTags は card_id 別に分離: card-1 のタグが card-2 の section には現れない
-// - tag mutation 経路 (multi/single 統合動作): pill 削除 → IDB 即時消滅 + enqueue + flush
+// - tag mutation 経路 (multi/single 統合動作): バッジ削除 → IDB 即時消滅 + enqueue + flush
 describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', () => {
   it('各 card listitem の title 行下に「タグ」 section が描画される', async () => {
     await getClientDb().cards.bulkPut([
@@ -427,16 +428,17 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
       expect(screen.getByText('問1')).toBeInTheDocument()
       expect(screen.getByText('問2')).toBeInTheDocument()
     })
-    // 「タグ」 見出しが card 数だけ存在 (CardTagsSection の <h3>)
+    // 「タグ」 h3 見出しが card 数だけ存在 (CardTagsSection の <h3>)
     const tagHeadings = screen.getAllByRole('heading', { name: 'タグ' })
     expect(tagHeadings).toHaveLength(2)
-    // 「タグ管理 →」 link は card ごとに 1 つ表示される (常時表示)
-    const tagsLinks = screen.getAllByRole('link', { name: /タグ管理/ })
-    expect(tagsLinks).toHaveLength(2)
-    expect(tagsLinks[0]).toHaveAttribute('href', '/app/tags')
+    // Tag-4b-fix: 見出し横の「タグ管理 →」 link は廃止 (popover が閉じた状態では表示されない)
+    expect(screen.queryByRole('link', { name: /タグ管理/ })).not.toBeInTheDocument()
+    // 各 card に「タグを追加」 button が表示される
+    const addButtons = screen.getAllByRole('button', { name: 'タグを追加' })
+    expect(addButtons).toHaveLength(2)
   })
 
-  it('カテゴリ 0 件: 全 card の section に placeholder が表示される', async () => {
+  it('カテゴリ 0 件: section には「タグを追加」 button のみ表示 (placeholder は popover 内)', async () => {
     await getClientDb().cards.bulkPut([
       fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
       fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
@@ -447,14 +449,14 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
     await waitFor(() => {
       expect(screen.getByText('問1')).toBeInTheDocument()
     })
-    // 各 card の section に placeholder
-    const placeholders = screen.getAllByText(
-      /タグ管理ページでカテゴリを作成/,
-    )
-    expect(placeholders).toHaveLength(2)
+    // Tag-4b-fix: placeholder は popover 内なので closed 状態では見えない
+    expect(screen.queryByText(/タグ管理ページでカテゴリを作成/)).not.toBeInTheDocument()
+    // 「タグを追加」 button は card 数だけ表示
+    const addButtons = screen.getAllByRole('button', { name: 'タグを追加' })
+    expect(addButtons).toHaveLength(2)
   })
 
-  it('カテゴリ ≥1 件: 各 card に カテゴリ名 + 付与 pill が描画される (card_id 別分離)', async () => {
+  it('カテゴリ ≥1 件: 付与済タグのみバッジ表示 (card_id 別分離)', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([
       fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
@@ -476,15 +478,15 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
     await waitFor(() => {
       expect(screen.getByText('問1')).toBeInTheDocument()
     })
-    // カテゴリ名「分野」 は card 数だけ表示 (各 row に見出し)
-    const sectionNames = screen.getAllByText('分野')
-    expect(sectionNames.length).toBeGreaterThanOrEqual(2)
-    // card-1 にだけ 循環器 pill が出る (card_id 別分離の証明)
-    const pills = screen.getAllByText('循環器')
-    expect(pills).toHaveLength(1)
+    // Tag-4b-fix: バッジは「カテゴリ名: option名」 形式。 card-1 にだけ循環器バッジが出る
+    const badge = screen.getByRole('button', { name: 'タグ: 分野: 循環器' })
+    expect(badge).toBeInTheDocument()
+    // card-2 は tag 未付与なのでバッジは 1 つだけ (card_id 別分離の証明)
+    const allBadges = screen.getAllByRole('button', { name: /^タグ: / })
+    expect(allBadges).toHaveLength(1)
   })
 
-  it('tag mirror の live 反映: 後から card_tags を put すると pill が追加される', async () => {
+  it('tag mirror の live 反映: 後から card_tags を put するとバッジが追加される', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([
       fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
@@ -500,18 +502,18 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
     await waitFor(() => {
       expect(screen.getByText('問1')).toBeInTheDocument()
     })
-    // 初期は pill 無し
-    expect(screen.queryByText('循環器')).not.toBeInTheDocument()
+    // 初期はバッジ無し
+    expect(screen.queryByRole('button', { name: 'タグ: 分野: 循環器' })).not.toBeInTheDocument()
     // 後から付与
     await act(async () => {
       await db.card_tags.put(makeCardTag('c1', 'opt-1'))
     })
     await waitFor(() => {
-      expect(screen.getByText('循環器')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'タグ: 分野: 循環器' })).toBeInTheDocument()
     })
   })
 
-  it('multi 経路: pill の「タグ削除」 click → IDB から該当 card_tag 即時消滅 + enqueue + flush', async () => {
+  it('multi 経路: バッジ × click → IDB から該当 card_tag 即時消滅 + enqueue + flush', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([
       fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
@@ -531,10 +533,11 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
     render(
       <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
     )
-    await screen.findByText('循環器')
-    // 「タグ削除: 循環器」 button click
+    // バッジが表示されるまで待つ
+    await screen.findByRole('button', { name: 'タグ: 分野: 循環器' })
+    // 「タグ削除: 分野: 循環器」 × button click
     const deletePill = await screen.findByRole('button', {
-      name: 'タグ削除: 循環器',
+      name: 'タグ削除: 分野: 循環器',
     })
     fireEvent.click(deletePill)
 
