@@ -54,6 +54,14 @@ export function AppHeader() {
           >
             スマート復習
           </Link>
+          {/* Tag-4a: タグ管理 page 追加。 prefetch={false} は他 nav link と統一 (S-perf-1)。 */}
+          <Link
+            href="/app/tags"
+            prefetch={false}
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            タグ
+          </Link>
           <Link
             href="/app/settings"
             prefetch={false}

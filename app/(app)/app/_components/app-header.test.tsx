@@ -48,7 +48,7 @@ describe('AppHeader', () => {
     expect(brand).toHaveAttribute('href', '/app')
   })
 
-  it('renders nav links: アップロード / 試験 / スマート復習 / 設定 (演習 link は削除済)', () => {
+  it('renders nav links: アップロード / 試験 / スマート復習 / タグ / 設定 (演習 link は削除済)', () => {
     render(<AppHeader />)
     // 旧「演習」 (/app/quiz) は T6 で削除
     expect(screen.queryByRole('link', { name: '演習' })).not.toBeInTheDocument()
@@ -57,7 +57,24 @@ describe('AppHeader', () => {
     expect(screen.getByRole('link', { name: 'アップロード' })).toHaveAttribute('href', '/app/upload')
     expect(screen.getByRole('link', { name: '試験' })).toHaveAttribute('href', '/app/exams')
     expect(screen.getByRole('link', { name: 'スマート復習' })).toHaveAttribute('href', '/app/study/smart')
+    // Tag-4a: タグ管理 link (4 番目、 スマート復習 と 設定 の間)
+    expect(screen.getByRole('link', { name: 'タグ' })).toHaveAttribute('href', '/app/tags')
     expect(screen.getByRole('link', { name: '設定' })).toHaveAttribute('href', '/app/settings')
+  })
+
+  it('nav link は brand 含め計 6 件 (RecallMint + アップロード / 試験 / スマート復習 / タグ / 設定)', () => {
+    render(<AppHeader />)
+    const links = screen.getAllByRole('link')
+    expect(links).toHaveLength(6)
+    const hrefs = links.map((l) => l.getAttribute('href'))
+    expect(hrefs).toEqual([
+      '/app',
+      '/app/upload',
+      '/app/exams',
+      '/app/study/smart',
+      '/app/tags',
+      '/app/settings',
+    ])
   })
 
   it('renders UserButton', () => {
