@@ -14,7 +14,7 @@
 //   aria-checked で選択状態を伝達。
 
 import Link from 'next/link'
-import { Check } from 'lucide-react'
+import { Check, Ellipsis } from 'lucide-react'
 
 import type { ClientTagOption } from '@/lib/client-db'
 import { colorToClass } from '@/lib/tags/color-palette'
@@ -31,6 +31,9 @@ type Props = {
   onToggle: (optionId: string) => void
   /** single 選択時に popover を閉じるための callback。 親 popover から渡す。 */
   onClose?: () => void
+  /** option 行末尾の kebab (「...」) click 時に optionId で呼ばれる callback。
+   *  提供時のみ kebab を表示する。 Tag-4c-1 Task 3 で追加。 */
+  onRowAction?: (optionId: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +46,7 @@ export function CardTagOptionList({
   selectType,
   onToggle,
   onClose,
+  onRowAction,
 }: Props) {
   const handleClick = (optionId: string) => {
     onToggle(optionId)
@@ -78,7 +82,7 @@ export function CardTagOptionList({
             selectType === 'multi' ? 'menuitemcheckbox' : 'menuitemradio'
 
           return (
-            <li key={option.id}>
+            <li key={option.id} className="flex items-center">
               <button
                 type="button"
                 role={role}
@@ -86,7 +90,7 @@ export function CardTagOptionList({
                 aria-label={option.name}
                 onClick={() => handleClick(option.id)}
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm',
+                  'flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm',
                   'transition-colors hover:bg-slate-100',
                 )}
               >
@@ -109,6 +113,28 @@ export function CardTagOptionList({
                   />
                 )}
               </button>
+              {/* kebab: onRowAction が渡されたときのみ表示 */}
+              {onRowAction && (
+                <button
+                  type="button"
+                  aria-label={`option 操作: ${option.name}`}
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRowAction(option.id)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation()
+                      e.preventDefault()
+                      onRowAction(option.id)
+                    }
+                  }}
+                  className="ml-auto inline-flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-slate-100 rounded"
+                >
+                  <Ellipsis className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                </button>
+              )}
             </li>
           )
         })}

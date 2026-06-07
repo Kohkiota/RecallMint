@@ -2,13 +2,15 @@
 // CardTagAddPopover: 2 stage popover (カテゴリ選択 → option 選択) の各シナリオを
 // pin する unit test。
 // ファイル作成理由: Tag-4b-fix Task 4 にて新規追加された追加用 popover component のテスト。
+// Tag-4c-1 Task 3: stage 拡張 (editCategory / editOption) + kebab + Esc 階層テスト追加。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import type { TagEditCallbacks } from './card-tags-section'
 
-import { CardTagAddPopover } from './card-tag-add-popover'
+import { CardTagAddPopover, sortByKeyThenCreated } from './card-tag-add-popover'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -70,6 +72,21 @@ const OPTIONS = [
 ]
 
 // ---------------------------------------------------------------------------
+// tagEditCallbacks mock (shared across all tests)
+// ---------------------------------------------------------------------------
+
+const mockTagEditCallbacks: TagEditCallbacks = {
+  renameCategory: vi.fn(async () => undefined),
+  setCategoryColor: vi.fn(async () => undefined),
+  deleteCategory: vi.fn(async () => undefined),
+  renameOption: vi.fn(async () => undefined),
+  setOptionColor: vi.fn(async () => undefined),
+  deleteOption: vi.fn(async () => undefined),
+  countCategoryImpact: vi.fn(async () => ({ optionCount: 0, cardCount: 0 })),
+  countOptionImpact: vi.fn(async () => ({ cardCount: 0 })),
+}
+
+// ---------------------------------------------------------------------------
 // 1. trigger button の aria-label と描画内容
 // ---------------------------------------------------------------------------
 
@@ -81,6 +98,7 @@ describe('CardTagAddPopover — trigger button', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     expect(
@@ -88,16 +106,19 @@ describe('CardTagAddPopover — trigger button', () => {
     ).toBeInTheDocument()
   })
 
-  it('trigger button に「タグを追加」 テキストが含まれる', () => {
+  it('Fix B-1: trigger button の visible text は「タグ」 (aria-label は「タグを追加」 を維持)', () => {
     render(
       <CardTagAddPopover
         categories={CATEGORIES}
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
-    expect(screen.getByText('タグを追加')).toBeInTheDocument()
+    // visible text は「タグ」に変更 (aria-label は「タグを追加」のまま)
+    expect(screen.getByText('タグ')).toBeInTheDocument()
+    expect(screen.queryByText('タグを追加')).not.toBeInTheDocument()
   })
 })
 
@@ -113,6 +134,7 @@ describe('CardTagAddPopover — 初期状態', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     // stage 1 のカテゴリ名は popover 内にのみ存在する
@@ -132,6 +154,7 @@ describe('CardTagAddPopover — stage 1 (カテゴリ一覧)', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -153,6 +176,7 @@ describe('CardTagAddPopover — stage 1 (カテゴリ一覧)', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -175,6 +199,7 @@ describe('CardTagAddPopover — stage 1 型アイコン', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -189,6 +214,7 @@ describe('CardTagAddPopover — stage 1 型アイコン', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -208,6 +234,7 @@ describe('CardTagAddPopover — stage 1 カテゴリ 0 件', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -223,6 +250,7 @@ describe('CardTagAddPopover — stage 1 カテゴリ 0 件', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -243,6 +271,7 @@ describe('CardTagAddPopover — stage 1 → stage 2', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -259,6 +288,7 @@ describe('CardTagAddPopover — stage 1 → stage 2', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -283,6 +313,7 @@ describe('CardTagAddPopover — stage 2 → stage 1 戻る', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -311,6 +342,7 @@ describe('CardTagAddPopover — stage 2 Esc 挙動', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -341,6 +373,7 @@ describe('CardTagAddPopover — stage 1 Esc 挙動', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -369,6 +402,7 @@ describe('CardTagAddPopover — close 後 reopen でリセット', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     // open → stage 2 へ進む
@@ -408,6 +442,7 @@ describe('CardTagAddPopover — stage 2 option フィルタ', () => {
         options={OPTIONS}
         allAssignedOptionIds={['o1', 'o3']}  // o1 は cat-1、 o3 は cat-2
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -434,6 +469,7 @@ describe('CardTagAddPopover — stage 2 single 動作', () => {
         options={[opt('o3', '初級', 'cat-2'), opt('o4', '上級', 'cat-2')]}
         allAssignedOptionIds={[]}
         onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -461,6 +497,7 @@ describe('CardTagAddPopover — stage 2 multi 動作', () => {
         options={[opt('o1', '循環器', 'cat-1'), opt('o2', '腎臓', 'cat-1')]}
         allAssignedOptionIds={[]}
         onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -486,6 +523,7 @@ describe('CardTagAddPopover — stage 2 option 0 件', () => {
         options={[]}  // このカテゴリに option なし
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -508,6 +546,7 @@ describe('CardTagAddPopover — footer タグ管理 link', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -523,6 +562,7 @@ describe('CardTagAddPopover — footer タグ管理 link', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -538,6 +578,7 @@ describe('CardTagAddPopover — footer タグ管理 link', () => {
         options={OPTIONS}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -554,6 +595,7 @@ describe('CardTagAddPopover — footer タグ管理 link', () => {
         options={[]}
         allAssignedOptionIds={[]}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
@@ -561,5 +603,468 @@ describe('CardTagAddPopover — footer タグ管理 link', () => {
     // CardTagOptionList placeholder の link が 1 つだけ (footer は非表示)
     const links = screen.getAllByRole('link', { name: 'タグ管理 →' })
     expect(links).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tag-4c-1 Task 3 tests: kebab + edit stages + Esc 階層
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 16. stage 1: 各カテゴリ row に kebab span が表示される
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — stage 1 kebab', () => {
+  it('stage 1 で各カテゴリ row に kebab span (aria-label に「カテゴリ操作」) が表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(screen.getByRole('button', { name: 'カテゴリ操作: 分野' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'カテゴリ操作: レベル' })).toBeInTheDocument()
+  })
+
+  it('category kebab click で editCategory stage に遷移する (header「カテゴリ選択へ戻る」が表示)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    // editCategory stage: back button が「カテゴリ選択へ戻る」
+    expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+    // CardTagEditFields の rename input が表示される
+    expect(screen.getByRole('textbox', { name: 'カテゴリ名 編集' })).toBeInTheDocument()
+  })
+
+  it('category kebab click は row click (stage option 遷移) を発火しない (stopPropagation)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    // option list (stage option) ではなく editCategory stage に遷移している
+    // → menuitemcheckbox (option) は表示されない
+    expect(screen.queryByRole('menuitemcheckbox', { name: '循環器' })).not.toBeInTheDocument()
+  })
+
+  it('category kebab keyboard (Enter) → 同じ editCategory 遷移', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    const kebab = screen.getByRole('button', { name: 'カテゴリ操作: 分野' })
+    fireEvent.keyDown(kebab, { key: 'Enter' })
+    expect(screen.getByRole('textbox', { name: 'カテゴリ名 編集' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 17. editCategory stage: Esc → stage='category'
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — editCategory Esc', () => {
+  it('editCategory stage で Esc → stage=category (カテゴリリスト再表示)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    // editCategory stage で Esc
+    const backBtn = screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })
+    fireEvent.keyDown(
+      backBtn.closest('[data-radix-popper-content-wrapper]') ?? document.body,
+      { key: 'Escape' },
+    )
+    // stage='category' に戻った → カテゴリリストが見える
+    expect(screen.getByRole('button', { name: 'カテゴリ操作: 分野' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'カテゴリ名 編集' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 18. stage 2: 各 option row に kebab 表示 (onRowAction prop 経由)
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — stage 2 option kebab', () => {
+  it('stage 2 で各 option row に kebab span が表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    // cat-1 の options: 循環器 (o1), 腎臓 (o2)
+    expect(screen.getByRole('button', { name: 'option 操作: 循環器' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'option 操作: 腎臓' })).toBeInTheDocument()
+  })
+
+  it('option kebab click → editOption stage 遷移 (header「option 一覧へ戻る」)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    // editOption stage: back button「option 一覧へ戻る」
+    expect(screen.getByRole('button', { name: 'option 一覧へ戻る' })).toBeInTheDocument()
+    // CardTagEditFields の rename input が表示される
+    expect(screen.getByRole('textbox', { name: 'option名 編集' })).toBeInTheDocument()
+  })
+
+  it('option kebab click は option toggle を発火しない (stopPropagation)', () => {
+    const onToggle = vi.fn()
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    // toggle は呼ばれない (kebab click で editOption stage に遷移)
+    expect(onToggle).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 19. editOption stage: Esc → stage='option'
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — editOption Esc', () => {
+  it('editOption stage で Esc → stage=option (option list 再表示)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    // editOption stage で Esc
+    const backBtn = screen.getByRole('button', { name: 'option 一覧へ戻る' })
+    fireEvent.keyDown(
+      backBtn.closest('[data-radix-popper-content-wrapper]') ?? document.body,
+      { key: 'Escape' },
+    )
+    // stage='option' に戻った → option list が見える
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'option名 編集' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 20. editCategory: rename 成功 → callback 呼出 + stage 維持 + lastError null
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — editCategory rename / delete callbacks', () => {
+  it('rename 成功: renameCategory が呼ばれ stage=editCategory を維持する', async () => {
+    const callbacks = { ...mockTagEditCallbacks, renameCategory: vi.fn(async () => undefined) }
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={callbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    const input = screen.getByRole('textbox', { name: 'カテゴリ名 編集' })
+    fireEvent.change(input, { target: { value: '新しい分野名' } })
+    fireEvent.blur(input)
+    // rename callback が呼ばれた
+    expect(callbacks.renameCategory).toHaveBeenCalledWith('cat-1', '新しい分野名')
+    // stage は editCategory に留まる
+    expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+  })
+
+  it('rename throw → lastError が表示され stage=editCategory 維持', async () => {
+    const callbacks = {
+      ...mockTagEditCallbacks,
+      renameCategory: vi.fn(async () => { throw new Error('API error') }),
+    }
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={callbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    const input = screen.getByRole('textbox', { name: 'カテゴリ名 編集' })
+    fireEvent.change(input, { target: { value: '新しい名前' } })
+    fireEvent.blur(input)
+    // error message が表示される (非同期なので await を使わず直接確認)
+    // CardTagEditFields の errorMessage prop 経由で表示される
+    await vi.waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+    // stage は維持
+    expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+  })
+
+  it('delete 成功: deleteCategory が呼ばれ stage=category に戻る', async () => {
+    const callbacks = {
+      ...mockTagEditCallbacks,
+      deleteCategory: vi.fn(async () => undefined),
+      countCategoryImpact: vi.fn(async () => ({ optionCount: 0, cardCount: 0 })),
+    }
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={callbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    // 削除ボタン click → countImpact → dialog open → confirm
+    fireEvent.click(screen.getByRole('button', { name: /削除/ }))
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('confirm-dialog-backdrop')).toBeInTheDocument()
+    })
+    // dialog の confirm button click
+    const confirmBtn = screen.getByRole('button', { name: '削除する' })
+    fireEvent.click(confirmBtn)
+    await vi.waitFor(() => {
+      expect(callbacks.deleteCategory).toHaveBeenCalledWith('cat-1')
+    })
+    // stage='category' に戻る
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カテゴリ操作: レベル' })).toBeInTheDocument()
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 21. editOption: rename / delete callbacks
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — editOption rename / delete callbacks', () => {
+  it('rename 成功: renameOption が呼ばれ stage=editOption 維持', async () => {
+    const callbacks = { ...mockTagEditCallbacks, renameOption: vi.fn(async () => undefined) }
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={callbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    const input = screen.getByRole('textbox', { name: 'option名 編集' })
+    fireEvent.change(input, { target: { value: '新しい循環器' } })
+    fireEvent.blur(input)
+    expect(callbacks.renameOption).toHaveBeenCalledWith('o1', '新しい循環器')
+    // stage は editOption に留まる
+    expect(screen.getByRole('button', { name: 'option 一覧へ戻る' })).toBeInTheDocument()
+  })
+
+  it('Fix A-3: delete 成功: 削除 button click で即 deleteOption が呼ばれ stage=option に戻る', async () => {
+    const callbacks = {
+      ...mockTagEditCallbacks,
+      deleteOption: vi.fn(async () => undefined),
+      countOptionImpact: vi.fn(async () => ({ cardCount: 0 })),
+    }
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={callbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    // Fix A-3: option 削除は即削除 (dialog を経由しない)
+    fireEvent.click(screen.getByRole('button', { name: /削除/ }))
+    await vi.waitFor(() => {
+      expect(callbacks.deleteOption).toHaveBeenCalledWith('o1')
+    })
+    // DeleteConfirmDialog は開かない
+    // (Radix Popover 自体は role="dialog" を持つため queryByRole('dialog') ではなく
+    // confirm-dialog-backdrop testid で確認する)
+    expect(screen.queryByTestId('confirm-dialog-backdrop')).not.toBeInTheDocument()
+    // countOptionImpact は呼ばれない
+    expect(callbacks.countOptionImpact).not.toHaveBeenCalled()
+    // stage='option' に戻る (成功後 popover が setStage('option') する)
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'option 一覧へ戻る' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 22. popover close で全 state reset (editTargetId=null, lastError=null)
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — close で全 state reset', () => {
+  it('editCategory stage から close → 再 open で stage=category, edit 要素なし', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    // open → editCategory へ
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    expect(screen.getByRole('textbox', { name: 'カテゴリ名 編集' })).toBeInTheDocument()
+
+    // Esc 2 回で close (editCategory Esc → category, category Esc → close)
+    const backBtn = screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })
+    fireEvent.keyDown(
+      backBtn.closest('[data-radix-popper-content-wrapper]') ?? document.body,
+      { key: 'Escape' },
+    )
+    // stage=category になった → category の Esc で close
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' })).not.toBeInTheDocument()
+
+    // 再 open → stage=category から (edit input なし)
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'カテゴリ名 編集' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 23. footer link は edit stages でも表示される
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — footer link in edit stages', () => {
+  it('editCategory stage でも footer に「タグ管理 →」 link がある', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    const links = screen.getAllByRole('link', { name: 'タグ管理 →' })
+    expect(links.length).toBeGreaterThanOrEqual(1)
+    expect(links[0]).toHaveAttribute('href', '/app/tags')
+  })
+
+  it('editOption stage でも footer に「タグ管理 →」 link がある', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'カテゴリ: 分野 (複数選択)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    const links = screen.getAllByRole('link', { name: 'タグ管理 →' })
+    expect(links.length).toBeGreaterThanOrEqual(1)
+    expect(links[0]).toHaveAttribute('href', '/app/tags')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fix C-3: sortByKeyThenCreated 純粋関数ユニットテスト
+// ---------------------------------------------------------------------------
+
+describe('sortByKeyThenCreated', () => {
+  type Item = { sort_key: string | null; created_at: string }
+  const mk = (sort_key: string | null, created_at: string): Item => ({ sort_key, created_at })
+
+  it('両方 sort_key 非 null: sort_key ASC で並ぶ', () => {
+    const a = mk('b', '2026-01-01T00:00:00.000Z')
+    const b = mk('a', '2026-01-01T00:00:00.000Z')
+    expect(sortByKeyThenCreated(a, b)).toBeGreaterThan(0) // a > b (b comes first)
+    expect(sortByKeyThenCreated(b, a)).toBeLessThan(0)   // b < a
+  })
+
+  it('sort_key null は末尾 (NULLS LAST): non-null が先', () => {
+    const withKey = mk('a', '2026-01-01T00:00:00.000Z')
+    const withoutKey = mk(null, '2025-01-01T00:00:00.000Z') // 古い created_at でも後
+    expect(sortByKeyThenCreated(withKey, withoutKey)).toBeLessThan(0)
+    expect(sortByKeyThenCreated(withoutKey, withKey)).toBeGreaterThan(0)
+  })
+
+  it('両方 sort_key null: created_at ASC でタイブレーク', () => {
+    const older = mk(null, '2026-01-01T00:00:00.000Z')
+    const newer = mk(null, '2026-12-31T00:00:00.000Z')
+    expect(sortByKeyThenCreated(older, newer)).toBeLessThan(0)
+    expect(sortByKeyThenCreated(newer, older)).toBeGreaterThan(0)
+  })
+
+  it('同 sort_key + 同 created_at → 0 (等価)', () => {
+    const a = mk('x', '2026-06-01T00:00:00.000Z')
+    const b = mk('x', '2026-06-01T00:00:00.000Z')
+    expect(sortByKeyThenCreated(a, b)).toBe(0)
   })
 })

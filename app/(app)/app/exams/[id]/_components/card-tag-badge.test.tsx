@@ -2,7 +2,9 @@
 // CardTagBadge: 「カテゴリ名: option名」 + × button + popover trigger の
 // 各シナリオを pin する unit test。
 // ファイル作成理由: Tag-4b-fix Task 3 にて新規追加されたバッジ表示 component のテスト。
+// Tag-4c-1 Fix A-1: forwardRef の ref attach + stopPropagation 維持を追加。
 
+import * as React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 
@@ -228,5 +230,47 @@ describe('CardTagBadge — color class', () => {
         expect(badge.className).toContain(cls)
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. Fix A-1: forwardRef で ref が外側 button に attach される
+// ---------------------------------------------------------------------------
+
+describe('CardTagBadge — forwardRef', () => {
+  it('forwardRef: ref は外側バッジ button に attach される (× span ではない)', () => {
+    const ref = React.createRef<HTMLButtonElement>()
+    render(
+      <CardTagBadge
+        ref={ref}
+        category={makeCategory()}
+        option={makeOption()}
+        onRemove={vi.fn()}
+        onOpenEdit={vi.fn()}
+      />,
+    )
+    expect(ref.current).toBeInstanceOf(HTMLButtonElement)
+    // 外側 button は aria-label="タグ: ..." (内側 × は「タグ削除: ...」)
+    expect(ref.current?.getAttribute('aria-label')).toMatch(/^タグ: /)
+  })
+
+  it('forwardRef 後も × click stopPropagation が維持: × → onRemove のみ、 onOpenEdit/onClick は呼ばれない', () => {
+    const onRemove = vi.fn()
+    const onOpenEdit = vi.fn()
+    const onClick = vi.fn()
+    render(
+      <CardTagBadge
+        category={makeCategory()}
+        option={makeOption()}
+        onRemove={onRemove}
+        onOpenEdit={onOpenEdit}
+        onClick={onClick}
+      />,
+    )
+    const closeBtn = screen.getByRole('button', { name: /タグ削除/ })
+    fireEvent.click(closeBtn)
+    expect(onRemove).toHaveBeenCalledTimes(1)
+    expect(onOpenEdit).not.toHaveBeenCalled()
+    expect(onClick).not.toHaveBeenCalled()
   })
 })

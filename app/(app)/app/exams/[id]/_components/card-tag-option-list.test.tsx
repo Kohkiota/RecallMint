@@ -285,3 +285,56 @@ describe('CardTagOptionList — 0 件 placeholder', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 6. onRowAction prop: kebab span の render
+// ---------------------------------------------------------------------------
+
+describe('CardTagOptionList — onRowAction kebab', () => {
+  it('onRowAction が渡されると各 row に kebab button が表示される', () => {
+    const onRowAction = vi.fn()
+    render(
+      <CardTagOptionList
+        options={OPTIONS}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={vi.fn()}
+        onRowAction={onRowAction}
+      />,
+    )
+    // 各 option row に kebab (aria-label: 「option 操作: <name>」)
+    expect(screen.getByRole('button', { name: 'option 操作: 循環器' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'option 操作: 腎臓' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'option 操作: 神経' })).toBeInTheDocument()
+  })
+
+  it('kebab click で onRowAction が optionId で呼ばれる', () => {
+    const onRowAction = vi.fn()
+    const onToggle = vi.fn()
+    render(
+      <CardTagOptionList
+        options={OPTIONS}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={onToggle}
+        onRowAction={onRowAction}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 腎臓' }))
+    expect(onRowAction).toHaveBeenCalledWith('o2')
+    // onToggle は呼ばれない (stopPropagation 動作確認)
+    expect(onToggle).not.toHaveBeenCalled()
+  })
+
+  it('onRowAction なし (省略) のとき kebab は表示されない', () => {
+    render(
+      <CardTagOptionList
+        options={OPTIONS}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /option 操作:/ })).not.toBeInTheDocument()
+  })
+})

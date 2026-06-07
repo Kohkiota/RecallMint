@@ -2,9 +2,10 @@
 // CardTagEditPopover: バッジ click で開く単 stage 編集 popover の
 // 各シナリオを pin する unit test。
 // ファイル作成理由: Tag-4b-fix Task 3 にて新規追加された編集 popover component のテスト。
+// Tag-4c-1 Task 4 にて editOption stage + kebab + Esc 階層のシナリオを追加。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 
@@ -59,15 +60,63 @@ const CATEGORY_OPTIONS = [
   makeOption('o3', '神経'),
 ]
 
+const mockTagEditCallbacks = {
+  renameCategory: vi.fn(async () => undefined),
+  setCategoryColor: vi.fn(async () => undefined),
+  deleteCategory: vi.fn(async () => undefined),
+  renameOption: vi.fn(async () => undefined),
+  setOptionColor: vi.fn(async () => undefined),
+  deleteOption: vi.fn(async () => undefined),
+  countCategoryImpact: vi.fn(async () => ({ optionCount: 0, cardCount: 0 })),
+  countOptionImpact: vi.fn(async () => ({ cardCount: 0 })),
+}
+
 function makeTrigger(category: ClientTagCategory, option: ClientTagOption) {
   return (
     <CardTagBadge
       category={category}
       option={option}
-      onRemove={vi.fn()}
-      onOpenEdit={vi.fn()}
+      onRemove={vi.fn<() => void>()}
+      onOpenEdit={vi.fn<() => void>()}
     />
   )
+}
+
+function renderPopover(
+  overrides: {
+    category?: ClientTagCategory
+    categoryOptions?: ClientTagOption[]
+    selectedOptionIds?: Set<string>
+    onToggle?: (optionId: string) => void
+  } = {},
+) {
+  const category = overrides.category ?? makeCategory()
+  const categoryOptions = overrides.categoryOptions ?? CATEGORY_OPTIONS
+  const selectedOptionIds = overrides.selectedOptionIds ?? new Set<string>()
+  const onToggle = overrides.onToggle ?? vi.fn<(optionId: string) => void>()
+  const option = makeOption('o1', '循環器')
+
+  render(
+    <CardTagEditPopover
+      category={category}
+      categoryOptions={categoryOptions}
+      selectedOptionIds={selectedOptionIds}
+      onToggle={onToggle}
+      tagEditCallbacks={mockTagEditCallbacks}
+    >
+      {makeTrigger(category, option)}
+    </CardTagEditPopover>,
+  )
+
+  return { category, categoryOptions, selectedOptionIds, onToggle }
+}
+
+function openPopover() {
+  fireEvent.click(screen.getByRole('button', { name: /タグ: 分野: 循環器/ }))
+}
+
+function clickKebab(optionName: string) {
+  fireEvent.click(screen.getByRole('button', { name: `option 操作: ${optionName}` }))
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +133,7 @@ describe('CardTagEditPopover — 初期状態', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set(['o1'])}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -110,6 +160,7 @@ describe('CardTagEditPopover — trigger click で open', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set(['o1'])}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -135,6 +186,7 @@ describe('CardTagEditPopover — options 表示', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set()}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -154,6 +206,7 @@ describe('CardTagEditPopover — options 表示', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set(['o2'])}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -179,6 +232,7 @@ describe('CardTagEditPopover — multi 動作', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set()}
         onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -198,6 +252,7 @@ describe('CardTagEditPopover — multi 動作', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set()}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -224,6 +279,7 @@ describe('CardTagEditPopover — single 動作', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set(['o1'])}
         onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -252,6 +308,7 @@ describe('CardTagEditPopover — header テキスト', () => {
         categoryOptions={[option]}
         selectedOptionIds={new Set()}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
@@ -275,11 +332,200 @@ describe('CardTagEditPopover — footer link', () => {
         categoryOptions={CATEGORY_OPTIONS}
         selectedOptionIds={new Set()}
         onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
       >
         {makeTrigger(category, option)}
       </CardTagEditPopover>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
+    const link = screen.getByRole('link', { name: 'タグ管理 →' })
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute('href', '/app/tags')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 8. stage='option' で各 option row に kebab 表示
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — kebab 表示 (option stage)', () => {
+  it('option 一覧の各行に kebab ボタンが表示される', () => {
+    renderPopover()
+    openPopover()
+    expect(screen.getByRole('button', { name: 'option 操作: 循環器' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'option 操作: 腎臓' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'option 操作: 神経' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 9. option kebab click → stage='editOption'
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — kebab click → editOption stage', () => {
+  it('option kebab click で editOption stage に遷移し、 header「タグ一覧へ戻る」が表示される', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+    // option list header は消える
+    expect(screen.queryByText('分野 を編集')).not.toBeInTheDocument()
+  })
+
+  it('option kebab click で CardTagEditFields (option名 編集 input) が表示される', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
+    expect(screen.getByRole('textbox', { name: 'option名 編集' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 10.「タグ一覧へ戻る」 click → stage='option'
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — 戻るボタンで option stage に戻る', () => {
+  it('「タグ一覧へ戻る」 click で option list が再表示される', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('循環器')
+    fireEvent.click(screen.getByRole('button', { name: 'タグ一覧へ戻る' }))
+    expect(screen.getByText('分野 を編集')).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 11. Esc (editOption) → stage='option'
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — Esc で editOption → option', () => {
+  it('editOption stage で Esc を押すと option list stage に戻る', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('神経')
+    // editOption stage を確認
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+    // PopoverContent に Esc キーを発行
+    const content = screen.getByRole('textbox', { name: 'option名 編集' }).closest('[data-radix-popper-content-wrapper]')
+      ?? document.querySelector('[role="dialog"]')
+      ?? document.body
+    fireEvent.keyDown(content, { key: 'Escape' })
+    // option stage に戻る
+    expect(screen.getByText('分野 を編集')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 12. editOption rename 成功 → callback 呼出 + stage 維持 + lastError null
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — editOption rename', () => {
+  it('rename 成功: tagEditCallbacks.renameOption が呼ばれ stage は editOption のまま', async () => {
+    mockTagEditCallbacks.renameOption.mockResolvedValueOnce(undefined)
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
+    const input = screen.getByRole('textbox', { name: 'option名 編集' })
+    fireEvent.change(input, { target: { value: '泌尿器' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(mockTagEditCallbacks.renameOption).toHaveBeenCalledWith('o2', '泌尿器')
+    })
+    // editOption stage にとどまっている (back button がまだある)
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+    // error は出ていない
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('rename throw → lastError が inline 表示され stage 維持', async () => {
+    mockTagEditCallbacks.renameOption.mockRejectedValueOnce(new Error('network error'))
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
+    const input = screen.getByRole('textbox', { name: 'option名 編集' })
+    fireEvent.change(input, { target: { value: '泌尿器' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+    // stage は editOption のまま
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 13. editOption delete 成功 → deleteOption callback 呼出
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — editOption delete', () => {
+  it('Fix A-3: delete 成功: 削除 button click で即 deleteOption が呼ばれる (dialog なし)', async () => {
+    mockTagEditCallbacks.deleteOption.mockResolvedValueOnce(undefined)
+    renderPopover()
+    openPopover()
+    clickKebab('循環器')
+    // Fix A-3: option 削除は即削除 (dialog を経由しない)
+    fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    await waitFor(() => {
+      expect(mockTagEditCallbacks.deleteOption).toHaveBeenCalledWith('o1')
+    })
+    // DeleteConfirmDialog (confirm-dialog-backdrop) は開かない。
+    // (Radix Popover 自体は role="dialog" を持つが、 それは popover 本体のため除外)
+    expect(screen.queryByTestId('confirm-dialog-backdrop')).not.toBeInTheDocument()
+    // countOptionImpact は呼ばれない
+    expect(mockTagEditCallbacks.countOptionImpact).not.toHaveBeenCalled()
+  })
+
+  it('Fix A-3: delete throw → lastError=「削除に失敗しました」+ stage 維持 (dialog なし)', async () => {
+    mockTagEditCallbacks.deleteOption.mockRejectedValueOnce(new Error('fail'))
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
+    fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    // Fix A-3: 即削除で throw → 親 popover の onDelete catch が setLastError する
+    await waitFor(() => {
+      expect(mockTagEditCallbacks.deleteOption).toHaveBeenCalled()
+    })
+    // DeleteConfirmDialog は開かない
+    expect(screen.queryByTestId('confirm-dialog-backdrop')).not.toBeInTheDocument()
+    // stage は editOption のまま
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 14. popover close で全 state reset
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — popover close で state reset', () => {
+  it('editOption stage で popover を閉じ (trigger 再 click)、 再 open すると option stage に戻る', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('神経')
+    expect(screen.getByRole('button', { name: 'タグ一覧へ戻る' })).toBeInTheDocument()
+    // trigger (badge button) を再 click → toggle close。 jsdom + Radix では
+    // outside click が安定しないため、 toggle close (trigger の 2 回目 click) で代替。
+    fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
+    // popover が閉じた: 「タグ一覧へ戻る」 も option list header も消える
+    expect(screen.queryByRole('button', { name: 'タグ一覧へ戻る' })).not.toBeInTheDocument()
+    expect(screen.queryByText('分野 を編集')).not.toBeInTheDocument()
+    // 再 open
+    fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
+    // option stage に戻っている
+    expect(screen.getByText('分野 を編集')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'タグ一覧へ戻る' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NEW: 15. footer link は editOption stage でも表示される
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — footer link は editOption stage でも表示', () => {
+  it('editOption stage でも「タグ管理 →」 link が表示される', () => {
+    renderPopover()
+    openPopover()
+    clickKebab('腎臓')
     const link = screen.getByRole('link', { name: 'タグ管理 →' })
     expect(link).toBeInTheDocument()
     expect(link).toHaveAttribute('href', '/app/tags')

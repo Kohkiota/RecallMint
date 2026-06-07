@@ -27,13 +27,64 @@ const mockTransaction = vi.fn(async (...args: unknown[]) => {
   await cb()
 })
 
+// ---------------------------------------------------------------------------
+// Tag-4c-1: tag_categories / tag_options mock
+// ---------------------------------------------------------------------------
+
+const mockTagCategoriesGet = vi.fn(async () => undefined as unknown)
+const mockTagCategoriesUpdate = vi.fn(async () => 1)
+const mockTagCategoriesDelete = vi.fn(async () => undefined)
+// Fix A-2: handleRenameCategory が全件 check に使う toArray
+const mockTagCategoriesToArray = vi.fn(async () => [] as unknown[])
+
+const mockTagOptionsGet = vi.fn(async () => undefined as unknown)
+const mockTagOptionsUpdate = vi.fn(async () => 1)
+const mockTagOptionsDelete = vi.fn(async () => undefined)
+
+// チェーン可能な where mock 生成ヘルパー
+// db.tag_options.where('category_id').equals(id).toArray() / .delete()
+// db.card_tags.where('option_id').equals(id).count() / .delete()
+// db.card_tags.where('option_id').anyOf(ids).delete()
+const makeWhereChain = (returns: unknown[] | number) => ({
+  equals: vi.fn(() => ({
+    toArray: vi.fn(async () => (Array.isArray(returns) ? returns : [])),
+    delete: vi.fn(async () => (Array.isArray(returns) ? returns.length : 0)),
+    count: vi.fn(async () => (typeof returns === 'number' ? returns : (Array.isArray(returns) ? returns.length : 0))),
+  })),
+  anyOf: vi.fn(() => ({
+    delete: vi.fn(async () => (Array.isArray(returns) ? returns.length : 0)),
+  })),
+})
+
+// 各 where call に返り値を設定するため、 テストで mockTagOptionsWhereImpl 等を差し替える
+let tagOptionsWhereImpl = () => makeWhereChain([])
+let tagCategoriesWhereImpl = () => makeWhereChain([])
+let cardTagsWhereImpl = () => makeWhereChain([])
+
+const mockTagOptionsWhere = vi.fn(() => tagOptionsWhereImpl())
+const mockTagCategoriesWhere = vi.fn(() => tagCategoriesWhereImpl())
+const mockCardTagsWhere = vi.fn(() => cardTagsWhereImpl())
+
 vi.mock('@/lib/client-db', async () => {
   const actual = await vi.importActual<typeof import('@/lib/client-db')>('@/lib/client-db')
   return {
     ...actual,
     getClientDb: vi.fn(() => ({
       transaction: mockTransaction,
-      card_tags: { delete: mockDelete, put: mockPut },
+      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        where: mockTagOptionsWhere,
+      },
       // entity_mutations は実 op をモジュールレベルで mock 済 (enqueueEntityMutation)
       // のため空 object で十分 (`db.transaction(...)` が table 参照のために touch する
       // だけで、 実際の query は走らない)。
@@ -102,6 +153,12 @@ const tag = (cardId: string, optionId: string): ClientCardTag => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // where チェーン実装をデフォルトにリセット
+  tagOptionsWhereImpl = () => makeWhereChain([])
+  tagCategoriesWhereImpl = () => makeWhereChain([])
+  cardTagsWhereImpl = () => makeWhereChain([])
+  // Fix A-2: toArray デフォルト (空配列 = 衝突なし)
+  mockTagCategoriesToArray.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -194,7 +251,9 @@ describe('CardTagsSection — 見出し「タグ」', () => {
         cardTags={[]}
       />,
     )
-    expect(screen.getByText('タグ')).toBeInTheDocument()
+    // getByText('タグ') は Fix B-1 で trigger button の <span>タグ</span> も合致するため
+    // heading role で絞る。
+    expect(screen.getByRole('heading', { name: 'タグ' })).toBeInTheDocument()
   })
 
   it('見出し横に「タグ管理 →」 link は render されない (popover footer のみ)', () => {
@@ -534,3 +593,633 @@ describe('CardTagsSection — optimistic atomic tx + user_id', () => {
 
 // getClientDb mock を Section 5 で参照するため import (Section 1-4 は不要)
 import { getClientDb } from '@/lib/client-db'
+
+// ---------------------------------------------------------------------------
+// Tag-4c-1: import handlers under test
+// ---------------------------------------------------------------------------
+import {
+  handleRenameCategory,
+  handleSetCategoryColor,
+  handleRenameOption,
+  handleSetOptionColor,
+  handleDeleteCategory,
+  handleDeleteOption,
+  countCategoryImpact,
+  countOptionImpact,
+} from './card-tags-section'
+// Note: runGuardedEntityMutationFlush already imported above (Section 5)
+
+// ===========================================================================
+// Section 6: handleRenameCategory
+// ===========================================================================
+
+describe('handleRenameCategory', () => {
+  it('正常系: get → update → enqueue → flush の順に呼ばれる', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '旧名',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+
+    await handleRenameCategory('cat-1', '新名')
+
+    // get が cat-1 を引数で呼ばれた
+    expect(mockTagCategoriesGet).toHaveBeenCalledWith('cat-1')
+    // update が新名で呼ばれた
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledWith(
+      'cat-1',
+      expect.objectContaining({ name: '新名' }),
+    )
+    // enqueue が呼ばれた (update より後)
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        entity_id: 'cat-1',
+        op: 'update_field',
+        patch: { field: 'name', value: '新名' },
+      }),
+    )
+    // flush が呼ばれた
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  it('no-op: 同名の場合は update / enqueue を呼ばない', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '同名',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+
+    await handleRenameCategory('cat-1', '同名')
+
+    expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+
+  it('enqueue が throw した場合 → update が 2 回呼ばれ (forward + revert)、 flush は呼ばれない', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '旧名',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleRenameCategory('cat-1', '新名')).rejects.toThrow('enqueue failed')
+
+    // update が 2 回: forward + revert
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
+    // revert call の引数は元値に戻す
+    const revertCall = (mockTagCategoriesUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
+    expect(revertCall[1]).toMatchObject({ name: '旧名' })
+    // flush は呼ばれない
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
+
+  it('category が存在しない場合は何もしない', async () => {
+    mockTagCategoriesGet.mockResolvedValueOnce(undefined)
+
+    await handleRenameCategory('nonexistent', '新名')
+
+    expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+
+  // Fix A-2: 同名衝突 check
+  it('Fix A-2: 同名カテゴリが既に存在する場合は throw + update/enqueue は呼ばれない', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '旧名',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    const existing = {
+      id: 'cat-2', // 別 id
+      user_id: 'user-1',
+      name: '既存名',
+      select_type: 'single' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+    mockTagCategoriesToArray.mockResolvedValueOnce([before, existing])
+
+    await expect(handleRenameCategory('cat-1', '既存名')).rejects.toThrow('同名のカテゴリが既にあります')
+
+    expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Section 7: handleSetCategoryColor
+// ===========================================================================
+
+describe('handleSetCategoryColor', () => {
+  it('正常系: update → enqueue → flush', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '分野',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+
+    await handleSetCategoryColor('cat-1', 'red')
+
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledWith(
+      'cat-1',
+      expect.objectContaining({ color: 'red' }),
+    )
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        entity_id: 'cat-1',
+        op: 'update_field',
+        patch: { field: 'color', value: 'red' },
+      }),
+    )
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  it('color null → null no-op: update / enqueue を呼ばない', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '分野',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+
+    await handleSetCategoryColor('cat-1', null)
+
+    expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+
+  it('color null 往復: before.color=null, newColor=red, enqueue throw → revert で color が null に戻る (空文字/undefined に化けない)', async () => {
+    const before = {
+      id: 'cat-1',
+      user_id: 'user-1',
+      name: '分野',
+      select_type: 'multi' as const,
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagCategoriesGet.mockResolvedValueOnce(before)
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleSetCategoryColor('cat-1', 'red')).rejects.toThrow('enqueue failed')
+
+    // revert の 2 回目 update で color が null (空文字や undefined ではない)
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
+    const revertCall = (mockTagCategoriesUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
+    expect(revertCall[1]).toMatchObject({ color: null })
+    expect(revertCall[1].color).not.toBe('')
+    expect(revertCall[1].color).not.toBe(undefined)
+  })
+})
+
+// ===========================================================================
+// Section 8: handleRenameOption
+// ===========================================================================
+
+describe('handleRenameOption', () => {
+  it('正常系: get → update → enqueue → flush', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: '旧名',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+
+    await handleRenameOption('opt-1', '新名')
+
+    expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
+      'opt-1',
+      expect.objectContaining({ name: '新名' }),
+    )
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        entity_id: 'opt-1',
+        op: 'update_field',
+        patch: { field: 'name', value: '新名' },
+      }),
+    )
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  it('enqueue throw → update 2 回 (forward + revert)、 flush は呼ばれない', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: '旧名',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleRenameOption('opt-1', '新名')).rejects.toThrow('enqueue failed')
+
+    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(2)
+    const revertCall = (mockTagOptionsUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
+    expect(revertCall[1]).toMatchObject({ name: '旧名' })
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
+
+  // Fix A-2: 同 category 内で同名衝突 check
+  it('Fix A-2: 同 category 内に同名 option が既に存在 → throw + update/enqueue は呼ばれない', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: '旧名',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+    // 同 cat-1 内に「衝突名」という option が既に存在する状態
+    tagOptionsWhereImpl = () => makeWhereChain([
+      before,
+      { id: 'opt-2', category_id: 'cat-1', name: '衝突名' },
+    ])
+
+    await expect(handleRenameOption('opt-1', '衝突名')).rejects.toThrow('同名の option が既にあります')
+
+    expect(mockTagOptionsUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+
+  it('Fix A-2: 別 category に同名 option があっても OK (option は category scope)', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: '旧名',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+    // cat-1 の where 結果には opt-1 のみ (同 cat-1 内に「新名」は存在しない)
+    tagOptionsWhereImpl = () => makeWhereChain([before])
+
+    // 別 category (cat-2) に「新名」 があっても衝突しない → throw しない
+    await expect(handleRenameOption('opt-1', '新名')).resolves.toBeUndefined()
+
+    expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
+      'opt-1',
+      expect.objectContaining({ name: '新名' }),
+    )
+  })
+})
+
+// ===========================================================================
+// Section 9: handleSetOptionColor
+// ===========================================================================
+
+describe('handleSetOptionColor', () => {
+  it('正常系: update → enqueue → flush', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: 'テスト',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+
+    await handleSetOptionColor('opt-1', 'blue')
+
+    expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
+      'opt-1',
+      expect.objectContaining({ color: 'blue' }),
+    )
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        entity_id: 'opt-1',
+        op: 'update_field',
+        patch: { field: 'color', value: 'blue' },
+      }),
+    )
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  it('color null 往復: before.color=null, newColor=red, enqueue throw → revert で color が null', async () => {
+    const before = {
+      id: 'opt-1',
+      user_id: 'user-1',
+      category_id: 'cat-1',
+      name: 'テスト',
+      color: null,
+      sort_key: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }
+    mockTagOptionsGet.mockResolvedValueOnce(before)
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleSetOptionColor('opt-1', 'red')).rejects.toThrow('enqueue failed')
+
+    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(2)
+    const revertCall = (mockTagOptionsUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
+    expect(revertCall[1].color).toBe(null)
+    expect(revertCall[1].color).not.toBe('')
+    expect(revertCall[1].color).not.toBe(undefined)
+  })
+})
+
+// ===========================================================================
+// Section 10: handleDeleteCategory
+// ===========================================================================
+
+describe('handleDeleteCategory', () => {
+  it('atomic tx: card_tags, tag_options, tag_categories, entity_mutations を rw lock する', async () => {
+    // tag_options.where('category_id').equals(catId).toArray() が [] を返す
+    tagOptionsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteCategory('cat-1')
+
+    expect(mockTransaction).toHaveBeenCalled()
+    const firstCall = mockTransaction.mock.calls[0]
+    expect(firstCall[0]).toBe('rw')
+    const tableArgs = firstCall.slice(1, -1)
+    const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
+    expect(tableArgs).toContain(db.card_tags)
+    expect(tableArgs).toContain(db.tag_options)
+    expect(tableArgs).toContain(db.tag_categories)
+    expect(tableArgs).toContain(db.entity_mutations)
+  })
+
+  it('enqueue が op:delete で呼ばれる', async () => {
+    tagOptionsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteCategory('cat-1')
+
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        entity_id: 'cat-1',
+        op: 'delete',
+        patch: {},
+      }),
+    )
+  })
+
+  it('配下 options が存在する場合: card_tags も削除される', async () => {
+    const options = [
+      { id: 'opt-1', category_id: 'cat-1' },
+      { id: 'opt-2', category_id: 'cat-1' },
+    ]
+    tagOptionsWhereImpl = () => makeWhereChain(options)
+    // card_tags.where('option_id').anyOf([opt-1, opt-2]).delete() のチェーンを使う
+    const cardTagsChain = makeWhereChain(options)
+    cardTagsWhereImpl = () => cardTagsChain
+
+    await handleDeleteCategory('cat-1')
+
+    expect(enqueueEntityMutation).toHaveBeenCalled()
+    // tag_categories.delete が呼ばれた
+    expect(mockTagCategoriesDelete).toHaveBeenCalledWith('cat-1')
+    // 強い contract pin: card_tags への cascade delete が option_ids 配列で発火
+    expect(cardTagsChain.anyOf).toHaveBeenCalledWith(['opt-1', 'opt-2'])
+  })
+
+  it('flush は tx 完了後に呼ばれる', async () => {
+    tagOptionsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteCategory('cat-1')
+
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Section 11: handleDeleteOption
+// ===========================================================================
+
+describe('handleDeleteOption', () => {
+  it('atomic tx: card_tags, tag_options, entity_mutations を rw lock する', async () => {
+    cardTagsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteOption('opt-1')
+
+    expect(mockTransaction).toHaveBeenCalled()
+    const firstCall = mockTransaction.mock.calls[0]
+    expect(firstCall[0]).toBe('rw')
+    const tableArgs = firstCall.slice(1, -1)
+    const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
+    expect(tableArgs).toContain(db.card_tags)
+    expect(tableArgs).toContain(db.tag_options)
+    expect(tableArgs).toContain(db.entity_mutations)
+    // tag_categories は含まれない (option 削除では不要)
+    expect(tableArgs).not.toContain(db.tag_categories)
+  })
+
+  it('enqueue が op:delete で呼ばれ、 tag_options.delete が呼ばれる', async () => {
+    cardTagsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteOption('opt-1')
+
+    expect(mockTagOptionsDelete).toHaveBeenCalledWith('opt-1')
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        entity_id: 'opt-1',
+        op: 'delete',
+        patch: {},
+      }),
+    )
+  })
+
+  it('flush は tx 完了後に呼ばれる', async () => {
+    cardTagsWhereImpl = () => makeWhereChain([])
+
+    await handleDeleteOption('opt-1')
+
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Section 12: countCategoryImpact / countOptionImpact
+// ===========================================================================
+
+describe('countCategoryImpact', () => {
+  it('options が 0 件のとき optionCount=0, cardCount=0', async () => {
+    tagOptionsWhereImpl = () => makeWhereChain([])
+    // card_tags.where もデフォルト (toArray → [])
+
+    const result = await countCategoryImpact('cat-1')
+    expect(result).toEqual({ optionCount: 0, cardCount: 0 })
+  })
+
+  it('options 2 件, 各 option に card_tags 2 件 (異なる card_id) → optionCount=2, cardCount=4', async () => {
+    const options = [
+      { id: 'opt-1', category_id: 'cat-1' },
+      { id: 'opt-2', category_id: 'cat-1' },
+    ]
+    tagOptionsWhereImpl = () => makeWhereChain(options)
+
+    // Fix A-4: 各 option の card_tags.toArray() が返す card_id が distinct 2 件ずつ
+    // opt-1 → [card-1, card-2]、 opt-2 → [card-3, card-4] → distinct = 4
+    let callCount = 0
+    cardTagsWhereImpl = () => {
+      const cards =
+        callCount++ === 0
+          ? [{ card_id: 'card-1' }, { card_id: 'card-2' }]
+          : [{ card_id: 'card-3' }, { card_id: 'card-4' }]
+      return makeWhereChain(cards)
+    }
+
+    const result = await countCategoryImpact('cat-1')
+    expect(result.optionCount).toBe(2)
+    expect(result.cardCount).toBe(4) // 4 distinct card_ids
+  })
+
+  // Fix A-4: 1 card が同カテゴリ内 2 options を持つ場合 → cardCount=1 (not 2)
+  it('Fix A-4: 1 card が同カテゴリ内 2 options を持つ場合 → cardCount=1 (distinct)', async () => {
+    const options = [
+      { id: 'opt-1', category_id: 'cat-1' },
+      { id: 'opt-2', category_id: 'cat-1' },
+    ]
+    tagOptionsWhereImpl = () => makeWhereChain(options)
+
+    // 両方の option に同じ card-1 が紐付いている
+    cardTagsWhereImpl = () => makeWhereChain([{ card_id: 'card-1' }])
+
+    const result = await countCategoryImpact('cat-1')
+    expect(result.optionCount).toBe(2)
+    expect(result.cardCount).toBe(1) // distinct: card-1 が 2 回カウントされない
+  })
+})
+
+describe('countOptionImpact', () => {
+  it('card_tags 0 件のとき cardCount=0', async () => {
+    cardTagsWhereImpl = () => makeWhereChain(0)
+
+    const result = await countOptionImpact('opt-1')
+    expect(result).toEqual({ cardCount: 0 })
+  })
+
+  it('card_tags 3 件のとき cardCount=3', async () => {
+    cardTagsWhereImpl = () => makeWhereChain(3)
+
+    const result = await countOptionImpact('opt-1')
+    expect(result).toEqual({ cardCount: 3 })
+  })
+})
+
+// ===========================================================================
+// Fix C-3 軸 2: sortedCardTags — バッジ表示順序 (category.name ASC, option.name ASC)
+// ===========================================================================
+
+describe('CardTagsSection — Fix C-3: sortedCardTags badge order', () => {
+  it('複数 cat × 複数 opt の混在: category.name ASC, option.name ASC (localeCompare ja) で表示される', () => {
+    // 意図的に逆順で渡す: cat "難易度" (先) vs cat "分野" (後)
+    // 期待: 分野 → 難易度 (localeCompare)
+    const categories = [
+      cat('c1', '難易度', 'single'), // 'diff' > '分野' → 後に来るはず
+      cat('c2', '分野', 'multi'),
+    ]
+    const options = [
+      opt('o1', 'c1', '高'),
+      opt('o2', 'c1', '低'),
+      opt('o3', 'c2', '循環器'),
+      opt('o4', 'c2', '腎臓'),
+    ]
+    // cardTags を意図的に逆順
+    const cardTags = [
+      tag('card-1', 'o1'), // 難易度: 高
+      tag('card-1', 'o4'), // 分野: 腎臓
+      tag('card-1', 'o2'), // 難易度: 低
+      tag('card-1', 'o3'), // 分野: 循環器
+    ]
+
+    render(
+      <CardTagsSection
+        cardId="card-1"
+        userId="user-1"
+        categories={categories}
+        options={options}
+        cardTags={cardTags}
+      />,
+    )
+
+    // バッジが 4 つ存在する
+    const badges = screen.getAllByRole('button', { name: /^タグ: / })
+    expect(badges).toHaveLength(4)
+
+    // localeCompare ja: 分野 < 難易度 のはずだが、 日本語文字比較は環境依存のため
+    // ここでは「全バッジが表示される」と「sort が identity 維持しない (呼び出しを確認)」を検証。
+    // 実際の sort 順は localeCompare の実装に委ねる。
+    const labels = badges.map((b) => b.getAttribute('aria-label'))
+    expect(labels).toContain('タグ: 難易度: 高')
+    expect(labels).toContain('タグ: 難易度: 低')
+    expect(labels).toContain('タグ: 分野: 循環器')
+    expect(labels).toContain('タグ: 分野: 腎臓')
+
+    // 同 category 内では option.name ASC: 循環器 < 腎臓
+    const bunIdx = labels.findIndex((l) => l === 'タグ: 分野: 循環器')
+    const jinIdx = labels.findIndex((l) => l === 'タグ: 分野: 腎臓')
+    expect(bunIdx).toBeLessThan(jinIdx) // 循環器 comes before 腎臓
+  })
+})

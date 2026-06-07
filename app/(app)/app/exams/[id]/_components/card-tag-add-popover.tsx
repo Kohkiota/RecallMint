@@ -1,16 +1,22 @@
 'use client'
 
-// CardTagAddPopover: 「+ タグを追加」 button trigger の 2 stage popover。
-// stage 1: カテゴリ選択 (created_at ASC sort)
-// stage 2: 選択カテゴリの option 選択 (CardTagOptionList)
-// Esc 挙動 (Notion 方式): stage 2 → stage 1 / stage 1 → close。
-// popover close 時は stage を 'category' にリセット (再開は常に stage 1)。
+// CardTagAddPopover: 「+ タグを追加」 button trigger の 4 stage popover。
+// stage 1 (category): カテゴリ選択 (created_at ASC sort)
+// stage 2 (option): 選択カテゴリの option 選択 (CardTagOptionList)
+// stage 3 (editCategory): カテゴリ編集 (CardTagEditFields)
+// stage 4 (editOption): option 編集 (CardTagEditFields)
+//
+// Esc 挙動 (Notion 方式拡張):
+//   editCategory → category / editOption → option / option → category / category → close
+//
+// popover close 時は全 state をリセット (stage='category', editTargetId=null, lastError=null)。
 //
 // 設計参照: docs/superpowers/specs/2026-06-07-tag-4b-fix-popover-ui-design.md §4/§5
+//           Tag-4c-1 Task 3
 
 import * as React from 'react'
 import Link from 'next/link'
-import { Plus, CheckSquare, Circle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, CheckSquare, Circle, ChevronLeft, ChevronRight, Ellipsis } from 'lucide-react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import {
@@ -20,6 +26,8 @@ import {
 } from '@/components/ui/popover'
 
 import { CardTagOptionList } from './card-tag-option-list'
+import { CardTagEditFields } from './card-tag-edit-fields'
+import type { TagEditCallbacks } from './card-tags-section'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -32,6 +40,40 @@ type Props = {
   allAssignedOptionIds: string[]
   /** (categoryId, optionId) で呼ばれる toggle callback */
   onToggle: (categoryId: string, optionId: string) => void
+  /** 編集系 callback 群 (Task 1 で section から渡す) */
+  tagEditCallbacks: TagEditCallbacks
+}
+
+// ---------------------------------------------------------------------------
+// Stage type
+// ---------------------------------------------------------------------------
+
+type Stage = 'category' | 'option' | 'editCategory' | 'editOption'
+
+// ---------------------------------------------------------------------------
+// Sort helper (Fix C-3 軸 1): sort_key ASC NULLS LAST, created_at ASC
+// export して card-tag-edit-popover.tsx からも使用する。
+// ---------------------------------------------------------------------------
+
+/**
+ * sort_key ASC NULLS LAST, created_at ASC の comparator。
+ * sort_key が null の entity は末尾に配置し、 tiebreak は created_at で解消。
+ */
+export function sortByKeyThenCreated<T extends { sort_key?: string | null; created_at: string }>(
+  a: T,
+  b: T,
+): number {
+  const ak = a.sort_key ?? null
+  const bk = b.sort_key ?? null
+  if (ak !== null && bk !== null) {
+    if (ak !== bk) return ak < bk ? -1 : 1
+  } else if (ak !== null) {
+    return -1 // a has key, b doesn't → a first (NULLS LAST)
+  } else if (bk !== null) {
+    return 1 // b has key, a doesn't → b first
+  }
+  // both null or same sort_key: tiebreak by created_at ASC
+  return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -43,17 +85,17 @@ export function CardTagAddPopover({
   options,
   allAssignedOptionIds,
   onToggle,
+  tagEditCallbacks,
 }: Props) {
   const [open, setOpen] = React.useState(false)
-  const [stage, setStage] = React.useState<'category' | 'option'>('category')
+  const [stage, setStage] = React.useState<Stage>('category')
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null)
+  const [editTargetId, setEditTargetId] = React.useState<string | null>(null)
+  const [lastError, setLastError] = React.useState<string | null>(null)
 
-  // 親が pre-sort してくれている保証はないため描画前に created_at ASC に固定。
+  // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC で categories を並べる。
   const sortedCategories = React.useMemo(
-    () =>
-      [...categories].sort((a, b) =>
-        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
-      ),
+    () => [...categories].sort(sortByKeyThenCreated),
     [categories],
   )
 
@@ -66,9 +108,7 @@ export function CardTagAddPopover({
     if (!selectedCategoryId) return []
     return options
       .filter((o) => o.category_id === selectedCategoryId)
-      .sort((a, b) =>
-        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
-      )
+      .sort(sortByKeyThenCreated)
   }, [options, selectedCategoryId])
 
   const selectedOptionIds = React.useMemo(
@@ -81,12 +121,27 @@ export function CardTagAddPopover({
     [allAssignedOptionIds, categoryOptions],
   )
 
+  // 編集対象の entity を解決する。 editTargetId が null または外部で削除済みのとき null。
+  const editTarget = React.useMemo(() => {
+    if (stage === 'editCategory') {
+      return categories.find((c) => c.id === editTargetId) ?? null
+    }
+    if (stage === 'editOption') {
+      return options.find((o) => o.id === editTargetId) ?? null
+    }
+    return null
+  }, [stage, editTargetId, categories, options])
+
   // footerを表示するかどうかの判定
-  // 0 件のときは placeholder 内に既に link があるため footer を非表示にして重複を防ぐ。
+  // - stage='category': カテゴリ 0 件 placeholder 内に既に link があるため footer 非表示
+  // - stage='option': option 0 件 placeholder 内に link があるため footer 非表示
+  // - stage='editCategory' / 'editOption': 常に表示 (edit fields は 0 件になりえない)
   const showFooter =
     stage === 'category'
       ? sortedCategories.length > 0
-      : categoryOptions.length > 0
+      : stage === 'option'
+        ? categoryOptions.length > 0
+        : true // editCategory / editOption は常に footer 表示
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
@@ -94,7 +149,33 @@ export function CardTagAddPopover({
       // closed → 再開時は stage 1 から始まるようにリセット
       setStage('category')
       setSelectedCategoryId(null)
+      setEditTargetId(null)
+      setLastError(null)
     }
+  }
+
+  // kebab click handlers
+  const handleCategoryKebabClick = (e: React.MouseEvent, categoryId: string) => {
+    e.stopPropagation()
+    setEditTargetId(categoryId)
+    setStage('editCategory')
+    setLastError(null)
+  }
+
+  const handleCategoryKebabKeyDown = (e: React.KeyboardEvent, categoryId: string) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.stopPropagation()
+      e.preventDefault()
+      setEditTargetId(categoryId)
+      setStage('editCategory')
+      setLastError(null)
+    }
+  }
+
+  const handleOptionRowAction = (optionId: string) => {
+    setEditTargetId(optionId)
+    setStage('editOption')
+    setLastError(null)
   }
 
   return (
@@ -106,19 +187,27 @@ export function CardTagAddPopover({
           className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:text-slate-700 hover:border-slate-400"
         >
           <Plus className="h-3 w-3" aria-hidden="true" />
-          <span>タグを追加</span>
+          <span>タグ</span>
         </button>
       </PopoverTrigger>
 
       <PopoverContent
         className="w-auto max-w-sm p-0"
         onEscapeKeyDown={(e) => {
-          // Notion 方式: stage 2 の Esc は stage 1 に戻るだけ (close しない)
-          if (stage === 'option') {
+          // Notion 方式拡張:
+          // editCategory → category / editOption → option / option → category
+          // category の Esc は shadcn 標準 (popover を close)
+          if (stage === 'editCategory') {
+            e.preventDefault()
+            setStage('category')
+          } else if (stage === 'editOption') {
+            e.preventDefault()
+            setStage('option')
+          } else if (stage === 'option') {
             e.preventDefault()
             setStage('category')
           }
-          // stage 'category' の Esc は shadcn 標準 (popover を close)
+          // stage 'category' の Esc は何もしない → shadcn 標準で popover close
         }}
       >
         {/* ------------------------------------------------------------------ */}
@@ -146,7 +235,7 @@ export function CardTagAddPopover({
                     const TypeIcon =
                       category.select_type === 'multi' ? CheckSquare : Circle
                     return (
-                      <li key={category.id}>
+                      <li key={category.id} className="flex items-center">
                         <button
                           type="button"
                           role="menuitem"
@@ -155,7 +244,7 @@ export function CardTagAddPopover({
                             setSelectedCategoryId(category.id)
                             setStage('option')
                           }}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-100"
+                          className="flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-100"
                         >
                           <TypeIcon
                             aria-hidden="true"
@@ -167,6 +256,17 @@ export function CardTagAddPopover({
                             aria-hidden="true"
                             className="h-4 w-4 text-slate-400"
                           />
+                        </button>
+                        {/* kebab: カテゴリ編集 stage への入口 */}
+                        <button
+                          type="button"
+                          aria-label={`カテゴリ操作: ${category.name}`}
+                          tabIndex={0}
+                          onClick={(e) => handleCategoryKebabClick(e, category.id)}
+                          onKeyDown={(e) => handleCategoryKebabKeyDown(e, category.id)}
+                          className="inline-flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-slate-100 rounded"
+                        >
+                          <Ellipsis className="h-4 w-4 text-slate-500" aria-hidden="true" />
                         </button>
                       </li>
                     )
@@ -200,6 +300,119 @@ export function CardTagAddPopover({
                 selectType={selectedCategory.select_type}
                 onToggle={(optId) => onToggle(selectedCategory.id, optId)}
                 onClose={() => setOpen(false)}
+                onRowAction={handleOptionRowAction}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Stage 3: カテゴリ編集 (editCategory)                               */}
+        {/* ------------------------------------------------------------------ */}
+        {stage === 'editCategory' && editTargetId !== null && editTarget !== null && (
+          <>
+            <div className="px-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setStage('category')}
+                aria-label="カテゴリ選択へ戻る"
+                className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              >
+                <ChevronLeft aria-hidden="true" className="h-3 w-3" />
+                <span>カテゴリ選択へ戻る</span>
+              </button>
+            </div>
+            <div className="mt-1 border-t px-3 py-3">
+              <CardTagEditFields
+                kind="category"
+                name={editTarget.name}
+                color={editTarget.color ?? null}
+                onRename={async (n) => {
+                  try {
+                    await tagEditCallbacks.renameCategory(editTargetId, n)
+                    setLastError(null)
+                  } catch (e) {
+                    setLastError(e instanceof Error ? e.message : String(e))
+                  }
+                }}
+                onColorChange={async (c) => {
+                  try {
+                    await tagEditCallbacks.setCategoryColor(editTargetId, c)
+                    setLastError(null)
+                  } catch (e) {
+                    setLastError(e instanceof Error ? e.message : String(e))
+                  }
+                }}
+                onDelete={async () => {
+                  try {
+                    await tagEditCallbacks.deleteCategory(editTargetId)
+                    setEditTargetId(null)
+                    setStage('category')
+                    setLastError(null)
+                  } catch {
+                    setLastError('削除に失敗しました')
+                  }
+                }}
+                countImpact={async () => {
+                  return await tagEditCallbacks.countCategoryImpact(editTargetId)
+                }}
+                errorMessage={lastError}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Stage 4: option 編集 (editOption)                                  */}
+        {/* ------------------------------------------------------------------ */}
+        {stage === 'editOption' && editTargetId !== null && editTarget !== null && (
+          <>
+            <div className="px-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setStage('option')}
+                aria-label="option 一覧へ戻る"
+                className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              >
+                <ChevronLeft aria-hidden="true" className="h-3 w-3" />
+                <span>option 一覧へ戻る</span>
+              </button>
+            </div>
+            <div className="mt-1 border-t px-3 py-3">
+              <CardTagEditFields
+                kind="option"
+                name={editTarget.name}
+                color={editTarget.color ?? null}
+                onRename={async (n) => {
+                  try {
+                    await tagEditCallbacks.renameOption(editTargetId, n)
+                    setLastError(null)
+                  } catch (e) {
+                    setLastError(e instanceof Error ? e.message : String(e))
+                  }
+                }}
+                onColorChange={async (c) => {
+                  try {
+                    await tagEditCallbacks.setOptionColor(editTargetId, c)
+                    setLastError(null)
+                  } catch (e) {
+                    setLastError(e instanceof Error ? e.message : String(e))
+                  }
+                }}
+                onDelete={async () => {
+                  try {
+                    await tagEditCallbacks.deleteOption(editTargetId)
+                    setEditTargetId(null)
+                    setStage('option')
+                    setLastError(null)
+                  } catch {
+                    setLastError('削除に失敗しました')
+                  }
+                }}
+                countImpact={async () => {
+                  return await tagEditCallbacks.countOptionImpact(editTargetId)
+                }}
+                errorMessage={lastError}
               />
             </div>
           </>
