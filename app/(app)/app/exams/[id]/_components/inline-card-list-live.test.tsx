@@ -11,20 +11,47 @@
 //   resolve 後は Dexie mirror が単一の真実 (initialCards に在って mirror に無い
 //   card は resolve 後に消える = length===0 永続 fallback でないことの証明)
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   render,
   screen,
   cleanup,
+  fireEvent,
   waitFor,
   act,
 } from '@testing-library/react'
-import { getClientDb, type ClientCard } from '@/lib/client-db'
+import {
+  getClientDb,
+  type ClientCard,
+  type ClientTagCategory,
+  type ClientTagOption,
+  type ClientCardTag,
+} from '@/lib/client-db'
 import type { ExamDetailCard } from '@/lib/exams/list'
 
 // 本 test は表示 source (Dexie mirror live-read) のみ検証、 編集経路は別 test で
 // 網羅。 InlineCardList とその子は server action / pull / next/navigation を
 // 一切 import しないため (Task 4.x local-first cutover 済)、 mock は不要。
+//
+// Tag-4b Task 3 で tag mutation 経路 (enqueue / flush) も配線するため、 sync 層は
+// spy mock する (実 mutation を outbox に積まずに UI assertion のみ検証)。
+const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
+  mockEnqueue: vi.fn(async () => ({}) as never),
+  mockFlush: vi.fn(async () => 'no-pending' as const),
+}))
+
+vi.mock('@/lib/sync/entity-mutations', async () => {
+  const actual = await vi.importActual<
+    typeof import('@/lib/sync/entity-mutations')
+  >('@/lib/sync/entity-mutations')
+  return {
+    ...actual,
+    enqueueEntityMutation: mockEnqueue,
+  }
+})
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
+}))
 
 import { InlineCardList } from './inline-card-list'
 
@@ -64,12 +91,66 @@ function fakeClientCard(overrides?: Partial<ClientCard>): ClientCard {
 }
 
 beforeEach(async () => {
-  await getClientDb().cards.clear()
+  vi.clearAllMocks()
+  const db = getClientDb()
+  await db.cards.clear()
+  await db.tag_categories.clear()
+  await db.tag_options.clear()
+  await db.card_tags.clear()
+  await db.entity_mutations.clear()
 })
 
 afterEach(() => {
   cleanup()
 })
+
+// Tag-4b Task 3 fixture: tag mirror seed 用 factory。
+const TAG_USER_ID = 'user-1'
+
+function makeCategory(
+  id: string,
+  name: string,
+  selectType: 'single' | 'multi',
+  createdAt: string,
+): ClientTagCategory {
+  return {
+    id,
+    user_id: TAG_USER_ID,
+    name,
+    select_type: selectType,
+    color: null,
+    sort_key: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+  }
+}
+
+function makeOption(
+  id: string,
+  categoryId: string,
+  name: string,
+  createdAt = '2026-06-01T00:00:00.000Z',
+): ClientTagOption {
+  return {
+    id,
+    user_id: TAG_USER_ID,
+    category_id: categoryId,
+    name,
+    color: null,
+    sort_key: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+  }
+}
+
+function makeCardTag(cardId: string, optionId: string): ClientCardTag {
+  return {
+    card_id: cardId,
+    option_id: optionId,
+    user_id: TAG_USER_ID,
+    created_at: '2026-06-01T00:00:00.000Z',
+  }
+}
 
 describe('InlineCardList Dexie live-read (Task 4.1)', () => {
   it('mirror を seed → title / 問題文 が表示される', async () => {
@@ -319,5 +400,151 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
     expect(
       screen.getByRole('heading', { name: 'カード (2 件)' }),
     ).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tag-4b Task 3: 4 store 一括 subscribe + CardTagsSection 配置の統合 test
+// ---------------------------------------------------------------------------
+//
+// 検証観点:
+// - 親が cards + tag_categories + tag_options + card_tags の 4 store を 1 useLiveQuery
+//   で読み、 各 card listitem に <CardTagsSection /> を render する
+// - カテゴリ 0 件: 全 card の section で「タグ管理ページでカテゴリを作成」 placeholder
+// - カテゴリ ≥1 件: 各 card に カテゴリ名 + 付与済 pill が描画される
+// - cardTags は card_id 別に分離: card-1 のタグが card-2 の section には現れない
+// - tag mutation 経路 (multi/single 統合動作): pill 削除 → IDB 即時消滅 + enqueue + flush
+describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', () => {
+  it('各 card listitem の title 行下に「タグ」 section が描画される', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+      fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
+    ])
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+      expect(screen.getByText('問2')).toBeInTheDocument()
+    })
+    // 「タグ」 見出しが card 数だけ存在 (CardTagsSection の <h3>)
+    const tagHeadings = screen.getAllByRole('heading', { name: 'タグ' })
+    expect(tagHeadings).toHaveLength(2)
+    // 「タグ管理 →」 link は card ごとに 1 つ表示される (常時表示)
+    const tagsLinks = screen.getAllByRole('link', { name: /タグ管理/ })
+    expect(tagsLinks).toHaveLength(2)
+    expect(tagsLinks[0]).toHaveAttribute('href', '/app/tags')
+  })
+
+  it('カテゴリ 0 件: 全 card の section に placeholder が表示される', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+      fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
+    ])
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+    })
+    // 各 card の section に placeholder
+    const placeholders = screen.getAllByText(
+      /タグ管理ページでカテゴリを作成/,
+    )
+    expect(placeholders).toHaveLength(2)
+  })
+
+  it('カテゴリ ≥1 件: 各 card に カテゴリ名 + 付与 pill が描画される (card_id 別分離)', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+      fakeClientCard({ id: 'c2', exam_id: 'exam-1', title: '問2' }),
+    ])
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-1', '分野', 'multi', '2026-06-01T00:00:00.000Z'),
+    ])
+    await db.tag_options.bulkPut([
+      makeOption('opt-1', 'cat-1', '循環器'),
+      makeOption('opt-2', 'cat-1', '腎'),
+    ])
+    // card-1 だけに opt-1 (循環器) を付与、 card-2 には何も付与しない
+    await db.card_tags.bulkPut([makeCardTag('c1', 'opt-1')])
+
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+    })
+    // カテゴリ名「分野」 は card 数だけ表示 (各 row に見出し)
+    const sectionNames = screen.getAllByText('分野')
+    expect(sectionNames.length).toBeGreaterThanOrEqual(2)
+    // card-1 にだけ 循環器 pill が出る (card_id 別分離の証明)
+    const pills = screen.getAllByText('循環器')
+    expect(pills).toHaveLength(1)
+  })
+
+  it('tag mirror の live 反映: 後から card_tags を put すると pill が追加される', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+    ])
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-1', '分野', 'multi', '2026-06-01T00:00:00.000Z'),
+    ])
+    await db.tag_options.bulkPut([makeOption('opt-1', 'cat-1', '循環器')])
+
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+    })
+    // 初期は pill 無し
+    expect(screen.queryByText('循環器')).not.toBeInTheDocument()
+    // 後から付与
+    await act(async () => {
+      await db.card_tags.put(makeCardTag('c1', 'opt-1'))
+    })
+    await waitFor(() => {
+      expect(screen.getByText('循環器')).toBeInTheDocument()
+    })
+  })
+
+  it('multi 経路: pill の「タグ削除」 click → IDB から該当 card_tag 即時消滅 + enqueue + flush', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      fakeClientCard({ id: 'c1', exam_id: 'exam-1', title: '問1' }),
+    ])
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-1', '分野', 'multi', '2026-06-01T00:00:00.000Z'),
+    ])
+    await db.tag_options.bulkPut([
+      makeOption('opt-1', 'cat-1', '循環器'),
+      makeOption('opt-2', 'cat-1', '腎'),
+    ])
+    await db.card_tags.bulkPut([
+      makeCardTag('c1', 'opt-1'),
+      makeCardTag('c1', 'opt-2'),
+    ])
+
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await screen.findByText('循環器')
+    // 「タグ削除: 循環器」 button click
+    const deletePill = await screen.findByRole('button', {
+      name: 'タグ削除: 循環器',
+    })
+    fireEvent.click(deletePill)
+
+    // IDB から該当 card_tag のみ消滅 (opt-2 は残る)
+    await waitFor(async () => {
+      expect(await db.card_tags.get(['c1', 'opt-1'])).toBeUndefined()
+    })
+    expect(await db.card_tags.get(['c1', 'opt-2'])).toBeDefined()
+    // enqueue + flush 発火
+    expect(mockEnqueue).toHaveBeenCalled()
+    expect(mockFlush).toHaveBeenCalled()
   })
 })

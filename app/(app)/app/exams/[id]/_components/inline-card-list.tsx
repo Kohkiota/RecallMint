@@ -5,12 +5,18 @@
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import type { CardOption } from '@/lib/db/schema'
-import { getClientDb, type ClientCard } from '@/lib/client-db'
+import {
+  getClientDb,
+  type ClientCard,
+  type ClientCardTag,
+  type ClientTagCategory,
+  type ClientTagOption,
+} from '@/lib/client-db'
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
 import { newId, enqueueEntityMutation } from '@/lib/sync/entity-mutations'
@@ -21,6 +27,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
 import { DeleteCardButton } from './delete-card-button'
+import { CardTagsSection } from './card-tags-section'
 
 type InlineCardListProps = {
   // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
@@ -73,18 +80,53 @@ export function InlineCardList({
   // 表示の真実は Dexie cards mirror の直読み (exam 単位 + owner-scope + server sort)。
   // 詳細滞在中のみ購読 (component unmount で dexie-react-hooks が解除)。 deps が変化
   // するまで同一 subscription。
-  const liveCards = useLiveQuery(async () => {
+  //
+  // Tag-4b Task 3: cards に加えて tag_categories / tag_options / card_tags の 3 store
+  // も同 subscription で一括 pull する。 4 store を 1 つの useLiveQuery にまとめることで、
+  // タグ side の mirror 更新 (pull / mutation の楽観反映) 時に同 tick で再描画され、
+  // 「cards が live で更新されたが tag pill だけ stale」 のような ordering 問題を避ける。
+  // deps は `[examId, userId]` のまま (4 store の購読は dexie-react-hooks が自動検出)。
+  const liveData = useLiveQuery(async () => {
     const db = getClientDb()
-    const rows = await db.cards.where('exam_id').equals(examId).toArray()
-    return rows
+    const [cardRows, categories, options, cardTags] = await Promise.all([
+      db.cards.where('exam_id').equals(examId).toArray(),
+      db.tag_categories.toArray(),
+      db.tag_options.toArray(),
+      db.card_tags.toArray(),
+    ])
+    const filteredCards = cardRows
       .filter((c) => c.user_id === userId)
       .sort(sortLikeServer)
-      .map(toExamDetailCard)
+    const cards = filteredCards.map(toExamDetailCard)
+    // card_id 別にグループ化。 各 card row 描画時は `.get(cardId) ?? []` で取り出す。
+    const tagsByCardId = new Map<string, ClientCardTag[]>()
+    for (const t of cardTags) {
+      const arr = tagsByCardId.get(t.card_id) ?? []
+      arr.push(t)
+      tagsByCardId.set(t.card_id, arr)
+    }
+    return { cards, categories, options, tagsByCardId }
   }, [examId, userId])
 
   // live query 未解決 (undefined) の間だけ server 由来の initialCards で bootstrap。
   // 解決後 (空配列含む) は mirror を信頼。 二層 state は持たない。
-  const cards = liveCards ?? initialCards
+  const cards = liveData?.cards ?? initialCards
+  // categories / options は useMemo で同 ref 安定化。 useLiveQuery 戻り値は毎 tick で
+  // 新 ref のため、 子 CardTagsSection を React.memo しても素のままでは毎回 prop ref が
+  // 変わり memo が無効化される。 同じ deps (= 同 ref) のときは同 ref を返すよう wrap。
+  // 過度な追い込み (deep equal / hash) は plan 警告通り入れない。
+  const categories = useMemo<ClientTagCategory[]>(
+    () => liveData?.categories ?? [],
+    [liveData?.categories],
+  )
+  const options = useMemo<ClientTagOption[]>(
+    () => liveData?.options ?? [],
+    [liveData?.options],
+  )
+  // tagsByCardId は Map (毎回新 ref) だが、 子側で `.get(cardId) ?? []` で配列を取り出し、
+  // 配列 ref は cardTags 内容が同じなら useLiveQuery の内容ベース差分検知に依存して
+  // 同 ref で返る前提。 子 memo は cardTags (= 取り出した配列) の ref で比較する。
+  const tagsByCardId = liveData?.tagsByCardId ?? new Map<string, ClientCardTag[]>()
   // 追加直後に採番した client id。 mirror insert + useLiveQuery 再描画で該当 card の
   // 問題文 cell に autoEditOnMount を当て、 自動で編集モードにするための marker。
   // client 採番のため server round-trip なしで即時に edit mode へ入れる
@@ -210,6 +252,19 @@ export function InlineCardList({
                 <div className="shrink-0">
                   <DeleteCardButton cardId={card.id} />
                 </div>
+              </div>
+
+              <div>
+                {/* Tag-4b Task 3: title 行直下に「タグ」 section を配置。 categories /
+                    options は親で useMemo 安定化、 cardTags は本 card 分だけを Map から
+                    取り出して渡すため、 他 card にタグを付けても本 card の section は
+                    React.memo (CardTagsSection) で再描画 skip される。 */}
+                <CardTagsSection
+                  cardId={card.id}
+                  categories={categories}
+                  options={options}
+                  cardTags={tagsByCardId.get(card.id) ?? []}
+                />
               </div>
 
               <div>
