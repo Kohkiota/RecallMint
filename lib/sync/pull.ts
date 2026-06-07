@@ -1,6 +1,7 @@
 // pull delta orchestrator — 統合 GET /api/pull 参照の増分 merge。
-// cursor 3本 (cards/exams/tombstone) を sync_meta から read し ?since_* で叩き、
-// 1 tx で bulkPut upsert + tombstone bulkDelete + cursor write を適用する。
+// cursor 6本 (cards/exams/tombstone/tag_categories/tag_options/card_tags) を sync_meta から
+// read し ?since_* で叩き、 1 tx で bulkPut upsert + tombstone bulkDelete + cursor write を
+// 適用する。
 //
 // 失敗時の不変性:
 // - network throw / non-2xx / response body 不正のいずれも、 tx を開く前に return。
@@ -11,6 +12,12 @@
 // tombstone bulkDelete (下記 §tx)。 サーバー側で card/exam を物理削除する経路は
 // 必ず tombstone を INSERT すること (さもないと client mirror が stale 化する)。
 // → pull.ts 参照。 server 側の不変条件は delete-card.ts / delete-exam.ts にも明記。
+//
+// card_tags の同期穴対策 (Tag-2b 案 a):
+//   card_tags 単体の cursor は created_at base なので「関連付けのみ外す `[A,B] → []`」 の
+//   ような whole-set 縮小は増分に乗らない。 書込側は cards.updated_at を bump する規約
+//   を持ち、 本 pull は cards 増分 (1) で変更カードを検知 → (2) で当該カードの card_tags を
+//   IDB から全削除 → (3) で card_tags 増分の bulkPut で新集合を upsert する順序を保つ。
 
 import {
   getClientDb,
@@ -18,6 +25,7 @@ import {
   type ClientExam,
   type ClientTagCategory,
   type ClientTagOption,
+  type ClientCardTag,
 } from '@/lib/client-db'
 import { getSyncMeta, SYNC_META_KEYS } from './sync-meta'
 import { logger } from '@/lib/logger'
@@ -40,12 +48,14 @@ type PullResponse = {
   }[]
   tag_categories: ClientTagCategory[]
   tag_options: ClientTagOption[]
+  card_tags: ClientCardTag[]
   cursors: {
     cards: string | null
     exams: string | null
     tombstone: string | null
     tag_categories: string | null
     tag_options: string | null
+    card_tags: string | null
   }
 }
 
@@ -64,6 +74,7 @@ export type PullDeltaResult = {
   tombstoneCount: number
   tagCategoryCount: number
   tagOptionCount: number
+  cardTagCount: number
 }
 
 const FAIL: PullDeltaResult = {
@@ -73,6 +84,7 @@ const FAIL: PullDeltaResult = {
   tombstoneCount: 0,
   tagCategoryCount: 0,
   tagOptionCount: 0,
+  cardTagCount: 0,
 }
 
 // ---------------------------------------------------------------------------
@@ -104,14 +116,21 @@ export async function pullDelta(
   client: PullApiClient = defaultClient,
 ): Promise<PullDeltaResult> {
   // §1: cursor read + URLSearchParams 構築 (存在分のみ set)
-  const [sinceCards, sinceExams, sinceTombstone, sinceTagCategories, sinceTagOptions] =
-    await Promise.all([
-      getSyncMeta(SYNC_META_KEYS.cardsCursor),
-      getSyncMeta(SYNC_META_KEYS.examsCursor),
-      getSyncMeta(SYNC_META_KEYS.tombstoneCursor),
-      getSyncMeta(SYNC_META_KEYS.tagCategoriesCursor),
-      getSyncMeta(SYNC_META_KEYS.tagOptionsCursor),
-    ])
+  const [
+    sinceCards,
+    sinceExams,
+    sinceTombstone,
+    sinceTagCategories,
+    sinceTagOptions,
+    sinceCardTags,
+  ] = await Promise.all([
+    getSyncMeta(SYNC_META_KEYS.cardsCursor),
+    getSyncMeta(SYNC_META_KEYS.examsCursor),
+    getSyncMeta(SYNC_META_KEYS.tombstoneCursor),
+    getSyncMeta(SYNC_META_KEYS.tagCategoriesCursor),
+    getSyncMeta(SYNC_META_KEYS.tagOptionsCursor),
+    getSyncMeta(SYNC_META_KEYS.cardTagsCursor),
+  ])
 
   const params = new URLSearchParams()
   if (sinceCards !== undefined) params.set('since_cards', sinceCards)
@@ -121,6 +140,8 @@ export async function pullDelta(
     params.set('since_tag_categories', sinceTagCategories)
   if (sinceTagOptions !== undefined)
     params.set('since_tag_options', sinceTagOptions)
+  if (sinceCardTags !== undefined)
+    params.set('since_card_tags', sinceCardTags)
 
   const query = params.toString()
   const path = query ? `${PULL_ENDPOINT}?${query}` : PULL_ENDPOINT
@@ -144,6 +165,7 @@ export async function pullDelta(
     tombstones,
     tag_categories: tagCategories,
     tag_options: tagOptions,
+    card_tags: cardTags,
     cursors,
   } = response.body
   if (
@@ -152,6 +174,7 @@ export async function pullDelta(
     !Array.isArray(tombstones) ||
     !Array.isArray(tagCategories) ||
     !Array.isArray(tagOptions) ||
+    !Array.isArray(cardTags) ||
     typeof cursors !== 'object' ||
     cursors === null
   ) {
@@ -159,12 +182,25 @@ export async function pullDelta(
   }
 
   // §4: 1 tx で upsert + tombstone 削除 + cursor write
+  // Tag-2b 案 a の取り直し経路を含む。 順序は厳守 (本 file 冒頭コメント参照):
+  //   1. cards.bulkPut          // 既存
+  //   2. 変更カード分の card_tags 全削除  // ★案 a の核心 (空集合化対応)
+  //   3. card_tags.bulkPut      // 新集合の上書き
+  //   4. tombstone bulkDelete (cards/exams/tag_categories/tag_options/card_tags cascade)
+  //   5. cursor write
   const db = getClientDb()
   await db.transaction(
     'rw',
-    [db.cards, db.exams, db.tag_categories, db.tag_options, db.sync_meta],
+    [
+      db.cards,
+      db.exams,
+      db.tag_categories,
+      db.tag_options,
+      db.card_tags,
+      db.sync_meta,
+    ],
     async () => {
-      // upsert (clear なし = id-upsert のみ)
+      // (1) cards upsert (clear なし = id-upsert のみ)
       if (cards.length) await db.cards.bulkPut(cards)
       if (exams.length) await db.exams.bulkPut(exams)
       // Tag-1: tag マスタの upsert は tombstone 適用 *前* に行う。
@@ -173,7 +209,21 @@ export async function pullDelta(
       if (tagCategories.length) await db.tag_categories.bulkPut(tagCategories)
       if (tagOptions.length) await db.tag_options.bulkPut(tagOptions)
 
-      // tombstone bulkDelete — mirror 削除反映の唯一経路。
+      // (2) 変更カード分の旧 card_tags 全削除 (Tag-2b 案 a)。
+      // server が card_tags=[] を返す「whole-set 縮小」 ケースでも、 変更カードの
+      // 旧行を消してから (3) で空 bulkPut することで IDB 側に旧行が残らない。
+      // changedCardIds.length === 0 のときは delete スキップ (no-op、 衝突回避)。
+      const changedCardIds = cards.map((c) => c.id)
+      if (changedCardIds.length) {
+        await db.card_tags
+          .where('card_id')
+          .anyOf(changedCardIds)
+          .delete()
+      }
+      // (3) card_tags upsert (新集合の bulkPut)。 length 0 は no-op。
+      if (cardTags.length) await db.card_tags.bulkPut(cardTags)
+
+      // (4) tombstone bulkDelete — mirror 削除反映の唯一経路。
       // サーバー側で card/exam/tag_category/tag_option を物理削除する経路は必ず
       // tombstone を INSERT すること (さもないと mirror が stale 化する)。
       // 不変条件は delete-card.ts / delete-exam.ts / tag apply 関数 (registry) 参照。
@@ -193,8 +243,23 @@ export async function pullDelta(
       if (examIds.length) await db.exams.bulkDelete(examIds)
       if (tagCategoryIds.length) await db.tag_categories.bulkDelete(tagCategoryIds)
       if (tagOptionIds.length) await db.tag_options.bulkDelete(tagOptionIds)
+      // Tag-2b: card_tags cascade purge (option 削除 / card 削除起点)。
+      // server cascade で物理削除済の card_tags は cursor に乗らない (DELETE は
+      // SELECT 増分に出ない) ため、 client 側で tombstone から導出して purge する。
+      // user_id は idempotent (どの user も自分の owner-scoped 行のみ持つ)、
+      // idempotent な (2)/(3) 経路とも衝突しない (option_id / card_id ベースの
+      // 別 index で別行を消す)。
+      if (tagOptionIds.length) {
+        await db.card_tags
+          .where('option_id')
+          .anyOf(tagOptionIds)
+          .delete()
+      }
+      if (cardIds.length) {
+        await db.card_tags.where('card_id').anyOf(cardIds).delete()
+      }
 
-      // cursor write (非 null のみ。 null = 据え置き)
+      // (5) cursor write (非 null のみ。 null = 据え置き)
       if (cursors.cards)
         await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: cursors.cards })
       if (cursors.exams)
@@ -214,6 +279,11 @@ export async function pullDelta(
           key: SYNC_META_KEYS.tagOptionsCursor,
           value: cursors.tag_options,
         })
+      if (cursors.card_tags)
+        await db.sync_meta.put({
+          key: SYNC_META_KEYS.cardTagsCursor,
+          value: cursors.card_tags,
+        })
     },
   )
 
@@ -224,6 +294,7 @@ export async function pullDelta(
     tombstoneCount: tombstones.length,
     tagCategoryCount: tagCategories.length,
     tagOptionCount: tagOptions.length,
+    cardTagCount: cardTags.length,
   }
 }
 

@@ -15,9 +15,9 @@
 //
 // 後続 Tag-2c で `tag_option_ids` field を 1 entry 追加するだけで済む構造。
 
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { cards, type CardOption } from '@/lib/db/schema'
+import { cards, cardTags, tagOptions, type CardOption } from '@/lib/db/schema'
 import { optionSchema } from '@/lib/validation/card'
 import type { DbExecutor } from './apply-card-mutation'
 
@@ -84,6 +84,11 @@ const optionsSchema = z
   .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
     message: '選択肢の id が重複しています',
   })
+
+// Tag-2c: card 編集 UI からのタグ付与/解除。 value = uuid[] (tag_options.id 集合)。
+// upper bound 100 は UI/取り回し上の現実的上限 (option pool 自体は user 全体で多くても
+// 数百〜千、 1 card に紐付くのは現実的に数十まで)。 越えたら 'failed' で押し返す。
+const tagOptionIdsSchema = z.array(z.uuid()).max(100)
 
 // ---------------------------------------------------------------------------
 // 共通 helper: owner-scoped UPDATE 1 列発行 → 0 row=failed / 1 row=applied
@@ -170,6 +175,72 @@ const handleOptions: CardFieldHandler = async (tx, cardId, userId, value) => {
 }
 
 // ---------------------------------------------------------------------------
+// tag_option_ids handler (Tag-2c)
+// ---------------------------------------------------------------------------
+//
+// card 編集 UI からのタグ付与/解除を、 既存 update_field op の 1 entry として実現する。
+// 値は uuid[] (tag_options.id 集合)。 handler は card_tags の whole-set replace
+// (DELETE 全部 → INSERT 新集合) + cards.updated_at bump (= 別端末側 card_tags 取り直し
+// 経路 (Tag-2b) の起点) を 1 関数で完結する。
+//
+// 検査順 (失敗時は副作用なしで 'failed'):
+//   1. value 形式 (uuid[] / max 100)
+//   2. card の存在 + owner-scope
+//   3. option_id 全件の存在 + owner-scope (bulk SELECT で件数一致確認)
+//   4. card_tags whole-set DELETE → INSERT
+//   5. cards.updated_at bump (独立 SQL、 SET 列を持たないので updateCardField helper は使えない)
+const handleTagOptionIds: CardFieldHandler = async (tx, cardId, userId, value) => {
+  // 1. value 形式
+  const r = tagOptionIdsSchema.safeParse(value)
+  if (!r.success) return 'failed'
+
+  // 2. 重複排除 (同一 UI 操作内で重複 UUID が来ても挙動を冪等にする)
+  const optionIds = [...new Set(r.data)]
+
+  // 3. card の存在 + owner-scope
+  const card = await tx
+    .select({ id: cards.id })
+    .from(cards)
+    .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
+  if (card.length === 0) return 'failed'
+
+  // 4. option_id 全件の存在 + owner-scope (1 件でも欠ければ他 user の option / 存在しない
+  //    option の混在として弾く)。 空配列は SQL skip。
+  if (optionIds.length > 0) {
+    const valid = await tx
+      .select({ id: tagOptions.id })
+      .from(tagOptions)
+      .where(
+        and(inArray(tagOptions.id, optionIds), eq(tagOptions.userId, userId)),
+      )
+    if (valid.length !== optionIds.length) return 'failed'
+  }
+
+  // 5. whole-set replace: 既存の紐付けを全部消す。 owner-scope 重複付与で他 user 行への
+  //    DELETE を防御。 (card_id の FK cascade があるので user 自身の他 card 行は影響しない。)
+  await tx
+    .delete(cardTags)
+    .where(and(eq(cardTags.cardId, cardId), eq(cardTags.userId, userId)))
+
+  // 6. 新集合 INSERT (空配列なら全 unset と等価で skip)
+  if (optionIds.length > 0) {
+    await tx
+      .insert(cardTags)
+      .values(optionIds.map((optionId) => ({ cardId, optionId, userId })))
+  }
+
+  // 7. cards.updated_at bump。 別端末側で card_tags pull stream を起こす際の起点
+  //    (Tag-2b の「変更カード集合の取り直し」 経路)。 SET 列を持たない touch なので
+  //    updateCardField helper (SET 列必須) ではなく独立 SQL で発行する。
+  await tx
+    .update(cards)
+    .set({ updatedAt: sql`now()` })
+    .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
+
+  return 'applied'
+}
+
+// ---------------------------------------------------------------------------
 // dispatch table
 // ---------------------------------------------------------------------------
 
@@ -187,6 +258,7 @@ export const CARD_FIELD_HANDLERS = {
   explanation_text: handleExplanationText,
   memo: handleMemo,
   options: handleOptions,
+  tag_option_ids: handleTagOptionIds,
 } as const satisfies Record<string, CardFieldHandler>
 
 export type CardFieldName = keyof typeof CARD_FIELD_HANDLERS

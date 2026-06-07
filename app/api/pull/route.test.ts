@@ -10,6 +10,7 @@ import type {
   ClientExam,
   ClientTagCategory,
   ClientTagOption,
+  ClientCardTag,
 } from '@/lib/client-db'
 import type { ClientTombstone } from '@/lib/db/tombstones-pull'
 
@@ -31,6 +32,9 @@ vi.mock('@/lib/db/tag-categories-pull', () => ({
 vi.mock('@/lib/db/tag-options-pull', () => ({
   getOptionsDelta: vi.fn(),
 }))
+vi.mock('@/lib/db/card-tags-pull', () => ({
+  getCardTagsDelta: vi.fn(),
+}))
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
@@ -41,6 +45,7 @@ import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
 import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
 import { getOptionsDelta } from '@/lib/db/tag-options-pull'
+import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
 import { GET } from './route'
 
 const FAKE_USER = { id: 'user-uuid-1' } as unknown as User
@@ -51,12 +56,14 @@ const EMPTY_BODY = {
   tombstones: [],
   tag_categories: [],
   tag_options: [],
+  card_tags: [],
   cursors: {
     cards: null,
     exams: null,
     tombstone: null,
     tag_categories: null,
     tag_options: null,
+    card_tags: null,
   },
 }
 
@@ -93,6 +100,23 @@ function fakeOptionsDelta(
   maxUpdatedAt: string | null = null,
 ) {
   return { rows, maxUpdatedAt }
+}
+
+function fakeCardTagsDelta(
+  rows: ClientCardTag[] = [],
+  maxCreatedAt: string | null = null,
+) {
+  return { rows, maxCreatedAt }
+}
+
+function fakeCardTag(overrides?: Partial<ClientCardTag>): ClientCardTag {
+  return {
+    card_id: 'card-1',
+    option_id: 'opt-1',
+    user_id: 'user-uuid-1',
+    created_at: '2026-06-01T00:00:00.000Z',
+    ...overrides,
+  }
 }
 
 function fakeCard(overrides?: Partial<ClientCard>): ClientCard {
@@ -160,6 +184,10 @@ function makeReq(url = 'http://x/api/pull'): Request {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Tag-2b: card_tags stream は新規追加のため、 既存 test が逐一 mock 設定を
+  // 書かなくて済むよう beforeEach で default mock を入れる (空配列 + null cursor)。
+  // 個別 test が必要なら test 内で上書き mock 可能。
+  vi.mocked(getCardTagsDelta).mockResolvedValue(fakeCardTagsDelta())
 })
 
 describe('GET /api/pull', () => {
@@ -245,6 +273,7 @@ describe('GET /api/pull', () => {
       tombstone: '2026-05-03T00:00:00.000Z',
       tag_categories: null,
       tag_options: null,
+      card_tags: null,
     })
   })
 
@@ -410,5 +439,71 @@ describe('GET /api/pull', () => {
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     expect(res.headers.get('cache-control')).toContain('no-store')
+  })
+
+  // -------------------------------------------------------------------------
+  // card_tags stream (Tag-2b)
+  // -------------------------------------------------------------------------
+  it('card_tags stream: rows + cursor が response に含まれる', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
+    vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
+    vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
+    const cardTagRows = [
+      fakeCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeCardTag({ card_id: 'c1', option_id: 'o2' }),
+    ]
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(cardTagRows, '2026-06-01T12:00:00.000Z'),
+    )
+
+    const res = await GET(makeReq())
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.card_tags).toHaveLength(2)
+    expect(body.card_tags[0].card_id).toBe('c1')
+    expect(body.card_tags[0].option_id).toBe('o1')
+    expect(body.cursors.card_tags).toBe('2026-06-01T12:00:00.000Z')
+  })
+
+  it('since_card_tags 有効 ISO8601 → getCardTagsDelta が (user.id, Date) で呼ばれる', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
+    vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
+    vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
+    await GET(
+      makeReq(
+        'http://x/api/pull?since_card_tags=2026-06-01T00%3A00%3A00.000Z',
+      ),
+    )
+    expect(getCardTagsDelta).toHaveBeenCalledWith(
+      'user-uuid-1',
+      new Date('2026-06-01T00:00:00.000Z'),
+    )
+  })
+
+  it('since_card_tags 欠落 → getCardTagsDelta が (user.id, undefined) で呼ばれる (全件 fallback)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    vi.mocked(getCardsDelta).mockResolvedValue(fakeCardsDelta())
+    vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
+    vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
+    await GET(makeReq())
+    expect(getCardTagsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+  })
+
+  it('users 未 sync (null) → card_tags も空 + cursor null + getCardTagsDelta 呼ばれない', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null)
+    const res = await GET(makeReq())
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.card_tags).toEqual([])
+    expect(body.cursors.card_tags).toBeNull()
+    expect(getCardTagsDelta).not.toHaveBeenCalled()
   })
 })

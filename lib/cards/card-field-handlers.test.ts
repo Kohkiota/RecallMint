@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SQL, getTableName } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
+import { cards, cardTags, tagOptions } from '@/lib/db/schema'
 
 // card-field-handlers.ts の unit test。
 //
@@ -672,7 +673,7 @@ describe('CARD_FIELD_HANDLERS.options', () => {
 // ---------------------------------------------------------------------------
 
 describe('CARD_FIELD_HANDLERS dispatch', () => {
-  it('map に全 6 field の handler が登録されている', async () => {
+  it('map に全 7 field の handler が登録されている', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     expect(Object.keys(CARD_FIELD_HANDLERS).sort()).toEqual(
       [
@@ -681,6 +682,7 @@ describe('CARD_FIELD_HANDLERS dispatch', () => {
         'options',
         'question_text',
         'sort_key',
+        'tag_option_ids',
         'title',
       ].sort(),
     )
@@ -695,3 +697,328 @@ describe('CARD_FIELD_HANDLERS dispatch', () => {
     // ここでは map に未登録であることのみ assert する。
   })
 })
+
+// ---------------------------------------------------------------------------
+// tag_option_ids handler (Tag-2c)
+//
+// このハンドラだけ owner-scoped UPDATE cards 1 列発行ではなく、
+//   SELECT cards (owner check)
+//   SELECT tag_options (owner check for options)
+//   DELETE card_tags (whole-set)
+//   INSERT card_tags (new set)
+//   UPDATE cards (updated_at bump only)
+// の 5 種類の DB 呼出を順次行う。 既存 makeTx は update only なので、
+// 専用の makeTagTx で 4 種の操作を全部観測する。
+// ---------------------------------------------------------------------------
+
+interface TagTxState {
+  // SELECT cards 結果 (owner check)
+  cardSelectRows: { id: string }[]
+  // SELECT tag_options 結果 (owner check)
+  optionSelectRows: { id: string }[]
+  // DELETE card_tags 呼出回数
+  cardTagsDeleteCalls: number
+  // INSERT card_tags の values 記録 (call ごとに push)
+  cardTagsInsertedValues: Array<Array<Record<string, unknown>>>
+  // UPDATE cards の set arg 記録 (touch 用)
+  cardsUpdateSetArgs: Array<Record<string, unknown>>
+  // SELECT 対象テーブル順
+  selectFromTables: string[]
+}
+
+function freshTagState(): TagTxState {
+  return {
+    cardSelectRows: [{ id: 'card-1' }],
+    optionSelectRows: [],
+    cardTagsDeleteCalls: 0,
+    cardTagsInsertedValues: [],
+    cardsUpdateSetArgs: [],
+    selectFromTables: [],
+  }
+}
+
+function makeTagTx(state: TagTxState) {
+  const obj: Record<string, unknown> = {}
+
+  obj.select = (_cols: unknown) => ({
+    from: (table: unknown) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      state.selectFromTables.push(name)
+      return {
+        where: (_cond: unknown) => {
+          if (name === getTableName(cards)) {
+            return Promise.resolve(state.cardSelectRows)
+          }
+          if (name === getTableName(tagOptions)) {
+            return Promise.resolve(state.optionSelectRows)
+          }
+          return Promise.resolve([])
+        },
+      }
+    },
+  })
+
+  obj.delete = (table: unknown) => ({
+    where: (_cond: unknown) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      if (name === getTableName(cardTags)) state.cardTagsDeleteCalls += 1
+      return Promise.resolve(undefined)
+    },
+  })
+
+  obj.insert = (table: unknown) => ({
+    values: (vals: Array<Record<string, unknown>>) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      if (name === getTableName(cardTags)) {
+        state.cardTagsInsertedValues.push(vals)
+      }
+      return Promise.resolve(undefined)
+    },
+  })
+
+  obj.update = (table: unknown) => {
+    const name = getTableName(table as Parameters<typeof getTableName>[0])
+    return {
+      set: (arg: Record<string, unknown>) => {
+        if (name === getTableName(cards)) state.cardsUpdateSetArgs.push(arg)
+        return {
+          where: (_cond: unknown) => Promise.resolve(undefined),
+        }
+      },
+    }
+  }
+
+  return obj as Parameters<
+    typeof import('./card-field-handlers').CARD_FIELD_HANDLERS.tag_option_ids
+  >[0]
+}
+
+describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
+  let state: TagTxState
+  // 適当な uuid (zod の z.uuid() を通せばよいので形式さえ守れば中身は何でも可)
+  const OPT_1 = '11111111-1111-4111-a111-111111111111'
+  const OPT_2 = '22222222-2222-4222-a222-222222222222'
+  const OPT_3 = '33333333-3333-4333-a333-333333333333'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    state = freshTagState()
+  })
+
+  it('正常: 空配列 → DELETE のみ + bump (INSERT skip)', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [],
+    )
+    expect(result).toBe('applied')
+    // owner-scope SELECT cards のみ走る (option owner check は optionIds 空なので skip)
+    expect(state.selectFromTables).toEqual(['cards'])
+    // DELETE は必ず 1 回 (whole-set replace で旧紐付けを全消去)
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    // INSERT は走らない (空集合)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    // cards.updated_at bump
+    expect(state.cardsUpdateSetArgs).toHaveLength(1)
+  })
+
+  it('正常: N 件 INSERT + bump (DELETE → INSERT → cards.update)', async () => {
+    state.optionSelectRows = [{ id: OPT_1 }, { id: OPT_2 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('applied')
+    // owner-scope SELECT cards → SELECT tag_options
+    expect(state.selectFromTables).toEqual(['cards', 'tag_options'])
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
+    expect(state.cardTagsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', optionId: OPT_1, userId: 'user-1' },
+      { cardId: 'card-1', optionId: OPT_2, userId: 'user-1' },
+    ])
+    expect(state.cardsUpdateSetArgs).toHaveLength(1)
+  })
+
+  it('updated_at bump: SET に sql`now()` が含まれる (touch のみ)', async () => {
+    state.optionSelectRows = [{ id: OPT_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1],
+    )
+    expect(state.cardsUpdateSetArgs).toHaveLength(1)
+    const setArg = state.cardsUpdateSetArgs[0]!
+    expect(setArg['updatedAt']).toBeInstanceOf(SQL)
+    const rendered = new PgDialect().sqlToQuery(setArg['updatedAt'] as SQL).sql
+    expect(rendered).toContain('now()')
+    // touch のみ: 他列は SET しない
+    expect(Object.keys(setArg)).toEqual(['updatedAt'])
+  })
+
+  it('重複排除: 同 uuid 複数渡しでも INSERT は重複除去後の件数', async () => {
+    // optionSelectRows は Set 化後の件数 (2) と一致させる
+    state.optionSelectRows = [{ id: OPT_1 }, { id: OPT_2 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_1, OPT_2],
+    )
+    expect(result).toBe('applied')
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
+    expect(state.cardTagsInsertedValues[0]).toHaveLength(2)
+    // 順序は Set の挿入順 (= [OPT_1, OPT_2])
+    expect(state.cardTagsInsertedValues[0]!.map((v) => v['optionId'])).toEqual([
+      OPT_1,
+      OPT_2,
+    ])
+  })
+
+  it('既存集合との置換: handler は DELETE → INSERT に閉じる (mock 観点)', async () => {
+    // 「事前に紐付け 1 件あっても、 DELETE で消し INSERT で入れ直す」 挙動を mock 上で
+    // 観測する。 mock 自体は store を持たないが、 DELETE が必ず 1 回 / INSERT が 1 回で
+    // values が新集合のみであることを assert する。
+    state.optionSelectRows = [{ id: OPT_3 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_3],
+    )
+    expect(result).toBe('applied')
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
+    expect(state.cardTagsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', optionId: OPT_3, userId: 'user-1' },
+    ])
+  })
+
+  it('値検証失敗 (非 uuid 混在) → failed、 副作用なし', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      ['not-a-uuid'],
+    )
+    expect(result).toBe('failed')
+    expect(state.selectFromTables).toHaveLength(0)
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    expect(state.cardsUpdateSetArgs).toHaveLength(0)
+  })
+
+  it('値検証失敗 (非配列) → failed、 副作用なし', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      'not-an-array',
+    )
+    expect(result).toBe('failed')
+    expect(state.cardTagsDeleteCalls).toBe(0)
+  })
+
+  it('値検証失敗 (101 件超) → failed、 副作用なし', async () => {
+    // 形式上 uuid である 101 個を作る
+    const big = Array.from({ length: 101 }, (_, i) => {
+      const hex = (i + 1).toString(16).padStart(4, '0')
+      return `${hex}${hex}${hex}${hex}-1111-4111-a111-111111111111`
+    })
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      big,
+    )
+    expect(result).toBe('failed')
+    expect(state.selectFromTables).toHaveLength(0)
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    expect(state.cardsUpdateSetArgs).toHaveLength(0)
+  })
+
+  it('card 不在 (owner mismatch / 未存在) → failed、 DELETE / INSERT / bump 走らない', async () => {
+    state.cardSelectRows = []
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1],
+    )
+    expect(result).toBe('failed')
+    // cards owner check のみ走る (option owner check より先)
+    expect(state.selectFromTables).toEqual(['cards'])
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    expect(state.cardsUpdateSetArgs).toHaveLength(0)
+  })
+
+  it('他 user option 混在 (option owner check 不一致) → failed、 DELETE / INSERT / bump 走らない', async () => {
+    // 2 件渡したが option_owner check で 1 件しか返らない (= 1 件は他 user)
+    state.optionSelectRows = [{ id: OPT_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('failed')
+    expect(state.selectFromTables).toEqual(['cards', 'tag_options'])
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    expect(state.cardsUpdateSetArgs).toHaveLength(0)
+  })
+
+  it('存在しない option_id 混在 → failed (option_owner check と同じ経路)', async () => {
+    // 2 件渡したが SELECT が 0 件 (= 全部不在)
+    state.optionSelectRows = []
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('failed')
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+  })
+
+  it('owner-scope eq spy gate: 各 SQL の WHERE に user_id が含まれる', async () => {
+    state.optionSelectRows = [{ id: OPT_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1],
+    )
+    const sig = await eqSignature()
+    // SELECT cards の WHERE
+    expect(sig).toContainEqual(['cards', 'id', 'card-1'])
+    expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
+    // SELECT tag_options の WHERE (inArray + eq(user_id))
+    expect(sig).toContainEqual(['tag_options', 'user_id', 'user-1'])
+    // DELETE card_tags の WHERE
+    expect(sig).toContainEqual(['card_tags', 'card_id', 'card-1'])
+    expect(sig).toContainEqual(['card_tags', 'user_id', 'user-1'])
+    // UPDATE cards (bump) の WHERE は SELECT cards と同じ entry を再呼出するため、
+    // 上の cards.id / cards.user_id assertion で gate 兼ねる。
+  })
+})
+

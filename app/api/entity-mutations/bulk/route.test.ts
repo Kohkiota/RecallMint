@@ -108,6 +108,8 @@ vi.mock('@/lib/cards/card-field-handlers', () => {
       explanation_text: makeHandler('explanation_text'),
       memo: makeHandler('memo'),
       options: makeHandler('options'),
+      // Tag-2c: card 編集 UI からのタグ付与/解除 (whole-set replace + cards.updated_at bump)
+      tag_option_ids: makeHandler('tag_option_ids'),
     },
   }
 })
@@ -552,6 +554,48 @@ describe('POST /api/entity-mutations/bulk', () => {
       value: 'Hello',
     })
 
+    expect(state.mutationInsertValues).not.toBeNull()
+    expect(state.mutationInsertValues).toMatchObject({
+      mutationId: VALID_MUTATION_ID,
+      entityType: 'card',
+      entityId: VALID_CARD_ID,
+      userId: FAKE_USER.id,
+      op: 'update_field',
+    })
+  })
+
+  it("update_field: field='tag_option_ids' → tag_option_ids handler が dispatch される (Tag-2c)", async () => {
+    // Tag-2c: card 編集 UI からのタグ付与/解除も既存 update_field op + dispatch table に
+    // 1 entry 追加するだけで成立することを保証する。 envelope は無修正、 他 handler は
+    // 呼ばれない、 applied → log INSERT、 までを 1 回で検証。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const OPT_UUID = '99999999-9999-4999-a999-999999999999'
+    const res = await POST(
+      makeReq({
+        mutations: [
+          makeUpdateFieldMutation({ field: 'tag_option_ids', value: [OPT_UUID] }),
+        ],
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    expect(vi.mocked(CARD_FIELD_HANDLERS.tag_option_ids)).toHaveBeenCalledTimes(1)
+    // 他 field の handler は呼ばれていない (dispatch 排他)
+    expect(vi.mocked(CARD_FIELD_HANDLERS.title)).not.toHaveBeenCalled()
+    expect(vi.mocked(CARD_FIELD_HANDLERS.options)).not.toHaveBeenCalled()
+
+    expect(state.cardFieldUpdateCalls).toHaveLength(1)
+    expect(state.cardFieldUpdateCalls[0]).toMatchObject({
+      cardId: VALID_CARD_ID,
+      userId: FAKE_USER.id,
+      field: 'tag_option_ids',
+      value: [OPT_UUID],
+    })
+
+    // applied → log INSERT 発火
     expect(state.mutationInsertValues).not.toBeNull()
     expect(state.mutationInsertValues).toMatchObject({
       mutationId: VALID_MUTATION_ID,

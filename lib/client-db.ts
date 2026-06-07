@@ -181,6 +181,16 @@ export type ClientTagOption = {
   updated_at: string
 }
 
+// card_tags (Tag-2b): card ↔ tag_option の junction の read-only mirror。
+// server pull で同期する 1:1 mirror、 sync_status は持たない (tag_categories /
+// tag_options と同方針)。 PK は複合 [card_id+option_id]。
+export type ClientCardTag = {
+  card_id: string
+  option_id: string
+  user_id: string
+  created_at: string
+}
+
 // sync_meta: key-value。 用途は呼出側に委ねる (例: last_pull_at / pending_count 等)。
 export type ClientSyncMeta = {
   key: string
@@ -220,6 +230,8 @@ export class ClientDb extends Dexie {
   // Tag-1: 試験横断のタグマスタ mirror。 server pull で同期する read-only mirror。
   tag_categories!: Table<ClientTagCategory, string>
   tag_options!: Table<ClientTagOption, string>
+  // Tag-2b: card ↔ tag_option junction の read-only mirror。 PK は複合 [card_id+option_id]。
+  card_tags!: Table<ClientCardTag, [string, string]>
 
   constructor() {
     super('recallmint')
@@ -254,6 +266,16 @@ export class ClientDb extends Dexie {
     this.version(4).stores({
       tag_categories: 'id, user_id, updated_at',
       tag_options: 'id, user_id, category_id, updated_at',
+    })
+    // v5 (Tag-2b): card_tags mirror store 追加。 既存 table の schema は変更せず、 新規
+    // store のみ追加するため、 v4 → v5 upgrade は単純な store 追加で済む。
+    // PK は複合 `[card_id+option_id]` (server schema と一致、 idempotent な bulkPut が成立)。
+    // index:
+    //   - card_id: 「あるカードの card_tags を列挙 / 一括削除」 (案 a 取り直し経路)
+    //   - option_id: 「あるオプションの cascade purge」 (tombstone)
+    //   - user_id: 「該当 user の card_tags 全削除」 (将来の reset 経路で使用余地)
+    this.version(5).stores({
+      card_tags: '[card_id+option_id], card_id, option_id, user_id',
     })
   }
 }

@@ -1,10 +1,11 @@
 // GET /api/pull — 統合 delta pull endpoint。
-// cards / exams / tombstone / tag_categories / tag_options の 5 ストリームを 1 レスポンスに
-// 集約し、ストリーム別 next-cursor (maxUpdatedAt / maxDeletedAt) を返す。
+// cards / exams / tombstone / tag_categories / tag_options / card_tags の 6 ストリームを
+// 1 レスポンスに集約し、ストリーム別 next-cursor (maxUpdatedAt / maxDeletedAt /
+// maxCreatedAt) を返す。
 //
 // query params (snake_case):
 //   since_cards / since_exams / since_tombstone /
-//   since_tag_categories / since_tag_options
+//   since_tag_categories / since_tag_options / since_card_tags
 //   - 有効 ISO8601 → その Date 以降の差分のみ返す (since inclusive)
 //   - 欠落 / 不正値 → undefined = 全件 fallback
 //
@@ -19,6 +20,7 @@ import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
 import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
 import { getOptionsDelta } from '@/lib/db/tag-options-pull'
+import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -54,12 +56,14 @@ export async function GET(req: Request): Promise<Response> {
         tombstones: [],
         tag_categories: [],
         tag_options: [],
+        card_tags: [],
         cursors: {
           cards: null,
           exams: null,
           tombstone: null,
           tag_categories: null,
           tag_options: null,
+          card_tags: null,
         },
       },
       { status: 200, headers },
@@ -72,14 +76,16 @@ export async function GET(req: Request): Promise<Response> {
   const st = parseSince(u.get('since_tombstone'))
   const stc = parseSince(u.get('since_tag_categories'))
   const sto = parseSince(u.get('since_tag_options'))
+  const sct = parseSince(u.get('since_card_tags'))
 
   try {
-    const [c, e, t, tc, to] = await Promise.all([
+    const [c, e, t, tc, to, ct] = await Promise.all([
       getCardsDelta(user.id, sc),
       getExamsDelta(user.id, se),
       getTombstonesDelta(user.id, st),
       getCategoriesDelta(user.id, stc),
       getOptionsDelta(user.id, sto),
+      getCardTagsDelta(user.id, sct),
     ])
     return Response.json(
       {
@@ -88,12 +94,14 @@ export async function GET(req: Request): Promise<Response> {
         tombstones: t.rows,
         tag_categories: tc.rows,
         tag_options: to.rows,
+        card_tags: ct.rows,
         cursors: {
           cards: c.maxUpdatedAt,
           exams: e.maxUpdatedAt,
           tombstone: t.maxDeletedAt,
           tag_categories: tc.maxUpdatedAt,
           tag_options: to.maxUpdatedAt,
+          card_tags: ct.maxCreatedAt,
         },
       },
       { status: 200, headers },

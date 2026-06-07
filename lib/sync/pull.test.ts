@@ -11,6 +11,7 @@ import {
   type ClientExam,
   type ClientTagCategory,
   type ClientTagOption,
+  type ClientCardTag,
 } from '@/lib/client-db'
 import { SYNC_META_KEYS, getSyncMeta } from './sync-meta'
 import { pullDelta, type PullApiClient, runGuardedPull, PULL_LOCK_NAME } from './pull'
@@ -80,6 +81,16 @@ function fakeTombstone(
   return { entity_type, entity_id, deleted_at }
 }
 
+function fakeClientCardTag(overrides?: Partial<ClientCardTag>): ClientCardTag {
+  return {
+    card_id: 'c1',
+    option_id: 'o1',
+    user_id: 'user-1',
+    created_at: '2026-06-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
 function emptyResponse(
   overrides?: Partial<{
     cards: ClientCard[]
@@ -87,12 +98,14 @@ function emptyResponse(
     tombstones: { entity_type: TombstoneEntityType; entity_id: string; deleted_at: string }[]
     tag_categories: ClientTagCategory[]
     tag_options: ClientTagOption[]
+    card_tags: ClientCardTag[]
     cursors: Partial<{
       cards: string | null
       exams: string | null
       tombstone: string | null
       tag_categories: string | null
       tag_options: string | null
+      card_tags: string | null
     }>
   }>,
 ) {
@@ -110,6 +123,7 @@ function emptyResponse(
       }[],
       tag_categories: [] as ClientTagCategory[],
       tag_options: [] as ClientTagOption[],
+      card_tags: [] as ClientCardTag[],
       ...rest,
       cursors: {
         cards: null,
@@ -117,6 +131,7 @@ function emptyResponse(
         tombstone: null,
         tag_categories: null,
         tag_options: null,
+        card_tags: null,
         ...(cursorOverrides ?? {}),
       },
     },
@@ -140,6 +155,7 @@ beforeEach(async () => {
     db.exams.clear(),
     db.tag_categories.clear(),
     db.tag_options.clear(),
+    db.card_tags.clear(),
     db.sync_meta.clear(),
   ])
 })
@@ -167,7 +183,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 2, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 2, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const rows = await db.cards.toArray()
     const ids = rows.map((r) => r.id).sort()
@@ -194,7 +210,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 2, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 2, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const rows = await db.exams.toArray()
     const ids = rows.map((r) => r.id).sort()
@@ -221,7 +237,7 @@ describe('pullDelta', () => {
       }),
     )
     const result = await pullDelta(client)
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 2, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 2, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const cardIds = (await db.cards.toArray()).map((r) => r.id)
     expect(cardIds).toEqual(['c1'])
@@ -299,7 +315,7 @@ describe('pullDelta', () => {
     const client: PullApiClient = { get: vi.fn().mockRejectedValue(new Error('network')) }
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
@@ -314,7 +330,7 @@ describe('pullDelta', () => {
     const client = mockClient({ ok: false, status: 500, body: null })
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
   })
@@ -337,7 +353,7 @@ describe('pullDelta', () => {
     })
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
   })
@@ -352,10 +368,241 @@ describe('pullDelta', () => {
     const client = mockClient(emptyResponse())
     const result = await pullDelta(client)
 
-    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+  })
+
+  // ===========================================================================
+  // Tag-2b: card_tags 取り直し経路 (案 a)
+  // ===========================================================================
+
+  // 観点 8a: 取り直し経路 — c1 の旧 card_tags が削除され、 新集合で置換される
+  it('cards 増分に c1 → c1 の旧 card_tags 全削除 + 新集合 bulkPut。 他 card は不変', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o2' }),
+      fakeClientCardTag({ card_id: 'c2', option_id: 'o3' }),
+    ])
+
+    const client = mockClient(
+      emptyResponse({
+        cards: [fakeClientCard({ id: 'c1' })],
+        card_tags: [
+          fakeClientCardTag({ card_id: 'c1', option_id: 'o3' }),
+        ],
+        cursors: { card_tags: '2026-06-01T01:00:00.000Z' },
+      }),
+    )
+    const result = await pullDelta(client)
+    expect(result.ok).toBe(true)
+    expect(result.cardTagCount).toBe(1)
+
+    const rows = await db.card_tags.toArray()
+    const pairs = rows
+      .map((r) => `${r.card_id}:${r.option_id}`)
+      .sort()
+    // c1 の旧 (o1, o2) は消えて c1:o3 に置換、 c2:o3 は不変
+    expect(pairs).toEqual(['c1:o3', 'c2:o3'])
+  })
+
+  // 観点 8b: 空集合化 (案 a の核心) — server が card_tags=[] を返す whole-set 縮小
+  it('cards 増分に c1 + card_tags=[] → c1 の card_tags 0 件 (空集合化)', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o2' }),
+    ])
+
+    const client = mockClient(
+      emptyResponse({
+        cards: [fakeClientCard({ id: 'c1' })],
+        card_tags: [], // whole-set 空に置換
+      }),
+    )
+    const result = await pullDelta(client)
+    expect(result.ok).toBe(true)
+
+    const c1Rows = await db.card_tags.where('card_id').equals('c1').toArray()
+    expect(c1Rows).toEqual([])
+  })
+
+  // 観点 8c: 変更カード集合 0 件 → card_tags の旧行は不変 (delete スキップ)
+  it('cards=[] + card_tags=[] → 既存 card_tags は不変', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c2', option_id: 'o2' }),
+    ])
+
+    const client = mockClient(emptyResponse())
+    const result = await pullDelta(client)
+    expect(result.ok).toBe(true)
+
+    expect(await db.card_tags.count()).toBe(2)
+  })
+
+  // 観点 8d: cascade purge — tag_option 削除起点
+  it('tombstone (tag_option=o1) → o1 紐付け card_tags が全削除される', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c2', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c3', option_id: 'o2' }),
+    ])
+
+    const client = mockClient(
+      emptyResponse({
+        tombstones: [fakeTombstone('tag_option', 'o1')],
+        cursors: { tombstone: '2026-06-01T02:00:00.000Z' },
+      }),
+    )
+    const result = await pullDelta(client)
+    expect(result.ok).toBe(true)
+
+    const rows = await db.card_tags.toArray()
+    const pairs = rows.map((r) => `${r.card_id}:${r.option_id}`).sort()
+    expect(pairs).toEqual(['c3:o2'])
+  })
+
+  // 観点 8e: cascade purge — card 削除起点
+  it('tombstone (card=c1) → c1 紐付け card_tags が全削除される', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o2' }),
+      fakeClientCardTag({ card_id: 'c2', option_id: 'o3' }),
+    ])
+
+    const client = mockClient(
+      emptyResponse({
+        tombstones: [fakeTombstone('card', 'c1')],
+        cursors: { tombstone: '2026-06-01T03:00:00.000Z' },
+      }),
+    )
+    const result = await pullDelta(client)
+    expect(result.ok).toBe(true)
+
+    const rows = await db.card_tags.toArray()
+    const pairs = rows.map((r) => `${r.card_id}:${r.option_id}`).sort()
+    expect(pairs).toEqual(['c2:o3'])
+  })
+
+  // 観点 8f: card_tags cursor write — レスポンス cursors.card_tags 非 null → sync_meta 更新
+  it('cursors.card_tags 非 null → SYNC_META_KEYS.cardTagsCursor が更新される', async () => {
+    const client = mockClient(
+      emptyResponse({
+        cursors: { card_tags: '2026-06-01T10:00:00.000Z' },
+      }),
+    )
+    await pullDelta(client)
+
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+      '2026-06-01T10:00:00.000Z',
+    )
+  })
+
+  // 観点 8g: card_tags cursor 据え置き — レスポンス cursors.card_tags=null → 旧値のまま
+  it('cardTagsCursor を put 済 + cursors.card_tags=null → cardTagsCursor は旧値のまま', async () => {
+    const db = getClientDb()
+    await db.sync_meta.put({
+      key: SYNC_META_KEYS.cardTagsCursor,
+      value: '2026-05-01T00:00:00.000Z',
+    })
+
+    const client = mockClient(emptyResponse())
+    await pullDelta(client)
+
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+      '2026-05-01T00:00:00.000Z',
+    )
+  })
+
+  // 観点 8h: cursor read → since_card_tags param 付き path
+  it('sync_meta に cardTagsCursor あれば ?since_card_tags=.. を含む path で呼ばれる', async () => {
+    const db = getClientDb()
+    await db.sync_meta.put({
+      key: SYNC_META_KEYS.cardTagsCursor,
+      value: '2026-05-20T00:00:00.000Z',
+    })
+
+    const client = mockClient(emptyResponse())
+    await pullDelta(client)
+
+    const calledPath = (client.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(calledPath).toContain('since_card_tags=2026-05-20T00%3A00%3A00.000Z')
+  })
+
+  // 観点 8i: 失敗時不変性 — card_tags 非 array → FAIL + card_tags mirror 不変
+  it('body.card_tags 非 array: {ok:false,...0}、card_tags mirror も不変', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([fakeClientCardTag({ card_id: 'keep', option_id: 'k' })])
+    await db.sync_meta.put({
+      key: SYNC_META_KEYS.cardTagsCursor,
+      value: '2026-05-01T00:00:00.000Z',
+    })
+
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: {
+        cards: [],
+        exams: [],
+        tombstones: [],
+        tag_categories: [],
+        tag_options: [],
+        card_tags: 'not-array',
+        cursors: {
+          cards: null,
+          exams: null,
+          tombstone: null,
+          tag_categories: null,
+          tag_options: null,
+          card_tags: null,
+        },
+      } as never,
+    })
+    const result = await pullDelta(client)
+
+    expect(result).toEqual({
+      ok: false,
+      cardCount: 0,
+      examCount: 0,
+      tombstoneCount: 0,
+      tagCategoryCount: 0,
+      tagOptionCount: 0,
+      cardTagCount: 0,
+    })
+    expect(await db.card_tags.count()).toBe(1)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+      '2026-05-01T00:00:00.000Z',
+    )
+  })
+
+  // 観点 8j: 取り直し → bulkPut の順序検証 (案 a の核心、 旧行削除が新行 upsert の前)
+  //   cards=[{id:'c1'}]、 card_tags=[{c1, o-new}]、 既存 card_tags=[{c1, o-old}]
+  //   結果として c1 の card_tags は {o-new} 1 件であり、 {o-old} は消えていることを確認。
+  //   (順序が逆 = bulkPut 後 delete だと {o-new} も巻き添えで消える ⇒ 0 件になる)
+  it('取り直し経路の順序: 旧行 delete → 新行 bulkPut の順 (逆順なら新行も消える)', async () => {
+    const db = getClientDb()
+    await db.card_tags.bulkPut([
+      fakeClientCardTag({ card_id: 'c1', option_id: 'o-old' }),
+    ])
+
+    const client = mockClient(
+      emptyResponse({
+        cards: [fakeClientCard({ id: 'c1' })],
+        card_tags: [
+          fakeClientCardTag({ card_id: 'c1', option_id: 'o-new' }),
+        ],
+      }),
+    )
+    await pullDelta(client)
+
+    const rows = await db.card_tags.where('card_id').equals('c1').toArray()
+    expect(rows.map((r) => r.option_id)).toEqual(['o-new'])
   })
 })
 
@@ -384,7 +631,7 @@ function fakeLocks(grant: boolean) {
 describe('runGuardedPull', () => {
   // 観点 1: lock granted → ran、 pull が 1 回実行され PULL_LOCK_NAME + ifAvailable:true で呼ばれる
   it('lock granted → outcome "ran"、 pull mock 1 回、 ifAvailable:true', async () => {
-    const pullResult: PullDeltaResult = { ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }
+    const pullResult: PullDeltaResult = { ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 }
     const pull = vi.fn(async () => pullResult)
     const locks = fakeLocks(true)
 
@@ -397,7 +644,7 @@ describe('runGuardedPull', () => {
 
   // 観点 2: ifAvailable skip (lock busy) → 'lock-busy'、 pull 未実行
   it('lock busy → outcome "lock-busy"、 pull 未実行', async () => {
-    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }))
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 }))
     const locks = fakeLocks(false)
 
     const outcome = await runGuardedPull({ pull, locks })
@@ -408,7 +655,7 @@ describe('runGuardedPull', () => {
 
   // 観点 3: fallback (locks: undefined) → 'ran'、 pull 1 回 (lock 経由しない)
   it('locks: undefined fallback → outcome "ran"、 pull 1 回', async () => {
-    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 }))
+    const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 }))
 
     const outcome = await runGuardedPull({ pull, locks: undefined })
 
@@ -429,7 +676,7 @@ describe('runGuardedPull', () => {
       // 1 回目: pending Promise (in-flight をシミュレート)
       if (callCount === 1) return deferred
       // 2 回目以降: 即解決
-      return Promise.resolve({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+      return Promise.resolve({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     })
     const locks = fakeLocks(true)
 
@@ -443,7 +690,7 @@ describe('runGuardedPull', () => {
     expect(pull).toHaveBeenCalledTimes(1)
 
     // 1 本目の pull を resolve → 'ran' で完了
-    resolveDeferred({ ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0 })
+    resolveDeferred({ ok: true, cardCount: 1, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     const outcome1 = await p1
     expect(outcome1).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(1)

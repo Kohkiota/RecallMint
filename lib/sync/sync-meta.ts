@@ -16,6 +16,8 @@ export const SYNC_META_KEYS = {
   tombstoneCursor: 'tombstone_cursor',
   tagCategoriesCursor: 'tag_categories_cursor',
   tagOptionsCursor: 'tag_options_cursor',
+  // Tag-2b: card_tags は updated_at を持たない junction なので created_at base の cursor。
+  cardTagsCursor: 'card_tags_cursor',
 } as const
 
 export type SyncMetaKey = (typeof SYNC_META_KEYS)[keyof typeof SYNC_META_KEYS]
