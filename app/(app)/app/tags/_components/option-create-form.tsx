@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { newId, enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { getClientDb } from '@/lib/client-db'
 import { logger } from '@/lib/logger'
 import { cn } from '@/lib/utils'
 import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
@@ -53,6 +54,31 @@ export function OptionCreateForm({ activeCategoryId, existingNames }: Props) {
     if (disabled) return
 
     const id = newId()
+
+    // optimistic IDB put: mirror に即時行を挿入し useLiveQuery を即時再描画させる。
+    // user_id は client から知る経路がない (Clerk 経由は server だけ) ため空文字、
+    // server pull で正しい user_id に上書きされる。
+    // enqueue より **先に** 発火 (UI 即反映の保証、 mock spy 順序で gate)。
+    const now = new Date().toISOString()
+    void getClientDb()
+      .tag_options.put({
+        id,
+        user_id: '',
+        category_id: activeCategoryId,
+        name: trimmed,
+        color,
+        sort_key: null,
+        created_at: now,
+        updated_at: now,
+      })
+      .catch((err) => {
+        logger.warn({
+          event: 'tag_option_create.mirror_put_failed',
+          optionId: id,
+          err: String(err),
+        })
+      })
+
     void enqueueEntityMutation({
       entity_type: 'tag_option',
       entity_id: id,

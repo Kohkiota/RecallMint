@@ -10,7 +10,9 @@
 // newId は実 UUID を返す mock (Dexie に流れる id 値が実 v4 形式)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+
+import { getClientDb } from '@/lib/client-db'
 
 const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
@@ -29,9 +31,15 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 
 import { CategoryCreateForm } from './category-create-form'
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   mockNewId.mockImplementation(() => realNewId.current())
+  // fake-indexeddb で実 Dexie を使う → 各 test 前に Tag 系 store を clear。
+  const db = getClientDb()
+  await db.tag_categories.clear()
+  await db.tag_options.clear()
+  await db.card_tags.clear()
+  await db.entity_mutations.clear()
 })
 
 afterEach(() => {
@@ -203,6 +211,79 @@ describe('CategoryCreateForm — submit', () => {
         op: 'create',
         patch: { name: '重要度', select_type: 'multi' },
       })
+    })
+  })
+})
+
+describe('CategoryCreateForm — optimistic IDB put', () => {
+  it('submit で IDB tag_categories に新行が即時 put される (UI 即反映の保証)', async () => {
+    const FIXED_ID = '66666666-6666-4666-8666-666666666666'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(<CategoryCreateForm />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
+      target: { value: '重要度' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    await waitFor(async () => {
+      const row = await getClientDb().tag_categories.get(FIXED_ID)
+      expect(row).toBeDefined()
+    })
+    const row = await getClientDb().tag_categories.get(FIXED_ID)
+    expect(row).toMatchObject({
+      id: FIXED_ID,
+      user_id: '',
+      name: '重要度',
+      select_type: 'multi',
+      color: null,
+      sort_key: null,
+    })
+    // created_at / updated_at は ISO 文字列 (時刻揃え)
+    expect(typeof row!.created_at).toBe('string')
+    expect(typeof row!.updated_at).toBe('string')
+    expect(row!.created_at).toBe(row!.updated_at)
+  })
+
+  it('IDB put が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
+    const FIXED_ID = '77777777-7777-4777-8777-777777777777'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    // tag_categories.put を spy 化 (Dexie 実体は残しつつ呼出時刻を取る)。
+    const db = getClientDb()
+    const putSpy = vi.spyOn(db.tag_categories, 'put')
+
+    render(<CategoryCreateForm />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
+      target: { value: '重要度' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    await waitFor(() => {
+      expect(putSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+
+    const putOrder = putSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(putOrder).toBeLessThan(enqueueOrder)
+    putSpy.mockRestore()
+  })
+
+  it('select_type=single で IDB row の select_type も single', async () => {
+    const FIXED_ID = '88888888-8888-4888-8888-888888888888'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(<CategoryCreateForm />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
+      target: { value: '優先度' },
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'single' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    await waitFor(async () => {
+      const row = await getClientDb().tag_categories.get(FIXED_ID)
+      expect(row?.select_type).toBe('single')
     })
   })
 })

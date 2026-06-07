@@ -11,7 +11,15 @@
 // 解決して props で渡すため、 本 test では string[] を直接渡す。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react'
+
+import { getClientDb } from '@/lib/client-db'
 
 const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
@@ -32,9 +40,14 @@ import { OptionCreateForm } from './option-create-form'
 
 const CAT_ID = 'cat-a'
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   mockNewId.mockImplementation(() => realNewId.current())
+  const db = getClientDb()
+  await db.tag_categories.clear()
+  await db.tag_options.clear()
+  await db.card_tags.clear()
+  await db.entity_mutations.clear()
 })
 
 afterEach(() => {
@@ -273,6 +286,85 @@ describe('OptionCreateForm — submit', () => {
         op: 'create',
         patch: { category_id: CAT_ID, name: '高', color: null },
       })
+    })
+  })
+})
+
+describe('OptionCreateForm — optimistic IDB put', () => {
+  it('submit で IDB tag_options に新行が即時 put される (UI 即反映の保証)', async () => {
+    const FIXED_ID = '66666666-6666-4666-8666-666666666666'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(
+      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'option 名' }), {
+      target: { value: '高' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'option 追加' }))
+
+    await waitFor(async () => {
+      const row = await getClientDb().tag_options.get(FIXED_ID)
+      expect(row).toBeDefined()
+    })
+    const row = await getClientDb().tag_options.get(FIXED_ID)
+    expect(row).toMatchObject({
+      id: FIXED_ID,
+      user_id: '',
+      category_id: CAT_ID,
+      name: '高',
+      color: null,
+      sort_key: null,
+    })
+    expect(typeof row!.created_at).toBe('string')
+    expect(typeof row!.updated_at).toBe('string')
+    expect(row!.created_at).toBe(row!.updated_at)
+  })
+
+  it('IDB put が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
+    const FIXED_ID = '77777777-7777-4777-8777-777777777777'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    const db = getClientDb()
+    const putSpy = vi.spyOn(db.tag_options, 'put')
+
+    render(
+      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'option 名' }), {
+      target: { value: '高' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'option 追加' }))
+
+    await waitFor(() => {
+      expect(putSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    const putOrder = putSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(putOrder).toBeLessThan(enqueueOrder)
+    putSpy.mockRestore()
+  })
+
+  it('color 選択ありの submit で IDB row.color に色名が反映', async () => {
+    const FIXED_ID = '88888888-8888-4888-8888-888888888888'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(
+      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'option 色を選択' }))
+    const redCell = await screen.findByRole('button', { name: /色: red/ })
+    fireEvent.click(redCell)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'option 名' }), {
+      target: { value: '高' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'option 追加' }))
+
+    await waitFor(async () => {
+      const row = await getClientDb().tag_options.get(FIXED_ID)
+      expect(row?.color).toBe('red')
     })
   })
 })

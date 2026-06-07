@@ -123,9 +123,9 @@ describe('OptionList — placeholder / 描画', () => {
     expect(
       await screen.findByRole('button', { name: 'option 追加' }),
     ).toBeInTheDocument()
-    // option 行は無し (option 名 編集 button が無い)
+    // option 行は無し (pen icon button (aria-label="編集") が無い)
     expect(
-      screen.queryByRole('button', { name: 'option 名 編集' }),
+      screen.queryByRole('button', { name: '編集' }),
     ).not.toBeInTheDocument()
   })
 
@@ -143,9 +143,13 @@ describe('OptionList — placeholder / 描画', () => {
     await screen.findByText('B option')
     await screen.findByText('C option')
 
-    const names = screen
-      .getAllByRole('button', { name: 'option 名 編集' })
-      .map((el) => el.textContent)
+    // 各 row 内の pen icon button (aria-label="編集") を順序保持で取得し、
+    // 同じ row 内の name span を兄弟 element から抜き出す (Tag-4a-fix Task 2 で
+    // name は static span 化、 役割は pen icon button が rename trigger を担う)。
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
     expect(names).toEqual(['A option', 'B option', 'C option'])
   })
 
@@ -225,6 +229,59 @@ describe('OptionList — 削除フロー', () => {
     })
     expect(mockEnqueue).not.toHaveBeenCalled()
     expect(mockFlush).not.toHaveBeenCalled()
+  })
+})
+
+describe('OptionList — optimistic cascade purge (削除確定時)', () => {
+  it('削除確定で IDB から option + 紐付き card_tags が即時消滅', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
+    await db.card_tags.bulkPut([
+      makeCardTag('card-1', 'opt-1'),
+      makeCardTag('card-2', 'opt-1'),
+    ])
+
+    render(<OptionList activeCategoryId="cat-a" />)
+    await screen.findByText('高')
+
+    fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+
+    await waitFor(async () => {
+      expect(await db.tag_options.get('opt-1')).toBeUndefined()
+      expect(
+        await db.card_tags.where('option_id').equals('opt-1').count(),
+      ).toBe(0)
+    })
+  })
+
+  it('cascade purge は enqueueEntityMutation より先に発火 (発行順序)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
+    await db.card_tags.put(makeCardTag('card-1', 'opt-1'))
+
+    const cardTagWhereSpy = vi.spyOn(db.card_tags, 'where')
+
+    render(<OptionList activeCategoryId="cat-a" />)
+    await screen.findByText('高')
+
+    fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+
+    await waitFor(() => {
+      expect(cardTagWhereSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    // confirm 後の card_tags.where (cascade purge 開始点) は 最低 1 度発火する。
+    // count 集計でも card_tags.where が呼ばれているため、 確定後の最後の呼出が
+    // enqueue より先である事を確認するために最終 invocationCallOrder を比較する。
+    const lastWhereOrder =
+      cardTagWhereSpy.mock.invocationCallOrder.at(-1) ?? 0
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(lastWhereOrder).toBeLessThan(enqueueOrder)
+    cardTagWhereSpy.mockRestore()
   })
 })
 

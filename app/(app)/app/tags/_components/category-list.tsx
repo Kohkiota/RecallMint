@@ -96,6 +96,36 @@ export function CategoryList({
     const target = pendingDelete.category
     setPendingDelete(null)
 
+    // optimistic cascade purge: 子孫 (card_tags) → 中孫 (options) → 親 (category) の
+    // 順で mirror から物理削除し useLiveQuery を即時再描画させる。 server cascade
+    // (applyTagCategoryDelete + FK) も等価処理を走らせるが、 二重削除 idempotent
+    // (server 真値が pull で上書き)。 enqueue より **先に** 発火 (UI 即反映の保証、
+    // mock spy 順序で gate)。
+    void (async () => {
+      const db = getClientDb()
+      try {
+        const options = await db.tag_options
+          .where('category_id')
+          .equals(target.id)
+          .toArray()
+        const optionIds = options.map((o) => o.id)
+        if (optionIds.length > 0) {
+          await db.card_tags.where('option_id').anyOf(optionIds).delete()
+        }
+        await db.tag_options
+          .where('category_id')
+          .equals(target.id)
+          .delete()
+        await db.tag_categories.delete(target.id)
+      } catch (err) {
+        logger.warn({
+          event: 'tag_category_delete.mirror_purge_failed',
+          categoryId: target.id,
+          err: String(err),
+        })
+      }
+    })()
+
     void enqueueEntityMutation({
       entity_type: 'tag_category',
       entity_id: target.id,

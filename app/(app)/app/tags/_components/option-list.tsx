@@ -93,6 +93,24 @@ export function OptionList({ activeCategoryId }: Props) {
     const target = pendingDelete.option
     setPendingDelete(null)
 
+    // optimistic cascade purge: 子孫 (card_tags) → 親 (option) の順で mirror から
+    // 物理削除し useLiveQuery を即時再描画させる。 server cascade
+    // (applyTagOptionDelete + FK) も等価処理を走らせるが、 二重削除 idempotent。
+    // enqueue より **先に** 発火 (UI 即反映の保証、 mock spy 順序で gate)。
+    void (async () => {
+      const db = getClientDb()
+      try {
+        await db.card_tags.where('option_id').equals(target.id).delete()
+        await db.tag_options.delete(target.id)
+      } catch (err) {
+        logger.warn({
+          event: 'tag_option_delete.mirror_purge_failed',
+          optionId: target.id,
+          err: String(err),
+        })
+      }
+    })()
+
     void enqueueEntityMutation({
       entity_type: 'tag_option',
       entity_id: target.id,

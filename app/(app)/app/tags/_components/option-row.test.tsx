@@ -142,6 +142,34 @@ describe('OptionRow — 表示', () => {
       screen.getByRole('button', { name: 'option 削除' }),
     ).toBeInTheDocument()
   })
+
+  it('pen icon button (aria-label="編集") が render される (rename の明示 trigger)', () => {
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '編集' })).toBeInTheDocument()
+  })
+
+  it('editing=true 時は pen icon button が非表示 (input のみ)', () => {
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    // pen icon button は消える
+    expect(
+      screen.queryByRole('button', { name: '編集' }),
+    ).not.toBeInTheDocument()
+    // input のみ表示
+    expect(screen.getByRole('textbox')).toBeInTheDocument()
+  })
 })
 
 describe('OptionRow — onDelete callback', () => {
@@ -160,7 +188,7 @@ describe('OptionRow — onDelete callback', () => {
 })
 
 describe('OptionRow — inline rename', () => {
-  it('option 名 click で edit mode に入り input に現値がセットされる', () => {
+  it('pen icon click で edit mode に入り input に現値がセットされる', () => {
     render(
       <OptionRow
         option={baseOption}
@@ -168,7 +196,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox') as HTMLInputElement
     expect(input).toHaveValue('高')
   })
@@ -181,7 +209,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '最高' } })
     fireEvent.blur(input)
@@ -207,7 +235,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.blur(input)
 
@@ -224,7 +252,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.blur(input)
@@ -242,7 +270,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '中断値' } })
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -267,7 +295,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '低' } })
     fireEvent.blur(input)
@@ -287,7 +315,7 @@ describe('OptionRow — inline rename', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'option 名 編集' }))
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     // 同じ名前で blur → 値変更なし short-circuit
     fireEvent.blur(input)
@@ -425,5 +453,152 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
     fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
     await screen.findByText(/他のカテゴリがありません/)
     expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+  })
+})
+
+describe('OptionRow — optimistic IDB update', () => {
+  it('rename 確定で IDB tag_options.update が name + updated_at を bump', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '最高' } })
+    fireEvent.blur(input)
+
+    await waitFor(async () => {
+      const row = await db.tag_options.get(baseOption.id)
+      expect(row?.name).toBe('最高')
+    })
+    const row = await db.tag_options.get(baseOption.id)
+    expect(row?.updated_at).not.toBe(baseOption.updated_at)
+  })
+
+  it('rename: IDB update が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+    const updateSpy = vi.spyOn(db.tag_options, 'update')
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '最高' } })
+    fireEvent.blur(input)
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    const updateOrder = updateSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(updateOrder).toBeLessThan(enqueueOrder)
+    updateSpy.mockRestore()
+  })
+
+  it('color 変更で IDB row.color が即時反映 (palette popover 経由)', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'option 色を変更' }))
+    const blueCell = await screen.findByRole('button', { name: /色: blue/ })
+    fireEvent.click(blueCell)
+
+    await waitFor(async () => {
+      const row = await db.tag_options.get(baseOption.id)
+      expect(row?.color).toBe('blue')
+    })
+  })
+
+  it('color 変更: IDB update が enqueue より先 (発行順序)', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+    const updateSpy = vi.spyOn(db.tag_options, 'update')
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'option 色を変更' }))
+    const blueCell = await screen.findByRole('button', { name: /色: blue/ })
+    fireEvent.click(blueCell)
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    const updateOrder = updateSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(updateOrder).toBeLessThan(enqueueOrder)
+    updateSpy.mockRestore()
+  })
+
+  it('カテゴリ移動で IDB row.category_id が即時反映', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
+    const item = await screen.findByRole('menuitem', { name: '難易度' })
+    fireEvent.click(item)
+
+    await waitFor(async () => {
+      const row = await db.tag_options.get(baseOption.id)
+      expect(row?.category_id).toBe('cat-b')
+    })
+  })
+
+  it('カテゴリ移動: IDB update が enqueue より先 (発行順序)', async () => {
+    const db = getClientDb()
+    await db.tag_options.put(baseOption)
+    const updateSpy = vi.spyOn(db.tag_options, 'update')
+
+    render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
+    const item = await screen.findByRole('menuitem', { name: '難易度' })
+    fireEvent.click(item)
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    const updateOrder = updateSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(updateOrder).toBeLessThan(enqueueOrder)
+    updateSpy.mockRestore()
   })
 })

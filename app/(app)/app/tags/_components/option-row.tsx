@@ -1,7 +1,11 @@
 'use client'
 
 // tag manager 右 column の option 1 行 component。
-// - option 名 click で in-place rename (Enter / blur で確定、 Esc / 空文字でキャンセル)
+// - 名前は static `<span>` で表示、 横の pen icon button (lucide Pencil、
+//   aria-label="編集") を rename trigger として明示配置 (Tag-4a-fix Task 2、
+//   category-row と同 pattern)。 row 全体は active 切替対象でないため
+//   role/tabIndex は付けない (右 panel に表示中の option は全 active 扱い)。
+// - 編集モード: Enter / blur で確定、 Esc / 空文字でキャンセル
 // - 確定値は `enqueueEntityMutation({entity_type:'tag_option', op:'update_field',
 //   patch:{field:'name', value}})` → `runGuardedEntityMutationFlush()` で同期
 // - color pill click で ColorPalettePopover (Task 1) を開き、 選択で
@@ -22,6 +26,7 @@
 // コピー (DRY より局所単純さ優先)。 debounce drain は category-row と同じ 500ms。
 
 import * as React from 'react'
+import { Pencil } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -98,12 +103,6 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
     }
   }, [editing])
 
-  const startEdit = (e: React.MouseEvent | React.KeyboardEvent) => {
-    e.stopPropagation()
-    setRenameError(null)
-    setEditing(true)
-  }
-
   const cancelEdit = () => {
     setEditing(false)
     setValue(option.name)
@@ -111,10 +110,31 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
   }
 
   // mutation 発行 + debounce flush の共通経路。
+  // optimistic IDB update は本 helper の **先頭** で発火 (UI 即反映の保証、
+  // mock spy 順序で gate)。 field に応じて mirror の対応 column を patch する。
   const enqueueUpdate = (
     field: 'name' | 'color' | 'category_id',
     value: unknown,
   ) => {
+    const now = new Date().toISOString()
+    const mirrorPatch: Partial<ClientTagOption> = {
+      updated_at: now,
+      ...(field === 'name'
+        ? { name: value as string }
+        : field === 'color'
+          ? { color: value as string | null }
+          : { category_id: value as string }),
+    }
+    void getClientDb()
+      .tag_options.update(option.id, mirrorPatch)
+      .catch((err) => {
+        logger.warn({
+          event: 'tag_option_inline.mirror_update_failed',
+          optionId: option.id,
+          field,
+          err: String(err),
+        })
+      })
     void enqueueEntityMutation({
       entity_type: 'tag_option',
       entity_id: option.id,
@@ -256,20 +276,25 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
             ) : null}
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={startEdit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                startEdit(e)
-              }
-            }}
-            aria-label="option 名 編集"
-            className="w-full text-left text-sm font-medium text-slate-900 truncate hover:text-slate-700"
-          >
-            {option.name}
-          </button>
+          <div className="flex items-center gap-1">
+            <span className="flex-1 text-left text-sm font-medium text-slate-900 truncate">
+              {option.name}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                // 親 div には onClick が無いので stopPropagation 不要だが、
+                // category-row との pattern 統一感のため明示。
+                e.stopPropagation()
+                setRenameError(null)
+                setEditing(true)
+              }}
+              aria-label="編集"
+              className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+          </div>
         )}
         {moveError ? (
           <p className="mt-0.5 text-xs text-red-600" role="alert">

@@ -131,9 +131,13 @@ describe('CategoryList — useLiveQuery 描画', () => {
     await screen.findByText('B カテゴリ')
     await screen.findByText('C カテゴリ')
 
-    const names = screen
-      .getAllByRole('button', { name: 'カテゴリ名 編集' })
-      .map((el) => el.textContent)
+    // 各 row 内の pen icon button (aria-label="編集") を順序保持で取得し、
+    // 同じ row 内の name span を兄弟 element から抜き出す (Tag-4a-fix Task 2 で
+    // name は static span 化、 役割は pen icon button が rename trigger を担う)。
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
     expect(names).toEqual(['A カテゴリ', 'B カテゴリ', 'C カテゴリ'])
   })
 
@@ -148,8 +152,10 @@ describe('CategoryList — useLiveQuery 描画', () => {
     )
     await screen.findByText('A')
 
-    // class に bg-slate-100 を含む row が 1 件のみ
-    const activeRows = container.querySelectorAll('[class*="bg-slate-100"]')
+    // class に bg-slate-100 を含む row が 1 件のみ。
+    // `[class~="bg-slate-100"]` は class 属性内の token 一致 (word boundary) で
+    // `hover:bg-slate-100` 等の prefix 付き utility class とは区別される。
+    const activeRows = container.querySelectorAll('[class~="bg-slate-100"]')
     expect(activeRows.length).toBe(1)
   })
 })
@@ -254,6 +260,93 @@ describe('CategoryList — 削除フロー', () => {
     await waitFor(() => {
       expect(onSelectCategory).toHaveBeenCalledWith(null)
     })
+  })
+})
+
+describe('CategoryList — optimistic cascade purge (削除確定時)', () => {
+  it('削除確定で IDB から category + 配下 option + 紐付き card_tags が即時消滅', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(
+      makeCategory('cat-a', '重要度', '2026-06-01T00:00:00.000Z'),
+    )
+    await db.tag_options.bulkPut([
+      makeOption('opt-1', 'cat-a', '高'),
+      makeOption('opt-2', 'cat-a', '低'),
+    ])
+    await db.card_tags.bulkPut([
+      makeCardTag('card-1', 'opt-1'),
+      makeCardTag('card-2', 'opt-1'),
+      makeCardTag('card-1', 'opt-2'),
+    ])
+
+    render(
+      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+    )
+    await screen.findByText('重要度')
+
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ削除' }))
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+
+    // category 本体 / 配下 option / 配下 card_tags がすべて IDB から消える
+    await waitFor(async () => {
+      expect(await db.tag_categories.get('cat-a')).toBeUndefined()
+      expect(
+        await db.tag_options.where('category_id').equals('cat-a').count(),
+      ).toBe(0)
+      expect(
+        await db.card_tags.where('option_id').anyOf(['opt-1', 'opt-2']).count(),
+      ).toBe(0)
+    })
+  })
+
+  it('cascade purge は enqueueEntityMutation より先に発火 (発行順序)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(
+      makeCategory('cat-a', '重要度', '2026-06-01T00:00:00.000Z'),
+    )
+    await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
+    await db.card_tags.put(makeCardTag('card-1', 'opt-1'))
+
+    const cardTagDeleteSpy = vi.spyOn(db.card_tags, 'where')
+
+    render(
+      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+    )
+    await screen.findByText('重要度')
+
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ削除' }))
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+
+    await waitFor(() => {
+      expect(cardTagDeleteSpy).toHaveBeenCalled()
+      expect(mockEnqueue).toHaveBeenCalled()
+    })
+    // card_tags.where (= cascade purge の最初の呼出) が enqueue より先。
+    const whereOrder = cardTagDeleteSpy.mock.invocationCallOrder[0]
+    const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
+    expect(whereOrder).toBeLessThan(enqueueOrder)
+    cardTagDeleteSpy.mockRestore()
+  })
+
+  it('配下 option が無い category の削除でも cascade purge が安全に成立 (anyOf 空)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(
+      makeCategory('cat-a', '重要度', '2026-06-01T00:00:00.000Z'),
+    )
+
+    render(
+      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+    )
+    await screen.findByText('重要度')
+
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ削除' }))
+    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
+
+    await waitFor(async () => {
+      expect(await db.tag_categories.get('cat-a')).toBeUndefined()
+    })
+    // enqueue も呼ばれている
+    expect(mockEnqueue).toHaveBeenCalled()
   })
 })
 
