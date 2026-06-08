@@ -34,12 +34,16 @@ const mockTransaction = vi.fn(async (...args: unknown[]) => {
 const mockTagCategoriesGet = vi.fn(async () => undefined as unknown)
 const mockTagCategoriesUpdate = vi.fn(async () => 1)
 const mockTagCategoriesDelete = vi.fn(async () => undefined)
+// Tag-4c-2a: handleCreateCategory が呼ぶ put (default mock; 個別テストで vi.fn 差替も可能)
+const mockTagCategoriesPutDefault = vi.fn(async () => undefined)
 // Fix A-2: handleRenameCategory が全件 check に使う toArray
 const mockTagCategoriesToArray = vi.fn(async () => [] as unknown[])
 
 const mockTagOptionsGet = vi.fn(async () => undefined as unknown)
 const mockTagOptionsUpdate = vi.fn(async () => 1)
 const mockTagOptionsDelete = vi.fn(async () => undefined)
+// Tag-4c-2a: handleCreateOptionAndAssign が呼ぶ put (default mock)
+const mockTagOptionsPutDefault = vi.fn(async () => undefined)
 
 // チェーン可能な where mock 生成ヘルパー
 // db.tag_options.where('category_id').equals(id).toArray() / .delete()
@@ -76,6 +80,7 @@ vi.mock('@/lib/client-db', async () => {
         get: mockTagCategoriesGet,
         update: mockTagCategoriesUpdate,
         delete: mockTagCategoriesDelete,
+        put: mockTagCategoriesPutDefault,
         where: mockTagCategoriesWhere,
         toArray: mockTagCategoriesToArray,
       },
@@ -83,6 +88,7 @@ vi.mock('@/lib/client-db', async () => {
         get: mockTagOptionsGet,
         update: mockTagOptionsUpdate,
         delete: mockTagOptionsDelete,
+        put: mockTagOptionsPutDefault,
         where: mockTagOptionsWhere,
       },
       // entity_mutations は実 op をモジュールレベルで mock 済 (enqueueEntityMutation)
@@ -256,7 +262,7 @@ describe('CardTagsSection — 見出し「タグ」', () => {
     expect(screen.getByRole('heading', { name: 'タグ' })).toBeInTheDocument()
   })
 
-  it('見出し横に「タグ管理 →」 link は render されない (popover footer のみ)', () => {
+  it('見出し横に「タグ管理 →」 link は render されない (Tag-4c-2a Task 4 で popover footer からも撤去)', () => {
     render(
       <CardTagsSection
         cardId="card-1"
@@ -606,6 +612,8 @@ import {
   handleDeleteOption,
   countCategoryImpact,
   countOptionImpact,
+  handleCreateCategory,
+  handleCreateOptionAndAssign,
 } from './card-tags-section'
 // Note: runGuardedEntityMutationFlush already imported above (Section 5)
 
@@ -1221,5 +1229,481 @@ describe('CardTagsSection — Fix C-3: sortedCardTags badge order', () => {
     const bunIdx = labels.findIndex((l) => l === 'タグ: 分野: 循環器')
     const jinIdx = labels.findIndex((l) => l === 'タグ: 分野: 腎臓')
     expect(bunIdx).toBeLessThan(jinIdx) // 循環器 comes before 腎臓
+  })
+})
+
+// ===========================================================================
+// Tag-4c-2a Section A: handleCreateCategory
+// ===========================================================================
+//
+// テスト戦略:
+// - module スコープ関数 (props 引数版) を直接呼出し、 db.transaction / mirror put / enqueue
+//   の挙動を mock で観測する。
+// - `crypto.randomUUID` は vi.spyOn で安定 id ('cat-new-1') に固定し、 put 引数の id を pin。
+// - sort_key 採番は `nextCardSortKey` の既存仕様に委ねる (categories.sort_key ベース)。
+
+describe('handleCreateCategory', () => {
+  beforeEach(() => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(
+      'cat-new-1' as `${string}-${string}-${string}-${string}-${string}`,
+    )
+  })
+
+  it('正常系: db.transaction が tag_categories + entity_mutations の 2 store rw lock で呼ばれる', async () => {
+    const result = await handleCreateCategory('user-1', [], '新カテゴリ', 'multi')
+
+    expect(result).toEqual({ id: 'cat-new-1' })
+    expect(mockTransaction).toHaveBeenCalled()
+    const firstCall = mockTransaction.mock.calls[0]
+    expect(firstCall[0]).toBe('rw')
+    const tableArgs = firstCall.slice(1, -1)
+    const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
+    expect(tableArgs).toContain(db.tag_categories)
+    expect(tableArgs).toContain(db.entity_mutations)
+    // 他 store (tag_options / card_tags) は含まれない
+    expect(tableArgs).not.toContain(db.tag_options)
+    expect(tableArgs).not.toContain(db.card_tags)
+  })
+
+  it('mirror put が id / name / select_type / color:null / sort_key / user_id / created_at で呼ばれる', async () => {
+    const mockTagCategoriesPut = vi.fn(async () => undefined)
+    // 既存 mock に put を追加 (getClientDb mock factory を上書き)
+    ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      transaction: mockTransaction,
+      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        put: mockTagCategoriesPut,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        where: mockTagOptionsWhere,
+      },
+      entity_mutations: {},
+    })
+
+    await handleCreateCategory('user-1', [], '分野', 'single')
+
+    expect(mockTagCategoriesPut).toHaveBeenCalledTimes(1)
+    const putArg = (mockTagCategoriesPut.mock.calls as unknown as [Record<string, unknown>][])[0][0]
+    expect(putArg.id).toBe('cat-new-1')
+    expect(putArg.name).toBe('分野')
+    expect(putArg.select_type).toBe('single')
+    expect(putArg.color).toBe(null)
+    expect(putArg.sort_key).toBe('1') // 空配列 → '1'
+    expect(putArg.user_id).toBe('user-1')
+    expect(typeof putArg.created_at).toBe('string')
+  })
+
+  it('enqueue が op=create の引数で呼ばれる', async () => {
+    await handleCreateCategory('user-1', [], '分野', 'multi')
+
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        entity_id: 'cat-new-1',
+        op: 'create',
+        patch: { name: '分野', select_type: 'multi' },
+      }),
+    )
+  })
+
+  it('userId 空文字 → console.error + throw、 db.transaction は呼ばれない', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(handleCreateCategory('', [], 'x', 'multi')).rejects.toThrow('empty user_id')
+    expect(errSpy).toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it('enqueue が throw した場合 → tx が throw を伝播 (Dexie auto-rollback)、 flush は呼ばれない', async () => {
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleCreateCategory('user-1', [], 'x', 'multi')).rejects.toThrow('enqueue failed')
+
+    // flush は tx 完了後の void で、 throw されると到達しない
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
+
+  it('flush は正常完了後に呼ばれる', async () => {
+    await handleCreateCategory('user-1', [], 'x', 'multi')
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  // ----- sort_key 採番 contract -----
+  it('sort_key 採番: 既存全 null → "1"', async () => {
+    const mockTagCategoriesPut = vi.fn(async () => undefined)
+    ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      transaction: mockTransaction,
+      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        put: mockTagCategoriesPut,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        where: mockTagOptionsWhere,
+      },
+      entity_mutations: {},
+    })
+    const cats = [cat('c1', '既存1'), cat('c2', '既存2')] // sort_key 全 null
+
+    await handleCreateCategory('user-1', cats, '新', 'multi')
+
+    const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
+    expect(putArg.sort_key).toBe('1')
+  })
+
+  it('sort_key 採番: 既存 ["1","2"] → "3"', async () => {
+    const mockTagCategoriesPut = vi.fn(async () => undefined)
+    ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      transaction: mockTransaction,
+      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        put: mockTagCategoriesPut,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        where: mockTagOptionsWhere,
+      },
+      entity_mutations: {},
+    })
+    const cats: ClientTagCategory[] = [
+      { ...cat('c1', '既存1'), sort_key: '1' },
+      { ...cat('c2', '既存2'), sort_key: '2' },
+    ]
+
+    await handleCreateCategory('user-1', cats, '新', 'multi')
+
+    const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
+    expect(putArg.sort_key).toBe('3')
+  })
+
+  it('sort_key 採番: 既存 ["1", null, "5"] → "6"', async () => {
+    const mockTagCategoriesPut = vi.fn(async () => undefined)
+    ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      transaction: mockTransaction,
+      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        put: mockTagCategoriesPut,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        where: mockTagOptionsWhere,
+      },
+      entity_mutations: {},
+    })
+    const cats: ClientTagCategory[] = [
+      { ...cat('c1', '既存1'), sort_key: '1' },
+      { ...cat('c2', '既存2'), sort_key: null },
+      { ...cat('c3', '既存3'), sort_key: '5' },
+    ]
+
+    await handleCreateCategory('user-1', cats, '新', 'multi')
+
+    const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
+    expect(putArg.sort_key).toBe('6')
+  })
+})
+
+// ===========================================================================
+// Tag-4c-2a Section B: handleCreateOptionAndAssign
+// ===========================================================================
+
+describe('handleCreateOptionAndAssign', () => {
+  // 共通: tag_options.put / card_tags.put / card_tags.delete を捕まえる spy 群を用意して
+  // getClientDb mock を毎回再設定する。
+  let mockTagOptionsPut: ReturnType<typeof vi.fn>
+  let mockCardTagsPut: ReturnType<typeof vi.fn>
+  let mockCardTagsDelete: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(
+      'opt-new-1' as `${string}-${string}-${string}-${string}-${string}`,
+    )
+    mockTagOptionsPut = vi.fn(async () => undefined)
+    mockCardTagsPut = vi.fn(async () => undefined)
+    mockCardTagsDelete = vi.fn(async () => undefined)
+    ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      transaction: mockTransaction,
+      card_tags: {
+        delete: mockCardTagsDelete,
+        put: mockCardTagsPut,
+        where: mockCardTagsWhere,
+      },
+      tag_categories: {
+        get: mockTagCategoriesGet,
+        update: mockTagCategoriesUpdate,
+        delete: mockTagCategoriesDelete,
+        where: mockTagCategoriesWhere,
+        toArray: mockTagCategoriesToArray,
+      },
+      tag_options: {
+        get: mockTagOptionsGet,
+        update: mockTagOptionsUpdate,
+        delete: mockTagOptionsDelete,
+        put: mockTagOptionsPut,
+        where: mockTagOptionsWhere,
+      },
+      entity_mutations: {},
+    })
+  })
+
+  it('atomic tx: tag_options + card_tags + entity_mutations の 3 store rw lock', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新option')
+
+    expect(mockTransaction).toHaveBeenCalled()
+    const firstCall = mockTransaction.mock.calls[0]
+    expect(firstCall[0]).toBe('rw')
+    const tableArgs = firstCall.slice(1, -1)
+    const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
+    expect(tableArgs).toContain(db.tag_options)
+    expect(tableArgs).toContain(db.card_tags)
+    expect(tableArgs).toContain(db.entity_mutations)
+    // tag_categories は含まれない (create option では category 触らない)
+    expect(tableArgs).not.toContain(db.tag_categories)
+  })
+
+  it('multi: 新 option は toAdd のみ (同カテゴリ既存付与は維持される)', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+    const options = [opt('o1', 'c1', '既存')]
+    const cardTags = [tag('card-1', 'o1')]
+
+    await handleCreateOptionAndAssign(
+      'user-1', 'card-1', categories, options, cardTags, 'c1', '追加',
+    )
+
+    // card_tags.delete は呼ばれない (multi なので toRemove なし)
+    expect(mockCardTagsDelete).not.toHaveBeenCalled()
+    // card_tags.put は新 option のみ
+    expect(mockCardTagsPut).toHaveBeenCalledTimes(1)
+    const putArg = mockCardTagsPut.mock.calls[0][0] as { card_id: string; option_id: string }
+    expect(putArg.card_id).toBe('card-1')
+    expect(putArg.option_id).toBe('opt-new-1')
+
+    // enqueue の card update_field value は ['o1', 'opt-new-1'] (順不同で検証)
+    const cardUpdateCall = (enqueueEntityMutation as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => (c[0] as { entity_type: string }).entity_type === 'card',
+    )
+    expect(cardUpdateCall).toBeDefined()
+    const value = (cardUpdateCall![0] as { patch: { value: string[] } }).patch.value
+    expect(value).toEqual(expect.arrayContaining(['o1', 'opt-new-1']))
+    expect(value).toHaveLength(2)
+  })
+
+  it('single: 同カテゴリ既存付与の option は toRemove に積まれる + 新 option を toAdd', async () => {
+    const categories = [cat('c1', '難易度', 'single')]
+    const options = [opt('o1', 'c1', '高')]
+    const cardTags = [tag('card-1', 'o1')] // 既に「高」 付与済
+
+    await handleCreateOptionAndAssign(
+      'user-1', 'card-1', categories, options, cardTags, 'c1', '中',
+    )
+
+    // 同カテゴリ既存付与 'o1' が delete される (single ルール)
+    expect(mockCardTagsDelete).toHaveBeenCalledWith(['card-1', 'o1'])
+    // 新 option を put
+    expect(mockCardTagsPut).toHaveBeenCalledTimes(1)
+    const putArg = mockCardTagsPut.mock.calls[0][0] as { option_id: string }
+    expect(putArg.option_id).toBe('opt-new-1')
+
+    // enqueue value は ['opt-new-1'] (o1 は除外)
+    const cardUpdateCall = (enqueueEntityMutation as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => (c[0] as { entity_type: string }).entity_type === 'card',
+    )
+    const value = (cardUpdateCall![0] as { patch: { value: string[] } }).patch.value
+    expect(value).toEqual(['opt-new-1'])
+  })
+
+  it('single: 他カテゴリの付与は維持される (whole-set 不変条件)', async () => {
+    const categories = [
+      cat('c1', '難易度', 'single'),
+      cat('c2', '分野', 'multi'),
+    ]
+    const options = [opt('o1', 'c1', '高'), opt('o2', 'c2', '循環器')]
+    const cardTags = [tag('card-1', 'o1'), tag('card-1', 'o2')]
+
+    await handleCreateOptionAndAssign(
+      'user-1', 'card-1', categories, options, cardTags, 'c1', '中',
+    )
+
+    // delete は o1 のみ (c1 内)、 o2 (c2) は触らない
+    expect(mockCardTagsDelete).toHaveBeenCalledWith(['card-1', 'o1'])
+    expect(mockCardTagsDelete).toHaveBeenCalledTimes(1)
+
+    // enqueue value は ['o2', 'opt-new-1']
+    const cardUpdateCall = (enqueueEntityMutation as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => (c[0] as { entity_type: string }).entity_type === 'card',
+    )
+    const value = (cardUpdateCall![0] as { patch: { value: string[] } }).patch.value
+    expect(value).toEqual(expect.arrayContaining(['o2', 'opt-new-1']))
+    expect(value).not.toContain('o1')
+  })
+
+  it('tag_options.put 引数: id / category_id / name / color:null / sort_key / user_id / created_at', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+    const options: ClientTagOption[] = [
+      { ...opt('o1', 'c1', '既存1'), sort_key: '1' },
+      { ...opt('o2', 'c1', '既存2'), sort_key: '2' },
+    ]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, options, [], 'c1', '新')
+
+    expect(mockTagOptionsPut).toHaveBeenCalledTimes(1)
+    const putArg = mockTagOptionsPut.mock.calls[0][0] as Record<string, unknown>
+    expect(putArg.id).toBe('opt-new-1')
+    expect(putArg.category_id).toBe('c1')
+    expect(putArg.name).toBe('新')
+    expect(putArg.color).toBe(null)
+    expect(putArg.sort_key).toBe('3') // 既存 ["1","2"] → '3'
+    expect(putArg.user_id).toBe('user-1')
+    expect(typeof putArg.created_at).toBe('string')
+  })
+
+  it('card_tags.put 引数: card_id / option_id / user_id (空文字でない)', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新')
+
+    const putArg = mockCardTagsPut.mock.calls[0][0] as { user_id: string }
+    expect(putArg.user_id).toBe('user-1')
+    expect(putArg.user_id).not.toBe('')
+  })
+
+  it('enqueue 2 連発: tag_option create と card update_field tag_option_ids', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新')
+
+    const calls = (enqueueEntityMutation as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls).toHaveLength(2)
+
+    // tag_option create call
+    expect(calls[0][0]).toMatchObject({
+      entity_type: 'tag_option',
+      entity_id: 'opt-new-1',
+      op: 'create',
+      patch: { category_id: 'c1', name: '新', color: null },
+    })
+    // card update_field tag_option_ids call
+    expect(calls[1][0]).toMatchObject({
+      entity_type: 'card',
+      entity_id: 'card-1',
+      op: 'update_field',
+      patch: expect.objectContaining({ field: 'tag_option_ids' }),
+    })
+  })
+
+  it('userId 空文字 → console.error + early return (副作用なし)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const categories = [cat('c1', '分野', 'multi')]
+
+    await handleCreateOptionAndAssign('', 'card-1', categories, [], [], 'c1', '新')
+
+    expect(errSpy).toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTagOptionsPut).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it('category 不在 → silent no-op (副作用なし)', async () => {
+    await handleCreateOptionAndAssign('user-1', 'card-1', [], [], [], 'no-such-cat', '新')
+
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTagOptionsPut).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+  })
+
+  it('enqueue が throw した場合 → tx が throw を伝播 (Dexie auto-rollback)、 flush は呼ばれない', async () => {
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+    const categories = [cat('c1', '分野', 'multi')]
+
+    await expect(
+      handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新'),
+    ).rejects.toThrow('enqueue failed')
+
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
+
+  it('flush は正常完了後に呼ばれる', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新')
+
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  // ----- sort_key 採番 contract (option scope: 同カテゴリの sort_key 集合) -----
+  it('sort_key 採番: 同カテゴリ既存全 null → "1"', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+    const options = [opt('o1', 'c1', '既存')] // sort_key null
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, options, [], 'c1', '新')
+
+    const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
+    expect(putArg.sort_key).toBe('1')
+  })
+
+  it('sort_key 採番: 別カテゴリの sort_key は無視される (同カテゴリ scope)', async () => {
+    const categories = [
+      cat('c1', '分野', 'multi'),
+      cat('c2', '難易度', 'single'),
+    ]
+    const options: ClientTagOption[] = [
+      { ...opt('o-other', 'c2', '別カテ'), sort_key: '99' }, // 別カテ
+      { ...opt('o1', 'c1', '既存'), sort_key: '1' }, // 同カテ
+    ]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, options, [], 'c1', '新')
+
+    const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
+    // c1 の sort_key は ["1"] のみ → '2' (c2 の "99" は無視)
+    expect(putArg.sort_key).toBe('2')
+  })
+
+  it('sort_key 採番: 既存 ["1", null, "5"] → "6"', async () => {
+    const categories = [cat('c1', '分野', 'multi')]
+    const options: ClientTagOption[] = [
+      { ...opt('o1', 'c1', '既存1'), sort_key: '1' },
+      { ...opt('o2', 'c1', '既存2'), sort_key: null },
+      { ...opt('o3', 'c1', '既存3'), sort_key: '5' },
+    ]
+
+    await handleCreateOptionAndAssign('user-1', 'card-1', categories, options, [], 'c1', '新')
+
+    const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
+    expect(putArg.sort_key).toBe('6')
   })
 })

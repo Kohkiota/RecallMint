@@ -428,6 +428,36 @@ describe('CardTagEditFields — Fix A-3: option kind は dialog なし', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Tag-4c-2a-fix-2 Fix-3: mount 時 全選択 focus
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditFields — Fix-3: mount 時 inputRef.focus() + inputRef.select()', () => {
+  it('mount 後 1 frame で input が focus され、 value 全体が selection 範囲になる', async () => {
+    const props = makeProps({ name: '分野' })
+    render(<CardTagEditFields {...props} />)
+    const input = screen.getByRole('textbox', { name: 'カテゴリ名 編集' }) as HTMLInputElement
+    // useEffect 内 requestAnimationFrame での focus + select は非同期発火。
+    // waitFor で次フレーム以降の発火を待つ。
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input)
+    })
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(input.value.length)
+  })
+
+  it('option kind でも mount 時 inputRef.focus() + 全選択が発火する', async () => {
+    const props = makeProps({ kind: 'option', name: '循環器' })
+    render(<CardTagEditFields {...props} />)
+    const input = screen.getByRole('textbox', { name: 'option名 編集' }) as HTMLInputElement
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input)
+    })
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(input.value.length)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 15. countImpact reject → countError 表示 + DeleteConfirmDialog 開かない + onDelete 呼ばれない
 // ---------------------------------------------------------------------------
 

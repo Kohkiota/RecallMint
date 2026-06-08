@@ -6,11 +6,11 @@
 // 設計変更点 (Tag-4b-fix):
 // - 旧: categories を iterate → 全カテゴリ row を常時表示 (CardTagCategoryRow)
 // - 新: cardTags を iterate → 付与済み tag のバッジのみ表示 (Notion 方式)
-// - 「タグ管理 →」 link は見出し横から削除。 popover footer のみに配置。
+// - 「タグ管理 →」 link は見出し横から削除。 Tag-4c-2a Task 4 で popover footer からも撤去。
 //
 // 設計参照: docs/superpowers/specs/2026-06-07-tag-4b-fix-popover-ui-design.md
 
-import { memo, useMemo } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 
 import { logger } from '@/lib/logger'
 import {
@@ -21,6 +21,7 @@ import {
 } from '@/lib/client-db'
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { nextCardSortKey } from '@/lib/cards/next-card-sort-key'
 
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
@@ -319,6 +320,174 @@ export async function countOptionImpact(
 }
 
 // ---------------------------------------------------------------------------
+// Create handlers (Tag-4c-2a)
+//
+// 既存の rename / color / delete handler が module スコープに集約されているのと同じ規約で、
+// create 系も明示的に props (userId / cardId / 当該 scope の categories / options / cardTags)
+// を受け取る module スコープ関数として export する。 component 内では useCallback で
+// closure 化し、 useMemo の dep に乗せて tagEditCallbacks identity を制御する。
+//
+// テスト容易性: deps を引数で受けることで getClientDb / enqueue mock 経由でユニットテスト可能。
+// ---------------------------------------------------------------------------
+
+/**
+ * カテゴリを新規作成する。
+ * mirror put (tag_categories) + enqueue (entity_mutations) を 2 store rw tx に閉じ、
+ * 失敗時 Dexie auto-rollback。 userId 空文字なら early return + console.error。
+ * sort_key は同 user scope の category 全体で max+1 (text 列、 string で書込)。
+ * color は null 固定 (作成時 UI なし、 Tag-4c-1 popover で後付け編集可能)。
+ *
+ * @returns 採番した id (popover 側で次 stage 遷移用)
+ * @throws userId 空文字時 / 内部 enqueue 失敗時 (Dexie auto-rollback 済)
+ */
+export async function handleCreateCategory(
+  userId: string,
+  existingCategories: ClientTagCategory[],
+  name: string,
+  selectType: 'single' | 'multi',
+): Promise<{ id: string }> {
+  if (!userId) {
+    console.error('[Tag-4c-2a] empty user_id, aborting handleCreateCategory')
+    throw new Error('empty user_id')
+  }
+  const db = getClientDb()
+  const id = crypto.randomUUID()
+  const sortKey = nextCardSortKey(existingCategories.map((c) => c.sort_key ?? null))
+  const nowIso = new Date().toISOString()
+
+  await db.transaction(
+    'rw',
+    db.tag_categories,
+    db.entity_mutations,
+    async () => {
+      await db.tag_categories.put({
+        id,
+        user_id: userId,
+        name,
+        select_type: selectType,
+        color: null,
+        sort_key: sortKey,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      await enqueueEntityMutation({
+        entity_type: 'tag_category',
+        entity_id: id,
+        op: 'create',
+        patch: { name, select_type: selectType },
+      })
+    },
+  )
+
+  void runGuardedEntityMutationFlush().catch(() => {})
+  return { id }
+}
+
+/**
+ * option を新規作成し、 当該 card に即時付与する。
+ * mirror put (tag_options) + card_tags whole-set 差分書込 + enqueue 2 連発を
+ * 3 store rw tx に閉じる。 失敗時 Dexie auto-rollback。
+ *
+ * select_type='single' の場合、 同カテゴリ既存付与 option を toRemove に積み
+ * whole-set 不変条件を満たす (buildNextTagSet 相当の logic を inline 展開)。
+ * select_type='multi' の場合、 新 option を toAdd のみ。
+ *
+ * userId 空文字なら early return + console.error (副作用なし)。
+ * category 不在なら silent no-op。
+ */
+export async function handleCreateOptionAndAssign(
+  userId: string,
+  cardId: string,
+  existingCategories: ClientTagCategory[],
+  existingOptions: ClientTagOption[],
+  existingCardTags: ClientCardTag[],
+  categoryId: string,
+  name: string,
+): Promise<void> {
+  if (!userId) {
+    console.error('[Tag-4c-2a] empty user_id, aborting handleCreateOptionAndAssign')
+    return
+  }
+  const category = existingCategories.find((c) => c.id === categoryId)
+  if (!category) return
+
+  const db = getClientDb()
+  const newOptionId = crypto.randomUUID()
+  const sortKey = nextCardSortKey(
+    existingOptions
+      .filter((o) => o.category_id === categoryId)
+      .map((o) => o.sort_key ?? null),
+  )
+  const nowIso = new Date().toISOString()
+
+  // whole-set 差分構築:
+  // - multi: 新 option を toAdd のみ
+  // - single: 新 option を toAdd、 同カテゴリ既存付与の option を toRemove
+  const oldAssigned = existingCardTags.map((t) => t.option_id)
+  const oldSet = new Set(oldAssigned)
+  const newSet = new Set(oldAssigned)
+  const toRemove: string[] = []
+  if (category.select_type === 'single') {
+    const sameCatOptionIds = new Set(
+      existingOptions.filter((o) => o.category_id === categoryId).map((o) => o.id),
+    )
+    for (const id of sameCatOptionIds) {
+      if (oldSet.has(id)) {
+        newSet.delete(id)
+        toRemove.push(id)
+      }
+    }
+  }
+  newSet.add(newOptionId)
+  const next = [...newSet]
+
+  await db.transaction(
+    'rw',
+    db.tag_options,
+    db.card_tags,
+    db.entity_mutations,
+    async () => {
+      // 1) tag_options mirror put
+      await db.tag_options.put({
+        id: newOptionId,
+        user_id: userId,
+        category_id: categoryId,
+        name,
+        color: null,
+        sort_key: sortKey,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      // 2) card_tags 差分書込 (single 時のみ toRemove あり)
+      for (const id of toRemove) {
+        await db.card_tags.delete([cardId, id])
+      }
+      await db.card_tags.put({
+        card_id: cardId,
+        option_id: newOptionId,
+        user_id: userId,
+        created_at: nowIso,
+      })
+      // 3) enqueue 2 連発: tag_option create + card update_field
+      await enqueueEntityMutation({
+        entity_type: 'tag_option',
+        entity_id: newOptionId,
+        op: 'create',
+        patch: { category_id: categoryId, name, color: null },
+      })
+      await enqueueEntityMutation({
+        entity_type: 'card',
+        entity_id: cardId,
+        op: 'update_field',
+        patch: { field: 'tag_option_ids', value: next },
+      })
+    },
+  )
+
+  void runGuardedEntityMutationFlush().catch(() => {})
+}
+
+// ---------------------------------------------------------------------------
 // tagEditCallbacks 型 (Task 3/4 で popover に渡す single props object)
 // ---------------------------------------------------------------------------
 
@@ -331,6 +500,16 @@ export type TagEditCallbacks = {
   deleteOption: (optionId: string) => Promise<void>
   countCategoryImpact: (categoryId: string) => Promise<{ optionCount: number; cardCount: number }>
   countOptionImpact: (optionId: string) => Promise<{ cardCount: number }>
+  // Tag-4c-2a: popover からの「カテゴリ新規作成」「option 新規作成 + 即時付与」 経路。
+  // 実装は module スコープ `handleCreateCategory` / `handleCreateOptionAndAssign` に集約、
+  // section 内では props (userId / cardId / 当該 scope の集合) を bind した useCallback
+  // closure を tagEditCallbacks に乗せる。 popover からは UI 視点の引数 (name, selectType /
+  // categoryId, name) のみで呼び出せる。
+  createCategory: (
+    name: string,
+    selectType: 'single' | 'multi',
+  ) => Promise<{ id: string }>
+  createOptionAndAssign: (categoryId: string, name: string) => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -362,10 +541,35 @@ function CardTagsSectionInner({
     })
   }, [cardTags, options, categories])
 
-  // Tag-4c-1: 6 handlers + 2 count helpers を単一 memoized object に集約。
-  // handlers は module スコープ関数 (getClientDb singleton のみ参照、 React state 依存なし)
-  // のため deps [] で安全。 object identity を安定化することで popover の React.memo が
-  // 機能する (親の re-render で毎回新オブジェクトが渡らない)。
+  // Tag-4c-2a: create 系 handler は module スコープ実装に props (userId / cardId /
+  // 当該 scope の集合) を bind した closure として useCallback で安定化する。
+  // popover に渡す `tagEditCallbacks` interface は (name, selectType) / (categoryId, name)
+  // という UI 視点の引数のみを残す (props は section が握る)。
+  const createCategory = useCallback(
+    (name: string, selectType: 'single' | 'multi') =>
+      handleCreateCategory(userId, categories, name, selectType),
+    [userId, categories],
+  )
+
+  const createOptionAndAssign = useCallback(
+    (categoryId: string, name: string) =>
+      handleCreateOptionAndAssign(
+        userId,
+        cardId,
+        categories,
+        options,
+        cardTags,
+        categoryId,
+        name,
+      ),
+    [userId, cardId, categories, options, cardTags],
+  )
+
+  // Tag-4c-1 + Tag-4c-2a: 6 handlers + 2 count helpers + 2 create handlers を単一
+  // memoized object に集約。 module スコープ関数 (rename / color / delete / count) は
+  // deps 不要、 useCallback で安定化した create 系のみ deps に含める。
+  // popover の React.memo identity を維持するため、 create 系の引数依存変化時のみ
+  // object identity が変わる。
   const tagEditCallbacks: TagEditCallbacks = useMemo(() => ({
     renameCategory: handleRenameCategory,
     setCategoryColor: handleSetCategoryColor,
@@ -375,7 +579,9 @@ function CardTagsSectionInner({
     deleteOption: handleDeleteOption,
     countCategoryImpact,
     countOptionImpact,
-  }), [])
+    createCategory,
+    createOptionAndAssign,
+  }), [createCategory, createOptionAndAssign])
 
   const handleToggle = async (categoryId: string, optionId: string) => {
     const category = categories.find((c) => c.id === categoryId)

@@ -69,6 +69,9 @@ const mockTagEditCallbacks = {
   deleteOption: vi.fn(async () => undefined),
   countCategoryImpact: vi.fn(async () => ({ optionCount: 0, cardCount: 0 })),
   countOptionImpact: vi.fn(async () => ({ cardCount: 0 })),
+  // Tag-4c-2a: 既存 edit popover の挙動には未関与 (Task 3/4 で配線)。 型整合のため stub。
+  createCategory: vi.fn(async () => ({ id: 'stub' })),
+  createOptionAndAssign: vi.fn(async () => undefined),
 }
 
 function makeTrigger(category: ClientTagCategory, option: ClientTagOption) {
@@ -169,6 +172,19 @@ describe('CardTagEditPopover — trigger click で open', () => {
     fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
     // popover content が現れる
     expect(screen.getByText('分野 を編集')).toBeInTheDocument()
+  })
+
+  it('Tag-4c-2a-fix-4 Fix-1: PopoverContent に `min-w-56` floor が含まれ `w-auto` は不在', () => {
+    // stage 遷移時の幅収縮を防ぐため、 PopoverContent に min-w-56 (224px) を追加。
+    // w-auto は削除、 max-w-sm + p-0 は維持。
+    renderPopover()
+    openPopover()
+    const content = document.querySelector('[data-slot="popover-content"]')
+    expect(content).not.toBeNull()
+    expect(content?.className).toContain('min-w-56')
+    expect(content?.className).toContain('max-w-sm')
+    expect(content?.className).toContain('p-0')
+    expect(content?.className).not.toContain('w-auto')
   })
 })
 
@@ -319,11 +335,11 @@ describe('CardTagEditPopover — header テキスト', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 7. footer link「タグ管理 →」が /app/tags に向く
+// 7. 「タグ管理 →」 link 全削除 regression (Tag-4c-2a Task 4 / spec B-2)
 // ---------------------------------------------------------------------------
 
-describe('CardTagEditPopover — footer link', () => {
-  it('popover footer に「タグ管理 →」 link が /app/tags に向いて表示される', () => {
+describe('CardTagEditPopover — タグ管理 link 全削除', () => {
+  it('option stage で「タグ管理 →」 link は描画されない', () => {
     const category = makeCategory()
     const option = makeOption('o1', '循環器')
     render(
@@ -338,9 +354,10 @@ describe('CardTagEditPopover — footer link', () => {
       </CardTagEditPopover>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
-    const link = screen.getByRole('link', { name: 'タグ管理 →' })
-    expect(link).toBeInTheDocument()
-    expect(link).toHaveAttribute('href', '/app/tags')
+    expect(
+      screen.queryByRole('link', { name: 'タグ管理 →' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('タグ管理')).not.toBeInTheDocument()
   })
 })
 
@@ -518,16 +535,182 @@ describe('CardTagEditPopover — popover close で state reset', () => {
 })
 
 // ---------------------------------------------------------------------------
-// NEW: 15. footer link は editOption stage でも表示される
+// 15. editOption stage でも「タグ管理 →」 link は描画されない (Tag-4c-2a Task 4 / B-2)
 // ---------------------------------------------------------------------------
 
-describe('CardTagEditPopover — footer link は editOption stage でも表示', () => {
-  it('editOption stage でも「タグ管理 →」 link が表示される', () => {
+describe('CardTagEditPopover — editOption stage でも タグ管理 link なし', () => {
+  it('editOption stage で「タグ管理 →」 link は描画されない', () => {
     renderPopover()
     openPopover()
     clickKebab('腎臓')
-    const link = screen.getByRole('link', { name: 'タグ管理 →' })
-    expect(link).toBeInTheDocument()
-    expect(link).toHaveAttribute('href', '/app/tags')
+    expect(
+      screen.queryByRole('link', { name: 'タグ管理 →' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 16. Tag-4c-2a Task 4: option 新規作成 + 即時付与 (createOptionAndAssign) 配線
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — option 新規作成 (createOptionAndAssign)', () => {
+  it('combobox 入力欄が popover open で表示される', () => {
+    renderPopover()
+    openPopover()
+    expect(
+      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+    ).toBeInTheDocument()
+  })
+
+  it('入力して「新規作成: ...」 row click で createOptionAndAssign(category.id, name) が呼ばれる', async () => {
+    mockTagEditCallbacks.createOptionAndAssign.mockResolvedValueOnce(undefined)
+    renderPopover()
+    openPopover()
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '消化器' } })
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: 消化器' }))
+    await waitFor(() => {
+      expect(mockTagEditCallbacks.createOptionAndAssign).toHaveBeenCalledWith(
+        'cat-1',
+        '消化器',
+      )
+    })
+  })
+
+  it('createOptionAndAssign throw → inline error 表示 (alert role)', async () => {
+    mockTagEditCallbacks.createOptionAndAssign.mockRejectedValueOnce(
+      new Error('fail'),
+    )
+    renderPopover()
+    openPopover()
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '泌尿器' } })
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: 泌尿器' }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('作成に失敗しました')
+    })
+  })
+
+  it('二重発火ガード: 連続 click でも createOptionAndAssign は 1 回だけ呼ばれる', async () => {
+    // pending promise を返して await 解決前に 2 回目 click を発火する
+    let resolve!: () => void
+    const pending = new Promise<undefined>((r) => {
+      resolve = () => r(undefined)
+    })
+    mockTagEditCallbacks.createOptionAndAssign.mockReturnValueOnce(pending)
+
+    renderPopover()
+    openPopover()
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '内分泌' } })
+
+    const createBtn = screen.getByRole('button', { name: '新規作成: 内分泌' })
+    fireEvent.click(createBtn)
+    // CardTagOptionList は click 後すぐ filterText を '' に戻すため、 同じ button は
+    // 再 mount されない可能性がある。 ガード検証は handler 入口の isSubmittingCreate で
+    // 行われるため、 同一 button の再 click を即座に発火させる。
+    fireEvent.click(createBtn)
+
+    resolve()
+    await waitFor(() => {
+      expect(mockTagEditCallbacks.createOptionAndAssign).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('popover close で createError が reset される (再 open で error 表示なし)', async () => {
+    mockTagEditCallbacks.createOptionAndAssign.mockRejectedValueOnce(
+      new Error('fail'),
+    )
+    renderPopover()
+    openPopover()
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '皮膚' } })
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: 皮膚' }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+    // popover close (trigger 再 click で toggle close)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
+    // 再 open
+    fireEvent.click(screen.getByRole('button', { name: 'タグ: 分野: 循環器' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 17. Tag-4c-2a Task 4: category 作成 UI が乗っていない (scope check)
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — category 作成 UI なし (scope)', () => {
+  it('「+ カテゴリを追加」 row は表示されない', () => {
+    renderPopover()
+    openPopover()
+    expect(
+      screen.queryByRole('button', { name: '+ カテゴリを追加' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tag-4c-2a-fix-2 Fix-3: バッジ click → editOption stage rename input 全選択 focus
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — Fix-3: kebab → editOption stage rename input 全選択 focus', () => {
+  it('option kebab click で editOption stage 入った瞬間 rename input が focus + 全選択', async () => {
+    renderPopover()
+    openPopover()
+    clickKebab('循環器')
+    const input = screen.getByRole('textbox', { name: 'option名 編集' }) as HTMLInputElement
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input)
+    })
+    expect(input.value).toBe('循環器')
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(input.value.length)
+  })
+
+  it('editOption stage 中に別 option の kebab → editTargetId 変化 → 再 mount → 全選択 focus 再発火', async () => {
+    renderPopover()
+    openPopover()
+    // 第 1 kebab: 循環器
+    clickKebab('循環器')
+    const firstInput = screen.getByRole('textbox', { name: 'option名 編集' }) as HTMLInputElement
+    await waitFor(() => {
+      expect(document.activeElement).toBe(firstInput)
+    })
+    expect(firstInput.value).toBe('循環器')
+    expect(firstInput.selectionStart).toBe(0)
+    expect(firstInput.selectionEnd).toBe(firstInput.value.length)
+
+    // option stage に戻ってから別 option (腎臓) の kebab を click
+    fireEvent.click(screen.getByRole('button', { name: 'タグ一覧へ戻る' }))
+    clickKebab('腎臓')
+    const secondInput = screen.getByRole('textbox', { name: 'option名 編集' }) as HTMLInputElement
+    await waitFor(() => {
+      expect(document.activeElement).toBe(secondInput)
+    })
+    expect(secondInput.value).toBe('腎臓')
+    expect(secondInput.selectionStart).toBe(0)
+    expect(secondInput.selectionEnd).toBe(secondInput.value.length)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 18. Tag-4c-2a-fix Task 4: kind="option" 明示渡しで suppressCreateOnExactMatch
+//     default (true) が維持されること = 完全一致時に新規作成 row が出ない
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditPopover — kind="option" 明示渡し (suppress on exact match)', () => {
+  it('既存 option 名と完全一致する文字列を入力しても「新規作成: ...」 row は表示されない', () => {
+    renderPopover()
+    openPopover()
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    // 既存 option '循環器' と完全一致
+    fireEvent.change(input, { target: { value: '循環器' } })
+    expect(
+      screen.queryByRole('button', { name: '新規作成: 循環器' }),
+    ).not.toBeInTheDocument()
+    // 既存 option はフィルタを通って表示される
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
   })
 })

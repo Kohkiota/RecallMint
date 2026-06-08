@@ -8,6 +8,9 @@
 // - 削除 button: click で countImpact() → DeleteConfirmDialog open → confirm で onDelete
 // - inline error: errorMessage prop が非 null なら rename input 直下に赤テキスト
 //
+// Tag-4c-2a-fix-2 Fix-3: mount 時 全選択 focus、 stage 遷移 / target 切替時の再発火は
+// 親側 `key={editTargetId}` で担保
+//
 // mutation logic (rename / color / delete の実 API call) は parent から callback 経由
 // で受領する純粋 presentation component。
 //
@@ -70,6 +73,28 @@ export function CardTagEditFields({
     if (focused) return
     setValue(name)
   }, [name, focused])
+
+  // Tag-4c-2a-fix-2 Fix-3: mount 時に rename input を focus + 全選択する。
+  // stage 遷移 / target 切替時の再発火は親側 `key={editTargetId}` で担保
+  // (key 変化で component が unmount + remount され、 本 effect が再実行される)。
+  // setFocused(true) は input の onFocus handler が発火するため、 ここで明示同期しない。
+  //
+  // requestAnimationFrame で 1 frame 遅延させる理由:
+  // (a) Radix Popover の `onOpenAutoFocus` (open と同フレーム発火) と競合した際に
+  //     select() が後勝ちで効くようにする。
+  // (b) 既存 Esc handler は `setValue(name); blur()` の順で実行し、 setValue が state
+  //     更新キューに入る一方 blur は同期発火する。 mount 直後に focus() してしまうと、
+  //     Esc 時の `e.target.blur()` が同期で handleBlur を発火させ、 closure value (古い)
+  //     を読んで onRename を誤発火する。 rAF 遅延で「open と同フレームの Esc」 では
+  //     focus 未着 → blur は no-op → handleBlur 経由の onRename 誤発火を回避する。
+  React.useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    })
+    return () => cancelAnimationFrame(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ------------------------------------------------------------------
   // Rename handlers

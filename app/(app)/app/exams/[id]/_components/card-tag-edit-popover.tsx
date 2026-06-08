@@ -1,23 +1,30 @@
 'use client'
 
 // CardTagEditPopover: バッジ click で開く popover。
-// stage='option' (option list with kebab) → stage='editOption' (CardTagEditFields)。
+// stage='option' (option list with kebab + combobox + 新規作成) → stage='editOption' (CardTagEditFields)。
 //
 // 内部 state:
 //   open: popover 開閉
 //   stage: 'option' | 'editOption'
 //   editTargetId: kebab click で選択された option_id
 //   lastError: onRename / onColorChange / onDelete が throw したときの inline error
+//   createError: option 新規作成 (createOptionAndAssign) が throw したときの inline error
+//   isSubmittingCreate: option 新規作成の二重発火ガード (await 解決前の連打を弾く)
 //
 // Esc 階層:
 //   editOption → option (onEscapeKeyDown で preventDefault + setStage)
 //   option → close (shadcn 標準)
 //
+// Tag-4c-2a Task 4: 「タグ管理 →」 footer link を撤去 (B-2)。
+// option stage の CardTagOptionList に combobox + onCreateNew + createError を配線、
+// バッジ click 経路でも option 新規作成 + 即時付与 (createOptionAndAssign) が使えるようにする。
+// category 新規作成 UI はこの popover には乗せない (バッジ click は既存 category 配下の
+// 編集動線。 category 作成は「+ タグを追加」 popover 経由)。
+//
 // 設計参照: docs/superpowers/specs/2026-06-07-tag-4b-fix-popover-ui-design.md §3/§5
-//           Tag-4c-1 Task 4
+//           Tag-4c-1 Task 4 / Tag-4c-2a Task 4
 
 import * as React from 'react'
-import Link from 'next/link'
 import { ChevronLeft } from 'lucide-react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
@@ -66,6 +73,12 @@ export function CardTagEditPopover({
   const [stage, setStage] = React.useState<'option' | 'editOption'>('option')
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null)
   const [lastError, setLastError] = React.useState<string | null>(null)
+  // Tag-4c-2a Task 4: option 新規作成 (createOptionAndAssign) の inline error。
+  // lastError とは別 state にして edit / create の error 文言が混ざらないようにする。
+  const [createError, setCreateError] = React.useState<string | null>(null)
+  // 二重発火ガード: CardTagOptionList の new-create row は外部から disabled できないため、
+  // wrapper 側で短絡する (add-popover Task 3 と同じパターン)。
+  const [isSubmittingCreate, setIsSubmittingCreate] = React.useState(false)
 
   // Fix C-3 軸 1: categoryOptions を sort_key ASC NULLS LAST, created_at ASC で並べる。
   // 親から unsorted で渡される可能性があるため、 描画前に正規化する。
@@ -89,6 +102,8 @@ export function CardTagEditPopover({
       setStage('option')
       setEditTargetId(null)
       setLastError(null)
+      setCreateError(null)
+      setIsSubmittingCreate(false)
     }
   }
 
@@ -98,15 +113,11 @@ export function CardTagEditPopover({
     setLastError(null)
   }
 
-  // footer: option stage では sortedCategoryOptions.length > 0 の場合のみ表示。
-  // editOption stage では常時表示 (back button と並存)。
-  const showFooter = stage === 'option' ? sortedCategoryOptions.length > 0 : true
-
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
-        className="w-auto max-w-sm p-0"
+        className="min-w-56 max-w-sm p-0"
         onEscapeKeyDown={(e) => {
           if (stage === 'editOption') {
             // Esc を consume して option stage に戻す。 popover は閉じない。
@@ -126,12 +137,29 @@ export function CardTagEditPopover({
             </div>
             <div className="py-1">
               <CardTagOptionList
+                kind="option"
                 options={sortedCategoryOptions}
                 selectedOptionIds={selectedOptionIds}
                 selectType={category.select_type}
                 onToggle={onToggle}
                 onClose={() => setOpen(false)}
                 onRowAction={handleRowAction}
+                selectedCategoryId={category.id}
+                onCreateNew={async (name) => {
+                  // Tag-4c-2a Task 4: バッジ click 経路でも option 新規作成 + 即時付与を可能にする。
+                  // 二重発火ガード (add-popover Task 3 同様)。
+                  if (isSubmittingCreate) return
+                  setIsSubmittingCreate(true)
+                  try {
+                    await tagEditCallbacks.createOptionAndAssign(category.id, name)
+                    setCreateError(null)
+                  } catch {
+                    setCreateError('作成に失敗しました')
+                  } finally {
+                    setIsSubmittingCreate(false)
+                  }
+                }}
+                createError={createError}
               />
             </div>
           </>
@@ -155,7 +183,9 @@ export function CardTagEditPopover({
               </button>
             </div>
             <div className="mt-1 border-t px-3 py-2">
+              {/* Tag-4c-2a-fix-2 Fix-3: editTargetId 変化で再 mount → useEffect 再発火で全選択 focus */}
               <CardTagEditFields
+                key={editTargetId ?? 'none'}
                 kind="option"
                 name={editTarget.name}
                 color={editTarget.color ?? null}
@@ -192,23 +222,8 @@ export function CardTagEditPopover({
           </>
         )}
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Footer: タグ管理 link                                             */}
-        {/* option stage は categoryOptions.length > 0 のときのみ表示 (0 件   */}
-        {/* は CardTagOptionList 内の placeholder に link が含まれる)。        */}
-        {/* editOption stage は常時表示。                                      */}
-        {/* ---------------------------------------------------------------- */}
-        {showFooter && (
-          <div className="border-t px-3 py-2">
-            <Link
-              href="/app/tags"
-              prefetch={false}
-              className="text-xs text-slate-500 hover:text-slate-700"
-            >
-              タグ管理 →
-            </Link>
-          </div>
-        )}
+        {/* Tag-4c-2a Task 4 (spec B-2): 「タグ管理 →」 footer link は撤去。
+            タグ管理画面への動線は別 entry (header メニュー等) に集約する設計。 */}
       </PopoverContent>
     </Popover>
   )

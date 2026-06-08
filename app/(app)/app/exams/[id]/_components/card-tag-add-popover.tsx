@@ -1,22 +1,34 @@
 'use client'
 
-// CardTagAddPopover: 「+ タグを追加」 button trigger の 4 stage popover。
-// stage 1 (category): カテゴリ選択 (created_at ASC sort)
-// stage 2 (option): 選択カテゴリの option 選択 (CardTagOptionList)
+// CardTagAddPopover: 「+ タグを追加」 button trigger の 5 stage popover。
+// stage 1 (category): カテゴリ選択 (combobox: CardTagOptionList kind='category')
+//   sort_key ASC NULLS LAST, created_at ASC で sort + 名前 filter + 新規作成導線。
+// stage 2 (option): 選択カテゴリの option 選択 (CardTagOptionList kind='option')
 // stage 3 (editCategory): カテゴリ編集 (CardTagEditFields)
 // stage 4 (editOption): option 編集 (CardTagEditFields)
+// stage 5 (createCategoryType): カテゴリ新規作成 select_type 選択 (Tag-4c-2a-fix Task 3)
+//   stage 1 combobox の「新規作成: {name}」 click で pendingCategoryName を保持し、
+//   本 stage で single/multi 2 button のいずれかを click すると mutation 発火 +
+//   stage='option' へ遷移する。
 //
 // Esc 挙動 (Notion 方式拡張):
-//   editCategory → category / editOption → option / option → category / category → close
+//   editCategory → category / editOption → option / option → category
+//   createCategoryType → category / category → close (shadcn 標準)
 //
-// popover close 時は全 state をリセット (stage='category', editTargetId=null, lastError=null)。
+// popover close 時は全 state をリセット (stage='category', selectedCategoryId=null,
+//   editTargetId=null, lastError=null, createError=null, pendingCategoryName=null,
+//   isSubmittingCreate=false)。
+//
+// error state の分離:
+//   - lastError: editCategory / editOption の rename/color/delete failure
+//   - createError: createCategoryType / option 新規作成 failure (Tag-4c-2a Task 3)
+//   stage 間で error 文言が混ざらないよう、 2 state を維持する。
 //
 // 設計参照: docs/superpowers/specs/2026-06-07-tag-4b-fix-popover-ui-design.md §4/§5
-//           Tag-4c-1 Task 3
+//           Tag-4c-1 Task 3 / Tag-4c-2a Task 3 / Tag-4c-2a-fix Task 3
 
 import * as React from 'react'
-import Link from 'next/link'
-import { Plus, CheckSquare, Circle, ChevronLeft, ChevronRight, Ellipsis } from 'lucide-react'
+import { Plus, ChevronLeft, CircleDot, CheckSquare } from 'lucide-react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import {
@@ -48,7 +60,14 @@ type Props = {
 // Stage type
 // ---------------------------------------------------------------------------
 
-type Stage = 'category' | 'option' | 'editCategory' | 'editOption'
+// Tag-4c-2a-fix Task 3: 旧 'createCategory' stage を撤廃、 'createCategoryType' のみ残す。
+// (combobox 「新規作成: {name}」 → createCategoryType で select_type 確定 → option stage)
+type Stage =
+  | 'category'
+  | 'option'
+  | 'editCategory'
+  | 'editOption'
+  | 'createCategoryType'
 
 // ---------------------------------------------------------------------------
 // Sort helper (Fix C-3 軸 1): sort_key ASC NULLS LAST, created_at ASC
@@ -92,6 +111,20 @@ export function CardTagAddPopover({
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null)
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null)
   const [lastError, setLastError] = React.useState<string | null>(null)
+  // Tag-4c-2a Task 3 / Tag-4c-2a-fix Task 3: create 系 error。
+  // lastError とは別に保持する (stage 間の error 文言混在を避けるため)。
+  // createCategoryType stage + stage='option' の option 新規作成で共用。
+  const [createError, setCreateError] = React.useState<string | null>(null)
+  // Tag-4c-2a Task 3 fix (Important 2): createCategoryType / 新規作成行の二重発火ガード。
+  // await 解決前の連打で entity_mutation を 2 件 enqueue するのを防ぐ。
+  // 1 state で兼用 (user は同時に両方を発火できない)。
+  const [isSubmittingCreate, setIsSubmittingCreate] = React.useState(false)
+  // Tag-4c-2a-fix Task 2: 新 combobox 「新規作成」 行 click 時に入力 name を保持し、
+  // createCategoryType stage へ持ち越すための state。 Task 3 で stage JSX に配線。
+  const [pendingCategoryName, setPendingCategoryName] = React.useState<string | null>(null)
+  // Tag-4c-2a-fix Task 3 / Tag-4c-2a-fix-2 Task 1: createCategoryType stage 表示直後に
+  // 「マルチセレクト」 button へ初期 focus を当てる用 ref。 multi が default 設計 (spec §5)。
+  const multiButtonRef = React.useRef<HTMLButtonElement | null>(null)
 
   // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC で categories を並べる。
   const sortedCategories = React.useMemo(
@@ -132,50 +165,62 @@ export function CardTagAddPopover({
     return null
   }, [stage, editTargetId, categories, options])
 
-  // footerを表示するかどうかの判定
-  // - stage='category': カテゴリ 0 件 placeholder 内に既に link があるため footer 非表示
-  // - stage='option': option 0 件 placeholder 内に link があるため footer 非表示
-  // - stage='editCategory' / 'editOption': 常に表示 (edit fields は 0 件になりえない)
-  const showFooter =
-    stage === 'category'
-      ? sortedCategories.length > 0
-      : stage === 'option'
-        ? categoryOptions.length > 0
-        : true // editCategory / editOption は常に footer 表示
+  // Tag-4c-2a-fix Task 3 / Tag-4c-2a-fix-2 Task 1: createCategoryType stage 表示直後に
+  // 「マルチセレクト」 button へ初期 focus を当てる (multi が default 設計、 spec §5)。
+  React.useEffect(() => {
+    if (stage === 'createCategoryType') {
+      multiButtonRef.current?.focus()
+    }
+  }, [stage])
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
     if (!next) {
-      // closed → 再開時は stage 1 から始まるようにリセット
+      // closed → 再開時は stage 1 から始まるよう全 state をリセット
+      // (Tag-4c-2a-fix Task 3: 旧 createForm reset は不要、 createCategoryType stage は
+      //  pendingCategoryName のみ保持。 popover close で null に戻す)
       setStage('category')
       setSelectedCategoryId(null)
       setEditTargetId(null)
       setLastError(null)
+      setCreateError(null)
+      setIsSubmittingCreate(false)
+      setPendingCategoryName(null)
     }
   }
 
-  // kebab click handlers
-  const handleCategoryKebabClick = (e: React.MouseEvent, categoryId: string) => {
-    e.stopPropagation()
-    setEditTargetId(categoryId)
-    setStage('editCategory')
-    setLastError(null)
-  }
-
-  const handleCategoryKebabKeyDown = (e: React.KeyboardEvent, categoryId: string) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.stopPropagation()
-      e.preventDefault()
-      setEditTargetId(categoryId)
-      setStage('editCategory')
-      setLastError(null)
-    }
-  }
+  // Tag-4c-2a-fix Task 2: category 用 kebab handler は CardTagOptionList の
+  // onRowAction callback に集約したため、 旧 handleCategoryKebabClick /
+  // handleCategoryKebabKeyDown は削除。
 
   const handleOptionRowAction = (optionId: string) => {
     setEditTargetId(optionId)
     setStage('editOption')
     setLastError(null)
+  }
+
+  // Tag-4c-2a-fix Task 3 / Tag-4c-2a-fix-2 Task 1: createCategoryType stage の type 確定 handler。
+  // 「シングルセレクト」「マルチセレクト」 button の共通 onClick (引数で分岐)。
+  // Important 2: isSubmittingCreate で二重発火を防ぐ。 disabled に加え
+  // handler 先頭でも短絡し、 await 解決前の連打で entity_mutation を 2 件
+  // enqueue するのを防ぐ。
+  const handleConfirmType = async (selectType: 'single' | 'multi') => {
+    if (isSubmittingCreate || !pendingCategoryName) return
+    setIsSubmittingCreate(true)
+    try {
+      const { id } = await tagEditCallbacks.createCategory(
+        pendingCategoryName,
+        selectType,
+      )
+      setSelectedCategoryId(id)
+      setStage('option')
+      setPendingCategoryName(null)
+      setCreateError(null)
+    } catch {
+      setCreateError('作成に失敗しました')
+    } finally {
+      setIsSubmittingCreate(false)
+    }
   }
 
   return (
@@ -192,89 +237,76 @@ export function CardTagAddPopover({
       </PopoverTrigger>
 
       <PopoverContent
-        className="w-auto max-w-sm p-0"
+        className="min-w-56 max-w-sm p-0"
         onEscapeKeyDown={(e) => {
-          // Notion 方式拡張:
-          // editCategory → category / editOption → option / option → category
-          // category の Esc は shadcn 標準 (popover を close)
+          // Notion 方式拡張 (5 stage、 Tag-4c-2a-fix Task 3 で createCategoryType に置換):
+          // editCategory → category / editOption → option
+          // createCategoryType → category (+ pendingCategoryName / createError reset)
+          // option → category / category は shadcn 標準 (popover を close)
           if (stage === 'editCategory') {
             e.preventDefault()
             setStage('category')
           } else if (stage === 'editOption') {
             e.preventDefault()
             setStage('option')
+          } else if (stage === 'createCategoryType') {
+            e.preventDefault()
+            setStage('category')
+            setPendingCategoryName(null)
+            setCreateError(null)
           } else if (stage === 'option') {
             e.preventDefault()
             setStage('category')
+            // Important 1: option stage で発生した createError を持ち越さない。
+            // (別カテゴリを次に選んだとき stale error が表示されるのを防ぐ)
+            setCreateError(null)
           }
           // stage 'category' の Esc は何もしない → shadcn 標準で popover close
         }}
       >
         {/* ------------------------------------------------------------------ */}
-        {/* Stage 1: カテゴリ選択                                               */}
+        {/* Stage 1: カテゴリ選択 (Tag-4c-2a-fix Task 2: combobox 化)           */}
+        {/* CardTagOptionList kind='category' に集約。 旧 ul/li + 末尾「+ カテゴリ */}
+        {/* を追加」 button + 0 件 placeholder JSX は削除し、 内部 render に統合。 */}
         {/* ------------------------------------------------------------------ */}
         {stage === 'category' && (
-          <>
-            <div className="py-1">
-              {sortedCategories.length === 0 ? (
-                <div className="px-2 py-3 text-center">
-                  <p className="mb-2 text-sm text-slate-500">
-                    カテゴリがありません。 タグ管理 → でカテゴリを作成してください
-                  </p>
-                  <Link
-                    href="/app/tags"
-                    prefetch={false}
-                    className="text-sm text-slate-600 underline-offset-2 hover:underline"
-                  >
-                    タグ管理 →
-                  </Link>
-                </div>
-              ) : (
-                <ul role="menu">
-                  {sortedCategories.map((category) => {
-                    const TypeIcon =
-                      category.select_type === 'multi' ? CheckSquare : Circle
-                    return (
-                      <li key={category.id} className="flex items-center">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label={`カテゴリ: ${category.name} (${category.select_type === 'multi' ? '複数選択' : '単一選択'})`}
-                          onClick={() => {
-                            setSelectedCategoryId(category.id)
-                            setStage('option')
-                          }}
-                          className="flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-100"
-                        >
-                          <TypeIcon
-                            aria-hidden="true"
-                            className="h-4 w-4 text-slate-500"
-                            data-testid={`type-icon-${category.select_type}-${category.id}`}
-                          />
-                          <span className="flex-1 text-left">{category.name}</span>
-                          <ChevronRight
-                            aria-hidden="true"
-                            className="h-4 w-4 text-slate-400"
-                          />
-                        </button>
-                        {/* kebab: カテゴリ編集 stage への入口 */}
-                        <button
-                          type="button"
-                          aria-label={`カテゴリ操作: ${category.name}`}
-                          tabIndex={0}
-                          onClick={(e) => handleCategoryKebabClick(e, category.id)}
-                          onKeyDown={(e) => handleCategoryKebabKeyDown(e, category.id)}
-                          className="inline-flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-slate-100 rounded"
-                        >
-                          <Ellipsis className="h-4 w-4 text-slate-500" aria-hidden="true" />
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-          </>
+          <div className="py-1">
+            <CardTagOptionList
+              kind="category"
+              options={sortedCategories}
+              onToggle={(categoryId) => {
+                // 既存 category 行 click 挙動 (3 連 setter) を callback に集約
+                setSelectedCategoryId(categoryId)
+                setStage('option')
+                // Important 1: 新しいカテゴリへ入るとき、 前カテゴリの option stage で
+                // 残った createError を持ち越さない。
+                setCreateError(null)
+              }}
+              onRowAction={(categoryId) => {
+                // 既存 kebab click 挙動 (3 連 setter) を callback に集約
+                setEditTargetId(categoryId)
+                setStage('editCategory')
+                setLastError(null)
+              }}
+              onCreateNew={async (name) => {
+                // 「新規作成: {入力値}」 click → createCategoryType stage へ移行。
+                // pendingCategoryName を保持して Task 3 の stage JSX (Task 3 で実装) に
+                // 渡す。 ここでは setter のみ実行 (mutation は createCategoryType で完結)。
+                setPendingCategoryName(name)
+                setStage('createCategoryType')
+                setCreateError(null)
+              }}
+              // stage='category' は createError を表示しない
+              createError={null}
+              // Tag-4c-2a-fix-2 Task 2: category も option と同じく完全一致時は新規作成行を抑制 (UI only)
+              // (CardTagOptionList の default `suppressCreateOnExactMatch=true` に揃える)
+              searchPlaceholder="検索 or 新規作成"
+              searchAriaLabel="category を検索 / 新規作成"
+              // emptyPlaceholderText は CardTagOptionList の default「タグ名を入力し新規作成」
+              // を使う (Tag-4c-2a-fix-4 Task 1: stage A category 0 件 / stage B option 0 件
+              // 共に意味は同じ「入力欄で作成」 なので全箇所統一)。
+            />
+          </div>
         )}
 
         {/* ------------------------------------------------------------------ */}
@@ -285,7 +317,11 @@ export function CardTagAddPopover({
             <div className="px-2 pt-2">
               <button
                 type="button"
-                onClick={() => setStage('category')}
+                onClick={() => {
+                  setStage('category')
+                  // Important 1: option stage で残った createError を持ち越さない。
+                  setCreateError(null)
+                }}
                 aria-label="カテゴリ選択へ戻る"
                 className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
               >
@@ -301,6 +337,25 @@ export function CardTagAddPopover({
                 onToggle={(optId) => onToggle(selectedCategory.id, optId)}
                 onClose={() => setOpen(false)}
                 onRowAction={handleOptionRowAction}
+                selectedCategoryId={selectedCategoryId}
+                onCreateNew={async (name) => {
+                  // Important 2: 二重発火ガード。 CardTagOptionList の new-create
+                  // button は外部から disabled できないため、 wrapper 側で短絡する。
+                  if (isSubmittingCreate) return
+                  setIsSubmittingCreate(true)
+                  try {
+                    await tagEditCallbacks.createOptionAndAssign(
+                      selectedCategory.id,
+                      name,
+                    )
+                    setCreateError(null)
+                  } catch {
+                    setCreateError('作成に失敗しました')
+                  } finally {
+                    setIsSubmittingCreate(false)
+                  }
+                }}
+                createError={createError}
               />
             </div>
           </>
@@ -323,7 +378,9 @@ export function CardTagAddPopover({
               </button>
             </div>
             <div className="mt-1 border-t px-3 py-3">
+              {/* Tag-4c-2a-fix-2 Fix-3: editTargetId 変化で再 mount → useEffect 再発火で全選択 focus */}
               <CardTagEditFields
+                key={editTargetId ?? 'none'}
                 kind="category"
                 name={editTarget.name}
                 color={editTarget.color ?? null}
@@ -379,7 +436,9 @@ export function CardTagAddPopover({
               </button>
             </div>
             <div className="mt-1 border-t px-3 py-3">
+              {/* Tag-4c-2a-fix-2 Fix-3: editTargetId 変化で再 mount → useEffect 再発火で全選択 focus */}
               <CardTagEditFields
+                key={editTargetId ?? 'none'}
                 kind="option"
                 name={editTarget.name}
                 color={editTarget.color ?? null}
@@ -419,19 +478,65 @@ export function CardTagAddPopover({
         )}
 
         {/* ------------------------------------------------------------------ */}
-        {/* Footer: タグ管理 link (0 件 placeholder に link があるときは非表示)  */}
+        {/* Stage 5: カテゴリ新規作成 select_type 選択 (createCategoryType)    */}
+        {/* Tag-4c-2a-fix Task 3: stage 1 combobox 「新規作成: {name}」 → 本 stage */}
+        {/* で single/multi を確定すると mutation 発火 + stage='option' へ遷移。 */}
         {/* ------------------------------------------------------------------ */}
-        {showFooter && (
-          <div className="border-t px-3 py-2">
-            <Link
-              href="/app/tags"
-              prefetch={false}
-              className="text-xs text-slate-500 hover:text-slate-700"
-            >
-              タグ管理 →
-            </Link>
+        {stage === 'createCategoryType' && (
+          <div className="py-1">
+            <div className="px-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStage('category')
+                  setPendingCategoryName(null)
+                  setCreateError(null)
+                }}
+                aria-label="カテゴリ選択へ戻る"
+                className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              >
+                <ChevronLeft aria-hidden="true" className="h-3 w-3" />
+                <span>カテゴリ選択へ戻る</span>
+              </button>
+            </div>
+            {/* Tag-4c-2a-fix-4 Task 2 Fix-3: 2 button block の outer から余分 `px-2`
+                を削除し `pb-1` のみ残す。 button class 内の `px-2 py-1.5` で content
+                左端 padding を持つため、 outer にも `px-2` を付けると二重になり
+                他 stage の row content 左端 (8px) より右へずれていた。 outer から
+                除去することで CardTagOptionList の row content と左端を揃える。
+                (Fix-2 旧見出し削除 / Fix-3 multi icon CheckSquare=SquareCheckBig は
+                 Tag-4c-2a-fix-3 で実施済み。) */}
+            <div className="pb-1">
+              <button
+                type="button"
+                disabled={isSubmittingCreate}
+                onClick={() => handleConfirmType('single')}
+                className="flex w-full items-center gap-2 px-2 py-1.5 text-sm hover:bg-slate-100 rounded"
+              >
+                <CircleDot className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                <span>シングルセレクト</span>
+              </button>
+              <button
+                type="button"
+                ref={multiButtonRef}
+                disabled={isSubmittingCreate}
+                onClick={() => handleConfirmType('multi')}
+                className="flex w-full items-center gap-2 px-2 py-1.5 text-sm hover:bg-slate-100 rounded"
+              >
+                <CheckSquare className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                <span>マルチセレクト</span>
+              </button>
+            </div>
+            {createError && (
+              <p role="alert" className="px-2 text-xs text-red-600">
+                {createError}
+              </p>
+            )}
           </div>
         )}
+
+        {/* Tag-4c-2a Task 4 (spec B-2): 「タグ管理 →」 footer link は撤去。
+            タグ管理画面への動線は別 entry (header メニュー等) に集約する設計。 */}
       </PopoverContent>
     </Popover>
   )
