@@ -248,34 +248,43 @@ N≥10 のとき `'10' < '2'` (先頭文字比較) によって `0,1,10,11,…,1
 `card-tag-add-popover.tsx:81-96` の `sortByKeyThenCreated` を以下の比較ロジックに置換:
 
 ```ts
-// 数値比較版 sort_key comparator (Tag-4c-2b §4.6)
+// 数値比較版 sort_key comparator (Tag-4c-2b §4.6、 Rev1.2 で空文字明示 case 追加)
 // 順序キー:
-//   1. Number(sort_key) 数値昇順 (NaN/null/undefined は末尾扱い)
+//   1. Number(sort_key) 数値昇順 (NaN/null/undefined/空文字は末尾扱い)
 //   2. 同位は created_at ASC (string 比較で ISO 8601 lexicographic = 時系列順、現行踏襲)
 export function sortByKeyThenCreated<T extends { sort_key?: string | null; created_at: string }>(
   a: T,
   b: T,
 ): number {
-  const an = a.sort_key === null || a.sort_key === undefined ? NaN : Number(a.sort_key)
-  const bn = b.sort_key === null || b.sort_key === undefined ? NaN : Number(b.sort_key)
+  // Number(null) === 0 を踏まない明示 NaN 化。 Number('') も 0 ではなく NaN にしたいが
+  // JS は Number('') === 0 のため、 空文字列は別途末尾扱いにする (Rev1.2)。
+  const an =
+    a.sort_key === null || a.sort_key === undefined || a.sort_key === ''
+      ? NaN
+      : Number(a.sort_key)
+  const bn =
+    b.sort_key === null || b.sort_key === undefined || b.sort_key === ''
+      ? NaN
+      : Number(b.sort_key)
   const aValid = !Number.isNaN(an)
   const bValid = !Number.isNaN(bn)
   if (aValid && bValid) {
     if (an !== bn) return an < bn ? -1 : 1
   } else if (aValid) {
-    return -1 // a は数値、 b は NaN/null → a 先 (NaN/null 末尾)
+    return -1 // a は数値、 b は NaN/null/空文字 → a 先 (NULLS LAST)
   } else if (bValid) {
     return 1
   }
-  // 両方 NaN/null/undefined or 同 sort_key: created_at ASC
+  // 両方 NaN/null/undefined/空文字 or 同 sort_key: created_at ASC
   return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
 }
 ```
 
-要点:
-- `Number('')` は `0` ではなく `NaN`、`Number(' 1 ')` は `1` (trim 不要)、`Number('abc')` は `NaN` (`is_number?` 判定不要)。
-- `null` / `undefined` は明示 NaN 化 (`Number(null) === 0` を踏まない)。
-- NaN/null/undefined は**末尾**配置 (現行の "NULLS LAST" 意味論を保持)。
+要点 (Rev1.2 修正):
+- `Number(' 1 ')` は `1` (trim 不要)、`Number('abc')` は `NaN` (`is_number?` 判定不要)。
+- **`Number('')` は `0`** (`NaN` ではない、 旧版誤記述)。 空文字も末尾化したいので **明示 case 分岐** で NaN に倒す (Rev1.2 で実装も spec も一致させた)。
+- `null` / `undefined` も明示 NaN 化 (`Number(null) === 0` を踏まない)。
+- 空文字 `''` / `null` / `undefined` / 非数値文字列はすべて NaN 化して**末尾**配置 (現行の "NULLS LAST" 意味論を保持)。
 - 同位 tiebreak は `created_at` の string 比較 (現行と同じ、ISO 8601 lexicographic = 時系列)。
 - ジェネリック型 / `T extends { sort_key?: string | null; created_at: string }` は現行のまま (`ClientTagCategory` / `ClientTagOption` 両対応)。
 
