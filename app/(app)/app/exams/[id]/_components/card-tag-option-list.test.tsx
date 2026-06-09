@@ -5,12 +5,35 @@
 // ファイル作成理由: Tag-4b-fix Task 2 にて新規追加された共通 sub-component のテスト。
 // Tag-4c-2a Task 2 で combobox + filter + 新規作成行 / showTagManagerLink 撤去を追加。
 
+import * as React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { DndContext } from '@dnd-kit/core'
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 
 import type { ClientTagOption } from '@/lib/client-db'
 
 import { CardTagOptionList } from './card-tag-option-list'
+
+// SortableContext は useSortable に必須 (parent からの items / strategy が無いと
+// no-op + warning)。 sortable 系 test 用の minimal wrapper。
+// Tag-4c-2b T4 で追加 (T5 で popover に同等構造を載せる、 本 test は wrapper を
+// 自前で持って row 単体の sortable 配線を検証する)。
+function SortableWrapper({
+  items,
+  children,
+}: {
+  items: string[]
+  children: React.ReactNode
+}) {
+  return (
+    <DndContext>
+      <SortableContext items={items} strategy={verticalListSortingStrategy}>
+        {children}
+      </SortableContext>
+    </DndContext>
+  )
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -1041,5 +1064,220 @@ describe('CardTagOptionList — break-all (long name wrap)', () => {
     const labelSpan = createButton.querySelector('span')
     expect(labelSpan).not.toBeNull()
     expect(labelSpan?.className).toContain('break-all')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 11. D&D handle + useSortable 配線 (Tag-4c-2b T4)
+//     - onReorder 有無で handle 切替 / items.length<2 で非表示 /
+//       event 分離契約 (handle のみに listeners/attributes、 main/kebab に乗らない) /
+//       drag と click の分離 (main onClick は通常 click で発火)
+// ---------------------------------------------------------------------------
+
+describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
+  it('onReorder 未指定 → handle button 非表示 (既存挙動踏襲、 SortableWrapper 不要)', () => {
+    render(
+      <CardTagOptionList
+        options={OPTIONS}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={vi.fn()}
+      />,
+    )
+    // 「並べ替え:」 を含む aria-label の button が存在しない
+    expect(
+      screen.queryByRole('button', { name: /並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('onReorder 指定 + items.length>=2 → 各 row に handle button (aria-label: optionを並べ替え: {name})', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={OPTIONS.map((o) => o.id)}>
+        <CardTagOptionList
+          options={OPTIONS}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+        />
+      </SortableWrapper>,
+    )
+    // 各 option の handle button が存在
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 腎臓' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 神経' }),
+    ).toBeInTheDocument()
+  })
+
+  it("kind='category' で onReorder 指定 → handle aria-label が「カテゴリを並べ替え: {name}」", () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={CATEGORIES.map((c) => c.id)}>
+        <CardTagOptionList
+          kind="category"
+          options={CATEGORIES}
+          onToggle={vi.fn()}
+          searchAriaLabel="category を検索 / 新規作成"
+          onReorder={onReorder}
+        />
+      </SortableWrapper>,
+    )
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 腎臓' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 神経' }),
+    ).toBeInTheDocument()
+  })
+
+  it('onReorder 指定でも items.length=1 → handle 非表示 (D-3 (a) ガード)', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={[OPTIONS[0]!.id]}>
+        <CardTagOptionList
+          options={[OPTIONS[0]!]}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+        />
+      </SortableWrapper>,
+    )
+    expect(
+      screen.queryByRole('button', { name: /並べ替え:/ }),
+    ).not.toBeInTheDocument()
+    // main button は引き続き表示される (regression なし)
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: '循環器' }),
+    ).toBeInTheDocument()
+  })
+
+  it('onReorder 指定でも items.length=0 → handle 非表示 (D-3 (a) ガード)', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={[]}>
+        <CardTagOptionList
+          options={[]}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+        />
+      </SortableWrapper>,
+    )
+    expect(
+      screen.queryByRole('button', { name: /並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('event 分離契約: handle button に dnd-kit attributes (aria-roledescription) が乗り、 main / kebab には乗らない', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={OPTIONS.map((o) => o.id)}>
+        <CardTagOptionList
+          options={OPTIONS}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+          onRowAction={vi.fn()}
+        />
+      </SortableWrapper>,
+    )
+    const handle = screen.getByRole('button', { name: 'optionを並べ替え: 循環器' })
+    // dnd-kit が draggable 要素に必ず付与する属性で pin (`DraggableAttributes`
+    // interface: role / aria-roledescription / aria-disabled / aria-pressed /
+    // tabIndex / aria-describedby)。 handle に乗る。
+    expect(handle).toHaveAttribute('aria-roledescription')
+    expect(handle).toHaveAttribute('aria-disabled')
+
+    // 同行の main button (循環器) には乗らない
+    const main = screen.getByRole('menuitemcheckbox', { name: '循環器' })
+    expect(main).not.toHaveAttribute('aria-roledescription')
+
+    // 同行の kebab button (option 操作: 循環器) にも乗らない
+    const kebab = screen.getByRole('button', { name: 'option 操作: 循環器' })
+    expect(kebab).not.toHaveAttribute('aria-roledescription')
+  })
+
+  it('event 分離契約: handle button のみが touch-none class を持ち、 main / kebab は持たない', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={OPTIONS.map((o) => o.id)}>
+        <CardTagOptionList
+          options={OPTIONS}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+          onRowAction={vi.fn()}
+        />
+      </SortableWrapper>,
+    )
+    const handle = screen.getByRole('button', { name: 'optionを並べ替え: 循環器' })
+    expect(handle.className).toContain('touch-none')
+
+    const main = screen.getByRole('menuitemcheckbox', { name: '循環器' })
+    expect(main.className).not.toContain('touch-none')
+
+    const kebab = screen.getByRole('button', { name: 'option 操作: 循環器' })
+    expect(kebab.className).not.toContain('touch-none')
+  })
+
+  it('drag と click の分離: main button の onClick (toggle) が通常 click で発火する', () => {
+    const onToggle = vi.fn()
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={OPTIONS.map((o) => o.id)}>
+        <CardTagOptionList
+          options={OPTIONS}
+          selectedOptionIds={new Set()}
+          selectType="multi"
+          onToggle={onToggle}
+          onReorder={onReorder}
+        />
+      </SortableWrapper>,
+    )
+    // sortable wrapper 配下でも main button の click は従来通り発火する
+    // (drag 未起動の通常 click は影響なし = listeners は handle のみだから)
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '腎臓' }))
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    expect(onToggle).toHaveBeenCalledWith('o2')
+    // onReorder は click では呼ばれない (drag-end のみ)
+    expect(onReorder).not.toHaveBeenCalled()
+  })
+
+  it('sortable モードでも既存 role / aria-checked / Check icon / kebab が維持される', () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined)
+    render(
+      <SortableWrapper items={OPTIONS.map((o) => o.id)}>
+        <CardTagOptionList
+          options={OPTIONS}
+          selectedOptionIds={new Set(['o1'])}
+          selectType="multi"
+          onToggle={vi.fn()}
+          onReorder={onReorder}
+          onRowAction={vi.fn()}
+        />
+      </SortableWrapper>,
+    )
+    // role / aria-checked
+    const main = screen.getByRole('menuitemcheckbox', { name: '循環器' })
+    expect(main).toHaveAttribute('aria-checked', 'true')
+    // Check icon (selected)
+    expect(screen.getByTestId('check-o1')).toBeInTheDocument()
+    // kebab
+    expect(
+      screen.getByRole('button', { name: 'option 操作: 循環器' }),
+    ).toBeInTheDocument()
   })
 })

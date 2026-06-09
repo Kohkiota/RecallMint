@@ -26,7 +26,9 @@
 //   list 移行時のラベル regression 防止)。
 
 import * as React from 'react'
-import { Check, CheckSquare, CircleDot, Ellipsis, Plus } from 'lucide-react'
+import { Check, CheckSquare, CircleDot, Ellipsis, GripVertical, Plus } from 'lucide-react'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 import { colorToClass } from '@/lib/tags/color-palette'
 import { cn } from '@/lib/utils'
@@ -98,6 +100,11 @@ type Props = {
    *  stage B (新規 category 作成直後の option 0 件) 用 popover 膨張源を除去)。
    *  Tag-4c-2a-fix Task 1 で追加。 */
   emptyPlaceholderText?: string
+  /** D&D 並べ替えを有効化。 drag-end で sortable id 列を親 (T5 popover) に渡す
+   *  (T4 では UI 配線のみ、 親が DndContext + SortableContext で囲んだ前提)。
+   *  未指定 → handle 非表示 + useSortable 呼ばない (既存挙動維持)。
+   *  Tag-4c-2b T4 で追加。 */
+  onReorder?: (orderedIds: string[]) => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +126,7 @@ export function CardTagOptionList({
   searchPlaceholder = '検索 or 新規作成',
   searchAriaLabel = 'option を検索 / 新規作成',
   emptyPlaceholderText = 'タグ名を入力し新規作成',
+  onReorder,
 }: Props) {
   const [filterText, setFilterText] = React.useState('')
   const inputRef = React.useRef<HTMLInputElement | null>(null)
@@ -149,6 +157,13 @@ export function CardTagOptionList({
   // option list 0 件 + 新規作成行も非表示 (= 入力空 + options 空、 または入力空 + filter hit 0)
   // のときのみ placeholder を出す。 入力ありで新規作成行が出るときは placeholder 出さない。
   const showEmptyPlaceholder = filteredOptions.length === 0 && !showCreateRow
+
+  // D&D 並べ替え可否判定 (Tag-4c-2b T4):
+  // - onReorder 未指定 → 既存挙動 (handle 非表示、 useSortable 呼ばない)
+  // - items.length < 2 → 並べ替え不要なので handle 非表示 (spec §7 D-3 (a))
+  // Hook ルール (条件付き呼出不可) のため row 自体を sub-component に分け、
+  // sortable 時のみ SortableRow を render する。
+  const isSortable = !!onReorder && filteredOptions.length >= 2
 
   const handleClick = (optionId: string) => {
     onToggle(optionId)
@@ -203,83 +218,25 @@ export function CardTagOptionList({
                   ? 'menuitemcheckbox'
                   : 'menuitemradio'
 
-            return (
-              <li key={option.id} className="flex items-center">
-                <button
-                  type="button"
-                  role={role}
-                  // kind='category' (role='menuitem') では aria-checked を付けない
-                  // (a11y: menuitem は checked state を持たない)。
-                  aria-checked={kind === 'option' ? selected : undefined}
-                  aria-label={option.name}
-                  onClick={() => handleClick(option.id)}
-                  className={cn(
-                    'flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm',
-                    'transition-colors hover:bg-slate-100',
-                  )}
-                >
-                  {/* select_type icon: kind='category' のみ。 single → CircleDot,
-                      multi → CheckSquare。 option 行 (kind='option') では出さない
-                      (Tag-4c-2a-fix-3 Fix-4)。 */}
-                  {kind === 'category' && option.select_type === 'single' && (
-                    <CircleDot
-                      className="h-3.5 w-3.5 text-slate-400"
-                      aria-hidden="true"
-                    />
-                  )}
-                  {kind === 'category' && option.select_type === 'multi' && (
-                    <CheckSquare
-                      className="h-3.5 w-3.5 text-slate-400"
-                      aria-hidden="true"
-                    />
-                  )}
-                  {/* color pill */}
-                  <span
-                    className={cn(
-                      'inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium break-all',
-                      colorToClass(option.color),
-                    )}
-                    aria-hidden="true"
-                  >
-                    {option.name}
-                  </span>
-                  {/* check icon: selected のみ表示 */}
-                  {selected && (
-                    <Check
-                      className="ml-auto h-4 w-4 shrink-0 text-slate-700"
-                      data-testid={`check-${option.id}`}
-                      aria-hidden="true"
-                    />
-                  )}
-                </button>
-                {/* kebab: onRowAction が渡されたときのみ表示。
-                    aria-label は kind で出し分け (Tag-4c-2a-fix Task 2)。 */}
-                {onRowAction && (
-                  <button
-                    type="button"
-                    aria-label={
-                      kind === 'category'
-                        ? `カテゴリ操作: ${option.name}`
-                        : `option 操作: ${option.name}`
-                    }
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onRowAction(option.id)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.stopPropagation()
-                        e.preventDefault()
-                        onRowAction(option.id)
-                      }
-                    }}
-                    className="ml-auto inline-flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-slate-100 rounded"
-                  >
-                    <Ellipsis className="h-4 w-4 text-slate-500" aria-hidden="true" />
-                  </button>
-                )}
-              </li>
+            // sortable と static で同一の row 内 JSX (main button + kebab) を共有。
+            // 差分は handle button の有無 + <li> 自体 (ref/style) のみ。
+            const rowInner = (
+              <RowInner
+                option={option}
+                kind={kind}
+                role={role}
+                selected={selected}
+                onMainClick={() => handleClick(option.id)}
+                onRowAction={onRowAction}
+              />
+            )
+
+            return isSortable ? (
+              <SortableRow key={option.id} option={option} kind={kind}>
+                {rowInner}
+              </SortableRow>
+            ) : (
+              <StaticRow key={option.id}>{rowInner}</StaticRow>
             )
           })}
           {showCreateRow && (
@@ -306,5 +263,164 @@ export function CardTagOptionList({
         </p>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Row sub-components (Tag-4c-2b T4)
+// ---------------------------------------------------------------------------
+
+// row 内の main button + 任意 kebab。 sortable / static 共通の JSX を 1 箇所に
+// 寄せて drift を防ぐ。 handle button (sortable のみ) は SortableRow が外側に
+// 差し込み、 本 inner には含めない (= main / kebab には listeners/attributes が
+// 絶対乗らないという event 分離契約の構造表現)。
+type RowInnerProps = {
+  option: TagComboboxItem
+  kind: 'option' | 'category'
+  role: 'menuitem' | 'menuitemcheckbox' | 'menuitemradio'
+  selected: boolean
+  onMainClick: () => void
+  onRowAction?: (optionId: string) => void
+}
+
+function RowInner({
+  option,
+  kind,
+  role,
+  selected,
+  onMainClick,
+  onRowAction,
+}: RowInnerProps) {
+  return (
+    <>
+      <button
+        type="button"
+        role={role}
+        // kind='category' (role='menuitem') では aria-checked を付けない
+        // (a11y: menuitem は checked state を持たない)。
+        aria-checked={kind === 'option' ? selected : undefined}
+        aria-label={option.name}
+        onClick={onMainClick}
+        className={cn(
+          'flex flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm',
+          'transition-colors hover:bg-slate-100',
+        )}
+      >
+        {/* select_type icon: kind='category' のみ。 single → CircleDot,
+            multi → CheckSquare。 option 行 (kind='option') では出さない
+            (Tag-4c-2a-fix-3 Fix-4)。 */}
+        {kind === 'category' && option.select_type === 'single' && (
+          <CircleDot
+            className="h-3.5 w-3.5 text-slate-400"
+            aria-hidden="true"
+          />
+        )}
+        {kind === 'category' && option.select_type === 'multi' && (
+          <CheckSquare
+            className="h-3.5 w-3.5 text-slate-400"
+            aria-hidden="true"
+          />
+        )}
+        {/* color pill */}
+        <span
+          className={cn(
+            'inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium break-all',
+            colorToClass(option.color),
+          )}
+          aria-hidden="true"
+        >
+          {option.name}
+        </span>
+        {/* check icon: selected のみ表示 */}
+        {selected && (
+          <Check
+            className="ml-auto h-4 w-4 shrink-0 text-slate-700"
+            data-testid={`check-${option.id}`}
+            aria-hidden="true"
+          />
+        )}
+      </button>
+      {/* kebab: onRowAction が渡されたときのみ表示。
+          aria-label は kind で出し分け (Tag-4c-2a-fix Task 2)。 */}
+      {onRowAction && (
+        <button
+          type="button"
+          aria-label={
+            kind === 'category'
+              ? `カテゴリ操作: ${option.name}`
+              : `option 操作: ${option.name}`
+          }
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation()
+            onRowAction(option.id)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation()
+              e.preventDefault()
+              onRowAction(option.id)
+            }
+          }}
+          className="ml-auto inline-flex h-7 w-7 items-center justify-center cursor-pointer hover:bg-slate-100 rounded"
+        >
+          <Ellipsis className="h-4 w-4 text-slate-500" aria-hidden="true" />
+        </button>
+      )}
+    </>
+  )
+}
+
+// 既存挙動踏襲: useSortable 呼ばない、 handle button 出さない。
+// onReorder 未指定 (= 親が SortableContext で囲まない) のときに使う。
+function StaticRow({ children }: { children: React.ReactNode }) {
+  return <li className="flex items-center">{children}</li>
+}
+
+// D&D 並べ替え用: useSortable を常に呼ぶ + handle button を行頭に追加。
+// 親が DndContext + SortableContext で囲んだ前提でのみ render される
+// (CardTagOptionList の isSortable 判定経由)。 event 分離契約 (handle のみに
+// listeners/attributes/touch-none、 main/kebab に絶対 spread しない) は
+// この構造で表現される。
+function SortableRow({
+  option,
+  kind,
+  children,
+}: {
+  option: TagComboboxItem
+  kind: 'option' | 'category'
+  children: React.ReactNode
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: option.id })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+  return (
+    <li ref={setNodeRef} style={style} className="flex items-center">
+      {/* handle button: listeners/attributes はここだけに spread。 main button /
+          kebab に絶対乗せない (event 分離契約、 spec §4.1)。 touch-none も
+          handle のみで main の縦 scroll / tap を殺さない。 */}
+      <button
+        type="button"
+        ref={setActivatorNodeRef}
+        {...listeners}
+        {...attributes}
+        aria-label={`${kind === 'category' ? 'カテゴリ' : 'option'}を並べ替え: ${option.name}`}
+        className="inline-flex h-7 w-6 cursor-grab items-center justify-center touch-none text-slate-400 hover:text-slate-600"
+      >
+        <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      {children}
+    </li>
   )
 }
