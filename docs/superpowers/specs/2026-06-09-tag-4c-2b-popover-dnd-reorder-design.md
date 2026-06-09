@@ -14,12 +14,23 @@ In scope:
 - `tag_categories.sort_key` / `tag_options.sort_key` の sparse-aware reindex (整数文字列、0-based)
 - 既存 popover 全挙動の維持 (combobox / 新規作成 / kebab / 編集 stage / Esc 階層 /
   single 最大 1 個 / 案 a 取り直し / whole-set / 幅 `min-w-56 max-w-sm` / `break-all`)
+- **manager (/app/tags) 表示順を sort_key ベースに変更** (Rev1: 旧 D-5 反転、§4.8)。 popover と同じ
+  IDB の同じ `sort_key` を共有 `sortByKeyThenCreated` で読む。
+- **manager 作成フォームの末尾採番化** (Rev1: §4.7)。 `category-create-form.tsx` /
+  `option-create-form.tsx` の現行 `sort_key: null` を共有 next-sort-key helper で末尾採番に統一、
+  popover 作成と同じ規約に。 null 混在を新規作成では作らない (既存 null は §4.2 reindex で順次正規化)。
+- comparator (sortByKeyThenCreated) と next-sort-key helper を **共有 module 化**し popover/manager
+  両方が import (§4.6, §4.7)。
 
 Out of scope:
-- manager (/app/tags) の並び替え UI / 並び基準切替 (Tag-4e 責務、§7 D-5 で明示)
+- **manager 側の D&D 並べ替え操作 UI** (Rev1: 後続 sprint **Tag-4c-2c** に切り出し、§5)。
+  本 sprint 完了時点で「popover で並べ替え → manager に反映」「どこで作っても末尾」 は完成、
+  逆向き「manager で並べ替え操作 → popover に反映」 は Tag-4c-2c で manager に D&D 入力を足せば
+  同 sort_key 共有で自動成立する。
 - card body 上のバッジ並び (Tag-4b-fix で `category.name ja-localeCompare → option.name ja-localeCompare` 固定)
 - popover 編集 stage 内 (editCategory / editOption / createCategoryType) の D&D
 - fractional indexing / collaborative reorder (タグ件数小、整数 reindex で十分)
+- **Tag-4e は本 Rev1 で実質消滅** (manager sort_key 化が前倒しされ、残るのは manager D&D = Tag-4c-2c のみ)
 
 ## §2 確定済 前提 (relitigate しない)
 
@@ -53,9 +64,14 @@ Out of scope:
 | 既存 reference | `card-tags-section.tsx` の `handleToggle` (`db.transaction('rw', db.card_tags, db.entity_mutations, …)` 内で mirror put + `enqueueEntityMutation`、tx 外で `void runGuardedEntityMutationFlush()`) | そのまま流用、tx に `db.tag_categories` or `db.tag_options` を含めて N 件 update + N 件 enqueue |
 | 既存値分布 | manager 経由 create = `sort_key: null` (`/app/tags/_components/category-create-form.tsx:61`, `option-create-form.tsx:70`)、popover Tag-4c-2a 経由 create = `nextCardSortKey()` で `'1','2',…` 採番 (`card-tags-section.tsx` の `handleCreateCategory`) | **混在 (null + 数字)** → reindex 初回挙動で全列を 0-based 整数文字列に正規化 |
 | 行 layout | `<li flex items-center>` 子 = main `<button flex-1>` + 任意 kebab `<button ml-auto h-7 w-7>` (`card-tag-option-list.tsx:207-281`) | 行頭に handle button (~24px) 追加で破綻なし、`min-w-56 max-w-sm` (224〜384px) に収まる |
-| manager 据置 | `/app/tags` は created_at ASC 固定、`sort_key UI は Tag-4e` (`category-list.tsx:42` / `category-create-form.tsx:15`) | 本 sprint で manager に触れない、Tag-4e で揃える前提 (§7 D-5) |
+| manager 据置 ~~(旧)~~ → **Rev1**: manager 表示 sort_key 化 + 作成末尾採番 を **本 sprint in scope**。 manager D&D 操作のみ Tag-4c-2c に切り出し | `/app/tags` の現状は created_at ASC 固定 (`category-list.tsx:42` のローカル `sortByCreatedAt` / `category-create-form.tsx:15-16,51,61` で `sort_key: null` 採番)、 OT 確定で本 sprint に取り込み (§4.7/§4.8、 旧 §7 D-5 反転) |
 | dnd-kit feasibility | 2026-06-09 de-risk gate で install / tsc / hydration クリーン (`Cannot find namespace 'JSX'` / `cannot be used as a JSX component` 発生せず、warning 0 + errors 0) | 採用 GO 済 |
-| 表示 comparator | popover 全 stage の最終ソートは `sortByKeyThenCreated` 1 関数 (`card-tag-add-popover.tsx:81-96`、stage1 :131 / stage2 :144 / 編集 popover `card-tag-edit-popover.tsx:86` の計 3 箇所が import)。比較は line 88 で `ak < bk ? -1 : 1` の**素の string `<` (lexicographic)** | **潜在バグ**: Tag-4c-2a の `nextCardSortKey()` は `'1','2',…,'10','11',…` 採番 ⇒ N≥10 で `'10' < '2'` (先頭文字比較) になり 1,10,11,…,19,2,20,… の誤順。本 sprint の reindex (`'0'..'N-1'`) は N≥10 で確実に露出させるため、本 spec 内で **数値比較化を確定**して同梱する (別 sprint に逃がさない、§4.6) |
+| 表示 comparator | popover 全 stage の最終ソートは `sortByKeyThenCreated` 1 関数 (`card-tag-add-popover.tsx:81-96`、stage1 :131 / stage2 :144 / 編集 popover `card-tag-edit-popover.tsx:86` の計 3 箇所が import)。比較は line 88 で `ak < bk ? -1 : 1` の**素の string `<` (lexicographic)** | **潜在バグ**: Tag-4c-2a の `nextCardSortKey()` は `'1','2',…,'10','11',…` 採番 ⇒ N≥10 で `'10' < '2'` (先頭文字比較) になり 1,10,11,…,19,2,20,… の誤順。本 sprint の reindex (`'0'..'N-1'`) は N≥10 で確実に露出させるため、本 spec 内で **数値比較化を確定**して同梱する (別 sprint に逃がさない、§4.6)。 Rev1 で **共有 module 化** (§4.6 拡張) し popover / manager 両方が 1 関数を import |
+| V-1 transport 束ね方 | `flushAllPendingEntityMutations` (`lib/sync/entity-mutations.ts:243-322` 「全 pending entity mutations を 1 回の bulk POST で送信する」) + bulk endpoint の `payloadSchema.mutations: z.array(...).max(1000)` (`app/api/entity-mutations/bulk/route.ts:57-60`) | reindex N 件は **1 POST で 1 往復**、上限 1000 件 (N≦数十なら余裕)。 batch サイズ上限による分割は本 sprint 想定範囲内では発生せず |
+| V-2 server tx 構造 | `bulk/route.ts:184-205` で `for (const mutation of mutations) { processMutation(...) }` の **逐次 for loop**、`processMutation` 内の `db.transaction(async (tx) => {...})` (`:74`) は mutation ごとに張る → **N 個の独立 per-mutation tx** | **bulk 全体 1 tx ではない**。 reindex N 件は同 bulk POST で送られるが server は per-mutation で apply、 結果は `applied++` / `failed[]` (`:181-205`) で個別集計され `200 { ok:true, applied, failed }` で返す |
+| V-3 部分適用窓 | V-2 から導出: k+1 件目で failed (orphan / owner mismatch / patch zod NG) が起きた場合、 server には 0..k 件が新値、 k+1.. は旧値で残る。 client outbox は failed 分が pending 残置 → 次 flush で再送 → 最終整合する。 但し中間状態で別端末 pull が走ると一時的に不完全並びを受信し得る | `applyTagCategoryUpdate` / `applyTagOptionUpdate` (`lib/tags/apply-tag-mutation.ts:67,218`) の `sort_key` 経路は `typeof value !== 'string' \|\| value === null` 以外の failed 条件を持たず、 reindex で生成する `String(i)` は常に valid。 ⇒ 実運用での per-mutation failed 確率は極小、 但しゼロではない (例: 並走で category 自体が削除された race)。 詳細は §4.9 transport analysis |
+| V-4 client atomic | `handleReorderX` の Dexie `db.transaction('rw', db.tag_X, db.entity_mutations, …)` は all-or-nothing で IDB は壊れない (前 §4.3) | OT 理解どおり: 問題は server 部分適用窓のみ、 client (IDB) は同 tx atomic で保護 |
+| V-5 manager read 経路 | `app/(app)/app/tags/page.tsx:1-12` は server shell (auth は `(app)/layout.tsx` で済)、 `tag-manager-shell.tsx:1` `'use client'` + `category-list.tsx:59-62` の `useLiveQuery(async () => db.tag_categories.toArray(), [])` で **IDB から read** | popover の楽観 mirror update (T6 `handleReorderX` の Dexie tx) は **manager に即反映** (同 IDB を subscribe、 別 URL でも 0 ラグ)。 flush 前の他端末は別 pull cycle まで旧値を見るが、 これは spec §4.3 既存挙動 (entity-mutations 経路全般) と同じ |
 
 ## §4 設計
 
@@ -268,6 +284,21 @@ export function sortByKeyThenCreated<T extends { sort_key?: string | null; creat
 `sortByKeyThenCreated` は popover 3 箇所 (`card-tag-add-popover.tsx:131,144` / `card-tag-edit-popover.tsx:86`)
 が import している。**呼出 site は無変更**、関数本体差替えのみで全箇所が数値比較に切替わる。
 
+#### Rev1: 共有 module 化 (manager との 1 関数共有)
+
+manager 表示順を sort_key 化する Rev1 (§4.8) で **同一 comparator を popover/manager 両方が import**
+する必要がある。 二重定義による drift を避けるため、 `sortByKeyThenCreated` を新規 module
+`lib/tags/sort-comparator.ts` に**抽出**し、 関数本体は §4.6 上記の数値比較版 1 つに統一する。
+
+抽出後の import path:
+- `card-tag-add-popover.tsx:131,144` → 旧 `from './card-tag-add-popover'` を **新 `from '@/lib/tags/sort-comparator'`** に変更 (関数を popover ファイル内から削除)
+- `card-tag-edit-popover.tsx:86` → 同じく新 import path
+- `card-tag-add-popover.test.tsx:13,1114` の既存 import / describe ブロックも新 path へ移動 (test 内容は§6 拡張に集約)
+- 新規 manager 側 (§4.8) も同じ `@/lib/tags/sort-comparator` を import
+
+`card-tag-add-popover.tsx` 内の export `sortByKeyThenCreated` は削除して新 module 経由のみとする
+(import 経路 1 本に絞り drift gate を強める)。
+
 #### useLiveQuery 順序 vs drag arrayMove 順序の一貫性 (flicker 防止)
 
 drag drop 直後の流れ:
@@ -277,14 +308,121 @@ drag drop 直後の流れ:
 
 旧 string 比較のままだと、N≥10 で arrayMove 順と再ソート順が不一致 (例: arrayMove で 0..11 を作っても再ソートが `0,1,10,11,2,…` で並べる) になり、drop 直後に並びがガクっと入れ替わる flicker が起きる。本 §4.6 修正で防止する。
 
+### §4.7 next-sort-key helper の共有化 + manager 作成フォーム末尾採番化 (Rev1)
+
+#### 背景
+
+現状 manager の `category-create-form.tsx:61` / `option-create-form.tsx:70` は `sort_key: null` で作成、
+popover Tag-4c-2a は `nextCardSortKey()` で `'1','2',…` を採番 (`card-tags-section.tsx` の
+`handleCreateCategory` / `handleCreateOptionAndAssign`)。 経路により null と数字が混在する。
+
+Rev1 で manager 表示順を sort_key ベースに揃えるなら、 **どこで作っても新規 sort_key を一律
+末尾採番** にし null 混在を新規に作らない方が semantics が綺麗 (既存 null は §4.2 reindex で
+順次 0-based 整数に正規化される)。
+
+#### 修正内容
+
+新規 module `lib/tags/next-sort-key.ts` を作成し、 共有 `nextSortKey(existing: (string | null | undefined)[]): string` を export:
+
+```ts
+// 既存 sort_key 群から末尾採番した整数文字列を返す。
+// - 全て数字 (NaN 化されない) → max(Number(v)) + 1 を返す (整数文字列、 0 起点でなく既存 +1)
+// - 全て null/undefined/非数値 → '0' を返す (0-based の起点)
+// - 数字 + 非数値混在 → 数値のみで max + 1
+// reindexSortKeys (§4.2) と semantic が一貫: 末尾追加 → 並び末尾、 reindex 後の値域とも整合
+export function nextSortKey(existing: (string | null | undefined)[]): string
+```
+
+`nextCardSortKey` (`lib/cards/next-card-sort-key.ts:13`) との関係:
+- 既存 `nextCardSortKey` は card 用 (string 採番、 自由度を許容する fallback あり)。 tag 用 sort_key
+  は本 sprint 以降 0-based 整数文字列で運用するため意味論が異なる ⇒ tag 専用に別 helper を切る。
+- card の sort_key は別命名 (`next-card-sort-key.ts`)、 触らない。
+
+#### 影響範囲
+
+- `app/(app)/app/tags/_components/category-create-form.tsx:61` の `sort_key: null` を
+  `sort_key: nextSortKey(existingCategories.map(c => c.sort_key))` に置換。
+- `app/(app)/app/tags/_components/option-create-form.tsx:70` の `sort_key: null` を同様に置換
+  (`existingOptions` は当該 category 内のみ filter)。
+- `card-tags-section.tsx` の `handleCreateCategory` / `handleCreateOptionAndAssign` は現状
+  `nextCardSortKey()` 利用 → 新 `nextSortKey` に置換 (tag 用採番 helper を 1 本化)。
+- `.env.example` 変更なし。
+
+### §4.8 manager 一覧の共有 comparator 適用 (Rev1)
+
+#### 背景 + 修正内容
+
+manager 一覧 `category-list.tsx:42-50` `sortByCreatedAt` ローカル関数 / `option-list.tsx:43`
+同型 (推定) を、共有 `sortByKeyThenCreated` (§4.6 抽出版) に差し替える。 IDB read (`useLiveQuery`)
+の結果に対し in-memory sort を適用する構造は維持、 comparator のみ差替。
+
+```ts
+// category-list.tsx の現状 (推定):
+//   const categories = useLiveQuery(async () => {
+//     const all = await getClientDb().tag_categories.toArray()
+//     return all.slice().sort(sortByCreatedAt)  // ← これを sortByKeyThenCreated に置換
+//   }, [])
+```
+
+option-list.tsx も同じ in-memory sort を持つ前提 (Step 0 で同 file の `sortByCreatedAt` 行を確認、
+構造は category-list と同型)。 両ファイルでローカル `sortByCreatedAt` 関数自体を削除し、
+共有 `sortByKeyThenCreated` import に置換する。
+
+#### 結果
+
+- 同 user の同 IDB を popover と manager が同 comparator で読む → 「どちらで並べ替えても両画面が
+  同じ並びを共有」 が成立 (V-5 IDB 即反映 + V-4 client atomic と組合せ)。
+- manager 側に D&D 入力はまだ持たない (Tag-4c-2c)、 read だけ揃える。
+
+### §4.9 transport analysis (V-1〜V-4 結果に基づく)
+
+#### 構造
+
+V-1〜V-4 結果 (§3 表):
+- client outbox: 1 POST に全 pending を束ねる (`flushAllPendingEntityMutations`)
+- payload 上限: 1000 件 (`payloadSchema.mutations.max(1000)`)
+- server: **per-mutation tx** (`for (const mutation of mutations) { db.transaction(...) }`)
+- 結果集計: `applied` count + `failed[]` を `200 { ok, applied, failed }` で返却
+- client: `failed[]` は pending 残置、 次 flush で再送
+- reindex N 件は 1 往復で送れるが、 server で k+1 件目で何か failed すると **0..k のみ反映 + k+1.. 旧値** の部分適用窓が一時的に生じる
+
+#### 失敗確率の実評価
+
+`applyTagCategoryUpdate` (`apply-tag-mutation.ts:67,89-95`) / `applyTagOptionUpdate` (`:218,259-265`)
+の `sort_key` 経路:
+- patch.value が `null` or `string` 以外 → `failed` (reindex は常に `String(i)` を送るため hit せず)
+- owner-scope SELECT 失敗 → `failed` (orphan = category/option が並走で削除された場合のみ)
+
+⇒ **実運用での per-mutation failed 確率は極小**。 並走削除 race のみで、 1 端末ユーザでの自発的
+reindex 中は発生し得ない。
+
+#### CC 推奨 = 許容案 (詳細は §7 D-6)
+
+per-mutation 失敗確率の極小性 + reindex の冪等性 (次 drag で `reindexSortKeys` が全件 candidate
+にして残り差分が必ず再送される) + comparator が NULLS LAST + 数値順で「server に届いた分は新値、
+旧値は末尾」 の表示 fallback が成立する性質から、 **本 sprint では transport 補強なしで許容**。
+
+代替案 (op='reindex' 専用 op を server registry に追加 / 1 bulk tx で全件 apply / 順序 token 化) は
+いずれも server work 大 + 既存 entity_mutations 意味論変更 + 監査 log 構造変更が伴い ROI が低い。
+判断は §7 D-6 で論点化。
+
 ## §5 非目標 / 据置
 
-- manager (`/app/tags`): 並び基準は created_at ASC のまま、UI 並べ替えは Tag-4e で実装。本 sprint 後
-  「popover は sort_key ベース / manager は created_at ベース」 の乖離が発生するが、Tag-4e で manager 側を
-  揃えて吸収する (§7 D-5 で明示許容)。
+- ~~manager (`/app/tags`) の並び基準は created_at ASC のまま~~ → **Rev1 で取り消し**:
+  manager の表示順は §4.8 で共有 `sortByKeyThenCreated` (数値比較) に切替、 作成末尾採番は §4.7
+  で共有 helper に統一する。 本 sprint 後 popover/manager の並びは IDB 経由で完全に揃う。
+- **manager 側の D&D 並べ替え操作 UI** = 後続 sprint **Tag-4c-2c** に切り出し (別 spec)。
+  本 sprint では manager は「sort_key を読んで表示 + 末尾採番で作成」 までで、 D&D 入力は持たない。
+  Tag-4c-2c で manager に D&D を足せば同 sort_key を共有するため「manager で並べ替え → popover に
+  反映」 も自動成立する。
+- **Tag-4e は本 Rev1 で実質消滅** (manager sort_key 化が前倒しされ、 残るのは manager D&D = Tag-4c-2c
+  のみ)。 Tag-4e と参照する既存 comment (`category-list.tsx:42` / `category-create-form.tsx:15` /
+  `option-list.tsx:43` / `option-create-form.tsx`) は §4.7/§4.8 編集と同時に Tag-4c-2c へ参照書換。
 - card body バッジ並び: Tag-4b-fix の `category.name → option.name` ja-localeCompare 固定を維持。
 - popover 編集 stage (editCategory / editOption / createCategoryType): 並べ替え対象外。
 - entity_mutations の coalesce 拡張: 既存 `entity_type:entity_id:update_field:field` で十分。
+- transport 補強 (op='reindex' / 1 bulk tx / 順序 token 化): §4.9 + §7 D-6 で許容案 (現状維持) を推奨。
+  許容判断のため新 op / schema 変更は本 sprint scope 外 (将来必要時に別 sprint)。
 
 ## §6 テスト方針
 
@@ -315,7 +453,8 @@ drag drop 直後の流れ:
 | D-2 | **A** | in-place transform (`CSS.Transform.toString(transform)` を `<li>` style に当てる)。`DragOverlay` の portal 描画は Radix Popover の focus trap / scroll 容器 clip と干渉余地。問題発生時の fallback は §9-(b) に注記 |
 | D-3 | **(a)+(b)+(c)** | (a) `items.length < 2` で handle 非表示 (`onReorder` を渡さない or 内部 early return)。(b) drag-end ごとに**当該 list 全件**を 0-based 整数で正規化 (§4.2 `reindexSortKeys`)、`updates.length === 0` で tx 自体 skip。(c) candidate は当該 list 全件、`previousKey !== nextKey` のみ updates に乗せ enqueue 不要発火を避ける |
 | D-4 | **A** | drag-end 1 回ごとに同期発火 (`void runGuardedEntityMutationFlush().catch(() => {})`)。連続 drag は outbox coalesce key `entity_type:entity_id:update_field:sort_key` で同 entity の最新値のみ pending に残る → server に最新 1 件しか届かない、debounce 不要 |
-| D-5 | **A** | popover (sort_key ベース) と manager (created_at ベース) の並び基準乖離を一時許容、Tag-4e で manager 側を sort_key ベースに揃えて吸収 (manager comment `sort_key UI は Tag-4e で導入` と整合) |
+| D-5 | ~~A~~ → **Rev1 反転** | OT 判断で**反転**: manager 表示順を sort_key ベースに揃え、 作成も末尾採番に統一 (§4.7/§4.8)。 旧 D-5 A 「乖離を許容 + Tag-4e で吸収」 は破棄。 Tag-4e は本 Rev1 で消滅 (残るのは manager D&D = Tag-4c-2c)。 本 sprint で manager は read + 作成のみ揃え、 D&D 操作は Tag-4c-2c |
+| D-6 (Rev1) | **A 推奨 / OT 判断要** | **transport: 部分適用許容 vs 強化**。 (A) 現状の per-mutation tx を維持し reindex の部分適用窓 (server 0..k 反映 + k+1.. 旧値) を許容。 根拠 = §4.9: per-mutation failed 確率極小 (sort_key apply は値型検査のみ、 並走削除 race のみ hit) + reindex 冪等性 (次 drag で全件再 candidate) + comparator 数値順 + NULLS LAST で部分適用中の表示も致命破綻しない。 (B) `op='reindex'` 等の新 op を registry に追加し N 件の sort_key を 1 server tx で apply。 server work 大 + 既存 entity_mutations 監査 log 意味論変更 + patch zod / apply 関数の signature 拡張、 ROI 低い → **A を推奨** |
 
 ## §8 完了条件
 
@@ -325,10 +464,13 @@ drag drop 直後の流れ:
   - popover stage1 / stage2 で D&D 並べ替え動作 (mouse + keyboard + touch)
   - drag-end で `tag_categories.sort_key` / `tag_options.sort_key` が 0-based 整数で正規化
   - `sortByKeyThenCreated` が数値比較化され、N≥10 のとき表示が数値順 (§4.6)
-  - 並べ替え後 reload して popover 再表示時に並び順保持
+  - comparator + next-sort-key helper が共有 module `@/lib/tags/sort-comparator` / `@/lib/tags/next-sort-key` に抽出され、 popover / manager / card-tags-section の全 import が 1 経路に集約 (§4.6/§4.7)
+  - manager (/app/tags) の category 一覧 + option 一覧が **共有 `sortByKeyThenCreated` で表示** (§4.8)、 popover と同じ並びを共有 (IDB 経由で楽観 mirror update が即反映)
+  - manager 作成フォーム (`category-create-form.tsx` / `option-create-form.tsx`) が **共有 `nextSortKey` で末尾採番**、 新規作成での null 混在を作らない (§4.7)
+  - 並べ替え後 reload して popover/manager 再表示時に並び順保持
   - 別端末 (or pull 再取得) で同じ並び順を受信
   - 既存 popover 全挙動 (combobox / 新規作成 / kebab / 編集 stage / Esc / 幅 / break-all) リグレッションなし
-  - manager (/app/tags) 触らず created_at ASC のまま
+  - manager は **D&D 操作を持たない** (Tag-4c-2c 範疇、 read + 作成のみ揃える)
   - Vitest 全 pass / Playwright smoke 全 pass / code-reviewer Critical 0 件 / `[reviewed]` tag
 
 ## §9 Smoke 確認項目 (本 sprint 末、OT が stg で実行)
