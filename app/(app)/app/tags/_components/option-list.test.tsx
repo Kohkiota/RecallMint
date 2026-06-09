@@ -154,9 +154,11 @@ describe('OptionList — placeholder / 描画', () => {
     expect(names).toEqual(['A option', 'B option', 'C option'])
   })
 
-  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort。 旧 string 比較なら
-  // `'0','1','10','2'` が `0,1,10,2` で fail。
-  it('sort_key で数値順 (旧 string 比較なら fail する `0,1,2,10` の並び)', async () => {
+  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort される。
+  // assertion は name 列 ['零','壱','弐','拾'] で表示順を確認、 sort_key は `'0','1','2','10'`。
+  // 旧 string `<` 比較なら `'0','1','10','2'` の lexicographic 順 (拾 が 弐 より前) で fail、
+  // 数値比較なら `0,1,2,10` の昇順に揃う。 「string 比較 vs 数値比較」 の差を pin する case。
+  it('sort_key 数値順 (共有 comparator は `0,1,2,10` を 0→1→2→10 で並べる / 旧 string 比較なら `0,1,10,2` で fail する fixture)', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.bulkPut([

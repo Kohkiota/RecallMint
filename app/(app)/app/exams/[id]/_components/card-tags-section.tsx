@@ -375,7 +375,7 @@ export async function handleCreateCategory(
         entity_type: 'tag_category',
         entity_id: id,
         op: 'create',
-        patch: { name, select_type: selectType },
+        patch: { name, select_type: selectType, sort_key: sortKey },
       })
     },
   )
@@ -472,7 +472,7 @@ export async function handleCreateOptionAndAssign(
         entity_type: 'tag_option',
         entity_id: newOptionId,
         op: 'create',
-        patch: { category_id: categoryId, name, color: null },
+        patch: { category_id: categoryId, name, color: null, sort_key: sortKey },
       })
       await enqueueEntityMutation({
         entity_type: 'card',
@@ -540,7 +540,7 @@ export async function handleReorderCategories(
     logger.warn({
       event: 'tag_category_reorder.tx_failed',
       count: updates.length,
-      err: String(err),
+      err,
     })
     return
   }
@@ -589,7 +589,7 @@ export async function handleReorderOptions(
     logger.warn({
       event: 'tag_option_reorder.tx_failed',
       count: updates.length,
-      err: String(err),
+      err,
     })
     return
   }

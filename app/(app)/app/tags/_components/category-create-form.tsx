@@ -39,7 +39,7 @@ type Props = {
   existingSortKeys?: (string | null | undefined)[]
 }
 
-export function CategoryCreateForm({ onCreated, existingSortKeys }: Props) {
+export function CategoryCreateForm({ onCreated, existingSortKeys = [] }: Props) {
   const [name, setName] = React.useState('')
   const [selectType, setSelectType] = React.useState<SelectType>('multi')
 
@@ -52,7 +52,9 @@ export function CategoryCreateForm({ onCreated, existingSortKeys }: Props) {
 
     const id = newId()
     // Tag-4c-2b §4.7: 末尾採番 (共有 helper)。 IDB put + enqueue patch の両方に流す。
-    const sortKey = nextSortKey(existingSortKeys ?? [])
+    // `nextSortKey` は空配列で起点 `'0'` を返すため、 props default `[]` で undefined
+    // 防御を集約する (helper 側に統一、 form 側の `?? []` 二重防御を解消)。
+    const sortKey = nextSortKey(existingSortKeys)
 
     // optimistic IDB put: mirror に即時行を挿入し useLiveQuery を即時再描画させる。
     // user_id は client から知る経路がない (Clerk 経由は server だけ) ため空文字、

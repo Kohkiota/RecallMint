@@ -141,10 +141,11 @@ describe('CategoryList — useLiveQuery 描画', () => {
     expect(names).toEqual(['A カテゴリ', 'B カテゴリ', 'C カテゴリ'])
   })
 
-  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort される。 旧 string `<` 比較
-  // だと `'0','1','10','2'` が `'0','1','10','2'` の lexicographic 順 (10 が 2 より前) で
-  // 表示され誤順、 数値比較版は `0,1,2,10` の昇順に揃う。
-  it('sort_key で数値順 (旧 string 比較なら fail する `0,1,2,10` の並び)', async () => {
+  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort される。
+  // assertion は name 列 ['零','壱','弐','拾'] で表示順を確認、 sort_key は `'0','1','2','10'`。
+  // 旧 string `<` 比較なら `'0','1','10','2'` の lexicographic 順 (拾 が 弐 より前) で fail、
+  // 数値比較なら `0,1,2,10` の昇順に揃う。 「string 比較 vs 数値比較」 の差を pin する case。
+  it('sort_key 数値順 (共有 comparator は `0,1,2,10` を 0→1→2→10 で並べる / 旧 string 比較なら `0,1,10,2` で fail する fixture)', async () => {
     await getClientDb().tag_categories.bulkPut([
       makeCategory('cat-2', '弐', '2026-06-01T00:00:00.000Z', 'multi', '2'),
       makeCategory('cat-10', '拾', '2026-06-01T00:00:00.000Z', 'multi', '10'),

@@ -1302,9 +1302,21 @@ describe('handleCreateCategory', () => {
     expect(putArg.sort_key).toBe('0') // 空配列 → '0' (Tag-4c-2b T2.7: nextSortKey 起点 '0')
     expect(putArg.user_id).toBe('user-1')
     expect(typeof putArg.created_at).toBe('string')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '0' }),
+      }),
+    )
   })
 
-  it('enqueue が op=create の引数で呼ばれる', async () => {
+  it('enqueue が op=create の引数で呼ばれる (patch に sort_key 含む / manager create と shape 一致)', async () => {
+    // Tag-4c-2b T7 V-a: 「null 混在を新規に作らない」 (§4.7 rationale) を popover create
+    // 経路でも実現。 manager `category-create-form.tsx` の enqueue patch shape
+    // (`{ name, select_type, sort_key }`) と揃え、 server `applyTagCategoryCreate` 経由で
+    // 全 row が末尾採番 sort_key を持つ状態に収束する。 空 existing → sort_key '0' 起点。
     await handleCreateCategory('user-1', [], '分野', 'multi')
 
     expect(enqueueEntityMutation).toHaveBeenCalledWith(
@@ -1312,7 +1324,7 @@ describe('handleCreateCategory', () => {
         entity_type: 'tag_category',
         entity_id: 'cat-new-1',
         op: 'create',
-        patch: { name: '分野', select_type: 'multi' },
+        patch: { name: '分野', select_type: 'multi', sort_key: '0' },
       }),
     )
   })
@@ -1369,6 +1381,15 @@ describe('handleCreateCategory', () => {
 
     const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
     expect(putArg.sort_key).toBe('0')
+    // Tag-4c-2b T7 V-a: mirror put 側だけでなく enqueue patch 側にも同採番値を書き込み、
+    // server `applyTagCategoryCreate` 経由で「null 混在を新規に作らない」 を成立させる。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '0' }),
+      }),
+    )
   })
 
   it('sort_key 採番: 既存 ["1","2"] → "3"', async () => {
@@ -1401,6 +1422,14 @@ describe('handleCreateCategory', () => {
 
     const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
     expect(putArg.sort_key).toBe('3')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '3' }),
+      }),
+    )
   })
 
   it('sort_key 採番: 既存 ["1", null, "5"] → "6"', async () => {
@@ -1434,6 +1463,14 @@ describe('handleCreateCategory', () => {
 
     const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
     expect(putArg.sort_key).toBe('6')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_category',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '6' }),
+      }),
+    )
   })
 })
 
@@ -1590,6 +1627,14 @@ describe('handleCreateOptionAndAssign', () => {
     expect(putArg.sort_key).toBe('3') // 既存 ["1","2"] → '3'
     expect(putArg.user_id).toBe('user-1')
     expect(typeof putArg.created_at).toBe('string')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '3' }),
+      }),
+    )
   })
 
   it('card_tags.put 引数: card_id / option_id / user_id (空文字でない)', async () => {
@@ -1602,7 +1647,11 @@ describe('handleCreateOptionAndAssign', () => {
     expect(putArg.user_id).not.toBe('')
   })
 
-  it('enqueue 2 連発: tag_option create と card update_field tag_option_ids', async () => {
+  it('enqueue 2 連発: tag_option create (patch に sort_key 含む / manager create と shape 一致) と card update_field tag_option_ids', async () => {
+    // Tag-4c-2b T7 V-a: 「null 混在を新規に作らない」 (§4.7 rationale) を popover create
+    // 経路でも実現。 manager `option-create-form.tsx` の enqueue patch shape
+    // (`{ category_id, name, color, sort_key }`) と揃え、 server `applyTagOptionCreate`
+    // 経由で全 row が末尾採番 sort_key を持つ状態に収束する。 空 existing → '0' 起点。
     const categories = [cat('c1', '分野', 'multi')]
 
     await handleCreateOptionAndAssign('user-1', 'card-1', categories, [], [], 'c1', '新')
@@ -1615,7 +1664,7 @@ describe('handleCreateOptionAndAssign', () => {
       entity_type: 'tag_option',
       entity_id: 'opt-new-1',
       op: 'create',
-      patch: { category_id: 'c1', name: '新', color: null },
+      patch: { category_id: 'c1', name: '新', color: null, sort_key: '0' },
     })
     // card update_field tag_option_ids call
     expect(calls[1][0]).toMatchObject({
@@ -1678,6 +1727,14 @@ describe('handleCreateOptionAndAssign', () => {
 
     const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
     expect(putArg.sort_key).toBe('0')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '0' }),
+      }),
+    )
   })
 
   it('sort_key 採番: 別カテゴリの sort_key は無視される (同カテゴリ scope)', async () => {
@@ -1695,6 +1752,14 @@ describe('handleCreateOptionAndAssign', () => {
     const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
     // c1 の sort_key は ["1"] のみ → '2' (c2 の "99" は無視)
     expect(putArg.sort_key).toBe('2')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '2' }),
+      }),
+    )
   })
 
   it('sort_key 採番: 既存 ["1", null, "5"] → "6"', async () => {
@@ -1709,6 +1774,14 @@ describe('handleCreateOptionAndAssign', () => {
 
     const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
     expect(putArg.sort_key).toBe('6')
+    // Tag-4c-2b T7 V-a: patch 側にも同採番値が書込される (manager create と shape 一致)。
+    expect(enqueueEntityMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity_type: 'tag_option',
+        op: 'create',
+        patch: expect.objectContaining({ sort_key: '6' }),
+      }),
+    )
   })
 })
 
