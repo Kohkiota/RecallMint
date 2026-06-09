@@ -117,8 +117,12 @@ describe('reindexSortKeys', () => {
   })
 
   // 防御的 (2): orderedIds に currentSortKeys 未登録 id (= get → undefined) が混入。
-  //   `?? null` 経由で previousKey = null として扱い、 安全に整数文字列で採番される
-  //   (race で list と map が瞬間的に乖離してもクラッシュせず正規化に倒れる契約)。
+  //   呼出側 (Tag-4c-2b T6 `handleReorderX`) は categories / options 配列から currentMap を
+  //   構築 + 同 source の id 列を SortableContext.items 経由で orderedIds として受けるため、
+  //   実運用では id 集合は一致する前提 (= unknown id は通常出現しない)。 本ケースは契約
+  //   (unknown id → previousKey null 扱いで整数文字列に正規化) を pin するための test で、
+  //   実 race を直接再現する目的ではない。 仮に何らかの理由で id 集合が乖離しても
+  //   クラッシュせず safe に倒れる挙動を保証する。
   it('(defensive) currentSortKeys 未登録 id: previousKey = null として正規化', () => {
     const orderedIds = ['a', 'unknown', 'b']
     const currentSortKeys = new Map<string, string | null | undefined>([

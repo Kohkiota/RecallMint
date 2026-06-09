@@ -163,10 +163,10 @@ export function CardTagOptionList({
     setFilterText('')
     // Tag-4c-2b T5: 親 popover が gate に使う filterText も同期 reset。
     onFilterChange?.('')
-    // onFilterChange は値書込専用 side channel (React useState setter は identity
-    // 安定 + 親で setStageNFilterText を直接渡す経路)、 effect の trigger は
-    // selectedCategoryId 単独で十分。 onFilterChange を deps に入れると親 callback の
-    // identity 変化で意図せず filter が再 reset される副作用が出るため除外する。
+    // 現状 (popover が setStageNFilterText setter を直接渡し identity 安定) では deps に
+    // onFilterChange を入れても再 run は起きないが、 将来 inline 関数を渡す call site が
+    // 増えたとき deps に入れると意図せず filter が再 reset される副作用が出るため除外。
+    // effect の trigger は selectedCategoryId 単独で十分 (stage 遷移時 cleanup の意図)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategoryId])
 
@@ -414,7 +414,8 @@ function RowInner({
 }
 
 // 既存挙動踏襲: useSortable 呼ばない、 handle button 出さない。
-// onReorder 未指定 (= 親が SortableContext で囲まない) のときに使う。
+// `sortable=false` (default) or `options.length<2` or `dndEnabled=false` のときに使う
+// (CardTagOptionList の isSortable 判定経由で StaticRow / SortableRow が切替えられる)。
 function StaticRow({ children }: { children: React.ReactNode }) {
   return <li className="flex items-center">{children}</li>
 }

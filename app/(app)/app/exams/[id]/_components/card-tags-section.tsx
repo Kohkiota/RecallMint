@@ -22,6 +22,7 @@ import {
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
+import { reindexSortKeys } from '@/lib/tags/reindex-sort-keys'
 
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
@@ -486,6 +487,94 @@ export async function handleCreateOptionAndAssign(
 }
 
 // ---------------------------------------------------------------------------
+// Tag-4c-2b T6: D&D reorder handlers (module スコープ)
+//
+// reference 実装 = `handleToggle` の same-tx atomic pattern (mirror update + enqueue を
+// 同一 Dexie rw tx に閉じ、 enqueue throw で tx 全体 throw → Dexie auto-rollback →
+// handler catch で silent return、 案 a 取り直し: 次回 pull が server 値で reconcile)。
+// updates.length === 0 (= 同順 drag or 既に正規化済) なら tx 自体張らず flush もしない。
+// mirror update は partial `{ sort_key, updated_at }` のみ (他列触らない)、 user_id 注入は
+// 不要 (sort_key 書込は user 列を触らない、 reference handleToggle の whole-set replace と
+// は異なる)。
+//
+// component 側では useCallback で props (categories / options) を bind した closure に
+// 安定化し、 tagEditCallbacks に乗せて popover に渡す。
+// ---------------------------------------------------------------------------
+
+/**
+ * categories の D&D 並べ替えを反映する。
+ * - 当該 list 全件の sort_key を `'0','1',…,'N-1'` で正規化 (`reindexSortKeys` 純関数)。
+ * - 差分が 0 件なら tx も flush も発火しない (no-op)。
+ * - 失敗時 Dexie auto-rollback、 catch silent return (案 a 取り直し)。
+ */
+export async function handleReorderCategories(
+  existingCategories: ClientTagCategory[],
+  orderedIds: string[],
+): Promise<void> {
+  const currentMap = new Map(existingCategories.map((c) => [c.id, c.sort_key]))
+  const updates = reindexSortKeys(orderedIds, currentMap)
+  if (updates.length === 0) return
+  const db = getClientDb()
+  const nowIso = new Date().toISOString()
+  try {
+    await db.transaction('rw', db.tag_categories, db.entity_mutations, async () => {
+      for (const { id, sort_key } of updates) {
+        await db.tag_categories.update(id, { sort_key, updated_at: nowIso })
+        await enqueueEntityMutation({
+          entity_type: 'tag_category',
+          entity_id: id,
+          op: 'update_field',
+          patch: { field: 'sort_key', value: sort_key },
+        })
+      }
+    })
+  } catch {
+    // Dexie tx auto-rollback 済 (mirror + outbox 共に未反映)。 案 a 取り直し経路で
+    // 次回 pull が server 値で reconcile するため、 UI への明示通知は省略。
+    return
+  }
+  // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
+  void runGuardedEntityMutationFlush().catch(() => {})
+}
+
+/**
+ * 指定 category 配下 options の D&D 並べ替えを反映する。
+ * categoryId 配下の option のみを reindex 母数とする (別 category の option を
+ * 巻き込まない不変条件)。 他は handleReorderCategories と同形。
+ */
+export async function handleReorderOptions(
+  existingOptions: ClientTagOption[],
+  categoryId: string,
+  orderedIds: string[],
+): Promise<void> {
+  const currentMap = new Map(
+    existingOptions
+      .filter((o) => o.category_id === categoryId)
+      .map((o) => [o.id, o.sort_key]),
+  )
+  const updates = reindexSortKeys(orderedIds, currentMap)
+  if (updates.length === 0) return
+  const db = getClientDb()
+  const nowIso = new Date().toISOString()
+  try {
+    await db.transaction('rw', db.tag_options, db.entity_mutations, async () => {
+      for (const { id, sort_key } of updates) {
+        await db.tag_options.update(id, { sort_key, updated_at: nowIso })
+        await enqueueEntityMutation({
+          entity_type: 'tag_option',
+          entity_id: id,
+          op: 'update_field',
+          patch: { field: 'sort_key', value: sort_key },
+        })
+      }
+    })
+  } catch {
+    return
+  }
+  void runGuardedEntityMutationFlush().catch(() => {})
+}
+
+// ---------------------------------------------------------------------------
 // tagEditCallbacks 型 (Task 3/4 で popover に渡す single props object)
 // ---------------------------------------------------------------------------
 
@@ -508,6 +597,11 @@ export type TagEditCallbacks = {
     selectType: 'single' | 'multi',
   ) => Promise<{ id: string }>
   createOptionAndAssign: (categoryId: string, name: string) => Promise<void>
+  // Tag-4c-2b T6: popover stage1 / stage2 D&D 並べ替えの差分 reindex 経路。
+  // 実装は section 内の useCallback closure として安定化し、 popover の
+  // DndContext.onDragEnd → handleStageNDragEnd → 当該 callback 直接 dispatch で呼ばれる。
+  reorderCategories: (orderedIds: string[]) => Promise<void>
+  reorderOptions: (categoryId: string, orderedIds: string[]) => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -563,11 +657,26 @@ function CardTagsSectionInner({
     [userId, cardId, categories, options, cardTags],
   )
 
-  // Tag-4c-1 + Tag-4c-2a: 6 handlers + 2 count helpers + 2 create handlers を単一
-  // memoized object に集約。 module スコープ関数 (rename / color / delete / count) は
-  // deps 不要、 useCallback で安定化した create 系のみ deps に含める。
-  // popover の React.memo identity を維持するため、 create 系の引数依存変化時のみ
-  // object identity が変わる。
+  // Tag-4c-2b T6: D&D reorder handler の component 側 closure。
+  // module スコープ `handleReorderCategories` / `handleReorderOptions` に当該 scope
+  // (categories / options) を bind した closure を useCallback で安定化する。
+  // popover に渡す `tagEditCallbacks` interface は popover 側 UI 視点の引数のみを残す。
+  const reorderCategories = useCallback(
+    (orderedIds: string[]) => handleReorderCategories(categories, orderedIds),
+    [categories],
+  )
+
+  const reorderOptions = useCallback(
+    (categoryId: string, orderedIds: string[]) =>
+      handleReorderOptions(options, categoryId, orderedIds),
+    [options],
+  )
+
+  // Tag-4c-1 + Tag-4c-2a + Tag-4c-2b: 6 handlers + 2 count helpers + 2 create handlers
+  // + 2 reorder handlers を単一 memoized object に集約。 module スコープ関数 (rename /
+  // color / delete / count) は deps 不要、 useCallback で安定化した create 系 + reorder
+  // 系のみ deps に含める。 popover の React.memo identity を維持するため、 これらの
+  // 引数依存変化時のみ object identity が変わる。
   const tagEditCallbacks: TagEditCallbacks = useMemo(() => ({
     renameCategory: handleRenameCategory,
     setCategoryColor: handleSetCategoryColor,
@@ -579,7 +688,9 @@ function CardTagsSectionInner({
     countOptionImpact,
     createCategory,
     createOptionAndAssign,
-  }), [createCategory, createOptionAndAssign])
+    reorderCategories,
+    reorderOptions,
+  }), [createCategory, createOptionAndAssign, reorderCategories, reorderOptions])
 
   const handleToggle = async (categoryId: string, optionId: string) => {
     const category = categories.find((c) => c.id === categoryId)
@@ -676,6 +787,8 @@ function CardTagsSectionInner({
           allAssignedOptionIds={allAssignedOptionIds}
           onToggle={handleToggle}
           tagEditCallbacks={tagEditCallbacks}
+          onReorderCategories={tagEditCallbacks.reorderCategories}
+          onReorderOptions={tagEditCallbacks.reorderOptions}
         />
       </div>
     </div>

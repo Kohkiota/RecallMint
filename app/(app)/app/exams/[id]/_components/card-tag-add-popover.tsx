@@ -70,12 +70,15 @@ type Props = {
   onToggle: (categoryId: string, optionId: string) => void
   /** 編集系 callback 群 (Task 1 で section から渡す) */
   tagEditCallbacks: TagEditCallbacks
-  /** stage1 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線、 T5 では型のみ受け取り)。
-   *  本 T5 では渡されたら CardTagOptionList の onReorder へそのまま流し、
-   *  渡されなかったら DndContext を mount せず D&D 配線を skip する (中間状態互換)。 */
+  /** stage1 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線済)。
+   *  渡された場合: 親 DndContext.onDragEnd → handleStage1DragEnd → 本 callback を直接
+   *  dispatch する (子 CardTagOptionList は `sortable` boolean のみ受け取り、 handle 表示と
+   *  useSortable 配線を担当)。 渡されなかった場合は DndContext を mount せず D&D 配線を
+   *  skip する (中間状態互換)。 */
   onReorderCategories?: (orderedIds: string[]) => Promise<void>
-  /** stage2 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線、 T5 では型のみ受け取り)。
-   *  arg は当該 category の id + drag-end 後の option id 順。 */
+  /** stage2 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線済)。
+   *  arg は当該 category の id + drag-end 後の option id 順。 onReorderCategories と
+   *  同じ経路 (親 DndContext.onDragEnd → handleStage2DragEnd → 本 callback を直接 dispatch)。 */
   onReorderOptions?: (categoryId: string, orderedIds: string[]) => Promise<void>
 }
 
