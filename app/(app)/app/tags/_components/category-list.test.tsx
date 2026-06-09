@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // CategoryList client component の test。 左 column orchestrator。
-// - useLiveQuery で db.tag_categories.orderBy('created_at').toArray() 直読
+// - useLiveQuery で db.tag_categories.toArray() 直読、 共有 `sortByKeyThenCreated`
+//   (sort_key 数値昇順 + 同位 created_at ASC) で並べる (Tag-4c-2b §4.8)
 // - CategoryCreateForm + 各 CategoryRow を render
 // - 削除フロー: CategoryRow から onDelete callback → 影響範囲 count (配下 option +
 //   紐付き card 数) を IDB から取得 → DeleteConfirmDialog 表示 → 確定で
@@ -49,6 +50,7 @@ function makeCategory(
   name: string,
   createdAt: string,
   selectType: 'single' | 'multi' = 'multi',
+  sortKey: string | null = null,
 ): ClientTagCategory {
   return {
     id,
@@ -56,7 +58,7 @@ function makeCategory(
     name,
     select_type: selectType,
     color: null,
-    sort_key: null,
+    sort_key: sortKey,
     created_at: createdAt,
     updated_at: createdAt,
   }
@@ -116,7 +118,7 @@ describe('CategoryList — useLiveQuery 描画', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('カテゴリ複数件: created_at ASC で並ぶ', async () => {
+  it('全 sort_key null: created_at ASC fallback で並ぶ (両 NaN tiebreak)', async () => {
     await getClientDb().tag_categories.bulkPut([
       makeCategory('cat-b', 'B カテゴリ', '2026-06-02T00:00:00.000Z'),
       makeCategory('cat-a', 'A カテゴリ', '2026-06-01T00:00:00.000Z'),
@@ -126,19 +128,62 @@ describe('CategoryList — useLiveQuery 描画', () => {
     render(
       <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
     )
-    // 全 3 件描画 + created_at ASC で a, b, c の順
     await screen.findByText('A カテゴリ')
     await screen.findByText('B カテゴリ')
     await screen.findByText('C カテゴリ')
 
     // 各 row 内の pen icon button (aria-label="編集") を順序保持で取得し、
-    // 同じ row 内の name span を兄弟 element から抜き出す (Tag-4a-fix Task 2 で
-    // name は static span 化、 役割は pen icon button が rename trigger を担う)。
+    // 同じ row 内の name span を兄弟 element から抜き出す。
     const penButtons = screen.getAllByRole('button', { name: '編集' })
     const names = penButtons.map(
       (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
     )
     expect(names).toEqual(['A カテゴリ', 'B カテゴリ', 'C カテゴリ'])
+  })
+
+  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort される。 旧 string `<` 比較
+  // だと `'0','1','10','2'` が `'0','1','10','2'` の lexicographic 順 (10 が 2 より前) で
+  // 表示され誤順、 数値比較版は `0,1,2,10` の昇順に揃う。
+  it('sort_key で数値順 (旧 string 比較なら fail する `0,1,2,10` の並び)', async () => {
+    await getClientDb().tag_categories.bulkPut([
+      makeCategory('cat-2', '弐', '2026-06-01T00:00:00.000Z', 'multi', '2'),
+      makeCategory('cat-10', '拾', '2026-06-01T00:00:00.000Z', 'multi', '10'),
+      makeCategory('cat-0', '零', '2026-06-01T00:00:00.000Z', 'multi', '0'),
+      makeCategory('cat-1', '壱', '2026-06-01T00:00:00.000Z', 'multi', '1'),
+    ])
+
+    render(
+      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+    )
+    await screen.findByText('零')
+
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
+    // 数値昇順: 0 → 1 → 2 → 10 (旧 string 比較なら 0,1,10,2 になり fail)
+    expect(names).toEqual(['零', '壱', '弐', '拾'])
+  })
+
+  it('sort_key + null 混在: 数値帯が先、 null は末尾 (NULLS LAST)、 null 内は created_at ASC', async () => {
+    await getClientDb().tag_categories.bulkPut([
+      makeCategory('cat-null-b', 'NB', '2026-06-02T00:00:00.000Z', 'multi', null),
+      makeCategory('cat-1', '壱', '2026-06-03T00:00:00.000Z', 'multi', '1'),
+      makeCategory('cat-null-a', 'NA', '2026-06-01T00:00:00.000Z', 'multi', null),
+      makeCategory('cat-0', '零', '2026-06-04T00:00:00.000Z', 'multi', '0'),
+    ])
+
+    render(
+      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+    )
+    await screen.findByText('零')
+
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
+    // 数値帯: 0 → 1、 null 帯 (末尾): created_at ASC で NA → NB
+    expect(names).toEqual(['零', '壱', 'NA', 'NB'])
   })
 
   it('activeCategoryId に一致する row だけ active 表示 (bg-slate-100)', async () => {

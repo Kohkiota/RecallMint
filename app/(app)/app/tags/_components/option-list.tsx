@@ -26,6 +26,7 @@ import {
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
+import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 
 import { OptionRow } from './option-row'
 import { OptionCreateForm } from './option-create-form'
@@ -40,14 +41,9 @@ type PendingDelete = {
   cardCount: number
 }
 
-// created_at ASC で並べる (sort_key UI は Tag-4e で導入、 4a は固定順)。
-function sortByCreatedAt(
-  a: ClientTagOption,
-  b: ClientTagOption,
-): number {
-  if (a.created_at === b.created_at) return 0
-  return a.created_at < b.created_at ? -1 : 1
-}
+// sort_key 数値昇順 + 同位 created_at ASC を共有 comparator で適用 (Tag-4c-2b §4.8)。
+// popover と同 IDB を同 comparator で読むことで両画面の並びを共有。 sort_key UI は
+// Tag-4c-2c で manager D&D 配備予定、 sort_key 表示順 + 末尾採番は本 sprint で導入済。
 
 export function OptionList({ activeCategoryId }: Props) {
   const [pendingDelete, setPendingDelete] =
@@ -60,7 +56,7 @@ export function OptionList({ activeCategoryId }: Props) {
       .tag_options.where('category_id')
       .equals(activeCategoryId)
       .toArray()
-    return all.slice().sort(sortByCreatedAt)
+    return all.slice().sort(sortByKeyThenCreated)
   }, [activeCategoryId])
 
   // 全カテゴリ (OptionRow のカテゴリ変更 dropdown 用)。 active 切替に追随する必要は
@@ -140,12 +136,15 @@ export function OptionList({ activeCategoryId }: Props) {
 
   const list = options ?? []
   const existingNames = list.map((o) => o.name)
+  // Tag-4c-2b T7: 末尾採番のため active category 配下の既存 sort_key 群を form に渡す。
+  const existingSortKeys = list.map((o) => o.sort_key)
 
   return (
     <div className="space-y-3">
       <OptionCreateForm
         activeCategoryId={activeCategoryId}
         existingNames={existingNames}
+        existingSortKeys={existingSortKeys}
       />
 
       <ul className="space-y-1">

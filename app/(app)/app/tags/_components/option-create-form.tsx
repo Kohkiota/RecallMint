@@ -5,7 +5,7 @@
 // - submit:
 //   1. crypto.randomUUID() (newId 経由) で id 採番
 //   2. enqueueEntityMutation({entity_type:'tag_option', op:'create',
-//      patch:{category_id, name, color}}) を発行
+//      patch:{category_id, name, color, sort_key}}) を発行
 //   3. runGuardedEntityMutationFlush() で drain
 //   4. form reset (name 空 / color null)
 //
@@ -15,6 +15,10 @@
 //
 // activeCategoryId が null の場合は親が render しない契約 (props 必須)。
 // color picker は ColorPalettePopover の trigger に独立 Button を差し込む形。
+//
+// Tag-4c-2b §4.7: 末尾採番 (`nextSortKey`) を共有 helper で適用。 IDB put + enqueue
+// patch の両方に sort_key を含める (null 混在を新規作成では作らない)。 manager D&D
+// 配備は Tag-4c-2c 範疇。
 
 import * as React from 'react'
 
@@ -27,6 +31,7 @@ import { getClientDb } from '@/lib/client-db'
 import { logger } from '@/lib/logger'
 import { cn } from '@/lib/utils'
 import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
+import { nextSortKey } from '@/lib/tags/next-sort-key'
 
 import { ColorPalettePopover } from './color-palette-popover'
 
@@ -35,9 +40,17 @@ type Props = {
   activeCategoryId: string
   // UNIQUE 事前チェック用、 active カテゴリ配下の現存 option name (親 useLiveQuery)。
   existingNames: string[]
+  // Tag-4c-2b T7: 親 (`OptionList`) が `useLiveQuery` で解決した active category 配下の
+  // 既存 sort_key 群。 共有 `nextSortKey` に渡して末尾採番に使う (popover create と同形)。
+  // 未指定 or 空配列なら起点 `'0'` (active category 初回作成)。
+  existingSortKeys?: (string | null | undefined)[]
 }
 
-export function OptionCreateForm({ activeCategoryId, existingNames }: Props) {
+export function OptionCreateForm({
+  activeCategoryId,
+  existingNames,
+  existingSortKeys,
+}: Props) {
   const [name, setName] = React.useState('')
   const [color, setColor] = React.useState<TagColorName | null>(null)
 
@@ -54,6 +67,8 @@ export function OptionCreateForm({ activeCategoryId, existingNames }: Props) {
     if (disabled) return
 
     const id = newId()
+    // Tag-4c-2b §4.7: 末尾採番 (共有 helper)。 IDB put + enqueue patch の両方に流す。
+    const sortKey = nextSortKey(existingSortKeys ?? [])
 
     // optimistic IDB put: mirror に即時行を挿入し useLiveQuery を即時再描画させる。
     // user_id は client から知る経路がない (Clerk 経由は server だけ) ため空文字、
@@ -67,7 +82,7 @@ export function OptionCreateForm({ activeCategoryId, existingNames }: Props) {
         category_id: activeCategoryId,
         name: trimmed,
         color,
-        sort_key: null,
+        sort_key: sortKey,
         created_at: now,
         updated_at: now,
       })
@@ -83,7 +98,12 @@ export function OptionCreateForm({ activeCategoryId, existingNames }: Props) {
       entity_type: 'tag_option',
       entity_id: id,
       op: 'create',
-      patch: { category_id: activeCategoryId, name: trimmed, color },
+      patch: {
+        category_id: activeCategoryId,
+        name: trimmed,
+        color,
+        sort_key: sortKey,
+      },
     }).catch((err) => {
       logger.warn({
         event: 'tag_option_create.enqueue_failed',

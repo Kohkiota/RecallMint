@@ -512,7 +512,11 @@ export async function handleReorderCategories(
   orderedIds: string[],
 ): Promise<void> {
   const currentMap = new Map(existingCategories.map((c) => [c.id, c.sort_key]))
-  const updates = reindexSortKeys(orderedIds, currentMap)
+  // Tag-4c-2b T7 M-A: 未登録 id (別経路から混入 / stale id 等) を捨て、 currentMap の
+  // 母数 (= categories 全 id 集合) のみを reindex 対象に限定する defensive filter。
+  // Tag-4c-2c で manager 側に D&D を載せた際にも自動的に守られる契約。
+  const filteredOrderedIds = orderedIds.filter((id) => currentMap.has(id))
+  const updates = reindexSortKeys(filteredOrderedIds, currentMap)
   if (updates.length === 0) return
   const db = getClientDb()
   const nowIso = new Date().toISOString()
@@ -528,9 +532,16 @@ export async function handleReorderCategories(
         })
       }
     })
-  } catch {
+  } catch (err) {
     // Dexie tx auto-rollback 済 (mirror + outbox 共に未反映)。 案 a 取り直し経路で
     // 次回 pull が server 値で reconcile するため、 UI への明示通知は省略。
+    // Tag-4c-2b T7 M-B: silent catch に logger.warn を 1 行追加 (本 reorder handler 限定、
+    // 他 silent catch には遡及しない = scope creep 回避)。
+    logger.warn({
+      event: 'tag_category_reorder.tx_failed',
+      count: updates.length,
+      err: String(err),
+    })
     return
   }
   // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
@@ -552,7 +563,12 @@ export async function handleReorderOptions(
       .filter((o) => o.category_id === categoryId)
       .map((o) => [o.id, o.sort_key]),
   )
-  const updates = reindexSortKeys(orderedIds, currentMap)
+  // Tag-4c-2b T7 M-A: 別 category の option id や stale id が orderedIds に混入しても
+  // currentMap (= 当該 categoryId 配下の option 全 id 集合) のみを reindex 対象に限定し、
+  // 別 category の sort_key 帯を破壊しない不変条件を強化する。 Tag-4c-2c で manager
+  // 側に D&D を載せた際にも自動的に守られる契約。
+  const filteredOrderedIds = orderedIds.filter((id) => currentMap.has(id))
+  const updates = reindexSortKeys(filteredOrderedIds, currentMap)
   if (updates.length === 0) return
   const db = getClientDb()
   const nowIso = new Date().toISOString()
@@ -568,7 +584,13 @@ export async function handleReorderOptions(
         })
       }
     })
-  } catch {
+  } catch (err) {
+    // Tag-4c-2b T7 M-B: silent catch に logger.warn を 1 行追加 (categories 側と同形)。
+    logger.warn({
+      event: 'tag_option_reorder.tx_failed',
+      count: updates.length,
+      err: String(err),
+    })
     return
   }
   void runGuardedEntityMutationFlush().catch(() => {})
@@ -597,11 +619,10 @@ export type TagEditCallbacks = {
     selectType: 'single' | 'multi',
   ) => Promise<{ id: string }>
   createOptionAndAssign: (categoryId: string, name: string) => Promise<void>
-  // Tag-4c-2b T6: popover stage1 / stage2 D&D 並べ替えの差分 reindex 経路。
-  // 実装は section 内の useCallback closure として安定化し、 popover の
-  // DndContext.onDragEnd → handleStageNDragEnd → 当該 callback 直接 dispatch で呼ばれる。
-  reorderCategories: (orderedIds: string[]) => Promise<void>
-  reorderOptions: (categoryId: string, orderedIds: string[]) => Promise<void>
+  // Tag-4c-2b T7 M-C: popover stage1 / stage2 D&D 経路は CardTagAddPopover の standalone
+  // props (`onReorderCategories` / `onReorderOptions`) 1 経路に集約。 旧 T6 で本型に乗せて
+  // いた `reorderCategories` / `reorderOptions` は二重経路の一方が dead だったため drop。
+  // section 内 useCallback closure は popover の standalone props として直接渡す。
 }
 
 // ---------------------------------------------------------------------------
@@ -657,10 +678,10 @@ function CardTagsSectionInner({
     [userId, cardId, categories, options, cardTags],
   )
 
-  // Tag-4c-2b T6: D&D reorder handler の component 側 closure。
-  // module スコープ `handleReorderCategories` / `handleReorderOptions` に当該 scope
-  // (categories / options) を bind した closure を useCallback で安定化する。
-  // popover に渡す `tagEditCallbacks` interface は popover 側 UI 視点の引数のみを残す。
+  // Tag-4c-2b T7 M-C: D&D reorder handler の component 側 closure。 module スコープ
+  // `handleReorderCategories` / `handleReorderOptions` に当該 scope (categories / options)
+  // を bind し useCallback で安定化、 CardTagAddPopover の standalone props として直接
+  // 渡す (tagEditCallbacks 経由を drop し 1 経路化、 spec §4.7 反映)。
   const reorderCategories = useCallback(
     (orderedIds: string[]) => handleReorderCategories(categories, orderedIds),
     [categories],
@@ -672,11 +693,10 @@ function CardTagsSectionInner({
     [options],
   )
 
-  // Tag-4c-1 + Tag-4c-2a + Tag-4c-2b: 6 handlers + 2 count helpers + 2 create handlers
-  // + 2 reorder handlers を単一 memoized object に集約。 module スコープ関数 (rename /
-  // color / delete / count) は deps 不要、 useCallback で安定化した create 系 + reorder
-  // 系のみ deps に含める。 popover の React.memo identity を維持するため、 これらの
-  // 引数依存変化時のみ object identity が変わる。
+  // Tag-4c-1 + Tag-4c-2a: 6 handlers + 2 count helpers + 2 create handlers を単一
+  // memoized object に集約。 module スコープ関数 (rename / color / delete / count) は
+  // deps 不要、 useCallback で安定化した create 系のみ deps に含める。 reorder 系は
+  // Tag-4c-2b T7 M-C で popover の standalone props 1 経路に分離 (型から drop 済)。
   const tagEditCallbacks: TagEditCallbacks = useMemo(() => ({
     renameCategory: handleRenameCategory,
     setCategoryColor: handleSetCategoryColor,
@@ -688,9 +708,7 @@ function CardTagsSectionInner({
     countOptionImpact,
     createCategory,
     createOptionAndAssign,
-    reorderCategories,
-    reorderOptions,
-  }), [createCategory, createOptionAndAssign, reorderCategories, reorderOptions])
+  }), [createCategory, createOptionAndAssign])
 
   const handleToggle = async (categoryId: string, optionId: string) => {
     const category = categories.find((c) => c.id === categoryId)
@@ -787,8 +805,8 @@ function CardTagsSectionInner({
           allAssignedOptionIds={allAssignedOptionIds}
           onToggle={handleToggle}
           tagEditCallbacks={tagEditCallbacks}
-          onReorderCategories={tagEditCallbacks.reorderCategories}
-          onReorderOptions={tagEditCallbacks.reorderOptions}
+          onReorderCategories={reorderCategories}
+          onReorderOptions={reorderOptions}
         />
       </div>
     </div>

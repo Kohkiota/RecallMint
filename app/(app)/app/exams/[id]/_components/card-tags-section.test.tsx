@@ -1835,6 +1835,41 @@ describe('handleReorderCategories', () => {
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
+
+  // ----- 境界 (Tag-4c-2b T7 M-A): 未登録 id 混入は無視され currentMap 母数のみ reindex -----
+  it('orderedIds に未登録 id (currentMap に無し) が混入しても無視される (defensive filter)', async () => {
+    // 既に '0','1' で正規化済の 2 件。 末尾に 'cat-zzz' (存在しない id) を足して渡す。
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', 'A'), sort_key: '0' },
+      { ...cat('c2', 'B'), sort_key: '1' },
+    ]
+    // 'cat-zzz' は currentMap に存在しないため filter で落ち、 残る ['c1','c2'] は
+    // 同順 → reindexSortKeys が空配列 → no-op (tx 自体張らない)
+    await handleReorderCategories(categories, ['c1', 'c2', 'cat-zzz'])
+
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
+    expect(enqueueEntityMutation).not.toHaveBeenCalled()
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
+
+  it('未登録 id を末尾に挟みつつ並び替えがある場合、 登録済 id のみが reindex 対象', async () => {
+    // 既に '0','1' で正規化済を逆順 + 末尾未登録。
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', 'A'), sort_key: '0' },
+      { ...cat('c2', 'B'), sort_key: '1' },
+    ]
+    await handleReorderCategories(categories, ['c2', 'c1', 'cat-zzz'])
+
+    // c2 → '0', c1 → '1' の 2 更新のみ (cat-zzz は filter で除外)
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
+    expect(enqueueEntityMutation).toHaveBeenCalledTimes(2)
+    const updatedIds = (mockTagCategoriesUpdate.mock.calls as unknown as [string, unknown][]).map(
+      ([id]) => id,
+    )
+    expect(updatedIds).toEqual(['c2', 'c1'])
+    expect(updatedIds).not.toContain('cat-zzz')
+  })
 })
 
 // ===========================================================================
@@ -1979,6 +2014,44 @@ describe('handleReorderOptions', () => {
     const enqueuedIds = (
       enqueueEntityMutation as ReturnType<typeof vi.fn>
     ).mock.calls.map((c) => (c[0] as { entity_id: string }).entity_id)
+    expect(enqueuedIds.sort()).toEqual(['o-a', 'o-b', 'o-c'])
+  })
+
+  // ----- 境界 (Tag-4c-2b T7 M-A): orderedIds に別 category の id が混入しても巻き込まない -----
+  it('orderedIds に別 category の option id が混入しても currentMap (categoryId 配下) のみで reindex', async () => {
+    // 2 category × 各 3 option (cat-1: o-a/b/c 全て normalized '0','1','2',
+    //  cat-2: o-x/y/z 別 sort_key 帯 '0','1','2')
+    const options: ClientTagOption[] = [
+      { ...opt('o-a', 'cat-1', 'A'), sort_key: '0' },
+      { ...opt('o-b', 'cat-1', 'B'), sort_key: '1' },
+      { ...opt('o-c', 'cat-1', 'C'), sort_key: '2' },
+      { ...opt('o-x', 'cat-2', 'X'), sort_key: '0' },
+      { ...opt('o-y', 'cat-2', 'Y'), sort_key: '1' },
+      { ...opt('o-z', 'cat-2', 'Z'), sort_key: '2' },
+    ]
+    // cat-1 の reorder に cat-2 配下の `o-x` を混入させる
+    // → defensive filter で o-x は currentMap (cat-1 配下のみ) に存在しないため落ち、
+    //   残る ['o-c','o-a','o-b'] が cat-1 配下で reindex 対象 (3 件全て差分)
+    await handleReorderOptions(options, 'cat-1', ['o-c', 'o-a', 'o-b', 'o-x'])
+
+    // o-x の update は呼ばれない
+    const updatedIds = (mockTagOptionsUpdate.mock.calls as unknown as [string, unknown][]).map(
+      ([id]) => id,
+    )
+    expect(updatedIds).not.toContain('o-x')
+    expect(updatedIds).not.toContain('o-y')
+    expect(updatedIds).not.toContain('o-z')
+    // cat-1 配下 3 件 (差分あり) のみ update / enqueue
+    expect(updatedIds.sort()).toEqual(['o-a', 'o-b', 'o-c'])
+    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(3)
+    expect(enqueueEntityMutation).toHaveBeenCalledTimes(3)
+
+    const enqueuedIds = (
+      enqueueEntityMutation as ReturnType<typeof vi.fn>
+    ).mock.calls.map((c) => (c[0] as { entity_id: string }).entity_id)
+    expect(enqueuedIds).not.toContain('o-x')
+    expect(enqueuedIds).not.toContain('o-y')
+    expect(enqueuedIds).not.toContain('o-z')
     expect(enqueuedIds.sort()).toEqual(['o-a', 'o-b', 'o-c'])
   })
 })

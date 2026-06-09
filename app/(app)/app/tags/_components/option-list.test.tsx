@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // OptionList client component の test。 右 column orchestrator。
 // - active カテゴリ未選択時: 「カテゴリを選択してください」 placeholder
-// - active カテゴリ配下の options を useLiveQuery で読み、 created_at ASC sort
+// - active カテゴリ配下の options を useLiveQuery で読み、 共有 `sortByKeyThenCreated`
+//   (sort_key 数値昇順 + 同位 created_at ASC) で並べる (Tag-4c-2b §4.8)
 // - 各 option を OptionRow に render
 // - 削除フロー: OptionRow から onDelete callback → 影響範囲 (`db.card_tags
 //   .where('option_id').equals(opt.id).count()`) → DeleteConfirmDialog 表示
@@ -72,6 +73,7 @@ function makeOption(
   categoryId: string,
   name: string,
   createdAt = '2026-06-01T00:00:00.000Z',
+  sortKey: string | null = null,
 ): ClientTagOption {
   return {
     id,
@@ -79,7 +81,7 @@ function makeOption(
     category_id: categoryId,
     name,
     color: null,
-    sort_key: null,
+    sort_key: sortKey,
     created_at: createdAt,
     updated_at: createdAt,
   }
@@ -129,7 +131,7 @@ describe('OptionList — placeholder / 描画', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('active カテゴリ配下 複数件: created_at ASC で並ぶ', async () => {
+  it('全 sort_key null: created_at ASC fallback で並ぶ (両 NaN tiebreak)', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.bulkPut([
@@ -144,13 +146,55 @@ describe('OptionList — placeholder / 描画', () => {
     await screen.findByText('C option')
 
     // 各 row 内の pen icon button (aria-label="編集") を順序保持で取得し、
-    // 同じ row 内の name span を兄弟 element から抜き出す (Tag-4a-fix Task 2 で
-    // name は static span 化、 役割は pen icon button が rename trigger を担う)。
+    // 同じ row 内の name span を兄弟 element から抜き出す。
     const penButtons = screen.getAllByRole('button', { name: '編集' })
     const names = penButtons.map(
       (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
     )
     expect(names).toEqual(['A option', 'B option', 'C option'])
+  })
+
+  // Tag-4c-2b §4.8: 共有 `sortByKeyThenCreated` で数値順 sort。 旧 string 比較なら
+  // `'0','1','10','2'` が `0,1,10,2` で fail。
+  it('sort_key で数値順 (旧 string 比較なら fail する `0,1,2,10` の並び)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.bulkPut([
+      makeOption('opt-2', 'cat-a', '弐', '2026-06-01T00:00:00.000Z', '2'),
+      makeOption('opt-10', 'cat-a', '拾', '2026-06-01T00:00:00.000Z', '10'),
+      makeOption('opt-0', 'cat-a', '零', '2026-06-01T00:00:00.000Z', '0'),
+      makeOption('opt-1', 'cat-a', '壱', '2026-06-01T00:00:00.000Z', '1'),
+    ])
+
+    render(<OptionList activeCategoryId="cat-a" />)
+    await screen.findByText('零')
+
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
+    // 数値昇順: 0 → 1 → 2 → 10 (旧 string 比較なら 0,1,10,2 になり fail)
+    expect(names).toEqual(['零', '壱', '弐', '拾'])
+  })
+
+  it('sort_key + null 混在: 数値帯が先、 null は末尾 (NULLS LAST)、 null 内は created_at ASC', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.bulkPut([
+      makeOption('opt-null-b', 'cat-a', 'NB', '2026-06-02T00:00:00.000Z', null),
+      makeOption('opt-1', 'cat-a', '壱', '2026-06-03T00:00:00.000Z', '1'),
+      makeOption('opt-null-a', 'cat-a', 'NA', '2026-06-01T00:00:00.000Z', null),
+      makeOption('opt-0', 'cat-a', '零', '2026-06-04T00:00:00.000Z', '0'),
+    ])
+
+    render(<OptionList activeCategoryId="cat-a" />)
+    await screen.findByText('零')
+
+    const penButtons = screen.getAllByRole('button', { name: '編集' })
+    const names = penButtons.map(
+      (btn) => btn.parentElement?.querySelector('span')?.textContent ?? '',
+    )
+    expect(names).toEqual(['零', '壱', 'NA', 'NB'])
   })
 
   it('他カテゴリ配下の option は表示しない', async () => {

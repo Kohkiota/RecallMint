@@ -72,10 +72,8 @@ const mockTagEditCallbacks = {
   // Tag-4c-2a: 既存 edit popover の挙動には未関与 (Task 3/4 で配線)。 型整合のため stub。
   createCategory: vi.fn(async () => ({ id: 'stub' })),
   createOptionAndAssign: vi.fn(async () => undefined),
-  // Tag-4c-2b T6: D&D reorder 経路。 edit popover の挙動には未関与 (popover D&D は
-  // add popover 側のみ)。 型整合のため stub。
-  reorderCategories: vi.fn(async () => undefined),
-  reorderOptions: vi.fn(async () => undefined),
+  // Tag-4c-2b T7 M-C: reorder callback は TagEditCallbacks 型から drop され、 add
+  // popover の standalone props 1 経路に集約された (edit popover には D&D 経路なし)。
 }
 
 function makeTrigger(category: ClientTagCategory, option: ClientTagOption) {

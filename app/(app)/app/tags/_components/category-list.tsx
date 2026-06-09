@@ -23,6 +23,7 @@ import {
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
+import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 
 import { CategoryRow } from './category-row'
 import { CategoryCreateForm } from './category-create-form'
@@ -39,15 +40,10 @@ type PendingDelete = {
   cardCount: number
 }
 
-// created_at ASC で並べる (sort_key UI は Tag-4e で導入、 4a は固定順)。
-// `<` 比較で十分 (ISO 8601 文字列の辞書順 = 時系列順)。
-function sortByCreatedAt(
-  a: ClientTagCategory,
-  b: ClientTagCategory,
-): number {
-  if (a.created_at === b.created_at) return 0
-  return a.created_at < b.created_at ? -1 : 1
-}
+// sort_key 数値昇順 + 同位 created_at ASC を共有 comparator で適用 (Tag-4c-2b §4.8)。
+// popover と同 IDB を同 comparator で読むことで「どちらで並べ替えても両画面が同じ並びを
+// 共有」 が成立。 sort_key UI は Tag-4c-2c で manager D&D 配備予定、 sort_key 表示順 +
+// 末尾採番は本 sprint で導入済。
 
 export function CategoryList({
   activeCategoryId,
@@ -58,7 +54,7 @@ export function CategoryList({
 
   const categories = useLiveQuery(async () => {
     const all = await getClientDb().tag_categories.toArray()
-    return all.slice().sort(sortByCreatedAt)
+    return all.slice().sort(sortByKeyThenCreated)
   }, [])
 
   // 削除 button click を受けて IDB から影響範囲を集計し、 確認 dialog を開く。
@@ -157,10 +153,15 @@ export function CategoryList({
   }
 
   const list = categories ?? []
+  // Tag-4c-2b T7: 末尾採番のため既存 sort_key 群を form に渡す (共有 nextSortKey で消費)。
+  const existingSortKeys = list.map((c) => c.sort_key)
 
   return (
     <div className="space-y-3">
-      <CategoryCreateForm onCreated={handleCreated} />
+      <CategoryCreateForm
+        onCreated={handleCreated}
+        existingSortKeys={existingSortKeys}
+      />
 
       <ul className="space-y-1">
         {list.map((category) => (

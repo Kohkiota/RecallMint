@@ -86,7 +86,7 @@ describe('CategoryCreateForm — 表示 / 入力', () => {
 })
 
 describe('CategoryCreateForm — submit', () => {
-  it('submit → enqueueEntityMutation を tag_category / create で発行 + drain', async () => {
+  it('submit → enqueueEntityMutation を tag_category / create で発行 + drain (sort_key 末尾採番)', async () => {
     const FIXED_ID = '12345678-1234-4abc-8abc-1234567890ab'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
@@ -96,12 +96,13 @@ describe('CategoryCreateForm — submit', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
 
+    // existingSortKeys 未指定 (or 空) → 起点 '0' で末尾採番
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
-        patch: { name: '重要度', select_type: 'multi' },
+        patch: { name: '重要度', select_type: 'multi', sort_key: '0' },
       })
     })
     await vi.waitFor(() => {
@@ -109,7 +110,7 @@ describe('CategoryCreateForm — submit', () => {
     })
   })
 
-  it('select_type=single で submit → patch.select_type=single', async () => {
+  it('select_type=single で submit → patch.select_type=single (sort_key も含む)', async () => {
     const FIXED_ID = '22222222-2222-4222-8222-222222222222'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
@@ -125,7 +126,7 @@ describe('CategoryCreateForm — submit', () => {
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
-        patch: { name: '優先度', select_type: 'single' },
+        patch: { name: '優先度', select_type: 'single', sort_key: '0' },
       })
     })
   })
@@ -145,8 +146,57 @@ describe('CategoryCreateForm — submit', () => {
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
-        patch: { name: 'カテゴリ', select_type: 'multi' },
+        patch: { name: 'カテゴリ', select_type: 'multi', sort_key: '0' },
       })
+    })
+  })
+
+  // Tag-4c-2b §4.7: existingSortKeys を受け取って末尾採番される
+  it('existingSortKeys を受け取り max(Number(v))+1 で sort_key を採番する', async () => {
+    const FIXED_ID = '99999999-9999-4abc-8abc-999999999999'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(
+      <CategoryCreateForm existingSortKeys={['0', '1', '2']} />,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
+      target: { value: 'タグ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith({
+        entity_type: 'tag_category',
+        entity_id: FIXED_ID,
+        op: 'create',
+        patch: { name: 'タグ', select_type: 'multi', sort_key: '3' },
+      })
+    })
+
+    // IDB put の sort_key も '3' (mirror 側にも同値が書かれる、 patch と一致)
+    const row = await getClientDb().tag_categories.get(FIXED_ID)
+    expect(row?.sort_key).toBe('3')
+  })
+
+  it('existingSortKeys に null + 数値混在: 数値のみで max + 1', async () => {
+    const FIXED_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    mockNewId.mockImplementationOnce(() => FIXED_ID)
+
+    render(
+      <CategoryCreateForm existingSortKeys={['0', null, '10', undefined, '2']} />,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
+      target: { value: 'タグ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    // 有効数値は 0, 10, 2 → max = 10 → '11'
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          patch: expect.objectContaining({ sort_key: '11' }),
+        }),
+      )
     })
   })
 
@@ -209,7 +259,7 @@ describe('CategoryCreateForm — submit', () => {
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
-        patch: { name: '重要度', select_type: 'multi' },
+        patch: { name: '重要度', select_type: 'multi', sort_key: '0' },
       })
     })
   })
@@ -237,7 +287,8 @@ describe('CategoryCreateForm — optimistic IDB put', () => {
       name: '重要度',
       select_type: 'multi',
       color: null,
-      sort_key: null,
+      // existingSortKeys 未指定 → 起点 '0' で末尾採番 (Tag-4c-2b §4.7)
+      sort_key: '0',
     })
     // created_at / updated_at は ISO 文字列 (時刻揃え)
     expect(typeof row!.created_at).toBe('string')

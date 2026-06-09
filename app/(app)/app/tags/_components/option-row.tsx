@@ -33,7 +33,7 @@ import { Button } from '@/components/ui/button'
 // shadcn の DropdownMenu (Task 3 で `@/components/ui/dropdown-menu.tsx` を CLI 追加済)
 // は Tag-4a 時点では UI としては未使用 (jsdom 上のトグル試験回避で controlled state +
 // 自前 menu semantics に倒したため)。 ファイルは将来の inline select (Tag-4c) / D&D
-// (Tag-4e) で再利用するためそのまま残す。
+// (Tag-4c-2c で manager D&D 配備予定) で再利用するためそのまま残す。
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
