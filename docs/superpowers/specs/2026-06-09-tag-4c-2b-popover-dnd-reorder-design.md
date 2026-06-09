@@ -156,8 +156,9 @@ export function reindexSortKeys(
 > **全件前提 (Rev1.3 confirmed、 T5 実装で確認)**: `reindexSortKeys` は呼出側から
 > **常に当該 list 全件** (filtered subset ではない) を受け取る前提で動作する。
 > filtered subset を渡すと隠れた行の sort_key と新値が衝突して全体順序が壊れるため、
-> §4.5 の「filter 中は D&D 無効」 とペアで成立する不変条件。 後続 Tag-4c-2c で manager
-> 経路から呼ぶ際も同じ前提を守る。
+> §4.5 の「filter 中は D&D 無効」 とペアで成立する不変条件。 Tag-4c-2c で manager
+> 経路から呼ぶ場合の踏襲方針は §4.5 末尾の Rev1.3 不変条件記述を参照
+> (filter / SortableContext.items の扱いと一括で記述)。
 
 ### §4.3 mirror 更新 + entity_mutations 経路
 

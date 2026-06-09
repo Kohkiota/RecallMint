@@ -2085,6 +2085,59 @@ describe('CardTagAddPopover — Tag-4c-2b T5: stage1 D&D 配線 (filter 空)', (
     // 既存挙動 (menuitem) は維持
     expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
   })
+
+  // ---------------------------------------------------------------------------
+  // T5 fix I-1: filter が 2+ 件残った状態でも handle 非表示 (dndEnabled gate を pin)
+  //   旧 fixture (2 件) では filter '分' → 1 件残り、 length<2 短絡経路と
+  //   dndEnabled gate どちらが効いて handle が消えたか区別できなかった。
+  //   3 件以上の共通 substring を持つ category 群で filter 2+ 件残し、
+  //   なお handle が消えることを assert することで、 length 短絡ではなく
+  //   filter-text 由来 dndEnabled gate が確実に効いていることを pin する
+  //   (spec §4.5 不変条件「filter 中は D&D 無効」)。
+  // ---------------------------------------------------------------------------
+  it('stage1 filter で 2+ 件残るが handle 非表示 (length 短絡ではなく dndEnabled gate)', () => {
+    // 共通 substring '分' を含む 3 件 → filter '分' で 3 件残る
+    const fanCategories = [
+      cat('cat-a', '分野', 'multi', '2026-06-07T01:00:00.000Z'),
+      cat('cat-b', '分類', 'multi', '2026-06-07T02:00:00.000Z'),
+      cat('cat-c', '分布', 'single', '2026-06-07T03:00:00.000Z'),
+    ]
+    render(
+      <CardTagAddPopover
+        categories={fanCategories}
+        options={[]}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // filter 空時点で 3 件 + handle 3 件 (length>=2 + dndEnabled=true)
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分野' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分類' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分布' }),
+    ).toBeInTheDocument()
+
+    // '分' で filter → 3 件残る (length 短絡条件 length<2 は不成立)
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '分' } },
+    )
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '分類' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '分布' })).toBeInTheDocument()
+
+    // 3 件残るが handle は出ない (dndEnabled gate が効いている)
+    expect(
+      screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
 })
 
 describe('CardTagAddPopover — Tag-4c-2b T5: stage2 D&D 配線 (filter 空)', () => {
@@ -2181,12 +2234,17 @@ describe('CardTagAddPopover — Tag-4c-2b T5: stage2 D&D 配線 (filter 空)', (
     ).toBeInTheDocument()
   })
 
-  it('stage2 onReorder bridge: popover から渡される `onReorderOptions` は selectedCategory.id 付き callback として CardTagOptionList.onReorder へ pass-through される (smoke 用 contract)', () => {
-    // 実 drag シミュレーションは jsdom で不安定なため、 contract レベルで
-    // 「stage2 で onReorderOptions を popover に渡せば handle が DOM 上 mount される」
-    // (= DndContext が mount されている) を pin する。 selectedCategory.id 付与は T5 で
-    // popover 側 handleStage2DragEnd が担う実装契約で、 onReorder の signature を見れば
-    // categoryId が wrapping されていることが構造的に保証される。
+  it('stage2 sortable pass-through contract: popover に onReorderOptions を渡すと DndContext が mount され handle が出るが、 drag 未発生時は onReorderOptions が呼ばれない (T5 fix I-2: 子は sortable boolean のみ受け取り、 実 dispatch は親 DndContext.onDragEnd 経路)', () => {
+    // 実 drag シミュレーションは jsdom で不安定なため、 contract レベルで以下を pin:
+    //   - popover に onReorderOptions を渡すと DndContext + SortableContext が mount される
+    //   - 子 CardTagOptionList は sortable boolean だけ受け取り handle UI を render
+    //   - drag 未発生 (通常 render + click) 時点では onReorderOptions が呼ばれない
+    //     (= 子内部に reorder dispatch path が存在しないことの間接 pin、
+    //      実 dispatch は親 DndContext.onDragEnd → handleStage2DragEnd → onReorderOptions(categoryId, ids) 経路で行う)
+    // selectedCategory.id 付与は popover 側 handleStage2DragEnd が担う実装契約で、
+    // onReorderOptions(categoryId, ids) signature を見れば categoryId が curry
+    // されることが構造的に保証される (T5 fix I-2 で旧 closure wrapper を削除し
+    // 親側 DragEnd handler に dispatch path を集約)。
     const onReorderOptions = vi.fn(async () => undefined)
     render(
       <CardTagAddPopover
@@ -2200,12 +2258,72 @@ describe('CardTagAddPopover — Tag-4c-2b T5: stage2 D&D 配線 (filter 空)', (
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
-    // handle 表示 = DndContext mount 済
+    // handle 表示 = DndContext mount 済 + 子 sortable=true で render
     expect(
       screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
     ).toBeInTheDocument()
-    // drag が起きていないので onReorderOptions は呼ばれていない
+    // drag が起きていないので onReorderOptions は呼ばれていない (子経路で実 dispatch しない)
     expect(onReorderOptions).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------
+  // T5 fix I-1: stage2 でも filter 2+ 件残しで handle 非表示 (dndEnabled gate を pin)
+  //   既存 fixture (cat-1 配下 2 option = 循環器/腎臓) では filter 1 件 = length 短絡で
+  //   handle が消える可能性が残り、 dndEnabled gate が効いたか区別できなかった。
+  //   '器' 共通 substring を持つ 3 件以上 (循環器 / 消化器 / 呼吸器) を fixture に乗せ、
+  //   filter '器' で 3 件残るが handle 非表示を assert する。 spec §4.5 不変条件
+  //   「filter 中は D&D 無効」 を length 短絡経路に依らずに pin。
+  // ---------------------------------------------------------------------------
+  it('stage2 filter で 2+ 件残るが handle 非表示 (length 短絡ではなく dndEnabled gate)', () => {
+    // 共通 substring '器' を含む 3 件 + cat-1 配下
+    const organOptions = [
+      opt('o-a', '循環器', 'cat-1'),
+      opt('o-b', '消化器', 'cat-1'),
+      opt('o-c', '呼吸器', 'cat-1'),
+    ]
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={organOptions}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+
+    // filter 空時点で 3 件 handle あり
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 消化器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 呼吸器' }),
+    ).toBeInTheDocument()
+
+    // '器' で filter → 3 件残る (length 短絡条件 length<2 は不成立)
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+      { target: { value: '器' } },
+    )
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: '循環器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: '消化器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: '呼吸器' }),
+    ).toBeInTheDocument()
+
+    // 3 件残るが handle は出ない (dndEnabled gate が効いている)
+    expect(
+      screen.queryByRole('button', { name: /optionを並べ替え:/ }),
+    ).not.toBeInTheDocument()
   })
 })
 

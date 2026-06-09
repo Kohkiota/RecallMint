@@ -24,6 +24,12 @@
 // - kebab aria-label は kind で出し分け: kind='option' は「option 操作: {name}」、
 //   kind='category' は「カテゴリ操作: {name}」 (Tag-4c-2a-fix Task 2、 stage1 category
 //   list 移行時のラベル regression 防止)。
+// - D&D 並べ替え対応: `sortable={true}` を渡すと handle を表示 + 各 row に
+//   useSortable を配線する (Tag-4c-2b T4 + T5 fix I-2 で onReorder 経路から
+//   repurpose)。 実 reorder dispatch は親 DndContext の onDragEnd → 親側 reorder
+//   handler 経路で行うため、 本 component は callback を持たず boolean フラグだけ
+//   受け取る (prop 名と実体の一致 = 子は「handle UI を出すか」 だけ判断、 親が
+//   DndContext.onDragEnd で id 列を組んで親 handler を呼ぶ)。
 
 import * as React from 'react'
 import { Check, CheckSquare, CircleDot, Ellipsis, GripVertical, Plus } from 'lucide-react'
@@ -100,22 +106,24 @@ type Props = {
    *  stage B (新規 category 作成直後の option 0 件) 用 popover 膨張源を除去)。
    *  Tag-4c-2a-fix Task 1 で追加。 */
   emptyPlaceholderText?: string
-  /** D&D 並べ替えを有効化。 drag-end で sortable id 列を親 (T5 popover) に渡す
-   *  (T4 では UI 配線のみ、 親が DndContext + SortableContext で囲んだ前提)。
-   *  未指定 → handle 非表示 + useSortable 呼ばない (既存挙動維持)。
-   *  Tag-4c-2b T4 で追加。 */
-  onReorder?: (orderedIds: string[]) => Promise<void>
+  /** D&D 並べ替え対応を有効化する (Tag-4c-2b T5 fix I-2 で onReorder から repurpose)。
+   *  true のとき handle button を render + 各 row に useSortable を配線する
+   *  (親が DndContext + SortableContext で囲んだ前提)。 実 reorder dispatch は
+   *  親 DndContext の onDragEnd → 親側 reorder handler 経路で行うため、 子は
+   *  callback を持たず boolean フラグのみ受け取る (prop 名と実体の一致)。
+   *  default false / 未指定 → handle 非表示 + useSortable 呼ばない (既存挙動)。 */
+  sortable?: boolean
   /** filter 入力 (text input) 変化を親に伝える callback (Tag-4c-2b T5)。
    *  popover 親が「filter 空のときだけ handle を出す」 不変条件 (spec §4.5) を
    *  成立させるため、 内部 filterText state を親へ漏らす経路。 trim 前の生入力を渡す
    *  (空文字判定は親で trim して行う)。 未指定 → 既存挙動 (filter は内部 state のまま)。 */
   onFilterChange?: (text: string) => void
   /** D&D handle を表示するか (Tag-4c-2b T5)。 親 popover が filter 空判定で gate する。
-   *  default true (T4 既存挙動互換、 親が gate しない場合は onReorder + items >= 2
-   *  だけで handle が出る)。 false のときは onReorder が渡されていても handle 非表示
-   *  にし、 SortableContext + useSortable は引き続き正常動作する (DndContext は親で
-   *  常時 mount され input の focus/filterText が remount で吹き飛ばないようにする
-   *  ための gate)。 */
+   *  default true (T4 既存挙動互換、 親が gate しない場合は sortable + items >= 2
+   *  だけで handle が出る)。 false のときは sortable=true でも handle 非表示にし、
+   *  SortableContext + useSortable は引き続き正常動作する (DndContext は親で常時
+   *  mount され input の focus/filterText が remount で吹き飛ばないようにするための
+   *  gate)。 */
   dndEnabled?: boolean
 }
 
@@ -138,7 +146,7 @@ export function CardTagOptionList({
   searchPlaceholder = '検索 or 新規作成',
   searchAriaLabel = 'option を検索 / 新規作成',
   emptyPlaceholderText = 'タグ名を入力し新規作成',
-  onReorder,
+  sortable = false,
   onFilterChange,
   dndEnabled = true,
 }: Props) {
@@ -155,8 +163,10 @@ export function CardTagOptionList({
     setFilterText('')
     // Tag-4c-2b T5: 親 popover が gate に使う filterText も同期 reset。
     onFilterChange?.('')
-    // selectedCategoryId 変化時のみ走るので、 onFilterChange は deps から
-    // 除外する (関数 identity 変化での再 reset を抑止)。
+    // onFilterChange は値書込専用 side channel (React useState setter は identity
+    // 安定 + 親で setStageNFilterText を直接渡す経路)、 effect の trigger は
+    // selectedCategoryId 単独で十分。 onFilterChange を deps に入れると親 callback の
+    // identity 変化で意図せず filter が再 reset される副作用が出るため除外する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategoryId])
 
@@ -177,14 +187,18 @@ export function CardTagOptionList({
   // のときのみ placeholder を出す。 入力ありで新規作成行が出るときは placeholder 出さない。
   const showEmptyPlaceholder = filteredOptions.length === 0 && !showCreateRow
 
-  // D&D 並べ替え可否判定 (Tag-4c-2b T4 / T5):
-  // - onReorder 未指定 → 既存挙動 (handle 非表示、 useSortable 呼ばない)
-  // - items.length < 2 → 並べ替え不要なので handle 非表示 (spec §7 D-3 (a))
+  // D&D 並べ替え可否判定 (Tag-4c-2b T4 / T5 / T5 fix I-2):
+  // - sortable=false (default) → 既存挙動 (handle 非表示、 useSortable 呼ばない)
+  // - options.length < 2 → 並べ替え不要なので handle 非表示 (spec §7 D-3 (a))
+  //   ※ filteredOptions ではなく props の options (全 list) で判定する。 filter で
+  //     2+ 件から 1 件に絞られた途中状態でも、 filter 中は dndEnabled=false で
+  //     handle が消える別 gate があるため、 ここの母数は全件で OK
+  //     (filter 中の handle 非表示は dndEnabled が一手に担う)。
   // - dndEnabled=false (親 gate) → handle 非表示 (T5: filter 中は親が false にする
   //   ことで「filter 中は drag 起動しない」 不変条件を成立)
   // Hook ルール (条件付き呼出不可) のため row 自体を sub-component に分け、
   // sortable 時のみ SortableRow を render する。
-  const isSortable = !!onReorder && filteredOptions.length >= 2 && dndEnabled
+  const isSortable = !!sortable && options.length >= 2 && dndEnabled
 
   const handleClick = (optionId: string) => {
     onToggle(optionId)

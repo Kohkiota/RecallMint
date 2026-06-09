@@ -345,7 +345,10 @@ export function CardTagAddPopover({
                 で吹き飛ばない構造)。 SortableContext.items は filter 状態に関わらず
                 full sorted list の id 列を渡す (spec §4.2「reindex 全件前提」 と
                 pair の不変条件)。 onReorderCategories 未指定 (T6 配線前 / 編集
-                popover 経路) は素の CardTagOptionList を render し既存挙動互換。 */}
+                popover 経路) は素の CardTagOptionList を render し既存挙動互換。
+                T5 fix I-2: 子へは sortable boolean のみ渡し (handle UI 表示 gate)、
+                実 reorder dispatch は本 DndContext.onDragEnd → handleStage1DragEnd
+                → onReorderCategories(orderedIds) 経路で行う (prop 名と実体一致)。 */}
             {onReorderCategories ? (
               <DndContext
                 sensors={sensors}
@@ -380,7 +383,7 @@ export function CardTagAddPopover({
                     searchPlaceholder="検索 or 新規作成"
                     searchAriaLabel="category を検索 / 新規作成"
                     onFilterChange={setStage1FilterText}
-                    onReorder={onReorderCategories}
+                    sortable
                     dndEnabled={isStage1DragEnabled}
                   />
                 </SortableContext>
@@ -437,7 +440,11 @@ export function CardTagAddPopover({
                   ときだけ DndContext + SortableContext を mount。 handle 表示の
                   最終 gate は CardTagOptionList.dndEnabled (filter 空判定) で行う。
                   stage1 と同じ filter ↔ D&D 整合不変条件 (spec §4.5)。
-                  selectedCategory は本 block 内で non-null 保証されている。 */}
+                  selectedCategory は本 block 内で non-null 保証されている。
+                  T5 fix I-2: 子へは sortable boolean のみ渡し、 実 reorder dispatch は
+                  本 DndContext.onDragEnd → handleStage2DragEnd で categoryId を
+                  curry → onReorderOptions(categoryId, orderedIds) 経路で行う
+                  (旧 onReorder closure wrapper を削除 = prop 名と実体一致)。 */}
               {onReorderOptions ? (
                 <DndContext
                   sensors={sensors}
@@ -480,9 +487,7 @@ export function CardTagAddPopover({
                       }}
                       createError={createError}
                       onFilterChange={setStage2FilterText}
-                      onReorder={(ids) =>
-                        onReorderOptions(selectedCategory.id, ids)
-                      }
+                      sortable
                       dndEnabled={isStage2DragEnabled}
                     />
                   </SortableContext>

@@ -1068,14 +1068,17 @@ describe('CardTagOptionList — break-all (long name wrap)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 11. D&D handle + useSortable 配線 (Tag-4c-2b T4)
-//     - onReorder 有無で handle 切替 / items.length<2 で非表示 /
+// 11. D&D handle + useSortable 配線 (Tag-4c-2b T4 + T5 fix I-2)
+//     - sortable 有無で handle 切替 / items.length<2 で非表示 /
 //       event 分離契約 (handle のみに listeners/attributes、 main/kebab に乗らない) /
 //       drag と click の分離 (main onClick は通常 click で発火)
+//     - T5 fix I-2 で `onReorder?: (orderedIds) => Promise<void>` から
+//       `sortable?: boolean` に repurpose (実 dispatch は親 DndContext.onDragEnd
+//       経路、 子は handle UI 表示 gate だけを判断)
 // ---------------------------------------------------------------------------
 
-describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
-  it('onReorder 未指定 → handle button 非表示 (既存挙動踏襲、 SortableWrapper 不要)', () => {
+describe('CardTagOptionList — D&D handle (Tag-4c-2b T4 + T5 fix I-2)', () => {
+  it('sortable 未指定 (default false) → handle button 非表示 (既存挙動踏襲、 SortableWrapper 不要)', () => {
     render(
       <CardTagOptionList
         options={OPTIONS}
@@ -1090,8 +1093,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('onReorder 指定 + items.length>=2 → 各 row に handle button (aria-label: optionを並べ替え: {name})', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
+  it('sortable + items.length>=2 → 各 row に handle button (aria-label: optionを並べ替え: {name})', () => {
     render(
       <SortableWrapper items={OPTIONS.map((o) => o.id)}>
         <CardTagOptionList
@@ -1099,7 +1101,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
         />
       </SortableWrapper>,
     )
@@ -1115,8 +1117,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
     ).toBeInTheDocument()
   })
 
-  it("kind='category' で onReorder 指定 → handle aria-label が「カテゴリを並べ替え: {name}」", () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
+  it("kind='category' で sortable → handle aria-label が「カテゴリを並べ替え: {name}」", () => {
     render(
       <SortableWrapper items={CATEGORIES.map((c) => c.id)}>
         <CardTagOptionList
@@ -1124,7 +1125,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           options={CATEGORIES}
           onToggle={vi.fn()}
           searchAriaLabel="category を検索 / 新規作成"
-          onReorder={onReorder}
+          sortable
         />
       </SortableWrapper>,
     )
@@ -1139,8 +1140,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
     ).toBeInTheDocument()
   })
 
-  it('onReorder 指定でも items.length=1 → handle 非表示 (D-3 (a) ガード)', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
+  it('sortable + items.length=1 → handle 非表示 (D-3 (a) ガード)', () => {
     render(
       <SortableWrapper items={[OPTIONS[0]!.id]}>
         <CardTagOptionList
@@ -1148,7 +1148,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
         />
       </SortableWrapper>,
     )
@@ -1161,8 +1161,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
     ).toBeInTheDocument()
   })
 
-  it('onReorder 指定でも items.length=0 → handle 非表示 (D-3 (a) ガード)', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
+  it('sortable + items.length=0 → handle 非表示 (D-3 (a) ガード)', () => {
     render(
       <SortableWrapper items={[]}>
         <CardTagOptionList
@@ -1170,7 +1169,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
         />
       </SortableWrapper>,
     )
@@ -1180,7 +1179,6 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
   })
 
   it('event 分離契約: handle button に dnd-kit attributes (aria-roledescription) が乗り、 main / kebab には乗らない', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
     render(
       <SortableWrapper items={OPTIONS.map((o) => o.id)}>
         <CardTagOptionList
@@ -1188,7 +1186,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
           onRowAction={vi.fn()}
         />
       </SortableWrapper>,
@@ -1210,7 +1208,6 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
   })
 
   it('event 分離契約: handle button のみが touch-none class を持ち、 main / kebab は持たない', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
     render(
       <SortableWrapper items={OPTIONS.map((o) => o.id)}>
         <CardTagOptionList
@@ -1218,7 +1215,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
           onRowAction={vi.fn()}
         />
       </SortableWrapper>,
@@ -1233,9 +1230,8 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
     expect(kebab.className).not.toContain('touch-none')
   })
 
-  it('drag と click の分離: main button の onClick (toggle) が通常 click で発火する', () => {
+  it('drag と click の分離: main button の onClick (toggle) が通常 click で発火する (drag 起動しない)', () => {
     const onToggle = vi.fn()
-    const onReorder = vi.fn().mockResolvedValue(undefined)
     render(
       <SortableWrapper items={OPTIONS.map((o) => o.id)}>
         <CardTagOptionList
@@ -1243,21 +1239,20 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set()}
           selectType="multi"
           onToggle={onToggle}
-          onReorder={onReorder}
+          sortable
         />
       </SortableWrapper>,
     )
     // sortable wrapper 配下でも main button の click は従来通り発火する
-    // (drag 未起動の通常 click は影響なし = listeners は handle のみだから)
+    // (drag 未起動の通常 click は影響なし = listeners は handle のみだから)。
+    // 実 reorder dispatch は親 DndContext.onDragEnd 経路ゆえ、 本 component の
+    // props に reorder callback は無く、 click でも drag 経路は何も呼ばれない。
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '腎臓' }))
     expect(onToggle).toHaveBeenCalledTimes(1)
     expect(onToggle).toHaveBeenCalledWith('o2')
-    // onReorder は click では呼ばれない (drag-end のみ)
-    expect(onReorder).not.toHaveBeenCalled()
   })
 
   it('sortable モードでも既存 role / aria-checked / Check icon / kebab が維持される', () => {
-    const onReorder = vi.fn().mockResolvedValue(undefined)
     render(
       <SortableWrapper items={OPTIONS.map((o) => o.id)}>
         <CardTagOptionList
@@ -1265,7 +1260,7 @@ describe('CardTagOptionList — D&D handle (Tag-4c-2b T4)', () => {
           selectedOptionIds={new Set(['o1'])}
           selectType="multi"
           onToggle={vi.fn()}
-          onReorder={onReorder}
+          sortable
           onRowAction={vi.fn()}
         />
       </SortableWrapper>,
