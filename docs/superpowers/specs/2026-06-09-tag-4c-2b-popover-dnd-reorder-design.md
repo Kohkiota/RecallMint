@@ -406,6 +406,11 @@ per-mutation 失敗確率の極小性 + reindex の冪等性 (次 drag で `rein
 いずれも server work 大 + 既存 entity_mutations 意味論変更 + 監査 log 構造変更が伴い ROI が低い。
 判断は §7 D-6 で論点化。
 
+> **番兵注記** (Rev1.1 OT 確定): 本 §4.9 の許容は「順序は一時不整合でも収束すればよい」 性質に
+> 依存する。 将来 sort_key 群に原子性が要る要件 (厳密連番制約 / 順序の即時一貫性 SLA / collaborative
+> reorder 等) が出たら D-6 を再評価する。 本 sprint の実装は増やさず、 要件が来た時点で別 sprint
+> として op='reindex' or 順序 token 等の transport 強化案を起こす。
+
 ## §5 非目標 / 据置
 
 - ~~manager (`/app/tags`) の並び基準は created_at ASC のまま~~ → **Rev1 で取り消し**:
