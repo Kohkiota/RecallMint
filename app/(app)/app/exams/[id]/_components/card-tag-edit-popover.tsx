@@ -28,6 +28,7 @@ import * as React from 'react'
 import { ChevronLeft } from 'lucide-react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import {
   Popover,
   PopoverContent,
@@ -37,7 +38,6 @@ import {
 import { CardTagOptionList } from './card-tag-option-list'
 import { CardTagEditFields } from './card-tag-edit-fields'
 import type { TagEditCallbacks } from './card-tags-section'
-import { sortByKeyThenCreated } from './card-tag-add-popover'
 
 // ---------------------------------------------------------------------------
 // Props

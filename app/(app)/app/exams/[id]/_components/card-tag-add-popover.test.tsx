@@ -10,7 +10,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 
-import { CardTagAddPopover, sortByKeyThenCreated } from './card-tag-add-popover'
+import { CardTagAddPopover } from './card-tag-add-popover'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -1108,40 +1108,9 @@ describe('CardTagAddPopover — edit stages でも タグ管理 link なし', ()
 })
 
 // ---------------------------------------------------------------------------
-// Fix C-3: sortByKeyThenCreated 純粋関数ユニットテスト
+// Fix C-3: sortByKeyThenCreated 純粋関数ユニットテストは Tag-4c-2b T1.5 で
+// `lib/tags/sort-comparator.test.ts` に移転 (popover ローカル定義の共有 module 化に伴う)。
 // ---------------------------------------------------------------------------
-
-describe('sortByKeyThenCreated', () => {
-  type Item = { sort_key: string | null; created_at: string }
-  const mk = (sort_key: string | null, created_at: string): Item => ({ sort_key, created_at })
-
-  it('両方 sort_key 非 null: sort_key ASC で並ぶ', () => {
-    const a = mk('b', '2026-01-01T00:00:00.000Z')
-    const b = mk('a', '2026-01-01T00:00:00.000Z')
-    expect(sortByKeyThenCreated(a, b)).toBeGreaterThan(0) // a > b (b comes first)
-    expect(sortByKeyThenCreated(b, a)).toBeLessThan(0)   // b < a
-  })
-
-  it('sort_key null は末尾 (NULLS LAST): non-null が先', () => {
-    const withKey = mk('a', '2026-01-01T00:00:00.000Z')
-    const withoutKey = mk(null, '2025-01-01T00:00:00.000Z') // 古い created_at でも後
-    expect(sortByKeyThenCreated(withKey, withoutKey)).toBeLessThan(0)
-    expect(sortByKeyThenCreated(withoutKey, withKey)).toBeGreaterThan(0)
-  })
-
-  it('両方 sort_key null: created_at ASC でタイブレーク', () => {
-    const older = mk(null, '2026-01-01T00:00:00.000Z')
-    const newer = mk(null, '2026-12-31T00:00:00.000Z')
-    expect(sortByKeyThenCreated(older, newer)).toBeLessThan(0)
-    expect(sortByKeyThenCreated(newer, older)).toBeGreaterThan(0)
-  })
-
-  it('同 sort_key + 同 created_at → 0 (等価)', () => {
-    const a = mk('x', '2026-06-01T00:00:00.000Z')
-    const b = mk('x', '2026-06-01T00:00:00.000Z')
-    expect(sortByKeyThenCreated(a, b)).toBe(0)
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Tag-4c-2a-fix Task 3: createCategoryType stage 配線テスト

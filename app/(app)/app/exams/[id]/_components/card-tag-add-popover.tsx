@@ -31,6 +31,7 @@ import * as React from 'react'
 import { Plus, ChevronLeft, CircleDot, CheckSquare } from 'lucide-react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import {
   Popover,
   PopoverContent,
@@ -68,32 +69,6 @@ type Stage =
   | 'editCategory'
   | 'editOption'
   | 'createCategoryType'
-
-// ---------------------------------------------------------------------------
-// Sort helper (Fix C-3 軸 1): sort_key ASC NULLS LAST, created_at ASC
-// export して card-tag-edit-popover.tsx からも使用する。
-// ---------------------------------------------------------------------------
-
-/**
- * sort_key ASC NULLS LAST, created_at ASC の comparator。
- * sort_key が null の entity は末尾に配置し、 tiebreak は created_at で解消。
- */
-export function sortByKeyThenCreated<T extends { sort_key?: string | null; created_at: string }>(
-  a: T,
-  b: T,
-): number {
-  const ak = a.sort_key ?? null
-  const bk = b.sort_key ?? null
-  if (ak !== null && bk !== null) {
-    if (ak !== bk) return ak < bk ? -1 : 1
-  } else if (ak !== null) {
-    return -1 // a has key, b doesn't → a first (NULLS LAST)
-  } else if (bk !== null) {
-    return 1 // b has key, a doesn't → b first
-  }
-  // both null or same sort_key: tiebreak by created_at ASC
-  return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
-}
 
 // ---------------------------------------------------------------------------
 // Component
