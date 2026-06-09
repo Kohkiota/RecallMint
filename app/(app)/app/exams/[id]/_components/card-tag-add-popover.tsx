@@ -29,6 +29,21 @@
 
 import * as React from 'react'
 import { Plus, ChevronLeft, CircleDot, CheckSquare } from 'lucide-react'
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  arrayMove,
+} from '@dnd-kit/sortable'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
@@ -55,6 +70,13 @@ type Props = {
   onToggle: (categoryId: string, optionId: string) => void
   /** 編集系 callback 群 (Task 1 で section から渡す) */
   tagEditCallbacks: TagEditCallbacks
+  /** stage1 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線、 T5 では型のみ受け取り)。
+   *  本 T5 では渡されたら CardTagOptionList の onReorder へそのまま流し、
+   *  渡されなかったら DndContext を mount せず D&D 配線を skip する (中間状態互換)。 */
+  onReorderCategories?: (orderedIds: string[]) => Promise<void>
+  /** stage2 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線、 T5 では型のみ受け取り)。
+   *  arg は当該 category の id + drag-end 後の option id 順。 */
+  onReorderOptions?: (categoryId: string, orderedIds: string[]) => Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +102,8 @@ export function CardTagAddPopover({
   allAssignedOptionIds,
   onToggle,
   tagEditCallbacks,
+  onReorderCategories,
+  onReorderOptions,
 }: Props) {
   const [open, setOpen] = React.useState(false)
   const [stage, setStage] = React.useState<Stage>('category')
@@ -100,6 +124,24 @@ export function CardTagAddPopover({
   // Tag-4c-2a-fix Task 3 / Tag-4c-2a-fix-2 Task 1: createCategoryType stage 表示直後に
   // 「マルチセレクト」 button へ初期 focus を当てる用 ref。 multi が default 設計 (spec §5)。
   const multiButtonRef = React.useRef<HTMLButtonElement | null>(null)
+  // Tag-4c-2b T5: stage1 / stage2 の combobox filter 入力を popover 側でも保持する。
+  // CardTagOptionList の onFilterChange callback で同期され、 filter 空のときだけ
+  // DndContext を mount + onReorder を渡す (spec §4.5「filter 中は D&D 無効」 不変条件)。
+  // 編集 stage / createCategoryType に移ると CardTagOptionList が unmount され filter
+  // は再 mount 時に空 reset されるが、 popover 側の state は明示 reset しない
+  // (DndContext は category/option stage の中だけで mount され、 他 stage では参照されない
+  // ため、 stale 値が悪さしない)。 popover close は onOpenChange で全 reset 経路あり。
+  const [stage1FilterText, setStage1FilterText] = React.useState('')
+  const [stage2FilterText, setStage2FilterText] = React.useState('')
+
+  // Tag-4c-2b T5: dnd-kit sensors。 stage1/stage2 で共用 (sensor 自体に識別性なし、
+  // useSensors の戻り値は ref 安定化されている)。 PointerSensor は delay 250 / tolerance 5
+  // でモバイル long-press 起動 + scroll/tap 誤発火抑制 (spec §4.4)。 KeyboardSensor は
+  // 既定 a11y 経路 (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
   // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC + 数値順 (Tag-4c-2b) で
   // categories を並べる。 comparator 本体は `@/lib/tags/sort-comparator` の共有版
@@ -163,12 +205,60 @@ export function CardTagAddPopover({
       setCreateError(null)
       setIsSubmittingCreate(false)
       setPendingCategoryName(null)
+      // Tag-4c-2b T5: 次回 open 時に filter 空 + D&D 有効を保証するため、
+      // popover 側で握る filter 鏡像も明示 reset (内部 CardTagOptionList は再 mount で
+      // 自前 reset するが、 popover 側 state は close で残ると DndContext gate が
+      // 次 open 直後に誤判定する可能性があるため両側で reset)。
+      setStage1FilterText('')
+      setStage2FilterText('')
     }
   }
 
   // Tag-4c-2a-fix Task 2: category 用 kebab handler は CardTagOptionList の
   // onRowAction callback に集約したため、 旧 handleCategoryKebabClick /
   // handleCategoryKebabKeyDown は削除。
+
+  // Tag-4c-2b T5: stage1 / stage2 共通の DragEnd handler。 active/over が同 id の no-op、
+  // または over が null (drop 圏外) のときは早期 return (spec §4.5)。 arrayMove で新順序
+  // を構築し orderedIds として onReorder へ流す。 T6 で配線される handleReorderX が
+  // reindexSortKeys (差分抽出) + Dexie tx atomic + enqueue を担う。
+  const handleStage1DragEnd = (
+    event: DragEndEvent,
+    items: ClientTagCategory[],
+    onReorder: (orderedIds: string[]) => Promise<void>,
+  ) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIndex = items.findIndex((c) => c.id === active.id)
+    const newIndex = items.findIndex((c) => c.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+    const next = arrayMove(items, oldIndex, newIndex)
+    void onReorder(next.map((c) => c.id))
+  }
+
+  const handleStage2DragEnd = (
+    event: DragEndEvent,
+    items: ClientTagOption[],
+    categoryId: string,
+    onReorder: (categoryId: string, orderedIds: string[]) => Promise<void>,
+  ) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIndex = items.findIndex((o) => o.id === active.id)
+    const newIndex = items.findIndex((o) => o.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+    const next = arrayMove(items, oldIndex, newIndex)
+    void onReorder(categoryId, next.map((o) => o.id))
+  }
+
+  // Tag-4c-2b T5: filter 空判定で D&D 有効を gate する (spec §4.5 不変条件)。
+  // trim 後の空文字判定 (前方スペースのみの入力は「filter 空」 として扱う、
+  // CardTagOptionList 内の filteredOptions ロジックと一致 = trimmed.length === 0)。
+  // DndContext は親 stage 内では常時 mount し、 handle 表示の最終 gate は
+  // CardTagOptionList.dndEnabled へ渡してそこで isSortable && dndEnabled の AND
+  // で取る (filter 中の input remount を避けるため)。
+  const isStage1DragEnabled = stage1FilterText.trim().length === 0
+  const isStage2DragEnabled = stage2FilterText.trim().length === 0
 
   const handleOptionRowAction = (optionId: string) => {
     setEditTargetId(optionId)
@@ -248,41 +338,77 @@ export function CardTagAddPopover({
         {/* ------------------------------------------------------------------ */}
         {stage === 'category' && (
           <div className="py-1">
-            <CardTagOptionList
-              kind="category"
-              options={sortedCategories}
-              onToggle={(categoryId) => {
-                // 既存 category 行 click 挙動 (3 連 setter) を callback に集約
-                setSelectedCategoryId(categoryId)
-                setStage('option')
-                // Important 1: 新しいカテゴリへ入るとき、 前カテゴリの option stage で
-                // 残った createError を持ち越さない。
-                setCreateError(null)
-              }}
-              onRowAction={(categoryId) => {
-                // 既存 kebab click 挙動 (3 連 setter) を callback に集約
-                setEditTargetId(categoryId)
-                setStage('editCategory')
-                setLastError(null)
-              }}
-              onCreateNew={async (name) => {
-                // 「新規作成: {入力値}」 click → createCategoryType stage へ移行。
-                // pendingCategoryName を保持して Task 3 の stage JSX (Task 3 で実装) に
-                // 渡す。 ここでは setter のみ実行 (mutation は createCategoryType で完結)。
-                setPendingCategoryName(name)
-                setStage('createCategoryType')
-                setCreateError(null)
-              }}
-              // stage='category' は createError を表示しない
-              createError={null}
-              // Tag-4c-2a-fix-2 Task 2: category も option と同じく完全一致時は新規作成行を抑制 (UI only)
-              // (CardTagOptionList の default `suppressCreateOnExactMatch=true` に揃える)
-              searchPlaceholder="検索 or 新規作成"
-              searchAriaLabel="category を検索 / 新規作成"
-              // emptyPlaceholderText は CardTagOptionList の default「タグ名を入力し新規作成」
-              // を使う (Tag-4c-2a-fix-4 Task 1: stage A category 0 件 / stage B option 0 件
-              // 共に意味は同じ「入力欄で作成」 なので全箇所統一)。
-            />
+            {/* Tag-4c-2b T5: stage1 D&D 配線。 onReorderCategories が渡された
+                ときだけ DndContext + SortableContext を mount。 filter 中の handle
+                非表示は CardTagOptionList の dndEnabled={filter 空} で gate
+                (DndContext は常時 mount、 input の filterText / focus が remount
+                で吹き飛ばない構造)。 SortableContext.items は filter 状態に関わらず
+                full sorted list の id 列を渡す (spec §4.2「reindex 全件前提」 と
+                pair の不変条件)。 onReorderCategories 未指定 (T6 配線前 / 編集
+                popover 経路) は素の CardTagOptionList を render し既存挙動互換。 */}
+            {onReorderCategories ? (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={(e) =>
+                  handleStage1DragEnd(e, sortedCategories, onReorderCategories)
+                }
+              >
+                <SortableContext
+                  items={sortedCategories.map((c) => c.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <CardTagOptionList
+                    kind="category"
+                    options={sortedCategories}
+                    onToggle={(categoryId) => {
+                      setSelectedCategoryId(categoryId)
+                      setStage('option')
+                      setCreateError(null)
+                    }}
+                    onRowAction={(categoryId) => {
+                      setEditTargetId(categoryId)
+                      setStage('editCategory')
+                      setLastError(null)
+                    }}
+                    onCreateNew={async (name) => {
+                      setPendingCategoryName(name)
+                      setStage('createCategoryType')
+                      setCreateError(null)
+                    }}
+                    createError={null}
+                    searchPlaceholder="検索 or 新規作成"
+                    searchAriaLabel="category を検索 / 新規作成"
+                    onFilterChange={setStage1FilterText}
+                    onReorder={onReorderCategories}
+                    dndEnabled={isStage1DragEnabled}
+                  />
+                </SortableContext>
+              </DndContext>
+            ) : (
+              <CardTagOptionList
+                kind="category"
+                options={sortedCategories}
+                onToggle={(categoryId) => {
+                  setSelectedCategoryId(categoryId)
+                  setStage('option')
+                  setCreateError(null)
+                }}
+                onRowAction={(categoryId) => {
+                  setEditTargetId(categoryId)
+                  setStage('editCategory')
+                  setLastError(null)
+                }}
+                onCreateNew={async (name) => {
+                  setPendingCategoryName(name)
+                  setStage('createCategoryType')
+                  setCreateError(null)
+                }}
+                createError={null}
+                searchPlaceholder="検索 or 新規作成"
+                searchAriaLabel="category を検索 / 新規作成"
+              />
+            )}
           </div>
         )}
 
@@ -307,33 +433,87 @@ export function CardTagAddPopover({
               </button>
             </div>
             <div className="mt-1 border-t py-1">
-              <CardTagOptionList
-                options={categoryOptions}
-                selectedOptionIds={selectedOptionIds}
-                selectType={selectedCategory.select_type}
-                onToggle={(optId) => onToggle(selectedCategory.id, optId)}
-                onClose={() => setOpen(false)}
-                onRowAction={handleOptionRowAction}
-                selectedCategoryId={selectedCategoryId}
-                onCreateNew={async (name) => {
-                  // Important 2: 二重発火ガード。 CardTagOptionList の new-create
-                  // button は外部から disabled できないため、 wrapper 側で短絡する。
-                  if (isSubmittingCreate) return
-                  setIsSubmittingCreate(true)
-                  try {
-                    await tagEditCallbacks.createOptionAndAssign(
+              {/* Tag-4c-2b T5: stage2 D&D 配線。 onReorderOptions が渡された
+                  ときだけ DndContext + SortableContext を mount。 handle 表示の
+                  最終 gate は CardTagOptionList.dndEnabled (filter 空判定) で行う。
+                  stage1 と同じ filter ↔ D&D 整合不変条件 (spec §4.5)。
+                  selectedCategory は本 block 内で non-null 保証されている。 */}
+              {onReorderOptions ? (
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={(e) =>
+                    handleStage2DragEnd(
+                      e,
+                      categoryOptions,
                       selectedCategory.id,
-                      name,
+                      onReorderOptions,
                     )
-                    setCreateError(null)
-                  } catch {
-                    setCreateError('作成に失敗しました')
-                  } finally {
-                    setIsSubmittingCreate(false)
                   }
-                }}
-                createError={createError}
-              />
+                >
+                  <SortableContext
+                    items={categoryOptions.map((o) => o.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <CardTagOptionList
+                      options={categoryOptions}
+                      selectedOptionIds={selectedOptionIds}
+                      selectType={selectedCategory.select_type}
+                      onToggle={(optId) => onToggle(selectedCategory.id, optId)}
+                      onClose={() => setOpen(false)}
+                      onRowAction={handleOptionRowAction}
+                      selectedCategoryId={selectedCategoryId}
+                      onCreateNew={async (name) => {
+                        if (isSubmittingCreate) return
+                        setIsSubmittingCreate(true)
+                        try {
+                          await tagEditCallbacks.createOptionAndAssign(
+                            selectedCategory.id,
+                            name,
+                          )
+                          setCreateError(null)
+                        } catch {
+                          setCreateError('作成に失敗しました')
+                        } finally {
+                          setIsSubmittingCreate(false)
+                        }
+                      }}
+                      createError={createError}
+                      onFilterChange={setStage2FilterText}
+                      onReorder={(ids) =>
+                        onReorderOptions(selectedCategory.id, ids)
+                      }
+                      dndEnabled={isStage2DragEnabled}
+                    />
+                  </SortableContext>
+                </DndContext>
+              ) : (
+                <CardTagOptionList
+                  options={categoryOptions}
+                  selectedOptionIds={selectedOptionIds}
+                  selectType={selectedCategory.select_type}
+                  onToggle={(optId) => onToggle(selectedCategory.id, optId)}
+                  onClose={() => setOpen(false)}
+                  onRowAction={handleOptionRowAction}
+                  selectedCategoryId={selectedCategoryId}
+                  onCreateNew={async (name) => {
+                    if (isSubmittingCreate) return
+                    setIsSubmittingCreate(true)
+                    try {
+                      await tagEditCallbacks.createOptionAndAssign(
+                        selectedCategory.id,
+                        name,
+                      )
+                      setCreateError(null)
+                    } catch {
+                      setCreateError('作成に失敗しました')
+                    } finally {
+                      setIsSubmittingCreate(false)
+                    }
+                  }}
+                  createError={createError}
+                />
+              )}
             </div>
           </>
         )}

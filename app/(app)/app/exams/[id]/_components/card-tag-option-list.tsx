@@ -105,6 +105,18 @@ type Props = {
    *  未指定 → handle 非表示 + useSortable 呼ばない (既存挙動維持)。
    *  Tag-4c-2b T4 で追加。 */
   onReorder?: (orderedIds: string[]) => Promise<void>
+  /** filter 入力 (text input) 変化を親に伝える callback (Tag-4c-2b T5)。
+   *  popover 親が「filter 空のときだけ handle を出す」 不変条件 (spec §4.5) を
+   *  成立させるため、 内部 filterText state を親へ漏らす経路。 trim 前の生入力を渡す
+   *  (空文字判定は親で trim して行う)。 未指定 → 既存挙動 (filter は内部 state のまま)。 */
+  onFilterChange?: (text: string) => void
+  /** D&D handle を表示するか (Tag-4c-2b T5)。 親 popover が filter 空判定で gate する。
+   *  default true (T4 既存挙動互換、 親が gate しない場合は onReorder + items >= 2
+   *  だけで handle が出る)。 false のときは onReorder が渡されていても handle 非表示
+   *  にし、 SortableContext + useSortable は引き続き正常動作する (DndContext は親で
+   *  常時 mount され input の focus/filterText が remount で吹き飛ばないようにする
+   *  ための gate)。 */
+  dndEnabled?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +139,8 @@ export function CardTagOptionList({
   searchAriaLabel = 'option を検索 / 新規作成',
   emptyPlaceholderText = 'タグ名を入力し新規作成',
   onReorder,
+  onFilterChange,
+  dndEnabled = true,
 }: Props) {
   const [filterText, setFilterText] = React.useState('')
   const inputRef = React.useRef<HTMLInputElement | null>(null)
@@ -139,6 +153,11 @@ export function CardTagOptionList({
   // category 変化で filter をリセットする (stage 遷移時 cleanup)
   React.useEffect(() => {
     setFilterText('')
+    // Tag-4c-2b T5: 親 popover が gate に使う filterText も同期 reset。
+    onFilterChange?.('')
+    // selectedCategoryId 変化時のみ走るので、 onFilterChange は deps から
+    // 除外する (関数 identity 変化での再 reset を抑止)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategoryId])
 
   const trimmed = filterText.trim()
@@ -158,12 +177,14 @@ export function CardTagOptionList({
   // のときのみ placeholder を出す。 入力ありで新規作成行が出るときは placeholder 出さない。
   const showEmptyPlaceholder = filteredOptions.length === 0 && !showCreateRow
 
-  // D&D 並べ替え可否判定 (Tag-4c-2b T4):
+  // D&D 並べ替え可否判定 (Tag-4c-2b T4 / T5):
   // - onReorder 未指定 → 既存挙動 (handle 非表示、 useSortable 呼ばない)
   // - items.length < 2 → 並べ替え不要なので handle 非表示 (spec §7 D-3 (a))
+  // - dndEnabled=false (親 gate) → handle 非表示 (T5: filter 中は親が false にする
+  //   ことで「filter 中は drag 起動しない」 不変条件を成立)
   // Hook ルール (条件付き呼出不可) のため row 自体を sub-component に分け、
   // sortable 時のみ SortableRow を render する。
-  const isSortable = !!onReorder && filteredOptions.length >= 2
+  const isSortable = !!onReorder && filteredOptions.length >= 2 && dndEnabled
 
   const handleClick = (optionId: string) => {
     onToggle(optionId)
@@ -178,10 +199,12 @@ export function CardTagOptionList({
     try {
       await onCreateNew(trimmed)
       setFilterText('')
+      onFilterChange?.('')
     } catch {
       // error は popover 側で createError 経由表示。 filter は空に戻す方が再試行で別名
       // 入力しやすい。
       setFilterText('')
+      onFilterChange?.('')
     }
   }
 
@@ -192,7 +215,12 @@ export function CardTagOptionList({
           ref={inputRef}
           type="text"
           value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
+          onChange={(e) => {
+            setFilterText(e.target.value)
+            // Tag-4c-2b T5: 親 popover が filter 空判定で DndContext mount を gate
+            // するため、 内部 filterText を親へ漏らす (onFilterChange 未指定なら no-op)。
+            onFilterChange?.(e.target.value)
+          }}
           placeholder={searchPlaceholder}
           aria-label={searchAriaLabel}
           className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm placeholder:text-slate-400 focus:border-slate-400 focus:outline-none"

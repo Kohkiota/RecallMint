@@ -153,6 +153,12 @@ export function reindexSortKeys(
 - 同順 drag (同位置で離す) → updates 空 → 副作用ゼロ
 - N が大きくても tag は user あたり数十が想定上限、Dexie tx 内で十分軽い
 
+> **全件前提 (Rev1.3 confirmed、 T5 実装で確認)**: `reindexSortKeys` は呼出側から
+> **常に当該 list 全件** (filtered subset ではない) を受け取る前提で動作する。
+> filtered subset を渡すと隠れた行の sort_key と新値が衝突して全体順序が壊れるため、
+> §4.5 の「filter 中は D&D 無効」 とペアで成立する不変条件。 後続 Tag-4c-2c で manager
+> 経路から呼ぶ際も同じ前提を守る。
+
 ### §4.3 mirror 更新 + entity_mutations 経路
 
 `card-tag-add-popover.tsx` の親 `CardTagsSection` に `handleReorderCategories` /
@@ -232,6 +238,17 @@ stage1 / stage2 で **別 DndContext** を mount (§7 D-1 推奨案):
 
 `handleStage1DragEnd` / `handleStage2DragEnd` は `event.active.id`/`event.over.id` から `arrayMove`
 で新順序を生成し `onReorder(orderedIds)` を await 発火。
+
+> **不変条件 (Rev1.3、 T5 実装で confirmed)**: combobox filter non-empty 中は D&D を
+> 無効化する (handle 非表示)。 SortableContext.items は **filter 状態に関わらず full
+> sorted list の id 列** を渡し、 filtered subset を渡さない。 実装は `CardTagOptionList`
+> に `dndEnabled?: boolean` prop を新設し、 popover 親が `dndEnabled={filterText 空}`
+> を渡して handle 表示の最終 gate を `isSortable && dndEnabled` の AND で取る。
+> DndContext / SortableContext は親 stage の中で常時 mount し (filter 中も維持)、
+> input の filterText / focus が remount で吹き飛ぶ UX 退行を避ける構造で「filter 中は
+> drag 起動しない」 を保証する。 後続 Tag-4c-2c で manager に D&D を載せる際も、 manager
+> に filter があれば同じ判断 (filter 中は handle 非表示 / SortableContext.items は全件)
+> を踏襲する。
 
 ### §4.6 `sortByKeyThenCreated` の数値比較化 (correctness fix、本 sprint 同梱)
 

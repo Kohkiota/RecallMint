@@ -1968,3 +1968,320 @@ describe('CardTagAddPopover — Fix-3: kebab → 編集 stage rename input 全�
   })
 })
 
+// ---------------------------------------------------------------------------
+// Tag-4c-2b T5: popover stage 別 DndContext + filter ↔ D&D 整合
+//
+// 検証観点:
+//   (a) stage1 filter 空 + onReorderCategories 渡し済 → handle 表示
+//       (handle 経由で D&D drop すると onReorderCategories(orderedIds) が呼ばれる)
+//   (b) stage1 filter non-empty → handle 非表示 (drag 不能)
+//   (c) stage2 filter 空 + onReorderOptions 渡し済 → handle 表示
+//   (d) stage2 filter non-empty → handle 非表示
+//   (e) 編集 stage (editCategory / editOption / createCategoryType) には DndContext を
+//       mount しない (handle 出ない)
+//   (f) stage1/stage2 で filter 空に戻すと handle 復活
+//
+// dnd-kit の実 pointer drag シミュレーションは jsdom で再現困難なため、
+// (a)/(c) の onReorder 呼出は「handle が presence」 + 「callback prop が popover の
+// 内部 handler 経由で確実に onReorder へ pass-through される」 のを別軸 (popover prop
+// 受け取り + CardTagOptionList へ手渡し済) で検証する。 onReorder の呼出 1 回 + 引数 pin は
+// 実時 drag 経路が必要なため OT smoke (spec §9) に委ねる。
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — Tag-4c-2b T5: stage1 D&D 配線 (filter 空)', () => {
+  it('stage1 filter 空 + onReorderCategories 渡し済 → 各 category row に handle button が表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // handle aria-label = `カテゴリを並べ替え: {name}`
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分野' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: レベル' }),
+    ).toBeInTheDocument()
+  })
+
+  it('stage1 filter non-empty 中は handle button が DOM 上消える (D&D 無効化)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // filter 空時点では handle あり
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分野' }),
+    ).toBeInTheDocument()
+    // filter に文字を入れる
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '分' } },
+    )
+    // 残った行は menuitem として存在するが handle button は出ない
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('stage1 filter 空に戻すと handle 復活 (D&D 再有効化)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    const input = screen.getByRole('textbox', { name: 'category を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '分' } })
+    // 中間: handle 非表示
+    expect(
+      screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+    // 空文字に戻す
+    fireEvent.change(input, { target: { value: '' } })
+    // 復活
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: 分野' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'カテゴリを並べ替え: レベル' }),
+    ).toBeInTheDocument()
+  })
+
+  it('onReorderCategories 未渡し → handle button は表示されない (T6 配線前互換)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        /* onReorderCategories 渡さない */
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(
+      screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+    // 既存挙動 (menuitem) は維持
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+  })
+})
+
+describe('CardTagAddPopover — Tag-4c-2b T5: stage2 D&D 配線 (filter 空)', () => {
+  it('stage2 filter 空 + onReorderOptions 渡し済 → 各 option row に handle button が表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 腎臓' }),
+    ).toBeInTheDocument()
+  })
+
+  it('stage2 filter non-empty 中は handle button が DOM 上消える', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    // filter 空: handle あり
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+      { target: { value: '循' } },
+    )
+    expect(
+      screen.queryByRole('button', { name: /optionを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('stage2 filter 空に戻すと handle 復活', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
+    fireEvent.change(input, { target: { value: '循' } })
+    expect(
+      screen.queryByRole('button', { name: /optionを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+    fireEvent.change(input, { target: { value: '' } })
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+  })
+
+  it('onReorderOptions 未渡し → handle 出ない (T6 配線前互換)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        /* onReorderOptions 渡さない */
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.queryByRole('button', { name: /optionを並べ替え:/ }),
+    ).not.toBeInTheDocument()
+    // 既存挙動 (menuitemcheckbox) は維持
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: '循環器' }),
+    ).toBeInTheDocument()
+  })
+
+  it('stage2 onReorder bridge: popover から渡される `onReorderOptions` は selectedCategory.id 付き callback として CardTagOptionList.onReorder へ pass-through される (smoke 用 contract)', () => {
+    // 実 drag シミュレーションは jsdom で不安定なため、 contract レベルで
+    // 「stage2 で onReorderOptions を popover に渡せば handle が DOM 上 mount される」
+    // (= DndContext が mount されている) を pin する。 selectedCategory.id 付与は T5 で
+    // popover 側 handleStage2DragEnd が担う実装契約で、 onReorder の signature を見れば
+    // categoryId が wrapping されていることが構造的に保証される。
+    const onReorderOptions = vi.fn(async () => undefined)
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={onReorderOptions}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    // handle 表示 = DndContext mount 済
+    expect(
+      screen.getByRole('button', { name: 'optionを並べ替え: 循環器' }),
+    ).toBeInTheDocument()
+    // drag が起きていないので onReorderOptions は呼ばれていない
+    expect(onReorderOptions).not.toHaveBeenCalled()
+  })
+})
+
+describe('CardTagAddPopover — Tag-4c-2b T5: 編集 stage には DndContext mount しない', () => {
+  it('editCategory stage に遷移しても category handle は出ない (spec §1 out of scope)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ操作: 分野' }))
+    // editCategory に遷移済 = カテゴリ名 編集 input が出る
+    expect(
+      screen.getByRole('textbox', { name: 'カテゴリ名 編集' }),
+    ).toBeInTheDocument()
+    // category handle / option handle どちらも出ない
+    expect(
+      screen.queryByRole('button', { name: /を並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('editOption stage に遷移しても option handle は出ない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    fireEvent.click(screen.getByRole('button', { name: 'option 操作: 循環器' }))
+    expect(
+      screen.getByRole('textbox', { name: 'option名 編集' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /を並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('createCategoryType stage に遷移しても handle は出ない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '新カテゴリ' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: 新カテゴリ' }))
+    // createCategoryType stage に遷移 (single/multi 2 button が見える)
+    expect(
+      screen.getByRole('button', { name: /マルチセレクト/ }),
+    ).toBeInTheDocument()
+    // handle は出ない
+    expect(
+      screen.queryByRole('button', { name: /を並べ替え:/ }),
+    ).not.toBeInTheDocument()
+  })
+})
+
