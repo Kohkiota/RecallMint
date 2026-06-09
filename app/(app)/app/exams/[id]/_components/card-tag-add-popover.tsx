@@ -101,7 +101,9 @@ export function CardTagAddPopover({
   // 「マルチセレクト」 button へ初期 focus を当てる用 ref。 multi が default 設計 (spec §5)。
   const multiButtonRef = React.useRef<HTMLButtonElement | null>(null)
 
-  // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC で categories を並べる。
+  // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC + 数値順 (Tag-4c-2b) で
+  // categories を並べる。 comparator 本体は `@/lib/tags/sort-comparator` の共有版
+  // (有効数値=順序母数 / null・undefined・非数値・空文字=末尾) を使用。
   const sortedCategories = React.useMemo(
     () => [...categories].sort(sortByKeyThenCreated),
     [categories],

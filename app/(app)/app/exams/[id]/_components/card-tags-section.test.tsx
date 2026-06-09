@@ -1240,7 +1240,8 @@ describe('CardTagsSection — Fix C-3: sortedCardTags badge order', () => {
 // - module スコープ関数 (props 引数版) を直接呼出し、 db.transaction / mirror put / enqueue
 //   の挙動を mock で観測する。
 // - `crypto.randomUUID` は vi.spyOn で安定 id ('cat-new-1') に固定し、 put 引数の id を pin。
-// - sort_key 採番は `nextCardSortKey` の既存仕様に委ねる (categories.sort_key ベース)。
+// - sort_key 採番は `nextSortKey` (`@/lib/tags/next-sort-key`) の semantics に委ねる
+//   (categories.sort_key ベース、 Tag-4c-2b T2.7 で `nextCardSortKey` から差替、 起点 '0')。
 
 describe('handleCreateCategory', () => {
   beforeEach(() => {
@@ -1296,7 +1297,7 @@ describe('handleCreateCategory', () => {
     expect(putArg.name).toBe('分野')
     expect(putArg.select_type).toBe('single')
     expect(putArg.color).toBe(null)
-    expect(putArg.sort_key).toBe('1') // 空配列 → '1'
+    expect(putArg.sort_key).toBe('0') // 空配列 → '0' (Tag-4c-2b T2.7: nextSortKey 起点 '0')
     expect(putArg.user_id).toBe('user-1')
     expect(typeof putArg.created_at).toBe('string')
   })
@@ -1338,8 +1339,8 @@ describe('handleCreateCategory', () => {
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
 
-  // ----- sort_key 採番 contract -----
-  it('sort_key 採番: 既存全 null → "1"', async () => {
+  // ----- sort_key 採番 contract (Tag-4c-2b T2.7: nextSortKey 起点 '0') -----
+  it('sort_key 採番: 既存全 null → "0"', async () => {
     const mockTagCategoriesPut = vi.fn(async () => undefined)
     ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
       transaction: mockTransaction,
@@ -1365,7 +1366,7 @@ describe('handleCreateCategory', () => {
     await handleCreateCategory('user-1', cats, '新', 'multi')
 
     const putArg = (mockTagCategoriesPut.mock.calls as unknown as [{ sort_key: string }][])[0][0]
-    expect(putArg.sort_key).toBe('1')
+    expect(putArg.sort_key).toBe('0')
   })
 
   it('sort_key 採番: 既存 ["1","2"] → "3"', async () => {
@@ -1666,14 +1667,15 @@ describe('handleCreateOptionAndAssign', () => {
   })
 
   // ----- sort_key 採番 contract (option scope: 同カテゴリの sort_key 集合) -----
-  it('sort_key 採番: 同カテゴリ既存全 null → "1"', async () => {
+  // Tag-4c-2b T2.7: nextSortKey 起点 '0' (全 null/非数値 = 母数空 → '0')。
+  it('sort_key 採番: 同カテゴリ既存全 null → "0"', async () => {
     const categories = [cat('c1', '分野', 'multi')]
     const options = [opt('o1', 'c1', '既存')] // sort_key null
 
     await handleCreateOptionAndAssign('user-1', 'card-1', categories, options, [], 'c1', '新')
 
     const putArg = mockTagOptionsPut.mock.calls[0][0] as { sort_key: string }
-    expect(putArg.sort_key).toBe('1')
+    expect(putArg.sort_key).toBe('0')
   })
 
   it('sort_key 採番: 別カテゴリの sort_key は無視される (同カテゴリ scope)', async () => {

@@ -21,7 +21,7 @@ import {
 } from '@/lib/client-db'
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { nextCardSortKey } from '@/lib/cards/next-card-sort-key'
+import { nextSortKey } from '@/lib/tags/next-sort-key'
 
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
@@ -352,7 +352,7 @@ export async function handleCreateCategory(
   }
   const db = getClientDb()
   const id = crypto.randomUUID()
-  const sortKey = nextCardSortKey(existingCategories.map((c) => c.sort_key ?? null))
+  const sortKey = nextSortKey(existingCategories.map((c) => c.sort_key))
   const nowIso = new Date().toISOString()
 
   await db.transaction(
@@ -413,10 +413,8 @@ export async function handleCreateOptionAndAssign(
 
   const db = getClientDb()
   const newOptionId = crypto.randomUUID()
-  const sortKey = nextCardSortKey(
-    existingOptions
-      .filter((o) => o.category_id === categoryId)
-      .map((o) => o.sort_key ?? null),
+  const sortKey = nextSortKey(
+    existingOptions.filter((o) => o.category_id === categoryId).map((o) => o.sort_key),
   )
   const nowIso = new Date().toISOString()
 

@@ -4,7 +4,7 @@
 // (Tag-4c-2b §4.6, Rev1)。
 //
 // 不変条件: 有効数値 (Number 変換で finite) のみを順序の母数とし、 null / undefined / 非数値
-// 文字列はすべて末尾に並べる。 後続 task T2.7 で実装する `nextSortKey` (末尾採番 helper) も
+// 文字列はすべて末尾に並べる。 共有 `nextSortKey` (`lib/tags/next-sort-key.ts`、 末尾採番 helper) も
 // この不変条件 (= 有効数値だけを母数に max + 1、 null/非数値は数えない) と整合し、 両 helper で
 // sort_key 群の integrity を共有する。
 // flicker 防止依存: drag drop 直後 `arrayMove` で構築した新順序が `'0','1',…,'N-1'` で mirror
