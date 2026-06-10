@@ -5,7 +5,7 @@
 // Tag-4c-1 Task 4 にて editOption stage + kebab + Esc 階層のシナリオを追加。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 
@@ -765,5 +765,86 @@ describe('CardTagEditPopover — Tag-4c-2c hotfix H5: PopoverContent 余白 prop
     expect(props.collisionPadding).toBe(8)
     expect(props.sideOffset).toBe(4)
     expect(props.avoidCollisions).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tag-4c-2c hotfix H6: drag 中 Esc (defaultPrevented=true) で popover を閉じない
+// ---------------------------------------------------------------------------
+// dnd-kit KeyboardSensor の cancel 経路 (node_modules/@dnd-kit/core/dist/
+// core.esm.js:1332 `handleCancel`) は `event.preventDefault()` を呼ぶ。
+// PopoverContent の `onEscapeKeyDown` 先頭で `e.defaultPrevented` 早期 return
+// することで「drag 中 Esc → drag cancel のみ / popover stage 維持 / close 起動
+// しない」 を構造的に実現する。 通常 Esc (preventDefault されていない) は既存
+// editOption 階層挙動を維持。
+// ---------------------------------------------------------------------------
+
+/**
+ * Tag-4c-2c hotfix H6: spy は `@/components/ui/popover` の PopoverContent
+ * 全 mount を捕捉するため、 editOption stage で render される
+ * `ColorPalettePopover` 内部の PopoverContent (`onEscapeKeyDown` を持たない)
+ * とも衝突する。 ここでは「本 edit popover の PopoverContent」 を
+ * `collisionPadding=8` (H5 で設定された当該 popover 固有 props) で識別する。
+ */
+function findEditPopoverProps(): {
+  onEscapeKeyDown?: (event: KeyboardEvent) => void
+} {
+  for (let i = popoverContentPropsSpy.mock.calls.length - 1; i >= 0; i--) {
+    const call = popoverContentPropsSpy.mock.calls[i]
+    const p = call?.[0] as Record<string, unknown> | undefined
+    if (p && p.collisionPadding === 8) {
+      return p as { onEscapeKeyDown?: (event: KeyboardEvent) => void }
+    }
+  }
+  throw new Error(
+    'CardTagEditPopover の PopoverContent props を spy から特定できませんでした',
+  )
+}
+
+describe('CardTagEditPopover — Tag-4c-2c hotfix H6: drag cancel Esc gate', () => {
+  it('defaultPrevented=true の Esc は editOption stage 維持 / preventDefault 追加呼出なし', () => {
+    popoverContentPropsSpy.mockClear()
+    renderPopover()
+    openPopover()
+    clickKebab('循環器')
+    // editOption stage を確認
+    expect(
+      screen.getByRole('button', { name: 'タグ一覧へ戻る' }),
+    ).toBeInTheDocument()
+
+    const props = findEditPopoverProps()
+    expect(typeof props.onEscapeKeyDown).toBe('function')
+
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    ev.preventDefault()
+    expect(ev.defaultPrevented).toBe(true)
+    const pdSpy = vi.spyOn(ev, 'preventDefault')
+    props.onEscapeKeyDown!(ev)
+    // editOption stage 維持 → 「タグ一覧へ戻る」 button が見えたまま
+    expect(pdSpy).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('button', { name: 'タグ一覧へ戻る' }),
+    ).toBeInTheDocument()
+  })
+
+  it('defaultPrevented=false の Esc は既存挙動 (editOption → option) を維持', () => {
+    popoverContentPropsSpy.mockClear()
+    renderPopover()
+    openPopover()
+    clickKebab('循環器')
+    expect(
+      screen.getByRole('button', { name: 'タグ一覧へ戻る' }),
+    ).toBeInTheDocument()
+
+    const props = findEditPopoverProps()
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    expect(ev.defaultPrevented).toBe(false)
+    const pdSpy = vi.spyOn(ev, 'preventDefault')
+    act(() => {
+      props.onEscapeKeyDown!(ev)
+    })
+    // editOption → option stage に戻る (header「分野 を編集」 が再表示)
+    expect(pdSpy).toHaveBeenCalled()
+    expect(screen.getByText('分野 を編集')).toBeInTheDocument()
   })
 })

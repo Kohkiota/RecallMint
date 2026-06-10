@@ -128,6 +128,13 @@ export function CardTagEditPopover({
         sideOffset={4}
         avoidCollisions={true}
         onEscapeKeyDown={(e) => {
+          // Tag-4c-2c hotfix H6: dnd-kit KeyboardSensor の cancel 経路は
+          // `event.preventDefault()` を呼ぶ (node_modules/@dnd-kit/core/dist/
+          // core.esm.js:1332 `handleCancel`)。 drag 中 Esc は drag cancel のみで
+          // popover stage 階層 / popover close を起動しない構造を、 native event
+          // の `defaultPrevented` を gate にして実現する。 通常 Esc (drag 中でない)
+          // は既存 editOption 階層 / shadcn 標準 close に流れる。
+          if (e.defaultPrevented) return
           if (stage === 'editOption') {
             // Esc を consume して option stage に戻す。 popover は閉じない。
             e.preventDefault()
