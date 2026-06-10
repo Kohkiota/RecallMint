@@ -25,8 +25,8 @@ export const TAG_COLOR_NAMES = [
 export type TagColorName = (typeof TAG_COLOR_NAMES)[number]
 
 // pill 表示用の bg / text / border の 3 utility を 1 まとめにした固定文字列。
-// active = 深めトーン (bg-300 / text-900 / border-400)。 12 色とも高コントラスト
-// を確保し、 明色 (yellow / amber / lime) も含め例外なく text-{c}-900 で揃える。
+// active = bg-{c}-200 / text-{c}-800 / border-{c}-300。 12 色とも高コントラスト
+// を確保し、 明色 (yellow / amber / lime) も含め例外なく text-{c}-800 で揃える。
 //
 // ── 将来ダークモード用の色案 (実装時にどちらか選ぶ) ──
 // Tailwind v4 の source scanner はコメント内の literal も拾うため、 ここでは
@@ -38,22 +38,22 @@ export type TagColorName = (typeof TAG_COLOR_NAMES)[number]
 //     例) red → dark:bg-red-950/40 dark:text-red-300 dark:border-red-900。
 //     ダークモードの定石は案 B。 案 A は明モードでも使える vivid 控え。
 export const COLOR_TO_CLASS: Record<TagColorName, string> = {
-  red: 'bg-red-300 text-red-900 border-red-400',
-  orange: 'bg-orange-300 text-orange-900 border-orange-400',
-  amber: 'bg-amber-300 text-amber-900 border-amber-400',
-  yellow: 'bg-yellow-300 text-yellow-900 border-yellow-400',
-  lime: 'bg-lime-300 text-lime-900 border-lime-400',
-  green: 'bg-green-300 text-green-900 border-green-400',
-  emerald: 'bg-emerald-300 text-emerald-900 border-emerald-400',
-  teal: 'bg-teal-300 text-teal-900 border-teal-400',
-  cyan: 'bg-cyan-300 text-cyan-900 border-cyan-400',
-  blue: 'bg-blue-300 text-blue-900 border-blue-400',
-  violet: 'bg-violet-300 text-violet-900 border-violet-400',
-  pink: 'bg-pink-300 text-pink-900 border-pink-400',
+  red: 'bg-red-200 text-red-800 border-red-300',
+  orange: 'bg-orange-200 text-orange-800 border-orange-300',
+  amber: 'bg-amber-200 text-amber-800 border-amber-300',
+  yellow: 'bg-yellow-200 text-yellow-800 border-yellow-300',
+  lime: 'bg-lime-200 text-lime-800 border-lime-300',
+  green: 'bg-green-200 text-green-800 border-green-300',
+  emerald: 'bg-emerald-200 text-emerald-800 border-emerald-300',
+  teal: 'bg-teal-200 text-teal-800 border-teal-300',
+  cyan: 'bg-cyan-200 text-cyan-800 border-cyan-300',
+  blue: 'bg-blue-200 text-blue-800 border-blue-300',
+  violet: 'bg-violet-200 text-violet-800 border-violet-300',
+  pink: 'bg-pink-200 text-pink-800 border-pink-300',
 }
 
 // 色なし (null) または未知色 (palette 削除後など) の fallback = ニュートラル grey。
-// 彩色タグ (bg-300) より一段静かに、 ただし旧 -100 の淡さは脱する (bg-200)。
+// 彩色タグと同段 (slate-200) のニュートラル、 hue だけ抜いた中立色で区別する。
 export const COLOR_NULL_CLASS = 'bg-slate-200 text-slate-700 border-slate-300'
 
 // 任意の文字列 / null / undefined から表示 class を解決する helper。
