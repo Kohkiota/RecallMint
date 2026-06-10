@@ -13,6 +13,7 @@
 // enqueueEntityMutation / runGuardedEntityMutationFlush は spy mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act } from 'react'
 import {
   render,
   screen,
@@ -620,5 +621,50 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         ['opt-2', 'opt-1'],
       )
     })
+  })
+})
+
+// ===========================================================================
+// Tag-4c-2c hotfix: hook order regression
+// ===========================================================================
+//
+// 既存 fixture は `activeCategoryId='cat-1'` 等 non-null 固定で初回 render から
+// option-list 経路 (useSensors を含む 4 hook 全実行) に入っていたため、 「最初は
+// null placeholder で 3 hook、 後で non-null に切替で 4 hook」 という遷移を踏まず、
+// 早期 return の後ろに置かれた `useSensors` の rules-of-hooks 違反が unfair に
+// 通過してきた。 stg smoke で manager 起動 → カテゴリクリック (= null → non-null
+// 遷移) で 「Rendered more hooks than during the previous render」 が出て発覚。
+// 本 test は null → non-null 遷移を rerender で再現し、 throw しないことを pin。
+// 旧版 (useSensors を早期 return 後に置いた状態) でこの test を回すと React が
+// throw して fail する設計 (= regression pin として機能する)。
+describe('OptionList — Tag-4c-2c hotfix hook order regression', () => {
+  it('activeCategoryId が null → non-null に遷移しても crash しない (Rendered more hooks 違反を回避)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+
+    // 初回 render: activeCategoryId=null で placeholder UI のみ。
+    // この時点で useSensors が早期 return より後に置かれていると hook 数は 3 件。
+    const { rerender } = render(<OptionList activeCategoryId={null} />)
+    expect(
+      await screen.findByText(/カテゴリを選択してください/),
+    ).toBeInTheDocument()
+
+    // rerender: activeCategoryId='cat-a' に遷移。
+    // 旧版なら早期 return を跨いで useSensors が呼ばれて hook 数が 3 → 4 に変わり、
+    // React が 「Rendered more hooks than during the previous render」 を throw する。
+    // 新版 (useSensors を早期 return 前に移動済) では 4 → 4 で安定し throw しない。
+    await act(async () => {
+      rerender(<OptionList activeCategoryId="cat-a" />)
+    })
+
+    // 切替後は placeholder が消え、 option-list 経路 (create form) に入る。
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/カテゴリを選択してください/),
+      ).not.toBeInTheDocument()
+    })
+    expect(
+      await screen.findByRole('button', { name: 'option 追加' }),
+    ).toBeInTheDocument()
   })
 })

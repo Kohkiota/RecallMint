@@ -139,6 +139,17 @@ export function OptionList({ activeCategoryId }: Props) {
       return await getClientDb().tag_categories.toArray()
     }, []) ?? []
 
+  // Tag-4c-2c T3 spec §4.3: dnd-kit sensors (popover / T2 と同値、 `delay: 250 / tolerance: 5`)。
+  // KeyboardSensor は a11y 経路 (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)。
+  // Tag-4c-2c hotfix: 早期 return (`activeCategoryId === null`) より **前** に置く。
+  // hooks は render の各 path で同数同順 invocation が必要 (React rules of hooks)、
+  // 早期 return の後に置くと `activeCategoryId` の null → non-null 遷移で hook 数が
+  // 3 → 4 に変わり 「Rendered more hooks than during the previous render」 で throw する。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
   const handleDeleteRequest = async (option: ClientTagOption) => {
     const db = getClientDb()
     let cardCount = 0
@@ -211,13 +222,6 @@ export function OptionList({ activeCategoryId }: Props) {
   const existingNames = list.map((o) => o.name)
   // Tag-4c-2b T7: 末尾採番のため active category 配下の既存 sort_key 群を form に渡す。
   const existingSortKeys = list.map((o) => o.sort_key)
-
-  // Tag-4c-2c T3 spec §4.3: dnd-kit sensors (popover / T2 と同値、 `delay: 250 / tolerance: 5`)。
-  // KeyboardSensor は a11y 経路 (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)。
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
 
   // 1 件以下は並べ替え不能 → DndContext を mount せず素の `<li>` で render (handle 非表示)。
   // 構造的に「並べ替えできない」 状態を保証 (spec §4.3)。
