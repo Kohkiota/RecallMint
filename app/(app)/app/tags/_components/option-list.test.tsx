@@ -4,9 +4,11 @@
 // - active カテゴリ配下の options を useLiveQuery で読み、 共有 `sortByKeyThenCreated`
 //   (sort_key 数値昇順 + 同位 created_at ASC) で並べる (Tag-4c-2b §4.8)
 // - 各 option を OptionRow に render
-// - 削除フロー: OptionRow から onDelete callback → 影響範囲 (`db.card_tags
-//   .where('option_id').equals(opt.id).count()`) → DeleteConfirmDialog 表示
-//   → 確定で enqueueEntityMutation({entity_type:'tag_option', op:'delete'}) + flush
+// - 削除フロー (Tag-4c-2c hotfix H2): OptionRow から onDelete callback → 確認なし即削除
+//   (popover Tag-4c-1-fix A-3 確定仕様「option 削除 = 確認なし即削除」 と整合)。
+//   IDB cascade purge (card_tags → tag_option) → enqueueEntityMutation({entity_type:
+//   'tag_option', op:'delete'}) + flush の発行順を pin する。
+//   DeleteConfirmDialog 経路は H2 で撤去 (category 削除側は別 file で維持)。
 // - allCategories (カテゴリ変更 dropdown 用) も useLiveQuery で取得し OptionRow に伝播
 //
 // fake-indexeddb で実 Dexie を回し、 useLiveQuery で表示更新を確認。
@@ -228,8 +230,8 @@ describe('OptionList — placeholder / 描画', () => {
   })
 })
 
-describe('OptionList — 削除フロー', () => {
-  it('削除 button click → 影響範囲 (card_tags count) 集計し ConfirmDialog (option 用) が開く', async () => {
+describe('OptionList — 削除フロー (Tag-4c-2c hotfix H2: 確認なし即削除)', () => {
+  it('削除 button click → ConfirmDialog 不表示 (popover 仕様と整合)', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
@@ -243,11 +245,24 @@ describe('OptionList — 削除フロー', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
 
-    await screen.findByText(/option.*高.*削除しますか/)
-    expect(screen.getByText(/2 件の card に紐付いています/)).toBeInTheDocument()
+    // ConfirmDialog の DOM (role=dialog / 「削除しますか」 見出し / 「削除する」 button /
+    // 「キャンセル」 button / 影響範囲表示) は一切現れない。
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/option.*高.*削除しますか/),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '削除する' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'キャンセル' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/件の card に紐付いています/),
+    ).not.toBeInTheDocument()
   })
 
-  it('「削除する」 確定 → enqueue (tag_option / op=delete) + drain', async () => {
+  it('削除 button click → enqueue (tag_option / op=delete) + drain が即発火', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
@@ -256,7 +271,6 @@ describe('OptionList — 削除フロー', () => {
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
-    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
@@ -270,28 +284,10 @@ describe('OptionList — 削除フロー', () => {
       expect(mockFlush).toHaveBeenCalled()
     })
   })
-
-  it('「キャンセル」 → enqueue を呼ばずダイアログが閉じる', async () => {
-    const db = getClientDb()
-    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
-    await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
-
-    render(<OptionList activeCategoryId="cat-a" />)
-    await screen.findByText('高')
-
-    fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'キャンセル' }))
-
-    await waitFor(() => {
-      expect(screen.queryByText(/option.*高.*削除しますか/)).not.toBeInTheDocument()
-    })
-    expect(mockEnqueue).not.toHaveBeenCalled()
-    expect(mockFlush).not.toHaveBeenCalled()
-  })
 })
 
-describe('OptionList — optimistic cascade purge (削除確定時)', () => {
-  it('削除確定で IDB から option + 紐付き card_tags が即時消滅', async () => {
+describe('OptionList — optimistic cascade purge (Tag-4c-2c hotfix H2: 即削除)', () => {
+  it('削除 click で IDB から option + 紐付き card_tags が即時消滅', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
@@ -304,7 +300,6 @@ describe('OptionList — optimistic cascade purge (削除確定時)', () => {
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
-    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
 
     await waitFor(async () => {
       expect(await db.tag_options.get('opt-1')).toBeUndefined()
@@ -326,15 +321,14 @@ describe('OptionList — optimistic cascade purge (削除確定時)', () => {
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
-    fireEvent.click(await screen.findByRole('button', { name: '削除する' }))
 
     await waitFor(() => {
       expect(cardTagWhereSpy).toHaveBeenCalled()
       expect(mockEnqueue).toHaveBeenCalled()
     })
-    // confirm 後の card_tags.where (cascade purge 開始点) は 最低 1 度発火する。
-    // count 集計でも card_tags.where が呼ばれているため、 確定後の最後の呼出が
-    // enqueue より先である事を確認するために最終 invocationCallOrder を比較する。
+    // 削除 click 後の card_tags.where (cascade purge 開始点) は最低 1 度発火する。
+    // H2 で count 集計経路は撤去されたため、 click 後の where 呼出は 100% cascade purge
+    // 起点。 last invocationCallOrder が enqueue より小さいことを pin する。
     const lastWhereOrder =
       cardTagWhereSpy.mock.invocationCallOrder.at(-1) ?? 0
     const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
@@ -570,7 +564,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
       expect(mockReorderOptions).not.toHaveBeenCalled()
     })
 
-    it('削除 button click で onDelete 経路 (confirm dialog) が発火 (drag 経路と独立、 reorder mock not called)', async () => {
+    it('削除 button click で onDelete 経路 (即削除) が発火 (drag 経路と独立、 reorder mock not called)', async () => {
       const db = getClientDb()
       await db.tag_categories.put(makeCategory('cat-a', '重要度'))
       await db.tag_options.bulkPut([
@@ -584,8 +578,16 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
       const deleteButtons = screen.getAllByRole('button', { name: 'option 削除' })
       fireEvent.click(deleteButtons[0])
 
-      // confirm dialog 開 (drag 起動せず)
-      await screen.findByText(/option.*高.*削除しますか/)
+      // Tag-4c-2c hotfix H2 で confirm dialog 経路は撤去、 即 enqueue (= 削除フロー発火) を pin。
+      // drag 経路と分離されていることは reorder mock 未呼出で示す。
+      await waitFor(() => {
+        expect(mockEnqueue).toHaveBeenCalledWith({
+          entity_type: 'tag_option',
+          entity_id: 'opt-1',
+          op: 'delete',
+          patch: {},
+        })
+      })
       expect(mockReorderOptions).not.toHaveBeenCalled()
     })
   })

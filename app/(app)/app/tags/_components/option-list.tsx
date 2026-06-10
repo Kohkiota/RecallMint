@@ -9,11 +9,13 @@
 //   - useLiveQuery で `db.tag_categories.toArray()` (OptionRow のカテゴリ変更
 //     dropdown 用に伝播)
 //   - OptionCreateForm + 各 OptionRow を render
-//   - 削除フロー: OptionRow から onDelete callback を受けて 影響範囲 (`db.card_tags
-//     .where('option_id').equals(optId).count()`) を集計 → DeleteConfirmDialog 表示
-//     → 確定で enqueueEntityMutation({entity_type:'tag_option', op:'delete',
-//     patch:{}}) 発行 + flush (server 側 applyTagOptionDelete が tombstone INSERT
-//     + 物理 DELETE、 FK CASCADE で card_tags も消える)
+//   - 削除フロー: OptionRow から onDelete callback を受けて 確認なし即削除
+//     (Tag-4c-2c hotfix H2 / popover Tag-4c-1-fix A-3 確定仕様「option 削除 = 確認なし
+//     即削除」 と整合)。 optimistic cascade purge (子: card_tags 物理削除 →
+//     親: tag_option 物理削除) → enqueueEntityMutation({entity_type:'tag_option',
+//     op:'delete', patch:{}}) 発行 + flush (server 側 applyTagOptionDelete が
+//     tombstone INSERT + 物理 DELETE、 FK CASCADE で card_tags も消える)。
+//     category 削除側 (category-list.tsx) は ConfirmDialog 経路を維持 (仕様)。
 
 import * as React from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
@@ -49,15 +51,9 @@ import { handleReorderOptions } from '@/lib/tags/reorder-handlers'
 
 import { OptionRow } from './option-row'
 import { OptionCreateForm } from './option-create-form'
-import { DeleteConfirmDialog } from './delete-confirm-dialog'
 
 type Props = {
   activeCategoryId: string | null
-}
-
-type PendingDelete = {
-  option: ClientTagOption
-  cardCount: number
 }
 
 // sort_key 数値昇順 + 同位 created_at ASC を共有 comparator で適用 (Tag-4c-2b §4.8)。
@@ -119,9 +115,6 @@ function SortableOptionRowWrapper({
 }
 
 export function OptionList({ activeCategoryId }: Props) {
-  const [pendingDelete, setPendingDelete] =
-    React.useState<PendingDelete | null>(null)
-
   // active カテゴリ配下の options。 activeCategoryId が null の間は空配列扱い。
   const options = useLiveQuery(async () => {
     if (activeCategoryId === null) return []
@@ -150,29 +143,11 @@ export function OptionList({ activeCategoryId }: Props) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
-  const handleDeleteRequest = async (option: ClientTagOption) => {
-    const db = getClientDb()
-    let cardCount = 0
-    try {
-      cardCount = await db.card_tags
-        .where('option_id')
-        .equals(option.id)
-        .count()
-    } catch (err) {
-      logger.warn({
-        event: 'tag_option_delete.count_failed',
-        optionId: option.id,
-        err: String(err),
-      })
-    }
-    setPendingDelete({ option, cardCount })
-  }
-
-  const handleConfirmDelete = () => {
-    if (!pendingDelete) return
-    const target = pendingDelete.option
-    setPendingDelete(null)
-
+  // Tag-4c-2c hotfix H2: ConfirmDialog 経路を撤去し即削除に統一 (popover Tag-4c-1-fix A-3
+  // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 旧 `handleConfirmDelete` と等価の
+  // optimistic cascade purge → enqueue → flush の発行順を維持。 manager は popover と異なり
+  // same-tx atomic は必須ではなく、 fire-and-forget の既存 silent pattern を踏襲する。
+  const handleDeleteImmediate = (option: ClientTagOption): void => {
     // optimistic cascade purge: 子孫 (card_tags) → 親 (option) の順で mirror から
     // 物理削除し useLiveQuery を即時再描画させる。 server cascade
     // (applyTagOptionDelete + FK) も等価処理を走らせるが、 二重削除 idempotent。
@@ -180,12 +155,12 @@ export function OptionList({ activeCategoryId }: Props) {
     void (async () => {
       const db = getClientDb()
       try {
-        await db.card_tags.where('option_id').equals(target.id).delete()
-        await db.tag_options.delete(target.id)
+        await db.card_tags.where('option_id').equals(option.id).delete()
+        await db.tag_options.delete(option.id)
       } catch (err) {
         logger.warn({
           event: 'tag_option_delete.mirror_purge_failed',
-          optionId: target.id,
+          optionId: option.id,
           err: String(err),
         })
       }
@@ -193,21 +168,17 @@ export function OptionList({ activeCategoryId }: Props) {
 
     void enqueueEntityMutation({
       entity_type: 'tag_option',
-      entity_id: target.id,
+      entity_id: option.id,
       op: 'delete',
       patch: {},
     }).catch((err) => {
       logger.warn({
         event: 'tag_option_delete.enqueue_failed',
-        optionId: target.id,
+        optionId: option.id,
         err: String(err),
       })
     })
     void runGuardedEntityMutationFlush().catch(() => {})
-  }
-
-  const handleCancelDelete = () => {
-    setPendingDelete(null)
   }
 
   if (activeCategoryId === null) {
@@ -270,9 +241,7 @@ export function OptionList({ activeCategoryId }: Props) {
                   key={opt.id}
                   option={opt}
                   allCategories={allCategories}
-                  onDelete={(o) => {
-                    void handleDeleteRequest(o)
-                  }}
+                  onDelete={(o) => handleDeleteImmediate(o)}
                 />
               ))}
             </ul>
@@ -285,23 +254,12 @@ export function OptionList({ activeCategoryId }: Props) {
               <OptionRow
                 option={opt}
                 allCategories={allCategories}
-                onDelete={(o) => {
-                  void handleDeleteRequest(o)
-                }}
+                onDelete={(o) => handleDeleteImmediate(o)}
               />
             </li>
           ))}
         </ul>
       )}
-
-      <DeleteConfirmDialog
-        open={pendingDelete !== null}
-        targetKind="option"
-        targetName={pendingDelete?.option.name ?? ''}
-        cardCount={pendingDelete?.cardCount ?? 0}
-        onConfirm={handleConfirmDelete}
-        onCancel={handleCancelDelete}
-      />
     </div>
   )
 }
