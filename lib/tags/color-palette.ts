@@ -25,23 +25,36 @@ export const TAG_COLOR_NAMES = [
 export type TagColorName = (typeof TAG_COLOR_NAMES)[number]
 
 // pill 表示用の bg / text / border の 3 utility を 1 まとめにした固定文字列。
+// active = 深めトーン (bg-300 / text-900 / border-400)。 12 色とも高コントラスト
+// を確保し、 明色 (yellow / amber / lime) も含め例外なく text-{c}-900 で揃える。
+//
+// ── 将来ダークモード用の色案 (実装時にどちらか選ぶ) ──
+// Tailwind v4 の source scanner はコメント内の literal も拾うため、 ここでは
+// プレースホルダ {c} 短縮表記で記述し dead utility 生成を回避する。 案 B の
+// 「例) red →」 だけは 1 色分の literal を残して具体形を示す (3 utility 増は許容)。
+// 案A ソリッド(鮮やか): red/orange/green/emerald/teal/cyan/blue/violet/pink = bg-{c}-600 text-white border-{c}-700。
+//     明色は白文字不可 → amber/yellow/lime = bg-{c}-400 text-{c}-950 border-{c}-500。
+// 案B ダークモード本命(暗トーン+明色文字、Notion 暗モード相当): dark: variant を全 12 色で設計。
+//     例) red → dark:bg-red-950/40 dark:text-red-300 dark:border-red-900。
+//     ダークモードの定石は案 B。 案 A は明モードでも使える vivid 控え。
 export const COLOR_TO_CLASS: Record<TagColorName, string> = {
-  red: 'bg-red-100 text-red-800 border-red-200',
-  orange: 'bg-orange-100 text-orange-800 border-orange-200',
-  amber: 'bg-amber-100 text-amber-800 border-amber-200',
-  yellow: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  lime: 'bg-lime-100 text-lime-800 border-lime-200',
-  green: 'bg-green-100 text-green-800 border-green-200',
-  emerald: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  teal: 'bg-teal-100 text-teal-800 border-teal-200',
-  cyan: 'bg-cyan-100 text-cyan-800 border-cyan-200',
-  blue: 'bg-blue-100 text-blue-800 border-blue-200',
-  violet: 'bg-violet-100 text-violet-800 border-violet-200',
-  pink: 'bg-pink-100 text-pink-800 border-pink-200',
+  red: 'bg-red-300 text-red-900 border-red-400',
+  orange: 'bg-orange-300 text-orange-900 border-orange-400',
+  amber: 'bg-amber-300 text-amber-900 border-amber-400',
+  yellow: 'bg-yellow-300 text-yellow-900 border-yellow-400',
+  lime: 'bg-lime-300 text-lime-900 border-lime-400',
+  green: 'bg-green-300 text-green-900 border-green-400',
+  emerald: 'bg-emerald-300 text-emerald-900 border-emerald-400',
+  teal: 'bg-teal-300 text-teal-900 border-teal-400',
+  cyan: 'bg-cyan-300 text-cyan-900 border-cyan-400',
+  blue: 'bg-blue-300 text-blue-900 border-blue-400',
+  violet: 'bg-violet-300 text-violet-900 border-violet-400',
+  pink: 'bg-pink-300 text-pink-900 border-pink-400',
 }
 
 // 色なし (null) または未知色 (palette 削除後など) の fallback = ニュートラル grey。
-export const COLOR_NULL_CLASS = 'bg-slate-100 text-slate-700 border-slate-200'
+// 彩色タグ (bg-300) より一段静かに、 ただし旧 -100 の淡さは脱する (bg-200)。
+export const COLOR_NULL_CLASS = 'bg-slate-200 text-slate-700 border-slate-300'
 
 // 任意の文字列 / null / undefined から表示 class を解決する helper。
 // 不明色は安全側に倒して COLOR_NULL_CLASS を返す。
