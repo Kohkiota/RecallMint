@@ -602,3 +602,58 @@ describe('OptionRow — optimistic IDB update', () => {
     updateSpy.mockRestore()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 状態遷移 pin (波2 ESLint C1: set-state-in-effect → prev-render pattern refactor の
+// 挙動保存証明)。 b02c072 hook regression pin と同形、 fix 前後で両方 pass する観点で
+// 「編集中の prop 変化は local state を保護」 「非編集中の prop 変化は local state へ
+// 同期」 を rerender 経路で踏む。
+// ---------------------------------------------------------------------------
+
+describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 pin)', () => {
+  it('editing=true (編集中) で option.name が外部変化しても input の value は保護される', () => {
+    const { rerender } = render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('高')
+    fireEvent.change(input, { target: { value: 'ユーザ編集中' } })
+    expect(input.value).toBe('ユーザ編集中')
+    rerender(
+      <OptionRow
+        option={{ ...baseOption, name: '外部更新' }}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    const inputAfter = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfter.value).toBe('ユーザ編集中')
+  })
+
+  it('editing=false (非編集) で option.name が外部変化したら display は新値に同期する', () => {
+    const { rerender } = render(
+      <OptionRow
+        option={baseOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('高')).toBeInTheDocument()
+    rerender(
+      <OptionRow
+        option={{ ...baseOption, name: '外部更新' }}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('外部更新')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const inputAfter = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfter.value).toBe('外部更新')
+  })
+})

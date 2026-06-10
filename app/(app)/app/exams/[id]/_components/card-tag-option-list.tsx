@@ -158,17 +158,16 @@ export function CardTagOptionList({
     inputRef.current?.focus()
   }, [])
 
-  // category 変化で filter をリセットする (stage 遷移時 cleanup)
-  React.useEffect(() => {
+  // category 変化で filter をリセットする (stage 遷移時 cleanup)。
+  // React 19 "store info from previous renders" pattern: useEffect を外し、
+  // render 中の guarded setState で reset (cascading render 回避)。 onFilterChange
+  // を render 中に呼ぶのは親 setter 経路 (identity 安定、 react が batch 化する)。
+  const [lastSyncedCategoryId, setLastSyncedCategoryId] = React.useState(selectedCategoryId)
+  if (selectedCategoryId !== lastSyncedCategoryId) {
+    setLastSyncedCategoryId(selectedCategoryId)
     setFilterText('')
-    // Tag-4c-2b T5: 親 popover が gate に使う filterText も同期 reset。
     onFilterChange?.('')
-    // 現状 (popover が setStageNFilterText setter を直接渡し identity 安定) では deps に
-    // onFilterChange を入れても再 run は起きないが、 将来 inline 関数を渡す call site が
-    // 増えたとき deps に入れると意図せず filter が再 reset される副作用が出るため除外。
-    // effect の trigger は selectedCategoryId 単独で十分 (stage 遷移時 cleanup の意図)。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategoryId])
+  }
 
   const trimmed = filterText.trim()
   const lower = trimmed.toLowerCase()

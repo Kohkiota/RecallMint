@@ -477,11 +477,13 @@ function InlineOptionCell({
   }, [editing])
 
   // dirty-guard: 編集中でなければ props.value (= 親 options[idx]) を editValue に同期。
-  // 編集中は user 入力を保護。
-  useEffect(() => {
-    if (editing) return
+  // 編集中は user 入力を保護。 React 19 "store info from previous renders" pattern:
+  // useEffect を外し、 render 中の guarded setState で同期 (cascading render 回避)。
+  const [lastSyncedValue, setLastSyncedValue] = useState(value)
+  if (!editing && value !== lastSyncedValue) {
+    setLastSyncedValue(value)
     setEditValue(value)
-  }, [value, editing])
+  }
 
   // multiline textarea の auto-resize: 編集中 + editValue 変化に追従。 useLayoutEffect
   // で paint 前同期実行。 single-line input (kind='id') では instanceof 判定で no-op。

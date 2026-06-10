@@ -583,3 +583,148 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
     expect(disp.textContent).toBe('\n')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 状態遷移 pin (波2 ESLint C1: set-state-in-effect → prev-render pattern refactor +
+// refs simple 撤去 の挙動保存証明)。 dirty-guard:
+//   (a) editing=true で initialValue が外部変化 → value 保護
+//   (b) editing=false (idle) で initialValue が外部変化 → value 同期 (display 反映)
+// b02c072 hook regression pin と同形、 fix 前後で両方 pass する観点で踏む。
+// ---------------------------------------------------------------------------
+
+describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波2 C1 pin)', () => {
+  it('editing=true (編集中) で initialValue が外部変化しても input の value は保護される', () => {
+    const { rerender } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧タイトル"
+        ariaLabel="title 編集"
+      />,
+    )
+    // edit mode に入る。
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('旧タイトル')
+    // user 入力で local state を更新。
+    fireEvent.change(input, { target: { value: 'ユーザ編集中' } })
+    expect(input.value).toBe('ユーザ編集中')
+    // 外部経路 (pull-back / 別 commit) で initialValue が変化。
+    rerender(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="外部更新"
+        ariaLabel="title 編集"
+      />,
+    )
+    // 編集中なので local value は保護される。
+    const inputAfter = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfter.value).toBe('ユーザ編集中')
+  })
+
+  it('editing=false (idle) で initialValue が外部変化したら display は新値に同期する', () => {
+    const { rerender } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧タイトル"
+        ariaLabel="title 編集"
+      />,
+    )
+    expect(screen.getByText('旧タイトル')).toBeInTheDocument()
+    rerender(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="外部更新"
+        ariaLabel="title 編集"
+      />,
+    )
+    expect(screen.getByText('外部更新')).toBeInTheDocument()
+    // 次回 edit 時にも input は新値が出る。
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('外部更新')
+  })
+
+  it('editing=true 中に initialValue が変化しても、 blur (editing=false 遷移) 後に local value が user typed のまま (flicker なし / 旧 deps [initialValue] 単独 invariant pin)', () => {
+    // 旧 useEffect 実装の意図 = 「editing 変化単独では setValue しない」 (deps 単独 +
+    // eslint-disable で意図明示)。 prev-render guard 実装でも厳密に保持する必要がある:
+    // editing=true 中に外部 prop が変化 → sentinel は更新するが setValue は inner gate で
+    // skip → blur (editing: true → false) 時には sentinel が既に新値に同期済なので guard
+    // が走らず setValue されない = display は user 編集値のまま (flicker なし)。
+    const { rerender } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="server-old"
+        ariaLabel="title 編集"
+      />,
+    )
+    // edit 開始
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('server-old')
+    // user typing
+    fireEvent.change(input, { target: { value: 'user-typed' } })
+    expect(input.value).toBe('user-typed')
+    // server pull が editing 中に来る (initialValue 変化)
+    rerender(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="server-new"
+        ariaLabel="title 編集"
+      />,
+    )
+    // 編集中なので local value は保護されたまま (sentinel は新値に更新、 setValue は skip)
+    const inputAfterRerender = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfterRerender.value).toBe('user-typed')
+    // blur (editing: true → false)
+    fireEvent.blur(inputAfterRerender)
+    // display は user-typed のまま、 server-new に flicker していない。
+    // (旧 deps [initialValue] 単独 + early return invariant を厳密保持)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.getByText('user-typed')).toBeInTheDocument()
+    expect(screen.queryByText('server-new')).not.toBeInTheDocument()
+  })
+
+  it('値変更なし blur 判定の比較基準は最新 initialValue (refs 撤去 pin、 波2 C1)', async () => {
+    // refs simple 撤去 (mirrorValueRef → initialString 直接参照) の挙動保存証明。
+    // 旧実装: blur 時に value === mirrorValueRef.current を比較し、 ref は render 中に
+    // initialString を毎度書き戻していたので「最新 initialValue」 が比較基準。
+    // 新実装: ref を消し render scope の initialString を closure 捕捉 → 同等の挙動。
+    // → 外部 prop が変わった直後の idle 状態で「新値と同値」 で blur した場合は
+    //   commit (enqueue) 不要、 enqueue が呼ばれないことを pin する。
+    const { rerender } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    // 外部更新 (server pull で新値 '新' に置換、 user は何も編集していない)。
+    rerender(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="新"
+        ariaLabel="title 編集"
+      />,
+    )
+    // idle なので display も value も '新' に同期済。
+    expect(screen.getByText('新')).toBeInTheDocument()
+    // edit → 値を変えずに blur (短絡経路、 value === initialString)。
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('新')
+    fireEvent.blur(input)
+    // commit / enqueue / flush は呼ばれない (mirrorValueRef.current === '新' で short-circuit、
+    // refs 撤去後の新実装でも render scope initialString === '新' で同等の short-circuit)。
+    await Promise.resolve()
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    expect(mockFlush).not.toHaveBeenCalled()
+  })
+})

@@ -50,10 +50,13 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
   const inputRef = React.useRef<HTMLInputElement | null>(null)
   const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   // 編集中以外は外部 prop (server pull 反映) で display を同期する。
-  React.useEffect(() => {
-    if (editing) return
+  // React 19 "store info from previous renders" pattern: useEffect を外し、
+  // render 中の guarded setState で同期 (cascading render 回避)。
+  const [lastSyncedName, setLastSyncedName] = React.useState(category.name)
+  if (!editing && category.name !== lastSyncedName) {
+    setLastSyncedName(category.name)
     setValue(category.name)
-  }, [category.name, editing])
+  }
 
   React.useEffect(() => {
     return () => {

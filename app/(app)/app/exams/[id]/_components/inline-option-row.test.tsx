@@ -611,6 +611,61 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
     expect(screen.getByText('d')).toBeInTheDocument()
   })
 
+  // 波2 ESLint C1 pin: InlineOptionCell L483 の set-state-in-effect を
+// prev-render pattern に置換するときの挙動保存証明。 (a) cell が編集中なら外部 prop
+// 変化で editValue は保護 / (b) idle なら次回 edit-start 時に新値が表示される。
+  it('cell 編集中に serverOptions の text が外部変化しても editValue (入力中値) は保護される (波2 C1 pin)', async () => {
+    const { rerender } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 行 a の text cell を edit mode に。
+    const dispA = screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!
+    fireEvent.click(dispA)
+    const taA = screen.getAllByRole('textbox', { name: '選択肢 本文 編集' })[0]!
+    fireEvent.change(taA, { target: { value: 'ユーザ入力中' } })
+    expect((taA as HTMLTextAreaElement).value).toBe('ユーザ入力中')
+    // 外部経路 (別 commit / pull-back 等) で text='A 更新' が降ってくる状況。
+    rerender(
+      <InlineOptionList
+        cardId={CARD_ID}
+        options={[
+          { id: 'a', text: 'A 更新', is_correct: true, explanation: 'A 理由' },
+          { id: 'b', text: '選択肢B', is_correct: false },
+        ]}
+      />,
+    )
+    // 編集中 cell の入力値は保護される (上書きされない)。
+    const taAAfter = screen.getAllByRole('textbox', { name: '選択肢 本文 編集' })[0]!
+    expect((taAAfter as HTMLTextAreaElement).value).toBe('ユーザ入力中')
+  })
+
+  it('cell が idle なら serverOptions 外部変化で display と次回 edit 時の input 値は新値に同期する (波2 C1 pin)', async () => {
+    const { rerender } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 初期 display は '選択肢A'。
+    expect(screen.getByText('選択肢A')).toBeInTheDocument()
+    // 外部経路で text='A 更新' が降ってくる。
+    rerender(
+      <InlineOptionList
+        cardId={CARD_ID}
+        options={[
+          { id: 'a', text: 'A 更新', is_correct: true, explanation: 'A 理由' },
+          { id: 'b', text: '選択肢B', is_correct: false },
+        ]}
+      />,
+    )
+    // idle なので display は新値に同期。
+    await vi.waitFor(() => {
+      expect(screen.getByText('A 更新')).toBeInTheDocument()
+    })
+    // edit mode に入っても新値が input に出る (= editValue が同期されている)。
+    const dispA = screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!
+    fireEvent.click(dispA)
+    const taA = screen.getAllByRole('textbox', { name: '選択肢 本文 編集' })[0]!
+    expect((taA as HTMLTextAreaElement).value).toBe('A 更新')
+  })
+
   it('連続追加で片方を入力中、 別 commit の serverOptions 更新でも編集中 ghost は消えない (70d0714 保護)', async () => {
     const { rerender } = render(
       <InlineOptionList cardId={CARD_ID} options={baseOptions} />,

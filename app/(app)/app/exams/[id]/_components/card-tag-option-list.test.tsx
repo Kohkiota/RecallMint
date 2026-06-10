@@ -661,6 +661,39 @@ describe('CardTagOptionList — selectedCategoryId 変化で filter reset', () =
     const inputAfter = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }) as HTMLInputElement
     expect(inputAfter.value).toBe('')
   })
+
+  // 波2 ESLint C1 pin: prev-render pattern refactor で「selectedCategoryId が同一の
+  // rerender では filterText が reset されない」 を保証する観点を補強。 既存 case と
+  // 対を成し、 (a) 同一 prop → state 保持 / (b) 別 prop → state リセット の両観点
+  // が rerender 経路で踏まれる。
+  it('selectedCategoryId が同一の rerender では filterText は保持される (波2 C1 pin)', () => {
+    const { rerender } = render(
+      <CardTagOptionList
+        options={OPTIONS}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={vi.fn()}
+        selectedCategoryId="cat-1"
+      />,
+    )
+    const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '循' } })
+    expect(input.value).toBe('循')
+
+    // 同 selectedCategoryId で rerender (別 prop が変わった場合を想定 = parent 再 render)。
+    rerender(
+      <CardTagOptionList
+        options={[...OPTIONS]}
+        selectedOptionIds={new Set()}
+        selectType="multi"
+        onToggle={vi.fn()}
+        selectedCategoryId="cat-1"
+      />,
+    )
+
+    const inputAfter = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }) as HTMLInputElement
+    expect(inputAfter.value).toBe('循')
+  })
 })
 
 describe('CardTagOptionList — createError inline display', () => {

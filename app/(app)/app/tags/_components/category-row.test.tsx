@@ -594,3 +594,69 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
     ).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 状態遷移 pin (波2 ESLint C1: set-state-in-effect → prev-render pattern refactor の
+// 挙動保存証明)。 b02c072 hook regression pin と同形、 fix 前後で両方 pass する観点で
+// 「編集中の prop 変化は local state を保護」 「非編集中の prop 変化は local state へ
+// 同期」 を rerender 経路で踏む。
+// ---------------------------------------------------------------------------
+
+describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 pin)', () => {
+  it('editing=true (編集中) で category.name が外部変化しても input の value は保護される', () => {
+    const { rerender } = render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // 編集モードに入る。
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('重要度')
+    // user 入力で local state を更新。
+    fireEvent.change(input, { target: { value: 'ユーザ編集中' } })
+    expect(input.value).toBe('ユーザ編集中')
+    // 外部 prop が変化 (server pull 反映を模す)。
+    rerender(
+      <CategoryRow
+        category={{ ...baseCategory, name: '外部更新' }}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // 編集中なので local value は保護される (上書きされない)。
+    const inputAfter = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfter.value).toBe('ユーザ編集中')
+  })
+
+  it('editing=false (非編集) で category.name が外部変化したら display は新値に同期する', () => {
+    const { rerender } = render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // 非編集なので display は span。
+    expect(screen.getByText('重要度')).toBeInTheDocument()
+    // 外部 prop が変化 (server pull 反映を模す)。
+    rerender(
+      <CategoryRow
+        category={{ ...baseCategory, name: '外部更新' }}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // 非編集中なので display は新値に同期、 編集モードに入ると input にも新値が出る。
+    expect(screen.getByText('外部更新')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const inputAfter = screen.getByRole('textbox') as HTMLInputElement
+    expect(inputAfter.value).toBe('外部更新')
+  })
+})

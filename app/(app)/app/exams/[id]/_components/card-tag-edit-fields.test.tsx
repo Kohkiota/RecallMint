@@ -483,3 +483,37 @@ describe('CardTagEditFields — countImpact 失敗時の inline error (kind=cate
     expect(onDelete).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 16. 状態遷移 pin (波2 ESLint C1: set-state-in-effect → prev-render pattern refactor の
+// 挙動保存証明)。 b02c072 hook regression pin と同形、 fix 前後で両方 pass する観点で
+// 「focused=true (入力中) の prop 変化は local state を保護」 「focused=false の
+// prop 変化は local state へ同期」 を rerender 経路で踏む。
+// ---------------------------------------------------------------------------
+
+describe('CardTagEditFields — 外部 prop 遷移と focused 状態の保護 (波2 C1 pin)', () => {
+  it('focused=true (入力中) で name prop が外部変化しても input の value は保護される', () => {
+    const props = makeProps({ name: '分野' })
+    const { rerender } = render(<CardTagEditFields {...props} />)
+    const input = screen.getByRole('textbox', { name: 'カテゴリ名 編集' }) as HTMLInputElement
+    // user が focus + 入力。 onFocus で focused=true。
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'ユーザ編集中' } })
+    expect(input.value).toBe('ユーザ編集中')
+    // 外部 prop name 変化 (server pull 等)、 focused=true なので保護される。
+    rerender(<CardTagEditFields {...makeProps({ name: '外部更新' })} />)
+    const inputAfter = screen.getByRole('textbox', { name: 'カテゴリ名 編集' }) as HTMLInputElement
+    expect(inputAfter.value).toBe('ユーザ編集中')
+  })
+
+  it('focused=false (非入力中) で name prop が外部変化したら input の value は新値に同期する', () => {
+    const props = makeProps({ name: '分野' })
+    const { rerender } = render(<CardTagEditFields {...props} />)
+    const input = screen.getByRole('textbox', { name: 'カテゴリ名 編集' }) as HTMLInputElement
+    expect(input.value).toBe('分野')
+    // 外部 prop name 変化 (focused は initial false のまま)、 同期される。
+    rerender(<CardTagEditFields {...makeProps({ name: '外部更新' })} />)
+    const inputAfter = screen.getByRole('textbox', { name: 'カテゴリ名 編集' }) as HTMLInputElement
+    expect(inputAfter.value).toBe('外部更新')
+  })
+})

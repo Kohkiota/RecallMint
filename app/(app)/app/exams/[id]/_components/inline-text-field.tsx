@@ -14,7 +14,7 @@
 //
 // rollback は pull-reconciliation に再構成: 拒否された編集は server に届かず、 server
 // 値は権威のまま、 次の pull/pull-back が server 値を mirror に bulkPut → value prop
-// 経由で降りてきて、 idle 時に dirty-guard useEffect が display を更新する。 component
+// 経由で降りてきて、 idle 時に dirty-guard (prev-render setState) が display を更新する。 component
 // 内の同期 rollback / inFlight / queue 機構は撤去した (flush engine が Web Locks +
 // in-flight Set + mutation_id UNIQUE で直列化・冪等化する)。
 //
@@ -84,16 +84,16 @@ export function InlineTextField({
   // display + edit 共用の単一 optimistic state。 display は mirror (initialValue prop)
   // から降りてくるが、 楽観反映の即時性 (mirror write → useLiveQuery 再評価までの 1
   // tick lag) を埋めるため value を直接 display にも使う。 編集中でなければ dirty-guard
-  // useEffect が value ← initialValue に同期する。
+  // (prev-render setState) が value ← initialValue に同期する。
   const [value, setValue] = useState<string>(initialString)
   // initializer は mount 時のみ評価 (subsequent prop change は無視、 one-shot 性)。
   const [editing, setEditing] = useState<boolean>(() => autoEditOnMount)
 
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
-  // 直近 mirror 確定値 (= initialValue prop の string 化)。 値変更なし blur の
-  // no-op short-circuit 比較に使う (無駄な mirror write + enqueue を避ける)。
-  const mirrorValueRef = useRef<string>(initialString)
-  mirrorValueRef.current = initialString
+  // 直近 mirror 確定値 = initialString (initialValue prop の string 化)。 値変更なし
+  // blur の no-op short-circuit 比較に使う。 旧 mirrorValueRef は render 中に
+  // initialString を書き戻すだけだったので撤去 (react-hooks/refs)、 consumer は
+  // initialString を直接参照する。
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // edit mode 切替時に auto-focus
@@ -119,11 +119,20 @@ export function InlineTextField({
   // dirty-guard: 親 (useLiveQuery / mirror) 由来で initialValue が外部変化した時、
   // 編集中でなければ value を新値に同期する (= pull-reconciliation の rollback path も
   // ここを通る)。 編集中は user 入力を保護するため触らない。
-  useEffect(() => {
-    if (editing) return
-    setValue(initialString)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialValue])
+  //
+  // React 19 "store info from previous renders" pattern (sentinel-only update + inner editing gate)。
+  // 旧 useEffect は deps `[initialValue]` 単独 + 早期 return で「editing 変化単独では resync しない」
+  // invariant を実装していた (flicker 回避、 旧 line 125 の eslint-disable で意図明示)。 prev-render
+  // guard でこの invariant を厳密保持するため、 sentinel 更新は initialString 変化で常時走らせ、
+  // setValue は editing=false の inner gate に置く。 editing: true → false 遷移時に sentinel
+  // は既に新値で同期済 → 再 setValue されない = 旧 deps と同 semantics。
+  const [lastSyncedInitialValue, setLastSyncedInitialValue] = useState(initialString)
+  if (initialString !== lastSyncedInitialValue) {
+    setLastSyncedInitialValue(initialString)
+    if (!editing) {
+      setValue(initialString)
+    }
+  }
 
   // unmount で timer clear (StrictMode 二重 effect でも単純な timer cleanup のみ)。
   // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の drain は
@@ -210,7 +219,8 @@ export function InlineTextField({
     // editing を即時 false に (display 復帰)。
     setEditing(false)
     // 値変更なしなら mirror write + enqueue を skip (無駄な outbox 行を避ける)。
-    if (value === mirrorValueRef.current) {
+    // 比較基準は render scope の initialString (旧 mirrorValueRef.current と等価)。
+    if (value === initialString) {
       return
     }
     commit(value)

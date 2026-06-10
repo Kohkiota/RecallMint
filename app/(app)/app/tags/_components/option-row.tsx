@@ -82,10 +82,13 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
   const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 編集中以外は外部 prop (server pull 反映) で display を同期する。
-  React.useEffect(() => {
-    if (editing) return
+  // React 19 "store info from previous renders" pattern: useEffect を外し、
+  // render 中の guarded setState で同期 (cascading render 回避)。
+  const [lastSyncedName, setLastSyncedName] = React.useState(option.name)
+  if (!editing && option.name !== lastSyncedName) {
+    setLastSyncedName(option.name)
     setValue(option.name)
-  }, [option.name, editing])
+  }
 
   React.useEffect(() => {
     return () => {

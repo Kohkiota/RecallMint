@@ -68,11 +68,13 @@ export function CardTagEditFields({
   const inputRef = React.useRef<HTMLInputElement | null>(null)
 
   // name prop が外部から変化したとき、 入力中でなければ同期する。
-  // (server pull 反映など)
-  React.useEffect(() => {
-    if (focused) return
+  // (server pull 反映など)。 React 19 "store info from previous renders" pattern:
+  // useEffect を外し、 render 中の guarded setState で同期 (cascading render 回避)。
+  const [lastSyncedName, setLastSyncedName] = React.useState(name)
+  if (!focused && name !== lastSyncedName) {
+    setLastSyncedName(name)
     setValue(name)
-  }, [name, focused])
+  }
 
   // Tag-4c-2a-fix-2 Fix-3: mount 時に rename input を focus + 全選択する。
   // stage 遷移 / target 切替時の再発火は親側 `key={editTargetId}` で担保
