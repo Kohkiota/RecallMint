@@ -1184,18 +1184,26 @@ describe('countOptionImpact', () => {
 // 並べていたため、 sort_key 未参照の文字列辞書順による 11+ 件誤順 (調査 3) を起こしていた。
 // hotfix H1 で popover / manager と同じ共有 `sortByKeyThenCreated` (sort_key 数値昇順 +
 // tie-break created_at) に切替、 3 経路の並びを揃える。
+//
+// regression pin 設計: 旧 code (name localeCompare ja) で fixture を回したら **必ず fail** する
+// よう name と sort_key を独立 / 逆順に設計する。 H1 fix-2 で I-1 対応として、 旧 fixture
+// (test #1: `難易度`/`分野` — V8/ICU ja で `'難易度' < '分野'` なので旧でも pass / test #2:
+// zero-padded `opt-01..opt-12` — 旧 string sort でも数値順と一致するので旧でも pass) を
+// 「旧で確実に fail / 新で pass」 する形に差替えた。
 
 describe('CardTagsSection — Tag-4c-2c hotfix H1: sortedCardTags badge order (sort_key)', () => {
-  it('category 間: catA.sort_key < catB.sort_key の順で並ぶ (name localeCompare は無視)', () => {
-    // 意図的に「name は逆順」 (難易度→分野 で localeCompare なら 分野 先) だが、
-    // sort_key を 難易度='0' / 分野='1' と振って「sort_key で 難易度 先」 を pin する。
+  it('category 間: catA.sort_key < catB.sort_key の順で並ぶ (name と sort_key を逆順に設計、 旧 name 順なら fail)', () => {
+    // 旧 (name localeCompare ja) は `'a-カテゴリ' < 'b-カテゴリ'` で cat-2 先 → fail。
+    // 新 (sort_key 数値順) は `'0' < '1'` で cat-1 (b-カテゴリ) 先 → pass。
+    // name と sort_key の優先順位が逆になるよう独立に設計し、 旧 code path で必ず fail する
+    // regression pin を成立させる。
     const categories: ClientTagCategory[] = [
-      { ...cat('c1', '難易度', 'single'), sort_key: '0' },
-      { ...cat('c2', '分野', 'multi'), sort_key: '1' },
+      { ...cat('c1', 'b-カテゴリ', 'multi'), sort_key: '0' },
+      { ...cat('c2', 'a-カテゴリ', 'multi'), sort_key: '1' },
     ]
     const options: ClientTagOption[] = [
-      { ...opt('o1', 'c1', '高'), sort_key: '0' },
-      { ...opt('o2', 'c2', '循環器'), sort_key: '0' },
+      { ...opt('o1', 'c1', 'opt-b'), sort_key: '0' },
+      { ...opt('o2', 'c2', 'opt-a'), sort_key: '0' },
     ]
     const cardTags = [tag('card-1', 'o2'), tag('card-1', 'o1')]
 
@@ -1211,48 +1219,50 @@ describe('CardTagsSection — Tag-4c-2c hotfix H1: sortedCardTags badge order (s
 
     const badges = screen.getAllByRole('button', { name: /^タグ: / })
     const labels = badges.map((b) => b.getAttribute('aria-label'))
-    // sort_key 順なら 難易度 (0) 先、 分野 (1) 後。 name localeCompare 順なら 分野 (bun) 先、
-    // 難易度 (nan) 後 — sort_key 順を pin。
-    expect(labels[0]).toBe('タグ: 難易度: 高')
-    expect(labels[1]).toBe('タグ: 分野: 循環器')
+    // sort_key 順なら b-カテゴリ (sort_key='0') 先、 a-カテゴリ ('1') 後。
+    // 旧 name localeCompare ja なら a-カテゴリ 先、 b-カテゴリ 後 → fail (regression pin 成立)。
+    expect(labels[0]).toBe('タグ: b-カテゴリ: opt-b')
+    expect(labels[1]).toBe('タグ: a-カテゴリ: opt-a')
   })
 
-  it('同 category 内 option: 2 桁含む sort_key を数値順で並べる (1, 2, ..., 12) — 旧文字列辞書順なら fail', () => {
-    // 旧 (name localeCompare) でも fail し、 sort_key 文字列辞書順 (旧の別案) でも
-    // ['1','10','11','12','2','3',...] で fail する形を明示。
-    // 期待: 数値順 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+  it('同 category 内 option: name と sort_key を逆順に設計、 sort_key 数値順で並ぶ (旧 name 順なら逆順で fail)', () => {
+    // name は逆アルファ (l,k,j,…,a) / sort_key は '1','2',…,'12'。
+    // 旧 (name localeCompare ja) なら 'a' 先 → labels が逆順 ['…opt-a','…opt-b',…,'…opt-l'] → fail。
+    // 旧 sort_key 文字列辞書順 (別案) なら ['1','10','11','12','2','3','4','5','6','7','8','9'] で fail。
+    // 新 (sort_key 数値順) のみが期待順 ['…opt-l','…opt-k',…,'…opt-a'] で pass。
     const categories: ClientTagCategory[] = [
       { ...cat('c1', '分野', 'multi'), sort_key: '0' },
     ]
-    // option の name は sort_key と無関係 (sort_key 数値順を確認したいので意図的に不一致)。
+    // name (逆アルファ) と sort_key (数値昇順) が**逆方向**になるよう独立設計。
+    // sort_key '1' = name 'l' / sort_key '12' = name 'a'。
     const optionFixture: ClientTagOption[] = [
-      { ...opt('o1', 'c1', 'opt-01'), sort_key: '1' },
-      { ...opt('o2', 'c1', 'opt-02'), sort_key: '2' },
-      { ...opt('o3', 'c1', 'opt-03'), sort_key: '3' },
-      { ...opt('o4', 'c1', 'opt-04'), sort_key: '4' },
-      { ...opt('o5', 'c1', 'opt-05'), sort_key: '5' },
-      { ...opt('o6', 'c1', 'opt-06'), sort_key: '6' },
-      { ...opt('o7', 'c1', 'opt-07'), sort_key: '7' },
-      { ...opt('o8', 'c1', 'opt-08'), sort_key: '8' },
-      { ...opt('o9', 'c1', 'opt-09'), sort_key: '9' },
-      { ...opt('o10', 'c1', 'opt-10'), sort_key: '10' },
-      { ...opt('o11', 'c1', 'opt-11'), sort_key: '11' },
-      { ...opt('o12', 'c1', 'opt-12'), sort_key: '12' },
+      { ...opt('o1', 'c1', 'opt-l'), sort_key: '1' },
+      { ...opt('o2', 'c1', 'opt-k'), sort_key: '2' },
+      { ...opt('o3', 'c1', 'opt-j'), sort_key: '3' },
+      { ...opt('o4', 'c1', 'opt-i'), sort_key: '4' },
+      { ...opt('o5', 'c1', 'opt-h'), sort_key: '5' },
+      { ...opt('o6', 'c1', 'opt-g'), sort_key: '6' },
+      { ...opt('o7', 'c1', 'opt-f'), sort_key: '7' },
+      { ...opt('o8', 'c1', 'opt-e'), sort_key: '8' },
+      { ...opt('o9', 'c1', 'opt-d'), sort_key: '9' },
+      { ...opt('o10', 'c1', 'opt-c'), sort_key: '10' },
+      { ...opt('o11', 'c1', 'opt-b'), sort_key: '11' },
+      { ...opt('o12', 'c1', 'opt-a'), sort_key: '12' },
     ]
-    // 意図的にシャッフル入力 (sort 結果 = sort_key 数値昇順)
+    // 意図的にシャッフル入力 (sort 結果 = sort_key 数値昇順 = name 逆アルファ)
     const shuffled = [
-      optionFixture[11], // sort_key '12'
-      optionFixture[0],  // '1'
-      optionFixture[9],  // '10'
-      optionFixture[1],  // '2'
-      optionFixture[10], // '11'
-      optionFixture[2],  // '3'
-      optionFixture[8],  // '9'
-      optionFixture[3],  // '4'
-      optionFixture[7],  // '8'
-      optionFixture[4],  // '5'
-      optionFixture[6],  // '7'
-      optionFixture[5],  // '6'
+      optionFixture[11], // sort_key '12' / opt-a
+      optionFixture[0],  // '1'  / opt-l
+      optionFixture[9],  // '10' / opt-c
+      optionFixture[1],  // '2'  / opt-k
+      optionFixture[10], // '11' / opt-b
+      optionFixture[2],  // '3'  / opt-j
+      optionFixture[8],  // '9'  / opt-d
+      optionFixture[3],  // '4'  / opt-i
+      optionFixture[7],  // '8'  / opt-e
+      optionFixture[4],  // '5'  / opt-h
+      optionFixture[6],  // '7'  / opt-f
+      optionFixture[5],  // '6'  / opt-g
     ]
     const cardTags = shuffled.map((o) => tag('card-1', o.id))
 
@@ -1268,20 +1278,21 @@ describe('CardTagsSection — Tag-4c-2c hotfix H1: sortedCardTags badge order (s
 
     const badges = screen.getAllByRole('button', { name: /^タグ: / })
     const labels = badges.map((b) => b.getAttribute('aria-label'))
-    // 数値昇順 (1,2,3,...,12)。 文字列辞書順なら '1','10','11','12','2','3',... となり fail する。
+    // sort_key 数値昇順 (1,2,…,12) → name は逆アルファ (l,k,…,a)。
+    // 旧 name 順 (a,b,…,l) なら逆順で fail / 旧 sort_key 文字列辞書順 (1,10,11,12,2,3,…) でも fail。
     expect(labels).toEqual([
-      'タグ: 分野: opt-01',
-      'タグ: 分野: opt-02',
-      'タグ: 分野: opt-03',
-      'タグ: 分野: opt-04',
-      'タグ: 分野: opt-05',
-      'タグ: 分野: opt-06',
-      'タグ: 分野: opt-07',
-      'タグ: 分野: opt-08',
-      'タグ: 分野: opt-09',
-      'タグ: 分野: opt-10',
-      'タグ: 分野: opt-11',
-      'タグ: 分野: opt-12',
+      'タグ: 分野: opt-l',
+      'タグ: 分野: opt-k',
+      'タグ: 分野: opt-j',
+      'タグ: 分野: opt-i',
+      'タグ: 分野: opt-h',
+      'タグ: 分野: opt-g',
+      'タグ: 分野: opt-f',
+      'タグ: 分野: opt-e',
+      'タグ: 分野: opt-d',
+      'タグ: 分野: opt-c',
+      'タグ: 分野: opt-b',
+      'タグ: 分野: opt-a',
     ])
   })
 
