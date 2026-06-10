@@ -751,18 +751,19 @@ describe('CardTagEditPopover — kind="option" 明示渡し (suppress on exact m
 // wrap し props を直接 assert する。
 // ---------------------------------------------------------------------------
 
-describe('CardTagEditPopover — Tag-4c-2c hotfix H5: PopoverContent 余白 props', () => {
-  it('popover open 時に collisionPadding=8 / sideOffset=4 / avoidCollisions=true が渡される', () => {
+describe('CardTagEditPopover — Tag-4c-2c hotfix H5 / H7a: PopoverContent 余白 props', () => {
+  it('popover open 時に collisionPadding=16 / sideOffset=4 / avoidCollisions=true が渡される', () => {
     popoverContentPropsSpy.mockClear()
     renderPopover()
     openPopover()
     // open 後 spy は最低 1 回呼ばれている (Radix mount + 任意 re-render)
     expect(popoverContentPropsSpy).toHaveBeenCalled()
     // 最後の call の props で本 hotfix の 3 件を assert (中間 render でも同値を期待)
+    // H7a: 8 → 16 (1rem) に bump (OT 実機確認で 8 が不足判定)
     const lastCall = popoverContentPropsSpy.mock.calls.at(-1)
     expect(lastCall).toBeDefined()
     const props = lastCall![0] as Record<string, unknown>
-    expect(props.collisionPadding).toBe(8)
+    expect(props.collisionPadding).toBe(16)
     expect(props.sideOffset).toBe(4)
     expect(props.avoidCollisions).toBe(true)
   })
@@ -780,11 +781,12 @@ describe('CardTagEditPopover — Tag-4c-2c hotfix H5: PopoverContent 余白 prop
 // ---------------------------------------------------------------------------
 
 /**
- * Tag-4c-2c hotfix H6: spy は `@/components/ui/popover` の PopoverContent
+ * Tag-4c-2c hotfix H6 / H7a: spy は `@/components/ui/popover` の PopoverContent
  * 全 mount を捕捉するため、 editOption stage で render される
  * `ColorPalettePopover` 内部の PopoverContent (`onEscapeKeyDown` を持たない)
  * とも衝突する。 ここでは「本 edit popover の PopoverContent」 を
- * `collisionPadding=8` (H5 で設定された当該 popover 固有 props) で識別する。
+ * `collisionPadding=16` (H5 で 8 / H7a で 16 に bump、 当該 popover 固有 props)
+ * で識別する。
  */
 function findEditPopoverProps(): {
   onEscapeKeyDown?: (event: KeyboardEvent) => void
@@ -792,7 +794,7 @@ function findEditPopoverProps(): {
   for (let i = popoverContentPropsSpy.mock.calls.length - 1; i >= 0; i--) {
     const call = popoverContentPropsSpy.mock.calls[i]
     const p = call?.[0] as Record<string, unknown> | undefined
-    if (p && p.collisionPadding === 8) {
+    if (p && p.collisionPadding === 16) {
       return p as { onEscapeKeyDown?: (event: KeyboardEvent) => void }
     }
   }

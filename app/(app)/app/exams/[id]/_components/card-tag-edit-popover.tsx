@@ -118,13 +118,12 @@ export function CardTagEditPopover({
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
         className="min-w-56 max-w-sm p-0"
-        // Tag-4c-2c hotfix H5: popover が画面左右端で起動したとき端ギリギリに寄りすぎ
+        // Tag-4c-2c hotfix H5 / H7a: popover が画面左右端で起動したとき端ギリギリに寄りすぎ
         // handle (24px) / kebab (28px) の操作が困難になる症状を Radix Popover の
-        // collisionPadding={8} (端最小 8px 余白) + sideOffset={4} (trigger 距離 4px) +
+        // collisionPadding={16} (端最小 16px (1rem) 余白) + sideOffset={4} (trigger 距離 4px) +
         // avoidCollisions={true} (Radix default、 端で自動 flip) で解消。
-        // 8px の具体値は spec §9 (b) 「scroll 容器 clip」 同類問題への保守的初期値、
-        // 実機 UX は OT smoke で確認、 不足なら別 hotfix で調整。
-        collisionPadding={8}
+        // H7a: H5 で入れた 8px が OT 実機確認で端からの距離が不足判定、 16 (= 1rem) に bump。
+        collisionPadding={16}
         sideOffset={4}
         avoidCollisions={true}
         onEscapeKeyDown={(e) => {
