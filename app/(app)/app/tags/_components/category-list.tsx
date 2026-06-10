@@ -69,7 +69,7 @@ type PendingDelete = {
 // children の UI 構造が異なり、 generic 化のメリット薄)。
 // 外側 `<li>` を `useSortable.setNodeRef` に当て、 listeners/attributes は handle button
 // のみに spread (event 分離契約: row click / pen / 削除 button は通常 click のまま動作)。
-// `CategoryRow` 本体は完全無変更で内側に noticed。
+// `CategoryRow` 本体は完全無変更で内側に nested。
 function SortableCategoryRowWrapper({
   category,
   active,

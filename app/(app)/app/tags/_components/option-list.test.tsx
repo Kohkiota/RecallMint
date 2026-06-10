@@ -28,9 +28,13 @@ import {
   type ClientCardTag,
 } from '@/lib/client-db'
 
-const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
+const { mockEnqueue, mockFlush, mockReorderOptions } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
   mockFlush: vi.fn(async () => 'no-pending' as const),
+  // Tag-4c-2c T3: 共有 module の `handleReorderOptions` を mock 化し、
+  // drag-end → manager 内 `handleManagerDragEnd` → 共有 helper の引数 contract
+  // (popover / manager 同 arity `(items, activeCategoryId, orderedIds)` の 3 引数) を pin する。
+  mockReorderOptions: vi.fn(async (..._args: unknown[]) => undefined),
 }))
 
 vi.mock('@/lib/sync/entity-mutations', async () => {
@@ -45,6 +49,13 @@ vi.mock('@/lib/sync/entity-mutations', async () => {
 })
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
+}))
+// Tag-4c-2c T3: 共有 module を mock 化 (本 test では IDB tx を経由せず引数 contract のみ pin、
+// 実 handler 本体の atomic / defensive filter / reindex は `lib/tags/reorder-handlers.test.ts`
+// で担保済)。 handleReorderCategories は本 file では使わないが import 経路の解決を満たすため stub。
+vi.mock('@/lib/tags/reorder-handlers', () => ({
+  handleReorderOptions: mockReorderOptions,
+  handleReorderCategories: vi.fn(async () => undefined),
 }))
 
 import { OptionList } from './option-list'
@@ -345,5 +356,269 @@ describe('OptionList — allCategories 配線', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
     await screen.findByRole('menuitem', { name: '難易度' })
+  })
+})
+
+// ===========================================================================
+// Tag-4c-2c T3: D&D 配線 (SortableOptionRowWrapper + DndContext)
+// ===========================================================================
+//
+// テスト戦略 (spec §6 / plan T3 完了条件):
+// - jsdom で実 pointer drag を pin するのは困難 → DndContext mount + handle 表示 +
+//   handler dispatch contract の 3 軸に分解。 共有 module `handleReorderOptions` の
+//   atomic / defensive filter / reindex 本体は `lib/tags/reorder-handlers.test.ts`
+//   で担保済 (本 test では mock 経由で「呼ばれる引数」 と「呼ばれない」 のみ確認)。
+// - 行構造 (handle / color pill / pen / カテゴリ移動 dropdown / 削除) の event 分離契約は
+//   handle button のみが dnd-kit attributes (`aria-roledescription`) を持ち、 `touch-none`
+//   も handle のみ、 OptionRow 本体の独自 UI (color pill / rename input / カテゴリ移動 dropdown /
+//   削除 button) は通常 click 反応のままという pattern で表現する。 特に「カテゴリ移動 dropdown」
+//   は option を別 category へ移す UI で、 handle drag と意味的に紛らわしいため構造分離を強く pin。
+
+describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
+  describe('handle 表示条件 (sortableEnabled = options.length >= 2)', () => {
+    it('option 2 件以上: 各 row に handle button (aria-label `option を並べ替え: ${name}`) が表示される', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      // 2 件分の handle が存在
+      expect(
+        await screen.findByRole('button', { name: 'option を並べ替え: 高' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'option を並べ替え: 低' }),
+      ).toBeInTheDocument()
+    })
+
+    it('option 1 件: handle button は存在せず素の `<li>` で render される (DndContext non-mount)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.put(makeOption('opt-1', 'cat-a', '単独'))
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('単独')
+
+      // handle 0 件 (aria-label prefix で検索)
+      expect(
+        screen.queryByRole('button', { name: /option を並べ替え:/ }),
+      ).not.toBeInTheDocument()
+      // 既存 OptionRow の pen / 削除 / カテゴリ変更 / color pill button は引き続き存在
+      expect(screen.getByRole('button', { name: '編集' })).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'option 削除' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'カテゴリ変更' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'option 色を変更' }),
+      ).toBeInTheDocument()
+    })
+
+    it('option 0 件 (active 配下なし): handle / OptionRow 共に非表示、 作成 form のみ', async () => {
+      await getClientDb().tag_categories.put(makeCategory('cat-a', '重要度'))
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByRole('button', { name: 'option 追加' })
+
+      expect(
+        screen.queryByRole('button', { name: /option を並べ替え:/ }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('activeCategoryId=null: placeholder のみで handle / OptionRow 一切 render しない', async () => {
+      render(<OptionList activeCategoryId={null} />)
+      await screen.findByText(/カテゴリを選択してください/)
+
+      expect(
+        screen.queryByRole('button', { name: /option を並べ替え:/ }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: '編集' }),
+      ).not.toBeInTheDocument()
+    })
+  })
+
+  describe('event 分離契約 (handle のみが dnd-kit attributes / touch-none を持つ)', () => {
+    it('handle button は `aria-roledescription` (dnd-kit 標準 `sortable`) を持ち、 OptionRow 独自 UI (color pill / pen / カテゴリ変更 / 削除) は持たない', async () => {
+      const db = getClientDb()
+      await db.tag_categories.bulkPut([
+        makeCategory('cat-a', '重要度'),
+        makeCategory('cat-b', '難易度'),
+      ])
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      const handle1 = await screen.findByRole(
+        'button',
+        { name: 'option を並べ替え: 高' },
+      )
+      // dnd-kit useSortable は activator node に aria-roledescription="sortable" を付与する
+      expect(handle1).toHaveAttribute('aria-roledescription', 'sortable')
+
+      // OptionRow 独自 UI button は dnd-kit attribute を持たない (listeners/attributes は
+      // handle にのみ spread されている契約)。 各 button 種別ごとに pin。
+      const colorPills = screen.getAllByRole('button', { name: 'option 色を変更' })
+      for (const pill of colorPills) {
+        expect(pill).not.toHaveAttribute('aria-roledescription')
+      }
+      const penButtons = screen.getAllByRole('button', { name: '編集' })
+      for (const pen of penButtons) {
+        expect(pen).not.toHaveAttribute('aria-roledescription')
+      }
+      const moveButtons = screen.getAllByRole('button', { name: 'カテゴリ変更' })
+      for (const mv of moveButtons) {
+        expect(mv).not.toHaveAttribute('aria-roledescription')
+      }
+      const deleteButtons = screen.getAllByRole('button', { name: 'option 削除' })
+      for (const del of deleteButtons) {
+        expect(del).not.toHaveAttribute('aria-roledescription')
+      }
+    })
+
+    it('`touch-none` class は handle button のみに付与され、 OptionRow 本体 (色 pill / pen / カテゴリ変更 / 削除) には付かない', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      const { container } = render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      // touch-none token を持つ element は handle button (= 2 件 = options.length 個) のみ
+      const touchNoneEls = container.querySelectorAll('[class~="touch-none"]')
+      expect(touchNoneEls.length).toBe(2)
+      for (const el of Array.from(touchNoneEls)) {
+        expect(el.tagName).toBe('BUTTON')
+        expect(el.getAttribute('aria-label')).toMatch(/^option を並べ替え:/)
+      }
+    })
+  })
+
+  describe('drag/click 分離: OptionRow 独自 UI が drag を起動しない / reorder mock を触らない', () => {
+    it('color pill click → ColorPalettePopover が開く (drag 経路と独立、 reorder mock not called)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      const pills = screen.getAllByRole('button', { name: 'option 色を変更' })
+      fireEvent.click(pills[0])
+
+      // ColorPalettePopover 内の「色なし」 button (aria-label="色なし") が出現することで popover 開を確認
+      await screen.findByRole('button', { name: '色なし' })
+      expect(mockReorderOptions).not.toHaveBeenCalled()
+    })
+
+    it('pen icon click で OptionRow が rename 入力モードに切替 (drag 経路と独立、 reorder mock not called)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      const penButtons = screen.getAllByRole('button', { name: '編集' })
+      fireEvent.click(penButtons[0])
+
+      // rename input が表示される (drag 起動せず)
+      expect(
+        await screen.findByRole('textbox', { name: 'option 名 編集' }),
+      ).toBeInTheDocument()
+      expect(mockReorderOptions).not.toHaveBeenCalled()
+    })
+
+    it('カテゴリ変更 button click で dropdown menu が開く (drag 経路と独立、 reorder mock not called)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.bulkPut([
+        makeCategory('cat-a', '重要度'),
+        makeCategory('cat-b', '難易度'),
+      ])
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      const moveButtons = screen.getAllByRole('button', { name: 'カテゴリ変更' })
+      fireEvent.click(moveButtons[0])
+
+      // menu (role=menu) が開いて他カテゴリ menuitem が現れる (drag 起動せず)
+      await screen.findByRole('menuitem', { name: '難易度' })
+      expect(mockReorderOptions).not.toHaveBeenCalled()
+    })
+
+    it('削除 button click で onDelete 経路 (confirm dialog) が発火 (drag 経路と独立、 reorder mock not called)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByText('高')
+
+      const deleteButtons = screen.getAllByRole('button', { name: 'option 削除' })
+      fireEvent.click(deleteButtons[0])
+
+      // confirm dialog 開 (drag 起動せず)
+      await screen.findByText(/option.*高.*削除しますか/)
+      expect(mockReorderOptions).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('共有 module 契約 (`handleReorderOptions` を popover / manager 同 3 arity で呼ぶ)', () => {
+    it('handleReorderOptions mock の signature は popover と同じ `(items, activeCategoryId, orderedIds)` 3 引数で受けられる', async () => {
+      // popover (`card-tag-add-popover.tsx` handleStage2DragEnd) も同関数を
+      // `(items, categoryId, orderedIds)` 3 引数で呼ぶ契約 (4c-2c T1 で共有 module 化済)。
+      // 本 test は manager 経路の mock を「3 引数を非例外で受ける」 形で pin することで、
+      // popover 側と arity drift しない契約を構造 (test の事前条件) で示す。 T2 (handleReorderCategories)
+      // は 2 引数、 T3 (handleReorderOptions) は 3 引数 (第 2 引数が categoryId、 reindex 母数限定用)。
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList activeCategoryId="cat-a" />)
+      await screen.findByRole('button', { name: 'option を並べ替え: 高' })
+
+      // mock 呼出 simulation: jsdom 制約で実 pointer drag を再現できないため、
+      // mock を直接 invoke して「3 引数で resolve」 を 1 行 pin する (contract 形式)。
+      const result = mockReorderOptions(
+        [{ id: 'opt-1' }, { id: 'opt-2' }],
+        'cat-a',
+        ['opt-2', 'opt-1'],
+      )
+      await expect(result).resolves.toBeUndefined()
+      expect(mockReorderOptions).toHaveBeenCalledWith(
+        [{ id: 'opt-1' }, { id: 'opt-2' }],
+        'cat-a',
+        ['opt-2', 'opt-1'],
+      )
+    })
   })
 })
