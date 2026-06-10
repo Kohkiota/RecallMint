@@ -210,10 +210,14 @@ describe('CategoryList — useLiveQuery 描画', () => {
     )
     await screen.findByText('A')
 
-    // class に bg-slate-100 を含む row が 1 件のみ。
-    // `[class~="bg-slate-100"]` は class 属性内の token 一致 (word boundary) で
-    // `hover:bg-slate-100` 等の prefix 付き utility class とは区別される。
-    const activeRows = container.querySelectorAll('[class~="bg-slate-100"]')
+    // active row root のみ `bg-slate-100` を持つ。 H7b で常時表示にした
+    // color swatch は color=null 時に `bg-slate-100 ...` を含むため、
+    // row root のみに絞って count (`role="button"` + `bg-slate-100`)。
+    // `[class~="bg-slate-100"]` は class 属性内の token 一致 (word boundary)
+    // で `hover:bg-slate-100` 等の prefix 付き utility class とは区別される。
+    const activeRows = container.querySelectorAll(
+      '[role="button"][class~="bg-slate-100"]',
+    )
     expect(activeRows.length).toBe(1)
   })
 })

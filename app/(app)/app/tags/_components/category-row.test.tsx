@@ -480,8 +480,8 @@ describe('CategoryRow — optimistic IDB update (rename)', () => {
   })
 })
 
-describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
-  it('編集モード進入で color picker (popover trigger) が DOM に出る', () => {
+describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
+  it('編集モード進入前から color swatch (popover trigger) が表示される', () => {
     render(
       <CategoryRow
         category={baseCategory}
@@ -490,17 +490,14 @@ describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
         onDelete={vi.fn()}
       />,
     )
-    // 進入前は color picker 非表示。
+    // H7b: H3 の編集モード gating を撤回し常時表示。 編集モード進入前から
+    // option 行と対称な位置 (handle の右、 name の左) に出る。
     expect(
-      screen.queryByRole('button', { name: 'カテゴリの色を変更' }),
-    ).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    expect(
-      screen.getByRole('button', { name: 'カテゴリの色を変更' }),
+      screen.getByRole('button', { name: 'カテゴリ色を変更' }),
     ).toBeInTheDocument()
   })
 
-  it('編集モード解除 (Esc) で color picker が非表示に戻る', () => {
+  it('編集モード中も color swatch 表示を維持する', () => {
     render(
       <CategoryRow
         category={baseCategory}
@@ -511,13 +508,26 @@ describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
     expect(
-      screen.getByRole('button', { name: 'カテゴリの色を変更' }),
+      screen.getByRole('button', { name: 'カテゴリ色を変更' }),
     ).toBeInTheDocument()
+  })
+
+  it('編集モード解除 (Esc) 後も color swatch 表示を維持する (常時表示)', () => {
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const input = screen.getByRole('textbox')
     fireEvent.keyDown(input, { key: 'Escape' })
+    // H7b: H3 の「Esc で消える」 挙動を撤回、 常時表示なので残る。
     expect(
-      screen.queryByRole('button', { name: 'カテゴリの色を変更' }),
-    ).not.toBeInTheDocument()
+      screen.getByRole('button', { name: 'カテゴリ色を変更' }),
+    ).toBeInTheDocument()
   })
 
   it('color 変更で IDB update_field (color) + enqueueEntityMutation (color) が発火', async () => {
@@ -532,11 +542,8 @@ describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    // popover trigger 起動。 click で Radix Popover が open し、 FocusScope が
-    // popover content へ focus を移すため input の blur が発火するが、
-    // CategoryRow の handleBlur で relatedTarget が popover 内なら editing 維持。
-    fireEvent.click(screen.getByRole('button', { name: 'カテゴリの色を変更' }))
+    // H7b: 編集モードに入らずとも swatch click で popover を開ける。
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ色を変更' }))
     // ColorPalettePopover の cell を選択 (例: 'red')。
     const redCell = await screen.findByRole('button', { name: '色: red' })
     fireEvent.click(redCell)
@@ -553,7 +560,7 @@ describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
     expect(row?.color).toBe('red')
   })
 
-  it('color picker trigger click は row click と独立 (onSelect は発火しない)', () => {
+  it('color swatch trigger click は row click と独立 (onSelect は発火しない、 stopPropagation)', () => {
     const onSelect = vi.fn()
     render(
       <CategoryRow
@@ -563,9 +570,27 @@ describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
         onDelete={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    onSelect.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: 'カテゴリの色を変更' }))
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ色を変更' }))
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('color swatch と select_type icon が並存する (H3 land の icon は無変更)', () => {
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // swatch 常時表示 (H7b)。
+    expect(
+      screen.getByRole('button', { name: 'カテゴリ色を変更' }),
+    ).toBeInTheDocument()
+    // select_type icon (H3 land、 無変更)。
+    expect(screen.getByText('タイプ: multi')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('category-select-type-icon-multi'),
+    ).toBeInTheDocument()
   })
 })

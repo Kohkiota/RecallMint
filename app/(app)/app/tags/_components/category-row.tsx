@@ -196,44 +196,41 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
         active && 'bg-slate-100 border-slate-200',
       )}
     >
+      {/*
+        Tag-4c-2c H7b: color swatch を常時表示 (option 行と対称)。 H3 の
+        編集モード限定 ColorPalettePopover はここに置換、 editing toggle と
+        独立して row 最初の子に出す。 trigger は onClick で stopPropagation
+        して row click (active 切替) と分離、 onMouseDown で input への
+        blur を抑止 (編集モード中に swatch を開いた際の race 回避、
+        handleBlur 側の popover-content gate と二段防御)。
+      */}
+      <ColorPalettePopover
+        value={(category.color ?? null) as TagColorName | null}
+        onChange={handleColorChange}
+      >
+        <button
+          type="button"
+          aria-label="カテゴリ色を変更"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
+          className={cn(
+            'shrink-0 h-5 w-5 rounded-full border transition-all hover:scale-110',
+            colorToClass(category.color ?? null),
+          )}
+        />
+      </ColorPalettePopover>
       <div className="flex-1 min-w-0 flex items-center gap-1">
         {editing ? (
-          <>
-            {/*
-              編集モード時のみ ColorPalettePopover を input の左に出す。
-              非編集時 (display) は category.color を行内に出さない方針
-              (popover での参照に倒し、 行 UI の情報量を抑える)。 trigger は
-              onClick で stopPropagation して row click (active 切替) と分離。
-            */}
-            <ColorPalettePopover
-              value={(category.color ?? null) as TagColorName | null}
-              onChange={handleColorChange}
-            >
-              <button
-                type="button"
-                aria-label="カテゴリの色を変更"
-                // mousedown は input への blur を抑制 (popover trigger click で
-                // input が blur → 編集モード解除 → trigger 自体が unmount される
-                // race を避ける)。 row click とも分離するため stopPropagation。
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={(e) => e.stopPropagation()}
-                className={cn(
-                  'shrink-0 h-5 w-5 rounded-full border transition-all hover:scale-110',
-                  colorToClass(category.color ?? null),
-                )}
-              />
-            </ColorPalettePopover>
-            <Input
-              ref={inputRef}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onBlur={handleBlur}
-              onKeyDown={handleKeyDown}
-              onClick={(e) => e.stopPropagation()}
-              aria-label="カテゴリ名 編集"
-              className="h-8 text-sm"
-            />
-          </>
+          <Input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            aria-label="カテゴリ名 編集"
+            className="h-8 text-sm"
+          />
         ) : (
           <>
             <span className="flex-1 text-left text-sm font-medium text-slate-900 truncate">
