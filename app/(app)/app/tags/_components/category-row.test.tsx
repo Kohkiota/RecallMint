@@ -69,7 +69,7 @@ describe('CategoryRow — 表示', () => {
     expect(screen.getByText('重要度')).toBeInTheDocument()
   })
 
-  it('select_type バッジ (multi) を表示する', () => {
+  it('select_type icon (multi → CheckSquare) を表示する', () => {
     render(
       <CategoryRow
         category={baseCategory}
@@ -78,10 +78,14 @@ describe('CategoryRow — 表示', () => {
         onDelete={vi.fn()}
       />,
     )
-    expect(screen.getByText('multi')).toBeInTheDocument()
+    // sr-only テキストで読み上げ可能 + icon は data-testid で query。
+    expect(screen.getByText('タイプ: multi')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('category-select-type-icon-multi'),
+    ).toBeInTheDocument()
   })
 
-  it('select_type バッジ (single) を表示する', () => {
+  it('select_type icon (single → CircleDot) を表示する', () => {
     render(
       <CategoryRow
         category={{ ...baseCategory, select_type: 'single' }}
@@ -90,7 +94,10 @@ describe('CategoryRow — 表示', () => {
         onDelete={vi.fn()}
       />,
     )
-    expect(screen.getByText('single')).toBeInTheDocument()
+    expect(screen.getByText('タイプ: single')).toBeInTheDocument()
+    expect(
+      screen.getByTestId('category-select-type-icon-single'),
+    ).toBeInTheDocument()
   })
 
   it('「削除」 button が描画される', () => {
@@ -470,5 +477,95 @@ describe('CategoryRow — optimistic IDB update (rename)', () => {
     await Promise.resolve()
     expect(updateSpy).not.toHaveBeenCalled()
     updateSpy.mockRestore()
+  })
+})
+
+describe('CategoryRow — 編集モード color picker (Tag-4c-2c H3)', () => {
+  it('編集モード進入で color picker (popover trigger) が DOM に出る', () => {
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    // 進入前は color picker 非表示。
+    expect(
+      screen.queryByRole('button', { name: 'カテゴリの色を変更' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    expect(
+      screen.getByRole('button', { name: 'カテゴリの色を変更' }),
+    ).toBeInTheDocument()
+  })
+
+  it('編集モード解除 (Esc) で color picker が非表示に戻る', () => {
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    expect(
+      screen.getByRole('button', { name: 'カテゴリの色を変更' }),
+    ).toBeInTheDocument()
+    const input = screen.getByRole('textbox')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(
+      screen.queryByRole('button', { name: 'カテゴリの色を変更' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('color 変更で IDB update_field (color) + enqueueEntityMutation (color) が発火', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(baseCategory)
+
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    // popover trigger 起動。 click で Radix Popover が open し、 FocusScope が
+    // popover content へ focus を移すため input の blur が発火するが、
+    // CategoryRow の handleBlur で relatedTarget が popover 内なら editing 維持。
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリの色を変更' }))
+    // ColorPalettePopover の cell を選択 (例: 'red')。
+    const redCell = await screen.findByRole('button', { name: '色: red' })
+    fireEvent.click(redCell)
+
+    await waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith({
+        entity_type: 'tag_category',
+        entity_id: 'cat-1',
+        op: 'update_field',
+        patch: { field: 'color', value: 'red' },
+      })
+    })
+    const row = await db.tag_categories.get(baseCategory.id)
+    expect(row?.color).toBe('red')
+  })
+
+  it('color picker trigger click は row click と独立 (onSelect は発火しない)', () => {
+    const onSelect = vi.fn()
+    render(
+      <CategoryRow
+        category={baseCategory}
+        active={false}
+        onSelect={onSelect}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    onSelect.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリの色を変更' }))
+    expect(onSelect).not.toHaveBeenCalled()
   })
 })

@@ -21,7 +21,7 @@
 // debounce drain は inline-text-field と同じ 500ms (連続編集の drain trigger 圧縮)。
 
 import * as React from 'react'
-import { Pencil } from 'lucide-react'
+import { Pencil, CircleDot, CheckSquare } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -30,6 +30,9 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 import { cn } from '@/lib/utils'
 import { getClientDb, type ClientTagCategory } from '@/lib/client-db'
+import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
+
+import { ColorPalettePopover } from './color-palette-popover'
 
 type Props = {
   category: ClientTagCategory
@@ -73,18 +76,25 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
     setValue(category.name)
   }
 
-  const commit = (next: string) => {
-    // optimistic IDB update: mirror に即時反映 → useLiveQuery 即時再描画。
-    // enqueue より **先に** 発火 (UI 即反映の保証、 mock spy 順序で gate)。
+  // mutation 発行 + debounce flush の共通経路。 OptionRow の enqueueUpdate と
+  // 同形 (Tag-4c-2c H3 で color picker を導入するに当たり rename / color を
+  // 共通経路へ統合)。 optimistic IDB update は本 helper の **先頭** で発火
+  // (UI 即反映の保証、 mock spy 順序で gate)。
+  const enqueueUpdate = (field: 'name' | 'color', value: unknown) => {
+    const now = new Date().toISOString()
+    const mirrorPatch: Partial<ClientTagCategory> = {
+      updated_at: now,
+      ...(field === 'name'
+        ? { name: value as string }
+        : { color: value as string | null }),
+    }
     void getClientDb()
-      .tag_categories.update(category.id, {
-        name: next,
-        updated_at: new Date().toISOString(),
-      })
+      .tag_categories.update(category.id, mirrorPatch)
       .catch((err) => {
         logger.warn({
           event: 'tag_category_inline.mirror_update_failed',
           categoryId: category.id,
+          field,
           err: String(err),
         })
       })
@@ -92,11 +102,12 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
       entity_type: 'tag_category',
       entity_id: category.id,
       op: 'update_field',
-      patch: { field: 'name', value: next },
+      patch: { field, value },
     }).catch((err) => {
       logger.warn({
         event: 'tag_category_inline.enqueue_failed',
         categoryId: category.id,
+        field,
         err: String(err),
       })
     })
@@ -109,7 +120,23 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
     }, DEBOUNCE_MS)
   }
 
-  const handleBlur = () => {
+  const commit = (next: string) => {
+    enqueueUpdate('name', next)
+  }
+
+  const handleColorChange = (next: TagColorName | null) => {
+    enqueueUpdate('color', next)
+  }
+
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    // editing 中に color picker (popover) を開くと Radix の FocusScope が
+    // popover content 内へ focus を移し、 input が blur する。 この場合は
+    // editing を維持して popover 操作を継続できるようにする
+    // (popover を閉じた / 外を click した場合は通常通り editing 解除 + commit)。
+    const next = e.relatedTarget as HTMLElement | null
+    if (next && next.closest('[data-slot="popover-content"]')) {
+      return
+    }
     setEditing(false)
     const trimmed = value.trim()
     // 空 / 値変更なしは commit しない (元値復元、 outbox 行を減らす)。
@@ -171,16 +198,42 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
     >
       <div className="flex-1 min-w-0 flex items-center gap-1">
         {editing ? (
-          <Input
-            ref={inputRef}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            onClick={(e) => e.stopPropagation()}
-            aria-label="カテゴリ名 編集"
-            className="h-8 text-sm"
-          />
+          <>
+            {/*
+              編集モード時のみ ColorPalettePopover を input の左に出す。
+              非編集時 (display) は category.color を行内に出さない方針
+              (popover での参照に倒し、 行 UI の情報量を抑える)。 trigger は
+              onClick で stopPropagation して row click (active 切替) と分離。
+            */}
+            <ColorPalettePopover
+              value={(category.color ?? null) as TagColorName | null}
+              onChange={handleColorChange}
+            >
+              <button
+                type="button"
+                aria-label="カテゴリの色を変更"
+                // mousedown は input への blur を抑制 (popover trigger click で
+                // input が blur → 編集モード解除 → trigger 自体が unmount される
+                // race を避ける)。 row click とも分離するため stopPropagation。
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  'shrink-0 h-5 w-5 rounded-full border transition-all hover:scale-110',
+                  colorToClass(category.color ?? null),
+                )}
+              />
+            </ColorPalettePopover>
+            <Input
+              ref={inputRef}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onBlur={handleBlur}
+              onKeyDown={handleKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              aria-label="カテゴリ名 編集"
+              className="h-8 text-sm"
+            />
+          </>
         ) : (
           <>
             <span className="flex-1 text-left text-sm font-medium text-slate-900 truncate">
@@ -198,11 +251,26 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
         )}
       </div>
 
-      <span
-        className="shrink-0 rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs text-slate-600"
-        aria-label={`タイプ: ${category.select_type}`}
-      >
-        {category.select_type}
+      {/*
+        select_type icon (Tag-4c-2c H3): popover (card-tag-option-list の
+        kind='category' 経路) と同視覚で single→CircleDot / multi→CheckSquare。
+        aria-hidden + 隣接 sr-only text で読み上げ可能。 作成後 immutable。
+      */}
+      <span className="shrink-0 inline-flex items-center" aria-hidden="false">
+        {category.select_type === 'single' ? (
+          <CircleDot
+            data-testid="category-select-type-icon-single"
+            className="h-3.5 w-3.5 text-slate-500"
+            aria-hidden="true"
+          />
+        ) : (
+          <CheckSquare
+            data-testid="category-select-type-icon-multi"
+            className="h-3.5 w-3.5 text-slate-500"
+            aria-hidden="true"
+          />
+        )}
+        <span className="sr-only">タイプ: {category.select_type}</span>
       </span>
 
       <Button
