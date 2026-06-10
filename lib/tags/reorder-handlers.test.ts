@@ -8,21 +8,30 @@ import type {
   ClientTagCategory,
   ClientTagOption,
 } from '@/lib/client-db'
+import {
+  handleReorderCategories,
+  handleReorderOptions,
+} from '@/lib/tags/reorder-handlers'
+import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 
 // ---------------------------------------------------------------------------
-// モック: IDB + sync (handler 呼出前に定義)
+// モック: IDB + sync
+// Tag-4c-2c T2 M-C polish: import を top に集約、 mock 定義は vi.hoisted で巻き上げ。
+// vi.mock は vitest が自動で先頭に hoist するため、 import 順序を整理しても問題なし。
 // ---------------------------------------------------------------------------
 
 // Dexie の `db.transaction(mode, table1, ..., tableN, cb)` は cb が最終引数。
 // reorder handler は tag_categories or tag_options + entity_mutations の 2 table を渡す
 // 多引数形のため、 mock は variadic で受けて末尾を cb として実行する。
-const mockTransaction = vi.fn(async (...args: unknown[]) => {
-  const cb = args[args.length - 1] as () => Promise<void>
-  await cb()
-})
-
-const mockTagCategoriesUpdate = vi.fn(async () => 1)
-const mockTagOptionsUpdate = vi.fn(async () => 1)
+const { mockTransaction, mockTagCategoriesUpdate, mockTagOptionsUpdate } = vi.hoisted(() => ({
+  mockTransaction: vi.fn(async (...args: unknown[]) => {
+    const cb = args[args.length - 1] as () => Promise<void>
+    await cb()
+  }),
+  mockTagCategoriesUpdate: vi.fn(async () => 1),
+  mockTagOptionsUpdate: vi.fn(async () => 1),
+}))
 
 vi.mock('@/lib/client-db', async () => {
   const actual = await vi.importActual<typeof import('@/lib/client-db')>('@/lib/client-db')
@@ -51,13 +60,6 @@ vi.mock('@/lib/sync/entity-mutations', () => ({
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: vi.fn(async () => 'no-pending' as const),
 }))
-
-import {
-  handleReorderCategories,
-  handleReorderOptions,
-} from '@/lib/tags/reorder-handlers'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 
 // ---------------------------------------------------------------------------
 // fixture helpers

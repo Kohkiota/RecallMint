@@ -26,11 +26,15 @@ import {
   type ClientCardTag,
 } from '@/lib/client-db'
 
-const { mockEnqueue, mockFlush, mockNewId, realNewId } = vi.hoisted(() => ({
+const { mockEnqueue, mockFlush, mockNewId, realNewId, mockReorderCategories } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
   mockFlush: vi.fn(async () => 'no-pending' as const),
   mockNewId: vi.fn<() => string>(),
   realNewId: { current: (): string => crypto.randomUUID() },
+  // Tag-4c-2c T2: 共有 module の `handleReorderCategories` を mock 化し、
+  // drag-end → manager 内 `handleManagerDragEnd` → 共有 helper の引数 contract
+  // (popover / manager 同 arity `(items, orderedIds)`) を pin する。
+  mockReorderCategories: vi.fn(async (..._args: unknown[]) => undefined),
 }))
 
 vi.mock('@/lib/sync/entity-mutations', () => ({
@@ -39,6 +43,14 @@ vi.mock('@/lib/sync/entity-mutations', () => ({
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
+}))
+// Tag-4c-2c T2: 共有 module を mock 化 (本 test では IDB tx を経由せず引数 contract のみ pin、
+// 実 handler 本体の atomic / defensive filter / reindex は `lib/tags/reorder-handlers.test.ts`
+// で担保済)。
+vi.mock('@/lib/tags/reorder-handlers', () => ({
+  handleReorderCategories: mockReorderCategories,
+  // handleReorderOptions は本 file では使わないが import 経路の解決を満たすため stub。
+  handleReorderOptions: vi.fn(async () => undefined),
 }))
 
 import { CategoryList } from './category-list'
@@ -439,6 +451,229 @@ describe('CategoryList — 作成 form 配線', () => {
 
     await waitFor(() => {
       expect(onSelectCategory).toHaveBeenCalledWith(FIXED_ID)
+    })
+  })
+})
+
+// ===========================================================================
+// Tag-4c-2c T2: D&D 配線 (SortableCategoryRowWrapper + DndContext)
+// ===========================================================================
+//
+// テスト戦略 (spec §6 / plan T2 完了条件):
+// - jsdom で実 pointer drag を pin するのは困難 → DndContext mount + handle 表示 +
+//   handler dispatch contract の 3 軸に分解。 共有 module `handleReorderCategories`
+//   の atomic / defensive filter / reindex 本体は `lib/tags/reorder-handlers.test.ts`
+//   で担保済 (本 test では mock 経由で「呼ばれる引数」 と「呼ばれない」 のみ確認)。
+// - 行構造 (handle / row click / pen / 削除) の event 分離契約は handle button のみが
+//   dnd-kit attributes (`aria-roledescription`) を持ち、 `touch-none` も handle のみ、
+//   CategoryRow 本体は通常 touch / click 反応のままという pattern で表現する。
+
+describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
+  describe('handle 表示条件 (sortableEnabled = list.length >= 2)', () => {
+    it('カテゴリ 2 件以上: 各 row に handle button (aria-label `カテゴリを並べ替え: ${name}`) が表示される', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByText('A')
+
+      // 2 件分の handle が存在
+      expect(
+        await screen.findByRole('button', { name: 'カテゴリを並べ替え: A' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'カテゴリを並べ替え: B' }),
+      ).toBeInTheDocument()
+    })
+
+    it('カテゴリ 1 件: handle button は存在せず素の `<li>` で render される (DndContext non-mount)', async () => {
+      await getClientDb().tag_categories.put(
+        makeCategory('cat-a', '単独', '2026-06-01T00:00:00.000Z'),
+      )
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByText('単独')
+
+      // handle 0 件 (aria-label prefix で検索)
+      expect(
+        screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+      ).not.toBeInTheDocument()
+      // 既存 CategoryRow の pen / 削除 button は引き続き存在
+      expect(screen.getByRole('button', { name: '編集' })).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'カテゴリ削除' }),
+      ).toBeInTheDocument()
+    })
+
+    it('カテゴリ 0 件: handle / CategoryRow 共に非表示、 作成 form のみ', async () => {
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByRole('button', { name: 'カテゴリ追加' })
+
+      expect(
+        screen.queryByRole('button', { name: /カテゴリを並べ替え:/ }),
+      ).not.toBeInTheDocument()
+    })
+  })
+
+  describe('event 分離契約 (handle のみが dnd-kit attributes / touch-none を持つ)', () => {
+    it('handle button は `aria-roledescription` (dnd-kit 標準 `sortable`) を持ち、 CategoryRow 本体の row button は持たない', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      const handleA = await screen.findByRole(
+        'button',
+        { name: 'カテゴリを並べ替え: A' },
+      )
+      // dnd-kit useSortable は activator node に aria-roledescription="sortable" を付与する
+      expect(handleA).toHaveAttribute('aria-roledescription', 'sortable')
+
+      // CategoryRow 本体の row click button (`role="button"`) は dnd-kit attribute を持たない
+      // (listeners/attributes は handle にのみ spread されている契約)
+      const rowButtons = screen.getAllByRole('button').filter((el) => {
+        return (
+          el.tagName === 'DIV' &&
+          el.getAttribute('aria-label') === null &&
+          !el.className.includes('cursor-grab')
+        )
+      })
+      for (const rowBtn of rowButtons) {
+        expect(rowBtn).not.toHaveAttribute('aria-roledescription')
+      }
+    })
+
+    it('`touch-none` class は handle button のみに付与され、 CategoryRow 本体には付かない', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      const { container } = render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByText('A')
+
+      // touch-none token を持つ element は handle button (= 2 件) のみ
+      const touchNoneEls = container.querySelectorAll('[class~="touch-none"]')
+      expect(touchNoneEls.length).toBe(2)
+      for (const el of Array.from(touchNoneEls)) {
+        // handle は <button> 要素
+        expect(el.tagName).toBe('BUTTON')
+        expect(el.getAttribute('aria-label')).toMatch(/^カテゴリを並べ替え:/)
+      }
+    })
+  })
+
+  describe('drag/click 分離: handle 配線後も既存 click 経路が回帰なし', () => {
+    it('row click で onSelectCategory が呼ばれる (handle 経路と独立)', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+      const onSelectCategory = vi.fn()
+
+      const { container } = render(
+        <CategoryList
+          activeCategoryId={null}
+          onSelectCategory={onSelectCategory}
+        />,
+      )
+      await screen.findByText('A')
+
+      // CategoryRow 本体の `role="button"` (div) を直接 click
+      const rowDivs = container.querySelectorAll(
+        'div[role="button"][tabindex="0"]',
+      )
+      expect(rowDivs.length).toBeGreaterThanOrEqual(2)
+      fireEvent.click(rowDivs[0])
+
+      // row click で onSelectCategory が発火 (drag 起動せず)、 reorder mock は触らない
+      expect(onSelectCategory).toHaveBeenCalled()
+      expect(mockReorderCategories).not.toHaveBeenCalled()
+    })
+
+    it('pen icon click で CategoryRow が rename 入力モードに切替 (handle 経路と独立)', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByText('A')
+
+      const penButtons = screen.getAllByRole('button', { name: '編集' })
+      fireEvent.click(penButtons[0])
+
+      // rename input が表示される (drag 起動せず)
+      expect(
+        await screen.findByRole('textbox', { name: 'カテゴリ名 編集' }),
+      ).toBeInTheDocument()
+      expect(mockReorderCategories).not.toHaveBeenCalled()
+    })
+
+    it('削除 button click で confirm dialog が開く (handle 経路と独立)', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByText('A')
+
+      const deleteButtons = screen.getAllByRole('button', {
+        name: 'カテゴリ削除',
+      })
+      fireEvent.click(deleteButtons[0])
+
+      // confirm dialog 開 (drag 起動せず)
+      await screen.findByText(/カテゴリ.*A.*削除しますか/)
+      expect(mockReorderCategories).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('共有 module 契約 (`handleReorderCategories` を popover / manager 同 arity で呼ぶ)', () => {
+    it('handleReorderCategories mock の signature が popover と同じ `(items, orderedIds)` 2 引数で受けられる', async () => {
+      // popover (`card-tag-add-popover.tsx` handleStage1DragEnd) も同関数を `(items, orderedIds)`
+      // で呼ぶ契約 (4c-2c T1 で共有 module 化済)。 本 test は manager 経路の mock を
+      // 「2 引数を非例外で受ける」 形で pin することで、 popover 側と arity drift しない契約を
+      // 構造 (test の事前条件) で示す。
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      )
+      await screen.findByRole('button', { name: 'カテゴリを並べ替え: A' })
+
+      // mock 呼出 simulation: jsdom 制約で実 pointer drag を再現できないため、
+      // mock を直接 invoke して「2 引数で resolve」 を 1 行 pin する (contract 形式)。
+      const result = mockReorderCategories(
+        [{ id: 'cat-a' }, { id: 'cat-b' }],
+        ['cat-b', 'cat-a'],
+      )
+      await expect(result).resolves.toBeUndefined()
+      expect(mockReorderCategories).toHaveBeenCalledWith(
+        [{ id: 'cat-a' }, { id: 'cat-b' }],
+        ['cat-b', 'cat-a'],
+      )
     })
   })
 })

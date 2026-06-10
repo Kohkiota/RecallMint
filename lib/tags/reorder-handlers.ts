@@ -1,6 +1,11 @@
 // reorder-handlers: sort_key D&D 並べ替え反映の純粋 helper。
 // popover (card-tags-section.tsx) / manager (category-list.tsx / option-list.tsx) の
 // 両経路から同 1 関数を呼ぶ共有 module (Tag-4c-2c T1 で抽出、 byte-equivalent 移転)。
+//
+// Client-only: depends on `getClientDb()` (Dexie / IndexedDB)、 manager / popover の
+// client component から import される前提。 RSC からの import は `getClientDb` が
+// server で throw する設計に依存して防御 (`@/lib/sync/entity-mutations` 等の既存
+// client-only helper と同 convention、 `'use client'` directive は使わず banner で示す)。
 
 import { logger } from '@/lib/logger'
 import {
@@ -13,7 +18,8 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { reindexSortKeys } from '@/lib/tags/reindex-sort-keys'
 
 // ---------------------------------------------------------------------------
-// Tag-4c-2b T6: D&D reorder handlers (module スコープ)
+// Tag-4c-2b T6: D&D reorder handlers の core ロジック (atomic + defensive filter + flush)。
+// Tag-4c-2c T1 で section.tsx から抽出、 popover / manager 両経路の共有 module 化。
 //
 // reference 実装 = `handleToggle` の same-tx atomic pattern (mirror update + enqueue を
 // 同一 Dexie rw tx に閉じ、 enqueue throw で tx 全体 throw → Dexie auto-rollback →
