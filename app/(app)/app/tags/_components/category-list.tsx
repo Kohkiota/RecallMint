@@ -19,17 +19,12 @@ import { GripVertical } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import {
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
-  sortableKeyboardCoordinates,
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -43,6 +38,7 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { logger } from '@/lib/logger'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderCategories } from '@/lib/tags/reorder-handlers'
+import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
 
 import { CategoryRow } from './category-row'
 import { CategoryCreateForm } from './category-create-form'
@@ -230,12 +226,10 @@ export function CategoryList({
   // Tag-4c-2b T7: 末尾採番のため既存 sort_key 群を form に渡す (共有 nextSortKey で消費)。
   const existingSortKeys = list.map((c) => c.sort_key)
 
-  // Tag-4c-2c T2 spec §4.3: dnd-kit sensors (popover と同値、 `delay: 250 / tolerance: 5`)。
-  // KeyboardSensor は a11y 経路 (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)。
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
+  // Tag-4c-2c T2 spec §4.3 / hotfix H4: dnd-kit sensors。 popover と同 hook を共有して
+  // 並び替え UX を統一する (Mouse 即 / Touch long-press / Keyboard a11y、 詳細は
+  // `lib/tags/use-tag-sortable-sensors.ts` の header コメント)。
+  const sensors = useTagSortableSensors()
 
   // 1 件以下は並べ替え不能 → DndContext を mount せず素の `<li>` で render (handle 非表示)。
   // 構造的に「並べ替えできない」 状態を保証 (spec §4.3)。

@@ -32,21 +32,17 @@ import { Plus, ChevronLeft, CircleDot, CheckSquare } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import {
   SortableContext,
   verticalListSortingStrategy,
-  sortableKeyboardCoordinates,
   arrayMove,
 } from '@dnd-kit/sortable'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
+import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
 import {
   Popover,
   PopoverContent,
@@ -137,14 +133,13 @@ export function CardTagAddPopover({
   const [stage1FilterText, setStage1FilterText] = React.useState('')
   const [stage2FilterText, setStage2FilterText] = React.useState('')
 
-  // Tag-4c-2b T5: dnd-kit sensors。 stage1/stage2 で共用 (sensor 自体に識別性なし、
-  // useSensors の戻り値は ref 安定化されている)。 PointerSensor は delay 250 / tolerance 5
-  // でモバイル long-press 起動 + scroll/tap 誤発火抑制 (spec §4.4)。 KeyboardSensor は
-  // 既定 a11y 経路 (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)。
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
+  // Tag-4c-2b T5 / Tag-4c-2c hotfix H4: dnd-kit sensors。 stage1/stage2 で共用。
+  // 旧 PointerSensor 単独 (delay 250 / tolerance 5) は PC でも長押し要で違和感が出ていた
+  // ため、 共有 hook `useTagSortableSensors` で MouseSensor (PC 即起動) + TouchSensor
+  // (delay 250 / tolerance 5 で long-press + scroll/tap 誤発火抑制) + KeyboardSensor
+  // (sortableKeyboardCoordinates で a11y) の 3 sensor 構成に分割。 manager (category-list
+  // / option-list) でも同 hook を使い drift を回避する (spec §4.4)。
+  const sensors = useTagSortableSensors()
 
   // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC + 数値順 (Tag-4c-2b) で
   // categories を並べる。 comparator 本体は `@/lib/tags/sort-comparator` の共有版
