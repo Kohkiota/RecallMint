@@ -22,7 +22,10 @@ import {
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
-import { reindexSortKeys } from '@/lib/tags/reindex-sort-keys'
+import {
+  handleReorderCategories,
+  handleReorderOptions,
+} from '@/lib/tags/reorder-handlers'
 
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
@@ -483,116 +486,6 @@ export async function handleCreateOptionAndAssign(
     },
   )
 
-  void runGuardedEntityMutationFlush().catch(() => {})
-}
-
-// ---------------------------------------------------------------------------
-// Tag-4c-2b T6: D&D reorder handlers (module スコープ)
-//
-// reference 実装 = `handleToggle` の same-tx atomic pattern (mirror update + enqueue を
-// 同一 Dexie rw tx に閉じ、 enqueue throw で tx 全体 throw → Dexie auto-rollback →
-// handler catch で silent return、 案 a 取り直し: 次回 pull が server 値で reconcile)。
-// updates.length === 0 (= 同順 drag or 既に正規化済) なら tx 自体張らず flush もしない。
-// mirror update は partial `{ sort_key, updated_at }` のみ (他列触らない)、 user_id 注入は
-// 不要 (sort_key 書込は user 列を触らない、 reference handleToggle の whole-set replace と
-// は異なる)。
-//
-// component 側では useCallback で props (categories / options) を bind した closure に
-// 安定化し、 tagEditCallbacks に乗せて popover に渡す。
-// ---------------------------------------------------------------------------
-
-/**
- * categories の D&D 並べ替えを反映する。
- * - 当該 list 全件の sort_key を `'0','1',…,'N-1'` で正規化 (`reindexSortKeys` 純関数)。
- * - 差分が 0 件なら tx も flush も発火しない (no-op)。
- * - 失敗時 Dexie auto-rollback、 catch silent return (案 a 取り直し)。
- */
-export async function handleReorderCategories(
-  existingCategories: ClientTagCategory[],
-  orderedIds: string[],
-): Promise<void> {
-  const currentMap = new Map(existingCategories.map((c) => [c.id, c.sort_key]))
-  // Tag-4c-2b T7 M-A: 未登録 id (別経路から混入 / stale id 等) を捨て、 currentMap の
-  // 母数 (= categories 全 id 集合) のみを reindex 対象に限定する defensive filter。
-  // Tag-4c-2c で manager 側に D&D を載せた際にも自動的に守られる契約。
-  const filteredOrderedIds = orderedIds.filter((id) => currentMap.has(id))
-  const updates = reindexSortKeys(filteredOrderedIds, currentMap)
-  if (updates.length === 0) return
-  const db = getClientDb()
-  const nowIso = new Date().toISOString()
-  try {
-    await db.transaction('rw', db.tag_categories, db.entity_mutations, async () => {
-      for (const { id, sort_key } of updates) {
-        await db.tag_categories.update(id, { sort_key, updated_at: nowIso })
-        await enqueueEntityMutation({
-          entity_type: 'tag_category',
-          entity_id: id,
-          op: 'update_field',
-          patch: { field: 'sort_key', value: sort_key },
-        })
-      }
-    })
-  } catch (err) {
-    // Dexie tx auto-rollback 済 (mirror + outbox 共に未反映)。 案 a 取り直し経路で
-    // 次回 pull が server 値で reconcile するため、 UI への明示通知は省略。
-    // Tag-4c-2b T7 M-B: silent catch に logger.warn を 1 行追加 (本 reorder handler 限定、
-    // 他 silent catch には遡及しない = scope creep 回避)。
-    logger.warn({
-      event: 'tag_category_reorder.tx_failed',
-      count: updates.length,
-      err,
-    })
-    return
-  }
-  // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
-  void runGuardedEntityMutationFlush().catch(() => {})
-}
-
-/**
- * 指定 category 配下 options の D&D 並べ替えを反映する。
- * categoryId 配下の option のみを reindex 母数とする (別 category の option を
- * 巻き込まない不変条件)。 他は handleReorderCategories と同形。
- */
-export async function handleReorderOptions(
-  existingOptions: ClientTagOption[],
-  categoryId: string,
-  orderedIds: string[],
-): Promise<void> {
-  const currentMap = new Map(
-    existingOptions
-      .filter((o) => o.category_id === categoryId)
-      .map((o) => [o.id, o.sort_key]),
-  )
-  // Tag-4c-2b T7 M-A: 別 category の option id や stale id が orderedIds に混入しても
-  // currentMap (= 当該 categoryId 配下の option 全 id 集合) のみを reindex 対象に限定し、
-  // 別 category の sort_key 帯を破壊しない不変条件を強化する。 Tag-4c-2c で manager
-  // 側に D&D を載せた際にも自動的に守られる契約。
-  const filteredOrderedIds = orderedIds.filter((id) => currentMap.has(id))
-  const updates = reindexSortKeys(filteredOrderedIds, currentMap)
-  if (updates.length === 0) return
-  const db = getClientDb()
-  const nowIso = new Date().toISOString()
-  try {
-    await db.transaction('rw', db.tag_options, db.entity_mutations, async () => {
-      for (const { id, sort_key } of updates) {
-        await db.tag_options.update(id, { sort_key, updated_at: nowIso })
-        await enqueueEntityMutation({
-          entity_type: 'tag_option',
-          entity_id: id,
-          op: 'update_field',
-          patch: { field: 'sort_key', value: sort_key },
-        })
-      }
-    })
-  } catch (err) {
-    // Tag-4c-2b T7 M-B: silent catch に logger.warn を 1 行追加 (categories 側と同形)。
-    logger.warn({
-      event: 'tag_option_reorder.tx_failed',
-      count: updates.length,
-      err,
-    })
-    return
-  }
   void runGuardedEntityMutationFlush().catch(() => {})
 }
 
