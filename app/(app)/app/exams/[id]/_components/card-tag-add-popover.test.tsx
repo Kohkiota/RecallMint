@@ -10,6 +10,30 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 
+// Tag-4c-2c hotfix H5: PopoverContent に渡された props を直接 assert したい
+// (collisionPadding / sideOffset / avoidCollisions は Radix 内部 positioning に消費され
+// DOM 属性化されないため)。 vi.hoisted で spy 受け皿を確保し、 vi.mock では
+// importActual で実 Popover module を取り寄せ PopoverContent のみ wrap する。
+// wrap は props を spy へ流した後、 そのまま実 PopoverContent を render するので
+// 既存 popover test (data-slot 検索 / role 系) は影響を受けない。
+const { popoverContentPropsSpy } = vi.hoisted(() => {
+  return { popoverContentPropsSpy: vi.fn() }
+})
+
+vi.mock('@/components/ui/popover', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@/components/ui/popover')>()
+  const RealPopoverContent = actual.PopoverContent
+  function PopoverContentSpy(
+    props: React.ComponentProps<typeof RealPopoverContent>,
+  ) {
+    popoverContentPropsSpy(props)
+    return <RealPopoverContent {...props} />
+  }
+  return { ...actual, PopoverContent: PopoverContentSpy }
+})
+
+import * as React from 'react'
 import { CardTagAddPopover } from './card-tag-add-popover'
 
 beforeEach(() => {
@@ -2402,6 +2426,41 @@ describe('CardTagAddPopover — Tag-4c-2b T5: 編集 stage には DndContext mou
     expect(
       screen.queryByRole('button', { name: /を並べ替え:/ }),
     ).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tag-4c-2c hotfix H5: PopoverContent に collisionPadding / sideOffset /
+//   avoidCollisions が渡されている
+// ---------------------------------------------------------------------------
+// 端起動時の余白確保 (handle 24px / kebab 28px の操作 affordance 確保) のため、
+// Radix Popover の positioning props を 3 件追加。 これらは DOM 属性化されない
+// (floating-ui middleware に内部消費) ため、 `vi.mock` で PopoverContent を spy
+// wrap し props を直接 assert する。
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — Tag-4c-2c hotfix H5: PopoverContent 余白 props', () => {
+  it('popover open 時に collisionPadding=8 / sideOffset=4 / avoidCollisions=true が渡される', () => {
+    popoverContentPropsSpy.mockClear()
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // open 後 spy は最低 1 回呼ばれている (Radix mount + 任意 re-render)
+    expect(popoverContentPropsSpy).toHaveBeenCalled()
+    // 最後の call の props で本 hotfix の 3 件を assert (中間 render でも同値を期待)
+    const lastCall = popoverContentPropsSpy.mock.calls.at(-1)
+    expect(lastCall).toBeDefined()
+    const props = lastCall![0] as Record<string, unknown>
+    expect(props.collisionPadding).toBe(8)
+    expect(props.sideOffset).toBe(4)
+    expect(props.avoidCollisions).toBe(true)
   })
 })
 
