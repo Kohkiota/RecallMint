@@ -26,6 +26,7 @@ import {
   handleReorderCategories,
   handleReorderOptions,
 } from '@/lib/tags/reorder-handlers'
+import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
@@ -532,7 +533,11 @@ function CardTagsSectionInner({
   // 本 card の全カテゴリ横断 option_id 配列。 handleToggle の whole-set 構築に使う。
   const allAssignedOptionIds = cardTags.map((t) => t.option_id)
 
-  // Fix C-3 軸 2: card body バッジを category.name ASC, option.name ASC (localeCompare ja) で並べる。
+  // Tag-4c-2c hotfix H1 で sort_key 順に切替 (共有 `sortByKeyThenCreated` で popover/manager/バッジ
+  // 3 経路の並びを揃える)。 第 1 キー = category.sort_key 数値昇順、 第 2 キー = 同 category 内
+  // option.sort_key 数値昇順、 tie-break = created_at (comparator 内蔵)。 旧 Fix C-3 軸 2 (Tag-4b-fix
+  // 由来) は name localeCompare で固定していたため、 sort_key 未参照の文字列辞書順による 11+ 件
+  // 誤順 (調査 3) を解消する。
   const sortedCardTags = useMemo(() => {
     return [...cardTags].sort((a, b) => {
       const optA = options.find((o) => o.id === a.option_id)
@@ -541,9 +546,9 @@ function CardTagsSectionInner({
       const catA = categories.find((c) => c.id === optA.category_id)
       const catB = categories.find((c) => c.id === optB.category_id)
       if (!catA || !catB) return 0
-      const catCmp = catA.name.localeCompare(catB.name, 'ja')
+      const catCmp = sortByKeyThenCreated(catA, catB)
       if (catCmp !== 0) return catCmp
-      return optA.name.localeCompare(optB.name, 'ja')
+      return sortByKeyThenCreated(optA, optB)
     })
   }, [cardTags, options, categories])
 

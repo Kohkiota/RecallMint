@@ -1177,30 +1177,27 @@ describe('countOptionImpact', () => {
 })
 
 // ===========================================================================
-// Fix C-3 軸 2: sortedCardTags — バッジ表示順序 (category.name ASC, option.name ASC)
+// Tag-4c-2c hotfix H1: sortedCardTags — バッジ表示順序 (共有 sortByKeyThenCreated)
 // ===========================================================================
+//
+// 旧 Fix C-3 軸 2 (Tag-4b-fix 由来) は category.name / option.name の localeCompare ja で
+// 並べていたため、 sort_key 未参照の文字列辞書順による 11+ 件誤順 (調査 3) を起こしていた。
+// hotfix H1 で popover / manager と同じ共有 `sortByKeyThenCreated` (sort_key 数値昇順 +
+// tie-break created_at) に切替、 3 経路の並びを揃える。
 
-describe('CardTagsSection — Fix C-3: sortedCardTags badge order', () => {
-  it('複数 cat × 複数 opt の混在: category.name ASC, option.name ASC (localeCompare ja) で表示される', () => {
-    // 意図的に逆順で渡す: cat "難易度" (先) vs cat "分野" (後)
-    // 期待: 分野 → 難易度 (localeCompare)
-    const categories = [
-      cat('c1', '難易度', 'single'), // 'diff' > '分野' → 後に来るはず
-      cat('c2', '分野', 'multi'),
+describe('CardTagsSection — Tag-4c-2c hotfix H1: sortedCardTags badge order (sort_key)', () => {
+  it('category 間: catA.sort_key < catB.sort_key の順で並ぶ (name localeCompare は無視)', () => {
+    // 意図的に「name は逆順」 (難易度→分野 で localeCompare なら 分野 先) だが、
+    // sort_key を 難易度='0' / 分野='1' と振って「sort_key で 難易度 先」 を pin する。
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', '難易度', 'single'), sort_key: '0' },
+      { ...cat('c2', '分野', 'multi'), sort_key: '1' },
     ]
-    const options = [
-      opt('o1', 'c1', '高'),
-      opt('o2', 'c1', '低'),
-      opt('o3', 'c2', '循環器'),
-      opt('o4', 'c2', '腎臓'),
+    const options: ClientTagOption[] = [
+      { ...opt('o1', 'c1', '高'), sort_key: '0' },
+      { ...opt('o2', 'c2', '循環器'), sort_key: '0' },
     ]
-    // cardTags を意図的に逆順
-    const cardTags = [
-      tag('card-1', 'o1'), // 難易度: 高
-      tag('card-1', 'o4'), // 分野: 腎臓
-      tag('card-1', 'o2'), // 難易度: 低
-      tag('card-1', 'o3'), // 分野: 循環器
-    ]
+    const cardTags = [tag('card-1', 'o2'), tag('card-1', 'o1')]
 
     render(
       <CardTagsSection
@@ -1212,23 +1209,109 @@ describe('CardTagsSection — Fix C-3: sortedCardTags badge order', () => {
       />,
     )
 
-    // バッジが 4 つ存在する
     const badges = screen.getAllByRole('button', { name: /^タグ: / })
-    expect(badges).toHaveLength(4)
-
-    // localeCompare ja: 分野 < 難易度 のはずだが、 日本語文字比較は環境依存のため
-    // ここでは「全バッジが表示される」と「sort が identity 維持しない (呼び出しを確認)」を検証。
-    // 実際の sort 順は localeCompare の実装に委ねる。
     const labels = badges.map((b) => b.getAttribute('aria-label'))
-    expect(labels).toContain('タグ: 難易度: 高')
-    expect(labels).toContain('タグ: 難易度: 低')
-    expect(labels).toContain('タグ: 分野: 循環器')
-    expect(labels).toContain('タグ: 分野: 腎臓')
+    // sort_key 順なら 難易度 (0) 先、 分野 (1) 後。 name localeCompare 順なら 分野 (bun) 先、
+    // 難易度 (nan) 後 — sort_key 順を pin。
+    expect(labels[0]).toBe('タグ: 難易度: 高')
+    expect(labels[1]).toBe('タグ: 分野: 循環器')
+  })
 
-    // 同 category 内では option.name ASC: 循環器 < 腎臓
-    const bunIdx = labels.findIndex((l) => l === 'タグ: 分野: 循環器')
-    const jinIdx = labels.findIndex((l) => l === 'タグ: 分野: 腎臓')
-    expect(bunIdx).toBeLessThan(jinIdx) // 循環器 comes before 腎臓
+  it('同 category 内 option: 2 桁含む sort_key を数値順で並べる (1, 2, ..., 12) — 旧文字列辞書順なら fail', () => {
+    // 旧 (name localeCompare) でも fail し、 sort_key 文字列辞書順 (旧の別案) でも
+    // ['1','10','11','12','2','3',...] で fail する形を明示。
+    // 期待: 数値順 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', '分野', 'multi'), sort_key: '0' },
+    ]
+    // option の name は sort_key と無関係 (sort_key 数値順を確認したいので意図的に不一致)。
+    const optionFixture: ClientTagOption[] = [
+      { ...opt('o1', 'c1', 'opt-01'), sort_key: '1' },
+      { ...opt('o2', 'c1', 'opt-02'), sort_key: '2' },
+      { ...opt('o3', 'c1', 'opt-03'), sort_key: '3' },
+      { ...opt('o4', 'c1', 'opt-04'), sort_key: '4' },
+      { ...opt('o5', 'c1', 'opt-05'), sort_key: '5' },
+      { ...opt('o6', 'c1', 'opt-06'), sort_key: '6' },
+      { ...opt('o7', 'c1', 'opt-07'), sort_key: '7' },
+      { ...opt('o8', 'c1', 'opt-08'), sort_key: '8' },
+      { ...opt('o9', 'c1', 'opt-09'), sort_key: '9' },
+      { ...opt('o10', 'c1', 'opt-10'), sort_key: '10' },
+      { ...opt('o11', 'c1', 'opt-11'), sort_key: '11' },
+      { ...opt('o12', 'c1', 'opt-12'), sort_key: '12' },
+    ]
+    // 意図的にシャッフル入力 (sort 結果 = sort_key 数値昇順)
+    const shuffled = [
+      optionFixture[11], // sort_key '12'
+      optionFixture[0],  // '1'
+      optionFixture[9],  // '10'
+      optionFixture[1],  // '2'
+      optionFixture[10], // '11'
+      optionFixture[2],  // '3'
+      optionFixture[8],  // '9'
+      optionFixture[3],  // '4'
+      optionFixture[7],  // '8'
+      optionFixture[4],  // '5'
+      optionFixture[6],  // '7'
+      optionFixture[5],  // '6'
+    ]
+    const cardTags = shuffled.map((o) => tag('card-1', o.id))
+
+    render(
+      <CardTagsSection
+        cardId="card-1"
+        userId="user-1"
+        categories={categories}
+        options={optionFixture}
+        cardTags={cardTags}
+      />,
+    )
+
+    const badges = screen.getAllByRole('button', { name: /^タグ: / })
+    const labels = badges.map((b) => b.getAttribute('aria-label'))
+    // 数値昇順 (1,2,3,...,12)。 文字列辞書順なら '1','10','11','12','2','3',... となり fail する。
+    expect(labels).toEqual([
+      'タグ: 分野: opt-01',
+      'タグ: 分野: opt-02',
+      'タグ: 分野: opt-03',
+      'タグ: 分野: opt-04',
+      'タグ: 分野: opt-05',
+      'タグ: 分野: opt-06',
+      'タグ: 分野: opt-07',
+      'タグ: 分野: opt-08',
+      'タグ: 分野: opt-09',
+      'タグ: 分野: opt-10',
+      'タグ: 分野: opt-11',
+      'タグ: 分野: opt-12',
+    ])
+  })
+
+  it('tie-break: 同 sort_key の option は created_at ASC で解決 (comparator 内蔵)', () => {
+    // 同 sort_key='1' の 2 option が created_at の早い方先。 sortByKeyThenCreated 仕様
+    // (sort_key 同位 → created_at ASC) を pin。
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', '分野', 'multi'), sort_key: '0' },
+    ]
+    const options: ClientTagOption[] = [
+      { ...opt('oLate', 'c1', '後発', '2026-06-01T00:00:02.000Z'), sort_key: '1' },
+      { ...opt('oEarly', 'c1', '先発', '2026-06-01T00:00:01.000Z'), sort_key: '1' },
+    ]
+    const cardTags = [tag('card-1', 'oLate'), tag('card-1', 'oEarly')]
+
+    render(
+      <CardTagsSection
+        cardId="card-1"
+        userId="user-1"
+        categories={categories}
+        options={options}
+        cardTags={cardTags}
+      />,
+    )
+
+    const badges = screen.getAllByRole('button', { name: /^タグ: / })
+    const labels = badges.map((b) => b.getAttribute('aria-label'))
+    // created_at の早い '先発' が先
+    expect(labels[0]).toBe('タグ: 分野: 先発')
+    expect(labels[1]).toBe('タグ: 分野: 後発')
   })
 })
 
