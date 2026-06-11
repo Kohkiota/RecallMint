@@ -81,11 +81,11 @@ components/
 
 詳細 (erDiagram + invariant): `README.md §7.6 Users schema 二段構造`。 経緯 (PG FK 自動 switch 不可 / 一時列方式 backfill / 互換性保持型段階移行 / audit table 設計原則 等 7 項目): `docs/superpowers/lessons/2026-04-30-users-schema-decoupling.md`。
 
-### 1.5 middleware (Edge 認証のみ)
+### 1.5 proxy (Node 認証)
 
-`middleware.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])`。 **URL ベース**で `/app/*` 配下を protect、 RG 構造 (`app/(app)/app/...`) と URL (`/app/...`) は 1:1 対応 (RG 透過)。 詳細: `README.md §7.3`。
+`proxy.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])`。 **URL ベース**で `/app/*` 配下を protect、 RG 構造 (`app/(app)/app/...`) と URL (`/app/...`) は 1:1 対応 (RG 透過)。 詳細: `README.md §3.3`。
 
-**設計判断**: Edge runtime + Neon WebSocket driver 制約のため middleware から DB 接続不可、 DB 由来判定 (`deletedAt` 等) は Node runtime の layout / page で 1 段判定する分担。 webhook endpoint (`/api/webhooks/{clerk,stripe}`) は matcher 通過するが `/app(.*)` 不一致で `auth.protect()` 非適用、 認証 skip しても署名検証 (Svix / Stripe) を handler 側で独自実施で security 担保。
+**設計判断**: proxy は thin に保ち DB 接続を持たない方針 (旧 middleware の Edge runtime + Neon WebSocket 制約由来の分担、 Next 16 で proxy 化 = Node runtime に切替後も継続)、 DB 由来判定 (`deletedAt` 等) は Node runtime の layout / page で 1 段判定する分担。 webhook endpoint (`/api/webhooks/{clerk,stripe}`) は matcher 通過するが `/app(.*)` 不一致で `auth.protect()` 非適用、 認証 skip しても署名検証 (Svix / Stripe) を handler 側で独自実施で security 担保。
 
 ### 1.6 lib/ 配下構成
 
@@ -246,7 +246,7 @@ brand 表示は別系統 (hardcode) のため本手順とは独立。
 | `lib/auth/errors.ts` | `UnauthenticatedError` 型 | 完全流用 |
 | `app/(auth)/sign-in/[[...rest]]/page.tsx` / `sign-up/[[...rest]]/page.tsx` | Clerk SignIn / SignUp primitive | 完全流用 (ただし Logo placeholder 経由で SaaS 名は §3 で置換) |
 | `app/(auth)/sign-out-deleted/page.tsx` | 削除完了 terminal page | 完全流用 |
-| `middleware.ts` | Clerk middleware + CSP default + `/app(.*)` protect | 完全流用 (protect path だけ書換可能) |
+| `proxy.ts` | Clerk middleware + CSP default + `/app(.*)` protect | 完全流用 (protect path だけ書換可能) |
 | `app/api/webhooks/clerk/route.ts` | Clerk webhook idempotency + user sync | 完全流用 |
 
 ### 4.2 課金 (Stripe)

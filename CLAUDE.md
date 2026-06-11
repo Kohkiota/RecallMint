@@ -48,7 +48,7 @@ template 起点、 vocab drop / mcq 新規追加中)。
 1. キーは `VERCEL_ENV` で使い分け、 `lib/clerk.ts` で fail-fast
    - `production` → `pk_live_`/`sk_live_` / その他 → `pk_test_`/`sk_test_`
    - 詳細: `docs/superpowers/lessons/2026-04-30-clerk-env-validation-environment-dependent.md`
-2. `middleware.ts` で保護ルート設定
+2. `proxy.ts` で保護ルート設定
 3. Server: `auth()` / `currentUser()`、 Client: `useUser()` / `useAuth()`
 4. **全 table に `user_id` カラム必須**、 query は必ず `WHERE user_id = ?` で絞る
 5. Clerk User と Stripe Customer の紐付けは `users` table (`clerk_id`,

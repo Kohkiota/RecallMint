@@ -118,12 +118,13 @@ base 利用者向け、 §3.8 で言及。
 - verify 手法 (intentional throw + Stripe trigger + Vercel Protection Bypass):
   lesson `2026-04-28-discord-notify-verify-methodology.md §3.4`
 
-### 3.3 Middleware (Edge 認証のみ + Node layout で 1 段判定)
+### 3.3 Proxy (Node 認証 + layout で DB 判定)
 
-- `middleware.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])` のみ
-  protect
-- Edge runtime + Neon WebSocket driver 制約のため middleware から DB 接続不可、
-  DB 由来判定 (`deletedAt` 等) は Node runtime layout / page で 1 段判定
+- `proxy.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])` のみ
+  protect (Next 16 で middleware → proxy にリネーム、 Node runtime 固定)
+- proxy は thin に保ち DB 接続を持たない方針、 DB 由来判定 (`deletedAt`
+  等) は Node runtime layout / page で 1 段判定 (旧 middleware の Edge
+  runtime + Neon WebSocket 制約由来の分担を proxy 移行後も継続)
 - webhook endpoint は matcher 通過するが protect 対象外、 署名検証 (Svix /
   Stripe) を handler 側で独自実施
 - 詳細: `docs/architecture-guide.md §1.5`
