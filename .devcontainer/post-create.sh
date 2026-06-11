@@ -19,8 +19,9 @@ if ! grep -q ".npm-global/bin" ~/.bashrc 2>/dev/null; then
 fi
 export PATH=~/.local/bin:~/.npm-global/bin:$PATH
 
-echo "==> [2/8] pnpm"
-npm install -g pnpm
+echo "==> [2/8] pnpm (via corepack、 packageManager field 準拠)"
+corepack enable
+corepack prepare pnpm@10.33.0 --activate
 pnpm config set store-dir ~/.local/share/pnpm-store
 
 echo "==> [3/8] Claude Code (native installer, stable channel)"
