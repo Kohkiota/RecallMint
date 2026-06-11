@@ -14,6 +14,21 @@
 #   でも動くよう jq 依存を排除、 旧 hook で silent fail していた事故を回避)。
 set -u
 
+# stop_hook_active guard (2026-06-12):
+# Stop hook は stdin で input JSON を受け取る。 stop_hook_active=true は
+# 「この hook の block により再試行中」 の意味で、 ここで再 block すると
+# 無限ループ → Claude Code の連続 block 上限で強制突破され hook が無意味化する。
+# block は 1 回で CC の context に届くため、 再試行中は素通りさせる。
+HOOK_INPUT=$(cat 2>/dev/null || true)
+STOP_ACTIVE=$(printf '%s' "$HOOK_INPUT" | python3 -c '
+import json, sys
+try:
+    print("true" if json.load(sys.stdin).get("stop_hook_active") else "false")
+except Exception:
+    print("false")
+' 2>/dev/null)
+[[ "$STOP_ACTIVE" == "true" ]] && exit 0
+
 cd "$CLAUDE_PROJECT_DIR" || exit 0
 
 LAST_MSG=$(git log -1 --pretty=%B 2>/dev/null)
