@@ -58,6 +58,16 @@ RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復�
 **review pass → commit([reviewed] 込み)の一方向のみ。commit してから review する順序は禁止。**
 tag の後付け amend が必要になった時点で順序違反(未 push なら amend 可だが、原則発生させない)。
 
+### task 完了後の標準フロー(第二の順序則)
+
+1. 実装 + review pass + commit → stop checkpoint 報告で CC は必ず停止
+2. OT + claude.ai が報告チェック → OK なら OT が push
+3. stg deploy 反映後、OT 指示で CC が stg smoke を DevTools MCP で実走(push 前に stg を叩かない、旧コード smoke は無意味)
+4. CC で検証困難な smoke(実機依存 / 決済実行 / 破壊的操作 等)のみ OT 実機
+5. prod 反映判断は smoke 結果を見て OT
+
+補足: 重要 fix(決済・認証・削除・外部副作用)の [reviewed] は OT 実機確認後 — push 時点はタグなしを許容し確認後 OT 指示で旗を立てる(既存規律)。smoke の省略・代替(単体 test を正とする等)は plan に 1 行明記した場合のみ可。
+
 ### 必須経路
 
 feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路(skill template + general-purpose subagent + 厳格 prompt、改変禁止)。自由形式 review / 軽量 agent 投げ捨て禁止。velocity 優先で省略不可。
