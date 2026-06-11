@@ -190,6 +190,50 @@ feat/fix commit 直前に以下 4 点を chat に明示:
 対象外 (review pass で即 [reviewed] 可): UI 微調整 / typo / ロジック変更なし
 refactor。
 
+### review dispatch checklist (必須項目)
+
+`superpowers:requesting-code-review` を controller が dispatch するときの
+prompt 内 観点 list に、 以下を **必須項目**として含める:
+
+- **whole-repo `pnpm lint --max-warnings=0` exit 0 確認**: reviewer subagent
+  が独立に 1 回実走、 報告に含める。 lefthook (staged-only) の穴を埋める
+  3 層目の gate (1 層 = config / 2 層 = lefthook / 3 層 = review checklist)
+
+---
+
+## Sprint 完了 gate (恒久規律)
+
+GitHub Actions CI を削除し lefthook をローカル gate の正本とした (2026-06-11、
+`6958d18 chore(lint): GitHub Actions CI を削除、 lefthook をローカル gate
+の正本とする [no-review]`) 経緯に合わせ、 push 前に **sprint 完了 gate** を
+コンテナ内で必ず通すこと:
+
+### 必須コマンド (全 sprint 共通)
+
+- `pnpm lint` (= `eslint . --max-warnings=0`) exit 0
+  - lefthook は staged file のみ lint = whole-repo 視点での違反は別途確認要
+  - sprint 完了報告 chat に「whole-repo lint exit 0 確認済」 を 1 行明記
+
+### 依存 / Next / Node / lockfile を触る sprint で追加必須
+
+- `pnpm install --frozen-lockfile` exit 0 (GHA `--frozen-lockfile` を消した代替、
+  lockfile 乖離を deploy 前にコンテナ内で掴む)
+- `pnpm typecheck` (= `tsc --noEmit`) exit 0
+- `pnpm build` (= `next build`) exit 0
+
+### git commit --no-verify 禁止
+
+`git commit --no-verify` / `-n` の使用は **全面禁止** (lefthook bypass で
+gate が機能しなくなる)。 hook が失敗した場合は根本原因を fix、 bypass しない。
+hook 設計に問題があるなら `lefthook.yml` を編集して直す (revert / 例外も
+config で明示)。
+
+### review dispatch との二重防御
+
+上記の whole-repo lint 確認は (1) sprint 完了 gate (CC 実行)、 (2) review
+checklist (reviewer subagent 実行) の 2 経路で踏む。 1 経路でも漏れたら
+sprint 完了報告に該当箇所を明記して OT 判断を仰ぐ。
+
 ---
 
 ## OT 向け出力規律
