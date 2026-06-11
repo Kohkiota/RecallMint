@@ -303,6 +303,10 @@ Sprint 内でも Critical 検出 / 仕様解釈揺れ / 外部サービス設定
   定数 UPPER_SNAKE_CASE
 - import 順: 外部 → 内部 → 相対
 - コメントは「なぜ」 (「何を」 はコードから読める)
+- **flat ESLint config の `files:` glob** は minimatch 評価のため、 Next route
+  group `(...)` と dynamic segment `[...]` を `\\(...\\)` / `\\[...\\]` で escape
+  する。 escape 不在で silent に override 効かず gate 立ち上げ時に fail する
+  (初出: 2026-06-10 ESLint 波 2 sprint Task 2 BLOCKED 報告)。
 
 ## テスト方針
 

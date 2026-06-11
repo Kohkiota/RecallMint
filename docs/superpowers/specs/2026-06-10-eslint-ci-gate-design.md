@@ -60,7 +60,10 @@ const config = [
     // optimistic 経路収束 (event handler 書換) と同 working set のため波2 では
     // 直さない。 Step 0.6 で本 file の refs 違反は L115 単独 = `optionsRef.current
     // = options` の 1 行のみと裏取り済。 Sync-fix-1 完了後この override block を削除。
-    files: ['app/(app)/app/exams/[id]/_components/inline-option-row.tsx'],
+    // glob の `(...)` `[...]` は minimatch では alternation / character class と
+    // 解釈されるため、 Next route group と dynamic segment は `\\(...\\)` `\\[...\\]`
+    // で escape する (escape 不在で silent に override 効かず → gate 立ち上げ時 fail)。
+    files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/inline-option-row.tsx'],
     rules: { 'react-hooks/refs': 'off' },
   },
   {
@@ -164,7 +167,7 @@ jobs:
 | commit | 名前 | 内容 | 影響 file | review 性質 |
 |---|---|---|---|---|
 | **C1** | `fix(lint): React 19 hook rule 違反を解消 (set-state-in-effect 6 + refs 1)` | hook fix 7 件 (prev-render pattern 6 + ref 撤去 1) + **状態遷移 test 補充** (§ 8 完了条件) | category-row / option-row / card-tag-edit-fields / card-tag-option-list / inline-option-row / inline-text-field の 6 ファイル touch + 該当 test ファイル | 挙動変更あり、 review **重点** ([reviewed] tag) |
-| **C2** | `chore(lint): 機械的な lint 違反を一括解消 (unused-vars 43 / prefer-const 1 / no-img disable / unused-disable 3)` | 機械 fix **48 件**: `_` prefix or disable comment 43 (warn) + `const` 化 1 (err) + upload-form.tsx:638 に `// eslint-disable-next-line @next/next/no-img-element TODO(波1): next/image 化` 1 + unused eslint-disable 削除 3 | 17 test file + 4 (route.ts / card-tag-edit-fields / replay-card × 2 / upload-form) ≈ 20 file | 機械的、 review **軽** ([reviewed] tag) |
+| **C2** | `chore(lint): 機械的な lint 違反を一括解消 (prefer-const 1 / no-img disable / unused-disable 3)` | 機械 fix **5 件**: `const` 化 1 (err) + upload-form.tsx:638 に `// eslint-disable-next-line @next/next/no-img-element TODO(波1): next/image 化` 1 + unused eslint-disable 削除 3。 **unused-vars 43 件は既に `_` prefix 済**で正式 config の `argsIgnorePattern: '^_'` により silently 消化 (code fix 不要、 Task 2 BLOCKED 報告 2026-06-10 で判明) | 4 file (route.ts / card-tag-edit-fields / replay-card × 2 / upload-form) | 機械的、 review **軽** ([reviewed] tag) |
 | **C3** | `feat(lint): ESLint 9 flat config + lefthook + CI gate 配備 (波2)` | `eslint.config.mjs` 新設 / `lefthook.yml` / `.github/workflows/ci.yml` / `package.json` script + devDep。 gate が立った瞬間 0 違反 (前 commit で fix 済) | 4 新 file + package.json + pnpm-lock.yaml | 設定、 review **中** ([reviewed] tag) |
 
 ### C3 まで lint コマンドを叩かない運用 (明記)

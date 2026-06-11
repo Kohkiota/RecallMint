@@ -4,16 +4,17 @@
 
 **Goal:** lint gate を 3 層 (eslint flat config + lefthook + CI workflow) で配備し、 Step 0.5 で実測した 57 件の違反を全件 error gate に通せる状態まで repo を整える。
 
-**Architecture:** 3 commit に分割 (C1: hook fix 7 件 + 状態保存 pin test、 C2: 機械 fix 48 件、 C3: gate 設置)。 C3 まで `pnpm lint` を叩かない (C1 / C2 は手動 `tsc` + `test` のみ)、 C3 commit が gate 初活性。
+**Architecture:** 3 commit に分割 (C1: hook fix 7 件 + 状態保存 pin test、 C2: 機械 fix 5 件、 C3: gate 設置)。 C3 まで `pnpm lint` を叩かない (C1 / C2 は手動 `tsc` + `test` のみ)、 C3 commit が gate 初活性。
 
-**算数の閉じ** (Step 0.5 raw 集計 58 件、 内訳の振り分け):
+**算数の閉じ** (Step 0.5 raw 集計 58 件、 内訳の振り分け、 **2026-06-10 Task 2 BLOCKED 報告で訂正**):
 - C1 fix 7 = set-state-in-effect 6 + refs simple 1 (inline-text-field:96)
-- C2 fix 48 = err 1 (prefer-const) + warn 47 (unused-vars 43 + no-img-element 1 + unused-disable directive 3)
+- C2 fix 5 = err 1 (prefer-const) + warn 4 (no-img-element 1 + unused-disable directive 3)
+- config 消化 43 = unused-vars 43 (全件 `_` prefix 済、 正式 config の `argsIgnorePattern: '^_'` で silently ignore、 code fix 不要)
 - rule off 1 = preserve-manual-memoization (Compiler OFF 制約と紐づく、 spec § 3)
 - file override 1 = refs structural (inline-option-row:115、 Sync-fix-1 送り、 spec § 3)
 - self-reference 1 = import/no-anonymous-default-export (Step 0.5 の暫定 config 自己言及、 本 plan の正式 config は named const → export default 形で再発しない、 spec § 3)
 
-合計 = 7 + 48 + 1 + 1 + 1 = 58 ✓ (Step 0.5 raw と一致)。 self-reference 1 を除いた repo 内本物違反 = **57 = 7 + 48 + 1 + 1**。 Task 1 Step 1 で実走対照表を取って消し込み、 期待値と一致しなければ stop & 原因究明。
+合計 = 7 + 5 + 43 + 1 + 1 + 1 = 58 ✓ (Step 0.5 raw と一致)。 self-reference 1 を除いた repo 内本物違反 = **57 = 7 + 5 + 43 + 1 + 1**。 Task 1 Step 1 で実走対照表を取って消し込み、 期待値と一致しなければ stop & 原因究明。
 
 **Tech Stack:** ESLint 9.39.4 / eslint-config-next 16.2.4 (flat) / eslint-plugin-react-hooks ^7.1.1 / lefthook ^2.1.9 / GitHub Actions (Node 24 LTS、 pnpm@10.33.0 SSoT)。
 
@@ -62,12 +63,11 @@
 
 ---
 
-### Task 2: C2 commit — 機械 fix 48 件
+### Task 2: C2 commit — 機械 fix 5 件
 
-**目的**: spec § 7 C2 = unused-vars 43 (warn) + prefer-const 1 (err) + no-img-element 1 (disable + TODO 波1) + unused-disable directive 3 を機械的に解消。 挙動変更ゼロ。
+**目的**: spec § 7 C2 = prefer-const 1 (err) + no-img-element 1 (disable + TODO 波1) + unused-disable directive 3 を機械的に解消。 挙動変更ゼロ。 **unused-vars 43 件は code fix 不要** (全件 `_` prefix 済で正式 config の `argsIgnorePattern: '^_'` により silently 消化、 2026-06-10 Task 2 BLOCKED 報告で判明)。
 
 **Files (touch):**
-- Modify: 17 test file (unused-vars 分布、 大半 mock の unused argument)
 - Modify: `app/api/review-events/bulk/route.ts:128` (`let orphanFailed` → `const orphanFailed`)
 - Modify: `app/(app)/app/upload/_components/upload-form.tsx:638` 直上 (`// TODO(波1): next/image 化 (loader / remotePatterns 設定 + Next 16 default 変更と同時)` + `// eslint-disable-next-line @next/next/no-img-element` の 2 行追加)
 - Modify: `app/(app)/app/exams/[id]/_components/card-tag-edit-fields.tsx:96` (unused eslint-disable directive 削除)
@@ -75,13 +75,13 @@
 
 **Steps:**
 
-- [ ] **Step 1: 暫定 eslint.config.mjs を 1 枚落として `pnpm exec eslint . --format json` を実走し、 違反 **48 件** (err 1 = prefer-const + warn 47 = unused-vars 43 + no-img 1 + unused-disable 3) の file:line 一覧を抽出。 **本 Step の暫定 config = spec § 3 準拠の「正式 config preview」** (named const → export default 形、 `react-hooks/preserve-manual-memoization: 'off'`、 inline-option-row.tsx の `react-hooks/refs` file override 込み、 `@typescript-eslint/no-unused-vars` の `_` prefix ignore 込み)。 これにより rule off 1 + file override 1 + self-ref 1 が config 側で消え、 残違反が C2 fix 48 件と直接照合可能 (Task 1 同 config で実走すると 51 件残り食い違いが説明的になるため Task 1 と別物)。 副次効果: C3 で正式 config を新設する前に「rule overrides が機能して gate が C2 fix 48 件のみで clean になるか」 を事前検証。 `_` prefix 化 vs `// eslint-disable-next-line` の判断を 1 件ずつ確定 (test mock 引数は基本 `_` prefix、 production 側で意図的不使用は理由コメント付き disable)。 Task 1 の対照表 C2 列との照合で 48 件一致を確認、 食い違えば stop。**
-- [ ] **Step 2: 機械 fix 適用**: (i) unused-vars 43 件 ← `_` prefix 化 第一選択、 prefix 不適切なら `// eslint-disable-next-line @typescript-eslint/no-unused-vars -- <理由>`、 (ii) prefer-const 1 件 ← `let` → `const`、 (iii) no-img 1 件 ← TODO + disable 2 行追加、 (iv) unused-disable 3 件 ← directive 行削除。
+- [ ] **Step 1: 暫定 eslint.config.mjs を 1 枚落として `pnpm exec eslint . --format json` を実走し、 違反 **5 件** (err 1 = prefer-const + warn 4 = no-img 1 + unused-disable 3) の file:line 一覧を抽出。 **本 Step の暫定 config = spec § 3 準拠の「正式 config preview」** (named const → export default 形、 `react-hooks/preserve-manual-memoization: 'off'`、 inline-option-row.tsx の `react-hooks/refs` file override (escape 済 glob 形) 込み、 `@typescript-eslint/no-unused-vars` の `_` prefix ignore 込み)。 これにより rule off 1 + file override 1 + self-ref 1 + unused-vars 43 (`_` prefix 済) が config 側で消え、 残違反が C2 fix 5 件と直接照合可能。 副次効果: C3 で正式 config を新設する前に「rule overrides + file override glob escape + `_` prefix ignore が機能して gate が C2 fix 5 件のみで clean になるか」 を事前検証。 disable 理由コメント付き or 行削除のみで判断、 Task 1 の対照表 C2 列との照合で 5 件一致を確認、 食い違えば stop。**
+- [ ] **Step 2: 機械 fix 適用**: (i) prefer-const 1 件 ← `let` → `const`、 (ii) no-img 1 件 ← TODO + disable 2 行追加、 (iii) unused-disable 3 件 ← directive 行削除。
 - [ ] **Step 3: 暫定 config を `rm` で revert** (commit に含めない、 C3 で正式版)。 `pnpm exec tsc --noEmit` + `pnpm test` 全 file gate。
 - [ ] **Step 4: review canonical 経路で dispatch**。 prompt に「`_` prefix 化が意図的か (本当に未使用か、 mock 命名規約を壊していないか)」 を観点 list に含める。 機械的なので review は軽い想定。
-- [ ] **Step 5: commit** (message `chore(lint): 機械的な lint 違反を一括解消 (unused-vars 43 / prefer-const 1 / no-img disable / unused-disable 3) [reviewed]`、 body に内訳 + 「暫定 config 不在のため `pnpm lint` は C3 まで叩かない、 手動 tsc + test で gate」 を明示)。
+- [ ] **Step 5: commit** (message `chore(lint): 機械的な lint 違反を一括解消 (prefer-const 1 / no-img disable / unused-disable 3) [reviewed]`、 body に内訳 + 「unused-vars 43 件は既に `_` prefix 済で正式 config の `argsIgnorePattern: '^_'` により silently 消化、 code fix 不要」 + 「暫定 config 不在のため `pnpm lint` は C3 まで叩かない、 手動 tsc + test で gate」 を明示)。
 
-**完了条件**: 48 fix / tsc クリーン / vitest 全 pass / review pass / [reviewed] tag / 暫定 config 削除済で working tree clean。
+**完了条件**: 5 fix / tsc クリーン / vitest 全 pass / review pass / [reviewed] tag / 暫定 config 削除済で working tree clean。
 
 ---
 
