@@ -47,6 +47,8 @@ RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復�
 
 **実装方式の既定** = `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 review)。`executing-plans` は OT が明示選択した場合のみ。
 
+**subagent dispatch は常に foreground で行う**。`run_in_background` は使用禁止(背景: 完了通知の取りこぼしで停止する既知バグ anthropics/claude-code#20236、および background agent の write auto-deny)。並列が必要な場合は同一メッセージ内の複数 Task 呼び出しで行う。
+
 ---
 
 ## Review と Commit(最重要)
