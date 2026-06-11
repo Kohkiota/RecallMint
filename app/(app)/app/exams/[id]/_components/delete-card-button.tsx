@@ -13,8 +13,7 @@
 
 import { useState, useTransition } from 'react'
 import { getClientDb } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
 import { Button } from '@/components/ui/button'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
@@ -32,23 +31,32 @@ export function DeleteCardButton({ cardId }: Props) {
     setPhase('deleting')
     setErrorMsg(null)
     startTransition(async () => {
+      const db = getClientDb()
       try {
-        // mirror remove (楽観反映 → useLiveQuery が一覧から即座に消す)。
-        await getClientDb().cards.delete(cardId)
+        // mirror remove + outbox enqueue (op='delete') を 1 Dexie rw tx に閉じる
+        // (`runOptimisticMutation` helper)。 enqueue throw で Dexie auto-rollback により
+        // mirror delete も巻き戻り、 user 通知 (error UI) を維持するため throwOnError=true。
+        // 即時 drain は helper 内蔵 fire-and-forget。
+        await runOptimisticMutation({
+          stores: [db.cards],
+          mutate: () => db.cards.delete(cardId),
+          mutations: [
+            {
+              entity_type: 'card',
+              entity_id: cardId,
+              op: 'delete',
+              patch: {},
+            },
+          ],
+          logEvent: 'card_inline.delete.tx_failed',
+          logContext: { cardId },
+          throwOnError: true,
+        })
       } catch {
         setErrorMsg('カードの削除に失敗しました。')
         setPhase('error')
         return
       }
-      // outbox enqueue (op='delete'、 patch は空 object で足りる)。
-      await enqueueEntityMutation({
-        entity_type: 'card',
-        entity_id: cardId,
-        op: 'delete',
-        patch: {},
-      }).catch(() => {})
-      // 即時 drain で delete を sync し、 pull-back で確定収束させる。
-      void runGuardedEntityMutationFlush().catch(() => {})
     })
   }
 

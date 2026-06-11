@@ -477,17 +477,26 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     })
   })
 
-  it('mirror insert が throw → inline error 表示、 enqueue / drain しない', async () => {
+  it('mirror insert が throw → tx auto-rollback で mirror に row が残らない (helper 既定 silent catch、 案 a 取り直し)', async () => {
+    // Sync-fix-1 T1a: handleAddCard は runOptimisticCreate 経由で mirror put + enqueue を
+    // 1 Dexie rw tx に閉じる。 mirror put (cards.add) が throw すると tx callback が rethrow
+    // → Dexie auto-rollback → 何も書き込まれない。 helper 既定 (throwOnError=false) で catch
+    // 後 silent return + logger.warn 1 行のみ (案 a 取り直し: 次回 pull で reconcile)。
+    // caller の inline error UI は出ない (userId='' fail-fast 以外では throw が伝播しないため)。
     const spy = vi
       .spyOn(getClientDb().cards, 'add')
       .mockRejectedValueOnce(new Error('boom'))
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'カードの追加に失敗しました。',
-    )
-    expect(mockEnqueue).not.toHaveBeenCalled()
-    expect(mockFlush).not.toHaveBeenCalled()
+
+    // logger.warn 経路の完了を待つため microtask を 1 tick 進める
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // mirror は rollback で 0 行のまま (seed 0 + insert 失敗)
+    expect(await getClientDb().cards.toArray()).toHaveLength(0)
+    // 既定 silent catch なので inline error UI は出ない
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     spy.mockRestore()
   })
 })

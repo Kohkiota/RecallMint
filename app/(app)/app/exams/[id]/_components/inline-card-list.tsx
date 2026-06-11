@@ -19,9 +19,7 @@ import {
 } from '@/lib/client-db'
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
-import { newId, enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
+import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
@@ -134,75 +132,61 @@ export function InlineCardList({
   const [newCardId, setNewCardId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // local-first 追加: client id を即時採番し、 mirror insert (楽観反映) +
-  // outbox enqueue (op='create') + 即時 drain。 server action 直叩き / refresh は廃止。
+  // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
+  // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
+  // rollback により mirror / outbox の lost write を構造的に排除する。 即時 drain は helper 内蔵。
+  // 採番基準は現在の live cards (この exam の sort_key と件数)。
   // card_count は exam list / 詳細 header いずれも mirror の card 行数で算出するため、
   // mirror への insert がそのまま件数表示に反映される (exam.card_count は別 bump しない。
   // 真の確定値は server 適用後の pull-back で収束)。
-  const handleAddCard = () => {
+  const handleAddCard = async () => {
     setError(null)
-    const cardId = newId()
-    const now = new Date().toISOString()
-    // 採番基準は現在の live cards (この exam の sort_key と件数)。
     const empty = buildEmptyCard(
       cards.map((c) => c.sortKey),
       cards.length,
     )
-    const card = buildNewClientCard({ cardId, userId, examId, empty, now })
 
-    // 新 card cell が mirror insert 由来の useLiveQuery 再 render で mount する前に
-    // newCardId を確定させる。 autoEditOnMount は one-shot の useState 初期化子のため、
-    // cell mount 時に newCardId が未確定 (null) だと display 固定になり auto-edit が
-    // 起動しない (Stage 4 smoke で実機 IndexedDB の競合として発覚)。 client 採番で id は
-    // 手元にあり server round-trip 不要なので、 mirror insert / enqueue より前に set する。
-    setNewCardId(cardId)
-
-    void (async () => {
-      try {
-        await getClientDb().cards.add(card)
-      } catch (err) {
-        logger.warn({
-          event: 'card_inline.create_mirror_insert_failed',
-          cardId,
-          examId,
-          err: String(err),
-        })
-        setError('カードの追加に失敗しました。')
-        return
-      }
-
-      // outbox enqueue (snake_case patch + camelCase options)。 server は options の
-      // is_correct から correct_answer_ids を再生成するため patch に含めない。
-      await enqueueEntityMutation({
-        entity_type: 'card',
-        entity_id: cardId,
-        op: 'create',
-        patch: {
-          exam_id: examId,
-          title: empty.title,
-          sort_key: empty.sortKey,
-          question_text: empty.questionText,
-          options: empty.options.map((o) => ({
-            id: o.id,
-            text: o.text,
-            isCorrect: o.is_correct,
-            ...(o.explanation ? { explanation: o.explanation } : {}),
-          })),
-          explanation_text: null,
-          memo: null,
-        },
-      }).catch((err) => {
-        logger.warn({
-          event: 'card_inline.create_enqueue_failed',
-          cardId,
-          examId,
-          err: String(err),
-        })
+    try {
+      const { id } = await runOptimisticCreate({
+        userId,
+        mirrorStore: getClientDb().cards,
+        buildRow: (newCardId, now) =>
+          buildNewClientCard({ cardId: newCardId, userId, examId, empty, now }),
+        // outbox enqueue (snake_case patch + camelCase options)。 server は options の
+        // is_correct から correct_answer_ids を再生成するため patch に含めない。
+        buildMutation: (newCardId) => ({
+          entity_type: 'card',
+          entity_id: newCardId,
+          op: 'create',
+          patch: {
+            exam_id: examId,
+            title: empty.title,
+            sort_key: empty.sortKey,
+            question_text: empty.questionText,
+            options: empty.options.map((o) => ({
+              id: o.id,
+              text: o.text,
+              isCorrect: o.is_correct,
+              ...(o.explanation ? { explanation: o.explanation } : {}),
+            })),
+            explanation_text: null,
+            memo: null,
+          },
+        }),
+        logEvent: 'card_inline.add.tx_failed',
+        logContext: { examId },
       })
 
-      // 即時 drain で create を sync し、 pull-back で card_count を確定収束させる。
-      void runGuardedEntityMutationFlush().catch(() => {})
-    })()
+      // 新 card cell が useLiveQuery 再 render で mount する際、 autoEditOnMount が one-shot
+      // useState 初期化子で発火するよう、 helper 戻り直後に newCardId を確定させる。
+      // Dexie tx commit → helper return → setNewCardId → React batch → useLiveQuery 再 render
+      // の順序で、 React batch が同 render に折り畳むため auto-edit は失われない。
+      setNewCardId(id)
+    } catch {
+      // runOptimisticCreate の fail-fast (userId='' のみ throw、 throwOnError 未指定で silent
+      // 既定)。 mirror rollback 済 + caller の error UI を維持。
+      setError('カードの追加に失敗しました。')
+    }
   }
 
   return (
