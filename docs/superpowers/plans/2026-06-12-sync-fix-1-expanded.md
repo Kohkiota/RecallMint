@@ -53,7 +53,8 @@
 
 - [ ] **目的**: `runOptimisticUpdate` を追加 + #3 #4 + 追加 1 2 (cascade delete 2 件) を helper 経由化、 残る lost write/atomic 経路を全消化。
 - [ ] **制約**: 全体ルール 1-5 + 7。 `runOptimisticUpdate` の revert 失敗時は `logger.warn` 1 行 + silent return (案 a 取り直し)。 cascade delete は `stores=[card_tags, tag_options, tag_categories]` の multi-store rw tx。
-- [ ] **完了条件**: 4 file 移行完了、 旧 void enqueue + IIFE pattern が対象 file の grep で 0。 helper test に update case 2-3 件追加 (revert 成功 / revert 失敗 silent / `isNoop` 早期 return)。 `pnpm lint`/`typecheck` exit 0、 Critical 0、 [reviewed]。
+- [ ] **T1a 引継ぎ既知 issue (T1b 着手時の前段)**: `app/(app)/app/exams/[id]/_components/inline-card-list.test.tsx:450-478` (「2 枚連続追加でも各々の問題文 cell が auto-edit」) が e06a3f2 baseline から flake (再現率 単独実行で 2-3 回中 1 回 fail、 canonical review Important #2)。 推定原因 = e06a3f2 で `handleAddCard` を async 化したことによる `setNewCardId` 遅延 race (旧実装の即時 sync 採番 → helper await 後採番 への変更)。 e06a3f2 `inline-card-list.tsx:180-184` のコメント「React batch が同 render に折り畳むため auto-edit は失われない」 は flake 実態と矛盾しており、 **コメント主張の検証**が必要。 T1b 着手時は (a) この race が test 環境限定 (jsdom + fake-indexeddb) か (b) 実ブラウザでも auto-edit が失われうるかを **DevTools MCP で先判定**すること。 実環境でも起きるなら test 修正でなく実装側 (setNewCardId のタイミング or auto-edit 検知方式) を直す。 **`waitFor` timeout 増加だけで close するのは禁止** (= 根本原因を検証せず flake を隠す対症療法を禁ずる)。
+- [ ] **完了条件**: 4 file 移行完了、 旧 void enqueue + IIFE pattern が対象 file の grep で 0。 helper test に update case 2-3 件追加 (revert 成功 / revert 失敗 silent / `isNoop` 早期 return)。 `pnpm lint`/`typecheck` exit 0、 Critical 0、 [reviewed]。 **加えて T1a 引継ぎ既知 issue (上記) の切り分け結論 (test 環境限定 or 実環境発生) と対処を記録**。
 
 ---
 
