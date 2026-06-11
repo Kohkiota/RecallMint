@@ -23,11 +23,12 @@ Next 16 / 依存全体 bump (波1) は本 sprint 範囲外。 波 2 完了時点
 | eslint-config-next | **16.2.4 維持** | bump 16.2.9 は波1。 next との一時ズレは hard peer なしで実害軽微 |
 | eslint-plugin-react-hooks | **direct devDep ^7.1.1** | 現状 transitive、 drift 事故回避 |
 | lefthook | **新 devDep ^2.1.9** | pre-commit (local 迅速性) |
-| GitHub Actions | **新 `.github/workflows/ci.yml`** | merge gate |
+| ~~GitHub Actions~~ | ~~新 `.github/workflows/ci.yml`~~ → **削除** (2026-06-11、 `6958d18`) | PR を作らない運用 (develop push → stg smoke → main ff-merge) では required check は PR merge 時のみ blocking gate になり事後アラームにしかならず、 Next 16 で build 時 lint 廃止で Vercel build にも lint を載せない方針と合わせ削除。 GHA 復活時は `6958d18` を revert か `edf3cab` から cherry-pick |
+| lint gate 正本 | **lefthook (コンテナ内 pre-commit) + sprint 完了 gate + review checklist の 3 層** | 1 層 = eslint.config.mjs (rule SSoT) / 2 層 = lefthook (staged-only、 commit gate) / 3 層 = sprint 完了 gate (whole-repo lint exit 0、 CLAUDE.md 規律) + review checklist (reviewer subagent 独立実走) |
 | 違反処理 | **全件 error gate** (`--max-warnings=0`) | 段階導入なし、 57 件僅少 |
 | Task 分割 | **3 commit** (OT 確定) | 挙動変更 fix / 機械 fix / gate 設置 を厳格分離 |
-| lefthook scope | **lint のみ** (OT 確定) | typecheck/test/build は CI に寄せる、 役割分離 |
-| **pnpm 版** | **`package.json` `"packageManager": "pnpm@10.33.0"` を Single Source of Truth** | devcontainer 実 pnpm = 10.33.0、 lockfile 9.0 形式と整合。 CI は `pnpm/action-setup@v4` の `version` 引数を **省略** し packageManager field を自動読み、 SSoT 1 箇所で全環境同期 |
+| lefthook scope | **lint のみ** (OT 確定) | typecheck/test/build は sprint 完了 gate (CC コンテナ内実行) に寄せる、 役割分離 |
+| **pnpm 版** | **`package.json` `"packageManager": "pnpm@10.33.0"` を Single Source of Truth** | devcontainer 実 pnpm = 10.33.0、 lockfile 9.0 形式と整合。 旧 CI は `pnpm/action-setup@v4` の `version` 引数を省略し packageManager field を自動読みする設計だった。 GHA 削除後も `packageManager` field の SSoT 性は維持 (devcontainer post-create.sh の `npm install -g pnpm` drift は波 1 で corepack 化検討) |
 
 ## 3. `eslint.config.mjs` (新設)
 
@@ -98,39 +99,76 @@ pre-commit:
 - `stage_fixed: false` で auto-fix 禁止 (作業者の明示意図を尊重)
 - install: `pnpm install` 時に `lefthook install` が自走するよう `package.json` `scripts.prepare` に追加 (§ 6)
 
-## 5. `.github/workflows/ci.yml` (新設、 merge gate)
+## 5. ~~`.github/workflows/ci.yml`~~ (削除済、 2026-06-11)
 
-```yaml
-# recallmint CI (波2)。 main / develop への PR と push で gate を立てる。
-name: CI
-on:
-  pull_request:
-    branches: [main, develop]
-  push:
-    branches: [main, develop]
-jobs:
-  gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # pnpm/action-setup は version 引数を省略 → package.json の packageManager
-      # field (pnpm@10.33.0) を自動読み。 pnpm 版の SSoT = packageManager field。
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      # build は波1 で Next 16 + Turbopack default に整合させる際に有効化。
-      # 波2 時点では skip (Next 15 のまま、 lint/typecheck/test で gate は十分)。
+**status: 削除 (`6958d18 chore(lint): GitHub Actions CI を削除、 lefthook を
+ローカル gate の正本とする [no-review]`)**。 波 2 初期に `edf3cab feat(lint):
+ESLint 9 flat config + lefthook + CI gate 配備 (波2)` で新設したが、 配備直後
+に運用観点で削除判断。
+
+### 不採用判断 (履歴に残す)
+
+- 現状の運用は **PR を作らない** (develop push → stg smoke → main ff-merge)、
+  GHA の `required check` は PR merge 時のみ blocking gate になる仕組みで、
+  本運用では事後アラームにしかならず blocking 効果なし
+- **Next 16 で build 時 lint は完全廃止** (`next lint` 削除)、 Vercel build に
+  lint を載せる設計は波 1 で消える仕組みに乗ること
+- チェックは **push トリガーでなく「実装完了」 トリガーに置く方針** = push を
+  叩く場所 (コンテナ / WSL) に依存する仕組みは置かない
+
+### 復活経路 (将来 PR 運用化 / 増員 / protected branch 移行時)
+
+- (i) `6958d18` を `git revert` で復活、 (ii) `edf3cab` から ci.yml 部分を
+  `git checkout edf3cab -- .github/workflows/ci.yml` で cherry-pick、
+  (iii) brief を起こして再配備
+- ci.yml の中身は `edf3cab` に保存済 (step 順 `checkout → pnpm/action-setup
+  (version 省略 = packageManager 自動読み) → setup-node 24` + install /
+  lint / typecheck / test + build skip)
+
+### 代替の lint gate 設計 (現行)
+
+- **1 層 = `eslint.config.mjs`** (rule SSoT、 § 3)
+- **2 層 = `lefthook.yml` pre-commit** (staged-only、 commit gate、 § 4)
+- **3 層 = sprint 完了 gate (CC コンテナ内実行) + review checklist (reviewer
+  subagent 独立実走)** (CLAUDE.md「Sprint 完了 gate」 セクション)
+  - 必須コマンド: `pnpm lint` exit 0 (whole-repo)
+  - 依存 / Next / Node / lockfile を触る sprint で追加: `pnpm install
+    --frozen-lockfile` / `pnpm typecheck` / `pnpm build`
+
+### pre-push hook 不採用判断 (履歴に残す)
+
+- pre-push hook の選択肢も検討したが **不採用**:
+  - チェックは push トリガーでなく「実装完了」 トリガーに置く方針
+  - whole-repo lint は sprint 完了 gate + review checklist で強制し、 コンテナ
+    内で完結させる
+  - push を叩く場所 (devcontainer / WSL / ローカル) に依存する hook は置かない
+- 将来 PR 運用化 / 増員 で push トリガー gate が必要なら GHA 復活が第一選択
+  (pre-push hook は環境依存で fragile)
+
+## 6. `package.json` 変更点
+
+事前確認: `grep "prepare" package.json` = **0 件**、 既存 `scripts.prepare` なし → 新設で衝突なし。
+
+```diff
+   "scripts": {
+     "dev": "next dev",
+     "build": "next build",
+     "start": "next start",
+-    "lint": "next lint",
++    "lint": "eslint . --max-warnings=0",
++    "typecheck": "tsc --noEmit",
+     "test": "vitest run",
++    "prepare": "lefthook install",
+     ...
+   },
+   "devDependencies": {
++    "eslint-plugin-react-hooks": "^7.1.1",
++    "lefthook": "^2.1.9",
+     ...
+   }
 ```
 
-設計判断:
-- node 24 (active LTS、 devcontainer と同じ)
-- pnpm 版指定は **`packageManager` 自動読み**で SSoT 1 本化 (drift 防止、 brief 要求)
-- 順序 = brief 通り (install → lint → typecheck → test)、 **build は skip** (波1 で Next 16 化と同時有効化、 二度手間回避)
-- secrets 不要 (lint / typecheck / test いずれも env 依存なし)、 branch protection との整合は OT 確認 (§ 10)
+- `"lint"` を `next lint` (Next 16 で削除予定 + 対話 prompt stuck) → `eslint . --max-warnings=0` に置換
 
 ## 6. `package.json` 変更点
 
@@ -216,6 +254,6 @@ prev-render pattern fix (set-state-in-effect 6 件) は「編集中の prop 変�
 
 ## 10. OT 依頼項目
 
-- (a) **GitHub Actions secret / branch protection 現状**: 本リポジトリは `.github/` 自体不在 = 設定 0 想定。 OT が手動で別途配備済の secret / protection があれば事前共有
-- (b) **devcontainer post-create.sh の `npm install -g pnpm`** は version 未指定で latest 取得 = drift リスクあり。 本 spec scope 外、 **波1 で corepack 化 or pnpm version 明示**を検討。 波2 時点では `packageManager` field の自動読みで CI と実環境を揃える形に倒す (drift 顕在化したら OT へ報告)
-- (c) **CI 初回 PR で gate を smoke**: C3 commit を含む PR で CI が実走、 lint/typecheck/test の 3 step pass を確認 (push は OT)
+- (a) ~~GitHub Actions secret / branch protection 現状~~ → **削除**。 GHA 自体を `6958d18` で削除したため項目消滅。 将来 PR 運用化で復活する場合は § 5「不採用判断 / 復活経路」 参照
+- (b) **devcontainer post-create.sh の `npm install -g pnpm`** は version 未指定で latest 取得 = drift リスクあり。 本 spec scope 外、 **波1 で corepack 化 or pnpm version 明示**を検討。 波2 時点では `packageManager` field の SSoT で開発環境を揃える形に倒す (drift 顕在化したら OT へ報告)
+- (c) ~~CI 初回 PR で gate を smoke~~ → **削除**。 GHA 自体を `6958d18` で削除したため項目消滅。 代替として sprint 完了時に CC が **whole-repo `pnpm lint` exit 0 を必ず確認** + 報告 chat に明記する規律 (CLAUDE.md「Sprint 完了 gate」 セクション) で 強制する
