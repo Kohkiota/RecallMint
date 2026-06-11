@@ -9,8 +9,8 @@
 // 環境依存に変更。詳細:
 // docs/superpowers/lessons/2026-04-30-clerk-env-validation-environment-dependent.md
 //
-// Imported as a side-effect from middleware.ts (Edge runtime) and
-// lib/auth/ensure-user.ts (Node runtime) for dual-runtime fail-fast.
+// Imported as a side-effect from proxy.ts (Node runtime) and
+// lib/auth/ensure-user.ts (Node runtime) for fail-fast.
 // lib/stripe.ts も同 VERCEL_ENV-aware pattern (両者で形式統一)。
 
 const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY

@@ -3,7 +3,7 @@ import type { NextConfig } from 'next'
 // Phase 1 G-baseline-3 (I-baseline-9): production grade の最低限 security
 // header を全 route に適用。CSP は frame-ancestors 'none' のみで X-Frame-Options
 // DENY と二重防御 (外部 origin 列挙不要、追加リスクゼロ)。Clerk + Stripe 関連の
-// CSP directive は middleware.ts の clerkMiddleware({ contentSecurityPolicy: {} })
+// CSP directive は proxy.ts の clerkMiddleware({ contentSecurityPolicy: {} })
 // 経由で auto 配備される (Clerk 公式 default mode)。HSTS preload は本 sprint
 // scope 外 (max-age + includeSubDomains のみ)。
 const securityHeaders = [
