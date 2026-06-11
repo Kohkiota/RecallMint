@@ -126,12 +126,38 @@ export function InlineCardList({
   // 配列 ref は cardTags 内容が同じなら useLiveQuery の内容ベース差分検知に依存して
   // 同 ref で返る前提。 子 memo は cardTags (= 取り出した配列) の ref で比較する。
   const tagsByCardId = liveData?.tagsByCardId ?? new Map<string, ClientCardTag[]>()
-  // 追加直後に採番した client id。 mirror insert + useLiveQuery 再描画で該当 card の
+  // 追加直後に採番した client id 集合。 mirror insert + useLiveQuery 再描画で該当 card の
   // 問題文 cell に autoEditOnMount を当て、 自動で編集モードにするための marker。
   // client 採番のため server round-trip なしで即時に edit mode へ入れる
   // (card の主体が問題文のため question_text cell のみに適用、 spec §3.5)。
-  const [newCardId, setNewCardId] = useState<string | null>(null)
+  //
+  // T1b race fix #2: 旧実装 (fa4aa7b) の `useState<string | null>` は 2 連続 click 時に
+  // `setNewCardId(id1) → setNewCardId(id2)` が React batch で「後勝ち」 fold され、
+  // 1 枚目 cell mount 時の `newCardId === id1` 判定が常に false (id2 のみ残存) に
+  // なる構造的限界があり、 stg smoke で 3/3 FAIL 再現した。 Set 化 + functional
+  // updater で 2 連続 add でも両方蓄積する形に再設計し、 single state 後勝ち問題を
+  // 構造的に解消する。 consume (Set 縮小) は持たない (下のコメント参照)。
+  const [newCardIds, setNewCardIds] = useState<Set<string>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
+
+  // 設計判断: 「mount 済 marker を Set から削除する consume 経路」 は意図的に持たない。
+  // 子 cell の `autoEditOnMount` は **mount 時の値** で判定 (one-shot useState 初期化子)
+  // のため、 Set に id が残り続けても既に mount 済 cell の挙動には影響しない。
+  // useEffect + setState の consume 実装は `react-hooks/set-state-in-effect` warning に
+  // 抵触し、 render-phase sentinel pattern も unmount race / over-trigger を抱える。
+  // 本 component 寿命は exam 詳細 page 滞在中のみで、 Set サイズは「滞在中の add 回数」
+  // (現実的に 10s 程度) で頭打ち、 各 `has()` も O(1) のため、 ためたままで bound する
+  // 方が単純で堅い。 失敗 add (catch 経路) の id も 残置でかまわない (mirror に row が
+  // 無いため描画に出てこない)。
+  //
+  // **成立条件 (重要、 将来の仮想化導入時に注意)**: consume 省略は「本 component 滞在中
+  // に cell `<li key={card.id}>` が unmount/remount されないこと」 に依存する。 現状は
+  // 直下 `<ul>` の stable key (= `card.id`) で React reconcile = order 変更でも cell は
+  // move のみで unmount しないため成立。 **将来 Grid-1 で TanStack Virtual / react-virtual
+  // 等の仮想化を導入する場合、 scroll で cell が unmount/remount され、 Set 残置 id を
+  // 持つ cell が再 mount で `autoEditOnMount=true` 経路に再突入し、 誤 auto-edit
+  // (編集モード強制突入) が発火する**。 仮想化導入と同時に consume (mount 後の Set
+  // 縮小、 sentinel pattern、 useEffect + functional updater 等) を復活させること。
 
   // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
   // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
@@ -147,14 +173,20 @@ export function InlineCardList({
       cards.length,
     )
 
-    // id は helper await の前に sync で採番し、 `setNewCardId(id)` を同期的に発火させる。
-    // これにより 2 連続 click 時の React batch が両 click の setNewCardId を同 render に
-    // 折り畳み、 各新 card cell の autoEditOnMount (one-shot useState 初期化子) が両方
-    // 発火する (T1a smoke #4 で 3/3 再現した sequential 上書き race fix、 旧実装の即時
-    // sync 採番挙動を復活)。 helper には id 引数で渡し、 helper 内 newId() の二重採番は
-    // 起きない。
+    // id は helper await の前に sync で採番し、 `setNewCardIds(prev => add)` を同期的に
+    // 発火させる。 fa4aa7b で導入した sync 採番 → 先発火は維持しつつ、 単一 state 後勝ち
+    // 問題 (旧 setNewCardId が batch fold で id1 を上書き) を Set + functional updater で
+    // 構造的に解消する: 2 連続 click では updater chain `prev → {id1} → {id1, id2}` で
+    // 両 id を蓄積、 useLiveQuery 再評価後の各新 card cell mount 時に `newCardIds.has(id)`
+    // が両方 true となり、 autoEditOnMount (one-shot useState 初期化子) が両 cell で
+    // 発火する (T1a smoke #4 race fix #2)。 helper には id 引数で渡し、 helper 内
+    // newId() の二重採番は起きない。
     const cardId = newId()
-    setNewCardId(cardId)
+    setNewCardIds((prev) => {
+      const next = new Set(prev)
+      next.add(cardId)
+      return next
+    })
 
     try {
       await runOptimisticCreate({
@@ -197,8 +229,12 @@ export function InlineCardList({
       // helper が rethrow した場合のみ到達 (enqueue throw → Dexie auto-rollback 済、 もしくは
       // userId='' fail-fast)。 mirror は rollback 済 + outbox 未反映、 案 a 取り直し前提で
       // 次回 pull が server 値で reconcile。 user 通知のため inline error UI を表示する。
-      // 注: setNewCardId は既に発火済 (sync 採番経路) だが、 mirror に該当 row が存在しない
+      // 注: setNewCardIds は既に発火済 (sync 採番経路) だが、 mirror に該当 row が存在しない
       // ため autoEditOnMount は描画上 no-op となる (該当 cell が render されない)。
+      // 失敗した id を Set から削除する bookkeeping は行わない: helper の catch 経路は
+      // Dexie auto-rollback 済で mirror に row が存在せず、 cell が render されないため
+      // `newCardIds.has(failed_id)` は呼ばれない (= 実害なし、 delete の手間を省く)。
+      // 集合は max でも 1 view 中の add 回数分しか溜まらないため leak にもならない。
       setError('カードの追加に失敗しました。')
     }
   }
@@ -275,7 +311,7 @@ export function InlineCardList({
                   ariaLabel="問題文 編集"
                   multiline
                   displayClassName="text-sm text-slate-800"
-                  autoEditOnMount={card.id === newCardId}
+                  autoEditOnMount={newCardIds.has(card.id)}
                 />
               </div>
 

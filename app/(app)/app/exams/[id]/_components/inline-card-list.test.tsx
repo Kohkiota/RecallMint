@@ -448,7 +448,17 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
   })
 
   it('2 枚連続追加でも各々の問題文 cell が auto-edit する', async () => {
-    // 連続追加でも各 add で newCardId が mount 前に確定し、 両新 card が edit mode に。
+    // 註: 本 test は T1b race fix #2 (newCardId Set 化、 commit 後追記) で
+    // single state 後勝ち問題を構造的に解消したことを立証する。 ただし jsdom
+    // の async render 解決順序により、 race fix #1 (fa4aa7b、 単一 state のまま
+    // sync 採番) でも本 test は stable green を出していた = jsdom は race 検出器
+    // として機能しなかった。 本 race の真の検証は DevTools MCP 実 smoke (stg
+    // 2 枚連続追加 × 3 回試行) が権威。 jsdom test は **同期化された end behavior**
+    // (両 cell の autoEditOnMount=true 経路) の retry safety のみを担保する。
+    // plan T1b 制約 per、 「waitFor timeout 増加だけで close 禁止」 + 「DevTools
+    // MCP 実 smoke の権威性」 を遵守。
+    // 連続追加でも各 add で newCardIds に id が functional updater chain で蓄積され、
+    // 両新 card が edit mode に。
     // enqueue 遅延 (macrotask) を各 add 分 queue して実機の競合を再現する。
     mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')
     mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2')
