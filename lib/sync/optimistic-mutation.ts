@@ -111,6 +111,10 @@ export async function runOptimisticMutation(
 export type OptimisticCreateOptions<T> = {
   /** 空文字なら fail-fast (console.error + 早期 throw)、 placeholder 禁止。 */
   userId: string
+  /** 任意: caller が事前採番した id を使う場合に指定。 未指定なら helper 内部で newId() を呼ぶ。
+   *  caller が `setNewCardId(id)` 等の UI state 更新を helper await の前 (= sync) に
+   *  発火させたい場合に使う (T1a smoke #4 race fix、 連続 click 時の sequential 上書き解消)。 */
+  id?: string
   /** 採番した id + nowIso を受け取り mirror row を組み立てる factory。 */
   buildRow: (newId: string, nowIso: string) => T
   /** mirror put の target store。 */
@@ -142,6 +146,7 @@ export async function runOptimisticCreate<T>(
 ): Promise<{ id: string }> {
   const {
     userId,
+    id: providedId,
     buildRow,
     mirrorStore,
     buildMutation,
@@ -159,7 +164,9 @@ export async function runOptimisticCreate<T>(
     throw new Error('empty user_id')
   }
 
-  const id = newId()
+  // options.id 未指定なら helper 内で newId()、 指定ありなら caller 採番値を尊重する。
+  // caller が `setNewCardId(id)` 等 UI state を sync で先発火させたい race fix 経路。
+  const id = providedId ?? newId()
   const nowIso = new Date().toISOString()
   const db = getClientDb()
 

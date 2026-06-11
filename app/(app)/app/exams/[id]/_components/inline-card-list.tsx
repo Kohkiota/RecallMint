@@ -20,6 +20,7 @@ import {
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
 import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
+import { newId } from '@/lib/sync/entity-mutations'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
@@ -146,9 +147,19 @@ export function InlineCardList({
       cards.length,
     )
 
+    // id は helper await の前に sync で採番し、 `setNewCardId(id)` を同期的に発火させる。
+    // これにより 2 連続 click 時の React batch が両 click の setNewCardId を同 render に
+    // 折り畳み、 各新 card cell の autoEditOnMount (one-shot useState 初期化子) が両方
+    // 発火する (T1a smoke #4 で 3/3 再現した sequential 上書き race fix、 旧実装の即時
+    // sync 採番挙動を復活)。 helper には id 引数で渡し、 helper 内 newId() の二重採番は
+    // 起きない。
+    const cardId = newId()
+    setNewCardId(cardId)
+
     try {
-      const { id } = await runOptimisticCreate({
+      await runOptimisticCreate({
         userId,
+        id: cardId,
         mirrorStore: getClientDb().cards,
         buildRow: (newCardId, now) =>
           buildNewClientCard({ cardId: newCardId, userId, examId, empty, now }),
@@ -174,7 +185,7 @@ export function InlineCardList({
           },
         }),
         logEvent: 'card_inline.add.tx_failed',
-        logContext: { examId },
+        logContext: { examId, cardId },
         // user-initiated create は failure を UI で通知する (= delete-card-button と同 pattern)。
         // helper 既定 silent (案 a 取り直し) のままだと「追加ボタンを押したが何も起きない」
         // 経験になり、 prior 動作からの UX regression を招く (Sync-fix-1 T1a canonical review
@@ -182,16 +193,12 @@ export function InlineCardList({
         // caller の catch に流し、 既存 error UI ('カードの追加に失敗しました。') を維持する。
         throwOnError: true,
       })
-
-      // 新 card cell が useLiveQuery 再 render で mount する際、 autoEditOnMount が one-shot
-      // useState 初期化子で発火するよう、 helper 戻り直後に newCardId を確定させる。
-      // Dexie tx commit → helper return → setNewCardId → React batch → useLiveQuery 再 render
-      // の順序で、 React batch が同 render に折り畳むため auto-edit は失われない。
-      setNewCardId(id)
     } catch {
       // helper が rethrow した場合のみ到達 (enqueue throw → Dexie auto-rollback 済、 もしくは
       // userId='' fail-fast)。 mirror は rollback 済 + outbox 未反映、 案 a 取り直し前提で
       // 次回 pull が server 値で reconcile。 user 通知のため inline error UI を表示する。
+      // 注: setNewCardId は既に発火済 (sync 採番経路) だが、 mirror に該当 row が存在しない
+      // ため autoEditOnMount は描画上 no-op となる (該当 cell が render されない)。
       setError('カードの追加に失敗しました。')
     }
   }

@@ -311,7 +311,57 @@ describe('runOptimisticCreate — main path', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 6. userId='' fail-fast (runOptimisticCreate)
+// 6. caller-provided id (runOptimisticCreate)
+// ---------------------------------------------------------------------------
+
+describe('runOptimisticCreate — caller-provided id', () => {
+  it('options.id 指定で caller 採番 id がそのまま buildRow / buildMutation / 戻り値に渡る', async () => {
+    // T1a smoke #4 race fix: caller 側で sync 採番 → setNewCardId(id) を await の前に
+    // 発火させたい場合に使う経路。 helper 内 newId() は呼ばれず、 caller 採番 id が
+    // 一貫して buildRow / buildMutation / 戻り値 / mirror 行 / outbox 行に伝播する。
+    const db = getClientDb()
+    const CALLER_ID = 'caller-provided-id'
+    const receivedByBuildRow: { id: string; nowIso: string }[] = []
+    const receivedByBuildMutation: { id: string; nowIso: string }[] = []
+
+    const result = await runOptimisticCreate<ClientCard>({
+      userId: TEST_USER_ID,
+      id: CALLER_ID,
+      mirrorStore: db.cards,
+      buildRow: (id, nowIso) => {
+        receivedByBuildRow.push({ id, nowIso })
+        const row = makeClientCard(id)
+        return { ...row, created_at: nowIso, updated_at: nowIso, due: nowIso }
+      },
+      buildMutation: (id, nowIso) => {
+        receivedByBuildMutation.push({ id, nowIso })
+        return {
+          entity_type: 'card',
+          entity_id: id,
+          op: 'create',
+          patch: { exam_id: TEST_EXAM_ID, title: 'created' },
+          edited_at: nowIso,
+        }
+      },
+      logEvent: 'test.create_caller_id',
+    })
+
+    // 戻り値 + buildRow / buildMutation 受領値が全て caller 採番 id と一致
+    expect(result.id).toBe(CALLER_ID)
+    expect(receivedByBuildRow[0].id).toBe(CALLER_ID)
+    expect(receivedByBuildMutation[0].id).toBe(CALLER_ID)
+
+    // mirror / outbox 双方の id も caller 採番 id
+    const stored = await db.cards.get(CALLER_ID)
+    expect(stored).toBeDefined()
+    const pending = await getPendingEntityMutations()
+    expect(pending).toHaveLength(1)
+    expect(pending[0].entity_id).toBe(CALLER_ID)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. userId='' fail-fast (runOptimisticCreate)
 // ---------------------------------------------------------------------------
 
 describe('runOptimisticCreate — userId="" fail-fast', () => {
