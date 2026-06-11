@@ -1,378 +1,149 @@
 # プロジェクトルール
 
-## プロジェクト概要
+## 概要 / スタック
 
-多肢選択問題 PWA (mcq-platform)。学習資料を AI OCR で MCQ 化し、 FSRS 忘却曲線で
-復習する学習アプリ。 Notion 互換のカスタムプロパティ方式 (cards.custom_props、
-freeform jsonb) でドメイン中立、マルチテナント対応。
-リポジトリ: `Kohkiota/mcq-platform` (devcontainer-template + plan00 SaaS
-template 起点、 vocab drop / mcq 新規追加中)。
+RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復習する学習 SaaS。local-first(Dexie/IndexedDB mirror + outbox)。リポジトリ: `Kohkiota/RecallMint`。
+現フェーズ・ロードマップは sprint docs(`docs/plans/` / `docs/superpowers/`)と OT 管理の todo が正本。**本 file に進捗を書かない**。
 
-**現フェーズ**: Sprint A 系 (A-1a / A-2 / A-3.2) 完了、 本番初回 deploy 成功。
-詳細は `docs/02-tech-spec.md` および sprint 個別 plan (`docs/plans/`) 参照、
-全体ロードマップ / 改訂履歴は Obsidian 管理。
+- Next.js 16.x(App Router)/ TypeScript strict / Tailwind v4 / pnpm(packageManager field が SSoT)
+- PostgreSQL(Supabase)+ Drizzle / Dexie(client mirror + entity_mutations outbox)
+- Clerk(認証)/ Stripe(決済)/ Gemini 2.5 Flash(@google/genai)
+- Vercel(hnd1 / Function timeout 900s)/ Node 24
+- 新ライブラリ導入は事前相談。API 仕様は Context7 MCP で裏取り、**最新 patch 版の判定は registry 直叩きが正**(Context7 は patch に遅れる)
 
-## 技術スタック (固定)
+## Stripe(絶対)
 
-- Frontend: Next.js 15.x (App Router) / TypeScript strict / Tailwind v4
-- DB: PostgreSQL (Supabase) / Drizzle ORM
-- 認証: Clerk (@clerk/nextjs) / 決済: Stripe
-- AI: Google Gemini 2.5 Flash 主軸 (PoC 実測 1 問 0.1 円)。 Pro fallback は v1.x で
-  post-validation 失敗時のみ検討、 Flash-lite はコスト最重視時の候補
-- PWA: 骨格のみ (manifest + icons + metadata)。 service worker / offline /
-  push / next-pwa は Phase 2 検討
-- Deploy: Vercel (Pro / Function timeout 900s、 OCR は 1 ファイル ≤ 150p 単発)
-- Package: pnpm
+1. キーは `VERCEL_ENV` で分岐、`lib/stripe.ts` で fail-fast(production = live のみ / その他 = test のみ。SECRET は `rk_` Restricted Key 推奨)
+2. webhook 署名検証(`constructEvent`)+ idempotency(`stripe_events` に event.id 保存)必須。エラー時も 200 を返す(再送ループ防止)、timeout 10 秒以内
+3. 本番切替(live key / Vercel env / endpoint 登録)は OT 手動、CC 関与不可。ローカルは Stripe CLI 転送のみ
 
-**重要**: 上記以外のライブラリ導入時は事前相談。 API 仕様は Context7 MCP
-(`use context7`) から取得。
+## Clerk(絶対)
 
----
+1. キーは `VERCEL_ENV` で分岐、`lib/clerk.ts` で fail-fast
+2. `proxy.ts` で保護ルート設定。Server: `auth()` / `currentUser()`、Client: `useUser()` / `useAuth()`
+3. **全 table に `user_id` 必須**、query は必ず `WHERE user_id = ?`
+4. Clerk User ↔ Stripe Customer の紐付けは `users` table(`clerk_id`, `stripe_customer_id`)
 
-## Stripe 取扱い (絶対)
+## AI API(絶対)
 
-1. キーは `VERCEL_ENV` で使い分け、 `lib/stripe.ts` で fail-fast
-   - `production` → `rk_live_`/`sk_live_` + `pk_live_` (test 拒否)
-   - その他 → `rk_test_`/`sk_test_` + `pk_test_` (live 拒否)
-   - SECRET*KEY は `rk*\*` Restricted Key 推奨
-2. Webhook 検証必須 (`stripe.webhooks.constructEvent`)
-3. Webhook idempotency 必須
-   - `event.id` を `stripe_events` table に保存、 重複処理を弾く
-   - エラー時も 200 を返す (再送ループ防止)、 timeout 10 秒以内
-4. 本番切替 (live key 発行 / Vercel env / Webhook endpoint 登録) は人間が手動、
-   Claude Code 関与不可
-5. ローカルは Stripe CLI 転送のみ使用
-
-## Clerk 認証 (絶対)
-
-1. キーは `VERCEL_ENV` で使い分け、 `lib/clerk.ts` で fail-fast
-   - `production` → `pk_live_`/`sk_live_` / その他 → `pk_test_`/`sk_test_`
-   - 詳細: `docs/superpowers/lessons/2026-04-30-clerk-env-validation-environment-dependent.md`
-2. `proxy.ts` で保護ルート設定
-3. Server: `auth()` / `currentUser()`、 Client: `useUser()` / `useAuth()`
-4. **全 table に `user_id` カラム必須**、 query は必ず `WHERE user_id = ?` で絞る
-5. Clerk User と Stripe Customer の紐付けは `users` table (`clerk_id`,
-   `stripe_customer_id`)
-
-## AI API 呼出 (絶対、 AI 使用時のみ)
-
-1. クレジットカード紐付けなし運用前提 (無料枠のみ)
-2. 日次上限を `GEMINI_DAILY_LIMIT` で制御
-3. `ai_usage` table (date, count) で呼出毎にカウントアップ
-4. 上限到達で UI エラー + API 停止
-5. **429 受信で即時停止、 リトライ禁止**
-6. 外部 API call にはタイムアウトを必ず設定する (具体値は機能ごとに `docs/02-tech-spec.md` で定義)
-7. 生成はユーザー明示トリガーのみ (自動生成禁止)
-8. 無限ループで叩くコード・テストは禁止
-9. test では実 API 禁止、 モック必須
-
----
+1. 無料枠のみ運用(カード紐付けなし)。日次上限 `GEMINI_DAILY_LIMIT` + `ai_usage` カウント、上限到達で UI エラー + 停止
+2. **429 受信で即停止・リトライ禁止**。外部 API call はタイムアウト必須(値は tech-spec で定義)
+3. 生成はユーザー明示トリガーのみ(自動生成禁止)。無限ループで叩くコード・テスト禁止。test は mock 必須(実 API 禁止)
 
 ## 品質基準
 
-- TypeScript strict / UI は一貫した世界観 (色・タイポ・レイアウト統一)
-- テンプレ的 AI デザイン回避 (紫グラデ・白カード羅列禁止)
-- mobile 実機 (Chrome DevTools mobile view) で動作検証必須
-- 決済は Stripe Checkout (自前フォーム禁止)、 認証は Clerk UI component 基本使用
-- プラン制限時は残り枠・上限・超過時 message を明示
-- 各機能は実動 (モック・スタブで誤魔化さない)
-
-## 役割境界
-
-- 設計書 (`docs/design.md`) は設計フェーズのみ更新、 実装時は書き換えない
-  (仕様変更要なら停止して相談)
-- 完了報告に起動コマンド必記、 「概ね良い」 で済ませず具体指摘
+- TypeScript strict / UI は一貫した世界観(テンプレ的 AI デザイン回避: 紫グラデ・白カード羅列禁止)
+- mobile 実機 view(DevTools)で動作検証必須
+- 決済は Stripe Checkout(自前フォーム禁止)、認証は Clerk UI component 基本使用
+- プラン制限時は残り枠・上限・超過 message を明示。各機能は実動(モック・スタブで誤魔化さない)
 
 ---
 
-## Sprint kickoff のフロー規律 (skill skip 禁止)
+## Sprint フロー(skill skip 禁止)
 
-`brainstorming` / `writing-plans` の各 superpowers skill を Claude Code が
-独断で skip するのは禁止。 brief を「spec + plan 確定済」と解釈する判断は
-OT 専権。
+`brainstorming`(spec 起草 = 同 skill 内 step 6。`writing-specs` という独立 skill は存在しない)/ `writing-plans` を CC 独断で skip 禁止。brief を「spec + plan 確定済」と解釈する判断は OT 専権。
 
-(註: superpowers 5.1.0 に **`writing-specs` skill は存在しない**。 spec 起草
-は `brainstorming` skill 内 step 6「Write design doc」 が担当し、
-`docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` への書込 + user review
-gate + `writing-plans` への transition も同 skill 内で完結する。 spec 起草
-だけ独立に行いたい場合は `brainstorming` skill を起動し、 clarifying
-questions step を skip して design step から入る運用とする。)
+**着手前宣言**(feat/fix 系 task の着手直前に chat へ): ① 現在 phase ② skill 起動方針(A full / B 部分 skip + 根拠1行 / C 全 skip + 根拠1行)③ OT 承認要否。迷ったら full flow。C は brief が scope + 完了条件 + やらないこと + 実装手段を 1-2 file 粒度で具体指定している場合のみ。skip ミスに気付いたら即中断して OT に巻き戻し/継続を仰ぐ(cover up 禁止)。
 
-**着手前宣言** (feat/fix 系 task の着手直前、 chat に明示):
-
-1. 現在 phase (brainstorming / spec / plan / execute / review)
-   - 「spec」 は `brainstorming` skill の output artifact、 独立 phase 名と
-     しては保持するが skill 起動は `brainstorming` を指す
-2. skill 起動方針: (A) full flow / (B) 部分 skip + 根拠 1 行 /
-   (C) 全 skill skip + 根拠 1 行
-3. OT 承認要否
-
-**Skip 判断**: 迷ったら full flow。 全 skill skip (C) は brief が scope +
-完了条件 + やらないこと + 実装手段を 1-2 ファイル粒度で具体指定している場合のみ
-許容。 境界で迷えば OT 確認必須。
-
-**skip ミスに進行中気付いたら**: 即中断、 OT に「巻き戻し」か「継続承認」を
-仰ぐ。 cover up (黙って続行 / 後付け正当化) は禁止。
-
-(初出経緯: 2026-05-27 cache-fix roadmap ④-1 / ④-4 で skill 全 skip 発生。
-同日 ④-3 で `writing-specs` skill 不在が発覚、 本文修正。)
-
-### 実装方式 (既定: Subagent-Driven Development)
-
-plan 化後の実装は**原則すべて `superpowers:subagent-driven-development`** で行う
-(task 単位で fresh subagent + task 間 review)。 これを既定の実装方式とする。
-inline 一括実行 (`executing-plans`) は OT が明示選択した場合のみ。
+**実装方式の既定** = `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 review)。`executing-plans` は OT が明示選択した場合のみ。
 
 ---
 
-## Review と Commit (最重要)
+## Review と Commit(最重要)
+
+### 順序の絶対則
+
+**review pass → commit([reviewed] 込み)の一方向のみ。commit してから review する順序は禁止。**
+tag の後付け amend が必要になった時点で順序違反(未 push なら amend 可だが、原則発生させない)。
 
 ### 必須経路
 
-feat(_) / fix(_) は auto mode でも **`superpowers:requesting-code-review`
-skill canonical 経路** (skill template + general-purpose subagent + 厳格
-prompt) を通すこと。 自由形式 review / 軽量 agent 投げ捨て / template 改変は
-**禁止**。 velocity 優先で省略不可。
+feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路(skill template + general-purpose subagent + 厳格 prompt、改変禁止)。自由形式 review / 軽量 agent 投げ捨て禁止。velocity 優先で省略不可。
+例外: chore / docs / test / refactor で実装ロジック変更なしのみ skip 可(= `[no-review]`)。
 
-例外: chore(_) / docs(_) / test(_) / refactor(_) で実装ロジック変更なしのみ
-スキップ可。
+### Tag と hook
 
-(註: superpowers 5.0.7 の `code-reviewer` 独立 subagent は 5.1.0 で削除、
-`requesting-code-review` skill + general-purpose subagent に統合。 plan00
-Phase 1 I-J / I-K で運用検証済)
+commit 末尾に `[reviewed]`(formal review 完了)or `[no-review]`(意図的 skip)。`.claude/hooks/check-review.sh`(Stop hook)が tag 無し feat/fix を block する。手動無効化禁止。
 
-### Tag 運用
+### Commit 直前の宣言(feat/fix)
 
-commit message 末尾:
-
-- `[reviewed]`: formal review 完了後
-- `[no-review]`: 軽微変更 (typo / 単純 revert / コメント修正) を意図的 skip
-
-`.claude/hooks/check-review.sh` (Stop hook) が tag 無し commit を block する。
-手動無効化禁止。
-
-### ドキュメントの commit
-
-docs 配下の成果物 (spec / plan / session log / lessons / roadmap 等) は、 内容が
-確定したら**必ず commit する**。 確定済みドキュメントを未 commit のまま放置しない
-(`docs(_)` + `[no-review]`、 実装ロジック変更なしのため review skip 可)。
-
-### Commit 直前の review ログ明示
-
-feat/fix commit 直前に以下 4 点を chat に明示:
-
-1. 呼出 review 経路 (skill 名 / subagent 種別 = general-purpose /
-   template 改変なし)
-2. review 結果 (Critical N / Important N / Minor N)
-3. Important を fix せず残す場合: 項目名 + 理由 + OT 承認済み旨
-4. [reviewed] tag 付与宣言
-
-宣言なし commit 禁止。
+chat に4点: ① review 経路(skill 名 / general-purpose / template 改変なし)② 結果(Critical N / Important N / Minor N)③ Important を残す場合は項目 + 理由 + OT 承認済み旨 ④ [reviewed] 付与宣言。宣言なし commit 禁止。
 
 ### 結果分類
 
-- **Critical**: 即 fix (amend or follow-up)
-- **Important**: 原則 fix。 MVP スコープ薄 or コスト高は OT 判断
-- **Minor**: 記録のみ可
+Critical = 即 fix / Important = 原則 fix(MVP スコープ薄・コスト高は OT 判断)/ Minor = 記録のみ可。
 
 ### 重要 Fix の裏取り
 
-以下に該当する Fix は code-reviewer pass だけで [reviewed] 付与しない:
+**決済・認証・削除・外部副作用**に触れる fix は review pass だけで [reviewed] を付けない: review pass → commit(tag 無し)→ OT 実機確認 → 未 push amend で [reviewed] 追記。UI 微調整 / typo / ロジック不変 refactor は対象外。
 
-- **決済** (Stripe Checkout / portal / Webhook / subscription)
-- **認証** (Clerk middleware / session / 保護ルート)
-- **削除** (アカウント削除 / cascade / 論理削除)
-- **外部副作用** (外部 API / email / Webhook 発火)
+### docs の commit
 
-手順: review pass → commit (tag 無し) → OT 実機確認 → `git commit --amend` で
-[reviewed] 追記。
-
-対象外 (review pass で即 [reviewed] 可): UI 微調整 / typo / ロジック変更なし
-refactor。
-
-### review dispatch checklist (必須項目)
-
-`superpowers:requesting-code-review` を controller が dispatch するときの
-prompt 内 観点 list に、 以下を **必須項目**として含める:
-
-- **whole-repo `pnpm lint --max-warnings=0` exit 0 確認**: reviewer subagent
-  が独立に 1 回実走、 報告に含める。 lefthook (staged-only) の穴を埋める
-  3 層目の gate (1 層 = config / 2 層 = lefthook / 3 層 = review checklist)
+確定した docs(spec / plan / session log / lessons)は**必ず即 commit**(`docs(_)` + `[no-review]`)。未 commit 放置禁止。
 
 ---
 
-## Sprint 完了 gate (恒久規律)
+## Sprint 完了 gate(恒久規律)
 
-GitHub Actions CI を削除し lefthook をローカル gate の正本とした (2026-06-11、
-`6958d18 chore(lint): GitHub Actions CI を削除、 lefthook をローカル gate
-の正本とする [no-review]`) 経緯に合わせ、 push 前に **sprint 完了 gate** を
-コンテナ内で必ず通すこと:
+lint gate はローカル3層: ① eslint.config.mjs(ルール正本)② lefthook pre-commit(staged のみ)③ sprint 完了 gate + review checklist(whole-repo)。GHA は不採用(PR なし運用、git 履歴 `6958d18` から復活可)。
 
-### 必須コマンド (全 sprint 共通)
+**全 sprint 共通**: 完了時に whole-repo `pnpm lint`(--max-warnings=0)exit 0。報告 chat に「whole-repo lint exit 0 確認済」を1行明記。
+**依存 / Next / Node / lockfile を触る sprint は追加**: `pnpm install --frozen-lockfile` + `pnpm typecheck` + `pnpm build` 全 exit 0。
+**review dispatch の観点 list にも whole-repo lint 実行確認を必須項目として含める**(CC と reviewer の2経路。どちらか漏れたら完了報告に明記して OT 判断)。
 
-- `pnpm lint` (= `eslint . --max-warnings=0`) exit 0
-  - lefthook は staged file のみ lint = whole-repo 視点での違反は別途確認要
-  - sprint 完了報告 chat に「whole-repo lint exit 0 確認済」 を 1 行明記
-
-### 依存 / Next / Node / lockfile を触る sprint で追加必須
-
-- `pnpm install --frozen-lockfile` exit 0 (GHA `--frozen-lockfile` を消した代替、
-  lockfile 乖離を deploy 前にコンテナ内で掴む)
-- `pnpm typecheck` (= `tsc --noEmit`) exit 0
-- `pnpm build` (= `next build`) exit 0
-
-### git commit --no-verify 禁止
-
-`git commit --no-verify` / `-n` の使用は **全面禁止** (lefthook bypass で
-gate が機能しなくなる)。 hook が失敗した場合は根本原因を fix、 bypass しない。
-hook 設計に問題があるなら `lefthook.yml` を編集して直す (revert / 例外も
-config で明示)。
-
-### review dispatch との二重防御
-
-上記の whole-repo lint 確認は (1) sprint 完了 gate (CC 実行)、 (2) review
-checklist (reviewer subagent 実行) の 2 経路で踏む。 1 経路でも漏れたら
-sprint 完了報告に該当箇所を明記して OT 判断を仰ぐ。
+`git commit --no-verify` / `-n` は**全面禁止**。hook が失敗したら根本原因を fix(設計問題なら lefthook.yml を編集して明示的に直す)。
 
 ---
 
 ## OT 向け出力規律
 
-chat には結論のみ、 詳細 trace / log / 検証 step は別 file
-(`docs/superpowers/sessions/` 等) に書き path 提示。
+chat には結論のみ。詳細 trace / log は `docs/superpowers/sessions/` 等に書き path 提示。
 
-### 構造
-
-1. **結論** (3-5 行): 何をやった / 発見 / 次の一手
-2. **論点** (あれば、 text 番号 bullet `A. / B. / C.` で 1 メッセージ提示。
-   AskUserQuestion 等の選択式 UI は使わない — OT は自由形式で全論点に一括返答)
-3. **判断必要: yes / no**
-4. **詳細 file path** (あれば)
-
-### 禁止
-
-- 長文 prose の状況説明 / 言い換え繰り返し
-- 「〜と思われます」 連発 (確度を 1 行で)
-- memory / 既定方針 / `CLAUDE.md` 既出ルールの再説明
-
-### 例
-
-```
-復習 bug の root cause 特定。 revalidatePath による server queue 動的縮小
-+ client idx 独立前進の二重作用。
-詳細: docs/superpowers/sessions/2026-05-04-review-bug-trace.md
-
-論点:
-- 再 due card 取扱い: A) 同 session 再出題 / B) 次 session 待ち
-- 完了判定: A) 全件解いたら完了 / B) due 0 で完了
-
-判断必要: yes
-```
+構造: ① 結論(3-5 行)② 論点(あれば text 番号 bullet。選択式 UI 不使用 — OT は自由形式で一括返答)③ **判断必要: yes / no** ④ 詳細 file path。
+禁止: 長文 prose の状況説明 / 言い換え反復 / 確度曖昧表現の連発 / CLAUDE.md 既出ルールの再説明。
 
 ### Smoke 確認
 
-**実行担当**: 原則 Claude Code が DevTools MCP (chrome-devtools / playwright)
-で実行。 以下のみ OT 依頼:
-
-- 課金 API 呼出を伴うもの (OCR / AI 実走系)
-- Claude Code 環境で届かない条件 (物理 mobile / push / Stripe 本番 /
-  OT 専用 Clerk 設定 等)
-- Claude Code が試行して環境制約で頓挫 (例: Vercel Live iframe → chrome-error)
-
-**手順**: 着手 / 依頼前に整理:
-
-1. 確認 URL 2. 確認手順 3. 期待挙動 4. mobile 要否
-
-「動作確認してください」 だけの丸投げ禁止。 Claude Code 実行時は DevTools 証拠
-(Network reqid 順序 / IDB 抜粋 / console / snapshot) を report に含める。
+原則 CC が DevTools MCP(chrome-devtools / playwright)で実行し、証拠(Network reqid / IDB 抜粋 / console / snapshot)を report に含める。OT 依頼は次のみ: 課金 API 実走系 / CC 環境で届かない条件(物理 mobile / push / Stripe 本番等)/ CC が環境制約で頓挫した場合。依頼時は ① URL ② 手順 ③ 期待挙動 ④ mobile 要否 を整理(丸投げ禁止)。
 
 ### kickoff prompt 受領時
 
-- plan 級詳細 (test 戦略 / 修正 logic / コード片 / 検証 step) を kickoff に
-  求めない。 不足は自分で skill (writing-specs / brainstorming) で drafting
-- claude.ai に実装方法を求めない (claude.ai は判断材料整理担当、 実装方法判断
-  は OT 専権)
+plan 級詳細(test 戦略 / コード片)を kickoff に求めない — 不足は skill で自分で drafting。claude.ai は判断材料整理担当、実装方法判断は OT 専権。
 
 ---
 
-## Plan の書き方 (writing-plans 指示)
+## Plan の書き方(writing-plans)
 
-Plan は**設計判断の記録**、 実装コードそのものではない。
+Plan は**設計判断の記録**。各 task は ① 目的 ② 制約(型 / 命名 / 絶対ルールのどれを守るか)③ 完了条件(テスト可能 + Critical 0 + [reviewed])の3要素のみ、10-20 行。全体ルールは冒頭一度、task からは参照。
+禁止: file 完全な中身を書く / scaffolding を複数 task に割る / 起動確認を TDD step と呼ぶ。
+分量: 150-250 行。**300 行超で STOP・OT 相談**。完成時に最終行数を報告。
 
-### 禁止
+### Spec の凍結
 
-- ファイル完全な中身 (`package.json` / schema / component) を plan に書かない
-  (コードは Generator が TDD で書く)
-- `pnpm create next-app` / `pnpm add` 等 scaffolding を複数 task に割らない
-  (1 task)
-- 「`pnpm dev` で起動確認」 等を TDD step と呼ばない
-
-### 各タスクに書く 3 要素のみ
-
-1. **目的**: 何を、 なぜ
-2. **制約**: 型 / 命名 / 依存 / 絶対ルール (Stripe / Clerk / AI) のどれを守るか
-3. **完了条件**: テスト可能 + code-reviewer Critical 0 件 + [reviewed] tag
-
-❌「`lib/foo.ts` を作る (実装コード 20 行)」
-✅「`lib/foo.ts` は X 検証、 Y で throw。 test 通過 + Critical 0 + [reviewed]」
-
-### 分量
-
-- plan 全体: 150〜250 行 / 各タスク: 10〜20 行
-- 全体ルールは冒頭一度のみ、 各タスクからは**参照**
-
-**plan 300 行超過で STOP、 OT 相談**。 各 Sprint plan 書き終わり時点で
-**最終行数を報告** (例: 「Sprint 2 plan 完成: 187 行 / 上限 250」)。
+spec は実装フェーズで書き換えない(仕様変更が必要なら停止して OT 相談)。
 
 ### Sprint 境界の停止
 
-各 Sprint 完了で停止、 OT 判断待ち。 複数 Sprint を連続 auto mode 禁止。
-Sprint 内でも Critical 検出 / 仕様解釈揺れ / 外部サービス設定変更要時は停止。
+各 Sprint 完了で停止、OT 判断待ち。複数 Sprint の連続 auto mode 禁止。Sprint 内でも Critical 検出 / 仕様解釈揺れ / 外部サービス設定変更要で停止。
 
 ---
 
 ## 環境変数
 
-新規環境変数を参照するコードを書く時、 **同 commit で `.env.example` に項目追加**。
-
-- 値はプレースホルダ (`...`) のみ、 実値は `.env.local` のみ
-- 「後から埋める」 マーカーは空値記法 (`CLERK_WEBHOOK_SECRET=`)
-- 取得タイミング非自明はコメント補足
-  (例: `# Vercel deploy 後に Clerk Dashboard で取得`)
-- deploy 前に「全環境変数が `.env.example` に記載」 を再確認
+新規 env を参照するコードと**同 commit で `.env.example` に追加**(値はプレースホルダ、実値は `.env.local` のみ、後から埋める項目は空値記法 `KEY=`)。取得タイミング非自明はコメント補足。deploy 前に全 env 記載を再確認。
 
 ## コーディング規約
 
-- ファイル名 kebab-case / Component PascalCase / 関数 camelCase /
-  定数 UPPER_SNAKE_CASE
-- import 順: 外部 → 内部 → 相対
-- コメントは「なぜ」 (「何を」 はコードから読める)
-- **flat ESLint config の `files:` glob** は minimatch 評価のため、 Next route
-  group `(...)` と dynamic segment `[...]` を `\\(...\\)` / `\\[...\\]` で escape
-  する。 escape 不在で silent に override 効かず gate 立ち上げ時に fail する
-  (初出: 2026-06-10 ESLint 波 2 sprint Task 2 BLOCKED 報告)。
+- file kebab-case / Component PascalCase / 関数 camelCase / 定数 UPPER_SNAKE_CASE。import 順: 外部 → 内部 → 相対。コメントは「なぜ」のみ
+- **flat ESLint config の `files:` glob は minimatch 評価** — route group `(...)` / dynamic segment `[...]` は `\\(...\\)` / `\\[...\\]` で escape(escape 不在は silent に override 不発)
 
 ## テスト方針
 
-- Unit: Vitest (FSRS / 課金ガード / プレフィックス検証は特に厚く)
-- E2E: Playwright MCP で実ブラウザ
-- Stripe: `stripe.webhooks.generateTestHeaderString` で webhook test
-- Clerk: test 用トークン機能
-- AI: モック必須 (実 API 禁止)
-
-## 立ち上げ時必須修正
-
-`pnpm create next-app` 直後、 `docs/setup-notes.md` の 3 点 (bufferutil /
-watchOptions / .gitignore 追加) を必ず実施。 scaffold デフォルトのままでは
-dev server 無限ループ / Neon 接続失敗。 plan00 は反映済み。
+Unit: Vitest(FSRS / 課金ガード / プレフィックス検証は厚く)。E2E: Playwright MCP。Stripe: `generateTestHeaderString`。Clerk: test トークン。AI: mock 必須。
 
 ## デプロイ前チェック
 
-- [ ] `pnpm build` エラーなし
-- [ ] `pnpm test` 全通過
-- [ ] `.env.example` に全環境変数記載
-- [ ] `.env.local` が `.gitignore` 入り
-- [ ] Stripe キー `sk_test_` / `rk_test_` 確認
-- [ ] Clerk キー `pk_test_` / `sk_test_` 確認
-- [ ] 全 feat(_) / fix(_) commit に [reviewed] tag
-- [ ] `README.md` に起動手順記載
+- [ ] `pnpm build` / `pnpm test` 全通過
+- [ ] `.env.example` に全 env 記載、`.env.local` が `.gitignore` 入り
+- [ ] Stripe / Clerk キーが環境に対し正しい prefix
+- [ ] 全 feat / fix commit に [reviewed] tag
