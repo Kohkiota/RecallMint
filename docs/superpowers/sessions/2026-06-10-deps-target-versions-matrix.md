@@ -70,7 +70,7 @@
 | react-dom | ^19.2.5 | **19.2.7 [exact]** | D | react と同 patch pair 必須。overrides 固定 |
 | @types/react | ^19.2.14 | **19.2.17 [exact]** | V | 型は patch でも型エラーを増やしうる → exact |
 | @types/react-dom | ^19.2.3 | **19.2.3 [exact]** | V | **react とペア必須**(Next 16 guide 明記) → exact |
-| @clerk/nextjs | ^7.2.4 (install 7.2.9) | **7.4.3 [exact]** | D | 7.2.9 でも Next 16 peer 満たすが、7.4.3 が proxy.ts 公式例 base。同 sprint で bump |
+| @clerk/nextjs | ^7.2.4 (install 7.2.9) | **7.5.1 [exact]** | D | 7.2.9 でも Next 16 peer 満たすが、proxy.ts 公式例 base に追従。当初 7.4.3 を選定したが、7.4.3 は dep declaration (`@clerk/react ^6.7.3`) と実 import (`ConfigureSSO`) の不整合で build fail。7.5.1 (`@clerk/react ^6.9.0`) で解消。発見経路 = C4 の per-task build gate (2026-06-11) |
 | @types/node | ^25.6.0 | **24.x.y [exact*]** | V | Node 24 と整合(25=odd/current から落とす)。CC が最新 24 系 patch を exact 確定 |
 | (engines.node) | 不在 | **"24.x"** 明示 | — | `>=24` でなく 24 系固定 |
 | (packageManager) | **既存 "pnpm@10.33.0"** | **維持(波2 で SSoT 確認済)** | — | corepack 仕様で range 不可・完全 semver。波2 Task 3 Step 0 で現物確認、CI は pnpm/action-setup version 省略で自動読み。**SSoT = package.json の 1 箇所のみ** |

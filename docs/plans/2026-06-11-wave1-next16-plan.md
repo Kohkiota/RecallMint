@@ -46,7 +46,7 @@ prod 稼働中の `next 15.5.15` に存在する 13 件の Next.js CVE (高 7 / 
 - **目的**: prod CVE 13 件解消 + Next 16 LTS 移行 + Clerk proxy.ts 公式 base 整合。 本 sprint の核 commit。
 - **制約**:
   - `package.json` の以下を **exact pin** (caret 外す) で書換 (matrix v1.3 §3.1):
-    - `dependencies`: `next: "16.2.9"` / `react: "19.2.7"` / `react-dom: "19.2.7"` / `@clerk/nextjs: "7.4.3"`
+    - `dependencies`: `next: "16.2.9"` / `react: "19.2.7"` / `react-dom: "19.2.7"` / `@clerk/nextjs: "7.5.1"` (※実装中改訂 2026-06-11、 7.4.3 は @clerk/react との dep declaration 不整合で build fail、 詳細は matrix v1.3 §3.1)
     - `devDependencies`: `@types/react: "19.2.17"` / `@types/react-dom: "19.2.3"` / `eslint-config-next: "16.2.9"` / `@types/node: "^24.13.2"` (24 系のみ caret 維持、 spec §6.3)
   - 新規 field `"engines": { "node": "24.x" }` を `package.json` 末尾に追加 (matrix v1.3 §3.5)。 `packageManager: "pnpm@10.33.0"` は維持。
   - codemod を**使わない** (手で書く、 spec §6.2)。 `pnpm install` で lockfile 更新 (初回は `--frozen-lockfile` 付けない)。

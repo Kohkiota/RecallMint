@@ -12,7 +12,7 @@ scope: prod の 13 件 Next CVE (高 7 / 中 4 / 低 2、 Step 0 §2.1.2) を解
 ### 1.1 含める (matrix v1.3 §3.1 + Step 0 §4)
 
 - **核 bump** (exact pin、 caret 外す):
-  - `next 16.2.9`、 `react 19.2.7`、 `react-dom 19.2.7`、 `@types/react 19.2.17`、 `@types/react-dom 19.2.3`、 `eslint-config-next 16.2.9`、 `@clerk/nextjs 7.4.3`、 `@types/node ^24.13.2`
+  - `next 16.2.9`、 `react 19.2.7`、 `react-dom 19.2.7`、 `@types/react 19.2.17`、 `@types/react-dom 19.2.3`、 `eslint-config-next 16.2.9`、 `@clerk/nextjs 7.5.1` (※実装中改訂 2026-06-11、 詳細は matrix v1.3 §3.1)、 `@types/node ^24.13.2`
 - **構成**: `engines.node = "24.x"` 明示、 `packageManager = "pnpm@10.33.0"` 維持
 - **runtime**: `middleware.ts` → `proxy.ts` rename + `config.matcher` に `/__clerk/(.*)` 追加
 - **overrides**: `pnpm-workspace.yaml` に `react: 19.2.7` / `react-dom: 19.2.7` を**追加**。 既存の `uuid` / `postcss` 維持 = 計 **4 件**
