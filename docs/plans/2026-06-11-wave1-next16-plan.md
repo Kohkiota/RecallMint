@@ -17,7 +17,7 @@ prod 稼働中の `next 15.5.15` に存在する 13 件の Next.js CVE (高 7 / 
 - **overrides 4 件 SSoT = `pnpm-workspace.yaml`**: `react / react-dom / uuid / postcss`。 codemod 提案の `@types/react` / `@types/react-dom` は移植しない (C2 の exact pin 自身で peer drift を防ぐ最小手で十分、 spec §6.1)。
 - **runtime 移行**: `proxy.ts` は Node runtime 固定 (Next 16)。 RecallMint の edge runtime 利用は実質ゼロ (`runtime = 'nodejs'` 配備済 9 routes、 Step 0 §1.6 G-7) のため移行コスト 0。
 - **Clerk 7.4.3 は core bump 同 commit に含む**: Next 16 + proxy.ts 公式 base、 smoke #1 (#8302 回帰) で fail した場合のみ follow-up commit で `^7.2.9` へ revert (spec §4.2)。
-- **commit 順序**: C1 (overrides 床) → C2 (核 bump) → C3 (proxy 化) → C4 (webpack 削除) → C5 (pg 削除) → C6 (corepack)。 C3-C6 は C2 後の独立 cleanup で順不同可だが review 経路の安定のため上記順を既定とする。
+- **commit 順序** (実装中改訂、 2026-06-11): C1 (overrides 床) → **C4 (webpack 削除、 C2 の前提)** → C2 (核 bump) → C3 (proxy 化) → C5 (pg 削除) → C6 (corepack)。 C2 build gate (`pnpm build` Turbopack default) で Next 16 breaking を検出 — Step 0 §1.6 G-5 の評価「影響軽微」 は Next 15 前提で、 16 では「webpack config 検出 + turbopack config 不在 → build fail」 ガードに昇格していた。 C4 を C2 の pre-step として運用、 C3/C5/C6 は C2 後の独立 cleanup で順不同可。
 
 ## 全体ルール (各 task 共通、 再掲しない)
 
