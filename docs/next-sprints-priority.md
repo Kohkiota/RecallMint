@@ -1,15 +1,17 @@
 # RecallMint 全 sprint 横断 優先順位 (next sprints)
 
-- 起票日: 2026-05-29
-- 種別: roadmap (全 sprint 横断の優先順位整理。 cache 領域専用は `docs/cache-fix-roadmap.md`)
+- 起票日: 2026-05-29、 **最終更新: 2026-06-11 (v18 相当、 波1 完了反映)**
+- 種別: roadmap (全 sprint 横断の優先順位整理。 cache 領域専用は `docs/cache-fix-roadmap.md`、 dep upgrade 波系列は `docs/superpowers/sessions/2026-06-10-deps-target-versions-matrix.md` が正本)
 - 位置づけ: claude.ai の view。 **最終優先順位は OT 決定が優先**。
-- 各ステータスは 2026-05-29 時点の実コード verify / closure doc に基づく。
+- 各ステータスは更新時点の実コード verify / closure doc に基づく。
 
 ---
 
 ## 1. ステータス一覧 (全 sprint)
 
 ### ✅ クローズ済
+- **波1 (Next 16 核)** [2026-06-11 prod deploy 済 + P0/P1 secret rotate 済] — Next 15.5.15 で稼働中だった prod の 13 CVE (high 7 / mod 4 / low 2、 全て `<15.5.16` 範囲) を Next 16.2.9 LTS + React 19.2.7 + Clerk **7.5.1** (※当初 7.4.3 を選定したが `@clerk/react` との dep declaration 不整合で build fail、 7.5.1 で着地、 `docs/superpowers/lessons/2026-06-11-dep-declaration-bug-build-only-detection.md` 参照) + Node 24 LTS で解消、 `middleware.ts → proxy.ts` rename + matcher 拡張 + 周辺整合まで含めて 6 task。 主要 commit: C1=`f36f164`、 C4=`21a20a7 [reviewed]`、 C2=`49bff77 [reviewed]`、 C3=`390d194 [reviewed]`、 C5=`56b3f69`、 C6=`1ffe921`、 後始末 docs=`ed77418`。 deploy 後 OT P0 (Clerk `CLERK_SECRET_KEY` + 全 session sign-out) + P1 (Stripe Webhook signing secret) rotate 完了。 詳細: `docs/superpowers/specs/2026-06-11-wave1-next16-design.md` + `docs/plans/2026-06-11-wave1-next16-plan.md` + `docs/superpowers/sessions/2026-06-11-wave1-next16-step0-investigation.md`。
+- **波2 (ESLint 9 flat config + lefthook gate)** [2026-06-11 prod deploy 済、 波1 と一括 push] — `next lint` 廃止対応で flat config + lefthook pre-commit + sprint 完了 gate の 2 層 lint gate を確立 (GHA は不採用)。 主要 commit: `edf3cab` 他。 波1 中に lefthook の `--no-warn-ignored` 補強 (`96797ee`) を追加。
 - **問題 2** flush 並走重複の解消 (in-flight guard、 `5e86839`)。 `docs/superpowers/sessions/2026-05-28-problem2-stg-smoke.md`
 - **問題 3** bulk refactor (per-event tx × N → 単一 tx + bulk SQL、 Drizzle #5789 fix 含む)。 flush 16.7-17.4s → 4.8s。 `docs/superpowers/sessions/2026-05-29-problem3-bulk-refactor-closure.md`
 - **S2.0.5** OCR pipeline 改修 — **実コード verify で実装済を確認** (`a61ea5a` Flash only 化 + timeout 220s + deadline 720s + page/size 制限、 `lib/ai/clients/gemini.ts` に 220s AbortController + 429 Retry-After parse、 `lib/ai/ocr.ts` で 429 即 throw = CLAUDE.md AI ルール 5 準拠、 `7672e70` 連打防御調査=既存三段防御で十分)。
@@ -56,6 +58,7 @@
 
 ## 3. spec / idea 段階 (中期)
 
+- **波3 (TS6 + Stripe 22.2.0 + minor 群)** — 残波。 matrix v1.3 §3.3 が正本 pin list。 `typescript 6.0.3 [exact]` の migration (`tsc --noEmit` 通過確認)、 `stripe ^22.0.2 → 22.2.0 [exact]` (同 major minor bump、 apiVersion 変更なし見込み、 webhook/subscription/downgrade smoke 再実行で足りる)、 minor 群 (svix / dexie / ts-fsrs / radix-ui / lucide-react / tailwindcss / @tailwindcss/postcss / tailwind-merge / tsx / pg 等) は chore 1 commit 可。 drizzle-kit は orm とペア exact 固定 (`0.31.10`)、 vitest + @vitest/coverage-v8 も exact pair (`4.1.8`)。 波1/波2 とは独立 PR。
 - **S2.1** FSRS smart 復習実装 (launch-viable minimum)
 - **S2.0b** tag schema 移行 + Notion 風 inline 編集 + bulk 編集 (大スコープ)
 - **S2.2 / S2.3** dashboard / custom 練習

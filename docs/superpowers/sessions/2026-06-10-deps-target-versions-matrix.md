@@ -2,6 +2,8 @@
 
 > **本 file が正本**。 改訂時は repo 側を更新し、 OT が claude.ai プロジェクトナレッジへ同期する。
 
+> **進捗(2026-06-11 更新)**: **波1 (Next 16 核) ✅ クローズ済 / 波2 (ESLint 9 + lefthook) ✅ クローズ済、 両方 prod deploy + P0/P1 secret rotate 済**。 残波 = **波3 (TS6 + Stripe 22.2.0 + minor 群)**。 波1 の Clerk 着地版は **7.5.1** (当初 7.4.3 を選定したが `@clerk/react` との dep declaration 不整合で build fail、 7.5.1 で解消。 詳細は §3.1 メモ + `docs/superpowers/lessons/2026-06-11-dep-declaration-bug-build-only-detection.md`)。 波1 plan 順序は実装中改訂で C1 → **C4 (pre-step)** → C2 → C3 → C5 → C6 (`docs/superpowers/lessons/2026-06-11-version-context-in-impact-evaluation.md` 参照)。
+
 > **進捗(2026-06-10)**: **波2(ESLint 9 flat config + lefthook gate)実装完了 → develop 10 commit・push/stg smoke 待ち**。`next lint` → `eslint .` 移行済。残り = 波1(Next 16 核)→ 波3(TS6/Stripe/minor)。
 > **v1.3 の訂正**: **GitHub Actions(ci.yml)は不採用に変更**(当初の「CI gate」案を撤回)。lint gate は **lefthook(pre-commit コンテナ内)+ sprint 完了 gate(review checklist 強制)の2層**に確定。pre-push も不採用(チェックは push トリガーでなく完了トリガー)。理由 = PR なし運用で GHA は blocking gate にならない + Next 16 で build 時 lint 廃止。将来 PR 運用化/増員時は git 履歴から復活可。§2/§3.2 を反映。
 > **v1.2 の訂正(doc drift)**: packageManager を「不在 → 波1 で追加」から **「既存(`pnpm@10.33.0`)、波2 で SSoT 確認済」** に訂正。
@@ -36,19 +38,21 @@
 波2(lint gate) ── 先行推奨 ──> 波1(Next 16 核) ──> 波3(TS6 + Stripe + minor)
 ```
 
-### 波2: ESLint 9 flat config + lefthook gate（✅ 実装完了・push/stg smoke 待ち）
+### 波2: ESLint 9 flat config + lefthook gate（✅ クローズ済、 波1 と一括 push/prod deploy 済 2026-06-11）
 - **先行理由**: 波1 の大量 diff を gate 付きで通せる。旧方針「Grid-1 前に lint gate」とも整合。Next 16 で `next lint` 削除 + build 時 lint も消えるため、**lefthook(commit を止める)+ sprint 完了 gate が検出経路**になる。
 - 内容: `eslint.config.mjs`(flat、`eslint-config-next/core-web-vitals` + `/typescript` extend)/ lefthook ^2.1.9(新 devDep、pre-commit、コンテナ内 staged のみ)/ package.json `"lint": "eslint . --max-warnings=0"`。
 - **GitHub Actions(ci.yml)は不採用**(当初案を撤回): PR なし運用で required check は blocking gate にならない + Next 16 で build 時 lint 廃止。Vercel build にも lint を載せない。pre-push も不採用(push 場所がコンテナ/WSL で揺れるため、チェックは完了トリガーに置く)。将来 PR 運用化/増員/protected branch 移行時は git 履歴から復活可(SHA)。
 - **lint gate = 2層(全てコンテナ内)**: ① lefthook pre-commit ② sprint 完了時 whole-repo `pnpm lint` exit 0 必須(review checklist で強制、staged-only の穴を塞ぐ)。CLAUDE.md に恒久規律化(`--no-verify` 禁止 / 依存触る sprint は `--frozen-lockfile` + typecheck + build も完了 gate)。
 - **eslint-config-next は現行(16.2.4)のまま**で組む（bump は波1）。**一筆: 「config 16.2.4 / next 15.5 の組合せは一時状態。`@next/eslint-plugin-next` は next への hard peer を持たないので実害ほぼなし。波1 で next・config を同時に 16.2.9 へ上げて解消する」** — CC が迷わないよう spec に明記。
 - **着手前**: 既存違反が大量に出たら(前 ESLint Step0 の red flag)、波1 の前に「既存違反処理(rules-of-hooks 系は error / 残りは warn から)」が挟まる。件数を見て段階導入。
-### 波1: Next 16 核（不可分）
-- next / **eslint-config-next(ここで 16.2.9 へ)** / @clerk/nextjs / react / react-dom / @types/react / @types/react-dom / Node 24 / engines / packageManager。
-- middleware.ts → **proxy.ts**(Node runtime 固定)。codemod `npx @next/codemod@canary upgrade latest` で大半自動化。
-- **初回 stg deploy は Vercel build cache 無効で 1 回**(Node major / pnpm / Next major 変更で古い `.next/cache`・install cache がノイズ)。
-- **stg smoke 必須**(§5)。
-### 波3: TS6 + Stripe22 + minor 群（独立 PR）
+### 波1: Next 16 核（✅ クローズ済、 prod deploy + P0/P1 rotate 済 2026-06-11）
+- next / **eslint-config-next(ここで 16.2.9 へ)** / @clerk/nextjs (**7.5.1 で着地**) / react / react-dom / @types/react / @types/react-dom / Node 24 / engines / packageManager。
+- middleware.ts → **proxy.ts**(Node runtime 固定)。codemod は使用せず手で正確 pin (Step 0 dry-run でソース変換 0 件と確認、 codemod が package.json に追加する `pnpm.overrides` block は workspace.yaml SSoT と衝突するため不採用)。
+- plan 順序は実装中改訂で **C1 → C4 (pre-step) → C2 → C3 → C5 → C6** (C2 build gate で Next 16 Turbopack default の「webpack config 検出 + turbopack config 不在 → build fail」 ガードを検出、 C4 webpack block 削除を C2 の前提化)。
+- 初回 stg deploy は Vercel build cache 無効で 1 回実施済。
+- stg smoke (§5) 全 pass、 prod deploy 済。 deploy 後 OT P0 (Clerk session 系 rotate + 全 session sign-out) + P1 (Stripe Webhook signing secret) rotate 完了。
+- 主要 commit: C1=`f36f164`、 C4=`21a20a7 [reviewed]`、 C2=`49bff77 [reviewed]`、 C3=`390d194 [reviewed]`、 C5=`56b3f69`、 C6=`1ffe921`、 後始末 docs=`ed77418`、 lefthook `--no-warn-ignored` 補強=`96797ee`、 Clerk 7.4.3 → 7.5.1 改訂 docs=`8e4acfb`。
+### 波3: TS6 + Stripe22 + minor 群（独立 PR、 残波、 2026-06-11 時点で着手前）
 - TS6 は「Next 16 の一部」でなく **TS6 migration として独立**。`tsc --noEmit` 通過確認。
 - Stripe 22.2.0 は**同 major(22)の minor bump**。pinned apiVersion が変わるのは major 時ゆえ、**「apiVersion 別 commit」警戒は実質発動しない見込み — webhook/subscription/downgrade の smoke 再実行で足りる**。
 - minor/patch 群(§3.3)はまとめて chore 1 commit 可。
