@@ -1,0 +1,23 @@
+# recallmint CI (波2)。 main / develop への PR と push で gate を立てる。
+name: CI
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm/action-setup は version 引数を省略 → package.json の packageManager
+      # field (pnpm@10.33.0) を自動読み。 pnpm 版の SSoT = packageManager field。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      # build は波1 で Next 16 + Turbopack default に整合させる際に有効化。
+      # 波2 時点では skip (Next 15 のまま、 lint/typecheck/test で gate は十分)。
