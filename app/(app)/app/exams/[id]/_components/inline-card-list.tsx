@@ -175,6 +175,12 @@ export function InlineCardList({
         }),
         logEvent: 'card_inline.add.tx_failed',
         logContext: { examId },
+        // user-initiated create は failure を UI で通知する (= delete-card-button と同 pattern)。
+        // helper 既定 silent (案 a 取り直し) のままだと「追加ボタンを押したが何も起きない」
+        // 経験になり、 prior 動作からの UX regression を招く (Sync-fix-1 T1a canonical review
+        // Important #1)。 throwOnError: true で enqueue throw + userId='' fail-fast の双方を
+        // caller の catch に流し、 既存 error UI ('カードの追加に失敗しました。') を維持する。
+        throwOnError: true,
       })
 
       // 新 card cell が useLiveQuery 再 render で mount する際、 autoEditOnMount が one-shot
@@ -183,8 +189,9 @@ export function InlineCardList({
       // の順序で、 React batch が同 render に折り畳むため auto-edit は失われない。
       setNewCardId(id)
     } catch {
-      // runOptimisticCreate の fail-fast (userId='' のみ throw、 throwOnError 未指定で silent
-      // 既定)。 mirror rollback 済 + caller の error UI を維持。
+      // helper が rethrow した場合のみ到達 (enqueue throw → Dexie auto-rollback 済、 もしくは
+      // userId='' fail-fast)。 mirror は rollback 済 + outbox 未反映、 案 a 取り直し前提で
+      // 次回 pull が server 値で reconcile。 user 通知のため inline error UI を表示する。
       setError('カードの追加に失敗しました。')
     }
   }
