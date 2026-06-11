@@ -74,7 +74,6 @@ export function replayCard(
       difficulty: current.difficulty,
       // ts-fsrs Card.elapsed_days は v6.0.0 で削除予定 (@deprecated)。
       // v5 では代替フィールドが未公開のため引き続き使用し、lint を明示的に抑制する。
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
       elapsed_days: current.elapsedDays,
       scheduled_days: current.scheduledDays,
       learning_steps: current.learningSteps,
@@ -95,7 +94,6 @@ export function replayCard(
       due: next.due,
       stability: next.stability,
       difficulty: next.difficulty,
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
       elapsedDays: next.elapsed_days,
       scheduledDays: next.scheduled_days,
       learningSteps: next.learning_steps,

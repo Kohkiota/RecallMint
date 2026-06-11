@@ -125,7 +125,7 @@ async function processSession(
   // Phase 1: orphan exclusion に使う distinct card_id セット
   const distinctCardIds = [...new Set(events.map((e) => e.card_id))]
 
-  let orphanFailed: string[] = []
+  const orphanFailed: string[] = []
   let txFailed: string[] = []
 
   try {

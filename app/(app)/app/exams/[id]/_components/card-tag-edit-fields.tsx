@@ -95,7 +95,6 @@ export function CardTagEditFields({
       inputRef.current?.select()
     })
     return () => cancelAnimationFrame(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ------------------------------------------------------------------

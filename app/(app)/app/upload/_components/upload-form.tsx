@@ -635,6 +635,8 @@ export function UploadForm({
                 <Card className={e.status === 'error' ? 'ring-red-200' : ''}>
                   <CardContent className="p-3 space-y-2">
                     {e.kind === 'image' && 'thumbUrl' in e && e.thumbUrl ? (
+                      // TODO(波1): next/image 化 (loader / remotePatterns 設定 + Next 16 default 変更と同時)
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={e.thumbUrl}
                         alt={e.file.name}
