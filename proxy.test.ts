@@ -1,52 +1,49 @@
 import { describe, it, expect } from 'vitest'
-import { config } from './proxy'
+import { isWebhookBypass } from './proxy'
 
-// T-A4 (audit §10.3 (b) #13): proxy.ts matcher の webhook bypass を構造保証する
-// contract test。 Next.js は config.matcher 配列のうち **いずれか** に hit すれば
-// middleware を走らせる仕様 (= 配列 OR)。 したがって webhook bypass は「全 pattern
-// が webhook path を弾く」 ことで成立し、 ある pattern だけ修正しても他で拾われ
-// うる regression を本 test が catch する。
-// matcher 文字列は path-to-regexp 風だが、 現状利用している sub-set ( `(...)` /
-// `(.*)` / negative lookahead `(?!...)` / character class) は JS RegExp として
-// そのまま有効なため、 `^...$` でラップして直接 test する (Next.js 内部変換と
-// 同等)。
-function matchesAny(path: string): boolean {
-  return config.matcher.some((pattern) => {
-    const regex = new RegExp('^' + pattern + '$')
-    return regex.test(path)
-  })
-}
-
-describe('proxy matcher webhook bypass (T-A4 audit §10.3 (b) #13)', () => {
-  it('webhook path は matcher に hit しない (clerkMiddleware を通らない)', () => {
-    // Stripe / Clerk いずれの webhook も Clerk auth context を要求しない構造保証。
-    expect(matchesAny('/api/webhooks/stripe')).toBe(false)
-    expect(matchesAny('/api/webhooks/clerk')).toBe(false)
-    // sub-path も同様に bypass される (将来 webhook 系 path 追加に強い)。
-    expect(matchesAny('/api/webhooks/stripe/extra')).toBe(false)
-    // boundary lock (code review I1 反映): bare `/api/webhooks` (no sub-path)
-    // と trailing slash も明示的に bypass、 segment 末尾の挙動を契約 pin。
-    expect(matchesAny('/api/webhooks')).toBe(false)
-    expect(matchesAny('/api/webhooks/')).toBe(false)
+// T-A4 fix (audit §10.3 (b) #13): webhook bypass の構造保証 contract test。
+//
+// 旧 T-A4 (45a74cf) は `config.matcher` 内 negative lookahead `(?!/webhooks
+// (?:$|/))` で構造保証していたが、 Next.js が config.matcher を path-to-regexp
+// で評価し、 capturing group / lookahead を許容しないため Vercel build で
+// 落ちた (`Error: Invalid source ... Capturing groups are not allowed`)。
+// 本 fix で matcher を波 1 確定形に戻し、 webhook 除外を `isWebhookBypass()`
+// による pathname check + early return に置換、 contract test を `matchesAny`
+// (regex 等価性) から `isWebhookBypass` (pathname check) の unit test に
+// 書き換える。 segment boundary `/api/webhooks(?:$|/)` 相当を startsWith +
+// 厳密 path check で表現することで、 旧 test の検証粒度 (prefix collision
+// 防御含む) を完全に維持する。
+describe('proxy webhook bypass (T-A4 fix audit §10.3 (b) #13)', () => {
+  it('webhook path は bypass される (clerkMiddleware の auth.protect 経路に巻き込まれない)', () => {
+    // Stripe / Clerk いずれの webhook も Clerk auth context を要求しない。
+    expect(isWebhookBypass('/api/webhooks/stripe')).toBe(true)
+    expect(isWebhookBypass('/api/webhooks/clerk')).toBe(true)
+    // sub-path も同様 (将来 webhook 系 path 追加に強い)。
+    expect(isWebhookBypass('/api/webhooks/stripe/extra')).toBe(true)
+    // boundary lock: bare `/api/webhooks` (no sub-path) と trailing slash も
+    // 明示的に bypass、 segment 末尾の挙動を契約 pin (旧 T-A4 M1 review 反映)。
+    expect(isWebhookBypass('/api/webhooks')).toBe(true)
+    expect(isWebhookBypass('/api/webhooks/')).toBe(true)
   })
 
-  it('既存 path は matcher に hit する (regression guard)', () => {
+  it('既存 path は bypass されない (regression guard)', () => {
     // 保護 route (/app(.*)) と clerk 内部 endpoint、 webhook 以外の api は
     // 引き続き middleware を通す必要がある。
-    expect(matchesAny('/app')).toBe(true)
-    expect(matchesAny('/app/exams')).toBe(true)
-    expect(matchesAny('/api/entity-mutations/bulk')).toBe(true)
-    expect(matchesAny('/api/review-events/bulk')).toBe(true)
-    expect(matchesAny('/__clerk/foo')).toBe(true)
+    expect(isWebhookBypass('/app')).toBe(false)
+    expect(isWebhookBypass('/app/exams')).toBe(false)
+    expect(isWebhookBypass('/api/entity-mutations/bulk')).toBe(false)
+    expect(isWebhookBypass('/api/review-events/bulk')).toBe(false)
+    expect(isWebhookBypass('/__clerk/foo')).toBe(false)
   })
 
-  it('webhook segment boundary を超える path は bypass されない (prefix collision 防御、 code review I1)', () => {
+  it('webhook segment boundary を超える path は bypass されない (prefix collision 防御)', () => {
     // `/api/webhooks-foo` / `/api/webhooks_audit` 等は webhook segment では
-    // ないため middleware を通る必要がある。 segment boundary `(?:$|/)` で
-    // 構造的に prefix collision を排除する契約 pin (将来 admin/diagnostic
-    // 用途で webhook prefix の route が増えた際の silent bypass 防御)。
-    expect(matchesAny('/api/webhooks-foo')).toBe(true)
-    expect(matchesAny('/api/webhooks_audit')).toBe(true)
-    expect(matchesAny('/api/webhooksomething')).toBe(true)
+    // ないため middleware を通る必要がある。 startsWith + 厳密 path check で
+    // 構造的に prefix collision を排除する契約 pin (旧 T-A4 code review I1 反映、
+    // 将来 admin/diagnostic 用途で webhook prefix の route が増えた際の silent
+    // bypass 防御)。
+    expect(isWebhookBypass('/api/webhooks-foo')).toBe(false)
+    expect(isWebhookBypass('/api/webhooks_audit')).toBe(false)
+    expect(isWebhookBypass('/api/webhooksomething')).toBe(false)
   })
 })
