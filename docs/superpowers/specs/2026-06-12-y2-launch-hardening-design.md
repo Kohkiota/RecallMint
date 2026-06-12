@@ -57,22 +57,25 @@
 
 **H5 (webhook secret env-aware)** と **#11c (deletion-status nonce/signed token)** は CLAUDE.md「重要 fix」 (決済・認証・削除・外部副作用) に該当。 commit 経路は次のとおり:
 
-1. 通常の review pass → commit。 ただし commit message tag は **無し (= 暫定)** で commit (`[reviewed]` も `[no-review]` も付与しない)。
-2. OT 実機確認: H5 は stg で Stripe / Clerk webhook 配信を実際に通す。 #11c は stg で deletion-status URL が token 付きで生成され、 token 不正で 401/404 を返すことを実走確認。
-3. OT 承認後、 **未 push の状態で `git commit --amend`** により commit message に `[reviewed]` を追記して確定。
-4. 上記 2-3 が完了するまで本 sub-plan A の **stop checkpoint** = OT 承認待ち。
+1. **実装 / review は他 item と並走で前出し可** (env 系で論理的に早い H5 を後ろまで止める必要はない)、 ただし **commit は本 sub-plan A 末尾に集約** (= 他 8 item 完了後)。 これにより無 tag commit が tree 中段に滞留せず、 Stop hook (`check-review.sh`) の feat/fix tag 検査で **block 発火を回避**できる (= §2.3 修正の主目的)。
+2. 末尾で H5 / #11c を順次 commit (`[reviewed]` も `[no-review]` も付与しない暫定 commit)。
+3. OT 実機確認: H5 は stg で Stripe / Clerk webhook 配信を実際に通す。 #11c は stg で deletion-status URL が token 付きで生成され、 token 不正で 401/404 を返すことを実走確認。
+4. OT 承認後、 **未 push の状態で `git commit --amend`** により commit message に `[reviewed]` を追記して確定。 H5 / #11c がそれぞれ 1 commit のため amend は順次。
+5. 上記 3-4 が完了するまで本 sub-plan A の **stop checkpoint** = OT 承認待ち。
 
 push 経路は Y-1 と同じく OT 専権 (CC は push 経路を持たない)。
 
+**実装 / review 前出しの運用**: H5 を env 系 (前半) で実装着手する場合、 review pass まで進めて branch / 作業領域に保留 (stage / patch / 別 branch のいずれか CC が選択)、 commit のみ末尾に寄せる。 H5 と並行で他 item を commit する際、 H5 が同 file (例: `app/api/webhooks/{stripe,clerk}/route.ts`、 #10 と overlap) に触れる場合は、 H5 を後ろにずらして file 衝突を回避するか、 stage 領域を別管理 (patch file 経由) する。 spec sub-plan A 起こし時に CC が運用判断 (前出し vs 末尾実装) を提案 → OT 確認。
+
 ### 2.3 ordering 推奨 (Sub-plan A 内)
 
-**実装順序** (env 系先行 → API behavior → docs):
+**commit 順序 = 実装順序** (Stop hook block 回避のため commit は末尾集約):
 
-H5 / #5 / #6 / #13 → H1 → H4 → #9 / #10 → #15 → #11c
+H1 / #5 / #6 / #13 / H4 → #9 / #10 → #15 → **H5 (無 tag commit)** → **#11c (無 tag commit)** → OT stg 実機確認 → amend で `[reviewed]` 追記 (H5 → #11c 順)
 
-**commit-tag finalize 順序** (重要 fix 2 件は OT 実機確認後に `[reviewed]` amend):
+**8 通常 item (H1 / H4 / #5 / #6 / #9 / #10 / #13 / #15)**: review pass で `[reviewed]` 即付与の通常経路。 env 系 (#5 / #6 / #13) を先頭、 H1 / H4 (API behavior) → #9 / #10 (payload zod) → #15 (rate limit) の順。
 
-他 8 item (H1 / H4 / #5 / #6 / #9 / #10 / #13 / #15) は review pass で `[reviewed]` 即付与。 **H5 / #11c は無 tag commit で先行 → OT stg 実機確認待ち → 承認後 amend で `[reviewed]` 追記** (§2.2 / §8)。 重要 fix 2 件の OT 確認待ちで他 8 item の merge が止まらないよう、 commit-tag finalize は実装後に独立して進行できる設計。
+**2 重要 fix (H5 / #11c)**: 末尾集約 commit、 §2.2 経路で OT 実機確認後 amend。 **H5 を環境系の論理位置 (前半) で実装 / review することは可だが、 commit は必ず末尾に寄せる** (Stop hook block 回避、 §2.2 「実装 / review 前出し」 運用参照)。
 
 ---
 
@@ -231,10 +234,10 @@ H6 / Perm 単独完結 → H2 軽量変更 (30d 延長 + comment 1 行) → H3 �
 | #25 deletion-status nonce/signed token | §10.4 #11 (格上げ) | Sub-plan A #11c (**重要 fix**) | HMAC + ttl |
 
 **取り残し 0 確認**:
-- audit §10.3 (b) #1-#15, #17 = 16 件 (うち #16 #19 #20 は Y-3 繰越、 #18 は Grid-2 で対象外) すべて本 spec の sub-plan に 1:1 マッピング
+- audit §10.3 (b) #1-#15, #17 のうち **#3 (anyOf 2件、 Grid-1 合流) を除く 15 件** すべて本 spec の sub-plan に 1:1 マッピング (#16 / #19 / #20 = Y-3 繰越、 #18 = Grid-2 で対象外、 §1.3 参照)
 - audit §10.4 #10 / #11 = 2 件 (Y-2 格上げ) すべて本 spec の sub-plan に 1:1 マッピング
 - 軽微 2 件 + Permissions-Policy = 3 件 (audit 外含む) すべて本 spec の sub-plan に 1:1 マッピング
-- 計 21 audit-mapped + 3 OT-added = 24 item、 Grid-1 合流分 (#3 anyOf 2件) を除いた数と一致
+- 計 20 audit-mapped (= 15 + 2 + #1 内訳 5 件で重複なし) + 3 OT-added + H6 / H7 (軽微 2 件) = 24 item、 Grid-1 合流分 (#3 anyOf 2件) を除いた数と一致
 - → **取り残し 0**
 
 ---
@@ -259,7 +262,9 @@ OT 実行 / 判断待ちをクリティカルパスから外すための前出�
 
 ### 10.3 H3 段 2 SELECT 文先出し
 
-- CC が以下相当の SQL 文を提示 (OT が Supabase dashboard で実行):
+**schema 型確認済 (2026-06-12)**: `lib/db/schema.ts` で `card_ids` / `selected_answer_ids` を grep、 両列とも **`jsonb` 型** (TS 側 `$type<string[]>()` で narrow、 DB 上は jsonb array of UUID strings)。 → PostgreSQL `jsonb_array_length()` が正、 `cardinality()` (native array 用) 差替不要。
+
+- CC が以下 SQL 文を提示 (OT が Supabase dashboard で実行):
 
 ```sql
 -- session.card_ids 実値分布
