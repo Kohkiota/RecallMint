@@ -19,7 +19,7 @@
 3. **CLAUDE.md 絶対ルール**: Stripe / Clerk / AI 既知 + sprint 完了 gate (whole-repo `pnpm lint --max-warnings=0` exit 0) + commit `[reviewed]` tag。
 4. **review 経路**: 各 task PR 直前 `superpowers:requesting-code-review` skill canonical (template + general-purpose subagent + 厳格 prompt、 改変禁止)。
 5. **重要 fix 規律** (T-A8 H5 / T-A9 #11c): **無 tag commit で末尾集約** → OT stg 実機確認 → 未 push amend で `[reviewed]` (CLAUDE.md「重要 Fix 裏取り」、 spec §2.2 / §8)。
-6. **stop checkpoint**: T-A7 rate limit (5 req/h 妥当か OT 判断、 実装直前提案)、 T-A9 末尾 (H5 + #11c の OT 実機確認待ち)。
+6. **stop checkpoint** (OT 裁定 2026-06-12 反映): ~~T-A7 rate limit 値 OT 判断~~ = **解除済** (5 req/h で OT 一括承認時に確定)、 **T-A9 末尾**は残置 (H5 + #11c の OT 実機確認待ち、 重要 fix 構造)。
 7. **spec 凍結**: 実装フェーズで spec 書き換えない (仕様変更必要なら停止 → OT 相談)。
 
 **File Structure** (新規 / 主要 modify):
@@ -48,9 +48,9 @@
 - Create: `lib/transient/classify-bulk-error.ts` + test
 - Modify: `app/api/review-events/bulk/route.ts` / `app/api/entity-mutations/bulk/route.ts`
 
-- [ ] **目的**: bulk 2 endpoint の transient error (DB conflict / lock timeout / Drizzle PG error code 系) を 5xx 一括 → **503 + `Retry-After` header 付与** に切替、 client retry controller の transient/permanent 分岐と整合 (audit §10.3 (b) #11)。
-- [ ] **制約**: response shape 不変。 classifier は server-only 不付 (caller は server route)。 retry 秒は固定 30s (load test 結果で後日調整可、 magic number 化せず `BULK_TRANSIENT_RETRY_SEC` 定数で固定)。 transient 判定: PG error code `40001` (serialization failure) / `40P01` (deadlock) / `57014` (statement timeout) / Drizzle ConnectionError。
-- [ ] **完了条件**: helper test 4 case (transient 3 種 / permanent / 未分類 fallback)。 既存 bulk route test 全 pass + 新規 case 2 (transient = 503 + `Retry-After: 30`、 permanent = 500)。 Critical 0、 [reviewed]。
+- [ ] **目的**: bulk 2 endpoint の transient error (DB conflict / lock timeout / connection class / Drizzle PG error code 系) を 5xx 一括 → **503 + `Retry-After` header 付与** に切替、 client retry controller の transient/permanent 分岐と整合 (audit §10.3 (b) #11)。
+- [ ] **制約** (OT 裁定 2026-06-12 反映): response shape 不変。 classifier は server-only 不付 (caller は server route)。 retry 秒は固定 30s (load test 結果で後日調整可、 magic number 化せず `BULK_TRANSIENT_RETRY_SEC` 定数で固定)。 transient 判定 PG error code: `40001` (serialization failure) / `40P01` (deadlock) / `57014` (statement timeout) / **`08000` `08003` `08006` (connection exception class 08)** / **`53300` (too_many_connections)** / **`57P03` (cannot_connect_now)** + Drizzle ConnectionError。 **unknown DB error の default は transient (503) に倒す** (permanent 誤判定 = silent lost write 再来を回避、 outbox 再送収束性を壊さない設計、 spec §1.1 目的 3 整合)。 zod 等の明示 4xx (validation failure) は default transient 対象外で 400 系のまま。 列の育て方 = production logger 観測で発生 code を集計、 必要に応じて追加 (本 sprint では初期セットで開始)。
+- [ ] **完了条件**: helper test 8 case (transient PG code 7 種 / Drizzle ConnectionError / permanent zod 4xx / unknown DB error = transient default 帰着)。 既存 bulk route test 全 pass + 新規 case 3 (transient = 503 + `Retry-After: 30` / 明示 permanent 4xx / unknown DB = 503 default)。 Critical 0、 [reviewed]。
 
 ---
 
@@ -118,7 +118,7 @@
 - Modify: `app/(marketing)/contact/actions.ts` + 既存 test
 
 - [ ] **目的**: contact form の Server Action に IP / userId (signed-in 時) 単位 rate limit 導入、 abuse 防止 (audit §10.3 (b) #15)。 contact は Server Action 経路 (`/api/contact` route なし)、 actions.ts 内に組込。
-- [ ] **制約**: 暫定 storage = in-memory LRU (Vercel Function 単一 instance 仮定)、 多 instance 化したら upstash/ratelimit 等に差替の note を helper header comment 明記。 key = `IP` (anonymous) / `userId:<uuid>` (signed-in)。 突破時は ContactSubmitResult の error variant ('rate_limited') を返す (UI 側で 「しばらくしてからもう一度」 等表示)。 **OT 判断 stop**: limit 値 (現案 `5 req/h`) 採用可否を実装直前 chat 提案 → OT 承認後に実装。
+- [ ] **制約** (OT 裁定 2026-06-12 反映): 暫定 storage = in-memory LRU (**Vercel serverless では単一 instance 仮定不成立 = `per-warm-instance の best-effort 抑止`と性格付け**、 helper header comment 明記)。 将来差替先 (multi-instance 一貫 rate limit) = **Vercel KV / upstash/ratelimit** の TODO comment を helper header に明記、 H7 (perf 切り分け) の結果次第で sub-plan B 内併合の余地ありの脚注。 key = `IP` (anonymous) / `userId:<uuid>` (signed-in)。 **limit = 5 req/h (OT 承認済、 2026-06-12)**。 突破時は ContactSubmitResult の error variant ('rate_limited') を返す (UI 側で 「しばらくしてからもう一度」 等表示)。 **(旧 OT 判断 stop = 解除済、 OT 一括承認時に limit 値確定)**。
 - [ ] **完了条件**: helper test 4 case (5 件以内 pass / 6 件目 block / 1h 経過後 reset / IP 異なれば独立)。 contact action test に rate_limited 経路 1 case 追加 + 既存 case 全 pass。 Critical 0、 [reviewed]。
 
 ---

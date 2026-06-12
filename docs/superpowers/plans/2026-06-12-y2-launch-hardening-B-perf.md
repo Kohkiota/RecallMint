@@ -19,7 +19,7 @@
 3. **CLAUDE.md 絶対ルール**: Stripe / Clerk / AI 既知 + sprint 完了 gate (whole-repo `pnpm lint --max-warnings=0` exit 0) + commit `[reviewed]` tag。
 4. **review 経路**: 各 task PR 直前 `superpowers:requesting-code-review` skill canonical (改変禁止)。
 5. **#1b 順序保証契約** (Y-2 最大リスク、 spec §3.2): 「同一 entity key (`(entity_type, entity_id)`) 内は順序維持、 独立 key 間のみ並列」。 cascade delete (tag_category delete → 配下 option / card_tags) と dependent multi-mutation (Grid-2 対象) は entity key 境界外、 T-B3 stop checkpoint で OT 判断仰ぐ。 順序破壊 regression test (= 違反 path で `throw new Error('ordering violated')`) を必ず含む。
-6. **stop checkpoint**: T-B1 (H7 切り分け結果報告 → 残り ordering 再判定)、 T-B3 (#1b entity key 境界 + 着手承認)。
+6. **stop checkpoint** (OT 裁定 2026-06-12 反映): **T-B1** (H7 切り分け結果報告 → 残り ordering 再判定、 残置)、 ~~T-B3 #1b entity key 境界 + 着手承認~~ = **解除済** (最狭 entity key + cascade/dependent 逐次 fallback で OT 一括承認時に確定、 実装内は self-check のみ)。
 7. **spec 凍結**: 実装フェーズで spec 書き換えない (H7 結果が perf 同根なら spec §3.1 H7 内訳を「sub-plan B 内併合」 に更新、 それ以外は spec 不変)。
 
 **File Structure** (新規 / 主要 modify):
@@ -66,8 +66,8 @@
 - Modify: `app/api/entity-mutations/bulk/route.ts` + 既存 test
 
 - [ ] **目的**: bulk 内 mutations を `(entity_type, entity_id)` で grouping、 同一 key 内は順序維持、 独立 key 間のみ `Promise.allSettled` で並列化 (spec §3.2、 audit §10.3 (b) #1 of 5)。
-- [ ] **制約**: **spec §3.2 順序保証契約**準拠 (全体ルール 5 参照)。 entity key 境界は本 task で「同一 `(entity_type, entity_id)` のみ」 = 最狭定義、 cascade delete / dependent multi-mutation は **entity key 境界外**で逐次 fallback (Grid-2 対象 = 本 sprint で並列化しない)。 response の mutation_id 順は維持 (= 入力順正規化)。 wire format / `{ok, applied, failed}` 形不変。
-- [ ] **完了条件**: helper test 4 case (同一 key 内逐次 / 独立 key 間並列 / 順序破壊 regression = 同一 key を意図的 parallel した path で `throw` 検知 / cascade-like 入力 = 逐次 fallback)。 既存 bulk route test 全 pass + 並列計測 (10 独立 key 入力で逐次 vs 並列の wall-clock 比較を session log)。 **stop checkpoint**: 実装着手前に entity key grouping 境界 (cascade / dependent multi-mutation の扱い) を spec §3.2 と再突合、 OT 判断仰ぐ。
+- [ ] **制約** (OT 裁定 2026-06-12 反映): **spec §3.2 順序保証契約**準拠 (全体ルール 5 参照)。 **entity key 境界 = 「同一 `(entity_type, entity_id)` のみ」 の最狭定義 + cascade delete / dependent multi-mutation は entity key 境界外で逐次 fallback (Grid-2 対象 = 本 sprint で並列化しない) = OT 承認済 (2026-06-12)**。 response の mutation_id 順は維持 (= 入力順正規化)。 wire format / `{ok, applied, failed}` 形不変。
+- [ ] **完了条件**: helper test 4 case (同一 key 内逐次 / 独立 key 間並列 / 順序破壊 regression = 同一 key を意図的 parallel した path で `throw` 検知 / cascade-like 入力 = 逐次 fallback)。 既存 bulk route test 全 pass + 並列計測 (10 独立 key 入力で逐次 vs 並列の wall-clock 比較を session log)。 **(旧 OT 判断 stop = 解除済、 OT 一括承認時に entity key 境界確定。 実装内では spec §3.2 と突合する self-check のみ)**。
 
 ---
 
@@ -122,7 +122,7 @@
 - Modify: `lib/ai/clients/gemini.ts` / OCR 呼出 path (process.ts 等)
 
 - [ ] **目的**: service-wide で OCR 同時実行を制限する semaphore 導入、 worst-case ~660s への concurrency 圧迫を解消 (audit §10.3 (b) #7)。
-- [ ] **制約**: 暫定 N=2 (Gemini 2.5 Flash free tier RPM ~60 / 平均ペイロード ~1MB / OCR 単発 ~5s から算出、 spec §7-6 暫定値)。 突破時は queue (FIFO)。 timeout = backoff worst-case 660s 内 (queue 待機含めて全 request が timeout 範囲)。 N 値の最終調整は実装後 stg 計測で運用 tuning (本 sprint test では fixture 値で固定)。
+- [ ] **制約** (OT 裁定 2026-06-12 反映): **N=2 で OT 承認済 (運用 tuning 範疇、 spec §7-6)**。 Gemini 2.5 Flash free tier RPM ~60 / 平均ペイロード ~1MB / OCR 単発 ~5s から算出。 突破時は queue (FIFO)。 timeout = backoff worst-case 660s 内 (queue 待機含めて全 request が timeout 範囲)。 N 値の最終調整は実装後 stg 計測で運用 tuning (本 sprint test では fixture 値 2 で固定)。
 - [ ] **完了条件**: semaphore helper test 4 case (N=2 内 pass / N+1 = queue / queue cancel / timeout 超過 = reject)。 既存 OCR test 全 pass + worst-case backoff 経路 mock test 1 case。 Critical 0、 [reviewed]。
 
 ---

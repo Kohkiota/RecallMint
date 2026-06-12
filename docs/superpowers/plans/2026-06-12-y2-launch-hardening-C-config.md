@@ -77,7 +77,7 @@
 
 - [ ] **目的**: 現状 schema / drizzle / Dexie 内の `content_version` 利用箇所を grep 整理 → (a) 廃止 / (b) versioning gate として実装 を OT 判断 (audit §10.3 (b) #8)。
 - [ ] **制約**: **OT 判断 stop**。 CC は調査のみ (1 page session log で grep 結果 + 各 callsite の役割推定 + Phase 4 roadmap 内位置付け確認) を spec §11 risks 4 のとおり実施、 chat に「(a) 廃止 / (b) 採用 / (c) Y-3 繰越」 の 3 案を提案 → OT 判断後に実装。 採用 (b) なら本 sprint 内 fix、 廃止 (a) なら本 sprint 内 remove (call site 全削除 + schema migration なし = TS 側のみ削除)、 (c) なら本 task のみ Y-3 繰越 (sub-plan C 内残 5 task 続行可)。
-- [ ] **完了条件**: 調査 session log 1 page (grep 結果 + callsite 数 + 推定用途 + Phase 4 roadmap 確認)。 OT 判断後の実装 (採用 / 廃止) または繰越判定。 Critical 0、 [reviewed] (採用 / 廃止 commit)、 [no-review] (調査 session log commit)。
+- [ ] **完了条件**: 調査 session log 1 page (grep 結果 + callsite 数 + 推定用途 + Phase 4 roadmap 確認)。 OT 判断後の実装 (採用 / 廃止) または繰越判定。 Critical 0、 [reviewed] (採用 / 廃止 commit)、 [no-review] (調査 session log commit)。 **(c) Y-3 繰越判定時 (OT 裁定 2026-06-12 反映): 本 task のみ Y-3 へ、 sub-plan C は残 5 task (T-C1 / T-C2 / T-C3 / T-C5 / T-C6) で完了可。 sprint 完了報告 + audit 突合表に「#8 = Y-3 繰越 (OT 判断、 2026-06-12)」 を明記、 帰属 trace を残す**。
 
 ---
 
