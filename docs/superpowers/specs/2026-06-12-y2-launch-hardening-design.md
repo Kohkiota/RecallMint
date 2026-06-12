@@ -312,7 +312,7 @@ Permissions-Policy:
 **stg gate 確定運用 (Sub-plan C 実装時)**:
 1. spec sub-plan C Perm 項に上記 default を実装案として明記。
 2. `next.config.js` headers() で directive 設定 → stg deploy。
-3. CC が DevTools MCP / Playwright で stg を実走: (a) `/app/upgrade` → Stripe Checkout redirect → 戻り、 (b) Clerk sign-in / sign-up flow、 (c) `/app` 全主要 page を巡回。
+3. CC が DevTools MCP / Playwright で stg を実走: (a) `/app/upgrade` → Stripe Checkout redirect → 戻り、 (b) Clerk sign-in / sign-up flow、 (c) `/app` 全主要 page を巡回、 (d) **`/app/upload` OCR upload 画面 (ファイル選択経路) を含む** — `<input type="file">` での camera/file picker access が Permissions-Policy で阻害されないか確認 (OT 修正反映、 2026-06-12)。
 4. console / Network response header / browser security warnings に Permissions-Policy violation 出力 0 件を確認。 1 件でも検出されたら spec sub-plan C にて該当 directive を `self` 緩和、 再 stg gate。
 5. 確定後 prod 反映。
 
