@@ -66,8 +66,15 @@ const { state } = vi.hoisted(() => ({
     // tx を throw させるフラグ
     txShouldThrow: false,
 
+    // T-A1: envelope-level 致命 error (getDb 経路で throw 等) を simulate するため、
+    // getDb() 自体を throw させる error を test 側から差し替え可能にする。
+    // null = 既存挙動 (fakeDb を返す)、 非 null = throw する error。
+    getDbError: null as null | Error,
+
     // logger warn の記録
     loggerWarnCalls: [] as Array<Record<string, unknown>>,
+    // T-A1 用: envelope-level error の log を観測する (logger.error 呼出)
+    loggerErrorCalls: [] as Array<Record<string, unknown>>,
   },
 }))
 
@@ -82,7 +89,9 @@ vi.mock('@/lib/logger', () => ({
     warn: vi.fn((...args: unknown[]) => {
       state.loggerWarnCalls.push(args[0] as Record<string, unknown>)
     }),
-    error: vi.fn(),
+    error: vi.fn((...args: unknown[]) => {
+      state.loggerErrorCalls.push(args[0] as Record<string, unknown>)
+    }),
     info: vi.fn(),
   },
 }))
@@ -137,9 +146,12 @@ vi.mock('@/lib/cards/apply-card-mutation', () => ({
   ),
 }))
 
-// getDb は fakeDb を返す
+// getDb は fakeDb を返す (T-A1: state.getDbError 設定で throw に切替可能)
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(() => fakeDb),
+  getDb: vi.fn(() => {
+    if (state.getDbError) throw state.getDbError
+    return fakeDb
+  }),
 }))
 
 // ---------------------------------------------------------------------------
@@ -332,7 +344,9 @@ beforeEach(() => {
   state.cardCreateResults = new Map()
   state.cardCreateCalls = []
   state.txShouldThrow = false
+  state.getDbError = null
   state.loggerWarnCalls = []
+  state.loggerErrorCalls = []
   // CARD_FIELD_HANDLERS の各 spy も reset (vi.clearAllMocks は mock factory 内の
   // vi.fn() もクリアするが、 後で mockImplementationOnce 等を上書きした場合に備える)。
   for (const handler of Object.values(CARD_FIELD_HANDLERS)) {
@@ -951,5 +965,69 @@ describe('POST /api/entity-mutations/bulk', () => {
     await POST(makeReq({ mutations: [makeUpdateFieldMutation({ edited_at: '2026-05-30T10:00:00.000Z' })] }))
     expect(state.mutationInsertValues).not.toBeNull()
     expect(state.mutationInsertValues!['editedAt']).toBeInstanceOf(Date)
+  })
+
+  // --- T-A1: envelope-level transient classification (audit §10.3 (b) #11) ---
+
+  it('T-A1: envelope-level で transient PG code (40001) を catch → 503 + Retry-After:30', async () => {
+    // getDb 経路で transient SQLSTATE を持つ error を simulate する (実機では
+    // connection 全断 / serialization failure 等が envelope-level に到達する経路)。
+    // client retry controller (lib/retry/transient-error.ts) は HTTP 503 を transient
+    // 判定 → 自動 backoff retry が成立。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const pgErr = new Error('serialization failure')
+    ;(pgErr as Error & { code: string }).code = '40001'
+    state.getDbError = pgErr
+
+    const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('transient_unavailable')
+    // envelope_failed の log が出る
+    expect(state.loggerErrorCalls.length).toBeGreaterThan(0)
+    expect(state.loggerErrorCalls[0]).toMatchObject({
+      event: 'entity_mutations.bulk.envelope_failed',
+    })
+  })
+
+  it('T-A1: envelope-level で unknown DB error → 503 default (silent lost write 回避 regression)', async () => {
+    // unknown DB error を permanent (例: 500) に倒すと、 transient 由来の失敗が
+    // outbox 削除されて silent lost write を再来させる。 default は transient で
+    // 503 を返す (spec §1.1 目的 3 整合)。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.getDbError = new Error('unexpected envelope-level failure')
+
+    const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('transient_unavailable')
+  })
+
+  it('T-A1: 明示 permanent 4xx (zod validation failure) は 既存挙動 (400 系) を維持', async () => {
+    // T-A1 (OT 裁定 2026-06-12): zod 等の明示 4xx は default transient 対象外。
+    // 400 が既存挙動として維持されることを assert (envelope catch 経由ではなく
+    // 既存 payloadSchema.safeParse 経路で 400 が返るため、 helper 経路に到達しない)。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const res = await POST(
+      makeReq({
+        mutations: [
+          {
+            mutation_id: 'not-a-uuid', // 不正 envelope
+            entity_type: 'card',
+            entity_id: VALID_CARD_ID,
+            op: 'update_field',
+            patch: { field: 'title', value: 'x' },
+            edited_at: '2026-05-30T10:00:00.000Z',
+          },
+        ],
+      }),
+    )
+    expect(res.status).toBe(400)
+    // Retry-After header は付与しない (400 は permanent、 retry 対象外)
+    expect(res.headers.get('Retry-After')).toBeNull()
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('invalid_payload')
   })
 })

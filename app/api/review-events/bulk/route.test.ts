@@ -24,6 +24,9 @@ const { state } = vi.hoisted(() => ({
       conflictSetWhere: unknown
     }>,
     sessionUpsertShouldThrow: false,
+    // T-A1: classifyBulkError 経路を session upsert 経由で叩くため、 throw する
+    // error を test 側から差し替え可能にする (default = 既存 unknown error)。
+    sessionUpsertError: null as null | Error,
 
     // answer_events insert — bulk insert に渡された rows と返却する event_ids を記録
     answerEventInsertValues: null as null | Record<string, unknown>[],
@@ -212,7 +215,7 @@ const fakeDb = {
         setWhere?: unknown
       }) => {
         if (state.sessionUpsertShouldThrow) {
-          throw new Error('boom')
+          throw state.sessionUpsertError ?? new Error('boom')
         }
         state.sessionUpsertCalls.push({
           values: vals,
@@ -429,6 +432,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   state.sessionUpsertCalls = []
   state.sessionUpsertShouldThrow = false
+  state.sessionUpsertError = null
   state.answerEventInsertValues = null
   state.duplicateEventIds = new Set()
   state.cardRows = new Map()
@@ -682,13 +686,36 @@ describe('POST /api/review-events/bulk', () => {
     expect(state.answerEventInsertValues).toBeNull()
   })
 
-  it('study_sessions upsert 自体が throw → 500 session_upsert_failed、 events 未処理', async () => {
+  it('T-A1: study_sessions upsert で unknown DB error → 503 + Retry-After:30 (default = transient、 silent lost write 回避)', async () => {
+    // T-A1 (audit §10.3 (b) #11): session upsert で unknown DB error が出た場合、
+    // default は transient に倒す (= 503 + Retry-After: 30 で client retry controller が
+    // 自動 backoff)。 旧挙動 (500) は permanent 扱いで outbox 削除に倒れる経路があり、
+    // transient 由来失敗で silent lost write 再来の元 (spec §1.1 目的 3 整合)。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     state.sessionUpsertShouldThrow = true
 
     const res = await POST(makeReq(makeValidPayload()))
-    expect(res.status).toBe(500)
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
     expect(await res.json()).toEqual({ error: 'session_upsert_failed' })
+    expect(state.answerEventInsertValues).toBeNull()
+  })
+
+  it('T-A1: study_sessions upsert で transient PG code (40001 serialization failure) → 503 + Retry-After:30', async () => {
+    // 明示的に transient と判定される SQLSTATE を持つ error。 client retry controller
+    // (lib/retry/transient-error.ts) は HTTP 503 を /\b(500|502|503|504)\b/ で transient
+    // 判定 → 自動 backoff retry が成立。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.sessionUpsertShouldThrow = true
+    const pgErr = new Error('serialization failure')
+    ;(pgErr as Error & { code: string }).code = '40001'
+    state.sessionUpsertError = pgErr
+
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('session_upsert_failed')
     expect(state.answerEventInsertValues).toBeNull()
   })
 

@@ -38,6 +38,10 @@ import { entityMutations, type User } from '@/lib/db/schema'
 import { lookupRegistryEntry } from '@/lib/sync/server/entity-mutation-registry'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import { logger } from '@/lib/logger'
+import {
+  classifyBulkError,
+  BULK_TRANSIENT_RETRY_SEC,
+} from '@/lib/transient/classify-bulk-error'
 
 export const runtime = 'nodejs'
 
@@ -175,33 +179,61 @@ export async function POST(req: Request): Promise<Response> {
   }
   const { mutations } = parsed.data
 
-  const db = getDb()
-
-  // -- per-mutation 処理 --
+  // -- per-mutation 処理 (envelope-level catch で transient/permanent を分岐) --
+  // per-mutation 内部の throw は loop 内 catch が 200+failed[] で吸収するため、 ここの
+  // 外側 try/catch が拾うのは「per-mutation に閉じない envelope-level 致命 error」
+  // (getDb 失敗 / connection 全断 / 予期せぬ runtime error 等)。
+  // classifyBulkError で transient なら 503 + Retry-After、 permanent-4xx は 400 系
+  // (caller は zod 既存経路で 400 を返しているため到達想定なし)、 unknown DB は
+  // 503 default (silent lost write 回避、 spec §1.1 目的 3)。
   let applied = 0
   const failed: string[] = []
+  try {
+    const db = getDb()
 
-  for (const mutation of mutations) {
-    try {
-      const result = await processMutation(db, user, mutation)
-      if (result === 'applied') {
-        applied++
-      } else if (result === 'failed') {
+    for (const mutation of mutations) {
+      try {
+        const result = await processMutation(db, user, mutation)
+        if (result === 'applied') {
+          applied++
+        } else if (result === 'failed') {
+          failed.push(mutation.mutation_id)
+        }
+        // 'skipped' は applied にも failed にも入れない (冪等 skip)
+      } catch (err) {
+        // 予期せぬ throw (DB 接続障害等) → log して failed に積む (200 契約維持)
+        logger.warn({
+          event: 'entity_mutations.bulk.mutation_failed',
+          mutationId: mutation.mutation_id,
+          entityType: mutation.entity_type,
+          entityId: mutation.entity_id,
+          userId: user.id,
+          err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
+        })
         failed.push(mutation.mutation_id)
       }
-      // 'skipped' は applied にも failed にも入れない (冪等 skip)
-    } catch (err) {
-      // 予期せぬ throw (DB 接続障害等) → log して failed に積む (200 契約維持)
-      logger.warn({
-        event: 'entity_mutations.bulk.mutation_failed',
-        mutationId: mutation.mutation_id,
-        entityType: mutation.entity_type,
-        entityId: mutation.entity_id,
-        userId: user.id,
-        err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
-      })
-      failed.push(mutation.mutation_id)
     }
+  } catch (err) {
+    // envelope-level 致命 error: classifyBulkError で 503 / 400 を分岐。
+    logger.error({
+      event: 'entity_mutations.bulk.envelope_failed',
+      userId: user.id,
+      err: serializeDbError(err),
+    })
+    const cls = classifyBulkError(err)
+    if (cls === 'permanent-4xx') {
+      return Response.json({ error: 'invalid_payload' }, { status: 400 })
+    }
+    // transient + permanent-other は両方 503 (unknown DB default = transient、
+    // spec §1.1 目的 3)。 client retry controller (lib/retry/transient-error.ts) が
+    // /\b503\b/ で transient 判定 → backoff retry。
+    return Response.json(
+      { error: 'transient_unavailable' },
+      {
+        status: 503,
+        headers: { 'Retry-After': String(BULK_TRANSIENT_RETRY_SEC) },
+      },
+    )
   }
 
   return Response.json({ ok: true, applied, failed }, { status: 200 })

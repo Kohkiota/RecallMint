@@ -46,6 +46,10 @@ import { serializeDbError } from '@/lib/db/serialize-db-error'
 import type { RatingInt } from '@/lib/fsrs'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
+import {
+  classifyBulkError,
+  BULK_TRANSIENT_RETRY_SEC,
+} from '@/lib/transient/classify-bulk-error'
 
 export const runtime = 'nodejs'
 
@@ -529,7 +533,23 @@ export async function POST(req: Request): Promise<Response> {
       userId: user.id,
       err,
     })
-    return Response.json({ error: 'session_upsert_failed' }, { status: 500 })
+    // T-A1 (audit §10.3 (b) #11): transient (DB conflict / lock timeout / connection
+    // class / Drizzle wrap) なら 503 + Retry-After に倒し、 client retry controller
+    // (lib/retry/transient-error.ts) の transient/permanent 分岐と整合させる。
+    // unknown DB error も default = transient で 503 を返す (spec §1.1 目的 3、
+    // silent lost write 回避)。 permanent-4xx (zod validation 等、 session upsert 経路
+    // では実質発生しないが安全網として) は既存 500 を維持しない方が無難なので 400 に倒す。
+    const cls = classifyBulkError(err)
+    if (cls === 'permanent-4xx') {
+      return Response.json({ error: 'invalid_payload' }, { status: 400 })
+    }
+    return Response.json(
+      { error: 'session_upsert_failed' },
+      {
+        status: 503,
+        headers: { 'Retry-After': String(BULK_TRANSIENT_RETRY_SEC) },
+      },
+    )
   }
 
   // -- Phase 1+2: events を単一 tx で処理 --
