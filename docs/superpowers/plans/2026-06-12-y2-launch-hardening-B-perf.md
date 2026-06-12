@@ -21,6 +21,7 @@
 5. **#1b 順序保証契約** (Y-2 最大リスク、 spec §3.2): 「同一 entity key (`(entity_type, entity_id)`) 内は順序維持、 独立 key 間のみ並列」。 cascade delete (tag_category delete → 配下 option / card_tags) と dependent multi-mutation (Grid-2 対象) は entity key 境界外、 T-B3 stop checkpoint で OT 判断仰ぐ。 順序破壊 regression test (= 違反 path で `throw new Error('ordering violated')`) を必ず含む。
 6. **stop checkpoint** (OT 裁定 2026-06-12 反映): **T-B1** (H7 切り分け結果報告 → 残り ordering 再判定、 残置)、 ~~T-B3 #1b entity key 境界 + 着手承認~~ = **解除済** (最狭 entity key + cascade/dependent 逐次 fallback で OT 一括承認時に確定、 実装内は self-check のみ)。
 7. **spec 凍結**: 実装フェーズで spec 書き換えない (H7 結果が perf 同根なら spec §3.1 H7 内訳を「sub-plan B 内併合」 に更新、 それ以外は spec 不変)。
+8. **Next 設定 file gate** (T-A4 fix 反映、 CLAUDE.md §Sprint 完了 gate と整合): `proxy.ts` / `next.config.*` / matcher 関連 file を触る task は per-task gate に `pnpm build` 必須 (vitest / typecheck / lint は path-to-regexp 制約を検出不能、 T-A4 元 45a74cf で Vercel build error 発生、 6f82025 で hotfix)。
 
 **File Structure** (新規 / 主要 modify):
 - 新規 `lib/sync/server/group-mutations-by-entity-key.ts` (T-B3、 #1b)

@@ -20,6 +20,7 @@
 4. **review 経路**: code 系 task PR 直前 `superpowers:requesting-code-review` skill canonical (改変禁止)。
 5. **stop checkpoint** 2 件: T-C4 (#8 content_version 用途決定、 OT 判断要)、 T-C2 段 2 (H3、 OT SELECT 結果受領待ち)。
 6. **spec 凍結**: 実装フェーズで spec 書き換えない (Perm directive list は spec §10.2 stg gate で確定、 H3 段 2 item format は OT 結果で確定、 いずれも spec 内 follow-up 手順に沿う)。
+7. **Next 設定 file gate** (T-A4 fix 反映、 CLAUDE.md §Sprint 完了 gate と整合): T-C6 Perm の `next.config.*` 編集を含め、 `proxy.ts` / `next.config.*` / matcher 関連 file を触る task は per-task gate に `pnpm build` 必須 (vitest / typecheck / lint は path-to-regexp 制約を検出不能、 T-A4 元 45a74cf で Vercel build error 発生、 6f82025 で hotfix)。
 
 **File Structure** (新規 / 主要 modify):
 - 新規 `lib/validation/review-session-bounds.ts` (T-C2、 H3 段 1)

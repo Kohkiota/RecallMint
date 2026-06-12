@@ -21,6 +21,7 @@
 5. **重要 fix 規律** (T-A8 H5 / T-A9 #11c): **無 tag commit で末尾集約** → OT stg 実機確認 → 未 push amend で `[reviewed]` (CLAUDE.md「重要 Fix 裏取り」、 spec §2.2 / §8)。
 6. **stop checkpoint** (OT 裁定 2026-06-12 反映): ~~T-A7 rate limit 値 OT 判断~~ = **解除済** (5 req/h で OT 一括承認時に確定)、 **T-A9 末尾**は残置 (H5 + #11c の OT 実機確認待ち、 重要 fix 構造)。
 7. **spec 凍結**: 実装フェーズで spec 書き換えない (仕様変更必要なら停止 → OT 相談)。
+8. **Next 設定 file gate** (T-A4 fix 反映、 CLAUDE.md §Sprint 完了 gate と整合): `proxy.ts` / `next.config.*` / matcher 関連 file を触る task は per-task gate に `pnpm build` 必須 (vitest / typecheck / lint は内部 js regex で動作するため Next.js matcher (path-to-regexp) の制約を検出不能。 T-A4 元 (45a74cf) で実際に Vercel build error 発生、 6f82025 で hotfix)。
 
 **File Structure** (新規 / 主要 modify):
 - 新規 `lib/transient/classify-bulk-error.ts` (T-A1)
