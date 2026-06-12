@@ -13,10 +13,30 @@ vi.mock('@/lib/ops', () => ({
   notifyOps: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('next/headers', () => ({
+  // 各 test ごとに別 IP を返して rate limit bucket を分離する
+  // (in-memory LRU が test 間で共有されるため)。
+  headers: vi.fn(),
+}))
+
 import { auth } from '@clerk/nextjs/server'
+import { headers } from 'next/headers'
 import { getDb } from '@/lib/db'
 import { notifyOps } from '@/lib/ops'
 import { submitContact } from './actions'
+import { __resetContactRateLimitStore } from '@/lib/rate-limit/contact-action'
+
+// 各 test に固有の IP を割り当てて rate limit bucket を分離する helper。
+let testIpCounter = 0
+function makeFakeHeaders(ip?: string) {
+  const finalIp = ip ?? `10.0.0.${++testIpCounter}`
+  return {
+    get: (name: string) => {
+      if (name === 'x-forwarded-for') return finalIp
+      return null
+    },
+  } as unknown as Headers
+}
 
 // Drizzle chain mock factory:
 // - select().from().where().limit() → resolves to provided rows (users lookup)
@@ -51,6 +71,8 @@ describe('submitContact', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(auth).mockResolvedValue({ userId: null } as never)
+    vi.mocked(headers).mockResolvedValue(makeFakeHeaders() as never)
+    __resetContactRateLimitStore()
   })
 
   it('zod 違反 (subject 空) → ok:false + error message、 DB insert 走らず', async () => {
@@ -178,5 +200,28 @@ describe('submitContact', () => {
 
     expect(result.ok).toBe(false)
     expect(fake.insert).not.toHaveBeenCalled()
+  })
+
+  it('rate limit 突破 (同 IP で 6 件目) → ok:false + error:"rate_limited"、 6 件目の DB insert 走らず', async () => {
+    // audit §10.3 (b) #15、 T-A7: 同 IP で 5 req/h を超えた 6 件目は
+    // gate で弾く (DB insert / notifyOps 双方走らない)。
+    const fake = makeFakeDb({})
+    vi.mocked(getDb).mockReturnValue(fake as never)
+    // 全 6 件で同一 IP を返す (固定 fakeHeaders)。
+    vi.mocked(headers).mockResolvedValue(
+      makeFakeHeaders('192.0.2.99') as never,
+    )
+
+    for (let i = 0; i < 5; i++) {
+      const ok = await submitContact(validInput)
+      expect(ok).toEqual({ ok: true })
+    }
+    expect(fake.insert).toHaveBeenCalledTimes(5)
+
+    const blocked = await submitContact(validInput)
+    expect(blocked).toEqual({ ok: false, error: 'rate_limited' })
+    // 6 件目は gate で弾かれているため DB insert 数は 5 件のまま。
+    expect(fake.insert).toHaveBeenCalledTimes(5)
+    expect(notifyOps).not.toHaveBeenCalled()
   })
 })

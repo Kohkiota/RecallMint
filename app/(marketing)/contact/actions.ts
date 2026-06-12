@@ -1,5 +1,6 @@
 'use server'
 
+import { headers } from 'next/headers'
 import { auth } from '@clerk/nextjs/server'
 import { eq } from 'drizzle-orm'
 import { contactSchema } from '@/lib/validation/contact'
@@ -7,6 +8,7 @@ import { getDb } from '@/lib/db'
 import { users, contactMessages } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
+import { checkContactRateLimit } from '@/lib/rate-limit/contact-action'
 import type { ActionResult } from '@/lib/actions/result'
 
 // 認証外 contact form の submit 処理。
@@ -22,8 +24,33 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
     return { ok: false, error: parsed.error.issues[0].message }
   }
 
+  // Rate limit gate (audit §10.3 (b) #15、 T-A7): IP / userId 単位 5 req/h。
+  // key 優先順位 = signed-in userId > IP。 Clerk auth() 失敗時は IP のみで
+  // 抑止継続 (DB insert 側の auth lookup と分離 — auth 障害で rate limit を
+  // 無効化すると bot に悪用される)。 IP 取得失敗 (dev / 直 invoke 等) は
+  // `'unknown'` bucket に集約 (= anonymous 全体で 5 req/h 共有、 dev では
+  // 通常許容範囲)。
+  let rateLimitUserId: string | null = null
+  try {
+    const { userId } = await auth()
+    rateLimitUserId = userId
+  } catch {
+    // 匿名扱いで rate limit gate を続行 (詳細 log は DB insert 側の auth
+    // 再試行で記録される)。
+  }
+  // I-2 (review): signed-in userId が取れたら IP は不要、 headers() の async
+  // 呼出を skip (cheap optimization + headers() error 経路の縮減)。
+  const rateKey = rateLimitUserId
+    ? `userId:${rateLimitUserId}`
+    : `ip:${await getRequestIp()}`
+  if (!checkContactRateLimit(rateKey).allowed) {
+    return { ok: false, error: 'rate_limited' }
+  }
+
   // honeypot: website field に値があれば silent reject (bot に成功を装う)。
   // DB 書き込みもスキップ — bot 由来データを保存しない。
+  // 注: rate limit gate は honeypot より前に置く (bot に枠を消費させて
+  // 同一 IP からの正規 user を保護)。
   if (parsed.data.website && parsed.data.website.length > 0) {
     return { ok: true }
   }
@@ -86,4 +113,32 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
       error: '送信に失敗しました。時間をおいて再度お試しください。',
     }
   }
+}
+
+// Next.js Vercel pattern: client IP は `x-forwarded-for` の先頭 token、
+// fallback で `x-real-ip`。 いずれも欠落時は `'unknown'` で anonymous bucket
+// 集約 (dev / 直 invoke / proxy header 剥がし等)。 Next.js 15+ で headers()
+// は async。
+async function getRequestIp(): Promise<string> {
+  try {
+    const h = await headers()
+    const xff = h.get('x-forwarded-for')
+    if (xff) {
+      const first = xff.split(',')[0]?.trim()
+      if (first) return first
+    }
+    const real = h.get('x-real-ip')?.trim()
+    if (real) return real
+  } catch {
+    // headers() が Server Action 経路外で呼ばれた等の例外 — anonymous fallback
+  }
+  // I-3 (review): production 環境で proxy header config regression が起きると
+  // 全 anonymous traffic が `'unknown'` bucket に集約され、 5 req/h 上限で site
+  // 全体の silent DoS になる。 prod でこの fallback が発火したら 1 行 warn 出力で
+  // Vercel logs に surface (sampling = anonymous request の希少性で実用範囲、
+  // log spam にはならない)。 dev / test env は VERCEL_ENV 未設定で skip。
+  if (process.env.VERCEL_ENV === 'production') {
+    logger.warn({ event: 'contact.rate_limit.ip_missing' })
+  }
+  return 'unknown'
 }
