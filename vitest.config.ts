@@ -18,6 +18,7 @@ export default defineConfig({
       'components/**/*.test.ts',
       'scripts/**/*.test.ts',
       'instrumentation.test.ts',
+      'proxy.test.ts',
     ],
   },
   resolve: {

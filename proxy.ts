@@ -20,10 +20,21 @@ export default clerkMiddleware(
   },
 )
 
+// T-A4 (audit §10.3 (b) #13): webhook (`/api/webhooks/*`) は Clerk auth context
+// を一切要求しない構造保証。 第 1 matcher (catch-all) の negative lookahead に
+// `api/webhooks(?:$|/)` を追加し、 第 2 matcher (旧 `/(api|trpc)(.*)`) も `api`
+// 直下で `/webhooks(?:$|/)` を negative lookahead で除外する。 segment boundary
+// `(?:$|/)` で「webhooks segment ぴったり」 or 「webhooks/ 配下」 にのみ bypass
+// を適用、 `/api/webhooks-foo` 等の prefix collision を構造的に排除 (T-A4 code
+// review I1 反映)。 Next.js は config.matcher を OR 評価するため、 全 pattern で
+// webhook を除外しないと bypass が成立しない (proxy.test.ts header コメント参照)。
+// isProtectedRoute の matcher 拡張 regression が webhook を auth.protect 経路に
+// 巻き込むことを構造で防ぐ。 contract は proxy.test.ts で boundary 込み 2 case
+// (webhook bypass + 既存 path 維持 + prefix collision 防御) で保証。
 export const config = {
   matcher: [
-    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
-    '/(api|trpc)(.*)',
+    '/((?!_next|api/webhooks(?:$|/)|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
+    '/((api(?!/webhooks(?:$|/))|trpc))(.*)',
     '/__clerk/(.*)',
   ],
 }
