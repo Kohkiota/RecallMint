@@ -45,33 +45,14 @@ if [[ ${#SUBJECT} -gt 60 ]]; then
   SUBJECT="${SUBJECT:0:60}..."
 fi
 
-# (B) [reviewed] / [no-review] tag あり → 完了 gate リマインドを user 向け warning で
+# (B) [reviewed] / [no-review] tag あり → silent pass (exit 0、 何も出力しない)
 #
-# 出力形式 (2026-06-12 訂正):
-# - 公式 docs (https://code.claude.com/docs/en/hooks) で Stop hook の universal
-#   fields に `systemMessage` (= user に表示する warning) があり、 これがリマインド
-#   用途の正解。 旧版は `hookSpecificOutput.additionalContext` を返していたが、
-#   実環境で「Hook JSON output validation failed — (root): Invalid input」 を
-#   引き起こしてリマインドが沈黙する事故が発生 (docs の記述と Claude Code 内部
-#   validator の挙動に齟齬あり)。 systemMessage に移すことで schema 違反を避け、
-#   なおかつ意図 (user に sprint 完了 gate を促す) と field の意味が一致する。
-# - `additionalContext` は Claude 向けの system reminder で、 conversation 継続を
-#   前提とした feedback。 本 hook の意図は user 通知 (CC 側で lint を回したかの
-#   確認督促) なので systemMessage が正しい。
+# 旧版は systemMessage で sprint 完了 gate (whole-repo pnpm lint 等) のリマインドを
+# 毎 stop 表示していたが、 リマインドは 3 層 gate の 3 段目で、 1 段目 (eslint.config
+# ルール正本) と 2 段目 (lefthook pre-commit staged-only) + CLAUDE.md「Sprint 完了
+# gate」 規律 + review checklist が機能している現在は、 毎 stop の全文表示が
+# context 浪費。 強制力は CLAUDE.md + review に任せ、 hook は block 機能のみ残す。
 if printf '%s\n' "$LAST_MSG" | grep -qE '\[(reviewed|no-review)\]'; then
-  HASH="$SHORT_HASH" SUBJECT="$SUBJECT" python3 -c '
-import json, os
-msg = (
-    "sprint 完了 gate リマインド (commit: " + os.environ["HASH"] + " " + os.environ["SUBJECT"] + "):\n\n"
-    "- whole-repo `pnpm lint`(--max-warnings=0) exit 0 を確認すること (lefthook は staged-only のため穴あり)\n"
-    "- 依存 / Next / Node / lockfile を触った sprint は追加で `pnpm install --frozen-lockfile` + `pnpm typecheck` + `pnpm build` も実行\n"
-    "- これらは CLAUDE.md「Sprint 完了 gate」 セクション参照、 sprint 完了報告 chat に「whole-repo lint exit 0 確認済」 を 1 行明記\n"
-    "- 確実な強制は CLAUDE.md 規律 + review checklist 側 (本リマインドは 3 段目)"
-)
-print(json.dumps({
-    "systemMessage": msg,
-}, ensure_ascii=False))
-'
   exit 0
 fi
 
