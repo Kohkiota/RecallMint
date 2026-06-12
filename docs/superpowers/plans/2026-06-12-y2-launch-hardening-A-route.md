@@ -180,3 +180,9 @@ CLAUDE.md sprint 規律: plan 完成時点で最終行数を報告すること�
 本 plan は Y-2 sprint の **3 plan 起草の Sub-plan A (第 1 弾)**。 Sub-plan B (performance) / C (config-header-cleanup) 起草完了後、 OT review gate に 3 plan 一括提示 (OT 指示: 個別提示 = 往復 3 回回避)。
 
 CLAUDE.md 既定 = `superpowers:subagent-driven-development` (本 sprint も既定方式)。 OT 一括 review 承認後、 T-A1 から実装開始。
+
+---
+
+## Future UX polish backlog (Y-2 範囲外、 stg smoke 発見 — 記録のみ)
+
+- **T-A7 contact rate_limit UI 文言**: `components/marketing/contact-form.tsx:49` で server action result の `error` を素通し表示しているため、 rate_limited 時 UI に raw key 「`rate_limited`」 が表示される。 機能観点 PASS (silent fail でない、 stg smoke 2026-06-12 で確認、 `docs/superpowers/sessions/2026-06-12-y2-subplan-a-stg-smoke.md` Findings)、 UX 観点では category-LABEL mapping の延長で「しばらく時間をおいて再度お試しください」 等の日本語 message に置換するのが望ましい。 着手は Y-3 以降 UX polish sprint、 本 plan の Sub-plan A scope (audit §10.3 (b) #15 = rate limit 機能導入) は完了確定。

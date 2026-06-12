@@ -56,6 +56,15 @@
 - [ ] **制約**: 段 1 = zod `.array(z.unknown()).max(2000)` (card_ids) / `.max(50)` (selected_answer_ids) のみ。 段 2 は OT が Supabase dashboard で SELECT 実行 → 結果 chat 貼付 → CC が item format (`z.uuid()` array / 順序 array / 重複可否) を schema 化 → 同 file 修正で別 commit (T-C2-stage2)。 段 1 と段 2 は別 commit、 段 1 だけで完結可。
 - [ ] **完了条件 (段 1)**: helper test 4 case (card_ids 2000 件 pass / 2001 件 fail / selected_answer_ids 50 件 pass / 51 件 fail)。 既存 review-events bulk test 全 pass。 Critical 0、 [reviewed]。 **stop checkpoint**: 段 1 commit 後、 chat に 「段 2 は OT SELECT 結果待ち、 Sub-plan A 並走中」 と報告、 OT 結果受領で段 2 着手。
 
+#### 段 2 (T-C2-stage2 別 commit) — OT SELECT 結果反映 (2026-06-12 受領)
+
+OT SELECT 結果 (2026-06-12 確定):
+
+- `study_sessions.card_ids`: **全 row で uuid v4 format** = **`z.array(z.uuid())` で厳格化**可
+- `answer_events.selected_answer_ids`: **string item (uuid とは限らず option_id raw value 等が混在)** = **`z.array(z.string().min(1))` の緩和形** で許容、 締め直し (uuid 化 / 正規化) は **Phase 4 帰属** (Y-2 範囲外、 audit §10.3 (b) #12 残し分)
+
+T-C2-stage2 完了条件: 段 1 の `.array(z.unknown())` を上記 2 schema に置換、 helper test に item format case 各 2 件追加 (uuid pass / non-uuid fail for card_ids、 string pass / empty fail for selected_answer_ids)。 既存 review-events bulk test 全 pass + Phase 4 締め直し帰属を T-C2-stage2 commit message に 1 行明記 (audit trail)。 Critical 0、 [reviewed]。
+
 ---
 
 ### Task T-C3: H6 prod console info level → warn 以上に絞る (`LOG_LEVEL` env)
