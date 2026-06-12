@@ -67,8 +67,12 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
     return { ok: true }
   } catch (err) {
     // 書き込み失敗 (DB 接続断 / 制約違反 等) は ops に escalate。
-    // notifyOps 自体は best-effort で内部 fetch error を呑む (lib/ops.ts) ため
-    // 二重 throw にはならない。
+    // notifyOps は fetch error を内部で呑む (best-effort)、 通常時は二重 throw
+    // にならない。 例外: T-A5 以降、 production で OPS_DISCORD_WEBHOOK_URL 未設定
+    // (= deployment misconfig) なら notifyOps が throw し、 本 catch を escape
+    // して Server Action 境界へ 500 propagate する。 deploy 直後に operator が
+    // Vercel logs で即時検知する fail-fast 意図 (audit §10.3 (b) #14、 T-A5)。
+    // prod env 設定済を前提とするため runtime では発生しない。
     logger.error({ event: 'contact.insert.failed', err })
     await notifyOps('contact_messages insert failed', {
       error: err,

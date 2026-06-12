@@ -4,19 +4,25 @@ import { notifyOps, notifyWebhookError } from './ops'
 describe('notifyOps', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   let warnSpy: ReturnType<typeof vi.spyOn>
+  let errorSpy: ReturnType<typeof vi.spyOn>
   const ORIGINAL_URL = process.env.OPS_DISCORD_WEBHOOK_URL
+  const ORIGINAL_VERCEL_ENV = process.env.VERCEL_ENV
 
   beforeEach(() => {
     fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
     warnSpy.mockRestore()
+    errorSpy.mockRestore()
     if (ORIGINAL_URL === undefined) delete process.env.OPS_DISCORD_WEBHOOK_URL
     else process.env.OPS_DISCORD_WEBHOOK_URL = ORIGINAL_URL
+    if (ORIGINAL_VERCEL_ENV === undefined) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = ORIGINAL_VERCEL_ENV
   })
 
   it('no-op when OPS_DISCORD_WEBHOOK_URL is not set', async () => {
@@ -78,6 +84,48 @@ describe('notifyOps', () => {
     fetchMock.mockRejectedValueOnce(abortErr)
     await expect(notifyOps('s', {})).resolves.toBeUndefined()
     expect(warnSpy).toHaveBeenCalledOnce()
+  })
+
+  // T-A5 (audit §10.3 (b) #14): production fail-fast + 代替 error sink.
+  // production で OPS_DISCORD_WEBHOOK_URL 未設定 = 設定漏れの deployment misconfig
+  // なので silent no-op せず throw、 fetch 失敗時は logger.warn に加えて
+  // logger.error も fire (warn が filter で消える可能性に備える)。
+  it('throws when OPS_DISCORD_WEBHOOK_URL is missing in production (T-A5)', async () => {
+    process.env.VERCEL_ENV = 'production'
+    delete process.env.OPS_DISCORD_WEBHOOK_URL
+    await expect(notifyOps('test', { foo: 'bar' })).rejects.toThrow(
+      'OPS_DISCORD_WEBHOOK_URL must be set in production',
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('posts successfully when URL is set in production (T-A5 happy path)', async () => {
+    process.env.VERCEL_ENV = 'production'
+    process.env.OPS_DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/x/y'
+    await expect(notifyOps('test', { foo: 'bar' })).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires both warn (fetch_failed) and error (unreachable) on fetch failure in production (T-A5)', async () => {
+    process.env.VERCEL_ENV = 'production'
+    process.env.OPS_DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/x/y'
+    fetchMock.mockRejectedValueOnce(new Error('network down'))
+    await expect(notifyOps('s', {})).resolves.toBeUndefined()
+    // logger.warn (existing) routes to console.warn
+    expect(warnSpy).toHaveBeenCalledOnce()
+    const warnArg = warnSpy.mock.calls[0]?.[0] as string
+    expect(warnArg).toContain('ops.notify.fetch_failed')
+    // logger.error (new in T-A5) routes to console.error
+    expect(errorSpy).toHaveBeenCalledOnce()
+    const errorArg = errorSpy.mock.calls[0]?.[0] as string
+    expect(errorArg).toContain('ops.notify.unreachable')
+  })
+
+  it('silent no-op when URL is missing and VERCEL_ENV is unset (non-prod, T-A5 regression)', async () => {
+    delete process.env.VERCEL_ENV
+    delete process.env.OPS_DISCORD_WEBHOOK_URL
+    await expect(notifyOps('test', { foo: 'bar' })).resolves.toBeUndefined()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

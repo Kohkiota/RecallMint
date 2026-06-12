@@ -8,7 +8,11 @@
 //
 // 設計上の保証:
 // - OPS_DISCORD_WEBHOOK_URL 未設定環境 (local dev / preview) では no-op
-// - fetch 失敗 / payload serialize 失敗時は logger.warn のみで本処理を巻き込まない
+// - production (VERCEL_ENV='production') で URL 未設定なら notifyOps 呼出時に throw
+//   (audit §10.3 (b) #14: silent fallback で ops 通知が黙って失敗する経路を解消、
+//   遅延 fail-fast — module load 時 eager throw は test 困難なため呼出時に throw)
+// - fetch 失敗時は logger.warn (既存) に加え production のみ logger.error も発火
+//   (warn が log filter で消える可能性に備え stderr に必須残し、 audit §10.3 (b) #14)
 // - Discord content の 2000 char 制限を考慮して 1900 char で truncate
 
 import { logger } from '@/lib/logger'
@@ -20,7 +24,16 @@ export async function notifyOps(
   context: Record<string, unknown>,
 ): Promise<void> {
   const url = process.env.OPS_DISCORD_WEBHOOK_URL
-  if (!url) return
+  if (!url) {
+    // audit §10.3 (b) #14: production で URL 未設定は deployment misconfig なので
+    // silent no-op せず throw (operator に即時気付かせる)。
+    if (process.env.VERCEL_ENV === 'production') {
+      throw new Error(
+        'OPS_DISCORD_WEBHOOK_URL must be set in production (see audit §10.3 (b) #14)',
+      )
+    }
+    return
+  }
 
   let contextStr: string
   try {
@@ -54,6 +67,13 @@ export async function notifyOps(
     // notifyOps 自身の失敗が呼び出し元を巻き込んではならない。
   } catch (err) {
     logger.warn({ event: 'ops.notify.fetch_failed', err })
+    // audit §10.3 (b) #14: production で fetch 失敗 (Discord 到達不可) は
+    // 単発失敗 (warn) より重い事象として error にも残す (stderr 必須残し、
+    // log filter で warn が消える可能性に備える)。 url は webhook secret なので
+    // payload に含めず redact。
+    if (process.env.VERCEL_ENV === 'production') {
+      logger.error({ event: 'ops.notify.unreachable', err, url: '<redacted>' })
+    }
   }
 }
 
@@ -66,6 +86,13 @@ export async function notifyOps(
  *
  * `userId` / `customerId` は省略可能。`undefined` field は JSON.stringify で
  * payload から消える。
+ *
+ * **T-A5 以降の throw 条件** (audit §10.3 (b) #14): production で
+ * `OPS_DISCORD_WEBHOOK_URL` 未設定の場合、 内部の notifyOps が throw する
+ * (deployment misconfig 即時検知の fail-fast)。 webhook handler は本 helper の
+ * throw を outer catch で受け、 HTTP 500 を返す → Clerk / Stripe が retry。
+ * Sentry-swap-ready interface としては、 Phase 1 F (Sentry) 移行時にも同 throw
+ * semantics を維持する (= operator に misconfig を運用早期発見させる契約)。
  */
 export async function notifyWebhookError(args: {
   handler: 'clerk' | 'stripe'
