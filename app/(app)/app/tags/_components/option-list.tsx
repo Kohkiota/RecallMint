@@ -47,6 +47,8 @@ import { OptionRow } from './option-row'
 import { OptionCreateForm } from './option-create-form'
 
 type Props = {
+  // Sync-fix-1 T2b: server で解決した userId を OptionCreateForm に thread。
+  userId: string
   activeCategoryId: string | null
 }
 
@@ -108,7 +110,7 @@ function SortableOptionRowWrapper({
   )
 }
 
-export function OptionList({ activeCategoryId }: Props) {
+export function OptionList({ userId, activeCategoryId }: Props) {
   // active カテゴリ配下の options。 activeCategoryId が null の間は空配列扱い。
   const options = useLiveQuery(async () => {
     if (activeCategoryId === null) return []
@@ -202,6 +204,7 @@ export function OptionList({ activeCategoryId }: Props) {
   return (
     <div className="space-y-3">
       <OptionCreateForm
+        userId={userId}
         activeCategoryId={activeCategoryId}
         existingNames={existingNames}
         existingSortKeys={existingSortKeys}

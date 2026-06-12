@@ -39,6 +39,9 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 import { OptionCreateForm } from './option-create-form'
 
 const CAT_ID = 'cat-a'
+// Sync-fix-1 T2b: form は server で解決した userId を props で受ける。 旧版の
+// `user_id: ''` placeholder は撤去、 mirror row + 失敗時の rollback で USER_ID が保持される。
+const USER_ID = 'user-1'
 
 beforeEach(async () => {
   vi.clearAllMocks()
@@ -58,6 +61,7 @@ describe('OptionCreateForm — 表示 / 入力', () => {
   it('name input + color 選択 button + 「追加」 button を render', () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -72,6 +76,7 @@ describe('OptionCreateForm — 表示 / 入力', () => {
   it('name 空で 「追加」 button が disabled', () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -82,6 +87,7 @@ describe('OptionCreateForm — 表示 / 入力', () => {
   it('whitespace のみの name で 「追加」 button が disabled', () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -95,6 +101,7 @@ describe('OptionCreateForm — 表示 / 入力', () => {
   it('name 入力で button enabled', () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -110,6 +117,7 @@ describe('OptionCreateForm — UNIQUE 事前チェック', () => {
   it('existingNames に同名 → 「同名が既に存在します」 表示 + submit 不可', async () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={['高', '低']}
       />,
@@ -128,6 +136,7 @@ describe('OptionCreateForm — UNIQUE 事前チェック', () => {
   it('UNIQUE 違反 message は trim 後で判定する (前後 whitespace は揃える)', async () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={['高']}
       />,
@@ -144,6 +153,7 @@ describe('OptionCreateForm — UNIQUE 事前チェック', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={['低']}
       />,
@@ -167,6 +177,7 @@ describe('OptionCreateForm — submit', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -196,6 +207,7 @@ describe('OptionCreateForm — submit', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -221,6 +233,7 @@ describe('OptionCreateForm — submit', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -252,6 +265,7 @@ describe('OptionCreateForm — submit', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
         existingSortKeys={['0', '1', '2']}
@@ -287,6 +301,7 @@ describe('OptionCreateForm — submit', () => {
 
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
         existingSortKeys={['0', null, '10', undefined, '2']}
@@ -310,6 +325,7 @@ describe('OptionCreateForm — submit', () => {
   it('submit 後 form reset (name クリア + color null に戻る)', async () => {
     render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -332,6 +348,7 @@ describe('OptionCreateForm — submit', () => {
 
     const { container } = render(
       <OptionCreateForm
+        userId={USER_ID}
         activeCategoryId={CAT_ID}
         existingNames={[]}
       />,
@@ -359,7 +376,11 @@ describe('OptionCreateForm — optimistic IDB put', () => {
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
     render(
-      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+      <OptionCreateForm
+        userId={USER_ID}
+        activeCategoryId={CAT_ID}
+        existingNames={[]}
+      />,
     )
     fireEvent.change(screen.getByRole('textbox', { name: 'option 名' }), {
       target: { value: '高' },
@@ -373,7 +394,9 @@ describe('OptionCreateForm — optimistic IDB put', () => {
     const row = await getClientDb().tag_options.get(FIXED_ID)
     expect(row).toMatchObject({
       id: FIXED_ID,
-      user_id: '',
+      // Sync-fix-1 T2b: server で解決した USER_ID が mirror row に保持される
+      // (旧版の `user_id: ''` placeholder は撤去)。
+      user_id: USER_ID,
       category_id: CAT_ID,
       name: '高',
       color: null,
@@ -385,15 +408,21 @@ describe('OptionCreateForm — optimistic IDB put', () => {
     expect(row!.created_at).toBe(row!.updated_at)
   })
 
-  it('IDB put が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
+  it('IDB add が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
     const FIXED_ID = '77777777-7777-4777-8777-777777777777'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
+    // Sync-fix-1 T2b: helper (`runOptimisticCreate`) は mirror に `add` で挿入する
+    // (UUID 新規採番なので collision は実質発生せず、 万一の collision は throw → tx rollback)。
     const db = getClientDb()
-    const putSpy = vi.spyOn(db.tag_options, 'put')
+    const addSpy = vi.spyOn(db.tag_options, 'add')
 
     render(
-      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+      <OptionCreateForm
+        userId={USER_ID}
+        activeCategoryId={CAT_ID}
+        existingNames={[]}
+      />,
     )
     fireEvent.change(screen.getByRole('textbox', { name: 'option 名' }), {
       target: { value: '高' },
@@ -401,13 +430,13 @@ describe('OptionCreateForm — optimistic IDB put', () => {
     fireEvent.click(screen.getByRole('button', { name: 'option 追加' }))
 
     await waitFor(() => {
-      expect(putSpy).toHaveBeenCalled()
+      expect(addSpy).toHaveBeenCalled()
       expect(mockEnqueue).toHaveBeenCalled()
     })
-    const putOrder = putSpy.mock.invocationCallOrder[0]
+    const addOrder = addSpy.mock.invocationCallOrder[0]
     const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
-    expect(putOrder).toBeLessThan(enqueueOrder)
-    putSpy.mockRestore()
+    expect(addOrder).toBeLessThan(enqueueOrder)
+    addSpy.mockRestore()
   })
 
   it('color 選択ありの submit で IDB row.color に色名が反映', async () => {
@@ -415,7 +444,11 @@ describe('OptionCreateForm — optimistic IDB put', () => {
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
     render(
-      <OptionCreateForm activeCategoryId={CAT_ID} existingNames={[]} />,
+      <OptionCreateForm
+        userId={USER_ID}
+        activeCategoryId={CAT_ID}
+        existingNames={[]}
+      />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'option 色を選択' }))
     const redCell = await screen.findByRole('button', { name: /色: red/ })
@@ -430,5 +463,40 @@ describe('OptionCreateForm — optimistic IDB put', () => {
       const row = await getClientDb().tag_options.get(FIXED_ID)
       expect(row?.color).toBe('red')
     })
+  })
+})
+
+// Sync-fix-1 T2b: helper (`runOptimisticCreate`) は `userId === ''` で console.error +
+// 早期 throw する fail-fast contract。 form は handleSubmit 内で `void runOptimisticCreate`
+// しており caller try/catch は無いが、 helper の throw は void で握りつぶされ console.error
+// は残る → form の reset は同期で進行する設計を pin する。
+describe('OptionCreateForm — userId="" fail-fast (sync-fix-1 T2b)', () => {
+  it('userId="" で console.error が出る (helper fail-fast) が UI は reset で進行する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    render(
+      <OptionCreateForm
+        userId=""
+        activeCategoryId={CAT_ID}
+        existingNames={[]}
+      />,
+    )
+    const nameInput = screen.getByRole('textbox', {
+      name: 'option 名',
+    }) as HTMLInputElement
+    fireEvent.change(nameInput, { target: { value: '高' } })
+    fireEvent.click(screen.getByRole('button', { name: 'option 追加' }))
+
+    await vi.waitFor(() => {
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[optimistic-create] empty user_id, aborting create',
+      )
+    })
+    // form reset は helper await の前に sync で発火する設計のため進行する
+    expect(nameInput.value).toBe('')
+    // mirror は書かれない (helper が tx を張る前に throw)
+    expect(mockEnqueue).not.toHaveBeenCalled()
+
+    errorSpy.mockRestore()
   })
 })

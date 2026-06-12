@@ -31,6 +31,11 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 
 import { CategoryCreateForm } from './category-create-form'
 
+// Sync-fix-1 T2b: form は server で解決した userId (UUID) を props で受ける。
+// 旧版の `user_id: ''` placeholder は撤去、 mirror row + 失敗時の rollback で USER_ID が
+// 保持される。 空文字を渡すと helper が早期 throw する fail-fast contract も pin する。
+const USER_ID = 'user-1'
+
 beforeEach(async () => {
   vi.clearAllMocks()
   mockNewId.mockImplementation(() => realNewId.current())
@@ -48,7 +53,7 @@ afterEach(() => {
 
 describe('CategoryCreateForm — 表示 / 入力', () => {
   it('name input と select_type radio (single/multi) + 「追加」 button を render', () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     expect(screen.getByRole('textbox', { name: 'カテゴリ名' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'multi' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'single' })).toBeInTheDocument()
@@ -56,7 +61,7 @@ describe('CategoryCreateForm — 表示 / 入力', () => {
   })
 
   it('初期状態で select_type は multi が selected', () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     const multi = screen.getByRole('radio', { name: 'multi' }) as HTMLInputElement
     const single = screen.getByRole('radio', { name: 'single' }) as HTMLInputElement
     expect(multi.checked).toBe(true)
@@ -64,12 +69,12 @@ describe('CategoryCreateForm — 表示 / 入力', () => {
   })
 
   it('name 空で 「追加」 button が disabled', () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     expect(screen.getByRole('button', { name: 'カテゴリ追加' })).toBeDisabled()
   })
 
   it('whitespace のみの name で 「追加」 button が disabled', () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '   ' },
     })
@@ -77,7 +82,7 @@ describe('CategoryCreateForm — 表示 / 入力', () => {
   })
 
   it('name 入力で button enabled', () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '重要度' },
     })
@@ -90,7 +95,7 @@ describe('CategoryCreateForm — submit', () => {
     const FIXED_ID = '12345678-1234-4abc-8abc-1234567890ab'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '重要度' },
     })
@@ -114,7 +119,7 @@ describe('CategoryCreateForm — submit', () => {
     const FIXED_ID = '22222222-2222-4222-8222-222222222222'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '優先度' },
     })
@@ -135,7 +140,7 @@ describe('CategoryCreateForm — submit', () => {
     const FIXED_ID = '33333333-3333-4333-8333-333333333333'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '  カテゴリ  ' },
     })
@@ -157,7 +162,7 @@ describe('CategoryCreateForm — submit', () => {
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
     render(
-      <CategoryCreateForm existingSortKeys={['0', '1', '2']} />,
+      <CategoryCreateForm userId={USER_ID} existingSortKeys={['0', '1', '2']} />,
     )
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: 'タグ' },
@@ -183,7 +188,10 @@ describe('CategoryCreateForm — submit', () => {
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
     render(
-      <CategoryCreateForm existingSortKeys={['0', null, '10', undefined, '2']} />,
+      <CategoryCreateForm
+        userId={USER_ID}
+        existingSortKeys={['0', null, '10', undefined, '2']}
+      />,
     )
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: 'タグ' },
@@ -201,7 +209,7 @@ describe('CategoryCreateForm — submit', () => {
   })
 
   it('submit 後 form reset (name クリア + select_type=multi に戻る)', async () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     const nameInput = screen.getByRole('textbox', { name: 'カテゴリ名' }) as HTMLInputElement
     fireEvent.change(nameInput, { target: { value: '重要度' } })
     fireEvent.click(screen.getByRole('radio', { name: 'single' }))
@@ -221,7 +229,7 @@ describe('CategoryCreateForm — submit', () => {
     mockNewId.mockImplementationOnce(() => FIXED_ID)
     const onCreated = vi.fn()
 
-    render(<CategoryCreateForm onCreated={onCreated} />)
+    render(<CategoryCreateForm userId={USER_ID} onCreated={onCreated} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '重要度' },
     })
@@ -233,7 +241,7 @@ describe('CategoryCreateForm — submit', () => {
   })
 
   it('onCreated 未指定でも submit が動く (callback optional)', async () => {
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: 'X' },
     })
@@ -248,7 +256,7 @@ describe('CategoryCreateForm — submit', () => {
     const FIXED_ID = '55555555-5555-4555-8555-555555555555'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    const { container } = render(<CategoryCreateForm />)
+    const { container } = render(<CategoryCreateForm userId={USER_ID} />)
     const nameInput = screen.getByRole('textbox', { name: 'カテゴリ名' })
     fireEvent.change(nameInput, { target: { value: '重要度' } })
     const form = container.querySelector('form')!
@@ -270,7 +278,7 @@ describe('CategoryCreateForm — optimistic IDB put', () => {
     const FIXED_ID = '66666666-6666-4666-8666-666666666666'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '重要度' },
     })
@@ -283,7 +291,9 @@ describe('CategoryCreateForm — optimistic IDB put', () => {
     const row = await getClientDb().tag_categories.get(FIXED_ID)
     expect(row).toMatchObject({
       id: FIXED_ID,
-      user_id: '',
+      // Sync-fix-1 T2b: server で解決した USER_ID が mirror row に保持される
+      // (旧版の `user_id: ''` placeholder は撤去)。
+      user_id: USER_ID,
       name: '重要度',
       select_type: 'multi',
       color: null,
@@ -296,36 +306,38 @@ describe('CategoryCreateForm — optimistic IDB put', () => {
     expect(row!.created_at).toBe(row!.updated_at)
   })
 
-  it('IDB put が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
+  it('IDB add が enqueueEntityMutation より先に呼ばれる (発行順序)', async () => {
     const FIXED_ID = '77777777-7777-4777-8777-777777777777'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    // tag_categories.put を spy 化 (Dexie 実体は残しつつ呼出時刻を取る)。
+    // Sync-fix-1 T2b: helper (`runOptimisticCreate`) は mirror に `add` で挿入する
+    // (UUID は新規採番なので collision は実質発生せず、 万一の collision は throw →
+    // tx rollback で安全側に倒す設計)。 spy 対象も `put` → `add` に追従。
     const db = getClientDb()
-    const putSpy = vi.spyOn(db.tag_categories, 'put')
+    const addSpy = vi.spyOn(db.tag_categories, 'add')
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '重要度' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
 
     await waitFor(() => {
-      expect(putSpy).toHaveBeenCalled()
+      expect(addSpy).toHaveBeenCalled()
       expect(mockEnqueue).toHaveBeenCalled()
     })
 
-    const putOrder = putSpy.mock.invocationCallOrder[0]
+    const addOrder = addSpy.mock.invocationCallOrder[0]
     const enqueueOrder = mockEnqueue.mock.invocationCallOrder[0]
-    expect(putOrder).toBeLessThan(enqueueOrder)
-    putSpy.mockRestore()
+    expect(addOrder).toBeLessThan(enqueueOrder)
+    addSpy.mockRestore()
   })
 
   it('select_type=single で IDB row の select_type も single', async () => {
     const FIXED_ID = '88888888-8888-4888-8888-888888888888'
     mockNewId.mockImplementationOnce(() => FIXED_ID)
 
-    render(<CategoryCreateForm />)
+    render(<CategoryCreateForm userId={USER_ID} />)
     fireEvent.change(screen.getByRole('textbox', { name: 'カテゴリ名' }), {
       target: { value: '優先度' },
     })
@@ -336,5 +348,36 @@ describe('CategoryCreateForm — optimistic IDB put', () => {
       const row = await getClientDb().tag_categories.get(FIXED_ID)
       expect(row?.select_type).toBe('single')
     })
+  })
+})
+
+// Sync-fix-1 T2b: helper (`runOptimisticCreate`) は `userId === ''` で console.error +
+// 早期 throw する fail-fast contract。 form は handleSubmit 内で `void runOptimisticCreate`
+// しており caller try/catch は無いが、 helper の throw は void で握りつぶされ console.error
+// は残る → form の reset / onCreated は同期で進行する設計を pin する。
+describe('CategoryCreateForm — userId="" fail-fast (sync-fix-1 T2b)', () => {
+  it('userId="" で console.error が出る (helper fail-fast) が UI は reset で進行する', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onCreated = vi.fn()
+
+    render(<CategoryCreateForm userId="" onCreated={onCreated} />)
+    const nameInput = screen.getByRole('textbox', {
+      name: 'カテゴリ名',
+    }) as HTMLInputElement
+    fireEvent.change(nameInput, { target: { value: '重要度' } })
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ追加' }))
+
+    await vi.waitFor(() => {
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[optimistic-create] empty user_id, aborting create',
+      )
+    })
+    // form reset / onCreated は helper await の前に sync で発火する設計のため進行する
+    expect(nameInput.value).toBe('')
+    expect(onCreated).toHaveBeenCalled()
+    // mirror は書かれない (helper が tx を張る前に throw)
+    expect(mockEnqueue).not.toHaveBeenCalled()
+
+    errorSpy.mockRestore()
   })
 })

@@ -25,9 +25,8 @@ import { Pencil, CircleDot, CheckSquare } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
+import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { cn } from '@/lib/utils'
 import { getClientDb, type ClientTagCategory } from '@/lib/client-db'
 import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
@@ -79,40 +78,39 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
     setValue(category.name)
   }
 
-  // mutation 発行 + debounce flush の共通経路。 OptionRow の enqueueUpdate と
-  // 同形 (Tag-4c-2c H3 で color picker を導入するに当たり rename / color を
-  // 共通経路へ統合)。 optimistic IDB update は本 helper の **先頭** で発火
-  // (UI 即反映の保証、 mock spy 順序で gate)。
+  // mutation 発行 + debounce flush の共通経路。 OptionRow の enqueueUpdate と同形。
+  // sync-fix-1 T2b: `runOptimisticUpdate` (skipInternalFlush=true) で mirror update +
+  // enqueue を 1 Dexie rw tx に閉じる。 ordering (mirror→enqueue) は helper tx callback
+  // 内で保証 (発行順序 test が `db.tag_categories.update` spy → mockEnqueue spy 経路で gate)。
+  // debounce drain (500ms) は caller 側で維持 (plan §全体ルール 3)。
   const enqueueUpdate = (field: 'name' | 'color', value: unknown) => {
     const now = new Date().toISOString()
-    const mirrorPatch: Partial<ClientTagCategory> = {
+    const afterPatch: Partial<ClientTagCategory> = {
       updated_at: now,
       ...(field === 'name'
         ? { name: value as string }
         : { color: value as string | null }),
     }
-    void getClientDb()
-      .tag_categories.update(category.id, mirrorPatch)
-      .catch((err) => {
-        logger.warn({
-          event: 'tag_category_inline.mirror_update_failed',
-          categoryId: category.id,
-          field,
-          err: String(err),
-        })
-      })
-    void enqueueEntityMutation({
-      entity_type: 'tag_category',
-      entity_id: category.id,
-      op: 'update_field',
-      patch: { field, value },
-    }).catch((err) => {
-      logger.warn({
-        event: 'tag_category_inline.enqueue_failed',
-        categoryId: category.id,
-        field,
-        err: String(err),
-      })
+    const beforeValue: Partial<ClientTagCategory> = {
+      updated_at: category.updated_at,
+      ...(field === 'name'
+        ? { name: category.name }
+        : { color: category.color ?? null }),
+    }
+    void runOptimisticUpdate({
+      store: getClientDb().tag_categories,
+      rowKey: category.id,
+      beforeValue,
+      afterPatch,
+      mutation: {
+        entity_type: 'tag_category',
+        entity_id: category.id,
+        op: 'update_field',
+        patch: { field, value },
+      },
+      logEvent: `tag_category_inline.${field}.tx_failed`,
+      logContext: { categoryId: category.id, field },
+      skipInternalFlush: true,
     })
     if (debounceTimerRef.current !== null) {
       clearTimeout(debounceTimerRef.current)

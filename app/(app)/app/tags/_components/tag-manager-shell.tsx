@@ -21,7 +21,14 @@ import { OptionList } from './option-list'
 
 type MobileTab = 'categories' | 'options'
 
-export function TagManagerShell() {
+type Props = {
+  // Sync-fix-1 T2b: server (tags/page.tsx) で解決した users.id (UUID) を
+  // CategoryList / OptionList → CreateForm まで thread。 `runOptimisticCreate` の
+  // fail-fast (空文字なら throw) を構造的に満たし、 `user_id: ''` placeholder を排する。
+  userId: string
+}
+
+export function TagManagerShell({ userId }: Props) {
   const [activeCategoryId, setActiveCategoryId] = React.useState<string | null>(
     null,
   )
@@ -45,12 +52,13 @@ export function TagManagerShell() {
       <div className="hidden md:grid md:grid-cols-3 md:gap-6">
         <div className="col-span-1">
           <CategoryList
+            userId={userId}
             activeCategoryId={activeCategoryId}
             onSelectCategory={setActiveCategoryId}
           />
         </div>
         <div className="col-span-2">
-          <OptionList activeCategoryId={activeCategoryId} />
+          <OptionList userId={userId} activeCategoryId={activeCategoryId} />
         </div>
       </div>
 
@@ -66,12 +74,13 @@ export function TagManagerShell() {
           </TabsList>
           <TabsContent value="categories">
             <CategoryList
+              userId={userId}
               activeCategoryId={activeCategoryId}
               onSelectCategory={handleSelectMobile}
             />
           </TabsContent>
           <TabsContent value="options">
-            <OptionList activeCategoryId={activeCategoryId} />
+            <OptionList userId={userId} activeCategoryId={activeCategoryId} />
           </TabsContent>
         </Tabs>
       </div>

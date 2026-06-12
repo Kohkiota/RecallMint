@@ -34,9 +34,8 @@ import { Button } from '@/components/ui/button'
 // は Tag-4a 時点では UI としては未使用 (jsdom 上のトグル試験回避で controlled state +
 // 自前 menu semantics に倒したため)。 ファイルは将来の inline select (Tag-4c) / D&D
 // (Tag-4c-2c で manager D&D 配備予定) で再利用するためそのまま残す。
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
+import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { cn } from '@/lib/utils'
 import {
   getClientDb,
@@ -113,14 +112,16 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
   }
 
   // mutation 発行 + debounce flush の共通経路。
-  // optimistic IDB update は本 helper の **先頭** で発火 (UI 即反映の保証、
-  // mock spy 順序で gate)。 field に応じて mirror の対応 column を patch する。
+  // sync-fix-1 T2b: `runOptimisticUpdate` (skipInternalFlush=true) で mirror update +
+  // enqueue を 1 Dexie rw tx に閉じる。 ordering (mirror→enqueue) は helper tx callback
+  // 内で保証 (発行順序 test が `db.tag_options.update` spy → mockEnqueue spy 経路で gate)。
+  // debounce drain (500ms) は caller 側で維持 (plan §全体ルール 3)。
   const enqueueUpdate = (
     field: 'name' | 'color' | 'category_id',
     value: unknown,
   ) => {
     const now = new Date().toISOString()
-    const mirrorPatch: Partial<ClientTagOption> = {
+    const afterPatch: Partial<ClientTagOption> = {
       updated_at: now,
       ...(field === 'name'
         ? { name: value as string }
@@ -128,28 +129,28 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
           ? { color: value as string | null }
           : { category_id: value as string }),
     }
-    void getClientDb()
-      .tag_options.update(option.id, mirrorPatch)
-      .catch((err) => {
-        logger.warn({
-          event: 'tag_option_inline.mirror_update_failed',
-          optionId: option.id,
-          field,
-          err: String(err),
-        })
-      })
-    void enqueueEntityMutation({
-      entity_type: 'tag_option',
-      entity_id: option.id,
-      op: 'update_field',
-      patch: { field, value },
-    }).catch((err) => {
-      logger.warn({
-        event: 'tag_option_inline.enqueue_failed',
-        optionId: option.id,
-        field,
-        err: String(err),
-      })
+    const beforeValue: Partial<ClientTagOption> = {
+      updated_at: option.updated_at,
+      ...(field === 'name'
+        ? { name: option.name }
+        : field === 'color'
+          ? { color: option.color ?? null }
+          : { category_id: option.category_id }),
+    }
+    void runOptimisticUpdate({
+      store: getClientDb().tag_options,
+      rowKey: option.id,
+      beforeValue,
+      afterPatch,
+      mutation: {
+        entity_type: 'tag_option',
+        entity_id: option.id,
+        op: 'update_field',
+        patch: { field, value },
+      },
+      logEvent: `tag_option_inline.${field}.tx_failed`,
+      logContext: { optionId: option.id, field },
+      skipInternalFlush: true,
     })
     if (debounceTimerRef.current !== null) {
       clearTimeout(debounceTimerRef.current)

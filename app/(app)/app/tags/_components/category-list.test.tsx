@@ -120,7 +120,11 @@ afterEach(() => {
 describe('CategoryList — useLiveQuery 描画', () => {
   it('カテゴリ 0 件: 一覧は空、 「+ カテゴリ追加」 form は描画される', async () => {
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     expect(
       await screen.findByRole('button', { name: 'カテゴリ追加' }),
@@ -138,7 +142,11 @@ describe('CategoryList — useLiveQuery 描画', () => {
     ])
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('A カテゴリ')
     await screen.findByText('B カテゴリ')
@@ -166,7 +174,11 @@ describe('CategoryList — useLiveQuery 描画', () => {
     ])
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('零')
 
@@ -187,7 +199,11 @@ describe('CategoryList — useLiveQuery 描画', () => {
     ])
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('零')
 
@@ -206,7 +222,11 @@ describe('CategoryList — useLiveQuery 描画', () => {
     ])
 
     const { container } = render(
-      <CategoryList activeCategoryId="cat-a" onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId="cat-a"
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('A')
 
@@ -240,7 +260,11 @@ describe('CategoryList — 削除フロー', () => {
     ])
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -260,7 +284,11 @@ describe('CategoryList — 削除フロー', () => {
     )
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -286,7 +314,11 @@ describe('CategoryList — 削除フロー', () => {
     )
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -310,6 +342,7 @@ describe('CategoryList — 削除フロー', () => {
 
     render(
       <CategoryList
+        userId={USER_ID}
         activeCategoryId="cat-a"
         onSelectCategory={onSelectCategory}
       />,
@@ -342,7 +375,11 @@ describe('CategoryList — optimistic cascade purge (削除確定時)', () => {
     ])
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -372,7 +409,11 @@ describe('CategoryList — optimistic cascade purge (削除確定時)', () => {
     const cardTagDeleteSpy = vi.spyOn(db.card_tags, 'where')
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -397,7 +438,11 @@ describe('CategoryList — optimistic cascade purge (削除確定時)', () => {
     )
 
     render(
-      <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
     )
     await screen.findByText('重要度')
 
@@ -421,6 +466,7 @@ describe('CategoryList — onSelectCategory 配線', () => {
 
     const { container } = render(
       <CategoryList
+        userId={USER_ID}
         activeCategoryId={null}
         onSelectCategory={onSelectCategory}
       />,
@@ -443,6 +489,7 @@ describe('CategoryList — 作成 form 配線', () => {
 
     render(
       <CategoryList
+        userId={USER_ID}
         activeCategoryId={null}
         onSelectCategory={onSelectCategory}
       />,
@@ -481,7 +528,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByText('A')
 
@@ -500,7 +551,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       )
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByText('単独')
 
@@ -517,7 +572,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
 
     it('カテゴリ 0 件: handle / CategoryRow 共に非表示、 作成 form のみ', async () => {
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByRole('button', { name: 'カテゴリ追加' })
 
@@ -535,7 +594,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       const handleA = await screen.findByRole(
         'button',
@@ -565,7 +628,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       const { container } = render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByText('A')
 
@@ -590,6 +657,7 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
 
       const { container } = render(
         <CategoryList
+          userId={USER_ID}
           activeCategoryId={null}
           onSelectCategory={onSelectCategory}
         />,
@@ -615,7 +683,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByText('A')
 
@@ -636,7 +708,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByText('A')
 
@@ -663,7 +739,11 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       ])
 
       render(
-        <CategoryList activeCategoryId={null} onSelectCategory={vi.fn()} />,
+        <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
       )
       await screen.findByRole('button', { name: 'カテゴリを並べ替え: A' })
 

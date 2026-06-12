@@ -3,34 +3,34 @@
 // tag manager 左 column の新規カテゴリ作成 form。
 // - name input (必須) + select_type radio (single / multi、 default multi) + 追加 button
 // - submit:
-//   1. crypto.randomUUID() で id 採番 (newId() helper 経由)
-//   2. enqueueEntityMutation({entity_type:'tag_category', op:'create',
-//      patch:{name, select_type, sort_key}}) を発行
-//   3. runGuardedEntityMutationFlush() で drain
-//   4. form reset (name 空 / select_type=multi)
-//   5. onCreated(newId) callback で親に通知 (active 切替 hook)
+//   1. crypto.randomUUID() で id 採番 (newId() helper 経由、 onCreated に sync 通知するため事前採番)
+//   2. `runOptimisticCreate` 経由で mirror put + enqueue を 1 Dexie rw tx に閉じる (sync-fix-1 T2b)
+//   3. form reset (name 空 / select_type=multi)
+//   4. onCreated(newId) callback で親に通知 (active 切替 hook)
 // - select_type は作成後 immutable (spec §1.2)、 作成時のみ選択可能
 // - カテゴリ name は UNIQUE 制約なし (spec §1.2) のため client / server 共に重複 OK
 //
 // Tag-4c-2b §4.7: 末尾採番 (`nextSortKey`) を共有 helper で適用。 IDB put + enqueue
 // patch の両方に sort_key を含める (null 混在を新規作成では作らない)。 既存 null は
-// reindex (`lib/tags/reindex-sort-keys.ts`) で順次 0-based 整数に正規化される。 色変更 /
-// D&D 並べ替えの manager 配備は Tag-4c-2c 範疇。
+// reindex (`lib/tags/reindex-sort-keys.ts`) で順次 0-based 整数に正規化される。
+// Sync-fix-1 T2b: 旧版の `user_id: ''` placeholder を排し、 server で解決した userId を
+// props 経由で受け取る (空文字なら helper が fail-fast)。
 
 import * as React from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { newId, enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { newId } from '@/lib/sync/entity-mutations'
 import { getClientDb } from '@/lib/client-db'
-import { logger } from '@/lib/logger'
+import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
 
 type SelectType = 'single' | 'multi'
 
 type Props = {
+  // Sync-fix-1 T2b: server で解決した users.id (UUID)。 空文字なら helper が早期 throw。
+  userId: string
   // 作成成功時に新 id を親へ通知 (active 切替に使う)。 未指定でも form は動く。
   onCreated?: (id: string) => void
   // Tag-4c-2b T7: 親 (`CategoryList`) が `useLiveQuery` で解決した既存 sort_key 群。
@@ -39,7 +39,11 @@ type Props = {
   existingSortKeys?: (string | null | undefined)[]
 }
 
-export function CategoryCreateForm({ onCreated, existingSortKeys = [] }: Props) {
+export function CategoryCreateForm({
+  userId,
+  onCreated,
+  existingSortKeys = [],
+}: Props) {
   const [name, setName] = React.useState('')
   const [selectType, setSelectType] = React.useState<SelectType>('multi')
 
@@ -50,52 +54,40 @@ export function CategoryCreateForm({ onCreated, existingSortKeys = [] }: Props) 
     e.preventDefault()
     if (disabled) return
 
+    // onCreated を sync で発火させるため id を事前採番し helper に渡す。
     const id = newId()
     // Tag-4c-2b §4.7: 末尾採番 (共有 helper)。 IDB put + enqueue patch の両方に流す。
-    // `nextSortKey` は空配列で起点 `'0'` を返すため、 props default `[]` で undefined
-    // 防御を集約する (helper 側に統一、 form 側の `?? []` 二重防御を解消)。
     const sortKey = nextSortKey(existingSortKeys)
 
-    // optimistic IDB put: mirror に即時行を挿入し useLiveQuery を即時再描画させる。
-    // user_id は client から知る経路がない (Clerk 経由は server だけ) ため空文字、
-    // server pull で正しい user_id に上書きされる。
-    // enqueue より **先に** 発火 (UI 即反映の保証、 mock spy 順序で gate)。
-    const now = new Date().toISOString()
-    void getClientDb()
-      .tag_categories.put({
-        id,
-        user_id: '',
+    // helper 既定 (`throwOnError: false`) は catch 後 silent return + logger.warn 1 行。
+    // ただし `userId === ''` の fail-fast (helper 入口の `throw new Error('empty user_id')`)
+    // のみ caller に rethrow されるため、 unhandled rejection を作らないよう `.catch` で
+    // 握りつぶす。 console.error は helper 内で既に出ているので追加 log は不要。
+    void runOptimisticCreate({
+      userId,
+      id,
+      mirrorStore: getClientDb().tag_categories,
+      buildRow: (newCategoryId, nowIso) => ({
+        id: newCategoryId,
+        user_id: userId,
         name: trimmed,
         select_type: selectType,
         color: null,
         sort_key: sortKey,
-        created_at: now,
-        updated_at: now,
-      })
-      .catch((err) => {
-        logger.warn({
-          event: 'tag_category_create.mirror_put_failed',
-          categoryId: id,
-          err: String(err),
-        })
-      })
+        created_at: nowIso,
+        updated_at: nowIso,
+      }),
+      buildMutation: (newCategoryId) => ({
+        entity_type: 'tag_category',
+        entity_id: newCategoryId,
+        op: 'create',
+        patch: { name: trimmed, select_type: selectType, sort_key: sortKey },
+      }),
+      logEvent: 'tag_category_create.tx_failed',
+      logContext: { categoryId: id },
+    }).catch(() => {})
 
-    void enqueueEntityMutation({
-      entity_type: 'tag_category',
-      entity_id: id,
-      op: 'create',
-      patch: { name: trimmed, select_type: selectType, sort_key: sortKey },
-    }).catch((err) => {
-      logger.warn({
-        event: 'tag_category_create.enqueue_failed',
-        categoryId: id,
-        err: String(err),
-      })
-    })
-
-    void runGuardedEntityMutationFlush().catch(() => {})
-
-    // form reset (mutation 発行と独立に同期実行 — enqueue は fire-and-forget)。
+    // form reset (helper は fire-and-forget、 reset / onCreated は sync で先行)。
     setName('')
     setSelectType('multi')
 

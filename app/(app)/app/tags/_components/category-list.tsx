@@ -44,6 +44,8 @@ import { CategoryCreateForm } from './category-create-form'
 import { DeleteConfirmDialog } from './delete-confirm-dialog'
 
 type Props = {
+  // Sync-fix-1 T2b: server で解決した userId を CategoryCreateForm に thread。
+  userId: string
   activeCategoryId: string | null
   onSelectCategory: (id: string | null) => void
 }
@@ -115,6 +117,7 @@ function SortableCategoryRowWrapper({
 }
 
 export function CategoryList({
+  userId,
   activeCategoryId,
   onSelectCategory,
 }: Props) {
@@ -247,6 +250,7 @@ export function CategoryList({
   return (
     <div className="space-y-3">
       <CategoryCreateForm
+        userId={userId}
         onCreated={handleCreated}
         existingSortKeys={existingSortKeys}
       />

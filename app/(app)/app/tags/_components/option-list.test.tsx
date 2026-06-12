@@ -125,7 +125,7 @@ afterEach(() => {
 
 describe('OptionList — placeholder / 描画', () => {
   it('activeCategoryId=null で placeholder 表示', async () => {
-    render(<OptionList activeCategoryId={null} />)
+    render(<OptionList userId={USER_ID} activeCategoryId={null} />)
     expect(
       await screen.findByText(/カテゴリを選択してください/),
     ).toBeInTheDocument()
@@ -134,7 +134,7 @@ describe('OptionList — placeholder / 描画', () => {
   it('active カテゴリ配下 0 件: create form は render される、 OptionRow は無し', async () => {
     await getClientDb().tag_categories.put(makeCategory('cat-a', '重要度'))
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     // create form の追加 button が見える
     expect(
       await screen.findByRole('button', { name: 'option 追加' }),
@@ -154,7 +154,7 @@ describe('OptionList — placeholder / 描画', () => {
       makeOption('opt-c', 'cat-a', 'C option', '2026-06-03T00:00:00.000Z'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('A option')
     await screen.findByText('B option')
     await screen.findByText('C option')
@@ -182,7 +182,7 @@ describe('OptionList — placeholder / 描画', () => {
       makeOption('opt-1', 'cat-a', '壱', '2026-06-01T00:00:00.000Z', '1'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('零')
 
     const penButtons = screen.getAllByRole('button', { name: '編集' })
@@ -203,7 +203,7 @@ describe('OptionList — placeholder / 描画', () => {
       makeOption('opt-0', 'cat-a', '零', '2026-06-04T00:00:00.000Z', '0'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('零')
 
     const penButtons = screen.getAllByRole('button', { name: '編集' })
@@ -224,7 +224,7 @@ describe('OptionList — placeholder / 描画', () => {
       makeOption('opt-b', 'cat-b', 'B の option'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('A の option')
     expect(screen.queryByText('B の option')).not.toBeInTheDocument()
   })
@@ -240,7 +240,7 @@ describe('OptionList — 削除フロー (Tag-4c-2c hotfix H2: 確認なし即�
       makeCardTag('card-2', 'opt-1'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
@@ -267,7 +267,7 @@ describe('OptionList — 削除フロー (Tag-4c-2c hotfix H2: 確認なし即�
     await db.tag_categories.put(makeCategory('cat-a', '重要度'))
     await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
@@ -296,7 +296,7 @@ describe('OptionList — optimistic cascade purge (Tag-4c-2c hotfix H2: 即削�
       makeCardTag('card-2', 'opt-1'),
     ])
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
@@ -317,7 +317,7 @@ describe('OptionList — optimistic cascade purge (Tag-4c-2c hotfix H2: 即削�
 
     const cardTagWhereSpy = vi.spyOn(db.card_tags, 'where')
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'option 削除' }))
@@ -346,7 +346,7 @@ describe('OptionList — allCategories 配線', () => {
     ])
     await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
 
-    render(<OptionList activeCategoryId="cat-a" />)
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     await screen.findByText('高')
 
     fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
@@ -379,7 +379,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       // 2 件分の handle が存在
@@ -396,7 +396,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
       await db.tag_categories.put(makeCategory('cat-a', '重要度'))
       await db.tag_options.put(makeOption('opt-1', 'cat-a', '単独'))
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('単独')
 
       // handle 0 件 (aria-label prefix で検索)
@@ -419,7 +419,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
     it('option 0 件 (active 配下なし): handle / OptionRow 共に非表示、 作成 form のみ', async () => {
       await getClientDb().tag_categories.put(makeCategory('cat-a', '重要度'))
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByRole('button', { name: 'option 追加' })
 
       expect(
@@ -428,7 +428,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
     })
 
     it('activeCategoryId=null: placeholder のみで handle / OptionRow 一切 render しない', async () => {
-      render(<OptionList activeCategoryId={null} />)
+      render(<OptionList userId={USER_ID} activeCategoryId={null} />)
       await screen.findByText(/カテゴリを選択してください/)
 
       expect(
@@ -452,7 +452,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       const handle1 = await screen.findByRole(
         'button',
         { name: 'option を並べ替え: 高' },
@@ -488,7 +488,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      const { container } = render(<OptionList activeCategoryId="cat-a" />)
+      const { container } = render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       // touch-none token を持つ element は handle button (= 2 件 = options.length 個) のみ
@@ -510,7 +510,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       const pills = screen.getAllByRole('button', { name: 'option 色を変更' })
@@ -529,7 +529,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       const penButtons = screen.getAllByRole('button', { name: '編集' })
@@ -553,7 +553,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       const moveButtons = screen.getAllByRole('button', { name: 'カテゴリ変更' })
@@ -572,7 +572,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByText('高')
 
       const deleteButtons = screen.getAllByRole('button', { name: 'option 削除' })
@@ -606,7 +606,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
         makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
       ])
 
-      render(<OptionList activeCategoryId="cat-a" />)
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
       await screen.findByRole('button', { name: 'option を並べ替え: 高' })
 
       // mock 呼出 simulation: jsdom 制約で実 pointer drag を再現できないため、
@@ -646,7 +646,7 @@ describe('OptionList — Tag-4c-2c hotfix hook order regression', () => {
 
     // 初回 render: activeCategoryId=null で placeholder UI のみ。
     // この時点で useSensors が早期 return より後に置かれていると hook 数は 3 件。
-    const { rerender } = render(<OptionList activeCategoryId={null} />)
+    const { rerender } = render(<OptionList userId={USER_ID} activeCategoryId={null} />)
     expect(
       await screen.findByText(/カテゴリを選択してください/),
     ).toBeInTheDocument()
@@ -656,7 +656,7 @@ describe('OptionList — Tag-4c-2c hotfix hook order regression', () => {
     // React が 「Rendered more hooks than during the previous render」 を throw する。
     // 新版 (useSensors を早期 return 前に移動済) では 4 → 4 で安定し throw しない。
     await act(async () => {
-      rerender(<OptionList activeCategoryId="cat-a" />)
+      rerender(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
     })
 
     // 切替後は placeholder が消え、 option-list 経路 (create form) に入る。
