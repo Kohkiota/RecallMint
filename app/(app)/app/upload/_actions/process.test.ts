@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const {
   mockGetCurrentUser,
@@ -468,6 +468,78 @@ describe('processUpload', () => {
     const { processUpload } = await importProcess()
     const result = await processUpload(fd)
     expect(result.ok).toBe(true)
+  })
+
+  // T-A3 (audit §10.3 (b) #6): production で GEMINI_DAILY_LIMIT 欠落時は
+  // startup fail-fast。 preview / dev は従来通り silent fallback (= 上の test)。
+  describe('T-A3: GEMINI_DAILY_LIMIT production fail-fast', () => {
+    const originalVercelEnv = process.env.VERCEL_ENV
+    afterEach(() => {
+      // 他 test への漏出を防ぐため VERCEL_ENV を必ず復元 (delete or 元値復帰)
+      if (originalVercelEnv === undefined) {
+        delete process.env.VERCEL_ENV
+      } else {
+        process.env.VERCEL_ENV = originalVercelEnv
+      }
+    })
+
+    it('prod 欠落: VERCEL_ENV=production + GEMINI_DAILY_LIMIT unset → throws fail-fast', async () => {
+      process.env.VERCEL_ENV = 'production'
+      delete process.env.GEMINI_DAILY_LIMIT
+      mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+      const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+      const { processUpload } = await importProcess()
+      await expect(processUpload(fd)).rejects.toThrow(
+        'GEMINI_DAILY_LIMIT must be set in production',
+      )
+      // fail-fast → OCR は走らず、 DB 書き込みも発生しない
+      expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+      expect(dbState.insertedExams).toHaveLength(0)
+      expect(dbState.insertedSourceDocs).toHaveLength(0)
+    })
+
+    it('prod 設定済: VERCEL_ENV=production + GEMINI_DAILY_LIMIT=5 → 既存 limit guard 経路が正常動作', async () => {
+      process.env.VERCEL_ENV = 'production'
+      process.env.GEMINI_DAILY_LIMIT = '5'
+      mockGetTodayAiUsageGlobal.mockResolvedValueOnce(5)
+      mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+      const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+      const { processUpload } = await importProcess()
+      const result = await processUpload(fd)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.code).toBe('GEMINI_DAILY_LIMIT_EXCEEDED')
+        expect(result.details).toMatchObject({ current: 5, limit: 5 })
+      }
+      expect(mockRunOcrPipeline).not.toHaveBeenCalled()
+    })
+
+    it('dev 欠落: VERCEL_ENV undefined + GEMINI_DAILY_LIMIT unset → warn pass (OCR proceeds)', async () => {
+      delete process.env.VERCEL_ENV
+      delete process.env.GEMINI_DAILY_LIMIT
+      mockGetTodayAiUsageGlobal.mockResolvedValueOnce(999_999)
+      mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+      mockRunOcrPipeline.mockResolvedValueOnce({
+        cards: [
+          {
+            title: '問1',
+            question_text: 'リード文',
+            options: [{ id: 'a', text: 'A', is_correct: true }],
+            correct_answer_ids: ['a'],
+            images: [],
+            custom_props: {},
+          },
+        ],
+        modelChain: ['flash'],
+        costYen: 1,
+        tokenUsage: [{ model: 'flash', inputTokens: 100, outputTokens: 10 }],
+      })
+      dbState.nextCardIds = ['card-1']
+      const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+      const { processUpload } = await importProcess()
+      const result = await processUpload(fd)
+      expect(result.ok).toBe(true)
+    })
   })
 
   it('processUpload always calls revalidatePath on completion (success path) — S-cache-2a 縮小: /app/upload + /app', async () => {

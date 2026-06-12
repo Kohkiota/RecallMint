@@ -677,10 +677,25 @@ function truncate(s: string, max: number): string {
 // GEMINI_DAILY_LIMIT 環境変数を Number に変換。 未設定 / 不正値 / 0 以下は
 // null を返し guard を off にする (.env.example で 1000 を default 提示済、
 // 想定外の設定で本番が止まることを避ける)。
+//
+// T-A3 (audit §10.3 (b) #6): production (VERCEL_ENV='production') では未設定 /
+// 不正値で fail-fast。 quota 機構が silent に no-op になり実際の Gemini 課金 API へ
+// 無制限に流れる事故を防ぐ。 preview / dev は従来通り null fallback (= guard off)。
 function parseDailyLimit(raw: string | undefined): number | null {
-  if (!raw) return null
+  // T-A3 (audit §10.3 (b) #6): production では未設定 / 不正値で fail-fast、
+  // 非 prod は従来通り null fallback。 throw 文言は audit 参照 (sprint spec が
+  // archive されても安定、 review minor #2 反映)。
+  const failed = (): null => {
+    if (process.env.VERCEL_ENV === 'production') {
+      throw new Error(
+        'GEMINI_DAILY_LIMIT must be set in production (see audit §10.3 (b) #6)',
+      )
+    }
+    return null
+  }
+  if (!raw) return failed()
   const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n <= 0) return null
+  if (!Number.isFinite(n) || n <= 0) return failed()
   return n
 }
 
