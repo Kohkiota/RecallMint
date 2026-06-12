@@ -193,3 +193,95 @@ export async function runOptimisticCreate<T>(
   void runGuardedEntityMutationFlush().catch(() => {})
   return { id }
 }
+
+// ---------------------------------------------------------------------------
+// runOptimisticUpdate — 単一 row mirror update + outbox enqueue を atomic に閉じる
+// ---------------------------------------------------------------------------
+
+export type OptimisticUpdateOptions<
+  TKey,
+  TPatch extends Record<string, unknown>,
+> = {
+  /** mirror store (Table<row, primaryKey>)。 */
+  store: Table<unknown, TKey>
+  /** mirror 更新対象 row key。 */
+  rowKey: TKey
+  /** before fetch (revert 用の元値、 caller が事前取得して渡す)。 */
+  beforeValue: TPatch
+  /** mirror に書く patch (after 値)。 */
+  afterPatch: TPatch
+  /** enqueueEntityMutation 引数 (1 件)。 */
+  mutation: EnqueueEntityMutationInput
+  /** logger event 名 (mirror revert 失敗時 + tx 失敗時)。 */
+  logEvent: string
+  logContext?: Record<string, unknown>
+  /** noop 判定 (before === after なら早期 return、 tx も flush も発火しない)。 */
+  isNoop?: (before: TPatch, after: TPatch) => boolean
+  /** 既定 false: catch 後 silent return + logger.warn 1 行。 true: catch 後 rethrow。 */
+  throwOnError?: boolean
+  /** 既定 false: tx 成功後に `runGuardedEntityMutationFlush()` を内蔵 fire-and-forget で叩く。
+   *  true: 内蔵 flush を skip (caller が独自 debounce drain を管理するケース、 e.g.
+   *  inline-text-field.tsx の 500ms scheduleDrain)。 plan §全体ルール 3 = debounce drain は
+   *  caller 側に保持。 */
+  skipInternalFlush?: boolean
+}
+
+/**
+ * 単一 row の mirror update (`store.update(rowKey, afterPatch)`) + outbox enqueue (1 件)
+ * を 1 Dexie rw tx に閉じて実行する update path 専用 helper。
+ *
+ * - `isNoop?.(beforeValue, afterPatch)` が true なら tx も flush も張らず早期 return。
+ * - tx 内 enqueue throw → tx callback rethrow → Dexie auto-rollback (mirror update +
+ *   outbox enqueue 双方未反映、 mirror は beforeValue 相当に戻る)。
+ * - 既定動作 (`throwOnError: false`): catch 後 silent return + `logger.warn({event, ...ctx, err})`
+ *   1 行。 案 a 取り直し経路: 次回 pull が server 値で reconcile。
+ * - `throwOnError: true`: catch 後 rethrow (caller が error UI 等を維持したい場合)。
+ * - flush は tx 外 fire-and-forget。
+ *
+ * `beforeValue` は caller 責務 (mirror から事前取得、 helper 側で before snapshot を
+ * 取らせない)。 helper 内では `isNoop` 比較にのみ使用する (Dexie auto-rollback で
+ * mirror 値は自動復元されるため、 helper 内で明示 revert は不要)。
+ */
+export async function runOptimisticUpdate<
+  TKey,
+  TPatch extends Record<string, unknown>,
+>(options: OptimisticUpdateOptions<TKey, TPatch>): Promise<void> {
+  const {
+    store,
+    rowKey,
+    beforeValue,
+    afterPatch,
+    mutation,
+    logEvent,
+    logContext,
+    isNoop,
+    throwOnError = false,
+    skipInternalFlush = false,
+  } = options
+
+  // isNoop 早期 return: tx も flush も張らない (no-op 編集の outbox 行を避ける)。
+  if (isNoop?.(beforeValue, afterPatch)) return
+
+  const db = getClientDb()
+  try {
+    // 配列 overload に揃える (理由は runOptimisticMutation 側 comment 参照)。
+    const txTables: AnyTable[] = [store as AnyTable, db.entity_mutations]
+    await db.transaction('rw', txTables, async () => {
+      // mirror update → enqueue 順。 enqueue throw で tx callback rethrow → Dexie
+      // auto-rollback (mirror update も巻き戻る = revert 自動成立)。
+      await store.update(rowKey, afterPatch as Partial<unknown>)
+      await enqueueEntityMutation(mutation)
+    })
+  } catch (err) {
+    // tx auto-rollback 済 (mirror update + outbox enqueue 共に未反映、 mirror は
+    // beforeValue 相当に自動復元)。
+    logger.warn({ event: logEvent, ...(logContext ?? {}), err })
+    if (throwOnError) throw err
+    return
+  }
+  // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
+  // `skipInternalFlush=true` の場合は caller の debounce drain (e.g. scheduleDrain) に委任。
+  if (!skipInternalFlush) {
+    void runGuardedEntityMutationFlush().catch(() => {})
+  }
+}

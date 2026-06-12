@@ -79,6 +79,10 @@ export type OptimisticUpdateOptions<TKey, TPatch extends Record<string, unknown>
   logContext?: Record<string, unknown>
   isNoop?: (before: TPatch, after: TPatch) => boolean
   throwOnError?: boolean                        // rename/color 系の caller 通知用
+  // 既定 false: helper 内蔵 fire-and-forget flush (`runGuardedEntityMutationFlush`) を tx 外で叩く。
+  // true: 内蔵 flush を skip し caller-side debounce drain (例 inline-text-field.tsx の 500ms
+  // scheduleDrain) に委任、 二重 flush を回避する。
+  skipInternalFlush?: boolean
 }
 export async function runOptimisticUpdate<TKey, TPatch extends Record<string, unknown>>(
   options: OptimisticUpdateOptions<TKey, TPatch>,
@@ -95,7 +99,7 @@ export async function runOptimisticUpdate<TKey, TPatch extends Record<string, un
 6. `throwOnError: true` なら catch 後 rethrow
 7. **flush は helper 内蔵 fire-and-forget**: `void runGuardedEntityMutationFlush().catch(() => {})` を tx 外で。 caller は flush を渡さない
 8. `runOptimisticCreate` は `userId === ''` で **空文字 fail-fast** (早期 throw + `console.error('[optimistic-create] empty user_id', ...)`)、 T2 の create form 2 件で構造的に空文字 placeholder を消す
-9. `runOptimisticUpdate` の revert 失敗時 (= mirror revert で再 throw) は `logger.warn` 1 行 + silent return (案 a 取り直し)
+9. `runOptimisticUpdate` の **mirror update throw → Dexie auto-rollback + silent** (案 a 取り直し): 実装は manual revert path を持たず Dexie auto-rollback に依存、 tx 外 catch 後は `logger.warn` 1 行 + silent return (`throwOnError: true` の時のみ rethrow)。 caller 側で `beforeValue` の snapshot を取らせる「明示 revert」 経路は持たない
 
 ---
 

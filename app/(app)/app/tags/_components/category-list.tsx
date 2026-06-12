@@ -33,8 +33,7 @@ import {
   getClientDb,
   type ClientTagCategory,
 } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
 import { logger } from '@/lib/logger'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderCategories } from '@/lib/tags/reorder-handlers'
@@ -162,14 +161,17 @@ export function CategoryList({
     const target = pendingDelete.category
     setPendingDelete(null)
 
-    // optimistic cascade purge: 子孫 (card_tags) → 中孫 (options) → 親 (category) の
-    // 順で mirror から物理削除し useLiveQuery を即時再描画させる。 server cascade
-    // (applyTagCategoryDelete + FK) も等価処理を走らせるが、 二重削除 idempotent
-    // (server 真値が pull で上書き)。 enqueue より **先に** 発火 (UI 即反映の保証、
-    // mock spy 順序で gate)。
-    void (async () => {
-      const db = getClientDb()
-      try {
+    // optimistic cascade purge + enqueue を 1 Dexie rw tx に閉じる
+    // (`runOptimisticMutation` multi-store)。 enqueue throw で Dexie auto-rollback により
+    // cascade purge も巻き戻り、 useLiveQuery が削除前の状態に戻る (silent + 案 a 取り直し)。
+    // server cascade (applyTagCategoryDelete + FK) も等価処理を走らせるが、 二重削除
+    // idempotent (server 真値が pull で上書き)。 `mutate` 内で 子孫 (card_tags) →
+    // 中孫 (tag_options) → 親 (tag_category) の順で物理削除し、 enqueue は helper が tx 内で
+    // mutations を順次 await する (= enqueue より先に物理削除が走る発行順を維持)。
+    const db = getClientDb()
+    void runOptimisticMutation({
+      stores: [db.card_tags, db.tag_options, db.tag_categories],
+      mutate: async () => {
         const options = await db.tag_options
           .where('category_id')
           .equals(target.id)
@@ -183,28 +185,18 @@ export function CategoryList({
           .equals(target.id)
           .delete()
         await db.tag_categories.delete(target.id)
-      } catch (err) {
-        logger.warn({
-          event: 'tag_category_delete.mirror_purge_failed',
-          categoryId: target.id,
-          err: String(err),
-        })
-      }
-    })()
-
-    void enqueueEntityMutation({
-      entity_type: 'tag_category',
-      entity_id: target.id,
-      op: 'delete',
-      patch: {},
-    }).catch((err) => {
-      logger.warn({
-        event: 'tag_category_delete.enqueue_failed',
-        categoryId: target.id,
-        err: String(err),
-      })
+      },
+      mutations: [
+        {
+          entity_type: 'tag_category',
+          entity_id: target.id,
+          op: 'delete',
+          patch: {},
+        },
+      ],
+      logEvent: 'tag_category_delete.tx_failed',
+      logContext: { categoryId: target.id },
     })
-    void runGuardedEntityMutationFlush().catch(() => {})
 
     // 削除対象が現 active なら active を解除。 server pull で IDB から消えた後に
     // 別カテゴリへの自動遷移は今回はしない (空 state へ落とすほうが意図明確)。

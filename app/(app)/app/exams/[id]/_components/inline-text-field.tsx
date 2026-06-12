@@ -31,9 +31,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
 
 // sort_key / title / question_text / explanation_text / memo は ClientCard の
 // snake_case 列名に 1:1 対応する (mirror patch のキーにそのまま使う)。
@@ -148,45 +147,51 @@ export function InlineTextField({
     }
   }, [])
 
-  // commit: mirror 直書き + outbox enqueue を即時実行 (fire-and-forget)。
-  // server への drain は debounce 後 (scheduleDrain)。
+  // commit: mirror 直書き + outbox enqueue を 1 Dexie rw tx に閉じる
+  // (`runOptimisticUpdate` helper、 enqueue throw で Dexie auto-rollback → mirror も
+  // beforeValue 相当に戻る、 catch は helper 内蔵 silent + `logger.warn` 1 行)。
+  // server への drain は debounce 後 (scheduleDrain) を維持 (helper 内蔵 fire-and-forget
+  // flush と二重に走るが run-guarded 側で同時実行は弾かれる、 既存挙動同等)。
+  //
+  // なぜ正規化: nullable 列は server (lib/cards/card-field-handlers.ts の
+  // CARD_FIELD_HANDLERS[field] handler、 sort_key / explanation_text / memo は handler
+  // 内で `r.data === '' ? null : r.data` 正規化) が '' を null に揃えるため、 mirror にも
+  // 同じ規則を適用して楽観値を server 確定値に一致させる (一致させないと次の pull-back で
+  // '' → null へ見た目が反転する)。 server zod は trim しないのでここも strict な === '' で
+  // 揃える。 enqueue に渡す raw 値は変えない (server 側で正規化されるため、 raw を送って
+  // server contract に委ねる)。
+  //
+  // beforeValue は render scope の initialString (= 直近 mirror 確定値) を正規化して渡す。
+  // commit 直前に `value === initialString` の no-op short-circuit を `handleBlur` で済ませて
+  // いるため、 helper 側 `isNoop` は省略 (no-op は到達しない)。
   const commit = (target: string) => {
-    // mirror 直書き (楽観反映)。 enqueue/flush とは独立に await しない (失敗は
-    // 次回 pull で reconcile)。 logger に残すのみ。
-    // field ∈ ClientCard の snake_case 列名に 1:1 対応するため Partial<ClientCard> で型付け。
-    //
-    // なぜ正規化: nullable 列は server (lib/cards/card-field-handlers.ts の
-    // CARD_FIELD_HANDLERS[field] handler、 sort_key / explanation_text / memo は
-    // handler 内で `r.data === '' ? null : r.data` 正規化) が '' を null に揃えるため、
-    // mirror にも同じ規則を適用して楽観値を server 確定値に一致させる (一致させないと
-    // 次の pull-back で '' → null へ見た目が反転する)。 server zod は trim しないので
-    // ここも strict な === '' で揃える。 enqueue に渡す raw 値は変えない (server 側で
-    // 正規化されるため、 raw を送って server contract に委ねる)。
     const mirrorValue =
       NULLABLE_FIELDS.has(field) && target === '' ? null : target
-    const mirrorPatch: Partial<ClientCard> = { [field]: mirrorValue }
-    void getClientDb()
-      .cards.update(cardId, mirrorPatch)
-      .catch((err) => {
-        logger.warn({
-          event: 'card_inline.mirror_update_failed',
-          cardId,
-          field,
-          err: String(err),
-        })
-      })
-    void enqueueEntityMutation({
-      entity_type: 'card',
-      entity_id: cardId,
-      op: 'update_field',
-      patch: { field, value: target },
-    }).catch((err) => {
-      logger.warn({
-        event: 'card_inline.enqueue_failed',
-        cardId,
-        field,
-        err: String(err),
-      })
+    const beforeMirrorValue =
+      NULLABLE_FIELDS.has(field) && initialString === '' ? null : initialString
+    // beforeValue は helper API 対称性のため渡しているが、 commit 直前に
+    // `value === initialString` の no-op を `handleBlur` で短絡判定済なので、
+    // helper 側 `isNoop` には渡さない (helper 内 isNoop 経由の早期 return は使わない)。
+    // revert は Dexie auto-rollback (mirror update + enqueue の同一 tx 内 rollback) に
+    // 一任 = beforeValue は実質 dead だが、 caller-side で型を揃えるために構築する。
+    const beforePatch: Partial<ClientCard> = { [field]: beforeMirrorValue }
+    const afterPatch: Partial<ClientCard> = { [field]: mirrorValue }
+    void runOptimisticUpdate({
+      store: getClientDb().cards,
+      rowKey: cardId,
+      beforeValue: beforePatch as Record<string, unknown>,
+      afterPatch: afterPatch as Record<string, unknown>,
+      mutation: {
+        entity_type: 'card',
+        entity_id: cardId,
+        op: 'update_field',
+        patch: { field, value: target },
+      },
+      logEvent: 'card_inline.commit.tx_failed',
+      logContext: { cardId, field },
+      // plan §全体ルール 3: debounce drain は caller 側に保持 (本 component の 500ms
+      // scheduleDrain を維持、 helper 内蔵 fire-and-forget flush は skip)。
+      skipInternalFlush: true,
     })
     scheduleDrain()
   }

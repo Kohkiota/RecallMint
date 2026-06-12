@@ -64,9 +64,13 @@ async function seedCard(fields: Partial<Record<string, unknown>> = {}) {
 }
 
 beforeEach(async () => {
-  vi.clearAllMocks()
+  // T1b: runOptimisticUpdate 化で commit が `await db.transaction(...)` 経由になり、
+  // 前 test の void 発火 transaction が次 test 開始時に未 settle で残るケースが発生する。
+  // mock の `mockEnqueue` が次 test 内で stale call を記録しないよう、 mock 操作の前に
+  // Dexie の cards.clear() を await して前 test の transaction を drain する。
   vi.useRealTimers()
   await getClientDb().cards.clear()
+  vi.clearAllMocks()
   await seedCard()
 })
 

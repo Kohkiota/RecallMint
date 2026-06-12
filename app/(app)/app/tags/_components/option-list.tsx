@@ -38,9 +38,7 @@ import {
   type ClientTagCategory,
   type ClientTagOption,
 } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
+import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderOptions } from '@/lib/tags/reorder-handlers'
 import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
@@ -138,41 +136,31 @@ export function OptionList({ activeCategoryId }: Props) {
   const sensors = useTagSortableSensors()
 
   // Tag-4c-2c hotfix H2: ConfirmDialog 経路を撤去し即削除に統一 (popover Tag-4c-1-fix A-3
-  // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 旧 `handleConfirmDelete` と等価の
-  // optimistic cascade purge → enqueue → flush の発行順を維持。 manager は popover と異なり
-  // same-tx atomic は必須ではなく、 fire-and-forget の既存 silent pattern を踏襲する。
+  // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 Sync-fix-1 T1b: cascade purge +
+  // enqueue を 1 Dexie rw tx に閉じる (`runOptimisticMutation` multi-store)、 enqueue throw
+  // で Dexie auto-rollback により cascade purge も巻き戻る。 manager は popover と異なり
+  // same-tx atomic 必須ではないが、 silent lost write を構造的に塞ぐため helper 化。
+  // `mutate` 内で 子孫 (card_tags) → 親 (tag_option) の順で物理削除し、 enqueue は helper が
+  // tx 内で mutations を順次 await する (= enqueue より先に物理削除が走る発行順を維持)。
   const handleDeleteImmediate = (option: ClientTagOption): void => {
-    // optimistic cascade purge: 子孫 (card_tags) → 親 (option) の順で mirror から
-    // 物理削除し useLiveQuery を即時再描画させる。 server cascade
-    // (applyTagOptionDelete + FK) も等価処理を走らせるが、 二重削除 idempotent。
-    // enqueue より **先に** 発火 (UI 即反映の保証、 mock spy 順序で gate)。
-    void (async () => {
-      const db = getClientDb()
-      try {
+    const db = getClientDb()
+    void runOptimisticMutation({
+      stores: [db.card_tags, db.tag_options],
+      mutate: async () => {
         await db.card_tags.where('option_id').equals(option.id).delete()
         await db.tag_options.delete(option.id)
-      } catch (err) {
-        logger.warn({
-          event: 'tag_option_delete.mirror_purge_failed',
-          optionId: option.id,
-          err: String(err),
-        })
-      }
-    })()
-
-    void enqueueEntityMutation({
-      entity_type: 'tag_option',
-      entity_id: option.id,
-      op: 'delete',
-      patch: {},
-    }).catch((err) => {
-      logger.warn({
-        event: 'tag_option_delete.enqueue_failed',
-        optionId: option.id,
-        err: String(err),
-      })
+      },
+      mutations: [
+        {
+          entity_type: 'tag_option',
+          entity_id: option.id,
+          op: 'delete',
+          patch: {},
+        },
+      ],
+      logEvent: 'tag_option_delete.tx_failed',
+      logContext: { optionId: option.id },
     })
-    void runGuardedEntityMutationFlush().catch(() => {})
   }
 
   if (activeCategoryId === null) {

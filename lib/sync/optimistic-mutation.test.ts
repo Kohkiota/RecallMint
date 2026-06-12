@@ -8,9 +8,22 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { getPendingEntityMutations, newId } from './entity-mutations'
+
+// runGuardedEntityMutationFlush は helper 内蔵 fire-and-forget で叩かれる。 本 test では
+// `skipInternalFlush` の検証で「呼ばれた / 呼ばれなかった」 を assert する必要があるため
+// module 全体を mock 化 (vi.hoisted で mock 関数を先に生成、 inline-text-field.test.tsx 同形)。
+// 既存 case はこの mock の影響を受けない (flush 戻り値を assert していない)。
+const { mockGuardedFlush } = vi.hoisted(() => ({
+  mockGuardedFlush: vi.fn(async () => 'no-pending' as const),
+}))
+vi.mock('./entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockGuardedFlush,
+}))
+
 import {
   runOptimisticMutation,
   runOptimisticCreate,
+  runOptimisticUpdate,
 } from './optimistic-mutation'
 import { logger } from '@/lib/logger'
 
@@ -24,6 +37,7 @@ beforeEach(async () => {
   await db.entity_mutations.clear()
   await db.cards.clear()
   await db.card_tags.clear()
+  mockGuardedFlush.mockClear()
 })
 
 afterEach(() => {
@@ -357,6 +371,265 @@ describe('runOptimisticCreate — caller-provided id', () => {
     const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
     expect(pending[0].entity_id).toBe(CALLER_ID)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6.5 update path (runOptimisticUpdate) — revert 成功 / revert 失敗 silent / isNoop
+// ---------------------------------------------------------------------------
+
+describe('runOptimisticUpdate — revert 成功 (enqueue throw で auto-rollback)', () => {
+  it('enqueue throw → tx auto-rollback で mirror が beforeValue に戻る + 例外伝播なし + logger.warn 1 回', async () => {
+    // before 値を mirror に seed (T1b 取扱: caller が事前取得した値を beforeValue として渡す)。
+    const db = getClientDb()
+    const cardId = newId()
+    await db.cards.put({ ...makeClientCard(cardId), title: '旧タイトル' })
+
+    // enqueue throw 化 (= entity_mutations.add throw)。
+    const addSpy = vi
+      .spyOn(db.entity_mutations, 'add')
+      .mockRejectedValueOnce(new Error('boom-update'))
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardId,
+        beforeValue: { title: '旧タイトル' },
+        afterPatch: { title: '新タイトル' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardId,
+          op: 'update_field',
+          patch: { field: 'title', value: '新タイトル' },
+        },
+        logEvent: 'test.update.revert_ok',
+        logContext: { cardId },
+      }),
+    ).resolves.toBeUndefined()
+
+    // tx auto-rollback で mirror title は旧値に戻っている。
+    const row = await db.cards.get(cardId)
+    expect(row?.title).toBe('旧タイトル')
+    // outbox は未反映。
+    expect(await getPendingEntityMutations()).toHaveLength(0)
+    // logger.warn は 1 回 (event + context + err)。
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const call = warnSpy.mock.calls[0][0] as {
+      event: string
+      cardId: string
+      err: unknown
+    }
+    expect(call.event).toBe('test.update.revert_ok')
+    expect(call.cardId).toBe(cardId)
+    expect(call.err).toBeInstanceOf(Error)
+
+    addSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+})
+
+describe('runOptimisticUpdate — mirror update throw → silent + auto-rollback (manual revert なし)', () => {
+  it('store.update throw → tx auto-rollback (mirror 不変) + silent return + logger.warn 1 回', async () => {
+    const db = getClientDb()
+    const cardId = newId()
+    await db.cards.put({ ...makeClientCard(cardId), title: '元タイトル' })
+
+    // mirror update 自体が throw する経路。 tx callback throw で Dexie auto-rollback、
+    // catch 後の silent return を verify。
+    const updateSpy = vi
+      .spyOn(db.cards, 'update')
+      .mockRejectedValueOnce(new Error('boom-mirror'))
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardId,
+        beforeValue: { title: '元タイトル' },
+        afterPatch: { title: '新タイトル' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardId,
+          op: 'update_field',
+          patch: { field: 'title', value: '新タイトル' },
+        },
+        logEvent: 'test.update.revert_failed',
+      }),
+    ).resolves.toBeUndefined()
+
+    // tx auto-rollback で mirror は元のまま (= 元タイトル)。
+    const row = await db.cards.get(cardId)
+    expect(row?.title).toBe('元タイトル')
+    expect(await getPendingEntityMutations()).toHaveLength(0)
+    // silent: logger.warn 1 行 (case a 取り直し経路)。
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const call = warnSpy.mock.calls[0][0] as { event: string; err: unknown }
+    expect(call.event).toBe('test.update.revert_failed')
+    expect(call.err).toBeInstanceOf(Error)
+
+    updateSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+})
+
+describe('runOptimisticUpdate — isNoop 早期 return (tx 張らず flush 呼ばず)', () => {
+  it('isNoop true → mirror 不変 + outbox 不変 + flush 呼ばれず + return', async () => {
+    const db = getClientDb()
+    const cardId = newId()
+    await db.cards.put({ ...makeClientCard(cardId), title: '同一' })
+
+    // tx 自体張らないことを verify: spy で update / add が呼ばれないことを assert。
+    const updateSpy = vi.spyOn(db.cards, 'update')
+    const addSpy = vi.spyOn(db.entity_mutations, 'add')
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardId,
+        beforeValue: { title: '同一' },
+        afterPatch: { title: '同一' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardId,
+          op: 'update_field',
+          patch: { field: 'title', value: '同一' },
+        },
+        logEvent: 'test.update.noop',
+        isNoop: (before, after) => before.title === after.title,
+      }),
+    ).resolves.toBeUndefined()
+
+    // mirror 不変。
+    const row = await db.cards.get(cardId)
+    expect(row?.title).toBe('同一')
+    // outbox 不変。
+    expect(await getPendingEntityMutations()).toHaveLength(0)
+    // tx 自体張らない契約: update / enqueue の add は一切呼ばれない。
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(addSpy).not.toHaveBeenCalled()
+
+    updateSpy.mockRestore()
+    addSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6.6 runOptimisticUpdate — throwOnError=true で rethrow
+// ---------------------------------------------------------------------------
+
+describe('runOptimisticUpdate — throwOnError=true で rethrow', () => {
+  it('enqueue throw + throwOnError=true → caller が rejects.toThrow で catch + mirror が beforeValue に戻る + logger.warn 1 回', async () => {
+    const db = getClientDb()
+    const cardId = newId()
+    await db.cards.put({ ...makeClientCard(cardId), title: '元タイトル' })
+
+    // enqueue (entity_mutations.add) を throw 化 → tx callback rethrow → Dexie
+    // auto-rollback で mirror update も巻き戻る (mirror は元タイトルのまま)。
+    const addSpy = vi
+      .spyOn(db.entity_mutations, 'add')
+      .mockRejectedValueOnce(new Error('boom-update-rethrow'))
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardId,
+        beforeValue: { title: '元タイトル' },
+        afterPatch: { title: '新タイトル' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardId,
+          op: 'update_field',
+          patch: { field: 'title', value: '新タイトル' },
+        },
+        logEvent: 'test.update.throw_rethrow',
+        logContext: { cardId },
+        throwOnError: true,
+      }),
+    ).rejects.toThrow(/boom-update-rethrow/)
+
+    // tx auto-rollback で mirror は beforeValue 相当 (元タイトル) に戻っている。
+    const row = await db.cards.get(cardId)
+    expect(row?.title).toBe('元タイトル')
+    // outbox は未反映。
+    expect(await getPendingEntityMutations()).toHaveLength(0)
+    // logger.warn は rethrow 経路でも 1 回呼ばれる (記録は残す)。
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const call = warnSpy.mock.calls[0][0] as {
+      event: string
+      cardId: string
+      err: unknown
+    }
+    expect(call.event).toBe('test.update.throw_rethrow')
+    expect(call.cardId).toBe(cardId)
+    expect(call.err).toBeInstanceOf(Error)
+
+    addSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6.7 runOptimisticUpdate — skipInternalFlush (caller-side debounce drain との二重 flush 回避)
+// ---------------------------------------------------------------------------
+
+describe('runOptimisticUpdate — skipInternalFlush 契約 (caller-side debounce との二重 flush 回避)', () => {
+  it('skipInternalFlush=true で内蔵 flush 呼ばれず / 既定 (=false) では 1 回呼ばれる', async () => {
+    const db = getClientDb()
+
+    // --- skipInternalFlush=true: 内蔵 flush は skip (caller-side debounce drain に委任) ---
+    const cardIdA = newId()
+    await db.cards.put({ ...makeClientCard(cardIdA), title: '旧' })
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardIdA,
+        beforeValue: { title: '旧' },
+        afterPatch: { title: '新' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardIdA,
+          op: 'update_field',
+          patch: { field: 'title', value: '新' },
+        },
+        logEvent: 'test.update.skip_flush',
+        skipInternalFlush: true,
+      }),
+    ).resolves.toBeUndefined()
+
+    // mirror / outbox は正常更新済。 内蔵 flush は skip された (二重 flush 回避)。
+    expect((await db.cards.get(cardIdA))?.title).toBe('新')
+    expect(await getPendingEntityMutations()).toHaveLength(1)
+    expect(mockGuardedFlush).not.toHaveBeenCalled()
+
+    // --- 既定 (skipInternalFlush 省略 = false): 内蔵 flush が 1 回呼ばれる ---
+    const cardIdB = newId()
+    await db.cards.put({ ...makeClientCard(cardIdB), title: '旧B' })
+
+    await expect(
+      runOptimisticUpdate({
+        store: db.cards,
+        rowKey: cardIdB,
+        beforeValue: { title: '旧B' },
+        afterPatch: { title: '新B' },
+        mutation: {
+          entity_type: 'card',
+          entity_id: cardIdB,
+          op: 'update_field',
+          patch: { field: 'title', value: '新B' },
+        },
+        logEvent: 'test.update.default_flush',
+        // skipInternalFlush 省略 = 既定 false
+      }),
+    ).resolves.toBeUndefined()
+
+    expect((await db.cards.get(cardIdB))?.title).toBe('新B')
+    // tx 成功後に内蔵 fire-and-forget flush が叩かれる (`void ... .catch(() => {})` は
+    // 同期 promise resolve を待たないので、 microtask flush で settle させて assert)。
+    await Promise.resolve()
+    expect(mockGuardedFlush).toHaveBeenCalledTimes(1)
   })
 })
 

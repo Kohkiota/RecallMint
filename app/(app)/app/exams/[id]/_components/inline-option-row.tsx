@@ -42,10 +42,9 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
 import { nextOptionId } from '@/lib/cards/next-option-id'
-import { getClientDb } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { logger } from '@/lib/logger'
 
 // snake_case CardOption → camelCase (bulk endpoint の optionsSchema が期待する形)。
 // server 側 lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS.options
@@ -164,8 +163,11 @@ export function InlineOptionList({
   }
 
   // commit: working-set snapshot を sanitize (ghost 除外) し、 mirror 直書き +
-  // outbox enqueue を即時実行 → drain を debounce で叩く。
-  // immediateDrain=true の場合 (checkbox / delete) は drain も即時叩く。
+  // outbox enqueue を 1 Dexie rw tx に閉じる (`runOptimisticUpdate` helper、 enqueue
+  // throw で Dexie auto-rollback → mirror も before 値に戻る、 catch は helper 内蔵
+  // silent + `logger.warn` 1 行)。 immediateDrain=true の場合 (checkbox / delete) は
+  // drain も即時叩く (debounce 解除)。 それ以外は caller-side debounce drain
+  // (scheduleDrain) を維持する (plan §全体ルール 3、 helper 内蔵 flush は skip)。
   const commit = (target: CardOption[], immediateDrain = false) => {
     // ghost (text 空) は server zod が reject するため payload から除外。
     const sanitized = target.filter((o) => o.text.trim().length > 0)
@@ -177,39 +179,50 @@ export function InlineOptionList({
       return
     }
 
-    // mirror 直書き (楽観反映)。 correct_answer_ids は is_correct から derive して
-    // 同時 set (display 楽観反映用)。 server には送らず再生成される。
+    // correct_answer_ids は is_correct から derive して同時 set (display 楽観反映用)。
+    // server には送らず再生成される。 beforeValue は serverCommittedRef.current (= 直近の
+    // server 確定値) から再構築する (revert 時に server 値に戻る経路、 Dexie auto-rollback
+    // で十分なため helper 側 isNoop には参照されない)。
+    // beforeValue は helper API 対称性のため渡しているが、 caller 側で
+    // `shallowEqualOptions(sanitized, serverCommittedRef.current)` の no-op を上で短絡判定済 →
+    // helper 側 `isNoop` は使わない (helper 内 isNoop 経由の早期 return は使わない)。
+    // revert も Dexie auto-rollback に一任 = beforeValue は実質 dead、 caller-side で
+    // 型を揃えるためだけに構築する。
     const correctAnswerIds = sanitized
       .filter((o) => o.is_correct)
       .map((o) => o.id)
-    void getClientDb()
-      .cards.update(cardId, {
-        options: sanitized,
-        correct_answer_ids: correctAnswerIds,
-      })
-      .catch((err) => {
-        logger.warn({
-          event: 'card_inline.mirror_update_failed',
-          cardId,
-          field: 'options',
-          err: String(err),
-        })
-      })
+    const beforeOptions = serverCommittedRef.current
+    const beforeCorrect = beforeOptions
+      .filter((o) => o.is_correct)
+      .map((o) => o.id)
+    const beforePatch: Partial<ClientCard> = {
+      options: beforeOptions,
+      correct_answer_ids: beforeCorrect,
+    }
+    const afterPatch: Partial<ClientCard> = {
+      options: sanitized,
+      correct_answer_ids: correctAnswerIds,
+    }
 
-    // outbox enqueue。 value は camelCase ZodOption[] (correct_answer_ids は含めない)。
+    // outbox enqueue payload。 value は camelCase ZodOption[] (correct_answer_ids は含めない)。
     const payload: ZodOption[] = sanitized.map(toZodOption)
-    void enqueueEntityMutation({
-      entity_type: 'card',
-      entity_id: cardId,
-      op: 'update_field',
-      patch: { field: 'options', value: payload },
-    }).catch((err) => {
-      logger.warn({
-        event: 'card_inline.enqueue_failed',
-        cardId,
-        field: 'options',
-        err: String(err),
-      })
+
+    void runOptimisticUpdate({
+      store: getClientDb().cards,
+      rowKey: cardId,
+      beforeValue: beforePatch as Record<string, unknown>,
+      afterPatch: afterPatch as Record<string, unknown>,
+      mutation: {
+        entity_type: 'card',
+        entity_id: cardId,
+        op: 'update_field',
+        patch: { field: 'options', value: payload },
+      },
+      logEvent: 'card_inline.commit.tx_failed',
+      logContext: { cardId, field: 'options' },
+      // plan §全体ルール 3: debounce drain は caller 側に保持 (debounce or immediateDrain は
+      // 下記 if/else で管理、 helper 内蔵 flush は skip)。
+      skipInternalFlush: true,
     })
 
     if (immediateDrain) {

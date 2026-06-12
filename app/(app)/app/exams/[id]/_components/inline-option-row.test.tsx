@@ -66,9 +66,13 @@ async function seedCard(options: CardOption[]) {
 }
 
 beforeEach(async () => {
-  vi.clearAllMocks()
+  // inline-text-field.test.tsx と同形の順序。 commit が void runOptimisticUpdate
+  // (fire-and-forget) 経由なので、 前 test の transaction が settle 前に次 test が
+  // 開始すると mockEnqueue に stale call が bleed する。 useRealTimers → cards.clear()
+  // を mock 操作の前に置いて前 test の transaction を確実に drain する。
   vi.useRealTimers()
   await getClientDb().cards.clear()
+  vi.clearAllMocks()
 })
 
 afterEach(() => {
