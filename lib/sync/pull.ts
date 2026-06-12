@@ -28,6 +28,7 @@ import {
   type ClientCardTag,
 } from '@/lib/client-db'
 import { getSyncMeta, SYNC_META_KEYS } from './sync-meta'
+import { withWebLock, type MinimalLockManager } from './with-web-lock'
 import { logger } from '@/lib/logger'
 
 const PULL_ENDPOINT = '/api/pull'
@@ -307,31 +308,10 @@ export const PULL_LOCK_NAME = 'recallmint:pull'
 
 export type PullGuardOutcome = 'ran' | 'inflight-skip' | 'lock-busy'
 
-// Web Locks の最小型 (lib.dom の LockManager から本 module が使う部分のみ)。
-// review-flush.ts の MinimalLockManager を手本に複製し、 callback 戻り値型を
-// Promise<PullGuardOutcome> に置き換えたもの (共通 util 抽出はしない = U2 採択)。
-type MinimalLockManager = {
-  request: (
-    name: string,
-    options: { ifAvailable?: boolean },
-    callback: (lock: unknown) => Promise<PullGuardOutcome>,
-  ) => Promise<PullGuardOutcome>
-}
-
 type GuardedPullDeps = {
   reason?: string
   pull?: () => Promise<PullDeltaResult>
-  locks?: MinimalLockManager | undefined
-}
-
-// 'locks' を明示指定すると navigator を見ない (undefined 指定で非対応 path を test 可能)。
-function resolveLocks(deps: GuardedPullDeps): MinimalLockManager | undefined {
-  if ('locks' in deps) return deps.locks
-  // defensive: navigator.locks の存在チェックのみ。
-  if (typeof navigator !== 'undefined' && navigator.locks) {
-    return navigator.locks as unknown as MinimalLockManager
-  }
-  return undefined
+  locks?: MinimalLockManager<PullGuardOutcome> | undefined
 }
 
 // 1 タブ内の in-flight pull を skip するための module-scope フラグ。
@@ -340,8 +320,8 @@ let pullInFlight = false
 
 // pullDelta を「1 タブ内 in-flight skip」+「多タブ Web Locks (ifAvailable skip)」で囲む。
 // in-flight guard を最外に置く理由: locks.request の呼出自体もスキップするため、
-// Lock API の非同期コストを払わずに即 return できる。
-// fallback (locks なし) は直接実行する理由: Web Locks 非対応環境でも pull を止めない。
+// Lock API の非同期コストを払わずに即 return できる。 lock wrap は共有 helper
+// (lib/sync/with-web-lock) に委譲、 fallback (locks なし) は helper が直接 run() を回す。
 //   多重 pull は server 側 cursor 更新の冪等性で吸収される。
 export async function runGuardedPull(deps: GuardedPullDeps = {}): Promise<PullGuardOutcome> {
   if (pullInFlight) {
@@ -351,20 +331,19 @@ export async function runGuardedPull(deps: GuardedPullDeps = {}): Promise<PullGu
   pullInFlight = true
   try {
     const pull = deps.pull ?? (() => pullDelta())
-    const locks = resolveLocks(deps)
-    if (!locks) {
-      // Web Locks 非対応 (defensive): lock なしで直接 pull。
-      await pull()
-      return 'ran'
-    }
-    return await locks.request(PULL_LOCK_NAME, { ifAvailable: true }, async (lock) => {
-      if (!lock) {
+    return await withWebLock<PullGuardOutcome>({
+      lockName: PULL_LOCK_NAME,
+      run: async () => {
+        await pull()
+        return 'ran'
+      },
+      onLockBusy: () => {
         // 他タブが lock を保持中 → pull せず即 return (queue で待たない)。
         logger.info({ event: 'pull.lock_busy', lockName: PULL_LOCK_NAME, reason: deps.reason })
         return 'lock-busy'
-      }
-      await pull()
-      return 'ran'
+      },
+      // 'locks' key 明示時のみ helper に転送 (undefined で非対応 path test)。
+      ...('locks' in deps ? { locks: deps.locks } : {}),
     })
   } finally {
     pullInFlight = false

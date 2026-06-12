@@ -16,15 +16,13 @@
 // 全 helper はブラウザ専用 (getClientDb が server で throw する)。
 
 import { getClientDb, type ClientEntityMutation } from '@/lib/client-db'
+import { newId } from './new-id'
 import { type BulkApiClient, type FlushResult } from './review-events'
 
-// ---------------------------------------------------------------------------
-// UUID 生成 (v4)。 review-events.ts の newId() と同実装・同方針。
-// ブラウザ / Node 19+ 共通の crypto.randomUUID() を利用。
-// ---------------------------------------------------------------------------
-export function newId(): string {
-  return crypto.randomUUID()
-}
+// UUID 生成 (v4) は lib/sync/new-id.ts に集約。 旧 inline 実装は同 helper を経由する
+// re-export に置換 (外部 caller の `import { newId } from '@/lib/sync/entity-mutations'`
+// 互換を保つ。 例: app/(app)/app/tags/_components/option-create-form.tsx)。
+export { newId }
 
 // ---------------------------------------------------------------------------
 // enqueueEntityMutation

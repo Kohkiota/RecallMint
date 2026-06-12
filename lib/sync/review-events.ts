@@ -23,15 +23,12 @@ import {
   type ClientStudySession,
   type SyncStatus,
 } from '@/lib/client-db'
+import { newId } from './new-id'
 
-// ---------------------------------------------------------------------------
-// UUID 生成 (v4)。 ブラウザ / Node 19+ 共通の crypto.randomUUID() を利用。
-// 古い WebView fallback は要件未確認のため敢えて入れない (PWA 対象 iOS 16.4+ /
-// Android Chrome では問題なし)。
-// ---------------------------------------------------------------------------
-export function newId(): string {
-  return crypto.randomUUID()
-}
+// UUID 生成 (v4) は lib/sync/new-id.ts に集約。 旧 inline 実装は同 helper を経由する
+// re-export に置換 (外部 caller の `import { newId } from '@/lib/sync/review-events'`
+// 互換を保つ。 例: app/(app)/app/study/smart/_components/study-session-host.tsx)。
+export { newId }
 
 // ---------------------------------------------------------------------------
 // study_sessions

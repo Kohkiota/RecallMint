@@ -27,6 +27,7 @@ import {
   isTransientError,
   computeBackoffMs,
 } from '@/lib/retry/transient-error'
+import { withWebLock, type MinimalLockManager } from './with-web-lock'
 import { logger } from '@/lib/logger'
 
 // 演習 flush 用の単一固定 lock 名 (origin 内全タブ共有)。
@@ -69,53 +70,29 @@ export function classifyFlushResults(results: FlushResult[]): FlushOutcome {
   return 'permanent'
 }
 
-// Web Locks の最小型 (lib.dom の LockManager から本 module が使う部分のみ)。
-type MinimalLockManager = {
-  request: (
-    name: string,
-    options: { ifAvailable?: boolean },
-    callback: (lock: unknown) => Promise<FlushOutcome>,
-  ) => Promise<FlushOutcome>
-}
-
 export type GuardedFlushDeps = {
   flushAll?: () => Promise<FlushResult[]>
   // 'locks' を明示指定すると navigator を見ない (undefined 指定で非対応 path を test 可能)。
-  locks?: MinimalLockManager | undefined
+  locks?: MinimalLockManager<FlushOutcome> | undefined
 }
 
-function resolveLocks(
-  deps: GuardedFlushDeps,
-): MinimalLockManager | undefined {
-  if ('locks' in deps) return deps.locks
-  // defensive: navigator.locks の存在チェックのみ (対象環境 iOS 16.4+ は全対応)。
-  if (typeof navigator !== 'undefined' && navigator.locks) {
-    return navigator.locks as unknown as MinimalLockManager
-  }
-  return undefined
-}
-
-// flush の最外を Web Locks で囲んで実行する。 lock 取得失敗時は flush せず lock-busy。
+// flush の最外を Web Locks で囲んで実行する (lib/sync/with-web-lock の共有 helper 経由)。
+// lock 取得失敗時は flush せず lock-busy を返す。
 export async function runGuardedFlush(
   deps: GuardedFlushDeps = {},
 ): Promise<FlushOutcome> {
   const flushAll = deps.flushAll ?? (() => flushAllPendingEvents())
-  const locks = resolveLocks(deps)
 
-  if (!locks) {
-    // Web Locks 非対応 (defensive): lock なしで直接 flush。 多重は server UNIQUE で吸収。
-    const results = await flushAll()
-    return classifyFlushResults(results)
-  }
-
-  return locks.request(FLUSH_LOCK_NAME, { ifAvailable: true }, async (lock) => {
-    if (!lock) {
+  return withWebLock<FlushOutcome>({
+    lockName: FLUSH_LOCK_NAME,
+    run: async () => classifyFlushResults(await flushAll()),
+    onLockBusy: () => {
       // 他タブが保持中 → flush せず即 return (queue で待たない)。
       logger.info({ event: 'review_events.flush.lock_busy', lockName: FLUSH_LOCK_NAME })
       return 'lock-busy'
-    }
-    const results = await flushAll()
-    return classifyFlushResults(results)
+    },
+    // 'locks' key 明示時のみ helper に転送 (undefined で非対応 path test)。
+    ...('locks' in deps ? { locks: deps.locks } : {}),
   })
 }
 
