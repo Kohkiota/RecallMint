@@ -16,13 +16,15 @@
 2. 重要 fix (削除 / 認証 = #11c / H5) は OT 実機確認後 [reviewed] amend で安全に通す (CLAUDE.md「重要 Fix 裏取り」 規律準拠)。
 3. Y-2 最大リスク (#1b per-mutation tx 並列化) を順序保証契約付きで設計、 outbox 再送収束性を壊さない。
 
-### 1.2 スコープ (24 item、 Grid-1 合流の #3 anyOf 2件を除く)
+### 1.2 スコープ (23 item、 Grid-1 合流の #3 + Phase 4 既定の #9 を除く)
 
 3 sub-plan に分割。 各 sub-plan 250 行 cap。
 
-- **Sub-plan A — route hardening** (10 item) = H1 / H4 / H5 / #5 / #6 / #9 / #10 / #13 / #15 / #11c
+- **Sub-plan A — route hardening** (9 item) = H1 / H4 / H5 / #5 / #6 / #10 / #13 / #15 / #11c
 - **Sub-plan B — performance** (8 item effective) = #1a / #1b / #1c / #1d / #1e / #2 / #7 / H7
 - **Sub-plan C — config / header / cleanup / docs** (6 item) = H2 / H3 / H6 / #8 / Perm / #10d
+
+**注 (immediate follow-up §10.1 結果反映、 2026-06-12)**: audit §10.3 (b) #9 「pull.ts レスポンス zod parse 化」 は Y-1 spec (`2026-06-12-sync-fix-1-expanded-design.md` L34, L343) で **Phase 4 既定 scope と明示済**のため、 本 Y-2 sprint から除外。 todo v19 (OT 側) の修正要請を §10.1 に記載。 → Y-2 編入は **24 → 23 item**。
 
 ### 1.3 スコープ外 (明示)
 
@@ -47,7 +49,7 @@
 | **H5** (§10.3 (b) #17) | webhook secret env-aware | `STRIPE_WEBHOOK_SECRET` / `CLERK_WEBHOOK_SECRET` を production = required (起動時 fail-fast)、 preview = warn のみ、 local = skip。 **重要 fix 該当 (認証)** |
 | #5 (§10.3 (b) #5) | OCR_DEBUG_LOG / BULK_FULL_PARAMS_LOG production gate 二重化 | env 直 + `lib/ocr/log-gate.ts` (or 既存 file) の 2 段判定、 production で uncontrolled true 化を防止 |
 | #6 (§10.3 (b) #6) | GEMINI_DAILY_LIMIT production fail-fast | production で env 欠落時 startup throw、 quota 機構の no-op を防ぐ |
-| #9 (§10.3 (b) #9) | pull.ts レスポンス zod parse 化 | `/api/pull` response を `pullResponseSchema.safeParse(...)` 経由化。 **OT 指摘**: todo Phase 4 「pull response zod 化」 との重複は spec 起こし直後に確認 → 重複なら本 sprint 除外 + OT に文面案で指摘 (immediate follow-up §10 参照) |
+| ~~#9 (§10.3 (b) #9)~~ | ~~pull.ts レスポンス zod parse 化~~ | **本 sprint 除外** (§10.1 follow-up 結果: Y-1 spec L34, L343 で Phase 4 scope と既明示)。 todo v19 修正要請を §10.1 に記載 |
 | #10 (§10.3 (b) #10) | webhook clerk payload zod 化 | Clerk webhook (`user.created` / `user.deleted`) の payload を zod schema で safeParse、 unknown field を ignore (Clerk schema drift 耐性) |
 | #13 (§10.3 (b) #13) | proxy.ts webhook bypass | `proxy.ts` matcher から `/api/webhooks/(.*)` を除外、 webhook が Clerk auth context を要求しないことを構造保証 |
 | #15 (§10.3 (b) #15) | contact rate limit | `/api/contact` (問い合わせ form) の IP / userId 単位 rate limit (e.g. 5 req/h)、 abuse 防止 |
@@ -71,9 +73,9 @@ push 経路は Y-1 と同じく OT 専権 (CC は push 経路を持たない)。
 
 **commit 順序 = 実装順序** (Stop hook block 回避のため commit は末尾集約):
 
-H1 / #5 / #6 / #13 / H4 → #9 / #10 → #15 → **H5 (無 tag commit)** → **#11c (無 tag commit)** → OT stg 実機確認 → amend で `[reviewed]` 追記 (H5 → #11c 順)
+H1 / #5 / #6 / #13 / H4 → #10 → #15 → **H5 (無 tag commit)** → **#11c (無 tag commit)** → OT stg 実機確認 → amend で `[reviewed]` 追記 (H5 → #11c 順)
 
-**8 通常 item (H1 / H4 / #5 / #6 / #9 / #10 / #13 / #15)**: review pass で `[reviewed]` 即付与の通常経路。 env 系 (#5 / #6 / #13) を先頭、 H1 / H4 (API behavior) → #9 / #10 (payload zod) → #15 (rate limit) の順。
+**7 通常 item (H1 / H4 / #5 / #6 / #10 / #13 / #15)**: review pass で `[reviewed]` 即付与の通常経路。 env 系 (#5 / #6 / #13) を先頭、 H1 / H4 (API behavior) → #10 (clerk webhook payload zod) → #15 (rate limit) の順。 #9 (pull response zod) は §10.1 follow-up で Phase 4 既定と確認、 Y-2 から除外。
 
 **2 重要 fix (H5 / #11c)**: 末尾集約 commit、 §2.2 経路で OT 実機確認後 amend。 **H5 を環境系の論理位置 (前半) で実装 / review することは可だが、 commit は必ず末尾に寄せる** (Stop hook block 回避、 §2.2 「実装 / review 前出し」 運用参照)。
 
@@ -219,7 +221,7 @@ H6 / Perm 単独完結 → H2 軽量変更 (30d 延長 + comment 1 行) → H3 �
 | #10 GEMINI_DAILY_LIMIT production fail-fast | §10.3 (b) #6 | Sub-plan A #6 | startup throw |
 | #11 OCR concurrency limit | §10.3 (b) #7 | (#7 と同) | (上記参照) |
 | #12 content_version 用途決定 | §10.3 (b) #8 | Sub-plan C #8 | OT 判断 stop |
-| #13 pull.ts レスポンス zod | §10.3 (b) #9 | Sub-plan A #9 | safeParse + Phase 4 重複検証 |
+| ~~#13 pull.ts レスポンス zod~~ | ~~§10.3 (b) #9~~ | **本 sprint 除外** | §10.1 follow-up = Y-1 spec で Phase 4 既定確認 |
 | #14 webhook clerk payload zod | §10.3 (b) #10 | Sub-plan A #10 | safeParse + drift 耐性 |
 | #15 review-events/entity-mutations bulk transient/permanent 区別 | §10.3 (b) #11 | Sub-plan A H1 | 503 + Retry-After |
 | #16 session.card_ids / selected_answer_ids bound | §10.3 (b) #12 | Sub-plan C H3 | zod max + 2段 format |
@@ -234,11 +236,11 @@ H6 / Perm 単独完結 → H2 軽量変更 (30d 延長 + comment 1 行) → H3 �
 | #25 deletion-status nonce/signed token | §10.4 #11 (格上げ) | Sub-plan A #11c (**重要 fix**) | HMAC + ttl |
 
 **取り残し 0 確認**:
-- audit §10.3 (b) #1-#15, #17 のうち **#3 (anyOf 2件、 Grid-1 合流) を除く 15 件** すべて本 spec の sub-plan に 1:1 マッピング (#16 / #19 / #20 = Y-3 繰越、 #18 = Grid-2 で対象外、 §1.3 参照)
+- audit §10.3 (b) #1-#15, #17 のうち **#3 (anyOf 2件、 Grid-1 合流) + #9 (Y-1 で Phase 4 既定確認、 §10.1) を除く 14 件** すべて本 spec の sub-plan に 1:1 マッピング (#16 / #19 / #20 = Y-3 繰越、 #18 = Grid-2 で対象外、 §1.3 参照)
 - audit §10.4 #10 / #11 = 2 件 (Y-2 格上げ) すべて本 spec の sub-plan に 1:1 マッピング
 - 軽微 2 件 + Permissions-Policy = 3 件 (audit 外含む) すべて本 spec の sub-plan に 1:1 マッピング
-- 計 20 audit-mapped (= 15 + 2 + #1 内訳 5 件で重複なし) + 3 OT-added + H6 / H7 (軽微 2 件) = 24 item、 Grid-1 合流分 (#3 anyOf 2件) を除いた数と一致
-- → **取り残し 0**
+- 計 19 audit-mapped (= 14 + 2 + #1 内訳 5 件で重複なし) + 3 OT-added + H6 / H7 (軽微 2 件) = 23 item、 Grid-1 合流分 (#3 anyOf 2件) + Phase 4 既定 (#9) を除いた数と一致
+- → **Y-2 sprint 範囲で取り残し 0** (#9 は Phase 4 で消化される前提)
 
 ---
 
@@ -246,19 +248,75 @@ H6 / Perm 単独完結 → H2 軽量変更 (30d 延長 + comment 1 行) → H3 �
 
 OT 実行 / 判断待ちをクリティカルパスから外すための前出し task:
 
-### 10.1 #9 Phase 4 重複検証
+### 10.1 #9 Phase 4 重複検証 — **完了 (重複あり、 Y-2 除外確定)**
 
-- audit / Phase 4 plan / roadmap docs を grep (`grep -rn "pull.*zod\|pullResponseSchema\|pull response zod" docs/`) して #9 「pull.ts response zod parse 化」 が Phase 4 既定 task と重複していないか確認。
-- 重複ありなら本 sprint A の #9 を除外 + OT に文面案で指摘 (todo OT 側修正)。
-- 重複なしなら #9 を Sub-plan A に正規組込。
-- spec 承認直後に 1 つ目の follow-up task として実行、 結果は session log に追記。
+実施日: 2026-06-12 (spec OT review 直後)。
 
-### 10.2 Permissions-Policy 公式 docs 裏取り
+**grep 結果**:
+- `docs/superpowers/specs/2026-06-12-sync-fix-1-expanded-design.md:34` (Y-1 spec §1.3 スコープ外表): `pull response zod 化 (lib/sync/pull.ts:100) | Phase 4 | Step 0 §3.5 C-3`
+- 同 file L343: 「`pull response zod 化 (Phase 4) は本 spec のスコープ外として §1.3 で明示済`」
 
-- Stripe Checkout の現状 integration mode (`docs.stripe.com/checkout` を WebFetch) → redirect-mode か embedded-mode かを確認、 必要 directive (`payment`, `clipboard-write` 等) を抽出。
-- Clerk の公式 docs (`clerk.com/docs/security`) を WebFetch → Permissions-Policy に関連する制約 (`microphone` 等の要否) を確認。
-- 結果を spec sub-plan C の Perm 項に追記 (deny list 確定)。 記憶ベース固定禁止。
-- spec 承認直後に 2 つ目の follow-up task として実行。
+→ **Y-1 spec で #9 を明確に Phase 4 scope に仕分け済**。 audit §10.3 (b) #9 が Y-2 (launch hardening) に列挙されているのは todo v19 → audit drift。
+
+**spec 反映**:
+- §1.2 Sub-plan A の item 数: 10 → 9 (#9 削除)
+- §2.1 / §2.3 / §9 の #9 関連行を取り消し線 + 「Phase 4 既定」 注記
+- 全体 item 数: 24 → 23
+
+**OT 文面案** (todo v19 修正用):
+> #9 「pull.ts レスポンス zod parse 化」 は Y-1 spec (`docs/superpowers/specs/2026-06-12-sync-fix-1-expanded-design.md`) §1.3 で **Phase 4 scope と明示済** (L34, L343)。 audit §10.3 (b) #9 の Y-2 列挙は drift と判断、 Y-2 spec から除外。 todo v19 「Y-2 H series」 列から削除推奨。 Phase 4 sprint で `pullResponseSchema.safeParse` + Y-1 mutation-schemas.ts と同 server-only 不付 pattern で消化予定 (Y-1 T5 precedent 利用可)。
+
+### 10.2 Permissions-Policy 公式 docs 裏取り — **完了 (現状 stack 必要 directive なし、 stg gate 運用)**
+
+実施日: 2026-06-12 (spec OT review 直後)。
+
+**Stripe 確認**:
+- 公式 docs (`docs.stripe.com/security/guide`、 WebFetch + WebSearch): Permissions-Policy 直接記載なし (CSP の `connect-src` / `frame-src` / `script-src` のみ言及)。
+- **RecallMint 実 integration mode 確認 (`app/(app)/app/upgrade/actions.ts:50-69`)**: `stripe.checkout.sessions.create({...})` で session 作成 → `redirect(session.url)` で Stripe domain (checkout.stripe.com) に遷移 = **hosted (redirect) mode**。 `ui_mode: 'embedded'` 指定なし。
+- → merchant domain 上で Payment Request API が走らない、 `payment=()` deny で安全候補。
+
+**Clerk 確認**:
+- 公式 docs (`clerk.com/docs/security/headers`、 WebFetch 404 / WebSearch): Permissions-Policy 直接記載なし。 passkey/WebAuthn 経路を採用する場合は `publickey-credentials-get=self` + `publickey-credentials-create=self` が必要 (MDN 経由確定)。
+- **RecallMint 実 usage 確認 (`grep -rn passkey|webauthn|publickey-credentials app/ lib/`)**: **0 件** = passkey 経路未採用。
+- → `publickey-credentials-get=()` / `publickey-credentials-create=()` deny で安全候補。 将来 passkey 導入時に `self` 緩和、 spec sub-plan C 完了条件に「将来 passkey 導入時の更新手順」 を 1 行明記する。
+
+**現状の安全 default candidate** (記憶ベース固定禁止の OT 規律遵守、 stg gate で確定):
+
+```
+Permissions-Policy:
+  accelerometer=(),
+  ambient-light-sensor=(),
+  autoplay=(),
+  battery=(),
+  camera=(),
+  display-capture=(),
+  document-domain=(),
+  encrypted-media=(),
+  fullscreen=(self),
+  geolocation=(),
+  gyroscope=(),
+  magnetometer=(),
+  microphone=(),
+  midi=(),
+  payment=(),
+  picture-in-picture=(),
+  publickey-credentials-create=(),
+  publickey-credentials-get=(),
+  screen-wake-lock=(),
+  sync-xhr=(),
+  usb=(),
+  web-share=(),
+  xr-spatial-tracking=()
+```
+
+**stg gate 確定運用 (Sub-plan C 実装時)**:
+1. spec sub-plan C Perm 項に上記 default を実装案として明記。
+2. `next.config.js` headers() で directive 設定 → stg deploy。
+3. CC が DevTools MCP / Playwright で stg を実走: (a) `/app/upgrade` → Stripe Checkout redirect → 戻り、 (b) Clerk sign-in / sign-up flow、 (c) `/app` 全主要 page を巡回。
+4. console / Network response header / browser security warnings に Permissions-Policy violation 出力 0 件を確認。 1 件でも検出されたら spec sub-plan C にて該当 directive を `self` 緩和、 再 stg gate。
+5. 確定後 prod 反映。
+
+**spec 反映**: Sub-plan C Perm 項 (§4.1 ) は「stg gate で directive 確定」 と既に明示済、 本 follow-up 結果の **default candidate + Stripe redirect mode 確認 + Clerk passkey 未使用** をここに 永続記録、 sub-plan C 実装時に参照可。
 
 ### 10.3 H3 段 2 SELECT 文先出し
 
