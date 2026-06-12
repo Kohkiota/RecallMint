@@ -35,6 +35,7 @@ import {
   clerkWebhookEventSchema,
   type ClerkWebhookEvent,
 } from '@/lib/validation/clerk-webhook'
+import { requireWebhookSecret } from '@/lib/env/webhook-secret-gate'
 
 export const runtime = 'nodejs'
 
@@ -46,14 +47,11 @@ const CANCEL_TARGETS = new Set<Stripe.Subscription.Status>([
 ])
 
 export async function POST(req: Request) {
-  const secret = process.env.CLERK_WEBHOOK_SECRET
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      logger.error({ event: 'webhook.clerk.misconfig', secret: 'CLERK_WEBHOOK_SECRET' })
-      return new Response('misconfigured', { status: 500 })
-    }
-    return new Response('CLERK_WEBHOOK_SECRET not set', { status: 200 })
-  }
+  // T-A8 (audit §10.3 (b) #17): 3-tier env-aware gate に統一。
+  // production = env 必須 (helper throw → Next.js 500、 既存 wire format と一致)、
+  // preview = logger.warn + '' fallback (既存 svix verify が空文字で fail → 400)、
+  // local / dev = silent '' (既存 svix verify が空文字で fail → 400)。
+  const secret = requireWebhookSecret('CLERK_WEBHOOK_SECRET', 'Clerk webhook')
 
   const svixId = req.headers.get('svix-id')
   const svixTs = req.headers.get('svix-timestamp')

@@ -9,19 +9,17 @@ import { logger } from '@/lib/logger'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
+import { requireWebhookSecret } from '@/lib/env/webhook-secret-gate'
 
 export const runtime = 'nodejs'
 
 export async function POST(req: Request) {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET
-  if (!secret) {
-    // Local dev tolerance (mirrors Clerk webhook pattern)
-    if (process.env.NODE_ENV === 'production') {
-      logger.error({ event: 'webhook.stripe.misconfig', secret: 'STRIPE_WEBHOOK_SECRET' })
-      return new Response('misconfigured', { status: 500 })
-    }
-    return new Response('STRIPE_WEBHOOK_SECRET not set', { status: 200 })
-  }
+  // T-A8 (audit §10.3 (b) #17): 3-tier env-aware gate に統一。
+  // production = env 必須 (helper throw → Next.js 500、 既存 wire format と一致)、
+  // preview = logger.warn + '' fallback (既存 stripe.webhooks.constructEvent が
+  // 空文字 secret で fail → 400 invalid signature)、 local / dev = silent ''
+  // (同上、 400)。 clerk webhook route と同 pattern (T-A8 helper 経由化)。
+  const secret = requireWebhookSecret('STRIPE_WEBHOOK_SECRET', 'Stripe webhook')
 
   const sig = req.headers.get('stripe-signature')
   if (!sig) return new Response('missing stripe-signature', { status: 400 })

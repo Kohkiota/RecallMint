@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Webhook } from 'svix'
+import { logger } from '@/lib/logger'
 
 // Universal drizzle chain mock: `.values() / .onConflictDoNothing() / .returning() / .set() /
 // .where()` のどこを await しても resolveTo に解決する。test ごとに insert/update の戻り値を
@@ -157,29 +158,56 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('secret 未設定 × NODE_ENV=production → 500 (misconfigured)', async () => {
+  it('secret 未設定 × VERCEL_ENV=production → throw (T-A8 fail-fast、 Next.js handler で 500 に変換される)', async () => {
+    // T-A8 (audit §10.3 (b) #17): production tier では requireWebhookSecret が
+    // 起動時 throw する fail-fast 経路。 旧 NODE_ENV='production' 偽装 × 500
+    // 期待は T-A8 helper が VERCEL_ENV 単独判定に統一されたため、 VERCEL_ENV
+    // 偽装に書き換え。 throw 文言を assert することで fail-fast 強度を維持
+    // (Next.js framework 内部の throw → 500 変換は handler test 範疇外、 throw
+    // 到達 = wire-level 500 と等価)。
     delete process.env.CLERK_WEBHOOK_SECRET
-    const origEnv = process.env.NODE_ENV
-    ;(process.env as Record<string, string | undefined>).NODE_ENV = 'production'
+    const origVE = process.env.VERCEL_ENV
+    process.env.VERCEL_ENV = 'production'
+    try {
+      const req = new Request('http://localhost/api/webhooks/clerk', {
+        method: 'POST',
+        body: '{}',
+      })
+      await expect(POST(req)).rejects.toThrow(
+        /CLERK_WEBHOOK_SECRET must be set in production/,
+      )
+    } finally {
+      if (origVE === undefined) delete process.env.VERCEL_ENV
+      else process.env.VERCEL_ENV = origVE
+    }
+  })
+
+  it('secret 未設定 × VERCEL_ENV=preview → 400 + logger.warn (T-A8 preview tier)', async () => {
+    // T-A8: preview tier では throw せず、 logger.warn('webhook.secret.missing_preview')
+    // を 1 行残しつつ requireWebhookSecret は空文字を返す → svix 検証段で空文字
+    // secret 起因 fail → 400 帰着。 missing-secret 状態を silent success 偽装
+    // させない hardening (旧 200 silent → 新 400 fail-loud)。
+    delete process.env.CLERK_WEBHOOK_SECRET
+    const origVE = process.env.VERCEL_ENV
+    process.env.VERCEL_ENV = 'preview'
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     try {
       const req = new Request('http://localhost/api/webhooks/clerk', {
         method: 'POST',
         body: '{}',
       })
       const res = await POST(req)
-      expect(res.status).toBe(500)
-
-      // 既存の「非 production × unset → 200」挙動も同じテスト内で両立確認
-      ;(process.env as Record<string, string | undefined>).NODE_ENV = 'test'
-      const res2 = await POST(
-        new Request('http://localhost/api/webhooks/clerk', {
-          method: 'POST',
-          body: '{}',
+      expect(res.status).toBe(400)
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'webhook.secret.missing_preview',
+          envKey: 'CLERK_WEBHOOK_SECRET',
         }),
       )
-      expect(res2.status).toBe(200)
     } finally {
-      ;(process.env as Record<string, string | undefined>).NODE_ENV = origEnv
+      warnSpy.mockRestore()
+      if (origVE === undefined) delete process.env.VERCEL_ENV
+      else process.env.VERCEL_ENV = origVE
     }
   })
 })
