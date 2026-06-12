@@ -166,7 +166,10 @@ describe('InlineOptionList commit / debounced drain', () => {
       await vi.waitFor(async () => {
         const pending = await getPendingEntityMutations()
         expect(pending).toHaveLength(1)
-        const value = pending[0]!.patch.value as { text: string }[]
+        // T5: ClientEntityMutation は discriminated union。 本 test path は
+        // op='update_field' branch 限定なので、 patch を { field, value } shape に cast。
+        const patch = pending[0]!.patch as { field: string; value: { text: string }[] }
+        const value = patch.value
         expect(value[0]!.text).toBe(expectedText)
       })
     }

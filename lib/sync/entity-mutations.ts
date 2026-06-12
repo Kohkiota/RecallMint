@@ -16,6 +16,7 @@
 // 全 helper はブラウザ専用 (getClientDb が server で throw する)。
 
 import { getClientDb, type ClientEntityMutation } from '@/lib/client-db'
+import type { EntityMutationEnvelope } from '@/lib/sync/shared/mutation-schemas'
 import { newId } from './new-id'
 import { type BulkApiClient, type FlushResult } from './review-events'
 
@@ -28,11 +29,10 @@ export { newId }
 // enqueueEntityMutation
 // ---------------------------------------------------------------------------
 
-export type EnqueueEntityMutationInput = {
-  entity_type: string
-  entity_id: string
-  op: string
-  patch: Record<string, unknown>
+// T5: envelope (entity_type / op / entity_id / patch) は共有 discriminated union から
+// 派生。 mutation_id は enqueueEntityMutation が `newId()` で内部採番、 edited_at は
+// outbox row の coalesce 用 metadata (caller 未指定なら now)。
+export type EnqueueEntityMutationInput = EntityMutationEnvelope & {
   /** 未指定なら now (ISO 8601)。 */
   edited_at?: string
 }
@@ -86,27 +86,40 @@ export async function enqueueEntityMutation(
   if (existing !== undefined && existing.local_id !== undefined) {
     // 既存 pending 行を最新 patch / edited_at / mutation_id で上書き。
     // mutation_id を再採番することで、flush 側が冪等キーとして「最新の意図」を送れる。
-    const updated: Partial<ClientEntityMutation> = {
+    // T5: ClientEntityMutation は discriminated union (entity_type / op / patch 連動)。
+    // `Partial<union>` は branch を distribute しないため、 update 対象は patch /
+    // edited_at / mutation_id (= branch 内 metadata 列のみ) に限る前提で
+    // `Partial<ClientEntityMutation> & { patch: unknown }` 経由で widen し、
+    // Dexie に渡す値の shape を保つ (runtime 挙動は input.patch を素通し)。
+    const updated = {
       mutation_id: newId(),
       patch: input.patch,
       edited_at: now,
+    } satisfies Pick<ClientEntityMutation, 'mutation_id' | 'edited_at'> & {
+      patch: unknown
     }
-    await db.entity_mutations.update(existing.local_id, updated)
-    return { ...existing, ...updated }
+    await db.entity_mutations.update(
+      existing.local_id,
+      updated as Partial<ClientEntityMutation>,
+    )
+    // T5: 戻り型は ClientEntityMutation。 existing の entity_type / op / patch branch を
+    // 維持しつつ新 mutation_id / edited_at / 入力 patch を反映。 union narrow は cast で。
+    return { ...existing, ...updated } as ClientEntityMutation
   }
 
-  // 新規 add
-  const row: ClientEntityMutation = {
+  // 新規 add: input (envelope union) と outbox metadata を spread し、 ClientEntityMutation
+  // (= envelope & metadata) を組む。 TypeScript は union spread の constituent 相関を
+  // 単独で narrow できないため、 戻り値レベルで `as ClientEntityMutation` で widen。
+  // 入力 input は EnqueueEntityMutationInput = envelope union のため、 spread 後の
+  // entity_type / op / patch は同一 branch (input 自身の branch) で整合する。
+  const row = {
+    ...input,
     mutation_id: newId(),
-    entity_type: input.entity_type,
-    entity_id: input.entity_id,
-    op: input.op,
-    patch: input.patch,
     edited_at: now,
-    sync_status: 'pending',
+    sync_status: 'pending' as const,
   }
-  const localId = await db.entity_mutations.add(row)
-  return { ...row, local_id: localId as number }
+  const localId = await db.entity_mutations.add(row as ClientEntityMutation)
+  return { ...row, local_id: localId as number } as ClientEntityMutation
 }
 
 // ---------------------------------------------------------------------------

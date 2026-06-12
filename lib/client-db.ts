@@ -24,6 +24,7 @@
 //   'failed' (最終失敗、 user 介入待ち)。
 
 import Dexie, { type Table } from 'dexie'
+import type { EntityMutationEnvelope } from '@/lib/sync/shared/mutation-schemas'
 
 // ---------------------------------------------------------------------------
 // 共通 enum
@@ -144,13 +145,14 @@ export type ClientAnswerEvent = {
 // 識別し、 entity_id は対象 entity の PK。
 // op は registry (server) で定義される文字列、 card では 'update_field' | 'create' | 'delete'、
 // tag_category / tag_option も同 3 op (Tag-1)。
-export type ClientEntityMutation = {
+//
+// T5: entity_type / op / patch の 3-tuple を `EntityMutationEnvelope` 経由で
+// discriminated union として narrow する (`lib/sync/shared/mutation-schemas.ts`)。
+// mutation_id / edited_at / sync_status / last_attempted_at / local_id は outbox metadata
+// として intersection で乗せる。
+export type ClientEntityMutation = EntityMutationEnvelope & {
   local_id?: number
   mutation_id: string
-  entity_type: string
-  entity_id: string
-  op: string
-  patch: Record<string, unknown>
   edited_at: string
   sync_status: SyncStatus
   last_attempted_at?: string | null

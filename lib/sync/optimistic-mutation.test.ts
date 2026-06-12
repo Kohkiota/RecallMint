@@ -7,7 +7,11 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
-import { getPendingEntityMutations, newId } from './entity-mutations'
+import {
+  getPendingEntityMutations,
+  newId,
+  type EnqueueEntityMutationInput,
+} from './entity-mutations'
 
 // runGuardedEntityMutationFlush は helper 内蔵 fire-and-forget で叩かれる。 本 test では
 // `skipInternalFlush` の検証で「呼ばれた / 呼ばれなかった」 を assert する必要があるため
@@ -287,6 +291,7 @@ describe('runOptimisticCreate — main path', () => {
       },
       buildMutation: (id, nowIso) => {
         receivedByBuildMutation.push({ id, nowIso })
+        // T5: 最小 patch shape (test 視点) を envelope union に通すため cast。
         return {
           entity_type: 'card',
           entity_id: id,
@@ -296,7 +301,7 @@ describe('runOptimisticCreate — main path', () => {
             title: 'created',
           },
           edited_at: nowIso,
-        }
+        } as unknown as EnqueueEntityMutationInput
       },
       logEvent: 'test.create_main',
     })
@@ -349,13 +354,14 @@ describe('runOptimisticCreate — caller-provided id', () => {
       },
       buildMutation: (id, nowIso) => {
         receivedByBuildMutation.push({ id, nowIso })
+        // T5: 最小 patch shape (test 視点) を envelope union に通すため cast。
         return {
           entity_type: 'card',
           entity_id: id,
           op: 'create',
           patch: { exam_id: TEST_EXAM_ID, title: 'created' },
           edited_at: nowIso,
-        }
+        } as unknown as EnqueueEntityMutationInput
       },
       logEvent: 'test.create_caller_id',
     })
@@ -643,13 +649,18 @@ describe('runOptimisticCreate — userId="" fail-fast', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     // buildRow / buildMutation が呼ばれないことも verify (tx 自体張らない契約)
+    // T5: buildMutation の戻り型は envelope union だが、 本 test は fail-fast 経路で
+    // 呼ばれないため shape 整合は不要 (cast で satisfy)。
     const buildRow = vi.fn((id: string): ClientCard => makeClientCard(id))
-    const buildMutation = vi.fn((id: string) => ({
-      entity_type: 'card',
-      entity_id: id,
-      op: 'create',
-      patch: {},
-    }))
+    const buildMutation = vi.fn(
+      (id: string) =>
+        ({
+          entity_type: 'card',
+          entity_id: id,
+          op: 'create',
+          patch: {},
+        }) as unknown as EnqueueEntityMutationInput,
+    )
 
     await expect(
       runOptimisticCreate<ClientCard>({

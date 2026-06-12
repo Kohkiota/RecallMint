@@ -11,6 +11,7 @@ import {
   markEntityMutationsAttempted,
   dropStalePendingEntityMutations,
   newId,
+  type EnqueueEntityMutationInput,
 } from './entity-mutations'
 
 // 各 test の前に entity_mutations table を全 clear。 fake-indexeddb は process 越しに
@@ -129,7 +130,10 @@ describe('enqueueEntityMutation — coalesce (update_field)', () => {
 
     const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(2)
-    const fields = pending.map((r) => r.patch.field).sort()
+    // T5: ClientEntityMutation は discriminated union。 本 path は update_field のみ。
+    const fields = pending
+      .map((r) => (r.patch as { field: string }).field)
+      .sort()
     expect(fields).toEqual(['memo', 'title'])
   })
 
@@ -236,16 +240,18 @@ describe('enqueueEntityMutation — coalesce (create / delete)', () => {
   it('同 card に create を 2 回 enqueue → pending 1 行・最新 patch', async () => {
     const cardId = newId()
     const examId = newId()
+    // T5: create patch は coalesce 検証のみが目的のため、 必須 field (sort_key 等) を
+    // 省いた最小 shape を cast で通す (runtime は coalesce key で 1 行集約を確認)。
     const first = await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'create',
       patch: { exam_id: examId, title: 'Draft 1', question_text: 'Q1', options: [] },
-    })
+    } as unknown as EnqueueEntityMutationInput)
     const second = await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'create',
       patch: { exam_id: examId, title: 'Draft 2', question_text: 'Q2', options: [] },
-    })
+    } as unknown as EnqueueEntityMutationInput)
 
     const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
@@ -265,11 +271,12 @@ describe('enqueueEntityMutation — coalesce (create / delete)', () => {
 
   it('create と delete は別 key → 別行 (2 pending)', async () => {
     const cardId = newId()
+    // T5: 分岐 key 比較が目的のため、 create patch の field は最小 (cast で通す)。
     await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'create',
       patch: { title: 'New card' },
-    })
+    } as unknown as EnqueueEntityMutationInput)
     await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'delete',
@@ -294,17 +301,19 @@ describe('enqueueEntityMutation — coalesce (update_field field 欠落 fallback
   it('op=update_field で patch.field 欠落の mutation を同 card に 2 回 enqueue → 1 行に coalesce される', async () => {
     // field キーが無いため coalesceKey は `${card_id}:update_field` で同一になる。
     // 2 回目が 1 回目を上書きし、pending は 1 行のみ残る。
+    // T5: 意図的に envelope schema 不整合 (field 欠落) で coalesce fallback を test
+    // するため cast で通す。 runtime 挙動 (coalesceKey の fallback) は変わらない。
     const cardId = newId()
     const first = await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'update_field',
       patch: { value: 'first — field key missing' },
-    })
+    } as unknown as EnqueueEntityMutationInput)
     const second = await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'update_field',
       patch: { value: 'second — field key missing' },
-    })
+    } as unknown as EnqueueEntityMutationInput)
 
     const pending = await getPendingEntityMutations()
     // field 欠落でも coalesce key が同一になり 1 行のみ残る
@@ -320,17 +329,18 @@ describe('enqueueEntityMutation — coalesce (update_field field 欠落 fallback
 
   it('op=update_field で patch.field=非 string の mutation を同 card に 2 回 → 1 行に coalesce される', async () => {
     // patch.field が number など非文字列でも同様にフォールバックし coalesce される。
+    // T5: 意図的 schema 不整合 (field=number) で coalesce fallback を test。 cast 経由。
     const cardId = newId()
     await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'update_field',
       patch: { field: 42, value: 'non-string field first' },
-    })
+    } as unknown as EnqueueEntityMutationInput)
     await enqueueEntityMutation({
       entity_type: 'card', entity_id: cardId,
       op: 'update_field',
       patch: { field: 42, value: 'non-string field second' },
-    })
+    } as unknown as EnqueueEntityMutationInput)
 
     const pending = await getPendingEntityMutations()
     // patch.field が非 string のため coalesce key は `${card_id}:update_field` → 1 行
