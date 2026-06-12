@@ -14,7 +14,8 @@
 
 import 'server-only'
 
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
+import type { z } from 'zod'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import {
   tagCategories,
@@ -22,6 +23,12 @@ import {
   tombstones,
 } from '@/lib/db/schema'
 import type { ApplyResult } from '@/lib/sync/server/entity-mutation-registry'
+import {
+  tagCategoryIdSchema,
+  tagColorSchema,
+  tagNameSchema,
+  tagSortKeySchema,
+} from '@/lib/validation/tag'
 
 // ---------------------------------------------------------------------------
 // tag_category
@@ -64,36 +71,31 @@ export type TagCategoryUpdatePatch = {
   value: unknown
 }
 
+// field 名 → 共有値 schema + Drizzle 列キーへの dispatch table。
+// inline switch + `typeof` 検査を `lib/validation/tag.ts` 経由 safeParse に統一し、
+// registry の create patch と同 source にする (audit #10、 drift 防止)。
+// sort_key → sortKey の列名マッピングは tag に閉じるので shared util 化しない。
+const TAG_CATEGORY_UPDATE_FIELDS = {
+  name: { schema: tagNameSchema, dbField: 'name' },
+  color: { schema: tagColorSchema, dbField: 'color' },
+  sort_key: { schema: tagSortKeySchema, dbField: 'sortKey' },
+} as const satisfies Record<
+  TagCategoryUpdateFieldName,
+  { schema: z.ZodTypeAny; dbField: string }
+>
+
 export async function applyTagCategoryUpdate(
   tx: DbExecutor,
   userId: string,
   categoryId: string,
   patch: TagCategoryUpdatePatch,
 ): Promise<ApplyResult> {
-  const set: Record<string, unknown> = {}
-  switch (patch.field) {
-    case 'name': {
-      if (typeof patch.value !== 'string' || patch.value.length === 0) {
-        return 'failed'
-      }
-      set.name = patch.value
-      break
-    }
-    case 'color': {
-      if (patch.value !== null && typeof patch.value !== 'string') {
-        return 'failed'
-      }
-      set.color = patch.value
-      break
-    }
-    case 'sort_key': {
-      if (patch.value !== null && typeof patch.value !== 'string') {
-        return 'failed'
-      }
-      set.sortKey = patch.value
-      break
-    }
-  }
+  const entry = TAG_CATEGORY_UPDATE_FIELDS[patch.field]
+  if (!entry) return 'failed'
+  const parsed = entry.schema.safeParse(patch.value)
+  if (!parsed.success) return 'failed'
+  const set: Record<string, unknown> = { [entry.dbField]: parsed.data }
+
   const result = await tx
     .update(tagCategories)
     .set(set)
@@ -184,11 +186,19 @@ export async function applyTagOptionCreate(
     )
   if (parent.length === 0) return 'failed'
 
-  // 2. UNIQUE (category_id, name) の事前チェック (merge ロジック未実装、 衝突は failed)
+  // 2. UNIQUE (category_id, name) の事前チェック (merge ロジック未実装、 衝突は failed)。
+  //    `ne(tagOptions.id, optionId)` で自己除外 — mutation_id race で同一 id の row
+  //    が既存 (= 自分自身の replay) のときに偽 failed を返さない (audit #9)。
   const dup = await tx
     .select({ id: tagOptions.id })
     .from(tagOptions)
-    .where(and(eq(tagOptions.categoryId, patch.category_id), eq(tagOptions.name, patch.name)))
+    .where(
+      and(
+        eq(tagOptions.categoryId, patch.category_id),
+        eq(tagOptions.name, patch.name),
+        ne(tagOptions.id, optionId),
+      ),
+    )
   if (dup.length > 0) return 'failed'
 
   // 3. INSERT — id 衝突 (再送) は ON CONFLICT DO NOTHING で no-op
@@ -215,19 +225,36 @@ export type TagOptionUpdatePatch = {
   value: unknown
 }
 
+// field 名 → 共有値 schema + Drizzle 列キーへの dispatch table。 name / category_id
+// は schema 通過後に UNIQUE pre-check (rename / move 衝突回避) が走る。 単純 field
+// (color / sort_key) は schema 通過後そのまま SET。 audit #10 (drift 防止) 解消。
+const TAG_OPTION_UPDATE_FIELDS = {
+  name: { schema: tagNameSchema, dbField: 'name' },
+  color: { schema: tagColorSchema, dbField: 'color' },
+  sort_key: { schema: tagSortKeySchema, dbField: 'sortKey' },
+  category_id: { schema: tagCategoryIdSchema, dbField: 'categoryId' },
+} as const satisfies Record<
+  TagOptionUpdateFieldName,
+  { schema: z.ZodTypeAny; dbField: string }
+>
+
 export async function applyTagOptionUpdate(
   tx: DbExecutor,
   userId: string,
   optionId: string,
   patch: TagOptionUpdatePatch,
 ): Promise<ApplyResult> {
+  const entry = TAG_OPTION_UPDATE_FIELDS[patch.field]
+  if (!entry) return 'failed'
+  const parsed = entry.schema.safeParse(patch.value)
+  if (!parsed.success) return 'failed'
+
   const set: Record<string, unknown> = {}
 
+  // schema 通過後の business pre-check は field ごとに必要なものだけ走らせる。
   switch (patch.field) {
     case 'name': {
-      if (typeof patch.value !== 'string' || patch.value.length === 0) {
-        return 'failed'
-      }
+      const newName = parsed.data as string
       // UNIQUE (category_id, name) を事前 SELECT で確認 (自分自身の category 内に
       // 同名が他 id で存在しないか)。
       const current = await tx
@@ -241,37 +268,23 @@ export async function applyTagOptionUpdate(
         .where(
           and(
             eq(tagOptions.categoryId, current[0]!.categoryId),
-            eq(tagOptions.name, patch.value),
+            eq(tagOptions.name, newName),
           ),
         )
       // dup に自分自身が含まれる場合は no-op (rename to same name) として許容
       if (dup.length > 0 && dup.some((d) => d.id !== optionId)) return 'failed'
-      set.name = patch.value
-      break
-    }
-    case 'color': {
-      if (patch.value !== null && typeof patch.value !== 'string') {
-        return 'failed'
-      }
-      set.color = patch.value
-      break
-    }
-    case 'sort_key': {
-      if (patch.value !== null && typeof patch.value !== 'string') {
-        return 'failed'
-      }
-      set.sortKey = patch.value
+      set[entry.dbField] = newName
       break
     }
     case 'category_id': {
-      if (typeof patch.value !== 'string' || patch.value.length === 0) {
-        return 'failed'
-      }
+      const newCategoryId = parsed.data as string
       // 移動先 category の owner check
       const parent = await tx
         .select({ id: tagCategories.id })
         .from(tagCategories)
-        .where(and(eq(tagCategories.id, patch.value), eq(tagCategories.userId, userId)))
+        .where(
+          and(eq(tagCategories.id, newCategoryId), eq(tagCategories.userId, userId)),
+        )
       if (parent.length === 0) return 'failed'
       // 自分自身の name を取得し、 移動先 category に同名 option が無いか確認
       const current = await tx
@@ -284,12 +297,17 @@ export async function applyTagOptionUpdate(
         .from(tagOptions)
         .where(
           and(
-            eq(tagOptions.categoryId, patch.value),
+            eq(tagOptions.categoryId, newCategoryId),
             eq(tagOptions.name, current[0]!.name),
           ),
         )
       if (dup.length > 0 && dup.some((d) => d.id !== optionId)) return 'failed'
-      set.categoryId = patch.value
+      set[entry.dbField] = newCategoryId
+      break
+    }
+    case 'color':
+    case 'sort_key': {
+      set[entry.dbField] = parsed.data
       break
     }
   }

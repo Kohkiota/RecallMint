@@ -28,6 +28,12 @@ import {
 import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
 import { optionSchema } from '@/lib/validation/card'
 import {
+  tagNameSchema,
+  tagColorSchema,
+  tagSortKeySchema,
+  tagCategoryIdSchema,
+} from '@/lib/validation/tag'
+import {
   applyTagCategoryCreate,
   applyTagCategoryUpdate,
   applyTagCategoryDelete,
@@ -190,15 +196,13 @@ const tagCategoryUpdateFieldPatchSchema = z.object({
 })
 
 // create の patch: client が optimistic に組んだ category 内容。
+// 値検証は `lib/validation/tag.ts` の共有 field schema 経由 (apply 側 update 経路と
+// 同 source、 drift 防止 = audit #10 解消)。 select_type は immutable のため inline。
 const tagCategoryCreatePatchSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, 'カテゴリ名は必須です')
-    .max(100, 'カテゴリ名は 100 文字以内で入力してください'),
+  name: tagNameSchema,
   select_type: z.enum(['single', 'multi']),
-  color: z.string().max(50, 'color は 50 文字以内').nullable().optional(),
-  sort_key: z.string().max(100, 'sort_key は 100 文字以内').nullable().optional(),
+  color: tagColorSchema.optional(),
+  sort_key: tagSortKeySchema.optional(),
 })
 
 const tagCategoryDeletePatchSchema = z.record(z.string(), z.unknown())
@@ -238,14 +242,10 @@ const tagOptionUpdateFieldPatchSchema = z.object({
 })
 
 const tagOptionCreatePatchSchema = z.object({
-  category_id: z.uuid(),
-  name: z
-    .string()
-    .trim()
-    .min(1, 'オプション名は必須です')
-    .max(100, 'オプション名は 100 文字以内で入力してください'),
-  color: z.string().max(50, 'color は 50 文字以内').nullable().optional(),
-  sort_key: z.string().max(100, 'sort_key は 100 文字以内').nullable().optional(),
+  category_id: tagCategoryIdSchema,
+  name: tagNameSchema,
+  color: tagColorSchema.optional(),
+  sort_key: tagSortKeySchema.optional(),
 })
 
 const tagOptionDeletePatchSchema = z.record(z.string(), z.unknown())
