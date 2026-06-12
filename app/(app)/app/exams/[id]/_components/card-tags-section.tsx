@@ -12,7 +12,6 @@
 
 import { memo, useCallback, useMemo } from 'react'
 
-import { logger } from '@/lib/logger'
 import {
   getClientDb,
   type ClientTagCategory,
@@ -21,6 +20,7 @@ import {
 } from '@/lib/client-db'
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
 import {
   handleReorderCategories,
@@ -98,15 +98,14 @@ export function buildNextTagSet(
 // テスト容易性のため export する (buildNextTagSet と同じ規約)。
 //
 // Atomic strategy:
-// - rename / color: single-store。 mirror.update await → enqueue await → revert on throw
+// - rename / color: `runOptimisticUpdate` (helper) で mirror update + enqueue を 1 rw tx に
+//   閉じ込め、 失敗時 Dexie auto-rollback (Sync-fix-1 T2a)。
 // - delete: multi-store。 db.transaction('rw', ...) で same-tx atomic
 // ---------------------------------------------------------------------------
 
 /**
- * カテゴリ名を変更する。
- * mirror update → enqueue の順で await、 enqueue が throw したら mirror を元値に revert。
- * 同名の場合は no-op (IDB / enqueue を触らない)。
- * 全ユーザースコープで同名の category が既に存在する場合は throw。
+ * カテゴリ名を変更する。 同名は no-op、 全ユーザースコープで同名衝突なら throw。
+ * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
 export async function handleRenameCategory(categoryId: string, newName: string): Promise<void> {
   const db = getClientDb()
@@ -118,61 +117,56 @@ export async function handleRenameCategory(categoryId: string, newName: string):
   if (all.some((c) => c.id !== categoryId && c.name === newName)) {
     throw new Error('同名のカテゴリが既にあります')
   }
-  const now = new Date().toISOString()
-  try {
-    await db.tag_categories.update(categoryId, { name: newName, updated_at: now })
-    await enqueueEntityMutation({
+  await runOptimisticUpdate({
+    store: db.tag_categories,
+    rowKey: categoryId,
+    beforeValue: { name: before.name, updated_at: before.updated_at },
+    afterPatch: { name: newName, updated_at: new Date().toISOString() },
+    mutation: {
       entity_type: 'tag_category',
       entity_id: categoryId,
       op: 'update_field',
       patch: { field: 'name', value: newName },
-    })
-  } catch (err) {
-    // revert mirror を元値に戻す (updated_at も before 値で上書き)
-    await db.tag_categories.update(categoryId, {
-      name: before.name,
-      updated_at: before.updated_at,
-    }).catch((err) => { logger.warn({ event: 'tag_category_rename.revert_failed', id: categoryId, err: String(err) }) })
-    throw err
-  }
-  void runGuardedEntityMutationFlush().catch(() => {})
+    },
+    logEvent: 'tag_category_rename.tx_failed',
+    logContext: { id: categoryId },
+    isNoop: (b, a) => b.name === a.name,
+    throwOnError: true,
+  })
 }
 
 /**
- * カテゴリ color を設定する (null でクリア)。
- * null → null は no-op。
+ * カテゴリ color を設定する (null でクリア)。 null → null は no-op。
+ * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
 export async function handleSetCategoryColor(categoryId: string, color: string | null): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_categories.get(categoryId)
   if (!before) return
-  // 値が同じ (null → null, 'red' → 'red') なら no-op
+  // before.color ?? null で undefined → null 正規化 (空文字 / undefined に化けない比較)
   const beforeColor = before.color ?? null
-  if (beforeColor === color) return
-  const now = new Date().toISOString()
-  try {
-    await db.tag_categories.update(categoryId, { color, updated_at: now })
-    await enqueueEntityMutation({
+  if (beforeColor === color) return // no-op
+  await runOptimisticUpdate({
+    store: db.tag_categories,
+    rowKey: categoryId,
+    beforeValue: { color: beforeColor, updated_at: before.updated_at },
+    afterPatch: { color, updated_at: new Date().toISOString() },
+    mutation: {
       entity_type: 'tag_category',
       entity_id: categoryId,
       op: 'update_field',
       patch: { field: 'color', value: color },
-    })
-  } catch (err) {
-    // revert: before.color が null なら null を書き戻す (空文字に化けさせない)
-    await db.tag_categories.update(categoryId, {
-      color: beforeColor,
-      updated_at: before.updated_at,
-    }).catch((err) => { logger.warn({ event: 'tag_category_color.revert_failed', id: categoryId, err: String(err) }) })
-    throw err
-  }
-  void runGuardedEntityMutationFlush().catch(() => {})
+    },
+    logEvent: 'tag_category_color.tx_failed',
+    logContext: { id: categoryId },
+    isNoop: (b, a) => b.color === a.color,
+    throwOnError: true,
+  })
 }
 
 /**
- * オプション名を変更する。
- * 同名の場合は no-op。
- * 同 category 内に既存と同名の option が存在する場合は throw。
+ * オプション名を変更する。 同名は no-op、 同 category 内同名衝突なら throw。
+ * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
 export async function handleRenameOption(optionId: string, newName: string): Promise<void> {
   const db = getClientDb()
@@ -184,53 +178,51 @@ export async function handleRenameOption(optionId: string, newName: string): Pro
   if (sameCat.some((o) => o.id !== optionId && o.name === newName)) {
     throw new Error('同名の option が既にあります')
   }
-  const now = new Date().toISOString()
-  try {
-    await db.tag_options.update(optionId, { name: newName, updated_at: now })
-    await enqueueEntityMutation({
+  await runOptimisticUpdate({
+    store: db.tag_options,
+    rowKey: optionId,
+    beforeValue: { name: before.name, updated_at: before.updated_at },
+    afterPatch: { name: newName, updated_at: new Date().toISOString() },
+    mutation: {
       entity_type: 'tag_option',
       entity_id: optionId,
       op: 'update_field',
       patch: { field: 'name', value: newName },
-    })
-  } catch (err) {
-    await db.tag_options.update(optionId, {
-      name: before.name,
-      updated_at: before.updated_at,
-    }).catch((err) => { logger.warn({ event: 'tag_option_rename.revert_failed', id: optionId, err: String(err) }) })
-    throw err
-  }
-  void runGuardedEntityMutationFlush().catch(() => {})
+    },
+    logEvent: 'tag_option_rename.tx_failed',
+    logContext: { id: optionId },
+    isNoop: (b, a) => b.name === a.name,
+    throwOnError: true,
+  })
 }
 
 /**
- * オプション color を設定する (null でクリア)。
- * null → null は no-op。
+ * オプション color を設定する (null でクリア)。 null → null は no-op。
+ * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
 export async function handleSetOptionColor(optionId: string, color: string | null): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_options.get(optionId)
   if (!before) return
+  // before.color ?? null で undefined → null 正規化 (空文字 / undefined に化けない比較)
   const beforeColor = before.color ?? null
   if (beforeColor === color) return // no-op
-  const now = new Date().toISOString()
-  try {
-    await db.tag_options.update(optionId, { color, updated_at: now })
-    await enqueueEntityMutation({
+  await runOptimisticUpdate({
+    store: db.tag_options,
+    rowKey: optionId,
+    beforeValue: { color: beforeColor, updated_at: before.updated_at },
+    afterPatch: { color, updated_at: new Date().toISOString() },
+    mutation: {
       entity_type: 'tag_option',
       entity_id: optionId,
       op: 'update_field',
       patch: { field: 'color', value: color },
-    })
-  } catch (err) {
-    // revert: before.color が null なら null を書き戻す (空文字に化けさせない)
-    await db.tag_options.update(optionId, {
-      color: beforeColor,
-      updated_at: before.updated_at,
-    }).catch((err) => { logger.warn({ event: 'tag_option_color.revert_failed', id: optionId, err: String(err) }) })
-    throw err
-  }
-  void runGuardedEntityMutationFlush().catch(() => {})
+    },
+    logEvent: 'tag_option_color.tx_failed',
+    logContext: { id: optionId },
+    isNoop: (b, a) => b.color === a.color,
+    throwOnError: true,
+  })
 }
 
 /**

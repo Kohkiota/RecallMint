@@ -676,7 +676,11 @@ describe('handleRenameCategory', () => {
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
   })
 
-  it('enqueue が throw した場合 → update が 2 回呼ばれ (forward + revert)、 flush は呼ばれない', async () => {
+  it('Sync-fix-1 T2a: enqueue throw → mirror update は 1 回のみ (Dexie auto-rollback)、 throwOnError:true で caller に伝播、 flush は呼ばれない', async () => {
+    // 旧 (T2a 前): 手動 try/catch + revert update で update が 2 回呼ばれた。
+    // 新 (T2a 後): runOptimisticUpdate 内蔵 tx で update 1 回のみ、 失敗時 Dexie tx 全体が
+    // auto-rollback し mirror も巻き戻る (= 手動 revert 不要)。 throwOnError: true なので
+    // caller (UI) は依然 throw を受け取る。
     const before = {
       id: 'cat-1',
       user_id: 'user-1',
@@ -691,16 +695,20 @@ describe('handleRenameCategory', () => {
     ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('enqueue failed'),
     )
+    // helper の catch path で logger.warn が console.warn を 1 行吐くため抑止 (出力雑音回避)。
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(handleRenameCategory('cat-1', '新名')).rejects.toThrow('enqueue failed')
 
-    // update が 2 回: forward + revert
-    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
-    // revert call の引数は元値に戻す
-    const revertCall = (mockTagCategoriesUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
-    expect(revertCall[1]).toMatchObject({ name: '旧名' })
-    // flush は呼ばれない
+    // update は forward 1 回のみ (revert は Dexie auto-rollback が担当 = 明示 call なし)
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(1)
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledWith(
+      'cat-1',
+      expect.objectContaining({ name: '新名' }),
+    )
+    // flush は tx 失敗 path で skip される
     expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   it('category が存在しない場合は何もしない', async () => {
@@ -798,7 +806,11 @@ describe('handleSetCategoryColor', () => {
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
   })
 
-  it('color null 往復: before.color=null, newColor=red, enqueue throw → revert で color が null に戻る (空文字/undefined に化けない)', async () => {
+  it('Sync-fix-1 T2a: enqueue throw → mirror update は 1 回のみ (Dexie auto-rollback)、 throwOnError:true で caller に伝播、 flush は呼ばれない', async () => {
+    // 旧 (T2a 前): 手動 try/catch + revert update で color: null を書き戻す 2 回目 update が必要。
+    // 新 (T2a 後): runOptimisticUpdate 内蔵 tx で update 1 回のみ、 失敗時 Dexie tx 全体が
+    // auto-rollback し mirror も before.color=null に巻き戻る (= 手動 revert 不要、 空文字/
+    // undefined への化け問題は構造的に排除)。 throwOnError: true で caller に throw 伝播。
     const before = {
       id: 'cat-1',
       user_id: 'user-1',
@@ -813,15 +825,18 @@ describe('handleSetCategoryColor', () => {
     ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('enqueue failed'),
     )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(handleSetCategoryColor('cat-1', 'red')).rejects.toThrow('enqueue failed')
 
-    // revert の 2 回目 update で color が null (空文字や undefined ではない)
-    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
-    const revertCall = (mockTagCategoriesUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
-    expect(revertCall[1]).toMatchObject({ color: null })
-    expect(revertCall[1].color).not.toBe('')
-    expect(revertCall[1].color).not.toBe(undefined)
+    // forward update 1 回のみ (color: 'red' を書く)、 Dexie auto-rollback で巻き戻り。
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(1)
+    expect(mockTagCategoriesUpdate).toHaveBeenCalledWith(
+      'cat-1',
+      expect.objectContaining({ color: 'red' }),
+    )
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })
 
@@ -860,7 +875,9 @@ describe('handleRenameOption', () => {
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
 
-  it('enqueue throw → update 2 回 (forward + revert)、 flush は呼ばれない', async () => {
+  it('Sync-fix-1 T2a: enqueue throw → mirror update は 1 回のみ (Dexie auto-rollback)、 throwOnError:true で caller に伝播、 flush は呼ばれない', async () => {
+    // 旧: 手動 try/catch + revert update で update 2 回。
+    // 新: runOptimisticUpdate 内蔵 tx で update 1 回、 Dexie auto-rollback で巻き戻り。
     const before = {
       id: 'opt-1',
       user_id: 'user-1',
@@ -875,13 +892,17 @@ describe('handleRenameOption', () => {
     ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('enqueue failed'),
     )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(handleRenameOption('opt-1', '新名')).rejects.toThrow('enqueue failed')
 
-    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(2)
-    const revertCall = (mockTagOptionsUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
-    expect(revertCall[1]).toMatchObject({ name: '旧名' })
+    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(1)
+    expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
+      'opt-1',
+      expect.objectContaining({ name: '新名' }),
+    )
     expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   // Fix A-2: 同 category 内で同名衝突 check
@@ -969,7 +990,10 @@ describe('handleSetOptionColor', () => {
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
 
-  it('color null 往復: before.color=null, newColor=red, enqueue throw → revert で color が null', async () => {
+  it('Sync-fix-1 T2a: enqueue throw → mirror update は 1 回のみ (Dexie auto-rollback)、 throwOnError:true で caller に伝播、 flush は呼ばれない', async () => {
+    // 旧: 手動 try/catch + revert update で color: null を書き戻す 2 回目 update が必要。
+    // 新: runOptimisticUpdate 内蔵 tx で update 1 回、 Dexie auto-rollback で巻き戻り
+    // (空文字/undefined への化け問題は構造的に排除、 mirror は before.color=null のまま)。
     const before = {
       id: 'opt-1',
       user_id: 'user-1',
@@ -984,14 +1008,17 @@ describe('handleSetOptionColor', () => {
     ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('enqueue failed'),
     )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await expect(handleSetOptionColor('opt-1', 'red')).rejects.toThrow('enqueue failed')
 
-    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(2)
-    const revertCall = (mockTagOptionsUpdate.mock.calls as unknown as [string, Record<string, unknown>][])[1]
-    expect(revertCall[1].color).toBe(null)
-    expect(revertCall[1].color).not.toBe('')
-    expect(revertCall[1].color).not.toBe(undefined)
+    expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(1)
+    expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
+      'opt-1',
+      expect.objectContaining({ color: 'red' }),
+    )
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })
 
