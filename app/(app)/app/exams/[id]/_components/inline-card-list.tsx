@@ -131,12 +131,20 @@ export function InlineCardList({
   // client 採番のため server round-trip なしで即時に edit mode へ入れる
   // (card の主体が問題文のため question_text cell のみに適用、 spec §3.5)。
   //
-  // T1b race fix #2: 旧実装 (fa4aa7b) の `useState<string | null>` は 2 連続 click 時に
-  // `setNewCardId(id1) → setNewCardId(id2)` が React batch で「後勝ち」 fold され、
-  // 1 枚目 cell mount 時の `newCardId === id1` 判定が常に false (id2 のみ残存) に
-  // なる構造的限界があり、 stg smoke で 3/3 FAIL 再現した。 Set 化 + functional
-  // updater で 2 連続 add でも両方蓄積する形に再設計し、 single state 後勝ち問題を
-  // 構造的に解消する。 consume (Set 縮小) は持たない (下のコメント参照)。
+  // **複数 pending id の追跡基盤** (`useState<Set<string>>`)。
+  //
+  // 経緯: T1a smoke #4 で「2 連続 click で 1 枚目の auto-edit が失われる」 挙動を
+  // race と切り分け、 fix #1 (fa4aa7b sync 採番) + fix #2 (本 Set 化) を試行したが
+  // いずれも実環境で FAIL。 OT 実機検証 (1 枚目 textarea focus 状態で 2 秒以上待ち
+  // → 「+ カードを追加」 click → 1 枚目 display 復帰 + 新カード focus) で**タイミング
+  // 無関係 = race ではなく blur-commit による構造的挙動**と決着、 「2 連続で両方
+  // auto-edit」 仕様自体を撤回 (実挙動 = 前の編集が確定して閉じ、 新カードに focus
+  // 移行 = UX として正しい)。 詳細経緯は plan T1b 「T1a 引継ぎ既知 issue」 参照。
+  //
+  // Set 化は revert せず維持: (1) 将来仮想化 (Grid-1 TanStack Virtual) で cell 再
+  // mount が起きる経路の基盤、 (2) click 以外の経路 (keyboard shortcut で連続 add、
+  // batch import で複数 card 同時 mount 等) で複数 pending id を保持する必要が
+  // 生じた場合の汎用基盤として残す。 consume (Set 縮小) は持たない (下のコメント参照)。
   const [newCardIds, setNewCardIds] = useState<Set<string>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
 
@@ -174,13 +182,13 @@ export function InlineCardList({
     )
 
     // id は helper await の前に sync で採番し、 `setNewCardIds(prev => add)` を同期的に
-    // 発火させる。 fa4aa7b で導入した sync 採番 → 先発火は維持しつつ、 単一 state 後勝ち
-    // 問題 (旧 setNewCardId が batch fold で id1 を上書き) を Set + functional updater で
-    // 構造的に解消する: 2 連続 click では updater chain `prev → {id1} → {id1, id2}` で
-    // 両 id を蓄積、 useLiveQuery 再評価後の各新 card cell mount 時に `newCardIds.has(id)`
-    // が両方 true となり、 autoEditOnMount (one-shot useState 初期化子) が両 cell で
-    // 発火する (T1a smoke #4 race fix #2)。 helper には id 引数で渡し、 helper 内
-    // newId() の二重採番は起きない。
+    // 発火させる。 fa4aa7b で導入した sync 採番 → 先発火は維持しつつ、 Set + functional
+    // updater で複数 pending id を蓄積する: updater chain `prev → {id1} → {id1, id2}` で
+    // 両 id を追跡、 useLiveQuery 再評価後の cell mount 時に `newCardIds.has(id)` が
+    // true となり、 autoEditOnMount (one-shot useState 初期化子) が発火する。
+    // 実ブラウザでは button click による blur-commit で 1 枚目の編集状態は確定して
+    // 閉じ、 新カードのみが focus する (= 仕様、 詳細は上の Set 化コメント参照)。
+    // helper には id 引数で渡し、 helper 内 newId() の二重採番は起きない。
     const cardId = newId()
     setNewCardIds((prev) => {
       const next = new Set(prev)

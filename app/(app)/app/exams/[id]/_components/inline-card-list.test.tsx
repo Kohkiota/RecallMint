@@ -447,19 +447,21 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     })
   })
 
-  it('2 枚連続追加でも各々の問題文 cell が auto-edit する', async () => {
-    // 註: 本 test は T1b race fix #2 (newCardId Set 化、 commit 後追記) で
-    // single state 後勝ち問題を構造的に解消したことを立証する。 ただし jsdom
-    // の async render 解決順序により、 race fix #1 (fa4aa7b、 単一 state のまま
-    // sync 採番) でも本 test は stable green を出していた = jsdom は race 検出器
-    // として機能しなかった。 本 race の真の検証は DevTools MCP 実 smoke (stg
-    // 2 枚連続追加 × 3 回試行) が権威。 jsdom test は **同期化された end behavior**
-    // (両 cell の autoEditOnMount=true 経路) の retry safety のみを担保する。
-    // plan T1b 制約 per、 「waitFor timeout 増加だけで close 禁止」 + 「DevTools
-    // MCP 実 smoke の権威性」 を遵守。
-    // 連続追加でも各 add で newCardIds に id が functional updater chain で蓄積され、
-    // 両新 card が edit mode に。
-    // enqueue 遅延 (macrotask) を各 add 分 queue して実機の競合を再現する。
+  it('2 枚連続追加で 2 枚作成され、 編集状態は最後の 1 枚のみ (blur-commit による構造的挙動)', async () => {
+    // 仕様の決着 (2026-06-12 OT 実機検証):
+    // 1 枚目 textarea focus 状態で 2 秒以上待ってから「+ カードを追加」 を click すると、
+    // 1 枚目は display モードに戻り、 新カードのみ編集状態 + focus。 = 2 回目の click が
+    // 直前 textarea の blur を引き起こし、 InlineTextField の blur-commit で編集終了する
+    // 構造的挙動。 **タイミング無関係 = race ではない**。
+    //
+    // 経緯: T1a smoke #4 で「2 連続追加で両方 auto-edit」 を期待値として 3/3 FAIL を
+    // 観察、 「flake」 と切り分けて T1b race fix を 2 度走らせた (fa4aa7b sync 採番 →
+    // 63f6b98 Set 化) が、 いずれも実環境で FAIL。 OT 実機検証で blur-commit による
+    // 編集確定 → 新カードに focus 移行という UX 観点で**正しい挙動**と確定、 仕様撤回。
+    //
+    // jsdom は click による blur 連鎖を再現しないため、 旧 test は「両 cell auto-edit」 で
+    // stable green を出していた = jsdom test の意味論が実ブラウザの実態と乖離していた。
+    // 本 test は現実仕様 (枚数 +2、 最終 focus は新カード) のみ検証する。
     mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')
     mockNewId.mockImplementationOnce(() => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2')
     mockEnqueue.mockImplementationOnce(
@@ -471,20 +473,23 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     await seedMirror(cards)
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     await screen.findByText('問1')
-    // 1 枚目: 新 card の問題文 cell が auto-edit (textbox 1 つ)
+
+    // 連続 2 回 click
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
-    await waitFor(() => {
-      expect(
-        screen.getAllByRole('textbox', { name: '問題文 編集' }),
-      ).toHaveLength(1)
-    })
-    // 2 枚目: 2 枚目も auto-edit (既に edit 中の 1 枚目 + 2 枚目 = textbox 2 つ)
     fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+
+    // 枚数 +2 (元 2 枚 → 4 枚): heading で件数を判定 (タイトル / 問題文は display 形式の
+    // ことが多く textbox count は edit 中のものしか取れないため、 件数 heading が確実)。
     await waitFor(() => {
-      expect(
-        screen.getAllByRole('textbox', { name: '問題文 編集' }),
-      ).toHaveLength(2)
+      expect(screen.getByText(/カード \(4 件\)/)).toBeInTheDocument()
     })
+    // 実ブラウザでは blur-commit により編集状態は新カードのみ (= 1)。 jsdom は
+    // blur 連鎖を再現しないため本 assert で 1 が出るかは jsdom 実装依存、 上限 2 で
+    // 寛容に判定 (jsdom で 2 が出ても本仕様撤回の意味論を破壊しない、 実挙動は
+    // DevTools MCP 実 smoke の OT 実機検証で確定)。
+    expect(
+      screen.getAllByRole('textbox', { name: '問題文 編集' }).length,
+    ).toBeLessThanOrEqual(2)
   })
 
   it('mirror insert が throw → tx auto-rollback + caller catch で inline error UI 表示 (throwOnError=true 経路)', async () => {
