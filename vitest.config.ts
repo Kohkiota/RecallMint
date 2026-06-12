@@ -19,6 +19,7 @@ export default defineConfig({
       'scripts/**/*.test.ts',
       'instrumentation.test.ts',
       'proxy.test.ts',
+      'next.config.test.ts',
     ],
   },
   resolve: {
