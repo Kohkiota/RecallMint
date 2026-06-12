@@ -17,13 +17,19 @@ type Phase = 'idle' | 'confirm' | 'deleting' | 'polling' | 'error'
 
 interface Props {
   plan: User['plan']
+  // audit §10.4 #11 / T-A9: 削除 status polling URL の `userId` 直渡しを排除し、
+  // server-side で 24h ttl signed token を生成して props 経由で受領する。 token 内
+  // に userId が encode されているため、 削除完了 polling は token 1 つで認可 + 識別
+  // を兼ねる。 page render 時点で生成 (settings/page.tsx:`signDeletionToken`)。
+  deletionStatusToken: string
 }
 
-export function DeleteAccountButton({ plan }: Props) {
+export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
   const { user } = useUser()
   const [phase, setPhase] = useState<Phase>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   // user.delete() 後は useUser() の user が null になるため、削除前に userId を memorize する
+  // (UI gating 用のみ。 polling 識別は deletionStatusToken に集約済)。
   const [memoizedUserId, setMemoizedUserId] = useState<string | null>(null)
 
   // user.delete() は Clerk 仕様上 sensitive action で、 session reverification
@@ -94,7 +100,7 @@ export function DeleteAccountButton({ plan }: Props) {
       }
       try {
         const res = await fetch(
-          `/api/me/deletion-status?userId=${encodeURIComponent(memoizedUserId)}`,
+          `/api/me/deletion-status?token=${encodeURIComponent(deletionStatusToken)}`,
           { signal: controller.signal, cache: 'no-store' },
         )
         if (!res.ok) return // 一時失敗は skip して次 interval で再試行
@@ -114,7 +120,7 @@ export function DeleteAccountButton({ plan }: Props) {
       clearInterval(intervalId)
       controller.abort()
     }
-  }, [phase, memoizedUserId])
+  }, [phase, memoizedUserId, deletionStatusToken])
 
   if (phase === 'idle') {
     return (

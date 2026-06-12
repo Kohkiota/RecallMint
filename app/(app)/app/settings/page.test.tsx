@@ -61,6 +61,9 @@ import SettingsPage from './page'
 
 const baseUser = {
   id: 'u_1',
+  // T-A9: settings page が clerkId から削除 status polling token を生成する
+  // (signDeletionToken) ため、 mock user にも clerkId を含める必要がある。
+  clerkId: 'user_abc123',
   plan: 'free' as const,
   billingInterval: null as 'month' | 'year' | null,
   cancelAt: null as Date | null,

@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { PAID_PLAN_CATALOG, planLabelFor } from '@/lib/plan-catalog'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
+import { signDeletionToken } from '@/lib/security/deletion-token'
 
 // 解約予定日 / ダウングレード予約発効日を日本語ロケールの YYYY/MM/DD 形式に整形する
 // Intl.DateTimeFormat を使い、ロケール依存の区切り文字を統一する
@@ -33,6 +34,20 @@ export default async function SettingsPage() {
     .limit(1)
   const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
   const fsrsMode = settingsRows[0]?.fsrsMode ?? false
+
+  // audit §10.4 #11 / T-A9: 削除 status polling URL を signed token 経由化。
+  // page render 時点で 24h ttl token を発行し client (delete-button) に prop
+  // で渡す。 削除実行から polling までは数分〜数十秒 (POLL_MAX_ATTEMPTS=30 sec) で
+  // ttl 24h は十分。 token 内 userId は clerkId なので client 側で別途保存する
+  // 必要なし (token が単一の認可 + 識別 source)。
+  // clerkId は schema 上 nullable (GDPR scrub 後 NULL) だが、 active session で
+  // settings page に到達する user は必ず非 null。 防御的に空文字 fallback で
+  // 渡し、 client 側は polling 経路に入る前に user.delete() が成功している前提で
+  // token を使う (空 token → 401 で polling は no-op timeout で sign-out-deleted へ
+  // 強制 navigate される既存 zombie-net で吸収)。
+  const deletionStatusToken = user.clerkId
+    ? signDeletionToken(user.clerkId)
+    : ''
 
   // ダウングレード予約 (方針C) の表示用ラベル整形。 cancelAt 優先のため、 cancelAt
   // 不在で scheduledDowngradeScheduleId set のときだけ JSX 側で表示する。 ここでは
@@ -160,7 +175,7 @@ export default async function SettingsPage() {
             <p className="text-sm text-slate-700 mb-3">
               アカウントを削除します。登録したカードと学習履歴は復元できません。
             </p>
-            <DeleteAccountButton plan={user.plan} />
+            <DeleteAccountButton plan={user.plan} deletionStatusToken={deletionStatusToken} />
           </CardContent>
         </Card>
       </section>
