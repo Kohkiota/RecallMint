@@ -1,0 +1,150 @@
+# Sprint Y-2 Sub-plan B: performance Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (本 sprint の既定実装方式、 CLAUDE.md 明示) to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** audit §10.3 (b) の P1 perf 7 件 (#1a / #1b / #1c / #1d / #1e / #2 / #7) + 軽微 2 件 H7 (`/app/tags` 初期遅延切り分け) を 8 task で消化、 Y-2 最大リスク #1b (per-mutation tx 並列化) を spec §3.2 順序保証契約付きで安全に通す。
+
+**Architecture:** 案 = H7 切り分け調査 (T-B1) を先発、 結果次第で #1c-#1e (T-B4 / T-B5 / T-B6) と合流可。 SQL/Dexie 系は before/after の **EXPLAIN ANALYZE + 実 row count** を session log に貼付。 #1b は順序保証契約 + 順序破壊 regression test 必須、 entity key (`(entity_type, entity_id)`) 内逐次 / 独立 key 間並列の選択並列化。 #7 OCR semaphore は独立並走。
+
+**Spec:** `docs/superpowers/specs/2026-06-12-y2-launch-hardening-design.md` §3 (Sub-plan B) が正本。 §3.2 が #1b 順序保証契約の正本。
+
+**Tech Stack:** Next.js 16 / TS strict / Drizzle / Dexie / PostgreSQL / vitest / pnpm 10。
+
+---
+
+## 全体ルール (各 task 冒頭で参照、 個別 task で再掲しない)
+
+1. **TDD**: 各 task は test 先行。 既存 test を壊さない。
+2. **計測契約**: SQL/Dexie 系の改善は **before/after の EXPLAIN ANALYZE (server) or DevTools Performance (client) + 実 row count** を session log に貼付。 性能改善幅は実数で記録 (相対 % / 「速くなった」 等の主観表記禁止)。
+3. **CLAUDE.md 絶対ルール**: Stripe / Clerk / AI 既知 + sprint 完了 gate (whole-repo `pnpm lint --max-warnings=0` exit 0) + commit `[reviewed]` tag。
+4. **review 経路**: 各 task PR 直前 `superpowers:requesting-code-review` skill canonical (改変禁止)。
+5. **#1b 順序保証契約** (Y-2 最大リスク、 spec §3.2): 「同一 entity key (`(entity_type, entity_id)`) 内は順序維持、 独立 key 間のみ並列」。 cascade delete (tag_category delete → 配下 option / card_tags) と dependent multi-mutation (Grid-2 対象) は entity key 境界外、 T-B3 stop checkpoint で OT 判断仰ぐ。 順序破壊 regression test (= 違反 path で `throw new Error('ordering violated')`) を必ず含む。
+6. **stop checkpoint**: T-B1 (H7 切り分け結果報告 → 残り ordering 再判定)、 T-B3 (#1b entity key 境界 + 着手承認)。
+7. **spec 凍結**: 実装フェーズで spec 書き換えない (H7 結果が perf 同根なら spec §3.1 H7 内訳を「sub-plan B 内併合」 に更新、 それ以外は spec 不変)。
+
+**File Structure** (新規 / 主要 modify):
+- 新規 `lib/sync/server/group-mutations-by-entity-key.ts` (T-B3、 #1b)
+- 新規 `lib/ocr/semaphore.ts` (T-B8、 #7)
+- 新規 session log: `docs/superpowers/sessions/2026-06-12-y2-tags-perf-investigation.md` (T-B1、 H7)
+- modify: `app/api/review-events/bulk/route.ts` (T-B2、 #1a)
+- modify: `app/api/entity-mutations/bulk/route.ts` (T-B3、 #1b)
+- modify: 試験一覧 useLiveQuery 経路 (T-B4、 #1c、 grep で特定)
+- modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx` (T-B5、 #1d)
+- modify: dashboard-actions 経路 (T-B6、 #1e、 grep で特定)
+- modify: get-dexie-session-cards 経路 (T-B7、 #2、 grep で特定)
+- modify: `lib/ai/clients/gemini.ts` + OCR 呼出 path (T-B8、 #7)
+
+---
+
+### Task T-B1: H7 `/app/tags` 初期遅延 切り分け調査 (先発、 投資対効果判断)
+
+**Files:**
+- Read-only investigation (code 変更なし)
+- Create: `docs/superpowers/sessions/2026-06-12-y2-tags-perf-investigation.md`
+
+- [ ] **目的**: T2b で async RSC 化した `tags/page.tsx` の初期表示遅延 (軽微 2、 OT 報告) を Lighthouse + DevTools MCP / Playwright で計測、 (a) server roundtrip / (b) Dexie 初回 fetch / (c) SSR rendering の 3 要因を分離 (spec §3.1 H7)。
+- [ ] **制約**: code 変更なし、 stg 実走のみ。 計測値は 3 回平均 (FCP / LCP / TBT / TTI)、 同時に Network waterfall + Performance trace + Dexie initial query 数を取得。 比較対象 = Y-1 prod 反映前 (`/app/exams` 等) の同 metric。
+- [ ] **完了条件**: 切り分け結果 (a / b / c のどの要因が dominant) を session log に記載 (実数値 + screenshot + trace 保存 path)、 fix 位置を OT 提案: (i) perf 同根なら T-B4 / T-B5 / T-B6 / T-B7 群に併合 / (ii) 軽ければ独立 Task T-B1' (本 plan 末尾追加) / (iii) 重ければ Y-3 繰越提案。 **stop checkpoint**: OT 判断後に Sub-plan B の残り ordering 確定。
+
+---
+
+### Task T-B2: #1a review-events/bulk study_days SQL N+1 解消
+
+**Files:**
+- Modify: `app/api/review-events/bulk/route.ts` + 既存 test
+
+- [ ] **目的**: session 終了時の study_days per-card UPSERT を per-session 1 文集約 (audit §10.3 (b) #1 of 5)。
+- [ ] **制約**: SQL は `INSERT ... ON CONFLICT (date) DO UPDATE SET count = study_days.count + EXCLUDED.count` 1 文集約、 COALESCE / SUM で連続 increment。 集計値の意味論不変 (date 軸 / count / streak 計算前提)。
+- [ ] **完了条件**: 計測: 50 card session で SQL 実行回数 50 → 1 を session log に貼付 (before/after `EXPLAIN ANALYZE` 結果)。 既存 review-events bulk test 全 pass + study_days 集計値 regression test 1 case。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B3: #1b entity-mutations/bulk per-mutation tx 順序保証付き選択並列化 (Y-2 最大リスク)
+
+**Files:**
+- Create: `lib/sync/server/group-mutations-by-entity-key.ts` + test
+- Modify: `app/api/entity-mutations/bulk/route.ts` + 既存 test
+
+- [ ] **目的**: bulk 内 mutations を `(entity_type, entity_id)` で grouping、 同一 key 内は順序維持、 独立 key 間のみ `Promise.allSettled` で並列化 (spec §3.2、 audit §10.3 (b) #1 of 5)。
+- [ ] **制約**: **spec §3.2 順序保証契約**準拠 (全体ルール 5 参照)。 entity key 境界は本 task で「同一 `(entity_type, entity_id)` のみ」 = 最狭定義、 cascade delete / dependent multi-mutation は **entity key 境界外**で逐次 fallback (Grid-2 対象 = 本 sprint で並列化しない)。 response の mutation_id 順は維持 (= 入力順正規化)。 wire format / `{ok, applied, failed}` 形不変。
+- [ ] **完了条件**: helper test 4 case (同一 key 内逐次 / 独立 key 間並列 / 順序破壊 regression = 同一 key を意図的 parallel した path で `throw` 検知 / cascade-like 入力 = 逐次 fallback)。 既存 bulk route test 全 pass + 並列計測 (10 独立 key 入力で逐次 vs 並列の wall-clock 比較を session log)。 **stop checkpoint**: 実装着手前に entity key grouping 境界 (cascade / dependent multi-mutation の扱い) を spec §3.2 と再突合、 OT 判断仰ぐ。
+
+---
+
+### Task T-B4: #1c exam-list-live 全 cards → necessary subset
+
+**Files:**
+- Modify: 試験一覧 useLiveQuery 経路 (grep `exam-list-live\|examListLive` で特定) + 関連 component test
+
+- [ ] **目的**: 試験一覧の Dexie query を試験ごとに必要 subset (count + 最近 N=5 件等) に絞り込み、 全 cards scan を回避 (audit §10.3 (b) #1 of 5)。
+- [ ] **制約**: UI 表示要素 (count / 最終更新 / etc.) に必要な field のみ読む。 既存 useLiveQuery subscription 契約は維持 (server pull で書込走ったら自動再描画)。 Dexie index は既存 (新規 migration 不要)。
+- [ ] **完了条件**: 試験 100 件 × cards 1000 件の test fixture で before/after row read 数を計測 (~100k → ~500 を目標)。 既存 試験一覧 test 全 pass + read 数 regression test 1 case。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B5: #1d inline-card-list 全 card_tags → page subset + memoize
+
+**Files:**
+- Modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx` + 関連 test
+
+- [ ] **目的**: inline-card-list の `card_tags` query を `card_id IN (current page)` に絞り + memoize、 全 card_tags scan を回避 (audit §10.3 (b) #1 of 5)。
+- [ ] **制約**: page 表示の tag 挙動不変。 memoize key = `cards.map(c => c.id).sort().join(',')` 等の安定 key。 Dexie の `where('card_id').anyOf(...)` 経由 (Y-1 #3 同形、 Grid-1 合流前なので暫定形、 Grid-1 で正規化予定の comment 1 行)。
+- [ ] **完了条件**: 50 card / 200 card_tags fixture で query 行読み数を before/after で計測 (全 scan → page subset)。 既存 inline-card-list test 全 pass。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B6: #1e dashboard-actions 全 cards → `[user_id+due]` index 使用
+
+**Files:**
+- Modify: dashboard-actions 経路 (grep `dashboard-actions\|dashboardActions` で特定) + Dexie schema 確認
+
+- [ ] **目的**: dashboard の card count を既存 `[user_id+due]` compound index 経由 query に置換、 高速化 (audit §10.3 (b) #1 of 5)。
+- [ ] **制約**: index は既存 (stg Dexie schema v50 確認、 Y-1 smoke 時の DB version)、 新規 migration なし。 dashboard 表示挙動不変。 query = `db.cards.where('[user_id+due]').between([userId, MIN_DATE], [userId, MAX_DATE])` 形。
+- [ ] **完了条件**: dashboard load 時の Dexie query 経路を before/after で確認 (全 cards scan 0 件、 `[user_id+due]` between 経路 1 件、 DevTools Performance で確認)。 既存 dashboard test 全 pass。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B7: #2 get-dexie-session-cards 全 cards → index 利用
+
+**Files:**
+- Modify: get-dexie-session-cards 経路 (grep `get-dexie-session-cards\|getDexieSessionCards` で特定) + 既存 test
+
+- [ ] **目的**: 学習 session 開始時の全 cards fetch を `[user_id+due]` index 経由に集約 (audit §10.3 (b) #2、 T-B6 と同 index hit)。
+- [ ] **制約**: T-B6 と同 index 使用、 session card 選定 logic 不変。 between 範囲 = `due <= now` (期限到来分のみ)。
+- [ ] **完了条件**: session 開始時の Dexie scan 範囲を before/after で計測 (全 cards → due 範囲のみ)。 既存 session test 全 pass。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B8: #7 OCR backoff worst-case ~660s への semaphore concurrency limit
+
+**Files:**
+- Create: `lib/ocr/semaphore.ts` + test
+- Modify: `lib/ai/clients/gemini.ts` / OCR 呼出 path (process.ts 等)
+
+- [ ] **目的**: service-wide で OCR 同時実行を制限する semaphore 導入、 worst-case ~660s への concurrency 圧迫を解消 (audit §10.3 (b) #7)。
+- [ ] **制約**: 暫定 N=2 (Gemini 2.5 Flash free tier RPM ~60 / 平均ペイロード ~1MB / OCR 単発 ~5s から算出、 spec §7-6 暫定値)。 突破時は queue (FIFO)。 timeout = backoff worst-case 660s 内 (queue 待機含めて全 request が timeout 範囲)。 N 値の最終調整は実装後 stg 計測で運用 tuning (本 sprint test では fixture 値で固定)。
+- [ ] **完了条件**: semaphore helper test 4 case (N=2 内 pass / N+1 = queue / queue cancel / timeout 超過 = reject)。 既存 OCR test 全 pass + worst-case backoff 経路 mock test 1 case。 Critical 0、 [reviewed]。
+
+---
+
+## Self-Review (spec 突合 + placeholder + 型一貫性)
+
+1. **Spec 突合**: spec §3 (Sub-plan B) 8 item (H7 / #1a / #1b / #1c / #1d / #1e / #2 / #7) すべて T-B1 〜 T-B8 に 1:1 マッピング。 取り残し 0。
+2. **Placeholder scan**: TBD / TODO / 「適宜」 無し。 stop checkpoint 2 件 (T-B1 H7 結果 / T-B3 #1b entity key 境界) を明示。 grep で特定する file path は task 着手時に確定 (file 名 placeholder ではなく「grep 経路明示」 として運用)。
+3. **型一貫性**: helper signature (`groupMutationsByEntityKey` / `OcrSemaphore` 内 `acquire` / `release`) 統一。 spec §3.2 で定義した entity key 概念は T-B3 で唯一参照、 他 task 流用なし。
+
+self-review pass。
+
+---
+
+## 行数報告
+
+CLAUDE.md sprint 規律: plan 完成時点で最終行数を報告すること。 本 plan 最終行数は file 保存後 `wc -l` で確定、 commit message 末尾に明記。
+
+---
+
+## Execution Handoff
+
+本 plan は Y-2 sprint の **3 plan 起草の Sub-plan B (第 2 弾)**。 Sub-plan C (config-header-cleanup) 起草完了後、 OT review gate に 3 plan 一括提示 (OT 指示: 個別提示 = 往復 3 回回避)。
+
+CLAUDE.md 既定 = `superpowers:subagent-driven-development` (本 sprint も既定方式)。 OT 一括 review 承認後、 T-B1 (H7 切り分け先発) → OT 判断 → 残り ordering 確定 → T-B2 以降実装開始。
