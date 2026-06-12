@@ -27,6 +27,20 @@ type Level = 'info' | 'warn' | 'error'
 
 type Payload = { event: string; [k: string]: unknown }
 
+// T-C3 H6: emit() 内 level filter の priority 表。 数値が大きいほど深刻。
+// `LEVEL_PRIORITY[callLevel] < LEVEL_PRIORITY[threshold]` で skip 判定。
+const LEVEL_PRIORITY: Record<Level, number> = { info: 0, warn: 1, error: 2 }
+
+// T-C3 H6: env tier ベースの level 既定 + LOG_LEVEL env による override 解釈。
+// - LOG_LEVEL が 'info' / 'warn' / 'error' なら env tier に関係なくその値
+// - 未指定 / 空 / 不正値 = default tier (production = 'warn' / 非 production = 'info')
+// throw guarantee (G-6 spec §3 Assumption 3) 維持: env 読みのみで throw しない。
+function resolveLogLevel(): Level {
+  const env = process.env.LOG_LEVEL
+  if (env === 'info' || env === 'warn' || env === 'error') return env
+  return process.env.VERCEL_ENV === 'production' ? 'warn' : 'info'
+}
+
 // Factory pattern: per-call で seen WeakSet を closure で持つ replacer 関数を返す。
 // Error → { name, message, stack } 展開 + 循環参照 → '[Circular]' 置換。
 function expandError(): (key: string, value: unknown) => unknown {
@@ -45,6 +59,10 @@ function expandError(): (key: string, value: unknown) => unknown {
 
 function emit(level: Level, payload: Payload): void {
   try {
+    // T-C3 H6 level filter: LOG_LEVEL 以上のみ通す。 production 既定 = 'warn' で
+    // flush.kick 等の常時 info を抑止。 try ブロック内に置くことで env access が
+    // 何らかの runtime で throw しても fallback path (catch) で防御される。
+    if (LEVEL_PRIORITY[level] < LEVEL_PRIORITY[resolveLogLevel()]) return
     const enriched = {
       level,
       timestamp: new Date().toISOString(),

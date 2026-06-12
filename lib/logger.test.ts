@@ -72,6 +72,55 @@ describe('logger', () => {
     expect(lastCall).toContain('event=x')
   })
 
+  describe('level filter (T-C3 H6)', () => {
+    // LOG_LEVEL env で emit() 内に level filter 1 段追加。 production 既定 = warn
+    // 以上のみ (info 抑止 = flush.kick 等の常時 info を console から削減)、
+    // 非 production 既定 = info 以上 (全出力)。 明示 LOG_LEVEL=info/warn/error で
+    // env tier に関係なく override 可 (debug 経路)。
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('production 既定 = warn 以上のみ (info 抑止)', () => {
+      vi.stubEnv('VERCEL_ENV', 'production')
+      vi.stubEnv('LOG_LEVEL', '')
+      logger.info({ event: 'flush.kick' })
+      logger.warn({ event: 'ops.notify.fetch_failed' })
+      logger.error({ event: 'webhook.stripe.bad_signature' })
+      expect(logSpy).not.toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalledOnce()
+      expect(errorSpy).toHaveBeenCalledOnce()
+    })
+
+    it('production + LOG_LEVEL=info = info も出力 (debug override)', () => {
+      vi.stubEnv('VERCEL_ENV', 'production')
+      vi.stubEnv('LOG_LEVEL', 'info')
+      logger.info({ event: 'flush.kick' })
+      expect(logSpy).toHaveBeenCalledOnce()
+    })
+
+    it('非 production 既定 = info 以上 (全出力)', () => {
+      vi.stubEnv('VERCEL_ENV', 'preview')
+      vi.stubEnv('LOG_LEVEL', '')
+      logger.info({ event: 'startup' })
+      logger.warn({ event: 'w' })
+      logger.error({ event: 'e' })
+      expect(logSpy).toHaveBeenCalledOnce()
+      expect(warnSpy).toHaveBeenCalledOnce()
+      expect(errorSpy).toHaveBeenCalledOnce()
+    })
+
+    it('非 production + LOG_LEVEL=warn = info 抑止 (override)', () => {
+      vi.stubEnv('VERCEL_ENV', 'preview')
+      vi.stubEnv('LOG_LEVEL', 'warn')
+      logger.info({ event: 'startup' })
+      logger.warn({ event: 'w' })
+      expect(logSpy).not.toHaveBeenCalled()
+      expect(warnSpy).toHaveBeenCalledOnce()
+    })
+  })
+
   describe('warnFromError', () => {
     // Sync-fix-1 audit §10.2 (a) #11: 旧 `err: String(err)` boilerplate を helper
     // 1 行に置換、 Error を expandError 経由で構造化保持。
