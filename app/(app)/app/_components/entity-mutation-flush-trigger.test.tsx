@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // EntityMutationFlushTrigger client component の test。
-// mount で 24h drop → flush kick、 visibilitychange(visible) / online で再 kick、
+// mount で 30d drop → flush kick、 visibilitychange(visible) / online で再 kick、
 // pagehide で runGuardedEntityMutationFlush の best-effort 呼出、
 // unmount で controller.stop + listener 解除。
 // controller / dropStale / runGuardedEntityMutationFlush は injection mock で差し替え、
@@ -58,12 +58,13 @@ afterEach(() => {
 })
 
 describe('EntityMutationFlushTrigger', () => {
-  it('mount で 24h drop を走らせてから flush を kick("mount") する', async () => {
+  it('mount で 30d drop を走らせてから flush を kick("mount") する', async () => {
     render(<EntityMutationFlushTrigger />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     expect(mockDropStale).toHaveBeenCalledTimes(1)
-    // drop の maxAge は 24h (ms)
-    expect(mockDropStale.mock.calls[0][1]).toBe(24 * 60 * 60 * 1000)
+    // drop の maxAge は 30d (ms) — T-C1: 24h → 30d 延長 (隔離機構維持、
+    // 30d 超は将来 ops 通知の打鍵点として温存)
+    expect(mockDropStale.mock.calls[0][1]).toBe(30 * 24 * 60 * 60 * 1000)
   })
 
   it('UI は何も描画しない (null)', () => {

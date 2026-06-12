@@ -598,6 +598,52 @@ describe('dropStalePendingEntityMutations', () => {
     expect(dropped).toEqual([])
   })
 
+  // T-C1: trigger 側 cap が 24h → 30d に延長された後の汎用 helper 動作確認。
+  // 30d cap を渡したとき `now - 31d` の pending が failed 隔離されることを pin する。
+  // (helper 自体は maxAge を引数で受ける汎用関数のため、 trigger と独立に挙動を確認する)
+  it('30d cap で now - 31d pending が failed に隔離される (T-C1 audit §10.3 (b) #4)', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+    const now = Date.parse('2026-05-30T12:00:00.000Z')
+    const db = getClientDb()
+
+    // 31 日前 (30d cap 超 → drop 対象)
+    await db.entity_mutations.add({
+      mutation_id: 'stale-31d',
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'title', value: 'stale 31d' },
+      edited_at: new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString(),
+      sync_status: 'pending',
+    })
+    // 29 日前 (30d cap 内 → 残す)
+    const freshId = newId()
+    await db.entity_mutations.add({
+      mutation_id: freshId,
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'memo', value: 'fresh 29d' },
+      edited_at: new Date(now - 29 * 24 * 60 * 60 * 1000).toISOString(),
+      sync_status: 'pending',
+    })
+
+    const dropped = await dropStalePendingEntityMutations(now, THIRTY_DAYS_MS)
+    expect(dropped).toEqual(['stale-31d'])
+
+    // 31d 前の行は failed に隔離 (隔離機構維持、 撤去ではない)
+    const staleRow = await db.entity_mutations
+      .where('mutation_id')
+      .equals('stale-31d')
+      .first()
+    expect(staleRow!.sync_status).toBe('failed')
+
+    // 29d 前の行は pending のまま
+    const pending = await getPendingEntityMutations()
+    expect(pending).toHaveLength(1)
+    expect(pending[0].mutation_id).toBe(freshId)
+  })
+
   it('複数の古い pending を一括 drop できる', async () => {
     const now = Date.parse('2026-05-30T12:00:00.000Z')
     const db = getClientDb()

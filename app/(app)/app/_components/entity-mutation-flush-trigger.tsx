@@ -15,7 +15,7 @@
 // (createReviewFlushController / review-flush.ts には手を加えない)。
 //
 // trigger (配線は旧 card-mutation-flush-trigger からそのまま据え置き):
-// - mount: 24h 超 pending を silent drop してから flush kick。
+// - mount: 30d 超 pending を silent drop してから flush kick。
 // - visibilitychange(visible): フォーカス復帰時に kick。
 // - online: 再接続時に kick。
 // - pagehide: best-effort の最後の flush 試行 (fire-and-forget、await しない)。
@@ -33,8 +33,10 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { pullBack } from '@/lib/sync/pull-back'
 import { logger } from '@/lib/logger'
 
-// 24h 超の pending は mount 時の古さ判定で silent drop する (常駐監視はしない)。
-const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000
+// 30d 超の pending は mount 時の古さ判定で silent drop する (常駐監視はしない)。
+// spec OT 修正 3 / audit §10.3 (b) #4 反映 = 24h → 30d 延長 (隔離機構維持、
+// 30d 超は将来 ops 通知の打鍵点として温存)。
+const PENDING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 export function EntityMutationFlushTrigger() {
   useEffect(() => {
@@ -56,7 +58,7 @@ export function EntityMutationFlushTrigger() {
         }),
     })
 
-    // mount: 24h 超 pending を drop → flush kick。 失敗は UI に出さず silent。
+    // mount: 30d 超 pending を drop → flush kick。 失敗は UI に出さず silent。
     void (async () => {
       try {
         const dropped = await dropStalePendingEntityMutations(
