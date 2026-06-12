@@ -50,6 +50,10 @@ import {
   classifyBulkError,
   BULK_TRANSIENT_RETRY_SEC,
 } from '@/lib/transient/classify-bulk-error'
+import {
+  cardIdsSchema,
+  selectedAnswerIdsSchema,
+} from '@/lib/validation/review-session-bounds'
 
 export const runtime = 'nodejs'
 
@@ -63,7 +67,7 @@ const sessionSchema = z.object({
   session_id: z.uuid(),
   exam_id: z.uuid().optional(),
   mode: z.enum(['smart', 'custom']),
-  card_ids: z.array(z.uuid()),
+  card_ids: cardIdsSchema,
   started_at: z.iso.datetime(),
   completed_at: z.iso.datetime().optional(),
   status: z.enum(['active', 'completed', 'abandoned']),
@@ -72,7 +76,7 @@ const sessionSchema = z.object({
 const eventSchema = z.object({
   event_id: z.uuid(),
   card_id: z.uuid(),
-  selected_answer_ids: z.array(z.string()),
+  selected_answer_ids: selectedAnswerIdsSchema,
   is_correct: z.boolean(),
   answered_at: z.iso.datetime(),
   elapsed_ms: z.number().int().nonnegative().optional(),
