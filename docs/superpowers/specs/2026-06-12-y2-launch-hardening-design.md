@@ -320,36 +320,44 @@ Permissions-Policy:
 
 ### 10.3 H3 段 2 SELECT 文先出し
 
-**schema 型確認済 (2026-06-12)**: `lib/db/schema.ts` で `card_ids` / `selected_answer_ids` を grep、 両列とも **`jsonb` 型** (TS 側 `$type<string[]>()` で narrow、 DB 上は jsonb array of UUID strings)。 → PostgreSQL `jsonb_array_length()` が正、 `cardinality()` (native array 用) 差替不要。
+**schema 物理確認済 (2026-06-12 再確認、 OT 指摘により誤記訂正)**:
+`lib/db/schema.ts` の実 `pgTable` 定義を確認:
+- `card_ids` 列 = `pgTable('study_sessions', ...)` (L540-552、 drizzle export `studySessions`、 PK = `session_id`)
+- `selected_answer_ids` 列 = `pgTable('answer_events', ...)` (L586-605、 drizzle export `answerEvents`、 PK = `id`、 nullable)
+
+両列とも **`jsonb` 型** (TS 側 `$type<string[]>()` で narrow、 DB 上は jsonb array of UUID strings)。 → PostgreSQL `jsonb_array_length()` が正、 `cardinality()` (native array 用) 差替不要。
+
+**前回誤記の原因 (OT 質問 4 への回答)**: 初稿確認時、 `grep -nE 'card_ids|selected_answer_ids' lib/db/schema.ts` で列定義行 (L552, L605) と `jsonb` 型は物理確認したが、 **上行の `pgTable` 第 1 引数 (実 table 名) を見ずに**、 audit §10.3 (b) #12 行の `"review-events session.card_ids ... selected_answer_ids"` という API route 名 (`/api/review-events/bulk`) + column 名併記の文字列から推測で `review_sessions` / `review_events` という存在しない table 名を書いた。 本訂正で **table 名 + 列名 + 列型の 3 点をすべて pgTable 定義で物理確認**、 SELECT 4 文を実 table 名に書き直し。
 
 - CC が以下 SQL 文を提示 (OT が Supabase dashboard で実行):
 
 ```sql
--- session.card_ids 実値分布
+-- study_sessions.card_ids 実値分布
 SELECT
   COUNT(*) AS session_count,
   MAX(jsonb_array_length(card_ids)) AS max_len,
   AVG(jsonb_array_length(card_ids))::numeric(10,2) AS avg_len,
   percentile_cont(0.99) WITHIN GROUP (ORDER BY jsonb_array_length(card_ids)) AS p99_len
-FROM review_sessions;
+FROM study_sessions;
 
--- selected_answer_ids 実値分布 (review_events 内)
+-- answer_events.selected_answer_ids 実値分布
 SELECT
   COUNT(*) AS event_count,
   MAX(jsonb_array_length(selected_answer_ids)) AS max_len,
   AVG(jsonb_array_length(selected_answer_ids))::numeric(10,2) AS avg_len,
   percentile_cont(0.99) WITHIN GROUP (ORDER BY jsonb_array_length(selected_answer_ids)) AS p99_len
-FROM review_events
+FROM answer_events
 WHERE selected_answer_ids IS NOT NULL;
 
--- item format 確認用 (上位 5 サンプル)
-SELECT id, jsonb_array_length(card_ids) AS len, card_ids
-FROM review_sessions
+-- item format 確認用 (study_sessions 上位 5 サンプル)
+SELECT session_id, jsonb_array_length(card_ids) AS len, card_ids
+FROM study_sessions
 ORDER BY jsonb_array_length(card_ids) DESC
 LIMIT 5;
 
+-- item format 確認用 (answer_events 上位 5 サンプル)
 SELECT id, selected_answer_ids
-FROM review_events
+FROM answer_events
 WHERE selected_answer_ids IS NOT NULL
 ORDER BY jsonb_array_length(selected_answer_ids) DESC
 LIMIT 5;

@@ -28,7 +28,7 @@
 - 新規 session log: `docs/superpowers/sessions/2026-06-12-y2-content-version-usage.md` (T-C4、 #8 用途決定材料)
 - modify: `lib/sync/entity-mutation-flush.ts` 等 outbox 24h cap 経路 (T-C1、 H2)
 - modify: `lib/logger.ts` (T-C3、 H6 = 既存 emit() に level filter 追加)
-- modify: `lib/sync/server/review-events-bulk.ts` 等 review_events zod schema (T-C2、 H3 段 1)
+- modify: `app/api/review-events/bulk/route.ts` 内 embed zod schema (T-C2、 H3 段 1。 server-side schema は route file 内 inline 定義、 別 file 化されていない、 実在 file 確認済 2026-06-12)
 - modify: `next.config.js` or `next.config.ts` (T-C6、 Perm headers())
 - modify: `.env.example` (T-C3 で `LOG_LEVEL=` 追記、 CLAUDE.md §環境変数 同 commit 規律)
 
@@ -49,9 +49,9 @@
 
 **Files:**
 - Create: `lib/validation/review-session-bounds.ts` + test
-- Modify: `lib/sync/server/review-events-bulk.ts` 等 review_events / review_sessions zod schema (grep で特定) + 既存 test
+- Modify: `app/api/review-events/bulk/route.ts` 内 embed zod schema (server-side schema は route file 内 inline 定義) + 既存 test
 
-- [ ] **目的**: review_sessions.card_ids / review_events.selected_answer_ids に zod max 制約のみ追加 (audit §10.3 (b) #12 段 1)。 item format (UUID / 順序 / 重複) は spec §10.3 SELECT 結果待ち = **段 2 で別 commit**。
+- [ ] **目的**: `study_sessions.card_ids` / `answer_events.selected_answer_ids` に zod max 制約のみ追加 (audit §10.3 (b) #12 段 1、 spec §10.3 物理確認済の実 table 名)。 item format (UUID / 順序 / 重複) は spec §10.3 SELECT 結果待ち = **段 2 で別 commit**。
 - [ ] **制約**: 段 1 = zod `.array(z.unknown()).max(2000)` (card_ids) / `.max(50)` (selected_answer_ids) のみ。 段 2 は OT が Supabase dashboard で SELECT 実行 → 結果 chat 貼付 → CC が item format (`z.uuid()` array / 順序 array / 重複可否) を schema 化 → 同 file 修正で別 commit (T-C2-stage2)。 段 1 と段 2 は別 commit、 段 1 だけで完結可。
 - [ ] **完了条件 (段 1)**: helper test 4 case (card_ids 2000 件 pass / 2001 件 fail / selected_answer_ids 50 件 pass / 51 件 fail)。 既存 review-events bulk test 全 pass。 Critical 0、 [reviewed]。 **stop checkpoint**: 段 1 commit 後、 chat に 「段 2 は OT SELECT 結果待ち、 Sub-plan A 並走中」 と報告、 OT 結果受領で段 2 着手。
 
