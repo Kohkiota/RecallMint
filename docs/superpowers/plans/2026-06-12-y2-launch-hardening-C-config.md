@@ -18,7 +18,7 @@
 2. **設定変更の wire 影響なし契約**: outbox cap 延長 (H2) / log level filter (H6) / zod bound (H3) は client 既存挙動に regression を起こさない (cap 30d 延長 = 既存 24h 内 pending は影響なし、 LOG_LEVEL filter = production の info 抑止のみ、 zod max = 既存 範囲内入力は通る)。
 3. **CLAUDE.md 絶対ルール**: Stripe / Clerk / AI 既知 + sprint 完了 gate (whole-repo `pnpm lint --max-warnings=0` exit 0) + commit `[reviewed]` tag。 docs 系 (T-C5 #10d) は `[no-review]` 可。
 4. **review 経路**: code 系 task PR 直前 `superpowers:requesting-code-review` skill canonical (改変禁止)。
-5. **stop checkpoint** 2 件: T-C4 (#8 content_version 用途決定、 OT 判断要)、 T-C2 段 2 (H3、 OT SELECT 結果受領待ち)。
+5. **stop checkpoint** 2 件 (OT 裁定 2026-06-12 反映、 すべて解除済): ~~T-C4 (#8 content_version 用途決定)~~ = **(c) Y-3 繰越採用** (OT 判断 2026-06-12、 sub-plan C は残 5 task で完了)、 ~~T-C2 段 2 (H3 OT SELECT 結果受領待ち)~~ = **OT SELECT 結果受領済** (2026-06-12、 段 2 schema 確定: `z.array(z.uuid())` 厳格 / `z.array(z.string().min(1))` 緩和)。
 6. **spec 凍結**: 実装フェーズで spec 書き換えない (Perm directive list は spec §10.2 stg gate で確定、 H3 段 2 item format は OT 結果で確定、 いずれも spec 内 follow-up 手順に沿う)。
 7. **Next 設定 file gate** (T-A4 fix 反映、 CLAUDE.md §Sprint 完了 gate と整合): T-C6 Perm の `next.config.*` 編集を含め、 `proxy.ts` / `next.config.*` / matcher 関連 file を触る task は per-task gate に `pnpm build` 必須 (vitest / typecheck / lint は path-to-regexp 制約を検出不能、 T-A4 元 45a74cf で Vercel build error 発生、 6f82025 で hotfix)。
 
@@ -87,7 +87,7 @@ T-C2-stage2 完了条件: 段 1 の `.array(z.unknown())` を上記 2 schema に
 
 - [ ] **目的**: 現状 schema / drizzle / Dexie 内の `content_version` 利用箇所を grep 整理 → (a) 廃止 / (b) versioning gate として実装 を OT 判断 (audit §10.3 (b) #8)。
 - [ ] **制約**: **OT 判断 stop**。 CC は調査のみ (1 page session log で grep 結果 + 各 callsite の役割推定 + Phase 4 roadmap 内位置付け確認) を spec §11 risks 4 のとおり実施、 chat に「(a) 廃止 / (b) 採用 / (c) Y-3 繰越」 の 3 案を提案 → OT 判断後に実装。 採用 (b) なら本 sprint 内 fix、 廃止 (a) なら本 sprint 内 remove (call site 全削除 + schema migration なし = TS 側のみ削除)、 (c) なら本 task のみ Y-3 繰越 (sub-plan C 内残 5 task 続行可)。
-- [ ] **完了条件**: 調査 session log 1 page (grep 結果 + callsite 数 + 推定用途 + Phase 4 roadmap 確認)。 OT 判断後の実装 (採用 / 廃止) または繰越判定。 Critical 0、 [reviewed] (採用 / 廃止 commit)、 [no-review] (調査 session log commit)。 **(c) Y-3 繰越判定時 (OT 裁定 2026-06-12 反映): 本 task のみ Y-3 へ、 sub-plan C は残 5 task (T-C1 / T-C2 / T-C3 / T-C5 / T-C6) で完了可。 sprint 完了報告 + audit 突合表に「#8 = Y-3 繰越 (OT 判断、 2026-06-12)」 を明記、 帰属 trace を残す**。
+- [ ] **完了条件**: 調査 session log 1 page (grep 結果 + callsite 数 + 推定用途 + Phase 4 roadmap 確認)。 OT 判断後の実装 (採用 / 廃止) または繰越判定。 Critical 0、 [reviewed] (採用 / 廃止 commit)、 [no-review] (調査 session log commit)。 **(c) Y-3 繰越判定時 (OT 裁定 2026-06-12 反映): 本 task のみ Y-3 へ、 sub-plan C は残 5 task (T-C1 / T-C2 / T-C3 / T-C5 / T-C6) で完了可。 sprint 完了報告 + audit 突合表に「#8 = Y-3 繰越 (OT 判断、 2026-06-12)」 を明記、 帰属 trace を残す**。 → **確定 2026-06-12** (調査 session log commit `ca310e9` で 24 callsite 全 dead 確認、 OT 判断 = **(c) Y-3 繰越採用**、 本 task クローズ、 sub-plan C は **残 5 task (T-C1 / T-C2 段 1 + 段 2 / T-C3 / T-C5 / T-C6) で完了確定**、 sprint 完了報告で audit 突合表 entry を追加)。
 
 ---
 
@@ -115,7 +115,7 @@ T-C2-stage2 完了条件: 段 1 の `.array(z.unknown())` を上記 2 schema に
 
 ## Self-Review (spec 突合 + placeholder + 型一貫性)
 
-1. **Spec 突合**: spec §4 (Sub-plan C) 6 item (H2 / H3 / H6 / #8 / Perm / #10d) すべて T-C1 〜 T-C6 に 1:1 マッピング。 取り残し 0。 H3 は段 1 (T-C2) + 段 2 (T-C2-stage2、 別 commit) の 2 commit 構造を明示。
+1. **Spec 突合**: spec §4 (Sub-plan C) 6 item (H2 / H3 / H6 / #8 / Perm / #10d) すべて T-C1 〜 T-C6 に 1:1 マッピング。 取り残し 0。 H3 は段 1 (T-C2) + 段 2 (T-C2-stage2、 別 commit) の 2 commit 構造を明示。 **#8 (T-C4) は OT 判断 2026-06-12 で (c) Y-3 繰越採用、 sub-plan C は残 5 task (T-C1 / T-C2 段 1 + 段 2 / T-C3 / T-C5 / T-C6) で完了**。
 2. **Placeholder scan**: TBD / TODO / 「適宜」 無し。 stop checkpoint 2 件 (T-C2 段 2 = OT SELECT 結果待ち / T-C4 #8 = OT 判断) を明示。 grep で特定する file path は task 着手時に確定 (file 名 placeholder ではなく「grep 経路明示」 として運用)。
 3. **型一貫性**: helper signature (`reviewSessionBoundsSchema` の field 名 = `cardIdsSchema` / `selectedAnswerIdsSchema`、 logger level filter は既存 emit() 内に閉じる) 統一。
 

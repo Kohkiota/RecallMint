@@ -19,7 +19,7 @@
 3. **CLAUDE.md 絶対ルール**: Stripe / Clerk / AI 既知 + sprint 完了 gate (whole-repo `pnpm lint --max-warnings=0` exit 0) + commit `[reviewed]` tag。
 4. **review 経路**: 各 task PR 直前 `superpowers:requesting-code-review` skill canonical (改変禁止)。
 5. **#1b 順序保証契約** (Y-2 最大リスク、 spec §3.2): 「同一 entity key (`(entity_type, entity_id)`) 内は順序維持、 独立 key 間のみ並列」。 cascade delete (tag_category delete → 配下 option / card_tags) と dependent multi-mutation (Grid-2 対象) は entity key 境界外、 T-B3 stop checkpoint で OT 判断仰ぐ。 順序破壊 regression test (= 違反 path で `throw new Error('ordering violated')`) を必ず含む。
-6. **stop checkpoint** (OT 裁定 2026-06-12 反映): **T-B1** (H7 切り分け結果報告 → 残り ordering 再判定、 残置)、 ~~T-B3 #1b entity key 境界 + 着手承認~~ = **解除済** (最狭 entity key + cascade/dependent 逐次 fallback で OT 一括承認時に確定、 実装内は self-check のみ)。
+6. **stop checkpoint** (OT 裁定 2026-06-12 反映、 すべて解除済): ~~T-B1~~ (H7 切り分け結果 → (ii) 独立 T-B1' 採用、 残 ordering = T-B2 → T-B3 (stop) → T-B4 → T-B1' → T-B5 → T-B6 → T-B7 → T-B8 で OT 確定 2026-06-12)、 ~~T-B3 #1b entity key 境界 + 着手承認~~ (最狭 entity key + cascade/dependent 逐次 fallback で OT 一括承認時に確定、 実装内は self-check のみ)。 ただし **T-B3 は最大リスク task のため、 実装着手直前に OT へ再確認を入れる** (push しない / 順序保証契約の self-check 結果を chat 報告) — これは旧 stop の継続ではなく実装規律。
 7. **spec 凍結**: 実装フェーズで spec 書き換えない (H7 結果が perf 同根なら spec §3.1 H7 内訳を「sub-plan B 内併合」 に更新、 それ以外は spec 不変)。
 8. **Next 設定 file gate** (T-A4 fix 反映、 CLAUDE.md §Sprint 完了 gate と整合): `proxy.ts` / `next.config.*` / matcher 関連 file を触る task は per-task gate に `pnpm build` 必須 (vitest / typecheck / lint は path-to-regexp 制約を検出不能、 T-A4 元 45a74cf で Vercel build error 発生、 6f82025 で hotfix)。
 
@@ -30,6 +30,7 @@
 - modify: `app/api/review-events/bulk/route.ts` (T-B2、 #1a)
 - modify: `app/api/entity-mutations/bulk/route.ts` (T-B3、 #1b)
 - modify: 試験一覧 useLiveQuery 経路 (T-B4、 #1c、 grep で特定)
+- modify: `app/(app)/app/tags/_components/category-list.tsx` (T-B1'、 H7 (ii) per-option N+1 解消)
 - modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx` (T-B5、 #1d)
 - modify: dashboard-actions 経路 (T-B6、 #1e、 grep で特定)
 - modify: get-dexie-session-cards 経路 (T-B7、 #2、 grep で特定)
@@ -45,7 +46,7 @@
 
 - [ ] **目的**: T2b で async RSC 化した `tags/page.tsx` の初期表示遅延 (軽微 2、 OT 報告) を Lighthouse + DevTools MCP / Playwright で計測、 (a) server roundtrip / (b) Dexie 初回 fetch / (c) SSR rendering の 3 要因を分離 (spec §3.1 H7)。
 - [ ] **制約**: code 変更なし、 stg 実走のみ。 計測値は 3 回平均 (FCP / LCP / TBT / TTI)、 同時に Network waterfall + Performance trace + Dexie initial query 数を取得。 比較対象 = Y-1 prod 反映前 (`/app/exams` 等) の同 metric。
-- [ ] **完了条件**: 切り分け結果 (a / b / c のどの要因が dominant) を session log に記載 (実数値 + screenshot + trace 保存 path)、 fix 位置を OT 提案: (i) perf 同根なら T-B4 / T-B5 / T-B6 / T-B7 群に併合 / (ii) 軽ければ独立 Task T-B1' (本 plan 末尾追加) / (iii) 重ければ Y-3 繰越提案。 **stop checkpoint**: OT 判断後に Sub-plan B の残り ordering 確定。
+- [ ] **完了条件**: 切り分け結果 (a / b / c のどの要因が dominant) を session log に記載 (実数値 + screenshot + trace 保存 path)、 fix 位置を OT 提案: (i) perf 同根なら T-B4 / T-B5 / T-B6 / T-B7 群に併合 / (ii) 軽ければ独立 Task T-B1' (本 plan 末尾追加) / (iii) 重ければ Y-3 繰越提案。 **stop checkpoint**: OT 判断後に Sub-plan B の残り ordering 確定。 → **完了 2026-06-12** (session log commit `19a3978`、 dominant = (b) Dexie per-option N+1 ~95%、 OT 裁定 = **(ii) 独立 T-B1' 採用 (本 plan 内、 T-B5 直前に挿入)**)。
 
 ---
 
@@ -80,6 +81,17 @@
 - [ ] **目的**: 試験一覧の Dexie query を試験ごとに必要 subset (count + 最近 N=5 件等) に絞り込み、 全 cards scan を回避 (audit §10.3 (b) #1 of 5)。
 - [ ] **制約**: UI 表示要素 (count / 最終更新 / etc.) に必要な field のみ読む。 既存 useLiveQuery subscription 契約は維持 (server pull で書込走ったら自動再描画)。 Dexie index は既存 (新規 migration 不要)。
 - [ ] **完了条件**: 試験 100 件 × cards 1000 件の test fixture で before/after row read 数を計測 (~100k → ~500 を目標)。 既存 試験一覧 test 全 pass + read 数 regression test 1 case。 Critical 0、 [reviewed]。
+
+---
+
+### Task T-B1': H7 (ii) `/app/tags` per-option N+1 解消 (T-B1 結果反映、 T-B5 直前挿入)
+
+**Files:**
+- Modify: `app/(app)/app/tags/_components/category-list.tsx` + 関連 component test
+
+- [ ] **目的**: T-B1 で確定した dominant 要因 (b) Dexie per-option N+1 (`category-list.tsx:127-148` の `db.card_tags.count()` × options 数) を解消、 `/app/tags` text_appeared を baseline 4,830 ms → **< 1,500 ms (3x 改善)** に持っていく (T-B1 session log `2026-06-12-y2-tags-perf-investigation.md` 参照、 spec §3.1 H7 (ii) 経路)。
+- [ ] **制約**: per-option `db.card_tags.count()` × N を `db.card_tags.where('option_id').anyOf(allOptionIds).toArray()` 単一 query + JS reduce で `optionId → count` の hash 集計に置換 (T-B5 と同形 anyOf precedent、 helper 抽出はしない = T-B5 と同じ inline 形)。 useLiveQuery subscription 契約は維持 (server pull 書込で自動再描画)。 memoize key = `categories.flatMap(c => c.options).map(o => o.id).sort().join(',')` 等の安定 key。 Grid-1 で正規化予定の旨は comment 1 行で明示。
+- [ ] **完了条件**: stg 同 fixture (= T-B1 seed runbook `2026-06-12-y2-b1-seed-runbook.md` 再利用) で before/after の text_appeared / Dexie query 数を計測 (per-option count() N+1 → anyOf 1 query)、 **< 1,500 ms 達成**を session log に貼付。 既存 category-list test 全 pass + per-option N+1 regression test 1 case (`db.card_tags.count` 呼出回数 ≤ 1 を assert、 N+1 復活検知)。 Critical 0、 [reviewed]。
 
 ---
 
@@ -130,7 +142,7 @@
 
 ## Self-Review (spec 突合 + placeholder + 型一貫性)
 
-1. **Spec 突合**: spec §3 (Sub-plan B) 8 item (H7 / #1a / #1b / #1c / #1d / #1e / #2 / #7) すべて T-B1 〜 T-B8 に 1:1 マッピング。 取り残し 0。
+1. **Spec 突合**: spec §3 (Sub-plan B) 8 item (H7 / #1a / #1b / #1c / #1d / #1e / #2 / #7) すべて T-B1 〜 T-B8 に 1:1 マッピング。 取り残し 0。 **T-B1' は T-B1 結果反映の追加 task (spec §3.1 H7 (ii) 経路、 OT 裁定 2026-06-12)、 spec 1:1 マッピング外の派生実装 (spec 変更不要、 H7 fix の現実化)**。
 2. **Placeholder scan**: TBD / TODO / 「適宜」 無し。 stop checkpoint 2 件 (T-B1 H7 結果 / T-B3 #1b entity key 境界) を明示。 grep で特定する file path は task 着手時に確定 (file 名 placeholder ではなく「grep 経路明示」 として運用)。
 3. **型一貫性**: helper signature (`groupMutationsByEntityKey` / `OcrSemaphore` 内 `acquire` / `release`) 統一。 spec §3.2 で定義した entity key 概念は T-B3 で唯一参照、 他 task 流用なし。
 
@@ -149,3 +161,5 @@ CLAUDE.md sprint 規律: plan 完成時点で最終行数を報告すること�
 本 plan は Y-2 sprint の **3 plan 起草の Sub-plan B (第 2 弾)**。 Sub-plan C (config-header-cleanup) 起草完了後、 OT review gate に 3 plan 一括提示 (OT 指示: 個別提示 = 往復 3 回回避)。
 
 CLAUDE.md 既定 = `superpowers:subagent-driven-development` (本 sprint も既定方式)。 OT 一括 review 承認後、 T-B1 (H7 切り分け先発) → OT 判断 → 残り ordering 確定 → T-B2 以降実装開始。
+
+**残り実装 ordering 確定 (OT 裁定 2026-06-12 反映)**: T-B2 → T-B3 (実装着手直前に OT 再確認、 push しない) → T-B4 → T-B1' → T-B5 → T-B6 → T-B7 → T-B8。 T-B3 を先発させない (最大リスク task を先発させる積極理由なし、 serial baseline 取得済で後置しても腐らない、 T-B5 と隣接で T-B1' が anyOf precedent を踏む形)。
