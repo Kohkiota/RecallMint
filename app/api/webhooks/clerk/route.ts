@@ -31,16 +31,12 @@ import { logger } from '@/lib/logger'
 import { stripe, cancelWithRetry } from '@/lib/stripe'
 import { notifyOps, notifyWebhookError } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
+import {
+  clerkWebhookEventSchema,
+  type ClerkWebhookEvent,
+} from '@/lib/validation/clerk-webhook'
 
 export const runtime = 'nodejs'
-
-type ClerkEvent =
-  | {
-      type: 'user.created'
-      data: { id: string; email_addresses?: { email_address: string }[] }
-    }
-  | { type: 'user.deleted'; data: { id: string } }
-  | { type: string; data: unknown }
 
 // cancel 対象 status。canceled / incomplete* / unpaid / paused は skip。
 const CANCEL_TARGETS = new Set<Stripe.Subscription.Status>([
@@ -68,17 +64,36 @@ export async function POST(req: Request) {
 
   const payload = await req.text()
 
-  let evt: ClerkEvent
+  let verified: unknown
   try {
     const wh = new Webhook(secret)
-    evt = wh.verify(payload, {
+    verified = wh.verify(payload, {
       'svix-id': svixId,
       'svix-timestamp': svixTs,
       'svix-signature': svixSig,
-    }) as ClerkEvent
+    })
   } catch {
     return new Response('invalid signature', { status: 400 })
   }
+
+  // audit §10.3 (b) #10: payload を zod schema で safeParse して narrowed type を得る。
+  // 未対応 type (e.g. session.created) / 必須 field 欠落 / Clerk 側 schema drift は
+  // ここで弾き、 200 + logger.warn で吸収 (Clerk 再送ループ回避、 既存 wire format 不変)。
+  const parsed = clerkWebhookEventSchema.safeParse(verified)
+  if (!parsed.success) {
+    logger.warn({
+      event: 'webhook.clerk.unknown_event_type',
+      svixId,
+      // verified.type を best-effort で抽出 (string なら log、 不明なら undefined)。
+      type:
+        typeof verified === 'object' && verified !== null && 'type' in verified
+          ? (verified as { type?: unknown }).type
+          : undefined,
+      issues: parsed.error.issues,
+    })
+    return new Response('ok', { status: 200 })
+  }
+  const evt = parsed.data
 
   const db = getDb()
 
@@ -93,9 +108,9 @@ export async function POST(req: Request) {
     return new Response('duplicate', { status: 200 })
   }
 
-  // user.deleted / user.created は evt.data.id を持つ。outer catch で userId を
-  // 通知に含めて切り分け (Vercel logs / Neon SELECT) を簡素化。
-  const userId = (evt.data as { id?: string } | null | undefined)?.id
+  // user.deleted / user.created は evt.data.id を持つ (schema で narrow 済)。
+  // outer catch で userId を通知に含めて切り分け (Vercel logs / Neon SELECT) を簡素化。
+  const userId = evt.data.id
 
   try {
     await handleEvent(evt)
@@ -114,10 +129,10 @@ export async function POST(req: Request) {
   }
 }
 
-async function handleEvent(evt: ClerkEvent): Promise<void> {
+async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
   const db = getDb()
   if (evt.type === 'user.created') {
-    const data = evt.data as { id: string; email_addresses?: { email_address: string }[] }
+    const data = evt.data
     const email = data.email_addresses?.[0]?.email_address ?? 'unknown@example.com'
     // .returning({id}) で INSERT 成立 (新規) と conflict (既存) を区別する。
     // 新規時のみ Clerk publicMetadata を初期 sync (dbUserId + plan='free')。
@@ -144,11 +159,11 @@ async function handleEvent(evt: ClerkEvent): Promise<void> {
     return
   }
   if (evt.type === 'user.deleted') {
-    const data = evt.data as { id: string }
-    await handleUserDeleted(data.id)
+    await handleUserDeleted(evt.data.id)
     return
   }
-  // Other event types: no-op (200 が後で返る)
+  // 上の if 群で全 discriminated variant を扱い切る。 schema 拡張時はここに到達せず
+  // narrow が cover する (型 exhaustive)。
 }
 
 async function handleUserDeleted(clerkUserId: string): Promise<void> {

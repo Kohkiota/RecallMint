@@ -138,9 +138,13 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.delete).toHaveBeenCalledTimes(10)
   })
 
-  it('unknown event type → clerk_events INSERT のみで no-op 200', async () => {
+  it('unknown event type → safeParse fail で early return 200 (clerk_events INSERT 不到達、 T-A6)', async () => {
+    // T-A6 (audit §10.3 (b) #10): payload は zod schema (user.created /
+    // user.deleted の discriminated union) で safeParse、 未対応 type は
+    // signature verify 後の受領段で fail → 200 + logger.warn で吸収する。
+    // これにより `clerk_events` table が handler 対象外 event で汚染されない。
+    // Clerk 側は 200 を受けて再送しないため再送ループの懸念なし。
     const db = vi.mocked(getDb)()
-    vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'msg_x' }]) as never)
     const body = JSON.stringify({
       type: 'session.created',
       data: { id: 'sess_1' },
@@ -148,7 +152,8 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     const req = signed(body)
     const res = await POST(req)
     expect(res.status).toBe(200)
-    expect(db.insert).toHaveBeenCalledTimes(1) // clerk_events idempotency のみ
+    // safeParse fail で early return → DB insert に到達しない
+    expect(db.insert).not.toHaveBeenCalled()
     expect(db.update).not.toHaveBeenCalled()
   })
 
