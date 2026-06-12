@@ -150,11 +150,7 @@ export function CategoryList({
           .count()
       }
     } catch (err) {
-      logger.warn({
-        event: 'tag_category_delete.count_failed',
-        categoryId: category.id,
-        err: String(err),
-      })
+      logger.warnFromError('tag_category_delete.count_failed', { categoryId: category.id }, err)
     }
     setPendingDelete({ category, childOptionCount, cardCount })
   }

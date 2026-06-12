@@ -74,4 +74,12 @@ export const logger = {
   warn: (payload: Payload) => emit('warn', payload),
   /** Error-level structured log. Routes to console.error. Example: `logger.error({ event: 'webhook.stripe.bad_signature', err })` */
   error: (payload: Payload) => emit('error', payload),
+  /**
+   * catch(err) で受け取った Error をそのまま warn する shortcut。 `err` を Error の
+   * まま `expandError` に渡し name/message/stack を構造化保持する
+   * (旧 `err: String(err)` で stack を捨てていた inline boilerplate の置換、
+   * Sync-fix-1 audit §10.2 (a) #11)。
+   */
+  warnFromError: (event: string, ctx: Record<string, unknown>, err: unknown) =>
+    emit('warn', { event, ...ctx, err }),
 }

@@ -71,4 +71,33 @@ describe('logger', () => {
     expect(lastCall).toContain('[logger fallback]')
     expect(lastCall).toContain('event=x')
   })
+
+  describe('warnFromError', () => {
+    // Sync-fix-1 audit §10.2 (a) #11: 旧 `err: String(err)` boilerplate を helper
+    // 1 行に置換、 Error を expandError 経由で構造化保持。
+
+    it('routes to console.warn with event + ctx merged and Error expanded', () => {
+      const err = new Error('boom')
+      logger.warnFromError('tag_category_delete.count_failed', { categoryId: 'cat-1' }, err)
+      expect(warnSpy).toHaveBeenCalledOnce()
+      expect(logSpy).not.toHaveBeenCalled()
+      expect(errorSpy).not.toHaveBeenCalled()
+      const parsed = JSON.parse(warnSpy.mock.calls[0][0] as string)
+      expect(parsed).toMatchObject({
+        level: 'warn',
+        event: 'tag_category_delete.count_failed',
+        categoryId: 'cat-1',
+        err: { name: 'Error', message: 'boom' },
+      })
+      // 旧 String(err) 経路では stack を捨てていた。 helper は Error を保持し expandError 展開する。
+      expect(typeof parsed.err.stack).toBe('string')
+    })
+
+    it('handles non-Error err (string / unknown) without throwing', () => {
+      logger.warnFromError('x', { ctxKey: 'v' }, 'plain string err')
+      const parsed = JSON.parse(warnSpy.mock.calls[0][0] as string)
+      expect(parsed.err).toBe('plain string err')
+      expect(parsed.ctxKey).toBe('v')
+    })
+  })
 })
