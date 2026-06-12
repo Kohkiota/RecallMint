@@ -40,7 +40,8 @@ exam create だけ Server Action 経路 (`createExam(name)`) で bulk envelope �
 
 ## 3. 前提条件
 
-- stg ログイン済 Playwright session (test user `komail9server+clerk_test@gmail.com`)
+- **seed 対象 = stg 専用テストユーザー** (本 runbook では `komail9server+clerk_test@gmail.com` を使用、 Clerk dev key 環境の test account)。 **OT 本アカウントには一切波及しない** — bulk endpoint は user_id scope で書き分け、 entity_mutations / users row も別 user_id、 Dexie は browser-per-account の IndexedDB 分離 (Clerk session 切替時に IDB は別 namespace ではないが、 user_id scope の query 経路により他 user data 混在は起きない)。 実機 smoke (OT 本アカウント) と test fixture を分離する規律 (= OT 本アカウントの IDB / 同期状態に混ぜず、 実機 smoke の baseline を汚さない)。
+- stg ログイン済 Playwright session (上記 test user)
 - 既存 seed 残骸が無いこと (前回 cleanup 完遂、 確認 step あり)
 - `Y2B1-` prefix の tag_categories / `seed-y2-b1-` 始まる exams が 0 件
 - Y-2 Sub-plan A push 反映済 develop が stg に出ていること (envelope 仕様変更なしのため backward 互換、 直前リリース確認のみ)
@@ -245,12 +246,21 @@ pull が遅延する場合は明示的に `/api/pull?since=0` を fetch して�
 
 ## 6. cleanup 手順 (計測完了後、 stg test data 残置禁止)
 
+### 6.1 計測順序の絶対則 (tombstone-on-baseline 汚染回避)
+
+**全 T-B1 計測は cleanup 前に閉じる** (= seed → 計測 N 本実走 → cleanup の 1 way)。 cleanup は entity_mutation `op='delete'` 経路 = server が tombstone INSERT + client pull で tombstone 反映 (`lib/sync/pull.ts:227-260`、 cards / exams / tag_categories / tag_options の bulkDelete + tag_option_ids ベース card_tags cascade 派生) を踏むため、 cleanup 直後の最初の pull に **2000 card + 100 option + 10 category + 1 exam = ~2111 件の tombstone が payload に乗る**。 cursor (`SYNC_META_KEYS.tombstoneCursor`) は 1 回 drain で advanced し以降 0 件に戻るが、 その 1 回の pull 自体の Network / Dexie bulkDelete cost が `/app/tags` 初期遅延の baseline を歪める恐れあり。
+
+ため、 計測は seed 完了 → Dexie 反映確認 → measurement (3 回平均) → 全完了報告 → 初めて cleanup を起動する順。 cleanup 後の re-measurement は本 sprint scope 外 (= 再計測したい場合は ① tombstone 1 回 drain pull を実走 → cursor advance 確認 → ② 改めて `/app/tags` 計測、 か OR 新規 Playwright context で fresh IDB から開始)。
+
+### 6.2 cleanup 実行
+
 **逆順 (FK cascade に依存)**:
 
 1. UI で `/app/exams` → `seed-y2-b1-tags-perf-2026-06-12` exam の「削除」 ボタン → 確認 → cards 2000 件 + card_tags 4000 行 cascade 削除 (DB FK + entity_mutation delete)
 2. UI で `/app/tags` → `Y2B1-cat-*` 10 件を 1 件ずつ「削除」 (tag_options 100 件 + 残 card_tags cascade)
 3. step 1+2 を Playwright で自動化する場合: bulk POST `op='delete'` で `tag_category` / `card` entity を順次 (delete cascade は server-side で完結、 mutation 数は 10 + 2000 = 2010、 1000/batch で 3 POST)
 4. 確認: `db.cards`, `db.tag_categories`, `db.tag_options`, `db.card_tags` の `Y2B1-` 含む / `seed-y2-b1-` 含む行が全 0 件 + UI 上で 0 件
+5. cleanup 直後の `/api/pull` 1 回実走 (tombstone drain 確実化): pull response の `tombstones[].length` が ~2111 程度であること + 次 pull で 0 件に戻ることを確認 (cursor advance 検証)。 完了状態を session log に記録。
 
 ---
 
