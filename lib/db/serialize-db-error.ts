@@ -11,6 +11,8 @@
 // 制約: 観測専用。 throw しない (catch 内で更に throw すると 200+failed[] 契約が崩れる)。
 // 副作用なし。 SQL 文・挙動は一切変えない (診断強化のみ)。
 
+import { isLogGateOpen } from '@/lib/env/log-gate'
+
 const STD_KEYS = [
   'name', 'message', 'stack',
   // postgres-js native error (node-postgres 互換) が持つ field
@@ -136,8 +138,9 @@ function summarizeParams(
     paramsAnomaly: { hasUndefined, hasNull, hasInvalidDate },
     cardIds: [...cardIds],
   }
-  // full params は stg 限定で env flag が "1" のときのみ (本番では出さない)。
-  if (process.env.BULK_FULL_PARAMS_LOG === '1') summary.fullParams = params ?? []
+  // full params は env flag が "1" のときのみ。 prod では LOG_GATE_ALLOW_PROD=1 も
+  // 併せて要する 2 段 gate (audit §10.3 (b) #5、 lib/env/log-gate.ts)。
+  if (isLogGateOpen('BULK_FULL_PARAMS_LOG')) summary.fullParams = params ?? []
   return summary
 }
 

@@ -7,6 +7,7 @@
 
 import { GoogleGenAI } from '@google/genai'
 import { logger } from '@/lib/logger'
+import { isLogGateOpen } from '@/lib/env/log-gate'
 import { modelId, type ModelKind } from '../cost'
 
 // OCR は複数ページを一括生成する重い処理であり数分かかることがあるため、
@@ -132,10 +133,11 @@ export async function callGemini(
   const text = res.text
   if (!text) throw new Error('Gemini returned empty response.text')
 
-  // OCR debug: OCR_DEBUG_LOG=1 (staging 専用) のときのみ raw response を log に出す。
+  // OCR debug: OCR_DEBUG_LOG=1 のときのみ raw response を log に出す。 prod では
+  // LOG_GATE_ALLOW_PROD=1 も併せて要する 2 段 gate (audit §10.3 (b) #5、 lib/env/log-gate.ts)。
   // Vercel log の 1 行サイズ上限対策で先頭 50000 文字に truncate し、 元の長さは
   // textLength に残す。 env 未設定 (本番デフォルト) は no-op。
-  if (process.env.OCR_DEBUG_LOG === '1') {
+  if (isLogGateOpen('OCR_DEBUG_LOG')) {
     logger.info({
       event: 'ocr.gemini.response',
       model: input.model,
