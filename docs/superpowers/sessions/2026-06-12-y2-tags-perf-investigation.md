@@ -171,3 +171,40 @@ cleanup 直後の pull で tombstone (= cards 2000 + tag_categories 10 + tag_opt
 1. **T-B1' 追加 plan B 末尾** の承認 — CC 推奨 (ii) 独立 task。 OT 否認なら (i) 既存 T-B4 群に併合 or (iii) Y-3 繰越。
 2. **Sub-plan B 残 ordering の確定** — T-B1 完了後の T-B2 / T-B3 #1b (stop checkpoint = 着手承認) / T-B4 / T-B5 / T-B6 / T-B7 / T-B8 を順次 or T-B3 並走など、 OT 指定 (plan B 全体ルール 6 stop = T-B1 残置で OT 判断後 ordering)。
 3. (independent) **T-C4 推奨 (c) Y-3 繰越** の OT 裁定 — 別 stop checkpoint。
+
+---
+
+## 8. 2026-06-13 追記 — 計測 protocol の教訓 (T-B1' 前提崩壊 → close)
+
+T-B1' (本 session log §5 の (ii) 独立 task 提案) で stg 同形 fixture 再計測した結果、 **T-B1 計測値 4,830 ms が再現せず**、 264 ms (longtask 0 件、 Dexie tag_categories.getAll 0.7 ms) で安定する事実が判明。 詳細: `docs/superpowers/sessions/2026-06-13-y2-t-b1p-investigation.md`。
+
+### 8.1 dominant 内訳推定の誤りを訂正
+
+本 session log §4 L95-100 の dominant 内訳「`category-list.tsx:127-148` の per-option `db.card_tags.where('[option_id+user_id]' 相当).count() × 110 options` が dominant」 は **実コードに存在しない**:
+- `category-list.tsx:127-130` の useLiveQuery は `db.tag_categories.toArray()` のみ
+- per-option `db.card_tags.count()` は `category-list.tsx:144-151` の `handleDeleteRequest` 内 = **削除ボタン click 時のみ発火**、 初回表示時ではない
+- `option-list.tsx:115-122` も active 1 件 (初回 null で空配列) のみ
+
+§4 末尾「(推定、 code 読み + 構造から)」 と但し書きで明記していたが、 実コードを十分検証せずに推定を書いた点が反省。 plan T-B1' は本推定を fix 対象として組まれたため、 「fix する対象が無い」 状態だった。
+
+### 8.2 真の dominant = 計測 protocol artifact (seed 直後 pull drain 中の useLiveQuery 多重 re-fire)
+
+T-B1 計測は本 session log §2 step 5 「Dexie 反映確認」 直後に §3 計測を実走している。 つまり server に大量 INSERT (cards 2000 / card_tags 4000) 直後の状態で、 pull change event が dispatch される間 useLiveQuery callback が複数回 re-trigger される不安定 state で計測した可能性が最有力 (T-B1' session log §5 仮説 (a))。
+
+実コード変更 0 で 18x 速い (4,830 → 264 ms) のは、 「pull drain 完了後の stable state での計測」 と「seed 直後の不安定 state での計測」 の差で説明できる。 通常 user は seed 大量投入を経験しない = 通常運用では遅延ない = 直す対象なし。
+
+### 8.3 perf 計測 protocol の今後の運用ルール
+
+**seed 投入直後の即時計測は使わない**。 計測の正本となる数字を取るときは、 seed 完了後に以下を満たす状態で取る:
+
+1. **page reload を 1 回挟む** (= initial pull change event を drain させる)
+2. **/app navigate → wait 5-8 秒** (sync_meta cursor advance + Dexie subscription stable 確認)
+3. **/app/tags (or 対象 page) navigate** → MutationObserver で text appear
+
+これを守らないと、 pull drain 中の useLiveQuery 多重 re-fire が `text_appeared_at` に乗り、 真の cost ではない「server pull + Dexie bulkPut + subscription re-fire の合算」 を計測することになる。 4,830 ms vs 264 ms の差は本質的にこの protocol 欠陥。
+
+本 session log §2 計測方法の文言は「run 1 は cold cache 影響あり (FCP 大)、 run 2/3 で安定化を確認」 と書いたが、 これは **bundle cache のみを意識**しており、 **pull drain stability は考慮できていなかった**。 同種の計測を行う場合 (T-B6 dashboard / T-B7 session など)、 §8.3 ルールを必ず適用すること。
+
+### 8.4 T-B1' 結末
+
+plan B-perf.md L87-94 の T-B1' task block は本日 (2026-06-13) `[closed]` に変更。 Y-3 繰越なし (将来やる宿題ではない)。 spec §3.1 H7 (ii) は本 task の close で消化扱い (= 「pull drain 中のアーティファクトであることを実証して close」 で hardening 趣旨を満たす)。

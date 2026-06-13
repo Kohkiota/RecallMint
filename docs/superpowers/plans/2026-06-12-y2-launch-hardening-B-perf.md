@@ -86,14 +86,13 @@
 
 ---
 
-### Task T-B1': H7 (ii) `/app/tags` per-option N+1 解消 (T-B1 結果反映、 T-B5 直前挿入)
+### Task T-B1': `/app/tags` per-option N+1 解消 → **[closed]** (2026-06-13、 直す対象なし)
 
-**Files:**
-- Modify: `app/(app)/app/tags/_components/category-list.tsx` + 関連 component test
+**結論**: per-option N+1 は **`/app/tags` 初回表示経路に存在しない** (削除フロー click 時のみ)。 再計測で T-B1 値 4,830 ms が再現せず (264 ms = 18x 速い、 longtask 0 件)。 4,830 ms は **seed 投入直後 pull drain 中の useLiveQuery 多重 re-fire による計測アーティファクト**確定 (実コード変更 0 で 18x 改善 = 真の遅延ではない)。 直すべき遅延が存在しないため close (Y-3 繰越なし、 将来やる宿題ではない)。
 
-- [ ] **目的**: T-B1 で確定した dominant 要因 (b) Dexie per-option N+1 (`category-list.tsx:127-148` の `db.card_tags.count()` × options 数) を解消、 `/app/tags` text_appeared を baseline 4,830 ms → **< 1,500 ms (3x 改善)** に持っていく (T-B1 session log `2026-06-12-y2-tags-perf-investigation.md` 参照、 spec §3.1 H7 (ii) 経路)。
-- [ ] **制約**: per-option `db.card_tags.count()` × N を `db.card_tags.where('option_id').anyOf(allOptionIds).toArray()` 単一 query + JS reduce で `optionId → count` の hash 集計に置換 (T-B5 と同形 anyOf precedent、 helper 抽出はしない = T-B5 と同じ inline 形)。 useLiveQuery subscription 契約は維持 (server pull 書込で自動再描画)。 memoize key = `categories.flatMap(c => c.options).map(o => o.id).sort().join(',')` 等の安定 key。 Grid-1 で正規化予定の旨は comment 1 行で明示。
-- [ ] **完了条件**: stg 同 fixture (= T-B1 seed runbook `2026-06-12-y2-b1-seed-runbook.md` 再利用) で before/after の text_appeared / Dexie query 数を計測 (per-option count() N+1 → anyOf 1 query)、 **< 1,500 ms 達成**を session log に貼付。 既存 category-list test 全 pass + per-option N+1 regression test 1 case (`db.card_tags.count` 呼出回数 ≤ 1 を assert、 N+1 復活検知)。 Critical 0、 [reviewed]。
+詳細: `docs/superpowers/sessions/2026-06-13-y2-t-b1p-investigation.md` (前提崩壊 + 再計測結果 + 仮説評価)、 `docs/superpowers/sessions/2026-06-12-y2-tags-perf-investigation.md` 末尾 (計測 protocol の教訓)。
+
+**spec への影響**: spec §3.1 H7 (ii) は本 task で消化扱い (= 「pull drain 中のアーティファクトであることを実証して close」 で hardening 趣旨を満たす)。 spec 書き換え不要。
 
 ---
 
