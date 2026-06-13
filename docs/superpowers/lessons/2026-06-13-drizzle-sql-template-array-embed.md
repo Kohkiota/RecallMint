@@ -1,6 +1,8 @@
 # Drizzle `sql` template への array 直接 embed は record 展開 — array bind は `sql.param(array)` 必須
 
-> **Source**: 2026-06-13 Y-2 T-B2 (review-events/bulk study_days SQL N+1 解消)、 初版実装 (旧 commit `481d2e4`、 git reset で巻き戻し済) で `ANY(${days}::date[])` の array embed が **invalid PG cast を生成**、 spec / code quality 両 reviewer round 1 が Critical 検出、 round 2 で `sql.param(days)` 化 + render-shape regression test 強化で fix (新 commit `d1987da` + session log `ce1c257`)。
+> **⚠️ 訂正 (2026-06-13、 後刻)**: 本 lesson の中核主張 (= `sql.param(array)` で OK) は **誤り**と判明。 後述「### 訂正: sql.param(array) は postgres-js では機能しない」 section を必読。 d1987da は revert (`8777e8f`)、 stg 経路復旧済。 本 lesson の §1 / §2 / §3 は誤誘導の記録として温存 (削除でなく訂正記録、 false lesson の発生→否定の trace を残す)。
+
+> **Source**: 2026-06-13 Y-2 T-B2 (review-events/bulk study_days SQL N+1 解消)、 初版実装 (旧 commit `481d2e4`、 git reset で巻き戻し済) で `ANY(${days}::date[])` の array embed が **invalid PG cast を生成**、 spec / code quality 両 reviewer round 1 が Critical 検出、 round 2 で `sql.param(days)` 化 + render-shape regression test 強化で fix を試みた (新 commit `d1987da` + session log `ce1c257`)。 しかし fix も postgres-js 実 serializer 段で別 TypeError、 stg smoke で発覚 → revert (`8777e8f`)。
 
 ## 1. 背景
 
@@ -75,3 +77,49 @@ expect(arrayParam).toEqual([...expectedValues])
 - T-B2 session log: `ce1c257` (= `docs/superpowers/sessions/2026-06-13-y2-t-b2-study-days-sql-n1.md`)
 - 巻き戻し済の旧 broken commit: `481d2e4` (`git reflog` でのみ確認可、 develop branch history からは消滅)
 - Drizzle 内部 expand 仕様: `node_modules/drizzle-orm/sql/sql.cjs` の array→record 展開、 公式 docs では明示記述少なめ (= 実装挙動依存、 docs 拡充は upstream 課題)
+
+---
+
+## ⚠️ 訂正: `sql.param(array)` は postgres-js では機能しない (2026-06-13、 後刻)
+
+### 真因 (OT が Vercel function log で確認、 2026-06-13)
+
+```
+TypeError: The "string" argument must be of type string or an instance of
+Buffer or ArrayBuffer. Received an instance of Array
+  at Buffer.byteLength
+  at Function.str (postgres-js serializer)
+```
+
+- 型解決自体は drizzle で正しく走り (`types=2950,1182` = uuid,date の OID 解決済)、 SQL は `ANY($2::date[])` 形に render される
+- しかし **param #2 (= `sql.param(days)` の array 値)** が postgres-js シリアライザに渡される時、 driver は array を **1 つの array 値 (= text[] serialize)** として扱わず、 **スカラ string として `Buffer.byteLength` を呼んで TypeError** で死ぬ
+- 結果 Phase 2f 内で tx throw → catch で applicable events 全 failed[]、 stg で review session 完了経路が常時 broken
+
+### `sql.param(array)` の誤解釈
+
+本 lesson の §1 / §2 で「`sql.param(arr)` は配列を driver に 1 値として渡し、 postgres-js が text[] serialize する」 と書いたが、 これは **誤り**:
+
+- drizzle 内の `sql.param()` は単に `Param` instance を generate して param スロットに 1 個分 assign する (= rendering は `$N` 1 個)、 driver 渡しを 1 値にする
+- しかし **postgres-js は array 値を受け取った時に「これは array bind」 とは推論しない** (= 標準的な PG protocol で array bind は `text[]` 等の専用 type が指定されている前提)、 既定で **string とみなして `Buffer.byteLength` を呼ぶ**
+- → Array.prototype を Buffer.byteLength に渡せず TypeError
+
+### local render テストが false confidence だった理由
+
+- `PgDialect().sqlToQuery()` は **render 文字列を返すだけ** = postgres-js 実シリアライズを通さない
+- render output (`ANY($1::date[])`) は **valid SQL form として見える** が、 driver 段で別 issue が起きるかは未検証
+- 本 lesson の L2 で提案した「render-shape regression test (`/ANY\(\$\d+::type\[\]\)/` match)」 は driver 層 mock を再現しない、 = 初版 `481d2e4` の broken 形 (`ANY(($1,$2)::date[])`) を通した「`tx.execute` mock + 構造 substring 検査」 と **同じ false confidence の穴** に落ちる
+- 既存 lesson `2026-05-29-bulk-refactor-driver-layer-lessons.md` L2 「unit test の mock は driver / pooler 層を再現できない、 実 DB smoke を完了条件に」 が **本件でも的中**
+
+### 真の Lesson (= 既存 2026-05-29 L1/L2 と同型 + array bind 特有)
+
+1. **driver 層は mock で再現できない**: render shape test は SQL 文字列の構造を pin する以上の意味を持たない、 実 PG serialize の通過は **stg / preview deploy + 実 DB smoke でしか証明できない** (= `2026-05-29` L2 と同一)
+2. **postgres-js への array bind の正解は未確定** (2026-06-13 時点): 候補 = drizzle `inArray()` helper / `sql.join(days.map(d => sql\`${d}\`), sql\`, \`)` で `ANY(ARRAY[$1, $2]::date[])` 形に個別 param 展開 / `unnest($1::text[])` 経由。 いずれも local render では確証不能 = 再 push 後の実機 smoke 必須。 候補のどれが postgres-js + 実 PG で通るかは本 lesson の **次回 update で記録**する (= revert 後の再設計 task で確定する)
+3. **「array は sql.param() で 1 値 bind」 は誤り**を本 lesson に記録: 次セッションの自分が本 lesson の §1 / §2 だけ読んで再採用するリスクを警告 (= 訂正 section を必読化)
+
+### 訂正の commit chain
+
+- 初版 broken (`${days}` 直接 embed): `481d2e4` (git reset で巻き戻し済)
+- sql.param fix 試行 (本 lesson §1/§2 の主張): `d1987da` (revert された)
+- session log: `ce1c257` (内容に sql.param の経緯記述あり、 revert に伴い同様に訂正余地、 本 lesson の訂正で trace 維持)
+- revert: `8777e8f` (本 lesson 訂正 commit と同 push 単位、 stg 経路復旧)
+- T-B2 再設計 task: 別 commit で `inArray` / `sql.join` / `unnest` 候補を検証 (= postgres-js + 実 PG で通る形を確定後に本 lesson を再 update)
