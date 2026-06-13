@@ -279,6 +279,19 @@ export class ClientDb extends Dexie {
     this.version(5).stores({
       card_tags: '[card_id+option_id], card_id, option_id, user_id',
     })
+    // v6 (Y-2 T-B4): cards に compound index `[user_id+exam_id]` を追加。
+    // /app/exams の per-exam 集計を「user 全 cards を materialize (~2k 件、 nested
+    // field 含む) → JS で countByExam を集計」 から、 per-exam の
+    // `where('[user_id+exam_id]').equals([U, e.id]).count()` (Dexie 内部で
+    // isPlainKeyRange true → native `IDBIndex.count(IDBKeyRange)` 直送、
+    // row 本体 fetch なしの B-tree range count) に置換するための index。
+    // owner isolation は index 第 1 要素 user_id の equals fix で構造保証する
+    // (他 user の cards に index 経路で到達不能)。 過去 v2 / v4 / v5 と同形の
+    // 純粋 index 追加 (store drop なし、 既存データ保持、 upgrade callback 不要)。
+    this.version(6).stores({
+      cards:
+        'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id]',
+    })
   }
 }
 

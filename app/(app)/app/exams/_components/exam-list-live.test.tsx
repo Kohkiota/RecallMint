@@ -244,4 +244,62 @@ describe('ExamListLive (Dexie useLiveQuery)', () => {
     expect(screen.queryByText(/カード 99 件/)).not.toBeInTheDocument()
     expect(screen.queryByText(/カード 3 件/)).not.toBeInTheDocument()
   })
+
+  it('7. per-exam count() 経路で materialize 0 を構造保証 (T-B4 regression)', async () => {
+    // T-B4: db.cards.where('user_id').equals(userId).toArray() の materialize 経路を
+    // 撤去し、 per-exam の compound index `[user_id+exam_id]` 経由 `count()` (native
+    // IDBIndex.count(IDBKeyRange) 経路 = row 本体 fetch なし) に置換したことを
+    // 構造的に保証する regression test。
+    //
+    // assertion:
+    //   - 新経路: db.cards.where('[user_id+exam_id]') の呼出回数 = active exam 件数
+    //   - 旧経路: db.cards.where('user_id') の呼出 0 件 (toArray 経路を完全撤去)
+    //
+    // 注意: JS filter (.and() / .filter()) を後段に乗せると Dexie 内部で
+    //   isPlainKeyRange が false に落ちて cursor 走査になり materialize 0 が崩れる。
+    //   本 test は where('[user_id+exam_id]') 呼出のみ assert、 後段 op の制約は
+    //   実装側コメントで防御する (静的検査の限界)。
+    const db = getClientDb()
+    await db.exams.bulkPut([
+      fakeExam({ id: 'exam-1', name: '試験 A', updated_at: '2026-04-10T00:00:00.000Z' }),
+      fakeExam({ id: 'exam-2', name: '試験 B', updated_at: '2026-04-09T00:00:00.000Z' }),
+    ])
+    await db.cards.bulkPut([
+      fakeCard({ id: 'c1', exam_id: 'exam-1' }),
+      fakeCard({ id: 'c2', exam_id: 'exam-2' }),
+    ])
+
+    // spy で db.cards.where の引数を tracking (db.exams.where は別 Table instance なので
+    // この spy には乗らない、 `cards.where` のみ正確にカウントできる)。
+    const whereSpy = vi.spyOn(db.cards, 'where')
+
+    renderWithProvider('user-1')
+
+    await waitFor(() => {
+      expect(screen.getByText('試験 A')).toBeInTheDocument()
+      expect(screen.getByText('試験 B')).toBeInTheDocument()
+    })
+
+    // Dexie の where overload (string / string[] / equality object) で vi.spyOn の
+    // 型推論は equality object 側に寄るため、 mock.calls を unknown 経由で再解釈する。
+    // 実行時の引数値は文字列 ('user_id' / '[user_id+exam_id]') 確定なので、
+    // typeof guard で string のみ拾って比較する。
+    const firstArgs = (whereSpy.mock.calls as unknown as unknown[][]).map(
+      (c) => c[0],
+    )
+    const stringFirstArgs = firstArgs.filter(
+      (a): a is string => typeof a === 'string',
+    )
+    const compoundCalls = stringFirstArgs.filter(
+      (a) => a === '[user_id+exam_id]',
+    )
+    // active exam 2 件 → 2 回の per-exam count() 経路
+    expect(compoundCalls.length).toBe(2)
+
+    const oldCardsCalls = stringFirstArgs.filter((a) => a === 'user_id')
+    // 旧 materialize 経路は完全撤去
+    expect(oldCardsCalls.length).toBe(0)
+
+    whereSpy.mockRestore()
+  })
 })

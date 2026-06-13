@@ -26,26 +26,34 @@ import { ExamStatusBadge } from '../../_components/exam-status-live'
 export function ExamListLive({ userId }: { userId: string }) {
   const exams = useLiveQuery(async () => {
     const db = getClientDb()
-    const [allExams, allCards] = await Promise.all([
-      db.exams.where('user_id').equals(userId).toArray(),
-      db.cards.where('user_id').equals(userId).toArray(),
-    ])
+    const allExams = await db.exams.where('user_id').equals(userId).toArray()
 
-    // cards を exam 単位で集計 (Dexie mirror が最新 source of truth)
-    const countByExam = new Map<string, number>()
-    for (const c of allCards) {
-      countByExam.set(c.exam_id, (countByExam.get(c.exam_id) ?? 0) + 1)
-    }
-
-    return allExams
+    const activeExams = allExams
       .filter((e) => e.archived_at == null) // undefined も null も除外 (archived)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) // ISO 文字列の辞書順 DESC
-      .map((e) => ({
-        id: e.id,
-        name: e.name,
-        updatedAt: e.updated_at,
-        cardCount: countByExam.get(e.id) ?? 0,
-      }))
+
+    // T-B4: per-exam materialize 0 の構造保証。
+    // - compound index `[user_id+exam_id]` (Dexie v6) で第 1 要素 user_id を equals fix
+    //   → 他 user の cards に index 経路で構造的に到達不能 (owner isolation 担保、
+    //   既存 test #6 を index 構造で satisfy。 perf のためのガード撤去はしない)
+    // - count() は filter 不要のため Dexie 内部で isPlainKeyRange true →
+    //   native `IDBIndex.count(IDBKeyRange)` 直送 = row 本体 fetch なしの B-tree range count
+    // - JS filter (.and() / .filter()) を絶対に乗せないこと (cursor 走査に落ちて
+    //   materialize 0 が崩れ、 T-B4 の意味が消える。 spec §2.4 確証はこの形が前提)
+    // - cards table への subscription は `where('[user_id+exam_id]')` 経由でも維持 →
+    //   server pull / optimistic mutation 双方で自動再描画される
+    const counts = await Promise.all(
+      activeExams.map((e) =>
+        db.cards.where('[user_id+exam_id]').equals([userId, e.id]).count(),
+      ),
+    )
+
+    return activeExams.map((e, i) => ({
+      id: e.id,
+      name: e.name,
+      updatedAt: e.updated_at,
+      cardCount: counts[i],
+    }))
   }, [userId])
 
   // 1) skeleton — useLiveQuery が Dexie からの値を解決するまで undefined を返す。
