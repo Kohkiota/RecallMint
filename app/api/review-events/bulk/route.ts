@@ -42,6 +42,7 @@ import {
   type User,
 } from '@/lib/db/schema'
 import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
+import { inDateList } from '@/lib/db/in-date-list'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import type { RatingInt } from '@/lib/fsrs'
 import { logger } from '@/lib/logger'
@@ -381,17 +382,36 @@ async function processSession(
           dayMap.set(day, existing)
         }
 
+        if (dayMap.size === 0) return undefined
+
+        // T-B2 #1a 再実装 (採用 X、 helper 化): per-day SELECT N+1 を
+        // `GROUP BY day` 1 文に集約。 inDateList helper で `IN ($1::date,
+        // $2::date, ...)` 形に個別 param 展開し、 driver 層挙動 (postgres-js
+        // Array serializer / Drizzle inArray 配列 binding) 依存を最小化する
+        // (a885199 stg 実機検証で X 形を確証、 lesson 2026-06-13 訂正
+        // section 参照)。 UPSERT は plan 制約「ON CONFLICT DO UPDATE」 構造
+        // 維持で per-day ループ (SUM increment + 累積 distinct 上書き)。
+        const days = [...dayMap.keys()]
+        const distinctRows = await tx.execute(sql`
+          SELECT (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date::text AS day,
+                 COUNT(DISTINCT card_id)::int AS distinct_count
+          FROM reviews
+          WHERE user_id = ${user.id}::uuid
+            AND ${inDateList(sql`(reviewed_at AT TIME ZONE 'Asia/Tokyo')::date`, days)}
+          GROUP BY (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date
+        `)
+        const distinctMap = new Map<string, number>()
+        for (const row of distinctRows as unknown as Array<{
+          day: string
+          distinct_count: unknown
+        }>) {
+          distinctMap.set(row.day, Number(row.distinct_count))
+        }
+
         for (const [day, counts] of dayMap) {
-          // reviews table から JST date 別 distinct card_id を再集計
-          // (今回の reviews INSERT を含む)
-          const distinctRows = await tx.execute(sql`
-            SELECT COUNT(DISTINCT card_id)::int AS c FROM reviews
-            WHERE user_id = ${user.id}::uuid
-              AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
-          `)
-          const distinct = Number(
-            ((distinctRows as unknown) as Array<{ c: unknown }>)[0]?.c ?? 0,
-          )
+          // event tx 直後の reviews row 不在は実 DB では起きないが、 防御的に
+          // fallback (distinctMap.get ?? 0) で distinctCardCount=0 にする。
+          const distinct = distinctMap.get(day) ?? 0
 
           await tx
             .insert(studyDays)
