@@ -61,19 +61,8 @@ const { state } = vi.hoisted(() => ({
       conflictSet: Record<string, unknown>
     }>,
 
-    // T-B2 #1a: execute() の返却値。 改修後は `GROUP BY day` 1 文で
-    // (day, distinct_count)[] を返す。 default = 任意 day → distinct=2
-    // (旧 default `[{ c: 2 }]` と意味論的に等価、 全 day で distinct=2)。
-    // null = mock 側で「dayMap の全 day について distinct=2」 を返却 (動的展開)。
-    executeDistinctRowsOverride: null as
-      | null
-      | Array<{ day: string; distinct_count: number }>,
-
-    // T-B2 #1a: execute() 呼び出し回数 (SQL N+1 解消の計測)。
-    // 改修後は 50 day session でも 1 回。
-    executeCallCount: 0,
-    // T-B2 #1a: execute() に渡された SQL chunk capture (構造検証用)。
-    executeCalls: [] as unknown[],
+    // execute() (COUNT DISTINCT) の返却値
+    executeDistinctResult: [{ c: 2 }] as Array<{ c: number }>,
 
     // tx を throw させるフラグ (rollback テスト用)
     txShouldThrow: false,
@@ -208,25 +197,9 @@ function makeFakeTx(throwAfterInsert = false) {
       }
     },
 
-    // T-B2 #1a: study_days 集計 — 改修後は `GROUP BY day` で 1 文集約。
-    // execute() は (day, distinct_count)[] を返す。 mock 側は SQL 文の中身
-    // (queryChunks 内 string fragments) から `GROUP BY` を含むことを
-    // 確認し、 override 未指定なら eventsToApply の day 群について
-    // distinct=2 の default rows を返す。
-    execute: (query: unknown) => {
-      state.executeCallCount++
-      state.executeCalls.push(query)
-      if (state.executeDistinctRowsOverride !== null) {
-        return Promise.resolve(state.executeDistinctRowsOverride)
-      }
-      // default fallback: 必要な day は呼び出し側 helper (setExecuteDaysDefault)
-      // で予め override する想定。 ここに来るのは「day distinct を気にしない
-      // 既存 case」 のみ — 空配列を返すと distinct=0 になり、 単一 day
-      // assertion を破壊するため、 既存 test 互換に「全 day で distinct=2」
-      // を返す軽量 sentinel として SQL chunk から day param を抜き出す
-      // 必要はなく、 default override で対応する。 (override 必須)
-      return Promise.resolve([])
-    },
+    // study_days COUNT DISTINCT
+    execute: (_query: unknown) =>
+      Promise.resolve(state.executeDistinctResult),
   }
 }
 
@@ -468,14 +441,7 @@ beforeEach(() => {
   state.bulkUpdateReturnOverride = null
   state.reviewsInsertValues = null
   state.studyDaysUpsertCalls = []
-  // T-B2 #1a default: GROUP BY 1 文集約後の rows (全 day で distinct=2)。
-  // 多 day case では override で day 数分の行を返す。
-  state.executeDistinctRowsOverride = [
-    { day: '2026-05-25', distinct_count: 2 },
-    { day: '2026-05-26', distinct_count: 2 },
-  ]
-  state.executeCallCount = 0
-  state.executeCalls = []
+  state.executeDistinctResult = [{ c: 2 }]
   state.txShouldThrow = false
 
   // デフォルトで VALID_CARD_ID を存在する card として設定
@@ -977,9 +943,6 @@ describe('POST /api/review-events/bulk', () => {
       expect(call.values.reviewCount).toBe(1)
       expect(call.values.correctCount).toBe(1)
     }
-    // T-B2 #1a: 2 day session でも reviews SELECT (distinct 集計) は 1 回。
-    // 改修前は per-day SELECT で 2 回呼ばれた (= SQL N+1)。
-    expect(state.executeCallCount).toBe(1)
   })
 
   it('response contract: always { ok: true, failed } with status 200 (normal success)', async () => {
@@ -1130,184 +1093,5 @@ describe('POST /api/review-events/bulk', () => {
     const q = new PgDialect().sqlToQuery(updatedAt as SQL)
     expect(q.sql).toContain('now()')
     expect(q.params).toHaveLength(0) // Date param を bind していないこと
-  })
-
-  // -------------------------------------------------------------------------
-  // T-B2 #1a — study_days SQL N+1 解消 (audit §10.3 (b) #1)
-  // -------------------------------------------------------------------------
-  // per-JST-day ループ内の `COUNT(DISTINCT card_id) FROM reviews WHERE day=...`
-  // を `GROUP BY day` 1 文に集約。 SELECT 回数が day 数 N → 1 に減ることと、
-  // 集計値 (reviewCount / correctCount / distinctCardCount) が改修前後で
-  // 完全一致することを検証する。
-  describe('T-B2 #1a: study_days SQL N+1 解消 (GROUP BY day 集約)', () => {
-    it('50 day session で reviews SELECT は 1 回 (改善前は day 数 = 50 回 / 改善後は GROUP BY 1 文)', async () => {
-      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-      // 50 day session fixture: 各 day に 1 event。
-      // event UUID は version=4 / variant=a を満たす format で連番生成。
-      const DAY_COUNT = 50
-      const baseDate = new Date('2026-05-01T01:00:00.000Z') // JST 2026-05-01 10:00
-      const events = Array.from({ length: DAY_COUNT }, (_, i) => {
-        const answeredAt = new Date(
-          baseDate.getTime() + i * 24 * 3600 * 1000,
-        ).toISOString()
-        const eventIdHex = i.toString(16).padStart(8, '0')
-        return {
-          event_id: `${eventIdHex}-0000-4000-a000-000000000000`,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a'],
-          is_correct: true,
-          answered_at: answeredAt,
-        }
-      })
-
-      // GROUP BY 1 文集約後の rows を全 day について返す (distinct=1)
-      state.executeDistinctRowsOverride = events.map((ev) => ({
-        day: ev.answered_at.slice(0, 10).replace(
-          /(\d{4})-(\d{2})-(\d{2})/,
-          (_m, y, mo, d) => {
-            // UTC slice はそのまま JST 日付として 1 文字目から扱える
-            // (JST = UTC+09:00、 01:00Z = 10:00 JST、 日付は同じ)
-            return `${y}-${mo}-${d}`
-          },
-        ),
-        distinct_count: 1,
-      }))
-
-      const res = await POST(makeReq(makeValidPayload({ events })))
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true, failed: [] })
-
-      // ★ N+1 解消: SELECT は 1 回のみ (= GROUP BY day 集約後の bulk SELECT)
-      expect(state.executeCallCount).toBe(1)
-      // UPSERT は day 数だけ (= plan 制約「ON CONFLICT DO UPDATE」 構造維持)
-      expect(state.studyDaysUpsertCalls).toHaveLength(DAY_COUNT)
-    })
-
-    it('SELECT 文構造: GROUP BY (reviewed_at AT TIME ZONE JST)::date を含む (per-day SELECT 不在)', async () => {
-      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-      // 2 day session で SELECT 文を実行
-      const dayA = '2026-05-25T01:00:00.000Z' // JST 2026-05-25
-      const dayB = '2026-05-26T01:00:00.000Z' // JST 2026-05-26
-      const payload = makeValidPayload({
-        events: [
-          {
-            event_id: VALID_EVENT_ID,
-            card_id: VALID_CARD_ID,
-            selected_answer_ids: ['a'],
-            is_correct: true,
-            answered_at: dayA,
-          },
-          {
-            event_id: VALID_EVENT_ID_2,
-            card_id: VALID_CARD_ID,
-            selected_answer_ids: ['a'],
-            is_correct: true,
-            answered_at: dayB,
-          },
-        ],
-      })
-      const res = await POST(makeReq(payload))
-      expect(res.status).toBe(200)
-
-      // SELECT 1 回のみ + 文構造に GROUP BY + AT TIME ZONE 'Asia/Tokyo' を含む
-      expect(state.executeCallCount).toBe(1)
-      const capturedSql = state.executeCalls[0] as SQL
-      const { sql: rendered, params } = new PgDialect().sqlToQuery(capturedSql)
-      expect(rendered).toContain('GROUP BY')
-      expect(rendered).toContain("AT TIME ZONE 'Asia/Tokyo'")
-      // 改善前 per-day SELECT (= WHERE ... = $day::date 等値) ではないこと
-      // = WHERE 句に day 配列の ANY (or = ANY) bind を使う
-      expect(rendered.toUpperCase()).toContain('ANY')
-      // **Array bind shape regression** (2026-06-13 review fix): `${days}` を
-      // sql template に直接 embed すると Drizzle が `($1, $2, ..., $N)` の record
-      // 構造で展開し `ANY(($1, $2, ..., $N)::date[])` が生成、 PG runtime で
-      // 「cannot cast type record to date[]」 で throw する。 `sql.param(days)`
-      // 化で正しく `ANY($N::date[])` 形 (= array 1 param、 postgres-js が text[]
-      // serialize) になることを assert、 silent 回帰を防ぐ。
-      expect(rendered).toMatch(/ANY\(\$\d+::date\[\]\)/)
-      // `(p1, p2, ...)` record 形が混ざらないこと
-      expect(rendered).not.toMatch(/ANY\(\(\$\d+/)
-      // params に day 配列が 1 要素として bind されている (record でなく array)
-      const dayArrayParam = params.find(
-        (p): p is string[] => Array.isArray(p) && p.length === 2 && p[0] === '2026-05-25',
-      )
-      expect(dayArrayParam).toEqual(['2026-05-25', '2026-05-26'])
-    })
-
-    it('50 day session で集計値 (reviewCount / correctCount / distinctCardCount) が day 単位で正しく upsert される', async () => {
-      // 集計値 regression: per-day SELECT → GROUP BY 集約に変わっても、
-      // study_days への書き込み値 (counts.total / counts.correct / distinct) は
-      // 改修前後で完全一致する。 fixture = 50 day × 1 event/day で各 day 値を assertion。
-      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-      const DAY_COUNT = 50
-      const baseDate = new Date('2026-05-01T01:00:00.000Z')
-      const events = Array.from({ length: DAY_COUNT }, (_, i) => {
-        const answeredAt = new Date(
-          baseDate.getTime() + i * 24 * 3600 * 1000,
-        ).toISOString()
-        const eventIdHex = i.toString(16).padStart(8, '0')
-        // 偶数 day は is_correct=true (correctCount=1), 奇数 day は false (correctCount=0)
-        const isCorrect = i % 2 === 0
-        return {
-          event_id: `${eventIdHex}-0000-4000-a000-000000000000`,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: isCorrect ? ['a'] : [],
-          is_correct: isCorrect,
-          answered_at: answeredAt,
-        }
-      })
-
-      // 各 day の expected day (todayInJst 換算と同じ — UTC 01:00 → JST 10:00 で日付不変)
-      const expectedDays = events.map((ev) => ev.answered_at.slice(0, 10))
-
-      // distinct_count は各 day 1 (1 event × 1 card)
-      state.executeDistinctRowsOverride = expectedDays.map((day) => ({
-        day,
-        distinct_count: 1,
-      }))
-
-      const res = await POST(makeReq(makeValidPayload({ events })))
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true, failed: [] })
-
-      // 50 day 分の UPSERT、 各 day の集計値が期待通り
-      expect(state.studyDaysUpsertCalls).toHaveLength(DAY_COUNT)
-      const upsertsByDay = new Map(
-        state.studyDaysUpsertCalls.map((c) => [c.values.day as string, c.values]),
-      )
-      for (let i = 0; i < DAY_COUNT; i++) {
-        const day = expectedDays[i]
-        const isCorrect = i % 2 === 0
-        const vals = upsertsByDay.get(day)
-        expect(vals).toBeDefined()
-        expect(vals).toMatchObject({
-          userId: FAKE_USER.id,
-          day,
-          reviewCount: 1,
-          correctCount: isCorrect ? 1 : 0,
-          distinctCardCount: 1,
-        })
-      }
-      // 改修前後で集計値完全一致 (per-day SELECT → GROUP BY 集約の不変条件)
-      // = SELECT 回数が変わっても day → counts の対応関係は不変。
-      expect(state.executeCallCount).toBe(1)
-    })
-
-    it('SELECT 返却に該当 day がない (event tx 直後 reviews row 不在の異常系) → distinctCardCount=0 fallback', async () => {
-      // 防御的 fallback の guard。 実 DB では reviews INSERT が tx 内で先に完了するため
-      // 起きないが、 mock で「SELECT 返却が空」 のシナリオを再現し、 distinctMap.get
-      // ?? 0 fallback が機能することを確認する。
-      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-      state.executeDistinctRowsOverride = [] // SELECT 返却空
-
-      const res = await POST(makeReq(makeValidPayload()))
-      expect(res.status).toBe(200)
-      expect(state.studyDaysUpsertCalls).toHaveLength(1)
-      expect(state.studyDaysUpsertCalls[0].values).toMatchObject({
-        distinctCardCount: 0,
-      })
-    })
   })
 })

@@ -368,18 +368,6 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 2f — study_days UPSERT (per JST day)
       // ------------------------------------------------------------------
-      // T-B2 #1a (audit §10.3 (b) #1): 旧実装は per-day ループ内で
-      // `COUNT(DISTINCT card_id) FROM reviews WHERE day=...` を発行し SQL N+1。
-      // GROUP BY day の bulk 取得 1 文に集約し、 SELECT 回数を day 数 → 1 に削減
-      // (= N day session で N → 1)。 UPSERT 自体は per-day で残る (plan 制約「ON
-      // CONFLICT (date) DO UPDATE SET count = study_days.count + EXCLUDED.count」
-      // 構造維持、 累積 increment 経路は不変)。
-      // 集計値の意味論不変:
-      // - reviewCount / correctCount は dayMap (eventsToApply 由来) から計算、
-      //   ON CONFLICT で SUM increment (不変)
-      // - distinctCardCount は session 跨ぎ累積 (= reviews table の DISTINCT
-      //   全件 query)、 既存挙動維持 (= 今回の reviews INSERT を含めた最新値で
-      //   per-day 上書き)
       await measure('study-days', async () => {
         // eventsToApply を JST date でグループ化して count 集計
         type DayCount = { total: number; correct: number }
@@ -393,40 +381,17 @@ async function processSession(
           dayMap.set(day, existing)
         }
 
-        if (dayMap.size === 0) return undefined
-
-        // T-B2 #1a: per-day SELECT を `GROUP BY day` 1 文に集約。
-        // day 配列 → text[] bind。 **`sql.param(days)` 必須**: Drizzle の `sql`
-        // template に array (`${days}`) を直接 embed すると record 構造
-        // `($1, $2, ..., $N)` で展開され `ANY(($1,$2,...)::date[])` が生成、
-        // PostgreSQL で「cannot cast type record to date[]」 で throw する
-        // (review fix、 2026-06-13)。 `sql.param(days)` は array を 1 つの
-        // bind value として postgres-js に渡し、 driver 側で text[] serialize
-        // → `::date[]` cast で type 強制 = `ANY($N::date[])` 形に rendering。
-        // day::text cast (SELECT 列) は JS 側 Map key を string で扱うため
-        // (Date 型では Map key の identity 比較が壊れる)。
-        const days = [...dayMap.keys()]
-        const distinctRows = await tx.execute(sql`
-          SELECT (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date::text AS day,
-                 COUNT(DISTINCT card_id)::int AS distinct_count
-          FROM reviews
-          WHERE user_id = ${user.id}::uuid
-            AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ANY(${sql.param(days)}::date[])
-          GROUP BY (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date
-        `)
-        const distinctMap = new Map<string, number>()
-        for (const row of distinctRows as unknown as Array<{
-          day: string
-          distinct_count: unknown
-        }>) {
-          distinctMap.set(row.day, Number(row.distinct_count))
-        }
-
         for (const [day, counts] of dayMap) {
-          // distinctMap に該当 day がない異常系 (= tx 内 reviews INSERT 前の
-          // race 想定だが、 上の Phase 2d INSERT 後に到達するため通常起きない)
-          // は 0 fallback。 既存挙動 (per-day SELECT で 0 件返却) と同義。
-          const distinct = distinctMap.get(day) ?? 0
+          // reviews table から JST date 別 distinct card_id を再集計
+          // (今回の reviews INSERT を含む)
+          const distinctRows = await tx.execute(sql`
+            SELECT COUNT(DISTINCT card_id)::int AS c FROM reviews
+            WHERE user_id = ${user.id}::uuid
+              AND (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date = ${day}::date
+          `)
+          const distinct = Number(
+            ((distinctRows as unknown) as Array<{ c: unknown }>)[0]?.c ?? 0,
+          )
 
           await tx
             .insert(studyDays)
