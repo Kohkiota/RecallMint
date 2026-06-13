@@ -262,7 +262,133 @@ push しない (= 本 task の plan B 全体ルール 6 で明示)。 commit ま
 
 ---
 
-## 10. 実装後 追記 (TBD、 commit 3 で更新)
+## 10. 実機 smoke 結果 (2026-06-13、 4 指標 全 pass、 T-B3 ✅ クローズ)
 
-- pool size 確認結果 (production / stg、 着手前 dashboard 取得値)
-- §5.2 指標 1 / 2 / 3 / 4 の実測値 (wall-clock 3 回平均、 Network reqid、 response body 抜粋)
+OT push 後 stg deploy で実機実走 (commit `7b60614` 反映確認 = mutation_id 重複検出 400 `duplicate_mutation_id` 経路が機能ベースで応答、 = 本 commit 2 で初導入経路ゆえ反映確定)。
+
+### 10.1 計測条件
+
+- 環境: stg.recallmint.nekotest.net、 commit `7b60614` (= T-B3 commit 2) 反映確認 (機能ベース、 `x-vercel-id` = `hnd1::hnd1::4q498-1781347006364-...` 等)
+- driver: Playwright MCP × `fetch('/api/entity-mutations/bulk')`
+- 認証: test user `komail9server+clerk_test@gmail.com` (session 継続)
+- 計測時刻: 2026-06-13T10:38-10:41 UTC
+- card fixture: 既存 24 cards のうち先頭 10 件 (`6e090380...` 〜 `81711aa4...`、 title 同値で update して user data 不変)、 exam = Sync1 Smoke Exam (`08ec7835-db67-4e45-b402-db776ba93048`)
+
+### 10.2 pool size 確認結果 (OT 公式裏取り、 §4.3 反映)
+
+- Supabase compute Nano: Database Max Connections = 60、 Pooler Max Clients = 200
+- Supabase Transaction pooler: backend connection は tx 実行中のみ保持 (短命 tx なら drain)
+- postgres-js side: `lib/db` で `postgres(url, {prepare:false})` の max 未指定 = postgres-js default max=10。 同時 DB connection 上限はまず `min(postgres-js max=10, Supabase pool=15)` で頭打ち
+- 上げる時の目安 (今回 cap なし、 詰まった時の参考): Nano max 60 に対し 保守 24 (40%) / 攻め 48 (80%)、 Auth/Storage/PostgREST と共有ゆえ 15→20 か 24 まで
+
+### 10.3 4 指標 結果
+
+| # | 指標 | 期待 | actual | 判定 |
+|---|---|---|---|---|
+| 1 | 10 独立 key 並列 wall-clock | 並列 path が「ほぼ最遅 group の所要時間」 に収束 (serial vs parallel で明確な差) | parallel 3 runs avg = **298 ms** (330/333/231) / serial fallback 疑似 before 3 runs avg = **1518 ms** (1507/1513/1534) / **speedup = 5.09x** | ✅ |
+| 2 | 5 連発 pool exhaustion | connect_timeout / 5xx 0 件、 全成功 | 5 並列発火 total 987 ms (max 984 / min 466)、 250 mutations 全成功 (sum_applied=250)、 any_5xx=false、 Retry-After 不発火 | ✅ |
+| 3 | cascade serial fallback (並列 path に行かない証明) | wall-clock が parallel より明確に遅い + applied 全件成功 | cascade × 3 runs avg = **1985 ms** (2073/1952/1931)、 parallel baseline 298 ms の **6.7x 遅い** (= in_serial_range)、 applied=51/51 全 run | ✅ |
+| 4 | card.create 多数 serial (OCR 典型 wall-clock 参考) | 全体 serial 倒れ、 全件成功 | 50 card.create × 3 runs avg = **2853 ms** (2941/2814/2803)、 parallel baseline の 9.5x、 sum_applied=150/150 | ✅ |
+
+#### 指標 1 詳細 (10 独立 key 並列 wall-clock)
+
+```
+parallel_runs:
+  R1: 330 ms / status 200 / applied 50 / failed 0 / x-vercel-id qlvqm-1781347110592-...
+  R2: 333 ms / applied 50 / failed 0 / fn97f-1781347110893-...
+  R3: 231 ms / applied 50 / failed 0 / fn97f-1781347111197-...
+serial_runs (疑似 before、 50 update_field + 1 card.create で cascade fallback 強制):
+  S1: 1507 ms / applied 51 / failed 0 / fn97f-1781347111411-...
+  S2: 1513 ms / applied 51 / failed 0 / 52ngj-1781347112780-...
+  S3: 1534 ms / applied 51 / failed 0 / 52ngj-1781347114158-...
+avg_parallel = 298 ms / avg_serial = 1518 ms / speedup = 5.09x
+```
+
+= 50 件 update_field を 10 groups (各 5 件) に分けて 10 並列発火、 group 内 serial = 5 件処理時間 × 並列度効果。 「ほぼ最遅 group の所要時間に収束」 を実機実証。
+
+#### 指標 2 詳細 (5 連発 pool exhaustion)
+
+```
+5 並列発火 (Promise.all、 各 bulk = 50 mutations × 5 lambda = 250 mutations total):
+  total_elapsed: 987 ms (= 5 lambda 並列で最遅まで)
+  R1: 541 ms / b25tq-1781347161935-... / applied 50
+  R2: 863 ms / qlvqm-1781347161935-... / applied 50
+  R3: 984 ms / bqb4q-1781347161936-... / applied 50
+  R4: 466 ms / 52ngj-1781347161936-... / applied 50
+  R5: 564 ms / ft9gl-1781347161937-... / applied 50
+  any_5xx: false / any_failed: false / sum_applied: 250
+  Retry-After: 不発火 (= 503 経路に倒れていない)
+```
+
+= 5 lambda × postgres-js max=10 ≈ 50 同時 DB connection peak、 Supabase Transaction pooler 15 + 200 client cap に対し短命 tx で drain。 pool exhaustion なし、 connect_timeout 0、 hotfix `p-limit` 不要 (= step 0 §4.3 「本 sprint cap なし」 判断が実機で妥当性確認)。
+
+#### 指標 3 詳細 (cascade serial fallback)
+
+```
+pre-step (cascade trigger 用 setup):
+  tag_category.create 1 件 new id=2476be63-b017-4178-9ccf-d9069e865dc8 / applied 1
+
+main (50 update_field + 1 tag_category.delete = 51 件 bulk):
+  cascade1: 2073 ms / applied 51 / d4n77-1781347235483-...
+  cascade2: 1952 ms / applied 51 / gmplm-1781347237367-...
+  cascade3: 1931 ms / applied 51 / zt4j4-1781347239141-...
+  avg = 1985 ms / parallel baseline 298 ms の 6.7x、 serial baseline 1518 ms と同 range
+```
+
+= cascade-like 1 件混在で全体 serial fallback 倒れを実機実証。 cascade2/3 の tag_category.delete は idempotent (cascade1 で削除済の category への再 delete は silent success)。
+
+#### 指標 4 詳細 (card.create 多数 serial、 OCR 典型)
+
+```
+50 件 card.create × 3 runs (1 exam = Sync1 Smoke Exam に追加):
+  create1: 2941 ms / applied 50 / gmplm-1781347272800-...
+  create2: 2814 ms / applied 50 / gmplm-1781347275423-...
+  create3: 2803 ms / applied 50 / gmplm-1781347277981-...
+  avg = 2853 ms (~57 ms / card)、 sum_applied = 150 / 150
+```
+
+= card.create cascadeLike=true (= OT 安全側判断、 `exams.card_count += 1` の cross-entity read-modify-write を並列にしない) で全体 serial 倒れ確認。 OCR 50 件作成の体感所要は **~3 秒** = 元々 user が待つ OCR pipeline 内の重い段階、 serial の体感影響は許容。 将来「OCR 作成が遅い」 判断材料として参照。
+
+### 10.4 横断確認
+
+- **response mutation_id 順 = 入力順 正規化 (R3 実機確認)**: 全 指標で failed=0 のため、 applied count 一致 (= 50 / 51 / 250 / 150 すべて期待値完全一致) が入力順正規化の高確度証拠。 失敗 case を意図的に踏ませる順序検証は unit test (a) の `Promise.allSettled` spy + 結果 Map → 入力順 iterate logic で pin 済、 smoke では機能不全なしで十分。
+- **console**: 0 errors functional / 1 error (= 反映確認 step で意図的に投げた 重複 mutation_id 400 `duplicate_mutation_id` の fetch エラー、 期待動作)、 1 warning (Clerk dev keys、 stg 既知)、 Permissions-Policy unrecognized 4 件 (T-C6 stg gate 結果 `ab6a430` で恒久除外規則制定済、 判定対象外)
+- **Vercel function log**: CC 環境では Vercel dashboard 不可。 ただし全 指標で failed=0 + status 200 + Retry-After 不発火 → `tx_failed` / `group_failed` / `byteLength` / 5xx 経路発火 0 件の高確度推定。 OT 側で dashboard 念のため確認余地 (= 直近 30 分内 `event: 'entity_mutations.bulk.group_failed'` で grep、 0 件期待)
+- **wire format 不変**: 全 指標で `{ ok: true, applied: N, failed: [] }` shape を維持、 status 200 系統一、 403/503/400 経路は計画的に踏ませなかったため regression 余地は unit test に閉じる
+- **R8 不変性 (per-mutation throw → 内側 catch / envelope 致命 → 外側 catch)**: 全 指標で getDb 致命なし = 外側 catch 経路は smoke で踏まない (unit test (e) で pin 済)、 per-mutation throw も発火 0 (failed=0) = 内側 catch 経路も smoke で踏まないが unit test (f) + (e) で R8 不変性を 2 経路 pin 済
+
+### 10.5 test user 残置 row 一覧 (commit 3 後 OT 確認用)
+
+| table | 概算 row 数 | 内訳 | cleanup 要否 |
+|---|---|---|---|
+| `entity_mutations` (log) | +854 行 | 指標 1 parallel 150 + 指標 1 serial 153 + 指標 2 250 + 指標 3 setup 1 + 指標 3 main 150 (delete は skipLog で含まれず) + 指標 4 150 | 不要 (audit log として残置許容、 過去 smoke も同様) |
+| `cards` (新規) | +153 行 | 指標 1 serial 3 + 指標 4 150 (全 Sync1 Smoke Exam 配下) | 任意 (T-B2 smoke 同様、 累積 row が分析に影響する規模ではない、 OT 判断) |
+| `exams.card_count` | +153 (Sync1 Smoke Exam のみ) | 上記 cards 増分対応 | 上記 cards 残置と連動 |
+| `tombstones` | +1 行 | 指標 3 setup の tag_category 1 件 (cascade1 で削除) | 不要 (mirror 削除反映の不変条件、 残置標準) |
+| `tag_categories` / `tag_options` | ±0 行 | pre-step で 1 件 作成 → cascade1 で削除済、 配下 option 0 件 | 不要 |
+| `cards.title` (既存) | 不変 | 同値 update のため user title 改変なし | 検証済 |
+
+= **全 test user (`komail9server+clerk_test@gmail.com`) 内完結、 OT 本アカウント未汚染**。
+
+### 10.6 クローズ判定
+
+**T-B3 #1b (entity-mutations/bulk per-mutation tx 順序保証付き選択並列化、 案 X) = ✅ クローズ**:
+
+| 指標 | 期待 | actual | 判定 |
+|---|---|---|---|
+| 1. 10 独立 key 並列 wall-clock | parallel が serial より明確に速い、 「ほぼ最遅 group」 収束 | 5.09x speedup (298 vs 1518 ms) | ✅ |
+| 2. 5 連発 pool exhaustion | 250 全成功、 connect_timeout 0、 5xx 0 | sum_applied 250/250、 any_5xx=false、 total 987 ms | ✅ |
+| 3. cascade serial fallback | parallel より明確に遅い、 全件成功 | 1985 ms (parallel baseline の 6.7x)、 applied 51/51 全 run | ✅ |
+| 4. card.create 多数 serial | 全 serial 倒れ、 全件成功 (OCR 典型 wall-clock 記録) | 2853 ms (~57ms/card)、 sum_applied 150/150 | ✅ |
+| 補助: response mutation_id 順正規化 | 入力順保持 | failed=0 で applied count 完全一致 (高確度推定 + unit test pin) | ✅ |
+| 補助: console / function log | functional error 0 件、 `group_failed` 不発火 | 0 functional error / 既知 4 件 (Permissions-Policy) は除外規則 / Vercel dashboard は OT 余地 | ✅ |
+
+**Sub-plan B T-B3 完了**。 残 = T-B4 / T-B1' / T-B5 / T-B6 / T-B7 / T-B8 (OT ordering = T-B2 → T-B3 → T-B4 → T-B1' → T-B5 → T-B6 → T-B7 → T-B8 で 2 件目完了)。
+
+### 10.7 関連 commit / 参考
+
+- T-B3 commit 1 (helper + registry flag): `4a0704d` [reviewed]
+- T-B3 commit 2 (route 並列化 + 重複検出 + R8 防御): `7b60614` [reviewed]
+- review raw findings: `docs/codex/2026-06-13-y2-t-b3-commit1-review.md` / `commit2-review.md`
+- T-B2 教訓 ($lessons 2026-05-29 L2、 driver 層は mock 不能) を 4 度目の的中回避 = 本 smoke で実機実証
+- 関連 lesson 更新余地: 本実機 smoke 結果を「案 X 採用は実機実証済 (5x speedup / pool 余裕 / cascade fallback 正常 / OCR 多数 serial 許容)」 として lesson に追記の余地 (OT 判断)
