@@ -73,14 +73,16 @@
 
 ---
 
-### Task T-B4: #1c exam-list-live 全 cards → necessary subset
+### Task T-B4: #1c exam-list-live materialize 回避 (案 b、 spec 2026-06-13 反映)
 
 **Files:**
-- Modify: 試験一覧 useLiveQuery 経路 (grep `exam-list-live\|examListLive` で特定) + 関連 component test
+- Modify: `app/(app)/app/exams/_components/exam-list-live.tsx` + `app/(app)/app/exams/_components/exam-list-live.test.tsx`
+- Modify: `lib/client-db.ts` (Dexie v6 で `cards` table に compound index `[user_id+exam_id]` 追加、 純粋追加 / 既存データ保持)
+- Reference: `docs/superpowers/specs/2026-06-13-y2-t-b4-design.md` (本 task の方針確定 spec)
 
-- [ ] **目的**: 試験一覧の Dexie query を試験ごとに必要 subset (count + 最近 N=5 件等) に絞り込み、 全 cards scan を回避 (audit §10.3 (b) #1 of 5)。
-- [ ] **制約**: UI 表示要素 (count / 最終更新 / etc.) に必要な field のみ読む。 既存 useLiveQuery subscription 契約は維持 (server pull で書込走ったら自動再描画)。 Dexie index は既存 (新規 migration 不要)。
-- [ ] **完了条件**: 試験 100 件 × cards 1000 件の test fixture で before/after row read 数を計測 (~100k → ~500 を目標)。 既存 試験一覧 test 全 pass + read 数 regression test 1 case。 Critical 0、 [reviewed]。
+- [ ] **目的**: exam-list-live の per-exam 集計を `db.cards.where('user_id').toArray()` (cards ~2k 件以上を JS object 化) → `Promise.all(activeExams.map(e => db.cards.where('[user_id+exam_id]').equals([userId, e.id]).count()))` に置換し、 materialize 0 を構造保証する (spec §2.1 / §2.4 = Dexie native `IDBIndex.count(IDBKeyRange)` 経路、 row 本体 fetch なし)。 旧 plan の subset 化前提 (archived exam の cards 除外) は spec §1.2 確認結果 (archive 軸が運用上機能してない、 archived_at SET write 経路 0 件) で破棄。
+- [ ] **制約**: Dexie v6 で `cards` に compound index `[user_id+exam_id]` を追加 (旧 plan の「新規 migration 不要」 制約は spec §1.2 で解除済、 ユーザー 0 / DB 破棄可前提)。 過去 v2 / v4 / v5 と同形の純粋 index 追加 (store drop なし、 既存データ保持、 upgrade callback 不要)。 owner isolation (test #6) は index 構造 (`.equals([userId, examId])` の第 1 要素 fix で他 user の cards に index 経路で到達不能) で担保し、 client 防御層は撤去せず強化。 `exams.cardCount` 非読の設計判断は維持 (spec §1.4、 local-first / optimistic mutation の整合性が背景)。 useLiveQuery subscription 契約は維持 (cards table を触る事実は変わらないため、 server pull / optimistic mutation 双方で自動再描画)。 server 側 (Drizzle/Postgres) 対応は不要 (spec §1.4 + Step 0 確認結果: `getActiveExamsWithCardCount` 撤去済、 `/app/exams` 表示 path に per-exam 集計 SELECT は存在しない)。
+- [ ] **完了条件**: ① per-exam materialize 0 の構造保証 = regression test 1 件 (spy で `db.cards.where('[user_id+exam_id]').equals` の呼出回数 = active exam 件数 / 旧経路 `db.cards.where('user_id').equals(userId).toArray()` の呼出 = 0 を assert、 旧経路復活検知)。 ② 既存 exam-list-live test 6 件全 pass (test #6 owner isolation を index 構造で満たす)。 ③ stg 実機 DevTools Performance で `/app/exams` の dexie_render_attr が計測可能な幅で改善 (実数値 + T-B1 比較 + materialized row 数を session log に貼付。 計測 fixture = T-B1 seed runbook `docs/superpowers/sessions/2026-06-12-y2-b1-seed-runbook.md` 流用 + exam 数を 3 → 100 規模に拡張)。 ④ **exam 数拡張 fixture で候補 (a) (`where('[user_id+exam_id]').between([U,MIN],[U,MAX]).keys()` + JS Map 集計) との実測比較**を同 session log に貼付し、 100 exam 規模で (b) が依然優位であることを確認 (逆転していたら本 task 内で (a) へ切替、 spec §2.5 / §7-3 の余地反映)。 ⑤ **per-task gate** = whole-repo `pnpm lint --max-warnings=0` + `pnpm typecheck` + `pnpm test` + **`pnpm build`** 全 exit 0 (Dexie schema 変更を build が検出経路。 vitest / typecheck は IDB schema 変更を検出不能、 ブラウザ実走 = stg build で表面化、 CLAUDE.md sprint 完了 gate + Next 設定 file gate の趣旨を本 task に適用)。 ⑥ Critical 0、 [reviewed] (UI 微調整 / 認証・決済・削除・外部副作用に該当しないため、 review pass 後即 [reviewed] 付与の通常経路)。
 
 ---
 
