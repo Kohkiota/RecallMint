@@ -35,7 +35,14 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
 import { entityMutations, type User } from '@/lib/db/schema'
-import { lookupRegistryEntry } from '@/lib/sync/server/entity-mutation-registry'
+import {
+  ENTITY_MUTATION_REGISTRY,
+  lookupRegistryEntry,
+} from '@/lib/sync/server/entity-mutation-registry'
+import {
+  groupMutationsByEntityKey,
+  assertSequentialPath,
+} from '@/lib/sync/server/group-mutations-by-entity-key'
 import {
   parsedMutationSchema,
   type ParsedMutation,
@@ -56,10 +63,31 @@ export const runtime = 'nodejs'
 // 共有するため)。 本 file は payload 全体 (= mutations 配列上限) のみ定義する。
 // ---------------------------------------------------------------------------
 
-const payloadSchema = z.object({
-  // 1 回の flush で 1000 件超は実用上ないため上限を設けて DoS 寄りの巨大 payload を弾く。
-  mutations: z.array(parsedMutationSchema).max(1000),
-})
+// mutation_id 重複検出に使う zod issue code (envelope-level の `invalid_payload` と
+// `duplicate_mutation_id` を caller 側で識別するための custom 文字列)。 並列化後は
+// 異 group に分離された同 mutation_id が両方 applied になりうる race (R7) を入口で
+// 殺すため、 envelope zod で 400 reject する設計 (step 0 doc §4.4)。
+const DUPLICATE_MUTATION_ID_CODE = 'duplicate_mutation_id'
+
+const payloadSchema = z
+  .object({
+    // 1 回の flush で 1000 件超は実用上ないため上限を設けて DoS 寄りの巨大 payload を弾く。
+    mutations: z.array(parsedMutationSchema).max(1000),
+  })
+  .superRefine((data, ctx) => {
+    const seen = new Set<string>()
+    for (const m of data.mutations) {
+      if (seen.has(m.mutation_id)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: DUPLICATE_MUTATION_ID_CODE,
+          path: ['mutations'],
+        })
+        return
+      }
+      seen.add(m.mutation_id)
+    }
+  })
 
 // ---------------------------------------------------------------------------
 // processMutation — 単一 mutation を per-mutation tx で apply + (skipLog でなければ)
@@ -168,6 +196,17 @@ export async function POST(req: Request): Promise<Response> {
   }
   const parsed = payloadSchema.safeParse(body)
   if (!parsed.success) {
+    // mutation_id 重複は envelope zod の他 issue と切り分けて caller に伝える
+    // (client 側で原因切り分け可能にするため、 専用 error code を返す)。
+    const isDuplicate = parsed.error.issues.some(
+      (issue) => issue.message === DUPLICATE_MUTATION_ID_CODE,
+    )
+    if (isDuplicate) {
+      return Response.json(
+        { error: 'duplicate_mutation_id' },
+        { status: 400 },
+      )
+    }
     return Response.json(
       { error: 'invalid_payload', issues: parsed.error.issues },
       { status: 400 },
@@ -187,26 +226,103 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const db = getDb()
 
-    for (const mutation of mutations) {
-      try {
-        const result = await processMutation(db, user, mutation)
+    // Y-2 T-B3 #1b: 順序保証付き選択並列化 (案 X)。
+    // - `${entity_type}:${entity_id}` で group 化
+    // - cascade-like 1 件でも検出 → 全体 serial fallback (= 現状経路を丸ごと再利用)
+    // - cascade なし → group 間 `Promise.allSettled` で並列、 group 内は逐次
+    // - 結果は mutation_id → result の Map に投入 → 入力順 iterate で集計を再構築
+    //   (= response failed[] 順 + applied count は wire format 不変、 入力順)
+    const { groups, serialFallback } = groupMutationsByEntityKey(
+      mutations,
+      ENTITY_MUTATION_REGISTRY,
+    )
+
+    if (serialFallback) {
+      // cascade-like 検出: 現行 for-of 経路をそのまま使う (prod 実績ある経路丸ごと再利用)。
+      for (const mutation of mutations) {
+        try {
+          const result = await processMutation(db, user, mutation)
+          if (result === 'applied') {
+            applied++
+          } else if (result === 'failed') {
+            failed.push(mutation.mutation_id)
+          }
+          // 'skipped' は applied にも failed にも入れない (冪等 skip)
+        } catch (err) {
+          // 予期せぬ throw (DB 接続障害等) → log して failed に積む (200 契約維持)
+          logger.warn({
+            event: 'entity_mutations.bulk.mutation_failed',
+            mutationId: mutation.mutation_id,
+            entityType: mutation.entity_type,
+            entityId: mutation.entity_id,
+            userId: user.id,
+            err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
+          })
+          failed.push(mutation.mutation_id)
+        }
+      }
+    } else {
+      // 非 cascade のみ: group 間並列。 各 group の per-mutation 結果は Map に投入し、
+      // 後段で 入力順 iterate により response mutation_id 順を入力順に正規化する。
+      const resultByMutationId = new Map<
+        string,
+        'applied' | 'skipped' | 'failed'
+      >()
+      // `Promise.allSettled` は「group 内 try/catch を抜ける runtime error が
+      // 他 group を止めない」 ための safety net。 通常 path では各 group 内の
+      // try/catch が per-mutation throw を吸い込むため rejected には到達しない。
+      await Promise.allSettled(
+        Array.from(groups.values()).map(async (group) => {
+          // 外側 try: assertSequentialPath / logger / serializeDbError が万一 throw
+          // した時の fail-silent (= Map に結果が入らず入力順 iterate で skipped と
+          // 同視 = silent lost write) を構造的に塞ぐ。 step 0 §5 R8 不変性を mock
+          // 検出可に格上げするための防御線で、 通常 path では発火しない。
+          try {
+            // 順序破壊 self-guard: 通常 path で group 内 for-of (serial mode) は no-op。
+            // 将来の `Promise.all` 誤改造 (= 同一 key を並列で流す) を build/test 時に
+            // throw で gate する dev-time invariant (helper test case 3 と一体)。
+            assertSequentialPath(group, 'serial')
+            for (const mutation of group) {
+              try {
+                const result = await processMutation(db, user, mutation)
+                resultByMutationId.set(mutation.mutation_id, result)
+              } catch (err) {
+                logger.warn({
+                  event: 'entity_mutations.bulk.mutation_failed',
+                  mutationId: mutation.mutation_id,
+                  entityType: mutation.entity_type,
+                  entityId: mutation.entity_id,
+                  userId: user.id,
+                  err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
+                })
+                resultByMutationId.set(mutation.mutation_id, 'failed')
+              }
+            }
+          } catch (err) {
+            // group-level fatal: assertSequentialPath / logger / serializer の万一の
+            // throw のみ到達。 当該 group 内全 mutation を failed に積み replay 余地を
+            // 残す (= 入力順 iterate で failed[] に必ず出る、 silent skip を回避)。
+            logger.warn({
+              event: 'entity_mutations.bulk.group_failed',
+              groupSize: group.length,
+              userId: user.id,
+              err: serializeDbError(err),
+            })
+            for (const m of group) {
+              resultByMutationId.set(m.mutation_id, 'failed')
+            }
+          }
+        }),
+      )
+      // 入力順で集計を再構築 (= response の failed[] / applied count を入力順に正規化)。
+      // 'skipped' は applied / failed どちらにも入れない (冪等 skip、 既存挙動)。
+      for (const mutation of mutations) {
+        const result = resultByMutationId.get(mutation.mutation_id)
         if (result === 'applied') {
           applied++
         } else if (result === 'failed') {
           failed.push(mutation.mutation_id)
         }
-        // 'skipped' は applied にも failed にも入れない (冪等 skip)
-      } catch (err) {
-        // 予期せぬ throw (DB 接続障害等) → log して failed に積む (200 契約維持)
-        logger.warn({
-          event: 'entity_mutations.bulk.mutation_failed',
-          mutationId: mutation.mutation_id,
-          entityType: mutation.entity_type,
-          entityId: mutation.entity_id,
-          userId: user.id,
-          err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
-        })
-        failed.push(mutation.mutation_id)
       }
     }
   } catch (err) {

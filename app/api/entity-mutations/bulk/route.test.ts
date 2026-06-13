@@ -18,7 +18,7 @@
 //   - vi.mock() で getCurrentUser / getDb / logger をモック
 //   - fake tx を手作りして DB interaction を検証
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { getTableName } from 'drizzle-orm'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import type { User } from '@/lib/db/schema'
@@ -146,6 +146,19 @@ vi.mock('@/lib/cards/apply-card-mutation', () => ({
   ),
 }))
 
+// apply-tag-mutation は cascade serial fallback 検証 (T-B3 case (b)) で
+// `tag_category.delete` / `tag_option.delete` の registry path を踏むため mock 化。
+// 戻り値は 'applied' 固定 (= cascade serial 経路の挙動確認が目的、 apply 内部は
+// 別 test で覆われている)。
+vi.mock('@/lib/tags/apply-tag-mutation', () => ({
+  applyTagCategoryCreate: vi.fn(async () => 'applied'),
+  applyTagCategoryUpdate: vi.fn(async () => 'applied'),
+  applyTagCategoryDelete: vi.fn(async () => 'applied'),
+  applyTagOptionCreate: vi.fn(async () => 'applied'),
+  applyTagOptionUpdate: vi.fn(async () => 'applied'),
+  applyTagOptionDelete: vi.fn(async () => 'applied'),
+}))
+
 // getDb は fakeDb を返す (T-A1: state.getDbError 設定で throw に切替可能)
 vi.mock('@/lib/db', () => ({
   getDb: vi.fn(() => {
@@ -247,6 +260,9 @@ const fakeDb = {
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { entityMutations } from '@/lib/db/schema'
 import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
+import { assertSequentialPath } from '@/lib/sync/server/group-mutations-by-entity-key'
+// logger は (f) group-level fatal で `mockImplementationOnce` 用に直接参照する。
+import { logger } from '@/lib/logger'
 import { POST } from './route'
 
 const FAKE_USER = { id: '11111111-1111-4111-a111-111111111111' } as unknown as User
@@ -352,6 +368,13 @@ beforeEach(() => {
   for (const handler of Object.values(CARD_FIELD_HANDLERS)) {
     vi.mocked(handler).mockClear()
   }
+})
+
+// spy (= `Promise.allSettled` を `vi.spyOn` で奪う case 群) が test 内 throw で
+// `mockRestore` を skip した時に global state が次 test に漏れるのを防ぐ。
+// 各 test 末尾の明示 `mockRestore()` と二重防御 (review Minor 2 反映)。
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 // ---------------------------------------------------------------------------
@@ -1029,5 +1052,282 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(res.headers.get('Retry-After')).toBeNull()
     const body = (await res.json()) as { error: string }
     expect(body.error).toBe('invalid_payload')
+  })
+
+  // ---------------------------------------------------------------------------
+  // T-B3 #1b: 順序保証付き選択並列化 (Y-2 最大リスク task の中核)
+  //
+  // 並列化の検証戦略 (Promise.allSettled spy):
+  //   group helper の戻り値 `serialFallback` を信頼して route が分岐するため、
+  //   「並列 path を踏んだ」 = 「`Promise.allSettled` が呼ばれた」 の対応で十分。
+  //   timing ベースの overlap 観測は flake 源になるので採らず、 spy で path を pin する。
+  //   group 内 for-of は通常 path で serial mode = no-op の `assertSequentialPath` を踏む。
+  //
+  // R8 念押し:
+  //   per-mutation 内部 throw は group 内 catch (= logger.warn + failed[] 積み) で吸い込み、
+  //   envelope-level 致命 (= getDb 失敗 等の外側 catch) は並列化前後で不変。 case (e) が
+  //   この 2 層分類が並列化で崩れないことを pin する。
+  // ---------------------------------------------------------------------------
+
+  // (a) 10 独立 key 並列発火
+  it('T-B3 (a): 10 件異 entity_id の update_field → 並列 path (Promise.allSettled 経由) + applied:10 + 入力順保持', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const allSettledSpy = vi.spyOn(Promise, 'allSettled')
+
+    // 10 件すべて異なる entity_id (= 10 独立 group)、 全件 update_field (= 非 cascade)
+    const mutations = Array.from({ length: 10 }, (_, i) => {
+      const cardId = `bbbbbbbb-bbbb-4bbb-aaaa-${String(i).padStart(12, '0')}`
+      const mutationId = `cccccccc-cccc-4ccc-aaaa-${String(i).padStart(12, '0')}`
+      return makeUpdateFieldMutation({
+        mutation_id: mutationId,
+        entity_id: cardId,
+        field: 'title',
+        value: `t-${i}`,
+      })
+    })
+
+    const res = await POST(makeReq({ mutations }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      applied: number
+      failed: string[]
+    }
+    expect(body.ok).toBe(true)
+    expect(body.applied).toBe(10)
+    expect(body.failed).toHaveLength(0)
+
+    // 並列 path: route が group 間で `Promise.allSettled` を 1 回呼ぶ
+    expect(allSettledSpy).toHaveBeenCalledTimes(1)
+    // CARD_FIELD_HANDLERS.title が 10 回呼ばれた (10 件すべて dispatch 成功)
+    expect(vi.mocked(CARD_FIELD_HANDLERS.title)).toHaveBeenCalledTimes(10)
+    allSettledSpy.mockRestore()
+  })
+
+  // (b) cascade serial 倒れ (4 op subtest 網羅)
+  describe('T-B3 (b): cascade-like 1 件混在 → 全体 serial fallback (4 op 網羅)', () => {
+    const cascadeFixtures: Array<{
+      label: string
+      makeMutation: (mutationId: string) => Record<string, unknown>
+    }> = [
+      {
+        label: 'card.create',
+        makeMutation: (mutationId) =>
+          makeCreateMutation({
+            mutation_id: mutationId,
+            entity_id: 'cafe0000-0000-4000-a000-000000000001',
+          }),
+      },
+      {
+        label: 'card.delete',
+        makeMutation: (mutationId) =>
+          makeDeleteMutation({
+            mutation_id: mutationId,
+            entity_id: 'cafe0000-0000-4000-a000-000000000002',
+          }),
+      },
+      {
+        label: 'tag_category.delete',
+        makeMutation: (mutationId) => ({
+          mutation_id: mutationId,
+          entity_type: 'tag_category',
+          entity_id: 'cafe0000-0000-4000-a000-000000000003',
+          op: 'delete',
+          patch: {},
+          edited_at: '2026-05-30T10:00:00.000Z',
+        }),
+      },
+      {
+        label: 'tag_option.delete',
+        makeMutation: (mutationId) => ({
+          mutation_id: mutationId,
+          entity_type: 'tag_option',
+          entity_id: 'cafe0000-0000-4000-a000-000000000004',
+          op: 'delete',
+          patch: {},
+          edited_at: '2026-05-30T10:00:00.000Z',
+        }),
+      },
+    ]
+
+    for (const { label, makeMutation } of cascadeFixtures) {
+      it(`${label} を 1 件含む 11 件 mixed → applied:11, failed:[]、 Promise.allSettled 不発火 (serial path)`, async () => {
+        vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+        const allSettledSpy = vi.spyOn(Promise, 'allSettled')
+
+        // 10 件の非 cascade update_field (異 entity_id) + 1 件の cascade-like
+        const updates = Array.from({ length: 10 }, (_, i) => {
+          const cardId = `dddddddd-dddd-4ddd-aaaa-${String(i).padStart(12, '0')}`
+          const mutationId = `eeeeeeee-eeee-4eee-aaaa-${String(i).padStart(12, '0')}`
+          return makeUpdateFieldMutation({
+            mutation_id: mutationId,
+            entity_id: cardId,
+            field: 'title',
+            value: `t-${i}`,
+          })
+        })
+        const cascadeMutationId =
+          'ffffffff-ffff-4fff-aaaa-000000000099'
+        const mutations = [...updates, makeMutation(cascadeMutationId)]
+
+        const res = await POST(makeReq({ mutations }))
+        expect(res.status).toBe(200)
+        const body = (await res.json()) as {
+          ok: boolean
+          applied: number
+          failed: string[]
+        }
+        expect(body.ok).toBe(true)
+        expect(body.applied).toBe(11)
+        expect(body.failed).toHaveLength(0)
+        // serial path: `Promise.allSettled` は呼ばれない
+        expect(allSettledSpy).not.toHaveBeenCalled()
+        allSettledSpy.mockRestore()
+      })
+    }
+  })
+
+  // (c) mutation_id 重複 → 400 duplicate_mutation_id
+  it('T-B3 (c): mutation_id 重複 (2 件) → 400 + { error: "duplicate_mutation_id" }', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    // 同 mutation_id を 2 件 (entity_id は異なる、 envelope レベルでは他 issue なし)
+    const mutations = [
+      makeUpdateFieldMutation({
+        mutation_id: VALID_MUTATION_ID,
+        entity_id: VALID_CARD_ID,
+      }),
+      makeUpdateFieldMutation({
+        mutation_id: VALID_MUTATION_ID,
+        entity_id: VALID_CARD_ID_2,
+      }),
+    ]
+    const res = await POST(makeReq({ mutations }))
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('duplicate_mutation_id')
+    // Retry-After は付与しない (400 は permanent)
+    expect(res.headers.get('Retry-After')).toBeNull()
+    // payload 段で reject → DB に到達しない (handler / log INSERT 不発)
+    expect(state.cardFieldUpdateCalls).toHaveLength(0)
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
+  // (d) length=1 境界 parallel OK
+  // helper test case 3 は「parallel + length>1」 を gate しており、 length=1 で parallel mode
+  // を踏んでも false positive にならないことを route 結合で pin する (review Recommendation 1)。
+  // 実装は helper 直接呼出で十分 (route は serial mode で呼ぶ前提だが、 invariant の
+  // false positive 防止を helper signature レベルで確認)。
+  it('T-B3 (d): assertSequentialPath(group, "parallel") は group.length=1 で throw しない (false positive 防止)', () => {
+    const single = [
+      makeUpdateFieldMutation({
+        mutation_id: VALID_MUTATION_ID,
+        entity_id: VALID_CARD_ID,
+      }),
+    ]
+    expect(() =>
+      assertSequentialPath(
+        single as unknown as Parameters<typeof assertSequentialPath>[0],
+        'parallel',
+      ),
+    ).not.toThrow()
+  })
+
+  // (e) R8 envelope 致命の分類 2 層不変 (並列化前後で 503/Retry-After 経路維持)
+  it('T-B3 (e): envelope-level getDb 致命 → 並列化前後で 503 + Retry-After 維持、 Promise.allSettled 不発火、 logger.error のみ', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const allSettledSpy = vi.spyOn(Promise, 'allSettled')
+    state.getDbError = new Error('connection failed')
+
+    // 10 件異 entity_id の update_field (= cascade なし、 通常なら並列 path に倒れる構成)
+    // を入れて、 getDb 自体の throw を踏ませる。 並列化前後で envelope catch が 503 に
+    // 倒れること、 group 内 throw として吸い込まれないことを pin する。
+    const mutations = Array.from({ length: 10 }, (_, i) => {
+      const cardId = `99999999-9999-4999-aaaa-${String(i).padStart(12, '0')}`
+      const mutationId = `88888888-8888-4888-aaaa-${String(i).padStart(12, '0')}`
+      return makeUpdateFieldMutation({
+        mutation_id: mutationId,
+        entity_id: cardId,
+        field: 'title',
+        value: `t-${i}`,
+      })
+    })
+
+    const res = await POST(makeReq({ mutations }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('transient_unavailable')
+
+    // group 内 catch (= logger.warn) は呼ばれない (envelope-level で外側 catch が拾う)
+    expect(state.loggerWarnCalls).toHaveLength(0)
+    // envelope-level catch の logger.error が 1 回呼ばれた
+    expect(state.loggerErrorCalls.length).toBeGreaterThan(0)
+    expect(state.loggerErrorCalls[0]).toMatchObject({
+      event: 'entity_mutations.bulk.envelope_failed',
+    })
+    // group 段以降に到達していない → Promise.allSettled も不発
+    expect(allSettledSpy).not.toHaveBeenCalled()
+    allSettledSpy.mockRestore()
+  })
+
+  // (f) group async body の fail-silent 防御 (review Minor 1 反映、 step 0 §5 R8 を構造的に格上げ)
+  // 並列 path の `Promise.allSettled` は async function 本体の throw を rejection として
+  // 吸収する。 内側 try が processMutation 周りしか囲っていない設計だと、 inner catch の
+  // logger.warn / serializeDbError が万一 throw した場合に結果が Map に入らず、
+  // 入力順 iterate 時に skipped と同視 = silent lost write になる。 route 側の外側 try/catch
+  // (group-level fatal) が当該 group の全 mutation を failed[] に積む経路を pin する。
+  it('T-B3 (f): group async body 内 logger.warn が throw → group-level fatal で全 mutation を failed[] に積む (silent skip 防御)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const allSettledSpy = vi.spyOn(Promise, 'allSettled')
+
+    // (i) handler を 1 回 throw させて inner catch を発火
+    vi.mocked(CARD_FIELD_HANDLERS.title).mockImplementationOnce(async () => {
+      throw new Error('synthetic per-mutation throw')
+    })
+    // (ii) logger.warn の 1 回目のみ throw → inner catch から外側 catch に渡す。
+    // mockImplementationOnce ゆえ、 group-level catch 内の logger.warn (2 回目) は
+    // default に戻り state.loggerWarnCalls に group_failed event が push される。
+    vi.mocked(logger.warn).mockImplementationOnce(() => {
+      throw new Error('synthetic logger.warn fatal')
+    })
+
+    // 1 mutation = 1 group の非 cascade 並列 path。 update_field ゆえ serialFallback=false。
+    const mutationId = 'ffffffff-ffff-4fff-aaaa-000000000001'
+    const cardId = 'eeeeeeee-eeee-4eee-aaaa-000000000001'
+    const mutations = [
+      makeUpdateFieldMutation({
+        mutation_id: mutationId,
+        entity_id: cardId,
+        field: 'title',
+        value: 't-0',
+      }),
+    ]
+
+    const res = await POST(makeReq({ mutations }))
+    // envelope は OK (per-mutation 経路の fatal は status 200 で返す既存契約)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      applied: number
+      failed: string[]
+    }
+    expect(body.ok).toBe(true)
+    expect(body.applied).toBe(0)
+    // silent skip 防御: group async body throw でも該当 group の mutation は failed[] に積まれる
+    expect(body.failed).toContain(mutationId)
+
+    // group-level fatal log が記録された (route.ts の group_failed event)
+    const groupFailedLogs = state.loggerWarnCalls.filter(
+      (c) => c.event === 'entity_mutations.bulk.group_failed',
+    )
+    expect(groupFailedLogs).toHaveLength(1)
+    expect(groupFailedLogs[0]).toMatchObject({
+      event: 'entity_mutations.bulk.group_failed',
+      groupSize: 1,
+    })
+
+    // 並列 path に倒れたことの確認 (= group helper が serialFallback=false を返した)
+    expect(allSettledSpy).toHaveBeenCalledTimes(1)
+    allSettledSpy.mockRestore()
   })
 })
