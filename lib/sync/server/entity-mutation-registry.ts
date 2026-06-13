@@ -84,11 +84,26 @@ export type EntityApplyFn<TPatch> = (
  *
  * skipLog=true の op は entity_mutations への log INSERT を skip する
  * (delete のように audit 行を残さない設計)。
+ *
+ * cascadeLike=true の op は per-mutation tx 並列化対象から外す (Y-2 T-B3 #1b、 案 X)。
+ * 強 cascade (= 配下 entity を巻き込む delete) と cross-entity read-modify-write
+ * (= `exams.card_count ± 1`) を持つ op が該当し、 group helper 段で 1 件でも検出
+ * されたら bulk 全体を serial fallback に倒す (= 並列化の新規リスクを「非 cascade
+ * のみ」に閉じ込める)。 step 0 doc §1.2 / §4.2 で 4 件確定:
+ *   - `card.create` (`exams.card_count += 1`、 OT 安全側判断)
+ *   - `card.delete` (tombstone + DELETE + `exams.card_count -= 1`)
+ *   - `tag_category.delete` (配下 tag_options 巻き込み + FK CASCADE)
+ *   - `tag_option.delete` (FK CASCADE で card_tags 巻き込み)
+ * 残り 5 op (`card.update_field` / `tag_category.create|update_field` /
+ * `tag_option.create|update_field`) は本人 entity 内 self-contained のため flag を
+ * 立てない (= undefined = false 同等)。 新 op 追加時の flag 立て忘れは
+ * `entity-mutation-registry.test.ts` の 9 件 enumerate assert で gate する。
  */
 export type RegistryEntry<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {
   patch: TSchema
   apply: EntityApplyFn<z.infer<TSchema>>
   skipLog?: boolean
+  cascadeLike?: boolean
 }
 
 /**
@@ -250,6 +265,9 @@ export const ENTITY_MUTATION_REGISTRY: Record<
     create: defineEntry({
       patch: cardCreatePatchSchema,
       apply: applyCardCreate,
+      // cross-entity read-modify-write (`exams.card_count += 1`) を含むため、
+      // 並列で確実に安全と言い切れない (OT 安全側判断、 §4.2)。
+      cascadeLike: true,
     }),
     delete: defineEntry({
       patch: cardDeletePatchSchema,
@@ -258,6 +276,9 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       // 理由: 監査 log としての価値が低く、 再送 dedupe は tombstone + 自然冪等で
       // 担保するため (audit log として記録不要)。 従来 card 経路の挙動を維持する。
       skipLog: true,
+      // tombstone INSERT + cards DELETE + `exams.card_count -= 1` の cross-entity
+      // read-modify-write を伴うため並列化対象外 (§1.2 表)。
+      cascadeLike: true,
     }),
   },
   tag_category: {
@@ -274,6 +295,9 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       apply: applyTagCategoryDeleteFn,
       // card と同方針: tombstone + idempotent apply で audit 不要、 log skip
       skipLog: true,
+      // 配下 tag_options 全件 SELECT → tombstones bulk INSERT → FK CASCADE で
+      // tag_options / card_tags を巻き込むため、 並列化対象外 (§1.2 表)。
+      cascadeLike: true,
     }),
   },
   tag_option: {
@@ -289,6 +313,9 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       patch: tagOptionDeletePatchSchema,
       apply: applyTagOptionDeleteFn,
       skipLog: true,
+      // tombstone INSERT + tag_options DELETE → FK CASCADE で card_tags を巻き込む
+      // ため、 並列化対象外 (§1.2 表)。
+      cascadeLike: true,
     }),
   },
 }

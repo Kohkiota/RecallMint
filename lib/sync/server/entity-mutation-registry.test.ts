@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { entityMutationEnvelopeSchema } from '@/lib/sync/shared/mutation-schemas'
+import { lookupRegistryEntry } from '@/lib/sync/server/entity-mutation-registry'
 
 describe('entityMutationEnvelopeSchema — envelope reject', () => {
   it('envelope reject: untrusted entity_type → safeParse failure', () => {
@@ -32,4 +33,28 @@ describe('entityMutationEnvelopeSchema — envelope reject', () => {
     })
     expect(result.success).toBe(false)
   })
+})
+
+// Y-2 T-B3 #1b: cascadeLike flag を 9 件すべて enumerate して assert する。
+// step 0 doc §1.2 / §4.2 確定の 4 件 (= `card.create` / `card.delete` /
+// `tag_category.delete` / `tag_option.delete`) のみ true、 残り 5 件は undefined
+// (= false 同等)。 1 件でも漏れたら test 失敗 = 新 op 追加時に flag 立て忘れを
+// 物理的に検出する gate。
+describe('ENTITY_MUTATION_REGISTRY — cascadeLike flag (Y-2 T-B3 #1b)', () => {
+  const expected: Record<string, Record<string, boolean>> = {
+    card: { create: true, update_field: false, delete: true },
+    tag_category: { create: false, update_field: false, delete: true },
+    tag_option: { create: false, update_field: false, delete: true },
+  }
+
+  for (const [entityType, ops] of Object.entries(expected)) {
+    for (const [op, cascadeLike] of Object.entries(ops)) {
+      it(`${entityType}.${op} → cascadeLike=${cascadeLike}`, () => {
+        const entry = lookupRegistryEntry(entityType, op)
+        expect(entry).toBeDefined()
+        // undefined と false を同一視 (= flag 立てていない = false 同等)
+        expect(entry!.cascadeLike === true).toBe(cascadeLike)
+      })
+    }
+  }
 })

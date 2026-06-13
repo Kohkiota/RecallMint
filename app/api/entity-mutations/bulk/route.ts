@@ -36,6 +36,10 @@ import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
 import { entityMutations, type User } from '@/lib/db/schema'
 import { lookupRegistryEntry } from '@/lib/sync/server/entity-mutation-registry'
+import {
+  parsedMutationSchema,
+  type ParsedMutation,
+} from '@/lib/sync/shared/parsed-mutation'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import { logger } from '@/lib/logger'
 import {
@@ -47,23 +51,15 @@ export const runtime = 'nodejs'
 
 // ---------------------------------------------------------------------------
 // Payload validation (zod) — envelope のみ。 entity_type 別 patch 検証は registry。
+// 単一 mutation の envelope schema (`parsedMutationSchema`) と派生型 (`ParsedMutation`)
+// は `lib/sync/shared/parsed-mutation.ts` に分離 (Y-2 T-B3 #1b、 group helper から
+// 共有するため)。 本 file は payload 全体 (= mutations 配列上限) のみ定義する。
 // ---------------------------------------------------------------------------
-
-const mutationSchema = z.object({
-  mutation_id: z.uuid(),
-  entity_type: z.string().min(1),
-  entity_id: z.uuid(),
-  op: z.string().min(1),
-  patch: z.record(z.string(), z.unknown()),
-  edited_at: z.iso.datetime(),
-})
 
 const payloadSchema = z.object({
   // 1 回の flush で 1000 件超は実用上ないため上限を設けて DoS 寄りの巨大 payload を弾く。
-  mutations: z.array(mutationSchema).max(1000),
+  mutations: z.array(parsedMutationSchema).max(1000),
 })
-
-type ParsedMutation = z.infer<typeof mutationSchema>
 
 // ---------------------------------------------------------------------------
 // processMutation — 単一 mutation を per-mutation tx で apply + (skipLog でなければ)
