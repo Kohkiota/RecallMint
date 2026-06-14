@@ -116,6 +116,28 @@
 
 ---
 
+### Task T-B5b: inline-card-list render / regroup / subscription の cost 軸 (T-B5 派生、 2026-06-14 起票)
+
+**Files:**
+- Investigate / modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx` (L88-130 useLiveQuery callback + L270 付近 `cards.map(card => <li>)` 全 card 一括描画)
+- Investigate: `app/(app)/app/exams/[id]/_components/card-tags-section.tsx` (pill 描画コスト軸)
+
+- [ ] **目的**: T-B5 で card_tags **fetch** 側 (全 scan → page subset) は抑止済。 残る (i) tag 更新ごとの `tagsByCardId` Map **regroup** コスト (audit codex L25 「更新ごとに全 tag relation を regroup する」 未解決部分)、 (ii) `cards.map(...)` での全 card **render** (仮想化なし)、 (iii) tag master と per-card relation の **subscription 統合**で他 exam の card_tags 変化でも本 page callback が再 fire する over-subscription を解消、 を扱う。
+- [ ] **背景** (根拠付き): `docs/superpowers/sessions/2026-06-14-y2-t-b5-step0-redo.md` §4.3 / §5c より、 card_tags fetch を anyOf で抑止しても scenario C/D (他 exam tag 5k-20k、 1-5 年 power user 想定) で React render が page 支配項になりうる (本 sprint では未測定、 stg multi-exam seed 必要)。 audit codex L25 サブ提案「subscription 分離も検討」 は T-B5 で採用せず本 task に振り戻し。
+- [ ] **方針候補** (未確定、 Step 0 で確定):
+   - (a) **仮想化** (`react-window` / `@tanstack/react-virtual` 等): 全 card 一括描画を viewport 制限に。 inline-card-list の現コメント (L143-168) で「将来仮想化導入時に consume 経路復活が必要」 と既に予告。
+   - (b) **subscription 分離**: cards / tag マスタ (categories + options) / card_tags の 3 group を別 useLiveQuery に。 tag マスタ更新 (rare) が card_tags 経路と独立して再 fire するように。
+   - (c) **`tagsByCardId` Map 構築の useMemo 化** (key = cardTags ref + cards id 集合)。
+   - これらは plan T-B5 の memoize 不採用とは別軸 (T-B5 は **fetch memoize** の話、 本 task は **post-fetch assembly / render** の話)。
+- [ ] **Step 0** (本 task 内、 着手 1 段目): stg に multi-exam fixture (B 相当: 5 exam × 50 card × 4 tag = 200 + 1000 他、 fixture spec は T-B1 seed runbook の multi-exam 拡張) を seed し、 inline-card-list の **page-level wall-clock** (React render + regroup) を Performance API で計測。 fetch ≪ render なら仮想化優先、 fetch ≈ render なら subscription 分離優先、 と Step 0 結果で方針確定。
+- [ ] **制約**: T-B5 の anyOf 化を retain (上位構造として変更しない)。 card_tags の subscription 範囲を狭めても useLiveQuery 契約 (= 描画と mirror の整合) を崩さない。 Grid-1 (テーブル化) 合流前の暫定形は許容、 Grid-1 で再評価される comment 1 行。
+- [ ] **完了条件**: **未確定** (Step 0 計測結果から方針 a/b/c 決定後に定義)。 暫定枠 = page-level wall-clock の before/after を session log に貼付 + 既存 inline-card-list test 全 pass + per-task gate 全 exit 0 + Critical 0 + [reviewed]。
+- [ ] **状態**: 未着手。 T-B5 (= 5db89d6 [reviewed]) と独立 scope、 ordering の T-B5 → T-B6 → T-B7 → T-B8 は変更しない。 T-B5b は Sub-plan B 末尾 (T-B8 後) もしくは Y-3 繰越とするかは Step 0 結果で OT 判断。
+
+**起票根拠**: review 中 forward-looking note (canonical review 2026-06-14、 commit 5db89d6 review subagent) で「T-B5b が subscription 分離を実装するなら本 task の equivalence comment (L96-98) を再検証推奨」、 + Step 0 再調査 §6 「card_tags fetch 支配性 = callback 内 99% / page-level 未測定」 を受けて起票。
+
+---
+
 ### Task T-B6: #1e dashboard-actions 全 cards → `[user_id+due]` index 使用
 
 **Files:**
