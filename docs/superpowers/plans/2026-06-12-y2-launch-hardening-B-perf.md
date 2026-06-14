@@ -170,6 +170,8 @@
 
 ### Task T-B8: #7 OCR backoff worst-case ~660s への semaphore concurrency limit
 
+**(2026-06-14 確定: 不実装・受容、 audit §8.3 / §10.3 (b) #7 close note 参照)** — Step 0 fact-finding で「有料 Gemini tier の RPM 余裕 + GEMINI_DAILY_LIMIT 日次 cap (prod fail-fast 配備済) + 429 即 throw (粘らず「混み合っています」 表示、 データ破損 / 他 user 波及なし) で実害抑制 + in-process semaphore は Vercel auto-scale 下で service-wide にならない (effective = N × instances)」 を確認、 将来バズ規模で 429 が実問題化した時の cross-instance lock (Redis 等) で再検討と受容判定 = OT 確定。 以下の実装方針は経緯として残置 (削除しない)。
+
 **Files:**
 - Create: `lib/ocr/semaphore.ts` + test
 - Modify: `lib/ai/clients/gemini.ts` / OCR 呼出 path (process.ts 等)

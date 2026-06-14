@@ -313,7 +313,7 @@ P0 は §1.1 (inline-card-list / delete-card-button) を参照。 ここでは P
 
 #### 8.3 Gemini / R2 コスト暴走経路
 
-- [P1] `lib/ai/ocr.ts:97-104` — `BACKOFF_BASE_MS = [5000, 20000]` + `MAX_HTTP_RETRIES = 2` で最悪 1 attempt ~220s + 待機 ~60s × 2 = 660s。 deadline 720s で打ち切るが N user 並列で Gemini API quota 圧迫余地。 service-wide concurrency limit なし。 工数 M
+- [P1] `lib/ai/ocr.ts:97-104` — `BACKOFF_BASE_MS = [5000, 20000]` + `MAX_HTTP_RETRIES = 2` で最悪 1 attempt ~220s + 待機 ~60s × 2 = 660s。 deadline 720s で打ち切るが N user 並列で Gemini API quota 圧迫余地。 service-wide concurrency limit なし。 工数 M — **2026-06-14 close (T-B8 不実装で受容、 §10.3 (b) #7 参照)**。 OCR service-wide concurrency limit (旧 T-B8) は不実装で受容。 理由 = 有料 Gemini tier の RPM 余裕 + `GEMINI_DAILY_LIMIT` 日次 cap (prod fail-fast 配備済、 T-A3 commit `fda49a2`) + 429 即 throw (粘らず「混み合っています」 表示、 データ破損 / 他 user 波及なし、 `lib/ai/ocr.ts:134, 206-209` + `process.ts:463-506` で構造保証)。 in-process semaphore は Vercel auto-scale 下で service-wide にならない (effective = N × instances) ため、 将来バズ規模で 429 が実問題化した時に cross-instance lock (Redis 等) で再検討。 詳細 = `docs/superpowers/sessions/2026-06-14-y2-t-b7-step0.md` の precedent と本 OT 判断、 T-B8 Step 0 fact-finding 結果。
 - [P1] `lib/ai/ocr.ts:138-143` — Retry-After parseRetryAfterMs は `@google/genai` SDK 現状実装で実質 null。 SDK 更新で機能するが現状サーバー指示見落とし。 推奨: SDK ChangeLog 監視。 工数 S
 - [P1] [both] `process.ts:303-319` — Gemini daily limit guard ↔ retry onAttempt の race (codex #3、 並列 user で限度 +N 件超過構造)。
 - [P2] `lib/ai/ocr.ts:106-147` — `callWithRetry` `onAttempt` が counter DB エラー silent swallow (`incrementAiUsage`)。 推奨: `logger.error({event:'ai_usage.increment_failed'})` 1 行。 工数 S
@@ -409,7 +409,7 @@ P1 中心、 個別工数小、 launch 前に固める価値が高いもの:
 4. [P1] [Codex-only] entity-mutation-flush-trigger 24h 自動 failed 隔離撤去 (§3)
 5. [P1] [both] OCR_DEBUG_LOG / BULK_FULL_PARAMS_LOG production gate 二重化 (§8.1)
 6. [P1] [both] GEMINI_DAILY_LIMIT production fail-fast (§8.1)
-7. [P1] OCR backoff worst-case ~660s への service-wide concurrency limit 検討 (§8.3)
+7. [P1] OCR backoff worst-case ~660s への service-wide concurrency limit 検討 (§8.3) — **2026-06-14 close (T-B8 不実装で受容)**。 有料 Gemini tier の RPM 余裕 + `GEMINI_DAILY_LIMIT` 日次 cap (prod fail-fast 配備済) + 429 即 throw (粘らず「混み合っています」 表示、 データ破損 / 他 user 波及なし) で実害が抑制される構造を確認。 in-process semaphore は Vercel auto-scale 下で service-wide にならない (effective = N × instances) ため、 将来バズ規模で 429 が実問題化した時に cross-instance lock (Redis 等) で再検討。 詳細 §8.3 該当行 + plan `docs/superpowers/plans/2026-06-12-y2-launch-hardening-B-perf.md` T-B8 section。
 8. [P1] content_version 用途決定 (廃止 or 実装、 §3)
 9. [P1] pull.ts レスポンス zod parse 化 (§6)
 10. [P1] webhook clerk payload zod 化 (§6)
@@ -445,6 +445,7 @@ P1 中心、 個別工数小、 launch 前に固める価値が高いもの:
 15. [P3] [Codex-only] dropdown-menu.tsx 未使用整理 (§5.2、 必要なら category-move UI 実配線)
 16. [P3] save-fsrs-mode / delete-exam runtime validation (§6、 まとめて 1 PR)
 17. [P3] [Codex-only] contact category enum 二重定義 解消 (§6)
+18. [P3] **Y-3 監視 candidate**: `app/(app)/app/tags/_components/category-list.tsx:146-151` (`handleDeleteRequest`) — 削除 button click 時の per-option `card_tags.where('option_id').equals(opt.id).count()` 逐次ループ。 現 domain (option 数 ~10 想定) で実害なし (初期表示経路に N+1 なし、 削除 click 時のみ実行、 plan B-perf T-B1' close note と整合 = commit `2ebf9ac`)。 power user で option 数が想定大幅超過時 `where('option_id').anyOf(allOptionIds)` 単一 query + JS hash 集計へ移行候補 = **Y-3 監視 candidate** (実害観測 trigger まで未着手)。
 
 ---
 
