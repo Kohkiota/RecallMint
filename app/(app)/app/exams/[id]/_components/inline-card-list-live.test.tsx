@@ -551,3 +551,110 @@ describe('InlineCardList Tag-4b 統合 (Task 3 — 4 store + CardTagsSection)', 
     expect(mockFlush).toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// T-B5 (Y-2 Sub-plan B、 2026-06-14): card_tags 全 scan → anyOf(pageCardIds) regression
+// ---------------------------------------------------------------------------
+//
+// 完了条件 (plan B-perf.md L106 改訂版、 (b) は二分追補で構造 unit + wall-clock stg に分割):
+// (a) B 相当 fixture (1 target exam × 50 cards × 4 tags = 200 + 1000 他 exam tags) で
+//     anyOf 経路 row 数 < toArray 経路 row 数 を assert (構造的最適化目的 = 他 exam scan 回避)
+// (b-i) low-scale 構造: A 相当 (200 tags / 0 other + 紛れ込み 1 件) で anyOf 経路の
+//     card_id 集合が target_card_ids subset のみで他 exam 行を含まないことを assert
+//     (「無駄読みゼロ」 を perf でなく構造で担保)
+// (b-ii) low-scale wall-clock: **stg 実測**を正本 (step0-redo §3: anyOf 4.04ms mean /
+//     stdev 0.75 at 200 tags / 0 other = 知覚不能域)。 unit test に wall-clock ceiling は
+//     新規導入しない (plan policy 「jsdom/mock を perf 根拠にしない、 fake-indexeddb は
+//     集計 correctness 確認に限定」 準拠、 fake-indexeddb は memory-based JS 実装で
+//     実 IDB の B-tree seek と特性が異なる)。 本 test は (a) + (b-i) のみ assert する。
+describe('InlineCardList T-B5 anyOf 化 regression (Y-2 Sub-plan B)', () => {
+  it('completion criteria (a): multi-exam fixture で anyOf 経路が toArray 経路より少ない rows を返す', async () => {
+    const db = getClientDb()
+    const TARGET_CARDS = 50
+    const TARGET_TAGS_PER_CARD = 4
+    const targetCardIds: string[] = []
+    const targetCards: ClientCard[] = []
+    const targetCardTags: ClientCardTag[] = []
+    for (let i = 0; i < TARGET_CARDS; i++) {
+      const id = `target-card-${i}`
+      targetCardIds.push(id)
+      targetCards.push(
+        fakeClientCard({ id, exam_id: 'exam-target', user_id: 'user-1' }),
+      )
+      for (let j = 0; j < TARGET_TAGS_PER_CARD; j++) {
+        targetCardTags.push(makeCardTag(id, `opt-target-${i}-${j}`))
+      }
+    }
+    // 他 exam 想定: card は別 exam_id、 card_tags は 200 cards × 5 tags = 1000
+    const otherCardTags: ClientCardTag[] = []
+    for (let i = 0; i < 200; i++) {
+      const otherId = `other-card-${i}`
+      for (let j = 0; j < 5; j++) {
+        otherCardTags.push(makeCardTag(otherId, `opt-other-${i}-${j}`))
+      }
+    }
+    await db.cards.bulkPut(targetCards)
+    await db.card_tags.bulkPut([...targetCardTags, ...otherCardTags])
+
+    // toArray 経路 = 旧コードと等価な全 scan
+    const toArrayRows = await db.card_tags.toArray()
+    // anyOf 経路 = 新コードの fetch shape
+    const anyOfRows = await db.card_tags
+      .where('card_id')
+      .anyOf(targetCardIds)
+      .toArray()
+
+    expect(toArrayRows.length).toBe(1200)
+    expect(anyOfRows.length).toBe(200)
+    // 構造的に row 数差が出ること = 最適化目的 (他 exam scan 回避) の検知
+    expect(anyOfRows.length).toBeLessThan(toArrayRows.length)
+    // 返却 set が target card_tags と一致 (correctness、 余剰 / 欠落 0)
+    expect(new Set(anyOfRows.map((r) => r.card_id))).toEqual(
+      new Set(targetCardIds),
+    )
+  })
+
+  it('completion criteria (b) 構造側: anyOf 経路は target exam の card_ids subset のみを読み、 他 exam rows を含まない', async () => {
+    // (b) low-scale wall-clock 非劣化の正本は **stg 実測** (step0-redo §3: anyOf 4.04 ms mean
+    // / stdev 0.75 at 200 tags / 0 other)。 fake-indexeddb は memory-based JS 実装で実 IDB の
+    // B-tree seek と特性が違うため perf 根拠にしない (plan policy 「jsdom/mock を perf 根拠に
+    // しない、 fake-indexeddb は集計 correctness 確認に限定」 準拠)。 本 test は「他 exam 分を
+    // 読まない」 構造のみ検証する (= 「無駄読みゼロ」 を perf でなく構造で担保)。
+    const db = getClientDb()
+    const TARGET_CARDS = 50
+    const TARGET_TAGS_PER_CARD = 4
+    const targetCardIds: string[] = []
+    const targetCards: ClientCard[] = []
+    const targetCardTags: ClientCardTag[] = []
+    for (let i = 0; i < TARGET_CARDS; i++) {
+      const id = `target-card-${i}`
+      targetCardIds.push(id)
+      targetCards.push(
+        fakeClientCard({ id, exam_id: 'exam-target', user_id: 'user-1' }),
+      )
+      for (let j = 0; j < TARGET_TAGS_PER_CARD; j++) {
+        targetCardTags.push(makeCardTag(id, `opt-${i}-${j}`))
+      }
+    }
+    // 他 exam の card_tags も DB に追加 (低 scale 想定外に紛れた他 exam が無駄読みされ
+    // ないことを構造的に検出するため、 1 件だけ別 card_id で seed する)
+    const otherCardTag = makeCardTag('other-exam-card', 'opt-other')
+    await db.cards.bulkPut(targetCards)
+    await db.card_tags.bulkPut([...targetCardTags, otherCardTag])
+
+    const anyOfRows = await db.card_tags
+      .where('card_id')
+      .anyOf(targetCardIds)
+      .toArray()
+
+    expect(anyOfRows.length).toBe(200)
+    // 返却 set が target_card_ids の subset で、 他 exam の card_id を含まない (構造的に
+    // 無駄読みしていない証明)
+    const targetSet = new Set(targetCardIds)
+    const anyOfCardIds = new Set(anyOfRows.map((r) => r.card_id))
+    for (const cid of anyOfCardIds) {
+      expect(targetSet.has(cid)).toBe(true)
+    }
+    expect(anyOfCardIds.has('other-exam-card')).toBe(false)
+  })
+})

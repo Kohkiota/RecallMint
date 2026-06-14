@@ -85,18 +85,38 @@ export function InlineCardList({
   // タグ side の mirror 更新 (pull / mutation の楽観反映) 時に同 tick で再描画され、
   // 「cards が live で更新されたが tag pill だけ stale」 のような ordering 問題を避ける。
   // deps は `[examId, userId]` のまま (4 store の購読は dexie-react-hooks が自動検出)。
+  //
+  // T-B5 (Y-2 Sub-plan B、 2026-06-14): card_tags は全 scan から page subset に絞り込む。
+  // 旧: `db.card_tags.toArray()` を Promise.all で並列 fetch (= IDB 全 card_tags scan、
+  // 他 exam の card_tags も無駄に読む)。
+  // 新: filteredCards 確定後に `where('card_id').anyOf(pageCardIds)` で当該 exam の
+  // card 集合のみに絞る (= card_id index 経由 seek、 他 exam 行を skip)。 pageCardIds
+  // 依存のため Promise.all 並列は cards/categories/options の 3 store のみとし、 card_tags
+  // は filteredCards 確定後の後段直列 fetch。 Grid-1 (テーブル化) で正規化予定の暫定形。
+  // 観測可能挙動 (描画 pill 集合 / 件数表示) は不変: tagsByCardId.get(card.id) の key 集合は
+  // 必ず pageCardIds の subset (`cards = filteredCards.map(...)` 由来) であり、 全 scan で
+  // 入っていた他 exam の card_id entries はそもそも .get() で参照されない死蔵 entries だった。
+  // tag_categories / tag_options の全 scan、 subscription 分離、 regroup の memoize、 仮想化
+  // は本 task scope 外 (T-B5b 別 task)。 memoize は本 task で不採用 (audit 原文に語なし +
+  // fetch memoize は card_tags 変化を取りこぼし stale bug 源、 step0 再調査 §2c)。
   const liveData = useLiveQuery(async () => {
     const db = getClientDb()
-    const [cardRows, categories, options, cardTags] = await Promise.all([
+    const [cardRows, categories, options] = await Promise.all([
       db.cards.where('exam_id').equals(examId).toArray(),
       db.tag_categories.toArray(),
       db.tag_options.toArray(),
-      db.card_tags.toArray(),
     ])
     const filteredCards = cardRows
       .filter((c) => c.user_id === userId)
       .sort(sortLikeServer)
     const cards = filteredCards.map(toExamDetailCard)
+    // T-B5: card_tags は filteredCards の card_id 集合だけに絞って fetch (anyOf 経由)。
+    // 空 page (= cards 0 件) は短絡で IDB query を発火しない。
+    const pageCardIds = filteredCards.map((c) => c.id)
+    const cardTags =
+      pageCardIds.length === 0
+        ? []
+        : await db.card_tags.where('card_id').anyOf(pageCardIds).toArray()
     // card_id 別にグループ化。 各 card row 描画時は `.get(cardId) ?? []` で取り出す。
     const tagsByCardId = new Map<string, ClientCardTag[]>()
     for (const t of cardTags) {
