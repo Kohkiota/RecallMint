@@ -438,7 +438,7 @@ P1 中心、 個別工数小、 launch 前に固める価値が高いもの:
 8. [P3] `noUncheckedIndexedAccess` 有効化 sprint (型安全 P3 一掃)
 9. [P2] GDPR physical cascade (s1-9-5、 invariant test 維持で対応中)
 10. [P2] webhook runbook 整備 (codex #7、 Stripe stuck 検知 dashboard / 定期 job 含む)
-11. [P2] deletion-status nonce / signed token 化 (codex #6、 既知)
+11. [P2] deletion-status nonce / signed token 化 (codex #6、 既知) — **2026-06-14 close (polling 廃止で攻撃面ゼロ化)**。 T-A9 で signed token 経由化 (commit `b6d742d`) 実装したが、 prod env 未設定で `/app/settings` 全 user 500 を契機に再評価。 polling は UX 補助 (30 秒以内 navigate 補助) で削除完了保証 (= Clerk webhook + Stripe cancel + 子データ cascade) は webhook 経路で独立完結のため、 polling endpoint / signed token helper / settings polling effect 一式廃止 (`/api/me/deletion-status` / `lib/security/deletion-token.ts` / `delete-button.tsx` polling 削除)、 `DELETION_TOKEN_SECRET` env 不要化。 廃止後の UX = user.delete() resolve 後即 `window.location.replace('/sign-out-deleted')`、 zombie net (`layout.tsx` deletedAt redirect) + BFCacheGuard が back/forward 経路を吸収。 詳細 = `docs/superpowers/sessions/2026-06-14-prod-settings-500-deletion-token-fact-finding.md`。
 12. [P2] String(err) shared serializer (codex 既知合流、 user-facing/ops-facing/log-facing 分離)
 13. [P3] [Codex-only] client-db.ts v3 migration `card_mutations` drop hardening (§3、 既存ユーザーいる時点で migrate path 要、 launch タイミング判断必要)
 14. [P3] Sentry 移行 (`lib/logger.ts` Sentry-swap-ready が宣言済、 Phase 1 F)

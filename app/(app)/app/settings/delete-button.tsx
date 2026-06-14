@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useUser, useReverification } from '@clerk/nextjs'
 import {
   isClerkRuntimeError,
@@ -9,28 +9,16 @@ import {
 import type { User } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
 
-// polling の間隔と最大試行回数。max 30 秒 = 1 秒 × 30 回で zombie net が吸収する
-const POLL_INTERVAL_MS = 1000
-const POLL_MAX_ATTEMPTS = 30
-
-type Phase = 'idle' | 'confirm' | 'deleting' | 'polling' | 'error'
+type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
 interface Props {
   plan: User['plan']
-  // audit §10.4 #11 / T-A9: 削除 status polling URL の `userId` 直渡しを排除し、
-  // server-side で 24h ttl signed token を生成して props 経由で受領する。 token 内
-  // に userId が encode されているため、 削除完了 polling は token 1 つで認可 + 識別
-  // を兼ねる。 page render 時点で生成 (settings/page.tsx:`signDeletionToken`)。
-  deletionStatusToken: string
 }
 
-export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
+export function DeleteAccountButton({ plan }: Props) {
   const { user } = useUser()
   const [phase, setPhase] = useState<Phase>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  // user.delete() 後は useUser() の user が null になるため、削除前に userId を memorize する
-  // (UI gating 用のみ。 polling 識別は deletionStatusToken に集約済)。
-  const [memoizedUserId, setMemoizedUserId] = useState<string | null>(null)
 
   // user.delete() は Clerk 仕様上 sensitive action で、 session reverification
   // (直近の再認証) を要求する。 自前 UI は prebuilt <UserProfile /> と違い SDK の
@@ -42,20 +30,32 @@ export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
   // `if (!user) return` guard により deleteAccount() はそもそも呼ばれない。
   const deleteAccount = useReverification(() => user?.delete())
 
+  // 削除完了 navigate に window.location.replace を使う理由:
+  // router.push() は soft navigation で /app/settings を Router Cache に
+  // 保持してしまい、back ボタンで Router Cache 復元 → middleware/layout の
+  // zombie net (deletedAt redirect) が走らず削除済 user 画面が安定表示される
+  // bug を起こす (Phase 1 D-3 verify で確認)。window.location.replace は
+  // hard navigation で history 置換 + Router Cache + BFCache を完全 bypass。
+  //
+  // 削除完了 detection の独立性: server 側 cascade (Stripe cancel + 子データ削除
+  // + users.deletedAt set) は Clerk webhook (`/api/webhooks/clerk`) が webhook
+  // payload 受信を契機に完結する。 本 client は user.delete() resolve = Clerk
+  // 側削除受領を保証する時点で即 navigate し、 残りの cascade は webhook 経路で
+  // 背景進行する。 navigate 先 (sign-out-deleted page) は static で server-side
+  // 状態を参照しないため、 cascade 完了前でも安定表示。 back/forward で再進入
+  // した場合は `app/(app)/app/layout.tsx` の `if (user.deletedAt) redirect()`
+  // zombie net + `BFCacheGuard` が deletedAt 反映後の判定を再 trigger する。
   const onConfirmDelete = async () => {
     if (!user) return
-    // memorize userId before calling user.delete() which nullifies useUser().user
-    setMemoizedUserId(user.id)
     setPhase('deleting')
     setErrorMsg(null)
     try {
       await deleteAccount()
-      setPhase('polling')
+      window.location.replace('/sign-out-deleted')
     } catch (err) {
       // reverification modal を user がキャンセルした場合は「失敗」 ではなく
       // 「中断」。 confirm phase に戻して再試行可能にし、 error message は出さない。
       if (isClerkRuntimeError(err) && isReverificationCancelledError(err)) {
-        setMemoizedUserId(null)
         setPhase('confirm')
         return
       }
@@ -73,54 +73,6 @@ export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
       setPhase('error')
     }
   }
-
-  // polling effect: user.delete() 完了後に /api/me/deletion-status を 3 秒間隔で監視し、
-  // completed / not_found を検知したら /sign-out-deleted へ navigate する
-  // React 18 Strict Mode 対応: cleanup で clearInterval + controller.abort() を必ず実行する
-  useEffect(() => {
-    if (phase !== 'polling' || !memoizedUserId) return
-
-    const controller = new AbortController()
-    let cancelled = false
-    let attempts = 0
-
-    // navigate に window.location.replace を使う理由:
-    // router.push() は soft navigation で /app/settings を Router Cache に
-    // 保持してしまい、back ボタンで Router Cache 復元 → middleware/layout の
-    // zombie net (deletedAt redirect) が走らず削除済 user 画面が安定表示される
-    // bug を起こす (Phase 1 D-3 verify で確認)。window.location.replace は
-    // hard navigation で history 置換 + Router Cache + BFCache を完全 bypass。
-    const intervalId = setInterval(async () => {
-      attempts++
-      if (attempts > POLL_MAX_ATTEMPTS) {
-        // 30 秒経過しても completed が来ない場合は強制 navigate (zombie net で吸収)
-        clearInterval(intervalId)
-        if (!cancelled) window.location.replace('/sign-out-deleted')
-        return
-      }
-      try {
-        const res = await fetch(
-          `/api/me/deletion-status?token=${encodeURIComponent(deletionStatusToken)}`,
-          { signal: controller.signal, cache: 'no-store' },
-        )
-        if (!res.ok) return // 一時失敗は skip して次 interval で再試行
-        const data: { status: string } = await res.json()
-        if (data.status === 'completed' || data.status === 'not_found') {
-          clearInterval(intervalId)
-          if (!cancelled) window.location.replace('/sign-out-deleted')
-        }
-      } catch {
-        // AbortError はunmount 時の cleanup、それ以外は次 interval で再試行
-      }
-    }, POLL_INTERVAL_MS)
-
-    return () => {
-      // unmount 後の setState を防ぐためフラグを立て、fetch も中断する
-      cancelled = true
-      clearInterval(intervalId)
-      controller.abort()
-    }
-  }, [phase, memoizedUserId, deletionStatusToken])
 
   if (phase === 'idle') {
     return (
@@ -181,14 +133,6 @@ export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
     )
   }
 
-  if (phase === 'polling') {
-    return (
-      <div className="text-sm text-slate-600">
-        削除処理を確認中です。しばらくお待ちください…
-      </div>
-    )
-  }
-
   // phase === 'error'
   return (
     <div className="space-y-2">
@@ -198,7 +142,6 @@ export function DeleteAccountButton({ plan, deletionStatusToken }: Props) {
         onClick={() => {
           setPhase('idle')
           setErrorMsg(null)
-          setMemoizedUserId(null)
         }}
         className="px-4 py-2 border-red-300 text-red-700 hover:bg-red-50 text-sm font-medium"
       >
