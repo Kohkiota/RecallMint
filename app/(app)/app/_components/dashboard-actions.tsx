@@ -15,6 +15,18 @@
 // 比較戦略:
 // - cards.due は ISO8601 文字列 (Dexie 統一)。 lexicographic compare で `card.due
 //   <= nowIso` が時系列正しく動く (get-dexie-session-cards.ts と同方針)。
+//
+// Y-2 T-B6 (v7): user 全 cards を materialize して JS filter する旧経路から、
+// compound index `[user_id+due]` の range count に置換。 Dexie の `between(...)`
+// は native `IDBIndex.count(IDBKeyRange)` 直送で row 本体 fetch なし。 owner
+// isolation は index 第 1 要素 user_id の equals fix で構造保証 (他 user の due row を
+// 読まない)。 lower bound `'0'` は ISO8601 (`'0001-...'` 以上) より lex で小さい正当な
+// 下限、 upper bound `nowIso` は **明示的に inclusive** にする (Dexie `.between(lower,
+// upper, includeLower=true, includeUpper=false)` の default は `includeUpper=false` =
+// upper exclusive のため、 元コード `c.due <= nowIso` と等価にするには第 4 引数 `true`
+// で `includeUpper=true` を明示する必要がある。 sessions/2026-06-14-y2-t-b6-step0.md
+// §補-E boundary probe で全境界一致を検証済)。 due 欠損 (null/undefined/'') は schema
+// NOT NULL + 全 write path ISO 由来で構造的に発生しえないため考慮不要 (§補-D)。
 
 import Link from 'next/link'
 import { useLiveQuery } from 'dexie-react-hooks'
@@ -33,11 +45,10 @@ export function DashboardActions({
   const dueCount = useLiveQuery(
     async () => {
       const nowIso = (now ?? new Date()).toISOString()
-      const cards = await getClientDb()
-        .cards.where('user_id')
-        .equals(userId)
-        .toArray()
-      return cards.filter((c) => c.due <= nowIso).length
+      return getClientDb()
+        .cards.where('[user_id+due]')
+        .between([userId, '0'], [userId, nowIso], true, true)
+        .count()
     },
     // userId は依存に含める (component 再利用時の query 切替に追従)。 now が固定
     // Date のときは固定 nowIso、 undefined のときは初回 mount の now 固定でよく、

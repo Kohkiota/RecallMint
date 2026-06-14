@@ -292,6 +292,19 @@ export class ClientDb extends Dexie {
       cards:
         'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id]',
     })
+    // v7 (Y-2 T-B6 / T-B7 共用 migration): cards に compound index `[user_id+due]` を追加。
+    // dashboard-actions の dueCount 件数 query (T-B6) と get-dexie-session-cards の
+    // due 期限到来分 fetch (T-B7) で共用。 列順 `[user_id, due]` = 等価条件 (user_id) →
+    // 範囲条件 (due) の B-tree 原則 (v6 `[user_id+exam_id]` と同形)。 native
+    // `IDBIndex.count(IDBKeyRange)` で row 本体 fetch なしの range count が成立する。
+    // owner isolation は index 第 1 要素 user_id の equals fix で構造保証 (T-B4 と同)。
+    // v2 / v4 / v5 / v6 と同形の純粋 index 追加 (store drop なし、 既存データ保持、
+    // upgrade callback 不要)。 plan L147 初稿の「既存」 主張は事実誤認 (Step 0 §3 で
+    // 確認、 sessions/2026-06-14-y2-t-b6-step0.md)、 本 v7 で新規追加が確定経路。
+    this.version(7).stores({
+      cards:
+        'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id], [user_id+due]',
+    })
   }
 }
 
