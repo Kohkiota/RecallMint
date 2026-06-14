@@ -103,12 +103,16 @@
 
 - [ ] **目的**: inline-card-list の `card_tags` query を `card_id IN (current page)` に絞り、 全 card_tags scan を回避 (audit §10.3 (b) #1 of 5)。 multi-exam 想定で他 exam の card_tags scan 抑止を主目的とする。
 - [ ] **制約**: page 表示の tag 挙動不変 (描画 pill 集合 + 件数表示の一致)。 Dexie の `where('card_id').anyOf(...)` 経由 (Y-1 #3 同形、 Grid-1 合流前なので暫定形、 Grid-1 で正規化予定の comment 1 行)。 **memoize は不採用** (Step 0 再調査で fetch memoize 実装が card_tags 変化を取りこぼし stale bug 源となること、 また audit 原文に「memoize」 の語がなく spec 起草時に regroup 対策として角度違いで足された hint であることを確認、 詳細 `docs/superpowers/sessions/2026-06-14-y2-t-b5-step0-redo.md` §2c)。 tag_categories / tag_options の全 scan / regroup 抑止 / 仮想化は本 task scope 外 (T-B5b 別起票、 後述)。
-- [ ] **完了条件** (multi-exam fixture で 2 条件を両方 assert):
-   - (a) **B 相当 (1 target exam × 50 cards × 4 tags = 200 target_rows + 1000 他 exam tags = 1200 total)** で `anyOf fetch < toArray fetch` (現コードと提案コードを fake-indexeddb で並べて row 数差を assert)
-   - (b) **low-scale 非劣化 (A 相当、 50 cards × 4 tags = 200 tags、 他 exam tags 0)** で `anyOf fetch` の wall-clock が知覚不能域 (< 5 ms) に留まる
+- [ ] **完了条件** (unit test と stg 実測に二分):
+   - (a) **B 相当 (1 target exam × 50 cards × 4 tags = 200 target_rows + 1000 他 exam tags = 1200 total)** で `anyOf fetch row 数 < toArray fetch row 数` を unit test で assert (fake-indexeddb で旧 code 相当の toArray() と新 code 相当の anyOf() を並べ、 row 数差で最適化目的 = 他 exam scan 回避を構造的に検知)
+   - (b) **low-scale 非劣化 (A 相当、 50 cards × 4 tags = 200 tags、 他 exam tags 0)** = 二分:
+       - **(b-i) 構造**: anyOf 経路が返す rows の card_id 集合が target exam の card_ids subset と一致 (他 exam card_id を含まない) を **unit test** で assert。 「無駄読みゼロ」 を perf でなく構造で担保
+       - **(b-ii) wall-clock**: stg 実機計測を正本 (`docs/superpowers/sessions/2026-06-14-y2-t-b5-step0-redo.md` §3: anyOf 4.04 ms mean / stdev 0.75 at 200 tags / 0 other = 知覚不能域)。 unit test に wall-clock ceiling は新規導入しない (plan policy 「jsdom/mock を perf 根拠にしない、 fake-indexeddb は集計 correctness 確認に限定」 準拠、 fake-indexeddb は memory-based JS 実装で実 IDB の B-tree seek と特性が異なる)
    - 既存 inline-card-list test 全 pass、 per-task gate (lint / typecheck / build / test) 全 exit 0、 Critical 0、 [reviewed]。
 
-**完了条件改訂の理由 (2026-06-14)**: 旧 fixture (50 card / 200 card_tags、 single-exam) は **anyOf の最適化目的 (他 exam scan 回避) を mis-model** していた (Step 0 再調査 §3 で確認、 旧 fixture では anyOf が 2.5x 遅い結果になる)。 test が落ちたから fixture を変えたのではなく、 **completion criteria の mis-spec 是正** = OT chat 承認 (2026-06-14)。 元 fixture は spec 起草時の規模感推定で書かれており、 計測 protocol (Step 0 教訓 = 単一 fixture を多角的に分離して計測) を踏襲する形に揃えた。
+**完了条件改訂の経緯 (2026-06-14)**:
+- **初版改訂**: 旧 fixture (50 card / 200 card_tags、 single-exam) は **anyOf の最適化目的 (他 exam scan 回避) を mis-model** していた (Step 0 再調査 §3 で確認、 旧 fixture では anyOf が 2.5x 遅い結果になる)。 test が落ちたから fixture を変えたのではなく、 **completion criteria の mis-spec 是正** = OT chat 承認 (2026-06-14)。 元 fixture は spec 起草時の規模感推定で書かれており、 計測 protocol (Step 0 教訓 = 単一 fixture を多角的に分離して計測) を踏襲する形に揃えた。
+- **追補**: 初版で (b) を wall-clock < 5 ms の unit test assert としたが、 fake-indexeddb は memory-based JS 実装で anyOf cursor walk が実 IDB の B-tree seek より遅く、 unit test 上で 26 ms に達した (実装本体の問題ではなく env 特性差)。 plan policy `jsdom/mock を perf 根拠にしない` と衝突するため (b) を構造側 (b-i) と wall-clock 側 (b-ii) に二分し、 wall-clock は stg 実測正本 + session log 参照に振り、 unit test では「他 exam 分を読まない」 構造のみ検証する形に確定 (OT chat 承認 2026-06-14)。
 
 ---
 
