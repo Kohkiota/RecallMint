@@ -96,14 +96,19 @@
 
 ---
 
-### Task T-B5: #1d inline-card-list 全 card_tags → page subset + memoize
+### Task T-B5: #1d inline-card-list 全 card_tags → page subset (memoize 不採用、 2026-06-14 改訂)
 
 **Files:**
 - Modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx` + 関連 test
 
-- [ ] **目的**: inline-card-list の `card_tags` query を `card_id IN (current page)` に絞り + memoize、 全 card_tags scan を回避 (audit §10.3 (b) #1 of 5)。
-- [ ] **制約**: page 表示の tag 挙動不変。 memoize key = `cards.map(c => c.id).sort().join(',')` 等の安定 key。 Dexie の `where('card_id').anyOf(...)` 経由 (Y-1 #3 同形、 Grid-1 合流前なので暫定形、 Grid-1 で正規化予定の comment 1 行)。
-- [ ] **完了条件**: 50 card / 200 card_tags fixture で query 行読み数を before/after で計測 (全 scan → page subset)。 既存 inline-card-list test 全 pass。 Critical 0、 [reviewed]。
+- [ ] **目的**: inline-card-list の `card_tags` query を `card_id IN (current page)` に絞り、 全 card_tags scan を回避 (audit §10.3 (b) #1 of 5)。 multi-exam 想定で他 exam の card_tags scan 抑止を主目的とする。
+- [ ] **制約**: page 表示の tag 挙動不変 (描画 pill 集合 + 件数表示の一致)。 Dexie の `where('card_id').anyOf(...)` 経由 (Y-1 #3 同形、 Grid-1 合流前なので暫定形、 Grid-1 で正規化予定の comment 1 行)。 **memoize は不採用** (Step 0 再調査で fetch memoize 実装が card_tags 変化を取りこぼし stale bug 源となること、 また audit 原文に「memoize」 の語がなく spec 起草時に regroup 対策として角度違いで足された hint であることを確認、 詳細 `docs/superpowers/sessions/2026-06-14-y2-t-b5-step0-redo.md` §2c)。 tag_categories / tag_options の全 scan / regroup 抑止 / 仮想化は本 task scope 外 (T-B5b 別起票、 後述)。
+- [ ] **完了条件** (multi-exam fixture で 2 条件を両方 assert):
+   - (a) **B 相当 (1 target exam × 50 cards × 4 tags = 200 target_rows + 1000 他 exam tags = 1200 total)** で `anyOf fetch < toArray fetch` (現コードと提案コードを fake-indexeddb で並べて row 数差を assert)
+   - (b) **low-scale 非劣化 (A 相当、 50 cards × 4 tags = 200 tags、 他 exam tags 0)** で `anyOf fetch` の wall-clock が知覚不能域 (< 5 ms) に留まる
+   - 既存 inline-card-list test 全 pass、 per-task gate (lint / typecheck / build / test) 全 exit 0、 Critical 0、 [reviewed]。
+
+**完了条件改訂の理由 (2026-06-14)**: 旧 fixture (50 card / 200 card_tags、 single-exam) は **anyOf の最適化目的 (他 exam scan 回避) を mis-model** していた (Step 0 再調査 §3 で確認、 旧 fixture では anyOf が 2.5x 遅い結果になる)。 test が落ちたから fixture を変えたのではなく、 **completion criteria の mis-spec 是正** = OT chat 承認 (2026-06-14)。 元 fixture は spec 起草時の規模感推定で書かれており、 計測 protocol (Step 0 教訓 = 単一 fixture を多角的に分離して計測) を踏襲する形に揃えた。
 
 ---
 
