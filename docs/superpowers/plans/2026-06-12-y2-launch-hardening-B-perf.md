@@ -149,14 +149,22 @@
 
 ---
 
-### Task T-B7: #2 get-dexie-session-cards 全 cards → index 利用
+### Task T-B7: #2 get-dexie-session-cards 全 cards → index 利用 (2026-06-14 完了条件改訂、 T-B5/T-B6 precedent 二分化適用)
 
 **Files:**
-- Modify: get-dexie-session-cards 経路 (grep `get-dexie-session-cards\|getDexieSessionCards` で特定) + 既存 test
+- Modify: `lib/cards/get-dexie-session-cards.ts` + `lib/cards/get-dexie-session-cards.test.ts`
+- Reference: `docs/superpowers/sessions/2026-06-14-y2-t-b7-step0.md` (本 task の前提検証 + Step 0 findings)
 
-- [ ] **目的**: 学習 session 開始時の全 cards fetch を `[user_id+due]` index 経由に集約 (audit §10.3 (b) #2、 T-B6 と同 index hit)。
-- [ ] **制約**: T-B6 と同 index 使用、 session card 選定 logic 不変。 between 範囲 = `due <= now` (期限到来分のみ)。
-- [ ] **完了条件**: session 開始時の Dexie scan 範囲を before/after で計測 (全 cards → due 範囲のみ)。 既存 session test 全 pass。 Critical 0、 [reviewed]。
+- [ ] **目的**: 学習 session 開始時の全 cards fetch を `[user_id+due]` index 経由に集約 (audit §10.3 (b) #2、 T-B6 で導入済 v7 index 流用)。 power user (2k+ cards) で旧の全 user cards body materialize + JS filter/sort/slice → index range cursor + .limit(N) body fetch 最大 N 件 に置換。
+- [ ] **制約 (2026-06-14 改訂、 Step 0 反映)**: T-B6 で導入済 v7 `[user_id+due]` compound index を流用 (本 task で schema 変更なし)、 session card 選定 logic 不変 (関数シグネチャ `getDueCardsFromDexie(userId, limit, now?)` / 呼出元 `study-session-host.tsx:62` / 戻り型 `Promise<Card[]>` / `toCard` mapper 経由 不変)。 query = `db.cards.where('[user_id+due]').between([userId, '0'], [userId, nowIso], true, true).limit(limit).toArray()` 形。 第 4 引数 `true` (includeUpper) は必須 (Dexie `.between(lower, upper, includeLower=true, includeUpper=false)` の default は `includeUpper=false` = upper exclusive で `due == nowIso` ぴったり card を session から落とす real bug、 T-B6 §補-E.3 罠 + dashboard-actions.tsx:50 と同文面)。 `.sortBy()` は呼ばない (compound index 順で due ASC 構造的成立、 sortBy は内部で全件 materialize → JS sort で index 利点を消す)。 lower bound `'0'` は ISO8601 lex 下限 (dashboard-actions.tsx:50 と同文面)。 旧 JS chain (filter + sort + slice) は完全撤去。 sort 安定性差 (旧 JS comparator は engine 依存 vs 新 index 順は `(user_id, due, primary key)` lex 順で安定) は session 開始順が UI に出ないため影響無視可。
+- [ ] **完了条件 (2026-06-14 改訂、 T-B5/T-B6 と同型で二分)**:
+   - (a) **境界 regression test** (最優先・correctness): `due == nowIso` ぴったり card を結果に含むことを assert (第 4 引数 true 漏らしたら fail する固定 regression、 T-B6 §補-E.3 罠を本 task でも守る)
+   - (b-i) **構造改善 unit test**: `vi.spyOn(db.cards, 'where')` で `[user_id+due]` index 経路の呼出 1 回 / 旧 `where('user_id')` 経路の呼出 0 回を assert (T-B4/T-B6 precedent と同 pattern、 dashboard-actions.test.tsx の `as unknown as unknown[][]` type workaround 流用)
+   - (b-ii) **tenant isolation 構造 unit test**: 別 user の due card が混ざらない (第 1 要素 user_id equals fix の構造保証、 旧 test #6 と意図的に重複させて新経路でも独立 case で守る)
+   - (c) **既存 test 7 件 全 pass** (同 due 複数 card の id 順 assert なしのため byte-identical で互換、 sort 安定性差は assert 範囲外につき影響なし)
+   - (d) **wall-clock は jsdom/fake-indexeddb で assert しない** (T-B5/T-B6 precedent と policy 共通、 wall-clock は stg 実測が正本)。 低 scale 非劣化は構造で保証 (新は body fetch が strictly 少 + JS sort/filter なし → 旧より strictly 軽い)。 高 scale 改善は index access pattern からの reasoning + T-B6 §4c bench (`.count()` 経路) からの定性援用 (本 task は `.toArray()` で body fetch 次元が異なるが、 limit(20) 上限と user 全 cards 級 fetch の比で改善幅は T-B6 より大の見込み)。 多 scale bench は gate に不要、 audit 数字要件があれば 2k card 一点 seed → 計測 (min/max/median/mean/stdev、 isolated IDB、 stg 無改変、 計測後 deleteDatabase) → cleanup
+   - (e) **per-task gate**: whole-repo `pnpm lint --max-warnings=0` + `pnpm typecheck` + `pnpm build` + `pnpm test` 全 exit 0 (Dexie schema 不変につき build は念のため、 必須項目に含める)
+   - (f) **review 経路**: `superpowers:requesting-code-review` skill canonical (改変なし) + `superpowers:subagent-driven-development` 既定 spec compliance reviewer (二段、 独立検証)、 Critical 0、 [reviewed] (UI 微調整 / 認証・決済・削除・外部副作用に該当しないため、 review pass 後即 [reviewed] 付与の通常経路)
 
 ---
 
