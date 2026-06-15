@@ -9,6 +9,7 @@ const {
   mockIncrementAiUsage,
   mockGetTodayAiUsageGlobal,
   mockRevalidatePath,
+  mockApplyOcrTags,
   dbState,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
@@ -19,6 +20,10 @@ const {
   mockIncrementAiUsage: vi.fn(),
   mockGetTodayAiUsageGlobal: vi.fn(),
   mockRevalidatePath: vi.fn(),
+  // Tag-3 T2: applyOcrTags は cards INSERT tx に同梱される server-only helper。
+  // 既定 mock は無風 resolve (= 既存 happy path test を壊さない)。 atomic rollback
+  // test 用に mockApplyOcrTags.mockRejectedValueOnce(...) で injection する。
+  mockApplyOcrTags: vi.fn(),
   // DB chain mock — track which operations were called and return preset values.
   dbState: {
     insertedExams: [] as Array<{ name: string; userId: string }>,
@@ -75,6 +80,13 @@ vi.mock('@/lib/ops', () => ({
 
 vi.mock('../_lib/pdf-page-count', () => ({
   pdfPageCount: mockPdfPageCount,
+}))
+
+// Tag-3 T2: applyOcrTags helper を mock (実 DB query を走らせず spy 化)。
+// 既定挙動は無風 resolve。 atomic rollback test では mockRejectedValueOnce で
+// injection する。 spy として call args (tx instance / userId / cards array) も検証。
+vi.mock('@/lib/tags/apply-ocr-tags', () => ({
+  applyOcrTags: mockApplyOcrTags,
 }))
 
 // Chainable DB mock builder. Uses a real Promise-returning thenable to avoid
@@ -234,9 +246,12 @@ beforeEach(() => {
   mockIncrementAiUsage.mockReset()
   mockGetTodayAiUsageGlobal.mockReset()
   mockRevalidatePath.mockReset()
+  mockApplyOcrTags.mockReset()
   // 既定: ai_usage counter は無風 (上限未到達 / increment 成功)
   mockGetTodayAiUsageGlobal.mockResolvedValue(0)
   mockIncrementAiUsage.mockResolvedValue(undefined)
+  // 既定: applyOcrTags は無風 resolve (Tag-3 T2 wire-up、 既存 happy path 維持)
+  mockApplyOcrTags.mockResolvedValue(undefined)
   // GEMINI_DAILY_LIMIT は test 中で個別 override する場合がある
   delete process.env.GEMINI_DAILY_LIMIT
 
@@ -960,5 +975,132 @@ describe('processUpload', () => {
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app/upload')
     expect(mockRevalidatePath).toHaveBeenCalledWith('/app')
     expect(mockRevalidatePath).toHaveBeenCalledTimes(2)
+  })
+
+  // Tag-3 T2 (atomic 境界): cards INSERT tx と applyOcrTags は同 tx で atomic に閉じる。
+  // applyOcrTags が予期せぬ DB error を throw すると、 (i) 既存 try/catch (process.ts
+  // L550-579) で SAVE_FAILED を返し、 (ii) markFailed で source_documents が failed に
+  // 落ち、 (iii) notifyOps で ops 通知が飛ぶ、 (iv) 完了 tx (status='completed' 更新 +
+  // upload_records 'completed' append) は走らない、 ことを構造的に保証する。
+  it('Tag-3 T2 (i) atomic rollback: applyOcrTags throw → SAVE_FAILED + markFailed + notifyOps + 完了 tx 不到達', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: { 年度: '2024' },
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 7,
+      tokenUsage: [{ model: 'flash', inputTokens: 1000, outputTokens: 100 }],
+    })
+    dbState.nextCardIds = ['card-1']
+    // 予期せぬ DB error を injection (spec §4 rollback トリガー = ON CONFLICT 外の throw)
+    mockApplyOcrTags.mockRejectedValueOnce(
+      new Error('NOT NULL violation in tag_options'),
+    )
+
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected fail')
+    expect(result.code).toBe('SAVE_FAILED')
+    expect(result.error).toBe('抽出結果の保存に失敗しました')
+    // OCR 自体は成功済 → cost / modelChain は details に乗る
+    expect(result.details).toMatchObject({
+      costYen: 7,
+      modelChain: ['flash'],
+    })
+    expect(result.details?.rawError).toMatch(/NOT NULL violation/)
+    expect(result.details?.sourceDocumentId).toBeDefined()
+
+    // markFailed で status='failed' 更新 + upload_records 'failed' 行 append (cost 実値)
+    expect(
+      dbState.updatedSourceDocs.some((u) => u.status === 'failed'),
+    ).toBe(true)
+    const failedRec = dbState.insertedUploadRecords.find(
+      (r) => r.status === 'failed',
+    )
+    expect(failedRec).toMatchObject({
+      userId: 'user-uuid',
+      pagesProcessed: 1,
+      ocrCostYen: 7,
+      status: 'failed',
+    })
+
+    // 完了 tx (status='completed' 更新 + upload_records 'completed' append) は走らない
+    expect(
+      dbState.updatedSourceDocs.some((u) => u.status === 'completed'),
+    ).toBe(false)
+    expect(
+      dbState.insertedUploadRecords.some((r) => r.status === 'completed'),
+    ).toBe(false)
+
+    // ops 通知が飛ぶ (cards INSERT 失敗 path、 既存挙動を維持)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'cards insert failed after ocr success',
+      expect.objectContaining({ userId: 'user-uuid' }),
+    )
+  })
+
+  // Tag-3 T2 (wire-up 正常系): applyOcrTags が cards INSERT tx 内で呼ばれ、
+  // 引数 (userId / inserted card id + custom_props の index 対応) が正しい。
+  it('Tag-3 T2 (ii) wire-up: applyOcrTags が cards INSERT tx 内で (tx, userId, [{id, custom_props}, ...]) で呼ばれる', async () => {
+    mockCanRunOcr.mockResolvedValueOnce({ ok: true, remaining: 29 })
+    mockRunOcrPipeline.mockResolvedValueOnce({
+      cards: [
+        {
+          title: '問1',
+          question_text: 'リード文1',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: { 年度: '2024', 分野: '微積' },
+        },
+        {
+          title: '問2',
+          question_text: 'リード文2',
+          options: [{ id: 'a', text: 'A', is_correct: true }],
+          correct_answer_ids: ['a'],
+          images: [],
+          custom_props: { 年度: '2024' },
+        },
+      ],
+      modelChain: ['flash'],
+      costYen: 3,
+      tokenUsage: [{ model: 'flash', inputTokens: 200, outputTokens: 20 }],
+    })
+    dbState.nextCardIds = ['card-1', 'card-2']
+
+    const fd = makeFormData({ mode: 'new', files: [sampleImage] })
+    const { processUpload } = await importProcess()
+    const result = await processUpload(fd)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    expect(result.data?.cardsExtracted).toBe(2)
+
+    // applyOcrTags が 1 回呼ばれる (cards INSERT tx 内、 1 upload = 1 call)
+    expect(mockApplyOcrTags).toHaveBeenCalledTimes(1)
+    const callArgs = mockApplyOcrTags.mock.calls[0]
+    // 第 1 引数 = tx instance (mock tx は dbApi 戻り値、 insert / select method を持つ object)
+    expect(callArgs?.[0]).toBeDefined()
+    expect(typeof (callArgs?.[0] as { insert?: unknown }).insert).toBe('function')
+    // 第 2 引数 = Clerk user.id
+    expect(callArgs?.[1]).toBe('user-uuid')
+    // 第 3 引数 = inserted card id + 該当 pipelineResult.cards[i].custom_props
+    // (drizzle bulk INSERT + RETURNING の VALUES 順保持に依存、 process.ts L648-649 の
+    // 既存契約と同じ index 対応)
+    expect(callArgs?.[2]).toEqual([
+      { id: 'card-1', custom_props: { 年度: '2024', 分野: '微積' } },
+      { id: 'card-2', custom_props: { 年度: '2024' } },
+    ])
   })
 })

@@ -19,6 +19,7 @@ import {
 } from '@/lib/ai-usage-counter'
 import { runOcrPipeline, OcrDeadlineError } from '@/lib/ai/ocr'
 import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
+import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { todayInJst } from '@/lib/jst'
@@ -520,9 +521,9 @@ async function _processUpload(
     explanationText: c.explanation_text ?? null,
     images: (c.images ?? []) as CardImage[],
     // Tag-1: cards.custom_props / cards.tags を DROP したため書込列なし。
-    // Gemini discover の `c.custom_props` は Tag-3 で tag_categories / tag_options /
-    // card_tags に分解書込する設計。 OCR pipeline 本体 (Gemini 呼出 / options 抽出 /
-    // discover schema) は不変、 ここでの捨却に留める。
+    // Gemini discover の `c.custom_props` は Tag-3 (本 task) で tag_categories /
+    // tag_options / card_tags に分解書込する (下 applyOcrTags 呼出、 同 tx atomic)。
+    // OCR pipeline 本体 (Gemini 呼出 / options 抽出 / discover schema) は不変。
   }))
 
   let insertedCards: { id: string; title: string }[] = []
@@ -530,11 +531,26 @@ async function _processUpload(
     // B1 (S2.0c): cards bulk INSERT と exams.card_count += N を同一 transaction
     // で実行し、 件数キャッシュ列が card 実体と乖離しないようにする。 examId は
     // OCR の投入先 exam (mode='new' は直前に作成済 / 'existing' は既存)。
+    //
+    // Tag-3 T2 (spec §2.1 / §4): applyOcrTags も同 tx に同梱して atomic。
+    // UNIQUE(category_id, name) 競合は ON CONFLICT DO NOTHING + 再 SELECT で握る
+    // 正常系 (helper 内で処理)、 予期せぬ DB error のみ throw で tx 巻き込み →
+    // 下 catch で SAVE_FAILED を返す。 inserted row index と pipelineResult.cards
+    // の index 対応は drizzle bulk INSERT + RETURNING の VALUES 順保持に依拠
+    // (preview 構築 L648-649 と同じ既存契約)。
     insertedCards = await db.transaction(async (tx) => {
       const inserted = await tx
         .insert(cards)
         .values(cardRows)
         .returning({ id: cards.id, title: cards.title })
+      await applyOcrTags(
+        tx,
+        user.id,
+        inserted.map((row, i) => ({
+          id: row.id,
+          custom_props: pipelineResult.cards[i].custom_props,
+        })),
+      )
       await tx
         .update(exams)
         .set({
