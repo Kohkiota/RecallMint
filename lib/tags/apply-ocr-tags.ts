@@ -20,6 +20,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import { cardTags, tagCategories, tagOptions } from '@/lib/db/schema'
 import { newId } from '@/lib/sync/new-id'
+import { tagNameSchema } from '@/lib/validation/tag'
 import { nextSortKey } from './next-sort-key'
 
 // 同 upload 内 (category_id, trim(name)) Map の key separator。 ASCII US (Unit Separator)。
@@ -43,7 +44,8 @@ export async function applyOcrTags(
   cards: ExtractedCardWithId[],
 ): Promise<void> {
   // -------------------------------------------------------------------------
-  // 0. custom_props を per-upload で集約。 空文字 / 空白のみ key/value は skip。
+  // 0. custom_props を per-upload で集約。 tagNameSchema 不通過 (空文字 / 空白のみ /
+  //    101 字超等) は silent skip。
   // -------------------------------------------------------------------------
   // categoryNames: 入力 OCR 全体で出現した category 名 (trim 後) の unique 集合。
   // optionsByCategory: category 名 (trim) → option 名 (trim) の unique 集合。
@@ -52,15 +54,23 @@ export async function applyOcrTags(
   const optionsByCategory = new Map<string, Set<string>>()
   const cardAssignments: { cardId: string; category: string; option: string }[] = []
 
+  // tagNameSchema (= z.string().trim().min(1).max(100)) を category key / option value
+  // 両方に適用する。 OCR は Gemini 自動出力で manual の guard が無く、 幻覚で 100 字超
+  // のゴミ tag が永続化する risk があるため silent skip (throw しない、 enrichment failure
+  // で OCR card 生成全体を巻き戻すのは過剰)。 category key が skip された場合は配下 option
+  // も生成しない (parent 不在で張りようがない)。
   for (const card of cards) {
     if (!card.custom_props) continue
     for (const [rawKey, rawVal] of Object.entries(card.custom_props)) {
-      const cat = rawKey.trim()
-      if (cat === '') continue
+      const catParsed = tagNameSchema.safeParse(rawKey)
+      if (!catParsed.success) continue
+      const cat = catParsed.data
       const values = Array.isArray(rawVal) ? rawVal : [rawVal]
       for (const raw of values) {
-        const opt = typeof raw === 'string' ? raw.trim() : ''
-        if (opt === '') continue
+        if (typeof raw !== 'string') continue
+        const optParsed = tagNameSchema.safeParse(raw)
+        if (!optParsed.success) continue
+        const opt = optParsed.data
         categoryNames.add(cat)
         if (!optionsByCategory.has(cat)) optionsByCategory.set(cat, new Set())
         optionsByCategory.get(cat)!.add(opt)

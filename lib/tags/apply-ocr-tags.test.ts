@@ -266,6 +266,9 @@ describe('applyOcrTags (a) correctness', () => {
     expect(captured.cardTagInserts[0]).toEqual([
       { cardId: 'card-1', optionId: 'opt-existing', userId: 'user-1' },
     ])
+    // M-1 guard: find-only path の SELECT 回数 = 2 (category find / option find)。
+    // missingCats / missingPairs 0 件で allCatSortKeys / allOptsForCats / 再 SELECT は走らない。
+    expect(captured.selectCount).toBe(2)
   })
 
   it('case 2: 新規 category default = select_type=multi / color=null / sort_key=末尾', async () => {
@@ -551,5 +554,66 @@ describe('applyOcrTags (a) correctness', () => {
     for (const row of captured.cardTagInserts.flat()) {
       expect(row.userId).toBe('user-1')
     }
+  })
+
+  it('case A (Min-4): 101 字超の option value は silent skip、 同 card の正常な他 value は通常作成', async () => {
+    // tagNameSchema = z.string().trim().min(1).max(100)。 OCR は Gemini 自動出力で
+    // manual の guard が効かないため、 helper 内で safeParse skip しないと 100 字超の
+    // ゴミ tag が永続化する。 同 array 内の正常値は落とさず enrichment 継続。
+    const longVal = 'x'.repeat(101)
+    const { applyOcrTags } = await import('./apply-ocr-tags')
+    await applyOcrTags(makeTx(store, captured), 'user-1', [
+      { id: 'card-1', custom_props: { '分野': [longVal, '正常値'] } },
+    ])
+
+    // category '分野' は 1 件 INSERT
+    expect(captured.categoryInserts).toHaveLength(1)
+    expect(captured.categoryInserts[0]).toHaveLength(1)
+    expect(captured.categoryInserts[0]![0]!.name).toBe('分野')
+
+    // option は '正常値' のみ INSERT (101 字側は skip)
+    expect(captured.optionInserts).toHaveLength(1)
+    expect(captured.optionInserts[0]).toHaveLength(1)
+    expect(captured.optionInserts[0]![0]!.name).toBe('正常値')
+
+    // card_tags は '正常値' option との 1 pair のみ
+    expect(captured.cardTagInserts).toHaveLength(1)
+    expect(captured.cardTagInserts[0]).toHaveLength(1)
+    const optionId = captured.optionInserts[0]![0]!.id
+    expect(captured.cardTagInserts[0]![0]).toEqual({
+      cardId: 'card-1',
+      optionId,
+      userId: 'user-1',
+    })
+  })
+
+  it('case B (Min-4): 101 字超の category key は silent skip、 配下 option も生成しない / 他正常 category は通常作成', async () => {
+    // category key が schema 不通過なら、 その key 配下の option も作らない (category が
+    // 無いので張りようがない)。 同 card 内の他正常 category は影響を受けない。
+    const longKey = 'a'.repeat(101)
+    const { applyOcrTags } = await import('./apply-ocr-tags')
+    await applyOcrTags(makeTx(store, captured), 'user-1', [
+      { id: 'card-1', custom_props: { [longKey]: '値1', '分野': '値2' } },
+    ])
+
+    // category '分野' のみ INSERT (longKey side は category 自体作られず)
+    expect(captured.categoryInserts).toHaveLength(1)
+    expect(captured.categoryInserts[0]).toHaveLength(1)
+    expect(captured.categoryInserts[0]![0]!.name).toBe('分野')
+
+    // option '値2' のみ INSERT ('値1' は parent category skip で配下も生成しない)
+    expect(captured.optionInserts).toHaveLength(1)
+    expect(captured.optionInserts[0]).toHaveLength(1)
+    expect(captured.optionInserts[0]![0]!.name).toBe('値2')
+
+    // card_tags は (card-1, '値2' option) のみ
+    expect(captured.cardTagInserts).toHaveLength(1)
+    expect(captured.cardTagInserts[0]).toHaveLength(1)
+    const optionId = captured.optionInserts[0]![0]!.id
+    expect(captured.cardTagInserts[0]![0]).toEqual({
+      cardId: 'card-1',
+      optionId,
+      userId: 'user-1',
+    })
   })
 })
