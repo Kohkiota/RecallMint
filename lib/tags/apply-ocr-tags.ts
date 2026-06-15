@@ -93,19 +93,6 @@ export async function applyOcrTags(
       ),
     )
 
-  // sort_key 採番の base = ユーザ全 category 中の最大値。 in-memory に「いま採番した最大」
-  // を保持して累積するため、 既存 row も母数に含める (1 回 SELECT で済ます)。
-  // 既存 row 群の sort_key 全件を取得するために、 別途 user-scope の全件 SELECT は避け、
-  // 既存 SELECT で取れる範囲 (今回照会した name のみ) でなく user 全体を見る必要があるが、
-  // OCR 採番は「末尾追加」 意味論で drift 受容 (spec §8.3) のため、 簡略のため候補 name の
-  // 既存 sort_key を母数にすると不足し得る (manual で作った異名 category の max を取りこぼす)。
-  // → user 全 category の sort_key を別 SELECT で取る (1 回追加、 OCR 採番母数として正確)。
-  const allCatSortKeys = await tx
-    .select({ sortKey: tagCategories.sortKey })
-    .from(tagCategories)
-    .where(eq(tagCategories.userId, userId))
-  let nextCatSort = Number(nextSortKey(allCatSortKeys.map((r) => r.sortKey)))
-
   for (const row of existingCats) {
     categoryByName.set(row.name, row.id)
   }
@@ -113,6 +100,16 @@ export async function applyOcrTags(
   // Step 2: 未存在 category を INSERT ... ON CONFLICT DO NOTHING (race 安全)。
   const missingCats = candidateCats.filter((n) => !categoryByName.has(n))
   if (missingCats.length > 0) {
+    // sort_key 採番の base = ユーザ全 category 中の最大値。 in-memory に「いま採番した最大」
+    // を保持して累積するため、 既存 row も母数に含める (1 回 SELECT で済ます)。 候補 name の
+    // 既存 sort_key だけだと manual で作った異名 category の max を取りこぼすため user 全体を
+    // 見る。 missing 0 件なら走らせない (find-only path の SELECT 回数 = spec §7 b-ii 契約 2 回)。
+    const allCatSortKeys = await tx
+      .select({ sortKey: tagCategories.sortKey })
+      .from(tagCategories)
+      .where(eq(tagCategories.userId, userId))
+    let nextCatSort = Number(nextSortKey(allCatSortKeys.map((r) => r.sortKey)))
+
     const inserts = missingCats.map((name) => {
       const id = newId()
       const sortKey = String(nextCatSort)
@@ -129,9 +126,10 @@ export async function applyOcrTags(
     })
     await tx.insert(tagCategories).values(inserts).onConflictDoNothing()
 
-    // Step 3: 並走 INSERT の race で「自分の INSERT が DO NOTHING された」 ケースの id 回収。
-    // missing 名のみ再 SELECT。 並走で別 id の row が確定していれば自分の予測 id は誤りなので
-    // 上書きする (caller tx 内 INSERT は ROLLBACK されるため孤立 row になる懸念なし)。
+    // Step 3: PostgreSQL READ COMMITTED + 同 tx 視認性前提。 並走 tx の commit 済 row を
+    // 再 SELECT で回収する (spec §3.1)。 「自分の INSERT が DO NOTHING された」 ケースの
+    // id 回収。 missing 名のみ再 SELECT。 並走で別 id の row が確定していれば自分の予測 id は
+    // 誤りなので上書きする (caller tx 内 INSERT は ROLLBACK されるため孤立 row になる懸念なし)。
     const reselect = await tx
       .select({ id: tagCategories.id, name: tagCategories.name })
       .from(tagCategories)
@@ -160,6 +158,9 @@ export async function applyOcrTags(
     for (const n of names) optionNames.add(n)
   }
 
+  // find 用 SELECT。 inArray(name, optionNames) で絞られるため、 「(category_id, name) ペア
+  // 一致」 を Map に積むためだけに使う。 sort_key 採番母数としては **不十分** (OCR 候補に
+  // 含まれない既存 option を漏らすため)、 採番には allOptsForCats を別途使う。
   const existingOpts = await tx
     .select({
       id: tagOptions.id,
@@ -176,44 +177,65 @@ export async function applyOcrTags(
       ),
     )
 
-  // category 内 sort_key 末尾累積用の base。 「対象 category 群内の全 option」 を 1 回
-  // 取得して category_id ごとに max を出す。 OCR が新規 category を作った場合は base 0。
-  const allOptSortByCategory = new Map<string, (string | null)[]>()
-  for (const row of existingOpts) {
-    if (!allOptSortByCategory.has(row.categoryId)) {
-      allOptSortByCategory.set(row.categoryId, [])
-    }
-    allOptSortByCategory.get(row.categoryId)!.push(row.sortKey)
-  }
-  // category ごとの「いま採番した最大」 cursor
-  const nextOptSortByCategory = new Map<string, number>()
-  for (const catId of categoryIds) {
-    const keys = allOptSortByCategory.get(catId) ?? []
-    nextOptSortByCategory.set(catId, Number(nextSortKey(keys)))
-  }
-
   for (const row of existingOpts) {
     optionByPair.set(`${row.categoryId}${PAIR_SEP}${row.name}`, row.id)
   }
 
   // Step 2: 未存在 option を INSERT ... ON CONFLICT DO NOTHING。
   const missingOpts: { id: string; categoryId: string; name: string; sortKey: string }[] = []
+  // missing を計算するために、 まず unique pair 集合を組み立てる (sort_key 採番は missing 有る
+  // 時のみ走るため、 母数 SELECT を guard 内に置く前に missing を確定させる必要がある)。
+  const missingPairs: { catId: string; optName: string }[] = []
   for (const [catName, optNames] of optionsByCategory) {
     const catId = categoryByName.get(catName)
     if (!catId) continue // 理論上発生しない (Step 1-3 で全 category 名は id を持つ)
     for (const optName of optNames) {
       const key = `${catId}${PAIR_SEP}${optName}`
       if (optionByPair.has(key)) continue
+      missingPairs.push({ catId, optName })
+    }
+  }
+
+  if (missingPairs.length > 0) {
+    // category 内 sort_key 末尾累積用の base。 「対象 category 群内の **全** option」 を 1 回
+    // 取得して category_id ごとに max を出す。 existingOpts は name IN (...) で絞られるため
+    // sort_key 採番母数としては不足する (OCR 候補に無い既存 option を取りこぼす)。 missing 0
+    // 件なら走らせない (find-only path の SELECT 回数 = spec §7 b-ii 契約 2 回)。
+    const allOptsForCats = await tx
+      .select({
+        categoryId: tagOptions.categoryId,
+        sortKey: tagOptions.sortKey,
+      })
+      .from(tagOptions)
+      .where(
+        and(
+          eq(tagOptions.userId, userId),
+          inArray(tagOptions.categoryId, categoryIds),
+        ),
+      )
+    const allOptSortByCategory = new Map<string, (string | null)[]>()
+    for (const row of allOptsForCats) {
+      if (!allOptSortByCategory.has(row.categoryId)) {
+        allOptSortByCategory.set(row.categoryId, [])
+      }
+      allOptSortByCategory.get(row.categoryId)!.push(row.sortKey)
+    }
+    // category ごとの「いま採番した最大」 cursor
+    const nextOptSortByCategory = new Map<string, number>()
+    for (const catId of categoryIds) {
+      const keys = allOptSortByCategory.get(catId) ?? []
+      nextOptSortByCategory.set(catId, Number(nextSortKey(keys)))
+    }
+
+    for (const { catId, optName } of missingPairs) {
       const id = newId()
       const next = nextOptSortByCategory.get(catId) ?? 0
       const sortKey = String(next)
       nextOptSortByCategory.set(catId, next + 1)
-      optionByPair.set(key, id)
+      optionByPair.set(`${catId}${PAIR_SEP}${optName}`, id)
       missingOpts.push({ id, categoryId: catId, name: optName, sortKey })
     }
-  }
 
-  if (missingOpts.length > 0) {
     await tx
       .insert(tagOptions)
       .values(
@@ -228,7 +250,8 @@ export async function applyOcrTags(
       )
       .onConflictDoNothing()
 
-    // Step 3: 並走 race の id 回収 (missing pair のみ再 SELECT)。
+    // Step 3: PostgreSQL READ COMMITTED + 同 tx 視認性前提。 並走 tx の commit 済 row を
+    // 再 SELECT で回収する (spec §3.1)。 missing pair のみ再 SELECT。
     const missingNames = Array.from(new Set(missingOpts.map((m) => m.name)))
     const missingCatIds = Array.from(new Set(missingOpts.map((m) => m.categoryId)))
     const reselect = await tx
@@ -268,6 +291,8 @@ export async function applyOcrTags(
   }
 
   if (cardTagRows.length > 0) {
-    await tx.insert(cardTags).values(cardTagRows).onConflictDoNothing()
+    // PK (card_id, option_id) 衝突は構造上発生しない (同 upload で cardTagSet 排除済 + 既存
+    // card の card_tags は OCR 新規 card 作成経路のため不可触)。 spec §6.1 「ON CONFLICT 不要」。
+    await tx.insert(cardTags).values(cardTagRows)
   }
 }

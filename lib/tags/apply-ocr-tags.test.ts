@@ -100,8 +100,10 @@ function freshCaptured(): Captured {
 
 function makeTx(store: Store, captured: Captured) {
   // drizzle builder を最低限の chain で模倣する。 WHERE predicate は実 SQL を組まないので、
-  // store 上の row を「同 table の find が呼ばれたら全件返す」 簡易応答にする。 race ケース
-  // 等で differential な結果を返したい場合は captured.selectOverride を使う。
+  // store 上の row を「同 table の find が呼ばれたら全件返す」 簡易応答にする (intentional —
+  // table-name granularity only。 predicate / filter は test 側で再現しない)。 race ケースや
+  // 「同 table 内で call N 回目だけ別 row を返す」 等 differential が要るときは
+  // captured.selectOverride を使う (tableName + callIndex で表 mock を分岐)。
   const tx: Record<string, unknown> = {}
 
   tx.select = (_cols?: Record<string, unknown>) => ({
@@ -321,6 +323,86 @@ describe('applyOcrTags (a) correctness', () => {
     }
   })
 
+  it('case 3-b: option sort_key 採番母数は category 内全 option (OCR 候補に無い既存 row も含む) — I-1 regression', async () => {
+    // I-1: option find SELECT は inArray(name, optionNames) で絞られるため、 OCR 候補に
+    // 含まれない既存 option (A=sortKey:'0', B=sortKey:'1') が sort_key 採番母数から漏れる
+    // と、 新規 '微積' の sort_key が '0' になり pre-existing A と衝突する。 fix 後は
+    // allOptsForCats SELECT で category 内全 option を別途取得し、 新規 sort_key='2' を出す。
+    store.categories.push({
+      id: 'cat-existing',
+      userId: 'user-1',
+      name: '分野',
+      selectType: 'multi',
+      color: null,
+      sortKey: '0',
+    })
+    store.options.push(
+      {
+        id: 'opt-a',
+        userId: 'user-1',
+        categoryId: 'cat-existing',
+        name: 'A',
+        color: null,
+        sortKey: '0',
+      },
+      {
+        id: 'opt-b',
+        userId: 'user-1',
+        categoryId: 'cat-existing',
+        name: 'B',
+        color: null,
+        sortKey: '1',
+      },
+    )
+
+    // option find SELECT は inArray(name, ['微積']) で絞られるため、 既存 A/B は返らない
+    // (store には残るが SELECT 結果は空)。 一方 allOptsForCats は category 内全 option を
+    // 返すべき。 selectOverride で per-table の 2 回目 (allOptsForCats) のみ既存 A/B を返す。
+    let catN = 0
+    let optN = 0
+    captured.selectOverride = (tableName, _callIndex) => {
+      if (tableName === getTableName(tagCategories)) {
+        const n = catN++
+        // (0) find = 既存 '分野' 一致あり (store 全件返却で OK)、 (1+) は base mock に委譲
+        if (n === 0) {
+          return [{ id: 'cat-existing', name: '分野', sortKey: '0' }]
+        }
+        return null // missingCats 0 件で allCatSortKeys / re-SELECT は走らない (M-1 guard)
+      }
+      if (tableName === getTableName(tagOptions)) {
+        const n = optN++
+        // (0) find = inArray(name, ['微積']) 一致なし → 空
+        if (n === 0) return []
+        // (1) allOptsForCats = category 内全 option (既存 A=sortKey:'0', B=sortKey:'1')
+        if (n === 1) {
+          return [
+            { categoryId: 'cat-existing', sortKey: '0' },
+            { categoryId: 'cat-existing', sortKey: '1' },
+          ]
+        }
+        // (2) Step 3 re-SELECT = 並走 race 無しなので空 (helper は OK 継続)
+        return []
+      }
+      return null
+    }
+
+    const { applyOcrTags } = await import('./apply-ocr-tags')
+    await applyOcrTags(makeTx(store, captured), 'user-1', [
+      { id: 'card-1', custom_props: { '分野': '微積' } },
+    ])
+
+    // category find ヒット (既存 'cat-existing' 再利用) → category INSERT 0 件
+    expect(captured.categoryInserts).toHaveLength(0)
+    // option は新規 '微積' を 1 件 INSERT、 sort_key='2' (既存 A:0, B:1 の次)
+    expect(captured.optionInserts).toHaveLength(1)
+    expect(captured.optionInserts[0]).toHaveLength(1)
+    expect(captured.optionInserts[0]![0]).toMatchObject({
+      categoryId: 'cat-existing',
+      name: '微積',
+      sortKey: '2',
+    })
+  })
+
   it('case 4: 同 upload 内同名 (category / option) は同 id 流用 (1 INSERT のみ)', async () => {
     // 5 cards すべて 年度=2024 → category 1 INSERT、 option 1 INSERT、 card_tags 5 行
     const { applyOcrTags } = await import('./apply-ocr-tags')
@@ -401,19 +483,22 @@ describe('applyOcrTags (a) correctness', () => {
   })
 
   it('case 8: race 正常系 — Step 1 空 → Step 2 INSERT DO NOTHING → Step 3 再 SELECT で id 回収', async () => {
-    // Step 1 (category find) で空、 Step 2 INSERT 後、 Step 3 (category 再 SELECT) で
-    // 並走 INSERT 済の row を返す。 helper の SELECT 呼出順は:
-    //   call 0: tag_categories (find)
-    //   call 1: tag_options (find)
-    //   call 2: tag_categories (再 SELECT 、 並走 INSERT row を返す)
-    //   call 3: tag_options (再 SELECT 、 並走 INSERT row を返す)
-    captured.selectOverride = (tableName, callIndex) => {
-      // Step 1 は空 / Step 3 (再 SELECT) で並走 row を返す
-      if (callIndex === 0 || callIndex === 1) return [] // Step 1 / Step 1' 空
+    // per-table の SELECT occurrence index で path を分岐する。 helper の per-table SELECT 順:
+    //   tag_categories: (0) find / (1) allCatSortKeys / (2) Step 3 re-SELECT
+    //   tag_options:    (0) find / (1) allOptsForCats / (2) Step 3 re-SELECT
+    // find SELECT は空に保ち、 re-SELECT で並走 INSERT 済の race row を返す。 これにより
+    // §3.1 Step 3 の id 回収 path を実走する (find ヒット path に化けない)。
+    let catN = 0
+    let optN = 0
+    captured.selectOverride = (tableName, _callIndex) => {
       if (tableName === getTableName(tagCategories)) {
-        return [{ id: 'cat-race', name: '分野', sortKey: '0' }]
+        const n = catN++
+        if (n < 2) return [] // find + allCatSortKeys は空
+        return [{ id: 'cat-race', name: '分野', sortKey: '0' }] // re-SELECT で race row
       }
       if (tableName === getTableName(tagOptions)) {
+        const n = optN++
+        if (n < 2) return [] // find + allOptsForCats は空
         return [
           { id: 'opt-race', name: '微積', categoryId: 'cat-race', sortKey: '0' },
         ]
