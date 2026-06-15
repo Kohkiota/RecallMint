@@ -435,9 +435,11 @@ export function UploadForm({
     } catch (err) {
       // 413 (body size limit 超過) を message ベースで best-effort 検出する。
       // - Next.js `experimental.serverActions.bodySizeLimit` を超えた場合は
-      //   `Error('Body exceeded N mb limit ...')` が throw される。
-      // - Vercel platform-level 413 (FUNCTION_PAYLOAD_TOO_LARGE、 4.5MB 超) も
-      //   fetch 層 message に "413" や "payload too large" が含まれる可能性あり。
+      //   `Error('Body exceeded N mb limit ...')` が throw される (現状の realistic trigger:
+      //   bodySizeLimit=4.5mb + client cap=4MB の組合せで framework path がまず効く)。
+      // - "payload too large" / "413" の substring 検出は defensive coverage:
+      //   bodySizeLimit が将来 raise されたり Vercel/Next の error 文言が変更された場合に
+      //   platform / fetch 層 message へ fall back するための保険 (現状は dead branch 寄り)。
       // production では Next.js が error.message を digest (hash) 化する場合があり
       // 検出は best-effort。 一致しなければ既存 OTHER 経路 (504 / network error /
       // server side で source_document 既作成の可能性等) に fall through する。
@@ -448,13 +450,13 @@ export function UploadForm({
         message.includes('413')
       setLongRunning(false)
       if (isPayloadTooLarge) {
-        // server 側 SIZE_LIMIT_EXCEEDED 経路と文言を統一する (UX 一貫性)。
+        // server 側 SIZE_LIMIT_EXCEEDED 経路 (process.ts L222) と文言を完全一致させ、
+        // log/grep / user UX の一貫性を担保する (同一 error code で 2 種類の文言を避ける)。
         // hideRetryHint=false: 「ファイルを変更して再試行」 が正しい誘導。
         setPhase({
           kind: 'error',
           code: 'SIZE_LIMIT_EXCEEDED',
-          message:
-            'ファイルサイズが大きすぎます。 ファイル数または合計サイズを減らしてください。',
+          message: `合計サイズは ${TOTAL_UPLOAD_LIMIT_MB} MB までです。 ファイルを分けてアップロードしてください`,
         })
         return
       }

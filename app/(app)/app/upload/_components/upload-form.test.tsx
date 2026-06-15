@@ -328,13 +328,14 @@ describe('hideRetryHint: PAGE_LIMIT_EXCEEDED で retry hint が非表示', () =>
 // 背景: Next.js `experimental.serverActions.bodySizeLimit` を超える FormData が
 // submit された場合、 server action は `Error('Body exceeded ...')` を throw して
 // client に伝播する。 catch 句で message を best-effort 検出し、
-// SIZE_LIMIT_EXCEEDED 文言に揃える (server 側 4MB check と UI 上の挙動を統一)。
+// SIZE_LIMIT_EXCEEDED 文言に揃える (server 側 process.ts L222 の SIZE_LIMIT_EXCEEDED
+// 文言と完全一致させて UX / log 双方の一貫性を担保)。
 //
 // production では Next.js が error.message を digest (hash) 化する可能性があり
 // 検出は best-effort。 message が一致しなければ既存の OTHER 経路 (試験一覧で確認を)
 // に fall through する (= 今より悪化しない、 dev/test では確実に検出される)。
 describe('413 (body size limit) catch 経路の文言マップ', () => {
-  it('processUpload が "Body exceeded" を含む Error を throw した場合、 SIZE_LIMIT_EXCEEDED 文言 + retry hint 表示', async () => {
+  it('processUpload が "Body exceeded" を含む Error を throw した場合、 server と同一の SIZE_LIMIT_EXCEEDED 文言 + retry hint 表示', async () => {
     const mockedProcessUpload = vi.mocked(processUpload)
     mockedProcessUpload.mockRejectedValueOnce(
       new Error('Body exceeded 1 MB limit.\nTo configure the body size limit ...'),
@@ -349,10 +350,14 @@ describe('413 (body size limit) catch 経路の文言マップ', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
 
-    // SIZE_LIMIT_EXCEEDED 経路の文言が表示される (server 側 SIZE_LIMIT_EXCEEDED と統一)
+    // server (process.ts L222) と完全一致した SIZE_LIMIT_EXCEEDED 文言が表示される。
+    // 「合計サイズは N MB までです。 ファイルを分けて...」 で具体 MB 値 (4) も含むこと。
     // ErrorDetails <dd> にも同文言が出るため getAllByText で確認
     expect(
-      screen.getAllByText(/ファイルサイズが大きすぎます/).length,
+      screen.getAllByText(/合計サイズは 4 MB までです/).length,
+    ).toBeGreaterThanOrEqual(1)
+    expect(
+      screen.getAllByText(/ファイルを分けてアップロードしてください/).length,
     ).toBeGreaterThanOrEqual(1)
     // retry hint は表示 (hideRetryHint=false、 「変更して再試行」 を案内)
     expect(
@@ -382,8 +387,9 @@ describe('413 (body size limit) catch 経路の文言マップ', () => {
     expect(
       screen.getAllByText(/処理状況を確認できませんでした/).length,
     ).toBeGreaterThanOrEqual(1)
+    // SIZE_LIMIT_EXCEEDED 文言 (server と統一済) は表示されない
     expect(
-      screen.queryByText(/ファイルサイズが大きすぎます/),
+      screen.queryByText(/合計サイズは 4 MB までです/),
     ).not.toBeInTheDocument()
     expect(
       screen.queryByText(/ファイルを変更して再度お試しください/),

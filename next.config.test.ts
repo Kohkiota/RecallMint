@@ -50,4 +50,12 @@ describe('next.config security headers', () => {
       "frame-ancestors 'none'",
     )
   })
+
+  it('experimental.serverActions.bodySizeLimit が 4.5mb で固定 (drift 防止、 incident hotfix 6c7e99e)', () => {
+    // Next.js 16 で experimental.serverActions の型は any 寄りで narrow には cast が必要。
+    const exp = nextConfig.experimental as
+      | { serverActions?: { bodySizeLimit?: string } }
+      | undefined
+    expect(exp?.serverActions?.bodySizeLimit).toBe('4.5mb')
+  })
 })
