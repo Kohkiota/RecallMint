@@ -35,6 +35,22 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  experimental: {
+    serverActions: {
+      // Next.js 16 の framework default は 1MB。 default のまま運用すると Server
+      // Action 到達前 (framework 層) で 413 が投げられ、 client は generic な
+      // catch で OTHER 経路に流れる (= app 側 SIZE_LIMIT_EXCEEDED 経路に届かず
+      // 「処理状況を確認できませんでした」 と誤誘導される)。
+      // 値は Vercel platform の Request body hard limit と同値の 4.5MB に開放し、
+      // 制限の正本を app-level に集約する: upload 経路は constants.ts の
+      // TOTAL_UPLOAD_LIMIT_MB (=4MB) を client cap、 process.ts 内の
+      // SIZE_LIMIT_EXCEEDED check が server-side enforcement の正本。
+      // 4MB cap + multipart overhead ≒ 4.1MB 弱 < 4.5MB platform 上限 = margin 内。
+      // 他の Server Action 7 件 (settings/exams/upgrade/contact) は id/name/number/
+      // bool/text の小ペイロードのみで、 4.5MB 化の実用影響なし。
+      bodySizeLimit: '4.5mb',
+    },
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }]
   },

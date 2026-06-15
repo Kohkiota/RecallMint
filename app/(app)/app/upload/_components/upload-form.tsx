@@ -432,13 +432,37 @@ export function UploadForm({
     let result
     try {
       result = await processUpload(fd)
-    } catch {
+    } catch (err) {
+      // 413 (body size limit 超過) を message ベースで best-effort 検出する。
+      // - Next.js `experimental.serverActions.bodySizeLimit` を超えた場合は
+      //   `Error('Body exceeded N mb limit ...')` が throw される。
+      // - Vercel platform-level 413 (FUNCTION_PAYLOAD_TOO_LARGE、 4.5MB 超) も
+      //   fetch 層 message に "413" や "payload too large" が含まれる可能性あり。
+      // production では Next.js が error.message を digest (hash) 化する場合があり
+      // 検出は best-effort。 一致しなければ既存 OTHER 経路 (504 / network error /
+      // server side で source_document 既作成の可能性等) に fall through する。
+      const message = err instanceof Error ? err.message : ''
+      const isPayloadTooLarge =
+        message.includes('Body exceeded') ||
+        message.toLowerCase().includes('payload too large') ||
+        message.includes('413')
+      setLongRunning(false)
+      if (isPayloadTooLarge) {
+        // server 側 SIZE_LIMIT_EXCEEDED 経路と文言を統一する (UX 一貫性)。
+        // hideRetryHint=false: 「ファイルを変更して再試行」 が正しい誘導。
+        setPhase({
+          kind: 'error',
+          code: 'SIZE_LIMIT_EXCEEDED',
+          message:
+            'ファイルサイズが大きすぎます。 ファイル数または合計サイズを減らしてください。',
+        })
+        return
+      }
       // 504 / network error 等、 server action が throw した場合。
       // server 側で source_document が作成されている可能性があるため、
       // 無条件再試行でなく「試験一覧で確認を」と案内する。
       // hideRetryHint=true: このエラーメッセージは再試行を推奨しないため、
       // 「ファイルを変更して再試行」サブタイトルを非表示にする (Fix 2)。
-      setLongRunning(false)
       setPhase({
         kind: 'error',
         code: 'OTHER',

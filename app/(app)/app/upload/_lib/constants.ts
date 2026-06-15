@@ -1,11 +1,19 @@
-// Upload UI 制限値。 Vercel Server Action body 上限 (4.5MB) + Vercel Pro 関数
-// timeout (900s) を踏まえた client 側検証用。
+// Upload UI 制限値。 body size 上限は 2 段で決まる点に注意 (再発防止):
+//   1. Next.js framework default = **1MB**。 `next.config.ts` の
+//      `experimental.serverActions.bodySizeLimit` で明示 raise しないと、
+//      Server Action 本体に到達する前に framework 層で 413 が投げられる。
+//   2. Vercel platform hard limit = **4.5MB** (vercel.com/docs/functions/limitations
+//      "Request body size")。 これ以上は platform 側で FUNCTION_PAYLOAD_TOO_LARGE。
+// 本 client cap (4MB) は `next.config.ts` の `bodySizeLimit: '4.5mb'` と整合させた
+// 値: 4MB + multipart overhead ≒ 4.1MB 弱で 4.5MB platform 上限の内側に収まる。
+// Vercel Pro 関数 timeout (900s) も合わせて踏まえた client 側検証用。
 
 // 1 file 圧縮後の目安。 画像は browser-image-compression で maxSizeMB に渡す値。
 export const MAX_IMAGE_FILE_MB = 0.5
 export const MAX_IMAGE_WIDTH_OR_HEIGHT = 2048
 
-// 合計 (圧縮後画像 + PDF 原本) の上限。 Vercel Server Action body 上限 4.5MB の
+// 合計 (圧縮後画像 + PDF 原本) の上限。 Vercel platform body 上限 4.5MB + Next.js
+// `bodySizeLimit: '4.5mb'` 設定 (next.config.ts) と整合させた client cap。
 // 安全マージンを取り 4MB。
 export const TOTAL_UPLOAD_LIMIT_MB = 4
 

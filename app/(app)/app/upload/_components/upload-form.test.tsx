@@ -324,6 +324,73 @@ describe('hideRetryHint: PAGE_LIMIT_EXCEEDED で retry hint が非表示', () =>
   })
 })
 
+// ─── 413 (Server Action body size limit) → 文言マップ ─────────────────────────
+// 背景: Next.js `experimental.serverActions.bodySizeLimit` を超える FormData が
+// submit された場合、 server action は `Error('Body exceeded ...')` を throw して
+// client に伝播する。 catch 句で message を best-effort 検出し、
+// SIZE_LIMIT_EXCEEDED 文言に揃える (server 側 4MB check と UI 上の挙動を統一)。
+//
+// production では Next.js が error.message を digest (hash) 化する可能性があり
+// 検出は best-effort。 message が一致しなければ既存の OTHER 経路 (試験一覧で確認を)
+// に fall through する (= 今より悪化しない、 dev/test では確実に検出される)。
+describe('413 (body size limit) catch 経路の文言マップ', () => {
+  it('processUpload が "Body exceeded" を含む Error を throw した場合、 SIZE_LIMIT_EXCEEDED 文言 + retry hint 表示', async () => {
+    const mockedProcessUpload = vi.mocked(processUpload)
+    mockedProcessUpload.mockRejectedValueOnce(
+      new Error('Body exceeded 1 MB limit.\nTo configure the body size limit ...'),
+    )
+
+    mockPdfPageCount.mockResolvedValue(1)
+    await renderWithFiles([makePdf('big.pdf')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    // SIZE_LIMIT_EXCEEDED 経路の文言が表示される (server 側 SIZE_LIMIT_EXCEEDED と統一)
+    // ErrorDetails <dd> にも同文言が出るため getAllByText で確認
+    expect(
+      screen.getAllByText(/ファイルサイズが大きすぎます/).length,
+    ).toBeGreaterThanOrEqual(1)
+    // retry hint は表示 (hideRetryHint=false、 「変更して再試行」 を案内)
+    expect(
+      screen.getByText(/ファイルを変更して再度お試しください/),
+    ).toBeInTheDocument()
+    // 既存の OTHER 文言 (試験一覧で確認を) は表示されない
+    expect(
+      screen.queryByText(/処理状況を確認できませんでした/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('processUpload が無関係な Error を throw した場合、 既存 OTHER 経路 (試験一覧で確認を) に fall through', async () => {
+    const mockedProcessUpload = vi.mocked(processUpload)
+    mockedProcessUpload.mockRejectedValueOnce(new Error('connect ETIMEDOUT'))
+
+    mockPdfPageCount.mockResolvedValue(1)
+    await renderWithFiles([makePdf('test.pdf')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    // 既存挙動: OTHER 経路、 「試験一覧で確認を」、 retry hint 非表示
+    // ErrorDetails <dd> にも同文言が出るため getAllByText で確認
+    expect(
+      screen.getAllByText(/処理状況を確認できませんでした/).length,
+    ).toBeGreaterThanOrEqual(1)
+    expect(
+      screen.queryByText(/ファイルサイズが大きすぎます/),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/ファイルを変更して再度お試しください/),
+    ).not.toBeInTheDocument()
+  })
+})
+
 // ─── FIX1: per-file 上限 (MAX_PDF_PAGES) テスト ──────────────────────────────
 // per-file 上限 (MAX_PDF_PAGES) と per-upload 合計上限 (OCR_MAX_PAGES) の 2 軸を
 // 独立して検証する。
