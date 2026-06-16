@@ -7,7 +7,7 @@ import {
   getExamByIdForUser,
 } from '@/lib/exams/list'
 import { ExamDetailPullGate } from './_components/exam-detail-pull-gate'
-import { InlineCardList } from './_components/inline-card-list'
+import { ExamDetailView } from './_components/exam-detail-view'
 
 // 試験詳細 page: 各 card の全情報 (sort_key / title / 問題文 / 選択肢 + 各解説 /
 // 解説 / メモ) を inline 編集 cell として展開 (S2.0b-1 T3)。 旧 /app/cards/[id]
@@ -62,7 +62,7 @@ export default async function ExamDetailPage({
             useLiveQuery 直読みが真実。件数も同一 live 配列から算出するため追加/削除
             直後も即時整合する (論点B)。initialCards は SSR / mirror 未 hydrate 期間の
             bootstrap 用 fallback。 */}
-        <InlineCardList initialCards={cards} examId={id} userId={userId} />
+        <ExamDetailView initialCards={cards} examId={id} userId={userId} />
       </section>
     </div>
   )
