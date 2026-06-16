@@ -28,6 +28,8 @@ import {
 } from '@/lib/tags/reorder-handlers'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 
+import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
+
 import { CardTagBadge } from './card-tag-badge'
 import { CardTagEditPopover } from './card-tag-edit-popover'
 import { CardTagAddPopover } from './card-tag-add-popover'
@@ -600,57 +602,25 @@ function CardTagsSectionInner({
     createOptionAndAssign,
   }), [createCategory, createOptionAndAssign])
 
-  const handleToggle = async (categoryId: string, optionId: string) => {
-    const category = categories.find((c) => c.id === categoryId)
-    if (!category) return
-
-    const sameCategoryOptionIds = new Set(
-      options.filter((o) => o.category_id === categoryId).map((o) => o.id),
-    )
-
-    const { next, toAdd, toRemove } = buildNextTagSet(
-      category,
+  // Grid-1 T2: toggle ロジックを useCardTagToggle hook に切り出し。
+  // hook は table レベルで 1 回 instantiate し、 getCardContext で live data を渡す。
+  // CardTagsSection の outward 挙動 (props / render / mutation 反映タイミング) は完全不変。
+  // CardTagsSection は per-card scope (props で 1 card 分のみ受領) のため、
+  // getCardContext は cardId を見ずに固定 context を返す。 T6 TagCell の
+  // table-level usage では cardId をキーに Map lookup する形になる。
+  const rowToggle = useCardTagToggle({
+    userId,
+    getCardContext: (_cardId) => ({
+      categories,
+      options,
       allAssignedOptionIds,
-      sameCategoryOptionIds,
-      optionId,
-    )
+    }),
+  })
 
-    const db = getClientDb()
-    const nowIso = new Date().toISOString()
-
-    // optimistic mirror 書込と outbox enqueue を同一 Dexie tx に寄せる。
-    // 「UI だけ反映され送信予約が無い」 状態を構造的に排除: enqueue が失敗すれば Dexie が
-    // tx を自動 rollback、 mirror も元に戻る。 flush (ネットワーク送信) は tx 外で fire-and-
-    // forget、 outbox row は残るため次回 trigger で再送される。
-    // (Tag-4b-fix codex review #1: 旧 void 並列発行を atomic 化。 他 8 ファイル経路は
-    // 別 sprint「Sync-fix-1」 で共有 helper に収束予定、 本 component が reference 実装)。
-    try {
-      await db.transaction('rw', db.card_tags, db.entity_mutations, async () => {
-        for (const id of toRemove) await db.card_tags.delete([cardId, id])
-        for (const id of toAdd) {
-          await db.card_tags.put({
-            card_id: cardId,
-            option_id: id,
-            user_id: userId,
-            created_at: nowIso,
-          })
-        }
-        await enqueueEntityMutation({
-          entity_type: 'card',
-          entity_id: cardId,
-          op: 'update_field',
-          patch: { field: 'tag_option_ids', value: next },
-        })
-      })
-    } catch {
-      // Dexie tx auto-rollback 済 (mirror + outbox 共に未反映)。 案 a 取り直し経路で
-      // 次回 pull が server 値で reconcile するため、 UI への明示通知は省略。
-      return
-    }
-
-    // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
-    void runGuardedEntityMutationFlush().catch(() => {})
-  }
+  const handleToggle = useCallback(
+    (categoryId: string, optionId: string) => rowToggle(cardId, categoryId, optionId),
+    [rowToggle, cardId],
+  )
 
   return (
     <div className="space-y-1.5">
