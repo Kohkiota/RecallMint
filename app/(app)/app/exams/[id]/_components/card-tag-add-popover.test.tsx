@@ -2568,3 +2568,100 @@ describe('CardTagAddPopover — Tag-4c-2c hotfix H6: drag cancel Esc gate', () =
   })
 })
 
+// ---------------------------------------------------------------------------
+// Grid-1 T3: initialStage / initialCategoryId props
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — Grid-1 T3: initialStage / initialCategoryId props', () => {
+  // case ①: props 未指定 = stage 'category' で open (= 既存挙動)
+  it('case ①: props 未指定で open → category list が表示される (既存挙動)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // stage='category' → category list が表示される
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'レベル' })).toBeInTheDocument()
+    // stage='option' の「カテゴリ選択へ戻る」 ボタンは存在しない
+    expect(screen.queryByRole('button', { name: 'カテゴリ選択へ戻る' })).not.toBeInTheDocument()
+  })
+
+  // case ②: initialStage='option' + initialCategoryId='cat-1' → stage='option' + selectedCategoryId='cat-1' で open
+  it('case ②: initialStage="option" + initialCategoryId="cat-1" で open → cat-1 の option list が直接表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        initialStage="option"
+        initialCategoryId="cat-1"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // stage='option' で cat-1 (分野) が選択されている →「カテゴリ選択へ戻る」 が表示される
+    expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+    // cat-1 の option (o1=循環器, o2=腎臓) が表示される
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: '腎臓' })).toBeInTheDocument()
+    // cat-2 の option は表示されない
+    expect(screen.queryByRole('menuitemradio', { name: '初級' })).not.toBeInTheDocument()
+  })
+
+  // case ③: initialStage='option' + initialCategoryId=undefined → 防御 fallback = stage='category'
+  it('case ③: initialStage="option" + initialCategoryId=undefined → 防御 fallback で category list が表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        initialStage="option"
+        initialCategoryId={undefined}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // fallback → stage='category' → category list が表示される
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    // stage='option' の「カテゴリ選択へ戻る」 ボタンは存在しない
+    expect(screen.queryByRole('button', { name: 'カテゴリ選択へ戻る' })).not.toBeInTheDocument()
+  })
+
+  // case ④: close → 再 open で再び initial props が反映される
+  it('case ④: close → 再 open で再び initialStage / initialCategoryId が反映される (option list 再表示)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        initialStage="option"
+        initialCategoryId="cat-1"
+      />,
+    )
+    // 1st open → option list 表示確認
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+
+    // stage 1 に戻してから Esc で close
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' }))
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    // popover が閉じた → option list 消える
+    expect(screen.queryByRole('menuitemcheckbox', { name: '循環器' })).not.toBeInTheDocument()
+
+    // 2nd open → 再び initialStage='option' + initialCategoryId='cat-1' が反映される
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(screen.getByRole('button', { name: 'カテゴリ選択へ戻る' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+  })
+})
+

@@ -76,6 +76,18 @@ type Props = {
    *  arg は当該 category の id + drag-end 後の option id 順。 onReorderCategories と
    *  同じ経路 (親 DndContext.onDragEnd → handleStage2DragEnd → 本 callback を直接 dispatch)。 */
   onReorderOptions?: (categoryId: string, orderedIds: string[]) => Promise<void>
+  /** popover open 時の初期 stage。 default 'category' (= 既存挙動)。
+   *  'option' を指定した場合 initialCategoryId と組合せて「カテゴリ起点で開く」 が可能。
+   *  edit* / createCategoryType は initial 不可 (Grid-1 範囲外、 型で禁止)。
+   *  Grid-1 T3。
+   */
+  initialStage?: 'category' | 'option'
+  /** popover open 時の初期 selectedCategoryId。 default null (= 既存挙動)。
+   *  initialStage='option' のときに categoryId を指定すると stage='option' で
+   *  該当 category の option list を開く。 null/undefined の場合は防御的に
+   *  stage='category' fallback (invalid input は無視)。 Grid-1 T3。
+   */
+  initialCategoryId?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +115,8 @@ export function CardTagAddPopover({
   tagEditCallbacks,
   onReorderCategories,
   onReorderOptions,
+  initialStage,
+  initialCategoryId,
 }: Props) {
   const [open, setOpen] = React.useState(false)
   const [stage, setStage] = React.useState<Stage>('category')
@@ -209,6 +223,16 @@ export function CardTagAddPopover({
       // 次 open 直後に誤判定する可能性があるため両側で reset)。
       setStage1FilterText('')
       setStage2FilterText('')
+    } else {
+      // Grid-1 T3: open 時に initialStage / initialCategoryId で stage / selectedCategoryId を初期化。
+      // initialStage='option' + initialCategoryId=null/undefined は防御的に 'category' fallback
+      // (stage='option' 状態で selectedCategoryId=null は既存ロジックで option list が表示されないため)。
+      const effectiveInitialStage: Stage =
+        initialStage === 'option' && (initialCategoryId == null)
+          ? 'category'
+          : initialStage ?? 'category'
+      setStage(effectiveInitialStage)
+      setSelectedCategoryId(initialCategoryId ?? null)
     }
   }
 
