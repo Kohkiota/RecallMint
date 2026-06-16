@@ -43,7 +43,8 @@ type InlineCardListProps = {
 // Dexie ClientCard (snake_case) → 子 inline 編集 component が消費する ExamDetailCard
 // 形 (camelCase) へ写像。 options は ClientCardOption ≡ CardOption (id/text/is_correct/
 // explanation?) のため as 経由でそのまま渡す。
-function toExamDetailCard(c: ClientCard): ExamDetailCard {
+// export: ExamCardTable (案 H-1) から再利用するため export を追加 (internal logic 不変)。
+export function toExamDetailCard(c: ClientCard): ExamDetailCard {
   return {
     id: c.id,
     title: c.title,
@@ -58,7 +59,8 @@ function toExamDetailCard(c: ClientCard): ExamDetailCard {
 // server (getCardsForExam) の `ORDER BY sort_key, created_at` を Dexie 配列上で再現。
 // Postgres ASC は NULL を末尾に置くため、 sort_key 非 null を辞書順 ASC で先に、
 // null は末尾、 同 key 内 (null 同士含む) は created_at ASC を tiebreak とする。
-function sortLikeServer(a: ClientCard, b: ClientCard): number {
+// export: ExamCardTable (案 H-1) から再利用するため export を追加 (internal logic 不変)。
+export function sortLikeServer(a: ClientCard, b: ClientCard): number {
   const aKey = a.sort_key ?? null
   const bKey = b.sort_key ?? null
   if (aKey !== bKey) {

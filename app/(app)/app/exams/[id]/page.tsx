@@ -58,10 +58,11 @@ export default async function ExamDetailPage({
       </header>
 
       <section>
-        {/* 見出し「カード (N 件)」+ 表示は共に InlineCardList 内の Dexie mirror
-            useLiveQuery 直読みが真実。件数も同一 live 配列から算出するため追加/削除
-            直後も即時整合する (論点B)。initialCards は SSR / mirror 未 hydrate 期間の
-            bootstrap 用 fallback。 */}
+        {/* ExamDetailView → InlineCardList (card view) / ExamCardTable (table view) の
+            view 別 conditional unmount で表示を切り替える。 どちらの view でも内部の
+            Dexie mirror useLiveQuery 直読みが真実。 件数も同 live 配列から算出するため
+            追加/削除直後も即時整合する (論点B)。 initialCards は SSR / mirror 未 hydrate
+            期間の bootstrap 用 fallback (InlineCardList のみ使用)。 */}
         <ExamDetailView initialCards={cards} examId={id} userId={userId} />
       </section>
     </div>

@@ -2,9 +2,10 @@
 // ExamDetailView の unit test (Grid-1 T4)。
 // - 5 case: saved prefs なし → default 'card' / saved 'table' → useEffect 後 'table' /
 //   saved 不正値 → 'card' fallback / toggle click → setJsonSyncMeta が呼ばれる /
-//   view 別 render (InlineCardList stub / placeholder)。
+//   view 別 render (InlineCardList stub / ExamCardTable stub)。
 // - InlineCardList は vi.mock で軽量 stub に差し替え (useLiveQuery 依存の肥大化を回避。
 //   本 test は ExamDetailView の責務を検証するため stub mock が妥当)。
+// - ExamCardTable も vi.mock で軽量 stub に差し替え (同方針)。
 // - setJsonSyncMeta は vi.mock で部分 mock + spy (ESM named export の spy 確実化)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -23,6 +24,16 @@ import {
 vi.mock('./inline-card-list', () => ({
   InlineCardList: ({ examId }: { examId: string }) => (
     <div data-testid="inline-card-list-stub">inline-card-list-{examId}</div>
+  ),
+}))
+
+// ---------------------------------------------------------------------------
+// モック: ExamCardTable — 軽量 stub で TanStack / useLiveQuery 依存を回避
+// ---------------------------------------------------------------------------
+
+vi.mock('./exam-card-table', () => ({
+  ExamCardTable: ({ examId }: { examId: string }) => (
+    <div data-testid="exam-card-table-stub">exam-card-table-{examId}</div>
   ),
 }))
 
@@ -91,8 +102,8 @@ describe('ExamDetailView — Case ①: saved prefs なし → default card', () 
     // InlineCardList stub が render されている
     expect(screen.getByTestId('inline-card-list-stub')).toBeInTheDocument()
 
-    // placeholder は render されていない
-    expect(screen.queryByText(/Coming soon/)).not.toBeInTheDocument()
+    // ExamCardTable stub は render されていない
+    expect(screen.queryByTestId('exam-card-table-stub')).not.toBeInTheDocument()
   })
 })
 
@@ -125,8 +136,8 @@ describe('ExamDetailView — Case ②: saved table → useEffect 後 table 切�
     const cardBtn = screen.getByRole('button', { name: 'カード' })
     expect(cardBtn).toHaveAttribute('aria-pressed', 'false')
 
-    // placeholder が render されている
-    expect(screen.getByText(/Coming soon/)).toBeInTheDocument()
+    // ExamCardTable stub が render されている
+    expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
 
     // InlineCardList は render されていない
     expect(screen.queryByTestId('inline-card-list-stub')).not.toBeInTheDocument()
@@ -194,8 +205,8 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
       examViewPrefsV1Schema,
     )
 
-    // placeholder が render されている
-    expect(screen.getByText(/Coming soon/)).toBeInTheDocument()
+    // ExamCardTable stub が render されている
+    expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
 
     // InlineCardList は unmount
     expect(screen.queryByTestId('inline-card-list-stub')).not.toBeInTheDocument()
@@ -203,11 +214,11 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
 })
 
 // ===========================================================================
-// Case ⑤: view 別 render (InlineCardList / placeholder conditional unmount)
+// Case ⑤: view 別 render (InlineCardList / ExamCardTable conditional unmount)
 // ===========================================================================
 
 describe('ExamDetailView — Case ⑤: view 別 render の conditional unmount', () => {
-  it('view=card のとき InlineCardList が render され placeholder は render されない', async () => {
+  it('view=card のとき InlineCardList が render され ExamCardTable は render されない', async () => {
     render(<ExamDetailView {...defaultProps} />)
 
     await waitFor(() => {
@@ -215,10 +226,10 @@ describe('ExamDetailView — Case ⑤: view 別 render の conditional unmount',
     })
 
     expect(screen.getByTestId('inline-card-list-stub')).toBeInTheDocument()
-    expect(screen.queryByText(/Coming soon/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('exam-card-table-stub')).not.toBeInTheDocument()
   })
 
-  it('view=table に切替後は placeholder が render され InlineCardList は unmount される', async () => {
+  it('view=table に切替後は ExamCardTable が render され InlineCardList は unmount される', async () => {
     render(<ExamDetailView {...defaultProps} />)
 
     await waitFor(() => {
@@ -229,7 +240,7 @@ describe('ExamDetailView — Case ⑤: view 別 render の conditional unmount',
     fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
 
     await waitFor(() => {
-      expect(screen.getByText(/Coming soon/)).toBeInTheDocument()
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
     })
 
     // InlineCardList は unmount

@@ -5,7 +5,7 @@
 // - mount 後 useEffect で Dexie sync_meta から saved prefs を load (案 F-1: SSR は
 //   default 'card'、 flicker 1 frame 許容)。
 // - view 切替時は fire-and-forget で setJsonSyncMeta を書込 (await しない)。
-// - view='table' は Grid-1 T5 で ExamCardTable に置き換える予定。
+// - view='card': InlineCardList / view='table': ExamCardTable (Grid-1 T5 で差し替え済み)。
 
 import { useEffect, useState } from 'react'
 import type { ExamDetailCard } from '@/lib/exams/list'
@@ -17,6 +17,7 @@ import {
 } from '@/lib/sync/sync-meta'
 import { Button } from '@/components/ui/button'
 import { InlineCardList } from './inline-card-list'
+import { ExamCardTable } from './exam-card-table'
 
 type ExamDetailViewProps = {
   initialCards: ExamDetailCard[]
@@ -79,12 +80,13 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
         </Button>
       </div>
 
-      {/* conditional render: view='card' のとき InlineCardList、 view='table' のとき placeholder (T5 で ExamCardTable に置き換え) */}
+      {/* conditional render: view='card' のとき InlineCardList、 view='table' のとき ExamCardTable (Grid-1 T5 で差し替え済み)。
+          OQ-5 案 S-A: conditional unmount で同時刻に 2 subscription にならないことを構造的に保証。 */}
       {view === 'card' && (
         <InlineCardList initialCards={initialCards} examId={examId} userId={userId} />
       )}
       {view === 'table' && (
-        <div className="text-sm text-slate-500 py-4">Coming soon (Grid-1 T5 で実装)</div>
+        <ExamCardTable examId={examId} userId={userId} />
       )}
     </div>
   )
