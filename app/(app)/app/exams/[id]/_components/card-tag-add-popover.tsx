@@ -88,6 +88,11 @@ type Props = {
    *  stage='category' fallback (invalid input は無視)。 Grid-1 T3。
    */
   initialCategoryId?: string | null
+  /** popover trigger の React element。 提供時は default 「+ タグを追加」 button を置き換え、
+   *  Radix PopoverTrigger asChild で任意要素を trigger 化する。 未指定 = 既存挙動
+   *  (固定 trigger button)。 Grid-1 T6 で TagCell が badge / +N / placeholder を trigger 化する。
+   */
+  trigger?: React.ReactNode
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +122,7 @@ export function CardTagAddPopover({
   onReorderOptions,
   initialStage,
   initialCategoryId,
+  trigger,
 }: Props) {
   const [open, setOpen] = React.useState(false)
   const [stage, setStage] = React.useState<Stage>('category')
@@ -315,14 +321,16 @@ export function CardTagAddPopover({
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="タグを追加"
-          className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:text-slate-700 hover:border-slate-400"
-        >
-          <Plus className="h-3 w-3" aria-hidden="true" />
-          <span>タグ</span>
-        </button>
+        {trigger ?? (
+          <button
+            type="button"
+            aria-label="タグを追加"
+            className="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:text-slate-700 hover:border-slate-400"
+          >
+            <Plus className="h-3 w-3" aria-hidden="true" />
+            <span>タグ</span>
+          </button>
+        )}
       </PopoverTrigger>
 
       <PopoverContent

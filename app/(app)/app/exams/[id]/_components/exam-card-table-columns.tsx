@@ -2,7 +2,7 @@
 
 // exam-card-table-columns — TanStack Table column defs for ExamCardTable。
 // module スコープで定義 (component 内 useMemo 不使用)。
-// 列順: [checkbox, 問題文(sticky), タグ(T5 placeholder → T6 TagCell)]。
+// 列順: [checkbox, 問題文(sticky), タグ(T6 TagCell)]。
 //
 // 'use client' は JSX を含む ColumnDef を使うため必要 (T2 学び: pure helper でも
 // React component を含む場合は boundary が必要)。
@@ -10,10 +10,22 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { ExamDetailCard } from '@/lib/exams/list'
+import type { TagEditCallbacks } from './card-tags-section'
+import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
+import { TagCell } from './exam-card-table-tag-cell'
 
 export type ExamCardRow = {
   card: ExamDetailCard
   tags: Array<{ category: ClientTagCategory; option: ClientTagOption }>
+}
+
+/** TanStack Table meta 型。 table レベルで 1 回構築し、 columns の cell から参照する。 */
+export type ExamCardTableMeta = {
+  userId: string
+  toggle: ToggleFn
+  tagEditCallbacks: TagEditCallbacks
+  categories: ClientTagCategory[]
+  options: ClientTagOption[]
 }
 
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
@@ -55,17 +67,21 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'tags',
     header: 'タグ',
-    cell: ({ row }) => (
-      // T5: 空 placeholder cell。 data-tag-count で tags 配列長を expose し、
-      // smoke ③ (tag cell props 経路再描画) で追従を観測可能にする。
-      // T6 で先頭 K=5 個 + +N の TagCell に置き換える。
-      <div
-        data-testid={`tag-cell-${row.original.card.id}`}
-        data-tag-count={row.original.tags.length}
-      >
-        {/* T6 で TagCell に置換 */}
-      </div>
-    ),
+    cell: ({ row, table }) => {
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      if (!meta) return null
+      return (
+        <TagCell
+          cardId={row.original.card.id}
+          userId={meta.userId}
+          tags={row.original.tags}
+          categories={meta.categories}
+          options={meta.options}
+          toggle={meta.toggle}
+          tagEditCallbacks={meta.tagEditCallbacks}
+        />
+      )
+    },
     enableSorting: false,
   },
 ]

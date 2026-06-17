@@ -7,8 +7,13 @@
 //
 // OQ-3 案 J-A: join シェイプ = flat array { card, tags: { category, option }[] }。
 // join は useLiveQuery 解決時に 1 回、useMemo で ref 安定化 (TanStack 参照不安定対策の核)。
+//
+// Grid-1 T6:
+//   - useCardTagToggle を table レベルで 1 回 instantiate (OT 制約 2)。
+//   - tagEditCallbacks も table レベルで 1 回構築 (案 EC-A)。
+//   - 両者を meta 経由で各 TagCell に配る (TanStack 標準 pattern)。
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   useReactTable,
@@ -18,7 +23,20 @@ import {
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
 import { toExamDetailCard, sortLikeServer } from './inline-card-list'
-import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
+import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
+import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
+import {
+  handleRenameCategory,
+  handleSetCategoryColor,
+  handleDeleteCategory,
+  handleRenameOption,
+  handleSetOptionColor,
+  handleDeleteOption,
+  countCategoryImpact,
+  countOptionImpact,
+  handleCreateCategory,
+  type TagEditCallbacks,
+} from './card-tags-section'
 
 type ExamCardTableProps = {
   examId: string
@@ -74,9 +92,95 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     }))
   }, [liveData])
 
+  // Grid-1 T6: useCardTagToggle を table レベルで 1 回 instantiate (OT 制約 2)。
+  // getCardContext は liveData から card ごとの context を返す getter pattern (OT 制約 1:
+  // hook 内で useLiveQuery を呼ばない)。 inline arrow は latest-ref pattern で安定化済。
+  const getCardContext = useCallback(
+    (cardId: string) => {
+      if (!liveData) return undefined
+      const cardTagsForCard = liveData.cardTags.filter((ct) => ct.card_id === cardId)
+      return {
+        categories: liveData.categories,
+        options: liveData.options,
+        allAssignedOptionIds: cardTagsForCard.map((ct) => ct.option_id),
+      }
+    },
+    [liveData],
+  )
+
+  const toggle = useCardTagToggle({ userId, getCardContext })
+
+  // Grid-1 T6 案 EC-A: tagEditCallbacks を table レベルで 1 回構築。
+  // module スコープ handler (rename/color/delete/count) は import で共有。
+  // create 系は userId / liveData を bind した useCallback closure。
+  // ExamCardTable は per-row cardId を tagEditCallbacks に bind できないため、
+  // createOptionAndAssign は TagCell の onToggle callback が行うので不要に見えるが、
+  // CardTagAddPopover の createOptionAndAssign 経路 (option 新規作成) は popover 内で
+  // selectedCategoryId + input name を取り、 onToggle ではなく tagEditCallbacks.createOptionAndAssign
+  // を呼ぶ設計 (card-tags-section.tsx L541-558 参照)。 そのため cardId を bind した closure が必要。
+  //
+  // ここでは per-card の cardId は取得できないため、 createOptionAndAssign に cardId を
+  // 渡す経路は TagCell 経由の sharedPopoverProps.onToggle 内で行う (TagCell 実装参照)。
+  // tagEditCallbacks.createOptionAndAssign は fallback として no-op にはせず、
+  // TagCell が cardId=row.original.card.id を閉じ込めた onToggle を渡す設計になっている。
+  //
+  // 問題: tagEditCallbacks.createOptionAndAssign は cardId をどこから取るか。
+  // TagCell で sharedPopoverProps.onToggle は (categoryId, optionId) のため、
+  // createOptionAndAssign の cardId は TagCell スコープで bind する必要がある。
+  // ExamCardTable ではテーブル全体で 1 つの tagEditCallbacks を構築しているが、
+  // createOptionAndAssign だけは per-row で closure が異なる。
+  //
+  // 解決: tagEditCallbacks.createOptionAndAssign は「最後に render された行」の cardId を
+  // 使う実装ではなく、 TagCell 側で cardId-bound な createOptionAndAssign を構築し
+  // tagEditCallbacks を上書きして渡す方式にする。 具体的には TagCell が受け取った
+  // tagEditCallbacks を spread し createOptionAndAssign だけ cardId-bound に差し替える。
+  // ExamCardTable では createOptionAndAssign の placeholder として渡し、 TagCell 側で override。
+  //
+  // placeholder: 空関数 (型を満たすが実際は TagCell 側で override される)。
+  const createCategory = useCallback(
+    (name: string, selectType: 'single' | 'multi') =>
+      handleCreateCategory(
+        userId,
+        liveData?.categories ?? [],
+        name,
+        selectType,
+      ),
+    [userId, liveData?.categories],
+  )
+
+  // createOptionAndAssign の placeholder (TagCell 側で cardId-bound に差し替え)。
+  // 実際の呼出では TagCell が自分の cardId を使った closure に上書きするため、
+  // ExamCardTable レベルでは cardId = '' の placeholder で OK。
+  const createOptionAndAssignPlaceholder = useCallback(
+    (_categoryId: string, _name: string): Promise<void> => {
+      // TagCell 側で override されるため、 ここに到達する呼び出しは発生しない。
+      // 万が一呼ばれた場合は no-op (card が特定できないため書込不可)。
+      return Promise.resolve()
+    },
+    [],
+  )
+
+  const tagEditCallbacks: TagEditCallbacks = useMemo(
+    () => ({
+      renameCategory: handleRenameCategory,
+      setCategoryColor: handleSetCategoryColor,
+      deleteCategory: handleDeleteCategory,
+      renameOption: handleRenameOption,
+      setOptionColor: handleSetOptionColor,
+      deleteOption: handleDeleteOption,
+      countCategoryImpact,
+      countOptionImpact,
+      createCategory,
+      createOptionAndAssign: createOptionAndAssignPlaceholder,
+    }),
+    [createCategory, createOptionAndAssignPlaceholder],
+  )
+
   // TanStack table instance。 columns は module スコープ参照 (再採番なし)。
   // enableRowSelection: true + getRowId で card.id を row id とする。
   // rowSelection は controlled state (useState) で持つ。
+  // meta に toggle / tagEditCallbacks / categories / options を渡し、
+  // TagCell が cell render 時に table.options.meta 経由でアクセスする (TanStack 標準 pattern)。
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table の useReactTable は React Compiler 非対応 API だが、TanStack 側の既知 tradeoff であり抑止が推奨方針
   const table = useReactTable<ExamCardRow>({
     data,
@@ -86,6 +190,13 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     getRowId: (row) => row.card.id,
     state: { rowSelection },
     onRowSelectionChange: setRowSelection,
+    meta: {
+      userId,
+      toggle,
+      tagEditCallbacks,
+      categories: liveData?.categories ?? [],
+      options: liveData?.options ?? [],
+    } satisfies ExamCardTableMeta,
   })
 
   return (
