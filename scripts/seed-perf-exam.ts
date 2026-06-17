@@ -28,6 +28,16 @@
 //      --user-id=<uuid>
 //    (カード数デフォルト 300。変更する場合: --cards=N)
 //
+//    Grid-2 指標列・回答状態フィルタ検証用に回答記録を投入する場合:
+//    pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts \
+//      --user-id=<uuid> --with-answers
+//    (デフォルト ratio=0.5: 全カードの 50% を回答済みにする)
+//
+//    ratio 指定:
+//    pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts \
+//      --user-id=<uuid> --with-answers=0.7
+//    (全カードの 70% を回答済みにする。0〜1 の小数)
+//
 // 5. 観測完了後 cleanup:
 //    pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts \
 //      --user-id=<uuid> --cleanup
@@ -173,6 +183,48 @@ function chunk<T>(arr: T[], size: number): T[][] {
 }
 
 // ---------------------------------------------------------------------------
+// --with-answers helpers (exported for unit tests)
+// ---------------------------------------------------------------------------
+
+/** デフォルト ratio: 50% のカードを「回答済み」にする */
+export const WITH_ANSWERS_DEFAULT_RATIO = 0.5
+
+/**
+ * `--with-answers` / `--with-answers=<ratio>` 引数値を解釈して ratio (0〜1) を返す。
+ *
+ * - args['with-answers'] が undefined  → undefined (機能オフ)
+ * - args['with-answers'] が true       → デフォルト ratio (0.5)
+ * - args['with-answers'] が文字列      → parseFloat して 0〜1 範囲チェック
+ * - 範囲外 / 非数値               → Error をスロー
+ */
+export function parseWithAnswersRatio(
+  value: string | boolean | undefined,
+): number | undefined {
+  if (value === undefined) return undefined
+  if (value === true) return WITH_ANSWERS_DEFAULT_RATIO
+  // parseArgs は --flag を true にする (false は返さない)が、型上は boolean | string。
+  // false が渡された場合は undefined 扱い (機能オフ) にする。
+  if (value === false) return undefined
+
+  const parsed = parseFloat(value)
+  if (isNaN(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(
+      `--with-answers の値が無効です: "${value}" (0〜1 の小数を指定してください)`,
+    )
+  }
+  return parsed
+}
+
+/**
+ * 全件数 total に ratio を乗じて「回答済みにする件数」を返す。
+ * Math.round で四捨五入。ratio=0 or total=0 のときは 0。
+ */
+export function pickAnsweredCount(total: number, ratio: number): number {
+  if (total <= 0 || ratio <= 0) return 0
+  return Math.round(total * ratio)
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -220,7 +272,7 @@ async function main(): Promise<void> {
   if (!userId || typeof userId !== 'string') {
     console.error('❌ --user-id=<uuid> は必須です')
     console.error(
-      'Usage: pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts --user-id=<uuid> [--cards=300] [--cleanup] [--dry-run]',
+      'Usage: pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts --user-id=<uuid> [--cards=300] [--cleanup] [--dry-run] [--with-answers[=ratio]]',
     )
     process.exit(1)
   }
@@ -236,12 +288,26 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // --with-answers[=ratio]: ratio 割合のカードを回答済みにする
+  let withAnswersRatio: number | undefined
+  try {
+    withAnswersRatio = parseWithAnswersRatio(
+      args['with-answers'] as string | boolean | undefined,
+    )
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`)
+    process.exit(1)
+  }
+
   console.log('[seed-perf-exam] 設定:')
-  console.log(`  user-id  : ${userId}`)
-  console.log(`  cards    : ${cardCount}`)
-  console.log(`  cleanup  : ${cleanup}`)
-  console.log(`  dry-run  : ${dryRun}`)
-  console.log(`  SEED_FORCE: ${process.env.SEED_FORCE === '1' ? 'ON (L2 bypass)' : 'OFF'}`)
+  console.log(`  user-id      : ${userId}`)
+  console.log(`  cards        : ${cardCount}`)
+  console.log(`  cleanup      : ${cleanup}`)
+  console.log(`  dry-run      : ${dryRun}`)
+  console.log(
+    `  with-answers : ${withAnswersRatio !== undefined ? `ratio=${withAnswersRatio} (${pickAnsweredCount(cardCount, withAnswersRatio)} 件を回答済みにする予定)` : 'OFF'}`,
+  )
+  console.log(`  SEED_FORCE   : ${process.env.SEED_FORCE === '1' ? 'ON (L2 bypass)' : 'OFF'}`)
 
   const db = getDb()
 
@@ -487,6 +553,12 @@ async function main(): Promise<void> {
       `  [DRY-RUN] card_tags 約 ${totalTags} 件 INSERT 予定 (実際は random で変動)`,
     )
     console.log(`  [DRY-RUN] exams.card_count = ${cardCount} UPDATE 予定`)
+    if (withAnswersRatio !== undefined) {
+      const answeredCount = pickAnsweredCount(cardCount, withAnswersRatio)
+      console.log(
+        `  [DRY-RUN] --with-answers: ${answeredCount}/${cardCount} 件 (ratio=${withAnswersRatio}) の cards を answered=true に UPDATE する予定`,
+      )
+    }
     console.log('\n[seed-perf-exam] dry-run 完了 (DB 書込なし)')
     console.log(`  試験名: "${examName}"`)
     console.log(`  タグカテゴリ: ${TAG_CATEGORIES.map((c) => c.name).join(' / ')}`)
@@ -569,6 +641,64 @@ async function main(): Promise<void> {
     })
     .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
 
+  // -------------------------------------------------------------------------
+  // Step 9: --with-answers: 一部カードの回答状態を synthetic UPDATE
+  // -------------------------------------------------------------------------
+  let answeredCount = 0
+  if (withAnswersRatio !== undefined) {
+    answeredCount = pickAnsweredCount(insertedCardIds.length, withAnswersRatio)
+    console.log(
+      `\n[seed-perf-exam] Step 9: --with-answers (ratio=${withAnswersRatio}): ${answeredCount}/${insertedCardIds.length} 件を回答済みに UPDATE...`,
+    )
+
+    if (answeredCount > 0) {
+      // 先頭 answeredCount 件を回答済みにする
+      const answeredIds = insertedCardIds.slice(0, answeredCount)
+      const now = new Date()
+      // 直近 30 日内の random date を生成するヘルパー
+      const randomPastDate = (): Date =>
+        new Date(now.getTime() - Math.random() * 30 * 24 * 60 * 60 * 1000)
+
+      // Drizzle の .update().set() 形で安全に JS Date を渡す
+      // (sql template リテラルへの JS Date 直接 embed は postgres-js serializer bypass
+      //  の既知バグがあるため、 素直な .set({ field: value }) 形を使う)
+      const answeredChunks = chunk(answeredIds, 50)
+      let updatedCount = 0
+      for (let ci = 0; ci < answeredChunks.length; ci++) {
+        const chunkIds = answeredChunks[ci]
+        // chunk 内の各カードを個別 UPDATE (pg の IN-clause UPDATE で一括でも可だが、
+        // last_correct / current_streak / last_review をカード毎に散らすため個別に実行)
+        for (const cardId of chunkIds) {
+          // 7〜8 割正解: Math.random() < 0.75 → true (正解)
+          const lastCorrect = Math.random() < 0.75
+          // current_streak: 正解なら 1〜10、不正解なら 0
+          const currentStreak = lastCorrect ? randomBetween(1, 10) : 0
+          // last_review: 直近 30 日内の random 日時
+          const lastReview = randomPastDate()
+
+          await db
+            .update(cards)
+            .set({
+              answered: true,
+              lastCorrect,
+              currentStreak,
+              lastReview,
+              updatedAt: now,
+            })
+            .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
+
+          updatedCount++
+        }
+        process.stdout.write(
+          `\r  with-answers UPDATE: ${updatedCount}/${answeredCount} (chunk ${ci + 1}/${answeredChunks.length})`,
+        )
+      }
+      console.log('\n  with-answers UPDATE 完了')
+    } else {
+      console.log('  (ratio=0 のため UPDATE なし)')
+    }
+  }
+
   // =========================================================================
   // 完了報告
   // =========================================================================
@@ -578,6 +708,11 @@ async function main(): Promise<void> {
   console.log(`  カード数 : ${insertedCardIds.length}`)
   console.log(`  card_tags: ${cardTagRows.length} 件`)
   console.log(`  タグカテゴリ: ${TAG_CATEGORIES.map((c) => c.name).join(' / ')}`)
+  if (withAnswersRatio !== undefined) {
+    console.log(
+      `  with-answers: ${answeredCount}/${insertedCardIds.length} 件を回答済みに UPDATE (ratio=${withAnswersRatio})`,
+    )
+  }
   console.log(`\n  stg app URL: https://stg.recallmint.nekotest.net/app/exams/${examId}`)
   console.log('\n  観測完了後の cleanup:')
   console.log(
