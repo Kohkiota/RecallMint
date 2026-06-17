@@ -72,7 +72,7 @@
 
 import 'dotenv/config'
 import { and, eq, like, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
+import { getDb, closeDb } from '@/lib/db'
 import {
   exams,
   cards,
@@ -586,9 +586,24 @@ async function main(): Promise<void> {
 }
 
 // process.argv[1] が本 file のとき = CLI 起動。 import 経路では走らない。
+//
+// 全経路 (成功 / 失敗 / dry-run / cleanup) で closeDb() → process.exit を呼ぶ。
+// postgres-js client が open のままだと Node が exit せず固まる (=旧バグ)。
+// closeDb は { timeout: 5 } で 5 秒以内に in-flight query を待ってから force close、
+// その後 process.exit で確実に terminate する。 close 自身の失敗は exit を妨げない
+// (catch で握り潰し、 fatal log は残す)。
 if (process.argv[1]?.endsWith('seed-perf-exam.ts')) {
-  main().catch((e) => {
-    console.error('[seed-perf-exam] fatal:', e)
-    process.exit(1)
-  })
+  main().then(
+    async () => {
+      await closeDb().catch((e) => console.error('[seed-perf-exam] closeDb error (ignored):', e))
+      process.exit(0)
+    },
+    async (e) => {
+      console.error('[seed-perf-exam] fatal:', e)
+      await closeDb().catch((closeErr) =>
+        console.error('[seed-perf-exam] closeDb error after fatal (ignored):', closeErr),
+      )
+      process.exit(1)
+    },
+  )
 }
