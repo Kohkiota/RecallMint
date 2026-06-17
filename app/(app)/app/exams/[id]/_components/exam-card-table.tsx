@@ -22,7 +22,7 @@ import {
   type RowSelectionState,
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
-import { toExamDetailCard, sortLikeServer } from './inline-card-list'
+import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import {
@@ -87,7 +87,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
       tagsByCardId.set(ct.card_id, arr)
     }
     return filteredCards.map((c) => ({
-      card: toExamDetailCard(c),
+      card: c,
       tags: tagsByCardId.get(c.id) ?? [],
     }))
   }, [liveData])
