@@ -12,6 +12,7 @@ import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/clien
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
+import { sortLikeServer } from './inline-card-list'
 
 export type ExamCardRow = {
   card: ClientCard
@@ -61,7 +62,10 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // 問題文列は第 1 列 pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
     // column def には meta だけ持たせ、 layout は render 側で解決する。
     meta: { sticky: true },
-    enableSorting: false,
+    enableSorting: true,
+    // sortKey(連番)順 = sortLikeServer (sort_key NULLS-LAST 辞書順 + created_at tiebreak)。
+    // 問題文列ヘッダクリックで「連番順」ソートを担う (Grid-2 T2 設計: # 列削除済のため代替)。
+    sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
   },
   {
     id: 'tags',
@@ -86,6 +90,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'lastCorrect',
     header: '直近正誤',
+    // null → undefined 変換: TanStack の sortUndefined: 'last' に乗せるため必須。
+    // false ?? undefined === false なので false は保持される (boolean 値は消えない)。
+    accessorFn: (row) => row.card.last_correct ?? undefined,
     cell: ({ row }) => {
       const v = row.original.card.last_correct
       if (v === true) {
@@ -96,19 +103,26 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       }
       return <span className="text-muted-foreground">—</span>
     },
-    enableSorting: false,
+    enableSorting: true,
+    // null/undefined を昇順・降順とも末尾に固定 (direction 非依存)。
+    sortUndefined: 'last',
+    // boolean 比較は TanStack default ('basic' = 数値変換後比較、false=0 < true=1) で OK。
   },
   {
     id: 'currentStreak',
     header: '連続正解数',
+    // 数値フィールド。null なし。default sortingFn ('auto') で数値ソート。
+    accessorFn: (row) => row.card.current_streak,
     cell: ({ row }) => (
       <span>{row.original.card.current_streak}</span>
     ),
-    enableSorting: false,
+    enableSorting: true,
   },
   {
     id: 'lastReview',
     header: '最終回答日時',
+    // null → undefined 変換: sortUndefined: 'last' を効かせるため必須。
+    accessorFn: (row) => row.card.last_review ?? undefined,
     cell: ({ row }) => {
       const v = row.original.card.last_review
       if (!v) {
@@ -125,6 +139,11 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       })
       return <span>{jst}</span>
     },
-    enableSorting: false,
+    enableSorting: true,
+    // ISO 文字列を純粋文字列比較 (辞書順 = 時系列順)。
+    // 'alphanumeric' は数値分割で ISO に意図しない結果を生む可能性があるため 'text' を明示。
+    // undefined (= null 変換済) は sortUndefined: 'last' が処理するため custom 内不要。
+    sortingFn: 'text',
+    sortUndefined: 'last',
   },
 ]

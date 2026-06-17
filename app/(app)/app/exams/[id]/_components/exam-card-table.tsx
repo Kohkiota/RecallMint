@@ -18,8 +18,10 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   useReactTable,
   getCoreRowModel,
+  getSortedRowModel,
   flexRender,
   type RowSelectionState,
+  type SortingState,
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
@@ -45,6 +47,8 @@ type ExamCardTableProps = {
 
 export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
+  // 初期ソート: question 列昇順 = sortKey 昇順 = sortLikeServer 順 (spec §6)。
+  const [sorting, setSorting] = useState<SortingState>([{ id: 'question', desc: false }])
 
   // useLiveQuery: 案 X-A。 4 store (cards / tag_categories / tag_options / card_tags) を
   // 1 subscription で一括 pull。 InlineCardList の useLiveQuery と同パターンを踏襲
@@ -186,10 +190,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     data,
     columns: examCardTableColumns,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
     enableRowSelection: true,
     getRowId: (row) => row.card.id,
-    state: { rowSelection },
+    state: { rowSelection, sorting },
     onRowSelectionChange: setRowSelection,
+    onSortingChange: setSorting,
     meta: {
       userId,
       toggle,
@@ -209,6 +215,8 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                 const isSticky =
                   (h.column.columnDef.meta as { sticky?: boolean } | undefined)
                     ?.sticky === true
+                const canSort = h.column.getCanSort()
+                const sortDir = h.column.getIsSorted()
                 return (
                   <th
                     key={h.id}
@@ -217,13 +225,25 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                       isSticky
                         ? 'sticky left-0 z-10 bg-background'
                         : '',
+                      canSort ? 'cursor-pointer select-none' : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
+                    onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
-                    {h.isPlaceholder
-                      ? null
-                      : flexRender(h.column.columnDef.header, h.getContext())}
+                    {h.isPlaceholder ? null : (
+                      <span className="inline-flex items-center gap-1">
+                        {flexRender(h.column.columnDef.header, h.getContext())}
+                        {canSort && (
+                          <span
+                            className="text-xs text-muted-foreground/60"
+                            aria-hidden="true"
+                          >
+                            {sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '⇅'}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </th>
                 )
               })}
