@@ -347,15 +347,29 @@ async function main(): Promise<void> {
     }
 
     const optionMap: Record<string, string> = {}
+    // dry-run で新規カテゴリ (DB 未存在) の場合、 catId は仮文字列 (例: `dry-run-cat-分野`)。
+    // tagOptions.category_id は uuid 型のため、 仮 catId で SELECT すると 22P02 invalid input
+    // syntax for type uuid エラーで落ちる。 → dry-run + 新規カテゴリの組合せでは option の
+    // 既存チェック SELECT を skip し、 配下 option を無条件に「INSERT する予定」 として扱う
+    // (dry-run の目的 = 何を作るか を log 出力、 既存チェックは本実行で確実に動けば十分)。
+    const isNewCategoryInDryRun = dryRun && catId.startsWith('dry-run-cat-')
 
     for (const optName of catDef.options) {
+      if (isNewCategoryInDryRun) {
+        const optId = `dry-run-opt-${catDef.name}-${optName}`
+        console.log(`  [DRY-RUN] 選択肢 "${catDef.name}/${optName}" を INSERT する予定 (新規カテゴリ配下のため SELECT skip)`)
+        optionMap[optName] = optId
+        continue
+      }
+
+      // 既存カテゴリ (本物 UUID) or 非 dry-run: 通常の find-or-create。
       // SELECT — UNIQUE(category_id, name) なので 1 行以下
       const existingOpts = await db
         .select({ id: tagOptions.id })
         .from(tagOptions)
         .where(
           and(
-            eq(tagOptions.categoryId, catId.startsWith('dry-run') ? catId : catId),
+            eq(tagOptions.categoryId, catId),
             eq(tagOptions.name, optName),
           ),
         )
@@ -366,8 +380,10 @@ async function main(): Promise<void> {
         optId = existingOpts[0].id
       } else {
         if (dryRun) {
+          // 既存カテゴリ配下で、 option だけ新規の場合 (例: カテゴリ「難易度」 は前回 seed で存在、
+          // 新規 option を今回足す)。 SELECT は通っているので catId は本物 UUID、 ここに到達して OK。
           optId = `dry-run-opt-${catDef.name}-${optName}`
-          console.log(`  [DRY-RUN] 選択肢 "${catDef.name}/${optName}" を INSERT する予定`)
+          console.log(`  [DRY-RUN] 選択肢 "${catDef.name}/${optName}" を INSERT する予定 (既存カテゴリ配下)`)
         } else {
           const [insertedOpt] = await db
             .insert(tagOptions)
