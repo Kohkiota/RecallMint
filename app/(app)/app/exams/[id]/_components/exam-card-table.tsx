@@ -19,13 +19,16 @@ import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
+  getFilteredRowModel,
   flexRender,
   type RowSelectionState,
   type SortingState,
+  type ColumnFiltersState,
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
+import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import {
   handleRenameCategory,
@@ -49,6 +52,8 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   // 初期ソート: question 列昇順 = sortKey 昇順 = sortLikeServer 順 (spec §6)。
   const [sorting, setSorting] = useState<SortingState>([{ id: 'question', desc: false }])
+  // Grid-2 T3: columnFilters は非永続 (examViewPrefs に保存しない、 リロードで初期化)。
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
 
   // useLiveQuery: 案 X-A。 4 store (cards / tag_categories / tag_options / card_tags) を
   // 1 subscription で一括 pull。 InlineCardList の useLiveQuery と同パターンを踏襲
@@ -191,11 +196,13 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     columns: examCardTableColumns,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
     enableRowSelection: true,
     getRowId: (row) => row.card.id,
-    state: { rowSelection, sorting },
+    state: { rowSelection, sorting, columnFilters },
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
     meta: {
       userId,
       toggle,
@@ -206,8 +213,15 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   })
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm border-collapse">
+    <div>
+      <ExamCardTableFilterBar
+        table={table}
+        categories={liveData?.categories ?? []}
+        options={liveData?.options ?? []}
+        tagEditCallbacks={tagEditCallbacks}
+      />
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
         <thead>
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id} className="border-b border-border">
@@ -283,7 +297,8 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             </tr>
           ))}
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   )
 }

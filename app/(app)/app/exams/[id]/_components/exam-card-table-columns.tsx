@@ -7,12 +7,20 @@
 // 'use client' は JSX を含む ColumnDef を使うため必要 (T2 学び: pure helper でも
 // React component を含む場合は boundary が必要)。
 
-import type { ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef, FilterFn } from '@tanstack/react-table'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
 import { sortLikeServer } from './inline-card-list'
+import {
+  matchesTagFilter,
+  matchesAnswerState,
+  matchesStreakFilter,
+  type TagFilterValue,
+  type AnswerStateFilter,
+  type StreakFilterValue,
+} from '../_lib/card-filter-predicates'
 
 export type ExamCardRow = {
   card: ClientCard
@@ -27,6 +35,20 @@ export type ExamCardTableMeta = {
   categories: ClientTagCategory[]
   options: ClientTagOption[]
 }
+
+// ---------------------------------------------------------------------------
+// filterFn (Grid-2 T3) — module スコープで定義し、 純関数 (../_lib) に委譲する。
+// columnFilters の value 形は filter-bar が書込む型と一致させる。
+// ---------------------------------------------------------------------------
+
+const tagsFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
+  matchesTagFilter(row.original.tags, filterValue as TagFilterValue)
+
+const answerStateFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
+  matchesAnswerState(row.original.card, filterValue as AnswerStateFilter)
+
+const streakFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
+  matchesStreakFilter(row.original.card.current_streak, filterValue as StreakFilterValue)
 
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
@@ -86,6 +108,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       )
     },
     enableSorting: false,
+    // Grid-2 T3: tag フィルタ (カテゴリ内 OR / カテゴリ間 AND)。 value = TagFilterValue。
+    filterFn: tagsFilterFn,
   },
   {
     id: 'lastCorrect',
@@ -107,6 +131,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // null/undefined を昇順・降順とも末尾に固定 (direction 非依存)。
     sortUndefined: 'last',
     // boolean 比較は TanStack default ('basic' = 数値変換後比較、false=0 < true=1) で OK。
+    // Grid-2 T3: 回答状態フィルタ (AS-1) を last_correct 列に attach。 value = AnswerStateFilter。
+    filterFn: answerStateFilterFn,
   },
   {
     id: 'currentStreak',
@@ -117,6 +143,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       <span>{row.original.card.current_streak}</span>
     ),
     enableSorting: true,
+    // Grid-2 T3: 数値比較フィルタ (N-1)。 value = StreakFilterValue。
+    filterFn: streakFilterFn,
   },
   {
     id: 'lastReview',

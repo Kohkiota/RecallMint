@@ -1,0 +1,98 @@
+// card-filter-predicates — ExamCardTable のフィルタ評価ロジック (純関数)。
+// Grid-2 T3。 副作用なし・component 非依存 = unit test しやすいよう component と分離。
+//
+// 3 種のフィルタ:
+//   - tag フィルタ (matchesTagFilter): カテゴリ内 OR / カテゴリ間 AND。
+//   - 回答状態フィルタ (matchesAnswerState): all / unanswered / correct / incorrect の相互排他 4 値。
+//   - 数値比較フィルタ (matchesStreakFilter): current_streak の lte / gte / eq 比較。
+//
+// これらは TanStack Table の filterFn から呼ばれる (exam-card-table-columns.tsx)。
+
+// ---------------------------------------------------------------------------
+// tag フィルタ
+// ---------------------------------------------------------------------------
+
+/** { [categoryId]: optionId[] }。 空配列カテゴリ・空 map は「絞り込みなし」。 */
+export type TagFilterValue = Record<string, string[]>
+
+/**
+ * tag フィルタ評価。
+ * filter の各 categoryId について、 optionId 配列が非空なら
+ * tags が「その category 内のいずれかの option を持つ」(カテゴリ内 OR) こと。
+ * 全 categoryId で true なら pass (カテゴリ間 AND)。
+ * 空配列カテゴリ・空 filter は pass (絞り込みなし)。
+ */
+export function matchesTagFilter(
+  tags: Array<{ category: { id: string }; option: { id: string } }>,
+  filter: TagFilterValue,
+): boolean {
+  for (const [categoryId, optionIds] of Object.entries(filter)) {
+    if (optionIds.length === 0) continue // 空カテゴリ = 絞り込みなし
+    const hit = tags.some(
+      (t) => t.category.id === categoryId && optionIds.includes(t.option.id),
+    )
+    if (!hit) return false
+  }
+  return true
+}
+
+// ---------------------------------------------------------------------------
+// 回答状態フィルタ (AS-1)
+// ---------------------------------------------------------------------------
+
+/** 相互排他 4 値。 'all' = 絞り込みなし。 */
+export type AnswerStateFilter = 'all' | 'unanswered' | 'correct' | 'incorrect'
+
+/**
+ * 回答状態フィルタ評価。
+ *   all       → 常に true
+ *   unanswered→ card.answered === false
+ *   correct   → card.last_correct === true
+ *   incorrect → card.last_correct === false
+ */
+export function matchesAnswerState(
+  card: { answered: boolean; last_correct?: boolean | null },
+  state: AnswerStateFilter,
+): boolean {
+  switch (state) {
+    case 'all':
+      return true
+    case 'unanswered':
+      return card.answered === false
+    case 'correct':
+      return card.last_correct === true
+    case 'incorrect':
+      return card.last_correct === false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 数値比較フィルタ (N-1)
+// ---------------------------------------------------------------------------
+
+/** 当面 UI は 'lte' のみ提供でも、 純関数は 3 種対応。 */
+export type StreakFilterOp = 'lte' | 'gte' | 'eq'
+
+export type StreakFilterValue = { op: StreakFilterOp; value: number }
+
+/**
+ * 連続正解数の数値比較フィルタ評価。
+ * filter が null/undefined → true (絞り込みなし)。
+ * value が NaN → true (未入力扱い)。
+ *   lte → streak <= value / gte → streak >= value / eq → streak === value
+ */
+export function matchesStreakFilter(
+  streak: number,
+  filter: StreakFilterValue | null | undefined,
+): boolean {
+  if (!filter) return true
+  if (Number.isNaN(filter.value)) return true
+  switch (filter.op) {
+    case 'lte':
+      return streak <= filter.value
+    case 'gte':
+      return streak >= filter.value
+    case 'eq':
+      return streak === filter.value
+  }
+}
