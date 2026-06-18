@@ -18,7 +18,7 @@ import {
   type ClientTagCategory,
   type ClientTagOption,
 } from '@/lib/client-db'
-import { buildNextTagSet } from '@/app/(app)/app/exams/[id]/_components/card-tags-section'
+import { buildNextTagSet } from '@/lib/tags/build-next-tag-set'
 import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 
