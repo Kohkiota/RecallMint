@@ -13,7 +13,7 @@
 //   - tagEditCallbacks も table レベルで 1 回構築 (案 EC-A)。
 //   - 両者を meta 経由で各 TagCell に配る (TanStack 標準 pattern)。
 
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   useReactTable,
@@ -29,7 +29,10 @@ import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
+import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
+import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
+import { useBulkCardDelete } from '../_hooks/use-bulk-card-delete'
 import {
   handleRenameCategory,
   handleSetCategoryColor,
@@ -118,6 +121,16 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   )
 
   const toggle = useCardTagToggle({ userId, getCardContext })
+
+  // Grid-2 T6: bulk helper を table レベルで 1 回 instantiate。
+  // getCardTags は単票 getCardContext と同 shape (T4 が想定する getter) なので流用。
+  const bulkTag = useBulkCardTags({ userId, getCardTags: getCardContext })
+  const bulkDelete = useBulkCardDelete({ userId })
+  // 失敗 UI 用 state (BF-2 inline)。 atomic all-or-nothing の結果を保持。
+  const [lastBulkResult, setLastBulkResult] = useState<{
+    op: string
+    result: BulkResult
+  } | null>(null)
 
   // Grid-1 T6 案 EC-A: tagEditCallbacks を table レベルで 1 回構築。
   // module スコープ handler (rename/color/delete/count) は import で共有。
@@ -212,6 +225,51 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     } satisfies ExamCardTableMeta,
   })
 
+  // Grid-2 T6: selection prune effect (§7.4 / HS-2 を単一 effect で吸収)。
+  // visibleIds = 現在のフィルタ後 row id 集合。 selection をこの集合に prune することで
+  //   - タグ操作後: card は data に残る = 可視継続 = 維持
+  //   - 削除後: card が data から消える = 非可視 = prune で除外
+  //   - フィルタ変更: 隠れる = 非可視 = prune で除外
+  // を 1 effect で満たし「selection ⊆ 可視 (= N件 = 今見えている選択行)」不変条件 (HS-2) を保証する。
+  const visibleIds = useMemo(
+    () => table.getFilteredRowModel().rows.map((r) => r.id),
+    // columnFilters / data は memo body から直接参照しないが、 getFilteredRowModel() の
+    // 戻り値はこの 2 値の変化で更新される (table ref は安定なので deps から漏れると
+    // filter/削除後に再計算されず prune が効かない)。 両者を明示的に deps に含める。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 上記理由で意図的に追加
+    [table, columnFilters, data],
+  )
+  useEffect(() => {
+    const visible = new Set(visibleIds)
+    setRowSelection((prev) => {
+      let changed = false
+      const next: RowSelectionState = {}
+      for (const id of Object.keys(prev)) {
+        if (visible.has(id)) next[id] = prev[id]
+        else changed = true
+      }
+      // no-op guard: 変化なしなら同一 ref を返し再レンダーループを防ぐ (必須)。
+      return changed ? next : prev
+    })
+  }, [visibleIds])
+
+  // 可視選択行 id。 prune effect により selection ⊆ 可視なので Object.keys = 可視選択 id。
+  const selectedIds = useMemo(() => Object.keys(rowSelection), [rowSelection])
+
+  // bulk tag/delete 配線: 結果を lastBulkResult に格納し action bar の失敗 UI に渡す。
+  const onBulkTag = useCallback(
+    async (categoryId: string, optionId: string, op: BulkTagOp) => {
+      const r = await bulkTag(selectedIds, categoryId, optionId, op)
+      setLastBulkResult({ op: op === 'add' ? '付与' : '除去', result: r })
+    },
+    [bulkTag, selectedIds],
+  )
+  const onBulkDelete = useCallback(async () => {
+    // 削除後の selection は prune effect が自動除外する (data から消える = 非可視)。
+    const r = await bulkDelete(selectedIds)
+    setLastBulkResult({ op: '削除', result: r })
+  }, [bulkDelete, selectedIds])
+
   return (
     <div>
       <ExamCardTableFilterBar
@@ -299,6 +357,17 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         </tbody>
         </table>
       </div>
+      {selectedIds.length > 0 && (
+        <ExamCardTableActionBar
+          selectedIds={selectedIds}
+          categories={liveData?.categories ?? []}
+          options={liveData?.options ?? []}
+          tagEditCallbacks={tagEditCallbacks}
+          onBulkTag={onBulkTag}
+          onBulkDelete={onBulkDelete}
+          lastResult={lastBulkResult}
+        />
+      )}
     </div>
   )
 }
