@@ -271,7 +271,10 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   }, [bulkDelete, selectedIds])
 
   return (
-    <div>
+    // M3 (T7 stg smoke): 選択時のみ下部 padding を確保し、 fixed bottom action bar
+    // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
+    // ようにする (mobile 短 viewport 375px で確認)。 pb-32 (128px) で wrap 時も余裕を持つ。
+    <div className={selectedIds.length > 0 ? 'pb-32' : undefined}>
       <ExamCardTableFilterBar
         table={table}
         categories={liveData?.categories ?? []}
