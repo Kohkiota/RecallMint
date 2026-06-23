@@ -33,7 +33,7 @@ type StudySessionHostProps = {
   fsrsMode: boolean
   // S-local-3: Dexie cards mirror から due cards を引き直すために必要。
   userId: string
-  sessionLimit: number
+  sessionLimit: number | null
   // 全 exam 横断 smart session では exam_id を指定しない (null になる)。
   // custom mode (将来) では絞り込み対象の exam_id を渡す。
   examId?: string

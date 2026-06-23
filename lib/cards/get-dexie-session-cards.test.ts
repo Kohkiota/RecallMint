@@ -160,6 +160,18 @@ describe('getDueCardsFromDexie', () => {
     expect(stringFirstArgs.filter((a) => a === 'user_id')).toHaveLength(0)
   })
 
+  it('limit=null → .limit() を呼ばずに全件返す (上限なし)', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClient({ id: 'a', due: '2026-05-20T00:00:00.000Z' }),
+      fakeClient({ id: 'b', due: '2026-05-21T00:00:00.000Z' }),
+      fakeClient({ id: 'c', due: '2026-05-22T00:00:00.000Z' }),
+    ])
+    // limit=null: .limit() を chain しないので 3 件すべて返る
+    const out = await getDueCardsFromDexie('user-1', null, NOW)
+    expect(out).toHaveLength(3)
+    expect(out.map((c) => c.id)).toEqual(['a', 'b', 'c'])
+  })
+
   // (C) Y-2 T-B7 tenant isolation 構造保証: [user_id+due] index の第 1 要素
   // user_id equals fix で他 user の cards に index 経路で到達不能であることを
   // 独立 case で守る (旧 test #6 と意図的に重複、 (B) と組み合わせて新経路でも

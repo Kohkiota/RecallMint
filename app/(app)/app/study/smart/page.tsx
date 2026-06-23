@@ -24,8 +24,9 @@ export default async function SmartStudyPage() {
     .from(userSettings)
     .where(eq(userSettings.userId, user.id))
     .limit(1)
-  const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
-  const fsrsMode = settingsRows[0]?.fsrsMode ?? false
+  const row = settingsRows[0]
+  const sessionLimit = row ? row.sessionLimit : 20  // 行不在のみ 20。 明示 null = 上限なし は維持
+  const fsrsMode = row ? row.fsrsMode : false
 
   // S-local-4 (Phase γ): server fetch を try/catch、 throw 時 cards=[]。 これにより
   // offline / server 5xx でも page render fail せず、 client (StudySessionHost) が

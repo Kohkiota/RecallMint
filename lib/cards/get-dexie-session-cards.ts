@@ -24,7 +24,7 @@ import type { Card } from '@/lib/db/schema'
 
 export async function getDueCardsFromDexie(
   userId: string,
-  limit: number,
+  limit: number | null,
   now: Date = new Date(),
 ): Promise<Card[]> {
   const nowIso = now.toISOString()
@@ -36,10 +36,11 @@ export async function getDueCardsFromDexie(
   // となる (T-B6 §補-E.3 で確立、 dashboard-actions.tsx:50 と同文面)。
   // index 順が due ASC 構造的に成立するため .sortBy() は呼ばない (呼ぶと内部で
   // 全件 materialize → JS sort になり index 利点を消す)。
-  const userCards = await getClientDb()
+  // limit = null (上限なし) のとき .limit() を chain しない。
+  let coll = getClientDb()
     .cards.where('[user_id+due]')
     .between([userId, '0'], [userId, nowIso], true, true)
-    .limit(limit)
-    .toArray()
+  if (limit !== null) coll = coll.limit(limit)
+  const userCards = await coll.toArray()
   return userCards.map(toCard)
 }

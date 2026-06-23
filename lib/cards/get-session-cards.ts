@@ -13,20 +13,20 @@ import { cards, type Card } from '@/lib/db/schema'
  * due ASC で limit 件取得して返す。
  *
  * @param userId  テナント識別子 (必須)
- * @param limit   session_limit (1 以上)
+ * @param limit   session_limit (1 以上)。null = 上限なし (due 範囲内の全件を返す)
  * @param now     due 判定基準時刻 (省略時は new Date())
  */
 export async function getSessionCards(
   userId: string,
-  limit: number,
+  limit: number | null,
   now?: Date,
 ): Promise<Card[]> {
   const db = getDb()
   const threshold = now ?? new Date()
-  return await db
+  const base = db
     .select()
     .from(cards)
     .where(and(eq(cards.userId, userId), lte(cards.due, threshold)))
     .orderBy(asc(cards.due))
-    .limit(limit)
+  return limit === null ? await base : await base.limit(limit)
 }
