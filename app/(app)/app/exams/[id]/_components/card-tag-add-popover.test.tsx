@@ -2665,3 +2665,241 @@ describe('CardTagAddPopover — Grid-1 T3: initialStage / initialCategoryId prop
   })
 })
 
+// ---------------------------------------------------------------------------
+// S2.3 Task 9: selectOnly prop
+// selectOnly=true のとき:
+//   - stage1 (category): 「新規作成」 行なし / kebab なし
+//   - stage2 (option): 「新規作成」 行なし / kebab なし
+//   - filter (検索 input) は動作する
+//   - onToggle (option 選択) は動作する
+//   - selectOnly=false (default) では全既存挙動が不変
+// ---------------------------------------------------------------------------
+
+describe('CardTagAddPopover — selectOnly=true: stage1 新規作成行・kebab 非表示', () => {
+  it('selectOnly=true + stage1 open → カテゴリ一覧は表示されるが「新規作成」 行は入力後も出ない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    // カテゴリ一覧は表示される
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'レベル' })).toBeInTheDocument()
+    // filter input に新カテゴリ名を入力しても「新規作成」 行が出ない
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '新カテゴリ' } },
+    )
+    expect(
+      screen.queryByRole('button', { name: /新規作成:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('selectOnly=true + stage1 → kebab (カテゴリ操作) ボタンが表示されない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(
+      screen.queryByRole('button', { name: /カテゴリ操作:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('selectOnly=true + stage1: filter input は機能し、 マッチしたカテゴリだけ表示される', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '分野' } },
+    )
+    // フィルタにヒット
+    expect(screen.getByRole('menuitem', { name: '分野' })).toBeInTheDocument()
+    // ヒットしないカテゴリは非表示
+    expect(screen.queryByRole('menuitem', { name: 'レベル' })).not.toBeInTheDocument()
+  })
+})
+
+describe('CardTagAddPopover — selectOnly=true: stage2 新規作成行・kebab 非表示 + toggle 機能', () => {
+  it('selectOnly=true + stage2 → 「新規作成」 行は入力後も出ない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    // option 一覧が表示される
+    expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
+    // filter に存在しない名前を入力しても「新規作成」 行が出ない
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+      { target: { value: '新 option' } },
+    )
+    expect(
+      screen.queryByRole('button', { name: /新規作成:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('selectOnly=true + stage2 → kebab (option 操作) ボタンが表示されない', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.queryByRole('button', { name: /option 操作:/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('selectOnly=true + stage2 → onToggle は正常に呼ばれる (toggle 選択が機能する)', () => {
+    const onToggle = vi.fn()
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '循環器' }))
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    expect(onToggle).toHaveBeenCalledWith('cat-1', 'o1')
+  })
+
+  it('selectOnly=true + stage2 single → option click で onToggle が呼ばれ popover が閉じる', () => {
+    const onToggle = vi.fn()
+    render(
+      <CardTagAddPopover
+        categories={[cat('cat-2', 'レベル', 'single')]}
+        options={[opt('o3', '初級', 'cat-2'), opt('o4', '上級', 'cat-2')]}
+        allAssignedOptionIds={[]}
+        onToggle={onToggle}
+        tagEditCallbacks={mockTagEditCallbacks}
+        selectOnly
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'レベル' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '初級' }))
+    expect(onToggle).toHaveBeenCalledWith('cat-2', 'o3')
+    // single → popover が閉じる
+    expect(
+      screen.queryByRole('button', { name: 'カテゴリ選択へ戻る' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('CardTagAddPopover — selectOnly=false (default): 既存挙動が不変', () => {
+  it('selectOnly 未指定 (=false) → stage1 kebab が表示される (regression)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(
+      screen.getByRole('button', { name: 'カテゴリ操作: 分野' }),
+    ).toBeInTheDocument()
+  })
+
+  it('selectOnly 未指定 (=false) → stage1 新規作成行が出る (regression)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      { target: { value: '新カテゴリ' } },
+    )
+    expect(
+      screen.getByRole('button', { name: '新規作成: 新カテゴリ' }),
+    ).toBeInTheDocument()
+  })
+
+  it('selectOnly 未指定 (=false) → stage2 kebab が表示される (regression)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.getByRole('button', { name: 'option 操作: 循環器' }),
+    ).toBeInTheDocument()
+  })
+
+  it('selectOnly 未指定 (=false) → stage2 新規作成行が出る (regression)', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+      { target: { value: '新 option' } },
+    )
+    expect(
+      screen.getByRole('button', { name: /新規作成:/ }),
+    ).toBeInTheDocument()
+  })
+})
+

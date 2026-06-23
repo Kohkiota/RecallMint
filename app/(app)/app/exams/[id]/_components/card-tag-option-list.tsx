@@ -179,8 +179,9 @@ export function CardTagOptionList({
   )
   // suppressCreateOnExactMatch=false の場合は完全一致でも新規作成行を表示する
   // (category list は同名許容のためこちらを使う)。
+  // onCreateNew が未指定 (selectOnly モード等) のときは新規作成行を出さない。
   const showCreateRow =
-    trimmed.length > 0 && (!suppressCreateOnExactMatch || !exactMatchExists)
+    !!onCreateNew && trimmed.length > 0 && (!suppressCreateOnExactMatch || !exactMatchExists)
 
   // option list 0 件 + 新規作成行も非表示 (= 入力空 + options 空、 または入力空 + filter hit 0)
   // のときのみ placeholder を出す。 入力ありで新規作成行が出るときは placeholder 出さない。

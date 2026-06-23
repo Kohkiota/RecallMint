@@ -93,6 +93,10 @@ type Props = {
    *  (固定 trigger button)。 Grid-1 T6 で TagCell が badge / +N / placeholder を trigger 化する。
    */
   trigger?: React.ReactNode
+  /** 選択専用モード (default false = 既存挙動)。 true のとき「新規作成」 行と kebab (編集導線) を
+   *  非表示にし、 filter + toggle 選択だけを許可する。 custom フィルタの tag 選択 UI で使用。
+   *  既存呼出元 (filter-bar / tag-cell) は未指定のため挙動不変。 S2.3 Task 9。 */
+  selectOnly?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +127,7 @@ export function CardTagAddPopover({
   initialStage,
   initialCategoryId,
   trigger,
+  selectOnly = false,
 }: Props) {
   const [open, setOpen] = React.useState(false)
   const [stage, setStage] = React.useState<Stage>('category')
@@ -414,12 +419,12 @@ export function CardTagAddPopover({
                       setStage('option')
                       setCreateError(null)
                     }}
-                    onRowAction={(categoryId) => {
+                    onRowAction={selectOnly ? undefined : (categoryId) => {
                       setEditTargetId(categoryId)
                       setStage('editCategory')
                       setLastError(null)
                     }}
-                    onCreateNew={async (name) => {
+                    onCreateNew={selectOnly ? undefined : async (name) => {
                       setPendingCategoryName(name)
                       setStage('createCategoryType')
                       setCreateError(null)
@@ -442,12 +447,12 @@ export function CardTagAddPopover({
                   setStage('option')
                   setCreateError(null)
                 }}
-                onRowAction={(categoryId) => {
+                onRowAction={selectOnly ? undefined : (categoryId) => {
                   setEditTargetId(categoryId)
                   setStage('editCategory')
                   setLastError(null)
                 }}
-                onCreateNew={async (name) => {
+                onCreateNew={selectOnly ? undefined : async (name) => {
                   setPendingCategoryName(name)
                   setStage('createCategoryType')
                   setCreateError(null)
@@ -513,9 +518,9 @@ export function CardTagAddPopover({
                       selectType={selectedCategory.select_type}
                       onToggle={(optId) => onToggle(selectedCategory.id, optId)}
                       onClose={() => setOpen(false)}
-                      onRowAction={handleOptionRowAction}
+                      onRowAction={selectOnly ? undefined : handleOptionRowAction}
                       selectedCategoryId={selectedCategoryId}
-                      onCreateNew={async (name) => {
+                      onCreateNew={selectOnly ? undefined : async (name) => {
                         if (isSubmittingCreate) return
                         setIsSubmittingCreate(true)
                         try {
@@ -544,9 +549,9 @@ export function CardTagAddPopover({
                   selectType={selectedCategory.select_type}
                   onToggle={(optId) => onToggle(selectedCategory.id, optId)}
                   onClose={() => setOpen(false)}
-                  onRowAction={handleOptionRowAction}
+                  onRowAction={selectOnly ? undefined : handleOptionRowAction}
                   selectedCategoryId={selectedCategoryId}
-                  onCreateNew={async (name) => {
+                  onCreateNew={selectOnly ? undefined : async (name) => {
                     if (isSubmittingCreate) return
                     setIsSubmittingCreate(true)
                     try {
