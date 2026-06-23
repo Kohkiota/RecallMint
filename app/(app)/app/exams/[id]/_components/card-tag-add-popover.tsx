@@ -64,8 +64,8 @@ type Props = {
   allAssignedOptionIds: string[]
   /** (categoryId, optionId) で呼ばれる toggle callback */
   onToggle: (categoryId: string, optionId: string) => void
-  /** 編集系 callback 群 (Task 1 で section から渡す) */
-  tagEditCallbacks: TagEditCallbacks
+  /** 編集系 callback 群。 selectOnly=true で tag 選択だけ行う場合は省略可 (Q-7)。 */
+  tagEditCallbacks?: TagEditCallbacks
   /** stage1 D&D 並べ替えの差分 reindex 経路 (Tag-4c-2b T6 で配線済)。
    *  渡された場合: 親 DndContext.onDragEnd → handleStage1DragEnd → 本 callback を直接
    *  dispatch する (子 CardTagOptionList は `sortable` boolean のみ受け取り、 handle 表示と
@@ -305,7 +305,7 @@ export function CardTagAddPopover({
   // handler 先頭でも短絡し、 await 解決前の連打で entity_mutation を 2 件
   // enqueue するのを防ぐ。
   const handleConfirmType = async (selectType: 'single' | 'multi') => {
-    if (isSubmittingCreate || !pendingCategoryName) return
+    if (isSubmittingCreate || !pendingCategoryName || !tagEditCallbacks) return
     setIsSubmittingCreate(true)
     try {
       const { id } = await tagEditCallbacks.createCategory(
@@ -521,7 +521,7 @@ export function CardTagAddPopover({
                       onRowAction={selectOnly ? undefined : handleOptionRowAction}
                       selectedCategoryId={selectedCategoryId}
                       onCreateNew={selectOnly ? undefined : async (name) => {
-                        if (isSubmittingCreate) return
+                        if (!tagEditCallbacks || isSubmittingCreate) return
                         setIsSubmittingCreate(true)
                         try {
                           await tagEditCallbacks.createOptionAndAssign(
@@ -552,7 +552,7 @@ export function CardTagAddPopover({
                   onRowAction={selectOnly ? undefined : handleOptionRowAction}
                   selectedCategoryId={selectedCategoryId}
                   onCreateNew={selectOnly ? undefined : async (name) => {
-                    if (isSubmittingCreate) return
+                    if (!tagEditCallbacks || isSubmittingCreate) return
                     setIsSubmittingCreate(true)
                     try {
                       await tagEditCallbacks.createOptionAndAssign(
@@ -576,7 +576,7 @@ export function CardTagAddPopover({
         {/* ------------------------------------------------------------------ */}
         {/* Stage 3: カテゴリ編集 (editCategory)                               */}
         {/* ------------------------------------------------------------------ */}
-        {stage === 'editCategory' && editTargetId !== null && editTarget !== null && (
+        {stage === 'editCategory' && editTargetId !== null && editTarget !== null && tagEditCallbacks && (
           <>
             <div className="px-2 pt-2">
               <button
@@ -634,7 +634,7 @@ export function CardTagAddPopover({
         {/* ------------------------------------------------------------------ */}
         {/* Stage 4: option 編集 (editOption)                                  */}
         {/* ------------------------------------------------------------------ */}
-        {stage === 'editOption' && editTargetId !== null && editTarget !== null && (
+        {stage === 'editOption' && editTargetId !== null && editTarget !== null && tagEditCallbacks && (
           <>
             <div className="px-2 pt-2">
               <button
@@ -694,7 +694,7 @@ export function CardTagAddPopover({
         {/* Tag-4c-2a-fix Task 3: stage 1 combobox 「新規作成: {name}」 → 本 stage */}
         {/* で single/multi を確定すると mutation 発火 + stage='option' へ遷移。 */}
         {/* ------------------------------------------------------------------ */}
-        {stage === 'createCategoryType' && (
+        {stage === 'createCategoryType' && tagEditCallbacks && (
           <div className="py-1">
             <div className="px-2 pt-2">
               <button
