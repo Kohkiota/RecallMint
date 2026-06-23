@@ -7,6 +7,8 @@ import { createBillingPortalSession } from './actions'
 import { DeleteAccountButton } from './delete-button'
 import { SessionLimitForm } from './_components/session-limit-form'
 import { FsrsModeForm } from './_components/fsrs-mode-form'
+import { saveSessionLimit } from './_actions/save-session-limit'
+import { saveCustomSessionLimit } from './_actions/save-custom-session-limit'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { PAID_PLAN_CATALOG, planLabelFor } from '@/lib/plan-catalog'
@@ -24,15 +26,19 @@ export default async function SettingsPage() {
   const user = await getCurrentUser()
   if (!user) return null
 
-  // 学習設定: user_settings を owner-scoped SELECT (行不在は sessionLimit=20 の暫定値)
+  // 学習設定: user_settings を owner-scoped SELECT
   const db = getDb()
   const settingsRows = await db
     .select()
     .from(userSettings)
     .where(eq(userSettings.userId, user.id))
     .limit(1)
-  const sessionLimit = settingsRows[0]?.sessionLimit ?? 20
-  const fsrsMode = settingsRows[0]?.fsrsMode ?? false
+  // 行不在 (row===undefined) のみ 20 にフォールバック。
+  // null (= 上限なし) は ?? で潰してはいけないため三項演算子で分岐する。
+  const row = settingsRows[0]
+  const smartLimit = row ? row.sessionLimit : 20
+  const customLimit = row ? row.customSessionLimit : 20
+  const fsrsMode = row?.fsrsMode ?? false
 
   // ダウングレード予約 (方針C) の表示用ラベル整形。 cancelAt 優先のため、 cancelAt
   // 不在で scheduledDowngradeScheduleId set のときだけ JSX 側で表示する。 ここでは
@@ -139,7 +145,22 @@ export default async function SettingsPage() {
             <p className="text-sm text-slate-700 mb-3">
               1 セッションあたりの最大 card 数
             </p>
-            <SessionLimitForm initial={sessionLimit} />
+
+            {/* スマート復習 (FSRS セッション) の枚数上限 */}
+            <SessionLimitForm
+              initial={smartLimit}
+              onSaveAction={saveSessionLimit}
+              label="スマート復習"
+            />
+
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              {/* カスタム演習セッションの枚数上限 */}
+              <SessionLimitForm
+                initial={customLimit}
+                onSaveAction={saveCustomSessionLimit}
+                label="カスタム演習"
+              />
+            </div>
 
             <div className="mt-6 border-t border-slate-200 pt-4">
               <p className="text-sm text-slate-700 mb-1">回答評価の入力方式</p>
