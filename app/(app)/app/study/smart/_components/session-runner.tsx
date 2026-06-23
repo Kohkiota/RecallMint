@@ -81,8 +81,10 @@ type SessionRunnerProps = {
   fsrsMode: boolean
   // S-cache-1: 演習開始時に呼出 client が uuidv4 で発行する session_id。
   // Dexie study_sessions の PK に対応、 全 answer_events を紐付ける。
-  // 親 (StudySessionHost) が Dexie に session 行を入れてから渡す。
+  // 親 (SessionLauncher) が Dexie に session 行を入れてから渡す。
   sessionId: string
+  // セッション見出し。 省略時は 'スマート復習'。 custom mode など呼出側が差し替え可能。
+  heading?: string
 }
 
 // opt.text 先頭に opt.id と同じ ID prefix が混入したケースのみ strip (B2 fix, S2.2 T4 review I-1)。
@@ -133,7 +135,7 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps) {
+export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマート復習' }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -413,7 +415,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId }: SessionRunnerProps
     <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
       {/* ヘッダー */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">スマート復習</h1>
+        <h1 className="text-xl font-bold">{heading}</h1>
         <span className="text-sm text-slate-500">
           {idx + 1} / {cards.length}
         </span>
