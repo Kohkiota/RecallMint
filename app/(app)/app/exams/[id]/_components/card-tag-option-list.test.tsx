@@ -546,7 +546,7 @@ describe('CardTagOptionList — 新規作成行 click', () => {
     })
   })
 
-  it('onCreateNew undefined のときは新規作成行 click が no-op (crash しない)', () => {
+  it('onCreateNew undefined のときは新規作成行を出さない (S2.3 T9: showCreateRow が onCreateNew 有無を表示条件に含める)', () => {
     render(
       <CardTagOptionList
         options={OPTIONS}
@@ -556,12 +556,9 @@ describe('CardTagOptionList — 新規作成行 click', () => {
       />,
     )
     const input = screen.getByRole('textbox', { name: 'option を検索 / 新規作成' })
-    fireEvent.change(input, { target: { value: 'ABC' } })
-
-    // 新規作成行は出る (onCreateNew の有無は表示条件に関係しない)
-    const createRow = screen.getByRole('button', { name: '新規作成: ABC' })
-    // crash しない
-    expect(() => fireEvent.click(createRow)).not.toThrow()
+    // filter 入力しても、 onCreateNew 不在なら新規作成行は DOM に現れない (click-suppress ではなく DOM-absent)。
+    expect(() => fireEvent.change(input, { target: { value: 'ABC' } })).not.toThrow()
+    expect(screen.queryByRole('button', { name: '新規作成: ABC' })).not.toBeInTheDocument()
   })
 })
 
