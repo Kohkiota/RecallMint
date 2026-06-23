@@ -96,3 +96,20 @@ export function matchesStreakFilter(
       return streak === filter.value
   }
 }
+
+// ---------------------------------------------------------------------------
+// 試験フィルタ (S2.3 custom-session T2)
+// ---------------------------------------------------------------------------
+
+/**
+ * 試験フィルタ評価 (IN 絞り込み、複数試験 = OR)。
+ * examIds が空配列 → true (絞り込みなし)。
+ * 非空 → card.exam_id が examIds のいずれかと一致すれば true。
+ */
+export function matchesExamFilter(
+  card: { exam_id: string },
+  examIds: string[],
+): boolean {
+  if (examIds.length === 0) return true // 空 = 絞り込みなし
+  return examIds.includes(card.exam_id)
+}

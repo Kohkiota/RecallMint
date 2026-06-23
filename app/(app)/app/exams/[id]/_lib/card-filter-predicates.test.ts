@@ -6,6 +6,7 @@ import {
   matchesTagFilter,
   matchesAnswerState,
   matchesStreakFilter,
+  matchesExamFilter,
   type TagFilterValue,
   type StreakFilterValue,
 } from './card-filter-predicates'
@@ -159,7 +160,33 @@ describe('matchesStreakFilter — 数値比較', () => {
 })
 
 // ===========================================================================
-// case 5: 複合 (tag AND 回答状態) を組合せた row 集合
+// case 5: 試験フィルタ (examIds による IN 絞り込み)
+// ===========================================================================
+
+describe('matchesExamFilter', () => {
+  it('空配列は絞り込みなし → true', () => {
+    expect(matchesExamFilter({ exam_id: 'exam-1' }, [])).toBe(true)
+  })
+
+  it('examIds に card.exam_id が含まれる → true', () => {
+    expect(matchesExamFilter({ exam_id: 'exam-1' }, ['exam-1'])).toBe(true)
+  })
+
+  it('examIds に card.exam_id が含まれない → false', () => {
+    expect(matchesExamFilter({ exam_id: 'exam-2' }, ['exam-1'])).toBe(false)
+  })
+
+  it('複数 examIds — OR: いずれか一致 → true', () => {
+    expect(matchesExamFilter({ exam_id: 'exam-2' }, ['exam-1', 'exam-2', 'exam-3'])).toBe(true)
+  })
+
+  it('複数 examIds — OR: いずれも不一致 → false', () => {
+    expect(matchesExamFilter({ exam_id: 'exam-9' }, ['exam-1', 'exam-2', 'exam-3'])).toBe(false)
+  })
+})
+
+// ===========================================================================
+// case 6: 複合 (tag AND 回答状態) を組合せた row 集合
 // ===========================================================================
 
 describe('複合フィルタ (tag かつ 回答状態)', () => {
