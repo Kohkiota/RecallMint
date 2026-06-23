@@ -55,7 +55,7 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
-import { saveSessionLimit } from './save-session-limit'
+import { saveCustomSessionLimit } from './save-custom-session-limit'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -85,11 +85,11 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe('saveSessionLimit', () => {
+describe('saveCustomSessionLimit', () => {
   describe('auth gate', () => {
     it('getCurrentUser が null → ok:false / 認証エラー、DB 呼び出しなし', async () => {
       mockGetCurrentUser.mockResolvedValue(null)
-      const result = await saveSessionLimit(20)
+      const result = await saveCustomSessionLimit(20)
       expect(result).toEqual({ ok: false, error: '認証が必要です' })
       expect(insertCalls).toHaveLength(0)
     })
@@ -101,41 +101,41 @@ describe('saveSessionLimit', () => {
     })
 
     it('value=0 → ok:false / 範囲外エラー', async () => {
-      const result = await saveSessionLimit(0)
+      const result = await saveCustomSessionLimit(0)
       expect(result).toEqual({ ok: false, error: '1〜200 で指定してください' })
       expect(insertCalls).toHaveLength(0)
     })
 
     it('value=201 → ok:false / 範囲外エラー', async () => {
-      const result = await saveSessionLimit(201)
+      const result = await saveCustomSessionLimit(201)
       expect(result).toEqual({ ok: false, error: '1〜200 で指定してください' })
       expect(insertCalls).toHaveLength(0)
     })
 
     it('value=-1 → ok:false / 範囲外エラー', async () => {
-      const result = await saveSessionLimit(-1)
+      const result = await saveCustomSessionLimit(-1)
       expect(result).toEqual({ ok: false, error: '1〜200 で指定してください' })
       expect(insertCalls).toHaveLength(0)
     })
 
     it('value=1.5 (小数) → ok:false / 整数以外エラー', async () => {
-      const result = await saveSessionLimit(1.5)
+      const result = await saveCustomSessionLimit(1.5)
       expect(result).toEqual({ ok: false, error: '1〜200 で指定してください' })
       expect(insertCalls).toHaveLength(0)
     })
 
     it('value=1 (境界下限) → ok:true', async () => {
-      const result = await saveSessionLimit(1)
+      const result = await saveCustomSessionLimit(1)
       expect(result).toEqual({ ok: true })
     })
 
     it('value=200 (境界上限) → ok:true', async () => {
-      const result = await saveSessionLimit(200)
+      const result = await saveCustomSessionLimit(200)
       expect(result).toEqual({ ok: true })
     })
 
     it('value=null (上限なし) → ok:true / validation を通過', async () => {
-      const result = await saveSessionLimit(null)
+      const result = await saveCustomSessionLimit(null)
       expect(result).toEqual({ ok: true })
       expect(insertCalls).toHaveLength(1)
     })
@@ -146,43 +146,40 @@ describe('saveSessionLimit', () => {
       mockGetCurrentUser.mockResolvedValue(fakeUser)
     })
 
-    it('value=20 → insert chain が userId / sessionLimit で呼ばれる', async () => {
-      const result = await saveSessionLimit(20)
+    it('value=20 → insert chain が userId / customSessionLimit で呼ばれる', async () => {
+      const result = await saveCustomSessionLimit(20)
       expect(result).toEqual({ ok: true })
 
       expect(insertCalls).toHaveLength(1)
       const call = insertCalls[0]
       expect(call.values).toMatchObject({
         userId: fakeUser.id,
-        sessionLimit: 20,
+        customSessionLimit: 20,
       })
     })
 
-    it('value=null → sessionLimit: null が insert chain に渡る', async () => {
-      const result = await saveSessionLimit(null)
+    it('onConflictDoUpdate に target (userSettings.userId) と set.customSessionLimit / set.updatedAt が含まれる', async () => {
+      await saveCustomSessionLimit(50)
+
+      const call = insertCalls[0]
+      expect(call.conflictTarget).toBeDefined()
+      expect(call.conflictSet).toMatchObject({ customSessionLimit: 50 })
+      expect(call.conflictSet.updatedAt).toBeInstanceOf(Date)
+    })
+
+    it('value=null → customSessionLimit: null が insert chain に渡る', async () => {
+      const result = await saveCustomSessionLimit(null)
       expect(result).toEqual({ ok: true })
 
       expect(insertCalls).toHaveLength(1)
       const call = insertCalls[0]
-      expect(call.values).toMatchObject({ userId: fakeUser.id, sessionLimit: null })
-      expect(call.conflictSet).toMatchObject({ sessionLimit: null })
+      expect(call.values).toMatchObject({ userId: fakeUser.id, customSessionLimit: null })
+      expect(call.conflictSet).toMatchObject({ customSessionLimit: null })
       expect(call.conflictSet.updatedAt).toBeInstanceOf(Date)
     })
 
-    it('onConflictDoUpdate に target (userSettings.userId) と set.sessionLimit / set.updatedAt が含まれる', async () => {
-      await saveSessionLimit(50)
-
-      const call = insertCalls[0]
-      // target は userSettings.userId column object
-      expect(call.conflictTarget).toBeDefined()
-      // set には sessionLimit: 50 が含まれる
-      expect(call.conflictSet).toMatchObject({ sessionLimit: 50 })
-      // I-1: updatedAt は conflict branch で明示的に更新される
-      expect(call.conflictSet.updatedAt).toBeInstanceOf(Date)
-    })
-
-    it('UPSERT 後 revalidatePath は呼ばれない (S-cache-2a: 同 path、 fsrs-mode-form の router.refresh で吸収)', async () => {
-      await saveSessionLimit(30)
+    it('UPSERT 後 revalidatePath は呼ばれない (S-cache-2a)', async () => {
+      await saveCustomSessionLimit(30)
       expect(mockRevalidatePath).not.toHaveBeenCalled()
     })
   })
@@ -197,12 +194,11 @@ describe('saveSessionLimit', () => {
       dbState.shouldThrow = true
       dbState.throwError = dbError
 
-      const result = await saveSessionLimit(20)
+      const result = await saveCustomSessionLimit(20)
       expect(result).toEqual({ ok: false, error: '保存に失敗しました。しばらくしてからお試しください' })
       expect(mockLoggerError).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'save_session_limit.error', err: dbError }),
+        expect.objectContaining({ event: 'save_custom_session_limit.error', err: dbError }),
       )
-      // revalidatePath は呼ばれない
       expect(mockRevalidatePath).not.toHaveBeenCalled()
     })
   })

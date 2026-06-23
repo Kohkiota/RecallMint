@@ -6,7 +6,7 @@ import { userSettings } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
 import { logger } from '@/lib/logger'
 
-export async function saveSessionLimit(value: number | null): Promise<ActionResult<void>> {
+export async function saveCustomSessionLimit(value: number | null): Promise<ActionResult<void>> {
   const user = await getCurrentUser()
   if (!user) return { ok: false, error: '認証が必要です' }
 
@@ -19,13 +19,13 @@ export async function saveSessionLimit(value: number | null): Promise<ActionResu
   try {
     await db
       .insert(userSettings)
-      .values({ userId: user.id, sessionLimit: value })
+      .values({ userId: user.id, customSessionLimit: value })
       .onConflictDoUpdate({
         target: userSettings.userId,
-        set: { sessionLimit: value, updatedAt: new Date() },
+        set: { customSessionLimit: value, updatedAt: new Date() },
       })
   } catch (err) {
-    logger.error({ event: 'save_session_limit.error', err, userId: user.id, value })
+    logger.error({ event: 'save_custom_session_limit.error', err, userId: user.id, value })
     return { ok: false, error: '保存に失敗しました。しばらくしてからお試しください' }
   }
 
