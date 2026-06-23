@@ -28,6 +28,7 @@ import {
 import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
+import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
@@ -88,20 +89,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const data = useMemo<ExamCardRow[]>(() => {
     if (!liveData) return []
     const { filteredCards, categories, options, cardTags } = liveData
-    const tagsByCardId = new Map<string, ExamCardRow['tags']>()
-    for (const ct of cardTags) {
-      const option = options.find((o) => o.id === ct.option_id)
-      if (!option) continue
-      const category = categories.find((c) => c.id === option.category_id)
-      if (!category) continue
-      const arr = tagsByCardId.get(ct.card_id) ?? []
-      arr.push({ category, option })
-      tagsByCardId.set(ct.card_id, arr)
-    }
-    return filteredCards.map((c) => ({
-      card: c,
-      tags: tagsByCardId.get(c.id) ?? [],
-    }))
+    return joinCardTags(filteredCards, cardTags, categories, options)
   }, [liveData])
 
   // Grid-1 T6: useCardTagToggle を table レベルで 1 回 instantiate (OT 制約 2)。

@@ -8,7 +8,7 @@
 // React component を含む場合は boundary が必要)。
 
 import type { ColumnDef, FilterFn } from '@tanstack/react-table'
-import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
@@ -21,11 +21,10 @@ import {
   type AnswerStateFilter,
   type StreakFilterValue,
 } from '../_lib/card-filter-predicates'
+import type { CardWithTags } from '@/lib/cards/join-card-tags'
 
-export type ExamCardRow = {
-  card: ClientCard
-  tags: Array<{ category: ClientTagCategory; option: ClientTagOption }>
-}
+// 既存 import 互換維持: ExamCardRow = CardWithTags (pure alias)。
+export type ExamCardRow = CardWithTags
 
 /** TanStack Table meta 型。 table レベルで 1 回構築し、 columns の cell から参照する。 */
 export type ExamCardTableMeta = {
