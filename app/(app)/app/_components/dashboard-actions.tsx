@@ -10,7 +10,7 @@
 // - server SSR の dueCount に依存しない。 props は userId と (test 注入用) now のみ。
 // - 未 pull / mount 直後の useLiveQuery undefined 状態は skeleton で表示 (layout
 //   shift 防止)。 既存 DashboardStats と同 pattern。
-// - 右 button は「カスタム演習（準備中）」 で常時 disabled (S2.3 で復活予定)。
+// - 右 button は「カスタム演習」 で /app/study/custom へリンク (S2.3 で有効化)。
 //
 // 比較戦略:
 // - cards.due は ISO8601 文字列 (Dexie 統一)。 lexicographic compare で `card.due
@@ -65,12 +65,9 @@ export function DashboardActions({
         className="grid grid-cols-2 gap-3"
       >
         <div className="h-[60px] w-full rounded-xl bg-slate-200 animate-pulse" />
-        <Button
-          size="lg"
-          className="w-full py-4 text-lg font-bold rounded-xl"
-          disabled
-        >
-          カスタム演習（準備中）
+        {/* カスタム演習は dueCount に非依存なので skeleton 中も実 link で出す */}
+        <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
+          <Link href="/app/study/custom" prefetch={false}>カスタム演習</Link>
         </Button>
       </div>
     )
@@ -89,12 +86,8 @@ export function DashboardActions({
           復習完了！
         </div>
       )}
-      <Button
-        size="lg"
-        className="w-full py-4 text-lg font-bold rounded-xl"
-        disabled
-      >
-        カスタム演習（準備中）
+      <Button asChild size="lg" className="w-full py-4 text-lg font-bold rounded-xl">
+        <Link href="/app/study/custom" prefetch={false}>カスタム演習</Link>
       </Button>
     </div>
   )

@@ -32,7 +32,7 @@ export function AppHeader() {
           {/* Sprint A-2: vocab nav (単語 / 復習) 撤去。 S1a: アップロード追加。
               S1.7: 試験 追加 (read-only viewer)。
               T6 (S2.1): 演習 (/app/quiz) 撤去、スマート復習 (/app/study/smart) 追加。
-              カスタム演習導線は S2.3 で追加予定。 */}
+              T12 (S2.3): カスタム演習 (/app/study/custom) 追加。 */}
           <Link
             href="/app/upload"
             prefetch={false}
@@ -53,6 +53,13 @@ export function AppHeader() {
             className="text-sm text-slate-600 hover:text-slate-900"
           >
             スマート復習
+          </Link>
+          <Link
+            href="/app/study/custom"
+            prefetch={false}
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            カスタム演習
           </Link>
           {/* Tag-4a: タグ管理 page 追加。 prefetch={false} は他 nav link と統一 (S-perf-1)。 */}
           <Link

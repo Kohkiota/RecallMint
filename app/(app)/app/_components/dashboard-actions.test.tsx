@@ -127,20 +127,25 @@ describe('DashboardActions (Dexie)', () => {
     })
   })
 
-  it('右 button は「カスタム演習（準備中）」 label で常に disabled', async () => {
+  it('カスタム演習 link は /app/study/custom へのリンクで、disabled ではない (S2.3 有効化)', async () => {
     await getClientDb().cards.bulkPut([
       fakeCard({ due: '2026-04-20T00:00:00.000Z' }),
     ])
     render(<DashboardActions userId="user-1" now={new Date('2026-04-22T12:00:00Z')} />)
-    // dueCount 確定を待つ (右 button は常時 disabled だが、 await で render 確定後の
-    // 状態を verify する)
     await waitFor(() => {
-      expect(
-        screen.queryByText('読み込み中', { exact: false }),
-      ).not.toBeInTheDocument()
+      const link = screen.getByRole('link', { name: 'カスタム演習' })
+      expect(link).toHaveAttribute('href', '/app/study/custom')
     })
-    const btn = screen.getByRole('button', { name: 'カスタム演習（準備中）' })
-    expect(btn).toBeDisabled()
+    // disabled 属性・「準備中」文言は存在しない
+    expect(screen.queryByText('カスタム演習（準備中）')).not.toBeInTheDocument()
+  })
+
+  it('skeleton 中も カスタム演習 link は存在する (dueCount 非依存)', () => {
+    // mount 直後 (useLiveQuery undefined): skeleton branch でも custom link を出す
+    render(<DashboardActions userId="user-1" />)
+    expect(screen.getByRole('status', { name: /読み込み中/ })).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'カスタム演習' })
+    expect(link).toHaveAttribute('href', '/app/study/custom')
   })
 
   it('useLiveQuery 結果未確定 (undefined) の瞬間は skeleton (aria-busy) を出す', () => {
