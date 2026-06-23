@@ -475,8 +475,9 @@ export const studyDays = pgTable(
 )
 
 // ---------------------------------------------------------------------------
-// user_settings (ユーザー設定、S2.1 新設 / S2.2 fsrs_mode 追加)
-// session_limit: 1 session あたりの最大 card 数 (default 20)。
+// user_settings (ユーザー設定、S2.1 新設 / S2.2 fsrs_mode 追加 / S2.3 nullable 化)
+// session_limit: smart モード用 1 session あたりの最大 card 数。nullable = 上限なし、default 20。
+// custom_session_limit: custom モード用 上限。nullable = 上限なし、default 20 (未設定を示す)。
 // fsrs_mode: false=通常 (回答時 client が rating 自動マッピング)、
 //   true=上級 (user が Again/Hard/Good/Easy を直接押す)。
 // PK = user_id (1 user 1 行、UPSERT で lazy init)。
@@ -485,7 +486,8 @@ export const userSettings = pgTable('user_settings', {
   userId: uuid('user_id')
     .primaryKey()
     .references(() => users.id, { onDelete: 'cascade' }),
-  sessionLimit: integer('session_limit').notNull().default(20),
+  sessionLimit: integer('session_limit').default(20),
+  customSessionLimit: integer('custom_session_limit').default(20),
   fsrsMode: boolean('fsrs_mode').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()

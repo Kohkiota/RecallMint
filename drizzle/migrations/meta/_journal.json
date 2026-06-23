@@ -148,6 +148,13 @@
       "when": 1780674015841,
       "tag": "0020_rare_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1782203932051,
+      "tag": "0021_flowery_lifeguard",
+      "breakpoints": true
     }
   ]
 }

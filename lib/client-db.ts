@@ -102,6 +102,9 @@ export type ClientCard = {
 // user_settings: 1 user 1 行。 PK = user_id。
 export type ClientUserSettings = {
   user_id: string
+  // S2.3: server 側 session_limit は nullable 化済 (null = 上限なし)。 この mirror field は
+  // pull writer 不在で現状未使用 (Q-5: session 上限値は RSC server 読み、 Dexie からは引かない)。
+  // 将来 user_settings を pull 配線する際に number | null へ揃える (custom 上限は Q-5 により Dexie 非保持)。
   session_limit: number
   fsrs_mode: boolean
   created_at: string
