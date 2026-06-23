@@ -1,0 +1,234 @@
+// @vitest-environment jsdom
+// CustomSessionFlow (S2.3 T11) — state machine + SessionLauncher 統合テスト。
+//
+// 検証観点:
+// 1. 初期表示: CustomFilterForm が render される
+// 2. onStart(criteria) → getCustomSessionCards が {…criteria, userId, limit: customLimit} で呼ばれる
+// 3. 解決済み cards → SessionLauncher が mode="custom" / heading="カスタム演習" で render される
+// 4. 0 件 → SessionLauncher に渡った emptyState が render される (cards.length===0 path)
+// 5. 「条件を変更」 click → フォームに戻る (filter フェーズに遷移)
+// 6. getCustomSessionCards throw → empty 扱い (page crash しない)
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
+import * as React from 'react'
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+// getCustomSessionCards: テストごとに解決値を切り替えられる spy
+const mockGetCustomSessionCards = vi.fn()
+vi.mock('@/lib/cards/get-custom-session-cards', () => ({
+  getCustomSessionCards: (...args: unknown[]) => mockGetCustomSessionCards(...args),
+}))
+
+// CustomFilterForm: onStart を外から発火できる stub
+const mockOnStartRef: { current: ((c: unknown) => void) | null } = { current: null }
+vi.mock('./custom-filter-form', () => ({
+  CustomFilterForm: ({ onStart }: { userId: string; onStart: (c: unknown) => void }) => {
+    // ref に最新の onStart を保持
+    mockOnStartRef.current = onStart
+    return <div data-testid="custom-filter-form">FilterForm</div>
+  },
+}))
+
+// SessionLauncher: props を記録して emptyState を render できる stub
+const lastLauncherProps: {
+  cards?: unknown[]
+  mode?: string
+  heading?: string
+  fsrsMode?: boolean
+  emptyState?: React.ReactNode
+} = {}
+vi.mock('../../_components/session-launcher', () => ({
+  SessionLauncher: (props: {
+    cards: unknown[]
+    mode: string
+    heading: string
+    fsrsMode: boolean
+    emptyState: React.ReactNode
+  }) => {
+    // props を記録
+    lastLauncherProps.cards = props.cards
+    lastLauncherProps.mode = props.mode
+    lastLauncherProps.heading = props.heading
+    lastLauncherProps.fsrsMode = props.fsrsMode
+    lastLauncherProps.emptyState = props.emptyState
+    // cards が空の場合は emptyState を render (SessionLauncher の実装に準拠)
+    if (props.cards.length === 0) {
+      return <>{props.emptyState}</>
+    }
+    return <div data-testid="session-launcher">SessionLauncher (cards={props.cards.length})</div>
+  },
+}))
+
+import { CustomSessionFlow } from './custom-session-flow'
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const CRITERIA = {
+  examIds: ['exam-1'],
+  tagFilter: {},
+  answerState: 'all' as const,
+  streakFilter: null,
+  order: 'sequential' as const,
+}
+
+const CARDS = [
+  { id: 'card-1', question: 'Q1' },
+  { id: 'card-2', question: 'Q2' },
+]
+
+const DEFAULT_PROPS = {
+  userId: 'user-1',
+  customLimit: 20,
+  fsrsMode: false,
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockOnStartRef.current = null
+  Object.keys(lastLauncherProps).forEach((k) => {
+    delete (lastLauncherProps as Record<string, unknown>)[k]
+  })
+})
+
+afterEach(() => {
+  cleanup()
+})
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('CustomSessionFlow — 初期表示', () => {
+  it('初期フェーズは filter: CustomFilterForm が表示される', () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    expect(screen.getByTestId('custom-filter-form')).toBeInTheDocument()
+  })
+})
+
+describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
+  it('onStart(criteria) → getCustomSessionCards が {…criteria, userId, limit} で呼ばれる', async () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    // CustomFilterForm stub 経由で onStart を発火
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    expect(mockGetCustomSessionCards).toHaveBeenCalledOnce()
+    expect(mockGetCustomSessionCards).toHaveBeenCalledWith({
+      ...CRITERIA,
+      userId: 'user-1',
+      limit: 20,
+    })
+  })
+
+  it('選定完了後、SessionLauncher が mode="custom" + heading="カスタム演習" で render される', async () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-launcher')).toBeInTheDocument()
+    })
+
+    expect(lastLauncherProps.mode).toBe('custom')
+    expect(lastLauncherProps.heading).toBe('カスタム演習')
+    expect(lastLauncherProps.cards).toHaveLength(CARDS.length)
+  })
+
+  it('fsrsMode が SessionLauncher に渡る', async () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} fsrsMode={true} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-launcher')).toBeInTheDocument()
+    })
+
+    expect(lastLauncherProps.fsrsMode).toBe(true)
+  })
+
+  it('customLimit が null のとき getCustomSessionCards に limit:null が渡る', async () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} customLimit={null} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    expect(mockGetCustomSessionCards).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: null }),
+    )
+  })
+})
+
+describe('CustomSessionFlow — 0 件パス', () => {
+  it('cards=[] → SessionLauncher の emptyState (条件に一致するカードがありません) が表示される', async () => {
+    mockGetCustomSessionCards.mockResolvedValue([])
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('条件に一致するカードがありません。'),
+      ).toBeInTheDocument()
+    })
+
+    // SessionLauncher には cards=[] が渡る
+    expect(lastLauncherProps.cards).toHaveLength(0)
+  })
+
+  it('「条件を変更」 click でフォームに戻る', async () => {
+    mockGetCustomSessionCards.mockResolvedValue([])
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '条件を変更' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '条件を変更' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('custom-filter-form')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('CustomSessionFlow — エラーパス', () => {
+  it('getCustomSessionCards が throw → empty 扱い (emptyState が表示される)', async () => {
+    mockGetCustomSessionCards.mockRejectedValue(new Error('Dexie failure'))
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('条件に一致するカードがありません。'),
+      ).toBeInTheDocument()
+    })
+  })
+})

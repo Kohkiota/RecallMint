@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// CustomFilterForm (S2.3 T10) — local state + onStart payload のテスト。
+// CustomFilterForm (S2.3 T10 + T11 count preview) — local state + onStart payload のテスト。
 //
 // 検証観点:
 // 1. 試験 chip toggle で examIds が更新される
@@ -8,9 +8,11 @@
 // 4. 出題順 radio でデフォルトが sequential で、 random に切替可
 // 5. 「演習開始」 click で onStart が 5 keys (examIds/tagFilter/answerState/streakFilter/order) 付きで呼ばれる
 // 6. tag toggle が tagFilter に反映される (chip 表示 / onStart payload)
+// 7. (T11 Q-3) 件数ヒント (match-count-hint) が matchCount に応じて表示される
 //
 // useLiveQuery は vi.mock で返値を直接制御する。 CardTagAddPopover は
 // onToggle を外部から呼び出せるよう軽量 stub に差し替える。
+// getCustomSessionCards (件数プレビュー用) も vi.mock でスタブする。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -21,7 +23,7 @@ import type { ClientExam, ClientTagCategory, ClientTagOption } from '@/lib/clien
 // Hoisted mock state
 // ---------------------------------------------------------------------------
 
-const { liveQueryState, mockOnToggleRef } = vi.hoisted(() => ({
+const { liveQueryState, mockOnToggleRef, mockCountRef } = vi.hoisted(() => ({
   // useLiveQuery の返値を制御するための shared state
   liveQueryState: {
     exams: [] as ClientExam[],
@@ -30,19 +32,26 @@ const { liveQueryState, mockOnToggleRef } = vi.hoisted(() => ({
   },
   // CardTagAddPopover stub が外部に公開する onToggle ref
   mockOnToggleRef: { current: (_catId: string, _optId: string) => {} },
+  // getCustomSessionCards が返す件数
+  mockCountRef: { current: 5 },
 }))
 
-// dexie-react-hooks: useLiveQuery を呼び出し順で exams → categories → options を返す
+// getCustomSessionCards: 件数プレビュー用に mock。 Promise<Card[]> を返す。
+vi.mock('@/lib/cards/get-custom-session-cards', () => ({
+  getCustomSessionCards: vi.fn(async () =>
+    Array.from({ length: mockCountRef.current }, (_, i) => ({ id: `card-${i}` })),
+  ),
+}))
+
+// dexie-react-hooks: useLiveQuery を fn.toString() の内容で分岐。
+// 件数プレビュー用 useLiveQuery は getCustomSessionCards を含む文字列になる。
 vi.mock('dexie-react-hooks', () => ({
   useLiveQuery: vi.fn((fn: () => unknown, _deps?: unknown[]) => {
-    // 呼び出しコンテキストを fn の中身から判断するのは難しいため、
-    // 3 回の呼び出し順 (exams, categories, options) で対応する fixture を返す。
-    // vi.fn() は実行ごとに呼び出し順が分かれるため、モジュール内部の
-    // component re-render でも同じ fixture を返す安定した実装が必要。
-    // → fn の toString() に含まれるキーワードで判断する。
     const src = fn.toString()
     if (src.includes('tag_categories')) return liveQueryState.categories
     if (src.includes('tag_options')) return liveQueryState.options
+    // 件数プレビュー: getCustomSessionCards を呼ぶ fn — 同期的に件数を返す
+    if (src.includes('getCustomSessionCards')) return mockCountRef.current
     // exams は where('user_id') を含む
     return liveQueryState.exams
   }),
@@ -137,6 +146,7 @@ beforeEach(() => {
   liveQueryState.categories = CATEGORIES
   liveQueryState.options = OPTIONS
   mockOnToggleRef.current = (_catId: string, _optId: string) => {}
+  mockCountRef.current = 5
 })
 
 afterEach(() => {
@@ -348,5 +358,35 @@ describe('CustomFilterForm — onStart payload 全 5 keys', () => {
     expect(payload).toHaveProperty('answerState', 'correct')
     expect(payload).toHaveProperty('streakFilter', { op: 'lte', value: 2 })
     expect(payload).toHaveProperty('order', 'random')
+  })
+})
+
+describe('CustomFilterForm — 件数ヒント (Q-3 count preview)', () => {
+  it('matchCount が number のとき「N 件が条件に一致」 ヒントが表示される', () => {
+    mockCountRef.current = 7
+    const onStart = vi.fn()
+    render(<CustomFilterForm userId="user-1" onStart={onStart} />)
+
+    // useLiveQuery が 7 を返すので hint が表示される
+    const hint = screen.getByTestId('match-count-hint')
+    expect(hint).toHaveTextContent('7 件が条件に一致')
+  })
+
+  it('matchCount=0 のときも「0 件が条件に一致」 が表示される', () => {
+    mockCountRef.current = 0
+    const onStart = vi.fn()
+    render(<CustomFilterForm userId="user-1" onStart={onStart} />)
+
+    const hint = screen.getByTestId('match-count-hint')
+    expect(hint).toHaveTextContent('0 件が条件に一致')
+  })
+
+  it('件数ヒントがあっても演習開始ボタンは常に enabled', () => {
+    mockCountRef.current = 0
+    const onStart = vi.fn()
+    render(<CustomFilterForm userId="user-1" onStart={onStart} />)
+
+    const startBtn = screen.getByRole('button', { name: '演習開始' })
+    expect(startBtn).not.toBeDisabled()
   })
 })

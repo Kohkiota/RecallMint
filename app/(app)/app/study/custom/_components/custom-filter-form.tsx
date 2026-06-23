@@ -20,6 +20,7 @@ import type {
   StreakFilterOp,
 } from '@/app/(app)/app/exams/[id]/_lib/card-filter-predicates'
 import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
+import { getCustomSessionCards } from '@/lib/cards/get-custom-session-cards'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -73,6 +74,31 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
   const [streakOp, setStreakOp] = React.useState<StreakFilterOp>('lte')
   const [streakInput, setStreakInput] = React.useState<string>('')
   const [order, setOrder] = React.useState<'random' | 'sequential'>('sequential')
+
+  // ---- 件数プレビュー (Q-3: 警告ではなくヒント表示) ----
+  // getCustomSessionCards を limit:null で実行し全マッチ件数をカウント。
+  // useLiveQuery は Dexie テーブル (cards / tag_categories / tag_options / card_tags) の
+  // 変化と deps (フィルタ state) 両方に反応して再実行される。
+  // undefined = ローディング中 → 表示なし (レイアウトシフト防止)。
+  const computeStreakFilterForCount = (op: StreakFilterOp, raw: string): StreakFilterValue | null => {
+    if (raw.trim() === '') return null
+    const value = Number(raw)
+    if (Number.isNaN(value)) return null
+    return { op, value }
+  }
+  const matchCount = useLiveQuery(
+    () =>
+      getCustomSessionCards({
+        userId,
+        examIds,
+        tagFilter,
+        answerState,
+        streakFilter: computeStreakFilterForCount(streakOp, streakInput),
+        order: 'sequential', // 件数カウントに順序は無関係
+        limit: null,         // 全件マッチ数を得る (cap なし)
+      }).then((cards) => cards.length),
+    [userId, examIds, tagFilter, answerState, streakOp, streakInput],
+  )
 
   // ---- 試験 multiselect ----
   // 名前 → created_at の昇順 (サーバー由来の並び準拠)
@@ -312,14 +338,24 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
         </div>
       </section>
 
-      {/* 演習開始 */}
-      <button
-        type="button"
-        onClick={handleStart}
-        className="w-full rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90"
-      >
-        演習開始
-      </button>
+      {/* 件数ヒント + 演習開始 (Q-3: 警告ではなく情報提示。 開始ボタンは常に enabled) */}
+      <div className="space-y-2">
+        {matchCount !== undefined && (
+          <p
+            data-testid="match-count-hint"
+            className="text-center text-xs text-muted-foreground"
+          >
+            {matchCount} 件が条件に一致
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={handleStart}
+          className="w-full rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-background hover:opacity-90"
+        >
+          演習開始
+        </button>
+      </div>
     </div>
   )
 }
