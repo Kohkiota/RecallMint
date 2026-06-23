@@ -107,25 +107,13 @@ export function SessionLimitForm({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-1.5">
       {/* 任意ラベル (スマート復習 / カスタム演習 等) */}
       {label && <p className="text-xs font-medium text-slate-600">{label}</p>}
 
-      {/* 上限なし toggle */}
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          aria-label="上限なし"
-          checked={unlimited}
-          onChange={handleUnlimitedChange}
-          disabled={pending}
-          className="h-4 w-4 rounded border-slate-300 text-emerald-600 accent-emerald-600"
-        />
-        <span className="text-sm text-slate-700">上限なし</span>
-      </label>
-
-      {/* Preset buttons — unlimited 時は disabled */}
-      <div className="flex gap-2">
+      {/* 横一列: preset / input / 上限なし toggle / 保存 — flex-wrap で 375px でも overflow しない */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Preset buttons — unlimited 時は disabled */}
         {PRESETS.map((preset) => (
           <Button
             key={preset}
@@ -138,24 +126,37 @@ export function SessionLimitForm({
             {preset}
           </Button>
         ))}
+
+        {/* Free-form number input — unlimited 時は disabled */}
+        <Input
+          type="number"
+          min="1"
+          max="200"
+          value={unlimited ? '' : value}
+          onChange={handleInputChange}
+          disabled={pending || unlimited}
+          className="w-20"
+          aria-label="セッション枚数"
+        />
+
+        {/* 上限なし toggle */}
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            aria-label="上限なし"
+            checked={unlimited}
+            onChange={handleUnlimitedChange}
+            disabled={pending}
+            className="h-4 w-4 rounded border-slate-300 text-emerald-600 accent-emerald-600"
+          />
+          <span className="text-sm text-slate-700">上限なし</span>
+        </label>
+
+        {/* Save button */}
+        <Button type="button" size="sm" onClick={handleSave} disabled={pending}>
+          保存
+        </Button>
       </div>
-
-      {/* Free-form number input — unlimited 時は disabled */}
-      <Input
-        type="number"
-        min="1"
-        max="200"
-        value={unlimited ? '' : value}
-        onChange={handleInputChange}
-        disabled={pending || unlimited}
-        className="w-32"
-        aria-label="セッション枚数"
-      />
-
-      {/* Save button */}
-      <Button type="button" size="sm" onClick={handleSave} disabled={pending}>
-        保存
-      </Button>
 
       {/* Inline feedback message — value が message.value と一致する間のみ表示 */}
       {message && value === message.value && (
