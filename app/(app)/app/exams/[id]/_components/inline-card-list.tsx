@@ -19,6 +19,7 @@ import {
 } from '@/lib/client-db'
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
+import { sortLikeServer } from '@/lib/cards/sort-like-server'
 import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
 import { newId } from '@/lib/sync/entity-mutations'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,10 @@ import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
 import { DeleteCardButton } from './delete-card-button'
 import { CardTagsSection } from './card-tags-section'
+
+// sortLikeServer は @/lib/cards/sort-like-server に抽出済 (S2.3 T3)。 既存 importer
+// (exam-card-table-columns / exam-card-table) の `from './inline-card-list'` 互換のため re-export。
+export { sortLikeServer }
 
 type InlineCardListProps = {
   // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
@@ -54,23 +59,6 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
     explanationText: c.explanation_text ?? null,
     memo: c.memo ?? null,
   }
-}
-
-// server (getCardsForExam) の `ORDER BY sort_key, created_at` を Dexie 配列上で再現。
-// Postgres ASC は NULL を末尾に置くため、 sort_key 非 null を辞書順 ASC で先に、
-// null は末尾、 同 key 内 (null 同士含む) は created_at ASC を tiebreak とする。
-// export: ExamCardTable (案 H-1) から再利用するため export を追加 (internal logic 不変)。
-export function sortLikeServer(a: ClientCard, b: ClientCard): number {
-  const aKey = a.sort_key ?? null
-  const bKey = b.sort_key ?? null
-  if (aKey !== bKey) {
-    if (aKey === null) return 1 // null は後ろ (NULLS LAST)
-    if (bKey === null) return -1
-    return aKey < bKey ? -1 : 1
-  }
-  // 同 sort_key (null 同士含む): created_at ASC
-  if (a.created_at === b.created_at) return 0
-  return a.created_at < b.created_at ? -1 : 1
 }
 
 export function InlineCardList({
