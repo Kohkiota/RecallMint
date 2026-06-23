@@ -202,3 +202,59 @@
 - Q-6 確定 = T7 SessionLauncher 抽出(smart は選定を保持し起動を委譲)。Q-2 = T3/T10 の order セレクタ。Q-3 = T3(cap 無効化)+ T11(目安表示判断)。
 - 型整合: `CardWithTags`(T1)= `ExamCardRow` alias / `CustomSessionCriteria`(T3)を T10/T11 が consume / `SessionLauncher` heading prop(T7)を T11 が渡す / action signature `number | null`(T5)を T6 が呼ぶ。
 - 未確定で plan に残す判断: T9 の tag-UI 機構(selectOnly prop 採用、OT 異論余地)/ T10 出題順デフォルト(sequential 採用)/ T11 巨大集合 目安表示の要否。
+
+---
+
+## 追加スコープ tasks(2026-06-23 launch ブロッカー、spec §11)
+
+T1〜T12 完了 + stg smoke pass 済。spec §11 の追加-1/追加-2 を T13〜T15 で実装(workflow = review-before-commit、gate/順序則は既存と同一)。
+
+### Task 13: 設定フォームの横並びレイアウト(spec §11.1)
+
+**目的:** `SessionLimitForm` の preset + 数値 input + 保存 + 上限なしトグルを横一列にコンパクト化。2 フォームが縦に短く収まる。
+
+**Files:** Modify `app/(app)/app/settings/_components/session-limit-form.tsx`(JSX/className のみ)。Test は既存 `session-limit-form.test.tsx` が green のままを確認(必要なら layout 非依存な形に調整)。
+
+**制約:** 保存挙動・state・message race-free 設計(UNLIMITED_SENTINEL guard / flushSync / `value===message.value` guard)は**一切変更しない**。レイアウトのみ。mobile 375px で横スクロール overflow なし(`flex-wrap` 可)。上限なし checked 時の input/preset disable は維持。
+
+**完了条件:** 既存 form test 25/25 green(挙動不変)。typecheck 0。横並び化が DOM に反映(controller smoke は push 後)。Critical 0 + [reviewed]。
+
+### Task 14: 選定器 refactor — selectCustomSessionRows 抽出 + seedFromCriteria(spec §11.2)
+
+**目的:** プレビューが tags 付き出題リストを得られるよう、選定コアを CardWithTags[] で返す関数に抽出。random の preview==session 用に決定論シードを追加。
+
+**Files:** Modify `lib/cards/get-custom-session-cards.ts`。Create `lib/cards/seed-from-criteria.ts`(+ test)。Test 追記 `get-custom-session-cards.test.ts`。
+
+**Interfaces(Produces):**
+- `export async function selectCustomSessionRows(c: CustomSessionCriteria, rng?: () => number): Promise<CardWithTags[]>` — steps 1-5(読込→join→述語→順序→cap)を CardWithTags[] のまま返す(toCard しない)。
+- `getCustomSessionCards` = `selectCustomSessionRows(c, rng).then(rows => rows.map(r => toCard(r.card)))`(セッション経路の戻り値 server Card[] は不変)。
+- `export function seedFromCriteria(c: Omit<CustomSessionCriteria,'userId'|'limit'>): () => number` — criteria の決定論ハッシュから seed する PRNG(例: mulberry32)。同一 criteria → 同一系列。
+
+**制約:** 処理順序(読込→join→述語→順序→cap→[toCard])不変。`CardWithTags` は T1 の `@/lib/cards/join-card-tags` 由来を使用。seed は examIds(順序正規化)/tagFilter/answerState/streakFilter/order を含む安定ハッシュ。tenant 読みは既存(`where('user_id').equals`)維持。
+
+**完了条件:** unit test green — `selectCustomSessionRows` が tags 保持 + 順序 + cap 正しい / `getCustomSessionCards` 既存挙動不変(server Card[]、camelCase、cap、order) / `seedFromCriteria` 同一 criteria=同一系列・異 criteria=異系列 / random を seed 注入で決定論再現。typecheck 0。Critical 0 + [reviewed]。
+
+### Task 15: 出題プレビュー一覧 UI + preview==session 配線(spec §11.2)
+
+**目的:** custom フォームに cap 適用後の出題リストを read-only 表示。プレビュー順=実出題順を seed で構造的に一致させる。
+
+**Files:** Create `app/(app)/app/study/custom/_components/custom-session-preview.tsx`(read-only 軽量テーブル)+ test。Modify `custom-filter-form.tsx`(preview 配線 + count/list 2 値表示 + customLimit prop)、`custom-session-flow.tsx`(customLimit を form へ + handleStart で seedFromCriteria 注入)。
+
+**Interfaces(Consumes):** `selectCustomSessionRows`/`seedFromCriteria`(T14)、`CardWithTags`(T1)。`CustomFilterForm` props に `customLimit: number | null` 追加。
+
+**制約:**
+- プレビュー一覧 = `useLiveQuery(() => selectCustomSessionRows({...criteria, userId, limit: customLimit}, seedFromCriteria(criteria)))` の CardWithTags[]。列: 問題文(line-clamp)+ タグ(既存 chip/badge 風)+ 主要指標(連続正解数・直近正誤)。read-only(編集導線なし)。
+- 既存 `matchCount`(`limit:null` 全件)は維持し「条件一致 N 件」、プレビュー一覧件数は「出題 M 件(cap 後)」として **2 値を明示区別**。
+- `flow.handleStart` は `getCustomSessionCards({...criteria, userId, limit: customLimit}, seedFromCriteria(criteria))` を呼ぶ(form と同シード → preview 順 == 実出題順)。`onStart(criteria)` シグネチャ不変。
+- exam-card-table は流用しない(spec §11.2 確定)。`'use client'`。0 件時はプレビュー非表示(既存 empty UI は flow 側)。
+- perf: 上限なし時の全件描画が重ければ「先頭 N 件 + 他 X 件」に degrade(本 task で計測判断、結果を報告)。
+
+**完了条件:** test green — プレビューが cap 件を出題順で表示 / sequential=sortLikeServer 順・random=seed 決定論順 / count(全件)と list(cap)の 2 値表示 / フィルタ変更で反応的更新。flow が同シードで session を起こす(preview==session)を test で担保。typecheck 0 / build 0。Critical 0 + [reviewed]。stg smoke(push 後): プレビュー順==実出題順 / cap 後件数 / 設定横並び mobile。
+
+---
+
+## Self-Review(追加スコープ §11 対応)
+
+- spec §11.1 → T13(layout only)。§11.2 選定器 refactor → T14(selectCustomSessionRows + seedFromCriteria)。§11.2 プレビュー UI + preview==session → T15。
+- 型整合: `selectCustomSessionRows`/`seedFromCriteria`(T14)を T15 が consume / `CardWithTags`(T1)を T14/T15 が使用 / `customLimit: number|null`(T4/T6 由来)を T15 が form へ / `getCustomSessionCards` 戻り値不変で T11 flow 互換。
+- data-supply 決定: exam-card-table 流用却下(exam_id 固定 + 編集重量)、選定器結果の軽量 read-only テーブル採用。preview==session は seedFromCriteria の決定論で構造保証。

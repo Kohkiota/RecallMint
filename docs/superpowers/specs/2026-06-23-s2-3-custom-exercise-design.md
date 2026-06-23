@@ -255,3 +255,38 @@ Q-1 / Q-2 / Q-4 / Q-5 / Q-7 は OT 確定済(本文へ畳み込み: Q-1=§3.4, Q
 - §4.2 の default 値確定: smart `default 20` 維持 / custom 既定値 / 行不在 fallback の最終形。
 - §3.2: 出題順デフォルト値(random / sequential)。
 - 確定済の前提(推測ではなく裏取り済): server submit 経路は §2.2 で「mode 非分岐 = custom 同一 FSRS」、フィルタ述語の snake_case 入力(§2.5)、tag join 抽出可能性(§2.6)。
+
+---
+
+## 11. 追加スコープ(S2.3 launch ブロッカー対応、2026-06-23 OT 確定 / 凍結解除→追記→再凍結)
+
+T1〜T12 実装 + stg smoke pass 後に判明した launch ブロッカー 2 点。同 sprint 内で実装する。spec を一旦凍結解除して本節を追記し再凍結。Open Questions なし(consistency 機構は OT が CC へ委譲、下記で確定)。
+
+### 11.1 追加-1: 設定「1 セッションあたりの最大 card 数」の横並び化(レイアウトのみ)
+
+- **現状**: `SessionLimitForm`(`session-limit-form.tsx`)が preset(10/20/50)+ 数値 input + 保存 + 上限なしトグルを縦積み(`space-y-3`)。2 フォーム(smart/custom)が縦に冗長。
+- **要件**: 各フォームの preset + input + 保存 + 上限なしトグルを**横一列にコンパクト化**。2 フォームが縦に短く収まる。
+- **制約(不変)**: 保存挙動(`saveSessionLimit`/`saveCustomSessionLimit`、`null=上限なし`)・state ロジック・message race-free 設計(UNLIMITED_SENTINEL guard)は**一切変更しない**。**レイアウト(JSX/className)のみ**。mobile 375px で横スクロール overflow を出さない(狭幅では `flex-wrap` で wrap 可)。
+
+### 11.2 追加-2: カスタム演習フォームに「出題対象カードのプレビュー一覧」(承認ブロッカー)
+
+- **現状**: 「N 件が条件に一致」テキストのみ(`custom-filter-form.tsx` の `matchCount`)。どの問題が出るか見えず承認不可。
+- **要件**: 演習開始ボタン近傍に、抽出カードの一覧を**読み取り専用テーブル相当**で表示。最低限「問題文(clamp)+ タグ + 主要指標(連続正解数 / 直近正誤等)」。これから取り組む問題を事前確認できること。
+
+- **データ供給の確定(Step 0 実コード裏取り)**:
+  - **exam-card-table は流用しない**。`exam-card-table.tsx` は `db.cards.where('exam_id').equals(examId)` で**単一 exam 固定読み**(cross-exam の custom に不適合)、かつ TanStack + タグ編集(TagCell / bulk / sort)を内包する重量級。read-only プレビューに対し drift / 回帰リスク大。
+  - **採用 = 選定器の結果を供給する軽量 read-only テーブル**。ただし現行 `getCustomSessionCards` は Step 4 で `filtered.map(({card})=>card)` し **tags を捨てて server Card[] を返す**(`get-custom-session-cards.ts:101,112`)→ タグ列を出せない。
+  - **選定器を refactor**: 「読込→join→述語→順序→cap」のコア(CardWithTags[] を保持)を `selectCustomSessionRows(c, rng): Promise<CardWithTags[]>` として抽出。`getCustomSessionCards` は `selectCustomSessionRows(...).then(rows => rows.map(r => toCard(r.card)))` に置換(セッション経路 = server Card[] 不変)。プレビューは `selectCustomSessionRows` の `CardWithTags[]`(snake_case ClientCard + tags)を直接表示。
+
+- **プレビュー = 実出題の構造的一致(確定)**:
+  - プレビューの**並び = 出題順選択(sequential=`sortLikeServer` / random=shuffle)を反映**。**件数 = cap 適用後の実出題分のみ**(`limit=customLimit`)。上限なし(null)時は全件。
+  - **random の preview==session 機構(CC 確定)**: 乱択を **criteria 由来の決定論シード**で駆動する(`seedFromCriteria(criteria): () => number`、criteria のハッシュから seed する小さな PRNG)。プレビュー(form)と実出題(flow の `getCustomSessionCards`)が**同一 criteria → 同一シャッフル**となり、preview と実出題順が構造的に一致。副作用: 同一 criteria の再開始は同一順序(drill 用途として許容)。useLiveQuery 再評価でも seed 固定ゆえ再シャッフルせず flicker なし。
+  - 反応的更新: フィルタ/出題順変更で count・プレビュー一覧とも更新。
+  - **2 値の明示**: 「条件一致 N 件(フィルタ後全件、`limit:null`)」と「出題 M 件(cap 適用後、プレビュー一覧の件数)」を UI で区別表示(見えてるのに出ない/出るのに見えない混乱を防ぐ)。
+  - **データフロー**: `customLimit` を form に props 注入(プレビュー cap 用)。`flow.handleStart` は `getCustomSessionCards(criteria, customLimit, seedFromCriteria(criteria))` を呼ぶ(form プレビューと同シード)。`onStart(criteria)` シグネチャは不変。
+
+- **perf / degrade**: `selectCustomSessionRows` は全 user cards 読込 + join(既存 count preview と同コスト)。一覧描画は cap 件(既定 20)。上限なし時は全件描画が原則だが、計測して重い場合は「先頭 N 件 + 他 X 件」表示に degrade(task 判断、§11.2 完了条件に明記)。
+
+### 11.3 凍結
+
+本節追記をもって spec を**再凍結**。以降の仕様変更は停止して OT 相談。
