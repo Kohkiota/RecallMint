@@ -4,7 +4,11 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
-import { getCustomSessionCards, type CustomSessionCriteria } from './get-custom-session-cards'
+import {
+  getCustomSessionCards,
+  selectCustomSessionRows,
+  type CustomSessionCriteria,
+} from './get-custom-session-cards'
 
 // ---------------------------------------------------------------------------
 // ファクトリ
@@ -292,5 +296,111 @@ describe('getCustomSessionCards', () => {
     ])
     const out = await getCustomSessionCards(baseCriteria({ limit: 10 }))
     expect(out).toHaveLength(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// selectCustomSessionRows — CardWithTags[] を返すコア選定関数
+// ---------------------------------------------------------------------------
+
+describe('selectCustomSessionRows', () => {
+  it('タグありカードで tags が保持される (CardWithTags[])', async () => {
+    const db = getClientDb()
+    await db.tag_categories.bulkPut([
+      { id: 'cat-1', user_id: 'user-1', name: 'Cat', select_type: 'single', created_at: '', updated_at: '' },
+    ])
+    await db.tag_options.bulkPut([
+      { id: 'opt-A', user_id: 'user-1', category_id: 'cat-1', name: 'A', created_at: '', updated_at: '' },
+    ])
+    await db.cards.bulkPut([fakeClient({ id: 'tagged' })])
+    await db.card_tags.bulkPut([
+      { card_id: 'tagged', option_id: 'opt-A', user_id: 'user-1', created_at: '' },
+    ])
+
+    const rows = await selectCustomSessionRows(baseCriteria())
+    expect(rows).toHaveLength(1)
+    // CardWithTags 型: .card と .tags を持つ
+    expect(rows[0]).toHaveProperty('card')
+    expect(rows[0]).toHaveProperty('tags')
+    // tags が正しく join されている
+    expect(rows[0]!.tags).toHaveLength(1)
+    expect(rows[0]!.tags[0]!.option.id).toBe('opt-A')
+    expect(rows[0]!.tags[0]!.category.id).toBe('cat-1')
+    // toCard していないため snake_case ClientCard
+    expect(rows[0]!.card).toHaveProperty('question_text')
+    expect(rows[0]!.card).not.toHaveProperty('questionText')
+  })
+
+  it('タグなしカードは tags: [] で返る', async () => {
+    await getClientDb().cards.bulkPut([fakeClient({ id: 'no-tag' })])
+    const rows = await selectCustomSessionRows(baseCriteria())
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tags).toEqual([])
+  })
+
+  it('order=sequential → sortLikeServer 順 (CardWithTags[] の card で比較)', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      fakeClient({ id: 'null-newer', sort_key: null, created_at: '2026-01-03T00:00:00.000Z' }),
+      fakeClient({ id: 'key-002', sort_key: '002', created_at: '2026-01-01T00:00:00.000Z' }),
+      fakeClient({ id: 'null-older', sort_key: null, created_at: '2026-01-02T00:00:00.000Z' }),
+      fakeClient({ id: 'key-001', sort_key: '001', created_at: '2026-01-01T00:00:00.000Z' }),
+    ])
+    const rows = await selectCustomSessionRows(baseCriteria({ order: 'sequential' }))
+    expect(rows.map((r) => r.card.id)).toEqual(['key-001', 'key-002', 'null-older', 'null-newer'])
+  })
+
+  it('order=random: 注入した決定論的 rng で確定的な順列を返す (tags 保持)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.bulkPut([
+      { id: 'cat-1', user_id: 'user-1', name: 'Cat', select_type: 'single', created_at: '', updated_at: '' },
+    ])
+    await db.tag_options.bulkPut([
+      { id: 'opt-X', user_id: 'user-1', category_id: 'cat-1', name: 'X', created_at: '', updated_at: '' },
+    ])
+    await db.cards.bulkPut([
+      fakeClient({ id: 'c1' }),
+      fakeClient({ id: 'c2' }),
+      fakeClient({ id: 'c3' }),
+    ])
+    await db.card_tags.bulkPut([
+      { card_id: 'c1', option_id: 'opt-X', user_id: 'user-1', created_at: '' },
+    ])
+
+    // Fisher-Yates: i=2 j=floor(0.9*3)=2→swap noop; i=1 j=floor(0.1*2)=0→swap(1,0)
+    const rngValues = [0.9, 0.1]
+    let rngIdx = 0
+    const deterministicRng = () => rngValues[rngIdx++] ?? 0
+
+    const rows = await selectCustomSessionRows(baseCriteria({ order: 'random' }), deterministicRng)
+    expect(rows.map((r) => r.card.id)).toEqual(['c2', 'c1', 'c3'])
+    // c1 のタグが c2 の位置に移動した後も c1 の tags は保持されている
+    const c1Row = rows.find((r) => r.card.id === 'c1')
+    expect(c1Row!.tags).toHaveLength(1)
+    expect(c1Row!.tags[0]!.option.id).toBe('opt-X')
+  })
+
+  it('limit cap が CardWithTags[] に適用される', async () => {
+    await getClientDb().cards.bulkPut([
+      fakeClient({ id: 'a', sort_key: '001' }),
+      fakeClient({ id: 'b', sort_key: '002' }),
+      fakeClient({ id: 'c', sort_key: '003' }),
+    ])
+    const rows = await selectCustomSessionRows(baseCriteria({ limit: 2 }))
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.card.id)).toEqual(['a', 'b'])
+  })
+
+  it('getCustomSessionCards の出力 id/順序 と一致する (regression)', async () => {
+    // selectCustomSessionRows と getCustomSessionCards が同一 rng で同一順序を保証
+    await getClientDb().cards.bulkPut([
+      fakeClient({ id: 'x1', sort_key: '001' }),
+      fakeClient({ id: 'x2', sort_key: '002' }),
+      fakeClient({ id: 'x3', sort_key: '003' }),
+    ])
+    const c = baseCriteria({ limit: 2, order: 'sequential' })
+    const rows = await selectCustomSessionRows(c)
+    const cards = await getCustomSessionCards(c)
+    expect(rows.map((r) => r.card.id)).toEqual(cards.map((card) => card.id))
   })
 })

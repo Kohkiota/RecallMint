@@ -11,7 +11,7 @@
 //   6. toCard で server Card 型に変換 (LAST ステップ)
 
 import { getClientDb } from '@/lib/client-db'
-import { joinCardTags } from '@/lib/cards/join-card-tags'
+import { joinCardTags, type CardWithTags } from '@/lib/cards/join-card-tags'
 import {
   matchesExamFilter,
   matchesTagFilter,
@@ -58,16 +58,17 @@ function shuffleInPlace<T>(arr: T[], rng: () => number): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Dexie から全 exam 横断で custom session 用 Card[] を返す。
+ * 選定コア: Dexie 読込 → joinCardTags → 述語 AND → 順序 → cap。
+ * tags を保持した CardWithTags[] を返す (toCard しない)。
+ * プレビュー表示がタグ付き出題リストを得るために抽出。
  *
  * @param c   セッション選定基準
  * @param rng 乱数生成器 (order='random' 時の Fisher-Yates に使用)。 既定 Math.random。
- *            テストで確定的な並び順を検証する際は決定論的な関数を注入する。
  */
-export async function getCustomSessionCards(
+export async function selectCustomSessionRows(
   c: CustomSessionCriteria,
   rng: () => number = Math.random,
-): Promise<Card[]> {
+): Promise<CardWithTags[]> {
   const db = getClientDb()
 
   // Step 1: Dexie 読み込み (due gate なし — 全 exam 横断)
@@ -97,17 +98,30 @@ export async function getCustomSessionCards(
       matchesStreakFilter(card.current_streak, c.streakFilter),
   )
 
-  // Step 4: 順序付け (ClientCard のまま操作、 toCard は最後)
-  const ordered = filtered.map(({ card }) => card)
+  // Step 4: 順序付け (CardWithTags[] ごと操作してタグを保持。 toCard は Step 6 まで行わない)
   if (c.order === 'sequential') {
-    ordered.sort(sortLikeServer)
+    filtered.sort((a, b) => sortLikeServer(a.card, b.card))
   } else {
-    shuffleInPlace(ordered, rng)
+    shuffleInPlace(filtered, rng)
   }
 
   // Step 5: limit cap
-  const capped = c.limit === null ? ordered : ordered.slice(0, c.limit)
+  return c.limit === null ? filtered : filtered.slice(0, c.limit)
+}
 
+/**
+ * Dexie から全 exam 横断で custom session 用 Card[] を返す。
+ * selectCustomSessionRows のラッパー: 戻り値を server Card 型に変換して返す。
+ *
+ * @param c   セッション選定基準
+ * @param rng 乱数生成器 (order='random' 時の Fisher-Yates に使用)。 既定 Math.random。
+ *            テストで確定的な並び順を検証する際は決定論的な関数を注入する。
+ */
+export async function getCustomSessionCards(
+  c: CustomSessionCriteria,
+  rng: () => number = Math.random,
+): Promise<Card[]> {
   // Step 6: server Card 型に変換 (LAST)
-  return capped.map(toCard)
+  const rows = await selectCustomSessionRows(c, rng)
+  return rows.map((r) => toCard(r.card))
 }
