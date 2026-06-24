@@ -36,8 +36,11 @@
 
 ### 3.1 OT open Q の確定 (推奨どおり)
 
-1. **問題文列 = 無改変**。
-   根拠: 現 cell は (a) sticky-left pin、(b) `line-clamp-2`、(c) `sortLikeServer` ソートの三役で動作中。`InlineTextField` は display を `whitespace-pre-wrap break-words` (clamp 不在) で出すため行高が伸び、固定幅 + sticky pin セル内での auto-resize textarea (`useLayoutEffect` scrollHeight 追従) は未検証リスク。問題文の editable 化は選択肢編集 sprint と同時に行う。本 sprint では現状の read-only / sticky pin / clamp / sort を保持する。
+1. **問題文列 = 中身無改変 + sticky pin を title へ移設** (open Q1 微修正で確定)。
+   - **問題文の中身は無改変**: read-only / `line-clamp-2` / `sortLikeServer` ヘッダソート (連番順、# 列削除の代替) をそのまま保持する。問題文の editable 化は選択肢編集 sprint と同時に行う (本 sprint では editable 化しない)。
+   - **sticky-left pin だけを問題文 → title へ移設**: `meta.sticky` 相当の pin 指定を問題文列から外し、新規 title 列に付与する。問題文は非 pin の通常列 (位置は §4.2 で sort_key の後) になる。
+   - 根拠 (なぜ問題文を editable にせず title を pin にするか): `InlineTextField` で問題文を editable 化すると multiline textarea の auto-resize (`useLayoutEffect` scrollHeight 追従) + `line-clamp-2` が固定幅 + sticky セル内で衝突するリスクが高い。一方 **title は単一行 (`multiline` 無)** で auto-resize 概念がなく、clamp も元々持たないため、pin + editable の共存リスクが低い (Step 0 §3.2 で確認)。
+   - `sortLikeServer` ヘッダソートは問題文列ヘッダに残す (中身無改変)。新規 sort_key 列への sort 付与は本 sprint では行わない (OUT、必要なら後続)。
 
 2. **column resize 幅 = 非永続** (リロードで初期固定幅にリセット)。
    根拠: `examViewPrefs` の現 schema は `{ version: 1, view }` の `.strict()`。列関連 schema 拡張は Edit-3 (columnVisibility) と束ねる。初期固定幅の後調整は code 定数側で行う前提のため、永続化は本 sprint で必須ではない。`columnFilters` が既に非永続の前例。
@@ -48,6 +51,7 @@
 
 - **`#` 列は存在しない**。Grid-2 T2 で削除済 (`exam-card-table-columns.tsx` コメント明記、現 column id は `select/question/tags/lastCorrect/currentStreak/lastReview` の 6 本のみ)。連番順ソートは問題文ヘッダクリックが代替で担う。→ brief の「既存維持: # 列」は誤認。**`#` 列は追加しない**。
 - **loading.tsx / error.tsx も波及スコープ IN**。`<main>` から max-w を外すと各 route の `loading.tsx` (skeleton) / `error.tsx` も full-width 化し、ロード中に全幅 skeleton のチラつきが出る。→ これらにも per-page と同じラッパを当てる (§5 影響範囲)。
+- **title の pin + editable 共存 = 可 (open Q1 微修正の Step 0 根拠)**。title の `InlineTextField` は card view で `multiline` 無 = 単一行 `Input` を render する (auto-resize textarea ではない)。`Input` は `bg-transparent` のため、sticky-left の `<td>` (`bg-background`) 内に置くとセルが scrolled 下層に対し不透明を保つ (underlay 成立)。display mode は `whitespace-pre-wrap break-words` (clamp 不在) で、固定幅セルでは長い title が複数行に折り返し行高が可変になる (Notion 風テーブルとして許容)。→ title を pin + editable にしても問題文のような multiline/clamp の衝突は起きない。
 
 ### 3.3 試験詳細 page の幅分岐 (open Q3 確定)
 
@@ -61,6 +65,8 @@
 | **テーブルビュー (ExamCardTable)** | **full-width / 最小左右 padding** | `ExamDetailView` |
 
 → 幅分岐の owner は `ExamDetailView` (`view` state を持つため card/table の幅を出し分けられる) と `page.tsx` (自身の header を cap)。`ExamCardTablePullGate` 等の非表示要素は幅に無関係。
+
+> テーブル内の sticky-left pin は **title 列** に付与する (§3.1-1 で問題文から移設)。pin はセル単位の CSS であり、本 §3.3 の page/view レベル幅分岐とは独立。
 
 ---
 
@@ -84,24 +90,27 @@
 **T-C 列追加 (カードビュー全項目を列化)**
 - 新規・編集可 (InlineTextField を cell に drop): `title` / `sort_key` / 解説 `explanation_text` / メモ `memo`。
 - 新規・read-only 表示のみ: 選択肢 `options` (正解ハイライト)。**新規の軽量 read-only 表示部品**を新設 (commit/working-set ロジックは持ち込まない)。
-- 既存維持: `select` / 問題文 (無改変・sticky pin) / タグ (TagCell) / 直近正誤 / 連続正解数 / 最終回答日時。
+- 既存維持: `select` / 問題文 (中身無改変・本 sprint で pin を喪失し非 pin 通常列へ、§3.1-1) / タグ (TagCell) / 直近正誤 / 連続正解数 / 最終回答日時。
+- sticky-left pin は title 列へ移設 (§3.1-1 / §4.2)。
 - データは全て `row.original.card` から (追加 join なし)。
 
 **T-D sticky header (推奨採用)**
 - thead の th に `sticky top-0 z-10 bg-background`。
-- 左 pin (`left-0` 既存) と上 pin (`top-0` 新規) は別軸、角セル (select / 問題文 th) は両軸付与。
+- 左 pin (`left-0`、本 sprint で title 列へ移設) と上 pin (`top-0` 新規) は別軸、角セル (select th / title th) は両軸付与。
 - `border-collapse` + sticky の border 落ち癖に注意 (bg-background + border 処理を plan で詰める)。
 
-### 4.2 列構成 (案、順序は調整可)
+### 4.2 列構成 (最終確定)
 
 ```
-select / 問題文(pin・read-only・無改変) / sort_key(編集) / title(編集) /
-選択肢(read-only新規) / 解説(編集) / メモ(編集) / タグ(TagCell既存) /
+select / title(sticky pin・編集) / sort_key(編集) / 問題文(read-only・無改変) /
+選択肢(read-only新規) / タグ(TagCell既存) / 解説(編集) / メモ(編集) /
 直近正誤 / 連続正解数 / 最終回答日時
 ```
 
-- 編集系 4 列 = `InlineTextField`、書込は内部 runOptimisticUpdate (単票編集と同一経路)。
-- 問題文 pin の位置 (select 直後) は据え置き = 既存 pin 挙動を完全保持。新規列は問題文の後に append。
+- 編集系 4 列 (title / sort_key / 解説 / メモ) = `InlineTextField`、書込は内部 runOptimisticUpdate (単票編集と同一経路、親 wiring 不要)。
+- **sticky-left pin = title 列** (select の直後・最左の固定列)。問題文から移設 (§3.1-1)。
+- 問題文 = 非 pin の read-only 通常列。中身 (clamp / sortLikeServer ヘッダソート) は無改変。
+- 角セル (select th / title th) は left+top 両軸 sticky (§4.1 T-D)。
 - `#` 列は追加しない (§3.2)。
 
 ### 4.3 OUT (今回入れない)
