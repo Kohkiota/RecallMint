@@ -53,13 +53,17 @@
 
 **目的:** 試験詳細を「header + ViewToggle + カードビュー = capped / テーブルビュー = full-width」に。T1 の暫定 blanket を per-section へ置換。
 
-**Files:** Modify `app/(app)/app/exams/[id]/page.tsx`(blanket AppContainer を外し、戻りリンク + header だけ AppContainer で包む。`ExamDetailView` は full-width 領域に置く)/ `app/(app)/app/exams/[id]/_components/exam-detail-view.tsx`(ViewToggle と card view を AppContainer 相当 cap、table view は full-width container `w-full px-2 md:px-4`)。
+**Step 0 確定済(実コード読了、見込みなし):** page.tsx は T1 で `<AppContainer>` blanket → 内側 `div.space-y-6` に [戻りリンク div / `ExamDetailPullGate`(`return null`・UI なし) / `header` / `section`→`ExamDetailView`]。exam-detail-view.tsx は `div.space-y-4` → ViewToggle `div[role=group].flex.gap-1` + `{view==='card' && InlineCardList}` / `{view==='table' && ExamCardTable}`、**幅クラスは現状どこにも無い**(幅は page blanket 由来)。`cn = twMerge(clsx)` を確認 → `<AppContainer className="py-0">` は `py-8` を打ち消し `mx-auto w-full max-w-4xl px-4`(水平 cap のみ)になる = AppContainer を水平 cap に再利用可。
 
-**Interfaces(Consumes):** `AppContainer`(T1)。
+**Files(確定):**
+- Modify `app/(app)/app/exams/[id]/page.tsx`: blanket を `<div className="w-full">` に置換し、その中で **(a)** 戻りリンク + `ExamDetailPullGate` + `header` を `div.space-y-6 md:space-y-3` ごと `<AppContainer>`(既定 py-8 維持=上部 page padding + 下部 view との間隔)で包み、**(b)** `<ExamDetailView/>` は AppContainer の外=full-width 領域に置く(`section` ラッパは不要、直置き)。
+- Modify `app/(app)/app/exams/[id]/_components/exam-detail-view.tsx`: 外側を `div.space-y-4 pb-8`(下部 page padding 復元)に。ViewToggle と card view は各々 `<AppContainer className="py-0">`(水平 cap のみ)で包む。table view は `<div className="w-full px-2 md:px-4">` で full-width。
 
-**制約:** カードビュー(InlineCardList)の見た目を T0 と一致させる(従来 = max-w-4xl 中央 + px-4 相当)。table view の左右 padding は極小(`px-2 md:px-4`)。view state(`view`)は既存のまま、幅クラスを条件分岐するだけ。pull-gate 等の不可視要素は幅に無関係。
+**Interfaces(Consumes):** `AppContainer`(T1)。`className="py-0"` で水平 cap 化(twMerge 依存)。
 
-**完了条件:** `exam-detail-view` の component test(view='table' で full-width container class / view='card' で capped class が出る、ViewToggle 押下で切替)green。stg smoke(T2 2 view + loading/error 幅)対象。
+**制約:** カードビュー(InlineCardList)を含む内部構造は無改変(wrap だけ追加、子の class/構造は触らない)。view state(`view`)・ViewToggle ロジック・conditional unmount は不変。`ExamDetailPullGate`(null)・selection prune(内部 state)・action bar(`fixed` viewport 相対)は幅と無関係 = 触らない。
+
+**完了条件:** `exam-detail-view` の component test green = view='table' で table 容器が `w-full`(max-w-4xl を持たない)/ view='card' で容器が `max-w-4xl`、ViewToggle 押下で card↔table が切替わり幅クラスも切替わる、を assert。stg smoke(テーブル view=画面幅 / カード view=capped / loading・error 幅)対象。
 
 ---
 
