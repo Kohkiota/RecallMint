@@ -2,7 +2,9 @@
 
 // exam-card-table-columns — TanStack Table column defs for ExamCardTable。
 // module スコープで定義 (component 内 useMemo 不使用)。
-// 列順: [checkbox, 問題文(sticky), タグ(T6 TagCell)]。
+// 列順: [select, title(sticky-left pin), sort_key, question, options, tags,
+//        explanation_text, memo, lastCorrect, currentStreak, lastReview]。
+// title 列が sticky-left pin 列 (meta.sticky = true)。
 //
 // 'use client' は JSX を含む ColumnDef を使うため必要 (T2 学び: pure helper でも
 // React component を含む場合は boundary が必要)。
@@ -23,6 +25,7 @@ import {
   type StreakFilterValue,
 } from '../_lib/card-filter-predicates'
 import type { CardWithTags } from '@/lib/cards/join-card-tags'
+import { InlineTextField } from './inline-text-field'
 
 // 既存 import 互換維持: ExamCardRow = CardWithTags (pure alias)。
 export type ExamCardRow = CardWithTags
@@ -76,6 +79,37 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     enableSorting: false,
   },
   {
+    id: 'title',
+    size: 240,
+    header: 'タイトル',
+    // title 列は sticky-left pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
+    // column def には meta だけ持たせ、 layout は render 側で解決する。
+    meta: { sticky: true },
+    cell: ({ row }) => (
+      <InlineTextField
+        cardId={row.original.card.id}
+        field="title"
+        initialValue={row.original.card.title}
+        ariaLabel="タイトル 編集"
+      />
+    ),
+    enableSorting: false,
+  },
+  {
+    id: 'sort_key',
+    size: 100,
+    header: 'ソートキー',
+    cell: ({ row }) => (
+      <InlineTextField
+        cardId={row.original.card.id}
+        field="sort_key"
+        initialValue={row.original.card.sort_key ?? null}
+        ariaLabel="ソートキー 編集"
+      />
+    ),
+    enableSorting: false,
+  },
+  {
     id: 'question',
     size: 320,
     header: '問題文',
@@ -83,9 +117,6 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     cell: ({ row }) => (
       <div className="line-clamp-2">{row.original.card.question_text}</div>
     ),
-    // 問題文列は第 1 列 pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
-    // column def には meta だけ持たせ、 layout は render 側で解決する。
-    meta: { sticky: true },
     enableSorting: true,
     // sortKey(連番)順 = sortLikeServer (sort_key NULLS-LAST 辞書順 + created_at tiebreak)。
     // 問題文列ヘッダクリックで「連番順」ソートを担う (Grid-2 T2 設計: # 列削除済のため代替)。
@@ -122,6 +153,36 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     enableSorting: false,
     // Grid-2 T3: tag フィルタ (カテゴリ内 OR / カテゴリ間 AND)。 value = TagFilterValue。
     filterFn: tagsFilterFn,
+  },
+  {
+    id: 'explanation_text',
+    size: 220,
+    header: '解説',
+    cell: ({ row }) => (
+      <InlineTextField
+        cardId={row.original.card.id}
+        field="explanation_text"
+        initialValue={row.original.card.explanation_text ?? null}
+        multiline
+        ariaLabel="解説 編集"
+      />
+    ),
+    enableSorting: false,
+  },
+  {
+    id: 'memo',
+    size: 220,
+    header: 'メモ',
+    cell: ({ row }) => (
+      <InlineTextField
+        cardId={row.original.card.id}
+        field="memo"
+        initialValue={row.original.card.memo ?? null}
+        multiline
+        ariaLabel="メモ 編集"
+      />
+    ),
+    enableSorting: false,
   },
   {
     id: 'lastCorrect',

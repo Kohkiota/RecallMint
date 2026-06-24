@@ -193,10 +193,32 @@ describe('ExamCardTable smoke ③: tag cell props 経路再描画', () => {
 })
 
 // ===========================================================================
-// smoke ④ (T3): th に style width が付与されること + resize handle が存在すること
+// smoke ④ (T5): title 列に InlineTextField が描画されること
 // ===========================================================================
 
-describe('ExamCardTable smoke ④ (T3): column sizing + resize handle', () => {
+describe('ExamCardTable smoke ④ (T5): title column renders InlineTextField', () => {
+  it('1 row seed → title cell に aria-label="タイトル 編集" の InlineTextField が描画される', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // row が描画されるのを待つ
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+    })
+
+    // InlineTextField は display mode で role="button" + aria-label を持つ div を描画する
+    const titleField = screen.getByRole('button', { name: 'タイトル 編集' })
+    expect(titleField).toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// smoke ⑤ (T3): th に style width が付与されること + resize handle が存在すること
+// ===========================================================================
+
+describe('ExamCardTable smoke ⑤ (T3): column sizing + resize handle', () => {
   it('render 後 th が style.width を持ち、 resize handle が存在する', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1)])

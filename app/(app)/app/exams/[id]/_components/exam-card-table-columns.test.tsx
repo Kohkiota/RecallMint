@@ -166,9 +166,13 @@ describe('T3: column sizing', () => {
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
       select: 44,
+      title: 240,
+      sort_key: 100,
       question: 320,
       options: 240,
       tags: 200,
+      explanation_text: 220,
+      memo: 220,
       lastCorrect: 96,
       currentStreak: 96,
       lastReview: 160,
@@ -177,6 +181,51 @@ describe('T3: column sizing', () => {
       if (col.id && col.id in sizeMap) {
         expect(col.size, `column "${col.id}" の size`).toBe(sizeMap[col.id])
       }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 6 (T5): 最終列順 + sticky pin 移設 + 4 編集列の存在
+// ---------------------------------------------------------------------------
+
+describe('T5: final column order, sticky pin, and editable columns', () => {
+  it('column id 配列が最終仕様順と一致する', () => {
+    const ids = examCardTableColumns.map((c) => c.id)
+    expect(ids).toEqual([
+      'select',
+      'title',
+      'sort_key',
+      'question',
+      'options',
+      'tags',
+      'explanation_text',
+      'memo',
+      'lastCorrect',
+      'currentStreak',
+      'lastReview',
+    ])
+  })
+
+  it('title 列に meta.sticky === true が付与されている', () => {
+    const titleCol = examCardTableColumns.find((c) => c.id === 'title')
+    expect(titleCol).toBeDefined()
+    expect((titleCol?.meta as { sticky?: boolean } | undefined)?.sticky).toBe(true)
+  })
+
+  it('question 列に meta.sticky が付与されていない (pin 除去済)', () => {
+    const questionCol = examCardTableColumns.find((c) => c.id === 'question')
+    expect(questionCol).toBeDefined()
+    const stickyValue = (questionCol?.meta as { sticky?: boolean } | undefined)?.sticky
+    expect(stickyValue).not.toBe(true)
+  })
+
+  it('title / sort_key / explanation_text / memo の 4 編集列が存在する', () => {
+    const editableIds = ['title', 'sort_key', 'explanation_text', 'memo']
+    for (const id of editableIds) {
+      const col = examCardTableColumns.find((c) => c.id === id)
+      expect(col, `column "${id}" が存在する`).toBeDefined()
+      expect(col?.cell, `column "${id}" に cell renderer が存在する`).toBeDefined()
     }
   })
 })
