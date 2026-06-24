@@ -96,7 +96,8 @@
 
 **T-D sticky header (推奨採用)**
 - thead の th に `sticky top-0 z-10 bg-background`。
-- 左 pin (`left-0`、本 sprint で title 列へ移設) と上 pin (`top-0` 新規) は別軸、角セル (select th / title th) は両軸付与。
+- 左 pin (`left-0`、本 sprint で title 列へ移設) と上 pin (`top-0` 新規、全 th) は別軸。**左 pin は title 列のみ** (select は非 pin = 横スクロールで流れる)。
+- z 設計: 通常 th = top-0 / z-10、左 pin body td (title) = z-10、**角セル = title th のみ** (left+top 両軸 / z-20)。
 - `border-collapse` + sticky の border 落ち癖に注意 (bg-background + border 処理を plan で詰める)。
 
 ### 4.2 列構成 (最終確定)
@@ -110,7 +111,7 @@ select / title(sticky pin・編集) / sort_key(編集) / 問題文(read-only・�
 - 編集系 4 列 (title / sort_key / 解説 / メモ) = `InlineTextField`、書込は内部 runOptimisticUpdate (単票編集と同一経路、親 wiring 不要)。
 - **sticky-left pin = title 列** (select の直後・最左の固定列)。問題文から移設 (§3.1-1)。
 - 問題文 = 非 pin の read-only 通常列。中身 (clamp / sortLikeServer ヘッダソート) は無改変。
-- 角セル (select th / title th) は left+top 両軸 sticky (§4.1 T-D)。
+- 左 pin は title 列のみ (select は非 pin)。角セル = title th のみ left+top 両軸 (§4.1 T-D)。
 - `#` 列は追加しない (§3.2)。
 
 ### 4.3 OUT (今回入れない)
