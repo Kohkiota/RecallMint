@@ -14,6 +14,7 @@ import Link from 'next/link'
 import type { Card } from '@/lib/db/schema'
 import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
 import { getCustomSessionCards } from '@/lib/cards/get-custom-session-cards'
+import { seedFromCriteria } from '@/lib/cards/seed-from-criteria'
 import { SessionLauncher } from '../../_components/session-launcher'
 import { CustomFilterForm } from './custom-filter-form'
 
@@ -36,11 +37,12 @@ export function CustomSessionFlow({ userId, customLimit, fsrsMode }: Props) {
   ) => {
     setPhase({ tag: 'selecting' })
     try {
-      const cards = await getCustomSessionCards({
-        ...criteria,
-        userId,
-        limit: customLimit,
-      })
+      // seedFromCriteria を注入することでプレビューと同一 rng シードを使用:
+      //   preview (useLiveQuery) と session (ここ) が同一の random 順になる
+      const cards = await getCustomSessionCards(
+        { ...criteria, userId, limit: customLimit },
+        seedFromCriteria(criteria),
+      )
       setPhase({ tag: 'done', cards })
     } catch {
       // 選定失敗は empty 扱い (page crash 防止)
@@ -101,6 +103,7 @@ export function CustomSessionFlow({ userId, customLimit, fsrsMode }: Props) {
   return (
     <CustomFilterForm
       userId={userId}
+      customLimit={customLimit}
       onStart={(criteria) => {
         // handleStart は async だが onStart の型は sync。 void で発火する。
         void handleStart(criteria)

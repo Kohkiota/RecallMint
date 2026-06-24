@@ -20,7 +20,9 @@ import type {
   StreakFilterOp,
 } from '@/app/(app)/app/exams/[id]/_lib/card-filter-predicates'
 import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
-import { getCustomSessionCards } from '@/lib/cards/get-custom-session-cards'
+import { getCustomSessionCards, selectCustomSessionRows } from '@/lib/cards/get-custom-session-cards'
+import { seedFromCriteria } from '@/lib/cards/seed-from-criteria'
+import { CustomSessionPreview } from './custom-session-preview'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -28,6 +30,8 @@ import { getCustomSessionCards } from '@/lib/cards/get-custom-session-cards'
 
 export type CustomFilterFormProps = {
   userId: string
+  /** cap 値。null = 上限なし (全件)。CustomSessionFlow から渡される。 */
+  customLimit: number | null
   onStart: (c: Omit<CustomSessionCriteria, 'userId' | 'limit'>) => void
 }
 
@@ -52,7 +56,7 @@ const STREAK_OP_LABELS: Record<StreakFilterOp, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
+export function CustomFilterForm({ userId, customLimit, onStart }: CustomFilterFormProps) {
   // ---- Dexie 読み取り (read-only, Q-7) ----
   const exams = useLiveQuery(
     () => getClientDb().exams.where('user_id').equals(userId).toArray(),
@@ -75,17 +79,21 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
   const [streakInput, setStreakInput] = React.useState<string>('')
   const [order, setOrder] = React.useState<'random' | 'sequential'>('sequential')
 
-  // ---- 件数プレビュー (Q-3: 警告ではなくヒント表示) ----
-  // getCustomSessionCards を limit:null で実行し全マッチ件数をカウント。
-  // useLiveQuery は Dexie テーブル (cards / tag_categories / tag_options / card_tags) の
-  // 変化と deps (フィルタ state) 両方に反応して再実行される。
-  // undefined = ローディング中 → 表示なし (レイアウトシフト防止)。
-  const computeStreakFilterForCount = (op: StreakFilterOp, raw: string): StreakFilterValue | null => {
+  // ---- streak filter 計算 (件数・プレビュー共用) ----
+  // 空入力 / NaN → null (絞り込みなし)。 useLiveQuery のクロージャ内でも使うため
+  // state 宣言直後に定義し、後続の hook から参照できるようにする。
+  const computeStreakFilter = (op: StreakFilterOp, raw: string): StreakFilterValue | null => {
     if (raw.trim() === '') return null
     const value = Number(raw)
     if (Number.isNaN(value)) return null
     return { op, value }
   }
+
+  // ---- 件数プレビュー (Q-3: 警告ではなくヒント表示) ----
+  // getCustomSessionCards を limit:null で実行し全マッチ件数をカウント。
+  // useLiveQuery は Dexie テーブル (cards / tag_categories / tag_options / card_tags) の
+  // 変化と deps (フィルタ state) 両方に反応して再実行される。
+  // undefined = ローディング中 → 表示なし (レイアウトシフト防止)。
   const matchCount = useLiveQuery(
     () =>
       getCustomSessionCards({
@@ -93,11 +101,32 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
         examIds,
         tagFilter,
         answerState,
-        streakFilter: computeStreakFilterForCount(streakOp, streakInput),
+        streakFilter: computeStreakFilter(streakOp, streakInput),
         order: 'sequential', // 件数カウントに順序は無関係
         limit: null,         // 全件マッチ数を得る (cap なし)
       }).then((cards) => cards.length),
     [userId, examIds, tagFilter, answerState, streakOp, streakInput],
+  )
+
+  // ---- 出題プレビュー行 (cap 適用後の実出題順リスト) ----
+  // selectCustomSessionRows + seedFromCriteria を使うことで preview==session を構造的に保証:
+  //   同じ criteria + seed → 同じ random 順 → フォームで見た順 == 実セッションの順
+  // undefined = ローディング中 → コンポーネントに [] を渡して非表示にする。
+  const previewRows = useLiveQuery(
+    () =>
+      selectCustomSessionRows(
+        {
+          userId,
+          examIds,
+          tagFilter,
+          answerState,
+          streakFilter: computeStreakFilter(streakOp, streakInput),
+          order,
+          limit: customLimit,
+        },
+        seedFromCriteria({ examIds, tagFilter, answerState, streakFilter: computeStreakFilter(streakOp, streakInput), order }),
+      ),
+    [userId, examIds, tagFilter, answerState, streakOp, streakInput, order, customLimit],
   )
 
   // ---- 試験 multiselect ----
@@ -155,14 +184,7 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
     setAnswerState(e.target.value as AnswerStateFilter)
   }
 
-  // ---- 連続正解数 (filter-bar の applyStreakFilter を local-state 版に re-host) ----
-  // 空入力 / NaN → null (絞り込みなし)
-  const computeStreakFilter = (op: StreakFilterOp, raw: string): StreakFilterValue | null => {
-    if (raw.trim() === '') return null
-    const value = Number(raw)
-    if (Number.isNaN(value)) return null
-    return { op, value }
-  }
+  // ---- 連続正解数 handlers (computeStreakFilter は streak filter 計算セクションで定義済み) ----
 
   const handleStreakOpChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setStreakOp(e.target.value as StreakFilterOp)
@@ -340,12 +362,23 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
 
       {/* 件数ヒント + 演習開始 (Q-3: 警告ではなく情報提示。 開始ボタンは常に enabled) */}
       <div className="space-y-2">
-        {matchCount !== undefined && (
+        {/* 2 値表示: 条件一致(cap なし全件) vs 出題(cap 後) を明示区別 */}
+        {(matchCount !== undefined || previewRows !== undefined) && (
           <p
             data-testid="match-count-hint"
             className="text-center text-xs text-muted-foreground"
           >
-            {matchCount} 件が条件に一致
+            {matchCount !== undefined ? (
+              <>条件一致 {matchCount} 件</>
+            ) : (
+              <>条件一致 — 件</>
+            )}
+            {' / '}
+            {previewRows !== undefined ? (
+              <>出題 {previewRows.length} 件</>
+            ) : (
+              <>出題 — 件</>
+            )}
           </p>
         )}
         <button
@@ -356,6 +389,9 @@ export function CustomFilterForm({ userId, onStart }: CustomFilterFormProps) {
           演習開始
         </button>
       </div>
+
+      {/* 出題プレビュー一覧 (cap 後の実出題順) — 0 件時は非表示 */}
+      <CustomSessionPreview rows={previewRows ?? []} customLimit={customLimit} />
     </div>
   )
 }

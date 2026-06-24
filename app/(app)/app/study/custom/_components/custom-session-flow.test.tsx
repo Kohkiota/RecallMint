@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// CustomSessionFlow (S2.3 T11) — state machine + SessionLauncher 統合テスト。
+// CustomSessionFlow (S2.3 T11 + T15) — state machine + SessionLauncher 統合テスト。
 //
 // 検証観点:
 // 1. 初期表示: CustomFilterForm が render される
@@ -8,6 +8,7 @@
 // 4. 0 件 → SessionLauncher に渡った emptyState が render される (cards.length===0 path)
 // 5. 「条件を変更」 click → フォームに戻る (filter フェーズに遷移)
 // 6. getCustomSessionCards throw → empty 扱い (page crash しない)
+// 7. (T15) handleStart が seedFromCriteria(criteria) を rng として getCustomSessionCards に渡す
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
@@ -23,12 +24,28 @@ vi.mock('@/lib/cards/get-custom-session-cards', () => ({
   getCustomSessionCards: (...args: unknown[]) => mockGetCustomSessionCards(...args),
 }))
 
+// seedFromCriteria: 決定論的 rng を返す純関数。spy して呼び出し確認。
+const mockSeedFromCriteria = vi.fn((_criteria: unknown): (() => number) => Math.random)
+vi.mock('@/lib/cards/seed-from-criteria', () => ({
+  seedFromCriteria: (criteria: unknown) => mockSeedFromCriteria(criteria),
+}))
+
 // CustomFilterForm: onStart を外から発火できる stub
 const mockOnStartRef: { current: ((c: unknown) => void) | null } = { current: null }
+// form に渡る customLimit を記録 (preview cap が flow→form へ正しく伝播することの検証用)
+const mockCustomLimitRef: { current: number | null | undefined } = { current: undefined }
 vi.mock('./custom-filter-form', () => ({
-  CustomFilterForm: ({ onStart }: { userId: string; onStart: (c: unknown) => void }) => {
-    // ref に最新の onStart を保持
+  CustomFilterForm: ({
+    onStart,
+    customLimit,
+  }: {
+    userId: string
+    customLimit: number | null
+    onStart: (c: unknown) => void
+  }) => {
+    // ref に最新の onStart / customLimit を保持
     mockOnStartRef.current = onStart
+    mockCustomLimitRef.current = customLimit
     return <div data-testid="custom-filter-form">FilterForm</div>
   },
 }))
@@ -90,6 +107,7 @@ const DEFAULT_PROPS = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockSeedFromCriteria.mockReturnValue(Math.random)
   mockOnStartRef.current = null
   Object.keys(lastLauncherProps).forEach((k) => {
     delete (lastLauncherProps as Record<string, unknown>)[k]
@@ -124,11 +142,11 @@ describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
     })
 
     expect(mockGetCustomSessionCards).toHaveBeenCalledOnce()
-    expect(mockGetCustomSessionCards).toHaveBeenCalledWith({
-      ...CRITERIA,
-      userId: 'user-1',
-      limit: 20,
-    })
+    // 第 1 引数: criteria + userId + limit。 第 2 引数: seedFromCriteria 由来の rng 関数。
+    expect(mockGetCustomSessionCards).toHaveBeenCalledWith(
+      { ...CRITERIA, userId: 'user-1', limit: 20 },
+      expect.any(Function),
+    )
   })
 
   it('選定完了後、SessionLauncher が mode="custom" + heading="カスタム演習" で render される', async () => {
@@ -173,6 +191,7 @@ describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
 
     expect(mockGetCustomSessionCards).toHaveBeenCalledWith(
       expect.objectContaining({ limit: null }),
+      expect.any(Function),
     )
   })
 })
@@ -230,5 +249,38 @@ describe('CustomSessionFlow — エラーパス', () => {
         screen.getByText('条件に一致するカードがありません。'),
       ).toBeInTheDocument()
     })
+  })
+})
+
+describe('CustomSessionFlow — T15 preview==session (seedFromCriteria 注入)', () => {
+  it('handleStart が seedFromCriteria(criteria) を rng として getCustomSessionCards に渡す', async () => {
+    // 決定論的な rng 関数を返す spy を設定
+    const deterministicRng = () => 0.5
+    mockSeedFromCriteria.mockReturnValue(deterministicRng)
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+
+    render(<CustomSessionFlow {...DEFAULT_PROPS} />)
+
+    await act(async () => {
+      mockOnStartRef.current!(CRITERIA)
+    })
+
+    // seedFromCriteria が criteria で呼ばれていること
+    expect(mockSeedFromCriteria).toHaveBeenCalledOnce()
+    expect(mockSeedFromCriteria).toHaveBeenCalledWith(CRITERIA)
+
+    // getCustomSessionCards の第 2 引数が seedFromCriteria の戻り値 (deterministicRng) であること
+    expect(mockGetCustomSessionCards).toHaveBeenCalledOnce()
+    const [, rngArg] = mockGetCustomSessionCards.mock.calls[0] as [unknown, () => number]
+    expect(rngArg).toBe(deterministicRng)
+  })
+
+  it('customLimit が flow から form へ渡される', () => {
+    mockGetCustomSessionCards.mockResolvedValue(CARDS)
+    render(<CustomSessionFlow {...DEFAULT_PROPS} customLimit={50} />)
+
+    // form が render され、 stub が捕捉した customLimit が 50 であること (実値の伝播を検証)
+    expect(screen.getByTestId('custom-filter-form')).toBeInTheDocument()
+    expect(mockCustomLimitRef.current).toBe(50)
   })
 })
