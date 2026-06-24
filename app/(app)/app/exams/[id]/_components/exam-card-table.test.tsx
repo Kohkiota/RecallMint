@@ -191,3 +191,37 @@ describe('ExamCardTable smoke ③: tag cell props 経路再描画', () => {
     })
   })
 })
+
+// ===========================================================================
+// smoke ④ (T3): th に style width が付与されること + resize handle が存在すること
+// ===========================================================================
+
+describe('ExamCardTable smoke ④ (T3): column sizing + resize handle', () => {
+  it('render 後 th が style.width を持ち、 resize handle が存在する', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1)])
+
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // 1 row が描画されるのを待つ (table が完全 mount された状態)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+
+    // th が style width を持つことを確認 (non-vacuous: 空文字でも 0 でもなく正の数値文字列)。
+    const allTh = container.querySelectorAll('th')
+    expect(allTh.length).toBeGreaterThan(0)
+    for (const th of allTh) {
+      const widthStyle = (th as HTMLElement).style.width
+      // width が CSS px 値として設定されている (例: "320px")
+      expect(widthStyle, `th "${th.textContent?.trim()}" に style.width が必要`).toMatch(/^\d+(\.\d+)?px$/)
+      const widthPx = parseFloat(widthStyle)
+      expect(widthPx, `th "${th.textContent?.trim()}" の width は正値`).toBeGreaterThan(0)
+    }
+
+    // resize handle が少なくとも 1 つ存在することを確認 (question 列など resizable 列に付与)。
+    // cursor-col-resize クラスで handle を特定する。
+    const handles = container.querySelectorAll('.cursor-col-resize')
+    expect(handles.length, 'resize handle が 1 つ以上存在する').toBeGreaterThan(0)
+  })
+})

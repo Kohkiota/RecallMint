@@ -24,6 +24,7 @@ import {
   type RowSelectionState,
   type SortingState,
   type ColumnFiltersState,
+  type ColumnSizingState,
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
@@ -58,6 +59,8 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const [sorting, setSorting] = useState<SortingState>([{ id: 'question', desc: false }])
   // Grid-2 T3: columnFilters は非永続 (examViewPrefs に保存しない、 リロードで初期化)。
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
 
   // useLiveQuery: 案 X-A。 4 store (cards / tag_categories / tag_options / card_tags) を
   // 1 subscription で一括 pull。 InlineCardList の useLiveQuery と同パターンを踏襲
@@ -200,10 +203,14 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     getFilteredRowModel: getFilteredRowModel(),
     enableRowSelection: true,
     getRowId: (row) => row.card.id,
-    state: { rowSelection, sorting, columnFilters },
+    // T3: column resizing (非永続 — columnSizing は useState のみ、 examViewPrefs/sync_meta に書かない)。
+    enableColumnResizing: true,
+    columnResizeMode: 'onChange',
+    state: { rowSelection, sorting, columnFilters, columnSizing },
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
+    onColumnSizingChange: setColumnSizing,
     meta: {
       userId,
       toggle,
@@ -270,21 +277,31 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         tagEditCallbacks={tagEditCallbacks}
       />
       <div className="overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
+        {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x-auto を発火させる。
+            border-collapse → border-separate border-spacing-0 に倒し切る (条件分岐なし)。
+            理由: sticky セルで border-collapse は border 消失が既知挙動。
+            border-separate では <tr> の border-b が効かないため border を td/th 側に移譲。 */}
+        <table
+          className="text-sm border-separate border-spacing-0"
+          style={{ width: table.getTotalSize() }}
+        >
         <thead>
           {table.getHeaderGroups().map((hg) => (
-            <tr key={hg.id} className="border-b border-border">
+            <tr key={hg.id}>
               {hg.headers.map((h) => {
                 const isSticky =
                   (h.column.columnDef.meta as { sticky?: boolean } | undefined)
                     ?.sticky === true
                 const canSort = h.column.getCanSort()
                 const sortDir = h.column.getIsSorted()
+                const canResize = h.column.getCanResize()
                 return (
                   <th
                     key={h.id}
+                    // T3: relative が必要 (resize handle を absolute right-0 で配置するため)。
+                    // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     className={[
-                      'px-3 py-2 text-left font-medium text-muted-foreground',
+                      'relative px-3 py-2 text-left font-medium text-muted-foreground border-b border-border',
                       isSticky
                         ? 'sticky left-0 z-10 bg-background'
                         : '',
@@ -292,6 +309,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     ]
                       .filter(Boolean)
                       .join(' ')}
+                    style={{ width: h.getSize() }}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
                     {h.isPlaceholder ? null : (
@@ -307,6 +325,22 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                         )}
                       </span>
                     )}
+                    {/* T3: resize handle。select 列はスキップ (checkbox との干渉回避)。
+                        stopPropagation で sort onClick が発火しないよう分離する。 */}
+                    {canResize && h.column.id !== 'select' && (
+                      <div
+                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize select-none touch-none"
+                        onMouseDown={(e) => {
+                          e.stopPropagation()
+                          h.getResizeHandler()(e)
+                        }}
+                        onTouchStart={(e) => {
+                          e.stopPropagation()
+                          h.getResizeHandler()(e)
+                        }}
+                        aria-hidden="true"
+                      />
+                    )}
                   </th>
                 )
               })}
@@ -318,7 +352,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             <tr
               key={row.id}
               data-testid={`row-${row.original.card.id}`}
-              className="border-b border-border hover:bg-muted/50"
+              className="hover:bg-muted/50"
             >
               {row.getVisibleCells().map((cell) => {
                 const isSticky =
@@ -330,14 +364,16 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                 return (
                   <td
                     key={cell.id}
+                    // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
                     className={[
-                      'px-3 py-2',
+                      'px-3 py-2 border-b border-border',
                       isSticky
                         ? 'sticky left-0 z-10 bg-background'
                         : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
+                    style={{ width: cell.column.getSize() }}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>

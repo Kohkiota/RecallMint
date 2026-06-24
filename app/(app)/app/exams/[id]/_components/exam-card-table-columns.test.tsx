@@ -150,7 +150,38 @@ describe('Column: lastReview', () => {
 })
 
 // ---------------------------------------------------------------------------
-// case 4: ExamCardRow.card が full ClientCard を保持し指標 field にアクセスできる
+// case 4 (T3): 全列が数値 size を持つ
+// ---------------------------------------------------------------------------
+
+describe('T3: column sizing', () => {
+  it('全 column def が number 型の size を持つ', () => {
+    for (const col of examCardTableColumns) {
+      expect(
+        typeof col.size,
+        `column "${col.id}" には数値 size が必要`,
+      ).toBe('number')
+    }
+  })
+
+  it('各列の size が仕様値と一致する', () => {
+    const sizeMap: Record<string, number> = {
+      select: 44,
+      question: 320,
+      tags: 200,
+      lastCorrect: 96,
+      currentStreak: 96,
+      lastReview: 160,
+    }
+    for (const col of examCardTableColumns) {
+      if (col.id && col.id in sizeMap) {
+        expect(col.size, `column "${col.id}" の size`).toBe(sizeMap[col.id])
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 5: ExamCardRow.card が full ClientCard を保持し指標 field にアクセスできる
 // ---------------------------------------------------------------------------
 
 describe('ExamCardRow.card is full ClientCard', () => {

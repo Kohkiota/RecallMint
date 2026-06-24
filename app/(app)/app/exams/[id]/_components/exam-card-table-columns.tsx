@@ -52,6 +52,7 @@ const streakFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
+    size: 44,
     header: ({ table }) => (
       <input
         type="checkbox"
@@ -75,6 +76,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'question',
+    size: 320,
     header: '問題文',
     accessorFn: (row) => row.card.question_text,
     cell: ({ row }) => (
@@ -90,6 +92,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'tags',
+    size: 200,
     header: 'タグ',
     cell: ({ row, table }) => {
       const meta = table.options.meta as ExamCardTableMeta | undefined
@@ -112,6 +115,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'lastCorrect',
+    size: 96,
     header: '直近正誤',
     // null → undefined 変換: TanStack の sortUndefined: 'last' に乗せるため必須。
     // false ?? undefined === false なので false は保持される (boolean 値は消えない)。
@@ -135,6 +139,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'currentStreak',
+    size: 96,
     header: '連続正解数',
     // 数値フィールド。null なし。default sortingFn ('auto') で数値ソート。
     accessorFn: (row) => row.card.current_streak,
@@ -147,6 +152,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'lastReview',
+    size: 160,
     header: '最終回答日時',
     // null → undefined 変換: sortUndefined: 'last' を効かせるため必須。
     accessorFn: (row) => row.card.last_review ?? undefined,
