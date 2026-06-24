@@ -70,7 +70,7 @@ export default async function AppLayout({
             送信する (entity 別 trigger は持たない)。 UI なし、 失敗 silent。 */}
         <EntityMutationFlushTrigger />
         <AppHeader />
-        <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-8">
+        <main className="flex-1 w-full">
           {children}
         </main>
       </div>

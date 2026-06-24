@@ -4,6 +4,7 @@ import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
 import { limitsForOrFree, type Plan } from '@/lib/auth/plan-limits'
 import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
+import { AppContainer } from '../_components/app-container'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { UploadForm } from './_components/upload-form'
@@ -64,22 +65,24 @@ export default async function UploadPage() {
   // --- in-flight guard: UploadForm を出さず案内を表示 ---
   if (isProcessing) {
     return (
-      <div className="space-y-6">
-        {header}
-        <Card>
-          <CardContent className="p-6 space-y-3">
-            <p className="font-medium text-slate-800">
-              現在 AI が問題を抽出中です。完了までしばらくお待ちください。
-            </p>
-            <p className="text-sm text-slate-600">
-              処理状況は試験一覧で確認できます。
-            </p>
-            <Button asChild variant="outline">
-              <Link href="/app/exams" prefetch={false}>試験一覧を見る</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+      <AppContainer>
+        <div className="space-y-6">
+          {header}
+          <Card>
+            <CardContent className="p-6 space-y-3">
+              <p className="font-medium text-slate-800">
+                現在 AI が問題を抽出中です。完了までしばらくお待ちください。
+              </p>
+              <p className="text-sm text-slate-600">
+                処理状況は試験一覧で確認できます。
+              </p>
+              <Button asChild variant="outline">
+                <Link href="/app/exams" prefetch={false}>試験一覧を見る</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </AppContainer>
     )
   }
 
@@ -97,15 +100,17 @@ export default async function UploadPage() {
     monthlyLimit === null ? null : Math.max(monthlyLimit - currentMonthPages, 0)
 
   return (
-    <div className="space-y-6">
-      {header}
-      <UploadForm
-        existingExams={existingExams}
-        currentMonthPages={currentMonthPages}
-        monthlyLimit={monthlyLimit}
-        remaining={remaining}
-        plan={plan}
-      />
-    </div>
+    <AppContainer>
+      <div className="space-y-6">
+        {header}
+        <UploadForm
+          existingExams={existingExams}
+          currentMonthPages={currentMonthPages}
+          monthlyLimit={monthlyLimit}
+          remaining={remaining}
+          plan={plan}
+        />
+      </div>
+    </AppContainer>
   )
 }

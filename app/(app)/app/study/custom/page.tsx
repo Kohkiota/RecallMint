@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings } from '@/lib/db/schema'
+import { AppContainer } from '../../_components/app-container'
 import { CustomSessionFlow } from './_components/custom-session-flow'
 
 export default async function CustomStudyPage() {
@@ -28,10 +29,12 @@ export default async function CustomStudyPage() {
   const fsrsMode = row ? row.fsrsMode : false
 
   return (
-    <CustomSessionFlow
-      userId={user.id}
-      customLimit={customLimit}
-      fsrsMode={fsrsMode}
-    />
+    <AppContainer>
+      <CustomSessionFlow
+        userId={user.id}
+        customLimit={customLimit}
+        fsrsMode={fsrsMode}
+      />
+    </AppContainer>
   )
 }

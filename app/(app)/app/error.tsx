@@ -5,6 +5,7 @@
 // ため、<html>/<body> は親に委譲、ヘッダー / ナビゲーションは layout 経由で残る。
 
 import { Button } from '@/components/ui/button'
+import { AppContainer } from './_components/app-container'
 
 export default function AppError({
   reset,
@@ -13,20 +14,22 @@ export default function AppError({
   reset: () => void
 }) {
   return (
-    <div className="flex flex-col items-center justify-center py-16">
-      <h2 className="text-xl font-bold text-slate-900 mb-2">
-        画面の表示中にエラーが発生しました
-      </h2>
-      <p className="text-slate-600 mb-6">
-        時間を置いて再度お試しください。
-      </p>
-      <Button
-        onClick={() => reset()}
-        size="lg"
-        className="px-6 py-3 font-medium"
-      >
-        再試行
-      </Button>
-    </div>
+    <AppContainer>
+      <div className="flex flex-col items-center justify-center py-16">
+        <h2 className="text-xl font-bold text-slate-900 mb-2">
+          画面の表示中にエラーが発生しました
+        </h2>
+        <p className="text-slate-600 mb-6">
+          時間を置いて再度お試しください。
+        </p>
+        <Button
+          onClick={() => reset()}
+          size="lg"
+          className="px-6 py-3 font-medium"
+        >
+          再試行
+        </Button>
+      </div>
+    </AppContainer>
   )
 }

@@ -5,6 +5,7 @@ import {
 } from '@/lib/stripe/subscription'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { PAID_PLAN_CATALOG } from '@/lib/plan-catalog'
+import { AppContainer } from '../_components/app-container'
 import { UpgradePlans } from './upgrade-plans'
 
 // 予約発効日を settings の formatCancelDate と同一形式 (ja-JP YYYY/MM/DD) で整形する。
@@ -70,14 +71,16 @@ export default async function UpgradePage() {
   }
 
   return (
-    <UpgradePlans
-      userPlan={user.plan}
-      userInterval={user.billingInterval}
-      hasPendingUpdate={hasPendingUpdate}
-      cancelScheduled={cancelScheduled}
-      hasScheduledDowngrade={hasScheduledDowngrade}
-      scheduledTargetPlanLabel={scheduledTargetPlanLabel}
-      scheduledEffectiveDateLabel={scheduledEffectiveDateLabel}
-    />
+    <AppContainer>
+      <UpgradePlans
+        userPlan={user.plan}
+        userInterval={user.billingInterval}
+        hasPendingUpdate={hasPendingUpdate}
+        cancelScheduled={cancelScheduled}
+        hasScheduledDowngrade={hasScheduledDowngrade}
+        scheduledTargetPlanLabel={scheduledTargetPlanLabel}
+        scheduledEffectiveDateLabel={scheduledEffectiveDateLabel}
+      />
+    </AppContainer>
   )
 }

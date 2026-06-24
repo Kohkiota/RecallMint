@@ -1,4 +1,5 @@
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
+import { AppContainer } from '../_components/app-container'
 import { CreateExamForm } from './_components/create-exam-form'
 import { ExamListLive } from './_components/exam-list-live'
 
@@ -25,16 +26,18 @@ export default async function ExamsListPage() {
   }
 
   return (
-    <div className="space-y-6 md:space-y-3">
-      <h1 className="text-2xl font-bold">試験一覧</h1>
+    <AppContainer>
+      <div className="space-y-6 md:space-y-3">
+        <h1 className="text-2xl font-bold">試験一覧</h1>
 
-      {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
-      <CreateExamForm />
+        {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
+        <CreateExamForm />
 
-      {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
-          useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。
-          ExamStatusProvider は /app layout に常駐、badge はそこから context 購読。 */}
-      <ExamListLive userId={userId} />
-    </div>
+        {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
+            useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。
+            ExamStatusProvider は /app layout に常駐、badge はそこから context 購読。 */}
+        <ExamListLive userId={userId} />
+      </div>
+    </AppContainer>
   )
 }

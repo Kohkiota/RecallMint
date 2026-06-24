@@ -9,6 +9,7 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings, type Card } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
+import { AppContainer } from '../../_components/app-container'
 import { StudySessionHost } from './_components/study-session-host'
 
 export default async function SmartStudyPage() {
@@ -44,12 +45,14 @@ export default async function SmartStudyPage() {
   // 直接 due cards を引いて (mirror が空なら server cards で fallback)。
   // S-local-4: cards=[] でも host に進む (empty UI 判定は host 内)。
   return (
-    <StudySessionHost
-      cards={serverCards}
-      fsrsMode={fsrsMode}
-      userId={user.id}
-      sessionLimit={sessionLimit}
-      mode="smart"
-    />
+    <AppContainer>
+      <StudySessionHost
+        cards={serverCards}
+        fsrsMode={fsrsMode}
+        userId={user.id}
+        sessionLimit={sessionLimit}
+        mode="smart"
+      />
+    </AppContainer>
   )
 }

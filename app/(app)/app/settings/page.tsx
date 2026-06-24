@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { userSettings } from '@/lib/db/schema'
+import { AppContainer } from '../_components/app-container'
 import { createBillingPortalSession } from './actions'
 import { DeleteAccountButton } from './delete-button'
 import { SessionLimitForm } from './_components/session-limit-form'
@@ -67,6 +68,7 @@ export default async function SettingsPage() {
   }
 
   return (
+    <AppContainer>
     <div className="space-y-8">
       <h1 className="text-2xl font-bold">設定</h1>
 
@@ -219,5 +221,6 @@ export default async function SettingsPage() {
         </Card>
       </section>
     </div>
+    </AppContainer>
   )
 }

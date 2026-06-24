@@ -9,6 +9,7 @@
 
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 
+import { AppContainer } from '../_components/app-container'
 import { TagManagerShell } from './_components/tag-manager-shell'
 
 export const metadata = {
@@ -25,8 +26,10 @@ export default async function TagsPage() {
   }
 
   return (
-    <div className="space-y-6 md:space-y-3">
-      <TagManagerShell userId={userId} />
-    </div>
+    <AppContainer>
+      <div className="space-y-6 md:space-y-3">
+        <TagManagerShell userId={userId} />
+      </div>
+    </AppContainer>
   )
 }

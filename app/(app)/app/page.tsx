@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { AppContainer } from './_components/app-container'
 import { BillingBanner } from './_components/billing-banner'
 import { DashboardActions } from './_components/dashboard-actions'
 import { DashboardStats } from './_components/dashboard-stats'
@@ -33,26 +34,28 @@ export default async function Dashboard({
   const billing = Array.isArray(sp.billing) ? sp.billing[0] : sp.billing
 
   return (
-    <div>
-      <BillingBanner kind={billing} />
+    <AppContainer>
+      <div>
+        <BillingBanner kind={billing} />
 
-      <h1 className="text-2xl font-bold mb-4">こんにちは</h1>
+        <h1 className="text-2xl font-bold mb-4">こんにちは</h1>
 
-      <DashboardStats userId={user.id} />
+        <DashboardStats userId={user.id} />
 
-      <DashboardActions userId={user.id} />
+        <DashboardActions userId={user.id} />
 
-      {/* 全 plan で「プラン変更」CTA を表示。entry point を /app/upgrade に統一し、
-          upgrade / downgrade の選択は同 page 内 toggle に委ねる (§7.4)。Pro 年額も
-          含め表示する (最上位でも plan 変更導線は残す)。prefetch は切る — upgrade
-          page は load 時に Stripe call を行うため (perf precedent)。 */}
-      <Link
-        href="/app/upgrade"
-        prefetch={false}
-        className="block mt-4 text-center text-sm text-slate-600 underline"
-      >
-        プラン変更
-      </Link>
-    </div>
+        {/* 全 plan で「プラン変更」CTA を表示。entry point を /app/upgrade に統一し、
+            upgrade / downgrade の選択は同 page 内 toggle に委ねる (§7.4)。Pro 年額も
+            含め表示する (最上位でも plan 変更導線は残す)。prefetch は切る — upgrade
+            page は load 時に Stripe call を行うため (perf precedent)。 */}
+        <Link
+          href="/app/upgrade"
+          prefetch={false}
+          className="block mt-4 text-center text-sm text-slate-600 underline"
+        >
+          プラン変更
+        </Link>
+      </div>
+    </AppContainer>
   )
 }
