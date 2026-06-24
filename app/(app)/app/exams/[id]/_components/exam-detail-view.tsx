@@ -16,6 +16,7 @@ import {
   setJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
 import { Button } from '@/components/ui/button'
+import { AppContainer } from '../../../_components/app-container'
 import { InlineCardList } from './inline-card-list'
 import { ExamCardTable } from './exam-card-table'
 
@@ -59,34 +60,41 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
   }
 
   return (
-    <div className="space-y-4">
-      {/* ViewToggle: 2 button + role="group" + aria-pressed (OQ-4 案 V-B 独自 button group) */}
-      <div role="group" aria-label="表示モード切替" className="flex gap-1">
-        <Button
-          variant={view === 'card' ? 'default' : 'outline'}
-          size="sm"
-          aria-pressed={view === 'card'}
-          onClick={() => handleToggle('card')}
-        >
-          カード
-        </Button>
-        <Button
-          variant={view === 'table' ? 'default' : 'outline'}
-          size="sm"
-          aria-pressed={view === 'table'}
-          onClick={() => handleToggle('table')}
-        >
-          テーブル
-        </Button>
-      </div>
+    <div className="space-y-4 pb-8">
+      {/* ViewToggle: 水平 cap のみ (py-0 で py-8 を打ち消し、mx-auto max-w-4xl px-4 が残る) */}
+      <AppContainer className="py-0">
+        <div role="group" aria-label="表示モード切替" className="flex gap-1">
+          <Button
+            variant={view === 'card' ? 'default' : 'outline'}
+            size="sm"
+            aria-pressed={view === 'card'}
+            onClick={() => handleToggle('card')}
+          >
+            カード
+          </Button>
+          <Button
+            variant={view === 'table' ? 'default' : 'outline'}
+            size="sm"
+            aria-pressed={view === 'table'}
+            onClick={() => handleToggle('table')}
+          >
+            テーブル
+          </Button>
+        </div>
+      </AppContainer>
 
-      {/* conditional render: view='card' のとき InlineCardList、 view='table' のとき ExamCardTable (Grid-1 T5 で差し替え済み)。
-          OQ-5 案 S-A: conditional unmount で同時刻に 2 subscription にならないことを構造的に保証。 */}
+      {/* conditional render: view='card' のとき InlineCardList (capped)、 view='table' のとき ExamCardTable (full-width)。
+          OQ-5 案 S-A: conditional unmount で同時刻に 2 subscription にならないことを構造的に保証。
+          Edit-1 T2: card view は AppContainer で水平 cap、table view は w-full px-2 md:px-4 で full-width。 */}
       {view === 'card' && (
-        <InlineCardList initialCards={initialCards} examId={examId} userId={userId} />
+        <AppContainer className="py-0">
+          <InlineCardList initialCards={initialCards} examId={examId} userId={userId} />
+        </AppContainer>
       )}
       {view === 'table' && (
-        <ExamCardTable examId={examId} userId={userId} />
+        <div className="w-full px-2 md:px-4">
+          <ExamCardTable examId={examId} userId={userId} />
+        </div>
       )}
     </div>
   )

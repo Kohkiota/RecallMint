@@ -247,3 +247,43 @@ describe('ExamDetailView — Case ⑤: view 別 render の conditional unmount',
     expect(screen.queryByTestId('inline-card-list-stub')).not.toBeInTheDocument()
   })
 })
+
+// ===========================================================================
+// Case ⑥: 幅クラス — card view は max-w-4xl (capped) / table view は w-full (full-width)
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑥: 幅クラス (Edit-1 T2)', () => {
+  it('default card view: InlineCardList の親要素が max-w-4xl を持つ', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    const stub = screen.getByTestId('inline-card-list-stub')
+    const wrapper = stub.parentElement
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.className).toContain('max-w-4xl')
+  })
+
+  it('table view に切替後: ExamCardTable の親要素が w-full を持ち max-w-4xl を持たない', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // table に切替
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
+    })
+
+    const stub = screen.getByTestId('exam-card-table-stub')
+    const wrapper = stub.parentElement
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.className).toContain('w-full')
+    expect(wrapper!.className).not.toContain('max-w-4xl')
+  })
+})

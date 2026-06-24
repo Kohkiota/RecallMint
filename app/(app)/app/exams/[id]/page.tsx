@@ -36,38 +36,39 @@ export default async function ExamDetailPage({
   const cards = await getCardsForExam(userId, id)
 
   return (
-    <AppContainer>
-      <div className="space-y-6 md:space-y-3">
-        <div>
-          <Link
-            href="/app/exams"
-            prefetch={false}
-            className="text-sm text-slate-600 hover:text-slate-900"
-          >
-            ← 試験一覧
-          </Link>
+    <div className="w-full">
+      <AppContainer>
+        <div className="space-y-6 md:space-y-3">
+          <div>
+            <Link
+              href="/app/exams"
+              prefetch={false}
+              className="text-sm text-slate-600 hover:text-slate-900"
+            >
+              ← 試験一覧
+            </Link>
+          </div>
+
+          {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
+          <ExamDetailPullGate examId={id} />
+
+          <header className="space-y-1">
+            <h1 className="text-2xl font-bold">{exam.name}</h1>
+            <p className="text-xs text-slate-500">
+              作成 {formatRelativeJa(exam.createdAt)} ・ 最終更新 {formatRelativeJa(exam.updatedAt)}
+              {exam.archivedAt && <span className="ml-2 text-amber-700">(アーカイブ済)</span>}
+            </p>
+          </header>
         </div>
+      </AppContainer>
 
-        {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
-        <ExamDetailPullGate examId={id} />
-
-        <header className="space-y-1">
-          <h1 className="text-2xl font-bold">{exam.name}</h1>
-          <p className="text-xs text-slate-500">
-            作成 {formatRelativeJa(exam.createdAt)} ・ 最終更新 {formatRelativeJa(exam.updatedAt)}
-            {exam.archivedAt && <span className="ml-2 text-amber-700">(アーカイブ済)</span>}
-          </p>
-        </header>
-
-        <section>
-          {/* ExamDetailView → InlineCardList (card view) / ExamCardTable (table view) の
-              view 別 conditional unmount で表示を切り替える。 どちらの view でも内部の
-              Dexie mirror useLiveQuery 直読みが真実。 件数も同 live 配列から算出するため
-              追加/削除直後も即時整合する (論点B)。 initialCards は SSR / mirror 未 hydrate
-              期間の bootstrap 用 fallback (InlineCardList のみ使用)。 */}
-          <ExamDetailView initialCards={cards} examId={id} userId={userId} />
-        </section>
-      </div>
-    </AppContainer>
+      {/* ExamDetailView → InlineCardList (card view) / ExamCardTable (table view) の
+          view 別 conditional unmount で表示を切り替える。 どちらの view でも内部の
+          Dexie mirror useLiveQuery 直読みが真実。 件数も同 live 配列から算出するため
+          追加/削除直後も即時整合する (論点B)。 initialCards は SSR / mirror 未 hydrate
+          期間の bootstrap 用 fallback (InlineCardList のみ使用)。
+          ExamDetailView は AppContainer の外 = full-width 領域に置く (Edit-1 T2)。 */}
+      <ExamDetailView initialCards={cards} examId={id} userId={userId} />
+    </div>
   )
 }
