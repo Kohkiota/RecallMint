@@ -71,9 +71,9 @@
 
 **Interfaces(Produces→T4/T5 が踏襲):** 各 ColumnDef に数値 `size`(例: select 44 / question 320 / tags 200 / lastCorrect 96 / currentStreak 96 / lastReview 160、tunable)。table render は全 th/td が `getSize()` を style width に反映する形に統一。
 
-**制約:** `border-collapse` + 固定幅 + 後続 sticky で border 落ち懸念があれば `border-separate border-spacing-0` + セル border 明示に切替(挙動同等を保つ)。resize handle は th 内 `absolute right-0 top-0 h-full w-1 cursor-col-resize select-none touch-none`、本文セル選択を阻害しない。既存の sort クリック(th onClick)と resize handle の click 干渉を `e.stopPropagation()` で分離。
+**制約:** table を `border-collapse` から **`border-separate border-spacing-0` に倒し切る**(条件分岐なし)+ 行/セル境界を border util で明示(現 `border-b border-border` 相当を tr ではなく td/th 側に付け直す)。理由: 固定幅 + sticky セルで border-collapse の border 消失はほぼ確実な既知挙動で、条件分岐は T6 sticky header で初めて顕在化し T3 決定の蒸し返しになる。今 sprint は sticky 2軸を確実に入れるため collapse 温存の利得が薄い。resize handle は th 内 `absolute right-0 top-0 h-full w-1 cursor-col-resize select-none touch-none`、本文セル選択を阻害しない。既存の sort クリック(th onClick)と resize handle の click 干渉を `e.stopPropagation()` で分離。
 
-**完了条件:** columns test に「全列が数値 size を持つ」assertion 追加 green。`exam-card-table.test.tsx` で th が style width を持つこと + resize handle 要素が存在することを assert、既存 test 全 green。stg smoke(横スクロール発火 + ドラッグ resize)対象。
+**完了条件:** columns test に「全列が数値 size を持つ」assertion 追加 green。`exam-card-table.test.tsx` で th が style width を持つこと + resize handle 要素が存在することを assert、既存 test 全 green。stg smoke(横スクロール発火 + ドラッグ resize + 行/セル border が border-separate 下で崩れていない)対象。
 
 ---
 
@@ -95,7 +95,12 @@
 
 **目的:** title / sort_key / 解説 / メモ を InlineTextField cell で列追加、sticky-left pin を問題文 → title へ移設、列順を spec §4.2 に最終確定。
 
-**Files:** Modify `app/(app)/app/exams/[id]/_components/exam-card-table-columns.tsx`(4列追加 + `question` 列から `meta.sticky` 除去 + `title` 列に `meta.sticky` 付与 + 配列順を最終形に並べ替え)/ 必要なら `exam-card-table.tsx`(左 pin render が `meta.sticky` 列を見る既存ロジックを title に追従させるだけ=変更不要見込み、要確認)。
+**Step 0(着手前・必須・見込みで実装に入らない):** `exam-card-table.tsx` の左 pin render 実装を読み、pin が **(a) `meta.sticky` を汎用に読む**のか **(b) 特定列 id / 問題文列前提でハードコードされている**のかを判定する。
+- (a) なら `meta.sticky` を question→title へ付け替えるだけで title に**無配線追従** → render 変更不要。
+- (b) なら left pin render を汎用化する**要配線**を本 task に含める(列 id 直書きを排除し meta.sticky 駆動へ)。
+判定結果(a/b と要配線有無)を chat に1行報告してから列定義の fix に進む。pin は今 sprint の横スクロール成立の核心であり、T5(pin)と T6(sticky header)が同一 render に依存するため、見込みのまま実装に入らない。
+
+**Files:** Modify `app/(app)/app/exams/[id]/_components/exam-card-table-columns.tsx`(4列追加 + `question` 列から `meta.sticky` 除去 + `title` 列に `meta.sticky` 付与 + 配列順を最終形に並べ替え)/ `exam-card-table.tsx`(Step 0 が (b) 要配線と判定した場合のみ left pin render を meta.sticky 駆動へ汎用化)。
 
 **Interfaces(Consumes):** `InlineTextField`(`from './inline-text-field'`)。**列の cell 配線:**
 - `title`: `<InlineTextField cardId={card.id} field="title" initialValue={card.title} ariaLabel="タイトル 編集" />`(単一行)+ `meta:{ sticky:true }`
@@ -107,6 +112,7 @@
 **制約:** 問題文の中身は無改変(read-only / line-clamp-2 / sortLikeServer ヘッダソートを保持、pin だけ除去)。新規 sort_key 列に sort は付けない。編集書込は InlineTextField 内部に委譲(親 wiring なし)。各列に `size` 付与(title 広め=240、sort_key 100、explanation/memo 中=220)。
 
 **完了条件:** columns test green(最終 column id 配列が上記順 / `meta.sticky` が title のみ true・question は false / 4編集列の存在)。`exam-card-table.test.tsx` で title cell の InlineTextField(aria-label「タイトル 編集」)描画を assert、既存 green。stg smoke(新列表示 + title pin + inline 編集 → mirror 反映)対象。
+- **追加(T3×T5 交差点):** title 列(sticky-left pin)で column resize handle が機能すること = pin の sticky/z-index 配下でも handle を掴め、ドラッグで title 幅が追従する(横スクロール時も含む)を stg smoke で確認。title は「pin かつ resizable」な唯一の列のため、pin の z-index と resize handle の前面性の両立をこの完了条件で担保する。
 
 ---
 
