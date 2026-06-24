@@ -13,6 +13,7 @@ import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
 import { sortLikeServer } from './inline-card-list'
+import { OptionsReadonlyCell } from './exam-card-table-options-cell'
 import {
   matchesTagFilter,
   matchesAnswerState,
@@ -89,6 +90,15 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // sortKey(連番)順 = sortLikeServer (sort_key NULLS-LAST 辞書順 + created_at tiebreak)。
     // 問題文列ヘッダクリックで「連番順」ソートを担う (Grid-2 T2 設計: # 列削除済のため代替)。
     sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
+  },
+  {
+    id: 'options',
+    size: 240,
+    header: '選択肢',
+    cell: ({ row }) => (
+      <OptionsReadonlyCell options={row.original.card.options} />
+    ),
+    enableSorting: false,
   },
   {
     id: 'tags',

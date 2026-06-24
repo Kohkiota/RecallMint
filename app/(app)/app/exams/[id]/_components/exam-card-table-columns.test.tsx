@@ -167,6 +167,7 @@ describe('T3: column sizing', () => {
     const sizeMap: Record<string, number> = {
       select: 44,
       question: 320,
+      options: 240,
       tags: 200,
       lastCorrect: 96,
       currentStreak: 96,
