@@ -40,7 +40,10 @@ bulk 用の実 `createOptionAndAssign` を `ExamCardTableActionBar` で構築す
 ## 3. スコープ
 
 ### 3.1 IN
-- option 作成のみを行う helper を `card-tags-section.tsx` から抽出(`handleCreateOptionAndAssign` の「option 作成」部分 = `tag_options` mirror put + option 作成 enqueue、entity_type/op は既存 handler の値をそのまま流用)。新 `optionId` を返す。既存 `handleCreateOptionAndAssign`(単票 create+assign)は**この helper を内部利用するよう refactor**(単票挙動は不変)。
+- **pure builder `buildNewOption`** を `card-tags-section.tsx` から抽出(**tx を持たない**純関数): 入力 `(userId, existingOptions, categoryId, name)` → 出力 `{ newOptionId, optionRow, enqueueInput }`(id 採番 / sortKey 計算 / created_at,updated_at / `tag_options` put payload(`optionRow`)/ tag_option create の `enqueueEntityMutation` 入力(`enqueueInput`)。entity_type/op/patch は既存 handler の値をそのまま)。
+  - `createOption`(bulk 用・**自前 tx**): `buildNewOption` で payload 構築 → `rw(tag_options, entity_mutations)` tx で `optionRow` put + `enqueueInput` enqueue → flush → **newOptionId を return**。userId 空 fail-fast。
+  - `handleCreateOptionAndAssign`(単票): `buildNewOption` で payload 構築し、**現状の単一 atomic tx**(`tag_options`+`card_tags`+`entity_mutations`)内で `optionRow` put + card_tags 差分 + enqueue 2 連発(**tx 境界・atomicity 不変**、createOption は呼ばない)。
+  - 注: tx は bulk/単票の**各文脈が持つ**(builder は payload のみ共有)。spec §4 参照。
 - **付与/除去 popover は別インスタンス**(fact-finding 確定: `action-bar.tsx:86-100` 付与=`handleAddToggle` / `:103-117` 除去=`handleRemoveToggle`)。新規作成導線の出し分けは props で行う(本体無改造):
   - **「タグ付与」popover**: bulk-bound な `createOptionAndAssign` を持つ callbacks を渡す(`{ ...tagEditCallbacks, createOptionAndAssign: bulkCreateOptionAndAssign }`、TagCell と同 pattern)。selectOnly は付けない → 新規作成導線が出る。
     - `bulkCreateOptionAndAssign(categoryId, name) = createOption(...) → newOptionId → 全選択 card へ bulk add`。
@@ -70,16 +73,19 @@ bulk 用の実 `createOptionAndAssign` を `ExamCardTableActionBar` で構築す
         popover.onCreateNew(option) → tagEditCallbacks.createOptionAndAssign(categoryId, name)        // 既存配線
 ```
 
-- `createOption`(新 helper): `tag_options` mirror put + `enqueueEntityMutation` を 1 rw tx に閉じ、`runGuardedEntityMutationFlush` を fire、**newOptionId を return**。失敗時 Dexie auto-rollback。userId 空は fail-fast(既存踏襲)。
-- `handleCreateOptionAndAssign`(単票): 内部で `createOption` を呼び、続けて当該 card の whole-set 差分書込(現挙動不変)。
-- bulk add(`use-bulk-card-tags`): 既存。new optionId + categoryId を権威に各選択 card へ whole-set 反映(single-select 除去含む)。
+- `buildNewOption`(pure・tx なし): `(userId, existingOptions, categoryId, name)` → `{ newOptionId, optionRow, enqueueInput }`。payload 構築のみ(副作用なし)。bulk/単票が共有。
+- `createOption`(bulk・自前 tx): `buildNewOption` → `rw(tag_options, entity_mutations)` tx で put + enqueue → `runGuardedEntityMutationFlush` fire → **newOptionId を return**。失敗時 Dexie auto-rollback。userId 空 fail-fast。
+- `handleCreateOptionAndAssign`(単票): `buildNewOption` → **現状の単一 atomic tx**(`tag_options`+`card_tags`+`entity_mutations`)内で option put + card_tags 差分 + enqueue 2 連発 → flush(現挙動・atomicity 不変、createOption は呼ばない)。
+- bulk add(`use-bulk-card-tags`): **改修不要(Step 0 確定)**。new optionId + categoryId を権威に各選択 card へ whole-set 反映(single-select 除去含む)。`options.find(optionId)` で bail しないため新 option が snapshot 未反映でも成立。
 
 ---
 
 ## 5. テスト方針
 
+- **buildNewOption**(unit): 純関数で `{ newOptionId, optionRow, enqueueInput }` を返す(id 採番 / sortKey が同カテゴリ既存の次 / payload 形)。副作用なし。
 - **createOption helper**(unit, Vitest + fake-indexeddb): option mirror put + enqueue + newOptionId 返却 / userId 空 fail-fast / category 不在挙動。
 - **handleCreateOptionAndAssign refactor**(unit): 単票 create+assign の挙動が refactor 前後で不変(回帰)。single/multi の whole-set 差分。
+- **単票 atomicity rollback(必須・案A の実質挙動不変の証明)**: builder 抽出後の `handleCreateOptionAndAssign` で **enqueue を意図的に throw させて** tx を失敗させ、`tag_options`(新 option)+ `card_tags`(付与/除去)+ `entity_mutations` が **全戻し**される(部分書込が残らない)ことを assert。= 単一 atomic tx が builder 抽出で壊れていないこと。
 - **共有部品変更の consumer 回帰(横断規律・必須、論点1)**: `card-tags-section` の create helper 抽出は共有部品変更のため、**単票 consumer の test も実行・green を per-task gate に含める** — 少なくとも `exam-card-table-tag-cell` の TagCell が新規 option 作成(`createOptionAndAssign` 経路)を refactor 前後で挙動不変に保つこと(TagCell consumer test、無ければ追加)。`card-tags-section` 既存 consumer test(`card-tag-option-list` / `card-tag-add-popover` 等)も網羅実行(S2.3 の「shared-component 変更で関連 test 実行漏れ → 後続で発覚」教訓を踏襲)。
 - **ExamCardTableActionBar**(component, RTL): (a) **「タグ付与」popover** の onCreateNew(option)が `createOption`→`onBulkTag(_, newOptionId, 'add')` を呼ぶ(新 optionId が bulk add に渡る = snapshot 非依存)を mock で assert。(b) **「タグ除去」popover は `selectOnly={true}`** で新規作成導線(option/category)が出ないことを assert。(c) category 作成導線が付与側で壊れていない回帰。
 - **snapshot 非依存**: 新 optionId が options 配列に未反映でも bulk add が成立することを test で固定。
