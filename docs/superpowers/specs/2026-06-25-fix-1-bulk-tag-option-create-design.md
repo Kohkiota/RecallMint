@@ -41,14 +41,16 @@ bulk 用の実 `createOptionAndAssign` を `ExamCardTableActionBar` で構築す
 
 ### 3.1 IN
 - option 作成のみを行う helper を `card-tags-section.tsx` から抽出(`handleCreateOptionAndAssign` の「option 作成」部分 = `tag_options` mirror put + option 作成 enqueue、entity_type/op は既存 handler の値をそのまま流用)。新 `optionId` を返す。既存 `handleCreateOptionAndAssign`(単票 create+assign)は**この helper を内部利用するよう refactor**(単票挙動は不変)。
-- `ExamCardTableActionBar` に bulk-bound な `createOptionAndAssign` closure を構築し、2 つの `CardTagAddPopover`(タグ付与 / タグ除去)に渡す `tagEditCallbacks` を **createOptionAndAssign だけ差し替え**(spread + override、TagCell と同 pattern)。
-  - closure = `(categoryId, name) => createOption(...) → newOptionId → 全選択 card へ bulk add`。
-  - bulk add は既存 `onBulkTag(categoryId, optionId, 'add')`(= `use-bulk-card-tags` の bulk add)を **新 optionId** で呼ぶ。
-- **付与は op='add' のみ**(新規作成は「付与」文脈の操作。「タグ除去」popover でも override は同一で良いが、新規作成→除去は無意味なので付与経路に統一。除去 popover で新規作成導線を出すか否かは plan で UX 確認、既定は両 popover とも作成可・作成は常に add)。
+- **付与/除去 popover は別インスタンス**(fact-finding 確定: `action-bar.tsx:86-100` 付与=`handleAddToggle` / `:103-117` 除去=`handleRemoveToggle`)。新規作成導線の出し分けは props で行う(本体無改造):
+  - **「タグ付与」popover**: bulk-bound な `createOptionAndAssign` を持つ callbacks を渡す(`{ ...tagEditCallbacks, createOptionAndAssign: bulkCreateOptionAndAssign }`、TagCell と同 pattern)。selectOnly は付けない → 新規作成導線が出る。
+    - `bulkCreateOptionAndAssign(categoryId, name) = createOption(...) → newOptionId → 全選択 card へ bulk add`。
+    - bulk add は既存 `onBulkTag(categoryId, optionId, 'add')`(= `use-bulk-card-tags` の bulk add)を **新 optionId** で呼ぶ。作成は常に op='add'(付与文脈)。
+  - **「タグ除去」popover**: **`selectOnly={true}` を渡す**(論点2 確定変更)。除去は既存タグを外す文脈で、新規作成→付与は操作方向と逆。selectOnly=true で option/category とも作成・編集導線を抑制し「既存タグの選択(=除去 toggle)」のみにする(filter-bar の「絞る場だから作成不要」と同論理)。除去 toggle(onToggle)は selectOnly でも生存するため除去機能は不変。
+  - → **新規作成導線が出るのは「付与」popover のみ**。
 - snapshot 非依存(判断3): bulk add の single-select 除去判定が**渡された categoryId/optionId を権威**として扱い、新 optionId が `options` mirror snapshot に無くても成立すること。`use-bulk-card-tags` が `options.find(id===optionId)` 不在で bail しないことを確認・必要なら是正。
 
 ### 3.2 OUT(今回触らない)
-- **filter-bar の option-create no-op**(fact-finding 第2症状): `exam-card-table-filter-bar.tsx` も table-level callbacks を selectOnly なしで渡すため同じ no-op。ただし「フィルタのために新規 option を作る」のは無意味 = **別途 selectOnly 抑制で対応**(carry-forward、Grid-2 T3 quirk と同根)。**【OT 確認後に確定】** Fix-1 では触らない。
+- **filter-bar の option-create no-op**(fact-finding 第2症状): `exam-card-table-filter-bar.tsx` も table-level callbacks を selectOnly なしで渡すため同じ no-op。ただし「フィルタのために新規 option を作る」のは無意味 = **別 sprint で selectOnly 抑制で対応**(carry-forward 確定 / OT 合意済、ledger 記録済、Grid-2 T3 filter popover quirk と同根)。Fix-1 では触らない。
 - 単票 TagCell の挙動変更(既に正常)。
 - カテゴリ作成経路(既に bulk で動作)。
 - popover 本体(`CardTagAddPopover`)の改造(本体無改造の adapter 再利用 pattern を維持)。
@@ -78,7 +80,8 @@ bulk 用の実 `createOptionAndAssign` を `ExamCardTableActionBar` で構築す
 
 - **createOption helper**(unit, Vitest + fake-indexeddb): option mirror put + enqueue + newOptionId 返却 / userId 空 fail-fast / category 不在挙動。
 - **handleCreateOptionAndAssign refactor**(unit): 単票 create+assign の挙動が refactor 前後で不変(回帰)。single/multi の whole-set 差分。
-- **ExamCardTableActionBar**(component, RTL): bulk popover の onCreateNew(option)が `createOption`→`onBulkTag(_, newOptionId, 'add')` を呼ぶ(新 optionId が bulk add に渡る = snapshot 非依存)を mock で assert。category 作成導線が壊れていない回帰。
+- **共有部品変更の consumer 回帰(横断規律・必須、論点1)**: `card-tags-section` の create helper 抽出は共有部品変更のため、**単票 consumer の test も実行・green を per-task gate に含める** — 少なくとも `exam-card-table-tag-cell` の TagCell が新規 option 作成(`createOptionAndAssign` 経路)を refactor 前後で挙動不変に保つこと(TagCell consumer test、無ければ追加)。`card-tags-section` 既存 consumer test(`card-tag-option-list` / `card-tag-add-popover` 等)も網羅実行(S2.3 の「shared-component 変更で関連 test 実行漏れ → 後続で発覚」教訓を踏襲)。
+- **ExamCardTableActionBar**(component, RTL): (a) **「タグ付与」popover** の onCreateNew(option)が `createOption`→`onBulkTag(_, newOptionId, 'add')` を呼ぶ(新 optionId が bulk add に渡る = snapshot 非依存)を mock で assert。(b) **「タグ除去」popover は `selectOnly={true}`** で新規作成導線(option/category)が出ないことを assert。(c) category 作成導線が付与側で壊れていない回帰。
 - **snapshot 非依存**: 新 optionId が options 配列に未反映でも bulk add が成立することを test で固定。
 - AI/課金は非該当。
 
@@ -86,9 +89,10 @@ bulk 用の実 `createOptionAndAssign` を `ExamCardTableActionBar` で構築す
 
 ## 6. 完了条件
 
-- bulk タグ付与 popover で新規 option を作成 → 選択中の全 card に付与される(single-select は同カテゴリ既存を除去)。
+- 「タグ付与」popover で新規 option を作成 → 選択中の全 card に付与される(single-select は同カテゴリ既存を除去)。
+- 「タグ除去」popover では新規作成導線(option/category)が出ない(`selectOnly={true}`)。除去 toggle は不変。
 - 作成は新 optionId を bulk add へ直接渡し、useLiveQuery 再評価タイミングに依存しない。
-- 単票 option 作成・カテゴリ作成(bulk/単票)に回帰なし。`CardTagAddPopover` 本体無改造。
+- 単票 option 作成・カテゴリ作成(bulk/単票)に回帰なし(consumer 回帰 test green、§5)。`CardTagAddPopover` 本体無改造。
 - 該当 unit/component test green。canonical review Critical 0、commit に [reviewed]。
 - whole-repo `pnpm lint --max-warnings=0` exit 0。
 
