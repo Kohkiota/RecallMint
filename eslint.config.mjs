@@ -20,14 +20,15 @@ const config = [
     },
   },
   {
-    // TODO(Sync-fix-1): inline-option-row.tsx の refs structural fix は
+    // TODO(Sync-fix-1): use-card-options.ts の refs structural fix は
     // optimistic 経路収束 (event handler 書換) と同 working set のため波2 では
-    // 直さない。 Step 0.6 で本 file の refs 違反は L115 単独 = `optionsRef.current
-    // = options` の 1 行のみと裏取り済。 Sync-fix-1 完了後この override block を削除。
+    // 直さない。 Edit-2 T1 で inline-option-row.tsx から hook へ移送、違反箇所は
+    // use-card-options.ts L102 単独 = `optionsRef.current = options` の 1 行のみ。
+    // Sync-fix-1 完了後この override block を削除。
     // glob の `(...)` `[...]` は minimatch では alternation / character class と
     // 解釈されるため、 Next route group と dynamic segment は `\\(...\\)` `\\[...\\]`
     // で escape する (escape 不在で silent に override 効かず → gate 立ち上げ時 fail)。
-    files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/inline-option-row.tsx'],
+    files: ['app/\\(app\\)/app/exams/\\[id\\]/_hooks/use-card-options.ts'],
     rules: { 'react-hooks/refs': 'off' },
   },
   {
