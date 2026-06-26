@@ -51,8 +51,9 @@
 ## 4. スコープ
 
 ### 4.1 IN
-- **T1**: `inline-option-row.tsx` から `useCardOptions(cardId, serverOptions)` を抽出(state: options working-set / autoEditOptionId、refs: serverCommittedRef / debounceTimerRef / optionsRef、merge useEffect、commit + scheduleDrain、handlers: handleCellSave / handleCheckboxToggle / handleAddOption / handleDeleteOption、canDelete / correctIds)。`InlineOptionList` を hook consumer 化(card-view 挙動不変)。`InlineOptionCell` を export(T2 再利用のため)。
+- **T1**: `inline-option-row.tsx` から `useCardOptions(cardId, serverOptions)` を抽出(state: options working-set / autoEditOptionId、refs: serverCommittedRef / debounceTimerRef / optionsRef、merge useEffect、commit + scheduleDrain、handlers: handleCellSave / handleCheckboxToggle / handleAddOption / handleDeleteOption、canDelete / correctIds)。`InlineOptionList` を hook consumer 化(card-view 挙動不変)。`InlineOptionCell` を **export のみ**(中身/props/挙動 不変 = card-view 影響ゼロ)。
 - **T2**: 新規 **compact editable options cell**(table cell 用)。1 セル内に選択肢行を**縦積み**、各行 = `is_correct` checkbox + text(click-to-edit)+ explanation(**常時表示・下に編集可**)+ 削除 + 末尾「+ 選択肢を追加」。`useCardOptions`(T1)+ `InlineOptionCell`(primitive 再利用)で構成。`InlineOptionRow` の 4/5列 grid は使わない(table cell 非適合)。working-set は **cell ローカル(card 単位)state**。
+  - **InlineOptionCell の扱い(spec review 指摘)**: 原則 **export のみ・props/挙動 不変**(card-view 影響ゼロ)。table cell のために `InlineOptionCell` に **props 追加や挙動分岐を入れる場合は、それが card-view(`InlineOptionRow` 経由 consumer)への変更**になるため、T1/T2 の **card-view 回帰 gate(951 行 + inline-card-list)対象に含める**こと。T2 実装時に「export のみ」か「props 追加あり」かを明示する。
 - **T3**: `exam-card-table-columns.tsx` で options 列の `OptionsReadonlyCell` → T2 の editable cell に差し替え。問題文列を editable 化(`<div line-clamp-2>` → `<InlineTextField multiline field="question_text" initialValue={card.question_text} ariaLabel="問題文 編集" />`)。問題文の `sortingFn: sortLikeServer`(header 連番ソート)は維持(header onClick=sort / cell=編集、非干渉)。
 - **T4**: TanStack `columnVisibility` 導入(`useReactTable` state + UI トグル)+ 列表示/非表示 UI(表示プロパティ的)+ `examViewPrefs` schema 拡張(列表示集合の保存)。
 
@@ -91,11 +92,15 @@ table (T4): useReactTable({ state: { columnVisibility, ... }, onColumnVisibility
 
 ---
 
-## 7. 設計判断点(spec で推奨、実装着手前に OT 確定)
+## 7. 設計判断(OT 確定)
 
-1. **columnVisibility 保存 schema**: `examViewPrefs`(現 `{version:1, view}` strict)を **version 2 に上げる**か field 追加か。列表示集合の持ち方(表示する列 id 集合 / 非表示集合 / 列ごと boolean map)。**新列追加時の default 表示/非表示**の扱い(保存済 prefs に無い列 id は default 表示、を推奨)。**推奨**: version 2 で `hiddenColumns: string[]`(非表示集合を持つ=保存に無い新列は既定表示で前方互換)。
-2. **表示/非表示の対象列**: **title(pin)を非表示可能にするか**(pin 列を消すと横スクロール時の左固定がなくなる)。**select 列は対象外**で良いか。default の初期表示セット(全列表示 or 一部既定非表示)。**推奨**: select は常時表示(対象外)、title は非表示**可**(消すと pin が無くなる旨は許容)、初期は全列表示。
-3. **compact cell の選択肢多数(20択等)時の行高**: 常時表示 explanation で 1 セルが極端に縦長化。**仮想化は本 sprint 不要**か(carry-forward: 数百件で仮想化不要を実証済だが、行が重くなるため再観測候補と記録あり)。**推奨**: 仮想化は入れず、本 sprint の stg smoke(desktop/mobile)で重い card(多択 + explanation)の体感を実測し記録。重ければ別 sprint で row height/仮想化。
+1. **columnVisibility 保存 schema = examViewPrefs version 2 + `hiddenColumns: string[]`**(非表示集合)。
+   - 保存済 prefs に無い列 id は**既定表示**(= 新列追加で前方互換)。
+   - **version 1→2 migration**: `hiddenColumns` 無ければ**空配列(全表示)**として読む。zod は **version 分岐**で旧 `{version:1, view}` も引き続き読めること(`z.discriminatedUnion('version', ...)` 等)。`view` は両 version で保持。
+2. **表示/非表示の対象列 = select 常時表示(対象外)/ title 非表示可 / 初期全列表示**。
+   - **title は唯一の pin 列**なので、非表示にすると**横スクロール時の固定列が無くなる**(これは許容)。
+   - **title 非表示時に別列を pin に昇格させない**(pin は title 固定のまま。title が hidden なら単に pin 無し)。= 実装者は余計な pin 切替ロジックを入れないこと(`meta.sticky` は title 列に固定、可視性で pin を付け替えない)。
+3. **行高 = 仮想化なし**。本 sprint の stg smoke(desktop/mobile)で**重い card(20択 + explanation 常時表示)を実測** → 結果を carry-forward に追記。重ければ別 sprint で row height/仮想化。
 
 ---
 
