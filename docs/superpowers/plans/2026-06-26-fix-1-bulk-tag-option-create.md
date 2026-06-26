@@ -46,6 +46,7 @@
 
 **完了条件:**
 - `buildNewOption` unit green(id 採番 / sortKey が同カテゴリ既存の次 / payload 形 / 副作用なし)。
+  - **sortKey カテゴリ絞り込み(必須)**: `existingOptions` に**別カテゴリの option が混在**していても、新 option の `sort_key` は **当該 `categoryId` 内の既存 sort_key のみ**の次の値になり、別カテゴリの sort_key を巻き込まないことを assert(= `nextSortKey` に渡す集合が `category_id===categoryId` で絞り込み済)。理由: 採番が一度ずれると同カテゴリ内連番が壊れ後続の並べ替え(`lib/tags` sort-comparator)に波及するため test で固定。
 - `createOption` unit green(fake-indexeddb: option mirror put + enqueue 1 件 + newOptionId 返却 / userId 空 fail-fast)。
 - `handleCreateOptionAndAssign` 回帰 green(single/multi の whole-set 差分が refactor 前後不変)。
 - **単票 atomicity rollback(必須)**: `handleCreateOptionAndAssign` で **enqueue を意図的に throw** させ tx を失敗させると、`tag_options`(新 option)/`card_tags`(付与・除去)/`entity_mutations` が**全戻し**(部分書込ゼロ)を assert。
