@@ -18,7 +18,7 @@ import {
   type ClientTagOption,
   type ClientCardTag,
 } from '@/lib/client-db'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
+import { enqueueEntityMutation, type EnqueueEntityMutationInput } from '@/lib/sync/entity-mutations'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
@@ -350,6 +350,76 @@ export async function handleCreateCategory(
   return { id }
 }
 
+// ---------------------------------------------------------------------------
+// buildNewOption: pure builder (no Dexie / no side effects)
+// Fix-1: bulk タグ付与で新規 option 作成 payload を共有するために抽出。
+// カテゴリ絞り込みの注意: sortKey は categoryId と一致する option のみから採番する
+// (他カテゴリの sort_key を巻き込むと同カテゴリ内連番が壊れる)。
+// ---------------------------------------------------------------------------
+
+export function buildNewOption(
+  userId: string,
+  existingOptions: ClientTagOption[],
+  categoryId: string,
+  name: string,
+): { newOptionId: string; optionRow: ClientTagOption; enqueueInput: EnqueueEntityMutationInput } {
+  if (!userId) throw new Error('empty user_id')
+  const newOptionId = crypto.randomUUID()
+  const sortKey = nextSortKey(
+    existingOptions.filter((o) => o.category_id === categoryId).map((o) => o.sort_key),
+  )
+  const nowIso = new Date().toISOString()
+  const optionRow: ClientTagOption = {
+    id: newOptionId,
+    user_id: userId,
+    category_id: categoryId,
+    name,
+    color: null,
+    sort_key: sortKey,
+    created_at: nowIso,
+    updated_at: nowIso,
+  }
+  const enqueueInput: EnqueueEntityMutationInput = {
+    entity_type: 'tag_option',
+    entity_id: newOptionId,
+    op: 'create',
+    patch: { category_id: categoryId, name, color: null, sort_key: sortKey },
+  }
+  return { newOptionId, optionRow, enqueueInput }
+}
+
+/**
+ * bulk 用: option を新規作成する (card への付与は行わない)。
+ * 自前の rw tx (tag_options + entity_mutations) に閉じる。
+ * userId 空文字なら console.error + throw (fail-fast)。
+ * 呼び出し元が別 tx で card_tags を扱う場合は buildNewOption を直接使うこと
+ * (この関数は tx 分裂を起こすため handleCreateOptionAndAssign 内では使わない)。
+ */
+export async function createOption(
+  userId: string,
+  existingOptions: ClientTagOption[],
+  categoryId: string,
+  name: string,
+): Promise<string> {
+  if (!userId) {
+    console.error('[Fix-1] empty user_id, aborting createOption')
+    throw new Error('empty user_id')
+  }
+  const db = getClientDb()
+  const { newOptionId, optionRow, enqueueInput } = buildNewOption(userId, existingOptions, categoryId, name)
+  await db.transaction(
+    'rw',
+    db.tag_options,
+    db.entity_mutations,
+    async () => {
+      await db.tag_options.put(optionRow)
+      await enqueueEntityMutation(enqueueInput)
+    },
+  )
+  void runGuardedEntityMutationFlush().catch(() => {})
+  return newOptionId
+}
+
 /**
  * option を新規作成し、 当該 card に即時付与する。
  * mirror put (tag_options) + card_tags whole-set 差分書込 + enqueue 2 連発を
@@ -379,11 +449,10 @@ export async function handleCreateOptionAndAssign(
   if (!category) return
 
   const db = getClientDb()
-  const newOptionId = crypto.randomUUID()
-  const sortKey = nextSortKey(
-    existingOptions.filter((o) => o.category_id === categoryId).map((o) => o.sort_key),
-  )
-  const nowIso = new Date().toISOString()
+  // payload 構築は pure builder に委譲 (tx 境界・card_tags 差分は本関数が保持)
+  const { newOptionId, optionRow, enqueueInput } = buildNewOption(userId, existingOptions, categoryId, name)
+  // タイムスタンプの一貫性: card_tags.created_at は optionRow と同一 ISO 文字列を再利用
+  const nowIso = optionRow.created_at
 
   // whole-set 差分構築:
   // - multi: 新 option を toAdd のみ
@@ -413,16 +482,7 @@ export async function handleCreateOptionAndAssign(
     db.entity_mutations,
     async () => {
       // 1) tag_options mirror put
-      await db.tag_options.put({
-        id: newOptionId,
-        user_id: userId,
-        category_id: categoryId,
-        name,
-        color: null,
-        sort_key: sortKey,
-        created_at: nowIso,
-        updated_at: nowIso,
-      })
+      await db.tag_options.put(optionRow)
       // 2) card_tags 差分書込 (single 時のみ toRemove あり)
       for (const id of toRemove) {
         await db.card_tags.delete([cardId, id])
@@ -434,12 +494,7 @@ export async function handleCreateOptionAndAssign(
         created_at: nowIso,
       })
       // 3) enqueue 2 連発: tag_option create + card update_field
-      await enqueueEntityMutation({
-        entity_type: 'tag_option',
-        entity_id: newOptionId,
-        op: 'create',
-        patch: { category_id: categoryId, name, color: null, sort_key: sortKey },
-      })
+      await enqueueEntityMutation(enqueueInput)
       await enqueueEntityMutation({
         entity_type: 'card',
         entity_id: cardId,
