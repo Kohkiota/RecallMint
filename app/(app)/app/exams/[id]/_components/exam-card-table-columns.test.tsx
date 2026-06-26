@@ -6,11 +6,46 @@
 //   - lastReview: null → 「未回答」 / 非 null → JST 日時文字列
 //   - ExamCardRow.card が full ClientCard を保持し、指標 field にアクセスできる (型 + ランタイム)
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import type { ClientCard } from '@/lib/client-db'
+import { getClientDb } from '@/lib/client-db'
 import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
+
+// ---------------------------------------------------------------------------
+// Edit-2 T3: mocks for InlineTextField / CompactOptionsCell write paths。
+// enqueueEntityMutation / runGuardedEntityMutationFlush を spy mock に差し替える。
+// getClientDb (fake-indexeddb) と runOptimisticUpdate は実実装のまま動かす。
+// ---------------------------------------------------------------------------
+
+const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
+  mockEnqueue: vi.fn(async () => ({}) as never),
+  mockFlush: vi.fn(async () => 'no-pending' as const),
+}))
+
+vi.mock('@/lib/sync/entity-mutations', () => ({
+  enqueueEntityMutation: mockEnqueue,
+}))
+vi.mock('@/lib/sync/entity-mutation-flush', () => ({
+  runGuardedEntityMutationFlush: mockFlush,
+}))
+
+// ---------------------------------------------------------------------------
+// Edit-2 T3: setup / teardown for new editable-cell tests。
+// 既存テスト (lastCorrect / currentStreak / lastReview) は DB・モックを触らない
+// ため影響なし。
+// ---------------------------------------------------------------------------
+
+beforeEach(async () => {
+  vi.useRealTimers()
+  await getClientDb().cards.clear()
+  vi.clearAllMocks()
+})
+
+afterEach(() => {
+  cleanup()
+})
 
 // ---------------------------------------------------------------------------
 // fixture helpers
@@ -266,5 +301,95 @@ describe('ExamCardRow.card is full ClientCard', () => {
     expect(streakEl.textContent).toContain('7')
     expect(lastReviewEl.textContent).not.toContain('未回答')
     expect(lastReviewEl.textContent).toMatch(/2024/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit-2 T3: question column → InlineTextField multiline
+// ---------------------------------------------------------------------------
+
+describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
+  it('column attributes: size=320, header="問題文", enableSorting=true, sortingFn present, accessorFn present', () => {
+    const col = examCardTableColumns.find((c) => c.id === 'question')
+    expect(col).toBeDefined()
+    expect(col?.size).toBe(320)
+    expect(col?.header).toBe('問題文')
+    expect(col?.enableSorting).toBe(true)
+    expect(typeof col?.sortingFn).toBe('function')
+    // accessorFn は ColumnDef union の全 variant に存在しないため unknown キャストでアクセスする。
+    expect(typeof (col as Record<string, unknown> | undefined)?.['accessorFn']).toBe('function')
+  })
+
+  it('cell renders InlineTextField with aria-label="問題文 編集" in display mode', () => {
+    const el = renderCell('question', makeRow({ question_text: 'テスト問題文テキスト' }))
+    // InlineTextField の display mode は role="button" + aria-label を持つ div を描画する
+    const btn = el.querySelector('[role="button"][aria-label="問題文 編集"]')
+    expect(btn).not.toBeNull()
+  })
+
+  it('line-clamp-2 div は存在しない (全文表示・行高可変 = 他 editable text 列と一貫)', () => {
+    const el = renderCell('question', makeRow({ question_text: '問題文テキスト' }))
+    expect(el.querySelector('.line-clamp-2')).toBeNull()
+  })
+
+  it('cell は initialValue として question_text を表示する', () => {
+    const el = renderCell('question', makeRow({ question_text: '2 + 2 = ?' }))
+    expect(el.textContent).toContain('2 + 2 = ?')
+  })
+
+  it('screen.getByRole("button") で aria-label が取得できる', () => {
+    renderCell('question', makeRow({ question_text: 'テスト' }))
+    // テスト内でレンダーされた button が screen からアクセスできる
+    expect(screen.getByRole('button', { name: '問題文 編集' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit-2 T3: options column → CompactOptionsCell
+// ---------------------------------------------------------------------------
+
+describe('Column: options (Edit-2 T3) — CompactOptionsCell', () => {
+  it('column attributes: size=240, header="選択肢", enableSorting=false', () => {
+    const col = examCardTableColumns.find((c) => c.id === 'options')
+    expect(col).toBeDefined()
+    expect(col?.size).toBe(240)
+    expect(col?.header).toBe('選択肢')
+    expect(col?.enableSorting).toBe(false)
+  })
+
+  it('cell renders CompactOptionsCell — "+ 選択肢を追加" button が存在する', () => {
+    const el = renderCell(
+      'options',
+      makeRow({
+        options: [
+          { id: 'a', text: '選択肢A', is_correct: true },
+          { id: 'b', text: '選択肢B', is_correct: false },
+        ],
+      }),
+    )
+    // CompactOptionsCell は常に "+ 選択肢を追加" add button を描画する
+    const addBtn = Array.from(el.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('+ 選択肢を追加'),
+    )
+    expect(addBtn).toBeDefined()
+  })
+
+  it('cell renders option rows — 各 option に削除ボタンが描画される', () => {
+    const el = renderCell(
+      'options',
+      makeRow({
+        options: [
+          { id: 'a', text: '選択肢A', is_correct: true },
+          { id: 'b', text: '選択肢B', is_correct: false },
+        ],
+      }),
+    )
+    const deleteBtns = el.querySelectorAll('[aria-label="選択肢を削除"]')
+    expect(deleteBtns.length).toBe(2)
+  })
+
+  it('screen.getByRole("button", { name: "\\+ 選択肢を追加" }) がアクセスできる', () => {
+    renderCell('options', makeRow({ options: [] }))
+    expect(screen.getByRole('button', { name: '+ 選択肢を追加' })).toBeInTheDocument()
   })
 })

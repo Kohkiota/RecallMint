@@ -15,7 +15,7 @@ import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
 import { sortLikeServer } from './inline-card-list'
-import { OptionsReadonlyCell } from './exam-card-table-options-cell'
+import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
 import {
   matchesTagFilter,
   matchesAnswerState,
@@ -115,7 +115,13 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     header: '問題文',
     accessorFn: (row) => row.card.question_text,
     cell: ({ row }) => (
-      <div className="line-clamp-2">{row.original.card.question_text}</div>
+      <InlineTextField
+        cardId={row.original.card.id}
+        field="question_text"
+        initialValue={row.original.card.question_text}
+        ariaLabel="問題文 編集"
+        multiline
+      />
     ),
     enableSorting: true,
     // sortKey(連番)順 = sortLikeServer (sort_key NULLS-LAST 辞書順 + created_at tiebreak)。
@@ -127,7 +133,10 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     size: 240,
     header: '選択肢',
     cell: ({ row }) => (
-      <OptionsReadonlyCell options={row.original.card.options} />
+      <CompactOptionsCell
+        cardId={row.original.card.id}
+        options={row.original.card.options}
+      />
     ),
     enableSorting: false,
   },

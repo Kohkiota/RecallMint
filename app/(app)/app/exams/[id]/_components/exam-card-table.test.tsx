@@ -350,6 +350,28 @@ describe('Fix-1 T2: bulk createOptionAndAssign 配線 (action-bar 経由)', () =
   })
 })
 
+// ===========================================================================
+// smoke ⑥ (Edit-2 T3): question 列が InlineTextField で描画される
+// ===========================================================================
+
+describe('ExamCardTable smoke ⑥ (Edit-2 T3): question column renders InlineTextField', () => {
+  it('1 row seed → question cell に aria-label="問題文 編集" の InlineTextField が描画される', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // row が描画されるのを待つ
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+    })
+
+    // InlineTextField は display mode で role="button" + aria-label を持つ div を描画する
+    const questionField = screen.getByRole('button', { name: '問題文 編集' })
+    expect(questionField).toBeInTheDocument()
+  })
+})
+
 describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不変', () => {
   // 回帰条件: bulkTagEditCallbacks が filter-bar や TagCell に誤って渡された場合、
   // filter-bar の tag popover で option 新規作成をトリガすると createOption (= mockCreateOption) が
