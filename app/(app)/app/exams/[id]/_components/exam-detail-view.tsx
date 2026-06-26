@@ -11,7 +11,9 @@ import { useEffect, useState } from 'react'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import {
   SYNC_META_KEYS,
-  examViewPrefsV1Schema,
+  examViewPrefsSchema,
+  examViewPrefsV2Schema,
+  examViewPrefsToV2,
   getJsonSyncMeta,
   setJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
@@ -36,10 +38,12 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
   // 不正値 / 欠損は getJsonSyncMeta が undefined 返し → setState せず default 維持。
   useEffect(() => {
     let cancelled = false
-    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsV1Schema).then((saved) => {
+    // Edit-2 Task 4: union schema で v1/v2 両対応 read → toV2 で正規化し view のみ使用。
+    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema).then((saved) => {
       if (cancelled) return
-      if (saved && saved.view !== view) {
-        setView(saved.view)
+      if (saved) {
+        const { view: savedView } = examViewPrefsToV2(saved)
+        if (savedView !== view) setView(savedView)
       }
     })
     return () => {
@@ -49,14 +53,21 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
   }, [])
 
   // view 切替: setState 即時 + sync_meta は fire-and-forget で書込 (失敗は次回 load の fallback で吸収)。
+  // Edit-2 Task 4: READ-MODIFY-WRITE。 table 側が書いた hiddenColumns を消さないよう、
+  // 現在 record を read → toV2 → hiddenColumns を保持したまま v2 で書込む。
   const handleToggle = (nextView: View) => {
     if (nextView === view) return
     setView(nextView)
-    void setJsonSyncMeta(
-      SYNC_META_KEYS.examViewPrefs,
-      { version: 1, view: nextView },
-      examViewPrefsV1Schema,
-    ).catch(() => {})
+    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+      .then((saved) => {
+        const hiddenColumns = saved ? examViewPrefsToV2(saved).hiddenColumns : []
+        return setJsonSyncMeta(
+          SYNC_META_KEYS.examViewPrefs,
+          { version: 2, view: nextView, hiddenColumns },
+          examViewPrefsV2Schema,
+        )
+      })
+      .catch(() => {})
   }
 
   return (

@@ -10,6 +10,9 @@ import {
   getJsonSyncMeta,
   setJsonSyncMeta,
   examViewPrefsV1Schema,
+  examViewPrefsV2Schema,
+  examViewPrefsSchema,
+  examViewPrefsToV2,
 } from './sync-meta'
 
 beforeEach(async () => {
@@ -134,5 +137,118 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
         examViewPrefsV1Schema,
       ),
     ).rejects.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ExamViewPrefs v2 + union + toV2 (Edit-2 Task 4)
+// ---------------------------------------------------------------------------
+
+describe('examViewPrefs v2 schema / union / toV2', () => {
+  // 旧 v1 record を union で読み、 toV2 で hiddenColumns: [] に正規化 (forward-compat)。
+  it('v1 record を union で読み toV2 で hiddenColumns=[] に正規化する', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 1, view: 'table' },
+      examViewPrefsV1Schema,
+    )
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(saved).toBeDefined()
+    expect(examViewPrefsToV2(saved!)).toEqual({ view: 'table', hiddenColumns: [] })
+  })
+
+  // v2 round-trip: set(v2) → get(union) → toV2 で同値復元。
+  it('v2 round-trip: hiddenColumns を保持して復元する', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'card', hiddenColumns: ['memo', 'tags'] },
+      examViewPrefsV2Schema,
+    )
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(saved).toBeDefined()
+    expect(examViewPrefsToV2(saved!)).toEqual({
+      view: 'card',
+      hiddenColumns: ['memo', 'tags'],
+    })
+  })
+
+  // 不正値 (view: kanban) → union 読みは undefined (fallback)。
+  it('不正な view 値の v2 record は union 読みで undefined を返す', async () => {
+    await getClientDb().sync_meta.put({
+      key: SYNC_META_KEYS.examViewPrefs,
+      value: JSON.stringify({ version: 2, view: 'kanban', hiddenColumns: [] }),
+    })
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(saved).toBeUndefined()
+  })
+
+  // hiddenColumns 欠損の v2 record → union 読みは undefined (fallback)。
+  it('hiddenColumns 欠損の v2 record は union 読みで undefined を返す', async () => {
+    await getClientDb().sync_meta.put({
+      key: SYNC_META_KEYS.examViewPrefs,
+      value: JSON.stringify({ version: 2, view: 'card' }),
+    })
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(saved).toBeUndefined()
+  })
+
+  // setJsonSyncMeta(v2) に invalid value → reject。
+  it('setJsonSyncMeta(v2) に invalid value を渡すと throw する', async () => {
+    const invalidValue = {
+      version: 2,
+      view: 'kanban',
+      hiddenColumns: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    await expect(
+      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, invalidValue, examViewPrefsV2Schema),
+    ).rejects.toThrow()
+  })
+
+  // ---- view ↔ hiddenColumns 相互非破壊 (HARD GATE) ----
+  // table が hiddenColumns を書いた後、 view 切替 (read-modify-write) が hiddenColumns を保持する。
+  it('view 切替の read-modify-write は既存 hiddenColumns を保持する', async () => {
+    // table が hiddenColumns を保存した state を模す
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: ['memo', 'tags'] },
+      examViewPrefsV2Schema,
+    )
+    // exam-detail-view の handleToggle と同じ read-modify-write: hiddenColumns を保持して view のみ変更
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const hiddenColumns = saved ? examViewPrefsToV2(saved).hiddenColumns : []
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'card', hiddenColumns },
+      examViewPrefsV2Schema,
+    )
+    const after = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(examViewPrefsToV2(after!)).toEqual({
+      view: 'card',
+      hiddenColumns: ['memo', 'tags'],
+    })
+  })
+
+  // view を書いた後、 列 toggle (read-modify-write) が view を保持する。
+  it('列 toggle の read-modify-write は既存 view を保持する', async () => {
+    // exam-detail-view が view を保存した state を模す
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
+    )
+    // exam-card-table の persist effect と同じ read-modify-write: view を保持して hiddenColumns のみ変更
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const view = saved ? examViewPrefsToV2(saved).view : 'table'
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view, hiddenColumns: ['explanation_text'] },
+      examViewPrefsV2Schema,
+    )
+    const after = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    expect(examViewPrefsToV2(after!)).toEqual({
+      view: 'table',
+      hiddenColumns: ['explanation_text'],
+    })
   })
 })

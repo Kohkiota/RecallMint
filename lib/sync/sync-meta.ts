@@ -95,3 +95,45 @@ export const examViewPrefsV1Schema = z
   .strict()
 
 export type ExamViewPrefsV1 = z.infer<typeof examViewPrefsV1Schema>
+
+// ---------------------------------------------------------------------------
+// ExamViewPrefsV2 schema (Edit-2 Task 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * 試験一覧 view preference の zod schema (version: 2)。
+ * v1 に hiddenColumns (非表示列 id の配列) を追加。 書込は常に v2。
+ */
+export const examViewPrefsV2Schema = z
+  .object({
+    version: z.literal(2),
+    view: z.enum(['card', 'table']),
+    hiddenColumns: z.array(z.string()),
+  })
+  .strict()
+
+export type ExamViewPrefsV2 = z.infer<typeof examViewPrefsV2Schema>
+
+/**
+ * 読み取り用 union schema。 旧 v1 record も新 v2 record も両方 accept する
+ * (version discriminator で分岐)。 書込は examViewPrefsV2Schema を使うこと。
+ */
+export const examViewPrefsSchema = z.discriminatedUnion('version', [
+  examViewPrefsV1Schema,
+  examViewPrefsV2Schema,
+])
+
+export type ExamViewPrefs = z.infer<typeof examViewPrefsSchema>
+
+/**
+ * v1 / v2 いずれの record も v2 working shape に正規化する。
+ * v1 (hiddenColumns 不在) は hiddenColumns: [] にフォールバックする (forward-compat)。
+ */
+export function examViewPrefsToV2(
+  prefs: ExamViewPrefs,
+): { view: 'card' | 'table'; hiddenColumns: string[] } {
+  return {
+    view: prefs.view,
+    hiddenColumns: prefs.version === 2 ? prefs.hiddenColumns : [],
+  }
+}

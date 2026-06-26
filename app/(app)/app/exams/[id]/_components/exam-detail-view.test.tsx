@@ -14,6 +14,7 @@ import { getClientDb } from '@/lib/client-db'
 import {
   SYNC_META_KEYS,
   examViewPrefsV1Schema,
+  examViewPrefsV2Schema,
   setJsonSyncMeta as realSetJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
 
@@ -197,12 +198,16 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
       expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
     })
 
-    // setJsonSyncMeta が { version: 1, view: 'table' } で呼ばれていることを確認
-    expect(mockSetJsonSyncMeta).toHaveBeenCalledTimes(1)
+    // Edit-2 Task 4: read-modify-write で v2 を書込む。 既存 prefs なしのため
+    // hiddenColumns は [] にフォールバック。 read (getJsonSyncMeta) 解決後に
+    // setJsonSyncMeta が呼ばれるため waitFor で待つ。
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledTimes(1)
+    })
     expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 1, view: 'table' },
-      examViewPrefsV1Schema,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
     )
 
     // ExamCardTable stub が render されている
@@ -210,6 +215,42 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
 
     // InlineCardList は unmount
     expect(screen.queryByTestId('inline-card-list-stub')).not.toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// Case ④-b: view 切替の read-modify-write が table 設定の hiddenColumns を保持 (HARD GATE)
+// ===========================================================================
+
+describe('ExamDetailView — Case ④-b: view 切替が hiddenColumns を破壊しない', () => {
+  it('table が hiddenColumns を保存済の state で view 切替 → hiddenColumns が保持される', async () => {
+    // table 側が hiddenColumns を保存した state を seed (v2)
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'card', hiddenColumns: ['memo', 'tags'] },
+      examViewPrefsV2Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    // mount load 完了 (view='card' のまま) を待つ
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    mockSetJsonSyncMeta.mockClear()
+
+    // テーブルに切替
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    // read-modify-write で hiddenColumns を保持したまま view='table' を書込む
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        { version: 2, view: 'table', hiddenColumns: ['memo', 'tags'] },
+        examViewPrefsV2Schema,
+      )
+    })
   })
 })
 
