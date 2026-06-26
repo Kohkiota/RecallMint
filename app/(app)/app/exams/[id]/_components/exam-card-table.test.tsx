@@ -7,10 +7,38 @@
 //
 // 環境: vitest + jsdom + @testing-library/react + fake-indexeddb (vitest.setup.ts global)。
 // useLiveQuery は Dexie への put/add でリアクティブに再評価される (fake-indexeddb 使用)。
+//
+// Fix-1 T2 追記: bulk createOptionAndAssign 配線 + 回帰 (action-bar 限定、 filter-bar/TagCell 不変)。
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { getClientDb, type ClientCard, type ClientTagCategory, type ClientTagOption } from '@/lib/client-db'
+
+// ---------------------------------------------------------------------------
+// Fix-1 T2: createOption mock (hoisted so vi.mock can reference it)
+// ---------------------------------------------------------------------------
+
+const { mockCreateOption, mockBulkTag } = vi.hoisted(() => ({
+  mockCreateOption: vi.fn(async () => 'new-opt-fixed'),
+  mockBulkTag: vi.fn(async () => ({ ok: true, succeeded: [] as string[], failed: [] as string[] })),
+}))
+
+// Mock createOption from card-tags-section; keep all other exports real.
+vi.mock('./card-tags-section', async (importActual) => {
+  const actual = await importActual<typeof import('./card-tags-section')>()
+  return { ...actual, createOption: mockCreateOption }
+})
+
+// Mock useBulkCardTags to return a stable spy that we can assert on.
+// Existing smoke tests don't trigger bulk ops, so they are unaffected.
+vi.mock('../_hooks/use-bulk-card-tags', async (importActual) => {
+  const actual = await importActual<typeof import('../_hooks/use-bulk-card-tags')>()
+  return {
+    ...actual,
+    useBulkCardTags: () => mockBulkTag,
+  }
+})
+
 import { ExamCardTable } from './exam-card-table'
 
 // ---------------------------------------------------------------------------
@@ -245,5 +273,128 @@ describe('ExamCardTable smoke ⑤ (T3): column sizing + resize handle', () => {
     // cursor-col-resize クラスで handle を特定する。
     const handles = container.querySelectorAll('.cursor-col-resize')
     expect(handles.length, 'resize handle が 1 つ以上存在する').toBeGreaterThan(0)
+  })
+})
+
+// ===========================================================================
+// Fix-1 T2: bulk createOptionAndAssign 配線検証
+// ===========================================================================
+
+const FIX1_CATEGORY: ClientTagCategory = {
+  id: 'cat-fix1',
+  user_id: USER_ID,
+  name: 'Difficulty',
+  select_type: 'multi',
+  color: null,
+  sort_key: null,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+}
+
+describe('Fix-1 T2: bulk createOptionAndAssign 配線 (action-bar 経由)', () => {
+  it('action-bar 付与 popover で option 新規作成すると createOption → bulkTag(new id, add) が呼ばれる', async () => {
+    mockCreateOption.mockClear()
+    mockBulkTag.mockClear()
+
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2)])
+    await db.tag_categories.put(FIX1_CATEGORY)
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // 2 行選択して action bar を表示
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 2/ }))
+    await waitFor(() =>
+      expect(screen.getByTestId('action-bar-count')).toHaveTextContent('2件選択中'),
+    )
+
+    // action bar 内の「タグ付与」popover を開く
+    const bar = screen.getByTestId('exam-card-table-action-bar')
+    fireEvent.click(within(bar).getByText('タグ付与'))
+
+    // stage1: カテゴリ選択 → Difficulty を選択
+    const catInput = await screen.findByLabelText('category を検索 / 新規作成')
+    fireEvent.change(catInput, { target: { value: '' } })
+    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Difficulty'))
+
+    // stage2: option 新規作成 → input に名前を入力して「新規作成: NewOpt」を click
+    const optInput = await screen.findByLabelText('option を検索 / 新規作成')
+    fireEvent.change(optInput, { target: { value: 'NewOpt' } })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '新規作成: NewOpt' })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: NewOpt' }))
+
+    // createOption が categoryId='cat-fix1', name='NewOpt' で呼ばれた
+    await waitFor(() => {
+      expect(mockCreateOption).toHaveBeenCalledWith(
+        USER_ID,
+        expect.any(Array),
+        'cat-fix1',
+        'NewOpt',
+      )
+    })
+
+    // bulkTag が newId='new-opt-fixed', op='add' で呼ばれた
+    await waitFor(() => {
+      expect(mockBulkTag).toHaveBeenCalledWith(
+        expect.any(Array),
+        'cat-fix1',
+        'new-opt-fixed',
+        'add',
+      )
+    })
+  })
+})
+
+describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不変', () => {
+  // 回帰条件: bulkTagEditCallbacks が filter-bar や TagCell に誤って渡された場合、
+  // filter-bar の tag popover で option 新規作成をトリガすると createOption (= mockCreateOption) が
+  // 呼ばれてしまう。本テストはその leak を行動レベルで検出する。
+  //
+  // 検証戦略: filter-bar の「タグで絞り込み」popover から新規 option 作成パスを実行する。
+  //   - tagEditCallbacks.createOptionAndAssign = no-op placeholder → mockCreateOption 非呼出
+  //   - もし bulkTagEditCallbacks が filter-bar に誤配線された場合 → mockCreateOption が呼ばれ失敗
+  //
+  // action-bar が bulkCreateOptionAndAssign を呼ぶことは上の T2 テストで証明済み。
+  // 本テストは「filter-bar 側が独立した no-op 経路を通ること」の isolation のみを確認する。
+  it('filter-bar の createOptionAndAssign は no-op — bulkTagEditCallbacks の leak を検出する isolation テスト', async () => {
+    mockCreateOption.mockClear()
+    mockBulkTag.mockClear()
+
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1)])
+    await db.tag_categories.put(FIX1_CATEGORY)
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // filter-bar の「タグで絞り込み」popover を開く (action-bar は未表示 = 行未選択)
+    const filterBar = screen.getByTestId('exam-card-table-filter-bar')
+    fireEvent.click(within(filterBar).getByText('タグで絞り込み'))
+
+    // stage1: カテゴリ選択 → Difficulty を選択して option stage へ
+    const catInput = await screen.findByLabelText('category を検索 / 新規作成')
+    fireEvent.change(catInput, { target: { value: '' } })
+    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Difficulty'))
+
+    // stage2: option 新規作成 → 「新規作成: FilterOpt」を click
+    const optInput = await screen.findByLabelText('option を検索 / 新規作成')
+    fireEvent.change(optInput, { target: { value: 'FilterOpt' } })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '新規作成: FilterOpt' })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新規作成: FilterOpt' }))
+
+    // filter-bar のパスでは tagEditCallbacks.createOptionAndAssign = no-op placeholder のため
+    // mockCreateOption (= module-level createOption) は呼ばれない。
+    // リグレッション: bulkTagEditCallbacks が filter-bar に誤配線された場合ここで 1+ 回呼ばれ失敗する。
+    await waitFor(() => {
+      expect(mockCreateOption).not.toHaveBeenCalled()
+    })
   })
 })

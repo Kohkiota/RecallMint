@@ -45,6 +45,7 @@ import {
   countCategoryImpact,
   countOptionImpact,
   handleCreateCategory,
+  createOption,
   type TagEditCallbacks,
 } from './card-tags-section'
 
@@ -265,6 +266,23 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     setLastBulkResult({ op: '削除', result: r })
   }, [bulkDelete, selectedIds])
 
+  // Fix-1 T2: action-bar 専用の bulk-bound createOptionAndAssign。
+  // option を新規作成 (createOption) してから bulk add (onBulkTag) へ流す。
+  // filter-bar / TagCell(meta) へ渡す tagEditCallbacks は不変 — action-bar のみに影響。
+  // onBulkTag の後に宣言することで TDZ を回避する。
+  const bulkCreateOptionAndAssign = useCallback(
+    async (categoryId: string, name: string): Promise<void> => {
+      const newOptionId = await createOption(userId, liveData?.options ?? [], categoryId, name)
+      await onBulkTag(categoryId, newOptionId, 'add')
+    },
+    [userId, liveData?.options, onBulkTag],
+  )
+
+  const bulkTagEditCallbacks = useMemo(
+    () => ({ ...tagEditCallbacks, createOptionAndAssign: bulkCreateOptionAndAssign }),
+    [tagEditCallbacks, bulkCreateOptionAndAssign],
+  )
+
   return (
     // M3 (T7 stg smoke): 選択時のみ下部 padding を確保し、 fixed bottom action bar
     // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
@@ -389,7 +407,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
           selectedIds={selectedIds}
           categories={liveData?.categories ?? []}
           options={liveData?.options ?? []}
-          tagEditCallbacks={tagEditCallbacks}
+          tagEditCallbacks={bulkTagEditCallbacks}
           onBulkTag={onBulkTag}
           onBulkDelete={onBulkDelete}
           lastResult={lastBulkResult}

@@ -99,13 +99,14 @@ export function ExamCardTableActionBar({
           }
         />
 
-        {/* タグ除去: popover を adapter で再利用 (op='remove') */}
+        {/* タグ除去: popover を adapter で再利用 (op='remove')。 新規作成導線は不要なので selectOnly */}
         <CardTagAddPopover
           categories={categories}
           options={options}
           allAssignedOptionIds={[]}
           onToggle={handleRemoveToggle}
           tagEditCallbacks={tagEditCallbacks}
+          selectOnly
           trigger={
             <button
               type="button"
