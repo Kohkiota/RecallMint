@@ -73,6 +73,22 @@ tag の後付け amend が必要になった時点で順序違反(未 push な�
 feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路(skill template + general-purpose subagent + 厳格 prompt、改変禁止)。自由形式 review / 軽量 agent 投げ捨て禁止。velocity 優先で省略不可。
 例外: chore / docs / test / refactor で実装ロジック変更なしのみ skip 可(= `[no-review]`)。
 
+### レビュー強化: pr-review-toolkit 専門エージェント配線
+
+`superpowers:requesting-code-review` のチェックポイントでは、**汎用 subagent 1 体というデフォルトを上書きし、`pr-review-toolkit` の専門エージェントを並列ディスパッチする**(同一 canonical 経路内で reviewer の中身だけを差し替える。各エージェントへ渡す厳格 prompt の改変禁止は従来どおり)。`pr-review-toolkit` は Skill を持たず自走しないため、**この明示ルートが配線そのもの**(書かなければデフォルトの汎用 1 体に戻る)。
+
+変更内容で選ぶ:
+
+- **常時**: `code-reviewer` + `silent-failure-hunter`
+- **型 / スキーマ変更**: `type-design-analyzer` を追加
+- **テスト変更**: `pr-test-analyzer` を追加
+- **ドキュメント / コメント変更**: `comment-analyzer` を追加
+- **リファクタ判断時**: `code-simplifier` を追加(simplify 系の最終判断材料)
+
+結果分類は本 file 既存ルール準拠 — **Critical = 即修正 / Important = 次に進む前に修正**(Minor は記録のみ可)。
+
+導入は `.claude/settings.json` の `enabledPlugins` で `pr-review-toolkit@claude-plugins-official` を有効化(marketplace `claude-plugins-official` は既知・`.devcontainer/post-create.sh` で marketplace add 済、superpowers / frontend-design と同じ auto-enable 方式)。プラグイン本体(`.claude/plugins/` 配下)は更新で消えるため編集しない — 配線は本 CLAUDE.md 側で行う。
+
 ### Tag と hook
 
 commit 末尾に `[reviewed]`(formal review 完了)or `[no-review]`(意図的 skip)。`.claude/hooks/check-review.sh`(Stop hook)が tag 無し feat/fix を block する。手動無効化禁止。
