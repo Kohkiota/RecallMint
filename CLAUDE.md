@@ -73,21 +73,11 @@ tag の後付け amend が必要になった時点で順序違反(未 push な�
 feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路(skill template + general-purpose subagent + 厳格 prompt、改変禁止)。自由形式 review / 軽量 agent 投げ捨て禁止。velocity 優先で省略不可。
 例外: chore / docs / test / refactor で実装ロジック変更なしのみ skip 可(= `[no-review]`)。
 
-### レビュー強化: pr-review-toolkit 専門エージェント配線
+### レビュアーは superpowers ネイティブ reviewer
 
-`superpowers:requesting-code-review` のチェックポイントでは、**汎用 subagent 1 体というデフォルトを上書きし、`pr-review-toolkit` の専門エージェントを並列ディスパッチする**(同一 canonical 経路内で reviewer の中身だけを差し替える。各エージェントへ渡す厳格 prompt の改変禁止は従来どおり)。`pr-review-toolkit` は Skill を持たず自走しないため、**この明示ルートが配線そのもの**(書かなければデフォルトの汎用 1 体に戻る)。
+feat/fix の canonical review は `superpowers:requesting-code-review` の**デフォルト経路**(汎用 general-purpose subagent + template `code-reviewer.md` の `## Read-Only Review` 文言、read-only が本体保証)で回す。template 改変禁止は従来どおり。
 
-変更内容で選ぶ:
-
-- **常時**: `code-reviewer` + `silent-failure-hunter`
-- **型 / スキーマ変更**: `type-design-analyzer` を追加
-- **テスト変更**: `pr-test-analyzer` を追加
-- **ドキュメント / コメント変更**: `comment-analyzer` を追加
-- **リファクタ判断時**: `code-simplifier` を追加(simplify 系の最終判断材料)
-
-結果分類は本 file 既存ルール準拠 — **Critical = 即修正 / Important = 次に進む前に修正**(Minor は記録のみ可)。
-
-導入は `.claude/settings.json` の `enabledPlugins` で `pr-review-toolkit@claude-plugins-official` を有効化(marketplace `claude-plugins-official` は既知・`.devcontainer/post-create.sh` で marketplace add 済、superpowers / frontend-design と同じ auto-enable 方式)。プラグイン本体(`.claude/plugins/` 配下)は更新で消えるため編集しない — 配線は本 CLAUDE.md 側で行う。
+`pr-review-toolkit` 専門エージェント配線は**撤去した**(`.claude/settings.json` の `enabledPlugins` から無効化済)。撤去理由: 6 体中 `code-simplifier` が指摘専用でなく Edit/Write で**能動的にコードを書き換える実装者**であり read-only レビュー枠と両立しない、残り 5 体も本体に書込抑止が無く厳格 prompt 依存(`comment-analyzer` のみ本体 read-only)で「想定=指摘のみ / 実体=書込可能」のズレを持つため。reviewer の多観点強化は **Codex 独立レビュー**(後述)で担保する。
 
 ### Tag と hook
 
