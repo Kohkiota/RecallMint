@@ -79,6 +79,17 @@ feat/fix の canonical review は `superpowers:requesting-code-review` の**デ�
 
 `pr-review-toolkit` 専門エージェント配線は**撤去した**(`.claude/settings.json` の `enabledPlugins` から無効化済)。撤去理由: 6 体中 `code-simplifier` が指摘専用でなく Edit/Write で**能動的にコードを書き換える実装者**であり read-only レビュー枠と両立しない、残り 5 体も本体に書込抑止が無く厳格 prompt 依存(`comment-analyzer` のみ本体 read-only)で「想定=指摘のみ / 実体=書込可能」のズレを持つため。reviewer の多観点強化は **Codex 独立レビュー**(後述)で担保する。
 
+### Codex 協調レビュー(canonical 後 / commit 前)
+
+canonical review(native reviewer)pass 後・`[reviewed]` commit 前に、Codex を独立レビュアーとして実行する: `scripts/ai/codex-review.sh <topic>`。reviewer の多観点強化はこの Codex で担保(pr-review-toolkit の代替)。
+
+- **対象** = HEAD に対する未 commit 変更一式(staged+unstaged+untracked。`codex exec review --uncommitted` がネイティブに拾う)。対象範囲は feat/fix の非自明変更のみ — chore/docs/test/ロジック不変 refactor は canonical 同様 skip 可(「必須経路」準拠)。
+- **Codex = レビュー専用(指摘のみ)。修正主体は CC 本体**。Codex に canonical の結論を見せない(anchor 防止 — 独立に diff を見させる)。
+- **重大度マッピング(語彙統一)**: Codex の P0/P1 → Critical / P2 → Important / P3,P4 → Minor。canonical も Critical/Important/Minor で返るため両者を**同一語彙・同一収束条件**で扱う。分類後の扱いは「結果分類」準拠。
+- **fix ループ**: CC が canonical 指摘 + Codex 保存 md(`docs/codex/`)の両方を読む → 修正(CC)→ 再 review を、**未解決 Critical 0 かつ未解決 Important 0** まで反復。安全弁 = **上限 3 周**。3 周で収束しなければ「収束困難」として停止し OT に上げる。
+- **pass 判定は exit code でなく保存 md の内容**(Critical/Important ゼロ)。exit code は走破 / timeout(124)/ detector FAIL(3)/ codex 異常の検出専用(別レイヤー)。
+- **read-only 担保**: 書込/apply 系フラグ(`codex apply` / `--dangerously-bypass-*` / `--add-dir`)を渡さない。`worktree-snapshot.sh`(`.git/hooks` 含む内容ベース)の git clean detector が唯一のガード — **pass 宣言の前に評価**。
+
 ### Tag と hook
 
 commit 末尾に `[reviewed]`(formal review 完了)or `[no-review]`(意図的 skip)。`.claude/hooks/check-review.sh`(Stop hook)が tag 無し feat/fix を block する。手動無効化禁止。
@@ -141,15 +152,42 @@ Plan は**設計判断の記録**。各 task は ① 目的 ② 制約(型 / 命
 
 spec は実装フェーズで書き換えない(仕様変更が必要なら停止して OT 相談)。
 
+### plan 段階の Codex 協調(cross-check)
+
+fact-finding → spec → plan ドラフト(CC)の後、**plan 確定の前**に Codex に独立論点を出させる: `scripts/ai/codex-plan-review.sh`。狙い = plan を CC 単独で固めて後で Codex に見せ抜けが出る二度手間を、確定時点に前倒しで潰す。
+
+- **入力** = 調査結果 + 要件を主、CC の plan ドラフトは参考添付(承認させない)。指示は「調査結果と要件から独立に論点・抜け・リスクを挙げ、その上で添付 plan の抜けを照合せよ」(anchor 防止)。
+- これは fix ループでなく **1 回の cross-check**。CC 本体が CC 自身の plan + Codex 論点を突き合わせ、取りまとめ(どちらが出したか / 重複・対立を明示)て OT に提示。**OT 承認で plan 確定**。
+
 ### Sprint 境界の停止
 
 各 Sprint 完了で停止、OT 判断待ち。複数 Sprint の連続 auto mode 禁止。Sprint 内でも Critical 検出 / 仕様解釈揺れ / 外部サービス設定変更要で停止。
+
+### 自走継続条件(plan 確定後)
+
+plan が OT 承認で確定したら、**plan 完了まで一気通貫で自走**する(task ごとに OT 確認を取らない)。直上「Sprint 境界の停止」の『Sprint 内でも Critical 検出で停止』の**例外**を以下に定める(この例外がないと毎 Critical で止まり自走にならない):
+
+- **claude.ai に即上げる条件** = canonical または Codex の **Critical(P0/P1)を、CC が修正・検証・rollback 計画しても未解決の時のみ**。解決すれば自走継続(修正試行前に上げない)。
+- **Important(P2)以下は CC が吸収**(fix して自走継続)。Minor は記録のみ可(「結果分類」準拠)。
+- 不変の停止理由(仕様解釈揺れ / 外部サービス設定変更要 / Sprint 完了)は従来どおり停止。
 
 ---
 
 ## 環境変数
 
 新規 env を参照するコードと**同 commit で `.env.example` に追加**(値はプレースホルダ、実値は `.env.local` のみ、後から埋める項目は空値記法 `KEY=`)。取得タイミング非自明はコメント補足。deploy 前に全 env 記載を再確認。
+
+## 簡潔性規律
+
+恒久の横断規律。実装・レビュー(canonical / Codex)双方の判断基準。
+
+- タスク要件を満たす**最小実装**を選ぶ。
+- 「将来必要かも」で抽象化・汎用化・設定可能化しない(**YAGNI**)。
+- **既存パターンに乗る**。同種処理が既にあれば新しい書き方を発明せず既存に倣う。
+- 抽象化は**実重複が 3 回以上実在する時だけ**(rule of three)。予測重複や 2 回では共通化しない。
+- **タスク範囲外のコードを触らない**。ついでのリファクタ・改善をしない(scope creep 禁止)。必要なら別タスク起票し OT 判断。
+- レイヤー・ラッパー・間接層を足す前に、**それ無しで書けないか試す**。足すなら理由を 1 行で正当化できること。
+- 過剰な防御的コードを書かない(起きえない分岐の握り / 不要 null guard / 使われない汎用引数)。
 
 ## コーディング規約
 
