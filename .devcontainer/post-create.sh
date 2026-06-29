@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # Dev Container 初回作成時のセットアップスクリプト
 # - npm prefix を ~/.npm-global に変更 (EACCES 対策)
-# - pnpm / Claude Code / Stripe CLI / TypeScript LSP バイナリを install
+# - pnpm / Claude Code / Stripe CLI / TypeScript LSP / Codex CLI バイナリを install
 # - Google Chrome を install (playwright MCP / chrome-devtools-mcp 共用)
 # - MCP / Plugin 登録: context7, typescript-lsp, chrome-devtools-mcp
 # - Opus + Superpowers + frontend-design は .claude/settings.json で auto-enable
@@ -43,6 +43,13 @@ fi
 
 echo "==> [5/8] TypeScript Language Server (typescript-lsp プラグイン用)"
 npm install -g typescript typescript-language-server
+
+echo "==> [5/8b] Codex CLI (独立レビュアー / scripts/ai/codex-*.sh 用)"
+# exact pin 必須: フラグ仕様が版で変わる実績があるため version 固定 (CLAUDE.md 規律)。
+# 認証は手動 codex login (ChatGPT) 運用 = API key passthrough なし。
+# bwrap 回避のため scripts/ai は danger-full-access + git clean detector で read-only 運用。
+npm install -g @openai/codex@0.142.3
+codex --version
 
 echo "==> [6/8] Google Chrome (playwright MCP / chrome-devtools-mcp 共用)"
 # playwright MCP は --browser chrome 指定で system Chrome を使う (自前 chromium 不要)
@@ -117,6 +124,7 @@ node --version
 pnpm --version
 claude --version
 stripe --version
+codex --version 2>/dev/null || echo "(codex: 確認失敗)"
 typescript-language-server --version 2>/dev/null || echo "(tsls: 確認失敗)"
 google-chrome --version 2>/dev/null || echo "(google-chrome: install 失敗)"
 npx --yes playwright --version 2>/dev/null || echo "(Playwright は image 同梱)"
