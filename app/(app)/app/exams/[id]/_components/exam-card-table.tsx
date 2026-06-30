@@ -73,8 +73,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
   // Edit-2 Task 4: columnVisibility は examViewPrefs.hiddenColumns として永続化。
-  // 初期は空 (= 全列表示)。 mount effect で sync_meta から load し setState する。
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  // 初期は空 (= 全列表示) だが Edit-3 T4 で sort_key を既定 hidden に。
+  // mount effect で sync_meta から load し setState する。
+  // caveat: saved に他列 hidden があり sort_key を含まない record が存在すると
+  // load が初期 { sort_key: false } を置換し sort_key が表示に戻る。
+  // ユーザー 0・DB 全消し可ゆえフラグ判定なし・許容 (spec §3.2-3)。
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ sort_key: false })
   // 永続化ガード: mount load 完了前に persist effect が初期空 state を書き込んで
   // 既存 record (table が前回保存した hiddenColumns) を上書きするのを防ぐ。
   const visibilityLoadedRef = useRef(false)

@@ -82,7 +82,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   },
   {
     id: 'title',
-    size: 240,
+    size: 80,
     header: 'タイトル',
     // title 列は sticky-left pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
     // column def には meta だけ持たせ、 layout は render 側で解決する。

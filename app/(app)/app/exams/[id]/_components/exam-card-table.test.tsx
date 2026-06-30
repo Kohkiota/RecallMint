@@ -526,3 +526,57 @@ describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
     expect(titleTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
   })
 })
+
+// ===========================================================================
+// smoke ⑧ (Edit-3 T4): sort_key default hidden + toggle UI + re-show
+// ===========================================================================
+
+describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
+  it('sort_key ヘッダが初期状態で DOM に存在しない (columnVisibility 初期値 { sort_key: false })', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTh = container.querySelectorAll('th')
+    const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
+    // sort_key の header 文字列「ソートキー」が DOM に存在しない
+    expect(headerTexts).not.toContain('ソートキー')
+  })
+
+  it('列 toggle popover に sort_key (ソートキー) が列挙され checkbox が unchecked (hidden 状態)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 「列の表示・非表示」ボタンをクリックして popover を開く
+    fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
+
+    // sort_key に対応する checkbox が unchecked で列挙される
+    await waitFor(() => {
+      const sortKeyCheckbox = screen.getByRole('checkbox', { name: '列表示: ソートキー' })
+      expect(sortKeyCheckbox).toBeInTheDocument()
+      expect(sortKeyCheckbox).not.toBeChecked()
+    })
+  })
+
+  it('toggle で sort_key を表示にすると ソートキー ヘッダが DOM に現れる (getCanHide() true)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // popover を開いて sort_key を toggle (check)
+    fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
+    const sortKeyCheckbox = await screen.findByRole('checkbox', { name: '列表示: ソートキー' })
+    fireEvent.click(sortKeyCheckbox)
+
+    // ソートキー header が DOM に出現する
+    await waitFor(() => {
+      const allTh = container.querySelectorAll('th')
+      const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
+      expect(headerTexts).toContain('ソートキー')
+    })
+  })
+})

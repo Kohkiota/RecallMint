@@ -201,7 +201,7 @@ describe('T3: column sizing', () => {
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
       select: 44,
-      title: 240,
+      title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
       sort_key: 100,
       question: 320,
       options: 240,
@@ -468,6 +468,25 @@ describe('Column: options (Edit-2 T3) — CompactOptionsCell', () => {
   it('screen.getByRole("button", { name: "\\+ 選択肢を追加" }) がアクセスできる', () => {
     renderCell('options', makeRow({ options: [] }))
     expect(screen.getByRole('button', { name: '+ 選択肢を追加' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit-3 T4: title size 80 + sort_key enableHiding 維持
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T4: title size 80 + sort_key getCanHide() 維持', () => {
+  it('title column size が 80 (~80px 起点)', () => {
+    const titleCol = examCardTableColumns.find((c) => c.id === 'title')
+    expect(titleCol?.size).toBe(80)
+  })
+
+  it('sort_key column に enableHiding=false が設定されていない (getCanHide() === true を保証)', () => {
+    const sortKeyCol = examCardTableColumns.find((c) => c.id === 'sort_key')
+    expect(sortKeyCol).toBeDefined()
+    // enableHiding=false が設定されると getCanHide()===false になり toggle UI から除外される。
+    // 再表示できなくなるため設定しない。
+    expect((sortKeyCol as unknown as Record<string, unknown>)?.['enableHiding']).not.toBe(false)
   })
 })
 
