@@ -90,6 +90,7 @@ beforeEach(async () => {
   await db.tag_categories.clear()
   await db.tag_options.clear()
   await db.card_tags.clear()
+  await db.sync_meta.clear()
 })
 
 afterEach(() => {
@@ -524,6 +525,56 @@ describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
     // ④ sticky セルの style に既存 width が維持されている
     expect(selectTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
     expect(titleTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
+  })
+})
+
+// ===========================================================================
+// Edit-3 Fix-1: columnVisibility round-trip
+// sort_key を表示に toggle した状態の saved record (hiddenColumns:[]) が
+// リロード後も尊重されること。
+// fix 前: length>0 guard が setColumnVisibility をスキップ → 初期 { sort_key: false } 復帰 → FAIL
+// fix 後: saved が存在すれば常に setColumnVisibility({}) → sort_key 表示を維持 → PASS
+// ===========================================================================
+
+describe('Edit-3 Fix-1: columnVisibility round-trip — saved hiddenColumns:[] → sort_key 表示維持', () => {
+  it('[fix前fail→fix後pass] hiddenColumns:[] の saved record → reload 後も sort_key が表示のまま', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+
+    // sort_key を表示にした状態の saved record (hiddenColumns 空) を sync_meta に seed。
+    // これは「ユーザーが sort_key を toggle して表示にし、persist が hiddenColumns:[] を書いた」状況に相当。
+    await db.sync_meta.put({
+      key: 'exam_view_prefs',
+      value: JSON.stringify({ version: 2, view: 'table', hiddenColumns: [] }),
+    })
+
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // row が描画されるのを待つ
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // mount load effect が非同期で saved record を読み setColumnVisibility({}) を呼ぶのを待つ。
+    // fix前: hiddenColumns.length>0 guard でスキップ → 初期 { sort_key: false } 維持 → "ソートキー" が DOM に存在しない → FAIL
+    // fix後: saved 有りなので setColumnVisibility({}) → sort_key 表示 → "ソートキー" が DOM に現れる → PASS
+    await waitFor(() => {
+      const allTh = container.querySelectorAll('th')
+      const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
+      expect(headerTexts, 'sort_key (ソートキー) が saved record の hiddenColumns:[] を尊重して表示されている').toContain('ソートキー')
+    })
+  })
+
+  it('saved record が存在しない新規ユーザー → sort_key は既定 hidden のまま', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // sync_meta は空 (beforeEach で clear 済み) = 新規ユーザー
+
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // saved 無しなら load effect は setState せず初期 { sort_key: false } が維持される
+    const allTh = container.querySelectorAll('th')
+    const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
+    expect(headerTexts, 'saved record なし → sort_key 既定 hidden').not.toContain('ソートキー')
   })
 })
 
