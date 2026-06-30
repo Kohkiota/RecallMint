@@ -372,6 +372,48 @@ describe('ExamCardTable smoke ⑥ (Edit-2 T3): question column renders InlineTex
   })
 })
 
+// ===========================================================================
+// Edit-3 T1: th/td padding density (py-2 → py-1)
+// ===========================================================================
+
+describe('Edit-3 T1: th/td padding density', () => {
+  it('th が py-1 クラスを持ち py-2 を持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+    const allTh = container.querySelectorAll('th')
+    expect(allTh.length).toBeGreaterThan(0)
+    for (const th of allTh) {
+      expect(
+        th.className,
+        `th "${th.textContent?.trim()}" は py-1 を持つ`,
+      ).toContain('py-1')
+      expect(
+        th.className,
+        `th "${th.textContent?.trim()}" は py-2 を持たない`,
+      ).not.toContain('py-2')
+    }
+  })
+
+  it('td が py-1 クラスを持ち py-2 を持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+    const allTd = container.querySelectorAll('td')
+    expect(allTd.length).toBeGreaterThan(0)
+    for (const td of allTd) {
+      expect(td.className, 'td は py-1 を持つ').toContain('py-1')
+      expect(td.className, 'td は py-2 を持たない').not.toContain('py-2')
+    }
+  })
+})
+
 describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不変', () => {
   // 回帰条件: bulkTagEditCallbacks が filter-bar や TagCell に誤って渡された場合、
   // filter-bar の tag popover で option 新規作成をトリガすると createOption (= mockCreateOption) が

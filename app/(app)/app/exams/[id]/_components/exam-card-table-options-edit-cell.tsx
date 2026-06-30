@@ -29,14 +29,14 @@ export function CompactOptionsCell({
   } = useCardOptions(cardId, serverOptions)
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5">
       {options.map((opt, idx) => (
         <div
           key={opt.id}
           className={
             opt.is_correct
-              ? 'rounded border border-emerald-300 bg-emerald-100 p-1.5 text-sm'
-              : 'rounded border border-border/60 p-1.5 text-sm'
+              ? 'rounded border border-emerald-300 bg-emerald-100 px-1.5 py-0.5 text-sm'
+              : 'rounded border border-border/60 px-1.5 py-0.5 text-sm'
           }
         >
           {/* 1 行目: checkbox + 本文 + 削除ボタン */}

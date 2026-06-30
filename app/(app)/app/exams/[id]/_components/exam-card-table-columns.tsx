@@ -121,6 +121,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         initialValue={row.original.card.question_text}
         ariaLabel="問題文 編集"
         multiline
+        displayClassName="text-sm"
       />
     ),
     enableSorting: true,
@@ -174,6 +175,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         initialValue={row.original.card.explanation_text ?? null}
         multiline
         ariaLabel="解説 編集"
+        displayClassName="text-sm"
       />
     ),
     enableSorting: false,
@@ -189,6 +191,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         initialValue={row.original.card.memo ?? null}
         multiline
         ariaLabel="メモ 編集"
+        displayClassName="text-sm"
       />
     ),
     enableSorting: false,

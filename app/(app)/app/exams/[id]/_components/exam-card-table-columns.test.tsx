@@ -345,6 +345,42 @@ describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Edit-3 T1: question / explanation_text / memo の InlineTextField displayClassName="text-sm"
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T1: question / explanation_text / memo に displayClassName="text-sm" が渡る', () => {
+  it('question cell の display div に text-sm クラスが付与される', () => {
+    const el = renderCell('question', makeRow({ question_text: 'テスト問題文' }))
+    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
+    expect(displayDiv.className).toContain('text-sm')
+  })
+
+  it('explanation_text cell の display div に text-sm クラスが付与される', () => {
+    const el = renderCell('explanation_text', makeRow({ explanation_text: '解説テキスト' }))
+    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
+    expect(displayDiv.className).toContain('text-sm')
+  })
+
+  it('memo cell の display div に text-sm クラスが付与される', () => {
+    const el = renderCell('memo', makeRow({ memo: 'メモテキスト' }))
+    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
+    expect(displayDiv.className).toContain('text-sm')
+  })
+
+  it('title cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
+    const el = renderCell('title', makeRow({ title: 'タイトル' }))
+    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
+    expect(displayDiv.className).not.toContain('text-sm')
+  })
+
+  it('sort_key cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
+    const el = renderCell('sort_key', makeRow({ sort_key: '0001' }))
+    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
+    expect(displayDiv.className).not.toContain('text-sm')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Edit-2 T3: options column → CompactOptionsCell
 // ---------------------------------------------------------------------------
 

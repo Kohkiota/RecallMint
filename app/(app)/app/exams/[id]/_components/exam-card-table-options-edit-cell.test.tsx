@@ -305,6 +305,46 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
+  it('外側 div に space-y-0.5 があり space-y-1 がない', () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={baseOptions} />,
+    )
+    const outer = container.firstElementChild as HTMLElement
+    expect(outer.className).toContain('space-y-0.5')
+    expect(outer.className).not.toContain('space-y-1')
+  })
+
+  it('選択肢ボックスに px-1.5 py-0.5 があり p-1.5 (単独) がない', () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+    )
+    const optionBox = container.querySelector('.rounded.border') as HTMLElement
+    expect(optionBox.className).toContain('px-1.5')
+    expect(optionBox.className).toContain('py-0.5')
+    // p-1.5 は px-1.5 のサブストリングにはならない ('p-' vs 'px-' で異なる)
+    expect(optionBox.className).not.toContain('p-1.5')
+  })
+
+  it('checkbox label の min-h-8 が維持されている (tap target 保護)', () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+    )
+    const checkboxLabel = container.querySelector('label') as HTMLElement
+    expect(checkboxLabel.className).toContain('min-h-8')
+  })
+
+  it('削除ボタンの min-h-8 が維持されている (tap target 保護)', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    const deleteBtn = screen.getAllByRole('button', { name: '選択肢を削除' })[0]!
+    expect((deleteBtn as HTMLElement).className).toContain('min-h-8')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // add / delete
 // ---------------------------------------------------------------------------
 
