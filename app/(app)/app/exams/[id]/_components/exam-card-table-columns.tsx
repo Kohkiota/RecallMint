@@ -77,6 +77,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       />
     ),
     enableSorting: false,
+    // Edit-3 T3: select を sticky 左固定(1 列目、left=0)。
+    meta: { sticky: true, stickyLeft: 0 },
   },
   {
     id: 'title',
@@ -84,7 +86,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     header: 'タイトル',
     // title 列は sticky-left pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
     // column def には meta だけ持たせ、 layout は render 側で解決する。
-    meta: { sticky: true },
+    // Edit-3 T3: stickyLeft=44 (select 幅固定 44px の右隣)。
+    meta: { sticky: true, stickyLeft: 44 },
     cell: ({ row }) => (
       <InlineTextField
         cardId={row.original.card.id}

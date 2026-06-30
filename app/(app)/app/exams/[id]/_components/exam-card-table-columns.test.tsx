@@ -470,3 +470,33 @@ describe('Column: options (Edit-2 T3) — CompactOptionsCell', () => {
     expect(screen.getByRole('button', { name: '+ 選択肢を追加' })).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Edit-3 T3: select 列と title 列の sticky meta (stickyLeft)
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T3: select 列と title 列の sticky meta', () => {
+  it('select 列に meta.sticky === true と meta.stickyLeft === 0 が付与されている', () => {
+    const selectCol = examCardTableColumns.find((c) => c.id === 'select')
+    expect(selectCol).toBeDefined()
+    const meta = selectCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
+    expect(meta?.sticky).toBe(true)
+    expect(meta?.stickyLeft).toBe(0)
+  })
+
+  it('title 列に meta.sticky === true と meta.stickyLeft === 44 が付与されている', () => {
+    const titleCol = examCardTableColumns.find((c) => c.id === 'title')
+    expect(titleCol).toBeDefined()
+    const meta = titleCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
+    expect(meta?.sticky).toBe(true)
+    expect(meta?.stickyLeft).toBe(44)
+  })
+
+  it('非 sticky 列(question)に meta.sticky が付与されていない', () => {
+    const questionCol = examCardTableColumns.find((c) => c.id === 'question')
+    expect(questionCol).toBeDefined()
+    const meta = questionCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
+    expect(meta?.sticky).not.toBe(true)
+    expect(meta?.stickyLeft).toBeUndefined()
+  })
+})

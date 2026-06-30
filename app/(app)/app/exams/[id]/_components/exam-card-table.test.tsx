@@ -462,3 +462,67 @@ describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不�
     })
   })
 })
+
+// ===========================================================================
+// smoke ⑦ (Edit-3 T3): sticky 2列 — select + title の left offset
+// 列順: select(0) / title(1) / sort_key(2) / question(3) / ...
+// ===========================================================================
+
+describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
+  it('th: ① select に sticky+left:0px ② title に sticky+left:44px ③ question に left 付与なし ④ sticky th に width 維持', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTh = container.querySelectorAll('th')
+    const selectTh = allTh[0] as HTMLElement  // select 列
+    const titleTh = allTh[1] as HTMLElement   // title 列
+    const questionTh = allTh[3] as HTMLElement // question 列(非 sticky)
+
+    // ① select th: sticky class + left:0
+    expect(selectTh.className).toContain('sticky')
+    expect(selectTh.style.left).toBe('0px')
+
+    // ② title th: sticky class + left:44
+    expect(titleTh.className).toContain('sticky')
+    expect(titleTh.style.left).toBe('44px')
+
+    // ③ 非 sticky 列に left 付与なし
+    expect(questionTh.className).not.toContain('sticky')
+    expect(questionTh.style.left).toBe('')
+
+    // ④ sticky セルの style に既存 width が維持されている
+    expect(selectTh.style.width).toMatch(/^\d+(\.\d+)?px$/)
+    expect(titleTh.style.width).toMatch(/^\d+(\.\d+)?px$/)
+  })
+
+  it('td: ① select に sticky+left:0px ② title に sticky+left:44px ③ question に left 付与なし ④ sticky td に width 維持', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    const cells = row.querySelectorAll('td')
+    const selectTd = cells[0] as HTMLElement  // select 列
+    const titleTd = cells[1] as HTMLElement   // title 列
+    const questionTd = cells[3] as HTMLElement // question 列(非 sticky)
+
+    // ① select td: sticky class + left:0
+    expect(selectTd.className).toContain('sticky')
+    expect(selectTd.style.left).toBe('0px')
+
+    // ② title td: sticky class + left:44
+    expect(titleTd.className).toContain('sticky')
+    expect(titleTd.style.left).toBe('44px')
+
+    // ③ 非 sticky 列に left 付与なし
+    expect(questionTd.className).not.toContain('sticky')
+    expect(questionTd.style.left).toBe('')
+
+    // ④ sticky セルの style に既存 width が維持されている
+    expect(selectTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
+    expect(titleTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
+  })
+})

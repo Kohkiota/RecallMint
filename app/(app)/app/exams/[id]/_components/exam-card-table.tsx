@@ -371,9 +371,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>
               {hg.headers.map((h) => {
-                const isSticky =
-                  (h.column.columnDef.meta as { sticky?: boolean } | undefined)
-                    ?.sticky === true
+                // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
+                const stickyMeta = h.column.columnDef.meta as
+                  | { sticky?: boolean; stickyLeft?: number }
+                  | undefined
+                const isSticky = stickyMeta?.sticky === true
+                const stickyLeft = stickyMeta?.stickyLeft ?? 0
                 const canSort = h.column.getCanSort()
                 const sortDir = h.column.getIsSorted()
                 const canResize = h.column.getCanResize()
@@ -385,13 +388,13 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     className={[
                       'relative px-3 py-1 text-left font-medium text-muted-foreground border-b border-border',
                       isSticky
-                        ? 'sticky left-0 z-10 bg-background'
+                        ? 'sticky z-10 bg-background'
                         : '',
                       canSort ? 'cursor-pointer select-none' : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
-                    style={{ width: h.getSize() }}
+                    style={{ width: h.getSize(), ...(isSticky ? { left: stickyLeft } : {}) }}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
                     {h.isPlaceholder ? null : (
@@ -437,12 +440,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
               className="hover:bg-muted/50"
             >
               {row.getVisibleCells().map((cell) => {
-                const isSticky =
-                  (
-                    cell.column.columnDef.meta as
-                      | { sticky?: boolean }
-                      | undefined
-                  )?.sticky === true
+                // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
+                const stickyMeta = cell.column.columnDef.meta as
+                  | { sticky?: boolean; stickyLeft?: number }
+                  | undefined
+                const isSticky = stickyMeta?.sticky === true
+                const stickyLeft = stickyMeta?.stickyLeft ?? 0
                 return (
                   <td
                     key={cell.id}
@@ -450,12 +453,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     className={[
                       'px-3 py-1 border-b border-border',
                       isSticky
-                        ? 'sticky left-0 z-10 bg-background'
+                        ? 'sticky z-10 bg-background'
                         : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
-                    style={{ width: cell.column.getSize() }}
+                    style={{ width: cell.column.getSize(), ...(isSticky ? { left: stickyLeft } : {}) }}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
