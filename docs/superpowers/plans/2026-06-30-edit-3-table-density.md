@@ -65,7 +65,7 @@
 
 **制約(spec §3.1/3.3):**
 - 全パス `cn(clsx+twMerge)` 化: display `<div>`(現状テンプレート結合 :286-288)を `cn(sharedBoxChrome, isEmpty && 'text-slate-400 italic', displayClassName)` に。edit も `cn(sharedBoxChrome, 'resize-none overflow-hidden', displayClassName)` に揃える。**display↔edit 両モードを同時変更**し box 寸法一致(layout shift 防止)維持。
-- table 側だけ詰める: table の InlineTextField/InlineOptionCell caller に `min-h`/`py` を縮める className を渡す(twMerge で sharedBoxChrome の `min-h-8`/`py-1` を上書き)。**density prop は足さない**(className 直接)。**下限 = `min-h-8`(32px)を下回らない**(Q2 確定: tap target 床。32px を床にその範囲で詰める)。
+- table 側だけ詰める: table の InlineTextField/InlineOptionCell caller に `min-h`/`py` を縮める className を渡す(twMerge で sharedBoxChrome の `min-h-8`/`py-1` を上書き)。**density prop は足さない**(className 直接)。**下限 = `md:min-h-6`(24px、WCAG 2.5.8 最低)を下回らない**(Q2 改定: desktop md: のみ 24px へ詰める。mobile は `min-h-11`(44px)/`min-h-8`(32px)を touch target ゆえ維持)。
 - **どの prop が内側に効くか明示(Codex 抜け#4 反映)**: 詰める className は **box 本体(textarea/input/display div = sharedBoxChrome を持つ要素)に届く prop**(InlineTextField なら `displayClassName`、InlineOptionCell なら本文/解説の box に届く同等 prop)を使う。**wrapper(`space-y-1` 等の外側 div)だけ詰めて内側 box の `min-h-8` が残る誤りを防ぐ** — test で「内側 textarea/input/display 要素に上書き class が乗る」ことを assert。
 - **card-view は className を渡さない or 現状維持** → 見た目不変。
 - **回帰 hard gate(spec §3.3)**: consumer test 全 green。**card-view 不変の検証は class 文字列完全一致にしない(Codex 抜け#5: twMerge 導入で class 文字列順/重複が変わり完全一致は脆い)** → behavioral assertion(編集/表示/commit 挙動)+ token 単位の有無確認 + **sprint 末 card-view スクショ smoke**(見た目不変が本体保証)。card-view が未定義挙動(`p-2` と外部 `py-*` 両残り)に偶然依存していた場合に見た目が変わらないことをスクショで確認。
@@ -129,7 +129,7 @@
 ## Open Questions → OT 確定事項(2026-06-30 承認・実装に反映)
 
 - **Q1 確定**: td `py-2`→`py-1` **全列一律**(tag 列 td も詰まる・バッジ内部不変)。→ T1。
-- **Q2 確定**: 共有 `min-h` を table で詰める下限 = **T2 裁量。ただし tap target の床 = `min-h-8`(32px)を下回らない**(32px を床にその範囲で詰める)。→ T2。
+- **Q2 確定(2026-06-30 kickoff で改定)**: 共有 `min-h` を table で詰める下限 = **T2 裁量。tap target 床 = `md:min-h-6`(24px、WCAG 2.5.8 最低)を下回らない**(desktop md: のみ 24px。mobile は `min-h-11`(44px)/`min-h-8`(32px)維持)。当初案「32px(min-h-8)床」から 24px へ改定(密度を最大化、tap が厳しければ sprint 末 smoke で戻す)。→ T2。
 - **Q3 確定**: title **~80px 起点**(固定確定でなく、sprint 末 smoke で header label「タイトル」と input が破綻しないか見て微調整可)。→ T4。
 - **Q4 確定**: 密度判定は**数値事前固定しない**。T1 前後で「選択肢 1 件の高さ」「1 row 高」を DevTools 実測し before/after をスクショで並べ、それを材料に **OT が T2 要否を判断**。→ T1 stop + Sprint gate。
 
