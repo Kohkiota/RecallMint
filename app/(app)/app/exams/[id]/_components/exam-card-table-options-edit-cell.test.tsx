@@ -345,6 +345,69 @@ describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Edit-3 T2: CompactOptionsCell desktop min-h 削減 (24px 床)
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
+  it('text cell display div(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    // is_correct=false の text cell (displayClassName="text-sm text-slate-800 md:min-h-6 md:py-0.5")
+    const btn = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    const classes = btn.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('text cell edit textarea(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
+    const classes = ta.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('explanation cell display div(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    // explanation cell (displayClassName="text-xs text-slate-600 md:min-h-6 md:py-0.5")
+    const btn = screen.getByRole('button', { name: '選択肢 解説 編集' })
+    const classes = btn.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('checkbox label に md:min-h-6 が付く (desktop tap target ~24px)', () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+    )
+    const label = container.querySelector('label') as HTMLElement
+    const classes = label.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+  })
+
+  it('削除ボタンに md:min-h-6 が付く (desktop tap target ~24px)', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    const deleteBtn = screen.getAllByRole('button', { name: '選択肢を削除' })[0]!
+    const classes = (deleteBtn as HTMLElement).className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+  })
+
+  it('mobile は touch target を維持: checkbox label に min-h-8 が残る', () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+    )
+    const label = container.querySelector('label') as HTMLElement
+    expect(label.className.split(' ')).toContain('min-h-8')
+  })
+
+  it('mobile は touch target を維持: 削除ボタンに min-h-8 が残る', () => {
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    const deleteBtn = screen.getByRole('button', { name: '選択肢を削除' })
+    expect((deleteBtn as HTMLElement).className.split(' ')).toContain('min-h-8')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // add / delete
 // ---------------------------------------------------------------------------
 

@@ -25,7 +25,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
 }))
 
-import { InlineOptionList } from './inline-option-row'
+import { InlineOptionList, InlineOptionCell } from './inline-option-row'
 
 const CARD_ID = '33333333-3333-4333-8333-333333333333'
 
@@ -587,6 +587,85 @@ describe('InlineOptionCell — 末尾改行の display 補正 (<br>)', () => {
     const disp = screen.getByRole('button', { name: '選択肢 本文 編集' })
     expect(disp.querySelectorAll('br')).toHaveLength(1)
     expect(disp.textContent).toBe('\n')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit-3 T2: InlineOptionCell の cn 統一後 twMerge 上書き確認
+// displayClassName に md:min-h-6 を渡すと sharedBoxChrome の md:min-h-8 が上書きされる
+// ことを display/edit 両パスで確認。inner box 要素(textarea/input/display div)に効く。
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T2: InlineOptionCell displayClassName の md:min-h 上書き (cn 統一 + twMerge)', () => {
+  it('display button(inner box): md:min-h-6 が md:min-h-8 を上書き', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="テスト 本文 編集"
+        value="テスト"
+        onSave={() => {}}
+        displayClassName="text-sm md:min-h-6 md:py-0.5"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'テスト 本文 編集' })
+    const classes = btn.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('edit textarea(inner box): md:min-h-6 が md:min-h-8 を上書き', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="テスト 本文 編集"
+        value="テスト"
+        onSave={() => {}}
+        displayClassName="text-sm md:min-h-6 md:py-0.5"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'テスト 本文 編集' }))
+    const ta = screen.getByRole('textbox', { name: 'テスト 本文 編集' })
+    const classes = ta.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('edit input(inner box, id cell): md:min-h-6 が md:min-h-8 を上書き', () => {
+    render(
+      <InlineOptionCell
+        kind="id"
+        ariaLabel="テスト id 編集"
+        value="x"
+        onSave={() => {}}
+        displayClassName="md:min-h-6 md:py-0.5"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'テスト id 編集' }))
+    const input = screen.getByRole('textbox', { name: 'テスト id 編集' })
+    const classes = input.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('display と edit の md:min-h が一致する (layout shift 防止)', () => {
+    render(
+      <InlineOptionCell
+        kind="id"
+        ariaLabel="テスト id 編集"
+        value="x"
+        onSave={() => {}}
+        displayClassName="md:min-h-6 md:py-0.5"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'テスト id 編集' })
+    const displayClasses = btn.className.split(' ')
+    fireEvent.click(btn)
+    const input = screen.getByRole('textbox', { name: 'テスト id 編集' })
+    const editClasses = input.className.split(' ')
+    expect(displayClasses).toContain('md:min-h-6')
+    expect(editClasses).toContain('md:min-h-6')
+    expect(displayClasses).not.toContain('md:min-h-8')
+    expect(editClasses).not.toContain('md:min-h-8')
   })
 })
 

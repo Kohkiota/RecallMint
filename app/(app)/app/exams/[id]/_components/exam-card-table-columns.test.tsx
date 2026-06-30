@@ -349,34 +349,75 @@ describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
 // ---------------------------------------------------------------------------
 
 describe('Edit-3 T1: question / explanation_text / memo に displayClassName="text-sm" が渡る', () => {
+  // T1 Minor 2 fix: as HTMLElement cast → null safe + toContain(substring) → split+toContain(exact)
   it('question cell の display div に text-sm クラスが付与される', () => {
-    const el = renderCell('question', makeRow({ question_text: 'テスト問題文' }))
-    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
-    expect(displayDiv.className).toContain('text-sm')
+    renderCell('question', makeRow({ question_text: 'テスト問題文' }))
+    const displayDiv = screen.getByRole('button', { name: '問題文 編集' })
+    expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('explanation_text cell の display div に text-sm クラスが付与される', () => {
-    const el = renderCell('explanation_text', makeRow({ explanation_text: '解説テキスト' }))
-    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
-    expect(displayDiv.className).toContain('text-sm')
+    renderCell('explanation_text', makeRow({ explanation_text: '解説テキスト' }))
+    const displayDiv = screen.getByRole('button', { name: '解説 編集' })
+    expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('memo cell の display div に text-sm クラスが付与される', () => {
-    const el = renderCell('memo', makeRow({ memo: 'メモテキスト' }))
-    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
-    expect(displayDiv.className).toContain('text-sm')
+    renderCell('memo', makeRow({ memo: 'メモテキスト' }))
+    const displayDiv = screen.getByRole('button', { name: 'メモ 編集' })
+    expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('title cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    const el = renderCell('title', makeRow({ title: 'タイトル' }))
-    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
-    expect(displayDiv.className).not.toContain('text-sm')
+    renderCell('title', makeRow({ title: 'タイトル' }))
+    const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
+    expect(displayDiv.className.split(' ')).not.toContain('text-sm')
   })
 
   it('sort_key cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    const el = renderCell('sort_key', makeRow({ sort_key: '0001' }))
-    const displayDiv = el.querySelector('[role="button"]') as HTMLElement
-    expect(displayDiv.className).not.toContain('text-sm')
+    renderCell('sort_key', makeRow({ sort_key: '0001' }))
+    const displayDiv = screen.getByRole('button', { name: 'ソートキー 編集' })
+    expect(displayDiv.className.split(' ')).not.toContain('text-sm')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit-3 T2: question / explanation_text / memo の displayClassName に md:min-h-6 が追加され
+// twMerge で md:min-h-8 を上書きする。inner box(display div)に効くことを assert。
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T2: question / explanation_text / memo の display div に md:min-h-6 が付く', () => {
+  it('question display div に md:min-h-6 が付き md:min-h-8 がない (twMerge 上書き)', () => {
+    renderCell('question', makeRow({ question_text: 'テスト' }))
+    const displayDiv = screen.getByRole('button', { name: '問題文 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('explanation_text display div に md:min-h-6 が付き md:min-h-8 がない', () => {
+    renderCell('explanation_text', makeRow({ explanation_text: '解説' }))
+    const displayDiv = screen.getByRole('button', { name: '解説 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('memo display div に md:min-h-6 が付き md:min-h-8 がない', () => {
+    renderCell('memo', makeRow({ memo: 'メモ' }))
+    const displayDiv = screen.getByRole('button', { name: 'メモ 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('title display div には md:min-h-6 が付かない (table で渡さない列の回帰)', () => {
+    renderCell('title', makeRow({ title: 'タイトル' }))
+    const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
+    const classes = displayDiv.className.split(' ')
+    // title に displayClassName を渡さないので md:min-h-8 が残る
+    expect(classes).not.toContain('md:min-h-6')
+    expect(classes).toContain('md:min-h-8')
   })
 })
 

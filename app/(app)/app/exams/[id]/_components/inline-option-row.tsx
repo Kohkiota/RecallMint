@@ -43,6 +43,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
 import { useCardOptions } from '../_hooks/use-card-options'
+import { cn } from '@/lib/utils'
 
 // ============================================================================
 // InlineOptionList (per-card parent)
@@ -330,7 +331,7 @@ export function InlineOptionCell({
               ref: React.Ref<HTMLTextAreaElement>
             })}
             // rows 固定値は使わない (useLayoutEffect が scrollHeight 追従で auto-resize)。
-            className={`${sharedBoxChrome} resize-none overflow-hidden ${displayClassName ?? ''}`}
+            className={cn(sharedBoxChrome, 'resize-none overflow-hidden', displayClassName)}
           />
         ) : (
           <Input
@@ -338,7 +339,7 @@ export function InlineOptionCell({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
-            className={`${sharedBoxChrome} ${displayClassName ?? ''}`}
+            className={cn(sharedBoxChrome, displayClassName)}
           />
         )}
       </div>
@@ -353,9 +354,12 @@ export function InlineOptionCell({
       aria-label={ariaLabel}
       onClick={startEdit}
       onKeyDown={onKeyDown}
-      className={`${sharedBoxChrome} border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
-        isEmpty ? 'text-slate-400 italic' : ''
-      } ${displayClassName ?? ''}`}
+      className={cn(
+        sharedBoxChrome,
+        'border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+        isEmpty && 'text-slate-400 italic',
+        displayClassName,
+      )}
     >
       {isEmpty ? (
         <span>{placeholder}</span>

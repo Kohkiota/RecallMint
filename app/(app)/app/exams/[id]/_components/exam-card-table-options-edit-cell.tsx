@@ -41,7 +41,7 @@ export function CompactOptionsCell({
         >
           {/* 1 行目: checkbox + 本文 + 削除ボタン */}
           <div className="flex items-start gap-1">
-            <label className="inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center">
+            <label className="inline-flex min-h-8 min-w-8 md:min-h-6 md:min-w-6 shrink-0 cursor-pointer items-center justify-center">
               <input
                 type="checkbox"
                 aria-label="選択肢 正解フラグ 編集"
@@ -58,8 +58,8 @@ export function CompactOptionsCell({
                 onSave={(value) => handleCellSave(idx, { ...opt, text: value })}
                 displayClassName={
                   opt.is_correct
-                    ? 'text-sm font-bold text-emerald-900'
-                    : 'text-sm text-slate-800'
+                    ? 'text-sm font-bold text-emerald-900 md:min-h-6 md:py-0.5'
+                    : 'text-sm text-slate-800 md:min-h-6 md:py-0.5'
                 }
                 autoEditOnMount={opt.id === autoEditOptionId}
               />
@@ -69,7 +69,7 @@ export function CompactOptionsCell({
               aria-label="選択肢を削除"
               onClick={() => handleDeleteOption(idx)}
               disabled={!canDelete}
-              className="inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+              className="inline-flex min-h-8 min-w-8 md:min-h-6 md:min-w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
             >
               <span className="text-base leading-none" aria-hidden="true">
                 ×
@@ -92,7 +92,7 @@ export function CompactOptionsCell({
                   handleCellSave(idx, { ...opt, explanation: value })
                 }
               }}
-              displayClassName="text-xs text-slate-600"
+              displayClassName="text-xs text-slate-600 md:min-h-6 md:py-0.5"
               placeholder="解説 (クリックで追加)"
             />
           </div>

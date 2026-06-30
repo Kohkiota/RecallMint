@@ -596,6 +596,90 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
 // b02c072 hook regression pin と同形、 fix 前後で両方 pass する観点で踏む。
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Edit-3 T2: cn 統一後の twMerge 上書き確認
+// displayClassName に md:min-h-6 を渡すと sharedBoxChrome の md:min-h-8 が上書きされる
+// ことを display/edit 両パスで確認。wrapper div でなく内側 box 要素(textarea/input/div)
+// に効くことを assert。
+// ---------------------------------------------------------------------------
+
+describe('Edit-3 T2: displayClassName の md:min-h 上書き (cn 統一 + twMerge)', () => {
+  it('display div(inner box): md:min-h-6 が md:min-h-8 を上書き — box 要素に効く', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue="テスト"
+        ariaLabel="question 編集"
+        multiline
+        displayClassName="text-sm md:min-h-6 md:py-0.5"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'question 編集' })
+    const classes = btn.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8') // twMerge で上書き済
+  })
+
+  it('edit textarea(inner box): md:min-h-6 が md:min-h-8 を上書き', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue="テスト"
+        ariaLabel="question 編集"
+        multiline
+        displayClassName="text-sm md:min-h-6 md:py-0.5"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    const ta = screen.getByRole('textbox')
+    const classes = ta.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('edit input(inner box): md:min-h-6 が md:min-h-8 を上書き', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="テスト"
+        ariaLabel="title 編集"
+        displayClassName="md:min-h-6 md:py-0.5"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'title 編集' }))
+    const input = screen.getByRole('textbox')
+    const classes = input.className.split(' ')
+    expect(classes).toContain('md:min-h-6')
+    expect(classes).not.toContain('md:min-h-8')
+  })
+
+  it('display と edit の md:min-h が一致する (layout shift 防止)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="テスト"
+        ariaLabel="title 編集"
+        displayClassName="md:min-h-6 md:py-0.5"
+      />,
+    )
+    const btn = screen.getByRole('button', { name: 'title 編集' })
+    const displayClasses = btn.className.split(' ')
+    fireEvent.click(btn)
+    const input = screen.getByRole('textbox')
+    const editClasses = input.className.split(' ')
+    // display と edit で md:min-h が同値
+    expect(displayClasses).toContain('md:min-h-6')
+    expect(editClasses).toContain('md:min-h-6')
+    // どちらも md:min-h-8 が消えている
+    expect(displayClasses).not.toContain('md:min-h-8')
+    expect(editClasses).not.toContain('md:min-h-8')
+  })
+})
+
 describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波2 C1 pin)', () => {
   it('editing=true (編集中) で initialValue が外部変化しても input の value は保護される', () => {
     const { rerender } = render(

@@ -33,6 +33,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { cn } from '@/lib/utils'
 
 // sort_key / title / question_text / explanation_text / memo は ClientCard の
 // snake_case 列名に 1:1 対応する (mirror patch のキーにそのまま使う)。
@@ -257,7 +258,7 @@ export function InlineTextField({
             // rows 固定値は使わない (auto-resize 担当の useLayoutEffect が scrollHeight に
             // 追従させる)。 `resize-none overflow-hidden` で manual resize handle と
             // scrollbar を抑止し、 親レイアウトと整合させる。
-            className={`${sharedBoxChrome} resize-none overflow-hidden ${displayClassName ?? ''}`}
+            className={cn(sharedBoxChrome, 'resize-none overflow-hidden', displayClassName)}
           />
         ) : (
           <Input
@@ -265,7 +266,7 @@ export function InlineTextField({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
-            className={`${sharedBoxChrome} ${displayClassName ?? ''}`}
+            className={cn(sharedBoxChrome, displayClassName)}
           />
         )}
       </div>
@@ -283,9 +284,12 @@ export function InlineTextField({
         aria-label={ariaLabel}
         onClick={startEdit}
         onKeyDown={onKeyDown}
-        className={`${sharedBoxChrome} border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring ${
-          isEmpty ? 'text-slate-400 italic' : ''
-        } ${displayClassName ?? ''}`}
+        className={cn(
+          sharedBoxChrome,
+          'border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+          isEmpty && 'text-slate-400 italic',
+          displayClassName,
+        )}
       >
         {isEmpty ? (
           <span>{placeholder}</span>
