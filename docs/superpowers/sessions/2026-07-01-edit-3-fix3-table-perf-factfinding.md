@@ -101,3 +101,39 @@ prod component 群に querySelector / getBoundingClientRect / offsetWidth 等の
 | Radix 閉時 content 非 mount | `card-tag-add-popover.tsx:327-341`(forceMount なし) |
 | 手動 DOM 測定 0 件(prod) | grep: querySelector 等は `.test.tsx` のみ |
 | 手動 addEventListener 0 件(prod) | grep: 該当なし |
+
+---
+
+# Fix-3 T1 実装 + after 計測(2026-07-01)
+
+- **commit**: `965ec68` `fix(edit-3): Fix-3 T1 列幅 CSS変数配布 + resize中 tbody memo凍結 [reviewed]`(BASE dd3b093)。
+- **実装**: 案A(TanStack v8.21.3 公式パターン)。列幅を `--header-{id}-size` / `--col-{id}-size` の CSS 変数で `<table>` に配布(th/td は `calc(var(...)*1px)` を読む)。`<tbody>` を module スコープ `TableBody` / `MemoizedTableBody`(`React.memo`、comparator = `prev.table.options.data === next.table.options.data`)に分離し、`columnSizingInfo.isResizingColumn` 中は memo 版を描画して凍結。`columnResizeMode:'onChange'` 維持・sticky left(0/44)不変・per-cell memo/仮想化なし。触れた file = `exam-card-table.tsx` + `.test.tsx` のみ(共有部品/card-view 不変)。
+- **review**: canonical(general-purpose + `code-reviewer.md` 改変なし)初回 Critical0/**Important1**/Minor3 → I-1(`columnSizeVars` の deps に `columnVisibility` 欠落 → hidden の sort_key をトグル表示で width auto 落ち = 列表示切替 regression)を fix wave 1 で解消(dep 追加 + 非 vacuous 回帰 test)→ 再 review Crit0/Imp0/Min0。Codex 独立(`docs/codex/2026-07-01-edit-3-fix3-t1.md`)Crit0/Imp0/Min0。gate: whole-repo lint --max-warnings=0 exit0 / typecheck exit0 / 該当 test 26/26 green。
+
+## after 計測(決定的 = component render-count、jsdom + InlineTextField を render カウンタに mock、N=30 行)
+
+| 指標 | 値 | 意味 |
+|---|---|---|
+| afterMount(cell render 総数) | 240 | 30行 × 可視4列 × 2(mount 二重評価) |
+| **sustainedDrag 20 mousemove の cell 再レンダー増分** | **0** | **memo 凍結成立 = ドラッグ中の pointermove で 2,100 重 cell を再レンダーしない(T1 の核心)** |
+| firstMove 遷移コスト | 120(=30×4) | ドラッグ開始時 TableBody→Memoized 遷移で 1 回のみ再構築(離す時も同程度 1 回。許容) |
+| 列表示切替の cell 再レンダー増分 | 150 | 列表示切替は **通常再レンダーのまま**(memo が永久凍結でない証拠、かつ **T1 は列表示切替を軽くしない**) |
+
+- **memo 凍結の runtime 検証**: 上記の `sustainedDrag=0` が決定的証拠(React DevTools Profiler の代替。20 連続 mousemove で cell render 0)。非 memo なら 1 move = 120 render(N=30)→ 20 move = 2,400。実機 N=300 では 1 move ≈ 2,100 重 cell、数百 move のドラッグ = 数十万 render が 0 になる。
+- **計測方法**: throwaway 計測 test(`exam-card-table.perf-measure.test.tsx`、InlineTextField を counter に mock し resize ドラッグ模擬)で取得後に削除(commit しない)。
+
+## 体感改善見込み(計測ベース)
+
+- **列幅 resize = 根治見込み**: フリーズ主因はドラッグ中の per-move 全 body 再レンダーの嵐。T1 で **sustained drag の再レンダー = 0** ゆえ、この経路のフリーズは解消見込み。resize 由来の listener 増殖(全再レンダーごとの Radix popover subtree reconciliation)も、再レンダーが起きない以上止まる見込み。
+- **列表示切替 = T1 では実質改善しない見込み**: 列表示切替は元々「1 回の全 body 再レンダー(2,100 重 cell + Radix)」で、これは単発ゆえ memo 凍結(resize 専用)では軽くならない。計測でも列表示切替は cell を通常再レンダー(delta 150)。OT 実測の列非表示ピーク(DOM 116,889 / heap 216MB / listeners 35,408)は「全行を捨てて再生成する 1 コミット」の重さで、**根治は T2(行仮想化 = mount cell 数削減)** が要る。per-cell memo も列表示切替では効果限定(列増減で保持 cell も再 mount 側に寄る)。
+
+## runtime browser 計測(listeners/DOM/heap/querySelector)の扱い
+
+- **CC 側で T1 の browser before/after は取得不可**: stg は未 push の旧コード(規律: 旧コード smoke は無意味)、CC 環境に 300 seed + Clerk 認証済の実ブラウザ harness なし。→ **OT が push 後に stg 実機で before/after(特に resize 中の listener 継続増加が止まるか / 列非表示は残るか)を確認**。
+- T1 の主目的 = **resize 描画の根治**。listener leak の根治は保証しない(fact-finding 通り発生 API 未特定。leak が resize 経路のものなら再レンダー停止で連動して止まる可能性が高いが、baseline leak / 列表示切替経路は T2 待ち)。
+
+## 次アクション(OT)
+
+1. push(965ec68)。
+2. stg 実機 smoke: ① 列幅 resize が 300件で操作可能になったか(フリーズ解消)+ resize 中の listener 継続増加が止まったか ② 列表示切替は依然重いか(= T2 要否の判断材料)③ sticky 2列 offset / selection / filter / sort / card-view 非回帰。
+3. ②の結果で **T2(行仮想化 `@tanstack/react-virtual`、新規依存 = 事前相談ゲート)** の要否を判断。
