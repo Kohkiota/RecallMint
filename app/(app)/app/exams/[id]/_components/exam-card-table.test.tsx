@@ -413,6 +413,42 @@ describe('Edit-3 T1: th/td padding density', () => {
       expect(td.className, 'td は py-2 を持たない').not.toContain('py-2')
     }
   })
+
+  it('th が px-1 クラスを持ち px-3 を持たない (Edit-3 Fix-2: 左右 padding 詰め)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+    const allTh = container.querySelectorAll('th')
+    expect(allTh.length).toBeGreaterThan(0)
+    for (const th of allTh) {
+      expect(
+        th.className,
+        `th "${th.textContent?.trim()}" は px-1 を持つ`,
+      ).toContain('px-1')
+      expect(
+        th.className,
+        `th "${th.textContent?.trim()}" は px-3 を持たない`,
+      ).not.toContain('px-3')
+    }
+  })
+
+  it('td が px-1 クラスを持ち px-3 を持たない (Edit-3 Fix-2: 左右 padding 詰め)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+    const allTd = container.querySelectorAll('td')
+    expect(allTd.length).toBeGreaterThan(0)
+    for (const td of allTd) {
+      expect(td.className, 'td は px-1 を持つ').toContain('px-1')
+      expect(td.className, 'td は px-3 を持たない').not.toContain('px-3')
+    }
+  })
 })
 
 describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不変', () => {

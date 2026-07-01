@@ -388,7 +388,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     // T3: relative が必要 (resize handle を absolute right-0 で配置するため)。
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     className={[
-                      'relative px-3 py-1 text-left font-medium text-muted-foreground border-b border-border',
+                      'relative px-1 py-1 text-left font-medium text-muted-foreground border-b border-border',
                       isSticky
                         ? 'sticky z-10 bg-background'
                         : '',
@@ -453,7 +453,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     key={cell.id}
                     // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
                     className={[
-                      'px-3 py-1 border-b border-border',
+                      'px-1 py-1 border-b border-border',
                       isSticky
                         ? 'sticky z-10 bg-background'
                         : '',
