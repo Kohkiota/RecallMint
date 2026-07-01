@@ -13,7 +13,7 @@
 //   - tagEditCallbacks も table レベルで 1 回構築 (案 EC-A)。
 //   - 両者を meta 経由で各 TagCell に配る (TanStack 標準 pattern)。
 
-import { useMemo, useRef, useState, useCallback, useEffect } from 'react'
+import { useMemo, useRef, useState, useCallback, useEffect, memo, type CSSProperties } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   useReactTable,
@@ -26,6 +26,7 @@ import {
   type ColumnFiltersState,
   type ColumnSizingState,
   type VisibilityState,
+  type Table,
 } from '@tanstack/react-table'
 import { getClientDb } from '@/lib/client-db'
 import {
@@ -58,6 +59,68 @@ import {
   createOption,
   type TagEditCallbacks,
 } from './card-tags-section'
+
+// ---------------------------------------------------------------------------
+// Fix-3 T1: TableBody / MemoizedTableBody (module スコープ — component 外で定義し
+//   React.memo が正しく機能するようにする。component 内定義だと毎 render で
+//   関数参照が変わり memo が無意味になる)。
+// ---------------------------------------------------------------------------
+
+type TableBodyProps = {
+  table: Table<ExamCardRow>
+}
+
+function TableBody({ table }: TableBodyProps) {
+  return (
+    <tbody>
+      {table.getRowModel().rows.map((row) => (
+        <tr
+          key={row.id}
+          data-testid={`row-${row.original.card.id}`}
+          className="hover:bg-muted/50"
+        >
+          {row.getVisibleCells().map((cell) => {
+            // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
+            const stickyMeta = cell.column.columnDef.meta as
+              | { sticky?: boolean; stickyLeft?: number }
+              | undefined
+            const isSticky = stickyMeta?.sticky === true
+            const stickyLeft = stickyMeta?.stickyLeft ?? 0
+            return (
+              <td
+                key={cell.id}
+                // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
+                className={[
+                  'px-1 py-1 border-b border-border',
+                  isSticky
+                    ? 'sticky z-10 bg-background'
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
+                //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
+                style={{
+                  width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
+                  ...(isSticky ? { left: stickyLeft } : {}),
+                }}
+              >
+                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+              </td>
+            )
+          })}
+        </tr>
+      ))}
+    </tbody>
+  )
+}
+
+// resize 中は tbody を memo で凍結し pointermove が CSS 変数のみ更新するようにする。
+// data 参照が変わらない限り再レンダーしない (TanStack v8 公式パターン)。
+const MemoizedTableBody = memo(
+  TableBody,
+  (prev, next) => prev.table.options.data === next.table.options.data,
+)
 
 type ExamCardTableProps = {
   examId: string
@@ -345,6 +408,25 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     [tagEditCallbacks, bulkCreateOptionAndAssign],
   )
 
+  // Fix-3 T1: CSS 変数で列幅を配布 (TanStack v8 公式パターン)。
+  // columnSizingInfo (resize 中に変化) と columnSizing (resize 確定後に変化) の
+  // いずれかが変わった時のみ再計算する。table ref は useReactTable で安定なので deps 不要。
+  // columnVisibility を含め、新たに表示された列の CSS 変数を emit する
+  // (getFlatHeaders は visible 列のみ返すため、visibility 変化時も再計算が必要)。
+  const columnSizeVars = useMemo(
+    (): CSSProperties => {
+      const headers = table.getFlatHeaders()
+      const result: Record<string, number> = {}
+      for (const header of headers) {
+        result[`--header-${header.id}-size`] = header.getSize()
+        result[`--col-${header.column.id}-size`] = header.column.getSize()
+      }
+      return result as CSSProperties
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- table ref は useReactTable で安定; 列幅変化は columnSizingInfo / columnSizing が検出する; columnVisibility を含め新たに表示された列の CSS 変数を emit する
+    [table.getState().columnSizingInfo, table.getState().columnSizing, table.getState().columnVisibility],
+  )
+
   return (
     // M3 (T7 stg smoke): 選択時のみ下部 padding を確保し、 fixed bottom action bar
     // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
@@ -365,9 +447,11 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             border-collapse → border-separate border-spacing-0 に倒し切る (条件分岐なし)。
             理由: sticky セルで border-collapse は border 消失が既知挙動。
             border-separate では <tr> の border-b が効かないため border を td/th 側に移譲。 */}
+        {/* Fix-3 T1: columnSizeVars を spread して CSS 変数を <table> に付与。
+            resize 中は MemoizedTableBody を使い tbody を凍結する (pointermove = CSS 変数のみ更新)。 */}
         <table
           className="text-sm border-separate border-spacing-0"
-          style={{ width: table.getTotalSize() }}
+          style={{ ...columnSizeVars, width: table.getTotalSize() }}
         >
         <thead>
           {table.getHeaderGroups().map((hg) => (
@@ -396,7 +480,8 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     ]
                       .filter(Boolean)
                       .join(' ')}
-                    style={{ width: h.getSize(), ...(isSticky ? { left: stickyLeft } : {}) }}
+                    // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
+                    style={{ width: `calc(var(--header-${h.id}-size) * 1px)`, ...(isSticky ? { left: stickyLeft } : {}) }}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
                     {h.isPlaceholder ? null : (
@@ -434,41 +519,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             </tr>
           ))}
         </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr
-              key={row.id}
-              data-testid={`row-${row.original.card.id}`}
-              className="hover:bg-muted/50"
-            >
-              {row.getVisibleCells().map((cell) => {
-                // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
-                const stickyMeta = cell.column.columnDef.meta as
-                  | { sticky?: boolean; stickyLeft?: number }
-                  | undefined
-                const isSticky = stickyMeta?.sticky === true
-                const stickyLeft = stickyMeta?.stickyLeft ?? 0
-                return (
-                  <td
-                    key={cell.id}
-                    // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
-                    className={[
-                      'px-1 py-1 border-b border-border',
-                      isSticky
-                        ? 'sticky z-10 bg-background'
-                        : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                    style={{ width: cell.column.getSize(), ...(isSticky ? { left: stickyLeft } : {}) }}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
+        {/* Fix-3 T1: resize 中は MemoizedTableBody(凍結)/ 非 resize 時は TableBody(通常) で出し分け。
+            どちらも <tbody> を返す。凍結中は tbody が再レンダーされず CSS 変数のみ更新される。 */}
+        {table.getState().columnSizingInfo.isResizingColumn
+          ? <MemoizedTableBody table={table} />
+          : <TableBody table={table} />
+        }
         </table>
       </div>
       {selectedIds.length > 0 && (

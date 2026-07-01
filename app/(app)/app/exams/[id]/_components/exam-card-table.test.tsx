@@ -259,15 +259,14 @@ describe('ExamCardTable smoke ⑤ (T3): column sizing + resize handle', () => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
 
-    // th が style width を持つことを確認 (non-vacuous: 空文字でも 0 でもなく正の数値文字列)。
+    // th が style width を持つことを確認。
+    // Fix-3 T1 適用後: CSS 変数参照形式 calc(var(--header-{id}-size) * 1px) に変わった。
     const allTh = container.querySelectorAll('th')
     expect(allTh.length).toBeGreaterThan(0)
     for (const th of allTh) {
       const widthStyle = (th as HTMLElement).style.width
-      // width が CSS px 値として設定されている (例: "320px")
-      expect(widthStyle, `th "${th.textContent?.trim()}" に style.width が必要`).toMatch(/^\d+(\.\d+)?px$/)
-      const widthPx = parseFloat(widthStyle)
-      expect(widthPx, `th "${th.textContent?.trim()}" の width は正値`).toBeGreaterThan(0)
+      // Fix-3 T1: CSS 変数参照形式で設定されている
+      expect(widthStyle, `th "${th.textContent?.trim()}" に style.width が必要`).toMatch(/calc\(var\(--header-[^)]+\) \* 1px\)/)
     }
 
     // resize handle が少なくとも 1 つ存在することを確認 (question 列など resizable 列に付与)。
@@ -529,9 +528,9 @@ describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
     expect(questionTh.className).not.toContain('sticky')
     expect(questionTh.style.left).toBe('')
 
-    // ④ sticky セルの style に既存 width が維持されている
-    expect(selectTh.style.width).toMatch(/^\d+(\.\d+)?px$/)
-    expect(titleTh.style.width).toMatch(/^\d+(\.\d+)?px$/)
+    // ④ sticky セルの style に width が維持されている (Fix-3 T1: CSS 変数参照形式)
+    expect(selectTh.style.width).toMatch(/calc\(var\(--header-/)
+    expect(titleTh.style.width).toMatch(/calc\(var\(--header-/)
   })
 
   it('td: ① select に sticky+left:0px ② title に sticky+left:44px ③ question に left 付与なし ④ sticky td に width 維持', async () => {
@@ -558,9 +557,9 @@ describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
     expect(questionTd.className).not.toContain('sticky')
     expect(questionTd.style.left).toBe('')
 
-    // ④ sticky セルの style に既存 width が維持されている
-    expect(selectTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
-    expect(titleTd.style.width).toMatch(/^\d+(\.\d+)?px$/)
+    // ④ sticky セルの style に width が維持されている (Fix-3 T1: CSS 変数参照形式)
+    expect(selectTd.style.width).toMatch(/calc\(var\(--col-/)
+    expect(titleTd.style.width).toMatch(/calc\(var\(--col-/)
   })
 })
 
@@ -664,6 +663,135 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
       const allTh = container.querySelectorAll('th')
       const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
       expect(headerTexts).toContain('ソートキー')
+    })
+  })
+})
+
+// ===========================================================================
+// Fix-3 T1: CSS 変数配布 + MemoizedTableBody 構造テスト
+// ===========================================================================
+
+describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th・td が var() 参照', () => {
+  it('<table> に --col-{id}-size CSS 変数が付与されている', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const tableEl = container.querySelector('table') as HTMLElement
+    // title 列は初期表示される列なので --col-title-size が付与されているはず
+    const colTitleSize = tableEl.style.getPropertyValue('--col-title-size')
+    expect(colTitleSize, '<table> に --col-title-size CSS 変数が付与されている').not.toBe('')
+    // 値は正の数値 (px 単位なし)
+    expect(parseFloat(colTitleSize)).toBeGreaterThan(0)
+
+    // --header-title-size も付与されている
+    const headerTitleSize = tableEl.style.getPropertyValue('--header-title-size')
+    expect(headerTitleSize, '<table> に --header-title-size CSS 変数が付与されている').not.toBe('')
+    expect(parseFloat(headerTitleSize)).toBeGreaterThan(0)
+  })
+
+  it('th の style.width が CSS 変数参照形式 calc(var(--header-{id}-size) * 1px)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTh = container.querySelectorAll('th')
+    expect(allTh.length).toBeGreaterThan(0)
+    for (const th of allTh) {
+      expect((th as HTMLElement).style.width, `th "${(th as HTMLElement).textContent?.trim()}" は calc(var(--header-...)) 形式`).toMatch(
+        /calc\(var\(--header-[^)]+\) \* 1px\)/,
+      )
+    }
+  })
+
+  it('td の style.width が CSS 変数参照形式 calc(var(--col-{id}-size) * 1px)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTd = container.querySelectorAll('td')
+    expect(allTd.length).toBeGreaterThan(0)
+    for (const td of allTd) {
+      expect((td as HTMLElement).style.width, 'td は calc(var(--col-...)) 形式').toMatch(
+        /calc\(var\(--col-[^)]+\) \* 1px\)/,
+      )
+    }
+  })
+
+  it('sticky 列 (select / title) の left offset は 0px / 44px のまま不変', async () => {
+    // Fix-3 T1 が th/td の left を変えないことの regression guard
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // th
+    const allTh = container.querySelectorAll('th')
+    const selectTh = allTh[0] as HTMLElement
+    const titleTh = allTh[1] as HTMLElement
+    expect(selectTh.style.left).toBe('0px')
+    expect(titleTh.style.left).toBe('44px')
+
+    // td
+    const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    const cells = row.querySelectorAll('td')
+    const selectTd = cells[0] as HTMLElement
+    const titleTd = cells[1] as HTMLElement
+    expect(selectTd.style.left).toBe('0px')
+    expect(titleTd.style.left).toBe('44px')
+  })
+
+  it('resize handle が存在する (columnResizeMode guard)', async () => {
+    // resize 中のみ MemoizedTableBody を使うが handle が消えていないことを確認
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const handles = container.querySelectorAll('.cursor-col-resize')
+    expect(handles.length, 'resize handle が 1 つ以上存在する').toBeGreaterThan(0)
+  })
+
+  it('非 resize 時(通常描画)に全行が描画される — memo 出し分けが通常 TableBody を使う', async () => {
+    const N = 5
+    // N が小さくても TableBody 分岐の確認には十分(300行凍結の実測は Profiler task)
+    const db = getClientDb()
+    await db.cards.bulkPut(Array.from({ length: N }, (_, i) => makeCard(i + 1)))
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // isResizingColumn = false(初期値) → TableBody が使われ全行が描画される
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(N)
+    })
+  })
+
+  it('[Fix-3 T1 回帰] sort_key toggle 後に <table> が --col-sort_key-size CSS 変数を持つ', async () => {
+    // fix 前: columnSizeVars の deps に columnVisibility が含まれないため、sort_key を
+    //   toggle で表示しても memo が再計算されず --col-sort_key-size が付与されない (FAIL)。
+    // fix 後: columnVisibility を deps に追加したため memo が再計算され --col-sort_key-size が
+    //   emit される (PASS)。
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 初期状態: sort_key は hidden → --col-sort_key-size は <table> に付与されていない
+    const tableEl = container.querySelector('table') as HTMLElement
+    expect(tableEl.style.getPropertyValue('--col-sort_key-size')).toBe('')
+
+    // popover を開いて sort_key を toggle (hidden → visible)
+    fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
+    const sortKeyCheckbox = await screen.findByRole('checkbox', { name: '列表示: ソートキー' })
+    fireEvent.click(sortKeyCheckbox)
+
+    // sort_key が visible になった後、columnSizeVars が再計算されて --col-sort_key-size が <table> に付与される
+    await waitFor(() => {
+      const cssVar = tableEl.style.getPropertyValue('--col-sort_key-size')
+      expect(cssVar, '<table> に --col-sort_key-size が付与されている').not.toBe('')
+      expect(parseFloat(cssVar), '--col-sort_key-size が正の数値').toBeGreaterThan(0)
     })
   })
 })
