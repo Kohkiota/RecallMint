@@ -137,3 +137,73 @@ prod component 群に querySelector / getBoundingClientRect / offsetWidth 等の
 1. push(965ec68)。
 2. stg 実機 smoke: ① 列幅 resize が 300件で操作可能になったか(フリーズ解消)+ resize 中の listener 継続増加が止まったか ② 列表示切替は依然重いか(= T2 要否の判断材料)③ sticky 2列 offset / selection / filter / sort / card-view 非回帰。
 3. ②の結果で **T2(行仮想化 `@tanstack/react-virtual`、新規依存 = 事前相談ゲート)** の要否を判断。
+
+---
+
+# Fix-3 リーク源特定(T2 前段、CC + Codex 独立調査 → CC 統合)(2026-07-01)
+
+- **種別**: fact-finding のみ(実装/commit/push なし)。
+- **一次証拠**: OT の T1 適用後 stg 実機(Performance Monitor)= 300件で列幅 resize を繰り返すと **階段状に増え GC でも戻らない明確なリーク**: JS listeners ~9,000→66,275 / DOM nodes ~35,000→174,472 / heap ~230MB。resize 再レンダーは T1 で停止済にもかかわらず増える = 再レンダー経路とは別。
+- **調査体制**: CC 独立コード調査 + mount/unmount 実計測、Codex 独立コード調査(anchor 防止、CC 仮説を渡さず現象+file 場所のみ入力)。Codex raw = `docs/codex/2026-07-01-leak-fix3.md`。
+
+## 確定根本原因(CC・Codex 一致)= T1 の「別コンポーネント型 swap」による tbody 全 remount
+
+`exam-card-table.tsx:524` の `isResizingColumn ? <MemoizedTableBody/> : <TableBody/>` は **別の React element 型**(`TableBody` `:73` vs `memo(TableBody)` `:120`)を同位置で出し分ける。React は型が変わると subtree を tear down + rebuild するため、**resize ドラッグ開始(TableBody→Memoized)と終了(Memoized→TableBody)で 300行×cell×Radix popover の tbody 全体が毎回 unmount+remount** する。DOM 増加と listener 増加は**同一 trigger(1 root)**。
+
+### CC 決定的裏取り(mount/unmount 実計測、jsdom + InlineTextField を mount カウンタに mock、N=20)
+
+| 指標 | 値 | 意味 |
+|---|---|---|
+| base mount / unmount | 80 / 0 | 20行×可視4列、mount のみ |
+| **1 resize サイクルの unmount / mount 増分** | **160 / 160**(=80×2)| ドラッグ開始で全 cell unmount+mount、終了でもう一度 = 操作ごとに全 remount |
+| mountPerCycle(4 サイクル平均)| 160 | 階段 churn 確定(操作ごとに一定量積む) |
+
+→ 実機 N=300 では 1 resize = 300×4 InlineTextField ×2 遷移 = 2,400 mount + 2,400 unmount、加えて TagCell の Radix popover(最大 300×6)も同様に remount。OT 実測の DOM 174k / listener 66k の階段はこの remount churn。
+
+### T1 は中立でなく「悪化」
+
+- **pre-T1**(OT 初回計測)= listener は増えるが **DOM はほぼ不変**(35,138→35,156)。pre-T1 resize は re-render(remount でない)ゆえ DOM churn なし = リークは listener のみの軽度。
+- **post-T1** = DOM も 174k へ階段(remount churn 追加)+ listener も 66k へ悪化。→ **T1 の型 swap が DOM リークを新規導入し listener リークを増幅**(resize 再レンダーフリーズは直したが、副作用として remount churn を生んだ)。pre-T1 の軽度 listener リークの機序は別で未確定(今回の支配的リーク = post-T1 remount で確定)。
+
+## cleanup 漏れは app 側になし(CC・Codex 一致)
+
+InlineTextField(debounce timer を unmount で clear `:142`)/ InlineOptionCell / CardTagEditFields(rAF cancel)/ CardTagOptionList に global listener・timer 漏れなし。Radix/Floating UI も cleanup path を持つ(DismissableLayer removeEventListener、Presence、Floating UI autoUpdate の ResizeObserver disconnect)。閉じた popover content は Presence で未 mount。→ **リークは「個別 cleanup バグ」でなく「巨大 Radix subtree を操作ごとに remount する構造」**。detach 後 GC されない厳密機序(Radix/React どの参照が保持するか)は未証明だが、trigger は remount で確定ゆえ fix には不要。
+
+## CC / Codex の一致・独自・対立
+
+- **一致(両者独立で同一結論)**: 根本原因 = 型 swap remount / DOM+listener は 1 root / app cleanup 漏れなし / 修正 = 単一 body 型 + freeze / 仮想化は rate 低減で root 非解決。
+- **CC 独自**: mount/unmount 実計測で churn を数値確定(160/160→修正で 0)。修正の comparator 落とし穴を発見(下記)。
+- **Codex 独自**: Floating UI autoUpdate の ResizeObserver/scroll listener 経路(開時のみ・cleanup 有)を特定。TagCell の popover 数削減(6→1/行)案。上流 leak issue は Dialog/Tabs で Popover 直接証拠は未確定と明示。
+- **対立**: なし。
+
+## 修正案(CC が prototype で裏取り済)
+
+**核心 = 同位置の body component 型を 1 つに固定し、型 swap をやめる。**
+
+- 常に `<MemoizedTableBody table={table} isResizing={Boolean(columnSizingInfo.isResizingColumn)} />` を render(TableBody との出し分け撤廃)。
+- comparator = **`(_prev, next) => next.isResizing` 単独**。resize 中 = true → 凍結、非 resize = false → 通常再レンダー(反応性維持)。単一型ゆえ **remount が一切起きない**。
+- **落とし穴(CC 発見)**: comparator に `prev.table.options.data === next.table.options.data` を混ぜると、useReactTable は同一 mutated instance を返すため `data===data` が常に true → 非 resize 時も永久 skip → **data が反映されず行が描画されない**(prototype で実際に 26/26 fail)。よって data 比較は入れず `next.isResizing` 単独が正。
+
+### CC prototype 計測(修正の効果裏取り、実装後 revert 済)
+
+| | 型 swap(現状 T1)| 単一型 + `next.isResizing`(修正案)|
+|---|---|---|
+| 1 resize サイクルの mount/unmount | 160 / 160 | **0 / 0** |
+| 既存 T1 test | 26/26 pass | **26/26 pass**(凍結・反応性維持)|
+
+→ remount churn が 0 になり、memo 凍結(resize 再レンダー抑止)も反応性も維持。**この修正で resize リークの支配要因が消える見込み**。
+
+## T2(仮想化)との関係・task 分割案
+
+- **リーク root fix は T2 と独立、かつ T2 より先**: 仮想化は mounted 数を 15×↓ = leak **rate** を比例低減するが、型 swap を残すと縮小した窓(~20行)でも resize 毎に remount して低速リークが残る。**root は型 swap 撤廃でしか直らない**。
+- **task 分割案**:
+  - **T1.1(リーク root fix / 最優先 / 小 / 新規依存なし)** = 型 swap 撤廃(単一 MemoizedTableBody + `isResizing` prop + `next.isResizing` comparator)。`exam-card-table.tsx` のみ。CC 計測で churn 0 裏取り済。**T2 の前に単独で入れる**(T1 が導入した regression の是正)。
+  - **T2(行仮想化 `@tanstack/react-virtual`)** = baseline DOM/listener 規模(35k)+ 列表示切替の重さの根治。新規依存 = 事前相談ゲート。T1.1 後に要否判断。
+  - **(任意)TagCell popover 数削減 6→1/行** = baseline mounted popover を ~6×↓。UX(単一 popover に initialStage を動的化)に触るため別 task・OT 判断。leak rate と baseline を下げるが root(remount)とは独立。
+
+## 受け入れ基準(T1.1)
+
+- 300件で列幅 resize を繰り返しても listener / DOM nodes / heap が階段状に増えない(GC で戻る)。
+- resize 中の memo 凍結(sustainedDrag 再レンダー 0)は維持。
+- 反応性(data / sort / filter / 列表示切替 / selection 追従)非回帰・既存 test green。
+- before-after を OT 実機 Performance Monitor で確認(CC 計測は mount churn 0 で方向確認済)。
