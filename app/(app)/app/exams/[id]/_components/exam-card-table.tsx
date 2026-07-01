@@ -68,6 +68,7 @@ import {
 
 type TableBodyProps = {
   table: Table<ExamCardRow>
+  isResizing: boolean
 }
 
 function TableBody({ table }: TableBodyProps) {
@@ -115,11 +116,14 @@ function TableBody({ table }: TableBodyProps) {
   )
 }
 
-// resize 中は tbody を memo で凍結し pointermove が CSS 変数のみ更新するようにする。
-// data 参照が変わらない限り再レンダーしない (TanStack v8 公式パターン)。
+// Fix-3 T1.1: 単一型 + isResizing comparator で remount リーク根治。
+//   isResizing=true の間は tbody を凍結(再レンダーをスキップ)し CSS 変数のみ更新される。
+//   isResizing=false の間は通常再レンダーで data/tag 変更への反応性を維持する。
+//   落とし穴: data===data 比較は useReactTable が同一 mutated instance を返すため常に true
+//   → 非 resize 中も永久 skip → rows 不更新になる。comparator は next.isResizing 単独が正。
 const MemoizedTableBody = memo(
   TableBody,
-  (prev, next) => prev.table.options.data === next.table.options.data,
+  (_prev, next) => next.isResizing,
 )
 
 type ExamCardTableProps = {
@@ -519,12 +523,15 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             </tr>
           ))}
         </thead>
-        {/* Fix-3 T1: resize 中は MemoizedTableBody(凍結)/ 非 resize 時は TableBody(通常) で出し分け。
-            どちらも <tbody> を返す。凍結中は tbody が再レンダーされず CSS 変数のみ更新される。 */}
-        {table.getState().columnSizingInfo.isResizingColumn
-          ? <MemoizedTableBody table={table} />
-          : <TableBody table={table} />
-        }
+        {/* Fix-3 T1.1: 型 swap を撤廃し単一型 MemoizedTableBody に固定する。
+            旧実装: resize 中は <MemoizedTableBody> / 非 resize 時は <TableBody> の型 swap。
+            型 swap は React の型変化 tear-down を引き起こし tbody subtree (300行×cell×Radix popover) を
+            毎 resize サイクルで remount → listener ~66k / DOM ~174k の階段リーク根治。
+            修正: 常に <MemoizedTableBody isResizing={...}> を render し型変化 tear-down を封じる。 */}
+        <MemoizedTableBody
+          table={table}
+          isResizing={Boolean(table.getState().columnSizingInfo.isResizingColumn)}
+        />
         </table>
       </div>
       {selectedIds.length > 0 && (
