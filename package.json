@@ -27,6 +27,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@google/genai": "^1.50.1",
     "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.5",
     "browser-image-compression": "^2.0.2",
     "bufferutil": "^4.1.0",
     "class-variance-authority": "^0.7.1",
