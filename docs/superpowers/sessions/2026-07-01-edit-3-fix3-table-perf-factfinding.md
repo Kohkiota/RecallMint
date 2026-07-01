@@ -207,3 +207,74 @@ InlineTextField(debounce timer を unmount で clear `:142`)/ InlineOptionCell /
 - resize 中の memo 凍結(sustainedDrag 再レンダー 0)は維持。
 - 反応性(data / sort / filter / 列表示切替 / selection 追従)非回帰・既存 test green。
 - before-after を OT 実機 Performance Monitor で確認(CC 計測は mount churn 0 で方向確認済)。
+
+---
+
+# Fix-3 T2 前段: 行仮想化 導入 fact-finding + 実装設計(CC + Codex 独立 → CC 統合)(2026-07-01)
+
+- **種別**: fact-finding + 設計のみ(実装/commit/push なし)。
+- **背景(T1/T1.1 適用後 OT stg 実機で確定)**: resize 継続フリーズ解消・リーク解消(操作やめると listener ~9,300 / DOM ~35,000 / heap ~60MB に復帰)。**残: 1 操作の瞬間に CPU 100% で数秒フリーズ**(resize > 列非表示、短くなったが継続)。= 単発の全 cell 描画コスト(mount cell 数比例)。memo(T1)は継続再レンダー、型 swap 撤廃(T1.1)は積み上がりを止めたが、**1 回あたりの全 mount コストは残る → 根治は描画量削減(行仮想化)のみ**。
+- **調査**: CC(現物 + context7 で TanStack Table/Virtual 公式 docs)+ Codex 独立(anchor 防止)。Codex raw = `docs/codex/2026-07-01-t2-virtualization-codex.md`。
+
+## ライブラリ / 依存是非
+- `@tanstack/react-virtual@3.14.5`(registry 直叩き確定)。peer = React `^16||^17||^18||^19`(現 19.2.7 OK)、unpackedSize ~52KB、TanStack Table v8 と同組織の公式姉妹(v8 Table + Virtual は公式 compose パターンあり)。メンテ活発。
+- de-risk gate: install → `pnpm typecheck` → `pnpm build` → 専用 `chore` commit(依存導入と実装を分離、lockfile 変更 sprint の完了 gate 準拠: install --frozen-lockfile + typecheck + build 全 exit 0)。
+- **是非判断材料**: 公式姉妹・小サイズ・React19 対応・v8 と公式 compose = 導入妥当。ただし新規依存ゆえ **OT 承認ゲート**必須(CLAUDE.md「新ライブラリ導入は事前相談」)。
+
+## CC / Codex の一致・独自・対立
+
+### 一致(両者独立で同結論)
+- 行仮想化が唯一の根治(1 操作 CPU コスト = mount cell 数比例、300→~20-30 行で ~10-15× 削減)。
+- **非回帰は安全**: rowSelection / sorting / columnFilters / columnVisibility / select-all(indeterminate)は全て **table state ベース(DOM 非依存)**。`getRowModel()` が全行を返し、virtualizer は「どれを描くか」だけを決める。body は既に `row.getVisibleCells()`。
+- **病的 churn 回避**: 単一 `MemoizedTableBody` 型を維持(型 swap 再導入禁止 = T1.1 教訓)+ `getItemKey = row.id`(getRowId 既に card.id)で並び替え時の index-key churn を防ぐ。scroll での mount/unmount は仮想化の設計通り(bounded)。
+- 可変高さ = measureElement 必須。resize memo 凍結は仮想化窓にそのまま共存(resize commit で `rowVirtualizer.measure()`)。columnResizeMode:'onChange' 維持。CSS 変数幅(T1)は cell `width` としてそのまま流用。
+
+### 対立(今回の核心論点 = レイアウト手法)
+| | **CC / context7(TanStack 公式)** | **Codex** |
+|---|---|---|
+| 行配置 | `<table display:grid>` + `<tr position:absolute translateY>` + flex `<td>`。公式 docs 明記「native table layout は dynamic-height の独立配置行と相性が悪い」 | **native table 維持 + top/bottom spacer `<tr>`**(絶対配置しない)。既存 flow/CSS変数/sticky を無改造で維持 |
+| container | 内側 bounded `overflow:auto` div(getScrollElement)。sticky header 無償 | **`useWindowVirtualizer`**(page 縦スクロール維持 + 既存 overflow-x-auto)。sticky-left は同祖先で不変 |
+| sticky-left への影響 | flex 上で sticky 再構築 = **要再検証(リスク高)** | sticky 機構**無改造 = 最低リスク** |
+| 動的高さの実績 | 公式に blessed | native+spacer は非公式(測定 jitter の可能性) |
+
+### CC 独自
+- 公式 docs(context7)の table+virtual 例 = display:grid/flex + absolute が「公式」で、native table + dynamic は非推奨と明記(この一次証拠が対立の根拠)。
+- 既存 test への影響を特定: `getAllByTestId(/^row-/).toHaveLength(N)` 系(既存 26+ 件の多く)は jsdom に layout がなく virtualizer が全/0 行になり **要改修**(container 高さ mock or virtualizer stub)。
+
+### Codex 独自
+- spacer は「絶対配置しない」ので公式警告(独立配置行)の直接対象外 = 公式警告 vs 低リスク維持のトレードオフを明確化。
+- `useFlushSync:false`(React19 compat/perf)、resize commit 時 `measure()` 明示。
+
+### 対立なし(手法以外は全一致)
+
+## 設計(CC 推奨 = 対立の裁定)
+
+**#1 リスク = sticky-left 保全。この観点で Codex の native+spacer+windowVirtualizer を第一候補**とする(sticky 機構を一切触らない = 破壊リスク最小、T1.1 の「fix が別問題を生む」教訓に最も忠実)。公式 display:grid 案は sticky を flex 上に作り替えるため、まさに #1 リスクを自ら増やす。
+
+- **container**: `useWindowVirtualizer`(page スクロール維持、既存 `overflow-x-auto` 温存)。sticky-left は同 overflow-x 祖先基準で不変。
+- **body**: 単一 `MemoizedTableBody` 内で `useWindowVirtualizer({ count: rows.length, estimateSize, getItemKey: i=>rows[i].id, measureElement, overscan:5, useFlushSync:false })`。`<tbody>` に top/bottom spacer `<tr aria-hidden>`(height のみ)+ 窓内行に `ref={measureElement} data-index`。
+- **T1/T1.1 共存**: CSS 変数幅・sticky・memo 凍結・単一型は不変。resize commit で `measure()`。
+- **sticky-left 裏取り(最重要・実装時 gate)**: spacer 案は sticky 構造を触らないため理論上不変だが、**実装 T2 の受入に「300件で横スクロール中に select/title が固定され続ける」実機 smoke を必須化**(DevTools/Playwright)。理論だけで pass しない。
+- **フォールバック**: native+spacer で dynamic 測定に jitter/破綻が出たら、公式 display:grid+absolute 案へ切替(sticky-left を flex 上で再構築 → 再 smoke)。設計 doc に両案を残す。
+
+## Edit-5(sticky header)を T2 と統合するか
+- **分離を推奨**。理由: 第一候補が `useWindowVirtualizer`(内側 container を作らない)ゆえ、T2 は sticky header の構造前提(bounded container)を要求しない → 両者は**独立**。Edit-5 は spec 未策定(凍結原則上、未 spec 機能を T2 に混ぜると spec リスク + scope 膨張)。
+- ただし **将来 Edit-5 を内側 container 方式(Option A)でやるなら virtualizer を window→element に再配線**する手戻りが出る。**OT が「sticky header を近く必ずやる」なら、T2 を Option A(内側 container + element virtualizer)で組み Edit-5 と一体化する選択も合理**(1 回の構造変更で済むが scope 大 + sticky-left を flex/container 上で要再検証 + Edit-5 spec 先行が必要)。→ **この分岐は OT 判断**。
+
+## task 分割案(第一候補 = window + spacer 前提)
+- **T2-a(依存導入 / chore)**: `@tanstack/react-virtual@3` 追加 + de-risk gate(typecheck/build/frozen-lockfile 全 exit0)。lockfile sprint gate 準拠。
+- **T2-b(仮想化本体)**: `MemoizedTableBody` を windowVirtualizer + spacer 行に改修。CSS変数/sticky/memo/単一型 不変。getItemKey=card.id。
+- **T2-c(test 改修 + 非回帰)**: 既存 row-count 系 test を仮想化前提に改修(container/measure stub)、selection/filter/sort/visibility の state 非回帰 test、mount 数削減の裏取り(可能なら)。
+- **T2-d(smoke gate)**: OT 実機で ①1 操作 CPU スパイク解消 ②baseline DOM ~3k ③**sticky-left 横スクロール保全**(最重要)④selection/filter/sort/card-view 非回帰。
+- 順序: T2-a → T2-b → T2-c →(push)→ T2-d。sticky-left が smoke で崩れたらフォールバック(display:grid 案)へ。
+
+## 受け入れ基準
+- 300件で 1 操作(resize commit / 列表示切替)の CPU スパイク解消(数秒フリーズ → 即応)。
+- baseline mounted DOM が ~35k → ~3k 規模(~10-15× 減)。
+- **sticky 2列(select/title)が横スクロールで固定され続ける**(実機 smoke 必須・#1 リスク)。
+- selection(select-all/indeterminate)/ filter(行数変化)/ sort / columnVisibility / resize / card-view 非回帰。
+- 既存 test(仮想化前提に改修後)green。before-after profile(DOM/scripting time)を doc に残す。
+
+## 今日の教訓の反映(fix が別問題を生むパターンの事前封じ)
+- T1(型 swap→remount churn)の轍を踏まないため、T2 は **単一 MemoizedTableBody 型を維持**(型 swap 厳禁)+ **getItemKey=card.id**(index-key churn 防止)+ **container 変更を最小化**(window virtualizer で sticky/overflow 祖先を温存)。
+- sticky-left は理論 pass で終わらせず**実機 smoke を受入 gate に必須化**(構造変更が sticky を壊す典型を計測で潰す)。
