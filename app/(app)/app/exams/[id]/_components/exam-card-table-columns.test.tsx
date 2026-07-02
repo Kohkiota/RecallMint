@@ -200,7 +200,7 @@ describe('T3: column sizing', () => {
 
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
-      select: 44,
+      select: 32, // Fix-3 cosmetic: チェックボックス実体 (~16px) + px-1 左右 (8px) + 余白 8px = 32px
       title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
       sort_key: 100,
       question: 320,

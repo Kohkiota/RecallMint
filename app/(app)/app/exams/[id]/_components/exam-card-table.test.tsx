@@ -812,3 +812,56 @@ describe('Fix-3 T2: 行仮想化 — 大 N で DOM 行数が有界 (全 N を mo
     expect(rendered, `仮想化で N=${N} 全 mount せず有界 (実測 ${rendered})`).toBeLessThan(N)
   })
 })
+
+// ===========================================================================
+// Fix-3 cosmetic: select 列 中央揃え — header th・body td の class 検証
+// ===========================================================================
+
+describe('Fix-3 cosmetic: select 列 中央揃え', () => {
+  it('header select th が text-center と align-middle を持ち text-left を持たない (全選択チェックボックスの th)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 全選択 checkbox を aria-label で特定し、その親 th を取得
+    const headerCheckbox = screen.getByRole('checkbox', { name: '全選択' })
+    const selectTh = headerCheckbox.closest('th') as HTMLElement
+    expect(selectTh, 'select th が存在する').not.toBeNull()
+    const classes = selectTh.className.split(' ')
+    expect(classes).toContain('text-center')
+    expect(classes).toContain('align-middle')
+    expect(classes).not.toContain('text-left')
+
+    // 回帰: コンテナ内の全 th から select 以外は text-left を持つ。
+    // allTh[0] = select 列 (columns.test T3 で列順先頭が保証済)。index 1 以降を検証。
+    const allTh = container.querySelectorAll('th')
+    for (let i = 1; i < allTh.length; i++) {
+      const th = allTh[i] as HTMLElement
+      expect(th.className.split(' '), `th[${i}] "${th.textContent?.trim()}" は text-left を持つ`).toContain('text-left')
+      expect(th.className.split(' '), `th[${i}] "${th.textContent?.trim()}" は text-center を持たない`).not.toContain('text-center')
+    }
+  })
+
+  it('body select td が text-center を持つ (行選択チェックボックスの td)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 行選択 checkbox を aria-label で特定し、その親 td を取得
+    const bodyCheckbox = screen.getByRole('checkbox', { name: /行選択/ })
+    const selectTd = bodyCheckbox.closest('td') as HTMLElement
+    expect(selectTd, 'select td が存在する').not.toBeNull()
+    expect(selectTd.className.split(' ')).toContain('text-center')
+
+    // 回帰: 同じ行の非 select td は text-center を持たない。
+    // cells[0] = select 列 (columns.test T3 で列順先頭が保証済)。index 1 以降を検証。
+    const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    const cells = row.querySelectorAll('td')
+    for (let i = 1; i < cells.length; i++) {
+      const td = cells[i] as HTMLElement
+      expect(td.className.split(' '), `td[${i}] は text-center を持たない`).not.toContain('text-center')
+    }
+  })
+})

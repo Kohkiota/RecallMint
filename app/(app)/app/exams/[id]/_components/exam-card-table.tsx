@@ -38,6 +38,7 @@ import {
   type VisibilityState,
   type Table,
 } from '@tanstack/react-table'
+import { cn } from '@/lib/utils'
 import { getClientDb } from '@/lib/client-db'
 import {
   SYNC_META_KEYS,
@@ -154,7 +155,8 @@ function TableBody({ table, scrollMargin }: TableBodyProps) {
               <td
                 key={cell.id}
                 // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
-                className="px-1 py-1 border-b border-border"
+                // select 列のみ text-center でチェックボックスを水平中央に揃える。
+                className={cn('px-1 py-1 border-b border-border', cell.column.id === 'select' && 'text-center')}
                 // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
                 //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
                 style={{
@@ -565,12 +567,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     key={h.id}
                     // T3: relative が必要 (resize handle を absolute right-0 で配置するため)。
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
-                    className={[
-                      'relative px-1 py-1 text-left font-medium text-muted-foreground border-b border-border',
-                      canSort ? 'cursor-pointer select-none' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
+                    // select 列のみ text-center align-middle で全選択チェックボックスを上下左右中央に揃える。
+                    className={cn(
+                      'relative px-1 py-1 font-medium text-muted-foreground border-b border-border',
+                      h.column.id === 'select' ? 'text-center align-middle' : 'text-left',
+                      canSort && 'cursor-pointer select-none',
+                    )}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
                     style={{ width: `calc(var(--header-${h.id}-size) * 1px)` }}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}

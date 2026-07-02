@@ -56,7 +56,9 @@ const streakFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    size: 44,
+    // チェックボックス実体 (~16px) + px-1 左右 合計 (8px) = 24px コンテンツ幅 →
+    // text-center で前後 ~4px 余白 → 合計 32px (クリップなしの最小幅)。
+    size: 32,
     header: ({ table }) => (
       <input
         type="checkbox"
