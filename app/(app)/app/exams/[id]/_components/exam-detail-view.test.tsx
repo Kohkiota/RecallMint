@@ -345,3 +345,17 @@ describe('ExamDetailView — Case ⑦: ViewToggle buttons が size=xs', () => {
     expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('data-size', 'xs')
   })
 })
+
+// ===========================================================================
+// Case ⑧: root 要素の gap が space-y-1(Fix-3 cosmetic C)
+// ViewToggle と直下 view の間隔を密度優先で space-y-4(16px) → space-y-1(4px) に縮小
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑧: root gap が space-y-1(Fix-3 cosmetic C)', () => {
+  it('root div が space-y-1 を持ち space-y-4 を持たない', () => {
+    const { container } = render(<ExamDetailView {...defaultProps} />)
+    const root = container.firstElementChild as HTMLElement
+    expect(root.className).toContain('space-y-1')
+    expect(root.className).not.toContain('space-y-4')
+  })
+})

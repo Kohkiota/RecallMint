@@ -37,7 +37,8 @@ export default async function ExamDetailPage({
 
   return (
     <div className="w-full">
-      <AppContainer>
+      {/* 試験詳細のみ密度優先で共通 py-8 を page 限定で py-2 に上書き */}
+      <AppContainer className="py-2">
         <div className="space-y-6 md:space-y-3">
           <div>
             <Link

@@ -71,7 +71,8 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
   }
 
   return (
-    <div className="space-y-4 pb-8">
+    // 試験詳細のみ密度優先で ViewToggle と直下 view の間隔を space-y-4(16px) → space-y-1(4px) に縮小
+    <div className="space-y-1 pb-8">
       {/* ViewToggle: 水平 cap のみ (py-0 で py-8 を打ち消し、mx-auto max-w-4xl px-4 が残る) */}
       <AppContainer className="py-0">
         <div role="group" aria-label="表示モード切替" className="flex gap-1">
