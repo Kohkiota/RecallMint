@@ -328,3 +328,20 @@ describe('ExamDetailView — Case ⑥: 幅クラス (Edit-1 T2)', () => {
     expect(wrapper!.className).not.toContain('max-w-4xl')
   })
 })
+
+// ===========================================================================
+// Case ⑦: ViewToggle ボタンが xs サイズ variant を使う (Fix-3 cosmetic B)
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑦: ViewToggle buttons が size=xs', () => {
+  it('カード・テーブル両 button に data-size="xs" が付与される', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('data-size', 'xs')
+    expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('data-size', 'xs')
+  })
+})

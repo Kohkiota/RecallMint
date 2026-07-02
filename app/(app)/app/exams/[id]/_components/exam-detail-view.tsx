@@ -77,7 +77,7 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
         <div role="group" aria-label="表示モード切替" className="flex gap-1">
           <Button
             variant={view === 'card' ? 'default' : 'outline'}
-            size="sm"
+            size="xs"
             aria-pressed={view === 'card'}
             onClick={() => handleToggle('card')}
           >
@@ -85,7 +85,7 @@ export function ExamDetailView({ initialCards, examId, userId }: ExamDetailViewP
           </Button>
           <Button
             variant={view === 'table' ? 'default' : 'outline'}
-            size="sm"
+            size="xs"
             aria-pressed={view === 'table'}
             onClick={() => handleToggle('table')}
           >
