@@ -242,10 +242,10 @@ describe('T5: final column order, sticky pin, and editable columns', () => {
     ])
   })
 
-  it('title 列に meta.sticky === true が付与されている', () => {
+  it('title 列に meta.sticky が付与されていない (Fix-3 T2 sticky 撤去済)', () => {
     const titleCol = examCardTableColumns.find((c) => c.id === 'title')
     expect(titleCol).toBeDefined()
-    expect((titleCol?.meta as { sticky?: boolean } | undefined)?.sticky).toBe(true)
+    expect((titleCol?.meta as { sticky?: boolean } | undefined)?.sticky).toBeUndefined()
   })
 
   it('question 列に meta.sticky が付与されていない (pin 除去済)', () => {
@@ -491,24 +491,24 @@ describe('Edit-3 T4: title size 80 + sort_key getCanHide() 維持', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Edit-3 T3: select 列と title 列の sticky meta (stickyLeft)
+// Edit-3 T3: select 列と title 列の sticky meta 撤去 (Fix-3 T2 以降)
 // ---------------------------------------------------------------------------
 
-describe('Edit-3 T3: select 列と title 列の sticky meta', () => {
-  it('select 列に meta.sticky === true と meta.stickyLeft === 0 が付与されている', () => {
+describe('Edit-3 T3: select 列と title 列の sticky meta 撤去 (Fix-3 T2 sticky 撤去済)', () => {
+  it('select 列に meta.sticky と meta.stickyLeft が付与されていない (撤去ガード)', () => {
     const selectCol = examCardTableColumns.find((c) => c.id === 'select')
     expect(selectCol).toBeDefined()
     const meta = selectCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
-    expect(meta?.sticky).toBe(true)
-    expect(meta?.stickyLeft).toBe(0)
+    expect(meta?.sticky).toBeUndefined()
+    expect(meta?.stickyLeft).toBeUndefined()
   })
 
-  it('title 列に meta.sticky === true と meta.stickyLeft === 44 が付与されている', () => {
+  it('title 列に meta.sticky と meta.stickyLeft が付与されていない (撤去ガード)', () => {
     const titleCol = examCardTableColumns.find((c) => c.id === 'title')
     expect(titleCol).toBeDefined()
     const meta = titleCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
-    expect(meta?.sticky).toBe(true)
-    expect(meta?.stickyLeft).toBe(44)
+    expect(meta?.sticky).toBeUndefined()
+    expect(meta?.stickyLeft).toBeUndefined()
   })
 
   it('非 sticky 列(question)に meta.sticky が付与されていない', () => {

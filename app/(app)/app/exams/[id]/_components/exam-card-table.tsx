@@ -13,8 +13,18 @@
 //   - tagEditCallbacks も table レベルで 1 回構築 (案 EC-A)。
 //   - 両者を meta 経由で各 TagCell に配る (TanStack 標準 pattern)。
 
-import { useMemo, useRef, useState, useCallback, useEffect, memo, type CSSProperties } from 'react'
+import {
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  memo,
+  type CSSProperties,
+} from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import {
   useReactTable,
   getCoreRowModel,
@@ -69,49 +79,102 @@ import {
 type TableBodyProps = {
   table: Table<ExamCardRow>
   isResizing: boolean
+  // Fix-3 T2: list(tbody 行群)の document 先頭からの offset。
+  //   useWindowVirtualizer に scrollMargin として渡し「どの行が可視か」の計算が
+  //   filter bar / header 分ズレないようにする (必須。無いと wrong rows が render される)。
+  scrollMargin: number
 }
 
-function TableBody({ table }: TableBodyProps) {
+// Fix-3 T2: 推定行高 (px)。実行高の中央値目安。過小でも measureElement が補正する。
+const ESTIMATED_ROW_HEIGHT = 120
+
+function TableBody({ table, scrollMargin }: TableBodyProps) {
+  const rows = table.getRowModel().rows
+
+  // Fix-3 T2: 行仮想化。window スクロール前提 (縦スクロールは page)。
+  //   getItemKey=card.id で sort/filter 並び替え時の index-key churn を防ぐ (getRowId 一致)。
+  //   measureElement は各実行 <tr> に付与し dynamic 行高を測る (estimateSize の補正)。
+  const rowVirtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    getItemKey: (index) => rows[index].id,
+    overscan: 5,
+    scrollMargin,
+    useFlushSync: false,
+  })
+
+  // Fix-3 T2: resize commit 後に幅変更後の行高を測り直す。
+  //   resize 中は memo 凍結で body が再 render されないため、この effect は
+  //   commit で columnSizing が確定した後の再 render で 1 回だけ走る (onChange の
+  //   中間値では走らない = 凍結が保証)。
+  const columnSizing = table.getState().columnSizing
+  useEffect(() => {
+    rowVirtualizer.measure()
+  }, [columnSizing, rowVirtualizer])
+
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  const totalSize = rowVirtualizer.getTotalSize()
+  const visibleColCount = table.getVisibleLeafColumns().length
+  // scrollMargin を引いて spacer 高を算出 (window virtualizer の start/end は
+  //   document 座標なので header 分の offset を差し引く)。
+  // virtualItems が空の場合 (filter で 0 件 / data 未ロード) は spacer を出さない。
+  // 空時に素直に計算すると paddingBottom = totalSize + scrollMargin になり
+  // ~scrollMargin px の余白スペーサーが誤描画されるため、0 に固定する。
+  const hasItems = virtualItems.length > 0
+  const paddingTop = hasItems
+    ? virtualItems[0].start - rowVirtualizer.options.scrollMargin
+    : 0
+  const paddingBottom = hasItems
+    ? totalSize -
+      (virtualItems[virtualItems.length - 1].end -
+        rowVirtualizer.options.scrollMargin)
+    : 0
+
   return (
     <tbody>
-      {table.getRowModel().rows.map((row) => (
-        <tr
-          key={row.id}
-          data-testid={`row-${row.original.card.id}`}
-          className="hover:bg-muted/50"
-        >
-          {row.getVisibleCells().map((cell) => {
-            // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
-            const stickyMeta = cell.column.columnDef.meta as
-              | { sticky?: boolean; stickyLeft?: number }
-              | undefined
-            const isSticky = stickyMeta?.sticky === true
-            const stickyLeft = stickyMeta?.stickyLeft ?? 0
-            return (
+      {paddingTop > 0 && (
+        <tr aria-hidden>
+          <td
+            colSpan={visibleColCount}
+            style={{ height: paddingTop, padding: 0, border: 0 }}
+          />
+        </tr>
+      )}
+      {virtualItems.map((vi) => {
+        const row = rows[vi.index]
+        return (
+          <tr
+            key={row.id}
+            data-index={vi.index}
+            ref={rowVirtualizer.measureElement}
+            data-testid={`row-${row.original.card.id}`}
+            className="hover:bg-muted/50"
+          >
+            {row.getVisibleCells().map((cell) => (
               <td
                 key={cell.id}
                 // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
-                className={[
-                  'px-1 py-1 border-b border-border',
-                  isSticky
-                    ? 'sticky z-10 bg-background'
-                    : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
+                className="px-1 py-1 border-b border-border"
                 // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
                 //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
                 style={{
                   width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
-                  ...(isSticky ? { left: stickyLeft } : {}),
                 }}
               >
                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
               </td>
-            )
-          })}
+            ))}
+          </tr>
+        )
+      })}
+      {paddingBottom > 0 && (
+        <tr aria-hidden>
+          <td
+            colSpan={visibleColCount}
+            style={{ height: paddingBottom, padding: 0, border: 0 }}
+          />
         </tr>
-      ))}
+      )}
     </tbody>
   )
 }
@@ -431,13 +494,46 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     [table.getState().columnSizingInfo, table.getState().columnSizing, table.getState().columnVisibility],
   )
 
+  // Fix-3 T2: 行仮想化用に list(table)の document 先頭からの offset を計測する。
+  //   window virtualizer の scrollMargin に渡す (filter bar / header 分のズレ補正、必須)。
+  //   getBoundingClientRect().top + scrollY で document 座標を得る (offsetParent 非依存)。
+  //
+  //   Fix wave-1: ResizeObserver (filter bar wrapper) + window resize listener を追加し、
+  //   filter chip の追加/削除や window 幅変化で filter bar の高さが変わった際に
+  //   listOffset を再計測する (stale offset が wrong row window を生む問題を防ぐ)。
+  const filterBarWrapperRef = useRef<HTMLDivElement>(null)
+  const tableContainerRef = useRef<HTMLDivElement>(null)
+  const [listOffset, setListOffset] = useState(0)
+  useLayoutEffect(() => {
+    const recompute = () => {
+      const el = tableContainerRef.current
+      if (el) setListOffset(el.getBoundingClientRect().top + window.scrollY)
+    }
+    // 初回計測
+    recompute()
+    // filter bar の高さ変化を監視 (chip 追加/削除、toolbar wrap)
+    const filterBar = filterBarWrapperRef.current
+    let ro: ResizeObserver | null = null
+    if (filterBar) {
+      ro = new ResizeObserver(recompute)
+      ro.observe(filterBar)
+    }
+    // window 幅変化でも再計測 (toolbar が wrap して高さが変わる)
+    window.addEventListener('resize', recompute)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', recompute)
+    }
+  }, [])
+
   return (
     // M3 (T7 stg smoke): 選択時のみ下部 padding を確保し、 fixed bottom action bar
     // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
     // ようにする (mobile 短 viewport 375px で確認)。 pb-32 (128px) で wrap 時も余裕を持つ。
     <div className={selectedIds.length > 0 ? 'pb-32' : undefined}>
       {/* Edit-2 Task 4: 列表示/非表示 toggle を filter bar と並べる (右寄せ)。 */}
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      {/* Fix wave-1: filterBarWrapperRef を付与し ResizeObserver で高さ変化を監視する。 */}
+      <div ref={filterBarWrapperRef} className="flex flex-wrap items-start justify-between gap-2">
         <ExamCardTableFilterBar
           table={table}
           categories={liveData?.categories ?? []}
@@ -446,7 +542,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         />
         <ColumnVisibilityToggle table={table} />
       </div>
-      <div className="overflow-x-auto">
+      <div ref={tableContainerRef} className="overflow-x-auto">
         {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x-auto を発火させる。
             border-collapse → border-separate border-spacing-0 に倒し切る (条件分岐なし)。
             理由: sticky セルで border-collapse は border 消失が既知挙動。
@@ -461,12 +557,6 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>
               {hg.headers.map((h) => {
-                // Edit-3 T3: meta 型を stickyLeft まで拡張し動的 left を付与する。
-                const stickyMeta = h.column.columnDef.meta as
-                  | { sticky?: boolean; stickyLeft?: number }
-                  | undefined
-                const isSticky = stickyMeta?.sticky === true
-                const stickyLeft = stickyMeta?.stickyLeft ?? 0
                 const canSort = h.column.getCanSort()
                 const sortDir = h.column.getIsSorted()
                 const canResize = h.column.getCanResize()
@@ -477,15 +567,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     className={[
                       'relative px-1 py-1 text-left font-medium text-muted-foreground border-b border-border',
-                      isSticky
-                        ? 'sticky z-10 bg-background'
-                        : '',
                       canSort ? 'cursor-pointer select-none' : '',
                     ]
                       .filter(Boolean)
                       .join(' ')}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
-                    style={{ width: `calc(var(--header-${h.id}-size) * 1px)`, ...(isSticky ? { left: stickyLeft } : {}) }}
+                    style={{ width: `calc(var(--header-${h.id}-size) * 1px)` }}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
                     {h.isPlaceholder ? null : (
@@ -531,6 +618,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         <MemoizedTableBody
           table={table}
           isResizing={Boolean(table.getState().columnSizingInfo.isResizingColumn)}
+          scrollMargin={listOffset}
         />
         </table>
       </div>

@@ -500,40 +500,34 @@ describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不�
 })
 
 // ===========================================================================
-// smoke ⑦ (Edit-3 T3): sticky 2列 — select + title の left offset
-// 列順: select(0) / title(1) / sort_key(2) / question(3) / ...
+// Fix-3 T2: sticky 2列撤去 — select / title に sticky class / left が付与されないこと
+// (OT 方針: Notion 準拠で左端固定しない)。旧 smoke ⑦ (Edit-3 T3 sticky) を撤去し、
+// 撤去の非回帰 guard に置き換える。列順: select(0) / title(1) / sort_key(hidden) / question ...
 // ===========================================================================
 
-describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
-  it('th: ① select に sticky+left:0px ② title に sticky+left:44px ③ question に left 付与なし ④ sticky th に width 維持', async () => {
+describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されない', () => {
+  it('th: select / title に sticky class も left も付与されず、 width CSS 変数のみ維持される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
-    const selectTh = allTh[0] as HTMLElement  // select 列
-    const titleTh = allTh[1] as HTMLElement   // title 列
-    const questionTh = allTh[3] as HTMLElement // question 列(非 sticky)
+    // 全 th に sticky class / left が残っていないこと
+    for (const th of allTh) {
+      const el = th as HTMLElement
+      expect(el.className, `th "${el.textContent?.trim()}" は sticky class を持たない`).not.toContain('sticky')
+      expect(el.style.left, `th "${el.textContent?.trim()}" は left を持たない`).toBe('')
+    }
 
-    // ① select th: sticky class + left:0
-    expect(selectTh.className).toContain('sticky')
-    expect(selectTh.style.left).toBe('0px')
-
-    // ② title th: sticky class + left:44
-    expect(titleTh.className).toContain('sticky')
-    expect(titleTh.style.left).toBe('44px')
-
-    // ③ 非 sticky 列に left 付与なし
-    expect(questionTh.className).not.toContain('sticky')
-    expect(questionTh.style.left).toBe('')
-
-    // ④ sticky セルの style に width が維持されている (Fix-3 T1: CSS 変数参照形式)
+    // select / title の width CSS 変数は維持
+    const selectTh = allTh[0] as HTMLElement
+    const titleTh = allTh[1] as HTMLElement
     expect(selectTh.style.width).toMatch(/calc\(var\(--header-/)
     expect(titleTh.style.width).toMatch(/calc\(var\(--header-/)
   })
 
-  it('td: ① select に sticky+left:0px ② title に sticky+left:44px ③ question に left 付与なし ④ sticky td に width 維持', async () => {
+  it('td: select / title に sticky class も left も付与されず、 width CSS 変数のみ維持される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -541,23 +535,16 @@ describe('ExamCardTable smoke ⑦ (Edit-3 T3): sticky 2列 left offset', () => {
 
     const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
     const cells = row.querySelectorAll('td')
-    const selectTd = cells[0] as HTMLElement  // select 列
-    const titleTd = cells[1] as HTMLElement   // title 列
-    const questionTd = cells[3] as HTMLElement // question 列(非 sticky)
+    // 全 td に sticky class / left が残っていないこと
+    for (const td of cells) {
+      const el = td as HTMLElement
+      expect(el.className, 'td は sticky class を持たない').not.toContain('sticky')
+      expect(el.style.left, 'td は left を持たない').toBe('')
+    }
 
-    // ① select td: sticky class + left:0
-    expect(selectTd.className).toContain('sticky')
-    expect(selectTd.style.left).toBe('0px')
-
-    // ② title td: sticky class + left:44
-    expect(titleTd.className).toContain('sticky')
-    expect(titleTd.style.left).toBe('44px')
-
-    // ③ 非 sticky 列に left 付与なし
-    expect(questionTd.className).not.toContain('sticky')
-    expect(questionTd.style.left).toBe('')
-
-    // ④ sticky セルの style に width が維持されている (Fix-3 T1: CSS 変数参照形式)
+    // select / title の width CSS 変数は維持
+    const selectTd = cells[0] as HTMLElement
+    const titleTd = cells[1] as HTMLElement
     expect(selectTd.style.width).toMatch(/calc\(var\(--col-/)
     expect(titleTd.style.width).toMatch(/calc\(var\(--col-/)
   })
@@ -721,8 +708,8 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     }
   })
 
-  it('sticky 列 (select / title) の left offset は 0px / 44px のまま不変', async () => {
-    // Fix-3 T1 が th/td の left を変えないことの regression guard
+  it('sticky 撤去後 (Fix-3 T2): select / title の th・td に left が付与されない', async () => {
+    // Fix-3 T2 で sticky 2列を撤去したため left は付与されない (旧 0px/44px guard を撤去の非回帰に置換)。
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -732,16 +719,16 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     const allTh = container.querySelectorAll('th')
     const selectTh = allTh[0] as HTMLElement
     const titleTh = allTh[1] as HTMLElement
-    expect(selectTh.style.left).toBe('0px')
-    expect(titleTh.style.left).toBe('44px')
+    expect(selectTh.style.left).toBe('')
+    expect(titleTh.style.left).toBe('')
 
     // td
     const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
     const cells = row.querySelectorAll('td')
     const selectTd = cells[0] as HTMLElement
     const titleTd = cells[1] as HTMLElement
-    expect(selectTd.style.left).toBe('0px')
-    expect(titleTd.style.left).toBe('44px')
+    expect(selectTd.style.left).toBe('')
+    expect(titleTd.style.left).toBe('')
   })
 
   it('resize handle が存在する (columnResizeMode guard)', async () => {
@@ -793,5 +780,35 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
       expect(cssVar, '<table> に --col-sort_key-size が付与されている').not.toBe('')
       expect(parseFloat(cssVar), '--col-sort_key-size が正の数値').toBeGreaterThan(0)
     })
+  })
+})
+
+// ===========================================================================
+// Fix-3 T2: 行仮想化 — 大 N で DOM 行数が N 未満に頭打ちする (窓が有界)
+//
+// 注意 (jsdom 制約): jsdom は layout 0 (getBoundingClientRect=0) のため
+//   measureElement が 0 高を返し、virtualizer の可視窓は実ブラウザ (~20-30 行) と
+//   一致しない。本テストは「全 N を mount しない = 仮想化が有界窓で効いている」ことのみを
+//   非空振りで担保する (N=200 → 実測 106 行 < 200)。実機の ~20-30 窓・CPU スパイク解消は
+//   OT の実機 smoke に委ねる (report 記載)。
+// ===========================================================================
+
+describe('Fix-3 T2: 行仮想化 — 大 N で DOM 行数が有界 (全 N を mount しない)', () => {
+  it('N=200 seed → 描画される row-testid は 0 < count < 200 (仮想化が有界窓で効く)', async () => {
+    const N = 200
+    const db = getClientDb()
+    await db.cards.bulkPut(Array.from({ length: N }, (_, i) => makeCard(i + 1)))
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // 少なくとも 1 行は描画される (mount 成立)
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/).length).toBeGreaterThan(0)
+    })
+
+    // 全 N を mount していないこと = 仮想化が有界窓で機能している非空振り根拠。
+    // (jsdom 0-height ゆえ正確な窓サイズは実機依存 — ここでは < N のみを担保)
+    const rendered = screen.getAllByTestId(/^row-card-/).length
+    expect(rendered, `仮想化で N=${N} 全 mount せず有界 (実測 ${rendered})`).toBeLessThan(N)
   })
 })

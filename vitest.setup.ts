@@ -23,6 +23,18 @@ process.env.CLERK_SECRET_KEY ??= 'sk_test_clerk_fake'
 process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??= 'pk_test_clerk_fake'
 process.env.CLERK_WEBHOOK_SECRET ??= 'whsec_clerk_fake'
 
+// ResizeObserver は jsdom に存在しないため no-op stub を注入する。
+// exam-card-table.tsx の Fix wave-1 ResizeObserver で参照される。
+// jsdom はレイアウト 0 のため observer が発火することはないが、
+// new ResizeObserver(...) が ReferenceError を投げないようにするのが目的。
+if (typeof ResizeObserver === 'undefined') {
+  global.ResizeObserver = class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
 // Reset modules before each test so dynamic imports re-evaluate
 // (important for Task 1.3 Stripe prefix validation tests).
 beforeEach(() => {

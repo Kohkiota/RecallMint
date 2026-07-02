@@ -2,9 +2,9 @@
 
 // exam-card-table-columns — TanStack Table column defs for ExamCardTable。
 // module スコープで定義 (component 内 useMemo 不使用)。
-// 列順: [select, title(sticky-left pin), sort_key, question, options, tags,
+// 列順: [select, title, sort_key, question, options, tags,
 //        explanation_text, memo, lastCorrect, currentStreak, lastReview]。
-// title 列が sticky-left pin 列 (meta.sticky = true)。
+// Fix-3 T2: sticky 左固定列は撤去 (OT 方針: Notion 準拠で左端固定しない)。
 //
 // 'use client' は JSX を含む ColumnDef を使うため必要 (T2 学び: pure helper でも
 // React component を含む場合は boundary が必要)。
@@ -77,17 +77,11 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       />
     ),
     enableSorting: false,
-    // Edit-3 T3: select を sticky 左固定(1 列目、left=0)。
-    meta: { sticky: true, stickyLeft: 0 },
   },
   {
     id: 'title',
     size: 80,
     header: 'タイトル',
-    // title 列は sticky-left pin。 sticky CSS は ExamCardTable 側の <th>/<td> で付与。
-    // column def には meta だけ持たせ、 layout は render 側で解決する。
-    // Edit-3 T3: stickyLeft=44 (select 幅固定 44px の右隣)。
-    meta: { sticky: true, stickyLeft: 44 },
     cell: ({ row }) => (
       <InlineTextField
         cardId={row.original.card.id}
