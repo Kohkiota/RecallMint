@@ -54,6 +54,7 @@ import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
+import { ConditionBar } from './exam-card-table-condition-bar'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
@@ -543,6 +544,15 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
           categories={liveData?.categories ?? []}
           options={liveData?.options ?? []}
           tagEditCallbacks={tagEditCallbacks}
+        />
+        {/* S1-2: ConditionBar を固定 FilterBar・ColumnVisibilityToggle と一時共存。
+            S1-5 で固定 FilterBar を撤去し ConditionBar のみになる。 */}
+        <ConditionBar
+          table={table}
+          editorContext={{
+            categories: liveData?.categories ?? [],
+            options: liveData?.options ?? [],
+          }}
         />
         <ColumnVisibilityToggle table={table} />
       </div>

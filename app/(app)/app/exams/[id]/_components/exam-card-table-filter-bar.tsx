@@ -24,6 +24,7 @@ import type {
   StreakFilterValue,
   StreakFilterOp,
 } from '../_lib/card-filter-predicates'
+import { ANSWER_STATE_LABELS, STREAK_OP_LABELS } from '../_lib/card-filter-labels'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -34,23 +35,6 @@ export type ExamCardTableFilterBarProps = {
   categories: ClientTagCategory[]
   options: ClientTagOption[]
   tagEditCallbacks: TagEditCallbacks
-}
-
-// ---------------------------------------------------------------------------
-// constants
-// ---------------------------------------------------------------------------
-
-const ANSWER_STATE_LABELS: Record<AnswerStateFilter, string> = {
-  all: 'すべて',
-  unanswered: '未回答',
-  correct: '直近正解',
-  incorrect: '直近不正解',
-}
-
-const STREAK_OP_LABELS: Record<StreakFilterOp, string> = {
-  lte: '≤',
-  gte: '≥',
-  eq: '=',
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +87,15 @@ export function ExamCardTableFilterBar({
 
   const handleStreakOpChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const op = e.target.value as StreakFilterOp
+    // Derive the effective input from the current external filter state, not stale local state.
+    // If ConditionBar cleared the filter (streakFilter=undefined after re-render), `streakInput`
+    // may still hold the old value. Reading from `streakFilter` (updated on last re-render)
+    // prevents silently re-applying the just-cleared filter.
+    const effectiveInput =
+      streakFilter && !Number.isNaN(streakFilter.value) ? String(streakFilter.value) : ''
     setStreakOp(op)
-    applyStreakFilter(op, streakInput)
+    setStreakInput(effectiveInput)
+    applyStreakFilter(op, effectiveInput)
   }
 
   const handleStreakInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
