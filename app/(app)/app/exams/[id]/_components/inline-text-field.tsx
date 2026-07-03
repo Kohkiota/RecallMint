@@ -96,6 +96,21 @@ export function InlineTextField({
   // initialString を直接参照する。
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // latest-ref: stale closure 回避。 useEffect empty-deps cleanup は初回 render の値を
+  // capture する(stale)ため、 commit-on-unmount には最新値を ref 経由で読む。
+  // commit も含めることで、 cleanup が最新 initialString を持つ commit 関数を呼べる。
+  // 毎 render 同期更新(下の latestRef.current = ... 参照)。
+  // cardId も含め、 cleanup が「同一 render の自己整合スナップショット」(cardId ↔ commit ↔
+  // value が同じカードを指す)を読めるようにする。 これにより unmount cleanup は closure の
+  // cardId でなく latestRef.cardId を使い、 別カードへの誤 commit を構造的に排除する。
+  const latestRef = useRef<{
+    cardId: string
+    editing: boolean
+    value: string
+    initialString: string
+    commit: (target: string) => void
+  }>({ cardId, editing, value, initialString, commit: () => {} })
+
   // edit mode 切替時に auto-focus
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -134,7 +149,7 @@ export function InlineTextField({
     }
   }
 
-  // unmount で timer clear (StrictMode 二重 effect でも単純な timer cleanup のみ)。
+  // unmount で timer clear + commit-on-unmount。
   // なぜ drain 取りこぼし OK: blur 後 500ms 以内に離脱すると本 component の drain は
   // 発火しないが、 enqueue は Dexie に同期 persist 済みのため、 次の ambient trigger
   // (pagehide best-effort / visibilitychange / 次回 mount = entity-mutation-flush-trigger)
@@ -145,7 +160,22 @@ export function InlineTextField({
         clearTimeout(debounceTimerRef.current)
         debounceTimerRef.current = null
       }
+      // commit-on-unmount: 編集中かつ dirty の場合のみ commit する。
+      // latestRef から自己整合スナップショット(cid ↔ c ↔ v が同一カード)を読む
+      // (empty-deps cleanup の stale closure 回避 + 別カード誤 commit の排除)。
+      // blur 経路は setEditing(false) 済 → latestRef.editing=false → skip(二重 commit なし)。
+      const { cardId: cid, editing: e, value: v, initialString: is, commit: c } = latestRef.current
+      if (e && v !== is) {
+        // 削除済カードへの orphan update_field enqueue を避ける(Codex P2)。
+        // scroll-out=card 生存→commit / 削除=card 不在→skip。cleanup は同期だが
+        // commit path は元来 fire-and-forget ゆえ async 存在確認で分岐してよい。
+        void getClientDb().cards.get(cid).then((row) => {
+          if (row) c(v)
+        })
+      }
     }
+    // deps=[] : cleanup は真の unmount のみで発火(cardId は list key で安定 = 変化時は
+    // remount)。 cleanup が読む値はすべて latestRef 経由ゆえ closure deps は不要。
   }, [])
 
   // commit: mirror 直書き + outbox enqueue を 1 Dexie rw tx に閉じる
@@ -209,6 +239,11 @@ export function InlineTextField({
     }, DEBOUNCE_MS)
   }
 
+  // 毎 render 同期更新(副作用なし・re-render 誘発なし)。
+  // commit を含めることで cleanup が最新 initialString クロージャを持つ commit を呼べる。
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: 意図的な render-phase 同期更新(stale closure 回避のため必須)
+  latestRef.current = { cardId, editing, value, initialString, commit }
+
   const startEdit = () => {
     setEditing(true)
   }
@@ -224,6 +259,9 @@ export function InlineTextField({
   const handleBlur = () => {
     // editing を即時 false に (display 復帰)。
     setEditing(false)
+    // blur 直後の same-batch unmount で cleanup が二重 commit しないよう、
+    // latestRef の editing を同期反映する(render phase 更新の lag を潰す。Codex P2)。
+    latestRef.current = { ...latestRef.current, editing: false }
     // 値変更なしなら mirror write + enqueue を skip (無駄な outbox 行を避ける)。
     // 比較基準は render scope の initialString (旧 mirrorValueRef.current と等価)。
     if (value === initialString) {

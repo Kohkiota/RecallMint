@@ -816,3 +816,136 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     expect(mockFlush).not.toHaveBeenCalled()
   })
 })
+
+describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
+  // NOTE: scroll-out による実際の focus tear-down / onBlur 不発は jsdom で再現不可。
+  // RTL unmount() で代替し、mirror write + outbox enqueue を assert する。
+  // scroll-out 実挙動の確認は実機 smoke で行う。
+
+  it('#1 保存(核心): editing+dirty → unmount → mirror に新値 + outbox に update_field', async () => {
+    await seedCard({ title: '旧' })
+    const { unmount } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '新タイトル' } })
+    // blur させずに unmount (仮想化 scroll-out による unmount の代替)
+    unmount()
+
+    await vi.waitFor(async () => {
+      const row = await getClientDb().cards.get(CARD_ID)
+      expect(row?.title).toBe('新タイトル')
+    })
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      entity_type: 'card', entity_id: CARD_ID,
+      op: 'update_field',
+      patch: { field: 'title', value: '新タイトル' },
+    })
+  })
+
+  it('#2 guard-1(not editing): display のまま unmount → mirror/outbox 書込なし', async () => {
+    await seedCard({ title: '旧' })
+    const { unmount } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+      />,
+    )
+    unmount()
+
+    await Promise.resolve()
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    const row = await getClientDb().cards.get(CARD_ID)
+    expect(row?.title).toBe('旧')
+  })
+
+  it('#3 guard-2(editing but clean): editing で value 変えずに unmount → 書込なし', async () => {
+    await seedCard({ title: '旧' })
+    const { unmount } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    expect(input.value).toBe('旧')
+    // 値を変えずに unmount
+    unmount()
+
+    await Promise.resolve()
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    const row = await getClientDb().cards.get(CARD_ID)
+    expect(row?.title).toBe('旧')
+  })
+
+  it('#5 blur→unmount → enqueue 1 回のみ(二重 commit なし / Codex P2 回帰ガード)', async () => {
+    // jsdom/RTL は blur 後に render を flush するため「render 前 unmount」の
+    // same-batch race 自体は再現しにくい。本 test は、handleBlur の latestRef 同期
+    // 反映が壊れて cleanup が editing=true のまま commit を呼んだ場合に二重 enqueue
+    // になることを検出する回帰ガード(Codex P2: blur→same-batch unmount 二重 commit)。
+    await seedCard({ title: '旧' })
+    const { unmount } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '新タイトル' } })
+    // blur → commit #1 (handleBlur が latestRef.editing を false に同期反映)
+    fireEvent.blur(input)
+    // 直後に unmount → cleanup は latestRef.editing=false を見て skip → 二重 commit なし
+    unmount()
+
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    })
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      entity_type: 'card', entity_id: CARD_ID,
+      op: 'update_field',
+      patch: { field: 'title', value: '新タイトル' },
+    })
+  })
+
+  it('#4 存在 gate: カード削除後に editing+dirty で unmount → outbox enqueue されない(orphan なし) / 例外なし', async () => {
+    await seedCard({ title: '旧' })
+    const { unmount } = render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="title"
+        initialValue="旧"
+        ariaLabel="title 編集"
+        autoEditOnMount
+      />,
+    )
+    const input = screen.getByRole('textbox') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '新タイトル' } })
+    // カードを削除してから unmount (remote pull-delete による削除中 unmount の代替)
+    await getClientDb().cards.delete(CARD_ID)
+    // 例外が飛ばないこと
+    expect(() => unmount()).not.toThrow()
+    // cleanup の async 存在チェック(getClientDb().cards.get)が settle するまで待つ。
+    // 同等の Dexie 操作を await することで、cleanup の .then() より後に制御が戻ることを保証する。
+    await getClientDb().cards.get(CARD_ID)
+    // 存在 gate が commit をスキップ → outbox への orphan enqueue なし(core assertion)。
+    // この assert は存在 gate を除去すると失敗する(gate 追加前は enqueue が呼ばれる)。
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    // 行は削除済
+    const row = await getClientDb().cards.get(CARD_ID)
+    expect(row).toBeUndefined()
+  })
+})
