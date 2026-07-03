@@ -735,6 +735,33 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
 })
 
 // ===========================================================================
+// M1: 既定 view (条件ゼロ) で列トグルが右寄せされる (ml-auto 担保)
+//
+// regression: wrapper が justify-between のため、ConditionBar が null を返す既定 view
+//   (初期 sorting=[]/filters=[]) では子が列トグル 1 個だけになり左寄せに崩れていた。
+//   fix: 列トグル button に ml-auto を付与し sibling 有無に依存せず右端へ寄せる。
+//   非空振り: ml-auto 未付与では fail (red)、付与後に pass (green)。
+//   (jsdom は layout 計算不可のため、右寄せ意図は ml-auto class 有無で固定する)
+// ===========================================================================
+
+describe('M1: 既定 view で列トグルが右寄せ (ml-auto)', () => {
+  it('条件ゼロ (ConditionBar 非表示) でも列トグル button が ml-auto を持つ', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // (a) 既定 view = 条件ゼロ → ConditionBar は null (条件 chip / すべてクリア 不在)
+    expect(screen.queryByText('すべてクリア')).toBeNull()
+    expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
+
+    // (b) 列トグル button が ml-auto で末尾寄せ (sibling 非依存の右寄せ)
+    const toggle = screen.getByRole('button', { name: '列の表示・非表示' })
+    expect(toggle.className.split(' ')).toContain('ml-auto')
+  })
+})
+
+// ===========================================================================
 // Fix-3 T2: 行仮想化 — 大 N で DOM 行数が N 未満に頭打ちする (窓が有界)
 //
 // 注意 (jsdom 制約): jsdom は layout 0 (getBoundingClientRect=0) のため

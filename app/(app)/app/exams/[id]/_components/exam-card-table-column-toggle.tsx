@@ -34,7 +34,7 @@ export function ColumnVisibilityToggle({
         <button
           type="button"
           aria-label="列の表示・非表示"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-sm text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-sm text-muted-foreground hover:border-foreground/30 hover:text-foreground"
         >
           <SlidersHorizontal className="size-4" aria-hidden="true" />
           列
