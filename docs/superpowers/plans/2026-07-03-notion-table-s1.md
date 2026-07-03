@@ -13,7 +13,7 @@
 - `undefined` で解除規約(answerState 'all'→undefined / 空 streak→undefined / 空 tag map→undefined)。
 - 簡潔性: registry は plain object map 1 箇所 / `Condition[]` は useMemo 派生値(独自 state 化しない)/ 範囲外(card-view・inline 編集・列トグル内部・仮想化 body・resize handle 実装)を触らない。
 - 各 task 完了 = TDD(test 先行)+ 対象 test green + `pnpm vitest run "app/(app)/app/exams/[id]"` 全 green + canonical review(`superpowers:requesting-code-review`・template 改変なし)+ Codex review(`scripts/ai/codex-review.sh`)両者 Critical/Important 0 + `[reviewed]` commit。
-- S1 完了 gate: whole-repo `pnpm lint --max-warnings=0` + `pnpm typecheck` exit 0(報告に明記)。stg smoke は OT push 後に DevTools MCP(§S1-5)。
+- S1 完了 gate: whole-repo `pnpm lint --max-warnings=0` + `pnpm typecheck` exit 0(報告に明記)+ **whole-branch review(opus)**。whole-branch は全 5 task commit 後・OT push 前の締めで、per-task の canonical + Codex review では見えない **cross-task 相互作用**(条件導出 × wrapper 撤去 × ResizeObserver/listOffset の相互影響、旧バー撤去による回帰)を検出対象とする。whole-branch で Critical/Important が出たら解消するまで S1 完了としない(per-task review・stg smoke の代替でなく追加。Edit-3/Fix-3 と同じ規律)。stg smoke は OT push 後に DevTools MCP(§S1-5)。
 - `git commit --no-verify` / `-n` 全面禁止。
 
 ## File 構成(確定)
@@ -94,7 +94,7 @@
 
 - S1-1 → S1-5 直列(各段が単独 smoke できる粒度 = Fix-3 T1.1 型 swap の教訓)。併合しない。
 - commit 規約: `feat(notion-table): S1-N <要約> [reviewed]`(S1-5 のみ撤去を含むが実装ロジック変更ありのため feat + canonical/Codex 必須)。
-- 自走: plan 確定後は S1-5 まで一気通貫(CLAUDE.md 自走継続条件)。停止 = 未解決 Critical / 仕様解釈揺れ / Sprint 完了。
+- 自走: plan 確定後は S1-5 まで一気通貫(CLAUDE.md 自走継続条件)。停止 = 未解決 Critical / 仕様解釈揺れ / Sprint 完了。締め手順 = S1-5 実装完了で一旦止まり、**whole-branch review(opus)→ Critical/Important 解消 → OT push** の順(whole-branch は完了 gate の一部)。
 - 既知リスクと引当:
   - listOffset 崩れ(バー高さ動的化)→ S1-5 完了条件 + stg smoke ④。
   - menu trigger と resize drag の干渉 → 既存 stopPropagation 維持(S1-1 制約)+ stg smoke ①。
@@ -110,7 +110,7 @@
 | S1-2 | bar 新規 7 件 | filter-bar.test 共存 green |
 | S1-3 | filter-bar.test port(3 describe 同値)+ 編集 1 + selectOnly 1 | 旧 test 共存 green |
 | S1-4 | dot / chevron 2 件 | — |
-| S1-5 | 参照ゼロ + wrapper 構造 | whole-repo lint/typecheck + stg smoke 5 項目 |
+| S1-5 | 参照ゼロ + wrapper 構造 | whole-repo lint/typecheck + whole-branch review(opus)+ stg smoke 5 項目 |
 
 - 各 task で `pnpm vitest run "app/(app)/app/exams/[id]"` 全 green を必須(局所 green で済まさない)。
 - review dispatch の観点 list に whole-repo lint 実行確認を含める(CLAUDE.md 完了 gate)。
