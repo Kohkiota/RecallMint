@@ -59,7 +59,7 @@
 ### S1-2: 動的条件バー shell
 
 **目的**: `ConditionBar` 新設。`deriveConditions` で sorting+columnFilters を chip 列挙(sort chip: 「並び替え: <列名> ↑/↓」・click で方向 flip・×= `setSorting` filter 除去 / filter chip: 値要約 label・×= `setFilterValue(undefined)`。編集オープンは S1-3)。「すべてクリア」= 両 state 空化。条件ゼロ → `null`(シュリンク)。hidden 列の条件も表示(列名は凍結 interface どおり `table.getColumn(id)?.columnDef.header` から導出 — `typeof header === 'string'` guard + 非 string 時は `columnId` fallback。guard + fallback があるため非 string header でも壊れない。`table.getColumn(id)` は visibility 非依存ゆえ hidden でも取得可)。独自 display-name map は作らない。`filterBarWrapperRef` 内(既存固定バーと一時共存)に mount。
-**制約**: Global。`Condition[]` は useMemo 派生。`ANSWER_STATE_LABELS`/`STREAK_OP_LABELS` を condition-bar へ移設 export し filter-bar は import に切替(表示文言・挙動不変)。filter chip の値要約は既存 3 型(AnswerStateFilter / StreakFilterValue / TagFilterValue=「タグ: N 件」)のみ対応。
+**制約**: Global。`Condition[]` は useMemo 派生。`ANSWER_STATE_LABELS`/`STREAK_OP_LABELS` は凍結 interface どおり `_lib/card-filter-labels.ts`(新設・pure)へ移設 export し、filter-bar・condition-bar・S1-3 editors はいずれも import に切替(condition-bar 所有にしない = 表示文言・挙動不変)。filter chip の値要約は既存 3 型(AnswerStateFilter / StreakFilterValue / TagFilterValue=「タグ: N 件」)のみ対応。
 **完了条件**:
 - condition-bar.test(新規): ① sort 2 件 + filter 1 件で chip 3 個・配列順 ② sort chip × → 当該のみ削除 ③ sort chip click → desc flip ④ filter chip × → `setFilterValue(undefined)` 経路で行復元 ⑤ すべてクリア → 全行復帰 + バー消滅 ⑥ 条件ゼロ時 render なし ⑦ hidden 列の条件可視 = **sort / filter 両 kind** で「列 hide → header 消滅 + chip 残存 → chip × → 全行復元」の一連 UX を test(columnVisibility 初期値だけの vacuous test にしない。Codex 指摘反映)。
 - 既存 filter-bar.test 無改変 green(共存中・移設 import 含む)+ suite 全 green → review → `[reviewed]` commit。
