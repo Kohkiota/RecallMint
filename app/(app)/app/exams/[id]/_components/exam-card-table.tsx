@@ -53,6 +53,7 @@ import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from '
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
+import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
@@ -198,8 +199,9 @@ type ExamCardTableProps = {
 
 export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
-  // 初期ソート: question 列昇順 = sortKey 昇順 = sortLikeServer 順 (spec §6)。
-  const [sorting, setSorting] = useState<SortingState>([{ id: 'question', desc: false }])
+  // 初期ソート: 空配列 = sortLikeServer pre-sort (liveData:232) が連番順を担保するため不要。
+  // ソートを全削除した時も自然に連番順へ戻る(バーシュリンクとも整合)。
+  const [sorting, setSorting] = useState<SortingState>([])
   // Grid-2 T3: columnFilters は非永続 (examViewPrefs に保存しない、 リロードで初期化)。
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
@@ -562,6 +564,13 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                 const canSort = h.column.getCanSort()
                 const sortDir = h.column.getIsSorted()
                 const canResize = h.column.getCanResize()
+                // ColumnHeaderMenu の label: column header が string のときそれを使い、
+                // それ以外 (JSX header = select 列の checkbox 等) は column.id を fallback。
+                // canSort 列は全て string header (question/lastCorrect/currentStreak/lastReview)。
+                const headerLabel =
+                  typeof h.column.columnDef.header === 'string'
+                    ? h.column.columnDef.header
+                    : h.column.id
                 return (
                   <th
                     key={h.id}
@@ -575,11 +584,17 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     )}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
                     style={{ width: `calc(var(--header-${h.id}-size) * 1px)` }}
-                    onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
+                    // S1-1: th の即ソート onClick を撤去。canSort 列は ColumnHeaderMenu trigger 経由。
                   >
                     {h.isPlaceholder ? null : (
                       <span className="inline-flex items-center gap-1">
-                        {flexRender(h.column.columnDef.header, h.getContext())}
+                        {/* S1-1: canSort 列は ColumnHeaderMenu trigger 化。非 canSort は plain render。
+                            select 列は canSort=false なので flexRender でそのまま checkbox を描画。
+                            filterEditor は S1-3 で配線 (S1-1 では常に undefined = フィルタ節非表示)。 */}
+                        {canSort
+                          ? <ColumnHeaderMenu column={h.column} label={headerLabel} />
+                          : flexRender(h.column.columnDef.header, h.getContext())
+                        }
                         {canSort && (
                           <span
                             className="text-xs text-muted-foreground/60"
@@ -591,7 +606,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                       </span>
                     )}
                     {/* T3: resize handle。select 列はスキップ (checkbox との干渉回避)。
-                        stopPropagation で sort onClick が発火しないよう分離する。 */}
+                        stopPropagation で上位 th の click に menu が干渉しないよう分離する。 */}
                     {canResize && h.column.id !== 'select' && (
                       <div
                         className="absolute right-0 top-0 h-full w-1 cursor-col-resize select-none touch-none"
