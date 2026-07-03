@@ -14,6 +14,13 @@ import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { AnswerStateFilter, StreakFilterValue, TagFilterValue } from '../_lib/card-filter-predicates'
 import { ANSWER_STATE_LABELS, STREAK_OP_LABELS } from '../_lib/card-filter-labels'
 import type { ExamCardRow } from './exam-card-table-columns'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { CardTagAddPopover } from './card-tag-add-popover'
+import { cardTableFilterEditors } from './exam-card-table-filter-editors'
 
 // ---------------------------------------------------------------------------
 // 公開 type / 純関数 (task interface 凍結)
@@ -85,9 +92,7 @@ type ConditionBarProps = {
 
 export function ConditionBar({
   table,
-  // editorContext は S1-3 で使用。S1-2 では受け取るが参照しない。
-  // '_' prefix で varsIgnorePattern: '^_' が適用されるため eslint-disable 不要。
-  editorContext: _editorContext,
+  editorContext,
 }: ConditionBarProps): React.JSX.Element | null {
   const { sorting, columnFilters } = table.getState()
 
@@ -116,6 +121,20 @@ export function ConditionBar({
   const handleClearAll = () => {
     table.setSorting([])
     table.setColumnFilters([])
+  }
+
+  // タグ chip 用の adapter (chip body が CardTagAddPopover trigger になるため component 外で定義)。
+  // empty-category pruning + empty-map → undefined (never leaves {} residue = dot 誤点灯防止)。
+  const tagsColumn = table.getColumn('tags')
+  const handleTagsChipToggle = (categoryId: string, optionId: string) => {
+    const current = (tagsColumn?.getFilterValue() as TagFilterValue | undefined) ?? {}
+    const existing = current[categoryId] ?? []
+    const nextForCat = existing.includes(optionId)
+      ? existing.filter((id) => id !== optionId)
+      : [...existing, optionId]
+    const next: TagFilterValue = { ...current, [categoryId]: nextForCat }
+    if (nextForCat.length === 0) delete next[categoryId]
+    tagsColumn?.setFilterValue(Object.keys(next).length === 0 ? undefined : next)
   }
 
   return (
@@ -157,6 +176,90 @@ export function ConditionBar({
 
         // kind === 'filter'
         const summary = getFilterSummary(condition.value)
+
+        // タグ chip: chip body が CardTagAddPopover の trigger になる。
+        // ネスト popover を避けるため ConditionBar Popover wrapper を使わず
+        // CardTagAddPopover 直接を chip body として配置する。
+        if (condition.columnId === 'tags') {
+          const rawTagFilter = tagsColumn?.getFilterValue() as TagFilterValue | undefined
+          const tagsSelectedOptionIds = Object.values(rawTagFilter ?? {}).flat()
+          return (
+            <span
+              key="filter-tags"
+              data-testid="condition-chip-filter-tags"
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
+            >
+              {/* CardTagAddPopover: chip body (summary) が trigger。selectOnly で作成/編集非表示。 */}
+              <CardTagAddPopover
+                categories={editorContext.categories}
+                options={editorContext.options}
+                allAssignedOptionIds={tagsSelectedOptionIds}
+                onToggle={handleTagsChipToggle}
+                selectOnly
+                trigger={
+                  <button type="button" className="hover:text-foreground">
+                    {summary}
+                  </button>
+                }
+              />
+              {/* × ボタン: filter 解除。stopPropagation で CardTagAddPopover trigger と分離。 */}
+              <button
+                type="button"
+                aria-label={`フィルタを解除: ${displayName}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleRemoveFilter(condition.columnId)
+                }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                ×
+              </button>
+            </span>
+          )
+        }
+
+        // lastCorrect / currentStreak: chip body は Popover trigger、editor は PopoverContent。
+        // filter editor が registry に存在する列のみ。存在しない列は summary span のまま。
+        const columnId = condition.columnId as keyof typeof cardTableFilterEditors
+        const EditorComponent =
+          columnId in cardTableFilterEditors ? cardTableFilterEditors[columnId] : null
+
+        if (EditorComponent && col) {
+          return (
+            <Popover key={`filter-${condition.columnId}`}>
+              <span
+                data-testid={`condition-chip-filter-${condition.columnId}`}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
+              >
+                {/* chip body: PopoverTrigger → editor が popover で開く */}
+                <PopoverTrigger asChild>
+                  <button type="button" className="hover:text-foreground">
+                    {summary}
+                  </button>
+                </PopoverTrigger>
+                {/* × ボタン: filter 解除 (popover は開かない)
+                    Note: aria-label は「フィルタを解除」(を あり) — 固定 filter bar の
+                    「フィルタ解除」(を なし) と区別し既存テストの getByLabelText(/フィルタ解除/)
+                    が複数マッチしないようにする。 */}
+                <button
+                  type="button"
+                  aria-label={`フィルタを解除: ${displayName}`}
+                  onClick={() => handleRemoveFilter(condition.columnId)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  ×
+                </button>
+              </span>
+              <PopoverContent align="start" className="w-auto p-0">
+                {/* editor mounts fresh on Popover open (Radix が close 時に unmount する)。
+                    初期値は EditorComponent 内で column.getFilterValue() から復元する。 */}
+                <EditorComponent column={col} ctx={editorContext} />
+              </PopoverContent>
+            </Popover>
+          )
+        }
+
+        // editor なし列: summary span のみ (× は解除)
         return (
           <span
             key={`filter-${condition.columnId}`}
@@ -164,10 +267,6 @@ export function ConditionBar({
             className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
           >
             <span>{summary}</span>
-            {/* × ボタン: filter 解除 (setFilterValue(undefined))
-                Note: aria-label は「フィルタを解除」(を あり) — 固定 filter bar の
-                「フィルタ解除」(を なし) と区別し既存テストの getByLabelText(/フィルタ解除/)
-                が複数マッチしないようにする。 */}
             <button
               type="button"
               aria-label={`フィルタを解除: ${displayName}`}

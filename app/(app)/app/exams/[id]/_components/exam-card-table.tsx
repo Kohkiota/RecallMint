@@ -22,6 +22,7 @@ import {
   useLayoutEffect,
   memo,
   type CSSProperties,
+  type ReactNode,
 } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
@@ -55,6 +56,7 @@ import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { ConditionBar } from './exam-card-table-condition-bar'
+import { cardTableFilterEditors } from './exam-card-table-filter-editors'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
@@ -600,10 +602,49 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                       <span className="inline-flex items-center gap-1">
                         {/* S1-1: canSort 列は ColumnHeaderMenu trigger 化。非 canSort は plain render。
                             select 列は canSort=false なので flexRender でそのまま checkbox を描画。
-                            filterEditor は S1-3 で配線 (S1-1 では常に undefined = フィルタ節非表示)。 */}
+                            S1-3: lastCorrect/currentStreak は filterEditor を渡す。
+                                  tags 列は CardTagAddPopover 直 trigger (nested popover 回避)。 */}
                         {canSort
-                          ? <ColumnHeaderMenu column={h.column} label={headerLabel} />
-                          : flexRender(h.column.columnDef.header, h.getContext())
+                          ? (() => {
+                              // S1-3: lastCorrect / currentStreak は filterEditor を ColumnHeaderMenu に渡す。
+                              // 他の canSort 列 (question / lastReview) は filterEditor=undefined。
+                              const colId = h.column.id
+                              const editorCtx = {
+                                categories: liveData?.categories ?? [],
+                                options: liveData?.options ?? [],
+                              }
+                              let filterEditor: ReactNode | undefined
+                              if (colId === 'lastCorrect') {
+                                const FE = cardTableFilterEditors.lastCorrect
+                                filterEditor = <FE column={h.column} ctx={editorCtx} />
+                              } else if (colId === 'currentStreak') {
+                                const FE = cardTableFilterEditors.currentStreak
+                                filterEditor = <FE column={h.column} ctx={editorCtx} />
+                              }
+                              return (
+                                <ColumnHeaderMenu
+                                  column={h.column}
+                                  label={headerLabel}
+                                  filterEditor={filterEditor}
+                                />
+                              )
+                            })()
+                          : h.column.id === 'tags'
+                            ? (() => {
+                                // S1-3: tags 列は CardTagAddPopover 直 trigger (ColumnHeaderMenu 非使用)。
+                                // nested popover を避けるため spec §4.2 準拠で直接配置する。
+                                const FE = cardTableFilterEditors.tags
+                                return (
+                                  <FE
+                                    column={h.column}
+                                    ctx={{
+                                      categories: liveData?.categories ?? [],
+                                      options: liveData?.options ?? [],
+                                    }}
+                                  />
+                                )
+                              })()
+                            : flexRender(h.column.columnDef.header, h.getContext())
                         }
                         {canSort && (
                           <span
