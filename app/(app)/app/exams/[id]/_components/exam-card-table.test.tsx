@@ -8,7 +8,7 @@
 // 環境: vitest + jsdom + @testing-library/react + fake-indexeddb (vitest.setup.ts global)。
 // useLiveQuery は Dexie への put/add でリアクティブに再評価される (fake-indexeddb 使用)。
 //
-// Fix-1 T2 追記: bulk createOptionAndAssign 配線 + 回帰 (action-bar 限定、 filter-bar/TagCell 不変)。
+// Fix-1 T2 追記: bulk createOptionAndAssign 配線 (action-bar 限定、 TagCell 不変)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
@@ -447,55 +447,6 @@ describe('Edit-3 T1: th/td padding density', () => {
       expect(td.className, 'td は px-1 を持つ').toContain('px-1')
       expect(td.className, 'td は px-3 を持たない').not.toContain('px-3')
     }
-  })
-})
-
-describe('Fix-1 T2: 回帰 — filter-bar / TagCell の tagEditCallbacks は不変', () => {
-  // 回帰条件: bulkTagEditCallbacks が filter-bar や TagCell に誤って渡された場合、
-  // filter-bar の tag popover で option 新規作成をトリガすると createOption (= mockCreateOption) が
-  // 呼ばれてしまう。本テストはその leak を行動レベルで検出する。
-  //
-  // 検証戦略: filter-bar の「タグで絞り込み」popover から新規 option 作成パスを実行する。
-  //   - tagEditCallbacks.createOptionAndAssign = no-op placeholder → mockCreateOption 非呼出
-  //   - もし bulkTagEditCallbacks が filter-bar に誤配線された場合 → mockCreateOption が呼ばれ失敗
-  //
-  // action-bar が bulkCreateOptionAndAssign を呼ぶことは上の T2 テストで証明済み。
-  // 本テストは「filter-bar 側が独立した no-op 経路を通ること」の isolation のみを確認する。
-  it('filter-bar の createOptionAndAssign は no-op — bulkTagEditCallbacks の leak を検出する isolation テスト', async () => {
-    mockCreateOption.mockClear()
-    mockBulkTag.mockClear()
-
-    const db = getClientDb()
-    await db.cards.bulkPut([makeCard(1)])
-    await db.tag_categories.put(FIX1_CATEGORY)
-
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
-    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
-
-    // filter-bar の「タグで絞り込み」popover を開く (action-bar は未表示 = 行未選択)
-    const filterBar = screen.getByTestId('exam-card-table-filter-bar')
-    fireEvent.click(within(filterBar).getByText('タグで絞り込み'))
-
-    // stage1: カテゴリ選択 → Difficulty を選択して option stage へ
-    const catInput = await screen.findByLabelText('category を検索 / 新規作成')
-    fireEvent.change(catInput, { target: { value: '' } })
-    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Difficulty'))
-
-    // stage2: option 新規作成 → 「新規作成: FilterOpt」を click
-    const optInput = await screen.findByLabelText('option を検索 / 新規作成')
-    fireEvent.change(optInput, { target: { value: 'FilterOpt' } })
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: '新規作成: FilterOpt' })).toBeInTheDocument(),
-    )
-    fireEvent.click(screen.getByRole('button', { name: '新規作成: FilterOpt' }))
-
-    // filter-bar のパスでは tagEditCallbacks.createOptionAndAssign = no-op placeholder のため
-    // mockCreateOption (= module-level createOption) は呼ばれない。
-    // リグレッション: bulkTagEditCallbacks が filter-bar に誤配線された場合ここで 1+ 回呼ばれ失敗する。
-    await waitFor(() => {
-      expect(mockCreateOption).not.toHaveBeenCalled()
-    })
   })
 })
 

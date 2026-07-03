@@ -202,12 +202,19 @@ describe('ConditionBar: filter chip ×', () => {
     render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 固定フィルタバーで「直近正解」に絞る
-    fireEvent.change(screen.getByLabelText('回答状態フィルタ'), { target: { value: 'correct' } })
+    // 直近正誤 header menu で「直近正解」に絞る (S1-5: 固定バー撤去後は header 経由)
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'), {
+      target: { value: 'correct' },
+    })
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
       expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
     })
+    // header menu を閉じる
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // filter chip が出現する
     const filterChip = await screen.findByTestId('condition-chip-filter-lastCorrect')
@@ -245,13 +252,19 @@ describe('ConditionBar: すべてクリア', () => {
     fireEvent.click(screen.getByText('昇順'))
     await waitFor(() => expect(screen.queryByText('昇順')).not.toBeInTheDocument())
 
-    // filter 追加 (1 行だけに絞る)
-    fireEvent.change(screen.getByLabelText('回答状態フィルタ'), { target: { value: 'correct' } })
+    // filter 追加 (1 行だけに絞る) — 直近正誤 header menu 経由
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'), {
+      target: { value: 'correct' },
+    })
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
       expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
       expect(screen.getByTestId('condition-chip-filter-lastCorrect')).toBeInTheDocument()
     })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // すべてクリア
     fireEvent.click(screen.getByText('すべてクリア'))
@@ -278,8 +291,12 @@ describe('ConditionBar: filter chip value-summary labels', () => {
     render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // fixed bar で streak ≤ 2 をセット
-    fireEvent.change(screen.getByLabelText('連続正解数 しきい値'), { target: { value: '2' } })
+    // 連続正解数 header menu で streak ≤ 2 をセット (S1-5: 固定バー撤去後は header 経由)
+    fireEvent.click(screen.getByLabelText('連続正解数 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('連続正解数 しきい値'), {
+      target: { value: '2' },
+    })
 
     // ConditionBar に streak filter chip が出現し、ラベルが「連続正解数: ≤ 2」を含む
     const chip = await screen.findByTestId('condition-chip-filter-currentStreak')
@@ -321,9 +338,9 @@ describe('ConditionBar: filter chip value-summary labels', () => {
     render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // fixed bar の tag popover で option を 1 件選択
-    const bar = screen.getByTestId('exam-card-table-filter-bar')
-    fireEvent.click(within(bar).getByText('タグで絞り込み'))
+    // tags header popover で option を 1 件選択 (S1-5: 固定バー撤去後は header 経由)
+    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
+    fireEvent.click(within(tagsHeader).getByRole('button'))
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Difficulty'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
@@ -333,50 +350,6 @@ describe('ConditionBar: filter chip value-summary labels', () => {
     // (count = Object.values({'cat-label': ['opt-label']}).flat().length = 1)
     const chip = await screen.findByTestId('condition-chip-filter-tags')
     expect(chip).toHaveTextContent('タグ: 1 件')
-  })
-})
-
-// ===========================================================================
-// Fix 2 TDD: streak filter clear via ConditionBar → op change must not reapply
-// ===========================================================================
-
-describe('FilterBar + ConditionBar coexistence: streak sync after external clear', () => {
-  it('[TDD-RED→GREEN] ConditionBar で streak クリア後に演算子変更しても filter は再適用されない', async () => {
-    const db = getClientDb()
-    await db.cards.bulkPut([
-      makeCard(1, { current_streak: 0 }),
-      makeCard(2, { current_streak: 2 }),
-      makeCard(3, { current_streak: 5 }),
-    ])
-
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
-    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
-
-    // Step 1: fixed bar で streak ≤ 2 に絞る
-    fireEvent.change(screen.getByLabelText('連続正解数 しきい値'), { target: { value: '2' } })
-    await waitFor(() => {
-      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
-      expect(screen.queryByTestId('row-card-3')).not.toBeInTheDocument()
-    })
-
-    // Step 2: ConditionBar の currentStreak filter chip × でクリア
-    const filterChip = await screen.findByTestId('condition-chip-filter-currentStreak')
-    fireEvent.click(within(filterChip).getByRole('button', { name: /フィルタを解除/ }))
-
-    // 全行復元を確認
-    await waitFor(() => {
-      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3)
-    })
-    expect(screen.queryByTestId('condition-chip-filter-currentStreak')).not.toBeInTheDocument()
-
-    // Step 3: fixed bar の op を 'gte' に変更 → filter は再適用されない
-    fireEvent.change(screen.getByLabelText('連続正解数 演算子'), { target: { value: 'gte' } })
-
-    // 全 3 行が維持される (stale streakInput '2' で再適用されてはいけない)
-    await waitFor(() => {
-      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3)
-    })
-    expect(screen.queryByTestId('condition-chip-filter-currentStreak')).not.toBeInTheDocument()
   })
 })
 
@@ -437,12 +410,19 @@ describe('ConditionBar: hidden 列の条件可視', () => {
     render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 直近正誤 フィルタを「直近正解」に設定 → 1 行に絞る
-    fireEvent.change(screen.getByLabelText('回答状態フィルタ'), { target: { value: 'correct' } })
+    // 直近正誤 フィルタを「直近正解」に設定 → 1 行に絞る (S1-5: header menu 経由)
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'), {
+      target: { value: 'correct' },
+    })
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
       expect(screen.getByTestId('condition-chip-filter-lastCorrect')).toBeInTheDocument()
     })
+    // header menu を閉じてから列トグルを操作
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // 列トグルを開いて 直近正誤 を非表示にする
     fireEvent.click(screen.getByLabelText('列の表示・非表示'))

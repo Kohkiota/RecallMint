@@ -5,7 +5,7 @@
 //
 // 'use client' は付けない: 親 ExamCardTable (= 'use client') からのみ import される子で
 // boundary は親側で確立済。 file 自体に付けると Next.js TS plugin が function 型 prop
-// (table) を Server Action prop として誤検出する (ExamCardTableFilterBar と同 pattern)。
+// (table) を Server Action prop として誤検出する (ConditionBar と同 pattern)。
 
 import * as React from 'react'
 import { SlidersHorizontal } from 'lucide-react'

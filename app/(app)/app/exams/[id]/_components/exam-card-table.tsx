@@ -52,7 +52,6 @@ import {
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
-import { ExamCardTableFilterBar } from './exam-card-table-filter-bar'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { ConditionBar } from './exam-card-table-condition-bar'
@@ -86,7 +85,7 @@ type TableBodyProps = {
   isResizing: boolean
   // Fix-3 T2: list(tbody 行群)の document 先頭からの offset。
   //   useWindowVirtualizer に scrollMargin として渡し「どの行が可視か」の計算が
-  //   filter bar / header 分ズレないようにする (必須。無いと wrong rows が render される)。
+  //   条件バー / header 分ズレないようにする (必須。無いと wrong rows が render される)。
   scrollMargin: number
 }
 
@@ -467,7 +466,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
 
   // Fix-1 T2: action-bar 専用の bulk-bound createOptionAndAssign。
   // option を新規作成 (createOption) してから bulk add (onBulkTag) へ流す。
-  // filter-bar / TagCell(meta) へ渡す tagEditCallbacks は不変 — action-bar のみに影響。
+  // TagCell(meta) へ渡す tagEditCallbacks は不変 — action-bar のみに影響。
   // onBulkTag の後に宣言することで TDZ を回避する。
   const bulkCreateOptionAndAssign = useCallback(
     async (categoryId: string, name: string): Promise<void> => {
@@ -502,12 +501,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   )
 
   // Fix-3 T2: 行仮想化用に list(table)の document 先頭からの offset を計測する。
-  //   window virtualizer の scrollMargin に渡す (filter bar / header 分のズレ補正、必須)。
+  //   window virtualizer の scrollMargin に渡す (条件バー / header 分のズレ補正、必須)。
   //   getBoundingClientRect().top + scrollY で document 座標を得る (offsetParent 非依存)。
   //
-  //   Fix wave-1: ResizeObserver (filter bar wrapper) + window resize listener を追加し、
-  //   filter chip の追加/削除や window 幅変化で filter bar の高さが変わった際に
-  //   listOffset を再計測する (stale offset が wrong row window を生む問題を防ぐ)。
+  //   Fix wave-1: ResizeObserver (条件バー wrapper) + window resize listener を追加し、
+  //   S1-5 以降は ConditionBar の条件 chip 追加/削除や window 幅変化で wrapper の高さが
+  //   変わった際に listOffset を再計測する (stale offset が wrong row window を生む問題を防ぐ)。
   const filterBarWrapperRef = useRef<HTMLDivElement>(null)
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [listOffset, setListOffset] = useState(0)
@@ -518,7 +517,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     }
     // 初回計測
     recompute()
-    // filter bar の高さ変化を監視 (chip 追加/削除、toolbar wrap)
+    // 条件バー wrapper の高さ変化を監視 (chip 追加/削除、toolbar wrap)
     const filterBar = filterBarWrapperRef.current
     let ro: ResizeObserver | null = null
     if (filterBar) {
@@ -538,17 +537,12 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
     // ようにする (mobile 短 viewport 375px で確認)。 pb-32 (128px) で wrap 時も余裕を持つ。
     <div className={selectedIds.length > 0 ? 'pb-32' : undefined}>
-      {/* Edit-2 Task 4: 列表示/非表示 toggle を filter bar と並べる (右寄せ)。 */}
-      {/* Fix wave-1: filterBarWrapperRef を付与し ResizeObserver で高さ変化を監視する。 */}
+      {/* Edit-2 Task 4: 列表示/非表示 toggle を ConditionBar と並べる (右寄せ)。 */}
+      {/* filterBarWrapperRef = ConditionBar + ColumnVisibilityToggle の wrapper。
+          S1-5 で固定 FilterBar を撤去し、この wrapper は動的条件バーのみを内包する。
+          ResizeObserver で高さ変化 (条件 chip の追加/削除で ConditionBar が伸縮) を監視する。 */}
       <div ref={filterBarWrapperRef} className="flex flex-wrap items-start justify-between gap-2">
-        <ExamCardTableFilterBar
-          table={table}
-          categories={liveData?.categories ?? []}
-          options={liveData?.options ?? []}
-          tagEditCallbacks={tagEditCallbacks}
-        />
-        {/* S1-2: ConditionBar を固定 FilterBar・ColumnVisibilityToggle と一時共存。
-            S1-5 で固定 FilterBar を撤去し ConditionBar のみになる。 */}
+        {/* S1-5: 動的条件バー (固定 FilterBar 撤去済 = 唯一のフィルタ UI)。 */}
         <ConditionBar
           table={table}
           editorContext={{

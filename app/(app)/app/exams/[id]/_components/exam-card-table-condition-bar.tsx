@@ -237,10 +237,7 @@ export function ConditionBar({
                     {summary}
                   </button>
                 </PopoverTrigger>
-                {/* × ボタン: filter 解除 (popover は開かない)
-                    Note: aria-label は「フィルタを解除」(を あり) — 固定 filter bar の
-                    「フィルタ解除」(を なし) と区別し既存テストの getByLabelText(/フィルタ解除/)
-                    が複数マッチしないようにする。 */}
+                {/* × ボタン: filter 解除 (popover は開かない) */}
                 <button
                   type="button"
                   aria-label={`フィルタを解除: ${displayName}`}

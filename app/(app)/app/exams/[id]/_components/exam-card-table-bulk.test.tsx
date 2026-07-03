@@ -149,11 +149,16 @@ describe('T6: 全選択スコープ = filtered (§7.3)', () => {
     render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
-    // 「直近正解」で card-1 のみ可視に絞る
-    fireEvent.change(screen.getByLabelText('回答状態フィルタ'), {
+    // 「直近正解」で card-1 のみ可視に絞る (S1-5: 固定バー撤去後は header menu 経由)
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'), {
       target: { value: 'correct' },
     })
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+    // header menu を閉じてから全選択
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // 全選択 header
     fireEvent.click(screen.getByRole('checkbox', { name: '全選択' }))
@@ -264,8 +269,10 @@ describe('T6: フィルタ変更で隠れた選択行 自動解除 (HS-2)', () =
       expect(screen.getByTestId('action-bar-count')).toHaveTextContent('2件選択中'),
     )
 
-    // フィルタで card-1 (last_correct=true) のみ可視 → card-2 が隠れる
-    fireEvent.change(screen.getByLabelText('回答状態フィルタ'), {
+    // フィルタで card-1 (last_correct=true) のみ可視 → card-2 が隠れる (S1-5: header menu 経由)
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'), {
       target: { value: 'correct' },
     })
 
