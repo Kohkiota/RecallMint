@@ -40,3 +40,6 @@ npm-debug.log*
 
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
+
+# Claude Code 個人設定(hook 登録等)
+.claude/settings.local.json
