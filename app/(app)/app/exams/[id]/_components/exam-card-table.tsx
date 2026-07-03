@@ -646,12 +646,24 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                               })()
                             : flexRender(h.column.columnDef.header, h.getContext())
                         }
+                        {/* S1-4: filter dot — registry-gated, independent of canSort.
+                            dot の対象列判定は cardTableFilterEditors の key 参照
+                            (capability source = registry に一元化)。 */}
+                        {h.column.id in cardTableFilterEditors &&
+                          h.column.getIsFiltered() && (
+                            <span
+                              role="img"
+                              aria-label="フィルタ適用中"
+                              className="inline-block h-1.5 w-1.5 rounded-full bg-primary"
+                            />
+                          )}
                         {canSort && (
                           <span
                             className="text-xs text-muted-foreground/60"
                             aria-hidden="true"
                           >
-                            {sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '⇅'}
+                            {/* S1-4: ⇅ → ▾ (unsorted = menu-affordance chevron; ▲/▼ unchanged) */}
+                            {sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '▾'}
                           </span>
                         )}
                       </span>

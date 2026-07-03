@@ -12,14 +12,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
   type SortingState,
 } from '@tanstack/react-table'
-import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { getClientDb, type ClientCard, type ClientTagCategory, type ClientTagOption } from '@/lib/client-db'
 import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 
@@ -116,11 +116,37 @@ function TestMenu({
 }
 
 // ---------------------------------------------------------------------------
-// ExamCardTable setup helpers (tests ④ ⑤)
+// ExamCardTable setup helpers (tests ④ ⑤ ⑥ ⑦)
 // ---------------------------------------------------------------------------
 
 const EXAM_ID = 'header-menu-exam'
 const USER_ID = 'header-menu-user'
+
+function makeTagCategory(): ClientTagCategory {
+  return {
+    id: 'cat-header-menu-1',
+    user_id: USER_ID,
+    name: 'Difficulty',
+    select_type: 'multi',
+    color: null,
+    sort_key: '0001',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+function makeTagOption(): ClientTagOption {
+  return {
+    id: 'opt-header-menu-1',
+    user_id: USER_ID,
+    category_id: 'cat-header-menu-1',
+    name: 'Hard',
+    color: null,
+    sort_key: '0001',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+}
 
 function makeCard(): ClientCard {
   return {
@@ -296,5 +322,147 @@ describe('ColumnHeaderMenu ⑤: select 列は ExamCardTable で trigger 化さ�
     // その th 内にメニュー trigger button がない
     const menuButton = selectTh.querySelector('button[aria-label$="の列メニュー"]')
     expect(menuButton).toBeNull()
+  })
+})
+
+// ===========================================================================
+// ⑥ S1-4: filter dot — registered column shows dot when filtered, hides when cleared
+// ===========================================================================
+
+describe('S1-4 ⑥: filter dot — lastCorrect フィルタ設定/解除で dot が出現/消滅', () => {
+  it('lastCorrect フィルタ設定で「フィルタ適用中」dot 出現、解除で消滅', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // initially no filter dot
+    expect(screen.queryByRole('img', { name: 'フィルタ適用中' })).not.toBeInTheDocument()
+
+    // open lastCorrect column menu and set filter to 'correct'
+    fireEvent.click(screen.getByRole('button', { name: '直近正誤 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(
+      within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'),
+      { target: { value: 'correct' } },
+    )
+
+    // dot appears
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+    })
+
+    // clear filter → dot disappears
+    fireEvent.change(
+      within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ'),
+      { target: { value: 'all' } },
+    )
+    await waitFor(() => {
+      expect(screen.queryByRole('img', { name: 'フィルタ適用中' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('tags 列(非 canSort)フィルタ設定で「フィルタ適用中」dot が tags th 内に出現', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeTagCategory())
+    await db.tag_options.put(makeTagOption())
+    await db.cards.put(makeCard())
+    await db.card_tags.put({
+      card_id: 'card-menu-1',
+      option_id: 'opt-header-menu-1',
+      user_id: USER_ID,
+      created_at: new Date().toISOString(),
+    })
+
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // no dot initially
+    expect(screen.queryByRole('img', { name: 'フィルタ適用中' })).not.toBeInTheDocument()
+
+    // open tags header popover and select an option
+    const tagsHeaderBefore = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
+    fireEvent.click(within(tagsHeaderBefore).getByRole('button'))
+    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Difficulty'))
+    await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Hard'))
+
+    // dot appears — and is scoped within the tags th
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+    })
+    const tagsHeaderAfter = screen.getByRole('columnheader', { name: /タグ/ })
+    expect(
+      within(tagsHeaderAfter).getByRole('img', { name: 'フィルタ適用中' }),
+    ).toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// ⑦ S1-4: sort arrow glyph — unsorted=▾ (chevron), asc=▲, desc=▼
+// ===========================================================================
+
+describe('S1-4 ⑦: sort arrow glyph', () => {
+  it('未ソート canSort 列(currentStreak)は ▾ を表示し ⇅ を表示しない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // 初期 sorting=[](S1-1)ゆえ currentStreak は未ソート → 中立グリフ ▾ が出る
+    const streakTh = screen.getByRole('columnheader', { name: /連続正解数/ })
+    expect(streakTh.textContent).toContain('▾')
+    expect(streakTh.textContent).not.toContain('⇅')
+  })
+
+  it('昇順ソート後の列は ▲ を表示する', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // Sort question ascending via menu
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '昇順' }))
+
+    await waitFor(() => {
+      const questionTh = screen.getByRole('columnheader', { name: /問題文/ })
+      expect(questionTh.textContent).toContain('▲')
+      expect(questionTh.textContent).not.toContain('▾')
+    })
+  })
+
+  it('降順ソート後の列は ▼ を表示する', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // Open question menu and click 降順
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '降順' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '降順' }))
+
+    await waitFor(() => {
+      const questionTh = screen.getByRole('columnheader', { name: /問題文/ })
+      expect(questionTh.textContent).toContain('▼')
+      expect(questionTh.textContent).not.toContain('▾')
+    })
   })
 })
