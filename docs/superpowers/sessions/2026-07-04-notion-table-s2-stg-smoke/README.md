@@ -43,3 +43,15 @@ container を 1500px 内部スクロール後も thead が container 上端(147)
 
 ## 総括
 S2 の app-shell + 2段 sticky + element virtualizer + 列 lift + th 全域 trigger は実機で機能。**唯一の実欠陥 = ② の 32px document overflow(root pb-8・Minor・cosmetic）**。OT 判断: 今 fix(1行・要 re-push/re-smoke）or 記録 defer。
+
+---
+
+## ② re-smoke(2026-07-04・scroll-fix 6f548c4 反映確認)= PASS
+
+fix(root を `cn('space-y-1', view === 'card' && 'pb-8')`)デプロイ反映を確認(table view の root className = `space-y-1`・pb-8 なし)。
+
+- **desktop table view**: doc_scrollHeight 760 = viewport 760・**doc_overflow 0px**(前回 32px→0)・document スクロール不可(scrollTop 500 試行→0 維持)。二重スクロール消滅 ✓
+- **mobile(375×667)table view**: doc_scrollHeight 667 = viewport・doc_overflow 0px・document スクロール不可 ✓
+- **card view 回帰なし**: card view root は pb-8 維持・doc_scrollHeight 25443 ≫ viewport・document スクロール可能 ✓(pb-8 出し分けが正しく card のみ）
+
+② 二重スクロールは desktop/mobile とも完全消滅、card view 非回帰。console error 0。**S2 stg smoke 全項目 PASS 確定**。
