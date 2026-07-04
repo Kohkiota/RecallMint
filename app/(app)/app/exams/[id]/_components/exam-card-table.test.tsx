@@ -942,3 +942,61 @@ describe('S2-2: fixed action-bar occlusion 回避が container 内部 padding �
     })
   })
 })
+
+// ===========================================================================
+// S2-3: sticky thead + th 不透明背景
+//
+// jsdom は sticky を実描画しないため、class 存在で構造を固定する。
+// 実挙動 (内部スクロール中の thead 固定・行非透過・Popover 非クリップ) は
+// S2 締め stg smoke に委譲する。
+// ===========================================================================
+
+describe('S2-3: sticky thead + th 不透明背景', () => {
+  it('thead が sticky top-0 z-10 クラスを持つ', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const thead = container.querySelector('thead') as HTMLElement
+    expect(thead, 'thead が存在する').not.toBeNull()
+    const classes = thead.className.split(' ')
+    expect(classes, 'thead が sticky を持つ').toContain('sticky')
+    expect(classes, 'thead が top-0 を持つ').toContain('top-0')
+    expect(classes, 'thead が z-10 を持つ').toContain('z-10')
+  })
+
+  it('全 th が bg-background クラスを持つ (不透明背景 — sticky 時に下の行が透けない)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTh = container.querySelectorAll('th')
+    expect(allTh.length, '少なくとも 1 つの th が存在する').toBeGreaterThan(0)
+    for (const th of allTh) {
+      expect(
+        (th as HTMLElement).className,
+        `th "${(th as HTMLElement).textContent?.trim()}" は bg-background を持つ`,
+      ).toContain('bg-background')
+    }
+  })
+
+  it('th 自体には sticky class が付与されない (thead 単位 sticky / per-th ではない)', async () => {
+    // S2-3 は thead 単位の sticky を採用 (per-th sticky は fallback)。
+    // Fix-3 T2 (scroll-frozen 列撤去) との整合を維持するため、th 自体に sticky は付けない。
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const allTh = container.querySelectorAll('th')
+    for (const th of allTh) {
+      const el = th as HTMLElement
+      expect(
+        el.className,
+        `th "${el.textContent?.trim()}" に sticky class が付与されない (thead 単位)`,
+      ).not.toContain('sticky')
+    }
+  })
+})

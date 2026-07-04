@@ -552,7 +552,11 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
           className="text-sm border-separate border-spacing-0"
           style={{ ...columnSizeVars, width: table.getTotalSize() }}
         >
-        <thead>
+        {/* S2-3: sticky top-0 z-10 で内部スクロール container 上端に見出し行を固定する。
+            border-separate table では thead 単位の sticky が正しく動作する (border-collapse 禁忌だが
+            本テーブルは border-separate border-spacing-0 を維持)。
+            実挙動 (固定・非透過・Popover 非クリップ) は S2 締め stg smoke に委譲。 */}
+        <thead className="sticky top-0 z-10">
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>
               {hg.headers.map((h) => {
@@ -572,8 +576,9 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
                     // T3: relative が必要 (resize handle を absolute right-0 で配置するため)。
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     // select 列のみ text-center align-middle で全選択チェックボックスを上下左右中央に揃える。
+                    // S2-3: bg-background で不透明背景を付与 (thead sticky 時に tbody 行が透けないよう)。
                     className={cn(
-                      'relative px-1 py-1 font-medium text-muted-foreground border-b border-border',
+                      'relative px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
                       h.column.id === 'select' ? 'text-center align-middle' : 'text-left',
                       canSort && 'cursor-pointer select-none',
                     )}
