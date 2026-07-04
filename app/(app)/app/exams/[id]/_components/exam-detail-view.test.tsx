@@ -780,3 +780,36 @@ describe('ExamDetailView — Case ⑯ (S2-5 fix2): 新規ユーザー無操作�
     expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
   })
 })
+
+// ===========================================================================
+// Case ⑰ (S2 scroll-fix): root の pb-8 view 分岐
+// table view では document が一切スクロールしないよう root の pb-8 を付けない。
+// card view では下部余白のため pb-8 を維持する(非 vacuous: 対比で双方を固定)。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑰ (S2 scroll-fix): root の pb-8 は card のみ', () => {
+  it('card view (既定) では root が pb-8 を持つ', () => {
+    const { container } = render(<ExamDetailView {...defaultProps} />)
+    const root = container.firstElementChild as HTMLElement
+    expect(root.className).toContain('pb-8')
+  })
+
+  it('table view に切替後は root が pb-8 を持たない', async () => {
+    // table に seed して view=table で render させる
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
+    )
+
+    const { container } = render(<ExamDetailView {...defaultProps} />)
+
+    // useEffect 後に table view に切替されるのを待つ
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    const root = container.firstElementChild as HTMLElement
+    expect(root.className).not.toContain('pb-8')
+  })
+})

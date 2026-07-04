@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { OnChangeFn, VisibilityState } from '@tanstack/react-table'
 import type { ExamDetailCard } from '@/lib/exams/list'
+import { cn } from '@/lib/utils'
 import {
   SYNC_META_KEYS,
   examViewPrefsSchema,
@@ -178,7 +179,8 @@ export function ExamDetailView({
 
   return (
     // 試験詳細のみ密度優先で ViewToggle と直下 view の間隔を space-y-4(16px) → space-y-1(4px) に縮小
-    <div className="space-y-1 pb-8">
+    // S2 scroll-fix: table view は内部スクロール container が下部余白を吸うため pb-8 不要(二重スクロール防止)
+    <div className={cn('space-y-1', view === 'card' && 'pb-8')}>
       {/* conditional render: view='card' → InlineCardList (capped) / view='table' → app-shell 骨格。
           OQ-5 案 S-A: conditional unmount で同時刻に 2 subscription にならないことを構造的に保証。
           S2-1: card view はタイトル/日付 + view 切替を現状同等スタイルで document flow に描画
