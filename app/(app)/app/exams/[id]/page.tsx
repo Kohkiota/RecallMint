@@ -1,9 +1,7 @@
-import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
 import { getCardsForExam, getExamByIdForUser } from '@/lib/exams/list'
 import { formatRelativeJa } from '@/lib/exams/format'
-import { AppContainer } from '../../_components/app-container'
 import { ExamDetailPullGate } from './_components/exam-detail-pull-gate'
 import { ExamDetailView } from './_components/exam-detail-view'
 
@@ -34,23 +32,8 @@ export default async function ExamDetailPage({
 
   return (
     <div className="w-full">
-      {/* 試験詳細のみ密度優先で共通 py-8 を page 限定で py-2 に上書き */}
-      <AppContainer className="py-2">
-        <div className="space-y-6 md:space-y-3">
-          <div>
-            <Link
-              href="/app/exams"
-              prefetch={false}
-              className="text-sm text-slate-600 hover:text-slate-900"
-            >
-              ← 試験一覧
-            </Link>
-          </div>
-
-          {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
-          <ExamDetailPullGate examId={id} />
-        </div>
-      </AppContainer>
+      {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
+      <ExamDetailPullGate examId={id} />
 
       {/* ExamDetailView → InlineCardList (card view) / ExamCardTable (table view) の
           view 別 conditional unmount で表示を切り替える。 どちらの view でも内部の

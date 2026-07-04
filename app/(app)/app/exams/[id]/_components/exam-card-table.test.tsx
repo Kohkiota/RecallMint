@@ -1472,3 +1472,121 @@ describe('S2b-1 (c): onCollapsedChange 伝播テスト', () => {
     expect(onCollapsedChange, 'hysteresis zone では呼ばれない').not.toHaveBeenCalled()
   })
 })
+
+// ===========================================================================
+// S2b-2: ScrollTopButton — 表示条件 3 態 + click で scrollTo 呼出
+//
+// collapsed 信号は scroll イベントで駆動する (S2b-1 と同一パターン)。
+// rAF を同期 stub にして scroll → 状態更新を 1 イベントループで完結させる。
+// scrollTo は tableContainerRef.current(table の parentElement)への代入 spy で検証。
+// ===========================================================================
+
+describe('S2b-2: ScrollTopButton 表示条件 3 態', () => {
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(performance.now())
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    cleanup()
+  })
+
+  it('collapsed=false (初期状態): scroll-top-button が DOM に存在しない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 初期 collapsed=false → ボタン非表示 (unmount)
+    expect(screen.queryByTestId('scroll-top-button')).not.toBeInTheDocument()
+  })
+
+  it('collapsed=true かつ選択なし: scroll-top-button が DOM に現れる', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // scrollTop > 24 かつ guard 十分 → collapsed=true に遷移
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('scroll-top-button')).toBeInTheDocument()
+    })
+  })
+
+  it('collapsed=true かつ行選択中: scroll-top-button が DOM に存在しない (action bar 競合回避)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // まず collapsed=true にする
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(screen.getByTestId('scroll-top-button')).toBeInTheDocument())
+
+    // 行選択 → selectedIds.length > 0 → ボタン非表示
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
+    await waitFor(() => {
+      expect(screen.queryByTestId('scroll-top-button')).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe('S2b-2: ScrollTopButton click → scrollTo 呼出', () => {
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(performance.now())
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    cleanup()
+  })
+
+  it('click → tableContainerRef.current.scrollTo({ top: 0, behavior: "smooth" }) が呼ばれる', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // scrollTo をスパイとして注入(jsdom は scrollTo が no-op のためモックで検証)
+    const scrollToSpy = vi.fn()
+    scrollContainer.scrollTo = scrollToSpy as unknown as typeof scrollContainer.scrollTo
+
+    // collapsed=true に遷移させてボタンを表示
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(screen.getByTestId('scroll-top-button')).toBeInTheDocument())
+
+    // ボタンをクリック
+    fireEvent.click(screen.getByTestId('scroll-top-button'))
+
+    // scrollTo が正しい引数で呼ばれた
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
+  })
+})

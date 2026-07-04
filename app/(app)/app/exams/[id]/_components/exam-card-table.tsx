@@ -66,7 +66,9 @@ import {
   type OnChangeFn,
   type Table,
 } from '@tanstack/react-table'
+import { ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import { getClientDb } from '@/lib/client-db'
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
@@ -742,6 +744,21 @@ export function ExamCardTable({
           onBulkDelete={onBulkDelete}
           lastResult={lastBulkResult}
         />
+      )}
+      {/* S2b-2: scroll-top ボタン。 collapsed かつ選択なし(action bar 非表示)の時のみ表示。
+          非表示時は unmount(focus 消失許容)。z-30 < action bar z-40 だが同時表示なし。
+          safe-area 対応は stg smoke 確認後に必要なら追加(先回り YAGNI)。 */}
+      {collapsed && selectedIds.length === 0 && (
+        <Button
+          variant="outline"
+          size="icon-lg"
+          className="rounded-full shadow-sm fixed right-4 bottom-4 z-30"
+          data-testid="scroll-top-button"
+          aria-label="先頭へスクロール"
+          onClick={() => tableContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+        >
+          <ChevronUp />
+        </Button>
       )}
     </div>
   )
