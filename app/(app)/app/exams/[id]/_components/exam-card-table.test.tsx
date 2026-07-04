@@ -1000,3 +1000,144 @@ describe('S2-3: sticky thead + th 不透明背景', () => {
     }
   })
 })
+
+// ===========================================================================
+// S2-4: 条件バー A-out(flex-none)確定 — D-4 不変条件
+//
+// D-4 不変条件:
+//   1. 条件バー wrapper が flex-none(container の外・上)
+//   2. container が flex-1 min-h-0 overflow-auto
+//   3. chip 有無(可変高バー)で container/thead 構造が崩れない
+//   4. JS 高さ制御(ResizeObserver / window resize listener)が再導入されていない
+//
+// chip 有/無の対比で非空振り(単に pass するだけでなく状態遷移を追う)。
+// jsdom は layout 計算をしないため、class 存在 + inline style 不在で構造を固定する。
+// 実 layout の崩れ確認(バー高変化でスクロールが壊れないか)は S2 締め stg smoke に委譲。
+// ===========================================================================
+
+describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)', () => {
+  it('条件ゼロ(ConditionBar null): 条件バー wrapper が flex-none を持つ', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 条件ゼロ → ConditionBar は null (chip / すべてクリア 不在)
+    expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
+    expect(screen.queryByText('すべてクリア')).toBeNull()
+
+    // root → 第 1 子 = 条件バー wrapper (flex-none)
+    const root = container.firstElementChild as HTMLElement
+    const condBarWrapper = root.firstElementChild as HTMLElement
+    expect(
+      condBarWrapper.className.split(' '),
+      '条件バー wrapper が flex-none を持つ(chip 無し)',
+    ).toContain('flex-none')
+  })
+
+  it('sort 適用(chip 有り): 条件バー wrapper が flex-none を維持し container/thead が不変', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // 問題文 列メニュー → 昇順 を適用 → ConditionBar が sort chip を描画する
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+    })
+
+    // chip 有りでも 条件バー wrapper が flex-none を維持する
+    const root = container.firstElementChild as HTMLElement
+    const condBarWrapper = root.firstElementChild as HTMLElement
+    expect(
+      condBarWrapper.className.split(' '),
+      'chip 有りでも flex-none を維持',
+    ).toContain('flex-none')
+
+    // container が flex-1 min-h-0 overflow-auto を維持する
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+    const scrollClasses = scrollContainer.className.split(' ')
+    expect(scrollClasses, 'chip 有りでも container が flex-1').toContain('flex-1')
+    expect(scrollClasses, 'chip 有りでも container が min-h-0').toContain('min-h-0')
+    expect(scrollClasses, 'chip 有りでも container が overflow-auto').toContain('overflow-auto')
+
+    // thead が sticky top-0 z-10 を維持する
+    const thead = container.querySelector('thead') as HTMLElement
+    const theadClasses = thead.className.split(' ')
+    expect(theadClasses, 'chip 有りでも thead が sticky').toContain('sticky')
+    expect(theadClasses, 'chip 有りでも thead が top-0').toContain('top-0')
+    expect(theadClasses, 'chip 有りでも thead が z-10').toContain('z-10')
+  })
+})
+
+describe('S2-4: 可変高バー安定性 — chip 有無の対比で構造が不変(D-4 非空振り)', () => {
+  it('chip 無し → sort chip 有り → クリアで chip 無しに戻る、全状態で container/thead 構造が不変', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+    const thead = container.querySelector('thead') as HTMLElement
+
+    // --- chip 無し状態のアサーション ---
+    expect(scrollContainer.className.split(' '), 'chip 無し: container flex-1').toContain('flex-1')
+    expect(scrollContainer.className.split(' '), 'chip 無し: container min-h-0').toContain('min-h-0')
+    expect(thead.className.split(' '), 'chip 無し: thead sticky').toContain('sticky')
+    expect(thead.className.split(' '), 'chip 無し: thead top-0').toContain('top-0')
+    expect(thead.className.split(' '), 'chip 無し: thead z-10').toContain('z-10')
+
+    // --- sort 適用 → chip 有り状態に遷移 ---
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+    })
+
+    // --- chip 有り状態で同一アサーション(可変高でも構造安定) ---
+    expect(scrollContainer.className.split(' '), 'chip 有り: container flex-1 不変').toContain('flex-1')
+    expect(scrollContainer.className.split(' '), 'chip 有り: container min-h-0 不変').toContain('min-h-0')
+    expect(thead.className.split(' '), 'chip 有り: thead sticky 不変').toContain('sticky')
+    expect(thead.className.split(' '), 'chip 有り: thead top-0 不変').toContain('top-0')
+    expect(thead.className.split(' '), 'chip 有り: thead z-10 不変').toContain('z-10')
+
+    // chip 有り → すべてクリアして chip 無しに戻す
+    fireEvent.click(screen.getByText('すべてクリア'))
+    await waitFor(() => {
+      expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
+    })
+
+    // --- chip 無しに戻った後も構造は不変 ---
+    expect(scrollContainer.className.split(' '), 'クリア後: container flex-1 不変').toContain('flex-1')
+    expect(scrollContainer.className.split(' '), 'クリア後: container min-h-0 不変').toContain('min-h-0')
+    expect(thead.className.split(' '), 'クリア後: thead sticky 不変').toContain('sticky')
+    expect(thead.className.split(' '), 'クリア後: thead top-0 不変').toContain('top-0')
+    expect(thead.className.split(' '), 'クリア後: thead z-10 不変').toContain('z-10')
+  })
+})
+
+describe('S2-4: JS 高さ制御なし(D-4 flex ネイティブ)', () => {
+  it('container に inline height style が付与されない(ResizeObserver / JS 高さ制御が再導入されていない)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+    // JS 高さ制御があれば container に style.height が設定される。flex ネイティブではゼロ。
+    expect(scrollContainer.style.height, 'container に inline height が設定されない').toBe('')
+
+    // sort 適用でバー高が変わった後も inline height が付与されない
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+    })
+    expect(scrollContainer.style.height, 'sort(バー高変化)後も inline height なし').toBe('')
+  })
+})
