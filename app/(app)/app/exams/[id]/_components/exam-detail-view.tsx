@@ -52,6 +52,11 @@ export function ExamDetailView({
   archivedAt,
 }: ExamDetailViewProps) {
   const [view, setView] = useState<View>('card')
+  // S2b-1: table-chrome の collapse 状態。ExamCardTable の onCollapsedChange で更新。
+  // table view 離脱時にリセット(stale collapse 禁止)。
+  const [chromeCollapsed, setChromeCollapsed] = useState(false)
+  // S2b-1: table-chrome 外側 wrapper の ref。ExamCardTable が短コンテンツ guard に使う。
+  const chromeRef = useRef<HTMLDivElement>(null)
   // S2-5: columnVisibility state + examViewPrefs 永続を exam-detail-view に集約 (案 P)。
   // 旧 split-brain (view=detail-view / hiddenColumns=ExamCardTable) を単一所有へ。
   // 初期 { sort_key: false } は saved record の無い新規ユーザーにのみ適用。 saved があれば
@@ -98,9 +103,11 @@ export function ExamDetailView({
   // view 切替: setState のみ (UI 即応)。 永続は下の guard 付き effect が一元的に担う。
   // S2-5 fix (R3): handleToggle は直接 setJsonSyncMeta を呼ばない (guard 付き effect 経由)。
   // fix2: ユーザー明示操作なので userInteracted を立てる (load 完了後の replay/永続を許可)。
+  // S2b-1: table view を離脱するときに chromeCollapsed をリセット(stale collapse 防止)。
   const handleToggle = (nextView: View) => {
     if (nextView === view) return
     userInteractedRef.current = true
+    if (view === 'table') setChromeCollapsed(false)
     setView(nextView)
   }
 
@@ -211,32 +218,47 @@ export function ExamDetailView({
           style={{ height: `calc(100dvh - ${shellTop}px)` }}
           className="flex flex-col min-h-0"
         >
-          {/* 上部 chrome (flex-none): タイトル/日付 (最小・1 行 truncate・日付さらに小さく) + view 切替。 */}
+          {/* S2b-1: 上部 chrome — grid-rows 0fr/1fr で unmount せずに collapse。
+              flex-none で flex-col 内配分を担い、grid で内側コンテンツを畳む。
+              chromeRef で offsetHeight を実測し ExamCardTable の短コンテンツ guard に渡す。
+              transition 150ms + motion-reduce 非アニメ。 */}
           <div
+            ref={chromeRef}
             data-testid="table-chrome"
-            className="flex-none flex items-center justify-between gap-2 px-2 py-2 md:px-4"
+            className={cn(
+              'flex-none grid transition-[grid-template-rows] duration-150 motion-reduce:transition-none',
+              chromeCollapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]',
+            )}
           >
-            <div className="min-w-0">
-              <h1 className="truncate text-base font-bold">{examName}</h1>
-              <p className="truncate text-[11px] leading-tight text-slate-500">{dateText}</p>
-            </div>
-            {/* S2-5: view 切替と列ボタンを並べる (列ボタンは table view のみ)。 */}
-            <div className="flex items-center gap-2">
-              <ColumnVisibilityToggle
-                columnVisibility={columnVisibility}
-                onColumnVisibilityChange={handleColumnVisibilityChange}
-              />
-              {viewToggle}
+            <div className="min-h-0 overflow-hidden" inert={chromeCollapsed}>
+              <div className="flex items-center justify-between gap-2 px-2 py-2 md:px-4">
+                <div className="min-w-0">
+                  <h1 className="truncate text-base font-bold">{examName}</h1>
+                  <p className="truncate text-[11px] leading-tight text-slate-500">{dateText}</p>
+                </div>
+                {/* S2-5: view 切替と列ボタンを並べる (列ボタンは table view のみ)。 */}
+                <div className="flex items-center gap-2">
+                  <ColumnVisibilityToggle
+                    columnVisibility={columnVisibility}
+                    onColumnVisibilityChange={handleColumnVisibilityChange}
+                  />
+                  {viewToggle}
+                </div>
+              </div>
             </div>
           </div>
           {/* 表領域 (flex-1 min-h-0): S2-2 の overflow-auto 密封が効く土台。 Edit-1 T2: full-width。
-              S2-5: columnVisibility を controlled prop で渡す (state 所有 + 永続は本 component)。 */}
+              S2-5: columnVisibility を controlled prop で渡す (state 所有 + 永続は本 component)。
+              S2b-1: onCollapsedChange で collapsed 信号を受信し table-chrome を collapse。
+                     chromeRef で chrome の offsetHeight を渡し短コンテンツ guard に使う。 */}
           <div className="w-full flex-1 min-h-0 px-2 md:px-4">
             <ExamCardTable
               examId={examId}
               userId={userId}
               columnVisibility={columnVisibility}
               onColumnVisibilityChange={handleColumnVisibilityChange}
+              onCollapsedChange={setChromeCollapsed}
+              chromeRef={chromeRef}
             />
           </div>
         </div>

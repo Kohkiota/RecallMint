@@ -11,7 +11,7 @@
 // Fix-1 T2 追記: bulk createOptionAndAssign 配線 (action-bar 限定、 TagCell 不変)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { getClientDb, type ClientCard, type ClientTagCategory, type ClientTagOption } from '@/lib/client-db'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,7 @@ vi.mock('../_hooks/use-bulk-card-tags', async (importActual) => {
 })
 
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
+import { ExamCardTable } from './exam-card-table'
 
 // ---------------------------------------------------------------------------
 // test fixtures
@@ -1021,9 +1022,8 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
     expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
     expect(screen.queryByText('すべてクリア')).toBeNull()
 
-    // root → 第 1 子 = 条件バー wrapper (flex-none)
-    const root = container.firstElementChild as HTMLElement
-    const condBarWrapper = root.firstElementChild as HTMLElement
+    // data-testid で条件バー wrapper を取得 (F4: positional traversal 廃止)
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
     expect(
       condBarWrapper.className.split(' '),
       '条件バー wrapper が flex-none を持つ(chip 無し)',
@@ -1044,8 +1044,7 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
     })
 
     // chip 有りでも 条件バー wrapper が flex-none を維持する
-    const root = container.firstElementChild as HTMLElement
-    const condBarWrapper = root.firstElementChild as HTMLElement
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
     expect(
       condBarWrapper.className.split(' '),
       'chip 有りでも flex-none を維持',
@@ -1134,5 +1133,342 @@ describe('S2-4: JS 高さ制御なし(D-4 flex ネイティブ)', () => {
       expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
     })
     expect(scrollContainer.style.height, 'sort(バー高変化)後も inline height なし').toBe('')
+  })
+})
+
+// ===========================================================================
+// S2b-1: 中間帯 collapse — 構造テスト(b)(c)
+//
+// jsdom は scroll/layout 計算不可のため:
+//   - rAF を同期モック(beforeEach stub)
+//   - scrollTop/scrollHeight/clientHeight を Object.defineProperty でスタブ
+//   - fireEvent.scroll で scroll ハンドラを発火
+//   - class 変化を waitFor で確認
+//
+// (b) collapsed → condBarWrapper に grid-rows-[0fr] / expand で grid-rows-[1fr] 復帰
+// (c) onCollapsedChange 伝播(ExamCardTable を直接 render し spy で確認)
+// ===========================================================================
+
+describe('S2b-1 (b): condBarWrapper collapse / expand — scroll で class が切替', () => {
+  // rAF を同期実行にして scroll → 状態更新を 1 イベントループで追う
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(performance.now())
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    cleanup()
+  })
+
+  // non-vacuous guard: rAF が同期実行されることを確認(テストが空振りでないことの証明)
+  it('(前提) rAF stub が同期実行されること', () => {
+    let called = false
+    requestAnimationFrame(() => { called = true })
+    expect(called, 'rAF stub は同期実行').toBe(true)
+  })
+
+  it('初期状態: condBarWrapper が grid-rows-[1fr] を持ち grid-rows-[0fr] を持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    expect(condBarWrapper.className, '初期は grid-rows-[1fr]').toContain('grid-rows-[1fr]')
+    expect(condBarWrapper.className, '初期は grid-rows-[0fr] なし').not.toContain('grid-rows-[0fr]')
+  })
+
+  it('scrollTop > 24, guard 十分 → condBarWrapper が grid-rows-[0fr] に切替(collapse)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    // scroll container は table の親要素
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // スタブ: scrollTop > 24, guard 十分(500 - 200 - 40 = 260 >= 8)
+    // offsetHeight stub=40 → middleBandHeight = condBar(40) + chrome(0, chromeRef なし) = 40
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+
+    fireEvent.scroll(scrollContainer)
+
+    await waitFor(() => {
+      expect(condBarWrapper.className, 'collapse で grid-rows-[0fr]').toContain('grid-rows-[0fr]')
+      expect(condBarWrapper.className, 'collapse で grid-rows-[1fr] 消滅').not.toContain('grid-rows-[1fr]')
+    })
+  })
+
+  it('collapse 後に scrollTop < 8 → condBarWrapper が grid-rows-[1fr] に戻る(expand)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // collapse
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(condBarWrapper.className).toContain('grid-rows-[0fr]'))
+
+    // expand: scrollTop < 8
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 5, configurable: true })
+    fireEvent.scroll(scrollContainer)
+
+    await waitFor(() => {
+      expect(condBarWrapper.className, 'expand で grid-rows-[1fr] 復帰').toContain('grid-rows-[1fr]')
+      expect(condBarWrapper.className, 'expand で grid-rows-[0fr] 消滅').not.toContain('grid-rows-[0fr]')
+    })
+  })
+
+  it('guard failure: 短コンテンツで scrollTop > 24 でも collapse しない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // scrollTop > 24 だが guard 失敗:
+    // offsetHeight stub=40 → middleBandHeight=40 / 205 - 200 - 40 = -35 < 8
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 205, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+
+    fireEvent.scroll(scrollContainer)
+    await act(async () => {})
+
+    // guard 不足 → collapsed=false 維持
+    expect(condBarWrapper.className, 'guard 失敗で grid-rows-[0fr] にならない').not.toContain('grid-rows-[0fr]')
+    expect(condBarWrapper.className, 'guard 失敗で grid-rows-[1fr] 維持').toContain('grid-rows-[1fr]')
+  })
+
+  it('hysteresis: 8 <= scrollTop <= 24 の zone では状態を変化させない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // zone 内のスクロール(8 <= scrollTop <= 24) → 変化なし
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 16, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+
+    fireEvent.scroll(scrollContainer)
+    await act(async () => {})
+
+    // current=false のまま変化なし
+    expect(condBarWrapper.className, 'hysteresis zone で grid-rows-[1fr] 維持').toContain('grid-rows-[1fr]')
+  })
+})
+
+describe('S2b-1 (b): condBarWrapper 構造 — collapse wrapper の内側構造', () => {
+  it('condBarWrapper が flex-none を維持(既存 D-4 不変条件)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    expect(condBarWrapper.className, 'flex-none を維持').toContain('flex-none')
+  })
+
+  it('condBarWrapper 内側に min-h-0 overflow-hidden div が存在する(unmount なし保証)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    // 内側 div: min-h-0 overflow-hidden
+    const innerDiv = condBarWrapper.firstElementChild as HTMLElement
+    expect(innerDiv.className, '内側に min-h-0').toContain('min-h-0')
+    expect(innerDiv.className, '内側に overflow-hidden').toContain('overflow-hidden')
+  })
+
+  it('collapse → condBarWrapper 内側 div が inert を持つ(F1 a11y)', async () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(performance.now()); return 0 })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    const innerDiv = condBarWrapper.firstElementChild as HTMLElement
+    const scrollContainer = (container.querySelector('table') as HTMLElement).parentElement as HTMLElement
+
+    // 展開状態: inert なし
+    expect(innerDiv, '展開時は inert なし').not.toHaveAttribute('inert')
+
+    // collapse
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+
+    await waitFor(() => {
+      expect(innerDiv, 'collapse → inert を持つ').toHaveAttribute('inert')
+    })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('collapse → expand で condBarWrapper 内側 div の inert が消える(F1 a11y)', async () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(performance.now()); return 0 })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
+    const innerDiv = condBarWrapper.firstElementChild as HTMLElement
+    const scrollContainer = (container.querySelector('table') as HTMLElement).parentElement as HTMLElement
+
+    // collapse
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(innerDiv).toHaveAttribute('inert'))
+
+    // expand: scrollTop < 8
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 5, configurable: true })
+    fireEvent.scroll(scrollContainer)
+
+    await waitFor(() => {
+      expect(innerDiv, 'expand → inert が消える').not.toHaveAttribute('inert')
+    })
+
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('S2b-1 (c): onCollapsedChange 伝播テスト', () => {
+  // rAF を同期実行にする
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(performance.now())
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    cleanup()
+  })
+
+  it('scrollTop > 24 → onCollapsedChange(true) が呼ばれる', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onCollapsedChange = vi.fn()
+
+    const { container } = render(
+      <ExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        columnVisibility={{}}
+        onColumnVisibilityChange={() => {}}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(onCollapsedChange).toHaveBeenCalledWith(true))
+  })
+
+  it('collapse 後 scrollTop < 8 → onCollapsedChange(false) が呼ばれる(expand)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onCollapsedChange = vi.fn()
+
+    const { container } = render(
+      <ExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        columnVisibility={{}}
+        onColumnVisibilityChange={() => {}}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // collapse
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 30, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(onCollapsedChange).toHaveBeenCalledWith(true))
+
+    onCollapsedChange.mockClear()
+
+    // expand
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 5, configurable: true })
+    fireEvent.scroll(scrollContainer)
+    await waitFor(() => expect(onCollapsedChange).toHaveBeenCalledWith(false))
+  })
+
+  it('collapsed が変化しない scroll では onCollapsedChange は呼ばれない(boolean 変化時のみ)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onCollapsedChange = vi.fn()
+
+    const { container } = render(
+      <ExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        columnVisibility={{}}
+        onColumnVisibilityChange={() => {}}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+
+    // hysteresis zone — 変化なし
+    Object.defineProperty(scrollContainer, 'scrollTop', { value: 16, configurable: true })
+    Object.defineProperty(scrollContainer, 'scrollHeight', { value: 500, configurable: true })
+    Object.defineProperty(scrollContainer, 'clientHeight', { value: 200, configurable: true })
+
+    fireEvent.scroll(scrollContainer)
+    await act(async () => {})
+
+    expect(onCollapsedChange, 'hysteresis zone では呼ばれない').not.toHaveBeenCalled()
   })
 })

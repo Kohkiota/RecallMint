@@ -1,5 +1,31 @@
 'use client'
 
+// ---------------------------------------------------------------------------
+// S2b-1: computeCollapsed — scroll 閾値 / hysteresis / 短コンテンツ guard の純関数。
+// jsdom は scroll 計算不可のため、この関数を export して直接 unit test する。
+//
+//   scrollTop < 8                         → false (expand)
+//   scrollTop > 24 AND guard >= 8         → true  (collapse)
+//   それ以外 (8 ≤ scrollTop ≤ 24)         → current (hysteresis)
+//
+// guard = scrollHeight - clientHeight - middleBandHeight >= 8
+//   middleBandHeight: collapse 対象帯高合計(chrome + condBarWrapper の実測 offsetHeight)
+//   理由: collapse すると clientHeight が middleBandHeight ぶん増加し、
+//         maxScroll が同量減る。guard がないと scrollTop がclamp されて
+//         expand 条件を即満たす「一往復ちらつき」が発生する。
+// ---------------------------------------------------------------------------
+export function computeCollapsed(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  middleBandHeight: number,
+  current: boolean,
+): boolean {
+  if (scrollTop < 8) return false
+  if (scrollTop > 24 && scrollHeight - clientHeight - middleBandHeight >= 8) return true
+  return current
+}
+
 // ExamCardTable — TanStack Table 最小構成。
 // 案 X-A: ExamCardTable 内で独自 useLiveQuery を呼ぶ (InlineCardList と subscription を共有しない)。
 // view='table' 時のみ mount (OQ-5 案 S-A / conditional unmount) されるため、
@@ -202,6 +228,11 @@ type ExamCardTableProps = {
   // exam-detail-view.tsx が単一所有する (内部 useState / mount-load / persist effect は撤去)。
   columnVisibility: VisibilityState
   onColumnVisibilityChange: OnChangeFn<VisibilityState>
+  // S2b-1: scroll → collapsed 信号を exam-detail-view に通知し table-chrome を collapse。
+  onCollapsedChange?: (collapsed: boolean) => void
+  // S2b-1: table-chrome の高さを実測するための ref (短コンテンツ guard 用)。
+  // exam-detail-view が table-chrome 外側 wrapper の ref を渡す。
+  chromeRef?: RefObject<HTMLElement | null>
 }
 
 export function ExamCardTable({
@@ -209,6 +240,8 @@ export function ExamCardTable({
   userId,
   columnVisibility,
   onColumnVisibilityChange,
+  onCollapsedChange,
+  chromeRef,
 }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   // 初期ソート: 空配列 = sortLikeServer pre-sort (liveData:232) が連番順を担保するため不要。
@@ -218,6 +251,15 @@ export function ExamCardTable({
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
+
+  // S2b-1: 中間帯 collapse 状態。初期 false — remount 時は常に false から再出発。
+  const [collapsed, setCollapsed] = useState(false)
+  // ref で最新値を保持(rAF callback の stale closure 防止)。
+  const collapsedRef = useRef(false)
+  // ConditionBar wrapper の高さ実測用 ref(短コンテンツ guard)。
+  const condBarWrapperRef = useRef<HTMLDivElement>(null)
+  // rAF キャンセル用 id。
+  const rafIdRef = useRef(0)
 
   // useLiveQuery: 案 X-A。 4 store (cards / tag_categories / tag_options / card_tags) を
   // 1 subscription で一括 pull。 InlineCardList の useLiveQuery と同パターンを踏襲
@@ -465,30 +507,77 @@ export function ExamCardTable({
   //   条件バー高や document 位置の変化に非依存で、 座標追従の JS が不要になる)。
   const tableContainerRef = useRef<HTMLDivElement>(null)
 
+  // S2b-1: rAF クリーンアップ(unmount 時に残った rAF をキャンセル)。
+  useEffect(() => {
+    return () => cancelAnimationFrame(rafIdRef.current)
+  }, [])
+
+  // S2b-1: scroll ハンドラ。rAF で throttle し boolean 変化時のみ setState + onCollapsedChange 通知。
+  // virtualizer の getScrollElement/内部 listener とは独立 (同一要素への React onScroll 追加は干渉しない)。
+  // scrollTop は書き換えない(scroll 保持)。
+  const handleScroll = useCallback(() => {
+    cancelAnimationFrame(rafIdRef.current)
+    rafIdRef.current = requestAnimationFrame(() => {
+      const el = tableContainerRef.current
+      if (!el) return
+      const middleBandHeight =
+        (condBarWrapperRef.current?.offsetHeight ?? 0) +
+        (chromeRef?.current?.offsetHeight ?? 0)
+      const next = computeCollapsed(
+        el.scrollTop,
+        el.scrollHeight,
+        el.clientHeight,
+        middleBandHeight,
+        collapsedRef.current,
+      )
+      if (next !== collapsedRef.current) {
+        collapsedRef.current = next
+        setCollapsed(next)
+        onCollapsedChange?.(next)
+      }
+    })
+  }, [onCollapsedChange, chromeRef])
+
   return (
     // S2-2: app-shell 密封の flex 列。 親 (exam-detail-view の flex-1 min-h-0 スロット) を
     //   h-full で埋め、 [条件バー wrapper (flex-none)] + [table container (flex-1 overflow-auto)]
     //   に配分する。 min-h-0 で flex chain を切らさない (固定 px 高さ禁止・spec Global)。
     <div className="h-full flex flex-col min-h-0">
-      {/* S2-2: 条件バー wrapper は flex-none (可変高を吸収)。 S1 の listOffset 用
-          ResizeObserver は D-2 で廃止済のため ref/監視は付けない (D-4 で flex ネイティブに委ねる)。
+      {/* S2b-1: 条件バー wrapper — grid-rows 0fr/1fr で unmount せずに collapse。
+          flex-none で可変高を吸収。transition 150ms + motion-reduce 非アニメ。
+          collapsed 時は grid-rows-[0fr] + inner min-h-0 overflow-hidden でコンテンツをクリップ。
+          condBarWrapperRef で offsetHeight を実測し scroll 閾値の短コンテンツ guard に使う。
           S2-5: 列ボタン (ColumnVisibilityToggle) は exam-detail-view の上部 chrome へ移設済。 */}
-      <div className="flex-none flex flex-wrap items-start gap-2">
-        {/* S1-5: 動的条件バー (固定 FilterBar 撤去済 = 唯一のフィルタ UI)。 */}
-        <ConditionBar
-          table={table}
-          editorContext={{
-            categories: liveData?.categories ?? [],
-            options: liveData?.options ?? [],
-          }}
-        />
+      <div
+        ref={condBarWrapperRef}
+        data-testid="cond-bar-wrapper"
+        className={cn(
+          'flex-none grid transition-[grid-template-rows] duration-150 motion-reduce:transition-none',
+          collapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]',
+        )}
+      >
+        <div className="min-h-0 overflow-hidden" inert={collapsed}>
+          <div className="flex flex-wrap items-start gap-2">
+            {/* S1-5: 動的条件バー (固定 FilterBar 撤去済 = 唯一のフィルタ UI)。 */}
+            <ConditionBar
+              table={table}
+              editorContext={{
+                categories: liveData?.categories ?? [],
+                options: liveData?.options ?? [],
+              }}
+            />
+          </div>
+        </div>
       </div>
       {/* S2-2: 内部スクロール主体の container。 flex-1 min-h-0 で残余高を埋め overflow-auto で
           縦横スクロールを内包 (旧 overflow-x-auto = document 縦スクロール前提から差替)。
           M3: 選択時は fixed action bar (~106px、 wrap で増) が最終行を occlude しないよう
-          container の内部下部に pb-32 (128px) を足す (密封後は container 側 padding が正)。 */}
+          container の内部下部に pb-32 (128px) を足す (密封後は container 側 padding が正)。
+          S2b-1: onScroll → rAF throttle → computeCollapsed で collapsed 信号を導出。
+          virtualizer の getScrollElement/内部 listener とは独立(干渉なし)。 */}
       <div
         ref={tableContainerRef}
+        onScroll={handleScroll}
         className={cn('flex-1 min-h-0 overflow-auto', selectedIds.length > 0 && 'pb-32')}
       >
         {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x スクロールを発火させる。

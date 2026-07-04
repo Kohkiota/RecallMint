@@ -37,18 +37,31 @@ vi.mock('./inline-card-list', () => ({
 
 // S2-5: stub は columnVisibility prop を data 属性で露出し、 detail-view → table の
 // controlled prop 配線 (mount-load / toggle 反映) を検証可能にする。
+// S2b-1: stub は onCollapsedChange prop をボタン経由で呼び出せるよう露出する
+// (scroll 伝播・chrome collapse の結合 test 用)。
 vi.mock('./exam-card-table', () => ({
   ExamCardTable: ({
     examId,
     columnVisibility,
+    onCollapsedChange,
   }: {
     examId: string
     columnVisibility?: unknown
+    onCollapsedChange?: (collapsed: boolean) => void
   }) => (
     <div
       data-testid="exam-card-table-stub"
       data-colvis={JSON.stringify(columnVisibility ?? null)}
     >
+      {/* S2b-1: collapse/expand を test から注入するトリガーボタン */}
+      <button
+        data-testid="stub-trigger-collapse"
+        onClick={() => onCollapsedChange?.(true)}
+      />
+      <button
+        data-testid="stub-trigger-expand"
+        onClick={() => onCollapsedChange?.(false)}
+      />
       exam-card-table-{examId}
     </div>
   ),
@@ -811,5 +824,175 @@ describe('ExamDetailView — Case ⑰ (S2 scroll-fix): root の pb-8 は card �
 
     const root = container.firstElementChild as HTMLElement
     expect(root.className).not.toContain('pb-8')
+  })
+})
+
+// ===========================================================================
+// Case ⑱ (S2b-1): table-chrome collapse — onCollapsedChange 受信で chrome が畳まれる
+//
+// ExamCardTable は stub(onCollapsedChange prop を持つ)。
+// stub の trigger button を fireEvent.click して onCollapsedChange を注入し、
+// table-chrome の grid-rows クラス変化を確認する。
+//
+// (b) collapsed → chrome に grid-rows-[0fr] / expand → grid-rows-[1fr]
+// (d) table → card 切替で chromeCollapsed がリセット → 再 table 時に grid-rows-[1fr]
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑱ (S2b-1): table-chrome collapse', () => {
+  it('table view: 初期状態で table-chrome が grid-rows-[1fr] を持つ(展開)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    // table に切替
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    const chrome = screen.getByTestId('table-chrome')
+    expect(chrome.className, '初期は grid-rows-[1fr]').toContain('grid-rows-[1fr]')
+    expect(chrome.className, '初期は grid-rows-[0fr] なし').not.toContain('grid-rows-[0fr]')
+  })
+
+  it('onCollapsedChange(true) → table-chrome が grid-rows-[0fr] に切替(collapse)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    // stub の collapse trigger を click
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+
+    await waitFor(() => {
+      const chrome = screen.getByTestId('table-chrome')
+      expect(chrome.className, 'collapse で grid-rows-[0fr]').toContain('grid-rows-[0fr]')
+      expect(chrome.className, 'collapse で grid-rows-[1fr] 消滅').not.toContain('grid-rows-[1fr]')
+    })
+  })
+
+  it('onCollapsedChange(false) → table-chrome が grid-rows-[1fr] に復帰(expand)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    // collapse
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+    await waitFor(() =>
+      expect(screen.getByTestId('table-chrome').className).toContain('grid-rows-[0fr]'),
+    )
+
+    // expand
+    fireEvent.click(screen.getByTestId('stub-trigger-expand'))
+    await waitFor(() => {
+      const chrome = screen.getByTestId('table-chrome')
+      expect(chrome.className, 'expand で grid-rows-[1fr] 復帰').toContain('grid-rows-[1fr]')
+      expect(chrome.className, 'expand で grid-rows-[0fr] 消滅').not.toContain('grid-rows-[0fr]')
+    })
+  })
+
+  it('collapse → table-chrome 内側 div が inert を持つ(F1 a11y)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    const chrome = screen.getByTestId('table-chrome')
+    const innerDiv = chrome.firstElementChild as HTMLElement
+
+    // 展開状態: inert なし
+    expect(innerDiv, '展開時は inert なし').not.toHaveAttribute('inert')
+
+    // collapse
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+    await waitFor(() => {
+      expect(innerDiv, 'collapse → inert を持つ').toHaveAttribute('inert')
+    })
+  })
+
+  it('collapse → expand で table-chrome 内側 div の inert が消える(F1 a11y)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    const chrome = screen.getByTestId('table-chrome')
+    const innerDiv = chrome.firstElementChild as HTMLElement
+
+    // collapse
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+    await waitFor(() => expect(innerDiv).toHaveAttribute('inert'))
+
+    // expand
+    fireEvent.click(screen.getByTestId('stub-trigger-expand'))
+    await waitFor(() => {
+      expect(innerDiv, 'expand → inert が消える').not.toHaveAttribute('inert')
+    })
+  })
+})
+
+describe('ExamDetailView — Case ⑲ (S2b-1 d): view 切替で chromeCollapsed がリセット', () => {
+  it('table → collapse → card → table → chrome が展開状態でレンダーされる', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    // table に切替
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    // collapse
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+    await waitFor(() =>
+      expect(screen.getByTestId('table-chrome').className).toContain('grid-rows-[0fr]'),
+    )
+
+    // card に切替(ExamCardTable unmount + chromeCollapsed reset)
+    fireEvent.click(screen.getByRole('button', { name: 'カード' }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('exam-card-table-stub')).not.toBeInTheDocument(),
+    )
+
+    // table に再切替(ExamCardTable remount)
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    // chrome が展開状態(grid-rows-[1fr])で描画されること
+    const chrome = screen.getByTestId('table-chrome')
+    expect(chrome.className, 'view 再入後 chrome は展開 (grid-rows-[1fr])').toContain('grid-rows-[1fr]')
+    expect(chrome.className, 'view 再入後 chrome は grid-rows-[0fr] なし').not.toContain('grid-rows-[0fr]')
+  })
+
+  it('table-chrome collapse 中は flex-none を維持する(既存 D-4 不変)', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    // collapse
+    fireEvent.click(screen.getByTestId('stub-trigger-collapse'))
+    await waitFor(() =>
+      expect(screen.getByTestId('table-chrome').className).toContain('grid-rows-[0fr]'),
+    )
+
+    // flex-none を維持
+    const chrome = screen.getByTestId('table-chrome')
+    expect(chrome.className, 'collapse 中も flex-none').toContain('flex-none')
   })
 })
