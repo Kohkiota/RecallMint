@@ -42,7 +42,7 @@ vi.mock('../_hooks/use-bulk-card-tags', async (importActual) => {
   return { ...actual, useBulkCardTags: () => mockBulkTag }
 })
 
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -280,7 +280,7 @@ describe('ColumnHeaderMenu ④: 非 canSort 列は ExamCardTable でメニュー
   it('title 列ヘッダーに「タイトル の列メニュー」ボタンが存在しない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
@@ -308,7 +308,7 @@ describe('ColumnHeaderMenu ⑤: select 列は ExamCardTable で trigger 化さ�
   it('select 列 th に「の列メニュー」button がなく全選択 checkbox のみ存在する', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
@@ -333,7 +333,7 @@ describe('S1-4 ⑥: filter dot — lastCorrect フィルタ設定/解除で dot 
   it('lastCorrect フィルタ設定で「フィルタ適用中」dot 出現、解除で消滅', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
@@ -377,7 +377,7 @@ describe('S1-4 ⑥: filter dot — lastCorrect フィルタ設定/解除で dot 
       created_at: new Date().toISOString(),
     })
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
@@ -412,7 +412,7 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
   it('未ソート canSort 列(currentStreak)は ▾ を表示し ⇅ を表示しない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
@@ -427,7 +427,7 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
   it('昇順ソート後の列は ▲ を表示する', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
@@ -448,7 +448,7 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
   it('降順ソート後の列は ▼ を表示する', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()

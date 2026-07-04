@@ -85,7 +85,7 @@ vi.mock('./inline-text-field', async () => {
   return { InlineTextField: MockInlineTextField }
 })
 
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -167,7 +167,7 @@ describe('Fix-3 T1.1 — T1: resize ドラッグ 1 サイクルで InlineTextFie
     const db = getClientDb()
     await db.cards.bulkPut(Array.from({ length: N }, (_, i) => makeCard(i + 1)))
 
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // Wait for initial render to settle
     await waitFor(() => {
@@ -218,7 +218,7 @@ describe('Fix-3 T1.1 — T2: isResizing=true 中の mouseMoves で cell 再レ�
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
 
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
@@ -270,7 +270,7 @@ describe('Fix-3 T1.1 — T3: 非 resize 時の Dexie 更新が cells に追従�
     const card = makeCard(1)
     await db.cards.put(card)
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // Wait for initial render
     await waitFor(() => {

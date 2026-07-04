@@ -9,12 +9,15 @@
 // - setJsonSyncMeta は vi.mock で部分 mock + spy (ESM named export の spy 確実化)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { getClientDb } from '@/lib/client-db'
 import {
   SYNC_META_KEYS,
+  examViewPrefsSchema,
   examViewPrefsV1Schema,
   examViewPrefsV2Schema,
+  examViewPrefsToV2,
+  getJsonSyncMeta,
   setJsonSyncMeta as realSetJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
 
@@ -32,9 +35,22 @@ vi.mock('./inline-card-list', () => ({
 // モック: ExamCardTable — 軽量 stub で TanStack / useLiveQuery 依存を回避
 // ---------------------------------------------------------------------------
 
+// S2-5: stub は columnVisibility prop を data 属性で露出し、 detail-view → table の
+// controlled prop 配線 (mount-load / toggle 反映) を検証可能にする。
 vi.mock('./exam-card-table', () => ({
-  ExamCardTable: ({ examId }: { examId: string }) => (
-    <div data-testid="exam-card-table-stub">exam-card-table-{examId}</div>
+  ExamCardTable: ({
+    examId,
+    columnVisibility,
+  }: {
+    examId: string
+    columnVisibility?: unknown
+  }) => (
+    <div
+      data-testid="exam-card-table-stub"
+      data-colvis={JSON.stringify(columnVisibility ?? null)}
+    >
+      exam-card-table-{examId}
+    </div>
   ),
 }))
 
@@ -44,9 +60,13 @@ vi.mock('./exam-card-table', () => ({
 // モジュール解決後に actual 実装を impl として注入することで infinite recursion を回避。
 // ---------------------------------------------------------------------------
 
-const { mockSetJsonSyncMeta } = vi.hoisted(() => ({
+const { mockSetJsonSyncMeta, mockGetJsonSyncMeta } = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockSetJsonSyncMeta: vi.fn<any>(),
+  // getJsonSyncMeta も spy 化 (既定は actual)。 load-race 回帰 test は
+  // mockImplementationOnce で deferred promise に差し替え pre-load toggle を再現する。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mockGetJsonSyncMeta: vi.fn<any>(),
 }))
 
 vi.mock('@/lib/sync/sync-meta', async (importActual) => {
@@ -54,9 +74,13 @@ vi.mock('@/lib/sync/sync-meta', async (importActual) => {
   // impl を actual に向けることで, spy は actual を通してから Dexie に書く
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockSetJsonSyncMeta.mockImplementation(actual.setJsonSyncMeta as any)
+  // 既定 impl は actual (既存 case は素通し)。 clearAllMocks は impl を保持する。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mockGetJsonSyncMeta.mockImplementation(actual.getJsonSyncMeta as any)
   return {
     ...actual,
     setJsonSyncMeta: mockSetJsonSyncMeta,
+    getJsonSyncMeta: mockGetJsonSyncMeta,
   }
 })
 
@@ -184,6 +208,14 @@ describe('ExamDetailView — Case ③: saved 不正値 → card fallback', () =>
 
 describe('ExamDetailView — Case ④: toggle click → setState + sync_meta write', () => {
   it('テーブル button を click → view が table に切替 + setJsonSyncMeta が正しい args で呼ばれる', async () => {
+    // fix2: 書込は prefsLoaded (state, load 完了で true) に依存する。 実 Dexie load 遅延で
+    // waitFor timeout する flake を避けるため load 完了を deferred で決定的にする。
+    let resolveLoad!: (value: unknown) => void
+    const deferred = new Promise<unknown>((resolve) => {
+      resolveLoad = resolve
+    })
+    mockGetJsonSyncMeta.mockImplementationOnce(() => deferred)
+
     render(<ExamDetailView {...defaultProps} />)
 
     // useEffect 完了を waitFor (初期 prefs なし → card のまま)
@@ -191,7 +223,13 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
       expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
     })
 
-    // spy カウントをここでリセット (useEffect 内の write は case ④ では起きないが念のため)
+    // saved 欠損で load 解決 (prefsLoaded=true・無操作ゆえ write なし)
+    await act(async () => {
+      resolveLoad(undefined)
+      await deferred
+    })
+
+    // spy カウントをここでリセット (無操作の load 完了では write は起きないが念のため)
     mockSetJsonSyncMeta.mockClear()
 
     // 「テーブル」 button を click
@@ -203,15 +241,15 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
       expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
     })
 
-    // Edit-2 Task 4: read-modify-write で v2 を書込む。 既存 prefs なしのため
-    // hiddenColumns は [] にフォールバック。 read (getJsonSyncMeta) 解決後に
-    // setJsonSyncMeta が呼ばれるため waitFor で待つ。
+    // S2-5 fix: view 変更で guard 付き永続 effect (deps [view, columnVisibility]) が 1 回
+    // 発火し、 自 columnVisibility state (初期 { sort_key: false }) から hiddenColumns=['sort_key']
+    // を書込む。 handleToggle は書かない (setView のみ) ため二重書込にならず書込は 1 回。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledTimes(1)
     })
     expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 2, view: 'table', hiddenColumns: [] },
+      { version: 2, view: 'table', hiddenColumns: ['sort_key'] },
       examViewPrefsV2Schema,
     )
 
@@ -224,35 +262,44 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
 })
 
 // ===========================================================================
-// Case ④-b: view 切替の read-modify-write が table 設定の hiddenColumns を保持 (HARD GATE)
+// Case ④-b: view 切替が hiddenColumns を破壊しない (HARD GATE / 非破壊往復)
+// S2-5 単一所有: view の書込は自 columnVisibility state から hiddenColumns を導出する。
+// mount load で load 済の hiddenColumns が view 変更後も保持されることを stored 書込で固定する。
 // ===========================================================================
 
 describe('ExamDetailView — Case ④-b: view 切替が hiddenColumns を破壊しない', () => {
-  it('table が hiddenColumns を保存済の state で view 切替 → hiddenColumns が保持される', async () => {
-    // table 側が hiddenColumns を保存した state を seed (v2)
+  it('hiddenColumns を保存済の state で view 切替 → hiddenColumns が保持される', async () => {
+    // hiddenColumns を保存した state を seed (v2)。 fix2: mount echo write は無操作ゆえ起きない
+    // ため、 load 完了の観測点を stub の columnVisibility 反映に変える (view=table で seed し
+    // stub を render させる)。
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 2, view: 'card', hiddenColumns: ['memo', 'tags'] },
+      { version: 2, view: 'table', hiddenColumns: ['memo', 'tags'] },
       examViewPrefsV2Schema,
     )
 
     render(<ExamDetailView {...defaultProps} />)
 
-    // mount load 完了 (view='card' のまま) を待つ
+    // mount load 完了を待つ (単一所有: load が columnVisibility を set → stub の data-colvis に
+    // memo/tags:false が反映される = load 完了の観測点)。 これで click 前に columnVisibility が
+    // 反映済であることを保証し race を排除する。
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+      const stub = screen.getByTestId('exam-card-table-stub')
+      const colvis = JSON.parse(stub.getAttribute('data-colvis') ?? 'null')
+      expect(colvis).toEqual({ memo: false, tags: false })
     })
 
     mockSetJsonSyncMeta.mockClear()
 
-    // テーブルに切替
-    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    // カードに切替 (ユーザー明示操作)
+    fireEvent.click(screen.getByRole('button', { name: 'カード' }))
 
-    // read-modify-write で hiddenColumns を保持したまま view='table' を書込む
+    // 単一所有: view=card + hiddenColumns=[memo,tags] (自 state から導出、 view は消えず
+    // hiddenColumns も消えない = 相互非破壊)。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        { version: 2, view: 'table', hiddenColumns: ['memo', 'tags'] },
+        { version: 2, view: 'card', hiddenColumns: ['memo', 'tags'] },
         examViewPrefsV2Schema,
       )
     })
@@ -468,9 +515,9 @@ describe('ExamDetailView — Case ⑩: table view app-shell 骨格 (S2-1)', () =
     expect(chrome.contains(toggleGroup)).toBe(true)
   })
 
-  it('table view branch は密封しない (S2-2 の責務): container の overflow を変えず ExamCardTable に props 追加しない', async () => {
-    // 骨格段の非密封を構造で固定: ExamCardTable stub は examId のみ受ける
-    // (props 追加なし = 内部構造非変更)。 密封 (overflow-auto container) は S2-2。
+  it('table view branch は密封しない (S2-2 の責務): container の overflow を変えない', async () => {
+    // 密封 (overflow-auto container) は S2-2 の責務。 表領域 wrapper に overflow-auto が
+    // 付かないことを固定する (S2-5 で columnVisibility controlled prop は追加済 = 別軸)。
     render(<ExamDetailView {...defaultProps} />)
 
     await waitFor(() => {
@@ -486,5 +533,250 @@ describe('ExamDetailView — Case ⑩: table view app-shell 骨格 (S2-1)', () =
     // 表領域 wrapper は overflow-auto を持たない (密封は S2-2)
     const tableWrapper = screen.getByTestId('exam-card-table-stub').parentElement
     expect(tableWrapper!.className).not.toContain('overflow-auto')
+  })
+})
+
+// ===========================================================================
+// Case ⑪ (S2-5): 列ボタン (ColumnVisibilityToggle) の配置 — table view のみ表示
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑪ (S2-5): 列ボタンは table view のみ表示', () => {
+  it('card view (既定) では列ボタンが描画されない', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+    expect(screen.queryByRole('button', { name: '列の表示・非表示' })).not.toBeInTheDocument()
+  })
+
+  it('table view に切替後は chrome 内に列ボタンが描画される', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
+    })
+
+    // chrome 内に列ボタンが描画される (view 切替の並び)
+    const chrome = screen.getByTestId('table-chrome')
+    const colBtn = screen.getByRole('button', { name: '列の表示・非表示' })
+    expect(chrome.contains(colBtn)).toBe(true)
+  })
+})
+
+// ===========================================================================
+// Case ⑫ (S2-5): 単一所有 mount-load — saved hiddenColumns が table へ渡る
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑫ (S2-5): mount-load で hiddenColumns が table prop に反映', () => {
+  it('saved hiddenColumns=[explanation_text] → stub の columnVisibility に反映される', async () => {
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: ['explanation_text'] },
+      examViewPrefsV2Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    // saved view='table' へ切替 + stub が hidden 列を反映した columnVisibility を受ける
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      const colvis = JSON.parse(stub.getAttribute('data-colvis') ?? 'null')
+      expect(colvis).toEqual({ explanation_text: false })
+    })
+  })
+})
+
+// ===========================================================================
+// Case ⑬ (S2-5): 単一所有 列 toggle 永続 — 列変更が view を消さない (HARD GATE)
+// 列トグルで列を off → persist は {version:2, view:table, hiddenColumns:[col]} を書き、
+// view=table を保持する (相互非破壊)。 stored 書込 + stub prop 反映を固定する。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑬ (S2-5): 列 toggle が view を破壊しない', () => {
+  it('table view で列を off → 永続 record が view=table を保持し hiddenColumns に載る', async () => {
+    // view=table + hidden なし で seed (chrome + 列ボタンが出る状態)
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    // table view + 列ボタン描画を待つ
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
+    })
+    const colBtn = await screen.findByRole('button', { name: '列の表示・非表示' })
+
+    mockSetJsonSyncMeta.mockClear()
+
+    // 列ボタン popover を開いて メモ を off
+    fireEvent.click(colBtn)
+    const memoCheckbox = await screen.findByRole('checkbox', { name: '列表示: メモ' })
+    fireEvent.click(memoCheckbox)
+
+    // 永続 record を stored から確認 (HARD GATE): view=table 保持 + memo が hiddenColumns。
+    await waitFor(async () => {
+      const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+      expect(saved).toBeDefined()
+      const v2 = examViewPrefsToV2(saved!)
+      expect(v2.view, '列変更が view を消さない').toBe('table')
+      expect(v2.hiddenColumns).toContain('memo')
+    })
+
+    // detail-view → table の controlled prop 配線: stub が memo:false を受ける
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      const colvis = JSON.parse(stub.getAttribute('data-colvis') ?? 'null')
+      expect(colvis.memo).toBe(false)
+    })
+  })
+})
+
+// ===========================================================================
+// Case ⑭ (S2-5 fix / R3): 永続 load-race — load 解決前の view 切替が saved を破壊しない
+// getJsonSyncMeta を deferred promise で mock し、 load 未解決のまま view を切替える。
+// 修正前 (handleToggle が非 guard で write) は default columnVisibility 由来の
+// hiddenColumns=['sort_key'] を書き saved (memo hidden) を上書き = 設定消失 (R3)。
+// 修正後は永続が prefsLoadedRef guard 付き単一 effect に集約され、 pre-load write が
+// 起きず、 load 解決後に saved hiddenColumns が保持される。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で saved を破壊しない', () => {
+  it('load 解決前に view 切替 → guard で write されず、 load 解決後 saved hiddenColumns=[memo] を保持', async () => {
+    // getJsonSyncMeta を未解決 deferred に差し替え (mount load を保留させる)
+    let resolveLoad!: (value: unknown) => void
+    const deferred = new Promise<unknown>((resolve) => {
+      resolveLoad = resolve
+    })
+    mockGetJsonSyncMeta.mockImplementationOnce(() => deferred)
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    // load 未解決: default 'card' のまま
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // load 解決前に table へ切替 (R3 の発火条件: slow read + 素早いクリック)
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // 修正の核心: load 未完了 (prefsLoadedRef=false) ゆえ永続 write は 1 回も起きない。
+    // 修正前はここで handleToggle が hiddenColumns=['sort_key'] を書き RED になる。
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
+
+    // load を saved { view:'table', hiddenColumns:['memo'] } で解決
+    await act(async () => {
+      resolveLoad({ version: 2, view: 'table', hiddenColumns: ['memo'] })
+      await deferred
+    })
+
+    // load 解決後の永続 write は saved hiddenColumns=['memo'] を保持する (clobber なし)
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        { version: 2, view: 'table', hiddenColumns: ['memo'] },
+        examViewPrefsV2Schema,
+      )
+    })
+
+    // default 由来の ['sort_key'] で上書きした形跡がない (= saved 消失していない)
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalledWith(
+      SYNC_META_KEYS.examViewPrefs,
+      expect.objectContaining({ hiddenColumns: ['sort_key'] }),
+      expect.anything(),
+    )
+  })
+})
+
+// ===========================================================================
+// Case ⑮ (S2-5 fix2): pre-load view toggle の post-load replay (Codex P2)
+// fix1 が導入した edge: load 解決前に view 切替 + saved 欠損 (新規ユーザー) だと
+// guard で write skip → fix1 は prefsLoadedRef (ref) を true にするだけで effect を
+// 再発火せず、 pre-load の view 変更が永続されず消失した。 fix2 は「loaded」を state 化し
+// load 完了で effect を再発火させ、 userInteracted 済ゆえ current view (table) を replay 書込。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑮ (S2-5 fix2): pre-load view toggle が post-load で replay される', () => {
+  it('load 解決前に table 切替 + saved 欠損 → load 解決後に current view(table) が永続される', async () => {
+    // getJsonSyncMeta を未解決 deferred に差し替え (mount load を保留させる)
+    let resolveLoad!: (value: unknown) => void
+    const deferred = new Promise<unknown>((resolve) => {
+      resolveLoad = resolve
+    })
+    mockGetJsonSyncMeta.mockImplementationOnce(() => deferred)
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    // load 未解決: default 'card' のまま
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // load 解決前に table へ切替 (ユーザー明示操作)
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'テーブル' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // load 未完了ゆえ pre-load の write は起きない (guard skip)
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
+
+    // load を「saved 欠損 (新規ユーザー)」で解決 (undefined)
+    await act(async () => {
+      resolveLoad(undefined)
+      await deferred
+    })
+
+    // fix2 核心: load 完了で effect が再発火し、 userInteracted 済ゆえ current view(table) を
+    // replay 書込する (fix1 では二度と発火せず消失していた = RED)。
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        { version: 2, view: 'table', hiddenColumns: ['sort_key'] },
+        examViewPrefsV2Schema,
+      )
+    })
+  })
+})
+
+// ===========================================================================
+// Case ⑯ (S2-5 fix2): 新規ユーザー無操作の spurious mount write を抑止 (no-spurious)
+// loaded-state 化で load 完了に effect が再発火するが、 userInteracted=false の間は
+// write しない。 新規ユーザーが何も操作せず開いただけで sync_meta を書かないことを固定。
+// (loaded-state 化のみで userInteracted guard を欠くと load 完了で spurious write = RED)
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑯ (S2-5 fix2): 新規ユーザー無操作で spurious write なし', () => {
+  it('saved 欠損で load 解決 + 無操作 → setJsonSyncMeta が一度も呼ばれない', async () => {
+    // deferred で load 完了タイミングを決定的にする
+    let resolveLoad!: (value: unknown) => void
+    const deferred = new Promise<unknown>((resolve) => {
+      resolveLoad = resolve
+    })
+    mockGetJsonSyncMeta.mockImplementationOnce(() => deferred)
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // saved 欠損で load 解決 (無操作: click なし)
+    await act(async () => {
+      resolveLoad(undefined)
+      await deferred
+    })
+
+    // 無操作 (userInteracted=false) ゆえ load 完了で effect が再発火しても write しない
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
   })
 })

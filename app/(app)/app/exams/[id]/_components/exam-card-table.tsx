@@ -37,22 +37,14 @@ import {
   type ColumnFiltersState,
   type ColumnSizingState,
   type VisibilityState,
+  type OnChangeFn,
   type Table,
 } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
 import { getClientDb } from '@/lib/client-db'
-import {
-  SYNC_META_KEYS,
-  examViewPrefsSchema,
-  examViewPrefsV2Schema,
-  examViewPrefsToV2,
-  getJsonSyncMeta,
-  setJsonSyncMeta,
-} from '@/lib/sync/sync-meta'
 import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
-import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { ConditionBar } from './exam-card-table-condition-bar'
 import { cardTableFilterEditors } from './exam-card-table-filter-editors'
@@ -206,9 +198,18 @@ const MemoizedTableBody = memo(
 type ExamCardTableProps = {
   examId: string
   userId: string
+  // S2-5: columnVisibility は controlled prop。 state 所有 + examViewPrefs 永続は
+  // exam-detail-view.tsx が単一所有する (内部 useState / mount-load / persist effect は撤去)。
+  columnVisibility: VisibilityState
+  onColumnVisibilityChange: OnChangeFn<VisibilityState>
 }
 
-export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
+export function ExamCardTable({
+  examId,
+  userId,
+  columnVisibility,
+  onColumnVisibilityChange,
+}: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   // 初期ソート: 空配列 = sortLikeServer pre-sort (liveData:232) が連番順を担保するため不要。
   // ソートを全削除した時も自然に連番順へ戻る(バーシュリンクとも整合)。
@@ -217,16 +218,6 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
-  // Edit-2 Task 4: columnVisibility は examViewPrefs.hiddenColumns として永続化。
-  // 初期 { sort_key: false } は saved record の無い新規ユーザーにのみ適用。
-  // saved record が存在すれば mount load effect が setColumnVisibility(map) を呼び、
-  // その record が authoritative になる (hiddenColumns:[] = 全列表示 = sort_key 表示を含む)。
-  // 本機能以前に作られた sort_key 非記載の v1 record は examViewPrefsToV2 で
-  // hiddenColumns:[] に変換されるため sort_key が表示になるが、population 0 ゆえ許容 (spec §3.2-3)。
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ sort_key: false })
-  // 永続化ガード: mount load 完了前に persist effect が初期空 state を書き込んで
-  // 既存 record (table が前回保存した hiddenColumns) を上書きするのを防ぐ。
-  const visibilityLoadedRef = useRef(false)
 
   // useLiveQuery: 案 X-A。 4 store (cards / tag_categories / tag_options / card_tags) を
   // 1 subscription で一括 pull。 InlineCardList の useLiveQuery と同パターンを踏襲
@@ -377,7 +368,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnSizingChange: setColumnSizing,
-    onColumnVisibilityChange: setColumnVisibility,
+    onColumnVisibilityChange: onColumnVisibilityChange,
     meta: {
       userId,
       toggle,
@@ -386,47 +377,6 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
       options: liveData?.options ?? [],
     } satisfies ExamCardTableMeta,
   })
-
-  // Edit-2 Task 4: mount で sync_meta から hiddenColumns を load し columnVisibility に反映。
-  // hiddenColumns(string[]) を { [id]: false } map に変換して setState。 load 完了で
-  // visibilityLoadedRef を立て、 以降の persist effect を解禁する (初期空 state での上書き防止)。
-  useEffect(() => {
-    let cancelled = false
-    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema).then((saved) => {
-      if (cancelled) return
-      if (saved) {
-        const { hiddenColumns } = examViewPrefsToV2(saved)
-        const map: VisibilityState = {}
-        for (const id of hiddenColumns) map[id] = false
-        setColumnVisibility(map)
-      }
-      visibilityLoadedRef.current = true
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // Edit-2 Task 4: columnVisibility 変更時に READ-MODIFY-WRITE で永続化 (fire-and-forget)。
-  // load 完了前 (visibilityLoadedRef=false) は early-return し、 初期空 state で既存
-  // record を上書きしない。 view は現在値を read して保持し、 hiddenColumns のみ更新する。
-  // hidden id は value===false の列 (select 列は除外 = 常に表示)。
-  useEffect(() => {
-    if (!visibilityLoadedRef.current) return
-    const hiddenColumns = Object.keys(columnVisibility).filter(
-      (id) => columnVisibility[id] === false && id !== 'select',
-    )
-    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
-      .then((saved) => {
-        const view = saved ? examViewPrefsToV2(saved).view : 'table'
-        return setJsonSyncMeta(
-          SYNC_META_KEYS.examViewPrefs,
-          { version: 2, view, hiddenColumns },
-          examViewPrefsV2Schema,
-        )
-      })
-      .catch(() => {})
-  }, [columnVisibility])
 
   // Grid-2 T6: selection prune effect (§7.4 / HS-2 を単一 effect で吸収)。
   // visibleIds = 現在のフィルタ後 row id 集合。 selection をこの集合に prune することで
@@ -520,10 +470,10 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     //   h-full で埋め、 [条件バー wrapper (flex-none)] + [table container (flex-1 overflow-auto)]
     //   に配分する。 min-h-0 で flex chain を切らさない (固定 px 高さ禁止・spec Global)。
     <div className="h-full flex flex-col min-h-0">
-      {/* Edit-2 Task 4: 列表示/非表示 toggle を ConditionBar と並べる (右寄せ)。 */}
-      {/* S2-2: 条件バー + 列ボタンの wrapper は flex-none (可変高を吸収)。 S1 の listOffset 用
-          ResizeObserver は D-2 で廃止済のため ref/監視は付けない (D-4 で flex ネイティブに委ねる)。 */}
-      <div className="flex-none flex flex-wrap items-start justify-between gap-2">
+      {/* S2-2: 条件バー wrapper は flex-none (可変高を吸収)。 S1 の listOffset 用
+          ResizeObserver は D-2 で廃止済のため ref/監視は付けない (D-4 で flex ネイティブに委ねる)。
+          S2-5: 列ボタン (ColumnVisibilityToggle) は exam-detail-view の上部 chrome へ移設済。 */}
+      <div className="flex-none flex flex-wrap items-start gap-2">
         {/* S1-5: 動的条件バー (固定 FilterBar 撤去済 = 唯一のフィルタ UI)。 */}
         <ConditionBar
           table={table}
@@ -532,7 +482,6 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
             options: liveData?.options ?? [],
           }}
         />
-        <ColumnVisibilityToggle table={table} />
       </div>
       {/* S2-2: 内部スクロール主体の container。 flex-1 min-h-0 で残余高を埋め overflow-auto で
           縦横スクロールを内包 (旧 overflow-x-auto = document 縦スクロール前提から差替)。

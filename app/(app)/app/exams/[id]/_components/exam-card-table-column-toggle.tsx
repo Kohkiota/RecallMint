@@ -1,32 +1,59 @@
-// ColumnVisibilityToggle — Edit-2 Task 4: 試験詳細テーブルの列表示/非表示 popover。
-// table.getAllLeafColumns() を列挙し、 各列の getIsVisible() / toggleVisibility() を
-// checkbox に bind する。 select 列 (全選択 checkbox) は常時表示なので toggle 対象外。
-// 永続化は ExamCardTable 側の columnVisibility effect が担う (本 component は state 操作のみ)。
+// ColumnVisibilityToggle — 試験詳細テーブルの列表示/非表示 popover。
+// S2-5: controlled 化。 live `table` instance ではなく静的列メタ (examCardTableColumns から
+// 導出) を列挙し、 columnVisibility / onColumnVisibilityChange を controlled prop で受ける。
+// 永続・state 所有は exam-detail-view.tsx が単一所有 (本 component は表示 + toggle 通知のみ)。
 //
-// 'use client' は付けない: 親 ExamCardTable (= 'use client') からのみ import される子で
-// boundary は親側で確立済。 file 自体に付けると Next.js TS plugin が function 型 prop
-// (table) を Server Action prop として誤検出する (ConditionBar と同 pattern)。
+// 'use client' は付けない: 親 (= 'use client') からのみ import される子で boundary は親側で
+// 確立済。 file 自体に付けると Next.js TS plugin が function 型 prop (onColumnVisibilityChange)
+// を Server Action prop として誤検出する (ConditionBar / 旧実装と同 pattern)。
 
 import * as React from 'react'
 import { SlidersHorizontal } from 'lucide-react'
-import type { Table } from '@tanstack/react-table'
+import type { ColumnDef, OnChangeFn, VisibilityState } from '@tanstack/react-table'
 
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import type { ExamCardRow } from './exam-card-table-columns'
+import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
+
+/** 列トグルが表示する列メタ (live table instance 非依存)。 */
+export type ColumnToggleMeta = { id: string; label: string; hideable: boolean }
+
+/**
+ * ColumnDef 配列から列トグル用メタを導出する (S2-5 interface 凍結節の規約)。
+ * - select 列は除外 (全選択 checkbox は常時表示)。
+ * - label = header が string ならそれ、 非 string (JSX header) は id fallback。
+ * - hideable = enableHiding !== false (getCanHide() 相当)。
+ * 将来 columns.tsx に列が追加されても examCardTableColumns 経由で自動的に載る。
+ */
+export function deriveColumnToggleMeta(
+  columns: ColumnDef<ExamCardRow>[],
+): ColumnToggleMeta[] {
+  return columns
+    .filter((column) => column.id !== 'select')
+    .map((column) => ({
+      id: column.id as string,
+      label:
+        typeof column.header === 'string'
+          ? column.header
+          : (column.id as string),
+      hideable: column.enableHiding !== false,
+    }))
+}
 
 export function ColumnVisibilityToggle({
-  table,
+  columnVisibility,
+  onColumnVisibilityChange,
 }: {
-  table: Table<ExamCardRow>
+  columnVisibility: VisibilityState
+  onColumnVisibilityChange: OnChangeFn<VisibilityState>
 }): React.JSX.Element {
-  // select 列は常時表示 (全選択 checkbox) なので除外。 getCanHide() で hide 不可列も除外。
-  const toggleableColumns = table
-    .getAllLeafColumns()
-    .filter((column) => column.id !== 'select' && column.getCanHide())
+  // 静的列メタから hideable 列のみを列挙 (select 除外は derive 内、 非 hideable はここで除外)。
+  const toggleableColumns = deriveColumnToggleMeta(examCardTableColumns).filter(
+    (meta) => meta.hideable,
+  )
 
   return (
     <Popover>
@@ -34,7 +61,7 @@ export function ColumnVisibilityToggle({
         <button
           type="button"
           aria-label="列の表示・非表示"
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-sm text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-sm text-muted-foreground hover:border-foreground/30 hover:text-foreground"
         >
           <SlidersHorizontal className="size-4" aria-hidden="true" />
           列
@@ -42,24 +69,26 @@ export function ColumnVisibilityToggle({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56">
         <div className="flex flex-col gap-0.5">
-          {toggleableColumns.map((column) => {
-            // header が string のときはそれをラベルに、 それ以外 (JSX header) は id を使う。
-            const label =
-              typeof column.columnDef.header === 'string'
-                ? column.columnDef.header
-                : column.id
+          {toggleableColumns.map((meta) => {
+            // checked = 可視 (columnVisibility[id] !== false)。 hidden 列のみ false が入る。
+            const checked = columnVisibility[meta.id] !== false
             return (
               <label
-                key={column.id}
+                key={meta.id}
                 className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted"
               >
                 <input
                   type="checkbox"
-                  checked={column.getIsVisible()}
-                  onChange={(e) => column.toggleVisibility(e.target.checked)}
-                  aria-label={`列表示: ${label}`}
+                  checked={checked}
+                  onChange={(e) =>
+                    onColumnVisibilityChange({
+                      ...columnVisibility,
+                      [meta.id]: e.target.checked,
+                    })
+                  }
+                  aria-label={`列表示: ${meta.label}`}
                 />
-                <span>{label}</span>
+                <span>{meta.label}</span>
               </label>
             )
           })}

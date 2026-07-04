@@ -40,7 +40,7 @@ vi.mock('../_hooks/use-bulk-card-tags', async (importActual) => {
   return { ...actual, useBulkCardTags: () => mockBulkTag }
 })
 
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 
 // ---------------------------------------------------------------------------
 // Test data helpers
@@ -135,7 +135,7 @@ describe('FilterEditors: 回答状態フィルタ (header menu 経由)', () => {
       makeCard(3, { answered: false, last_correct: null }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3)
     })
@@ -164,7 +164,7 @@ describe('FilterEditors: 回答状態フィルタ (header menu 経由)', () => {
       makeCard(2, { answered: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 直近正誤 header menu → 「直近正解」に設定
@@ -196,7 +196,7 @@ describe('FilterEditors: 連続正解数フィルタ (header menu 経由)', () =
       makeCard(3, { current_streak: 5 }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     // 連続正解数 header menu を開く
@@ -222,7 +222,7 @@ describe('FilterEditors: 連続正解数フィルタ (header menu 経由)', () =
       makeCard(2, { current_streak: 5 }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // filter 設定
@@ -258,7 +258,7 @@ describe('FilterEditors: tag フィルタ (tags header popover 経由)', () => {
       created_at: new Date().toISOString(),
     })
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // タグ列ヘッダーの tags editor トリガー (columnheader 内の button) を開く
@@ -302,7 +302,7 @@ describe('FilterEditors: chip-click reopen で値変更が反映される', () =
       makeCard(2, { answered: true, last_correct: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // Step 1: 直近正誤 header menu で「直近正解」に設定 → 1 行に絞る
@@ -356,7 +356,7 @@ describe('FilterEditors: selectOnly で新規作成/編集導線が非表示', (
     await db.tag_options.put(makeOption())
     await db.cards.bulkPut([makeCard(1)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
 
     // tags header から editor を開く
@@ -395,7 +395,7 @@ describe('FilterEditors: tag 全解除で filter value が undefined になる',
       created_at: new Date().toISOString(),
     })
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // Step 1: tags header から Hard を選択 → 絞り込み

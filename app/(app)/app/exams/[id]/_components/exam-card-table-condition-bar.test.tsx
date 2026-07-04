@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 import { deriveConditions } from './exam-card-table-condition-bar'
 
 const EXAM_ID = 'test-exam-condition-bar'
@@ -97,7 +97,7 @@ describe('ConditionBar: 条件ゼロ', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
     })
@@ -117,7 +117,7 @@ describe('ConditionBar: sort chip ×', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 問題文 昇順 sort を追加
@@ -160,7 +160,7 @@ describe('ConditionBar: sort chip body click → flip desc', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 問題文 昇順 sort を追加
@@ -199,7 +199,7 @@ describe('ConditionBar: filter chip ×', () => {
       makeCard(2, { answered: true, last_correct: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 直近正誤 header menu で「直近正解」に絞る (S1-5: 固定バー撤去後は header 経由)
@@ -243,7 +243,7 @@ describe('ConditionBar: すべてクリア', () => {
       makeCard(2, { answered: true, last_correct: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // sort 追加
@@ -288,7 +288,7 @@ describe('ConditionBar: filter chip value-summary labels', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1, { current_streak: 0 }), makeCard(2, { current_streak: 5 })])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 連続正解数 header menu で streak ≤ 2 をセット (S1-5: 固定バー撤去後は header 経由)
@@ -335,7 +335,7 @@ describe('ConditionBar: filter chip value-summary labels', () => {
       created_at: new Date().toISOString(),
     })
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // tags header popover で option を 1 件選択 (S1-5: 固定バー撤去後は header 経由)
@@ -362,7 +362,7 @@ describe('ConditionBar: hidden 列の条件可視', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 問題文 列に sort を追加
@@ -407,7 +407,7 @@ describe('ConditionBar: hidden 列の条件可視', () => {
       makeCard(2, { answered: true, last_correct: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 直近正誤 フィルタを「直近正解」に設定 → 1 行に絞る (S1-5: header menu 経由)

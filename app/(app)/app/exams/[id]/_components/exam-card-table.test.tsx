@@ -39,7 +39,7 @@ vi.mock('../_hooks/use-bulk-card-tags', async (importActual) => {
   }
 })
 
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 
 // ---------------------------------------------------------------------------
 // test fixtures
@@ -107,7 +107,7 @@ describe('ExamCardTable smoke ①: rowSelection toggle', () => {
     const db = getClientDb()
     await db.cards.bulkPut(Array.from({ length: 5 }, (_, i) => makeCard(i + 1)))
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // 5 rows が描画されるのを待つ
     await waitFor(() => {
@@ -143,7 +143,7 @@ describe('ExamCardTable smoke ②: data 差し替え再描画', () => {
     // seed: 3 cards
     await db.cards.bulkPut(Array.from({ length: 3 }, (_, i) => makeCard(i + 1)))
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // 3 rows が描画されるのを待つ
     await waitFor(() => {
@@ -172,7 +172,7 @@ describe('ExamCardTable smoke ③: tag cell props 経路再描画', () => {
     const card = makeCard(1)
     await db.cards.put(card)
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // row が描画されるのを待つ
     await waitFor(() => {
@@ -230,7 +230,7 @@ describe('ExamCardTable smoke ④ (T5): title column renders InlineTextField', (
     const db = getClientDb()
     await db.cards.put(makeCard(1))
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // row が描画されるのを待つ
     await waitFor(() => {
@@ -252,7 +252,7 @@ describe('ExamCardTable smoke ⑤ (T3): column sizing + resize handle', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1)])
 
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // 1 row が描画されるのを待つ (table が完全 mount された状態)
     await waitFor(() => {
@@ -300,7 +300,7 @@ describe('Fix-1 T2: bulk createOptionAndAssign 配線 (action-bar 経由)', () =
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
     await db.tag_categories.put(FIX1_CATEGORY)
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 2 行選択して action bar を表示
@@ -359,7 +359,7 @@ describe('ExamCardTable smoke ⑥ (Edit-2 T3): question column renders InlineTex
     const db = getClientDb()
     await db.cards.put(makeCard(1))
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // row が描画されるのを待つ
     await waitFor(() => {
@@ -380,7 +380,7 @@ describe('Edit-3 T1: th/td padding density', () => {
   it('th が py-1 クラスを持ち py-2 を持たない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
@@ -401,7 +401,7 @@ describe('Edit-3 T1: th/td padding density', () => {
   it('td が py-1 クラスを持ち py-2 を持たない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
@@ -416,7 +416,7 @@ describe('Edit-3 T1: th/td padding density', () => {
   it('th が px-1 クラスを持ち px-3 を持たない (Edit-3 Fix-2: 左右 padding 詰め)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
@@ -437,7 +437,7 @@ describe('Edit-3 T1: th/td padding density', () => {
   it('td が px-1 クラスを持ち px-3 を持たない (Edit-3 Fix-2: 左右 padding 詰め)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
@@ -460,7 +460,7 @@ describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されな
   it('th: select / title に sticky class も left も付与されず、 width CSS 変数のみ維持される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
@@ -481,7 +481,7 @@ describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されな
   it('td: select / title に sticky class も left も付与されず、 width CSS 変数のみ維持される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
@@ -502,52 +502,60 @@ describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されな
 })
 
 // ===========================================================================
-// Edit-3 Fix-1: columnVisibility round-trip
-// sort_key を表示に toggle した状態の saved record (hiddenColumns:[]) が
-// リロード後も尊重されること。
-// fix 前: length>0 guard が setColumnVisibility をスキップ → 初期 { sort_key: false } 復帰 → FAIL
-// fix 後: saved が存在すれば常に setColumnVisibility({}) → sort_key 表示を維持 → PASS
+// S2-5: ExamCardTable controlled columnVisibility contract
+// state 所有 + 永続 (sync_meta) は exam-detail-view へ集約済 (exam-detail-view.test で検証)。
+// ここは ExamCardTable が受け取った columnVisibility prop に従って列を隠す/表示する
+// controlled 契約のみを固定する。
+//
+// harness は初期 { sort_key: false } を与えるため、 sort_key は既定 hidden。
+// initialColumnVisibility={} (= saved hiddenColumns:[] 相当) を渡すと sort_key が表示される
+// = 旧 mount-load round-trip の振る舞い等価 (所有者だけが detail-view に移動)。
 // ===========================================================================
 
-describe('Edit-3 Fix-1: columnVisibility round-trip — saved hiddenColumns:[] → sort_key 表示維持', () => {
-  it('[fix前fail→fix後pass] hiddenColumns:[] の saved record → reload 後も sort_key が表示のまま', async () => {
+describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
+  it('columnVisibility={sort_key:false} (harness 既定) → sort_key ヘッダが hidden', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
 
-    // sort_key を表示にした状態の saved record (hiddenColumns 空) を sync_meta に seed。
-    // これは「ユーザーが sort_key を toggle して表示にし、persist が hiddenColumns:[] を書いた」状況に相当。
-    await db.sync_meta.put({
-      key: 'exam_view_prefs',
-      value: JSON.stringify({ version: 2, view: 'table', hiddenColumns: [] }),
-    })
-
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
-
-    // row が描画されるのを待つ
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // mount load effect が非同期で saved record を読み setColumnVisibility({}) を呼ぶのを待つ。
-    // fix前: hiddenColumns.length>0 guard でスキップ → 初期 { sort_key: false } 維持 → "ソートキー" が DOM に存在しない → FAIL
-    // fix後: saved 有りなので setColumnVisibility({}) → sort_key 表示 → "ソートキー" が DOM に現れる → PASS
-    await waitFor(() => {
-      const allTh = container.querySelectorAll('th')
-      const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
-      expect(headerTexts, 'sort_key (ソートキー) が saved record の hiddenColumns:[] を尊重して表示されている').toContain('ソートキー')
-    })
+    const headerTexts = Array.from(container.querySelectorAll('th')).map((th) =>
+      (th as HTMLElement).textContent?.trim(),
+    )
+    expect(headerTexts, '既定 { sort_key: false } → sort_key hidden').not.toContain('ソートキー')
   })
 
-  it('saved record が存在しない新規ユーザー → sort_key は既定 hidden のまま', async () => {
+  it('columnVisibility={} (saved hiddenColumns:[] 相当) → sort_key ヘッダが表示される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    // sync_meta は空 (beforeEach で clear 済み) = 新規ユーザー
 
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(
+      <ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} initialColumnVisibility={{}} />,
+    )
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // saved 無しなら load effect は setState せず初期 { sort_key: false } が維持される
-    const allTh = container.querySelectorAll('th')
-    const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
-    expect(headerTexts, 'saved record なし → sort_key 既定 hidden').not.toContain('ソートキー')
+    const headerTexts = Array.from(container.querySelectorAll('th')).map((th) =>
+      (th as HTMLElement).textContent?.trim(),
+    )
+    expect(headerTexts, 'hiddenColumns:[] 相当 → sort_key が表示される').toContain('ソートキー')
+  })
+
+  it('columnVisibility={memo:false} → メモ列 header / cell が描画されない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+
+    render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnVisibility={{ memo: false }}
+      />,
+    )
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    expect(screen.queryByRole('columnheader', { name: /メモ/ })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('メモ 編集')).not.toBeInTheDocument()
   })
 })
 
@@ -559,7 +567,7 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
   it('sort_key ヘッダが初期状態で DOM に存在しない (columnVisibility 初期値 { sort_key: false })', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
@@ -571,7 +579,7 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
   it('列 toggle popover に sort_key (ソートキー) が列挙され checkbox が unchecked (hidden 状態)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 「列の表示・非表示」ボタンをクリックして popover を開く
@@ -588,7 +596,7 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
   it('toggle で sort_key を表示にすると ソートキー ヘッダが DOM に現れる (getCanHide() true)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // popover を開いて sort_key を toggle (check)
@@ -613,7 +621,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
   it('<table> に --col-{id}-size CSS 変数が付与されている', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const tableEl = container.querySelector('table') as HTMLElement
@@ -632,7 +640,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
   it('th の style.width が CSS 変数参照形式 calc(var(--header-{id}-size) * 1px)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
@@ -647,7 +655,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
   it('td の style.width が CSS 変数参照形式 calc(var(--col-{id}-size) * 1px)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTd = container.querySelectorAll('td')
@@ -663,7 +671,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     // Fix-3 T2 で sticky 2列を撤去したため left は付与されない (旧 0px/44px guard を撤去の非回帰に置換)。
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // th
@@ -686,7 +694,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     // resize 中のみ MemoizedTableBody を使うが handle が消えていないことを確認
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const handles = container.querySelectorAll('.cursor-col-resize')
@@ -698,7 +706,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     // N が小さくても TableBody 分岐の確認には十分(300行凍結の実測は Profiler task)
     const db = getClientDb()
     await db.cards.bulkPut(Array.from({ length: N }, (_, i) => makeCard(i + 1)))
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // isResizingColumn = false(初期値) → TableBody が使われ全行が描画される
     await waitFor(() => {
@@ -713,7 +721,7 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     //   emit される (PASS)。
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 初期状態: sort_key は hidden → --col-sort_key-size は <table> に付与されていない
@@ -744,22 +752,9 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
 //   (jsdom は layout 計算不可のため、右寄せ意図は ml-auto class 有無で固定する)
 // ===========================================================================
 
-describe('M1: 既定 view で列トグルが右寄せ (ml-auto)', () => {
-  it('条件ゼロ (ConditionBar 非表示) でも列トグル button が ml-auto を持つ', async () => {
-    const db = getClientDb()
-    await db.cards.put(makeCard(1))
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
-    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
-
-    // (a) 既定 view = 条件ゼロ → ConditionBar は null (条件 chip / すべてクリア 不在)
-    expect(screen.queryByText('すべてクリア')).toBeNull()
-    expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
-
-    // (b) 列トグル button が ml-auto で末尾寄せ (sibling 非依存の右寄せ)
-    const toggle = screen.getByRole('button', { name: '列の表示・非表示' })
-    expect(toggle.className.split(' ')).toContain('ml-auto')
-  })
-})
+// S2-5: 旧 M1「列トグルが ExamCardTable 内で ml-auto 右寄せ」テストは撤去。
+// 列ボタンは exam-detail-view の上部 chrome へ移設され、 配置 (view 切替との並び / card view
+// 非表示) は exam-detail-view.test で検証する。 ExamCardTable は列ボタンを描画しない。
 
 // ===========================================================================
 // Fix-3 T2: 行仮想化 — 大 N で DOM 行数が N 未満に頭打ちする (窓が有界)
@@ -779,7 +774,7 @@ describe('Fix-3 T2: 行仮想化 — 大 N で DOM 行数が有界 (全 N を mo
     const db = getClientDb()
     await db.cards.bulkPut(Array.from({ length: N }, (_, i) => makeCard(i + 1)))
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
 
     // 少なくとも 1 行は描画される (mount 成立)
     await waitFor(() => {
@@ -801,7 +796,7 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
   it('header select th が text-center と align-middle を持ち text-left を持たない (全選択チェックボックスの th)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 全選択 checkbox を aria-label で特定し、その親 th を取得
@@ -826,7 +821,7 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
   it('body select td が text-center を持つ (行選択チェックボックスの td)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 行選択 checkbox を aria-label で特定し、その親 td を取得
@@ -860,7 +855,7 @@ describe('S2-2: app-shell 密封 — 内部スクロール container の構造',
   it('table container が flex-1 min-h-0 overflow-auto を持ち overflow-x-auto を持たない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const tableEl = container.querySelector('table') as HTMLElement
@@ -875,7 +870,7 @@ describe('S2-2: app-shell 密封 — 内部スクロール container の構造',
   it('ExamCardTable root が app-shell flex 列 (flex flex-col min-h-0 h-full)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const root = container.firstElementChild as HTMLElement
@@ -890,7 +885,7 @@ describe('S2-2: app-shell 密封 — 内部スクロール container の構造',
 describe('S2-2: element virtualizer — 件数境界 (0 / 1 / 少数) で spacer が壊れない', () => {
   it('0 件: data 行も aria-hidden spacer 行も描画されない (phantom margin なし)', async () => {
     // seed なし = 0 cards。 hasItems ガードで paddingTop/Bottom=0 → spacer 非描画。
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     // table (thead) は data 未ロードでも即描画される (data=[] スタート)。
     await waitFor(() => expect(container.querySelector('table')).not.toBeNull())
     await waitFor(() => {
@@ -903,7 +898,7 @@ describe('S2-2: element virtualizer — 件数境界 (0 / 1 / 少数) で spacer
   it('1 件: 1 data 行 + spacer 高は非負 (element 座標で負 offset なし)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // spacer が出る場合でもその高さは非負 (旧: totalSize+scrollMargin の phantom 余白バグ回帰防止)。
@@ -917,7 +912,7 @@ describe('S2-2: element virtualizer — 件数境界 (0 / 1 / 少数) で spacer
   it('少数 (3 件): 全 3 行が描画される (窓が全件を含む)', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
   })
 })
@@ -926,7 +921,7 @@ describe('S2-2: fixed action-bar occlusion 回避が container 内部 padding �
   it('行選択で scroll container が pb-32 を持ち、 選択前は持たない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const scrollContainer = (container.querySelector('table') as HTMLElement)
@@ -955,7 +950,7 @@ describe('S2-3: sticky thead + th 不透明背景', () => {
   it('thead が sticky top-0 z-10 クラスを持つ', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const thead = container.querySelector('thead') as HTMLElement
@@ -969,7 +964,7 @@ describe('S2-3: sticky thead + th 不透明背景', () => {
   it('全 th が bg-background クラスを持つ (不透明背景 — sticky 時に下の行が透けない)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
@@ -987,7 +982,7 @@ describe('S2-3: sticky thead + th 不透明背景', () => {
     // Fix-3 T2 (scroll-frozen 列撤去) との整合を維持するため、th 自体に sticky は付けない。
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const allTh = container.querySelectorAll('th')
@@ -1019,7 +1014,7 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
   it('条件ゼロ(ConditionBar null): 条件バー wrapper が flex-none を持つ', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 条件ゼロ → ConditionBar は null (chip / すべてクリア 不在)
@@ -1038,7 +1033,7 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
   it('sort 適用(chip 有り): 条件バー wrapper が flex-none を維持し container/thead が不変', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // 問題文 列メニュー → 昇順 を適用 → ConditionBar が sort chip を描画する
@@ -1077,7 +1072,7 @@ describe('S2-4: 可変高バー安定性 — chip 有無の対比で構造が不
   it('chip 無し → sort chip 有り → クリアで chip 無しに戻る、全状態で container/thead 構造が不変', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const scrollContainer = (container.querySelector('table') as HTMLElement)
@@ -1124,7 +1119,7 @@ describe('S2-4: JS 高さ制御なし(D-4 flex ネイティブ)', () => {
   it('container に inline height style が付与されない(ResizeObserver / JS 高さ制御が再導入されていない)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     const scrollContainer = (container.querySelector('table') as HTMLElement)

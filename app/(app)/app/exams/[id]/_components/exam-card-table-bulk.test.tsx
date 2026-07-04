@@ -29,7 +29,7 @@ import {
   type ClientTagCategory,
   type ClientTagOption,
 } from '@/lib/client-db'
-import { ExamCardTable } from './exam-card-table'
+import { ControlledExamCardTable } from './exam-card-table-test-harness'
 
 const EXAM_ID = 'test-exam-bulk'
 const USER_ID = 'test-user-bulk'
@@ -119,7 +119,7 @@ describe('T6: action bar 表示 / 件数', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     expect(screen.queryByTestId('exam-card-table-action-bar')).not.toBeInTheDocument()
@@ -146,7 +146,7 @@ describe('T6: 全選択スコープ = filtered (§7.3)', () => {
       makeCard(3, { answered: false, last_correct: null }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     // 「直近正解」で card-1 のみ可視に絞る (S1-5: 固定バー撤去後は header menu 経由)
@@ -180,7 +180,7 @@ describe('T6: タグ操作後 selection 維持 + 1 tx/flush', () => {
     await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
     await seedTags()
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     selectRow(1)
@@ -225,7 +225,7 @@ describe('T6: 削除後 selection 除外', () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     selectRow(1)
@@ -259,7 +259,7 @@ describe('T6: フィルタ変更で隠れた選択行 自動解除 (HS-2)', () =
       makeCard(2, { answered: true, last_correct: false }),
     ])
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // 2 行とも選択
@@ -294,7 +294,7 @@ describe('T6: bulk 失敗 UI', () => {
     await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
     await seedTags()
 
-    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
 
     selectRow(1)
