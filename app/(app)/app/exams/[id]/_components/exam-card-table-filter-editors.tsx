@@ -187,11 +187,21 @@ function TagsEditor({
       onToggle={handleTagToggle}
       selectOnly
       trigger={
+        // S2-6: tags header の trigger を cell 全体化(ラベル + filter dot)。
+        // tags は sort 不可ゆえ glyph なし。 dot は registry-gated と等価に
+        // column.getIsFiltered() で出し分け(見た目・表示条件は不変、位置が trigger 内へ移るのみ)。
         <button
           type="button"
-          className="rounded-md border border-border bg-background px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground hover:border-foreground/30"
+          className="w-full inline-flex items-center gap-1 text-left cursor-pointer select-none text-sm text-muted-foreground hover:text-foreground"
         >
-          タグで絞り込み
+          <span>タグで絞り込み</span>
+          {column.getIsFiltered() && (
+            <span
+              role="img"
+              aria-label="フィルタ適用中"
+              className="inline-block h-1.5 w-1.5 rounded-full bg-primary"
+            />
+          )}
         </button>
       }
     />

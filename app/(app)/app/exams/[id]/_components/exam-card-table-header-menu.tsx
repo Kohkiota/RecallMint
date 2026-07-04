@@ -24,12 +24,16 @@ type ColumnHeaderMenuProps = {
   column: Column<ExamCardRow, unknown>
   label: string
   filterEditor?: React.ReactNode
+  // S2-6: trigger 内容全体(親が描画する label + filter dot + sort glyph)。
+  // 未指定時は label 文字列のみを trigger 内に描画(単体 harness / 後方互換)。
+  children?: React.ReactNode
 }
 
 export function ColumnHeaderMenu({
   column,
   label,
   filterEditor,
+  children,
 }: ColumnHeaderMenuProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const canSort = column.getCanSort()
@@ -43,12 +47,15 @@ export function ColumnHeaderMenu({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
+        {/* S2-6: trigger を cell 全体化。 w-full + text-left で th 全幅を占め、
+            label + dot + glyph(= children)のどこを押しても menu が開く。
+            cursor-pointer / select-none は trigger button 側に集約(th からは撤去)。 */}
         <button
           type="button"
           aria-label={`${label} の列メニュー`}
-          className="inline-flex items-center"
+          className="w-full inline-flex items-center gap-1 text-left cursor-pointer select-none"
         >
-          {label}
+          {children ?? label}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-36 p-1">

@@ -529,82 +529,86 @@ export function ExamCardTable({
                     className={cn(
                       'relative px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
                       h.column.id === 'select' ? 'text-center align-middle' : 'text-left',
-                      canSort && 'cursor-pointer select-none',
+                      // S2-6: cursor-pointer / select-none は trigger button 側へ集約(cell 全体 trigger 化)。
                     )}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
                     style={{ width: `calc(var(--header-${h.id}-size) * 1px)` }}
                     // S1-1: th の即ソート onClick を撤去。canSort 列は ColumnHeaderMenu trigger 経由。
                   >
-                    {h.isPlaceholder ? null : (
-                      <span className="inline-flex items-center gap-1">
-                        {/* S1-1: canSort 列は ColumnHeaderMenu trigger 化。非 canSort は plain render。
-                            select 列は canSort=false なので flexRender でそのまま checkbox を描画。
-                            S1-3: lastCorrect/currentStreak は filterEditor を渡す。
-                                  tags 列は CardTagAddPopover 直 trigger (nested popover 回避)。 */}
-                        {canSort
-                          ? (() => {
-                              // S1-3: lastCorrect / currentStreak は filterEditor を ColumnHeaderMenu に渡す。
-                              // 他の canSort 列 (question / lastReview) は filterEditor=undefined。
-                              const colId = h.column.id
-                              const editorCtx = {
-                                categories: liveData?.categories ?? [],
-                                options: liveData?.options ?? [],
-                              }
-                              let filterEditor: ReactNode | undefined
-                              if (colId === 'lastCorrect') {
-                                const FE = cardTableFilterEditors.lastCorrect
-                                filterEditor = <FE column={h.column} ctx={editorCtx} />
-                              } else if (colId === 'currentStreak') {
-                                const FE = cardTableFilterEditors.currentStreak
-                                filterEditor = <FE column={h.column} ctx={editorCtx} />
-                              }
-                              return (
-                                <ColumnHeaderMenu
-                                  column={h.column}
-                                  label={headerLabel}
-                                  filterEditor={filterEditor}
-                                />
-                              )
-                            })()
-                          : h.column.id === 'tags'
-                            ? (() => {
-                                // S1-3: tags 列は CardTagAddPopover 直 trigger (ColumnHeaderMenu 非使用)。
-                                // nested popover を避けるため spec §4.2 準拠で直接配置する。
-                                const FE = cardTableFilterEditors.tags
-                                return (
-                                  <FE
-                                    column={h.column}
-                                    ctx={{
-                                      categories: liveData?.categories ?? [],
-                                      options: liveData?.options ?? [],
-                                    }}
-                                  />
-                                )
-                              })()
-                            : flexRender(h.column.columnDef.header, h.getContext())
-                        }
-                        {/* S1-4: filter dot — registry-gated, independent of canSort.
-                            dot の対象列判定は cardTableFilterEditors の key 参照
-                            (capability source = registry に一元化)。 */}
-                        {h.column.id in cardTableFilterEditors &&
-                          h.column.getIsFiltered() && (
-                            <span
-                              role="img"
-                              aria-label="フィルタ適用中"
-                              className="inline-block h-1.5 w-1.5 rounded-full bg-primary"
-                            />
-                          )}
-                        {canSort && (
+                    {h.isPlaceholder ? null : (() => {
+                      // S2-6: filter dot / sort glyph を trigger 内へ配置(cell 全体を menu 起動対象化)。
+                      //   dot の表示条件・見た目は不変(registry-gated + getIsFiltered)。 位置のみ trigger 内へ。
+                      //   glyph は canSort 列のみ(▲/▼/▾)。
+                      const dot =
+                        h.column.id in cardTableFilterEditors && h.column.getIsFiltered() ? (
                           <span
-                            className="text-xs text-muted-foreground/60"
-                            aria-hidden="true"
+                            role="img"
+                            aria-label="フィルタ適用中"
+                            className="inline-block h-1.5 w-1.5 rounded-full bg-primary"
+                          />
+                        ) : null
+                      const glyph = canSort ? (
+                        <span
+                          className="text-xs text-muted-foreground/60"
+                          aria-hidden="true"
+                        >
+                          {/* S1-4: unsorted=▾ / asc=▲ / desc=▼ */}
+                          {sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '▾'}
+                        </span>
+                      ) : null
+
+                      // S1-1/S2-6: canSort 列は ColumnHeaderMenu trigger(label + dot + glyph を trigger 内に children 渡し)。
+                      if (canSort) {
+                        // S1-3: lastCorrect / currentStreak は filterEditor を渡す。 他 (question / lastReview) は undefined。
+                        const colId = h.column.id
+                        const editorCtx = {
+                          categories: liveData?.categories ?? [],
+                          options: liveData?.options ?? [],
+                        }
+                        let filterEditor: ReactNode | undefined
+                        if (colId === 'lastCorrect') {
+                          const FE = cardTableFilterEditors.lastCorrect
+                          filterEditor = <FE column={h.column} ctx={editorCtx} />
+                        } else if (colId === 'currentStreak') {
+                          const FE = cardTableFilterEditors.currentStreak
+                          filterEditor = <FE column={h.column} ctx={editorCtx} />
+                        }
+                        return (
+                          <ColumnHeaderMenu
+                            column={h.column}
+                            label={headerLabel}
+                            filterEditor={filterEditor}
                           >
-                            {/* S1-4: ⇅ → ▾ (unsorted = menu-affordance chevron; ▲/▼ unchanged) */}
-                            {sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '▾'}
-                          </span>
-                        )}
-                      </span>
-                    )}
+                            <span>{headerLabel}</span>
+                            {dot}
+                            {glyph}
+                          </ColumnHeaderMenu>
+                        )
+                      }
+
+                      // S1-3/S2-6: tags 列は CardTagAddPopover 直 trigger(nested popover 回避)。
+                      //   trigger の cell 全体化 + dot は TagsEditor(cardTableFilterEditors.tags)内で行う。
+                      if (h.column.id === 'tags') {
+                        const FE = cardTableFilterEditors.tags
+                        return (
+                          <FE
+                            column={h.column}
+                            ctx={{
+                              categories: liveData?.categories ?? [],
+                              options: liveData?.options ?? [],
+                            }}
+                          />
+                        )
+                      }
+
+                      // menu なし列(title/sort_key/options/explanation/memo/select): plain render。
+                      //   dot/glyph 非対象ゆえ trigger 化しない(現状維持)。
+                      return (
+                        <span className="inline-flex items-center gap-1">
+                          {flexRender(h.column.columnDef.header, h.getContext())}
+                        </span>
+                      )
+                    })()}
                     {/* T3: resize handle。select 列はスキップ (checkbox との干渉回避)。
                         stopPropagation で上位 th の click に menu が干渉しないよう分離する。 */}
                     {canResize && h.column.id !== 'select' && (

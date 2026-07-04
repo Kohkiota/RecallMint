@@ -466,3 +466,99 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
     })
   })
 })
+
+// ===========================================================================
+// ⑧ S2-6: sort glyph 領域クリックで menu open(trigger = cell 全体)
+// glyph は S2-6 前は trigger button の外(sibling)ゆえ click しても menu が開かない。
+// S2-6 で trigger 内へ移すことで glyph click でも menu 起動 = 非 vacuous RED→GREEN。
+// ===========================================================================
+
+describe('S2-6 ⑧: canSort 列の sort glyph 領域クリックで menu が開く', () => {
+  it('currentStreak の ▾ グリフを click すると「昇順」「降順」が表示される', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    const streakTh = screen.getByRole('columnheader', { name: /連続正解数/ })
+    // 未ソート canSort 列の中立グリフ ▾。 trigger 内にあれば click で menu が開く。
+    fireEvent.click(within(streakTh).getByText('▾'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '降順' })).toBeInTheDocument()
+    })
+  })
+})
+
+// ===========================================================================
+// ⑨ S2-6: filter dot が trigger button 内に含まれる(tags 列 full-cell trigger)
+// dot は S2-6 前は trigger button の sibling ゆえ dot 領域クリックで popover が開かない。
+// S2-6 で trigger 内へ移すことで dot も clickable = 非 vacuous RED→GREEN。
+// ===========================================================================
+
+describe('S2-6 ⑨: filter dot が tags trigger button の子孫である', () => {
+  it('tags フィルタ適用後、dot が tags trigger button 内に描画される', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeTagCategory())
+    await db.tag_options.put(makeTagOption())
+    await db.cards.put(makeCard())
+    await db.card_tags.put({
+      card_id: 'card-menu-1',
+      option_id: 'opt-header-menu-1',
+      user_id: USER_ID,
+      created_at: new Date().toISOString(),
+    })
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // tags header popover を開き option を選択(filter 設定 → dot 出現)
+    const tagsHeaderBefore = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
+    fireEvent.click(within(tagsHeaderBefore).getByRole('button'))
+    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Difficulty'))
+    await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Hard'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+    })
+
+    // dot は tags trigger button の子孫(S2-6 前は sibling = RED)
+    const tagsTh = screen.getByRole('columnheader', { name: /タグ/ })
+    const trigger = within(tagsTh).getByRole('button')
+    const dot = within(tagsTh).getByRole('img', { name: 'フィルタ適用中' })
+    expect(trigger).toContainElement(dot)
+  })
+})
+
+// ===========================================================================
+// ⑩ S2-6: resize handle は menu を開かない(端ドラッグ=リサイズと分離)
+// handle は trigger button の外(th 直接 sibling)で stopPropagation 維持ゆえ、
+// handle click で menu が起動しないこと(regression guard)。
+// ===========================================================================
+
+describe('S2-6 ⑩: resize handle click は menu を開かない', () => {
+  it('currentStreak の resize handle を click しても「昇順」が表示されない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    const streakTh = screen.getByRole('columnheader', { name: /連続正解数/ })
+    const handle = streakTh.querySelector('.cursor-col-resize') as HTMLElement
+    expect(handle).not.toBeNull()
+    fireEvent.click(handle)
+
+    expect(screen.queryByRole('button', { name: '昇順' })).not.toBeInTheDocument()
+  })
+})
