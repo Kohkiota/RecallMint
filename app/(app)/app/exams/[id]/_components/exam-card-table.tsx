@@ -19,13 +19,13 @@ import {
   useState,
   useCallback,
   useEffect,
-  useLayoutEffect,
   memo,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useWindowVirtualizer } from '@tanstack/react-virtual'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   useReactTable,
   getCoreRowModel,
@@ -83,27 +83,35 @@ import {
 type TableBodyProps = {
   table: Table<ExamCardRow>
   isResizing: boolean
-  // Fix-3 T2: list(tbody 行群)の document 先頭からの offset。
-  //   useWindowVirtualizer に scrollMargin として渡し「どの行が可視か」の計算が
-  //   条件バー / header 分ズレないようにする (必須。無いと wrong rows が render される)。
-  scrollMargin: number
+  // S2-2: 内部スクロール container (tableContainerRef) を getScrollElement に渡すための ref。
+  //   element virtualizer は container.scrollTop を offset 原点とする。 旧 window 実装が
+  //   scrollMargin=listOffset(document 座標)で container 先頭へ re-base していたのと同一の
+  //   基準を、 element 実装では container 自身が原点 = scrollMargin 0 で満たす (下記参照)。
+  scrollElementRef: RefObject<HTMLDivElement | null>
 }
 
 // Fix-3 T2: 推定行高 (px)。実行高の中央値目安。過小でも measureElement が補正する。
 const ESTIMATED_ROW_HEIGHT = 120
 
-function TableBody({ table, scrollMargin }: TableBodyProps) {
+function TableBody({ table, scrollElementRef }: TableBodyProps) {
   const rows = table.getRowModel().rows
 
-  // Fix-3 T2: 行仮想化。window スクロール前提 (縦スクロールは page)。
+  // S2-2: 行仮想化を element virtualizer 化 (内部スクロール container が縦スクロール主体)。
+  //   getScrollElement=tableContainerRef で container.scrollTop を offset 原点にする。
+  //   scrollMargin は既定 0: element scroll では container 先頭 (= table/thead 先頭) が原点で、
+  //   これは旧 window 実装の scrollMargin=listOffset(container の document 座標)が re-base して
+  //   いた基準と一致する (list 位置は両者とも「container 先頭」相対)。 thead 高分の微小差は
+  //   overscan=5 が吸収する (旧実装も同一挙動)。 実挙動は stg 300-card smoke で締める。
   //   getItemKey=card.id で sort/filter 並び替え時の index-key churn を防ぐ (getRowId 一致)。
   //   measureElement は各実行 <tr> に付与し dynamic 行高を測る (estimateSize の補正)。
-  const rowVirtualizer = useWindowVirtualizer({
+  //   observeElementRect / observeElementOffset は default (明示指定しない)。
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual の useVirtualizer は React Compiler 非対応 API だが、TanStack 側の既知 tradeoff であり抑止が推奨方針 (useReactTable と同扱い)
+  const rowVirtualizer = useVirtualizer({
     count: rows.length,
+    getScrollElement: () => scrollElementRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     getItemKey: (index) => rows[index].id,
     overscan: 5,
-    scrollMargin,
     useFlushSync: false,
   })
 
@@ -119,11 +127,12 @@ function TableBody({ table, scrollMargin }: TableBodyProps) {
   const virtualItems = rowVirtualizer.getVirtualItems()
   const totalSize = rowVirtualizer.getTotalSize()
   const visibleColCount = table.getVisibleLeafColumns().length
-  // scrollMargin を引いて spacer 高を算出 (window virtualizer の start/end は
-  //   document 座標なので header 分の offset を差し引く)。
+  // spacer 高を算出。 element virtualizer では scrollMargin=0 のため start/end は
+  //   container 先頭相対 (= 実質そのまま)。 options.scrollMargin 参照を残すのは
+  //   将来 scrollMargin を再定義しても式が破綻しないため (現状は 0)。
   // virtualItems が空の場合 (filter で 0 件 / data 未ロード) は spacer を出さない。
-  // 空時に素直に計算すると paddingBottom = totalSize + scrollMargin になり
-  // ~scrollMargin px の余白スペーサーが誤描画されるため、0 に固定する。
+  // 空時に素直に計算すると paddingBottom = totalSize (+scrollMargin) の余白スペーサーが
+  // 誤描画されるため、0 に固定する (件数境界 0 件の phantom spacer 回帰防止)。
   const hasItems = virtualItems.length > 0
   const paddingTop = hasItems
     ? virtualItems[0].start - rowVirtualizer.options.scrollMargin
@@ -500,48 +509,21 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
     [table.getState().columnSizingInfo, table.getState().columnSizing, table.getState().columnVisibility],
   )
 
-  // Fix-3 T2: 行仮想化用に list(table)の document 先頭からの offset を計測する。
-  //   window virtualizer の scrollMargin に渡す (条件バー / header 分のズレ補正、必須)。
-  //   getBoundingClientRect().top + scrollY で document 座標を得る (offsetParent 非依存)。
-  //
-  //   Fix wave-1: ResizeObserver (条件バー wrapper) + window resize listener を追加し、
-  //   S1-5 以降は ConditionBar の条件 chip 追加/削除や window 幅変化で wrapper の高さが
-  //   変わった際に listOffset を再計測する (stale offset が wrong row window を生む問題を防ぐ)。
-  const filterBarWrapperRef = useRef<HTMLDivElement>(null)
+  // S2-2: 内部スクロール container の ref。 element virtualizer の getScrollElement へ渡す。
+  //   旧 window 実装の listOffset(document 座標)算出 + ResizeObserver(条件バー wrapper)
+  //   + window resize listener は廃止 (element scroll では container 自身が offset 原点 =
+  //   条件バー高や document 位置の変化に非依存で、 座標追従の JS が不要になる)。
   const tableContainerRef = useRef<HTMLDivElement>(null)
-  const [listOffset, setListOffset] = useState(0)
-  useLayoutEffect(() => {
-    const recompute = () => {
-      const el = tableContainerRef.current
-      if (el) setListOffset(el.getBoundingClientRect().top + window.scrollY)
-    }
-    // 初回計測
-    recompute()
-    // 条件バー wrapper の高さ変化を監視 (chip 追加/削除、toolbar wrap)
-    const filterBar = filterBarWrapperRef.current
-    let ro: ResizeObserver | null = null
-    if (filterBar) {
-      ro = new ResizeObserver(recompute)
-      ro.observe(filterBar)
-    }
-    // window 幅変化でも再計測 (toolbar が wrap して高さが変わる)
-    window.addEventListener('resize', recompute)
-    return () => {
-      ro?.disconnect()
-      window.removeEventListener('resize', recompute)
-    }
-  }, [])
 
   return (
-    // M3 (T7 stg smoke): 選択時のみ下部 padding を確保し、 fixed bottom action bar
-    // (高さ ~106px、 失敗メッセージで wrap すると更に増える) が最終行を occlude しない
-    // ようにする (mobile 短 viewport 375px で確認)。 pb-32 (128px) で wrap 時も余裕を持つ。
-    <div className={selectedIds.length > 0 ? 'pb-32' : undefined}>
+    // S2-2: app-shell 密封の flex 列。 親 (exam-detail-view の flex-1 min-h-0 スロット) を
+    //   h-full で埋め、 [条件バー wrapper (flex-none)] + [table container (flex-1 overflow-auto)]
+    //   に配分する。 min-h-0 で flex chain を切らさない (固定 px 高さ禁止・spec Global)。
+    <div className="h-full flex flex-col min-h-0">
       {/* Edit-2 Task 4: 列表示/非表示 toggle を ConditionBar と並べる (右寄せ)。 */}
-      {/* filterBarWrapperRef = ConditionBar + ColumnVisibilityToggle の wrapper。
-          S1-5 で固定 FilterBar を撤去し、この wrapper は動的条件バーのみを内包する。
-          ResizeObserver で高さ変化 (条件 chip の追加/削除で ConditionBar が伸縮) を監視する。 */}
-      <div ref={filterBarWrapperRef} className="flex flex-wrap items-start justify-between gap-2">
+      {/* S2-2: 条件バー + 列ボタンの wrapper は flex-none (可変高を吸収)。 S1 の listOffset 用
+          ResizeObserver は D-2 で廃止済のため ref/監視は付けない (D-4 で flex ネイティブに委ねる)。 */}
+      <div className="flex-none flex flex-wrap items-start justify-between gap-2">
         {/* S1-5: 動的条件バー (固定 FilterBar 撤去済 = 唯一のフィルタ UI)。 */}
         <ConditionBar
           table={table}
@@ -552,8 +534,15 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         />
         <ColumnVisibilityToggle table={table} />
       </div>
-      <div ref={tableContainerRef} className="overflow-x-auto">
-        {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x-auto を発火させる。
+      {/* S2-2: 内部スクロール主体の container。 flex-1 min-h-0 で残余高を埋め overflow-auto で
+          縦横スクロールを内包 (旧 overflow-x-auto = document 縦スクロール前提から差替)。
+          M3: 選択時は fixed action bar (~106px、 wrap で増) が最終行を occlude しないよう
+          container の内部下部に pb-32 (128px) を足す (密封後は container 側 padding が正)。 */}
+      <div
+        ref={tableContainerRef}
+        className={cn('flex-1 min-h-0 overflow-auto', selectedIds.length > 0 && 'pb-32')}
+      >
+        {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x スクロールを発火させる。
             border-collapse → border-separate border-spacing-0 に倒し切る (条件分岐なし)。
             理由: sticky セルで border-collapse は border 消失が既知挙動。
             border-separate では <tr> の border-b が効かないため border を td/th 側に移譲。 */}
@@ -692,7 +681,7 @@ export function ExamCardTable({ examId, userId }: ExamCardTableProps) {
         <MemoizedTableBody
           table={table}
           isResizing={Boolean(table.getState().columnSizingInfo.isResizingColumn)}
-          scrollMargin={listOffset}
+          scrollElementRef={tableContainerRef}
         />
         </table>
       </div>

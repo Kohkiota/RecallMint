@@ -35,6 +35,31 @@ if (typeof ResizeObserver === 'undefined') {
   }
 }
 
+// S2-2: element virtualizer (TanStack) は scroll 元の size と行高を offsetWidth/offsetHeight
+// で読む (virtual-core の getRect / measureElement = 共に offset* 経由)。 jsdom は layout を
+// 計算せず offset* に 0 を返すため、 scroll container の outerSize=0 → calculateRange が null →
+// 行が 1 つも描画されない (element virtualizer は window virtualizer と違い innerHeight
+// fallback を持たない)。 ResizeObserver stub と同種の jsdom layout shim として、 非ゼロの
+// offset* を返す。 これで container が有限高を持ち仮想化窓が成立する (窓は依然 min(overscan+1,
+// N) 程度に「有界」= 全 N を mount しない性質を保つ)。
+// 注意: リポジトリの source / test は offsetWidth/offsetHeight を数値参照しない (grep 済) ため
+//   非ゼロ供給による回帰はない (whole-repo test green で担保)。
+if (typeof HTMLElement !== 'undefined') {
+  const STUB_OFFSET = 40
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get() {
+      return STUB_OFFSET
+    },
+  })
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get() {
+      return STUB_OFFSET
+    },
+  })
+}
+
 // Reset modules before each test so dynamic imports re-evaluate
 // (important for Task 1.3 Stripe prefix validation tests).
 beforeEach(() => {

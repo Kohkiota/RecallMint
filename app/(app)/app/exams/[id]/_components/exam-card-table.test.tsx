@@ -764,11 +764,13 @@ describe('M1: 既定 view で列トグルが右寄せ (ml-auto)', () => {
 // ===========================================================================
 // Fix-3 T2: 行仮想化 — 大 N で DOM 行数が N 未満に頭打ちする (窓が有界)
 //
-// 注意 (jsdom 制約): jsdom は layout 0 (getBoundingClientRect=0) のため
-//   measureElement が 0 高を返し、virtualizer の可視窓は実ブラウザ (~20-30 行) と
-//   一致しない。本テストは「全 N を mount しない = 仮想化が有界窓で効いている」ことのみを
-//   非空振りで担保する (N=200 → 実測 106 行 < 200)。実機の ~20-30 窓・CPU スパイク解消は
-//   OT の実機 smoke に委ねる (report 記載)。
+// 注意 (jsdom 制約): jsdom は layout を計算しない。S2-2 で element virtualizer 化した後は
+//   scroll 元の size/行高を offsetWidth/offsetHeight で読む (window virtualizer の innerHeight
+//   fallback がない)。vitest.setup.ts の offset* shim (=40) で container が有限高を持ち窓が
+//   成立するが、その窓は実ブラウザ (~20-30 行) と一致しない (shim 下では ~overscan+1 行)。
+//   本テストは「全 N を mount しない = 仮想化が有界窓で効いている」ことのみを非空振りで
+//   担保する (N=200 → 窓 < 200)。実機の窓サイズ・scroll 追従・CPU スパイク解消は
+//   S2 締めの stg 300-card smoke に委ねる (report 記載)。
 // ===========================================================================
 
 describe('Fix-3 T2: 行仮想化 — 大 N で DOM 行数が有界 (全 N を mount しない)', () => {
@@ -841,5 +843,102 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
       const td = cells[i] as HTMLElement
       expect(td.className.split(' '), `td[${i}] は text-center を持たない`).not.toContain('text-center')
     }
+  })
+})
+
+// ===========================================================================
+// S2-2: app-shell 密封 + element virtualizer 差替
+//
+// jsdom は layout/scroll を計算しない (getBoundingClientRect=0) ため、 実スクロールの
+// 正しさ (row window の追従・offset・scroll 保持) は unit で保証できない → stg 300-card
+// smoke に委譲する。 ここで unit 固定するのは (a) 密封の構造 class (内部スクロール主体化)、
+// (b) element virtualizer の spacer が件数境界 (0/1/少数) で壊れない (phantom spacer なし)、
+// (c) fixed action-bar occlusion 回避が container 内部 padding へ移設されたこと。
+// ===========================================================================
+
+describe('S2-2: app-shell 密封 — 内部スクロール container の構造', () => {
+  it('table container が flex-1 min-h-0 overflow-auto を持ち overflow-x-auto を持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const tableEl = container.querySelector('table') as HTMLElement
+    const scrollContainer = tableEl.parentElement as HTMLElement
+    const classes = scrollContainer.className.split(' ')
+    expect(classes, 'container が内部スクロール主体 (overflow-auto)').toContain('overflow-auto')
+    expect(classes, 'container が flex-1 で残余高を埋める').toContain('flex-1')
+    expect(classes, 'container が min-h-0 で flex chain を切らさない').toContain('min-h-0')
+    expect(classes, '旧 window スクロール前提の overflow-x-auto は撤去').not.toContain('overflow-x-auto')
+  })
+
+  it('ExamCardTable root が app-shell flex 列 (flex flex-col min-h-0 h-full)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const root = container.firstElementChild as HTMLElement
+    const classes = root.className.split(' ')
+    expect(classes, 'root が flex 列').toContain('flex')
+    expect(classes, 'root が縦積み').toContain('flex-col')
+    expect(classes, 'root が min-h-0 で flex chain を切らさない').toContain('min-h-0')
+    expect(classes, 'root が親 flex-1 スロットを埋める').toContain('h-full')
+  })
+})
+
+describe('S2-2: element virtualizer — 件数境界 (0 / 1 / 少数) で spacer が壊れない', () => {
+  it('0 件: data 行も aria-hidden spacer 行も描画されない (phantom margin なし)', async () => {
+    // seed なし = 0 cards。 hasItems ガードで paddingTop/Bottom=0 → spacer 非描画。
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    // table (thead) は data 未ロードでも即描画される (data=[] スタート)。
+    await waitFor(() => expect(container.querySelector('table')).not.toBeNull())
+    await waitFor(() => {
+      expect(screen.queryAllByTestId(/^row-card-/)).toHaveLength(0)
+    })
+    const spacers = container.querySelectorAll('tbody tr[aria-hidden]')
+    expect(spacers.length, '0 件で spacer 行 (phantom margin) を描画しない').toBe(0)
+  })
+
+  it('1 件: 1 data 行 + spacer 高は非負 (element 座標で負 offset なし)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // spacer が出る場合でもその高さは非負 (旧: totalSize+scrollMargin の phantom 余白バグ回帰防止)。
+    const spacerTds = container.querySelectorAll('tbody tr[aria-hidden] td')
+    spacerTds.forEach((td) => {
+      const h = parseFloat((td as HTMLElement).style.height || '0')
+      expect(h, 'spacer 高は非負 (負値=座標系ズレ)').toBeGreaterThanOrEqual(0)
+    })
+  })
+
+  it('少数 (3 件): 全 3 行が描画される (窓が全件を含む)', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
+    render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
+  })
+})
+
+describe('S2-2: fixed action-bar occlusion 回避が container 内部 padding へ移設', () => {
+  it('行選択で scroll container が pb-32 を持ち、 選択前は持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const scrollContainer = (container.querySelector('table') as HTMLElement)
+      .parentElement as HTMLElement
+    expect(scrollContainer.className.split(' '), '選択前は pb-32 なし').not.toContain('pb-32')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択/ }))
+    await waitFor(() => {
+      expect(
+        scrollContainer.className.split(' '),
+        '選択後は container 内部下部に pb-32 (fixed bar 非 occlusion)',
+      ).toContain('pb-32')
+    })
   })
 })
