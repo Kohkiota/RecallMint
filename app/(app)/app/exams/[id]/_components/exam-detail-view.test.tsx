@@ -70,6 +70,11 @@ const defaultProps = {
   initialCards: [],
   examId: 'exam-1',
   userId: 'user-1',
+  // S2-1 fix: hydration mismatch 解消 — server preformat 済み文字列を渡す。
+  examName: 'テスト試験',
+  createdLabel: '1ヶ月前',
+  updatedLabel: '2日前',
+  archivedAt: null,
 }
 
 beforeEach(async () => {
@@ -357,5 +362,129 @@ describe('ExamDetailView — Case ⑧: root gap が space-y-1(Fix-3 cosmetic C)'
     const root = container.firstElementChild as HTMLElement
     expect(root.className).toContain('space-y-1')
     expect(root.className).not.toContain('space-y-4')
+  })
+})
+
+// ===========================================================================
+// Case ⑨: タイトル/日付移管 — card view でタイトル/日付が視覚維持 (S2-1)
+// page.tsx の <h1 text-2xl font-bold> + <p text-xs> 日付を ExamDetailView が
+// props から描画。 card view branch では現状同等 (text-2xl font-bold) を維持。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑨: card view タイトル/日付 視覚維持 (S2-1)', () => {
+  it('card view で examName が heading として描画され、text-2xl font-bold で日付も出る', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // タイトルが heading として描画される
+    const heading = screen.getByRole('heading', { name: 'テスト試験' })
+    expect(heading).toBeInTheDocument()
+    // card view は現状同等スタイル (text-2xl font-bold) を維持
+    expect(heading.className).toContain('text-2xl')
+    expect(heading.className).toContain('font-bold')
+
+    // 日付 (作成 / 最終更新) が描画される。createdLabel/updatedLabel が反映される (非 vacuous)
+    expect(screen.getByText(/作成/)).toBeInTheDocument()
+    expect(screen.getByText(/最終更新/)).toBeInTheDocument()
+    expect(screen.getByText(/1ヶ月前/)).toBeInTheDocument()
+    expect(screen.getByText(/2日前/)).toBeInTheDocument()
+  })
+
+  it('archivedAt が非 null のとき (アーカイブ済) バッジが描画される', async () => {
+    render(<ExamDetailView {...defaultProps} archivedAt={new Date('2026-01-03T00:00:00Z')} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    expect(screen.getByText('(アーカイブ済)')).toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// Case ⑩: table view app-shell 骨格 (S2-1)
+// table view branch = viewport 追従 flex 列骨格 + flex-none chrome
+// (タイトル/日付 + view 切替) + flex-1 min-h-0 の ExamCardTable 領域。
+// 密封 (container overflow / virtualizer 差替) は S2-2 = ここでは骨格のみ。
+// jsdom は layout 計算不可ゆえ class/構造 + 高さ style の存在で固定。
+// ===========================================================================
+
+describe('ExamDetailView — Case ⑩: table view app-shell 骨格 (S2-1)', () => {
+  it('table view branch が flex-col + viewport 追従高さ骨格、chrome が flex-none、表領域が flex-1 min-h-0', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // table に切替
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
+    })
+
+    // app-shell 骨格: flex flex-col + viewport 追従高さ (固定 px 禁止 = calc(100dvh - offset))
+    const shell = screen.getByTestId('table-app-shell')
+    expect(shell.className).toContain('flex')
+    expect(shell.className).toContain('flex-col')
+    // 高さは viewport 追従 (calc(100dvh - <topOffset>px))。 固定 px 高禁止 = inline style は calc(100dvh。
+    expect(shell.style.height).toContain('calc(100dvh')
+    expect(shell.style.height).not.toMatch(/^\d+px$/)
+
+    // 上部 chrome は flex-none
+    const chrome = screen.getByTestId('table-chrome')
+    expect(chrome.className).toContain('flex-none')
+
+    // ExamCardTable 領域は flex-1 min-h-0 (S2-2 の overflow が効く土台)
+    const tableWrapper = screen.getByTestId('exam-card-table-stub').parentElement
+    expect(tableWrapper).not.toBeNull()
+    expect(tableWrapper!.className).toContain('flex-1')
+    expect(tableWrapper!.className).toContain('min-h-0')
+  })
+
+  it('table view chrome 内にタイトル (examName) と view 切替が描画される', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
+    })
+
+    const chrome = screen.getByTestId('table-chrome')
+    // chrome 内にタイトルが描画される (heading)
+    const heading = screen.getByRole('heading', { name: 'テスト試験' })
+    expect(chrome.contains(heading)).toBe(true)
+    // chrome 内に view 切替 button が描画される
+    const toggleGroup = screen.getByRole('group', { name: '表示モード切替' })
+    expect(chrome.contains(toggleGroup)).toBe(true)
+  })
+
+  it('table view branch は密封しない (S2-2 の責務): container の overflow を変えず ExamCardTable に props 追加しない', async () => {
+    // 骨格段の非密封を構造で固定: ExamCardTable stub は examId のみ受ける
+    // (props 追加なし = 内部構造非変更)。 密封 (overflow-auto container) は S2-2。
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument()
+    })
+
+    // 表領域 wrapper は overflow-auto を持たない (密封は S2-2)
+    const tableWrapper = screen.getByTestId('exam-card-table-stub').parentElement
+    expect(tableWrapper!.className).not.toContain('overflow-auto')
   })
 })
