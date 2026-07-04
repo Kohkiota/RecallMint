@@ -24,8 +24,9 @@
 
 - `page.tsx` の Link + AppContainer wrapper を撤去し、`<ExamDetailPullGate examId={id} />` を素で残す(null render ゆえ視覚要素ゼロ)。card/table 両 view で上部余白が縮む(意図どおりのスペース節約)。shellTop は実測ゆえ追従。
 - **ScrollTopButton**: ExamCardTable 内(containerRef と scroll 状態の所有者)で render。`position: fixed` 右下(`right-4 bottom-4` 目安)、shadcn `Button variant="outline" size="icon-lg"`(36px)+ lucide `ChevronUp`、`rounded-full shadow-sm` の控えめ表現。`aria-label="先頭へスクロール"` + `data-testid="scroll-top-button"`。click で `containerRef.current.scrollTo({ top: 0, behavior: 'smooth' })`(smooth が仮想化で jank する場合 instant へ切替、stg で判定)。
-- **表示条件(推奨)**: 常時表示でなく **B と同一の scroll 信号(collapsed)と連動**して表示(scrollTop≈0 では非表示)。信号を 1 本に統一し閾値の二重管理を避ける。
-- **選択時 action bar との競合(推奨)**: `selectedIds.length > 0` の間はボタン非表示(bulk 操作中に scroll-top は必須でなく、全幅 z-40 バーとの z/クリック競合を構造的に回避)。
+- **表示条件(推奨)**: 常時表示でなく **B と同一の scroll 信号(collapsed)と連動**して表示(scrollTop≈0 では非表示)。信号を 1 本に統一し閾値の二重管理を避ける。A が B の状態機械に依存する結合は意図的トレードオフ(将来 collapse 閾値と表示閾値を分けたくなったら信号を 2 値に分離、の可能性を記録 — Codex 指摘)。
+- **選択時 action bar との競合(推奨)**: `selectedIds.length > 0` の間はボタン非表示(bulk 操作中に scroll-top は必須でなく、全幅 z-40 バーとの z/クリック競合を構造的に回避)。選択中に先頭復帰導線を失うトレードオフは許容(Codex 指摘・記録)。
+- **mobile 下端**: `bottom-4` を基本とし、iOS safe-area は stg mobile smoke で確認、必要時のみ `env(safe-area-inset-bottom)` を加算(先回り実装しない)。非表示化は unmount(collapsed 解除時に focus が乗っていた場合の focus 消失は許容)。
 
 ## 4. B — 中間帯 collapse(設計)
 
@@ -33,9 +34,10 @@
 - **閾値 + hysteresis(推奨)**: collapse = `scrollTop > 24px` / expand = `scrollTop < 8px`(境界振動防止)。
 - **短コンテンツ guard(推奨)**: collapse 条件に `scrollHeight - clientHeight - 中間帯高 ≥ expand 閾値` を加える。理由: collapse で container が中間帯高ぶん伸びると maxScroll が同量減り、scrollTop が expand 閾値未満へ clamp → 即 re-expand の一往復ちらつきが出るため(コンテンツが僅かに溢れるだけの時)。中間帯高は collapse 対象 wrapper の実測(offsetHeight)。
 - **collapse 対象と伝播**: 中間帯は 2 コンポーネント跨ぎ(§2-1)。ExamCardTable が collapsed を所有し、(a) 自身の ConditionBar wrapper を collapse、(b) 新 prop `onCollapsedChange?: (collapsed: boolean) => void` で exam-detail-view に通知 → table-chrome を collapse。ref の lift や context は導入しない(最小変更)。
-- **collapse 方式(推奨)**: unmount しない(ConditionBar の popover state / ResizeObserver churn 回避)。wrapper を `grid grid-rows-[1fr] → grid-rows-[0fr]` + inner `min-h-0 overflow-hidden` の CSS transition で畳む(px 指定不要・可変高対応・Notion 的スライド)。transition が問題を出す場合の fallback = 無アニメの `hidden` toggle。
+- **collapse 方式(推奨)**: unmount しない(ConditionBar の popover state / ResizeObserver churn 回避)。wrapper を `grid grid-rows-[1fr] → grid-rows-[0fr]` + inner `min-h-0 overflow-hidden` の CSS transition で畳む(px 指定不要・可変高対応・Notion 的スライド)。transition は短く(150-200ms 目安)+ `motion-reduce:transition-none`(Codex 指摘)。transition が問題を出す場合の fallback = 無アニメの `hidden` toggle。
+- **初期化(Codex 指摘採用)**: collapsed 初期値 = false。view 切替等で ExamCardTable が unmount → remount した際は collapsed=false から再出発し、親(exam-detail-view)側 state も table view 離脱時にリセット(scrollTop=0 なのに chrome が畳まれたままの stale 状態を作らない)。
 - **不変条件**: thead `sticky top-0`(container 相対)は collapse と独立に成立 = collapse 中は app-header + thead の 2 段固定、行は thead 直下から連続。scrollTop は書き換えない(scroll 保持と両立)。container 高変化は virtualizer が ResizeObserver(observeElementRect default)で追従。
-- **既知エッジ(smoke で確認)**: 条件バーの Popover(filter editor)が開いたまま collapse すると anchor が隠れて popover が浮く。実害があれば collapse 時に閉じる対応を検討(先回り実装しない)。
+- **既知エッジ(smoke で確認)**: 条件バーの Popover(filter editor)が開いたまま collapse すると anchor が隠れて popover が浮く。**実害の判定基準**(Codex 指摘採用)= 浮いた popover が「操作不能 / 画面外 / 誤操作誘発」のいずれかなら対応対象(collapse 時に閉じる)、単に位置が不自然なだけなら記録のみ(先回り実装しない)。
 
 ## 5. C — 条件バー 2 ゾーン + タグ個別 chip(設計)
 
@@ -44,9 +46,10 @@
 - **フィルタゾーン**: 回答状態・連続正解数 chip は現状維持(無彩色・testid 不変)。
 - **tags 特例(generic 投影への局所例外)**: tags フィルタのみ「タグ: N 件」summary chip を廃し、TagFilterValue の **選択 option ごとに個別 chip** を展開。
   - label = `{カテゴリ名}: {option 名}`、色 = `colorToClass(option.color)`(タグ chip のみ色付き・他 chip 無彩色)。
-  - 各 chip の × = **その option だけを TagFilterValue から除去**(既存 `handleTagsChipToggle` の除去経路を再利用: 空カテゴリ prune + 空 map → `undefined` 解除 = dot も消える。既存規約準拠)。
+  - 各 chip の × = **その option だけを TagFilterValue から除去**(既存 `handleTagsChipToggle` の除去経路を再利用: 空カテゴリ prune + 空 map → `undefined` 解除 = dot も消える。既存規約準拠)。× は現 tags chip 同様 `stopPropagation` で popover trigger と分離(× click で popover が開かないこと = test 観点、Codex 指摘採用)。aria-label は option 単位(`フィルタを解除: {カテゴリ名}: {option 名}`)。
   - chip body は現 tags chip 同様 **CardTagAddPopover trigger を維持**(selectOnly・§8 論点3)。
-  - testid = `condition-chip-filter-tags-{optionId}`(option 単位ユニーク)。**S1 記録の前提更新**: S1 は「testid は columnId 一意キー・同一列複数条件は S4 で再訪」としたが、tags は本追補で option 単位複数 chip に先行移行する(S4 のテキストフィルタ複数条件とは独立の局所特例)。
+  - testid = `condition-chip-filter-tags-{optionId}`(option 単位ユニーク。optionId は UUID ゆえ selector 安全 — sanitize 不要、Codex 指摘に対する明記)。
+  - **論理構造の見え方**: 個別 chip 化でカテゴリ間 AND / カテゴリ内 OR の構造は UI 上フラットに見えるが、Notion 準拠 UX として許容(判断記録、Codex 指摘)。predicate 意味は不変。**S1 記録の前提更新**: S1 は「testid は columnId 一意キー・同一列複数条件は S4 で再訪」としたが、tags は本追補で option 単位複数 chip に先行移行する(S4 のテキストフィルタ複数条件とは独立の局所特例)。
   - **特例の理由と局所化**: Notion 準拠 UX(フィルタ値の構成要素を chip で直接解除)のため。特例は ConditionBar 内 `columnId === 'tags'` 分岐に閉じ、deriveConditions・predicate 層(matchesTagFilter)・他フィルタ/sort の generic 経路・registry は不変。S3/S4 の登録追加拡張性を阻害しない。
   - **欠損 fallback**: filter 値が参照する option/category が削除済で lookup 不能の場合、chip は optionId を label に無彩色で表示し × は機能させる(解除不能な幽霊条件を作らない)。
 - **クリア**: 文言「すべてクリア」→「クリア」(:284)。位置(ml-auto)・全解除挙動は不変。
