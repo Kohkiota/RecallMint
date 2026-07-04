@@ -279,13 +279,13 @@ describe('FilterEditors: tag フィルタ (tags header popover 経由)', () => {
       expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
     })
 
-    // ConditionBar の filter chip × をクリックして解除
-    const chip = await screen.findByTestId('condition-chip-filter-tags')
+    // ConditionBar の filter chip × をクリックして解除 (S2b-3: testid は option 単位)
+    const chip = await screen.findByTestId('condition-chip-filter-tags-opt-editors-1')
     fireEvent.click(within(chip).getByRole('button', { name: /フィルタを解除/ }))
 
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
-      expect(screen.queryByTestId('condition-chip-filter-tags')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('condition-chip-filter-tags-opt-editors-1')).not.toBeInTheDocument()
     })
   })
 })
@@ -407,31 +407,19 @@ describe('FilterEditors: tag 全解除で filter value が undefined になる',
     fireEvent.click(screen.getByText('Hard'))
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
-      expect(screen.getByTestId('condition-chip-filter-tags')).toBeInTheDocument()
+      // S2b-3: testid は option 単位 condition-chip-filter-tags-{optionId}
+      expect(screen.getByTestId('condition-chip-filter-tags-opt-editors-1')).toBeInTheDocument()
     })
 
-    // Step 2: popover を閉じて chip の tags editor (body button) から再オープン
-    fireEvent.keyDown(document, { key: 'Escape' })
-
-    // Step 3: ConditionBar chip の tags editor 経由で同 option を再クリック → deselect
-    // tags chip は CardTagAddPopover が chip body に埋め込まれており、
-    // chip 内の first button がその trigger。
-    const chip = screen.getByTestId('condition-chip-filter-tags')
-    // chip body (summary trigger) をクリックして tag editor を開く
-    const chipBodyBtn = within(chip).getAllByRole('button')[0]
-    fireEvent.click(chipBodyBtn)
-
-    // tag popover が開く
-    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Difficulty'))
-    await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
-    // Hard を再クリックして deselect (toggle off)
-    fireEvent.click(screen.getByText('Hard'))
+    // Step 2: S2b-3 では per-option chip の × で直接解除できる。
+    // handleTagsChipToggle 除去経路: 空カテゴリ prune + 空 map → undefined (= dot 消灯)。
+    const chip = screen.getByTestId('condition-chip-filter-tags-opt-editors-1')
+    fireEvent.click(within(chip).getByRole('button', { name: /フィルタを解除/ }))
 
     // filter value が undefined になり chip/rows が消える
     // (空 {} が残ると chip は消えず rows も絞られたまま → 誤点灯)
     await waitFor(() => {
-      expect(screen.queryByTestId('condition-chip-filter-tags')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('condition-chip-filter-tags-opt-editors-1')).not.toBeInTheDocument()
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
     })
   })

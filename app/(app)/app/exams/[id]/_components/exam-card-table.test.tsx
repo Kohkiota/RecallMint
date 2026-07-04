@@ -1018,9 +1018,9 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // 条件ゼロ → ConditionBar は null (chip / すべてクリア 不在)
+    // 条件ゼロ → ConditionBar は null (chip / クリア 不在)
     expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
-    expect(screen.queryByText('すべてクリア')).toBeNull()
+    expect(screen.queryByText('クリア')).toBeNull()
 
     // data-testid で条件バー wrapper を取得 (F4: positional traversal 廃止)
     const condBarWrapper = container.querySelector('[data-testid="cond-bar-wrapper"]') as HTMLElement
@@ -1099,8 +1099,8 @@ describe('S2-4: 可変高バー安定性 — chip 有無の対比で構造が不
     expect(thead.className.split(' '), 'chip 有り: thead top-0 不変').toContain('top-0')
     expect(thead.className.split(' '), 'chip 有り: thead z-10 不変').toContain('z-10')
 
-    // chip 有り → すべてクリアして chip 無しに戻す
-    fireEvent.click(screen.getByText('すべてクリア'))
+    // chip 有り → クリアして chip 無しに戻す (S2b-3: 文言「クリア」)
+    fireEvent.click(screen.getByText('クリア'))
     await waitFor(() => {
       expect(screen.queryByTestId(/^condition-chip-/)).toBeNull()
     })
