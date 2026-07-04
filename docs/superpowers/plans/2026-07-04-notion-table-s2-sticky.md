@@ -35,15 +35,15 @@
 
 ---
 
-### Task S2-1: exam 詳細テーブル view の app-shell 化(D-1)
+### Task S2-1: app-shell chrome 骨格(D-1・密封は S2-2)
 
-**目的**: exam-detail-view の table view branch を viewport 高の flex 列(`h-[calc(100dvh - navH)] flex flex-col`)にする。上部 chrome(flex-none)= [タイトル/日付(最小・1 行 truncate)+ view 切替 + ※列ボタンは S2-5)]。ページを document スクロールさせず、以降 ExamCardTable 側の container が内部スクロール主体になる土台を作る。nav(app-header)は触らない(非スクロールで自然に残る)。タイトル/日付を chrome に取り込むかは page.tsx の現物を見て決める。
-**制約**: Global。app-header 非変更。card view branch は現状の document スクロール維持(app-shell 化は table view のみ)。navH は固定 px 禁止(calc/dvh・実測)。この段では virtualizer 差替(S2-2)を含めない(まず高さ骨格)。
-**完了条件**: table view が viewport 高 flex 列になり外側 page が document スクロールしない構造 test(高さ/flex-col/flex-none chrome)+ full-dir green + lint/typecheck exit0。stg smoke ①②(app-shell スクロール構造)は S2 締め。単独で視覚確認可能。
+**目的**: exam-detail-view の table view branch を viewport 高の flex 列(`h-[calc(100dvh - navH)] flex flex-col`)骨格にする。上部 chrome(flex-none)= [タイトル/日付(最小・1 行 truncate)+ view 切替 + ※列ボタンは S2-5)]、その下に ExamCardTable が flex-1 領域として入る構造を確立。nav(app-header)は触らない。タイトル/日付を chrome に取り込むかは page.tsx の現物を見て決める。**この段は骨格のみ = 実スクロール密封(container overflow + 内部スクロール主体化)は行わない**(密封は element virtualizer 差替と不可分ゆえ S2-2 に隔離。S2-1 完了時点では document スクロール継続を許容 = 意図的分割、主リスク隔離のため)。
+**制約**: Global。app-header 非変更。card view branch は現状維持(app-shell 化は table view のみ)。navH は固定 px 禁止(calc/dvh・実測)。virtualizer 差替・container 密封を含めない。既存の ExamCardTable 内部構造(条件バー/列ボタン/tableContainerRef)は S2-2 以降で扱う=この段では移動しない。
+**完了条件**: table view branch が `h-[calc(100dvh-navH)] flex flex-col` 骨格 + flex-none 上部 chrome(タイトル/日付/view 切替)+ flex-1 表領域、の構造 test + full-dir green + lint/typecheck exit0。stg smoke ①②(app-shell 構造)は密封完了(S2-2)後に S2 締めで。単独で視覚確認可能。
 
-### Task S2-2: element virtualizer 差替 + container 内部スクロール(D-2・主リスク・独立)
+### Task S2-2: app-shell 密封 + element virtualizer 差替(D-2・主リスク・独立)
 
-**目的**: `tableContainerRef` を app-shell の `flex-1 min-h-0 overflow-auto` container 化し、`useWindowVirtualizer` → `useVirtualizer({ getScrollElement: () => tableContainerRef.current })` へ差替。`scrollMargin`/paddingTop/paddingBottom を container 相対に再定義、`listOffset`(document 座標 = getBoundingClientRect().top+scrollY)算出と S1 の listOffset 用 ResizeObserver を廃止。thead はまだ非 sticky(S2-3)。
+**目的**: S2-1 の骨格を密封する。`tableContainerRef` を app-shell の `flex-1 min-h-0 overflow-auto` container 化して**内部スクロール主体化**(外側 page が document スクロールしなくなる)し、同時に `useWindowVirtualizer` → `useVirtualizer({ getScrollElement: () => tableContainerRef.current })` へ差替(密封と virtualizer は不可分ゆえ同一段)。`scrollMargin`/paddingTop/paddingBottom を container 相対に再定義、`listOffset`(document 座標 = getBoundingClientRect().top+scrollY)算出と S1 の listOffset 用 ResizeObserver を廃止。thead はまだ非 sticky(S2-3)。
 **制約**: Global。`count`/`estimateSize=120`/`getItemKey=card.id`/`overscan=5`/`measureElement` 流用。memo 凍結(isResizing)・resize CSS 変数のリアルタイム更新を不変に保つ。`observeElementRect`/`observeElementOffset` は default(明示指定しない)。**scroll 位置 = 保持**(filter/sort/view/列変更で先頭リセットしない)。row window 正しさ厳守。
 **完了条件**: 仮想化 spacer/paddingTop/Bottom・window 計算の対象 test green(element virtualizer 前提へ更新、旧 document 座標 test は再 point/削除)+ **件数境界 test(0件/1件/少数)** + full-dir green + typecheck/lint exit0。**stg 300-card 実機**(S2 締め ④)で scroll 位置・行描画 anomaly なし・offset 追従・scroll 保持・filter で件数減時の spacer を確認。R1 の主検証段。
 
