@@ -752,7 +752,7 @@ export function ExamCardTable({
         <Button
           variant="outline"
           size="icon-lg"
-          className="rounded-full shadow-sm fixed right-4 bottom-4 z-30"
+          className="rounded-full shadow-sm fixed right-6 bottom-4 z-30"
           data-testid="scroll-top-button"
           aria-label="先頭へスクロール"
           onClick={() => tableContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
