@@ -114,26 +114,72 @@ export const examViewPrefsV2Schema = z
 
 export type ExamViewPrefsV2 = z.infer<typeof examViewPrefsV2Schema>
 
+// ---------------------------------------------------------------------------
+// ExamViewPrefsV3 schema (S5-1)
+// ---------------------------------------------------------------------------
+
 /**
- * 読み取り用 union schema。 旧 v1 record も新 v2 record も両方 accept する
- * (version discriminator で分岐)。 書込は examViewPrefsV2Schema を使うこと。
+ * 試験一覧 view preference の zod schema (version: 3)。
+ * v2 に pinnedBoundary (列固定境界の列 id / null) を追加。 書込は常に v3。
+ */
+export const examViewPrefsV3Schema = z
+  .object({
+    version: z.literal(3),
+    view: z.enum(['card', 'table']),
+    hiddenColumns: z.array(z.string()),
+    pinnedBoundary: z.string().nullable(),
+  })
+  .strict()
+
+export type ExamViewPrefsV3 = z.infer<typeof examViewPrefsV3Schema>
+
+/**
+ * 読み取り用 union schema。 v1 / v2 / v3 の全 record を accept する
+ * (version discriminator で分岐)。 書込は examViewPrefsV3Schema を使うこと。
  */
 export const examViewPrefsSchema = z.discriminatedUnion('version', [
   examViewPrefsV1Schema,
   examViewPrefsV2Schema,
+  examViewPrefsV3Schema,
 ])
 
 export type ExamViewPrefs = z.infer<typeof examViewPrefsSchema>
 
 /**
- * v1 / v2 いずれの record も v2 working shape に正規化する。
+ * v1 / v2 / v3 いずれの record も v2 working shape に正規化する。
  * v1 (hiddenColumns 不在) は hiddenColumns: [] にフォールバックする (forward-compat)。
+ * v2 および v3 はともに hiddenColumns フィールドを持つため、そのまま引き継ぐ
+ * (v3 record を渡してもデータロスしない)。
+ * S5-2 で examViewPrefsToV3 に置換される予定 (それまでは exam-detail-view が使用中)。
  */
 export function examViewPrefsToV2(
   prefs: ExamViewPrefs,
 ): { view: 'card' | 'table'; hiddenColumns: string[] } {
   return {
     view: prefs.view,
-    hiddenColumns: prefs.version === 2 ? prefs.hiddenColumns : [],
+    hiddenColumns: prefs.version === 1 ? [] : prefs.hiddenColumns,
   }
+}
+
+/**
+ * v1 / v2 / v3 いずれの record も v3 working shape に正規化する (S5-1)。
+ * v1 → hiddenColumns: [], pinnedBoundary: null
+ * v2 → hiddenColumns を引き継ぎ, pinnedBoundary: null
+ * v3 → そのまま passthrough
+ */
+export function examViewPrefsToV3(
+  prefs: ExamViewPrefs,
+): { view: 'card' | 'table'; hiddenColumns: string[]; pinnedBoundary: string | null } {
+  if (prefs.version === 3) {
+    return {
+      view: prefs.view,
+      hiddenColumns: prefs.hiddenColumns,
+      pinnedBoundary: prefs.pinnedBoundary,
+    }
+  }
+  if (prefs.version === 2) {
+    return { view: prefs.view, hiddenColumns: prefs.hiddenColumns, pinnedBoundary: null }
+  }
+  // version === 1: hiddenColumns なし
+  return { view: prefs.view, hiddenColumns: [], pinnedBoundary: null }
 }
