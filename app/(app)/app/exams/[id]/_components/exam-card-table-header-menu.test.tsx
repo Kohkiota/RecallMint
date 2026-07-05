@@ -366,7 +366,7 @@ describe('S1-4 ⑥: filter dot — lastCorrect フィルタ設定/解除で dot 
     })
   })
 
-  it('tags 列(非 canSort)フィルタ設定で「フィルタ適用中」dot が tags th 内に出現', async () => {
+  it('tags 列 (S3-2 canSort 化) フィルタ設定で「フィルタ適用中」dot が tags th 内に出現', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeTagCategory())
     await db.tag_options.put(makeTagOption())
@@ -386,19 +386,22 @@ describe('S1-4 ⑥: filter dot — lastCorrect フィルタ設定/解除で dot 
     // no dot initially
     expect(screen.queryByRole('img', { name: 'フィルタ適用中' })).not.toBeInTheDocument()
 
-    // open tags header popover and select an option
-    const tagsHeaderBefore = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeaderBefore).getByRole('button'))
+    // H-1: outer ColumnHeaderMenu → inner CardTagAddPopover でフィルタ設定
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Difficulty'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Hard'))
 
-    // dot appears — and is scoped within the tags th
+    // dot appears in the tags th (H-1: outer menu open → dot in both trigger + inner button)
+    // getAllByRole to handle the 2 dots (outer trigger + TagsEditor inner button)
     await waitFor(() => {
-      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+      expect(screen.getAllByRole('img', { name: 'フィルタ適用中' }).length).toBeGreaterThan(0)
     })
     const tagsHeaderAfter = screen.getByRole('columnheader', { name: /タグ/ })
+    // th 内: ColumnHeaderMenu trigger の dot (portal content の dot は th 外)
     expect(
       within(tagsHeaderAfter).getByRole('img', { name: 'フィルタ適用中' }),
     ).toBeInTheDocument()
@@ -502,7 +505,7 @@ describe('S2-6 ⑧: canSort 列の sort glyph 領域クリックで menu が開�
 // ===========================================================================
 
 describe('S2-6 ⑨: filter dot が tags trigger button の子孫である', () => {
-  it('tags フィルタ適用後、dot が tags trigger button 内に描画される', async () => {
+  it('tags フィルタ適用後、dot が ColumnHeaderMenu trigger button 内に描画される (H-1)', async () => {
     const db = getClientDb()
     await db.tag_categories.put(makeTagCategory())
     await db.tag_options.put(makeTagOption())
@@ -519,21 +522,24 @@ describe('S2-6 ⑨: filter dot が tags trigger button の子孫である', () =
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
 
-    // tags header popover を開き option を選択(filter 設定 → dot 出現)
-    const tagsHeaderBefore = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeaderBefore).getByRole('button'))
+    // H-1: outer ColumnHeaderMenu → inner CardTagAddPopover でフィルタ設定
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Difficulty'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Hard'))
 
+    // H-1: outer menu open → dots in both ColumnHeaderMenu trigger + TagsEditor inner button
     await waitFor(() => {
-      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+      expect(screen.getAllByRole('img', { name: 'フィルタ適用中' }).length).toBeGreaterThan(0)
     })
 
-    // dot は tags trigger button の子孫(S2-6 前は sibling = RED)
+    // dot は tags ColumnHeaderMenu trigger button の子孫 (th 内の button = outer menu trigger)
+    // portal 側の TagsEditor dot は th 外 → within(tagsTh) でスコープすれば 1 件だけ
     const tagsTh = screen.getByRole('columnheader', { name: /タグ/ })
-    const trigger = within(tagsTh).getByRole('button')
+    const trigger = within(tagsTh).getByRole('button', { name: 'タグ の列メニュー' })
     const dot = within(tagsTh).getByRole('img', { name: 'フィルタ適用中' })
     expect(trigger).toContainElement(dot)
   })

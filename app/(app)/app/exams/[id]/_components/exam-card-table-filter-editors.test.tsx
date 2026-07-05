@@ -261,9 +261,10 @@ describe('FilterEditors: tag フィルタ (tags header popover 経由)', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // タグ列ヘッダーの tags editor トリガー (columnheader 内の button) を開く
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // タグ列ヘッダー: H-1 流儀で outer ColumnHeaderMenu → inner CardTagAddPopover を開く
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
 
     // stage1: category 選択
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
@@ -359,9 +360,10 @@ describe('FilterEditors: selectOnly で新規作成/編集導線が非表示', (
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
 
-    // tags header から editor を開く
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // tags header から editor を開く (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
 
     // category 一覧が出る
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
@@ -398,9 +400,10 @@ describe('FilterEditors: tag 全解除で filter value が undefined になる',
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // Step 1: tags header から Hard を選択 → 絞り込み
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // Step 1: tags header から Hard を選択 → 絞り込み (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Difficulty'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())

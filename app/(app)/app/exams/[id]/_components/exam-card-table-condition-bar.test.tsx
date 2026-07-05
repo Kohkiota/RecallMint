@@ -347,9 +347,10 @@ describe('ConditionBar: filter chip value-summary labels', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // tags header popover で option を 1 件選択 (S1-5: 固定バー撤去後は header 経由)
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // tags header popover で option を 1 件選択 (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Difficulty'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
@@ -623,9 +624,10 @@ describe('ConditionBar S2b-3: tags 個別 chip', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // tags header popover で 2 option を選択
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // tags header popover で 2 option を選択 (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Level')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Level'))
     await waitFor(() => expect(screen.getByText('Easy')).toBeInTheDocument())
@@ -661,9 +663,10 @@ describe('ConditionBar S2b-3: tags 個別 chip', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 2 option を選択
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // 2 option を選択 (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Level')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Level'))
     await waitFor(() => expect(screen.getByText('Easy')).toBeInTheDocument())
@@ -717,9 +720,10 @@ describe('ConditionBar S2b-3: tags 個別 chip', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // 1 option を選択
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // 1 option を選択 (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Status')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Status'))
     await waitFor(() => expect(screen.getByText('Active')).toBeInTheDocument())
@@ -769,9 +773,10 @@ describe('ConditionBar S2b-3: tags 個別 chip', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // option を選択
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // option を選択 (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Gone')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Gone'))
     await waitFor(() => expect(screen.getByText('WillBeDeleted')).toBeInTheDocument())
@@ -809,17 +814,18 @@ describe('ConditionBar S2b-3: tags 個別 chip', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 2 option を選択してから chip 状態にする
-    const tagsHeader = screen.getByRole('columnheader', { name: /タグで絞り込み/ })
-    fireEvent.click(within(tagsHeader).getByRole('button'))
+    // 2 option を選択してから chip 状態にする (H-1: outer ColumnHeaderMenu → inner CardTagAddPopover)
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
     await waitFor(() => expect(screen.getByText('Level')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Level'))
     await waitFor(() => expect(screen.getByText('Easy')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Easy'))
     await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Hard'))
-    // Esc 1 回目: option stage → category stage (search input 残)
-    // Esc 2 回目: category stage → close
+    // Esc 1 回目: inner CardTagAddPopover の option stage → category stage (search input 残)
+    // Esc 2 回目: inner CardTagAddPopover の category stage → close inner popover
     fireEvent.keyDown(document, { key: 'Escape' })
     fireEvent.keyDown(document, { key: 'Escape' })
 

@@ -650,7 +650,14 @@ export function ExamCardTable({
 
                       // S1-1/S2-6: canSort 列は ColumnHeaderMenu trigger(label + dot + glyph を trigger 内に children 渡し)。
                       if (canSort) {
-                        // S1-3: lastCorrect / currentStreak は filterEditor を渡す。 他 (question / lastReview) は undefined。
+                        // S1-3: lastCorrect / currentStreak / tags は filterEditor を渡す。
+                        // 他 (title / sort_key / lastReview) は undefined。
+                        // S3-2 H-1: tags を ColumnHeaderMenu 経由に統合し filterEditor に
+                        // TagsEditor (CardTagAddPopover ベース) を渡す。
+                        // nested Popover リスク: CardTagAddPopover が Radix Popover を持つため
+                        // ColumnHeaderMenu (Radix Popover) 内に nested になる。
+                        // Radix DismissableLayerBranch により通常は正常動作するが、
+                        // 実開閉・クリップ・フォーカス挙動は stg smoke で最終確認する。
                         const colId = h.column.id
                         const editorCtx = {
                           categories: liveData?.categories ?? [],
@@ -663,6 +670,9 @@ export function ExamCardTable({
                         } else if (colId === 'currentStreak') {
                           const FE = cardTableFilterEditors.currentStreak
                           filterEditor = <FE column={h.column} ctx={editorCtx} />
+                        } else if (colId === 'tags') {
+                          const FE = cardTableFilterEditors.tags
+                          filterEditor = <FE column={h.column} ctx={editorCtx} />
                         }
                         return (
                           <ColumnHeaderMenu
@@ -674,21 +684,6 @@ export function ExamCardTable({
                             {dot}
                             {glyph}
                           </ColumnHeaderMenu>
-                        )
-                      }
-
-                      // S1-3/S2-6: tags 列は CardTagAddPopover 直 trigger(nested popover 回避)。
-                      //   trigger の cell 全体化 + dot は TagsEditor(cardTableFilterEditors.tags)内で行う。
-                      if (h.column.id === 'tags') {
-                        const FE = cardTableFilterEditors.tags
-                        return (
-                          <FE
-                            column={h.column}
-                            ctx={{
-                              categories: liveData?.categories ?? [],
-                              options: liveData?.options ?? [],
-                            }}
-                          />
                         )
                       }
 

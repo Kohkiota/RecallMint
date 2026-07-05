@@ -14,6 +14,7 @@ import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
+import { tagSortKey } from '../_lib/tag-sort-key'
 import { sortLikeServer } from './inline-card-list'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
 import {
@@ -156,6 +157,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'tags',
     size: 200,
     header: 'タグ',
+    // S3-2 D-3: 代表値 = TagCell 表示順と同一 comparator で並べた先頭タグの
+    // `{category.name}: {option.name}`。TanStack の getCanSort() には !!accessorFn が必要。
+    accessorFn: (row) => tagSortKey(row.tags),
     cell: ({ row, table }) => {
       const meta = table.options.meta as ExamCardTableMeta | undefined
       if (!meta) return null
@@ -171,8 +175,17 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         />
       )
     },
-    enableSorting: false,
-    // Grid-2 T3: tag フィルタ (カテゴリ内 OR / カテゴリ間 AND)。 value = TagFilterValue。
+    enableSorting: true,
+    // 代表値を localeCompare('ja') で比較。undefined (タグ無し) は sortUndefined:'last' が処理。
+    sortingFn: (rowA, rowB, columnId) =>
+      String(rowA.getValue(columnId) ?? '').localeCompare(
+        String(rowB.getValue(columnId) ?? ''),
+        'ja',
+      ),
+    // タグ無しカード (accessorFn → undefined) は昇降ともに末尾固定。
+    sortUndefined: 'last',
+    // Grid-2 T3: tag フィルタ (カテゴリ内 OR / カテゴリ間 AND)。value = TagFilterValue。
+    // filterFn は row.original.tags を直読み — accessorFn/getValue とは独立 (sort/filter 独立)。
     filterFn: tagsFilterFn,
   },
   {

@@ -1,24 +1,26 @@
 // @vitest-environment jsdom
-// exam-card-table-sorting unit test (Grid-2 T2 / S3-1)。
-// sorting 機能の 8 case:
+// exam-card-table-sorting unit test (Grid-2 T2 / S3-1 / S3-2)。
+// sorting 機能の 9 case:
 //   1. currentStreak 昇順/降順
 //   2. lastReview ソートで null が末尾
 //   3. lastCorrect ソートで null が末尾
-//   4. tags / select 列がソート不可 (enableSorting: false)
+//   4. select 列がソート不可 (enableSorting: false)
 //   5. title 昇順/降順 (localeCompare 'ja') [S3-1 (a)]
 //   6. sort_key 昇順/降順 + NULLS LAST/FIRST [S3-1 (b)(e)]
 //   7. question 列が getCanSort() === false [S3-1 (c)]
 //   8. 初期連番順 (pre-sort レイヤー回帰防止) [S3-1 (d)]
+//   9. tags 列 getCanSort()===true + localeCompare 昇降 + タグ無し末尾 + tiebreak [S3-2 (b)(c)]
 
 import { describe, it, expect } from 'vitest'
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
+  getFilteredRowModel,
   type SortingState,
 } from '@tanstack/react-table'
 import { renderHook } from '@testing-library/react'
-import type { ClientCard } from '@/lib/client-db'
+import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
 
 // ---------------------------------------------------------------------------
@@ -165,27 +167,12 @@ describe('Sorting: lastCorrect null が末尾固定', () => {
 })
 
 // ---------------------------------------------------------------------------
-// case 4: tags / select 列がソート不可 (enableSorting: false)
+// case 4: select 列がソート不可 (enableSorting: false)
+// tags は S3-2 で sortable 化 (case 9 参照)
 // ---------------------------------------------------------------------------
 
-describe('Sorting: tags / select 列は getCanSort() === false', () => {
+describe('Sorting: select 列は getCanSort() === false', () => {
   const data = [makeRow('card-1')]
-
-  it('tags 列は getCanSort() が false', () => {
-    const { result } = renderHook(() =>
-      useReactTable<ExamCardRow>({
-        data,
-        columns: examCardTableColumns,
-        getCoreRowModel: getCoreRowModel(),
-        getSortedRowModel: getSortedRowModel(),
-        state: { sorting: [] },
-        onSortingChange: () => {},
-      }),
-    )
-    const tagsCol = result.current.getColumn('tags')
-    expect(tagsCol).toBeDefined()
-    expect(tagsCol!.getCanSort()).toBe(false)
-  })
 
   it('select 列は getCanSort() が false', () => {
     const { result } = renderHook(() =>
@@ -322,5 +309,177 @@ describe('Sorting: 初期連番順 pre-sort レイヤー回帰防止 [S3-1 (d)]'
     // sorting=[] へ戻すと pre-sort 順 (連番順) に復帰する
     const idsAfterClear = getSortedIds(preSortedData, [])
     expect(idsAfterClear).toEqual(['card-1', 'card-2', 'card-3'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S3-2 fixtures: tag 付き行を作るためのヘルパー
+// ---------------------------------------------------------------------------
+
+function makeTagCategory(overrides: Partial<ClientTagCategory> = {}): ClientTagCategory {
+  return {
+    id: 'cat-1',
+    user_id: 'u-test',
+    name: 'カテゴリ',
+    select_type: 'single',
+    color: null,
+    sort_key: '1',
+    created_at: '2024-01-01T00:00:00.000Z',
+    updated_at: '2024-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function makeTagOption(overrides: Partial<ClientTagOption> = {}): ClientTagOption {
+  return {
+    id: 'opt-1',
+    user_id: 'u-test',
+    category_id: 'cat-1',
+    name: 'オプション',
+    color: null,
+    sort_key: '1',
+    created_at: '2024-01-01T00:00:00.000Z',
+    updated_at: '2024-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function makeTaggedRow(
+  id: string,
+  cardOverrides: Partial<ClientCard>,
+  tags: ExamCardRow['tags'],
+): ExamCardRow {
+  return {
+    card: makeClientCard({ id, ...cardOverrides }),
+    tags,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// case 9 / (b)(c): tags 列 S3-2
+// ---------------------------------------------------------------------------
+
+describe('Sorting: tags 列は getCanSort() === true [S3-2 (b)]', () => {
+  const data = [makeRow('card-1')]
+
+  it('tags 列は getCanSort() が true (S3-2 で sortable 化)', () => {
+    const { result } = renderHook(() =>
+      useReactTable<ExamCardRow>({
+        data,
+        columns: examCardTableColumns,
+        getCoreRowModel: getCoreRowModel(),
+        getSortedRowModel: getSortedRowModel(),
+        state: { sorting: [] },
+        onSortingChange: () => {},
+      }),
+    )
+    const tagsCol = result.current.getColumn('tags')
+    expect(tagsCol).toBeDefined()
+    expect(tagsCol!.getCanSort()).toBe(true)
+  })
+})
+
+describe('Sorting: tags 代表値 localeCompare 昇降 [S3-2 (b)]', () => {
+  // 代表値 = `{category.name}: {option.name}` を localeCompare('ja') で比較。
+  // 各行の category sort_key=1 で同一 → option.name による代表値の差で順序が決まる。
+  const cat = makeTagCategory({ id: 'cat-a', name: 'カテゴリ', sort_key: '1' })
+  const optA = makeTagOption({ id: 'opt-a', name: 'あいう', sort_key: '1' })
+  const optU = makeTagOption({ id: 'opt-u', name: 'うえお', sort_key: '2' })
+  const optZ = makeTagOption({ id: 'opt-z', name: 'おかき', sort_key: '3' })
+
+  const data = [
+    makeTaggedRow('card-u', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: optU }]),
+    makeTaggedRow('card-z', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: optZ }]),
+    makeTaggedRow('card-a', { sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }, [{ category: cat, option: optA }]),
+  ]
+  // 代表値: card-u='カテゴリ: うえお', card-z='カテゴリ: おかき', card-a='カテゴリ: あいう'
+  // 昇順: あいう < うえお < おかき → card-a, card-u, card-z
+
+  it('昇順ソートで代表値 localeCompare 小→大 (あいう→うえお→おかき)', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: false }])
+    expect(ids).toEqual(['card-a', 'card-u', 'card-z'])
+  })
+
+  it('降順ソートで代表値 localeCompare 大→小 (おかき→うえお→あいう)', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: true }])
+    expect(ids).toEqual(['card-z', 'card-u', 'card-a'])
+  })
+})
+
+describe('Sorting: tags タグ無しカードが末尾 [S3-2 (b)(c)]', () => {
+  const cat = makeTagCategory({ id: 'cat-a', name: 'カテゴリ', sort_key: '1' })
+  const opt = makeTagOption({ id: 'opt-a', name: 'あ', sort_key: '1' })
+
+  const data = [
+    makeTaggedRow('card-no-tag', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, []),
+    makeTaggedRow('card-tagged', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+  ]
+
+  it('昇順ソートでタグ無しカードが末尾に来る (sortUndefined:last)', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: false }])
+    expect(ids[ids.length - 1]).toBe('card-no-tag')
+  })
+
+  it('降順ソートでもタグ無しカードが末尾に来る (sortUndefined:last)', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: true }])
+    expect(ids[ids.length - 1]).toBe('card-no-tag')
+  })
+})
+
+describe('Sorting: tags 同値 tiebreak = 連番順 (stable sort) [S3-2 (b)]', () => {
+  // 代表値が同一の 2 行は stable sort + pre-sort (連番順) で相対順が維持される。
+  // TanStack の sort は stable (ECMAScript 2019 以降 Array.prototype.sort = stable)。
+  const cat = makeTagCategory({ id: 'cat-a', name: 'カテゴリ', sort_key: '1' })
+  // 同じ option を使い、代表値を同一にする
+  const opt = makeTagOption({ id: 'opt-same', name: '同値', sort_key: '1' })
+
+  // pre-sort 順: card-1 (sort_key=0001) → card-2 (sort_key=0002)
+  const data = [
+    makeTaggedRow('card-1', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-2', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+  ]
+
+  it('代表値同値の 2 行は昇順で pre-sort 相対順 (card-1→card-2) を保つ', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: false }])
+    expect(ids).toEqual(['card-1', 'card-2'])
+  })
+
+  it('代表値同値の 2 行は降順でも pre-sort 相対順 (card-1→card-2) を保つ', () => {
+    const ids = getSortedIds(data, [{ id: 'tags', desc: true }])
+    expect(ids).toEqual(['card-1', 'card-2'])
+  })
+})
+
+describe('Sorting: tags filterFn は accessorFn 追加後も機能 (sort/filter 独立) [S3-2 (c)]', () => {
+  // accessorFn 追加後も filterFn が row.original.tags を読んで機能することを確認。
+  // sort と filter が独立 (getValue 経由 vs row.original 直読み) を固定。
+  const cat = makeTagCategory({ id: 'cat-test', name: 'テスト', sort_key: '1' })
+  const opt = makeTagOption({ id: 'opt-test', name: 'オプション', sort_key: '1' })
+
+  const data = [
+    makeTaggedRow('card-tagged', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-no-tag', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, []),
+  ]
+
+  it('tags filter が accessorFn 追加後も正しく機能する', () => {
+    const { result } = renderHook(() =>
+      useReactTable<ExamCardRow>({
+        data,
+        columns: examCardTableColumns,
+        getCoreRowModel: getCoreRowModel(),
+        getSortedRowModel: getSortedRowModel(),
+        getFilteredRowModel: getFilteredRowModel(),
+        state: {
+          sorting: [{ id: 'tags', desc: false }],
+          columnFilters: [{ id: 'tags', value: { [cat.id]: [opt.id] } }],
+        },
+        onSortingChange: () => {},
+        onColumnFiltersChange: () => {},
+      }),
+    )
+    // タグフィルタ後 = card-tagged のみ残る (card-no-tag は対象外)
+    const filteredIds = result.current.getFilteredRowModel().rows.map((r) => r.original.card.id)
+    expect(filteredIds).toContain('card-tagged')
+    expect(filteredIds).not.toContain('card-no-tag')
   })
 })
