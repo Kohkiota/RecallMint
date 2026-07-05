@@ -273,12 +273,14 @@ describe('ColumnHeaderMenu ③: 既存 sort 列の「昇順」click は方向更
 })
 
 // ===========================================================================
-// ④ 非 canSort 列(title 等)は ExamCardTable で trigger 化されない
+// ④ S4-3: 非 canSort だが filterEditor 有り列は menu trigger 化される / registry 外は非 trigger
 // ===========================================================================
 
 // S3-1 反映: title が canSort 化、question が非 canSort 化。
-describe('ColumnHeaderMenu ④: 非 canSort 列は ExamCardTable でメニュー trigger 化されない', () => {
-  it('question 列ヘッダーに「問題文 の列メニュー」ボタンが存在しない(S3-1 撤去確認)', async () => {
+// S4-3 反映: question は非 canSort だが registry 登録済のため menu が出る(filter 節のみ)。
+// select/options は非 canSort かつ registry 外 → plain render のまま。
+describe('ColumnHeaderMenu ④: S4-3 menu gate — filter 有り列は非 canSort でも trigger 化', () => {
+  it('question 列に「問題文 の列メニュー」ボタンが存在し、filter 節のみ(sort ボタンなし)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -287,17 +289,96 @@ describe('ColumnHeaderMenu ④: 非 canSort 列は ExamCardTable でメニュー
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
 
-    // question 列は S3-1 で enableSorting: false になったのでメニュー trigger が存在しない
-    expect(
-      screen.queryByRole('button', { name: '問題文 の列メニュー' }),
-    ).not.toBeInTheDocument()
-    // 問題文ヘッダーは列自体として存在する
-    expect(screen.getByRole('columnheader', { name: /問題文/ })).toBeInTheDocument()
-    // S3-1 で canSort 化した title 列は ExamCardTable の thead で menu trigger 化される
-    // (production の thead 配線を positive に固定 = ternary を戻すと fail する非 vacuous guard)
-    expect(
-      screen.getByRole('button', { name: 'タイトル の列メニュー' }),
-    ).toBeInTheDocument()
+    // S4-3: question 列は非 canSort だが filterEditor 有りで menu trigger が出現する
+    const questionMenuBtn = screen.getByRole('button', { name: '問題文 の列メニュー' })
+    expect(questionMenuBtn).toBeInTheDocument()
+
+    // menu を開いて sort 節がないことを確認
+    fireEvent.click(questionMenuBtn)
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: '昇順' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '降順' })).not.toBeInTheDocument()
+    // filter 節は存在する (TextColumnEditor の演算子 select)
+    expect(screen.getByLabelText('問題文 フィルタ演算子')).toBeInTheDocument()
+    // sort glyph なし(canSort=false)
+    const questionTh = screen.getByRole('columnheader', { name: /問題文/ })
+    expect(questionTh.textContent).not.toContain('▾')
+  })
+
+  it('explanation_text 列と memo 列にも filter-only menu が出る', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // explanation_text: 非 canSort + registry 登録 → menu trigger 有り
+    expect(screen.getByRole('button', { name: '解説 の列メニュー' })).toBeInTheDocument()
+    // memo: 同上
+    expect(screen.getByRole('button', { name: 'メモ の列メニュー' })).toBeInTheDocument()
+  })
+
+  it('title/sort_key は sort 節 + filter 節の両方を持つ', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    // sort_key はデフォルト非表示のため表示させる
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} initialColumnVisibility={{}} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // title: canSort + registry 登録 → sort + filter 両方
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '降順' })).toBeInTheDocument()
+    expect(screen.getByLabelText('タイトル フィルタ演算子')).toBeInTheDocument()
+    // menu を閉じる
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // sort_key: 同上 (sort_key 列が表示されている)
+    fireEvent.click(screen.getByRole('button', { name: 'ソートキー の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument()
+    expect(screen.getByLabelText('ソートキー フィルタ演算子')).toBeInTheDocument()
+  })
+
+  it('options 列(registry 外・非 canSort)は menu trigger が存在しない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard())
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // options は registry 外なので menu なし
+    expect(screen.queryByRole('button', { name: '選択肢 の列メニュー' })).not.toBeInTheDocument()
+    // 選択肢ヘッダーは列として存在する
+    expect(screen.getByRole('columnheader', { name: /選択肢/ })).toBeInTheDocument()
+  })
+
+  it('(d) tags の filterEditor(TagsEditor)が registry lookup 後も従来どおり render される', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeTagCategory())
+    await db.tag_options.put(makeTagOption())
+    await db.cards.put(makeCard())
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => {
+      expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
+    })
+
+    // H-1: outer ColumnHeaderMenu trigger
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    // TagsEditor の trigger ボタンが menu 内に出現 = TagsEditor が registry 経由で render された証拠
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument(),
+    )
   })
 })
 

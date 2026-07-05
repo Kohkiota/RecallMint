@@ -381,6 +381,313 @@ describe('FilterEditors: selectOnly で新規作成/編集導線が非表示', (
 })
 
 // ===========================================================================
+// S4-3 (a) TextColumnEditor — question 列メニュー経由での editor 挙動テスト
+// ===========================================================================
+
+describe('FilterEditors: TextColumnEditor — デフォルト op は contains', () => {
+  it('question 列メニューを開くと演算子 select のデフォルト値が "contains"', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // S4-3: question 列は非 canSort だが filterEditor 有りで menu が出る
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    const opSelect = within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ演算子')
+    expect((opSelect as HTMLSelectElement).value).toBe('contains')
+    // 値必須 op なので input が存在する
+    expect(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値')).toBeInTheDocument()
+  })
+})
+
+describe('FilterEditors: TextColumnEditor — 値入力で行が絞れる', () => {
+  it('contains: 検索語を含む行のみ残る', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Question about Alps' }),
+      makeCard(2, { question_text: 'Question about Fuji' }),
+      makeCard(3, { question_text: 'Question about Pacific' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
+
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Fuji' },
+    })
+
+    await waitFor(() => {
+      const rows = screen.getAllByTestId(/^row-card-/)
+      expect(rows).toHaveLength(1)
+      expect(screen.getByTestId('row-card-2')).toBeInTheDocument()
+    })
+  })
+
+  it('startsWith: 演算子変更後に対応行のみ残る', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Alps view' }),
+      makeCard(2, { question_text: 'Fuji mountain' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    const dialog = screen.getByRole('dialog')
+
+    // 演算子を startsWith に変更
+    fireEvent.change(within(dialog).getByLabelText('問題文 フィルタ演算子'), {
+      target: { value: 'startsWith' },
+    })
+    // 検索値を入力
+    fireEvent.change(within(dialog).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Fuji' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('row-card-2')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('FilterEditors: TextColumnEditor — 値なし op(empty/notEmpty)', () => {
+  it('empty 選択で input が非 render、空のセル行のみ残る', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { explanation_text: null }),
+      makeCard(2, { explanation_text: 'Some explanation' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // explanation_text 列メニューを開く
+    fireEvent.click(screen.getByRole('button', { name: '解説 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    const dialog = screen.getByRole('dialog')
+
+    // empty を選択 → input が消える
+    fireEvent.change(within(dialog).getByLabelText('解説 フィルタ演算子'), {
+      target: { value: 'empty' },
+    })
+
+    await waitFor(() => {
+      // 値なし op なので input が非 render
+      expect(within(dialog).queryByLabelText('解説 フィルタ値')).not.toBeInTheDocument()
+      // explanation_text が null(空)の行のみ残る
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+    })
+  })
+
+  it('値なし op → 値必須 op へ戻すと local 値が復元されて書き込まれる', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Alps and Snow' }),
+      makeCard(2, { question_text: 'Fuji and Cherry' }),
+      makeCard(3, { question_text: 'Pacific and Wave' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
+
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    const dialog = screen.getByRole('dialog')
+
+    // Step 1: 'Alps' を入力 → 1 行
+    fireEvent.change(within(dialog).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Alps' },
+    })
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // Step 2: empty op へ切替 → input 消え、全行通過ゼロ (question_text は全行非空)
+    fireEvent.change(within(dialog).getByLabelText('問題文 フィルタ演算子'), {
+      target: { value: 'empty' },
+    })
+    await waitFor(() => {
+      expect(within(dialog).queryByLabelText('問題文 フィルタ値')).not.toBeInTheDocument()
+      // 全カードに question_text が入っているため empty で 0 行
+      expect(screen.queryAllByTestId(/^row-card-/).length).toBe(0)
+    })
+
+    // Step 3: contains へ戻す → local 値 'Alps' が復元されて再度 1 行に絞られる
+    fireEvent.change(within(dialog).getByLabelText('問題文 フィルタ演算子'), {
+      target: { value: 'contains' },
+    })
+    await waitFor(() => {
+      // input が再表示される
+      expect(within(dialog).getByLabelText('問題文 フィルタ値')).toBeInTheDocument()
+      // local 値 'Alps' が復元されており 1 行のみ
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('FilterEditors: TextColumnEditor — 既存 filter 値からの mount 復元', () => {
+  it('filter 設定 → menu 閉じる → 再 open で op/value が復元される', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Alps view' }),
+      makeCard(2, { question_text: 'Fuji summit' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // Step 1: 問題文 menu を開き startsWith + 'Fuji' を設定
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ演算子'), {
+      target: { value: 'startsWith' },
+    })
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Fuji' },
+    })
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // Step 2: Escape で閉じる
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // Step 3: 再 open → editor が filter 値から復元される
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    const opSelect = within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ演算子')
+    expect((opSelect as HTMLSelectElement).value).toBe('startsWith')
+    const valueInput = within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値')
+    expect((valueInput as HTMLInputElement).value).toBe('Fuji')
+  })
+})
+
+describe('FilterEditors: TextColumnEditor — 空入力でも filter が残る(undefined に落ちない)', () => {
+  it('input を全消しても dot/chip が残り undefined に落ちない', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Alps' }),
+      makeCard(2, { question_text: 'Fuji' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    // 'Alps' を入力 → 1 行 + dot 点灯
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Alps' },
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+    })
+
+    // 全消し → value='' で全行通過、だが filter は undefined にならない(dot 維持)
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: '' },
+    })
+    await waitFor(() => {
+      // 全行通過
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2)
+      // dot は残る(filter value は {op:'contains', value:''} で非 undefined)
+      expect(screen.getByRole('img', { name: 'フィルタ適用中' })).toBeInTheDocument()
+    })
+  })
+})
+
+// ===========================================================================
+// S4-3 (a2) 整合テスト: TEXT_FILTER_COLUMN_IDS の全 id が registry に存在する
+// ===========================================================================
+
+describe('S4-3 (a2) 整合テスト: TEXT_FILTER_COLUMN_IDS と cardTableFilterEditors の同期', () => {
+  it('TEXT_FILTER_COLUMN_IDS の全 id が cardTableFilterEditors の key に存在する', async () => {
+    // 動的 import で循環参照なしに両方を取得
+    const { TEXT_FILTER_COLUMN_IDS } = await import('../_lib/card-filter-labels')
+    const { cardTableFilterEditors } = await import('./exam-card-table-filter-editors')
+    for (const id of TEXT_FILTER_COLUMN_IDS) {
+      expect(
+        id in cardTableFilterEditors,
+        `columnId "${id}" is in TEXT_FILTER_COLUMN_IDS but missing from cardTableFilterEditors`,
+      ).toBe(true)
+    }
+  })
+
+  // 三重管理の第3同期点: labels/registry に加え columns の filterFn attach も一致を明示ガード。
+  // 片方漏れ (id は登録済だが filterFn 未 attach) だと chip+editor は出るが絞り込みが silent no-op になる。
+  it('TEXT_FILTER_COLUMN_IDS の全 id が columns で filterFn を持つ', async () => {
+    const { TEXT_FILTER_COLUMN_IDS } = await import('../_lib/card-filter-labels')
+    const { examCardTableColumns } = await import('./exam-card-table-columns')
+    for (const id of TEXT_FILTER_COLUMN_IDS) {
+      const col = examCardTableColumns.find((c) => c.id === id)
+      expect(col, `columnId "${id}" not found in examCardTableColumns`).toBeDefined()
+      expect(
+        typeof col?.filterFn,
+        `columnId "${id}" is in TEXT_FILTER_COLUMN_IDS but has no filterFn attached in columns`,
+      ).toBe('function')
+    }
+  })
+})
+
+// ===========================================================================
+// S4-3 (c) chip 再編集: テキスト chip click で editor popover が開き値変更が反映される
+// ===========================================================================
+
+describe('FilterEditors: S4-3 テキスト chip 再編集 — question filter chip', () => {
+  it('chip body クリックで editor が開き、値変更が絞り込みに反映される', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1, { question_text: 'Alps adventure' }),
+      makeCard(2, { question_text: 'Fuji experience' }),
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // Step 1: 問題文 menu から 'Alps' で絞り込む
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Alps' },
+    })
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    // Escape で閉じる
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // Step 2: ConditionBar に chip が出現する
+    const chip = await screen.findByTestId('condition-chip-filter-question')
+    expect(chip).toBeInTheDocument()
+
+    // Step 3: chip summary ボタン(× 以外)をクリックして editor を再オープン
+    const summaryBtn = within(chip).getAllByRole('button')[0]
+    fireEvent.click(summaryBtn)
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    // Step 4: editor 内で 'Fuji' に変更
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Fuji' },
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('row-card-2')).toBeInTheDocument()
+    })
+  })
+})
+
+// ===========================================================================
 // tag 全解除 → filter value becomes `undefined` (空 {} 残置 = dot 誤点灯防止)
 // ===========================================================================
 

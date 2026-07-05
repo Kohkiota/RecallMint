@@ -1,6 +1,7 @@
-// exam-card-table-filter-editors.tsx — S1-3: filter editor registry.
-// 3 entries: lastCorrect (回答状態 select) / currentStreak (op+数値 input) /
-//   tags (CardTagAddPopover selectOnly).
+// exam-card-table-filter-editors.tsx — S1-3 / S4-3: filter editor registry.
+// 8 entries: lastCorrect (回答状態 select) / currentStreak (op+数値 input) /
+//   tags (CardTagAddPopover selectOnly) /
+//   title / sort_key / question / explanation_text / memo (共有 TextColumnEditor)。
 // Each editor component receives { column, ctx } and reads/writes column filter value directly.
 // Aria-labels preserved from exam-card-table-filter-bar.tsx for test asset reuse.
 //
@@ -18,8 +19,11 @@ import type {
   AnswerStateFilter,
   StreakFilterValue,
   StreakFilterOp,
+  TextFilterOp,
+  TextFilterValue,
 } from '../_lib/card-filter-predicates'
-import { ANSWER_STATE_LABELS, STREAK_OP_LABELS } from '../_lib/card-filter-labels'
+import { isValuelessTextOp } from '../_lib/card-filter-predicates'
+import { ANSWER_STATE_LABELS, STREAK_OP_LABELS, TEXT_OP_LABELS } from '../_lib/card-filter-labels'
 
 // ---------------------------------------------------------------------------
 // LastCorrect editor — 回答状態 select
@@ -209,14 +213,93 @@ function TagsEditor({
 }
 
 // ---------------------------------------------------------------------------
-// Registry (frozen interface — S1-3 task interface)
+// TextColumnEditor — S4-3: 共有テキストフィルタ editor (5 列共通)
+// CurrentStreakEditor と同構造だが「undefined に落とさない」「local value 保持」の差分あり。
+// 書込規約: op 変更・値入力の操作時に常に setFilterValue({op, value})。
+//   値なし op は {op, value:''} — 空値で undefined に落とさない (無効化は predicate 側)。
+// 入力値の保持: 値なし op へ切替時に localValue は保持し、値必須 op へ戻したら復元して書き込む。
+// ---------------------------------------------------------------------------
+
+function TextColumnEditor({
+  column,
+}: {
+  column: Column<ExamCardRow, unknown>
+  ctx: FilterEditorContext
+}) {
+  // 列名: columnDef.header が string のときそれを使い、非 string は column.id fallback (getDisplayName と同ロジック)。
+  const columnName =
+    typeof column.columnDef.header === 'string' ? column.columnDef.header : column.id
+
+  // editor mounts fresh on Popover open — initialize from current filter value.
+  const textFilter = column.getFilterValue() as TextFilterValue | undefined
+  const [op, setOp] = React.useState<TextFilterOp>(textFilter?.op ?? 'contains')
+  // localValue は常に「最後にユーザーが入力したテキスト」を保持する。
+  // 値なし op へ切替時は localValue を消さずに保持し、値必須 op へ戻したら復元する。
+  const [localValue, setLocalValue] = React.useState<string>(textFilter?.value ?? '')
+
+  const handleOpChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextOp = e.target.value as TextFilterOp
+    setOp(nextOp)
+    if (isValuelessTextOp(nextOp)) {
+      // 値なし op: {op, value:''} を書く。localValue は保持(次に値必須 op へ戻した時に復元)。
+      column.setFilterValue({ op: nextOp, value: '' } satisfies TextFilterValue)
+    } else {
+      // 値必須 op へ切替: 保持していた localValue を復元して書き込む。
+      column.setFilterValue({ op: nextOp, value: localValue } satisfies TextFilterValue)
+    }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value
+    setLocalValue(val)
+    // 空値でも undefined に落とさない — {op, value:''} を書く。
+    column.setFilterValue({ op, value: val } satisfies TextFilterValue)
+  }
+
+  return (
+    <div className="px-2 py-2">
+      <div className="flex flex-col gap-1.5 text-sm">
+        <span className="text-muted-foreground">{columnName}</span>
+        <select
+          aria-label={`${columnName} フィルタ演算子`}
+          value={op}
+          onChange={handleOpChange}
+          className="rounded-md border border-border bg-background px-2 py-1"
+        >
+          {(Object.keys(TEXT_OP_LABELS) as TextFilterOp[]).map((o) => (
+            <option key={o} value={o}>
+              {TEXT_OP_LABELS[o]}
+            </option>
+          ))}
+        </select>
+        {!isValuelessTextOp(op) && (
+          <input
+            type="text"
+            aria-label={`${columnName} フィルタ値`}
+            value={localValue}
+            onChange={handleInputChange}
+            className="rounded-md border border-border bg-background px-2 py-1"
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Registry (frozen interface — S1-3 / S4-3 task interface)
 // ---------------------------------------------------------------------------
 
 export const cardTableFilterEditors: Record<
-  'lastCorrect' | 'currentStreak' | 'tags',
+  'lastCorrect' | 'currentStreak' | 'tags' | 'title' | 'sort_key' | 'question' | 'explanation_text' | 'memo',
   React.FC<{ column: Column<ExamCardRow, unknown>; ctx: FilterEditorContext }>
 > = {
   lastCorrect: LastCorrectEditor,
   currentStreak: CurrentStreakEditor,
   tags: TagsEditor,
+  title: TextColumnEditor,
+  sort_key: TextColumnEditor,
+  question: TextColumnEditor,
+  explanation_text: TextColumnEditor,
+  memo: TextColumnEditor,
 }

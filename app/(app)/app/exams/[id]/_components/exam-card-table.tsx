@@ -648,32 +648,27 @@ export function ExamCardTable({
                         </span>
                       ) : null
 
-                      // S1-1/S2-6: canSort 列は ColumnHeaderMenu trigger(label + dot + glyph を trigger 内に children 渡し)。
-                      if (canSort) {
-                        // S1-3: lastCorrect / currentStreak / tags は filterEditor を渡す。
-                        // 他 (title / sort_key / lastReview) は undefined。
-                        // S3-2 H-1: tags を ColumnHeaderMenu 経由に統合し filterEditor に
-                        // TagsEditor (CardTagAddPopover ベース) を渡す。
-                        // nested Popover リスク: CardTagAddPopover が Radix Popover を持つため
-                        // ColumnHeaderMenu (Radix Popover) 内に nested になる。
-                        // Radix DismissableLayerBranch により通常は正常動作するが、
-                        // 実開閉・クリップ・フォーカス挙動は stg smoke で最終確認する。
-                        const colId = h.column.id
+                      // S4-3: registry lookup で filterEditor を構築 (if/else chain 撤去)。
+                      // tags は引き続き TagsEditor、新 5 列は TextColumnEditor が registry 経由で解決される。
+                      // nested Popover リスク (tags): CardTagAddPopover が Radix Popover を持つため
+                      // ColumnHeaderMenu (Radix Popover) 内に nested になる。
+                      // Radix DismissableLayerBranch により通常は正常動作するが、
+                      // 実開閉・クリップ・フォーカス挙動は stg smoke で最終確認する。
+                      const colId = h.column.id
+                      let filterEditor: ReactNode | undefined
+                      if (colId in cardTableFilterEditors) {
+                        const FE = cardTableFilterEditors[colId as keyof typeof cardTableFilterEditors]
                         const editorCtx = {
                           categories: liveData?.categories ?? [],
                           options: liveData?.options ?? [],
                         }
-                        let filterEditor: ReactNode | undefined
-                        if (colId === 'lastCorrect') {
-                          const FE = cardTableFilterEditors.lastCorrect
-                          filterEditor = <FE column={h.column} ctx={editorCtx} />
-                        } else if (colId === 'currentStreak') {
-                          const FE = cardTableFilterEditors.currentStreak
-                          filterEditor = <FE column={h.column} ctx={editorCtx} />
-                        } else if (colId === 'tags') {
-                          const FE = cardTableFilterEditors.tags
-                          filterEditor = <FE column={h.column} ctx={editorCtx} />
-                        }
+                        filterEditor = <FE column={h.column} ctx={editorCtx} />
+                      }
+
+                      // S4-3: menu gate = canSort || filterEditor 有り。
+                      // question/explanation_text/memo は非 canSort だが filterEditor 有りで menu 出現。
+                      // select/options は非 canSort かつ registry 外 → plain render のまま。
+                      if (canSort || filterEditor !== undefined) {
                         return (
                           <ColumnHeaderMenu
                             column={h.column}
@@ -687,7 +682,7 @@ export function ExamCardTable({
                         )
                       }
 
-                      // menu なし列(title/sort_key/options/explanation/memo/select): plain render。
+                      // menu なし列(select/options): plain render。
                       //   dot/glyph 非対象ゆえ trigger 化しない(現状維持)。
                       return (
                         <span className="inline-flex items-center gap-1">
