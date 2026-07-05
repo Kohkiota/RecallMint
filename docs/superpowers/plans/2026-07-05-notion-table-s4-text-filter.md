@@ -44,7 +44,7 @@
 ### Task S4-1: predicate 層 + ラベル + 5 列 filterFn(ロジック層)
 
 **目的**: `matchesTextFilter` 純関数(spec D-1)と演算子ラベル・列 id 定数を新設し、5 列の ColumnDef に filterFn を attach(spec D-2)。この task 完了で filter 値を programmatic に set すれば絞り込みが機能する(UI は S4-3)。
-**制約**: Global。既存 predicate(matchesTagFilter / matchesAnswerState / matchesStreakFilter / matchesExamFilter)不変。正規化は「空白のみ → ''、それ以外は原文維持(前後空白を削らない)」— trim を比較にまで波及させない。streak の `'eq'` と op 語彙が重複するが型が別なので判別は不要(summary 判別は S4-2 の columnId dispatch が担う)。filterFn は streak 流儀の module スコープ・`row.original.card` 直読み(accessorFn/getValue 非依存 = S3 sort と独立)。
+**制約**: Global。既存 predicate(matchesTagFilter / matchesAnswerState / matchesStreakFilter / matchesExamFilter)不変。正規化は「空白のみ → ''、それ以外は原文維持(前後空白を削らない)」— trim を比較にまで波及させない。**検索値側も同じ**: 空判定(`filter.value.trim()===''`)のみ trim、比較は入力原文(前後空白込み)の toLowerCase(Codex 論点反映・明示)。**正規化は大文字小文字のみ**: 全角/半角・かな/カナ・濁点合成・アクセント差は吸収しない(仕様として明記・Codex 論点反映)。streak の `'eq'` と op 語彙が重複するが型が別なので判別は不要(summary 判別は S4-2 の columnId dispatch が担う)。filterFn は streak 流儀の module スコープ・`row.original.card` 直読み(accessorFn/getValue 非依存 = S3 sort と独立)。
 **完了条件**:
 - (a) predicate unit test(`card-filter-predicates.test.ts` 追記): 8 演算子それぞれ × {通常一致/不一致・大文字小文字差(例 'ABC' vs 'abc')・空セル・空白のみセル・null・undefined} を網羅。特に **否定演算子(neq / notContains)が空セルを通す**(Notion 準拠)/ empty が空白のみセルで true / notEmpty が空白のみセルで false / 値必須 op の `value` 空・空白のみ → 全行通過 / `!filter` → true。
 - (b) `isValuelessTextOp` = empty/notEmpty のみ true。
@@ -54,7 +54,7 @@
 
 ### Task S4-2: 条件バー chip(getFilterSummary の columnId dispatch 化)
 
-**目的**: `getFilterSummary` を値形 duck-typing から columnId dispatch へ変更(spec D-3)し、テキスト chip 文言(`列名: 演算子 値`・値なし op は値部なし・24 code point 省略)を実装。registry 追加前でも「editor なし列」generic 経路で chip 表示・× 除去・クリアが成立する(chip 再編集 popover は S4-3 の registry 追加で自動有効化)。
+**目的**: `getFilterSummary` を値形 duck-typing から columnId dispatch へ変更(spec D-3)し、テキスト chip 文言(`列名: 演算子 値`・値なし op は値部なし・24 code point 省略)を実装。registry 追加前でも「editor なし列」fallback 経路(condition-bar.tsx:281-298 summary span + ×)で chip 表示・× 除去・クリアが成立する(chip 再編集 popover は S4-3 の registry 追加で自動有効化。Codex がここを「generic 経路は registry 前提」と指摘したが fallback 経路の実在は実コード確認済 — 指摘は不成立)。**空値 filter(値必須 op + value 空)中も chip と dot は表示される** — 仕様として許容(spec R3。絞れていないことは chip に値が出ないことで視認可能)。
 **制約**: Global。streak の値形は変更しない(spec D-3 で不採用確定)。既存 chip 文言(回答状態・連続正解数)は 1 文字も変えない。呼出は condition-bar 内 1 箇所 — `getDisplayName` の結果を渡す形にし、ラベル map の重複定義を作らない。省略は summary 純関数内で行う(CSS truncate に逃げない = test 可能)。tags 特例分岐(columnId==='tags')は不変。
 **完了条件**:
 - (a) condition-bar test 追記: テキスト chip 文言 — 例 question + `{op:'contains', value:'富士山'}` → `問題文: を含む 富士山` / memo + `{op:'empty', value:''}` → `メモ: 未入力` / 25 code point 値 → 24 + `…`(サロゲートペア含む値で `Array.from` 切断を固定)。
@@ -65,9 +65,10 @@
 ### Task S4-3: TextColumnEditor + registry 拡張 + header menu 配線
 
 **目的**: 共有 `TextColumnEditor`(CurrentStreakEditor の文字列版・spec D-5)を実装して registry に 5 key 登録し、header menu の filterEditor 解決を registry lookup 化 + 表示 gate を `canSort || filterEditor` に変更(spec D-4)。この task 完了で全機能が UI から使える。
-**制約**: Global。editor は 1 component 共有(列別 component を作らない)、列名は `column.columnDef.header`(5 列全て string)から導出。aria-label = `${列名} フィルタ演算子` / `${列名} フィルタ値`。**書込規約(spec D-5・streak と意図的に別)**: op 変更・値入力の操作時に常に `setFilterValue({op, value})`(値なし op は `{op, value:''}`)— 空値で undefined に落とさない(無効化は predicate 側)。除去経路は chip × とクリアのみ。popover open 時 fresh mount → `getFilterValue()` から復元。ColumnHeaderMenu 本体は改変しない(capability-driven で filter 節のみの menu が既に成立)。menu gate 変更で select/options 列は plain render のまま。
+**制約**: Global。editor は 1 component 共有(列別 component を作らない)、列名は `column.columnDef.header`(5 列全て string。非 string は column.id fallback = getDisplayName と同ロジック)から導出。aria-label = `${列名} フィルタ演算子` / `${列名} フィルタ値`。**書込規約(spec D-5・streak と意図的に別)**: op 変更・値入力の操作時に常に `setFilterValue({op, value})`(値なし op は `{op, value:''}`)— 空値で undefined に落とさない(無効化は predicate 側)。除去経路は chip × とクリアのみ。**入力値の保持(Codex 論点反映)**: editor local state の値は mount 中保持 — 値なし op へ切替(`{op, value:''}` 書込)後に値必須 op へ戻すと local 値を復元して書き込む。popover close 後は filter 値から復元(= 値なし op のまま閉じたら破棄)。ColumnHeaderMenu 本体は改変しない(capability-driven で filter 節のみの menu が既に成立)。menu gate 変更で select/options 列は plain render のまま。
 **完了条件**:
-- (a) editor test(`filter-editors.test.tsx` 追記): default op 'contains' / op 変更で `{op, value}` 書込 / 値入力で書込 / **値なし op 選択で値 input が非 render + `{op, value:''}` 書込** / 値必須 op へ戻すと input 再表示 / 既存 filter 値からの mount 復元 / 値を全消ししても filter が `{op, value:''}` で残る(undefined に落ちない)。
+- (a) editor test(`filter-editors.test.tsx` 追記): default op 'contains' / op 変更で `{op, value}` 書込 / 値入力で書込 / **値なし op 選択で値 input が非 render + `{op, value:''}` 書込** / 値必須 op へ戻すと input 再表示 + **mount 中の local 値が復元されて書き込まれる** / 既存 filter 値からの mount 復元 / 値を全消ししても filter が `{op, value:''}` で残る(undefined に落ちない)。
+- (a2) 整合 test(二重管理ガード・Codex 論点反映): `TEXT_FILTER_COLUMN_IDS` の全 id が `cardTableFilterEditors` の key に存在することを assert(片側更新漏れで chip summary / editor / dot / menu がズレる事故の固定)。
 - (b) 配線 test(header-menu / table harness): question・explanation_text・memo 列に menu が出て filter 節のみ(昇順/降順ボタンなし・sort glyph なし)/ title・sort_key 列は sort 節 + filter 節の両方 / lastCorrect・currentStreak・tags・lastReview の menu 構成が不変 / select・options 列に menu なし / dot が 5 列で filter 適用時に点灯(registry gate 自動追随)。
 - (c) chip 再編集: テキスト chip click で editor popover が開き値変更が反映(S4-2 の generic 経路 + registry 追加の統合確認)。
 - (d) if/else chain 撤去後も tags の filterEditor(TagsEditor)が従来どおり render される(S3-2 H-1 経路の回帰)。
@@ -79,7 +80,7 @@
 
 - **whole-branch review(opus)**: cross-task 相互作用(predicate × filterFn × summary dispatch × menu gate × 既存 3 フィルタ × S3 ソート群)+ S1-S3 からの回帰。Critical/Important 解消まで完了としない。carry Minor を triage。
 - whole-repo `pnpm lint --max-warnings=0` + `pnpm typecheck` exit 0(報告明記)。
-- **stg smoke(OT push 後・stg URL・CC 裁量)**: ① 5 列それぞれ header menu からフィルタ追加 ② 8 演算子の絞り込み結果(特に 未入力/未入力ではない を nullable 列 = ソートキー/解説/メモ で)③ 大文字小文字非区別(英字データ)④ chip 再編集・値なし演算子切替で入力欄消滅 ⑤ chip ×・クリア ⑥ S3 ソート・タグフィルタとの併用 ⑦ 300-card で keystroke 毎の再評価体感。証拠添付。
+- **stg smoke(OT push 後・stg URL・CC 裁量)**: ① 5 列それぞれ header menu からフィルタ追加(filter-only menu の開閉・Esc・focus が非 sortable 列でも自然か含む・Codex 論点反映)② 8 演算子の絞り込み結果(特に 未入力/未入力ではない を nullable 列 = ソートキー/解説/メモ で)③ 大文字小文字非区別(英字データ)④ chip 再編集・値なし演算子切替で入力欄消滅 ⑤ chip ×・クリア ⑥ S3 ソート・タグフィルタとの併用 ⑦ 300-card で keystroke 毎の再評価体感。証拠添付。
 - Sprint 境界 = OT 判断で停止。
 
 ## 実装順序 / 停止条件
