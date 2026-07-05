@@ -11,8 +11,9 @@
 import * as React from 'react'
 import type { SortingState, ColumnFiltersState, Table } from '@tanstack/react-table'
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import type { AnswerStateFilter, StreakFilterValue, TagFilterValue } from '../_lib/card-filter-predicates'
-import { ANSWER_STATE_LABELS, STREAK_OP_LABELS } from '../_lib/card-filter-labels'
+import type { AnswerStateFilter, StreakFilterValue, TagFilterValue, TextFilterValue } from '../_lib/card-filter-predicates'
+import { isValuelessTextOp } from '../_lib/card-filter-predicates'
+import { ANSWER_STATE_LABELS, STREAK_OP_LABELS, TEXT_OP_LABELS, TEXT_FILTER_COLUMN_IDS } from '../_lib/card-filter-labels'
 import type { ExamCardRow } from './exam-card-table-columns'
 import {
   Popover,
@@ -62,16 +63,31 @@ export type FilterEditorContext = {
 // 内部ヘルパー: filter value → 要約 label
 // ---------------------------------------------------------------------------
 
-function getFilterSummary(value: unknown): string {
-  // AnswerStateFilter = string ('unanswered' | 'correct' | 'incorrect')
-  if (typeof value === 'string') {
+// S4-2: columnId dispatch に変更 (spec D-3)。
+// - 'lastCorrect' → 回答状態ラベル (文言不変・displayName 不使用: header は '直近正誤' だが
+//   ラベルは spec D-3「文言不変」で '回答状態:' 固定)
+// - 'currentStreak' → 連続正解数ラベル (文言不変・displayName 不使用: 同上 '連続正解数:' 固定)
+// - TEXT_FILTER_COLUMN_IDS 所属 → テキスト chip 文言 (displayName: op [value省略])
+//   値なし op (empty/notEmpty) は値部なし。24 code point 超は先頭 24 code point + '…' (Array.from で切断)。
+// - fallback → String(value)
+export function getFilterSummary(columnId: string, displayName: string, value: unknown): string {
+  if (columnId === 'lastCorrect') {
     const label = ANSWER_STATE_LABELS[value as AnswerStateFilter]
     return `回答状態: ${label ?? value}`
   }
-  // StreakFilterValue = { op: StreakFilterOp; value: number }
-  if (value !== null && typeof value === 'object' && 'op' in value) {
+  if (columnId === 'currentStreak') {
     const sv = value as StreakFilterValue
     return `連続正解数: ${STREAK_OP_LABELS[sv.op]} ${sv.value}`
+  }
+  if ((TEXT_FILTER_COLUMN_IDS as readonly string[]).includes(columnId)) {
+    const tv = value as TextFilterValue
+    if (isValuelessTextOp(tv.op)) {
+      return `${displayName}: ${TEXT_OP_LABELS[tv.op]}`
+    }
+    const codePoints = Array.from(tv.value)
+    const truncated =
+      codePoints.length > 24 ? codePoints.slice(0, 24).join('') + '…' : tv.value
+    return `${displayName}: ${TEXT_OP_LABELS[tv.op]} ${truncated}`
   }
   return String(value)
 }
@@ -241,7 +257,7 @@ export function ConditionBar({
 
         // lastCorrect / currentStreak: chip body は Popover trigger、editor は PopoverContent。
         // filter editor が registry に存在する列のみ。存在しない列は summary span のまま。
-        const summary = getFilterSummary(condition.value)
+        const summary = getFilterSummary(condition.columnId, displayName, condition.value)
         const columnId = condition.columnId as keyof typeof cardTableFilterEditors
         const EditorComponent =
           columnId in cardTableFilterEditors ? cardTableFilterEditors[columnId] : null

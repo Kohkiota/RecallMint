@@ -19,10 +19,18 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
+import {
+  useReactTable,
+  getCoreRowModel,
+  getFilteredRowModel,
+  type ColumnFiltersState,
+} from '@tanstack/react-table'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
-import { deriveConditions } from './exam-card-table-condition-bar'
+import { deriveConditions, getFilterSummary, ConditionBar } from './exam-card-table-condition-bar'
+import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 
 const EXAM_ID = 'test-exam-condition-bar'
 const USER_ID = 'test-user-condition-bar'
@@ -884,6 +892,183 @@ describe('ConditionBar S2b-3: クリア文言', () => {
     await waitFor(() => {
       expect(screen.queryByText('クリア')).not.toBeInTheDocument()
       expect(screen.queryByTestId(/^condition-chip-/)).not.toBeInTheDocument()
+    })
+  })
+})
+
+// ===========================================================================
+// S4-2: getFilterSummary columnId dispatch (unit tests)
+// ===========================================================================
+
+describe('getFilterSummary: テキストフィルタ chip 文言', () => {
+  it('question + contains → 「問題文: を含む 富士山」', () => {
+    expect(getFilterSummary('question', '問題文', { op: 'contains', value: '富士山' })).toBe(
+      '問題文: を含む 富士山',
+    )
+  })
+
+  it('memo + empty → 「メモ: 未入力」(値なし op は値部なし)', () => {
+    expect(getFilterSummary('memo', 'メモ', { op: 'empty', value: '' })).toBe('メモ: 未入力')
+  })
+
+  it('title + notEmpty → 「タイトル: 未入力ではない」', () => {
+    expect(getFilterSummary('title', 'タイトル', { op: 'notEmpty', value: '' })).toBe(
+      'タイトル: 未入力ではない',
+    )
+  })
+
+  it('25 code point 値 → 先頭 24 code point + …(サロゲートペア絵文字含む)', () => {
+    // 23 ASCII 文字 + 絵文字 🎌(U+1F38C, 1 code point / 2 char) + ASCII 1 文字 = 25 code points
+    // Array.from は code point 単位で分割するため 🎌 が 1 要素になる。
+    // slice(0, 24) → 23 ASCII + 🎌 の 24 要素 → join → '...🎌'(25 chars)
+    // サロゲートペアが壊れず先頭 24 code point が切り取られることを固定する。
+    const twentyFiveCodePoints = 'a'.repeat(23) + '🎌' + 'b' // 25 code points (26 chars in JS)
+    const expected24 = 'a'.repeat(23) + '🎌' // 24 code points (25 chars in JS)
+    const result = getFilterSummary('question', '問題文', { op: 'contains', value: twentyFiveCodePoints })
+    expect(result).toBe(`問題文: を含む ${expected24}…`)
+  })
+
+  it('24 code point 値 → 省略なし', () => {
+    const exactlyTwentyFour = 'a'.repeat(24)
+    expect(
+      getFilterSummary('question', '問題文', { op: 'contains', value: exactlyTwentyFour }),
+    ).toBe(`問題文: を含む ${exactlyTwentyFour}`)
+  })
+
+  it('sort_key + eq → 「ソートキー: と一致 0001」', () => {
+    expect(getFilterSummary('sort_key', 'ソートキー', { op: 'eq', value: '0001' })).toBe(
+      'ソートキー: と一致 0001',
+    )
+  })
+
+  it('explanation_text + notContains → 「解説: を含まない ABC」', () => {
+    expect(
+      getFilterSummary('explanation_text', '解説', { op: 'notContains', value: 'ABC' }),
+    ).toBe('解説: を含まない ABC')
+  })
+})
+
+describe('getFilterSummary: 既存 chip 文言回帰(dispatch 化後も不変)', () => {
+  it('lastCorrect + unanswered → 「回答状態: 未回答」', () => {
+    expect(getFilterSummary('lastCorrect', '直近正誤', 'unanswered')).toBe('回答状態: 未回答')
+  })
+
+  it('lastCorrect + correct → 「回答状態: 直近正解」', () => {
+    expect(getFilterSummary('lastCorrect', '直近正誤', 'correct')).toBe('回答状態: 直近正解')
+  })
+
+  it('lastCorrect + incorrect → 「回答状態: 直近不正解」', () => {
+    expect(getFilterSummary('lastCorrect', '直近正誤', 'incorrect')).toBe('回答状態: 直近不正解')
+  })
+
+  it('currentStreak + lte 3 → 「連続正解数: ≤ 3」', () => {
+    expect(getFilterSummary('currentStreak', '連続正解数', { op: 'lte', value: 3 })).toBe(
+      '連続正解数: ≤ 3',
+    )
+  })
+
+  it('currentStreak + gte 5 → 「連続正解数: ≥ 5」', () => {
+    expect(getFilterSummary('currentStreak', '連続正解数', { op: 'gte', value: 5 })).toBe(
+      '連続正解数: ≥ 5',
+    )
+  })
+
+  it('currentStreak + eq 2 → 「連続正解数: = 2」', () => {
+    expect(getFilterSummary('currentStreak', '連続正解数', { op: 'eq', value: 2 })).toBe(
+      '連続正解数: = 2',
+    )
+  })
+
+  it('fallback (未知列) → String(value)', () => {
+    expect(getFilterSummary('unknownColumn', 'Unknown', 42)).toBe('42')
+  })
+})
+
+// ===========================================================================
+// S4-2: テキスト filter chip の render + × 個別除去 + クリア全消し (c)
+// ConditionBar を直接受け取るローカルハーネスで editor なし fallback 経路を検証。
+// ===========================================================================
+
+/** ローカルテスト専用: columnFilters を初期値付きで設定し ConditionBar のみを描画。
+ *  data = [] のため row model は空。ConditionBar は table.getState() + getColumn() のみ使用。
+ *  meta は ConditionBar が参照しないため空オブジェクトで型キャスト。 */
+function TextFilterConditionBar({
+  columnId,
+  filterValue,
+}: {
+  columnId: string
+  filterValue: unknown
+}) {
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([
+    { id: columnId, value: filterValue },
+  ])
+
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table のuseReactTable は React Compiler 非対応 API (既存コードと同じ抑止)
+  const table = useReactTable<ExamCardRow>({
+    data: [],
+    columns: examCardTableColumns,
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    state: { columnFilters },
+    onColumnFiltersChange: setColumnFilters,
+    meta: {} as unknown as ExamCardTableMeta,
+  })
+
+  return <ConditionBar table={table} editorContext={{ categories: [], options: [] }} />
+}
+
+describe('ConditionBar S4-2: テキスト filter chip 描画 + × 個別除去 + クリア', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('question + contains chip → 正しい文言で描画される', async () => {
+    render(
+      <TextFilterConditionBar
+        columnId="question"
+        filterValue={{ op: 'contains', value: '富士山' }}
+      />,
+    )
+    const chip = await screen.findByTestId('condition-chip-filter-question')
+    expect(chip).toHaveTextContent('問題文: を含む 富士山')
+  })
+
+  it('memo + empty chip → 値部なし文言で描画される', async () => {
+    render(
+      <TextFilterConditionBar columnId="memo" filterValue={{ op: 'empty', value: '' }} />,
+    )
+    const chip = await screen.findByTestId('condition-chip-filter-memo')
+    expect(chip).toHaveTextContent('メモ: 未入力')
+  })
+
+  it('テキスト filter chip × クリック → chip 消滅(setFilterValue(undefined))', async () => {
+    render(
+      <TextFilterConditionBar
+        columnId="question"
+        filterValue={{ op: 'contains', value: '富士山' }}
+      />,
+    )
+    const chip = await screen.findByTestId('condition-chip-filter-question')
+    expect(chip).toBeInTheDocument()
+
+    fireEvent.click(within(chip).getByRole('button', { name: /フィルタを解除/ }))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('condition-chip-filter-question')).not.toBeInTheDocument()
+    })
+  })
+
+  it('「クリア」クリック → テキスト filter chip も消滅', async () => {
+    render(
+      <TextFilterConditionBar columnId="memo" filterValue={{ op: 'notEmpty', value: '' }} />,
+    )
+    await screen.findByTestId('condition-chip-filter-memo')
+
+    fireEvent.click(screen.getByText('クリア'))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('condition-chip-filter-memo')).not.toBeInTheDocument()
+      expect(screen.queryByText('クリア')).not.toBeInTheDocument()
     })
   })
 })
