@@ -10,7 +10,7 @@
 // React component を含む場合は boundary が必要)。
 
 import type { ColumnDef, FilterFn } from '@tanstack/react-table'
-import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
@@ -21,9 +21,11 @@ import {
   matchesTagFilter,
   matchesAnswerState,
   matchesStreakFilter,
+  matchesTextFilter,
   type TagFilterValue,
   type AnswerStateFilter,
   type StreakFilterValue,
+  type TextFilterValue,
 } from '../_lib/card-filter-predicates'
 import type { CardWithTags } from '@/lib/cards/join-card-tags'
 import { InlineTextField } from './inline-text-field'
@@ -53,6 +55,15 @@ const answerStateFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue)
 
 const streakFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
   matchesStreakFilter(row.original.card.current_streak, filterValue as StreakFilterValue)
+
+// S4-1: テキストフィルタ factory。read(card) でセル値を取り出して matchesTextFilter に委譲。
+// 5 列 (title / sort_key / question / explanation_text / memo) に適用 (rule of three 充足)。
+// row.original 直読み — accessorFn / getValue とは独立 (sort と filter は別レイヤー)。
+const makeTextFilterFn = (
+  read: (card: ClientCard) => string | null | undefined,
+): FilterFn<ExamCardRow> =>
+  (row, _columnId, filterValue) =>
+    matchesTextFilter(read(row.original.card), filterValue as TextFilterValue)
 
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
@@ -101,6 +112,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     enableSorting: true,
     sortingFn: (rowA, rowB) =>
       rowA.original.card.title.localeCompare(rowB.original.card.title, 'ja'),
+    // S4-1: テキストフィルタ。row.original.card.title を直読み (sort と独立)。
+    filterFn: makeTextFilterFn((card) => card.title),
   },
   {
     id: 'sort_key',
@@ -120,6 +133,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     ),
     enableSorting: true,
     sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
+    // S4-1: テキストフィルタ。row.original.card.sort_key を直読み (nullable)。
+    filterFn: makeTextFilterFn((card) => card.sort_key),
   },
   {
     id: 'question',
@@ -140,6 +155,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // S3-1: 問題文ソート撤去。連番順の役割は sort_key 列 sortingFn へ移管。
     // 注意: 初期連番順(liveData の pre-sort)は別レイヤーで不変(exam-card-table.tsx)。
     enableSorting: false,
+    // S4-1: テキストフィルタ。row.original.card.question_text を直読み。
+    filterFn: makeTextFilterFn((card) => card.question_text),
   },
   {
     id: 'options',
@@ -203,6 +220,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       />
     ),
     enableSorting: false,
+    // S4-1: テキストフィルタ。row.original.card.explanation_text を直読み (nullable)。
+    filterFn: makeTextFilterFn((card) => card.explanation_text),
   },
   {
     id: 'memo',
@@ -219,6 +238,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       />
     ),
     enableSorting: false,
+    // S4-1: テキストフィルタ。row.original.card.memo を直読み (nullable)。
+    filterFn: makeTextFilterFn((card) => card.memo),
   },
   {
     id: 'lastCorrect',

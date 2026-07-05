@@ -7,8 +7,12 @@ import {
   matchesAnswerState,
   matchesStreakFilter,
   matchesExamFilter,
+  isValuelessTextOp,
+  matchesTextFilter,
   type TagFilterValue,
   type StreakFilterValue,
+  type TextFilterOp,
+  type TextFilterValue,
 } from './card-filter-predicates'
 
 // ---------------------------------------------------------------------------
@@ -209,5 +213,304 @@ describe('複合フィルタ (tag かつ 回答状態)', () => {
     )
     expect(passed).toHaveLength(1)
     expect(passed[0]).toBe(rows[0])
+  })
+})
+
+// ===========================================================================
+// S4-1 case 7: isValuelessTextOp
+// ===========================================================================
+
+describe('isValuelessTextOp', () => {
+  const valueless: TextFilterOp[] = ['empty', 'notEmpty']
+  const valued: TextFilterOp[] = ['eq', 'neq', 'contains', 'notContains', 'startsWith', 'endsWith']
+
+  it('empty / notEmpty → true', () => {
+    for (const op of valueless) {
+      expect(isValuelessTextOp(op), `op=${op}`).toBe(true)
+    }
+  })
+
+  it('eq / neq / contains / notContains / startsWith / endsWith → false', () => {
+    for (const op of valued) {
+      expect(isValuelessTextOp(op), `op=${op}`).toBe(false)
+    }
+  })
+})
+
+// ===========================================================================
+// S4-1 case 8: matchesTextFilter — null/undefined filter
+// ===========================================================================
+
+describe('matchesTextFilter — !filter → true', () => {
+  it('filter が null → true', () => {
+    expect(matchesTextFilter('anything', null)).toBe(true)
+  })
+  it('filter が undefined → true', () => {
+    expect(matchesTextFilter('anything', undefined)).toBe(true)
+  })
+  it('raw が null でも filter が null → true', () => {
+    expect(matchesTextFilter(null, null)).toBe(true)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 9: matchesTextFilter — empty op (値不使用)
+// ===========================================================================
+
+describe('matchesTextFilter — empty (セル正規化が空なら pass)', () => {
+  const f = (v: string): TextFilterValue => ({ op: 'empty', value: v })
+
+  it('null セル → true', () => {
+    expect(matchesTextFilter(null, f(''))).toBe(true)
+  })
+  it('undefined セル → true', () => {
+    expect(matchesTextFilter(undefined, f(''))).toBe(true)
+  })
+  it('空文字セル → true', () => {
+    expect(matchesTextFilter('', f(''))).toBe(true)
+  })
+  it('空白のみセル (" ") → true', () => {
+    expect(matchesTextFilter('   ', f(''))).toBe(true)
+  })
+  it('通常テキストセル → false', () => {
+    expect(matchesTextFilter('hello', f(''))).toBe(false)
+  })
+  it('value は無視される (任意の value でも挙動不変)', () => {
+    expect(matchesTextFilter(null, f('ignored value'))).toBe(true)
+    expect(matchesTextFilter('hello', f('ignored value'))).toBe(false)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 10: matchesTextFilter — notEmpty op (値不使用)
+// ===========================================================================
+
+describe('matchesTextFilter — notEmpty (セル正規化が非空なら pass)', () => {
+  const f = (v: string): TextFilterValue => ({ op: 'notEmpty', value: v })
+
+  it('null セル → false', () => {
+    expect(matchesTextFilter(null, f(''))).toBe(false)
+  })
+  it('undefined セル → false', () => {
+    expect(matchesTextFilter(undefined, f(''))).toBe(false)
+  })
+  it('空文字セル → false', () => {
+    expect(matchesTextFilter('', f(''))).toBe(false)
+  })
+  it('空白のみセル (" ") → false', () => {
+    expect(matchesTextFilter('   ', f(''))).toBe(false)
+  })
+  it('通常テキストセル → true', () => {
+    expect(matchesTextFilter('hello', f(''))).toBe(true)
+  })
+  it('前後空白付きテキスト " hello " → true (原文維持 → 非空)', () => {
+    expect(matchesTextFilter(' hello ', f(''))).toBe(true)
+  })
+  it('value は無視される', () => {
+    expect(matchesTextFilter(null, f('ignored'))).toBe(false)
+    expect(matchesTextFilter('hello', f('ignored'))).toBe(true)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 11: 値必須 op の空 value は全行通過
+// ===========================================================================
+
+describe('matchesTextFilter — 値必須 op で value が空 → 全行 pass', () => {
+  const ops: TextFilterOp[] = ['eq', 'neq', 'contains', 'notContains', 'startsWith', 'endsWith']
+
+  for (const op of ops) {
+    it(`op=${op}: value='' → true`, () => {
+      expect(matchesTextFilter('anything', { op, value: '' })).toBe(true)
+    })
+    it(`op=${op}: value='  ' (空白のみ) → true`, () => {
+      expect(matchesTextFilter('anything', { op, value: '   ' })).toBe(true)
+    })
+    it(`op=${op}: raw=null, value='' → true (全行 pass)`, () => {
+      expect(matchesTextFilter(null, { op, value: '' })).toBe(true)
+    })
+  }
+})
+
+// ===========================================================================
+// S4-1 case 12: matchesTextFilter — eq
+// ===========================================================================
+
+describe('matchesTextFilter — eq', () => {
+  it('通常一致 → true', () => {
+    expect(matchesTextFilter('hello', { op: 'eq', value: 'hello' })).toBe(true)
+  })
+  it('大文字小文字差 → true (ABC = abc)', () => {
+    expect(matchesTextFilter('ABC', { op: 'eq', value: 'abc' })).toBe(true)
+    expect(matchesTextFilter('abc', { op: 'eq', value: 'ABC' })).toBe(true)
+  })
+  it('不一致 → false', () => {
+    expect(matchesTextFilter('hello', { op: 'eq', value: 'world' })).toBe(false)
+  })
+  it('null セル, 非空 value → false', () => {
+    expect(matchesTextFilter(null, { op: 'eq', value: 'x' })).toBe(false)
+  })
+  it('undefined セル, 非空 value → false', () => {
+    expect(matchesTextFilter(undefined, { op: 'eq', value: 'x' })).toBe(false)
+  })
+  it('空白のみセル, 非空 value → false', () => {
+    expect(matchesTextFilter('   ', { op: 'eq', value: 'x' })).toBe(false)
+  })
+  it('空文字セル, 非空 value → false', () => {
+    expect(matchesTextFilter('', { op: 'eq', value: 'x' })).toBe(false)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 13: matchesTextFilter — neq (否定演算子は空セルを通す)
+// ===========================================================================
+
+describe('matchesTextFilter — neq (Notion 準拠: 否定演算子は空セルを通す)', () => {
+  it('通常一致 → false (same string)', () => {
+    expect(matchesTextFilter('hello', { op: 'neq', value: 'hello' })).toBe(false)
+  })
+  it('通常不一致 → true', () => {
+    expect(matchesTextFilter('hello', { op: 'neq', value: 'world' })).toBe(true)
+  })
+  it('大文字小文字差 → false (ABC neq abc = 同一なので false)', () => {
+    expect(matchesTextFilter('ABC', { op: 'neq', value: 'abc' })).toBe(false)
+  })
+  it('null セル → true (空セルは否定演算子を通す)', () => {
+    expect(matchesTextFilter(null, { op: 'neq', value: 'anything' })).toBe(true)
+  })
+  it('undefined セル → true', () => {
+    expect(matchesTextFilter(undefined, { op: 'neq', value: 'anything' })).toBe(true)
+  })
+  it('空白のみセル → true', () => {
+    expect(matchesTextFilter('   ', { op: 'neq', value: 'anything' })).toBe(true)
+  })
+  it('空文字セル → true', () => {
+    expect(matchesTextFilter('', { op: 'neq', value: 'anything' })).toBe(true)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 14: matchesTextFilter — contains
+// ===========================================================================
+
+describe('matchesTextFilter — contains', () => {
+  it('含む → true', () => {
+    expect(matchesTextFilter('hello world', { op: 'contains', value: 'world' })).toBe(true)
+  })
+  it('含まない → false', () => {
+    expect(matchesTextFilter('hello world', { op: 'contains', value: 'xyz' })).toBe(false)
+  })
+  it('大文字小文字差 → true (HELLO contains hello)', () => {
+    expect(matchesTextFilter('HELLO WORLD', { op: 'contains', value: 'hello' })).toBe(true)
+  })
+  it('null セル → false', () => {
+    expect(matchesTextFilter(null, { op: 'contains', value: 'any' })).toBe(false)
+  })
+  it('undefined セル → false', () => {
+    expect(matchesTextFilter(undefined, { op: 'contains', value: 'any' })).toBe(false)
+  })
+  it('空白のみセル → false', () => {
+    expect(matchesTextFilter('   ', { op: 'contains', value: 'x' })).toBe(false)
+  })
+  it('空文字セル → false', () => {
+    expect(matchesTextFilter('', { op: 'contains', value: 'x' })).toBe(false)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 15: matchesTextFilter — notContains (否定演算子は空セルを通す)
+// ===========================================================================
+
+describe('matchesTextFilter — notContains (Notion 準拠: 空セルを通す)', () => {
+  it('含まない → true', () => {
+    expect(matchesTextFilter('hello world', { op: 'notContains', value: 'xyz' })).toBe(true)
+  })
+  it('含む → false', () => {
+    expect(matchesTextFilter('hello world', { op: 'notContains', value: 'world' })).toBe(false)
+  })
+  it('大文字小文字差 → false (HELLO contains hello → notContains = false)', () => {
+    expect(matchesTextFilter('HELLO', { op: 'notContains', value: 'hello' })).toBe(false)
+  })
+  it('null セル → true (空セルは否定演算子を通す)', () => {
+    expect(matchesTextFilter(null, { op: 'notContains', value: 'any' })).toBe(true)
+  })
+  it('undefined セル → true', () => {
+    expect(matchesTextFilter(undefined, { op: 'notContains', value: 'any' })).toBe(true)
+  })
+  it('空白のみセル → true', () => {
+    expect(matchesTextFilter('   ', { op: 'notContains', value: 'x' })).toBe(true)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 16: matchesTextFilter — startsWith
+// ===========================================================================
+
+describe('matchesTextFilter — startsWith', () => {
+  it('前方一致 → true', () => {
+    expect(matchesTextFilter('hello world', { op: 'startsWith', value: 'hello' })).toBe(true)
+  })
+  it('不一致 → false', () => {
+    expect(matchesTextFilter('hello world', { op: 'startsWith', value: 'world' })).toBe(false)
+  })
+  it('大文字小文字差 → true (HELLO startsWith hello)', () => {
+    expect(matchesTextFilter('HELLO', { op: 'startsWith', value: 'hel' })).toBe(true)
+  })
+  it('null セル → false', () => {
+    expect(matchesTextFilter(null, { op: 'startsWith', value: 'any' })).toBe(false)
+  })
+  it('undefined セル → false', () => {
+    expect(matchesTextFilter(undefined, { op: 'startsWith', value: 'any' })).toBe(false)
+  })
+  it('空白のみセル, 非空 value → false', () => {
+    expect(matchesTextFilter('   ', { op: 'startsWith', value: 'x' })).toBe(false)
+  })
+  it('空文字セル, 非空 value → false', () => {
+    expect(matchesTextFilter('', { op: 'startsWith', value: 'x' })).toBe(false)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 17: matchesTextFilter — endsWith
+// ===========================================================================
+
+describe('matchesTextFilter — endsWith', () => {
+  it('後方一致 → true', () => {
+    expect(matchesTextFilter('hello world', { op: 'endsWith', value: 'world' })).toBe(true)
+  })
+  it('不一致 → false', () => {
+    expect(matchesTextFilter('hello world', { op: 'endsWith', value: 'hello' })).toBe(false)
+  })
+  it('大文字小文字差 → true (WORLD endsWith world)', () => {
+    expect(matchesTextFilter('HELLO WORLD', { op: 'endsWith', value: 'world' })).toBe(true)
+  })
+  it('null セル → false', () => {
+    expect(matchesTextFilter(null, { op: 'endsWith', value: 'any' })).toBe(false)
+  })
+  it('undefined セル → false', () => {
+    expect(matchesTextFilter(undefined, { op: 'endsWith', value: 'any' })).toBe(false)
+  })
+  it('空白のみセル, 非空 value → false', () => {
+    expect(matchesTextFilter('   ', { op: 'endsWith', value: 'x' })).toBe(false)
+  })
+  it('空文字セル, 非空 value → false', () => {
+    expect(matchesTextFilter('', { op: 'endsWith', value: 'x' })).toBe(false)
+  })
+})
+
+// ===========================================================================
+// S4-1 case 18: セル正規化の詳細 — 原文維持 (前後空白を trim しない)
+// ===========================================================================
+
+describe('matchesTextFilter — セル正規化: 空白のみ→空文字、それ以外は原文維持', () => {
+  it('前後空白付きテキスト " hello " は原文維持 → eq "hello" に不一致', () => {
+    // 原文 " hello " の toLowerCase = " hello " であり "hello" !== " hello "
+    expect(matchesTextFilter(' hello ', { op: 'eq', value: 'hello' })).toBe(false)
+  })
+  it('前後空白付きテキスト " hello " は eq " hello " に一致 (原文維持)', () => {
+    expect(matchesTextFilter(' hello ', { op: 'eq', value: ' hello ' })).toBe(true)
+  })
+  it('前後空白付きテキスト " hello " は contains "hello" に一致', () => {
+    expect(matchesTextFilter(' hello ', { op: 'contains', value: 'hello' })).toBe(true)
   })
 })

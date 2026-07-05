@@ -9,9 +9,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
 import { render, screen, cleanup } from '@testing-library/react'
+import {
+  useReactTable,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  type ColumnFiltersState,
+  type SortingState,
+} from '@tanstack/react-table'
+import { renderHook } from '@testing-library/react'
 import type { ClientCard } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
+import type { TextFilterValue } from '../_lib/card-filter-predicates'
 
 // ---------------------------------------------------------------------------
 // Edit-2 T3: mocks for InlineTextField / CompactOptionsCell write paths。
@@ -518,5 +528,238 @@ describe('Edit-3 T3: select 列と title 列の sticky meta 撤去 (Fix-3 T2 sti
     const meta = questionCol?.meta as { sticky?: boolean; stickyLeft?: number } | undefined
     expect(meta?.sticky).not.toBe(true)
     expect(meta?.stickyLeft).toBeUndefined()
+  })
+})
+
+// ===========================================================================
+// S4-1: テキストフィルタ (makeTextFilterFn + 5 列 filterFn)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// harness helpers
+// ---------------------------------------------------------------------------
+
+/** useReactTable を renderHook で呼び出し、指定 columnFilters で filtered row ids を返す。 */
+function getFilteredIds(data: ExamCardRow[], columnFilters: ColumnFiltersState): string[] {
+  const { result } = renderHook(() =>
+    useReactTable<ExamCardRow>({
+      data,
+      columns: examCardTableColumns,
+      getCoreRowModel: getCoreRowModel(),
+      getFilteredRowModel: getFilteredRowModel(),
+      state: { columnFilters },
+      onColumnFiltersChange: () => {},
+    }),
+  )
+  return result.current.getFilteredRowModel().rows.map((r) => r.original.card.id)
+}
+
+/** sort + filter 併用で filtered+sorted row ids を返す。 */
+function getFilteredSortedIds(
+  data: ExamCardRow[],
+  columnFilters: ColumnFiltersState,
+  sorting: SortingState,
+): string[] {
+  const { result } = renderHook(() =>
+    useReactTable<ExamCardRow>({
+      data,
+      columns: examCardTableColumns,
+      getCoreRowModel: getCoreRowModel(),
+      getFilteredRowModel: getFilteredRowModel(),
+      getSortedRowModel: getSortedRowModel(),
+      state: { columnFilters, sorting },
+      onColumnFiltersChange: () => {},
+      onSortingChange: () => {},
+    }),
+  )
+  // getSortedRowModel は getFilteredRowModel の後に適用される
+  return result.current.getSortedRowModel().rows.map((r) => r.original.card.id)
+}
+
+// ---------------------------------------------------------------------------
+// case S4-1 (c): 5 列それぞれ contains フィルタで絞れる
+// ---------------------------------------------------------------------------
+
+describe('S4-1: title 列 — contains フィルタ', () => {
+  const data = [
+    makeRow({ id: 'card-foo', title: 'Foo Title' }),
+    makeRow({ id: 'card-bar', title: 'Bar Title' }),
+    makeRow({ id: 'card-baz', title: 'BAZ TITLE' }),
+  ]
+
+  it('{op:contains, value:"foo"} で Foo Title のみ pass', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'foo' }
+    const ids = getFilteredIds(data, [{ id: 'title', value: filter }])
+    expect(ids).toContain('card-foo')
+    expect(ids).not.toContain('card-bar')
+    expect(ids).not.toContain('card-baz')
+  })
+
+  it('{op:contains, value:"TITLE"} で全件 pass (大文字小文字非区別)', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'TITLE' }
+    const ids = getFilteredIds(data, [{ id: 'title', value: filter }])
+    expect(ids).toHaveLength(3)
+  })
+})
+
+describe('S4-1: sort_key 列 — contains フィルタ', () => {
+  const data = [
+    makeRow({ id: 'card-abc', sort_key: 'ABC-001' }),
+    makeRow({ id: 'card-xyz', sort_key: 'XYZ-002' }),
+    makeRow({ id: 'card-null', sort_key: null }),
+  ]
+
+  it('{op:contains, value:"abc"} で ABC-001 のみ pass (大文字小文字非区別)', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'abc' }
+    const ids = getFilteredIds(data, [{ id: 'sort_key', value: filter }])
+    expect(ids).toContain('card-abc')
+    expect(ids).not.toContain('card-xyz')
+    expect(ids).not.toContain('card-null')
+  })
+})
+
+describe('S4-1: question 列 — contains フィルタ', () => {
+  const data = [
+    makeRow({ id: 'card-q1', question_text: 'What is React?' }),
+    makeRow({ id: 'card-q2', question_text: 'Explain TypeScript.' }),
+  ]
+
+  it('{op:contains, value:"react"} で What is React? のみ pass', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'react' }
+    const ids = getFilteredIds(data, [{ id: 'question', value: filter }])
+    expect(ids).toContain('card-q1')
+    expect(ids).not.toContain('card-q2')
+  })
+})
+
+describe('S4-1: explanation_text 列 — contains フィルタ', () => {
+  const data = [
+    makeRow({ id: 'card-e1', explanation_text: 'Because of hooks.' }),
+    makeRow({ id: 'card-e2', explanation_text: 'Due to types.' }),
+    makeRow({ id: 'card-null', explanation_text: null }),
+  ]
+
+  it('{op:contains, value:"hooks"} で Because of hooks. のみ pass', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'hooks' }
+    const ids = getFilteredIds(data, [{ id: 'explanation_text', value: filter }])
+    expect(ids).toContain('card-e1')
+    expect(ids).not.toContain('card-e2')
+    expect(ids).not.toContain('card-null')
+  })
+})
+
+describe('S4-1: memo 列 — contains フィルタ', () => {
+  const data = [
+    makeRow({ id: 'card-m1', memo: 'Important note here.' }),
+    makeRow({ id: 'card-m2', memo: 'Other memo.' }),
+    makeRow({ id: 'card-null', memo: null }),
+  ]
+
+  it('{op:contains, value:"note"} で Important note here. のみ pass', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'note' }
+    const ids = getFilteredIds(data, [{ id: 'memo', value: filter }])
+    expect(ids).toContain('card-m1')
+    expect(ids).not.toContain('card-m2')
+    expect(ids).not.toContain('card-null')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case S4-1 (c): nullable 3 列で {op:'empty'} が null セル行を返す
+// ---------------------------------------------------------------------------
+
+describe('S4-1: nullable 3 列 (sort_key / explanation_text / memo) — empty op', () => {
+  it('sort_key: {op:empty} で null セル行のみ pass', () => {
+    const data = [
+      makeRow({ id: 'card-val', sort_key: '0001' }),
+      makeRow({ id: 'card-null', sort_key: null }),
+    ]
+    const filter: TextFilterValue = { op: 'empty', value: '' }
+    const ids = getFilteredIds(data, [{ id: 'sort_key', value: filter }])
+    expect(ids).toContain('card-null')
+    expect(ids).not.toContain('card-val')
+  })
+
+  it('explanation_text: {op:empty} で null セル行のみ pass', () => {
+    const data = [
+      makeRow({ id: 'card-val', explanation_text: 'Some text' }),
+      makeRow({ id: 'card-null', explanation_text: null }),
+    ]
+    const filter: TextFilterValue = { op: 'empty', value: '' }
+    const ids = getFilteredIds(data, [{ id: 'explanation_text', value: filter }])
+    expect(ids).toContain('card-null')
+    expect(ids).not.toContain('card-val')
+  })
+
+  it('memo: {op:empty} で null セル行のみ pass', () => {
+    const data = [
+      makeRow({ id: 'card-val', memo: 'Some memo' }),
+      makeRow({ id: 'card-null', memo: null }),
+    ]
+    const filter: TextFilterValue = { op: 'empty', value: '' }
+    const ids = getFilteredIds(data, [{ id: 'memo', value: filter }])
+    expect(ids).toContain('card-null')
+    expect(ids).not.toContain('card-val')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case S4-1 (d): enableSorting 値が S3 時点と不変
+// ---------------------------------------------------------------------------
+
+describe('S4-1 (d): enableSorting 値が S3 時点と不変 (filterFn 追加後も変わらない)', () => {
+  const sortableIds = ['title', 'sort_key']
+  const nonSortableIds = ['question', 'explanation_text', 'memo']
+
+  for (const colId of sortableIds) {
+    it(`${colId} 列: enableSorting === true`, () => {
+      const col = examCardTableColumns.find((c) => c.id === colId)
+      expect(col?.enableSorting).toBe(true)
+    })
+  }
+
+  for (const colId of nonSortableIds) {
+    it(`${colId} 列: enableSorting === false`, () => {
+      const col = examCardTableColumns.find((c) => c.id === colId)
+      expect(col?.enableSorting).toBe(false)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// case S4-1 (c): sort × filter 独立 — 1 case 固定
+// ---------------------------------------------------------------------------
+
+describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用)', () => {
+  // 3 行: Apple (sort_key=0003), Banana (sort_key=0001), Cherry (sort_key=0002)
+  // filter: title contains 'a' → Apple ('a') / Banana ('a') pass、Cherry fail
+  // sort: sort_key asc → pre-sort 順 Banana(0001), Cherry(0002), Apple(0003) → filter 後 Banana,Apple
+  const data = [
+    makeRow({ id: 'card-apple', title: 'Apple', sort_key: '0003', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow({ id: 'card-banana', title: 'Banana', sort_key: '0001', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow({ id: 'card-cherry', title: 'Cherry', sort_key: '0002', created_at: '2024-01-03T00:00:00.000Z' }),
+  ]
+
+  it('title contains "a" でフィルタ → Apple と Banana が残り Cherry が除外される', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'a' }
+    const ids = getFilteredSortedIds(
+      data,
+      [{ id: 'title', value: filter }],
+      [],
+    )
+    expect(ids).toContain('card-apple')
+    expect(ids).toContain('card-banana')
+    expect(ids).not.toContain('card-cherry')
+  })
+
+  it('title filter + sort_key asc ソートを同時適用 → filter と sort が独立に機能', () => {
+    const filter: TextFilterValue = { op: 'contains', value: 'a' }
+    const ids = getFilteredSortedIds(
+      data,
+      [{ id: 'title', value: filter }],
+      [{ id: 'sort_key', desc: false }],
+    )
+    // Apple(0003) と Banana(0001) が残り、sort_key asc で Banana→Apple の順
+    expect(ids).toEqual(['card-banana', 'card-apple'])
   })
 })

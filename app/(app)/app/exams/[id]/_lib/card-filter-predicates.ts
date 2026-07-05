@@ -113,3 +113,75 @@ export function matchesExamFilter(
   if (examIds.length === 0) return true // 空 = 絞り込みなし
   return examIds.includes(card.exam_id)
 }
+
+// ---------------------------------------------------------------------------
+// テキスト比較フィルタ (S4-1)
+// ---------------------------------------------------------------------------
+
+/** Notion 式テキスト演算子 8 種。 */
+export type TextFilterOp =
+  | 'eq'
+  | 'neq'
+  | 'contains'
+  | 'notContains'
+  | 'startsWith'
+  | 'endsWith'
+  | 'empty'
+  | 'notEmpty'
+
+/** テキストフィルタ値。 op と検索文字列のペア。 */
+export type TextFilterValue = { op: TextFilterOp; value: string }
+
+/**
+ * empty / notEmpty のみ true (値不使用演算子)。
+ * 値必須演算子 (eq / neq / contains / notContains / startsWith / endsWith) は false。
+ */
+export function isValuelessTextOp(op: TextFilterOp): boolean {
+  return op === 'empty' || op === 'notEmpty'
+}
+
+/**
+ * テキストフィルタ評価 (spec D-1)。
+ * - filter が null/undefined → true (絞り込みなし)。
+ * - セル正規化: raw ?? '' が trim()=='' なら ''、それ以外は原文維持(前後空白を削らない)。
+ * - empty / notEmpty は値不使用 (filter.value は無視)。
+ * - 値必須 op で filter.value.trim()=='' → true (全行通過)。
+ * - 比較は両辺 toLowerCase のみ (全角/半角・かな/カナは対象外)。
+ * - 否定演算子 (neq / notContains) が空セルを通すのは正規化→演算子適用の順序で自然に成立。
+ */
+export function matchesTextFilter(
+  raw: string | null | undefined,
+  filter: TextFilterValue | null | undefined,
+): boolean {
+  if (!filter) return true
+
+  // セル正規化: null/undefined → ''、空白のみ → ''、それ以外は原文維持
+  const base = raw ?? ''
+  const normalized = base.trim() === '' ? '' : base
+
+  // 値不使用演算子
+  if (filter.op === 'empty') return normalized === ''
+  if (filter.op === 'notEmpty') return normalized !== ''
+
+  // 値必須演算子: 検索値が空(空白のみ含む)なら全行通過
+  if (filter.value.trim() === '') return true
+
+  // 比較: 両辺 toLowerCase (大文字小文字のみ正規化)
+  const cell = normalized.toLowerCase()
+  const val = filter.value.toLowerCase()
+
+  switch (filter.op) {
+    case 'eq':
+      return cell === val
+    case 'neq':
+      return cell !== val
+    case 'contains':
+      return cell.includes(val)
+    case 'notContains':
+      return !cell.includes(val)
+    case 'startsWith':
+      return cell.startsWith(val)
+    case 'endsWith':
+      return cell.endsWith(val)
+  }
+}
