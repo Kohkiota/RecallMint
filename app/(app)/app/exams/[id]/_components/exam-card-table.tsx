@@ -178,28 +178,45 @@ function TableBody({ table, scrollElementRef }: TableBodyProps) {
       {virtualItems.map((vi) => {
         const row = rows[vi.index]
         return (
+          // S5-3: group を付与し、pinned td の group-hover 色合成を有効化(spec D-5)。
+          // pinning なし時も group は inert(group-hover 子が存在しない)で視覚変化なし。
           <tr
             key={row.id}
             data-index={vi.index}
             ref={rowVirtualizer.measureElement}
             data-testid={`row-${row.original.card.id}`}
-            className="hover:bg-muted/50"
+            className="group hover:bg-muted/50"
           >
-            {row.getVisibleCells().map((cell) => (
-              <td
-                key={cell.id}
-                // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
-                // select 列のみ text-center でチェックボックスを水平中央に揃える。
-                className={cn('px-1 py-1 border-b border-border', cell.column.id === 'select' && 'text-center')}
-                // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
-                //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
-                style={{
-                  width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
-                }}
-              >
-                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-              </td>
-            ))}
+            {row.getVisibleCells().map((cell) => {
+              // S5-3: left-pinned 判定。
+              const isPinnedCell = cell.column.getIsPinned() === 'left'
+              // S5-3: 最右可視 pinned 列にセパレータ border-r を付与(spec D-6・visible-leaf 基準)。
+              const isLastPinnedCell = isPinnedCell && cell.column.getIsLastColumn('left')
+              return (
+                <td
+                  key={cell.id}
+                  // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
+                  // select 列のみ text-center でチェックボックスを水平中央に揃える。
+                  // S5-3: pinned td = sticky z-[1] + 不透過背景(下を通過するセルの透け防止)。
+                  // group-hover: 非 pinned の hover:bg-muted/50(半透明)と同色の不透過合成色(spec D-5)。
+                  className={cn(
+                    'px-1 py-1 border-b border-border',
+                    cell.column.id === 'select' && 'text-center',
+                    isPinnedCell && 'sticky z-[1] bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]',
+                    isLastPinnedCell && 'border-r',
+                  )}
+                  // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
+                  //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
+                  // S5-3: pinned td の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
+                  style={{
+                    width: `calc(var(--col-${cell.column.id}-size) * 1px)`,
+                    ...(isPinnedCell && { left: `calc(var(--col-${cell.column.id}-start) * 1px)` }),
+                  }}
+                >
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              )
+            })}
           </tr>
         )
       })}
@@ -507,10 +524,17 @@ export function ExamCardTable({
         result[`--header-${header.id}-size`] = header.getSize()
         result[`--col-${header.column.id}-size`] = header.column.getSize()
       }
+      // S5-3: left-pinned 可視列に --col-{id}-start を追加 emit (spec D-5)。
+      // resize 中は MemoizedTableBody が凍結されているが <table> 上の CSS 変数が更新されるため
+      // pinned offset がリアルタイムに追従する(Fix-3 T1 パターン延長)。
+      // getStart('left') は columnSizing に memo 依存 = drag 中も再計算される。
+      for (const col of table.getLeftVisibleLeafColumns()) {
+        result[`--col-${col.id}-start`] = col.getStart('left')
+      }
       return result as CSSProperties
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- table ref は useReactTable で安定; 列幅変化は columnSizingInfo / columnSizing が検出する; columnVisibility を含め新たに表示された列の CSS 変数を emit する
-    [table.getState().columnSizingInfo, table.getState().columnSizing, table.getState().columnVisibility],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- table ref は useReactTable で安定; 列幅変化は columnSizingInfo / columnSizing が検出する; columnVisibility を含め新たに表示された列の CSS 変数を emit する; columnPinning を追加して left-pinned 可視列の --col-{id}-start を emit する
+    [table.getState().columnSizingInfo, table.getState().columnSizing, table.getState().columnVisibility, table.getState().columnPinning],
   )
 
   // S2-2: 内部スクロール container の ref。 element virtualizer の getScrollElement へ渡す。
@@ -624,20 +648,33 @@ export function ExamCardTable({
                   typeof h.column.columnDef.header === 'string'
                     ? h.column.columnDef.header
                     : h.column.id
+                // S5-3: left-pinned 判定。sticky は relative と position 二重指定不可のため置換(spec D-5)。
+                // sticky も positioned 要素のため absolute resize handle の anchor は不変(Codex 論点反映)。
+                const isPinned = h.column.getIsPinned() === 'left'
+                // S5-3: 最右可視 pinned 列にセパレータ border-r を付与(spec D-6・visible-leaf 基準)。
+                const isLastPinned = isPinned && h.column.getIsLastColumn('left')
                 return (
                   <th
                     key={h.id}
-                    // T3: relative が必要 (resize handle を absolute right-0 で配置するため)。
+                    // T3: 非 pinned は relative (resize handle を absolute right-0 で配置するため)。
+                    // S5-3: pinned は sticky z-10 に置換 (position 二重指定不可)。
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     // select 列のみ text-center align-middle で全選択チェックボックスを上下左右中央に揃える。
                     // S2-3: bg-background で不透明背景を付与 (thead sticky 時に tbody 行が透けないよう)。
                     className={cn(
-                      'relative px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
+                      isPinned ? 'sticky z-10' : 'relative',
+                      'px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
                       h.column.id === 'select' ? 'text-center align-middle' : 'text-left',
+                      // S5-3: 最右可視 pinned 列にセパレータ (spec D-6)。
+                      isLastPinned && 'border-r',
                       // S2-6: cursor-pointer / select-none は trigger button 側へ集約(cell 全体 trigger 化)。
                     )}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
-                    style={{ width: `calc(var(--header-${h.id}-size) * 1px)` }}
+                    // S5-3: pinned th の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
+                    style={{
+                      width: `calc(var(--header-${h.id}-size) * 1px)`,
+                      ...(isPinned && { left: `calc(var(--col-${h.column.id}-start) * 1px)` }),
+                    }}
                     // S1-1: th の即ソート onClick を撤去。canSort 列は ColumnHeaderMenu trigger 経由。
                   >
                     {h.isPlaceholder ? null : (() => {

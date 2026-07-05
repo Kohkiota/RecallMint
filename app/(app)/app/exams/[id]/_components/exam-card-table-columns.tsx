@@ -4,7 +4,7 @@
 // module スコープで定義 (component 内 useMemo 不使用)。
 // 列順: [select, title, sort_key, question, options, tags,
 //        explanation_text, memo, lastCorrect, currentStreak, lastReview]。
-// Fix-3 T2: sticky 左固定列は撤去 (OT 方針: Notion 準拠で左端固定しない)。
+// Fix-3 T2: 決め打ち sticky 固定は撤去(不変)。S5 でユーザー選択式の列固定(column pinning)を導入 — 固定境界は examViewPrefs V3 + TanStack columnPinning で管理。
 //
 // 'use client' は JSX を含む ColumnDef を使うため必要 (T2 学び: pure helper でも
 // React component を含む場合は boundary が必要)。

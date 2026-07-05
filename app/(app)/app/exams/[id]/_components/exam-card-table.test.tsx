@@ -1742,13 +1742,220 @@ describe('S5-2 (d): boundary null 時 — pinning 由来のクラスが th に�
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
 
-    // 全 th を取得し、S5-3 由来の sticky/z-10/border-r クラスが存在しないことを確認。
-    // (S5-3 は未実装のため boundary null なら追加クラスはゼロが invariant)
+    // 全 th を取得し、S5-3 由来の sticky クラスが存在しないことを確認。
+    // (boundary null では追加クラスはゼロが invariant)
     const allTh = Array.from(container.querySelectorAll('thead th'))
     expect(allTh.length).toBeGreaterThan(0)
     for (const th of allTh) {
-      // S5-3 で追加される予定のクラス群が S5-2 段階では一切付かない
       expect(th.className, `th[${th.textContent}] に sticky クラスなし`).not.toContain('sticky')
+    }
+  })
+})
+
+// ===========================================================================
+// S5-3 (a): boundary=title — sticky 描画 + セパレータ + CSS 変数 emit
+//
+// select / title が left-pinned → th/td に sticky + left style。
+// title が最右可視 pinned → th/td に border-r。
+// question (非 pinned) → sticky / left / border-r なし。
+// <table> style に --col-select-start=0 / --col-title-start=32(select size=32) が emit される。
+// boundary null → start 変数 emit なし + sticky class ゼロ (S5-2 (d) の回帰を兼用)。
+// ===========================================================================
+
+describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セパレータ', () => {
+  it('select/title th に sticky + left style が付与され、 title に border-r が付き、 question には付かない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // boundary=title: computePinnedLeft('title') = ['select', 'title']
+    const { container } = render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title'], right: [] }}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // th 列順(default columnVisibility = { sort_key: false }):
+    //   allTh[0] = select, allTh[1] = title, allTh[2] = question
+    const allTh = container.querySelectorAll('thead th')
+    expect(allTh.length).toBeGreaterThan(2)
+
+    const selectTh = allTh[0] as HTMLElement
+    const titleTh = allTh[1] as HTMLElement
+    const questionTh = allTh[2] as HTMLElement
+
+    // select th: sticky + left CSS 変数参照
+    expect(selectTh.className, 'select th に sticky').toContain('sticky')
+    expect(selectTh.style.left, 'select th に left CSS 変数参照').toMatch(/calc\(var\(--col-select-start\) \* 1px\)/)
+
+    // title th: sticky + left CSS 変数参照 + border-r (最右 pinned)
+    expect(titleTh.className, 'title th に sticky').toContain('sticky')
+    expect(titleTh.style.left, 'title th に left CSS 変数参照').toMatch(/calc\(var\(--col-title-start\) \* 1px\)/)
+    expect(titleTh.className, 'title th (最右 pinned) に border-r').toContain('border-r')
+
+    // question th: sticky なし・left なし・border-r なし
+    expect(questionTh.className, 'question th に sticky なし').not.toContain('sticky')
+    expect(questionTh.style.left, 'question th に left なし').toBe('')
+    expect(questionTh.className, 'question th に border-r なし').not.toContain('border-r')
+  })
+
+  it('<table> style に --col-select-start=0 / --col-title-start=32 が emit される', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title'], right: [] }}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    const tableEl = container.querySelector('table') as HTMLElement
+
+    // --col-select-start: select は最初の pinned 列なので offset=0
+    const selectStart = tableEl.style.getPropertyValue('--col-select-start')
+    expect(selectStart, '--col-select-start が emit されている').not.toBe('')
+    expect(parseFloat(selectStart), '--col-select-start = 0 (select が先頭 pinned)').toBe(0)
+
+    // --col-title-start: title は select (size=32) の直後 → offset=32
+    const titleStart = tableEl.style.getPropertyValue('--col-title-start')
+    expect(titleStart, '--col-title-start が emit されている').not.toBe('')
+    expect(parseFloat(titleStart), '--col-title-start = 32 (select size 分 offset)').toBe(32)
+  })
+
+  it('boundary null → --col-select-start / --col-title-start が emit されず、th に sticky がない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // デフォルト initialColumnPinning = { left: [], right: [] }
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    const tableEl = container.querySelector('table') as HTMLElement
+    expect(tableEl.style.getPropertyValue('--col-select-start'), '--col-select-start が emit されない').toBe('')
+    expect(tableEl.style.getPropertyValue('--col-title-start'), '--col-title-start が emit されない').toBe('')
+
+    const allTh = container.querySelectorAll('thead th')
+    for (const th of allTh) {
+      expect((th as HTMLElement).className, 'th に sticky なし (boundary null)').not.toContain('sticky')
+    }
+  })
+})
+
+// ===========================================================================
+// S5-3 (b): hidden boundary → separator が最右可視 pinned 列へ移動
+//
+// boundary=sort_key で sort_key が hidden の場合:
+//   - visible pinned: select, title (sort_key は hidden で getHeaderGroups から除外)
+//   - title が最右可視 pinned → border-r
+//   - sort_key の start var は emit されない (visible ではないため)
+// ===========================================================================
+
+describe('S5-3 (b): hidden boundary → separator が title (最右可視 pinned) へ移動', () => {
+  it('boundary=sort_key / sort_key hidden → title th に border-r が付き、 --col-sort_key-start は emit されない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // boundary=sort_key で sort_key を hidden にする
+    const { container } = render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title', 'sort_key'], right: [] }}
+        initialColumnVisibility={{ sort_key: false }}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    const allTh = container.querySelectorAll('thead th')
+    // sort_key hidden → th order: select(0), title(1), question(2)
+    const selectTh = allTh[0] as HTMLElement
+    const titleTh = allTh[1] as HTMLElement
+
+    // select: sticky + left, border-r なし (最右でない)
+    expect(selectTh.className, 'select th に sticky').toContain('sticky')
+    expect(selectTh.className, 'select th に border-r なし').not.toContain('border-r')
+
+    // title: sticky + left + border-r (hidden sort_key を飛ばして最右可視 pinned)
+    expect(titleTh.className, 'title th に sticky').toContain('sticky')
+    expect(titleTh.className, 'title th (最右可視 pinned) に border-r').toContain('border-r')
+
+    // <table> に --col-sort_key-start が emit されない (sort_key は visible ではないため)
+    const tableEl = container.querySelector('table') as HTMLElement
+    expect(
+      tableEl.style.getPropertyValue('--col-sort_key-start'),
+      '--col-sort_key-start は emit されない (hidden column)',
+    ).toBe('')
+
+    // select/title の start vars は emit されている
+    expect(tableEl.style.getPropertyValue('--col-select-start'), '--col-select-start は emit される').not.toBe('')
+    expect(tableEl.style.getPropertyValue('--col-title-start'), '--col-title-start は emit される').not.toBe('')
+  })
+})
+
+// ===========================================================================
+// S5-3 (c): hover — pinned td の不透過 + group class
+//
+// pinned td に bg-background + group-hover class が付く。
+// <tr> に group が付く(unconditional — pinning なし時も inert として付与)。
+// ===========================================================================
+
+describe('S5-3 (c): hover — pinned td の bg-background + group-hover + tr group', () => {
+  it('boundary=title → tr に group / pinned td に bg-background + group-hover class、 非 pinned td にはなし', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title'], right: [] }}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // data 行 tr の group class を確認
+    const dataRow = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    expect(dataRow.className, 'data tr に group').toContain('group')
+
+    // td: sort_key hidden → select(0), title(1), question(2)
+    const cells = dataRow.querySelectorAll('td')
+    const selectTd = cells[0] as HTMLElement
+    const titleTd = cells[1] as HTMLElement
+    const questionTd = cells[2] as HTMLElement
+
+    // select td: sticky + bg-background + group-hover class
+    expect(selectTd.className, 'select td に sticky').toContain('sticky')
+    expect(selectTd.className, 'select td に bg-background').toContain('bg-background')
+    expect(selectTd.className, 'select td に group-hover class').toContain('group-hover:')
+
+    // title td: sticky + bg-background + group-hover class
+    expect(titleTd.className, 'title td に sticky').toContain('sticky')
+    expect(titleTd.className, 'title td に bg-background').toContain('bg-background')
+    expect(titleTd.className, 'title td に group-hover class').toContain('group-hover:')
+
+    // question td: sticky なし・bg-background なし・group-hover なし
+    expect(questionTd.className, 'question td に sticky なし').not.toContain('sticky')
+    expect(questionTd.className, 'question td に bg-background なし').not.toContain('bg-background')
+    expect(questionTd.className, 'question td に group-hover なし').not.toContain('group-hover:')
+  })
+
+  it('boundary null → tr に group が付く(unconditional)が、 td に sticky / bg-background / group-hover は付かない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // デフォルト: no pinning
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // data 行 tr には unconditional の group が付く(inert — group-hover 子なし)
+    const dataRow = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    expect(dataRow.className, 'data tr に group (unconditional)').toContain('group')
+
+    // 全 td に sticky / bg-background / group-hover は付かない
+    const cells = dataRow.querySelectorAll('td')
+    for (const td of cells) {
+      expect((td as HTMLElement).className, 'td に sticky なし (boundary null)').not.toContain('sticky')
+      expect((td as HTMLElement).className, 'td に bg-background なし (boundary null)').not.toContain('bg-background')
+      expect((td as HTMLElement).className, 'td に group-hover なし (boundary null)').not.toContain('group-hover:')
     }
   })
 })
