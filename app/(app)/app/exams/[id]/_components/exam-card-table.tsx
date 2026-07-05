@@ -63,6 +63,7 @@ import {
   type ColumnFiltersState,
   type ColumnSizingState,
   type VisibilityState,
+  type ColumnPinningState,
   type OnChangeFn,
   type Table,
 } from '@tanstack/react-table'
@@ -74,6 +75,7 @@ import { sortLikeServer } from './inline-card-list'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
+import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { ConditionBar } from './exam-card-table-condition-bar'
 import { cardTableFilterEditors } from './exam-card-table-filter-editors'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
@@ -230,6 +232,10 @@ type ExamCardTableProps = {
   // exam-detail-view.tsx が単一所有する (内部 useState / mount-load / persist effect は撤去)。
   columnVisibility: VisibilityState
   onColumnVisibilityChange: OnChangeFn<VisibilityState>
+  // S5-2: columnPinning は controlled prop (handleColumnVisibilityChange と同型)。
+  // state 所有 + examViewPrefs V3 永続は exam-detail-view が単一所有する。
+  columnPinning: ColumnPinningState
+  onColumnPinningChange: OnChangeFn<ColumnPinningState>
   // S2b-1: scroll → collapsed 信号を exam-detail-view に通知し table-chrome を collapse。
   onCollapsedChange?: (collapsed: boolean) => void
   // S2b-1: table-chrome の高さを実測するための ref (短コンテンツ guard 用)。
@@ -242,6 +248,8 @@ export function ExamCardTable({
   userId,
   columnVisibility,
   onColumnVisibilityChange,
+  columnPinning,
+  onColumnPinningChange,
   onCollapsedChange,
   chromeRef,
 }: ExamCardTableProps) {
@@ -407,12 +415,14 @@ export function ExamCardTable({
     // T3: column resizing (非永続 — columnSizing は useState のみ、 examViewPrefs/sync_meta に書かない)。
     enableColumnResizing: true,
     columnResizeMode: 'onChange',
-    state: { rowSelection, sorting, columnFilters, columnSizing, columnVisibility },
+    state: { rowSelection, sorting, columnFilters, columnSizing, columnVisibility, columnPinning },
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnSizingChange: setColumnSizing,
     onColumnVisibilityChange: onColumnVisibilityChange,
+    // S5-2: columnPinning controlled prop 配線 (既存 state と独立共存)。
+    onColumnPinningChange: onColumnPinningChange,
     meta: {
       userId,
       toggle,
@@ -539,6 +549,10 @@ export function ExamCardTable({
       }
     })
   }, [onCollapsedChange, chromeRef])
+
+  // S5-2: 固定境界 id を render 冒頭で 1 回導出し、menu を持つ全列の pinning prop に渡す。
+  // derivePinnedBoundary は columnPinning.left 末尾 id を返す(末尾 'select' → null)。
+  const pinnedBoundary = derivePinnedBoundary(columnPinning)
 
   return (
     // S2-2: app-shell 密封の flex 列。 親 (exam-detail-view の flex-1 min-h-0 スロット) を
@@ -669,11 +683,25 @@ export function ExamCardTable({
                       // question/explanation_text/memo は非 canSort だが filterEditor 有りで menu 出現。
                       // select/options は非 canSort かつ registry 外 → plain render のまま。
                       if (canSort || filterEditor !== undefined) {
+                        // S5-2: menu を持つ全列に pinning prop を渡す。
+                        // isBoundary = 自列が現在の固定境界かどうか。
+                        // onSelect: 自列が境界なら null(全解除)、それ以外は自列を新境界にする。
+                        // colId は filterEditor lookup 節で既に宣言済(上の const colId = h.column.id)。
                         return (
                           <ColumnHeaderMenu
                             column={h.column}
                             label={headerLabel}
                             filterEditor={filterEditor}
+                            pinning={{
+                              isBoundary: colId === pinnedBoundary,
+                              onSelect: () =>
+                                onColumnPinningChange({
+                                  left: computePinnedLeft(
+                                    colId === pinnedBoundary ? null : colId,
+                                  ),
+                                  right: [],
+                                }),
+                            }}
                           >
                             <span>{headerLabel}</span>
                             {dot}

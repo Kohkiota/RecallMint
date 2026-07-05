@@ -90,11 +90,14 @@ function TestMenu({
   label,
   initialSorting = [],
   filterEditor,
+  pinning,
 }: {
   columnId: string
   label: string
   initialSorting?: SortingState
   filterEditor?: React.ReactNode
+  // S5-2: pinning prop を harness 経由で ColumnHeaderMenu に渡せるよう追加。
+  pinning?: { isBoundary: boolean; onSelect: () => void }
 }) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting)
   // eslint-disable-next-line react-hooks/incompatible-library -- test harness: useReactTable は React Compiler 非対応だが test 専用 component のため許容
@@ -110,7 +113,7 @@ function TestMenu({
   return (
     <>
       <div data-testid="sorting-state">{JSON.stringify(sorting)}</div>
-      <ColumnHeaderMenu column={column} label={label} filterEditor={filterEditor} />
+      <ColumnHeaderMenu column={column} label={label} filterEditor={filterEditor} pinning={pinning} />
     </>
   )
 }
@@ -648,5 +651,119 @@ describe('S2-6 ⑩: resize handle click は menu を開かない', () => {
     fireEvent.click(handle)
 
     expect(screen.queryByRole('button', { name: '昇順' })).not.toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// ⑪ S5-2: ColumnHeaderMenu pinning prop — 固定節の出し分け・click・後方互換
+// (brief 完了条件 a)
+// pinning prop 未指定 → 固定節なし(既存 test 後方互換)。
+// pinning prop present (isBoundary: false) → 「固定表示」button。
+// pinning prop present (isBoundary: true) → 「固定を解除」button。
+// click → onSelect 呼出 + popover 閉じる。
+// ===========================================================================
+
+describe('S5-2 ⑪: ColumnHeaderMenu pinning prop — 固定節', () => {
+  it('pinning prop 未指定 → メニューに「固定表示」「固定を解除」ボタンが存在しない', async () => {
+    render(<TestMenu columnId="currentStreak" label="連続正解数" />)
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument())
+
+    // 固定節ボタンが存在しない
+    expect(screen.queryByRole('button', { name: '固定表示' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '固定を解除' })).not.toBeInTheDocument()
+  })
+
+  it('isBoundary: false → 「固定表示」button が render される', async () => {
+    const onSelect = vi.fn()
+    render(
+      <TestMenu
+        columnId="currentStreak"
+        label="連続正解数"
+        pinning={{ isBoundary: false, onSelect }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定表示' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: '固定を解除' })).not.toBeInTheDocument()
+  })
+
+  it('isBoundary: true → 「固定を解除」button が render される', async () => {
+    const onSelect = vi.fn()
+    render(
+      <TestMenu
+        columnId="currentStreak"
+        label="連続正解数"
+        pinning={{ isBoundary: true, onSelect }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定を解除' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: '固定表示' })).not.toBeInTheDocument()
+  })
+
+  it('「固定表示」click → onSelect が呼ばれ popover が閉じる', async () => {
+    const onSelect = vi.fn()
+    render(
+      <TestMenu
+        columnId="currentStreak"
+        label="連続正解数"
+        pinning={{ isBoundary: false, onSelect }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定表示' })).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '固定表示' }))
+
+    // onSelect が呼ばれた
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    // popover が閉じた
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('「固定を解除」click → onSelect が呼ばれ popover が閉じる', async () => {
+    const onSelect = vi.fn()
+    render(
+      <TestMenu
+        columnId="currentStreak"
+        label="連続正解数"
+        pinning={{ isBoundary: true, onSelect }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定を解除' })).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '固定を解除' }))
+
+    // onSelect が呼ばれた
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    // popover が閉じた
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('固定節は昇順/降順の後・filterEditor の前に配置される', async () => {
+    const onSelect = vi.fn()
+    render(
+      <TestMenu
+        columnId="currentStreak"
+        label="連続正解数"
+        pinning={{ isBoundary: false, onSelect }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '連続正解数 の列メニュー' }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '固定表示' })).toBeInTheDocument()
+    })
+
+    // DOM 順: 昇順 → 降順 → 固定表示 の順であることを確認
+    const dialog = screen.getByRole('dialog')
+    const buttons = Array.from(dialog.querySelectorAll('button'))
+    const ascIdx = buttons.findIndex((b) => b.textContent === '昇順')
+    const descIdx = buttons.findIndex((b) => b.textContent === '降順')
+    const fixIdx = buttons.findIndex((b) => b.textContent === '固定表示')
+    expect(ascIdx).toBeLessThan(descIdx)
+    expect(descIdx).toBeLessThan(fixIdx)
   })
 })

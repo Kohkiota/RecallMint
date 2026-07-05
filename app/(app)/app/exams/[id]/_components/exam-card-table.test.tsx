@@ -1398,6 +1398,8 @@ describe('S2b-1 (c): onCollapsedChange 伝播テスト', () => {
         userId={USER_ID}
         columnVisibility={{}}
         onColumnVisibilityChange={() => {}}
+        columnPinning={{ left: [], right: [] }}
+        onColumnPinningChange={() => {}}
         onCollapsedChange={onCollapsedChange}
       />,
     )
@@ -1425,6 +1427,8 @@ describe('S2b-1 (c): onCollapsedChange 伝播テスト', () => {
         userId={USER_ID}
         columnVisibility={{}}
         onColumnVisibilityChange={() => {}}
+        columnPinning={{ left: [], right: [] }}
+        onColumnPinningChange={() => {}}
         onCollapsedChange={onCollapsedChange}
       />,
     )
@@ -1459,6 +1463,8 @@ describe('S2b-1 (c): onCollapsedChange 伝播テスト', () => {
         userId={USER_ID}
         columnVisibility={{}}
         onColumnVisibilityChange={() => {}}
+        columnPinning={{ left: [], right: [] }}
+        onColumnPinningChange={() => {}}
         onCollapsedChange={onCollapsedChange}
       />,
     )
@@ -1594,5 +1600,155 @@ describe('S2b-2: ScrollTopButton click → scrollTo 呼出', () => {
 
     // scrollTo が正しい引数で呼ばれた
     expect(scrollToSpy).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
+  })
+})
+
+// ===========================================================================
+// S5-2: column pinning 配線 (brief 完了条件 b / d)
+//
+// (b-1) menu を持つ 9 列(title/sort_key/question/tags/explanation_text/memo/
+//        lastCorrect/currentStreak/lastReview)全てに「固定表示」項目が出る。
+// (b-2) tags で「固定表示」click → onColumnPinningChange が
+//        {left: ['select','title','sort_key','question','options','tags'], right: []} を受ける。
+// (b-3) boundary=tags 状態で tags menu が「固定を解除」 → click で {left: [], right: []} を受ける。
+// (b-4) boundary=tags 状態で title menu が「固定表示」 → click で {left: ['select','title'], right: []} を受ける。
+// (d)  boundary null 時 → th に sticky/z-/border-r などの pinning 由来クラスが付かない。
+// ===========================================================================
+
+describe('S5-2 (b): column pinning menu 配線 — 9 列に固定項目', () => {
+  it('menu を持つ 9 列すべてに「固定表示」項目が描画される', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} initialColumnVisibility={{}} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // menu gate を持つ 9 列のラベルと対応するメニューボタン名
+    const menuColumns = [
+      'タイトル の列メニュー',
+      'ソートキー の列メニュー',
+      '問題文 の列メニュー',
+      'タグ の列メニュー',
+      '解説 の列メニュー',
+      'メモ の列メニュー',
+      '直近正誤 の列メニュー',
+      '連続正解数 の列メニュー',
+      '最終回答日時 の列メニュー',
+    ]
+
+    for (const menuBtnName of menuColumns) {
+      // 他のメニューを閉じてから次を開く
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+      fireEvent.click(screen.getByRole('button', { name: menuBtnName }))
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+      // 各列のメニューに「固定表示」が存在する(boundary なし状態 → 全列 isBoundary=false)
+      expect(
+        screen.getByRole('button', { name: '固定表示' }),
+        `${menuBtnName} のメニューに「固定表示」が存在する`,
+      ).toBeInTheDocument()
+    }
+  })
+})
+
+describe('S5-2 (b): column pinning menu 配線 — tags 固定・解除・境界縮小', () => {
+  it('(b-2) tags で「固定表示」click → onColumnPinningChange が 6 列 left を受ける', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onPinningChange = vi.fn()
+
+    render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        onColumnPinningChange={onPinningChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // tags メニューを開く
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定表示' })).toBeInTheDocument())
+
+    // 「固定表示」click
+    fireEvent.click(screen.getByRole('button', { name: '固定表示' }))
+
+    // onColumnPinningChange が select~tags の 6 列を受ける
+    expect(onPinningChange).toHaveBeenCalledWith({
+      left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'],
+      right: [],
+    })
+  })
+
+  it('(b-3) boundary=tags 状態で tags menu「固定を解除」click → {left: [], right: []} を受ける', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onPinningChange = vi.fn()
+
+    render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'], right: [] }}
+        onColumnPinningChange={onPinningChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // tags メニューを開く
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定を解除' })).toBeInTheDocument())
+
+    // 「固定を解除」click
+    fireEvent.click(screen.getByRole('button', { name: '固定を解除' }))
+
+    // onColumnPinningChange が全解除 (left=[]) を受ける
+    expect(onPinningChange).toHaveBeenCalledWith({ left: [], right: [] })
+  })
+
+  it('(b-4) boundary=tags 状態で title menu「固定表示」click → {left: [select,title], right: []} を受ける(境界縮小)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const onPinningChange = vi.fn()
+
+    render(
+      <ControlledExamCardTable
+        examId={EXAM_ID}
+        userId={USER_ID}
+        initialColumnPinning={{ left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'], right: [] }}
+        onColumnPinningChange={onPinningChange}
+      />,
+    )
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // title メニューを開く
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
+    // boundary=tags ゆえ title は固定済み非境界 → 「固定表示」(境界縮小移動)
+    await waitFor(() => expect(screen.getByRole('button', { name: '固定表示' })).toBeInTheDocument())
+
+    // 「固定表示」click
+    fireEvent.click(screen.getByRole('button', { name: '固定表示' }))
+
+    // onColumnPinningChange が select〜title の 2 列を受ける(境界縮小)
+    expect(onPinningChange).toHaveBeenCalledWith({ left: ['select', 'title'], right: [] })
+  })
+})
+
+describe('S5-2 (d): boundary null 時 — pinning 由来のクラスが th に付かない', () => {
+  it('columnPinning={left:[],right:[]} の状態で th に sticky/z-10/border-r などが付かない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    // デフォルト initialColumnPinning = { left: [], right: [] }
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    // 全 th を取得し、S5-3 由来の sticky/z-10/border-r クラスが存在しないことを確認。
+    // (S5-3 は未実装のため boundary null なら追加クラスはゼロが invariant)
+    const allTh = Array.from(container.querySelectorAll('thead th'))
+    expect(allTh.length).toBeGreaterThan(0)
+    for (const th of allTh) {
+      // S5-3 で追加される予定のクラス群が S5-2 段階では一切付かない
+      expect(th.className, `th[${th.textContent}] に sticky クラスなし`).not.toContain('sticky')
+    }
   })
 })

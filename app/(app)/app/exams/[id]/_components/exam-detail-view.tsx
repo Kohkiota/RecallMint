@@ -10,17 +10,18 @@
 // - view='card': InlineCardList / view='table': ExamCardTable (Grid-1 T5 で差し替え済み)。
 
 import { useEffect, useRef, useState } from 'react'
-import type { OnChangeFn, VisibilityState } from '@tanstack/react-table'
+import type { OnChangeFn, VisibilityState, ColumnPinningState } from '@tanstack/react-table'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import { cn } from '@/lib/utils'
 import {
   SYNC_META_KEYS,
   examViewPrefsSchema,
-  examViewPrefsV2Schema,
-  examViewPrefsToV2,
+  examViewPrefsV3Schema,
+  examViewPrefsToV3,
   getJsonSyncMeta,
   setJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
+import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { Button } from '@/components/ui/button'
 import { AppContainer } from '../../../_components/app-container'
 import { InlineCardList } from './inline-card-list'
@@ -62,6 +63,9 @@ export function ExamDetailView({
   // 初期 { sort_key: false } は saved record の無い新規ユーザーにのみ適用。 saved があれば
   // mount load が setColumnVisibility(map) で上書きする (hiddenColumns:[] = 全列表示)。
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ sort_key: false })
+  // S5-2: columnPinning state — handleColumnVisibilityChange と同型の controlled prop 化。
+  // 初期 { left: [], right: [] } は「固定なし」。 mount load で pinnedBoundary を復元する。
+  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>({ left: [], right: [] })
   // 永続ガード (fix2): mount load 完了前に persist effect が初期 state を書込んで既存 record を
   // 壊すのを防ぐ (load 完了で true)。 ref ではなく state — load 完了で persist effect を再発火
   // させて pre-load の view 変更を replay する (fix1 の ref は再発火せず pre-load 変更が消失した)。
@@ -80,11 +84,15 @@ export function ExamDetailView({
     void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema).then((saved) => {
       if (cancelled) return
       if (saved) {
-        const { view: savedView, hiddenColumns } = examViewPrefsToV2(saved)
+        // S5-2: toV3 で V1/V2/V3 を正規化し pinnedBoundary を取得 (V1/V2 → null)。
+        const { view: savedView, hiddenColumns, pinnedBoundary } = examViewPrefsToV3(saved)
         if (savedView !== view) setView(savedView)
         const map: VisibilityState = {}
         for (const id of hiddenColumns) map[id] = false
         setColumnVisibility(map)
+        // S5-2: pinnedBoundary → computePinnedLeft で left 配列を復元。
+        // 未知 id は computePinnedLeft が [] に落とす(load 時無害化)。
+        setColumnPinning({ left: computePinnedLeft(pinnedBoundary), right: [] })
       }
       setPrefsLoaded(true)
     })
@@ -119,6 +127,13 @@ export function ExamDetailView({
     setColumnVisibility(updater)
   }
 
+  // S5-2: columnPinning 変更を wrap し userInteracted を立てる (handleColumnVisibilityChange と同型)。
+  // mount load の setColumnPinning は wrap を通さないため spurious write なし。
+  const handleColumnPinningChange: OnChangeFn<ColumnPinningState> = (updater) => {
+    userInteractedRef.current = true
+    setColumnPinning(updater)
+  }
+
   // S2-5 fix: view / columnVisibility いずれの変更でも自 state から永続化 (fire-and-forget)。
   // 単一所有ゆえ view・hiddenColumns の両方が state にあり read-preserve dance は不要。
   // load 完了前 (prefsLoaded=false) は early-return: pre-load の default state 書込
@@ -128,12 +143,18 @@ export function ExamDetailView({
   useEffect(() => {
     if (!prefsLoaded) return
     if (!userInteractedRef.current) return
+    // S5-2: 書込を V3 に変更。pinnedBoundary を columnPinning から導出して付加する。
     void setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 2, view, hiddenColumns: deriveHiddenColumns(columnVisibility) },
-      examViewPrefsV2Schema,
+      {
+        version: 3,
+        view,
+        hiddenColumns: deriveHiddenColumns(columnVisibility),
+        pinnedBoundary: derivePinnedBoundary(columnPinning),
+      },
+      examViewPrefsV3Schema,
     ).catch(() => {})
-  }, [prefsLoaded, view, columnVisibility])
+  }, [prefsLoaded, view, columnVisibility, columnPinning])
 
   // S2-1 app-shell 骨格: table view を viewport 高の flex 列にする。 高さは固定 px 禁止
   // (spec Global) ゆえ shell の上端 offset を実測し height: calc(100dvh - <topOffset>px)。
@@ -257,6 +278,8 @@ export function ExamDetailView({
               userId={userId}
               columnVisibility={columnVisibility}
               onColumnVisibilityChange={handleColumnVisibilityChange}
+              columnPinning={columnPinning}
+              onColumnPinningChange={handleColumnPinningChange}
               onCollapsedChange={setChromeCollapsed}
               chromeRef={chromeRef}
             />

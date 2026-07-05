@@ -146,22 +146,6 @@ export const examViewPrefsSchema = z.discriminatedUnion('version', [
 export type ExamViewPrefs = z.infer<typeof examViewPrefsSchema>
 
 /**
- * v1 / v2 / v3 いずれの record も v2 working shape に正規化する。
- * v1 (hiddenColumns 不在) は hiddenColumns: [] にフォールバックする (forward-compat)。
- * v2 および v3 はともに hiddenColumns フィールドを持つため、そのまま引き継ぐ
- * (v3 record を渡してもデータロスしない)。
- * S5-2 で examViewPrefsToV3 に置換される予定 (それまでは exam-detail-view が使用中)。
- */
-export function examViewPrefsToV2(
-  prefs: ExamViewPrefs,
-): { view: 'card' | 'table'; hiddenColumns: string[] } {
-  return {
-    view: prefs.view,
-    hiddenColumns: prefs.version === 1 ? [] : prefs.hiddenColumns,
-  }
-}
-
-/**
  * v1 / v2 / v3 いずれの record も v3 working shape に正規化する (S5-1)。
  * v1 → hiddenColumns: [], pinnedBoundary: null
  * v2 → hiddenColumns を引き継ぎ, pinnedBoundary: null

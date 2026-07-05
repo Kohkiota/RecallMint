@@ -27,6 +27,10 @@ type ColumnHeaderMenuProps = {
   // S2-6: trigger 内容全体(親が描画する label + filter dot + sort glyph)。
   // 未指定時は label 文字列のみを trigger 内に描画(単体 harness / 後方互換)。
   children?: React.ReactNode
+  // S5-2: capability-driven 固定節(省略時は固定節を描画しない = 既存 test 後方互換)。
+  // isBoundary=true → 「固定を解除」 / false → 「固定表示」。
+  // 配置: 昇順/降順の下 ・ filterEditor の上。
+  pinning?: { isBoundary: boolean; onSelect: () => void }
 }
 
 export function ColumnHeaderMenu({
@@ -34,6 +38,7 @@ export function ColumnHeaderMenu({
   label,
   filterEditor,
   children,
+  pinning,
 }: ColumnHeaderMenuProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const canSort = column.getCanSort()
@@ -77,6 +82,20 @@ export function ColumnHeaderMenu({
                 降順
               </button>
             </>
+          )}
+          {/* S5-2: 固定節 — pinning prop が渡された列のみ描画 (capability-driven)。
+              昇順/降順の下 ・ filterEditor の上に配置。sort 項目と同規約で click 後に close。 */}
+          {pinning && (
+            <button
+              type="button"
+              className="rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => {
+                pinning.onSelect()
+                setOpen(false)
+              }}
+            >
+              {pinning.isBoundary ? '固定を解除' : '固定表示'}
+            </button>
           )}
           {filterEditor}
         </div>
