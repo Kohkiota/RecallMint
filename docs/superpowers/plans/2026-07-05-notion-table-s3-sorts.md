@@ -41,7 +41,8 @@
 - (a) title 昇順で localeCompare('ja') 順(かな/漢字混在サンプルで昇降両方向)を harness test で固定。
 - (b) sort_key 昇順で連番順 + null 末尾(NULLS LAST)、降順で反転(sortLikeServer 挙動継承)。
 - (c) `question` 列 `getCanSort() === false`(撤去固定)。既存 sorting test に question sort を前提とする case があれば反転/削除、無ければ新規に false 固定 test 追加。
-- (d) 初期連番順(sorting=[] + pre-sort)が撤去後も保たれることを別 assertion で固定(pre-sort レイヤー不変の回帰防止)。
+- (d) 初期連番順(sorting=[] + pre-sort)が撤去後も保たれること + **sort を clear すると連番順(pre-sort)へ戻る**ことを別 assertion で固定(pre-sort レイヤー不変の回帰防止・Codex 12)。
+- (e) sort_key 昇順で null 末尾 / **降順で null 先頭**(sortLikeServer + TanStack desc 反転の継承挙動・spec D-2)を明示 test で固定(意図挙動として pin、"バグ"と誤修正させない)。localeCompare test は**最小サンプル**(かな1・漢字1・英数1 程度)に絞る(環境差で脆くしない・Codex 9)。
 - full-dir green + typecheck/lint exit0 + canonical/Codex Crit・Imp 0 → `[reviewed]`。stg smoke ①②③⑥⑦ は S3 締め。
 
 ### Task S3-2: タグ ソート追加(代表値純関数 + header 改修)
@@ -51,7 +52,7 @@
 **完了条件**:
 - (a) `tagSortKey` 純関数の node test: 空 tags → undefined / 先頭選択が sortByKeyThenCreated 最小(複数カテゴリ・複数 option で先頭が category sort_key→option sort_key→created_at の最小)/ 返り値 = `{category.name}: {option.name}`。
 - (b) tags 列 `getCanSort() === true`(旧 false 固定 test を反転)。代表値 localeCompare('ja') 昇降 + タグ無し末尾 + 代表値同値 2 行が pre-sort(連番)相対順維持(tiebreak 安定)を harness test で固定。
-- (c) tags header 改修後も既存タグフィルタが機能: `getIsFiltered()` / dot 点灯 / TagFilterValue 設定・undefined 解除 が不変(構造 or 挙動 test)。
+- (c) tags header 改修後も既存タグフィルタが機能: `getIsFiltered()` / dot 点灯 / TagFilterValue 設定・undefined 解除 が不変。**accessorFn 追加後も filterFn が `row.original.tags` を読んで機能する**ことを test で固定(sort と filter の独立・Codex 5)。**sortUndefined:'last' が installed TanStack version で undefined 行を末尾固定し custom sortingFn へ渡さないこと**を test + 実装 verify(Codex 4）。
 - (d) 他列(canSort menu を持つ lastCorrect/currentStreak/新 title/sort_key)の header/menu が改修で壊れないこと(回帰 test 既存 green 維持で担保)。
 - full-dir green + typecheck/lint exit0 + canonical/Codex Crit・Imp 0 → `[reviewed]`。
 - **実装上のリスク(R1)**: H-1(ColumnHeaderMenu 内 CardTagAddPopover = nested popover)の実開閉/クリップ/フォーカスが jsdom で判定困難。構造 test は H-1 で組み、**nested popover の実挙動破綻が実装中に判明したら H-2(sort トグル + filter 直起動の横並び)へ切替、判定と切替時に選択肢+推奨を OT へ上げて停止**(§停止条件)。stg smoke ④⑤ が実挙動の最終判定。

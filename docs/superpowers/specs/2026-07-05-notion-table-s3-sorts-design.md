@@ -42,8 +42,11 @@ S1 で capability-driven ヘッダーメニュー + generic 条件バー + regis
 ### D-1. title ソート
 `title` 列に `enableSorting: true` + `sortingFn: (a,b) => a.original.card.title.localeCompare(b.original.card.title, 'ja')`。title は非 null ゆえ sortUndefined 不要。accessorFn は追加しない(sortingFn が row.original から直接読む。既存 lastReview 等の sortingFn 参照と同流儀)。
 
-### D-2. sort_key ソート
-`sort_key` 列に `enableSorting: true` + `sortingFn: (a,b) => sortLikeServer(a.original.card, b.original.card)`。sortLikeServer が sort_key 辞書順 ASC NULLS LAST + created_at tiebreak を担う(問題文列が現在使っている関数を sort_key 列へ移す形)。NULLS LAST は sortLikeServer 内蔵ゆえ sortUndefined 指定は不要(direction 反転時の挙動は sortLikeServer の定義に従う = 既存問題文ソートと同一挙動を継承)。
+### D-2. sort_key ソート(Codex cross-check 反映)
+`sort_key` 列に `enableSorting: true` + `sortingFn: (a,b) => sortLikeServer(a.original.card, b.original.card)`。
+- **比較は文字列 lexicographic**(数値ではない): `sortLikeServer` は `aKey < bKey` の**文字列比較**で、これは server の `ORDER BY sort_key`(Postgres text 順)= 既存「連番順」と同一。**数値比較へ"修正"しない**(挙動変更になる)。seed が zero-pad なら lexicographic = 連番。要件の「数値文字列」は値の形の記述であり、比較規則は既存 server 準拠の lexicographic で確定。
+- **NULLS LAST の direction 依存性(明示)**: `sortLikeServer` の null 後置(`aKey===null → return 1`)は方向非依存な comparator 内実装だが、TanStack は desc で comparator 結果を反転するため **昇順では null 末尾 / 降順では null 先頭**になる(= 撤去する問題文ソートと同一の既存挙動を継承)。これを許容する(OT 論点 §8-R5 参照)。厳密な direction 非依存 NULLS LAST が要るなら代替 = `accessorFn: row=>card.sort_key ?? undefined` + `sortingFn:'text'` + `sortUndefined:'last'`(lastReview 流儀)だが created_at tiebreak を失う。**採用 = sortLikeServer 継続**(連番順の完全継承 + tiebreak 保持)。
+- created_at tiebreak は sortLikeServer 内蔵(同 sort_key で created_at ASC)。
 
 ### D-3. tags ソート(代表値 = 案 c 確定)
 - **代表値導出**(純関数・新規 `_lib` へ切り出し = unit test 容易): card の tags を `sortByKeyThenCreated`(category→option)で並べ、**先頭要素**の `{category.name}: {option.name}` を返す。tags 空 → 代表値なし(末尾扱い)。
@@ -53,7 +56,12 @@ S1 で capability-driven ヘッダーメニュー + generic 条件バー + regis
     first = [...tags].sort((a,b)=> sortByKeyThenCreated(a.category,b.category) || sortByKeyThenCreated(a.option,b.option))[0]
     return `${first.category.name}: ${first.option.name}`
   ```
-- **sortingFn**: `tagSortKey` で両 row の代表値を出し、両 undefined→0、片側 undefined は `sortUndefined: 'last'` に委譲(sortingFn は string 同士のみ localeCompare し、undefined は sortingFn へ来る前に TanStack が末尾へ寄せる)。実装は accessorFn で代表値(string|undefined)を返し `sortingFn` は文字列 localeCompare + `sortUndefined: 'last'`、が最も既存流儀(lastReview/ lastCorrect)に近い。**採用: accessorFn = tagSortKey、sortingFn = (a,b)=>String(a).localeCompare(String(b),'ja')、sortUndefined: 'last'**。
+- **sortingFn / accessorFn(TanStack API 正確化・Codex 反映)**:
+  - `accessorFn: (row) => tagSortKey(row.tags)`(string | undefined を返す)。
+  - `sortingFn: (rowA, rowB, columnId) => String(rowA.getValue(columnId) ?? '').localeCompare(String(rowB.getValue(columnId) ?? ''), 'ja')`(TanStack 正規シグネチャ `(rowA,rowB,columnId)`、columnId 経由で accessor 値を読む)。
+  - `sortUndefined: 'last'`。
+  - **filterFn 共存**: tags 列は既存 `filterFn = tagsFilterFn` を持つが、これは `row.original.tags` を読む(getValue 非依存 — 実コード `matchesTagFilter(row.original.tags, …)` 確認済)ため、accessorFn 追加で **filter は壊れない**。sort(getValue 経由の代表値)と filter(row.original.tags)は独立。
+  - **sortUndefined と custom sortingFn の相互作用は実装時に installed TanStack version で要確認**(undefined 行が末尾固定され custom sortingFn へ来ないこと)。§7 の test + 実装 verify に含める。
   - accessorFn が undefined を返す行を TanStack が sortUndefined:'last' で末尾固定(既存 lastCorrect/lastReview と同一機構)= **タグ無しカード末尾**。
   - 同値 tiebreak: TanStack sort は stable。代表値同値の 2 行は pre-sort(sortLikeServer 連番順)の相対順が保たれる = **連番順フォールバックで安定**(明示 tiebreak コードは足さない — stable sort + pre-sort で満たす。§7 test で固定)。
   - `localeCompare('ja')` でかな/漢字混在の照合。
@@ -63,10 +71,13 @@ S1 で capability-driven ヘッダーメニュー + generic 条件バー + regis
 現 header 描画の分岐順(`canSort` が先)により、tags を canSort 化すると tags 専用フィルタ trigger が消える。解消方針(**推奨: 案 H-1**):
 - **案 H-1(推奨)**: tags 列を `ColumnHeaderMenu` 経由にし、`filterEditor` prop に既存タグフィルタ(`cardTableFilterEditors.tags` = CardTagAddPopover ベース editor)を渡す。header 描画の tags 専用分岐を撤去し canSort 分岐へ合流。ColumnHeaderMenu は lastCorrect/currentStreak で既に「sort + filterEditor(Popover 内 Popover)」の実績があるため、tags フィルタも同枠に載る想定。**リスク**: tags フィルタは CardTagAddPopover(それ自体 Popover)ゆえ ColumnHeaderMenu(Popover)内に nested popover になる(S1-3 が「nested popover 回避」で直起動にした経緯)。nested popover が破綻する場合は案 H-2 へ。
 - **案 H-2(fallback)**: tags header を「ソート glyph/menu と フィルタ trigger を横並び」に自前構成(ColumnHeaderMenu を使わず、sort は小さな昇順/降順トグル、filter は現行 CardTagAddPopover 直起動を維持)。競合を構造的に回避するが独自 UI が増える。
-- **実装 task(S3-2)で H-1 を試作し、nested popover の実挙動(開閉・クリップ・フォーカス)が破綻するなら H-2 へ切替**。破綻の判定と切替が出たら OT へ選択肢 + 推奨を上げる(§停止条件)。canSort 分岐順の副作用(他列への影響)を出さないこと。
+- **実装 task(S3-2)で H-1 を試作し、下記いずれかが起きたら H-2 へ切替**(Codex 反映・具体基準): (i) filter 選択後に外側 menu が閉じて値が反映不能、(ii) 内側 CardTagAddPopover が外側 ColumnHeaderMenu にクリップされ操作不能/画面外、(iii) Esc / 外クリックで状態が壊れる(片方だけ閉じる・両方残る等)、(iv) フォーカスが filter editor 内で保持されず sort へ奪われる。切替判定が出たら OT へ選択肢 + 推奨を上げて停止(§8 R1)。canSort 分岐順の副作用(他列への影響)を出さないこと。
 
-### D-4. capability 追加の載り方
-title/sort_key は `enableSorting: true` で ColumnHeaderMenu に自動的に昇順/降順が出る(canSort 駆動)。追加配線不要。tags のみ D-3b の header 改修が要る。条件バー chip は generic 経路が sorting state から自動生成(追加不要)。
+### D-4. capability 追加の載り方(Codex 反映)
+- **「registry」= ColumnDef 駆動**: ソートには filter editor(`cardTableFilterEditors`)のような別 registry オブジェクトは無い。sort capability は各 ColumnDef の `enableSorting`/`sortingFn` のみで決まり、menu は `column.getCanSort()`、条件バー chip は sorting state + `columnDef.header`(string)から generic に自動生成。よって title/sort_key は `enableSorting:true` を立てるだけで menu に昇順/降順が出て chip も出る(追加配線不要)。tags のみ D-3b の header 改修が要る。
+- **問題文 sort state 残留(Codex 反映)**: sorting state は**非永続**(`useState([])`・examViewPrefs にも sync_meta にも保存しない・reload で初期化)。ゆえに問題文を `enableSorting` 除去した後、永続経路に `{id:'question'}` が残る余地は無く、fresh load は常に `sorting=[]`。残留 chip の心配は構造上生じない(§7 で「reload で sorting 初期化」を前提として明記、防御コードは足さない = YAGNI)。
+- **非表示列の sort chip**: S1 仕様どおり条件バーは hidden 列の条件も描画する(`getColumn` は visibility 非依存)。新規 sortable 列(title/sort_key/tags)を非表示にしても sort chip は出る = 既存 generic 挙動の継続(新規挙動ではない)。§7 で回帰確認。
+- **編集中の再ソート**: title/sort_key は InlineTextField で編集可能。ソート適用中に編集・保存すると行が並び替わる = useLiveQuery の live データ更新に伴う既存挙動(問題文も編集可能で同様だった)。新規リスクではないが smoke で体感確認。sort_key は文字列ゆえ空/非数値でも lexicographic 比較が成立(数値バリデーション不要)。
 
 ## 5. アーキテクチャ(確定)
 
