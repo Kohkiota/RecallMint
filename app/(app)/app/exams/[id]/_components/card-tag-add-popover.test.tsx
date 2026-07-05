@@ -2693,7 +2693,7 @@ describe('CardTagAddPopover — selectOnly=true: stage1 新規作成行・kebab 
     expect(screen.getByRole('menuitem', { name: 'レベル' })).toBeInTheDocument()
     // filter input に新カテゴリ名を入力しても「新規作成」 行が出ない
     fireEvent.change(
-      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      screen.getByRole('textbox', { name: 'カテゴリを検索' }),
       { target: { value: '新カテゴリ' } },
     )
     expect(
@@ -2731,7 +2731,7 @@ describe('CardTagAddPopover — selectOnly=true: stage1 新規作成行・kebab 
     )
     fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
     fireEvent.change(
-      screen.getByRole('textbox', { name: 'category を検索 / 新規作成' }),
+      screen.getByRole('textbox', { name: 'カテゴリを検索' }),
       { target: { value: '分野' } },
     )
     // フィルタにヒット
@@ -2759,7 +2759,7 @@ describe('CardTagAddPopover — selectOnly=true: stage2 新規作成行・kebab 
     expect(screen.getByRole('menuitemcheckbox', { name: '循環器' })).toBeInTheDocument()
     // filter に存在しない名前を入力しても「新規作成」 行が出ない
     fireEvent.change(
-      screen.getByRole('textbox', { name: 'option を検索 / 新規作成' }),
+      screen.getByRole('textbox', { name: 'タグを検索' }),
       { target: { value: '新 option' } },
     )
     expect(

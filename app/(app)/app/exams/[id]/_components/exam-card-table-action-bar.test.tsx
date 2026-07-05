@@ -170,8 +170,8 @@ describe('Fix-1 T2: 除去 popover selectOnly で新規作成導線なし', () =
     // 「タグ除去」button をクリック
     fireEvent.click(screen.getByRole('button', { name: 'タグ除去' }))
 
-    // stage1 combobox が表示されるのを待つ
-    const input = await screen.findByLabelText('category を検索 / 新規作成')
+    // stage1 combobox が表示されるのを待つ (selectOnly = 検索専用文言)
+    const input = await screen.findByLabelText('カテゴリを検索')
 
     // 入力しても新規作成行は出ない (selectOnly=true → onCreateNew undefined)
     fireEvent.change(input, { target: { value: 'NewTag' } })
@@ -190,7 +190,7 @@ describe('Fix-1 T2: 除去 popover selectOnly で新規作成導線なし', () =
 
     // 「タグ除去」button で popover を開く
     fireEvent.click(screen.getByRole('button', { name: 'タグ除去' }))
-    const input = await screen.findByLabelText('category を検索 / 新規作成')
+    const input = await screen.findByLabelText('カテゴリを検索')
 
     // カテゴリを選択すると stage2 (option stage) に遷移する
     // Difficulty が categories にある → click で option stage へ

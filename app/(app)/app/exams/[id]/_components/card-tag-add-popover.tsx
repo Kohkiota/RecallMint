@@ -166,6 +166,17 @@ export function CardTagAddPopover({
   // / option-list) でも同 hook を使い drift を回避する (spec §4.4)。
   const sensors = useTagSortableSensors()
 
+  // selectOnly (フィルタ文脈) では作成導線を出さないため、検索ボックスの文言も
+  // 「新規作成」を誘導しない検索専用文言へ切替える (作成導線本体は onCreateNew=undefined で
+  // 既に非表示。 文言のみ揃える cosmetic)。 非フィルタ文脈 (tag-cell / action-bar 等) は不変。
+  const categorySearchPlaceholder = selectOnly ? '検索' : '検索 or 新規作成'
+  const categorySearchAriaLabel = selectOnly ? 'カテゴリを検索' : 'category を検索 / 新規作成'
+  const optionSearchPlaceholder = selectOnly ? '検索' : undefined
+  const optionSearchAriaLabel = selectOnly ? 'タグを検索' : undefined
+  // フィルタ 0 件時の空表示も selectOnly では作成を誘導しない (default は「タグ名を入力し新規作成」)。
+  const categoryEmptyPlaceholder = selectOnly ? '該当するカテゴリなし' : undefined
+  const optionEmptyPlaceholder = selectOnly ? '該当するタグなし' : undefined
+
   // Fix C-3 軸 1: sort_key ASC NULLS LAST, created_at ASC + 数値順 (Tag-4c-2b) で
   // categories を並べる。 comparator 本体は `@/lib/tags/sort-comparator` の共有版
   // (有効数値=順序母数 / null・undefined・非数値・空文字=末尾) を使用。
@@ -430,8 +441,9 @@ export function CardTagAddPopover({
                       setCreateError(null)
                     }}
                     createError={null}
-                    searchPlaceholder="検索 or 新規作成"
-                    searchAriaLabel="category を検索 / 新規作成"
+                    searchPlaceholder={categorySearchPlaceholder}
+                    searchAriaLabel={categorySearchAriaLabel}
+                    emptyPlaceholderText={categoryEmptyPlaceholder}
                     onFilterChange={setStage1FilterText}
                     sortable
                     dndEnabled={isStage1DragEnabled}
@@ -458,8 +470,9 @@ export function CardTagAddPopover({
                   setCreateError(null)
                 }}
                 createError={null}
-                searchPlaceholder="検索 or 新規作成"
-                searchAriaLabel="category を検索 / 新規作成"
+                searchPlaceholder={categorySearchPlaceholder}
+                searchAriaLabel={categorySearchAriaLabel}
+                emptyPlaceholderText={categoryEmptyPlaceholder}
               />
             )}
           </div>
@@ -520,6 +533,9 @@ export function CardTagAddPopover({
                       onClose={() => setOpen(false)}
                       onRowAction={selectOnly ? undefined : handleOptionRowAction}
                       selectedCategoryId={selectedCategoryId}
+                      searchPlaceholder={optionSearchPlaceholder}
+                      searchAriaLabel={optionSearchAriaLabel}
+                      emptyPlaceholderText={optionEmptyPlaceholder}
                       onCreateNew={selectOnly ? undefined : async (name) => {
                         if (!tagEditCallbacks || isSubmittingCreate) return
                         setIsSubmittingCreate(true)
@@ -551,6 +567,9 @@ export function CardTagAddPopover({
                   onClose={() => setOpen(false)}
                   onRowAction={selectOnly ? undefined : handleOptionRowAction}
                   selectedCategoryId={selectedCategoryId}
+                  searchPlaceholder={optionSearchPlaceholder}
+                  searchAriaLabel={optionSearchAriaLabel}
+                  emptyPlaceholderText={optionEmptyPlaceholder}
                   onCreateNew={selectOnly ? undefined : async (name) => {
                     if (!tagEditCallbacks || isSubmittingCreate) return
                     setIsSubmittingCreate(true)

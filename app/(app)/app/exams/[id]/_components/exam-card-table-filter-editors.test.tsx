@@ -181,6 +181,22 @@ describe('FilterEditors: 回答状態フィルタ (header menu 経由)', () => {
     })
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
   })
+
+  // 指摘 B: メニュー内フィルタのラベルは input の上・縦積み(flex-col)。
+  // 横並び(inline-flex)だと narrow menu(w-36)でラベルが縦に潰れるため。
+  it('回答状態 editor はラベルを input の上に置く縦積み(flex-col)レイアウト', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1, { answered: true, last_correct: true })])
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('直近正誤 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    const select = within(screen.getByRole('dialog')).getByLabelText('回答状態フィルタ')
+    const container = select.parentElement
+    expect(container?.className).toContain('flex-col')
+    expect(container?.className).not.toContain('inline-flex')
+  })
 })
 
 // ===========================================================================
@@ -238,6 +254,22 @@ describe('FilterEditors: 連続正解数フィルタ (header menu 経由)', () =
       target: { value: '' },
     })
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+  })
+
+  // 指摘 B: 連続正解数 editor もラベルを input の上・縦積み(flex-col)。
+  it('連続正解数 editor はラベルを input の上に置く縦積み(flex-col)レイアウト', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1, { current_streak: 1 })])
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByLabelText('連続正解数 の列メニュー'))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    // op select / しきい値 input が共通の flex-col コンテナ配下にある
+    const input = within(screen.getByRole('dialog')).getByLabelText('連続正解数 しきい値')
+    const container = input.parentElement
+    expect(container?.className).toContain('flex-col')
+    expect(container?.className).not.toContain('inline-flex')
   })
 })
 
@@ -377,6 +409,55 @@ describe('FilterEditors: selectOnly で新規作成/編集導線が非表示', (
 
     // option stage でも kebab が存在しない
     expect(screen.queryByRole('button', { name: /option 操作/ })).not.toBeInTheDocument()
+  })
+
+  it('検索ボックスの placeholder / aria が「新規作成」を誘導しない(フィルタ文脈)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory())
+    await db.tag_options.put(makeOption())
+    await db.cards.bulkPut([makeCard(1)])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
+
+    // stage1 (category): 検索専用文言。「新規作成」を含む input が存在しない。
+    await waitFor(() => expect(screen.getByText('Difficulty')).toBeInTheDocument())
+    const categorySearch = screen.getByLabelText('カテゴリを検索')
+    expect(categorySearch).toHaveAttribute('placeholder', '検索')
+    expect(screen.queryByLabelText(/新規作成/)).not.toBeInTheDocument()
+
+    // stage2 (option): 同じく検索専用文言。
+    fireEvent.click(screen.getByText('Difficulty'))
+    await waitFor(() => expect(screen.getByText('Hard')).toBeInTheDocument())
+    const optionSearch = screen.getByLabelText('タグを検索')
+    expect(optionSearch).toHaveAttribute('placeholder', '検索')
+    expect(screen.queryByLabelText(/新規作成/)).not.toBeInTheDocument()
+  })
+
+  it('フィルタ 0 件の空表示も「新規作成」を誘導しない(Codex P2)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory())
+    await db.tag_options.put(makeOption())
+    await db.cards.bulkPut([makeCard(1)])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグ の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'タグで絞り込み' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'タグで絞り込み' }))
+
+    // stage1 で存在しない名前で絞り込む → 空表示。「新規作成」を含まない検索専用の空文言。
+    await waitFor(() => expect(screen.getByLabelText('カテゴリを検索')).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('カテゴリを検索'), {
+      target: { value: 'zzz該当なし名' },
+    })
+    expect(screen.getByText('該当するカテゴリなし')).toBeInTheDocument()
+    expect(screen.queryByText(/新規作成/)).not.toBeInTheDocument()
   })
 })
 

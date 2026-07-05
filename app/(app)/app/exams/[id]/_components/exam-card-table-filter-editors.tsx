@@ -46,7 +46,9 @@ function LastCorrectEditor({
 
   return (
     <div className="px-2 py-2">
-      <label className="inline-flex items-center gap-1.5 text-sm">
+      {/* 指摘 B: ラベルを input の上に置く縦積み(flex-col)。TextColumnEditor と統一し
+          narrow menu(w-36)でのラベル縦潰れを解消。 */}
+      <div className="flex flex-col gap-1.5 text-sm">
         <span className="text-muted-foreground">回答状態</span>
         <select
           aria-label="回答状態フィルタ"
@@ -60,7 +62,7 @@ function LastCorrectEditor({
             </option>
           ))}
         </select>
-      </label>
+      </div>
     </div>
   )
 }
@@ -117,7 +119,9 @@ function CurrentStreakEditor({
 
   return (
     <div className="px-2 py-2">
-      <label className="inline-flex items-center gap-1.5 text-sm">
+      {/* 指摘 B: ラベルを input の上に置く縦積み(flex-col)。TextColumnEditor と統一し
+          narrow menu(w-36)でのラベル縦潰れを解消(op select + しきい値 input を縦に並べる)。 */}
+      <div className="flex flex-col gap-1.5 text-sm">
         <span className="text-muted-foreground">連続正解数</span>
         <select
           aria-label="連続正解数 演算子"
@@ -137,9 +141,9 @@ function CurrentStreakEditor({
           value={streakInput}
           onChange={handleInputChange}
           placeholder="—"
-          className="w-16 rounded-md border border-border bg-background px-2 py-1"
+          className="rounded-md border border-border bg-background px-2 py-1"
         />
-      </label>
+      </div>
     </div>
   )
 }
