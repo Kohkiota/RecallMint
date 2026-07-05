@@ -43,7 +43,7 @@
   - `computePinnedLeft(boundaryId: string | null): string[]` — `examCardTableColumns` の module 定義順で先頭から boundaryId まで(select 含む・boundaryId 含む)の id 配列。boundaryId が未知 id(将来の列改廃 / 不正永続値)なら `[]`。
   - `derivePinnedBoundary(state: ColumnPinningState): string | null` — `left` 末尾の id(空なら null)。select のみの配列は発生しない(書込経路が computePinnedLeft のみのため)が、末尾が 'select' の場合も null に落とす(防御は導出 1 箇所に集約)。
 - **left 配列は必ず computePinnedLeft 経由で書く**(menu handler / load 復元の 2 経路とも)。§2 のとおり getHeaderGroups は pinning 配列順に並べるため、この導出一元化が「視覚列順不変」の構造的保証になる。`column.pin()` は使わない(単列 append であり境界 semantics と不一致)。
-- select 付随(brief 確定)はここで実現: boundary 非 null → left = ['select', ...] / null → []。
+- select 付随(brief 確定)はここで実現: boundary 非 null → left = ['select', ...] / null → []。**options 列も boundary の左にあれば固定領域に含む**(menu 非対象 = boundary に指定できないだけで、「それより左の全列」には含まれる。除外すると列順・視覚連続性が壊れる — Codex 論点反映・明文化)。
 
 ### D-3. menu 項目とラベル(Notion 準拠・境界移動 1 操作)
 
