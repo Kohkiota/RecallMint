@@ -309,14 +309,15 @@ describe('ExamCardRow.card is full ClientCard', () => {
 // ---------------------------------------------------------------------------
 
 describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
-  it('column attributes: size=320, header="問題文", enableSorting=true, sortingFn present, accessorFn present', () => {
+  // S3-1: 問題文ソート撤去 — enableSorting:false / sortingFn 除去 / accessorFn は表示用に残置。
+  it('column attributes: size=320, header="問題文", enableSorting=false, sortingFn absent, accessorFn present', () => {
     const col = examCardTableColumns.find((c) => c.id === 'question')
     expect(col).toBeDefined()
     expect(col?.size).toBe(320)
     expect(col?.header).toBe('問題文')
-    expect(col?.enableSorting).toBe(true)
-    expect(typeof col?.sortingFn).toBe('function')
-    // accessorFn は ColumnDef union の全 variant に存在しないため unknown キャストでアクセスする。
+    expect(col?.enableSorting).toBe(false)
+    expect(col?.sortingFn).toBeUndefined()
+    // accessorFn は表示用 (question_text) のために残置している。
     expect(typeof (col as Record<string, unknown> | undefined)?.['accessorFn']).toBe('function')
   })
 

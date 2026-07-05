@@ -84,6 +84,11 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'title',
     size: 80,
     header: 'タイトル',
+    // S3-1 D-1: TanStack v8 の getCanSort() は !!accessorFn が必須 (RowSorting.js:178)。
+    // display column (accessorFn なし) では enableSorting:true でも getCanSort()===false になり
+    // getSortedRowModel がフィルタアウトするため、title を非 null accessor で sortable 化。
+    // sortingFn は row.original から直接読んで localeCompare('ja') で比較する。
+    accessorFn: (row) => row.card.title,
     cell: ({ row }) => (
       <InlineTextField
         cardId={row.original.card.id}
@@ -92,12 +97,18 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         ariaLabel="タイトル 編集"
       />
     ),
-    enableSorting: false,
+    enableSorting: true,
+    sortingFn: (rowA, rowB) =>
+      rowA.original.card.title.localeCompare(rowB.original.card.title, 'ja'),
   },
   {
     id: 'sort_key',
     size: 100,
     header: 'ソートキー',
+    // S3-1 D-2: accessorFn は getCanSort() を有効化するために必要 (TanStack v8 制約)。
+    // sortLikeServer = 連番順(文字列辞書比較 + NULLS LAST + created_at tiebreak)。
+    // TanStack desc 反転により昇順→null 末尾 / 降順→null 先頭 (継承挙動・意図的)。
+    accessorFn: (row) => row.card.sort_key,
     cell: ({ row }) => (
       <InlineTextField
         cardId={row.original.card.id}
@@ -106,12 +117,14 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         ariaLabel="ソートキー 編集"
       />
     ),
-    enableSorting: false,
+    enableSorting: true,
+    sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
   },
   {
     id: 'question',
     size: 320,
     header: '問題文',
+    // accessorFn は表示 (question_text) のために残置 — sort は撤去 (S3-1 D-3 前段)。
     accessorFn: (row) => row.card.question_text,
     cell: ({ row }) => (
       <InlineTextField
@@ -123,10 +136,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         displayClassName="text-sm md:min-h-6 md:py-0.5"
       />
     ),
-    enableSorting: true,
-    // sortKey(連番)順 = sortLikeServer (sort_key NULLS-LAST 辞書順 + created_at tiebreak)。
-    // 問題文列ヘッダクリックで「連番順」ソートを担う (Grid-2 T2 設計: # 列削除済のため代替)。
-    sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
+    // S3-1: 問題文ソート撤去。連番順の役割は sort_key 列 sortingFn へ移管。
+    // 注意: 初期連番順(liveData の pre-sort)は別レイヤーで不変(exam-card-table.tsx)。
+    enableSorting: false,
   },
   {
     id: 'options',

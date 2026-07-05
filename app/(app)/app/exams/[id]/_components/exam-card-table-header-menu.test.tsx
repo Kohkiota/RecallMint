@@ -4,7 +4,7 @@
 // ① canSort 列 header click で menu 開・「昇順」「降順」項目表示
 // ② 「降順」click → sorting に {id, desc:true} が append(他列 sort 維持 = multi)
 // ③ 追加済列の「昇順」click → 方向更新(重複 entry なし)
-// ④ 非 canSort 列(title 等)は ExamCardTable で trigger 化されない
+// ④ 非 canSort 列は ExamCardTable で trigger 化されない [S3-1: question→非canSort / title→canSort]
 // ⑤ select 列は ExamCardTable で trigger 化されない
 //
 // Radix Popover open/close: fireEvent.click on trigger(列 toggle test:78-98 準拠)。
@@ -197,10 +197,10 @@ afterEach(() => {
 // ===========================================================================
 
 describe('ColumnHeaderMenu ①: canSort 列 header click で menu が開く', () => {
-  it('question 列(canSort)の trigger click で「昇順」「降順」が表示される', async () => {
-    render(<TestMenu columnId="question" label="問題文" />)
+  it('currentStreak 列(canSort)の trigger click で「昇順」「降順」が表示される', async () => {
+    render(<TestMenu columnId="currentStreak" label="連続正解数" />)
 
-    const trigger = screen.getByRole('button', { name: '問題文 の列メニュー' })
+    const trigger = screen.getByRole('button', { name: '連続正解数 の列メニュー' })
     fireEvent.click(trigger)
 
     await waitFor(() => {
@@ -215,8 +215,8 @@ describe('ColumnHeaderMenu ①: canSort 列 header click で menu が開く', ()
 // ===========================================================================
 
 describe('ColumnHeaderMenu ②: 「降順」click は multi-sort でその列を append する', () => {
-  it('question が既にソート済の状態で currentStreak の「降順」click → 両列が sorting に含まれる', async () => {
-    const initialSorting: SortingState = [{ id: 'question', desc: false }]
+  it('lastReview が既にソート済の状態で currentStreak の「降順」click → 両列が sorting に含まれる', async () => {
+    const initialSorting: SortingState = [{ id: 'lastReview', desc: false }]
     render(
       <TestMenu columnId="currentStreak" label="連続正解数" initialSorting={initialSorting} />,
     )
@@ -234,8 +234,8 @@ describe('ColumnHeaderMenu ②: 「降順」click は multi-sort でその列を
       const state = JSON.parse(
         screen.getByTestId('sorting-state').textContent ?? '[]',
       ) as SortingState
-      // question 昇順 が維持されていること(他列 sort 維持 = multi)
-      expect(state).toContainEqual({ id: 'question', desc: false })
+      // lastReview 昇順 が維持されていること(他列 sort 維持 = multi)
+      expect(state).toContainEqual({ id: 'lastReview', desc: false })
       // currentStreak 降順 が追加されていること
       expect(state).toContainEqual({ id: 'currentStreak', desc: true })
     })
@@ -247,11 +247,11 @@ describe('ColumnHeaderMenu ②: 「降順」click は multi-sort でその列を
 // ===========================================================================
 
 describe('ColumnHeaderMenu ③: 既存 sort 列の「昇順」click は方向更新(重複なし)', () => {
-  it('question が desc=true の状態で「昇順」click → desc:false に更新・entry が 1 件のまま', async () => {
-    const initialSorting: SortingState = [{ id: 'question', desc: true }]
-    render(<TestMenu columnId="question" label="問題文" initialSorting={initialSorting} />)
+  it('currentStreak が desc=true の状態で「昇順」click → desc:false に更新・entry が 1 件のまま', async () => {
+    const initialSorting: SortingState = [{ id: 'currentStreak', desc: true }]
+    render(<TestMenu columnId="currentStreak" label="連続正解数" initialSorting={initialSorting} />)
 
-    const trigger = screen.getByRole('button', { name: '問題文 の列メニュー' })
+    const trigger = screen.getByRole('button', { name: '連続正解数 の列メニュー' })
     fireEvent.click(trigger)
 
     await waitFor(() => {
@@ -267,7 +267,7 @@ describe('ColumnHeaderMenu ③: 既存 sort 列の「昇順」click は方向更
       // entry が 1 件(重複なし)
       expect(state).toHaveLength(1)
       // 方向が desc:false に更新
-      expect(state[0]).toEqual({ id: 'question', desc: false })
+      expect(state[0]).toEqual({ id: 'currentStreak', desc: false })
     })
   })
 })
@@ -276,8 +276,9 @@ describe('ColumnHeaderMenu ③: 既存 sort 列の「昇順」click は方向更
 // ④ 非 canSort 列(title 等)は ExamCardTable で trigger 化されない
 // ===========================================================================
 
+// S3-1 反映: title が canSort 化、question が非 canSort 化。
 describe('ColumnHeaderMenu ④: 非 canSort 列は ExamCardTable でメニュー trigger 化されない', () => {
-  it('title 列ヘッダーに「タイトル の列メニュー」ボタンが存在しない', async () => {
+  it('question 列ヘッダーに「問題文 の列メニュー」ボタンが存在しない(S3-1 撤去確認)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard())
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -286,16 +287,16 @@ describe('ColumnHeaderMenu ④: 非 canSort 列は ExamCardTable でメニュー
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
 
-    // title 列は enableSorting: false なのでメニュー trigger ボタンが存在しない
+    // question 列は S3-1 で enableSorting: false になったのでメニュー trigger が存在しない
     expect(
-      screen.queryByRole('button', { name: 'タイトル の列メニュー' }),
+      screen.queryByRole('button', { name: '問題文 の列メニュー' }),
     ).not.toBeInTheDocument()
-    // タイトルヘッダーは列自体として存在する
-    expect(screen.getByRole('columnheader', { name: /タイトル/ })).toBeInTheDocument()
-    // canSort 列(問題文)は ExamCardTable の thead で実際に menu trigger 化される
+    // 問題文ヘッダーは列自体として存在する
+    expect(screen.getByRole('columnheader', { name: /問題文/ })).toBeInTheDocument()
+    // S3-1 で canSort 化した title 列は ExamCardTable の thead で menu trigger 化される
     // (production の thead 配線を positive に固定 = ternary を戻すと fail する非 vacuous guard)
     expect(
-      screen.getByRole('button', { name: '問題文 の列メニュー' }),
+      screen.getByRole('button', { name: 'タイトル の列メニュー' }),
     ).toBeInTheDocument()
   })
 })
@@ -433,15 +434,15 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
 
-    // Sort question ascending via menu
-    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    // S3-1: title は canSort 化済のためグリフ表示テストに使用
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '昇順' }))
 
     await waitFor(() => {
-      const questionTh = screen.getByRole('columnheader', { name: /問題文/ })
-      expect(questionTh.textContent).toContain('▲')
-      expect(questionTh.textContent).not.toContain('▾')
+      const titleTh = screen.getByRole('columnheader', { name: /タイトル/ })
+      expect(titleTh.textContent).toContain('▲')
+      expect(titleTh.textContent).not.toContain('▾')
     })
   })
 
@@ -454,15 +455,15 @@ describe('S1-4 ⑦: sort arrow glyph', () => {
       expect(screen.getByTestId('row-card-menu-1')).toBeInTheDocument()
     })
 
-    // Open question menu and click 降順
-    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    // S3-1: title は canSort 化済のためグリフ表示テストに使用
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '降順' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '降順' }))
 
     await waitFor(() => {
-      const questionTh = screen.getByRole('columnheader', { name: /問題文/ })
-      expect(questionTh.textContent).toContain('▼')
-      expect(questionTh.textContent).not.toContain('▾')
+      const titleTh = screen.getByRole('columnheader', { name: /タイトル/ })
+      expect(titleTh.textContent).toContain('▼')
+      expect(titleTh.textContent).not.toContain('▾')
     })
   })
 })

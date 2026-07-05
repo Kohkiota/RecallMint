@@ -539,7 +539,12 @@ describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
     const headerTexts = Array.from(container.querySelectorAll('th')).map((th) =>
       (th as HTMLElement).textContent?.trim(),
     )
-    expect(headerTexts, 'hiddenColumns:[] 相当 → sort_key が表示される').toContain('ソートキー')
+    // sort_key は S3-1 で enableSorting:true になりヘッダに glyph が付く ('ソートキー▾' 等)。
+    // 部分一致で存在確認する (正確な glyph 文字を pin しない)。
+    expect(
+      headerTexts.some((t) => t?.includes('ソートキー')),
+      'hiddenColumns:[] 相当 → sort_key が表示される',
+    ).toBe(true)
   })
 
   it('columnVisibility={memo:false} → メモ列 header / cell が描画されない', async () => {
@@ -606,10 +611,11 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
     fireEvent.click(sortKeyCheckbox)
 
     // ソートキー header が DOM に出現する
+    // sort_key は S3-1 で enableSorting:true になりヘッダに glyph が付く ('ソートキー▾' 等)。
     await waitFor(() => {
       const allTh = container.querySelectorAll('th')
       const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
-      expect(headerTexts).toContain('ソートキー')
+      expect(headerTexts.some((t) => t?.includes('ソートキー'))).toBe(true)
     })
   })
 })
@@ -1036,11 +1042,11 @@ describe('S2-4: 条件バー wrapper が flex-none を持つ(D-4 不変条件)',
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // 問題文 列メニュー → 昇順 を適用 → ConditionBar が sort chip を描画する
-    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    // タイトル 列メニュー → 昇順 を適用 → ConditionBar が sort chip を描画する
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
     fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
     })
 
     // chip 有りでも 条件バー wrapper が flex-none を維持する
@@ -1086,10 +1092,10 @@ describe('S2-4: 可変高バー安定性 — chip 有無の対比で構造が不
     expect(thead.className.split(' '), 'chip 無し: thead z-10').toContain('z-10')
 
     // --- sort 適用 → chip 有り状態に遷移 ---
-    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
     fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
     })
 
     // --- chip 有り状態で同一アサーション(可変高でも構造安定) ---
@@ -1127,10 +1133,10 @@ describe('S2-4: JS 高さ制御なし(D-4 flex ネイティブ)', () => {
     expect(scrollContainer.style.height, 'container に inline height が設定されない').toBe('')
 
     // sort 適用でバー高が変わった後も inline height が付与されない
-    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
     fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
     })
     expect(scrollContainer.style.height, 'sort(バー高変化)後も inline height なし').toBe('')
   })

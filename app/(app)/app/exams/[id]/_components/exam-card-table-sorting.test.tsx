@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
-// exam-card-table-sorting unit test (Grid-2 T2)。
-// sorting 機能の 4 case:
+// exam-card-table-sorting unit test (Grid-2 T2 / S3-1)。
+// sorting 機能の 8 case:
 //   1. currentStreak 昇順/降順
 //   2. lastReview ソートで null が末尾
 //   3. lastCorrect ソートで null が末尾
 //   4. tags / select 列がソート不可 (enableSorting: false)
+//   5. title 昇順/降順 (localeCompare 'ja') [S3-1 (a)]
+//   6. sort_key 昇順/降順 + NULLS LAST/FIRST [S3-1 (b)(e)]
+//   7. question 列が getCanSort() === false [S3-1 (c)]
+//   8. 初期連番順 (pre-sort レイヤー回帰防止) [S3-1 (d)]
 
 import { describe, it, expect } from 'vitest'
 import {
@@ -197,5 +201,126 @@ describe('Sorting: tags / select 列は getCanSort() === false', () => {
     const selectCol = result.current.getColumn('select')
     expect(selectCol).toBeDefined()
     expect(selectCol!.getCanSort()).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 5 / (a): title 昇順/降順 (localeCompare 'ja') [S3-1]
+// ---------------------------------------------------------------------------
+
+describe('Sorting: title 昇順/降順 [S3-1 (a)]', () => {
+  // ASCII サンプルで direction を確認。exact collation は pin しない (環境差)。
+  const data = [
+    makeRow('card-b', { title: 'B', sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-a', { title: 'A', sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-c', { title: 'C', sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
+  ]
+
+  it('昇順ソートで A→B→C 順', () => {
+    const ids = getSortedIds(data, [{ id: 'title', desc: false }])
+    expect(ids).toEqual(['card-a', 'card-b', 'card-c'])
+  })
+
+  it('降順ソートで C→B→A 順', () => {
+    const ids = getSortedIds(data, [{ id: 'title', desc: true }])
+    expect(ids).toEqual(['card-c', 'card-b', 'card-a'])
+  })
+
+  it('かな2文字で昇順が正しい向き (あ→い)', () => {
+    const kanaData = [
+      makeRow('card-i', { title: 'い', sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+      makeRow('card-a', { title: 'あ', sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    ]
+    const ids = getSortedIds(kanaData, [{ id: 'title', desc: false }])
+    expect(ids[0]).toBe('card-a') // 'あ' < 'い'
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 6 / (b)(e): sort_key 昇順/降順 + NULLS LAST/FIRST [S3-1]
+// ---------------------------------------------------------------------------
+
+describe('Sorting: sort_key 昇順/降順 + null 位置 [S3-1 (b)(e)]', () => {
+  const data = [
+    makeRow('card-2', { sort_key: '0002', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-null', { sort_key: null, created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-1', { sort_key: '0001', created_at: '2024-01-03T00:00:00.000Z' }),
+  ]
+
+  it('昇順ソートで連番順 (0001→0002→null)', () => {
+    const ids = getSortedIds(data, [{ id: 'sort_key', desc: false }])
+    expect(ids).toEqual(['card-1', 'card-2', 'card-null'])
+  })
+
+  it('昇順ソートで sort_key null が末尾 (NULLS LAST)', () => {
+    const ids = getSortedIds(data, [{ id: 'sort_key', desc: false }])
+    expect(ids[ids.length - 1]).toBe('card-null')
+  })
+
+  // (e): sortLikeServer + TanStack desc 反転 の継承挙動を明示 pin。
+  // "バグ" ではなく意図した挙動 — spec D-2 参照。
+  it('降順ソートで sort_key null が先頭 (inherited desc reversal)', () => {
+    const ids = getSortedIds(data, [{ id: 'sort_key', desc: true }])
+    expect(ids[0]).toBe('card-null')
+  })
+
+  it('降順ソートで非 null 行は 0002→0001 順', () => {
+    const ids = getSortedIds(data, [{ id: 'sort_key', desc: true }])
+    const nonNull = ids.filter((id) => id !== 'card-null')
+    expect(nonNull).toEqual(['card-2', 'card-1'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 7 / (c): question 列が getCanSort() === false [S3-1]
+// ---------------------------------------------------------------------------
+
+describe('Sorting: question 列は getCanSort() === false [S3-1 (c)]', () => {
+  const data = [makeRow('card-1')]
+
+  it('question 列は getCanSort() が false (sort 撤去)', () => {
+    const { result } = renderHook(() =>
+      useReactTable<ExamCardRow>({
+        data,
+        columns: examCardTableColumns,
+        getCoreRowModel: getCoreRowModel(),
+        getSortedRowModel: getSortedRowModel(),
+        state: { sorting: [] },
+        onSortingChange: () => {},
+      }),
+    )
+    const questionCol = result.current.getColumn('question')
+    expect(questionCol).toBeDefined()
+    expect(questionCol!.getCanSort()).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// case 8 / (d): 初期連番順 (pre-sort レイヤー回帰防止) [S3-1]
+// ---------------------------------------------------------------------------
+
+describe('Sorting: 初期連番順 pre-sort レイヤー回帰防止 [S3-1 (d)]', () => {
+  // exam-card-table.tsx の liveData pre-sort (sortLikeServer) により、
+  // テーブルに渡るデータは既に連番順 (sort_key ASC + created_at tiebreak)。
+  // sorting=[] では TanStack がデータ順を変えない = pre-sort 順が保たれる。
+  const preSortedData = [
+    makeRow('card-1', { sort_key: '0001', title: 'C', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-2', { sort_key: '0002', title: 'A', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-3', { sort_key: '0003', title: 'B', created_at: '2024-01-03T00:00:00.000Z' }),
+  ]
+
+  it('sorting=[] では入力データ順 (pre-sort 順) を保持する', () => {
+    const ids = getSortedIds(preSortedData, [])
+    expect(ids).toEqual(['card-1', 'card-2', 'card-3'])
+  })
+
+  it('title ソート適用後に sorting=[] へ戻すと pre-sort 順に復帰する', () => {
+    // title 昇順でソートすると C→A→B のタイトル順 = card-2, card-3, card-1
+    const idsWithSort = getSortedIds(preSortedData, [{ id: 'title', desc: false }])
+    // タイトルソートが効いており、pre-sort 順と異なる
+    expect(idsWithSort).not.toEqual(['card-1', 'card-2', 'card-3'])
+    // sorting=[] へ戻すと pre-sort 順 (連番順) に復帰する
+    const idsAfterClear = getSortedIds(preSortedData, [])
+    expect(idsAfterClear).toEqual(['card-1', 'card-2', 'card-3'])
   })
 })

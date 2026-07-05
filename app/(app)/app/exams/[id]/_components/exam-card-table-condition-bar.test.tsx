@@ -127,8 +127,8 @@ describe('ConditionBar: sort chip ×', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 問題文 昇順 sort を追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    // タイトル 昇順 sort を追加
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
 
@@ -142,17 +142,17 @@ describe('ConditionBar: sort chip ×', () => {
 
     // 2 つの sort chip が出る
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
       expect(screen.getByTestId('condition-chip-sort-lastReview')).toBeInTheDocument()
     })
 
-    // 問題文 sort の × をクリック
-    const questionChip = screen.getByTestId('condition-chip-sort-question')
+    // タイトル sort の × をクリック
+    const questionChip = screen.getByTestId('condition-chip-sort-title')
     fireEvent.click(within(questionChip).getByRole('button', { name: /ソート解除/ }))
 
-    // 問題文 chip が消え、最終回答日時 chip は残る
+    // タイトル chip が消え、最終回答日時 chip は残る
     await waitFor(() => {
-      expect(screen.queryByTestId('condition-chip-sort-question')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('condition-chip-sort-title')).not.toBeInTheDocument()
       expect(screen.getByTestId('condition-chip-sort-lastReview')).toBeInTheDocument()
     })
   })
@@ -170,26 +170,26 @@ describe('ConditionBar: sort chip body click → flip desc', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 問題文 昇順 sort を追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    // タイトル 昇順 sort を追加
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
 
     // ↑ (asc) の chip が出る
     await waitFor(() => {
-      const chip = screen.getByTestId('condition-chip-sort-question')
+      const chip = screen.getByTestId('condition-chip-sort-title')
       expect(chip).toHaveTextContent('↑')
     })
 
     // chip body button (最初の button = flip) をクリックして flip
     // S2b-3: 「並び替え:」プレフィックス削除後は getAllByRole('button')[0] で body を取得
-    const chip = screen.getByTestId('condition-chip-sort-question')
+    const chip = screen.getByTestId('condition-chip-sort-title')
     const [bodyBtn] = within(chip).getAllByRole('button')
     fireEvent.click(bodyBtn)
 
     // ↓ (desc) になる
     await waitFor(() => {
-      const chipAfter = screen.getByTestId('condition-chip-sort-question')
+      const chipAfter = screen.getByTestId('condition-chip-sort-title')
       expect(chipAfter).toHaveTextContent('↓')
     })
   })
@@ -255,7 +255,7 @@ describe('ConditionBar: クリア', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // sort 追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
     await waitFor(() => expect(screen.queryByText('昇順')).not.toBeInTheDocument())
@@ -268,7 +268,7 @@ describe('ConditionBar: クリア', () => {
     })
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
       expect(screen.getByTestId('condition-chip-filter-lastCorrect')).toBeInTheDocument()
     })
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -373,37 +373,37 @@ describe('ConditionBar: hidden 列の条件可視', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 問題文 列に sort を追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    // タイトル 列に sort を追加
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
     await waitFor(() => expect(screen.queryByText('昇順')).not.toBeInTheDocument())
 
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
     })
 
-    // 列トグルを開いて 問題文 を非表示にする
+    // 列トグルを開いて タイトル を非表示にする
     fireEvent.click(screen.getByLabelText('列の表示・非表示'))
-    await waitFor(() => expect(screen.getByLabelText('列表示: 問題文')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('列表示: 問題文'))
+    await waitFor(() => expect(screen.getByLabelText('列表示: タイトル')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('列表示: タイトル'))
     // popover を閉じる
     fireEvent.keyDown(document, { key: 'Escape' })
 
-    // 問題文 ヘッダー (menu trigger) が消える
+    // タイトル ヘッダー (menu trigger) が消える
     await waitFor(() => {
-      expect(screen.queryByLabelText('問題文 の列メニュー')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('タイトル の列メニュー')).not.toBeInTheDocument()
     })
 
     // 条件バーの sort chip は残存する (hidden でも条件は可視)
-    expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+    expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
 
     // chip × クリック → sort 解除 + bar 消滅
-    const chip = screen.getByTestId('condition-chip-sort-question')
+    const chip = screen.getByTestId('condition-chip-sort-title')
     fireEvent.click(within(chip).getByRole('button', { name: /ソート解除/ }))
 
     await waitFor(() => {
-      expect(screen.queryByTestId('condition-chip-sort-question')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('condition-chip-sort-title')).not.toBeInTheDocument()
       expect(screen.queryByText('クリア')).not.toBeInTheDocument()
     })
   })
@@ -471,11 +471,11 @@ describe('ConditionBar S2b-3: 2 ゾーン + separator', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // sort を追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
 
-    await waitFor(() => expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument())
 
     // separator は存在しない(sort のみ)
     expect(screen.queryByTestId('zone-separator')).not.toBeInTheDocument()
@@ -516,7 +516,7 @@ describe('ConditionBar S2b-3: 2 ゾーン + separator', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // sort 追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
     await waitFor(() => expect(screen.queryByText('昇順')).not.toBeInTheDocument())
@@ -528,7 +528,7 @@ describe('ConditionBar S2b-3: 2 ゾーン + separator', () => {
       target: { value: 'correct' },
     })
     await waitFor(() => {
-      expect(screen.getByTestId('condition-chip-sort-question')).toBeInTheDocument()
+      expect(screen.getByTestId('condition-chip-sort-title')).toBeInTheDocument()
       expect(screen.getByTestId('condition-chip-filter-lastCorrect')).toBeInTheDocument()
       expect(screen.getByTestId('zone-separator')).toBeInTheDocument()
     })
@@ -536,7 +536,7 @@ describe('ConditionBar S2b-3: 2 ゾーン + separator', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     // DOM 順序: sort chip → separator → filter chip
-    const sortChip = screen.getByTestId('condition-chip-sort-question')
+    const sortChip = screen.getByTestId('condition-chip-sort-title')
     const separator = screen.getByTestId('zone-separator')
     const filterChip = screen.getByTestId('condition-chip-filter-lastCorrect')
 
@@ -559,16 +559,16 @@ describe('ConditionBar S2b-3: sort chip プレフィックス無し', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // 問題文 昇順 sort を追加
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    // タイトル 昇順 sort を追加
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
 
     await waitFor(() => {
-      const chip = screen.getByTestId('condition-chip-sort-question')
-      // プレフィックスなし: 「問題文 ↑」のみ含む
+      const chip = screen.getByTestId('condition-chip-sort-title')
+      // プレフィックスなし: 「タイトル ↑」のみ含む
       expect(chip).not.toHaveTextContent('並び替え:')
-      expect(chip).toHaveTextContent('問題文 ↑')
+      expect(chip).toHaveTextContent('タイトル ↑')
     })
   })
 })
@@ -862,7 +862,7 @@ describe('ConditionBar S2b-3: クリア文言', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // sort を追加してボタン出現確認
-    fireEvent.click(screen.getByLabelText('問題文 の列メニュー'))
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
     await waitFor(() => expect(screen.getByText('昇順')).toBeInTheDocument())
     fireEvent.click(screen.getByText('昇順'))
 
