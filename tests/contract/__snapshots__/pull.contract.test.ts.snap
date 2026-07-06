@@ -1,0 +1,151 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`GET /api/pull — wire contract > 401: unauthenticated + Cache-Control: no-store 1`] = `
+{
+  "error": "unauthenticated",
+}
+`;
+
+exports[`GET /api/pull — wire contract > 500: DB error after auth + Cache-Control: no-store 1`] = `
+{
+  "error": "internal",
+}
+`;
+
+exports[`GET /api/pull — wire contract > 500: unexpected auth error + Cache-Control: no-store 1`] = `
+{
+  "error": "internal",
+}
+`;
+
+exports[`GET /api/pull — wire contract > happy path: 6 stream keys + cursor asymmetry + Cache-Control: no-store 1`] = `
+{
+  "card_tags": [
+    {
+      "card_id": "card-1",
+      "created_at": "2026-06-05T00:00:00.000Z",
+      "option_id": "opt-1",
+      "user_id": "11111111-1111-4111-a111-111111111111",
+    },
+  ],
+  "cards": [
+    {
+      "answered": false,
+      "content_version": 0,
+      "correct_answer_ids": [],
+      "created_at": "2026-05-01T00:00:00.000Z",
+      "current_streak": 0,
+      "difficulty": 0,
+      "due": "2026-05-26T10:00:00.000Z",
+      "elapsed_days": 0,
+      "exam_id": "exam-1",
+      "explanation_text": null,
+      "id": "card-1",
+      "images": [],
+      "lapses": 0,
+      "last_correct": null,
+      "last_review": null,
+      "learning_steps": 0,
+      "memo": null,
+      "options": [],
+      "question_text": "Q",
+      "reps": 0,
+      "scheduled_days": 0,
+      "sort_key": null,
+      "source_document_id": null,
+      "stability": 0,
+      "state": 0,
+      "sync_status": "synced",
+      "title": "Q1",
+      "updated_at": "2026-06-01T00:00:00.000Z",
+      "user_id": "11111111-1111-4111-a111-111111111111",
+    },
+  ],
+  "cursors": {
+    "card_tags": "2026-06-05T00:00:00.000Z",
+    "cards": "2026-06-01T00:00:00.000Z",
+    "exams": "2026-06-02T00:00:00.000Z",
+    "tag_categories": "2026-06-03T00:00:00.000Z",
+    "tag_options": "2026-06-04T00:00:00.000Z",
+    "tombstone": "2026-05-10T04:00:00.000Z",
+  },
+  "exams": [
+    {
+      "archived_at": null,
+      "card_count": 0,
+      "content_version": 0,
+      "created_at": "2026-05-01T00:00:00.000Z",
+      "id": "exam-1",
+      "name": "Test Exam",
+      "question_no_format": null,
+      "updated_at": "2026-06-02T00:00:00.000Z",
+      "user_id": "11111111-1111-4111-a111-111111111111",
+    },
+  ],
+  "tag_categories": [
+    {
+      "color": null,
+      "created_at": "2026-05-01T00:00:00.000Z",
+      "id": "cat-1",
+      "name": "Category 1",
+      "select_type": "single",
+      "sort_key": null,
+      "updated_at": "2026-06-03T00:00:00.000Z",
+      "user_id": "11111111-1111-4111-a111-111111111111",
+    },
+  ],
+  "tag_options": [
+    {
+      "category_id": "cat-1",
+      "color": null,
+      "created_at": "2026-05-01T00:00:00.000Z",
+      "id": "opt-1",
+      "name": "Option 1",
+      "sort_key": null,
+      "updated_at": "2026-06-04T00:00:00.000Z",
+      "user_id": "11111111-1111-4111-a111-111111111111",
+    },
+  ],
+  "tombstones": [
+    {
+      "deleted_at": "2026-05-10T01:00:00.000Z",
+      "entity_id": "exam-deleted-1",
+      "entity_type": "exam",
+    },
+    {
+      "deleted_at": "2026-05-10T02:00:00.000Z",
+      "entity_id": "card-deleted-1",
+      "entity_type": "card",
+    },
+    {
+      "deleted_at": "2026-05-10T03:00:00.000Z",
+      "entity_id": "cat-deleted-1",
+      "entity_type": "tag_category",
+    },
+    {
+      "deleted_at": "2026-05-10T04:00:00.000Z",
+      "entity_id": "opt-deleted-1",
+      "entity_type": "tag_option",
+    },
+  ],
+}
+`;
+
+exports[`GET /api/pull — wire contract > 未同期 (user=null): 200 + empty body + Cache-Control: no-store 1`] = `
+{
+  "card_tags": [],
+  "cards": [],
+  "cursors": {
+    "card_tags": null,
+    "cards": null,
+    "exams": null,
+    "tag_categories": null,
+    "tag_options": null,
+    "tombstone": null,
+  },
+  "exams": [],
+  "tag_categories": [],
+  "tag_options": [],
+  "tombstones": [],
+}
+`;
