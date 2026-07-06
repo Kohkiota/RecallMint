@@ -34,7 +34,7 @@
 
 - [ ] **目的**: contract test 共通の入力生成と非決定値固定を tests/fixtures/ に集約。
 - **Files:** Create `tests/fixtures/`(makeReq / fake-tx builder / payload・event factory / clock・id stub / 限定 serializer mask)。Modify `package.json`(`test:contract` script)。
-- **制約**: 既存 route test の fake-tx / delta mock パターンを移植(新規発明しない)。clock = `vi.setSystemTime`(`Date.now()` 含む)、id = `crypto.randomUUID`/`lib/sync/new-id` 決定論 stub、DB returning 値も fixture 固定。serializer マスクは最後の手段・個別 field 限定。route の signature/実装は変更しない。
+- **制約**: 既存 route test の fake-tx / delta mock パターンを移植(新規発明しない)。**共通基盤は薄く**(Request/clock/id のみ)、fake DB は route 別 builder(全部を 1 fake DB に寄せない — route 固有の fake DB 形を隠さない)。非決定源は `Date.now`/UUID/DB returning に**加えて**明示: `performance.now()`(review-events timing log)/ Stripe・Svix 署名 timestamp / logger・notifyOps payload timestamp / DB ``sql`now()`` 。clock = `vi.setSystemTime`(`Date.now()` 含む)、id = `crypto.randomUUID`/`lib/sync/new-id` 決定論 stub。**timing・ops payload 系は契約でないため snapshot 対象外 or 個別固定(焼かない)**。serializer マスクは最後の手段・個別 field 限定。route の signature/実装は変更しない。
 - **完了条件**: fixtures が import 可能。決定論が trivial な安定 snapshot 1 本で実証(2 回連続 run で同一)。`test:contract` script が `tests/contract/` のみ実行。commit。
 
 ### Task 2: `/api/pull` contract + .snap
@@ -48,34 +48,34 @@
 
 - [ ] **目的**: mutation envelope の応答 + 捕捉 DB mutation + 全 error code + 200-failed 意味論を固定。
 - **Files:** Create `tests/contract/entity-mutations-bulk.contract.test.ts` + `.snap`。
-- **制約**: 固定対象 = spec §3.2 entity-mutations 行。全 error code(unauthenticated/user_not_synced/invalid_json/invalid_payload/**duplicate_mutation_id**/503)。200-failed(unknown entity/op・invalid patch)。skipLog delete(INSERT なし・applied 計上)。op inventory を作り代表 op + skipLog + invalid-patch failed + cascade serial fallback を固定。fake tx は抽出値のみ固定(SQL object 全体を焼かない)。
+- **制約**: 固定対象 = spec §3.2 entity-mutations 行。全 error code(unauthenticated/user_not_synced/invalid_json/invalid_payload/**duplicate_mutation_id**/503)。**503 は `Retry-After` header も固定**。200-failed(unknown entity/op・invalid patch)。skipLog delete(INSERT なし・applied 計上)。**op inventory は `card` だけでなく `tag_category`/`tag_option` 含む全 op 系統(現 HEAD registry)に拡張**し、代表 op + skipLog + invalid-patch failed + cascade serial fallback を固定。**inventory と実 registry の突合が外れたら test red**(card だけ固定して tag 系が後続 DDD で壊れる穴を防ぐ)。fake tx は抽出値のみ固定(SQL object 全体を焼かない)。
 - **完了条件**: `test:contract` green。上記 error code・意味論が .snap に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
 
 ### Task 4: `review-events/bulk` contract + .snap
 
 - [ ] **目的**: `{ok,failed}` + 捕捉 DB 書込(sessionUpsert/answerEvent/reviews/studyDays)+ rating derive 契約を固定。
 - **Files:** Create `tests/contract/review-events-bulk.contract.test.ts` + `.snap`。
-- **制約**: 固定対象 = spec §3.2 review-events 行。rating derive 同時固定 = answer_events に rating 出ない / reviews.rating・study_days.correct_count は deriveRating 由来 / **correct_count は rating>=2**(FSRS rating ありケースを golden に含む)。fake tx 抽出値のみ。
-- **完了条件**: `test:contract` green。rating>=2 ケースと全 error code が .snap に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
+- **制約**: 固定対象 = spec §3.2 review-events 行。response は `{ok,failed}` のみゆえ**副作用 snapshot が主契約**。rating derive 同時固定 = answer_events に rating 出ない / reviews.rating・study_days.correct_count は deriveRating 由来 / **correct_count は rating>=2**(FSRS rating ありケースを golden に含む)。**branch 網羅**: duplicate event skip / orphan → failed[] / session upsert 失敗 / tx rollback で applicable events が failed になる面 / **503 + `Retry-After`**。fake tx 抽出値のみ。
+- **完了条件**: `test:contract` green。rating>=2 ケース + 上記 branch(duplicate skip / orphan failed / rollback failed / 503+Retry-After)が .snap に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
 
 ### Task 5: upload result union contract + .snap
 
 - [ ] **目的**: `ProcessUploadResult` union 形 + 11 error code + revalidatePath 常時発火を targeted に固定(full pipeline 実行しない)。
 - **Files:** Create `tests/contract/upload-result.contract.test.ts` + `.snap`。
-- **制約**: 固定対象 = spec §3.2 upload 行。advisory lock/AI 呼出/DB pipeline は走らせない。`revalidatePath('/app/upload')` と `'/app'` が finally で error path 含め常時発火することを固定。非決定値(Date.now・DB default id・sourceDocumentId・ops timestamp)は fixture 固定。
-- **完了条件**: `test:contract` green。11 error code + success union + revalidate 2 発火が .snap/assert に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
+- **制約**: 固定対象 = spec §3.2 upload 行。advisory lock/AI 呼出/DB pipeline は走らせない。`revalidatePath('/app/upload')` と `'/app'` が finally で error path 含め常時発火することを固定。**`ProcessUploadResult` union の success data shape も固定**。**同一 code 複数分岐**(`INVALID_INPUT`/`SAVE_FAILED` 等の user-facing 文言差)は**代表分岐 + 文言を明示選定**して固定し、どこまで焼くかを baseline §A/§B に記録。**`markFailed`/ops 通知の error path 副作用も対象**。非決定値(Date.now・DB default id・sourceDocumentId・ops timestamp)は fixture 固定。
+- **完了条件**: `test:contract` green。11 error code + success union(data shape 含む)+ revalidate 2 発火 + markFailed/ops error path が .snap/assert に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
 
 ### Task 6: webhook(stripe/clerk)contract + .snap
 
 - [ ] **目的**: text response + status + 捕捉 DB mutation + 「error でも 200」面 + stripe status matrix + clerk 10 テーブル DELETE を固定。
 - **Files:** Create `tests/contract/webhook-stripe.contract.test.ts` / `tests/contract/webhook-clerk.contract.test.ts` + `.snap`。
-- **制約**: 固定対象 = spec §3.2 webhook 行。stripe = active/trialing・past_due・unpaid/incomplete(status=past_due だが plan=free)・canceled 系・不明 price_id fallback を inventory 化。clerk = user.created+publicMetadata sync / user.deleted の soft delete + 10 子テーブル DELETE 全数。error でも 200(duplicate/handler error swallowed/unknown ok/invalid signature)。既存 fake-tx 素材再利用。
-- **完了条件**: `test:contract` green。上記代表面が .snap に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
+- **制約**: 固定対象 = spec §3.2 webhook 行。stripe status matrix = active/trialing・past_due・unpaid/incomplete(status=past_due だが plan=free)・canceled 系・不明 price_id fallback を inventory 化。**status matrix に追加 event を固定**: `checkout.session.completed`(subscription retrieve)/ `invoice.payment_failed` / `subscription_schedule.released` / unknown event no-op。clerk = user.created+publicMetadata sync / user.deleted の soft delete + 10 子テーブル DELETE 全数。**【correctness】invalid signature は Stripe/Clerk とも 400。「error でも 200」群と明確に分離する**(= 200 群 = duplicate / handler error swallowed / unknown・unsupported ok。invalid signature を 200 群に含めない)。既存 fake-tx 素材再利用。
+- **完了条件**: `test:contract` green。**invalid signature が 400 として 200 群と分離**して現れる + 追加 stripe event(checkout.session.completed/invoice.payment_failed/subscription_schedule.released/unknown no-op)+ 上記代表面が .snap に現れる。.snap commit(§A SHA 参照)。canonical+Codex review pass。
 
 ### Task 7: import 境界 lint(allowlist)
 
 - [ ] **目的**: lib/components→@/app と app 内の深い相対 import を検出、既知 4 件を allowlist。
-- **Files:** Modify `eslint.config.mjs`。Create pattern 検証 test(`tests/contract/` or lib test)。
+- **Files:** Modify `eslint.config.mjs`。Create pattern 検証 test = **ESLint RuleTester または CLI smoke**(`tests/contract/` に混ぜない — contract snapshot script と lint 検証の責務を分離)。
 - **制約**: 標準 `no-restricted-imports`(新規依存なし)。禁止 = `lib/**`・`components/**` → `@/app/*|**`、`app/**` → `../../../*`(**4 段以上も拾う**)。allowlist per-file override(禁止ブロックの後方)= get-custom-session-cards.ts / contact-form.tsx / exam-detail-view.tsx / upload result page.tsx。app 2 パスは `\\(app\\)` `\\[id\\]` `\\[sourceDocumentId\\]` escape 必須。app 内横断 import は P0 対象外(P3 送り・§B 記録)。
 - **完了条件**: whole-repo `pnpm lint --max-warnings=0` exit 0。pattern test で 4 段以上・escape が効くことを検証。per-file off 副作用は §B に記録(T9)。commit。
 
@@ -83,7 +83,7 @@
 
 - [ ] **目的**: 完全 dead + stale コメントのみ除去。掃討で golden が赤 → dead 判定撤回が commit 単位で見えるように。
 - **Files:** Delete `components/ui/dropdown-menu.tsx`。Modify `app/(app)/app/tags/_components/option-row.tsx`(コメント 2 箇所)/ `lib/db/schema.ts:1`(13→21)/ `lib/cards/replay-card.ts`(dangling `submit-review-tx.ts` を実対向 review-events route へ)+ `replay-card.test.ts`。
-- **制約**: T2-T6 の contract green 確認**後**の独立 commit。dropdown-menu 削除条件 = import ゼロ + barrel/re-export なし + shadcn 再生成対象でない + docs 参照なし。Tier 2/3 は触らない(owning phase / P3)。
+- **制約**: T2-T6 の contract green 確認**後**の独立 commit。dropdown-menu 削除条件 = **live code import ゼロ + barrel/re-export なし + shadcn 再生成対象でない**(「docs 参照なし」は条件から除外 — 現 HEAD の docs 参照は全て歴史ログ〔session/audit/plan〕で live 参照でないため削除阻害としない)。Tier 2/3 は触らない(owning phase / P3)。
 - **完了条件**: 削除後 `test:contract` + `pnpm test` green(赤なら dead 判定撤回し §A/§B に記録)。`pnpm lint`/`typecheck` exit 0。独立 commit。canonical review(コード削除のため)+ Codex。
 
 ### Task 9: baseline §B + smoke checklist(deliverable docs)
@@ -98,7 +98,7 @@
 - [ ] **目的**: whole-repo gate 通過と SSoT 状態更新で P0 を締める。
 - **Files:** Modify `docs/plans/2026-07-06-ddd-refactor-design-decisions.md`(P0 状態 → 完了 + HEAD SHA + 再スキャン記録)。
 - **制約**: 条件 B(状態更新は該当 commit で CC)。全 feat/fix commit に [reviewed] tag 確認。
-- **完了条件**: whole-repo `pnpm lint --max-warnings=0` / `pnpm typecheck` / `pnpm test`(contract 含む)exit 0。T0 の bug handoff 分岐が発火した場合は OT 判断が付いていること。SSoT P0 状態 = 完了 + SHA。commit。stop checkpoint 報告で停止(OT push 待ち)。
+- **完了条件**: whole-repo `pnpm lint --max-warnings=0` / `pnpm typecheck` / `pnpm test` / **`pnpm test:contract`(明示。Vitest default include の `tests/contract` 拾いに依存しない)** 全 exit 0。T0 の bug handoff 分岐が発火した場合は OT 判断が付いていること。SSoT P0 状態 = 完了 + SHA。commit。stop checkpoint 報告で停止(OT push 待ち)。
 
 ---
 
