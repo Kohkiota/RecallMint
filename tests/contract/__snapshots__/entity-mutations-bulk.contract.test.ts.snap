@@ -1,0 +1,177 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 200-failed: invalid patch (card.create missing exam_id) → failed[] + HTTP 200, no INSERT 1`] = `
+{
+  "applied": 0,
+  "failed": [
+    "55555555-5555-4555-a555-555555555555",
+  ],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 200-failed: invalid patch (tag_category.update_field disallowed field) → failed[] + HTTP 200 1`] = `
+{
+  "applied": 0,
+  "failed": [
+    "55555555-5555-4555-a555-555555555555",
+  ],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 200-failed: unknown entity_type → failed[] + HTTP 200 (not 400) 1`] = `
+{
+  "applied": 0,
+  "failed": [
+    "55555555-5555-4555-a555-555555555555",
+  ],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 200-failed: unknown op for known entity_type → failed[] + HTTP 200 1`] = `
+{
+  "applied": 0,
+  "failed": [
+    "55555555-5555-4555-a555-555555555555",
+  ],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 400 duplicate_mutation_id: same mutation_id appears twice in one batch 1`] = `
+{
+  "error": "duplicate_mutation_id",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 400 invalid_json: malformed JSON body 1`] = `
+{
+  "error": "invalid_json",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 400 invalid_payload: mutation_id fails UUID validation (envelope zod) 1`] = `"invalid_payload"`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 401 unauthenticated: getCurrentUser throws UnauthenticatedError 1`] = `
+{
+  "error": "unauthenticated",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 401 user_not_synced: getCurrentUser resolves null (Clerk session present, users row absent) 1`] = `
+{
+  "error": "user_not_synced",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > 503 transient_unavailable: envelope-level DB error → Retry-After: 30 1`] = `
+{
+  "error": "transient_unavailable",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > card.update_field happy path: envelope + extracted DB mutation INSERT values 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > card.update_field happy path: envelope + extracted DB mutation INSERT values 2`] = `
+{
+  "appliedAtPresent": true,
+  "editedAt": "2026-05-30T10:00:00.000Z",
+  "entityId": "44444444-4444-4444-a444-444444444444",
+  "entityType": "card",
+  "mutationId": "55555555-5555-4555-a555-555555555555",
+  "op": "update_field",
+  "patch": {
+    "field": "title",
+    "value": "Hello",
+  },
+  "userId": "11111111-1111-4111-a111-111111111111",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > cascade serial fallback: card.create in batch → serial path, Promise.allSettled NOT called 1`] = `
+{
+  "applied": 2,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > skipLog: card.delete → applied:1 in envelope, NO entity_mutations INSERT 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > skipLog: tag_category.delete → applied:1, NO entity_mutations INSERT 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > skipLog: tag_option.delete → applied:1, NO entity_mutations INSERT 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > tag_category.update_field: applied:1 + entity_mutations INSERT (extracted values) 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > tag_category.update_field: applied:1 + entity_mutations INSERT (extracted values) 2`] = `
+{
+  "appliedAtPresent": true,
+  "editedAt": "2026-05-30T10:00:00.000Z",
+  "entityId": "cccccccc-cccc-4ccc-accc-cccccccccccc",
+  "entityType": "tag_category",
+  "mutationId": "55555555-5555-4555-a555-555555555555",
+  "op": "update_field",
+  "patch": {
+    "field": "name",
+    "value": "Updated Category",
+  },
+  "userId": "11111111-1111-4111-a111-111111111111",
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > tag_option.create: applied:1 + entity_mutations INSERT (extracted values) 1`] = `
+{
+  "applied": 1,
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/entity-mutations/bulk — wire contract > tag_option.create: applied:1 + entity_mutations INSERT (extracted values) 2`] = `
+{
+  "appliedAtPresent": true,
+  "editedAt": "2026-05-30T10:00:00.000Z",
+  "entityId": "dddddddd-dddd-4ddd-addd-dddddddddddd",
+  "entityType": "tag_option",
+  "mutationId": "55555555-5555-4555-a555-555555555555",
+  "op": "create",
+  "patch": {
+    "category_id": "cccccccc-cccc-4ccc-accc-cccccccccccc",
+    "name": "New Option",
+  },
+  "userId": "11111111-1111-4111-a111-111111111111",
+}
+`;
