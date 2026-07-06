@@ -79,6 +79,7 @@ import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { ConditionBar } from './exam-card-table-condition-bar'
 import { cardTableFilterEditors } from './exam-card-table-filter-editors'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
+import { ExamCardSidePeek } from './exam-card-side-peek'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
 import { useBulkCardDelete } from '../_hooks/use-bulk-card-delete'
@@ -279,6 +280,16 @@ export function ExamCardTable({
   // T3: columnSizing は非永続 (examViewPrefs / sync_meta に書かない、 リロードで初期化)。
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
 
+  // side peek: 現在 open 中のカード id。rowSelection と用途直交・examViewPrefs 非永続。
+  const [activeCardId, setActiveCardId] = useState<string | null>(null)
+  // 同一 id 再 click で close(toggle)、別 id click で切替。
+  const openCard = useCallback(
+    (id: string) => setActiveCardId((prev) => (prev === id ? null : id)),
+    [],
+  )
+  // peek 閉じる。毎 render で新しい arrow を作らないよう安定化(ExamCardSidePeek に渡す)。
+  const handleClosePeek = useCallback(() => setActiveCardId(null), [])
+
   // S2b-1: 中間帯 collapse 状態。初期 false — remount 時は常に false から再出発。
   const [collapsed, setCollapsed] = useState(false)
   // ref で最新値を保持(rAF callback の stale closure 防止)。
@@ -320,6 +331,25 @@ export function ExamCardTable({
     const { filteredCards, categories, options, cardTags } = liveData
     return joinCardTags(filteredCards, cardTags, categories, options)
   }, [liveData])
+
+  // activeRow: columnFilters 非依存で data 全件から引く(spec §3.4)。
+  // activeCardId が null の場合は null を返す(peek 非表示)。
+  const activeRow = activeCardId ? data.find((r) => r.card.id === activeCardId) ?? null : null
+
+  // activeCardTags: liveData から activeCardId のタグのみ絞り込む。
+  const activeCardTags = useMemo(
+    () =>
+      activeCardId && liveData
+        ? liveData.cardTags.filter((ct) => ct.card_id === activeCardId)
+        : [],
+    [liveData, activeCardId],
+  )
+
+  // prune: data からカードが消えた時(削除・exam 移動)のみ close。
+  // columnFilters で行が非表示になっても data は全件のため prune しない(spec §3.6)。
+  useEffect(() => {
+    if (activeCardId !== null && activeRow === null) setActiveCardId(null)
+  }, [activeCardId, activeRow])
 
   // Grid-1 T6: useCardTagToggle を table レベルで 1 回 instantiate (OT 制約 2)。
   // getCardContext は liveData から card ごとの context を返す getter pattern (OT 制約 1:
@@ -446,6 +476,8 @@ export function ExamCardTable({
       tagEditCallbacks,
       categories: liveData?.categories ?? [],
       options: liveData?.options ?? [],
+      activeCardId,
+      openCard,
     } satisfies ExamCardTableMeta,
   })
 
@@ -815,6 +847,16 @@ export function ExamCardTable({
           <ChevronUp />
         </Button>
       )}
+      {/* side peek: Portal 経由で fixed overlay 描画。DOM 位置は root 末尾(スクロールコンテナ外)。
+          ActionBar(z-40) より上・popover/dialog 帯(z-50) より下 = z-[45](spec §3.8)。 */}
+      <ExamCardSidePeek
+        row={activeRow}
+        cardTags={activeCardTags}
+        categories={liveData?.categories ?? []}
+        options={liveData?.options ?? []}
+        userId={userId}
+        onClose={handleClosePeek}
+      />
     </div>
   )
 }
