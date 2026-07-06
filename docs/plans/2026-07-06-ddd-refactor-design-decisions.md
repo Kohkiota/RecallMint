@@ -49,7 +49,7 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 
 | Phase | 内容(1 行) | 状態 | 完了時 HEAD | 再スキャン記録 |
 |---|---|---|---|---|
-| P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | 未着手 | — | — |
+| P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | spec 起草中 | — | spec: docs/superpowers/specs/2026-07-06-ddd-p0-safety-net-design.md |
 | P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | 未着手 | — | — |
 | P2 | server 側 use-case 化(review-events route → webhooks 2 本 → process.ts 分解) | 未着手 | — | — |
 | P3 | client 側 use-case 化(タグ CRUD 移設 / card write 集約 / side peek 複製解消 / runOptimistic* 昇格 / inline primitive 統合) | 未着手 | — | — |
@@ -74,6 +74,8 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 | N-2 | **outbox 2 系統(entity_mutations ⇄ answer_events)の統合** | **defer**。価値小: review 系のみ retry controller / pullBack hook / session grouping を持つ非対称(検証済)で、統合は大改修の割に得るものが薄い。将来 3 系統目が必要になった時に再評価。 |
 | N-3 | **pull の完全 generic 化(PullResponse 型そのものの wire generic 化)** | server 内 factory 化(wire に出ない範囲)は **P4 で in scope**。wire generic 化は残り 2 割の**任意 consider** — P4 spec 起草時に費用対効果を見て判断し、採らない場合は理由を P4 spec に記す。 |
 | N-4 | **Dexie schema の再設計(store 分割・index 全面見直し等)** | **別 sprint**。DDD 層再編と直交する関心。D-6 により移行コスト自体は低いが、混ぜると bisect 可能性と review 粒度を壊す。本リファクタ中の Dexie 変更は「抽出に必要な最小限 + 別 commit 隔離」のみ。 |
+
+**dead code の Tier 分散(P0 spec 由来・2026-07-06)**: audit §4.3 の dead リストは「P0 で全消し」ではなく phase 分散に変更(現 HEAD 再スキャンで多くが「本体は内部利用で生存・export だけ test 専用」型 or 型連鎖の設計変更と判明)。Tier 1(完全 dead + stale コメント)= P0 / Tier 2(export-only-dead: isUpgrade・newCard・buildNewOption・jstMonthBoundsUtc・scheduler)= owning phase / Tier 3(onOpenEdit・createOptionAndAssignPlaceholder)= P3。詳細表 = P0 spec §6。後 phase での「掃討し忘れ」誤認防止のための記録。
 | N-5 | **client 側 repository 層の新設**(= D-1 の裏面) | **唯一の pragmatic 判断点として明示**。教科書的 DDD なら repository を置く場面だが、Dexie mirror + outbox + flush は application transaction であり、隠蔽すると coalesce / rollback / pull-back の同期挙動が不可視化する(audit §5.3、Codex 指摘 3)。`runOptimistic*` の application service 昇格で代替する。 |
 
 ---
@@ -82,3 +84,4 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 
 - 2026-07-06: 初版(OT 確定判断 D-1〜D-6 / phase 表初期化 / やらない 4+1)。
 - 2026-07-06: D-6 に Dexie 隔離対象の明確化(形の変化に限定)、進捗表に状態更新の責任者・タイミングを追記。
+- 2026-07-06: P0 spec 起草開始(状態 → spec 起草中)。dead code Tier 分散を §3 に記録(P0 spec §6 詳細)。
