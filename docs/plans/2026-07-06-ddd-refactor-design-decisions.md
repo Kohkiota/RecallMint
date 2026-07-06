@@ -49,7 +49,7 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 
 | Phase | 内容(1 行) | 状態 | 完了時 HEAD | 再スキャン記録 |
 |---|---|---|---|---|
-| P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | spec 起草中 | — | spec: docs/superpowers/specs/2026-07-06-ddd-p0-safety-net-design.md |
+| P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | spec 起草中(plan ドラフト・Codex/OT 待ち) | — | spec + plan: docs/superpowers/{specs/2026-07-06-ddd-p0-safety-net-design.md, plans/2026-07-06-ddd-p0-safety-net.md} |
 | P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | 未着手 | — | — |
 | P2 | server 側 use-case 化(review-events route → webhooks 2 本 → process.ts 分解) | 未着手 | — | — |
 | P3 | client 側 use-case 化(タグ CRUD 移設 / card write 集約 / side peek 複製解消 / runOptimistic* 昇格 / inline primitive 統合) | 未着手 | — | — |
