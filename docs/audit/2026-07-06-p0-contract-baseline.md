@@ -46,3 +46,356 @@
 5. **#5 は client/server 対称値(乖離なし)を DDD リスクマーカーとして例外収録。** 厳密には server↔client 乖離ではないが、tombstone `entity_type` union は DDD の entity 移動で壊れやすいため、代表 tombstone に全 4 種を含めて golden 固定する目的で §A に載せた(T9 §B の「DDD 移動リスク contract 値」inventory へ引き継ぐ)。
 
 6. **pull の stream key `tombstones`(複数)/ cursor key `tombstone`(単数)の命名非対称**(route `app/api/pull/route.ts:59,63` data=`tombstones` / `:92,101` cursor=`tombstone`。client `lib/sync/pull.ts:45,56` も同名で一貫 = 真の乖離ではない)。#3 の cursor 記述は value 非対称(card_tags=maxCreatedAt)に着目しており本 key name 非対称は別物。golden は実 JSON を自動捕捉するため実害なしだが、T9 §B / golden 手書き時に `cursors.tombstones` と誤記しないよう明記。
+
+---
+
+## §B 凍結契約 inventory
+
+> T9 追記 (2026-07-06)。§A で分類した intentional 面をもとに、P0 golden テスト (T2〜T6) が凍結した契約を人間可読形式でまとめる。本 §B の記述は現 HEAD 実読で裏取り済。file:line はすべて HEAD の実値。
+
+---
+
+### (i) 凍結契約 inventory
+
+§A の intentional 判定を受けて各 face の error code / HTTP status / response shape を索引化する。各 face の golden snapshot test (`tests/contract/*.contract.test.ts`) が変更されない限り、以下の値は変更禁止。
+
+---
+
+#### pull — `app/api/pull/route.ts` / `tests/contract/pull.contract.test.ts`
+
+**error codes & HTTP statuses**
+
+| code (JSON `error` field) | status | trigger |
+|---|---|---|
+| `unauthenticated` | 401 | `UnauthenticatedError` thrown (route.ts:44) |
+| `internal` | 500 | unexpected error after auth (route.ts:47, 111) |
+| (empty body — code なし) | 200 | `getCurrentUser` returns null (Clerk session valid, users 行未 sync) |
+
+**response shape (happy path 200)**
+
+```
+{
+  cards: ClientCard[],
+  exams: ClientExam[],
+  tombstones: ClientTombstone[],
+  tag_categories: ClientTagCategory[],
+  tag_options: ClientTagOption[],
+  card_tags: ClientCardTag[],
+  cursors: {
+    cards: ISO | null,
+    exams: ISO | null,
+    tombstone: ISO | null,   // key = singular (§A #6)
+    tag_categories: ISO | null,
+    tag_options: ISO | null,
+    card_tags: ISO | null    // value = maxCreatedAt (§A #3)
+  }
+}
+```
+
+**常時凍結**: 全レスポンスに `Cache-Control: no-store` ヘッダ (pull.contract.test.ts で hard assert)。
+
+**未同期 200 empty body** (§A #12): 全 6 配列が `[]`、全 6 cursor が `null`(tombstone cursor key も singular)。
+
+---
+
+#### entity-mutations/bulk — `app/api/entity-mutations/bulk/route.ts` / `tests/contract/entity-mutations-bulk.contract.test.ts`
+
+**error codes & HTTP statuses**
+
+| code | status | notes |
+|---|---|---|
+| `unauthenticated` | 401 | route.ts:180 |
+| `user_not_synced` | 401 | route.ts:187 |
+| `invalid_json` | 400 | route.ts:195 |
+| `invalid_payload` | 400 | route.ts:211 |
+| `duplicate_mutation_id` | 400 | route.ts:206; `Retry-After` ヘッダなし(permanent error) |
+| `transient_unavailable` | 503 | route.ts:343; `Retry-After: '30'` ヘッダ必須 |
+
+**200-failed semantics** (§A #9): unknown entity_type / op / invalid patch は per-mutation `failed[]` + HTTP 200(envelope 400 ではない)。
+
+```json
+{ "ok": true, "applied": 0, "failed": ["<mutation_id>"] }
+```
+
+**skipLog delete** (§A #10): `card.delete` / `tag_category.delete` / `tag_option.delete` は `applied` カウント + `entity_mutations` テーブルへの INSERT なし。
+
+**success response shape**: `{ "ok": true, "applied": N, "failed": [] }`
+
+**op inventory** (9 pairs, `lib/sync/server/entity-mutation-registry.ts`):
+
+| entity_type | op | skipLog | cascadeLike |
+|---|---|---|---|
+| card | update_field | false | false |
+| card | create | false | true |
+| card | delete | true | true |
+| tag_category | update_field | false | false |
+| tag_category | create | false | false |
+| tag_category | delete | true | true |
+| tag_option | update_field | false | false |
+| tag_option | create | false | false |
+| tag_option | delete | true | true |
+
+---
+
+#### review-events/bulk — `app/api/review-events/bulk/route.ts` / `tests/contract/review-events-bulk.contract.test.ts`
+
+**error codes & HTTP statuses**
+
+| code | status | notes |
+|---|---|---|
+| `unauthenticated` | 401 | route.ts:468 |
+| `user_not_synced` | 401 | route.ts:476 |
+| `invalid_json` | 400 | route.ts:502 |
+| `invalid_payload` | 400 | route.ts:507 |
+| `session_upsert_failed` | 503 | route.ts:571; `Retry-After: '30'` ヘッダ必須 |
+
+**success response shape**: `{ "ok": true, "failed": [] }`
+
+**凍結 DB 書込値** (§A #7, #8):
+- `answer_events` INSERT に rating 列なし (`ratingPresent: false` golden 固定)
+- `reviews.rating` / `study_days.correct_count` は `deriveRating` (route.ts:104-106) 経由で導出
+- `correct_count = rating >= 2`(is_correct でない) — 乖離ケース: rating=3 + is_correct=false → correct_count=1
+- `study_days.day` = JST date 文字列 (route.ts:377 `todayInJst`)
+
+---
+
+#### upload — `app/(app)/app/upload/_actions/process.ts` / `tests/contract/upload-result.contract.test.ts`
+
+**11 error codes** (process.ts:73-84):
+
+`AUTH` / `INVALID_INPUT` / `EXAM_NOT_FOUND` / `UPLOAD_IN_PROGRESS` / `PAGE_LIMIT_EXCEEDED` / `SIZE_LIMIT_EXCEEDED` / `QUOTA_EXCEEDED` / `GEMINI_DAILY_LIMIT_EXCEEDED` / `GEMINI_FAILED` / `SAVE_FAILED` / `OTHER`
+
+**`ProcessUploadResult` union shape** (process.ts:99-106):
+
+```typescript
+| { ok: true; data: ProcessResultData }
+| {
+    ok: false
+    code: ProcessUploadErrorCode
+    error: string        // user 向け文言
+    details?: ProcessUploadErrorDetails
+  }
+```
+
+**`revalidatePath` 常時発火** (process.ts:127-133): `finally` ブロックで `/app/upload` と `/app` を常時 revalidate。error return / throw のいずれでも発火する。
+
+**upload multi-branch inventory** (Task 5 handoff; `tests/contract/upload-result.contract.test.ts` が根拠):
+
+INVALID_INPUT — 3 branches:
+
+| Branch | message | status |
+|---|---|---|
+| A: mode invalid / missing | `投入先が指定されていません` | FROZEN (representative) |
+| B: mode=existing, examId なし | `既存の試験が選択されていません` | documented only — not frozen |
+| C: files empty | `ファイルが選択されていません` | documented only — not frozen |
+
+EXAM_NOT_FOUND — 2 branches, 両方 frozen:
+
+| Branch | message | status |
+|---|---|---|
+| A: found.length === 0 | `選択された試験が見つかりません` | FROZEN |
+| B: archivedAt !== null | `アーカイブ済の試験には追加できません` | FROZEN |
+
+GEMINI_FAILED — 2 branches:
+
+| Branch | message | status |
+|---|---|---|
+| A: OcrDeadlineError | `処理時間が長すぎました…` | documented only — not frozen |
+| B: other Error | `混み合っているようです…` | FROZEN (representative) |
+
+SAVE_FAILED — 2 branches:
+
+| Branch | message | status |
+|---|---|---|
+| A: cards INSERT / applyOcrTags throw | `抽出結果の保存に失敗しました` | FROZEN (representative) |
+| B: completion tx failure | same message | skipped — identical message |
+
+UPLOAD_IN_PROGRESS — 2 branches:
+
+| Branch | message | status |
+|---|---|---|
+| A: advisory xact lock fails | `処理中の OCR があります…` | FROZEN (representative; contract.test.ts:415) |
+| B: in-flight row check | same message | skipped — identical message |
+
+---
+
+#### webhook stripe — `app/api/webhooks/stripe/route.ts` / `tests/contract/webhook-stripe.contract.test.ts`
+
+**frozen HTTP responses**
+
+| body text | status | trigger |
+|---|---|---|
+| `'missing stripe-signature'` | 400 | signature header absent (route.ts:25) |
+| `'invalid signature'` | 400 | `constructEvent` throws (route.ts:34) |
+| `'duplicate'` | 200 | duplicate event_id (route.ts:47) |
+| `'ok'` | 200 | unknown / unsupported event type (route.ts:52) |
+| `'handler error swallowed'` | 200 | outer catch (route.ts:64) |
+
+**status matrix — users UPDATE extracted values** (§A #14):
+
+| Stripe status | subscriptionStatus | plan |
+|---|---|---|
+| `active` | `'active'` | resolved from price_id |
+| `trialing` | `'active'` | resolved from price_id |
+| `past_due` | `'past_due'` | preserved(NOT downgraded) |
+| `unpaid` | `'past_due'` | `'free'`(§A #14 非対称) |
+| `incomplete` | `'past_due'` | `'free'` |
+| `canceled` | `'canceled'` | `'free'` |
+| `incomplete_expired` | `'canceled'` | `'free'` |
+
+**frozen added events**: `checkout.session.completed`(subscription retrieve + plan sync), `invoice.payment_failed`(notifyOps のみ / DB plan/status 変更なし), `subscription_schedule.released`(scheduled 3 cols を null クリア), unknown event → HTTP 200 `'ok'`。
+
+---
+
+#### webhook clerk — `app/api/webhooks/clerk/route.ts` / `tests/contract/webhook-clerk.contract.test.ts`
+
+**frozen HTTP responses**
+
+| body text | status | trigger |
+|---|---|---|
+| `'missing svix headers'` | 400 | svix headers absent (route.ts:60) |
+| `'invalid signature'` | 400 | `svix.verify` throws (route.ts:74) |
+| `'ok'` | 200 | schema parse fail / unsupported event type (route.ts:92, 115) |
+| `'duplicate'` | 200 | duplicate event_id (route.ts:106) |
+| `'handler error swallowed'` | 200 | outer catch (route.ts:126) |
+
+**user.deleted frozen contract** (§A #15):
+
+- users soft delete: `email=null`, `clerkId=null`, `deletedAt` set; `stripeCustomerId` は **変更しない**
+- 10 child-table 明示 DELETE (Group I, route.ts:245-248):
+  `exams` / `study_days` / `contact_messages` / `ai_usage_users` / `upload_records` / `user_settings` / `study_sessions` / `tombstones` / `entity_mutations` / `tag_categories`
+
+**stale comment handoff** (§A note 3 / Task 8 deferred):
+`app/api/webhooks/clerk/route.ts:242` の集約 header コメントが "8 テーブル" と記述しているが、実際の凍結契約は **10** child-table DELETE (route.ts:245 が "Group I … 10 件" と正しく記述し、実 DELETE は 10 件)。コメントは P0 の dead-sweep 対象外として意図的に修正せず残置。修正対象: clerk route を触る後続 phase(当該コメント行のみ修正、挙動変更なし)。契約値(10)は正しく golden 固定済。
+
+---
+
+### (ii) Dexie schema v1〜7 stores 定義文字列
+
+`lib/client-db.ts` (lines 243-310) の `.stores({...})` 定義文字列をそのままコピー。P0 は Dexie に一切触らないが、後続 phase が store 移動を行う際の差分基準として記録する。
+
+```
+v1 (lib/client-db.ts:243-252)
+  exams:           'id, user_id, updated_at, content_version'
+  cards:           'id, exam_id, user_id, due, updated_at, content_version, sync_status'
+  user_settings:   'user_id'
+  study_sessions:  'session_id, exam_id, mode, status, sync_status'
+  answer_events:   '++local_id, event_id, session_id, card_id, sync_status'
+  card_mutations:  '++local_id, mutation_id, card_id, sync_status'
+  sync_meta:       'key'
+
+v2 (lib/client-db.ts:255-257) — S-perf-3: study_days mirror 追加
+  study_days:      '[user_id+day], user_id, day'
+
+v3 (lib/client-db.ts:263-267) — S-sync-1: card_mutations → entity_mutations rename
+  card_mutations:  null  (drop)
+  entity_mutations:'++local_id, mutation_id, [entity_type+entity_id], sync_status'
+
+v4 (lib/client-db.ts:271-274) — Tag-1: tag mirror 追加
+  tag_categories:  'id, user_id, updated_at'
+  tag_options:     'id, user_id, category_id, updated_at'
+
+v5 (lib/client-db.ts:282-284) — Tag-2b: card_tags junction 追加
+  card_tags:       '[card_id+option_id], card_id, option_id, user_id'
+
+v6 (lib/client-db.ts:294-297) — Y-2 T-B4: [user_id+exam_id] compound index 追加
+  cards:           'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id]'
+
+v7 (lib/client-db.ts:307-310) — Y-2 T-B6/B7: [user_id+due] compound index 追加
+  cards:           'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id], [user_id+due]'
+```
+
+DB name: `'recallmint'` (lib/client-db.ts:242)。現在の current version = **7**。
+
+---
+
+### (iii) 既存 route test と contract test の役割分担
+
+二重メンテナンス混乱を防ぐため、両テスト群の責務境界を明示する。
+
+**既存 co-located route tests** (+ process.test.ts):
+
+| file | 責務 |
+|---|---|
+| `app/api/pull/route.test.ts` | control-flow: auth guard, user=null 分岐, DB error パス |
+| `app/api/entity-mutations/bulk/route.test.ts` | control-flow: validation分岐, skipLog, registry lookup, partial-fail |
+| `app/api/review-events/bulk/route.test.ts` | control-flow: session upsert, event処理, duplicate skip, orphan |
+| `app/api/webhooks/stripe/route.test.ts` | control-flow: signature検証, event dispatch, status matrix |
+| `app/api/webhooks/clerk/route.test.ts` | control-flow: signature検証, user.deleted 10 DELETE 網羅性 invariant |
+| `app/(app)/app/upload/_actions/process.test.ts` | control-flow: 11 error code 分岐, advisory lock, pipeline mock |
+| その他 route.test.ts (dashboard / study-days / exams/status) | 各 route の control-flow / local invariants |
+
+役割: **分岐の正しさ・local invariant の保証**。DB mock を細粒度で制御し、どの branch が走るかを検証する。wire body の厳密な形や複数副作用の組み合わせは対象外。
+
+**新設 contract tests** (`tests/contract/*.contract.test.ts`):
+
+| file | 責務 |
+|---|---|
+| `tests/contract/pull.contract.test.ts` | wire body: 6 stream keys + cursor 形 + Cache-Control |
+| `tests/contract/entity-mutations-bulk.contract.test.ts` | wire body: error code 文字列 + 200-failed envelope + DB write values(extracted) |
+| `tests/contract/review-events-bulk.contract.test.ts` | wire body: success envelope + DB write values(rating derive / study_days) |
+| `tests/contract/upload-result.contract.test.ts` | wire body: ProcessUploadResult union + revalidatePath 常時発火 |
+| `tests/contract/webhook-stripe.contract.test.ts` | wire body: text response 文言 + status + status matrix DB values |
+| `tests/contract/webhook-clerk.contract.test.ts` | wire body: text response 文言 + 10 DELETE count + soft delete values |
+
+役割: **client が依存するワイヤー形(JSON body / text body / headers)と代表的な副作用(DB write values)の snapshot 固定**。`toMatchSnapshot()` で golden 化し、DDD リファクタが wire を壊した瞬間に検出する。
+
+**役割分担の要点**:
+- route.test.ts は「この branch が走るか」を検証する — branch exhaustive coverage
+- contract test は「wire が何を返すか」を snapshot する — representative superset
+- branch の追加・削除は route.test.ts を更新する。wire shape の変更は contract test の snapshot を更新する
+- 同じ assert を両方に書かない(重複メンテ禁止)。route.test.ts が持つ control-flow assert を contract test に再掲しない
+
+---
+
+### (iv) lint allowlist per-file off 副作用 + 削減期限
+
+(Task 7 実装 / `eslint.config.mjs` の 4 allowlist override blocks が根拠)
+
+**4 ファイルへの `'no-restricted-imports': 'off'` override**:
+
+| file | 理由(P0 時点での違反) |
+|---|---|
+| `lib/cards/get-custom-session-cards.ts` | Block A 違反: lib から app への import |
+| `components/marketing/contact-form.tsx` | Block A 違反: components から app への import |
+| `app/(app)/app/exams/[id]/_components/exam-detail-view.tsx` | Block B 違反: 3 段以上の相対 import (`../../../**`) |
+| `app/(app)/app/upload/result/[sourceDocumentId]/page.tsx` | Block B 違反: 3 段以上の相対 import |
+
+**副作用**: `'no-restricted-imports': 'off'` はその file の `no-restricted-imports` ルール**全体**を無効化する(特定 pattern だけでなく)。P3 が app-to-app cross-feature import に対して `no-restricted-imports` の新 config block を追加しても、この 4 file にはそのルールが適用されない。
+
+**削減期限 = P3**: 各違反の根本修正(lib への述語抽出 / `@/` alias への置換)を行い、修正完了後に `'off'` override を除去する。除去後は P3 で追加した cross-feature ルールが正しく適用される。
+
+---
+
+### (v) 未 cover の app 内境界の実リスト
+
+(現 HEAD 再スキャン 2026-07-06)
+
+P0 の lint (Block A: lib/components→app 禁止 / Block B: `../../../**` 深相対禁止) は `app/(app)/app/` 内のアプリ機能間 cross-feature import を捕捉しない。これらは P3 の allowlist 化の基点リストとして記録する。
+
+**機能間 cross-feature imports (feature A → feature B の private namespace)**:
+
+1. `app/(app)/app/study/custom/_components/custom-filter-form.tsx:15`
+   - `import { CardTagAddPopover } from '@/app/(app)/app/exams/[id]/_components/card-tag-add-popover'`
+   - study → exams `_components`(cross-feature コンポーネント流用)
+
+2. `app/(app)/app/study/custom/_components/custom-filter-form.tsx:21`
+   - `import type { TagFilterValue, AnswerStateFilter, ... } from '@/app/(app)/app/exams/[id]/_lib/card-filter-predicates'`
+   - study → exams `_lib`(cross-feature 型依存)
+
+3. `app/(app)/app/exams/[id]/_components/card-tag-edit-fields.tsx:26`
+   - `import { ColorPalettePopover } from '@/app/(app)/app/tags/_components/color-palette-popover'`
+   - exams → tags `_components`(cross-feature コンポーネント流用)
+
+4. `app/(app)/app/exams/[id]/_components/card-tag-edit-fields.tsx:27`
+   - `import { DeleteConfirmDialog } from '@/app/(app)/app/tags/_components/delete-confirm-dialog'`
+   - exams → tags `_components`(cross-feature コンポーネント流用)
+
+**機能内の逆方向依存 (`_lib` → `_components`)**:
+
+5. `app/(app)/app/exams/[id]/_lib/column-pinning.ts:6`
+   - `import { examCardTableColumns } from '../_components/exam-card-table-columns'`
+   - `_lib` → `_components` の逆方向(通常は `_components` が `_lib` に依存する)
+   - 設計上の意図: 列順の SSoT を `examCardTableColumns` に一元化するための "columns as data" パターン。pinning 導出に UI 依存はなく、列 id 配列のみを参照する(column-pinning.ts:8-12)。
+
+**P3 での対処方針**: 各 import を ESLint `no-restricted-imports` allowlist に追加して可視化し、将来の機能境界強化時に段階的に解消する。`custom-filter-form.tsx:15,21` は `card-filter-predicates` を lib/ に移動することで解消可能。
