@@ -1,0 +1,179 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`POST /api/review-events/bulk — wire contract > 503 + Retry-After: session upsert failure → 503 with Retry-After header (hard-assert value) 1`] = `
+{
+  "error": "session_upsert_failed",
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > derive divergence: rating=3 (explicit) + is_correct=false → reviews.rating=3 AND study_days.correct_count=1 (rating>=2 wins) 1`] = `
+{
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > derive divergence: rating=3 (explicit) + is_correct=false → reviews.rating=3 AND study_days.correct_count=1 (rating>=2 wins) 2`] = `
+[
+  {
+    "answeredAt": "2026-05-25T10:01:00.000Z",
+    "cardId": "44444444-4444-4444-a444-444444444444",
+    "elapsedMs": null,
+    "eventId": "55555555-5555-4555-a555-555555555555",
+    "isCorrect": false,
+    "ratingPresent": false,
+    "selectedAnswerIds": [
+      "b",
+    ],
+    "sessionId": "22222222-2222-4222-a222-222222222222",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+]
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > derive divergence: rating=3 (explicit) + is_correct=false → reviews.rating=3 AND study_days.correct_count=1 (rating>=2 wins) 3`] = `
+[
+  {
+    "cardId": "44444444-4444-4444-a444-444444444444",
+    "rating": 3,
+    "reviewedAt": "2026-05-25T10:01:00.000Z",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+]
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > derive divergence: rating=3 (explicit) + is_correct=false → reviews.rating=3 AND study_days.correct_count=1 (rating>=2 wins) 4`] = `
+{
+  "conflictSet": {
+    "correctCountIsSql": true,
+    "distinctCardCount": 1,
+    "reviewCountIsSql": true,
+  },
+  "values": {
+    "correctCount": 1,
+    "day": "2026-05-25",
+    "distinctCardCount": 1,
+    "reviewCount": 1,
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > derive: answer_events INSERT has NO rating column — ratingPresent frozen as false 1`] = `
+[
+  {
+    "answeredAt": "2026-05-25T10:01:00.000Z",
+    "cardId": "44444444-4444-4444-a444-444444444444",
+    "elapsedMs": null,
+    "eventId": "55555555-5555-4555-a555-555555555555",
+    "isCorrect": true,
+    "ratingPresent": false,
+    "selectedAnswerIds": [
+      "a",
+    ],
+    "sessionId": "22222222-2222-4222-a222-222222222222",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+]
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > duplicate event skip: re-sent event_id → absent from failed[], FSRS not applied 1`] = `
+{
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days) 1`] = `
+{
+  "failed": [],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days) 2`] = `
+{
+  "conflictSet": {
+    "cardIdsPresent": false,
+    "completedAt": null,
+    "status": "active",
+  },
+  "setWhereDefined": true,
+  "values": {
+    "cardIds": [
+      "44444444-4444-4444-a444-444444444444",
+    ],
+    "completedAt": null,
+    "examId": "33333333-3333-4333-a333-333333333333",
+    "mode": "smart",
+    "sessionId": "22222222-2222-4222-a222-222222222222",
+    "startedAt": "2026-05-25T10:00:00.000Z",
+    "status": "active",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days) 3`] = `
+[
+  {
+    "answeredAt": "2026-05-25T10:01:00.000Z",
+    "cardId": "44444444-4444-4444-a444-444444444444",
+    "elapsedMs": null,
+    "eventId": "55555555-5555-4555-a555-555555555555",
+    "isCorrect": true,
+    "ratingPresent": false,
+    "selectedAnswerIds": [
+      "a",
+    ],
+    "sessionId": "22222222-2222-4222-a222-222222222222",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+]
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days) 4`] = `
+[
+  {
+    "cardId": "44444444-4444-4444-a444-444444444444",
+    "rating": 3,
+    "reviewedAt": "2026-05-25T10:01:00.000Z",
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+]
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days) 5`] = `
+{
+  "conflictSet": {
+    "correctCountIsSql": true,
+    "distinctCardCount": 1,
+    "reviewCountIsSql": true,
+  },
+  "values": {
+    "correctCount": 1,
+    "day": "2026-05-25",
+    "distinctCardCount": 1,
+    "reviewCount": 1,
+    "userId": "11111111-1111-4111-a111-111111111111",
+  },
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > orphan: card not found (not in user cards) → event_id in failed[], HTTP 200 1`] = `
+{
+  "failed": [
+    "66666666-6666-4666-a666-666666666666",
+  ],
+  "ok": true,
+}
+`;
+
+exports[`POST /api/review-events/bulk — wire contract > tx rollback: internal throw → all applicable events in failed[], HTTP 200 (rollback semantics) 1`] = `
+{
+  "failed": [
+    "55555555-5555-4555-a555-555555555555",
+  ],
+  "ok": true,
+}
+`;
