@@ -47,6 +47,7 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 - radix Dialog を使う理由(素の fixed div と比較): Portal / `role="dialog"` + aria / open 時の focus 移動 / **Esc の layer 処理**(peek 内で tag popover 等を開いた時、Esc が最内層のみ閉じる dismissable layer stack)が既存実装で手に入る。旧 plan の手動 `defaultPrevented` 配線が不要になる。
 - `Dialog.Overlay` は描画しない(backdrop なし・テーブル可視のまま)。
 - **閉じ方 = × ボタン + Esc のみ。外クリックでは閉じない**(`onInteractOutside` は preventDefault)。理由: 外クリック close はテーブル側セル編集クリックのたびに peek が閉じ、併用ワークフローと矛盾。旧 plan の「閉じない領域 ref 台帳」も丸ごと不要化。開いている行のトリガー再クリックは close(toggle)。
+- **close 経路は `onOpenChange(false)` に一元化**(Esc も × = `Dialog.Close` もここに集約。`onEscapeKeyDown` の個別配線をしない)— 二重発火・テスト不安定化防止(Codex 指摘)。radix non-modal の実挙動(focus 移動 / outside interaction / restore focus)は T1 の RTL test で明示検証。
 - Esc とセル編集の関係: `InlineTextField` は Esc handler を持たない(blur commit のみ)ため、peek 内 input 編集中の Esc は panel close → blur commit で**値は保存されて閉じる**(破壊なし)。tag popover 等 radix 系は layer stack が先に消費する。この挙動を仕様として明記(追加ガードは書かない)。
 - 入退場: `tw-animate-css` の `data-open:slide-in-from-right` / `data-closed:slide-out-to-right`。duration は `duration-200`(既存 popover 系は duration-100 だがパネルは大型のため)+ `motion-reduce:transition-none`(既存慣習)。
 
@@ -55,7 +56,8 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 - **新列 `open` を select 列の直後に追加**(`examCardTableColumns` 配列)。幅 36px 固定・`enableHiding: false`・`enableSorting: false`。セル内容 = icon button(lucide、`aria-label="カードを開く"`)**常時表示**。click で `meta.setActiveCardId(card.id)`(既存 table meta 配線パターン)。開いている行の再 click は close。
 - **title 列ボタン案(旧 spec 凍結案)を不採用にした根拠**: title 列は hideable(column toggle の除外は `select` のみ、`exam-card-table-column-toggle.tsx:35`)。title 非表示にするとトリガーごと消え peek へ到達不能になる。専用列は列 toggle から除外(select と同パターン)し常時到達可能。
 - 既存挙動との非衝突: 専用セルは click-to-edit 要素・checkbox・popover trigger のいずれとも別セル = 伝播衝突なし(stopPropagation 不要)。行 `<tr>` に onClick は引き続き置かない。
-- 列 toggle(`deriveColumnToggleMeta`)の除外に `open` を追加。列 pinning 境界計算(S5 `computePinnedLeft`)は列定義追加に自動追従するが、回帰 test で担保。
+- トリガー button は開状態を持つ: `aria-pressed={開いている行}` + active style(開いている行の視覚手掛かり。行全体のハイライトは足さない — YAGNI)。
+- 列 toggle(`deriveColumnToggleMeta`)の除外に `open` を追加。**pinning・ヘッダーメニューの扱いは select 列の現行挙動と同一に揃える**(独自仕様を発明しない)。列 pinning 境界計算(S5 `computePinnedLeft`)は列定義追加に自動追従するが、回帰 test で担保。
 - キーボード: icon button は natural tab order で到達可(hover 出現式にしないため追加細工不要)。
 
 ### 3.4 peek のデータ供給(手元 row 流用・live 追従)
@@ -66,6 +68,8 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 - 選択肢: `useCardOptions(cardId, serverOptions)` へ live row の `card.options` を渡す(既存 merge 駆動がそのまま効く)。
 - タグ: `CardTagsSection` を card view と同 props 形で再利用(`cardTags` = row.tags 由来、context は既存 `getCardContext` 流用)。書込は canonical `useCardTagToggle`(hook 内 useLiveQuery なし制約を維持)。
 - **`key={activeCardId}` で peek 内容を remount**(カード切替時に編集 state / autoEdit / working-set をリセット。`InlineCardList` の `<li key={card.id}>` と同じ担保方式)。
+- 同一 card 同一フィールドの peek / テーブル同時編集 = **last-blur-wins**(`InlineTextField` の既存 dirty-guard 挙動そのまま。編集中は prop 変化を display に反映しない → blur commit が後勝ち)。新規調停コードを足さない。
+- 行仮想化と独立: peek の表示は `data` 由来で行 DOM に依存しないため、開いた行がスクロールアウト(仮想化 unmount)しても peek は維持される(smoke で確認)。
 
 ### 3.5 peek のレイアウト
 
@@ -90,6 +94,7 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 | リスク | 認可漏れ・not-found 点滅など新規面 | mobile キーボード + fixed overlay の干渉(smoke で確認) |
 
 - **推奨 = 案 b**(OT 指示「小さい方を推奨」)。モバイルのフル編集はカードビュー(`InlineCardList`)が既に提供しており、mobile peek は補助経路。design-policy §3.3「モバイル = full page 遷移」からの逸脱になる点は OT 最終判断(逸脱を許容しないなら案 a を別 task で追加可能 — 案 b 採用が案 a の将来追加を妨げない)。
+- 案 b の**受容リスクを明示**(Codex 指摘): ① ブラウザ戻る = peek close でなくページ離脱(モバイル慣習との不一致)② mobile キーボード × fixed overlay の干渉は RTL で担保不能 — sprint 末 stg smoke の必須項目とし、NG なら案 a へ切替(spec 改訂 + OT 判断)。
 - 案 b 採用時、JS viewport 判定(useMediaQuery 等)は導入しない(CSS breakpoint のみ。既存慣習)。
 
 ### 3.8 z-index / ActionBar 共存
@@ -99,7 +104,7 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
   - peek 内で開く tag popover / confirm-dialog(z-50・Portal で body 末尾)はパネルより上に出る。
   - 選択 ActionBar(z-40 fixed bottom 全幅)は peek 開時、右端 480px がパネルに覆われるが左側で bulk 操作は継続可能(bulk と単票編集は直交ワークフローのため特別対応しない — これを仕様として明記)。
   - scroll-top FAB(`fixed right-6 bottom-4 z-30`)は peek 開時パネルに覆われる。許容(peek 側は自前スクロール、テーブルのスクロールはパネル外で継続可能。FAB 退避は scope 外)。
-- **z-50 帯の全面整理(リナンバー)はしない**(触ると回帰面が広い。台帳の文書化 + peek 用 `z-[45]` 新設のみ = 最小)。
+- **z-50 帯の全面整理(リナンバー)はしない**(触ると回帰面が広い。台帳の文書化 + peek 用 `z-[45]` 新設のみ = 最小)。残余リスク: z-50 同帯(popover / confirm-dialog / billing-banner)同士の重なりは Portal の DOM 順依存 — 既存 confirm-dialog と同条件であり本 sprint では許容(Codex 指摘の明文化)。
 
 ---
 
@@ -128,6 +133,8 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 
 ## 6. Open Questions(OT レビュー時判断)
 
-1. **§3.1-5**: 編集範囲 = `InlineCardList` 1 枚分と同一(問題文・選択肢 ID 含む)の解釈で確定可か。
-2. **§3.7**: 案 b(モバイル全幅 overlay)採用 = design-policy「モバイル full page 遷移」からの逸脱を許容するか。
+1. **§3.1-5**: 編集範囲 = `InlineCardList` 1 枚分と同一(問題文・選択肢 ID・選択肢追加削除 含む)の解釈で確定可か。
+2. **§3.7**: 案 b(モバイル全幅 overlay)採用 = design-policy「モバイル full page 遷移」からの逸脱を許容するか(受容リスク: ブラウザ戻る非対応・mobile キーボード干渉は smoke 確認)。
 3. **§3.3**: トリガー = 専用列(常時表示 icon・非 hideable)で確定可か。対抗 = title セル内 hover ボタン(旧案。title 列が hideable なため到達不能ケースあり・不採用推奨)。
+4. **§3.2**(Codex 指摘 — brief の「overlay 方式」から一段踏み込んだ CC 設計判断のため明示確認): non-modal(backdrop なし・テーブル併用可)+ 閉じ方 ×/Esc のみ + **編集中 Esc = blur commit + close(値は保存)**で確定可か。対抗 = Esc をキャンセル扱いにする案は `InlineTextField` への新規挙動追加(fork 禁止と衝突)が必要で不採用推奨。
+5. **§3.1-5**: カード削除ボタンを peek に**載せない**で確定可か(要件「単票の全項目」の解釈次第。載せる場合は confirm-dialog z 重なり・削除→prune close の追加設計が要る)。
