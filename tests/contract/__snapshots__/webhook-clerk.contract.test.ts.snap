@@ -1,0 +1,71 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Clerk webhook: 400-vs-200 separation > duplicate event_id → HTTP 200, body=duplicate (200 group) 1`] = `
+{
+  "body": "duplicate",
+  "status": 200,
+}
+`;
+
+exports[`Clerk webhook: 400-vs-200 separation > handler error (outer catch swallows) → HTTP 200, body=handler error swallowed (200 group) 1`] = `
+{
+  "body": "handler error swallowed",
+  "status": 200,
+}
+`;
+
+exports[`Clerk webhook: 400-vs-200 separation > invalid signature (svix.verify throws) → HTTP 400 (NOT in 200 group) 1`] = `
+{
+  "body": "invalid signature",
+  "status": 400,
+}
+`;
+
+exports[`Clerk webhook: 400-vs-200 separation > missing svix headers → HTTP 400 (NOT in 200 group) 1`] = `
+{
+  "body": "missing svix headers",
+  "status": 400,
+}
+`;
+
+exports[`Clerk webhook: 400-vs-200 separation > schema parse fail (unsupported event type) → HTTP 200, body=ok (200 group) 1`] = `
+{
+  "body": "ok",
+  "status": 200,
+}
+`;
+
+exports[`Clerk webhook: user.created > happy path → users INSERT + publicMetadata sync (captured clerkId / email / dbUserId / plan) 1`] = `
+{
+  "publicMetadataSync": {
+    "clerkId": "user_new_contract",
+    "dbUserId": "00000000-0000-4000-a000-000000000001",
+    "plan": "free",
+  },
+  "status": 200,
+  "usersInsert": {
+    "clerkId": "user_new_contract",
+    "email": "new@contract.example.com",
+  },
+}
+`;
+
+exports[`Clerk webhook: user.deleted > soft delete + 10 child-table DELETEs (NOT 8 — route comment is wrong, actual is 10) 1`] = `
+{
+  "childTableDeleteCount": 10,
+  "softDelete": {
+    "clerkIdNull": true,
+    "deletedAtSet": true,
+    "emailNull": true,
+    "stripeCustomerIdTouched": false,
+  },
+  "status": 200,
+}
+`;
+
+exports[`Clerk webhook: user.deleted > user.deleted with Stripe subs → cancel loop runs, then 10 child-table DELETEs 1`] = `
+{
+  "cancelWithRetryCallCount": 1,
+  "childTableDeleteCount": 10,
+}
+`;

@@ -1,0 +1,140 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Stripe webhook: 400-vs-200 separation > duplicate event_id → HTTP 200, body=duplicate (200 group) 1`] = `
+{
+  "body": "duplicate",
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: 400-vs-200 separation > handler error (outer catch swallows) → HTTP 200, body=handler error swallowed (200 group) 1`] = `
+{
+  "body": "handler error swallowed",
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: 400-vs-200 separation > invalid signature (constructEvent throws) → HTTP 400 (NOT in 200 group) 1`] = `
+{
+  "body": "invalid signature",
+  "status": 400,
+}
+`;
+
+exports[`Stripe webhook: 400-vs-200 separation > missing stripe-signature header → HTTP 400 (NOT in 200 group) 1`] = `
+{
+  "body": "missing stripe-signature",
+  "status": 400,
+}
+`;
+
+exports[`Stripe webhook: 400-vs-200 separation > unknown/unsupported event → HTTP 200, body=ok (200 group) 1`] = `
+{
+  "body": "ok",
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: added events > checkout.session.completed → plan/status synced via subscription retrieve (2nd update) 1`] = `
+{
+  "mutation": {
+    "billingInterval": "month",
+    "plan": "standard",
+    "subscriptionStatus": "active",
+  },
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: added events > invoice.payment_failed → notifyOps fired, NO plan/status DB change 1`] = `
+{
+  "dbUpdateCallCount": 0,
+  "notifyOpsSubject": "stripe invoice.payment_failed",
+}
+`;
+
+exports[`Stripe webhook: added events > subscription_schedule.released → 3 scheduled cols cleared to null 1`] = `
+{
+  "mutation": {
+    "scheduledChangeEffectiveAt": null,
+    "scheduledDowngradeScheduleId": null,
+    "scheduledTargetPriceId": null,
+  },
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: added events > unknown event type → HTTP 200 ok, no DB update beyond idempotency 1`] = `
+{
+  "body": "ok",
+  "dbUpdateCallCount": 0,
+  "status": 200,
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > active → subscriptionStatus=active, plan resolved from price_id 1`] = `
+{
+  "billingInterval": "month",
+  "plan": "standard",
+  "subscriptionStatus": "active",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > canceled → subscriptionStatus=canceled, plan=free 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "canceled",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > incomplete → subscriptionStatus=past_due BUT plan=free (same as unpaid path) 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "past_due",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > incomplete_expired → subscriptionStatus=canceled, plan=free 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "canceled",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > past_due → subscriptionStatus=past_due, plan preserved from price_id (NOT downgraded) 1`] = `
+{
+  "billingInterval": "month",
+  "plan": "pro",
+  "subscriptionStatus": "past_due",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > trialing → subscriptionStatus=active (trialing normalizes same as active) 1`] = `
+{
+  "billingInterval": "year",
+  "plan": "pro",
+  "subscriptionStatus": "active",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > unknown price_id → notifyOps subject + plan=free fallback 1`] = `
+{
+  "mutation": {
+    "billingInterval": null,
+    "plan": "free",
+    "subscriptionStatus": "active",
+  },
+  "notifyOpsSubject": "stripe sub unknown price_id",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > unpaid → subscriptionStatus=past_due BUT plan=free (§A #14 intentional asymmetry) 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "past_due",
+}
+`;
