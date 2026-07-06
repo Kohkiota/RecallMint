@@ -10,7 +10,9 @@
 // React component を含む場合は boundary が必要)。
 
 import type { ColumnDef, FilterFn } from '@tanstack/react-table'
+import { PanelRightOpen } from 'lucide-react'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import { cn } from '@/lib/utils'
 import type { TagEditCallbacks } from './card-tags-section'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
@@ -40,6 +42,10 @@ export type ExamCardTableMeta = {
   tagEditCallbacks: TagEditCallbacks
   categories: ClientTagCategory[]
   options: ClientTagOption[]
+  // T2: side peek trigger。optional — T3 が配線するまでは undefined のまま。
+  // optional にすることで既存の `satisfies ExamCardTableMeta`(exam-card-table.tsx)を変更不要にする。
+  activeCardId?: string | null
+  openCard?: (cardId: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -101,14 +107,38 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // getSortedRowModel がフィルタアウトするため、title を非 null accessor で sortable 化。
     // sortingFn は row.original から直接読んで localeCompare('ja') で比較する。
     accessorFn: (row) => row.card.title,
-    cell: ({ row }) => (
-      <InlineTextField
-        cardId={row.original.card.id}
-        field="title"
-        initialValue={row.original.card.title}
-        ariaLabel="タイトル 編集"
-      />
-    ),
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // openCard が実際に配線された時だけボタンを描画する。T3 が配線するまでは undefined のため非表示。
+      const openCard = meta?.openCard
+      return (
+        <div className="relative w-full group/peek">
+          <InlineTextField
+            cardId={card.id}
+            field="title"
+            initialValue={card.title}
+            ariaLabel="タイトル 編集"
+          />
+          {openCard && (
+            <button
+              type="button"
+              aria-label="カードを開く"
+              aria-pressed={meta?.activeCardId === card.id}
+              onClick={() => openCard(card.id)}
+              className={cn(
+                'absolute right-0.5 top-0.5 z-[1] inline-flex size-7 items-center justify-center rounded bg-background shadow-sm text-muted-foreground hover:text-foreground',
+                'opacity-100 md:opacity-0 md:group-hover/peek:opacity-100 md:focus-visible:opacity-100',
+                'group-has-[input]/peek:opacity-0 group-has-[input]/peek:pointer-events-none',
+                'aria-pressed:text-foreground',
+              )}
+            >
+              <PanelRightOpen className="size-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )
+    },
     enableSorting: true,
     sortingFn: (rowA, rowB) =>
       rowA.original.card.title.localeCompare(rowB.original.card.title, 'ja'),

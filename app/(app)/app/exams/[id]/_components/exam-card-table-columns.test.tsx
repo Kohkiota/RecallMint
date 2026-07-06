@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import {
   useReactTable,
   getCoreRowModel,
@@ -20,7 +20,7 @@ import {
 import { renderHook } from '@testing-library/react'
 import type { ClientCard } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
-import { examCardTableColumns, type ExamCardRow } from './exam-card-table-columns'
+import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import type { TextFilterValue } from '../_lib/card-filter-predicates'
 
 // ---------------------------------------------------------------------------
@@ -380,7 +380,7 @@ describe('Edit-3 T1: question / explanation_text / memo に displayClassName="te
   })
 
   it('title cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    renderCell('title', makeRow({ title: 'タイトル' }))
+    renderTitleCellWithMeta(makeRow({ title: 'タイトル' }))
     const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
     expect(displayDiv.className.split(' ')).not.toContain('text-sm')
   })
@@ -422,8 +422,8 @@ describe('Edit-3 T2: question / explanation_text / memo の display div に md:m
     expect(classes).not.toContain('md:min-h-8')
   })
 
-  it('title display div には md:min-h-6 が付かない (table で渡さない列の回帰)', () => {
-    renderCell('title', makeRow({ title: 'タイトル' }))
+  it('title display div には md:min-h-6 が付かない (displayClassName を渡さない列の回帰)', () => {
+    renderTitleCellWithMeta(makeRow({ title: 'タイトル' }))
     const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
     const classes = displayDiv.className.split(' ')
     // title に displayClassName を渡さないので md:min-h-8 が残る
@@ -761,5 +761,149 @@ describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用
     )
     // Apple(0003) と Banana(0001) が残り、sort_key asc で Banana→Apple の順
     expect(ids).toEqual(['card-banana', 'card-apple'])
+  })
+})
+
+// ===========================================================================
+// T2 (side peek): title cell — peek button
+// ===========================================================================
+
+/**
+ * title cell を fake table context (meta 注入可) で render するヘルパー。
+ * TanStack Table の cell は常に table を受け取るが、既存 renderCell ヘルパーは
+ * table を渡さないため、title 固有の peek button テストはこのヘルパーを使う。
+ */
+function renderTitleCellWithMeta(
+  row: ExamCardRow,
+  meta?: Partial<ExamCardTableMeta>,
+): HTMLElement {
+  const col = examCardTableColumns.find((c) => c.id === 'title')
+  if (!col) throw new Error('Column "title" not found')
+  if (!col.cell) throw new Error('Column "title" has no cell renderer')
+
+  const cellFn = col.cell as (ctx: {
+    row: { original: ExamCardRow }
+    table: { options: { meta: unknown } }
+  }) => React.ReactNode
+
+  function Wrapper() {
+    return (
+      <div data-testid="cell-wrapper">
+        {cellFn({ row: { original: row }, table: { options: { meta } } })}
+      </div>
+    )
+  }
+
+  const { container } = render(<Wrapper />)
+  return container.querySelector('[data-testid="cell-wrapper"]') as HTMLElement
+}
+
+describe('Column: title — side peek button (T2)', () => {
+  it('① title cell に「カードを開く」button が存在する (meta 有)', () => {
+    renderTitleCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+    expect(screen.getByRole('button', { name: 'カードを開く' })).toBeInTheDocument()
+  })
+
+  it('② button click で meta.openCard(card.id) が呼ばれる', () => {
+    const openCard = vi.fn()
+    const row = makeRow({ id: 'card-peek-test' })
+    renderTitleCellWithMeta(row, { openCard, activeCardId: null })
+    fireEvent.click(screen.getByRole('button', { name: 'カードを開く' }))
+    expect(openCard).toHaveBeenCalledTimes(1)
+    expect(openCard).toHaveBeenCalledWith('card-peek-test')
+  })
+
+  it('③ meta 不在で button が描画されず crash しない', () => {
+    renderTitleCellWithMeta(makeRow())
+    expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
+    // InlineTextField は依然として描画される
+    expect(screen.getByRole('button', { name: 'タイトル 編集' })).toBeInTheDocument()
+  })
+
+  it('③-b meta 有だが openCard 未定義のとき button が描画されない', () => {
+    // openCard が T3 で配線されるまでは meta に activeCardId のみ存在する状態を想定。
+    // button はハンドラが実際に配線された時だけ描画されるべき。
+    renderTitleCellWithMeta(makeRow(), { activeCardId: null })
+    expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
+    // InlineTextField は依然として描画される
+    expect(screen.getByRole('button', { name: 'タイトル 編集' })).toBeInTheDocument()
+  })
+
+  it('④-a activeCardId === card.id のとき aria-pressed=true', () => {
+    const row = makeRow({ id: 'card-active' })
+    renderTitleCellWithMeta(row, { openCard: vi.fn(), activeCardId: 'card-active' })
+    const button = screen.getByRole('button', { name: 'カードを開く' })
+    expect(button).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('④-b activeCardId が異なる id のとき aria-pressed=false', () => {
+    const row = makeRow({ id: 'card-inactive' })
+    renderTitleCellWithMeta(row, { openCard: vi.fn(), activeCardId: 'other-id' })
+    const button = screen.getByRole('button', { name: 'カードを開く' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('⑤ button click 後に title の Input が現れない (startEdit 非起動)', () => {
+    const openCard = vi.fn()
+    renderTitleCellWithMeta(makeRow(), { openCard, activeCardId: null })
+    fireEvent.click(screen.getByRole('button', { name: 'カードを開く' }))
+    // InlineTextField の startEdit は peek button 経由では呼ばれないため
+    // editing 状態 (textbox) が現れないことを確認
+    expect(screen.queryByRole('textbox', { name: 'タイトル 編集' })).toBeNull()
+  })
+
+  it('⑤-positive タイトル display div クリックで textbox が現れる (edit-trigger 独立確認)', () => {
+    // peek button と edit display div が別クリックターゲットであることの isolation proof。
+    // display div をクリックすると InlineTextField が編集モードに遷移し textbox が現れる。
+    renderTitleCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル 編集' }))
+    expect(screen.getByRole('textbox', { name: 'タイトル 編集' })).toBeInTheDocument()
+  })
+
+  it('⑥ wrapper に relative / w-full / group/peek クラスが付与される', () => {
+    const el = renderTitleCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+    // cell-wrapper 直下の最初の子要素が wrapper div
+    const wrapper = el.firstElementChild as HTMLElement
+    const classes = wrapper.className.split(' ')
+    expect(classes).toContain('relative')
+    expect(classes).toContain('w-full')
+    expect(wrapper.className).toContain('group/peek')
+  })
+
+  it('⑥ button に編集中非表示 class が付与される', () => {
+    renderTitleCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+    const button = screen.getByRole('button', { name: 'カードを開く' })
+    expect(button.className).toContain('group-has-[input]/peek:opacity-0')
+    expect(button.className).toContain('group-has-[input]/peek:pointer-events-none')
+  })
+
+  it('⑥ button に mobile 常時表示 class (opacity-100) が付与される', () => {
+    renderTitleCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+    const button = screen.getByRole('button', { name: 'カードを開く' })
+    expect(button.className.split(' ')).toContain('opacity-100')
+  })
+
+  it('⑦ title 列の accessorFn / size / sortingFn / filterFn が不変', () => {
+    const titleCol = examCardTableColumns.find((c) => c.id === 'title')
+    expect(titleCol).toBeDefined()
+    expect(titleCol?.size).toBe(80)
+    expect(titleCol?.enableSorting).toBe(true)
+    expect(typeof (titleCol as Record<string, unknown> | undefined)?.['accessorFn']).toBe('function')
+    expect(typeof titleCol?.sortingFn).toBe('function')
+    expect(typeof titleCol?.filterFn).toBe('function')
+  })
+
+  it('⑧ title 列 hidden (columnVisibility=false) で crash しない', () => {
+    expect(() => {
+      renderHook(() =>
+        useReactTable<ExamCardRow>({
+          data: [makeRow()],
+          columns: examCardTableColumns,
+          getCoreRowModel: getCoreRowModel(),
+          state: { columnVisibility: { title: false } },
+          onColumnVisibilityChange: () => {},
+        }),
+      )
+    }).not.toThrow()
   })
 })
