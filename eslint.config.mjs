@@ -19,6 +19,86 @@ const config = [
       'react-hooks/preserve-manual-memoization': 'off',
     },
   },
+  // ---------------------------------------------------------------------------
+  // Block A: lib/ and components/ must not import from app/ layer.
+  // Shared logic belongs in lib/; violations are allowlisted per-file below (P3 送り).
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/**/*', 'components/**/*'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@/app/*', '@/app/**', '../app/**', '../**/app/**'],
+              message:
+                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (4 known violations are allowlisted per-file below — P3 refactor target)',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block B: app/ must not use deep relative imports (3+ levels up).
+  // Pattern `../../../**` catches 3 levels (`../../../foo`) AND 4+ levels
+  // (`../../../../foo` = `../../../` + `../foo`; minimatch `**` matches `../foo`
+  // because `**` crosses `/` and treats `..` as a regular path segment).
+  // Violations are allowlisted per-file below (P3 refactor target).
+  // ---------------------------------------------------------------------------
+  {
+    files: ['app/**/*'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['../../../**'],
+              message:
+                'Deep relative imports (3+ levels up) are forbidden in app/. Use the @/ alias instead. (2 known violations are allowlisted per-file below — P3 refactor target)',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Per-file allowlists (placed AFTER forbidding blocks so they win).
+  // Each turns `no-restricted-imports` fully off for that file.
+  // SIDE-EFFECT NOTE (§B / T9): `off` disables the whole rule for the file,
+  // not just the specific pattern — meaning app-to-app cross-feature imports
+  // (P0 out-of-scope / P3 target) inside these files are also unguarded.
+  // See §B handoff in task-7-report.md for details.
+  // ---------------------------------------------------------------------------
+
+  // lib → @/app: get-custom-session-cards.ts imports card-filter-predicates from app layer.
+  // Deferred to P3 — fix = extract predicate types to lib/.
+  {
+    files: ['lib/cards/get-custom-session-cards.ts'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  // components → @/app: contact-form.tsx imports server action from app layer.
+  // Deferred to P3 — fix = move action to lib/ or create dedicated shared action.
+  {
+    files: ['components/marketing/contact-form.tsx'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  // app deep relative: exam-detail-view.tsx imports ../../../_components/app-container.
+  // `(app)` → `\\(app\\)`, `[id]` → `\\[id\\]` per minimatch escape rule (same as use-card-options below).
+  // Deferred to P3 — fix = use @/ alias.
+  {
+    files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/exam-detail-view.tsx'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  // app deep relative: upload result page.tsx imports ../../../_components/app-container.
+  // `(app)` → `\\(app\\)`, `[sourceDocumentId]` → `\\[sourceDocumentId\\]` per minimatch escape rule.
+  // Deferred to P3 — fix = use @/ alias.
+  {
+    files: ['app/\\(app\\)/app/upload/result/\\[sourceDocumentId\\]/page.tsx'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
   {
     // TODO(Sync-fix-1): use-card-options.ts の refs structural fix は
     // optimistic 経路収束 (event handler 書換) と同 working set のため波2 では
