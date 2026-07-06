@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (13 tables; S1.9.1 で upload_records 追加)
+// Drizzle schema — mcq-platform (21 tables; S1.9.1 で upload_records 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除

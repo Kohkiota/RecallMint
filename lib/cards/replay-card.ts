@@ -2,7 +2,7 @@
 // 複数の rating event を in-memory で順次 apply し、最終 card state と
 // reviews 配列を返す。呼び出し元 (bulk endpoint) が fold 後の結果を
 // bulk SQL で一括書き込みするためのコア計算を担当する。
-// submit-review-tx.ts の (2)→(3) ブロックを純関数として抽出したもの。
+// app/api/review-events/bulk/route.ts の finalStates UPDATE ロジックと対になる純関数として抽出したもの。
 
 import type { Card as FsrsCard } from 'ts-fsrs'
 import { rate, type RatingInt } from '@/lib/fsrs'
@@ -67,7 +67,7 @@ export function replayCard(
     const { rating, answeredAt: now } = event
 
     // DB row (camelCase) → ts-fsrs Card (snake_case) に変換して rate() を呼ぶ。
-    // submit-review-tx.ts の変換ロジックと完全に同一にすること。
+    // app/api/review-events/bulk/route.ts の変換ロジックと完全に同一にすること。
     const fsrsCard: FsrsCard = {
       due: current.due,
       stability: current.stability,
@@ -89,7 +89,7 @@ export function replayCard(
     // correct 定義: Again(1) = 不正解、Hard/Good/Easy(2/3/4) = 正解
     const correct = rating >= 2
 
-    // submit-review-tx.ts の UPDATE set と完全に同じフィールドを更新する
+    // app/api/review-events/bulk/route.ts の UPDATE set と完全に同じフィールドを更新する
     current = {
       due: next.due,
       stability: next.stability,

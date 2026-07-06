@@ -10,8 +10,8 @@
 //   patch:{field:'name', value}})` → `runGuardedEntityMutationFlush()` で同期
 // - color pill click で ColorPalettePopover (Task 1) を開き、 選択で
 //   `update_field` patch field='color' を発行
-// - 「カテゴリ変更」 button click で DropdownMenu を開き、 現カテゴリ以外を列挙、
-//   選択で `update_field` patch field='category_id' を発行
+// - 「カテゴリ変更」 button click でカスタム controlled aria menu を開き、
+//   現カテゴリ以外を列挙、 選択で `update_field` patch field='category_id' を発行
 // - 行末「× ボタン」 で onDelete callback (親で ConfirmDialog + 削除 mutation)
 // - UNIQUE 違反の二段防御:
 //   - client: rename / カテゴリ移動の commit 前に IDB で同 category 内同名を逐次
@@ -30,10 +30,9 @@ import { Pencil } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-// shadcn の DropdownMenu (Task 3 で `@/components/ui/dropdown-menu.tsx` を CLI 追加済)
-// は Tag-4a 時点では UI としては未使用 (jsdom 上のトグル試験回避で controlled state +
-// 自前 menu semantics に倒したため)。 ファイルは将来の inline select (Tag-4c) / D&D
-// (Tag-4c-2c で manager D&D 配備予定) で再利用するためそのまま残す。
+// カテゴリ変更 menu は shadcn DropdownMenu を使わずカスタム controlled aria-menu で実装。
+// jsdom 上のポインタイベントベースのトグル試験がし辛いため、 controlled state +
+// 自前 menu semantics を採用した (Tag-4a 設計選択)。
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { cn } from '@/lib/utils'
@@ -308,12 +307,9 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
       </div>
 
       {/*
-        カテゴリ変更 dropdown。 shadcn DropdownMenu (radix-ui Menu) は jsdom 上で
-        トグル試験がし辛い (pointerdown ベース) ため、 4a では menu UI を
-        controlled state + 単純な aria menu semantics で実装する。 plan の
-        「shadcn の Dropdown を CLI 追加 (file 追加のみ)」 は満たし
-        (`@/components/ui/dropdown-menu.tsx` を Task 3 で追加済)、 将来 D&D /
-        inline select で再利用余地を残す。
+        カテゴリ変更 dropdown。 jsdom 上でポインタイベントベースの menu の
+        トグル試験がし辛いため、 controlled state + 単純な aria menu semantics で
+        カスタム実装する (shadcn DropdownMenu は使用していない)。
       */}
       <div className="relative">
         <Button

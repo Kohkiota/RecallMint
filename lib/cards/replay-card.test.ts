@@ -1,6 +1,6 @@
 // replayCard の invariant テスト。
 // @/lib/fsrs は mock しない — 実 ts-fsrs rate() を使って累積 FSRS state を保証する。
-// submit-review-tx.sequential.test.ts の同等検証を純関数版で再現し、
+// app/api/review-events/bulk/route.test.ts の同等検証を純関数版で再現し、
 // DB 結合なしに fold の正しさを回帰 guard とする。
 
 import { describe, it, expect } from 'vitest'
