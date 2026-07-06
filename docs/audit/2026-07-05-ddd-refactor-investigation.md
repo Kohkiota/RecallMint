@@ -201,3 +201,37 @@ page/_components(presentation)→ hooks(orchestration)→ use-case(application)�
 ## 9. 出典
 
 Explore agent 6 体の生レポートは本書に統合済み(exams UI / データ層 / sync 基盤 / その他 app 領域 / lib サービス群 / API・横断)。個別の file:line 証拠は各節に転記済み。転記時に要約した箇所はあるが、file:line は agent 報告の実測値をそのまま採用。
+
+---
+
+## 10. Codex cross-check 統合(2026-07-06 追記)
+
+`scripts/ai/codex-plan-review.sh` で Codex(gpt-5.5)に独立調査を実行(主入力 = 要件+自力コード調査指示、本書は照合用参考添付。anchor 防止手順準拠)。raw: `docs/codex/2026-07-06-plan-ddd-refactor-investigation.md`。detector PASS。
+
+### 10.1 重複(両者一致 — 確度上がった認定)
+
+- 主問題は「domain が無い」でなく「use-case が presentation/API に混在」(4 hotspot も一致: review-events route / process.ts / card-tags-section / webhooks)。
+- pragmatic DDD 推奨(full DDD は 9 万行 local-first では過剰)。
+- 暗黙契約(advisory lock・fire-and-forget・単一 subscription・commit-on-unmount)が最大の移動リスク。
+- import 境界 lint 不在による再汚染リスク。wire 変更系の別 sprint 化。
+
+### 10.2 Codex 新規論点(CC 調査に無かった採用候補)
+
+1. **cards の split ownership**(Codex 独立論点 2 / 指摘 2): Card は Content(本文・選択肢)+ Learning(FSRS 列)+ Sync(metadata)が同一 row に同居。「Card aggregate 1 個」でなく、**どの use-case がどの列を更新できるか**の所有ルール定義が必要。→ spec で決める設計判断に昇格。
+2. **wire 契約の範囲拡張**(論点 4 / 指摘 1): payload shape だけでなく error code・HTTP status・日本語文言・cache header・revalidatePath・tombstone entity_type・op 名・ops イベント名まで「挙動同一」の契約として凍結対象に含める。特に upload / webhook 抽出で回帰しやすい。
+3. **contract/golden test を P0 に追加**(論点 10 / 指摘 8): E2E より安く behavior-preserving を機械判定できる。対象 = /api/pull response・mutation envelope・review-events bulk result・upload result union・webhook 状態遷移の snapshot 固定。→ P0 の内容を「smoke checklist + contract tests(+E2E は別判断)」に更新。
+4. **単一 source 化の仕分け**(論点 7): 重複はすべて統合ではなく、「shared pure module に寄せる対象」と「意図的な client pre-check + server authoritative の二段構え(UNIQUE/cascade/quota)」を区別。client を authoritative にしない。
+5. **外部サービスの ACL/port 化論点**(指摘 6): Clerk / Stripe / Gemini / ts-fsrs の adapter 境界・失敗分類・idempotency 境界を spec の論点に追加。
+6. **lint 境界は allowlist 付き段階導入**(指摘 9): 現状違反を allowlist 化 → 移設ごとに削る。一括導入は大量移動と絡んでレビュー不能化。
+7. **tenant isolation の構造化**(論点 6): repository 抽象化時に「呼び出し側が userId を忘れられない」設計(scoped repository 等)。
+8. dead code 削除は public import grep + 段階 re-export の手順を踏む(指摘 7)。実施時 HEAD で再スキャンし stale 指摘を除去(指摘 10)。
+
+### 10.3 CC 提案への修正(Codex 指摘を受けた本書の自己修正)
+
+- **P3「Dexie 直アクセスの repository 閉じ込め」を緩和**(指摘 3): mirror 書込 + outbox enqueue + flush kick は単なる persistence でなく application transaction。全面 repository 隠蔽は同期挙動(coalesce/rollback/pull-back)を不可視化するリスク。→ 既存 `runOptimistic*` を application service として明示昇格する方向を主案に(新 repository 層の粒度は spec で判断)。
+- **P4「flush orchestrator 統合」を限定**(指摘 4): review flush には retry controller・pullBack hook・session grouping・threshold があり完全同型ではない。共通化は Web Lock guard / result 分類程度に限定するのが安全。
+- **P4「pull factory 化」に例外意味論の注記**(指摘 5): card_tags の created_at cursor + cards.updated_at bump 依存(§4.2 で把握済みだった穴)を generic factory が落とさないこと。
+
+### 10.4 対立・OT 論点への影響
+
+両者に本質的対立はなし(Codex も pragmatic 寄り・wire 凍結優先・UI は characterization 先行で一致)。§8 の OT 論点への影響: 論点 3(安全網)は「contract tests を P0 標準、E2E は任意」に更新提案。論点 1(DDD の深さ)に「repository 粒度(10.3)」が下位論点として加わる。
