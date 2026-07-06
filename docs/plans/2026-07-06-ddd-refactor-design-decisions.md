@@ -36,6 +36,10 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 - **Dexie 移行コード・lazy migration・旧版 schema 保持は書かない**。Dexie 変更は version bump + 旧定義削除で行う。
 - Dexie store/index 変更は data 喪失リスクとしては**解除**(audit §6.2 の「pending outbox 喪失リスク」は前提消滅)。
 - ただし **Dexie schema 変更は DDD 抽出(コード移動・層再編)とは別 commit に隔離**する — bisect 可能性の維持(「移動で壊れたのか schema で壊れたのか」を切り分け可能に保つ)。
+- **隔離対象は「形の変化」に限定**:
+  - store の追加・削除・index 変更 = D-6 隔離対象(別 commit)。
+  - 既存 store の中身削除のみ(store 名・index・型は不変)= 通常の抽出 commit に同居可。
+  - 理由 = bisect の切り分け対象は「schema の形が変わったか」であり、データの有無ではない(全消可のため)。形が不変なら「移動で壊れた」以外の疑いが無く隔離不要。
 
 ---
 
@@ -56,6 +60,7 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 - 各 phase は sprint フロー(brainstorming → spec → plan → 実装 + canonical/Codex review)に載せる。phase 完了時に本表へ **完了時 HEAD SHA** と **再スキャン箇所**(着手時に audit の該当主張を現 HEAD で再確認した範囲と結果)を記録する。
 - audit の file:line は `5d3baef` 検証時点。**phase 着手時に対象箇所を再スキャン**し、stale があれば audit でなく phase spec 側に現状を記す(audit は歴史記録として凍結)。
 - 状態欄の値: 未着手 / spec 起草中 / plan 確定 / 実装中 / 完了(SHA 記録済)。
+- **状態欄の更新は各 phase の CC が該当 commit と同じ commit で行う**(spec 起草開始時 → spec 起草中、plan 確定 commit 時 → plan 確定、実装 commit 時 → 実装中、完了時 → 完了 + HEAD SHA 記録)。OT push で確定する。
 
 ---
 
@@ -76,3 +81,4 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 ## 4. 変更履歴
 
 - 2026-07-06: 初版(OT 確定判断 D-1〜D-6 / phase 表初期化 / やらない 4+1)。
+- 2026-07-06: D-6 に Dexie 隔離対象の明確化(形の変化に限定)、進捗表に状態更新の責任者・タイミングを追記。
