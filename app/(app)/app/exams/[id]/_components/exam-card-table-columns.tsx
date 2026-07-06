@@ -85,6 +85,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
           if (el) el.indeterminate = table.getIsSomeRowsSelected()
         }}
         onChange={table.getToggleAllRowsSelectedHandler()}
+        // B: th 全域が onClick で全選択トグルするため、checkbox 直 click の bubbling を止めて
+        //    二重発火 (onChange + th onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
+        onClick={(e) => e.stopPropagation()}
         aria-label="全選択"
       />
     ),
@@ -93,6 +96,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         type="checkbox"
         checked={row.getIsSelected()}
         onChange={row.getToggleSelectedHandler()}
+        // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
+        //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
+        onClick={(e) => e.stopPropagation()}
         aria-label={`行選択: ${row.original.card.title}`}
       />
     ),

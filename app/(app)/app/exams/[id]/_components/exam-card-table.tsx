@@ -197,15 +197,21 @@ function TableBody({ table, scrollElementRef }: TableBodyProps) {
                 <td
                   key={cell.id}
                   // T3: border-b を td に付与 (border-separate では tr border-b は効かない)。
+                  // align-top: 全列一律で上揃え (長文セルで頭を揃える。既定 middle からの変更)。
                   // select 列のみ text-center でチェックボックスを水平中央に揃える。
+                  // B: select td 全域をクリック領域化 (cursor-pointer + onClick で選択トグル)。
+                  //    checkbox 直 click は input 側 stopPropagation で二重発火を防ぐ (net no-op 回避)。
                   // S5-3: pinned td = sticky z-[1] + 不透過背景(下を通過するセルの透け防止)。
                   // group-hover: 非 pinned の hover:bg-muted/50(半透明)と同色の不透過合成色(spec D-5)。
                   className={cn(
-                    'px-1 py-1 border-b border-border',
-                    cell.column.id === 'select' && 'text-center',
+                    'px-1 py-1 border-b border-border align-top',
+                    cell.column.id === 'select' && 'text-center cursor-pointer',
                     isPinnedCell && 'sticky z-[1] bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]',
                     isLastPinnedCell && 'border-r',
                   )}
+                  onClick={
+                    cell.column.id === 'select' ? () => row.toggleSelected() : undefined
+                  }
                   // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
                   //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
                   // S5-3: pinned td の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
@@ -696,11 +702,19 @@ export function ExamCardTable({
                     className={cn(
                       isPinned ? 'sticky z-10' : 'relative',
                       'px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
-                      h.column.id === 'select' ? 'text-center align-middle' : 'text-left',
+                      h.column.id === 'select' ? 'text-center align-middle cursor-pointer' : 'text-left',
                       // S5-3: 最右可視 pinned 列にセパレータ (spec D-6)。
                       isLastPinned && 'border-r',
                       // S2-6: cursor-pointer / select-none は trigger button 側へ集約(cell 全体 trigger 化)。
                     )}
+                    // B: select 列 th 全域をクリック領域化 (行 td と一貫、全選択トグル)。
+                    //    header checkbox 直 click は input 側 stopPropagation で二重発火を防ぐ。
+                    //    他列は menu trigger 側が click を持つため th onClick は付けない。
+                    onClick={
+                      h.column.id === 'select'
+                        ? () => table.toggleAllRowsSelected()
+                        : undefined
+                    }
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
                     // S5-3: pinned th の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
                     style={{

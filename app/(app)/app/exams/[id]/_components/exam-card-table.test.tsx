@@ -800,7 +800,7 @@ describe('Fix-3 T2: 行仮想化 — 大 N で DOM 行数が有界 (全 N を mo
 // ===========================================================================
 
 describe('Fix-3 cosmetic: select 列 中央揃え', () => {
-  it('header select th が text-center と align-middle を持ち text-left を持たない (全選択チェックボックスの th)', async () => {
+  it('header select th が text-center / align-middle / cursor-pointer を持ち text-left を持たない (全選択チェックボックスの th)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -813,6 +813,8 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
     const classes = selectTh.className.split(' ')
     expect(classes).toContain('text-center')
     expect(classes).toContain('align-middle')
+    // B: th 全域クリック化のカーソル表現。
+    expect(classes).toContain('cursor-pointer')
     expect(classes).not.toContain('text-left')
 
     // 回帰: コンテナ内の全 th から select 以外は text-left を持つ。
@@ -825,7 +827,7 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
     }
   })
 
-  it('body select td が text-center を持つ (行選択チェックボックスの td)', async () => {
+  it('body select td が text-center / cursor-pointer を持ち、全 td が align-top を持つ (行選択チェックボックスの td + 全列上揃え)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -836,15 +838,103 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
     const selectTd = bodyCheckbox.closest('td') as HTMLElement
     expect(selectTd, 'select td が存在する').not.toBeNull()
     expect(selectTd.className.split(' ')).toContain('text-center')
+    // B: td 全域クリック化のカーソル表現。
+    expect(selectTd.className.split(' ')).toContain('cursor-pointer')
 
-    // 回帰: 同じ行の非 select td は text-center を持たない。
-    // cells[0] = select 列 (columns.test T3 で列順先頭が保証済)。index 1 以降を検証。
+    // 回帰: 同じ行の非 select td は text-center / cursor-pointer を持たない。
+    // C: 全 td (select 含む) が align-top を持つ (全列一律上揃え)。
+    // cells[0] = select 列 (columns.test T3 で列順先頭が保証済)。
     const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
     const cells = row.querySelectorAll('td')
+    expect(selectTd.className.split(' '), 'select td も align-top').toContain('align-top')
     for (let i = 1; i < cells.length; i++) {
       const td = cells[i] as HTMLElement
+      expect(td.className.split(' '), `td[${i}] は align-top を持つ`).toContain('align-top')
       expect(td.className.split(' '), `td[${i}] は text-center を持たない`).not.toContain('text-center')
+      expect(td.className.split(' '), `td[${i}] は cursor-pointer を持たない`).not.toContain('cursor-pointer')
     }
+  })
+})
+
+// ===========================================================================
+// B: checkbox セル全域クリックで選択トグル (checkbox 本体以外の余白も当たり判定)
+// ===========================================================================
+
+describe('B: checkbox セル全域クリック', () => {
+  it('select td (checkbox 外の余白) click で行選択がトグルする', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ })
+    const selectTd = checkbox.closest('td') as HTMLElement
+    expect(checkbox).not.toBeChecked()
+
+    // td 自身を click (checkbox 本体ではなくセル余白のクリックを模す)。
+    fireEvent.click(selectTd)
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked()
+    })
+
+    // 再度 td click で unchecked (トグル)。
+    fireEvent.click(selectTd)
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).not.toBeChecked()
+    })
+  })
+
+  it('checkbox 本体 click は二重発火せず 1 回のトグル (stopPropagation が td onClick を遮断)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ })
+    expect(checkbox).not.toBeChecked()
+
+    // checkbox 本体 click。onChange + td onClick が二重発火すると net no-op になるが、
+    // stopPropagation で td onClick は発火しないため 1 回のトグル = checked になる。
+    fireEvent.click(checkbox)
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked()
+    })
+  })
+
+  it('非 select セル (タイトル列 td) click では選択がトグルしない (hit area は select 列限定)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ })
+    expect(checkbox).not.toBeChecked()
+
+    // 行の 2 番目の td (= title 列。cells[0] は select 列) を click。
+    const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    const titleTd = row.querySelectorAll('td')[1] as HTMLElement
+    fireEvent.click(titleTd)
+
+    // onClick が select 列限定のため、非 select セル click では選択が変化しない。
+    expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).not.toBeChecked()
+  })
+
+  it('全選択 th (checkbox 外の余白) click で全行が選択される', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2), makeCard(3)])
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
+
+    const headerCheckbox = screen.getByRole('checkbox', { name: '全選択' })
+    const selectTh = headerCheckbox.closest('th') as HTMLElement
+
+    // th 余白 click で全選択。
+    fireEvent.click(selectTh)
+    await waitFor(() => {
+      screen.getAllByRole('checkbox', { name: /行選択/ }).forEach((cb) => {
+        expect(cb).toBeChecked()
+      })
+    })
   })
 })
 
