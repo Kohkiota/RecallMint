@@ -34,7 +34,7 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 
 1. **統合 1 本**(表示/編集 2 段廃止)。click-to-edit プリミティブを peek に直載せ。
 2. **overlay 方式**(Portal + fixed right + slide-in)。push(2 カラム)不採用。
-3. **行クリック不使用**(セル click-to-edit と直衝突)。専用トリガー新設(具体案は §3.3 = CC 設計)。
+3. **行クリック不使用**(セル click-to-edit と直衝突)。トリガー = title セル hover ボタン(§3.3、2026-07-06 改訂: 専用列案から変更)。
 4. **書込 = 共通経路**、useLiveQuery で peek 編集がテーブル行へ即反映(追加配線不要)。
 5. **編集範囲 = 単票の全項目**(タイトル / sort_key / 問題文 / 選択肢(テキスト・ID・選択肢別解説・正解切替・追加削除)/ タグ / 解説 / メモ)。
    - 注: brief の列挙に問題文・選択肢 ID は明示されないが「単票の全項目」= `InlineCardList` 1 枚分(`inline-card-list.tsx:280-373`)と同一集合と解釈(問題文抜きの単票編集は成立しないため)。OT レビューで要確認。
@@ -51,14 +51,15 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 - Esc とセル編集の関係: `InlineTextField` は Esc handler を持たない(blur commit のみ)ため、peek 内 input 編集中の Esc は panel close → blur commit で**値は保存されて閉じる**(破壊なし)。tag popover 等 radix 系は layer stack が先に消費する。この挙動を仕様として明記(追加ガードは書かない)。
 - 入退場: `tw-animate-css` の `data-open:slide-in-from-right` / `data-closed:slide-out-to-right`。duration は `duration-200`(既存 popover 系は duration-100 だがパネルは大型のため)+ `motion-reduce:transition-none`(既存慣習)。
 
-### 3.3 開くトリガー = **専用列(非 hideable)**
+### 3.3 開くトリガー = **title セル hover ボタン(Notion 式)**
 
-- **新列 `open` を select 列の直後に追加**(`examCardTableColumns` 配列)。幅 36px 固定・`enableHiding: false`・`enableSorting: false`。セル内容 = icon button(lucide、`aria-label="カードを開く"`)**常時表示**。click で `meta.setActiveCardId(card.id)`(既存 table meta 配線パターン)。開いている行の再 click は close。
-- **title 列ボタン案(旧 spec 凍結案)を不採用にした根拠**: title 列は hideable(column toggle の除外は `select` のみ、`exam-card-table-column-toggle.tsx:35`)。title 非表示にするとトリガーごと消え peek へ到達不能になる。専用列は列 toggle から除外(select と同パターン)し常時到達可能。
-- 既存挙動との非衝突: 専用セルは click-to-edit 要素・checkbox・popover trigger のいずれとも別セル = 伝播衝突なし(stopPropagation 不要)。行 `<tr>` に onClick は引き続き置かない。
-- トリガー button は開状態を持つ: `aria-pressed={開いている行}` + active style(開いている行の視覚手掛かり。行全体のハイライトは足さない — YAGNI)。
-- 列 toggle(`deriveColumnToggleMeta`)の除外に `open` を追加。**pinning・ヘッダーメニューの扱いは select 列の現行挙動と同一に揃える**(独自仕様を発明しない)。列 pinning 境界計算(S5 `computePinnedLeft`)は列定義追加に自動追従するが、回帰 test で担保。
-- キーボード: icon button は natural tab order で到達可(hover 出現式にしないため追加細工不要)。
+- **title 列 cell 内に peek button を新設**(専用 open 列は作らない)。cell を `relative group/peek` wrapper 化し、既存 `InlineTextField`(display div = `role="button"` の click-to-edit)と**兄弟**として `absolute` button を並置する。
+- **click 衝突なし(構造的)**: button は display div の兄弟であり、button click のバブリングは wrapper → td を通り display div の `onClick={startEdit}` を経由しない。**stopPropagation 不要**。行 `<tr>` に onClick は引き続き置かない。
+- button = `<button type="button" aria-label="カードを開く" aria-pressed={activeCardId === card.id}>`(lucide icon、`absolute right-1 top-1 z-[1]`)。click で `meta.openCard(card.id)`(既存 table meta 配線パターン)。開いている行の再 click は close(toggle)。**title 折返し(`whitespace-pre-wrap`・truncate なし・初期幅 80px)にボタンが重なるため不透過背景**(`bg-background` + `shadow-sm`)を敷く。
+- **表示制御(desktop hover / mobile 常時)= CSS のみ**: `opacity-100 md:opacity-0 md:group-hover/peek:opacity-100 md:focus-visible:opacity-100`。desktop は hover/focus-visible で出現、mobile(<md、touch=hover なし)は常時表示。**JS viewport 判定を導入しない**(既存規律)。`display:none` を使わない(opacity 切替)ので desktop でも **Tab 到達可**。
+- **編集中は非表示(CSS のみ)**: title editing 時(display div が Input/Textarea に置換)はボタンを隠す。Tailwind v4 の has- variant(`group-has-[input]/peek:opacity-0 group-has-[input]/peek:pointer-events-none` 相当)で JS/props 追加なしに実現。編集面上にボタンが被るのを防ぐ。
+- 開状態の視覚 = button の `aria-pressed` + active style(例 `aria-pressed:text-foreground`)。行全体のハイライトは足さない(YAGNI)。
+- **title 非表示時は peek 到達不能 = ユーザー責任で許容**(OT 確定)。peek なしでも編集は table 他セル / card view で可能。列 toggle・pinning・ヘッダーメニューへの変更なし(専用列を作らないため）。
 
 ### 3.4 peek のデータ供給(手元 row 流用・live 追従)
 
@@ -115,14 +116,15 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 - カード削除ボタン・カード追加を peek に載せる。
 - judged 風確認ビュー(CardView 複製)— 旧 Edit-4 の遺物。学習確認は study 画面の責務。
 - FAB / ActionBar の退避・レイアウト変更。z-index の全面リナンバー。
-- SessionRunner / InlineCardList / exam-detail-view の view 切替・既存テーブル列(open 列追加を除く)の変更。
-- 行クリック・行 hover トリガー。JS viewport 判定 hook。
+- SessionRunner / InlineCardList / exam-detail-view の view 切替・既存テーブル列(title cell への hover button 追加を除く)の変更。
+- 行クリック・行 hover トリガー(トリガーは title cell 内 button であり行単位ではない)。JS viewport 判定 hook。
+- **design-policy §3.1「デスクトップ既定 = テーブル / モバイル既定 = カード」の実装**(現状は全環境 default `'card'` + per-device 永続で代替。viewport ベース既定切替は未実装)。本 sprint スコープ外・別枠記録のみ(要否は OT 判断)。
 
 ---
 
 ## 5. テスト方針(Vitest + RTL)
 
-- open 列: トリガー存在・click で peek 表示・再 click で close・列 toggle 一覧に `open` が出ない・pinning 境界回帰。
+- title セル トリガー: button 存在・click で peek 表示・再 click で close・aria-pressed 連動・display div(startEdit)非干渉・編集中非表示 class・mobile 常時表示 class。
 - peek 本体: activeCardId の card 内容表示 / `InlineTextField` 等プリミティブが正しい props(cardId/field/userId)で render / × と Esc で close / 外クリック(テーブルセル click)で**閉じない** / `key` remount(カード切替で編集 state リセット)。
 - live 追従: data 更新 → peek 表示反映(既存 exam-card-table.test.tsx のパターン踏襲)。
 - prune: data から削除 → close + null 化。**columnFilters で行が非表示になっても閉じない**。
@@ -135,6 +137,6 @@ side peek の価値 = 長文(解説・メモ)のフル編集・長文確認・�
 
 1. **§3.1-5**: 編集範囲 = `InlineCardList` 1 枚分と同一(問題文・選択肢 ID・選択肢追加削除 含む)の解釈で確定可か。
 2. **§3.7**: 案 b(モバイル全幅 overlay)採用 = design-policy「モバイル full page 遷移」からの逸脱を許容するか(受容リスク: ブラウザ戻る非対応・mobile キーボード干渉は smoke 確認)。
-3. **§3.3**: トリガー = 専用列(常時表示 icon・非 hideable)で確定可か。対抗 = title セル内 hover ボタン(旧案。title 列が hideable なため到達不能ケースあり・不採用推奨)。
+3. ~~**§3.3**: トリガー = 専用列で確定可か~~ → **確定済(2026-07-06)**: title セル hover ボタンに変更。title 非表示時の peek 到達不能はユーザー責任で許容。
 4. **§3.2**(Codex 指摘 — brief の「overlay 方式」から一段踏み込んだ CC 設計判断のため明示確認): non-modal(backdrop なし・テーブル併用可)+ 閉じ方 ×/Esc のみ + **編集中 Esc = blur commit + close(値は保存)**で確定可か。対抗 = Esc をキャンセル扱いにする案は `InlineTextField` への新規挙動追加(fork 禁止と衝突)が必要で不採用推奨。
 5. **§3.1-5**: カード削除ボタンを peek に**載せない**で確定可か(要件「単票の全項目」の解釈次第。載せる場合は confirm-dialog z 重なり・削除→prune close の追加設計が要る)。
