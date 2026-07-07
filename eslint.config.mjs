@@ -64,7 +64,9 @@ const config = [
   },
   // ---------------------------------------------------------------------------
   // Block A: lib/ and components/ must not import from app/ layer.
-  // Shared logic belongs in lib/; violations are allowlisted per-file below (P3 送り).
+  // Shared logic belongs in lib/. NO per-file allowlists remain — Block A is clean
+  // (the last one, contact-form.tsx, was resolved in P4 W5 by moving its server
+  // action to lib/actions/. See P4 plan Task7).
   // ---------------------------------------------------------------------------
   {
     files: ['lib/**/*', 'components/**/*'],
@@ -76,7 +78,7 @@ const config = [
             {
               group: ['@/app/*', '@/app/**', '../app/**', '../**/app/**'],
               message:
-                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (3 known violations are allowlisted per-file below — P3 refactor target)',
+                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (No per-file allowlists remain — Block A is clean as of P4 W5.)',
             },
           ],
         },
@@ -139,8 +141,9 @@ const config = [
   // ---------- Cross-feature visualization allowlist (P3 W7) ----------
   // These sites are FLAGGED by CROSS_FEATURE_PRIVATE_COMPONENTS / LIB_REVERSE_DEP_COMPONENTS
   // above and exempted here so they are tracked (not silently ignored) but not errors.
-  // Each `off` disables no-restricted-imports for the whole file (same side-effect as
-  // the contact-form override) — acceptable as none of these files also have a deep-relative.
+  // Each `off` disables no-restricted-imports for the whole file (the rule is turned off
+  // entirely, not just the flagged pattern) — acceptable as none of these files also have
+  // a deep-relative import that would otherwise need Block B enforcement.
   // 分類:
   //   study/custom→exams・exams→tags (下記 2 block) = 一時的負債 / 機能境界強化時に再評価
   //   column-pinning _lib→_components               = 意図的設計 (columns-as-data SSoT)

@@ -90,6 +90,18 @@
 
 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9。依存は **Task5 が Task4 の後**(移動先 file を書き換えるため)のみ — 他は相互独立だが直列で回す(subagent-driven・task 間 review)。
 
-## 実績欄(実装時に追記)
+## 実績欄
 
-(未着手)
+subagent-driven で 8 code task + Task9 最終 gate 完走。実装完了 HEAD=ff7d263。全 task 挙動不変・P0 golden snapshot 更新ゼロ。
+
+- **Task1**(e5cb93c): outbox-ops.ts 新設(modifyByKeys/dropStaleByKey/createBulkApiClient・MinimalTable 構造 interface で Dexie import ゼロ leaf)。委譲 4 対。in-flight 2 インスタンス + orchestrator 2 file + 非対称部 不触(限定共通化 ≠ 統合・N-2 維持)。canonical Approved Crit0/Imp0/Minor1(defaultClient 型注釈=即修正)。非 risk ゆえ Codex なし。gate: 4 suite 109 + contract77 + typecheck + lint。
+- **Task2**(6ed8fbf): pull-delta.ts getDeltaRows(server-only leaf・generic <TRow,TClient>・since verbatim・maxIso=mapped rows の cursorValueOf)。6 module 置換・return key 不変。study-days-pull 非同型で対象外。canonical + Codex 全 Crit0/Imp0(as unknown as TRow[] = brief pragmatic 準拠・informational)。gate: 6 suite 25 + contract77 + typecheck + lint + build。
+- **Task3**(c402b04): with-read-only-auth.ts。4 route byte-equiv(pull req passthrough / exams-status rethrow 非対称保存)。canonical + Codex 全 Crit0/Imp0(rethrow headers dead alloc=record-only)。gate: 4 route 38 + contract77 + typecheck + lint + build。
+- **Task4**(42fc4a0): clerk.ts→clerk/env-check.ts / stripe.ts→stripe/client.ts(git rename 100%=byte-identical)+ CLAUDE.md path 追随。importer 8 + test mock 9 更新。fail-fast 発火入口 直 import 維持(地雷 ③ 不発火)。shim なし・cycle なし。canonical + Codex 全 Crit0/Imp0/Minor0。gate: 移動 test 32 + contract77 + typecheck + lint + build。
+- **Task5**(dcd40b9): runtime-env.ts(依存ゼロ leaf・runtimeEnv/isProduction)。18 site 純粋 swap(controller 実装直前 rg 再スキャンで確定・webhook-secret-gate〈raw 3 値〉非接触)。logger.expandError export + ops.makeReplacer 削除(byte-exact 重複解消)。循環なし(controller 事前確認: ops→logger one-way)。canonical + Codex 全 Crit0/Imp0/Minor0(ops tombstone コメント=即除去)。gate: 9 suite 138 + contract77 + typecheck + lint + build。
+- **Task6**(d976f1a): classify-bulk-error.ts+.test → lib/retry(git rename 100%)、lib/transient 削除。実装統合なし(transient-error.ts 非接触)。importer 3。canonical + Codex 全 Crit0/Imp0/Minor0。gate: unit 97 + contract77 + typecheck + lint + build。
+- **Task7**(ccaa0d8): contact action → lib/actions/contact.ts(git rename 100%・'use server' 維持)+ Block A allowlist 0 件化。**controller が旧 app file を git rm で移動完遂**(実装者コピー止まり)。import-boundary.test:128 を dual-assertion に書換 + synthetic 2 箇所 generic 化。client→lib 'use server' = Next 標準境界・build pass。canonical + Codex 全 Crit0/Imp0/Minor0。gate: contact+boundary 26 + contract77 + typecheck + lint + build。
+- **Task8**(ff7d263): TEMP-MEASURE 撤去(route.ts measure 配管 + ingest 6 call site unwrap・戻り値/await/throw 伝播同一)。session_upsert_failed 不触。contract 77 snapshot 更新ゼロ = timing/logger 非凍結証明。非 risk ゆえ Codex なし。canonical Approved Crit0/Imp0/Minor0。gate: unit 30 + contract77 + typecheck + lint。
+- **Task9**(本 commit): 最終 gate 全 exit 0(full test 3004 / typecheck / whole-repo lint / contract 77 snapshot 更新ゼロ / build)。**whole-branch review(opus・7d7f22c..ff7d263)= READY TO MERGE / Crit0 Imp0 Minor3**(eslint.config.mjs の Block A stale コメント〈Task7 0 件化で乖離〉= controller 即修正で解消)。CLAUDE.md fail-fast path 実 path 整合確認。SSoT/baseline §B(vi)/本 実績欄 更新。**P4 完了 = DDD リファクタ全体(P0〜P4)完了**。
+
+**自走総括**: OT 停止ゼロ(エスカレーション ①〜⑤ 全不発火)。controller 介入 = per-task Minor 即修正 3(defaultClient 型 / ops tombstone / eslint stale コメント)+ Task7 移動完遂(旧 file git rm)。**教訓 = 移動 task の「旧 file 削除」を implementer prompt に明示すべき**(Task7 でコピー止まり)。
