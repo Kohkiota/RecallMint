@@ -26,9 +26,8 @@ import { newId } from '@/lib/sync/entity-mutations'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
-import { InlineOptionList } from './inline-option-row'
 import { DeleteCardButton } from './delete-card-button'
-import { CardTagsSection } from './card-tags-section'
+import { CardEditorFields } from './card-editor-fields'
 
 // sortLikeServer は @/lib/cards/sort-like-server に抽出済 (S2.3 T3)。 既存 importer
 // (exam-card-table-columns / exam-card-table) の `from './inline-card-list'` 互換のため re-export。
@@ -295,67 +294,22 @@ export function InlineCardList({
                 </div>
               </div>
 
-              <div>
-                {/* Tag-4b Task 3: title 行直下に「タグ」 section を配置。 categories /
-                    options は親で useMemo 安定化、 cardTags は本 card 分だけを Map から
-                    取り出して渡すため、 他 card にタグを付けても本 card の section は
-                    React.memo (CardTagsSection) で再描画 skip される。 */}
-                <CardTagsSection
-                  cardId={card.id}
-                  userId={userId}
-                  categories={categories}
-                  options={options}
-                  cardTags={tagsByCardId.get(card.id) ?? []}
-                />
-              </div>
-
-              <div>
-                <p className="text-xs font-medium text-slate-500">問題文</p>
-                <InlineTextField
-                  cardId={card.id}
-                  field="question_text"
-                  initialValue={card.questionText}
-                  ariaLabel="問題文 編集"
-                  multiline
-                  displayClassName="text-sm text-slate-800"
-                  autoEditOnMount={newCardIds.has(card.id)}
-                />
-              </div>
-
-              <div>
-                {/* per-card 親 InlineOptionList で options 共有 state を管理。
-                    cross-row checkbox race を構造的に解消 (S2.0b-2 follow-up fix)。
-                    S2.0b-3: 選択肢ヘッダ + 正解サマリ も InlineOptionList 内に
-                    co-locate して **optimistic state 経由表示** に統一 (checkbox
-                    toggle で UI と summary が同時に即時更新、 revalidate lag を解消)。 */}
-                <InlineOptionList cardId={card.id} options={card.options} />
-              </div>
-
-              <div>
-                <p className="text-xs font-medium text-slate-500">解説</p>
-                <InlineTextField
-                  cardId={card.id}
-                  field="explanation_text"
-                  initialValue={card.explanationText}
-                  ariaLabel="解説 編集"
-                  multiline
-                  placeholder="解説 (クリックで追加)"
-                  displayClassName="text-sm text-slate-700"
-                />
-              </div>
-
-              <div>
-                <p className="text-xs font-medium text-slate-500">メモ</p>
-                <InlineTextField
-                  cardId={card.id}
-                  field="memo"
-                  initialValue={card.memo}
-                  ariaLabel="メモ 編集"
-                  multiline
-                  placeholder="メモ (クリックで追加)"
-                  displayClassName="text-sm text-slate-700"
-                />
-              </div>
+              {/* タグ + 問題文 + 選択肢 + 解説 + メモ の後段フィールド列は side-peek と
+                  共有 (P3 W4)。categories / options は上で useMemo 安定化済み、cardTags は
+                  本 card 分だけを Map から取り出して透過するため React.memo(CardTagsSection)
+                  の凍結は維持される。autoEditOnMount は新規 card の問題文 auto-edit marker。 */}
+              <CardEditorFields
+                cardId={card.id}
+                userId={userId}
+                categories={categories}
+                tagOptions={options}
+                cardTags={tagsByCardId.get(card.id) ?? []}
+                questionText={card.questionText}
+                options={card.options}
+                explanationText={card.explanationText}
+                memo={card.memo}
+                autoEditOnMount={newCardIds.has(card.id)}
+              />
             </CardContent>
           </Card>
         </li>

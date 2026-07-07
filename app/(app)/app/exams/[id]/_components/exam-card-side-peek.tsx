@@ -19,8 +19,7 @@ import type { ClientCardTag, ClientTagCategory, ClientTagOption } from '@/lib/cl
 
 import type { ExamCardRow } from './exam-card-table-columns'
 import { InlineTextField } from './inline-text-field'
-import { InlineOptionList } from './inline-option-row'
-import { CardTagsSection } from './card-tags-section'
+import { CardEditorFields } from './card-editor-fields'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -128,60 +127,20 @@ export function ExamCardSidePeek({
                   />
                 </div>
 
-                <div>
-                  <CardTagsSection
-                    cardId={row.card.id}
-                    userId={userId}
-                    categories={categories}
-                    options={options}
-                    cardTags={cardTags}
-                  />
-                </div>
-
-                <div>
-                  <p className="text-xs font-medium text-slate-500">問題文</p>
-                  <InlineTextField
-                    cardId={row.card.id}
-                    field="question_text"
-                    initialValue={row.card.question_text}
-                    ariaLabel="問題文 編集"
-                    multiline
-                    displayClassName="text-sm text-slate-800"
-                  />
-                </div>
-
-                <div>
-                  <InlineOptionList
-                    cardId={row.card.id}
-                    options={row.card.options}
-                  />
-                </div>
-
-                <div>
-                  <p className="text-xs font-medium text-slate-500">解説</p>
-                  <InlineTextField
-                    cardId={row.card.id}
-                    field="explanation_text"
-                    initialValue={row.card.explanation_text ?? null}
-                    ariaLabel="解説 編集"
-                    multiline
-                    placeholder="解説 (クリックで追加)"
-                    displayClassName="text-sm text-slate-700"
-                  />
-                </div>
-
-                <div>
-                  <p className="text-xs font-medium text-slate-500">メモ</p>
-                  <InlineTextField
-                    cardId={row.card.id}
-                    field="memo"
-                    initialValue={row.card.memo ?? null}
-                    ariaLabel="メモ 編集"
-                    multiline
-                    placeholder="メモ (クリックで追加)"
-                    displayClassName="text-sm text-slate-700"
-                  />
-                </div>
+                {/* タグ + 問題文 + 選択肢 + 解説 + メモ の後段フィールド列は inline-card-list と
+                    共有 (P3 W4)。cardTags は親(T3)が card_id 整合させた raw をそのまま透過。
+                    autoEditOnMount は side-peek では不要(未指定 = 既定 false)。 */}
+                <CardEditorFields
+                  cardId={row.card.id}
+                  userId={userId}
+                  categories={categories}
+                  tagOptions={options}
+                  cardTags={cardTags}
+                  questionText={row.card.question_text}
+                  options={row.card.options}
+                  explanationText={row.card.explanation_text ?? null}
+                  memo={row.card.memo ?? null}
+                />
               </div>
             </div>
           )}
