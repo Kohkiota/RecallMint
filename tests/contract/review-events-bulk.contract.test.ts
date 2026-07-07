@@ -99,7 +99,7 @@ import {
 } from '../fixtures/review-events'
 
 // ── BULK_TRANSIENT_RETRY_SEC for Retry-After hard-assert ──────────────────────
-import { BULK_TRANSIENT_RETRY_SEC } from '@/lib/transient/classify-bulk-error'
+import { BULK_TRANSIENT_RETRY_SEC } from '@/lib/retry/classify-bulk-error'
 
 // ── Value extractors (no raw Drizzle SQL/AST objects in snapshots) ────────────
 

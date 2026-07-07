@@ -40,7 +40,7 @@ import { logger } from '@/lib/logger'
 import {
   classifyBulkError,
   BULK_TRANSIENT_RETRY_SEC,
-} from '@/lib/transient/classify-bulk-error'
+} from '@/lib/retry/classify-bulk-error'
 import { payloadSchema, processSession, type BulkPayload } from '@/lib/reviews/ingest-review-events'
 
 export const runtime = 'nodejs'

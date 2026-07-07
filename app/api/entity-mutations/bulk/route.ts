@@ -52,7 +52,7 @@ import { logger } from '@/lib/logger'
 import {
   classifyBulkError,
   BULK_TRANSIENT_RETRY_SEC,
-} from '@/lib/transient/classify-bulk-error'
+} from '@/lib/retry/classify-bulk-error'
 
 export const runtime = 'nodejs'
 
