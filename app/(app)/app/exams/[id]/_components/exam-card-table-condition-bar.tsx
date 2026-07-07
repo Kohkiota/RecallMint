@@ -11,8 +11,8 @@
 import * as React from 'react'
 import type { SortingState, ColumnFiltersState, Table } from '@tanstack/react-table'
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import type { AnswerStateFilter, StreakFilterValue, TagFilterValue, TextFilterValue } from '../_lib/card-filter-predicates'
-import { isValuelessTextOp } from '../_lib/card-filter-predicates'
+import type { AnswerStateFilter, StreakFilterValue, TagFilterValue, TextFilterValue } from '@/lib/cards/card-filter-predicates'
+import { isValuelessTextOp } from '@/lib/cards/card-filter-predicates'
 import { ANSWER_STATE_LABELS, STREAK_OP_LABELS, TEXT_OP_LABELS, TEXT_FILTER_COLUMN_IDS } from '../_lib/card-filter-labels'
 import type { ExamCardRow } from './exam-card-table-columns'
 import {

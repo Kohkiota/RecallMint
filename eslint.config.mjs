@@ -33,7 +33,7 @@ const config = [
             {
               group: ['@/app/*', '@/app/**', '../app/**', '../**/app/**'],
               message:
-                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (4 known violations are allowlisted per-file below — P3 refactor target)',
+                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (3 known violations are allowlisted per-file below — P3 refactor target)',
             },
           ],
         },
@@ -73,12 +73,6 @@ const config = [
   // See §B handoff in task-7-report.md for details.
   // ---------------------------------------------------------------------------
 
-  // lib → @/app: get-custom-session-cards.ts imports card-filter-predicates from app layer.
-  // Deferred to P3 — fix = extract predicate types to lib/.
-  {
-    files: ['lib/cards/get-custom-session-cards.ts'],
-    rules: { 'no-restricted-imports': 'off' },
-  },
   // components → @/app: contact-form.tsx imports server action from app layer.
   // Deferred to P3 — fix = move action to lib/ or create dedicated shared action.
   {

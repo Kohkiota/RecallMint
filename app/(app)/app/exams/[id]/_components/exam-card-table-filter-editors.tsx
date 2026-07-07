@@ -21,8 +21,8 @@ import type {
   StreakFilterOp,
   TextFilterOp,
   TextFilterValue,
-} from '../_lib/card-filter-predicates'
-import { isValuelessTextOp } from '../_lib/card-filter-predicates'
+} from '@/lib/cards/card-filter-predicates'
+import { isValuelessTextOp } from '@/lib/cards/card-filter-predicates'
 import { ANSWER_STATE_LABELS, STREAK_OP_LABELS, TEXT_OP_LABELS } from '../_lib/card-filter-labels'
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
  * Verifies the no-restricted-imports rules added to eslint.config.mjs:
  *   Block A — lib/ and components/ must not import @/app/**
  *   Block B — app/ must not use deep relative imports (3+ levels)
- *   Per-file allowlist overrides — the 4 real violations are exempted (P3 target)
+ *   Per-file allowlist overrides — the remaining real violations are exempted (P3 target)
  *
  * WHY ESLint Node API (not RuleTester):
  *   RuleTester tests rule logic in isolation and CANNOT verify flat-config
@@ -18,6 +18,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest'
 import { ESLint, type Linter } from 'eslint'
+import { readFileSync } from 'fs'
 import path from 'path'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
@@ -100,13 +101,28 @@ describe('import-boundary: per-file allowlist overrides (real files must NOT be 
     eslint = new ESLint({ cwd: ROOT })
   })
 
-  it('get-custom-session-cards.ts: @/app import NOT flagged (lib → @/app allowlisted)', async () => {
-    // Linting the real file exercises the `files: ['lib/cards/get-custom-session-cards.ts']` override.
+  it('get-custom-session-cards.ts: reverse-dependency removed — no @/app import, zero restricted messages', async () => {
+    // Task 5 (P1) moved card-filter-predicates app→lib, so get-custom-session-cards now
+    // imports it lib→lib. The single lib→@/app reverse-dependency (and its allowlist
+    // entry) is GONE. Assert the *condition* (no @/app import + zero restricted messages),
+    // NOT a hardcoded allowlist count — so future P2+ allowlist changes can't falsely fail.
+    const source = readFileSync(
+      path.join(ROOT, 'lib/cards/get-custom-session-cards.ts'),
+      'utf8',
+    )
+    expect(
+      source,
+      'get-custom-session-cards.ts must not import from @/app (reverse-dependency removed)',
+    ).not.toMatch(/from ['"]@\/app\//)
+
     const results = await eslint.lintFiles([
       path.join(ROOT, 'lib/cards/get-custom-session-cards.ts'),
     ])
     const restricted = restrictedMessages(results)
-    expect(restricted, 'get-custom-session-cards.ts should have no-restricted-imports allowlisted').toHaveLength(0)
+    expect(
+      restricted,
+      'get-custom-session-cards.ts should produce zero no-restricted-imports messages (reverse-dep gone, no allowlist needed)',
+    ).toHaveLength(0)
   })
 
   it('contact-form.tsx: @/app import NOT flagged (components → @/app allowlisted)', async () => {

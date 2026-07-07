@@ -20,7 +20,7 @@ import {
   type TagFilterValue,
   type AnswerStateFilter,
   type StreakFilterValue,
-} from '@/app/(app)/app/exams/[id]/_lib/card-filter-predicates'
+} from '@/lib/cards/card-filter-predicates'
 import { toCard } from '@/lib/db/cards-mapper'
 import { sortLikeServer } from '@/lib/cards/sort-like-server'
 import type { Card } from '@/lib/db/schema'

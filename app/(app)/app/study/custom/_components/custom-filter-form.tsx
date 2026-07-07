@@ -18,7 +18,7 @@ import type {
   AnswerStateFilter,
   StreakFilterValue,
   StreakFilterOp,
-} from '@/app/(app)/app/exams/[id]/_lib/card-filter-predicates'
+} from '@/lib/cards/card-filter-predicates'
 import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
 import { getCustomSessionCards, selectCustomSessionRows } from '@/lib/cards/get-custom-session-cards'
 import { seedFromCriteria } from '@/lib/cards/seed-from-criteria'

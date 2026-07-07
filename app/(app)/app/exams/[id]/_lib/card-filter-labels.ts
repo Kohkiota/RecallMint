@@ -2,7 +2,7 @@
 // filter-bar / condition-bar / S1-3 editors が共通 import する純粋定数ファイル。
 // S1-2 で exam-card-table-filter-bar.tsx から移設。
 
-import type { AnswerStateFilter, StreakFilterOp, TextFilterOp } from './card-filter-predicates'
+import type { AnswerStateFilter, StreakFilterOp, TextFilterOp } from '@/lib/cards/card-filter-predicates'
 
 export const ANSWER_STATE_LABELS: Record<AnswerStateFilter, string> = {
   all: 'すべて',

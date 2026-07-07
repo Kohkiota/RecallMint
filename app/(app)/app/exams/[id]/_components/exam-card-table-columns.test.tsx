@@ -21,7 +21,7 @@ import { renderHook } from '@testing-library/react'
 import type { ClientCard } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
-import type { TextFilterValue } from '../_lib/card-filter-predicates'
+import type { TextFilterValue } from '@/lib/cards/card-filter-predicates'
 
 // ---------------------------------------------------------------------------
 // Edit-2 T3: mocks for InlineTextField / CompactOptionsCell write paths。

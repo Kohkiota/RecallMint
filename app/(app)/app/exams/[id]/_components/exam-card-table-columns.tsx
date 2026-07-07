@@ -28,7 +28,7 @@ import {
   type AnswerStateFilter,
   type StreakFilterValue,
   type TextFilterValue,
-} from '../_lib/card-filter-predicates'
+} from '@/lib/cards/card-filter-predicates'
 import type { CardWithTags } from '@/lib/cards/join-card-tags'
 import { InlineTextField } from './inline-text-field'
 
