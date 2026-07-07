@@ -33,8 +33,8 @@ import {
   getClientDb,
   type ClientTagCategory,
 } from '@/lib/client-db'
-import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
 import { logger } from '@/lib/logger'
+import { handleDeleteCategory } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderCategories } from '@/lib/tags/reorder-handlers'
 import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
@@ -160,42 +160,13 @@ export function CategoryList({
     const target = pendingDelete.category
     setPendingDelete(null)
 
-    // optimistic cascade purge + enqueue を 1 Dexie rw tx に閉じる
-    // (`runOptimisticMutation` multi-store)。 enqueue throw で Dexie auto-rollback により
-    // cascade purge も巻き戻り、 useLiveQuery が削除前の状態に戻る (silent + 案 a 取り直し)。
-    // server cascade (applyTagCategoryDelete + FK) も等価処理を走らせるが、 二重削除
-    // idempotent (server 真値が pull で上書き)。 `mutate` 内で 子孫 (card_tags) →
-    // 中孫 (tag_options) → 親 (tag_category) の順で物理削除し、 enqueue は helper が tx 内で
-    // mutations を順次 await する (= enqueue より先に物理削除が走る発行順を維持)。
-    const db = getClientDb()
-    void runOptimisticMutation({
-      stores: [db.card_tags, db.tag_options, db.tag_categories],
-      mutate: async () => {
-        const options = await db.tag_options
-          .where('category_id')
-          .equals(target.id)
-          .toArray()
-        const optionIds = options.map((o) => o.id)
-        if (optionIds.length > 0) {
-          await db.card_tags.where('option_id').anyOf(optionIds).delete()
-        }
-        await db.tag_options
-          .where('category_id')
-          .equals(target.id)
-          .delete()
-        await db.tag_categories.delete(target.id)
-      },
-      mutations: [
-        {
-          entity_type: 'tag_category',
-          entity_id: target.id,
-          op: 'delete',
-          patch: {},
-        },
-      ],
-      logEvent: 'tag_category_delete.tx_failed',
-      logContext: { categoryId: target.id },
-    })
+    // optimistic cascade purge + enqueue を 1 Dexie rw tx に閉じる delete use-case へ委譲
+    // (`lib/tags/tag-crud` handleDeleteCategory、 exams 経路と単一 source)。 manager は
+    // silent fire-and-forget のため `{ throwOnError: false }` を明示 (helper 既定 true は
+    // exams / popover の rethrow → setLastError 経路用)。 enqueue throw で Dexie auto-rollback
+    // により cascade purge も巻き戻り、 useLiveQuery が削除前の状態に戻る (案 a 取り直し =
+    // 次回 pull で reconcile)。 UI 状態 (active 解除・confirm dialog・影響集計) は caller に残す。
+    void handleDeleteCategory(target.id, { throwOnError: false })
 
     // 削除対象が現 active なら active を解除。 server pull で IDB から消えた後に
     // 別カテゴリへの自動遷移は今回はしない (空 state へ落とすほうが意図明確)。

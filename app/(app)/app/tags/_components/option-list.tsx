@@ -38,7 +38,7 @@ import {
   type ClientTagCategory,
   type ClientTagOption,
 } from '@/lib/client-db'
-import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
+import { handleDeleteOption } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderOptions } from '@/lib/tags/reorder-handlers'
 import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
@@ -138,31 +138,13 @@ export function OptionList({ userId, activeCategoryId }: Props) {
   const sensors = useTagSortableSensors()
 
   // Tag-4c-2c hotfix H2: ConfirmDialog 経路を撤去し即削除に統一 (popover Tag-4c-1-fix A-3
-  // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 Sync-fix-1 T1b: cascade purge +
-  // enqueue を 1 Dexie rw tx に閉じる (`runOptimisticMutation` multi-store)、 enqueue throw
-  // で Dexie auto-rollback により cascade purge も巻き戻る。 manager は popover と異なり
-  // same-tx atomic 必須ではないが、 silent lost write を構造的に塞ぐため helper 化。
-  // `mutate` 内で 子孫 (card_tags) → 親 (tag_option) の順で物理削除し、 enqueue は helper が
-  // tx 内で mutations を順次 await する (= enqueue より先に物理削除が走る発行順を維持)。
+  // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 cascade purge + enqueue を 1 Dexie
+  // rw tx に閉じる delete use-case へ委譲 (`lib/tags/tag-crud` handleDeleteOption、 exams
+  // 経路と単一 source)。 manager は silent fire-and-forget のため `{ throwOnError: false }` を
+  // 明示 (helper 既定 true は exams / popover の rethrow → setLastError 経路用)。 enqueue throw
+  // で Dexie auto-rollback により cascade purge も巻き戻る (案 a 取り直し = 次回 pull で reconcile)。
   const handleDeleteImmediate = (option: ClientTagOption): void => {
-    const db = getClientDb()
-    void runOptimisticMutation({
-      stores: [db.card_tags, db.tag_options],
-      mutate: async () => {
-        await db.card_tags.where('option_id').equals(option.id).delete()
-        await db.tag_options.delete(option.id)
-      },
-      mutations: [
-        {
-          entity_type: 'tag_option',
-          entity_id: option.id,
-          op: 'delete',
-          patch: {},
-        },
-      ],
-      logEvent: 'tag_option_delete.tx_failed',
-      logContext: { optionId: option.id },
-    })
+    void handleDeleteOption(option.id, { throwOnError: false })
   }
 
   if (activeCategoryId === null) {

@@ -105,5 +105,5 @@ Task4-6 は相互独立だが直列実行(subagent-driven の review 粒度維�
 
 - **Task2 log 制約判断(2026-07-07・OT 確定 Option B)**: 実装前に helper 契約と旧制約「新規 log 出力ゼロ」の衝突が判明(runOptimisticMutation/Update は throwOnError に関わらず catch で必ず logger.warn → rethrow)。裏取り = rename/color 4 関数は既に runOptimisticUpdate + throwOnError: true + `*.tx_failed` log を出しており reject pin(section.test:703 系)pass 済 = タグ mutation の凍結 baseline に既に helper 由来 error-path warn が含まれる。OT 判断 = Option B(warn 許容・sibling 命名規則厳守・shared helper 非改変)。Global Constraints の Task2 制約を更新済。Codex review 確認項目に「log 名が sibling 命名規則に従う」を追加。
 - react-hooks/refs off の判定結果(Task4):
-- tags manager 差分実測の結果(Task3):
+- **tags manager 差分実測の結果(Task3・2026-07-07)**: delete ロジック本体(stores / mutate 順序 / mutations / logEvent 名)は category-list・option-list と tag-crud で **byte-equivalent**(停止条件の「delete 本体差」不発火)。差は 3 点で全て吸収済: (1) throwOnError = helper param 化(`opts?.throwOnError ?? true`・manager が `{throwOnError:false}` 明示で silent 維持・exams は default rethrow)(2) logContext キー = `{id}` に正規化(manager の `{categoryId}/{optionId}` を統一・error-path diagnostic のみ・event 名不変・no test/ops 依存・reviewer record-only)(3) UI state(onSelectCategory / confirm dialog / impact 集計 / 即削除)= caller 残置(D-1)。両 caller suite green・test 無改変。
 - custom-filter-form:21 の確認結果(Task8):

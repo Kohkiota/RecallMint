@@ -163,8 +163,15 @@ export async function handleSetOptionColor(optionId: string, color: string | nul
  * カテゴリを削除する。
  * same-tx atomic: 配下 option の card_tags → tag_options → tag_categories → enqueue を
  * 同一 Dexie tx に収め、 途中失敗で全 store が rollback される。
+ *
+ * `opts.throwOnError` 既定 true (exams / popover 経路は catch → setLastError のため rethrow
+ * を要求、 Task0 §10/§11 の reject pin で固定)。 tags manager は silent fire-and-forget の
+ * ため `{ throwOnError: false }` を明示して呼ぶ (案 a 取り直し = 次回 pull で reconcile)。
  */
-export async function handleDeleteCategory(categoryId: string): Promise<void> {
+export async function handleDeleteCategory(
+  categoryId: string,
+  opts?: { throwOnError?: boolean },
+): Promise<void> {
   const db = getClientDb()
   // tx 内 read (配下 option の列挙) は mutate callback 内で維持する。
   await runOptimisticMutation({
@@ -188,15 +195,22 @@ export async function handleDeleteCategory(categoryId: string): Promise<void> {
     ],
     logEvent: 'tag_category_delete.tx_failed',
     logContext: { id: categoryId },
-    throwOnError: true,
+    throwOnError: opts?.throwOnError ?? true,
   })
 }
 
 /**
  * オプションを削除する。
  * same-tx atomic: card_tags → tag_options → enqueue を同一 Dexie tx に収める。
+ *
+ * `opts.throwOnError` 既定 true (exams / popover 経路は catch → setLastError のため rethrow
+ * を要求、 Task0 §10/§11 の reject pin で固定)。 tags manager は silent fire-and-forget の
+ * ため `{ throwOnError: false }` を明示して呼ぶ (案 a 取り直し = 次回 pull で reconcile)。
  */
-export async function handleDeleteOption(optionId: string): Promise<void> {
+export async function handleDeleteOption(
+  optionId: string,
+  opts?: { throwOnError?: boolean },
+): Promise<void> {
   const db = getClientDb()
   await runOptimisticMutation({
     stores: [db.card_tags, db.tag_options],
@@ -214,7 +228,7 @@ export async function handleDeleteOption(optionId: string): Promise<void> {
     ],
     logEvent: 'tag_option_delete.tx_failed',
     logContext: { id: optionId },
-    throwOnError: true,
+    throwOnError: opts?.throwOnError ?? true,
   })
 }
 
