@@ -24,6 +24,10 @@ import {
   type SyncStatus,
 } from '@/lib/client-db'
 import { newId } from './new-id'
+import { modifyByKeys, dropStaleByKey, createBulkApiClient, type BulkApiClient } from './outbox-ops'
+
+// BulkApiClient 型は outbox-ops.ts に移動。既存 importer は変更不要。
+export type { BulkApiClient } from './outbox-ops'
 
 // UUID 生成 (v4) は lib/sync/new-id.ts に集約。 旧 inline 実装は同 helper を経由する
 // re-export に置換 (外部 caller の `import { newId } from '@/lib/sync/review-events'`
@@ -160,11 +164,7 @@ export async function countPendingAnswerEvents(
 }
 
 async function markAnswerEventsSynced(eventIds: string[]): Promise<void> {
-  if (eventIds.length === 0) return
-  await getClientDb()
-    .answer_events.where('event_id')
-    .anyOf(eventIds)
-    .modify({ sync_status: 'synced' })
+  await modifyByKeys(getClientDb().answer_events, 'event_id', eventIds, { sync_status: 'synced' })
 }
 
 // flush 試行のたびに対象 event の last_attempted_at を打刻する (dormant 列の write
@@ -174,11 +174,7 @@ async function markAnswerEventsAttempted(
   eventIds: string[],
   nowIso: string,
 ): Promise<void> {
-  if (eventIds.length === 0) return
-  await getClientDb()
-    .answer_events.where('event_id')
-    .anyOf(eventIds)
-    .modify({ last_attempted_at: nowIso })
+  await modifyByKeys(getClientDb().answer_events, 'event_id', eventIds, { last_attempted_at: nowIso })
 }
 
 // 24h 超 pending の silent drop。 mount 時の古さ判定で呼ぶ (常駐監視はしない)。
@@ -189,18 +185,16 @@ export async function dropStalePendingAnswerEvents(
   now: number,
   maxAgeMs: number,
 ): Promise<string[]> {
-  const cutoff = now - maxAgeMs
   const pending = await getPendingAnswerEvents()
-  const staleIds = pending
-    .filter((e) => Date.parse(e.answered_at) < cutoff)
-    .map((e) => e.event_id)
-  if (staleIds.length > 0) {
-    await getClientDb()
-      .answer_events.where('event_id')
-      .anyOf(staleIds)
-      .modify({ sync_status: 'failed' })
-  }
-  return staleIds
+  return dropStaleByKey({
+    table: getClientDb().answer_events,
+    keyCol: 'event_id',
+    pending,
+    timestampOf: (e) => e.answered_at,
+    idOf: (e) => e.event_id,
+    now,
+    maxAgeMs,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -226,35 +220,9 @@ export type FlushResult = {
   httpStatus: number
 }
 
-export type BulkApiClient = {
-  post: (payload: unknown) => Promise<{
-    ok: boolean
-    status: number
-    body: { ok?: boolean; failed?: string[]; error?: string } | null
-  }>
-}
-
 // fetch ラッパ (test では injection で差し替え)。
-const defaultClient: BulkApiClient = {
-  post: async (payload) => {
-    try {
-      const res = await fetch(BULK_ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      let body: { ok?: boolean; failed?: string[]; error?: string } | null = null
-      try {
-        body = (await res.json()) as typeof body
-      } catch {
-        body = null
-      }
-      return { ok: res.ok, status: res.status, body }
-    } catch {
-      return { ok: false, status: 0, body: null }
-    }
-  },
-}
+// BulkApiClient 型は outbox-ops.ts に移動 (この file の先頭で re-export 済み)。
+const defaultClient: BulkApiClient = createBulkApiClient(BULK_ENDPOINT)
 
 // 全 session の pending を session_id でまとめて並列 flush する。
 // セッション完了時に「完了 session 本体 + 過去 session の未送信残骸」を一括 sweep するために使う。

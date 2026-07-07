@@ -19,6 +19,7 @@ import { getClientDb, type ClientEntityMutation } from '@/lib/client-db'
 import type { EntityMutationEnvelope } from '@/lib/sync/shared/mutation-schemas'
 import { newId } from './new-id'
 import { type BulkApiClient, type FlushResult } from './review-events'
+import { modifyByKeys, dropStaleByKey, createBulkApiClient } from './outbox-ops'
 
 // UUID 生成 (v4) は lib/sync/new-id.ts に集約。 旧 inline 実装は同 helper を経由する
 // re-export に置換 (外部 caller の `import { newId } from '@/lib/sync/entity-mutations'`
@@ -145,11 +146,7 @@ export async function getPendingEntityMutations(): Promise<ClientEntityMutation[
 export async function markEntityMutationsSynced(
   mutationIds: string[],
 ): Promise<void> {
-  if (mutationIds.length === 0) return
-  await getClientDb()
-    .entity_mutations.where('mutation_id')
-    .anyOf(mutationIds)
-    .modify({ sync_status: 'synced' })
+  await modifyByKeys(getClientDb().entity_mutations, 'mutation_id', mutationIds, { sync_status: 'synced' })
 }
 
 // ---------------------------------------------------------------------------
@@ -165,11 +162,7 @@ export async function markEntityMutationsAttempted(
   mutationIds: string[],
   nowIso: string,
 ): Promise<void> {
-  if (mutationIds.length === 0) return
-  await getClientDb()
-    .entity_mutations.where('mutation_id')
-    .anyOf(mutationIds)
-    .modify({ last_attempted_at: nowIso })
+  await modifyByKeys(getClientDb().entity_mutations, 'mutation_id', mutationIds, { last_attempted_at: nowIso })
 }
 
 // ---------------------------------------------------------------------------
@@ -189,18 +182,16 @@ export async function dropStalePendingEntityMutations(
   now: number,
   maxAgeMs: number,
 ): Promise<string[]> {
-  const cutoff = now - maxAgeMs
   const pending = await getPendingEntityMutations()
-  const staleIds = pending
-    .filter((m) => Date.parse(m.edited_at) < cutoff)
-    .map((m) => m.mutation_id)
-  if (staleIds.length > 0) {
-    await getClientDb()
-      .entity_mutations.where('mutation_id')
-      .anyOf(staleIds)
-      .modify({ sync_status: 'failed' })
-  }
-  return staleIds
+  return dropStaleByKey({
+    table: getClientDb().entity_mutations,
+    keyCol: 'mutation_id',
+    pending,
+    timestampOf: (m) => m.edited_at,
+    idOf: (m) => m.mutation_id,
+    now,
+    maxAgeMs,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -217,27 +208,8 @@ const ENTITY_MUTATION_BULK_ENDPOINT = '/api/entity-mutations/bulk'
 export const inFlightMutationIds = new Set<string>()
 
 // fetch ラッパ (test では injection で差し替え)。
-// review-events.ts の defaultClient と同型、 endpoint のみ差し替え。
-const defaultEntityMutationClient: BulkApiClient = {
-  post: async (payload) => {
-    try {
-      const res = await fetch(ENTITY_MUTATION_BULK_ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      let body: { ok?: boolean; failed?: string[]; error?: string } | null = null
-      try {
-        body = (await res.json()) as typeof body
-      } catch {
-        body = null
-      }
-      return { ok: res.ok, status: res.status, body }
-    } catch {
-      return { ok: false, status: 0, body: null }
-    }
-  },
-}
+// createBulkApiClient で endpoint のみ差し替えた review-events.ts の defaultClient と同型。
+const defaultEntityMutationClient: BulkApiClient = createBulkApiClient(ENTITY_MUTATION_BULK_ENDPOINT)
 
 /**
  * 全 pending entity mutations を 1 回の bulk POST で送信する。
