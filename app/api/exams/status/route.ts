@@ -24,8 +24,8 @@ import { sourceDocuments, type User } from '@/lib/db/schema'
 import {
   STALE_PROCESSING_MS,
   deriveExamStatuses,
-  reconcileStaleProcessing,
-} from '@/lib/exams/source-doc-status'
+} from '@/lib/exams/derive-exam-statuses'
+import { reconcileStaleProcessing } from '@/lib/exams/source-doc-status'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'

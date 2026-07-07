@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveExamStatuses, STALE_PROCESSING_MS } from './source-doc-status'
+import { deriveExamStatuses, STALE_PROCESSING_MS } from './derive-exam-statuses'
 
 // 固定基準時刻: テスト全体で "now" を統一する
 const NOW = new Date('2026-05-20T10:00:00Z')
