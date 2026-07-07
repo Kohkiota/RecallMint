@@ -45,7 +45,7 @@ describe('import-boundary: Block A — lib/components must not import @/app', ()
   })
 
   it('flags a components/ file importing @/app/...', async () => {
-    const code = `import { something } from '@/app/(marketing)/contact/actions'\nexport {}\n`
+    const code = `import { something } from '@/app/some-feature/module'\nexport {}\n`
     const results = await eslint.lintText(code, {
       filePath: path.join(ROOT, 'components/synthetic-boundary-test.tsx'),
     })
@@ -54,9 +54,9 @@ describe('import-boundary: Block A — lib/components must not import @/app', ()
   })
 
   it('flags a components/ file importing app/ via relative parent traversal', async () => {
-    // Ensures the relative-path bypass is blocked: `../../app/(marketing)/contact/actions`
+    // Ensures the relative-path bypass is blocked: `../../app/some-feature/module`
     // must be caught by the `../app/**` / `../**/app/**` patterns in Block A.
-    const code = `import { someAction } from '../../app/(marketing)/contact/actions'\nexport {}\n`
+    const code = `import { someAction } from '../../app/some-feature/module'\nexport {}\n`
     const results = await eslint.lintText(code, {
       filePath: path.join(ROOT, 'components/marketing/synthetic-relative-test.tsx'),
     })
@@ -125,13 +125,25 @@ describe('import-boundary: per-file allowlist overrides (real files must NOT be 
     ).toHaveLength(0)
   })
 
-  it('contact-form.tsx: @/app import NOT flagged (components → @/app allowlisted)', async () => {
-    // Linting the real file exercises the `files: ['components/marketing/contact-form.tsx']` override.
+  it('contact-form.tsx: @/app import removed — no override needed, zero restricted messages (P4 W5)', async () => {
+    // P4 W5 (Task 7): submitContact action moved to lib/actions/contact.ts; contact-form.tsx
+    // now imports @/lib/actions/contact. The Block A allowlist override for contact-form.tsx
+    // was REMOVED. Assert: (a) source no longer has @/app import, (b) the file produces zero
+    // restricted messages WITHOUT any override — proving the clean import (not an exemption)
+    // is what makes it pass.
+    const source = readFileSync(
+      path.join(ROOT, 'components/marketing/contact-form.tsx'),
+      'utf8',
+    )
+    expect(
+      source,
+      'contact-form.tsx must not import from @/app (action moved to lib/actions/contact.ts)',
+    ).not.toMatch(/from ['"]@\/app\//)
     const results = await eslint.lintFiles([
       path.join(ROOT, 'components/marketing/contact-form.tsx'),
     ])
     const restricted = restrictedMessages(results)
-    expect(restricted, 'contact-form.tsx should have no-restricted-imports allowlisted').toHaveLength(0)
+    expect(restricted, 'contact-form.tsx should have zero restricted messages (no @/app import, no override needed)').toHaveLength(0)
   })
 
   it('exam-detail-view.tsx: uses @/ alias for AppContainer — passes Block B WITHOUT an override (P3 W7)', async () => {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { submitContact } from '@/app/(marketing)/contact/actions'
+import { submitContact } from '@/lib/actions/contact'
 import {
   CONTACT_CATEGORIES,
   type ContactCategory,

@@ -23,7 +23,7 @@ import { auth } from '@clerk/nextjs/server'
 import { headers } from 'next/headers'
 import { getDb } from '@/lib/db'
 import { notifyOps } from '@/lib/ops'
-import { submitContact } from './actions'
+import { submitContact } from './contact'
 import { __resetContactRateLimitStore } from '@/lib/rate-limit/contact-action'
 
 // 各 test に固有の IP を割り当てて rate limit bucket を分離する helper。

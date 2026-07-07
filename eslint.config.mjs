@@ -131,12 +131,6 @@ const config = [
   // See §B handoff in task-7-report.md for details.
   // ---------------------------------------------------------------------------
 
-  // components → @/app: contact-form.tsx imports server action from app layer.
-  // Deferred to P4 — fix = move action to lib/ or create dedicated shared action.
-  {
-    files: ['components/marketing/contact-form.tsx'],
-    rules: { 'no-restricted-imports': 'off' },
-  },
   // NOTE (P3 W7): the two former deep-relative overrides (exam-detail-view.tsx +
   // upload/result/[sourceDocumentId]/page.tsx) were REMOVED — both now import
   // AppContainer via the `@/app/(app)/app/_components/app-container` alias and pass
