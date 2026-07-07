@@ -8,7 +8,8 @@ const { mockDb } = vi.hoisted(() => ({
 
 vi.mock('@/lib/db', () => ({ getDb: () => mockDb }))
 
-import { computeStreak, getReviewStatsForUser } from './streak'
+import { computeStreak } from '@/lib/streak-core'
+import { getReviewStatsForUser } from './streak'
 
 describe('computeStreak', () => {
   it('空 → 0', () => {

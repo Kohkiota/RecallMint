@@ -2,10 +2,10 @@
 // pure + Dexie reader 集 (S-perf-3 / dashboard 高速化)。
 //
 // 役割境界:
-// - computeStreak: server `lib/db/streak.ts` の同名関数を 1:1 port した pure 関数。
-//   日付文字列 'YYYY-MM-DD' の set 操作だけで完結し DB / Dexie / 時刻に依存しない。
-//   server / client 両側で **同一仕様** を保つこと (= 数値の食い違いが出ない保証)。
-//   将来 server 側のロジックを変えるときは本ファイルも同期して更新する。
+// - computeStreak: 共有 pure module `lib/streak-core.ts` から import(server 版 streak も
+//   同一 core を共有 = 数値の食い違いが出ない保証)。日付文字列 'YYYY-MM-DD' の set 操作だけで
+//   完結し DB / Dexie / 時刻に依存しない。ロジック変更は `lib/streak-core.ts` 側で行う
+//   (server / client 双方に反映される)。
 // - getStreakStatsFromDexie: Dexie study_days を tenant 絞りで読み、 今日 JST 行の
 //   distinct_card_count と過去 61 日 (review_count > 0) の day 集合 → computeStreak
 //   で連続日数を算出。 server 版 getReviewStatsForUser (`lib/db/streak.ts:67-97`)
@@ -13,40 +13,11 @@
 
 import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
 import { todayInJst } from '@/lib/jst'
+import { computeStreak, addDays } from '@/lib/streak-core'
 
 // streak 用 window: server と同じ 61 日 (today + 過去 60 日)。 60 日 streak の境界
 // 安全マージン 1 日込み。
 const STREAK_WINDOW_DAYS = 61
-
-export function computeStreak(
-  dates: readonly string[],
-  today: string,
-): number {
-  if (dates.length === 0) return 0
-  const set = new Set(dates)
-
-  let cursor: string
-  if (set.has(today)) {
-    cursor = today
-  } else {
-    const y = addDays(today, -1)
-    if (set.has(y)) cursor = y
-    else return 0
-  }
-
-  let count = 0
-  while (set.has(cursor)) {
-    count++
-    cursor = addDays(cursor, -1)
-  }
-  return count
-}
-
-function addDays(ymd: string, delta: number): string {
-  const d = new Date(ymd + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + delta)
-  return d.toISOString().slice(0, 10)
-}
 
 export type StreakStats = {
   todayCardCount: number

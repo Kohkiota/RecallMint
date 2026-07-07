@@ -50,7 +50,7 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 | Phase | 内容(1 行) | 状態 | 完了時 HEAD | 再スキャン記録 |
 |---|---|---|---|---|
 | P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | 完了(SHA 記録済・OT push 待ち) | 7b36e58(実装完了)+ 本 SSoT gate commit | 現 HEAD 全数再スキャン済(§A triage 16 乖離 = intentional 15 / 対象外 1 / bug 0)。deliverable = docs/audit/2026-07-06-p0-contract-baseline.md(§A triage + §B 凍結契約 inventory)/ 2026-07-06-p0-smoke-checklist.md。contract golden = tests/contract/(5 面 77 test)。lint 境界 = eslint.config.mjs + tests/lint/import-boundary.test.ts。gate: whole-repo lint --max-warnings=0 / typecheck / test(2979)/ test:contract(77)全 exit 0 |
-| P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | plan 確定 | — | 現 HEAD `a11afca` grounding 済(carve-out 2 + 型 relocate 1 + 逆依存解消 1 + dedup 2)。spec = specs/2026-07-07-ddd-p1-domain-extraction-design.md / plan = plans/2026-07-07-ddd-p1-domain-extraction.md(8 task)/ Codex plan cross-check = codex/2026-07-07-plan-ddd-p1-domain-extraction.md |
+| P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | 実装中 | — | 現 HEAD `a11afca` grounding 済(carve-out 2 + 型 relocate 1 + 逆依存解消 1 + dedup 2)。spec = specs/2026-07-07-ddd-p1-domain-extraction-design.md / plan = plans/2026-07-07-ddd-p1-domain-extraction.md(8 task)/ Codex plan cross-check = codex/2026-07-07-plan-ddd-p1-domain-extraction.md |
 | P2 | server 側 use-case 化(review-events route → webhooks 2 本 → process.ts 分解) | 未着手 | — | — |
 | P3 | client 側 use-case 化(タグ CRUD 移設 / card write 集約 / side peek 複製解消 / runOptimistic* 昇格 / inline primitive 統合) | 未着手 | — | — |
 | P4 | インフラ DRY(outbox flush 層の限定共通化 / pull server 内 factory / retry・transient 統合 / 認証 wrapper / lib 再編) | 未着手 | — | — |

@@ -1,11 +1,12 @@
 // client streak helper test (S-perf-3 / dashboard 高速化)。
-// computeStreak は server lib/db/streak.ts と同一仕様 (pure port)、
+// computeStreak は共有 pure module lib/streak-core.ts の関数 (server/client 共有 core)、
 // getStreakStatsFromDexie は fake-indexeddb 上の Dexie study_days を直接 seed して
 // dashboard 表示用 { todayCardCount, streak } を算出することを verify。
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
-import { computeStreak, getStreakStatsFromDexie } from './streak'
+import { computeStreak } from '@/lib/streak-core'
+import { getStreakStatsFromDexie } from './streak'
 
 function fakeStudyDay(overrides?: Partial<ClientStudyDay>): ClientStudyDay {
   return {
