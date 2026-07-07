@@ -15,12 +15,15 @@
 // reconcile を撤去した代わりの DB cleanup 経路。
 //
 // Cache-Control: no-store で polling 結果が proxy/CDN にキャッシュされないよう強制。
+//
+// 認証非対称: UnauthenticatedError → 401 (wrapper が処理)。それ以外の auth エラーは
+// rethrow (framework default 500、no-store なし)。この挙動は既存の非対称を保存し
+// authFailEvent を設定しないことで実現する。
 
 import { desc, eq } from 'drizzle-orm'
-import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { UnauthenticatedError } from '@/lib/auth/errors'
+import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
 import { getDb } from '@/lib/db'
-import { sourceDocuments, type User } from '@/lib/db/schema'
+import { sourceDocuments } from '@/lib/db/schema'
 import {
   STALE_PROCESSING_MS,
   deriveExamStatuses,
@@ -30,67 +33,56 @@ import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
 
-export async function GET(): Promise<Response> {
-  const headers = { 'Cache-Control': 'no-store' }
+export const GET = withReadOnlyAuth(
+  {
+    // Clerk session はあるが users 行が未 sync (sign-up race) → 空 statuses を返す。
+    emptyBody: { statuses: {} },
+    // authFailEvent なし → 予期しない auth エラーは rethrow (framework default 500)。
+    // この非対称は既存挙動を保存する (他 3 route の 500+no-store 統一とは異なる)。
+  },
+  async (user, headers) => {
+    try {
+      const now = new Date()
+      // owner-scope 必須。examId / status / createdAt の 3 列のみ取得する。
+      // D1 (S2.0c): DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で
+      // exam ごと最新の source_document 1 行のみを DB 側で畳む。
+      const rows = await getDb()
+        .selectDistinctOn([sourceDocuments.examId], {
+          examId: sourceDocuments.examId,
+          status: sourceDocuments.status,
+          createdAt: sourceDocuments.createdAt,
+        })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.userId, user.id))
+        .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt))
 
-  // -- 認証 --
-  // middleware の isProtectedRoute は /app(.*) のみ対象で /api は protect されない。
-  // 未ログインは getCurrentUser が UnauthenticatedError を throw するため 401 化する。
-  let user: User | null
-  try {
-    user = await getCurrentUser()
-  } catch (err) {
-    if (err instanceof UnauthenticatedError) {
-      return Response.json({ error: 'unauthenticated' }, { status: 401, headers })
+      // 表示用 status map。deriveExamStatuses が 15 分超 processing を failed に倒す。
+      const statuses = deriveExamStatuses(rows, now)
+
+      // 15 分超の processing 残骸があれば DB cleanup を実行する。
+      // D1 後 rows は exam ごと最新行のみ。 hasStale は「いずれかの exam の最新が
+      // stale processing か」を見る。 reconcile は user の stale processing 行を
+      // 全件 status='failed' 化するため、 superseded な古い残骸もまとめて回収される。
+      // 表示は deriveExamStatuses が既に failed 扱いにしているため、reconcile は
+      // DB 整合 (status=failed / upload_records 台帳 append) のためだけに走る。
+      const hasStale = rows.some(
+        (row) =>
+          row.status === 'processing' &&
+          now.getTime() - row.createdAt.getTime() >= STALE_PROCESSING_MS,
+      )
+      if (hasStale) {
+        await reconcileStaleProcessing(user.id, now)
+      }
+
+      return Response.json(
+        { statuses: Object.fromEntries(statuses) },
+        { status: 200, headers },
+      )
+    } catch (err) {
+      // best-effort: polling endpoint の DB エラーで client を壊さない。
+      // client は !res.ok のレスポンスを無視し、現状のバッジ表示を維持する。
+      logger.warn({ event: 'api.exams.status.failed', userId: user.id, err })
+      return Response.json({ error: 'internal' }, { status: 500, headers })
     }
-    throw err
-  }
-  // Clerk session はあるが users 行が未 sync (sign-up race) → 空 statuses を返す。
-  if (!user) {
-    return Response.json({ statuses: {} }, { status: 200, headers })
-  }
-
-  try {
-    const now = new Date()
-    // owner-scope 必須。examId / status / createdAt の 3 列のみ取得する。
-    // D1 (S2.0c): DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で
-    // exam ごと最新の source_document 1 行のみを DB 側で畳む。
-    const rows = await getDb()
-      .selectDistinctOn([sourceDocuments.examId], {
-        examId: sourceDocuments.examId,
-        status: sourceDocuments.status,
-        createdAt: sourceDocuments.createdAt,
-      })
-      .from(sourceDocuments)
-      .where(eq(sourceDocuments.userId, user.id))
-      .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt))
-
-    // 表示用 status map。deriveExamStatuses が 15 分超 processing を failed に倒す。
-    const statuses = deriveExamStatuses(rows, now)
-
-    // 15 分超の processing 残骸があれば DB cleanup を実行する。
-    // D1 後 rows は exam ごと最新行のみ。 hasStale は「いずれかの exam の最新が
-    // stale processing か」を見る。 reconcile は user の stale processing 行を
-    // 全件 status='failed' 化するため、 superseded な古い残骸もまとめて回収される。
-    // 表示は deriveExamStatuses が既に failed 扱いにしているため、reconcile は
-    // DB 整合 (status=failed / upload_records 台帳 append) のためだけに走る。
-    const hasStale = rows.some(
-      (row) =>
-        row.status === 'processing' &&
-        now.getTime() - row.createdAt.getTime() >= STALE_PROCESSING_MS,
-    )
-    if (hasStale) {
-      await reconcileStaleProcessing(user.id, now)
-    }
-
-    return Response.json(
-      { statuses: Object.fromEntries(statuses) },
-      { status: 200, headers },
-    )
-  } catch (err) {
-    // best-effort: polling endpoint の DB エラーで client を壊さない。
-    // client は !res.ok のレスポンスを無視し、現状のバッジ表示を維持する。
-    logger.warn({ event: 'api.exams.status.failed', userId: user.id, err })
-    return Response.json({ error: 'internal' }, { status: 500, headers })
-  }
-}
+  },
+)

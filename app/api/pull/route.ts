@@ -13,8 +13,7 @@
 // Clerk session 不在は 401 を返す (app/api/cards/pull/route.ts と同 pattern)。
 
 import { z } from 'zod'
-import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { UnauthenticatedError } from '@/lib/auth/errors'
+import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
 import { getCardsDelta } from '@/lib/db/cards-pull'
 import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
@@ -33,81 +32,67 @@ function parseSince(raw: string | null): Date | undefined {
   return new Date(raw)
 }
 
-export async function GET(req: Request): Promise<Response> {
-  const headers = { 'Cache-Control': 'no-store' }
+export const GET = withReadOnlyAuth(
+  {
+    // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空レスポンス
+    emptyBody: {
+      cards: [],
+      exams: [],
+      tombstones: [],
+      tag_categories: [],
+      tag_options: [],
+      card_tags: [],
+      cursors: {
+        cards: null,
+        exams: null,
+        tombstone: null,
+        tag_categories: null,
+        tag_options: null,
+        card_tags: null,
+      },
+    },
+    authFailEvent: 'api.pull.auth_failed',
+  },
+  async (user, headers, req) => {
+    const u = new URL(req.url).searchParams
+    const sc = parseSince(u.get('since_cards'))
+    const se = parseSince(u.get('since_exams'))
+    const st = parseSince(u.get('since_tombstone'))
+    const stc = parseSince(u.get('since_tag_categories'))
+    const sto = parseSince(u.get('since_tag_options'))
+    const sct = parseSince(u.get('since_card_tags'))
 
-  let user: Awaited<ReturnType<typeof getCurrentUser>>
-  try {
-    user = await getCurrentUser()
-  } catch (err) {
-    if (err instanceof UnauthenticatedError) {
-      return Response.json({ error: 'unauthenticated' }, { status: 401, headers })
+    try {
+      const [c, e, t, tc, to, ct] = await Promise.all([
+        getCardsDelta(user.id, sc),
+        getExamsDelta(user.id, se),
+        getTombstonesDelta(user.id, st),
+        getCategoriesDelta(user.id, stc),
+        getOptionsDelta(user.id, sto),
+        getCardTagsDelta(user.id, sct),
+      ])
+      return Response.json(
+        {
+          cards: c.rows,
+          exams: e.rows,
+          tombstones: t.rows,
+          tag_categories: tc.rows,
+          tag_options: to.rows,
+          card_tags: ct.rows,
+          cursors: {
+            cards: c.maxUpdatedAt,
+            exams: e.maxUpdatedAt,
+            tombstone: t.maxDeletedAt,
+            tag_categories: tc.maxUpdatedAt,
+            tag_options: to.maxUpdatedAt,
+            card_tags: ct.maxCreatedAt,
+          },
+        },
+        { status: 200, headers },
+      )
+    } catch (err) {
+      logger.warn({ event: 'api.pull.failed', userId: user.id, err })
+      return Response.json({ error: 'internal' }, { status: 500, headers })
     }
-    logger.warn({ event: 'api.pull.auth_failed', err })
-    return Response.json({ error: 'internal' }, { status: 500, headers })
-  }
-
-  // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空レスポンス
-  if (!user) {
-    return Response.json(
-      {
-        cards: [],
-        exams: [],
-        tombstones: [],
-        tag_categories: [],
-        tag_options: [],
-        card_tags: [],
-        cursors: {
-          cards: null,
-          exams: null,
-          tombstone: null,
-          tag_categories: null,
-          tag_options: null,
-          card_tags: null,
-        },
-      },
-      { status: 200, headers },
-    )
-  }
-
-  const u = new URL(req.url).searchParams
-  const sc = parseSince(u.get('since_cards'))
-  const se = parseSince(u.get('since_exams'))
-  const st = parseSince(u.get('since_tombstone'))
-  const stc = parseSince(u.get('since_tag_categories'))
-  const sto = parseSince(u.get('since_tag_options'))
-  const sct = parseSince(u.get('since_card_tags'))
-
-  try {
-    const [c, e, t, tc, to, ct] = await Promise.all([
-      getCardsDelta(user.id, sc),
-      getExamsDelta(user.id, se),
-      getTombstonesDelta(user.id, st),
-      getCategoriesDelta(user.id, stc),
-      getOptionsDelta(user.id, sto),
-      getCardTagsDelta(user.id, sct),
-    ])
-    return Response.json(
-      {
-        cards: c.rows,
-        exams: e.rows,
-        tombstones: t.rows,
-        tag_categories: tc.rows,
-        tag_options: to.rows,
-        card_tags: ct.rows,
-        cursors: {
-          cards: c.maxUpdatedAt,
-          exams: e.maxUpdatedAt,
-          tombstone: t.maxDeletedAt,
-          tag_categories: tc.maxUpdatedAt,
-          tag_options: to.maxUpdatedAt,
-          card_tags: ct.maxCreatedAt,
-        },
-      },
-      { status: 200, headers },
-    )
-  } catch (err) {
-    logger.warn({ event: 'api.pull.failed', userId: user.id, err })
-    return Response.json({ error: 'internal' }, { status: 500, headers })
-  }
-}
+  },
+)

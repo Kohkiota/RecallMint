@@ -11,47 +11,26 @@
 // Cache-Control: no-store で proxy/CDN キャッシュを抑止 (polling endpoint で
 // stale 値を返さないことの保証)。
 
-import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { UnauthenticatedError } from '@/lib/auth/errors'
+import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
 import { getReviewStatsForUser } from '@/lib/db/streak'
 import { logger } from '@/lib/logger'
-import type { User } from '@/lib/db/schema'
 
 export const runtime = 'nodejs'
 
-export async function GET(): Promise<Response> {
-  const headers = { 'Cache-Control': 'no-store' }
-
-  // -- 認証 --
-  // `getCurrentUser` は UnauthenticatedError (Clerk session 不在) と、 内部 users
-  // SELECT 起因の任意 Error の 2 系統を throw しうる。 前者は 401、 後者も
-  // 「dashboard stats 取得失敗」 として 500 + `Cache-Control: no-store` で返す
-  // (review Important #1、 plan の「全 path で Cache-Control: no-store」 を満たす
-  // ため framework default 500 への rethrow を避ける)。
-  let user: User | null
-  try {
-    user = await getCurrentUser()
-  } catch (err) {
-    if (err instanceof UnauthenticatedError) {
-      return Response.json({ error: 'unauthenticated' }, { status: 401, headers })
+export const GET = withReadOnlyAuth(
+  {
+    // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空 stats を返す
+    // (dashboard の既存挙動 = SyncingPage に倒れる前にも 0 表示の安全側)。
+    emptyBody: { todayCardCount: 0, streak: 0 },
+    authFailEvent: 'api.dashboard.stats.auth_failed',
+  },
+  async (user, headers) => {
+    try {
+      const stats = await getReviewStatsForUser(user.id)
+      return Response.json(stats, { status: 200, headers })
+    } catch (err) {
+      logger.warn({ event: 'api.dashboard.stats.failed', userId: user.id, err })
+      return Response.json({ error: 'internal' }, { status: 500, headers })
     }
-    logger.warn({ event: 'api.dashboard.stats.auth_failed', err })
-    return Response.json({ error: 'internal' }, { status: 500, headers })
-  }
-  // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空 stats を返す
-  // (dashboard の既存挙動 = SyncingPage に倒れる前にも 0 表示の安全側)。
-  if (!user) {
-    return Response.json(
-      { todayCardCount: 0, streak: 0 },
-      { status: 200, headers },
-    )
-  }
-
-  try {
-    const stats = await getReviewStatsForUser(user.id)
-    return Response.json(stats, { status: 200, headers })
-  } catch (err) {
-    logger.warn({ event: 'api.dashboard.stats.failed', userId: user.id, err })
-    return Response.json({ error: 'internal' }, { status: 500, headers })
-  }
-}
+  },
+)
