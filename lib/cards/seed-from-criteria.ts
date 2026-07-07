@@ -2,7 +2,7 @@
 // 同一 criteria → 同一乱数系列 を保証することで、プレビューと実セッションが
 // 同じ random 順になる (preview == session)。
 
-import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 
 // ---------------------------------------------------------------------------
 // mulberry32 PRNG

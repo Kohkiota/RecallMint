@@ -4,7 +4,8 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { seedFromCriteria } from './seed-from-criteria'
-import { selectCustomSessionRows, type CustomSessionCriteria } from './get-custom-session-cards'
+import { selectCustomSessionRows } from './get-custom-session-cards'
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 
 // ---------------------------------------------------------------------------

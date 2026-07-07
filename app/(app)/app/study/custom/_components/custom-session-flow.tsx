@@ -12,7 +12,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import type { Card } from '@/lib/db/schema'
-import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 import { getCustomSessionCards } from '@/lib/cards/get-custom-session-cards'
 import { seedFromCriteria } from '@/lib/cards/seed-from-criteria'
 import { SessionLauncher } from '../../_components/session-launcher'

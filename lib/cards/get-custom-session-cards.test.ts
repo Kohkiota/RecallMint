@@ -7,8 +7,8 @@ import { getClientDb, type ClientCard } from '@/lib/client-db'
 import {
   getCustomSessionCards,
   selectCustomSessionRows,
-  type CustomSessionCriteria,
 } from './get-custom-session-cards'
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 
 // ---------------------------------------------------------------------------
 // ファクトリ

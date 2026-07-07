@@ -17,29 +17,11 @@ import {
   matchesTagFilter,
   matchesAnswerState,
   matchesStreakFilter,
-  type TagFilterValue,
-  type AnswerStateFilter,
-  type StreakFilterValue,
 } from '@/lib/cards/card-filter-predicates'
 import { toCard } from '@/lib/db/cards-mapper'
 import { sortLikeServer } from '@/lib/cards/sort-like-server'
 import type { Card } from '@/lib/db/schema'
-
-// ---------------------------------------------------------------------------
-// 入力型
-// ---------------------------------------------------------------------------
-
-export type CustomSessionCriteria = {
-  userId: string
-  /** 絞り込む exam の id 集合。 空配列 = 全 exam (絞り込みなし)。 */
-  examIds: string[]
-  tagFilter: TagFilterValue
-  answerState: AnswerStateFilter
-  streakFilter: StreakFilterValue | null
-  order: 'random' | 'sequential'
-  /** null = 全件 (cap 無効)。 */
-  limit: number | null
-}
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 
 // ---------------------------------------------------------------------------
 // Fisher-Yates in-place shuffle

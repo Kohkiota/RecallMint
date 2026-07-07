@@ -19,7 +19,7 @@ import type {
   StreakFilterValue,
   StreakFilterOp,
 } from '@/lib/cards/card-filter-predicates'
-import type { CustomSessionCriteria } from '@/lib/cards/get-custom-session-cards'
+import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 import { getCustomSessionCards, selectCustomSessionRows } from '@/lib/cards/get-custom-session-cards'
 import { seedFromCriteria } from '@/lib/cards/seed-from-criteria'
 import { CustomSessionPreview } from './custom-session-preview'
