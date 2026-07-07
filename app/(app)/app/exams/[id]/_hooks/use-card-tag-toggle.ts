@@ -19,8 +19,7 @@ import {
   type ClientTagOption,
 } from '@/lib/client-db'
 import { buildNextTagSet } from '@/lib/tags/build-next-tag-set'
-import { enqueueEntityMutation } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,12 +92,14 @@ export function useCardTagToggle({ userId, getCardContext }: UseCardTagToggleArg
       const db = getClientDb()
       const nowIso = new Date().toISOString()
 
-      // optimistic mirror 書込と outbox enqueue を同一 Dexie tx に寄せる。
+      // optimistic mirror 書込と outbox enqueue を同一 Dexie tx に寄せる (共有 helper)。
       // 「UI だけ反映され送信予約が無い」状態を構造的に排除: enqueue が失敗すれば Dexie が
-      // tx を自動 rollback、mirror も元に戻る。flush (ネットワーク送信) は tx 外で fire-and-
-      // forget、outbox row は残るため次回 trigger で再送される。
-      try {
-        await db.transaction('rw', db.card_tags, db.entity_mutations, async () => {
+      // tx を自動 rollback、mirror も元に戻る。既定 (throwOnError 省略 = silent) は catch 後
+      // silent return + logger.warn 1 行 — 旧 try/catch { return } と同じ「案 a 取り直し」経路
+      // (次回 pull が server 値で reconcile)。flush は helper が tx 外で fire-and-forget。
+      await runOptimisticMutation({
+        stores: [db.card_tags],
+        mutate: async () => {
           for (const id of toRemove) await db.card_tags.delete([cardId, id])
           for (const id of toAdd) {
             await db.card_tags.put({
@@ -108,21 +109,18 @@ export function useCardTagToggle({ userId, getCardContext }: UseCardTagToggleArg
               created_at: nowIso,
             })
           }
-          await enqueueEntityMutation({
+        },
+        mutations: [
+          {
             entity_type: 'card',
             entity_id: cardId,
             op: 'update_field',
             patch: { field: 'tag_option_ids', value: next },
-          })
-        })
-      } catch {
-        // Dexie tx auto-rollback 済 (mirror + outbox 共に未反映)。案 a 取り直し経路で
-        // 次回 pull が server 値で reconcile するため、UI への明示通知は省略。
-        return
-      }
-
-      // flush は tx 外で best-effort。失敗しても outbox row は残り次回 trigger で再送される。
-      void runGuardedEntityMutationFlush().catch(() => {})
+          },
+        ],
+        logEvent: 'card_tag_toggle.tx_failed',
+        logContext: { cardId },
+      })
     },
     // getCardContextRef は安定した ref オブジェクト (最新値は useEffect で更新) のため
     // deps に含めない。 userId のみを deps に含める。

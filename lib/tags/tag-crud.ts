@@ -16,9 +16,12 @@ import {
   type ClientTagOption,
   type ClientCardTag,
 } from '@/lib/client-db'
-import { enqueueEntityMutation, type EnqueueEntityMutationInput } from '@/lib/sync/entity-mutations'
-import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
-import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
+import { type EnqueueEntityMutationInput } from '@/lib/sync/entity-mutations'
+import {
+  runOptimisticCreate,
+  runOptimisticMutation,
+  runOptimisticUpdate,
+} from '@/lib/sync/optimistic-mutation'
 import { nextSortKey } from '@/lib/tags/next-sort-key'
 
 // ---------------------------------------------------------------------------
@@ -163,13 +166,10 @@ export async function handleSetOptionColor(optionId: string, color: string | nul
  */
 export async function handleDeleteCategory(categoryId: string): Promise<void> {
   const db = getClientDb()
-  await db.transaction(
-    'rw',
-    db.card_tags,
-    db.tag_options,
-    db.tag_categories,
-    db.entity_mutations,
-    async () => {
+  // tx 内 read (配下 option の列挙) は mutate callback 内で維持する。
+  await runOptimisticMutation({
+    stores: [db.card_tags, db.tag_options, db.tag_categories],
+    mutate: async () => {
       const options = await db.tag_options.where('category_id').equals(categoryId).toArray()
       const optionIds = options.map((o) => o.id)
       if (optionIds.length > 0) {
@@ -177,15 +177,19 @@ export async function handleDeleteCategory(categoryId: string): Promise<void> {
       }
       await db.tag_options.where('category_id').equals(categoryId).delete()
       await db.tag_categories.delete(categoryId)
-      await enqueueEntityMutation({
+    },
+    mutations: [
+      {
         entity_type: 'tag_category',
         entity_id: categoryId,
         op: 'delete',
         patch: {},
-      })
-    },
-  )
-  void runGuardedEntityMutationFlush().catch(() => {})
+      },
+    ],
+    logEvent: 'tag_category_delete.tx_failed',
+    logContext: { id: categoryId },
+    throwOnError: true,
+  })
 }
 
 /**
@@ -194,23 +198,24 @@ export async function handleDeleteCategory(categoryId: string): Promise<void> {
  */
 export async function handleDeleteOption(optionId: string): Promise<void> {
   const db = getClientDb()
-  await db.transaction(
-    'rw',
-    db.card_tags,
-    db.tag_options,
-    db.entity_mutations,
-    async () => {
+  await runOptimisticMutation({
+    stores: [db.card_tags, db.tag_options],
+    mutate: async () => {
       await db.card_tags.where('option_id').equals(optionId).delete()
       await db.tag_options.delete(optionId)
-      await enqueueEntityMutation({
+    },
+    mutations: [
+      {
         entity_type: 'tag_option',
         entity_id: optionId,
         op: 'delete',
         patch: {},
-      })
-    },
-  )
-  void runGuardedEntityMutationFlush().catch(() => {})
+      },
+    ],
+    logEvent: 'tag_option_delete.tx_failed',
+    logContext: { id: optionId },
+    throwOnError: true,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -274,41 +279,38 @@ export async function handleCreateCategory(
   name: string,
   selectType: 'single' | 'multi',
 ): Promise<{ id: string }> {
-  if (!userId) {
-    console.error('[Tag-4c-2a] empty user_id, aborting handleCreateCategory')
-    throw new Error('empty user_id')
-  }
+  // 空 userId の fail-fast (console.error + throw) は runOptimisticCreate に委ねる
+  // (helper が userId === '' で同一挙動、 D-2 の二重実装回避 = N-5)。
   const db = getClientDb()
   const id = crypto.randomUUID()
   const sortKey = nextSortKey(existingCategories.map((c) => c.sort_key))
-  const nowIso = new Date().toISOString()
 
-  await db.transaction(
-    'rw',
-    db.tag_categories,
-    db.entity_mutations,
-    async () => {
-      await db.tag_categories.put({
-        id,
-        user_id: userId,
-        name,
-        select_type: selectType,
-        color: null,
-        sort_key: sortKey,
-        created_at: nowIso,
-        updated_at: nowIso,
-      })
-      await enqueueEntityMutation({
-        entity_type: 'tag_category',
-        entity_id: id,
-        op: 'create',
-        patch: { name, select_type: selectType, sort_key: sortKey },
-      })
-    },
-  )
-
-  void runGuardedEntityMutationFlush().catch(() => {})
-  return { id }
+  // providedId = 現行 crypto.randomUUID 値、 buildRow/buildMutation は sortKey を閉じ込め、
+  // created_at/updated_at には helper 採番の同一 nowIso が入る (現行と同一値契約)。
+  return runOptimisticCreate({
+    userId,
+    id,
+    mirrorStore: db.tag_categories,
+    buildRow: (newCategoryId, nowIso) => ({
+      id: newCategoryId,
+      user_id: userId,
+      name,
+      select_type: selectType,
+      color: null,
+      sort_key: sortKey,
+      created_at: nowIso,
+      updated_at: nowIso,
+    }),
+    buildMutation: (newCategoryId) => ({
+      entity_type: 'tag_category',
+      entity_id: newCategoryId,
+      op: 'create',
+      patch: { name, select_type: selectType, sort_key: sortKey },
+    }),
+    logEvent: 'tag_category_create.tx_failed',
+    logContext: { categoryId: id },
+    throwOnError: true,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -362,22 +364,26 @@ export async function createOption(
   categoryId: string,
   name: string,
 ): Promise<string> {
+  // 空 userId の fail-fast は buildNewOption が console.error なしで throw するため、
+  // 現行の console.error + throw 契約を保つべく guard を先行させる。
   if (!userId) {
     console.error('[Fix-1] empty user_id, aborting createOption')
     throw new Error('empty user_id')
   }
   const db = getClientDb()
+  // buildNewOption が id / row / enqueue payload を採番済 — helper へ同一値を流し込む
+  // (providedId = newOptionId、 buildRow/buildMutation は事前構築値を返す = 現行と同一値契約)。
   const { newOptionId, optionRow, enqueueInput } = buildNewOption(userId, existingOptions, categoryId, name)
-  await db.transaction(
-    'rw',
-    db.tag_options,
-    db.entity_mutations,
-    async () => {
-      await db.tag_options.put(optionRow)
-      await enqueueEntityMutation(enqueueInput)
-    },
-  )
-  void runGuardedEntityMutationFlush().catch(() => {})
+  await runOptimisticCreate({
+    userId,
+    id: newOptionId,
+    mirrorStore: db.tag_options,
+    buildRow: () => optionRow,
+    buildMutation: () => enqueueInput,
+    logEvent: 'tag_option_create.tx_failed',
+    logContext: { optionId: newOptionId },
+    throwOnError: true,
+  })
   return newOptionId
 }
 
@@ -436,12 +442,11 @@ export async function handleCreateOptionAndAssign(
   newSet.add(newOptionId)
   const next = [...newSet]
 
-  await db.transaction(
-    'rw',
-    db.tag_options,
-    db.card_tags,
-    db.entity_mutations,
-    async () => {
+  // 2 mutations のため runOptimisticCreate ではなく runOptimisticMutation を使う。
+  // enqueue 順は mutations 配列の順序で保持される: (1) tag_option create → (2) card update_field。
+  await runOptimisticMutation({
+    stores: [db.tag_options, db.card_tags],
+    mutate: async () => {
       // 1) tag_options mirror put
       await db.tag_options.put(optionRow)
       // 2) card_tags 差分書込 (single 時のみ toRemove あり)
@@ -454,18 +459,22 @@ export async function handleCreateOptionAndAssign(
         user_id: userId,
         created_at: nowIso,
       })
-      // 3) enqueue 2 連発: tag_option create + card update_field
-      await enqueueEntityMutation(enqueueInput)
-      await enqueueEntityMutation({
+    },
+    mutations: [
+      // (1) tag_option create
+      enqueueInput,
+      // (2) card update_field tag_option_ids
+      {
         entity_type: 'card',
         entity_id: cardId,
         op: 'update_field',
         patch: { field: 'tag_option_ids', value: next },
-      })
-    },
-  )
-
-  void runGuardedEntityMutationFlush().catch(() => {})
+      },
+    ],
+    logEvent: 'tag_option_create_assign.tx_failed',
+    logContext: { cardId, optionId: newOptionId },
+    throwOnError: true,
+  })
 }
 
 // ---------------------------------------------------------------------------

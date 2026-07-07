@@ -36,6 +36,9 @@ const mockTagCategoriesUpdate = vi.fn(async () => 1)
 const mockTagCategoriesDelete = vi.fn(async () => undefined)
 // Tag-4c-2a: handleCreateCategory が呼ぶ put (default mock; 個別テストで vi.fn 差替も可能)
 const mockTagCategoriesPutDefault = vi.fn(async () => undefined)
+// P3 Task2: create 系は runOptimisticCreate 経由で mirrorStore.add() を呼ぶ (put ではなく add)。
+// default mock に add を用意 (fresh UUID なので add=put と同一 DB 効果、 upsert 差は無関係)。
+const mockTagCategoriesAddDefault = vi.fn(async () => undefined)
 // Fix A-2: handleRenameCategory が全件 check に使う toArray
 const mockTagCategoriesToArray = vi.fn(async () => [] as unknown[])
 
@@ -44,6 +47,8 @@ const mockTagOptionsUpdate = vi.fn(async () => 1)
 const mockTagOptionsDelete = vi.fn(async () => undefined)
 // Tag-4c-2a: handleCreateOptionAndAssign が呼ぶ put (default mock)
 const mockTagOptionsPutDefault = vi.fn(async () => undefined)
+// P3 Task2: createOption は runOptimisticCreate 経由で tag_options.add() を呼ぶ。
+const mockTagOptionsAddDefault = vi.fn(async () => undefined)
 
 // チェーン可能な where mock 生成ヘルパー
 // db.tag_options.where('category_id').equals(id).toArray() / .delete()
@@ -69,33 +74,41 @@ const mockTagOptionsWhere = vi.fn(() => tagOptionsWhereImpl())
 const mockTagCategoriesWhere = vi.fn(() => tagCategoriesWhereImpl())
 const mockCardTagsWhere = vi.fn(() => cardTagsWhereImpl())
 
+// P3 Task2: 実 getClientDb は module-level singleton を返す。 helper 寄せ後は 1 handler 内で
+// getClientDb() が 2 回 (handler 本体 + helper 内部) 呼ばれるため、 呼び毎に fresh object を
+// 返すと entity_mutations の参照が食い違い table-args 検証が壊れる。 singleton を返して実挙動
+// と揃える (override test は mockReturnValue が固定 object を返すため元から安定)。
+const mockDbSingleton = {
+  transaction: mockTransaction,
+  card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
+  tag_categories: {
+    get: mockTagCategoriesGet,
+    update: mockTagCategoriesUpdate,
+    delete: mockTagCategoriesDelete,
+    put: mockTagCategoriesPutDefault,
+    add: mockTagCategoriesAddDefault,
+    where: mockTagCategoriesWhere,
+    toArray: mockTagCategoriesToArray,
+  },
+  tag_options: {
+    get: mockTagOptionsGet,
+    update: mockTagOptionsUpdate,
+    delete: mockTagOptionsDelete,
+    put: mockTagOptionsPutDefault,
+    add: mockTagOptionsAddDefault,
+    where: mockTagOptionsWhere,
+  },
+  // entity_mutations は実 op をモジュールレベルで mock 済 (enqueueEntityMutation)
+  // のため空 object で十分 (`db.transaction(...)` が table 参照のために touch する
+  // だけで、 実際の query は走らない)。
+  entity_mutations: {},
+}
+
 vi.mock('@/lib/client-db', async () => {
   const actual = await vi.importActual<typeof import('@/lib/client-db')>('@/lib/client-db')
   return {
     ...actual,
-    getClientDb: vi.fn(() => ({
-      transaction: mockTransaction,
-      card_tags: { delete: mockDelete, put: mockPut, where: mockCardTagsWhere },
-      tag_categories: {
-        get: mockTagCategoriesGet,
-        update: mockTagCategoriesUpdate,
-        delete: mockTagCategoriesDelete,
-        put: mockTagCategoriesPutDefault,
-        where: mockTagCategoriesWhere,
-        toArray: mockTagCategoriesToArray,
-      },
-      tag_options: {
-        get: mockTagOptionsGet,
-        update: mockTagOptionsUpdate,
-        delete: mockTagOptionsDelete,
-        put: mockTagOptionsPutDefault,
-        where: mockTagOptionsWhere,
-      },
-      // entity_mutations は実 op をモジュールレベルで mock 済 (enqueueEntityMutation)
-      // のため空 object で十分 (`db.transaction(...)` が table 参照のために touch する
-      // だけで、 実際の query は走らない)。
-      entity_mutations: {},
-    })),
+    getClientDb: vi.fn(() => mockDbSingleton),
   }
 })
 
@@ -557,7 +570,7 @@ describe('CardTagsSection — optimistic atomic tx + user_id', () => {
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
     // 中間引数 (tables) に card_tags と entity_mutations の両方の table object 参照が含まれる
-    const tableArgs = firstCall.slice(1, -1) // 最後の cb を除く
+    const tableArgs = firstCall.slice(1, -1).flat() // 最後の cb を除く
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as {
       card_tags: unknown
       entity_mutations: unknown
@@ -1038,7 +1051,7 @@ describe('handleDeleteCategory', () => {
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
-    const tableArgs = firstCall.slice(1, -1)
+    const tableArgs = firstCall.slice(1, -1).flat()
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
     expect(tableArgs).toContain(db.card_tags)
     expect(tableArgs).toContain(db.tag_options)
@@ -1118,7 +1131,7 @@ describe('handleDeleteOption', () => {
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
-    const tableArgs = firstCall.slice(1, -1)
+    const tableArgs = firstCall.slice(1, -1).flat()
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
     expect(tableArgs).toContain(db.card_tags)
     expect(tableArgs).toContain(db.tag_options)
@@ -1408,7 +1421,7 @@ describe('handleCreateCategory', () => {
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
-    const tableArgs = firstCall.slice(1, -1)
+    const tableArgs = firstCall.slice(1, -1).flat()
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
     expect(tableArgs).toContain(db.tag_categories)
     expect(tableArgs).toContain(db.entity_mutations)
@@ -1427,7 +1440,7 @@ describe('handleCreateCategory', () => {
         get: mockTagCategoriesGet,
         update: mockTagCategoriesUpdate,
         delete: mockTagCategoriesDelete,
-        put: mockTagCategoriesPut,
+        add: mockTagCategoriesPut,
         where: mockTagCategoriesWhere,
         toArray: mockTagCategoriesToArray,
       },
@@ -1512,7 +1525,7 @@ describe('handleCreateCategory', () => {
         get: mockTagCategoriesGet,
         update: mockTagCategoriesUpdate,
         delete: mockTagCategoriesDelete,
-        put: mockTagCategoriesPut,
+        add: mockTagCategoriesPut,
         where: mockTagCategoriesWhere,
         toArray: mockTagCategoriesToArray,
       },
@@ -1550,7 +1563,7 @@ describe('handleCreateCategory', () => {
         get: mockTagCategoriesGet,
         update: mockTagCategoriesUpdate,
         delete: mockTagCategoriesDelete,
-        put: mockTagCategoriesPut,
+        add: mockTagCategoriesPut,
         where: mockTagCategoriesWhere,
         toArray: mockTagCategoriesToArray,
       },
@@ -1590,7 +1603,7 @@ describe('handleCreateCategory', () => {
         get: mockTagCategoriesGet,
         update: mockTagCategoriesUpdate,
         delete: mockTagCategoriesDelete,
-        put: mockTagCategoriesPut,
+        add: mockTagCategoriesPut,
         where: mockTagCategoriesWhere,
         toArray: mockTagCategoriesToArray,
       },
@@ -1673,7 +1686,7 @@ describe('handleCreateOptionAndAssign', () => {
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
-    const tableArgs = firstCall.slice(1, -1)
+    const tableArgs = firstCall.slice(1, -1).flat()
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
     expect(tableArgs).toContain(db.tag_options)
     expect(tableArgs).toContain(db.card_tags)
@@ -2022,13 +2035,13 @@ describe('buildNewOption — pure unit', () => {
 // ===========================================================================
 
 describe('createOption — mock-based', () => {
-  let mockTagOptionsPut2: ReturnType<typeof vi.fn>
+  let mockTagOptionsAdd2: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.spyOn(crypto, 'randomUUID').mockReturnValue(
       'opt-create-1' as `${string}-${string}-${string}-${string}-${string}`,
     )
-    mockTagOptionsPut2 = vi.fn(async () => undefined)
+    mockTagOptionsAdd2 = vi.fn(async () => undefined)
     ;(getClientDb as ReturnType<typeof vi.fn>).mockReturnValue({
       transaction: mockTransaction,
       card_tags: {
@@ -2047,20 +2060,20 @@ describe('createOption — mock-based', () => {
         get: mockTagOptionsGet,
         update: mockTagOptionsUpdate,
         delete: mockTagOptionsDelete,
-        put: mockTagOptionsPut2,
+        add: mockTagOptionsAdd2,
         where: mockTagOptionsWhere,
       },
       entity_mutations: {},
     })
   })
 
-  it('正常系: newOptionId を返し、 tag_options.put / enqueueEntityMutation (tag_option create) が呼ばれる', async () => {
+  it('正常系: newOptionId を返し、 tag_options.add / enqueueEntityMutation (tag_option create) が呼ばれる', async () => {
     const id = await createOption('user-1', [], 'cat-1', '新option')
 
     expect(id).toBe('opt-create-1')
-    // tag_options.put が newOptionId で呼ばれた
-    expect(mockTagOptionsPut2).toHaveBeenCalledTimes(1)
-    const putArg = mockTagOptionsPut2.mock.calls[0][0] as Record<string, unknown>
+    // tag_options.add が newOptionId で呼ばれた
+    expect(mockTagOptionsAdd2).toHaveBeenCalledTimes(1)
+    const putArg = mockTagOptionsAdd2.mock.calls[0][0] as Record<string, unknown>
     expect(putArg.id).toBe('opt-create-1')
     expect(putArg.category_id).toBe('cat-1')
     expect(putArg.name).toBe('新option')
@@ -2084,7 +2097,7 @@ describe('createOption — mock-based', () => {
     await expect(createOption('', [], 'cat-1', '新')).rejects.toThrow('empty user_id')
     expect(errSpy).toHaveBeenCalled()
     expect(mockTransaction).not.toHaveBeenCalled()
-    expect(mockTagOptionsPut2).not.toHaveBeenCalled()
+    expect(mockTagOptionsAdd2).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
     errSpy.mockRestore()
   })
@@ -2095,7 +2108,7 @@ describe('createOption — mock-based', () => {
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
     expect(firstCall[0]).toBe('rw')
-    const tableArgs = firstCall.slice(1, -1)
+    const tableArgs = firstCall.slice(1, -1).flat()
     const db = (getClientDb as ReturnType<typeof vi.fn>).mock.results[0]?.value as Record<string, unknown>
     expect(tableArgs).toContain(db.tag_options)
     expect(tableArgs).toContain(db.entity_mutations)

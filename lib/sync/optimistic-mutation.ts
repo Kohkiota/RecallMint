@@ -1,6 +1,12 @@
 // optimistic-mutation — 楽観 mirror 書込 + outbox enqueue を同一 Dexie rw tx に閉じる
 // 共有 helper (Sync-fix-1 T1a)。
 //
+// 役割 (DDD P3・N-5): 本 module の runOptimistic{Mutation,Create,Update} は、 client 側の
+// 「mirror 書込 + outbox enqueue を atomic に閉じる」 use-case を集約する application-service
+// seam である (新レイヤーは設けず、 既存 helper が seam を兼ねる)。 tag-crud.ts / 各 inline
+// handler / use-card-tag-toggle 等の caller はこの helper に tx 境界・rollback・flush 規約を
+// 委ね、 自前で db.transaction を張らない。
+//
 // Client-only: depends on `getClientDb()` (Dexie / IndexedDB) / `runGuardedEntityMutationFlush`、
 // component / handler 等の client 側から import される前提。 RSC からの import は
 // `getClientDb` が server で throw する設計に依存して防御 (`@/lib/sync/entity-mutations` /
