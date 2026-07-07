@@ -18,7 +18,7 @@ vi.mock('next/navigation', () => ({
 }))
 
 // stripe mock は createBillingPortalSession のために残す
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: { billingPortal: { sessions: { create: vi.fn() } } },
 }))
 

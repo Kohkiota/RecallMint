@@ -56,7 +56,7 @@ vi.mock('@/lib/db', () => ({
   getDb: () => ({ insert: mockDbInsert, update: mockDbUpdate }),
 }))
 
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     webhooks: { constructEvent: mockConstructEvent },
     subscriptions: { retrieve: mockSubscriptionsRetrieve },

@@ -22,7 +22,7 @@ const {
   mockNotifyOps: vi.fn(),
 }))
 
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     subscriptions: {
       retrieve: mockRetrieve,

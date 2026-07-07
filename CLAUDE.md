@@ -13,13 +13,13 @@ RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復�
 
 ## Stripe(絶対)
 
-1. キーは `VERCEL_ENV` で分岐、`lib/stripe.ts` で fail-fast(production = live のみ / その他 = test のみ。SECRET は `rk_` Restricted Key 推奨)
+1. キーは `VERCEL_ENV` で分岐、`lib/stripe/client.ts` で fail-fast(production = live のみ / その他 = test のみ。SECRET は `rk_` Restricted Key 推奨)
 2. webhook 署名検証(`constructEvent`)+ idempotency(`stripe_events` に event.id 保存)必須。エラー時も 200 を返す(再送ループ防止)、timeout 10 秒以内
 3. 本番切替(live key / Vercel env / endpoint 登録)は OT 手動、CC 関与不可。ローカルは Stripe CLI 転送のみ
 
 ## Clerk(絶対)
 
-1. キーは `VERCEL_ENV` で分岐、`lib/clerk.ts` で fail-fast
+1. キーは `VERCEL_ENV` で分岐、`lib/clerk/env-check.ts` で fail-fast
 2. `proxy.ts` で保護ルート設定。Server: `auth()` / `currentUser()`、Client: `useUser()` / `useAuth()`
 3. **全 table に `user_id` 必須**、query は必ず `WHERE user_id = ?`
 4. Clerk User ↔ Stripe Customer の紐付けは `users` table(`clerk_id`, `stripe_customer_id`)

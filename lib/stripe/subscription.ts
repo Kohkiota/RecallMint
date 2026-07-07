@@ -5,7 +5,7 @@
 
 import Stripe from 'stripe'
 
-import { stripe } from '@/lib/stripe'
+import { stripe } from '@/lib/stripe/client'
 import type { User } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 

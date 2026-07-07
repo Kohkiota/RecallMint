@@ -33,8 +33,8 @@ const { mockDb, seenEventIds, mockStripeRetrieve, mockNotifyWebhookError } =
 // Partial mock: preserve the real webhooks.constructEvent (used for signature
 // verification with generateTestHeaderString) but override subscriptions.retrieve
 // so tests can control the returned subscription without hitting Stripe.
-vi.mock('@/lib/stripe', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/stripe')>()
+vi.mock('@/lib/stripe/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/stripe/client')>()
   return {
     stripe: {
       ...actual.stripe,

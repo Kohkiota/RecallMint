@@ -1,4 +1,4 @@
-import '@/lib/clerk' // env prefix validation (side-effect, Node runtime)
+import '@/lib/clerk/env-check' // env prefix validation (side-effect, Node runtime)
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
 const isProtectedRoute = createRouteMatcher(['/app(.*)'])

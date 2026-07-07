@@ -1,4 +1,4 @@
-import '@/lib/clerk' // env prefix validation (side-effect, Node runtime)
+import '@/lib/clerk/env-check' // env prefix validation (side-effect, Node runtime)
 import { cache } from 'react'
 import { auth } from '@clerk/nextjs/server'
 import { eq } from 'drizzle-orm'

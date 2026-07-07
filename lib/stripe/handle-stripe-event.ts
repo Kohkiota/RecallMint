@@ -1,7 +1,7 @@
 import 'server-only'
 import type Stripe from 'stripe'
 import { eq } from 'drizzle-orm'
-import { stripe } from '@/lib/stripe'
+import { stripe } from '@/lib/stripe/client'
 import { getDb } from '@/lib/db'
 import { users } from '@/lib/db/schema'
 import type { Plan } from '@/lib/auth/plan-limits'

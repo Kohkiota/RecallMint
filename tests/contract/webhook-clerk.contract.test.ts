@@ -66,7 +66,7 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     subscriptions: {
       list: (..._args: unknown[]) => mockStripeListIterator(),

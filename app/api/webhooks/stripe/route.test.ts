@@ -28,7 +28,7 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     webhooks: { constructEvent: mockConstructEvent },
     subscriptions: { retrieve: mockSubscriptionsRetrieve },

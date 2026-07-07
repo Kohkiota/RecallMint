@@ -1,7 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
-import { stripe } from '@/lib/stripe'
+import { stripe } from '@/lib/stripe/client'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import { users, type User } from '@/lib/db/schema'

@@ -36,7 +36,7 @@ vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
 }))
 
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     checkout: { sessions: { create: mockCheckoutCreate } },
   },

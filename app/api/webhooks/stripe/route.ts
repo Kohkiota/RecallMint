@@ -1,5 +1,5 @@
 import type Stripe from 'stripe'
-import { stripe } from '@/lib/stripe'
+import { stripe } from '@/lib/stripe/client'
 import { getDb } from '@/lib/db'
 import { stripeEvents } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'

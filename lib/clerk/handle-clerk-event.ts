@@ -16,7 +16,7 @@ import {
   entityMutations,
   tagCategories,
 } from '@/lib/db/schema'
-import { stripe, cancelWithRetry } from '@/lib/stripe'
+import { stripe, cancelWithRetry } from '@/lib/stripe/client'
 import { notifyOps } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { type ClerkWebhookEvent } from '@/lib/validation/clerk-webhook'

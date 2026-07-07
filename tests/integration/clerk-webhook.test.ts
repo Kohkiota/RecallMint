@@ -35,7 +35,7 @@ vi.mock('@/lib/db', () => {
 
 // Spec §6.2: webhook handler が Stripe sub cancel を引き受ける。integration test
 // では実 Stripe API を叩かないため、empty iterator + cancelWithRetry no-op で stub。
-vi.mock('@/lib/stripe', () => ({
+vi.mock('@/lib/stripe/client', () => ({
   stripe: {
     subscriptions: {
       list: () => (async function* () {})(),
