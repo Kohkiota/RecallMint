@@ -5,7 +5,7 @@ import {
   getSourceDocumentForUser,
 } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
-import { AppContainer } from '../../../_components/app-container'
+import { AppContainer } from '@/app/(app)/app/_components/app-container'
 import { ResultActions } from './_components/result-actions'
 
 // S1.9.2: OCR result page。 旧来 upload-form の success phase で描画していた

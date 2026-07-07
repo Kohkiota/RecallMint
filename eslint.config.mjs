@@ -3,6 +3,49 @@
 import nextCoreWebVitals from 'eslint-config-next/core-web-vitals'
 import nextTypescript from 'eslint-config-next/typescript'
 
+// ---------------------------------------------------------------------------
+// Shared no-restricted-imports pattern groups (composed per files-scope below).
+// NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
+// IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
+// are treated LITERALLY and `*` matches a single path segment (`[id]` included),
+// so no `\\(...\\)` / `\\[...\\]` escaping is used here — the escaping rule only
+// applies to the flat-config `files:` field (see the per-file overrides below).
+// ---------------------------------------------------------------------------
+
+// Block B pattern: deep relative imports (3+ levels up) in app/.
+// `../../../**` catches 3 levels AND 4+ (minimatch `**` crosses `/` and treats
+// `..` as a normal segment). Fix = use the @/ alias.
+const DEEP_RELATIVE_IMPORTS = {
+  group: ['../../../**'],
+  message:
+    'Deep relative imports (3+ levels up) are forbidden in app/. Use the @/ alias instead.',
+}
+
+// Cross-feature imports into another feature's private `_components/` namespace.
+// `*/_components/**` catches a 1-segment feature (e.g. `tags/_components/...`);
+// `*/*/_components/**` catches a 2-segment feature (e.g. `exams/[id]/_components/...`).
+// The shared app-shell at `@/app/(app)/app/_components/app-container` has NO feature
+// segment before `_components`, so it is intentionally NOT matched (legitimate import).
+// 分類: 一時的負債 / 機能境界強化時に再評価 (3 known sites allowlisted per-file below).
+const CROSS_FEATURE_PRIVATE_COMPONENTS = {
+  group: ['@/app/(app)/app/*/_components/**', '@/app/(app)/app/*/*/_components/**'],
+  message:
+    "Cross-feature import into another feature's private _components/ namespace. " +
+    'Move the shared component to components/ or a shared location. ' +
+    '(3 files / 4 import violations are allowlisted per-file below — 一時的負債 / 機能境界強化時に再評価.)',
+}
+
+// Reverse-layering: a feature `_lib/` module importing its sibling `_components/`.
+// Scoped to `_lib/` files only (Block C) so the ~8 legitimate feature pages that
+// import the shared shell via `../_components/app-container` are NOT affected.
+// 分類: 意図的設計 (columns-as-data SSoT — see column-pinning.ts header).
+const LIB_REVERSE_DEP_COMPONENTS = {
+  group: ['../_components/**'],
+  message:
+    'A feature _lib/ module importing its _components/ is a reverse-layering dependency. ' +
+    '(1 known site — column-pinning.ts, columns-as-data SSoT — allowlisted per-file below.)',
+}
+
 const config = [
   ...nextCoreWebVitals,
   ...nextTypescript,
@@ -41,24 +84,39 @@ const config = [
     },
   },
   // ---------------------------------------------------------------------------
-  // Block B: app/ must not use deep relative imports (3+ levels up).
-  // Pattern `../../../**` catches 3 levels (`../../../foo`) AND 4+ levels
-  // (`../../../../foo` = `../../../` + `../foo`; minimatch `**` matches `../foo`
-  // because `**` crosses `/` and treats `..` as a regular path segment).
-  // Violations are allowlisted per-file below (P3 refactor target).
+  // Block B: app/ import boundaries.
+  //  - deep relative imports (3+ levels up) — DEEP_RELATIVE_IMPORTS
+  //  - cross-feature imports into another feature's private _components/ —
+  //    CROSS_FEATURE_PRIVATE_COMPONENTS (P3 W7: visualized, NOT yet resolved)
+  // Remaining real violations are allowlisted per-file below.
   // ---------------------------------------------------------------------------
   {
     files: ['app/**/*'],
     rules: {
       'no-restricted-imports': [
         'error',
+        { patterns: [DEEP_RELATIVE_IMPORTS, CROSS_FEATURE_PRIVATE_COMPONENTS] },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block C: app/**/_lib/ reverse-layering guard (must come AFTER Block B so it
+  // wins for `_lib/` files). Flat-config rule options REPLACE (not merge) per
+  // file, so this block re-includes Block B's patterns to preserve coverage for
+  // `_lib/` files, then adds LIB_REVERSE_DEP_COMPONENTS on top.
+  // The `app/**/_lib/**` glob uses `**` (not literal `(app)`/`[id]`) so no escaping
+  // is required — `**` spans the route group / dynamic segment as literal dirs.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['app/**/_lib/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
         {
           patterns: [
-            {
-              group: ['../../../**'],
-              message:
-                'Deep relative imports (3+ levels up) are forbidden in app/. Use the @/ alias instead. (2 known violations are allowlisted per-file below — P3 refactor target)',
-            },
+            DEEP_RELATIVE_IMPORTS,
+            CROSS_FEATURE_PRIVATE_COMPONENTS,
+            LIB_REVERSE_DEP_COMPONENTS,
           ],
         },
       ],
@@ -74,23 +132,43 @@ const config = [
   // ---------------------------------------------------------------------------
 
   // components → @/app: contact-form.tsx imports server action from app layer.
-  // Deferred to P3 — fix = move action to lib/ or create dedicated shared action.
+  // Deferred to P4 — fix = move action to lib/ or create dedicated shared action.
   {
     files: ['components/marketing/contact-form.tsx'],
     rules: { 'no-restricted-imports': 'off' },
   },
-  // app deep relative: exam-detail-view.tsx imports ../../../_components/app-container.
-  // `(app)` → `\\(app\\)`, `[id]` → `\\[id\\]` per minimatch escape rule (same as use-card-options below).
-  // Deferred to P3 — fix = use @/ alias.
+  // NOTE (P3 W7): the two former deep-relative overrides (exam-detail-view.tsx +
+  // upload/result/[sourceDocumentId]/page.tsx) were REMOVED — both now import
+  // AppContainer via the `@/app/(app)/app/_components/app-container` alias and pass
+  // Block B without any exemption.
+
+  // ---------- Cross-feature visualization allowlist (P3 W7) ----------
+  // These sites are FLAGGED by CROSS_FEATURE_PRIVATE_COMPONENTS / LIB_REVERSE_DEP_COMPONENTS
+  // above and exempted here so they are tracked (not silently ignored) but not errors.
+  // Each `off` disables no-restricted-imports for the whole file (same side-effect as
+  // the contact-form override) — acceptable as none of these files also have a deep-relative.
+  // 分類:
+  //   study/custom→exams・exams→tags (下記 2 block) = 一時的負債 / 機能境界強化時に再評価
+  //   column-pinning _lib→_components               = 意図的設計 (columns-as-data SSoT)
+
+  // 一時的負債: custom-filter-form.tsx imports exams/[id]/_components/card-tag-add-popover
+  // (study → exams cross-feature). Fix = extract CardTagAddPopover to a shared location.
   {
-    files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/exam-detail-view.tsx'],
+    files: ['app/\\(app\\)/app/study/custom/_components/custom-filter-form.tsx'],
     rules: { 'no-restricted-imports': 'off' },
   },
-  // app deep relative: upload result page.tsx imports ../../../_components/app-container.
-  // `(app)` → `\\(app\\)`, `[sourceDocumentId]` → `\\[sourceDocumentId\\]` per minimatch escape rule.
-  // Deferred to P3 — fix = use @/ alias.
+  // 一時的負債: card-tag-edit-fields.tsx imports tags/_components/color-palette-popover
+  // + tags/_components/delete-confirm-dialog (exams → tags cross-feature, 2 imports).
+  // Fix = extract those popovers/dialogs to a shared location.
   {
-    files: ['app/\\(app\\)/app/upload/result/\\[sourceDocumentId\\]/page.tsx'],
+    files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/card-tag-edit-fields.tsx'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  // 意図的設計 (columns-as-data SSoT): column-pinning.ts (_lib) imports
+  // ../_components/exam-card-table-columns to derive column order from the single
+  // source of truth. Intentional reverse-dep — see the file's header comment.
+  {
+    files: ['app/\\(app\\)/app/exams/\\[id\\]/_lib/column-pinning.ts'],
     rules: { 'no-restricted-imports': 'off' },
   },
   {

@@ -23,7 +23,7 @@ import {
 } from '@/lib/sync/sync-meta'
 import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { Button } from '@/components/ui/button'
-import { AppContainer } from '../../../_components/app-container'
+import { AppContainer } from '@/app/(app)/app/_components/app-container'
 import { InlineCardList } from './inline-card-list'
 import { ExamCardTable } from './exam-card-table'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
