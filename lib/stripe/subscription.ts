@@ -8,6 +8,7 @@ import Stripe from 'stripe'
 import { stripe } from '@/lib/stripe/client'
 import type { User } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
+import { runtimeEnv } from '@/lib/env/runtime-env'
 
 // ---------------------------------------------------------------------------
 // error 型
@@ -264,7 +265,7 @@ export async function releaseCompletedDowngrade(
         await notifyOps('autorelease: schedule active but current_phase null', {
           scheduleId,
           status: schedule.status,
-          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          environment: runtimeEnv(),
           timestamp: new Date().toISOString(),
         })
         return 'skipped'

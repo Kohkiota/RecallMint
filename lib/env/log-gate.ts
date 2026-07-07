@@ -14,9 +14,11 @@
 // 将来 env key が増えても helper を触らず caller 側で `isLogGateOpen('NEW_KEY')` を
 // 呼べばよいよう、 env key は引数指定 (固定 list を helper 内に持たない)。
 
+import { isProduction } from '@/lib/env/runtime-env'
+
 export function isLogGateOpen(envKey: string): boolean {
   if (process.env[envKey] !== '1') return false
-  if (process.env.VERCEL_ENV === 'production') {
+  if (isProduction()) {
     return process.env.LOG_GATE_ALLOW_PROD === '1'
   }
   return true

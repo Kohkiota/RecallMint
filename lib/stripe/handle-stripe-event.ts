@@ -9,6 +9,7 @@ import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { notifyOps } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
+import { runtimeEnv } from '@/lib/env/runtime-env'
 
 // 失敗時 notify の context 拡充用。event.data.object.customer を best-effort で
 // 取り出す (event 種別によっては customer 不在、その場合 undefined → notify payload
@@ -81,7 +82,7 @@ async function resolvePlanFromSub(
     await notifyOps('stripe sub missing price_id', {
       ...ctx,
       status,
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
     return { plan: 'free', billingInterval: null }
@@ -92,7 +93,7 @@ async function resolvePlanFromSub(
       ...ctx,
       status,
       priceId,
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
     return { plan: 'free', billingInterval: null }
@@ -232,7 +233,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
           eventId: event.id,
           customerId,
           eventType: event.type,
-          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          environment: runtimeEnv(),
           timestamp: new Date().toISOString(),
         })
       }
@@ -269,7 +270,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
           eventId: event.id,
           customerId,
           eventType: event.type,
-          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+          environment: runtimeEnv(),
           timestamp: new Date().toISOString(),
         })
       }
@@ -283,7 +284,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       await notifyOps('stripe invoice.payment_failed', {
         eventId: event.id,
         customerId,
-        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+        environment: runtimeEnv(),
         timestamp: new Date().toISOString(),
       })
       return
@@ -357,7 +358,7 @@ async function evaluateReleaseGate(args: {
       customerId,
       subScheduleId,
       dbScheduleId,
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
     return

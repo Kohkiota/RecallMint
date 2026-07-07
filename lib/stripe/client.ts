@@ -1,4 +1,5 @@
 import Stripe from 'stripe'
+import { isProduction } from '@/lib/env/runtime-env'
 
 // Stripe env prefix validation (CLAUDE.md §Stripe-1)。
 //
@@ -15,7 +16,7 @@ import Stripe from 'stripe'
 
 const key = process.env.STRIPE_SECRET_KEY
 const pk = process.env.STRIPE_PUBLISHABLE_KEY
-const isProd = process.env.VERCEL_ENV === 'production'
+const isProd = isProduction()
 
 if (!key) {
   throw new Error('STRIPE_SECRET_KEY is not set')

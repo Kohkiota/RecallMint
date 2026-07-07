@@ -23,6 +23,8 @@
  *    "event":"webhook.stripe.bad_signature","err":{"name":"...","message":"...","stack":"..."}}
  */
 
+import { isProduction, runtimeEnv } from '@/lib/env/runtime-env'
+
 type Level = 'info' | 'warn' | 'error'
 
 type Payload = { event: string; [k: string]: unknown }
@@ -38,12 +40,13 @@ const LEVEL_PRIORITY: Record<Level, number> = { info: 0, warn: 1, error: 2 }
 function resolveLogLevel(): Level {
   const env = process.env.LOG_LEVEL
   if (env === 'info' || env === 'warn' || env === 'error') return env
-  return process.env.VERCEL_ENV === 'production' ? 'warn' : 'info'
+  return isProduction() ? 'warn' : 'info'
 }
 
 // Factory pattern: per-call で seen WeakSet を closure で持つ replacer 関数を返す。
 // Error → { name, message, stack } 展開 + 循環参照 → '[Circular]' 置換。
-function expandError(): (key: string, value: unknown) => unknown {
+// P4 T5: export 化により ops.ts の byte-exact 重複 makeReplacer を削除。
+export function expandError(): (key: string, value: unknown) => unknown {
   const seen = new WeakSet<object>()
   return (_key, value) => {
     if (value instanceof Error) {
@@ -66,7 +69,7 @@ function emit(level: Level, payload: Payload): void {
     const enriched = {
       level,
       timestamp: new Date().toISOString(),
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       ...payload,
     }
     const json = JSON.stringify(enriched, expandError())

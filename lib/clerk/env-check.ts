@@ -13,9 +13,11 @@
 // lib/auth/ensure-user.ts (Node runtime) for fail-fast.
 // lib/stripe.ts も同 VERCEL_ENV-aware pattern (両者で形式統一)。
 
+import { isProduction } from '@/lib/env/runtime-env'
+
 const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 const sk = process.env.CLERK_SECRET_KEY
-const isProd = process.env.VERCEL_ENV === 'production'
+const isProd = isProduction()
 
 if (!pk) {
   throw new Error('NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set')

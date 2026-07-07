@@ -22,6 +22,7 @@
 import { clerkClient } from '@clerk/nextjs/server'
 import { isClerkAPIResponseError } from '@clerk/nextjs/errors'
 import { notifyOps } from '@/lib/ops'
+import { runtimeEnv } from '@/lib/env/runtime-env'
 import type { Plan } from './plan-limits'
 
 export type ClerkMetadataInput = {
@@ -61,7 +62,7 @@ export async function syncClerkPublicMetadata(
       clerkId,
       keys: Object.keys(metadata),
       error: err instanceof Error ? err.message : String(err),
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
     return { ok: false }

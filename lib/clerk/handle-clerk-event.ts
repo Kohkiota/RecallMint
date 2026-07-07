@@ -19,6 +19,7 @@ import {
 import { stripe, cancelWithRetry } from '@/lib/stripe/client'
 import { notifyOps } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
+import { runtimeEnv } from '@/lib/env/runtime-env'
 import { type ClerkWebhookEvent } from '@/lib/validation/clerk-webhook'
 
 // cancel 対象 status。canceled / incomplete* / unpaid / paused は skip。
@@ -87,7 +88,7 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   if (!internalUserId) {
     await notifyOps('user.deleted received but users row not synced', {
       clerkUserId,
-      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+      environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
     return
@@ -241,7 +242,7 @@ async function recordFailure(args: {
     subId: args.subId,
     kind: args.kind,
     error: args.errorMessage,
-    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
+    environment: runtimeEnv(),
     timestamp: new Date().toISOString(),
   })
 }

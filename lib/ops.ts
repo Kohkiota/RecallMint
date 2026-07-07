@@ -15,7 +15,8 @@
 //   (warn が log filter で消える可能性に備え stderr に必須残し、 audit §10.3 (b) #14)
 // - Discord content の 2000 char 制限を考慮して 1900 char で truncate
 
-import { logger } from '@/lib/logger'
+import { logger, expandError } from '@/lib/logger'
+import { isProduction, runtimeEnv } from '@/lib/env/runtime-env'
 
 const MAX_CONTENT_LEN = 1900
 
@@ -27,7 +28,7 @@ export async function notifyOps(
   if (!url) {
     // audit §10.3 (b) #14: production で URL 未設定は deployment misconfig なので
     // silent no-op せず throw (operator に即時気付かせる)。
-    if (process.env.VERCEL_ENV === 'production') {
+    if (isProduction()) {
       throw new Error(
         'OPS_DISCORD_WEBHOOK_URL must be set in production (see audit §10.3 (b) #14)',
       )
@@ -37,9 +38,9 @@ export async function notifyOps(
 
   let contextStr: string
   try {
-    contextStr = JSON.stringify(context, makeReplacer(), 2)
+    contextStr = JSON.stringify(context, expandError(), 2)
   } catch (err) {
-    // makeReplacer が Error / Circular を吸収するので通常 throw しないが、
+    // expandError が Error / Circular を吸収するので通常 throw しないが、
     // 未知の serialize edge case (BigInt 等) への defensive
     contextStr = `<failed to serialize context: ${String(err)}>`
   }
@@ -71,7 +72,7 @@ export async function notifyOps(
     // 単発失敗 (warn) より重い事象として error にも残す (stderr 必須残し、
     // log filter で warn が消える可能性に備える)。 url は webhook secret なので
     // payload に含めず redact。
-    if (process.env.VERCEL_ENV === 'production') {
+    if (isProduction()) {
       logger.error({ event: 'ops.notify.unreachable', err, url: '<redacted>' })
     }
   }
@@ -102,8 +103,7 @@ export async function notifyWebhookError(args: {
   userId?: string
   customerId?: string
 }): Promise<void> {
-  const environment =
-    process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown'
+  const environment = runtimeEnv()
   await notifyOps(`${args.handler} webhook handler error`, {
     handler: args.handler,
     eventId: args.eventId,
@@ -114,20 +114,4 @@ export async function notifyWebhookError(args: {
     environment,
     timestamp: new Date().toISOString(),
   })
-}
-
-// Error instance を name/message/stack に展開、循環参照を [Circular] で置換。
-// 各 notifyOps 呼び出しごとに新しい seen set を作る。
-function makeReplacer(): (key: string, value: unknown) => unknown {
-  const seen = new WeakSet<object>()
-  return (_key, value) => {
-    if (value instanceof Error) {
-      return { name: value.name, message: value.message, stack: value.stack }
-    }
-    if (typeof value === 'object' && value !== null) {
-      if (seen.has(value)) return '[Circular]'
-      seen.add(value)
-    }
-    return value
-  }
 }
