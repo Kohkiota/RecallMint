@@ -46,7 +46,7 @@
 
 - **目的**: runOptimistic\* 昇格の実体。lib/tags 内の 5 関数(delete ×2 / createCategory / createOption / createOptionAndAssign)+ use-card-tag-toggle を runOptimisticMutation / runOptimisticCreate へ。
 - **対応表**(spec §2-2): toggle → runOptimisticMutation(既定 silent = 現行どおり)/ delete ×2 → runOptimisticMutation + **throwOnError: true** / createCategory・createOption → runOptimisticCreate + **throwOnError: true**(戻り値 {id} / newOptionId 維持)/ createOptionAndAssign → runOptimisticMutation(**2 mutations 順序維持**: tag_option create → card update_field)+ throwOnError: true。
-- **制約**: mutation の patch shape・enqueue 件数・順序・op 名・log イベント名は凍結(D-2)。**throwOnError: true 経路では helper の logger.warn を発生させない(新規 log 出力ゼロ)/ toggle の silent 経路も現行 console 出力と同一性を確認**(Codex 指摘)。**create 系は id 採番(crypto.randomUUID / buildNewOption)・sort_key・created_at/updated_at・enqueue payload が現行と同一値になることを受け入れ条件に含める**(runOptimisticCreate の providedId / factory へ現行値を渡す・Codex 指摘)。tx 内 read(deleteCategory の tag_options where)は mutate callback 内で維持。guarded flush の fire-and-forget タイミング不変。optimistic-mutation.ts に application service 役割コメント追記(層新設なし = N-5)。
+- **制約**: mutation の patch shape・enqueue 件数・順序・op 名・**既存** log イベント名は凍結(D-2)。**log 制約(OT 確定・Option B 2026-07-07)**: helper 寄せで delete/create の error-path に helper 由来 logger.warn が出ることを許容する — log 名は sibling(rename/color 4 関数 = runOptimisticUpdate + throwOnError: true・`tag_category_color.tx_failed` 等)と同じ命名規則(`tag_category.tx_failed` / `tag_option.tx_failed` 等)に厳密に従う。「新規 log 出力ゼロ」の解釈 = **既に確立した sibling パターンを超える新規 log surface ゼロ**(wire/user/ops-monitored 契約は不変・log 名を消費する consumer なし・D-2 の凍結対象「既存 event 名の変更」に非該当〈新規追加かつ sibling 命名規則内〉)。**shared helper(optimistic-mutation.ts・18 site)は触らない**(Option A の skipWarnOnError 追加は却下 = helper 契約拡張 + sibling 非対称固定のため)。toggle の silent 経路は現行 console 出力と同一性を確認。**create 系は id 採番(crypto.randomUUID / buildNewOption)・sort_key・created_at/updated_at・enqueue payload が現行と同一値になることを受け入れ条件に含める**(runOptimisticCreate の providedId / factory へ現行値を渡す・Codex 指摘)。tx 内 read(deleteCategory の tag_options where)は mutate callback 内で維持。guarded flush の fire-and-forget タイミング不変。optimistic-mutation.ts に application service 役割コメント追記(層新設なし = N-5)。
 - **完了条件**: Task0-③ の reject pin + 既存 reject pin(:703 系 / :1455 / :2056 / :1828)全 green + rollback pin(idb:197 / Sync-fix-1 T2a)green + per-task gate + build + canonical + Codex。[reviewed]。
 
 ### Task 3: tags manager 統一(W2b・risk・独立 commit)
@@ -103,6 +103,7 @@ Task4-6 は相互独立だが直列実行(subagent-driven の review 粒度維�
 
 ## 実績欄(実装時に追記)
 
+- **Task2 log 制約判断(2026-07-07・OT 確定 Option B)**: 実装前に helper 契約と旧制約「新規 log 出力ゼロ」の衝突が判明(runOptimisticMutation/Update は throwOnError に関わらず catch で必ず logger.warn → rethrow)。裏取り = rename/color 4 関数は既に runOptimisticUpdate + throwOnError: true + `*.tx_failed` log を出しており reject pin(section.test:703 系)pass 済 = タグ mutation の凍結 baseline に既に helper 由来 error-path warn が含まれる。OT 判断 = Option B(warn 許容・sibling 命名規則厳守・shared helper 非改変)。Global Constraints の Task2 制約を更新済。Codex review 確認項目に「log 名が sibling 命名規則に従う」を追加。
 - react-hooks/refs off の判定結果(Task4):
 - tags manager 差分実測の結果(Task3):
 - custom-filter-form:21 の確認結果(Task8):
