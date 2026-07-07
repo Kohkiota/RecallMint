@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { sortByKeyThenCreated } from './sort-comparator'
+import { sortByKeyThenCreated, compareTagEntry } from './sort-comparator'
 
 // flicker 防止依存: drop 後 useLiveQuery 再ソート順が arrayMove 順と一致する不変条件は
 // 本 comparator の数値比較に依存 (spec §4.6 末尾節)。 旧 string `<` 比較なら N≥10 で順序が
@@ -94,5 +94,48 @@ describe('sortByKeyThenCreated', () => {
     const undef: ItemUndef = { created_at: '2025-01-01T00:00:00.000Z' } // sort_key omitted
     expect(sortByKeyThenCreated(withKey, undef)).toBeLessThan(0)
     expect(sortByKeyThenCreated(undef, withKey)).toBeGreaterThan(0)
+  })
+})
+
+describe('compareTagEntry', () => {
+  type Cat = { sort_key: string | null; created_at: string }
+  type Opt = { sort_key: string | null; created_at: string }
+  const mkEntry = (
+    catKey: string | null,
+    catCreated: string,
+    optKey: string | null,
+    optCreated: string,
+  ): { category: Cat; option: Opt } => ({
+    category: { sort_key: catKey, created_at: catCreated },
+    option: { sort_key: optKey, created_at: optCreated },
+  })
+
+  it('category sort_key が異なる → category 順が勝つ (option 無関係)', () => {
+    // category '1' vs '2' → a(cat=1) が先 (result < 0)
+    const a = mkEntry('1', '2026-01-01T00:00:00.000Z', '9', '2026-01-01T00:00:00.000Z')
+    const b = mkEntry('2', '2026-01-01T00:00:00.000Z', '1', '2026-01-01T00:00:00.000Z')
+    expect(compareTagEntry(a, b)).toBeLessThan(0)
+    expect(compareTagEntry(b, a)).toBeGreaterThan(0)
+  })
+
+  it('category sort_key が等しい → option sort_key でタイブレーク', () => {
+    const a = mkEntry('1', '2026-01-01T00:00:00.000Z', '1', '2026-01-01T00:00:00.000Z')
+    const b = mkEntry('1', '2026-01-01T00:00:00.000Z', '2', '2026-01-01T00:00:00.000Z')
+    expect(compareTagEntry(a, b)).toBeLessThan(0)
+    expect(compareTagEntry(b, a)).toBeGreaterThan(0)
+  })
+
+  it('category・option sort_key 両方等しい → option created_at ASC でタイブレーク', () => {
+    const a = mkEntry('1', '2026-01-01T00:00:00.000Z', '1', '2026-01-01T00:00:00.000Z')
+    const b = mkEntry('1', '2026-01-01T00:00:00.000Z', '1', '2026-12-31T00:00:00.000Z')
+    // a.option.created_at < b.option.created_at → a が先
+    expect(compareTagEntry(a, b)).toBeLessThan(0)
+    expect(compareTagEntry(b, a)).toBeGreaterThan(0)
+  })
+
+  it('完全等価 (両 sort_key 同 + 両 created_at 同) → 0', () => {
+    const a = mkEntry('1', '2026-06-01T00:00:00.000Z', '1', '2026-06-01T00:00:00.000Z')
+    const b = mkEntry('1', '2026-06-01T00:00:00.000Z', '1', '2026-06-01T00:00:00.000Z')
+    expect(compareTagEntry(a, b)).toBe(0)
   })
 })

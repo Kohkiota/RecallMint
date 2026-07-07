@@ -20,7 +20,7 @@
 import * as React from 'react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
+import { compareTagEntry } from '@/lib/tags/sort-comparator'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 
 import { CardTagBadge } from './card-tag-badge'
@@ -74,15 +74,11 @@ export function TagCell({
   toggle,
   tagEditCallbacks,
 }: TagCellProps) {
-  // 表示順は sortByKeyThenCreated (card-tags-section.tsx の sortedCardTags と同じ comparator)。
+  // 表示順は compareTagEntry (card-tags-section.tsx の sortedCardTags と同じ comparator)。
   // category sort_key ASC NULLS LAST → 同カテゴリ内 option sort_key ASC NULLS LAST → created_at ASC。
   const sortedTags = React.useMemo(
     () =>
-      [...tags].sort((a, b) => {
-        const catCmp = sortByKeyThenCreated(a.category, b.category)
-        if (catCmp !== 0) return catCmp
-        return sortByKeyThenCreated(a.option, b.option)
-      }),
+      [...tags].sort(compareTagEntry),
     [tags],
   )
 

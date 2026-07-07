@@ -42,3 +42,16 @@ export function sortByKeyThenCreated<
   // 両方 NaN/null/undefined or 同 sort_key: created_at ASC
   return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
 }
+
+/**
+ * 2 段 comparator: category を第 1 キー、 option を第 2 キーとして sortByKeyThenCreated で比較。
+ * tag 一覧表示 (TagCell / card-tags-section / tagSortKey) が共有する並び順を単一化する。
+ */
+export function compareTagEntry<
+  C extends { sort_key?: string | null; created_at: string },
+  O extends { sort_key?: string | null; created_at: string },
+>(a: { category: C; option: O }, b: { category: C; option: O }): number {
+  const catCmp = sortByKeyThenCreated(a.category, b.category)
+  if (catCmp !== 0) return catCmp
+  return sortByKeyThenCreated(a.option, b.option)
+}

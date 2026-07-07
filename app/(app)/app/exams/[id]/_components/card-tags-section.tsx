@@ -26,7 +26,7 @@ import {
   handleReorderCategories,
   handleReorderOptions,
 } from '@/lib/tags/reorder-handlers'
-import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
+import { compareTagEntry } from '@/lib/tags/sort-comparator'
 
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 
@@ -563,9 +563,7 @@ function CardTagsSectionInner({
       const catA = categories.find((c) => c.id === optA.category_id)
       const catB = categories.find((c) => c.id === optB.category_id)
       if (!catA || !catB) return 0
-      const catCmp = sortByKeyThenCreated(catA, catB)
-      if (catCmp !== 0) return catCmp
-      return sortByKeyThenCreated(optA, optB)
+      return compareTagEntry({ category: catA, option: optA }, { category: catB, option: optB })
     })
   }, [cardTags, options, categories])
 
