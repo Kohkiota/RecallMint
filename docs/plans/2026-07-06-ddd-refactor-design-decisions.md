@@ -50,7 +50,7 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 | Phase | 内容(1 行) | 状態 | 完了時 HEAD | 再スキャン記録 |
 |---|---|---|---|---|
 | P0 | contract/golden tests + smoke checklist + import 境界 lint(allowlist 方式)+ dead code・stale 掃討 | 完了(SHA 記録済・OT push 待ち) | 7b36e58(実装完了)+ 本 SSoT gate commit | 現 HEAD 全数再スキャン済(§A triage 16 乖離 = intentional 15 / 対象外 1 / bug 0)。deliverable = docs/audit/2026-07-06-p0-contract-baseline.md(§A triage + §B 凍結契約 inventory)/ 2026-07-06-p0-smoke-checklist.md。contract golden = tests/contract/(5 面 77 test)。lint 境界 = eslint.config.mjs + tests/lint/import-boundary.test.ts。gate: whole-repo lint --max-warnings=0 / typecheck / test(2979)/ test:contract(77)全 exit 0 |
-| P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | 未着手 | — | — |
+| P1 | domain 純粋層の抽出・移設 + 二重実装の仕分け・単一 source 化 | spec 起草中 | — | 現 HEAD `a11afca` grounding 済(carve-out 2 + 型 relocate 1 + 逆依存解消 1 + dedup 2)。spec = docs/superpowers/specs/2026-07-07-ddd-p1-domain-extraction-design.md |
 | P2 | server 側 use-case 化(review-events route → webhooks 2 本 → process.ts 分解) | 未着手 | — | — |
 | P3 | client 側 use-case 化(タグ CRUD 移設 / card write 集約 / side peek 複製解消 / runOptimistic* 昇格 / inline primitive 統合) | 未着手 | — | — |
 | P4 | インフラ DRY(outbox flush 層の限定共通化 / pull server 内 factory / retry・transient 統合 / 認証 wrapper / lib 再編) | 未着手 | — | — |
@@ -86,3 +86,4 @@ dddrefactor branch 上で開始。exams UI への機能追加が進むほど P3 
 - 2026-07-06: D-6 に Dexie 隔離対象の明確化(形の変化に限定)、進捗表に状態更新の責任者・タイミングを追記。
 - 2026-07-06: P0 spec 起草開始(状態 → spec 起草中)。dead code Tier 分散を §3 に記録(P0 spec §6 詳細)。
 - 2026-07-06: **P0 完了**(状態 → 完了)。subagent-driven で 11 task 実走(T0 triage→T1 fixtures→T2-T6 contract golden 5 面→T7 import 境界 lint→T8 dead-sweep Tier1→T9 §B+smoke→T10 gate)。各非自明 task に canonical(requesting-code-review)+ Codex 独立 review 実施・全 Critical/Important 収束。bug handoff(条件 2)不発火(§A bug 0)。実装完了 HEAD=7b36e58。
+- 2026-07-07: **P1 spec 起草開始**(状態 → spec 起草中)。前セッションの brainstorming(Explore ×3 で現 HEAD `a11afca` 実測)+ OT 承認済み方向を spec 化。3 判断点 = 物理構造(lib/domain 一括新設せず carve-out のみ)/ 逆依存 P1 解消(card-filter-predicates 移動 = P0 lint 機構初回実証)/ streak characterization 新規不要(既存二重 suite re-point)。P1 実体 = carve-out 2(deriveExamStatuses / classifyChange+getPendingState)+ 型 relocate 1(CustomSessionCriteria)+ 逆依存解消 1 + dedup 2(computeStreak hoist / compareTagEntry 抽出)。V5 filter 代数は確認のみに格下げ。latent 不純は §B 申し送り。
