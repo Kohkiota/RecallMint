@@ -1087,6 +1087,22 @@ describe('handleDeleteCategory', () => {
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
+
+  // P3 Task0 ③: enqueue 失敗時に tx が reject し caller へ throw が伝播する不変条件を pin。
+  // popover 側 (card-tag-add-popover / card-tag-edit-popover) は catch で setLastError するため
+  // この reject に依存するが、 従来 popover test は mock 経由で real handler の reject を未検証だった。
+  // P3 Task2 で helper 化する際 `throwOnError: true` を落とせないよう、 現挙動をここで固定する。
+  it('P3 Task0 ③: enqueue throw → tx reject が caller へ伝播 (flush は呼ばれない)', async () => {
+    tagOptionsWhereImpl = () => makeWhereChain([])
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleDeleteCategory('cat-1')).rejects.toThrow('enqueue failed')
+
+    // reject 経路では tx 後段の flush へ到達しない。
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
+  })
 })
 
 // ===========================================================================
@@ -1133,6 +1149,18 @@ describe('handleDeleteOption', () => {
     await handleDeleteOption('opt-1')
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
+  })
+
+  // P3 Task0 ③: handleDeleteOption も enqueue 失敗で tx reject を caller へ伝播する (上記同旨)。
+  it('P3 Task0 ③: enqueue throw → tx reject が caller へ伝播 (flush は呼ばれない)', async () => {
+    cardTagsWhereImpl = () => makeWhereChain([])
+    ;(enqueueEntityMutation as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('enqueue failed'),
+    )
+
+    await expect(handleDeleteOption('opt-1')).rejects.toThrow('enqueue failed')
+
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
   })
 })
 

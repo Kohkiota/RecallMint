@@ -2307,3 +2307,75 @@ describe('S5-3 (c): hover — pinned td の bg-background + group-hover + tr gro
     }
   })
 })
+
+// ===========================================================================
+// P3 Task0 ①: selection prune 不変条件 (HS-2) — selection ⊆ 可視集合
+//
+// impl: exam-card-table.tsx:490-516 の prune effect。 visibleIds =
+//   getFilteredRowModel().rows.map(r=>r.id) の集合に rowSelection を絞り込む。
+// 移設 (P3 後続 task) 前に「filter で隠れた行 / Dexie 削除で消えた行は selection から
+// 落ちる」不変条件を pin する。 assert は action-bar-count (= 選択件数、 selectedIds.length)
+// と可視行の checked 状態で行い、 selection ⊆ 可視 を担保する。
+// ===========================================================================
+
+describe('P3 Task0 ①: selection prune (HS-2) — selection ⊆ 可視集合', () => {
+  it('(a) 列 filter で選択行が隠れると、 その行 id が selection から落ちる', async () => {
+    const db = getClientDb()
+    // question_text を distinct 化し、 片方だけに match する filter を掛けられるようにする。
+    await db.cards.bulkPut([
+      { ...makeCard(1), question_text: 'Alpha only' },
+      { ...makeCard(2), question_text: 'Beta only' },
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // 2 行とも選択 → action bar が 2件選択中
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 2/ }))
+    await waitFor(() =>
+      expect(screen.getByTestId('action-bar-count')).toHaveTextContent('2件選択中'),
+    )
+
+    // 問題文 列メニューから 'Alpha' で絞り込む (card-2 が非可視になる)。
+    fireEvent.click(screen.getByRole('button', { name: '問題文 の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('問題文 フィルタ値'), {
+      target: { value: 'Alpha' },
+    })
+
+    // 可視行は card-1 のみ + selection は card-1 のみに prune される (2 → 1)。
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('action-bar-count')).toHaveTextContent('1件選択中')
+    })
+    // 残った可視行 (card-1) は checked のまま (selection ⊆ 可視 の等号側)。
+    expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked()
+  })
+
+  it('(b) 選択行を Dexie から削除すると、 その行 id が selection から落ちる', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2)])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 2/ }))
+    await waitFor(() =>
+      expect(screen.getByTestId('action-bar-count')).toHaveTextContent('2件選択中'),
+    )
+
+    // card-2 を mirror から削除 → useLiveQuery で行が消える → prune で selection から除外。
+    await act(async () => {
+      await db.cards.delete('card-2')
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+      expect(screen.getByTestId('action-bar-count')).toHaveTextContent('1件選択中')
+    })
+    // 残存 card-1 は checked のまま (selection ⊆ 可視)。
+    expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked()
+  })
+})

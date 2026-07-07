@@ -13,10 +13,24 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { TagCell } from './exam-card-table-tag-cell'
 import type { TagCellTag } from './exam-card-table-tag-cell'
+import type { TagEditCallbacks } from './card-tags-section'
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+// P3 Task0 ②: TagCell が構築する cardId-bound createOptionAndAssign が、 実際に
+// handleCreateOptionAndAssign を THIS row の cardId で呼ぶことを pin するため、
+// underlying handler を spy 化する (他 export は実装のまま維持)。
+const { mockHandleCreateOptionAndAssign } = vi.hoisted(() => ({
+  mockHandleCreateOptionAndAssign: vi.fn(
+    async (..._args: unknown[]): Promise<void> => undefined,
+  ),
+}))
+vi.mock('./card-tags-section', async (importActual) => {
+  const actual = await importActual<typeof import('./card-tags-section')>()
+  return { ...actual, handleCreateOptionAndAssign: mockHandleCreateOptionAndAssign }
+})
 
 // CardTagAddPopover: stub として render し、 props を data-attribute で expose する。
 // trigger を children として render することで trigger DOM が出る。
@@ -25,11 +39,14 @@ vi.mock('./card-tag-add-popover', () => ({
     initialStage,
     initialCategoryId,
     onToggle,
+    tagEditCallbacks,
     trigger,
   }: {
     initialStage?: string
     initialCategoryId?: string | null
     onToggle: (categoryId: string, optionId: string) => void
+    // P3 Task0 ②: cardId-bound override を検証するため tagEditCallbacks も expose する。
+    tagEditCallbacks?: TagEditCallbacks
     trigger?: React.ReactNode
   }) => (
     <div
@@ -40,6 +57,9 @@ vi.mock('./card-tag-add-popover', () => ({
       ref={(el) => {
         if (el) {
           ;(el as HTMLElement & { __onToggle?: typeof onToggle }).__onToggle = onToggle
+          ;(
+            el as HTMLElement & { __tagEditCallbacks?: TagEditCallbacks }
+          ).__tagEditCallbacks = tagEditCallbacks
         }
       }}
     >
@@ -374,5 +394,49 @@ describe('TagCell integration smoke: toggle → Dexie card_tags 反映', () => {
     await db.tag_categories.clear()
     await db.tag_options.clear()
     await db.card_tags.clear()
+  })
+})
+
+// ===========================================================================
+// P3 Task0 ②: TagCell cardId-bound createOptionAndAssign override
+//
+// impl: exam-card-table-tag-cell.tsx:111-126 の cardIdBoundCallbacks が
+//   tagEditCallbacks.createOptionAndAssign を「THIS row の cardId を bind した closure」で
+//   上書きする。 ExamCardTable レベルの createOptionAndAssignPlaceholder (no-op) が popover に
+//   漏れないことを pin する。 override が消えると popover は placeholder no-op を受け取り
+//   handleCreateOptionAndAssign が呼ばれない → 本 test の toHaveBeenCalled が FAIL する。
+// ===========================================================================
+
+describe('P3 Task0 ②: TagCell cardId-bound createOptionAndAssign override', () => {
+  it('popover へ渡る createOptionAndAssign は THIS row の cardId で handleCreateOptionAndAssign を呼ぶ (placeholder no-op ではない)', async () => {
+    mockHandleCreateOptionAndAssign.mockClear()
+
+    const cat = makeCategory('cat-x', 'Category X')
+    const opt = makeOption('opt-x', 'cat-x', 'Option X')
+    renderTagCell([{ category: cat, option: opt }])
+
+    // popover stub に降りた cardId-bound tagEditCallbacks を取り出す。
+    const stub = screen.getByTestId('popover-stub')
+    const callbacks = (
+      stub as HTMLElement & { __tagEditCallbacks?: typeof MOCK_TAG_EDIT_CALLBACKS }
+    ).__tagEditCallbacks
+    expect(callbacks).toBeDefined()
+
+    // popover が option 新規作成時に呼ぶ経路をシミュレート。
+    await callbacks!.createOptionAndAssign('cat-x', 'NewOpt')
+
+    // placeholder no-op ではなく、 THIS row の cardId を bind した handler が呼ばれる。
+    // signature: handleCreateOptionAndAssign(userId, cardId, categories, options, cardTags, categoryId, name)
+    expect(mockHandleCreateOptionAndAssign).toHaveBeenCalledTimes(1)
+    const args = mockHandleCreateOptionAndAssign.mock.calls[0]
+    expect(args[0]).toBe('test-user-1') // userId (renderTagCell の固定値)
+    expect(args[1]).toBe(CARD_ID) // ← THIS row の cardId (placeholder は '' を使う)
+    expect(args[5]).toBe('cat-x') // categoryId
+    expect(args[6]).toBe('NewOpt') // name
+    // cardId context: cardTags は THIS card の割当のみ (cardId が正しく閉じ込められている証拠)
+    const cardTags = args[4] as Array<{ card_id: string; option_id: string }>
+    expect(cardTags).toEqual([
+      expect.objectContaining({ card_id: CARD_ID, option_id: 'opt-x' }),
+    ])
   })
 })
