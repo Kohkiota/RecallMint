@@ -4,10 +4,8 @@
 // getTombstonesDelta: WHERE user_id [AND deleted_at >= since] の tombstone を
 // {rows, maxDeletedAt} で返す。 maxDeletedAt は next-cursor として呼出側が保持する。
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { tombstones } from './schema'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 type TombstoneRow = typeof tombstones.$inferSelect
 
@@ -29,10 +27,16 @@ export async function getTombstonesDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientTombstone[]; maxDeletedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(tombstones.userId, userId)]
-  if (since) conds.push(gte(tombstones.deletedAt, since))
-  const raw = await db.select().from(tombstones).where(and(...conds))
-  const rows = raw.map(toClientTombstone)
-  return { rows, maxDeletedAt: maxIso(rows.map((r) => r.deleted_at)) }
+  const { rows, max } = await getDeltaRows(
+    {
+      table: tombstones,
+      userIdCol: tombstones.userId,
+      cursorCol: tombstones.deletedAt, // tombstones cursor = deletedAt (updatedAt 非保持)
+      mapper: toClientTombstone,
+      cursorValueOf: (r) => r.deleted_at,
+    },
+    userId,
+    since,
+  )
+  return { rows, maxDeletedAt: max }
 }

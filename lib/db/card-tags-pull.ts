@@ -15,11 +15,9 @@
 
 import 'server-only'
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { cardTags } from './schema'
 import type { ClientCardTag } from '@/lib/client-db'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 type CardTagRow = typeof cardTags.$inferSelect
 
@@ -36,11 +34,16 @@ export async function getCardTagsDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientCardTag[]; maxCreatedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(cardTags.userId, userId)]
-  if (since) conds.push(gte(cardTags.createdAt, since))
-  const rows = (await db.select().from(cardTags).where(and(...conds))).map(
-    toClientCardTag,
+  const { rows, max } = await getDeltaRows(
+    {
+      table: cardTags,
+      userIdCol: cardTags.userId,
+      cursorCol: cardTags.createdAt, // card_tags は updated_at 非保持: cursor = createdAt
+      mapper: toClientCardTag,
+      cursorValueOf: (r) => r.created_at,
+    },
+    userId,
+    since,
   )
-  return { rows, maxCreatedAt: maxIso(rows.map((r) => r.created_at)) }
+  return { rows, maxCreatedAt: max }
 }

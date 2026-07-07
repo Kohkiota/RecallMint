@@ -2,11 +2,9 @@
 // (snake_case + ISO8601 文字列) に変換した差分を取得する。
 // 統合 `/api/pull` の delta 入口を提供する。
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { exams } from './schema'
 import type { ClientExam } from '@/lib/client-db'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 type ExamRow = typeof exams.$inferSelect
 
@@ -28,9 +26,16 @@ export async function getExamsDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientExam[]; maxUpdatedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(exams.userId, userId)]
-  if (since) conds.push(gte(exams.updatedAt, since))
-  const rows = (await db.select().from(exams).where(and(...conds))).map(toClientExam)
-  return { rows, maxUpdatedAt: maxIso(rows.map((r) => r.updated_at)) }
+  const { rows, max } = await getDeltaRows(
+    {
+      table: exams,
+      userIdCol: exams.userId,
+      cursorCol: exams.updatedAt,
+      mapper: toClientExam,
+      cursorValueOf: (r) => r.updated_at,
+    },
+    userId,
+    since,
+  )
+  return { rows, maxUpdatedAt: max }
 }

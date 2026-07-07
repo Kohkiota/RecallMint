@@ -8,11 +8,9 @@
 
 import 'server-only'
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { tagOptions } from './schema'
 import type { ClientTagOption } from '@/lib/client-db'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 type TagOptionRow = typeof tagOptions.$inferSelect
 
@@ -33,11 +31,16 @@ export async function getOptionsDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientTagOption[]; maxUpdatedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(tagOptions.userId, userId)]
-  if (since) conds.push(gte(tagOptions.updatedAt, since))
-  const rows = (await db.select().from(tagOptions).where(and(...conds))).map(
-    toClientTagOption,
+  const { rows, max } = await getDeltaRows(
+    {
+      table: tagOptions,
+      userIdCol: tagOptions.userId,
+      cursorCol: tagOptions.updatedAt,
+      mapper: toClientTagOption,
+      cursorValueOf: (r) => r.updated_at,
+    },
+    userId,
+    since,
   )
-  return { rows, maxUpdatedAt: maxIso(rows.map((r) => r.updated_at)) }
+  return { rows, maxUpdatedAt: max }
 }

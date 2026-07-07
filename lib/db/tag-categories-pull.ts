@@ -9,11 +9,9 @@
 
 import 'server-only'
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { tagCategories } from './schema'
 import type { ClientTagCategory } from '@/lib/client-db'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 type TagCategoryRow = typeof tagCategories.$inferSelect
 
@@ -34,11 +32,16 @@ export async function getCategoriesDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientTagCategory[]; maxUpdatedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(tagCategories.userId, userId)]
-  if (since) conds.push(gte(tagCategories.updatedAt, since))
-  const rows = (await db.select().from(tagCategories).where(and(...conds))).map(
-    toClientTagCategory,
+  const { rows, max } = await getDeltaRows(
+    {
+      table: tagCategories,
+      userIdCol: tagCategories.userId,
+      cursorCol: tagCategories.updatedAt,
+      mapper: toClientTagCategory,
+      cursorValueOf: (r) => r.updated_at,
+    },
+    userId,
+    since,
   )
-  return { rows, maxUpdatedAt: maxIso(rows.map((r) => r.updated_at)) }
+  return { rows, maxUpdatedAt: max }
 }

@@ -10,20 +10,25 @@
 
 import 'server-only'
 
-import { and, eq, gte, SQL } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { cards } from './schema'
 import type { ClientCard } from '@/lib/client-db'
 import { toClientCard } from './cards-mapper'
-import { maxIso } from './max-iso'
+import { getDeltaRows } from './pull-delta'
 
 export async function getCardsDelta(
   userId: string,
   since?: Date,
 ): Promise<{ rows: ClientCard[]; maxUpdatedAt: string | null }> {
-  const db = getDb()
-  const conds: SQL[] = [eq(cards.userId, userId)]
-  if (since) conds.push(gte(cards.updatedAt, since))
-  const rows = (await db.select().from(cards).where(and(...conds))).map(toClientCard)
-  return { rows, maxUpdatedAt: maxIso(rows.map((r) => r.updated_at)) }
+  const { rows, max } = await getDeltaRows(
+    {
+      table: cards,
+      userIdCol: cards.userId,
+      cursorCol: cards.updatedAt,
+      mapper: toClientCard,
+      cursorValueOf: (r) => r.updated_at,
+    },
+    userId,
+    since,
+  )
+  return { rows, maxUpdatedAt: max }
 }
