@@ -38,12 +38,13 @@
 // 「空 ghost 追加後に既存 row を編集」 した場合のみ空 ghost が autoEdit 扱いで残るが、
 // 永続化はされず報告 repro (連続 ghost 追加) の対象外。
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
 import { useCardOptions } from '../_hooks/use-card-options'
 import { cn } from '@/lib/utils'
+import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-shared'
 
 // ============================================================================
 // InlineOptionList (per-card parent)
@@ -276,18 +277,8 @@ export function InlineOptionCell({
     setEditValue(value)
   }
 
-  // multiline textarea の auto-resize: 編集中 + editValue 変化に追従。 useLayoutEffect
-  // で paint 前同期実行。 single-line input (kind='id') では instanceof 判定で no-op。
-  useLayoutEffect(() => {
-    if (!editing) return
-    const el = inputRef.current
-    if (!(el instanceof HTMLTextAreaElement)) return
-    // '0px' で一旦潰してから scrollHeight を測る。 'auto' だと textarea 既定
-    // rows=2 の 2 行枠が clientHeight として残り scrollHeight=2 行で固定され、
-    // 1 行内容でも 2 行高さに膨らむ (display とズレる)。 '0px' なら真の内容高を返す。
-    el.style.height = '0px'
-    el.style.height = `${el.scrollHeight}px`
-  }, [editing, editValue])
+  // multiline textarea の auto-resize (共有 hook)。 trigger = editValue (編集中変化に追従)。
+  useAutoResizeTextarea(inputRef, editing, editValue)
 
   const startEdit = () => {
     setEditing(true)
@@ -307,9 +298,6 @@ export function InlineOptionCell({
   }
 
   const multiline = kind !== 'id'
-
-  // display / edit で共通の box 寸法 (`InlineTextField` の sharedBoxChrome と同じ値)。
-  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2 md:min-h-8 md:py-1'
 
   if (editing) {
     const commonProps = {
@@ -331,7 +319,7 @@ export function InlineOptionCell({
               ref: React.Ref<HTMLTextAreaElement>
             })}
             // rows 固定値は使わない (useLayoutEffect が scrollHeight 追従で auto-resize)。
-            className={cn(sharedBoxChrome, 'resize-none overflow-hidden', displayClassName)}
+            className={cn(SHARED_BOX_CHROME, 'resize-none overflow-hidden', displayClassName)}
           />
         ) : (
           <Input
@@ -339,7 +327,7 @@ export function InlineOptionCell({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
-            className={cn(sharedBoxChrome, displayClassName)}
+            className={cn(SHARED_BOX_CHROME, displayClassName)}
           />
         )}
       </div>
@@ -355,7 +343,7 @@ export function InlineOptionCell({
       onClick={startEdit}
       onKeyDown={onKeyDown}
       className={cn(
-        sharedBoxChrome,
+        SHARED_BOX_CHROME,
         'border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
         isEmpty && 'text-slate-400 italic',
         displayClassName,

@@ -27,7 +27,7 @@
 // 予約。 multiline textarea は `useLayoutEffect` で auto-resize (paint 前同期実行で
 // 初回 mount の 1 frame flicker を回避)。
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
@@ -35,6 +35,7 @@ import { normalizeNullableTextField } from '@/lib/cards/card-write'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { cn } from '@/lib/utils'
+import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-shared'
 
 // sort_key / title / question_text / explanation_text / memo は ClientCard の
 // snake_case 列名に 1:1 対応する (mirror patch のキーにそのまま使う)。
@@ -112,18 +113,8 @@ export function InlineTextField({
     }
   }, [editing])
 
-  // multiline textarea の auto-resize: 編集中 + value 変化に追従して内容高さに合わせる。
-  // useLayoutEffect で paint 前に同期実行 (initial mount の 1 frame flicker 回避)。
-  useLayoutEffect(() => {
-    if (!editing) return
-    const el = inputRef.current
-    if (!(el instanceof HTMLTextAreaElement)) return
-    // '0px' で一旦潰してから scrollHeight を測る。 'auto' だと textarea 既定
-    // rows=2 の 2 行枠が clientHeight として残り scrollHeight=2 行で固定され、
-    // 1 行内容でも 2 行高さに膨らむ (display とズレる)。 '0px' なら真の内容高を返す。
-    el.style.height = '0px'
-    el.style.height = `${el.scrollHeight}px`
-  }, [editing, value])
+  // multiline textarea の auto-resize (共有 hook)。 trigger = value (編集中 value 変化に追従)。
+  useAutoResizeTextarea(inputRef, editing, value)
 
   // dirty-guard: 親 (useLiveQuery / mirror) 由来で initialValue が外部変化した時、
   // 編集中でなければ value を新値に同期する (= pull-reconciliation の rollback path も
@@ -262,10 +253,6 @@ export function InlineTextField({
     commit(value)
   }
 
-  // display / edit で共通の box 寸法 (border-box + padding + 1px border + radius +
-  // 最小高さ + 幅)。 textarea / input の default は twMerge で表示モードと同じ値に上書き。
-  const sharedBoxChrome = 'block w-full min-h-11 rounded-md p-2 md:min-h-8 md:py-1'
-
   if (editing) {
     const commonProps = {
       'aria-label': ariaLabel,
@@ -285,10 +272,10 @@ export function InlineTextField({
             {...(commonProps as React.ComponentProps<typeof Textarea> & {
               ref: React.Ref<HTMLTextAreaElement>
             })}
-            // rows 固定値は使わない (auto-resize 担当の useLayoutEffect が scrollHeight に
+            // rows 固定値は使わない (auto-resize は useAutoResizeTextarea が scrollHeight に
             // 追従させる)。 `resize-none overflow-hidden` で manual resize handle と
             // scrollbar を抑止し、 親レイアウトと整合させる。
-            className={cn(sharedBoxChrome, 'resize-none overflow-hidden', displayClassName)}
+            className={cn(SHARED_BOX_CHROME, 'resize-none overflow-hidden', displayClassName)}
           />
         ) : (
           <Input
@@ -296,7 +283,7 @@ export function InlineTextField({
               ref: React.Ref<HTMLInputElement>
             })}
             type="text"
-            className={cn(sharedBoxChrome, displayClassName)}
+            className={cn(SHARED_BOX_CHROME, displayClassName)}
           />
         )}
       </div>
@@ -315,7 +302,7 @@ export function InlineTextField({
         onClick={startEdit}
         onKeyDown={onKeyDown}
         className={cn(
-          sharedBoxChrome,
+          SHARED_BOX_CHROME,
           'border border-transparent cursor-text transition-colors hover:bg-slate-100 focus-visible:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
           isEmpty && 'text-slate-400 italic',
           displayClassName,
