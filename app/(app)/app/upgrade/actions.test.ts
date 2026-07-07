@@ -53,10 +53,21 @@ vi.mock('@/lib/stripe/subscription', async (importOriginal) => {
   return {
     ...actual,
     resolveActiveSubscription: mockResolveActiveSubscription,
-    getPendingState: mockGetPendingState,
     applyUpgrade: mockApplyUpgrade,
     scheduleDowngrade: mockScheduleDowngrade,
     cancelScheduledDowngrade: mockCancelScheduledDowngrade,
+  }
+})
+
+// getPendingState は pure module へ抽出済 (subscription-changes)。action 層 test では
+// pending 状態を任意に注入したいので mock する。classifyChange は純ロジックのため
+// importOriginal で real を維持し、実際の rank 比較を通す。
+vi.mock('@/lib/stripe/subscription-changes', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/stripe/subscription-changes')>()
+  return {
+    ...actual,
+    getPendingState: mockGetPendingState,
   }
 })
 

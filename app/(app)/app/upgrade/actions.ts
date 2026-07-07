@@ -9,8 +9,6 @@ import { eq } from 'drizzle-orm'
 import { rankPlan } from '@/lib/plan-catalog'
 import { notifyOps } from '@/lib/ops'
 import {
-  classifyChange,
-  getPendingState,
   resolveActiveSubscription,
   applyUpgrade,
   scheduleDowngrade,
@@ -18,6 +16,7 @@ import {
   NoSubscriptionError,
   AmbiguousSubscriptionError,
 } from '@/lib/stripe/subscription'
+import { classifyChange, getPendingState } from '@/lib/stripe/subscription-changes'
 import { priceIdFor, type PaidPlan, type BillingInterval } from '@/lib/stripe/price-mapping'
 
 // 4 種類 (Standard×month/year × Pro×month/year) すべての Checkout 起動に対応。

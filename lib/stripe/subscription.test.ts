@@ -43,8 +43,6 @@ vi.mock('@/lib/ops', () => ({
 }))
 
 import {
-  classifyChange,
-  getPendingState,
   resolveActiveSubscription,
   applyUpgrade,
   scheduleDowngrade,
@@ -53,6 +51,7 @@ import {
   NoSubscriptionError,
   AmbiguousSubscriptionError,
 } from './subscription'
+import { classifyChange, getPendingState } from './subscription-changes'
 
 // ---------------------------------------------------------------------------
 // classifyChange

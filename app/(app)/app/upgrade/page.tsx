@@ -1,8 +1,6 @@
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import {
-  resolveActiveSubscription,
-  getPendingState,
-} from '@/lib/stripe/subscription'
+import { resolveActiveSubscription } from '@/lib/stripe/subscription'
+import { getPendingState } from '@/lib/stripe/subscription-changes'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import { PAID_PLAN_CATALOG } from '@/lib/plan-catalog'
 import { AppContainer } from '../_components/app-container'
