@@ -67,24 +67,6 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: 'user_not_synced' }, { status: 401 })
   }
 
-  // [TEMP-MEASURE 2026-05-28 cache-fix 問題 3 Step 1] per-phase timing 計測 (logger 出力)。
-  // production の log を汚さないため stg/preview/dev のみ出力。 計測 campaign 後に revert。
-  const measureEnabled = process.env.VERCEL_ENV !== 'production'
-  const timings: Record<string, number> = {}
-  const measure = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-    const t0 = performance.now()
-    try {
-      return await fn()
-    } finally {
-      timings[name] = Math.round(performance.now() - t0)
-    }
-  }
-  const tStart = performance.now()
-  // marker: deploy 反映 + logger 動作 + route 到達を 1 fetch で確認できる単独 marker。
-  if (measureEnabled) {
-    logger.info({ event: 'review_events.bulk.request', userId: user.id })
-  }
-
   // -- payload parse + validation --
   let body: unknown
   try {
@@ -108,7 +90,7 @@ export async function POST(req: Request): Promise<Response> {
   // 最新値で上書き (updated_at は $onUpdate で自動)。
   // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
   try {
-    await measure('session-upsert', async () => db
+    await db
       .insert(studySessions)
       .values({
         sessionId: session.session_id,
@@ -140,7 +122,7 @@ export async function POST(req: Request): Promise<Response> {
             : null,
           status: session.status,
         },
-      }))
+      })
   } catch (err) {
     logger.error({
       event: 'review_events.bulk.session_upsert_failed',
@@ -168,17 +150,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // -- Phase 1+2: events を単一 tx で処理 --
-  const { failed } = await processSession(db, user, session, events, measure)
+  const { failed } = await processSession(db, user, session, events)
 
-  timings['total'] = Math.round(performance.now() - tStart)
-  if (measureEnabled) {
-    logger.info({
-      event: 'review_events.bulk.timing',
-      userId: user.id,
-      sessionId: session.session_id,
-      eventCount: events.length,
-      timings,
-    })
-  }
   return Response.json({ ok: true, failed }, { status: 200 })
 }

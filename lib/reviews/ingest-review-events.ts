@@ -88,7 +88,6 @@ async function processSession(
   user: User,
   session: BulkPayload['session'],
   events: ParsedEvent[],
-  measure: <T>(name: string, fn: () => Promise<T>) => Promise<T>,
 ): Promise<{ failed: string[] }> {
   // events が空の場合は tx に入らず即返却
   if (events.length === 0) {
@@ -106,33 +105,31 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 1 — cards SELECT (owner-scoped)
       // ------------------------------------------------------------------
-      const cardRows = await measure('select-cards', async () =>
-        tx
-          .select({
-            id: cards.id,
-            due: cards.due,
-            stability: cards.stability,
-            difficulty: cards.difficulty,
-            elapsedDays: cards.elapsedDays,
-            scheduledDays: cards.scheduledDays,
-            reps: cards.reps,
-            lapses: cards.lapses,
-            state: cards.state,
-            learningSteps: cards.learningSteps,
-            lastReview: cards.lastReview,
-            answered: cards.answered,
-            lastCorrect: cards.lastCorrect,
-            currentStreak: cards.currentStreak,
-          })
-          .from(cards)
-          .where(
-            and(
-              eq(cards.userId, user.id),
-              // owner-scoped IN 絞り込み — orphan / 他 user cards は返らない
-              inArray(cards.id, distinctCardIds),
-            ),
+      const cardRows = await tx
+        .select({
+          id: cards.id,
+          due: cards.due,
+          stability: cards.stability,
+          difficulty: cards.difficulty,
+          elapsedDays: cards.elapsedDays,
+          scheduledDays: cards.scheduledDays,
+          reps: cards.reps,
+          lapses: cards.lapses,
+          state: cards.state,
+          learningSteps: cards.learningSteps,
+          lastReview: cards.lastReview,
+          answered: cards.answered,
+          lastCorrect: cards.lastCorrect,
+          currentStreak: cards.currentStreak,
+        })
+        .from(cards)
+        .where(
+          and(
+            eq(cards.userId, user.id),
+            // owner-scoped IN 絞り込み — orphan / 他 user cards は返らない
+            inArray(cards.id, distinctCardIds),
           ),
-      )
+        )
 
       // card_id → ReplayCardState マップを構築
       const cardStateMap = new Map<string, ReplayCardState>()
@@ -170,24 +167,22 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 2a — answer_events bulk INSERT (ON CONFLICT DO NOTHING)
       // ------------------------------------------------------------------
-      const insertedRows = await measure('insert-events', async () =>
-        tx
-          .insert(answerEvents)
-          .values(
-            applicableEvents.map((ev) => ({
-              eventId: ev.event_id,
-              sessionId: session.session_id,
-              cardId: ev.card_id,
-              userId: user.id,
-              selectedAnswerIds: ev.selected_answer_ids,
-              isCorrect: ev.is_correct,
-              answeredAt: new Date(ev.answered_at),
-              elapsedMs: ev.elapsed_ms ?? null,
-            })),
-          )
-          .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ eventId: answerEvents.eventId }),
-      )
+      const insertedRows = await tx
+        .insert(answerEvents)
+        .values(
+          applicableEvents.map((ev) => ({
+            eventId: ev.event_id,
+            sessionId: session.session_id,
+            cardId: ev.card_id,
+            userId: user.id,
+            selectedAnswerIds: ev.selected_answer_ids,
+            isCorrect: ev.is_correct,
+            answeredAt: new Date(ev.answered_at),
+            elapsedMs: ev.elapsed_ms ?? null,
+          })),
+        )
+        .onConflictDoNothing({ target: answerEvents.eventId })
+        .returning({ eventId: answerEvents.eventId })
 
       // 実際に INSERT された event_id セット (duplicate は除外される)
       const insertedEventIds = new Set(insertedRows.map((r) => r.eventId))
@@ -225,27 +220,24 @@ async function processSession(
         grouped.set(ev.card_id, arr)
       }
 
-      await measure('replay', async () => {
-        for (const [cardId, groupEvents] of grouped) {
-          const initial = cardStateMap.get(cardId)!
-          const replayEvents = groupEvents.map((ev) => ({
-            // payload rating 優先、未指定は is_correct から derive
-            rating: deriveRating(ev),
-            answeredAt: new Date(ev.answered_at),
-          }))
-          const { final, reviews: reviewsOut } = replayCard(initial, replayEvents)
-          finalStates.set(cardId, final)
-          // reviews 行を eventsToApply 順に戻すため groupEvents と reviewsOut を zip
-          for (let i = 0; i < groupEvents.length; i++) {
-            allReviewRows.push({
-              cardId,
-              rating: reviewsOut[i].rating,
-              reviewedAt: reviewsOut[i].reviewedAt,
-            })
-          }
+      for (const [cardId, groupEvents] of grouped) {
+        const initial = cardStateMap.get(cardId)!
+        const replayEvents = groupEvents.map((ev) => ({
+          // payload rating 優先、未指定は is_correct から derive
+          rating: deriveRating(ev),
+          answeredAt: new Date(ev.answered_at),
+        }))
+        const { final, reviews: reviewsOut } = replayCard(initial, replayEvents)
+        finalStates.set(cardId, final)
+        // reviews 行を eventsToApply 順に戻すため groupEvents と reviewsOut を zip
+        for (let i = 0; i < groupEvents.length; i++) {
+          allReviewRows.push({
+            cardId,
+            rating: reviewsOut[i].rating,
+            reviewedAt: reviewsOut[i].reviewedAt,
+          })
         }
-        return undefined
-      })
+      }
 
       // reviews 行の順序は group 順 (card_id 初出順)。 study_days は eventsToApply から
       // 別途集計するため、 reviews INSERT 順は最終結果に影響しない。
@@ -253,15 +245,13 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 2d — reviews bulk INSERT
       // ------------------------------------------------------------------
-      await measure('insert-reviews', async () =>
-        tx.insert(reviews).values(
-          allReviewRows.map((r) => ({
-            userId: user.id,
-            cardId: r.cardId,
-            rating: r.rating,
-            reviewedAt: r.reviewedAt,
-          })),
-        ),
+      await tx.insert(reviews).values(
+        allReviewRows.map((r) => ({
+          userId: user.id,
+          cardId: r.cardId,
+          rating: r.rating,
+          reviewedAt: r.reviewedAt,
+        })),
       )
 
       // ------------------------------------------------------------------
@@ -270,9 +260,7 @@ async function processSession(
       // UPDATE cards SET ... FROM (VALUES (...), ...) AS v(id, ...) WHERE
       //   cards.id = v.id AND cards.user_id = $userId
       // ------------------------------------------------------------------
-      await measure('update-cards', async () => {
-        if (finalStates.size === 0) return undefined
-
+      if (finalStates.size !== 0) {
         // per-card tuple リスト (VALUES 節用)
         // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
         // ::cast は静的リテラルのみ (安全)。
@@ -326,28 +314,24 @@ async function processSession(
           })
           throw mismatch
         }
-
-        return undefined
-      })
+      }
 
       // ------------------------------------------------------------------
       // Phase 2f — study_days UPSERT (per JST day)
       // ------------------------------------------------------------------
-      await measure('study-days', async () => {
-        // eventsToApply を JST date でグループ化して count 集計
-        type DayCount = { total: number; correct: number }
-        const dayMap = new Map<string, DayCount>()
-        for (const ev of eventsToApply) {
-          const day = todayInJst(new Date(ev.answered_at))
-          const rating = deriveRating(ev)
-          const existing = dayMap.get(day) ?? { total: 0, correct: 0 }
-          existing.total += 1
-          if (rating >= 2) existing.correct += 1
-          dayMap.set(day, existing)
-        }
+      // eventsToApply を JST date でグループ化して count 集計
+      type DayCount = { total: number; correct: number }
+      const dayMap = new Map<string, DayCount>()
+      for (const ev of eventsToApply) {
+        const day = todayInJst(new Date(ev.answered_at))
+        const rating = deriveRating(ev)
+        const existing = dayMap.get(day) ?? { total: 0, correct: 0 }
+        existing.total += 1
+        if (rating >= 2) existing.correct += 1
+        dayMap.set(day, existing)
+      }
 
-        if (dayMap.size === 0) return undefined
-
+      if (dayMap.size !== 0) {
         // T-B2 #1a 再実装 (採用 X、 helper 化): per-day SELECT N+1 を
         // `GROUP BY day` 1 文に集約。 inDateList helper で `IN ($1::date,
         // $2::date, ...)` 形に個別 param 展開し、 driver 層挙動 (postgres-js
@@ -395,8 +379,7 @@ async function processSession(
               },
             })
         }
-        return undefined
-      })
+      }
     })
   } catch (err) {
     // tx 内部で予期しないエラー → rollback 済み。 applicable events を全て failed に。
