@@ -1,27 +1,22 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { eq, and, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
 import {
-  exams,
-  cards,
-  sourceDocuments,
-  uploadRecords,
   type CardOption,
   type CardImage,
 } from '@/lib/db/schema'
 import { incrementAiUsage } from '@/lib/ai-usage-counter'
 import { runOcrPipeline, OcrDeadlineError } from '@/lib/ai/ocr'
 import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
-import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { TOTAL_UPLOAD_LIMIT_BYTES, TOTAL_UPLOAD_LIMIT_MB } from '../_lib/constants'
 import { runUploadGuardTx, type Destination } from './upload-guard'
+import { saveExtractedCards, completeUploadTx, markFailed } from './upload-persistence'
 
 // 結果プレビュー用の card subset (preview UI が render する read-only data)。
 // 完全な ExtractedCard をそのまま返すのではなく、 必要最小限に絞ることで
@@ -397,30 +392,11 @@ async function _processUpload(
     // 下 catch で SAVE_FAILED を返す。 inserted row index と pipelineResult.cards
     // の index 対応は drizzle bulk INSERT + RETURNING の VALUES 順保持に依拠
     // (preview 構築 L648-649 と同じ既存契約)。
-    insertedCards = await db.transaction(async (tx) => {
-      const inserted = await tx
-        .insert(cards)
-        .values(cardRows)
-        .returning({ id: cards.id, title: cards.title })
-      await applyOcrTags(
-        tx,
-        user.id,
-        inserted.map((row, i) => ({
-          id: row.id,
-          custom_props: pipelineResult.cards[i].custom_props,
-        })),
-      )
-      await tx
-        .update(exams)
-        .set({
-          cardCount: sql`${exams.cardCount} + ${cardRows.length}`,
-          // card_count は派生キャッシュ。 更新で exams.updatedAt ($onUpdate) を
-          // 動かさず、 試験一覧の updatedAt DESC 順を card 増減で乱さない
-          // (B1 は perf 最適化であり list 並び順を変える feature ではない)。
-          updatedAt: sql`${exams.updatedAt}`,
-        })
-        .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
-      return inserted
+    insertedCards = await saveExtractedCards(db, {
+      userId: user.id,
+      examId,
+      cardRows,
+      customProps: pipelineResult.cards.map((c) => c.custom_props),
     })
   } catch (err) {
     // cards 保存失敗: OCR 自体は成功し cost が発生済のため実値を台帳に failed 記録
@@ -464,25 +440,14 @@ async function _processUpload(
   // source_documents が 'processing' のまま残留する。 markFailed で status を
   // 'failed' に確定させ、 stuck processing を防ぐ。
   try {
-    await db.transaction(async (tx) => {
-      await tx
-        .update(sourceDocuments)
-        .set({
-          status: 'completed',
-          pagesProcessed: totalPages,
-          cardsExtracted: insertedCards.length,
-          ocrCostYen: pipelineResult.costYen,
-          completedAt: sql`now()`,
-        })
-        .where(eq(sourceDocuments.id, sourceDocumentId))
-      await tx.insert(uploadRecords).values({
-        userId: user.id,
-        filename,
-        fileSizeBytes: totalSize,
-        pagesProcessed: totalPages,
-        ocrCostYen: pipelineResult.costYen,
-        status: 'completed',
-      })
+    await completeUploadTx(db, {
+      sourceDocumentId,
+      userId: user.id,
+      filename,
+      totalSize,
+      totalPages,
+      cardsExtracted: insertedCards.length,
+      ocrCostYen: pipelineResult.costYen,
     })
   } catch (err) {
     // OCR + cards INSERT は成功済 (cost 発生済) のため、 markFailed には実値
@@ -547,49 +512,4 @@ async function _processUpload(
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   return s.slice(0, max) + '…'
-}
-
-// OCR 失敗時の後始末。 source_documents を status='failed' に更新し、 同 transaction
-// で upload_records にも status='failed' 行を append する (台帳として失敗も記録、
-// ただし月次 quota SUM は completed で絞るため消費には計上されない)。
-// best-effort: 失敗しても throw せず logger.warn のみ (OCR 失敗 path の二次被害防止)。
-async function markFailed(
-  sourceDocumentId: string,
-  err: unknown,
-  audit: {
-    userId: string
-    filename: string
-    fileSizeBytes: number
-    pagesProcessed: number
-    ocrCostYen: number
-  },
-): Promise<void> {
-  const db = getDb()
-  const msg = err instanceof Error ? err.message : String(err)
-  try {
-    await db.transaction(async (tx) => {
-      await tx
-        .update(sourceDocuments)
-        .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
-        .where(eq(sourceDocuments.id, sourceDocumentId))
-      await tx.insert(uploadRecords).values({
-        userId: audit.userId,
-        filename: audit.filename,
-        fileSizeBytes: audit.fileSizeBytes,
-        pagesProcessed: audit.pagesProcessed,
-        ocrCostYen: audit.ocrCostYen,
-        status: 'failed',
-      })
-    })
-  } catch (updateErr) {
-    // status='processing' のまま残るが、 ops 通知側で source_document_id を持つので
-    // 後から OT が手動で update 可能。 巻き込み防止のため throw しない。
-    // S1.9.1: 月次 quota は upload_records 集計のため、 source_documents が
-    // processing 残骸として残っても消費計算には一切影響しない。
-    logger.warn({
-      event: 'source_documents.mark_failed.update_failed',
-      sourceDocumentId,
-      updateErr,
-    })
-  }
 }
