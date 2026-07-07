@@ -97,8 +97,15 @@ const config = [
     // TODO(Sync-fix-1): use-card-options.ts の refs structural fix は
     // optimistic 経路収束 (event handler 書換) と同 working set のため波2 では
     // 直さない。 Edit-2 T1 で inline-option-row.tsx から hook へ移送、違反箇所は
-    // use-card-options.ts L102 単独 = `optionsRef.current = options` の 1 行のみ。
+    // use-card-options.ts の `optionsRef.current = options` 単独。
     // Sync-fix-1 完了後この override block を削除。
+    //
+    // P3 W3 (Task 4, 2026-07-07) 再評価: 本 task は pure domain logic のみ carve
+    // (deriveCorrectAnswerIds 移送) し optionsRef パターン自体は不変。 off の解消は
+    // `optionsRef.current = options` の render-phase 同期更新を撤去する構造変更を要し、
+    // debounce commit / latest-value 読取の re-render・timing 挙動を変える (P3 =
+    // behavior-preserving に反する) ため据え置き継続。 次工程 = Sync-fix-1 または
+    // P4 の別 task で ref パターン再設計と併せて解消する。
     // glob の `(...)` `[...]` は minimatch では alternation / character class と
     // 解釈されるため、 Next route group と dynamic segment は `\\(...\\)` `\\[...\\]`
     // で escape する (escape 不在で silent に override 効かず → gate 立ち上げ時 fail)。

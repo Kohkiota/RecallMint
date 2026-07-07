@@ -31,6 +31,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { normalizeNullableTextField } from '@/lib/cards/card-write'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { cn } from '@/lib/utils'
@@ -60,15 +61,8 @@ type InlineTextFieldProps = {
 
 const DEBOUNCE_MS = 500
 
-// server (lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS[field] handler、
-// 具体的には sort_key / explanation_text / memo の各 handler 内で '' → null 正規化)
-// が空文字を null に揃える nullable text 列。 mirror も同じ正規化をかけ、 楽観値を
-// server 確定値に一致させる (pull-back での見た目反転防止)。
-const NULLABLE_FIELDS: ReadonlySet<InlineTextFieldName> = new Set([
-  'sort_key',
-  'explanation_text',
-  'memo',
-])
+// nullable text 列の空文字→null 正規化ルールは lib/cards/card-write.ts
+// (normalizeNullableTextField / NULLABLE_TEXT_FIELDS) へ移送済 (P3 W3)。
 
 export function InlineTextField({
   cardId,
@@ -196,10 +190,8 @@ export function InlineTextField({
   // commit 直前に `value === initialString` の no-op short-circuit を `handleBlur` で済ませて
   // いるため、 helper 側 `isNoop` は省略 (no-op は到達しない)。
   const commit = (target: string) => {
-    const mirrorValue =
-      NULLABLE_FIELDS.has(field) && target === '' ? null : target
-    const beforeMirrorValue =
-      NULLABLE_FIELDS.has(field) && initialString === '' ? null : initialString
+    const mirrorValue = normalizeNullableTextField(field, target)
+    const beforeMirrorValue = normalizeNullableTextField(field, initialString)
     // beforeValue は helper API 対称性のため渡しているが、 commit 直前に
     // `value === initialString` の no-op を `handleBlur` で短絡判定済なので、
     // helper 側 `isNoop` には渡さない (helper 内 isNoop 経由の早期 return は使わない)。

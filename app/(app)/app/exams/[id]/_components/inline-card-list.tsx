@@ -19,6 +19,7 @@ import {
 } from '@/lib/client-db'
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
+import { buildNewCardMutationPatch } from '@/lib/cards/card-write'
 import { sortLikeServer } from '@/lib/cards/sort-like-server'
 import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
 import { newId } from '@/lib/sync/entity-mutations'
@@ -213,26 +214,14 @@ export function InlineCardList({
         mirrorStore: getClientDb().cards,
         buildRow: (newCardId, now) =>
           buildNewClientCard({ cardId: newCardId, userId, examId, empty, now }),
-        // outbox enqueue (snake_case patch + camelCase options)。 server は options の
-        // is_correct から correct_answer_ids を再生成するため patch に含めない。
+        // outbox enqueue: snake_case create patch + camelCase options への写像は
+        // lib/cards/card-write.ts (buildNewCardMutationPatch) に移送済 (P3 W3)。
+        // server は options の is_correct から correct_answer_ids を再生成するため含めない。
         buildMutation: (newCardId) => ({
           entity_type: 'card',
           entity_id: newCardId,
           op: 'create',
-          patch: {
-            exam_id: examId,
-            title: empty.title,
-            sort_key: empty.sortKey,
-            question_text: empty.questionText,
-            options: empty.options.map((o) => ({
-              id: o.id,
-              text: o.text,
-              isCorrect: o.is_correct,
-              ...(o.explanation ? { explanation: o.explanation } : {}),
-            })),
-            explanation_text: null,
-            memo: null,
-          },
+          patch: buildNewCardMutationPatch({ examId, empty }),
         }),
         logEvent: 'card_inline.add.tx_failed',
         logContext: { examId, cardId },

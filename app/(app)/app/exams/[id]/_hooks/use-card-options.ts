@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CardOption } from '@/lib/db/schema'
 import { nextOptionId } from '@/lib/cards/next-option-id'
+import { deriveCorrectAnswerIds } from '@/lib/cards/card-write'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
@@ -176,13 +177,9 @@ export function useCardOptions(
     // helper 側 `isNoop` は使わない (helper 内 isNoop 経由の早期 return は使わない)。
     // revert も Dexie auto-rollback に一任 = beforeValue は実質 dead、 caller-side で
     // 型を揃えるためだけに構築する。
-    const correctAnswerIds = sanitized
-      .filter((o) => o.is_correct)
-      .map((o) => o.id)
+    const correctAnswerIds = deriveCorrectAnswerIds(sanitized)
     const beforeOptions = serverCommittedRef.current
-    const beforeCorrect = beforeOptions
-      .filter((o) => o.is_correct)
-      .map((o) => o.id)
+    const beforeCorrect = deriveCorrectAnswerIds(beforeOptions)
     const beforePatch: Partial<ClientCard> = {
       options: beforeOptions,
       correct_answer_ids: beforeCorrect,
@@ -276,7 +273,7 @@ export function useCardOptions(
   // S2.0b-3: 選択肢 count + 正解サマリは optimistic `options` state から計算して
   // checkbox toggle と同時即時更新する。 正解 0 件はサマリ要素自体を hide。
   const canDelete = options.length > 1
-  const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
+  const correctIds = deriveCorrectAnswerIds(options)
 
   return {
     options,
