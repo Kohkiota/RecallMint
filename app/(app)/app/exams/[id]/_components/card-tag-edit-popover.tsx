@@ -37,7 +37,7 @@ import {
 
 import { CardTagOptionList } from './card-tag-option-list'
 import { CardTagEditFields } from './card-tag-edit-fields'
-import type { TagEditCallbacks } from './card-tags-section'
+import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 
 // ---------------------------------------------------------------------------
 // Props

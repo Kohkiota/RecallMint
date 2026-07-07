@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import type { TagEditCallbacks } from './card-tags-section'
+import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 
 // Tag-4c-2c hotfix H5: PopoverContent に渡された props を直接 assert したい
 // (collisionPadding / sideOffset / avoidCollisions は Radix 内部 positioning に消費され

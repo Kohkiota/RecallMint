@@ -95,7 +95,7 @@ import {
   handleCreateCategory,
   createOption,
   type TagEditCallbacks,
-} from './card-tags-section'
+} from '@/lib/tags/tag-crud'
 
 // ---------------------------------------------------------------------------
 // Fix-3 T1: TableBody / MemoizedTableBody (module スコープ — component 外で定義し

@@ -13,7 +13,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { TagCell } from './exam-card-table-tag-cell'
 import type { TagCellTag } from './exam-card-table-tag-cell'
-import type { TagEditCallbacks } from './card-tags-section'
+import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -27,8 +27,8 @@ const { mockHandleCreateOptionAndAssign } = vi.hoisted(() => ({
     async (..._args: unknown[]): Promise<void> => undefined,
   ),
 }))
-vi.mock('./card-tags-section', async (importActual) => {
-  const actual = await importActual<typeof import('./card-tags-section')>()
+vi.mock('@/lib/tags/tag-crud', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/tags/tag-crud')>()
   return { ...actual, handleCreateOptionAndAssign: mockHandleCreateOptionAndAssign }
 })
 

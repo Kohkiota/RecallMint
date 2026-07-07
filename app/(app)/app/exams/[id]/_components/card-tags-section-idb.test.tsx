@@ -31,7 +31,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 }))
 
 import { getClientDb } from '@/lib/client-db'
-import { createOption, buildNewOption, handleCreateOptionAndAssign } from './card-tags-section'
+import { createOption, buildNewOption, handleCreateOptionAndAssign } from '@/lib/tags/tag-crud'
 
 // ---------------------------------------------------------------------------
 // fixture helpers (最小限)

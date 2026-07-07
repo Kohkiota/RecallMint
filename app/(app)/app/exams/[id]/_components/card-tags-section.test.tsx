@@ -616,7 +616,7 @@ import {
   handleCreateOptionAndAssign,
   buildNewOption,
   createOption,
-} from './card-tags-section'
+} from '@/lib/tags/tag-crud'
 // Note: runGuardedEntityMutationFlush already imported above (Section 5)
 
 // ===========================================================================

@@ -28,7 +28,7 @@ import { CardTagAddPopover } from './card-tag-add-popover'
 import {
   handleCreateOptionAndAssign,
   type TagEditCallbacks,
-} from './card-tags-section'
+} from '@/lib/tags/tag-crud'
 
 // ---------------------------------------------------------------------------
 // Constants

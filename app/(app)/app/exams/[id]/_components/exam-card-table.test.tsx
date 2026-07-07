@@ -23,9 +23,9 @@ const { mockCreateOption, mockBulkTag } = vi.hoisted(() => ({
   mockBulkTag: vi.fn(async () => ({ ok: true, succeeded: [] as string[], failed: [] as string[] })),
 }))
 
-// Mock createOption from card-tags-section; keep all other exports real.
-vi.mock('./card-tags-section', async (importActual) => {
-  const actual = await importActual<typeof import('./card-tags-section')>()
+// Mock createOption from @/lib/tags/tag-crud; keep all other exports real.
+vi.mock('@/lib/tags/tag-crud', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/tags/tag-crud')>()
   return { ...actual, createOption: mockCreateOption }
 })
 

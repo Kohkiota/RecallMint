@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { ClientTagCategory } from '@/lib/client-db'
 
-import type { TagEditCallbacks } from './card-tags-section'
+import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 import type { BulkResult } from '../_hooks/use-bulk-card-tags'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 

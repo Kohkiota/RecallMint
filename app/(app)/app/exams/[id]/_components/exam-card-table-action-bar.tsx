@@ -18,7 +18,7 @@
 import * as React from 'react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import type { TagEditCallbacks } from './card-tags-section'
+import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 import type { BulkResult, BulkTagOp } from '../_hooks/use-bulk-card-tags'
 import { CardTagAddPopover } from './card-tag-add-popover'
 import { ExamCardBulkDeleteDialog } from './exam-card-bulk-delete-dialog'
