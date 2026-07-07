@@ -52,7 +52,9 @@
 ### Task 3: tags manager 統一(W2b・risk・独立 commit)
 
 - **目的**: category-list.tsx:171 / option-list.tsx:147 の cascade delete を lib/tags use-case 呼び出しへ付け替え、client 内二重実装を単一 source 化(判断点 1 採用)。
-- **制約**(OT 条件 1): 「同形 ≠ 同一」— 付け替え前に両実装の差分を実測比較し、差分があれば caller 側で吸収(use-case を manager 挙動に寄せない)。比較対象 = impact 集計・削除順・enqueue patch・エラー処理 + **UI 状態(dialog close・error message・loading state・impact 表示)**(Codex 指摘で拡張)。**受け入れ条件 = 両 caller の既存 test が両方 green**(exams 側 + tags manager 側 category-list.test / option-list.test)。差分吸収不能なら停止(仕様解釈揺れ)— 無理な統一より別 task 切り出しを優先。
+- **制約**(OT 条件 1): 「同形 ≠ 同一」— 付け替え前に両実装の差分を実測比較し、差分があれば caller 側で吸収(use-case を manager 挙動に寄せない)。比較対象 = impact 集計・削除順・enqueue patch・エラー処理 + **UI 状態(dialog close・error message・loading state・impact 表示)**(Codex 指摘で拡張)。**受け入れ条件 = 両 caller の既存 test が両方 green**(exams 側 + tags manager 側 category-list.test / option-list.test)。
+- **吸収の原則**(OT 確定・振り分け基準): use-case は**純粋な delete ロジックのみ**を持つ(削除順・enqueue patch・tx 構造)。UI 状態(dialog close / error message / loading state / impact 表示)は use-case に入れず**各 caller に残す**(D-1: application service は presentation 知識を持たない)。差分はこの原則で機械的に振り分ける: 差分が UI 状態 → caller に残して吸収 / 差分が delete ロジック本体 → 要検討。
+- **停止発火基準**(締め): 吸収不能 = **delete ロジック本体が card-tags-section 経路と manager 経路で異なり、片方に寄せると他方の挙動が変わる場合のみ**。UI 状態の差分は吸収不能に該当しない(caller に残せば済む)。この場合のみ停止(仕様解釈揺れ)— 無理な統一より別 task 切り出しを優先。
 - **完了条件**: 両側 suite green + per-task gate + build + canonical + Codex。[reviewed]。
 
 ### Task 4: card write 集約(W3)
@@ -65,6 +67,7 @@
 
 - **目的**: §4.4-1。InlineTextField ×5 + CardTagsSection + InlineOptionList のブロックを `_components/card-editor-fields.tsx` へ抽出し、inline-card-list(284-369)と exam-card-side-peek(107-185)の両方から使用。
 - **制約**(spec §3.6): 共通 component は**データを props で受ける**(新規 useLiveQuery 禁止 — 単一 subscription 不変条件)。V6 blur→close は side-peek container(:56-64)に残す。差分は props: `showDelete` / `autoEditOnMount`(list のみ)/ layout variant / cardTags 供給。抽出後の両者は verbatim 差分ゼロが理想、残す差分は props 表現のみ。**callback identity(useMemo/useCallback の dep 構成)を変えない — memo 凍結・row 再 render 頻度への影響ゼロを remount.test green で担保**(Codex 指摘)。
+- **縮小 fallback**(OT 確定・Task6 と同型): props 吸収の結果、共通 component が条件分岐過多(`showDelete && ...` / `autoEditOnMount ? ...` / layout variant 分岐だらけ)になる場合は、共通化を**完全に verbatim な部分(InlineTextField ×5 + CardTagsSection + InlineOptionList の field ブロック)だけ**に縮小する。意図的差分(DeleteCardButton / autoEditOnMount / layout wrapper)は共通 component の props で吸収せず、**共通 component の外**(各 caller が共通ブロックの周囲に配置)に残す。これにより共通 component は props 最小(cardTags 供給程度)で条件分岐を増やさず near-verbatim 複製だけ消せる。判断(全 props 吸収 vs field ブロックのみ共通化 + 差分は caller)は CC 吸収・実績欄に記録 — §4.4 の複製実態(field ブロックはほぼ verbatim / DeleteCardButton・autoEditOnMount は意図的差分)に照らし、条件分岐コストが共通化利益を上回るなら縮小。
 - **完了条件**: side-peek F2(blur 順序)+ inline-card-list + exam-detail-view Case ⑤ + **exam-card-table.remount.test(memo 凍結 pin)** green + per-task gate + build + canonical + Codex。[reviewed]。
 
 ### Task 6: inline primitive 低次共有(W5)
