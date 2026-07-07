@@ -207,7 +207,6 @@ function CardTagsSectionInner({
                 category={category}
                 option={option}
                 onRemove={() => handleToggle(category.id, option.id)}
-                onOpenEdit={() => {}}
               />
             </CardTagEditPopover>
           )

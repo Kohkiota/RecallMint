@@ -1,8 +1,8 @@
 'use client'
 
 // CardTagBadge: 「カテゴリ名: option名」 + × button を持つバッジ。
-// バッジ本体 click で onOpenEdit callback → 親 (CardTagEditPopover) が popover を開く。
-// × span click で onRemove callback (stopPropagation で onOpenEdit は発火しない)。
+// バッジ本体 click で onClick (Radix PopoverTrigger asChild が注入) → popover を開く。
+// × span click で onRemove callback (stopPropagation でバッジ本体 onClick は発火しない)。
 //
 // a11y:
 //   - バッジ本体: <button aria-label="タグ: {cat}: {opt}">
@@ -30,7 +30,6 @@ type Props = {
   category: ClientTagCategory
   option: ClientTagOption
   onRemove: () => void
-  onOpenEdit: () => void
   /**
    * Radix PopoverTrigger asChild が注入する追加 onClick を受け取るため。
    * asChild は children の props を merge する際にこのフィールドを経由する。
@@ -44,7 +43,7 @@ type Props = {
 // ---------------------------------------------------------------------------
 
 export const CardTagBadge = React.forwardRef<HTMLButtonElement, Props>(
-  function CardTagBadge({ category, option, onRemove, onOpenEdit, onClick, ...rest }, ref) {
+  function CardTagBadge({ category, option, onRemove, onClick, ...rest }, ref) {
     const handleCloseKeyDown = (e: React.KeyboardEvent<HTMLSpanElement>) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.stopPropagation()
@@ -67,10 +66,7 @@ export const CardTagBadge = React.forwardRef<HTMLButtonElement, Props>(
           'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs',
           colorToClass(option.color),
         )}
-        onClick={(e) => {
-          onOpenEdit()
-          onClick?.(e)
-        }}
+        onClick={onClick}
         {...rest}
       >
         <span>

@@ -423,18 +423,9 @@ export function ExamCardTable({
     [userId, liveData?.categories],
   )
 
-  // createOptionAndAssign の placeholder (TagCell 側で cardId-bound に差し替え)。
-  // 実際の呼出では TagCell が自分の cardId を使った closure に上書きするため、
-  // ExamCardTable レベルでは cardId = '' の placeholder で OK。
-  const createOptionAndAssignPlaceholder = useCallback(
-    (_categoryId: string, _name: string): Promise<void> => {
-      // TagCell 側で override されるため、 ここに到達する呼び出しは発生しない。
-      // 万が一呼ばれた場合は no-op (card が特定できないため書込不可)。
-      return Promise.resolve()
-    },
-    [],
-  )
-
+  // createOptionAndAssign は base では省略する (TagEditCallbacks で optional)。
+  // 実経路では TagCell が cardId-bound closure を、ActionBar が bulk 版を必ず override
+  // するため、popover には常に定義済みの createOptionAndAssign が届く。
   const tagEditCallbacks: TagEditCallbacks = useMemo(
     () => ({
       renameCategory: handleRenameCategory,
@@ -446,9 +437,8 @@ export function ExamCardTable({
       countCategoryImpact,
       countOptionImpact,
       createCategory,
-      createOptionAndAssign: createOptionAndAssignPlaceholder,
     }),
-    [createCategory, createOptionAndAssignPlaceholder],
+    [createCategory],
   )
 
   // TanStack table instance。 columns は module スコープ参照 (再採番なし)。

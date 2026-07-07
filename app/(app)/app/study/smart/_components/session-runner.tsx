@@ -252,8 +252,8 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
     const correctSnapshot = currentCorrect
     const cardId = current.id
     // card 単位で初回 submit のみ tally 加算。 rate 連打 / リトライ後再回答 /
-    // 前へ戻り後再回答 いずれも 1 枚 1 カウント。 server 側は submit-review-tx の
-    // UPDATE で常に最新 rating で上書き (= 二重登録なし)。
+    // 前へ戻り後再回答 いずれも 1 枚 1 カウント。 server 側は review-events/bulk 経路
+    // (lib/reviews/ingest-review-events) の UPDATE で常に最新 rating で上書き (= 二重登録なし)。
     const isFirstSubmit = !submittedCardIds.has(cardId)
 
     // 1) Optimistic 即時 state 更新 (server 応答待ちなし)。

@@ -159,7 +159,7 @@ export function TagCell({
 
       {visibleTags.map((t) => (
         // 各バッジ: CardTagBadge を trigger 化。 asChild で PopoverTrigger が button の onClick を merge。
-        // onOpenEdit は no-op (asChild 経由の click で popover が開く)。
+        // asChild 経由の click で popover が開く。
         // onRemove は toggle で当該 option を remove (× click、 stopPropagation で popover は開かない)。
         <CardTagAddPopover
           key={`${cardId}-${t.option.id}`}
@@ -171,7 +171,6 @@ export function TagCell({
               category={t.category}
               option={t.option}
               onRemove={() => void toggle(cardId, t.category.id, t.option.id)}
-              onOpenEdit={() => {}}
             />
           }
         />

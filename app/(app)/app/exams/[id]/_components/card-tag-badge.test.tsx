@@ -62,7 +62,6 @@ describe('CardTagBadge — テキスト表示', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={vi.fn()}
       />,
     )
     expect(screen.getByText('分野: 循環器')).toBeInTheDocument()
@@ -80,7 +79,6 @@ describe('CardTagBadge — × button a11y', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={vi.fn()}
       />,
     )
     const closeBtn = screen.getByRole('button', {
@@ -95,7 +93,6 @@ describe('CardTagBadge — × button a11y', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={vi.fn()}
       />,
     )
     const closeBtn = screen.getByRole('button', {
@@ -106,29 +103,30 @@ describe('CardTagBadge — × button a11y', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 3. バッジ本体 click で onOpenEdit が呼ばれる
+// 3. バッジ本体 click で onClick (Radix PopoverTrigger asChild が注入) が呼ばれる
+//    = popover を開く実経路。旧 onOpenEdit proxy 撤去後の open 機構を pin する。
 // ---------------------------------------------------------------------------
 
 describe('CardTagBadge — バッジ本体 click', () => {
-  it('バッジ本体 click で onOpenEdit が 1 回呼ばれる', () => {
-    const onOpenEdit = vi.fn()
+  it('バッジ本体 click で onClick が 1 回呼ばれる (popover open 機構)', () => {
+    const onClick = vi.fn()
     render(
       <CardTagBadge
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={onOpenEdit}
+        onClick={onClick}
       />,
     )
     // バッジ本体: aria-label で識別
     const badge = screen.getByRole('button', { name: 'タグ: 分野: 循環器' })
     fireEvent.click(badge)
-    expect(onOpenEdit).toHaveBeenCalledTimes(1)
+    expect(onClick).toHaveBeenCalledTimes(1)
   })
 })
 
 // ---------------------------------------------------------------------------
-// 4. × click で onRemove が呼ばれ、 onOpenEdit は呼ばれない
+// 4. × click で onRemove が呼ばれ、 onClick (popover open) は呼ばれない
 // ---------------------------------------------------------------------------
 
 describe('CardTagBadge — × click の stopPropagation', () => {
@@ -139,7 +137,6 @@ describe('CardTagBadge — × click の stopPropagation', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={onRemove}
-        onOpenEdit={vi.fn()}
       />,
     )
     const closeBtn = screen.getByRole('button', {
@@ -149,26 +146,26 @@ describe('CardTagBadge — × click の stopPropagation', () => {
     expect(onRemove).toHaveBeenCalledTimes(1)
   })
 
-  it('× click では onOpenEdit が呼ばれない (stopPropagation)', () => {
-    const onOpenEdit = vi.fn()
+  it('× click では onClick (popover open) が呼ばれない (stopPropagation)', () => {
+    const onClick = vi.fn()
     render(
       <CardTagBadge
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={onOpenEdit}
+        onClick={onClick}
       />,
     )
     const closeBtn = screen.getByRole('button', {
       name: 'タグ削除: 分野: 循環器',
     })
     fireEvent.click(closeBtn)
-    expect(onOpenEdit).not.toHaveBeenCalled()
+    expect(onClick).not.toHaveBeenCalled()
   })
 })
 
 // ---------------------------------------------------------------------------
-// 5. キーボード: バッジ本体 Enter で onOpenEdit
+// 5. キーボード: × span の Enter / Space で onRemove
 // ---------------------------------------------------------------------------
 
 describe('CardTagBadge — キーボード操作', () => {
@@ -179,7 +176,6 @@ describe('CardTagBadge — キーボード操作', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={onRemove}
-        onOpenEdit={vi.fn()}
       />,
     )
     const closeBtn = screen.getByRole('button', {
@@ -196,7 +192,6 @@ describe('CardTagBadge — キーボード操作', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={onRemove}
-        onOpenEdit={vi.fn()}
       />,
     )
     const closeBtn = screen.getByRole('button', {
@@ -220,7 +215,6 @@ describe('CardTagBadge — color class', () => {
         category={makeCategory()}
         option={option}
         onRemove={vi.fn()}
-        onOpenEdit={vi.fn()}
       />,
     )
     const badge = screen.getByRole('button', { name: 'タグ: 分野: 循環器' })
@@ -246,7 +240,6 @@ describe('CardTagBadge — forwardRef', () => {
         category={makeCategory()}
         option={makeOption()}
         onRemove={vi.fn()}
-        onOpenEdit={vi.fn()}
       />,
     )
     expect(ref.current).toBeInstanceOf(HTMLButtonElement)
@@ -254,23 +247,20 @@ describe('CardTagBadge — forwardRef', () => {
     expect(ref.current?.getAttribute('aria-label')).toMatch(/^タグ: /)
   })
 
-  it('forwardRef 後も × click stopPropagation が維持: × → onRemove のみ、 onOpenEdit/onClick は呼ばれない', () => {
+  it('forwardRef 後も × click stopPropagation が維持: × → onRemove のみ、 onClick は呼ばれない', () => {
     const onRemove = vi.fn()
-    const onOpenEdit = vi.fn()
     const onClick = vi.fn()
     render(
       <CardTagBadge
         category={makeCategory()}
         option={makeOption()}
         onRemove={onRemove}
-        onOpenEdit={onOpenEdit}
         onClick={onClick}
       />,
     )
     const closeBtn = screen.getByRole('button', { name: /タグ削除/ })
     fireEvent.click(closeBtn)
     expect(onRemove).toHaveBeenCalledTimes(1)
-    expect(onOpenEdit).not.toHaveBeenCalled()
     expect(onClick).not.toHaveBeenCalled()
   })
 })

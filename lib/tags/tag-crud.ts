@@ -513,7 +513,7 @@ export type TagEditCallbacks = {
     name: string,
     selectType: 'single' | 'multi',
   ) => Promise<{ id: string }>
-  createOptionAndAssign: (categoryId: string, name: string) => Promise<void>
+  createOptionAndAssign?: (categoryId: string, name: string) => Promise<void>
   // Tag-4c-2b T7 M-C: popover stage1 / stage2 D&D 経路は CardTagAddPopover の standalone
   // props (`onReorderCategories` / `onReorderOptions`) 1 経路に集約。 旧 T6 で本型に乗せて
   // いた `reorderCategories` / `reorderOptions` は二重経路の一方が dead だったため drop。

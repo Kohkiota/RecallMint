@@ -538,6 +538,8 @@ export function CardTagAddPopover({
                       emptyPlaceholderText={optionEmptyPlaceholder}
                       onCreateNew={selectOnly ? undefined : async (name) => {
                         if (!tagEditCallbacks || isSubmittingCreate) return
+                        // 型 narrowing のみ (optional 化)。実経路では必ず override 済み。
+                        if (!tagEditCallbacks.createOptionAndAssign) return
                         setIsSubmittingCreate(true)
                         try {
                           await tagEditCallbacks.createOptionAndAssign(
@@ -572,6 +574,8 @@ export function CardTagAddPopover({
                   emptyPlaceholderText={optionEmptyPlaceholder}
                   onCreateNew={selectOnly ? undefined : async (name) => {
                     if (!tagEditCallbacks || isSubmittingCreate) return
+                    // 型 narrowing のみ (optional 化)。実経路では必ず override 済み。
+                    if (!tagEditCallbacks.createOptionAndAssign) return
                     setIsSubmittingCreate(true)
                     try {
                       await tagEditCallbacks.createOptionAndAssign(

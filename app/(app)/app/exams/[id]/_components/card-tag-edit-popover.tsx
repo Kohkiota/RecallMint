@@ -164,6 +164,9 @@ export function CardTagEditPopover({
                   // Tag-4c-2a Task 4: バッジ click 経路でも option 新規作成 + 即時付与を可能にする。
                   // 二重発火ガード (add-popover Task 3 同様)。
                   if (isSubmittingCreate) return
+                  // 型 narrowing のみ (optional 化に伴う)。実経路では TagCell/ActionBar が
+                  // 必ず createOptionAndAssign を override するため到達しない。
+                  if (!tagEditCallbacks.createOptionAndAssign) return
                   setIsSubmittingCreate(true)
                   try {
                     await tagEditCallbacks.createOptionAndAssign(category.id, name)

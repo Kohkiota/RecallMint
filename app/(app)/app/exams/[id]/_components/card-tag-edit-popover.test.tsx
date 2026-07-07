@@ -106,7 +106,6 @@ function makeTrigger(category: ClientTagCategory, option: ClientTagOption) {
       category={category}
       option={option}
       onRemove={vi.fn<() => void>()}
-      onOpenEdit={vi.fn<() => void>()}
     />
   )
 }
