@@ -398,4 +398,19 @@ P0 の lint (Block A: lib/components→app 禁止 / Block B: `../../../**` 深�
    - `_lib` → `_components` の逆方向(通常は `_components` が `_lib` に依存する)
    - 設計上の意図: 列順の SSoT を `examCardTableColumns` に一元化するための "columns as data" パターン。pinning 導出に UI 依存はなく、列 id 配列のみを参照する(column-pinning.ts:8-12)。
 
-**P3 での対処方針**: 各 import を ESLint `no-restricted-imports` allowlist に追加して可視化し、将来の機能境界強化時に段階的に解消する。`custom-filter-form.tsx:15,21` は `card-filter-predicates` を lib/ に移動することで解消可能。
+**P3 での対処方針**: 各 import を ESLint `no-restricted-imports` allowlist に追加して可視化し、将来の機能境界強化時に段階的に解消する。~~`custom-filter-form.tsx:15,21` は `card-filter-predicates` を lib/ に移動することで解消可能。~~ → **P1 Task5(commit 1196a68)で `card-filter-predicates.ts` を `lib/cards/` へ移動し、この lib→app 逆依存は解消済**(get-custom-session-cards の allowlist entry も削除)。上記 5 件のうち **app 内 cross-feature 依存(study/custom→exams・exams→tags・`_lib`→`_components`)は P3 の surface として未対処のまま残る**。
+
+---
+
+## §B (vi) develop merge 後の初回 stg smoke 対象(申し送り)
+
+**背景**: dddrefactor branch は phase ごとの個別 stg smoke を**省略**している。理由 = 各 phase が挙動不変(behavior-preserving)であり回帰検知は P0 golden + 既存 co-located test + build green が担保する / stg 環境が dddrefactor に無い(develop/main にのみ deploy)。方針(SSoT 2026-07-07 OT 判断)により **develop/main への反映は全 phase(P0〜P4)完了後に OT 判断** → その merge → stg 反映の時点で、各 phase が触った surface を**まとめて smoke** する。本節はその「まとめ smoke」の対象リスト。**以降の phase も、触った surface をここに追記していく**(各 phase 完了時に CC が更新)。
+
+**まとめ smoke の位置づけ**: 挙動不変前提の refactor ゆえ「新機能検証」でなく「移設・再編で意図せず壊れていないかの回帰確認」。P0 golden が緑でも捕捉しない UI/実挙動(表示順・描画・実 IDB 経路・実決済画面)を DevTools MCP(chrome-devtools / playwright)で確認する。CC で届かない条件(実決済実行・物理 mobile 等)のみ OT。
+
+| phase | 触った surface | smoke 観点(まとめ時) |
+|---|---|---|
+| P0 | (安全網構築のみ・挙動不変・UI surface なし) | 個別対象なし(contract golden が回帰の正) |
+| P1 | **タグ表示順**(compareTagEntry: exams カードのタグセル / タグ popover / カード詳細のタグ節)/ **streak・today count**(dashboard の streak 数値)/ **exam status**(試験一覧の processing/failed バッジ)/ **custom session 選定**(study/custom のフィルタ→出題・preview==session の乱数一致)/ **決済 upgrade page**(/app/upgrade の pending/schedule 表示・upgrade/downgrade 判定) | 各 surface が P1 前と同一挙動か: タグ並びが sort_key 順維持 / dashboard streak 数値一致 / バッジ表示一致 / custom session の絞り込み・順序・件数一致 / upgrade 画面の表示と判定一致(**実決済実行は不要=表示・分岐のみ**、実課金は OT) |
+
+**注記**: P1 は pure 層の移設のみで wire/契約(payload・error code・文言・revalidatePath 等)を一切変えていない(D-2 凍結契約不変・最終 whole-branch review で確認済)。ゆえに上記 smoke は「表示・並び・数値の同一性」確認が主で、契約面は P0 golden が既に担保している。
