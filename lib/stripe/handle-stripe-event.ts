@@ -6,6 +6,7 @@ import { getDb } from '@/lib/db'
 import { users } from '@/lib/db/schema'
 import type { Plan } from '@/lib/auth/plan-limits'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
+import { derivePlanFromStripe, normalizeSubStatus } from '@/lib/stripe/domain/subscription-values'
 import { notifyOps } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
@@ -26,69 +27,35 @@ export function extractCustomerId(event: Stripe.Event): string | undefined {
   return undefined
 }
 
-// Stripe.Subscription.Status (10 種) → 内部 subscriptionStatus (3 種) への純粋
-// マッピング。 plan / billingInterval は本関数では扱わない (price_id 解決と
-// 分離するため)。
-function normalizeSubStatus(
-  s: Stripe.Subscription.Status,
-): 'active' | 'past_due' | 'canceled' {
-  switch (s) {
-    case 'active':
-    case 'trialing':
-      return 'active'
-    case 'past_due':
-    case 'unpaid':
-    case 'incomplete':
-      return 'past_due'
-    case 'canceled':
-    case 'incomplete_expired':
-    case 'paused':
-      return 'canceled'
-    default:
-      return 'canceled'
-  }
-}
-
 // status × price_id から (plan, billingInterval) を決定する一段高い resolver。
-// 「課金 active 系 (active/trialing/past_due) なら price_id から plan + interval、
-// それ以外 (unpaid/incomplete/canceled/incomplete_expired/paused) は free + NULL」
-// を表現する。
+// 純粋 core (derivePlanFromStripe, VO) に委譲し、 anomaly を見て notifyOps を発火する
+// thin async wrapper。 純粋 core が「active 系なら price_id → plan+interval、
+// それ以外は free+NULL」の分岐と price 解決を担い、 本 wrapper は副作用
+// (不明 / 欠落 price_id の観測性 notifyOps) のみ担う。
 //
 // 不明 price_id (env 設定漏れ / Stripe Dashboard 不一致) は notifyOps + free
 // fallback。 throw しない (Stripe 再送ループを起こさず、 OT 観測性のみ確保)。
 //
-// 注: 'past_due' は plan を維持する設計 (初回支払失敗 retry 期間中はユーザー
-// アクセスを保持、 'unpaid' = max retry 後にようやく downgrade)。 Sprint A-3.2
-// 以前の normalizeSubStatus 既存 mapping を踏襲。
+// notifyOps payload 差 (現行維持): missing_price は priceId を含めない、
+// unknown_price は priceId を含む。
 async function resolvePlanFromSub(
   status: Stripe.Subscription.Status,
   priceId: string | null,
   ctx: { eventId: string; customerId: string },
 ): Promise<{ plan: Plan; billingInterval: 'month' | 'year' | null }> {
-  const sub = normalizeSubStatus(status)
-  // canceled 相当 (canceled / incomplete_expired / paused) は plan=free 確定
-  if (sub === 'canceled') {
-    return { plan: 'free', billingInterval: null }
-  }
-  // unpaid / incomplete は past_due に正規化されるが downgrade 対象。
-  // (active/trialing/past_due のうち unpaid/incomplete だけは plan='free')。
-  // 元の status をもう一度見て判定 (normalizeSubStatus の単純化を維持するため
-  // ここで再分岐)。
-  if (status === 'unpaid' || status === 'incomplete') {
-    return { plan: 'free', billingInterval: null }
-  }
-  // active / trialing / past_due: price_id から plan + interval を解決
-  if (!priceId) {
+  const { plan, billingInterval, anomaly } = derivePlanFromStripe(
+    status,
+    priceId,
+    resolveFromPriceId,
+  )
+  if (anomaly === 'missing_price') {
     await notifyOps('stripe sub missing price_id', {
       ...ctx,
       status,
       environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
-    return { plan: 'free', billingInterval: null }
-  }
-  const mapping = resolveFromPriceId(priceId)
-  if (!mapping) {
+  } else if (anomaly === 'unknown_price') {
     await notifyOps('stripe sub unknown price_id', {
       ...ctx,
       status,
@@ -96,9 +63,8 @@ async function resolvePlanFromSub(
       environment: runtimeEnv(),
       timestamp: new Date().toISOString(),
     })
-    return { plan: 'free', billingInterval: null }
   }
-  return { plan: mapping.plan, billingInterval: mapping.interval }
+  return { plan, billingInterval }
 }
 
 // subscription object から price_id / current_period_end / cancel_at を取り出す

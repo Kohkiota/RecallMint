@@ -1,8 +1,10 @@
 // プラン変更判定の純粋ロジック。Stripe API I/O からは切り離した pure module。
 // rankPlan の算出は lib/plan-catalog.ts に委譲し、本 file は rank 数値のみ受け取る (DRY)。
-// getPendingState の型は import type のみ (値 import なし = 実行時に Stripe を引かない)。
+// Stripe 型は import type のみ、値 import は cancel predicate VO
+// (isCancelScheduled — 純粋 VO、実行時に Stripe を引かない) のみ。
 
 import type Stripe from 'stripe'
+import { isCancelScheduled } from '@/lib/stripe/domain/subscription-values'
 
 // ---------------------------------------------------------------------------
 // classifyChange
@@ -38,8 +40,8 @@ export function getPendingState(sub: Stripe.Subscription): PendingState {
   const scheduleId =
     (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id) ?? null
 
-  // cancel_at は Unix timestamp (秒)、cancel_at_period_end は boolean
-  const cancelScheduled = sub.cancel_at != null || sub.cancel_at_period_end === true
+  // cancel 予約の合成 predicate は VO (isCancelScheduled) に一本化 (I-7)。
+  const cancelScheduled = isCancelScheduled(sub)
 
   return { hasPendingUpdate, scheduleId, cancelScheduled }
 }
