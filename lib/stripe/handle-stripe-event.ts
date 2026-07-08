@@ -209,26 +209,35 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
           scheduledDowngradeScheduleId: users.scheduledDowngradeScheduleId,
           scheduledTargetPriceId: users.scheduledTargetPriceId,
         })
-      const clerkId = updated?.[0]?.clerkId
-      if (clerkId) {
-        await syncClerkPublicMetadata({ clerkId, plan })
-        // §6.4 release gate: .updated でのみ、 かつ予約が存在するときだけ評価する。
-        // priceId は extractSubFields の現 item price (#5 の比較材料)。
+      // clerkId 非 null を「UPDATE が行に match したか」の proxy にすると、 GDPR
+      // scrub 済み行 (行は match するが clerkId=null) への自己誘発 webhook を
+      // 「行なし = 整合崩壊」と誤判定してしまう。 行 match の有無 (row) と
+      // clerkId の有無 (metadata sync 要否) を分離する。
+      const row = updated?.[0]
+      if (row) {
+        if (row.clerkId) {
+          await syncClerkPublicMetadata({ clerkId: row.clerkId, plan })
+        }
+        // §6.4 release gate: 行 match していれば clerkId 無関係に評価する
+        // (clerkId は Clerk metadata sync の要否のみを左右し、 gate 自体は
+        // DB 予約列の照合であって clerkId に依存しないため)。 .updated でのみ、
+        // かつ予約が存在するときだけ評価する。 priceId は extractSubFields の
+        // 現 item price (#5 の比較材料)。
         if (event.type === 'customer.subscription.updated') {
           await evaluateReleaseGate({
             sub,
             customerId,
             priceId,
-            dbScheduleId: updated[0].scheduledDowngradeScheduleId ?? null,
-            dbTargetPriceId: updated[0].scheduledTargetPriceId ?? null,
+            dbScheduleId: row.scheduledDowngradeScheduleId ?? null,
+            dbTargetPriceId: row.scheduledTargetPriceId ?? null,
             eventId: event.id,
           })
         }
       } else if (event.type === 'customer.subscription.updated') {
         // .created の unlinked race は checkout.session.completed が後追いで救済
         // するため alert 不要 (新規 sign-up の自然な ordering)。 .updated で
-        // unlinked は user operation 由来 (Portal 経由 plan 変更等) で stripeCustomerId
-        // 紐付き欠落 = OT 介入対象の anomaly なので notifyOps する。
+        // unlinked (行なし) は user operation 由来 (Portal 経由 plan 変更等) で
+        // stripeCustomerId 紐付き欠落 = OT 介入対象の anomaly なので notifyOps する。
         await notifyOps('stripe sub event for unlinked customer', {
           eventId: event.id,
           customerId,
@@ -260,12 +269,15 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
         })
         .where(eq(users.stripeCustomerId, customerId))
         .returning({ clerkId: users.clerkId })
-      const clerkId = updated?.[0]?.clerkId
-      if (clerkId) {
-        await syncClerkPublicMetadata({ clerkId, plan: 'free' })
-      } else {
-        // .deleted で unlinked は subscription を解約された user の row が消えて
-        // いるなど整合崩壊 = OT 介入対象。 .created と違い recover の経路がない。
+      // clerkId 非 null を「UPDATE が行に match したか」の proxy にすると、 退会
+      // (GDPR scrub: clerkId=NULL・stripeCustomerId は保持) が自己誘発する
+      // 後着 .deleted webhook を「行なし = 整合崩壊」と誤判定してしまう
+      // (根本原因、 docs/audit/2026-07-08-deletion-self-induced-webhook-alarm.md)。
+      // 行 match の有無 (row) と clerkId の有無 (metadata sync 要否) を分離する。
+      const row = updated?.[0]
+      if (!row) {
+        // 行なし = subscription を解約された user の row が本当に消えている
+        // など整合崩壊 = OT 介入対象。 .created と違い recover の経路がない。
         await notifyOps('stripe sub event for unlinked customer', {
           eventId: event.id,
           customerId,
@@ -273,7 +285,11 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
           environment: runtimeEnv(),
           timestamp: new Date().toISOString(),
         })
+      } else if (row.clerkId) {
+        await syncClerkPublicMetadata({ clerkId: row.clerkId, plan: 'free' })
       }
+      // row があり clerkId が null (scrub 済み) は削除済み user への自己誘発
+      // webhook として無害 skip: metadata sync も notifyOps も行わない。
       return
     }
     case 'invoice.payment_failed': {

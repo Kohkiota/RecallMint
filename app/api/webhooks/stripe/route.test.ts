@@ -1192,3 +1192,147 @@ describe('Stripe webhook: release gate (§6.4)', () => {
     expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Task 4 (A-4): 退会自己誘発 webhook 偽アラートの root fix。
+//
+// 根本原因: clerkId 非 null を「UPDATE が行に match したか」の proxy に使うと、
+// GDPR scrub 済み行 (clerkId=null だが行自体は存在 = stripeCustomerId で match)
+// への正常な自己誘発 webhook を「行なし = 整合崩壊」と誤判定して notifyOps
+// してしまう。「行 match の有無 (配列長)」と「clerkId の有無 (metadata sync
+// 要否)」を分離することで、scrub 行は無害 skip・真の unlinked (行なし) だけ
+// notifyOps を維持する。
+// ---------------------------------------------------------------------------
+describe('Stripe webhook: 退会自己誘発 webhook の偽アラート fix (Task 4 / A-4)', () => {
+  it('(a) customer.subscription.deleted → scrub 行 (clerkId: null, 行 match) → notifyOps 不発 + syncClerkMetadata 不発', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_task4_a',
+      type: 'customer.subscription.deleted',
+      data: { object: { customer: 'cus_scrubbed_del' } },
+    })
+    stubIdempotencyInsertOnce()
+    // scrub 済み行: stripeCustomerId で match したので行は返るが clerkId は null。
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: null }]))
+
+    const res = await POST(makeReq({ id: 'evt_task4_a' }))
+    expect(res.status).toBe(200)
+
+    // DB 更新 (SET) 自体は従来どおり実行されている (行 match のため)。
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(expect.objectContaining({ plan: 'free' }))
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('(b) customer.subscription.deleted → 行なし (returning []) → notifyOps 発火 (既存維持)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_task4_b',
+      type: 'customer.subscription.deleted',
+      data: { object: { customer: 'cus_truly_unlinked_del' } },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([]))
+
+    const res = await POST(makeReq({ id: 'evt_task4_b' }))
+    expect(res.status).toBe(200)
+
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'stripe sub event for unlinked customer',
+      expect.objectContaining({
+        eventId: 'evt_task4_b',
+        customerId: 'cus_truly_unlinked_del',
+        eventType: 'customer.subscription.deleted',
+      }),
+    )
+  })
+
+  it('(c) customer.subscription.updated → scrub 行 (clerkId: null, 行 match, 予約なし) → notifyOps 不発 + syncClerkMetadata 不発', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_task4_c',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({ priceId: PRICE.STANDARD_MONTHLY, customerId: 'cus_scrubbed_upd' }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(
+      chain([
+        {
+          clerkId: null,
+          scheduledDowngradeScheduleId: null,
+          scheduledTargetPriceId: null,
+        },
+      ]),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_task4_c' }))
+    expect(res.status).toBe(200)
+
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+    // 予約なし (dbScheduleId null) のため gate 冒頭で早期 return。
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+  })
+
+  it('(d) customer.subscription.updated → 行なし (returning []) → notifyOps 発火 (既存維持)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_task4_d',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({ priceId: PRICE.STANDARD_MONTHLY, customerId: 'cus_truly_unlinked_upd' }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([]))
+
+    const res = await POST(makeReq({ id: 'evt_task4_d' }))
+    expect(res.status).toBe(200)
+
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'stripe sub event for unlinked customer',
+      expect.objectContaining({
+        eventId: 'evt_task4_d',
+        customerId: 'cus_truly_unlinked_upd',
+        eventType: 'customer.subscription.updated',
+      }),
+    )
+  })
+
+  it('(e) customer.subscription.updated → scrub 行 (clerkId: null) + 予約 3 列あり → release gate は clerkId 無しでも評価される (Codex 論点)', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_task4_e',
+      type: 'customer.subscription.updated',
+      data: {
+        object: sub({
+          priceId: PRICE.STANDARD_MONTHLY,
+          customerId: 'cus_scrubbed_gate',
+          schedule: 'sched_x',
+        }),
+      },
+    })
+    stubIdempotencyInsertOnce()
+    // scrub 行だが .deleted 先着で予約 3 列は通常 clear 済み → dbScheduleId null →
+    // gate 冒頭の `if (!dbScheduleId) return` で無害 (releaseCompletedDowngrade 未呼出・
+    // notifyOps 不発・throw なし)。
+    mockDbUpdate.mockReturnValueOnce(
+      chain([
+        {
+          clerkId: null,
+          scheduledDowngradeScheduleId: null,
+          scheduledTargetPriceId: null,
+        },
+      ]),
+    )
+
+    const res = await POST(makeReq({ id: 'evt_task4_e' }))
+    expect(res.status).toBe(200)
+
+    expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+    expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+  })
+})
