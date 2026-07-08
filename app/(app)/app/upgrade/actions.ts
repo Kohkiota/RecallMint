@@ -8,6 +8,7 @@ import { users, type User } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { rankPlan } from '@/lib/plan-catalog'
 import { notifyOps } from '@/lib/ops'
+import { runtimeEnv } from '@/lib/env/runtime-env'
 import {
   resolveActiveSubscription,
   applyUpgrade,
@@ -138,11 +139,34 @@ export async function changePlan(formData: FormData): Promise<void> {
     // redirect より前に書く (redirect は throw でフローを終了させるため、後に書くと
     // DB write が実行されない)。end_date は Unix 秒 → Date 変換が必要。
     const db = getDb()
-    await db.update(users).set({
-      scheduledDowngradeScheduleId: schedule.id,
-      scheduledTargetPriceId: targetPriceId,
-      scheduledChangeEffectiveAt: new Date(schedule.phases[0].end_date * 1000),
-    }).where(eq(users.id, user.id))
+    try {
+      await db.update(users).set({
+        scheduledDowngradeScheduleId: schedule.id,
+        scheduledTargetPriceId: targetPriceId,
+        scheduledChangeEffectiveAt: new Date(schedule.phases[0].end_date * 1000),
+      }).where(eq(users.id, user.id))
+    } catch (err) {
+      // A-3 整合窓: Stripe schedule 作成は成功済だが DB 反映が失敗した状態を検知する
+      // (挙動不変・検知のみ)。notifyOps は通常 throw しないが、production で
+      // OPS_DISCORD_WEBHOOK_URL 未設定の fail-fast (lib/ops.ts) だけは throw する。
+      // その場合でも A-3 の目的である「Stripe 成功後の DB 失敗」を root cause として
+      // rethrow したいので、notifyOps は best-effort で囲み、元の DB error を優先して throw する。
+      try {
+        await notifyOps('plan change: db write failed after stripe success', {
+          operation: 'scheduleDowngrade',
+          userId: user.id,
+          operationId,
+          scheduleId: schedule.id,
+          targetPriceId,
+          error: err,
+          environment: runtimeEnv(),
+          timestamp: new Date().toISOString(),
+        })
+      } catch {
+        // notify 失敗 (prod misconfig 等) は握り潰す。元の DB error を優先。
+      }
+      throw err
+    }
     redirect('/app?billing=downgrade')
   }
 }
@@ -173,11 +197,33 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
   // §5.5 例外: release 成功後 DB 3 列を clear (null に set) する。
   // redirect より前に書く (redirect は throw でフローを終了させる)。
   const db = getDb()
-  await db.update(users).set({
-    scheduledDowngradeScheduleId: null,
-    scheduledTargetPriceId: null,
-    scheduledChangeEffectiveAt: null,
-  }).where(eq(users.id, user.id))
+  try {
+    await db.update(users).set({
+      scheduledDowngradeScheduleId: null,
+      scheduledTargetPriceId: null,
+      scheduledChangeEffectiveAt: null,
+    }).where(eq(users.id, user.id))
+  } catch (err) {
+    // A-3 整合窓: Stripe schedule release は成功済だが DB 反映が失敗した状態を検知する
+    // (挙動不変・検知のみ)。notifyOps は通常 throw しないが、production で
+    // OPS_DISCORD_WEBHOOK_URL 未設定の fail-fast (lib/ops.ts) だけは throw する。
+    // その場合でも A-3 の目的である「Stripe 成功後の DB 失敗」を root cause として
+    // rethrow したいので、notifyOps は best-effort で囲み、元の DB error を優先して throw する。
+    try {
+      await notifyOps('plan change: db write failed after stripe success', {
+        operation: 'cancelDowngrade',
+        userId: user.id,
+        operationId,
+        scheduleId: pending.scheduleId,
+        error: err,
+        environment: runtimeEnv(),
+        timestamp: new Date().toISOString(),
+      })
+    } catch {
+      // notify 失敗 (prod misconfig 等) は握り潰す。元の DB error を優先。
+    }
+    throw err
+  }
   redirect('/app/upgrade')
 }
 

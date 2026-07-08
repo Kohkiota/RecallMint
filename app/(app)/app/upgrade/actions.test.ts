@@ -344,6 +344,53 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, baseUser.id))
   })
 
+  // A-3 整合窓: scheduleDowngrade (Stripe) 成功後の db.update が失敗した場合、
+  // notifyOps で検知可能にする (挙動不変・検知のみ)。
+  it('downgrade 経路: db.update 失敗 → notifyOps 1 回 + rethrow (redirect 不到達)', async () => {
+    const dbErr = new Error('db unreachable')
+    mockDbWhere.mockRejectedValueOnce(dbErr)
+
+    await expect(
+      changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_dbfail' })),
+    ).rejects.toThrow('db unreachable')
+
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'plan change: db write failed after stripe success',
+      expect.objectContaining({
+        operation: 'scheduleDowngrade',
+        userId: 'u_1',
+        operationId: 'op_dbfail',
+        scheduleId: 'sched_1',
+        targetPriceId: process.env.STRIPE_PRICE_STANDARD_MONTHLY,
+        error: dbErr,
+        environment: expect.any(String),
+        timestamp: expect.any(String),
+      }),
+    )
+  })
+
+  // notifyOps 自身が throw する degraded path (prod misconfig 等) でも、A-3 の目的である
+  // 「Stripe 成功後の DB 失敗」を root cause として rethrow する (notifyOps のエラーで
+  // マスクされない)。
+  it('downgrade 経路: db.update 失敗 かつ notifyOps 自身も throw → 元の DB error を rethrow', async () => {
+    const dbErr = new Error('db unreachable')
+    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockNotifyOps.mockRejectedValueOnce(new Error('ops misconfig'))
+
+    await expect(
+      changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_dbfail2' })),
+    ).rejects.toThrow('db unreachable')
+  })
+
+  it('downgrade 経路: db.update 成功 → notifyOps 不発 + redirect throw', async () => {
+    await expect(
+      changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_ok' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=downgrade')
+
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
   // §5.3 回帰: upgrade 経路では DB write しない (3 列 set は downgrade 専用)。
   it('upgrade 経路: DB 3 列は set しない', async () => {
     await expect(
@@ -570,5 +617,68 @@ describe('cancelDowngrade: 予約取消', () => {
       scheduledChangeEffectiveAt: null,
     })
     expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, baseUser.id))
+  })
+
+  // A-3 整合窓: cancelScheduledDowngrade (Stripe) 成功後の db.update が失敗した場合、
+  // notifyOps で検知可能にする (挙動不変・検知のみ)。
+  it('db.update 失敗 → notifyOps 1 回 (targetPriceId なし) + rethrow (redirect 不到達)', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_x',
+      cancelScheduled: false,
+    })
+    const dbErr = new Error('db unreachable')
+    mockDbWhere.mockRejectedValueOnce(dbErr)
+
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_dbfail' })),
+    ).rejects.toThrow('db unreachable')
+
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    const [subject, context] = mockNotifyOps.mock.calls[0]
+    expect(subject).toBe('plan change: db write failed after stripe success')
+    expect(context).toEqual(
+      expect.objectContaining({
+        operation: 'cancelDowngrade',
+        userId: 'u_1',
+        operationId: 'op_dbfail',
+        scheduleId: 'sched_x',
+        error: dbErr,
+        environment: expect.any(String),
+        timestamp: expect.any(String),
+      }),
+    )
+    expect(context).not.toHaveProperty('targetPriceId')
+  })
+
+  it('db.update 成功 → notifyOps 不発 + redirect throw', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_y',
+      cancelScheduled: false,
+    })
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_ok' })),
+    ).rejects.toThrow('__REDIRECT__:/app/upgrade')
+
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  // notifyOps 自身が throw する degraded path (prod misconfig 等) でも、A-3 の目的である
+  // 「Stripe 成功後の DB 失敗」を root cause として rethrow する (notifyOps のエラーで
+  // マスクされない)。
+  it('db.update 失敗 かつ notifyOps 自身も throw → 元の DB error を rethrow', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_x',
+      cancelScheduled: false,
+    })
+    const dbErr = new Error('db unreachable')
+    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockNotifyOps.mockRejectedValueOnce(new Error('ops misconfig'))
+
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_dbfail2' })),
+    ).rejects.toThrow('db unreachable')
   })
 })
