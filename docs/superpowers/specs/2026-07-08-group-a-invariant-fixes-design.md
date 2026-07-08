@@ -56,6 +56,7 @@ kickoff の「tag_options UNIQUE(category_id,name) が実 DB に不在」は**�
 - (b) 「不正 id のみ除去して有効 id で続行」は不採用: 保存されるのは「ユーザーが実際に click した記録」であり、server が中身を改変すると answer_events の監査価値が壊れる。全 id 不正時は結局 reject が必要で分岐も増える。
 - reject の trade-off(明記): 上記 race に該当する**正当な回答 1 件が失われうる**(stale 窓まで再送 → client 側隔離)。ただし race 窓は「回答 → options 編集 → flush」の順序が揃う稀なケースに限られ、失われるのは当該 review 1 件のみ(card は再 due で学習進行は自己回復)。捏造 id の混入防止(データ衛生)を優先する。
 - **実害の追加確認(2026-07-08・OT 指示)**: client は FSRS をローカル計算しない(回答 = Dexie answer_events insert のみ `session-runner.tsx:287`、FSRS は server `replayCard` 一元 `ingest-review-events.ts:230`、flush 成功時 pull-back で mirror 反映)。よって reject の影響 = 「card の FSRS が進まず due のまま次セッションに再出現」(不正解時の再出題と同じ体験)+ streak/study_days の 1 カウント欠落のみ。巻き戻り・破損・複利的歪みは無い(以後の review は実状態から正しく計算)。**軽微確認済 → reject 確定**。
+- **自己回復の due 判定裏取り(2026-07-08・plan 承認条件・コード読解)**: reject event は `applicableEvents` から除外され(`ingest-review-events.ts:154-165`)、`eventsToApply`/`grouped`/`finalStates` に入らないため当該 card の cards UPDATE は発行されず **FSRS state 不変(破損でなく非更新)**。state 不変 = `due` が前の過去値のまま → 次 session の `getDueCardsFromDexie` が `between([uid,'0'],[uid,nowIso], true, true)` = `due <= now` で再度拾う(`get-dexie-session-cards.ts:42`)= **再 due 再出題で自己回復**。停止条件(回復しない/state 破損)非該当。
 - 検証は「対象 card の options に id が実在するか」まで。**is_correct の照合・再計算はしない**(F2 帰属・deriveRating intentional 契約に触れない)。別 card の実在 id も「対象 card の options に無い」ので同じ検査で弾ける。
 
 ### 実装方針
