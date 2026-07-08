@@ -85,6 +85,51 @@
 
 ---
 
+## ④-追補: schedule 3 列の webhook 矯正有無(2026-07-08 追加裏取り)
+
+§④ の「要確認」を現 HEAD で確定。**判定 = 部分的(方向依存)**: 「DB に予約残存 / Stripe に無い」方向は webhook が矯正するが、**「Stripe に schedule 有 / DB が null」方向(= changePlan downgrade の整合窓そのもの)を矯正する経路は存在しない**。
+
+### schedule 3 列の物理確認(3 点セット・実 DB information_schema + migration 0017 一致)
+
+| 実列名 | 型 | NULL 可否 |
+|---|---|---|
+| `scheduled_downgrade_schedule_id` | text | YES |
+| `scheduled_target_price_id` | text | YES |
+| `scheduled_change_effective_at` | timestamp with time zone | YES |
+
+schema 定義 = `lib/db/schema.ts:87-91` / migration = `drizzle/migrations/0017_lame_wonder_man.sql:1-3`。UNIQUE/CHECK/DEFAULT なし。
+
+### webhook が 3 列に触る全経路(`lib/stripe/handle-stripe-event.ts`・網羅確認済)
+
+| 経路 | file:line | 方向 |
+|---|---|---|
+| `customer.subscription.deleted` — 3 列 clear | handle-stripe-event.ts:256-259 | **clear のみ** |
+| `subscription_schedule.released` — `WHERE scheduledDowngradeScheduleId = schedule.id` で冪等 clear | handle-stripe-event.ts:292-306 | **clear のみ** |
+| release gate 方向2 — sub.schedule null かつ DB 予約残存 → clear | handle-stripe-event.ts:342-352 | **clear のみ** |
+| release gate 完了時 clear(released / already_terminal) | handle-stripe-event.ts:377-386 | **clear のみ** |
+
+**set する経路はゼロ**。`customer.subscription.created/updated` の plan-sync SET は 3 列を意図的に触らない(:194 コメント明記)。`subscription_schedule.created/.updated` event は handler の switch に無く default no-op(:307-309)。さらに release gate は `if (!dbScheduleId) return`(:328)で **DB null なら即 return** — Stripe に schedule が居ても照合・通知・矯正いずれも走らない(mismatch notifyOps :355-364 は DB 非 null 前提)。
+
+### 方向別の確定判定
+
+- **cancelDowngrade 窓(Stripe released 済 / DB に stale id 残存)= 自己修復する**。ユーザーの release 操作自体が `subscription_schedule.released` を発火 → :292-306 が schedule.id 照合で clear(webhook 配送遅延の数秒〜)。バックアップ = 次の `.updated` での方向2 clear(:342-352)。§④ の「実害は限定的」を「**webhook で自己修復確定**」に更新。
+- **changePlan downgrade 窓(Stripe schedule 有 / DB null)= 自己修復しない・検知もされない**。actions.ts:141-145 の DB UPDATE 失敗は try/catch なし・notifyOps なしで silent(ユーザーには server action の汎用エラーのみ)。以後どの webhook でも 3 列は set されず、窓は**発効日まで持続(最長 1 課金周期 = 月額 1 ヶ月 / 年額 1 年)**。
+- **upgrade(applyUpgrade → DB webhook 任せ)= 設計どおり確定**。`customer.subscription.updated` の plan-sync(:196-206)が plan/billingInterval/status を矯正。§④ の推測を確定に格上げ。
+
+### 窓の間にユーザーが見る/できる状態(UI 露出)
+
+- UI の予約表示・cancel ボタン・ブロック判定はすべて DB 列が真実 source(`app/(app)/app/upgrade/page.tsx:30-32`・changePlan の §5.5 判定 actions.ts:104-115 に「Stripe schedule 単独をブロック条件にしてはいけない」と明記)。窓の間、**予約 banner は出ず cancel ボタンも出ない** = ユーザーは「予約は入らなかった」と認識する。
+- **再 downgrade 試行**: DB null なので CHANGE_BLOCKED を素通り → `subscriptionSchedules.create({from_subscription})`(subscription.ts:143-146)が「既に schedule attach 済み」で **Stripe 側 reject** → 汎用エラー。**重複予約は Stripe が物理的に阻止**(§④ の「重複予約リスク」は「二重 schedule 成立」ではなく「不可解なエラーで操作不能」に修正)。
+- **upgrade 試行**: schedule 管理下の sub への `subscriptions.update`(items 変更)も Stripe が reject(高確度)→ 同じく汎用エラー。
+- **帰結**: ユーザーは (a) 見えない予約が生きたまま (b) プラン変更操作が全て不可解に失敗し (c) 期末に「UI で見たことのない」downgrade が発効する。発効時は `customer.subscription.updated` が plan を正しく同期し、schedule も `end_behavior: 'release'` で自然消滅 → 後発の `.released` は 0 行 no-op — **発効後は全列整合に収束**(金銭的過剰請求なし)。
+
+### fix サイズ・置き場
+
+- **発生確率は低い**(Stripe 成功直後のその瞬間に DB UPDATE だけ失敗、が条件)が、発生時の窓は長い(最長 1 課金周期)+ silent(notifyOps 無し)。
+- **fix S(即効・独立可)**: actions.ts:141-145 の DB UPDATE を try/catch + retry 1 回 + 失敗時 notifyOps(schedule.id 含む)。窓は塞がらないが silent でなくなり OT 手動修復可能に(schedule metadata に userId/targetPriceId/operationId が既に入っている — subscription.ts:159-164 — ため手動照合は容易)。
+- **fix M(窓自体を塞ぐ)**: `subscription_schedule.created`(or `.updated`)handler を追加し、`metadata.kind === 'recallmint_downgrade'` の schedule から 3 列を populate(metadata に必要情報が全て有り、冪等 upsert 可能)。~40-60 行 + test + **Stripe endpoint の購読 event 追加(OT 手動)**。
+- **置き場**: 窓の構造(外部 API と DB を tx で括れない)は Subscription aggregate の整合性設計そのもの — **M は完全 DDD F1 同梱が自然**(§④ の結論維持)。**S(観測性)のみ独立先行**する価値はある(グループ A ①③ の独立 fix と同梱可能なサイズ)。
+
 ## DB 物理確認の記録(3 点セット・実 DB)
 
 - 方法: `.env.local` の DATABASE_URL(Supabase)へ postgres-js で **read-only** の information_schema query(table_constraints / key_column_usage / triggers / columns)。migration SQL(drizzle/migrations/)と突合し一致確認。
