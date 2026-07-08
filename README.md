@@ -1,385 +1,297 @@
-# mcq-platform — 多肢選択問題 PWA
+# RecallMint — AI OCR × FSRS 学習 SaaS
 
-学習資料 (テキスト/ノート/教材) を AI OCR で MCQ 化し、
-FSRS 忘却曲線で復習する学習アプリ (Next.js 15.x App Router +
-TypeScript strict + Tailwind v4 + Drizzle (Neon serverless) +
-Clerk + Stripe + Discord webhook + Gemini 2.5 Flash)。
+学習資料(教材・ノート・過去問)を **AI OCR で MCQ(多肢選択問題)化**し、**FSRS 忘却曲線**で復習する学習 SaaS。**local-first** 設計(Dexie/IndexedDB のミラー + outbox 同期)で、オフラインでも編集・演習ができ、オンライン復帰時にサーバーへ同期する。
 
-`devcontainer-template` + `plan00` SaaS template を起点に派生。
-vocab 機能 (FSRS 英単語学習 + AI 例文生成) は drop 予定、mcq 機能
-(教材 OCR / custom_props / shared_context / 画像プレースホルダ) を
-新規追加中。
+- **フロント**: Next.js 16.x(App Router)/ React 19 / TypeScript strict / Tailwind v4
+- **サーバー DB**: PostgreSQL(Supabase Transaction pooler)+ Drizzle ORM(postgres-js)
+- **クライアント DB**: Dexie(IndexedDB ミラー + `entity_mutations` outbox)
+- **認証**: Clerk / **決済**: Stripe / **AI**: Gemini 2.5 Flash(`@google/genai`)
+- **運用**: Vercel(hnd1 / Function timeout 900s)/ Node 24 / pnpm(`packageManager` が SSoT)
 
-**現フェーズ**: Sprint A 系 (A-1a / A-2 / A-3.2) 完了、 本番初回 deploy 成功 (Stripe
-env-aware key 切替済)。 Tech Spec は `docs/02-tech-spec.md` (implementation reference、
-data model / API / business logic 等、 戦略系は Obsidian)、 全体ロードマップは Obsidian
-管理。 sprint 個別 plan は `docs/plans/` 配下。 アーキテクチャ詳細は
-`docs/architecture-guide.md` (plan00 由来、 Sprint 進行に応じて mcq 用へ更新中)。
+> 旧称 `mcq-platform`。SaaS テンプレート由来の英単語(vocab)機能は撤去済みで、現在は MCQ 学習アプリ本体。
 
 ---
 
 ## 1. Quick Start
 
-前提: Dev Container (`.devcontainer/` 設定済) を VS Code で開いた状態を想定。 ホスト
-側起動手順は別途 `devcontainer-template` repo 参照。
+前提: Dev Container(`.devcontainer/` 設定済)を VS Code で開いた状態。
 
 ```bash
-# 1. 依存導入
-pnpm install
-
-# 2. 環境変数設定 (詳細 §5)
-cp .env.example .env.local
-# .env.local を編集 (Clerk / Stripe / Neon / Discord webhook URL など)
-
-# 3. DB migration (Neon の DATABASE_URL 設定後)
-pnpm drizzle-kit migrate
-
-# 4. dev server
-pnpm dev
+pnpm install                       # 依存導入(native binding 含む)
+cp .env.example .env.local         # 環境変数(詳細 §5)。Clerk / Stripe / Supabase / Gemini 等
+pnpm db:migrate                    # DB migration(DATABASE_URL 設定後)
+pnpm dev                           # dev server → http://localhost:3000
 ```
 
-`http://localhost:3000` で起動。 Clerk sign-in / sign-up 動作確認。
-
-### 1.1 scaffold 直後 3 点修正 (新 repo 起こし時のみ)
-
-`pnpm create next-app` 直後の新 repo では、 dev server 無限ループ / Neon 接続失敗を
-防ぐため以下 3 点を必ず実施 (本 repo は反映済):
-
-- `package.json` `pnpm.onlyBuiltDependencies` で `bufferutil` / `utf-8-validate` を
-  承認 (Neon WebSocket native binding 必須)
-- `next.config.ts` で dev-only `webpack.watchOptions` 設定 (Vercel build 中の watch
-  ループ抑制)
-- `.gitignore` に `.env.local` / `tsconfig.tsbuildinfo` を追加
-
-詳細手順: `docs/setup-notes.md`
-
-### 1.2 Native binding 失敗時
-
-`@neondatabase/serverless` は WebSocket 接続で `bufferutil` + `utf-8-validate`
-native binding 必須。 初回 install 後に DB 接続失敗 (`bufferUtil.mask is not a
-function`) が出たら:
-
-```bash
-pnpm install   # native binding を rebuild
-```
+`bufferutil` / `utf-8-validate` は `pnpm-workspace.yaml` の `onlyBuiltDependencies` で承認済み(WebSocket native binding)。初回 DB 接続失敗時は `pnpm install` で rebuild。
 
 ---
 
-## 2. 見た目変更箇所一覧 (template 利用者書換)
+## 2. Architecture
 
-> **注記 (2026-05-13)**: §2 以降は plan00 (vocab template) 由来の
-> template 利用者向け書換指針。mcq-platform 本体としては vocab 機能
-> drop + mcq 機能新規追加が Sprint A〜J で進行中で、MVP 完成時に §2 以降を
-> mcq 用にまとめて整理する予定。それまでは plan00 文脈での記述として参照。
+RecallMint は **pragmatic DDD**(実用的なドメイン駆動設計)で層を分けている。教科書的な entity クラス + repository は導入せず、「純粋なドメイン層 + use-case 関数 + 既存 seam の昇格」で構成する。全体像は `docs/architecture-guide.md` が canonical。
 
-template 利用者は以下の 5 箇所を自身の SaaS 名 / 説明に書換:
+### 2.1 ディレクトリ構造とレイヤー
 
-| # | file path | 該当行 | 現値 | 変更指針 |
-|---|---|---|---|---|
-| 1 | `app/layout.tsx` | metadata title | `RecallMint — AI OCR × FSRS 学習アプリ` | 自身の SaaS 名 / タグライン |
-| 2 | `app/layout.tsx` | metadata description | 「AI OCR で学習資料を取り込み...」 | 自身の SaaS 説明文 |
-| 3 | `app/(marketing)/page.tsx` | L33/L35 hero h1 + 説明 | `RecallMint` / 「AI OCR で学習資料を取り込み...」 | 自身の SaaS では h1 と説明文を直接書換 (2026-05-17 SERVICE_NAME placeholder 撤回後は hardcode) |
-| 4 | `package.json` | L2 name | `vocab-learning-app` | 自身の SaaS 名 (kebab-case) |
-| 5 | `app/(app)/app/_components/app-header.tsx` | L17 Logo 直書き | `RecallMint` | 自身の SaaS では直接書換 (2026-05-17 SERVICE_NAME placeholder 撤回後は hardcode) |
+コードは **役割(責務)ごとの層**に分かれ、依存は上から下への一方通行(`app → use-case → domain`、infra は下支え)。
 
-法務 page (`app/(marketing)/{terms,privacy,legal}/page.tsx`) は別途 12 placeholder
-sed 置換で完結 (戸籍名 / 連絡先 / 価格 / 制定日等の本気運用切替時 fill-in 値)。
-詳細: `docs/legal-placeholders.md`
+```
+app/                       # presentation 層(画面・route・server action)
+├── (marketing)/           #   未認証 chrome(LP / 法務 / contact / pricing)
+├── (auth)/                #   認証 chrome(sign-in / sign-up / sign-out-deleted)
+├── (app)/app/             #   認証必須ゾーン(/app(.*) を proxy で protect)
+└── api/                   #   API route(pull / *-bulk / webhooks / dashboard 等)
 
-vocab 機能側文言 (nav link / dashboard / settings 削除確認 / vocab page 全) は次案件
-base 利用者向け、 §3.8 で言及。
+lib/
+├── cards/ exams/ tags/ reviews/   # ドメイン純粋層 + use-case(業務ルール)
+│   ├─ card-filter-predicates.ts, fsrs.ts, streak-core.ts …  # 純粋関数(画面も DB も知らない)
+│   └─ reviews/ingest-review-events.ts, tags/tag-crud.ts …    # use-case(1 関数 = 1 tx)
+├── db/                    # infra: サーバー DB(Drizzle / postgres-js)+ pull-delta factory
+├── sync/                  # infra: クライアント同期(Dexie outbox / flush / pull)
+├── auth/ clerk/ stripe/   # infra: 認証・決済・webhook 統合
+├── env/ retry/ ai/        # infra: 環境ゲート・再試行分類・Gemini
+└── validation/            # infra: Zod スキーマ
+```
 
----
+**層の考え方(レストランのたとえ)**: domain = レシピ(純粋な計算・ルール)、use-case = 厨房の段取り、app = 客席・メニュー(UI)。レシピ(domain)は客席(app)に依存してはいけない — そうすることで FSRS やフィルタ計算を将来別フロント(モバイル等)でそのまま再利用できる。
 
-## 3. Architecture
+### 2.2 境界の強制(コメントでなく仕組みで守る)
 
-各 pattern 概要 + 詳細 doc / lesson への link。 全体像 + path 別役割は
-`docs/architecture-guide.md` (canonical doc、 §1-§8) を参照。
+層とサーバー/クライアント境界は、**自動チェックが commit / build を止める**ことで守られている(コメントや意図に頼らない):
 
-### 3.1 削除フロー (webhook-driven、 Phase 1 D 系列で完成)
+| 守る対象 | 仕組み | いつ止まるか |
+|---|---|---|
+| 存在しない import / タイポ | TypeScript(`pnpm typecheck`) | build |
+| サーバー専用コードのブラウザ混入 | `import 'server-only'`(17 file)+ build | build |
+| Dexie をサーバーで呼ぶ | `getClientDb()` の実行時 throw | runtime |
+| 層の向き(domain→app 等) | ESLint import 境界ルール(Block A/B/C・`error`)+ lefthook pre-commit | commit |
+| 契約(API 形状・error code・文言等)の不変 | contract golden test 77(snapshot 固定) | test |
 
-- Clerk client SDK self-delete + polling pattern (`/app/settings` 削除ボタン →
-  `clerkClient.users.deleteUser` → polling で完了検知)
-- 削除後は `window.location.replace` で **hard navigation** (Router Cache 回避)
-- BFCacheGuard で browser back の zombie state 防御
-- DB は `users.deleted_at` 論理削除、 Stripe active subscriptions を auto-cancel
-  (auto-pagination + `status: "all"` で 100 件上限 + iterate-cancel 落とし穴回避)
-- 設計原則: Webhook 駆動 + Stripe/Clerk を真実、 アプリ DB はコピー (業界
-  ベストプラクティス整合)。 順序保証なし event 配信 + handler 冪等性確保
-- 詳細: `docs/architecture-guide.md §4.3` / lesson `2026-04-26-clerk-nextjs-webhook-architecture.md`
+DDD リファクタ(P0〜P4)で import 境界の allowlist は **0 件化**済み。
 
-### 3.2 Webhook idempotency (Clerk + Stripe 共通 pattern)
+### 2.3 local-first 同期(Dexie ミラー + outbox + pull)
 
-- `clerk_events` / `stripe_events` table に event ID PK で保存
-- handler 手前で `INSERT ... ON CONFLICT DO NOTHING RETURNING` → 既処理なら 200
-  "duplicate" 即 return
-- 失敗時も 200 swallow (Stripe / Clerk retry loop 防止)
-- recovery: `deletion_failures` audit table + Discord ops notify、 OT 手動経路
-- verify 手法 (intentional throw + Stripe trigger + Vercel Protection Bypass):
-  lesson `2026-04-28-discord-notify-verify-methodology.md §3.4`
+- **書込**: 楽観的に Dexie に反映 → `entity_mutations`(outbox)に積む → `/api/entity-mutations/bulk` へ flush → `synced` に遷移。演習の回答は `answer_events` → `/api/review-events/bulk`(FSRS replay + `study_days` 集計)。
+- **読込**: `/api/pull` が cards / exams / tag_categories / tag_options / card_tags / tombstones の 6 ストリームを増分 cursor で返す(server 内は `lib/db/pull-delta.ts` の factory に集約)。
+- **競合方針は context ごとに最適化**(統一しない): FSRS = event replay、entity 編集 = LWW、mirror = server-wins。
 
-### 3.3 Proxy (Node 認証 + layout で DB 判定)
+### 2.4 データモデル(主なテーブル)
 
-- `proxy.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])` のみ
-  protect (Next 16 で middleware → proxy にリネーム、 Node runtime 固定)
-- proxy は thin に保ち DB 接続を持たない方針、 DB 由来判定 (`deletedAt`
-  等) は Node runtime layout / page で 1 段判定 (旧 middleware の Edge
-  runtime + Neon WebSocket 制約由来の分担を proxy 移行後も継続)
-- webhook endpoint は matcher 通過するが protect 対象外、 署名検証 (Svix /
-  Stripe) を handler 側で独自実施
-- 詳細: `docs/architecture-guide.md §1.5`
-
-### 3.4 DB pool (Neon serverless lazy singleton)
-
-- `lib/db/index.ts` で `Pool` を module-scope で lazy 化、 1 invocation 内で同 pool
-  使い回し
-- Vercel cold start ごとに新 pool、 idle 接続溜まりは Neon serverless 側で handle
-- `neonConfig.webSocketConstructor = ws` で Node runtime 対応 (Edge runtime 非対応
-  設計)
-- 詳細: `docs/architecture-guide.md §1.6`
-
-### 3.5 Stripe API basil 対応 (cancel_at で解約予約判定)
-
-- Stripe API 2025-05-28 で `cancel_at_period_end` parameter は flexible billing
-  mode で deprecated
-- plan00 は `cancel_at != null` を解約予約 source of truth とし、
-  `cancelAtPeriodEnd` カラムは migration で DROP 済
-- 詳細: lesson `2026-04-29-stripe-deprecation-billing-mode.md`
-
-### 3.6 Users schema 二段構造 (auth provider decoupling)
-
-`users.id` (UUID PK、 auth provider 非依存 internal identity) + `users.clerk_id`
-(text UK、 Clerk session connector) を分離。 全 FK table は `users.id` 参照に
-統一、 auth provider 切替時の影響を Clerk 関連 column のみに局所化。
+- **ドメイン**: `exams` / `cards` / `tag_categories` / `tag_options` / `card_tags` / `source_documents` / `upload_records` / `study_sessions` / `answer_events` / `reviews` / `study_days` / `tombstones` / `entity_mutations`
+- **認証・課金・運用**: `users` / `user_settings` / `ai_usage` / `ai_usage_users` / `clerk_events` / `stripe_events` / `deletion_failures` / `contact_messages`
 
 ```mermaid
 erDiagram
-    users ||--o{ words : "user_id (uuid)"
+    users ||--o{ exams : "user_id (uuid)"
+    users ||--o{ cards : "user_id (uuid)"
     users ||--o{ reviews : "user_id (uuid)"
-    users ||--o{ ai_examples : "user_id (uuid)"
     users {
         uuid id PK "internal identity (provider-agnostic)"
-        text clerk_id UK "Clerk connector (Clerk session lookup)"
+        text clerk_id UK "Clerk connector"
         text email
         text plan
         text stripe_customer_id
     }
 ```
 
-将来 multi-provider (WorkOS / Auth0 / Apple Sign In 等) は `users.workos_id` 等の
-connector column 追加だけで済む。
+---
 
-詳細経緯 (PG FK constraint 自動 switch 不可 / 一時列方式 backfill / 互換性保持型
-段階移行 / audit table 設計原則 等 7 項目): lesson
-`2026-04-30-users-schema-decoupling.md`
+## 3. プラン / 課金(Stripe)
 
-### 3.7 chrome 3 layer + Route Group 3 構造 (Phase 1 I-K で確立)
+### 3.1 プラン構成
 
-Route Group 3 構造 (URL 不変保証):
-- `app/(marketing)/` = 未認証 chrome (top + 法務 page + contact form)
-- `app/(auth)/` = 認証 chrome (sign-in / sign-up / sign-out-deleted)
-- `app/(app)/app/` = 認証必須 zone (`/app(.*)` middleware protect)
+課金 plan は 3 段(`lib/auth/plan-limits.ts` = backend 上限 enforce / `lib/plan-catalog.ts` = UI カタログ で分離。機能差は plan 軸のみ、月額/年額は同一機能)。
 
-chrome 3 layer:
-- marketing: `MarketingHeader` + `MarketingFooter` (© + Contact / Terms / Privacy / 特商法 横並び)
-- auth: `AuthHeader` (Logo only) + footer なし
-- app: `AppHeader` (5 link onClick revalidate + UserButton) + footer なし
+| プラン | 月額 | 年額 | AI OCR 月次上限 | Stripe price |
+|---|---|---|---|---|
+| **Free** | ¥0 | ¥0 | 30 ページ/月 | なし(price 不在) |
+| **Standard** | ¥680 | ¥6,800 | 300 ページ/月 | あり |
+| **Pro** | ¥1,280 | ¥12,800 | 無制限(`null`) | あり |
 
-Logo は `components/brand/logo.tsx` で marketing / auth 共用、 brand 名は
-"RecallMint" hardcode (2026-05-17 SERVICE_NAME placeholder 撤回)。 残り 12
-placeholder 系 (法務 page 用) の詳細: `docs/legal-placeholders.md`
+- 課金 plan の型 = `'standard' | 'pro'`、billing interval = `'month' | 'year'`(`lib/stripe/price-mapping.ts`)。Free は Stripe price を持たない。
+- upsell 順位(`plan-catalog.ts` の `rank()`): `free=0 < standard月=1 < standard年=2 < pro月=3 < pro年=4`。
+- price は 4 つの env(`STRIPE_PRICE_STANDARD_MONTHLY/YEARLY` / `STRIPE_PRICE_PRO_MONTHLY/YEARLY`)から `priceIdFor(plan, interval)` で双方向 lookup。
 
-### 3.8 vocab 機能 = 次案件 base 拡張対象
+### 3.2 Stripe 連携
 
-vocab 機能 (FSRS 英単語学習 + AI 例文生成) は次案件 (mcq app 等) の base として
-残置。 次案件作業者は以下を全面書換:
-
-- `app/(app)/app/{words,review,quiz}/` = vocab UI / server action 全 (約 290 + 700
-  + 1 行)
-- `app/(app)/app/_components/app-header.tsx` nav link label (`単語` / `復習` /
-  `演習`)
-- `app/(app)/app/page.tsx` dashboard 文言 (`今日の学習単語数`)
-- `app/(app)/app/settings/page.tsx` 削除確認文言 (`登録した単語と学習履歴`)
-- `lib/{fsrs,gemini,ai-usage,jst}.ts` / `lib/db/streak.ts` / `lib/validation/word.ts`
-  = vocab/AI 機能 lib
-- `lib/auth/plan-limits.ts` = vocab/AI 前提の plan 構造 (`words`/`aiGenPerDay`)
-- `lib/db/schema.ts` 内 5 table = `words` / `reviews` / `ai_examples` / `ai_usage`
-  / `ai_usage_users`
-
-template 利用者は §2 の 5 箇所のみ書換で起動可能 (vocab 機能は触らず動作)、
-次案件 base 利用者は上記全面書換 + plan-limits / schema 再設計。 path 別 削除 /
-generic 化の判断 index は `docs/architecture-guide.md §2-§4` を参照。
+- **決済 UI = Stripe Checkout**(自前フォーム禁止・`CLAUDE.md §品質基準`)。`/app/upgrade` で `priceIdFor(plan, interval)` → Checkout Session を生成。
+- **key は `VERCEL_ENV` で分岐**し `lib/stripe/client.ts` で fail-fast(production = live のみ / その他 = test のみ。SECRET は `rk_` Restricted Key 推奨)。
+- **解約予約は `cancel_at` 一元化**: Stripe API basil(2025-05-28)で `cancel_at_period_end` は flexible billing mode で deprecated。`cancel_at != null` を解約予約の source of truth とし、`cancelAtPeriodEnd` カラムは DROP 済。lesson `2026-04-29-stripe-deprecation-billing-mode.md`。
+- **Clerk User ↔ Stripe Customer** の紐付けは `users` table(`clerk_id` / `stripe_customer_id`)。
 
 ---
 
-## 4. 開発手順
+## 4. 認証・削除・Webhook
 
-### 4.1 test / build / lint / migration
+### 4.1 Proxy(Node 認証 + layout で DB 判定)
 
-```bash
-pnpm test          # Vitest 全件 (242 test 維持)
-pnpm test:watch    # watch mode
-pnpm build         # production build (deploy 前必須)
-pnpm lint          # next lint
-pnpm drizzle-kit generate  # schema 変更後に migration 生成
-pnpm drizzle-kit migrate   # migration 適用 (DATABASE_URL 設定要)
-pnpm db:studio     # Drizzle Studio (DB 中身確認)
-```
+- `proxy.ts` で `clerkMiddleware` + `createRouteMatcher(['/app(.*)'])` のみ protect(Next 16 で middleware → proxy にリネーム、Node runtime 固定)。
+- proxy は thin に保ち DB 接続を持たない。DB 由来判定(`deletedAt` 等)は Node runtime の layout / page で 1 段判定。
+- webhook endpoint は matcher を通過するが protect 対象外。署名検証(Svix / Stripe)を handler 側で独自実施。
+- 詳細: `docs/architecture-guide.md §1.5`。
 
-### 4.2 workflow
+### 4.2 Chrome 3 layer + Route Group 3 構造
 
-Spec → Plan → 実装 (TDD where applicable) → Review → Commit のサイクル。 詳細:
-`CLAUDE.md` §「Plan の書き方」 / 「Review と Commit のルール」。
+Route Group(URL 不変保証):
+- `app/(marketing)/` = 未認証 chrome(LP + 法務 page + contact form + pricing)
+- `app/(auth)/` = 認証 chrome(sign-in / sign-up / sign-out-deleted)
+- `app/(app)/app/` = 認証必須 zone(`/app(.*)` を proxy で protect)
 
-- spec / plan は `docs/superpowers/specs/` / `docs/superpowers/plans/` に保存
-- 各 sprint 末に lessons 蒸溜 (`docs/superpowers/lessons/`)
-- spec / plan / sessions は sprint 完了後 OT 判断で削除可、 lessons は永続保持
+chrome 3 layer: marketing(`MarketingHeader` + `MarketingFooter`)/ auth(`AuthHeader` のみ)/ app(`AppHeader` = nav link + UserButton)。brand 名は `components/brand/logo.tsx` に "RecallMint" hardcode。
 
-### 4.3 Commit 規約 + review tag
+### 4.3 アカウント削除フロー(webhook 駆動)
 
-`CLAUDE.md` L91-142 が source of truth:
+- Clerk client SDK の self-delete + polling(`/app/settings` 削除ボタン → `clerkClient.users.deleteUser` → polling で完了検知)。
+- 削除後は `window.location.replace` で **hard navigation**(Router Cache 回避)。BFCacheGuard で browser back の zombie state 防御。
+- DB は `users.deleted_at` 論理削除、Stripe の active subscription を **auto-cancel**(auto-pagination + `status: "all"` で 100 件上限 + iterate-cancel の落とし穴回避)。関連 10 テーブルを単一 tx で cascade DELETE。
+- **設計原則**: Webhook 駆動 + Stripe/Clerk を真実、アプリ DB はコピー。順序保証なしの event 配信 + handler 冪等性で吸収。
+- 詳細: `docs/architecture-guide.md §4.3` / lesson `2026-04-26-clerk-nextjs-webhook-architecture.md`。
 
-- `feat(_)` / `fix(_)` 系は `superpowers:requesting-code-review` skill canonical 経路の
-  formal review 必須、 `[reviewed]` tag 付与
-- `chore(_)` / `docs(_)` / `test(_)` / `refactor(_)` で実装ロジック変更なしのもの
-  のみ `[no-review]` tag で skip 可
-- `.claude/hooks/check-review.sh` (Stop hook) が tag 無し commit を block
-- 決済 / 認証 / 削除 / 外部副作用を伴う fix は code-reviewer pass 後 OT 実機観察
-  → `git commit --amend` で `[reviewed]` 追記 (CLAUDE.md §重要 Fix 裏取り)
+### 4.4 Webhook 冪等性(Clerk + Stripe 共通)
 
-### 4.4 pnpm.overrides (transitive vuln)
+- `clerk_events` / `stripe_events` に event ID を PK で保存。
+- handler 手前で `INSERT ... ON CONFLICT DO NOTHING RETURNING` → 既処理なら 200 "duplicate" 即 return。
+- 失敗時も **200 を返す**(Stripe / Clerk の retry loop 防止)。timeout 10 秒以内。
+- recovery: `deletion_failures` audit table + Discord ops notify(OT 手動経路)。
+- verify 手法(intentional throw + Stripe trigger + Vercel Protection Bypass): lesson `2026-04-28-discord-notify-verify-methodology.md §3.4`。
 
-transitive vuln (例: `your-app → svix → uuid`) は pnpm.overrides で強制上書き。
-各 override に rationale + 解除 trigger を doc 化、 永久残置 risk 防止。
+### 4.5 DB 接続(Supabase serverless lazy singleton)
 
-詳細 pattern + cadence + checklist: lesson `2026-05-08-pnpm-overrides-rationale.md`
+- `lib/db/index.ts` で postgres-js client を module-scope で lazy singleton 化。**Supabase Transaction pooler** への接続を想定(`prepare: false` は pooler 前提)。
+- `import 'server-only'` でクライアントバンドルへの混入を防止(サーバー専用)。
+- 詳細: `docs/architecture-guide.md §1.6`。
 
-### 4.5 セキュリティ絶対ルール
+### 4.6 users schema 二段構造(auth provider decoupling)
 
-`CLAUDE.md` L27-69 が source of truth (Stripe test only / Clerk test only / AI
-クレカなし daily limit)。 違反 PR は code-reviewer が Critical で止める。
+`users.id`(UUID PK・auth provider 非依存の internal identity)+ `users.clerk_id`(text UK・Clerk session connector)を分離。全 FK table は `users.id` 参照に統一し、auth provider 切替の影響を Clerk 関連 column のみに局所化。将来 multi-provider(WorkOS / Auth0 等)は connector column 追加だけで済む。詳細: lesson `2026-04-30-users-schema-decoupling.md`。
 
 ---
 
-## 5. Deploy
+## 5. 開発手順
 
-### 5.1 Vercel
-
-ホスト側 (Dev Container 外) で実施。 SSH 鍵 / Vercel トークンはコンテナにマウント
-しない。
+### 5.1 コマンド
 
 ```bash
-git push origin main
-vercel --prod
+pnpm dev              # dev server
+pnpm build            # production build(deploy 前必須・Next matcher の path-to-regexp 制約はここで顕在化)
+pnpm typecheck        # tsc --noEmit
+pnpm lint             # eslint . --max-warnings=0(import 境界ルール含む)
+pnpm test             # Vitest 全件(現行 3004 test)
+pnpm test:contract    # 契約 golden(77・snapshot 固定 = 挙動不変の証明)
+pnpm db:generate      # schema 変更後に migration 生成
+pnpm db:migrate       # migration 適用(DATABASE_URL 設定要)
+pnpm db:studio        # Drizzle Studio(DB 中身確認)
 ```
 
-#### 5.1.1 初回 deploy 後の確認
+### 5.2 ワークフロー / commit 規約
 
-1. **Vercel Dashboard → Project → Settings → Domains** で正規 production domain
-   確認 (auto-generated short URL に頼らない、 lesson
-   `2026-04-29-vercel-domain-confusion.md`)
-2. Vercel env vars に `.env.example` 全項目を設定 (production / preview の使い分け)
-3. Stripe Dashboard → Developers → Webhooks に production endpoint URL 登録、
-   signing secret を Vercel env に設定
-4. Clerk Dashboard → Webhooks に production endpoint URL 登録、 Svix signing
-   secret を Vercel env に設定
-5. webhook endpoint URL は **正規 production domain** を使う
+`CLAUDE.md` が source of truth。Spec → Plan → 実装(TDD where applicable)→ Review → Commit のサイクル。
 
-#### 5.1.2 GitHub Push Protection 有効化 (必須)
+- `feat(_)` / `fix(_)` は `superpowers:requesting-code-review` の canonical review 必須 → `[reviewed]` tag。canonical pass 後・commit 前に Codex 独立レビュー(`scripts/ai/codex-review.sh`)。
+- `chore(_)` / `docs(_)` / `test(_)` / 実装ロジック変更なしの `refactor(_)` のみ `[no-review]` で skip 可。
+- `.claude/hooks/check-review.sh`(Stop hook)が tag 無しの feat/fix を block。`git commit --no-verify` は全面禁止。
+- 決済 / 認証 / 削除 / 外部副作用を伴う fix は review pass 後に OT 実機確認 → `[reviewed]` 追記。
+- lint gate はローカル 3 層(eslint.config.mjs / lefthook pre-commit / sprint 完了 gate の whole-repo lint)。
 
-GitHub → Settings → Code security → Secret scanning → **Push protection** を ON。
-`sk_live_...` / AWS / GitHub token 等が push 時に自動検出 + block される。
+### 5.3 テスト方針
 
-### 5.2 Clerk production instance 切替 (独自ドメイン必須)
+- Unit: Vitest(FSRS / 課金ガード / プレフィックス検証は厚く)。契約: `tests/contract/`(pull / mutation / review-events / upload / webhook の snapshot 固定)。
+- E2E: 実 browser 依存(実 focus/blur・virtualizer 実 scroll 等)は stg smoke(Playwright / chrome-devtools MCP)で担保。
+- Stripe: `generateTestHeaderString` / Clerk: test トークン / AI: **mock 必須**(実 API 禁止)。
 
-Clerk production instance は `*.vercel.app` domain を許可しない、 独自ドメイン必須。
-**Secondary application** 選択で apex domain 汚染を回避、 5 個の DNS records
-(`clerk` / `accounts` / `clkmail` / `clk._domainkey` / `clk2._domainkey`) を
-subdomain 配下に追加。
+### 5.4 pnpm.overrides(transitive vuln)
 
-詳細: lesson `2026-04-30-clerk-production-domain-setup-pitfalls.md`
+transitive vuln(例: `→ svix → uuid`)は `pnpm-workspace.yaml` の `overrides` で強制上書き。各 override に rationale + 解除 trigger を doc 化し永久残置 risk を防止。詳細: lesson `2026-05-08-pnpm-overrides-rationale.md`。
 
-env validation は `VERCEL_ENV === 'production'` で `pk_live_` / `sk_live_` 必須、
-それ以外で `pk_test_` / `sk_test_` 必須 (環境依存 validation)。 詳細: lesson
-`2026-04-30-clerk-env-validation-environment-dependent.md`
+---
 
-### 5.3 Stripe live 切替
+## 6. Deploy
 
-env を `sk_live_` / `pk_live_` に切替、 production webhook endpoint 登録 + signing
-secret 設定。 CLAUDE.md §Stripe-1 ~ §Stripe-7 厳守 (test only / プレフィックス検証
-必須 / webhook idempotency 必須等)。
+### 6.1 Vercel
 
-### 5.4 Discord webhook (2 channel 運用)
+ホスト側(Dev Container 外)で実施。SSH 鍵 / Vercel トークンはコンテナにマウントしない。デプロイは push で発火(stg = `develop` / prod = `main` 想定)。
 
-mcq-platform は 2 系統の Discord webhook を運用。 channel 混線防止のため env も分離:
+**初回 deploy 後の確認**:
+1. Vercel Dashboard → Settings → Domains で正規 production domain を確認(auto-generated short URL に頼らない。lesson `2026-04-29-vercel-domain-confusion.md`)。
+2. Vercel env vars に `.env.example` 全項目を設定(production / preview 使い分け)。
+3. Stripe Dashboard → Developers → Webhooks に **正規 production domain** の endpoint URL 登録 + signing secret を Vercel env に設定。
+4. Clerk Dashboard → Webhooks に同様に登録(Svix signing secret)。
+5. GitHub → Settings → Code security → **Push protection** を ON(`sk_live_` 等が push 時に自動 block)。
 
-- `OPS_DISCORD_WEBHOOK_URL`: アプリのエラー通知 (lib/ops.ts の notifyOps、
-  webhook handler 失敗 / 削除 failure / kill 閾値超過等)、 未設定時 silent skip
-- `CLAUDE_CODE_DISCORD_WEBHOOK_URL`: Claude Code セッション通知
-  (.claude/hooks/discord-notify.py が Stop hook で session 末尾 message を投稿)、
-  未設定時 silent skip
+### 6.2 env prefix 検証(fail-fast)
 
-Sprint A-2 で contact form の Discord 通知経路は撤去 (DB 保存方針に転換、
-DB INSERT 実装は Sprint A-3+ で contact_messages テーブル経由)。
+`VERCEL_ENV === 'production'` で live キー必須、それ以外で test キー必須。欠落・不正 prefix は **module-load 時に throw**(fail-fast):
 
-verify 手法: lesson `2026-04-28-discord-notify-verify-methodology.md` (一時 API
-route + curl で関数経由 verify、 webhook 動作 verify は §3.4 別 pattern)
+- Clerk: `lib/clerk/env-check.ts`(`pk_live_` / `sk_live_` ⇄ `pk_test_` / `sk_test_`)
+- Stripe: `lib/stripe/client.ts`(SECRET は `rk_` Restricted Key 推奨)
 
-### 5.5 環境変数一覧
+この throw は unit test で pin 済み(`lib/clerk/env-check.test.ts` / `lib/stripe/client.test.ts`)。lesson `2026-04-30-clerk-env-validation-environment-dependent.md`。
 
-`.env.example` が source of truth (新規 env 追加時は同 commit で更新):
+### 6.3 Clerk production instance 切替(独自ドメイン必須)
+
+Clerk production instance は `*.vercel.app` を許可しない、独自ドメイン必須。**Secondary application** 選択で apex domain 汚染を回避、5 個の DNS records(`clerk` / `accounts` / `clkmail` / `clk._domainkey` / `clk2._domainkey`)を subdomain 配下に追加。詳細: lesson `2026-04-30-clerk-production-domain-setup-pitfalls.md`。
+
+### 6.4 Stripe live 切替
+
+env を `sk_live_`(or `rk_live_`)/ `pk_live_` に切替、production webhook endpoint 登録 + signing secret 設定。`CLAUDE.md §Stripe` 厳守(test only / prefix 検証 / webhook idempotency)。**本番切替は OT 手動、CC 関与不可**。
+
+### 6.5 Discord webhook(2 channel 運用)
+
+channel 混線防止のため env も分離:
+- `OPS_DISCORD_WEBHOOK_URL`: アプリのエラー通知(`lib/ops.ts` の `notifyOps` — webhook handler 失敗 / 削除 failure / kill 閾値超過)。未設定で silent skip。
+- `CLAUDE_CODE_DISCORD_WEBHOOK_URL`: Claude Code セッション通知(Stop hook)。未設定で silent skip。
+
+### 6.6 環境変数一覧(`.env.example` が SSoT)
 
 | 変数 | 取得元 | 形式 / 注意 |
 |---|---|---|
-| `DATABASE_URL` | <https://console.neon.tech> | `postgresql://...neon.tech/...?sslmode=require` |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | <https://dashboard.clerk.com> | `pk_test_...` (production = `pk_live_...`) |
-| `CLERK_SECRET_KEY` | 同上 | `sk_test_...` (production = `sk_live_...`) |
-| `CLERK_WEBHOOK_SECRET` | 同 → Webhooks | `whsec_...` (production deploy 後発行) |
-| `STRIPE_SECRET_KEY` | <https://dashboard.stripe.com> | **`rk_test_...` Restricted Key** 推奨、 production = `sk_live_...` |
-| `STRIPE_PUBLISHABLE_KEY` | 同上 | `pk_test_...` (production = `pk_live_...`) |
+| `DATABASE_URL` | Supabase → Connection(Transaction pooler) | `postgresql://...pooler.supabase.com:6543/...` |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY` | Clerk Dashboard | `pk_test_` / `sk_test_`(prod = `_live_`) |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` / `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | 自分で決める | `/sign-in` / `/sign-up` |
+| `CLERK_WEBHOOK_SECRET` | Clerk → Webhooks | `whsec_...`(production deploy 後発行) |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | Stripe Dashboard | SECRET は **`rk_test_` 推奨**(prod = `_live_`) |
 | `STRIPE_WEBHOOK_SECRET` | `stripe listen` or Dashboard | `whsec_...` |
-| `STRIPE_PRICE_PRO_MONTHLY` | 同 → Products | `price_...` |
-| `GEMINI_API_KEY` | <https://aistudio.google.com/app/apikey> | **クレカ紐付けなし** で発行 (CLAUDE.md §AI-1) |
-| `GEMINI_DAILY_LIMIT` | 自分で決める | 整数 (default: 1000) |
-| `OPS_DISCORD_WEBHOOK_URL` | Discord channel → integration (アプリのエラー通知用) | 未設定で silent skip |
-| `CLAUDE_CODE_DISCORD_WEBHOOK_URL` | Discord channel → integration (Claude Code Stop hook 用、 OPS と別 channel) | 未設定で silent skip |
-| `NEXT_PUBLIC_APP_URL` | 自分で決める | dev: `http://localhost:3000` / prod: 正規 Vercel domain |
+| `STRIPE_PRICE_STANDARD_MONTHLY` / `_STANDARD_YEARLY` / `_PRO_MONTHLY` / `_PRO_YEARLY` | Stripe → Products | `price_...`(4 種) |
+| `GEMINI_API_KEY` | Google AI Studio | **クレカ紐付けなし**で発行(`CLAUDE.md §AI`) |
+| `GEMINI_DAILY_LIMIT` | 自分で決める | 整数 |
+| `OPS_DISCORD_WEBHOOK_URL` / `CLAUDE_CODE_DISCORD_WEBHOOK_URL` | Discord channel integration | 未設定で silent skip |
+| `LOG_LEVEL` / `LOG_GATE_ALLOW_PROD` / `OCR_DEBUG_LOG` / `BULK_FULL_PARAMS_LOG` | 自分で決める | ログ制御(任意) |
+| `NEXT_PUBLIC_APP_URL` | 自分で決める | dev: `http://localhost:3000` / prod: 正規 domain |
 
-### 5.6 Stripe Webhook ローカル転送 (dev 用)
+### 6.7 Stripe webhook ローカル転送(dev)
 
 ```bash
 stripe login
 stripe listen --forward-to localhost:3000/api/webhooks/stripe
+# 出力の whsec_... を .env.local の STRIPE_WEBHOOK_SECRET に貼る
 ```
-
-出力された `whsec_...` を `.env.local` の `STRIPE_WEBHOOK_SECRET` に貼る。
 
 ---
 
 ## References
 
-### lessons (12 file、 plan00 で確立した再利用可能 pattern)
+### 主要 lessons(再利用可能な設計パターン・落とし穴。全 23 file は `docs/superpowers/lessons/`)
 
-| file | trigger / 要旨 (実証 sprint) |
+| file | 要旨 |
 |---|---|
-| [clerk-nextjs-webhook-architecture](docs/superpowers/lessons/2026-04-26-clerk-nextjs-webhook-architecture.md) | Clerk + Next.js で webhook を source of truth として扱う基本設計 + cached JWT 60 秒 fallback + Stripe sub auto-pagination + 順序保証なし event 冪等性 (Phase 1 R1/R2) |
-| [discord-notify-verify-methodology](docs/superpowers/lessons/2026-04-28-discord-notify-verify-methodology.md) | failure path 専用 notifyOps の verify 方法論 (一時 API route + curl) + webhook handler outer catch verify (Stripe trigger + Vercel Protection Bypass) (Phase 1 C / E-3) |
-| [stripe-deprecation-billing-mode](docs/superpowers/lessons/2026-04-29-stripe-deprecation-billing-mode.md) | Stripe API basil (2025-05-28) `cancel_at_period_end` deprecation 検知 + cancel_at 一元化 (Phase 1 D-1) |
-| [test-fixture-payload-drift](docs/superpowers/lessons/2026-04-29-test-fixture-payload-drift.md) | webhook fixture と production payload の drift 防御 + payload baseline 統一 (Phase 1 E-3) |
-| [vercel-domain-confusion](docs/superpowers/lessons/2026-04-29-vercel-domain-confusion.md) | Vercel auto-generated short URL (`<project>.vercel.app`) を本番 domain と取り違える pitfall (Phase 1 E-1) |
-| [clerk-env-validation-environment-dependent](docs/superpowers/lessons/2026-04-30-clerk-env-validation-environment-dependent.md) | Clerk env prefix validation の環境依存化 (`VERCEL_ENV` で test/live 分岐) (Phase 1 E-2) |
-| [clerk-production-domain-setup-pitfalls](docs/superpowers/lessons/2026-04-30-clerk-production-domain-setup-pitfalls.md) | Clerk production instance 独自ドメイン必須 + Secondary application + 5 DNS records 落とし穴 (Phase 1 E-2) |
-| [users-schema-decoupling](docs/superpowers/lessons/2026-04-30-users-schema-decoupling.md) | users schema 二段構造化 + auth provider 抽象化 + PG FK constraint 自動 switch 不可 + 互換性保持型段階移行 (Phase 1 F) |
-| [g6-trigger-fact-discoveries](docs/superpowers/lessons/2026-05-03-g6-trigger-fact-discoveries.md) | structured logger 導入時の fact discovery (notifyOps response.ok 化等) (Phase 1 G-6) |
-| [spec-confirmed-vs-smoke-judgment](docs/superpowers/lessons/2026-05-07-spec-confirmed-vs-smoke-judgment.md) | smoke 観察で spec 確定設計を覆さない判断軸 (Phase 1 I-K) |
-| [clerk-auto-csp-overwrites-next-config](docs/superpowers/lessons/2026-05-08-clerk-auto-csp-overwrites-next-config.md) | Clerk middleware auto CSP の next.config CSP 上書き挙動 + X-Frame-Options DENY 代替防御 (Phase 1 G-baseline-3) |
-| [pnpm-overrides-rationale](docs/superpowers/lessons/2026-05-08-pnpm-overrides-rationale.md) | transitive vuln の pnpm.overrides 対処 + maintenance 規律 + 解除 trigger pattern (Phase 1 G-1) |
+| [clerk-nextjs-webhook-architecture](docs/superpowers/lessons/2026-04-26-clerk-nextjs-webhook-architecture.md) | Clerk + Next.js で webhook を source of truth とする基本設計 + Stripe sub auto-pagination + 順序保証なし event 冪等性 |
+| [discord-notify-verify-methodology](docs/superpowers/lessons/2026-04-28-discord-notify-verify-methodology.md) | failure path 専用 notifyOps の verify 方法論 + webhook handler outer catch verify |
+| [stripe-deprecation-billing-mode](docs/superpowers/lessons/2026-04-29-stripe-deprecation-billing-mode.md) | Stripe API basil `cancel_at_period_end` deprecation + `cancel_at` 一元化 |
+| [test-fixture-payload-drift](docs/superpowers/lessons/2026-04-29-test-fixture-payload-drift.md) | webhook fixture と production payload の drift 防御 |
+| [vercel-domain-confusion](docs/superpowers/lessons/2026-04-29-vercel-domain-confusion.md) | Vercel auto-generated short URL を本番 domain と取り違える pitfall |
+| [clerk-env-validation-environment-dependent](docs/superpowers/lessons/2026-04-30-clerk-env-validation-environment-dependent.md) | env prefix validation の環境依存化(`VERCEL_ENV` で test/live 分岐) |
+| [clerk-production-domain-setup-pitfalls](docs/superpowers/lessons/2026-04-30-clerk-production-domain-setup-pitfalls.md) | Clerk production 独自ドメイン + Secondary application + 5 DNS records |
+| [users-schema-decoupling](docs/superpowers/lessons/2026-04-30-users-schema-decoupling.md) | users schema 二段構造化 + auth provider 抽象化 + 互換性保持型段階移行 |
+| [g6-trigger-fact-discoveries](docs/superpowers/lessons/2026-05-03-g6-trigger-fact-discoveries.md) | structured logger 導入時の fact discovery |
+| [spec-confirmed-vs-smoke-judgment](docs/superpowers/lessons/2026-05-07-spec-confirmed-vs-smoke-judgment.md) | smoke 観察で spec 確定設計を覆さない判断軸 |
+| [clerk-auto-csp-overwrites-next-config](docs/superpowers/lessons/2026-05-08-clerk-auto-csp-overwrites-next-config.md) | Clerk middleware auto CSP の next.config 上書き挙動 + 代替防御 |
+| [pnpm-overrides-rationale](docs/superpowers/lessons/2026-05-08-pnpm-overrides-rationale.md) | transitive vuln の pnpm.overrides 対処 + maintenance 規律 |
 
 ### 関連 doc
 
-- `CLAUDE.md` — Stripe / Clerk / AI 絶対ルール、 Plan / Review / Commit 規約 (project root)
-- `docs/architecture-guide.md` — architecture canonical doc (path indexer + 役割境界 + Setup 手順)
-- `docs/TODO.md` — 全体 TODO + Phase 1 完結 record + Phase 2 整備 sprint record
-- `docs/legal-placeholders.md` — 12 placeholder mapping + sed 一括置換手順 (SERVICE_NAME は hardcode 化)
-- `docs/setup-notes.md` — scaffold 直後 3 点修正 (新 repo 起こし時)
-- `.env.example` — 環境変数 source of truth
+- `CLAUDE.md` — Stripe / Clerk / AI 絶対ルール、Sprint フロー、Review / Commit 規約、簡潔性規律(project root・SSoT)
+- `docs/architecture-guide.md` — architecture canonical(path indexer + 役割境界 + Setup 手順)
+- `docs/02-tech-spec.md` — data model / API / business logic の implementation reference
+- `docs/plans/2026-07-06-ddd-refactor-design-decisions.md` — DDD リファクタ(P0〜P4)の確定判断・進捗・「やらない」判断
+- `docs/superpowers/specs/` `docs/superpowers/plans/` — sprint ごとの spec / plan
+- `.env.example` — 環境変数 SSoT
