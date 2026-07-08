@@ -55,6 +55,7 @@ kickoff の「tag_options UNIQUE(category_id,name) が実 DB に不在」は**�
 
 - (b) 「不正 id のみ除去して有効 id で続行」は不採用: 保存されるのは「ユーザーが実際に click した記録」であり、server が中身を改変すると answer_events の監査価値が壊れる。全 id 不正時は結局 reject が必要で分岐も増える。
 - reject の trade-off(明記): 上記 race に該当する**正当な回答 1 件が失われうる**(stale 窓まで再送 → client 側隔離)。ただし race 窓は「回答 → options 編集 → flush」の順序が揃う稀なケースに限られ、失われるのは当該 review 1 件のみ(card は再 due で学習進行は自己回復)。捏造 id の混入防止(データ衛生)を優先する。
+- **実害の追加確認(2026-07-08・OT 指示)**: client は FSRS をローカル計算しない(回答 = Dexie answer_events insert のみ `session-runner.tsx:287`、FSRS は server `replayCard` 一元 `ingest-review-events.ts:230`、flush 成功時 pull-back で mirror 反映)。よって reject の影響 = 「card の FSRS が進まず due のまま次セッションに再出現」(不正解時の再出題と同じ体験)+ streak/study_days の 1 カウント欠落のみ。巻き戻り・破損・複利的歪みは無い(以後の review は実状態から正しく計算)。**軽微確認済 → reject 確定**。
 - 検証は「対象 card の options に id が実在するか」まで。**is_correct の照合・再計算はしない**(F2 帰属・deriveRating intentional 契約に触れない)。別 card の実在 id も「対象 card の options に無い」ので同じ検査で弾ける。
 
 ### 実装方針
@@ -89,9 +90,35 @@ actions の unit test: db.update を reject させ ① notifyOps が上記 subje
 
 ---
 
+## A-4: 退会時の自己誘発 webhook 偽アラート fix(2026-07-08 追加・OT 承認済)
+
+### 事実(確定・詳細 = `docs/audit/2026-07-08-deletion-self-induced-webhook-alarm.md`)
+
+- 削除カスケードの Stripe 即時 cancel が `customer.subscription.deleted` を発火(正常な副産物)→ handler の UPDATE は soft-delete 行(stripe_customer_id 保持)に **1 行 match して正常成功** → しかし `handle-stripe-event.ts:263` が「RETURNING の clerkId 非 null」を「行 match」の **proxy に誤用**しており、GDPR scrub(clerkId=NULL)行を「行なし = 整合崩壊」と誤判定 → `notifyOps('stripe sub event for unlinked customer')` 誤発火(:269-275)。
+- **構造的・毎回**(paid 退会ごと・env 非依存で prod でも)。同型 proxy 誤りは `.created/.updated` 分岐(:227-239)にも存在。DB 更新自体は正しい(解約終端状態)。害は偽アラートのみ。
+
+### 設計
+
+**notifyOps の発火条件のみ変更・webhook の DB 更新挙動は不変**。「真の整合崩壊(行が本当に無い)は引き続き通知する」を不変条件とする(偽アラートを消すために本物を殺さない)。
+
+fix の形は plan でサイズ見積もりの上で確定(OT 指示):
+
+- **root fix(推奨候補)**: clerkId proxy を実際の行 match 判定(RETURNING 行の有無)に置換 — `.deleted` / `.created/.updated` の 3 分岐すべて。metadata sync の要否(clerkId 有無)と「行 match の有無」を独立に判定する。3 分岐で S〜M に収まるならこちら。
+- **症状 fix(fallback)**: root fix が L に膨らむ場合のみ。`.deleted` の RETURNING に `deletedAt` を追加し「match 有 + deleted 済 = 自己誘発 → 無害 skip」「match 0 行 = 真の整合崩壊 → 通知」を区別。proxy の根本整理は F1 に送る。
+
+### テスト
+
+route.test.ts(webhook)に追加: scrub 済み soft-delete 行への `.deleted` → DB 更新は従来どおり + notifyOps **不発** / 行なし(unlinked)への `.deleted` → notifyOps 発火(既存挙動維持)/ root fix 採用時は `.updated` の同型ケースも。
+
+### stg smoke
+
+退会フロー実走(stg のテスト sub で削除)→ Discord に偽アラートが**出ない** + DB 終端状態は従来どおり。真の整合崩壊ケースの実走は不可能(行を消す破壊的操作)のため unit test を正とする(規律準拠でここに明記)。
+
+---
+
 ## Sprint 全体の完了条件・gate
 
-- 各 fix: テスト可能 + canonical review Critical 0 + Codex review(未解決 Critical/Important 0)+ `[reviewed]`。**commit は A-1 / A-2 / A-3 で分離**(DB 制約変更は発生しないため形の変更 commit は無し)。
+- 各 fix: テスト可能 + canonical review Critical 0 + Codex review(未解決 Critical/Important 0)+ `[reviewed]`。**commit は A-1 / A-2 / A-3 / A-4 で分離**(DB 制約変更は発生しないため形の変更 commit は無し)。
 - **A-3 は決済絡み** → 重要 fix の裏取り規律により review pass → commit(tag 無し)→ OT 実機確認後に [reviewed] 追記。
 - sprint 完了 gate: whole-repo `pnpm lint --max-warnings=0` exit 0 + `pnpm test` 全通過(依存/Next/Node/lockfile は触らないため install/typecheck/build gate は対象外)。
 - 既存 test への影響: 不正 payload を弾く方向の変更につき、既存正常系 test は不変のはず。変わる場合は「invariant 追加による意図的変更」として個別に妥当性を確認して記録。
