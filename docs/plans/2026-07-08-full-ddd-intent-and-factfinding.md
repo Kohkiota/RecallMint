@@ -67,6 +67,8 @@ P0〜P4 の SSoT(`docs/plans/2026-07-06-ddd-refactor-design-decisions.md`)に記
 
 ### ⚠ 発見事項(完全 DDD と独立に価値がある・**要裏取り**)
 
+> **裏取り完了(2026-07-08)**: 4 件とも `docs/audit/2026-07-08-server-invariant-verification.md` で判定確定 — ① single 制約 = **REAL**(fix M・独立 fix 可)② session ガード = **部分的**(遅延 flush が正当ケースと同経路・仕様判断が先 = F2 同梱が自然)③ selected_answer_ids = **REAL だが既知の意図的 deferral**(2026-06-12 監査 §8 P2・存在検証まで独立 fix 可)④ = **部分的**(大半 LOW・upgrade changePlan/cancelDowngrade のみ Stripe⇄DB 整合窓 = F1 同梱が自然)。共通: 認証・所有権は全件無傷、他ユーザー/課金への波及ゼロ。以下は裏取り前の原文。
+
 fact-finding 中に見つかった「server 側でドメイン不変条件が enforce されていない可能性」。いずれも Explore の推測を含むため**着手前に個別裏取りが必須**。裏取りの結果 real なら、完全 DDD を待たず個別 fix の価値がある:
 
 1. **single カテゴリ制約の server 検証欠落(疑い)**: select_type='single' の「1 card に同カテゴリ最大 1 option」は client(build-next-tag-set.ts:21-47 / tag-crud.ts:445-455)のみで enforce し、server の apply(card-field-handlers の tag_option_ids handler)は whole-set replace を無検証で受ける可能性。→ 改竄 client が single カテゴリに複数 option を付けられるかも。
