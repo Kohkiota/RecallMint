@@ -17,7 +17,13 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { cards, cardTags, tagOptions, type CardOption } from '@/lib/db/schema'
+import {
+  cards,
+  cardTags,
+  tagCategories,
+  tagOptions,
+  type CardOption,
+} from '@/lib/db/schema'
 import { optionSchema } from '@/lib/validation/card'
 import type { DbExecutor } from './apply-card-mutation'
 
@@ -187,6 +193,8 @@ const handleOptions: CardFieldHandler = async (tx, cardId, userId, value) => {
 //   1. value 形式 (uuid[] / max 100)
 //   2. card の存在 + owner-scope
 //   3. option_id 全件の存在 + owner-scope (bulk SELECT で件数一致確認)
+//   3.5. A-1: select_type='single' なカテゴリに option 2 個以上の whole-set を reject
+//        (owner-scope tag_categories SELECT + カテゴリごとの option 数集計)
 //   4. card_tags whole-set DELETE → INSERT
 //   5. cards.updated_at bump (独立 SQL、 SET 列を持たないので updateCardField helper は使えない)
 const handleTagOptionIds: CardFieldHandler = async (tx, cardId, userId, value) => {
@@ -208,12 +216,41 @@ const handleTagOptionIds: CardFieldHandler = async (tx, cardId, userId, value) =
   //    option の混在として弾く)。 空配列は SQL skip。
   if (optionIds.length > 0) {
     const valid = await tx
-      .select({ id: tagOptions.id })
+      .select({ id: tagOptions.id, categoryId: tagOptions.categoryId })
       .from(tagOptions)
       .where(
         and(inArray(tagOptions.id, optionIds), eq(tagOptions.userId, userId)),
       )
     if (valid.length !== optionIds.length) return 'failed'
+
+    // 4.5. A-1: select_type='single' なカテゴリに 2 個以上の option が whole-set に
+    //      含まれる場合は reject (client のみだった single 制約を server でも enforce)。
+    //      grouping は重複排除後の optionIds (dedup 済み valid) に対して行う。
+    const categoryIds = [...new Set(valid.map((v) => v.categoryId))]
+    const categories = await tx
+      .select({ id: tagCategories.id, selectType: tagCategories.selectType })
+      .from(tagCategories)
+      .where(
+        and(
+          inArray(tagCategories.id, categoryIds),
+          eq(tagCategories.userId, userId),
+        ),
+      )
+    // orphan category (FK cascade 上は起きないはずだが fail closed で弾く)
+    if (categories.length !== categoryIds.length) return 'failed'
+
+    const countByCategory = new Map<string, number>()
+    for (const v of valid) {
+      countByCategory.set(
+        v.categoryId,
+        (countByCategory.get(v.categoryId) ?? 0) + 1,
+      )
+    }
+    const hasSingleViolation = categories.some(
+      (c) =>
+        c.selectType === 'single' && (countByCategory.get(c.id) ?? 0) >= 2,
+    )
+    if (hasSingleViolation) return 'failed'
   }
 
   // 5. whole-set replace: 既存の紐付けを全部消す。 owner-scope 重複付与で他 user 行への

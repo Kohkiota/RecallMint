@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SQL, getTableName } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
-import { cards, cardTags, tagOptions } from '@/lib/db/schema'
+import { cards, cardTags, tagCategories, tagOptions } from '@/lib/db/schema'
 
 // card-field-handlers.ts の unit test。
 //
@@ -714,8 +714,10 @@ describe('CARD_FIELD_HANDLERS dispatch', () => {
 interface TagTxState {
   // SELECT cards 結果 (owner check)
   cardSelectRows: { id: string }[]
-  // SELECT tag_options 結果 (owner check)
-  optionSelectRows: { id: string }[]
+  // SELECT tag_options 結果 (owner check)。 single 制約検査 ④ 拡張で categoryId も返す。
+  optionSelectRows: { id: string; categoryId?: string }[]
+  // SELECT tag_categories 結果 (single 制約検査用)
+  categorySelectRows: { id: string; selectType: 'single' | 'multi' }[]
   // DELETE card_tags 呼出回数
   cardTagsDeleteCalls: number
   // INSERT card_tags の values 記録 (call ごとに push)
@@ -730,6 +732,7 @@ function freshTagState(): TagTxState {
   return {
     cardSelectRows: [{ id: 'card-1' }],
     optionSelectRows: [],
+    categorySelectRows: [],
     cardTagsDeleteCalls: 0,
     cardTagsInsertedValues: [],
     cardsUpdateSetArgs: [],
@@ -751,6 +754,9 @@ function makeTagTx(state: TagTxState) {
           }
           if (name === getTableName(tagOptions)) {
             return Promise.resolve(state.optionSelectRows)
+          }
+          if (name === getTableName(tagCategories)) {
+            return Promise.resolve(state.categorySelectRows)
           }
           return Promise.resolve([])
         },
@@ -799,6 +805,8 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
   const OPT_1 = '11111111-1111-4111-a111-111111111111'
   const OPT_2 = '22222222-2222-4222-a222-222222222222'
   const OPT_3 = '33333333-3333-4333-a333-333333333333'
+  // single 制約検査用の category id (multi 想定の既定カテゴリ)
+  const CAT_MULTI = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -825,7 +833,11 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
   })
 
   it('正常: N 件 INSERT + bump (DELETE → INSERT → cards.update)', async () => {
-    state.optionSelectRows = [{ id: OPT_1 }, { id: OPT_2 }]
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_MULTI },
+      { id: OPT_2, categoryId: CAT_MULTI },
+    ]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     const result = await CARD_FIELD_HANDLERS.tag_option_ids(
       makeTagTx(state),
@@ -834,8 +846,12 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
       [OPT_1, OPT_2],
     )
     expect(result).toBe('applied')
-    // owner-scope SELECT cards → SELECT tag_options
-    expect(state.selectFromTables).toEqual(['cards', 'tag_options'])
+    // owner-scope SELECT cards → SELECT tag_options → SELECT tag_categories
+    expect(state.selectFromTables).toEqual([
+      'cards',
+      'tag_options',
+      'tag_categories',
+    ])
     expect(state.cardTagsDeleteCalls).toBe(1)
     expect(state.cardTagsInsertedValues).toHaveLength(1)
     expect(state.cardTagsInsertedValues[0]).toEqual([
@@ -846,7 +862,8 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
   })
 
   it('updated_at bump: SET に sql`now()` が含まれる (touch のみ)', async () => {
-    state.optionSelectRows = [{ id: OPT_1 }]
+    state.optionSelectRows = [{ id: OPT_1, categoryId: CAT_MULTI }]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     await CARD_FIELD_HANDLERS.tag_option_ids(
       makeTagTx(state),
@@ -865,7 +882,11 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
 
   it('重複排除: 同 uuid 複数渡しでも INSERT は重複除去後の件数', async () => {
     // optionSelectRows は Set 化後の件数 (2) と一致させる
-    state.optionSelectRows = [{ id: OPT_1 }, { id: OPT_2 }]
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_MULTI },
+      { id: OPT_2, categoryId: CAT_MULTI },
+    ]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     const result = await CARD_FIELD_HANDLERS.tag_option_ids(
       makeTagTx(state),
@@ -887,7 +908,8 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
     // 「事前に紐付け 1 件あっても、 DELETE で消し INSERT で入れ直す」 挙動を mock 上で
     // 観測する。 mock 自体は store を持たないが、 DELETE が必ず 1 回 / INSERT が 1 回で
     // values が新集合のみであることを assert する。
-    state.optionSelectRows = [{ id: OPT_3 }]
+    state.optionSelectRows = [{ id: OPT_3, categoryId: CAT_MULTI }]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     const result = await CARD_FIELD_HANDLERS.tag_option_ids(
       makeTagTx(state),
@@ -1000,7 +1022,8 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
   })
 
   it('owner-scope eq spy gate: 各 SQL の WHERE に user_id が含まれる', async () => {
-    state.optionSelectRows = [{ id: OPT_1 }]
+    state.optionSelectRows = [{ id: OPT_1, categoryId: CAT_MULTI }]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     await CARD_FIELD_HANDLERS.tag_option_ids(
       makeTagTx(state),
@@ -1014,11 +1037,103 @@ describe('CARD_FIELD_HANDLERS.tag_option_ids', () => {
     expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
     // SELECT tag_options の WHERE (inArray + eq(user_id))
     expect(sig).toContainEqual(['tag_options', 'user_id', 'user-1'])
+    // SELECT tag_categories の WHERE (inArray + eq(user_id), single 制約検査)
+    expect(sig).toContainEqual(['tag_categories', 'user_id', 'user-1'])
     // DELETE card_tags の WHERE
     expect(sig).toContainEqual(['card_tags', 'card_id', 'card-1'])
     expect(sig).toContainEqual(['card_tags', 'user_id', 'user-1'])
     // UPDATE cards (bump) の WHERE は SELECT cards と同じ entry を再呼出するため、
     // 上の cards.id / cards.user_id assertion で gate 兼ねる。
+  })
+
+  // -------------------------------------------------------------------------
+  // A-1: single カテゴリ制約の server enforce
+  //
+  // select_type='single' なカテゴリに 2 個以上の option が whole-set に含まれる
+  // 場合は 'failed' で拒否する (client のみだった制約を server でも enforce)。
+  // 検査位置 = 既存検査 ④ の直後・DELETE より前。
+  // -------------------------------------------------------------------------
+  const CAT_SINGLE_A = 'bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb'
+  const CAT_SINGLE_B = 'cccccccc-cccc-4ccc-accc-cccccccccccc'
+
+  it('single カテゴリに 2 option → failed、 DELETE/INSERT 不発', async () => {
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_SINGLE_A },
+      { id: OPT_2, categoryId: CAT_SINGLE_A },
+    ]
+    state.categorySelectRows = [{ id: CAT_SINGLE_A, selectType: 'single' }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('failed')
+    expect(state.cardTagsDeleteCalls).toBe(0)
+    expect(state.cardTagsInsertedValues).toHaveLength(0)
+    expect(state.cardsUpdateSetArgs).toHaveLength(0)
+  })
+
+  it('single 1 個 + multi 複数混在 → applied', async () => {
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_SINGLE_A },
+      { id: OPT_2, categoryId: CAT_MULTI },
+      { id: OPT_3, categoryId: CAT_MULTI },
+    ]
+    state.categorySelectRows = [
+      { id: CAT_SINGLE_A, selectType: 'single' },
+      { id: CAT_MULTI, selectType: 'multi' },
+    ]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2, OPT_3],
+    )
+    expect(result).toBe('applied')
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
+  })
+
+  it('multi のみ複数 → applied', async () => {
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_MULTI },
+      { id: OPT_2, categoryId: CAT_MULTI },
+    ]
+    state.categorySelectRows = [{ id: CAT_MULTI, selectType: 'multi' }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('applied')
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
+  })
+
+  it('複数 single カテゴリ各 1 個 → applied', async () => {
+    state.optionSelectRows = [
+      { id: OPT_1, categoryId: CAT_SINGLE_A },
+      { id: OPT_2, categoryId: CAT_SINGLE_B },
+    ]
+    state.categorySelectRows = [
+      { id: CAT_SINGLE_A, selectType: 'single' },
+      { id: CAT_SINGLE_B, selectType: 'single' },
+    ]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.tag_option_ids(
+      makeTagTx(state),
+      'card-1',
+      'user-1',
+      [OPT_1, OPT_2],
+    )
+    expect(result).toBe('applied')
+    expect(state.cardTagsDeleteCalls).toBe(1)
+    expect(state.cardTagsInsertedValues).toHaveLength(1)
   })
 })
 
