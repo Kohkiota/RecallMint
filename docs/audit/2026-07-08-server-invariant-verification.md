@@ -134,7 +134,7 @@ schema 定義 = `lib/db/schema.ts:87-91` / migration = `drizzle/migrations/0017_
 
 - 方法: `.env.local` の DATABASE_URL(Supabase)へ postgres-js で **read-only** の information_schema query(table_constraints / key_column_usage / triggers / columns)。migration SQL(drizzle/migrations/)と突合し一致確認。
 - card_tags: PK(card_id,option_id)・FK×3・NOT NULL のみ。study_sessions: PK(session_id)・FK×2・status に CHECK なし。answer_events: PK(id)・UNIQUE(event_id)・FK×3(session_id→study_sessions 含む)。**public schema に trigger ゼロ**。
-- **副産物**: `tag_options` に **UNIQUE(category_id, name) が実 DB に存在しない**(apply 経路の事前 SELECT のみで enforce・race で同名重複が入り得る)。本裏取りの scope 外だが、①と同型の「application 層のみ enforce」パターンとして記録。
+- ~~**副産物**: `tag_options` に UNIQUE(category_id, name) が実 DB に存在しない~~ **【2026-07-08 訂正: 誤り】** UNIQUE INDEX `tag_options_category_name_uq` は実在する(`schema.ts:725` / `drizzle/migrations/0020_rare_magneto.sql:43` / 実 DB `pg_indexes` で物理確認済)。本監査は `information_schema.table_constraints` を照会したが、drizzle の `uniqueIndex()` は UNIQUE INDEX(constraint ではない)を作るため同 view に現れない — enforce 効果は UNIQUE 制約と同一。**教訓: UNIQUE の物理確認は table_constraints でなく pg_indexes を見る。**
 
 ## OT 判断材料(fix の扱い案)
 
