@@ -227,6 +227,11 @@ export function resetState(state: ReviewEventsState): void {
 /**
  * Add a card to state.cardRows with FSRS initial values.
  * Ported from app/api/review-events/bulk/route.test.ts `addCardRow`.
+ *
+ * Default `options` covers ids 'a' and 'b' — the ids used by
+ * makeValidPayload / existing selected_answer_ids fixtures across this
+ * test file, so adding the Task 2 option-existence check doesn't require
+ * every call site to pass `options` explicitly.
  */
 export function addCardRow(
   state: ReviewEventsState,
@@ -248,6 +253,10 @@ export function addCardRow(
     answered: false,
     lastCorrect: null,
     currentStreak: 0,
+    options: [
+      { id: 'a', text: 'Option A', is_correct: true },
+      { id: 'b', text: 'Option B', is_correct: false },
+    ],
     ...overrides,
   })
 }

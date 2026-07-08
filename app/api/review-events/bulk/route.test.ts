@@ -272,6 +272,8 @@ const VALID_EVENT_ID_3 = '77777777-7777-4777-a777-777777777777'
 const VALID_CARD_ID_2 = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
 
 // 新規カード相当の FSRS 初期 state を cardRows に設定するヘルパー
+// options のデフォルトは 'a'/'b' — 本 file の selected_answer_ids 既存 fixture が
+// 使う id と揃えてある (A-2 option 実在検証 追加時に既存 test を壊さないため)。
 function addCardRow(cardId: string, overrides: Record<string, unknown> = {}) {
   state.cardRows.set(cardId, {
     id: cardId,
@@ -288,6 +290,10 @@ function addCardRow(cardId: string, overrides: Record<string, unknown> = {}) {
     answered: false,
     lastCorrect: null,
     currentStreak: 0,
+    options: [
+      { id: 'a', text: 'Option A', is_correct: true },
+      { id: 'b', text: 'Option B', is_correct: false },
+    ],
     ...overrides,
   })
 }

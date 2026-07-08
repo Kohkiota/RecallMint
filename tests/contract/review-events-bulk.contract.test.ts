@@ -383,6 +383,163 @@ describe('POST /api/review-events/bulk — wire contract', () => {
     expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
   })
 
+  // ── §4b Branch: selected_answer_ids existence validation (Task 2 / A-2) ───
+
+  it('option existence (a): all selected ids exist on the card → applied (not in failed[])', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const payload = makeValidPayload({
+      events: [
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'], // 'a' exists on VALID_CARD_ID (fixture default)
+          is_correct: true,
+          answered_at: '2026-05-25T10:01:00.000Z',
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect((body as { failed: string[] }).failed).toEqual([])
+    expect(state.answerEventInsertValues).toHaveLength(1)
+    expect(state.reviewsInsertValues).not.toBeNull()
+  })
+
+  it('option existence (b): unknown id mixed in → only that event fails, others in the same payload are applied', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const payload = makeValidPayload({
+      events: [
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'], // valid
+          is_correct: true,
+          answered_at: '2026-05-25T10:01:00.000Z',
+        },
+        {
+          event_id: VALID_EVENT_ID_2,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['does-not-exist'], // not in card options
+          is_correct: true,
+          answered_at: '2026-05-25T10:02:00.000Z',
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
+    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
+
+    // Only the valid event reaches the answer_events INSERT.
+    expect(state.answerEventInsertValues).toHaveLength(1)
+    expect(state.answerEventInsertValues![0]!['eventId']).toBe(VALID_EVENT_ID)
+  })
+
+  it('option existence (c): id that exists on a different card → failed[] (cross-card id is not valid)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    // VALID_CARD_ID_2 has its own distinct options ('x','y') — 'a' belongs to
+    // VALID_CARD_ID only, so selecting 'a' against VALID_CARD_ID_2 must fail.
+    addCardRow(state, VALID_CARD_ID_2, {
+      options: [
+        { id: 'x', text: 'Option X', is_correct: true },
+        { id: 'y', text: 'Option Y', is_correct: false },
+      ],
+    })
+
+    const payload = makeValidPayload({
+      session: { card_ids: [VALID_CARD_ID, VALID_CARD_ID_2] },
+      events: [
+        {
+          event_id: VALID_EVENT_ID_2,
+          card_id: VALID_CARD_ID_2,
+          selected_answer_ids: ['a'], // exists on VALID_CARD_ID, not on VALID_CARD_ID_2
+          is_correct: true,
+          answered_at: '2026-05-25T10:02:00.000Z',
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
+    expect(state.reviewsInsertValues).toBeNull()
+  })
+
+  it('option existence (d): multi-select with all ids existing → applied', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const payload = makeValidPayload({
+      events: [
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a', 'b'], // both exist on VALID_CARD_ID (fixture default)
+          is_correct: true,
+          answered_at: '2026-05-25T10:01:00.000Z',
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect((body as { failed: string[] }).failed).toEqual([])
+    expect(state.answerEventInsertValues).toHaveLength(1)
+    expect(state.reviewsInsertValues).not.toBeNull()
+  })
+
+  it('option existence (e): malformed options on one card do not throw and do not fail other cards in the same payload (isolation)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    // VALID_CARD_ID_2 has a malformed options array (null element + an
+    // element missing `id`) — this must NOT throw inside the Phase 1 loop,
+    // which would otherwise roll back the whole tx and fail the healthy
+    // card's event too (the bug under test).
+    addCardRow(state, VALID_CARD_ID_2, {
+      options: [null, { text: 'no id here' }],
+    })
+
+    const payload = makeValidPayload({
+      session: { card_ids: [VALID_CARD_ID, VALID_CARD_ID_2] },
+      events: [
+        {
+          event_id: VALID_EVENT_ID,
+          card_id: VALID_CARD_ID,
+          selected_answer_ids: ['a'], // valid on the healthy card
+          is_correct: true,
+          answered_at: '2026-05-25T10:01:00.000Z',
+        },
+        {
+          event_id: VALID_EVENT_ID_2,
+          card_id: VALID_CARD_ID_2,
+          selected_answer_ids: ['a'], // malformed card has no valid ids → reject
+          is_correct: true,
+          answered_at: '2026-05-25T10:02:00.000Z',
+        },
+      ],
+    })
+
+    const res = await POST(makeReq(payload))
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // Only the malformed-card event fails; the healthy card's event is applied.
+    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
+    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
+    expect(state.answerEventInsertValues).toHaveLength(1)
+    expect(state.answerEventInsertValues![0]!['eventId']).toBe(VALID_EVENT_ID)
+  })
+
   // ── §5 Branch: tx rollback → all applicable events in failed[] ────────────
 
   it('tx rollback: internal throw → all applicable events in failed[], HTTP 200 (rollback semantics)', async () => {

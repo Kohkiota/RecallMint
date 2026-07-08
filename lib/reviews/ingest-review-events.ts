@@ -1,5 +1,6 @@
 import 'server-only'
 // P2 時点の置き場。Learning context の最終形ではない(spec §3.1 条件 1 — replay-card は lib/cards/ に分散)。
+// A-2: selected_answer_ids は対象 card の options に実在する id のみを許容する(server 検証)。
 
 import { z } from 'zod'
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -9,6 +10,7 @@ import {
   cards,
   reviews,
   studyDays,
+  type CardOption,
   type User,
 } from '@/lib/db/schema'
 import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
@@ -121,6 +123,7 @@ async function processSession(
           answered: cards.answered,
           lastCorrect: cards.lastCorrect,
           currentStreak: cards.currentStreak,
+          options: cards.options,
         })
         .from(cards)
         .where(
@@ -133,6 +136,9 @@ async function processSession(
 
       // card_id → ReplayCardState マップを構築
       const cardStateMap = new Map<string, ReplayCardState>()
+      // card_id → 実在 option id の Set(A-2 検証用)。 options が非配列/壊れ値の
+      // 既存データは空 Set 扱い(fail closed — selected が非空なら reject)。
+      const cardOptionIdMap = new Map<string, Set<string>>()
       for (const row of cardRows) {
         cardStateMap.set(row.id, {
           due: row.due,
@@ -149,12 +155,40 @@ async function processSession(
           lastCorrect: row.lastCorrect,
           currentStreak: row.currentStreak,
         })
+        const options = row.options
+        // 要素レベルで id: string を持つものだけ抽出 (null 要素・id 欠落要素は無視)。
+        // 壊れ要素で throw すると Phase 1 ループが tx catch に落ち、同 payload の
+        // 健全カードの event まで巻き添えで failed になるため、要素単位で握り潰す。
+        cardOptionIdMap.set(
+          row.id,
+          new Set(
+            Array.isArray(options)
+              ? (options as unknown[])
+                  .map((o) =>
+                    o != null && typeof (o as { id?: unknown }).id === 'string'
+                      ? (o as CardOption).id
+                      : null,
+                  )
+                  .filter((id): id is string => id !== null)
+              : [],
+          ),
+        )
       }
 
       // orphan exclusion: card が返ってこなかった event は failed[] へ
+      // A-2: selected_answer_ids の全 id が対象 card の options に実在するかも同時に検証。
+      // 1 つでも欠ければ orphan と同列の failed[] へ積む(応答形・語彙は既存を流用)。
       const applicableEvents: ParsedEvent[] = []
       for (const ev of events) {
         if (!cardStateMap.has(ev.card_id)) {
+          orphanFailed.push(ev.event_id)
+          continue
+        }
+        const validOptionIds = cardOptionIdMap.get(ev.card_id)!
+        const hasUnknownOption = ev.selected_answer_ids.some(
+          (id) => !validOptionIds.has(id),
+        )
+        if (hasUnknownOption) {
           orphanFailed.push(ev.event_id)
         } else {
           applicableEvents.push(ev)
