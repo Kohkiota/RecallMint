@@ -448,4 +448,125 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     )
   })
+
+  // -------------------------------------------------------------------------
+  // F1 golden (Phase G): retrieve reject の 200-swallow と、created 先着 → checkout
+  // 後着の順序 recovery を end-to-end で pin。 現行実挙動を観測して固定。
+  // -------------------------------------------------------------------------
+
+  // G3: checkout.session.completed で subscriptions.retrieve が reject。
+  // Step1 (customer link の db.update) は実行済、 Step2 (plan sync) は throw →
+  // outer catch → notifyWebhookError + HTTP 200。 Step2 の plan 書込は起きない
+  // (= db.update は Step1 の 1 回のみ)。
+  it('checkout.session.completed で subscriptions.retrieve reject → Step1 のみ実行・notifyWebhookError・200 (Step2 plan 書込なし)', async () => {
+    mockStripeRetrieve.mockRejectedValueOnce(new Error('stripe 5xx: retrieve failed'))
+
+    const body = JSON.stringify({
+      id: 'evt_checkout_retrieve_reject',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_retrieve_reject',
+          client_reference_id: 'user_rr',
+          customer: 'cus_rr',
+          subscription: 'sub_rr',
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    // outer catch で 200 を返す (Stripe 再送ループ防止)。
+    expect(res.status).toBe(200)
+    // Step1 (customer link) の 1 回のみ。 Step2 の plan-sync update は到達しない。
+    expect(mockDb.update).toHaveBeenCalledOnce()
+    // retrieve は正しい subId で呼ばれ reject。
+    expect(mockStripeRetrieve).toHaveBeenCalledWith('sub_rr')
+    // outer catch → notifyWebhookError 発火 (handler=stripe / eventId / eventType)。
+    expect(mockNotifyWebhookError).toHaveBeenCalledTimes(1)
+    const arg = mockNotifyWebhookError.mock.calls[0][0] as {
+      handler: string
+      eventId: string
+      eventType: string
+      customerId?: string
+    }
+    expect(arg.handler).toBe('stripe')
+    expect(arg.eventId).toBe('evt_checkout_retrieve_reject')
+    expect(arg.eventType).toBe('checkout.session.completed')
+    expect(arg.customerId).toBe('cus_rr')
+  })
+
+  // G6: customer.subscription.created が customer 未 link で先着 (db.update が
+  // 0 行 match = returning [])。 現行は silent (notifyOps 不発)。 その後
+  // checkout.session.completed 後着で customer link + plan sync 完了。 順序 recovery。
+  it('subscription.created 先着 (unlinked, returning []) は silent → 後着 checkout.session.completed で link + plan sync 完了', async () => {
+    const { notifyOps } = await import('@/lib/ops')
+    const mockNotifyOps = vi.mocked(notifyOps)
+
+    // --- 1) subscription.created 先着: stripeCustomerId 未 link で 0 行 match ---
+    // .created/.updated handler は .where().returning() を呼ぶため returning chain 必要。
+    mockDb.update.mockImplementationOnce(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]), // 0 行 match
+        })),
+      })),
+    }))
+
+    const createdBody = JSON.stringify({
+      id: 'evt_created_first',
+      type: 'customer.subscription.created',
+      data: {
+        object: {
+          id: 'sub_order',
+          customer: 'cus_order_new',
+          status: 'active',
+          cancel_at_period_end: false,
+          cancel_at: null,
+          items: { data: [{ price: { id: process.env.STRIPE_PRICE_PRO_MONTHLY }, current_period_end: 1735689600 }] },
+        },
+      },
+    })
+    const resCreated = await POST(signed(createdBody))
+    expect(resCreated.status).toBe(200)
+    // 現行挙動: .created の unlinked は transient race として silent (notifyOps 不発)。
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+
+    // --- 2) checkout.session.completed 後着: link + plan sync 完了 ---
+    mockStripeRetrieve.mockResolvedValueOnce({
+      id: 'sub_order',
+      status: 'active',
+      cancel_at_period_end: false,
+      cancel_at: null,
+      customer: 'cus_order_new',
+      items: { data: [{ price: { id: process.env.STRIPE_PRICE_PRO_MONTHLY }, current_period_end: 1735689600 }] },
+    })
+    // Step1 (customer link) は default mock、 Step2 (plan sync) は returning に clerkId。
+    const step2Set = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ clerkId: 'user_order' }]),
+      })),
+    }))
+    mockDb.update
+      .mockImplementationOnce(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) }))
+      .mockImplementationOnce(() => ({ set: step2Set }))
+
+    const checkoutBody = JSON.stringify({
+      id: 'evt_checkout_after',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_after',
+          client_reference_id: 'user_order',
+          customer: 'cus_order_new',
+          subscription: 'sub_order',
+        },
+      },
+    })
+    const resCheckout = await POST(signed(checkoutBody))
+    expect(resCheckout.status).toBe(200)
+    // Step2 plan sync が pro を書き込む (= recovery 成立)。
+    expect(step2Set).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: 'pro', subscriptionStatus: 'active' }),
+    )
+  })
 })

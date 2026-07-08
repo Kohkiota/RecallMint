@@ -305,6 +305,21 @@ describe('Stripe webhook: status matrix (captured users UPDATE mutation — extr
       notifyOpsSubject: (mockNotifyOps.mock.calls[0]?.[0] as string) ?? null,
     }).toMatchSnapshot()
   })
+
+  // F1 golden (Phase G): normalizeSubStatus の default 分岐を pin。 'paused' も
+  // 型に無い未知 status も default → canceled に落ち plan=free になる現行挙動を
+  // snapshot で固定する (後続 R phase で凍結対象)。
+  it('paused → normalizeSubStatus default で subscriptionStatus=canceled, plan=free', async () => {
+    setupSubUpdated('paused', PRICE.PRO_MONTHLY)
+    await POST(makeReq({}))
+    expect(captureSubMutation()).toMatchSnapshot()
+  })
+
+  it('unknown status (型に無い値) → default 分岐で subscriptionStatus=canceled, plan=free', async () => {
+    setupSubUpdated('future_status' as string, PRICE.PRO_MONTHLY)
+    await POST(makeReq({}))
+    expect(captureSubMutation()).toMatchSnapshot()
+  })
 })
 
 // ── 3. Added events ───────────────────────────────────────────────────────────

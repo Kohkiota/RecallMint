@@ -464,6 +464,29 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     expect(mockScheduleDowngrade).not.toHaveBeenCalled()
   })
 
+  // F1 golden (Phase G): cancelScheduled=true かつ DB 列 scheduledDowngradeScheduleId
+  // も non-null の複合 (両条件が同時に真)。 block 条件 (actions.ts:110-116) で
+  // CHANGE_BLOCKED throw、 Stripe mutate (applyUpgrade / scheduleDowngrade) は
+  // 一切呼ばれない現行挙動を pin。
+  it('cancelScheduled=true かつ DB 列 scheduledDowngradeScheduleId non-null (複合) → CHANGE_BLOCKED、Stripe mutate 未呼出', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      ...paidUser,
+      scheduledDowngradeScheduleId: 'sched_reserved',
+    })
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_reserved',
+      cancelScheduled: true,
+    })
+    await expect(
+      changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_compound' })),
+    ).rejects.toThrow('CHANGE_BLOCKED')
+    expect(mockApplyUpgrade).not.toHaveBeenCalled()
+    expect(mockScheduleDowngrade).not.toHaveBeenCalled()
+    // DB write も走らない (block は Stripe mutate の前段)。
+    expect(mockDbSet).not.toHaveBeenCalled()
+  })
+
   it('same rank → NO_CHANGE throw、apply/schedule 未呼出', async () => {
     // 現プラン pro/month → pro/month = same
     await expect(

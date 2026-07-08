@@ -112,6 +112,14 @@ exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extra
 }
 `;
 
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > paused → normalizeSubStatus default で subscriptionStatus=canceled, plan=free 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "canceled",
+}
+`;
+
 exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > trialing → subscriptionStatus=active (trialing normalizes same as active) 1`] = `
 {
   "billingInterval": "year",
@@ -128,6 +136,14 @@ exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extra
     "subscriptionStatus": "active",
   },
   "notifyOpsSubject": "stripe sub unknown price_id",
+}
+`;
+
+exports[`Stripe webhook: status matrix (captured users UPDATE mutation — extracted scalars only) > unknown status (型に無い値) → default 分岐で subscriptionStatus=canceled, plan=free 1`] = `
+{
+  "billingInterval": null,
+  "plan": "free",
+  "subscriptionStatus": "canceled",
 }
 `;
 

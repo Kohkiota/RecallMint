@@ -346,6 +346,49 @@ describe('Stripe webhook: Standard 配線 + billing_interval', () => {
     )
   })
 
+  // F1 golden (Phase G): items.data 空 (price_id 取得不能) の missing_price 経路。
+  // extractSubFields で priceId=null → resolvePlanFromSub (active) が
+  // notifyOps('stripe sub missing price_id') 発火 + plan=free 書込。 現行実挙動を
+  // 観測して pin (notifyOps subject 文言 + plan/interval)。
+  it('items.data 空 (missing price_id) → notifyOps "stripe sub missing price_id" + plan=free + 200', async () => {
+    mockConstructEvent.mockReturnValue({
+      id: 'evt_missing_price',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_unit',
+          customer: 'cus_missing_price',
+          status: 'active',
+          cancel_at: null,
+          schedule: null,
+          items: { data: [] },
+        },
+      },
+    })
+    stubIdempotencyInsertOnce()
+    mockDbUpdate.mockReturnValueOnce(chain([{ clerkId: 'user_clerk_mp' }]))
+
+    const res = await POST(makeReq({ id: 'evt_missing_price' }))
+    expect(res.status).toBe(200)
+
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'stripe sub missing price_id',
+      expect.objectContaining({
+        eventId: 'evt_missing_price',
+        customerId: 'cus_missing_price',
+        status: 'active',
+      }),
+    )
+    const setCall = (mockDbUpdate.mock.results[0].value as { set: ReturnType<typeof vi.fn> }).set
+    expect(setCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: 'free',
+        billingInterval: null,
+      }),
+    )
+  })
+
   it('idempotency: duplicate event_id → 200 without processing', async () => {
     mockConstructEvent.mockReturnValue({
       id: 'evt_dup',

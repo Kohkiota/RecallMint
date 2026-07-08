@@ -499,6 +499,21 @@ describe('cancelScheduledDowngrade', () => {
       cancelScheduledDowngrade('sub_sched_gone', 'idem_rel'),
     ).resolves.toBeUndefined()
   })
+
+  // F1 golden (Phase G): resource_missing とは別に、 message の "already been
+  // released" 正規表現 path でも冪等成功扱いされる現行挙動を pin。 code は
+  // resource_missing でない (message regex のみで握られる) ことを確認。
+  it('既に released (message "already been released" 正規表現 path, code は resource_missing 以外) でも throw せず resolve', async () => {
+    mockScheduleRelease.mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        message: 'This subscription schedule has already been released.',
+      } as never),
+    )
+    await expect(
+      cancelScheduledDowngrade('sub_sched_released', 'idem_rel'),
+    ).resolves.toBeUndefined()
+  })
 })
 
 describe('releaseCompletedDowngrade (status gate)', () => {
