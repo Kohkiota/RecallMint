@@ -19,6 +19,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { cards, exams, tombstones, type CardOption } from '@/lib/db/schema'
 import type { DB } from '@/lib/db'
 import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
+import { bumpExamCardCount } from '@/lib/cards/card-count'
 
 // ---------------------------------------------------------------------------
 // DbExecutor 型: db (PostgresJsDatabase) と tx (PgTransaction) の共通 interface。
@@ -106,15 +107,8 @@ export async function applyCardCreateWithId(
   const created = inserted.length > 0
 
   // 4. 実 insert 時のみ card_count += 1 (ON CONFLICT skip 時は非加算 — 二重加算防止)
-  //    updatedAt は据え置き (card 増減で動かさない、applyCardCreate と同方針)
   if (created) {
-    await tx
-      .update(exams)
-      .set({
-        cardCount: sql`${exams.cardCount} + 1`,
-        updatedAt: sql`${exams.updatedAt}`,
-      })
-      .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
+    await bumpExamCardCount(tx, { examId, userId, delta: 1 })
   }
 
   return { examNotFound: false, created }
@@ -169,13 +163,6 @@ export async function applyCardDelete(
     .delete(cards)
     .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
 
-  // 4. exams.card_count -= 1 (GREATEST for negative guard)
-  //    updatedAt は card 増減で動かさない (create-card.ts §B1 と同方針)
-  await tx
-    .update(exams)
-    .set({
-      cardCount: sql`GREATEST(${exams.cardCount} - 1, 0)`,
-      updatedAt: sql`${exams.updatedAt}`,
-    })
-    .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
+  // 4. exams.card_count -= 1 (delta<0 → GREATEST 負ガード、helper 内で処理)
+  await bumpExamCardCount(tx, { examId, userId, delta: -1 })
 }

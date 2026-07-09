@@ -1,12 +1,12 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import {
   cards,
-  exams,
   sourceDocuments,
   uploadRecords,
 } from '@/lib/db/schema'
 import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
+import { bumpExamCardCount } from '@/lib/cards/card-count'
 import { logger } from '@/lib/logger'
 
 // 保存 tx: cards bulk INSERT + applyOcrTags (同 tx 採番) + exams.cardCount 加算。
@@ -33,16 +33,11 @@ export async function saveExtractedCards(
         custom_props: args.customProps[i],
       })),
     )
-    await tx
-      .update(exams)
-      .set({
-        cardCount: sql`${exams.cardCount} + ${args.cardRows.length}`,
-        // card_count は派生キャッシュ。 更新で exams.updatedAt ($onUpdate) を
-        // 動かさず、 試験一覧の updatedAt DESC 順を card 増減で乱さない
-        // (B1 は perf 最適化であり list 並び順を変える feature ではない)。
-        updatedAt: sql`${exams.updatedAt}`,
-      })
-      .where(and(eq(exams.id, args.examId), eq(exams.userId, args.userId)))
+    await bumpExamCardCount(tx, {
+      examId: args.examId,
+      userId: args.userId,
+      delta: args.cardRows.length,
+    })
     return inserted
   })
 }
