@@ -54,6 +54,35 @@ try:
 except Exception:
     sys.exit(0)
 
+# background task 完了までの中間 Stop を抑止し、最終 Stop でだけ通知する。
+# Claude Code v2.1.x の Stop/SubagentStop 拡張入力は稼働中 background task を
+# background_tasks に載せる(v2.1.197 バイナリで存在確認)。残っている中間 Stop
+# では送らず、全 background 完了後(background_tasks 空)の Stop でのみ Discord へ。
+# フィールド不在の版では None → 従来どおり毎回通知(安全側の既定)。
+#
+# TEMP(次イテレーションで検証後に削除): background_tasks の実形状を確認するため、
+# 抑止判定より前に全 Stop の関連フィールドを追記記録する。抑止された中間 Stop も
+# 残したいので guard より前に置く。
+try:
+    with open("/tmp/claude-stop-hook-debug.jsonl", "a", encoding="utf-8") as _dbg:
+        _dbg.write(
+            json.dumps(
+                {
+                    "ts": time.time(),
+                    "background_tasks": hook_input.get("background_tasks"),
+                    "session_crons": hook_input.get("session_crons"),
+                    "stop_hook_active": hook_input.get("stop_hook_active"),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+except OSError:
+    pass
+
+if hook_input.get("background_tasks"):
+    sys.exit(0)
+
 project = os.path.basename(project_dir)
 
 
