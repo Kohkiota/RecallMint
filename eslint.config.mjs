@@ -44,6 +44,35 @@ const DOMAIN_NO_INFRA_IMPORTS = {
 }
 
 // ---------------------------------------------------------------------------
+// Session domain purity: `lib/reviews/domain/**` is pure domain and must not
+// RUNTIME-import infra / orchestration modules (mirrors the Subscription block
+// above). `import type` is always allowed (allowTypeImports) and intra-domain
+// runtime imports (`./session-values` / `./session-aggregate`) are NOT listed,
+// so they pass — as do pure siblings (@/lib/cards/replay-card / @/lib/jst /
+// @/lib/fsrs). Forbidden runtime targets = infra (db / drizzle / logger /
+// server-only) + zod (domain is zod-free — spec §3, structural types defined
+// in-domain) + orchestration (ingest-review-events / session-repository).
+// ---------------------------------------------------------------------------
+const SESSION_DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Session domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Session domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/logger', allowTypeImports: true, message: 'Session domain must not runtime-import infra (@/lib/logger).' },
+    { name: 'server-only', allowTypeImports: true, message: 'Session domain must stay environment-agnostic (no server-only).' },
+    { name: 'zod', allowTypeImports: true, message: 'Session domain must not runtime-import zod; define structural types in-domain (spec §3).' },
+    { name: '@/lib/reviews/ingest-review-events', allowTypeImports: true, message: 'Session domain must not runtime-import orchestration (ingest-review-events).' },
+    { name: '@/lib/reviews/session-repository', allowTypeImports: true, message: 'Session domain must not runtime-import orchestration (session-repository).' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Session domain must not runtime-import framework (next / next/*).',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
 // Shared no-restricted-imports pattern groups (composed per files-scope below).
 // NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
 // IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
@@ -133,6 +162,30 @@ const config = [
         {
           paths: DOMAIN_NO_INFRA_IMPORTS.paths,
           patterns: [LIB_NO_APP_IMPORTS, ...DOMAIN_NO_INFRA_IMPORTS.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A'': Session domain purity guard (F2 R4). Same structure/rationale as
+  // Block A' above but scoped to `lib/reviews/domain/**` — must come AFTER Block A
+  // so it wins for those files. Flat-config rule options REPLACE (not merge) per
+  // file, so this re-includes Block A's LIB_NO_APP_IMPORTS pattern to keep the
+  // app/-layer boundary, then layers the Session domain infra/orchestration/zod
+  // deny (paths + next/* pattern) on top. Scope excludes *.test.ts (domain tests
+  // import vitest and pull VOs via `@/lib/reviews/domain/*` — not the runtime-purity
+  // concern). The `lib/reviews/domain/**` glob has no route group / dynamic
+  // segment → no `\\(...\\)` / `\\[...\\]` escaping needed.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/reviews/domain/**/*.ts'],
+    ignores: ['lib/reviews/domain/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: SESSION_DOMAIN_NO_INFRA_IMPORTS.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...SESSION_DOMAIN_NO_INFRA_IMPORTS.patterns],
         },
       ],
     },
