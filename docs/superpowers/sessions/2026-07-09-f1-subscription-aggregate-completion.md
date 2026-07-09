@@ -48,5 +48,17 @@ whole-repo lint --max-warnings=0 / typecheck / **full test 202 files 3083 passed
 - 退会 flow 非退行(A-4 偽アラート不発生)
 - **再 upgrade 再試行経路**(W-A2 自己修復・Stripe 同 price no-op の実確認)
 
+## stg smoke 実機結果(2026-07-09・OT 実機・全 pass)
+- **W-A2 直接確認(F1 の本丸)**: std月額→pro年額 upgrade → **DB 即反映**(plan=pro / interval=year / updated_at 更新)= 整合窓が閉じている実証。
+- **release gate 非退行**: pro年額→月額pro downgrade 予約(予約3列セット)→ 取消(予約3列 null 復帰・plan/interval 維持)。
+- **A-4 退会非退行**: pro月額アカウント削除 → clerk_id/email null(GDPR scrub)+ plan=free/status=canceled/deleted_at セット + stripe_customer_id 保持 + **Discord 偽アラート不発生 + Vercel error 0**。
+- console error / Vercel error 全経路 0。
+- W-A2 自己修復(DB 書込失敗時 heal)= 実機で DB 書込失敗が発生せず未発動(想定通り・unit test cover・実機経路なし)。downgrade 実発効(期日 webhook)= Test Clock 領域・将来送りゆえ非対象。
+
+## [reviewed] 相当の確定と commit tag の扱い
+- W(`6fc1555`)は **review pass(canonical + Codex・Crit0/Imp0)+ stg 実機 pass** で **[reviewed] 相当を確定**。
+- ただし本 commit は既に **push 済**(origin/develop = HEAD)。`.claude/hooks/check-review.sh` 明記どおり **push 済 commit の amend は force-push を強いる最悪手・独断禁止**。→ commit message への [reviewed] tag retrofit は**行わず、本 doc で review-verified 状態を確定記録**する(Stop hook は HEAD の feat/fix のみ検査し、W は非 HEAD ゆえ block 対象外)。
+- tag を message に立てたい場合は OT 判断(force-push 領域)。
+
 ## 次
-OT 報告 → OT push → stg smoke(CC・DevTools MCP)→ **W に [reviewed] amend**(未 push amend or push 後 OT 指示)→ prod 判断は OT。CC は push・prod 判断せず。
+OT 報告(本結果)→ prod 反映判断は OT。CC は push・prod・force-push 判断せず。

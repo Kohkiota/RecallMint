@@ -55,4 +55,12 @@ Group A は **server-side-only(新 DOM マーカー無し・SHA は browser 非�
 
 - CC 実走分: **A-1 PASS / A-2 PASS**(正常系非退行・console error 0)。
 - A-4 = OT 実機(退会実行判断 + Discord 観測)。A-3 = OT 実機(実 Stripe)+ unit test(DB 失敗注入)。
-- smoke pass + OT 実機 pass 後、A-3(`c5075e0`)/ A-4(`e476ea9`)に [reviewed] amend(未 push 前提)→ prod 判断は OT。
+
+## OT 実機 smoke 結果(2026-07-09・全 pass)
+- **A-4 退会非退行(直接確認)**: pro月額アカウント実退会 → clerk_id/email null(GDPR scrub)+ plan=free/status=canceled/deleted_at セット + stripe_customer_id 保持 + **Discord 偽アラート不発生 + Vercel error 0**。A-4 root fix の実機実証。
+- **A-3 実 Stripe 非退行**: 今回の upgrade/downgrade 実走(F1 smoke と同一セッション)で changePlan 経路が正常動作(A-3 の db.update try/catch は正常系挙動不変・DB 失敗は unit test でカバー)。
+
+## [reviewed] 相当の確定と commit tag の扱い
+- A-3(`c5075e0`)/ A-4(`e476ea9`)は **review pass(canonical + Codex)+ stg 実機 pass** で **[reviewed] 相当を確定**。
+- ただし両 commit は既に **push 済**(F1 の下・~20 commit 前)。`.claude/hooks/check-review.sh` 明記どおり **push 済 commit の amend は最悪手・独断禁止**。しかも A-3/A-4 amend は全 F1 commit の SHA を書き換える(interactive rebase も本環境不可)。→ commit message tag retrofit は**行わず、本 doc で review-verified 状態を確定記録**する。
+- tag を message に立てたい場合は OT 判断(force-push + 全 F1 SHA 書換え領域)。
