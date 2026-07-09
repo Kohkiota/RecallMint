@@ -25,3 +25,47 @@ export const optionSchema = z.object({
     .max(2000, '選択肢の解説は 2000 文字以内で入力してください')
     .optional(),
 })
+
+// ---------------------------------------------------------------------------
+// card field-bound schema (F3-R3 集約)
+// ---------------------------------------------------------------------------
+//
+// card の各 field の境界検証 zod。 元は card-field-handlers.ts (各 handler の
+// 値検証) と mutation-schemas.ts (cardCreatePatchSchema の inline) に二重定義
+// されていたものを、 単一 source として本 module に集約した (drift 防止)。
+// 両 consumer は同一 schema object を .safeParse / z.object field に差すため、
+// issue path・message は文字通り不変。
+
+export const titleSchema = z
+  .string()
+  .trim()
+  .min(1, 'タイトルは必須です')
+  .max(200, 'タイトルは 200 文字以内で入力してください')
+
+export const sortKeySchema = z
+  .string()
+  .max(100, 'ソートキーは 100 文字以内で入力してください')
+  .nullable()
+
+export const questionTextSchema = z
+  .string()
+  .max(10000, '問題文は 10000 文字以内で入力してください')
+  .refine((s) => s.trim().length > 0, { message: '問題文は必須です' })
+
+export const explanationTextSchema = z
+  .string()
+  .max(10000, '解説は 10000 文字以内で入力してください')
+  .nullable()
+
+export const memoSchema = z
+  .string()
+  .max(10000, 'メモは 10000 文字以内で入力してください')
+  .nullable()
+
+export const optionsSchema = z
+  .array(optionSchema)
+  .min(1, '選択肢は最低 1 個必要です')
+  .max(50, '選択肢は最大 50 個までです')
+  .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
+    message: '選択肢の id が重複しています',
+  })

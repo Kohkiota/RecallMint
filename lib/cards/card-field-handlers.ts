@@ -24,7 +24,14 @@ import {
   tagOptions,
   type CardOption,
 } from '@/lib/db/schema'
-import { optionSchema } from '@/lib/validation/card'
+import {
+  titleSchema,
+  sortKeySchema,
+  questionTextSchema,
+  explanationTextSchema,
+  memoSchema,
+  optionsSchema,
+} from '@/lib/validation/card'
 import {
   deriveCorrectAnswerIds,
   normalizeNullableTextField,
@@ -58,42 +65,8 @@ export type CardFieldHandler = (
 ) => Promise<ApplyResult>
 
 // ---------------------------------------------------------------------------
-// 値検証 zod (旧 apply-card-mutation.ts の 6 schema を移植、 エラーメッセージ完全一致)
+// 値検証 zod (field bound schema は @/lib/validation/card に集約 = F3-R3)
 // ---------------------------------------------------------------------------
-
-const titleSchema = z
-  .string()
-  .trim()
-  .min(1, 'タイトルは必須です')
-  .max(200, 'タイトルは 200 文字以内で入力してください')
-
-const sortKeySchema = z
-  .string()
-  .max(100, 'ソートキーは 100 文字以内で入力してください')
-  .nullable()
-
-const questionTextSchema = z
-  .string()
-  .max(10000, '問題文は 10000 文字以内で入力してください')
-  .refine((s) => s.trim().length > 0, { message: '問題文は必須です' })
-
-const explanationTextSchema = z
-  .string()
-  .max(10000, '解説は 10000 文字以内で入力してください')
-  .nullable()
-
-const memoSchema = z
-  .string()
-  .max(10000, 'メモは 10000 文字以内で入力してください')
-  .nullable()
-
-const optionsSchema = z
-  .array(optionSchema)
-  .min(1, '選択肢は最低 1 個必要です')
-  .max(50, '選択肢は最大 50 個までです')
-  .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
-    message: '選択肢の id が重複しています',
-  })
 
 // Tag-2c: card 編集 UI からのタグ付与/解除。 value = uuid[] (tag_options.id 集合)。
 // upper bound 100 は UI/取り回し上の現実的上限 (option pool 自体は user 全体で多くても

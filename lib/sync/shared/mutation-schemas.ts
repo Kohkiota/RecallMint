@@ -20,7 +20,14 @@
 //   intersection で乗せる。
 
 import { z } from 'zod'
-import { optionSchema } from '@/lib/validation/card'
+import {
+  titleSchema,
+  sortKeySchema,
+  questionTextSchema,
+  explanationTextSchema,
+  memoSchema,
+  optionsSchema,
+} from '@/lib/validation/card'
 import {
   tagNameSchema,
   tagColorSchema,
@@ -48,28 +55,12 @@ export const cardUpdateFieldPatchSchema = z.object({
 // correct_answer_ids は含めない (server が options.is_correct から再生成)。
 export const cardCreatePatchSchema = z.object({
   exam_id: z.uuid(),
-  title: z
-    .string()
-    .trim()
-    .min(1, 'タイトルは必須です')
-    .max(200, 'タイトルは 200 文字以内で入力してください'),
-  sort_key: z.string().max(100, 'ソートキーは 100 文字以内で入力してください').nullable(),
-  question_text: z
-    .string()
-    .max(10000, '問題文は 10000 文字以内で入力してください')
-    .refine((s) => s.trim().length > 0, { message: '問題文は必須です' }),
-  options: z
-    .array(optionSchema)
-    .min(1, '選択肢は最低 1 個必要です')
-    .max(50, '選択肢は最大 50 個までです')
-    .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
-      message: '選択肢の id が重複しています',
-    }),
-  explanation_text: z
-    .string()
-    .max(10000, '解説は 10000 文字以内で入力してください')
-    .nullable(),
-  memo: z.string().max(10000, 'メモは 10000 文字以内で入力してください').nullable(),
+  title: titleSchema,
+  sort_key: sortKeySchema,
+  question_text: questionTextSchema,
+  options: optionsSchema,
+  explanation_text: explanationTextSchema,
+  memo: memoSchema,
 })
 
 // delete の patch: 不要 (空 object 許容)
