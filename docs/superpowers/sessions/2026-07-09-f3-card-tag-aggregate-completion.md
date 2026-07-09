@@ -93,6 +93,18 @@ literal 形と param 形は SQL render のみ異なり bind 後の計算は同�
 2. OCR upload → card_count 加算(+N helper 実 DB 経路)。
 3. tag CRUD + single カテゴリ toggle 入れ替え + category 削除の mirror 反映(tombstone 経路)+ **category delete 後に card 側 tag 割当が残らない**(実 FK CASCADE = card_tags 連動消滅の実 DB 確認・G5 の unit 不能面)。
 
+## stg smoke 結果(2026-07-09・push 後・CC DevTools 実走 = Playwright MCP・実 DB/driver)
+
+対象 = stg.recallmint.nekotest.net(test account・baseline 6 exams / 426 cards / 7 cat / 28 opt / 793 card_tags)。反映確認: /app 正常・認証済。**F3 = 挙動不変 refactor ゆえ DOM marker なし** → deploy-identity は OT push + 実 driver 挙動の整合で担保(下記 real-driver 全通過 = F3 反映と整合)。**console: 全経路 0 errors**(1 warning = Clerk dev-keys の環境 warning・F3 前の初回 load から常在・無害)。検証 = client Dexie mirror(pull 済 server 状態を反映)+ **強制 full re-pull(cursor reset)で server 側物理削除を実証**。
+
+| # | 項目 | 結果 | 実測(real DB/driver) |
+|---|---|---|---|
+| 1 | card CRUD + card_count 整合 | **PASS** | 新規 exam「F3-smoke」に card ×2 追加 → flush(2× POST entity-mutations/bulk 200)→ pull → **card_count=2**(R4 helper server +1/+1)。option 正解 flag 変更 → mirror **correct_answer_ids=['1']**(server handleOptions 再導出・R2)。memo set→空文字クリア → mirror **memo=null**(空→null 正規化・R2)。card 1 件削除 → pull → **card_count=1**(R4 helper -1 GREATEST)・削除 card 消滅。card_count === 実 card 数 常時一致・一覧「カード N 件」表示整合。 |
+| 2 | OCR upload → card_count +N | **OT へ委譲**(未実行) | card_count +N は item 1 で実証済の同一 `bumpExamCardCount` helper(+1/-1)を delta=N で呼ぶだけ・OCR 固有配線(upload-persistence delta=cardRows.length)は G1 golden で pin。実 OCR は 実 quiz document + Gemini quota 消費 + browser filesystem への file 配置(CC 環境制約)を要するため未実行。**推奨: OT が新規 exam に 1 回 OCR upload → card_count == 抽出枚数を確認**(end-to-end 望む場合)。helper-equivalence を採る場合は省略可。 |
+| 3 | tag CRUD + single toggle + FK CASCADE | **PASS(server 確定)** | single-select category「F3cat」+ opt optA/optB 作成・card #1 付与。**single toggle 入れ替え**: optB 付与で optA 自動除去(badge「F3cat: optB」・radio・mirror card1 card_tags=[optB])= whole-set {optB} が server R6 `hasSingleCategoryOverflow` を通過。**category 削除 FK CASCADE**: F3cat 削除(impact dialog「option 2 件・card 1 件」正確)→ flush POST 200 → mirror で F3cat/optA/optB/card1-card_tags 全消滅。**確定検証 = cursor を epoch に reset して強制 full re-pull → server は baseline 793 card_tags を返し F3cat/optA/optB/card1-card_tag をどこにも再導入せず** → **server FK-CASCADE が tag_category + tag_options + card_tags を物理削除**(client optimistic でなく server 側・spec §5 の unit fake 不能面)。 |
+
+**総括**: CC 実行可能な item 1 / 3 = **PASS**(item 3 は server 物理削除まで確定)。item 2(OCR +N)= 同一 helper 実証済ゆえ OT 委譲(実行望む場合)。挙動不変 = 維持確認。**残置**: throwaway exam「F3-smoke」(card 1 件・memo=null・tag なし)を test account に残置(OT が削除可)。cursor reset は current に再 pull 済(mirror 整合・データ欠損なし)。**prod 反映判断 = OT**。
+
 ## 参照
 
 - fact-finding: `docs/audit/2026-07-09-f3-factfinding.md`(42b1ef4)
