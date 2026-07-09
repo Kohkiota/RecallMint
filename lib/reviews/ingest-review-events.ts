@@ -3,26 +3,29 @@ import 'server-only'
 // A-2: selected_answer_ids は対象 card の options に実在する id のみを許容する(server 検証)。
 
 import { z } from 'zod'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { type User } from '@/lib/db/schema'
 import type { getDb } from '@/lib/db'
-import {
-  answerEvents,
-  cards,
-  reviews,
-  studyDays,
-  type CardOption,
-  type User,
-} from '@/lib/db/schema'
-import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
-import { inDateList } from '@/lib/db/in-date-list'
+import { type ReplayCardState } from '@/lib/cards/replay-card'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
-import type { RatingInt } from '@/lib/fsrs'
 import { logger } from '@/lib/logger'
-import { todayInJst } from '@/lib/jst'
 import {
   cardIdsSchema,
   selectedAnswerIdsSchema,
 } from '@/lib/validation/review-session-bounds'
+import {
+  aggregateStudyDays,
+  admitEvents,
+  buildCardOptionIndex,
+  planReplay,
+  replaySession,
+} from '@/lib/reviews/domain/session-aggregate'
+import {
+  applyCardFinalStates,
+  insertAnswerEvents,
+  insertReviews,
+  loadCardReplayStates,
+  upsertStudyDays,
+} from '@/lib/reviews/session-repository'
 
 // ---------------------------------------------------------------------------
 // Payload validation (zod)
@@ -64,21 +67,10 @@ const payloadSchema = z.object({
 type BulkPayload = z.infer<typeof payloadSchema>
 type ParsedEvent = z.infer<typeof eventSchema>
 
-// FSRS rating を server が一元的に決める唯一の箇所。 payload 指定を優先し、 未指定は
-// is_correct から derive (true→Good(3) / false→Again(1))。 replay と study_days 集計の
-// 両方から呼ぶことで、 2 箇所で derive ロジックがズレる静かなバグを防ぐ。
-function deriveRating(ev: Pick<ParsedEvent, 'rating' | 'is_correct'>): RatingInt {
-  return ev.rating ?? (ev.is_correct ? 3 : 1)
-}
-
-// Drizzle の sql template に JS Date を直接 embed すると postgres-js の timestamptz
-// serializer (OID 1184) が bypass され、 encode 経路で Buffer.byteLength(Date) が
-// TypeError (ERR_INVALID_ARG_TYPE) になる (Drizzle #5789、 2026-05-29 stg smoke で確定)。
-// timestamptz bind は ISO string 化してから embed する (::timestamptz cast で Postgres が
-// parse、 null は維持)。 helper は throw しない (Invalid Date guard は本 fix の scope 外)。
-function toPgTimestamptz(d: Date | null): string | null {
-  return d ? d.toISOString() : null
-}
+// deriveRating (FSRS rating の一元決定・P0 §A #7 凍結契約) と Phase 1-2f の
+// pure ロジックは lib/reviews/domain/session-aggregate.ts に、SQL は
+// lib/reviews/session-repository.ts に分離済 (R2)。processSession は両者を束ねる
+// orchestrator に縮退した。
 
 // ---------------------------------------------------------------------------
 // processSession — 単一 tx で全 events を処理し failed[] を返す
@@ -105,40 +97,15 @@ async function processSession(
   try {
     await db.transaction(async (tx) => {
       // ------------------------------------------------------------------
-      // Phase 1 — cards SELECT (owner-scoped)
+      // Phase 1 — cards SELECT (owner-scoped) → cardStateMap + option index
       // ------------------------------------------------------------------
-      const cardRows = await tx
-        .select({
-          id: cards.id,
-          due: cards.due,
-          stability: cards.stability,
-          difficulty: cards.difficulty,
-          elapsedDays: cards.elapsedDays,
-          scheduledDays: cards.scheduledDays,
-          reps: cards.reps,
-          lapses: cards.lapses,
-          state: cards.state,
-          learningSteps: cards.learningSteps,
-          lastReview: cards.lastReview,
-          answered: cards.answered,
-          lastCorrect: cards.lastCorrect,
-          currentStreak: cards.currentStreak,
-          options: cards.options,
-        })
-        .from(cards)
-        .where(
-          and(
-            eq(cards.userId, user.id),
-            // owner-scoped IN 絞り込み — orphan / 他 user cards は返らない
-            inArray(cards.id, distinctCardIds),
-          ),
-        )
+      // repo が raw rows を返す。cardStateMap (ReplayCardState を row から組む
+      // orchestrator glue) はここに残し、同 rows を domain の buildCardOptionIndex
+      // に渡す (A-2 検証用の option id Set)。
+      const cardRows = await loadCardReplayStates(tx, user.id, distinctCardIds)
 
       // card_id → ReplayCardState マップを構築
       const cardStateMap = new Map<string, ReplayCardState>()
-      // card_id → 実在 option id の Set(A-2 検証用)。 options が非配列/壊れ値の
-      // 既存データは空 Set 扱い(fail closed — selected が非空なら reject)。
-      const cardOptionIdMap = new Map<string, Set<string>>()
       for (const row of cardRows) {
         cardStateMap.set(row.id, {
           due: row.due,
@@ -155,45 +122,16 @@ async function processSession(
           lastCorrect: row.lastCorrect,
           currentStreak: row.currentStreak,
         })
-        const options = row.options
-        // 要素レベルで id: string を持つものだけ抽出 (null 要素・id 欠落要素は無視)。
-        // 壊れ要素で throw すると Phase 1 ループが tx catch に落ち、同 payload の
-        // 健全カードの event まで巻き添えで failed になるため、要素単位で握り潰す。
-        cardOptionIdMap.set(
-          row.id,
-          new Set(
-            Array.isArray(options)
-              ? (options as unknown[])
-                  .map((o) =>
-                    o != null && typeof (o as { id?: unknown }).id === 'string'
-                      ? (o as CardOption).id
-                      : null,
-                  )
-                  .filter((id): id is string => id !== null)
-              : [],
-          ),
-        )
       }
+      // card_id → 実在 option id の Set(A-2 検証用・fail-closed)。
+      const cardOptionIdMap = buildCardOptionIndex(cardRows)
 
-      // orphan exclusion: card が返ってこなかった event は failed[] へ
-      // A-2: selected_answer_ids の全 id が対象 card の options に実在するかも同時に検証。
-      // 1 つでも欠ければ orphan と同列の failed[] へ積む(応答形・語彙は既存を流用)。
-      const applicableEvents: ParsedEvent[] = []
-      for (const ev of events) {
-        if (!cardStateMap.has(ev.card_id)) {
-          orphanFailed.push(ev.event_id)
-          continue
-        }
-        const validOptionIds = cardOptionIdMap.get(ev.card_id)!
-        const hasUnknownOption = ev.selected_answer_ids.some(
-          (id) => !validOptionIds.has(id),
-        )
-        if (hasUnknownOption) {
-          orphanFailed.push(ev.event_id)
-        } else {
-          applicableEvents.push(ev)
-        }
-      }
+      // orphan exclusion + A-2: rejected は orphanFailed へ (現 wire failed[] と同形)。
+      const { applicable: applicableEvents, rejected } = admitEvents(
+        events,
+        cardOptionIdMap,
+      )
+      orphanFailed.push(...rejected)
 
       // applicable events が 0 件なら write フェーズはスキップ
       if (applicableEvents.length === 0) return
@@ -201,77 +139,34 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 2a — answer_events bulk INSERT (ON CONFLICT DO NOTHING)
       // ------------------------------------------------------------------
-      const insertedRows = await tx
-        .insert(answerEvents)
-        .values(
-          applicableEvents.map((ev) => ({
-            eventId: ev.event_id,
-            sessionId: session.session_id,
-            cardId: ev.card_id,
-            userId: user.id,
-            selectedAnswerIds: ev.selected_answer_ids,
-            isCorrect: ev.is_correct,
-            answeredAt: new Date(ev.answered_at),
-            elapsedMs: ev.elapsed_ms ?? null,
-          })),
-        )
-        .onConflictDoNothing({ target: answerEvents.eventId })
-        .returning({ eventId: answerEvents.eventId })
-
-      // 実際に INSERT された event_id セット (duplicate は除外される)
-      const insertedEventIds = new Set(insertedRows.map((r) => r.eventId))
+      // 実際に INSERT された event_id セットを返す (duplicate は除外される)。
+      const insertedEventIds = await insertAnswerEvents(
+        tx,
+        applicableEvents.map((ev) => ({
+          eventId: ev.event_id,
+          sessionId: session.session_id,
+          cardId: ev.card_id,
+          userId: user.id,
+          selectedAnswerIds: ev.selected_answer_ids,
+          isCorrect: ev.is_correct,
+          answeredAt: new Date(ev.answered_at),
+          elapsedMs: ev.elapsed_ms ?? null,
+        })),
+      )
 
       // ------------------------------------------------------------------
-      // Phase 2b — replay gating: payload 順を守りつつ dedup
+      // Phase 2b/2c — replay gating (dedup) + in-memory FSRS replay
       // ------------------------------------------------------------------
-      // - insertedEventIds にある → 新規 insert 確定 → apply
-      // - ない → duplicate (既処理) → skip (failed には追加しない)
-      // - consumedSet: 同 payload 内の重複 event_id を最初の出現のみ apply
-      const consumedSet = new Set<string>()
-      const eventsToApply = applicableEvents.filter((ev) => {
-        if (!insertedEventIds.has(ev.event_id)) return false // duplicate → skip
-        if (consumedSet.has(ev.event_id)) return false // intra-payload dedup
-        consumedSet.add(ev.event_id)
-        return true
-      })
+      // planReplay: insertedEventIds gating + intra-payload dedup + payload 順
+      // per-card group。replaySession: 各 group を replayCard で fold し finalStates
+      // と reviewRows を組む。groups (Map) の平坦化 = 現 eventsToApply と同 multiset
+      // (study_days 集計 = 順不同の加算ゆえ dayMap 値は不変)。
+      const groups = planReplay(applicableEvents, insertedEventIds)
+      const eventsToApply = [...groups.values()].flat()
 
       if (eventsToApply.length === 0) return
 
-      // ------------------------------------------------------------------
-      // Phase 2c — in-memory FSRS replay (per card group)
-      // ------------------------------------------------------------------
-      // card_id ごとにグループ化。 グループ内は payload 順を保持する。
-      type ReviewRow = { cardId: string; rating: RatingInt; reviewedAt: Date }
-      const allReviewRows: ReviewRow[] = []
-      // cards UPDATE に使う: cardId → final state
-      const finalStates = new Map<string, ReplayCardState>()
-
-      // グループ化 (insertion order で Map → payload 順保持)
-      const grouped = new Map<string, ParsedEvent[]>()
-      for (const ev of eventsToApply) {
-        const arr = grouped.get(ev.card_id) ?? []
-        arr.push(ev)
-        grouped.set(ev.card_id, arr)
-      }
-
-      for (const [cardId, groupEvents] of grouped) {
-        const initial = cardStateMap.get(cardId)!
-        const replayEvents = groupEvents.map((ev) => ({
-          // payload rating 優先、未指定は is_correct から derive
-          rating: deriveRating(ev),
-          answeredAt: new Date(ev.answered_at),
-        }))
-        const { final, reviews: reviewsOut } = replayCard(initial, replayEvents)
-        finalStates.set(cardId, final)
-        // reviews 行を eventsToApply 順に戻すため groupEvents と reviewsOut を zip
-        for (let i = 0; i < groupEvents.length; i++) {
-          allReviewRows.push({
-            cardId,
-            rating: reviewsOut[i].rating,
-            reviewedAt: reviewsOut[i].reviewedAt,
-          })
-        }
-      }
+      const { finalStates, reviewRows } = replaySession(cardStateMap, groups)
 
       // reviews 行の順序は group 順 (card_id 初出順)。 study_days は eventsToApply から
       // 別途集計するため、 reviews INSERT 順は最終結果に影響しない。
@@ -279,8 +174,9 @@ async function processSession(
       // ------------------------------------------------------------------
       // Phase 2d — reviews bulk INSERT
       // ------------------------------------------------------------------
-      await tx.insert(reviews).values(
-        allReviewRows.map((r) => ({
+      await insertReviews(
+        tx,
+        reviewRows.map((r) => ({
           userId: user.id,
           cardId: r.cardId,
           rating: r.rating,
@@ -290,129 +186,20 @@ async function processSession(
 
       // ------------------------------------------------------------------
       // Phase 2e — cards UPDATE (single VALUES UPDATE、owner-scoped)
-      // finalStates の全エントリを 1 round-trip で UPDATE する。
-      // UPDATE cards SET ... FROM (VALUES (...), ...) AS v(id, ...) WHERE
-      //   cards.id = v.id AND cards.user_id = $userId
+      // finalStates の全エントリを 1 round-trip で UPDATE。件数不一致は repo が throw。
+      // finalStates.size === 0 は repo 内で no-op。
       // ------------------------------------------------------------------
-      if (finalStates.size !== 0) {
-        // per-card tuple リスト (VALUES 節用)
-        // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
-        // ::cast は静的リテラルのみ (安全)。
-        // timestamptz (due / last_review) は ISO string 化してから embed (Drizzle #5789、
-        // toPgTimestamptz 参照)。 数値 / boolean / uuid はそのまま bind 可。
-        const rows = [...finalStates.entries()].map(([cardId, final]) =>
-          sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::real, ${final.difficulty}::real, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
-        )
-        const valuesList = sql.join(rows, sql`, `)
-
-        // RETURNING cards.id で実 update 件数を取得し、 finalStates と不一致なら throw
-        // (tx rollback → 上位 catch が serializeDbError で log)。 SQL 成功で 0 rows update を
-        // 黙って通す事故の安全網。
-        const updated = await tx
-          .update(cards)
-          .set({
-            due: sql`v.due`,
-            stability: sql`v.stability`,
-            difficulty: sql`v.difficulty`,
-            elapsedDays: sql`v.elapsed_days`,
-            scheduledDays: sql`v.scheduled_days`,
-            reps: sql`v.reps`,
-            lapses: sql`v.lapses`,
-            state: sql`v.state`,
-            learningSteps: sql`v.learning_steps`,
-            lastReview: sql`v.last_review`,
-            answered: sql`v.answered`,
-            lastCorrect: sql`v.last_correct`,
-            currentStreak: sql`v.current_streak`,
-            // DB クロックで打刻 (増分 pull cursor 統一、now() は DB 側評価で #5789 と無関係)。
-            updatedAt: sql`now()`,
-          })
-          .from(
-            sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
-          )
-          .where(
-            and(eq(cards.userId, user.id), sql`${cards.id} = v.id`),
-          )
-          .returning({ id: cards.id })
-
-        const updatedIds = new Set(updated.map((r) => r.id))
-        if (updatedIds.size !== finalStates.size) {
-          const missingCardIds = [...finalStates.keys()].filter(
-            (id) => !updatedIds.has(id),
-          )
-          const mismatch = new Error('bulk update card count mismatch')
-          Object.assign(mismatch, {
-            expected: finalStates.size,
-            updated: updatedIds.size,
-            missingCardIds,
-          })
-          throw mismatch
-        }
-      }
+      await applyCardFinalStates(tx, user.id, finalStates)
 
       // ------------------------------------------------------------------
       // Phase 2f — study_days UPSERT (per JST day)
       // ------------------------------------------------------------------
-      // eventsToApply を JST date でグループ化して count 集計
-      type DayCount = { total: number; correct: number }
-      const dayMap = new Map<string, DayCount>()
-      for (const ev of eventsToApply) {
-        const day = todayInJst(new Date(ev.answered_at))
-        const rating = deriveRating(ev)
-        const existing = dayMap.get(day) ?? { total: 0, correct: 0 }
-        existing.total += 1
-        if (rating >= 2) existing.correct += 1
-        dayMap.set(day, existing)
-      }
+      // eventsToApply を JST date でグループ化して count 集計 (domain)、
+      // distinct 集計 SELECT + per-day UPSERT は repo。
+      const dayMap = aggregateStudyDays(eventsToApply)
 
       if (dayMap.size !== 0) {
-        // T-B2 #1a 再実装 (採用 X、 helper 化): per-day SELECT N+1 を
-        // `GROUP BY day` 1 文に集約。 inDateList helper で `IN ($1::date,
-        // $2::date, ...)` 形に個別 param 展開し、 driver 層挙動 (postgres-js
-        // Array serializer / Drizzle inArray 配列 binding) 依存を最小化する
-        // (a885199 stg 実機検証で X 形を確証、 lesson 2026-06-13 訂正
-        // section 参照)。 UPSERT は plan 制約「ON CONFLICT DO UPDATE」 構造
-        // 維持で per-day ループ (SUM increment + 累積 distinct 上書き)。
-        const days = [...dayMap.keys()]
-        const distinctRows = await tx.execute(sql`
-          SELECT (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date::text AS day,
-                 COUNT(DISTINCT card_id)::int AS distinct_count
-          FROM reviews
-          WHERE user_id = ${user.id}::uuid
-            AND ${inDateList(sql`(reviewed_at AT TIME ZONE 'Asia/Tokyo')::date`, days)}
-          GROUP BY (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date
-        `)
-        const distinctMap = new Map<string, number>()
-        for (const row of distinctRows as unknown as Array<{
-          day: string
-          distinct_count: unknown
-        }>) {
-          distinctMap.set(row.day, Number(row.distinct_count))
-        }
-
-        for (const [day, counts] of dayMap) {
-          // event tx 直後の reviews row 不在は実 DB では起きないが、 防御的に
-          // fallback (distinctMap.get ?? 0) で distinctCardCount=0 にする。
-          const distinct = distinctMap.get(day) ?? 0
-
-          await tx
-            .insert(studyDays)
-            .values({
-              userId: user.id,
-              day,
-              reviewCount: counts.total,
-              correctCount: counts.correct,
-              distinctCardCount: distinct,
-            })
-            .onConflictDoUpdate({
-              target: [studyDays.userId, studyDays.day],
-              set: {
-                reviewCount: sql`${studyDays.reviewCount} + ${counts.total}`,
-                correctCount: sql`${studyDays.correctCount} + ${counts.correct}`,
-                distinctCardCount: distinct,
-              },
-            })
-        }
+        await upsertStudyDays(tx, user.id, dayMap)
       }
     })
   } catch (err) {
