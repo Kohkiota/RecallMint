@@ -409,20 +409,21 @@ export function makeFakeDb(state: ReviewEventsState) {
 
 // ─── G1: study_sessions upsert merge semantics ────────────────────────────
 //
-// Models ON CONFLICT DO UPDATE against state.sessionRows:
-//   - no existing row      → INSERT (store full `values` row)
-//   - existing, userId ==  → apply conflictSet (LWW merge into stored row)
-//   - existing, userId !=  → no-op (tenant isolation = current setWhere behavior)
+// Models ON CONFLICT DO UPDATE (+ W status-regression setWhere) against
+// state.sessionRows:
+//   - no existing row              → INSERT (store full `values` row)
+//   - existing, userId !=          → no-op (tenant isolation)
+//   - existing, userId ==, 後退遷移 → no-op (W status guard・下記)
+//   - existing, userId ==, その他   → apply conflictSet (LWW merge into stored row)
 //
-// The returned object is awaited directly by the route (no `.returning()`
-// today) AND exposes `.returning()` for future callers (W phase). Making it a
-// Promise with an attached `.returning` method keeps both call shapes valid
-// without changing the existing `await db.insert()...onConflictDoUpdate()` path.
+// The returned object is awaited directly by the route AND exposes
+// `.returning()` (W wires applied = returning().length > 0). Making it a
+// Promise with an attached `.returning` method keeps both call shapes valid.
 //
 // sessionUpsertCalls recording is preserved verbatim (existing args-capture
-// assertions in the 42 consumer tests must keep passing). Status-transition
-// GUARD is intentionally NOT modeled here — this fake only does the current
-// tenant check (userId match); the guard predicate lands in W (Task 6).
+// assertions in the consumer tests must keep passing). The status-transition
+// GUARD IS modeled (W / F2 Task 6) via the real `canApplyStatusWrite` import —
+// the fake's predicate is the single TS definition shared with the SQL setWhere.
 
 /** Result of a merge attempt: the resulting row, or null when a no-op. */
 function applySessionUpsertMerge(
