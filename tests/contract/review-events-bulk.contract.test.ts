@@ -40,6 +40,8 @@ const { state } = vi.hoisted(() => ({
     }>,
     sessionUpsertShouldThrow: false,
     sessionUpsertError: null as null | Error,
+    // G1: study_sessions row store (upsert merge semantics). resetState() reinits.
+    sessionRows: new Map<string, Record<string, unknown>>(),
     answerEventInsertValues: null as null | Record<string, unknown>[],
     duplicateEventIds: new Set<string>(),
     cardRows: new Map<string, Record<string, unknown>>(),

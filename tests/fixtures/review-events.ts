@@ -139,6 +139,14 @@ export interface ReviewEventsState {
   sessionUpsertShouldThrow: boolean
   sessionUpsertError: null | Error
 
+  // G1: study_sessions row store — session_id → persisted row.
+  // Lets the upsert fake model ON CONFLICT DO UPDATE merge semantics
+  // (INSERT when absent / apply conflictSet when userId matches / no-op on
+  // userId mismatch) so status-transition + I-1/C-1 goldens can assert the
+  // persisted value, not just captured args. sessionUpsertCalls recording is
+  // unchanged (additive).
+  sessionRows: Map<string, Record<string, unknown>>
+
   // answer_events insert
   answerEventInsertValues: null | Record<string, unknown>[]
   duplicateEventIds: Set<string>
@@ -181,6 +189,7 @@ export function createState(): ReviewEventsState {
     sessionUpsertCalls: [],
     sessionUpsertShouldThrow: false,
     sessionUpsertError: null,
+    sessionRows: new Map(),
     answerEventInsertValues: null,
     duplicateEventIds: new Set(),
     cardRows: new Map(),
@@ -205,6 +214,7 @@ export function resetState(state: ReviewEventsState): void {
   state.sessionUpsertCalls = []
   state.sessionUpsertShouldThrow = false
   state.sessionUpsertError = null
+  state.sessionRows = new Map()
   state.answerEventInsertValues = null
   state.duplicateEventIds = new Set()
   state.cardRows = new Map()
@@ -385,27 +395,89 @@ export function makeFakeTx(
 export function makeFakeDb(state: ReviewEventsState) {
   return {
     insert: (_table: unknown) => ({
-      values: (vals: Record<string, unknown>) => ({
-        onConflictDoUpdate: async (conf: {
-          target: unknown
-          set: Record<string, unknown>
-          setWhere?: unknown
-        }) => {
-          if (state.sessionUpsertShouldThrow) {
-            throw state.sessionUpsertError ?? new Error('boom')
-          }
-          state.sessionUpsertCalls.push({
-            values: vals,
-            conflictSet: conf.set,
-            conflictSetWhere: conf.setWhere,
-          })
-        },
-      }),
+      values: (vals: Record<string, unknown>) =>
+        makeSessionUpsertChain(state, vals),
     }),
 
     transaction: async (cb: (tx: unknown) => Promise<unknown>) => {
       const tx = makeFakeTx(state, state.txShouldThrow)
       return cb(tx)
+    },
+  }
+}
+
+// ─── G1: study_sessions upsert merge semantics ────────────────────────────
+//
+// Models ON CONFLICT DO UPDATE against state.sessionRows:
+//   - no existing row      → INSERT (store full `values` row)
+//   - existing, userId ==  → apply conflictSet (LWW merge into stored row)
+//   - existing, userId !=  → no-op (tenant isolation = current setWhere behavior)
+//
+// The returned object is awaited directly by the route (no `.returning()`
+// today) AND exposes `.returning()` for future callers (W phase). Making it a
+// Promise with an attached `.returning` method keeps both call shapes valid
+// without changing the existing `await db.insert()...onConflictDoUpdate()` path.
+//
+// sessionUpsertCalls recording is preserved verbatim (existing args-capture
+// assertions in the 42 consumer tests must keep passing). Status-transition
+// GUARD is intentionally NOT modeled here — this fake only does the current
+// tenant check (userId match); the guard predicate lands in W (Task 6).
+
+/** Result of a merge attempt: the resulting row, or null when a no-op. */
+function applySessionUpsertMerge(
+  state: ReviewEventsState,
+  vals: Record<string, unknown>,
+  conflictSet: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const sessionId = vals['sessionId'] as string
+  const existing = state.sessionRows.get(sessionId)
+
+  // No existing row → INSERT.
+  if (existing === undefined) {
+    const inserted = { ...vals }
+    state.sessionRows.set(sessionId, inserted)
+    return inserted
+  }
+
+  // Existing row owned by a different user → UPDATE no-op (tenant isolation).
+  if (existing['userId'] !== vals['userId']) {
+    return null
+  }
+
+  // Existing row, same owner → apply conflictSet (LWW). card_ids is insert-only
+  // (I-1): the route omits it from conflictSet, so the stored value is retained.
+  const merged = { ...existing, ...conflictSet }
+  state.sessionRows.set(sessionId, merged)
+  return merged
+}
+
+function makeSessionUpsertChain(
+  state: ReviewEventsState,
+  vals: Record<string, unknown>,
+) {
+  return {
+    onConflictDoUpdate: (conf: {
+      target: unknown
+      set: Record<string, unknown>
+      setWhere?: unknown
+    }) => {
+      if (state.sessionUpsertShouldThrow) {
+        throw state.sessionUpsertError ?? new Error('boom')
+      }
+      state.sessionUpsertCalls.push({
+        values: vals,
+        conflictSet: conf.set,
+        conflictSetWhere: conf.setWhere,
+      })
+      const merged = applySessionUpsertMerge(state, vals, conf.set)
+
+      // Awaitable (current path) + `.returning()` (future W path).
+      const promise = Promise.resolve() as Promise<void> & {
+        returning: () => Promise<Record<string, unknown>[]>
+      }
+      promise.returning = () =>
+        Promise.resolve(merged === null ? [] : [merged])
+      return promise
     },
   }
 }

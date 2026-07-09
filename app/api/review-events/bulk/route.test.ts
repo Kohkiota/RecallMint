@@ -28,6 +28,13 @@ const { state } = vi.hoisted(() => ({
     // error を test 側から差し替え可能にする (default = 既存 unknown error)。
     sessionUpsertError: null as null | Error,
 
+    // G1: study_sessions row store — session_id → persisted row。
+    // upsert fake が ON CONFLICT DO UPDATE の merge (no row → INSERT / userId
+    // 一致 → conflictSet 適用 / userId 不一致 → no-op) を実際に行い、 status 遷移 +
+    // I-1/C-1 golden が保存値を assert できるようにする。 sessionUpsertCalls の
+    // 記録は不変 (additive)。 status 遷移ガードは W (Task6) 帰属で本 fake は入れない。
+    sessionRows: new Map<string, Record<string, unknown>>(),
+
     // answer_events insert — bulk insert に渡された rows と返却する event_ids を記録
     answerEventInsertValues: null as null | Record<string, unknown>[],
     // duplicate と扱う event_ids (returning() が省く)
@@ -226,12 +233,52 @@ function makeFakeTx(throwAfterInsert = false) {
 }
 
 // ---------------------------------------------------------------------------
+// G1: study_sessions upsert merge semantics (route.test inline copy)
+// ---------------------------------------------------------------------------
+// ON CONFLICT DO UPDATE を state.sessionRows に対して模す:
+//   - 既存行なし        → INSERT (values を丸ごと store)
+//   - 既存行あり userId 一致 → conflictSet を適用 (LWW merge)
+//   - 既存行あり userId 不一致 → no-op (tenant 分離 = 現行 setWhere 挙動)
+// 返り値は route が直接 await する (現状 .returning() は呼ばない) と同時に、 将来
+// (W) 用に .returning() も提供する。 sessionUpsertCalls の記録は verbatim 維持。
+// status 遷移ガードは W (Task6) 帰属で本 fake には入れない (現行 tenant 判定のみ)。
+//
+// tests/fixtures/review-events.ts と同型だが **統合はしない** (2 系統維持 = G1 scope)。
+
+/** merge 試行結果: 結果行、 no-op なら null。 */
+function applySessionUpsertMerge(
+  vals: Record<string, unknown>,
+  conflictSet: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const sessionId = vals.sessionId as string
+  const existing = state.sessionRows.get(sessionId)
+
+  // 既存行なし → INSERT。
+  if (existing === undefined) {
+    const inserted = { ...vals }
+    state.sessionRows.set(sessionId, inserted)
+    return inserted
+  }
+
+  // 他 user 所有 → UPDATE no-op (tenant 分離)。
+  if (existing.userId !== vals.userId) {
+    return null
+  }
+
+  // 同 owner → conflictSet 適用 (LWW)。 card_ids は insert-only (I-1): route が
+  // conflictSet から外すため store 済みの値が保持される。
+  const merged = { ...existing, ...conflictSet }
+  state.sessionRows.set(sessionId, merged)
+  return merged
+}
+
+// ---------------------------------------------------------------------------
 // fakeDb — handler level の db mock
 // ---------------------------------------------------------------------------
 const fakeDb = {
   insert: (_table: unknown) => ({
     values: (vals: Record<string, unknown>) => ({
-      onConflictDoUpdate: async (conf: {
+      onConflictDoUpdate: (conf: {
         target: unknown
         set: Record<string, unknown>
         setWhere?: unknown
@@ -244,6 +291,15 @@ const fakeDb = {
           conflictSet: conf.set,
           conflictSetWhere: conf.setWhere,
         })
+        const merged = applySessionUpsertMerge(vals, conf.set)
+
+        // awaitable (現行 path) + .returning() (将来 W path)。
+        const promise = Promise.resolve() as Promise<void> & {
+          returning: () => Promise<Record<string, unknown>[]>
+        }
+        promise.returning = () =>
+          Promise.resolve(merged === null ? [] : [merged])
+        return promise
       },
     }),
   }),
@@ -461,6 +517,7 @@ beforeEach(() => {
   state.sessionUpsertCalls = []
   state.sessionUpsertShouldThrow = false
   state.sessionUpsertError = null
+  state.sessionRows = new Map()
   state.answerEventInsertValues = null
   state.duplicateEventIds = new Set()
   state.cardRows = new Map()
@@ -1129,6 +1186,186 @@ describe('POST /api/review-events/bulk', () => {
     const q = new PgDialect().sqlToQuery(updatedAt as SQL)
     expect(q.sql).toContain('now()')
     expect(q.params).toHaveLength(0) // Date param を bind していないこと
+  })
+
+  // -------------------------------------------------------------------------
+  // F2 Phase G: golden 先張り (G2-G5) — R が触る Phase 0 session upsert 経路の
+  // **W 後も不変な現挙動** を pin する (spec §5)。 G1 (state.sessionRows 強化) が
+  // 前提能力。 期待値は先に probe で観測した現行実挙動 (推測ではない)。
+  //
+  // 注: 後退遷移の「素通り」 (completed→active が現状は上書きされる) は W で挙動
+  // 変更されるため **pin しない** (確定判断 4)。 ここで pin するのは前進遷移 +
+  // 冪等再送 + LWW + I-1/C-1 = W 後も不変な部分のみ。
+  describe('F2 Phase G: session upsert 現挙動 pin (G2-G5)', () => {
+    const T_COMPLETE = '2026-05-25T10:10:00.000Z'
+    const T_COMPLETE_LATER = '2026-05-25T11:30:00.000Z'
+
+    // ── G2: 前進遷移 + 冪等再送 + LWW の現挙動 pin ──────────────────────────
+
+    it('G2: active→completed → 保存 status=completed / completed_at=payload 値', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      // 1) 初回 active insert
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      // 2) active→completed
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row).toBeDefined()
+      expect(row.status).toBe('completed')
+      expect(row.completedAt).toBeInstanceOf(Date)
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    it('G2: active→abandoned → 保存 status=abandoned / completed_at は null のまま', async () => {
+      // client の abandon は completed_at を送らない → route は null で upsert。
+      // abandoned_at 列は追加しない (schema 変更ゼロ・spec §3.1)。
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({ events: [], session: { status: 'abandoned' } }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('abandoned')
+      expect(row.completedAt).toBeNull()
+    })
+
+    it('G2: completed→completed 同一 payload 再送 → 値不変 (冪等)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      // insert as completed, then re-send identical payload
+      const completedSession = { status: 'completed', completed_at: T_COMPLETE }
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: completedSession })),
+      )
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: completedSession })),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    it('G2: completed→completed 異 completed_at 再送 → completed_at LWW 更新 (現行挙動)', async () => {
+      // spec §3.1 completed_at 規則: same-status 再送は現行どおり LWW (payload 値で
+      // 上書き)。 W 後もこの前進/冪等経路は不変 = ここで pin する。
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE_LATER },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      // LWW: 2 回目の completed_at で上書きされる
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE_LATER)
+    })
+
+    // ── G3: I-1 behavioral (card_ids は insert-only・conflict 上書き対象外) ──
+
+    it('G3 (I-1 behavioral): 再送 payload の card_ids 差替え → 保存 card_ids 値不変', async () => {
+      // I-1: card_ids は session 開始時に確定する不変値。 conflict 上書き対象外なので、
+      // 再送で別 card_ids を送っても初回 insert の値が保持される (shape でなく挙動 pin)。
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      const OTHER_CARD = '88888888-8888-4888-a888-888888888888'
+      // 初回 insert (card_ids = [VALID_CARD_ID])
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'active', card_ids: [VALID_CARD_ID] },
+          }),
+        ),
+      )
+      // 再送: card_ids を差替えて status も更新
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: {
+              status: 'completed',
+              card_ids: [OTHER_CARD],
+              completed_at: T_COMPLETE,
+            },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      // card_ids は初回値を保持 (差替え無視)。 status は更新される。
+      expect(row.cardIds).toEqual([VALID_CARD_ID])
+      expect(row.status).toBe('completed')
+    })
+
+    // ── G4: C-1 behavioral (他 user の session_id 衝突 → UPDATE no-op) ──────
+
+    it('G4 (C-1 behavioral): 他 user の既存 session_id に衝突 POST → UPDATE no-op (status 不変)', async () => {
+      // C-1: setWhere = eq(userId) により、 攻撃者が victim の session_id を運悪く
+      // 入手して POST しても UPDATE は no-op、 INSERT も PK 衝突で no-op。 既存行の
+      // owner / status が保持されることを挙動として pin する。
+      const OTHER_USER = {
+        id: '99999999-9999-4999-a999-999999999999',
+      } as unknown as User
+      // 1) 正当 owner (OTHER_USER) が completed で insert
+      vi.mocked(getCurrentUser).mockResolvedValue(OTHER_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      // 2) 別 user (FAKE_USER) が同 session_id に active で衝突 POST
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      // 既存行は owner=OTHER_USER / status=completed のまま (cross-tenant write 防止)
+      expect(row.userId).toBe(OTHER_USER.id)
+      expect(row.status).toBe('completed')
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    // ── G5: permanent-4xx → 400 分岐 pin ───────────────────────────────────
+
+    it('G5: Phase 0 permanent-4xx (ZodError) → 400 invalid_payload、 events 未処理', async () => {
+      // 既存の transient→503 test と対になる分岐。 session upsert が ZodError 相当を
+      // throw → classifyBulkError が permanent-4xx と判定 → 400 (route.ts:140)。
+      const { ZodError } = await import('zod')
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      state.sessionUpsertShouldThrow = true
+      state.sessionUpsertError = new ZodError([])
+
+      const res = await POST(makeReq(makeValidPayload()))
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'invalid_payload' })
+      // permanent-4xx は 503 と違い Retry-After を付けない
+      expect(res.headers.get('Retry-After')).toBeNull()
+      // events は処理されない (session upsert が tx 前に throw)
+      expect(state.answerEventInsertValues).toBeNull()
+    })
   })
 
   // -------------------------------------------------------------------------
