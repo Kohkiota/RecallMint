@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getTableName } from 'drizzle-orm'
-import { tagCategories, tagOptions } from '@/lib/db/schema'
+import { tagCategories, tagOptions, tombstones } from '@/lib/db/schema'
 
 // apply-tag-mutation.ts の unit test (T4 sync-fix-1)。
 //
@@ -61,6 +61,9 @@ interface Captured {
   categoryUpdateSet: Record<string, unknown> | null
   optionInsertValues: Record<string, unknown> | null
   categoryInsertValues: Record<string, unknown> | null
+  // G5: tombstones INSERT の values を到達順に flatten して蓄積 (単一 object も
+  // 配列 (category delete の子 option 一括) も同じ list に push する)。
+  tombstoneInserts: Array<Record<string, unknown>>
 }
 
 function freshStore(): Store {
@@ -115,32 +118,40 @@ function makeTx(store: Store, captured: Captured) {
   })
 
   tx.insert = (table: unknown) => ({
-    values: (vals: Record<string, unknown>) => ({
+    values: (vals: Record<string, unknown> | Array<Record<string, unknown>>) => ({
       onConflictDoNothing: () => {
         const name = getTableName(table as never)
+        if (name === getTableName(tombstones)) {
+          // G5: 単一 object も 配列 (category delete の子 option 一括) も flatten して蓄積。
+          for (const row of Array.isArray(vals) ? vals : [vals]) {
+            captured.tombstoneInserts.push(row)
+          }
+          return Promise.resolve(undefined)
+        }
+        const vObj = vals as Record<string, unknown>
         if (name === getTableName(tagCategories)) {
-          captured.categoryInsertValues = vals
-          if (!store.categories.find((c) => c.id === vals.id)) {
+          captured.categoryInsertValues = vObj
+          if (!store.categories.find((c) => c.id === vObj.id)) {
             store.categories.push({
-              id: vals.id as string,
-              userId: vals.userId as string,
-              name: vals.name as string,
-              selectType: vals.selectType as 'single' | 'multi',
-              color: (vals.color as string | null) ?? null,
-              sortKey: (vals.sortKey as string | null) ?? null,
+              id: vObj.id as string,
+              userId: vObj.userId as string,
+              name: vObj.name as string,
+              selectType: vObj.selectType as 'single' | 'multi',
+              color: (vObj.color as string | null) ?? null,
+              sortKey: (vObj.sortKey as string | null) ?? null,
             })
           }
         }
         if (name === getTableName(tagOptions)) {
-          captured.optionInsertValues = vals
-          if (!store.options.find((o) => o.id === vals.id)) {
+          captured.optionInsertValues = vObj
+          if (!store.options.find((o) => o.id === vObj.id)) {
             store.options.push({
-              id: vals.id as string,
-              userId: vals.userId as string,
-              categoryId: vals.categoryId as string,
-              name: vals.name as string,
-              color: (vals.color as string | null) ?? null,
-              sortKey: (vals.sortKey as string | null) ?? null,
+              id: vObj.id as string,
+              userId: vObj.userId as string,
+              categoryId: vObj.categoryId as string,
+              name: vObj.name as string,
+              color: (vObj.color as string | null) ?? null,
+              sortKey: (vObj.sortKey as string | null) ?? null,
             })
           }
         }
@@ -203,6 +214,7 @@ function freshCaptured(): Captured {
     categoryUpdateSet: null,
     optionInsertValues: null,
     categoryInsertValues: null,
+    tombstoneInserts: [],
   }
 }
 
@@ -481,5 +493,246 @@ describe('applyTagOptionCreate dup pre-check 自己除外 (#9 regression)', () =
       } as unknown as Parameters<typeof applyTagOptionCreate>[3],
     )
     expect(result).toBe('failed')
+  })
+
+  // G3: create-dup の「UNIQUE precheck で INSERT 不発」を現挙動として pin。
+  // 上の「真の dup」test は outcome='failed' のみ観測 → G3 は INSERT 不発を追加観測する
+  // (dup pre-check が INSERT より前に return する現挙動を固定)。
+  it('G3: create-dup (同 category 同名別 id) → failed かつ option INSERT 不発', async () => {
+    store.options.push({
+      id: '33333333-3333-3333-3333-333333333333',
+      userId: 'user-1',
+      categoryId: '11111111-1111-1111-1111-111111111111',
+      name: 'opt-a',
+      color: null,
+      sortKey: null,
+    })
+    captured = freshCaptured()
+
+    const { applyTagOptionCreate } = await import('./apply-tag-mutation')
+    const result = await applyTagOptionCreate(
+      makeTx(store, captured),
+      'user-1',
+      '44444444-4444-4444-4444-444444444444',
+      {
+        category_id: '11111111-1111-1111-1111-111111111111',
+        name: 'opt-a',
+      } as unknown as Parameters<typeof applyTagOptionCreate>[3],
+    )
+    expect(result).toBe('failed')
+    // INSERT は 1 度も発行されない (dup pre-check が return before INSERT)。
+    expect(captured.optionInsertValues).toBeNull()
+    // store に新 id が積まれていない (現状 2 件 = seed の parent-none + dup のみ)。
+    expect(store.options.some((o) => o.id === '44444444-4444-4444-4444-444444444444')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// G4: applyTagOptionUpdate — category_id move-dup (移動先に同名 option) → failed
+// ---------------------------------------------------------------------------
+
+describe('applyTagOptionUpdate move-dup (F3 G4)', () => {
+  let store: Store
+  let captured: Captured
+
+  // category_id field は tagCategoryIdSchema = z.uuid()。 schema 通過後に move-dup
+  // pre-check を踏ませるため、 category id は必ず「RFC-4122 variant/version bit まで
+  // valid な」UUID を使う (Zod v4 の z.uuid() は version/variant nibble を検証するため
+  // aaaa.../1111... 系は safeParse で弾かれ、 schema 段で failed になり pre-check に
+  // 到達しない = characterization が空振りする)。
+  const CAT_SRC = '550e8400-e29b-41d4-a716-446655440000'
+  const CAT_DST = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    store = freshStore()
+    // 2 category: 移動元 (CAT_SRC) / 移動先 (CAT_DST)
+    store.categories.push({
+      id: CAT_SRC,
+      userId: 'user-1',
+      name: 'src',
+      selectType: 'single',
+      color: null,
+      sortKey: null,
+    })
+    store.categories.push({
+      id: CAT_DST,
+      userId: 'user-1',
+      name: 'dst',
+      selectType: 'single',
+      color: null,
+      sortKey: null,
+    })
+    captured = freshCaptured()
+  })
+
+  it('G4: category_id 移動先に同名 option が既存 → failed かつ option UPDATE 不発', async () => {
+    // opt-move (name='shared', CAT_SRC) を CAT_DST へ移動しようとするが、 CAT_DST には
+    // 既に別 id の同名 option opt-taken が存在 → UNIQUE (category_id, name) 事前 SELECT で
+    // dup.some((d) => d.id !== optionId) が真 → 'failed'、 UPDATE 発行なし。
+    //
+    // fake の tagOptions SELECT は store 全 option を返す (categoryId/name の細粒度 filter は
+    // しない設計) ため、 「移動元 option (先頭) + 別 id の他 option 1 件以上」で move-dup 状況を
+    // 表現する。 current[0] が移動対象になるよう opt-move を先頭に積む。
+    store.options.push({
+      id: 'opt-move',
+      userId: 'user-1',
+      categoryId: CAT_SRC,
+      name: 'shared',
+      color: null,
+      sortKey: null,
+    })
+    store.options.push({
+      id: 'opt-taken',
+      userId: 'user-1',
+      categoryId: CAT_DST,
+      name: 'shared',
+      color: null,
+      sortKey: null,
+    })
+
+    const { applyTagOptionUpdate } = await import('./apply-tag-mutation')
+    const result = await applyTagOptionUpdate(
+      makeTx(store, captured),
+      'user-1',
+      'opt-move',
+      { field: 'category_id', value: CAT_DST },
+    )
+    expect(result).toBe('failed')
+    // UPDATE の set 句は捕捉されない (dup pre-check が UPDATE より前に return)。
+    expect(captured.optionUpdateSet).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// G5: delete cascade tombstone 列挙
+// ---------------------------------------------------------------------------
+
+describe('applyTagCategoryDelete tombstone cascade (F3 G5)', () => {
+  let store: Store
+  let captured: Captured
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    store = freshStore()
+    store.categories.push({
+      id: 'cat-del',
+      userId: 'user-1',
+      name: 'to-delete',
+      selectType: 'single',
+      color: null,
+      sortKey: null,
+    })
+    captured = freshCaptured()
+  })
+
+  it('G5: category delete → category 自身 + 配下 option 全件の tombstone を entityType/entityId で列挙', async () => {
+    // 配下 option 3 件。 fake の tagOptions SELECT は store 全 option を返すため、
+    // childOptions = 全 option。 tombstone は category 1 + option 3 = 4 件。
+    store.options.push({
+      id: 'opt-1',
+      userId: 'user-1',
+      categoryId: 'cat-del',
+      name: 'o1',
+      color: null,
+      sortKey: null,
+    })
+    store.options.push({
+      id: 'opt-2',
+      userId: 'user-1',
+      categoryId: 'cat-del',
+      name: 'o2',
+      color: null,
+      sortKey: null,
+    })
+    store.options.push({
+      id: 'opt-3',
+      userId: 'user-1',
+      categoryId: 'cat-del',
+      name: 'o3',
+      color: null,
+      sortKey: null,
+    })
+
+    const { applyTagCategoryDelete } = await import('./apply-tag-mutation')
+    const result = await applyTagCategoryDelete(
+      makeTx(store, captured),
+      'user-1',
+      'cat-del',
+    )
+    expect(result).toBe('applied')
+
+    const emitted = captured.tombstoneInserts.map((t) => ({
+      entityType: t.entityType,
+      entityId: t.entityId,
+    }))
+    // category 自身 tombstone
+    expect(emitted).toContainEqual({ entityType: 'tag_category', entityId: 'cat-del' })
+    // 配下 option 全件 tombstone
+    expect(emitted).toContainEqual({ entityType: 'tag_option', entityId: 'opt-1' })
+    expect(emitted).toContainEqual({ entityType: 'tag_option', entityId: 'opt-2' })
+    expect(emitted).toContainEqual({ entityType: 'tag_option', entityId: 'opt-3' })
+    // 総数 = category 1 + option 3
+    expect(emitted).toHaveLength(4)
+    // 全 tombstone に owner user_id が付く
+    expect(captured.tombstoneInserts.every((t) => t.userId === 'user-1')).toBe(true)
+  })
+
+  it('G5: 配下 option が 0 件 → category 自身 tombstone のみ (option 一括 INSERT はスキップ)', async () => {
+    const { applyTagCategoryDelete } = await import('./apply-tag-mutation')
+    const result = await applyTagCategoryDelete(
+      makeTx(store, captured),
+      'user-1',
+      'cat-del',
+    )
+    expect(result).toBe('applied')
+    expect(captured.tombstoneInserts).toHaveLength(1)
+    expect(captured.tombstoneInserts[0]).toMatchObject({
+      entityType: 'tag_category',
+      entityId: 'cat-del',
+    })
+  })
+})
+
+describe('applyTagOptionDelete tombstone (F3 G5)', () => {
+  let store: Store
+  let captured: Captured
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    store = freshStore()
+    store.categories.push({
+      id: 'cat-1',
+      userId: 'user-1',
+      name: 'cat',
+      selectType: 'single',
+      color: null,
+      sortKey: null,
+    })
+    store.options.push({
+      id: 'opt-del',
+      userId: 'user-1',
+      categoryId: 'cat-1',
+      name: 'o',
+      color: null,
+      sortKey: null,
+    })
+    captured = freshCaptured()
+  })
+
+  it('G5: option delete → 自身 tombstone のみ (entityType=tag_option, entityId=optionId)', async () => {
+    const { applyTagOptionDelete } = await import('./apply-tag-mutation')
+    const result = await applyTagOptionDelete(
+      makeTx(store, captured),
+      'user-1',
+      'opt-del',
+    )
+    expect(result).toBe('applied')
+    expect(captured.tombstoneInserts).toHaveLength(1)
+    expect(captured.tombstoneInserts[0]).toMatchObject({
+      userId: 'user-1',
+      entityType: 'tag_option',
+      entityId: 'opt-del',
+    })
   })
 })

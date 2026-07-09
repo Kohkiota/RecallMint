@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { SQL } from 'drizzle-orm'
+import { SQL, Column } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 
 // apply-card-mutation.ts の純関数 (applyCardCreateWithId / applyCardDelete) の unit test。
@@ -61,6 +61,28 @@ async function eqSignature() {
 }
 
 // ---------------------------------------------------------------------------
+// helper: sql fragment の構造的観測 (F3 G2 — render 文字列 pin 禁止)。
+// set.cardCount / set.updatedAt の sql object を queryChunks から判定する。
+// ---------------------------------------------------------------------------
+
+// Column instance の .name を列挙 (参照 column)。
+function sqlColumnNames(frag: SQL): string[] {
+  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
+  return chunks.filter((c): c is Column => c instanceof Column).map((c) => c.name)
+}
+
+// StringChunk の value を連結 (GREATEST / now() 等キーワードの有無検査用)。
+function sqlStaticText(frag: SQL): string {
+  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
+  return chunks
+    .flatMap((c) => {
+      const v = (c as { value?: unknown }).value
+      return Array.isArray(v) ? (v as string[]) : []
+    })
+    .join('')
+}
+
+// ---------------------------------------------------------------------------
 // applyCardDelete
 // ---------------------------------------------------------------------------
 
@@ -79,6 +101,8 @@ describe('applyCardDelete', () => {
   }
   const captured = {
     tombstoneValues: null as Record<string, unknown> | null,
+    // G2: exams UPDATE の set 句を捕捉 (cardCount / updatedAt fragment の構造観測用)。
+    updateSet: null as Record<string, unknown> | null,
   }
 
   function makeTx() {
@@ -125,14 +149,17 @@ describe('applyCardDelete', () => {
     })
 
     tx.update = (_table: unknown) => ({
-      set: (_vals: unknown) => ({
-        where: () => {
-          for (const e of store.exams) {
-            e.cardCount = Math.max(e.cardCount - 1, 0)
-          }
-          return Promise.resolve(undefined)
-        },
-      }),
+      set: (vals: Record<string, unknown>) => {
+        captured.updateSet = vals
+        return {
+          where: () => {
+            for (const e of store.exams) {
+              e.cardCount = Math.max(e.cardCount - 1, 0)
+            }
+            return Promise.resolve(undefined)
+          },
+        }
+      },
     })
 
     return tx as Parameters<
@@ -147,6 +174,7 @@ describe('applyCardDelete', () => {
     store.tombstones = []
     ctl.tombstoneAlreadyExists = false
     captured.tombstoneValues = null
+    captured.updateSet = null
   })
 
   it('正常削除: tombstone INSERT + card DELETE + cardCount -= 1', async () => {
@@ -235,6 +263,23 @@ describe('applyCardDelete', () => {
     expect(sig).toContainEqual(['exams', 'id', 'exam-1'])
     expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
   })
+
+  // G2: card_count -1 fragment の構造 (delete = GREATEST guard) を現挙動として pin。
+  it('G2: set.cardCount = exams.card_count 参照 + GREATEST 有 (現挙動: -1 は GREATEST guard)', async () => {
+    const { applyCardDelete } = await import('./apply-card-mutation')
+    await applyCardDelete(makeTx(), 'card-1', 'user-1')
+    const cardCount = captured.updateSet!.cardCount as SQL
+    expect(sqlColumnNames(cardCount)).toContain('card_count')
+    expect(sqlStaticText(cardCount)).toContain('GREATEST')
+  })
+
+  it('G2: set.updatedAt = exams.updated_at 自己参照 (now() 不在)', async () => {
+    const { applyCardDelete } = await import('./apply-card-mutation')
+    await applyCardDelete(makeTx(), 'card-1', 'user-1')
+    const updatedAt = captured.updateSet!.updatedAt as SQL
+    expect(sqlColumnNames(updatedAt)).toEqual(['updated_at'])
+    expect(sqlStaticText(updatedAt).toLowerCase()).not.toContain('now(')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -250,6 +295,8 @@ describe('applyCardCreateWithId', () => {
     insertedValues: null as Record<string, unknown> | null,
     // ON CONFLICT: null = 実 insert, 'conflict' = skip (no returning row)
     insertConflict: false,
+    // G2: exams UPDATE の set 句を捕捉 (cardCount / updatedAt fragment の構造観測用)。
+    updateSet: null as Record<string, unknown> | null,
   }
 
   function makeTx() {
@@ -284,12 +331,15 @@ describe('applyCardCreateWithId', () => {
     })
 
     tx.update = () => ({
-      set: () => ({
-        where: () => {
-          for (const e of store.exams) e.cardCount += 1
-          return Promise.resolve(undefined)
-        },
-      }),
+      set: (vals: Record<string, unknown>) => {
+        ctl.updateSet = vals
+        return {
+          where: () => {
+            for (const e of store.exams) e.cardCount += 1
+            return Promise.resolve(undefined)
+          },
+        }
+      },
     })
 
     return tx as Parameters<
@@ -317,6 +367,7 @@ describe('applyCardCreateWithId', () => {
     store.cards = []
     ctl.insertedValues = null
     ctl.insertConflict = false
+    ctl.updateSet = null
   })
 
   it('正常: { examNotFound: false, created: true } を返す', async () => {
@@ -414,6 +465,25 @@ describe('applyCardCreateWithId', () => {
       ([table, col, val]) => table === 'exams' && col === 'id' && val === 'exam-1',
     )
     expect(examsIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
+  })
+
+  // G2: card_count +1 fragment の構造 (create = 素加算・GREATEST 不在) を現挙動として pin。
+  it('G2: set.cardCount = exams.card_count 参照 + 素加算 (GREATEST 不在・現挙動)', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const cardCount = ctl.updateSet!.cardCount as SQL
+    expect(sqlColumnNames(cardCount)).toContain('card_count')
+    expect(sqlStaticText(cardCount)).not.toContain('GREATEST')
+    // +1 は StringChunk (" + 1") に畳まれ、 raw number chunk / param は無い (現挙動)。
+    expect(sqlStaticText(cardCount)).toContain('+ 1')
+  })
+
+  it('G2: set.updatedAt = exams.updated_at 自己参照 (now() 不在)', async () => {
+    const { applyCardCreateWithId } = await import('./apply-card-mutation')
+    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
+    const updatedAt = ctl.updateSet!.updatedAt as SQL
+    expect(sqlColumnNames(updatedAt)).toEqual(['updated_at'])
+    expect(sqlStaticText(updatedAt).toLowerCase()).not.toContain('now(')
   })
 })
 
