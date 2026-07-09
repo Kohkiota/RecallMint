@@ -73,6 +73,70 @@ const SESSION_DOMAIN_NO_INFRA_IMPORTS = {
 }
 
 // ---------------------------------------------------------------------------
+// Card domain purity (F3 R7): `lib/cards/domain/**` is pure domain and must not
+// RUNTIME-import infra / framework / orchestration modules (mirrors the Session
+// block above). `import type` is always allowed (allowTypeImports) — this is the
+// crux for two legitimate existing imports: `card-rules.ts` does
+// `import type { CardOption } from '@/lib/db/schema'` and `card-tag-constraint.ts`
+// does `import type { SelectType } from '@/lib/tags/domain/tag-values'`; both stay
+// legal, but a RUNTIME import from those targets is denied. Forbidden runtime
+// targets = infra (db / drizzle / logger / server-only) + zod + framework (next /
+// next/*) + cross-domain (@/lib/tags/domain, runtime only) + orchestration
+// back-flow (apply-card-mutation / card-field-handlers).
+// ---------------------------------------------------------------------------
+const CARD_DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Card domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Card domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/logger', allowTypeImports: true, message: 'Card domain must not runtime-import infra (@/lib/logger).' },
+    { name: 'server-only', allowTypeImports: true, message: 'Card domain must stay environment-agnostic (no server-only).' },
+    { name: 'zod', allowTypeImports: true, message: 'Card domain must not runtime-import zod; define structural types in-domain.' },
+    { name: '@/lib/tags/domain', allowTypeImports: true, message: 'Card domain must not runtime-import the tags domain; cross-domain coupling is type-only (import type).' },
+    { name: '@/lib/cards/apply-card-mutation', allowTypeImports: true, message: 'Card domain must not runtime-import orchestration (apply-card-mutation).' },
+    { name: '@/lib/cards/card-field-handlers', allowTypeImports: true, message: 'Card domain must not runtime-import orchestration (card-field-handlers).' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Card domain must not runtime-import framework (next / next/*).',
+    },
+    {
+      group: ['@/lib/tags/domain/*'],
+      allowTypeImports: true,
+      message: 'Card domain must not runtime-import the tags domain; cross-domain coupling is type-only (import type).',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
+// Tag domain purity (F3 R7): `lib/tags/domain/**` is pure domain and must not
+// RUNTIME-import infra / framework / orchestration modules (mirrors the Card block
+// above). `import type` is always allowed (allowTypeImports). tag-values.ts
+// currently has no imports, so the orchestration back-flow deny
+// (@/lib/tags/apply-tag-mutation) is symmetric future-proofing. Forbidden runtime
+// targets = infra (db / drizzle / logger / server-only) + zod + framework (next /
+// next/*) + orchestration back-flow (apply-tag-mutation).
+// ---------------------------------------------------------------------------
+const TAG_DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Tag domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Tag domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/logger', allowTypeImports: true, message: 'Tag domain must not runtime-import infra (@/lib/logger).' },
+    { name: 'server-only', allowTypeImports: true, message: 'Tag domain must stay environment-agnostic (no server-only).' },
+    { name: 'zod', allowTypeImports: true, message: 'Tag domain must not runtime-import zod; define structural types in-domain.' },
+    { name: '@/lib/tags/apply-tag-mutation', allowTypeImports: true, message: 'Tag domain must not runtime-import orchestration (apply-tag-mutation).' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Tag domain must not runtime-import framework (next / next/*).',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
 // Shared no-restricted-imports pattern groups (composed per files-scope below).
 // NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
 // IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
@@ -186,6 +250,55 @@ const config = [
         {
           paths: SESSION_DOMAIN_NO_INFRA_IMPORTS.paths,
           patterns: [LIB_NO_APP_IMPORTS, ...SESSION_DOMAIN_NO_INFRA_IMPORTS.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A''': Card domain purity guard (F3 R7). Same structure/rationale as
+  // Block A'' above but scoped to `lib/cards/domain/**` — must come AFTER Block A
+  // so it wins for those files. Flat-config rule options REPLACE (not merge) per
+  // file, so this re-includes Block A's LIB_NO_APP_IMPORTS pattern to keep the
+  // app/-layer boundary, then layers the Card domain infra/framework/cross-domain/
+  // orchestration deny (paths + next/* + @/lib/tags/domain/* patterns) on top.
+  // Scope excludes *.test.ts (domain tests import vitest and pull VOs via
+  // `@/lib/cards/domain/*` — not the runtime-purity concern). The
+  // `lib/cards/domain/**` glob has no route group / dynamic segment → no
+  // `\\(...\\)` / `\\[...\\]` escaping needed.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/cards/domain/**/*.ts'],
+    ignores: ['lib/cards/domain/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: CARD_DOMAIN_NO_INFRA_IMPORTS.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...CARD_DOMAIN_NO_INFRA_IMPORTS.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A'''': Tag domain purity guard (F3 R7). Same structure/rationale as
+  // Block A''' above but scoped to `lib/tags/domain/**` — must come AFTER Block A
+  // so it wins for those files. Flat-config rule options REPLACE (not merge) per
+  // file, so this re-includes Block A's LIB_NO_APP_IMPORTS pattern to keep the
+  // app/-layer boundary, then layers the Tag domain infra/framework/orchestration
+  // deny (paths + next/* pattern) on top. Scope excludes *.test.ts (domain tests
+  // import vitest and pull VOs via `@/lib/tags/domain/*` — not the runtime-purity
+  // concern). The `lib/tags/domain/**` glob has no route group / dynamic segment →
+  // no `\\(...\\)` / `\\[...\\]` escaping needed.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/tags/domain/**/*.ts'],
+    ignores: ['lib/tags/domain/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: TAG_DOMAIN_NO_INFRA_IMPORTS.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...TAG_DOMAIN_NO_INFRA_IMPORTS.patterns],
         },
       ],
     },
