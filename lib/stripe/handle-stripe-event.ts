@@ -4,9 +4,17 @@ import { eq } from 'drizzle-orm'
 import { stripe } from '@/lib/stripe/client'
 import { getDb } from '@/lib/db'
 import { users } from '@/lib/db/schema'
-import type { Plan } from '@/lib/auth/plan-limits'
-import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
-import { derivePlanFromStripe, normalizeSubStatus } from '@/lib/stripe/domain/subscription-values'
+import {
+  applyDeleted,
+  evaluateRelease,
+  clearReservation as aggregateClearReservation,
+} from '@/lib/stripe/domain/subscription-aggregate'
+import { extractPriceId } from '@/lib/stripe/domain/subscription-values'
+import {
+  applyDeletedReset,
+  clearReservation,
+} from '@/lib/stripe/subscription-repository'
+import { projectStripeSubscription } from '@/lib/stripe/project-subscription'
 import { notifyOps } from '@/lib/ops'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
@@ -25,64 +33,6 @@ export function extractCustomerId(event: Stripe.Event): string | undefined {
     return typeof id === 'string' ? id : undefined
   }
   return undefined
-}
-
-// status × price_id から (plan, billingInterval) を決定する一段高い resolver。
-// 純粋 core (derivePlanFromStripe, VO) に委譲し、 anomaly を見て notifyOps を発火する
-// thin async wrapper。 純粋 core が「active 系なら price_id → plan+interval、
-// それ以外は free+NULL」の分岐と price 解決を担い、 本 wrapper は副作用
-// (不明 / 欠落 price_id の観測性 notifyOps) のみ担う。
-//
-// 不明 price_id (env 設定漏れ / Stripe Dashboard 不一致) は notifyOps + free
-// fallback。 throw しない (Stripe 再送ループを起こさず、 OT 観測性のみ確保)。
-//
-// notifyOps payload 差 (現行維持): missing_price は priceId を含めない、
-// unknown_price は priceId を含む。
-async function resolvePlanFromSub(
-  status: Stripe.Subscription.Status,
-  priceId: string | null,
-  ctx: { eventId: string; customerId: string },
-): Promise<{ plan: Plan; billingInterval: 'month' | 'year' | null }> {
-  const { plan, billingInterval, anomaly } = derivePlanFromStripe(
-    status,
-    priceId,
-    resolveFromPriceId,
-  )
-  if (anomaly === 'missing_price') {
-    await notifyOps('stripe sub missing price_id', {
-      ...ctx,
-      status,
-      environment: runtimeEnv(),
-      timestamp: new Date().toISOString(),
-    })
-  } else if (anomaly === 'unknown_price') {
-    await notifyOps('stripe sub unknown price_id', {
-      ...ctx,
-      status,
-      priceId,
-      environment: runtimeEnv(),
-      timestamp: new Date().toISOString(),
-    })
-  }
-  return { plan, billingInterval }
-}
-
-// subscription object から price_id / current_period_end / cancel_at を取り出す
-// 共通 helper。 API 2025-03-31.basil 以降は items.data[].current_period_end に
-// 移動している点に注意。
-function extractSubFields(sub: Stripe.Subscription): {
-  priceId: string | null
-  periodEnd: Date | null
-  cancelAt: Date | null
-} {
-  const item = sub.items.data[0]
-  const priceId = item?.price?.id ?? null
-  const itemPeriodEnd = item?.current_period_end
-  const periodEnd =
-    typeof itemPeriodEnd === 'number' ? new Date(itemPeriodEnd * 1000) : null
-  const cancelAt =
-    typeof sub.cancel_at === 'number' ? new Date(sub.cancel_at * 1000) : null
-  return { priceId, periodEnd, cancelAt }
 }
 
 export async function handleEvent(event: Stripe.Event): Promise<void> {
@@ -116,31 +66,16 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
         // customer.subscription.created/.updated webhook で recover される
         // (両 path とも独立 idempotent、 race defense の degraded mode)。
         const sub = await stripe.subscriptions.retrieve(subId)
-        const { priceId, periodEnd, cancelAt } = extractSubFields(sub)
-        const { plan, billingInterval } = await resolvePlanFromSub(sub.status, priceId, {
-          eventId: event.id,
-          customerId,
-        })
-        // RETURNING で UPDATE matched 行数を判定する。 user.created webhook が
-        // checkout.session.completed より遅延した race では Step 1 link で
-        // 0 行 match → Step 2 でも 0 行 match。 この場合 Clerk publicMetadata
-        // を fire させない (= user.created 後着で plan='free' で clobber され、
-        // 結果的に "Clerk=standard / DB=free" の整合崩壊を防ぐ)。
-        const updated = await db
-          .update(users)
-          .set({
-            plan,
-            billingInterval,
-            subscriptionStatus: normalizeSubStatus(sub.status),
-            currentPeriodEnd: periodEnd,
-            cancelAt,
-            stripeSubscriptionId: sub.id,
-          })
-          .where(eq(users.clerkId, clerkId))
-          .returning({ clerkId: users.clerkId })
-        if (updated?.[0]?.clerkId) {
-          await syncClerkPublicMetadata({ clerkId, plan })
-        }
+        // Step 2 の射影 (priceId 抽出 → derivation → anomaly 通知 → plan 6 列書込 →
+        // RETURNING gate 付き Clerk sync) を use-case に集約。 retrieve は caller に
+        // 残し、 取得した sub を use-case に渡す。 0 行 match (user.created 後着 race)
+        // では use-case 内で Clerk sync を fire させない (clobber 整合崩壊防止)。
+        await projectStripeSubscription(
+          db,
+          { by: 'clerkId', value: clerkId },
+          sub,
+          { eventId: event.id, customerId },
+        )
       }
       return
     }
@@ -148,54 +83,26 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
     case 'customer.subscription.updated': {
       const sub = event.data.object as Stripe.Subscription
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-      const { priceId, periodEnd, cancelAt } = extractSubFields(sub)
-      const { plan, billingInterval } = await resolvePlanFromSub(sub.status, priceId, {
-        eventId: event.id,
-        customerId,
-      })
-      // RETURNING で clerkId を取得し、 続けて Clerk publicMetadata sync。
-      // UPDATE が 0 行 match (= checkout.session.completed が先着していない race)
-      // のときは returning 空 → metadata sync skip。
-      // plan-sync の SET は予約 3 列を触らないため、 returning で既存の予約値
-      // (scheduledDowngradeScheduleId / scheduledTargetPriceId) をそのまま取り出せる。
-      // これを §6.4 release gate の照合材料に使う。
-      const updated = await db
-        .update(users)
-        .set({
-          plan,
-          billingInterval,
-          subscriptionStatus: normalizeSubStatus(sub.status),
-          currentPeriodEnd: periodEnd,
-          cancelAt,
-          stripeSubscriptionId: sub.id,
-        })
-        .where(eq(users.stripeCustomerId, customerId))
-        .returning({
-          clerkId: users.clerkId,
-          scheduledDowngradeScheduleId: users.scheduledDowngradeScheduleId,
-          scheduledTargetPriceId: users.scheduledTargetPriceId,
-        })
-      // clerkId 非 null を「UPDATE が行に match したか」の proxy にすると、 GDPR
-      // scrub 済み行 (行は match するが clerkId=null) への自己誘発 webhook を
-      // 「行なし = 整合崩壊」と誤判定してしまう。 行 match の有無 (row) と
-      // clerkId の有無 (metadata sync 要否) を分離する。
-      const row = updated?.[0]
-      if (row) {
-        if (row.clerkId) {
-          await syncClerkPublicMetadata({ clerkId: row.clerkId, plan })
-        }
-        // §6.4 release gate: 行 match していれば clerkId 無関係に評価する
-        // (clerkId は Clerk metadata sync の要否のみを左右し、 gate 自体は
-        // DB 予約列の照合であって clerkId に依存しないため)。 .updated でのみ、
-        // かつ予約が存在するときだけ評価する。 priceId は extractSubFields の
-        // 現 item price (#5 の比較材料)。
+      // 射影 use-case: derivation + anomaly 通知 + plan 6 列書込 + RETURNING gate 付き
+      // Clerk sync を集約。 result で 0 行分岐 (unlinked notify) と §6.4 release gate を分岐。
+      const result = await projectStripeSubscription(
+        db,
+        { by: 'stripeCustomerId', value: customerId },
+        sub,
+        { eventId: event.id, customerId },
+      )
+      // A-4: 行 match の有無 (result.matched) と clerkId の有無 (Clerk sync 要否) を分離。
+      // scrub 行 (matched・clerkId null) は use-case 内で sync skip 済み。 gate は
+      // 行 match していれば clerkId 無関係に評価する (DB 予約列照合であって clerkId 非依存)。
+      if (result.matched) {
         if (event.type === 'customer.subscription.updated') {
+          const priceId = extractPriceId(sub)
           await evaluateReleaseGate({
             sub,
             customerId,
             priceId,
-            dbScheduleId: row.scheduledDowngradeScheduleId ?? null,
-            dbTargetPriceId: row.scheduledTargetPriceId ?? null,
+            dbScheduleId: result.scheduledDowngradeScheduleId ?? null,
+            dbTargetPriceId: result.scheduledTargetPriceId ?? null,
             eventId: event.id,
           })
         }
@@ -217,31 +124,21 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-      // subscription 削除時: plan/status/billingInterval をリセット、cancelAt を
-      // クリア。 currentPeriodEnd は billing 履歴の記録として残す (touch しない)。
+      // subscription 削除時: plan/status/billingInterval をリセット、cancelAt +
+      // 予約 3 列を clear。 currentPeriodEnd は billing 履歴の記録として残す
+      // (applyDeleted の DeletedReset に含めないことで touch しない)。
       // cancelAtPeriodEnd は schema 廃止済み (cancel_at != null で解約予約判定)。
-      const updated = await db
-        .update(users)
-        .set({
-          plan: 'free',
-          billingInterval: null,
-          subscriptionStatus: 'canceled',
-          cancelAt: null,
-          stripeSubscriptionId: null,
-          // subscription 消滅時は宙ぶらりんなダウングレード予約も無効なので clear。
-          scheduledDowngradeScheduleId: null,
-          scheduledTargetPriceId: null,
-          scheduledChangeEffectiveAt: null,
-        })
-        .where(eq(users.stripeCustomerId, customerId))
-        .returning({ clerkId: users.clerkId })
+      const result = await applyDeletedReset(
+        db,
+        { by: 'stripeCustomerId', value: customerId },
+        applyDeleted(),
+      )
       // clerkId 非 null を「UPDATE が行に match したか」の proxy にすると、 退会
       // (GDPR scrub: clerkId=NULL・stripeCustomerId は保持) が自己誘発する
       // 後着 .deleted webhook を「行なし = 整合崩壊」と誤判定してしまう
       // (根本原因、 docs/audit/2026-07-08-deletion-self-induced-webhook-alarm.md)。
-      // 行 match の有無 (row) と clerkId の有無 (metadata sync 要否) を分離する。
-      const row = updated?.[0]
-      if (!row) {
+      // 行 match の有無 (matched) と clerkId の有無 (metadata sync 要否) を分離する。
+      if (!result.matched) {
         // 行なし = subscription を解約された user の row が本当に消えている
         // など整合崩壊 = OT 介入対象。 .created と違い recover の経路がない。
         await notifyOps('stripe sub event for unlinked customer', {
@@ -251,8 +148,8 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
           environment: runtimeEnv(),
           timestamp: new Date().toISOString(),
         })
-      } else if (row.clerkId) {
-        await syncClerkPublicMetadata({ clerkId: row.clerkId, plan: 'free' })
+      } else if (result.clerkId) {
+        await syncClerkPublicMetadata({ clerkId: result.clerkId, plan: 'free' })
       }
       // row があり clerkId が null (scrub 済み) は削除済み user への自己誘発
       // webhook として無害 skip: metadata sync も notifyOps も行わない。
@@ -274,16 +171,14 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
     case 'subscription_schedule.released': {
       // §6.4 / §6.4.1: schedule の release を最終正として 3 列を冪等 clear。
       // .updated gate の clear 失敗や、 能動 release 後の取りこぼしを回収する
-      // recovery path。 0 行 match (既に clear 済) は正常な no-op。
+      // recovery path。 0 行 match (既に clear 済) は正常な no-op。 WHERE は
+      // scheduledDowngradeScheduleId = schedule.id (SubKey='scheduleId')。
       const schedule = event.data.object as Stripe.SubscriptionSchedule
-      await db
-        .update(users)
-        .set({
-          scheduledDowngradeScheduleId: null,
-          scheduledTargetPriceId: null,
-          scheduledChangeEffectiveAt: null,
-        })
-        .where(eq(users.scheduledDowngradeScheduleId, schedule.id))
+      await clearReservation(
+        db,
+        { by: 'scheduleId', value: schedule.id },
+        aggregateClearReservation(),
+      )
       return
     }
     default:
@@ -306,64 +201,53 @@ async function evaluateReleaseGate(args: {
   eventId: string
 }): Promise<void> {
   const { sub, customerId, priceId, dbScheduleId, dbTargetPriceId, eventId } = args
-  // 予約なし → gate 全 skip。
+  // 予約なし → gate 全 skip (この早期 return は保存する)。
   if (!dbScheduleId) return
 
   // #1: sub.schedule は string id / 展開 object / null で来うる。
   const subScheduleId =
     typeof sub.schedule === 'string' ? sub.schedule : (sub.schedule?.id ?? null)
 
-  // 方向2 (保険): sub.schedule == null かつ DB に予約残存 = Stripe が別経路で
-  // schedule を release した状態。 例: Portal cancel が即時 release を引き起こす
-  // (stg 観測)、 endpoint が `subscription_schedule.released` を購読していない、
-  // 別デバイス race で .released が取りこぼされる、 等。 .updated は確実に配信
-  // されるため、 ここで DB 3 列を冪等 clear する (方向1 = .released handler の
-  // 補完、 最後の砦)。 正常系の auto-release 後 .updated はこの handler に到達
-  // する前に冒頭の `if (!dbScheduleId) return` で早期 return するため非干渉、 .released
-  // 後着とのレースも両者 null SET で冪等。
-  if (subScheduleId == null) {
-    await getDb()
-      .update(users)
-      .set({
-        scheduledDowngradeScheduleId: null,
-        scheduledTargetPriceId: null,
-        scheduledChangeEffectiveAt: null,
+  // 判定は aggregate.evaluateRelease (pure) に集約、 副作用 (clear / notify / 委譲)
+  // のみ本 helper が担う。 分岐順序・挙動は従来 verbatim:
+  //   clear_direct = 方向2 保険 (sub.schedule==null + DB 予約残存 → 3 列冪等 clear)
+  //   mismatch     = 別 non-null id (OT 介入 anomaly、 委譲も clear もしない)
+  //   skip         = #5 未反映 (item price != target、 予約維持)
+  //   delegate     = #1 && #5 充足 → releaseCompletedDowngrade 委譲
+  switch (evaluateRelease({ subScheduleId, dbScheduleId, priceId, dbTargetPriceId })) {
+    case 'clear_direct':
+      await clearReservation(
+        getDb(),
+        { by: 'stripeCustomerId', value: customerId },
+        aggregateClearReservation(),
+      )
+      return
+    case 'mismatch':
+      await notifyOps('stripe release gate schedule mismatch', {
+        eventId,
+        customerId,
+        subScheduleId,
+        dbScheduleId,
+        environment: runtimeEnv(),
+        timestamp: new Date().toISOString(),
       })
-      .where(eq(users.stripeCustomerId, customerId))
-    return
-  }
-
-  // 別 non-null id は照合不一致 = OT 介入対象の anomaly。 委譲も clear もしない。
-  if (subScheduleId !== dbScheduleId) {
-    await notifyOps('stripe release gate schedule mismatch', {
-      eventId,
-      customerId,
-      subScheduleId,
-      dbScheduleId,
-      environment: runtimeEnv(),
-      timestamp: new Date().toISOString(),
-    })
-    return
-  }
-
-  // #5: 現 item price が target price に切り替わっているか。 未反映なら phase0 の
-  // ままで切替未発効 → 委譲しない (予約維持)。
-  if (priceId !== dbTargetPriceId) return
-
-  // #1 && #5 充足。 releaseCompletedDowngrade に委譲 (status gate は同関数が判定)。
-  // throw は外側 try に伝播させ notifyWebhookError + 200 で処理する (§6.4.1)。
-  const result = await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
-
-  // released / already_terminal は予約役目を終えたので 3 列 clear。
-  // skipped (not_started 等) は予約を維持する。
-  if (result === 'released' || result === 'already_terminal') {
-    await getDb()
-      .update(users)
-      .set({
-        scheduledDowngradeScheduleId: null,
-        scheduledTargetPriceId: null,
-        scheduledChangeEffectiveAt: null,
-      })
-      .where(eq(users.stripeCustomerId, customerId))
+      return
+    case 'skip':
+      return
+    case 'delegate': {
+      // releaseCompletedDowngrade に委譲 (status gate は同関数が判定)。 throw は
+      // 外側 try に伝播させ notifyWebhookError + 200 で処理する (§6.4.1)。
+      const result = await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
+      // released / already_terminal は予約役目を終えたので 3 列 clear。
+      // skipped (not_started 等) は予約を維持する。
+      if (result === 'released' || result === 'already_terminal') {
+        await clearReservation(
+          getDb(),
+          { by: 'stripeCustomerId', value: customerId },
+          aggregateClearReservation(),
+        )
+      }
+      return
+    }
   }
 }

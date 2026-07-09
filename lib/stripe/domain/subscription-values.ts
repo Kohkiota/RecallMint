@@ -76,6 +76,13 @@ export function derivePlanFromStripe(
   return { plan: mapping.plan, billingInterval: mapping.interval, anomaly: null }
 }
 
+// subscription object から price_id を取り出す共通 helper。 period/cancel の抽出は
+// projectStripeSnapshot (aggregate) に一本化したため、 本 helper は use-case
+// (plan derivation) と .updated の release gate caller が使う priceId のみを返す。
+export function extractPriceId(sub: Stripe.Subscription): string | null {
+  return sub.items.data[0]?.price?.id ?? null
+}
+
 // scheduled downgrade (予約) の値。 後続 task で使用。
 export type ScheduledChange = {
   scheduleId: string
