@@ -66,6 +66,7 @@ import {
 } from '@/lib/sync/review-events'
 import { classifyFlushResults } from '@/lib/sync/review-flush'
 import { pullBack } from '@/lib/sync/pull-back'
+import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 
 // S-cache-1: pending answer_events がこの件数に達した時点で bulk flush。
 // §14.7.1 「pending 5 件以上 / セッション終了 / ネット復活 / アプリ起動・復帰」 の
@@ -203,7 +204,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
   const handleAnswer = () => {
     if (!current) return
     const options: CardOption[] = Array.isArray(current.options) ? current.options : []
-    const correctIds = options.filter((o) => o.is_correct).map((o) => o.id)
+    const correctIds = deriveCorrectAnswerIds(options)
     const correct = equalSet(selectedIds, correctIds)
     setCurrentCorrect(correct)
     setError(null)

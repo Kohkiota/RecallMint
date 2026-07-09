@@ -8,37 +8,10 @@
 // 入力のみに依存し副作用を持たない。 commit 機構 (debounce drain / refs / commit-on-
 // unmount / ghost-merge) は presentation 側に残し、 本モジュールはそれらが呼ぶ変換だけを担う。
 
-import type { CardOption } from '@/lib/db/schema'
 import type { EmptyCard } from './empty-card'
 
 // ---------------------------------------------------------------------------
-// 1. nullable text 列の空文字→null 正規化 (from inline-text-field)
-// ---------------------------------------------------------------------------
-
-// server (lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS[field] handler、
-// sort_key / explanation_text / memo は handler 内で `r.data === '' ? null : r.data`
-// 正規化) が空文字を null に揃える nullable text 列。 mirror も同じ正規化をかけ、
-// 楽観値を server 確定値に一致させる (一致させないと次の pull-back で '' → null へ
-// 見た目が反転する)。 server zod は trim しないのでここも strict な === '' で揃える。
-export const NULLABLE_TEXT_FIELDS: ReadonlySet<string> = new Set([
-  'sort_key',
-  'explanation_text',
-  'memo',
-])
-
-/**
- * nullable text 列は空文字を null に正規化する (それ以外の列 / 非空値は素通し)。
- * mirror 楽観値と server 確定値を一致させるためのドメイン規則。
- */
-export function normalizeNullableTextField(
-  field: string,
-  value: string,
-): string | null {
-  return NULLABLE_TEXT_FIELDS.has(field) && value === '' ? null : value
-}
-
-// ---------------------------------------------------------------------------
-// 2. 新規カード create patch 構築 (from inline-card-list buildMutation)
+// 新規カード create patch 構築 (from inline-card-list buildMutation)
 // ---------------------------------------------------------------------------
 
 // outbox create patch の options 形 (camelCase)。 server bulk endpoint の optionsSchema
@@ -88,16 +61,4 @@ export function buildNewCardMutationPatch({
     explanation_text: null,
     memo: null,
   }
-}
-
-// ---------------------------------------------------------------------------
-// 3. correct_answer_ids の derive (from use-card-options)
-// ---------------------------------------------------------------------------
-
-/**
- * options の is_correct フラグから correct_answer_ids を導出する (順序保存)。
- * mirror の楽観表示・commit patch・正解サマリ表示で共有する派生規則。
- */
-export function deriveCorrectAnswerIds(options: CardOption[]): string[] {
-  return options.filter((o) => o.is_correct).map((o) => o.id)
 }

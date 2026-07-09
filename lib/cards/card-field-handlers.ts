@@ -25,6 +25,10 @@ import {
   type CardOption,
 } from '@/lib/db/schema'
 import { optionSchema } from '@/lib/validation/card'
+import {
+  deriveCorrectAnswerIds,
+  normalizeNullableTextField,
+} from '@/lib/cards/domain/card-rules'
 import type { DbExecutor } from './apply-card-mutation'
 
 // ---------------------------------------------------------------------------
@@ -137,7 +141,7 @@ const handleSortKey: CardFieldHandler = async (tx, cardId, userId, value) => {
   const r = sortKeySchema.safeParse(value)
   if (!r.success) return 'failed'
   // '' → null 正規化 (UI からの「クリア」操作と整合、 旧 buildSetClause 同等)
-  const normalized = r.data === '' ? null : r.data
+  const normalized = normalizeNullableTextField('sort_key', r.data)
   return updateCardField(tx, cardId, userId, { sortKey: normalized })
 }
 
@@ -150,14 +154,14 @@ const handleQuestionText: CardFieldHandler = async (tx, cardId, userId, value) =
 const handleExplanationText: CardFieldHandler = async (tx, cardId, userId, value) => {
   const r = explanationTextSchema.safeParse(value)
   if (!r.success) return 'failed'
-  const normalized = r.data === '' ? null : r.data
+  const normalized = normalizeNullableTextField('explanation_text', r.data)
   return updateCardField(tx, cardId, userId, { explanationText: normalized })
 }
 
 const handleMemo: CardFieldHandler = async (tx, cardId, userId, value) => {
   const r = memoSchema.safeParse(value)
   if (!r.success) return 'failed'
-  const normalized = r.data === '' ? null : r.data
+  const normalized = normalizeNullableTextField('memo', r.data)
   return updateCardField(tx, cardId, userId, { memo: normalized })
 }
 
@@ -174,9 +178,7 @@ const handleOptions: CardFieldHandler = async (tx, cardId, userId, value) => {
   }))
   // correct_answer_ids は client 入力を信用せず is_correct から server 再生成
   // (tech-spec §2.5.2 デノーマ、 client 改竄に対しても堅牢)。
-  const correctAnswerIds = options
-    .filter((o) => o.is_correct)
-    .map((o) => o.id)
+  const correctAnswerIds = deriveCorrectAnswerIds(options)
   return updateCardField(tx, cardId, userId, { options, correctAnswerIds })
 }
 

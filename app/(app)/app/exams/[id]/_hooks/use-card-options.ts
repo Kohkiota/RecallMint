@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CardOption } from '@/lib/db/schema'
 import { nextOptionId } from '@/lib/cards/next-option-id'
-import { deriveCorrectAnswerIds } from '@/lib/cards/card-write'
+import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'

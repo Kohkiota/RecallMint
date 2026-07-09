@@ -18,6 +18,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { cards, exams, tombstones, type CardOption } from '@/lib/db/schema'
 import type { DB } from '@/lib/db'
+import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 
 // ---------------------------------------------------------------------------
 // DbExecutor 型: db (PostgresJsDatabase) と tx (PgTransaction) の共通 interface。
@@ -80,7 +81,7 @@ export async function applyCardCreateWithId(
 
   // 2. correct_answer_ids を client patch から独立して再生成
   //    (client が is_correct を改竄しても server 側で正規化される)
-  const correctAnswerIds = options.filter((o) => o.is_correct).map((o) => o.id)
+  const correctAnswerIds = deriveCorrectAnswerIds(options)
 
   // 3. cards INSERT: id = client 生成 cardId
   //    ON CONFLICT (id) DO NOTHING — 同 cardId の再送は静かにスキップ
