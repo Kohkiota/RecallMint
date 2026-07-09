@@ -36,6 +36,7 @@ import {
   deriveCorrectAnswerIds,
   normalizeNullableTextField,
 } from '@/lib/cards/domain/card-rules'
+import { hasSingleCategoryOverflow } from '@/lib/cards/domain/card-tag-constraint'
 import type { DbExecutor } from './apply-card-mutation'
 
 // ---------------------------------------------------------------------------
@@ -214,18 +215,9 @@ const handleTagOptionIds: CardFieldHandler = async (tx, cardId, userId, value) =
     // orphan category (FK cascade 上は起きないはずだが fail closed で弾く)
     if (categories.length !== categoryIds.length) return 'failed'
 
-    const countByCategory = new Map<string, number>()
-    for (const v of valid) {
-      countByCategory.set(
-        v.categoryId,
-        (countByCategory.get(v.categoryId) ?? 0) + 1,
-      )
-    }
-    const hasSingleViolation = categories.some(
-      (c) =>
-        c.selectType === 'single' && (countByCategory.get(c.id) ?? 0) >= 2,
-    )
-    if (hasSingleViolation) return 'failed'
+    // single 制約判定は pure domain 述語に委譲 (F3-R6 配線)。single カテゴリに
+    // 2 個以上の option が含まれれば reject (client のみだった制約を server enforce)。
+    if (hasSingleCategoryOverflow(valid, categories)) return 'failed'
   }
 
   // 5. whole-set replace: 既存の紐付けを全部消す。 owner-scope 重複付与で他 user 行への
