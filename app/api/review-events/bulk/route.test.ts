@@ -11,6 +11,7 @@ import { getTableName, SQL } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import type { User } from '@/lib/db/schema'
+import { canApplyStatusWrite } from '@/lib/reviews/domain/session-values'
 
 // ---------------------------------------------------------------------------
 // hoisted state (test 間で reset)
@@ -265,8 +266,20 @@ function applySessionUpsertMerge(
     return null
   }
 
-  // 同 owner → conflictSet 適用 (LWW)。 card_ids は insert-only (I-1): route が
-  // conflictSet から外すため store 済みの値が保持される。
+  // W (F2 Task6) status 遷移ガード: 既存行が terminal で送信が別値 (後退遷移) なら
+  // no-op。fake の述語定義を domain と単一化 (spec §3.4 (i)) — setWhere の遷移述語と
+  // 1:1。true (前進/冪等) のときだけ merge、false (clamp) は null 返し。
+  if (
+    !canApplyStatusWrite(
+      existing.status as 'active' | 'completed' | 'abandoned',
+      vals.status as 'active' | 'completed' | 'abandoned',
+    )
+  ) {
+    return null
+  }
+
+  // 同 owner・ガード通過 → conflictSet 適用 (LWW)。 card_ids は insert-only (I-1):
+  // route が conflictSet から外すため store 済みの値が保持される。
   const merged = { ...existing, ...conflictSet }
   state.sessionRows.set(sessionId, merged)
   return merged
@@ -314,6 +327,7 @@ const fakeDb = {
 // helpers
 // ---------------------------------------------------------------------------
 import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { logger } from '@/lib/logger'
 import { POST } from './route'
 
 // zod v4 z.uuid() は version=1..8 + variant=8/9/a/b の RFC 4122 format を強制するため、
@@ -1365,6 +1379,216 @@ describe('POST /api/review-events/bulk', () => {
       expect(res.headers.get('Retry-After')).toBeNull()
       // events は処理されない (session upsert が tx 前に throw)
       expect(state.answerEventInsertValues).toBeNull()
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // F2 Phase W: ②status 遷移ガード (唯一の挙動変更・test-first)
+  // -------------------------------------------------------------------------
+  // terminal (completed/abandoned) 済み行への後退遷移を server で拒否する。
+  // 前進 (active→any) / 冪等再送 (same-status) は通す。clamp は events 処理を
+  // ブロックせず wire も不変 (200 {ok, failed})。
+  describe('F2 Phase W: session status 後退遷移ガード', () => {
+    const T_COMPLETE = '2026-05-25T10:10:00.000Z'
+    const T_LATER = '2026-05-25T11:30:00.000Z'
+
+    // (1) completed 済み行へ active payload 再送 → 保存 status/completed_at 維持。
+    it('W-1: completed 済みへ active 再送 → 拒否 (status=completed / completed_at 維持)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      // 1) completed で insert
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      // 2) active payload 再送 (後退) — completed_at も別値を送って巻き戻し攻撃を模す
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'active', completed_at: T_LATER },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      // set 節不発 = completed_at も巻き戻らず初回値のまま
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    // (2) completed → abandoned 拒否。
+    it('W-2: completed → abandoned 拒否 (status=completed のまま)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({ events: [], session: { status: 'abandoned' } }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    // (3) abandoned → active 拒否。
+    it('W-3: abandoned → active 拒否 (status=abandoned のまま)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({ events: [], session: { status: 'abandoned' } }),
+        ),
+      )
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('abandoned')
+    })
+
+    // (3b) abandoned → completed 拒否 (拒否 4 行を route-level 網羅)。
+    it('W-3b: abandoned → completed 拒否 (status=abandoned のまま)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({ events: [], session: { status: 'abandoned' } }),
+        ),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('abandoned')
+      // set 節不発 = completed_at は null のまま (巻き戻し防止)
+      expect(row.completedAt).toBeNull()
+    })
+
+    // (4) active → completed 通る (前進・G2 と同値の非退行)。
+    it('W-4: active → completed 通る (前進)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      expect((row.completedAt as Date).toISOString()).toBe(T_COMPLETE)
+    })
+
+    // (5) completed → completed 再送 通る (冪等)。
+    it('W-5: completed → completed 再送 通る (冪等・completed_at LWW)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_LATER },
+          }),
+        ),
+      )
+      const row = state.sessionRows.get(VALID_SESSION_ID)!
+      expect(row.status).toBe('completed')
+      // same-status 再送はガード通過 → completed_at は LWW 更新
+      expect((row.completedAt as Date).toISOString()).toBe(T_LATER)
+    })
+
+    // (6) clamp 時 events は通常処理される (failed に入らず INSERT が起きる)。
+    it('W-6: clamp 時も events は通常処理 (failed 空・answer_events + reviews INSERT)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      addCardRow(VALID_CARD_ID)
+      // 1) completed で insert (events なし)
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      // 2) active payload (後退 → clamp) + events
+      const res = await POST(
+        makeReq(
+          makeValidPayload({
+            session: { status: 'active' },
+            events: [
+              {
+                event_id: VALID_EVENT_ID,
+                card_id: VALID_CARD_ID,
+                selected_answer_ids: ['a'],
+                is_correct: true,
+                answered_at: '2026-05-25T10:20:00.000Z',
+              },
+            ],
+          }),
+        ),
+      )
+      // clamp は events 処理をブロックしない
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { ok: boolean; failed: string[] }
+      expect(body.ok).toBe(true)
+      expect(body.failed).toEqual([])
+      // events は通常処理 (代表 assert): answer_events INSERT + reviews INSERT
+      expect(state.answerEventInsertValues).toHaveLength(1)
+      expect(state.reviewsInsertValues).not.toBeNull()
+      // clamp なので session status は completed のまま
+      expect(state.sessionRows.get(VALID_SESSION_ID)!.status).toBe('completed')
+    })
+
+    // (7) clamp 時 logger.warn 1 回・event 名 review_events.session_upsert_blocked。
+    it('W-7: clamp 時 logger.warn 1 回 (event=review_events.session_upsert_blocked)', async () => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+      // 1) completed で insert
+      await POST(
+        makeReq(
+          makeValidPayload({
+            events: [],
+            session: { status: 'completed', completed_at: T_COMPLETE },
+          }),
+        ),
+      )
+      vi.mocked(logger.warn).mockClear()
+      // 2) active 後退 → clamp → warn
+      await POST(
+        makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+      )
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'review_events.session_upsert_blocked',
+          sessionId: VALID_SESSION_ID,
+          userId: FAKE_USER.id,
+          status: 'active',
+        }),
+      )
     })
   })
 

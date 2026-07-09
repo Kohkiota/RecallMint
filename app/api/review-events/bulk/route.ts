@@ -86,8 +86,9 @@ export async function POST(req: Request): Promise<Response> {
   // PK = session_id。 同 session_id への再送は status / completed_at を
   // 最新値で上書き (updated_at は $onUpdate で自動)。
   // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
+  let applied: boolean
   try {
-    await upsertSessionGuarded(db, user, session)
+    ;({ applied } = await upsertSessionGuarded(db, user, session))
   } catch (err) {
     logger.error({
       event: 'review_events.bulk.session_upsert_failed',
@@ -112,6 +113,20 @@ export async function POST(req: Request): Promise<Response> {
         headers: { 'Retry-After': String(BULK_TRANSIENT_RETRY_SEC) },
       },
     )
+  }
+
+  // F2 W (②status 遷移ガード): guarded upsert が適用されなかった事実の記録。
+  // applied=false = ON CONFLICT DO UPDATE の setWhere 述語不発 (terminal 済み行への
+  // 後退遷移 clamp、 または tenant 不一致)。両経路を区別せず束ねる (区別に追加 SELECT
+  // が要り単文性を壊すため・spec §6.2)。error ではないので catch には入らず、
+  // events 処理は通常どおり継続し wire も不変 (200 {ok, failed}) = 正当な遅延 flush 非弾き。
+  if (!applied) {
+    logger.warn({
+      event: 'review_events.session_upsert_blocked',
+      sessionId: session.session_id,
+      userId: user.id,
+      status: session.status,
+    })
   }
 
   // -- Phase 1+2: events を単一 tx で処理 --

@@ -391,11 +391,13 @@ describe('upsertStudyDays', () => {
 })
 
 // ---------------------------------------------------------------------------
-// upsertSessionGuarded (参照事実 D の R 形)
+// upsertSessionGuarded (W 形 — F2 Task6 ②status 遷移ガード)
 // ---------------------------------------------------------------------------
 
 describe('upsertSessionGuarded', () => {
-  function makeDb() {
+  // returnRows = .returning() の返却 (実書込行数を模す)。 1 行 = applied true、
+  // [] = 述語不発 (clamp) or tenant 不一致 = applied false。
+  function makeDb(returnRows: Array<{ sessionId: string }> = [{ sessionId: 'x' }]) {
     const captured: {
       values?: Record<string, unknown>
       conflictSet?: Record<string, unknown>
@@ -415,7 +417,9 @@ describe('upsertSessionGuarded', () => {
               captured.conflictTarget = conf.target
               captured.conflictSet = conf.set
               captured.setWhere = conf.setWhere
-              return Promise.resolve()
+              return {
+                returning: (_cols: unknown) => Promise.resolve(returnRows),
+              }
             },
           }
         },
@@ -434,10 +438,11 @@ describe('upsertSessionGuarded', () => {
     status: 'completed' as const,
   }
 
-  it('R form: conflictSet = {completedAt, status} only, target = sessionId, applied:true', async () => {
-    const { db, captured } = makeDb()
+  it('W form: conflictSet = {completedAt, status} only, target = sessionId, applied = (rows > 0)', async () => {
+    const { db, captured } = makeDb([{ sessionId: session.session_id }])
     const result = await upsertSessionGuarded(db, FAKE_USER, session)
 
+    // 実書込 1 行 → applied:true
     expect(result).toEqual({ applied: true })
     // conflict target on session_id PK
     expect((captured.conflictTarget as { name: string }).name).toBe('session_id')
@@ -456,14 +461,22 @@ describe('upsertSessionGuarded', () => {
     })
   })
 
-  it('setWhere = eq(studySessions.userId, user.id) (tenant guard only, no transition predicate)', async () => {
+  it('applied:false when .returning() yields 0 rows (setWhere 述語不発 = clamp / tenant no-op)', async () => {
+    const { db } = makeDb([]) // 0 rows written
+    const result = await upsertSessionGuarded(db, FAKE_USER, session)
+    expect(result).toEqual({ applied: false })
+  })
+
+  it('setWhere = tenant eq AND status 遷移述語 (userId + status=active OR status=excluded)', async () => {
     const { db } = makeDb()
     await upsertSessionGuarded(db, FAKE_USER, session)
-    // exactly one eq call in the R form: the setWhere tenant guard
     const eqCalls = eqSignature()
+    // tenant guard (C-1)
     expect(eqCalls).toContainEqual(['study_sessions', 'user_id', USER_ID])
-    // R form has no status transition predicate — only the tenant eq
-    expect(eqCalls.length).toBe(1)
+    // W 遷移述語の左枝 (既存 status='active' の許可)
+    expect(eqCalls).toContainEqual(['study_sessions', 'status', 'active'])
+    // W 形は tenant eq + status='active' eq の 2 本 (右枝 excluded は raw sql)
+    expect(eqCalls.length).toBe(2)
   })
 
   it('null completed_at when session omits completed_at', async () => {

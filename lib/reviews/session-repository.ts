@@ -11,7 +11,7 @@ import 'server-only'
 //   VALUES UPDATE / distinct SELECT / count-mismatch throw を一字一句保つ)。
 // - 挙動不変 (R phase)。既存 route.test + contract + G1-G5 が回帰の正。
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import type { DB } from '@/lib/db'
 import {
@@ -260,11 +260,12 @@ export async function upsertStudyDays(
 }
 
 // ---------------------------------------------------------------------------
-// upsertSessionGuarded — study_sessions upsert (参照事実 D の R 形)。
-// R 実装 = 現 route.ts:93-125 の SQL verbatim (conflictSet = {completedAt, status}
-// のみ・setWhere = eq(userId)・.returning() なし) + applied: true 固定返却。
-// この task では additive (processSession は使わない・route は Task 4 まで使わない)。
-// W (Task 6) が setWhere 遷移述語 / .returning() / applied 実計算に差し替える。
+// upsertSessionGuarded — study_sessions upsert (W 形 — F2 Task6 ②status 遷移ガード)。
+// setWhere = tenant eq (C-1) AND status 遷移述語 (既存='active' OR 既存=送信) で、
+// terminal 済み行への後退遷移を DB 側で拒否する。.returning() の実書込行数から
+// applied を実計算 (1 行=true / 0 行=clamp or tenant no-op=false)。conflictSet は
+// {completedAt, status} のみ (card_ids insert-only / I-1)。canApplyStatusWrite
+// (session-values.ts) の TS 規則と 1:1 (下記 setWhere コメント参照)。
 // ---------------------------------------------------------------------------
 
 export interface SessionUpsertInput {
@@ -282,7 +283,7 @@ export async function upsertSessionGuarded(
   user: User,
   session: SessionUpsertInput,
 ): Promise<{ applied: boolean }> {
-  await db
+  const rows = await db
     .insert(studySessions)
     .values({
       sessionId: session.session_id,
@@ -298,12 +299,21 @@ export async function upsertSessionGuarded(
     })
     .onConflictDoUpdate({
       target: studySessions.sessionId,
-      // C-1 (S-cache-1 review): tenant 分離。 同 session_id が既に存在し、 かつ
-      // 所有 user が認証 user と一致するときだけ UPDATE を許可する。 攻撃者 B が
-      // victim A の session_id (uuidv4) を運悪く入手して POST しても、 setWhere
-      // が match しないため UPDATE は no-op、 INSERT も既存行と PK 衝突で no-op
-      // (= cross-tenant write 完全防止)。 (CLAUDE.md Clerk 5)
-      setWhere: eq(studySessions.userId, user.id),
+      // C-1 (S-cache-1 review) tenant 分離 + W (F2 Task6) status 遷移ガードの AND。
+      // 意味 = userId 一致 AND (既存行.status='active' OR 既存行.status=送信.status)。
+      // setWhere では **テーブル修飾列 (studySessions.status) = 既存行**、
+      // **excluded.status = 送信値**。よって terminal (completed/abandoned) 済み行への
+      // 後退遷移は述語 false = set 節全体が不発 (status も completed_at も書かれず、
+      // completed_at 巻き戻し (null 上書き) も同時に防止)。前進 (既存=active) と
+      // 冪等再送 (既存=送信) のみ通す。canApplyStatusWrite (session-values.ts) の
+      // TS 規則と 1:1。tenant 不一致でも述語 false = cross-tenant write 防止を維持。
+      setWhere: and(
+        eq(studySessions.userId, user.id),
+        or(
+          eq(studySessions.status, 'active'),
+          sql`${studySessions.status} = excluded.status`,
+        ),
+      ),
       // I-1 (S-cache-1 review): card_ids は session 開始時に確定する不変値。
       // conflict 上書き対象から外し (initial insert のみ書く)、 status と
       // completed_at だけ最新値で更新する。 「同 session_id への再送で card_ids
@@ -315,7 +325,10 @@ export async function upsertSessionGuarded(
         status: session.status,
       },
     })
+    .returning({ sessionId: studySessions.sessionId })
 
-  // R 形は返り値未消費 (route は Phase 0 で awaited)。W で applied 実計算に差替。
-  return { applied: true }
+  // applied 実計算: fresh insert (conflict なし) or 述語 true (前進/冪等更新) は
+  // 1 行 → true。述語 false (後退 clamp) or tenant 不一致 は 0 行 → false。
+  // applied=false は throw しない正常戻り (route の DB error catch とは独立)。
+  return { applied: rows.length > 0 }
 }

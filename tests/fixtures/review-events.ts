@@ -21,6 +21,7 @@
 
 import { getTableName } from 'drizzle-orm'
 import type { User } from '@/lib/db/schema'
+import { canApplyStatusWrite } from '@/lib/reviews/domain/session-values'
 import { FIXED_USER_ID } from './common'
 
 // ─── VALUES decoder (ported from app/api/review-events/bulk/route.test.ts) ──
@@ -444,8 +445,22 @@ function applySessionUpsertMerge(
     return null
   }
 
-  // Existing row, same owner → apply conflictSet (LWW). card_ids is insert-only
-  // (I-1): the route omits it from conflictSet, so the stored value is retained.
+  // W (F2 Task6) status 遷移ガード: 既存行が terminal で送信が別値 (後退遷移) なら
+  // no-op。fake の述語定義を domain と単一化 (spec §3.4 (i)) — setWhere の遷移述語と
+  // 1:1。true (前進/冪等) のときだけ merge、false (clamp) は null 返し → returning() []
+  // → applied=false。tenant no-op と同型。
+  if (
+    !canApplyStatusWrite(
+      existing['status'] as 'active' | 'completed' | 'abandoned',
+      vals['status'] as 'active' | 'completed' | 'abandoned',
+    )
+  ) {
+    return null
+  }
+
+  // Existing row, same owner, guard passes → apply conflictSet (LWW). card_ids is
+  // insert-only (I-1): the route omits it from conflictSet, so the stored value
+  // is retained.
   const merged = { ...existing, ...conflictSet }
   state.sessionRows.set(sessionId, merged)
   return merged

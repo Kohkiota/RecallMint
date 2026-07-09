@@ -584,4 +584,35 @@ describe('POST /api/review-events/bulk — wire contract', () => {
     // Events never processed (session upsert failed before tx)
     expect(state.answerEventInsertValues).toBeNull()
   })
+
+  // ── §7 Branch: status regression clamp keeps the wire unchanged (F2 W) ─────
+
+  it('status regression clamp: completed→active blocked upsert still returns 200 { ok: true, failed: [] } (wire unchanged)', async () => {
+    // A blocked status write (terminal→earlier) is a normal applied:false, NOT
+    // an error — the wire (200 { ok, failed }) must be identical to a successful
+    // upsert. No new status code (409 etc). logger/DB-state asserts live in
+    // route.test; here we freeze the wire only.
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    // 1) seed a completed session (fresh insert)
+    await POST(
+      makeReq(
+        makeValidPayload({
+          events: [],
+          session: { status: 'completed', completed_at: '2026-05-25T10:10:00.000Z' },
+        }),
+      ),
+    )
+
+    // 2) re-send an active payload → regression → clamp (applied:false)
+    const res = await POST(
+      makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
+    )
+
+    // Wire unchanged: 200 + { ok: true, failed: [] }, no Retry-After
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Retry-After')).toBeNull()
+    const body = await res.json()
+    expect(body).toEqual({ ok: true, failed: [] })
+  })
 })
