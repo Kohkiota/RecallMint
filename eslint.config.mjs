@@ -4,6 +4,46 @@ import nextCoreWebVitals from 'eslint-config-next/core-web-vitals'
 import nextTypescript from 'eslint-config-next/typescript'
 
 // ---------------------------------------------------------------------------
+// Block A pattern: lib/ and components/ must not import from the app/ layer.
+// Extracted to a shared const so the Subscription domain block below can
+// re-include it (flat-config rule options REPLACE per file — see Block C note).
+// ---------------------------------------------------------------------------
+const LIB_NO_APP_IMPORTS = {
+  group: ['@/app/*', '@/app/**', '../app/**', '../**/app/**'],
+  message:
+    'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (No per-file allowlists remain — Block A is clean as of P4 W5.)',
+}
+
+// ---------------------------------------------------------------------------
+// Subscription domain purity: `lib/stripe/domain/**` is pure domain and must not
+// RUNTIME-import infra / orchestration modules. `import type` is always allowed
+// (allowTypeImports) and intra-domain runtime imports (`./subscription-values`)
+// are NOT listed, so they pass. Forbidden runtime targets = infra (db / drizzle /
+// ops / next / price-mapping / server-only) + orchestration (handle-stripe-event /
+// subscription / subscription-repository / project-subscription).
+// ---------------------------------------------------------------------------
+const DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Subscription domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Subscription domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/ops', allowTypeImports: true, message: 'Subscription domain must not runtime-import infra (@/lib/ops).' },
+    { name: '@/lib/stripe/price-mapping', allowTypeImports: true, message: 'Subscription domain must not runtime-import infra (price-mapping); inject price resolution instead.' },
+    { name: 'server-only', allowTypeImports: true, message: 'Subscription domain must stay environment-agnostic (no server-only).' },
+    { name: '@/lib/stripe/handle-stripe-event', allowTypeImports: true, message: 'Subscription domain must not runtime-import orchestration (handle-stripe-event).' },
+    { name: '@/lib/stripe/subscription', allowTypeImports: true, message: 'Subscription domain must not runtime-import orchestration (subscription).' },
+    { name: '@/lib/stripe/subscription-repository', allowTypeImports: true, message: 'Subscription domain must not runtime-import orchestration (subscription-repository).' },
+    { name: '@/lib/stripe/project-subscription', allowTypeImports: true, message: 'Subscription domain must not runtime-import orchestration (project-subscription).' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Subscription domain must not runtime-import framework (next / next/*).',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
 // Shared no-restricted-imports pattern groups (composed per files-scope below).
 // NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
 // IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
@@ -71,16 +111,28 @@ const config = [
   {
     files: ['lib/**/*', 'components/**/*'],
     rules: {
+      'no-restricted-imports': ['error', { patterns: [LIB_NO_APP_IMPORTS] }],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A': Subscription domain purity guard (must come AFTER Block A so it wins
+  // for `lib/stripe/domain/**` files). Flat-config rule options REPLACE (not merge)
+  // per file — same caveat as Block C — so this block re-includes Block A's
+  // LIB_NO_APP_IMPORTS pattern to preserve the app/-layer boundary, then adds the
+  // domain infra/orchestration deny (paths + next/* pattern) on top.
+  // Scope excludes *.test.ts: domain tests legitimately import vitest and pull VOs
+  // via `@/lib/stripe/domain/*`, which are not the runtime-purity concern here.
+  // The `lib/stripe/domain/**` glob has no route group / dynamic segment → no escaping.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/stripe/domain/**/*.ts'],
+    ignores: ['lib/stripe/domain/**/*.test.ts'],
+    rules: {
       'no-restricted-imports': [
         'error',
         {
-          patterns: [
-            {
-              group: ['@/app/*', '@/app/**', '../app/**', '../**/app/**'],
-              message:
-                'lib/ and components/ must not import from the app/ layer. Move shared logic to lib/ instead. (No per-file allowlists remain — Block A is clean as of P4 W5.)',
-            },
-          ],
+          paths: DOMAIN_NO_INFRA_IMPORTS.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...DOMAIN_NO_INFRA_IMPORTS.patterns],
         },
       ],
     },
