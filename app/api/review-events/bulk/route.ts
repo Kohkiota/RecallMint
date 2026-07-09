@@ -28,20 +28,17 @@
 // 認可: middleware は /app(.*) のみ protect。 /api は素通しのため、 ここで Clerk
 // session 不在は 401 を返す。
 
-import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
-import {
-  studySessions,
-  type User,
-} from '@/lib/db/schema'
+import { type User } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import {
   classifyBulkError,
   BULK_TRANSIENT_RETRY_SEC,
 } from '@/lib/retry/classify-bulk-error'
 import { payloadSchema, processSession, type BulkPayload } from '@/lib/reviews/ingest-review-events'
+import { upsertSessionGuarded } from '@/lib/reviews/session-repository'
 
 export const runtime = 'nodejs'
 
@@ -90,39 +87,7 @@ export async function POST(req: Request): Promise<Response> {
   // 最新値で上書き (updated_at は $onUpdate で自動)。
   // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
   try {
-    await db
-      .insert(studySessions)
-      .values({
-        sessionId: session.session_id,
-        userId: user.id,
-        examId: session.exam_id ?? null,
-        mode: session.mode,
-        cardIds: session.card_ids,
-        startedAt: new Date(session.started_at),
-        completedAt: session.completed_at
-          ? new Date(session.completed_at)
-          : null,
-        status: session.status,
-      })
-      .onConflictDoUpdate({
-        target: studySessions.sessionId,
-        // C-1 (S-cache-1 review): tenant 分離。 同 session_id が既に存在し、 かつ
-        // 所有 user が認証 user と一致するときだけ UPDATE を許可する。 攻撃者 B が
-        // victim A の session_id (uuidv4) を運悪く入手して POST しても、 setWhere
-        // が match しないため UPDATE は no-op、 INSERT も既存行と PK 衝突で no-op
-        // (= cross-tenant write 完全防止)。 (CLAUDE.md Clerk 5)
-        setWhere: eq(studySessions.userId, user.id),
-        // I-1 (S-cache-1 review): card_ids は session 開始時に確定する不変値。
-        // conflict 上書き対象から外し (initial insert のみ書く)、 status と
-        // completed_at だけ最新値で更新する。 「同 session_id への再送で card_ids
-        // が空配列に倒れる」 client side race を構造的に防ぐ (§14.8 整合)。
-        set: {
-          completedAt: session.completed_at
-            ? new Date(session.completed_at)
-            : null,
-          status: session.status,
-        },
-      })
+    await upsertSessionGuarded(db, user, session)
   } catch (err) {
     logger.error({
       event: 'review_events.bulk.session_upsert_failed',
