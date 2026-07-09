@@ -133,6 +133,10 @@ beforeEach(() => {
   mockGetCurrentUser.mockResolvedValue(baseUser)
   mockCheckoutCreate.mockResolvedValue({ url: 'https://checkout.stripe.com/test/abc' })
   // changePlan/cancelDowngrade のデフォルト happy-path 値。各 test で上書きする。
+  // downgrade test は scheduleDowngrade に渡る sub を { id: 'sub_1' } で verbatim
+  // assert するため、resolve の戻り sub は最小 shape を維持する (customer は付けない)。
+  // upgrade 枝の customerId は sub.customer (undefined) を anomaly notify 専用に読むが、
+  // healthy path では未使用なので undefined でも問題ない。
   mockResolveActiveSubscription.mockResolvedValue({
     sub: { id: 'sub_1' },
     itemId: 'si_1',
@@ -142,7 +146,11 @@ beforeEach(() => {
     scheduleId: null,
     cancelScheduled: false,
   })
-  mockApplyUpgrade.mockResolvedValue({ id: 'sub_1' })
+  // W (W-A2): upgrade 枝が applyUpgrade の戻り値を real projectStripeSubscription で
+  // 即時射影する。default は pro/year 昇格後の valid subscription を返す。
+  mockApplyUpgrade.mockResolvedValue(
+    upgradedSub({ priceId: process.env.STRIPE_PRICE_PRO_YEARLY! }),
+  )
   // scheduleDowngrade は phases[0].end_date (unix 秒) を含む SubscriptionSchedule を返す。
   // 1893456000 = 2030-01-01T00:00:00Z (arbitrary future timestamp for test assertions)
   mockScheduleDowngrade.mockResolvedValue({
@@ -180,6 +188,45 @@ function fd(plan: string, interval: string): FormData {
   f.set('plan', plan)
   f.set('interval', interval)
   return f
+}
+
+// applyUpgrade が返す Stripe.Subscription の最小 shape を組む helper。
+// projectStripeSubscription (real) が読む field のみ:
+//   - status → subscriptionStatus 正規化
+//   - items.data[0].price.id → plan/billingInterval 導出 (resolveFromPriceId)
+//   - items.data[0].current_period_end → currentPeriodEnd (Unix 秒 → Date)
+//   - cancel_at → cancelAt (Unix 秒 → Date)
+//   - id → stripeSubscriptionId
+//   - customer → anomaly notify payload (healthy path では未使用)
+// 1893456000 = 2030-01-01T00:00:00Z (arbitrary future timestamp)。
+// I-14 pin 用に pendingUpdate を渡すと pending_update を持つ「支払保留」sub を作る。
+function upgradedSub(opts: {
+  priceId: string
+  status?: string
+  currentPeriodEnd?: number
+  cancelAt?: number | null
+  pendingUpdate?: boolean
+}) {
+  return {
+    id: 'sub_1',
+    customer: 'cus_1',
+    status: opts.status ?? 'active',
+    cancel_at: opts.cancelAt ?? null,
+    // pending_update: 支払保留時 Stripe は旧 price を items に維持し pending_update に
+    // 目標変更を退避する。projectStripeSubscription は items の (旧) price を読むため、
+    // pendingUpdate=true でも本 helper は「items に旧 price を積んだ sub」を呼出側が
+    // 渡すことで I-14 (旧 plan 射影) を表現する。ここでは pending_update flag のみ付す。
+    pending_update: opts.pendingUpdate ? { expires_at: 1893456000 } : null,
+    items: {
+      data: [
+        {
+          id: 'si_1',
+          price: { id: opts.priceId },
+          current_period_end: opts.currentPeriodEnd ?? 1893456000,
+        },
+      ],
+    },
+  }
 }
 
 describe('createCheckoutSession: 4 種類 (plan × interval) を Stripe Checkout に渡す', () => {
@@ -302,6 +349,9 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     mockGetCurrentUser.mockResolvedValue(paidUser)
   })
 
+  // W (W-A2 挙動変更): applyUpgrade は valid Stripe.Subscription を返し (beforeEach
+  // default = upgradedSub)、後段で eager projection が走るようになった。本 test は
+  // applyUpgrade の引数 + redirect の不変性のみを pin (射影値は専用 test で assert)。
   it('upgrade 経路: applyUpgrade(subId,itemId,targetPrice,key) + /app?billing=upgrade redirect', async () => {
     // 現プラン pro/month (rank 3) → pro/year (rank 4) = upgrade
     await expect(
@@ -396,13 +446,186 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
-  // §5.3 回帰: upgrade 経路では DB write しない (3 列 set は downgrade 専用)。
-  it('upgrade 経路: DB 3 列は set しない', async () => {
+  // W (W-A2 挙動変更): upgrade 経路は plan 6 列を eager project する (saveProjection)。
+  // 一方で予約 3 列 (scheduledDowngradeScheduleId / scheduledTargetPriceId /
+  // scheduledChangeEffectiveAt) は触らない (saveProjection の update に含めない)。
+  // 旧挙動 (upgrade は DB write ゼロ) からの意図的更新。
+  it('upgrade 経路: plan 6 列を eager project、予約 3 列は触らない', async () => {
     await expect(
       changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_up' })),
     ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
 
-    expect(mockDbSet).not.toHaveBeenCalled()
+    // plan 6 列で set される (射影発火)。
+    expect(mockDbSet).toHaveBeenCalledTimes(1)
+    // mockDbSet は vi.fn(() => ...) で引数型が空 tuple 推論のため、set 引数を
+    // Record として取り出す (projection update = 動的 object)。
+    const setArg = (mockDbSet.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0]
+    // 予約 3 列は projection update に一切含まれない (I-9: 予約は saveReservation 専用)。
+    expect(setArg).not.toHaveProperty('scheduledDowngradeScheduleId')
+    expect(setArg).not.toHaveProperty('scheduledTargetPriceId')
+    expect(setArg).not.toHaveProperty('scheduledChangeEffectiveAt')
+    // plan 6 列 key を持つ。
+    expect(Object.keys(setArg).sort()).toEqual(
+      [
+        'billingInterval',
+        'cancelAt',
+        'currentPeriodEnd',
+        'plan',
+        'stripeSubscriptionId',
+        'subscriptionStatus',
+      ].sort(),
+    )
+  })
+
+  // ── W (W-A2) 新規 test 5 本: eager projection の実挙動 pin ──────────────
+  // real projectStripeSubscription を通す (db/ops/clerk は既存 mock)。射影値・
+  // 実失敗・冪等を非真空 assert する。
+
+  // #1: upgrade 成功 → applyUpgrade 戻り sub どおりの plan 6 列を DB へ set。
+  // matched 行の clerkId は null にして Clerk sync を skip させる (scrub 行流儀)。
+  it('upgrade 成功: applyUpgrade 戻り sub どおりの plan 6 列を eager project (値 assert)', async () => {
+    // pro/year 昇格 (rank 4)。period_end / cancel_at を具体値で pin。
+    mockApplyUpgrade.mockResolvedValueOnce(
+      upgradedSub({
+        priceId: process.env.STRIPE_PRICE_PRO_YEARLY!,
+        status: 'active',
+        currentPeriodEnd: 1900000000,
+        cancelAt: null,
+      }),
+    )
+    // matched=true / clerkId=null (Clerk sync skip)。
+    mockDbReturning.mockResolvedValueOnce([
+      {
+        clerkId: null,
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+      },
+    ])
+
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_proj' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+
+    expect(mockDbSet).toHaveBeenCalledWith({
+      plan: 'pro',
+      billingInterval: 'year',
+      subscriptionStatus: 'active',
+      currentPeriodEnd: new Date(1900000000 * 1000),
+      cancelAt: null,
+      stripeSubscriptionId: 'sub_1',
+    })
+    // user スコープ (WHERE eq(users.id, ...))。
+    expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, paidUser.id))
+    // Clerk sync は matched だが clerkId null なので notifyOps 系は不発。
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  // #2: 射影 DB reject → notifyOps(operation:'applyUpgrade') 1 回 + 元 error rethrow、
+  // redirect 不到達 (A-3 同型)。terminal な mockDbReturning を reject させる。
+  it('upgrade: 射影 DB 書込失敗 → notifyOps(applyUpgrade) 1 回 + rethrow、redirect 不到達', async () => {
+    const dbErr = new Error('db unreachable')
+    mockDbReturning.mockRejectedValueOnce(dbErr)
+
+    // redirect(__REDIRECT__) ではなく DB error が投げられる = redirect 不到達の証拠。
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_projfail' })),
+    ).rejects.toThrow('db unreachable')
+
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).toHaveBeenCalledWith(
+      'plan change: db write failed after stripe success',
+      expect.objectContaining({
+        operation: 'applyUpgrade',
+        userId: 'u_1',
+        operationId: 'op_projfail',
+        error: dbErr,
+        environment: expect.any(String),
+        timestamp: expect.any(String),
+      }),
+    )
+    // applyUpgrade (Stripe) は成功済 = 呼ばれている。
+    expect(mockApplyUpgrade).toHaveBeenCalled()
+  })
+
+  // #3: 射影 DB reject かつ notifyOps 自身も throw → 元 DB error を rethrow
+  // (notifyOps の error でマスクされない、A-3 同型)。
+  it('upgrade: 射影 DB 書込失敗 かつ notifyOps も throw → 元の DB error を rethrow', async () => {
+    const dbErr = new Error('db unreachable')
+    mockDbReturning.mockRejectedValueOnce(dbErr)
+    mockNotifyOps.mockRejectedValueOnce(new Error('ops misconfig'))
+
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_projfail2' })),
+    ).rejects.toThrow('db unreachable')
+  })
+
+  // #4 (I-14): 支払保留 (pending_if_incomplete) 時、applyUpgrade は items に旧 price を
+  // 維持したまま pending_update を持つ sub を返す → projectStripeSubscription は
+  // items の旧 price を読み、旧 plan を射影する (upgrade 未発効を正しく反映)。
+  it('upgrade 支払保留 (pending_update): items の旧 price → 旧 plan を射影', async () => {
+    // 現プラン pro/month (paidUser)。UI は pro/year を要求するが、支払保留のため
+    // applyUpgrade の戻り sub は items に旧 price (PRO_MONTHLY) を維持 + pending_update。
+    mockApplyUpgrade.mockResolvedValueOnce(
+      upgradedSub({
+        priceId: process.env.STRIPE_PRICE_PRO_MONTHLY!,
+        status: 'active',
+        pendingUpdate: true,
+      }),
+    )
+    mockDbReturning.mockResolvedValueOnce([
+      {
+        clerkId: null,
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+      },
+    ])
+
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_pending' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+
+    // 旧 plan (pro/month) が射影される (pro/year に昇格しない = I-14 pin)。
+    expect(mockDbSet).toHaveBeenCalledWith(
+      expect.objectContaining({ plan: 'pro', billingInterval: 'month' }),
+    )
+  })
+
+  // #5 冪等: 同一 updatedSub で 2 回 upgrade を走らせると、set される plan 6 列は
+  // 2 回とも同一 (終状態不変 = 再射影しても値が変わらない)。
+  it('upgrade 冪等: 同一 updatedSub の再射影で set 値が 2 回とも同一', async () => {
+    const sameSub = upgradedSub({
+      priceId: process.env.STRIPE_PRICE_PRO_YEARLY!,
+      status: 'active',
+      currentPeriodEnd: 1900000000,
+      cancelAt: 1910000000,
+    })
+    mockApplyUpgrade.mockResolvedValue(sameSub)
+    mockDbReturning.mockResolvedValue([
+      {
+        clerkId: null,
+        scheduledDowngradeScheduleId: null,
+        scheduledTargetPriceId: null,
+      },
+    ])
+
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_idem1' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+    await expect(
+      changePlan(changeFd({ plan: 'pro', interval: 'year', operationId: 'op_idem2' })),
+    ).rejects.toThrow('__REDIRECT__:/app?billing=upgrade')
+
+    const expectedSet = {
+      plan: 'pro',
+      billingInterval: 'year',
+      subscriptionStatus: 'active',
+      currentPeriodEnd: new Date(1900000000 * 1000),
+      cancelAt: new Date(1910000000 * 1000),
+      stripeSubscriptionId: 'sub_1',
+    }
+    expect(mockDbSet).toHaveBeenCalledTimes(2)
+    expect(mockDbSet).toHaveBeenNthCalledWith(1, expectedSet)
+    expect(mockDbSet).toHaveBeenNthCalledWith(2, expectedSet)
   })
 
   it('hasPendingUpdate → CHANGE_BLOCKED、apply/schedule 未呼出', async () => {

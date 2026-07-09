@@ -23,6 +23,7 @@ import {
   clearReservation as clearReservationSlice,
 } from '@/lib/stripe/domain/subscription-aggregate'
 import { saveReservation, clearReservation } from '@/lib/stripe/subscription-repository'
+import { projectStripeSubscription } from '@/lib/stripe/project-subscription'
 import { priceIdFor, type PaidPlan, type BillingInterval } from '@/lib/stripe/price-mapping'
 
 // 4 種類 (Standard×month/year × Pro×month/year) すべての Checkout 起動に対応。
@@ -130,8 +131,47 @@ export async function changePlan(formData: FormData): Promise<void> {
   const idempotencyKey = `changePlan:${user.id}:${operationId}`
 
   if (direction === 'upgrade') {
-    await applyUpgrade(sub.id, itemId, targetPriceId, idempotencyKey)
-    redirect('/app?billing=upgrade')
+    // W (W-A2): applyUpgrade で Stripe 側は新 price に更新されるが、従来はここで DB を
+    // 書かず webhook 反映を待っていた。webhook 遅延/欠落で Stripe=新価格・DB=旧 plan が
+    // 無検知で残る整合窓を、applyUpgrade の戻り Stripe.Subscription を即時射影して閉じる。
+    const updatedSub = await applyUpgrade(sub.id, itemId, targetPriceId, idempotencyKey)
+    // customerId は anomaly notify payload 用 (missing/unknown price)。射影対象である
+    // updatedSub 自身の customer を handle-stripe-event 流儀 (string ? c : c.id) で解決する
+    // (射影対象と同一 subscription の customer を使うのが自然)。
+    const customerId =
+      typeof updatedSub.customer === 'string'
+        ? updatedSub.customer
+        : updatedSub.customer.id
+    const db = getDb()
+    try {
+      // 射影入力は Stripe response (updatedSub) = 「Stripe→DB」方向を維持 (逆流禁止)。
+      // 支払保留時 (pending_if_incomplete) は items が旧 price を保つため旧 plan が
+      // 射影される (I-14: pending_update を新 plan に昇格させない)。
+      await projectStripeSubscription(db, { by: 'id', value: user.id }, updatedSub, {
+        // action 経由ゆえ Stripe event は無い。idempotencyKey を marker に流用する。
+        eventId: idempotencyKey,
+        customerId,
+      })
+    } catch (err) {
+      // A-3 整合窓: Stripe upgrade は成功済だが DB 射影が失敗した状態を検知する
+      // (downgrade/cancel と同型)。notifyOps は best-effort で囲み、元の DB error を
+      // 優先して rethrow する (prod misconfig で notifyOps が throw しても root cause を
+      // マスクしない)。
+      try {
+        await notifyOps('plan change: db write failed after stripe success', {
+          operation: 'applyUpgrade',
+          userId: user.id,
+          operationId,
+          error: err,
+          environment: runtimeEnv(),
+          timestamp: new Date().toISOString(),
+        })
+      } catch {
+        // notify 失敗 (prod misconfig 等) は握り潰す。元の DB error を優先。
+      }
+      throw err
+    }
+    redirect('/app?billing=upgrade') // try の外 (成功 path の redirect throw を握らない)
   } else {
     const schedule = await scheduleDowngrade(sub, targetPriceId, idempotencyKey, {
       userId: user.id,
