@@ -108,6 +108,8 @@ Critical = 即 fix / Important = 原則 fix(MVP スコープ薄・コスト高�
 
 **決済・認証・削除・外部副作用**に触れる fix は review pass だけで [reviewed] を付けない: review pass → commit(tag 無し)→ OT 実機確認 → 未 push amend で [reviewed] 追記。UI 微調整 / typo / ロジック不変 refactor は対象外。
 
+**stg smoke を要する重要 Fix(データ保全・課金・削除)は push→smoke の順ゆえ、smoke 実施時点で [reviewed] amend 窓が構造的に閉じる。この場合は session doc を [reviewed] の正記録とし、commit message tag は追わない(push 済 commit の force-push はしない)。**
+
 ### docs の commit
 
 確定した docs(spec / plan / session log / lessons)は**必ず即 commit**(`docs(_)` + `[no-review]`)。未 commit 放置禁止。
