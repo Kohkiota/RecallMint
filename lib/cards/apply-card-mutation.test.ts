@@ -82,6 +82,12 @@ function sqlStaticText(frag: SQL): string {
     .join('')
 }
 
+// queryChunks 内の raw number chunk を列挙 (`sql\`... + ${N}\`` の N は生 number chunk)。
+function sqlNumberChunks(frag: SQL): number[] {
+  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
+  return chunks.filter((c): c is number => typeof c === 'number')
+}
+
 // ---------------------------------------------------------------------------
 // applyCardDelete
 // ---------------------------------------------------------------------------
@@ -467,15 +473,25 @@ describe('applyCardCreateWithId', () => {
     expect(examsIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
   })
 
-  // G2: card_count +1 fragment の構造 (create = 素加算・GREATEST 不在) を現挙動として pin。
-  it('G2: set.cardCount = exams.card_count 参照 + 素加算 (GREATEST 不在・現挙動)', async () => {
+  // G2: card_count +1 fragment の構造 (create = 素加算・GREATEST 不在) を pin。
+  // §3.5: R4 の helper 化で literal `card_count + 1` → param `card_count + $1` に正規化
+  // されるが計算は同値 (node 実測: params [1] を bind = card_count+1)。よって観測を
+  // form-agnostic な値 pin にする (増分 1 を literal 静的文字 or param number chunk の
+  // どちらでも許容) = G1 OCR (number pin) / G2 delete (GREATEST presence) と同型。
+  // literal 文字列 '+ 1' の直接 pin は §3.5 の param-binding 吸収方針と食い違うため撤去。
+  it('G2: set.cardCount = exams.card_count 参照 + 素加算 (GREATEST 不在・増分 1・form-agnostic)', async () => {
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
     const cardCount = ctl.updateSet!.cardCount as SQL
     expect(sqlColumnNames(cardCount)).toContain('card_count')
+    // create/OCR path = 素加算 (delete の GREATEST guard と区別)
     expect(sqlStaticText(cardCount)).not.toContain('GREATEST')
-    // +1 は StringChunk (" + 1") に畳まれ、 raw number chunk / param は無い (現挙動)。
-    expect(sqlStaticText(cardCount)).toContain('+ 1')
+    // 加算方向 (+): literal 時 '+ 1' / param 時 '+ ' いずれも '+' を含む
+    expect(sqlStaticText(cardCount)).toContain('+')
+    // 増分値 1: literal 時は静的文字 '1' / param 時は number chunk 1 (どちらか一方)
+    expect(
+      sqlStaticText(cardCount).includes('1') || sqlNumberChunks(cardCount).includes(1),
+    ).toBe(true)
   })
 
   it('G2: set.updatedAt = exams.updated_at 自己参照 (now() 不在)', async () => {
