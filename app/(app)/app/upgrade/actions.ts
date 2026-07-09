@@ -4,8 +4,7 @@ import { redirect } from 'next/navigation'
 import { stripe } from '@/lib/stripe/client'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
-import { users, type User } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import { type User } from '@/lib/db/schema'
 import { rankPlan } from '@/lib/plan-catalog'
 import { notifyOps } from '@/lib/ops'
 import { runtimeEnv } from '@/lib/env/runtime-env'
@@ -18,6 +17,12 @@ import {
   AmbiguousSubscriptionError,
 } from '@/lib/stripe/subscription'
 import { classifyChange, getPendingState } from '@/lib/stripe/subscription-changes'
+import {
+  canChangePlan,
+  reserveDowngrade,
+  clearReservation as clearReservationSlice,
+} from '@/lib/stripe/domain/subscription-aggregate'
+import { saveReservation, clearReservation } from '@/lib/stripe/subscription-repository'
 import { priceIdFor, type PaidPlan, type BillingInterval } from '@/lib/stripe/price-mapping'
 
 // 4 種類 (Standard×month/year × Pro×month/year) すべての Checkout 起動に対応。
@@ -107,12 +112,9 @@ export async function changePlan(formData: FormData): Promise<void> {
   // sub.schedule (pending.scheduleId) 単独をブロック条件にしてはいけない — DB 列が
   // 真実 source で、Stripe schedule が存在しても DB 列が null なら続行する。
   const pending = getPendingState(sub)
-  if (
-    pending.hasPendingUpdate ||
-    user.scheduledDowngradeScheduleId != null ||
-    pending.cancelScheduled
-  ) {
-    throw new Error('CHANGE_BLOCKED')
+  const gate = canChangePlan(pending, user.scheduledDowngradeScheduleId)
+  if (!gate.ok) {
+    throw new Error(gate.reason)
   }
 
   const currentRank = rankPlan(user.plan, user.billingInterval)
@@ -140,11 +142,11 @@ export async function changePlan(formData: FormData): Promise<void> {
     // DB write が実行されない)。end_date は Unix 秒 → Date 変換が必要。
     const db = getDb()
     try {
-      await db.update(users).set({
-        scheduledDowngradeScheduleId: schedule.id,
-        scheduledTargetPriceId: targetPriceId,
-        scheduledChangeEffectiveAt: new Date(schedule.phases[0].end_date * 1000),
-      }).where(eq(users.id, user.id))
+      await saveReservation(db, { by: 'id', value: user.id }, reserveDowngrade({
+        scheduleId: schedule.id,
+        targetPriceId,
+        effectiveAt: new Date(schedule.phases[0].end_date * 1000),
+      }))
     } catch (err) {
       // A-3 整合窓: Stripe schedule 作成は成功済だが DB 反映が失敗した状態を検知する
       // (挙動不変・検知のみ)。notifyOps は通常 throw しないが、production で
@@ -198,11 +200,7 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
   // redirect より前に書く (redirect は throw でフローを終了させる)。
   const db = getDb()
   try {
-    await db.update(users).set({
-      scheduledDowngradeScheduleId: null,
-      scheduledTargetPriceId: null,
-      scheduledChangeEffectiveAt: null,
-    }).where(eq(users.id, user.id))
+    await clearReservation(db, { by: 'id', value: user.id }, clearReservationSlice())
   } catch (err) {
     // A-3 整合窓: Stripe schedule release は成功済だが DB 反映が失敗した状態を検知する
     // (挙動不変・検知のみ)。notifyOps は通常 throw しないが、production で

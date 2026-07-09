@@ -12,9 +12,12 @@ const {
   mockDbUpdate,
   mockDbSet,
   mockDbWhere,
+  mockDbReturning,
 } = vi.hoisted(() => {
-  // DB write chain: db.update(users).set({...}).where(eq(...))
-  const mockDbWhere = vi.fn().mockResolvedValue(undefined)
+  // DB write chain: db.update(users).set({...}).where(eq(...)).returning(...)
+  // (repository 経由で .returning() が付く。 await 解決点は returning)
+  const mockDbReturning = vi.fn().mockResolvedValue([])
+  const mockDbWhere = vi.fn(() => ({ returning: mockDbReturning }))
   const mockDbSet = vi.fn(() => ({ where: mockDbWhere }))
   const mockDbUpdate = vi.fn(() => ({ set: mockDbSet }))
   return {
@@ -29,6 +32,7 @@ const {
     mockDbUpdate,
     mockDbSet,
     mockDbWhere,
+    mockDbReturning,
   }
 })
 
@@ -121,7 +125,8 @@ const baseUser = {
 beforeEach(() => {
   vi.clearAllMocks()
   // DB mock チェーンは vi.clearAllMocks で実装が消えるので毎回再登録する。
-  mockDbWhere.mockResolvedValue(undefined)
+  mockDbReturning.mockResolvedValue([])
+  mockDbWhere.mockReturnValue({ returning: mockDbReturning })
   mockDbSet.mockReturnValue({ where: mockDbWhere })
   mockDbUpdate.mockReturnValue({ set: mockDbSet })
 
@@ -348,7 +353,7 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
   // notifyOps で検知可能にする (挙動不変・検知のみ)。
   it('downgrade 経路: db.update 失敗 → notifyOps 1 回 + rethrow (redirect 不到達)', async () => {
     const dbErr = new Error('db unreachable')
-    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockDbReturning.mockRejectedValueOnce(dbErr)
 
     await expect(
       changePlan(changeFd({ plan: 'standard', interval: 'month', operationId: 'op_dbfail' })),
@@ -375,7 +380,7 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
   // マスクされない)。
   it('downgrade 経路: db.update 失敗 かつ notifyOps 自身も throw → 元の DB error を rethrow', async () => {
     const dbErr = new Error('db unreachable')
-    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockDbReturning.mockRejectedValueOnce(dbErr)
     mockNotifyOps.mockRejectedValueOnce(new Error('ops misconfig'))
 
     await expect(
@@ -651,7 +656,7 @@ describe('cancelDowngrade: 予約取消', () => {
       cancelScheduled: false,
     })
     const dbErr = new Error('db unreachable')
-    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockDbReturning.mockRejectedValueOnce(dbErr)
 
     await expect(
       cancelDowngrade(changeFd({ operationId: 'op_dbfail' })),
@@ -697,7 +702,7 @@ describe('cancelDowngrade: 予約取消', () => {
       cancelScheduled: false,
     })
     const dbErr = new Error('db unreachable')
-    mockDbWhere.mockRejectedValueOnce(dbErr)
+    mockDbReturning.mockRejectedValueOnce(dbErr)
     mockNotifyOps.mockRejectedValueOnce(new Error('ops misconfig'))
 
     await expect(
