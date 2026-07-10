@@ -227,6 +227,40 @@ export const deletionFailures = pgTable('deletion_failures', {
 })
 
 // ---------------------------------------------------------------------------
+// integration_failures (課金系・外部連携の失敗を SQL で引ける台帳。deletion_failures
+// の一般化)。4 軸判別列 (service / operation / workflow / failure_code) の語彙と
+// 組合せの妥当性は DB CHECK でなくコード側 catalog (lib/integration-failures.ts)
+// で enforce するため $type<> union は付けない (catalog を語彙の SSoT に一本化)。
+// FK なし (deletion_failures 踏襲・audit 行は user 削除後も残置)。
+// user_id / error_message nullable (webhook 文脈に userId 無し・anomaly 検知系は
+// 合成エラー文字列を作らない)。retry_count / next_retry_at / resolved_at /
+// resolution_note は手動回収用で Sprint 2 では読み書きしない (dormant)。index は
+// PK のみ (YAGNI)。
+// 詳細: specs/2026-07-10-sprint2-integration-failures-design.md §4
+// ---------------------------------------------------------------------------
+export const integrationFailures = pgTable('integration_failures', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  service: text('service').notNull(),
+  operation: text('operation').notNull(),
+  workflow: text('workflow'),
+  failureCode: text('failure_code').notNull(),
+  userId: uuid('user_id'),
+  clerkId: text('clerk_id'),
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  scheduleId: text('schedule_id'),
+  context: jsonb('context').notNull(),
+  errorMessage: text('error_message'),
+  retryCount: integer('retry_count').notNull().default(0),
+  nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolutionNote: text('resolution_note'),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+})
+
+// ---------------------------------------------------------------------------
 // exams (mcq 新規)
 // hard delete (deleted_at なし、Sprint A-2 確定)。 archived_at で
 // ダウングレード時の自動アーカイブ (NULL = アクティブ)。
@@ -799,6 +833,8 @@ export type ClerkEvent = typeof clerkEvents.$inferSelect
 export type NewClerkEvent = typeof clerkEvents.$inferInsert
 export type DeletionFailure = typeof deletionFailures.$inferSelect
 export type NewDeletionFailure = typeof deletionFailures.$inferInsert
+export type IntegrationFailure = typeof integrationFailures.$inferSelect
+export type NewIntegrationFailure = typeof integrationFailures.$inferInsert
 export type Exam = typeof exams.$inferSelect
 export type NewExam = typeof exams.$inferInsert
 export type Card = typeof cards.$inferSelect
