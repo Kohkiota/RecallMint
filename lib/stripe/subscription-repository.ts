@@ -10,7 +10,7 @@
 // RETURNING は全 save メソッド共通で { clerkId, scheduledDowngradeScheduleId,
 // scheduledTargetPriceId } を返す (A-4 row-match / clerkId 分離 + release gate 材料)。
 
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { users } from '@/lib/db/schema'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import type {
@@ -187,6 +187,33 @@ export async function clearReservation(
     .update(users)
     .set(update)
     .where(whereFor(key))
+    .returning(RETURNING_SHAPE)
+  return toSaveResult(rows as ReturningRow[])
+}
+
+// clearReservationMatching: 条件付き冪等 clear。 owner-scope (SubKey) に加え
+// scheduleId / targetPriceId の一致を WHERE で照合し、 予約 3 列を一括 null に
+// する (I-9)。 release 発効経路 (#1 delegate / #5 cancelDowngrade) が「clear 対象は
+// 消費済のこの予約である」ことを行 match で確定させるための口。 別の
+// scheduleId/targetPriceId に差し替わっている (再送/race) 行には match せず
+// matched:false の正常 no-op を返す (notifyOps はしない)。 update は
+// ReservationUpdate (全 null) = clearReservation() aggregate の出力を verbatim 書く。
+export async function clearReservationMatching(
+  tx: DbExecutor,
+  key: SubKey,
+  update: ReservationUpdate,
+  match: { scheduleId: string; targetPriceId: string },
+): Promise<SaveResult> {
+  const rows = await tx
+    .update(users)
+    .set(update)
+    .where(
+      and(
+        whereFor(key),
+        eq(users.scheduledDowngradeScheduleId, match.scheduleId),
+        eq(users.scheduledTargetPriceId, match.targetPriceId),
+      ),
+    )
     .returning(RETURNING_SHAPE)
   return toSaveResult(rows as ReturningRow[])
 }

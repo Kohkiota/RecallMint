@@ -22,7 +22,7 @@ import {
   reserveDowngrade,
   clearReservation as clearReservationSlice,
 } from '@/lib/stripe/domain/subscription-aggregate'
-import { saveReservation, clearReservation } from '@/lib/stripe/subscription-repository'
+import { saveReservation, clearReservationMatching } from '@/lib/stripe/subscription-repository'
 import { projectStripeSubscription } from '@/lib/stripe/project-subscription'
 import { priceIdFor, type PaidPlan, type BillingInterval } from '@/lib/stripe/price-mapping'
 
@@ -233,14 +233,27 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
     // 取消対象が無い (既に release 済 / そもそも未予約)。
     throw new Error('NO_SCHEDULE')
   }
+  // clearReservationMatching の target 照合に null を渡さないための型 narrowing。
+  // I-9 上 schedule 有・target null はありえない破損だが、 non-null assertion せず
+  // NO_SCHEDULE guard に合流させる (予約なし相当扱い)。
+  if (user.scheduledTargetPriceId === null) {
+    throw new Error('NO_SCHEDULE')
+  }
 
   const idempotencyKey = `cancelDowngrade:${user.id}:${operationId}`
+  // #5 は #1 (webhook delegate) と順序非対称: #1 は clear 先行 + best-effort release
+  // だが、 #5 は release 成功 → clear の順を保つ。 発効**前**の取消で clear を先にすると
+  // 「DB 予約なし・Stripe schedule 生存 → 期末に意図しない downgrade」の逆破綻を招くため。
   await cancelScheduledDowngrade(pending.scheduleId, idempotencyKey)
-  // §5.5 例外: release 成功後 DB 3 列を clear (null に set) する。
-  // redirect より前に書く (redirect は throw でフローを終了させる)。
+  // §5.5 例外: release 成功後 DB 3 列を clear (null に set) する。 R (Task 2): clear は
+  // clearReservationMatching に差し替え (owner=id + schedule/target 照合で「消費した
+  // この予約」に限定 clear)。 redirect より前に書く (redirect は throw でフローを終了させる)。
   const db = getDb()
   try {
-    await clearReservation(db, { by: 'id', value: user.id }, clearReservationSlice())
+    await clearReservationMatching(db, { by: 'id', value: user.id }, clearReservationSlice(), {
+      scheduleId: pending.scheduleId,
+      targetPriceId: user.scheduledTargetPriceId,
+    })
   } catch (err) {
     // A-3 整合窓: Stripe schedule release は成功済だが DB 反映が失敗した状態を検知する
     // (挙動不変・検知のみ)。notifyOps は通常 throw しないが、production で

@@ -195,6 +195,12 @@ export async function scheduleDowngrade(
  *
  * release(id, params, options) — idempotencyKey は params ではなく options 側。
  */
+// 429 (StripeRateLimitError) の application 層 retry: 1s 固定・1 回のみ・同一
+// idempotencyKey 再利用・Retry-After 不使用 (cancelWithRetry / client.ts と同値)。
+// 指数バックオフは webhook handler の Vercel function timeout を圧迫するため不採用。
+// release 経路専用 (汎用 helper は新設しない)。
+const RATE_LIMIT_RETRY_DELAY_MS = 1000
+
 async function releaseScheduleIdempotent(
   scheduleId: string,
   idempotencyKey: string,
@@ -202,6 +208,22 @@ async function releaseScheduleIdempotent(
   try {
     await stripe.subscriptionSchedules.release(scheduleId, {}, { idempotencyKey })
   } catch (err) {
+    if (err instanceof Stripe.errors.StripeRateLimitError) {
+      // 1s sleep 後、 同一 key で 1 回だけ再試行。 再試行も初回と同じ冪等成功握り
+      // (already released/completed / resource_missing) を honor する — sleep 中に
+      // 別処理 (or 同一 key の in-flight) が先に release すると再試行は終端状態への
+      // 再 release になり InvalidRequest で返るが、これは目的達成済なので成功扱い。
+      // 再度 429 (rate limit) や無関係 error は伝播させる (retry budget = 1)
+      // (#1 は handle-stripe-event.ts の delegate catch が握る / #5 は UI へ)。
+      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS))
+      try {
+        await stripe.subscriptionSchedules.release(scheduleId, {}, { idempotencyKey })
+      } catch (retryErr) {
+        if (isAlreadyReleasedOrMissing(retryErr)) return
+        throw retryErr
+      }
+      return
+    }
     if (isAlreadyReleasedOrMissing(err)) return
     throw err
   }

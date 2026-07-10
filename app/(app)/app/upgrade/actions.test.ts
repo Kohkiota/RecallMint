@@ -91,7 +91,7 @@ vi.mock('next/navigation', () => ({
   },
 }))
 
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import {
   createCheckoutSession,
   changePlan,
@@ -794,8 +794,16 @@ describe('changePlan: in-place アップグレード / ダウングレード', (
 })
 
 describe('cancelDowngrade: 予約取消', () => {
+  // R (Task 2): clearReservationMatching は予約 target を要する (null なら NO_SCHEDULE
+  // guard)。 downgrade 予約は常に target を持つため、 cancelDowngrade の fixture は
+  // 予約 3 列を埋めた user を既定にする (schedule/target 有)。 個別 test で上書きする。
+  const paidUserWithReservation = {
+    ...paidUser,
+    scheduledDowngradeScheduleId: 'sched_x',
+    scheduledTargetPriceId: process.env.STRIPE_PRICE_STANDARD_MONTHLY!,
+  }
   beforeEach(() => {
-    mockGetCurrentUser.mockResolvedValue(paidUser)
+    mockGetCurrentUser.mockResolvedValue(paidUserWithReservation)
   })
 
   it('scheduleId 有 → cancelScheduledDowngrade(scheduleId,key) + /app/upgrade redirect', async () => {
@@ -852,7 +860,16 @@ describe('cancelDowngrade: 予約取消', () => {
   })
 
   // §5.5 例外: cancelScheduledDowngrade 成功後 DB 3 列を null に clear する。
-  it('cancelScheduledDowngrade 成功後 DB 3 列を clear (null set、user スコープ)', async () => {
+  // R (Task 2): clear は clearReservationMatching に差し替え (owner=id + schedule/
+  // target 照合の WHERE)。 順序は不変 (release → clear)。
+  it('cancelScheduledDowngrade 成功後 clearReservationMatching で 3 列 clear (owner=id + schedule/target match)', async () => {
+    const target = process.env.STRIPE_PRICE_STANDARD_MONTHLY!
+    // 予約 target を持つ user (clearReservationMatching の target 照合に使う)。
+    mockGetCurrentUser.mockResolvedValue({
+      ...paidUser,
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: target,
+    })
     mockGetPendingState.mockReturnValue({
       hasPendingUpdate: false,
       scheduleId: 'sched_x',
@@ -862,12 +879,42 @@ describe('cancelDowngrade: 予約取消', () => {
       cancelDowngrade(changeFd({ operationId: 'op_clear' })),
     ).rejects.toThrow('__REDIRECT__:/app/upgrade')
 
+    // 3 列一括 null set (I-9)。
     expect(mockDbSet).toHaveBeenCalledWith({
       scheduledDowngradeScheduleId: null,
       scheduledTargetPriceId: null,
       scheduledChangeEffectiveAt: null,
     })
-    expect(mockDbWhere).toHaveBeenCalledWith(eq(users.id, baseUser.id))
+    // WHERE = owner (users.id) AND schedule AND target の and() 合成。
+    expect(mockDbWhere).toHaveBeenCalledWith(
+      and(
+        eq(users.id, baseUser.id),
+        eq(users.scheduledDowngradeScheduleId, 'sched_x'),
+        eq(users.scheduledTargetPriceId, target),
+      ),
+    )
+  })
+
+  // null-guard #5 (spec): 予約 target が欠落 (user.scheduledTargetPriceId null) の
+  // とき non-null assertion せず NO_SCHEDULE guard に合流する (I-9 上ありえない破損の防御)。
+  it('N-6 null-guard: user.scheduledTargetPriceId null → NO_SCHEDULE throw・cancel/clear 未呼出', async () => {
+    // pending.scheduleId は有るが予約 target が null (破損)。 clearReservationMatching に
+    // null target を渡さず NO_SCHEDULE で弾く。
+    mockGetCurrentUser.mockResolvedValue({
+      ...paidUser,
+      scheduledDowngradeScheduleId: 'sched_x',
+      scheduledTargetPriceId: null,
+    })
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_x',
+      cancelScheduled: false,
+    })
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_null_target' })),
+    ).rejects.toThrow('NO_SCHEDULE')
+    expect(mockCancelScheduledDowngrade).not.toHaveBeenCalled()
+    expect(mockDbUpdate).not.toHaveBeenCalled()
   })
 
   // A-3 整合窓: cancelScheduledDowngrade (Stripe) 成功後の db.update が失敗した場合、

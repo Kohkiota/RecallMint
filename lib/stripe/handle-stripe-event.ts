@@ -13,6 +13,7 @@ import { extractPriceId } from '@/lib/stripe/domain/subscription-values'
 import {
   applyDeletedReset,
   clearReservation,
+  clearReservationMatching,
 } from '@/lib/stripe/subscription-repository'
 import { projectStripeSubscription } from '@/lib/stripe/project-subscription'
 import { notifyOps } from '@/lib/ops'
@@ -173,6 +174,13 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       // .updated gate の clear 失敗や、 能動 release 後の取りこぼしを回収する
       // recovery path。 0 行 match (既に clear 済) は正常な no-op。 WHERE は
       // scheduledDowngradeScheduleId = schedule.id (SubKey='scheduleId')。
+      //
+      // 配線注記 (i): released は scheduleId 単独 clear で足りるのに対し、 delegate
+      // (下記 evaluateReleaseGate) は scheduleId + targetPriceId の 2 列 match
+      // (clearReservationMatching) を課す。 理由: released は event payload の
+      // schedule.id が Stripe 発の事実で単独で予約同一性が確定する。 delegate は
+      // .updated が再送/race で発効前後が混ざりうるため、 target price も照合して
+      // 「clear 対象は消費済のこの予約である」ことを行 match で確定させる。
       const schedule = event.data.object as Stripe.SubscriptionSchedule
       await clearReservation(
         db,
@@ -190,8 +198,9 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
 // §6.4 release gate。 customer.subscription.updated で plan 同期後、 予約
 // (scheduledDowngradeScheduleId) が存在するときのみ呼ばれる。
 // #1 (sub.schedule === DB scheduleId) かつ #5 (現 item price === target price)
-// を充足したときに releaseCompletedDowngrade へ委譲し、 戻り値で 3 列 clear を分岐。
-// status/#2/#3/#4 の判定は releaseCompletedDowngrade (T10) が担う。
+// を充足したとき delegate に落とす。 R (Task 2): delegate では clear を先行させ
+// (release 成否から decouple)、 その後 best-effort で releaseCompletedDowngrade へ
+// 委譲する (順序反転)。 status/#2/#3/#4 の判定は releaseCompletedDowngrade (T10) が担う。
 async function evaluateReleaseGate(args: {
   sub: Stripe.Subscription
   customerId: string
@@ -213,7 +222,7 @@ async function evaluateReleaseGate(args: {
   //   clear_direct = 方向2 保険 (sub.schedule==null + DB 予約残存 → 3 列冪等 clear)
   //   mismatch     = 別 non-null id (OT 介入 anomaly、 委譲も clear もしない)
   //   skip         = #5 未反映 (item price != target、 予約維持)
-  //   delegate     = #1 && #5 充足 → releaseCompletedDowngrade 委譲
+  //   delegate     = #1 && #5 充足 → clear 先行 + best-effort release (R: 順序反転)
   switch (evaluateRelease({ subScheduleId, dbScheduleId, priceId, dbTargetPriceId })) {
     case 'clear_direct':
       await clearReservation(
@@ -235,17 +244,46 @@ async function evaluateReleaseGate(args: {
     case 'skip':
       return
     case 'delegate': {
-      // releaseCompletedDowngrade に委譲 (status gate は同関数が判定)。 throw は
-      // 外側 try に伝播させ notifyWebhookError + 200 で処理する (§6.4.1)。
-      const result = await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
-      // released / already_terminal は予約役目を終えたので 3 列 clear。
-      // skipped (not_started 等) は予約を維持する。
-      if (result === 'released' || result === 'already_terminal') {
-        await clearReservation(
-          getDb(),
-          { by: 'stripeCustomerId', value: customerId },
-          aggregateClearReservation(),
-        )
+      // 手順0: I-9 上ありえない破損 (schedule 有・target null)。 誤 clear せず予約を
+      // 維持し観測のみ。 evaluateRelease が priceId==dbTargetPriceId で delegate に
+      // 落とす都合上 dbTargetPriceId が null で到達しうるが、 clearReservationMatching
+      // の target 照合に null を渡さない (型 narrowing + 防御)。
+      if (dbTargetPriceId == null) {
+        await notifyOps('stripe release gate: reservation missing target price', {
+          eventId,
+          customerId,
+          scheduleId: dbScheduleId,
+          environment: runtimeEnv(),
+          timestamp: new Date().toISOString(),
+        })
+        return
+      }
+      // 手順1: clear 先行 (release 成否に無関係)。 delegate 到達 = 発効済 (price==
+      // target 確認済) で予約は消費済ゆえ DB clear を確定させる。 matched は release を
+      // gate しない (matched:false = 再送/race でも release へ進み status gate が吸収)。
+      // clear throw は握らない — correctness 重大ゆえ outer catch に伝播させ
+      // notifyWebhookError + 200 で処理する (release へは進まない)。
+      await clearReservationMatching(
+        getDb(),
+        { by: 'stripeCustomerId', value: customerId },
+        aggregateClearReservation(),
+        { scheduleId: dbScheduleId, targetPriceId: dbTargetPriceId },
+      )
+      // 手順2: best-effort release (detach)。 throw は握って notifyOps のみ (clear は
+      // 済で orphan は生じない)。
+      try {
+        await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
+      } catch (err) {
+        // Sprint 2: この catch が integration_failures dual-write の挿入点。
+        await notifyOps('stripe autorelease failed (reservation cleared)', {
+          eventId,
+          customerId,
+          scheduleId: dbScheduleId,
+          targetPriceId: dbTargetPriceId,
+          error: err,
+          environment: runtimeEnv(),
+          timestamp: new Date().toISOString(),
+        })
       }
       return
     }

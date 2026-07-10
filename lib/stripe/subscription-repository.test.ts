@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { users } from '@/lib/db/schema'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import * as repo from './subscription-repository'
@@ -11,6 +11,7 @@ import {
   applyDeletedReset,
   saveReservation,
   clearReservation,
+  clearReservationMatching,
 } from './subscription-repository'
 import type { ProjectionUpdate, DeletedReset, ReservationUpdate } from './domain/subscription-aggregate'
 
@@ -181,19 +182,27 @@ describe('観点2: 予約 3 列 atomicity', () => {
 describe('観点3: 個別予約列 update 口の不在', () => {
   it('repository の export に予約列を個別に書くメソッドが存在しない (I-9 型保証)', () => {
     // 予約列を書けるのは 3 列一括の saveReservation / clearReservation /
-    // applyDeletedReset のみ。 単一列専用の setter を export してはならない。
+    // clearReservationMatching / applyDeletedReset のみ。 単一列専用の setter を
+    // export してはならない。 clearReservationMatching も 3 列一括 clear (条件付き)
+    // なので allowlist に含む (WHERE に schedule/target 照合を足すだけで set 対象は
+    // 予約 3 列一括のまま)。
     const exportedNames = Object.keys(repo)
     const forbidden = exportedNames.filter((n) =>
       /^(set|save|update|clear)(Scheduled|DowngradeSchedule|TargetPrice|ChangeEffective)/i.test(n),
     )
     expect(forbidden).toEqual([])
-    // 予約を書く経路は 3 メソッドに限定 (allowlist)。
+    // 予約を書く経路は 4 メソッドに限定 (allowlist)。
     const reservationWriters = exportedNames.filter(
-      (n) => n === 'saveReservation' || n === 'clearReservation' || n === 'applyDeletedReset',
+      (n) =>
+        n === 'saveReservation' ||
+        n === 'clearReservation' ||
+        n === 'clearReservationMatching' ||
+        n === 'applyDeletedReset',
     )
     expect(reservationWriters.sort()).toEqual([
       'applyDeletedReset',
       'clearReservation',
+      'clearReservationMatching',
       'saveReservation',
     ])
   })
@@ -263,6 +272,74 @@ describe('観点5: 0 行 match', () => {
   it('applyDeletedReset の RETURNING 空 → matched:false', async () => {
     const { tx } = updateTx([])
     const result = await applyDeletedReset(tx, { by: 'stripeCustomerId', value: 'nope' }, RESET)
+    expect(result.matched).toBe(false)
+    expect(result.clerkId).toBeNull()
+  })
+})
+
+// ===========================================================================
+// clearReservationMatching: 条件付き冪等 clear (owner WHERE + schedule + target
+// の AND 合成 / 3 列一括 null / SaveResult shape / 0 行 no-op)
+// ===========================================================================
+describe('clearReservationMatching', () => {
+  const MATCH = { scheduleId: 'sched_1', targetPriceId: 'price_t' }
+
+  it('観点1: owner WHERE + schedule + target を and() で合成する', async () => {
+    const { tx, spies } = updateTx([RETURNING_ROW])
+    await clearReservationMatching(
+      tx,
+      { by: 'stripeCustomerId', value: 'cus_x' },
+      RESERVATION_CLEAR,
+      MATCH,
+    )
+    expect(spies.whereSpy).toHaveBeenCalledWith(
+      and(
+        eq(users.stripeCustomerId, 'cus_x'),
+        eq(users.scheduledDowngradeScheduleId, 'sched_1'),
+        eq(users.scheduledTargetPriceId, 'price_t'),
+      ),
+    )
+  })
+
+  it('観点2: 予約 3 列を同時 null に set (I-9)', async () => {
+    const { tx, spies } = updateTx([RETURNING_ROW])
+    await clearReservationMatching(
+      tx,
+      { by: 'id', value: 'u' },
+      RESERVATION_CLEAR,
+      MATCH,
+    )
+    expect(spies.setSpy).toHaveBeenCalledWith({
+      scheduledDowngradeScheduleId: null,
+      scheduledTargetPriceId: null,
+      scheduledChangeEffectiveAt: null,
+    })
+  })
+
+  it('観点4: 行 match → SaveResult 4 field (matched:true)', async () => {
+    const { tx } = updateTx([RETURNING_ROW])
+    const result = await clearReservationMatching(
+      tx,
+      { by: 'id', value: 'u' },
+      RESERVATION_CLEAR,
+      MATCH,
+    )
+    expect(result).toEqual({
+      matched: true,
+      clerkId: 'clerk_1',
+      scheduledDowngradeScheduleId: 'sched_1',
+      scheduledTargetPriceId: 'price_t',
+    })
+  })
+
+  it('観点5: 0 行 (schedule/target 不一致) → matched:false の正常 no-op', async () => {
+    const { tx } = updateTx([])
+    const result = await clearReservationMatching(
+      tx,
+      { by: 'id', value: 'u' },
+      RESERVATION_CLEAR,
+      { scheduleId: 'other', targetPriceId: 'price_other' },
+    )
     expect(result.matched).toBe(false)
     expect(result.clerkId).toBeNull()
   })

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Stripe from 'stripe'
 
 // --- hoisted Stripe mock (route.test.ts と同 vi.mock 方式、実 API 禁止) ---
@@ -513,6 +513,91 @@ describe('cancelScheduledDowngrade', () => {
     await expect(
       cancelScheduledDowngrade('sub_sched_released', 'idem_rel'),
     ).resolves.toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// N-7 (Task 2): releaseScheduleIdempotent の 429 retry (release 経路専用)。
+// cancelWithRetry (client.ts) と同値構造: 1s 固定・1 回のみ・同一 idempotencyKey
+// 再利用・Retry-After 不使用。 releaseScheduleIdempotent は非 export ゆえ、 それを
+// 直接呼ぶ cancelScheduledDowngrade (status gate なし) 経由で検証する。
+// fake timer の promise flush は client.test.ts の cancelWithRetry test に倣う。
+// ---------------------------------------------------------------------------
+describe('release 429 retry (releaseScheduleIdempotent, cancelScheduledDowngrade 経由)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('N-7 (a): release 429 → 1s → 同一 key 再試行 → 成功', async () => {
+    mockScheduleRelease
+      .mockRejectedValueOnce(new Stripe.errors.StripeRateLimitError())
+      .mockResolvedValueOnce({ id: 'sub_sched_r' } as unknown as Stripe.SubscriptionSchedule)
+
+    const promise = cancelScheduledDowngrade('sub_sched_r', 'idem_rel')
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(promise).resolves.toBeUndefined()
+
+    expect(mockScheduleRelease).toHaveBeenCalledTimes(2)
+    // 再試行は同一 idempotencyKey を再利用する (options 側)。
+    expect(mockScheduleRelease.mock.calls[0]).toEqual([
+      'sub_sched_r',
+      {},
+      { idempotencyKey: 'idem_rel' },
+    ])
+    expect(mockScheduleRelease.mock.calls[1]).toEqual([
+      'sub_sched_r',
+      {},
+      { idempotencyKey: 'idem_rel' },
+    ])
+  })
+
+  it('N-7 (b): 429 連続 → 2 回目の 429 は throw (retry budget = 1)', async () => {
+    mockScheduleRelease
+      .mockRejectedValueOnce(new Stripe.errors.StripeRateLimitError())
+      .mockRejectedValueOnce(new Stripe.errors.StripeRateLimitError())
+
+    const errPromise = cancelScheduledDowngrade('sub_sched_r', 'idem_rel').catch(
+      (err: unknown) => err,
+    )
+    await vi.advanceTimersByTimeAsync(1000)
+    const err = await errPromise
+    expect(err).toBeInstanceOf(Stripe.errors.StripeRateLimitError)
+    expect(mockScheduleRelease).toHaveBeenCalledTimes(2)
+  })
+
+  // 429 retry も初回同様に冪等成功握りを honor する: sleep 中に別処理が先に release
+  // すると再試行は終端状態への再 release になり InvalidRequest (resource_missing 等)
+  // で返るが、目的 (release 済) は達成済なので throw せず resolve する。#5 の UI
+  // 経路で spurious error + DB clear skip を起こさないための保証。
+  it('N-7 (c): 429 → retry が既 released (resource_missing) → throw せず resolve (同一 key で 2 回)', async () => {
+    mockScheduleRelease
+      .mockRejectedValueOnce(new Stripe.errors.StripeRateLimitError())
+      .mockRejectedValueOnce(
+        new Stripe.errors.StripeInvalidRequestError({
+          type: 'invalid_request_error',
+          code: 'resource_missing',
+          message: 'No such schedule',
+        } as never),
+      )
+
+    const promise = cancelScheduledDowngrade('sub_sched_r', 'idem_rel')
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(promise).resolves.toBeUndefined()
+
+    expect(mockScheduleRelease).toHaveBeenCalledTimes(2)
+    expect(mockScheduleRelease.mock.calls[0]).toEqual([
+      'sub_sched_r',
+      {},
+      { idempotencyKey: 'idem_rel' },
+    ])
+    expect(mockScheduleRelease.mock.calls[1]).toEqual([
+      'sub_sched_r',
+      {},
+      { idempotencyKey: 'idem_rel' },
+    ])
   })
 })
 
