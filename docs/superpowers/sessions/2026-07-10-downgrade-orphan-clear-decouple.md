@@ -47,16 +47,19 @@ downgrade 発効時、予約 3 列 clear が Stripe `release` API 成功に gate
 
 whole-repo `pnpm lint`(--max-warnings=0)exit 0 / `pnpm typecheck` exit 0 / `pnpm test` **3186 passed** / `pnpm build` exit 0。**whole-repo lint exit 0 確認済**。
 
-## 残 gate = Test Clock stg smoke(push 後・OT 指示で CC 実走)
+## Test Clock stg smoke = R commit `cb7ce29` の [reviewed] 正記録(OT 実機・2026-07-10・全 PASS)
 
-決済 fix ゆえ **本 session doc が [reviewed] の smoke 正記録**(push→smoke 順で amend 窓が構造的に閉じる・push 済 commit の force-push はしない — 恒久規律)。前提手順 = `docs/audit/2026-07-09-stripe-test-clock-reservation-verification.md`(clock 紐付き customer 必須・罠 1-5)。
+決済 fix ゆえ **本 section が R commit `cb7ce29` の [reviewed] 正記録**(push→smoke 順で amend 窓が構造的に閉じる・push 済 commit の force-push はしない — 恒久規律 6cd468a)。Test Clock 実機は CC 環境で不可のため **OT が実機実走**。前提手順 = `docs/audit/2026-07-09-stripe-test-clock-reservation-verification.md`(clock 紐付き customer 必須・罠 1-5)。
 
-- [ ] **① 主検証(発効経路 #1)**: clock 紐付き customer + app UI で downgrade 予約(pro月額→standard月額)→ `scheduled_*` 3 列 set 確認 → period_end 直後へ advance → `ready` polling → **実 DB で `scheduled_*` 3 列 = NULL + plan=standard**(前回 orphan だった経路が直る実証)。
-- [ ] **② #5 cancel 経路**(advance 不要): app UI で downgrade 予約 → 「取消」→ 実 DB 3 列 NULL + UI 復帰(banner 消滅・CTA 有効化)。
-- [ ] **③ 表示是正**: upgrade/settings の「変更予約中」banner 消滅・CTA 復活(DevTools MCP)。**「現プラン Pro」表示(Clerk JWT/publicMetadata stale)は本 fix の対象外**(監査 doc §5 症状 B・完了条件に含めない)。
-- [ ] **④ 観測**: Vercel log で `.updated` 200(swallowed でない)+ schedule の release 成否(best-effort・失敗なら notifyOps Discord 到達)。
-- [ ] **⑤ released webhook** の発火有無を記録(開放端 phase1 の自然 release 有無 = 監査未確定 #3 の回収)。
-- [ ] **⑥ release 失敗系(N-1)は unit golden で代替**(実環境で Stripe 失敗を意図的に起こせないため・本 doc で明記済)。
+- [x] **① 主検証(発効経路 #1)= PASS**: app UI で downgrade 予約(pro月額→standard月額)→ `scheduled_*` 3 列 set → clock advance(period_end 越え)→ `ready` → **実 DB で plan=standard / interval=month 発効 + `scheduled_*` 3 列 全 NULL**。**前回(fix 前)は同一操作で予約列が orphan 残留した箇所が今回 clear = correctness fix 実証**。
+- [x] **② #5 cancel 経路(advance 不要)= PASS**: app UI で downgrade 予約 → 「取消」→ **`scheduled_*` 3 列 NULL + subscription_schedule status=released**(順序不変 release→clear が正常動作・逆破綻なし)。
+- [x] **③ 表示是正 = PASS**: `scheduled_*`=NULL により「変更予約中」banner 消滅・CTA 復活は決定的(①② で DB=NULL 確認済 / banner = `scheduledDowngradeScheduleId != null` 由来)。**「現プラン Pro」(Clerk JWT stale)は対象外**(監査 §5 症状 B)。
+- [x] **④ 観測 = PASS(fix 核心の実 driver 証拠)**: **advance 中に Discord へ `advancement underway`(release API が Test Clock advance 中に拒否)発火。それでも `scheduled_*` は NULL** = **clear が release 成功に依存せず先行実行された(順序反転 #1)の実 driver 証拠**。best-effort release が失敗しても orphan にならないことを本番相当 driver で実証。
+- [x] **⑤ released webhook = 記録済**: #5(user 起点 release)= released 発火。#1(advance)= release が `advancement underway` で拒否 → released 非発火だが **clear は先行済ゆえ無影響**(開放端 phase1 で自然 release が来なくても correctness が保たれる = 監査未確定 #3 の実証: released 回収経路に依存しない設計が効いた)。
+- [x] **⑥ release 失敗系 = unit golden(N-1)+ 実 driver 二重実証**: 429 の人工発生は不可ゆえ unit で pin(N-1/N-7)。加えて ④ の `advancement underway` が「release 失敗でも clear」を**本番相当 driver で実再現**。冪等 clear 口(owner/2列/0-row)・429 retry も unit で pin 済(実機再現不要)。
+
+### smoke 結論
+**全項目 PASS。fix の核心命題(clear を release 成功から decouple・#1 順序反転)を、release が実際に拒否された driver 条件下で実証。** #5 の順序不変(release→clear・逆破綻なし)も実機確認。→ **R commit `cb7ce29` は本 section をもって [reviewed] 正記録確定**。
 
 ## 後続
 
@@ -64,5 +67,5 @@ whole-repo `pnpm lint`(--max-warnings=0)exit 0 / `pnpm typecheck` exit 0 / `pnpm
 - **掃除(別・CC 実行不可)**: test clock 2 件 + test10/11 users 行削除 = OT 手動(Stripe Dashboard + Supabase SQL・`rk_test_` に `billing_clock_write` 権限なし・psql 不在)。
 
 ## STOP checkpoint
-whole-repo gate 全 exit 0 + 4 段 review(canonical + Codex×2 + 最終 whole-branch)= Crit0/Imp0 pass。**push + Test Clock stg smoke = OT 判断待ち**。
+whole-repo gate 全 exit 0 + 4 段 review(canonical + Codex×2 + 最終 whole-branch)= Crit0/Imp0 pass。**push 済(origin/develop = 13e66aa)+ Test Clock stg smoke 全 PASS(OT 実機・上記 section)= R commit `cb7ce29` [reviewed] 正記録確定**。**残 = prod 反映判断(OT 専権)+ 掃除(test clock 2 件 / test10・11 users 行 = OT 手動)**。
 </content>
