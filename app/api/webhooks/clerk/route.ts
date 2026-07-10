@@ -6,7 +6,7 @@
 // 3. user.created → users INSERT ON CONFLICT DO NOTHING (既存挙動維持)
 //    user.deleted → Stripe sub cancel + soft delete + 子データ物理削除 (retry 付)
 // 4. outer catch で notifyOps explicit (Next.js onRequestError は uncaught 限定 fire)
-// 5. 200 強制 return (Clerk リトライ抑止、recovery は deletion_failures + 手動)
+// 5. 200 強制 return (Clerk リトライ抑止、recovery は integration_failures + 手動)
 
 import { Webhook } from 'svix'
 import { getDb } from '@/lib/db'

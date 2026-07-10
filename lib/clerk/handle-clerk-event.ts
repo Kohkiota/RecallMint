@@ -4,7 +4,6 @@ import Stripe from 'stripe'
 import { getDb } from '@/lib/db'
 import {
   users,
-  deletionFailures,
   exams,
   studyDays,
   contactMessages,
@@ -18,6 +17,10 @@ import {
 } from '@/lib/db/schema'
 import { stripe, cancelWithRetry } from '@/lib/stripe/client'
 import { notifyOps } from '@/lib/ops'
+import {
+  recordIntegrationFailure,
+  type IntegrationFailureKey,
+} from '@/lib/integration-failures'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { runtimeEnv } from '@/lib/env/runtime-env'
 import { type ClerkWebhookEvent } from '@/lib/validation/clerk-webhook'
@@ -82,9 +85,9 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   const customerId = rows[0]?.stripeCustomerId
 
   // F-5 fix-up (review M-1): users 未同期 (user.created webhook が user.deleted より
-  // 遅れて到達した順序逆転 edge case) は deletion_failures.user_id uuid NOT NULL に
-  // 書けず audit 不可。silent skip させず notifyOps で観測性を確保し、OT が Clerk
-  // webhook 配送順序の異常を検知できるようにする。
+  // 遅れて到達した順序逆転 edge case) は internalUserId が引けず、削除処理も台帳記録も
+  // 行えない。silent skip させず notifyOps で観測性を確保し、OT が Clerk webhook 配送
+  // 順序の異常を検知できるようにする。
   if (!internalUserId) {
     await notifyOps('user.deleted received but users row not synced', {
       clerkUserId,
@@ -202,18 +205,28 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   )
 }
 
-/**
- * §6: deletion_failures 書き込み + notifyOps の合成。
- * DB 書き込み (audit、真実) → notifyOps (人通知、best-effort) の順。
- * notifyOps 自身が throw しない設計なので順序による副作用なし。
- *
- * F-5: deletion_failures が Option A (uuid user_id + clerk_id text) に切替済。
- *   internalUserId (users.id 内部 UUID、grouping/template 一貫性) と
- *   clerkUserId (Clerk Dashboard で grep 用) を別 column に書く。
- *
- * kind='data_deletion': DB transaction 失敗 (subId=null)。subject は別文言。
- * kind∈{list,cancel,customer_missing}: Stripe cancel 失敗。subject は既存文言 (byte 不変)。
- */
+// Sprint 2 §6 site 4: 削除フローの失敗を integration_failures 台帳 (真実) に記録し
+// つつ Discord へ通知する。旧 recordFailure (廃止した専用 audit table への直書き) を
+// recordIntegrationFailure helper 呼び出しに置換した。
+//
+// 旧 kind → catalog key の写像 (§5): cancel→deletion_cancel / list→deletion_list /
+// customer_missing→deletion_customer_missing / data_deletion→deletion_data。
+// 4 軸値は catalog から引かれる (呼び出し側は 4 軸を自由文字列で渡さない)。
+//
+// Discord は byte 不変: subject 2 分岐 (data_deletion → 'user data deletion failure' /
+// それ以外 → 'stripe sub cancel failure during deletion') と context (旧 kind 文字列を
+// 含む) を verbatim で helper に渡す。context の kind は catalog key ではなく旧 kind 値
+// を保持し、既存 Discord payload を一切変えない。
+const KIND_TO_KEY: Record<
+  'list' | 'cancel' | 'customer_missing' | 'data_deletion',
+  IntegrationFailureKey
+> = {
+  cancel: 'deletion_cancel',
+  list: 'deletion_list',
+  customer_missing: 'deletion_customer_missing',
+  data_deletion: 'deletion_data',
+}
+
 async function recordFailure(args: {
   internalUserId: string
   clerkUserId: string
@@ -221,29 +234,29 @@ async function recordFailure(args: {
   kind: 'list' | 'cancel' | 'customer_missing' | 'data_deletion'
   errorMessage: string
 }): Promise<void> {
-  const db = getDb()
-  await db.insert(deletionFailures).values({
-    userId: args.internalUserId,
-    clerkId: args.clerkUserId,
-    subId: args.subId,
-    failureKind: args.kind,
-    errorMessage: args.errorMessage,
-  })
-  // Phase 1 E-3 spec: recordFailure は subject が webhook error と異なる (削除フロー
-  // 専用の per-sub cancel 失敗) ため notifyWebhookError には乗せない。代わりに
-  // environment + timestamp を inline 注入し、payload baseline を揃える。
+  // Phase 1 E-3 spec: subject が webhook error と異なる (削除フロー専用) ため
+  // notifyWebhookError には乗せず、environment + timestamp を inline 注入して
+  // payload baseline を揃える (byte 不変)。
   const subject =
     args.kind === 'data_deletion'
       ? 'user data deletion failure'
       : 'stripe sub cancel failure during deletion'
-  await notifyOps(subject, {
+  await recordIntegrationFailure({
+    key: KIND_TO_KEY[args.kind],
     userId: args.internalUserId,
     clerkId: args.clerkUserId,
-    subId: args.subId,
-    kind: args.kind,
-    error: args.errorMessage,
-    environment: runtimeEnv(),
-    timestamp: new Date().toISOString(),
+    stripeSubscriptionId: args.subId ?? undefined,
+    errorMessage: args.errorMessage,
+    subject,
+    context: {
+      userId: args.internalUserId,
+      clerkId: args.clerkUserId,
+      subId: args.subId,
+      kind: args.kind,
+      error: args.errorMessage,
+      environment: runtimeEnv(),
+      timestamp: new Date().toISOString(),
+    },
   })
 }
 

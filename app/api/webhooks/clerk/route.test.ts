@@ -63,6 +63,8 @@ vi.mock('@/lib/auth/clerk-metadata', () => ({
 }))
 
 import { POST } from './route'
+import { integrationFailures } from '@/lib/db/schema'
+import { INTEGRATION_FAILURE_CATALOG } from '@/lib/integration-failures'
 
 const SECRET = 'whsec_test_for_unit'
 
@@ -86,12 +88,30 @@ function chain(resolveTo: unknown = undefined) {
   return c
 }
 
+// Sprint 2 dual-write: recordFailure が recordIntegrationFailure 経由で
+// getDb().insert(integrationFailures).values({...}) を呼ぶ。mockDbInsert は
+// clerk_events (idempotency) と integration_failures (ledger) の両方で呼ばれるため、
+// 第 1 引数が integrationFailures の call だけを対象に row を拾う。
+function integrationInsertRow(): Record<string, unknown> | undefined {
+  const idx = mockDbInsert.mock.calls.findIndex((c) => c[0] === integrationFailures)
+  if (idx === -1) return undefined
+  const chainObj = mockDbInsert.mock.results[idx].value as {
+    values: ReturnType<typeof vi.fn>
+  }
+  return chainObj.values.mock.calls[0]?.[0] as Record<string, unknown> | undefined
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.CLERK_WEBHOOK_SECRET = SECRET
   mockNotifyOps.mockResolvedValue(undefined)
   mockCancelWithRetry.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
+  // ledger INSERT の default chain。idempotency INSERT の mockReturnValueOnce 消費後に
+  // helper の integration_failures INSERT が undefined を返して throw-safe path
+  // (ledgerWriteError) へ落ちないよう default を敷く。各 test は clerk_events を
+  // mockReturnValueOnce で先に消費する。
+  mockDbInsert.mockReturnValue(chain(undefined))
   // デフォルト: transaction は callback をそのまま実行する (tx は db と同 shape)
   mockDbTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -264,7 +284,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
   })
 
   it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で Group I 10 子テーブル DELETE も発火', async () => {
-    // GDPR 要件: users 行は監査 (deletion_failures.user_id FK / stripe correlation) の
+    // GDPR 要件: users 行は監査 (integration_failures user_id 相関 / stripe correlation) の
     // ため残置するが PII 列 (email, clerk_id) は退会と同じ transaction で NULL に
     // 書き換える。 stripe_customer_id (cus_xxx) は個人特定不能で監査 correlation key
     // のため保持 — SET 引数に含めない。
@@ -335,7 +355,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockDbSelect).toHaveBeenCalledTimes(1)
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).not.toHaveBeenCalled()
-    expect(mockDbInsert).toHaveBeenCalledTimes(1) // clerk_events のみ、deletion_failures に書かない
+    expect(mockDbInsert).toHaveBeenCalledTimes(1) // clerk_events のみ、integration_failures に書かない
     expect(mockNotifyOps).toHaveBeenCalledOnce()
     expect(mockNotifyOps.mock.calls[0]![0]).toBe(
       'user.deleted received but users row not synced',
@@ -364,13 +384,13 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
-  it('transaction 失敗 (permanent error): recordFailure(kind=data_deletion) → notifyOps subject="user data deletion failure", retry なし', async () => {
+  it('transaction 失敗 (permanent error): integration_failures (deletion_data) → notifyOps subject="user data deletion failure", retry なし', async () => {
     // I-2 realistic harness: tx.update が permanent pg error (23505 = unique violation)
     // を throw する。transaction callback が reject → retry せず即 recordFailure。
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-      .mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+      .mockReturnValueOnce(chain(undefined)) // integration_failures INSERT
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: null }]),
     )
@@ -391,12 +411,26 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(res.status).toBe(200)
     // permanent → retry なし = transaction は 1 回のみ
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // deletion_failures INSERT が呼ばれる
+    // integration_failures INSERT が呼ばれる
     expect(mockDbInsert).toHaveBeenCalledTimes(2)
+    // Discord notify は byte 不変 (subject 別文言 + context の kind は旧 'data_deletion')
     expect(mockNotifyOps).toHaveBeenCalledOnce()
     expect(mockNotifyOps.mock.calls[0]![0]).toBe('user data deletion failure')
     const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
     expect(ctx.kind).toBe('data_deletion')
+    // dual-write: ledger 行に catalog の 4 軸 (deletion_data) + 型付き ref。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.deletion_data
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      userId: '00000000-0000-0000-0000-0000000000a1',
+      clerkId: 'user_1',
+    })
+    expect(row!.stripeSubscriptionId).toBeUndefined() // subId=null → helper が undefined 化 (ref 列を省略 = DB は NULL)
   })
 
   it('重複 svix-id (idempotency skip): 2 回目は handler 未到達で 200 "duplicate"', async () => {
@@ -413,11 +447,11 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
-  it('個別 cancel 失敗: deletion_failures + notifyOps を per-sub で呼び loop 継続 + transaction 実行', async () => {
+  it('個別 cancel 失敗: integration_failures (deletion_cancel) + notifyOps を per-sub で呼び loop 継続 + transaction 実行', async () => {
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-      .mockReturnValueOnce(chain(undefined)) // deletion_failures (sub_a 失敗)
+      .mockReturnValueOnce(chain(undefined)) // integration_failures (sub_a 失敗)
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: 'cus_1' }]),
     )
@@ -437,20 +471,36 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
     expect(res.status).toBe(200)
     expect(mockCancelWithRetry).toHaveBeenCalledTimes(2)
-    expect(mockDbInsert).toHaveBeenCalledTimes(2) // clerk_events + deletion_failures × 1
+    expect(mockDbInsert).toHaveBeenCalledTimes(2) // clerk_events + integration_failures × 1
+    // Discord notify は byte 不変 (subject / context 不変。context の kind は旧 'cancel')
     expect(mockNotifyOps).toHaveBeenCalledOnce()
     expect(mockNotifyOps.mock.calls[0]![0]).toBe(
       'stripe sub cancel failure during deletion',
     )
+    expect(mockNotifyOps.mock.calls[0]![1]).toMatchObject({ kind: 'cancel' })
+    // dual-write: ledger 行に catalog の 4 軸 (deletion_cancel) + 型付き ref。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.deletion_cancel
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      userId: '00000000-0000-0000-0000-0000000000a1',
+      clerkId: 'user_1',
+      stripeSubscriptionId: 'sub_a',
+      errorMessage: 'Error: stripe error mid-cancel',
+    })
     // Stripe 失敗後も transaction が走る (forward-only)
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
   })
 
-  it('list 失敗 (customer_missing): kind=customer_missing で recordFailure + transaction 実行', async () => {
+  it('list 失敗 (customer_missing): integration_failures (deletion_customer_missing) で recordFailure + transaction 実行', async () => {
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-      .mockReturnValueOnce(chain(undefined)) // deletion_failures
+      .mockReturnValueOnce(chain(undefined)) // integration_failures
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000a2', stripeCustomerId: 'cus_gone' }]),
     )
@@ -469,10 +519,28 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
     expect(res.status).toBe(200)
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
+    // Discord notify は byte 不変 (context の kind は旧 'customer_missing')
     expect(mockNotifyOps).toHaveBeenCalledOnce()
+    expect(mockNotifyOps.mock.calls[0]![0]).toBe(
+      'stripe sub cancel failure during deletion',
+    )
     expect(mockNotifyOps.mock.calls[0]![1]).toMatchObject({
       kind: 'customer_missing',
     })
+    // dual-write: ledger 行に catalog の 4 軸 (deletion_customer_missing) + 型付き ref。
+    // subId=null ゆえ stripeSubscriptionId は null。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.deletion_customer_missing
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      userId: '00000000-0000-0000-0000-0000000000a2',
+      clerkId: 'user_1',
+    })
+    expect(row!.stripeSubscriptionId).toBeUndefined() // subId=null → helper が undefined 化 (ref 列を省略 = DB は NULL)
     // customer_missing 後も transaction は実行される (forward-only)
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
   })
@@ -573,7 +641,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     it('② transient error (40P01) で 4 回全失敗 → recordFailure(data_deletion), errorMessage に試行回数 + code', async () => {
       mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r2' } })
       setupUserAndNoStripe()
-      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // integration_failures INSERT
 
       const transientErr = Object.assign(new Error('deadlock detected'), { code: '40P01' })
       mockDbTransaction.mockImplementation(
@@ -606,7 +674,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     it('③ permanent error (23505 = unique violation) → retry せず即 recordFailure', async () => {
       mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r3' } })
       setupUserAndNoStripe()
-      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // integration_failures INSERT
 
       const permanentErr = Object.assign(new Error('unique constraint'), { code: '23505' })
       mockDbTransaction.mockImplementation(
@@ -677,7 +745,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     it('⑤ errorMessage に試行回数 + pg code が含まれる (I-3 診断値検証)', async () => {
       mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_r5' } })
       setupUserAndNoStripe()
-      mockDbInsert.mockReturnValueOnce(chain(undefined)) // deletion_failures INSERT
+      mockDbInsert.mockReturnValueOnce(chain(undefined)) // integration_failures INSERT
 
       // permanent error で即停止 → errorMessage を検証
       const pgErr = Object.assign(new Error('FK violation'), { code: '23503', detail: 'foreign key constraint' })
@@ -705,11 +773,11 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     })
   })
 
-  it('page-level partial 失敗: canceledIds + offset を error_message に詰める + transaction 実行', async () => {
+  it('page-level partial 失敗 (deletion_list): canceledIds + offset を error_message に詰める + transaction 実行', async () => {
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-      .mockReturnValueOnce(chain(undefined)) // deletion_failures (list 失敗)
+      .mockReturnValueOnce(chain(undefined)) // integration_failures (list 失敗)
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: 'cus_1' }]),
     )
@@ -728,11 +796,30 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
     expect(res.status).toBe(200)
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_a')
+    // Discord notify は byte 不変 (context の kind は旧 'list'・error 文言不変)
     expect(mockNotifyOps).toHaveBeenCalledOnce()
+    expect(mockNotifyOps.mock.calls[0]![0]).toBe(
+      'stripe sub cancel failure during deletion',
+    )
     const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
     expect(ctx.kind).toBe('list')
     expect(String(ctx.error)).toMatch(/page fetch failed at offset 1/)
     expect(String(ctx.error)).toMatch(/Canceled before failure: \[sub_a\]/)
+    // dual-write: ledger 行に catalog の 4 軸 (deletion_list) + 型付き ref。
+    // subId=null ゆえ stripeSubscriptionId は null。errorMessage = notify context.error と同一。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.deletion_list
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      userId: '00000000-0000-0000-0000-0000000000a1',
+      clerkId: 'user_1',
+    })
+    expect(row!.stripeSubscriptionId).toBeUndefined() // subId=null → helper が undefined 化 (ref 列を省略 = DB は NULL)
+    expect(String(row!.errorMessage)).toMatch(/page fetch failed at offset 1/)
     // list 失敗後も transaction は実行される (forward-only)
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
   })

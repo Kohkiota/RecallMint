@@ -19,7 +19,7 @@
 // mode: 'string'。
 // ルール B: stripe_events / ai_usage / clerk_events を除く全 table に user_id を
 // 持ち、 users.id (UUID) に FK。 auth provider 切替時の影響を Clerk 関連 column
-// のみに局所化。 deletion_failures は audit table で FK なし
+// のみに局所化。 integration_failures は audit table で FK なし
 // (template ポータビリティ重視)。
 //
 // 詳細: docs/02-tech-spec.md §2 / lessons/2026-04-30-users-schema-decoupling.md
@@ -206,32 +206,12 @@ export const clerkEvents = pgTable('clerk_events', {
 })
 
 // ---------------------------------------------------------------------------
-// deletion_failures (Stripe cancel 失敗 audit、FK 制約なし) — 変更なし
-// user_id (uuid) と clerk_id (text) を両保持: UUID 軸 grouping + Clerk
-// Dashboard で grep する audit context 維持。
-// 詳細: lessons/2026-04-30-users-schema-decoupling.md
-// ---------------------------------------------------------------------------
-export const deletionFailures = pgTable('deletion_failures', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull(),
-  clerkId: text('clerk_id').notNull(),
-  subId: text('sub_id'),
-  failureKind: text('failure_kind')
-    .$type<'list' | 'cancel' | 'customer_missing' | 'data_deletion'>()
-    .notNull(),
-  errorMessage: text('error_message').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
-})
-
-// ---------------------------------------------------------------------------
-// integration_failures (課金系・外部連携の失敗を SQL で引ける台帳。deletion_failures
-// の一般化)。4 軸判別列 (service / operation / workflow / failure_code) の語彙と
+// integration_failures (課金系・外部連携の失敗を SQL で引ける台帳。Sprint 2 で旧
+// 削除失敗専用 audit table を廃止し本 table に一般化・吸収)。4 軸判別列
+// (service / operation / workflow / failure_code) の語彙と
 // 組合せの妥当性は DB CHECK でなくコード側 catalog (lib/integration-failures.ts)
 // で enforce するため $type<> union は付けない (catalog を語彙の SSoT に一本化)。
-// FK なし (deletion_failures 踏襲・audit 行は user 削除後も残置)。
+// FK なし (audit 行は user 削除後も残置)。
 // user_id / error_message nullable (webhook 文脈に userId 無し・anomaly 検知系は
 // 合成エラー文字列を作らない)。retry_count / next_retry_at / resolved_at /
 // resolution_note は手動回収用で Sprint 2 では読み書きしない (dormant)。index は
@@ -831,8 +811,6 @@ export type AiUsageUser = typeof aiUsageUsers.$inferSelect
 export type StripeEvent = typeof stripeEvents.$inferSelect
 export type ClerkEvent = typeof clerkEvents.$inferSelect
 export type NewClerkEvent = typeof clerkEvents.$inferInsert
-export type DeletionFailure = typeof deletionFailures.$inferSelect
-export type NewDeletionFailure = typeof deletionFailures.$inferInsert
 export type IntegrationFailure = typeof integrationFailures.$inferSelect
 export type NewIntegrationFailure = typeof integrationFailures.$inferInsert
 export type Exam = typeof exams.$inferSelect
