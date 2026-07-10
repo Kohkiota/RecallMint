@@ -28,9 +28,14 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'scheduled_downgrade',
     failureCode: 'state_mismatch',
   },
-  // workflow=null: 記録 site (clerk-metadata.ts) は user.created 初期 sync / Stripe plan
-  // sync の複数文脈から呼ばれ、site 単独で文脈を特定できない (誤った固定値を書くより
-  // NULL)。呼び出し元識別は verbatim 保存される context 側で判別する。
+  // workflow=null: 記録 site (clerk-metadata.ts) は複数文脈から呼ばれ、site 単独で
+  // 文脈を特定できない (誤った固定値を書くより NULL)。caller-trace (Task 2 実確認):
+  //   init sync (handle-clerk-event.ts user.created) → context.keys = ['dbUserId','plan']
+  //   Stripe plan sync (handle-stripe-event.ts .deleted / project-subscription.ts) → ['plan']
+  //   backfill script (backfill-clerk-metadata.ts) → ['dbUserId','plan']
+  // ゆえ context.keys で「Stripe plan sync (['plan'])」対「init sync or backfill
+  // (['dbUserId','plan'])」の傾向推測は可能だが、init sync と backfill は同一 keys で
+  // 厳密判別は不能。これを許容し workflow=null を維持する (override 引数は入れない = 4 軸原則)。
   clerk_sync: {
     service: 'clerk',
     operation: 'user.public_metadata.sync',

@@ -49,6 +49,8 @@ vi.mock('@/lib/stripe/subscription', () => ({
 }))
 
 import { POST } from './route'
+import { integrationFailures } from '@/lib/db/schema'
+import { INTEGRATION_FAILURE_CATALOG } from '@/lib/integration-failures'
 
 const SECRET = 'whsec_test_for_stripe_unit'
 
@@ -84,7 +86,24 @@ beforeEach(() => {
   mockNotifyOps.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
   mockReleaseCompletedDowngrade.mockResolvedValue('released')
+  // recordIntegrationFailure (dual-write) は getDb().insert(integrationFailures) を
+  // 呼ぶため、 idempotency INSERT (mockReturnValueOnce) 消費後の追加 insert が
+  // undefined を返さないよう default chain を敷く。 これがないと helper の INSERT が
+  // fail し throw-safe path (ledgerWriteError) に落ちて dual-write の row を検証できない。
+  mockDbInsert.mockReturnValue(chain())
 })
+
+// dual-write: getDb().insert(integrationFailures).values({...}) に渡った row を拾う。
+// mockDbInsert は idempotency (stripeEvents) と ledger (integrationFailures) の両方で
+// 呼ばれるため、 第 1 引数が integrationFailures の call だけを対象にする。
+function integrationInsertRow(): Record<string, unknown> | undefined {
+  const idx = mockDbInsert.mock.calls.findIndex((c) => c[0] === integrationFailures)
+  if (idx === -1) return undefined
+  const chainObj = mockDbInsert.mock.results[idx].value as {
+    values: ReturnType<typeof vi.fn>
+  }
+  return chainObj.values.mock.calls[0]?.[0] as Record<string, unknown> | undefined
+}
 
 function makeReq(body: unknown): Request {
   return new Request('https://test/api/webhooks/stripe', {
@@ -1045,12 +1064,35 @@ describe('Stripe webhook: release gate (§6.4)', () => {
     expect(res.status).toBe(200)
 
     expect(mockReleaseCompletedDowngrade).not.toHaveBeenCalled()
+    // Sprint 2 dual-write: integration_failures INSERT (ledger) + plan-sync UPDATE。
+    // db.update は plan-sync の 1 回のみ (clear なし)、 ledger は db.insert 側。
     expect(mockDbUpdate).toHaveBeenCalledTimes(1)
+    // Discord notify は byte 不変 (helper 内部で発火)。 subject / context 不変。
     expect(mockNotifyOps).toHaveBeenCalledTimes(1)
     expect(mockNotifyOps).toHaveBeenCalledWith(
-      expect.stringMatching(/schedule.*mismatch/i),
-      expect.objectContaining({ customerId: 'cus_gate_6' }),
+      'stripe release gate schedule mismatch',
+      expect.objectContaining({
+        customerId: 'cus_gate_6',
+        subScheduleId: 'sched_other',
+        dbScheduleId: 'sched_x',
+      }),
     )
+    // dual-write: ledger 行に catalog の 4 軸 (stripe_gate_mismatch) + 型付き ref。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.stripe_gate_mismatch
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      stripeCustomerId: 'cus_gate_6',
+      stripeSubscriptionId: 'sub_unit',
+      scheduleId: 'sched_x',
+    })
+    // anomaly 検知系ゆえ errorMessage は NULL (subScheduleId は context 内)。
+    expect(row!.errorMessage).toBeUndefined()
+    expect(row!.context).toMatchObject({ subScheduleId: 'sched_other' })
   })
 
   it('DB scheduledDowngradeScheduleId null (予約なし) → gate 全 skip (sub.schedule あっても)', async () => {
@@ -1118,15 +1160,33 @@ describe('Stripe webhook: release gate (§6.4)', () => {
         scheduledChangeEffectiveAt: null,
       }),
     )
-    // release 失敗の notifyOps に scheduleId / targetPriceId が載る。
+    // release 失敗の notifyOps に scheduleId / targetPriceId が載る (Discord byte 不変)。
     expect(mockNotifyOps).toHaveBeenCalledTimes(1)
     expect(mockNotifyOps).toHaveBeenCalledWith(
-      expect.stringMatching(/autorelease failed/i),
+      'stripe autorelease failed (reservation cleared)',
       expect.objectContaining({
         scheduleId: 'sched_x',
         targetPriceId: PRICE.STANDARD_MONTHLY,
+        error: expect.any(Error),
       }),
     )
+    // Sprint 2 dual-write: ledger 行に catalog の 4 軸 (stripe_release) + 型付き ref +
+    // caught error の errorMessage。
+    const row = integrationInsertRow()
+    expect(row).toBeDefined()
+    const axes = INTEGRATION_FAILURE_CATALOG.stripe_release
+    expect(row).toMatchObject({
+      service: axes.service,
+      operation: axes.operation,
+      workflow: axes.workflow,
+      failureCode: axes.failureCode,
+      stripeCustomerId: 'cus_r_n1',
+      stripeSubscriptionId: 'sub_unit',
+      scheduleId: 'sched_x',
+      errorMessage: 'release boom',
+    })
+    // targetPriceId は独立列にせず context 内に残す。
+    expect(row!.context).toMatchObject({ targetPriceId: PRICE.STANDARD_MONTHLY })
   })
 
   it('N-2: delegate + release 成功 → clear が release より先に呼ばれる (呼出順)', async () => {

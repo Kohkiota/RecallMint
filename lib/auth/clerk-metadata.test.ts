@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ClerkAPIResponseError } from '@clerk/nextjs/errors'
 
 // ---------------------------------------------------------------------------
-// Clerk SDK + ops module を hoisted mock。 clerk webhook test 同 pattern。
+// Clerk SDK + integration-failures helper を hoisted mock。 Sprint 2 で site 3 は
+// notifyOps を直接叩かず recordIntegrationFailure 経由の dual-write になったため、
+// mock 対象を helper に切替 (INSERT→notifyOps は helper unit test で担保)。
 // ---------------------------------------------------------------------------
-const { mockUpdateUserMetadata, mockNotifyOps } = vi.hoisted(() => ({
+const { mockUpdateUserMetadata, mockRecordIntegrationFailure } = vi.hoisted(() => ({
   mockUpdateUserMetadata: vi.fn(),
-  mockNotifyOps: vi.fn().mockResolvedValue(undefined),
+  mockRecordIntegrationFailure: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@clerk/nextjs/server', () => ({
@@ -15,8 +17,8 @@ vi.mock('@clerk/nextjs/server', () => ({
   }),
 }))
 
-vi.mock('@/lib/ops', () => ({
-  notifyOps: mockNotifyOps,
+vi.mock('@/lib/integration-failures', () => ({
+  recordIntegrationFailure: mockRecordIntegrationFailure,
 }))
 
 import { syncClerkPublicMetadata } from './clerk-metadata'
@@ -68,17 +70,41 @@ describe('syncClerkPublicMetadata', () => {
     expect(mockUpdateUserMetadata).not.toHaveBeenCalled()
   })
 
-  it('Clerk API が throw したら notifyOps を呼び ok:false を返す (webhook 200 維持)', async () => {
+  it('Clerk API が throw したら recordIntegrationFailure を呼び ok:false を返す (webhook 200 維持)', async () => {
     mockUpdateUserMetadata.mockRejectedValueOnce(new Error('Clerk 5xx'))
     const result = await syncClerkPublicMetadata({
       clerkId: 'user_1',
+      dbUserId: 'db-uuid-1',
       plan: 'pro',
     })
     expect(result.ok).toBe(false)
-    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
-    const [, ctx] = mockNotifyOps.mock.calls[0]!
-    expect((ctx as { clerkId: string }).clerkId).toBe('user_1')
-    expect((ctx as { keys: string[] }).keys).toContain('plan')
+    // Sprint 2 dual-write: catalog key clerk_sync + 型付き ref (clerkId / userId) +
+    // errorMessage、 context は byte 不変 (clerkId / keys / error を verbatim)。
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledTimes(1)
+    const [args] = mockRecordIntegrationFailure.mock.calls[0]!
+    const a = args as {
+      key: string
+      clerkId: string
+      userId?: string
+      errorMessage: string
+      subject: string
+      context: { clerkId: string; keys: string[] }
+    }
+    expect(a.key).toBe('clerk_sync')
+    expect(a.clerkId).toBe('user_1')
+    expect(a.userId).toBe('db-uuid-1')
+    expect(a.errorMessage).toBe('Clerk 5xx')
+    expect(a.subject).toBe('clerk publicMetadata sync failed')
+    expect(a.context.clerkId).toBe('user_1')
+    expect(a.context.keys).toContain('plan')
+    expect(a.context.keys).toContain('dbUserId')
+  })
+
+  it('dbUserId 未指定なら ref userId は undefined (ref は present 時のみ)', async () => {
+    mockUpdateUserMetadata.mockRejectedValueOnce(new Error('Clerk 5xx'))
+    await syncClerkPublicMetadata({ clerkId: 'user_1', plan: 'pro' })
+    const [args] = mockRecordIntegrationFailure.mock.calls[0]!
+    expect((args as { userId?: string }).userId).toBeUndefined()
   })
 
   it('Clerk API throw 時も throw せず resolve する (webhook 200 維持の不変条件)', async () => {
@@ -107,7 +133,7 @@ describe('syncClerkPublicMetadata', () => {
       debugSpy.mockRestore()
     })
 
-    it('Clerk 404 では notifyOps を fire せず ok:true を返し、 console.debug を 1 回呼ぶ', async () => {
+    it('Clerk 404 では recordIntegrationFailure を fire せず (ledger 行なし) ok:true を返し、 console.debug を 1 回呼ぶ', async () => {
       // ClerkAPIResponseError(status=404) を inject。 isClerkAPIResponseError
       // type guard を通すために実 SDK class を使用。
       const err = new ClerkAPIResponseError('Not Found', {
@@ -122,8 +148,9 @@ describe('syncClerkPublicMetadata', () => {
         plan: 'free',
       })
 
-      // (1) notifyOps が呼ばれていない (silent skip の中核)
-      expect(mockNotifyOps).not.toHaveBeenCalled()
+      // (1) recordIntegrationFailure が呼ばれていない = ledger 行なし (silent skip の
+      // 中核。 404 = 同期対象不在 = 失敗でないので台帳に残さない)
+      expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
       // (2) 戻り値は ok:true (user 不在 = 同期不要 = success の semantics)
       expect(result).toEqual({ ok: true })
       // (3) console.debug が 1 回呼出され、 第 1 引数に 'user not found' を含む

@@ -21,7 +21,7 @@
 
 import { clerkClient } from '@clerk/nextjs/server'
 import { isClerkAPIResponseError } from '@clerk/nextjs/errors'
-import { notifyOps } from '@/lib/ops'
+import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { runtimeEnv } from '@/lib/env/runtime-env'
 import type { Plan } from './plan-limits'
 
@@ -58,12 +58,24 @@ export async function syncClerkPublicMetadata(
       })
       return { ok: true }
     }
-    await notifyOps('clerk publicMetadata sync failed', {
+    // workflow=null: この site は user.created 初期 sync / Stripe plan sync の複数
+    // 文脈から呼ばれ、site 単独で文脈を特定できないため catalog は workflow=null。
+    // 後段の手動 SQL では context.keys で傾向推測のみ可能 (['plan'] = Stripe plan
+    // sync / ['dbUserId','plan'] = 初期 sync or backfill script。初期 sync と backfill
+    // は同一 keys ゆえ厳密判別は不能・許容)。詳細: integration-failures.ts clerk_sync entry。
+    await recordIntegrationFailure({
+      key: 'clerk_sync',
       clerkId,
-      keys: Object.keys(metadata),
-      error: err instanceof Error ? err.message : String(err),
-      environment: runtimeEnv(),
-      timestamp: new Date().toISOString(),
+      userId: dbUserId,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      subject: 'clerk publicMetadata sync failed',
+      context: {
+        clerkId,
+        keys: Object.keys(metadata),
+        error: err instanceof Error ? err.message : String(err),
+        environment: runtimeEnv(),
+        timestamp: new Date().toISOString(),
+      },
     })
     return { ok: false }
   }

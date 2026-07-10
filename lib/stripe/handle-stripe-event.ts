@@ -17,6 +17,7 @@ import {
 } from '@/lib/stripe/subscription-repository'
 import { projectStripeSubscription } from '@/lib/stripe/project-subscription'
 import { notifyOps } from '@/lib/ops'
+import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import { releaseCompletedDowngrade } from '@/lib/stripe/subscription'
 import { runtimeEnv } from '@/lib/env/runtime-env'
@@ -232,13 +233,22 @@ async function evaluateReleaseGate(args: {
       )
       return
     case 'mismatch':
-      await notifyOps('stripe release gate schedule mismatch', {
-        eventId,
-        customerId,
-        subScheduleId,
-        dbScheduleId,
-        environment: runtimeEnv(),
-        timestamp: new Date().toISOString(),
+      // errorMessage は none: anomaly 検知 (state_mismatch) で例外由来でなく、
+      // subScheduleId は context 内に残す (subject / context は byte 不変)。
+      await recordIntegrationFailure({
+        key: 'stripe_gate_mismatch',
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: sub.id,
+        scheduleId: dbScheduleId,
+        subject: 'stripe release gate schedule mismatch',
+        context: {
+          eventId,
+          customerId,
+          subScheduleId,
+          dbScheduleId,
+          environment: runtimeEnv(),
+          timestamp: new Date().toISOString(),
+        },
       })
       return
     case 'skip':
@@ -274,15 +284,22 @@ async function evaluateReleaseGate(args: {
       try {
         await releaseCompletedDowngrade(dbScheduleId, 'autorelease:' + dbScheduleId)
       } catch (err) {
-        // Sprint 2: この catch が integration_failures dual-write の挿入点。
-        await notifyOps('stripe autorelease failed (reservation cleared)', {
-          eventId,
-          customerId,
+        await recordIntegrationFailure({
+          key: 'stripe_release',
+          stripeCustomerId: customerId,
+          stripeSubscriptionId: sub.id,
           scheduleId: dbScheduleId,
-          targetPriceId: dbTargetPriceId,
-          error: err,
-          environment: runtimeEnv(),
-          timestamp: new Date().toISOString(),
+          errorMessage: err instanceof Error ? err.message : String(err),
+          subject: 'stripe autorelease failed (reservation cleared)',
+          context: {
+            eventId,
+            customerId,
+            scheduleId: dbScheduleId,
+            targetPriceId: dbTargetPriceId,
+            error: err,
+            environment: runtimeEnv(),
+            timestamp: new Date().toISOString(),
+          },
         })
       }
       return
