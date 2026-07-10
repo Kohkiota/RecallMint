@@ -4,6 +4,7 @@
 - 前提 doc: `docs/audit/2026-07-10-reconciliation-infra-factfinding.md`(fact-finding 完了済み・追加調査なし)
 - 位置づけ: reconciliation program の Sprint 2(= fact-finding の Phase B1 相当)。Sprint 1(clear decouple, `cb7ce29`)で correctness は解消済み。本 sprint は**記録配線のみ(additive)**。
 - 改訂 2026-07-10: 分類モデルを「kind 単一 union(7 値)」から「**4 軸判別列 + コード側 catalog**」に変更(GPT cross-check + claude.ai 統合判断)。分類軸を kind 文字列に圧縮すると集計が文字列規約(`LIKE 'deletion_%'`)依存になるため、独立に検索・集計する軸は独立列にする。組合せ安全は DB CHECK でなくコード catalog で enforce(kind 追加 = catalog 1 entry のみ・DDL 不要)。
+- 最終改訂 2026-07-10: Codex cross-check(`docs/codex/2026-07-10-plan-sprint2-integration-failures-spec.md`)統合反映 — 文書化・完了条件 6 点を追加(schema / catalog / helper 契約 / 配線 4 系統は不変)。却下 = DB CHECK 追加 / partial index 前倒し / workflow override 引数 / S4・S6 の Sprint 2 対象化(いずれも既決: catalog SSoT / YAGNI / 4 軸原則 / round 1 中核確定)。
 
 ## 1. 目的
 
@@ -25,7 +26,7 @@
 
 **Out**(将来 catalog 追加・cron 導入で additive に足せる形は維持する):
 - 回収ロジック・cron route・`vercel.json` crons(fact-finding Phase B2)
-- S4(A-3 drift)/ S6(unlinked customer)/ S5(unresolved)/ S7(price anomaly)/ S3(current_phase null)/ C2(user.deleted 未同期)— 現状どおり notifyOps のみ
+- S4(A-3 drift)/ S6(unlinked customer)/ S5(unresolved)/ S7(price anomaly)/ S3(current_phase null)/ C2(user.deleted 未同期)— 現状どおり notifyOps のみ。S4/S6 は fact-finding で回収要否が中以上だが、Sprint 2 は中核(課金整合の orphan / gate mismatch・Clerk sync・削除)に絞る round 1 確定判断ゆえ対象外 — 将来 catalog entry 追加で additive に取り込める
 - 既存挙動の変更(W)。Discord 通知の subject / payload は正常経路 byte 不変(例外は §5 の台帳書込失敗フラグのみ)
 - Sprint 1 golden test が pin した clear / release 順序への干渉
 - `resolution_note` を読み書きするアプリコード(手動 SQL 専用列)
@@ -87,7 +88,7 @@ export const INTEGRATION_FAILURE_CATALOG = {
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
 ```
 
-- catalog key はコード内 handle(DB には入らない。DB に入るのは 4 軸値のみ。現 7 entry の 4 軸 tuple は全て相異なる)。
+- catalog key はコード内 handle(DB には入らない。DB に入るのは 4 軸値のみ。現 7 entry の 4 軸 tuple は全て相異なる)。**4 軸 tuple は stable identifier** として扱う: catalog の 4 軸値変更は原則「新 entry 追加」で行い、既存 tuple の rename はしない(既存 DB 行との意味継続のため)。
 - 写像確定の根拠(実コード確認済):
   - `deletion_list` / `deletion_customer_missing` は**同一 API call**(`stripe.subscriptions.list`)の失敗態様違い — page fetch 失敗 = `external_api_error`、customer `resource_missing`(DB が指す customer が Stripe に不在)= `state_mismatch`。operation を共有し failure_code で判別。
   - `deletion_data` は外部 service でなく**自 DB transaction**(soft delete + 子テーブル削除)の失敗 → service = 'db'、failure_code = 'db_error'(語彙に追加)。
@@ -115,6 +116,7 @@ export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
 
 - site 1 は seam コメント(`// Sprint 2: この catch が integration_failures dual-write の挿入点。`)を消化・削除する。targetPriceId は独立列にせず context 内に verbatim 残存(§4)。
 - site 3 の `syncClerkPublicMetadata` は throw せず `ok:false` を返す既存ポリシを維持(helper 呼出も await するだけで戻り値契約は不変)。404 silent skip は記録対象外(end-state 一致 = 失敗でない)。
+- site 3 の workflow=null の可観測性(**plan 確認事項**): workflow override 引数は入れない(自由文字列で 4 軸を渡さない原則・将来は呼び出し元別 catalog entry で割る)。代わりに、verbatim 保存される context(notifyOps payload)に「初期 sync 失敗 / Stripe plan sync 失敗」を後から手動 SQL で判別できる呼び出し元識別情報が実際に含まれるかを**実装時に実コードで確認**し、「context で判別可」/「判別不能を許容」のいずれかを意図的判断として記録する(未確認のまま null にしない)。
 - site 2 の同 switch 内 `clear_direct` / `skip`、および `reservation missing target price`(:252)は対象外(§3 Out)。
 
 ## 7. 不変条件(レビュー観点)
@@ -125,11 +127,15 @@ export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
 4. `retry_count` / `next_retry_at` を読むコード・書くコード(default 以外)、`resolution_note` を読み書きするコードを作らない。
 5. 4 軸値の書込は catalog 経由のみ(自由文字列の 4 軸を helper 入力に持たない)。
 6. 新規 env なし(`.env.example` 変更なし)。
+7. **dual-write 片側成功の許容(順序 pin)**: INSERT 成功後に notifyOps が throw(production misconfig)した場合、DB 行は残り Discord は飛ばない片側成功が起こりうる。これは許容する — 台帳(DB)が真実源であり、Discord 欠落は degraded だが記録は not lost。INSERT→notifyOps の順序はこの設計意図(DB=真実を先に確定)に基づく(順序を蒸し返さない)。逆側(INSERT 失敗 + 通知のみ)は §5 契約 3 の ledgerWriteError 印で可視化済み。
+8. context に**新規 secret を混入させない**(レビュー観点): 既存 notifyOps payload は Discord 既送前提ゆえ DB 保存に流用可。dual-write 化に伴い新規 field で secret / 生 token を足さない。
 
 ## 8. テスト戦略
 
 - **helper unit(新規)**: catalog key → **4 軸値が catalog どおり INSERT される** / INSERT 内容(ref / context verbatim)/ INSERT→notifyOps 順序 / INSERT 失敗時の throw-safe + `ledgerWriteError` 付き notifyOps 継続 / notifyOps throw の伝播。DB / notifyOps は mock(既存 route.test.ts パターン踏襲)。
+- **byte 不変 test は経路分離で assert**: 成功経路 = Discord payload 完全一致(byte 不変)/ INSERT 失敗経路 = `ledgerWriteError` の追加のみ(他 field 不変)。
 - **配線 test(既存拡張)**: 4 site それぞれで「失敗発火 → integration_failures 行 + Discord 呼び出し(subject 不変)」を assert。既存 `deletionFailures` 前提の test(clerk webhook route.test.ts 等)は `integrationFailures` + catalog key 前提に追随。
+- **完了条件(grep / 目視)**: ① `deletionFailures` / `deletion_failures` 参照ゼロを grep で確認(schema / handle-clerk-event / clerk webhook route + test / Drizzle 型)② 生成 migration SQL の内容目視(`CREATE TABLE integration_failures` + `DROP TABLE deletion_failures` が出ていること)。
 - **stg smoke**: 失敗経路の実発火は stg で誘発困難ゆえ unit test を正とし、smoke は ① migration 適用確認(table 存在)② 正常経路 regression(subscription 更新 / user 削除フローが従来どおり)に限定する — この代替は plan に 1 行明記(CLAUDE.md 規律)。
 
 ## 9. Migration / deploy
@@ -138,7 +144,26 @@ export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
 2. zero-users ゆえ `DROP TABLE deletion_failures` は無条件で安全(データ移行・後方互換コードなし)。
 3. 決済経路に触れる fix 扱い: canonical review + Codex 協調 + [reviewed] 規律は通常どおり(dual-write 自体は additive ゆえ Test Clock 実機は不要見込み、plan で確定)。
 
-## 10. 参照
+## 10. 手動回収(runbook)
+
+回収はすべて手動(Supabase SQL / tsx script)。アプリコードは resolved_at / resolution_note を読み書きしない(§7)。
+`next_retry_at` / `retry_count` は**手動運用でも触らない**(cron 導入まで dormant)。
+
+```sql
+-- 未解決一覧
+SELECT * FROM integration_failures WHERE resolved_at IS NULL ORDER BY created_at;
+
+-- 絞り込み例(特定 workflow の未解決。service / failure_code でも同様に絞れる)
+SELECT * FROM integration_failures
+WHERE resolved_at IS NULL AND workflow = 'user_deletion' ORDER BY created_at;
+
+-- 解決時(resolved_at と resolution_note を同時 UPDATE)
+UPDATE integration_failures
+SET resolved_at = now(), resolution_note = '<何をどう回収したか>'
+WHERE id = '<uuid>';
+```
+
+## 11. 参照
 
 - fact-finding: `docs/audit/2026-07-10-reconciliation-infra-factfinding.md`(item 1 棚卸し表 / item 3 設計 3 案 / item 6 既存パターン)
 - 手本: `lib/db/schema.ts:214-227`(deletion_failures)/ `lib/clerk/handle-clerk-event.ts:217-248`(recordFailure)/ `lib/ops.ts:23-79`(notifyOps)
