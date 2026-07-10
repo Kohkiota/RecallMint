@@ -51,6 +51,7 @@
 - **制約(spec §6)**: site 1 = key `stripe_release`・ref stripeCustomerId / stripeSubscriptionId(=sub.id)/ scheduleId(=dbScheduleId)・errorMessage = caught err・**seam コメント(:277)を削除**。site 2 = key `stripe_gate_mismatch`・同 ref・errorMessage NULL(subScheduleId は context 内)。site 3 = key `clerk_sync`・ref clerkId / userId(=input.dbUserId があれば)・**戻り値 `{ok:false}` 契約不変・404 silent skip は記録対象外のまま**。Sprint 1 golden test 不干渉(Global 2)。
 - **site 3 workflow=null の可観測性(spec §6 の plan 確認事項・意図的判断)**:
   - [ ] 現 notifyOps payload(`clerkId` / `keys` / `error`)に呼出元識別が実在するか実コードで再確認する。**先行調査の事実**: `keys` は更新 metadata key の配列で、plan sync = `['plan']` / user.created 初期 sync = `['dbUserId','plan']` と**傾向は推測できるが確定判別列ではない**(backfill script も `['dbUserId','plan']` を送るため初期 sync と重なる)。
+  - [ ] **実装時の確認(必須)**: clerk-metadata.ts の呼び出し元(`syncClerkPublicMetadata` の全 callsite = handle-clerk-event 初期 sync / handle-stripe-event・project-subscription の plan sync)を実コードで辿り、verbatim 保存される context に「初期 sync 失敗 / Stripe plan sync 失敗」を後から手動 SQL で判別できる呼出元識別情報が実際に含まれるかを確認する。含まれれば「context で判別可」、含まれなければ「判別不能を許容」を **session doc に意図的判断として記録**する(未確認のまま null を書かない)。
   - [ ] 判断 = **「厳密判別は不能を許容」を採用**(workflow=null 維持・override 引数は入れない=4 軸原則。keys による傾向推測は可能、という補足付き)。この判断は **catalog の `clerk_sync` entry 近傍コメント**(呼出 site コメントより保守されやすい)+ session doc に記録する(未確認のまま null にしない、を充足)。
 - **手順**:
   - [ ] site 1/2: `stripe/route.test.ts` の既存 case(mismatch / autorelease failed)を「失敗発火 → integration_failures 行(catalog key の 4 軸 + ref)+ Discord subject 不変」の assert に拡張 → red → 配線実装 → green。
