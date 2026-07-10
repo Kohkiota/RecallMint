@@ -932,4 +932,26 @@ describe('cancelDowngrade: 予約取消', () => {
       cancelDowngrade(changeFd({ operationId: 'op_dbfail2' })),
     ).rejects.toThrow('db unreachable')
   })
+
+  // #5 順序 pin (spec N-5): cancelScheduledDowngrade (release) が非冪等 error で reject
+  // すると、catch なしで伝播し後段の DB clear (db.update) には到達しない = 予約が維持される。
+  // R (webhook #1) が release→clear 順を反転しても、action #5 のこの順序は不変であることの
+  // 恒久防波堤 (逆転すると reverse orphan: DB は予約無しだが Stripe schedule が残る)。
+  it('cancelScheduledDowngrade reject(非冪等 error)→ throw 伝播・db.update 未呼出(予約維持・#5 順序 pin)', async () => {
+    mockGetPendingState.mockReturnValue({
+      hasPendingUpdate: false,
+      scheduleId: 'sched_x',
+      cancelScheduled: false,
+    })
+    const releaseErr = new Error('Stripe API error: could not release schedule')
+    mockCancelScheduledDowngrade.mockRejectedValueOnce(releaseErr)
+
+    await expect(
+      cancelDowngrade(changeFd({ operationId: 'op_release_fail' })),
+    ).rejects.toThrow('Stripe API error: could not release schedule')
+
+    // release 失敗で DB clear には到達しない (予約 3 列は維持される)。
+    expect(mockDbUpdate).not.toHaveBeenCalled()
+    expect(mockDbSet).not.toHaveBeenCalled()
+  })
 })
