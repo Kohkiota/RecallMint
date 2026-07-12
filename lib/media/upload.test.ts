@@ -177,15 +177,18 @@ describe('compressForAttach', () => {
     expect(r.hash).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  it('圧縮 options が verbatim で渡る', async () => {
+  it('圧縮 options が verbatim + self-host libURL で渡る', async () => {
     await compressForAttach(makeFile('a.jpg', 'image/jpeg'))
 
+    // COMPRESSION_OPTIONS 値は不変、 self-host libURL を追加 (spec §4)。 node env は
+    // window 不在ゆえ相対 path が渡る (browser では絶対 URL 化される)。
     expect(mockCompress).toHaveBeenCalledWith(expect.any(File), {
       maxWidthOrHeight: 1600,
       fileType: 'image/webp',
       initialQuality: 0.8,
       maxSizeMB: 1,
       useWebWorker: true,
+      libURL: '/vendor/browser-image-compression.js',
     })
   })
 
@@ -284,13 +287,16 @@ describe('attachImageToCard — happy path', () => {
     ])
     expect(images[0]).not.toHaveProperty('url')
 
-    // PUT は 圧縮 blob body + Content-Type + timeout signal で uploadUrl に。
+    // PUT は 圧縮 blob body + Content-Type + timeout signal + CORS hardening で uploadUrl に。
     expect(globalThis.fetch).toHaveBeenCalledWith(
       UPLOAD_URL,
       expect.objectContaining({
         method: 'PUT',
         headers: { 'Content-Type': 'image/webp' },
         body: expect.any(Blob),
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'error',
         signal: expect.any(AbortSignal),
       }),
     )

@@ -20,12 +20,36 @@ const isProtectedRoute = createRouteMatcher(['/app(.*)'])
 // 構造保証の強度は T-A4 と同等 (segment boundary `/api/webhooks(?:$|/)` 相当の
 // startsWith + 厳密 path check で prefix collision を排除)。
 
-// Phase 1 G-baseline-3 (I-baseline-9): Clerk auto CSP default mode を採用、
-// Clerk + Stripe redirect 等の必要 origin を Clerk 側が自動配備する。空 object
-// で「default 構築」を指示、追加 directive は本 sprint scope 外。next.config.ts
-// の Content-Security-Policy: frame-ancestors 'none' と二重防御で並ぶ層。
+// Phase 1 G-baseline-3 (I-baseline-9): Clerk auto CSP default mode を基盤に採用、
+// Clerk + Stripe redirect 等の必要 origin を Clerk 側が自動配備する。next.config.ts
+// の Content-Security-Policy: frame-ancestors 'none' と二重防御で並ぶ層(directive が
+// 素で disjoint ゆえ intersection 衝突なし = frame-ancestors は next.config、connect/img/
+// worker は本 middleware が SoT)。
 // 副作用: Vercel Live / Speed Insights が preview で動かなくなるが、補助機能
 // 無効化は実害なし (spec §3 Assumption 10、§9 Q6 で OT 確認済)。
+//
+// 画像フェーズ A(spec §4): 非公開 R2 への presigned 直 PUT/GET + blob: 画像表示 +
+// 圧縮 worker のため directive を追加する。Clerk の `directives` は既定に **merge(append)**
+// する仕様(@clerk/nextjs 7.5.1 handleExistingDirective・ground-truth 確認済)ゆえ、
+// Clerk/Stripe/maps の既存 source は保持され R2/blob: が加算される(置換でない)。
+//   - connect-src: R2 path-style origin `https://{account}.r2.cloudflarestorage.com`
+//     (r2.ts の objectUrl と一致。account 未設定なら加算しない = 空環境で壊れた entry を作らない)
+//   - img-src: blob:(getAssetObjectURL の blob: URL を <img> 表示)
+//   - worker-src: self blob:(圧縮 worker は blob: worker。Clerk 既定にも在るが本機能が
+//     依存するため明示 pin。child-src フォールバックに頼らない)
+export function imageCspDirectives(
+  r2AccountId: string | undefined,
+): { 'connect-src': string[]; 'img-src': string[]; 'worker-src': string[] } {
+  const connectSrc: string[] = []
+  if (r2AccountId) {
+    connectSrc.push(`https://${r2AccountId}.r2.cloudflarestorage.com`)
+  }
+  return {
+    'connect-src': connectSrc,
+    'img-src': ['blob:'],
+    'worker-src': ['self', 'blob:'],
+  }
+}
 
 // webhook bypass の構造保証 (T-A4 fix)。 `/api/webhooks/<provider>` 配下のみ
 // bypass、 `/api/webhooks-foo` / `/api/webhooksomething` 等の prefix collision
@@ -52,7 +76,9 @@ export default clerkMiddleware(
     }
   },
   {
-    contentSecurityPolicy: {},
+    contentSecurityPolicy: {
+      directives: imageCspDirectives(process.env.R2_ACCOUNT_ID),
+    },
   },
 )
 

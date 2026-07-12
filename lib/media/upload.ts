@@ -98,6 +98,18 @@ const COMPRESSION_OPTIONS = {
   useWebWorker: true,
 } as const
 
+// browser-image-compression の worker が importScripts するライブラリ本体を self-host する
+// (spec §4 訂正)。 既定は jsDelivr CDN だが、 CSP allowlist に CDN を足さない最小権限方針
+// ゆえアプリ内配置 (public/vendor/) を参照する。 vendored file は package と同版を drift test
+// で pin。 worker は blob: origin ゆえ root-relative では解決できず絶対 URL が要る。 module
+// 評価時 (SSR import) は window 不在ゆえ、 実際に呼ぶ browser 文脈でのみ絶対化する。
+const COMPRESSION_LIB_PATH = '/vendor/browser-image-compression.js'
+function compressionLibURL(): string {
+  return typeof window !== 'undefined'
+    ? new URL(COMPRESSION_LIB_PATH, window.location.origin).href
+    : COMPRESSION_LIB_PATH
+}
+
 // 直 PUT の timeout。 外部 fetch は AbortSignal.timeout 必須の repo 慣習 (lib/storage/r2.ts
 // の HEAD=10s / lib/ops.ts=3s 等) に倣う。 hang した PUT が saga を無限に止め、 held
 // mutation を release できなくなるのを防ぐ。 body は圧縮後 ≤1MiB ゆえ 60s で十分な余裕
@@ -151,7 +163,11 @@ export async function compressForAttach(file: File): Promise<CompressResult> {
 
   let blob: Blob
   try {
-    blob = await imageCompression(file, COMPRESSION_OPTIONS)
+    // libURL は self-host 版を呼出時に絶対 URL 化して渡す (COMPRESSION_OPTIONS の値は不変)。
+    blob = await imageCompression(file, {
+      ...COMPRESSION_OPTIONS,
+      libURL: compressionLibURL(),
+    })
   } catch (err) {
     // lib は decode 失敗時に非 Error (Event 様) で reject しうる → Error に正規化。
     throw normalizeError(err, 'image compression failed')
@@ -393,6 +409,11 @@ async function attachImageToCardInner(
       method: 'PUT',
       body: compressed.blob,
       headers: { 'Content-Type': compressed.mime },
+      // 署名クエリ認証ゆえ cookie 不要。 cross-origin (R2) 明示 + redirect は許さない
+      // (presigned は 200 直返し。 予期せぬ redirect は失敗扱い)。
+      mode: 'cors',
+      credentials: 'omit',
+      redirect: 'error',
       signal: AbortSignal.timeout(PUT_TIMEOUT_MS),
     })
     putOk = put.ok

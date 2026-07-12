@@ -414,7 +414,16 @@ const config = [
     rules: { 'react-hooks/refs': 'off' },
   },
   {
-    ignores: ['.next/**', 'out/**', 'build/**', 'next-env.d.ts', 'coverage/**'],
+    // public/vendor/** は self-host した third-party 配布物 (browser-image-compression
+    // の minified dist・画像フェーズ A spec §4)。 生成物ゆえ lint 対象外 (.next 等と同扱い)。
+    ignores: [
+      '.next/**',
+      'out/**',
+      'build/**',
+      'next-env.d.ts',
+      'coverage/**',
+      'public/vendor/**',
+    ],
   },
 ]
 

@@ -186,6 +186,10 @@ async function runDownload(
         })
 
         const res = await fetch(url, {
+          // 署名クエリ認証ゆえ cookie 不要。 cross-origin (R2) 明示 + redirect は失敗扱い。
+          mode: 'cors',
+          credentials: 'omit',
+          redirect: 'error',
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         })
         if (!res.ok) {

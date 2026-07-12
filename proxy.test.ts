@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isWebhookBypass } from './proxy'
+import { isWebhookBypass, imageCspDirectives } from './proxy'
 
 // T-A4 fix (audit §10.3 (b) #13): webhook bypass の構造保証 contract test。
 //
@@ -45,5 +45,31 @@ describe('proxy webhook bypass (T-A4 fix audit §10.3 (b) #13)', () => {
     expect(isWebhookBypass('/api/webhooks-foo')).toBe(false)
     expect(isWebhookBypass('/api/webhooks_audit')).toBe(false)
     expect(isWebhookBypass('/api/webhooksomething')).toBe(false)
+  })
+})
+
+// 画像フェーズ A(spec §4): Clerk CSP に merge する追加 directive の contract。
+// merge(既存 Clerk/Stripe source の保持)自体は Clerk 実装の責務(7.5.1 の
+// handleExistingDirective が append+dedup)。 ここでは本 middleware が Clerk に
+// 渡す directive object の形を pin する。
+describe('imageCspDirectives (画像フェーズ A CSP・spec §4)', () => {
+  it('R2 account 指定時、 connect-src に path-style の R2 exact origin を入れる', () => {
+    const d = imageCspDirectives('acc123')
+    expect(d['connect-src']).toEqual([
+      'https://acc123.r2.cloudflarestorage.com',
+    ])
+  })
+
+  it('R2 account 未設定時、 connect-src は空(壊れた undefined origin を作らない)', () => {
+    expect(imageCspDirectives(undefined)['connect-src']).toEqual([])
+    expect(imageCspDirectives('')['connect-src']).toEqual([])
+  })
+
+  it('img-src に blob:(getAssetObjectURL の blob: URL 表示用)', () => {
+    expect(imageCspDirectives('acc123')['img-src']).toEqual(['blob:'])
+  })
+
+  it("worker-src に 'self' blob:(圧縮 worker の blob: worker を明示 pin)", () => {
+    expect(imageCspDirectives('acc123')['worker-src']).toEqual(['self', 'blob:'])
   })
 })
