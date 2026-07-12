@@ -58,6 +58,7 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
     options: Array.isArray(c.options) ? (c.options as CardOption[]) : [],
     explanationText: c.explanation_text ?? null,
     memo: c.memo ?? null,
+    images: c.images,
   }
 }
 
@@ -308,6 +309,7 @@ export function InlineCardList({
                 options={card.options}
                 explanationText={card.explanationText}
                 memo={card.memo}
+                images={card.images}
                 autoEditOnMount={newCardIds.has(card.id)}
               />
             </CardContent>

@@ -33,6 +33,19 @@ import type { BulkApiClient } from '@/lib/sync/review-events'
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: vi.fn(async () => 'no-pending' as const),
 }))
+// inline-card-list.tsx → card-editor-fields.tsx → card-image-gallery.tsx が
+// '@/app/(app)/app/exams/[id]/_actions/asset-actions' (server action) を import する。
+// 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、 vitest.setup.ts は
+// R2_* を供給しないため未 mock だと module load 時に throw する(画像フェーズ A Task 10)。
+// 本 test は edit → mirror → outbox → flush の配線のみ検証するため最小 stub。
+vi.mock('@/app/(app)/app/exams/[id]/_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
 
 import { InlineCardList } from '@/app/(app)/app/exams/[id]/_components/inline-card-list'
 

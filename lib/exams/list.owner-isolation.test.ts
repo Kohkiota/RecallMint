@@ -134,13 +134,14 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
           options,
           explanationText: 'カード全体の解説',
           memo: 'マイメモ',
+          images: [{ key: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target: 'question_text', alt: '' }],
         },
       ],
     ]
     const { getCardsForExam } = await importModule()
     const r = await getCardsForExam('user-1', 'exam-A')
     expect(r).toHaveLength(1)
-    // snippet 化せず問題文全文・全選択肢・card 解説・memo をそのまま返す
+    // snippet 化せず問題文全文・全選択肢・card 解説・memo・images をそのまま返す
     expect(r[0]).toEqual({
       id: 'card-1',
       title: '問1',
@@ -149,7 +150,28 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
       options,
       explanationText: 'カード全体の解説',
       memo: 'マイメモ',
+      images: [{ key: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target: 'question_text', alt: '' }],
     })
+  })
+
+  it('images が非配列(欠損)行は空配列にフォールバックする(options と同じ防御パターン)', async () => {
+    dbState.queue = [
+      [
+        {
+          id: 'card-2',
+          title: '問2',
+          sortKey: null,
+          questionText: '問題文2',
+          options: [],
+          explanationText: null,
+          memo: null,
+          images: null,
+        },
+      ],
+    ]
+    const { getCardsForExam } = await importModule()
+    const r = await getCardsForExam('user-1', 'exam-A')
+    expect(r[0]?.images).toEqual([])
   })
 
   it('handles null sortKey + non-array options + null explanation + null memo defensively', async () => {

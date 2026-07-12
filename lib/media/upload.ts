@@ -218,8 +218,11 @@ async function readCardImages(
   fallback: ClientCardImage[],
 ): Promise<ClientCardImage[]> {
   const row = await getClientDb().cards.get(cardId)
-  const images = row?.images as ClientCardImage[] | undefined
-  return images ?? fallback
+  const images = row?.images
+  // stale / 旧 schema row では images が undefined / 非配列でありうる。 append (spread) や
+  // remove (filter) が "not iterable" で throw するのを防ぎ、 常に配列を返す (Codex 指摘)。
+  if (Array.isArray(images)) return images
+  return Array.isArray(fallback) ? fallback : []
 }
 
 // mirror images 更新 (runOptimisticUpdate) を共通化する。 append / remove 両方が
@@ -474,4 +477,33 @@ export async function abandonUpload(p: {
   currentImages: ClientCardImage[]
 }): Promise<void> {
   await serializePerCard(p.cardId, () => abandonUploadInner(p))
+}
+
+// ---------------------------------------------------------------------------
+// removeImageFromCard (編集面の「画像削除」)
+// ---------------------------------------------------------------------------
+
+/**
+ * card の images から該当 entry を除去する (asset/R2 object は残す。 spec §5「画像削除」)。
+ * abandonUpload と違い Cache/media_assets は削除しない — 添付済み ready 画像を card から
+ * 外すだけの操作。
+ *
+ * attach/abandon と同じ per-card 直列化 + mirror fresh read を通す (編集面の delete が
+ * upload saga の in-flight な楽観追加と full-array-replace で競合し、 追加中の画像を消したり
+ * 削除済み画像を復活させるのを防ぐ — Codex 指摘)。 fresh read ゆえ legacy / 他 target の
+ * entry も key 不一致で保持される。
+ */
+export async function removeImageFromCard(p: {
+  cardId: string
+  assetId: string
+}): Promise<void> {
+  const { cardId, assetId } = p
+  await serializePerCard(cardId, async () => {
+    const before = await readCardImages(cardId, [])
+    const after = before.filter((i) => i.key !== assetId)
+    await commitImages(cardId, before, after)
+  })
+  // commitImages は skipInternalFlush ゆえ、 除去後の最終値を server へ反映するため
+  // 明示 flush する (fire-and-forget)。
+  void runGuardedEntityMutationFlush().catch(() => {})
 }

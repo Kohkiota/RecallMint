@@ -20,7 +20,6 @@ import {
 import { renderHook } from '@testing-library/react'
 import type { ClientCard } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
-import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import type { TextFilterValue } from '@/lib/cards/card-filter-predicates'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +39,21 @@ vi.mock('@/lib/sync/entity-mutations', () => ({
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
 }))
+// card-editor-fields.tsx → card-image-gallery.tsx が '../_actions/asset-actions' (server
+// action) を import する。 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、
+// vitest.setup.ts は R2_* を供給しないため未 mock だと module load 時に throw する
+// (画像フェーズ A Task 10、 './exam-card-table-columns' → inline-card-list.tsx 経由の
+// transitive import)。 本 test は画像 gallery の挙動を検証しないため最小 stub。
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
+
+import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 
 // ---------------------------------------------------------------------------
 // Edit-2 T3: setup / teardown for new editable-cell tests。

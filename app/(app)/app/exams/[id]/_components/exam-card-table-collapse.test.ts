@@ -3,7 +3,20 @@
 // jsdom は scroll 計算不可のため、閾値/hysteresis/guard ロジックを純関数に切り出して直接 test する。
 // これが「境界振動バグ」への唯一の unit-level ガード。
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+// card-editor-fields.tsx → card-image-gallery.tsx が '../_actions/asset-actions' (server
+// action) を import する。 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、
+// vitest.setup.ts は R2_* を供給しないため未 mock だと module load 時に throw する
+// (画像フェーズ A Task 10)。 本 test は computeCollapsed 純関数のみ検証するため最小 stub。
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
+
 import { computeCollapsed } from './exam-card-table'
 
 // ---------------------------------------------------------------------------

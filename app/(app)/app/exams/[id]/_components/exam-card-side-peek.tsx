@@ -140,6 +140,7 @@ export function ExamCardSidePeek({
                   options={row.card.options}
                   explanationText={row.card.explanation_text ?? null}
                   memo={row.card.memo ?? null}
+                  images={row.card.images}
                 />
               </div>
             </div>

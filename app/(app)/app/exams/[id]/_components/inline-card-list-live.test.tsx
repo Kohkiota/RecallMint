@@ -52,6 +52,18 @@ vi.mock('@/lib/sync/entity-mutations', async () => {
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
 }))
+// card-editor-fields.tsx → card-image-gallery.tsx が '../_actions/asset-actions' (server
+// action) を import する。 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、
+// vitest.setup.ts は R2_* を供給しないため未 mock だと module load 時に throw する
+// (画像フェーズ A Task 10)。 本 test は画像 gallery の挙動を検証しないため最小 stub。
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
 
 import { InlineCardList } from './inline-card-list'
 
@@ -273,6 +285,7 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
         options: [],
         explanationText: null,
         memo: null,
+        images: [],
       },
     ]
     render(
@@ -298,6 +311,7 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
         options: [],
         explanationText: null,
         memo: null,
+        images: [],
       },
     ]
     render(
@@ -378,6 +392,7 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
         options: [],
         explanationText: null,
         memo: null,
+        images: [],
       },
       {
         id: 'i2',
@@ -387,6 +402,7 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
         options: [],
         explanationText: null,
         memo: null,
+        images: [],
       },
     ]
     render(

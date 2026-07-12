@@ -17,7 +17,7 @@
 //   (f) 「クリア」文言 + 全解除
 //   (g) chip × click で CardTagAddPopover が開かない(stopPropagation)
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import {
@@ -28,6 +28,19 @@ import {
 } from '@tanstack/react-table'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
+// card-editor-fields.tsx → card-image-gallery.tsx が '../_actions/asset-actions' (server
+// action) を import する。 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、
+// vitest.setup.ts は R2_* を供給しないため未 mock だと module load 時に throw する
+// (画像フェーズ A Task 10)。 本 test は画像 gallery の挙動を検証しないため最小 stub。
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
+
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
 import { deriveConditions, getFilterSummary, ConditionBar } from './exam-card-table-condition-bar'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'

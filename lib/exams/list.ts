@@ -13,6 +13,7 @@ import 'server-only'
 import { and, desc, eq, isNull } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import { cards, exams, sourceDocuments, type CardOption } from '@/lib/db/schema'
+import type { ClientCardImage } from '@/lib/client-db'
 
 // 既存 importer (server pages) が `@/lib/exams/list` から ActiveExam / formatRelativeJa
 // を引いている経路を壊さないよう re-export する。 新規 client から使う場合は
@@ -86,6 +87,7 @@ export type ExamDetailCard = {
   options: CardOption[]
   explanationText: string | null
   memo: string | null
+  images: ClientCardImage[]
 }
 
 // 試験詳細 page 用 cards 取得 (read-only、 owner-scoped)。
@@ -104,6 +106,7 @@ export async function getCardsForExam(
       options: cards.options,
       explanationText: cards.explanationText,
       memo: cards.memo,
+      images: cards.images,
     })
     .from(cards)
     .where(and(eq(cards.userId, userId), eq(cards.examId, examId)))
@@ -117,6 +120,8 @@ export async function getCardsForExam(
     options: Array.isArray(r.options) ? r.options : [],
     explanationText: r.explanationText,
     memo: r.memo,
+    // images も同様に防御的に配列チェック(既存 options パターン踏襲)。
+    images: Array.isArray(r.images) ? (r.images as ClientCardImage[]) : [],
   }))
 }
 

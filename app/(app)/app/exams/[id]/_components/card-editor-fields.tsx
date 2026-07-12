@@ -17,10 +17,11 @@
 // autoEditOnMount は問題文 field へ passthrough するだけ(one-shot 読み取り時点を変えない #4)。
 
 import type { CardOption } from '@/lib/db/schema'
-import type { ClientCardTag, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
+import type { ClientCardImage, ClientCardTag, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { InlineTextField } from './inline-text-field'
 import { InlineOptionList } from './inline-option-row'
 import { CardTagsSection } from './card-tags-section'
+import { CardImageGallery } from './card-image-gallery'
 
 export type CardEditorFieldsProps = {
   cardId: string
@@ -35,6 +36,7 @@ export type CardEditorFieldsProps = {
   options: CardOption[]
   explanationText: string | null
   memo: string | null
+  images: ClientCardImage[]
   // list のみ渡す(新規追加 card の問題文を mount 時に auto-edit)。side-peek は未指定 = false。
   autoEditOnMount?: boolean
 }
@@ -49,6 +51,7 @@ export function CardEditorFields({
   options,
   explanationText,
   memo,
+  images,
   autoEditOnMount,
 }: CardEditorFieldsProps) {
   return (
@@ -77,6 +80,9 @@ export function CardEditorFields({
           displayClassName="text-sm text-slate-800"
           autoEditOnMount={autoEditOnMount}
         />
+        {/* target 単位 gallery(spec §5)。 per-option gallery(target={'option:' + optionId})
+            は後続 task の deferred follow-up(本 task scope 外)。 */}
+        <CardImageGallery images={images} target="question_text" cardId={cardId} userId={userId} />
       </div>
 
       <div>

@@ -22,6 +22,13 @@ process.env.DATABASE_URL ??= 'postgresql://fake:fake@localhost:5432/fake'
 process.env.CLERK_SECRET_KEY ??= 'sk_test_clerk_fake'
 process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??= 'pk_test_clerk_fake'
 process.env.CLERK_WEBHOOK_SECRET ??= 'whsec_clerk_fake'
+// R2 (画像フェーズ A)。 lib/storage/r2.ts が module load で fail-fast するため、
+// 画像 gallery を transitive import する component test 全般で必要 (STRIPE/CLERK と同方針)。
+// r2.test.ts は自前で set/delete して fail-fast を検証するので ??= で衝突しない。
+process.env.R2_ACCOUNT_ID ??= 'fake_r2_account'
+process.env.R2_ACCESS_KEY_ID ??= 'fake_r2_access_key'
+process.env.R2_SECRET_ACCESS_KEY ??= 'fake_r2_secret_key'
+process.env.R2_BUCKET_NAME ??= 'fake-r2-bucket'
 
 // ResizeObserver は jsdom に存在しないため no-op stub を注入する。
 // exam-card-table.tsx の Fix wave-1 ResizeObserver で参照される。

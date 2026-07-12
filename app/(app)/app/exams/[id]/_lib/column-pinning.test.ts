@@ -7,7 +7,21 @@
 // (a) computePinnedLeft: 通常 / null / 未知 id / 最終列
 // (b) derivePinnedBoundary: 通常 / 空 / select 単独 / undefined / 往復同一性
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+// column-pinning.ts → exam-card-table-columns.ts → inline-card-list.tsx →
+// card-editor-fields.tsx → card-image-gallery.tsx が '../_actions/asset-actions' (server
+// action) を import する。 実 module は lib/storage/r2.ts の R2_* env fail-fast を経由し、
+// vitest.setup.ts は R2_* を供給しないため未 mock だと module load 時に throw する
+// (画像フェーズ A Task 10)。 本 test は pinning 純ロジックのみ検証するため最小 stub。
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: vi.fn(async () => null),
+}))
+
 import { computePinnedLeft, derivePinnedBoundary } from './column-pinning'
 
 // brief §完了条件 (a) で定義された期待 id 一覧(列順の確認に使用)

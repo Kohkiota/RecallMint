@@ -50,6 +50,7 @@ import {
   compressForAttach,
   attachImageToCard,
   abandonUpload,
+  removeImageFromCard,
 } from '@/lib/media/upload'
 import { getClientDb } from '@/lib/client-db'
 
@@ -684,5 +685,66 @@ describe('abandonUpload', () => {
 
     expect(await getCardImages()).toEqual([other])
     expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, RESERVED_ASSET_ID)
+  })
+})
+
+// ===========================================================================
+// removeImageFromCard (編集面の削除: entry 除去のみ・asset 残す)
+// ===========================================================================
+
+describe('removeImageFromCard', () => {
+  it('該当 key のみ除去し legacy / 他 target entry は保持 (fresh read + key 一致のみ)、 flush trigger', async () => {
+    const legacy: ClientCardImage = { key: 'legacy-img-1', target: 'question_text', alt: '' }
+    const other: ClientCardImage = {
+      key: '22222222-2222-4222-8222-222222222222',
+      target: 'option:a',
+      alt: '',
+    }
+    const toRemove: ClientCardImage = { key: RESERVED_ASSET_ID, target: 'question_text', alt: '' }
+    await seedCard([legacy, toRemove, other])
+
+    await removeImageFromCard({ cardId: CARD_ID, assetId: RESERVED_ASSET_ID })
+
+    // RESERVED_ASSET_ID のみ消え、 legacy / 他 target は残る (canonical Minor1)。
+    expect(await getCardImages()).toEqual([legacy, other])
+    // asset は残す (cache/media_assets を削除しない = abandonUpload と別経路)。
+    expect(mockDeleteAssetBlob).not.toHaveBeenCalled()
+    // 除去後の最終値を server へ反映するため flush trigger。
+    expect(mockFlush).toHaveBeenCalled()
+  })
+
+  it('caller snapshot でなく mirror の最新値から除去する (並行 attach の追加を巻き込まない)', async () => {
+    const a: ClientCardImage = { key: RESERVED_ASSET_ID, target: 'question_text', alt: '' }
+    const b: ClientCardImage = {
+      key: '33333333-3333-4333-8333-333333333333',
+      target: 'question_text',
+      alt: '',
+    }
+    // mirror には既に 2 件 (先行 attach が追加済みの想定)。
+    await seedCard([a, b])
+
+    await removeImageFromCard({
+      cardId: CARD_ID,
+      assetId: '33333333-3333-4333-8333-333333333333',
+    })
+
+    // fresh read で [a,b] を読み b のみ除去 → a は保持 (snapshot 非依存)。
+    expect(await getCardImages()).toEqual([a])
+  })
+
+  it('mirror row の images が非配列 (stale) でも throw せず [] に正規化して commit する', async () => {
+    const db = getClientDb()
+    await seedCard([])
+    // stale / 旧 schema を模して images を非配列に上書き。
+    await db.cards.update(CARD_ID, {
+      images: 'not-an-array' as unknown as ClientCardImage[],
+    })
+
+    await expect(
+      removeImageFromCard({ cardId: CARD_ID, assetId: RESERVED_ASSET_ID }),
+    ).resolves.toBeUndefined()
+
+    // 非配列 → [] に正規化されるため後続 filter/commit が throw しない。
+    expect(await getCardImages()).toEqual([])
   })
 })
