@@ -4,11 +4,12 @@
 // review-events.test.ts と同方式。
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { getClientDb } from '@/lib/client-db'
+import { getClientDb, type ClientMediaAsset } from '@/lib/client-db'
 import {
   enqueueEntityMutation,
   getPendingEntityMutations,
   flushAllPendingEntityMutations,
+  collectBlockedImageMutationIds,
   inFlightMutationIds,
   newId,
 } from './entity-mutations'
@@ -18,13 +19,53 @@ import {
 } from './entity-mutation-flush'
 import type { BulkApiClient, FlushResult } from './review-events'
 import type { FlushOutcome } from './review-flush'
+import type { ClientEntityMutation } from '@/lib/client-db'
 
-// 各 test の前に entity_mutations table と inFlightMutationIds を clear。
+// 各 test の前に entity_mutations / media_assets table と inFlightMutationIds を clear。
 beforeEach(async () => {
   const db = getClientDb()
   await db.entity_mutations.clear()
+  await db.media_assets.clear()
   inFlightMutationIds.clear()
 })
+
+// ---------------------------------------------------------------------------
+// helpers (画像フェーズ A Task 7)
+// ---------------------------------------------------------------------------
+
+function makeMediaAsset(overrides: Partial<ClientMediaAsset> = {}): ClientMediaAsset {
+  return {
+    id: newId(),
+    user_id: 'user-1',
+    status: 'uploading',
+    mime: 'image/webp',
+    byte_size: 1000,
+    width: 100,
+    height: 100,
+    hash: 'hash-1',
+    created_at: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+function makeImagesMutation(
+  keys: string[],
+  overrides: Partial<ClientEntityMutation> = {},
+): ClientEntityMutation {
+  return {
+    entity_type: 'card',
+    entity_id: newId(),
+    op: 'update_field',
+    patch: {
+      field: 'images',
+      value: keys.map((key) => ({ key, target: 'question_text', alt: '' })),
+    },
+    mutation_id: newId(),
+    edited_at: new Date().toISOString(),
+    sync_status: 'pending',
+    ...overrides,
+  } as ClientEntityMutation
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -283,6 +324,272 @@ describe('flushAllPendingEntityMutations — network / HTTP 失敗', () => {
 
     const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// collectBlockedImageMutationIds (画像フェーズ A Task 7: flush gate — pure helper)
+// ---------------------------------------------------------------------------
+
+describe('collectBlockedImageMutationIds', () => {
+  it('images mutation の value に uploading key を含む → blocked', () => {
+    const uploadingId = newId()
+    const m = makeImagesMutation([uploadingId])
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(true)
+  })
+
+  it('images mutation の keys が全て ready (uploadingAssetIds に無い) → not blocked', () => {
+    const readyId = newId()
+    const m = makeImagesMutation([readyId])
+    // uploadingAssetIds は空 (readyId は uploading 中ではない)
+    const blocked = collectBlockedImageMutationIds([m], new Set())
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('cross-device: local に行が無い UUID key (pull 由来) → not blocked', () => {
+    const pullDerivedId = newId()
+    const m = makeImagesMutation([pullDerivedId])
+    // pullDerivedId は local media_assets に一切行が無い (uploadingAssetIds にも無い)。
+    // 別 device で添付済 = server 側で ready 保証されているため gate しない。
+    const blocked = collectBlockedImageMutationIds([m], new Set(['some-other-uploading-id']))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('非 images mutation (title update_field) → not blocked', () => {
+    const uploadingId = newId()
+    const m: ClientEntityMutation = {
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'title', value: 'Some title' },
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    }
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('非 images mutation (create op) → not blocked', () => {
+    const uploadingId = newId()
+    const m: ClientEntityMutation = {
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'create',
+      patch: {
+        exam_id: newId(),
+        title: 'T',
+        sort_key: null,
+        question_text: 'Q',
+        options: [],
+        explanation_text: null,
+        memo: null,
+      },
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    } as ClientEntityMutation
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('非 images mutation (tag_option update_field) → not blocked', () => {
+    const uploadingId = newId()
+    const m: ClientEntityMutation = {
+      entity_type: 'tag_option',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'name', value: 'Some tag' },
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    } as ClientEntityMutation
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('mixed keys (uploading 1 件 + ready 1 件) → blocked (1 件でも uploading があれば block)', () => {
+    const uploadingId = newId()
+    const readyId = newId()
+    const m = makeImagesMutation([uploadingId, readyId])
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(true)
+  })
+
+  it('防御: patch.value が非配列 → not blocked (crash しない)', () => {
+    const uploadingId = newId()
+    const m: ClientEntityMutation = {
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'images', value: 'not-an-array' },
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    } as ClientEntityMutation
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('防御: patch.value 配列に null / primitive entry → throw せず not blocked (flush 全体を巻き添えにしない)', () => {
+    const uploadingId = newId()
+    const m: ClientEntityMutation = {
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      // 壊れた entry (null / string / number / object-without-key) の混在
+      patch: { field: 'images', value: [null, 'str', 42, {}] },
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    } as ClientEntityMutation
+    // null.key を読んで throw しないこと + block しないこと
+    expect(() =>
+      collectBlockedImageMutationIds([m], new Set([uploadingId])),
+    ).not.toThrow()
+    const blocked = collectBlockedImageMutationIds([m], new Set([uploadingId]))
+    expect(blocked.has(m.mutation_id)).toBe(false)
+  })
+
+  it('防御: patch 自体が null/非 object (corrupted row) → throw せず not blocked', () => {
+    const uploadingId = newId()
+    const mNull = {
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: null,
+      mutation_id: newId(),
+      edited_at: new Date().toISOString(),
+      sync_status: 'pending',
+    } as unknown as ClientEntityMutation
+    expect(() =>
+      collectBlockedImageMutationIds([mNull], new Set([uploadingId])),
+    ).not.toThrow()
+    expect(
+      collectBlockedImageMutationIds([mNull], new Set([uploadingId])).has(
+        mNull.mutation_id,
+      ),
+    ).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// flushAllPendingEntityMutations — images gate 統合 (画像フェーズ A Task 7)
+// ---------------------------------------------------------------------------
+
+describe('flushAllPendingEntityMutations — images gate', () => {
+  it('参照 asset が uploading 中 → images mutation は POST されず pending 残置', async () => {
+    const db = getClientDb()
+    const uploadingId = newId()
+    await db.media_assets.put(makeMediaAsset({ id: uploadingId, status: 'uploading' }))
+
+    const cardId = newId()
+    const imagesMutation = await enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: cardId,
+      op: 'update_field',
+      patch: {
+        field: 'images',
+        value: [{ key: uploadingId, target: 'question_text', alt: '' }],
+      },
+    })
+
+    const client = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
+    const results = await flushAllPendingEntityMutations(client)
+
+    // 送信対象が無いため flush 自体が no-op (空配列、 POST されない)
+    expect(results).toEqual([])
+    expect(client.calls).toHaveLength(0)
+
+    // pending のまま残置される
+    const pending = await getPendingEntityMutations()
+    expect(pending.map((m) => m.mutation_id)).toEqual([imagesMutation.mutation_id])
+  })
+
+  it('asset が ready 化された後の flush → images mutation が POST される', async () => {
+    const db = getClientDb()
+    const uploadingId = newId()
+    await db.media_assets.put(makeMediaAsset({ id: uploadingId, status: 'uploading' }))
+
+    const cardId = newId()
+    const imagesMutation = await enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: cardId,
+      op: 'update_field',
+      patch: {
+        field: 'images',
+        value: [{ key: uploadingId, target: 'question_text', alt: '' }],
+      },
+    })
+
+    // 最初の flush: まだ uploading → held back
+    const clientBlocked = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
+    await flushAllPendingEntityMutations(clientBlocked)
+    expect(clientBlocked.calls).toHaveLength(0)
+
+    // finalize: status を ready 化
+    await db.media_assets.update(uploadingId, { status: 'ready' })
+
+    // 次の flush: 送信される
+    const clientReady = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
+    const results = await flushAllPendingEntityMutations(clientReady)
+
+    expect(clientReady.calls).toHaveLength(1)
+    const payload = clientReady.calls[0] as { mutations: Array<{ mutation_id: string }> }
+    expect(payload.mutations.map((m) => m.mutation_id)).toEqual([imagesMutation.mutation_id])
+
+    expect(results).toHaveLength(1)
+    expect(results[0].syncedEventIds).toEqual([imagesMutation.mutation_id])
+
+    const pending = await getPendingEntityMutations()
+    expect(pending).toHaveLength(0)
+  })
+
+  it('gate は非 images mutation に影響しない: uploading 中でも並走 title mutation は両方の flush で POST される', async () => {
+    const db = getClientDb()
+    const uploadingId = newId()
+    await db.media_assets.put(makeMediaAsset({ id: uploadingId, status: 'uploading' }))
+
+    const imagesMutation = await enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: {
+        field: 'images',
+        value: [{ key: uploadingId, target: 'question_text', alt: '' }],
+      },
+    })
+    const titleMutation = await enqueueEntityMutation({
+      entity_type: 'card',
+      entity_id: newId(),
+      op: 'update_field',
+      patch: { field: 'title', value: 'Concurrent title edit' },
+    })
+
+    // 1 回目 flush: uploading 中 → title のみ送信される
+    const client1 = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
+    const results1 = await flushAllPendingEntityMutations(client1)
+    expect(client1.calls).toHaveLength(1)
+    const payload1 = client1.calls[0] as { mutations: Array<{ mutation_id: string }> }
+    expect(payload1.mutations.map((m) => m.mutation_id)).toEqual([titleMutation.mutation_id])
+    expect(results1[0].syncedEventIds).toEqual([titleMutation.mutation_id])
+
+    // images mutation はまだ pending
+    let pending = await getPendingEntityMutations()
+    expect(pending.map((m) => m.mutation_id)).toEqual([imagesMutation.mutation_id])
+
+    // ready 化 → 2 回目 flush で images mutation も送信される
+    await db.media_assets.update(uploadingId, { status: 'ready' })
+    const client2 = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
+    const results2 = await flushAllPendingEntityMutations(client2)
+    expect(client2.calls).toHaveLength(1)
+    const payload2 = client2.calls[0] as { mutations: Array<{ mutation_id: string }> }
+    expect(payload2.mutations.map((m) => m.mutation_id)).toEqual([imagesMutation.mutation_id])
+    expect(results2[0].syncedEventIds).toEqual([imagesMutation.mutation_id])
+
+    pending = await getPendingEntityMutations()
+    expect(pending).toHaveLength(0)
   })
 })
 

@@ -195,6 +195,44 @@ export async function dropStalePendingEntityMutations(
 }
 
 // ---------------------------------------------------------------------------
+// collectBlockedImageMutationIds (画像フェーズ A Task 7: flush gate)
+// ---------------------------------------------------------------------------
+
+/**
+ * pending mutation のうち、 `cards.images` update_field で参照 asset が
+ * まだ 'uploading' 中のものを blocked と判定する (spec §3.2)。
+ *
+ * gate 条件は「'uploading' の有無」のみ (local に行が無い UUID key は block しない)。
+ * pull 由来 (別 device で添付済) の key は local `media_assets` に行が無いが、
+ * server 側で ready 済みが保証されているため素通しする。
+ */
+export function collectBlockedImageMutationIds(
+  pending: ClientEntityMutation[],
+  uploadingAssetIds: Set<string>,
+): Set<string> {
+  const blocked = new Set<string>()
+  for (const m of pending) {
+    if (m.entity_type !== 'card' || m.op !== 'update_field') continue
+    // patch も unknown 由来 (corrupted IDB で null/undefined/primitive がありうる)。
+    // patch.field を読む前に object であることを確認 — flush 全体の巻き添え reject を防ぐ。
+    if (typeof m.patch !== 'object' || m.patch === null) continue
+    const patch = m.patch as { field?: unknown; value?: unknown }
+    if (patch.field !== 'images') continue
+    if (!Array.isArray(patch.value)) continue
+    const hasUploading = patch.value.some((entry: unknown) => {
+      // patch.value は unknown 由来 (outbox に壊れた entry が入りうる)。 null / primitive で
+      // `.key` を読むと throw し flush 全体が reject → 無関係な pending も巻き添えで止まる。
+      // 非 object entry は gate 対象外 (block しない = server へ流し per-mutation 失敗処理に委ねる)。
+      if (typeof entry !== 'object' || entry === null) return false
+      const key = (entry as { key?: unknown }).key
+      return typeof key === 'string' && uploadingAssetIds.has(key)
+    })
+    if (hasUploading) blocked.add(m.mutation_id)
+  }
+  return blocked
+}
+
+// ---------------------------------------------------------------------------
 // bulk flush
 // ---------------------------------------------------------------------------
 
@@ -228,10 +266,28 @@ export async function flushAllPendingEntityMutations(
 ): Promise<FlushResult[]> {
   const pendingAll = await getPendingEntityMutations()
 
-  // 別の並走 flush が既に掴んでいる mutation_id を除外する。
-  // 「元 pending > 0 かつ除外後 0 件」は全件が他 flush の in-flight 中を意味するため
-  // POST を省略する (server UNIQUE + in-flight set の二重防衛)。
-  const targets = pendingAll.filter((m) => !inFlightMutationIds.has(m.mutation_id))
+  // 画像フェーズ A Task 7: images mutation の全 uploading key が ready になるまで
+  // 送信保留 (spec §3.2 flush gate)。 finalize が media_assets の status を ready 化
+  // すると、 次回 flush で該当 mutation は自然に targets へ流れる (自己修復、
+  // 追加の再試行トリガー不要)。
+  // user-scope 不要: asset id/key は globally-unique UUIDv4 ゆえ、 共有ブラウザに
+  // 別 user の stale 'uploading' 行が残っても、 現 mutation の image key と衝突し得ず
+  // 誤 block しない。 sibling read (getPendingEntityMutations 等) も status のみで query
+  // する既存 convention と一致。
+  const uploadingAssetIds = new Set(
+    (await getClientDb().media_assets.where('status').equals('uploading').toArray()).map(
+      (a) => a.id,
+    ),
+  )
+  const blockedImageMutationIds = collectBlockedImageMutationIds(pendingAll, uploadingAssetIds)
+
+  // 別の並走 flush が既に掴んでいる mutation_id、 および images gate で保留中の
+  // mutation_id を除外する。
+  // 「元 pending > 0 かつ除外後 0 件」は全件が他 flush の in-flight 中 / images gate
+  // 保留中を意味するため POST を省略する (server UNIQUE + in-flight set の二重防衛)。
+  const targets = pendingAll.filter(
+    (m) => !inFlightMutationIds.has(m.mutation_id) && !blockedImageMutationIds.has(m.mutation_id),
+  )
 
   // pending が 0 件、 または全件が in-flight 中 → 空配列を返す
   // (classifyFlushResults が 'no-pending' に分類)。
