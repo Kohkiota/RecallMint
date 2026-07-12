@@ -1,0 +1,137 @@
+// 起動時 self-heal sweep (画像フェーズ A Task 9 / spec §3.4・§6)。
+//
+// ① stale 'uploading' (1h 超): tab close 等で中断した upload の後始末。
+//    card から参照されていれば `abandonUpload` (mirror 除去 + cache/media_assets
+//    削除 + flush) で片付ける。 参照が無ければ直接 cache/media_assets を削除する。
+// ② 'downloading' 残骸 job: 中断したデッキ一括 DL。 added_asset_ids の cache blob を
+//    削除して job row を削除する (既存キャッシュ不巻込・再開なし、 spec §6)。
+//
+// Web Lock `'recallmint:media:sweep'` で多重タブ排他 (他 tab が sweep 中なら skip)。
+// 各 item の失敗は best-effort — 1 件の失敗が残りを止めない (try/catch で握って続行)。
+
+import { getClientDb } from '@/lib/client-db'
+import { withWebLock } from '@/lib/sync/with-web-lock'
+import { getPendingEntityMutations } from '@/lib/sync/entity-mutations'
+import { deleteAssetBlob } from '@/lib/media/cache'
+import { abandonUpload } from '@/lib/media/upload'
+
+// stale 'uploading' の閾値。 spec §3.4「起動時 sweep: stale 'uploading'(1 時間超)」。
+const STALE_UPLOADING_MS = 60 * 60 * 1000
+
+// stale asset を参照している pending images mutation の cardId を outbox から探す。
+// mirror が pull で server 版に reset されても、 outbox には該当 asset を含む images
+// mutation が残りうる (pull は entity_mutations を触らない)。 この cardId で abandonUpload
+// を呼べば、 mirror 除去に加えて pending mutation を coalesce で server 版へ矯正でき、
+// media_assets 削除で gate を外しても非 ready asset を含む mutation が flush されない
+// (Codex 指摘: mirror 参照なし判定だけで削除すると stuck mutation が残る)。
+async function findCardIdReferencingAsset(
+  userId: string,
+  assetId: string,
+): Promise<string | undefined> {
+  const pending = await getPendingEntityMutations()
+  for (const m of pending) {
+    if (m.entity_type !== 'card' || m.op !== 'update_field') continue
+    if (typeof m.patch !== 'object' || m.patch === null) continue
+    const patch = m.patch as { field?: unknown; value?: unknown }
+    if (patch.field !== 'images' || !Array.isArray(patch.value)) continue
+    const hasKey = patch.value.some(
+      (e) =>
+        typeof e === 'object' &&
+        e !== null &&
+        (e as { key?: unknown }).key === assetId,
+    )
+    if (hasKey) {
+      // cardId を得たら、 owner (user) が一致する card か確認 (cross-user 防御)。
+      const card = await getClientDb().cards.get(m.entity_id)
+      if (!card || card.user_id === userId) return m.entity_id
+    }
+  }
+  return undefined
+}
+
+async function sweepStaleUploading(userId: string, now: number): Promise<void> {
+  const db = getClientDb()
+  const staleAssets = (
+    await db.media_assets.where('status').equals('uploading').toArray()
+  ).filter(
+    // 現 user の row のみ処理する (共有ブラウザで前 user の row が残っていても
+    // 触らない。 触ると別 user の card に対する images mutation を現 session の
+    // outbox へ積んでしまう — Codex 指摘)。
+    (a) => a.user_id === userId && now - Date.parse(a.created_at) > STALE_UPLOADING_MS,
+  )
+
+  if (staleAssets.length === 0) return
+
+  // card 参照解決は全 cards を読んで images 内 key を線形探索する (spec 記載どおり。
+  // sweep は起動時 1 回・低頻度のため per-item クエリ最適化は不要)。
+  const cards = await db.cards.toArray()
+
+  for (const asset of staleAssets) {
+    try {
+      const cardFromMirror = cards.find((c) =>
+        (c.images ?? []).some((i) => i.key === asset.id),
+      )
+      // mirror が pull で reset されていても、 outbox の pending images mutation が
+      // asset を参照していれば cardId を得る (fallback)。
+      const cardId =
+        cardFromMirror?.id ??
+        (await findCardIdReferencingAsset(asset.user_id, asset.id))
+      if (cardId) {
+        // mirror or outbox が参照: abandonUpload が mirror 除去 + pending mutation の
+        // coalesce 矯正 + cache/media_assets 削除 + flush を行う。
+        const currentImages =
+          cardFromMirror?.images ??
+          (await db.cards.get(cardId))?.images ??
+          []
+        await abandonUpload({
+          userId: asset.user_id,
+          cardId,
+          assetId: asset.id,
+          currentImages,
+        })
+      } else {
+        // mirror にも outbox にも参照なし = 真の orphan: 直接削除。
+        await deleteAssetBlob(asset.user_id, asset.id)
+        await db.media_assets.delete(asset.id)
+      }
+    } catch {
+      // best-effort: 1 件の失敗は残りの sweep を止めない。
+    }
+  }
+}
+
+async function sweepStaleDownloadJobs(userId: string): Promise<void> {
+  const db = getClientDb()
+  const staleJobs = (
+    await db.media_download_jobs.where('status').equals('downloading').toArray()
+  ).filter((j) => j.user_id === userId) // 現 user の job のみ (前 user の row を触らない)
+
+  for (const job of staleJobs) {
+    try {
+      for (const assetId of job.added_asset_ids) {
+        await deleteAssetBlob(job.user_id, assetId)
+      }
+      await db.media_download_jobs.delete([job.user_id, job.exam_id])
+    } catch {
+      // best-effort: 1 件の失敗は残りの sweep を止めない。
+    }
+  }
+}
+
+/**
+ * 起動時 self-heal sweep。 Web Lock で多重タブ排他 (busy なら skip)。
+ * `userId` (= 現 session の users.id) で scope する — 共有ブラウザで前 user の
+ * Dexie row が残っていても、 現 user の row のみを処理して cross-user 汚染を防ぐ
+ * (logout での DB wipe は無いため owner filter で守る)。
+ */
+export async function sweepStaleMedia(userId: string): Promise<void> {
+  await withWebLock({
+    lockName: 'recallmint:media:sweep',
+    onLockBusy: () => {},
+    run: async () => {
+      const now = Date.now()
+      await sweepStaleUploading(userId, now)
+      await sweepStaleDownloadJobs(userId)
+    },
+  })
+}

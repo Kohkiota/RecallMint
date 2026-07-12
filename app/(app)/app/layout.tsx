@@ -5,6 +5,7 @@ import { BFCacheGuard } from './_components/bfcache-guard'
 import { PullTrigger } from './_components/pull-trigger'
 import { ReviewFlushTrigger } from './_components/review-flush-trigger'
 import { EntityMutationFlushTrigger } from './_components/entity-mutation-flush-trigger'
+import { MediaSweepTrigger } from './_components/media-sweep-trigger'
 import { ExamStatusProvider } from './_components/exam-status-live'
 import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 
@@ -69,6 +70,10 @@ export default async function AppLayout({
             (review-flush.ts 無変更)。 全 entity_type の pending を 1 回の汎用 flush で
             送信する (entity 別 trigger は持たない)。 UI なし、 失敗 silent。 */}
         <EntityMutationFlushTrigger />
+        {/* 画像フェーズ A: 起動時 self-heal sweep trigger。 stale 'uploading'(1h 超)の
+            後始末 + 中断デッキ DL job('downloading' 残骸)の掃除を mount 1 回 kick する
+            (Web Lock 多重タブ排他は sweepStaleMedia 内部、 UI なし、 失敗 silent)。 */}
+        <MediaSweepTrigger userId={user.id} />
         <AppHeader />
         <main className="flex-1 w-full">
           {children}
