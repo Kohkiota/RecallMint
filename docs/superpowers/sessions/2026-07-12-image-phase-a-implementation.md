@@ -87,7 +87,7 @@
 1. **push**: `develop` → origin。
 2. **migration 0023 適用**: `pnpm db:migrate`(assets テーブル + FK + 2 index。0023_windy_ultimates)。
 3. **R2 env を Vercel に設定**: `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`(`.env.example` 記載済・`R2_PUBLIC_URL` は非公開 bucket ゆえ意図的に不使用 = spec §8)。SECRET は `rk_` Restricted 相当の R2 API token 推奨。
-4. **R2 CORS(最重要)**: 非公開 bucket に対しブラウザからの presigned **PUT + GET** を許可。`AllowedMethods=[PUT, GET]`、`AllowedOrigins=[stg/prod origin]`、**`AllowedHeaders` に `content-type`**(署名対象ヘッダ)、preflight(OPTIONS)許可。これが無いと直 PUT が CORS で全滅する。
+4. **R2 CORS(最重要)**: 非公開 bucket に対しブラウザからの presigned **PUT + GET** を許可。`AllowedMethods=[PUT, GET]`、`AllowedOrigins=[stg/prod origin]`、**`AllowedHeaders` は `Content-Type` を明示**(`*` から最小権限に絞る。署名対象ヘッダ)、**`ExposeHeaders` に `ETag`**、preflight(OPTIONS)許可。これが無いと直 PUT が CORS で全滅する。
 
 ---
 
@@ -134,3 +134,23 @@ WHERE a.status = 'ready'
 - 注(process 教訓): 本 whole-branch Codex は `codex-review.sh` の `--uncommitted` でなく native `--base` を直接使用(committed range ゆえ)。安全 profile(危険フラグ不使用 / worktree-snapshot detector / count-findings)は inline で複製。
 - **git clean detector が FAIL と出たが false-positive**: 原因 = 本 session doc を Codex background 実行**中**に書いたため、before/after の内容 snapshot 間で untracked file が増えた(Codex の source 書換ではない)。検証 = 実行後 `git status` は untracked 2 件(session doc + Codex OUT_FILE)のみ・`git diff HEAD` 空・HEAD 不変。Codex の `pnpm build` は gitignore 済 `.next/` のみ書込(snapshot 対象外)。
 - **教訓**: content-based detector を使う background codex-review の実行中は working tree に file を書かない(誤検出源)。次回は review 完走後に doc を書く。
+
+---
+
+## 10. 追補: CSP 不足補完(spec §4 訂正の反映・後日 fix)
+
+初回 stg smoke で CSP が R2 直アクセス(connect-src)と blob: 画像表示(img-src)をブロックしていたのを補完。**scope 内不足補完(新機能でない)**。
+
+- **CSP SoT = `proxy.ts` の Clerk auto CSP**(`next.config.ts` は `frame-ancestors 'none'` のみで directive が disjoint = 衝突なし)。`contentSecurityPolicy: {}` → `{ directives: imageCspDirectives(process.env.R2_ACCOUNT_ID) }`。
+- Clerk 7.5.1 の `directives` は既定に **merge(append+dedup)** する(node_modules 実装 `handleExistingDirective` で裏取り済 / canonical も installed source で独立検証)→ Clerk/Stripe/maps 既存 source を保持し R2/blob: を加算(置換でない)。
+  - `connect-src`: R2 path-style exact origin `https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`(r2.ts の objectUrl と一致。account 未設定なら加算しない guard)。
+  - `img-src`: `blob:` / `worker-src`: `self` `blob:`(圧縮 worker の明示 pin。Clerk 既定にも在り実質 no-op だが intent 固定)。
+- **圧縮 lib self-host**: `browser-image-compression@2.0.2` dist を `public/vendor/` へ byte 一致 vendored、`libURL` を同 origin へ(jsDelivr を CSP allowlist に足さない最小権限)。drift guard test で package 同版を pin。`worker` は blob: origin ゆえ絶対 URL 化(SSR/test は window guard で相対 path)。
+- **R2 fetch hardening**: PUT/GET に `mode:'cors'` / `credentials:'omit'`(署名クエリ認証で cookie 不要)/ `redirect:'error'`。
+- **Cache key**: 既に合成 key `/__media/{userId}/{assetId}`(presigned URL 不使用)を確認 = 変更なし(spec §2.4 遵守)。
+- **COEP/COOP は不追加**(Clerk 認証への影響回避)。
+- review: canonical(general-purpose/opus・template 改変なし)= **Ready to merge Crit0/Imp0/Minor3** + Codex 独立 = **Crit0/Imp0/Minor0**。commit 779... 系と同様 [reviewed] を canonical+Codex pass で付与(認証/外部副作用系ゆえ smoke は本 doc を正記録)。
+
+**フォローアップ(canonical Minor#1・記録)**: **OCR upload(`upload-form.tsx`)の圧縮 worker は依然 jsDelivr CDN を使う**(`libURL` 未指定)。新 CSP では壊れない(blob: worker は `worker-src blob:`、importScripts(jsDelivr) は Clerk 既定 `script-src 'https:'` が許容)ため今回は scope 外として未変更。「no-CDN 最小権限」を app 全体で完遂するなら OCR も vendored libURL に寄せる別 task を起票(その際は Clerk 既定 `script-src 'https:'` を絞る smoke も要る)。
+
+**CSP fix 後の再 smoke(OT・§6 に加え)**: PUT が Network に現れ 200 / 貼った画像が blob 表示される / 圧縮 worker が同 origin lib を通る(jsDelivr へ egress しない)/ negative over-size PUT 403 / 一括 DL。前提 = R2 CORS(§7-4)完了。
