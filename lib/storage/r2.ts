@@ -57,21 +57,30 @@ function objectUrl(objectKey: string): string {
 
 /**
  * PUT用のpresigned URLを発行する (browserからR2へ直PUTするための署名付きURL)。
- * Content-Typeを署名に含める (aws4fetchのs3+signQueryは既定でcontent-typeを
- * UNSIGNABLE_HEADERS扱いし除外するため、 `aws.allHeaders: true` で強制的に
- * signed headersへ含める — brief記載の検証事項。 これによりPUT時に異なる
- * Content-Typeを送ると署名不一致でR2が拒否する = Content-Typeがpresignに固定される)。
+ *
+ * Content-Type と Content-Length の両方を署名に含める (aws4fetch の s3+signQuery は
+ * 既定で content-type / content-length を UNSIGNABLE_HEADERS 扱いし除外するため、
+ * `aws.allHeaders: true` で強制的に signed headers へ含める)。
+ * - Content-Type 固定: 異なる Content-Type の PUT を R2 が署名不一致で拒否する。
+ * - Content-Length 固定 (= byteSize): これがないと presigned URL は body サイズを
+ *   一切制限せず、 reserve の 5 MiB cap が storage 層で無効化される (authed client が
+ *   小さい byteSize で reserve し巨大 body を PUT → 巨大 orphan で cap 迂回)。 exact
+ *   byteSize を署名に焼き込むことで R2 が Content-Length 不一致の PUT を拒否し、
+ *   保存オブジェクトを宣言サイズ (≤5 MiB) に構造的に束縛する。 browser は body の
+ *   実サイズから Content-Length を自動設定するため、 正直な client (body = byteSize
+ *   の blob) は一致し、 サイズ詐称は 403 になる。 R2 の実 enforce は stg smoke で確認。
  */
 export async function presignPutUrl(
   objectKey: string,
   mime: string,
+  byteSize: number,
   expiresSec: number = DEFAULT_EXPIRES_SEC,
 ): Promise<string> {
   const url = new URL(objectUrl(objectKey))
   url.searchParams.set('X-Amz-Expires', String(expiresSec))
   const signed = await client.sign(url.toString(), {
     method: 'PUT',
-    headers: { 'Content-Type': mime },
+    headers: { 'Content-Type': mime, 'Content-Length': String(byteSize) },
     aws: { signQuery: true, allHeaders: true },
   })
   return signed.url

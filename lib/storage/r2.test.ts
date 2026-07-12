@@ -59,26 +59,26 @@ describe('presignPutUrl', () => {
 
   it('returns a URL with the correct R2 host and bucket/objectKey path', async () => {
     const { presignPutUrl } = await import('./r2')
-    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp'))
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000))
     expect(url.hostname).toBe(`${ACCOUNT_ID}.r2.cloudflarestorage.com`)
     expect(url.pathname).toBe(`/${BUCKET_NAME}/users/u1/asset1.webp`)
   })
 
   it('sets X-Amz-Expires to the default 600 when expiresSec is omitted', async () => {
     const { presignPutUrl } = await import('./r2')
-    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp'))
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000))
     expect(url.searchParams.get('X-Amz-Expires')).toBe('600')
   })
 
   it('sets X-Amz-Expires to the passed value when provided', async () => {
     const { presignPutUrl } = await import('./r2')
-    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 120))
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000, 120))
     expect(url.searchParams.get('X-Amz-Expires')).toBe('120')
   })
 
   it('includes X-Amz-Algorithm, X-Amz-Credential (with access key + /auto/s3/), X-Amz-SignedHeaders, X-Amz-Signature', async () => {
     const { presignPutUrl } = await import('./r2')
-    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp'))
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000))
     expect(url.searchParams.get('X-Amz-Algorithm')).toBe('AWS4-HMAC-SHA256')
     expect(url.searchParams.get('X-Amz-Credential')).toContain(ACCESS_KEY_ID)
     expect(url.searchParams.get('X-Amz-Credential')).toContain('/auto/s3/')
@@ -87,9 +87,16 @@ describe('presignPutUrl', () => {
 
   it('X-Amz-SignedHeaders includes content-type (Content-Type is bound to the PUT signature)', async () => {
     const { presignPutUrl } = await import('./r2')
-    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp'))
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000))
     const signedHeaders = url.searchParams.get('X-Amz-SignedHeaders')
     expect(signedHeaders).toContain('content-type')
+  })
+
+  it('X-Amz-SignedHeaders includes content-length (byteSize is bound to the PUT signature — storage size cap)', async () => {
+    const { presignPutUrl } = await import('./r2')
+    const url = new URL(await presignPutUrl('users/u1/asset1.webp', 'image/webp', 1000))
+    const signedHeaders = url.searchParams.get('X-Amz-SignedHeaders')
+    expect(signedHeaders).toContain('content-length')
   })
 })
 
