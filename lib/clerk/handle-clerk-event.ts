@@ -14,6 +14,7 @@ import {
   tombstones,
   entityMutations,
   tagCategories,
+  assets,
 } from '@/lib/db/schema'
 import { stripe, cancelWithRetry } from '@/lib/stripe/client'
 import { notifyOps } from '@/lib/ops'
@@ -144,14 +145,18 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   // §6 / T3: DB transaction — users の soft delete + GDPR PII scrub + ユーザー
   // 紐付き子テーブルの物理削除。
   //
-  // 削除設計の集約コメント (なぜここに 10 テーブルを明示 DELETE するか):
+  // 削除設計の集約コメント (なぜここに 11 テーブルを明示 DELETE するか):
   // - users は soft delete (deleted_at set + email/clerk_id scrub) で物理削除しない
   //   ため、 users.id への FK ON DELETE CASCADE は発火しない。
-  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 10 件)**: direct user_id FK で
+  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 11 件)**: direct user_id FK で
   //   users に cascade するテーブルのうち、 親 cascade chain がないもの。
   //     exams / study_days / contact_messages / ai_usage_users / upload_records /
-  //     user_settings / study_sessions / tombstones / entity_mutations / tag_categories
+  //     user_settings / study_sessions / tombstones / entity_mutations / tag_categories /
+  //     assets
   //   (study_sessions は exam_id が set null = 非経路、 user_id のみが削除 path)
+  //   (assets は画像フェーズ A で新設、 user_id direct cascade のみ・親 chain なし → Group I。
+  //    行は本 DELETE で消えるが、 R2 上の画像オブジェクト自体の掃除は scope 外 = 手動運用
+  //    (spec §2.1: users/{user_id}/ prefix で手動削除可)。 row 削除と object 削除は別レイヤー)
   //   (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 旧 card_mutations の
   //    時にあった cards cascade chain がなくなり、 Group I に昇格)
   //   (tag_categories は Tag-1 で新設、 試験横断 master のため親 chain なし → Group I)
@@ -192,6 +197,7 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
       await tx.delete(tombstones).where(eq(tombstones.userId, internalUserId))
       await tx.delete(entityMutations).where(eq(entityMutations.userId, internalUserId))
       await tx.delete(tagCategories).where(eq(tagCategories.userId, internalUserId))
+      await tx.delete(assets).where(eq(assets.userId, internalUserId))
     },
     async (errorMessage) => {
       await recordFailure({

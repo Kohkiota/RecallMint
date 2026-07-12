@@ -50,9 +50,9 @@ exports[`Clerk webhook: user.created > happy path → users INSERT + publicMetad
 }
 `;
 
-exports[`Clerk webhook: user.deleted > soft delete + 10 child-table DELETEs (NOT 8 — route comment is wrong, actual is 10) 1`] = `
+exports[`Clerk webhook: user.deleted > soft delete + 11 child-table DELETEs (画像フェーズ A で assets 追加 → Group I=11) 1`] = `
 {
-  "childTableDeleteCount": 10,
+  "childTableDeleteCount": 11,
   "softDelete": {
     "clerkIdNull": true,
     "deletedAtSet": true,
@@ -63,9 +63,9 @@ exports[`Clerk webhook: user.deleted > soft delete + 10 child-table DELETEs (NOT
 }
 `;
 
-exports[`Clerk webhook: user.deleted > user.deleted with Stripe subs → cancel loop runs, then 10 child-table DELETEs 1`] = `
+exports[`Clerk webhook: user.deleted > user.deleted with Stripe subs → cancel loop runs, then 11 child-table DELETEs 1`] = `
 {
   "cancelWithRetryCallCount": 1,
-  "childTableDeleteCount": 10,
+  "childTableDeleteCount": 11,
 }
 `;

@@ -109,14 +109,14 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.insert).toHaveBeenCalledTimes(2)
   })
 
-  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update + 10 delete) + 200', async () => {
+  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update + 11 delete) + 200', async () => {
     const db = vi.mocked(getDb)()
     vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'msg_x' }]) as never)
     // SELECT users: customerId=null (Free プラン) → Stripe ループ skip
     vi.mocked(db.select).mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-000000000001', stripeCustomerId: null }]) as never,
     )
-    // transaction 内: update users (soft-delete + PII scrub) + delete Group I 8 子テーブル
+    // transaction 内: update users (soft-delete + PII scrub) + delete Group I 11 子テーブル
     vi.mocked(db.update).mockReturnValue(chain(undefined) as never)
     vi.mocked(db.delete).mockReturnValue(chain(undefined) as never)
     const body = JSON.stringify({
@@ -130,13 +130,13 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.select).toHaveBeenCalledTimes(1)  // users SELECT
     expect(db.transaction).toHaveBeenCalledTimes(1)
     expect(db.update).toHaveBeenCalledTimes(1)  // users soft-delete + scrub (inside transaction)
-    // Group I 10 件: exams + study_days + contact_messages + ai_usage_users +
+    // Group I 11 件: exams + study_days + contact_messages + ai_usage_users +
     // upload_records + user_settings + study_sessions + tombstones + entity_mutations +
-    // tag_categories
+    // tag_categories + assets (assets = 画像フェーズ A)
     // (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 cards cascade chain が
     //  なくなり Group I に昇格)
     // (tag_categories は Tag-1 で新設、 試験横断 master のため親 chain なし → Group I)
-    expect(db.delete).toHaveBeenCalledTimes(10)
+    expect(db.delete).toHaveBeenCalledTimes(11)
   })
 
   it('unknown event type → safeParse fail で early return 200 (clerk_events INSERT 不到達、 T-A6)', async () => {

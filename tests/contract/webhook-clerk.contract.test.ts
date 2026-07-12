@@ -13,9 +13,9 @@
  * 2. user.created → users INSERT ON CONFLICT DO NOTHING + publicMetadata sync
  *    (captured: clerkId, email, dbUserId, plan=free)
  * 3. user.deleted → users soft delete (email=null, clerkId=null, deletedAt set,
- *    stripeCustomerId NOT touched) + exactly 10 child-table DELETEs
- *    NOTE: route header comment says "8 テーブル" but ACTUAL contract is 10.
- *    Freeze 10, not 8.
+ *    stripeCustomerId NOT touched) + exactly 11 child-table DELETEs
+ *    NOTE: route header comment lists Group I テーブル。 ACTUAL contract is 11 (画像フェーズ A で assets 追加).
+ *    Freeze 11.
  *
  * NOT frozen: timing/ops payloads, logger calls, Stripe cancel sub calls,
  *             sql`now()` expression value (SQL chunk, AST-fragile).
@@ -255,24 +255,24 @@ describe('Clerk webhook: user.created', () => {
 // ── 3. user.deleted ───────────────────────────────────────────────────────────
 
 describe('Clerk webhook: user.deleted', () => {
-  it('soft delete + 10 child-table DELETEs (NOT 8 — route comment is wrong, actual is 10)', async () => {
-    // The 10 tables (Group I): exams, studyDays, contactMessages, aiUsageUsers,
-    // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories.
-    // Hard assert count=10; snapshot the soft-delete SET shape.
+  it('soft delete + 11 child-table DELETEs (画像フェーズ A で assets 追加 → Group I=11)', async () => {
+    // The 11 tables (Group I): exams, studyDays, contactMessages, aiUsageUsers,
+    // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories, assets.
+    // Hard assert count=11; snapshot the soft-delete SET shape.
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_contract' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '22222222-0000-4000-a000-000000000001', stripeCustomerId: null }]),
     )
-    // Free plan → no Stripe cancel loop. Transaction: update + 10 deletes.
+    // Free plan → no Stripe cancel loop. Transaction: update + 11 deletes.
     mockDbUpdate.mockReturnValue(chain(undefined))
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_del_contract' } }))
     expect(res.status).toBe(200)
 
-    // Hard assert: exactly 10 child-table DELETEs — freeze this count explicitly
-    expect(mockDbDelete).toHaveBeenCalledTimes(10)
+    // Hard assert: exactly 11 child-table DELETEs — freeze this count explicitly
+    expect(mockDbDelete).toHaveBeenCalledTimes(11)
 
     // Capture soft-delete SET args (scalar properties only)
     const updateChain = mockDbUpdate.mock.results[0]?.value as { set: ReturnType<typeof vi.fn> }
@@ -288,13 +288,13 @@ describe('Clerk webhook: user.deleted', () => {
         // stripeCustomerId is kept as audit correlation key — must NOT be in SET
         stripeCustomerIdTouched: 'stripeCustomerId' in setArgs,
       },
-      // The critical contract: 10 tables, NOT 8
+      // The critical contract: 11 tables (画像フェーズ A で assets 追加)
       childTableDeleteCount: mockDbDelete.mock.calls.length,
     }).toMatchSnapshot()
   })
 
-  it('user.deleted with Stripe subs → cancel loop runs, then 10 child-table DELETEs', async () => {
-    // Verify that the sub-cancel and 10-DELETE contract holds even with a Stripe customer.
+  it('user.deleted with Stripe subs → cancel loop runs, then 11 child-table DELETEs', async () => {
+    // Verify that the sub-cancel and 11-DELETE contract holds even with a Stripe customer.
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_stripe_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_stripe' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
@@ -313,8 +313,8 @@ describe('Clerk webhook: user.deleted', () => {
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_del_stripe_contract' } }))
     expect(res.status).toBe(200)
 
-    // Hard assert: 10 child-table DELETEs regardless of Stripe cancel activity
-    expect(mockDbDelete).toHaveBeenCalledTimes(10)
+    // Hard assert: 11 child-table DELETEs regardless of Stripe cancel activity
+    expect(mockDbDelete).toHaveBeenCalledTimes(11)
 
     expect({
       childTableDeleteCount: mockDbDelete.mock.calls.length,
