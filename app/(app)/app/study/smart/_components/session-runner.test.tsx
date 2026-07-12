@@ -15,6 +15,40 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { Card } from '@/lib/db/schema'
 
+// T11: SessionRunner は CardImageGallery (readOnly) を transitively import する。
+// card-image-gallery.tsx 自体は ../../../exams/[id]/_actions/asset-actions ('use server' +
+// R2_* env fail-fast) と @/lib/media/get-asset を real import するため、 未 mock だと module
+// load 時に throw する (card-image-gallery.test.tsx と同じ制約)。 ここでは gallery 本体は
+// real のまま、 その依存のみ mock して readOnly thumbnail 描画を検証する。
+const { mockGetAssetObjectURL, mockReserveAsset, mockFinalizeAsset, mockResolveAssetUrls } =
+  vi.hoisted(() => ({
+    mockGetAssetObjectURL: vi.fn(),
+    mockReserveAsset: vi.fn(),
+    mockFinalizeAsset: vi.fn(),
+    mockResolveAssetUrls: vi.fn(),
+  }))
+
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: mockGetAssetObjectURL,
+}))
+vi.mock('../../../exams/[id]/_actions/asset-actions', () => ({
+  reserveAsset: mockReserveAsset,
+  finalizeAsset: mockFinalizeAsset,
+  resolveAssetUrls: mockResolveAssetUrls,
+}))
+// getClientDb().media_assets.get(key) の best-effort width/height 読み取りは
+// card-image-gallery.test.tsx と同じ最小 stub (未定義でも壊れない)。
+vi.mock('@/lib/client-db', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/client-db')>('@/lib/client-db')
+  return {
+    ...actual,
+    getClientDb: () => ({
+      ...actual.getClientDb(),
+      media_assets: { get: vi.fn(async () => undefined) },
+    }),
+  }
+})
+
 // -----------------------------------------------------------------------
 // Hoisted mocks
 // -----------------------------------------------------------------------
@@ -126,6 +160,8 @@ beforeEach(() => {
   mockCompleteStudySession.mockResolvedValue(undefined)
   // flushAllPendingEvents は経路 2 (finished useEffect) で呼ばれる。 デフォルト success。
   mockFlushAllPendingEvents.mockResolvedValue([])
+  // T11: CardImageGallery (readOnly) の thumbnail 解決。 デフォルトは resolve 成功。
+  mockGetAssetObjectURL.mockResolvedValue('blob:mock-object-url')
 })
 
 afterEach(() => {
@@ -1778,5 +1814,47 @@ describe('threshold flush で pull-back', () => {
     expect(mockPullBack).toHaveBeenCalledWith('threshold-flush')
     expect(mockPullBack).not.toHaveBeenCalledWith('session-complete')
     expect(mockPullBack).toHaveBeenCalledTimes(1)
+  })
+})
+
+// -----------------------------------------------------------------------
+// 画像フェーズ A Task 11: 学習ビュー read-only gallery (問題文下)
+// -----------------------------------------------------------------------
+describe('SessionRunner (T11: read-only image gallery)', () => {
+  const UUID_IMAGE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+  it('images に question_text target の UUID entry あり → thumbnail が render され、 attach input / delete button は出ない (readOnly)', async () => {
+    const card = makeCard({
+      id: 'c1',
+      userId: 'user-with-image',
+      images: [{ key: UUID_IMAGE, target: 'question_text', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(1)
+    })
+    expect(mockGetAssetObjectURL).toHaveBeenCalledWith(
+      'user-with-image',
+      UUID_IMAGE,
+      expect.objectContaining({ resolveAssetUrls: mockResolveAssetUrls }),
+    )
+    // readOnly: 添付 input / 削除 button なし
+    expect(container.querySelector('input[type="file"]')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '画像を追加' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '画像を削除' })).not.toBeInTheDocument()
+  })
+
+  it('images が空配列 → thumbnail も添付 control も render されない', () => {
+    const card = makeCard({ id: 'c1', images: [] })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+    expect(container.querySelector('input[type="file"]')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '画像を追加' })).not.toBeInTheDocument()
+    expect(mockGetAssetObjectURL).not.toHaveBeenCalled()
   })
 })

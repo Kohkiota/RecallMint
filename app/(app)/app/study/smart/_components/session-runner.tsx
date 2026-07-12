@@ -56,6 +56,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
+import { CardImageGallery } from '@/app/(app)/app/exams/[id]/_components/card-image-gallery'
 import { equalSet } from '../_lib/equal-set'
 import {
   completeStudySession,
@@ -429,6 +430,17 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
         <p className="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base">
           {current.questionText}
         </p>
+        {/* 学習ビューは read-only gallery のみ (添付・削除は編集画面限定、 画像フェーズ A
+            Task 11 / spec §5)。 per-option gallery は Task 10 同様スコープ外。 */}
+        <div className="mt-2">
+          <CardImageGallery
+            images={current.images}
+            target="question_text"
+            cardId={current.id}
+            userId={current.userId}
+            readOnly
+          />
+        </div>
       </div>
 
       {/* 選択肢 (button 化、 selecting 中 click 可、 judged 後 disabled) */}

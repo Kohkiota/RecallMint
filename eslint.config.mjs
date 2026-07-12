@@ -372,6 +372,14 @@ const config = [
     files: ['app/\\(app\\)/app/study/custom/_components/custom-filter-form.tsx'],
     rules: { 'no-restricted-imports': 'off' },
   },
+  // 一時的負債: session-runner.tsx imports exams/[id]/_components/card-image-gallery
+  // (study → exams cross-feature、 画像フェーズ A Task 11 / spec §5)。 brief で明示的に
+  // Task 10 の CardImageGallery を再利用する設計のため許容。 Fix = 共有コンポーネントを
+  // shared location へ抽出。
+  {
+    files: ['app/\\(app\\)/app/study/smart/_components/session-runner.tsx'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
   // 一時的負債: card-tag-edit-fields.tsx imports tags/_components/color-palette-popover
   // + tags/_components/delete-confirm-dialog (exams → tags cross-feature, 2 imports).
   // Fix = extract those popovers/dialogs to a shared location.
