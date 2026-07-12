@@ -154,3 +154,26 @@ WHERE a.status = 'ready'
 **フォローアップ(canonical Minor#1・記録)**: **OCR upload(`upload-form.tsx`)の圧縮 worker は依然 jsDelivr CDN を使う**(`libURL` 未指定)。新 CSP では壊れない(blob: worker は `worker-src blob:`、importScripts(jsDelivr) は Clerk 既定 `script-src 'https:'` が許容)ため今回は scope 外として未変更。「no-CDN 最小権限」を app 全体で完遂するなら OCR も vendored libURL に寄せる別 task を起票(その際は Clerk 既定 `script-src 'https:'` を絞る smoke も要る)。
 
 **CSP fix 後の再 smoke(OT・§6 に加え)**: PUT が Network に現れ 200 / 貼った画像が blob 表示される / 圧縮 worker が同 origin lib を通る(jsDelivr へ egress しない)/ negative over-size PUT 403 / 一括 DL。前提 = R2 CORS(§7-4)完了。
+
+---
+
+## 11. stg smoke 実施記録(CC・Playwright MCP・2026-07-12)
+
+test user `komail9server+clerk_test@gmail.com`(email code `424242`)で stg(`stg.recallmint.nekotest.net`)ログイン。exam `F3-smoke`(9937637d…)のカードで実施。**CSP fix(32b93f9)は stg に反映済**(connect-src R2 / img-src blob: が通る = 下記 200 が成立)。
+
+### ③ negative over-size PUT(Content-Length 署名固定の実 enforce)= **PASS**
+- **署名固定の直接証拠**: 実 attach の presigned PUT URL の `X-Amz-SignedHeaders=content-length;content-type;host` — **`content-length` が署名対象**。SigV4 上、宣言と異なる Content-Length の body は R2 が署名不一致で拒否する(protocol 保証)。
+- **差分実証**: 同一 presigned URL に対し —
+  - 正規サイズ body(app 本来の PUT)→ **200 OK**(Network #57)。
+  - over-size body 500,000 bytes(手動 fetch/同 URL)→ **拒否**(Network #63 = `net::ERR_FAILED`。console = R2 の署名不一致エラー応答に CORS header が付かず browser が読取 block)。
+  - 唯一の差 = Content-Length。署名固定が無ければ over-size も 200 になるはずが拒否 = **enforce 実在**。
+- 判定: **PASS(署名固定は本物)**。200 通過なら FAIL だったが発生せず。
+
+### 正常系ベースライン(併せて確認)= PASS
+- attach: 圧縮 → reserve → 直 PUT **200**(#57)。R2 origin = `https://3658d1cf….r2.cloudflarestorage.com`(path-style・bucket `recallmint-dev`)= CSP connect-src パターンと一致。
+- 表示: resolve → GET **200**(#52)→ 48×48 の webp が **blob: で render**(`loaded:true`・`img-src blob:` CSP 通過)。
+- console: app 由来 error **0**(2 error は上記 negative fetch の意図的産物のみ)。
+
+### 未実施(OT 判断)
+- 一括 DL / placeholder 経路 / honest-upload mime mismatch は本 session では未実施(③ が最優先ゆえ)。必要なら追加 smoke。
+- **test 残置**: F3-smoke カードに 48×48 test 画像 1 枚を添付(assets 行 + R2 object `e96040ea….webp`)。test account 内・非破壊。over-size PUT は拒否ゆえ object は正規 blob のまま(上書きされていない)。掃除要否は OT 判断(§8 手動掃除素材参照)。
