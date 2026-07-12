@@ -69,3 +69,51 @@ export const optionsSchema = z
   .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
     message: '選択肢の id が重複しています',
   })
+
+// ---------------------------------------------------------------------------
+// images (画像フェーズ A Task 5 — server 最終防衛の zod 形状検証)
+// ---------------------------------------------------------------------------
+//
+// spec: docs/superpowers/specs/2026-07-12-image-phase-a-design.md §2.2 / §3.3
+//
+// `key` が UUIDv4 形式 = asset 参照 (server handler が「自 user の ready asset に
+// 実在」を検証する対象)。非 UUID key は既存 OCR 由来の参照メモ (legacy entry) で
+// あり、本 schema では target 形式の強制を外す (passthrough) — OCR 取込済 card の
+// images 編集が legacy entry で reject されないようにするため (spec §2.2)。
+//
+// spec §2.2 の判別: key が UUIDv4 = asset 参照 (server で ready 検証 / target 形式強制)、
+// 非 v4 (legacy OCR の "img-1" 等) = passthrough。 z.uuid() は任意 version を通すため
+// v4 厳密に絞る (spec は「UUIDv4 形式」と明記)。 imageEntrySchema の target 形式強制と
+// card-field-handlers の handleImages が同じ判別を共有するので helper に一本化し drift を防ぐ。
+export function isAssetKey(key: string): boolean {
+  return z.uuid({ version: 'v4' }).safeParse(key).success
+}
+
+// `url` は非空を reject する: 署名 URL の DB 保存禁止 (spec 前提 1) の恒久防衛。
+// 空文字 '' と未指定は許容する (書かない、が正しい状態)。
+const imageEntrySchema = z
+  .object({
+    key: z.string().min(1),
+    target: z.string(),
+    alt: z.string(),
+    source_ref: z.string().optional(),
+    url: z.string().optional(),
+  })
+  .refine((entry) => !entry.url || entry.url.length === 0, {
+    message: 'url は保存できません (署名 URL の DB 保存禁止)',
+    path: ['url'],
+  })
+  .refine(
+    (entry) => {
+      // legacy (非 UUIDv4) key は target 形式強制の対象外
+      if (!isAssetKey(entry.key)) return true
+      return entry.target === 'question_text' || /^option:.+/.test(entry.target)
+    },
+    {
+      message:
+        "target は 'question_text' または 'option:...' 形式である必要があります",
+      path: ['target'],
+    },
+  )
+
+export const imagesSchema = z.array(imageEntrySchema).max(10)

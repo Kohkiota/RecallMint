@@ -18,6 +18,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import {
+  assets,
   cards,
   cardTags,
   tagCategories,
@@ -31,6 +32,8 @@ import {
   explanationTextSchema,
   memoSchema,
   optionsSchema,
+  imagesSchema,
+  isAssetKey,
 } from '@/lib/validation/card'
 import {
   deriveCorrectAnswerIds,
@@ -156,6 +159,36 @@ const handleOptions: CardFieldHandler = async (tx, cardId, userId, value) => {
   return updateCardField(tx, cardId, userId, { options, correctAnswerIds })
 }
 
+// 画像フェーズ A Task 5: card 編集 UI からの images 更新の最終防衛。
+// zod (imagesSchema) が形状 (配列 ≤10 / url 非空 reject / UUID key の target 形式)
+// を検証した後、 UUID key (= asset 参照) 全件が「自 user の assets で
+// status='ready'」に実在するかを 1 query (IN) で確認する。 非 UUID key (legacy
+// OCR 参照) は判定対象外 (spec §2.2 の判別 invariant・passthrough)。
+// 詳細: docs/superpowers/specs/2026-07-12-image-phase-a-design.md §3.3
+const handleImages: CardFieldHandler = async (tx, cardId, userId, value) => {
+  const r = imagesSchema.safeParse(value)
+  if (!r.success) return 'failed'
+  const images = r.data
+  // spec §2.2: UUIDv4 key = asset 参照 (要 ready 検証)。 非 v4 (legacy OCR key) は除外。
+  // 判別は imageEntrySchema と同じ isAssetKey を共有 (drift 防止)。
+  const uuidKeys = images.map((i) => i.key).filter((k) => isAssetKey(k))
+  if (uuidKeys.length > 0) {
+    const rows = await tx
+      .select({ id: assets.id })
+      .from(assets)
+      .where(
+        and(
+          inArray(assets.id, uuidKeys),
+          eq(assets.userId, userId),
+          eq(assets.status, 'ready'),
+        ),
+      )
+    const readySet = new Set(rows.map((row) => row.id))
+    if (uuidKeys.some((k) => !readySet.has(k))) return 'failed'
+  }
+  return updateCardField(tx, cardId, userId, { images })
+}
+
 // ---------------------------------------------------------------------------
 // tag_option_ids handler (Tag-2c)
 // ---------------------------------------------------------------------------
@@ -262,6 +295,7 @@ export const CARD_FIELD_HANDLERS = {
   explanation_text: handleExplanationText,
   memo: handleMemo,
   options: handleOptions,
+  images: handleImages,
   tag_option_ids: handleTagOptionIds,
 } as const satisfies Record<string, CardFieldHandler>
 

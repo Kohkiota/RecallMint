@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SQL, getTableName } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
-import { cards, cardTags, tagCategories, tagOptions } from '@/lib/db/schema'
+import {
+  assets,
+  cards,
+  cardTags,
+  tagCategories,
+  tagOptions,
+} from '@/lib/db/schema'
 
 // card-field-handlers.ts の unit test。
 //
@@ -669,15 +675,206 @@ describe('CARD_FIELD_HANDLERS.options', () => {
 })
 
 // ---------------------------------------------------------------------------
+// images handler (画像フェーズ A Task 5)
+//
+// title 系と違い、 UUID key がある場合は先に assets テーブルへの SELECT
+// (owner-scope + status='ready') が挟まる。 既存 makeTx (update のみ) に
+// select を足した専用 mock を使う。
+// ---------------------------------------------------------------------------
+
+interface ImagesTxState extends TxState {
+  // SELECT assets 結果 (owner-scope + status='ready' 一致行のみを返す想定で
+  // テスト側が仕込む)
+  assetSelectRows: { id: string }[]
+  assetSelectCalls: number
+}
+
+function freshImagesState(): ImagesTxState {
+  return { ...freshState(), assetSelectRows: [], assetSelectCalls: 0 }
+}
+
+function makeImagesTx(state: ImagesTxState) {
+  const base = makeTx(state) as unknown as Record<string, unknown>
+  base.select = (_cols: unknown) => ({
+    from: (table: unknown) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      return {
+        where: (_cond: unknown) => {
+          if (name === getTableName(assets)) {
+            state.assetSelectCalls += 1
+            return Promise.resolve(state.assetSelectRows)
+          }
+          return Promise.resolve([])
+        },
+      }
+    },
+  })
+  return base as Parameters<
+    typeof import('./card-field-handlers').CARD_FIELD_HANDLERS.images
+  >[0]
+}
+
+describe('CARD_FIELD_HANDLERS.images', () => {
+  let state: ImagesTxState
+  const UUID_1 = '11111111-1111-4111-a111-111111111111'
+  const UUID_2 = '22222222-2222-4222-a222-222222222222'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    state = freshImagesState()
+  })
+
+  it('正常: UUID key 全件が ready+owned → applied、 images を SET', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }, { id: UUID_2 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'option:a', alt: '' },
+      ],
+    )
+    expect(result).toBe('applied')
+    expect(state.setArg?.images).toEqual([
+      { key: UUID_1, target: 'question_text', alt: '' },
+      { key: UUID_2, target: 'option:a', alt: '' },
+    ])
+    expect(state.assetSelectCalls).toBe(1)
+  })
+
+  it('UUID key が ready+owned 行に無い (不在/非ready/他user) → failed、 UPDATE 発行なし', async () => {
+    // UUID_2 が返ってこない = 不在 or status != ready or 他 user
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'option:a', alt: '' },
+      ],
+    )
+    expect(result).toBe('failed')
+    expect(state.updateCallCount).toBe(0)
+  })
+
+  it('url 非空を含む mutation → failed (zod で reject)、 assets query 不発', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        {
+          key: UUID_1,
+          target: 'question_text',
+          alt: '',
+          url: 'https://example.com/x.png',
+        },
+      ],
+    )
+    expect(result).toBe('failed')
+    expect(state.assetSelectCalls).toBe(0)
+    expect(state.updateCallCount).toBe(0)
+  })
+
+  it('legacy 非 UUID key のみ → assets query 不発、 applied', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: 'legacy-ocr-ref-1', target: 'anything', alt: '' }],
+    )
+    expect(result).toBe('applied')
+    expect(state.assetSelectCalls).toBe(0)
+    expect(state.setArg?.images).toEqual([
+      { key: 'legacy-ocr-ref-1', target: 'anything', alt: '' },
+    ])
+  })
+
+  it('非 v4 UUID key (v1) は legacy 扱い → assets query 不発、 applied (spec §2.2 UUIDv4 限定)', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      // v1 UUID: isAssetKey (v4 厳密) が false → asset 検証されず passthrough
+      [{ key: '11111111-1111-1111-8111-111111111111', target: 'anything', alt: '' }],
+    )
+    expect(result).toBe('applied')
+    expect(state.assetSelectCalls).toBe(0)
+  })
+
+  it('owner scope: assets query の WHERE に userId + status=ready が含まれる', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: UUID_1, target: 'question_text', alt: '' }],
+    )
+    const sig = await eqSignature()
+    expect(sig).toContainEqual(['assets', 'user_id', 'user-1'])
+    expect(sig).toContainEqual(['assets', 'status', 'ready'])
+  })
+
+  it('owner scope: cards UPDATE の WHERE に eq(cards.id, cardId) + eq(cards.userId, userId)', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: UUID_1, target: 'question_text', alt: '' }],
+    )
+    const sig = await eqSignature()
+    expect(sig).toContainEqual(['cards', 'id', 'card-1'])
+    expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
+  })
+
+  it('0 row (card 不在 / owner mismatch) → failed', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    state.returningRows = []
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: UUID_1, target: 'question_text', alt: '' }],
+    )
+    expect(result).toBe('failed')
+  })
+
+  it('空配列 → assets query 不発、 applied', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [],
+    )
+    expect(result).toBe('applied')
+    expect(state.assetSelectCalls).toBe(0)
+    expect(state.setArg?.images).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // dispatch (未知 field → failed)
 // ---------------------------------------------------------------------------
 
 describe('CARD_FIELD_HANDLERS dispatch', () => {
-  it('map に全 7 field の handler が登録されている', async () => {
+  it('map に全 8 field の handler が登録されている', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     expect(Object.keys(CARD_FIELD_HANDLERS).sort()).toEqual(
       [
         'explanation_text',
+        'images',
         'memo',
         'options',
         'question_text',
@@ -686,6 +883,11 @@ describe('CARD_FIELD_HANDLERS dispatch', () => {
         'title',
       ].sort(),
     )
+  })
+
+  it('images entry は handleImages と同一関数を指す', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    expect(CARD_FIELD_HANDLERS.images).toBeTypeOf('function')
   })
 
   it('未知 field → handler 未登録 (envelope 緩和の代替 gate)', async () => {
