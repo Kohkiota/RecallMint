@@ -4,7 +4,12 @@
 //    card から参照されていれば `abandonUpload` (mirror 除去 + cache/media_assets
 //    削除 + flush) で片付ける。 参照が無ければ直接 cache/media_assets を削除する。
 // ② 'downloading' 残骸 job: 中断したデッキ一括 DL。 added_asset_ids の cache blob を
-//    削除して job row を削除する (既存キャッシュ不巻込・再開なし、 spec §6)。
+//    削除して job row を削除する (既存キャッシュ不巻込・再開なし、 spec §6)。 liveness は
+//    per-exam download lock で判定する — try-acquire できれば LIVE でない (中断/crash)、
+//    busy なら別タブで進行中ゆえ触らない (時間 gate だと 1h 超の正当な DL を巻き込む・Codex 指摘)。
+//    Web Locks 非対応環境では lock が liveness を arbitrate できない (withWebLock は fallback で
+//    run を即実行 = 全 job を中断扱いにしてしまう) ため cleanup 自体を skip する (誤削除より
+//    残骸放置を選ぶ・fail-safe。 対象環境 iOS 16.4+ は Web Locks 対応ゆえ実害なし・Codex 指摘)。
 //
 // Web Lock `'recallmint:media:sweep'` で多重タブ排他 (他 tab が sweep 中なら skip)。
 // 各 item の失敗は best-effort — 1 件の失敗が残りを止めない (try/catch で握って続行)。
@@ -101,20 +106,36 @@ async function sweepStaleUploading(userId: string, now: number): Promise<void> {
 }
 
 async function sweepStaleDownloadJobs(userId: string): Promise<void> {
+  // Web Locks 非対応環境では per-exam download lock で liveness を判定できない
+  // (withWebLock が fallback で run を即実行 → 進行中 DL の added blob を誤削除しかねない)。
+  // arbitrate 不能なら cleanup を丸ごと skip する (fail-safe: 誤削除より残骸放置)。
+  if (typeof navigator === 'undefined' || !navigator.locks) return
+
   const db = getClientDb()
-  const staleJobs = (
+  const jobs = (
     await db.media_download_jobs.where('status').equals('downloading').toArray()
   ).filter((j) => j.user_id === userId) // 現 user の job のみ (前 user の row を触らない)
 
-  for (const job of staleJobs) {
-    try {
-      for (const assetId of job.added_asset_ids) {
-        await deleteAssetBlob(job.user_id, assetId)
-      }
-      await db.media_download_jobs.delete([job.user_id, job.exam_id])
-    } catch {
-      // best-effort: 1 件の失敗は残りの sweep を止めない。
-    }
+  for (const job of jobs) {
+    // liveness 判定は per-exam download lock で行う (時間 gate だと大デッキ/低速回線で 1h
+    // 超の正当な DL を巻き込む — Codex 指摘)。 try-acquire できる = その exam の DL は
+    // LIVE でない (中断/crash でタブが lock を解放済み) → 残骸として掃除。 acquire 不可
+    // (busy) = 別タブで進行中の LIVE DL ゆえ触らない (掃除すると added blob を消して
+    // all-or-nothing を壊す)。 sweep の外側 lock とは別名ゆえ nested 保持で deadlock しない。
+    await withWebLock({
+      lockName: `recallmint:media:download:${job.exam_id}`,
+      onLockBusy: () => {}, // live DL → skip
+      run: async () => {
+        try {
+          for (const assetId of job.added_asset_ids) {
+            await deleteAssetBlob(job.user_id, assetId)
+          }
+          await db.media_download_jobs.delete([job.user_id, job.exam_id])
+        } catch {
+          // best-effort: 1 件の失敗は残りの sweep を止めない。
+        }
+      },
+    })
   }
 }
 

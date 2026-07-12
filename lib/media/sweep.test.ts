@@ -6,8 +6,10 @@
 // ロジックは Task 8 側で検証済み、 本 test は sweep の分岐・end-state のみ検証)。
 //
 // 観点: stale 'uploading'(card 参照あり)→ abandonUpload 経路 / stale 'uploading'
-// (card 参照なし)→ 直接削除 / fresh 'uploading'(<1h)は不変 / 'downloading' job →
-// added blob 削除 + job row 削除 / lock-busy → run skip / per-item 失敗が他を止めない。
+// (card 参照なし)→ 直接削除 / fresh 'uploading'(<1h)は不変 / 'downloading' job:
+// per-exam download lock free(arbitrate 可能・LIVE でない)→ added blob 削除 + job row
+// 削除 / lock busy(別タブ LIVE 進行中)→ 不変 / Web Locks 非対応(arbitrate 不能)→ skip
+// / done job は不変 / sweep lock-busy → run skip / per-item 失敗が他を止めない。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ClientCardImage } from '@/lib/client-db'
@@ -237,25 +239,141 @@ describe('sweepStaleMedia — fresh uploading', () => {
 })
 
 describe('sweepStaleMedia — downloading job 残骸', () => {
-  it('downloading job の added_asset_ids を全て cache 削除 + job row 削除', async () => {
-    const db = getClientDb()
-    await db.media_download_jobs.put({
-      exam_id: 'exam-1',
-      user_id: USER_ID,
-      status: 'downloading',
-      total: 3,
-      done_count: 2,
-      added_asset_ids: ['a1', 'a2'],
-      started_at: isoMinusMs(5000),
+  it('per-exam download lock が free (arbitrate 可能・LIVE な DL なし=中断/crash 済) → added_asset_ids を全 cache 削除 + job row 削除', async () => {
+    // 全 lock を grant する stub (Web Locks 対応かつ per-exam lock free の環境を模す)。
+    const originalNavigator = (globalThis as { navigator?: unknown }).navigator
+    const requestSpy = vi.fn(
+      (_name: string, _options: unknown, cb: (lock: unknown) => Promise<void>) =>
+        cb({}),
+    )
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: { request: requestSpy } },
+      configurable: true,
+      writable: true,
     })
 
-    await sweepStaleMedia(USER_ID)
+    try {
+      const db = getClientDb()
+      await db.media_download_jobs.put({
+        exam_id: 'exam-1',
+        user_id: USER_ID,
+        status: 'downloading',
+        total: 3,
+        done_count: 2,
+        added_asset_ids: ['a1', 'a2'],
+        started_at: isoMinusMs(5000),
+      })
 
-    expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a1')
-    expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a2')
-    expect(
-      await db.media_download_jobs.get([USER_ID, 'exam-1']),
-    ).toBeUndefined()
+      await sweepStaleMedia(USER_ID)
+
+      expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a1')
+      expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a2')
+      expect(
+        await db.media_download_jobs.get([USER_ID, 'exam-1']),
+      ).toBeUndefined()
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as { navigator?: unknown }).navigator
+      } else {
+        Object.defineProperty(globalThis, 'navigator', {
+          value: originalNavigator,
+          configurable: true,
+          writable: true,
+        })
+      }
+    }
+  })
+
+  it('Web Locks 非対応 (navigator.locks なし) → download-job cleanup を skip (liveness arbitrate 不能ゆえ誤削除しない)', async () => {
+    // navigator は在るが locks を持たない環境を明示 stub (旧 Safari <16.4 等)。 Node の
+    // test env は実 navigator.locks を持つため、 非対応を模すには明示的に外す必要がある。
+    // lock で liveness を判定できない環境では進行中 DL を中断扱いにしないよう cleanup を
+    // 丸ごと skip する (fail-safe・Codex 指摘)。
+    const originalNavigator = (globalThis as { navigator?: unknown }).navigator
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {}, // locks なし
+      configurable: true,
+      writable: true,
+    })
+
+    try {
+      const db = getClientDb()
+      await db.media_download_jobs.put({
+        exam_id: 'exam-nolocks',
+        user_id: USER_ID,
+        status: 'downloading',
+        total: 3,
+        done_count: 2,
+        added_asset_ids: ['a1', 'a2'],
+        // 2h 前でも Web Locks 非対応なら触らない (時間 gate 不在の確認)。
+        started_at: isoMinusMs(2 * ONE_HOUR_MS),
+      })
+
+      await sweepStaleMedia(USER_ID)
+
+      expect(mockDeleteAssetBlob).not.toHaveBeenCalled()
+      expect(
+        await db.media_download_jobs.get([USER_ID, 'exam-nolocks']),
+      ).toBeDefined()
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as { navigator?: unknown }).navigator
+      } else {
+        Object.defineProperty(globalThis, 'navigator', {
+          value: originalNavigator,
+          configurable: true,
+          writable: true,
+        })
+      }
+    }
+  })
+
+  it('per-exam download lock が busy (別タブで LIVE 進行中) → 触らない (時間経過に依らない)', async () => {
+    // 外側 sweep lock は grant、 per-exam download lock は busy (cb(null)) にする stub。
+    const originalNavigator = (globalThis as { navigator?: unknown }).navigator
+    const requestSpy = vi.fn(
+      (name: string, _options: unknown, cb: (lock: unknown) => Promise<void>) => {
+        if (name.startsWith('recallmint:media:download:')) return cb(null) // live DL
+        return cb({}) // 外側 sweep lock 等は grant
+      },
+    )
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: { request: requestSpy } },
+      configurable: true,
+      writable: true,
+    })
+
+    try {
+      const db = getClientDb()
+      await db.media_download_jobs.put({
+        exam_id: 'exam-live',
+        user_id: USER_ID,
+        status: 'downloading',
+        total: 5,
+        done_count: 2,
+        added_asset_ids: ['a1', 'a2'],
+        // 2h 前でも lock busy なら触らない (時間 gate 廃止の確認)。
+        started_at: isoMinusMs(2 * ONE_HOUR_MS),
+      })
+
+      await sweepStaleMedia(USER_ID)
+
+      // LIVE な DL の added blob は消さない (消すと all-or-nothing が壊れる)。
+      expect(mockDeleteAssetBlob).not.toHaveBeenCalled()
+      expect(
+        await db.media_download_jobs.get([USER_ID, 'exam-live']),
+      ).toBeDefined()
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as { navigator?: unknown }).navigator
+      } else {
+        Object.defineProperty(globalThis, 'navigator', {
+          value: originalNavigator,
+          configurable: true,
+          writable: true,
+        })
+      }
+    }
   })
 
   it('done job には触れない', async () => {
@@ -329,56 +447,81 @@ describe('sweepStaleMedia — lock busy', () => {
 
 describe('sweepStaleMedia — per-item 失敗の隔離', () => {
   it('1 件の abandonUpload 失敗が他 asset / job の sweep を止めない', async () => {
-    const db = getClientDb()
-    await db.media_assets.bulkPut([
-      {
-        id: 'asset-fail',
-        user_id: USER_ID,
-        status: 'uploading',
-        mime: 'image/webp',
-        byte_size: 100,
-        width: 10,
-        height: 10,
-        hash: 'h1',
-        created_at: isoMinusMs(ONE_HOUR_MS + 1000),
-      },
-      {
-        id: 'asset-orphan-ok',
-        user_id: USER_ID,
-        status: 'uploading',
-        mime: 'image/webp',
-        byte_size: 100,
-        width: 10,
-        height: 10,
-        hash: 'h2',
-        created_at: isoMinusMs(ONE_HOUR_MS + 1000),
-      },
-    ])
-    const images: ClientCardImage[] = [
-      { key: 'asset-fail', target: 'question_text', alt: '' },
-    ]
-    await seedCard(images)
-
-    mockAbandonUpload.mockRejectedValueOnce(new Error('storage failure'))
-
-    await db.media_download_jobs.put({
-      exam_id: 'exam-1',
-      user_id: USER_ID,
-      status: 'downloading',
-      total: 1,
-      done_count: 0,
-      added_asset_ids: ['a1'],
-      started_at: isoMinusMs(5000),
+    // download-job phase は Web Locks で liveness を判定するため、 全 lock を grant する
+    // stub を置く (非対応環境では cleanup が skip され job 掃除の検証ができない)。
+    const originalNavigator = (globalThis as { navigator?: unknown }).navigator
+    const requestSpy = vi.fn(
+      (_name: string, _options: unknown, cb: (lock: unknown) => Promise<void>) =>
+        cb({}),
+    )
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: { request: requestSpy } },
+      configurable: true,
+      writable: true,
     })
 
-    await expect(sweepStaleMedia(USER_ID)).resolves.toBeUndefined()
+    try {
+      const db = getClientDb()
+      await db.media_assets.bulkPut([
+        {
+          id: 'asset-fail',
+          user_id: USER_ID,
+          status: 'uploading',
+          mime: 'image/webp',
+          byte_size: 100,
+          width: 10,
+          height: 10,
+          hash: 'h1',
+          created_at: isoMinusMs(ONE_HOUR_MS + 1000),
+        },
+        {
+          id: 'asset-orphan-ok',
+          user_id: USER_ID,
+          status: 'uploading',
+          mime: 'image/webp',
+          byte_size: 100,
+          width: 10,
+          height: 10,
+          hash: 'h2',
+          created_at: isoMinusMs(ONE_HOUR_MS + 1000),
+        },
+      ])
+      const images: ClientCardImage[] = [
+        { key: 'asset-fail', target: 'question_text', alt: '' },
+      ]
+      await seedCard(images)
 
-    // asset-fail の abandon は失敗したが、 asset-orphan-ok の直接削除と job の掃除は完遂。
-    expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'asset-orphan-ok')
-    expect(await db.media_assets.get('asset-orphan-ok')).toBeUndefined()
-    expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a1')
-    expect(
-      await db.media_download_jobs.get([USER_ID, 'exam-1']),
-    ).toBeUndefined()
+      mockAbandonUpload.mockRejectedValueOnce(new Error('storage failure'))
+
+      await db.media_download_jobs.put({
+        exam_id: 'exam-1',
+        user_id: USER_ID,
+        status: 'downloading',
+        total: 1,
+        done_count: 0,
+        added_asset_ids: ['a1'],
+        started_at: isoMinusMs(ONE_HOUR_MS + 1000),
+      })
+
+      await expect(sweepStaleMedia(USER_ID)).resolves.toBeUndefined()
+
+      // asset-fail の abandon は失敗したが、 asset-orphan-ok の直接削除と job の掃除は完遂。
+      expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'asset-orphan-ok')
+      expect(await db.media_assets.get('asset-orphan-ok')).toBeUndefined()
+      expect(mockDeleteAssetBlob).toHaveBeenCalledWith(USER_ID, 'a1')
+      expect(
+        await db.media_download_jobs.get([USER_ID, 'exam-1']),
+      ).toBeUndefined()
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as { navigator?: unknown }).navigator
+      } else {
+        Object.defineProperty(globalThis, 'navigator', {
+          value: originalNavigator,
+          configurable: true,
+          writable: true,
+        })
+      }
+    }
   })
 })

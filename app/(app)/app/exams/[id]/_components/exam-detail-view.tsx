@@ -27,6 +27,7 @@ import { AppContainer } from '@/app/(app)/app/_components/app-container'
 import { InlineCardList } from './inline-card-list'
 import { ExamCardTable } from './exam-card-table'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
+import { DeckDownloadButton } from './deck-download-button'
 
 type ExamDetailViewProps = {
   initialCards: ExamDetailCard[]
@@ -222,8 +223,15 @@ export function ExamDetailView({
               <p className="text-xs text-slate-500">{dateText}</p>
             </header>
           </AppContainer>
-          {/* ViewToggle: 水平 cap のみ (py-0 で py-8 を打ち消し、mx-auto max-w-4xl px-4 が残る) */}
-          <AppContainer className="py-0">{viewToggle}</AppContainer>
+          {/* ViewToggle + 一括 DL 入口 (画像フェーズ A Task 12 / spec §6): card view header に配置。
+              一括 DL は控えめな入口ゆえ ViewToggle と同じ帯に置く。 table view は密度優先の
+              app-shell chrome ゆえ入口を出さない (card view のみ)。 */}
+          <AppContainer className="py-0">
+            <div className="flex items-start justify-between gap-2">
+              {viewToggle}
+              <DeckDownloadButton userId={userId} examId={examId} />
+            </div>
+          </AppContainer>
           {/* Edit-1 T2: card view は AppContainer で水平 cap */}
           <AppContainer className="py-0">
             <InlineCardList initialCards={initialCards} examId={examId} userId={userId} />
