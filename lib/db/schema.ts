@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (21 tables; S1.9.1 で upload_records 追加)
+// Drizzle schema — mcq-platform (22 tables; 画像フェーズ A で assets 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -800,6 +800,47 @@ export const tombstones = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// assets (画像フェーズ A 新設、migration 0023) — R2 ホスト画像バイトの台帳。
+// card row と独立 (reservation 時点で card 未確定 / (user_id, hash) dedup lookup /
+// reserved→ready 状態遷移が card と無関係) のため cards.images に内包しない。
+// object_key は 'users/{user_id}/{assetId}.{webp|png}' 形式で UNIQUE (R2 key の
+// 一意性を DB 側でも担保)。status / mime は DB CHECK を張らずアプリ層 invariant
+// とする (Sprint 2 integration_failures catalog 前例と同判断)。
+// reference_count / unreferenced_at は将来の orphan 掃除用の枠 (列のみ確保、
+// 本 phase のアプリコードは一切読み書きしない = dormant)。
+// pull 同期非対象 (学習データでない、client 側は Dexie media_assets が別途持つ)。
+// user 削除: cascade で台帳は消える (R2 object 自体の自動掃除は scope 外)。
+// 詳細: docs/superpowers/specs/2026-07-12-image-phase-a-design.md §2.1
+// ---------------------------------------------------------------------------
+export const assets = pgTable(
+  'assets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    objectKey: text('object_key').notNull().unique(),
+    mime: text('mime').notNull(),
+    byteSize: integer('byte_size').notNull(),
+    width: integer('width').notNull(),
+    height: integer('height').notNull(),
+    hash: text('hash').notNull(),
+    status: text('status').notNull().default('reserved'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    readyAt: timestamp('ready_at', { withTimezone: true }),
+    // dormant: 将来の orphan 掃除 (手動 SQL) 用の枠。アプリコードは読み書きしない。
+    referenceCount: integer('reference_count').notNull().default(0),
+    unreferencedAt: timestamp('unreferenced_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('assets_user_hash_idx').on(t.userId, t.hash),
+    index('assets_user_status_idx').on(t.userId, t.status),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -841,3 +882,5 @@ export type CardTag = typeof cardTags.$inferSelect
 export type NewCardTag = typeof cardTags.$inferInsert
 export type Tombstone = typeof tombstones.$inferSelect
 export type NewTombstone = typeof tombstones.$inferInsert
+export type Asset = typeof assets.$inferSelect
+export type NewAsset = typeof assets.$inferInsert
