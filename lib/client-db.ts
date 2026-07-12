@@ -67,6 +67,34 @@ export type ClientCardImage = {
   url?: string
 }
 
+// media_assets (画像フェーズ A v8): 添付画像 asset の client 側状態 mirror。
+// server `assets` テーブル(migration 0023)と対で、 upload saga の 'uploading' 状態を
+// local に持つ (server は 'reserved'|'ready' のみ、 client は saga 進行中の
+// 'uploading' / 失敗時 'failed' も持つ点が非対称、 spec §2.3)。
+export type ClientMediaAsset = {
+  id: string // = assetId (UUIDv4)
+  user_id: string
+  status: 'uploading' | 'ready' | 'failed'
+  mime: string
+  byte_size: number
+  width: number
+  height: number
+  hash: string
+  created_at: string // ISO
+}
+
+// media_download_jobs (画像フェーズ A v8): デッキ一括 DL の進捗 row (spec §6)。
+// PK は複合 [user_id+exam_id] (1 exam につき進行中ジョブは 1 個)。
+export type ClientMediaDownloadJob = {
+  exam_id: string
+  user_id: string
+  status: 'downloading' | 'done'
+  total: number
+  done_count: number
+  added_asset_ids: string[]
+  started_at: string // ISO
+}
+
 export type ClientCard = {
   id: string
   user_id: string
@@ -237,6 +265,10 @@ export class ClientDb extends Dexie {
   tag_options!: Table<ClientTagOption, string>
   // Tag-2b: card ↔ tag_option junction の read-only mirror。 PK は複合 [card_id+option_id]。
   card_tags!: Table<ClientCardTag, [string, string]>
+  // 画像フェーズ A (v8): 添付画像 asset の client 状態 mirror。 PK = id (=assetId)。
+  media_assets!: Table<ClientMediaAsset, string>
+  // 画像フェーズ A (v8): デッキ一括 DL の進捗 row。 PK は複合 [user_id+exam_id]。
+  media_download_jobs!: Table<ClientMediaDownloadJob, [string, string]>
 
   constructor() {
     super('recallmint')
@@ -307,6 +339,21 @@ export class ClientDb extends Dexie {
     this.version(7).stores({
       cards:
         'id, exam_id, user_id, due, updated_at, content_version, sync_status, [user_id+exam_id], [user_id+due]',
+    })
+    // v8 (画像フェーズ A Task 6): media_assets / media_download_jobs store 追加。
+    // 既存 store の schema は変更せず、 新規 store のみ追加するため、 v7 → v8 upgrade は
+    // v2 / v4 / v5 / v6 / v7 と同形の単純 store 追加で済む (store drop なし、 既存データ
+    // 保持、 upgrade callback 不要。 spec §2.3)。
+    // media_assets index:
+    //   - user_id: owner scope 列挙 (起動時 sweep の stale 'uploading' 検出等)
+    //   - [user_id+hash]: 同一ユーザー内 dedup lookup (spec §3.5)
+    //   - status: 'uploading'/'failed' の横断検出 (flush gate / sweep)
+    // media_download_jobs index:
+    //   - PK [user_id+exam_id]: 1 exam につき進行中ジョブは 1 個 (server PK 構造と対称)
+    //   - user_id / status: 起動時 sweep での中断ジョブ('downloading' 残骸) 検出
+    this.version(8).stores({
+      media_assets: 'id, user_id, [user_id+hash], status',
+      media_download_jobs: '[user_id+exam_id], user_id, status',
     })
   }
 }
