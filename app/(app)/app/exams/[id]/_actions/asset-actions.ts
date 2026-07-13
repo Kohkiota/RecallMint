@@ -54,7 +54,10 @@ async function currentUserOrNull(): Promise<User | null> {
 }
 
 const reserveInputSchema = z.object({
-  mime: z.enum(['image/webp', 'image/png']),
+  // webp/png = 圧縮出力。 jpeg = fallback(圧縮/検証失敗時の元画像 direct PUT・iOS/WebKit
+  // 修正 T5)で受ける。 client の fallback 適格 type(lib/media/upload.ts の jpeg/png)と
+  // この enum は連動させること(片方だけ変えると jpeg fallback が RESERVE_FAILED に落ちる)。
+  mime: z.enum(['image/webp', 'image/png', 'image/jpeg']),
   byteSize: z.number().int().positive().max(MAX_ASSET_BYTES),
   width: z.number().int().positive().max(MAX_IMAGE_DIMENSION),
   height: z.number().int().positive().max(MAX_IMAGE_DIMENSION),
@@ -90,7 +93,8 @@ export async function reserveAsset(
   const { mime, byteSize, width, height, hash } = parsed.data
 
   const assetId = crypto.randomUUID()
-  const ext = mime === 'image/webp' ? 'webp' : 'png'
+  const ext =
+    mime === 'image/webp' ? 'webp' : mime === 'image/jpeg' ? 'jpg' : 'png'
   const objectKey = `users/${user.id}/${assetId}.${ext}`
 
   const db = getDb()

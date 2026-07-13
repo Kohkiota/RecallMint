@@ -41,7 +41,7 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { putAssetBlob, deleteAssetBlob } from '@/lib/media/cache'
 import { isWebKitImagePipeline } from '@/lib/media/webkit-detect'
 import { compressImageSafe } from '@/lib/media/compress-image-safe'
-import { validateCompressionOutput } from '@/lib/media/image-validation'
+import { validateCompressionOutput, validateImageStructure } from '@/lib/media/image-validation'
 
 // ---------------------------------------------------------------------------
 // 型・定数
@@ -59,6 +59,12 @@ export type AttachErrorCode =
 // reserve/upload 前に弾く (超えると server が images mutation を reject し、 local だけ
 // 増えて sync できない ready asset の orphan が残るため)。
 const MAX_IMAGES_PER_CARD = 10
+
+// fallback (T5) が直 PUT する元画像の上限。 server reserve の cap
+// (`app/(app)/app/exams/[id]/_actions/asset-actions.ts` MAX_ASSET_BYTES) と一致させる
+// (超えると reserve が reject し RESERVE_FAILED に落ちるだけなので fallback を試みる意味がない
+// = 早期に COMPRESS_FAILED へ倒す)。 lib/ → app/ import は Block A で禁止のためローカルに複製する。
+const MAX_ASSET_BYTES = 5 * 1024 * 1024
 
 export type CompressResult = {
   blob: Blob
@@ -238,6 +244,27 @@ function normalizeError(err: unknown, fallbackMessage: string): Error {
   return new Error(fallbackMessage)
 }
 
+// fallback (T5): 圧縮 / 出力検証が失敗した場合、 元画像を直 PUT してユーザーを詰ませない。
+// 対象は jpg/png かつ server reserve cap 以下のみ (webp は圧縮 skip の意味が薄く対象外・
+// spec)。 validateImageStructure (T2) で decode/寸法/magic-byte を確認し、 通れば圧縮版と
+// 同型の CompressResult を返す (同一 reserve→楽観層→PUT→finalize 経路に載せるため)。
+// 非対象 / 検証失敗は null (呼出側が COMPRESS_FAILED に落とす)。
+async function tryFallback(file: File): Promise<CompressResult | null> {
+  if (file.type !== 'image/jpeg' && file.type !== 'image/png') return null
+  if (file.size > MAX_ASSET_BYTES) return null
+
+  const structural = await validateImageStructure(file)
+  if (!structural.ok) return null
+
+  return {
+    blob: file,
+    mime: file.type,
+    width: structural.width,
+    height: structural.height,
+    hash: await sha256Hex(file),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // attachImageToCard (saga)
 // ---------------------------------------------------------------------------
@@ -386,21 +413,32 @@ async function attachImageToCardInner(
     return { ok: false, code: 'TOO_MANY_IMAGES' }
   }
 
-  // 1. 圧縮 (入口 gate 込み)。 gate 違反 = INVALID_TYPE、 検証 reject / それ以外 =
-  //    COMPRESS_FAILED (T5 が ValidationFailedError を fallback 起点に差し替える)。
+  // 1. 圧縮 (入口 gate 込み)。 gate 違反 = INVALID_TYPE (不正入力・fallback 対象外)。
+  //    それ以外 (ValidationFailedError / 圧縮 crash) は元画像 direct PUT を試みる (T5)。
+  //    fallback 非対象・構造検証失敗は従来どおり COMPRESS_FAILED。
   //
-  //    single-flight (Codex#6): WebKit は「compress→validate→(T5 fallback)」区間を
+  //    single-flight (Codex#6): WebKit は「compress→validate→fallback」区間を
   //    runExclusiveImageWork で全 card 横断 1 添付ずつ逐次化する (並列 canvas の OOM/黒画像
   //    回避)。 圧縮失敗後も同一 exclusive work 内に留めて fallback まで連続させる (lock を
-  //    途中で解放しない)。 Blink/Firefox は並列で問題ないため wrap せず直接呼ぶ。
-  //    区間は圧縮成功 (compressed 返却) / 早期失敗 (AttachResult 返却) の union を返し、
-  //    後者は下でそのまま return する (楽観層以降へ進まない)。
+  //    途中で解放しない・tryFallback は新規 lock を取得せずこの区間内で完結する)。
+  //    Blink/Firefox は並列で問題ないため wrap せず直接呼ぶ。
+  //    区間は圧縮 (or fallback) 成功 (compressed 返却) / 早期失敗 (AttachResult 返却) の
+  //    union を返し、 後者は下でそのまま return する (楽観層以降へ進まない)。
   const compressSection = async (): Promise<CompressResult | AttachResult> => {
     try {
       return await compressForAttach(file)
     } catch (err) {
       if (err instanceof InvalidImageTypeError) {
         return { ok: false, code: 'INVALID_TYPE' }
+      }
+      // tryFallback は sha256 (crypto.subtle) 等 reject しうる await を含むため、 ここで
+      // 握って COMPRESS_FAILED に落とす (never-throw AttachResult 契約 = throw を saga 外に
+      // 漏らさない。 catch 内の未 guard await が契約を破るのを防ぐ)。
+      try {
+        const fallback = await tryFallback(file)
+        if (fallback) return fallback
+      } catch {
+        // fallback 失敗は COMPRESS_FAILED に集約。
       }
       return { ok: false, code: 'COMPRESS_FAILED' }
     }

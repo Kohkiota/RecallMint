@@ -219,11 +219,33 @@ describe('reserveAsset', () => {
     await expect(reserveAsset(validInput)).rejects.toThrow('db down')
   })
 
-  it('invalid mime → { ok: false }, no INSERT', async () => {
+  it('invalid mime (enum 外) → { ok: false }, no INSERT', async () => {
     const { reserveAsset } = await importActions()
-    const r = await reserveAsset({ ...validInput, mime: 'image/jpeg' })
+    // image/gif は enum {webp,png,jpeg} 外ゆえ reject。
+    const r = await reserveAsset({
+      ...validInput,
+      mime: 'image/gif' as unknown as 'image/webp',
+    })
     expect(r.ok).toBe(false)
     expect(dbState.insertTable).toBeNull()
+  })
+
+  it('valid jpeg (fallback 元画像) → INSERT with .jpg objectKey, presign image/jpeg', async () => {
+    // client fallback(iOS/WebKit 修正 T5)が元 jpeg を direct PUT する経路。 enum が jpeg を
+    // 受けないと RESERVE_FAILED に落ちるため、 client fallback 適格 type との連動を pin する。
+    const { reserveAsset } = await importActions()
+    const r = await reserveAsset({ ...validInput, mime: 'image/jpeg' as const })
+    expect(r.ok).toBe(true)
+    const vals = dbState.insertValues!
+    expect(vals.mime).toBe('image/jpeg')
+    if (r.ok && r.data) {
+      expect(vals.objectKey).toBe(`users/user-1/${r.data.assetId}.jpg`)
+      expect(mockPresignPutUrl).toHaveBeenCalledWith(
+        vals.objectKey,
+        'image/jpeg',
+        1000,
+      )
+    }
   })
 
   it('byteSize 0 → { ok: false }, no INSERT', async () => {

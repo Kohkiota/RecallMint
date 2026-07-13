@@ -24,6 +24,7 @@ const {
   mockIsWebKit,
   mockCompressImageSafe,
   mockValidateOutput,
+  mockValidateStructure,
 } = vi.hoisted(() => ({
   mockCompress: vi.fn(),
   mockReserveAsset: vi.fn(),
@@ -34,6 +35,7 @@ const {
   mockIsWebKit: vi.fn(),
   mockCompressImageSafe: vi.fn(),
   mockValidateOutput: vi.fn(),
+  mockValidateStructure: vi.fn(),
 }))
 
 vi.mock('browser-image-compression', () => ({
@@ -63,6 +65,7 @@ vi.mock('@/lib/media/compress-image-safe', () => ({
 }))
 vi.mock('@/lib/media/image-validation', () => ({
   validateCompressionOutput: mockValidateOutput,
+  validateImageStructure: mockValidateStructure,
 }))
 
 import {
@@ -174,6 +177,8 @@ beforeEach(async () => {
   mockIsWebKit.mockReturnValue(false)
   mockValidateOutput.mockResolvedValue({ ok: true, metrics: VALIDATION_METRICS })
   mockCompressImageSafe.mockResolvedValue(makeWebkitResult())
+  // 既定: fallback (T5) が呼ぶ構造検証は pass (元 blob の decode/寸法)。
+  mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
 
   // fetch (直 PUT) の既定 = 200 ok。
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -473,7 +478,7 @@ describe('attachImageToCard — 失敗 end-state (spec §3.4)', () => {
     expect(await getCardImages()).toEqual([])
   })
 
-  it('COMPRESS_FAILED: 受付 OK だが圧縮/decode 失敗 → {ok:false,COMPRESS_FAILED}、 何も書かれない', async () => {
+  it('COMPRESS_FAILED: 受付 OK だが圧縮/decode 失敗 かつ fallback 非対象 (webp) → {ok:false,COMPRESS_FAILED}、 何も書かれない', async () => {
     mockCompress.mockRejectedValue({ type: 'error' }) // 非 Error reject
     await seedCard([])
 
@@ -481,7 +486,7 @@ describe('attachImageToCard — 失敗 end-state (spec §3.4)', () => {
       userId: USER_ID,
       cardId: CARD_ID,
       target: TARGET,
-      file: makeFile('a.jpg', 'image/jpeg'),
+      file: makeFile('a.webp', 'image/webp'),
       currentImages: [],
     }, deps)
 
@@ -490,12 +495,13 @@ describe('attachImageToCard — 失敗 end-state (spec §3.4)', () => {
     expect(await getCardImages()).toEqual([])
   })
 
-  it('COMPRESS_FAILED: 出力検証 reject (ValidationFailedError) → {ok:false,COMPRESS_FAILED} (T5 が fallback へ差替予定)', async () => {
+  it('COMPRESS_FAILED: 出力検証 reject (ValidationFailedError) かつ fallback 構造検証も失敗 → {ok:false,COMPRESS_FAILED}', async () => {
     mockValidateOutput.mockResolvedValue({
       ok: false,
       reason: 'flat_collapse',
       metrics: VALIDATION_METRICS,
     })
+    mockValidateStructure.mockResolvedValue({ ok: false, reason: 'decode_failed', width: 0, height: 0 })
     await seedCard([])
 
     const r = await attachImageToCard({
@@ -712,6 +718,164 @@ describe('attachImageToCard — 失敗 end-state (spec §3.4)', () => {
     // gate release: 'uploading' のまま残さず row を削除する。
     expect(await getClientDb().media_assets.get(RESERVED_ASSET_ID)).toBeUndefined()
     expect(mockFlush).toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// fallback: 圧縮/検証失敗時に元画像を direct PUT する (Task 5)
+// ===========================================================================
+
+describe('attachImageToCard — fallback (元画像 direct PUT)', () => {
+  it('圧縮 throw (非対象でない jpeg ≤5MiB) + 構造検証 ok → 元 file を reserve+PUT して成功する', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' }) // 非 Error reject → 圧縮 crash
+    mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
+    await seedCard([])
+    const file = makeFile('a.jpg', 'image/jpeg', new Uint8Array(2048))
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file,
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: true, assetId: RESERVED_ASSET_ID })
+    // reserve は元 file の mime/byteSize/構造検証の寸法で呼ばれる (圧縮結果でなく元画像)。
+    expect(mockReserveAsset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mime: 'image/jpeg',
+        byteSize: file.size,
+        width: 800,
+        height: 600,
+      }),
+    )
+    // PUT body は元 blob (compressed でなく file そのもの)。
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      UPLOAD_URL,
+      expect.objectContaining({ body: file }),
+    )
+    expect(mockPutAssetBlob).toHaveBeenCalledWith(USER_ID, RESERVED_ASSET_ID, file)
+  })
+
+  it('出力検証 reject (ValidationFailedError) + 構造検証 ok → 元 file を PUT して成功する', async () => {
+    mockValidateOutput.mockResolvedValue({
+      ok: false,
+      reason: 'flat_collapse',
+      metrics: VALIDATION_METRICS,
+    })
+    mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
+    await seedCard([])
+    const file = makeFile('a.png', 'image/png', new Uint8Array(2048))
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file,
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: true, assetId: RESERVED_ASSET_ID })
+    expect(mockReserveAsset).toHaveBeenCalledWith(
+      expect.objectContaining({ mime: 'image/png', byteSize: file.size }),
+    )
+  })
+
+  it('構造検証 {ok:false} (decode 不能 / 偽装拡張子等) → fallback せず COMPRESS_FAILED', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    mockValidateStructure.mockResolvedValue({
+      ok: false,
+      reason: 'magic_mismatch',
+      width: 0,
+      height: 0,
+    })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    expect(mockReserveAsset).not.toHaveBeenCalled()
+    expect(await getCardImages()).toEqual([])
+  })
+
+  it('file.size > 5MiB → fallback を試みず COMPRESS_FAILED (構造検証は呼ばれない)', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    await seedCard([])
+    const bigFile = makeFile('a.jpg', 'image/jpeg', new Uint8Array(5 * 1024 * 1024 + 1))
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: bigFile,
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    expect(mockValidateStructure).not.toHaveBeenCalled()
+    expect(mockReserveAsset).not.toHaveBeenCalled()
+  })
+
+  it('file.type が webp (jpg/png 以外) → fallback を試みず COMPRESS_FAILED', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.webp', 'image/webp'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    expect(mockValidateStructure).not.toHaveBeenCalled()
+    expect(mockReserveAsset).not.toHaveBeenCalled()
+  })
+
+  it('InvalidImageTypeError (入口 gate) → fallback を試みず INVALID_TYPE のまま', async () => {
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.gif', 'image/gif'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'INVALID_TYPE' })
+    expect(mockValidateStructure).not.toHaveBeenCalled()
+    expect(mockReserveAsset).not.toHaveBeenCalled()
+  })
+
+  it('fallback 成功時、 楽観層 (commitImages / media_assets put) は 1 回だけ実行される (二重更新なし)', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: true, assetId: RESERVED_ASSET_ID })
+    expect(mockPutAssetBlob).toHaveBeenCalledTimes(1)
+    // mirror images に fallback 経由の entry が 1 件だけ append される (二重更新なら 2 件以上になる)。
+    const images = await getCardImages()
+    expect(images).toEqual([{ key: RESERVED_ASSET_ID, target: TARGET, alt: '' }])
+    // 成功時 flush trigger も 1 回のみ。
+    expect(mockFlush).toHaveBeenCalledTimes(1)
   })
 })
 
