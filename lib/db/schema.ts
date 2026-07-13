@@ -803,7 +803,8 @@ export const tombstones = pgTable(
 // assets (画像フェーズ A 新設、migration 0023) — R2 ホスト画像バイトの台帳。
 // card row と独立 (reservation 時点で card 未確定 / (user_id, hash) dedup lookup /
 // reserved→ready 状態遷移が card と無関係) のため cards.images に内包しない。
-// object_key は 'users/{user_id}/{assetId}.{webp|png}' 形式で UNIQUE (R2 key の
+// object_key は 'users/{user_id}/{assetId}.{webp|png|jpg}' 形式で UNIQUE (jpg は
+// iOS/WebKit 修正の fallback で元 jpeg を直 PUT する際の拡張子。 R2 key の
 // 一意性を DB 側でも担保)。status / mime は DB CHECK を張らずアプリ層 invariant
 // とする (Sprint 2 integration_failures catalog 前例と同判断)。
 // reference_count / unreferenced_at は将来の orphan 掃除用の枠 (列のみ確保、
