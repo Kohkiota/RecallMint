@@ -164,7 +164,15 @@ describe('CardImageGallery attach', () => {
       expect(mockAttachImageToCard).toHaveBeenCalledTimes(1)
     })
     expect(mockAttachImageToCard).toHaveBeenCalledWith(
-      { userId: USER_ID, cardId: CARD_ID, target: TARGET, file, currentImages: images },
+      expect.objectContaining({
+        userId: USER_ID,
+        cardId: CARD_ID,
+        target: TARGET,
+        file,
+        currentImages: images,
+        // 一時デバッグ UI 用の telemetry sink が配線される。
+        onTelemetry: expect.any(Function),
+      }),
       expect.objectContaining({
         reserveAsset: mockReserveAsset,
         finalizeAsset: mockFinalizeAsset,

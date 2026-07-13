@@ -87,7 +87,7 @@ export type AttachResult =
 // telemetry (Task 6): 1 添付 = 1 logger.info レコード
 // ---------------------------------------------------------------------------
 
-type AttachTelemetryReason =
+export type AttachTelemetryReason =
   | 'validation_failed'
   | 'decode_failed'
   | 'compress_failed'
@@ -99,8 +99,8 @@ type AttachTelemetryReason =
   | 'fallback_too_large'
   | 'fallback_not_allowed'
 
-type AttachTelemetrySource = { type: string; bytes: number; width?: number; height?: number }
-type AttachTelemetryOutput = {
+export type AttachTelemetrySource = { type: string; bytes: number; width?: number; height?: number }
+export type AttachTelemetryOutput = {
   requestedType?: string
   actualType: string
   bytes: number
@@ -116,11 +116,27 @@ type AttachTelemetry = {
   source?: AttachTelemetrySource
   output?: AttachTelemetryOutput
   validationMetrics?: ValidationMetrics
+  // 一時デバッグ UI への record sink(PII でなく callback。 finishAttach が 1 回呼ぶ)。
+  onTelemetry?: (record: ImageAttachTelemetry) => void
 }
 
-function newTelemetry(webkit: boolean): AttachTelemetry {
+// finishAttach が確定させる 1 添付 1 レコード(logger.info と同内容)。 `onTelemetry`
+// callback(一時デバッグ UI)にも同じ record を渡す。 PII(file名/hash/bytes 本体)は含めない。
+export type ImageAttachTelemetry = {
+  outcome: 'success' | 'fallback_used' | 'error'
+  reason?: AttachTelemetryReason
+  compressionPath: 'webkit-safe' | 'lib' | 'fallback'
+  source?: AttachTelemetrySource
+  output?: AttachTelemetryOutput
+  validationMetrics?: ValidationMetrics
+}
+
+function newTelemetry(
+  webkit: boolean,
+  onTelemetry?: (record: ImageAttachTelemetry) => void,
+): AttachTelemetry {
   // fallback 判明時に 'fallback' へ上書きする前提の暫定値 (Codex#7/#9/#10 = 1 添付 1 レコード)。
-  return { compressionPath: webkit ? 'webkit-safe' : 'lib' }
+  return { compressionPath: webkit ? 'webkit-safe' : 'lib', onTelemetry }
 }
 
 // AttachErrorCode → telemetry reason (brief の対応表どおり。 何も学習していない早期
@@ -155,15 +171,25 @@ function finishAttach(result: AttachResult, t: AttachTelemetry): AttachResult {
     ? t.reason
     : (CODE_TO_REASON[result.code] ?? t.reason)
 
-  logger.info({
-    event: 'image_attach',
+  const record: ImageAttachTelemetry = {
     outcome,
     ...(reason ? { reason } : {}),
     compressionPath: t.compressionPath,
     ...(t.source ? { source: t.source } : {}),
     ...(t.output ? { output: t.output } : {}),
     ...(t.validationMetrics ? { validationMetrics: t.validationMetrics } : {}),
-  })
+  }
+
+  logger.info({ event: 'image_attach', ...record })
+  // 一時デバッグ UI(iPad 実機診断)へ同 record を渡す。 callback 例外は telemetry 記録を
+  // 壊さないよう握る(診断用途が本番経路を巻き込まない)。
+  if (t.onTelemetry) {
+    try {
+      t.onTelemetry(record)
+    } catch {
+      // debug UI 側の失敗は無視。
+    }
+  }
 
   return result
 }
@@ -236,11 +262,20 @@ class ValidationFailedError extends Error {
   // 検証の具体 reason (decode_failed 等)。 telemetry で decode_failed を validation_failed と
   // 区別して surface するため運ぶ (brief の reason schema・Codex 指摘)。
   reason?: string
-  constructor(message: string, metrics?: ValidationMetrics, reason?: string) {
+  // reject された圧縮出力の実サイズ/寸法。 一時デバッグ UI で「圧縮が 856B 破損を出した(A)」
+  // か「健全 output を検証が誤 reject した(B)」を画面判別するため運ぶ。
+  output?: AttachTelemetryOutput
+  constructor(
+    message: string,
+    metrics?: ValidationMetrics,
+    reason?: string,
+    output?: AttachTelemetryOutput,
+  ) {
     super(message)
     this.name = 'ValidationFailedError'
     this.metrics = metrics
     this.reason = reason
+    this.output = output
   }
 }
 
@@ -298,6 +333,13 @@ export async function compressForAttach(file: File): Promise<CompressResult> {
       `compression output rejected: ${validation.reason ?? 'unknown'}`,
       validation.metrics,
       validation.reason,
+      // reject でも実出力の実サイズ/寸法をデバッグ UI に渡す(A=圧縮破損 vs B=誤 reject 判別)。
+      {
+        actualType: result.mime,
+        bytes: result.blob.size,
+        width: result.width,
+        height: result.height,
+      },
     )
   }
 
@@ -504,6 +546,8 @@ export async function attachImageToCard(
     target: string
     file: File
     currentImages: ClientCardImage[]
+    // 一時デバッグ UI(iOS/WebKit 実機診断)へ 1 添付 1 record を渡す optional sink。
+    onTelemetry?: (record: ImageAttachTelemetry) => void
   },
   deps: AttachDeps,
 ): Promise<AttachResult> {
@@ -519,6 +563,7 @@ async function attachImageToCardInner(
     target: string
     file: File
     currentImages: ClientCardImage[]
+    onTelemetry?: (record: ImageAttachTelemetry) => void
   },
   deps: AttachDeps,
 ): Promise<AttachResult> {
@@ -527,7 +572,7 @@ async function attachImageToCardInner(
 
   // telemetry (Task 6): saga の学習を積みながら、 全 return を finishAttach() で包み
   // 1 添付 = 1 logger.info を保証する。 compressionPath は判明ししだい上書きする。
-  const t = newTelemetry(isWebKitImagePipeline())
+  const t = newTelemetry(isWebKitImagePipeline(), p.onTelemetry)
   t.source = { type: file.type, bytes: file.size }
 
   // 直列化区間内で mirror の最新 images を読む (caller の snapshot は row 不在時の fallback)。
@@ -581,8 +626,11 @@ async function attachImageToCardInner(
           ? 'decode_failed'
           : 'validation_failed'
       t.reason = triggerReason
-      if (err instanceof ValidationFailedError && err.metrics) {
-        t.validationMetrics = err.metrics
+      if (err instanceof ValidationFailedError) {
+        if (err.metrics) t.validationMetrics = err.metrics
+        // 検証 reject でも実出力サイズ/寸法を残す(デバッグ UI の A/B 判別。 fallback が
+        // 成功して 'fallback' path に上書きされた場合は fallback の output で上書きされる)。
+        if (err.output) t.output = err.output
       }
       // tryFallback は sha256 (crypto.subtle) 等 reject しうる await を含むため、 ここで
       // 握って COMPRESS_FAILED に落とす (never-throw AttachResult 契約 = throw を saga 外に
@@ -591,11 +639,17 @@ async function attachImageToCardInner(
         const fallback = await tryFallback(file)
         if (fallback.ok) {
           t.compressionPath = 'fallback'
-          t.output = {
-            actualType: fallback.result.mime,
-            bytes: fallback.result.blob.size,
-            width: fallback.result.width,
-            height: fallback.result.height,
+          // 検証 reject 由来の t.output(= 破損した圧縮出力の実サイズ/寸法)は残す。 これが
+          // fallback 診断の核心(圧縮が 856B/空を出したか vs 健全出力を誤 reject か)ゆえ、
+          // fallback 元画像で上書きしない(Codex 指摘)。 圧縮 crash 等で未設定の時だけ
+          // 元画像の値を入れる。
+          if (!t.output) {
+            t.output = {
+              actualType: fallback.result.mime,
+              bytes: fallback.result.blob.size,
+              width: fallback.result.width,
+              height: fallback.result.height,
+            }
           }
           return fallback.result
         }

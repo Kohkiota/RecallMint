@@ -1275,6 +1275,54 @@ describe('attachImageToCard — telemetry (image_attach)', () => {
     expect(json).not.toContain('hash')
   })
 
+  it('onTelemetry callback が logger と同じ record を 1 回受け取る(一時デバッグ UI 配線)', async () => {
+    mockIsWebKit.mockReturnValue(false)
+    await seedCard([])
+    const captured: unknown[] = []
+
+    const r = await attachImageToCard(
+      {
+        userId: USER_ID,
+        cardId: CARD_ID,
+        target: TARGET,
+        file: makeFile('a.jpg', 'image/jpeg'),
+        currentImages: [],
+        onTelemetry: (rec) => captured.push(rec),
+      },
+      deps,
+    )
+
+    expect(r.ok).toBe(true)
+    expect(captured).toHaveLength(1)
+    // logger 記録(event 付き)から event を除いたものと callback record が一致。
+    const { event: _event, ...loggedRecord } = imageAttachCalls()[0] as Record<
+      string,
+      unknown
+    >
+    expect(captured[0]).toEqual(loggedRecord)
+  })
+
+  it('onTelemetry が throw しても saga は成功を返す(never-throw 契約を壊さない)', async () => {
+    mockIsWebKit.mockReturnValue(false)
+    await seedCard([])
+
+    const r = await attachImageToCard(
+      {
+        userId: USER_ID,
+        cardId: CARD_ID,
+        target: TARGET,
+        file: makeFile('a.jpg', 'image/jpeg'),
+        currentImages: [],
+        onTelemetry: () => {
+          throw new Error('debug UI boom')
+        },
+      },
+      deps,
+    )
+
+    expect(r).toEqual({ ok: true, assetId: RESERVED_ASSET_ID })
+  })
+
   it('成功 (WebKit 経路): 1 レコード・outcome=success・compressionPath=webkit-safe・output.requestedType=image/webp', async () => {
     mockIsWebKit.mockReturnValue(true)
     await seedCard([])
