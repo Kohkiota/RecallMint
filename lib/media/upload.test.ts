@@ -21,6 +21,9 @@ const {
   mockPutAssetBlob,
   mockDeleteAssetBlob,
   mockFlush,
+  mockIsWebKit,
+  mockCompressImageSafe,
+  mockValidateOutput,
 } = vi.hoisted(() => ({
   mockCompress: vi.fn(),
   mockReserveAsset: vi.fn(),
@@ -28,6 +31,9 @@ const {
   mockPutAssetBlob: vi.fn(),
   mockDeleteAssetBlob: vi.fn(),
   mockFlush: vi.fn(),
+  mockIsWebKit: vi.fn(),
+  mockCompressImageSafe: vi.fn(),
+  mockValidateOutput: vi.fn(),
 }))
 
 vi.mock('browser-image-compression', () => ({
@@ -46,11 +52,25 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
 }))
 
+// WebKit 分岐 / 自前 pipeline / 出力検証は browser decode を要し node env で動かないため
+// mock する (T1/T2/T3 の unit が本体挙動を担保。 本 file は saga の配線を検証する)。
+// 既定は「非 WebKit + 検証 pass」= 既存 Blink 経路を素通りさせ回帰を維持する。
+vi.mock('@/lib/media/webkit-detect', () => ({
+  isWebKitImagePipeline: mockIsWebKit,
+}))
+vi.mock('@/lib/media/compress-image-safe', () => ({
+  compressImageSafe: mockCompressImageSafe,
+}))
+vi.mock('@/lib/media/image-validation', () => ({
+  validateCompressionOutput: mockValidateOutput,
+}))
+
 import {
   compressForAttach,
   attachImageToCard,
   abandonUpload,
   removeImageFromCard,
+  runExclusiveImageWork,
 } from '@/lib/media/upload'
 import { getClientDb } from '@/lib/client-db'
 
@@ -91,6 +111,34 @@ function makeBlob(type: string, size = 512): Blob {
   return new Blob([new Uint8Array(size)], { type })
 }
 
+// 条件成立まで待つ (逐次化 test 用。 saga は圧縮前に Dexie read 等の非同期前段があり
+// 固定 tick 数では圧縮開始を観測できないため、 predicate で待つ)。
+async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now()
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitUntil timeout')
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
+// validateCompressionOutput が返す metrics の最小 stub (saga は ok のみ参照)。
+const EMPTY_SAMPLE = { opaqueRatio: 0, meanLuma: 0, lumaVar: 0, edgeEnergy: 0 }
+const VALIDATION_METRICS = { input: EMPTY_SAMPLE, output: EMPTY_SAMPLE, mae: 0 }
+
+// WebKit 経路 (compressImageSafe) の canned 戻り値。 寸法は STUB_BITMAP と別値にして
+// 「lib 経路 (bitmap 寸法) でなく safe pipeline 寸法が使われた」ことを assert できる。
+const WEBKIT_W = 640
+const WEBKIT_H = 480
+function makeWebkitResult() {
+  return {
+    blob: makeBlob('image/webp', 333),
+    mime: 'image/webp',
+    width: WEBKIT_W,
+    height: WEBKIT_H,
+    hash: 'a'.repeat(64),
+  }
+}
+
 const USER_ID = 'user-1'
 const CARD_ID = 'card-1'
 const TARGET = 'question_text'
@@ -120,6 +168,12 @@ beforeEach(async () => {
   mockPutAssetBlob.mockResolvedValue(undefined)
   mockDeleteAssetBlob.mockResolvedValue(undefined)
   mockFlush.mockResolvedValue('done')
+
+  // 既定: 非 WebKit (既存 lib 経路を素通り) + 出力検証 pass。 これで Blink 系の既存 test が
+  // 無変化のまま通る (検証は追加されるが正常出力は ok)。
+  mockIsWebKit.mockReturnValue(false)
+  mockValidateOutput.mockResolvedValue({ ok: true, metrics: VALIDATION_METRICS })
+  mockCompressImageSafe.mockResolvedValue(makeWebkitResult())
 
   // fetch (直 PUT) の既定 = 200 ok。
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -235,6 +289,55 @@ describe('compressForAttach', () => {
     await expect(
       compressForAttach(makeFile('a.jpg', 'image/jpeg')),
     ).rejects.toThrow()
+  })
+
+  // --- WebKit 分岐 + 全経路共通検証 (Task 4) ---
+
+  it('非 WebKit: 既存 lib 経路 (imageCompression) を呼び、 検証は expected なしで通す', async () => {
+    mockIsWebKit.mockReturnValue(false)
+
+    const r = await compressForAttach(makeFile('a.jpg', 'image/jpeg'))
+
+    // lib 経路 = imageCompression 呼出 + createImageBitmap 寸法。
+    expect(mockCompress).toHaveBeenCalledTimes(1)
+    expect(mockCompressImageSafe).not.toHaveBeenCalled()
+    expect(r.width).toBe(STUB_BITMAP_W)
+    expect(r.height).toBe(STUB_BITMAP_H)
+    // 検証は全経路共通で呼ぶ。 lib 経路は寸法非制御ゆえ expected を渡さない。
+    expect(mockValidateOutput).toHaveBeenCalledTimes(1)
+    const [input, output, expected] = mockValidateOutput.mock.calls[0]
+    expect(input).toBeInstanceOf(File)
+    expect(output).toBeInstanceOf(Blob)
+    expect(expected).toBeUndefined()
+  })
+
+  it('WebKit: 自前 pipeline (compressImageSafe) を呼び、 検証に expected (safe pipeline 寸法) を渡す', async () => {
+    mockIsWebKit.mockReturnValue(true)
+
+    const r = await compressForAttach(makeFile('a.jpg', 'image/jpeg'))
+
+    // WebKit 経路 = compressImageSafe 呼出 (imageCompression は使わない)。
+    expect(mockCompressImageSafe).toHaveBeenCalledTimes(1)
+    expect(mockCompress).not.toHaveBeenCalled()
+    // 戻り値は safe pipeline のもの (bitmap stub 寸法でない)。
+    expect(r.width).toBe(WEBKIT_W)
+    expect(r.height).toBe(WEBKIT_H)
+    // 検証に safe pipeline の確定寸法を expected として渡す。
+    expect(mockValidateOutput).toHaveBeenCalledTimes(1)
+    const [, , expected] = mockValidateOutput.mock.calls[0]
+    expect(expected).toEqual({ width: WEBKIT_W, height: WEBKIT_H })
+  })
+
+  it('検証 reject ({ok:false}) → ValidationFailedError を throw (name で判別可能)', async () => {
+    mockValidateOutput.mockResolvedValue({
+      ok: false,
+      reason: 'opaque_collapse',
+      metrics: VALIDATION_METRICS,
+    })
+
+    await expect(
+      compressForAttach(makeFile('a.jpg', 'image/jpeg')),
+    ).rejects.toMatchObject({ name: 'ValidationFailedError' })
   })
 })
 
@@ -372,6 +475,27 @@ describe('attachImageToCard — 失敗 end-state (spec §3.4)', () => {
 
   it('COMPRESS_FAILED: 受付 OK だが圧縮/decode 失敗 → {ok:false,COMPRESS_FAILED}、 何も書かれない', async () => {
     mockCompress.mockRejectedValue({ type: 'error' }) // 非 Error reject
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    expect(mockReserveAsset).not.toHaveBeenCalled()
+    expect(await getCardImages()).toEqual([])
+  })
+
+  it('COMPRESS_FAILED: 出力検証 reject (ValidationFailedError) → {ok:false,COMPRESS_FAILED} (T5 が fallback へ差替予定)', async () => {
+    mockValidateOutput.mockResolvedValue({
+      ok: false,
+      reason: 'flat_collapse',
+      metrics: VALIDATION_METRICS,
+    })
     await seedCard([])
 
     const r = await attachImageToCard({
@@ -634,6 +758,188 @@ describe('attachImageToCard — fresh-read (並行 attach で lost-update しな
     }, deps)
     expect(r).toEqual({ ok: false, code: 'TOO_MANY_IMAGES' })
     expect(mockReserveAsset).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// runExclusiveImageWork (single-flight) + WebKit saga 逐次化
+// ===========================================================================
+
+describe('runExclusiveImageWork', () => {
+  it('2 つの並行 work が overlap せず投入順に逐次実行される', async () => {
+    const events: string[] = []
+    // work A は work B より後に resolve する deferred。 逐次なら B は A 完了まで開始しない。
+    let releaseA: () => void = () => {}
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve
+    })
+
+    const pA = runExclusiveImageWork(async () => {
+      events.push('A:start')
+      await aGate
+      events.push('A:end')
+      return 'a'
+    })
+    const pB = runExclusiveImageWork(async () => {
+      events.push('B:start')
+      events.push('B:end')
+      return 'b'
+    })
+
+    // A が gate で待っている間、 B はまだ開始していない (逐次化の証拠)。
+    await Promise.resolve()
+    expect(events).toEqual(['A:start'])
+
+    releaseA()
+    const [ra, rb] = await Promise.all([pA, pB])
+
+    expect(ra).toBe('a')
+    expect(rb).toBe('b')
+    // B の start は A の end より後 (区間が overlap しない)。
+    expect(events).toEqual(['A:start', 'A:end', 'B:start', 'B:end'])
+  })
+
+  it('先行 work の reject は後続に伝播しない (chain を壊さない)', async () => {
+    const pFail = runExclusiveImageWork(async () => {
+      throw new Error('boom')
+    })
+    const pOk = runExclusiveImageWork(async () => 'ok')
+
+    await expect(pFail).rejects.toThrow('boom')
+    await expect(pOk).resolves.toBe('ok')
+  })
+})
+
+describe('attachImageToCard — WebKit のみ圧縮区間を逐次化する', () => {
+  it('WebKit: 2 card 同時 attach の圧縮区間が overlap しない (別 card でも global chain で逐次)', async () => {
+    mockIsWebKit.mockReturnValue(true)
+    await seedCard([])
+    // 2 枚目の card も seed する。
+    const db = getClientDb()
+    await db.cards.put({
+      id: 'card-2',
+      user_id: USER_ID,
+      exam_id: 'exam-1',
+      question_text: 'q2',
+      options: [],
+      correct_answer_ids: [],
+      explanation: null,
+      images: [],
+      order_index: 1,
+      created_at: '2026-07-12T00:00:00.000Z',
+      updated_at: '2026-07-12T00:00:00.000Z',
+      sync_status: 'synced',
+    } as never)
+
+    // compressImageSafe の実行区間を観測する。 1 枚目は gate で待たせ、 逐次なら 2 枚目の
+    // 圧縮は 1 枚目完了まで始まらない (別 card = per-card 直列化では防げない → global chain)。
+    const events: string[] = []
+    let release1: () => void = () => {}
+    const gate1 = new Promise<void>((resolve) => {
+      release1 = resolve
+    })
+    mockCompressImageSafe
+      .mockImplementationOnce(async () => {
+        events.push('c1:start')
+        await gate1
+        events.push('c1:end')
+        return makeWebkitResult()
+      })
+      .mockImplementationOnce(async () => {
+        events.push('c2:start')
+        events.push('c2:end')
+        return makeWebkitResult()
+      })
+
+    const p1 = attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+    const p2 = attachImageToCard({
+      userId: USER_ID,
+      cardId: 'card-2',
+      target: TARGET,
+      file: makeFile('b.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    // 1 枚目の圧縮開始まで待つ (saga は圧縮前に Dexie read 等の前段がある)。
+    await waitUntil(() => events.includes('c1:start'))
+    // gate で待つ間、 2 枚目の圧縮はまだ開始していない (別 card でも global chain で逐次)。
+    expect(events).toEqual(['c1:start'])
+
+    release1()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+    // 逐次: c2 は c1 完了後に開始 (区間が overlap しない)。
+    expect(events).toEqual(['c1:start', 'c1:end', 'c2:start', 'c2:end'])
+  })
+
+  it('非 WebKit: 圧縮区間は single-flight で包まれず並列に走る (Blink は従来どおり)', async () => {
+    mockIsWebKit.mockReturnValue(false)
+    await seedCard([])
+    const db = getClientDb()
+    await db.cards.put({
+      id: 'card-2',
+      user_id: USER_ID,
+      exam_id: 'exam-1',
+      question_text: 'q2',
+      options: [],
+      correct_answer_ids: [],
+      explanation: null,
+      images: [],
+      order_index: 1,
+      created_at: '2026-07-12T00:00:00.000Z',
+      updated_at: '2026-07-12T00:00:00.000Z',
+      sync_status: 'synced',
+    } as never)
+
+    const events: string[] = []
+    let release1: () => void = () => {}
+    const gate1 = new Promise<void>((resolve) => {
+      release1 = resolve
+    })
+    // lib 経路 (imageCompression) の区間を観測。 別 card ゆえ per-card 直列化に掛からず、
+    // WebKit wrap もないため 2 枚目の圧縮は 1 枚目の gate 待ち中でも開始できる (並列)。
+    mockCompress
+      .mockImplementationOnce(async () => {
+        events.push('c1:start')
+        await gate1
+        events.push('c1:end')
+        return makeBlob('image/webp')
+      })
+      .mockImplementationOnce(async () => {
+        events.push('c2:start')
+        events.push('c2:end')
+        return makeBlob('image/webp')
+      })
+
+    const p1 = attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+    const p2 = attachImageToCard({
+      userId: USER_ID,
+      cardId: 'card-2',
+      target: TARGET,
+      file: makeFile('b.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    // 1 枚目が gate で待つ間でも 2 枚目の圧縮は開始する (並列 = single-flight で包まれない)。
+    await waitUntil(() => events.includes('c2:start'))
+    expect(events).toContain('c2:start')
+    expect(events).not.toContain('c1:end') // c1 はまだ gate 待ち = 両区間が overlap している
+
+    release1()
+    await Promise.all([p1, p2])
   })
 })
 

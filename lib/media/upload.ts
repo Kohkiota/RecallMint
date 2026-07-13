@@ -7,10 +7,12 @@
 // 'use client' directive は付けず banner で示す)。
 //
 // 設計 (spec §3.1 正常系 / §3.4 失敗 end-state):
-// - compressForAttach: 入口 gate (MIME + 拡張子) → browser-image-compression →
-//   実 MIME = 出力 blob.type (Safari は webp 不可で silent PNG。 blob.type を信頼) →
-//   圧縮後 blob を createImageBitmap で decode し width/height (EXIF 焼込後) →
-//   SHA-256 hex hash。 decode / 圧縮失敗 (非 Error reject 含む) は Error に正規化して throw。
+// - compressForAttach: 入口 gate (MIME + 拡張子) → 圧縮経路を runtime probe で分岐
+//   (isWebKitImagePipeline() → 自前 WebKit-safe pipeline / 否 → browser-image-compression。
+//   UA 決め打ちでなく実行時判定) → 全経路共通の出力妥当性検証 (validateCompressionOutput) →
+//   実 MIME = 出力 blob.type (WebP 可否も UA 仮定でなくデータ駆動。 webp を仮定しない) →
+//   width/height (lib 経路は createImageBitmap decode・WebKit 経路は自前 pipeline の確定寸法) →
+//   SHA-256 hex hash。 decode / 圧縮 / 検証失敗 (非 Error reject 含む) は Error に正規化して throw。
 // - attachImageToCard: 圧縮 → reserve → 楽観層 (Cache put + media_assets 'uploading' +
 //   mirror/outbox) → 直 PUT → finalize → media_assets 'ready' + flush trigger。
 //   各失敗点は spec §3.4 の end-state に対応する code を返す (INVALID_TYPE /
@@ -37,6 +39,9 @@ import { getClientDb, type ClientCardImage } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { putAssetBlob, deleteAssetBlob } from '@/lib/media/cache'
+import { isWebKitImagePipeline } from '@/lib/media/webkit-detect'
+import { compressImageSafe } from '@/lib/media/compress-image-safe'
+import { validateCompressionOutput } from '@/lib/media/image-validation'
 
 // ---------------------------------------------------------------------------
 // 型・定数
@@ -125,6 +130,16 @@ class InvalidImageTypeError extends Error {
   }
 }
 
+// 出力妥当性検証 (validateCompressionOutput) の reject を圧縮失敗と区別するための
+// tagged Error。 現状 saga は COMPRESS_FAILED に落とすが、 T5 が fallback (元画像 direct
+// PUT) の起点として ValidationFailedError を判別するため独立 tag にする。
+class ValidationFailedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ValidationFailedError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // compressForAttach
 // ---------------------------------------------------------------------------
@@ -148,9 +163,14 @@ async function sha256Hex(blob: Blob): Promise<string> {
  *
  * - 入口 gate: `file.type` ∈ {jpeg, png, webp} かつ拡張子 ∈ {jpg,jpeg,png,webp}。
  *   不一致 (空 MIME 含む) は `InvalidImageTypeError` を throw (呼出側で INVALID_TYPE 化)。
- * - 実 MIME = 出力 `blob.type` (Safari は webp 不可で silent PNG。 webp を仮定しない)。
- * - width/height = 圧縮後 blob を `createImageBitmap` で decode した値 (EXIF orientation
- *   焼込後の寸法)。 bitmap は close する。
+ * - 圧縮経路の分岐 (`isWebKitImagePipeline()` runtime probe): WebKit → 自前 pipeline
+ *   (`compressImageSafe`。巨大 canvas を作らず OOM/破損を回避) / それ以外 (Blink/Firefox)
+ *   → 既存 `imageCompression` 経路 (無改変)。WebP 可否は UA 仮定でなく実 `blob.type` 駆動。
+ * - 実 MIME = 出力 `blob.type` (WebKit で webp 不可なら PNG/JPEG に落ちる。 webp を仮定しない)。
+ * - 全経路共通で出力を `validateCompressionOutput` に通す (空/塗り潰し/偽装 type の破損出力を
+ *   reject。誤検知回避最優先ゆえ正常出力は pass = observable 回帰なし)。WebKit 経路のみ
+ *   `expected` (自前 pipeline が返す確定寸法) を渡し寸法照合する。lib 経路は寸法を制御しない
+ *   ため `expected` なし (decode>0 のみ)。reject は `ValidationFailedError` を throw。
  * - 圧縮 / decode 失敗 (lib の非 Error reject を含む) は Error に正規化して throw。
  */
 export async function compressForAttach(file: File): Promise<CompressResult> {
@@ -161,6 +181,26 @@ export async function compressForAttach(file: File): Promise<CompressResult> {
     )
   }
 
+  // WebKit は自前 pipeline (寸法確定ゆえ検証に expected を渡す)、 それ以外は既存 lib 経路
+  // (寸法非制御ゆえ expected なし)。 lib 経路は挙動不変。
+  const webkit = isWebKitImagePipeline()
+  const result = webkit ? await compressImageSafe(file) : await compressViaLib(file)
+
+  // 全経路共通の出力妥当性検証 (reserve より前に一段。 WebKit のみ寸法照合)。
+  const expected = webkit ? { width: result.width, height: result.height } : undefined
+  const validation = await validateCompressionOutput(file, result.blob, expected)
+  if (!validation.ok) {
+    throw new ValidationFailedError(
+      `compression output rejected: ${validation.reason ?? 'unknown'}`,
+    )
+  }
+
+  return result
+}
+
+// 既存 lib (browser-image-compression) 経路。 Blink/Firefox 向け・挙動不変
+// (compressForAttach の分岐前の実装を verbatim で切り出しただけ)。
+async function compressViaLib(file: File): Promise<CompressResult> {
   let blob: Blob
   try {
     // libURL は self-host 版を呼出時に絶対 URL 化して渡す (COMPRESSION_OPTIONS の値は不変)。
@@ -173,7 +213,7 @@ export async function compressForAttach(file: File): Promise<CompressResult> {
     throw normalizeError(err, 'image compression failed')
   }
 
-  // 実 MIME はデータ駆動 (出力 blob.type)。 Safari = image/png。
+  // 実 MIME はデータ駆動 (出力 blob.type)。
   const mime = blob.type
 
   let bitmap: ImageBitmap
@@ -223,6 +263,25 @@ function serializePerCard<T>(cardId: string, op: () => Promise<T>): Promise<T> {
       () => undefined,
       () => undefined,
     ),
+  )
+  return next
+}
+
+// WebKit の画像処理 (圧縮 + 検証 + fallback) を全 card 横断で 1 本の chain に逐次化する
+// single-flight。 serializePerCard が card 単位なのに対し、 これは 1 本の global chain。
+// 背景: WebKit は複数画像を並列に canvas 処理すると OOM/黒画像化しうるため、 iOS では
+// 圧縮系区間を 1 添付ずつ直列に流す (spec: iOS 逐次)。 別 card の attach は per-card 直列化
+// (serializePerCard) とは独立に、 圧縮区間だけをこの global chain で待ち合わせる。
+// Blink/Firefox は並列で問題ないため saga 側で WebKit のときだけ本 wrap を通す。
+let imageWorkChain: Promise<unknown> = Promise.resolve()
+
+export function runExclusiveImageWork<T>(fn: () => Promise<T>): Promise<T> {
+  // prev の失敗は後続に伝播させない (catch で握ってから連結)。
+  const next = imageWorkChain.then(fn, fn)
+  // chain tail も失敗を握る (reject 済 promise を chain 末尾に残さない)。
+  imageWorkChain = next.then(
+    () => undefined,
+    () => undefined,
   )
   return next
 }
@@ -327,16 +386,32 @@ async function attachImageToCardInner(
     return { ok: false, code: 'TOO_MANY_IMAGES' }
   }
 
-  // 1. 圧縮 (入口 gate 込み)。 gate 違反 = INVALID_TYPE、 それ以外 = COMPRESS_FAILED。
-  let compressed: CompressResult
-  try {
-    compressed = await compressForAttach(file)
-  } catch (err) {
-    if (err instanceof InvalidImageTypeError) {
-      return { ok: false, code: 'INVALID_TYPE' }
+  // 1. 圧縮 (入口 gate 込み)。 gate 違反 = INVALID_TYPE、 検証 reject / それ以外 =
+  //    COMPRESS_FAILED (T5 が ValidationFailedError を fallback 起点に差し替える)。
+  //
+  //    single-flight (Codex#6): WebKit は「compress→validate→(T5 fallback)」区間を
+  //    runExclusiveImageWork で全 card 横断 1 添付ずつ逐次化する (並列 canvas の OOM/黒画像
+  //    回避)。 圧縮失敗後も同一 exclusive work 内に留めて fallback まで連続させる (lock を
+  //    途中で解放しない)。 Blink/Firefox は並列で問題ないため wrap せず直接呼ぶ。
+  //    区間は圧縮成功 (compressed 返却) / 早期失敗 (AttachResult 返却) の union を返し、
+  //    後者は下でそのまま return する (楽観層以降へ進まない)。
+  const compressSection = async (): Promise<CompressResult | AttachResult> => {
+    try {
+      return await compressForAttach(file)
+    } catch (err) {
+      if (err instanceof InvalidImageTypeError) {
+        return { ok: false, code: 'INVALID_TYPE' }
+      }
+      return { ok: false, code: 'COMPRESS_FAILED' }
     }
-    return { ok: false, code: 'COMPRESS_FAILED' }
   }
+  const compressOutcome = isWebKitImagePipeline()
+    ? await runExclusiveImageWork(compressSection)
+    : await compressSection()
+  if ('ok' in compressOutcome) {
+    return compressOutcome
+  }
+  const compressed: CompressResult = compressOutcome
 
   // 2. reserve (offline / 検証失敗 → 何も書かない)。 client からの server action 呼び出しは
   //    transport 失敗で reject しうるため try/catch し、 reject も RESERVE_FAILED に落とす
