@@ -170,8 +170,6 @@ describe('CardImageGallery attach', () => {
         target: TARGET,
         file,
         currentImages: images,
-        // 一時デバッグ UI 用の telemetry sink が配線される。
-        onTelemetry: expect.any(Function),
       }),
       expect.objectContaining({
         reserveAsset: mockReserveAsset,

@@ -20,12 +20,9 @@ import {
   attachImageToCard,
   removeImageFromCard,
   type AttachErrorCode,
-  type ImageAttachTelemetry,
 } from '@/lib/media/upload'
 import { getAssetObjectURL } from '@/lib/media/get-asset'
 import { reserveAsset, finalizeAsset, resolveAssetUrls } from '../_actions/asset-actions'
-// 一時デバッグ UI(iOS/WebKit 実機診断・?imgdebug=1 の時のみ表示・原因特定後撤去)。
-import { ImageTelemetryDebug } from './image-telemetry-debug'
 
 export type CardImageGalleryProps = {
   images: ClientCardImage[]
@@ -158,9 +155,6 @@ export function CardImageGallery({
   readOnly = false,
 }: CardImageGalleryProps) {
   const [error, setError] = React.useState<string | null>(null)
-  // 一時デバッグ: 直近の添付 telemetry(?imgdebug=1 の時のみ画面表示)。
-  const [debugRecord, setDebugRecord] =
-    React.useState<ImageAttachTelemetry | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   // stale / 旧 schema の mirror row では images が undefined / 非配列でありうる。 filter で
@@ -181,7 +175,7 @@ export function CardImageGallery({
 
     setError(null)
     const result = await attachImageToCard(
-      { userId, cardId, target, file, currentImages: safeImages, onTelemetry: setDebugRecord },
+      { userId, cardId, target, file, currentImages: safeImages },
       { reserveAsset, finalizeAsset },
     )
     if (!result.ok) {
@@ -236,14 +230,6 @@ export function CardImageGallery({
         <p role="alert" className="w-full text-xs text-red-600">
           {error}
         </p>
-      )}
-
-      {/* 一時デバッグ UI(?imgdebug=1 の時のみ・原因特定後撤去)。 添付ごとの telemetry を
-          iPad の画面に表示し、 圧縮破損(A)か検証誤 reject(B)かを判別する。 */}
-      {!readOnly && (
-        <div className="w-full">
-          <ImageTelemetryDebug record={debugRecord} />
-        </div>
       )}
     </div>
   )
