@@ -41,7 +41,12 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { putAssetBlob, deleteAssetBlob } from '@/lib/media/cache'
 import { isWebKitImagePipeline } from '@/lib/media/webkit-detect'
 import { compressImageSafe } from '@/lib/media/compress-image-safe'
-import { validateCompressionOutput, validateImageStructure } from '@/lib/media/image-validation'
+import {
+  validateCompressionOutput,
+  validateImageStructure,
+  type ValidationMetrics,
+} from '@/lib/media/image-validation'
+import { logger } from '@/lib/logger'
 
 // ---------------------------------------------------------------------------
 // 型・定数
@@ -77,6 +82,91 @@ export type CompressResult = {
 export type AttachResult =
   | { ok: true; assetId: string }
   | { ok: false; code: AttachErrorCode }
+
+// ---------------------------------------------------------------------------
+// telemetry (Task 6): 1 添付 = 1 logger.info レコード
+// ---------------------------------------------------------------------------
+
+type AttachTelemetryReason =
+  | 'validation_failed'
+  | 'decode_failed'
+  | 'compress_failed'
+  | 'invalid_type'
+  | 'too_many_images'
+  | 'reserve_failed'
+  | 'upload_failed'
+  | 'finalize_failed'
+  | 'fallback_too_large'
+  | 'fallback_not_allowed'
+
+type AttachTelemetrySource = { type: string; bytes: number; width?: number; height?: number }
+type AttachTelemetryOutput = {
+  requestedType?: string
+  actualType: string
+  bytes: number
+  width: number
+  height: number
+}
+
+// saga 内で少しずつ埋まる可変 telemetry。 個人情報 (file 名 / hash / bytes 本体) は
+// 保持しない — 型に無いフィールドは足せない (誤って name を積むミスを型で防ぐ)。
+type AttachTelemetry = {
+  compressionPath: 'webkit-safe' | 'lib' | 'fallback'
+  reason?: AttachTelemetryReason
+  source?: AttachTelemetrySource
+  output?: AttachTelemetryOutput
+  validationMetrics?: ValidationMetrics
+}
+
+function newTelemetry(webkit: boolean): AttachTelemetry {
+  // fallback 判明時に 'fallback' へ上書きする前提の暫定値 (Codex#7/#9/#10 = 1 添付 1 レコード)。
+  return { compressionPath: webkit ? 'webkit-safe' : 'lib' }
+}
+
+// AttachErrorCode → telemetry reason (brief の対応表どおり。 何も学習していない早期
+// 失敗 (TOO_MANY_IMAGES/INVALID_TYPE/RESERVE_FAILED/UPLOAD_FAILED/FINALIZE_FAILED) は
+// code から一意に決まる。 COMPRESS_FAILED のみ saga 側で reason (validation_failed 等) を
+// 先に telemetry へ積んでおき、 ここでは上書きしない。
+const CODE_TO_REASON: Partial<Record<AttachErrorCode, AttachTelemetryReason>> = {
+  TOO_MANY_IMAGES: 'too_many_images',
+  INVALID_TYPE: 'invalid_type',
+  RESERVE_FAILED: 'reserve_failed',
+  UPLOAD_FAILED: 'upload_failed',
+  FINALIZE_FAILED: 'finalize_failed',
+}
+
+/**
+ * saga の終端 (成功 / 失敗いずれの return も含む) で `image_attach` を厳密 1 回記録し、
+ * 受け取った result をそのまま返す — 呼出側は `return finishAttach(..., t)` の形で
+ * 各 return を包むだけで済む (二重記録・記録漏れの両方を防ぐ)。
+ */
+function finishAttach(result: AttachResult, t: AttachTelemetry): AttachResult {
+  const outcome: 'success' | 'fallback_used' | 'error' = !result.ok
+    ? 'error'
+    : t.compressionPath === 'fallback'
+      ? 'fallback_used'
+      : 'success'
+  // 失敗時は「終端の失敗理由」を優先する。 fallback 成功後に reserve/PUT/finalize が失敗した
+  // ケースで、 圧縮を誘発した古い t.reason(validation_failed 等)でなく終端 code の reason
+  // (upload_failed 等)を記録する(Codex 指摘)。 COMPRESS_FAILED は CODE_TO_REASON に無いため
+  // t.reason(compress/validation/decode_failed)へ fall through する。 成功時のみ t.reason
+  // (= fallback を誘発した理由。 直行成功は undefined)を最終 reason にする。
+  const reason = result.ok
+    ? t.reason
+    : (CODE_TO_REASON[result.code] ?? t.reason)
+
+  logger.info({
+    event: 'image_attach',
+    outcome,
+    ...(reason ? { reason } : {}),
+    compressionPath: t.compressionPath,
+    ...(t.source ? { source: t.source } : {}),
+    ...(t.output ? { output: t.output } : {}),
+    ...(t.validationMetrics ? { validationMetrics: t.validationMetrics } : {}),
+  })
+
+  return result
+}
 
 // 注入する server action の構造型 (実 action の signature に一致。 app/ layer を import
 // しないため lib/ 側で構造的に定義する。 呼出側は実 action をそのまま渡せる)。
@@ -139,10 +229,18 @@ class InvalidImageTypeError extends Error {
 // 出力妥当性検証 (validateCompressionOutput) の reject を圧縮失敗と区別するための
 // tagged Error。 現状 saga は COMPRESS_FAILED に落とすが、 T5 が fallback (元画像 direct
 // PUT) の起点として ValidationFailedError を判別するため独立 tag にする。
+// `metrics` は telemetry (Task 6) が reject 時の validationMetrics を記録するために運ぶ
+// (compressForAttach の成功時戻り値には含めない契約を変えないための最小経路)。
 class ValidationFailedError extends Error {
-  constructor(message: string) {
+  metrics?: ValidationMetrics
+  // 検証の具体 reason (decode_failed 等)。 telemetry で decode_failed を validation_failed と
+  // 区別して surface するため運ぶ (brief の reason schema・Codex 指摘)。
+  reason?: string
+  constructor(message: string, metrics?: ValidationMetrics, reason?: string) {
     super(message)
     this.name = 'ValidationFailedError'
+    this.metrics = metrics
+    this.reason = reason
   }
 }
 
@@ -198,6 +296,8 @@ export async function compressForAttach(file: File): Promise<CompressResult> {
   if (!validation.ok) {
     throw new ValidationFailedError(
       `compression output rejected: ${validation.reason ?? 'unknown'}`,
+      validation.metrics,
+      validation.reason,
     )
   }
 
@@ -244,24 +344,47 @@ function normalizeError(err: unknown, fallbackMessage: string): Error {
   return new Error(fallbackMessage)
 }
 
+// tryFallback の不採用理由 (telemetry Task 6 が reason を出し分けるための tag。
+// 挙動そのものは従来どおり null 相当 = 呼出側は COMPRESS_FAILED に落とす)。
+type FallbackRejection = {
+  ok: false
+  reason: 'fallback_not_allowed' | 'fallback_too_large' | 'validation_failed' | 'decode_failed'
+}
+type FallbackOutcome = { ok: true; result: CompressResult } | FallbackRejection
+
 // fallback (T5): 圧縮 / 出力検証が失敗した場合、 元画像を直 PUT してユーザーを詰ませない。
 // 対象は jpg/png かつ server reserve cap 以下のみ (webp は圧縮 skip の意味が薄く対象外・
 // spec)。 validateImageStructure (T2) で decode/寸法/magic-byte を確認し、 通れば圧縮版と
 // 同型の CompressResult を返す (同一 reserve→楽観層→PUT→finalize 経路に載せるため)。
-// 非対象 / 検証失敗は null (呼出側が COMPRESS_FAILED に落とす)。
-async function tryFallback(file: File): Promise<CompressResult | null> {
-  if (file.type !== 'image/jpeg' && file.type !== 'image/png') return null
-  if (file.size > MAX_ASSET_BYTES) return null
+// 非対象 / 検証失敗は reason 付き不採用 (呼出側が COMPRESS_FAILED に落とす。 reason は
+// telemetry 記録のみに使い、 挙動 (COMPRESS_FAILED へ集約) は変えない)。
+async function tryFallback(file: File): Promise<FallbackOutcome> {
+  if (file.type !== 'image/jpeg' && file.type !== 'image/png') {
+    return { ok: false, reason: 'fallback_not_allowed' }
+  }
+  if (file.size > MAX_ASSET_BYTES) {
+    return { ok: false, reason: 'fallback_too_large' }
+  }
 
   const structural = await validateImageStructure(file)
-  if (!structural.ok) return null
+  if (!structural.ok) {
+    // 元画像が decode 不能(真に壊れた入力)は decode_failed で区別する。 その他の構造 reject
+    // (magic 不一致等)は validation_failed に集約(telemetry の診断粒度・Codex 指摘)。
+    return {
+      ok: false,
+      reason: structural.reason === 'decode_failed' ? 'decode_failed' : 'validation_failed',
+    }
+  }
 
   return {
-    blob: file,
-    mime: file.type,
-    width: structural.width,
-    height: structural.height,
-    hash: await sha256Hex(file),
+    ok: true,
+    result: {
+      blob: file,
+      mime: file.type,
+      width: structural.width,
+      height: structural.height,
+      hash: await sha256Hex(file),
+    },
   }
 }
 
@@ -402,6 +525,11 @@ async function attachImageToCardInner(
   const { userId, cardId, target, file } = p
   const { reserveAsset, finalizeAsset } = deps
 
+  // telemetry (Task 6): saga の学習を積みながら、 全 return を finishAttach() で包み
+  // 1 添付 = 1 logger.info を保証する。 compressionPath は判明ししだい上書きする。
+  const t = newTelemetry(isWebKitImagePipeline())
+  t.source = { type: file.type, bytes: file.size }
+
   // 直列化区間内で mirror の最新 images を読む (caller の snapshot は row 不在時の fallback)。
   // これにより先行 attach の追加を踏まえた append となり、 上書き (lost-update) を防ぐ。
   const currentImages = await readCardImages(cardId, p.currentImages)
@@ -410,7 +538,7 @@ async function attachImageToCardInner(
   //    超過は reserve/圧縮前に弾く (超えて upload すると server が mutation を reject し、
   //    ready asset の orphan と sync 不能な local entry が残る)。
   if (currentImages.length >= MAX_IMAGES_PER_CARD) {
-    return { ok: false, code: 'TOO_MANY_IMAGES' }
+    return finishAttach({ ok: false, code: 'TOO_MANY_IMAGES' }, t)
   }
 
   // 1. 圧縮 (入口 gate 込み)。 gate 違反 = INVALID_TYPE (不正入力・fallback 対象外)。
@@ -426,19 +554,60 @@ async function attachImageToCardInner(
   //    union を返し、 後者は下でそのまま return する (楽観層以降へ進まない)。
   const compressSection = async (): Promise<CompressResult | AttachResult> => {
     try {
-      return await compressForAttach(file)
+      const result = await compressForAttach(file)
+      // telemetry: 圧縮出力 (fallback でない直行成功。 requestedType は WebKit-safe 経路のみ)。
+      t.output = {
+        ...(t.compressionPath === 'webkit-safe' ? { requestedType: 'image/webp' } : {}),
+        actualType: result.mime,
+        bytes: result.blob.size,
+        width: result.width,
+        height: result.height,
+      }
+      return result
     } catch (err) {
       if (err instanceof InvalidImageTypeError) {
         return { ok: false, code: 'INVALID_TYPE' }
+      }
+      // 何が fallback を誘発したか (validation_failed = 出力検証 reject / compress_failed =
+      // 圧縮そのものの crash) を telemetry へ先に積む。 fallback 成功時はこれが最終 reason に
+      // なる (brief 例: 検証 reject→fallback 成功 = outcome:fallback_used, reason:validation_failed)。
+      // decode_failed(出力が decode 不能)は validation_failed(内容 reject)と区別して
+      // surface する(brief の reason schema・Codex 指摘)。 その他の検証 reject は validation_failed。
+      const triggerReason: AttachTelemetryReason = !(
+        err instanceof ValidationFailedError
+      )
+        ? 'compress_failed'
+        : err.reason === 'decode_failed'
+          ? 'decode_failed'
+          : 'validation_failed'
+      t.reason = triggerReason
+      if (err instanceof ValidationFailedError && err.metrics) {
+        t.validationMetrics = err.metrics
       }
       // tryFallback は sha256 (crypto.subtle) 等 reject しうる await を含むため、 ここで
       // 握って COMPRESS_FAILED に落とす (never-throw AttachResult 契約 = throw を saga 外に
       // 漏らさない。 catch 内の未 guard await が契約を破るのを防ぐ)。
       try {
         const fallback = await tryFallback(file)
-        if (fallback) return fallback
+        if (fallback.ok) {
+          t.compressionPath = 'fallback'
+          t.output = {
+            actualType: fallback.result.mime,
+            bytes: fallback.result.blob.size,
+            width: fallback.result.width,
+            height: fallback.result.height,
+          }
+          return fallback.result
+        }
+        // fallback 非対象 (型 / サイズ) のみ reason を上書きする — 「そもそも fallback を
+        // 試みなかった」理由の方が「圧縮がなぜ失敗したか」より最終転帰の説明として有用。
+        // fallback 自体の構造検証失敗 (reason:'validation_failed') は trigger と同じ語彙な
+        // ので上書き不要 (元の trigger reason をそのまま残す)。
+        if (fallback.reason !== 'validation_failed') {
+          t.reason = fallback.reason
+        }
       } catch {
-        // fallback 失敗は COMPRESS_FAILED に集約。
+        // fallback 失敗は COMPRESS_FAILED に集約 (誘発理由の reason は保持する)。
       }
       return { ok: false, code: 'COMPRESS_FAILED' }
     }
@@ -447,7 +616,7 @@ async function attachImageToCardInner(
     ? await runExclusiveImageWork(compressSection)
     : await compressSection()
   if ('ok' in compressOutcome) {
-    return compressOutcome
+    return finishAttach(compressOutcome, t)
   }
   const compressed: CompressResult = compressOutcome
 
@@ -464,10 +633,10 @@ async function attachImageToCardInner(
       hash: compressed.hash,
     })
   } catch {
-    return { ok: false, code: 'RESERVE_FAILED' }
+    return finishAttach({ ok: false, code: 'RESERVE_FAILED' }, t)
   }
   if (!reserved.ok || !reserved.data) {
-    return { ok: false, code: 'RESERVE_FAILED' }
+    return finishAttach({ ok: false, code: 'RESERVE_FAILED' }, t)
   }
   const { assetId, uploadUrl } = reserved.data
 
@@ -490,7 +659,8 @@ async function attachImageToCardInner(
     } catch {
       // 巻き戻し自体の失敗は握る (深い storage 障害。 sweep が回収)。
     }
-    return { ok: false, code }
+    // telemetry: UPLOAD_FAILED/FINALIZE_FAILED の唯一の集約点 (両失敗ともここを通る)。
+    return finishAttach({ ok: false, code }, t)
   }
 
   // 3. 楽観層 (reserve 成功後): Cache put + media_assets 'uploading' + mirror/outbox。
@@ -566,7 +736,7 @@ async function attachImageToCardInner(
   // flush trigger (uploading gate を外し held mutation を流す)。 fire-and-forget。
   void runGuardedEntityMutationFlush().catch(() => {})
 
-  return { ok: true, assetId }
+  return finishAttach({ ok: true, assetId }, t)
 }
 
 // ---------------------------------------------------------------------------

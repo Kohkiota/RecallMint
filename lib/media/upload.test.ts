@@ -25,6 +25,7 @@ const {
   mockCompressImageSafe,
   mockValidateOutput,
   mockValidateStructure,
+  mockLoggerInfo,
 } = vi.hoisted(() => ({
   mockCompress: vi.fn(),
   mockReserveAsset: vi.fn(),
@@ -36,6 +37,7 @@ const {
   mockCompressImageSafe: vi.fn(),
   mockValidateOutput: vi.fn(),
   mockValidateStructure: vi.fn(),
+  mockLoggerInfo: vi.fn(),
 }))
 
 vi.mock('browser-image-compression', () => ({
@@ -66,6 +68,11 @@ vi.mock('@/lib/media/compress-image-safe', () => ({
 vi.mock('@/lib/media/image-validation', () => ({
   validateCompressionOutput: mockValidateOutput,
   validateImageStructure: mockValidateStructure,
+}))
+
+// telemetry (Task 6): logger.info を spy し、 saga 終端で 1 添付 = 1 image_attach を assert する。
+vi.mock('@/lib/logger', () => ({
+  logger: { info: mockLoggerInfo, warn: vi.fn(), error: vi.fn(), warnFromError: vi.fn() },
 }))
 
 import {
@@ -1222,5 +1229,290 @@ describe('removeImageFromCard', () => {
 
     // 非配列 → [] に正規化されるため後続 filter/commit が throw しない。
     expect(await getCardImages()).toEqual([])
+  })
+})
+
+// ===========================================================================
+// telemetry (Task 6): 1 添付 = 1 logger.info({ event:'image_attach', ... })
+// ===========================================================================
+
+// image_attach レコードのみを抽出する (logger.info は本 saga 以外からも呼ばれうる前提で
+// 将来の混入に強くする。 現状は本 saga のみが info を叩く)。
+function imageAttachCalls(): Record<string, unknown>[] {
+  return mockLoggerInfo.mock.calls
+    .map((args) => args[0] as Record<string, unknown>)
+    .filter((p) => p.event === 'image_attach')
+}
+
+describe('attachImageToCard — telemetry (image_attach)', () => {
+  it('成功 (lib 経路): 1 レコード・outcome=success・compressionPath=lib・PII 不記録', async () => {
+    mockIsWebKit.mockReturnValue(false)
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('secret-name.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r.ok).toBe(true)
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      event: 'image_attach',
+      outcome: 'success',
+      compressionPath: 'lib',
+    })
+    expect(records[0]).not.toHaveProperty('reason')
+    // output.requestedType は lib 経路では省略。
+    expect((records[0].output as Record<string, unknown> | undefined)?.requestedType).toBeUndefined()
+
+    // PII: file 名 / hash / bytes 本体を含まない。
+    const json = JSON.stringify(records[0])
+    expect(json).not.toContain('secret-name')
+    expect(json).not.toContain('hash')
+  })
+
+  it('成功 (WebKit 経路): 1 レコード・outcome=success・compressionPath=webkit-safe・output.requestedType=image/webp', async () => {
+    mockIsWebKit.mockReturnValue(true)
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r.ok).toBe(true)
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      outcome: 'success',
+      compressionPath: 'webkit-safe',
+    })
+    expect(records[0].output).toMatchObject({ requestedType: 'image/webp' })
+  })
+
+  it('fallback 成功: 1 レコード・outcome=fallback_used・reason=validation_failed・compressionPath=fallback', async () => {
+    mockValidateOutput.mockResolvedValue({
+      ok: false,
+      reason: 'flat_collapse',
+      metrics: VALIDATION_METRICS,
+    })
+    mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
+    await seedCard([])
+    const file = makeFile('a.png', 'image/png', new Uint8Array(2048))
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file,
+      currentImages: [],
+    }, deps)
+
+    expect(r.ok).toBe(true)
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      outcome: 'fallback_used',
+      reason: 'validation_failed',
+      compressionPath: 'fallback',
+    })
+    // fallback 成功時は出力検証の validationMetrics を保持している。
+    expect(records[0].validationMetrics).toEqual(VALIDATION_METRICS)
+    // output.requestedType は fallback 経路では省略。
+    expect((records[0].output as Record<string, unknown>).requestedType).toBeUndefined()
+  })
+
+  it('ハード失敗 (RESERVE_FAILED): 1 レコード・outcome=error・reason=reserve_failed', async () => {
+    mockReserveAsset.mockResolvedValue({ ok: false, error: 'offline' })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'RESERVE_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'reserve_failed' })
+  })
+
+  it('INVALID_TYPE: 1 レコード・outcome=error・reason=invalid_type', async () => {
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.gif', 'image/gif'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'INVALID_TYPE' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'invalid_type' })
+    // 入口 gate 早期失敗でも source (type/bytes) は記録される (PII でない数値/MIME のみ)。
+    expect(records[0].source).toMatchObject({ type: 'image/gif' })
+  })
+
+  it('TOO_MANY_IMAGES: 1 レコード・outcome=error・reason=too_many_images', async () => {
+    const ten: ClientCardImage[] = Array.from({ length: 10 }, (_, i) => ({
+      key: `existing-${i}`,
+      target: TARGET,
+      alt: '',
+    }))
+    await seedCard(ten)
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: ten,
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'TOO_MANY_IMAGES' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'too_many_images' })
+  })
+
+  it('COMPRESS_FAILED (fallback 非対象 webp): 1 レコード・outcome=error・reason=fallback_not_allowed (fallback 非対象という最終理由を記録)', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.webp', 'image/webp'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'fallback_not_allowed' })
+  })
+
+  it('COMPRESS_FAILED (圧縮 crash かつ fallback 構造検証が内容 reject〔magic 不一致〕): trigger reason=compress_failed を保持', async () => {
+    mockCompress.mockRejectedValue({ type: 'error' })
+    // 内容系の構造 reject (magic 不一致) は validation_failed に集約 → trigger と同語彙ゆえ
+    // 上書きせず compress_failed を保持する。
+    mockValidateStructure.mockResolvedValue({ ok: false, reason: 'magic_mismatch', width: 0, height: 0 })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'compress_failed' })
+  })
+
+  it('COMPRESS_FAILED (圧縮 crash かつ fallback 元画像が decode 不能): reason=decode_failed を surface', async () => {
+    // 元画像が真に decode 不能 = decode_failed は validation_failed と区別し、 trigger の
+    // compress_failed より診断的ゆえ最終 reason に surface する (brief schema・Codex 指摘)。
+    mockCompress.mockRejectedValue({ type: 'error' })
+    mockValidateStructure.mockResolvedValue({ ok: false, reason: 'decode_failed', width: 0, height: 0 })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'COMPRESS_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'decode_failed' })
+  })
+
+  it('fallback 成功後に PUT 失敗 → reason は終端の upload_failed(fallback trigger を残さない)', async () => {
+    // 検証 reject → fallback 成功 → その後 PUT が 500 → 終端は upload_failed。 fallback を
+    // 誘発した validation_failed でなく終端 code の reason を記録する(Codex 指摘)。
+    mockValidateOutput.mockResolvedValue({
+      ok: false,
+      reason: 'flat_collapse',
+      metrics: VALIDATION_METRICS,
+    })
+    mockValidateStructure.mockResolvedValue({ ok: true, width: 800, height: 600 })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 500 }),
+    )
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'UPLOAD_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      outcome: 'error',
+      reason: 'upload_failed',
+      compressionPath: 'fallback',
+    })
+  })
+
+  it('UPLOAD_FAILED: 1 レコード・outcome=error・reason=upload_failed', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 500 }))
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'UPLOAD_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'upload_failed' })
+  })
+
+  it('FINALIZE_FAILED: 1 レコード・outcome=error・reason=finalize_failed', async () => {
+    mockFinalizeAsset.mockResolvedValue({ ok: false, error: 'verify failed' })
+    await seedCard([])
+
+    const r = await attachImageToCard({
+      userId: USER_ID,
+      cardId: CARD_ID,
+      target: TARGET,
+      file: makeFile('a.jpg', 'image/jpeg'),
+      currentImages: [],
+    }, deps)
+
+    expect(r).toEqual({ ok: false, code: 'FINALIZE_FAILED' })
+    const records = imageAttachCalls()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ outcome: 'error', reason: 'finalize_failed' })
   })
 })
