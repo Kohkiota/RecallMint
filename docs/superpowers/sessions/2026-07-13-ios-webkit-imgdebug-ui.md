@@ -43,3 +43,12 @@ iPad の画面上に、画像添付 1 回ごとの telemetry を人間可読で�
 ## レビュー収束
 
 canonical(general-purpose/sonnet)= Crit1(verdict の B 分岐が検証の reject 条件〔出力 lumaVar<4〕と矛盾し到達不能 = 誤って常に A 断定)+ Imp1(onTelemetry 未 test)を修正。Codex 4 周収束(r1 fallback が破損圧縮出力を上書き隠蔽 → r2 error+decode_failed が中立表示 → r3 fallback_used+decode_failed 同 → r4 clean。`compressOutputBroken = decode_failed || 出力空/極小` で両経路統一)。build0/lint0/typecheck0・whole-repo 3492 green。
+
+## 撤去完了(2026-07-13)
+
+- **commit**: `df98cf6` feat(media,exams)`[reviewed]`。原因 = push 忘れ(iPad HEIC/PNG は通過・圧縮修正は正常動作)と判明したため、§撤去手順どおり画面表示 UI を撤去。
+- **撤去内容**: image-telemetry-debug.tsx(+.test.tsx)削除 / card-image-gallery.tsx の imgdebug 配線除去(import・debugRecord state・onTelemetry・パネル描画)/ upload.ts の onTelemetry param・callback・ImageAttachTelemetry export を除去 / upload.test.ts の onTelemetry 2 test + gallery test の onTelemetry assertion 除去。
+- **残置(OT 判断 = 残す)**: `ValidationFailedError.output` + fallback の `if(!t.output)` guard は **logger telemetry(image_attach record の output)の精度**として残置(reject/fallback 時も実出力サイズを prod ログに残す)。関連コメントを「デバッグ UI」→「logger telemetry」表現に更新。**telemetry 記録(logger.info)本体は無傷**。
+- **review**: canonical(general-purpose + code-reviewer.md 改変なし)Crit0/Imp0/Minor1(fallback guard コメント表現 = 修正済)+ Codex 独立 Crit0/Imp0/Minor0(`docs/codex/2026-07-13-imgdebug-removal.md`)。
+- **gate**: whole-repo `pnpm lint --max-warnings=0` exit0 / typecheck exit0 / test 3480 green / build exit0。
+- **残タスク**: OT push → stg で画像添付本経路が引き続き通るか軽く確認(UI 層のみ撤去ゆえ本経路不変の想定)。
