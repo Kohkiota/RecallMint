@@ -193,6 +193,17 @@ plan が OT 承認で確定したら、**plan 完了まで一気通貫で自走*
 - レイヤー・ラッパー・間接層を足す前に、**それ無しで書けないか試す**。足すなら理由を 1 行で正当化できること。
 - 過剰な防御的コードを書かない(起きえない分岐の握り / 不要 null guard / 使われない汎用引数)。
 
+## 設計方針(DDD)
+
+ビジネスロジックに触るコードは既存の**薄い DDD** 構成に従う(P0〜P4 + F1〜F3 で確立):
+
+- ドメイン規則(不変条件・判定・状態遷移)は `lib/<context>/domain/` の **pure 関数**(I/O なし・test 厚く)。server の書込は repository / apply 層経由、orchestration は usecase / action / handler 層、外部 I/O は infra 層(`lib/storage/` 等)。
+- **新しいビジネス規則を server action / component に直書きしない**。既存 aggregate(Subscription / Session / Card / Tag)がある領域はそこへ寄せる。
+- client 側は repository を持たない(意図的): **aggregate の pure 関数で不変条件を計算 → 既存 `runOptimistic*` で書く**形を維持(local-first 優先)。
+- client/server 二重実装をしない: 共有 invariant は **pure 関数 1 定義を両側から import**。
+- 教科書 DDD の全部盛り(Repository/Entity 全面導入・event sourcing 化等)はしない。導入基準は「**不変条件が実在するから**」(簡潔性規律の YAGNI と両立)。
+- 意図・経緯の正本 = `docs/plans/2026-07-08-full-ddd-intent-and-factfinding.md`(+ P0〜P4 / F1〜F3 design docs)。
+
 ## コーディング規約
 
 - file kebab-case / Component PascalCase / 関数 camelCase / 定数 UPPER_SNAKE_CASE。import 順: 外部 → 内部 → 相対。コメントは「なぜ」のみ
