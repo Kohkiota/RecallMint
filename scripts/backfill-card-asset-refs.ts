@@ -3,10 +3,12 @@
 // から埋める。reconciler (Task G5、後続) の運用開始前提 (backfill 完了が前提条件、
 // spec §4.11-5)。
 //
-// 実行:
-//   pnpm tsx scripts/backfill-card-asset-refs.ts --dry-run          # 確認 (write ゼロ)
-//   pnpm tsx scripts/backfill-card-asset-refs.ts                    # 全 user 本実行
-//   pnpm tsx scripts/backfill-card-asset-refs.ts --user <userId>    # 対象 user のみ
+// 実行 (`--conditions=react-server` は必須フラグ: 本 script は getDb() 経由で
+//  `import 'server-only'` を持つ module を読むため、付与しないと runtime guard で
+//  throw する。seed-perf-exam.ts と同前例):
+//   pnpm tsx --conditions=react-server scripts/backfill-card-asset-refs.ts --dry-run       # 確認 (write ゼロ)
+//   pnpm tsx --conditions=react-server scripts/backfill-card-asset-refs.ts                 # 全 user 本実行
+//   pnpm tsx --conditions=react-server scripts/backfill-card-asset-refs.ts --user <userId> # 対象 user のみ
 //   (--user は値必須。値なし / 別 flag が続くと fail-fast で exit 1 — 全 user 誤爆防止)
 //
 // 動作:

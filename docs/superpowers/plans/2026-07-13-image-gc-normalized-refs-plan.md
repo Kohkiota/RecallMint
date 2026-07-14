@@ -84,8 +84,8 @@
 ## Deploy / stg smoke 順序(nit・OT 実行)
 
 1. push → stg deploy(migration = refs table + **W1 込みの全コード**。**backfill は W1 deploy 後に実行** — W1 前の images 更新は refs に反映されず backfill 済みでも取りこぼすため・Codex 抜け 9)
-2. stg で `backfill-card-asset-refs.ts --dry-run`(target 分布 + invalid key 隔離の実証)→ 本実行
-3. reconciler `--dry-run`(backfill 乖離検査込み)→ mark → **短縮 grace は stg のみ**(prod ガードの実証を兼ねる)→ `--sweep` full cycle
+2. stg で `pnpm tsx --conditions=react-server scripts/backfill-card-asset-refs.ts --dry-run`(target 分布 + invalid key 隔離の実証)→ 本実行(**`--conditions=react-server` は server-only guard 回避の必須フラグ**・seed-perf-exam.ts 前例)
+3. reconciler `--dry-run`(backfill 乖離検査込み)→ mark → **短縮 grace は stg のみ**(prod ガードの実証を兼ねる)→ `--sweep` full cycle(同じく `--conditions=react-server` 必須)
 4. smoke 項目: 添付済み画像の誤収なし / 非存在 key への実 R2 DELETE 応答(2xx or 404 の実証・spec 不明の解消)/ user 削除 → deleting → sweep 回収 / W1 後の画像添付・外し編集が引き続き通る / 画像外し・card 削除でローカル Cache blob + media_assets 行が消える(W3・DevTools で Cache/IDB 抜粋)
 5. prod 反映判断 = OT
 6. **運用 runbook(軽量・Codex 抜け 7)**: G5 script header + sprint 完了記録に「頻度目安 = 月次 / user 削除後は OT が sweep を打つ / 失敗時は再実行(反復収束)/ integration_failures の確認 SQL」を記載。独立 doc にはしない(cron 導入時に正式化・YAGNI)。
