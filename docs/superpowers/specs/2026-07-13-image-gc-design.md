@@ -12,7 +12,7 @@
 
 **目的**: 参照されなくなった画像 asset(R2 実体 + assets 行 + ローカル Cache blob)を安全に回収する。card 削除 / 画像外し編集 / exam 削除 cascade のどの経路で参照が消えても、経路非依存に一律回収する。
 
-**スコープ**: ① reconciler script(mark / sweep の 2-pass・手動 invoke)② R2 DELETE seam 新設 ③ integration_failures catalog 追記 ④ ローカル Cache blob の即時回収 hook 2 箇所。
+**スコープ**: ① reconciler script(mark / sweep の 2-pass・手動 invoke)② R2 DELETE seam 新設 ③ integration_failures catalog 追記 ④ ローカル Cache blob の即時回収 hook 2 箇所 ⑤ **asset ライフサイクル規則の domain 化(DDD 監査 D-1 是正・2026-07-14 OT 承認で追加。§4.9)**。
 
 **スコープ外**(将来タスク側): cron/scheduled トリガー / dedup 再利用分岐 / Cloudflare Images Transformations / サムネ R2 保存 / server-side 画像検証・re-encode / user 削除時の R2 自動掃除の自動化(§7-3)。
 
@@ -150,9 +150,23 @@ pnpm tsx scripts/gc-image-assets.ts [--sweep] [--user <userId>] [--dry-run] [--g
 4. **R2 失敗 / DB 失敗**: I-3 のとおり反復実行で収束。R2 失敗のみ台帳。
 5. **user 削除後の R2 残骸**: incumbent = prefix 手動掃除(§3-4)。本 GC の scan は行が無いため関知しない(§7-3)。
 
+### §4.9 asset ライフサイクルの domain 化(D-1 是正・2026-07-14 追加)
+
+DDD 準拠監査(`docs/audit/2026-07-14-ddd-conformance-audit.md` D-1)の是正を本 sprint に同梱する(OT 承認 2026-07-14)。GC で asset の状態機械が実在化する(状態・遷移・ガードが増える)ため、CLAUDE.md「設計方針(DDD)」に従い遷移規則を domain 層へ置く:
+
+- **新設**: `lib/media/domain/asset-state.ts`(pure・I/O なし・test 厚く)。内容 =
+  - 状態遷移表(現行 `reserved → ready` + GC の unreferenced ライフサイクル。将来 `deleting|deleted` を足す場合もここが唯一の定義点)
+  - 遷移ガードの pure 関数(例: finalize 可否 = `reserved` からのみ / 冪等判定 = `ready` は no-op)
+  - **sweep 適格判定** `isSweepEligible(unreferencedAt, grace, now)`(I-4 の grace gate を pure 化)
+  - unreferenced_at の set/clear 判定(I-1 の 3 遷移を pure 関数で表現。scan core はこれを呼ぶだけにする)
+- **利用側(単一定義を両側 import)**: `asset-actions.ts`(finalize の遷移・冪等判定を直書きから置換)/ reconciler(mark の set/clear 判定・sweep の適格判定)。
+- **範囲の抑制**(簡潔性規律): byteSize cap・objectKey 形式・zod schema は入力検証であり状態遷移ではない — 今回は動かさない(過剰移設をしない)。repository 層の新設もしない(書込点は reserve/finalize の 2 箇所に限局しており、apply seam 化は不変条件がさらに増えた時)。
+- **注記**: 本 spec が card_asset_refs 版(状態ベース遅延 GC)の新 spec に superseded された場合も、本節の要件(遷移規則 = `lib/media/domain/` の pure 関数・単一定義・両側 import)はそのまま新 spec に引き継ぐ。状態が `pending|ready|deleting|deleted` に拡張されるならなおさら domain 化が本命化する。
+
 ## §5 テスト方針
 
 - **Unit(Vitest・DI core)**: scan core の set/clear/無変更 3 分岐 / grace 適格判定 / sweep の削除直前再検証(参照復活 → clear に倒れ削除しない)/ R2 seam の 2xx・404・5xx・throw 4 様 / R2 失敗時の台帳呼出と行存置 / DB 失敗時の行残置 / dry-run で write ゼロ / `--user` filter / legacy key(非 UUIDv4)が参照にも対象にも入らない(I-2)。R2 は mock(実 API 禁止)。
+- **domain(§4.9)**: `asset-state.ts` の pure 関数を厚く(遷移表・finalize ガード/冪等・`isSweepEligible` 境界値・set/clear 判定)。asset-actions の finalize が domain 関数経由でも既存挙動不変(既存 asset-actions test green を回帰の正とする)。
 - **client hook**: 画像外し / card 削除で `deleteAssetBlob` + `media_assets.delete` が呼ばれる・失敗握り。
 - **stg smoke(push 後・OT 指示で)**: ① 非存在 key への実 R2 DELETE の応答確認(§3-2 の未明記部分の実証)② `--dry-run` → mark → `--grace-hours` 短縮 sweep の full cycle ③ 添付済み画像が誤収されない(referenced 温存)。
 

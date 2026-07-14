@@ -44,6 +44,7 @@
 - **D-1: Asset ライフサイクル規則が server action 層に直書き(domain 層なし)** — `asset-actions.ts` に reserved→ready の状態遷移(finalize の冪等判定 `:147` / `ready` 化 `:157-160`)・byteSize cap(`MAX_ASSET_BYTES :23`)・objectKey 形式(`:96-98`)・resolve の ready gate(`:210`)が同居。F1(Subscription = aggregate + state machine)の相似形なのに `lib/media/domain/`(または `lib/assets/domain/`)が無い。
   - **緩和事情**: 現状は 2 状態・遷移 1 本・ガード 1 個 = 「不変条件が実在するから導入」基準(基準 5)では薄く、今 aggregate 化すると逆に over-engineering 側に倒れる境界例。DB write 自体は server action 内の drizzle 直叩きだが、書込点は reserve/finalize の 2 箇所に限局。
   - **推奨**: **GC sprint で合流修正**。GC で status が `pending|ready|deleting|deleted` の 4 状態 + 遷移ガード(grace / 参照確認)に拡張された時点で状態機械が実在化する — その実装時に遷移規則を `lib/media/domain/asset-state.ts`(pure)へ置き、asset-actions / reconciler が両方 import する形が自然。**今すぐ独立リファクタ sprint を起こすことは推奨しない**(scope creep 禁止・簡潔性規律と整合)。
+  - **→ OT 承認(2026-07-14)**: GC sprint 同梱で確定。GC spec §4.9 に要件として追記済(`docs/superpowers/specs/2026-07-13-image-gc-design.md`。card_asset_refs 版新 spec に superseded された場合も要件は引き継ぐ)。
 
 **Minor(記録のみ・3 件)**:
 
