@@ -9,6 +9,7 @@ import { assets } from '@/lib/db/schema'
 import type { User } from '@/lib/db/schema'
 import { presignPutUrl, presignGetUrl, headObject } from '@/lib/storage/r2'
 import type { ActionResult } from '@/lib/actions/result'
+import { isFinalized, canFinalize, type AssetStatus } from '@/lib/media/domain/asset-state'
 
 // 画像アップロード saga の server 側 3 action (画像フェーズ A design spec §3.1/§6)。
 //
@@ -144,8 +145,19 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
     return { ok: false, error: 'アセットが見つかりません' }
   }
 
-  if (asset.status === 'ready') {
+  // assets.status は CHECK なし text 列 (G2 domain の前提通り) なので DB 型は
+  // string。 遷移判定を domain 関数へ委譲するための cast — 値自体は本 action と
+  // reserve/GC のみが書くため AssetStatus union に収まる。
+  const status = asset.status as AssetStatus
+
+  if (isFinalized(status)) {
     return { ok: true }
+  }
+
+  // deleting/deleted は GC 回収確定後 (spec §4.9) — ready への遷移を許すと
+  // 回収済み asset を復活させてしまうため、 HEAD 検証の前に拒否する。
+  if (!canFinalize(status)) {
+    return { ok: false, error: 'アセットが見つかりません' }
   }
 
   const { exists, contentLength } = await headObject(asset.objectKey)
@@ -154,10 +166,38 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
     return { ok: false, error: 'アップロードの検証に失敗しました' }
   }
 
-  await db
+  // status='reserved' を WHERE に含め atomic に遷移させる (TOCTOU 防御)。 SELECT と
+  // この UPDATE の間に GC reconciler が reserved→deleting へ promote すると、 id+userId
+  // だけの WHERE では回収対象 asset を ready に復活させてしまう。 status='reserved' 条件で
+  // 0 行更新に落とし、 その場合は成功を返さず not-found として扱う (read-time canFinalize
+  // ガードは fast path として維持)。
+  const updated = await db
     .update(assets)
     .set({ status: 'ready', readyAt: new Date() })
-    .where(and(eq(assets.id, assetId), eq(assets.userId, user.id)))
+    .where(
+      and(
+        eq(assets.id, assetId),
+        eq(assets.userId, user.id),
+        eq(assets.status, 'reserved'),
+      ),
+    )
+    .returning({ id: assets.id })
+
+  if (updated.length === 0) {
+    // 0 行 = SELECT 後に status が reserved から動いた。 並行 finalize が先に ready 化
+    // した場合は冪等成功 (呼び出し側が望んだ end-state)、 GC が deleting/deleted へ
+    // promote した場合 (or 行消失) は復活させず not-found とする。 現状態を owner scope で
+    // 再取得して判別する。
+    const currentRows = await db
+      .select()
+      .from(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.userId, user.id)))
+    const current = currentRows[0]
+    if (current && isFinalized(current.status as AssetStatus)) {
+      return { ok: true }
+    }
+    return { ok: false, error: 'アセットが見つかりません' }
+  }
 
   return { ok: true }
 }
@@ -200,6 +240,8 @@ export async function resolveAssetUrls(
   }
 
   const db = getDb()
+  // eq(status, 'ready') の gate が deleting/deleted (GC 回収中/済) の asset を
+  // 既に排除する (allowsNewReference と同じ意味論。spec §3-4)。
   const rows = await db
     .select()
     .from(assets)

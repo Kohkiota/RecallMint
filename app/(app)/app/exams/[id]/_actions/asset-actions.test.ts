@@ -62,6 +62,11 @@ const {
     insertValues: null as Record<string, unknown> | null,
     // finalizeAsset の SELECT が返す行 (デフォルト = 1 行の reserved asset)
     selectResult: [] as Record<string, unknown>[],
+    // finalizeAsset の 0 行 UPDATE 後 re-SELECT が返す行 (idempotency 判別)。
+    // null なら 2 回目 SELECT も selectResult を再利用する (再取得しないテスト用)。
+    reSelectResult: null as Record<string, unknown>[] | null,
+    // finalizeAsset の SELECT 呼び出し回数 (1 回目=初期 SELECT / 2 回目=re-SELECT)。
+    finalizeSelectCall: 0,
     // resolveAssetUrls の SELECT が返す行
     selectManyResult: [] as Record<string, unknown>[],
     whereArgs: [] as unknown[][],
@@ -70,6 +75,9 @@ const {
     updateSetValues: null as Record<string, unknown> | null,
     updateWhereArgs: [] as unknown[][],
     updateCalled: false,
+    // UPDATE ... .returning() が返す行 (atomic status guard: 0 行 = reserved で
+    // なかった = 並行 promote された)。デフォルト 1 行 = 通常の reserved→ready 成功。
+    updateReturningResult: [{ id: 'updated-1' }] as Record<string, unknown>[],
   },
 }))
 
@@ -93,7 +101,18 @@ vi.mock('@/lib/db', () => {
     obj.then = (
       onFulfilled?: (v: unknown) => unknown,
       onRejected?: (e: unknown) => unknown,
-    ) => Promise.resolve(dbState[resultKey]).then(onFulfilled, onRejected)
+    ) => {
+      let rows = dbState[resultKey]
+      // finalizeAsset は 0 行 UPDATE 後に status 判別のため 2 回目 SELECT を行う。
+      // reSelectResult が積まれていれば 2 回目以降はそれを返す (idempotency 判別)。
+      if (resultKey === 'selectResult') {
+        dbState.finalizeSelectCall += 1
+        if (dbState.finalizeSelectCall >= 2 && dbState.reSelectResult !== null) {
+          rows = dbState.reSelectResult
+        }
+      }
+      return Promise.resolve(rows).then(onFulfilled, onRejected)
+    }
     return obj
   }
 
@@ -123,6 +142,9 @@ vi.mock('@/lib/db', () => {
       dbState.updateWhereArgs.push(args)
       return obj
     }
+    // atomic status guard 後、 実装は .returning() で更新行を受け取る。 mock は
+    // updateReturningResult をそのまま返す (0 行 = 並行 promote シミュレート)。
+    obj['returning'] = (_cols?: unknown) => Promise.resolve(dbState.updateReturningResult)
     obj.then = (
       onFulfilled?: (v: unknown) => unknown,
       onRejected?: (e: unknown) => unknown,
@@ -158,12 +180,15 @@ function resetDbState() {
   dbState.insertTable = null
   dbState.insertValues = null
   dbState.selectResult = []
+  dbState.reSelectResult = null
+  dbState.finalizeSelectCall = 0
   dbState.selectManyResult = []
   dbState.whereArgs = []
   dbState.updateTable = null
   dbState.updateSetValues = null
   dbState.updateWhereArgs = []
   dbState.updateCalled = false
+  dbState.updateReturningResult = [{ id: 'updated-1' }]
 }
 
 beforeEach(() => {
@@ -455,6 +480,83 @@ describe('finalizeAsset', () => {
     expect(dbState.updateSetValues).toHaveProperty('readyAt')
     expect(dbState.updateCalled).toBe(true)
   })
+
+  // R1 (画像 GC v2・G2 domain 配線): canFinalize ガードが deleting/deleted の
+  // asset を ready へ遷移させないこと。 GC 回収確定後の asset を finalize 再呼び
+  // 出しで復活させない防衛 (spec §4.9)。
+  it.each(['deleting', 'deleted'] as const)(
+    'status=%s → { ok: false }, no HEAD/UPDATE, status unchanged (canFinalize ガード)',
+    async (status) => {
+      dbState.selectResult = [{ ...readyAsset, status }]
+      const { finalizeAsset } = await importActions()
+      const r = await finalizeAsset(VALID_ASSET_UUID)
+      expect(r.ok).toBe(false)
+      expect(mockHeadObject).not.toHaveBeenCalled()
+      expect(dbState.updateCalled).toBe(false)
+    },
+  )
+
+  // R1 (画像 GC v2・atomic status guard): write-time TOCTOU 防御。 SELECT 時点で
+  // reserved でも、 UPDATE までに GC reconciler が reserved→deleting へ promote し
+  // うる。 UPDATE の WHERE に status='reserved' を含め atomic に遷移させ、 0 行更新
+  // (並行 promote 済) なら成功を返さず not-found とする。
+  it('UPDATE WHERE に status=reserved が含まれる (atomic guard)', async () => {
+    dbState.selectResult = [readyAsset] // status='reserved'
+    mockHeadObject.mockResolvedValueOnce({ exists: true, contentLength: 1000 })
+    const { finalizeAsset } = await importActions()
+    const r = await finalizeAsset(VALID_ASSET_UUID)
+    expect(r.ok).toBe(true)
+    // UPDATE の WHERE param 値に 'reserved' が焼き込まれていること (SQL 条件木を辿る)。
+    expect(dbState.updateWhereArgs.length).toBe(1)
+    const paramValues = collectDrizzleParamValues(dbState.updateWhereArgs[0])
+    expect(paramValues).toContain('reserved')
+  })
+
+  it('write-time race: reserved at SELECT だが UPDATE が 0 行 (並行 promote) → { ok: false }, not success', async () => {
+    dbState.selectResult = [readyAsset] // read-time は reserved → canFinalize 通過
+    mockHeadObject.mockResolvedValueOnce({ exists: true, contentLength: 1000 })
+    // UPDATE ... status='reserved' が 0 行にマッチ (SELECT 後に deleting へ promote された)。
+    dbState.updateReturningResult = []
+    const { finalizeAsset } = await importActions()
+    const r = await finalizeAsset(VALID_ASSET_UUID)
+    expect(r.ok).toBe(false)
+    // UPDATE 自体は試みられる (read-time guard は通過している) が、 0 行ゆえ成功にしない。
+    expect(dbState.updateCalled).toBe(true)
+  })
+
+  // R1 (画像 GC v2・冪等性維持): atomic guard の 0 行分岐が finalize の冪等性を
+  // 壊さないこと。 並行する 2 本の finalize が同 reserved asset を叩くと、 先行が
+  // ready 化し、 後続の UPDATE は 0 行 (もう reserved でない) になる。 後続は re-SELECT
+  // で ready を観測し、 冪等成功 (呼び出し側が望んだ end-state) を返す。
+  it('0-row UPDATE + re-SELECT が ready → { ok: true } (冪等性維持 = 並行 finalize が先勝ち)', async () => {
+    dbState.selectResult = [readyAsset] // 初期 SELECT = reserved → canFinalize 通過
+    mockHeadObject.mockResolvedValueOnce({ exists: true, contentLength: 1000 })
+    dbState.updateReturningResult = [] // 並行 finalize が先に ready 化 → 0 行
+    dbState.reSelectResult = [{ ...readyAsset, status: 'ready' }] // 再取得で ready を観測
+    const { finalizeAsset } = await importActions()
+    const r = await finalizeAsset(VALID_ASSET_UUID)
+    expect(r.ok).toBe(true)
+    expect(dbState.updateCalled).toBe(true)
+  })
+
+  // R1 (画像 GC v2・no-resurrection): 0 行分岐 + re-SELECT が deleting / 行消失なら
+  // GC promote が先勝ちしたケース。 復活させず not-found を返す。
+  it.each([
+    ['deleting', [{ id: VALID_ASSET_UUID, userId: 'user-1', status: 'deleting' }]],
+    ['row gone', [] as Record<string, unknown>[]],
+  ] as const)(
+    '0-row UPDATE + re-SELECT が %s → { ok: false } (no-resurrection = GC promote が先勝ち)',
+    async (_label, reSelect) => {
+      dbState.selectResult = [readyAsset] // 初期 SELECT = reserved → canFinalize 通過
+      mockHeadObject.mockResolvedValueOnce({ exists: true, contentLength: 1000 })
+      dbState.updateReturningResult = [] // GC が deleting へ promote → 0 行
+      dbState.reSelectResult = reSelect as Record<string, unknown>[]
+      const { finalizeAsset } = await importActions()
+      const r = await finalizeAsset(VALID_ASSET_UUID)
+      expect(r.ok).toBe(false)
+      expect(dbState.updateCalled).toBe(true)
+    },
+  )
 })
 
 describe('resolveAssetUrls', () => {
@@ -599,5 +701,42 @@ describe('resolveAssetUrls', () => {
     const ids = Array.from({ length: 50 }, (_, i) => `asset-${i}`)
     const r = await resolveAssetUrls(ids)
     expect(r.ok).toBe(true)
+  })
+
+  // R1 (画像 GC v2・G2 domain 配線): resolve の SELECT WHERE が status='ready' を
+  // 要求すること (deleting/deleted を除外する state gate = spec §3-4 /
+  // allowsNewReference と同じ意味論) を pin する。 mock DB は実 WHERE 評価を
+  // 行わないため、 (1) SQL の param 値に 'ready' が含まれ 'deleting'/'deleted' が
+  // 含まれないこと、 (2) selectManyResult に ready 行のみを積んだ時に他 status
+  // 行が結果に混ざらないこと、の 2 点で state gate の配線を検証する。
+  it('WHERE に status=ready のみ含まれる (deleting/deleted は param に現れない) + ready 行のみ返る', async () => {
+    dbState.selectManyResult = [
+      {
+        id: VALID_ASSET_UUID,
+        userId: 'user-1',
+        objectKey: `users/user-1/${VALID_ASSET_UUID}.webp`,
+        mime: 'image/webp',
+        byteSize: 1000,
+        width: 800,
+        height: 600,
+        hash: 'h1',
+        status: 'ready',
+        createdAt: new Date(),
+        readyAt: new Date(),
+        referenceCount: 0,
+        unreferencedAt: null,
+      },
+    ]
+    const { resolveAssetUrls } = await importActions()
+    const r = await resolveAssetUrls([VALID_ASSET_UUID])
+    expect(r.ok).toBe(true)
+    if (r.ok && r.data) {
+      expect(r.data.map((d) => d.assetId)).toEqual([VALID_ASSET_UUID])
+    }
+    expect(dbState.whereArgs.length).toBe(1)
+    const paramValues = collectDrizzleParamValues(dbState.whereArgs[0])
+    expect(paramValues).toContain('ready')
+    expect(paramValues).not.toContain('deleting')
+    expect(paramValues).not.toContain('deleted')
   })
 })
