@@ -71,3 +71,33 @@
 ## DDD 監査 D-1 是正の完了
 
 `docs/audit/2026-07-14-ddd-conformance-audit.md` の D-1(asset ライフサイクル直書き)= G2 domain 新設 + R1/G5/W2 配線で是正完了。
+
+---
+
+## 画像フェーズ A Blink(Chromium)回帰 smoke(2026-07-14・stg・Playwright MCP)
+
+**目的**: iOS/WebKit 分岐追加で通常の Blink 経路が壊れていないか(iPad/WebKit 固有破損は OT 実機済ゆえ対象外)。
+**環境**: stg.recallmint.nekotest.net / Clerk test user(komail9server+clerk_test)/ deploy = git push 済(origin/develop==local `0daab87`・dpl_EebkDBLbxY457x2MDKGXk8bNP6Vt)。Vercel が commit SHA header 非公開のため SHA 直接照合は不可、下記 telemetry schema の存在で圧縮修正コードの deploy を functional に確認。
+
+### 結論: **Blink 圧縮経路は健全(回帰なし)**。server 側 sync は test account の広域 stuck(pre-existing・非 W1)で永続化のみ未検証。
+
+| # | 項目 | 結果 | 根拠 |
+|---|---|---|---|
+| 1 | 添付基本(client 経路)| **PASS** | PNG 198KB 添付 → `image_attach` telemetry `compressionPath:"lib"`(= browser-image-compression / **WebKit 自前 pipeline 未通過**)・`output.actualType:"image/webp"` 6.8KB・presigned PUT R2 `.webp` → **200 OK**・media_assets `status:ready`・cards.images に **assetId(url 空)** |
+| 2 | 表示解決 | **PASS** | 既存 5 画像すべて `blob:` objectURL・complete・naturalWidth>0・**broken なし**(presigned GET 200 → objectURL) |
+| 3 | Cache API | **PASS** | cache `recallmint-media` に `/__media/{DB userId}/{assetId}` 形式・userId namespace 一貫・新 asset も収容確認 |
+| 4 | over-size 拒否(署名固定)| **mechanism PASS** | PUT の `X-Amz-SignedHeaders=content-length;content-type;host` = Content-Length 署名固定を確認。実 5MiB 超 403 は real-device 担保 |
+| 5 | カード同期分離 | **PASS** | entity_mutations の images update_field が **assetId のみ運搬**(hasBlob:false)・blob は Cache/R2 別チャネル(media_assets に bytes なし)|
+| 6 | デッキ一括 DL | **未実施** | 下記 server-sync stuck + MCP 手数の都合で保留。real-device / 別途担保 |
+| 7 | CSP | **PASS** | 全 smoke で **CSP 違反 0・console error 0**。圧縮成功 = worker + 自前 vendor lib(public/vendor)が読めた = **jsDelivr 非依存**を裏付け |
+
+### 発見(pre-existing・非 W1・要 OT 認識)
+
+- **この test account の outbox が広域 stuck**: add(6-key)/ remove(4-key)の images mutation が bulk で `{applied:0, failed:[...]}` = server 決定的 reject。加えて **memo/title/options/tag_option_ids/card.create/delete 等 card_asset_refs に無関係な op も含め計 38 件が全て synced 0**。
+- **W1/migration 原因を棄却**: refs を触らない非 image op も stuck ゆえ handleImages/card_asset_refs 起因でない。かつ **07-12(W1 deploy 前)にも同 card の images mutation が stuck** = W1 前から蓄積した pre-existing 状態。
+- **帰結**: Blink 圧縮の **client 経路は完全健全**。ただし server 永続化(images jsonb への反映・assetId が server 到達)は **outbox stuck により本 account では未検証**。W1 の server 側(refs 全置換)を clean に smoke するには **outbox 健全な別 test account(or 当 account の outbox reset)が必要**。
+- residue(throwaway-stg): 添付 `ff17ac94-...webp` は R2 PUT 済だが mutation 失敗で未参照 = orphan(migration 適用後 reconciler が回収可)。local mirror は remove の楽観反映で一時 4(次 pull で 5 復帰)。
+
+### OT へのお願い(GC v2 push 判断とは別レイヤー)
+
+Blink 回帰は健全。GC v2 server 側 smoke(W1 refs / reconciler)を進める前に、① stg の当 test account の outbox 広域 stuck の原因(bulk が全 op を reject する状態)を確認 ② migration 0024 が stg DB に適用済か確認 — の 2 点を切り分けると、GC v2 の stg 実証が clean に回せる。
