@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (22 tables; 画像フェーズ A で assets 追加)
+// Drizzle schema — mcq-platform (23 tables; 画像 GC v2 Task G1 で card_asset_refs 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -842,6 +842,38 @@ export const assets = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// card_asset_refs (画像 GC v2 Task G1 新設) — 画像参照の正規化テーブル。
+// GC 権威。cards.images 配列は wire/表示として残す(二重持ち・legacy 非 UUID OCR
+// entry は配列のみで refs に入らない)。
+// cards.images を書く経路を増やす時は refs 同期必須(現状 handleImages 実質単一点)。
+// ordinal は同 field_key 内順序のみ。target 横断の元配列全体順は保存しない。
+// card_id は cards cascade (card 削除で refs も連動削除)。asset_id は RESTRICT
+// (cards とは非対称 — 参照中 asset の誤削除を DB で拒否)。user_id は card_tags
+// 前例どおり cascade FK。
+// 詳細: docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md §4.1
+// ---------------------------------------------------------------------------
+export const cardAssetRefs = pgTable(
+  'card_asset_refs',
+  {
+    cardId: uuid('card_id')
+      .notNull()
+      .references(() => cards.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => assets.id, { onDelete: 'restrict' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    fieldKey: text('field_key').notNull(),
+    ordinal: integer('ordinal').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardId, t.fieldKey, t.ordinal] }),
+    index('card_asset_refs_asset_idx').on(t.assetId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -885,3 +917,5 @@ export type Tombstone = typeof tombstones.$inferSelect
 export type NewTombstone = typeof tombstones.$inferInsert
 export type Asset = typeof assets.$inferSelect
 export type NewAsset = typeof assets.$inferInsert
+export type CardAssetRef = typeof cardAssetRefs.$inferSelect
+export type NewCardAssetRef = typeof cardAssetRefs.$inferInsert

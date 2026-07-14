@@ -169,6 +169,13 @@
       "when": 1783823063375,
       "tag": "0023_windy_ultimates",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784004705382,
+      "tag": "0024_bouncy_switch",
+      "breakpoints": true
     }
   ]
 }
