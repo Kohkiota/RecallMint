@@ -189,13 +189,23 @@ describe('recordIntegrationFailure', () => {
     expect(notifyContext).toEqual({ ...snapshot, ledgerWriteError: 'db down' })
   })
 
-  // (g) all 7 catalog entries have unique 4-axis tuples
+  // (g) all 8 catalog entries have unique 4-axis tuples
   it('has a unique 4-axis tuple for every catalog entry', () => {
     const tuples = CATALOG_KEYS.map((k) => {
       const e = INTEGRATION_FAILURE_CATALOG[k]
       return JSON.stringify([e.service, e.operation, e.workflow, e.failureCode])
     })
     expect(new Set(tuples).size).toBe(tuples.length)
-    expect(tuples.length).toBe(7)
+    expect(tuples.length).toBe(8)
+  })
+
+  // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
+  it('r2_gc_delete has the 4-axis values pinned by spec §4.6', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_gc_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'asset_gc',
+      failureCode: 'external_api_error',
+    })
   })
 })

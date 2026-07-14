@@ -49,6 +49,7 @@ describe('R2 client - env fail-fast', () => {
     expect(mod.presignPutUrl).toBeInstanceOf(Function)
     expect(mod.presignGetUrl).toBeInstanceOf(Function)
     expect(mod.headObject).toBeInstanceOf(Function)
+    expect(mod.deleteObject).toBeInstanceOf(Function)
   })
 })
 
@@ -205,5 +206,67 @@ describe('headObject', () => {
     const { headObject } = await import('./r2')
     const result = await headObject('users/u1/asset1.webp')
     expect(result).toEqual({ exists: false, contentLength: null })
+  })
+})
+
+describe('deleteObject', () => {
+  beforeEach(() => {
+    setValidEnv()
+    vi.restoreAllMocks()
+  })
+
+  it('issues a DELETE request against the object URL with a timeout signal', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const { deleteObject } = await import('./r2')
+    await deleteObject('users/u1/asset1.webp')
+    const request = fetchSpy.mock.calls[0][0] as Request
+    expect(request.method).toBe('DELETE')
+    expect(request.signal).toBeInstanceOf(AbortSignal)
+    const url = new URL(request.url)
+    expect(url.pathname).toBe(`/${BUCKET_NAME}/users/u1/asset1.webp`)
+  })
+
+  it('returns ok:true with the response status on a 2xx response (204)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: true, status: 204 })
+  })
+
+  it('returns ok:true with the response status on a 2xx response (200)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: true, status: 200 })
+  })
+
+  it('returns ok:true with status 404 (object already absent = success-equivalent end-state)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 404 }))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: true, status: 404 })
+  })
+
+  it('returns ok:false with the response status on a non-2xx/404 response (500)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 500 }))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: false, status: 500 })
+    // retries:0 も継承していること (headObject と同じ client) を1回呼び出しで確認
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns ok:false and status:null when fetch throws (network error)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new TypeError('network error'))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: false, status: null })
+  })
+
+  it('returns ok:false and status:null when fetch throws due to timeout (abort)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new DOMException('The operation timed out', 'TimeoutError'))
+    const { deleteObject } = await import('./r2')
+    const result = await deleteObject('users/u1/asset1.webp')
+    expect(result).toEqual({ ok: false, status: null })
   })
 })

@@ -66,6 +66,15 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'user_deletion',
     failureCode: 'db_error',
   },
+  // 画像GC sweepのR2物理削除失敗。 design spec §4.6: DB側の掃除(status/行DELETE)とは
+  // decoupleされ、 R2失敗のみ台帳に積む(DB失敗はscript出力の可視化+次run収束に委ねる)。
+  // context = { assetId, objectKey, status } (呼出配線はG5 reconcilerで行う)。
+  r2_gc_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'asset_gc',
+    failureCode: 'external_api_error',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG

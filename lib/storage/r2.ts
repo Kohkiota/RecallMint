@@ -37,6 +37,9 @@ const DEFAULT_EXPIRES_SEC = 600
 // HEAD検証のnetwork timeout。 CLAUDE.md AI-2 (外部API callはtimeout必須) 準拠。
 const HEAD_TIMEOUT_MS = 10_000
 
+// DELETE (GC sweep) のnetwork timeout。 HEAD_TIMEOUT_MSと同値 (CLAUDE.md AI-2)。
+const DELETE_TIMEOUT_MS = 10_000
+
 // retries: 0 が必須 — AwsClient は既定で retries:10 の指数 backoff を行うが、 その
 // backoff sleep は fetch へ渡す AbortSignal.timeout を観測しないため、 R2 が 5xx/429 を
 // 返し続けると headObject が 10 秒の外部 API timeout (CLAUDE.md AI-2) を大幅に超えて
@@ -129,5 +132,36 @@ export async function headObject(
     return { exists: true, contentLength }
   } catch {
     return { exists: false, contentLength: null }
+  }
+}
+
+/**
+ * R2オブジェクトの物理削除 (画像GC sweep がR2実体を消す唯一の口。 design spec §4.6)。
+ *
+ * success-equivalent判定: 2xx または 404 は「objectが存在しない」という望むend-stateに
+ * 達しているとみなし ok:true を返す (spec §3-2: Cloudflareは実装済 + AWS S3は「object不在
+ * でも204」と明文化されている挙動を踏襲)。DELETEは冪等なため再実行しても安全 — sweepが
+ * crashしても次runが同じobjectKeyに再DELETEしてよい。
+ *
+ * headObjectと同じnever-throw契約: fetchのthrow/timeout(abort)はcatchし
+ * `{ ok: false, status: null }` に正規化する。呼出側(reconciler)にtry/catchを強制しない。
+ *
+ * presigned DELETEは採用しない — 本関数はserver直DELETE専用 (reconcilerはserver環境の
+ * scriptとして動くため、presign経由の間接呼び出しは不要)。
+ */
+export async function deleteObject(
+  objectKey: string,
+): Promise<{ ok: boolean; status: number | null }> {
+  try {
+    const res = await client.fetch(objectUrl(objectKey), {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(DELETE_TIMEOUT_MS),
+    })
+    if (res.ok || res.status === 404) {
+      return { ok: true, status: res.status }
+    }
+    return { ok: false, status: res.status }
+  } catch {
+    return { ok: false, status: null }
   }
 }
