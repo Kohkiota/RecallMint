@@ -13,9 +13,11 @@
  * 2. user.created → users INSERT ON CONFLICT DO NOTHING + publicMetadata sync
  *    (captured: clerkId, email, dbUserId, plan=free)
  * 3. user.deleted → users soft delete (email=null, clerkId=null, deletedAt set,
- *    stripeCustomerId NOT touched) + exactly 11 child-table DELETEs
- *    NOTE: route header comment lists Group I テーブル。 ACTUAL contract is 11 (画像フェーズ A で assets 追加).
- *    Freeze 11.
+ *    stripeCustomerId NOT touched) + exactly 10 child-table DELETEs + assets
+ *    soft-delete (status='deleting' UPDATE, W2 image-GC-v2 spec §4.8).
+ *    NOTE: route header comment lists Group I テーブル (11 件)。 うち assets は W2 で
+ *    物理 DELETE → deleting UPDATE に置換されたため、 ACTUAL DELETE contract is 10.
+ *    Freeze 10 DELETE + 1 assets soft-delete.
  *
  * NOT frozen: timing/ops payloads, logger calls, Stripe cancel sub calls,
  *             sql`now()` expression value (SQL chunk, AST-fragile).
@@ -255,28 +257,34 @@ describe('Clerk webhook: user.created', () => {
 // ── 3. user.deleted ───────────────────────────────────────────────────────────
 
 describe('Clerk webhook: user.deleted', () => {
-  it('soft delete + 11 child-table DELETEs (画像フェーズ A で assets 追加 → Group I=11)', async () => {
-    // The 11 tables (Group I): exams, studyDays, contactMessages, aiUsageUsers,
-    // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories, assets.
-    // Hard assert count=11; snapshot the soft-delete SET shape.
+  it('soft delete users + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外)', async () => {
+    // Group I 11 テーブル: exams, studyDays, contactMessages, aiUsageUsers,
+    // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories,
+    // assets. うち assets のみ W2 で物理 DELETE → status='deleting' UPDATE (soft-delete)。
+    // よって物理 DELETE は 10 件、 update は users scrub + assets deleting の 2 件。
+    // Hard assert DELETE count=10; snapshot the soft-delete SET shape + assets deleting.
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_contract' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '22222222-0000-4000-a000-000000000001', stripeCustomerId: null }]),
     )
-    // Free plan → no Stripe cancel loop. Transaction: update + 11 deletes.
-    mockDbUpdate.mockReturnValue(chain(undefined))
+    // Free plan → no Stripe cancel loop. Transaction: update × 2 (users + assets) + 10 deletes.
+    // 呼び出しごとに新しい chain を返し、table 引数で users / assets の SET を区別する。
+    mockDbUpdate.mockImplementation(() => chain(undefined))
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_del_contract' } }))
     expect(res.status).toBe(200)
 
-    // Hard assert: exactly 11 child-table DELETEs — freeze this count explicitly
-    expect(mockDbDelete).toHaveBeenCalledTimes(11)
+    // Hard assert: exactly 10 child-table DELETEs (assets excluded = soft-delete) — freeze
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
 
-    // Capture soft-delete SET args (scalar properties only)
-    const updateChain = mockDbUpdate.mock.results[0]?.value as { set: ReturnType<typeof vi.fn> }
-    const setArgs = updateChain.set.mock.calls[0]?.[0] as Record<string, unknown>
+    // 1st update = users scrub (handler tx.update 順序: users が先)
+    const usersUpdateChain = mockDbUpdate.mock.results[0]?.value as { set: ReturnType<typeof vi.fn> }
+    const setArgs = usersUpdateChain.set.mock.calls[0]?.[0] as Record<string, unknown>
+    // 2nd update = assets deleting soft-delete
+    const assetsUpdateChain = mockDbUpdate.mock.results[1]?.value as { set: ReturnType<typeof vi.fn> }
+    const assetsSetArgs = assetsUpdateChain.set.mock.calls[0]?.[0] as Record<string, unknown>
 
     expect({
       status: res.status,
@@ -288,13 +296,15 @@ describe('Clerk webhook: user.deleted', () => {
         // stripeCustomerId is kept as audit correlation key — must NOT be in SET
         stripeCustomerIdTouched: 'stripeCustomerId' in setArgs,
       },
-      // The critical contract: 11 tables (画像フェーズ A で assets 追加)
+      // W2: assets is soft-deleted to 'deleting' (not physically DELETEd)
+      assetsSoftDelete: { status: assetsSetArgs.status },
+      // The critical contract: 10 physical DELETEs (assets soft-deleted, W2)
       childTableDeleteCount: mockDbDelete.mock.calls.length,
     }).toMatchSnapshot()
   })
 
-  it('user.deleted with Stripe subs → cancel loop runs, then 11 child-table DELETEs', async () => {
-    // Verify that the sub-cancel and 11-DELETE contract holds even with a Stripe customer.
+  it('user.deleted with Stripe subs → cancel loop runs, then 10 child-table DELETEs', async () => {
+    // Verify that the sub-cancel and 10-DELETE contract holds even with a Stripe customer.
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_stripe_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_stripe' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
@@ -307,14 +317,15 @@ describe('Clerk webhook: user.deleted', () => {
         { id: 'sub_canceled_contract', status: 'canceled' },
       ]),
     )
-    mockDbUpdate.mockReturnValue(chain(undefined))
+    mockDbUpdate.mockImplementation(() => chain(undefined))
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_del_stripe_contract' } }))
     expect(res.status).toBe(200)
 
-    // Hard assert: 11 child-table DELETEs regardless of Stripe cancel activity
-    expect(mockDbDelete).toHaveBeenCalledTimes(11)
+    // Hard assert: 10 child-table DELETEs regardless of Stripe cancel activity
+    // (assets is soft-deleted = deleting UPDATE, W2)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
 
     expect({
       childTableDeleteCount: mockDbDelete.mock.calls.length,

@@ -143,20 +143,25 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   }
 
   // §6 / T3: DB transaction — users の soft delete + GDPR PII scrub + ユーザー
-  // 紐付き子テーブルの物理削除。
+  // 紐付き子テーブルの物理削除 (10 件) + assets の soft-delete (deleting UPDATE, 1 件)。
   //
-  // 削除設計の集約コメント (なぜここに 11 テーブルを明示 DELETE するか):
+  // 削除設計の集約コメント (なぜここに Group I 11 テーブルを明示処理するか):
   // - users は soft delete (deleted_at set + email/clerk_id scrub) で物理削除しない
   //   ため、 users.id への FK ON DELETE CASCADE は発火しない。
-  // - **Group I (handler 明示 DELETE 必須、 = 本ブロックの 11 件)**: direct user_id FK で
-  //   users に cascade するテーブルのうち、 親 cascade chain がないもの。
+  // - **Group I (handler 明示処理必須、 = 本ブロックの 11 件)**: direct user_id FK で
+  //   users に cascade するテーブルのうち、 親 cascade chain がないもの。 うち 10 件は
+  //   物理 DELETE、 assets のみ soft-delete (deleting UPDATE = 唯一の例外・下記)。
   //     exams / study_days / contact_messages / ai_usage_users / upload_records /
   //     user_settings / study_sessions / tombstones / entity_mutations / tag_categories /
   //     assets
   //   (study_sessions は exam_id が set null = 非経路、 user_id のみが削除 path)
-  //   (assets は画像フェーズ A で新設、 user_id direct cascade のみ・親 chain なし → Group I。
-  //    行は本 DELETE で消えるが、 R2 上の画像オブジェクト自体の掃除は scope 外 = 手動運用
-  //    (spec §2.1: users/{user_id}/ prefix で手動削除可)。 row 削除と object 削除は別レイヤー)
+  //   (assets は Group I だが唯一の soft-delete 例外 = 物理 DELETE せず status='deleting'
+  //    へ UPDATE する。 理由 = R2 object への手掛かり (object_key) を保全し、 GC reconciler
+  //    の優先 sweep (deletion 由来 = grace 非適用) に R2 実体 + 行の物理回収を委ねるため
+  //    (spec §4.8)。 取得権限は deleting 遷移の瞬間に失効する (resolve/handleImages の
+  //    ready-gate = allowsNewReference は ready のみ許可)。 同 tx の exams DELETE cascade で
+  //    子 cards→card_asset_refs が消えるため、 これらの asset は「参照ゼロ + deleting」となり
+  //    reconciler collect が回収する。 row と object の物理削除は別レイヤー (decouple 規律))
   //   (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 旧 card_mutations の
   //    時にあった cards cascade chain がなくなり、 Group I に昇格)
   //   (tag_categories は Tag-1 で新設、 試験横断 master のため親 chain なし → Group I)
@@ -164,9 +169,10 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   //   は exam_id cascade で exams DELETE 時に連鎖、 reviews / answer_events は cards
   //   cascade (= exams chain) で連鎖、 tag_options は category_id cascade で tag_categories
   //   経由で連鎖、 card_tags は card_id / option_id の双方 cascade で連鎖。 ここに二重に書かない。
-  // - 網羅性は invariant test (route.test.ts の「user_id direct cascade を持つ全テーブル
-  //   が handler の明示 DELETE に含まれる」 検証) が保証。 schema に user_id direct FK
-  //   の新テーブルを追加すると invariant test が落ちて気づける。
+  // - 網羅性は invariant test (route.test.ts の「Group I − soft-delete 例外 (assets) が
+  //   handler の明示 DELETE 集合と一致」 検証) が保証。 schema に user_id direct FK の
+  //   新テーブルを追加すると invariant test が落ちて気づける (assets 以外は依然明示
+  //   DELETE 必須 = soft-delete は assets のみの例外)。
   //
   // GDPR PII scrub: users 行は audit / correlation のため残置するが、 PII 列
   // (email, clerk_id) を NULL に上書きする。 stripe_customer_id は cus_xxx 単体で
@@ -197,7 +203,17 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
       await tx.delete(tombstones).where(eq(tombstones.userId, internalUserId))
       await tx.delete(entityMutations).where(eq(entityMutations.userId, internalUserId))
       await tx.delete(tagCategories).where(eq(tagCategories.userId, internalUserId))
-      await tx.delete(assets).where(eq(assets.userId, internalUserId))
+      // assets は物理 DELETE でなく 'deleting' へ soft-delete (Group I 唯一の例外・spec §4.8)。
+      // 'deleting' は G2 asset-state (lib/media/domain/asset-state.ts) の AssetStatus 語彙。
+      // R2 object への手掛かり (object_key) を保全し、 GC reconciler の優先 sweep lane に
+      // R2 実体 + 行の物理回収を委ねる。 取得権限は deleting で失効 (ready-gate)。
+      // self-heal (deleting → ready 戻し) は起き得ない: 参照発生源 (この user の cards) が
+      // 同 tx の exams DELETE cascade で全滅 + 認証も失効するため refs が再出現しない。
+      // owner-scope (eq(userId)) 維持。
+      await tx
+        .update(assets)
+        .set({ status: 'deleting' })
+        .where(eq(assets.userId, internalUserId))
     },
     async (errorMessage) => {
       await recordFailure({

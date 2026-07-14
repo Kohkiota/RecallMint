@@ -101,6 +101,20 @@ function integrationInsertRow(): Record<string, unknown> | undefined {
   return chainObj.values.mock.calls[0]?.[0] as Record<string, unknown> | undefined
 }
 
+// W2: user 削除 tx は update(users) (PII scrub) と update(assets) (soft-delete
+// deleting) の 2 件を発行する。呼び出し順に依存せず、table 引数 (第 1 引数) で
+// 目的の update chain を引く。返す chain の .set.mock.calls[0][0] が SET payload。
+function updateChainFor(table: unknown):
+  | { set: ReturnType<typeof vi.fn>; where: ReturnType<typeof vi.fn> }
+  | undefined {
+  const idx = mockDbUpdate.mock.calls.findIndex((c) => c[0] === table)
+  if (idx === -1) return undefined
+  return mockDbUpdate.mock.results[idx].value as {
+    set: ReturnType<typeof vi.fn>
+    where: ReturnType<typeof vi.fn>
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.CLERK_WEBHOOK_SECRET = SECRET
@@ -112,6 +126,11 @@ beforeEach(() => {
   // (ledgerWriteError) へ落ちないよう default を敷く。各 test は clerk_events を
   // mockReturnValueOnce で先に消費する。
   mockDbInsert.mockReturnValue(chain(undefined))
+  // W2: tx.update は users (scrub) と assets (deleting soft-delete) の 2 件が走る。
+  // default は呼び出しごとに新しい chain を返す (両 update が有効な chain を得る)。
+  // table 引数は mockDbUpdate.mock.calls に残るので updateChainFor(table) で引ける。
+  // 個別 test は必要なら mockReturnValueOnce で特定 chain を差し込める (既存パターン)。
+  mockDbUpdate.mockImplementation(() => chain(undefined))
   // デフォルト: transaction は callback をそのまま実行する (tx は db と同 shape)
   mockDbTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) => {
@@ -255,9 +274,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
         { id: 'sub_c', status: 'canceled' },
       ]),
     )
-    // transaction 内: update users + delete exams + delete study_days + delete contact_messages
+    // transaction 内: update users (scrub) + delete Group I 10 件 + update assets (deleting)
     const updateChain = chain(undefined)
-    mockDbUpdate.mockReturnValueOnce(updateChain)
+    mockDbUpdate.mockReturnValueOnce(updateChain) // 1st update = users scrub
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_1' } }))
@@ -270,9 +289,10 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_t')
     expect(mockCancelWithRetry).not.toHaveBeenCalledWith('sub_c')
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // transaction 内で update × 1 + delete × 11 (Group I 全件)
-    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(11)
+    // transaction 内で update × 2 (users scrub + assets deleting) + delete × 10
+    // (Group I 11 件のうち assets は soft-delete なので DELETE でなく UPDATE = 10 件 DELETE)
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
     // 正常系でも scrub payload (email/clerkId NULL) が users UPDATE に乗ることを
     // defense-in-depth で確認 — 専用 test (下) が削除された場合の二重保険。
@@ -281,6 +301,11 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     const setArg = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
     expect(setArg.email).toBeNull()
     expect(setArg.clerkId).toBeNull()
+    // W2: assets は物理 DELETE でなく status='deleting' へ soft-delete される。
+    const assetsUpdate = updateChainFor(schemaModule.assets)
+    expect(assetsUpdate).toBeDefined()
+    const assetsSet = assetsUpdate!.set.mock.calls[0]![0] as Record<string, unknown>
+    expect(assetsSet.status).toBe('deleting')
   })
 
   it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で Group I 11 子テーブル DELETE も発火', async () => {
@@ -288,9 +313,10 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     // ため残置するが PII 列 (email, clerk_id) は退会と同じ transaction で NULL に
     // 書き換える。 stripe_customer_id (cus_xxx) は個人特定不能で監査 correlation key
     // のため保持 — SET 引数に含めない。
-    // 加えて、 scrub と Group I の 11 子テーブル DELETE (exams / studyDays /
+    // 加えて、 scrub と Group I の子テーブル削除 (exams / studyDays /
     // contactMessages / aiUsageUsers / uploadRecords / userSettings /
-    // studySessions / tombstones / entityMutations / tagCategories / assets) は同一 transaction 内で
+    // studySessions / tombstones / entityMutations / tagCategories = 10 件 DELETE /
+    // assets = deleting soft-delete UPDATE) は同一 transaction 内で
     // atomic に走る (= 部分 commit の漏れ無し) ことも本 test で確認する。
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_scrub' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_scrub' }])) // clerk_events
@@ -299,7 +325,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     )
     mockStripeListIterator.mockReturnValue(asyncIterFrom([])) // no subs
     const updateChain = chain(undefined)
-    mockDbUpdate.mockReturnValueOnce(updateChain)
+    mockDbUpdate.mockReturnValueOnce(updateChain) // 1st update = users scrub
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_scrub' } }))
@@ -316,10 +342,16 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     // stripe_customer_id は監査 correlation key として保持。 SET payload に
     // 載せない (= キー自体不在)。
     expect('stripeCustomerId' in setArg).toBe(false)
-    // atomicity: 同一 transaction 内で Group I の 11 子テーブル DELETE も発火している
+    // atomicity: 同一 transaction 内で Group I の子テーブル削除も発火している
     // こと (= 「scrub だけ通って子データが残る」 部分 commit を防ぐ)。
+    // assets は soft-delete (deleting UPDATE) ゆえ DELETE は 10 件。
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(11)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
+    // W2: assets の soft-delete も同一 tx で発火 (deleting UPDATE)。
+    const assetsUpdate = updateChainFor(schemaModule.assets)
+    expect(assetsUpdate).toBeDefined()
+    const assetsSet = assetsUpdate!.set.mock.calls[0]![0] as Record<string, unknown>
+    expect(assetsSet.status).toBe('deleting')
   })
 
   it('GDPR scrub 冪等性: 同 svix-id 再送は clerk_events dedup で handler 不到達 → 二重 scrub 起きない', async () => {
@@ -371,7 +403,6 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbSelect.mockReturnValueOnce(
       chain([{ id: '00000000-0000-0000-0000-0000000000b1', stripeCustomerId: null }]),
     )
-    mockDbUpdate.mockReturnValue(chain(undefined))
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_free' } }))
@@ -379,8 +410,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(res.status).toBe(200)
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
-    expect(mockDbDelete).toHaveBeenCalledTimes(11)
+    // update × 2 (users scrub + assets deleting soft-delete) / delete × 10 (Group I − assets)
+    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
 
@@ -844,12 +876,30 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 //     を持つ (direct or transitive) ものが存在しない
 //
 describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
-  it('handler の tx.delete 集合 = schema 由来の Group I 集合 (新規 user_id FK テーブル追加検知)', async () => {
-    // schema を読み Group I を機械算出
-    const expected = computeGroupITables()
-    expect(expected.length).toBeGreaterThan(0) // sanity
+  // W2 soft-delete 例外: assets は Group I (schema 上は user_id direct cascade FK・親 chain
+  // なし) だが、 handler は物理 DELETE でなく status='deleting' への UPDATE で soft-delete
+  // する (spec §4.8)。 理由 = R2 object への手掛かり (object_key) を保全し GC reconciler の
+  // 優先 sweep に物理回収を委ねるため。 よって「明示 DELETE 集合 = Group I」 の不変条件から
+  // assets のみを除外する。 assets 以外の新規 user_id FK テーブルが増えたら従来どおり明示
+  // DELETE 必須 (assets だけが soft の例外) — 下の invariant がそれを検知し続ける。
+  const SOFT_DELETED_GROUP_I = new Set([tableName(schemaModule.assets)])
 
-    // handler を 1 回走らせて tx.delete(...) の引数 (= table 識別子) を捕捉
+  it('handler の tx.delete 集合 = Group I − soft-delete 例外 (新規 user_id FK テーブル追加検知)', async () => {
+    // schema を読み Group I を機械算出。assets は依然 Group I (schema は不変) だが、
+    // 期待 DELETE 集合からは soft-delete 例外として除外する。
+    const groupINames = computeGroupITables().map(tableName)
+    expect(groupINames.length).toBeGreaterThan(0) // sanity
+    // 例外集合が実在 Group I の部分集合であること (綴り違い / 例外の陳腐化を検知)。
+    for (const n of SOFT_DELETED_GROUP_I) {
+      expect(groupINames).toContain(n)
+    }
+    const expectedDeleteNames = groupINames.filter(
+      (n) => !SOFT_DELETED_GROUP_I.has(n),
+    )
+    // assets を除いた明示 DELETE 対象は依然 1 件以上 (invariant の本体が空にならない)。
+    expect(expectedDeleteNames.length).toBeGreaterThan(0)
+
+    // handler を 1 回走らせて tx.delete(...) と tx.update(...) の引数 (= table 識別子) を捕捉
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_inv' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_inv' }])) // clerk_events
     mockDbSelect.mockReturnValueOnce(
@@ -858,7 +908,11 @@ describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
     mockStripeListIterator.mockReturnValue(asyncIterFrom([]))
 
     const deleteCallTargets: unknown[] = []
-    mockDbUpdate.mockReturnValue(chain(undefined))
+    const updateCallTargets: unknown[] = []
+    mockDbUpdate.mockImplementation((table: unknown) => {
+      updateCallTargets.push(table)
+      return chain(undefined)
+    })
     mockDbDelete.mockImplementation((table: unknown) => {
       deleteCallTargets.push(table)
       return chain(undefined)
@@ -871,14 +925,21 @@ describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
     // (e.g. tx.delete を別 API に書き換え) を「漏れ N 件」 でなく 「DELETE 自体ゼロ」 で
     // 明示検知する (M1 defense-in-depth)。
     expect(deleteCallTargets.length).toBeGreaterThan(0)
-    const actual = new Set(deleteCallTargets)
-    const expectedSet = new Set(expected)
-    // 集合一致を name ベースで diff してエラー時に何が漏れ/余剰かわかるようにする
-    const actualNames = new Set([...actual].map(tableName))
-    const expectedNames = new Set([...expectedSet].map(tableName))
-    const missing = [...expectedNames].filter((n) => !actualNames.has(n))
-    const surplus = [...actualNames].filter((n) => !expectedNames.has(n))
+    // DELETE 集合一致を name ベースで diff (期待 = Group I − soft-delete 例外)。
+    const actualDeleteNames = new Set(deleteCallTargets.map(tableName))
+    const expectedDeleteSet = new Set(expectedDeleteNames)
+    const missing = [...expectedDeleteSet].filter((n) => !actualDeleteNames.has(n))
+    const surplus = [...actualDeleteNames].filter((n) => !expectedDeleteSet.has(n))
     expect({ missing, surplus }).toEqual({ missing: [], surplus: [] })
+
+    // W2: soft-delete 例外の assets は DELETE でなく status='deleting' UPDATE で処理される。
+    // (a) DELETE 集合に assets が混ざっていないこと (物理 DELETE への逆戻り regression 検知)。
+    expect([...actualDeleteNames]).not.toContain(tableName(schemaModule.assets))
+    // (b) assets が確かに deleting へ UPDATE されていること (soft-delete が実在)。
+    const assetsUpdate = updateChainFor(schemaModule.assets)
+    expect(assetsUpdate).toBeDefined()
+    const assetsSet = assetsUpdate!.set.mock.calls[0]![0] as Record<string, unknown>
+    expect(assetsSet.status).toBe('deleting')
   })
 })
 
