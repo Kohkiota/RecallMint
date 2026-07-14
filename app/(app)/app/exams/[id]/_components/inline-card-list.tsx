@@ -291,7 +291,7 @@ export function InlineCardList({
                   />
                 </div>
                 <div className="shrink-0">
-                  <DeleteCardButton cardId={card.id} />
+                  <DeleteCardButton cardId={card.id} userId={userId} />
                 </div>
               </div>
 

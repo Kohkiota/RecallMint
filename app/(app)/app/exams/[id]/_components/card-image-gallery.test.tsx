@@ -29,6 +29,7 @@ const {
   mockReserveAsset,
   mockFinalizeAsset,
   mockResolveAssetUrls,
+  mockReclaimLocalAssetBlobs,
 } = vi.hoisted(() => ({
   mockAttachImageToCard: vi.fn(),
   mockAbandonUpload: vi.fn(),
@@ -37,12 +38,16 @@ const {
   mockReserveAsset: vi.fn(),
   mockFinalizeAsset: vi.fn(),
   mockResolveAssetUrls: vi.fn(),
+  mockReclaimLocalAssetBlobs: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/media/upload', () => ({
   attachImageToCard: mockAttachImageToCard,
   abandonUpload: mockAbandonUpload,
   removeImageFromCard: mockRemoveImageFromCard,
+}))
+vi.mock('@/lib/media/reclaim-local-asset-blobs', () => ({
+  reclaimLocalAssetBlobs: mockReclaimLocalAssetBlobs,
 }))
 vi.mock('@/lib/media/get-asset', () => ({
   getAssetObjectURL: mockGetAssetObjectURL,
@@ -241,6 +246,11 @@ describe('CardImageGallery delete', () => {
     })
     // delete は asset を残す = abandonUpload を使わない。
     expect(mockAbandonUpload).not.toHaveBeenCalled()
+    // removeImageFromCard 後にローカル Cache blob + media_assets 行を best-effort 掃除する
+    // (spec §4.7)。
+    await waitFor(() => {
+      expect(mockReclaimLocalAssetBlobs).toHaveBeenCalledWith(USER_ID, [UUID_A])
+    })
   })
 })
 

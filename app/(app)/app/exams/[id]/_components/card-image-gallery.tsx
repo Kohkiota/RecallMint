@@ -22,6 +22,7 @@ import {
   type AttachErrorCode,
 } from '@/lib/media/upload'
 import { getAssetObjectURL } from '@/lib/media/get-asset'
+import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
 import { reserveAsset, finalizeAsset, resolveAssetUrls } from '../_actions/asset-actions'
 
 export type CardImageGalleryProps = {
@@ -191,6 +192,10 @@ export function CardImageGallery({
     // lost-update するのを防ぐ — Codex 指摘)。
     setError(null)
     await removeImageFromCard({ cardId, assetId })
+    // ローカル Cache blob + media_assets 行を best-effort 掃除する(spec §4.7)。 R2/DB の
+    // grace とは独立の disposable cache 掃除なので fire-and-forget(失敗しても削除 UX は
+    // ブロックしない)。
+    void reclaimLocalAssetBlobs(userId, [assetId])
   }
 
   if (targetImages.length === 0 && readOnly) return null

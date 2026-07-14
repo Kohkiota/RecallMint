@@ -14,15 +14,18 @@
 import { useState, useTransition } from 'react'
 import { getClientDb } from '@/lib/client-db'
 import { runOptimisticMutation } from '@/lib/sync/optimistic-mutation'
+import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
+import { isAssetKey } from '@/lib/validation/card'
 import { Button } from '@/components/ui/button'
 
 type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
 interface Props {
   cardId: string
+  userId: string
 }
 
-export function DeleteCardButton({ cardId }: Props) {
+export function DeleteCardButton({ cardId, userId }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [, startTransition] = useTransition()
@@ -32,7 +35,19 @@ export function DeleteCardButton({ cardId }: Props) {
     setErrorMsg(null)
     startTransition(async () => {
       const db = getClientDb()
+      // 削除前 key 収集 + 削除 mutation を同じ try に閉じる。 pre-read (cards.get) が reject
+      // した場合も既存 catch (error UI) に集約するため (try 外だと read reject が deleting
+      // phase 固着を招く)。
+      let assetKeys: string[] = []
       try {
+        // 削除前に card の images から UUID key (= asset 参照) を収集する(削除後は mirror
+        // から読めない、 spec §4.7)。 legacy (非 UUID) key は Cache/media_assets に実体が
+        // ないため掃除対象外(isAssetKey フィルタ)。 stale/旧 schema の mirror row では
+        // images が非配列でありうるため Array.isArray で防御する (`?? []` は null/undefined
+        // しか救わない、 card-image-gallery と同じ防御)。
+        const card = await db.cards.get(cardId)
+        const imgs = Array.isArray(card?.images) ? card.images : []
+        assetKeys = imgs.filter((i) => isAssetKey(i.key)).map((i) => i.key)
         // mirror remove + outbox enqueue (op='delete') を 1 Dexie rw tx に閉じる
         // (`runOptimisticMutation` helper)。 enqueue throw で Dexie auto-rollback により
         // mirror delete も巻き戻り、 user 通知 (error UI) を維持するため throwOnError=true。
@@ -57,6 +72,9 @@ export function DeleteCardButton({ cardId }: Props) {
         setPhase('error')
         return
       }
+      // ローカル Cache blob + media_assets 行を best-effort 掃除する(spec §4.7)。 R2/DB
+      // の grace とは独立の disposable cache 掃除なので fire-and-forget。
+      void reclaimLocalAssetBlobs(userId, assetKeys)
     })
   }
 
