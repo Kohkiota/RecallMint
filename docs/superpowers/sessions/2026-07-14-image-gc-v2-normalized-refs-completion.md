@@ -101,3 +101,28 @@
 ### OT へのお願い(GC v2 push 判断とは別レイヤー)
 
 Blink 回帰は健全。GC v2 server 側 smoke(W1 refs / reconciler)を進める前に、① stg の当 test account の outbox 広域 stuck の原因(bulk が全 op を reject する状態)を確認 ② migration 0024 が stg DB に適用済か確認 — の 2 点を切り分けると、GC v2 の stg 実証が clean に回せる。
+
+---
+
+## GC v2 server 永続化 再 smoke(2026-07-14・migration 0024 適用後・stg)
+
+**前提**: OT が stg DB に migration 0024(card_asset_refs)を適用(適用前は不在 = 画像 mutation 失敗の原因)。新規使い捨て account は sign-up が **Cloudflare Turnstile** で自動化ブロックされたため、**旧 account の local Dexie/Cache を wipe → 再ログイン**でクリーン outbox(pending 0 / total 0)を確保して実施(stuck 38 件は local-only ゆえ wipe で消滅・server 無傷・confound 解消)。
+
+### 結論: **報告バグ(画像外しが server に残らず復活)は解消 = PASS**
+
+| # | 項目 | 結果 | 根拠 |
+|---|---|---|---|
+| 1 | 外しの永続化 | **PASS** | 添付(9239823e)→ bulk **applied:1** → reload で server 5 反映(add 永続)→ 外し → bulk **applied:1** → reload(server 再 pull)で **4 images・9239823e 復活せず** |
+| 2 | mutation 成功 | **PASS** | add / remove の entity-mutations bulk がいずれも `{applied:1, failed:[]}`(前回の card mutation rollback/mutation_failed が消失)|
+| 3 | refs の効き(outcome 代替) | **PASS** | 外した後 images(assetId)が 5→4 に減り reload 後も復活しない = refs 全置換(handleImages W1)が server で効いている |
+| 4 | outbox が synced 到達 | **一部** | migration 後 mutation は **applied 到達**(前回の全 failed から改善)。ただし下記の帳簿癖あり |
+| - | W3 ローカル Cache 掃除 | **PASS** | 外し後、9239823e が **Cache(recallmint-media)+ Dexie media_assets の両方から消滅** |
+
+### 補足観測(データ破損でない・要 dev 確認)
+
+- **applied 済 image mutation が local outbox で pending のまま**: attach(56c26483)/ remove(9a501868)は bulk で applied:1(server 反映確認済)なのに、local の synced_at が未設定で pending 残存。server は正・再送は mutation_id UNIQUE で idempotent-skip ゆえ**無害**だが、これが「outbox 蓄積(旧 account の 38 件)」の機序の可能性。images 固有か全 op かは未切り分け(別途 dev 調査推奨)。migration/W1 由来かは不明(W1 は bulk 応答形を変えないため client 帳簿ロジックには非依存)。
+- Turnstile により新規 account 自動作成は不可 → 旧 account wipe で代替(clean 化は達成)。真の新規 user 初回導線が必要なら人手で account 作成要。
+
+### 判定
+- **報告バグ = 解消**(migration 0024 適用が前提)。GC v2 server 永続化(W1 refs / images add・remove の server 反映)は healthy。
+- 残: reconciler / R2 実体回収(grace 後)の CLI smoke は引き続き OT 実走。outbox 帳簿癖は別件 dev 調査。
