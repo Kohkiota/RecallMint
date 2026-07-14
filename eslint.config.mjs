@@ -137,6 +137,45 @@ const TAG_DOMAIN_NO_INFRA_IMPORTS = {
 }
 
 // ---------------------------------------------------------------------------
+// Media domain purity (画像 GC v2 Task G2): `lib/media/domain/**` is pure domain
+// and must not RUNTIME-import infra / framework / orchestration modules (mirrors
+// the Card/Tag blocks above). `import type` is always allowed (allowTypeImports).
+// asset-state.ts has no imports at all (in-domain AssetStatus union per brief),
+// so the orchestration back-flow deny (@/lib/media/asset-actions) is symmetric
+// future-proofing for when R1/G5/W2 wire consumers. Forbidden runtime targets =
+// infra (db / drizzle / logger / server-only) + zod + framework (next / next/*) +
+// orchestration back-flow (asset-actions).
+// ---------------------------------------------------------------------------
+const MEDIA_DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Media domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Media domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/logger', allowTypeImports: true, message: 'Media domain must not runtime-import infra (@/lib/logger).' },
+    { name: 'server-only', allowTypeImports: true, message: 'Media domain must stay environment-agnostic (no server-only).' },
+    { name: 'zod', allowTypeImports: true, message: 'Media domain must not runtime-import zod; define structural types in-domain.' },
+    { name: '@/lib/media/asset-actions', allowTypeImports: true, message: 'Media domain must not runtime-import orchestration (asset-actions).' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Media domain must not runtime-import framework (next / next/*).',
+    },
+    // `paths: '@/lib/db'` above only matches the exact source string, so a runtime
+    // `import { x } from '@/lib/db/schema'` (subpath) would slip through. This
+    // pattern closes that hole while keeping `import type` legal (Card domain
+    // pulls CardOption from '@/lib/db/schema' this way). Intentionally stricter
+    // than the 4 sibling domain blocks (which share this pre-existing gap) — this
+    // is the new module; the others are not touched here.
+    {
+      group: ['@/lib/db/*'],
+      allowTypeImports: true,
+      message: 'Media domain must not runtime-import infra subpaths (@/lib/db/*); import type only.',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
 // Shared no-restricted-imports pattern groups (composed per files-scope below).
 // NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
 // IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
@@ -299,6 +338,30 @@ const config = [
         {
           paths: TAG_DOMAIN_NO_INFRA_IMPORTS.paths,
           patterns: [LIB_NO_APP_IMPORTS, ...TAG_DOMAIN_NO_INFRA_IMPORTS.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A''''': Media domain purity guard (画像 GC v2 Task G2). Same
+  // structure/rationale as Block A'''' above but scoped to `lib/media/domain/**`
+  // — must come AFTER Block A so it wins for those files. Flat-config rule
+  // options REPLACE (not merge) per file, so this re-includes Block A's
+  // LIB_NO_APP_IMPORTS pattern to keep the app/-layer boundary, then layers the
+  // Media domain infra/framework/orchestration deny (paths + next/* pattern) on
+  // top. Scope excludes *.test.ts (domain tests import vitest — not the
+  // runtime-purity concern). The `lib/media/domain/**` glob has no route group /
+  // dynamic segment → no `\\(...\\)` / `\\[...\\]` escaping needed.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/media/domain/**/*.ts'],
+    ignores: ['lib/media/domain/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: MEDIA_DOMAIN_NO_INFRA_IMPORTS.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...MEDIA_DOMAIN_NO_INFRA_IMPORTS.patterns],
         },
       ],
     },
