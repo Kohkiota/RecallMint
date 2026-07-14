@@ -19,11 +19,13 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   assets,
+  cardAssetRefs,
   cards,
   cardTags,
   tagCategories,
   tagOptions,
   type CardOption,
+  type NewCardAssetRef,
 } from '@/lib/db/schema'
 import {
   titleSchema,
@@ -186,7 +188,46 @@ const handleImages: CardFieldHandler = async (tx, cardId, userId, value) => {
     const readySet = new Set(rows.map((row) => row.id))
     if (uuidKeys.some((k) => !readySet.has(k))) return 'failed'
   }
-  return updateCardField(tx, cardId, userId, { images })
+
+  // images SET (既存の wire 書込)。1 row return = 実在する owned card を保証。
+  // これを refs 全置換より先に発行することで、以降の refs 書込は「存在する
+  // owned card の同 tx」に閉じる (存在しない card に refs を残さない)。
+  const result = await updateCardField(tx, cardId, userId, { images })
+  if (result !== 'applied') return result
+
+  // card_asset_refs 全置換 (GC 権威・spec §4.3)。cards.images 配列と同一
+  // per-mutation tx (processMutation の db.transaction) 内で置換するため、
+  // 配列と refs の drift は tx を破らない限り構造的に発生しない。card_tags の
+  // owner-scoped whole-set-replace (DELETE cardId+userId → INSERT) と同型。
+  await tx
+    .delete(cardAssetRefs)
+    .where(and(eq(cardAssetRefs.cardId, cardId), eq(cardAssetRefs.userId, userId)))
+
+  // 射影 (G4 backfill と同一 semantics): isAssetKey true の entry を配列順で走査し、
+  // field_key = target verbatim / ordinal = 同 field_key 内 0-based 連番。legacy 非
+  // UUID entry は refs に入らない (配列にのみ存在 = 二重持ちの非対称は意図的)。全
+  // UUID key は上の ready 検証で ready+owned 確定済ゆえ gap なし (PK 衝突なし)。
+  const ordinalByField = new Map<string, number>()
+  const refRows: NewCardAssetRef[] = []
+  for (const entry of images) {
+    if (!isAssetKey(entry.key)) continue
+    const ordinal = ordinalByField.get(entry.target) ?? 0
+    ordinalByField.set(entry.target, ordinal + 1)
+    refRows.push({
+      cardId,
+      assetId: entry.key,
+      userId,
+      fieldKey: entry.target,
+      ordinal,
+    })
+  }
+  // 空 (= UUID key 皆無) は INSERT skip = refs クリア。INSERT が throw すれば
+  // 同 tx の images SET ごと rollback される (swallow しない = atomicity)。
+  if (refRows.length > 0) {
+    await tx.insert(cardAssetRefs).values(refRows)
+  }
+
+  return 'applied'
 }
 
 // ---------------------------------------------------------------------------

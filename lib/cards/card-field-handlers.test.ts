@@ -3,6 +3,7 @@ import { SQL, getTableName } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 import {
   assets,
+  cardAssetRefs,
   cards,
   cardTags,
   tagCategories,
@@ -687,10 +688,23 @@ interface ImagesTxState extends TxState {
   // テスト側が仕込む)
   assetSelectRows: { id: string }[]
   assetSelectCalls: number
+  // W1: card_asset_refs 全置換の観測
+  refsDeleteCalls: number
+  // INSERT card_asset_refs の values 記録 (call ごとに push)
+  refsInsertedValues: Array<Array<Record<string, unknown>>>
+  // atomicity test: true で INSERT card_asset_refs を reject させる
+  refsInsertThrows: boolean
 }
 
 function freshImagesState(): ImagesTxState {
-  return { ...freshState(), assetSelectRows: [], assetSelectCalls: 0 }
+  return {
+    ...freshState(),
+    assetSelectRows: [],
+    assetSelectCalls: 0,
+    refsDeleteCalls: 0,
+    refsInsertedValues: [],
+    refsInsertThrows: false,
+  }
 }
 
 function makeImagesTx(state: ImagesTxState) {
@@ -707,6 +721,27 @@ function makeImagesTx(state: ImagesTxState) {
           return Promise.resolve([])
         },
       }
+    },
+  })
+  base.delete = (table: unknown) => ({
+    where: (_cond: unknown) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      if (name === getTableName(cardAssetRefs)) state.refsDeleteCalls += 1
+      return Promise.resolve(undefined)
+    },
+  })
+  base.insert = (table: unknown) => ({
+    values: (vals: Array<Record<string, unknown>>) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0])
+      if (name === getTableName(cardAssetRefs)) {
+        state.refsInsertedValues.push(vals)
+        // atomicity: INSERT が throw する状況を再現 (mock tx で reject)。
+        // handleImages が swallow せず伝播する = processMutation の tx が rollback。
+        if (state.refsInsertThrows) {
+          return Promise.reject(new Error('refs insert failed'))
+        }
+      }
+      return Promise.resolve(undefined)
     },
   })
   return base as Parameters<
@@ -861,6 +896,227 @@ describe('CARD_FIELD_HANDLERS.images', () => {
     expect(result).toBe('applied')
     expect(state.assetSelectCalls).toBe(0)
     expect(state.setArg?.images).toEqual([])
+  })
+
+  // -------------------------------------------------------------------------
+  // W1: card_asset_refs 全置換 seam (spec §4.3)
+  //
+  // handleImages は images SET と同一 per-mutation tx で card_asset_refs を全置換
+  // する (GC 権威化)。wire (images payload / 'failed' / HTTP status) は不変で、
+  // refs は server 内部の副次書込。射影 = isAssetKey true の entry を配列順で走査し
+  // field_key = target verbatim / ordinal = 同 field_key 内 0-based 連番。
+  // -------------------------------------------------------------------------
+
+  it('refs 書込: 単一 target 複数画像 → ordinal 0,1,2 (配列順)', async () => {
+    const UUID_3 = '33333333-3333-4333-a333-333333333333'
+    state.assetSelectRows = [{ id: UUID_1 }, { id: UUID_2 }, { id: UUID_3 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'question_text', alt: '' },
+        { key: UUID_3, target: 'question_text', alt: '' },
+      ],
+    )
+    expect(result).toBe('applied')
+    // DELETE 全置換が必ず 1 回 (stale refs 掃除)
+    expect(state.refsDeleteCalls).toBe(1)
+    expect(state.refsInsertedValues).toHaveLength(1)
+    expect(state.refsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', assetId: UUID_1, userId: 'user-1', fieldKey: 'question_text', ordinal: 0 },
+      { cardId: 'card-1', assetId: UUID_2, userId: 'user-1', fieldKey: 'question_text', ordinal: 1 },
+      { cardId: 'card-1', assetId: UUID_3, userId: 'user-1', fieldKey: 'question_text', ordinal: 2 },
+    ])
+  })
+
+  it('refs 書込: 複数 target 混在 → 各 field_key で独立に 0-based ordinal', async () => {
+    const UUID_3 = '33333333-3333-4333-a333-333333333333'
+    const UUID_4 = '44444444-4444-4444-a444-444444444444'
+    state.assetSelectRows = [
+      { id: UUID_1 },
+      { id: UUID_2 },
+      { id: UUID_3 },
+      { id: UUID_4 },
+    ]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'option:a', alt: '' },
+        { key: UUID_3, target: 'question_text', alt: '' },
+        { key: UUID_4, target: 'option:a', alt: '' },
+      ],
+    )
+    expect(result).toBe('applied')
+    expect(state.refsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', assetId: UUID_1, userId: 'user-1', fieldKey: 'question_text', ordinal: 0 },
+      { cardId: 'card-1', assetId: UUID_2, userId: 'user-1', fieldKey: 'option:a', ordinal: 0 },
+      { cardId: 'card-1', assetId: UUID_3, userId: 'user-1', fieldKey: 'question_text', ordinal: 1 },
+      { cardId: 'card-1', assetId: UUID_4, userId: 'user-1', fieldKey: 'option:a', ordinal: 1 },
+    ])
+  })
+
+  it('refs 射影: legacy 非 UUID entry は refs に入らない (UUID のみ INSERT・ordinal は UUID entry 基準)', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }, { id: UUID_2 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: 'legacy-ocr-ref-1', target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'question_text', alt: '' },
+      ],
+    )
+    expect(result).toBe('applied')
+    // legacy entry は refs に入らない。UUID_2 の ordinal は 1 (UUID entry のみで採番)。
+    expect(state.refsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', assetId: UUID_1, userId: 'user-1', fieldKey: 'question_text', ordinal: 0 },
+      { cardId: 'card-1', assetId: UUID_2, userId: 'user-1', fieldKey: 'question_text', ordinal: 1 },
+    ])
+    // images 配列 (wire) には legacy entry も残る (二重持ちの非対称)
+    expect(state.setArg?.images).toEqual([
+      { key: UUID_1, target: 'question_text', alt: '' },
+      { key: 'legacy-ocr-ref-1', target: 'question_text', alt: '' },
+      { key: UUID_2, target: 'question_text', alt: '' },
+    ])
+  })
+
+  it('全置換: DELETE は毎回 1 回発行される (再適用で stale refs が消える)', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    // 1 回目
+    await CARD_FIELD_HANDLERS.images(makeImagesTx(state), 'card-1', 'user-1', [
+      { key: UUID_1, target: 'question_text', alt: '' },
+    ])
+    // 2 回目 (別 payload) — DELETE がもう 1 回走り 1 回目の refs が全置換される
+    const state2 = freshImagesState()
+    state2.assetSelectRows = [{ id: UUID_2 }]
+    await CARD_FIELD_HANDLERS.images(makeImagesTx(state2), 'card-1', 'user-1', [
+      { key: UUID_2, target: 'option:a', alt: '' },
+    ])
+    expect(state.refsDeleteCalls).toBe(1)
+    expect(state2.refsDeleteCalls).toBe(1)
+    // 2 回目の INSERT は新集合のみ (旧 UUID_1 は含まれない)
+    expect(state2.refsInsertedValues[0]).toEqual([
+      { cardId: 'card-1', assetId: UUID_2, userId: 'user-1', fieldKey: 'option:a', ordinal: 0 },
+    ])
+  })
+
+  it('空 images → refs 全 DELETE + INSERT skip (refs クリア)', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [],
+    )
+    expect(result).toBe('applied')
+    // DELETE は走る (クリア)、 INSERT は skip
+    expect(state.refsDeleteCalls).toBe(1)
+    expect(state.refsInsertedValues).toHaveLength(0)
+  })
+
+  it('legacy 非 UUID のみ → DELETE は走るが INSERT skip (refs クリア・配列は残る)', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: 'legacy-ocr-ref-1', target: 'question_text', alt: '' }],
+    )
+    expect(result).toBe('applied')
+    expect(state.refsDeleteCalls).toBe(1)
+    expect(state.refsInsertedValues).toHaveLength(0)
+  })
+
+  it('ready 検証 fail (非 ready key 混在) → failed、 images も refs も未書込', async () => {
+    // UUID_2 が ready+owned 行に無い
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'option:a', alt: '' },
+      ],
+    )
+    expect(result).toBe('failed')
+    // images SET (updateCardField) 不発、 refs も未書込
+    expect(state.updateCallCount).toBe(0)
+    expect(state.refsDeleteCalls).toBe(0)
+    expect(state.refsInsertedValues).toHaveLength(0)
+  })
+
+  it('cross-tenant (他 user 所有 ready asset を含む) → failed、 refs 未書込', async () => {
+    // owner-scope の assets SELECT (eq(userId)) が他 user の asset を返さない =
+    // UUID_2 が readySet に無い → ready 検証 fail。 refs は一切書かれない。
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [
+        { key: UUID_1, target: 'question_text', alt: '' },
+        { key: UUID_2, target: 'question_text', alt: '' }, // 他 user 所有想定
+      ],
+    )
+    expect(result).toBe('failed')
+    expect(state.refsDeleteCalls).toBe(0)
+    expect(state.refsInsertedValues).toHaveLength(0)
+  })
+
+  it('updateCardField failed (card 不在 / owner mismatch) → refs 未書込', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    state.returningRows = [] // updateCardField 0 row → 'failed'
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    const result = await CARD_FIELD_HANDLERS.images(
+      makeImagesTx(state),
+      'card-1',
+      'user-1',
+      [{ key: UUID_1, target: 'question_text', alt: '' }],
+    )
+    expect(result).toBe('failed')
+    // updateCardField は発行される (card 実在検証を兼ねる) が refs には触らない
+    expect(state.updateCallCount).toBe(1)
+    expect(state.refsDeleteCalls).toBe(0)
+    expect(state.refsInsertedValues).toHaveLength(0)
+  })
+
+  it('atomicity: refs INSERT throw を swallow せず伝播する (tx rollback を誘発)', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    state.refsInsertThrows = true
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await expect(
+      CARD_FIELD_HANDLERS.images(makeImagesTx(state), 'card-1', 'user-1', [
+        { key: UUID_1, target: 'question_text', alt: '' },
+      ]),
+    ).rejects.toThrow('refs insert failed')
+    // images SET は既に発行済 (同 tx なので INSERT throw で processMutation の
+    // db.transaction が rollback し images も巻き戻る = 配列と refs が揃って巻き戻る)。
+    expect(state.updateCallCount).toBe(1)
+    expect(state.refsDeleteCalls).toBe(1)
+  })
+
+  it('owner-scope: refs DELETE の WHERE に eq(cardAssetRefs.cardId) + eq(cardAssetRefs.userId)', async () => {
+    state.assetSelectRows = [{ id: UUID_1 }]
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.images(makeImagesTx(state), 'card-1', 'user-1', [
+      { key: UUID_1, target: 'question_text', alt: '' },
+    ])
+    const sig = await eqSignature()
+    expect(sig).toContainEqual(['card_asset_refs', 'card_id', 'card-1'])
+    expect(sig).toContainEqual(['card_asset_refs', 'user_id', 'user-1'])
   })
 })
 
