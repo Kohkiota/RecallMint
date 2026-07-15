@@ -67,6 +67,7 @@ export type UseCardOptionsReturn = {
   canDelete: boolean
   correctIds: string[]
   handleCellSave: (idx: number, next: CardOption) => void
+  handleCellUnmountSave: (idx: number, next: CardOption) => void
   handleCheckboxToggle: (idx: number, checked: boolean) => void
   handleAddOption: () => void
   handleDeleteOption: (idx: number) => void
@@ -235,6 +236,34 @@ export function useCardOptions(
     commit(nextAll)
   }
 
+  // Sprint F W2: cell の commit-on-unmount 経由の保存。scroll-out(仮想化)で編集中の
+  // cell が blur を伴わず unmount した際、編集値を失わないための保全経路。
+  // setOptions は張らない(unmount 中の setState を避ける)が、optionsRef は他 handler と
+  // 同様に必ず同期する: plain ref 書込は lifecycle 影響がなく、hook が cell より長生き
+  // する場合(全 card を atomic に tear-down しない仮想化戦略等)に後続 handler
+  // (toggle / 別 cell 編集)が stale ref から payload を組んで unmount-saved edit を
+  // 上書きするのを防ぐ(canonical Critical / Codex P2)。
+  // 存在 gate(F6): runOptimisticUpdate は missing row でも enqueue するため、削除済 card
+  // への orphan mutation を避けるべく cards.get で実在確認してから commit する
+  // (InlineTextField の commit-on-unmount と同型・cleanup は同期だが commit は元来
+  // fire-and-forget ゆえ async gate で分岐してよい)。immediateDrain で timer を残さない。
+  const handleCellUnmountSave = (idx: number, nextOption: CardOption) => {
+    const nextAll = optionsRef.current.slice()
+    nextAll[idx] = nextOption
+    if (shallowEqualOptions(nextAll, optionsRef.current)) return
+    optionsRef.current = nextAll
+    void getClientDb()
+      .cards.get(cardId)
+      .then((row) => {
+        // gate resolve 時点の最新 working-set(optionsRef.current)を commit する。
+        // 捕捉した nextAll をそのまま commit すると、cards.get の解決待ちの窓で別 handler
+        // (別 cell の toggle/編集)が新しい配列を commit した場合に古い snapshot で
+        // 上書きしうる(Codex P2)。latest を commit すれば本 cell の edit(上で同期済)+
+        // 窓中の並行変更の双方を保つ。row 不在(削除済)なら commit skip = orphan 回避(F6)。
+        if (row) commit(optionsRef.current, true)
+      })
+  }
+
   // checkbox toggle: working-set を即時更新 → commit (即時 drain)。
   const handleCheckboxToggle = (idx: number, nextChecked: boolean) => {
     const nextAll = optionsRef.current.slice()
@@ -281,6 +310,7 @@ export function useCardOptions(
     canDelete,
     correctIds,
     handleCellSave,
+    handleCellUnmountSave,
     handleCheckboxToggle,
     handleAddOption,
     handleDeleteOption,

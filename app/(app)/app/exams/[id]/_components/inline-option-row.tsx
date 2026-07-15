@@ -65,6 +65,7 @@ export function InlineOptionList({
     canDelete,
     correctIds,
     handleCellSave,
+    handleCellUnmountSave,
     handleCheckboxToggle,
     handleAddOption,
     handleDeleteOption,
@@ -93,6 +94,9 @@ export function InlineOptionList({
                 handleCheckboxToggle(idx, nextChecked)
               }
               onCellSave={(nextOption) => handleCellSave(idx, nextOption)}
+              onCellUnmountSave={(nextOption) =>
+                handleCellUnmountSave(idx, nextOption)
+              }
               onDelete={() => handleDeleteOption(idx)}
             />
           </li>
@@ -123,6 +127,9 @@ type InlineOptionRowProps = {
   canDelete: boolean
   onCheckboxToggle: (nextChecked: boolean) => void
   onCellSave: (nextOption: CardOption) => void
+  // Sprint F W2: cell の commit-on-unmount 経由の保存(存在 gate 付き)。onCellSave と
+  // 同じ option 再構築を通し、commit 経路のみ hook 側で存在確認 + immediateDrain にする。
+  onCellUnmountSave: (nextOption: CardOption) => void
   onDelete: () => void
 }
 
@@ -141,10 +148,24 @@ function InlineOptionRow({
   canDelete,
   onCheckboxToggle,
   onCellSave,
+  onCellUnmountSave,
   onDelete,
 }: InlineOptionRowProps) {
   const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onCheckboxToggle(e.target.checked)
+  }
+
+  // cell 値 → 更新後 CardOption の再構築(blur=onCellSave / unmount=onCellUnmountSave
+  // で共有)。explanation の空文字は jsonb から key を drop する(payload bloat 防止、
+  // server zod は optional)。
+  const applyId = (value: string): CardOption => ({ ...option, id: value })
+  const applyText = (value: string): CardOption => ({ ...option, text: value })
+  const applyExplanation = (value: string): CardOption => {
+    if (value === '') {
+      const { explanation: _drop, ...rest } = option
+      return rest
+    }
+    return { ...option, explanation: value }
   }
 
   return (
@@ -170,7 +191,8 @@ function InlineOptionRow({
             kind="id"
             ariaLabel="選択肢 id 編集"
             value={option.id}
-            onSave={(value) => onCellSave({ ...option, id: value })}
+            onSave={(value) => onCellSave(applyId(value))}
+            onUnmountSave={(value) => onCellUnmountSave(applyId(value))}
             displayClassName="text-sm font-mono text-slate-700"
             placeholder="(id)"
           />
@@ -180,7 +202,8 @@ function InlineOptionRow({
             kind="text"
             ariaLabel="選択肢 本文 編集"
             value={option.text}
-            onSave={(value) => onCellSave({ ...option, text: value })}
+            onSave={(value) => onCellSave(applyText(value))}
+            onUnmountSave={(value) => onCellUnmountSave(applyText(value))}
             displayClassName={
               option.is_correct
                 ? 'text-sm font-bold text-emerald-900'
@@ -195,16 +218,8 @@ function InlineOptionRow({
             kind="explanation"
             ariaLabel="選択肢 解説 編集"
             value={option.explanation ?? ''}
-            onSave={(value) => {
-              // 空文字は jsonb から explanation key を drop する (payload bloat 防止、
-              // server zod は optional)。
-              if (value === '') {
-                const { explanation: _drop, ...rest } = option
-                onCellSave(rest)
-              } else {
-                onCellSave({ ...option, explanation: value })
-              }
-            }}
+            onSave={(value) => onCellSave(applyExplanation(value))}
+            onUnmountSave={(value) => onCellUnmountSave(applyExplanation(value))}
             displayClassName="text-xs text-slate-600"
             placeholder="解説 (クリックで追加)"
           />
@@ -235,6 +250,9 @@ type InlineOptionCellProps = {
   ariaLabel: string
   value: string // row の option から派生する display 値 (props 化)
   onSave: (value: string) => void
+  // Sprint F W2: editing 中に blur を伴わず unmount(仮想化 scroll-out)した際の保存経路。
+  // optional(row は常に渡す。cell を display 単体で render する test 等では省略可)。
+  onUnmountSave?: (value: string) => void
   displayClassName?: string
   placeholder?: string
   // S2.0b-3: 「+ 選択肢を追加」 直後に new row の text cell を mount 即 edit にする
@@ -253,6 +271,7 @@ export function InlineOptionCell({
   ariaLabel,
   value,
   onSave,
+  onUnmountSave,
   displayClassName,
   placeholder = '(クリックで追加)',
   autoEditOnMount = false,
@@ -262,11 +281,34 @@ export function InlineOptionCell({
   const [editing, setEditing] = useState<boolean>(() => autoEditOnMount)
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
+  // Sprint F W2: commit-on-unmount の自己整合スナップショット(InlineTextField と同型)。
+  // empty-deps cleanup は初回 render 値を capture(stale)するため、最新値を ref 経由で
+  // 読む。value は「直近確定値」= 比較基準。onUnmountSave も含め cleanup が最新 closure を
+  // 呼べるようにする。毎 render 同期更新。
+  const latestRef = useRef<{
+    editing: boolean
+    editValue: string
+    value: string
+    onUnmountSave: ((value: string) => void) | undefined
+  }>({ editing, editValue, value, onUnmountSave })
+
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus()
     }
   }, [editing])
+
+  // unmount で commit-on-unmount(editing かつ dirty のみ)。blur 経路は handleBlur が
+  // latestRef.editing=false を同期反映済ゆえ skip(二重 commit なし)。存在 gate は親
+  // (handleCellUnmountSave)側に置く。
+  useEffect(() => {
+    return () => {
+      const { editing: e, editValue: ev, value: v, onUnmountSave: save } =
+        latestRef.current
+      if (e && ev !== v) save?.(ev)
+    }
+    // deps=[] : cleanup は真の unmount のみ。読む値は latestRef 経由ゆえ closure deps 不要。
+  }, [])
 
   // dirty-guard: 編集中でなければ props.value (= 親 options[idx]) を editValue に同期。
   // 編集中は user 入力を保護。 React 19 "store info from previous renders" pattern:
@@ -279,6 +321,11 @@ export function InlineOptionCell({
 
   // multiline textarea の auto-resize (共有 hook)。 trigger = editValue (編集中変化に追従)。
   useAutoResizeTextarea(inputRef, editing, editValue)
+
+  // 毎 render 同期更新(副作用なし・re-render 誘発なし)。cleanup が最新の editing/
+  // editValue/value/onUnmountSave を latestRef 経由で読めるようにする。
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: 意図的な render-phase 同期更新(stale closure 回避)
+  latestRef.current = { editing, editValue, value, onUnmountSave }
 
   const startEdit = () => {
     setEditing(true)
@@ -293,6 +340,10 @@ export function InlineOptionCell({
 
   const handleBlur = () => {
     setEditing(false)
+    // blur 直後の same-batch unmount で cleanup が二重 commit しないよう、latestRef の
+    // editing を同期反映する(render phase 更新の lag を潰す。InlineTextField の Codex P2
+    // 同型)。cleanup は latestRef.editing=false を見て skip。
+    latestRef.current = { ...latestRef.current, editing: false }
     // commit / debounce / short-circuit 判定は全て親 (handleCellSave → commit) で実施。
     onSave(editValue)
   }

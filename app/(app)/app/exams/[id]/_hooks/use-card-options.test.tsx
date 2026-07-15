@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import type { CardOption } from '@/lib/db/schema'
+import { getClientDb } from '@/lib/client-db'
 
 const { mockRunOptimistic, mockFlush } = vi.hoisted(() => ({
   mockRunOptimistic: vi.fn(async () => {}),
@@ -171,5 +172,48 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
     })
     await new Promise((r) => setTimeout(r, 50))
     expect(mockRunOptimistic).not.toHaveBeenCalled()
+  })
+})
+
+// Sprint F W2 Critical 回帰: handleCellUnmountSave は optionsRef を同期しないと、後続の
+// 別 handler が stale ref から payload を組んで unmount-saved edit を上書きする(canonical/
+// Codex 指摘)。fix (optionsRef.current = nextAll) を pin する。
+describe('useCardOptions — handleCellUnmountSave (Sprint F W2)', () => {
+  it('unmount-save 後の別 option 操作が unmount-saved edit を上書きしない (optionsRef 同期)', async () => {
+    // 存在 gate(cards.get)が実在を確認できるよう card を seed(row の存在のみが要件)。
+    await getClientDb().cards.clear()
+    await getClientDb().cards.put({
+      id: CARD_ID,
+      user_id: 'user-1',
+      exam_id: 'exam-1',
+      options: baseOptions,
+    } as never)
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    // option 0 を unmount-save 経由で編集(存在 gate + commit は fire-and-forget)。
+    await act(async () => {
+      result.current.handleCellUnmountSave(0, {
+        id: 'a',
+        text: '選択肢A 編集済み',
+        is_correct: false,
+      })
+      await new Promise((r) => setTimeout(r, 50))
+    })
+    await vi.waitFor(() => {
+      expect(mockRunOptimistic).toHaveBeenCalledTimes(1)
+    })
+    // 別 option(index 1)を toggle → 2 回目 commit(working-set から payload を構築)。
+    act(() => {
+      result.current.handleCheckboxToggle(1, true)
+    })
+    await vi.waitFor(() => {
+      expect(mockRunOptimistic).toHaveBeenCalledTimes(2)
+    })
+    // 2 回目 payload の option 0 は unmount-saved edit を保持(revert していない)。
+    const secondCall = (
+      mockRunOptimistic.mock.calls[1] as unknown as [
+        { afterPatch: { options: CardOption[] } },
+      ]
+    )[0]
+    expect(secondCall.afterPatch.options[0]!.text).toBe('選択肢A 編集済み')
   })
 })

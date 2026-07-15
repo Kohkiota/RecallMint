@@ -306,6 +306,114 @@ describe('InlineOptionCell — blur 後 unmount で二重 commit しない (Spri
   })
 })
 
+// Sprint F W2: InlineOptionCell の commit-on-unmount(データ保全)。仮想化 scroll-out で
+// 編集中の cell が blur を伴わず unmount した際に編集値を失わない。InlineTextField の
+// commit-on-unmount(#1-#5)と対称。scroll-out 起因の unmount は jsdom で再現不可ゆえ
+// RTL unmount() で代替(実 unmount ライフサイクルを通す・非真空)。#5 は G describe が担う。
+describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
+  it('#1 保存核心: editing+dirty → unmount → mirror + outbox に更新後 options', async () => {
+    await seedCard(baseOptions)
+    const { unmount } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    fireEvent.click(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: '選択肢 本文 編集' }), {
+      target: { value: '選択肢A 改' },
+    })
+    // blur させずに unmount(仮想化 scroll-out による unmount の代替)
+    unmount()
+    await vi.waitFor(async () => {
+      const row = await getClientDb().cards.get(CARD_ID)
+      expect(row?.options).toEqual([
+        { id: 'a', text: '選択肢A 改', is_correct: true, explanation: 'A 理由' },
+        { id: 'b', text: '選択肢B', is_correct: false },
+      ])
+    })
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      entity_type: 'card',
+      entity_id: CARD_ID,
+      op: 'update_field',
+      patch: {
+        field: 'options',
+        value: [
+          { id: 'a', text: '選択肢A 改', isCorrect: true, explanation: 'A 理由' },
+          { id: 'b', text: '選択肢B', isCorrect: false },
+        ],
+      },
+    })
+  })
+
+  it('#2 guard(not editing): display のまま unmount → 書込なし', async () => {
+    await seedCard(baseOptions)
+    const { unmount } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 編集に入らずそのまま unmount
+    unmount()
+    // 存在 gate/commit の async を tx 直列化で待ってから確認
+    await getClientDb().transaction(
+      'rw',
+      getClientDb().cards,
+      getClientDb().entity_mutations,
+      async () => {},
+    )
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    const row = await getClientDb().cards.get(CARD_ID)
+    expect(row?.options).toEqual(baseOptions)
+  })
+
+  it('#3 guard(editing but clean): 値を変えずに unmount → 書込なし', async () => {
+    await seedCard(baseOptions)
+    const { unmount } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    // 編集に入るが値は変えない
+    fireEvent.click(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
+    )
+    unmount()
+    await getClientDb().transaction(
+      'rw',
+      getClientDb().cards,
+      getClientDb().entity_mutations,
+      async () => {},
+    )
+    expect(mockEnqueue).not.toHaveBeenCalled()
+  })
+
+  it('#4 存在 gate: card 削除後に editing+dirty で unmount → enqueue なし(orphan なし)', async () => {
+    await seedCard(baseOptions)
+    const { unmount } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    fireEvent.click(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: '選択肢 本文 編集' }), {
+      target: { value: '選択肢A 改' },
+    })
+    // card を mirror から削除 → unmount 時の存在 gate が row 不在で commit を skip
+    await getClientDb().cards.delete(CARD_ID)
+    unmount()
+    // gate は fire-and-forget な `cards.get → .then → (broken なら) commit tx → enqueue`。
+    // 存在 gate が壊れて commit が走った場合の enqueue を確実に捕捉するため、read + rw tx
+    // 直列化を数回挟んで chain を走り切らせてから「0 回」を確定する(1 tx だけでは gate の
+    // read prefix 完了前に assert が走り、gate 有無に関わらず green = 空振りになる)。
+    for (let i = 0; i < 4; i++) {
+      await getClientDb().cards.get(CARD_ID)
+      await getClientDb().transaction(
+        'rw',
+        getClientDb().cards,
+        getClientDb().entity_mutations,
+        async () => {},
+      )
+    }
+    expect(mockEnqueue).not.toHaveBeenCalled()
+  })
+})
+
 describe('InlineOptionList — checkbox toggle', () => {
   it('checkbox change → 即時 mirror + enqueue (blur 待たず)', async () => {
     await seedCard(baseOptions)
