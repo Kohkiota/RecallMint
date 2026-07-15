@@ -130,7 +130,7 @@ F5 の明示 blur は W2 後は冗長になるが**撤去しない**(scope 外�
 
 ### 8.3 「+ カードを追加」の UX 保持
 
-現挙動: 追加 → 新 card mount → auto-edit の `focus()` が browser 標準で scroll-into-view。仮想化後は off-screen = 未 mount = focus も scroll も起きないため、**追加後に `scrollToIndex`(新 card の位置・align end)で可視化**する(→ mount → auto-edit 発火 → W1 consume)。jsdom では window scroll が no-op のため、この経路の end-to-end は smoke 項目に含める(§10 ⑤)。
+現挙動: 追加 → 新 card mount → auto-edit の `focus()` が browser 標準で scroll-into-view。仮想化後は off-screen = 未 mount = focus も scroll も起きないため、**追加後に `scrollToIndex`(新 card の位置・`align: 'auto'`)で可視化**する(→ mount → auto-edit 発火 → W1 consume)。**align は `'auto'`**(rev2 訂正・当初 `'end'`): scrollToIndex の職務は position でなく mount で、正確な位置は直後の auto-edit `focus()` の scroll-into-view が担う。`'end'` は position 指定 → focus() 上書きで二度 scroll(4500px 級 card で往復が目視)。jsdom では window scroll が no-op のため、この経路の end-to-end は smoke 項目に含める(§10 ⑤)。
 
 ### 8.4 memo 方針(明示的にやらないこと)
 

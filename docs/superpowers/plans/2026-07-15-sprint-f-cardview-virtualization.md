@@ -44,7 +44,7 @@
 ### Task W1: newCardIds consume 経路
 
 **Files:** Modify: `inline-card-list.tsx`(親: `consumeNewCardId` / 行: mount effect)。Test: `inline-card-list.test.tsx`
-**Interfaces:** Consumes: W0 の `InlineCardRow`。Produces: 親 `consumeNewCardId(id: string): void`(functional updater で Set から削除・useCallback 安定化)、`InlineCardRow` 新 props `autoEditOnMount: boolean` + `onAutoEditConsumed(id: string): void`。
+**Interfaces:** Consumes: W0 の `InlineCardRow`(`autoEditOnMount` は W0 で既存 prop)。Produces: 親 `consumeNewCardId(id: string): void`(functional updater で Set から削除・useCallback 安定化)、`InlineCardRow` の**新規 prop は `onAutoEditConsumed(id: string): void` のみ**(`autoEditOnMount` は W0 で既にある)。
 
 - [ ] Step 1(test first・実 unmount の起こし方を固定 = Codex 指摘反映): list-level で「追加 → auto-edit 発火(textbox)→ **mirror から該当 card を delete → 消滅を waitFor(= 行の実 unmount)→ 同 id で再 put → 再描画(= 実 remount)**→ edit mode に入らない」を RED で追加。list は mount したまま(component 再 mount で Set が消える経路は仮想化の再現にならない)。あわせて unit: `InlineCardRow` の mount effect が `onAutoEditConsumed(card.id)` を 1 回だけ呼ぶ(spy)。
 - [ ] Step 2: `InlineCardRow` に mount effect(empty deps): `autoEditOnMount` が true なら `onAutoEditConsumed(card.id)`。消すのは**親の Set のみ**(子の one-shot useState initializer は render 中に読取済 = 初回 auto-edit は構造的に先行、spec §6.2)。冪等(Set delete)・StrictMode 二重実行安全。
@@ -71,9 +71,15 @@
 **Interfaces:** Consumes: W0 の `InlineCardRow` / W1 の `newCardIds`。Produces: 親 map の `<li>` に `data-index` + `ref={measureElement}`、定数 `ESTIMATED_CARD_HEIGHT`、追加 card 可視化 effect。
 **なぜ 1 task か(Codex 対立論点の採用)**: 仮想化だけ先に入れると「追加カードが off-screen で mount されず auto-edit 不発」の中間 commit ができる。順序制約の精神(branch 内健全性)に合わせ scrollToIndex まで同一 commit。
 
-- [ ] Step 1(実測・勘で置かない): 既存 300 件 seed 試験のカードビュー(仮想化前の現 DOM)で DevTools MCP evaluate: `const h=[...document.querySelectorAll('ul>li')].map(e=>e.getBoundingClientRect().height).sort((a,b)=>a-b); ({median: h[Math.floor(h.length/2)], p90: h[Math.floor(h.length*0.9)], n: h.length})` — **中央値を `ESTIMATED_CARD_HEIGHT` とし、実測値と測定環境を本 plan 末尾へ追記**(spec §9 再燃条件の基準値)。ローカル dev 不達なら stg で実測。**両方不可なら停止して OT へ**(代替導出は OT 承認時のみ = 要件「勘で置かない」の blocker 扱い・Codex 指摘反映)。
+- [ ] Step 1(実測・勘で置かない): 既存 300 件 seed 試験のカードビュー(仮想化前の現 DOM)で DevTools MCP evaluate。**カードリストの ul を特定してその直下 li のみ読む**(素朴な `ul>li` はページ全 ul 配下 = 選択肢行 li 数千個が混入し中央値が「選択肢 1 行高」になる・OT 指摘):
+  ```js
+  const ul = [...document.querySelectorAll('ul')].find(u => u.children.length > 50);
+  const h = [...ul.children].map(e => e.getBoundingClientRect().height).sort((a, b) => a - b);
+  ({ n: h.length, median: h[h.length >> 1], p90: h[Math.floor(h.length * 0.9)], min: h[0], max: h[h.length - 1] })
+  ```
+  **検算(必須)**: ① `n` が実カード件数(300)と一致 — 合わなければ別 ul を掴んでいる → selector を絞り直して再実行・数値を採用しない ② `min`/`max` の分布が整合(max=20 択 card の 4000px 級・min=数百 px。桁違いは掴み間違い)。**中央値を `ESTIMATED_CARD_HEIGHT`** とし、`n`/median/p90/min/max + 測定環境を plan 末尾の実測記録へ追記(spec §9 再燃条件の基準値)。ローカル dev 不達なら stg で実測。**両方不可なら停止して OT へ**(代替導出は OT 承認時のみ = blocker)。
 - [ ] Step 2: `useWindowVirtualizer` 配線 — `count`/`estimateSize:()=>ESTIMATED_CARD_HEIGHT`/`overscan:3`/`getItemKey:(i)=>cards[i].id`/`scrollMargin`=リスト先頭 offset。**scrollMargin は render 時に listRef.offsetTop から再評価**(上部 chrome 変化は次 render 追従・専用 ResizeObserver は足さない = YAGNI、smoke ④ で drift が出たら再検討 — Codex 指摘反映)。`<ul>` 内 = top spacer `<li aria-hidden>` + `getVirtualItems()` map(**親 map の `<li>` に `data-index` + `ref={measureElement}` を直接付与** = W0 の li 温存構成)+ bottom spacer。**行間 `space-y-3 md:space-y-2` margin を li 内 padding へ移す**(measureElement は margin を測らない・spec §8.2。視覚間隔は不変)。型 swap 厳禁・per-row memo 導入しない(spec §8.4)。
-- [ ] Step 3(追加カード UX): list-level effect(`[cards, newCardIds]`): `newCardIds` の id が `cards` に現れたら該当 index へ `scrollToIndex`。**align は OT 確定事項**(spec §8.3 表記 = `'end'` / CC 推奨 = `'auto'`(下方 off-screen では 'end' と同着地・可視時は no-op で無駄 jump なし)— plan 承認時に確定)。**動的行高ズレの mitigation(二段構え・OT 入力 1)**: scrollToIndex は estimate 基準の概算で行を mount させるだけとし、正確な位置合わせは mount 後の auto-edit `focus()` の browser 標準 scroll-into-view に委ねる(`inline-text-field.tsx:110-114` 既存挙動)。追い scroll の自前実装は足さない(YAGNI・smoke ⑤ で不足が出たら再検討)。
+- [ ] Step 3(追加カード UX): list-level effect(`[cards, newCardIds]`): `newCardIds` の id が `cards` に現れたら該当 index へ **`scrollToIndex(idx, { align: 'auto' })`(OT 確定)**。根拠 = scrollToIndex の職務は position でなく mount(正確な位置は次の auto-edit `focus()` の scroll-into-view `inline-text-field.tsx:110-114` が担う)。`'end'` だと position 指定 → focus() が上書きで確実に二度 scroll(4500px 級で下端→問題文へ往復が目視)。`'auto'` は mount に必要な最小 scroll のみ(可視/overscan 内なら no-op)。**追い scroll の自前実装は足さない**(YAGNI・smoke ⑤ で不足が出たら再検討)。
 - [ ] Step 4(test): ① 有界窓(F9 先例): N=100 seed → **`container.querySelectorAll('li[data-index]')` で row のみ数え**(素朴な `<li>` は spacer 2 本を含む)`0 < count < 100`、**+ spacer 2 本の style height が有限かつ ≥0**(NaN/負数の破綻検出 — Codex 指摘反映)② scrollToIndex spy(jsdom では scroll no-op のため呼出のみ)③ 既存 test(小 N)は test 変更ゼロで green 維持。
 - [ ] Step 5: canonical + Codex review → 宣言 → commit `fix(exams): カードビューを useWindowVirtualizer で仮想化 + 追加カード可視化(Sprint F S)[reviewed]`
 
@@ -81,7 +87,7 @@
 
 ### Task F: sprint 完了 gate + OT 引き渡し
 
-**Files:** Create: `docs/superpowers/sessions/2026-07-XX-sprint-f-completion.md`(完了記録・W2 [reviewed] 正記録の受け皿)
+**Files:** Create: `docs/superpowers/sessions/2026-07-15-sprint-f-completion.md`(完了記録・W2 [reviewed] 正記録の受け皿)
 
 - [ ] Step 1: whole-repo `pnpm lint` exit 0 / `pnpm test` 全 green / `pnpm typecheck` exit 0 を実行し報告に明記。
 - [ ] Step 2: 完了記録 doc(range・review 結果・ESTIMATED_CARD_HEIGHT 根拠値・spec §10 smoke checklist 6 項の手順)を commit(`docs(session): ...[no-review]`)。
