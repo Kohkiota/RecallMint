@@ -29,9 +29,11 @@
 
 ## 3. データ整合性の核心(最重要・破損防止)
 
+> **訂正注記(2026-07-15・plan 段 Codex cross-check で判明・doc drift 訂正)**: 初版の「`removeImageFromCard` は reclaim 内蔵」は**事実記述の誤り**。現物は `removeImageFromCard`(images 配列除去のみ)+ 別途 `reclaimLocalAssetBlobs`(ローカル Cache blob 掃除)の **2 段**(gallery `handleDelete` `card-image-gallery.tsx:194-198` と同型)。下記確定方針を 2 段に訂正済。仕様変更ではないため spec 凍結に抵触しない(誤った現物記述の是正)。
+
 **選択肢 id は安定だが、`nextOptionId`(`next-option-id.ts`)は削除済 id を再利用しうる**:letter `[a,b,c]`→b削除→追加=**b 再利用**、digit `[1,2]`→2削除→追加=**2 再利用**、`opt-N` も同様(3 方式すべて)。かつ `handleDeleteOption` は `cards.images` を触らないため、**削除された選択肢の `option:<id>` 画像が zombie として残存**(GC も ref 存在ゆえ削除しない)。→ **同 id の新選択肢が追加されると zombie 画像が誤って新選択肢へ紐付く = 静かなデータ破損**(id ベースでも id 再利用で破損が復活する)。
 
-- **確定方針**: **選択肢削除時に、その選択肢の `option:<id>` 画像を `cards.images` から除去する(cascade)**。`handleDeleteOption` が削除対象 id を確定 → `getClientDb().cards.get(cardId)` で現 images を読み `option:<id>` の asset key を抽出 → 各 key を **既存 `removeImageFromCard`**(全配列 fresh read/write + reclaim 内蔵)で除去。zombie を消すことで ①storage リーク解消 ②id 再利用の誤紐付き window を同時に閉じる = 必要十分。
+- **確定方針**: **選択肢削除時に、その選択肢の `option:<id>` 画像を `cards.images` から除去する(cascade)**。`handleDeleteOption` が削除対象 id を確定 → `getClientDb().cards.get(cardId)` で現 images を読み `option:<id>` の asset key を抽出 → 各 key を **既存 `removeImageFromCard`(全配列 fresh read/write)で除去し、成功分を別途 `reclaimLocalAssetBlobs` でローカル掃除**(gallery `handleDelete` と同型の 2 段。上記訂正注記参照)。zombie を消すことで ①storage リーク解消 ②id 再利用の誤紐付き window を同時に閉じる = 必要十分。
 - **不変条件(spec 明記)**: 新規 gallery は必ず既存 `attachImageToCard`/`removeImageFromCard` を経由し、**target 部分集合の独自 commit を新設しない**(§2「client commit」より、部分 commit だけが union を壊し GC 孤児を生む唯一経路)。
 - reorder は存在しないため追随保証は不要(将来 reorder を足すなら id ベースゆえ画像は自動追随・別 sprint)。
 
