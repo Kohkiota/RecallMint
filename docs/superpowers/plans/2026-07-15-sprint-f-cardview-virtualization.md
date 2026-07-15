@@ -77,7 +77,7 @@
   const h = [...ul.children].map(e => e.getBoundingClientRect().height).sort((a, b) => a - b);
   ({ n: h.length, median: h[h.length >> 1], p90: h[Math.floor(h.length * 0.9)], min: h[0], max: h[h.length - 1] })
   ```
-  **検算(必須)**: ① `n` が実カード件数(300)と一致 — 合わなければ別 ul を掴んでいる → selector を絞り直して再実行・数値を採用しない ② `min`/`max` の分布が整合(max=20 択 card の 4000px 級・min=数百 px。桁違いは掴み間違い)。**中央値を `ESTIMATED_CARD_HEIGHT`** とし、`n`/median/p90/min/max + 測定環境を plan 末尾の実測記録へ追記(spec §9 再燃条件の基準値)。ローカル dev 不達なら stg で実測。**両方不可なら停止して OT へ**(代替導出は OT 承認時のみ = blocker)。
+  **検算(必須)**: ① `n` が実カード件数(300)と一致 — 合わなければ別 ul を掴んでいる → selector を絞り直して再実行・数値を採用しない ② `min`/`max` の分布が整合。**桁違いは掴み間違いを疑う** — ただし n 一致 + option checkbox 構造で card と確認できれば selector は正・分布は seed 実データ特性(実測記録参照: 本 seed は 4 択中心で max 828px・多択カードなし)。**中央値を `ESTIMATED_CARD_HEIGHT`** とし、`n`/median/p90/min/max + 測定環境を plan 末尾の実測記録へ追記(spec §9 再燃条件の基準値)。ローカル dev 不達なら stg で実測。**両方不可なら停止して OT へ**(代替導出は OT 承認時のみ = blocker)。**→ 本 plan では 2026-07-15 に stg 実測済(実測記録参照)= 738。Task S Step 1 は再測不要**。
 - [ ] Step 2: `useWindowVirtualizer` 配線 — `count`/`estimateSize:()=>ESTIMATED_CARD_HEIGHT`/`overscan:3`/`getItemKey:(i)=>cards[i].id`/`scrollMargin`=リスト先頭 offset。**scrollMargin は render 時に listRef.offsetTop から再評価**(上部 chrome 変化は次 render 追従・専用 ResizeObserver は足さない = YAGNI、smoke ④ で drift が出たら再検討 — Codex 指摘反映)。`<ul>` 内 = top spacer `<li aria-hidden>` + `getVirtualItems()` map(**親 map の `<li>` に `data-index` + `ref={measureElement}` を直接付与** = W0 の li 温存構成)+ bottom spacer。**行間 `space-y-3 md:space-y-2` margin を li 内 padding へ移す**(measureElement は margin を測らない・spec §8.2。視覚間隔は不変)。型 swap 厳禁・per-row memo 導入しない(spec §8.4)。
 - [ ] Step 3(追加カード UX): list-level effect(`[cards, newCardIds]`): `newCardIds` の id が `cards` に現れたら該当 index へ **`scrollToIndex(idx, { align: 'auto' })`(OT 確定)**。根拠 = scrollToIndex の職務は position でなく mount(正確な位置は次の auto-edit `focus()` の scroll-into-view `inline-text-field.tsx:110-114` が担う)。`'end'` だと position 指定 → focus() が上書きで確実に二度 scroll(4500px 級で下端→問題文へ往復が目視)。`'auto'` は mount に必要な最小 scroll のみ(可視/overscan 内なら no-op)。**追い scroll の自前実装は足さない**(YAGNI・smoke ⑤ で不足が出たら再検討)。
 - [ ] Step 4(test): ① 有界窓(F9 先例): N=100 seed → **`container.querySelectorAll('li[data-index]')` で row のみ数え**(素朴な `<li>` は spacer 2 本を含む)`0 < count < 100`、**+ spacer 2 本の style height が有限かつ ≥0**(NaN/負数の破綻検出 — Codex 指摘反映)② scrollToIndex spy(jsdom では scroll no-op のため呼出のみ)③ 既存 test(小 N)は test 変更ゼロで green 維持。
@@ -97,6 +97,12 @@
 
 ---
 
-## 実測記録(Task S Step 1 で追記)
+## 実測記録(Task S Step 1・2026-07-15 stg 実測済)
 
-- ESTIMATED_CARD_HEIGHT = (未実測)/ 測定環境: / median: / p90: / n:
+- **ESTIMATED_CARD_HEIGHT = 738**(median 採用)
+- 測定環境: stg `[PERF-SEED] 300-card exam`(fb10b7cf…)カードビュー・Playwright(viewport 1042×575・md/desktop layout)
+- 分布: n=300(カード件数一致 ✓)/ min 666 / median 738 / p90 738 / max 828 (px)
+- selector 検算: n=300 完全一致 + 対象 ul は children>50 が唯一(他 ul=4-7 children=選択肢/タグ)+ 二次検証で card=option checkbox 構造を確認 → 掴み間違いなし。
+- **seed 特性の申し送り(検算②の max 桁不一致の真因・OT 要確認)**: seed カードは **選択肢 4 択が 298 枚・5 択 1・7 択 1**。**多択(20択)カードは存在しない**ため実分布 max は 828px(fact-finding の「20択≈4531px」は UI 上の worst-case であり seed には無い)。
+  - 影響: freeze 修正の実証(smoke ①)は 300×738px 未仮想化 = O(N) 再レンダー機構を十分に突く(高さでなく枚数が支配的)ゆえ **有効**。
+  - **coverage gap**: spec §9 の「多択行高肥大での measure jitter / scroll 飛び」(smoke ④ の重点)は**この seed では発火しない**。§9 の再燃条件を実機検証したい場合は seed に 15-20 択カードを数枚追加する必要がある(OT 判断・本 sprint の必須ではない = §9 は監視方針)。
