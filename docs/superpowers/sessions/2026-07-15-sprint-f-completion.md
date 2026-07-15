@@ -36,7 +36,10 @@
 - 分布: n=300(件数一致 ✓)/ min 666 / median 738 / p90 738 / max 828(px)。selector = children>50 の ul 直下 li(選択肢行 li 混入回避)、option checkbox 構造で card 確認。
 - **seed 特性の申し送り(重要)**: seed は選択肢 **4 択 298 / 5 択 1 / 7 択 1**、**多択(15-20 択)カードは不在**(実分布 max 828px)。fact-finding の「20 択≈4531px」は UI worst-case で seed には無い。
   - freeze 実証(smoke ①)= 300×738px 未仮想化 = O(N) 再レンダーを十分に突く(枚数支配)ゆえ **有効**。
-  - **coverage gap**: spec §9「多択行高肥大の measure jitter / scroll 飛び」(smoke ④ 重点)は**本 seed で発火しない**。§9 再燃条件を実機検証したい場合は seed に 15-20 択カードを数枚追加要(**OT 判断・本 sprint 必須でない = §9 は監視方針**)。
+  - **coverage gap(§9 未検証・OT 確定事項 2026-07-15)**: spec §9「多択行高肥大の measure jitter / scroll 飛び」(smoke ④ 重点)は**本 seed で発火せず、今回の smoke で検証できていない**。
+    - ESTIMATED_CARD_HEIGHT=738 に対し**設計上の最過酷ケース(20 択 ≈ 4531px 想定)は実機で一度も走っていない**(738 と 4531 の乖離を突く行が seed に存在しない)。
+    - 再燃条件の検証は **実データ投入後(実ユーザーの多択カード出現時)または seed への多択追加時**に持ち越し。
+    - **OT 判断: seed への多択カード追加は行わない**(本 sprint 範囲外)。§9 は監視方針として `docs/next-sprints-priority.md` §4 に follow-up 記載。
 
 ## 完了 gate(2026-07-15 実行)
 
@@ -44,11 +47,24 @@
 - `pnpm typecheck`(tsc --noEmit)**exit 0**。
 - `pnpm test`(vitest run 全 231 files)**3625/3625 green**。
 
+## OT stg smoke 結果(2026-07-15・全 6 項 PASS)
+
+OT が stg で人力実施。**全 6 項 PASS**:
+
+1. **① PASS(仮説の実証)**: 300 件 seed のカードビューで inline 編集 → blur が固まらない。複数 field で反復済。→ fact-finding の静的 trace 結論(枚数起因・ループ不在)が実機で裏付けられた。
+2. **② PASS(W2 データ保全)**: option 編集中 scroll-out → 戻って値が保存されている。
+3. **③ PASS(W1)**: 追加カードの誤 auto-edit なし。
+4. **④ PASS(描画健全性)**: spacer 飛び・空白帯なし。**ただし多択カードは seed 不在ゆえ §9 は未検証**(下記「§9 未検証」参照)。
+5. **⑤ PASS(追加 UX)**: scrollToIndex + auto-edit が従来どおり。`align='auto'` の判断も実機で問題なし。
+6. **⑥ PASS(回帰)**: side peek / テーブルビュー無変化。
+
+**参考(追跡不要・記録のみ / §11 監視対象)**: deploy 直後の初回アクセス時に一度だけ「編集→blur で固まりエラー音頻発・ブラウザ不応」が発生したが**再現せず**、Console 残存は**ブラウザ拡張由来ノイズのみ**(`A listener indicated an asynchronous response...` = 拡張の messaging、アプリ由来エラーは無し)。deploy 直後の一過性と判断し**追わない**。**ただし今後同一現象が再発した場合は spec §11 分岐を発火**(ログが無くても現象自体が証拠)。
+
 ## W2 の [reviewed] 正記録(データ保全 fix・tag 無し commit)
 
-`30f630c`(W2)は **approved plan + GC v2 W2 前例に従い tag 無し commit**。canonical + Codex は **Crit0/Imp0 で収束済**(formal review 完了)。**OT stg smoke ②(下記)で option 編集中 scroll-out → 保存を実機確認後、本行を [reviewed] の正記録とする**:
+`30f630c`(W2)は **approved plan + GC v2 W2 前例に従い tag 無し commit**。canonical + Codex は **Crit0/Imp0 で収束済**(formal review 完了)。**OT smoke ②(上記)PASS を確認**:
 
-- [ ] **W2 [reviewed] 確定**: OT smoke ② pass 後にチェック(commit `30f630c` の formal review 完了 + 実機データ保全確認をもって [reviewed] 相当)。
+- [x] **W2 [reviewed] 確定**(2026-07-15): commit `30f630c` の formal review 完了 + OT smoke ②(option 編集中 scroll-out → 保存)実機 PASS をもって **[reviewed] 相当と確定**。push 済 commit の force-push はしない(tag は追わず本 doc を正記録とする = CLAUDE.md「stg smoke を要する重要 Fix」規律)。
 
 ## OT smoke checklist(人力・push/deploy 後)
 
