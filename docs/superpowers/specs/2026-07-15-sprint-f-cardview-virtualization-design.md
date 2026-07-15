@@ -1,7 +1,7 @@
 # Sprint F spec: カードビュー freeze 修正(仮想化 + 前提 2 件)
 
 - **日付**: 2026-07-15 / **起草 HEAD**: `develop` `748e8bf`
-- **状態**: draft(claude.ai レビュー → OT 承認待ち。承認後に writing-plans)
+- **状態**: rev2(claude.ai レビュー反映済: G 通常則化・W0 分割・F6 follow-up 記録。OT 承認待ち。承認後に writing-plans)
 - **fact-finding**: `docs/audit/2026-07-15-b1-scope-reduction-and-cardview-freeze-factfinding.md` §1(記述は本 spec 起草時に現 HEAD で再検証済)
 
 ## 1. 背景 / 目的
@@ -19,7 +19,7 @@
 
 **非スコープ**: 画像 4 欄化(Sprint I)/ 表描画(Sprint T)/ props 参照安定化・per-row `React.memo`(§8.4)/ 多択行高肥大対策(§9・監視)/ side-peek blur workaround の撤去(§7.4)/ テーブルビューへの変更。
 
-**順序制約(絶対)**: W1・W2 は S より前に着地。**branch 内のどの時点でも「仮想化あり・ガードなし」の状態を作らない**(仮想化は unmount を常態化させるため、W2 なしで S を入れると option 編集消失が実害化、W1 なしだと誤 auto-edit が発生)。
+**順序制約(絶対)**: W0・W1・W2 は S より前に着地。**branch 内のどの時点でも「仮想化あり・ガードなし」の状態を作らない**(仮想化は unmount を常態化させるため、W2 なしで S を入れると option 編集消失が実害化、W1 なしだと誤 auto-edit が発生)。
 
 ## 3. 現状事実(spec 起草時に現 HEAD で再検証済)
 
@@ -39,12 +39,13 @@
 ## 4. Phase 構成と commit/tag 方針
 
 ```
-G(安全網・test のみ)→ W1(consume)→ W2(commit-on-unmount)→ S(仮想化)
+G(安全網)→ W0(InlineCardRow verbatim 抽出)→ W1(consume)→ W2(commit-on-unmount)→ S(仮想化)
 ```
 
 | Phase | 種別 | review | tag |
 |---|---|---|---|
-| G | test(挙動変更なし)| canonical skip 可(必須経路の例外)| `[no-review]` |
+| G | test(挙動変更なし・非真空性が review 対象)| canonical + Codex | `[reviewed]`(通常則)|
+| W0 | refactor(verbatim 移動のみ・挙動不変)| canonical + Codex | `[reviewed]`(通常則)|
 | W1 | fix(挙動変更)| canonical + Codex | `[reviewed]`(通常則)|
 | W2 | fix(**データ保全**)| canonical + Codex | **tag 無し commit → OT smoke 後 session doc を [reviewed] 正記録**(stg smoke 要の重要 Fix 規律・GC v2 W2 と同型)|
 | S | fix(構造変更・表示内容不変)| canonical + Codex | `[reviewed]`(通常則。freeze 仮説の実証は smoke で別途 = §11)|
@@ -67,12 +68,22 @@ G(安全網・test のみ)→ W1(consume)→ W2(commit-on-unmount)→ S(仮想�
 
 **G の追加分 = 欠落 1 件のみ**: 「option cell を編集 → blur(commit 1 回)→ その後 unmount → 追加の mirror 書込/enqueue が発生しない」を pin(現挙動として真・W2 後も不変のため characterization として安全)。「unmount で編集値が失われる」現挙動は **pin しない**(W2 で意図的に変える挙動を固定しても即捨てになるため)。
 
-## 6. W1: newCardIds consume 経路
+## 6. W0(InlineCardRow verbatim 抽出)+ W1(newCardIds consume 経路)
+
+### 6.1 W0: InlineCardRow の verbatim 抽出(挙動不変)
+
+現 inline map の中身(`inline-card-list.tsx:269-318` の `<li>` 内)を module scope の `InlineCardRow` へ **verbatim 移動のみ**。hook 追加なし・props 追加なし・挙動不変。W1(consume effect)と S(measureElement ref)の持ち場を先に用意する。
+
+**なぜ W1 と分離するか(移動と書換えの分離)**: 表示不変 ≠ reconciliation 不変 — component 境界が 1 枚増えれば fiber が増え hook の持ち主が変わる。定義位置を誤れば(render 内定義・key 不安定)subtree 全 remount = 本 sprint が扱う病理そのものを自作する。verbatim 移動を単独 commit にすることで、抽出の瑕疵を W1/W2 のガードに隠さず bisect 可能に保つ。
+
+**完了条件**: 既存 test(`inline-card-list.test.tsx` / `inline-card-list-live.test.tsx`)が**無傷で green** = 挙動不変の客観証明。
+
+### 6.2 W1: consume 経路
 
 **目的**: 仮想化下の remount で `autoEditOnMount=true` が再発火し誤 auto-edit する穴(F2)を塞ぐ。
 
 **consume 境界(確定)**: **該当 card 行の初回 mount 直後**(行 level `useEffect`)。
-- **W1 で行 component `InlineCardRow` を module scope に抽出**(現 inline map の中身を移すだけの表示不変 refactor。S が依存する持ち場を先に用意する)。その mount effect で「自分の `card.id` が Set にあれば親の `consumeNewCardId(id)` を呼ぶ」。親は functional updater で Set から削除(`inline-card-list.tsx:159-179` コメントが予告した経路の実装)。
+- W0 で抽出済みの `InlineCardRow` に mount effect を追加: 「自分の `card.id` が Set にあれば親の `consumeNewCardId(id)` を呼ぶ」。親は functional updater で Set から削除(`inline-card-list.tsx:159-179` コメントが予告した経路の実装)。
 - **正当な auto-edit は殺さない**: 子 `InlineTextField` の `useState` initializer(one-shot 読取)は**render 中**に走り、consume の effect は **render 後**に走る。同一 mount 内で「読取 → consume」の順序が React の実行モデルで構造的に保証されるため、初回 mount の auto-edit は必ず発火してから Set が縮む。
 - **再発火しない**: 以後の remount(scroll-out → scroll-in)時は Set に id が無く `autoEditOnMount=false`。
 - consume は冪等(Set delete)・StrictMode の effect 二重実行でも安全。
@@ -110,7 +121,7 @@ F5 の明示 blur は W2 後は冗長になるが**撤去しない**(scope 外�
 - カードビューは page flow の `<ul>`(内部 scroll container なし)のため **`useWindowVirtualizer`**(F8。T2 の element-based と異なる点はここのみ・他は T2 資産踏襲)。
 - options: `count=cards.length` / `estimateSize=() => ESTIMATED_CARD_HEIGHT`(定数。多択 card は `measureElement` が補正)/ `overscan=3`(行が table 行より桁違いに高いため T2 の 5 より絞る。実機 smoke で調整可)/ `getItemKey=(i) => cards[i].id`(F7 踏襲・sort 変動時の index-key churn 防止)/ **`scrollMargin`=リスト先頭の document offset**(window 座標系との原点合わせ。element-based の T2 には無かった window 固有の注意点)。
 - DOM: `<ul>` 内に **top spacer `<li aria-hidden>` + 可視 items(`ref={measureElement}` + `data-index`)+ bottom spacer `<li aria-hidden>`**(native flow・absolute positioning 不使用 = T2 spacer `<tr>` 方式の移植)。
-- 行 component は **W1 で抽出済みの `InlineCardRow`**(§6)に `measureElement` ref + `data-index` を追加配線する。**型 swap 厳禁**(F7 教訓): 条件分岐で component 型を切り替えない・key は `card.id` 固定。
+- 行 component は **W0 で抽出済みの `InlineCardRow`**(§6.1)に `measureElement` ref + `data-index` を追加配線する。**型 swap 厳禁**(F7 教訓): 条件分岐で component 型を切り替えない・key は `card.id` 固定。
 - SSR fallback(`initialCards`)/ empty state / 見出し件数 / 「+ カードを追加」の描画は不変。
 
 ### 8.2 行間 margin の扱い(高さ計算の落とし穴)
@@ -156,6 +167,7 @@ per-row `React.memo` は**導入しない**。理由: `toExamDetailCard` が毎 
 
 ## 12. 影響範囲 / 触らないもの
 
-- **触る**: `inline-card-list.tsx`(仮想化 + consume + 行 component 抽出)/ `inline-option-row.tsx`(latestRef + cleanup)/ `use-card-options.ts`(unmount 用 existence gate handler)/ 対応 test。
+- **触る**: `inline-card-list.tsx`(W0 行 component 抽出 → W1 consume → S 仮想化)/ `inline-option-row.tsx`(W2 latestRef + cleanup)/ `use-card-options.ts`(W2 unmount 用 existence gate handler)/ 対応 test(G 含む)。
 - **触らない**: `exam-card-table.tsx` 系(テーブルビュー)/ `inline-text-field.tsx`(F3 で完備)/ `card-editor-fields.tsx` / side peek / sync 層(`optimistic-mutation.ts` 等)/ server 側全部。
 - 新 dep なし(F8)。`.env` 変更なし。migration なし。
+- **follow-up(本 sprint では触らない・記録のみ)**: 「`runOptimisticUpdate` は missing row でも enqueue する」契約(F6)は 3 人目の unmount-commit 実装者が踏む地雷。現状は unmount commit 経路 2 箇所とも call site gate・blur 経路は両方とも意図的に gate なし(対称)で、rule of three 未充足ゆえ局所 gate が正 — helper への契約明示 or gate 内蔵の要否は別途起票して判断。
