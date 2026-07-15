@@ -15,6 +15,10 @@ import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
+import { isAssetKey } from '@/lib/validation/card'
+import { removeImageFromCard } from '@/lib/media/upload'
+import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
+import { logger } from '@/lib/logger'
 
 // snake_case CardOption → camelCase (bulk endpoint の optionsSchema が期待する形)。
 // server 側 lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS.options
@@ -56,6 +60,51 @@ function shallowEqualOptions(a: CardOption[], b: CardOption[]): boolean {
 }
 
 const DEBOUNCE_MS = 500
+
+// Sprint I W1: 選択肢削除時の画像 cascade。削除された option の `option:<id>` 画像を
+// cards.images から除去する。これをしないと zombie 画像が残り、nextOptionId が同 id を
+// 再利用した際に新選択肢へ誤紐付く(静かなデータ破損・spec §3)。
+//
+// 設計: DB 状態変更(選択肢削除 commit)を fallible な画像除去の成功に gate しないため、
+// 削除は caller 側で先に確定し、本 cascade は後段 best-effort(fire-and-forget)で呼ぶ。
+// userId は hook 引数に足さず card row(user_id)から導出する(caller 追随を増やさない)。
+// 除去は gallery `handleDelete` と同型の 2 段(removeImageFromCard で配列除去 → 成功分を
+// reclaimLocalAssetBlobs でローカル掃除)。複数画像は直列 for-await し、部分失敗は assetId
+// 単位で warn して残件を止めない。
+async function cascadeDeleteOptionImages(
+  cardId: string,
+  optionId: string,
+): Promise<void> {
+  const row = await getClientDb().cards.get(cardId)
+  if (!row) return
+  const images = Array.isArray(row.images) ? row.images : []
+  const target = `option:${optionId}`
+  // UUID key(= asset 参照)かつ当該 option target の entry のみ除去対象。legacy 非 UUID
+  // entry は passthrough(除去しない)、他 target/他選択肢の画像は温存(union 非破壊)。
+  const keys = images
+    .filter((i) => isAssetKey(i.key) && i.target === target)
+    .map((i) => i.key)
+  if (keys.length === 0) return
+  const removed: string[] = []
+  for (const assetId of keys) {
+    try {
+      await removeImageFromCard({ cardId, assetId })
+      removed.push(assetId)
+    } catch {
+      // 選択肢削除は確定済ゆえ rollback せず記録のみ(client 側失敗記録は logger.warn。
+      // integration_failures 台帳は server reconciliation 用で client 書込経路が無い)。
+      logger.warn({
+        event: 'card_option_delete.image_cascade_failed',
+        cardId,
+        optionId,
+        assetId,
+      })
+    }
+  }
+  if (removed.length > 0) {
+    void reclaimLocalAssetBlobs(row.user_id, removed)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Hook return type
@@ -293,10 +342,16 @@ export function useCardOptions(
   // button が disabled で到達しないが server zod min(1) を defensive に local でも判定。
   const handleDeleteOption = (idx: number) => {
     if (optionsRef.current.length <= 1) return
+    // 削除前に対象 option id を捕捉(cascade の target 決定に使う)。
+    const deletedId = optionsRef.current[idx]!.id
     const nextAll = optionsRef.current.filter((_, i) => i !== idx)
     setOptions(nextAll)
     optionsRef.current = nextAll
     commit(nextAll, true)
+    // Sprint I W1: 選択肢削除を確定させた後、後段で画像を cascade 除去(best-effort)。
+    // 削除を画像除去の成功に gate しない(decouple・spec §3)。top-level の Dexie read
+    // 失敗も握って unhandled rejection を出さない(既存 fire-and-forget と同 house style)。
+    void cascadeDeleteOptionImages(cardId, deletedId).catch(() => {})
   }
 
   // S2.0b-3: 選択肢 count + 正解サマリは optimistic `options` state から計算して

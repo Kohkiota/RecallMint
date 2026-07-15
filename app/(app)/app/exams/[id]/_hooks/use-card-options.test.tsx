@@ -6,7 +6,7 @@
 // runOptimisticUpdate / runGuardedEntityMutationFlush は spy mock。
 // getClientDb() は fake-indexeddb (test 環境の Dexie) をそのまま使う。
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import type { CardOption } from '@/lib/db/schema'
 import { getClientDb } from '@/lib/client-db'
@@ -21,6 +21,24 @@ vi.mock('@/lib/sync/optimistic-mutation', () => ({
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
+}))
+
+// Sprint I W1: 選択肢削除の画像 cascade は removeImageFromCard(images 配列除去)+
+// reclaimLocalAssetBlobs(ローカル掃除)を呼び、失敗は logger.warn で記録する。
+// hook の責務 = 「削除された option の option:<id> asset key を選び、除去を要求する」ため
+// 3 依存を spy して選択ロジック・decouple・部分失敗継続を検証する(実 mirror 書込は
+// removeImageFromCard 自身の unit test の責務)。
+const { mockRemoveImage, mockReclaim, mockWarn } = vi.hoisted(() => ({
+  mockRemoveImage: vi.fn(async (_p: { cardId: string; assetId: string }) => {}),
+  mockReclaim: vi.fn(async (_userId: string, _assetIds: string[]) => {}),
+  mockWarn: vi.fn(),
+}))
+vi.mock('@/lib/media/upload', () => ({ removeImageFromCard: mockRemoveImage }))
+vi.mock('@/lib/media/reclaim-local-asset-blobs', () => ({
+  reclaimLocalAssetBlobs: mockReclaim,
+}))
+vi.mock('@/lib/logger', () => ({
+  logger: { warn: mockWarn, info: vi.fn(), error: vi.fn() },
 }))
 
 import { useCardOptions } from './use-card-options'
@@ -215,5 +233,118 @@ describe('useCardOptions — handleCellUnmountSave (Sprint F W2)', () => {
       ]
     )[0]
     expect(secondCall.afterPatch.options[0]!.text).toBe('選択肢A 編集済み')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sprint I W1: 選択肢削除の画像 cascade。削除した option の option:<id> 画像を除去し、
+// nextOptionId の id 再利用による zombie 誤紐付き(静かなデータ破損)を閉じる。
+// hook の責務 = 正しい asset key の除去要求 + decouple(削除は cascade 成否に非依存)+
+// 部分失敗継続。実 mirror 書込は removeImageFromCard の unit test が担う。
+// ---------------------------------------------------------------------------
+describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', () => {
+  // baseOptions = [a, b]。b(index 1)を削除するケースを pin する。
+  const Q_KEY = 'aaaaaaaa-0000-4000-8000-000000000001' // target question_text
+  const A_KEY = 'aaaaaaaa-0000-4000-8000-00000000000a' // target option:a
+  const B_KEY = 'aaaaaaaa-0000-4000-8000-00000000000b' // target option:b
+  const B_KEY2 = 'aaaaaaaa-0000-4000-8000-00000000000c' // target option:b (2 枚目)
+  const LEGACY_B = 'q001-img-1' // 非 UUID legacy(target option:b・asset でない)
+
+  async function seedCardWithImages(images: unknown[]): Promise<void> {
+    await getClientDb().cards.clear()
+    await getClientDb().cards.put({
+      id: CARD_ID,
+      user_id: 'user-1',
+      exam_id: 'exam-1',
+      options: baseOptions,
+      images,
+    } as never)
+  }
+
+  // cascade は void(fire-and-forget)ゆえ test 本体は完了を await しない。各 test 後に
+  // 残りの cascade を drain して、次 test の mock 呼び出しへ漏れる(cross-test 汚染)のを防ぐ。
+  afterEach(async () => {
+    await new Promise((r) => setTimeout(r, 30))
+  })
+
+  it('選択肢 b 削除 → option:b の asset 画像のみ removeImageFromCard で除去(他 target/他選択肢/legacy 非 UUID は温存 = union 非破壊)', async () => {
+    await seedCardWithImages([
+      { key: Q_KEY, target: 'question_text', alt: '' },
+      { key: A_KEY, target: 'option:a', alt: '' },
+      { key: B_KEY, target: 'option:b', alt: '' },
+      { key: LEGACY_B, target: 'option:b', alt: '' }, // legacy 非 UUID → 除去対象外
+    ])
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleDeleteOption(1) // b を削除
+    })
+    await vi.waitFor(() => {
+      expect(mockRemoveImage).toHaveBeenCalledWith({ cardId: CARD_ID, assetId: B_KEY })
+    })
+    // 除去要求された assetId 集合 = { B_KEY } のみ(Q/A/legacy は含まれない)
+    const calledAssetIds = mockRemoveImage.mock.calls.map((c) => c[0].assetId)
+    expect(calledAssetIds).toEqual([B_KEY])
+  })
+
+  it('reclaim: 除去成功分を reclaimLocalAssetBlobs(card の user_id, keys) でローカル掃除', async () => {
+    await seedCardWithImages([{ key: B_KEY, target: 'option:b', alt: '' }])
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleDeleteOption(1)
+    })
+    await vi.waitFor(() => {
+      expect(mockReclaim).toHaveBeenCalledWith('user-1', [B_KEY])
+    })
+  })
+
+  it('部分失敗: 1 件目 reject でも 2 件目は除去継続 + 失敗を assetId 単位で warn + 成功分のみ reclaim', async () => {
+    await seedCardWithImages([
+      { key: B_KEY, target: 'option:b', alt: '' },
+      { key: B_KEY2, target: 'option:b', alt: '' },
+    ])
+    mockRemoveImage.mockRejectedValueOnce(new Error('boom')) // B_KEY 除去だけ失敗
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleDeleteOption(1)
+    })
+    await vi.waitFor(() => {
+      expect(mockRemoveImage).toHaveBeenCalledTimes(2) // 1 件失敗でも残件を止めない
+    })
+    await vi.waitFor(() => {
+      expect(mockWarn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'card_option_delete.image_cascade_failed',
+          assetId: B_KEY,
+        }),
+      )
+    })
+    // 成功分(B_KEY2)のみ reclaim(失敗した B_KEY は含まない)
+    expect(mockReclaim).toHaveBeenCalledWith('user-1', [B_KEY2])
+  })
+
+  it('decouple: cascade 失敗でも選択肢削除の commit(options)は確定(削除を fallible 操作に gate しない)', async () => {
+    await seedCardWithImages([{ key: B_KEY, target: 'option:b', alt: '' }])
+    mockRemoveImage.mockRejectedValueOnce(new Error('boom'))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleDeleteOption(1)
+    })
+    // options 削除 commit は cascade の成否に関係なく発火済
+    await vi.waitFor(() => {
+      expect(mockRunOptimistic).toHaveBeenCalledTimes(1)
+    })
+    expect(result.current.options).toHaveLength(1) // b は working-set から消えている
+    expect(result.current.options[0]!.id).toBe('a')
+  })
+
+  it('option 画像が無い選択肢の削除では removeImageFromCard を呼ばない', async () => {
+    await seedCardWithImages([{ key: Q_KEY, target: 'question_text', alt: '' }])
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleDeleteOption(1)
+    })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockRemoveImage).not.toHaveBeenCalled()
+    expect(mockReclaim).not.toHaveBeenCalled()
   })
 })
