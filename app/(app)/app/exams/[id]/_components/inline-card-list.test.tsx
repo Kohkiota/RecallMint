@@ -578,6 +578,61 @@ describe('InlineCardList — newCardIds consume (Sprint F W1)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Sprint F S: カードビュー仮想化(useWindowVirtualizer)。jsdom は layout 非計算ゆえ
+// 窓サイズは実機と一致しない(window.innerHeight=768 / estimate=738 の estimate 駆動)。
+// 本 test は「全 N を mount しない = 有界窓が効く」ことのみ非空振りで担保する(F9 先例)。
+// 実機の窓サイズ・scroll 追従・freeze 解消は OT stg 300-card smoke に委ねる。
+// ---------------------------------------------------------------------------
+describe('InlineCardList — 仮想化 (Sprint F S)', () => {
+  it('有界窓: N=100 seed → 描画 row(li[data-index])は 0 < count < 100・spacer 高は有限 ≥0', async () => {
+    const many: ExamDetailCard[] = Array.from({ length: 100 }, (_, i) => ({
+      id: `bulk-${String(i).padStart(3, '0')}`,
+      title: `T${i}`,
+      sortKey: String(i).padStart(4, '0'),
+      questionText: `Q${i}`,
+      options: [{ id: 'a', text: 'A', is_correct: false }],
+      explanationText: null,
+      memo: null,
+      images: [],
+    }))
+    await seedMirror(many)
+    const { container } = render(
+      <InlineCardList initialCards={many} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      // 素朴な `li` は spacer 2 本を含むため row のみ(data-index)を数える。
+      expect(container.querySelectorAll('li[data-index]').length).toBeGreaterThan(0)
+    })
+    const rendered = container.querySelectorAll('li[data-index]').length
+    expect(rendered).toBeGreaterThan(0)
+    expect(rendered).toBeLessThan(100) // 有界窓 = 全 N を mount しない
+    // spacer(aria-hidden の直下 li)の height が有限かつ ≥0(NaN/負数の破綻検出)。
+    const spacers = container.querySelectorAll('ul > li[aria-hidden]')
+    spacers.forEach((s) => {
+      const h = Number.parseFloat((s as HTMLElement).style.height || '0')
+      expect(Number.isFinite(h)).toBe(true)
+      expect(h).toBeGreaterThanOrEqual(0)
+    })
+  })
+
+  it('カード追加 → scrollToIndex(window.scrollTo)で新カードを可視化する', async () => {
+    const NEW_ID = '66666666-6666-4666-8666-666666666666'
+    mockNewId.mockImplementationOnce(() => NEW_ID)
+    await seedMirror(cards)
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    await screen.findByText('問1')
+    // 初期 render 落ち着き後に spy(初期の virtualizer scroll を除外)+ 「Not implemented」抑止。
+    const scrollSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    // 追加 → newCardIds に id → cards に出現 → scrollToIndex effect が window.scrollTo を呼ぶ。
+    await waitFor(() => {
+      expect(scrollSpy).toHaveBeenCalled()
+    })
+    scrollSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // A3: responsive spacing クラス回帰防止 (md: prefix の維持確認)
 // ---------------------------------------------------------------------------
 describe('InlineCardList responsive spacing (A3)', () => {

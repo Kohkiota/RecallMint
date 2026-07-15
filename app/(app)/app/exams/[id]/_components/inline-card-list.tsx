@@ -5,8 +5,16 @@
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import type { CardOption } from '@/lib/db/schema'
@@ -61,6 +69,12 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
     images: c.images,
   }
 }
+
+// Sprint F S: カードビュー仮想化の推定行高(px)。stg PERF-SEED 300-card exam の
+// 実測 median(2026-07-15・viewport 1042×575・4 択中心分布)。過小/過大でも
+// measureElement(ResizeObserver)が実行高で補正する。多択カード等の可変行高は
+// measureElement 追従で吸収(spec §9・行高肥大は監視方針)。
+const ESTIMATED_CARD_HEIGHT = 738
 
 // 1 card 分の行 body(sort_key / title / delete + 後段フィールド列)を module scope の
 // component に抽出(Sprint F W0)。抽出は verbatim 移動のみ(挙動不変)で、後続の W1
@@ -265,6 +279,58 @@ export function InlineCardList({
     })
   }, [])
 
+  // Sprint F S: カードビュー仮想化(未仮想化 O(N) 再レンダー freeze の解消)。
+  // 内部 scroll container を持たず page(window)スクロールのため useWindowVirtualizer。
+  const listRef = useRef<HTMLUListElement>(null)
+  // window 座標原点合わせ: window virtualizer は document 座標で測るため、リスト先頭の
+  // offsetTop を scrollMargin に渡す。上部 chrome(見出し / empty-state / banner)の
+  // 変化で offsetTop が変わりうるため毎 render 実測し、値が変わった時だけ state 更新
+  // (guard で re-render loop を防ぐ)。jsdom は layout 非計算ゆえ offsetTop=0。
+  const [scrollMargin, setScrollMargin] = useState(0)
+  // offsetTop は上部 chrome の高さ変化(主に empty-state ↔ list の cards.length 遷移)で
+  // 変わる。deps に cards.length を含めて count 変化時に測り直す。scrollMargin は書込 →
+  // 再測(同値なら guard で set skip)で 2 render 以内に収束(infinite loop なし)。
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (el && el.offsetTop !== scrollMargin) setScrollMargin(el.offsetTop)
+  }, [cards.length, scrollMargin])
+
+  const rowVirtualizer = useWindowVirtualizer({
+    count: cards.length,
+    estimateSize: () => ESTIMATED_CARD_HEIGHT,
+    // 行が table 行より桁違いに高いため overscan は table(5)より絞る。実機で調整可。
+    overscan: 3,
+    // sort/filter/追加での index-key churn を防ぐ(stable key = card.id)。
+    getItemKey: (index) => cards[index]!.id,
+    scrollMargin,
+  })
+
+  // 追加カードの可視化(Sprint F S): 仮想化後は off-screen の新カードが mount されず
+  // auto-edit も focus scroll も起きない。newCardIds の id が cards に現れたら該当 index へ
+  // scrollToIndex(align:'auto' = 可視/overscan 内なら no-op)して mount させる。正確な
+  // 着地は直後の auto-edit focus() の scroll-into-view に委ねる(追い scroll は足さない)。
+  useEffect(() => {
+    if (newCardIds.size === 0) return
+    for (const id of newCardIds) {
+      const idx = cards.findIndex((c) => c.id === id)
+      if (idx >= 0) {
+        rowVirtualizer.scrollToIndex(idx, { align: 'auto' })
+        break
+      }
+    }
+  }, [cards, newCardIds, rowVirtualizer])
+
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  const totalSize = rowVirtualizer.getTotalSize()
+  const hasVirtualItems = virtualItems.length > 0
+  // spacer 高(scrollMargin で document→list 相対に re-base)。空(0 件)は spacer を出さない。
+  const paddingTop = hasVirtualItems
+    ? virtualItems[0]!.start - scrollMargin
+    : 0
+  const paddingBottom = hasVirtualItems
+    ? totalSize - (virtualItems[virtualItems.length - 1]!.end - scrollMargin)
+    : 0
+
   // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
   // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
   // rollback により mirror / outbox の lost write を構造的に排除する。 即時 drain は helper 内蔵。
@@ -352,20 +418,36 @@ export function InlineCardList({
           </CardContent>
         </Card>
       )}
-      <ul className="space-y-2">
-        {cards.map((card) => (
-        <li key={card.id}>
-          <InlineCardRow
-            card={card}
-            userId={userId}
-            categories={categories}
-            tagOptions={options}
-            cardTags={tagsByCardId.get(card.id) ?? []}
-            autoEditOnMount={newCardIds.has(card.id)}
-            onAutoEditConsumed={consumeNewCardId}
-          />
-        </li>
-      ))}
+      {/* 仮想化(Sprint F S): top/bottom spacer <li> + 可視 items のみ mount。行間の
+          space-y は measureElement が margin を測らないため各 item <li> の pb-2 へ移す
+          (視覚間隔は不変・spacer 計算と整合)。<li> は W0 で親 map に温存済ゆえ
+          measureElement ref / data-index を直接付与(forwardRef 不要)。 */}
+      <ul ref={listRef}>
+        {paddingTop > 0 && <li aria-hidden style={{ height: paddingTop }} />}
+        {virtualItems.map((vi) => {
+          const card = cards[vi.index]!
+          return (
+            <li
+              key={card.id}
+              data-index={vi.index}
+              ref={rowVirtualizer.measureElement}
+              // 旧 space-y-2 は sibling 間のみ gap(最後の card 下には付かない)。真の
+              // 末尾 card(全 list 中の最終 index)には pb を付けず、視覚間隔を厳密維持。
+              className={vi.index < cards.length - 1 ? 'pb-2' : undefined}
+            >
+              <InlineCardRow
+                card={card}
+                userId={userId}
+                categories={categories}
+                tagOptions={options}
+                cardTags={tagsByCardId.get(card.id) ?? []}
+                autoEditOnMount={newCardIds.has(card.id)}
+                onAutoEditConsumed={consumeNewCardId}
+              />
+            </li>
+          )
+        })}
+        {paddingBottom > 0 && <li aria-hidden style={{ height: paddingBottom }} />}
       </ul>
 
       {/* 末尾「+ カードを追加」: client id 採番 + mirror insert + outbox enqueue で
