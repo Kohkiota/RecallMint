@@ -62,6 +62,78 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
   }
 }
 
+// 1 card 分の行 body(sort_key / title / delete + 後段フィールド列)を module scope の
+// component に抽出(Sprint F W0)。抽出は verbatim 移動のみ(挙動不変)で、後続の W1
+// (mount 時 consume effect)と S(仮想化の measureElement/ data-index は親 map の <li>
+// に付与)の持ち場を用意する。閉包参照していた値(tagOptions / cardTags / autoEditOnMount)
+// を props 化しただけで JSX は元と一致。<li> と key は親 map 側に残す。
+type InlineCardRowProps = {
+  card: ExamDetailCard
+  userId: string
+  categories: ClientTagCategory[]
+  tagOptions: ClientTagOption[]
+  cardTags: ClientCardTag[]
+  autoEditOnMount: boolean
+}
+
+function InlineCardRow({
+  card,
+  userId,
+  categories,
+  tagOptions,
+  cardTags,
+  autoEditOnMount,
+}: InlineCardRowProps) {
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3 md:p-2 md:space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="w-28 shrink-0">
+            <InlineTextField
+              cardId={card.id}
+              field="sort_key"
+              initialValue={card.sortKey}
+              ariaLabel="ソートキー 編集"
+              placeholder="(キー)"
+              displayClassName="text-xs font-mono text-slate-600"
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <InlineTextField
+              cardId={card.id}
+              field="title"
+              initialValue={card.title}
+              ariaLabel="タイトル 編集"
+              displayClassName="text-sm font-medium text-slate-900"
+            />
+          </div>
+          <div className="shrink-0">
+            <DeleteCardButton cardId={card.id} userId={userId} />
+          </div>
+        </div>
+
+        {/* タグ + 問題文 + 選択肢 + 解説 + メモ の後段フィールド列は side-peek と
+            共有 (P3 W4)。categories / options は上で useMemo 安定化済み、cardTags は
+            本 card 分だけを Map から取り出して透過するため React.memo(CardTagsSection)
+            の凍結は維持される。autoEditOnMount は新規 card の問題文 auto-edit marker。 */}
+        <CardEditorFields
+          cardId={card.id}
+          userId={userId}
+          categories={categories}
+          tagOptions={tagOptions}
+          cardTags={cardTags}
+          questionText={card.questionText}
+          options={card.options}
+          explanationText={card.explanationText}
+          memo={card.memo}
+          images={card.images}
+          autoEditOnMount={autoEditOnMount}
+        />
+      </CardContent>
+    </Card>
+  )
+}
+
 export function InlineCardList({
   initialCards,
   examId,
@@ -268,52 +340,14 @@ export function InlineCardList({
       <ul className="space-y-2">
         {cards.map((card) => (
         <li key={card.id}>
-          <Card>
-            <CardContent className="p-4 space-y-3 md:p-2 md:space-y-1.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="w-28 shrink-0">
-                  <InlineTextField
-                    cardId={card.id}
-                    field="sort_key"
-                    initialValue={card.sortKey}
-                    ariaLabel="ソートキー 編集"
-                    placeholder="(キー)"
-                    displayClassName="text-xs font-mono text-slate-600"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <InlineTextField
-                    cardId={card.id}
-                    field="title"
-                    initialValue={card.title}
-                    ariaLabel="タイトル 編集"
-                    displayClassName="text-sm font-medium text-slate-900"
-                  />
-                </div>
-                <div className="shrink-0">
-                  <DeleteCardButton cardId={card.id} userId={userId} />
-                </div>
-              </div>
-
-              {/* タグ + 問題文 + 選択肢 + 解説 + メモ の後段フィールド列は side-peek と
-                  共有 (P3 W4)。categories / options は上で useMemo 安定化済み、cardTags は
-                  本 card 分だけを Map から取り出して透過するため React.memo(CardTagsSection)
-                  の凍結は維持される。autoEditOnMount は新規 card の問題文 auto-edit marker。 */}
-              <CardEditorFields
-                cardId={card.id}
-                userId={userId}
-                categories={categories}
-                tagOptions={options}
-                cardTags={tagsByCardId.get(card.id) ?? []}
-                questionText={card.questionText}
-                options={card.options}
-                explanationText={card.explanationText}
-                memo={card.memo}
-                images={card.images}
-                autoEditOnMount={newCardIds.has(card.id)}
-              />
-            </CardContent>
-          </Card>
+          <InlineCardRow
+            card={card}
+            userId={userId}
+            categories={categories}
+            tagOptions={options}
+            cardTags={tagsByCardId.get(card.id) ?? []}
+            autoEditOnMount={newCardIds.has(card.id)}
+          />
         </li>
       ))}
       </ul>
