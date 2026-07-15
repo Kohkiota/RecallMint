@@ -253,6 +253,59 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
   })
 })
 
+// Sprint F G(= W2 #5 と同一 test): blur 済み後の unmount で追加 commit が起きない
+// ことを pin する。現状(commit-on-unmount 無し)では自明に green だが、W2 で
+// commit-on-unmount を付与した後も「blur→unmount 二重 commit ガード」が効いて
+// enqueue 合計 1 回のまま = 挙動不変を保証する characterization。W2 で本 test を
+// 書き直さず green を維持すること(plan §5 / §7.3・二重実装禁止)。
+describe('InlineOptionCell — blur 後 unmount で二重 commit しない (Sprint F G / W2 #5)', () => {
+  it('text cell 編集 → blur(enqueue 1 回)→ unmount → enqueue 合計 1 回のまま', async () => {
+    await seedCard(baseOptions)
+    const { unmount } = render(
+      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+    )
+    fireEvent.click(
+      screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
+    )
+    fireEvent.change(screen.getByRole('textbox', { name: '選択肢 本文 編集' }), {
+      target: { value: '選択肢A 改' },
+    })
+    // blur → commit #1
+    fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 本文 編集' }))
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    })
+    // blur 済み後に unmount → 追加 commit なし
+    // (現状 = commit-on-unmount 無し / W2 後 = latestRef.editing=false で cleanup skip)
+    unmount()
+    // wall-clock でなく tx 直列化で同期する: 同一 table (cards + entity_mutations) への
+    // 空 rw tx は、万一の commit-on-unmount 二重 commit が走らせた in-flight tx を Dexie の
+    // rw 直列化で待ってから完了する。これで固定 sleep に依らず enqueue の落ち着き先を作る
+    // (Codex P2)。非同期の非イベントを完全 deterministic に捕捉するには production hook が
+    // 要り test scope 外 — 主防御は W2 の同期 editing guard(editing=false で cleanup は
+    // 同期 short-circuit し async 経路に入らない)であり、本 assert はその回帰ガード。
+    await getClientDb().transaction(
+      'rw',
+      getClientDb().cards,
+      getClientDb().entity_mutations,
+      async () => {},
+    )
+    expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      entity_type: 'card',
+      entity_id: CARD_ID,
+      op: 'update_field',
+      patch: {
+        field: 'options',
+        value: [
+          { id: 'a', text: '選択肢A 改', isCorrect: true, explanation: 'A 理由' },
+          { id: 'b', text: '選択肢B', isCorrect: false },
+        ],
+      },
+    })
+  })
+})
+
 describe('InlineOptionList — checkbox toggle', () => {
   it('checkbox change → 即時 mirror + enqueue (blur 待たず)', async () => {
     await seedCard(baseOptions)
