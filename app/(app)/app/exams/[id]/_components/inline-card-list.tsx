@@ -5,7 +5,7 @@
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
@@ -74,8 +74,15 @@ type InlineCardRowProps = {
   tagOptions: ClientTagOption[]
   cardTags: ClientCardTag[]
   autoEditOnMount: boolean
+  // 初回 mount で auto-edit を発火した後、親の newCardIds Set から自 id を消す
+  // (Sprint F W1)。仮想化(S)で scroll-out→scroll-in の remount 時に
+  // autoEditOnMount=true が再突入して誤 auto-edit するのを防ぐ。
+  onAutoEditConsumed: (id: string) => void
 }
 
+// 非 export(internal): 'use client' entry から function prop を持つ component を
+// export すると Next の serializable-props 境界規則に触れるため。consume の検証は
+// InlineCardList 経由の list-level test(remount で誤 auto-edit しない)で担保する。
 function InlineCardRow({
   card,
   userId,
@@ -83,7 +90,17 @@ function InlineCardRow({
   tagOptions,
   cardTags,
   autoEditOnMount,
+  onAutoEditConsumed,
 }: InlineCardRowProps) {
+  // 初回 mount 時に 1 回だけ consume する。子 InlineTextField の autoEditOnMount は
+  // render 中の one-shot useState 初期化子で読まれる(= mount 時の auto-edit は本 effect
+  // より先に確定)ため、consume で Set を縮めても初回 auto-edit は殺さない。以後の
+  // remount では Set に自 id が無く autoEditOnMount=false となり再突入しない。
+  useEffect(() => {
+    if (autoEditOnMount) onAutoEditConsumed(card.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount 時の値で 1 回だけ consume(one-shot・以後の prop 変化では再走させない)
+  }, [])
+
   return (
     <Card>
       <CardContent className="p-4 space-y-3 md:p-2 md:space-y-1.5">
@@ -227,28 +244,26 @@ export function InlineCardList({
   // Set 化は revert せず維持: (1) 将来仮想化 (Grid-1 TanStack Virtual) で cell 再
   // mount が起きる経路の基盤、 (2) click 以外の経路 (keyboard shortcut で連続 add、
   // batch import で複数 card 同時 mount 等) で複数 pending id を保持する必要が
-  // 生じた場合の汎用基盤として残す。 consume (Set 縮小) は持たない (下のコメント参照)。
+  // 生じた場合の汎用基盤として残す。 consume (Set 縮小) は下の consumeNewCardId が担う。
   const [newCardIds, setNewCardIds] = useState<Set<string>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
 
-  // 設計判断: 「mount 済 marker を Set から削除する consume 経路」 は意図的に持たない。
-  // 子 cell の `autoEditOnMount` は **mount 時の値** で判定 (one-shot useState 初期化子)
-  // のため、 Set に id が残り続けても既に mount 済 cell の挙動には影響しない。
-  // useEffect + setState の consume 実装は `react-hooks/set-state-in-effect` warning に
-  // 抵触し、 render-phase sentinel pattern も unmount race / over-trigger を抱える。
-  // 本 component 寿命は exam 詳細 page 滞在中のみで、 Set サイズは「滞在中の add 回数」
-  // (現実的に 10s 程度) で頭打ち、 各 `has()` も O(1) のため、 ためたままで bound する
-  // 方が単純で堅い。 失敗 add (catch 経路) の id も 残置でかまわない (mirror に row が
-  // 無いため描画に出てこない)。
-  //
-  // **成立条件 (重要、 将来の仮想化導入時に注意)**: consume 省略は「本 component 滞在中
-  // に cell `<li key={card.id}>` が unmount/remount されないこと」 に依存する。 現状は
-  // 直下 `<ul>` の stable key (= `card.id`) で React reconcile = order 変更でも cell は
-  // move のみで unmount しないため成立。 **将来 Grid-1 で TanStack Virtual / react-virtual
-  // 等の仮想化を導入する場合、 scroll で cell が unmount/remount され、 Set 残置 id を
-  // 持つ cell が再 mount で `autoEditOnMount=true` 経路に再突入し、 誤 auto-edit
-  // (編集モード強制突入) が発火する**。 仮想化導入と同時に consume (mount 後の Set
-  // 縮小、 sentinel pattern、 useEffect + functional updater 等) を復活させること。
+  // Sprint F W1: mount 済 marker を Set から消す consume 経路。子 InlineCardRow が
+  // 初回 mount effect で自 id を渡す(one-shot)。これが無いと S(仮想化)導入後、
+  // scroll-out→scroll-in の remount で cell が Set 残置 id を見て autoEditOnMount=true に
+  // 再突入し誤 auto-edit する(旧「consume を持たない」設計は「cell が unmount/remount
+  // されない」ことに依存しており、仮想化でその前提が崩れる)。functional updater で
+  // 参照 Set のみを縮め、既に mount 済 cell の子 one-shot 判定には影響しない(初回
+  // auto-edit は effect より先に render で確定済)。id 不在時は同一 ref を返して
+  // 無駄な再 render を避ける。
+  const consumeNewCardId = useCallback((id: string) => {
+    setNewCardIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
   // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
   // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
@@ -347,6 +362,7 @@ export function InlineCardList({
             tagOptions={options}
             cardTags={tagsByCardId.get(card.id) ?? []}
             autoEditOnMount={newCardIds.has(card.id)}
+            onAutoEditConsumed={consumeNewCardId}
           />
         </li>
       ))}

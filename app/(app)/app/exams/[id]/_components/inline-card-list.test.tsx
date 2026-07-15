@@ -533,6 +533,51 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
 })
 
 // ---------------------------------------------------------------------------
+// Sprint F W1: newCardIds consume — 追加で auto-edit した card を消して同 id で
+// 再 mount しても、consume 済ゆえ再び auto-edit しない(仮想化 S 導入時の
+// scroll-out→scroll-in remount で誤 auto-edit しないことの回帰ガード)。
+// consume が無ければ Set に id が残り、再 mount で autoEditOnMount=true 再突入 = red。
+// ---------------------------------------------------------------------------
+describe('InlineCardList — newCardIds consume (Sprint F W1)', () => {
+  it('追加で auto-edit した card を削除→同 id で再 mount しても edit mode に入らない', async () => {
+    const NEW_ID = '55555555-5555-4555-8555-555555555555'
+    mockNewId.mockImplementationOnce(() => NEW_ID)
+    await seedMirror(cards)
+    render(
+      <InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />,
+    )
+    await screen.findByText('問1')
+    // 追加 → 新 card の問題文のみ auto-edit(textbox 1)
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('textbox', { name: '問題文 編集' }),
+      ).toHaveLength(1)
+    })
+    const insertedRow = (await getClientDb().cards.get(NEW_ID))!
+    // mirror から削除 → live 再 render で行が unmount(textbox 0)
+    await getClientDb().cards.delete(NEW_ID)
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole('textbox', { name: '問題文 編集' }),
+      ).toHaveLength(0)
+    })
+    // 同 id で再 put → 行が再 mount。consume 済ゆえ auto-edit しない
+    await getClientDb().cards.put(insertedRow)
+    // 3 枚(card-1 / card-2 / 復活 card)が display(問題文 button)で出るのを待つ
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('button', { name: '問題文 編集' }),
+      ).toHaveLength(3)
+    })
+    // 復活 card は edit mode に入っていない
+    expect(
+      screen.queryAllByRole('textbox', { name: '問題文 編集' }),
+    ).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // A3: responsive spacing クラス回帰防止 (md: prefix の維持確認)
 // ---------------------------------------------------------------------------
 describe('InlineCardList responsive spacing (A3)', () => {
