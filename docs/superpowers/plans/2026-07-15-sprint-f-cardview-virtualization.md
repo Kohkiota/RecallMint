@@ -33,9 +33,9 @@
 ### Task W0: InlineCardRow verbatim 抽出(挙動不変)
 
 **Files:** Modify: `app/(app)/app/exams/[id]/_components/inline-card-list.tsx`(map 中身 :269-318 を module scope へ移動)
-**Interfaces:** Produces: `InlineCardRow`(module scope・props = 現 map が閉包参照する値そのまま: `card, userId, categories, options, cardTags, autoEditOnMount`)。W1 が mount effect を、S1 が measureElement ref を後からここに足す。
+**Interfaces:** Produces: `InlineCardRow`(module scope・props = 現 map が閉包参照する値そのまま: `card, userId, categories, options, cardTags, autoEditOnMount`)。W1 が mount effect を足す(measureElement ref は S で親 map の `<li>` に付き、本 component には触れない)。
 
-- [ ] Step 1: `<li key={card.id}>` の中身を **verbatim 移動のみ**で `InlineCardRow` へ。hook 追加なし・props 追加なし・JSX/className 変更なし・render 内定義禁止(module scope)・key は `card.id` のまま親 map 側に残す。
+- [ ] Step 1: `<li key={card.id}>` の**中身(li の children)**を verbatim 移動のみで `InlineCardRow` へ。**`<li>` 自体は親 map 側に残す**(S で measureElement ref / `data-index` を li に直接付けるため forwardRef 不要になる構成・Codex 指摘反映)。hook 追加なし・props 追加なし・JSX/className 変更なし・render 内定義禁止(module scope)。
 - [ ] Step 2: `pnpm test app/\(app\)/app/exams/\[id\]/_components/inline-card-list.test.tsx app/\(app\)/app/exams/\[id\]/_components/inline-card-list-live.test.tsx` — **test 変更ゼロで全 green** = 挙動不変の客観証明(spec §6.1)。
 - [ ] Step 3: canonical + Codex review → 宣言 → commit `refactor(exams): InlineCardRow を module scope へ verbatim 抽出(Sprint F W0)[reviewed]`
 
@@ -46,7 +46,7 @@
 **Files:** Modify: `inline-card-list.tsx`(親: `consumeNewCardId` / 行: mount effect)。Test: `inline-card-list.test.tsx`
 **Interfaces:** Consumes: W0 の `InlineCardRow`。Produces: 親 `consumeNewCardId(id: string): void`(functional updater で Set から削除・useCallback 安定化)、`InlineCardRow` 新 props `autoEditOnMount: boolean` + `onAutoEditConsumed(id: string): void`。
 
-- [ ] Step 1(test first): 「追加 → auto-edit 発火 → 該当行を実 unmount → remount(key 変更 or rerender)しても edit mode に入らない」を RED で追加。
+- [ ] Step 1(test first・実 unmount の起こし方を固定 = Codex 指摘反映): list-level で「追加 → auto-edit 発火(textbox)→ **mirror から該当 card を delete → 消滅を waitFor(= 行の実 unmount)→ 同 id で再 put → 再描画(= 実 remount)**→ edit mode に入らない」を RED で追加。list は mount したまま(component 再 mount で Set が消える経路は仮想化の再現にならない)。あわせて unit: `InlineCardRow` の mount effect が `onAutoEditConsumed(card.id)` を 1 回だけ呼ぶ(spy)。
 - [ ] Step 2: `InlineCardRow` に mount effect(empty deps): `autoEditOnMount` が true なら `onAutoEditConsumed(card.id)`。消すのは**親の Set のみ**(子の one-shot useState initializer は render 中に読取済 = 初回 auto-edit は構造的に先行、spec §6.2)。冪等(Set delete)・StrictMode 二重実行安全。
 - [ ] Step 3: 新 test green + 既存 `:442-509`(追加→auto-edit / 2 連続)無傷 green。
 - [ ] Step 4: canonical + Codex review → 宣言 → commit `fix(exams): newCardIds に mount 時 consume を追加(Sprint F W1)[reviewed]`
@@ -59,34 +59,25 @@
 **Interfaces:** Consumes: Task G の #5 test(書き直さず green 維持)。Produces: `useCardOptions` に `unmountSave(option: CardOption): void`(`getClientDb().cards.get(cardId)` 存在時のみ既存 commit 経路 — F6 対応)、`InlineOptionCell` 新 prop `onUnmountSave: (value: string) => void`(Row/List 経由で unmountSave へ配線)。
 
 - [ ] Step 1(test first): `inline-text-field.test.tsx:820-924` と対称の 4 本を RED で追加 — #1 editing+dirty→unmount→mirror+enqueue / #2 not-editing guard / #3 clean guard / #4 card 削除後 unmount→enqueue なし(存在 gate)。**#5 は Task G の test をそのまま流用**(追加実装後も green のままであることが二重 commit ガードの検証)。全て実 `unmount()` 経由(spec §7.3)。
-- [ ] Step 2: cell に latestRef 自己整合 snapshot + empty-deps cleanup(`inline-text-field.tsx:101-164` と同型)。blur handler で `latestRef.editing=false` を同期反映(Codex P2 同型)。blur 経路は不変。
+- [ ] Step 2: cell に latestRef 自己整合 snapshot + empty-deps cleanup(`inline-text-field.tsx:101-164` と同型)。blur handler で `latestRef.editing=false` を同期反映(Codex P2 同型)。blur 経路は不変。**cleanup は await 不可のため保存は fire-and-forget**(`void cards.get(cardId).then(row => row && …)` = `inline-text-field.tsx:157-159` verbatim 同型・test は waitFor で enqueue を待つ — Codex 指摘反映)。
 - [ ] Step 3: 4 本 green + G test green 維持 + 既存 option test 無傷。
 - [ ] Step 4: canonical + Codex review → 宣言 → commit `fix(exams): InlineOptionCell に commit-on-unmount を付与(Sprint F W2)` — **tag 無し**(Global Constraints の W2 方針)。
 
 **完了条件:** 5 観点 green(#5 は G 由来)・side-peek workaround(F5)無変更で共存・Crit0/Imp0。
 
-### Task S1: 仮想化 core(useWindowVirtualizer・表示不変)
+### Task S: 仮想化 + 追加カード UX(同一 commit・中間破壊状態を作らない)
 
-**Files:** Modify: `inline-card-list.tsx`。Test: `inline-card-list.test.tsx`(有界窓 test 追加)
-**Interfaces:** Consumes: W0 の `InlineCardRow`。Produces: 行 `<li>` に `data-index` + `ref={measureElement}`(S2 と有界窓 test が依存)、定数 `ESTIMATED_CARD_HEIGHT`。
+**Files:** Modify: `inline-card-list.tsx`。Test: `inline-card-list.test.tsx`(有界窓 + scrollToIndex spy)
+**Interfaces:** Consumes: W0 の `InlineCardRow` / W1 の `newCardIds`。Produces: 親 map の `<li>` に `data-index` + `ref={measureElement}`、定数 `ESTIMATED_CARD_HEIGHT`、追加 card 可視化 effect。
+**なぜ 1 task か(Codex 対立論点の採用)**: 仮想化だけ先に入れると「追加カードが off-screen で mount されず auto-edit 不発」の中間 commit ができる。順序制約の精神(branch 内健全性)に合わせ scrollToIndex まで同一 commit。
 
-- [ ] Step 1(実測・勘で置かない): 既存 300 件 seed 試験のカードビュー(仮想化前の現 DOM)で DevTools MCP evaluate: `const h=[...document.querySelectorAll('ul>li')].map(e=>e.getBoundingClientRect().height).sort((a,b)=>a-b); ({median: h[Math.floor(h.length/2)], p90: h[Math.floor(h.length*0.9)], n: h.length})` — **中央値を `ESTIMATED_CARD_HEIGHT` とし、実測値と測定環境を本 plan 末尾へ追記**(spec §9 再燃条件の基準値)。ローカル dev で seed 済 DB に到達できない場合は stg で実測。どちらも不可なら seed データ形状(選択肢数 × option 行高 + chrome)からの導出値を代用し、報告に「実測代替」と明記。
-- [ ] Step 2: `useWindowVirtualizer` 配線 — `count`/`estimateSize:()=>ESTIMATED_CARD_HEIGHT`/`overscan:3`/`getItemKey:(i)=>cards[i].id`/**`scrollMargin`=リスト先頭 offset**(window 座標原点合わせ・spec §8.1)。`<ul>` 内 = top spacer `<li aria-hidden>` + `getVirtualItems()` map(`InlineCardRow` に `data-index` + `ref={measureElement}`)+ bottom spacer。**行間 `space-y-3 md:space-y-2` margin を li 内 padding へ移す**(measureElement は margin を測らない・spec §8.2。視覚間隔は不変)。型 swap 厳禁・per-row memo 導入しない(spec §8.4)。
-- [ ] Step 3(有界窓 test・F9 先例): N=100 seed → **`container.querySelectorAll('li[data-index]')` で row のみ数え**(素朴な `<li>` は spacer 2 本を含むため不可)`0 < count < 100`。既存 test(小 N)は test 変更ゼロで green 維持。
-- [ ] Step 4: canonical + Codex review → 宣言 → commit `fix(exams): カードビューを useWindowVirtualizer で仮想化(Sprint F S1)[reviewed]`
+- [ ] Step 1(実測・勘で置かない): 既存 300 件 seed 試験のカードビュー(仮想化前の現 DOM)で DevTools MCP evaluate: `const h=[...document.querySelectorAll('ul>li')].map(e=>e.getBoundingClientRect().height).sort((a,b)=>a-b); ({median: h[Math.floor(h.length/2)], p90: h[Math.floor(h.length*0.9)], n: h.length})` — **中央値を `ESTIMATED_CARD_HEIGHT` とし、実測値と測定環境を本 plan 末尾へ追記**(spec §9 再燃条件の基準値)。ローカル dev 不達なら stg で実測。**両方不可なら停止して OT へ**(代替導出は OT 承認時のみ = 要件「勘で置かない」の blocker 扱い・Codex 指摘反映)。
+- [ ] Step 2: `useWindowVirtualizer` 配線 — `count`/`estimateSize:()=>ESTIMATED_CARD_HEIGHT`/`overscan:3`/`getItemKey:(i)=>cards[i].id`/`scrollMargin`=リスト先頭 offset。**scrollMargin は render 時に listRef.offsetTop から再評価**(上部 chrome 変化は次 render 追従・専用 ResizeObserver は足さない = YAGNI、smoke ④ で drift が出たら再検討 — Codex 指摘反映)。`<ul>` 内 = top spacer `<li aria-hidden>` + `getVirtualItems()` map(**親 map の `<li>` に `data-index` + `ref={measureElement}` を直接付与** = W0 の li 温存構成)+ bottom spacer。**行間 `space-y-3 md:space-y-2` margin を li 内 padding へ移す**(measureElement は margin を測らない・spec §8.2。視覚間隔は不変)。型 swap 厳禁・per-row memo 導入しない(spec §8.4)。
+- [ ] Step 3(追加カード UX): list-level effect(`[cards, newCardIds]`): `newCardIds` の id が `cards` に現れたら該当 index へ `scrollToIndex`。**align は OT 確定事項**(spec §8.3 表記 = `'end'` / CC 推奨 = `'auto'`(下方 off-screen では 'end' と同着地・可視時は no-op で無駄 jump なし)— plan 承認時に確定)。**動的行高ズレの mitigation(二段構え・OT 入力 1)**: scrollToIndex は estimate 基準の概算で行を mount させるだけとし、正確な位置合わせは mount 後の auto-edit `focus()` の browser 標準 scroll-into-view に委ねる(`inline-text-field.tsx:110-114` 既存挙動)。追い scroll の自前実装は足さない(YAGNI・smoke ⑤ で不足が出たら再検討)。
+- [ ] Step 4(test): ① 有界窓(F9 先例): N=100 seed → **`container.querySelectorAll('li[data-index]')` で row のみ数え**(素朴な `<li>` は spacer 2 本を含む)`0 < count < 100`、**+ spacer 2 本の style height が有限かつ ≥0**(NaN/負数の破綻検出 — Codex 指摘反映)② scrollToIndex spy(jsdom では scroll no-op のため呼出のみ)③ 既存 test(小 N)は test 変更ゼロで green 維持。
+- [ ] Step 5: canonical + Codex review → 宣言 → commit `fix(exams): カードビューを useWindowVirtualizer で仮想化 + 追加カード可視化(Sprint F S)[reviewed]`
 
-**完了条件:** 有界窓 test green・既存無傷・ESTIMATED_CARD_HEIGHT の根拠値記録・Crit0/Imp0。
-
-### Task S2: 「+ カードを追加」UX(scrollToIndex)
-
-**Files:** Modify: `inline-card-list.tsx`。Test: `inline-card-list.test.tsx`
-**Interfaces:** Consumes: S1 の virtualizer instance / W1 の `newCardIds`。Produces: list-level effect(追加 card の可視化)。
-
-- [ ] Step 1: list-level effect(`[cards, newCardIds]`): `newCardIds` の id が `cards` に現れたら該当 index へ `scrollToIndex(idx, {align:'auto'})`(可視なら no-op)。**動的行高ズレの mitigation(二段構え・OT 入力 1)**: scrollToIndex は estimate 基準の概算で行を mount させるだけとし、**正確な位置合わせは mount 後の auto-edit `focus()` の browser 標準 scroll-into-view に委ねる**(`inline-text-field.tsx:110-114` 既存挙動)。追い scroll の自前実装は足さない(YAGNI・smoke ⑤ で不足が出たら再検討)。
-- [ ] Step 2(test): 追加 → effect が scrollToIndex を呼ぶ(virtualizer method spy・jsdom では scroll 自体 no-op のため呼出のみ検証)+ 既存の追加→auto-edit test 無傷。end-to-end の着地精度は smoke ⑤(Global 外・OT)。
-- [ ] Step 3: canonical + Codex review → 宣言 → commit `fix(exams): 追加カードの可視化 scroll を仮想化に対応(Sprint F S2)[reviewed]`
-
-**完了条件:** spy test green・既存無傷・Crit0/Imp0。
+**完了条件:** 有界窓 + spacer + spy test green・既存無傷・ESTIMATED_CARD_HEIGHT の根拠値記録・Crit0/Imp0。
 
 ### Task F: sprint 完了 gate + OT 引き渡し
 
@@ -100,6 +91,6 @@
 
 ---
 
-## 実測記録(Task S1 Step 1 で追記)
+## 実測記録(Task S Step 1 で追記)
 
 - ESTIMATED_CARD_HEIGHT = (未実測)/ 測定環境: / median: / p90: / n:
