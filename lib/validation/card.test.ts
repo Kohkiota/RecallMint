@@ -29,6 +29,21 @@ describe('imagesSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  // Sprint I W2: 解説/メモへの画像添付を許容する target widen。
+  it('正常: UUID key + target=explanation_text → pass (Sprint I W2 widen)', () => {
+    const result = imagesSchema.safeParse([
+      { key: UUID_KEY, target: 'explanation_text', alt: '' },
+    ])
+    expect(result.success).toBe(true)
+  })
+
+  it('正常: UUID key + target=memo → pass (Sprint I W2 widen)', () => {
+    const result = imagesSchema.safeParse([
+      { key: UUID_KEY, target: 'memo', alt: '' },
+    ])
+    expect(result.success).toBe(true)
+  })
+
   it('url が非空 → reject', () => {
     const result = imagesSchema.safeParse([
       {

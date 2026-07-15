@@ -107,11 +107,18 @@ const imageEntrySchema = z
     (entry) => {
       // legacy (非 UUIDv4) key は target 形式強制の対象外
       if (!isAssetKey(entry.key)) return true
-      return entry.target === 'question_text' || /^option:.+/.test(entry.target)
+      // Sprint I: 画像添付を 4 面へ拡張。field 名一致の target を許容
+      // (question_text / explanation_text / memo)+ 選択肢は option:<id>。
+      return (
+        entry.target === 'question_text' ||
+        entry.target === 'explanation_text' ||
+        entry.target === 'memo' ||
+        /^option:.+/.test(entry.target)
+      )
     },
     {
       message:
-        "target は 'question_text' または 'option:...' 形式である必要があります",
+        "target は 'question_text' / 'explanation_text' / 'memo' または 'option:...' 形式である必要があります",
       path: ['target'],
     },
   )
