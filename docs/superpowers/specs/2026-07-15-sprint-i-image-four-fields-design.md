@@ -10,7 +10,7 @@
 
 画像添付を **問題文 / 各選択肢 / 解説 / メモ** の 4 面に拡張する。現状は添付 UI が `target='question_text'` 固定(gallery 2 instance)で実データも事実上 question_text 一択。
 
-**In**: ① `imageEntrySchema` の target widen(解説/メモ)② gallery 増設(4 面)③ **選択肢削除時の画像 cascade**(データ破損防止・§3)。
+**In**: ① `imageEntrySchema` の target widen(解説/メモ)② 編集面 gallery 増設(4 面)③ **選択肢削除時の画像 cascade**(データ破損防止・§3)④ 学習面 read-only 表示(question/option/explanation)。
 **Out(非スコープ)**: 表描画(Sprint T)/ 本文への inline 挿入 / OCR の画像自動切り出し / dedup 再利用分岐 / 選択肢の並べ替え(**現コードに reorder UI 自体が存在しない** = §2)。
 
 ## 2. HEAD 再検証結果(`ce60b20`・fact-finding の無検証転記を避けるため実コードで裏取り)
@@ -49,24 +49,26 @@ Sprint F spec §9(多択行高肥大・現「未検証・監視持ち越し」)�
 
 ### 4.3 gallery 設置
 - **編集面(`card-editor-fields.tsx`・list と side-peek が共有)**: 解説/メモ の `InlineTextField` 直下に `CardImageGallery target='explanation_text'|'memo'` を増設。選択肢は `InlineOptionList` に `images`+`userId` を追加透過し、各選択肢行(`inline-option-row.tsx`)に `CardImageGallery target={'option:'+id} compact` を設置。
-- **学習面(`session-runner.tsx`・read-only)= W4(OT 判断)**: 現 question_text read-only gallery を、学習が描画する field(question / option / explanation)へ read-only で拡張。memo は学習非表示ゆえ対象外。**本スプリントに含めるか OT 判断**(編集で付けた画像が学習で見えない coherence gap を埋めるが、smoke は編集面中心ゆえ分離可)。
+- **学習面(`session-runner.tsx`・read-only)= W4(必須)**: 現 question_text read-only gallery を、学習が描画する field(question / option / explanation)へ read-only で拡張。memo は学習非表示ゆえ対象外。編集で付けた画像は「解く/答え合わせ」時に見るものゆえ学習面表示は機能の一部(W4 なしでは「付けたのに出ない」= 破綻)。read-only ゆえ attach/remove を通らず §3 の破損経路と無関係で安価。
 
 ### 4.4 無改修(§2 再検証で確定)
 handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-asset)/ backfill / CardImage 型は **変更不要**。migration 不要。
 
-## 5. Phase 分割(G→W)
+## 5. Phase 分割(全 phase feat・test-first)
 
-全 phase behavior-changing(feat)ゆえ canonical + Codex review + [reviewed]。
+全 phase behavior-changing(feat)ゆえ canonical + Codex review + [reviewed]。**各 phase の完了条件 = 対象 test green**(赤で task 間を連結しない = per-task で full test)。
 
-- **G(安全網 test・先行)**: 選択肢削除 + id 再利用の**誤紐付きガード**を pin。「`option:b` 画像を持つ選択肢 b を削除 → 新選択肢追加(id が b に再利用される)→ 新 b に旧画像が付かない」を検証。cascade 不在なら zombie 残存 → 新 b に誤紐付き = **RED**。**完了条件**: cascade 実装前に RED、実装後 GREEN(非空振り)。
-- **W1(選択肢削除の画像 cascade)**: §3 の cascade を `handleDeleteOption`(`use-card-options.ts`)に自己完結で実装(削除 idx から option id を確定 → `getClientDb().cards.get(cardId)` で images 読取 → `option:<id>` の asset key を既存 `removeImageFromCard` で除去。server は既存 handleImages の refs 全置換で追随 = server 無改修)。G を GREEN 化。**完了条件**: G green・既存 option test 回帰なし・Crit0。
+- **W1(選択肢削除の画像 cascade・test first)**: 破損回帰 test と cascade 実装を**同一 task**で行う(TDD RED→GREEN を 1 commit 内で完結。**RED 状態は commit しない** = 「同一挙動変更に対する test と実装」ゆえ分割すると赤が生まれるだけ)。
+  - test(先行): 「`option:b` 画像を持つ選択肢 b を削除 → 新選択肢追加(id が b に再利用される)→ 新 b に旧画像が付かない」。**cascade を neuter(削除時に画像を残す)すると RED になることを commit 前 review 時に確認・報告**(§6・非空振り担保。RED は commit しない)。
+  - 実装: §3 の cascade を `handleDeleteOption`(`use-card-options.ts`)に自己完結で実装(削除 idx から option id を確定 → `getClientDb().cards.get(cardId)` で images 読取 → `option:<id>` の asset key を既存 `removeImageFromCard` で除去。server は既存 handleImages の refs 全置換で追随 = server 無改修)。
+  - **完了条件**: 上記 test + 既存 option test 回帰なしで **green commit**・Crit0。
 - **W2(imageEntrySchema widen)**: 解説/メモ target を refine に追加(§4.1)。**完了条件**: `explanation_text`/`memo` の UUID-key entry が validation を通り、未許容 target が従来どおり reject される test・既存 question_text/option: entry 不変。
 - **W3(gallery 増設)**: `CardImageGallery` に `compact` 追加 + 編集面 4 面配線(§4.2/4.3)。**完了条件**: 4 面すべてで attach/remove が既存経路を通る・compact 空選択肢が小 affordance のみ・問題文据え置き・Crit0。
-- **W4(学習面 read-only・OT 判断で含/除)**: §4.3。**完了条件**: 学習面 question/option/explanation に read-only gallery・memo 除外。
+- **W4(学習面 read-only・必須)**: §4.3。学習が描画する question/option/explanation に read-only gallery を拡張(memo は学習非表示ゆえ除外)。**完了条件**: 4 面添付が学習面で read-only 表示される・read-only(attach/remove 経路を通らない)・Crit0。
 
 ## 6. test 方針
 
-- **非空振りの破損回帰(G・最重要)**: §5 G。**序数ベースの破損は該当しない**(§2 で id ベースと確定)ため、実在する破損ベクタ = **id 再利用**を pin する。cascade を neuter(削除時に画像を残す)すると RED になることを確認して非空振り担保。
+- **非空振りの破損回帰(W1・最重要)**: §5 W1。**序数ベースの破損は該当しない**(§2 で id ベースと確定)ため、実在する破損ベクタ = **id 再利用**を pin する。cascade を neuter(削除時に画像を残す)すると RED になることを commit 前 review で確認して非空振り担保(RED は commit しない = W1 は green で commit)。
 - **W1**: 削除で `option:<id>` 画像が cards.images から消える + 他 target 画像・他選択肢画像は残る(union 非破壊)。reclaim 呼び出し確認。
 - **W2**: widen した target の通過 + 未許容 target の reject(既存 refine test に 2 面追加)。
 - **W3**: 4 面それぞれ attach→cards.images に正しい target で 1 entry・remove で消える(既存 gallery test を target 別に拡張)。compact 空状態の affordance。
@@ -80,7 +82,7 @@ handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-
 3. **選択肢削除の追随(破損防止)**: 画像付き選択肢を削除 → (同 id 再利用が起きる操作で)新選択肢に旧画像が付かない。
 4. **GC 非孤児化**: GC reconciler 実行後、4 面の生存画像が孤児判定・削除されない(§2 で asset_id ベースと確定済のため回帰確認)。
 5. **§9 非悪化**: 多択カードで空選択肢が小 affordance のみ・行高が常時 gallery 化で肥大しない。
-6. (W4 採用時)学習面で question/option/explanation の画像が read-only 表示。
+6. **学習面 read-only 表示**: 学習画面で question/option/explanation の画像が read-only 表示される(編集で付けた画像が「解く/答え合わせ」時に見える)。
 
 ## 8. 制約・非機能
 
@@ -89,8 +91,8 @@ handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-
 - 通常則: review-before-commit / canonical + Codex / commit は CC・push は OT / SQL は OT(本 spec は SQL 不要)。
 - spec は実装フェーズで凍結。仕様変更が要れば停止して OT 相談。
 
-## 9. 判断論点(claude.ai レビュー / OT 承認向け)
+## 9. 設計判断の確定(OT レビュー 2026-07-15 反映)
 
-1. **選択肢削除 cascade(§3)を W1 として実装**する方針でよいか(破損の必要十分解。代替 = `nextOptionId` を非再利用化する案もあるが、既存 a/b/c・1/2/3 の id 語彙=正解サマリ表示を壊すため不採用)。
-2. **学習面 read-only(W4)を本スプリントに含めるか**(編集で付けた画像を学習で見せる coherence を取るか、smoke 中心の編集面 W1-W3 に絞るか)。
-3. 解説/メモ gallery を**常時表示形態**(問題文と同じ)とした判断(§4.2)でよいか(選択肢のみ compact)。
+1. **選択肢削除 cascade(§3)= W1 で実装**(承認)。代替 `nextOptionId` 非再利用化は不採用 — **id が UI 語彙を兼ねる**(a/b/c・1/2/3 が正解サマリ表示に露出)ため、非再利用化は穴あき表示(a, b, d)という別問題を作る。cascade は「zombie 除去 + id 再利用 window を同時に閉じる」= 片方では不足(zombie だけ残す = storage リーク継続 / window だけ閉じても zombie 残存)。
+2. **学習面 read-only(W4)= 本スプリント必須**(確定・分離案不採用)。W4 なしでは「解説に画像を付けられるのに学習で見えない」= 機能破綻(試験カードの図は解く/答え合わせ時に見るもの)。read-only ゆえ破損経路と無関係・安価。分離すると同一体験の smoke が二度手間。memo 除外は正(学習非表示)。
+3. **解説/メモ = 常時表示・選択肢のみ compact**(承認)。§9 リスクは**選択肢数に比例**するため、比例するものだけ compact にするのが必要十分。解説/メモは card あたり 1 個で非比例ゆえ問題文と形態を揃える。
