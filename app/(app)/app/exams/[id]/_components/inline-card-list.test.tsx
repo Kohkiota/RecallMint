@@ -633,6 +633,55 @@ describe('InlineCardList — 仮想化 (Sprint F S)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// scroll-top ボタン (card-view 移植): テーブルビュー (exam-card-table) と同一 presentation
+// の「先頭へスクロール」ボタン。table は element scroll (tableContainerRef) 由来の collapsed
+// で出し入れするが、card-view は useWindowVirtualizer = window スクロールのため window.scrollY
+// を閾値判定する。jsdom は window.scrollY を defineProperty で駆動する。
+// ---------------------------------------------------------------------------
+describe('InlineCardList — scroll-top ボタン (card-view 移植)', () => {
+  afterEach(() => {
+    // defineProperty で上書きした window.scrollY を既定 (0) へ戻す (後続 test 汚染防止)。
+    Object.defineProperty(window, 'scrollY', {
+      value: 0,
+      configurable: true,
+      writable: true,
+    })
+  })
+
+  it('初期 (scrollY=0) では scroll-top ボタンは非表示', () => {
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    expect(screen.queryByTestId('scroll-top-button')).not.toBeInTheDocument()
+  })
+
+  it('window を閾値超に scroll すると scroll-top ボタンが出現する', async () => {
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    expect(screen.queryByTestId('scroll-top-button')).not.toBeInTheDocument()
+    Object.defineProperty(window, 'scrollY', {
+      value: 1000,
+      configurable: true,
+      writable: true,
+    })
+    fireEvent.scroll(window)
+    expect(await screen.findByTestId('scroll-top-button')).toBeInTheDocument()
+  })
+
+  it('click で window.scrollTo({ top: 0, behavior: smooth }) を呼ぶ', async () => {
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    Object.defineProperty(window, 'scrollY', {
+      value: 1000,
+      configurable: true,
+      writable: true,
+    })
+    fireEvent.scroll(window)
+    const btn = await screen.findByTestId('scroll-top-button')
+    const scrollSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    fireEvent.click(btn)
+    expect(scrollSpy).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
+    scrollSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // A3: responsive spacing クラス回帰防止 (md: prefix の維持確認)
 // ---------------------------------------------------------------------------
 describe('InlineCardList responsive spacing (A3)', () => {

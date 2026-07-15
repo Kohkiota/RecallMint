@@ -15,6 +15,7 @@ import {
 } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
+import { ChevronUp } from 'lucide-react'
 import Link from 'next/link'
 import type { ExamDetailCard } from '@/lib/exams/list'
 import type { CardOption } from '@/lib/db/schema'
@@ -75,6 +76,12 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
 // measureElement(ResizeObserver)が実行高で補正する。多択カード等の可変行高は
 // measureElement 追従で吸収(spec §9・行高肥大は監視方針)。
 const ESTIMATED_CARD_HEIGHT = 738
+
+// scroll-top ボタンの表示閾値(px)。window をこの高さ以上スクロールしたら表示する。
+// table(exam-card-table)は element scroll の collapsed(hysteresis 8/24px)由来だが、
+// card-view の scroll-top ボタンは fixed で本文レイアウトを変えない(collapse のような
+// layout feedback loop が無い)ため hysteresis は不要で単純閾値で足りる。
+const SCROLL_TOP_VISIBLE_THRESHOLD = 400
 
 // 1 card 分の行 body(sort_key / title / delete + 後段フィールド列)を module scope の
 // component に抽出(Sprint F W0)。抽出は verbatim 移動のみ(挙動不変)で、後続の W1
@@ -320,6 +327,19 @@ export function InlineCardList({
     }
   }, [cards, newCardIds, rowVirtualizer])
 
+  // scroll-top ボタン(テーブルビュー exam-card-table と同一 presentation)。card-view は
+  // window スクロール(useWindowVirtualizer)のため、element scroll の collapsed に相当する
+  // 出し入れを window.scrollY の閾値判定で行う。検知対象が構造的に異なるため component は
+  // 共有せず presentation のみ揃える(実重複 2 箇所 = rule-of-three 未満)。
+  const [showScrollTop, setShowScrollTop] = useState(false)
+  useEffect(() => {
+    const onScroll = () =>
+      setShowScrollTop(window.scrollY > SCROLL_TOP_VISIBLE_THRESHOLD)
+    onScroll() // 復元スクロール等、mount 時点の scroll 位置を初期反映
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
   const virtualItems = rowVirtualizer.getVirtualItems()
   const totalSize = rowVirtualizer.getTotalSize()
   const hasVirtualItems = virtualItems.length > 0
@@ -468,6 +488,26 @@ export function InlineCardList({
           </p>
         )}
       </div>
+
+      {/* scroll-top ボタン: window を閾値超スクロール時のみ表示。fixed のため本文レイアウトに
+          影響しない。presentation はテーブルビュー(exam-card-table)と同一。element scroll
+          でなく window.scrollTo を呼ぶ点のみ異なる。safe-area(env(safe-area-inset-bottom))は
+          付与しない: ① 参照するテーブルビューのボタンも非付与ゆえ視覚一致のため揃える、
+          ② 現 viewport は viewport-fit=cover 不在で env() が全デバイス 0(inert)かつ iOS
+          Safari は viewport を safe-area 手前に inset するため bottom-4 は home indicator と
+          構造的に被らない(判断根拠は Sprint F session doc)。 */}
+      {showScrollTop && (
+        <Button
+          variant="outline"
+          size="icon-lg"
+          className="rounded-full shadow-sm fixed right-6 bottom-4 z-30"
+          data-testid="scroll-top-button"
+          aria-label="先頭へスクロール"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        >
+          <ChevronUp />
+        </Button>
+      )}
     </div>
   )
 }
