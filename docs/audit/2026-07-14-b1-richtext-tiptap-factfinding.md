@@ -1,5 +1,11 @@
 # B1(リッチテキスト・Tiptap)fact-finding
 
+> **⚠️ 前提破棄(2026-07-15 追記・supersede ではない)**
+> 本 doc の中核前提「Tiptap によるリッチテキスト化 + 本文途中への画像挿入 + 本文 version 付き JSON + 変換層」は、業界調査(Anki/Mochi/RemNote/Quizlet/Markji)+ GPT cross-check + OT 討議を経て **破棄**された。B1 は「**画像は欄(field)単位添付** + **表は MD のまま保存・read-only 描画**」へ縮小。
+> - **破棄(もう追わない)**: Tiptap/Lexical 選定・技術スパイク 5 点・本文 JSON・変換層・**案 X/案 Y(assetId 保有面)論点**・**card_asset_refs clobber gap**(本文 JSON を入れない以上発生しない)・`@tiptap/react` peer 調査。
+> - **生きている事実(現 HEAD 再検証の上で流用可)**: **A. 編集面の棚卸し**(2 プリミティブ / 3 面 / commit 経路)・**C. seam / 仮想化・React19 の現物事実**・**B. 保存 format の事実**(全 text field は plain string・options jsonb・`content_version` は DEAD・wire は `value:z.unknown()` shape 非依存・`card_asset_refs` は handleImages 単一 writer で field_key=target verbatim)。
+> - 後継 doc = `docs/audit/2026-07-15-b1-scope-reduction-and-cardview-freeze-factfinding.md`(縮小スコープ + カードビュー freeze bug triage)。
+
 - **日付**: 2026-07-14
 - **調査 HEAD**: `develop` `0f94458`
 - **性質**: **read-only 調査のみ**。実装 / スパイク prototype / migration / spec 起草は一切なし(fact-finding と実装は分離)。
