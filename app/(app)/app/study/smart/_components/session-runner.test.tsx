@@ -1857,4 +1857,71 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
     expect(screen.queryByRole('button', { name: '画像を追加' })).not.toBeInTheDocument()
     expect(mockGetAssetObjectURL).not.toHaveBeenCalled()
   })
+
+  // Sprint I W4: 学習面 read-only を option / explanation にも拡張(memo は学習非表示ゆえ除外)。
+  const OPT_A_UID = 'a0000000-0000-4000-8000-00000000000a'
+
+  it('W4: option:<uid> の画像 → 選択肢下に read-only thumbnail(選択フェーズから表示・attach/delete なし)', async () => {
+    const OPT_IMG = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const card = makeCard({
+      id: 'c1',
+      userId: 'user-opt-img',
+      options: [
+        { id: 'a', uid: OPT_A_UID, text: '選択肢A', is_correct: false },
+        { id: 'b', uid: 'b0000000-0000-4000-8000-00000000000b', text: '選択肢B', is_correct: true },
+      ],
+      images: [{ key: OPT_IMG, target: `option:${OPT_A_UID}`, alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(1)
+    })
+    expect(mockGetAssetObjectURL).toHaveBeenCalledWith(
+      'user-opt-img',
+      OPT_IMG,
+      expect.objectContaining({ resolveAssetUrls: mockResolveAssetUrls }),
+    )
+    expect(container.querySelector('input[type="file"]')).not.toBeInTheDocument()
+  })
+
+  it('W4: explanation_text の画像 → 判定後に解説節に read-only thumbnail', async () => {
+    const EXP_IMG = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    const card = makeCard({
+      id: 'c1',
+      userId: 'user-exp-img',
+      explanationText: 'カード解説',
+      images: [{ key: EXP_IMG, target: 'explanation_text', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    // 判定前は解説節なし
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(1)
+    })
+  })
+
+  it('W4: explanationText 無し + explanation 画像あり → 判定後に解説節が表示(画像だけで節が出る)', async () => {
+    const EXP_IMG = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+    const card = makeCard({
+      id: 'c1',
+      userId: 'u',
+      explanationText: null,
+      images: [{ key: EXP_IMG, target: 'explanation_text', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => {
+      expect(screen.getByText('解説')).toBeInTheDocument()
+    })
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+  })
 })

@@ -57,6 +57,7 @@ import { useRouter } from 'next/navigation'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
 import { CardImageGallery } from '@/app/(app)/app/exams/[id]/_components/card-image-gallery'
+import { isAssetKey } from '@/lib/validation/card'
 import { equalSet } from '../_lib/equal-set'
 import {
   completeStudySession,
@@ -412,6 +413,10 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
   const options: CardOption[] = Array.isArray(current.options) ? current.options : []
   const isJudged = phase === 'judged'
   const isFirstCard = idx === 0
+  // Sprint I W4: テキスト無しでも解説画像だけで解説節を出すため(4 面化で生まれるエッジ)。
+  const hasExplanationImage = (Array.isArray(current.images) ? current.images : []).some(
+    (i) => i.key && isAssetKey(i.key) && i.target === 'explanation_text',
+  )
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
@@ -478,6 +483,21 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
                   </span>
                 )}
               </button>
+              {/* Sprint I W4: 選択肢画像の read-only 表示(選択フェーズから可視 = 解く時に見る)。
+                  button の外に置く(button 内に nested interactive を作らない)。uid あり時のみ
+                  (target=option:<uid>)。画像 0 件の option は gallery が null で thumbnail 増ゼロ
+                  (問題文 gallery と同じ wrapper パターン)。 */}
+              {opt.uid && (
+                <div className="mt-1">
+                  <CardImageGallery
+                    images={current.images}
+                    target={`option:${opt.uid}`}
+                    cardId={current.id}
+                    userId={current.userId}
+                    readOnly
+                  />
+                </div>
+              )}
             </li>
           )
         })}
@@ -496,13 +516,26 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
         </p>
       )}
 
-      {/* カード解説 (judged 中) */}
-      {isJudged && current.explanationText && (
+      {/* カード解説 (judged 中)。Sprint I W4: 解説画像も read-only 表示。表示条件を
+          「テキストあり or 解説画像あり」に拡張(画像だけ添付した card で解説節ごと消える
+          エッジを閉じる = 4 面化で初めて生まれるエッジ)。 */}
+      {isJudged && (current.explanationText || hasExplanationImage) && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
           <p className="text-xs font-medium text-slate-500">解説</p>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
-            {current.explanationText}
-          </p>
+          {current.explanationText && (
+            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
+              {current.explanationText}
+            </p>
+          )}
+          <div className="mt-2">
+            <CardImageGallery
+              images={current.images}
+              target="explanation_text"
+              cardId={current.id}
+              userId={current.userId}
+              readOnly
+            />
+          </div>
         </div>
       )}
 
