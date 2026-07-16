@@ -13,7 +13,7 @@
 1. 全 task feat = **TDD(test first)** → canonical + Codex review → **Crit0/Imp0 収束** → `[reviewed]` commit。**per-task で full test green**(赤で task 間を連結しない・RED を commit しない)。
 2. **新 gallery instance は必ず既存 `attachImageToCard` / `removeImageFromCard` を経由**し、target 部分集合の独自 commit を新設しない(spec §3 不変条件。attach/remove の全配列 fresh read/write が refs 全置換の union を構造的に保つ = GC 孤児化の唯一の破壊経路を塞ぐ)。
 3. `MAX_IMAGES_PER_CARD = 10` は **card 全体(4 面合計)のまま維持**(既存 pre-check は全配列 length・per-field 上限は作らない = YAGNI)。
-4. target 語彙(spec §4.1): `'question_text'` / `'option:<id>'` / `'explanation_text'` / `'memo'`。OCR legacy(非 UUID key・`option_1` 語彙)は別 namespace で不干渉・cascade / gallery の対象外(`isAssetKey` filter)。
+4. target 語彙(spec §4.1): `'question_text'` / **`'option:<uid>'`(§3 rev2・内部不変 UUID。W1 実装時の `option:<表示id>` から W5 で改訂)** / `'explanation_text'` / `'memo'`。OCR legacy(非 UUID key・`option_1` 語彙)は別 namespace で不干渉・cascade / gallery の対象外(`isAssetKey` filter)。**表示ラベル(a/b/c = `opt.id`)は uid と別物** — aria-label 等の UI 語彙は `opt.id`(表示)、画像 target は uid(同一性)を使う。
 5. test は実 Dexie(fake-indexeddb)+ server action / R2 / reclaim は mock(実 I/O 禁止)。
 6. 自走継続・停止条件・spec 凍結は CLAUDE.md 準拠。
 
@@ -55,16 +55,19 @@
 
 **目的**: W3 レビュー(canonical + Codex)が検出した delete-only cascade の取りこぼし 2 経路(id rename / blank-text 除去)を、紐付けキーの構造変更で根本解消する。`CardOption.uid`(UUID v4・不変・不可視)を導入し画像 target を `option:<uid>` 化 → **uid は再利用されないため mis-attach が構造的に不可能**になり、cascade は「配列から消えた uid の掃除」= **衛生機構**(set-diff 1 個・失敗しても破損しない)へ降格する。裏取り = `docs/audit/2026-07-16-option-internal-id-feasibility.md`。
 
-**Files**: Modify `lib/db/schema.ts`(CardOption)/ `lib/client-db.ts`(ClientCardOption)/ `lib/validation/card.ts`(optionSchema.uid + uid 一意 refine)/ `lib/cards/empty-card.ts` / `app/(app)/app/upload/_actions/process.ts`(OCR 写像点 mint)/ `scripts/seed-perf-exam.ts` / `app/(app)/app/exams/[id]/_hooks/use-card-options.ts`(handleAddOption mint + cascade set-diff 化)/ `lib/cards/card-field-handlers.ts`(handleOptions uid 透過)/ `lib/sync/server/entity-mutation-registry.ts`(create handler uid 透過)/ `lib/cards/card-write.ts`(create patch 透過・必要時)/ Test: 各対応 test。
+**Files**: Modify `lib/db/schema.ts`(CardOption)/ `lib/client-db.ts`(ClientCardOption)/ `lib/validation/card.ts`(optionSchema.uid + uid 一意 refine)/ `lib/cards/empty-card.ts` / `app/(app)/app/upload/_actions/process.ts`(OCR 写像点 mint)/ `scripts/seed-perf-exam.ts`(**uid mint + 多択カード 3〜5 枚混入・下記追加指示**)/ `app/(app)/app/exams/[id]/_hooks/use-card-options.ts`(handleAddOption mint + cascade set-diff 化)/ `lib/cards/card-field-handlers.ts`(handleOptions uid 透過)/ `lib/sync/server/entity-mutation-registry.ts`(create handler uid 透過)/ `lib/cards/card-write.ts`(create patch 透過・必要時)/ Test: 各対応 test。
 
 **制約**:
 - **G→W の型**: G = 現 delete cascade の挙動 pin(既存 W1 test が green のまま流用可 = uid 化後も delete で画像が消える)。
 - **mint 経路 = 4 つ全て**(1 経路でも漏れると uid 無し option が validation reject): ① handleAddOption(client・`newId()`)② buildEmptyCard(「+カードを追加」既定 option・create patch 経路)③ OCR **server 写像点 `process.ts:373` のみ**(**Gemini prompt / `ocr-extract.ts` / response schema は一切触らない** — LLM は表示ラベルのみ返し uid はアプリが振る。受け皿のみ・画像自動切り出しは非スコープ)④ seed script。+ **詰め替え透過 2 箇所**(handleOptions の camel/snake 詰め替え / create handler)で uid を落とさない。
-- cascade set-diff: options commit(`commit()`)で「旧 working-set に在って新に無い uid」を diff し、その `option:<uid>` 画像を W1 と同じ 2 段(removeImageFromCard → 成功分 reclaim)+ 直列 for-await + assetId 単位 warn で除去。delete/blank-text の両経路を単一機構でカバー(handleDeleteOption 専用 cascade は set-diff に吸収)。
+- cascade set-diff(**diff 対象を現物で確定 = 要修正 2**): `commit()`(`use-card-options.ts:210`)は `sanitized = target.filter(text 非空)` を **mirror(`afterPatch.options`)と server payload の双方**に書く一方、working-set state(`options`/`optionsRef.current`)は blank row を保持する。∴ **「実際に永続する集合」= `sanitized`**。cascade の diff は **`serverCommittedRef.current`(直近永続 = before)と `sanitized`(今回永続 = after)の uid 差分**を取る(working-set 差分は blank を残すため検出漏れ = 不可)。
+  - blank-text 経路: text を空にして blur → `handleCellSave` → `commit` で当該 option が sanitize 除外 → **その commit 時点で `serverCommittedRef.current` はまだ当該 uid を保持** → diff が commit 時点で除去を検出(pull-back 不要)。delete 経路も `handleDeleteOption` → `commit` を通るため同一機構でカバー。→ **W1 の handleDeleteOption 専用 cascade は commit の set-diff に置換(一般化・revert しない)**。no-op 短絡(`shallowEqualOptions(sanitized, serverCommittedRef.current)`)時は diff も空。
+  - 除去は W1 と同じ 2 段(removeImageFromCard → 成功分 reclaim)+ 直列 for-await + assetId 単位 warn。userId は `cards.get(cardId)` の `row.user_id` から導出(W1 と同じ)。cascade は fire-and-forget（衛生機構ゆえ失敗しても mis-attach 不能）。
 - 学習系は不変: `selected_answer_ids` / `correct_answer_ids` / 正解サマリ / `nextOptionId`(表示ラベル採番に降格・実装不変)/ ghost merge(表示 id key のまま)。
 - 既存データ: **lazy 付与は作らない**。stg は W5 push 後に OT が再 seed(uid 付き)。DDL/migration 不要(jsonb)。
+- **seed 多択カード(追加指示・OT 確定)**: 現 seed は 4 択中心(実測 max 828px)で Sprint F spec §9(多択行高肥大・20 択 ≈ 4531px 想定)が未検証・持ち越し。再 seed する今、**20 択カードを 3〜5 枚、可視窓に 1〜2 枚入るよう分散配置**して混ぜる(追加コストほぼゼロ)。uid mint は 4 択・20 択とも同経路。
 
-**test**: ① 生成 4 経路それぞれが uid を mint(handleAddOption / buildEmptyCard / OCR 写像点 / seed は build 関数単位)② 透過 2 箇所が uid を落とさない ③ **rename**: 画像付き option の id を変更 → 画像 target(uid)不変 = 追随 ④ **blank-text**: text 空 commit で option が消える → set-diff cascade が画像除去 ⑤ **delete**: 既存 W1 test green 維持 ⑥ uid 一意 refine・uid 無し option の reject。
+**test**: ① 生成 4 経路それぞれが uid を mint(handleAddOption / buildEmptyCard / OCR 写像点 / seed は build 関数単位)② 透過 2 箇所が uid を落とさない ③ **rename**: 画像付き option の id cell を編集 → 画像 target(uid)不変 = 追随(gallery filter が uid で hit)④ **blank-text(sanitize 経路を実際に通す = 非空振り必須)**: `handleCellSave(idx, {...opt, text: ''})` で commit → sanitize が option を永続集合から除外 → set-diff cascade が `option:<uid>` 画像を removeImageFromCard で除去(**配列から手で uid を消して diff を呼ぶ test は経路を通らず vacuous ゆえ禁止**)。cascade を neuter して RED になることを commit 前 review で確認(W1 と同型の非空振り担保)⑤ **delete**: 既存 W1 test green 維持(set-diff 化後も delete で画像除去)⑥ uid 一意 refine・uid 無し option の reject。
 
 **完了条件**: 上記 test green + 既存 test 回帰なし + **「全 option 生成経路が mint する」を test で担保** + Crit0/Imp0 + `[reviewed]`。
 
@@ -79,7 +82,7 @@
 **compact affordance の実物(OT plan 入力 2・既存 UI 語彙に揃える)**:
 - `CardImageGallery` に `compact?: boolean`。**thumbnail 描画は不変**(h-16 既存)。変わるのは空/add affordance のみ。
 - affordance = 生 button `h-6 w-6`(24px)— **gallery 内既存 icon 語彙 = thumbnail の × 削除 button(`min-h-6 min-w-6`)と同寸**。中身は lucide `ImagePlus` `size-3.5`(Button size-xs の svg 語彙)。**aria-label は文脈付け**(Codex a11y 指摘採用): `CardImageGallery` に `attachAriaLabel?: string` を追加し、選択肢 instance は `'選択肢 ' + opt.id + ' に画像を追加'` を渡す(既定 = 「画像を追加」・複数 option で同名 button が並ぶ SR 不可判別を回避)。`text-slate-400 hover:bg-slate-100 hover:text-slate-900` + 既存 focus-visible ring。click/tap = 既存 `fileInputRef.click()`(hidden input・attach 経路共有 = 全体ルール 2)。dashed「画像を追加」テキストボタンと空 flex container は compact では出さない。
-- 設置位置: `InlineOptionList` の各 `<li>` 内・`InlineOptionRow` の**直後**(Row は un-export presentational のまま不変・grid 非改変)。`target={'option:' + opt.id}`。
+- 設置位置: `InlineOptionList` の各 `<li>` 内・`InlineOptionRow` の**直後**(Row は un-export presentational のまま不変・grid 非改変)。**`target={'option:' + opt.uid}`**(§3 rev2・画像同一性は uid)。aria-label は表示ラベル `opt.id`(据え置き)。保持済 diff は `opt.id`→`opt.uid` の 1 箇所修正で拾う。
 - **§9 影響記録**: 空選択肢の増分 = 24px icon 1 個/選択肢(常時 dashed gallery なら ~52px+/選択肢)。画像を持つ行のみ thumb 高が乗る。行高変動は Sprint F の measureElement が吸収(spec §4.2 の 1 行記録を session doc へ転記)。
 - 解説/メモ = 問題文と同じ**常時形態**で `InlineTextField` 直下に `target='explanation_text'` / `'memo'` を増設(card あたり各 1 個・選択肢数非比例ゆえ §9 無関係)。
 
@@ -96,7 +99,7 @@
 **Files**: Modify `app/(app)/app/study/smart/_components/session-runner.tsx` / Test `session-runner.test.tsx`。
 
 **制約**:
-- 選択肢: 各 `<li>` 内・選択 `<button>` の**外**(直後)に `readOnly` gallery `target={'option:' + opt.id}`(button 内は nested interactive になるため禁止)。readOnly + 0 件 → null(既存)ゆえ空選択肢は DOM 増ゼロ。**readOnly thumbnail は非 interactive**(click しても選択動作と独立・何も起きない = 既存 readOnly gallery と同挙動)。option 画像は選択フェーズから表示(reveal 非依存)ゆえ判定前後の DOM 変化は既存 explanation 節の増減と同型。
+- 選択肢: 各 `<li>` 内・選択 `<button>` の**外**(直後)に `readOnly` gallery **`target={'option:' + opt.uid}`**(§3 rev2・画像同一性は uid。button 内は nested interactive になるため禁止)。readOnly + 0 件 → null(既存)ゆえ空選択肢は DOM 増ゼロ。**readOnly thumbnail は非 interactive**(click しても選択動作と独立・何も起きない = 既存 readOnly gallery と同挙動)。option 画像は選択フェーズから表示(reveal 非依存)ゆえ判定前後の DOM 変化は既存 explanation 節の増減と同型。
 - 解説: 解説 div 内に `target='explanation_text'` readOnly を追加。**表示条件を「`explanationText` truthy または explanation_text 画像あり」に拡張**(現条件はテキスト truthy のみ → 画像だけ添付した card で解説節ごと消えるエッジを閉じる)。判定は `current.images` の UUID-key `explanation_text` entry 有無。
 - 問題文 gallery(既存)不変。添付/削除 UI は一切出さない(readOnly)。
 
@@ -110,7 +113,7 @@
 
 **目的**: sprint 完了 gate と OT への引き渡し。
 
-**手順**: ① whole-repo `pnpm lint`(--max-warnings=0)/ `pnpm typecheck` / `pnpm test` 全 exit 0(報告に「whole-repo lint exit 0 確認済」明記)② session doc(`docs/superpowers/sessions/`)に commit range・per-task 要点・§9 影響記録・OT smoke checklist(spec §7 の 6 項: 4 面添付+reload 復活 / 削除の非復活 / 選択肢削除の追随 / GC 非孤児化 / §9 非悪化 / 学習面 read-only)を記載し `docs(session)` `[no-review]` commit ③ stop checkpoint 報告 → OT push → OT smoke。
+**手順**: ① whole-repo `pnpm lint`(--max-warnings=0)/ `pnpm typecheck` / `pnpm test` 全 exit 0(報告に「whole-repo lint exit 0 確認済」明記)② session doc(`docs/superpowers/sessions/`)に commit range・per-task 要点・§9 影響記録・W5 の uid 化経緯(W3 レビュー 2 経路 → uid で構造解消)・**OT smoke checklist(spec §7: 4 面添付+reload 復活 / 削除の非復活 / 選択肢削除の追随 / **rename 追随 3b** / GC 非孤児化 / §9 非悪化 / **§9 再燃検証 5b(多択 scroll)** / 学習面 read-only)**+ **§9 の検証結果欄(smoke 後に「検証済=持ち越し解消」or「観測→別 task 起票」を追記する受け皿)**を記載し `docs(session)` `[no-review]` commit ③ stop checkpoint 報告 → OT push(→ **OT が再 seed:uid 付き + 多択**)→ OT smoke。
 
 **完了条件**: 3 gate exit 0・session doc commit 済・working tree clean・stop checkpoint 報告。
 

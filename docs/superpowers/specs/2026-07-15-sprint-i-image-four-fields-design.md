@@ -36,7 +36,7 @@
 1. **紐付けキー = `option:<uid>`**。`CardOption` に **`uid`(UUID v4・不変・ユーザー不可視)**を追加し、画像 target は uid を参照する。現 `id`(a/b/c・1/2/3)は**表示ラベルへ降格**(正解サマリ・学習面表示・OCR 採番・`nextOptionId` は従来どおり id を使う。`selected_answer_ids`/`correct_answer_ids` も id のまま = 学習系は同時点自己整合ゆえ不変)。
    - rename は「ラベル変更」となり画像は uid で自動追随(**rename という概念が画像系から消滅**)。
    - **uid は UUID ゆえ再利用されない → 孤児画像が新選択肢へ誤紐付く(mis-attach)ことが構造的に不可能**。初版の破損ベクタ(`nextOptionId` の削除済 id 再利用 × zombie 残存)は確率的対処でなく不変条件として消える。
-2. **cascade = 配列 set-diff の単一機構(衛生機構)**。options commit で「配列から消えた uid」を diff し、その `option:<uid>` 画像を除去する(delete / blank-text 除去の両経路を同一機構でカバー。delete-only の W1 実装は W5 で**一般化**する — revert しない。W1 commit は当時の spec に忠実で履歴として正しい)。
+2. **cascade = 永続集合の set-diff の単一機構(衛生機構)**。options commit の **diff は「実際に永続する集合」に対して取る** — 直近永続(commit 前の確定 options)と今回永続(sanitize 後 = mirror/server に書かれる集合)の **uid 差分**で「消えた uid」を検出し、その `option:<uid>` 画像を除去する。**working-set(表示用・blank row を保持)を diff 対象にしない**(blank-text 除去は working-set に blank が残り diff が検出漏れするため。実装点は plan W5 参照)。これで delete / blank-text 除去の両経路を commit 時点で同一機構がカバーする(pull-back 非依存)。delete-only の W1 実装は W5 で**一般化**する — revert しない。W1 commit は当時の spec に忠実で履歴として正しい。
    - **cascade は正確性機構ではなく衛生機構**: 失敗しても mis-attach は起こりえず(上記 1)、残るのは storage リーク(GC は ref 存在で保持 = 安全側)のみ。ゆえに best-effort + warn 記録で足り、self-heal / 再試行は作らない(初版判断を「稀さへの賭け」から「構造的不可能」へ格上げ)。
    - 除去は **`removeImageFromCard`(images 配列除去のみ)+ 成功分を別途 `reclaimLocalAssetBlobs`(ローカル Cache blob 掃除)の 2 段**(gallery `handleDelete` `card-image-gallery.tsx:194-198` と同型)。`removeImageFromCard` は reclaim を**内蔵しない**(初版の事実誤認の正記述)。
 3. **uid の mint は全 option 生成経路で必須**(1 経路でも漏れると validation reject)。現 HEAD で確認済の生成経路 = **4 つ**: ①「+選択肢を追加」(`use-card-options.ts` handleAddOption・client `newId()`)②「+カードを追加」の既定 option(`lib/cards/empty-card.ts` buildEmptyCard・create patch 経路)③ **OCR は server 写像点(`process.ts:373`)でのみ mint**(Gemini prompt / `ocr-extract.ts` / response schema は**一切触らない** — LLM は表示ラベルのみ返し uid はアプリが振る。OCR 画像自動切り出しは従来どおり非スコープ・今回は受け皿のみ)④ seed script(`scripts/seed-perf-exam.ts`)。加えて server 側の**詰め替え透過** 2 箇所(`card-field-handlers.ts` handleOptions / `entity-mutation-registry.ts` create handler)で uid を落とさない。
@@ -103,7 +103,8 @@ handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-
 3. **選択肢削除の追随(破損防止)**: 画像付き選択肢を削除 → (同 id 再利用が起きる操作で)新選択肢に旧画像が付かない。
 3b. **rename 追随(§3 rev2)**: 画像付き選択肢の id を編集(a→x 等)→ 画像がその選択肢に付いたまま(消えない・他選択肢に付かない)。text を空にして blur(選択肢が消える)→ 新選択肢を追加しても旧画像が付かない。
 4. **GC 非孤児化**: GC reconciler 実行後、4 面の生存画像が孤児判定・削除されない(§2 で asset_id ベースと確定済のため回帰確認)。
-5. **§9 非悪化**: 多択カードで空選択肢が小 affordance のみ・行高が常時 gallery 化で肥大しない。
+5. **§9 非悪化(compact)**: 多択カードで空選択肢が小 affordance のみ・行高が常時 gallery 化で肥大しない。
+5b. **§9 再燃検証(Sprint F 持ち越し解消・W5 seed 多択で今回検証)**: 再 seed 後、**20 択カード前後を scroll** し、目視できる gap / 行の飛び / カクつき(scroll jitter)が無いか。観測されたら別 task 起票(対策候補 = explanation トグル化 / estimateSize 精緻化 / overscan 調整)。session doc に「§9 検証済(持ち越し解消)」or「観測 → 別 task 起票」を記録。
 6. **学習面 read-only 表示**: 学習画面で question/option/explanation の画像が read-only 表示される(編集で付けた画像が「解く/答え合わせ」時に見える)。
 
 ## 8. 制約・非機能
