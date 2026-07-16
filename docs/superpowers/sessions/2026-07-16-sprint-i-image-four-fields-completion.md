@@ -37,6 +37,14 @@ docs(spec/plan/audit)= `d488609` / `78aa3a6` / `eb168ba` / `26cc585` / `dbee52e`
 
 - **blank-text の非対称(W5・OT 判断 = cascade する)**: 画像付き選択肢の text を空にして blur → sanitize が永続集合から除外 → cascade が画像削除。**working-set は blank 行を保持ゆえ UI に行は残るが、打ち直しても画像は戻らない**(現行の壊れた挙動では zombie 残存ゆえ戻っていた・W5 は意図的に消す)。理由 = 「空 = option 消滅」の意味論一貫 + 不可視の永久 leak を避ける。uid 化で mis-attach 不能ゆえ**破損でなく hygiene vs UX トレードオフ** → smoke 3c で OT が実物許容判断。
 
+## UI fix(§9 行高・push 前・独立 commit `29c51f2` [reviewed])
+
+smoke 全 PASS 後、OT 実物確認で画像 add affordance が行高を食っていたため push 前に縮小(見た目のみ・feat と別)。CardImageGallery に `slot`('full'|'add'|'thumbnails')を追加し add affordance と thumbnail を分離:
+- **fix1(問題文/解説/メモ)**: dashed 大ボタン + 独立行 → **ラベル行の 24px アイコン**(slot='add')。thumbnail は field 下に slot='thumbnails' で据え置き(位置・サイズ不変)。**行増分ゼロ**。
+- **fix2(選択肢)**: add アイコンを**行内(delete と同セル)**に co-locate。**grid 設計判断 = 列を増やさず既存 auto(delete)セルに寄せる**(列追加は 20 択で text/解説幅を圧迫するため最小侵襲)。thumbnail は行下に据え置き(OT 許容)。slot='thumbnails' は空で null = **空選択肢の DOM 増ゼロ**。
+- **§9 行高影響**: 4 面 × dashed 大ボタン独立行 + 選択肢ごとの独立アイコン行 を消去。20 択カードで選択肢アイコン分の行を全廃。data-integrity(option:<uid>/attach/remove/cascade/validation/学習面)は非接触。
+- review: canonical Crit0/Imp0/Minor3(#2 airtight guard fix・#1 attach error 位置 follow-up 起票・#3 thumbnails gate 緩和=意図的)+ Codex clean。
+
 ## OT stg smoke 結果(2026-07-16・全項 PASS)
 
 再 seed 済 stg exam(`75104e5f-aea5-42b5-9d15-cc1743bda55d`)で OT 実施・**全項 PASS**。①②③⑤⑥ PASS。
