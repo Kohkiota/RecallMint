@@ -31,6 +31,8 @@
 
 ## 3. SEED_FORCE ガードの実際
 
+> **⚠ 実測補正(2026-07-16)**: 下記 line 39-41 の「提示 URL は token を含まない → L2 exit(1) → **SEED_FORCE=1 必須**」は**誤り**だった。OT が `SEED_FORCE` 無しで `--dry-run --cleanup` を実行したところ **`SEED_FORCE: OFF` の表示のまま正常走行**した。原因と正しい guard 実態は §3-bis(本節末)を参照。L2 の**コード記述(substring 検査)は正しい**が、full URL(secret)を CC が未読ゆえ「token を含まない」という**推論が外れた**。
+
 3 層(`:235-278`):
 - **L1**(`:237-245`): `VERCEL_ENV === 'production' || NODE_ENV === 'production'` → exit(1)。**SEED_FORCE でも bypass 不可**。ただしローカル実行では両 env が通常 unset ゆえ**発火しない**(= prod DB を local から叩く場合の防御にならない)。
 - **L2**(`:248-267`): `DATABASE_URL` を lowercase して `['stg','test','dev','localhost','127.0.0.1']` のいずれかを `includes` するか判定(`:255-258`)。含まなければ exit(1)、ただし **`SEED_FORCE === '1'` で bypass**(`:259`)。
@@ -44,6 +46,36 @@
   - L1 は「production env で実行しない」だけ(local からは効かない)。
   - **L3(`--user-id`)= 実質の bounding**: cleanup/seed は指定 user のデータにしか触れない(§4)。テストアカウント UUID を渡す限り、仮に prod DB に向いても触れるのは「そのテスト user の [PERF-SEED] exam」に限定される。
   - → ガードが守っているもの = 「production env での実行拒否(L1)」「user scope 限定(L3)」。**守れていないもの = Supabase URL の stg/prod 判別(L2)**。
+
+## 3-bis. L2 実測補正と破壊 script ガード実態(2026-07-16)
+
+### なぜ SEED_FORCE 無しで通ったか(現物 file:line)
+
+- L2 は `if (!looksSafe && process.env.SEED_FORCE !== '1') process.exit(1)`(`:259-267`)。**exit するのは `looksSafe` が false かつ SEED_FORCE 未設定の時だけ**。SEED_FORCE OFF で走った = **`looksSafe === true`** だった。
+- `looksSafe = safeTokens.some(token => dbUrl.toLowerCase().includes(token))`(`:256-258`)。`safeTokens = ['stg','test','dev','localhost','127.0.0.1']`(`:255`)。→ **`.env.local` の `DATABASE_URL` 文字列のどこかに、これらのいずれかが substring として含まれていた**。
+- **検査対象は接続文字列全体**: scheme / username(`postgres.<project-ref>`)/ **password** / host / port / dbname / query の全部を lowercase 連結して `includes`。前回 §3 の「pooler URL は token を含まない」は、**OT が chat で提示した host 断片(`aws-1-ap-northeast-1.pooler.supabase.com`)だけを見た推論**。CC は full URL(secret)を未読ゆえ、実際に project-ref / username / password 等に token が含まれていた事実を捉えられなかった。
+- **どの token が match したかは不明**(secret 未読)。host 側(`...pooler.supabase.com` / `aws-1-ap-northeast-1` / `postgres`)には `stg/test/dev/localhost/127.0.0.1` は現れないので、match は **secret 部分(project-ref か password 等)**。CC は推測で埋めない。
+- **dry-run だから gate されなかったのではない**: L2 は `main()` 冒頭(`:247-267`)で cleanup/dryRun 分岐(`:318`)より**前**に無条件評価される。∴ dry-run/cleanup でも L2 は走る。通った理由は `looksSafe===true` の一点。
+
+### L2 はさらに弱い(次の実装者への警告)
+
+- substring 検査は **password も対象**にする。長いランダム password が偶然 `dev`/`stg`/`test`(3-4 char)を含めば、**prod URL でも `looksSafe===true` になり SEED_FORCE 不要で通る**(false positive)。逆に token を含まない正当な stg URL は SEED_FORCE=1 が要る(false negative)。
+- Supabase の stg/prod pooler URL は構造上ほぼ同形(host に stg/prod token 無し)ゆえ、**L2 は stg/prod 境界として設計上機能しない**。前回結論「L2 は stg/prod を判別しない」は正しく、実測でむしろ**より弱い**(password 誤 match で prod を通しうる)と判明した。
+- ∴ 「SEED_FORCE=1 が必須」は **URL 依存で一般には成り立たない**。実際の `.env.local` では不要だった。**`SEED_FORCE` の有無を安全指標にしてはならない**。
+
+### 破壊 script のガード実態(横断・「ガードがあるから安全」の誤解防止)
+
+| script | env 拒否 | URL チェック | scope 限定 | dry-run |
+|---|---|---|---|---|
+| `seed-perf-exam.ts` | L1: `NODE_ENV/VERCEL_ENV==='production'` で exit(`:237-245`・**local では両 env unset ゆえ無効**)| L2: URL substring 弱ヒューリスティック(`:255-267`・password 誤 match・SEED_FORCE=1 で bypass)| L3: `--user-id` 必須(`:272-279`)= 実質 bounding | `--dry-run`(write ゼロ)+ `--dry-run --cleanup`(削除対象 identity 列挙)|
+| `gc-image-assets.ts`(GC reconciler)| grace<30 の prod 拒否(`:509-516`・**同じく production env 時のみ・local 無効**)| **無し**(L2 相当の URL チェックは存在しない)| `--user` scope(`:545`)| `--dry-run`(referenced/divergence 件数で間接 identity)|
+
+- **共通の穴**: どの破壊 script も「env 変数が literal `production`」以外では**自動で prod DB を止めない**。local shell から `--env-file` で prod URL を指せば L1/grace ガードは素通り。
+- **実効的な安全境界(これだけが確実)**:
+  1. **operator が DATABASE_URL(GC はさらに R2 env 4 種)を実行前に目視で正す** — 唯一の確実な境界。コードは Supabase URL の stg/prod を判別しない。
+  2. **`--user` / `--user-id` scope で blast radius を 1 テスト user に限定** — 万一向き先を誤っても、触れるのは指定 user のデータ(seed = `[PERF-SEED]%` exam / GC = その user の未参照 asset)に bounded。
+  3. **dry-run を先行**(seed = `--dry-run --cleanup` の列挙 / GC = referenced>0 + divergence 件数)。
+  - → 「ガードがあるから安全」は誤り。L1 / L2 / grace ガードは heuristic であり、**prod DB を local から叩く事故を構造的には防げない**。守りは operator の env 目視 + scope + dry-run の三点。
 
 ## 4. `--cleanup` の削除範囲
 
