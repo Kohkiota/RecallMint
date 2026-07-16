@@ -156,6 +156,7 @@ const applyCardCreate: EntityApplyFn<
   // options: camelCase (zod) → snake_case (CardOption)
   const cardOptions = patch.options.map((o) => ({
     id: o.id,
+    uid: o.uid, // Sprint I W5: 画像 identity(cardCreatePatchSchema で uid 必須)を透過。
     text: o.text,
     is_correct: o.isCorrect,
     ...(o.explanation ? { explanation: o.explanation } : {}),

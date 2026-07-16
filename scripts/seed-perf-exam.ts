@@ -81,6 +81,7 @@
 // - --cleanup で [PERF-SEED]% 試験をまとめて削除可能
 
 import 'dotenv/config'
+import { randomUUID } from 'node:crypto'
 import { and, eq, like, sql } from 'drizzle-orm'
 import { getDb, closeDb } from '@/lib/db'
 import {
@@ -512,13 +513,19 @@ async function main(): Promise<void> {
     const cardNum = String(i + 1).padStart(4, '0')
     const questionText = `[PERF-SEED No.${i + 1}] ${JP_LOREM.slice(0, 200 + (i % 5) * 20)}`
 
-    // 4 択ダミー選択肢 (index=0 を正解固定)
-    const opts: CardOption[] = [
-      { id: `opt-${i}-0`, text: `選択肢 A (正解) No.${i + 1}`, is_correct: true },
-      { id: `opt-${i}-1`, text: `選択肢 B No.${i + 1}`, is_correct: false },
-      { id: `opt-${i}-2`, text: `選択肢 C No.${i + 1}`, is_correct: false },
-      { id: `opt-${i}-3`, text: `選択肢 D No.${i + 1}`, is_correct: false },
-    ]
+    // Sprint I W5: 選択肢は uid(内部不変 identity)を必ず持つ。§9(多択行高肥大)検証の
+    // ため一部を 20 択にする(300 件中 ~4 枚・可視窓に 1-2 枚入るよう分散配置)。それ以外は
+    // 従来の 4 択。index=0 を正解固定。
+    const optionCount = i % 75 === 37 ? 20 : 4
+    const opts: CardOption[] = Array.from({ length: optionCount }, (_, j) => ({
+      id: `opt-${i}-${j}`,
+      uid: randomUUID(),
+      text:
+        j === 0
+          ? `選択肢 1 (正解) No.${i + 1}`
+          : `選択肢 ${j + 1} No.${i + 1}${optionCount === 20 ? '(多択検証用のやや長めの本文サンプル)' : ''}`,
+      is_correct: j === 0,
+    }))
     // shuffle opts for display variety
     const shuffledOpts = [...opts].sort(() => Math.random() - 0.5)
     const correctId = shuffledOpts.find((o) => o.is_correct)!.id

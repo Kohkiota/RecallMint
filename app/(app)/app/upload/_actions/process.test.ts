@@ -370,6 +370,16 @@ describe('processUpload', () => {
     expect(result.data?.ocrCostYen).toBe(5)
     expect(result.data?.modelChain).toEqual(['flash'])
     expect(result.data?.cards).toHaveLength(1)
+    // Sprint I W5: OCR 写像点(process.ts)で option uid を mint する(Gemini は表示ラベル id
+    // のみ返す = mock の options は uid 無し)。inserted card の options は各々別 uid を持つ。
+    const insertedOptions = dbState.insertedCards[0]!.options as Array<{
+      id: string
+      uid?: string
+    }>
+    expect(insertedOptions[0]!.uid).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    expect(insertedOptions[1]!.uid).not.toBe(insertedOptions[0]!.uid)
     // exam created with auto-name pattern
     expect(dbState.insertedExams).toHaveLength(1)
     expect(dbState.insertedExams[0].name).toMatch(/^アップロード \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)

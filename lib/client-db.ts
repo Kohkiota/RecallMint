@@ -54,6 +54,8 @@ export type ClientExam = {
 // 載せておくが、 MVP では mutations 経由で push するためここは原則 'synced' 固定。
 export type ClientCardOption = {
   id: string
+  // Sprint I W5: 画像紐付けの内部不変 identity(server `CardOption.uid` と同義)。
+  uid?: string
   text: string
   is_correct: boolean
   explanation?: string

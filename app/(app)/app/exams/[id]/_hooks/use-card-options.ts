@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CardOption } from '@/lib/db/schema'
 import { nextOptionId } from '@/lib/cards/next-option-id'
+import { newId } from '@/lib/sync/entity-mutations'
 import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
@@ -26,6 +27,7 @@ import { logger } from '@/lib/logger'
 // jsonb 形に詰め直す)。
 type ZodOption = {
   id: string
+  uid: string
   text: string
   isCorrect: boolean
   explanation?: string
@@ -34,6 +36,9 @@ type ZodOption = {
 function toZodOption(o: CardOption): ZodOption {
   return {
     id: o.id,
+    // Sprint I W5: working-set option は全経路で uid を持つ(handleAddOption mint /
+    // mirror 由来はいずれも uid 付き)。uid 無しは server optionsSchema が reject(fail-safe)。
+    uid: o.uid!,
     text: o.text,
     isCorrect: o.is_correct,
     ...(o.explanation ? { explanation: o.explanation } : {}),
@@ -61,28 +66,28 @@ function shallowEqualOptions(a: CardOption[], b: CardOption[]): boolean {
 
 const DEBOUNCE_MS = 500
 
-// Sprint I W1: 選択肢削除時の画像 cascade。削除された option の `option:<id>` 画像を
-// cards.images から除去する。これをしないと zombie 画像が残り、nextOptionId が同 id を
-// 再利用した際に新選択肢へ誤紐付く(静かなデータ破損・spec §3)。
+// Sprint I W5(§3 rev2): 永続集合から消えた option の画像を cascade 除去する衛生機構。
+// 紐付けキーは `option:<uid>`(内部不変 UUID・非再利用)ゆえ、削除/blank-text/rename の
+// いずれでも「消えた uid」= 除去対象で、rename は uid 不変で画像追随・id 再利用による
+// mis-attach は構造的に不可能(cascade 失敗でも破損せず storage リークのみ = 衛生機構)。
 //
-// 設計: DB 状態変更(選択肢削除 commit)を fallible な画像除去の成功に gate しないため、
-// 削除は caller 側で先に確定し、本 cascade は後段 best-effort(fire-and-forget)で呼ぶ。
-// userId は hook 引数に足さず card row(user_id)から導出する(caller 追随を増やさない)。
-// 除去は gallery `handleDelete` と同型の 2 段(removeImageFromCard で配列除去 → 成功分を
-// reclaimLocalAssetBlobs でローカル掃除)。複数画像は直列 for-await し、部分失敗は assetId
-// 単位で warn して残件を止めない。
-async function cascadeDeleteOptionImages(
+// 呼出は commit() の永続集合 diff(serverCommittedRef=直近永続 と sanitized=今回永続 の
+// uid 差分)から。best-effort(fire-and-forget)。userId は card row(user_id)から導出。
+// 除去は gallery `handleDelete` と同型の 2 段(removeImageFromCard → 成功分 reclaim)。
+// 複数画像/複数 uid は直列 for-await、部分失敗は assetId 単位 warn で残件を止めない。
+async function cascadeRemovedOptionImages(
   cardId: string,
-  optionId: string,
+  removedUids: string[],
 ): Promise<void> {
+  if (removedUids.length === 0) return
   const row = await getClientDb().cards.get(cardId)
   if (!row) return
   const images = Array.isArray(row.images) ? row.images : []
-  const target = `option:${optionId}`
-  // UUID key(= asset 参照)かつ当該 option target の entry のみ除去対象。legacy 非 UUID
-  // entry は passthrough(除去しない)、他 target/他選択肢の画像は温存(union 非破壊)。
+  const targets = new Set(removedUids.map((uid) => `option:${uid}`))
+  // UUID key(= asset 参照)かつ消えた option の target の entry のみ除去。legacy 非 UUID
+  // は passthrough、他 target/生存 option の画像は温存(union 非破壊)。
   const keys = images
-    .filter((i) => isAssetKey(i.key) && i.target === target)
+    .filter((i) => isAssetKey(i.key) && targets.has(i.target))
     .map((i) => i.key)
   if (keys.length === 0) return
   const removed: string[] = []
@@ -91,12 +96,11 @@ async function cascadeDeleteOptionImages(
       await removeImageFromCard({ cardId, assetId })
       removed.push(assetId)
     } catch {
-      // 選択肢削除は確定済ゆえ rollback せず記録のみ(client 側失敗記録は logger.warn。
-      // integration_failures 台帳は server reconciliation 用で client 書込経路が無い)。
+      // 永続 option の変更は確定済ゆえ rollback せず記録のみ(client 側失敗記録は
+      // logger.warn。integration_failures 台帳は server reconciliation 用で client 経路なし)。
       logger.warn({
         event: 'card_option_delete.image_cascade_failed',
         cardId,
-        optionId,
         assetId,
       })
     }
@@ -218,6 +222,21 @@ export function useCardOptions(
       return
     }
 
+    // Sprint I W5(§3 rev2): 永続集合の set-diff で「消えた option」の画像を cascade 除去。
+    // diff は「実際に永続する集合」= serverCommittedRef.current(直近永続=before)と
+    // sanitized(今回永続=after)の uid 差分で取る(working-set は blank row を保持するため
+    // diff 対象にしない)。delete も blank-text 除去も本経路(commit)を通るため単一機構で
+    // カバー。fire-and-forget(衛生機構ゆえ失敗しても mis-attach 不能)。
+    const afterUids = new Set(
+      sanitized.map((o) => o.uid).filter((u): u is string => !!u),
+    )
+    const removedUids = serverCommittedRef.current
+      .map((o) => o.uid)
+      .filter((u): u is string => !!u && !afterUids.has(u))
+    if (removedUids.length > 0) {
+      void cascadeRemovedOptionImages(cardId, removedUids).catch(() => {})
+    }
+
     // correct_answer_ids は is_correct から derive して同時 set (display 楽観反映用)。
     // server には送らず再生成される。 beforeValue は serverCommittedRef.current (= 直近の
     // server 確定値) から再構築する (revert 時に server 値に戻る経路、 Dexie auto-rollback
@@ -326,32 +345,30 @@ export function useCardOptions(
   // セット。 commit は呼ばない (text='' は ghost、 sanitize で除外される)。 user の
   // text 入力 → blur で handleCellSave 経由の通常 commit にのせる。
   const handleAddOption = () => {
-    const newId = nextOptionId(optionsRef.current.map((o) => o.id))
+    const newLabel = nextOptionId(optionsRef.current.map((o) => o.id))
     const newOption: CardOption = {
-      id: newId,
+      id: newLabel,
+      // Sprint I W5: 生成地点 mint(表示ラベル id とは別の内部不変 uid)。
+      uid: newId(),
       text: '',
       is_correct: false,
     }
     const nextAll = [...optionsRef.current, newOption]
     setOptions(nextAll)
     optionsRef.current = nextAll
-    setAutoEditOptionId(newId)
+    setAutoEditOptionId(newLabel)
   }
 
   // 削除: optimistic 即時除去 + commit (即時 drain)。 options.length === 1 は UI 上
   // button が disabled で到達しないが server zod min(1) を defensive に local でも判定。
   const handleDeleteOption = (idx: number) => {
     if (optionsRef.current.length <= 1) return
-    // 削除前に対象 option id を捕捉(cascade の target 決定に使う)。
-    const deletedId = optionsRef.current[idx]!.id
     const nextAll = optionsRef.current.filter((_, i) => i !== idx)
     setOptions(nextAll)
     optionsRef.current = nextAll
+    // Sprint I W5: 画像 cascade は commit() の永続集合 set-diff が担う(delete/blank-text を
+    // 単一機構で統一。削除を画像除去の成功に gate しない decouple は commit 側で維持)。
     commit(nextAll, true)
-    // Sprint I W1: 選択肢削除を確定させた後、後段で画像を cascade 除去(best-effort)。
-    // 削除を画像除去の成功に gate しない(decouple・spec §3)。top-level の Dexie read
-    // 失敗も握って unhandled rejection を出さない(既存 fire-and-forget と同 house style)。
-    void cascadeDeleteOptionImages(cardId, deletedId).catch(() => {})
   }
 
   // S2.0b-3: 選択肢 count + 正解サマリは optimistic `options` state から計算して

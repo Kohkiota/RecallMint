@@ -18,6 +18,9 @@ import type { EmptyCard } from './empty-card'
 // が期待する形で、 lib/cards/card-field-handlers.ts の handler が snake_case へ戻す。
 type OutboxCardOption = {
   id: string
+  // Sprint I W5: write-path(server optionsSchema が uid 必須)ゆえ required。
+  // create 経路の empty.options は buildEmptyCard が必ず mint する。
+  uid: string
   text: string
   isCorrect: boolean
   explanation?: string
@@ -54,6 +57,7 @@ export function buildNewCardMutationPatch({
     question_text: empty.questionText,
     options: empty.options.map((o) => ({
       id: o.id,
+      uid: o.uid, // Sprint I W5: EmptyCard.options は uid 保証型ゆえ透過(mint 済)。
       text: o.text,
       isCorrect: o.is_correct,
       ...(o.explanation ? { explanation: o.explanation } : {}),

@@ -45,9 +45,12 @@ import { useCardOptions } from './use-card-options'
 
 const CARD_ID = '11111111-1111-4111-8111-111111111111'
 
+// Sprint I W5: option は uid(内部不変 identity)を持ち、画像 target は option:<uid>。
+const UID_OPT_A = 'a0000000-0000-4000-8000-00000000000a'
+const UID_OPT_B = 'b0000000-0000-4000-8000-00000000000b'
 const baseOptions: CardOption[] = [
-  { id: 'a', text: '選択肢A', is_correct: false },
-  { id: 'b', text: '選択肢B', is_correct: false },
+  { id: 'a', uid: UID_OPT_A, text: '選択肢A', is_correct: false },
+  { id: 'b', uid: UID_OPT_B, text: '選択肢B', is_correct: false },
 ]
 
 beforeEach(() => {
@@ -245,10 +248,13 @@ describe('useCardOptions — handleCellUnmountSave (Sprint F W2)', () => {
 describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', () => {
   // baseOptions = [a, b]。b(index 1)を削除するケースを pin する。
   const Q_KEY = 'aaaaaaaa-0000-4000-8000-000000000001' // target question_text
-  const A_KEY = 'aaaaaaaa-0000-4000-8000-00000000000a' // target option:a
-  const B_KEY = 'aaaaaaaa-0000-4000-8000-00000000000b' // target option:b
-  const B_KEY2 = 'aaaaaaaa-0000-4000-8000-00000000000c' // target option:b (2 枚目)
-  const LEGACY_B = 'q001-img-1' // 非 UUID legacy(target option:b・asset でない)
+  const A_KEY = 'aaaaaaaa-0000-4000-8000-00000000000a' // target option:<UID_OPT_A>
+  const B_KEY = 'aaaaaaaa-0000-4000-8000-00000000000b' // target option:<UID_OPT_B>
+  const B_KEY2 = 'aaaaaaaa-0000-4000-8000-00000000000c' // target option:<UID_OPT_B> (2 枚目)
+  const LEGACY_B = 'q001-img-1' // 非 UUID legacy(target option:<UID_OPT_B>・asset でない)
+  // Sprint I W5: 画像 target は表示 id でなく uid。b 削除 → 消えた uid(B)の画像のみ除去。
+  const TARGET_A = `option:${UID_OPT_A}`
+  const TARGET_B = `option:${UID_OPT_B}`
 
   async function seedCardWithImages(images: unknown[]): Promise<void> {
     await getClientDb().cards.clear()
@@ -270,9 +276,9 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
   it('選択肢 b 削除 → option:b の asset 画像のみ removeImageFromCard で除去(他 target/他選択肢/legacy 非 UUID は温存 = union 非破壊)', async () => {
     await seedCardWithImages([
       { key: Q_KEY, target: 'question_text', alt: '' },
-      { key: A_KEY, target: 'option:a', alt: '' },
-      { key: B_KEY, target: 'option:b', alt: '' },
-      { key: LEGACY_B, target: 'option:b', alt: '' }, // legacy 非 UUID → 除去対象外
+      { key: A_KEY, target: TARGET_A, alt: '' },
+      { key: B_KEY, target: TARGET_B, alt: '' },
+      { key: LEGACY_B, target: TARGET_B, alt: '' }, // legacy 非 UUID → 除去対象外
     ])
     const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
     act(() => {
@@ -287,7 +293,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
   })
 
   it('reclaim: 除去成功分を reclaimLocalAssetBlobs(card の user_id, keys) でローカル掃除', async () => {
-    await seedCardWithImages([{ key: B_KEY, target: 'option:b', alt: '' }])
+    await seedCardWithImages([{ key: B_KEY, target: TARGET_B, alt: '' }])
     const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
     act(() => {
       result.current.handleDeleteOption(1)
@@ -299,8 +305,8 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
 
   it('部分失敗: 1 件目 reject でも 2 件目は除去継続 + 失敗を assetId 単位で warn + 成功分のみ reclaim', async () => {
     await seedCardWithImages([
-      { key: B_KEY, target: 'option:b', alt: '' },
-      { key: B_KEY2, target: 'option:b', alt: '' },
+      { key: B_KEY, target: TARGET_B, alt: '' },
+      { key: B_KEY2, target: TARGET_B, alt: '' },
     ])
     mockRemoveImage.mockRejectedValueOnce(new Error('boom')) // B_KEY 除去だけ失敗
     const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
@@ -323,7 +329,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
   })
 
   it('decouple: cascade 失敗でも選択肢削除の commit(options)は確定(削除を fallible 操作に gate しない)', async () => {
-    await seedCardWithImages([{ key: B_KEY, target: 'option:b', alt: '' }])
+    await seedCardWithImages([{ key: B_KEY, target: TARGET_B, alt: '' }])
     mockRemoveImage.mockRejectedValueOnce(new Error('boom'))
     const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
     act(() => {
@@ -346,5 +352,79 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
     await new Promise((r) => setTimeout(r, 50))
     expect(mockRemoveImage).not.toHaveBeenCalled()
     expect(mockReclaim).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sprint I W5(§3 rev2): option 内部 uid + 永続集合 set-diff cascade。
+// rename は uid 不変で画像追随(cascade しない)、blank-text は sanitize 経路で永続集合から
+// 消え cascade される。handleAddOption は uid を mint する。実 mirror 書込は
+// removeImageFromCard の unit test の責務ゆえ、hook は除去要求(uid 選択)を検証する。
+// ---------------------------------------------------------------------------
+describe('useCardOptions — uid + set-diff cascade (Sprint I W5)', () => {
+  const IMG_B = 'cccccccc-0000-4000-8000-00000000000b' // option:<UID_OPT_B> の画像
+
+  async function seedCard(options: CardOption[], images: unknown[]): Promise<void> {
+    await getClientDb().cards.clear()
+    await getClientDb().cards.put({
+      id: CARD_ID,
+      user_id: 'user-1',
+      exam_id: 'exam-1',
+      options,
+      images,
+    } as never)
+  }
+
+  // fire-and-forget cascade を次 test に持ち越さない(cross-test 汚染防止)。
+  afterEach(async () => {
+    await new Promise((r) => setTimeout(r, 30))
+  })
+
+  it('handleAddOption は表示ラベル id と別に UUID の uid を mint する', () => {
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    act(() => {
+      result.current.handleAddOption()
+    })
+    const added = result.current.options[2]!
+    expect(added.id).toBe('c') // 表示ラベルは nextOptionId 規則
+    expect(added.uid).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    expect(added.uid).not.toBe(added.id) // uid(同一性)≠ 表示ラベル
+  })
+
+  it('rename: option の id を変更しても uid 不変ゆえ画像は cascade されない(追随)', async () => {
+    await seedCard(baseOptions, [{ key: IMG_B, target: `option:${UID_OPT_B}`, alt: '' }])
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    // option b(uid=B)の id を 'x' に rename(uid は据え置き = 実 cell の applyId と同じ)。
+    act(() => {
+      result.current.handleCellSave(1, {
+        id: 'x',
+        uid: UID_OPT_B,
+        text: '選択肢B',
+        is_correct: false,
+      })
+    })
+    await new Promise((r) => setTimeout(r, 50))
+    // 消えた uid が無い(B は sanitized に生存)→ cascade 不発 = 画像は uid で追随。
+    expect(mockRemoveImage).not.toHaveBeenCalled()
+  })
+
+  it('blank-text(sanitize 経路を実走): text を空にして commit → 消えた uid の画像を cascade 除去', async () => {
+    await seedCard(baseOptions, [{ key: IMG_B, target: `option:${UID_OPT_B}`, alt: '' }])
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    // option b の text を空にして save。commit の sanitize が永続集合から b(uid=B)を除外し、
+    // set-diff が「消えた uid=B」を検出して cascade する(配列から手で uid を消さない = 非空振り)。
+    act(() => {
+      result.current.handleCellSave(1, {
+        id: 'b',
+        uid: UID_OPT_B,
+        text: '',
+        is_correct: false,
+      })
+    })
+    await vi.waitFor(() => {
+      expect(mockRemoveImage).toHaveBeenCalledWith({ cardId: CARD_ID, assetId: IMG_B })
+    })
   })
 })

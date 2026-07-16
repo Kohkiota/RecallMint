@@ -13,6 +13,9 @@ import { z } from 'zod'
 
 export const optionSchema = z.object({
   id: z.string().min(1, '選択肢の id は必須です'),
+  // Sprint I W5: 画像紐付けの内部不変 identity。全生成経路が mint するため書込境界では必須。
+  // crypto.randomUUID() = v4 ゆえ v4 厳密(isAssetKey と同じ判定域)。
+  uid: z.uuid({ version: 'v4' }),
   text: z
     .string()
     .max(1000, '選択肢の本文は 1000 文字以内で入力してください')
@@ -68,6 +71,11 @@ export const optionsSchema = z
   .max(50, '選択肢は最大 50 個までです')
   .refine((opts) => new Set(opts.map((o) => o.id)).size === opts.length, {
     message: '選択肢の id が重複しています',
+  })
+  // Sprint I W5: uid(画像 identity)も一意。id(表示ラベル)一意とは独立の制約
+  // (label は selected_answer_ids 用に一意・uid は画像紐付け用に一意)。
+  .refine((opts) => new Set(opts.map((o) => o.uid)).size === opts.length, {
+    message: '選択肢の uid が重複しています',
   })
 
 // ---------------------------------------------------------------------------

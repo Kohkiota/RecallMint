@@ -12,6 +12,7 @@ import { runOcrPipeline, OcrDeadlineError } from '@/lib/ai/ocr'
 import type { GeminiInputFile } from '@/lib/ai/clients/gemini'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
+import { newId } from '@/lib/sync/entity-mutations'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { TOTAL_UPLOAD_LIMIT_BYTES, TOTAL_UPLOAD_LIMIT_MB } from '../_lib/constants'
@@ -370,7 +371,9 @@ async function _processUpload(
     title: c.title,
     sortKey: c.sort_key ?? null,
     questionText: c.question_text,
-    options: c.options as CardOption[],
+    // Sprint I W5: OCR は表示ラベル id のみ返す(Gemini prompt / schema 非接触)。
+    // 内部不変 uid はアプリが写像点で mint する(受け皿・画像自動切り出しは非スコープ)。
+    options: c.options.map((o) => ({ ...o, uid: newId() })) as CardOption[],
     correctAnswerIds: c.correct_answer_ids,
     explanationText: c.explanation_text ?? null,
     images: (c.images ?? []) as CardImage[],

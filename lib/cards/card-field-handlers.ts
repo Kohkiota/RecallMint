@@ -151,6 +151,7 @@ const handleOptions: CardFieldHandler = async (tx, cardId, userId, value) => {
   // 残し、 空 string や未指定は jsonb から省く (旧 buildSetClause 同等)。
   const options: CardOption[] = r.data.map((o) => ({
     id: o.id,
+    uid: o.uid, // Sprint I W5: 画像 identity(optionsSchema で uid 必須検証済)を透過。
     text: o.text,
     is_correct: o.isCorrect,
     ...(o.explanation ? { explanation: o.explanation } : {}),

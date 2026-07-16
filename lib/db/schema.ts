@@ -45,6 +45,11 @@ import {
 // ---------------------------------------------------------------------------
 export type CardOption = {
   id: string
+  // Sprint I W5: 画像紐付けの内部不変 identity(UUID v4・ユーザー不可視・非再利用)。
+  // `id`(a/b/c 等)は表示ラベルでユーザー編集可 + 削除後再利用されるため、画像 target は
+  // uid を参照する(rename/削除で mis-attach しない)。型は optional(既存 fixture 互換)だが
+  // 全生成経路が mint し、書込境界の `optionSchema.uid`(z.uuid 必須)が uid 無しを reject する。
+  uid?: string
   text: string
   is_correct: boolean
   explanation?: string

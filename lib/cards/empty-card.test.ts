@@ -34,6 +34,8 @@ describe('buildEmptyCard', () => {
       options: [
         {
           id: '1',
+          // Sprint I W5: uid は生成地点 mint(ランダム UUID)ゆえ型のみ検証。
+          uid: expect.any(String),
           text: '(選択肢1)',
           is_correct: false,
         },
@@ -76,6 +78,7 @@ describe('buildEmptyCard', () => {
     // Convert from CardOption (snake_case is_correct) to optionSchema format (camelCase isCorrect)
     const convertedOptions = card.options.map((o: CardOption) => ({
       id: o.id,
+      uid: o.uid,
       text: o.text,
       isCorrect: o.is_correct,
     }))
@@ -146,6 +149,7 @@ describe('buildEmptyCard', () => {
     // Validate options in edit format
     const convertedOptions = card.options.map((o: CardOption) => ({
       id: o.id,
+      uid: o.uid,
       text: o.text,
       isCorrect: o.is_correct,
     }))

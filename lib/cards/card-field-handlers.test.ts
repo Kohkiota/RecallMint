@@ -557,15 +557,15 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       'card-1',
       'user-1',
       [
-        { id: 'a', text: 'A', isCorrect: true },
-        { id: 'b', text: 'B', isCorrect: false },
+        { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true },
+        { id: 'b', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'B', isCorrect: false },
       ],
     )
     expect(result).toBe('applied')
-    // camelCase → snake_case (CardOption)
+    // camelCase → snake_case (CardOption)。Sprint I W5: uid も透過。
     expect(state.setArg?.options).toEqual([
-      { id: 'a', text: 'A', is_correct: true },
-      { id: 'b', text: 'B', is_correct: false },
+      { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', is_correct: true },
+      { id: 'b', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'B', is_correct: false },
     ])
     // correct_answer_ids は is_correct=true のものだけ
     expect(state.setArg?.correctAnswerIds).toEqual(['a'])
@@ -578,9 +578,9 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       'card-1',
       'user-1',
       [
-        { id: 'a', text: 'A', isCorrect: true },
-        { id: 'b', text: 'B', isCorrect: false },
-        { id: 'c', text: 'C', isCorrect: true },
+        { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true },
+        { id: 'b', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'B', isCorrect: false },
+        { id: 'c', uid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', text: 'C', isCorrect: true },
       ],
     )
     expect(state.setArg?.correctAnswerIds).toEqual(['a', 'c'])
@@ -593,15 +593,15 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       'card-1',
       'user-1',
       [
-        { id: 'a', text: 'A', isCorrect: true, explanation: '理由 A' },
-        { id: 'b', text: 'B', isCorrect: false, explanation: '' },
-        { id: 'c', text: 'C', isCorrect: false },
+        { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true, explanation: '理由 A' },
+        { id: 'b', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'B', isCorrect: false, explanation: '' },
+        { id: 'c', uid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', text: 'C', isCorrect: false },
       ],
     )
     expect(state.setArg?.options).toEqual([
-      { id: 'a', text: 'A', is_correct: true, explanation: '理由 A' },
-      { id: 'b', text: 'B', is_correct: false },
-      { id: 'c', text: 'C', is_correct: false },
+      { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', is_correct: true, explanation: '理由 A' },
+      { id: 'b', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'B', is_correct: false },
+      { id: 'c', uid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', text: 'C', is_correct: false },
     ])
   })
 
@@ -620,6 +620,7 @@ describe('CARD_FIELD_HANDLERS.options', () => {
   it('51 個 → failed (最大 50 個まで)', async () => {
     const big = Array.from({ length: 51 }, (_, i) => ({
       id: `o-${i}`,
+      uid: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
       text: `T${i}`,
       isCorrect: false,
     }))
@@ -640,8 +641,9 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       'card-1',
       'user-1',
       [
-        { id: 'a', text: 'A', isCorrect: true },
-        { id: 'a', text: 'A2', isCorrect: false },
+        // uid は別値にして「id 重複」のみを検証(uid 重複ではなく id 重複で failed)。
+        { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true },
+        { id: 'a', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'A2', isCorrect: false },
       ],
     )
     expect(result).toBe('failed')
@@ -655,7 +657,7 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       makeTx(state),
       'card-1',
       'user-1',
-      [{ id: 'a', text: 'A', isCorrect: true }],
+      [{ id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true }],
     )
     expect(result).toBe('failed')
   })
@@ -666,7 +668,7 @@ describe('CARD_FIELD_HANDLERS.options', () => {
       makeTx(state),
       'card-1',
       'user-1',
-      [{ id: 'a', text: 'A', isCorrect: true }],
+      [{ id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true }],
     )
     expect(state.setArg?.updatedAt).toBeInstanceOf(SQL)
     const sig = await eqSignature()

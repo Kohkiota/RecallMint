@@ -16,6 +16,8 @@ const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/sync/entity-mutations', () => ({
+  // Sprint I W5: handleAddOption が option uid を newId() で mint するため mock に含める。
+  newId: () => crypto.randomUUID(),
   enqueueEntityMutation: mockEnqueue,
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({

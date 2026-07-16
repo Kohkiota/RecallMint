@@ -360,11 +360,6 @@ export function InlineCardList({
   // 真の確定値は server 適用後の pull-back で収束)。
   const handleAddCard = async () => {
     setError(null)
-    const empty = buildEmptyCard(
-      cards.map((c) => c.sortKey),
-      cards.length,
-    )
-
     // id は helper await の前に sync で採番し、 `setNewCardIds(prev => add)` を同期的に
     // 発火させる。 fa4aa7b で導入した sync 採番 → 先発火は維持しつつ、 Set + functional
     // updater で複数 pending id を蓄積する: updater chain `prev → {id1} → {id1, id2}` で
@@ -373,7 +368,13 @@ export function InlineCardList({
     // 実ブラウザでは button click による blur-commit で 1 枚目の編集状態は確定して
     // 閉じ、 新カードのみが focus する (= 仕様、 詳細は上の Set 化コメント参照)。
     // helper には id 引数で渡し、 helper 内 newId() の二重採番は起きない。
+    // Sprint I W5: card id を buildEmptyCard(option uid を newId で mint)より先に採番する
+    // (card id が最初の採番であることを保つ)。
     const cardId = newId()
+    const empty = buildEmptyCard(
+      cards.map((c) => c.sortKey),
+      cards.length,
+    )
     setNewCardIds((prev) => {
       const next = new Set(prev)
       next.add(cardId)

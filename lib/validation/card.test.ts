@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { imagesSchema } from './card'
+import { imagesSchema, optionsSchema } from './card'
 
 // imagesSchema の unit test (画像フェーズ A Task 5)。
 //
@@ -123,5 +123,47 @@ describe('imagesSchema', () => {
   it('空配列 → pass (画像なし card は許容)', () => {
     const result = imagesSchema.safeParse([])
     expect(result.success).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sprint I W5(§3 rev2): option.uid(画像 identity)の validation。書込境界で uid 必須 +
+// uid 一意(id 一意とは独立)。uid 無し / 非 UUID / uid 重複を reject する。
+// ---------------------------------------------------------------------------
+describe('optionsSchema uid (Sprint I W5)', () => {
+  const V = {
+    id: 'a',
+    uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    text: 'A',
+    isCorrect: true,
+  }
+
+  it('uid 付き valid option → pass', () => {
+    expect(optionsSchema.safeParse([V]).success).toBe(true)
+  })
+
+  it('uid 無し option → reject(生成経路漏れの検出 = fail-safe)', () => {
+    const { uid: _drop, ...noUid } = V
+    expect(optionsSchema.safeParse([noUid]).success).toBe(false)
+  })
+
+  it('uid が UUID 形式でない → reject', () => {
+    expect(optionsSchema.safeParse([{ ...V, uid: 'not-a-uuid' }]).success).toBe(false)
+  })
+
+  it('uid 重複 → reject(id が別でも uid 一意制約が効く)', () => {
+    const result = optionsSchema.safeParse([
+      { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true },
+      { id: 'b', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'B', isCorrect: false },
+    ])
+    expect(result.success).toBe(false)
+  })
+
+  it('id 重複だが uid は別 → reject(id 一意制約は uid 導入後も継続)', () => {
+    const result = optionsSchema.safeParse([
+      { id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: true },
+      { id: 'a', uid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', text: 'A2', isCorrect: false },
+    ])
+    expect(result.success).toBe(false)
   })
 })

@@ -10,7 +10,9 @@ const EMPTY: EmptyCard = {
   title: '新規カード 3',
   sortKey: '3',
   questionText: '(問題文を入力してください)',
-  options: [{ id: '1', text: '(選択肢1)', is_correct: false }],
+  options: [
+    { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', is_correct: false },
+  ],
   correctAnswerIds: [],
 }
 
@@ -29,7 +31,9 @@ describe('buildNewClientCard', () => {
     expect(card.title).toBe('新規カード 3')
     expect(card.sort_key).toBe('3')
     expect(card.question_text).toBe('(問題文を入力してください)')
-    expect(card.options).toEqual([{ id: '1', text: '(選択肢1)', is_correct: false }])
+    expect(card.options).toEqual([
+      { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', is_correct: false },
+    ])
     expect(card.correct_answer_ids).toEqual([])
   })
 
