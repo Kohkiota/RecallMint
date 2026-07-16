@@ -19,6 +19,8 @@ const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/sync/entity-mutations', () => ({
+  // Sprint I W5: handleAddOption が option uid を newId() で mint するため mock に含める。
+  newId: () => crypto.randomUUID(),
   enqueueEntityMutation: mockEnqueue,
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
@@ -28,6 +30,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 import { InlineOptionList, InlineOptionCell } from './inline-option-row'
 
 const CARD_ID = '33333333-3333-4333-8333-333333333333'
+const TEST_USER_ID = 'user-opt-test'
 
 const baseOptions: CardOption[] = [
   { id: 'a', text: '選択肢A', is_correct: true, explanation: 'A 理由' },
@@ -80,7 +83,7 @@ afterEach(() => {
 })
 
 function renderSingle(option: CardOption) {
-  return render(<InlineOptionList cardId={CARD_ID} options={[option]} />)
+  return render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={[option]} />)
 }
 
 describe('InlineOptionRow (via InlineOptionList) — 表示', () => {
@@ -114,7 +117,7 @@ describe('InlineOptionRow (via InlineOptionList) — 表示', () => {
 describe('InlineOptionList — cell edit → mirror + enqueue', () => {
   it('id 編集 + blur → options 全体を該当 index のみ書換えて enqueue', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 id 編集' })[0]!,
     )
@@ -139,7 +142,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
 
   it('text 編集 + blur → mirror cards.update に options + correct_answer_ids が書かれる', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
     )
@@ -160,7 +163,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
 
   it('explanation 編集 + blur → enqueue に explanation 含む', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 解説 編集' })[1]!,
     )
@@ -185,7 +188,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
 
   it('explanation を空文字に → enqueue payload から explanation key が drop される', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 解説 編集' })[0]!,
     )
@@ -215,7 +218,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
       { id: 'c', text: 'C', is_correct: false },
     ]
     await seedCard(opts)
-    render(<InlineOptionList cardId={CARD_ID} options={opts} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={opts} />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[1]!,
     )
@@ -262,7 +265,7 @@ describe('InlineOptionCell — blur 後 unmount で二重 commit しない (Spri
   it('text cell 編集 → blur(enqueue 1 回)→ unmount → enqueue 合計 1 回のまま', async () => {
     await seedCard(baseOptions)
     const { unmount } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
@@ -314,7 +317,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
   it('#1 保存核心: editing+dirty → unmount → mirror + outbox に更新後 options', async () => {
     await seedCard(baseOptions)
     const { unmount } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
@@ -348,7 +351,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
   it('#2 guard(not editing): display のまま unmount → 書込なし', async () => {
     await seedCard(baseOptions)
     const { unmount } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 編集に入らずそのまま unmount
     unmount()
@@ -367,7 +370,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
   it('#3 guard(editing but clean): 値を変えずに unmount → 書込なし', async () => {
     await seedCard(baseOptions)
     const { unmount } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 編集に入るが値は変えない
     fireEvent.click(
@@ -386,7 +389,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
   it('#4 存在 gate: card 削除後に editing+dirty で unmount → enqueue なし(orphan なし)', async () => {
     await seedCard(baseOptions)
     const { unmount } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
@@ -417,7 +420,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
 describe('InlineOptionList — checkbox toggle', () => {
   it('checkbox change → 即時 mirror + enqueue (blur 待たず)', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option b を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
@@ -436,7 +439,7 @@ describe('InlineOptionList — checkbox toggle', () => {
 
   it('checkbox toggle → mirror の correct_answer_ids が即時更新される', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // b を ON
     await vi.waitFor(async () => {
       const row = await getClientDb().cards.get(CARD_ID)
@@ -446,7 +449,7 @@ describe('InlineOptionList — checkbox toggle', () => {
 
   it('checkbox toggle → drain (flush) が即時叩かれる', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getAllByRole('checkbox')[1]!)
     await vi.waitFor(() => {
       expect(mockFlush).toHaveBeenCalled()
@@ -455,7 +458,7 @@ describe('InlineOptionList — checkbox toggle', () => {
 
   it('checkbox toggle で正解サマリが即時更新 (optimistic)', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(screen.getByText('○ 正解: a')).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('checkbox')[1]!)
     await vi.waitFor(() => {
@@ -467,14 +470,45 @@ describe('InlineOptionList — checkbox toggle', () => {
 
 describe('InlineOptionList — add / delete + ghost', () => {
   it('「+ 選択肢を追加」 button が list 末尾に描画される', () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(
       screen.getByRole('button', { name: '+ 選択肢を追加' }),
     ).toBeInTheDocument()
   })
 
+  it('Sprint I W3/W5: 実選択肢(text 非空 + uid)は compact +画像 を持つが、未入力 ghost には出さない(空 ghost 孤児化防止)', async () => {
+    // W5: gallery gate は text 非空 + uid あり。実 option は uid を持つ。
+    const optsUid: CardOption[] = [
+      { id: 'a', uid: 'a0000000-0000-4000-8000-00000000000a', text: '選択肢A', is_correct: false },
+      { id: 'b', uid: 'b0000000-0000-4000-8000-00000000000b', text: '選択肢B', is_correct: false },
+    ]
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={optsUid} />)
+    // 実選択肢 a/b は compact +画像 affordance を持つ
+    expect(
+      screen.getByRole('button', { name: '選択肢 a に画像を追加' }),
+    ).toBeInTheDocument()
+    // 「+ 選択肢を追加」で ghost c(uid は mint されるが text 空)を追加
+    fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
+    await screen.findByText('c')
+    // ghost c には gallery を出さない(text 非空になるまで affordance なし)
+    expect(
+      screen.queryByRole('button', { name: '選択肢 c に画像を追加' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('Sprint I W5: uid 無し option(legacy)には gallery を出さない(option:undefined 衝突を構造回避)', () => {
+    // uid 無し option が editor に来ても target=option:undefined の gallery を出さない
+    // (legacy 同士の衝突 mis-attach を affordance ごと塞ぐ = canonical Important #1)。
+    const legacyOpts: CardOption[] = [
+      { id: 'a', text: '選択肢A(legacy 無 uid)', is_correct: false },
+      { id: 'b', text: '選択肢B(legacy 無 uid)', is_correct: false },
+    ]
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={legacyOpts} />)
+    expect(screen.queryByRole('button', { name: /に画像を追加$/ })).not.toBeInTheDocument()
+  })
+
   it('削除 button が各 option row に描画される (option 数と一致)', () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(screen.getAllByRole('button', { name: '選択肢を削除' }).length).toBe(2)
   })
 
@@ -484,7 +518,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
   })
 
   it('「+ 追加」: 新 option が optimistic に末尾追加 + text cell が即 edit mode', async () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' }).length,
     ).toBe(2)
@@ -497,13 +531,13 @@ describe('InlineOptionList — add / delete + ghost', () => {
   })
 
   it('「+ 追加」: 新 option の id は nextOptionId 規則 (a,b → c)', () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     expect(screen.getByText('c')).toBeInTheDocument()
   })
 
   it('追加 click 直後は enqueue されない (text 空 ghost は sanitize で除外)', async () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     await vi.waitFor(() => {
       expect(
@@ -515,7 +549,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
 
   it('追加後 ghost に text 入力 + blur → 昇格して enqueue に new option 含む', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     const ta = await screen.findByRole('textbox', { name: '選択肢 本文 編集' })
     fireEvent.change(ta, { target: { value: '新しい選択肢' } })
@@ -529,7 +563,8 @@ describe('InlineOptionList — add / delete + ghost', () => {
           value: [
             { id: 'a', text: '選択肢A', isCorrect: true, explanation: 'A 理由' },
             { id: 'b', text: '選択肢B', isCorrect: false },
-            { id: 'c', text: '新しい選択肢', isCorrect: false },
+            // Sprint I W5: 新規 option c は handleAddOption が uid を mint(ランダム)。
+            { id: 'c', uid: expect.any(String), text: '新しい選択肢', isCorrect: false },
           ],
         },
       })
@@ -537,7 +572,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
   })
 
   it('ghost を text 入力なく blur → sanitized が server-committed と一致 → enqueue skip、 ghost は local に残る', async () => {
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     const ta = await screen.findByRole('textbox', { name: '選択肢 本文 編集' })
     fireEvent.blur(ta)
@@ -550,7 +585,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
 
   it('ghost 放置で別 row checkbox toggle → ghost 除外で別 row 変更のみ enqueue', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     await vi.waitFor(() => {
       expect(
@@ -575,7 +610,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
 
   it('削除 click → optimistic に row が消え、 filtered options を enqueue', async () => {
     await seedCard(baseOptions)
-    render(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(screen.getByText('選択肢B')).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: '選択肢を削除' })[1]!)
     await vi.waitFor(() => {
@@ -833,7 +868,7 @@ describe('Edit-3 T2: InlineOptionCell displayClassName の md:min-h 上書き (c
 describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70d0714 回帰修正)', () => {
   it('放置された空 ghost は serverOptions 更新 (pull-back) で drop され末尾に残らない', async () => {
     const { rerender } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 空のまま追加 (ghost c)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
@@ -844,7 +879,7 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
     // d を入力・確定して server へ反映された状態を rerender で模す (serverOptions に d 追加、c は無い)
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[...baseOptions, { id: 'd', text: 'D本文', is_correct: false }]}
       />,
     )
@@ -860,7 +895,7 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
 // 変化で editValue は保護 / (b) idle なら次回 edit-start 時に新値が表示される。
   it('cell 編集中に serverOptions の text が外部変化しても editValue (入力中値) は保護される (波2 C1 pin)', async () => {
     const { rerender } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 行 a の text cell を edit mode に。
     const dispA = screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!
@@ -871,7 +906,7 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
     // 外部経路 (別 commit / pull-back 等) で text='A 更新' が降ってくる状況。
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[
           { id: 'a', text: 'A 更新', is_correct: true, explanation: 'A 理由' },
           { id: 'b', text: '選択肢B', is_correct: false },
@@ -885,14 +920,14 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
 
   it('cell が idle なら serverOptions 外部変化で display と次回 edit 時の input 値は新値に同期する (波2 C1 pin)', async () => {
     const { rerender } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 初期 display は '選択肢A'。
     expect(screen.getByText('選択肢A')).toBeInTheDocument()
     // 外部経路で text='A 更新' が降ってくる。
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[
           { id: 'a', text: 'A 更新', is_correct: true, explanation: 'A 理由' },
           { id: 'b', text: '選択肢B', is_correct: false },
@@ -912,7 +947,7 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
 
   it('連続追加で片方を入力中、 別 commit の serverOptions 更新でも編集中 ghost は消えない (70d0714 保護)', async () => {
     const { rerender } = render(
-      <InlineOptionList cardId={CARD_ID} options={baseOptions} />,
+      <InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />,
     )
     // 1 つ目追加 (ghost c) → 2 つ目追加 (ghost d, autoEdit=d)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
@@ -925,7 +960,7 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
     // 別経路の commit で serverOptions が更新された状況を rerender で模す (c/d は server に未反映)
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[
           { id: 'a', text: '選択肢A 改', is_correct: true, explanation: 'A 理由' },
           { id: 'b', text: '選択肢B', is_correct: false },

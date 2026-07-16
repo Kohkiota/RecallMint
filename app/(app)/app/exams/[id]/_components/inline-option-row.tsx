@@ -42,9 +42,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
+import type { ClientCardImage } from '@/lib/client-db'
 import { useCardOptions } from '../_hooks/use-card-options'
 import { cn } from '@/lib/utils'
 import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-shared'
+import { CardImageGallery } from './card-image-gallery'
 
 // ============================================================================
 // InlineOptionList (per-card parent)
@@ -53,11 +55,17 @@ import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-sh
 type InlineOptionListProps = {
   cardId: string
   options: CardOption[]
+  // Sprint I W3: 各選択肢に compact gallery(target=option:<id>)を出すため、card の全画像配列と
+  // owner userId を透過する。gallery は自身で target filter する。
+  images: ClientCardImage[]
+  userId: string
 }
 
 export function InlineOptionList({
   cardId,
   options: serverOptions,
+  images,
+  userId,
 }: InlineOptionListProps) {
   const {
     options,
@@ -99,6 +107,26 @@ export function InlineOptionList({
               }
               onDelete={() => handleDeleteOption(idx)}
             />
+            {/* Sprint I W3/W5: 選択肢の画像 gallery。行に対し外(row の直後)に置き、grid を
+                改変しない。compact ゆえ空選択肢は小 +画像 アイコンのみ(§9 行高肥大回避)。
+                gate 条件 2 つ:
+                ① text 非空(未確定 ghost に画像を付けて放置 → drop で孤児化する経路を塞ぐ)。
+                ② uid あり(target=option:<uid>。uid 無し legacy option だと `option:undefined`
+                   となり legacy 同士が衝突 mis-attach するため、affordance ごと出さない =
+                   §3 rev2 の「構造的に mis-attach 不能」をコードで担保。W5 後の実 option は
+                   全経路 mint 済ゆえ常に uid を持つ)。 */}
+            {opt.text.trim().length > 0 && opt.uid && (
+              <div className="mt-1">
+                <CardImageGallery
+                  images={images}
+                  target={`option:${opt.uid}`}
+                  cardId={cardId}
+                  userId={userId}
+                  compact
+                  attachAriaLabel={`選択肢 ${opt.id} に画像を追加`}
+                />
+              </div>
+            )}
           </li>
         ))}
       </ul>

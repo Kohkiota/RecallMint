@@ -121,8 +121,9 @@ const cards: ExamDetailCard[] = [
     sortKey: '001',
     questionText: '問題文 1',
     options: [
-      { id: 'a', text: '選択肢A', is_correct: true, explanation: 'A 理由' },
-      { id: 'b', text: '選択肢B', is_correct: false },
+      // Sprint I W5: option は uid を持つ(gallery target=option:<uid> + gate 条件)。
+      { id: 'a', uid: 'aaaa0000-0000-4000-8000-00000000000a', text: '選択肢A', is_correct: true, explanation: 'A 理由' },
+      { id: 'b', uid: 'bbbb0000-0000-4000-8000-00000000000b', text: '選択肢B', is_correct: false },
     ],
     explanationText: '解説 1',
     memo: 'メモ 1',
@@ -133,7 +134,7 @@ const cards: ExamDetailCard[] = [
     title: '問2',
     sortKey: null,
     questionText: '問題文 2',
-    options: [{ id: 'a', text: 'A', is_correct: true }],
+    options: [{ id: 'a', uid: 'cccc0000-0000-4000-8000-00000000000c', text: 'A', is_correct: true }],
     explanationText: null,
     memo: null,
     images: [],
@@ -400,7 +401,8 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     expect(inserted.sort_key).toBe('2')
     expect(inserted.question_text).toBe('(問題文を入力してください)')
     expect(inserted.options).toEqual([
-      { id: '1', text: '(選択肢1)', is_correct: false },
+      // Sprint I W5: buildEmptyCard が option uid を mint(ランダム UUID)ゆえ型のみ検証。
+      { id: '1', uid: expect.any(String), text: '(選択肢1)', is_correct: false },
     ])
     expect(inserted.correct_answer_ids).toEqual([])
     // default の代表値
@@ -428,7 +430,7 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
           title: '新規カード 3',
           sort_key: '2',
           question_text: '(問題文を入力してください)',
-          options: [{ id: '1', text: '(選択肢1)', isCorrect: false }],
+          options: [{ id: '1', uid: expect.any(String), text: '(選択肢1)', isCorrect: false }],
           explanation_text: null,
           memo: null,
         },
@@ -705,5 +707,24 @@ describe('InlineCardList responsive spacing (A3)', () => {
     const cardContents = container.querySelectorAll('[class*="md:p-2"]')
     expect(cardContents.length).toBeGreaterThanOrEqual(1)
     expect(cardContents[0]!.className).toMatch(/md:space-y-1\.5/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sprint I W3: 編集面 4 面 gallery 配線。問題文/解説/メモ は常時「画像を追加」、選択肢は
+// compact(attachAriaLabel 文脈付き)。cards = card-1(options a,b)+ card-2(option a)。
+// ---------------------------------------------------------------------------
+describe('InlineCardList — 4 面画像 gallery 配線 (Sprint I W3)', () => {
+  it('問題文/解説/メモ に常時「画像を追加」+ 各選択肢に compact「選択肢 X に画像を追加」が出る', () => {
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    // 常時表示 gallery = 問題文/解説/メモ の 3 面 × 2 card = 6(compact icon は別 aria-label)
+    expect(screen.getAllByRole('button', { name: '画像を追加' })).toHaveLength(6)
+    // 選択肢 compact = option id ごとの文脈付き aria-label。card-1(a,b)+ card-2(a)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 a に画像を追加' }),
+    ).toHaveLength(2)
+    expect(
+      screen.getAllByRole('button', { name: '選択肢 b に画像を追加' }),
+    ).toHaveLength(1)
   })
 })

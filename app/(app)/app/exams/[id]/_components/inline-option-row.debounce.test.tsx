@@ -35,6 +35,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 import { InlineOptionList } from './inline-option-row'
 
 const CARD_ID = '44444444-4444-4444-8444-444444444444'
+const TEST_USER_ID = 'user-opt-debounce-test'
 
 const baseOptions: CardOption[] = [
   { id: 'a', text: '選択肢A', is_correct: false, explanation: 'A 理由' },
@@ -48,7 +49,7 @@ async function flushPromises() {
 }
 
 function renderList(all: CardOption[] = baseOptions) {
-  return render(<InlineOptionList cardId={CARD_ID} options={all} />)
+  return render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={all} />)
 }
 
 function startTextEdit(newValue: string, rowIdx = 0) {
@@ -199,7 +200,7 @@ describe('InlineOptionList dirty-guard / merge reconciliation', () => {
     // 親 (mirror) から別値で prop 更新
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[
           { id: 'a', text: 'server 更新', is_correct: false, explanation: 'A 理由' },
           { id: 'b', text: '選択肢B', is_correct: false },
@@ -217,7 +218,7 @@ describe('InlineOptionList dirty-guard / merge reconciliation', () => {
     expect(screen.getByText('選択肢A')).toBeInTheDocument()
     rerender(
       <InlineOptionList
-        cardId={CARD_ID}
+        cardId={CARD_ID} images={[]} userId={TEST_USER_ID}
         options={[
           { id: 'a', text: 'server 確定A', is_correct: false, explanation: 'A 理由' },
           { id: 'b', text: '選択肢B', is_correct: false },
@@ -238,7 +239,7 @@ describe('InlineOptionList dirty-guard / merge reconciliation', () => {
     expect(screen.getByText('選択肢 (3 件)')).toBeInTheDocument()
 
     // 親 revalidate を simulate (server 側は a, b のまま、 c は ghost で未送信)
-    rerender(<InlineOptionList cardId={CARD_ID} options={baseOptions} />)
+    rerender(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     await flushPromises()
 
     // merge 戦略: c-ghost は保持される (server に id 'c' なし → ghost)

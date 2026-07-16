@@ -80,15 +80,21 @@ export function CardEditorFields({
           displayClassName="text-sm text-slate-800"
           autoEditOnMount={autoEditOnMount}
         />
-        {/* target 単位 gallery(spec §5)。 per-option gallery(target={'option:' + optionId})
-            は後続 task の deferred follow-up(本 task scope 外)。 */}
+        {/* 問題文 target 単位 gallery(常時表示形態・据え置き)。解説/メモ/選択肢の gallery は
+            Sprint I W3 で増設(下の解説/メモ + InlineOptionList 内の per-option compact)。 */}
         <CardImageGallery images={images} target="question_text" cardId={cardId} userId={userId} />
       </div>
 
       <div>
         {/* per-card 親 InlineOptionList で options 共有 state を管理(cross-row checkbox
-            race を構造的に解消)。選択肢ヘッダ + 正解サマリも内部に co-locate。 */}
-        <InlineOptionList cardId={cardId} options={options} />
+            race を構造的に解消)。選択肢ヘッダ + 正解サマリも内部に co-locate。
+            Sprint I W3: 各選択肢の compact gallery 用に images / userId を透過。 */}
+        <InlineOptionList
+          cardId={cardId}
+          options={options}
+          images={images}
+          userId={userId}
+        />
       </div>
 
       <div>
@@ -102,6 +108,9 @@ export function CardEditorFields({
           placeholder="解説 (クリックで追加)"
           displayClassName="text-sm text-slate-700"
         />
+        {/* Sprint I W3: 解説 target 単位 gallery(問題文と同じ常時表示形態。card あたり 1 個で
+            選択肢数に非比例ゆえ §9 に無関係)。 */}
+        <CardImageGallery images={images} target="explanation_text" cardId={cardId} userId={userId} />
       </div>
 
       <div>
@@ -115,6 +124,8 @@ export function CardEditorFields({
           placeholder="メモ (クリックで追加)"
           displayClassName="text-sm text-slate-700"
         />
+        {/* Sprint I W3: メモ target 単位 gallery(常時表示形態)。 */}
+        <CardImageGallery images={images} target="memo" cardId={cardId} userId={userId} />
       </div>
     </>
   )

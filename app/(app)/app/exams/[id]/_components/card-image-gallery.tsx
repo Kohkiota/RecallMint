@@ -13,6 +13,7 @@
 // best-effort 読み取り(width/height, layout-shift 回避)のみ自前で行う。
 
 import * as React from 'react'
+import { ImagePlus } from 'lucide-react'
 
 import { getClientDb, type ClientCardImage } from '@/lib/client-db'
 import { isAssetKey } from '@/lib/validation/card'
@@ -31,6 +32,13 @@ export type CardImageGalleryProps = {
   cardId: string
   userId: string
   readOnly?: boolean
+  // Sprint I W3: 選択肢のように gallery 数が要素数に比例して増える面で、空状態の add
+  // affordance を dashed「画像を追加」ボタンでなく小さな +画像 アイコンに留める(§9 行高
+  // 肥大回避)。thumbnail 描画・attach/delete 経路は不変。
+  compact?: boolean
+  // compact icon の aria-label 文脈付け(複数選択肢で同名ボタンが並ぶ SR 不可判別を回避)。
+  // 例: 「選択肢 a に画像を追加」。未指定時は既定「画像を追加」。
+  attachAriaLabel?: string
 }
 
 // attach 失敗 code → 短い JP エラーメッセージ(brief 指定の文言、 変更禁止)。
@@ -154,6 +162,8 @@ export function CardImageGallery({
   cardId,
   userId,
   readOnly = false,
+  compact = false,
+  attachAriaLabel,
 }: CardImageGalleryProps) {
   const [error, setError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -214,13 +224,26 @@ export function CardImageGallery({
 
       {!readOnly && (
         <>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex min-h-11 items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
-          >
-            画像を追加
-          </button>
+          {compact ? (
+            // compact: 小さな +画像 アイコン(gallery 内 × 削除ボタンと同寸 h-6 w-6)。
+            // 空選択肢の行高増分を最小化する(§9)。onClick / hidden input は共有。
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label={attachAriaLabel ?? '画像を追加'}
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+            >
+              <ImagePlus className="size-3.5" aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex min-h-11 items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+            >
+              画像を追加
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"

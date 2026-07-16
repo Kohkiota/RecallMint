@@ -288,3 +288,69 @@ describe('CardImageGallery placeholder / readOnly', () => {
     expect(screen.queryByText('画像を追加')).not.toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// ⑦ compact mode (Sprint I W3): 選択肢のように gallery が数に比例して増える面で、
+// 空状態を dashed「画像を追加」ボタンでなく小さな +画像 アイコンに留める(§9 行高肥大回避)。
+// ---------------------------------------------------------------------------
+describe('CardImageGallery compact mode (Sprint I W3)', () => {
+  it('compact + 空 + edit → 小さな +画像 アイコンボタン(attachAriaLabel でアクセス可)を出し、dashed「画像を追加」テキストは出さない', () => {
+    render(
+      <CardImageGallery
+        images={[]}
+        target="option:a"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        compact
+        attachAriaLabel="選択肢 a に画像を追加"
+      />,
+    )
+    expect(
+      screen.getByRole('button', { name: '選択肢 a に画像を追加' }),
+    ).toBeInTheDocument()
+    // dashed テキストボタン「画像を追加」は compact では出さない(§9 行高肥大回避)
+    expect(screen.queryByText('画像を追加')).not.toBeInTheDocument()
+  })
+
+  it('非 compact(既定)+ 空 + edit → dashed「画像を追加」テキストボタン(回帰維持)', () => {
+    render(
+      <CardImageGallery images={[]} target={TARGET} cardId={CARD_ID} userId={USER_ID} />,
+    )
+    expect(
+      screen.getByRole('button', { name: '画像を追加' }),
+    ).toBeInTheDocument()
+  })
+
+  it('compact + readOnly + 空 → 何も描画しない(null)', () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[]}
+        target="option:a"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        compact
+        readOnly
+      />,
+    )
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('compact + 画像あり + edit → thumbnail と +画像 アイコンの両方を出す', async () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[{ key: UUID_A, target: 'option:a', alt: '' }]}
+        target="option:a"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        compact
+        attachAriaLabel="選択肢 a に画像を追加"
+      />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(1)
+    })
+    expect(
+      screen.getByRole('button', { name: '選択肢 a に画像を追加' }),
+    ).toBeInTheDocument()
+  })
+})
