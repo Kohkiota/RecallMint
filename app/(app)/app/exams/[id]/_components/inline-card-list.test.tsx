@@ -715,11 +715,15 @@ describe('InlineCardList responsive spacing (A3)', () => {
 // compact(attachAriaLabel 文脈付き)。cards = card-1(options a,b)+ card-2(option a)。
 // ---------------------------------------------------------------------------
 describe('InlineCardList — 4 面画像 gallery 配線 (Sprint I W3)', () => {
-  it('問題文/解説/メモ に常時「画像を追加」+ 各選択肢に compact「選択肢 X に画像を追加」が出る', () => {
+  it('問題文/解説/メモ はラベル行の add アイコン(文脈付き)+ 各選択肢は行内 add アイコン。dashed「画像を追加」は不在(§9 fix)', () => {
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
-    // 常時表示 gallery = 問題文/解説/メモ の 3 面 × 2 card = 6(compact icon は別 aria-label)
-    expect(screen.getAllByRole('button', { name: '画像を追加' })).toHaveLength(6)
-    // 選択肢 compact = option id ごとの文脈付き aria-label。card-1(a,b)+ card-2(a)
+    // Sprint I fix: dashed 大ボタン「画像を追加」は廃止(§9 行高)→ ラベル文脈付き icon。各 2 card 分。
+    expect(screen.getAllByRole('button', { name: '問題文に画像を追加' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: '解説に画像を追加' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'メモに画像を追加' })).toHaveLength(2)
+    // dashed「画像を追加」は editor に存在しない(fix の核心)
+    expect(screen.queryByRole('button', { name: '画像を追加' })).not.toBeInTheDocument()
+    // 選択肢 add アイコン = option id ごとの文脈付き。card-1(a,b)+ card-2(a)
     expect(
       screen.getAllByRole('button', { name: '選択肢 a に画像を追加' }),
     ).toHaveLength(2)

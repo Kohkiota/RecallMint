@@ -354,3 +354,73 @@ describe('CardImageGallery compact mode (Sprint I W3)', () => {
     ).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// ⑧ slot mode (Sprint I fix・§9 行高): add affordance と thumbnail を別配置する。
+// 'add' = アイコンのみ(ラベル行/選択肢行に収める)/ 'thumbnails' = thumbnail のみ(下に表示)。
+// ---------------------------------------------------------------------------
+describe('CardImageGallery slot mode (Sprint I fix)', () => {
+  it("slot='add' + 空 → add アイコンのみ(thumbnail なし)", () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[]}
+        target="question_text"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        slot="add"
+        compact
+        attachAriaLabel="問題文に画像を追加"
+      />,
+    )
+    expect(screen.getByRole('button', { name: '問題文に画像を追加' })).toBeInTheDocument()
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+  })
+
+  it("slot='add' + 画像あり → add アイコンのみ・thumbnail は出さない(下の slot='thumbnails' が担う)", async () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[{ key: UUID_A, target: 'question_text', alt: '' }]}
+        target="question_text"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        slot="add"
+        compact
+        attachAriaLabel="問題文に画像を追加"
+      />,
+    )
+    expect(screen.getByRole('button', { name: '問題文に画像を追加' })).toBeInTheDocument()
+    // add slot は thumbnail を描画しない
+    await new Promise((r) => setTimeout(r, 20))
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+  })
+
+  it("slot='thumbnails' + 画像あり → thumbnail のみ・add button/input なし", async () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[{ key: UUID_A, target: 'question_text', alt: '' }]}
+        target="question_text"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        slot="thumbnails"
+      />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(1)
+    })
+    expect(container.querySelector('input[type="file"]')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /画像を追加/ })).not.toBeInTheDocument()
+  })
+
+  it("slot='thumbnails' + 空 → null(下の表示専用 slot は空なら DOM 増ゼロ)", () => {
+    const { container } = render(
+      <CardImageGallery
+        images={[]}
+        target="question_text"
+        cardId={CARD_ID}
+        userId={USER_ID}
+        slot="thumbnails"
+      />,
+    )
+    expect(container.firstChild).toBeNull()
+  })
+})

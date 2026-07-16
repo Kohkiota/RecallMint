@@ -70,7 +70,20 @@ export function CardEditorFields({
       </div>
 
       <div>
-        <p className="text-xs font-medium text-slate-500">問題文</p>
+        {/* Sprint I fix(§9 行高): add affordance をラベル行の 24px アイコンに寄せ、独立行を
+            消す。thumbnail は field 下に slot='thumbnails' で据え置き(位置・サイズ不変)。 */}
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-slate-500">問題文</p>
+          <CardImageGallery
+            images={images}
+            target="question_text"
+            cardId={cardId}
+            userId={userId}
+            slot="add"
+            compact
+            attachAriaLabel="問題文に画像を追加"
+          />
+        </div>
         <InlineTextField
           cardId={cardId}
           field="question_text"
@@ -80,9 +93,7 @@ export function CardEditorFields({
           displayClassName="text-sm text-slate-800"
           autoEditOnMount={autoEditOnMount}
         />
-        {/* 問題文 target 単位 gallery(常時表示形態・据え置き)。解説/メモ/選択肢の gallery は
-            Sprint I W3 で増設(下の解説/メモ + InlineOptionList 内の per-option compact)。 */}
-        <CardImageGallery images={images} target="question_text" cardId={cardId} userId={userId} />
+        <CardImageGallery images={images} target="question_text" cardId={cardId} userId={userId} slot="thumbnails" />
       </div>
 
       <div>
@@ -98,7 +109,18 @@ export function CardEditorFields({
       </div>
 
       <div>
-        <p className="text-xs font-medium text-slate-500">解説</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-slate-500">解説</p>
+          <CardImageGallery
+            images={images}
+            target="explanation_text"
+            cardId={cardId}
+            userId={userId}
+            slot="add"
+            compact
+            attachAriaLabel="解説に画像を追加"
+          />
+        </div>
         <InlineTextField
           cardId={cardId}
           field="explanation_text"
@@ -108,13 +130,22 @@ export function CardEditorFields({
           placeholder="解説 (クリックで追加)"
           displayClassName="text-sm text-slate-700"
         />
-        {/* Sprint I W3: 解説 target 単位 gallery(問題文と同じ常時表示形態。card あたり 1 個で
-            選択肢数に非比例ゆえ §9 に無関係)。 */}
-        <CardImageGallery images={images} target="explanation_text" cardId={cardId} userId={userId} />
+        <CardImageGallery images={images} target="explanation_text" cardId={cardId} userId={userId} slot="thumbnails" />
       </div>
 
       <div>
-        <p className="text-xs font-medium text-slate-500">メモ</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-slate-500">メモ</p>
+          <CardImageGallery
+            images={images}
+            target="memo"
+            cardId={cardId}
+            userId={userId}
+            slot="add"
+            compact
+            attachAriaLabel="メモに画像を追加"
+          />
+        </div>
         <InlineTextField
           cardId={cardId}
           field="memo"
@@ -124,8 +155,7 @@ export function CardEditorFields({
           placeholder="メモ (クリックで追加)"
           displayClassName="text-sm text-slate-700"
         />
-        {/* Sprint I W3: メモ target 単位 gallery(常時表示形態)。 */}
-        <CardImageGallery images={images} target="memo" cardId={cardId} userId={userId} />
+        <CardImageGallery images={images} target="memo" cardId={cardId} userId={userId} slot="thumbnails" />
       </div>
     </>
   )

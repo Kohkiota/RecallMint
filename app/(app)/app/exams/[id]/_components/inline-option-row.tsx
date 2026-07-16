@@ -96,6 +96,9 @@ export function InlineOptionList({
           <li key={opt.id}>
             <InlineOptionRow
               option={opt}
+              cardId={cardId}
+              images={images}
+              userId={userId}
               autoEditTextOnMount={opt.id === autoEditOptionId}
               canDelete={canDelete}
               onCheckboxToggle={(nextChecked) =>
@@ -107,25 +110,17 @@ export function InlineOptionList({
               }
               onDelete={() => handleDeleteOption(idx)}
             />
-            {/* Sprint I W3/W5: 選択肢の画像 gallery。行に対し外(row の直後)に置き、grid を
-                改変しない。compact ゆえ空選択肢は小 +画像 アイコンのみ(§9 行高肥大回避)。
-                gate 条件 2 つ:
-                ① text 非空(未確定 ghost に画像を付けて放置 → drop で孤児化する経路を塞ぐ)。
-                ② uid あり(target=option:<uid>。uid 無し legacy option だと `option:undefined`
-                   となり legacy 同士が衝突 mis-attach するため、affordance ごと出さない =
-                   §3 rev2 の「構造的に mis-attach 不能」をコードで担保。W5 後の実 option は
-                   全経路 mint 済ゆえ常に uid を持つ)。 */}
-            {opt.text.trim().length > 0 && opt.uid && (
-              <div className="mt-1">
-                <CardImageGallery
-                  images={images}
-                  target={`option:${opt.uid}`}
-                  cardId={cardId}
-                  userId={userId}
-                  compact
-                  attachAriaLabel={`選択肢 ${opt.id} に画像を追加`}
-                />
-              </div>
+            {/* Sprint I fix(§9 行高): add アイコンは行内(InlineOptionRow の delete 隣)へ移し、
+                独立行を消した。thumbnail は行の下に slot='thumbnails' で据え置き(OT 許容)。
+                空/uid 無しは slot='thumbnails' が null を返すため空 option の DOM 増ゼロ。 */}
+            {opt.uid && (
+              <CardImageGallery
+                images={images}
+                target={`option:${opt.uid}`}
+                cardId={cardId}
+                userId={userId}
+                slot="thumbnails"
+              />
             )}
           </li>
         ))}
@@ -148,6 +143,11 @@ export function InlineOptionList({
 
 type InlineOptionRowProps = {
   option: CardOption
+  // Sprint I fix: 画像 add アイコンを行内(delete 隣)に置くための透過。row の add affordance
+  // は option:<uid> を target とし、cardId/images/userId を CardImageGallery に渡す。
+  cardId: string
+  images: ClientCardImage[]
+  userId: string
   // S2.0b-3: 「+ 選択肢を追加」 直後に new row の text cell を auto-edit するための
   // marker。 InlineOptionCell の useState initializer に渡って mount 時のみ有効。
   autoEditTextOnMount: boolean
@@ -172,6 +172,9 @@ type InlineOptionRowProps = {
 //     row 1: [✓] [id] [本文] [解説] [削除]
 function InlineOptionRow({
   option,
+  cardId,
+  images,
+  userId,
   autoEditTextOnMount,
   canDelete,
   onCheckboxToggle,
@@ -252,18 +255,33 @@ function InlineOptionRow({
             placeholder="解説 (クリックで追加)"
           />
         </div>
-        {/* delete: mobile = row 1 col 4 (auto-flow) / desktop = row 1 col 5 (explicit) */}
-        <button
-          type="button"
-          aria-label="選択肢を削除"
-          onClick={onDelete}
-          disabled={!canDelete}
-          className="md:col-start-5 inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:self-center shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
-        >
-          <span className="text-xl leading-none md:text-base" aria-hidden="true">
-            ×
-          </span>
-        </button>
+        {/* Sprint I fix(§9 行高): 画像 add アイコンを delete と同セルに co-locate(grid 列を
+            増やさず既存 auto セルに寄せる。列追加は 20 択で text/解説 幅を圧迫するため最小侵襲)。
+            add は実選択肢(text 非空 + uid)のみ。thumbnail は行の下(InlineOptionList 側)据え置き。 */}
+        <div className="md:col-start-5 flex items-center gap-0.5 self-start md:self-center">
+          {option.text.trim().length > 0 && option.uid && (
+            <CardImageGallery
+              images={images}
+              target={`option:${option.uid}`}
+              cardId={cardId}
+              userId={userId}
+              slot="add"
+              compact
+              attachAriaLabel={`選択肢 ${option.id} に画像を追加`}
+            />
+          )}
+          <button
+            type="button"
+            aria-label="選択肢を削除"
+            onClick={onDelete}
+            disabled={!canDelete}
+            className="inline-flex min-h-11 min-w-11 md:min-h-0 md:min-w-0 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+          >
+            <span className="text-xl leading-none md:text-base" aria-hidden="true">
+              ×
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   )

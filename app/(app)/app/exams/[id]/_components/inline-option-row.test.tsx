@@ -507,6 +507,19 @@ describe('InlineOptionList — add / delete + ghost', () => {
     expect(screen.queryByRole('button', { name: /に画像を追加$/ })).not.toBeInTheDocument()
   })
 
+  it('Sprint I fix(§9): 選択肢の add アイコンは行内(delete と同セル)に収まる = 独立行を消す', () => {
+    const optsUid: CardOption[] = [
+      { id: 'a', uid: 'a0000000-0000-4000-8000-00000000000a', text: '選択肢A', is_correct: false },
+    ]
+    render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={optsUid} />)
+    const addIcon = screen.getByRole('button', { name: '選択肢 a に画像を追加' })
+    const delBtn = screen.getByRole('button', { name: '選択肢を削除' })
+    // delete の grid cell(最終列 col-start-5)に add アイコンも収まる = 行内 co-locate。
+    const cell = delBtn.closest('div')!
+    expect(cell.className).toMatch(/col-start-5/)
+    expect(cell.contains(addIcon)).toBe(true)
+  })
+
   it('削除 button が各 option row に描画される (option 数と一致)', () => {
     render(<InlineOptionList cardId={CARD_ID} images={[]} userId={TEST_USER_ID} options={baseOptions} />)
     expect(screen.getAllByRole('button', { name: '選択肢を削除' }).length).toBe(2)
@@ -751,8 +764,10 @@ describe('InlineOptionList — auto-resize / layout regression (S2.0b)', () => {
     // 縦中央に寄せる回帰 fix。md:min-h-0 で 16px に縮んでも行中央に来る。
     const label = screen.getByRole('checkbox').closest('label')!
     expect(label.className).toMatch(/md:self-center/)
+    // Sprint I fix: delete は画像 add アイコンと同セル(wrapper)に co-locate し、md:self-center
+    // は wrapper 側へ移動(縦中央揃えは wrapper が担う)。
     const delBtn = screen.getByRole('button', { name: '選択肢を削除' })
-    expect(delBtn.className).toMatch(/md:self-center/)
+    expect(delBtn.closest('div')!.className).toMatch(/md:self-center/)
   })
 })
 

@@ -39,6 +39,11 @@ export type CardImageGalleryProps = {
   // compact icon の aria-label 文脈付け(複数選択肢で同名ボタンが並ぶ SR 不可判別を回避)。
   // 例: 「選択肢 a に画像を追加」。未指定時は既定「画像を追加」。
   attachAriaLabel?: string
+  // Sprint I fix(§9 行高): add affordance と thumbnail を別配置するための slot 制御。
+  // 'full'(既定)= thumbnail + add(従来)/ 'add' = add affordance のみ(ラベル行や選択肢行に
+  // 収める)/ 'thumbnails' = thumbnail のみ(add はラベル/行側に置いたので下は表示専用)。
+  // readOnly は add を出さないため slot と直交(学習面は 'full' のまま thumbnail のみ)。
+  slot?: 'full' | 'add' | 'thumbnails'
 }
 
 // attach 失敗 code → 短い JP エラーメッセージ(brief 指定の文言、 変更禁止)。
@@ -164,6 +169,7 @@ export function CardImageGallery({
   readOnly = false,
   compact = false,
   attachAriaLabel,
+  slot = 'full',
 }: CardImageGalleryProps) {
   const [error, setError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -208,21 +214,29 @@ export function CardImageGallery({
     void reclaimLocalAssetBlobs(userId, [assetId])
   }
 
-  if (targetImages.length === 0 && readOnly) return null
+  // slot='add' は add affordance のみ / 'thumbnails'(+ readOnly)は thumbnail のみ。
+  const showThumbnails = slot !== 'add'
+  const showAdd = slot !== 'thumbnails' && !readOnly
+  // thumbnail も add も描画しない組合せ(空 thumbnails / 空 readOnly / add+readOnly の
+  // 想定外併用)は空 wrapper を出さず null(§9 行高: 空 div も出さない)。
+  if (!(showThumbnails && targetImages.length > 0) && !showAdd) {
+    return null
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {targetImages.map((image) => (
-        <CardImageThumbnail
-          key={image.key}
-          image={image}
-          userId={userId}
-          readOnly={readOnly}
-          onDelete={handleDelete}
-        />
-      ))}
+      {showThumbnails &&
+        targetImages.map((image) => (
+          <CardImageThumbnail
+            key={image.key}
+            image={image}
+            userId={userId}
+            readOnly={readOnly}
+            onDelete={handleDelete}
+          />
+        ))}
 
-      {!readOnly && (
+      {showAdd && (
         <>
           {compact ? (
             // compact: 小さな +画像 アイコン(gallery 内 × 削除ボタンと同寸 h-6 w-6)。
