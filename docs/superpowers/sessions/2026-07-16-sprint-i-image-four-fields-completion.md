@@ -37,10 +37,17 @@ docs(spec/plan/audit)= `d488609` / `78aa3a6` / `eb168ba` / `26cc585` / `dbee52e`
 
 - **blank-text の非対称(W5・OT 判断 = cascade する)**: 画像付き選択肢の text を空にして blur → sanitize が永続集合から除外 → cascade が画像削除。**working-set は blank 行を保持ゆえ UI に行は残るが、打ち直しても画像は戻らない**(現行の壊れた挙動では zombie 残存ゆえ戻っていた・W5 は意図的に消す)。理由 = 「空 = option 消滅」の意味論一貫 + 不可視の永久 leak を避ける。uid 化で mis-attach 不能ゆえ**破損でなく hygiene vs UX トレードオフ** → smoke 3c で OT が実物許容判断。
 
+## OT stg smoke 結果(2026-07-16・全項 PASS)
+
+再 seed 済 stg exam(`75104e5f-aea5-42b5-9d15-cc1743bda55d`)で OT 実施・**全項 PASS**。①②③⑤⑥ PASS。
+- **3b(rename 追随)PASS**: 選択肢 id を変更しても画像が追随 = **W5 uid 化が実機で効いている**(pivot の目的達成)。
+- **3c(blank-text 非対称)PASS・OT 実物許容**: text を空にすると画像が消え打ち直しても戻らない挙動を OT が実物確認し**仕様として許容**(別 task 起票不要)。§3 rev2 の「hygiene vs UX トレードオフ」を実物で受容。
+- **5b(§9 多択 scroll)PASS**: 下記「§9 検証結果」参照。
+
 ## §9(多択行高肥大)検証結果
 
 - W5 seed 改修で **20 択カード 3〜5 枚を分散混入**(`seed-perf-exam.ts`・`i % 75 === 37` で 300 件中 ~4 枚)。Sprint F §9 の「未検証・持ち越し」を今回 smoke で解消する準備。
-- **【smoke 後に追記】**: § smoke 5b(多択前後 scroll で gap/飛び/カクつき)の結果 → 「検証済=持ち越し解消」or「観測→別 task 起票(対策候補=explanation トグル化/estimateSize 精緻化/overscan 調整)」。**現時点は再 seed + smoke 前ゆえ未記入**。
+- **検証済 = 持ち越し解消(2026-07-16・OT stg smoke)**: 20 択 seed 混入(`i % 75 === 37`)+ stg 再 seed 済 exam(`75104e5f-aea5-42b5-9d15-cc1743bda55d`)で smoke 5b(20 択カード前後を scroll)実施 → **gap / 行の飛び / カクつき(jitter)観測なし**。Sprint F spec §9 の「未検証・持ち越し」を**解消**(measureElement の実行高補正が多択でも効いていることを実機確認)。
 
 ## commit 粒度の注記(W5/W3 の相互依存)
 

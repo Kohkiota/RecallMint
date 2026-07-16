@@ -27,7 +27,7 @@
 ### 🕗 後回し / launch 後判断 → §4
 - **画像上限 `MAX_IMAGES_PER_CARD=10` の単位表示** [起票 2026-07-15・Sprint I] — 4 面化(問題文/選択肢/解説/メモ)で 10 枚上限に当たる確率が上がる(従来は問題文のみ = 実質当たらなかった)。エラー文言「画像は10枚までです」が『カードあたり合計』と伝わるか実利用で観察。当たるようになったら文言 or 上限(合計 vs field 別)を再検討。**本 sprint では実装しない**(文言は brief 指定・変更禁止コメント付き)。
 - **safe-area(fixed ボタン下端 × iOS home indicator)= 現 viewport-fit 下では非該当** [更新 2026-07-15] — 旧 S2b follow-up「scroll-top ボタン下端が home indicator と被るか未検証」を調査で解決。現 viewport(`app/layout.tsx` は `viewport-fit=cover` 不在)では `env(safe-area-inset-*)` が全デバイス 0(inert)かつ iOS Safari が CSS viewport を safe-area 手前に inset するため `bottom-4` の fixed ボタンは**構造的に被らない**。**再燃条件 = `viewport-fit=cover` を導入する時のみ**(その際は全 fixed 要素の inset 対応 + 実機再検証が必要な app-wide 変更)。判断根拠: `docs/superpowers/sessions/2026-07-15-cardview-scroll-top-button.md`。
-- **Sprint F §9(多択カード行高肥大の scroll jitter)未検証** [起票 2026-07-15] — カードビュー仮想化(`ESTIMATED_CARD_HEIGHT=738`)は 300 件 seed で freeze 解消を実証済だが、seed に多択(15-20 択 ≈ 4531px)カードが不在のため spec §9 の最過酷ケースが**実機で一度も走っていない**。再燃条件の検証は**実データ投入後(実ユーザーの多択カード出現時)または seed への多択追加時**に持ち越し。正記録: `docs/superpowers/sessions/2026-07-15-sprint-f-completion.md`「§9 未検証」。
+- **~~Sprint F §9(多択カード行高肥大の scroll jitter)未検証~~ → 解決済(2026-07-16)** [起票 2026-07-15 / 解決 2026-07-16] — Sprint I W5 の seed 改修で 20 択カードを混入し、stg 再 seed + OT smoke 5b(多択前後 scroll)で **jitter 観測なし = §9 再燃せず**を実機確認。measureElement の実行高補正が多択でも有効。正記録: `docs/superpowers/sessions/2026-07-16-sprint-i-image-four-fields-completion.md`「§9 検証結果」。
 
 ### 🗂 廃案 (再開しない、 理由記録) → §5
 - **ローカル FSRS 化** (問題 3 中の C 判断、 OT 確定で正式廃案)
