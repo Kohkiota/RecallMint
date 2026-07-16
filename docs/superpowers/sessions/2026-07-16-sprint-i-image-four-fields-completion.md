@@ -87,6 +87,19 @@ W5(uid+cascade)と W3(galleries on `option:<uid>`)は**相互依存**(W3 は W5 
 5b. **§9 再燃検証(多択 scroll)**: 20 択カード前後を scroll し gap/飛び/カクつきが無いか(Sprint F 持ち越し解消・観測時は別 task 起票)。
 6. **学習面 read-only**: 学習画面で question/option/explanation の画像が read-only 表示。
 
+## smoke④(GC 非孤児化)結果 = PASS(2026-07-16・OT 実施 stg)
+
+reconciler(`scripts/gc-image-assets.ts`)を stg で実行し PASS。手順・裏取りは `docs/audit/2026-07-16-gc-reconciler-smoke4-procedure.md`(§実測確定)。
+
+- 実行形 `node --env-file=.env.local --conditions=react-server --import tsx scripts/gc-image-assets.ts --user <uuid> [--dry-run|--sweep --grace-days 0]` で動作(`.env.local` に stg DATABASE_URL 6543 + R2 env 4 種が揃い、専用 file 不要だった)。
+- dry-run `scanned=4 referenced=1` / `imageUuidKeys=1 refRows=1`(divergence なし)→ sweep で**孤児のみ回収・生存画像(referenced=1)は非回収**。R2 で生存 object 1 個のみ残存を目視。→ spec §2「GC は asset_id ベース・field 非依存ゆえ 4 面化の影響なし」が実機裏付け。
+
+### 教訓(load-bearing): GC smoke の事前 gate = `referenced > 0`
+
+- 1 回目は試験データ全消去後に実行し `scanned=23 referenced=0` → sweep で全 23 が孤児として回収。**守るべき生存画像がゼロ = 「誤収しない」の証明にならず vacuous** と判断しやり直した。
+- ∴ **GC smoke は dry-run で `referenced > 0`(生存画像あり)を確認してから sweep する**。= 「test は実際に gate を通さないと vacuous」の運用版。GC 手順 doc の §8 判定基準に事前 gate として明記済。
+- 副産物: seed の SEED_FORCE **L2 ガードは stg/prod 境界にならない**(URL substring 弱ヒューリスティック・password 誤 match・実測で SEED_FORCE 無しでも通過)ことを確認。破壊 script のガード実態と実効安全境界(operator env 目視 / `--user` scope / dry-run 先行)は `docs/audit/2026-07-16-seed-perf-exam-reseed-procedure.md` §3-bis に記録。
+
 ## follow-up
 
 - §9 検証結果(smoke 後に上記「§9 検証結果」欄へ追記)。
