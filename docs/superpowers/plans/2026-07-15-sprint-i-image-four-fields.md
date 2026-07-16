@@ -51,7 +51,26 @@
 
 ---
 
-### Task W3: gallery 増設(compact 形態 + 編集面 4 面配線)
+### Task W5: option 内部 id(uid)導入 + target uid 化 + set-diff cascade(spec §3 rev2・W3 の前提)
+
+**目的**: W3 レビュー(canonical + Codex)が検出した delete-only cascade の取りこぼし 2 経路(id rename / blank-text 除去)を、紐付けキーの構造変更で根本解消する。`CardOption.uid`(UUID v4・不変・不可視)を導入し画像 target を `option:<uid>` 化 → **uid は再利用されないため mis-attach が構造的に不可能**になり、cascade は「配列から消えた uid の掃除」= **衛生機構**(set-diff 1 個・失敗しても破損しない)へ降格する。裏取り = `docs/audit/2026-07-16-option-internal-id-feasibility.md`。
+
+**Files**: Modify `lib/db/schema.ts`(CardOption)/ `lib/client-db.ts`(ClientCardOption)/ `lib/validation/card.ts`(optionSchema.uid + uid 一意 refine)/ `lib/cards/empty-card.ts` / `app/(app)/app/upload/_actions/process.ts`(OCR 写像点 mint)/ `scripts/seed-perf-exam.ts` / `app/(app)/app/exams/[id]/_hooks/use-card-options.ts`(handleAddOption mint + cascade set-diff 化)/ `lib/cards/card-field-handlers.ts`(handleOptions uid 透過)/ `lib/sync/server/entity-mutation-registry.ts`(create handler uid 透過)/ `lib/cards/card-write.ts`(create patch 透過・必要時)/ Test: 各対応 test。
+
+**制約**:
+- **G→W の型**: G = 現 delete cascade の挙動 pin(既存 W1 test が green のまま流用可 = uid 化後も delete で画像が消える)。
+- **mint 経路 = 4 つ全て**(1 経路でも漏れると uid 無し option が validation reject): ① handleAddOption(client・`newId()`)② buildEmptyCard(「+カードを追加」既定 option・create patch 経路)③ OCR **server 写像点 `process.ts:373` のみ**(**Gemini prompt / `ocr-extract.ts` / response schema は一切触らない** — LLM は表示ラベルのみ返し uid はアプリが振る。受け皿のみ・画像自動切り出しは非スコープ)④ seed script。+ **詰め替え透過 2 箇所**(handleOptions の camel/snake 詰め替え / create handler)で uid を落とさない。
+- cascade set-diff: options commit(`commit()`)で「旧 working-set に在って新に無い uid」を diff し、その `option:<uid>` 画像を W1 と同じ 2 段(removeImageFromCard → 成功分 reclaim)+ 直列 for-await + assetId 単位 warn で除去。delete/blank-text の両経路を単一機構でカバー(handleDeleteOption 専用 cascade は set-diff に吸収)。
+- 学習系は不変: `selected_answer_ids` / `correct_answer_ids` / 正解サマリ / `nextOptionId`(表示ラベル採番に降格・実装不変)/ ghost merge(表示 id key のまま)。
+- 既存データ: **lazy 付与は作らない**。stg は W5 push 後に OT が再 seed(uid 付き)。DDL/migration 不要(jsonb)。
+
+**test**: ① 生成 4 経路それぞれが uid を mint(handleAddOption / buildEmptyCard / OCR 写像点 / seed は build 関数単位)② 透過 2 箇所が uid を落とさない ③ **rename**: 画像付き option の id を変更 → 画像 target(uid)不変 = 追随 ④ **blank-text**: text 空 commit で option が消える → set-diff cascade が画像除去 ⑤ **delete**: 既存 W1 test green 維持 ⑥ uid 一意 refine・uid 無し option の reject。
+
+**完了条件**: 上記 test green + 既存 test 回帰なし + **「全 option 生成経路が mint する」を test で担保** + Crit0/Imp0 + `[reviewed]`。
+
+---
+
+### Task W3: gallery 増設(compact 形態 + 編集面 4 面配線)【W5 後・保持済 diff を修正して仕上げ】
 
 **目的**: 編集面(list + side-peek 共有の `CardEditorFields`)で 4 面すべてに添付 UI を出す。選択肢は §9(多択行高肥大)を悪化させない compact 形態(spec §4.2)。
 
@@ -97,6 +116,9 @@
 
 ---
 
-## 実行順序と依存
+## 実行順序と依存(§3 rev2 で改訂)
 
-W1(独立・破損防止を最優先)→ W2(W3 解説/メモの前提)→ W3(W2 依存)→ W4(W2 依存・W3 と独立だが直列で回す)→ F。
+W1(完了・[reviewed] `b35fae6`)→ W2(完了・[reviewed] `5c137a9`)→ **W5(uid 導入・W3 の前提)→ W3(W5 依存: working tree 保持中の実装済 diff の選択肢 target を `option:<uid>` へ修正して review→commit)→ W4(W2 依存)→ F**。
+
+- W3 の未 commit diff は W5 完了まで working tree に保持(消失リスクが出る場合= W5 review 長期化等は OT 相談)。
+- smoke 前提: W5 は uid 必須 validation を含むため **OT push → stg 再 seed(uid 付き)→ smoke** の順(spec §7)。

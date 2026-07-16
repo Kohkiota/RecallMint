@@ -29,18 +29,27 @@
 
 ## 3. データ整合性の核心(最重要・破損防止)
 
-> **訂正注記(2026-07-15・plan 段 Codex cross-check で判明・doc drift 訂正)**: 初版の「`removeImageFromCard` は reclaim 内蔵」は**事実記述の誤り**。現物は `removeImageFromCard`(images 配列除去のみ)+ 別途 `reclaimLocalAssetBlobs`(ローカル Cache blob 掃除)の **2 段**(gallery `handleDelete` `card-image-gallery.tsx:194-198` と同型)。下記確定方針を 2 段に訂正済。仕様変更ではないため spec 凍結に抵触しない(誤った現物記述の是正)。
+> **改訂 rev2(2026-07-16・OT 承認)**: W3 実装レビュー(canonical + Codex の 2 独立)で、初版 §3 の **delete-only cascade が取りこぼす孤児化経路 2 件**が検出された — ① **option id rename**(id cell は user 編集可。a→b で `option:a` 画像が UI から消え孤児化)② **blank-text 除去**(text を空にして blur → sanitize が payload から drop → server が option 削除・`handleDeleteOption` 非経由ゆえ cascade 不発)。root cause = 紐付けキー `option:<id>` の id が**ユーザー編集可能な表示ラベルを兼ねる**こと(rename か delete+add かの判別情報がデータに存在せず、migrate 案はヒューリスティックにならざるを得ない)。fact-finding `docs/audit/2026-07-16-option-internal-id-feasibility.md` で **(A'-min) = 内部 id(uid)導入**の成立を確認し、本改訂で確定方針を差し替えた(**W5** として実装)。あわせて初版の「`removeImageFromCard` は reclaim 内蔵」という事実誤認(2026-07-15 訂正済)の正記述も本節に統合。
 
-**選択肢 id は安定だが、`nextOptionId`(`next-option-id.ts`)は削除済 id を再利用しうる**:letter `[a,b,c]`→b削除→追加=**b 再利用**、digit `[1,2]`→2削除→追加=**2 再利用**、`opt-N` も同様(3 方式すべて)。かつ `handleDeleteOption` は `cards.images` を触らないため、**削除された選択肢の `option:<id>` 画像が zombie として残存**(GC も ref 存在ゆえ削除しない)。→ **同 id の新選択肢が追加されると zombie 画像が誤って新選択肢へ紐付く = 静かなデータ破損**(id ベースでも id 再利用で破損が復活する)。
+**確定方針(rev2)**:
 
-- **確定方針**: **選択肢削除時に、その選択肢の `option:<id>` 画像を `cards.images` から除去する(cascade)**。`handleDeleteOption` が削除対象 id を確定 → `getClientDb().cards.get(cardId)` で現 images を読み `option:<id>` の asset key を抽出 → 各 key を **既存 `removeImageFromCard`(全配列 fresh read/write)で除去し、成功分を別途 `reclaimLocalAssetBlobs` でローカル掃除**(gallery `handleDelete` と同型の 2 段。上記訂正注記参照)。zombie を消すことで ①storage リーク解消 ②id 再利用の誤紐付き window を同時に閉じる = 必要十分。
-- **不変条件(spec 明記)**: 新規 gallery は必ず既存 `attachImageToCard`/`removeImageFromCard` を経由し、**target 部分集合の独自 commit を新設しない**(§2「client commit」より、部分 commit だけが union を壊し GC 孤児を生む唯一経路)。
-- reorder は存在しないため追随保証は不要(将来 reorder を足すなら id ベースゆえ画像は自動追随・別 sprint)。
+1. **紐付けキー = `option:<uid>`**。`CardOption` に **`uid`(UUID v4・不変・ユーザー不可視)**を追加し、画像 target は uid を参照する。現 `id`(a/b/c・1/2/3)は**表示ラベルへ降格**(正解サマリ・学習面表示・OCR 採番・`nextOptionId` は従来どおり id を使う。`selected_answer_ids`/`correct_answer_ids` も id のまま = 学習系は同時点自己整合ゆえ不変)。
+   - rename は「ラベル変更」となり画像は uid で自動追随(**rename という概念が画像系から消滅**)。
+   - **uid は UUID ゆえ再利用されない → 孤児画像が新選択肢へ誤紐付く(mis-attach)ことが構造的に不可能**。初版の破損ベクタ(`nextOptionId` の削除済 id 再利用 × zombie 残存)は確率的対処でなく不変条件として消える。
+2. **cascade = 配列 set-diff の単一機構(衛生機構)**。options commit で「配列から消えた uid」を diff し、その `option:<uid>` 画像を除去する(delete / blank-text 除去の両経路を同一機構でカバー。delete-only の W1 実装は W5 で**一般化**する — revert しない。W1 commit は当時の spec に忠実で履歴として正しい)。
+   - **cascade は正確性機構ではなく衛生機構**: 失敗しても mis-attach は起こりえず(上記 1)、残るのは storage リーク(GC は ref 存在で保持 = 安全側)のみ。ゆえに best-effort + warn 記録で足り、self-heal / 再試行は作らない(初版判断を「稀さへの賭け」から「構造的不可能」へ格上げ)。
+   - 除去は **`removeImageFromCard`(images 配列除去のみ)+ 成功分を別途 `reclaimLocalAssetBlobs`(ローカル Cache blob 掃除)の 2 段**(gallery `handleDelete` `card-image-gallery.tsx:194-198` と同型)。`removeImageFromCard` は reclaim を**内蔵しない**(初版の事実誤認の正記述)。
+3. **uid の mint は全 option 生成経路で必須**(1 経路でも漏れると validation reject)。現 HEAD で確認済の生成経路 = **4 つ**: ①「+選択肢を追加」(`use-card-options.ts` handleAddOption・client `newId()`)②「+カードを追加」の既定 option(`lib/cards/empty-card.ts` buildEmptyCard・create patch 経路)③ **OCR は server 写像点(`process.ts:373`)でのみ mint**(Gemini prompt / `ocr-extract.ts` / response schema は**一切触らない** — LLM は表示ラベルのみ返し uid はアプリが振る。OCR 画像自動切り出しは従来どおり非スコープ・今回は受け皿のみ)④ seed script(`scripts/seed-perf-exam.ts`)。加えて server 側の**詰め替え透過** 2 箇所(`card-field-handlers.ts` handleOptions / `entity-mutation-registry.ts` create handler)で uid を落とさない。
+4. **既存データ**: prod = zero-user(空)。**stg PERF-SEED は uid 無し options** → lazy 付与は作らず(複雑化のみ)、**W5 実装 → OT push → OT 再 seed → smoke** の順で洗い替える。
+
+- **不変条件(継続)**: 新規 gallery は必ず既存 `attachImageToCard`/`removeImageFromCard` を経由し、**target 部分集合の独自 commit を新設しない**(§2「client commit」より、部分 commit だけが union を壊し GC 孤児を生む唯一経路)。
+- reorder は存在しない(将来足しても uid ベースゆえ画像は自動追随)。
+- §2 表の「選択肢の安定 id」行は初版時点の検証事実として正だが、紐付けキーの結論は本節 rev2 が supersede する。
 
 ## 4. 設計
 
 ### 4.1 target 命名(OT 確定 = field 名一致)
-- 解説 = `'explanation_text'` / メモ = `'memo'`(handler/mirror の field 名と一致・OCR 語彙に寄せない)。選択肢 = 既存 `'option:<id>'`。
+- 解説 = `'explanation_text'` / メモ = `'memo'`(handler/mirror の field 名と一致・OCR 語彙に寄せない)。選択肢 = `'option:<uid>'`(**§3 rev2**: 内部不変 UUID。初版の `option:<id>` から改訂)。
 - `imageEntrySchema` refine(`validation/card.ts:110`)を widen: `['question_text','explanation_text','memo'].includes(target) || /^option:.+/.test(target)`。**1 箇所のみ**(server handleImages と client 双方がこの共有 schema を経由)。
 
 ### 4.2 gallery 表示形態(§9 衝突回避・OT 確定)
@@ -59,13 +68,20 @@ handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-
 ## 5. Phase 分割(全 phase feat・test-first)
 
 全 phase behavior-changing(feat)ゆえ canonical + Codex review + [reviewed]。**各 phase の完了条件 = 対象 test green**(赤で task 間を連結しない = per-task で full test)。
+**実行順(§3 rev2 で改訂)**: W1(実装済)→ W2(実装済)→ **W5(uid 導入)→ W3(gallery)→ W4(学習面)→ F**。
 
 - **W1(選択肢削除の画像 cascade・test first)**: 破損回帰 test と cascade 実装を**同一 task**で行う(TDD RED→GREEN を 1 commit 内で完結。**RED 状態は commit しない** = 「同一挙動変更に対する test と実装」ゆえ分割すると赤が生まれるだけ)。
   - test(先行): 「`option:b` 画像を持つ選択肢 b を削除 → 新選択肢追加(id が b に再利用される)→ 新 b に旧画像が付かない」。**cascade を neuter(削除時に画像を残す)すると RED になることを commit 前 review 時に確認・報告**(§6・非空振り担保。RED は commit しない)。
   - 実装: §3 の cascade を `handleDeleteOption`(`use-card-options.ts`)に自己完結で実装(削除 idx から option id を確定 → `getClientDb().cards.get(cardId)` で images 読取 → `option:<id>` の asset key を既存 `removeImageFromCard` で除去。server は既存 handleImages の refs 全置換で追随 = server 無改修)。
   - **完了条件**: 上記 test + 既存 option test 回帰なしで **green commit**・Crit0。
+  - 註(rev2): W1 は初版 §3(delete-only・`option:<表示id>`)に忠実な実装として**完了・[reviewed] 済**(commit `b35fae6`)。W5 が uid + set-diff に**一般化**する(revert しない — W1 commit は当時の spec に忠実で履歴として正しい)。
+- **W5(option 内部 id 導入 + target uid 化 + set-diff cascade・§3 rev2・W3 の前提)**: G→W の型。
+  - G = 現 delete cascade の挙動 pin(既存 W1 test を流用可・green のまま)。
+  - W = ① `CardOption.uid` 導入(型 + `optionSchema.uid: z.uuid()` + uid 一意 refine。DDL/migration 不要 = jsonb)② **全 4 生成経路で mint**: 「+選択肢を追加」(`use-card-options.ts` handleAddOption)/「+カードを追加」既定 option(`empty-card.ts` buildEmptyCard)/ OCR server 写像点(`process.ts:373`)/ seed script(`seed-perf-exam.ts`)+ **詰め替え透過 2 箇所**で uid を落とさない(`card-field-handlers.ts` handleOptions / `entity-mutation-registry.ts` create handler)③ 画像 target を `option:<uid>` 化 ④ cascade を uid ベース **set-diff** に一般化(§3 rev2-2・衛生機構)。
+  - **境界(OT 明示)**: Gemini prompt / `ocr-extract.ts` / OCR response schema は**一切触らない**(LLM は表示ラベルのみ返し uid はアプリが振る。OCR 画像自動切り出しは非スコープ・今回は受け皿のみ)。
+  - **完了条件**: 「**全 option 生成経路が uid を mint する**」を test で担保(4 経路 + 透過 2 箇所)+ **rename / blank-text / delete の 3 経路で画像が mis-attach しない**回帰 test + 既存 test 回帰なし・Crit0/Imp0・`[reviewed]`。
 - **W2(imageEntrySchema widen)**: 解説/メモ target を refine に追加(§4.1)。**完了条件**: `explanation_text`/`memo` の UUID-key entry が validation を通り、未許容 target が従来どおり reject される test・既存 question_text/option: entry 不変。
-- **W3(gallery 増設)**: `CardImageGallery` に `compact` 追加 + 編集面 4 面配線(§4.2/4.3)。**完了条件**: 4 面すべてで attach/remove が既存経路を通る・compact 空選択肢が小 affordance のみ・問題文据え置き・Crit0。
+- **W3(gallery 増設・W5 後)**: `CardImageGallery` に `compact` 追加 + 編集面 4 面配線(§4.2/4.3)。選択肢 gallery の target は `option:<uid>`(§3 rev2。W3 実装済 diff は working tree 保持中 → W5 完了後に target 参照を uid へ修正して commit)。**完了条件**: 4 面すべてで attach/remove が既存経路を通る・compact 空選択肢が小 affordance のみ・問題文据え置き・Crit0。
 - **W4(学習面 read-only・必須)**: §4.3。学習が描画する question/option/explanation に read-only gallery を拡張(memo は学習非表示ゆえ除外)。**完了条件**: 4 面添付が学習面で read-only 表示される・read-only(attach/remove 経路を通らない)・Crit0。
 
 ## 6. test 方針
@@ -73,15 +89,19 @@ handleImages / card_asset_refs / GC / discovery(deck DL・sweep・reclaim・get-
 - **非空振りの破損回帰(W1・最重要)**: §5 W1。**序数ベースの破損は該当しない**(§2 で id ベースと確定)ため、実在する破損ベクタ = **id 再利用**を pin する。cascade を neuter(削除時に画像を残す)すると RED になることを commit 前 review で確認して非空振り担保(RED は commit しない = W1 は green で commit)。
 - **W1**: 削除で `option:<id>` 画像が cards.images から消える + 他 target 画像・他選択肢画像は残る(union 非破壊)。reclaim 呼び出し確認。
 - **W2**: widen した target の通過 + 未許容 target の reject(既存 refine test に 2 面追加)。
-- **W3**: 4 面それぞれ attach→cards.images に正しい target で 1 entry・remove で消える(既存 gallery test を target 別に拡張)。compact 空状態の affordance。
+- **W5(§3 rev2)**: ① 全 4 生成経路の uid mint + 透過 2 箇所 ② **rename / blank-text / delete の 3 経路で画像が mis-attach しない**(rename = target 不変で追随・blank-text/delete = set-diff cascade で除去)③ uid 一意 + uid 無し option の reject。
+- **W3**: 4 面それぞれ attach→cards.images に正しい target(選択肢 = `option:<uid>`)で 1 entry・remove で消える(既存 gallery test を target 別に拡張)。compact 空状態の affordance。
 - AI/画像実 I/O は mock(実 R2/実 API 禁止・既存方針)。
 
 ## 7. OT smoke checklist(push/deploy 後・人力 or CC DevTools)
 
-既存 stg で:
+**前提(§3 rev2)**: W5 は `optionSchema.uid` 必須化を含むため、**OT push → 再 seed(uid 付き)→ smoke** の順(既存 seed card は uid 無しで options 編集が reject されるため)。
+
+再 seed 後の stg で:
 1. **4 面添付 + 永続**: 問題文/選択肢/解説/メモ すべてに画像添付 → reload → 4 面とも復活表示(消えない)。
 2. **削除の非復活**: 各面で画像削除 → reload → 復活しない。
 3. **選択肢削除の追随(破損防止)**: 画像付き選択肢を削除 → (同 id 再利用が起きる操作で)新選択肢に旧画像が付かない。
+3b. **rename 追随(§3 rev2)**: 画像付き選択肢の id を編集(a→x 等)→ 画像がその選択肢に付いたまま(消えない・他選択肢に付かない)。text を空にして blur(選択肢が消える)→ 新選択肢を追加しても旧画像が付かない。
 4. **GC 非孤児化**: GC reconciler 実行後、4 面の生存画像が孤児判定・削除されない(§2 で asset_id ベースと確定済のため回帰確認)。
 5. **§9 非悪化**: 多択カードで空選択肢が小 affordance のみ・行高が常時 gallery 化で肥大しない。
 6. **学習面 read-only 表示**: 学習画面で question/option/explanation の画像が read-only 表示される(編集で付けた画像が「解く/答え合わせ」時に見える)。
