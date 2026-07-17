@@ -76,11 +76,23 @@ Codex T5 が D の `span>table` / `button>table` nesting を P2 指摘。→ **s
 - **shared_context(`> ` 引用)内の表は非描画**(root 直下限定の帰結・実データに `> ` 付き表なし = 現状不要)。ノード起点描画に切替えれば可能(将来拡張候補)。
 - **GFM 列 alignment(`|:---|`)非対応**(T3 canonical Minor)= th/td が align/style を捨てる。spec §3.5 対象外・実カード不使用。OCR が alignment 吐くなら scoped follow-up。
 - **side peek の幅可変化(テーブルビュー)= 独立 sprint**(2026-07-17 OT)。Step 0 の核 = side peek がテーブルを押すのか被せるのか(押すなら列 reflow → 仮想化の再測が要る)。他論点 = 永続化の要否 / min-max / モバイルの扱い。
-- **学習中のメモ編集 = 別途**(下記「追加バッチ 4」の非スコープ)。誤答直後がメモを書く自然な瞬間だが変更源が別。
+- **学習中のメモ編集 = 別途**(下記「追加バッチ」item4 の非スコープ)。誤答直後がメモを書く自然な瞬間だが変更源が別。
+- **whitespace-only メモ / 解説の空 island**(whole-branch Minor)= `current.memo &&` / `explanationText ||` が `'   '` を truthy 扱いし空 island を出す。**解説と共通の既存挙動**(trim 未実施)ゆえ両面同時に直すべき follow-up。
+- **in-flight attach + 同時 blank-text race**(whole-branch cross-cut)= file 選択直後・mirror commit 前に option text を空にすると cascade の fresh read が未書込 image を取りこぼし `option:<uid>` が孤児化しうる。**card view と同一機構の既存 best-effort 挙動**(mis-attach でなく storage リークのみ)。閉じるなら両面同時 = 画像 GC track。
 
 ## 追加バッチ(2026-07-17 smoke PASS 後・OT 指示・同 branch)
 
-smoke PASS を受けて OT が同 branch で 3 件を追加指示(MD 表描画は smoke 済ゆえ再検証不要・items 2-4 のみ push 後 smoke):
-- **B(add affordance)**: T6 の「add 非配線」を覆し table 列に add 配線(spec §3.6 訂正済)。→ Minor#3 の「delete-yes/add-no 非対称」も **add 追加で解消**(card view と対称)。
-- **C(選択保持)**: 学習面で回答後に「自分が選んだ選択肢」を識別可能に(正誤=背景 / 選択=別チャネルの 2 軸・多択対応)。回答前から出している選択状態を回答時に捨てているのが欠陥。
-- **D(メモ学習面表示)**: 回答後のみ・非空時のみ・MdTableText 経由(6 番目の挿入点)・解説と視覚区別・read-only。spec §1 の「メモ×4 面」が学習面で空振りしていたのを埋める。
+smoke PASS を受けて OT が 4 件を追加指示(item1=docs / items 2-4=feat/fix。MD 表描画は smoke 済ゆえ再検証不要・**items 2-4 のみ push 後 smoke**)。range `9e190b6..545d28c`・feat/fix 3 全 [reviewed]。
+
+- **item1(docs `9e190b6` [no-review])**: smoke 全PASS 記録 + spec §3.3 の nesting を「論証受容」→「実機確認済」格上げ + §3.6 add 訂正。
+- **item2(add affordance・`d680526` [reviewed])**: T6 の「add 非配線」を覆し table 3 列 + 選択肢に card view と同じ compact add(既存 `attachImageToCard` 経路・独自経路なし)。→ Minor#3「delete-yes/add-no 非対称」も add 追加で解消。**canonical + Codex 両者が空 ghost 選択肢への添付で孤児化(P2/Imp)を検出 → card view と同じ `opt.text.trim().length > 0` gate で fix**(mutation で gate 除去→RED 実証)・Codex 再走 clean。
+- **item3(選択保持・`fcb475c` [reviewed])**: 回答後も「自分が選んだ選択肢」を識別可能に。**2 軸**(正誤=emerald 背景 + ○/× / 選択=**sky ring + 「あなたの回答」badge**・判定前後一貫)。多択で選び逃し正解 / 選んだ誤答を区別。灰色化不採用。非色キュー(badge)で色覚非依存。retry/next/prev で reset。
+- **item4(メモ表示・`5625f40` [reviewed])**: 回答後・非空時のみ・`MdTableBlock` 経由(6 番目の挿入点)・**amber の別スタイル島**(解説=blue と出自区別)・read-only。spec §1「メモ×4 面」の学習面空振りを埋める。
+- **whole-branch review(opus・items 2-4)= Ready to merge Crit0/Imp0**。part2/3 の shared file(session-runner)は disjoint 領域で `isJudged` reveal gate のみ共有・4 色同時状態(emerald/sky/blue/amber)は各々非色キュー付きで曖昧なし。add gate は card view と同一・新規 mutation/network なし。Minor 1(コメント `MdTableText`→`MdTableBlock` 訂正・`545d28c` で fix)。
+- **バッチ完了 gate**: full test **3742 passed**・tc0・whole-repo lint0・build0(dep 変更なし)。
+
+### items 2-4 の stg smoke checklist(push 後・OT or CC DevTools)
+1. **item2**: テーブルビュー 3 列 + 選択肢に add アイコン表示 → 押下で画像添付 → reload で復活。空 ghost 選択肢(+選択肢を追加 直後・未入力)には add が**出ない**。
+2. **item3**: 回答後、自分が選んだ選択肢に sky ring + 「あなたの回答」badge。多択で「選んだ正解 vs 選び逃した正解」「選んだ誤答 vs 選ばなかった誤答」が判別可能。retry で消える。
+3. **item4**: 回答後、メモがある card で amber の「メモ(あなたの記録)」island 表示(解説 blue と区別)。回答前・空メモでは非表示。メモ内 MD 表が `<table>` 描画。
+4. **4 色同時状態の可読性**: 正誤(緑)+ 選択(sky)+ 解説(blue)+ メモ(amber)が同画面で混同しないか目視。
