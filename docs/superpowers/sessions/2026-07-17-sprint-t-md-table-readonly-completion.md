@@ -4,7 +4,8 @@
 - **spec**: `docs/superpowers/specs/2026-07-17-sprint-t-md-table-readonly-render-design.md`(確定・凍結)
 - **plan**: `docs/superpowers/plans/2026-07-17-sprint-t-md-table-readonly-render.md`(OT 承認・確定)
 - **実装方式**: CC inline TDD + read-only canonical(general-purpose subagent)+ Codex 独立レビュー(per-task)+ 末尾 whole-branch review(opus)
-- **sprint base**: `0b43435` / **最終 HEAD**: `5d75414`(develop・未 push)
+- **sprint base**: `0b43435` / **本体最終 HEAD**: `5d75414` → 追加バッチ・follow-up fix 込みの **Sprint T 最終 = `562de1f`**(develop・**origin へ push 済**=stg smoke 実施可能だった状態)
+- **クローズ**: 2026-07-17(下記「Sprint T クローズ確定」参照)
 
 ## 成果
 
@@ -79,6 +80,7 @@ Codex T5 が D の `span>table` / `button>table` nesting を P2 指摘。→ **s
 - **学習中のメモ編集 = 別途**(下記「追加バッチ」item4 の非スコープ)。誤答直後がメモを書く自然な瞬間だが変更源が別。
 - **whitespace-only メモ / 解説の空 island**(whole-branch Minor)= `current.memo &&` / `explanationText ||` が `'   '` を truthy 扱いし空 island を出す。**解説と共通の既存挙動**(trim 未実施)ゆえ両面同時に直すべき follow-up。
 - **in-flight attach + 同時 blank-text race**(whole-branch cross-cut)= file 選択直後・mirror commit 前に option text を空にすると cascade の fresh read が未書込 image を取りこぼし `option:<uid>` が孤児化しうる。**card view と同一機構の既存 best-effort 挙動**(mis-attach でなく storage リークのみ)。閉じるなら両面同時 = 画像 GC track。
+- **⚠ テーブルビュー画像添付の実 attach smoke = 未実施のままクローズ(2026-07-17)**: item2(`d680526` で配線・`5a913a9` で DOM 行内化)の add 経路は、テーブルビューから **実際に 1 度も画像を添付していない**。unit は mock-call 検証のみで、**`meta.userId` が実行時 undefined でも test は通る**(署名付き URL の 403 は実 upload 時にしか出ない)。既存 `attachImageToCard`・card view と同一・prop 源不変を根拠に閉じたが、**この失敗モードは未検証で残る = 次に誰かがテーブルビューから画像を添付した瞬間に初めて表面化する**状態。閉じるなら 30 秒で足りる(テーブルビューで選択肢 1 件に 1 枚添付 → reload で残存確認)。
 
 ## 追加バッチ(2026-07-17 smoke PASS 後・OT 指示・同 branch)
 
@@ -108,3 +110,21 @@ smoke PASS を受けて OT が 4 件を追加指示(item1=docs / items 2-4=feat/
 - **4 色同時状態 PASS**: 1 画面に emerald(正解)+ sky(選択)+ blue(解説)+ amber(メモ)が同時に出るが各々明確に区別。**console error 0 / warning は Clerk dev-keys のみ**(validateDOMNesting 等なし)= 選択肢 button 内 table + 解説/メモ table 同時でも nesting warning なし(spec §3.3 の実機確認をさらに強い状態で再確認)。
 - **副次確認**: 学習面の解説/メモの MD 表描画(本体 smoke 済の C/E)も注入 card で再確認 PASS。
 - **クリーンアップ**: card No.1 は reload で原状復帰(correctCount 1 / memo null / explanation null)・server 無変更・自分由来の pending mutation 0 を確認。
+
+## follow-up fix: add アイコン行内 co-locate(`5a913a9` [reviewed] / 2026-07-17)
+
+items 2-4 smoke 後に判明した item2 の density 問題(選択肢列で add アイコンが独立行を取り、選択肢数ぶん行高が倍加)を修正。詳細・論拠 = `docs/superpowers/sessions/2026-07-17-table-add-icon-inline-fix.md`。canonical Ready(Minor1・意図的で code 変更不要)+ Codex clean。DOM 配置のみ移動で attach 経路(props / userId 源)は byte 一致で不変。
+
+- **smoke(2026-07-17・OT 手動)= item1 PASS**: add アイコンが × の直隣にインライン収容・行高が増えていないことを実機目視で確認(多択でも同様)。thumbnails 余白も同視で問題なし。
+- **item2(実 attach → reload)= 未実施のままクローズ**(上記 follow-up 台帳の ⚠ 項参照)。
+
+## Sprint T クローズ確定(2026-07-17)
+
+- **範囲**: base `0b43435` → 最終 `562de1f`(本体 T1-T6 + whole-branch Minor + 追加バッチ items 2-4 + follow-up fix 5a913a9 + 各 session/codex docs)。**origin へ push 済**。
+- **review**: 全 feat/fix [reviewed]・whole-branch Ready to merge Crit0/Imp0(本体・items 2-4 とも)・Codex 各 clean(T5 P2 は adjudicated-resolved)。
+- **gate**: full test 3742 passed(本 doc 記載時点)・typecheck 0・whole-repo lint 0・build 0。
+- **smoke**: 本体 4 面 + items 2-4 + follow-up item1(アイコン配置)すべて PASS(stg・OT/CC)。
+- **唯一の未検証**: テーブルビュー画像の**実 attach smoke**(mock では捕まらない runtime userId undefined 失敗モード)。意図的に未実施でクローズ、follow-up 台帳に申し送り。次にテーブルビューから添付した時に表面化する状態であることを明記済み。
+- **残 OT 判断(blocker でない)**: テーブルビュー サムネの削除可否(Minor#3・上記「OT 判断・smoke 事項」#1)。
+
+→ **Sprint T をクローズ**。次 Sprint は OT 判断待ち。

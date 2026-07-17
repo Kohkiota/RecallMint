@@ -65,6 +65,19 @@ CC 検証困難な実 attach を含むため OT 実機/stg。
    d680526 の add 経路の実 attach 未 smoke を併せて閉じる。
 3. thumbnails のある選択肢で、add 行内化後の余白(explanation 直下に thumbnail が接する)が読める見た目か目視。
 
-## 停止
+## smoke 結果(2026-07-17・OT 手動実施)
 
-Sprint 境界で停止。OT push → smoke。
+- **item1(アイコン配置)= PASS**: 選択肢のある card で add アイコンが × の直隣にインライン収容され、
+  **選択肢ごとの独立行が解消・行高が増えていない**ことを OT が実機目視で確認。多択 card でも同様。
+  この fix の主眼(row 1 への co-locate)は合格。
+- **item3(thumbnails 余白)= 同視で問題なし**: 行内化後の explanation 直下 thumbnail の接し方も同じ画面で
+  目視、可読性に問題なし。
+- **item2(実 attach → reload)= 未実施**: 下記「クローズ」および Sprint T completion doc の follow-up 台帳参照。
+  テーブルビューからの実添付は 1 度も走らせていない。既存 `attachImageToCard` 経路・card view と同一・
+  unit の mock-call 検証済みという扱いのまま閉じる。
+
+## クローズ
+
+item1(この fix の主眼)smoke PASS で co-locate 修正は完了。item2(実 attach)は未実施のまま
+**意図的にクローズ** — mock では捕まらない失敗モードが未検証で残る点を Sprint T completion doc の
+follow-up 台帳に申し送り済み。Sprint T として本 follow-up を含めクローズ。
