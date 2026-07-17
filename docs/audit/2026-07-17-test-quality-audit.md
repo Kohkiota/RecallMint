@@ -69,6 +69,46 @@ gate: full suite 3756 green(+14 test)/ whole-repo lint exit 0 / typecheck exit 0
 Codex 追走(OT 指示・一時 worktree で diff を uncommitted 再現): **clean**(Critical 0 / Important 0 / Minor 0・detector PASS)— raw = `docs/codex/2026-07-17-test-quality-g1-g3.md`。
 Minor 群は本監査の記録のまま未対処(OT 判断事項)。
 
+## 追加対処(2026-07-17・OT 判断による 3 件)
+
+### #1 ts-fsrs を exact pin(`80b4412` chore(deps))
+
+`"^5.3.2"` → `"5.3.2"`(caret 除去・resolve 実体 5.3.2 不変・lockfile 差分 specifier 1 行)。理由:
+
+- SemVer は公開 API 互換のみ保証し数値出力の一致は保証しない。patch でも「後方互換なバグ修正」として計算結果が変わりうる。実例: caret 範囲内の 5.4.1 にパラメータ clipping 計算修正 = API を壊さず出力を変える変更。
+- スケジューラは数値出力そのものが製品挙動(ユーザーの復習計画を決める)。ライブラリ更新は「内部実装の更新」でなく「スケジュール仕様の更新」として扱う。
+- react-markdown / remark-gfm の exact pin 論拠(更新 = 表示仕様の更新)と同形。ts-fsrs は規律制定前から caret のまま残っていた。
+- G1 golden が default_w 由来を pin するため、caret のままだと意図しない pnpm update で golden が割れる。
+
+de-risk gate 不要(version 変更なし)。frozen install / typecheck / full test exit 0 確認済。
+
+### #2 G1 記述の訂正(`efff9fa` test(fsrs)・本 doc)
+
+**訂正**: 「ts-fsrs 5.x default params」→「**ts-fsrs 5.3.2(FSRS-6.0)の default params**」。ts-fsrs はライブラリ版とアルゴリズム版が別物(5.3.2 / 5.4.1 とも FSRS-6.0。`FSRSVersion` 実文字列 = `v5.3.2 using FSRS-6.0`)。「5.x」は FSRS-5 と誤読される。golden が何を pin しているかは将来 FSRS-7 系へ移行する時の判断材料になるため、アルゴリズム版が読み取れる形で残す。
+
+**pin 対象の正確な定義**: G1 golden は「**ライブラリ同梱の FSRS-6.0 default weights(`default_w` 21 要素)+ short-term スケジューリング挙動**(enable_short_term: true / learning_steps ["1m","10m"])」を pin しており、**fuzz 無効(enable_fuzz: false = default)に依存**する(fuzz 有効化で due が非決定になり golden 不成立)。stability pin 値 [0.212, 1.2931, 2.3065, 8.2956] = default_w[0..3]、Again difficulty 6.4133 = default_w[4]。app は `lib/fsrs.ts:5` の `fsrs()`(引数なし・全 default・自前 w なし)。
+
+commit 59eda8f の message(「5.x」表記)は書き換えず、test コメント + 本 doc 側で訂正(OT 指示)。
+
+### #3 pull stream 4 本の eq(userId) pin(`e7aff7d` test(db))— Minor 判断の格上げ
+
+監査が Minor に落とした「pull stream 4 本の eq 未 pin」を対処に格上げ。**判断を覆す理由**(記録):
+
+- G2 で `lib/exams/list.ts` に行ったのと同じクラスの pin であり、rating が割れていた。監査 doc は Minor に落とした理由を記録していなかった。
+- pull はユーザーのデータ一式をクライアントに返す経路であり、leak 時の blast radius が list.ts より大きい。
+- RLS が全 23 テーブルで無効のため、アプリコードの eq(userId) が**唯一のテナント隔離防壁**。
+- spy のコストは低い(既存パターン流用・`getDeltaRows` 共有ゆえ 1 file で tag 系 3 経路を被覆)。Minor 化は「フィルタが実在し live leak がない」ことに基づくが、**それは回帰ガードが不要な理由にならない**。
+
+実装: `lib/db/pull-delta.test.ts` 新設(getDeltaRows 直接 pin + tag-categories / tag-options / card-tags の 3 caller が正しい userIdCol を渡すことを pin)+ `study-days-pull.test.ts` に独立 inline query の pin 追加。red 検証 = factory eq 除去で 4 fail / study-days eq 除去で 1 fail / caller 誤 userIdCol(tagCategories.id)で 1 fail、いずれも worktree で実証。
+
+**この pin の限界(test file 冒頭にも明記)**: eq-spy は「eq が userId 列と userId 値で呼ばれた」という**構造の pin であり、テナント隔離の証明ではない**。最終 SQL の WHERE に条件が届いているか / (参照同一性以上の意味で)正しいテーブルの列と比較しているか / 別の条件で無効化されていないか / ストリームの後続チャンクで条件が消えていないか は検証していない。**回帰ガードとしては有効だがセキュリティ保証として数えない**。実効の検証は下記 follow-up(実 PostgreSQL 2 テナント統合テスト)の責務。
+
+## follow-up 台帳(2026-07-17 追加対処時・OT 起票)
+
+1. **実 PostgreSQL による 2 テナント統合テスト(launch blocker)**: user A / user B の fixture を実 DB に入れ、(a) A で引いて B が出ないこと (b) B の ID を指定した更新/削除の影響行数が 0 であること (c) ストリームの全チャンクとページネーションの全ページで混入しないこと (d) user ID をリクエスト由来ではなく Clerk 認証コンテキストからのみ取ること、を検証する。**基盤が存在しない**(pglite / pg-mem / testcontainers いずれも不在・tests/integration は mock DB)ため独立 sprint。現在の eq-spy は SQL の実効を検証していないため、**これが入るまで「テナント隔離は未検証」の状態が続く。外部公開前に必須**。
+2. **RLS の導入判断(独立 sprint)**: 現在 RLS は全 23 テーブルで無効。単に有効化するだけでは足りない — テーブル所有者・superuser・BYPASSRLS ロールは RLS を迂回するため、**DATABASE_URL が owner role なら無効**。かつ Clerk + Drizzle 直結では `auth.jwt()` に伝播しないため、**transaction ごとに SET LOCAL で認証済み user ID を渡す設計が要る**(Transaction Pooler ゆえ session 設定は不可)。「導入する」か「導入しない理由を設計記録に残す」かの判断を外部公開前に行う。
+3. **レビューログの保持(S2.1 の Step 0 で確認)**: FSRS の ReviewLog(rating / 実 review timestamp / 直前の review timestamp / 適用したスケジューラ設定の version)を正本として保持しているか。保持していない場合、将来のパラメータ再最適化・FSRS-6 → 7 の移行(レビューログの replay による状態再構築)・スケジューリングのバグ修復ができない。**card の状態(due / stability / difficulty)だけでは replay できない**。
+
 ## 方法メモ
 
 - subagent 3 体(domain 層 19+9+14+5 file / app 層 89+8 file から 20 サンプル + 1,891 it-block 走査 / クリティカル路 ~390 test 精読)。read-only。
