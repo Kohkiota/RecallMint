@@ -55,7 +55,7 @@ fact-finding §3 は Sprint F / I より前の記述のため全点を HEAD で�
 ### 3.2 セグメンテーション規則
 
 - **対象 = root 直下(depth 1)の table ノードのみ**。blockquote / list 内の入れ子は対象外 = 生記号のまま現状維持。理由の正確な記録: 本設計の「切り出し文字列を react-markdown に渡す」手順では offset slice に行頭 prefix(`> ` / インデント)が混入し単独再パースが成立しない(§2 実測 2,6)が、これは**手順が招いた制約であって原理的な不能ではない**(table ノードから直接描画すれば prefix は存在しない — パーサが blockquote container を剥がした後の中身がノードのため)。root 直下限定の実際の根拠 = **ノード起点描画にすれば blockquote 内も可能だが、実データに `> ` 付きの表が存在しないため本 sprint では不要**。実データ確認(2026-07-17・OT の SQL): OCR 実出力 2 件はいずれも root 直下の表(`> ` なし)、shared_context の `> ` 引用に表が入る形は観測されなかった。
-- 不変条件: **text セグメント + table スライスの連結 === 入力文字列(byte 同一)**。offset ずれによる重複・消失をこの再構成テストで検出する(§6)。
+- 不変条件: **text セグメント + table スライスの連結 === 入力文字列(string 完全一致)**。mdast の `position.offset` は UTF-16 code unit(JS string index)であり「byte」ではない — 我々は返された offset で `String.slice` するだけゆえ、`===` による string 完全一致が最も厳密かつ十分(同一 string なら byte も同一)。offset ずれによる重複・消失をこの再構成テストで検出する(§6)。**サロゲートペア(BMP 外文字)が唯一の危険経路** = code unit と code point がズレるのはそこだけ → fixture で必ず通す(§6)。
 - 空 text セグメント(表が先頭/末尾/連続)は DOM に出さない。
 - 実装形: 純関数 `lib/markdown/`(I/O なし・test 厚く。DDD 方針の pure 層準拠 — ただしビジネス規則ではなく表示ユーティリティなので `lib/<context>/domain/` ではなく独立 dir)。
 
@@ -63,7 +63,7 @@ fact-finding §3 は Sprint F / I より前の記述のため全点を HEAD で�
 
 fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components/markdown/`)を新設し、A/B/C/D/E の 5 site が import する(rule of three 充足)。
 
-- **renderer はセグメント列だけを描く**: text セグメント = **素の text node(原文 verbatim・span 等を足さない)**、table セグメント = react-markdown の `<table>`。各 site の既存 wrapper・class・末尾改行 `<br>` 補償は **call site に温存し 1 文字も変えない** — 差し替えるのは `{value}` 補間点のみ。→ 表 0 個入力では renderer 出力 = text node 1 個となり、**5 site すべてで DOM が byte 同一**(§4 不変条件を全 site で厳密充足)。
+- **renderer はセグメント列だけを描く**: text セグメント = **素の text node(原文 verbatim・span 等を足さない)**、table セグメント = react-markdown の `<table>`。各 site の既存 wrapper・class・末尾改行 `<br>` 補償は **call site に温存し 1 文字も変えない** — 差し替えるのは `{value}` 補間点のみ。→ 表 0 個入力では renderer 出力 = text node 1 個となり、**5 site すべてで DOM が同一**(§4 不変条件を全 site で厳密充足)。
 - **edit 枝は 1 ミリも触らない**(raw MD textarea 維持。編集 = display 全体クリックの既存方式も不変)。
 - **wrapper の HTML content model 対応**(Step 0 で判明した追加論点):
   - **(C)(E) の `<p>` wrapper**: `<p>` 内の `<table>` は HTML パーサが `<p>` を auto-close して再親化するため SSR/hydration が壊れる。→ **表を含む値の時のみ `<div>`(class 維持)、表 0 個は `<p>` 維持**(不変条件①を破らない)。判定はセグメンテーション結果を流用(二重パースの回避方法は plan で)。
@@ -93,7 +93,7 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 ## 4. 不変条件(spec 明記・kickoff 指定)
 
 1. **表が 0 個の入力に対し、現状と DOM が同一**であること(5 site すべて。renderer が text を素の text node で出し、wrapper・class・`<br>` 補償・(C)(E) の `<p>` tag を call site が温存することで成立、§3.3)。
-2. **offset ずれによるテキストの重複・消失が起きない**こと(連結復元 = 入力 byte 同一、§3.2)。
+2. **offset ずれによるテキストの重複・消失が起きない**こと(連結復元 = 入力と string 完全一致、§3.2。サロゲートペア fixture で code unit 前提を検証)。
 3. **Markdown の画像記法から外部リクエストが 1 件も発生しない**こと(components.img 無効化、§3.4)。
 4. 保存形式・編集枝・書込経路は変更ゼロ(display 枝のみ)。
 
@@ -115,8 +115,8 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 
 - **contract**: 表描画の DOM snapshot を `tests/contract/` に置く(既存 `__snapshots__` 慣行。**`.snap` の無条件 `-u` 禁止**)。セル内 raw HTML / autolink / 打消し線の挙動も snapshot で固定。
 - **実カード fixture(OT SQL 抽出・2026-07-17)**: OCR 実出力 2 件がちょうど 2 パターンを網羅するため、合成 fixture でなく実形をそのまま使う。**(A)** card `06f4e35f-b2d3-44af-a69d-86693ea10658` = 表が末尾で終わる(後続なし・基礎疾患×医薬品成分の 2 列表)→ 正常描画の pin。**(B)** card `2e97b7b7-0d3c-4f5a-933e-afcc7ce27841` = 表直後に空行なしで本文が続く(成分×分量の 2 列表 + 吸収)→ **受容した吸収挙動を snapshot で pin し、ライブラリ更新でこの挙動が変わったら `.snap` diff が捕まえる**状態にする(§2 実測 3。受容 = 放置ではない)。※ 手元の抜粋は `left(question_text, 500)` の結果 — **fixture 化の前に全文であることを OT に確認**(500 字超の切断があれば全文を再取得)。
-- **セグメンテーション純関数(厚く)**: 表 0 個で原文と byte 同一 / 連結復元(offset ずれ検出)/ 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識される / 表直後の本文吸収(実カード B)/ blockquote・リスト内の表は対象外(現状維持)/ 表が先頭・末尾(実カード A)・複数・連続。
-- **renderer component**: 表 0 個 → renderer 出力は text node のみ・site 単位で現状 DOM と byte 同一 / img 記法 → `<img>` 不在 + alt テキスト表示 / a 記法 → `<a>` 不在 / (C)(E) の tag 切替(表 0 個 = `p` / 表あり = `div`)/ 末尾改行 `<br>` 補償の維持。
+- **セグメンテーション純関数(厚く)**: 表 0 個で原文と string 完全一致 / 連結復元(offset ずれ検出)/ **サロゲートペア(BMP 外文字)を表の前・表内セル・表の後に置いた fixture で連結復元 property が通る**(UTF-16 code unit 前提の唯一の危険経路・§3.2)/ 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識される / 表直後の本文吸収(実カード B)/ blockquote・リスト内の表は対象外(現状維持)/ 表が先頭・末尾(実カード A)・複数・連続。
+- **renderer component**: 表 0 個 → renderer 出力は text node のみ・site 単位で現状 DOM と同一 / img 記法 → `<img>` 不在 + alt テキスト表示 / a 記法 → `<a>` 不在 / (C)(E) の tag 切替(表 0 個 = `p` / 表あり = `div`)/ 末尾改行 `<br>` 補償の維持。
 - **第 2 スコープ**: テーブルビュー列に thumbnails が出る / uid なし選択肢は増分 DOM ゼロ(既存 gallery test の拡張)。
 - AI mock 必須・実 API 禁止(既存規律、本 sprint は AI 経路に触れないが明記)。
 

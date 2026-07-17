@@ -15,7 +15,7 @@
 3. 不変条件(spec §4): ① 表 0 個入力で現状と DOM 同一(5 site 全部)② セグメント連結復元 = 入力と **string 完全一致(`===`)** — mdast `position.offset` は UTF-16 code unit(JS string index)であり「byte」ではない(Codex 論点採用: 同一 string なら byte も同一ゆえ `===` が最も厳密かつ十分)③ MD 画像記法から外部リクエスト 0 件。
 4. renderer 設定は spec §3.4 で固定: `components.img` 無効(alt 表示)/ `components.a` 無効(children 表示)/ `singleTilde: false` / rehype 系・remark-breaks・allowedElements 不使用。
 5. `.snap` の無条件 `-u` 禁止(diff を読んで意図した変更のみ受理)。
-6. 実カード fixture 2 件(spec §6 A/B)は **OT 提供の全文で確定**(前提: plan 承認時に全文確認の回答を受領。未受領なら T2 着手前に停止して確認)。
+6. 実カード fixture 2 件(spec §6 A/B)は **OT が `length(question_text)` を確認して確定させる**(OT レビューで切断痕跡なしと判定済 = A は閉じパイプで完結・B は選択肢 d まで揃う)。**OT の length 確認結果を受けてから T2 の fixture 化に進む**(未受領なら T2 fixture 化の直前で停止)。
 7. review dispatch の観点 list に whole-repo lint 実行確認を含める(CLAUDE.md)。自走継続・停止条件・spec 凍結は CLAUDE.md 準拠。
 
 ---
@@ -42,12 +42,12 @@
 
 **Interfaces(Produces)**:
 - `type MdSegment = { type: 'text' | 'table'; value: string }`
-- `segmentMdTables(text: string): MdSegment[]` — root 直下(depth 1)の table ノードのみ table セグメント化。空 text セグメントは配列に入れない。表 0 個 → `[{ type: 'text', value: text }]`(byte 同一)。
-- `hasMdTable(text: string): boolean` — `segmentMdTables` の派生(T5 の C/E 条件 tag 用)。
+- `segmentMdTables(text: string): MdSegment[]` — root 直下(depth 1)の table ノードのみ table セグメント化。空 text セグメントは配列に入れない。表 0 個 → `[{ type: 'text', value: text }]`(string 完全一致)。
+- **`hasMdTable` は produce しない**(修正 3: T5 は Codex 採用で `segments.some(s => s.type === 'table')` に変わり consumer 不在 = 初日から dead code のため落とす)。
 
-**制約**: パーサ構築 = `unified().use(remarkParse).use(remarkGfm, { singleTilde: false })`(spec §3.1 処理フロー)。判定器自作禁止(GFM 委譲)。offset は `position.start.offset` / `end.offset` のみ使用。
+**制約**: パーサ構築 = `unified().use(remarkParse).use(remarkGfm, { singleTilde: false })`(spec §3.1 処理フロー)。判定器自作禁止(GFM 委譲)。offset は `position.start.offset` / `end.offset` のみ使用(= 我々は返り値で `String.slice` するだけ・UTF-16 code unit 前提)。
 
-**test(spec §6 全列挙 + 実測エッジ)**: 表 0 個で原文と string 完全一致 / **連結復元 property(全 fixture: segments の value 連結 `===` 入力)** / 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識 / 表直後の本文吸収(実カード B 形 — test 名に「GFM 仕様の吸収挙動を正として pin」と明記)/ blockquote・リスト内の表は text のまま / 表が先頭・末尾(実カード A 形)・複数・連続 / 空文字列。実カード A/B 全文を fixture file に置く(全体ルール 6)。
+**test(spec §6 全列挙 + 実測エッジ)**: 表 0 個で原文と string 完全一致 / **連結復元 property(全 fixture: segments の value 連結 `===` 入力)** / **サロゲートペア fixture(修正 1・最重要)** = 絵文字 or `𠮟` 等の BMP 外文字を **①表より前 ②表内セル ③表より後** に含む 3 版(+ 3 箇所全部入り版)で連結復元 property が通る。この test だけが「offset は UTF-16 code unit で我々は slice するだけ」という**設計の load-bearing な前提**を検証する(現 fixture list は全て BMP 内 = 唯一の危険経路を一度も通らず green になるため必須。offset が code unit なら自明に通り、code point ならペア以降の全テキストがズレて RED)/ 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識 / 表直後の本文吸収(実カード B 形 — test 名に「GFM 仕様の吸収挙動を正として pin」と明記)/ blockquote・リスト内の表は text のまま / 表が先頭・末尾(実カード A 形)・複数・連続 / 空文字列。実カード A/B 全文を fixture file に置く(全体ルール 6)。
 
 **完了条件**: 上記 test green(この test 実行が ESM/vitest 動作確認を兼ねる、spec §5)・Crit0/Imp0・`[reviewed]`。
 
@@ -66,7 +66,7 @@
 
 **制約(CSS・spec §3.5)**: 表 = 縦に伸びる・行数で切らない・省略記号なし・横スクロールなし・`w-fit` 相当(コンテナ幅に引き伸ばさない)・**セルに `overflow-wrap: anywhere`**(外側 TanStack 列を押さない)。表スタイルは renderer 内で完結(4 面同一適用・面ごと出し分けなし)。
 
-**test**: 表 0 個 → container.innerHTML === value そのまま(text node のみ)/ `![x](url)` → `<img>` 不在 + 「x」(alt)表示 / `![](url)`(空 alt)→ `<img>` 不在・表示なし / `[厚労省](url)` → `<a>` 不在・「厚労省」表示(URL は表示から落ちる = spec §3.4 既知挙動)/ `~x~` → `<del>` 不在(singleTilde:false)/ セル内 `<script>` 要素が DOM に**存在しない**(rehype-raw 不使用)/ td・th に `overflow-wrap: anywhere` 相当 class が当たっている(構造 assert — layout 実測は smoke)/ 末尾改行値でも renderer は `<br>` を足さない(補償は call site 責務)。**contract snapshot**: 実カード A(正常 2 列表)+ 実カード B(**吸収挙動の pin** — ライブラリ更新で挙動が変われば `.snap` diff が捕まえる、spec §6)+ セル内 raw HTML / autolink fixture。snapshot は raw innerHTML を prettify せず固定(react-markdown 生成の thead/tbody・空白 text node 込みで pin — それ自体が「表示仕様の固定」の目的、Codex 論点採用)。
+**test**: 表 0 個 → **`container.textContent === value` かつ element 子ノードがゼロ(`container.querySelector('*') === null`)**(修正 4: React text node は `innerHTML` で `<`→`&lt;` / `&`→`&amp;` に serialize されるため `innerHTML === value` は raw HTML fixture で必ず落ちる — 「text node のみで DOM 要素を足していない」の正しい表現は textContent 一致 + 子要素ゼロ)/ `![x](url)` → `<img>` 不在 + 「x」(alt)表示 / `![](url)`(空 alt)→ `<img>` 不在・表示なし / `[厚労省](url)` → `<a>` 不在・「厚労省」表示(URL は表示から落ちる = spec §3.4 既知挙動)/ `~x~` → `<del>` 不在(singleTilde:false)/ セル内 `<script>` 要素が DOM に**存在しない**(rehype-raw 不使用)/ td・th に `overflow-wrap: anywhere` 相当 class が当たっている(構造 assert — layout 実測は smoke)/ 末尾改行値でも renderer は `<br>` を足さない(補償は call site 責務)。**contract snapshot**: 実カード A(正常 2 列表)+ 実カード B(**吸収挙動の pin** — ライブラリ更新で挙動が変われば `.snap` diff が捕まえる、spec §6)+ セル内 raw HTML / autolink fixture。snapshot は raw innerHTML を prettify せず固定(react-markdown 生成の thead/tbody・空白 text node 込みで pin — それ自体が「表示仕様の固定」の目的、Codex 論点採用)。
 
 **完了条件**: test + snapshot green・Crit0/Imp0・`[reviewed]`。
 
@@ -82,9 +82,17 @@
 
 **制約**: wrapper span(`whitespace-pre-wrap break-words`)・`<br>` 補償・placeholder 分岐・edit 枝は **1 文字も変えない**。isEmpty 分岐は従来どおり(renderer は非空時のみ)。
 
-**test**: ① 表 0 個 value → display 枝の innerHTML が差し替え前と完全一致(不変条件①の site-level 検証。差し替え前の期待 DOM をリテラルで固定)② 表入り value → span 内に `<table>` が描画される ③ click で edit 開始・textarea に raw MD(既存挙動の回帰)。カードビュー / テーブルビュー / side peek は全て A/B 共有ゆえ、この 2 file で 3 面カバー(spec §2)。
+**不変条件① = golden-first で機械証明する(修正 2)**。手書きリテラル固定は「読み違えて誤 DOM を pin」/「同一 commit で新コードから .snap 生成 = 必ず green = 無証明」の 2 通りに壊れるため使わない。既存 G→R→W 規律に沿い、次の順で組む(commit の切り方は CC 判断):
 
-**完了条件**: 追加 test + 既存 inline-text-field / inline-option-row / exam-card-table 系 test 回帰なし・Crit0/Imp0・`[reviewed]`。
+- [ ] **Step 1(golden 取得・差し替え前)**: `inline-text-field.tsx` / `inline-option-row.tsx` を**現行コードのまま**、表 0 個 value の display 枝 DOM を `toMatchSnapshot()` で採取し green を確認(= .snap が**旧 DOM から**生成される)。表あり value の snapshot も同時採取(この時点では生記号 = 現状描画が pin される)。
+- [ ] **Step 2(RED 確認）**: 表入り value で「span 内に `<table>` が存在する」assert を追加 → 現行コードで FAIL することを確認(RED は commit しない)。
+- [ ] **Step 3(差し替え)**: `{displayText}` / `{value}` 補間点を `<MdTableText>` に差し替え。
+- [ ] **Step 4(不変条件① 証明 + 新挙動）**: 表 0 個 snapshot が **`.snap` diff なしで green のまま**であることを確認(= 差し替えが表 0 個 DOM を変えていない機械的証明)。表あり snapshot は意図した差分(生記号→`<table>`)を**目視で確認して**更新受理(`.snap` 無条件 `-u` 禁止・全体ルール 5)。Step 2 の `<table>` assert が PASS に転じる。
+- [ ] **Step 5**: click で edit 開始・textarea に raw MD(既存挙動の回帰）+ 既存 test 回帰なしを確認 → commit。
+
+カードビュー / テーブルビュー / side peek は全て A/B 共有ゆえ、この 2 file で 3 面カバー(spec §2)。
+
+**完了条件**: 表 0 個 snapshot が diff なし green(不変条件①証明)+ 表あり snapshot が意図差分で受理 + 既存 inline-text-field / inline-option-row / exam-card-table 系 test 回帰なし・Crit0/Imp0・`[reviewed]`。
 
 ---
 
@@ -96,11 +104,17 @@
 
 **Interfaces**: Consumes `<MdTableText>` + `<MdTableSegments>` + `segmentMdTables`(T2/T3)。
 
-**制約**: C/E = `useMemo(() => segmentMdTables(text))` を **1 回**呼び、`segments.some(s => s.type === 'table')` で tag を `'p'` / `'div'` に切替(className 維持)+ `<MdTableSegments segments>` で描画(二重パースしない、Codex 論点採用)。D = `{stripPrefix 後 displayText}` と `{opt.explanation}` の補間点のみ `<MdTableText>` に差し替え(`<button>` / marker span 構造は不変 — span/button 内 table nesting は spec §3.3 で受容済)。stripPrefix の適用順は現状維持(strip 後の文字列を renderer に渡す)。
+**制約**: `<button>` / marker span / 選択肢の highlight class・回答トグルは **1 文字も変えない**(span/button 内 table nesting は spec §3.3 で受容済)。stripPrefix の適用順は現状維持(strip 後の文字列を renderer に渡す)。className は全 site 維持(C/E は tag だけ条件切替)。実装詳細は下記 Step 3。
 
-**test**: ① 表 0 個 question → `<p>` のまま・innerHTML 同一 ② 表入り question → `<div>` + `<table>` ③ 表入り option text / **option explanation** が button 内に `<table>` 描画 ④ **D の表 0 個 option text・explanation → innerHTML が差し替え前と同一**(不変条件①は 5 site 全部、Codex 論点採用)⑤ 表入り描画で **console.error/warn(React validateDOMNesting 等)が出ない**ことを spy で assert ⑥ 回答フロー(選択→判定)の既存 test 回帰なし。
+**不変条件① = golden-first(修正 2・T4 と同型)**。C/D/E の 3 site すべてを対象に、次の順で組む:
 
-**完了条件**: test green・Crit0/Imp0・`[reviewed]`。
+- [ ] **Step 1(golden 取得・差し替え前)**: `session-runner.tsx` を**現行コードのまま**、表 0 個の question(C)/ option text・explanation(D)/ explanation(E)の DOM を `toMatchSnapshot()` で採取し green 確認(= 旧 DOM から .snap 生成。C/E は現行 `<p>` が pin される)。
+- [ ] **Step 2(RED 確認)**: 表入りで「C/E が `<div>` + `<table>`」「D の option text・explanation が button 内 `<table>`」assert を追加 → 現行コードで FAIL 確認(RED は commit しない)。
+- [ ] **Step 3(差し替え)**: C/E = `useMemo(() => segmentMdTables(text))` を **1 回**呼び `segments.some(s => s.type === 'table')` で tag を `'p'`/`'div'` 切替 + `<MdTableSegments segments>` 描画(二重パースしない、Codex 採用)。D = `{stripPrefix 後 displayText}` と `{opt.explanation}` の補間点のみ `<MdTableText>` に差し替え。
+- [ ] **Step 4(不変条件① 証明 + 新挙動)**: 表 0 個 snapshot(C の `<p>` 含む)が **`.snap` diff なしで green のまま**であることを確認 + Step 2 assert が PASS に転じる + 表あり snapshot を意図差分で受理。
+- [ ] **Step 5**: 表入り描画で **console.error/warn(React validateDOMNesting 等)が出ない**ことを spy で assert + 回答フロー(選択→判定)の既存 test 回帰なし → commit。
+
+**完了条件**: 表 0 個 snapshot が C/D/E とも diff なし green(不変条件①証明・5 site 全部）+ 表あり意図差分受理 + console warn なし + 回答フロー回帰なし・Crit0/Imp0・`[reviewed]`。
 
 ---
 
