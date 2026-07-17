@@ -559,6 +559,19 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
         </div>
       )}
 
+      {/* Sprint T(メモ学習面表示): 回答後のみ・非空時のみ。出自の違い(解説=試験の公式解説
+          /メモ=ユーザー自身の記録)を混同させないため amber の別スタイル島にする(解説は blue)。
+          MdTableText 経由(6 番目の挿入点・メモにも MD 表が入りうる)。read-only(編集 UI なし)。 */}
+      {isJudged && current.memo && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <p className="text-xs font-medium text-amber-700">メモ(あなたの記録)</p>
+          <MdTableBlock
+            value={current.memo}
+            className="mt-1 whitespace-pre-wrap text-sm text-slate-700"
+          />
+        </div>
+      )}
+
       {/* error */}
       {error && (
         <p role="alert" className="rounded bg-red-50 px-3 py-2 text-sm text-red-600">

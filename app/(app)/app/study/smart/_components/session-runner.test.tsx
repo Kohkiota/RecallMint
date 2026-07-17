@@ -2184,3 +2184,86 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
     expect(screen.queryByText('あなたの回答')).toBeNull()
   })
 })
+
+// Sprint T(メモ学習面表示): 回答後のみ・非空時のみ・MdTableText 経由・read-only・
+// 解説(公式)と視覚的に区別(amber の別スタイル島)。
+describe('Sprint T: 学習面のメモ表示', () => {
+  const MEMO_LABEL = 'メモ(あなたの記録)'
+  const judge = () => fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+  const renderCard = (memo: string | null) =>
+    render(
+      <SessionRunner cards={[makeCard({ memo })]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+
+  it('回答前はメモが DOM に存在しない', () => {
+    renderCard('ユーザーのメモ本文')
+    expect(screen.queryByText(MEMO_LABEL)).toBeNull()
+    expect(screen.queryByText('ユーザーのメモ本文')).toBeNull()
+  })
+
+  it('回答後、メモがある card でメモが表示される(read-only)', () => {
+    renderCard('ユーザーのメモ本文')
+    clickOption('選択肢B')
+    judge()
+    expect(screen.getByText(MEMO_LABEL)).toBeInTheDocument()
+    expect(screen.getByText('ユーザーのメモ本文')).toBeInTheDocument()
+    // read-only: メモ編集の textarea / 追加 UI は無い
+    expect(screen.queryByRole('textbox', { name: /メモ/ })).toBeNull()
+  })
+
+  it('メモが空の card ではメモ関連 DOM が増分ゼロ', () => {
+    const { container } = renderCard('')
+    clickOption('選択肢B')
+    judge()
+    expect(screen.queryByText(MEMO_LABEL)).toBeNull()
+    // amber island 自体が DOM に無いことを直接確認(canonical Minor#3)。
+    expect(container.querySelector('.border-amber-200')).toBeNull()
+  })
+
+  it('メモは card 遷移で持ち越さない(card1 判定後メモ → 次へ → card2 pre-answer でメモなし)', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({ id: 'card-mm-1', memo: 'カード1のメモ' }),
+          makeCard({ id: 'card-mm-2', memo: 'カード2のメモ' }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('選択肢B')
+    judge()
+    expect(screen.getByText('カード1のメモ')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+    // card2 は pre-answer(selecting)→ どちらのメモも出ない(持ち越し・pre-answer 露出なし)。
+    expect(screen.queryByText('カード1のメモ')).toBeNull()
+    expect(screen.queryByText('カード2のメモ')).toBeNull()
+  })
+
+  it('メモに MD 表が入っていれば <table> 描画される', () => {
+    renderCard('メモ前置き\n\n| 覚え方 | 内容 |\n|---|---|\n| A | 1 |')
+    clickOption('選択肢B')
+    judge()
+    const block = screen.getByText(MEMO_LABEL).closest('div') as HTMLElement
+    expect(block.querySelector('table')).not.toBeNull()
+    expect(block.textContent).toContain('メモ前置き')
+  })
+
+  it('解説とメモは別スタイル島(出自の区別)= 両方あれば別 block', () => {
+    render(
+      <SessionRunner
+        cards={[makeCard({ explanationText: '公式解説テキスト', memo: 'ユーザーメモテキスト' })]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('選択肢B')
+    judge()
+    const explBlock = screen.getByText('解説').closest('div') as HTMLElement
+    const memoBlock = screen.getByText(MEMO_LABEL).closest('div') as HTMLElement
+    expect(explBlock).not.toBe(memoBlock) // 別 block(混同しない)
+    expect(explBlock.textContent).toContain('公式解説テキスト')
+    expect(explBlock.textContent).not.toContain('ユーザーメモテキスト')
+    expect(memoBlock.textContent).toContain('ユーザーメモテキスト')
+  })
+})
