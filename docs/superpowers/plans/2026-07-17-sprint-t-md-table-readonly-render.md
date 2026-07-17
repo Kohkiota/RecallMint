@@ -12,7 +12,7 @@
 
 1. feat task = **TDD(test first)** → canonical + Codex review → **Crit0/Imp0 収束** → `[reviewed]` commit。per-task full test green(RED を commit しない)。
 2. **display 枝のみ変更**。edit 枝(raw MD textarea)・保存形式・書込経路・OCR 系 file(Gemini prompt / `lib/ai/prompts/ocr-extract.ts` / response schema)に 1 バイトも触らない(spec §4-4)。
-3. 不変条件(spec §4): ① 表 0 個入力で現状と DOM 同一(5 site 全部)② セグメント連結復元 = 入力 byte 同一 ③ MD 画像記法から外部リクエスト 0 件。
+3. 不変条件(spec §4): ① 表 0 個入力で現状と DOM 同一(5 site 全部)② セグメント連結復元 = 入力と **string 完全一致(`===`)** — mdast `position.offset` は UTF-16 code unit(JS string index)であり「byte」ではない(Codex 論点採用: 同一 string なら byte も同一ゆえ `===` が最も厳密かつ十分)③ MD 画像記法から外部リクエスト 0 件。
 4. renderer 設定は spec §3.4 で固定: `components.img` 無効(alt 表示)/ `components.a` 無効(children 表示)/ `singleTilde: false` / rehype 系・remark-breaks・allowedElements 不使用。
 5. `.snap` の無条件 `-u` 禁止(diff を読んで意図した変更のみ受理)。
 6. 実カード fixture 2 件(spec §6 A/B)は **OT 提供の全文で確定**(前提: plan 承認時に全文確認の回答を受領。未受領なら T2 着手前に停止して確認)。
@@ -28,7 +28,9 @@
 
 **制約**: `react-markdown@10.1.0` / `remark-gfm@4.0.1` / `remark-parse@11.0.0` / `unified@11.0.5` を dependencies に **exact 記法**(caret なし)で追加。他の依存・設定は触らない。
 
-**完了条件**: ① `pnpm why remark-parse unified react-markdown remark-gfm` で各 package が単一バージョン(react-markdown 内部 range `^11` に dedupe)② `pnpm install --frozen-lockfile` / `pnpm typecheck` / `pnpm build` 全 exit 0 ③ **build 出力の route サイズを baseline として記録**(消費 site 未配線ゆえ差分は T7 で確定 — 推測数字を置かない、spec §5)。commit = `chore(deps)` + `[no-review]`(ロジック変更なし)。
+**手順**: 通常 `pnpm install` で lockfile 更新 → commit 対象確定後に `pnpm install --frozen-lockfile` で再検証(Codex 指摘採用: 依存追加 task で最初から frozen は失敗する)。
+
+**完了条件**: ① `pnpm why remark-parse unified react-markdown remark-gfm` で各 package が単一バージョン(react-markdown 内部 range `^11` に dedupe)② frozen 再検証 / `pnpm typecheck` / `pnpm build` 全 exit 0 ③ **build 出力の route サイズを baseline として記録**(消費 site 未配線ゆえ差分は T7 で確定 — 推測数字を置かない、spec §5)。commit = `chore(deps)` + `[no-review]`(ロジック変更なし)。
 
 ---
 
@@ -45,7 +47,7 @@
 
 **制約**: パーサ構築 = `unified().use(remarkParse).use(remarkGfm, { singleTilde: false })`(spec §3.1 処理フロー)。判定器自作禁止(GFM 委譲)。offset は `position.start.offset` / `end.offset` のみ使用。
 
-**test(spec §6 全列挙 + 実測エッジ)**: 表 0 個で原文 byte 同一 / **連結復元 property(全 fixture: segments の value 連結 === 入力)** / 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識 / 表直後の本文吸収(実カード B 形)/ blockquote・リスト内の表は text のまま / 表が先頭・末尾(実カード A 形)・複数・連続 / 空文字列。実カード A/B 全文を fixture file に置く(全体ルール 6)。
+**test(spec §6 全列挙 + 実測エッジ)**: 表 0 個で原文と string 完全一致 / **連結復元 property(全 fixture: segments の value 連結 `===` 入力)** / 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識 / 表直後の本文吸収(実カード B 形 — test 名に「GFM 仕様の吸収挙動を正として pin」と明記)/ blockquote・リスト内の表は text のまま / 表が先頭・末尾(実カード A 形)・複数・連続 / 空文字列。実カード A/B 全文を fixture file に置く(全体ルール 6)。
 
 **完了条件**: 上記 test green(この test 実行が ESM/vitest 動作確認を兼ねる、spec §5)・Crit0/Imp0・`[reviewed]`。
 
@@ -58,12 +60,13 @@
 **Files**: Create `components/markdown/md-table-text.tsx` / Test `components/markdown/md-table-text.test.tsx`(jsdom)/ Create `tests/contract/md-table-render.contract.test.tsx`(jsdom・snapshot)。
 
 **Interfaces**:
-- Consumes: `segmentMdTables`(T2)。
+- Consumes: `segmentMdTables` / `MdSegment`(T2)。
 - Produces: `<MdTableText value={string} />` — Fragment を返す。text セグメント → `{value}`(React text node)、table セグメント → `<ReactMarkdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]} components={{ img, a }}>`(設定 = 全体ルール 4)。`useMemo(() => segmentMdTables(value), [value])` でパースを value 変化時のみに。
+- Produces(低レベル): `<MdTableSegments segments={MdSegment[]} />` — `MdTableText` の内部実体を export(Codex 論点採用: T5 の C/E が `segmentMdTables` を 1 回だけ呼び、tag 判定と描画で segments を共有 = 二重パース回避)。
 
 **制約(CSS・spec §3.5)**: 表 = 縦に伸びる・行数で切らない・省略記号なし・横スクロールなし・`w-fit` 相当(コンテナ幅に引き伸ばさない)・**セルに `overflow-wrap: anywhere`**(外側 TanStack 列を押さない)。表スタイルは renderer 内で完結(4 面同一適用・面ごと出し分けなし)。
 
-**test**: 表 0 個 → container.innerHTML === value そのまま(text node のみ)/ `![x](url)` → `<img>` 不在 + 「x」(alt)表示 / `![](url)`(空 alt)→ `<img>` 不在・表示なし / `[厚労省](url)` → `<a>` 不在・「厚労省」表示(URL は表示から落ちる = spec §3.4 既知挙動)/ `~x~` → `<del>` 不在(singleTilde:false)/ 末尾改行値でも renderer は `<br>` を足さない(補償は call site 責務)。**contract snapshot**: 実カード A(正常 2 列表)+ 実カード B(**吸収挙動の pin** — ライブラリ更新で挙動が変われば `.snap` diff が捕まえる、spec §6)+ セル内 raw HTML / autolink fixture。
+**test**: 表 0 個 → container.innerHTML === value そのまま(text node のみ)/ `![x](url)` → `<img>` 不在 + 「x」(alt)表示 / `![](url)`(空 alt)→ `<img>` 不在・表示なし / `[厚労省](url)` → `<a>` 不在・「厚労省」表示(URL は表示から落ちる = spec §3.4 既知挙動)/ `~x~` → `<del>` 不在(singleTilde:false)/ セル内 `<script>` 要素が DOM に**存在しない**(rehype-raw 不使用)/ td・th に `overflow-wrap: anywhere` 相当 class が当たっている(構造 assert — layout 実測は smoke)/ 末尾改行値でも renderer は `<br>` を足さない(補償は call site 責務)。**contract snapshot**: 実カード A(正常 2 列表)+ 実カード B(**吸収挙動の pin** — ライブラリ更新で挙動が変われば `.snap` diff が捕まえる、spec §6)+ セル内 raw HTML / autolink fixture。snapshot は raw innerHTML を prettify せず固定(react-markdown 生成の thead/tbody・空白 text node 込みで pin — それ自体が「表示仕様の固定」の目的、Codex 論点採用)。
 
 **完了条件**: test + snapshot green・Crit0/Imp0・`[reviewed]`。
 
@@ -79,7 +82,7 @@
 
 **制約**: wrapper span(`whitespace-pre-wrap break-words`)・`<br>` 補償・placeholder 分岐・edit 枝は **1 文字も変えない**。isEmpty 分岐は従来どおり(renderer は非空時のみ)。
 
-**test**: ① 表 0 個 value → display 枝の innerHTML が差し替え前と byte 同一(不変条件①の site-level 検証。差し替え前の期待 DOM をリテラルで固定)② 表入り value → span 内に `<table>` が描画される ③ click で edit 開始・textarea に raw MD(既存挙動の回帰)。カードビュー / テーブルビュー / side peek は全て A/B 共有ゆえ、この 2 file で 3 面カバー(spec §2)。
+**test**: ① 表 0 個 value → display 枝の innerHTML が差し替え前と完全一致(不変条件①の site-level 検証。差し替え前の期待 DOM をリテラルで固定)② 表入り value → span 内に `<table>` が描画される ③ click で edit 開始・textarea に raw MD(既存挙動の回帰)。カードビュー / テーブルビュー / side peek は全て A/B 共有ゆえ、この 2 file で 3 面カバー(spec §2)。
 
 **完了条件**: 追加 test + 既存 inline-text-field / inline-option-row / exam-card-table 系 test 回帰なし・Crit0/Imp0・`[reviewed]`。
 
@@ -91,11 +94,11 @@
 
 **Files**: Modify `app/(app)/app/study/smart/_components/session-runner.tsx`(C :435-437 / D :473-484 / E :525-529)/ Test `app/(app)/app/study/smart/_components/session-runner.test.tsx`(既存)に追加。
 
-**Interfaces**: Consumes `<MdTableText>` + `hasMdTable`(T2/T3)。
+**Interfaces**: Consumes `<MdTableText>` + `<MdTableSegments>` + `segmentMdTables`(T2/T3)。
 
-**制約**: C/E = `hasMdTable(text)` で tag を `'p'` / `'div'` に切替(className 維持)。D = `{stripPrefix 後 displayText}` と `{opt.explanation}` の補間点のみ差し替え(`<button>` / marker span 構造は不変 — span/button 内 table nesting は spec §3.3 で受容済)。stripPrefix の適用順は現状維持(strip 後の文字列を renderer に渡す)。
+**制約**: C/E = `useMemo(() => segmentMdTables(text))` を **1 回**呼び、`segments.some(s => s.type === 'table')` で tag を `'p'` / `'div'` に切替(className 維持)+ `<MdTableSegments segments>` で描画(二重パースしない、Codex 論点採用)。D = `{stripPrefix 後 displayText}` と `{opt.explanation}` の補間点のみ `<MdTableText>` に差し替え(`<button>` / marker span 構造は不変 — span/button 内 table nesting は spec §3.3 で受容済)。stripPrefix の適用順は現状維持(strip 後の文字列を renderer に渡す)。
 
-**test**: ① 表 0 個 question → `<p>` のまま・innerHTML 同一 ② 表入り question → `<div>` + `<table>` ③ 表入り option text が button 内に `<table>` 描画 ④ 回答フロー(選択→判定)の既存 test 回帰なし。
+**test**: ① 表 0 個 question → `<p>` のまま・innerHTML 同一 ② 表入り question → `<div>` + `<table>` ③ 表入り option text / **option explanation** が button 内に `<table>` 描画 ④ **D の表 0 個 option text・explanation → innerHTML が差し替え前と同一**(不変条件①は 5 site 全部、Codex 論点採用)⑤ 表入り描画で **console.error/warn(React validateDOMNesting 等)が出ない**ことを spy で assert ⑥ 回答フロー(選択→判定)の既存 test 回帰なし。
 
 **完了条件**: test green・Crit0/Imp0・`[reviewed]`。
 
@@ -111,7 +114,7 @@
 
 **制約**: **add affordance は配線しない**(slot='thumbnails' のみ・削除はカードビュー同等に可、spec §3.6)。target 語彙 = `'question_text'` / `'explanation_text'` / `'memo'` / `'option:<uid>'`(Sprint I 確定)。attach/remove の独自経路を新設しない。
 
-**test**: ① 画像ありカードの 3 列 + 選択肢に thumbnail が render ② uid なし・画像なし選択肢は増分 DOM ゼロ ③ add affordance(`画像を追加` ボタン/アイコン)が table 列に**出ない**。
+**test**: ① 画像ありカードの 3 列 + 選択肢に thumbnail が render ② uid なし・画像なし選択肢は増分 DOM ゼロ ③ add affordance(`画像を追加` ボタン/アイコン)が table 列に**出ない** ④ thumbnail 削除 → 既存 `removeImageFromCard` 経路(mock)が呼ばれる(独自経路が無いことの確認、Codex 論点採用)。
 
 **完了条件**: test + 既存 table 系 test 回帰なし・Crit0/Imp0・`[reviewed]`。
 
@@ -123,7 +126,7 @@
 
 **Files**: Create `docs/superpowers/sessions/2026-07-XX-sprint-t-completion.md`(実施日で命名)。
 
-**完了条件**: ① `pnpm install --frozen-lockfile` / `pnpm typecheck` / `pnpm build` / `pnpm test` 全 exit 0 ② whole-repo `pnpm lint`(--max-warnings=0)exit 0 — 報告 chat に「whole-repo lint exit 0 確認済」1 行明記 ③ **bundle size: T1 baseline との route サイズ差分を実測し session doc に記録**(spec §5)④ session doc commit(`docs(session)` + `[no-review]`)。完了後 **Sprint 境界で停止**(OT push → stg smoke は OT 指示後に CC が DevTools で実施: 実カード 2 件 × 4 面 + 表 0 個カード不変 + Network 外部リクエスト 0 + テーブルビュー サムネ + 行高観察・spec §7)。
+**完了条件**: ① `pnpm install --frozen-lockfile` / `pnpm typecheck` / `pnpm build` / `pnpm test` 全 exit 0 ② whole-repo `pnpm lint`(--max-warnings=0)exit 0 — 報告 chat に「whole-repo lint exit 0 確認済」1 行明記 ③ **bundle size: T1 baseline との route サイズ差分を実測し session doc に記録**(spec §5)④ session doc commit(`docs(session)` + `[no-review]`)。完了後 **Sprint 境界で停止**(OT push → stg smoke は OT 指示後に CC が DevTools で実施: 実カード 2 件 × 4 面 + 表 0 個カード不変 + Network 外部リクエスト 0 + テーブルビュー サムネ + 行高観察 + **学習面 button 内 table の実機確認**(console に hydration/nesting warning なし・表領域クリックで回答トグルが機能)+ **テーブルビューで長い連続語入り表の列幅実測**(td width が指定値を超えて押し広げられない)・spec §7 + Codex 論点採用)。
 
 ---
 
@@ -133,4 +136,4 @@ T1 → T2 → T3 → T4 → T5 → T6 → T7。T6 は T3-T5 と独立(T1 後な�
 
 ## Plan 段階 Codex cross-check(CLAUDE.md)
 
-plan 確定前に `scripts/ai/codex-plan-review.sh sprint-t-md-table <spec> <本 plan>` を 1 回実行し、CC 突き合わせ(重複・対立の明示)を OT に提示 → **OT 承認で plan 確定**。確定後は plan 完了まで自走(Critical は CC 解決を試み、未解決のみ即上げ)。
+**実施済(2026-07-17)**: raw = `docs/codex/2026-07-17-plan-sprint-t-md-table.md`。採用 9 点(offset 用語の正確化 = string `===` / C/E 単一パース API / D の 0 個 DOM 同一 + explanation 表 test / React warning spy / anywhere 構造 assert + smoke 列幅実測 / snapshot 安定化方針 / raw HTML `<script>` 不在 assert / サムネ削除経路 test / T1 install 手順分離)は本 plan に反映済(各所「Codex 論点採用」)。不採用は OT 承認済の決定と重複する対立論点(root 限定 / nesting 受容 / 委譲 vs 補正器 / exact pin / サムネ密度)= spec §9 で決定済。**OT 承認で plan 確定** → 確定後は plan 完了まで自走(Critical は CC 解決を試み、未解決のみ即上げ)。
