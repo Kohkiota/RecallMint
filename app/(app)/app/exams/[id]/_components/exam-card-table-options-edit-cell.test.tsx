@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import type { ClientCardOption } from '@/lib/client-db'
+import type { ClientCardImage, ClientCardOption } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 
 const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
@@ -22,6 +22,20 @@ vi.mock('@/lib/sync/entity-mutations', () => ({
 }))
 vi.mock('@/lib/sync/entity-mutation-flush', () => ({
   runGuardedEntityMutationFlush: mockFlush,
+}))
+// Sprint T T6: CompactOptionsCell が CardImageGallery を import するようになり、gallery が
+// '../_actions/asset-actions'(server action・R2_* env fail-fast)と '@/lib/media/get-asset'
+// を real import するため、未 mock だと module load 時に throw する(columns test と同じ制約)。
+const { mockGetAssetObjectURL } = vi.hoisted(() => ({
+  mockGetAssetObjectURL: vi.fn(async () => 'blob:mock-object-url' as string | null),
+}))
+vi.mock('../_actions/asset-actions', () => ({
+  reserveAsset: vi.fn(),
+  finalizeAsset: vi.fn(),
+  resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
+}))
+vi.mock('@/lib/media/get-asset', () => ({
+  getAssetObjectURL: mockGetAssetObjectURL,
 }))
 
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
@@ -83,7 +97,7 @@ afterEach(() => {
 
 describe('CompactOptionsCell — 表示', () => {
   it('N 個の選択肢が縦積みで全て描画される', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     // 各選択肢の本文が display cell (role=button) として出る
     expect(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' }).length,
@@ -95,7 +109,7 @@ describe('CompactOptionsCell — 表示', () => {
   it('空 options 配列 → クラッシュしない', () => {
     // no throw
     expect(() =>
-      render(<CompactOptionsCell cardId={CARD_ID} options={[]} />),
+      render(<CompactOptionsCell cardId={CARD_ID} options={[]} images={[]} userId="user-opt" />),
     ).not.toThrow()
     // 「+ 選択肢を追加」 は出る
     expect(
@@ -104,45 +118,45 @@ describe('CompactOptionsCell — 表示', () => {
   })
 
   it('explanation あり → 解説テキストが表示される', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     expect(screen.getByText('A 理由', { exact: false })).toBeInTheDocument()
   })
 
   it('explanation 未設定 → placeholder が表示される', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} images={[]} userId="user-opt" />)
     expect(screen.getByText('解説 (クリックで追加)')).toBeInTheDocument()
   })
 
   it('「+ 選択肢を追加」 button が描画される', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     expect(
       screen.getByRole('button', { name: '+ 選択肢を追加' }),
     ).toBeInTheDocument()
   })
 
   it('削除 button が各 option に描画される', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     expect(
       screen.getAllByRole('button', { name: '選択肢を削除' }).length,
     ).toBe(2)
   })
 
   it('options.length === 1 → 削除 button が disabled', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     expect(
       screen.getByRole('button', { name: '選択肢を削除' }),
     ).toBeDisabled()
   })
 
   it('is_correct=true の checkbox が checked', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     expect(
       (screen.getByRole('checkbox') as HTMLInputElement).checked,
     ).toBe(true)
   })
 
   it('is_correct=false の checkbox が unchecked', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} images={[]} userId="user-opt" />)
     expect(
       (screen.getByRole('checkbox') as HTMLInputElement).checked,
     ).toBe(false)
@@ -156,7 +170,7 @@ describe('CompactOptionsCell — 表示', () => {
 describe('CompactOptionsCell — checkbox toggle', () => {
   it('checkbox toggle → enqueue (即時 drain)', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option b を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
@@ -176,7 +190,7 @@ describe('CompactOptionsCell — checkbox toggle', () => {
 
   it('checkbox toggle → flush が即時叩かれる', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getAllByRole('checkbox')[0]!) // option a を OFF
     await vi.waitFor(() => {
       expect(mockFlush).toHaveBeenCalled()
@@ -190,7 +204,7 @@ describe('CompactOptionsCell — checkbox toggle', () => {
 
 describe('CompactOptionsCell — text click-to-edit', () => {
   it('text cell click → edit mode (textarea 表示)', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
     expect(
       screen.getByRole('textbox', { name: '選択肢 本文 編集' }),
@@ -199,7 +213,7 @@ describe('CompactOptionsCell — text click-to-edit', () => {
 
   it('text 編集 + blur → mirror cards.update に options が書かれる', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 本文 編集' })[0]!,
     )
@@ -220,7 +234,7 @@ describe('CompactOptionsCell — text click-to-edit', () => {
   it('値変更なし + blur → enqueue されない', async () => {
     await seedCard([baseOptions[0]!])
     render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 本文 編集' }))
@@ -239,7 +253,7 @@ describe('CompactOptionsCell — text click-to-edit', () => {
 
 describe('CompactOptionsCell — explanation click-to-edit', () => {
   it('explanation cell click → edit mode (textarea 表示)', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getByRole('button', { name: '選択肢 解説 編集' }))
     expect(
       screen.getByRole('textbox', { name: '選択肢 解説 編集' }),
@@ -248,7 +262,7 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
 
   it('explanation 編集 + blur → enqueue に explanation 含む', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 解説 編集' })[1]!, // option b
     )
@@ -280,7 +294,7 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
 
   it('explanation を空文字に → enqueue payload から explanation key が drop される', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢 解説 編集' })[0]!, // option a (has explanation)
     )
@@ -313,7 +327,7 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
 describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
   it('外側 div に space-y-0.5 があり space-y-1 がない', () => {
     const { container } = render(
-      <CompactOptionsCell cardId={CARD_ID} options={baseOptions} />,
+      <CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />,
     )
     const outer = container.firstElementChild as HTMLElement
     expect(outer.className).toContain('space-y-0.5')
@@ -322,7 +336,7 @@ describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
 
   it('選択肢ボックスに px-1.5 py-0.5 があり p-1.5 (単独) がない', () => {
     const { container } = render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     const optionBox = container.querySelector('.rounded.border') as HTMLElement
     expect(optionBox.className).toContain('px-1.5')
@@ -333,14 +347,14 @@ describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
 
   it('checkbox label の min-h-8 が維持されている (tap target 保護)', () => {
     const { container } = render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     const checkboxLabel = container.querySelector('label') as HTMLElement
     expect(checkboxLabel.className).toContain('min-h-8')
   })
 
   it('削除ボタンの min-h-8 が維持されている (tap target 保護)', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     const deleteBtn = screen.getAllByRole('button', { name: '選択肢を削除' })[0]!
     expect((deleteBtn as HTMLElement).className).toContain('min-h-8')
   })
@@ -352,7 +366,7 @@ describe('Edit-3 T1: CompactOptionsCell 縦密度 (table 専用層)', () => {
 
 describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
   it('text cell display div(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} images={[]} userId="user-opt" />)
     // is_correct=false の text cell (displayClassName="text-sm text-slate-800 md:min-h-6 md:py-0.5")
     const btn = screen.getByRole('button', { name: '選択肢 本文 編集' })
     const classes = btn.className.split(' ')
@@ -361,7 +375,7 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
   })
 
   it('text cell edit textarea(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[1]!]} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
     const ta = screen.getByRole('textbox', { name: '選択肢 本文 編集' })
     const classes = ta.className.split(' ')
@@ -370,7 +384,7 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
   })
 
   it('explanation cell display div(inner box) に md:min-h-6 が付き md:min-h-8 がない', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     // explanation cell (displayClassName="text-xs text-slate-600 md:min-h-6 md:py-0.5")
     const btn = screen.getByRole('button', { name: '選択肢 解説 編集' })
     const classes = btn.className.split(' ')
@@ -380,7 +394,7 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
 
   it('checkbox label に md:min-h-6 が付く (desktop tap target ~24px)', () => {
     const { container } = render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     const label = container.querySelector('label') as HTMLElement
     const classes = label.className.split(' ')
@@ -388,7 +402,7 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
   })
 
   it('削除ボタンに md:min-h-6 が付く (desktop tap target ~24px)', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     const deleteBtn = screen.getAllByRole('button', { name: '選択肢を削除' })[0]!
     const classes = (deleteBtn as HTMLElement).className.split(' ')
     expect(classes).toContain('md:min-h-6')
@@ -396,14 +410,14 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
 
   it('mobile は touch target を維持: checkbox label に min-h-8 が残る', () => {
     const { container } = render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     const label = container.querySelector('label') as HTMLElement
     expect(label.className.split(' ')).toContain('min-h-8')
   })
 
   it('mobile は touch target を維持: 削除ボタンに min-h-8 が残る', () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />)
     const deleteBtn = screen.getByRole('button', { name: '選択肢を削除' })
     expect((deleteBtn as HTMLElement).className.split(' ')).toContain('min-h-8')
   })
@@ -415,7 +429,7 @@ describe('Edit-3 T2: CompactOptionsCell desktop min-h ~24px 削減', () => {
 
 describe('CompactOptionsCell — add / delete', () => {
   it('「+ 追加」 click → 新 option が optimistic に末尾追加される (削除ボタン数で確認)', async () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     expect(
       screen.getAllByRole('button', { name: '選択肢を削除' }).length,
     ).toBe(2)
@@ -430,7 +444,7 @@ describe('CompactOptionsCell — add / delete', () => {
   })
 
   it('「+ 追加」 click → 新 option の text cell が即 edit mode になる', async () => {
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     fireEvent.click(screen.getByRole('button', { name: '+ 選択肢を追加' }))
     await vi.waitFor(() => {
       expect(
@@ -441,7 +455,7 @@ describe('CompactOptionsCell — add / delete', () => {
 
   it('削除 click → 該当 option が optimistic に消え enqueue', async () => {
     await seedCard(baseOptions)
-    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} />)
+    render(<CompactOptionsCell cardId={CARD_ID} options={baseOptions} images={[]} userId="user-opt" />)
     expect(screen.getByText('選択肢B')).toBeInTheDocument()
     fireEvent.click(
       screen.getAllByRole('button', { name: '選択肢を削除' })[1]!, // option b
@@ -466,10 +480,65 @@ describe('CompactOptionsCell — add / delete', () => {
 
   it('options.length === 1 → 削除 button が disabled (canDelete=false)', () => {
     render(
-      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} />,
+      <CompactOptionsCell cardId={CARD_ID} options={[baseOptions[0]!]} images={[]} userId="user-opt" />,
     )
     expect(
       screen.getByRole('button', { name: '選択肢を削除' }),
     ).toBeDisabled()
+  })
+})
+
+// Sprint T T6: 選択肢サムネ配線(option:<uid> target・slot='thumbnails')。
+describe('Sprint T T6: 選択肢サムネ配線', () => {
+  const OPT_IMG: ClientCardImage = {
+    key: '22222222-2222-4222-8222-222222222222',
+    target: 'option:opt-uid-1',
+    alt: '選択肢画像',
+  }
+  const optWithUid: ClientCardOption = { id: 'a', text: '選A', is_correct: true, uid: 'opt-uid-1' }
+
+  it('① uid あり選択肢 + 該当画像 → サムネ(img)描画', async () => {
+    render(
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[OPT_IMG]} userId="user-opt" />,
+    )
+    expect(await screen.findByAltText('選択肢画像')).toBeInTheDocument()
+  })
+
+  it('② uid なし選択肢 → gallery 描画されず(opt.uid gate の負テスト)', () => {
+    // canonical Imp#1: gate が消えると target=`option:${undefined}`=「option:undefined」で
+    // gallery が render される。それに一致する画像を置くことで gate 除去 = RED を作る。
+    // 判定は **同期** の loading placeholder(.animate-pulse)で行う — img/alt は objectURL
+    // 解決後(非同期)にしか出ないため、同期の querySelector('img') では gate 有無を区別できない。
+    // gate 健在 = gallery wrapper ごと出ない → placeholder なし。gate 除去 = 一致画像で
+    // thumbnail(loading placeholder)が同期描画される。
+    const GHOST_IMG: ClientCardImage = {
+      key: '33333333-3333-4333-8333-333333333333',
+      target: 'option:undefined',
+      alt: 'ghost 画像',
+    }
+    const { container } = render(
+      <CompactOptionsCell
+        cardId={CARD_ID}
+        options={[{ id: 'a', text: '選A', is_correct: true }]}
+        images={[GHOST_IMG]}
+        userId="user-opt"
+      />,
+    )
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('③ 選択肢サムネに add affordance「画像を追加」は出ない(slot=thumbnails)', async () => {
+    render(
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[OPT_IMG]} userId="user-opt" />,
+    )
+    await screen.findByAltText('選択肢画像')
+    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+  })
+
+  it('④ 選択肢サムネは削除可能(readOnly でない → 既存 remove 経路)', async () => {
+    render(
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[OPT_IMG]} userId="user-opt" />,
+    )
+    expect(await screen.findByRole('button', { name: '画像を削除' })).toBeInTheDocument()
   })
 })

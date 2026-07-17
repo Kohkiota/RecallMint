@@ -18,7 +18,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { renderHook } from '@testing-library/react'
-import type { ClientCard } from '@/lib/client-db'
+import type { ClientCard, ClientCardImage } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 import type { TextFilterValue } from '@/lib/cards/card-filter-predicates'
 
@@ -28,9 +28,11 @@ import type { TextFilterValue } from '@/lib/cards/card-filter-predicates'
 // getClientDb (fake-indexeddb) と runOptimisticUpdate は実実装のまま動かす。
 // ---------------------------------------------------------------------------
 
-const { mockEnqueue, mockFlush } = vi.hoisted(() => ({
+const { mockEnqueue, mockFlush, mockGetAssetObjectURL } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
   mockFlush: vi.fn(async () => 'no-pending' as const),
+  // Sprint T T6: サムネ配線 test 用に objectURL を返す(既存テストは images:[] ゆえ未呼出)。
+  mockGetAssetObjectURL: vi.fn(async () => 'blob:mock-object-url' as string | null),
 }))
 
 vi.mock('@/lib/sync/entity-mutations', () => ({
@@ -50,7 +52,7 @@ vi.mock('../_actions/asset-actions', () => ({
   resolveAssetUrls: vi.fn(async () => ({ ok: true, data: [] })),
 }))
 vi.mock('@/lib/media/get-asset', () => ({
-  getAssetObjectURL: vi.fn(async () => null),
+  getAssetObjectURL: mockGetAssetObjectURL,
 }))
 
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
@@ -120,18 +122,31 @@ function makeRow(cardOverrides: Partial<ClientCard> = {}): ExamCardRow {
 // helpers: render specific column cell
 // ---------------------------------------------------------------------------
 
-/** 指定 column id の cell を render して container を返す */
-function renderCell(columnId: string, row: ExamCardRow): HTMLElement {
+/** 指定 column id の cell を render して container を返す。
+ * Sprint T T6: 一部 cell(question/explanation_text/memo/options)が table.options.meta を
+ * 読むようになったため、TanStack の cell 契約どおり table を必ず渡す(meta 省略時は undefined)。 */
+function renderCell(
+  columnId: string,
+  row: ExamCardRow,
+  meta?: Partial<ExamCardTableMeta>,
+): HTMLElement {
   const col = examCardTableColumns.find((c) => c.id === columnId)
   if (!col) throw new Error(`Column "${columnId}" not found`)
   if (!col.cell) throw new Error(`Column "${columnId}" has no cell renderer`)
 
   // TanStack Table の cell renderer を直接 invoke するのは複雑なため、
-  // row.original をそのまま渡すシンプルな wrapper component で描画する。
-  const cellFn = col.cell as (ctx: { row: { original: ExamCardRow } }) => React.ReactNode
+  // row.original と table.options.meta を渡すシンプルな wrapper component で描画する。
+  const cellFn = col.cell as (ctx: {
+    row: { original: ExamCardRow }
+    table: { options: { meta: unknown } }
+  }) => React.ReactNode
 
   function Wrapper() {
-    return <div data-testid="cell-wrapper">{cellFn({ row: { original: row } })}</div>
+    return (
+      <div data-testid="cell-wrapper">
+        {cellFn({ row: { original: row }, table: { options: { meta } } })}
+      </div>
+    )
   }
 
   const { container } = render(<Wrapper />)
@@ -919,5 +934,51 @@ describe('Column: title — side peek button (T2)', () => {
         }),
       )
     }).not.toThrow()
+  })
+})
+
+// Sprint T T6: テーブルビュー 画像サムネ配線(question / explanation_text / memo 列)。
+// slot='thumbnails' のみ(add affordance は table 列に出さない)。userId は meta 経由。
+describe('Sprint T T6: テーブルビュー 画像サムネ配線', () => {
+  const META: Partial<ExamCardTableMeta> = { userId: 'user-owner' }
+  const img = (target: string): ClientCardImage => ({
+    key: '11111111-1111-4111-8111-111111111111',
+    target,
+    alt: `${target}の画像`,
+  })
+
+  it('① 問題文/解説/メモ列: 画像ありでサムネ(img)が描画される', async () => {
+    renderCell('question', makeRow({ images: [img('question_text')] }), META)
+    expect(await screen.findByAltText('question_textの画像')).toBeInTheDocument()
+    cleanup()
+    renderCell('explanation_text', makeRow({ images: [img('explanation_text')] }), META)
+    expect(await screen.findByAltText('explanation_textの画像')).toBeInTheDocument()
+    cleanup()
+    renderCell('memo', makeRow({ images: [img('memo')] }), META)
+    expect(await screen.findByAltText('memoの画像')).toBeInTheDocument()
+  })
+
+  it('② 画像なし → gallery DOM 増ゼロ(img も追加ボタンもなし)', () => {
+    const el = renderCell('question', makeRow({ question_text: 'x', images: [] }), META)
+    expect(el.querySelector('img')).toBeNull()
+    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+  })
+
+  it('③ add affordance「画像を追加」は table 列に出ない(slot=thumbnails)', async () => {
+    renderCell('question', makeRow({ images: [img('question_text')] }), META)
+    await screen.findByAltText('question_textの画像')
+    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+  })
+
+  it('④ サムネは編集可能(readOnly でない → 削除 affordance あり = 既存 remove 経路)', async () => {
+    renderCell('question', makeRow({ images: [img('question_text')] }), META)
+    expect(
+      await screen.findByRole('button', { name: '画像を削除' }),
+    ).toBeInTheDocument()
+  })
+
+  it('⑤ meta 不在(userId なし)→ gallery 描画されず crash しない', () => {
+    const el = renderCell('question', makeRow({ images: [img('question_text')] }))
+    expect(el.querySelector('img')).toBeNull()
   })
 })

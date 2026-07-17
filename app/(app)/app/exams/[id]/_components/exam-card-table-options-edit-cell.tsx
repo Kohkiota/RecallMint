@@ -7,16 +7,23 @@
 // wiring するだけで Dexie / outbox の直接呼び出しは一切しない。
 
 import * as React from 'react'
-import type { ClientCardOption } from '@/lib/client-db'
+import type { ClientCardImage, ClientCardOption } from '@/lib/client-db'
 import { useCardOptions } from '../_hooks/use-card-options'
 import { InlineOptionCell } from './inline-option-row'
+import { CardImageGallery } from './card-image-gallery'
 
 export function CompactOptionsCell({
   cardId,
   options: serverOptions,
+  images,
+  userId,
 }: {
   cardId: string
   options: ClientCardOption[]
+  // Sprint T T6: 選択肢サムネ配線用。card 全体の images と owner userId を透過する
+  // (target=option:<uid> で gallery が該当分を抽出)。
+  images: ClientCardImage[]
+  userId: string
 }): React.JSX.Element {
   const {
     options,
@@ -96,6 +103,19 @@ export function CompactOptionsCell({
               placeholder="解説 (クリックで追加)"
             />
           </div>
+          {/* Sprint T T6: 選択肢サムネ(inline-option-row の per-option gallery と同パターン)。
+              uid あり + userId ありのみ描画。画像 0 件は gallery が null で DOM 増ゼロ。 */}
+          {opt.uid && userId && (
+            <div className="mt-0.5">
+              <CardImageGallery
+                images={images}
+                target={`option:${opt.uid}`}
+                cardId={cardId}
+                userId={userId}
+                slot="thumbnails"
+              />
+            </div>
+          )}
         </div>
       ))}
       <button

@@ -19,6 +19,7 @@ import { TagCell } from './exam-card-table-tag-cell'
 import { tagSortKey } from '../_lib/tag-sort-key'
 import { sortLikeServer } from './inline-card-list'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
+import { CardImageGallery } from './card-image-gallery'
 import {
   matchesTagFilter,
   matchesAnswerState,
@@ -178,16 +179,33 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     header: '問題文',
     // accessorFn は表示 (question_text) のために残置 — sort は撤去 (S3-1 D-3 前段)。
     accessorFn: (row) => row.card.question_text,
-    cell: ({ row }) => (
-      <InlineTextField
-        cardId={row.original.card.id}
-        field="question_text"
-        initialValue={row.original.card.question_text}
-        ariaLabel="問題文 編集"
-        multiline
-        displayClassName="text-sm md:min-h-6 md:py-0.5"
-      />
-    ),
+    // Sprint T T6: カードビュー同様に画像サムネを配線(slot='thumbnails' のみ・add は
+    // カードビュー/side peek に集約し table 列には出さない)。userId は meta 経由。
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      return (
+        <>
+          <InlineTextField
+            cardId={card.id}
+            field="question_text"
+            initialValue={card.question_text}
+            ariaLabel="問題文 編集"
+            multiline
+            displayClassName="text-sm md:min-h-6 md:py-0.5"
+          />
+          {meta && (
+            <CardImageGallery
+              images={card.images}
+              target="question_text"
+              cardId={card.id}
+              userId={meta.userId}
+              slot="thumbnails"
+            />
+          )}
+        </>
+      )
+    },
     // S3-1: 問題文ソート撤去。連番順の役割は sort_key 列 sortingFn へ移管。
     // 注意: 初期連番順(liveData の pre-sort)は別レイヤーで不変(exam-card-table.tsx)。
     enableSorting: false,
@@ -198,12 +216,18 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'options',
     size: 240,
     header: '選択肢',
-    cell: ({ row }) => (
-      <CompactOptionsCell
-        cardId={row.original.card.id}
-        options={row.original.card.options}
-      />
-    ),
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      return (
+        <CompactOptionsCell
+          cardId={card.id}
+          options={card.options}
+          images={card.images}
+          userId={meta?.userId ?? ''}
+        />
+      )
+    },
     enableSorting: false,
   },
   {
@@ -245,16 +269,31 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'explanation_text',
     size: 220,
     header: '解説',
-    cell: ({ row }) => (
-      <InlineTextField
-        cardId={row.original.card.id}
-        field="explanation_text"
-        initialValue={row.original.card.explanation_text ?? null}
-        multiline
-        ariaLabel="解説 編集"
-        displayClassName="text-sm md:min-h-6 md:py-0.5"
-      />
-    ),
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      return (
+        <>
+          <InlineTextField
+            cardId={card.id}
+            field="explanation_text"
+            initialValue={card.explanation_text ?? null}
+            multiline
+            ariaLabel="解説 編集"
+            displayClassName="text-sm md:min-h-6 md:py-0.5"
+          />
+          {meta && (
+            <CardImageGallery
+              images={card.images}
+              target="explanation_text"
+              cardId={card.id}
+              userId={meta.userId}
+              slot="thumbnails"
+            />
+          )}
+        </>
+      )
+    },
     enableSorting: false,
     // S4-1: テキストフィルタ。row.original.card.explanation_text を直読み (nullable)。
     filterFn: makeTextFilterFn((card) => card.explanation_text),
@@ -263,16 +302,31 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'memo',
     size: 220,
     header: 'メモ',
-    cell: ({ row }) => (
-      <InlineTextField
-        cardId={row.original.card.id}
-        field="memo"
-        initialValue={row.original.card.memo ?? null}
-        multiline
-        ariaLabel="メモ 編集"
-        displayClassName="text-sm md:min-h-6 md:py-0.5"
-      />
-    ),
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      return (
+        <>
+          <InlineTextField
+            cardId={card.id}
+            field="memo"
+            initialValue={card.memo ?? null}
+            multiline
+            ariaLabel="メモ 編集"
+            displayClassName="text-sm md:min-h-6 md:py-0.5"
+          />
+          {meta && (
+            <CardImageGallery
+              images={card.images}
+              target="memo"
+              cardId={card.id}
+              userId={meta.userId}
+              slot="thumbnails"
+            />
+          )}
+        </>
+      )
+    },
     enableSorting: false,
     // S4-1: テキストフィルタ。row.original.card.memo を直読み (nullable)。
     filterFn: makeTextFilterFn((card) => card.memo),
