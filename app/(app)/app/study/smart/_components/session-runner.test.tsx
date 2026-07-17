@@ -1980,6 +1980,14 @@ describe('Sprint T: MD 表 read-only 描画(学習面 C/D/E)', () => {
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     expect(container.querySelector('ul.space-y-2')!.querySelector('table')).not.toBeNull()
   })
+  it('D 選択肢解説 表 0 個: judged options DOM を pin(不変条件① explanation・whole-branch Minor#2)', () => {
+    // 選択肢解説は judged phase でのみ描画される。selecting phase の golden では覆えない
+    // explanation 補間点(解説: <MdTableText>)の表 0 個 DOM を judged で pin する。
+    const { container } = renderRunner({}) // 既定 option b が explanation='選択肢B解説'(表なし)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    expect(container.querySelector('ul.space-y-2')!.innerHTML).toMatchSnapshot()
+  })
 
   // --- E: カード解説(judged) ---
   it('E カード解説 表 0 個: 解説ブロック DOM 不変(golden・不変条件①)', () => {

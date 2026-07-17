@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest'
 import {
   REAL_CARD_A,
   REAL_CARD_B,
+  SURROGATE,
+  TABLE_BLOCK,
   SURROGATE_BEFORE,
   SURROGATE_IN_CELL,
   SURROGATE_AFTER,
@@ -33,14 +35,38 @@ describe('segmentMdTables', () => {
     })
   })
 
-  it('サロゲートペアを含む入力で offset が UTF-16 code unit として扱われる(唯一の危険経路)', () => {
-    // code point 単位 slice ならペア以降がズレて連結復元が壊れる。property が最も直接に検証。
-    for (const input of [SURROGATE_BEFORE, SURROGATE_IN_CELL, SURROGATE_AFTER, SURROGATE_ALL]) {
-      const segs = segmentMdTables(input)
-      expect(reconstruct(segs)).toBe(input)
-      // 表が 1 個以上検出されている(危険経路を実際に通っている確証)
-      expect(segs.some((s) => s.type === 'table')).toBe(true)
-    }
+  describe('サロゲートペア: offset が UTF-16 code unit である証明(境界 assert・唯一の危険経路)', () => {
+    // whole-branch review Minor#1: 連結復元(concat===input)は「任意の連続分割」で常に成立
+    // するため、offset が code point 単位でも通ってしまう(= 危険経路を検出しない)。真に
+    // load-bearing にするには **セグメント境界** を assert する。code point 単位 offset なら、
+    // 表より前のサロゲートペア 1 個につき境界が 1 UTF-16 単位ズレ、table セグメント値が
+    // 先頭に余分な文字を含む/欠く形で崩れる。以下は UTF-16 offset のときだけ通る。
+    it('表より前のペア: text=ペア込み前置き / table=表ちょうど(境界がズレない)', () => {
+      const segs = segmentMdTables(SURROGATE_BEFORE)
+      expect(segs).toEqual([
+        { type: 'text', value: `${SURROGATE}責の注意\n` },
+        { type: 'table', value: TABLE_BLOCK },
+      ])
+    })
+    it('表内セルのペア: 表全体が 1 table セグメント(セル内容が保たれる)', () => {
+      const segs = segmentMdTables(SURROGATE_IN_CELL)
+      expect(segs).toEqual([{ type: 'table', value: SURROGATE_IN_CELL }])
+    })
+    it('表より後のペア: table=表ちょうど / text=ペア込み後書き', () => {
+      const segs = segmentMdTables(SURROGATE_AFTER)
+      expect(segs).toEqual([
+        { type: 'table', value: TABLE_BLOCK },
+        { type: 'text', value: `\n\n${SURROGATE}責の後書き` },
+      ])
+    })
+    it('3 箇所すべて: 各境界がサロゲート数だけズレず正確', () => {
+      const segs = segmentMdTables(SURROGATE_ALL)
+      expect(segs).toEqual([
+        { type: 'text', value: `${SURROGATE}前\n` },
+        { type: 'table', value: `| ${SURROGATE} | b |\n|---|---|\n| 1 | ${SURROGATE} |` },
+        { type: 'text', value: `\n\n${SURROGATE}後` },
+      ])
+    })
   })
 
   describe('表 0 個 → text 1 個(現状と同一・空文字含む)', () => {

@@ -33,8 +33,8 @@ d てんかん`
 // サロゲートペア(BMP 外文字)fixture — offset が UTF-16 code unit である前提の唯一の
 // 危険経路(spec §3.2・OT 修正1)。code point 単位で slice すると、ペア以降の全テキストが
 // 1 ずつズレて連結復元が壊れる。'𠮟'(U+20B9F)= 1 サロゲートペア(string.length===2)。
-const SURROGATE = '𠮟' // U+20B9F, length 2 in UTF-16
-const TABLE_BLOCK = '| a | b |\n|---|---|\n| 1 | 2 |'
+export const SURROGATE = '𠮟' // U+20B9F, length 2 in UTF-16
+export const TABLE_BLOCK = '| a | b |\n|---|---|\n| 1 | 2 |'
 
 // 表より前にペア
 export const SURROGATE_BEFORE = `${SURROGATE}責の注意\n${TABLE_BLOCK}`
