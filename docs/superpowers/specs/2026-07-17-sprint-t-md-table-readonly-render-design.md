@@ -1,6 +1,6 @@
 # Sprint T(MD 表の read-only 描画)設計 spec
 
-- **日付**: 2026-07-17 / **status**: draft(OT レビュー待ち)
+- **日付**: 2026-07-17 / **status**: 確定(2026-07-17 OT レビュー承認・修正 6 件反映済)
 - **起点**: `docs/audit/2026-07-15-b1-scope-reduction-and-cardview-freeze-factfinding.md` §3 + OT kickoff(確定スコープ・決定事項は kickoff が正、本 spec はそれを HEAD 裏取りと共に記録する)
 - **前提**: B1 縮小スコープ(本文 inline 画像なし・欄単位画像 = Sprint I 完了)の続き。保存形式 plain text・編集 raw MD textarea は 1 バイト/1 ミリも変えない。**display 枝のみ**変える。
 
@@ -31,7 +31,7 @@ fact-finding §3 は Sprint F / I より前の記述のため全点を HEAD で�
 
 1. **空行なしで段落直後に始まる表も表として認識される**(paragraph interrupt 可)— OCR 出力に多い形が救える
 2. **blockquote 内の表**: table ノードの offset slice は初行のみ prefix なし・継続行に `> ` が混入(`"| 薬剤 | 用量 |\n> |---|---|\n> ..."`)= **単独再パース不成立**
-3. **表直後に空行なしで続く本文は表の行として吸収される**(end.offset が本文行を含む)。GFM 仕様(空行 or 別ブロックまで表が続く)どおりで GitHub と同挙動 = 委譲原則の帰結として受容・fixture 化
+3. **表直後に空行なしで続く本文は表の行として吸収される**(end.offset が本文行を含む。GFM 仕様どおり・GitHub と同挙動)。**実データで発生する**(card `2e97b7b7` = 表の後に問題文後半と選択肢 4 つが続く形 → カード全体が 1 枚の壊れた表として描画される)。**受容する**。理由 = 破綻が**視認可能**であり(明らかに壊れた表として見える)、ユーザーが編集で空行 1 個を入れれば直る。これは「正しく見えて間違っている」静かな変質(フル MD 却下の理由、§3.1)とは質が異なる。parser に境界規則(「`|` を含まない行で表を打ち切る」等)を持たせる案は、委譲原則に例外を開ける対価に見合わないため却下。受容 = 放置ではなく、この挙動を実カード fixture + snapshot で pin する(§6)
 4. 区切り行なし / ヘッダーと区切り行の列数不一致 → **表と認識されない**(fail-safe = 生記号のまま現状維持)
 5. データ行の列数ズレは表として吸収(不足 = 空セル・超過 = 無視)
 6. リスト内の表も slice にインデント prefix が混入(blockquote と同型の不成立)
@@ -54,7 +54,7 @@ fact-finding §3 は Sprint F / I より前の記述のため全点を HEAD で�
 
 ### 3.2 セグメンテーション規則
 
-- **対象 = root 直下(depth 1)の table ノードのみ**。blockquote / list 内の入れ子は対象外 = 生記号のまま現状維持。理由 = offset slice に行頭 prefix(`> ` / インデント)が混入し単独再パースが成立しない(§2 実測 2,6)。**帰結: shared_context(`> ` 引用)内の表は本 sprint では描画されない**(§8。将来拡張候補として記録)。
+- **対象 = root 直下(depth 1)の table ノードのみ**。blockquote / list 内の入れ子は対象外 = 生記号のまま現状維持。理由の正確な記録: 本設計の「切り出し文字列を react-markdown に渡す」手順では offset slice に行頭 prefix(`> ` / インデント)が混入し単独再パースが成立しない(§2 実測 2,6)が、これは**手順が招いた制約であって原理的な不能ではない**(table ノードから直接描画すれば prefix は存在しない — パーサが blockquote container を剥がした後の中身がノードのため)。root 直下限定の実際の根拠 = **ノード起点描画にすれば blockquote 内も可能だが、実データに `> ` 付きの表が存在しないため本 sprint では不要**。実データ確認(2026-07-17・OT の SQL): OCR 実出力 2 件はいずれも root 直下の表(`> ` なし)、shared_context の `> ` 引用に表が入る形は観測されなかった。
 - 不変条件: **text セグメント + table スライスの連結 === 入力文字列(byte 同一)**。offset ずれによる重複・消失をこの再構成テストで検出する(§6)。
 - 空 text セグメント(表が先頭/末尾/連続)は DOM に出さない。
 - 実装形: 純関数 `lib/markdown/`(I/O なし・test 厚く。DDD 方針の pure 層準拠 — ただしビジネス規則ではなく表示ユーティリティなので `lib/<context>/domain/` ではなく独立 dir)。
@@ -72,7 +72,7 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 ### 3.4 react-markdown 設定(理由ごと記録)
 
 - **`components.img` = 無効化(alt テキストを出す。黙って消さない)**。理由 = `![](url)` を描画すると Sprint I の assetId 間接参照(URL を保存しない / private R2 / 参照カウント GC / オフライン Cache)を迂回する第 2 の画像経路ができ、B1 破棄の判断(本文 inline 画像はやらない)が穴あきになる。外部 URL 読込は CSP img-src 違反にもなる。
-- **`components.a` = 無効化(children をプレーン表示)**。理由 = display 全体クリックで編集モードに入る方式ゆえ、リンク遷移と blur commit が競合する。GFM autolink(セル内の裸 URL)も同経路で無害化される。
+- **`components.a` = 無効化(children をプレーン表示)**。理由 = display 全体クリックで編集モードに入る方式ゆえ、リンク遷移と blur commit が競合する。GFM autolink(セル内の裸 URL)も同経路で無害化される。**既知挙動**: `[厚労省](https://…)` は「厚労省」として表示され **URL は表示から落ちる**(原文には残る)— img が alt を出して URL を落とすのと同じ形で一貫している。
 - **`singleTilde: false`**。理由 = セル内の `~注意~` が打消し線になるのを防ぐ。GFM 仕様上も単一チルダは禁止(GitHub が独自に通しているだけ)。
 - **remark-breaks / allowedElements / rehype-raw / rehype-sanitize / MDX = 不要**。理由 = text セグメントを MD として描かないので、打ち消すべき副作用が発生しない。rehype-raw 不使用によりセル内 raw HTML は描画されない(挙動は fixture で固定する)。
 
@@ -109,28 +109,33 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 - **exact pin の理由** = MD ライブラリの更新は「内部実装の更新」ではなく「表示仕様の更新」。パッチでパースが変われば画面が変わる。
 - 二重パーサ検査: 実装時に `pnpm why remark-parse unified` で単一バージョンを確認(完了条件に含める)。
 - **ESM only / vitest**: vitest 4(Vite ベース・native ESM)ゆえ追加 transform 設定不要の見込み。component test は既存慣行どおり per-file `// @vitest-environment jsdom` 注釈(`card-image-gallery.test.tsx:1` と同形)。実装 task の最初の test 実行で確認し、問題があれば plan で扱う。
+- **bundle size 実測(de-risk gate)**: dep 導入 task の完了条件に client bundle size の実測・記録を含める(`pnpm build` の route サイズ差分)。**推測で数字を置かない**。
 
 ## 6. test 方針
 
 - **contract**: 表描画の DOM snapshot を `tests/contract/` に置く(既存 `__snapshots__` 慣行。**`.snap` の無条件 `-u` 禁止**)。セル内 raw HTML / autolink / 打消し線の挙動も snapshot で固定。
-- **セグメンテーション純関数(厚く)**: 表 0 個で原文と byte 同一 / 連結復元(offset ずれ検出)/ 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識される / 表直後の本文吸収(§2 実測 3)/ blockquote・リスト内の表は対象外(現状維持)/ 表が先頭・末尾・複数・連続。
+- **実カード fixture(OT SQL 抽出・2026-07-17)**: OCR 実出力 2 件がちょうど 2 パターンを網羅するため、合成 fixture でなく実形をそのまま使う。**(A)** card `06f4e35f-b2d3-44af-a69d-86693ea10658` = 表が末尾で終わる(後続なし・基礎疾患×医薬品成分の 2 列表)→ 正常描画の pin。**(B)** card `2e97b7b7-0d3c-4f5a-933e-afcc7ce27841` = 表直後に空行なしで本文が続く(成分×分量の 2 列表 + 吸収)→ **受容した吸収挙動を snapshot で pin し、ライブラリ更新でこの挙動が変わったら `.snap` diff が捕まえる**状態にする(§2 実測 3。受容 = 放置ではない)。※ 手元の抜粋は `left(question_text, 500)` の結果 — **fixture 化の前に全文であることを OT に確認**(500 字超の切断があれば全文を再取得)。
+- **セグメンテーション純関数(厚く)**: 表 0 個で原文と byte 同一 / 連結復元(offset ずれ検出)/ 区切り行なし・列数不一致は表にならない / 空行なし直後の表は認識される / 表直後の本文吸収(実カード B)/ blockquote・リスト内の表は対象外(現状維持)/ 表が先頭・末尾(実カード A)・複数・連続。
 - **renderer component**: 表 0 個 → renderer 出力は text node のみ・site 単位で現状 DOM と byte 同一 / img 記法 → `<img>` 不在 + alt テキスト表示 / a 記法 → `<a>` 不在 / (C)(E) の tag 切替(表 0 個 = `p` / 表あり = `div`)/ 末尾改行 `<br>` 補償の維持。
 - **第 2 スコープ**: テーブルビュー列に thumbnails が出る / uid なし選択肢は増分 DOM ゼロ(既存 gallery test の拡張)。
 - AI mock 必須・実 API 禁止(既存規律、本 sprint は AI 経路に触れないが明記)。
 
 ## 7. smoke(stg・push 後)
 
-- **vacuous 罠対策(kickoff 指定)**: 現 stg データ(PERF-SEED)は本文がダミー文章のみで**表を 1 枚も含まない** — そのまま smoke すると全カードが「表 0 個」経路で何も検証せず PASS する(GC smoke の referenced>0 gate と同型)。**表を含むカードを事前に用意する**こと。
-- 表は実用途に近い内容(例: **英語の薬剤名と用量の 2 列表** `| Amoxicillin | 500mg |` 等)。長い連続語がコンテナ幅を超えた際に**列レイアウトが崩れないか**(§3.5 anywhere)もこの smoke で併せて観察。
+- **vacuous 罠は解決済**: OCR 実出力の 2 実カード(§6 の A / B)がちょうど 2 パターン(表が末尾で終わる / 表直後の本文吸収)を網羅する。**PERF-SEED 用の合成カードは不要**。smoke はこの 2 カードで行う。
+- 実カードは実用途の内容(医薬品成分・分量の 2 列表)。長い連続語がコンテナ幅を超えた際に**列レイアウトが崩れないか**(§3.5 anywhere)もこの smoke で併せて観察。
 - 確認面: 4 面すべて(カードビュー / テーブルビュー / side peek / 学習面)で同一の表が `<table>` 描画される / 表 0 個カードの見た目不変 / 編集クリックで raw MD textarea(不変)/ DevTools Network で画像記法カードから外部リクエスト 0 件 / テーブルビューにサムネ表示。
+- **行高変化の観察(blocker ではない)**: 表描画でカード行高が変わる。カードビュー仮想化の `ESTIMATED_CARD_HEIGHT = 738`(`inline-card-list.tsx:78`)は実測中央値ゆえずれる可能性 — `measureElement` が動的高さを処理するため観察のみとし、todo Phase 4 の監視項目「可変行高 measureElement: 1000 件超で jitter」に接続する。
 
 ## 8. 非スコープ・制限の記録
 
 - 表の編集 UI / 表以外の MD 描画 / 保存形式変更 / 形式フラグ / OCR 系 file(§1 Out 再掲)。
-- **shared_context(`> ` 引用)内の表は描画されない**(root 直下限定の帰結、§3.2)。生記号のまま = 現状維持であり劣化ではない。将来「blockquote 内 prefix 剥がし + 再帰セグメント化」で拡張可能だが、引用内 prose の MD 再解釈(§3.1 の却下理由と同じ変質リスク)を伴うため本 sprint ではやらない。
+- **shared_context(`> ` 引用)内の表は描画されない**(root 直下限定の帰結、§3.2)。生記号のまま = 現状維持であり劣化ではない。ノード起点描画に切り替えれば blockquote 内も描画可能(原理的不能ではない)だが、**実データに `> ` 付きの表が存在しない**(2026-07-17 OT SQL 確認)ため本 sprint では不要。観測されたら拡張候補。
+- **follow-up 記録(OCR prompt 側課題・単独タスクにしない)**: 「MD 表の直後に空行を吐かせる」を prompt に足せば §2 実測 3 の吸収形(card `2e97b7b7`)は源流で消える。画像切り出しのための OCR チューニングを行う際に同時に整理・対処する(同一 file・同一変更源・検証 1 回で済む)。
 - `custom-session-preview.tsx:107`(line-clamp-2)は対象外(fact-finding (F) と同判断)。
 
 ## 9. 設計判断の確定状況
 
 - kickoff で OT 確定済: §1 スコープ / §3.1 コア / §3.4 設定 / §3.5 基本 CSS 要件 / §5 pin 方針 / §6-7 test・smoke 方針。
-- **CC 判断(OT レビュー対象)**: ① root 直下の table のみ(shared_context 引用内は対象外、§3.2)② renderer = 素の text node + call site wrapper 温存、(C)(E) は表を含む時のみ `p`→`div`、span/button 内 table nesting 受容(§3.3)③ テーブルビュー列崩れ防止 = セル `overflow-wrap: anywhere`(§3.5、kickoff の条件付き要件の発動)④ テーブルビュー サムネは thumbnails のみ・add 非配線(§3.6)⑤ remark-parse / unified も exact pin(§5)。
+- **CC 判断 5 点 = OT 承認済(2026-07-17 spec レビュー)**: ① root 直下の table のみ(§3.2。理由の正確な記録は同節 — 実データ不在ゆえ不要、原理的不能ではない)② renderer = 素の text node + call site wrapper 温存、(C)(E) は表を含む時のみ `p`→`div`、span/button 内 table nesting 受容(§3.3)③ テーブルビュー列崩れ防止 = セル `overflow-wrap: anywhere`(§3.5、kickoff の条件付き要件の発動)④ テーブルビュー サムネは thumbnails のみ・add 非配線(§3.6)⑤ remark-parse / unified も exact pin(§5)。
+- 同レビューの修正 6 件(実測 3 の受容理由書き直し / 実カード fixture pin / blockquote 理由訂正 / 実カード 2 件で smoke / OCR prompt follow-up 記録 / 行高観察・a 既知挙動・bundle size 実測)は反映済。
