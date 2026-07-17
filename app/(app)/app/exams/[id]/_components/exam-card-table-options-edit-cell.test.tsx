@@ -6,7 +6,7 @@
 // runOptimisticUpdate / getClientDb は fake-indexeddb の実 Dexie で動かす。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { ClientCardImage, ClientCardOption } from '@/lib/client-db'
 import { getClientDb } from '@/lib/client-db'
 
@@ -26,8 +26,10 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 // Sprint T T6: CompactOptionsCell が CardImageGallery を import するようになり、gallery が
 // '../_actions/asset-actions'(server action・R2_* env fail-fast)と '@/lib/media/get-asset'
 // を real import するため、未 mock だと module load 時に throw する(columns test と同じ制約)。
-const { mockGetAssetObjectURL } = vi.hoisted(() => ({
+const { mockGetAssetObjectURL, mockAttachImageToCard } = vi.hoisted(() => ({
   mockGetAssetObjectURL: vi.fn(async () => 'blob:mock-object-url' as string | null),
+  // Sprint T add(2026-07-17): 選択肢 add affordance の attach 経路検証用。
+  mockAttachImageToCard: vi.fn(async () => ({ ok: true, assetId: 'asset-x' }) as never),
 }))
 vi.mock('../_actions/asset-actions', () => ({
   reserveAsset: vi.fn(),
@@ -36,6 +38,10 @@ vi.mock('../_actions/asset-actions', () => ({
 }))
 vi.mock('@/lib/media/get-asset', () => ({
   getAssetObjectURL: mockGetAssetObjectURL,
+}))
+vi.mock('@/lib/media/upload', () => ({
+  attachImageToCard: mockAttachImageToCard,
+  removeImageFromCard: vi.fn(async () => {}),
 }))
 
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
@@ -488,8 +494,9 @@ describe('CompactOptionsCell — add / delete', () => {
   })
 })
 
-// Sprint T T6: 選択肢サムネ配線(option:<uid> target・slot='thumbnails')。
-describe('Sprint T T6: 選択肢サムネ配線', () => {
+// Sprint T T6 + add(2026-07-17 OT): 選択肢 gallery 配線(option:<uid> target・
+// thumbnail + compact add affordance)。uid gate 付き。
+describe('Sprint T T6: 選択肢 gallery 配線(thumbnail + add)', () => {
   const OPT_IMG: ClientCardImage = {
     key: '22222222-2222-4222-8222-222222222222',
     target: 'option:opt-uid-1',
@@ -527,15 +534,59 @@ describe('Sprint T T6: 選択肢サムネ配線', () => {
     expect(container.querySelector('.animate-pulse')).toBeNull()
   })
 
-  it('③ 選択肢サムネに add affordance「画像を追加」は出ない(slot=thumbnails)', async () => {
+  it('③ uid あり選択肢に add affordance が出る(選択肢 id 文脈付き aria-label)', () => {
     render(
-      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[OPT_IMG]} userId="user-opt" />,
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[]} userId="user-opt" />,
     )
-    await screen.findByAltText('選択肢画像')
-    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+    expect(screen.getByRole('button', { name: '選択肢 a に画像を追加' })).toBeInTheDocument()
   })
 
-  it('④ 選択肢サムネは削除可能(readOnly でない → 既存 remove 経路)', async () => {
+  it('③-b uid なし選択肢では add affordance も出ない(uid gate と整合)', () => {
+    render(
+      <CompactOptionsCell
+        cardId={CARD_ID}
+        options={[{ id: 'a', text: '選A', is_correct: true }]}
+        images={[]}
+        userId="user-opt"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /画像を追加/ })).toBeNull()
+  })
+
+  it('③-c uid ありでも text 空(ghost 選択肢)では add が出ない(孤児化防止・card view と同 gate)', () => {
+    // Codex P2: 空 ghost 選択肢に add を出すと未確定 option へ添付 → drop 時に孤児化する。
+    // card view(inline-option-row:262)は text 非空 gate で回避しており、それに揃える。
+    render(
+      <CompactOptionsCell
+        cardId={CARD_ID}
+        options={[{ id: 'a', text: '', is_correct: false, uid: 'ghost-uid-1' }]}
+        images={[]}
+        userId="user-opt"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /画像を追加/ })).toBeNull()
+  })
+
+  it('④ add 押下(file 選択)→ 既存 attachImageToCard 経路が呼ばれる(独自経路なし)', async () => {
+    const { container } = render(
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[]} userId="user-opt" />,
+    )
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['x'], 'x.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() =>
+      expect(mockAttachImageToCard).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: 'option:opt-uid-1',
+          cardId: CARD_ID,
+          userId: 'user-opt',
+        }),
+        expect.anything(),
+      ),
+    )
+  })
+
+  it('⑤ 選択肢サムネは削除可能(readOnly でない → 既存 remove 経路)', async () => {
     render(
       <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[OPT_IMG]} userId="user-opt" />,
     )

@@ -179,8 +179,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     header: '問題文',
     // accessorFn は表示 (question_text) のために残置 — sort は撤去 (S3-1 D-3 前段)。
     accessorFn: (row) => row.card.question_text,
-    // Sprint T T6: カードビュー同様に画像サムネを配線(slot='thumbnails' のみ・add は
-    // カードビュー/side peek に集約し table 列には出さない)。userId は meta 経由。
+    // Sprint T T6 + add(2026-07-17 OT): カードビュー同様に gallery を配線(thumbnail +
+    // compact add icon)。add は「面ごとの出し分けをしない」原則で table にも配線。
+    // 既存 attach 経路(CardImageGallery 内 attachImageToCard)を流用・独自経路なし。userId は meta 経由。
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
@@ -200,7 +201,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
               target="question_text"
               cardId={card.id}
               userId={meta.userId}
-              slot="thumbnails"
+              compact
+              attachAriaLabel="問題文に画像を追加"
             />
           )}
         </>
@@ -288,7 +290,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
               target="explanation_text"
               cardId={card.id}
               userId={meta.userId}
-              slot="thumbnails"
+              compact
+              attachAriaLabel="解説に画像を追加"
             />
           )}
         </>
@@ -321,7 +324,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
               target="memo"
               cardId={card.id}
               userId={meta.userId}
-              slot="thumbnails"
+              compact
+              attachAriaLabel="メモに画像を追加"
             />
           )}
         </>

@@ -103,10 +103,14 @@ export function CompactOptionsCell({
               placeholder="解説 (クリックで追加)"
             />
           </div>
-          {/* Sprint T T6: 選択肢サムネ(inline-option-row の per-option gallery と同パターン)。
-              uid あり + userId ありのみ描画。画像 0 件は gallery が null で DOM 増ゼロ。 */}
+          {/* Sprint T T6 + add(2026-07-17 OT): 選択肢 gallery。card view(inline-option-row)と
+              同じ 2 gallery 構成に揃える:
+              - thumbnail = uid ありで常時(既存画像の表示)
+              - add = **text 非空** + uid(card view :262 と同一 gate)。空 ghost 選択肢に add を
+                出すと未確定 option へ画像添付 → drop 時に option:<ghost uid> が孤児化する
+                (Codex P2)。card view はこの gate で回避しており、それに合わせる。 */}
           {opt.uid && userId && (
-            <div className="mt-0.5">
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
               <CardImageGallery
                 images={images}
                 target={`option:${opt.uid}`}
@@ -114,6 +118,17 @@ export function CompactOptionsCell({
                 userId={userId}
                 slot="thumbnails"
               />
+              {opt.text.trim().length > 0 && (
+                <CardImageGallery
+                  images={images}
+                  target={`option:${opt.uid}`}
+                  cardId={cardId}
+                  userId={userId}
+                  slot="add"
+                  compact
+                  attachAriaLabel={`選択肢 ${opt.id} に画像を追加`}
+                />
+              )}
             </div>
           )}
         </div>

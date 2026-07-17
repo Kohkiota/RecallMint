@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import {
   useReactTable,
   getCoreRowModel,
@@ -28,11 +28,13 @@ import type { TextFilterValue } from '@/lib/cards/card-filter-predicates'
 // getClientDb (fake-indexeddb) と runOptimisticUpdate は実実装のまま動かす。
 // ---------------------------------------------------------------------------
 
-const { mockEnqueue, mockFlush, mockGetAssetObjectURL } = vi.hoisted(() => ({
+const { mockEnqueue, mockFlush, mockGetAssetObjectURL, mockAttachImageToCard } = vi.hoisted(() => ({
   mockEnqueue: vi.fn(async () => ({}) as never),
   mockFlush: vi.fn(async () => 'no-pending' as const),
   // Sprint T T6: サムネ配線 test 用に objectURL を返す(既存テストは images:[] ゆえ未呼出)。
   mockGetAssetObjectURL: vi.fn(async () => 'blob:mock-object-url' as string | null),
+  // Sprint T add(2026-07-17): add affordance の attach 経路検証用。
+  mockAttachImageToCard: vi.fn(async () => ({ ok: true, assetId: 'asset-x' }) as never),
 }))
 
 vi.mock('@/lib/sync/entity-mutations', () => ({
@@ -53,6 +55,10 @@ vi.mock('../_actions/asset-actions', () => ({
 }))
 vi.mock('@/lib/media/get-asset', () => ({
   getAssetObjectURL: mockGetAssetObjectURL,
+}))
+vi.mock('@/lib/media/upload', () => ({
+  attachImageToCard: mockAttachImageToCard,
+  removeImageFromCard: vi.fn(async () => {}),
 }))
 
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
@@ -937,9 +943,9 @@ describe('Column: title — side peek button (T2)', () => {
   })
 })
 
-// Sprint T T6: テーブルビュー 画像サムネ配線(question / explanation_text / memo 列)。
-// slot='thumbnails' のみ(add affordance は table 列に出さない)。userId は meta 経由。
-describe('Sprint T T6: テーブルビュー 画像サムネ配線', () => {
+// Sprint T T6 + add(2026-07-17 OT): テーブルビュー 画像 gallery 配線(question /
+// explanation_text / memo 列)= thumbnail + compact add affordance。userId は meta 経由。
+describe('Sprint T T6: テーブルビュー 画像 gallery 配線(thumbnail + add)', () => {
   const META: Partial<ExamCardTableMeta> = { userId: 'user-owner' }
   const img = (target: string): ClientCardImage => ({
     key: '11111111-1111-4111-8111-111111111111',
@@ -958,27 +964,51 @@ describe('Sprint T T6: テーブルビュー 画像サムネ配線', () => {
     expect(await screen.findByAltText('memoの画像')).toBeInTheDocument()
   })
 
-  it('② 画像なし → gallery DOM 増ゼロ(img も追加ボタンもなし)', () => {
+  it('② 画像なし → サムネ(img)は出ないが add affordance は出る', () => {
     const el = renderCell('question', makeRow({ question_text: 'x', images: [] }), META)
     expect(el.querySelector('img')).toBeNull()
-    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+    // add affordance(compact icon・aria-label=attachAriaLabel)は空欄でも出る。
+    expect(screen.getByRole('button', { name: '問題文に画像を追加' })).toBeInTheDocument()
   })
 
-  it('③ add affordance「画像を追加」は table 列に出ない(slot=thumbnails)', async () => {
-    renderCell('question', makeRow({ images: [img('question_text')] }), META)
-    await screen.findByAltText('question_textの画像')
-    expect(screen.queryByRole('button', { name: '画像を追加' })).toBeNull()
+  it('③ 3 列すべてに add affordance が出る(card view と同扱い)', () => {
+    renderCell('question', makeRow({ images: [] }), META)
+    expect(screen.getByRole('button', { name: '問題文に画像を追加' })).toBeInTheDocument()
+    cleanup()
+    renderCell('explanation_text', makeRow({ images: [] }), META)
+    expect(screen.getByRole('button', { name: '解説に画像を追加' })).toBeInTheDocument()
+    cleanup()
+    renderCell('memo', makeRow({ images: [] }), META)
+    expect(screen.getByRole('button', { name: 'メモに画像を追加' })).toBeInTheDocument()
   })
 
-  it('④ サムネは編集可能(readOnly でない → 削除 affordance あり = 既存 remove 経路)', async () => {
+  it('④ add 押下(file 選択)→ 既存 attachImageToCard 経路が呼ばれる(独自経路なし)', async () => {
+    const el = renderCell('question', makeRow({ id: '99999999-9999-4999-8999-999999999999', images: [] }), META)
+    const input = el.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['x'], 'x.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() =>
+      expect(mockAttachImageToCard).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: 'question_text',
+          cardId: '99999999-9999-4999-8999-999999999999',
+          userId: 'user-owner',
+        }),
+        expect.anything(),
+      ),
+    )
+  })
+
+  it('⑤ サムネは編集可能(readOnly でない → 削除 affordance あり = 既存 remove 経路)', async () => {
     renderCell('question', makeRow({ images: [img('question_text')] }), META)
     expect(
       await screen.findByRole('button', { name: '画像を削除' }),
     ).toBeInTheDocument()
   })
 
-  it('⑤ meta 不在(userId なし)→ gallery 描画されず crash しない', () => {
+  it('⑥ meta 不在(userId なし)→ gallery 描画されず crash しない(add も出ない)', () => {
     const el = renderCell('question', makeRow({ images: [img('question_text')] }))
     expect(el.querySelector('img')).toBeNull()
+    expect(screen.queryByRole('button', { name: '問題文に画像を追加' })).toBeNull()
   })
 })
