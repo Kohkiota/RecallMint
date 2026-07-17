@@ -592,4 +592,17 @@ describe('Sprint T T6: 選択肢 gallery 配線(thumbnail + add)', () => {
     )
     expect(await screen.findByRole('button', { name: '画像を削除' })).toBeInTheDocument()
   })
+
+  it('⑥ add アイコンと × 削除ボタンが同一行コンテナに co-locate(独立行を作らない)', () => {
+    // 症状: add が独立行(explanation 下の別 wrapper)を取り、選択肢 1 件ごとに 1 行増える。
+    // card view(inline-option-row:262)は add を × と同一 flex に置く。それに揃える。
+    // 構造 assert: 削除ボタンの親コンテナ(行内グループ)が add アイコンも内包する = 同一行。
+    // 破損状態では add は別 wrapper にあり親コンテナに contain されない → RED。
+    render(
+      <CompactOptionsCell cardId={CARD_ID} options={[optWithUid]} images={[]} userId="user-opt" />,
+    )
+    const addBtn = screen.getByRole('button', { name: '選択肢 a に画像を追加' })
+    const deleteBtn = screen.getByRole('button', { name: '選択肢を削除' })
+    expect(deleteBtn.parentElement).toContainElement(addBtn)
+  })
 })

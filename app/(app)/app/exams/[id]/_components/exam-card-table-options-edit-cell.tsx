@@ -46,7 +46,10 @@ export function CompactOptionsCell({
               : 'rounded border border-border/60 px-1.5 py-0.5 text-sm'
           }
         >
-          {/* 1 行目: checkbox + 本文 + 削除ボタン */}
+          {/* 1 行目: checkbox + 本文 + (add アイコン + 削除ボタン)。add は card view
+              (inline-option-row:262)と同じく × と同一行に co-locate する(独立行を作らない
+              = 選択肢数ぶんの行高肥大を避ける)。gate は uid + userId + text 非空 で card view
+              と同一(空 ghost 選択肢への添付 = option:<ghost uid> 孤児化を防ぐ)。 */}
           <div className="flex items-start gap-1">
             <label className="inline-flex min-h-8 min-w-8 md:min-h-6 md:min-w-6 shrink-0 cursor-pointer items-center justify-center">
               <input
@@ -71,17 +74,30 @@ export function CompactOptionsCell({
                 autoEditOnMount={opt.id === autoEditOptionId}
               />
             </div>
-            <button
-              type="button"
-              aria-label="選択肢を削除"
-              onClick={() => handleDeleteOption(idx)}
-              disabled={!canDelete}
-              className="inline-flex min-h-8 min-w-8 md:min-h-6 md:min-w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
-            >
-              <span className="text-base leading-none" aria-hidden="true">
-                ×
-              </span>
-            </button>
+            <div className="flex shrink-0 items-center gap-0.5">
+              {opt.uid && userId && opt.text.trim().length > 0 && (
+                <CardImageGallery
+                  images={images}
+                  target={`option:${opt.uid}`}
+                  cardId={cardId}
+                  userId={userId}
+                  slot="add"
+                  compact
+                  attachAriaLabel={`選択肢 ${opt.id} に画像を追加`}
+                />
+              )}
+              <button
+                type="button"
+                aria-label="選択肢を削除"
+                onClick={() => handleDeleteOption(idx)}
+                disabled={!canDelete}
+                className="inline-flex min-h-8 min-w-8 md:min-h-6 md:min-w-6 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+              >
+                <span className="text-base leading-none" aria-hidden="true">
+                  ×
+                </span>
+              </button>
+            </div>
           </div>
           {/* 2 行目: 解説 (常時表示) */}
           <div className="mt-0.5">
@@ -103,33 +119,18 @@ export function CompactOptionsCell({
               placeholder="解説 (クリックで追加)"
             />
           </div>
-          {/* Sprint T T6 + add(2026-07-17 OT): 選択肢 gallery。card view(inline-option-row)と
-              同じ 2 gallery 構成に揃える:
-              - thumbnail = uid ありで常時(既存画像の表示)
-              - add = **text 非空** + uid(card view :262 と同一 gate)。空 ghost 選択肢に add を
-                出すと未確定 option へ画像添付 → drop 時に option:<ghost uid> が孤児化する
-                (Codex P2)。card view はこの gate で回避しており、それに合わせる。 */}
+          {/* Sprint T T6 + add(2026-07-17 OT): 選択肢サムネは行の下に据え置き(card view
+              inline-option-row:117 と同じく、add は行内・thumbnail は下)。add はここから row 1
+              へ移した(独立行の解消)。gallery は uid 無し / 画像 0 で null を返すため(card-image-
+              gallery:222)、bare render で空 DOM 増ゼロ。 */}
           {opt.uid && userId && (
-            <div className="mt-0.5 flex flex-wrap items-center gap-2">
-              <CardImageGallery
-                images={images}
-                target={`option:${opt.uid}`}
-                cardId={cardId}
-                userId={userId}
-                slot="thumbnails"
-              />
-              {opt.text.trim().length > 0 && (
-                <CardImageGallery
-                  images={images}
-                  target={`option:${opt.uid}`}
-                  cardId={cardId}
-                  userId={userId}
-                  slot="add"
-                  compact
-                  attachAriaLabel={`選択肢 ${opt.id} に画像を追加`}
-                />
-              )}
-            </div>
+            <CardImageGallery
+              images={images}
+              target={`option:${opt.uid}`}
+              cardId={cardId}
+              userId={userId}
+              slot="thumbnails"
+            />
           )}
         </div>
       ))}
