@@ -96,3 +96,15 @@ smoke PASS を受けて OT が 4 件を追加指示(item1=docs / items 2-4=feat/
 2. **item3**: 回答後、自分が選んだ選択肢に sky ring + 「あなたの回答」badge。多択で「選んだ正解 vs 選び逃した正解」「選んだ誤答 vs 選ばなかった誤答」が判別可能。retry で消える。
 3. **item4**: 回答後、メモがある card で amber の「メモ(あなたの記録)」island 表示(解説 blue と区別)。回答前・空メモでは非表示。メモ内 MD 表が `<table>` 描画。
 4. **4 色同時状態の可読性**: 正誤(緑)+ 選択(sky)+ 解説(blue)+ メモ(amber)が同画面で混同しないか目視。
+
+### items 2-4 stg smoke 実施結果(2026-07-17・CC DevTools=Playwright MCP・全 PASS)
+
+**データ前提の相違(要 OT 認識)**: OT が指定した test1(komail9server+clerk_test)には **実カード A/B が存在せず**、PERF-SEED 300 枚のみ(explanation/memo/multi-correct すべて 0・MD 表 0)。stg 再 seed で A/B が消えたと推定。→ item2 と item3 単択は PERF-SEED でそのまま検証。item3 多択 / item4 メモ / 4 色同時は **card No.1(041ae8c1)を Dexie mirror にのみ注入**(outbox 非経由=server 無変更・reload で自動 revert、実際に revert 確認済)して検証。session-runner の描画経路をそのまま exercise するため注入は有効な smoke セットアップ。
+
+- **item2 PASS**: テーブルビューで 3 列(問題文/解説/メモ)+ 選択肢すべてに add アイコン表示(可視 49 個)。画像 1 枚の card で thumbnail(img)+ 削除ボタン描画。**ghost gate**: 「+選択肢を追加」で空選択肢を足すと add アイコンは増えず(row の add 数 7→7)= 空 ghost に add 出ない。空選択肢は sanitize され未 persist(pending option mutation 0)。attach→R2 は既存 attachImageToCard 経路(card view と同一・unit mock-call 検証済)ゆえ stg 再アップロードは省略。証拠=smoke-item2-table-add.png。
+- **item3 PASS**: 単択(PERF-SEED card 0030)= 選んだ誤答 × + sky ring + badge / 選ばなかった誤答 × のみ / 選び逃した正解 ○+emerald のみ(ring/badge なし)→ 判別可。**多択(注入 card No.1)= 選んだ正解 ○+emerald+ring+badge / 選び逃した正解 ○+emerald(ring/badge なし)→ 判別可**。retry で ring/badge/選択すべて消滅。FSRS モードで Again/Hard/Good/Easy 提示中も自分の回答(ring+badge)が可視(OT 指摘の欠陥が解消)。証拠=smoke-item3-prejudge.png / smoke-item3-postjudge.png。
+- **item3 遷移観察(OT 追加項目)= 違和感なし**: 回答前の選択表示は既に **sky ring(ring-sky-500)**、回答後も **同一の sky ring**(badge が追加されるのみ)。色も形も連続で「別物に変わった/押し直された」印象なし。回答前後で選択チャネルは一貫。
+- **item4 PASS**: 回答後のみ amber の「メモ(あなたの記録)」island 表示・メモ内 MD 表が `<table>` 描画。解説(blue「解説」island・MD 表描画)とは別 island で出自区別。**回答前(retry 後)は memo/explanation island とも非表示**(isJudged gate)。証拠=smoke-item3-4-multiselect-memo-4color.png。
+- **4 色同時状態 PASS**: 1 画面に emerald(正解)+ sky(選択)+ blue(解説)+ amber(メモ)が同時に出るが各々明確に区別。**console error 0 / warning は Clerk dev-keys のみ**(validateDOMNesting 等なし)= 選択肢 button 内 table + 解説/メモ table 同時でも nesting warning なし(spec §3.3 の実機確認をさらに強い状態で再確認)。
+- **副次確認**: 学習面の解説/メモの MD 表描画(本体 smoke 済の C/E)も注入 card で再確認 PASS。
+- **クリーンアップ**: card No.1 は reload で原状復帰(correctCount 1 / memo null / explanation null)・server 無変更・自分由来の pending mutation 0 を確認。
