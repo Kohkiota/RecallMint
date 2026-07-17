@@ -66,6 +66,7 @@ G1〜G3 は同日対処済(test-only・実装ロジック不変・[no-review] �
 - **G3** → `8558ef2` test(settings): 成功経路(customer / return_url / redirect(session.url))を pin。red 検証 = return_url 改変で 1 fail。
 
 gate: full suite 3756 green(+14 test)/ whole-repo lint exit 0 / typecheck exit 0。
+Codex 追走(OT 指示・一時 worktree で diff を uncommitted 再現): **clean**(Critical 0 / Important 0 / Minor 0・detector PASS)— raw = `docs/codex/2026-07-17-test-quality-g1-g3.md`。
 Minor 群は本監査の記録のまま未対処(OT 判断事項)。
 
 ## 方法メモ
