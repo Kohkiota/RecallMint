@@ -57,6 +57,17 @@ guard 経路 2 test のみ。`billingPortal.sessions.create` に `stripeCustomer
 - **境界 pin の規律**: 30=limit 許容 / 31 超過、5MiB 丁度、50 ids 丁度、STALE_PROCESSING_MS 丁度、24h 丁度、Dexie includeUpper 罠の due==now pin。
 - CLAUDE.md「厚く」対象のうち課金ガード・prefix 検証・webhook 署名/冪等・429 は 3 層(unit / 実 crypto 統合 / wire contract)で pin 済み。**FSRS のみ名目と実態が乖離**(G1)。
 
+## 対処記録(2026-07-17 追記)
+
+G1〜G3 は同日対処済(test-only・実装ロジック不変・[no-review] 経路):
+
+- **G1** → `59eda8f` test(fsrs): RATING_MAP 4 対応を scheduler.next 実引数で pin + 実測 golden(固定日時の due/state/stability/difficulty)。red 検証 = Hard↔Good 変異再注入で 4 fail。
+- **G2** → `a5c536e` test(exams): drizzle eq を spy 化し全 5 query の owner 絞りを実引数で pin(chain mock は挙動検証層として存置、header に 2 層構成を明記)。red 検証 = eq(userId) 除去で 1 fail。
+- **G3** → `8558ef2` test(settings): 成功経路(customer / return_url / redirect(session.url))を pin。red 検証 = return_url 改変で 1 fail。
+
+gate: full suite 3756 green(+14 test)/ whole-repo lint exit 0 / typecheck exit 0。
+Minor 群は本監査の記録のまま未対処(OT 判断事項)。
+
 ## 方法メモ
 
 - subagent 3 体(domain 層 19+9+14+5 file / app 層 89+8 file から 20 サンプル + 1,891 it-block 走査 / クリティカル路 ~390 test 精読)。read-only。
