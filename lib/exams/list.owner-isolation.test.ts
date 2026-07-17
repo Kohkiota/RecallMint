@@ -1,6 +1,12 @@
 // S1.7 review Important 3 を受けて新規。 lib/exams/list.ts の owner-check 回帰
-// 防止 test。 mock DB chain を使い、 WHERE 句が user_id で正しく絞っているか
-// (= 他 user の exam / cards が漏れないか) を検証する。
+// 防止 test。
+//
+// 2 層構成 (監査 2026-07-17 G2 対応):
+// - chain mock (下記): row mapping / null・防御経路の挙動検証。 where() 引数は
+//   検証できない (eq(userId) を除去しても通過することを変異実測で確認済 —
+//   docs/audit/2026-07-17-test-quality-audit.md)。
+// - eq-spy (末尾 describe): drizzle の eq を spy 化し、 各 query が owner 列で
+//   絞ることを実引数で pin する。 前例 = lib/db/cards-delta.test.ts の (d)。
 //
 // 既存 list.test.ts は formatRelativeJa の純粋関数 test 専用、 owner-check は
 // SQL レイヤなので別 file で mock chain を構築する。
@@ -17,6 +23,25 @@ const { dbState } = vi.hoisted(() => ({
     queue: [] as SelectedRow[][],
   },
 }))
+
+// drizzle-orm: eq を spy 化し実動作は real に委譲 (owner-scope 実引数 pin 用)。
+vi.mock('drizzle-orm', async (importActual) => {
+  const real = await importActual<typeof import('drizzle-orm')>()
+  const spyEq = vi.fn((...args: Parameters<typeof real.eq>) => real.eq(...args))
+  return { ...real, eq: spyEq }
+})
+
+async function getEqSpy() {
+  const { eq } = await import('drizzle-orm')
+  return vi.mocked(eq)
+}
+
+// schema は静的 import しない: mock 適用後の動的 import 経路 (list.ts 側) と
+// module インスタンスを一致させ、 column 参照の同一性で assert するため
+// (前例: lib/db/cards-delta.test.ts)。
+async function getSchema() {
+  return await import('@/lib/db/schema')
+}
 
 vi.mock('@/lib/db', () => {
   // chain proxy: 各 method は self を返し、 最終的に await されると queue の先頭を resolve
@@ -52,8 +77,9 @@ async function importModule() {
   return await import('./list')
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   dbState.queue = []
+  ;(await getEqSpy()).mockClear()
 })
 
 // getActiveExamsWithCardCount は ExamListLive (Dexie useLiveQuery) への切替により撤去済。
@@ -249,5 +275,57 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
       optionCount: 2,
     })
     expect(r[0].questionTextSnippet.endsWith('…')).toBe(true)
+  })
+})
+
+// 監査 2026-07-17 G2: chain mock は where() 引数を握り潰すため、owner 絞りの
+// 実在は eq の実引数で pin する。全 5 query が対象 (list.ts の owner-scoped 面)。
+describe('owner-scope WHERE 検証 (eq-spy)', () => {
+  it('getActiveExamsForUser: eq(exams.userId, userId) が呼ばれる', async () => {
+    dbState.queue = [[]]
+    const { getActiveExamsForUser } = await importModule()
+    await getActiveExamsForUser('user-1')
+    const { exams } = await getSchema()
+    expect(await getEqSpy()).toHaveBeenCalledWith(exams.userId, 'user-1')
+  })
+
+  it('getExamByIdForUser: eq(exams.userId, userId) と eq(exams.id, examId) が呼ばれる', async () => {
+    dbState.queue = [[]]
+    const { getExamByIdForUser } = await importModule()
+    await getExamByIdForUser('user-1', 'exam-A')
+    const { exams } = await getSchema()
+    const spy = await getEqSpy()
+    expect(spy).toHaveBeenCalledWith(exams.userId, 'user-1')
+    expect(spy).toHaveBeenCalledWith(exams.id, 'exam-A')
+  })
+
+  it('getCardsForExam: eq(cards.userId, userId) と eq(cards.examId, examId) が呼ばれる', async () => {
+    dbState.queue = [[]]
+    const { getCardsForExam } = await importModule()
+    await getCardsForExam('user-1', 'exam-A')
+    const { cards } = await getSchema()
+    const spy = await getEqSpy()
+    expect(spy).toHaveBeenCalledWith(cards.userId, 'user-1')
+    expect(spy).toHaveBeenCalledWith(cards.examId, 'exam-A')
+  })
+
+  it('getSourceDocumentForUser: eq(sourceDocuments.userId, userId) と eq(sourceDocuments.id, id) が呼ばれる', async () => {
+    dbState.queue = [[]]
+    const { getSourceDocumentForUser } = await importModule()
+    await getSourceDocumentForUser('user-1', 'sdoc-A')
+    const { sourceDocuments } = await getSchema()
+    const spy = await getEqSpy()
+    expect(spy).toHaveBeenCalledWith(sourceDocuments.userId, 'user-1')
+    expect(spy).toHaveBeenCalledWith(sourceDocuments.id, 'sdoc-A')
+  })
+
+  it('getCardsForSourceDocument: eq(cards.userId, userId) と eq(cards.sourceDocumentId, id) が呼ばれる', async () => {
+    dbState.queue = [[]]
+    const { getCardsForSourceDocument } = await importModule()
+    await getCardsForSourceDocument('user-1', 'sdoc-A')
+    const { cards } = await getSchema()
+    const spy = await getEqSpy()
+    expect(spy).toHaveBeenCalledWith(cards.userId, 'user-1')
+    expect(spy).toHaveBeenCalledWith(cards.sourceDocumentId, 'sdoc-A')
   })
 })
