@@ -68,6 +68,7 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 - **wrapper の HTML content model 対応**(Step 0 で判明した追加論点):
   - **(C)(E) の `<p>` wrapper**: `<p>` 内の `<table>` は HTML パーサが `<p>` を auto-close して再親化するため SSR/hydration が壊れる。→ **表を含む値の時のみ `<div>`(class 維持)、表 0 個は `<p>` 維持**(不変条件①を破らない)。判定はセグメンテーション結果を流用(二重パースの回避方法は plan で)。
   - **(A)(B)(D) の `<span>` 内・(D) の `<button>` 内**: 表が既存 span(pre-wrap)の中に入るため `span > table` / `button > table` となり content model 上 invalid だが、HTML パーサの再親化規則は `<p>` のみ(span/button は authored どおり parse)= hydration 安全・全ブラウザで anonymous box 補正により正常描画。button の構造替え(`div role="button"` 化)は disabled / focus / aria の再実装を伴い blast radius 過大、span 剥がしは不変条件①違反のため、**現構造を維持し nesting を受容**(CC 判断・OT レビュー対象)。A/B の span が持つ `break-words`(overflow-wrap: break-word)はセルに継承されるが、§3.5 の `anywhere` がセル側で上書きする。
+    - **status = 論証による受容 → 2026-07-17 stg 実機で確認済に格上げ**(区別: 論証は「HTML パーサ再親化規則 + React `findInvalidAncestorForTag` が `<p>` 祖先のみ判定」の演繹、実機確認は現物の目視)。**実機根拠**: 選択肢 text と選択肢 explanation の両方に表を入れた card で `<button>` 内の `<table>` が正常描画・console warning なし・表を含む/含まない選択肢いずれもクリックで選択可能(table がクリックイベントを食わない)。session doc 2026-07-17 参照。
 
 ### 3.4 react-markdown 設定(理由ごと記録)
 
@@ -87,7 +88,8 @@ fact-finding 総括(3)の CC lean どおり**共有 renderer 1 個**(`components
 ### 3.6 第 2 スコープ: テーブルビューの画像サムネ配線
 
 - Sprint I の**列挙漏れ**(§2)を埋める。変更源は MD 表描画と別(gallery の配線 vs テキストの解釈)。
-- 配線: 問題文 / 解説 / メモ 列 = セル内 `InlineTextField` 直下に `CardImageGallery slot='thumbnails'`(カードビューと同形・削除可・add affordance は配線しない = セル密度と Sprint F §9 類似の行高肥大を避ける。添付はカードビュー / side peek で可能)。選択肢列 = `CompactOptionsCell` に `images` + `userId` を透過し、各選択肢の下に `option:<uid>` gate 付き thumbnails(`InlineOptionList` `inline-option-row.tsx:116-124` と同パターン)。
+- 配線: 問題文 / 解説 / メモ 列 = セル内 `InlineTextField` 直下に `CardImageGallery`(カードビューと同形・削除可)。選択肢列 = `CompactOptionsCell` に `images` + `userId` を透過し、各選択肢の下に `option:<uid>` gate 付き gallery(`InlineOptionList` `inline-option-row.tsx:116-124` と同パターン)。
+- **add affordance の扱い(2026-07-17 OT 決定で訂正)**: T6 は当初「add 非配線(セル密度・§9 行高肥大回避)」としたが**覆す**。理由 = ① 本 sprint の背骨「面ごとの出し分けをしない」。delete を table 列で許した以上、add だけ切ると同じ原則を自分で破る(「同じ画像なのに見る場所で足せたり足せなかったり」は覚えられない規則)② density 懸念が実測に耐えず — Sprint I で add affordance は小 inline icon に圧縮済、stg 実機では問題文セルが表描画で数百 px 高になり icon の寄与は無視できる。→ **table 列も card view / side peek と同じ add affordance・同じ attach 経路**(target 語彙 Sprint I 確定のまま)。slot 指定は CC 判断。
 - 行仮想化(MemoizedTableBody + row virtualizer)により gallery instance 数は可視行に有界。
 
 ## 4. 不変条件(spec 明記・kickoff 指定)

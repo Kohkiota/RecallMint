@@ -47,6 +47,15 @@ Minor 3 件の扱い:
 
 Codex T5 が D の `span>table` / `button>table` nesting を P2 指摘。→ **spec §3.3 が明示受容 + OT §9 #2 承認済の設計判断**。canonical が `react-dom` の `findInvalidAncestorForTag`(`<table>` は `<p>` 祖先のみ判定)で **warning-free を実ソース確認** + nesting-warning spy 実証。button 構造替え = spec が blast radius 過大で却下 / span 剥がし = 不変条件①違反。→ **adjudicated-resolved(未解決 Important 0)・コード変更なし**。詳細 = `docs/codex/2026-07-17-sprint-t-t5-study-wiring.md`。
 
+## stg smoke 結果(2026-07-17・OT 手動実施・全項目 PASS)
+
+- **4 面すべて PASS**: カードビュー / side peek = 実カード A(`06f4e35f`)/ B(`2e97b7b7`)とも表描画。テーブルビュー = 表描画 + 画像サムネ OK・**表がコンテナ幅に引き伸ばされない**(width:auto 有効)。学習面 = 問題文 / 選択肢 text / 選択肢 explanation / カード解説の 4 箇所に表を入れた card で描画・**console warning なし**。
+- **4 面同一扱いの裏取り**: 表が周囲の font-weight / color を継承(独立スタイル島でない)。
+- **`<button>` / `<span>` 内 table nesting = 実機確認済(spec §3.3 を論証受容→実機確認済に格上げ)**: 選択肢 text + explanation 両方に表を入れた card で button 内 table 正常描画・warning なし・表を含む/含まない選択肢いずれもクリック選択可能(table がクリックを食わない)。
+- **受容した吸収挙動の実地確認**: card B で表直後本文が表の行に吸収されるのを再現 → クリックで raw MD 確認 → 表直後に空行 1 個入れて blur → 正常な表に解消(所要 5 秒)。spec §2 の受容理由(視認可能・編集で直せる)が実物で裏取りされた。
+- **不変条件① 実機**: PERF-SEED 300 枚(全表 0 個)をカード/テーブルビューでスクロール・見た目/行高とも違和感なし。
+- **未実施(条件不発)**: Network 外部リクエスト 0(実カードに MD 画像記法なし → T3 unit test で証明済ゆえ実機省略)/ 長い連続語の列崩れ(実データに該当なし → T3 の td/th overflow-wrap:anywhere 構造 assert で足りると判断)。
+
 ## OT 判断・smoke 事項(push 前 / push 後)
 
 **判断必要**:
@@ -66,3 +75,12 @@ Codex T5 が D の `span>table` / `button>table` nesting を P2 指摘。→ **s
 - **OCR prompt 側課題(単独 task にしない)**: 「MD 表の直後に空行を吐かせる」で B 型の吸収を源流で消せる。画像切り出しの OCR チューニング時に同時対処(同一 file・同一変更源・検証 1 回)。
 - **shared_context(`> ` 引用)内の表は非描画**(root 直下限定の帰結・実データに `> ` 付き表なし = 現状不要)。ノード起点描画に切替えれば可能(将来拡張候補)。
 - **GFM 列 alignment(`|:---|`)非対応**(T3 canonical Minor)= th/td が align/style を捨てる。spec §3.5 対象外・実カード不使用。OCR が alignment 吐くなら scoped follow-up。
+- **side peek の幅可変化(テーブルビュー)= 独立 sprint**(2026-07-17 OT)。Step 0 の核 = side peek がテーブルを押すのか被せるのか(押すなら列 reflow → 仮想化の再測が要る)。他論点 = 永続化の要否 / min-max / モバイルの扱い。
+- **学習中のメモ編集 = 別途**(下記「追加バッチ 4」の非スコープ)。誤答直後がメモを書く自然な瞬間だが変更源が別。
+
+## 追加バッチ(2026-07-17 smoke PASS 後・OT 指示・同 branch)
+
+smoke PASS を受けて OT が同 branch で 3 件を追加指示(MD 表描画は smoke 済ゆえ再検証不要・items 2-4 のみ push 後 smoke):
+- **B(add affordance)**: T6 の「add 非配線」を覆し table 列に add 配線(spec §3.6 訂正済)。→ Minor#3 の「delete-yes/add-no 非対称」も **add 追加で解消**(card view と対称)。
+- **C(選択保持)**: 学習面で回答後に「自分が選んだ選択肢」を識別可能に(正誤=背景 / 選択=別チャネルの 2 軸・多択対応)。回答前から出している選択状態を回答時に捨てているのが欠陥。
+- **D(メモ学習面表示)**: 回答後のみ・非空時のみ・MdTableText 経由(6 番目の挿入点)・解説と視覚区別・read-only。spec §1 の「メモ×4 面」が学習面で空振りしていたのを埋める。
