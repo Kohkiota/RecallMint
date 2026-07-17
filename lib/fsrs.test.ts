@@ -50,9 +50,16 @@ describe('fsrs', () => {
     spy.mockRestore()
   })
 
-  // golden: 固定日時の New card を 1 回 rate した出力値 pin (ts-fsrs 5.x default
-  // params)。ts-fsrs 更新等で学習スケジュールの実挙動が変わったとき silent に
-  // 通さず、ここで割って意図確認するための検知線。値は実測採取 (推測値ではない)。
+  // golden: 固定日時の New card を 1 回 rate した出力値 pin。
+  // pin 対象 = ts-fsrs 5.3.2(アルゴリズム版 FSRS-6.0、FSRSVersion 実文字列
+  // "v5.3.2 using FSRS-6.0")が同梱する default weights(default_w、21 要素)+
+  // short-term スケジューリング挙動(enable_short_term: true / learning_steps
+  // ["1m","10m"])。fuzz 無効(enable_fuzz: false = default)に依存する — fuzz を
+  // 有効化すると due が非決定になり本 golden は成立しない。
+  // ts-fsrs 更新等で学習スケジュールの実挙動が変わったとき silent に通さず、
+  // ここで割って意図確認するための検知線(FSRS-7 系への移行判断材料を兼ねる)。
+  // 値は実測採取 (推測値ではない)。stability[0..3] = default_w[0..3] /
+  // Again difficulty = default_w[4] 由来。
   it.each([
     [1, '2026-01-01T00:01:00.000Z', 1, 0.212, 6.4133],
     [2, '2026-01-01T00:06:00.000Z', 1, 1.2931, 5.11217071],
