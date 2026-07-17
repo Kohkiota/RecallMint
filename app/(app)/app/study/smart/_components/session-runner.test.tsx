@@ -12,7 +12,7 @@
 // next/navigation / lib/sync/review-events は mock。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import type { Card } from '@/lib/db/schema'
 
 // T11: SessionRunner は CardImageGallery (readOnly) を transitively import する。
@@ -2028,5 +2028,159 @@ describe('Sprint T: MD 表 read-only 描画(学習面 C/D/E)', () => {
     )
     expect(nestingWarn).toBeUndefined()
     spy.mockRestore()
+  })
+})
+
+// Sprint T(選択保持 fix): 回答後も「自分が選んだ選択肢」を識別できる(正誤=背景 /
+// 選択=独立チャネル「あなたの回答」badge の 2 軸)。多択でも選び逃し / 選んだ誤答を区別。
+describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
+  // 各選択肢 button 内に「あなたの回答」badge があるかを opt.text で scope して判定。
+  const hasYourAnswer = (optText: string): boolean => {
+    const btn = screen.getByRole('button', { name: new RegExp(optText) })
+    return within(btn).queryByText('あなたの回答') !== null
+  }
+  const judge = () => fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+
+  it('単択: 誤答を選んだ後、選んだ誤答と選ばなかった誤答が識別できる', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ誤', is_correct: false },
+              { id: 'b', text: 'ベータ正', is_correct: true },
+              { id: 'c', text: 'ガンマ誤', is_correct: false },
+            ],
+            correctAnswerIds: ['b'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('アルファ誤')
+    judge()
+    expect(hasYourAnswer('アルファ誤')).toBe(true) // 選んだ誤答
+    expect(hasYourAnswer('ガンマ誤')).toBe(false) // 選ばなかった誤答
+    expect(hasYourAnswer('ベータ正')).toBe(false) // 選ばなかった正答
+  })
+
+  it('単択: 正答を選んだ後、「正解であり自分の選択」と分かる(緑背景 + badge 併存)', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ誤', is_correct: false },
+              { id: 'b', text: 'ベータ正', is_correct: true },
+            ],
+            correctAnswerIds: ['b'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('ベータ正')
+    judge()
+    const btn = screen.getByRole('button', { name: /ベータ正/ })
+    expect(within(btn).queryByText('あなたの回答')).not.toBeNull() // 自分の選択
+    expect(btn.className).toContain('bg-emerald-100') // 正解の背景(独立軸)
+  })
+
+  it('多択: 「選んだ正解」と「選び逃した正解」が区別できる', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ正', is_correct: true },
+              { id: 'b', text: 'ベータ正', is_correct: true },
+              { id: 'c', text: 'ガンマ誤', is_correct: false },
+            ],
+            correctAnswerIds: ['a', 'b'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('アルファ正') // 正解を 1 つだけ選ぶ(b は選び逃し)
+    judge()
+    expect(hasYourAnswer('アルファ正')).toBe(true) // 選んだ正解
+    expect(hasYourAnswer('ベータ正')).toBe(false) // 選び逃した正解(緑だが未選択)
+    // 両方とも正解の緑背景ではあること(正誤軸は独立)
+    expect(screen.getByRole('button', { name: /アルファ正/ }).className).toContain('bg-emerald-100')
+    expect(screen.getByRole('button', { name: /ベータ正/ }).className).toContain('bg-emerald-100')
+  })
+
+  it('多択: 「選んだ誤答」と「選ばなかった誤答」が区別できる', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ誤', is_correct: false },
+              { id: 'b', text: 'ベータ誤', is_correct: false },
+              { id: 'c', text: 'ガンマ正', is_correct: true },
+            ],
+            correctAnswerIds: ['c'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('アルファ誤')
+    judge()
+    expect(hasYourAnswer('アルファ誤')).toBe(true) // 選んだ誤答
+    expect(hasYourAnswer('ベータ誤')).toBe(false) // 選ばなかった誤答
+  })
+
+  it('回答前(selecting)も選択チャネル(sky ring)が出る(判定前後で一貫・canonical Minor#1)', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ誤', is_correct: false },
+              { id: 'b', text: 'ベータ正', is_correct: true },
+            ],
+            correctAnswerIds: ['b'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('アルファ誤') // 判定前に選択
+    const btn = screen.getByRole('button', { name: /アルファ誤/ })
+    expect(btn.className).toContain('ring-sky-500') // selecting phase でも ring あり
+    // 未選択は ring なし
+    expect(screen.getByRole('button', { name: /ベータ正/ }).className).not.toContain('ring-sky-500')
+  })
+
+  it('リトライ後に選択表示(badge)がリセットされる', () => {
+    render(
+      <SessionRunner
+        cards={[
+          makeCard({
+            options: [
+              { id: 'a', text: 'アルファ誤', is_correct: false },
+              { id: 'b', text: 'ベータ正', is_correct: true },
+            ],
+            correctAnswerIds: ['b'],
+          }),
+        ]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('アルファ誤')
+    judge()
+    expect(hasYourAnswer('アルファ誤')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: NAME_RETRY }))
+    // selecting へ戻り selectedIds クリア → badge 消滅
+    expect(screen.queryByText('あなたの回答')).toBeNull()
   })
 })

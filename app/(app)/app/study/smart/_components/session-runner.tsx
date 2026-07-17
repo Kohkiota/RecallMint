@@ -457,13 +457,18 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
         {options.map((opt) => {
           const isCorrect = opt.is_correct
           const selected = selectedIds.includes(opt.id)
-          const showCorrectHl = isJudged && isCorrect
-          const showSelectedHl = !isJudged && selected
-          const classes = showCorrectHl
-            ? 'w-full rounded border border-emerald-300 bg-emerald-100 p-3 text-left text-sm font-bold text-emerald-900'
-            : showSelectedHl
-              ? 'w-full rounded border border-emerald-400 bg-emerald-50 p-3 text-left text-sm text-slate-900'
-              : 'w-full rounded border border-border/60 p-3 text-left text-sm text-slate-800 hover:bg-slate-50'
+          // Sprint T(選択保持 fix): 2 軸表示。
+          // 軸1 = 正誤(背景・判定後のみ): 正解 = emerald / 不正解 = plain(× marker で判別)。
+          // 軸2 = 選択(sky ring + badge・判定前後で一貫した独立チャネル): 回答時に選択状態を
+          //   捨てず残す。多択で「選んだ正解 vs 選び逃した正解」「選んだ誤答 vs 選ばなかった
+          //   誤答」を区別可能にする(正誤の背景とは独立ゆえ緑で潰れない)。灰色化は採らない。
+          const correctnessClass = isJudged
+            ? isCorrect
+              ? 'border-emerald-300 bg-emerald-100 font-bold text-emerald-900'
+              : 'border-border/60 text-slate-800'
+            : 'border-border/60 text-slate-800 hover:bg-slate-50'
+          const selectionClass = selected ? ' ring-2 ring-sky-500' : ''
+          const classes = `w-full rounded border p-3 text-left text-sm ${correctnessClass}${selectionClass}`
           const displayText = stripPrefix(opt.text, opt.id)
           return (
             <li key={opt.id}>
@@ -483,6 +488,12 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
                       parser-safe(spec §3.3)。表 0 個は text node で DOM 不変。 */}
                   <MdTableText value={displayText} />
                 </span>
+                {/* 選択チャネルの非色キュー(色覚非依存)。判定後に「自分が選んだ」を明示。 */}
+                {isJudged && selected && (
+                  <span className="mt-1 block w-fit rounded bg-sky-100 px-1.5 py-0.5 text-xs font-medium text-sky-800">
+                    あなたの回答
+                  </span>
+                )}
                 {isJudged && opt.explanation && (
                   <span className="mt-1 block whitespace-pre-wrap text-xs font-normal text-slate-500">
                     解説: <MdTableText value={opt.explanation} />
