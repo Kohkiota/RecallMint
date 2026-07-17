@@ -949,3 +949,70 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     expect(row).toBeUndefined()
   })
 })
+
+// Sprint T T4: display 枝の MD 表 read-only 描画。golden-first(修正2)= 差し替え前に
+// 表 0 個の display DOM を snapshot(旧 DOM から生成)→ 差し替え後も diff なし green で
+// 不変条件①(表 0 個 = DOM 同一)を機械証明する。表入りは意図差分で snapshot 受理。
+describe('Sprint T: MD 表 read-only 描画(display 枝 A)', () => {
+  // 表なし。< & > を含めて escape 挙動も golden に固定。末尾改行なし(<br> 補償を混ぜない)。
+  const TABLE_FREE = '問題文の 1 行目\n2 行目 < & > 記号あり'
+  // 表あり(前後に本文)。
+  const WITH_TABLE = 'まえがき\n\n| 成分 | 分量 |\n|---|---|\n| A | 1 |\n\nあとがき'
+
+  it('表 0 個: display DOM は差し替え前後で不変(golden・不変条件①)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue={TABLE_FREE}
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'question 編集' }).innerHTML).toMatchSnapshot()
+  })
+
+  it('表入り: display DOM(golden — 差し替え後に <table> へ変わる)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue={WITH_TABLE}
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'question 編集' }).innerHTML).toMatchSnapshot()
+  })
+
+  it('表入り: display 枝に <table> が描画される(差し替え後に PASS・前は RED)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue={WITH_TABLE}
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    const display = screen.getByRole('button', { name: 'question 編集' })
+    expect(display.querySelector('table')).not.toBeNull()
+    // 前後の本文は保持
+    expect(display.textContent).toContain('まえがき')
+    expect(display.textContent).toContain('あとがき')
+  })
+
+  it('表入りでも click で edit に入ると textarea に raw MD が出る(edit 枝不変)', () => {
+    render(
+      <InlineTextField
+        cardId={CARD_ID}
+        field="question_text"
+        initialValue={WITH_TABLE}
+        ariaLabel="question 編集"
+        multiline
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'question 編集' }))
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(WITH_TABLE)
+  })
+})

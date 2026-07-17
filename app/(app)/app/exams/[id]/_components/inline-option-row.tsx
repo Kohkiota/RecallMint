@@ -43,6 +43,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type { CardOption } from '@/lib/db/schema'
 import type { ClientCardImage } from '@/lib/client-db'
+import { MdTableText } from '@/components/markdown/md-table-text'
 import { useCardOptions } from '../_hooks/use-card-options'
 import { cn } from '@/lib/utils'
 import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-shared'
@@ -450,7 +451,9 @@ export function InlineOptionCell({
         <span>{placeholder}</span>
       ) : (
         <span className="whitespace-pre-wrap break-words">
-          {value}
+          {/* Sprint T: display のみ MD 表を read-only 描画(InlineTextField と同型)。
+              表 0 個は text node 1 個で DOM 不変(不変条件①)。edit 枝・<br> 補償は不変。 */}
+          <MdTableText value={value} />
           {/* white-space:pre-wrap は末尾の単一改行に line box を作らず、 末尾改行を
               持つ値が textarea(edit) より 1 行低く表示される。 末尾が改行のときだけ
               装飾 <br> を 1 つ補い、 edit と行数/高さを一致させる (落とされるのは常に

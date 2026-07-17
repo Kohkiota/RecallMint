@@ -1,0 +1,12 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Sprint T: MD 表 read-only 描画(display 枝 B) > 表 0 個: display DOM は差し替え前後で不変(golden・不変条件①) 1`] = `
+"<span class="whitespace-pre-wrap break-words">選択肢本文
+2 行目 &lt; &amp; &gt; 記号</span>"
+`;
+
+exports[`Sprint T: MD 表 read-only 描画(display 枝 B) > 表入り: display DOM(golden — 差し替え後に <table> へ変わる) 1`] = `
+"<span class="whitespace-pre-wrap break-words">前置き
+
+<table class="my-1 border-collapse text-sm"><thead><tr><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">用量</th><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">値</th></tr></thead><tbody><tr><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">A</td><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">1</td></tr></tbody></table></span>"
+`;

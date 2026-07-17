@@ -31,6 +31,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { MdTableText } from '@/components/markdown/md-table-text'
 import { normalizeNullableTextField } from '@/lib/cards/domain/card-rules'
 import { runOptimisticUpdate } from '@/lib/sync/optimistic-mutation'
 import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
@@ -312,7 +313,10 @@ export function InlineTextField({
           <span>{placeholder}</span>
         ) : (
           <span className="whitespace-pre-wrap break-words">
-            {displayText}
+            {/* Sprint T: display のみ MD 表を read-only 描画。表 0 個なら MdTableText は
+                原文の text node 1 個を返すため DOM 不変(不変条件①)。edit 枝・wrapper・
+                <br> 補償は不変(表描画は非破壊 slot-in)。 */}
+            <MdTableText value={displayText} />
             {/* white-space:pre-wrap は末尾の単一改行に line box を作らず、 末尾改行を
                 持つ値が textarea(edit) より 1 行低く表示される。 末尾が改行のときだけ
                 装飾 <br> を 1 つ補い、 edit と行数/高さを一致させる (落とされるのは

@@ -991,3 +991,61 @@ describe('InlineOptionList — merge での ghost ライフサイクル (1-a, 70
     expect(screen.queryByText('c')).not.toBeInTheDocument()
   })
 })
+
+// Sprint T T4: InlineOptionCell display 枝の MD 表 read-only 描画。golden-first(修正2)で
+// 表 0 個 DOM 不変を機械証明 + 表入りで <table> 描画。InlineOptionCell を単体 render する。
+describe('Sprint T: MD 表 read-only 描画(display 枝 B)', () => {
+  const TABLE_FREE = '選択肢本文\n2 行目 < & > 記号'
+  const WITH_TABLE = '前置き\n\n| 用量 | 値 |\n|---|---|\n| A | 1 |'
+
+  it('表 0 個: display DOM は差し替え前後で不変(golden・不変条件①)', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="選択肢 本文 編集"
+        value={TABLE_FREE}
+        onSave={() => {}}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '選択肢 本文 編集' }).innerHTML).toMatchSnapshot()
+  })
+
+  it('表入り: display DOM(golden — 差し替え後に <table> へ変わる)', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="選択肢 本文 編集"
+        value={WITH_TABLE}
+        onSave={() => {}}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '選択肢 本文 編集' }).innerHTML).toMatchSnapshot()
+  })
+
+  it('表入り: display 枝に <table> が描画される(差し替え後に PASS・前は RED)', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="選択肢 本文 編集"
+        value={WITH_TABLE}
+        onSave={() => {}}
+      />,
+    )
+    const display = screen.getByRole('button', { name: '選択肢 本文 編集' })
+    expect(display.querySelector('table')).not.toBeNull()
+    expect(display.textContent).toContain('前置き')
+  })
+
+  it('表入りでも click で edit に入ると raw MD が出る(edit 枝不変)', () => {
+    render(
+      <InlineOptionCell
+        kind="text"
+        ariaLabel="選択肢 本文 編集"
+        value={WITH_TABLE}
+        onSave={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '選択肢 本文 編集' }))
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(WITH_TABLE)
+  })
+})
