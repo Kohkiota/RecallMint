@@ -71,3 +71,24 @@ export function MdTableText({ value }: { value: string }) {
   const segments = React.useMemo(() => segmentMdTables(value), [value])
   return <MdTableSegments segments={segments} />
 }
+
+// ブロック級 wrapper が <p> の call site 用(学習面 C/E・spec §3.3)。表を含む値では
+// <p> を <div> に切替える(<p> 内 <table> は HTML パーサが <p> を auto-close して
+// hydration を壊すため)。表 0 個は <p> 維持で DOM 同一(不変条件①)。segmentMdTables を
+// 1 回だけ呼び tag 判定と描画で共有(二重パース回避)。className は call site の <p> と同一を渡す。
+export function MdTableBlock({
+  value,
+  className,
+}: {
+  value: string
+  className?: string
+}) {
+  const segments = React.useMemo(() => segmentMdTables(value), [value])
+  const hasTable = segments.some((s) => s.type === 'table')
+  const Tag = hasTable ? 'div' : 'p'
+  return (
+    <Tag className={className}>
+      <MdTableSegments segments={segments} />
+    </Tag>
+  )
+}

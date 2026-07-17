@@ -1925,3 +1925,100 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
     expect(container.querySelectorAll('img')).toHaveLength(1)
   })
 })
+
+// Sprint T T5: 学習面 C(問題文)/ D(選択肢 text・解説)/ E(カード解説)の MD 表 read-only
+// 描画。golden-first(修正2)= 差し替え前に表 0 個 DOM を snapshot(旧 DOM から生成)→
+// 差し替え後も diff なし green で不変条件①(表 0 個 = DOM 同一)を機械証明。C/E は表を含む時
+// のみ <p>→<div>(p>table の hydration 破壊回避)。表 0 個は <p> 維持で DOM 同一。
+describe('Sprint T: MD 表 read-only 描画(学習面 C/D/E)', () => {
+  const QF = '問題文\n2 行目 < & > 記号' // table-free question
+  const QT = 'まえ\n\n| 成分 | 分量 |\n|---|---|\n| A | 1 |' // table question
+  const EF = 'カード全体の解説' // table-free explanation (makeCard default)
+  const ET = '解説まえ\n\n| 項目 | 値 |\n|---|---|\n| X | 9 |' // table explanation
+
+  const renderRunner = (card: Partial<Card>) =>
+    render(
+      <SessionRunner
+        cards={[makeCard(card)]}
+        fsrsMode={false}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+
+  // --- C: 問題文(selecting phase・常時可視) ---
+  it('C 問題文 表 0 個: 問題文ブロック DOM 不変(golden・不変条件①)', () => {
+    const { container } = renderRunner({ questionText: QF })
+    expect(container.querySelector('.bg-slate-50')!.innerHTML).toMatchSnapshot()
+  })
+  it('C 問題文 表入り: 問題文ブロック DOM(golden — 差し替え後 <div>+<table>)', () => {
+    const { container } = renderRunner({ questionText: QT })
+    expect(container.querySelector('.bg-slate-50')!.innerHTML).toMatchSnapshot()
+  })
+  it('C 問題文 表入り: <table> 描画(差し替え後 PASS・前は RED)', () => {
+    const { container } = renderRunner({ questionText: QT })
+    expect(container.querySelector('.bg-slate-50')!.querySelector('table')).not.toBeNull()
+  })
+
+  // --- D: 選択肢本文(selecting)+ 選択肢解説(judged) ---
+  it('D 選択肢本文 表 0 個: options DOM 不変(golden・不変条件①)', () => {
+    const { container } = renderRunner({})
+    expect(container.querySelector('ul.space-y-2')!.innerHTML).toMatchSnapshot()
+  })
+  it('D 選択肢本文 表入り: <table> 描画(差し替え後 PASS・前は RED)', () => {
+    const { container } = renderRunner({
+      options: [{ id: 'a', text: '選択肢\n\n| x | y |\n|---|---|\n| 1 | 2 |', is_correct: true }],
+      correctAnswerIds: ['a'],
+    })
+    expect(container.querySelector('ul.space-y-2')!.querySelector('table')).not.toBeNull()
+  })
+  it('D 選択肢解説 表入り: judged で <table> 描画(差し替え後 PASS・前は RED)', () => {
+    const { container } = renderRunner({
+      options: [{ id: 'a', text: '選A', is_correct: true, explanation: '解説\n\n| p | q |\n|---|---|\n| 3 | 4 |' }],
+      correctAnswerIds: ['a'],
+    })
+    clickOption('選A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    expect(container.querySelector('ul.space-y-2')!.querySelector('table')).not.toBeNull()
+  })
+
+  // --- E: カード解説(judged) ---
+  it('E カード解説 表 0 個: 解説ブロック DOM 不変(golden・不変条件①)', () => {
+    const { container } = renderRunner({ explanationText: EF })
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    expect(container.querySelector('.bg-blue-50')!.innerHTML).toMatchSnapshot()
+  })
+  it('E カード解説 表入り: 解説ブロック DOM(golden — 差し替え後 <div>+<table>)', () => {
+    const { container } = renderRunner({ explanationText: ET })
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    expect(container.querySelector('.bg-blue-50')!.innerHTML).toMatchSnapshot()
+  })
+  it('E カード解説 表入り: <table> 描画(差し替え後 PASS・前は RED)', () => {
+    const { container } = renderRunner({ explanationText: ET })
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    expect(container.querySelector('.bg-blue-50')!.querySelector('table')).not.toBeNull()
+  })
+
+  // --- 回答フロー回帰 + DOM nesting warning なし(修正2 Step5) ---
+  it('表入りカードでも判定フローが動作し console.error(nesting warning)が出ない', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderRunner({
+      questionText: QT,
+      explanationText: ET,
+      options: [{ id: 'a', text: '選A', is_correct: true, explanation: '解説\n\n| p | q |\n|---|---|\n| 3 | 4 |' }],
+      correctAnswerIds: ['a'],
+    })
+    clickOption('選A')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    // 判定 banner が出る(フロー健全)
+    expect(screen.getByText(/正解/)).toBeInTheDocument()
+    // validateDOMNesting 等の React warning が出ていない
+    const nestingWarn = spy.mock.calls.find((c) =>
+      String(c[0]).includes('validateDOMNesting') || String(c[0]).includes('cannot be a descendant') || String(c[0]).includes('cannot appear as'),
+    )
+    expect(nestingWarn).toBeUndefined()
+    spy.mockRestore()
+  })
+})

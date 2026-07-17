@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Sprint T: MD 表 read-only 描画(学習面 C/D/E) > C 問題文 表 0 個: 問題文ブロック DOM 不変(golden・不変条件①) 1`] = `
+"<p class="text-sm font-medium text-slate-900">カードタイトル既定</p><p class="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base">問題文
+2 行目 &lt; &amp; &gt; 記号</p><div class="mt-2"></div>"
+`;
+
+exports[`Sprint T: MD 表 read-only 描画(学習面 C/D/E) > C 問題文 表入り: 問題文ブロック DOM(golden — 差し替え後 <div>+<table>) 1`] = `
+"<p class="text-sm font-medium text-slate-900">カードタイトル既定</p><div class="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base">まえ
+
+<table class="my-1 border-collapse text-sm"><thead><tr><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">成分</th><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">分量</th></tr></thead><tbody><tr><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">A</td><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">1</td></tr></tbody></table></div><div class="mt-2"></div>"
+`;
+
+exports[`Sprint T: MD 表 read-only 描画(学習面 C/D/E) > D 選択肢本文 表 0 個: options DOM 不変(golden・不変条件①) 1`] = `"<li><button type="button" aria-pressed="false" class="w-full rounded border border-border/60 p-3 text-left text-sm text-slate-800 hover:bg-slate-50"><span class="whitespace-pre-wrap"><span class="mr-2 font-medium">a</span>選択肢A</span></button></li><li><button type="button" aria-pressed="false" class="w-full rounded border border-border/60 p-3 text-left text-sm text-slate-800 hover:bg-slate-50"><span class="whitespace-pre-wrap"><span class="mr-2 font-medium">b</span>選択肢B</span></button></li>"`;
+
+exports[`Sprint T: MD 表 read-only 描画(学習面 C/D/E) > E カード解説 表 0 個: 解説ブロック DOM 不変(golden・不変条件①) 1`] = `"<p class="text-xs font-medium text-slate-500">解説</p><p class="mt-1 whitespace-pre-wrap text-sm text-slate-700">カード全体の解説</p><div class="mt-2"></div>"`;
+
+exports[`Sprint T: MD 表 read-only 描画(学習面 C/D/E) > E カード解説 表入り: 解説ブロック DOM(golden — 差し替え後 <div>+<table>) 1`] = `
+"<p class="text-xs font-medium text-slate-500">解説</p><div class="mt-1 whitespace-pre-wrap text-sm text-slate-700">解説まえ
+
+<table class="my-1 border-collapse text-sm"><thead><tr><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">項目</th><th class="border border-slate-300 px-2 py-1 text-left align-top font-semibold [overflow-wrap:anywhere]">値</th></tr></thead><tbody><tr><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">X</td><td class="border border-slate-300 px-2 py-1 align-top [overflow-wrap:anywhere]">9</td></tr></tbody></table></div><div class="mt-2"></div>"
+`;

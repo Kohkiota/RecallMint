@@ -56,6 +56,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
+import { MdTableText, MdTableBlock } from '@/components/markdown/md-table-text'
 import { CardImageGallery } from '@/app/(app)/app/exams/[id]/_components/card-image-gallery'
 import { isAssetKey } from '@/lib/validation/card'
 import { equalSet } from '../_lib/equal-set'
@@ -432,9 +433,12 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
           同じ class を当てて見え方を揃える) */}
       <div className="rounded-lg border border-border bg-slate-50 p-4">
         <p className="text-sm font-medium text-slate-900">{current.title}</p>
-        <p className="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base">
-          {current.questionText}
-        </p>
+        {/* Sprint T (C): 問題文 display のみ MD 表 read-only 描画。表 0 個は <p> 維持で
+            DOM 同一(不変条件①)、表を含む時のみ <div>(p>table の hydration 破壊回避)。 */}
+        <MdTableBlock
+          value={current.questionText}
+          className="mt-1 whitespace-pre-wrap text-sm text-slate-900 sm:text-base"
+        />
         {/* 学習ビューは read-only gallery のみ (添付・削除は編集画面限定、 画像フェーズ A
             Task 11 / spec §5)。 per-option gallery は Task 10 同様スコープ外。 */}
         <div className="mt-2">
@@ -475,11 +479,13 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
                     <span className="mr-1.5">{isCorrect ? '○' : '×'}</span>
                   )}
                   <span className="mr-2 font-medium">{opt.id}</span>
-                  {displayText}
+                  {/* Sprint T (D): 選択肢本文 display のみ MD 表描画。span 内 table は
+                      parser-safe(spec §3.3)。表 0 個は text node で DOM 不変。 */}
+                  <MdTableText value={displayText} />
                 </span>
                 {isJudged && opt.explanation && (
                   <span className="mt-1 block whitespace-pre-wrap text-xs font-normal text-slate-500">
-                    解説: {opt.explanation}
+                    解説: <MdTableText value={opt.explanation} />
                   </span>
                 )}
               </button>
@@ -523,9 +529,12 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
           <p className="text-xs font-medium text-slate-500">解説</p>
           {current.explanationText && (
-            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">
-              {current.explanationText}
-            </p>
+            /* Sprint T (E): カード解説 display のみ MD 表描画。C と同じく表を含む時のみ
+               <p>→<div>(hydration 破壊回避)、表 0 個は <p> 維持で DOM 同一。 */
+            <MdTableBlock
+              value={current.explanationText}
+              className="mt-1 whitespace-pre-wrap text-sm text-slate-700"
+            />
           )}
           <div className="mt-2">
             <CardImageGallery
