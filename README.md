@@ -169,6 +169,8 @@ chrome 3 layer: marketing(`MarketingHeader` + `MarketingFooter`)/ auth(`AuthHead
 
 ## 5. 開発手順
 
+開発コンテナの構成(image / CLI 導入 / Claude Code 設定レイヤー / hooks / MCP)は **`.devcontainer/README.md`** 参照。
+
 ### 5.1 コマンド
 
 ```bash
@@ -196,7 +198,7 @@ pnpm db:studio        # Drizzle Studio(DB 中身確認)
 ### 5.3 テスト方針
 
 - Unit: Vitest(FSRS / 課金ガード / プレフィックス検証は厚く)。契約: `tests/contract/`(pull / mutation / review-events / upload / webhook の snapshot 固定)。
-- E2E: 実 browser 依存(実 focus/blur・virtualizer 実 scroll 等)は stg smoke(Playwright / chrome-devtools MCP)で担保。
+- E2E: 実 browser 依存(実 focus/blur・virtualizer 実 scroll 等)は stg smoke(Playwright MCP)で担保。
 - Stripe: `generateTestHeaderString` / Clerk: test トークン / AI: **mock 必須**(実 API 禁止)。
 
 ### 5.4 pnpm.overrides(transitive vuln)
