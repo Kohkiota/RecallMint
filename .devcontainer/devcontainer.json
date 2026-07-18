@@ -2,14 +2,6 @@
   "name": "OT Microbiz Dev Container",
   "image": "mcr.microsoft.com/playwright:v1.58.2",
   "shutdownAction": "stopContainer",
-  "features": {
-    "ghcr.io/devcontainers/features/desktop-lite:1": {
-      "password": "vscode",
-      "webPort": "6080",
-      "vncPort": "5901",
-      "installUser": "false"
-    }
-  },
 
   "remoteUser": "root",
   "containerUser": "root",
@@ -26,12 +18,11 @@
     "IS_SANDBOX": "1"
   },
 
-  "forwardPorts": [3000, 5173, 8000, 6080, 4983],
+  "forwardPorts": [3000, 5173, 8000, 4983],
   "portsAttributes": {
     "3000": { "label": "Next.js / generic", "onAutoForward": "notify" },
     "5173": { "label": "Vite", "onAutoForward": "notify" },
     "8000": { "label": "FastAPI / Django", "onAutoForward": "silent" },
-    "6080": { "label": "noVNC (browser debug)", "onAutoForward": "silent" },
     "4983": { "label": "Drizzle Studio", "onAutoForward": "silent" }
   },
 
