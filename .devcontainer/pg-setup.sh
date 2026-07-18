@@ -52,6 +52,16 @@ if ! su postgres -c "psql -p ${PG_PORT} -tAc \"SELECT 1 FROM pg_database WHERE d
   su postgres -c "createdb -p ${PG_PORT} ${PG_TEST_DB}"
 fi
 
+# --- role: recallmint_app(RLS-P1 最小権限 app role・非所有者・冪等)---
+# 存在すれば作らず属性のみ矯正(ALTER は無条件で流し、CREATE 直後の状態と再実行後の
+# 状態を一致させる)。password は throwaway(grants は db/roles/recallmint_app-grants.sql、
+# ここでは role 作成のみ。適用は別 task / OT)。
+if ! su postgres -c "psql -p ${PG_PORT} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='recallmint_app'\"" \
+     | grep -qx 1; then
+  su postgres -c "psql -p ${PG_PORT} -c \"CREATE ROLE recallmint_app LOGIN PASSWORD 'recallmint_app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\"" >/dev/null
+fi
+su postgres -c "psql -p ${PG_PORT} -c \"ALTER ROLE recallmint_app NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS LOGIN;\"" >/dev/null
+
 # --- postcondition: pg_isready でなく実 TCP 接続で「認証 + 権限 + 版」を検証 ---
 # (pg_isready は listen 状態しか見ない = 認証/権限/major を保証しない: Codex 指摘)
 command -v pg_ctlcluster >/dev/null || fail "postgresql-${PG_MAJOR} が未 install"
