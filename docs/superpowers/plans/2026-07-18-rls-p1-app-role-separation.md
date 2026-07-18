@@ -102,9 +102,9 @@ DO $$ BEGIN
 **前提 gate(自走しない):** §未解決1(Supavisor が custom role を受けるか)を先に確認。NG なら停止・報告。
 
 1. **stg Supabase catalog-check(反映前)**: table owner role 名 = `postgres` か(`SELECT relowner::regrole FROM pg_class …`)/ `has_schema_privilege('public','public','CREATE')` = f か / user-defined SECURITY DEFINER function 有無。差分あれば grants file / 前提を訂正。
-2. **role + grants(SQL Editor, owner=postgres)**: `CREATE ROLE recallmint_app LOGIN PASSWORD '<URL-safe な強 pw>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;`(既存なら `ALTER ROLE` で属性矯正 + membership 検査)→ `db/roles/recallmint_app-grants.sql` 適用。**pw は URL-encode 前提**(生 URL 連結で特殊文字が壊れないこと)。pw の生成/保管/rotation/stg・prod 分離は OT 管理。
-3. **app URL 直接接続確認(pooler 経由)**: `recallmint_app.<project_ref>` で ① login ② `current_user='recallmint_app'` ③ CRUD + advisory lock 動作 ④ negative(CREATE/TRUNCATE 失敗)⑤ `prepare:false` 適合 ⑥ pool(15/(user,db))が owner 系と分離。
-4. **Vercel env 追加(先)**: 全 scope(Production/Preview/Development)に `DATABASE_URL_APP`(app-role pooler URL)を**追加**。無印 `DATABASE_URL` は**まだ消さない**(互換期間)。
+2. **role + grants(SQL Editor, owner=postgres)**: `CREATE ROLE recallmint_app LOGIN PASSWORD '<強 pw>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;`(既存なら `ALTER ROLE` で属性矯正 + membership 検査)→ `db/roles/recallmint_app-grants.sql` 適用。**pw は英数字のみ・長め(例 32+ 桁)で生成すれば URL encode 不要**(生 URL 連結で壊れない)。pw の生成/保管/rotation/stg・prod 分離は OT 管理。
+3. **app URL 直接接続確認(pooler 経由)**: username `recallmint_app.<project_ref>`、**host は Supabase dashboard の Connection → Transaction pooler からコピーした実値**(例 `aws-1-ap-northeast-1.pooler.supabase.com`)を使う。① login ② `current_user='recallmint_app'` ③ CRUD + advisory lock 動作 ④ negative(CREATE/TRUNCATE 失敗)⑤ `prepare:false` 適合 ⑥ pool(15/(user,db))が owner 系と分離。
+4. **Vercel env 追加(先)**: 全 scope(Production/Preview/Development)に `DATABASE_URL_APP`(app-role pooler URL、**ポート 6543 = transaction mode・現行 runtime の無印 DATABASE_URL と同一**)を**追加**。無印 `DATABASE_URL` は**まだ消さない**(互換期間)。
 5. **新コード deploy → stg smoke**: 通常操作一巡 + `current_user='recallmint_app'`(OT が app creds で psql 実行。runtime 診断 endpoint は恒久追加しない)+ operator script(GC dry-run)が `DATABASE_URL_ADMIN='<owner>'` inline で owner 動作。
 6. **無印 `DATABASE_URL` 削除(後)**: smoke OK 後に全 scope から削除 → 再 deploy/再確認。ローカル `.env.local` も `DATABASE_URL`→`DATABASE_URL_APP`(値=app URL)へ(OT 作業=pw 要)。
 7. **prod**: stg 完了後 OT 独自判断で 1–6 を prod scope に反復(prod catalog-check・app URL 確認・smoke 含む)。
@@ -117,6 +117,6 @@ DO $$ BEGIN
 
 ## 未解決論点(codex-plan-review 後・OT 判断で停止)
 
-1. **[gate] Supabase Transaction Pooler(Supavisor)が custom LOGIN role `recallmint_app` を受けるか + username 形式(`recallmint_app.<project_ref>`)**。確認は「login 可」に留めず手順3の①–⑥まで。NG = 唯一のブロッカー(direct 接続化=`prepare:false` 前提の再検討)。→ Context7/OT 裏取り、NG なら自走停止。
+1. ~~[gate] Supavisor が custom role を受けるか~~ **解消済(claude.ai 裏取り 2026-07-18)**: Supabase 公式が service ごとの専用 role 作成を推奨(postgres/roles docs)/ username 形式 `recallmint_app.<project_ref>` で pooler 接続可(公式 troubleshooting + community 実証)。実装着手可。反映済 = 手順2/3/4。実接続確認は手順3の①–⑥で行う(念のための実証)。
 2. Supabase の table owner role 名 = `postgres` の確認(手順1)。異なれば grants の `FOR ROLE` を訂正。
 3. local dev は `.env.local` の `DATABASE_URL_APP` が指す project に role+grants 在ることに依存(rollout 順序の含意)。
