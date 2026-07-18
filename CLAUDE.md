@@ -130,6 +130,7 @@ Critical = 即 fix / Important = 原則 fix(MVP スコープ薄・コスト高�
 lint gate はローカル3層: ① eslint.config.mjs(ルール正本)② lefthook pre-commit(staged のみ)③ sprint 完了 gate + review checklist(whole-repo)。GHA は不採用(PR なし運用、git 履歴 `6958d18` から復活可)。
 
 **全 sprint 共通**: 完了時に whole-repo `pnpm lint`(--max-warnings=0)exit 0。報告 chat に「whole-repo lint exit 0 確認済」を1行明記。
+**全 sprint 共通(Iso-1 制定・無条件恒久)**: 完了時に `pnpm test:iso`(実 PostgreSQL 2 テナント統合テスト・テナント隔離の behavioral 保証)green。**条件付き(schema 変更時のみ等)にしない** — テナント境界 regression は無関係に見える refactor からも起きるため、判断点を作らず全 sprint で無条件実行する。前提 = devcontainer 常駐 PG17 cluster(`.devcontainer/pg-setup.sh` / `postStartCommand`)。報告 chat に「test:iso green 確認済」を1行明記。review dispatch の観点 list にも含める。
 **依存 / Next / Node / lockfile を触る sprint は追加**: `pnpm install --frozen-lockfile` + `pnpm typecheck` + `pnpm build` 全 exit 0。
 **Next 設定 file (matcher / proxy.ts / next.config.\*) を触る task は per-task gate に追加**: `pnpm build` 必須 (vitest / typecheck / lint は内部 js regex で動作するため Next.js matcher の path-to-regexp 制約 (capturing group / lookahead 禁止) を検出不能、 Vercel build で初めて表面化する。 Y-2 T-A4 で実際に発生、 commit 45a74cf → 6f82025 で hotfix)。
 **review dispatch の観点 list にも whole-repo lint 実行確認を必須項目として含める**(CC と reviewer の2経路。どちらか漏れたら完了報告に明記して OT 判断)。
