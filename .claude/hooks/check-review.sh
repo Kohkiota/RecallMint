@@ -34,6 +34,61 @@ cd "$CLAUDE_PROJECT_DIR" || exit 0
 LAST_MSG=$(git log -1 --pretty=%B 2>/dev/null)
 [[ -z "$LAST_MSG" ]] && exit 0
 
+# --- test-only 変更の増減分岐検査 (2026-07-18 制定、CLAUDE.md「必須経路」) ---
+# 変更 file が全て test file (*.test.ts / *.test.tsx / tests/**) の commit が対象。
+# 強制できるのは宣言の形式まで (分類の正直さ・red が実走したかは宣言 + 事後 grep 監査)。
+# merge commit (複数親) は対象外。
+PARENTS=$(git log -1 --pretty=%P 2>/dev/null)
+if [[ "$PARENTS" != *" "* ]]; then
+  CHANGED=$(git diff-tree --root --no-commit-id --name-only -r HEAD 2>/dev/null)
+  if [[ -n "$CHANGED" ]]; then
+    TEST_ONLY=true
+    while IFS= read -r f; do
+      if [[ ! "$f" =~ \.test\.(ts|tsx)$ ]] && [[ ! "$f" =~ ^tests/ ]]; then
+        TEST_ONLY=false
+        break
+      fi
+    done <<< "$CHANGED"
+    if [[ "$TEST_ONLY" == "true" ]]; then
+      SHORT_HASH=$(git log -1 --pretty=%h)
+      SUBJECT=$(git log -1 --pretty=%s)
+      [[ ${#SUBJECT} -gt 60 ]] && SUBJECT="${SUBJECT:0:60}..."
+      TEST_BLOCK=""
+      if ! printf '%s\n' "$LAST_MSG" | grep -qE '\[(reviewed|no-review)\]'; then
+        TEST_BLOCK="tag 無し: test-only commit にも [reviewed] / [no-review] tag が必要です。"
+      elif printf '%s\n' "$LAST_MSG" | grep -q '\[no-review\]'; then
+        if ! printf '%s\n' "$LAST_MSG" | grep -q '保証不変'; then
+          TEST_BLOCK="[no-review] の test-only commit に「保証不変」宣言がありません。保証不変の整理 (fixture 更新 / 命名 / rename) なら message に「保証不変」を含めること。保証の増減があるなら gate ([reviewed]) が必要です。"
+        fi
+      else
+        if ! printf '%s\n' "$LAST_MSG" | grep -qE 'red 検証|保証減'; then
+          TEST_BLOCK="[reviewed] の test-only commit に「red 検証」(保証増: 変異注入 fail の実証記録) も「保証減」(何の保証を落とすか + 理由) もありません。増減に応じた宣言行を message に含めること。"
+        fi
+      fi
+      if [[ -n "$TEST_BLOCK" ]]; then
+        HASH="$SHORT_HASH" SUBJECT="$SUBJECT" DETAIL="$TEST_BLOCK" python3 -c '
+import json, os
+reason = (
+    "test-only commit が「保証の増減」規律 (CLAUDE.md 必須経路、 2026-07-18 制定) を満たしていません。\n\n"
+    "commit: " + os.environ["HASH"] + " " + os.environ["SUBJECT"] + "\n"
+    "検出: " + os.environ["DETAIL"] + "\n\n"
+    "ルール (test-only 変更は保証の増減で分岐):\n"
+    "- 増 (新規 pin / assertion 追加) = red 検証必須 + 簡易 review → [reviewed] + message に「red 検証」記録行\n"
+    "- 減 (assertion 削除 / 期待値緩和 / skip 化) = review 必須 → [reviewed] + message に「保証減」+ 理由\n"
+    "- 保証不変の整理 (fixture / 命名 / rename) = [no-review] + message に「保証不変」\n\n"
+    "対処: 未 push なら amend で宣言行を追記、 分類が誤りなら gate (red 検証 / review) を実施してから宣言。\n"
+    "hook が強制するのは宣言の形式のみ — 分類の正直さと red の実走は自分で担保し、 虚偽宣言は cover up として扱われる。"
+)
+print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+'
+        exit 0
+      fi
+      # test-only で宣言が揃っている → pass (feat/fix 検査は不要)
+      exit 0
+    fi
+  fi
+fi
+
 # 対象は feat/fix のみ (scope ありなし両対応)
 if ! printf '%s\n' "$LAST_MSG" | head -1 | grep -qE '^(feat|fix)(\(.+\))?:'; then
   exit 0

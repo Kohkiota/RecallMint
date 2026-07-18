@@ -77,10 +77,11 @@ feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路
 
 **test-only 変更は「保証の増減」で分岐**(2026-07-18 制定、遡及なし。背景 = docs/audit/2026-07-17-test-quality-audit.md — 検出力の空振りと主張の不正確は別の欠陥で、red と review は同じものを見ていない):
 
-- **増**(新規 pin / assertion 追加)= **red 検証必須**(その保証を壊す変異で fail する実証、commit message に記録行)+ **簡易 review**(主張の記述が正確か: 何を pin し何を保証しないか。canonical subagent へ専用観点 dispatch or Codex)→ `[reviewed]`
-- **減**(assertion 削除 / 期待値緩和 / skip 化)= **review 必須**(何の保証を落とすか・なぜ落としてよいかを明示)→ `[reviewed]`。減に red は原理的に不成立(新しい主張がない)
-- **保証不変の整理**(fixture 更新 / 命名 / rename)= skip 可(= `[no-review]`)
+- **増**(新規 pin / assertion 追加)= **red 検証必須**(その保証を壊す変異で fail する実証、commit message に「**red 検証**」記録行)+ **簡易 review**(主張の記述が正確か: 何を pin し何を保証しないか。canonical subagent へ専用観点 dispatch or Codex)→ `[reviewed]`
+- **減**(assertion 削除 / 期待値緩和 / skip 化)= **review 必須**(何の保証を落とすか・なぜ落としてよいかを message に「**保証減**」+ 理由で明示)→ `[reviewed]`。減に red は原理的に不成立(新しい主張がない)
+- **保証不変の整理**(fixture 更新 / 命名 / rename)= skip 可(= `[no-review]` + message に「**保証不変**」)
 - 混在 diff は両 gate 適用。分類は自己申告 + commit message 宣言(既存 tag 規律と同じ・事後 grep 可能性で受容)
+- **宣言の形式は Stop hook が強制**: `.claude/hooks/check-review.sh` が test-only diff(全変更 file が `*.test.ts(x)` / `tests/**`)の commit を検出し、tag + 上記宣言 token の不在を block。強制は形式のみ — 分類の正直さと red の実走は宣言者責務、虚偽宣言は cover up として扱う
 - 原理: red = 検出力(効いているか)/ review = 主張の妥当性(言っていることが正しいか)。役割が違うため序列なし
 
 ### レビュアーは superpowers ネイティブ reviewer
