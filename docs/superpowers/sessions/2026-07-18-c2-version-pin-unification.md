@@ -63,6 +63,15 @@
 - `--browser chrome` により実駆動は post-create 導入の system Google Chrome(apt stable)
 - **結論**: image v1.58.2 同梱ブラウザ/playwright は誰も使わず、**skew は実害にならない**。唯一の実結合 = MCP 内部 playwright ↔ system Chrome stable(playwright 公式サポートの緩い CDP 結合)。image が効くのは Node 版と OS deps のみ。→ README §7.6 の表に記載
 
+### 5.1 訂正(2026-07-18 追記 — headless 回帰)
+
+上の skew 事実確認は「実行経路が交わらない」ことに集中し、**headless 既定という版依存の挙動差を見落とした**。C2 pin(`@latest`→`@0.0.78`)後、stg smoke でブラウザが **headed(実窓)起動**する回帰を OT が実機確認(`--no-sandbox` unsupported flag 警告バー付きの実窓スクショ)。
+
+- **原因**: `.mcp.json` は初期から `--headless` を**明示しておらず**、headless か否かは **MCP 版の既定に依存**していた(git 履歴: 初期 236a189 以降 `--headless` 不在)。`@0.0.78` の既定は **headed**(README L428「run browser in headless mode, **headed by default**」/ env `PLAYWRIGHT_MCP_HEADLESS`)。floating `@latest` 時代は headless 既定の旧版を掴んでいたため窓が出ず、pin で headed 既定の版に固定されて表面化した = **headless 既定が MCP 版依存で変わった実例**。
+- **§4 live 確認の欠陥**: §4 の live 確認は `initialize → tools/list → tools/call(browser_navigate)` の疎通のみで、**headed/headless を検証していなかった**。tools が動くこと ≠ headless であること。**MCP の live 確認は headless 検証(起動後に窓が出ない / browser chrome プロセス args に `--headless` が乗る)を含めること**。
+- **修正**: `.mcp.json` の playwright args に `--headless` 明示追加(pin 0.0.78 は不変更)。検証 = 固定版 MCP を新規 spawn し `about:blank`(no-network)launch → `/proc/<pid>/cmdline` で確認: `--headless` あり=`HEADLESS_CONFIRMED`、無し(旧 config 対照)=`NO_HEADLESS_FLAG`。`--no-sandbox` は引き続き透過。
+- README §7.2 に「playwright MCP bump 時は headless 起動を検証」を確認項目として追加。
+
 ## 6. インシデント記録(正直申告)
 
 **`.playwright-mcp/` の誤削除**: pin 版 live 確認が repo root に生成した snapshot を掃除する際、`ls && rm -rf` を同一コマンド連鎖で実行し、ls 出力(= 7/7 以降の過去 smoke セッション raw artifact: console log 47 本 / page snapshot 90 本超 / smoke-test.png)を確認する前に削除が走った。

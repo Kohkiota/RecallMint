@@ -87,6 +87,7 @@
 3. Codex のみ: contract gate(→ §7.3)を**書き換え確定の前に**通す
 4. rebuild → post-create の postcondition 全通過(exit 0)を確認
 5. commit(`chore(devcontainer)`)。MCP は rebuild 不要で反映される(npx が起動毎に解決)が、記録の一貫性のため手順は共通形とする
+6. **playwright MCP の bump 時のみ: headless 起動を検証**(既定は版依存。`@0.0.78` は headed 既定 = README L428「headed by default」。`.mcp.json` の `--headless` 明示で固定)。確認 = 起動後に窓が出ない/browser chrome プロセスの args に `--headless` が乗ること(2026-07-18 Playwright MCP headed 回帰の教訓 → §5 実装記録 / C2 session doc §5 訂正)
 
 ### 7.3 Codex pin 更新の contract gate
 
