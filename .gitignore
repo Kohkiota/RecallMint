@@ -43,3 +43,6 @@ tsconfig.tsbuildinfo
 
 # Claude Code 個人設定(hook 登録等)
 .claude/settings.local.json
+
+# subagent-driven-development scratch (ledger/briefs)
+.superpowers/
