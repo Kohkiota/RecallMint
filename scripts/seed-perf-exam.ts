@@ -4,12 +4,12 @@
 // ============================================================
 // USAGE
 // ============================================================
-// 1. stg DATABASE_URL を .env.local または環境変数で設定
-//    例: DATABASE_URL=postgres://... pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts ...
+// 1. stg DATABASE_URL_ADMIN を .env.local または環境変数で設定
+//    例: DATABASE_URL_ADMIN=postgres://... pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts ...
 //    または: dotenv -e .env.stg-seed pnpm tsx --conditions=react-server scripts/seed-perf-exam.ts ...
 //
 //    注: `--conditions=react-server` は必須フラグ。
-//        本 script は `getDb()` (lib/db/index.ts) 経由で DB に接続するが、
+//        本 script は `getAdminDb()` (lib/db/index.ts) 経由で DB に接続するが、
 //        同 module は `import 'server-only'` を持つため、 tsx をそのまま実行すると
 //        runtime guard で throw する。 `--conditions=react-server` を付与することで
 //        server-only package が empty.js (no-op) に解決され、 script が正常起動する。
@@ -64,12 +64,12 @@
 // 安全性 (prod guard 多層防御)
 // ============================================================
 // L1: VERCEL_ENV=production または NODE_ENV=production の場合 即 exit(1)
-// L2: DATABASE_URL に "stg"/"test"/"dev"/"localhost"/"127.0.0.1" のいずれかが
+// L2: DATABASE_URL_ADMIN に "stg"/"test"/"dev"/"localhost"/"127.0.0.1" のいずれかが
 //     含まれない場合 exit(1)。 stg DB URL がこれらを含まない場合は SEED_FORCE=1 で bypass 可
 // L3: --user-id CLI flag 必須 (未指定で exit(1))
 //
 // SEED_FORCE=1:
-//   L2 の DATABASE_URL token check を bypass する環境変数。
+//   L2 の DATABASE_URL_ADMIN token check を bypass する環境変数。
 //   L1 (VERCEL_ENV/NODE_ENV production) は SEED_FORCE=1 でも bypass 不可。
 //
 // ============================================================
@@ -83,7 +83,7 @@
 import 'dotenv/config'
 import { randomUUID } from 'node:crypto'
 import { and, eq, like, sql } from 'drizzle-orm'
-import { getDb, closeDb } from '@/lib/db'
+import { getAdminDb, closeDb } from '@/lib/db'
 import {
   exams,
   cards,
@@ -245,11 +245,11 @@ async function main(): Promise<void> {
   }
 
   // =========================================================================
-  // L2 guard: DATABASE_URL token check
+  // L2 guard: DATABASE_URL_ADMIN token check
   // =========================================================================
-  const dbUrl = process.env.DATABASE_URL
+  const dbUrl = process.env.DATABASE_URL_ADMIN
   if (!dbUrl) {
-    console.error('❌ DATABASE_URL is not set')
+    console.error('❌ DATABASE_URL_ADMIN is not set')
     process.exit(1)
   }
   const safeTokens = ['stg', 'test', 'dev', 'localhost', '127.0.0.1']
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
   )
   if (!looksSafe && process.env.SEED_FORCE !== '1') {
     console.error(
-      '⚠️  DATABASE_URL に "stg"/"test"/"dev"/"localhost"/"127.0.0.1" が含まれない → prod 疑い',
+      '⚠️  DATABASE_URL_ADMIN に "stg"/"test"/"dev"/"localhost"/"127.0.0.1" が含まれない → prod 疑い',
     )
     console.error(
       '   stg DB URL が legitimately これらを含まない場合は SEED_FORCE=1 で bypass',
@@ -310,7 +310,7 @@ async function main(): Promise<void> {
   )
   console.log(`  SEED_FORCE   : ${process.env.SEED_FORCE === '1' ? 'ON (L2 bypass)' : 'OFF'}`)
 
-  const db = getDb()
+  const db = getAdminDb()
 
   // =========================================================================
   // --cleanup: [PERF-SEED]% 試験を全削除

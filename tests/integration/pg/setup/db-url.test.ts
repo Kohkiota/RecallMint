@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  TEST_APP_DATABASE_URL,
   TEST_DATABASE_URL,
   assertLocalTestDb,
   hardSetTestDatabaseUrl,
@@ -9,6 +10,10 @@ import {
 describe('assertLocalTestDb', () => {
   it('passes the shipped TEST_DATABASE_URL constant', () => {
     expect(() => assertLocalTestDb(TEST_DATABASE_URL)).not.toThrow()
+  })
+
+  it('passes the shipped TEST_APP_DATABASE_URL constant', () => {
+    expect(() => assertLocalTestDb(TEST_APP_DATABASE_URL)).not.toThrow()
   })
 
   it('passes a local test DB url (postgres: scheme)', () => {
@@ -69,14 +74,14 @@ describe('assertLocalTestDb', () => {
 })
 
 describe('hardSetTestDatabaseUrl', () => {
-  const original = process.env.DATABASE_URL
+  const original = process.env.DATABASE_URL_APP
   afterEach(() => {
-    process.env.DATABASE_URL = original
+    process.env.DATABASE_URL_APP = original
   })
 
-  it('assigns process.env.DATABASE_URL to the guarded test DB url', () => {
-    process.env.DATABASE_URL = 'postgres://someone:else@127.0.0.1:5432/other'
+  it('assigns process.env.DATABASE_URL_APP to the guarded test DB url', () => {
+    process.env.DATABASE_URL_APP = 'postgres://someone:else@127.0.0.1:5432/other'
     hardSetTestDatabaseUrl()
-    expect(process.env.DATABASE_URL).toBe(TEST_DATABASE_URL)
+    expect(process.env.DATABASE_URL_APP).toBe(TEST_APP_DATABASE_URL)
   })
 })

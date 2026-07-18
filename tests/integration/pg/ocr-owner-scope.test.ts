@@ -24,12 +24,14 @@ import {
 
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
 
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 async function statusOf(sourceDocumentId: string): Promise<string | undefined> {

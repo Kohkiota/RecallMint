@@ -29,12 +29,14 @@ import { getAllStudyDaysForUser } from '@/lib/db/study-days-pull'
 
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
 
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 describe('delta isolation (R2)', () => {

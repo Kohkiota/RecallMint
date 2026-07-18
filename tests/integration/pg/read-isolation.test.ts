@@ -18,12 +18,14 @@ import { getActiveExamsForUser, getCardsForExam } from '@/lib/exams/list'
 
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
 
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 describe('read isolation (R1)', () => {

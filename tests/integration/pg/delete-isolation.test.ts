@@ -33,6 +33,7 @@ import { applyCardDelete } from '@/lib/cards/apply-card-mutation'
 
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -55,6 +56,7 @@ import { deleteExam } from '@/app/(app)/app/exams/_actions/delete-exam'
 
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 describe('delete isolation (W2)', () => {

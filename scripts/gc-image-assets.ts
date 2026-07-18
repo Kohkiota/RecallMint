@@ -23,7 +23,7 @@
 //   (--user は値必須。値なし / 別 flag が続くと fail-fast で exit 1 — 全 user 誤爆防止)
 //
 // `--conditions=react-server` は必須(seed-perf-exam.ts / backfill-card-asset-refs.ts
-// と同様)。本 script は getDb()(@/lib/db)・recordIntegrationFailure(→ @/lib/db)を
+// と同様)。本 script は getAdminDb()(@/lib/db)・recordIntegrationFailure(→ @/lib/db)を
 // 経由して DB に接続し、@/lib/storage/r2 も含めいずれも `import 'server-only'` を
 // 持つため、tsx をそのまま実行すると runtime guard で throw する。このフラグで
 // server-only package が empty.js(no-op)に解決され script が正常起動する
@@ -50,7 +50,7 @@
 // 環境用に切替えた上で本 script を実行)。
 
 import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
+import { getAdminDb } from '@/lib/db'
 import { assets, cardAssetRefs } from '@/lib/db/schema'
 import {
   isSweepEligible,
@@ -539,7 +539,7 @@ async function main(): Promise<void> {
     NODE_ENV: process.env.NODE_ENV,
   })
 
-  const db = getDb()
+  const db = getAdminDb()
 
   // --user 指定時は owner-scope の追加 WHERE を各 SQL に足す(CLAUDE.md Clerk-3)。
   const userScope = userId ? sql` AND ${assets.userId} = ${userId}::uuid` : sql``

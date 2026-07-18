@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
 import { drizzle } from 'drizzle-orm/postgres-js'
@@ -15,6 +16,14 @@ import { TEST_DATABASE_URL, assertLocalTestDb } from './db-url'
 const MIGRATIONS_FOLDER = path.resolve(
   import.meta.dirname,
   '../../../../drizzle/migrations',
+)
+
+// RLS-P1: least-privilege app role (recallmint_app) への grant 定義の SSoT。
+// migrate 直後・owner client close 前に owner として同 DB へ適用する (毎回
+// DROP/CREATE する recallmint_test は grant が残らないため、 test run ごとに要る)。
+const GRANTS_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/roles/recallmint_app-grants.sql',
 )
 
 // DROP/CREATE DATABASE は対象 DB 自身に接続していると不可能なため、 同 host/port/user の
@@ -44,6 +53,11 @@ export async function setup(): Promise<void> {
   const client = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} })
   try {
     await migrate(drizzle(client), { migrationsFolder: MIGRATIONS_FOLDER })
+
+    // grants: owner (postgres) として recallmint_app に least-privilege を付与する。
+    // .simple() = simple query protocol で multi-statement SQL file を一括実行。
+    const grantsSql = readFileSync(GRANTS_FILE, 'utf8')
+    await client.unsafe(grantsSql).simple()
   } finally {
     await client.end({ timeout: 5 })
   }

@@ -14,6 +14,7 @@ import {
 } from './setup/completeness'
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -24,9 +25,11 @@ function sorted(set: Set<string>): string[] {
   return [...set].sort()
 }
 
-// H1 規約: 各 PG test file は afterAll で closeDb()(接続リーク防止)。
+// H1 規約: 各 PG test file は afterAll で closeDb() + closeFixtureOwnerDb()
+// (接続リーク防止)。
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 describe('user_id table three-way completeness', () => {

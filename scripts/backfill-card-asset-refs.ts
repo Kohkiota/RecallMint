@@ -3,7 +3,7 @@
 // から埋める。reconciler (Task G5、後続) の運用開始前提 (backfill 完了が前提条件、
 // spec §4.11-5)。
 //
-// 実行 (`--conditions=react-server` は必須フラグ: 本 script は getDb() 経由で
+// 実行 (`--conditions=react-server` は必須フラグ: 本 script は getAdminDb() 経由で
 //  `import 'server-only'` を持つ module を読むため、付与しないと runtime guard で
 //  throw する。seed-perf-exam.ts と同前例):
 //   pnpm tsx --conditions=react-server scripts/backfill-card-asset-refs.ts --dry-run       # 確認 (write ゼロ)
@@ -35,7 +35,7 @@
 // - production 実行は OT が手動 (env を対象環境用に切替えた上で本 script を実行)。
 
 import { and, eq, inArray } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
+import { getAdminDb } from '@/lib/db'
 import { cards, assets, cardAssetRefs } from '@/lib/db/schema'
 import type { CardImage, NewCardAssetRef } from '@/lib/db/schema'
 import { isAssetKey } from '@/lib/validation/card'
@@ -274,7 +274,7 @@ async function main(): Promise<void> {
   const dryRun = argv.includes('--dry-run')
   const userId = parseUserFlag(argv)
 
-  const db = getDb()
+  const db = getAdminDb()
   await runBackfill(
     { dryRun, userId },
     {

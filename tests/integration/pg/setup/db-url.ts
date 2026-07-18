@@ -5,6 +5,12 @@
 export const TEST_DATABASE_URL =
   'postgres://postgres:postgres@127.0.0.1:5432/recallmint_test'
 
+// RLS-P1: test:iso の code-under-test (getDb()) は least-privilege app role で
+// 接続する。 owner 接続 (TEST_DATABASE_URL) は provisioning/migrate/grants/
+// truncate/seed 専用のまま残す。
+export const TEST_APP_DATABASE_URL =
+  'postgres://recallmint_app:recallmint_app@127.0.0.1:5432/recallmint_test'
+
 // URL が local test DB (127.0.0.1:5432/recallmint_test) を指すことを検証し、 満たさなければ
 // throw する。 検査した URL そのものを接続に使う前提 — 別 URL で接続する TOCTOU を作らない。
 // throw メッセージには host/port/db のみ出し、 secret/password は出さない。
@@ -31,10 +37,10 @@ export function assertLocalTestDb(url: string): void {
   }
 }
 
-// TEST_DATABASE_URL を guard に通した上で process.env.DATABASE_URL に代入する。
-// ??= でなく代入 — 既存 fake env (vitest.setup.ts) より real test DB を優先させ、
-// getDb() が確実に test DB を掴むことを保証する。
+// TEST_APP_DATABASE_URL を guard に通した上で process.env.DATABASE_URL_APP に
+// 代入する。 ??= でなく代入 — 既存 fake env (vitest.setup.ts) より real test DB
+// を優先させ、 getDb() が確実に test DB (app role) を掴むことを保証する。
 export function hardSetTestDatabaseUrl(): void {
-  assertLocalTestDb(TEST_DATABASE_URL)
-  process.env.DATABASE_URL = TEST_DATABASE_URL
+  assertLocalTestDb(TEST_APP_DATABASE_URL)
+  process.env.DATABASE_URL_APP = TEST_APP_DATABASE_URL
 }

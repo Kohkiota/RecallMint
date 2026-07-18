@@ -7,7 +7,7 @@
 //
 // 詳細: specs/2026-07-10-sprint2-integration-failures-design.md §5
 
-import { getDb } from '@/lib/db'
+import { getAdminDb, getDb } from '@/lib/db'
 import { integrationFailures } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
@@ -112,7 +112,13 @@ export async function recordIntegrationFailure(
   let notifyContext: Record<string, unknown> = args.context
 
   try {
-    await getDb()
+    // 実行文脈で存在する接続を選ぶ: runtime は DATABASE_URL_APP(app role)、operator
+    // script は DATABASE_URL_ADMIN(owner)のみを持つ (RLS-P1)。どちらでも失敗台帳の
+    // INSERT を落とさないため (integration_failures は app/owner 両 role が INSERT 可)。
+    // 選択も try 内に置く: getDb/getAdminDb が env 未設定等で throw しても catch の
+    // best-effort (ledger 失敗 log + notifyOps) を通すため。
+    const db = process.env.DATABASE_URL_APP ? getDb() : getAdminDb()
+    await db
       .insert(integrationFailures)
       .values({
         service: axes.service,

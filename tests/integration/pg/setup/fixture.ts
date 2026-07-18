@@ -5,6 +5,8 @@
 import { randomUUID } from 'node:crypto'
 
 import { sql } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import postgres from 'postgres'
 
 import { getDb } from '@/lib/db'
 import {
@@ -31,6 +33,7 @@ import {
 } from '@/lib/db/schema'
 
 import { EXPECTED_USER_ID_TABLES } from './completeness'
+import { TEST_DATABASE_URL } from './db-url'
 
 export type TenantIds = {
   userId: string
@@ -45,6 +48,35 @@ export type TenantIds = {
 
 export type TenantFixture = { a: TenantIds; b: TenantIds }
 
+// RLS-P1: getDb() は least-privilege app role (recallmint_app) を指す (TRUNCATE
+// 権限を持たない)。truncate/seed は harness 専属の owner 接続 (TEST_DATABASE_URL)
+// を使う。getAdminDb() は使わない — DATABASE_URL_ADMIN は test では未設定、かつ
+// closeDb() が両方 close する設計と、この独立 owner client の lifecycle を
+// 混線させないため。lazy 生成 (呼ばれるまで接続しない)。schema config は渡さない
+// (この file は db.query.* の relational API を使わず table 直参照の insert/execute
+// のみのため不要 — 渡すと getDb() の full schema 型との generic 不一致を招く)。
+let _ownerDb: ReturnType<typeof drizzle> | null = null
+let _ownerClient: ReturnType<typeof postgres> | null = null
+
+function getFixtureOwnerDb() {
+  if (_ownerDb) return _ownerDb
+  _ownerClient = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} })
+  _ownerDb = drizzle(_ownerClient)
+  return _ownerDb
+}
+
+// 各 iso test file の afterAll で closeDb() と並べて呼ぶ (H1 規約の拡張)。
+// 未接続なら no-op。
+export async function closeFixtureOwnerDb(): Promise<void> {
+  if (!_ownerClient) return
+  try {
+    await _ownerClient.end({ timeout: 5 })
+  } finally {
+    _ownerClient = null
+    _ownerDb = null
+  }
+}
+
 // truncate 対象 = users(tenant 本体) + 19 user_id table。CASCADE で FK 子も掃くが、
 // downstream の per-test beforeEach が truncate→reseed で使うため全 table を明示列挙する。
 // 19 の list は completeness.ts の SSoT を再利用(重複 list の drift を防ぐ — この file の
@@ -53,8 +85,11 @@ const ALL_TABLES = ['users', ...EXPECTED_USER_ID_TABLES] as const
 
 // 1 テナント分を FK 依存順で seed し、downstream が使う主要 id を返す。A/B で
 // 完全に別 UUID になるよう全 id を randomUUID() で採番する。
+// 引数は `insert` のみを要求する(Pick)— `insert`/`select`/`update`/`execute` は
+// TSchema generic に依存しない drizzle-orm の設計のため、schema 未設定の owner db
+// (getFixtureOwnerDb) と schema 設定済の getDb() の両方が構造的に満たせる。
 async function seedTenant(
-  db: ReturnType<typeof getDb>,
+  db: Pick<ReturnType<typeof getDb>, 'insert'>,
   label: string,
 ): Promise<TenantIds> {
   const userId = randomUUID()
@@ -188,18 +223,20 @@ async function seedTenant(
 }
 
 // A/B 2 テナントを seed する。呼び出し側は事前に truncateAllUserTables() で
-// clean state を作る前提(FK 制約と決定的 assertion のため)。
+// clean state を作る前提(FK 制約と決定的 assertion のため)。owner 接続を使う
+// (app role は TRUNCATE 権限を持たないため truncate と対で owner に揃える)。
 export async function seedTwoTenants(): Promise<TenantFixture> {
-  const db = getDb()
+  const db = getFixtureOwnerDb()
   const a = await seedTenant(db, 'A')
   const b = await seedTenant(db, 'B')
   return { a, b }
 }
 
 // 19 user_id table + users を単文 TRUNCATE で全消し(RESTART IDENTITY CASCADE)。
-// downstream の per-test beforeEach で truncate→reseed に使う。
+// downstream の per-test beforeEach で truncate→reseed に使う。app role は
+// TRUNCATE 権限を持たないため owner 接続で実行する。
 export async function truncateAllUserTables(): Promise<void> {
-  const db = getDb()
+  const db = getFixtureOwnerDb()
   await db.execute(
     sql.raw(`TRUNCATE TABLE ${ALL_TABLES.join(', ')} RESTART IDENTITY CASCADE`),
   )

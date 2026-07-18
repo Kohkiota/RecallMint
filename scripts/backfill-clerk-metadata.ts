@@ -20,7 +20,7 @@
 // - production 実行は OT が手動 (env を本番用に切替えた上で本 script を実行)
 
 import { isNull } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
+import { getAdminDb } from '@/lib/db'
 import { users } from '@/lib/db/schema'
 import { syncClerkPublicMetadata } from '@/lib/auth/clerk-metadata'
 import type { Plan } from '@/lib/auth/plan-limits'
@@ -124,7 +124,7 @@ export async function runBackfill(
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
   const dryRun = process.argv.includes('--dry-run')
-  const db = getDb()
+  const db = getAdminDb()
   const result = await runBackfill(
     { dryRun },
     {

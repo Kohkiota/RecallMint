@@ -25,12 +25,14 @@ import type { ReplayCardState } from '@/lib/cards/replay-card'
 
 import {
   type TenantFixture,
+  closeFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
 
 afterAll(async () => {
   await closeDb()
+  await closeFixtureOwnerDb()
 })
 
 describe('write isolation (W1)', () => {
