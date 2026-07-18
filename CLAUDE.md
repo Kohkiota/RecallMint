@@ -73,7 +73,15 @@ tag の後付け amend が必要になった時点で順序違反(未 push な�
 ### 必須経路
 
 feat(_) / fix(_) は `superpowers:requesting-code-review` skill canonical 経路(skill template + general-purpose subagent + 厳格 prompt、改変禁止)。自由形式 review / 軽量 agent 投げ捨て禁止。velocity 優先で省略不可。
-例外: chore / docs / test / refactor で実装ロジック変更なしのみ skip 可(= `[no-review]`)。
+例外: chore / docs / refactor で実装ロジック変更なしは skip 可(= `[no-review]`)。
+
+**test-only 変更は「保証の増減」で分岐**(2026-07-18 制定、遡及なし。背景 = docs/audit/2026-07-17-test-quality-audit.md — 検出力の空振りと主張の不正確は別の欠陥で、red と review は同じものを見ていない):
+
+- **増**(新規 pin / assertion 追加)= **red 検証必須**(その保証を壊す変異で fail する実証、commit message に記録行)+ **簡易 review**(主張の記述が正確か: 何を pin し何を保証しないか。canonical subagent へ専用観点 dispatch or Codex)→ `[reviewed]`
+- **減**(assertion 削除 / 期待値緩和 / skip 化)= **review 必須**(何の保証を落とすか・なぜ落としてよいかを明示)→ `[reviewed]`。減に red は原理的に不成立(新しい主張がない)
+- **保証不変の整理**(fixture 更新 / 命名 / rename)= skip 可(= `[no-review]`)
+- 混在 diff は両 gate 適用。分類は自己申告 + commit message 宣言(既存 tag 規律と同じ・事後 grep 可能性で受容)
+- 原理: red = 検出力(効いているか)/ review = 主張の妥当性(言っていることが正しいか)。役割が違うため序列なし
 
 ### レビュアーは superpowers ネイティブ reviewer
 
@@ -85,7 +93,7 @@ feat/fix の canonical review は `superpowers:requesting-code-review` の**デ�
 
 canonical review(native reviewer)pass 後・`[reviewed]` commit 前に、Codex を独立レビュアーとして実行する: `scripts/ai/codex-review.sh <topic>`。reviewer の多観点強化はこの Codex で担保(pr-review-toolkit の代替)。
 
-- **対象** = HEAD に対する未 commit 変更一式(staged+unstaged+untracked。`codex exec review --uncommitted` がネイティブに拾う)。対象範囲は feat/fix の非自明変更のみ — chore/docs/test/ロジック不変 refactor は canonical 同様 skip 可(「必須経路」準拠)。
+- **対象** = HEAD に対する未 commit 変更一式(staged+unstaged+untracked。`codex exec review --uncommitted` がネイティブに拾う)。対象範囲は feat/fix の非自明変更のみ — chore/docs/ロジック不変 refactor は canonical 同様 skip 可、test-only は「必須経路」の増減分岐に準拠(増の簡易 review の担い手として Codex を使ってよい)。
 - **Codex = レビュー専用(指摘のみ)。修正主体は CC 本体**。Codex に canonical の結論を見せない(anchor 防止 — 独立に diff を見させる)。
 - **重大度マッピング(語彙統一)**: Codex の P0/P1 → Critical / P2 → Important / P3,P4 → Minor。canonical も Critical/Important/Minor で返るため両者を**同一語彙・同一収束条件**で扱う。分類後の扱いは「結果分類」準拠。
 - **fix ループ**: CC が canonical 指摘 + Codex 保存 md(`docs/codex/`)の両方を読む → 修正(CC)→ 再 review を、**未解決 Critical 0 かつ未解決 Important 0** まで反復。安全弁 = **上限 3 周**。3 周で収束しなければ「収束困難」として停止し OT に上げる。
