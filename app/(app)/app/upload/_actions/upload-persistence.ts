@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
 import {
   cards,
@@ -57,7 +57,11 @@ export async function completeUploadTx(
   },
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx
+    // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
+    // 正常フローの sourceDocumentId は runUploadGuardTx が同一 user で INSERT した
+    // owner-scoped な id ゆえ id/userId 一致で厳密 1 行。affected 0 行は所有権違反
+    // または doc 不在なので完了 tx を確定させず throw (tx rollback で台帳も残さない)。
+    const updated = await tx
       .update(sourceDocuments)
       .set({
         status: 'completed',
@@ -66,7 +70,18 @@ export async function completeUploadTx(
         ocrCostYen: args.ocrCostYen,
         completedAt: sql`now()`,
       })
-      .where(eq(sourceDocuments.id, args.sourceDocumentId))
+      .where(
+        and(
+          eq(sourceDocuments.id, args.sourceDocumentId),
+          eq(sourceDocuments.userId, args.userId),
+        ),
+      )
+      .returning({ id: sourceDocuments.id })
+    if (updated.length === 0) {
+      throw new Error(
+        'completeUploadTx: source document not found or not owned by user',
+      )
+    }
     await tx.insert(uploadRecords).values({
       userId: args.userId,
       filename: args.filename,
@@ -97,10 +112,26 @@ export async function markFailed(
   const msg = err instanceof Error ? err.message : String(err)
   try {
     await db.transaction(async (tx) => {
-      await tx
+      // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
+      // best-effort no-throw 契約は維持: affected 0 行 (所有権違反 or doc 不在) は
+      // warn のみで台帳 (upload_records) を残さず tx を no-op 化する。
+      const updated = await tx
         .update(sourceDocuments)
         .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
-        .where(eq(sourceDocuments.id, sourceDocumentId))
+        .where(
+          and(
+            eq(sourceDocuments.id, sourceDocumentId),
+            eq(sourceDocuments.userId, audit.userId),
+          ),
+        )
+        .returning({ id: sourceDocuments.id })
+      if (updated.length === 0) {
+        // 所有権違反 or doc 不在。spec の「warn に PII/機密 id を載せない」を厳格採用し、
+        // 対象 doc id も acting userId も載せず event のみ記録する(Codex 独立 review が
+        // 任意の persistent id を不可としたため最安全側へ寄せた。詳細相関が要れば OT 判断)。
+        logger.warn({ event: 'source_documents.mark_failed.no_row' })
+        return
+      }
       await tx.insert(uploadRecords).values({
         userId: audit.userId,
         filename: audit.filename,

@@ -209,7 +209,12 @@ vi.mock('@/lib/db', () => {
         set: (vals: Record<string, unknown>) => {
           if ('cardCount' in vals) dbState.updatedExams.push(vals)
           else dbState.updatedSourceDocs.push(vals)
-          return chain(undefined)
+          // O1: completeUploadTx / markFailed が owner-scope 述語追加後に
+          // .returning({ id }) で affected rows を確認するため returning を生やす。
+          // mock は常に 1 行 affected を返し happy path の分岐を維持する。
+          const c = chain(undefined) as Record<string, unknown>
+          c.returning = () => chain([{ id: dbState.nextSourceDocId }])
+          return c
         },
       }),
       delete: () => chain(undefined),

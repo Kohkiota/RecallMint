@@ -182,7 +182,13 @@ vi.mock('@/lib/db', () => {
           // それ以外 (status 等) は source_documents 更新として振り分ける。
           if ('cardCount' in vals) dbState.updatedExams.push(vals)
           else dbState.updatedSourceDocs.push(vals)
-          return chain(undefined)
+          // O1: completeUploadTx / markFailed が owner-scope 述語追加後に
+          // .returning({ id }) で affected rows を確認するため、 update chain に
+          // returning を生やす。 mock は常に 1 行 affected (非空配列) を返し、
+          // happy path で 0 行 throw / no-row warn 分岐に落ちないようにする。
+          const c = chain(undefined) as Record<string, unknown>
+          c.returning = () => chain([{ id: dbState.nextSourceDocId }])
+          return c
         },
       }),
       delete: () => chain(undefined),
