@@ -58,7 +58,70 @@
 - **rebuild で走る**: post-create.sh(全 postcondition 通過 = exit 0 が正常。落ちたら step 名が出る)
 - rebuild 後の確認 checklist: `docs/superpowers/sessions/2026-07-18-c1-workflow-cleanup-execution.md` §9
 
-## 7. よく使うコマンド
+## 7. バージョン pin 一覧と更新手順(2026-07-18 C2 制定)
+
+### 7.1 pin 一覧(何がどこで固定されているか)
+
+| 対象 | 固定場所 | 現在の pin | 備考 |
+|---|---|---|---|
+| container image | `devcontainer.json` `image` | `mcr.microsoft.com/playwright:v1.58.2` | bump は別イベント(→ §7.5) |
+| playwright MCP | `.mcp.json` | `@playwright/mcp@0.0.78` | 内部に playwright `1.62.0-alpha-1783623505000` を exact 同梱(→ §7.6) |
+| context7 MCP | `.mcp.json` | `@upstash/context7-mcp@3.2.4` | |
+| Codex CLI | `post-create.sh` `CODEX_VERSION` | `0.144.5` | pin と postcondition 期待値は同一変数(二重管理なし)。更新は contract gate 必須(→ §7.3) |
+| pnpm | `package.json` `packageManager` field | (field が SSoT) | corepack が field に追従。ここに版番号を書かない(二重管理防止) |
+
+**意図的に pin しないもの**(「全部 exact pin」からの非対称。後から"統一"しないこと):
+
+- **Claude Code 本体 = stable channel**。「最新安定版に追随する」の実装が channel そのもので、auto-update を殺して exact pin する運用コストに見合う事故実績が無い。担保は ① rebuild 時の実版記録(post-create の `--version` postcondition 出力)② regression 時の特定版固定手順(→ §7.4)。
+- **Google Chrome = apt stable**(rebuild 時点の最新 stable が入る)。playwright MCP が CDP で駆動する対象で、playwright 側が branded Chrome stable を公式サポートするため版結合は緩い。実版は rebuild 時の post-create summary で記録される。
+
+### 7.2 更新手順(共通形)
+
+1. 最新**安定**版を registry で確認(`npm view <pkg> dist-tags --json`。alpha / beta / RC / canary は除外。Context7 は patch に遅れるため registry 直叩きが正)
+2. pin 行を書き換える(`.mcp.json` or `post-create.sh` の `CODEX_VERSION`)
+3. Codex のみ: contract gate(→ §7.3)を**書き換え確定の前に**通す
+4. rebuild → post-create の postcondition 全通過(exit 0)を確認
+5. commit(`chore(devcontainer)`)。MCP は rebuild 不要で反映される(npx が起動毎に解決)が、記録の一貫性のため手順は共通形とする
+
+### 7.3 Codex pin 更新の contract gate
+
+scripts/ai の invocation(`codex exec review --uncommitted` / `codex exec -`)を**変えずに**、旧 pin vs 新候補を同一入力の fixture で比較(rebuild 不要 = `npx -y @openai/codex@<ver>` の exact 指定で実行):
+
+- a. 既知欠陥を植えた diff → その欠陥が finding として出る
+- b. clean diff → Critical / Important 0
+- c. 実行前後で worktree 内容不変(`worktree-snapshot.sh` detector 再利用)
+- d. `count-findings.sh` の `- [Pn]` 集計・保存 md 判定が新版出力で壊れない
+- e. ツール失敗(timeout / auth 失敗)と「finding 無し」が出力上区別できる(auth 失敗 = 非 0 exit + `-o` file 未生成 / timeout = exit 124 / finding 無し = exit 0 + md 保存)
+
+いずれかで旧版より劣化 → pin 更新見送り・差分を報告して停止(判断は OT)。
+
+### 7.4 戻し方
+
+- **MCP / Codex**: pin 行を前版へ revert するだけ(`git log -p .mcp.json` / `post-create.sh` で前値確認)。MCP は次回 server 起動から、Codex は rebuild(または `npm install -g @openai/codex@<ver>` 手動実行)で反映。
+- **Claude Code 本体のみ**(regression 時の特定版固定・公式 [setup docs](https://code.claude.com/docs/en/setup) 裏取り済 2026-07-18):
+  1. 特定版を install: `curl -fsSL https://claude.ai/install.sh | bash -s <版番号>`(`stable` / `latest` と同じ位置に版番号を渡す)
+  2. auto-update を無効化: settings.json の `env` に `"DISABLE_AUTOUPDATER": "1"`(背景更新チェックのみ停止。`claude update` 手動実行は残る。全更新路 block は `DISABLE_UPDATES`)
+  3. stable channel 復帰 = env を外して `curl -fsSL https://claude.ai/install.sh | bash -s stable` を再実行
+
+### 7.5 image 更新手順(別イベント。pin 統一と混ぜない)
+
+`mcr.microsoft.com/playwright:vX.Y.Z` の bump は Node 版・同梱ブラウザ・OS deps が一斉に動くため、単独 sprint で行う。確認点:
+
+1. 新 image の **Node major**(post-create の corepack / packageManager 追従が動くか、app の engines と整合するか)
+2. **同梱ブラウザ**(現状 playwright MCP は `--browser chrome` で system Chrome を使うため未使用だが、前提が変わっていないか → §7.6)
+3. **post-create postcondition への影響**(apt 系 step 4/6 が新 base で通るか)
+4. rebuild → postcondition 全通過 → 実版 summary を記録して commit
+
+### 7.6 ブラウザ責務表(どのブラウザを誰が使うか)
+
+| ブラウザ | 導入経路 | 使うもの |
+|---|---|---|
+| image 同梱ブラウザ(chromium 等・playwright 1.58.2 世代) | image に pre-install | **誰も使わない**(repo に playwright 依存なし・MCP は下記 Chrome を使用) |
+| Google Chrome(apt stable) | post-create step 6 | playwright MCP(`--browser chrome` 指定・CDP 駆動) |
+
+**版 skew の結論(2026-07-18 事実確認)**: playwright MCP(`@playwright/mcp@0.0.78`)は内部に playwright `1.62.0-alpha` を exact 同梱し npx が独立に解決するため、**image v1.58.2 の playwright/同梱ブラウザとは実行経路が交わらず、skew は実害にならない**。実在する唯一の版結合は「MCP 内部 playwright ↔ system Chrome stable」で、これは playwright が公式サポートする緩い結合(CDP)。image が効くのは Node 版と OS deps のみ。
+
+## 8. よく使うコマンド
 
 ```bash
 claude                                                  # Claude Code 起動
