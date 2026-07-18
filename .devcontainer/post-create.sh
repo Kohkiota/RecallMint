@@ -23,7 +23,7 @@ set -euo pipefail
 
 fail() { echo "✗ POSTCONDITION FAIL: $*" >&2; exit 1; }
 
-CODEX_VERSION="0.142.3"  # exact pin 必須: フラグ仕様が版で変わる実績 (CLAUDE.md 規律)
+CODEX_VERSION="0.144.5"  # exact pin 必須: フラグ仕様が版で変わる実績。更新は contract gate 必須 (README §7.3)
 
 echo "==> [1/7] npm global prefix"
 mkdir -p ~/.npm-global ~/.local/bin "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
