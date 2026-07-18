@@ -1,5 +1,6 @@
-# recallmint lefthook config (波2)。 pre-commit は lint のみ (実走 11 秒)。
-# typecheck / vitest / build は CI 側 (.github/workflows/ci.yml) に寄せる。
+# recallmint lefthook config。pre-commit は staged file の lint のみ(実走 11 秒)。
+# typecheck / vitest / build は sprint 完了 gate + デプロイ前チェック(CLAUDE.md)で
+# whole-repo 実行。GHA は不採用(PR なし運用。復活は git 履歴 6958d18 参照)。
 pre-commit:
   commands:
     lint:
