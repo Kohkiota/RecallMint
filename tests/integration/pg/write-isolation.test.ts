@@ -112,6 +112,43 @@ describe('write isolation (W1)', () => {
         .where(eq(tagOptions.id, fixture.b.tagOptionId))
       expect(rows[0]?.name).toBe('Option')
     })
+
+    // 'name'/'category_id' は owner-scoped pre-check SELECT で短絡するが、'color'/
+    // 'sort_key' は pre-check が無く、共有 final UPDATE の and(eq(id), eq(userId)) が
+    // 唯一の owner 節。その節を behavioral に exercise するため pre-check の無い
+    // 'color' で検証する(whole-branch review Important 対応)。
+    it('updates tenant A own tag option color (positive control)', async () => {
+      const result = await applyTagOptionUpdate(
+        getDb(),
+        fixture.a.userId,
+        fixture.a.tagOptionId,
+        { field: 'color', value: '#a11a11' },
+      )
+      expect(result).toBe('applied')
+
+      const rows = await getDb()
+        .select({ color: tagOptions.color })
+        .from(tagOptions)
+        .where(eq(tagOptions.id, fixture.a.tagOptionId))
+      expect(rows[0]?.color).toBe('#a11a11')
+    })
+
+    it('does not update tenant B tag option color via tenant A context (negative, shared UPDATE owner clause)', async () => {
+      const result = await applyTagOptionUpdate(
+        getDb(),
+        fixture.a.userId,
+        fixture.b.tagOptionId,
+        { field: 'color', value: '#hacked' },
+      )
+      expect(result).toBe('failed')
+
+      // color は pre-check 無し = 共有 UPDATE の owner 節のみが守る。B の color は不変 (null)。
+      const rows = await getDb()
+        .select({ color: tagOptions.color })
+        .from(tagOptions)
+        .where(eq(tagOptions.id, fixture.b.tagOptionId))
+      expect(rows[0]?.color).toBeNull()
+    })
   })
 
   // --- 非 RED・behavioral: cards の FSRS state UPDATE を
