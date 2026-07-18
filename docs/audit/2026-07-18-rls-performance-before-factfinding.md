@@ -5,6 +5,7 @@
 - **本 doc は調査のみ・変更なし・設計判断なし**(事実からの直接の含意のみ)。
 - 関連: `docs/audit/2026-07-18-tenant-isolation-integration-test-factfinding.md`(Iso-0。§1.2 経路 inventory を再利用、load-bearing は現物再確認)/ `docs/superpowers/lessons/2026-05-25-link-prefetch-amplifies-server-load.md`(prefetch 並列増幅の一次記録)。
 - 方法: 2 並列 general-purpose subagent(並列クエリ / tx 内 I/O)+ CC 本体裏取り(pool 設定・prefetch・RLS 機構・raw SQL)。
+- **Perf-0b 追記(2026-07-18)**: §3 の read 経路 end-to-end p50/p95 を Playwright MCP 経由で stg 実測(path (a))。§3.2 = **RLS after 比較の基準線**。計装 deploy(案 b)・write 経路 30 回は OT 方針で不採用。
 
 ---
 
@@ -13,7 +14,7 @@
 1. **[裏取り済] RLS 機構の帰結 = 「request 全体を 1 tx に包む」必須**。Supabase Transaction Pooler(PgBouncer transaction mode)では session 単位 `SET` は使えず、`SET LOCAL`(tx-scoped)を各 request の tx 先頭で発行する形が唯一。→ 現在 `Promise.all` で **別コネクションに分散して並列実行している DB クエリ群は、1 tx = 1 コネクション上で直列化**される。これが RLS 性能コストの本体。
 2. **[裏取り済] postgres-js の pool 上限は既定値 `max: 10`**(`lib/db/index.ts:20` は `{ prepare: false }` のみ指定、`max` 未指定 → postgres-js 既定 10。`node_modules/postgres/src/index.js:449`)。1 request = 1 tx = 1 コネクション占有ゆえ、RLS 後は「同時 in-flight request 数」がそのまま pool 圧に直結する。
 3. **[裏取り済] RLS で並列性を失う server DB サイトは 3 箇所のみ**(§1): ① `GET /api/pull`(`route.ts:66`)6-way delta → **6 直列** ② RSC `/app/upload`(`page.tsx:91`)N=2 → 2 直列 ③ **`POST /api/entity-mutations/bulk`(`route.ts:274`)= 最大影響**。group 間 `Promise.allSettled`(Y-2 T-B3 の perf 最適化)+ per-mutation nested `db.transaction` の両方が単一 outer tx と衝突(§1.1)。他 RSC/route は逐次(RLS 影響 = SET LOCAL overhead のみ)。
-4. **[裏取り済] 計測はこの sandbox から実行不能**。outbound network が deny(`curl` 2 回 permission denied、Iso-0 の「registry 直叩き deny」と整合)。→ **stg route 計測・Supabase pooler 越し DB 計測・pooler 実値はすべて OT 実行 or OT dashboard 確認項目**(§3 / §7)。server-timing 計装も未実装ゆえ「DB 時間の切り出し」は計装 deploy(=変更)が前提。
+4. **[裏取り済/Perf-0b 更新] read 経路 end-to-end は Playwright MCP 経由で stg 実測済**(§3.2)。Bash/local-script は sandbox の outbound deny(`curl` permission denied、IS_SANDBOX=1)で到達不能だが、**Playwright MCP の browser egress は stg に到達**するため read 計測はこの経路で実行。**未計測(据置)= ① DB 時間の切り出し/並列部 max vs sum(server-timing 計装未実装ゆえ計装 deploy 要)② write 経路(OT 方針で不採用)③ Supabase pooler 実値(OT dashboard、§7)**。
 5. **[裏取り済] prefetch 並列爆発は S-perf-1 で対処済・現状維持**。全 dynamic `/app/*` `<Link>` に `prefetch={false}` 付与済(§5)。ただし RLS 観点では **prefetch とは独立に**、dynamic page が全て cookie(Clerk auth)依存で dynamic に倒れており、各 RSC render が `getCurrentUser()`(auth + users SELECT)を走らせる = RLS 後は各 render が個別 `SET LOCAL` tx を要する(§5.3)。
 6. **[裏取り済] 既存 server tx 10 本の tx 内 外部 I/O = 0**(§2.A)。ただし 2 点が RLS 配管の要注意面: ① `runUploadGuardTx` が tx 保持中に別 `getDb()` 接続を +2 本取る(`canRunOcr`/`getTodayAiUsageGlobal`)= RLS で `SET LOCAL` 未伝播(correctness)+ pool 圧(§6.6)。② 「request 全体を 1 tx」設計を採ると OCR(Gemini 720s)/ 一部 Stripe・R2 経路が tx 内に落ちる。現行 OCR は既に guard/OCR/persistence を 3 tx 分離済で Gemini は tx 外(§2.B)= この分離を RLS 後も維持すれば refactor コスト低。
 
@@ -103,12 +104,11 @@
 
 ## 3. 経路別 before 数字(計測)
 
-**状態: この sandbox からは計測不能(§0.4)。以下は計測 method の確定と blocker の明示。**
+**状態: Perf-0b(2026-07-18)で path (a) = read 経路 end-to-end p50/p95 を Playwright MCP 経由で stg 実測済(§3.2 = RLS after 比較の基準線)。**
 
-- 計測環境 = stg(本番同等 Supabase + pooler 越し)。ローカル PG は pooler / RTT が消え before として不適(課題文指定)。
-- **blocker 1: outbound network deny**。本 sandbox の Bash は stg / Supabase pooler いずれにも到達不可(`curl` permission denied、IS_SANDBOX=1)。Playwright MCP browser egress は過去 smoke で到達実績あり(別 egress)だが、下記 blocker 2/3 が残る。
-- **blocker 2: server-timing 計装が未実装**(`Server-Timing` header / `performance.now` の DB 区間計測ともに 0 hit)。→ route 応答 end-to-end(browser Resource Timing)は測れるが、「**クエリ本数 / DB 時間合計 / 並列部 max vs sum**」の切り出しは計装 deploy(=コード変更・OT push)を要する。クエリ本数のみ静的導出可(§1 の enumeration)。
-- **blocker 3: write 経路の負荷/汚染**。`/api/entity-mutations/bulk` / `/api/review-events/bulk` を各 30 回叩くと stg data を実書込で汚す + payload 作成が要る。read 経路(dashboard / exams / exam 詳細 / pull)は非破壊で計測可。
+- 計測環境 = stg(本番同等 Supabase + Transaction Pooler 越し)。ローカル PG は pooler / RTT が消え before として不適(課題文指定)。
+- **測れたもの**: read 経路(dashboard / exams 一覧 / exam 詳細 / upload / `/api/pull` full+delta)の end-to-end 応答 p50/p95。非破壊 GET のみ(browser page-context `fetch`)。
+- **測れないもの(据置)**: ① DB 時間合計 / 並列部 max vs sum の切り出し = server-timing 計装未実装(`Server-Timing` / `performance.now` の DB 区間 0 hit)ゆえ計装 deploy が要る(案 b、OT 方針で不採用 = after で悪化が出た時のみ再検討)。② write 経路(entity-mutations/review-events bulk)= OT 方針で不採用(素朴 RLS 案で group 並列が残る見込みゆえ before write 計測の価値薄)。③ Supabase dashboard 実値 = OT(§7)。
 
 ### 3.1 計測対象と静的クエリ本数(§1 enumeration からの導出)
 
@@ -123,17 +123,53 @@
 
 - クエリ本数は静的導出ゆえ計測不要。**「DB 時間合計 / 並列部 max vs sum / p50・p95」は §0.4 の blocker で本 sandbox 実測不能** = §3.3 の method を OT 実行 or 計装 deploy 承認後。
 
-### 3.2 既知の before 数字(過去計測・引用)
+### 3.2 warm baseline(Perf-0b 実測・**RLS after 比較の基準線**)
 
-- `2026-05-25` prefetch 調査(stg / Playwright + Resource Timing): navigation 1 回で `?_rsc=` GET が **5〜9 並列**、各 RSC SSR **400-650 ms TTFB(warm)/ 1000-2000 ms(cold)**。dashboard 単体 RSC SSR ~2000 ms。出所: 上記 lessons doc / `sessions/2026-05-25-stg-perf-rsc-prefetch-amplification.md`。
-- 上記は **prefetch 並列**の数字で、RLS の tx 直列化コストとは別軸。RLS before としては §3.1 の per-route 実測が別途要る(未計測)。
+各経路 warmup 5 回捨て後 30 回計測、end-to-end(request→full body 読了)、p50/p95 = nearest-rank。単位 ms。
 
-### 3.3 計測 method(OT 実行 or 計装 deploy 承認後)
+| 経路 | p50 | p95 | mean | min | max | resp bytes | 備考 |
+|---|---|---|---|---|---|---|---|
+| dashboard `/app` | **91** | 114 | 94 | 81 | 120 | 36 KB | RSC(集計は client Dexie、RSC 側 DB は auth のみ)|
+| exams 一覧 `/app/exams` | **91** | 162 | 100 | 80 | 181 | 34 KB | |
+| exam 詳細(300件)`/app/exams/{id}` | **131** | 204 | 141 | 106 | 239 | 452 KB | 300 card render。逐次 RSC(auth+exam+cards)|
+| `/app/upload` | **94** | 138 | 101 | 85 | 181 | 36 KB | warm。並列 DB N=2(§1.1)|
+| `GET /api/pull` full | **181** | 226 | 179 | 138 | 265 | 979 KB | **6-way 並列**(§1.1)。rows: cards300 / exams1 / tombstones1066 / tag_cat7 / tag_opt28 / card_tags1621 |
+| `GET /api/pull` delta(0行)| **77** | 85 | 78 | 69 | 85 | 204 B | steady-state(since=当日、全 stream 0 行)= auth + 6 空 index scan + RTT floor |
 
-- **条件**: seed 300 件基準(PERF-SEED、単一テナント test1)。warm(連続叩き 5 回捨て後)を主、cold(instance idle 明け)を別枠で 5 回。各経路 **30 回以上**で p50/p95。
-- **read 経路の end-to-end p50/p95(非破壊・CC 実行可)**: Playwright MCP で stg にログイン → dashboard / exams 一覧 / exam 詳細 / `/api/pull` を Resource Timing で計測。→ route 応答のみ(DB 時間切り出しは不可、下記)。
-- **並列部 max vs sum(= RLS 直列化コストの本体)**: server-timing 計装が要る。案 A = `/api/pull` に一時 `Server-Timing` header で 6 delta の個別 ms を出す計装を deploy(要 OT push、撤去まで完結)。案 B = 計装せず「max(= 現状 Promise.all 実測 route 時間の DB 区間)」と「sum(= 各 delta を直列で叩く一時 debug endpoint)」を比較。いずれも変更を伴うため OT 承認前提。
-- **write 経路(entity-mutations/review-events bulk)**: 30 回 = 実書込汚染 + payload 作成(§0.4 blocker 3)。seed user 専用 + 計測後 cleanup 前提で OT 判断。
+**RLS after 比較への読み**: `/api/pull` full の p50 181ms は 6-way 並列の **max**。RLS 1-tx 直列化後は各 delta の per-query 時間の **sum** に近づく。per-query の内訳は本計測(end-to-end 集約)からは分離不可(計装未実装)→ after 実測 or 計装で確認。参考値として full(181)と delta(77、~0 行)の差 ~104ms が「300cards+1621card_tags+1066tombstones の fetch+serialize+979KB 転送」で、DB 並列区間はこの一部。直列化の絶対悪化は数十 ms オーダーと推定(after で要検証)。
+
+### 3.3 cold / first-hit(opportunistic 2 サンプル)
+
+真の Vercel reclaimed cold-start ×5 は client から強制不可(instance idle 明けを制御できない)。→ **session 開始時(T≈13:03 UTC)と ~5分 idle 明け(T≈13:20 UTC)の first-hit を 2 サンプル**記録。単位 ms。
+
+| 経路 | cold #1(session 開始)| cold #2(~5分 idle 明け)| warm p50 | 備考 |
+|---|---|---|---|---|
+| dashboard | 170 | 137 | 91 | |
+| exams 一覧 | 113 | 157 | 91 | |
+| exam 詳細 | 348 | 317 | 131 | |
+| `/app/upload` | **1381** | **1270** | 94 | **2 回とも ~1.3s = Next.js route compile cold**(warm の 13×)。cold 突出は upload のみ |
+| `/api/pull` full | 256 | 187 | 181 | |
+| `/api/pull` delta | 82 | 90 | 77 | |
+
+→ cold penalty は upload(route compile)を除けば warm の 1.2〜2.7×。upload の compile cold は RLS と無関係(SET LOCAL は warm-path コスト)。
+
+### 3.4 計測条件
+
+- **時刻**: 2026-07-18 ~13:03–13:21 UTC。**seed**: `[PERF-SEED] 300-card exam`(test1 = `komail9server+clerk_test`、exam id `75104e5f-aea5-42b5-9d15-cc1743bda55d`)。
+- **client / egress**: Playwright MCP browser(stg 到達 egress)。page-context `fetch(url,{credentials:'include',cache:'no-store'})` で document GET(SSR)/ API JSON を計測、`performance.now()` で request→full body。
+- **network floor**: 静的 edge-cache 資産(`/favicon.ico`)25 回で **RTT p50 ≈ 3ms** → 測定値はほぼ **server 処理時間**(browser は stg 近接、network 誤差小)。
+- **非破壊**: read GET のみ。認証 = Clerk test モード(`+clerk_test` + 固定 OTP 424242)。
+
+### 3.5 未計測(据置・OT / 後続)
+
+- **並列部 max vs sum(= RLS 直列化コストの本体)**: server-timing 計装が要る(案 b、OT 方針で不採用 = after で悪化が出た時のみ再検討)。
+- **write 経路**(entity-mutations/review-events bulk): OT 方針で不採用(素朴 RLS 案で group 並列が残る見込み)。
+- **Supabase dashboard 実値**(§7): pooler pool size / max backend conn / 現在の同時接続 peak。
+
+### 3.6 既知の before 数字(過去計測・引用)
+
+- `2026-05-25` prefetch 調査(stg / Playwright + Resource Timing): navigation 1 回で `?_rsc=` GET が **5〜9 並列**、各 RSC SSR **400-650 ms TTFB(warm)/ 1000-2000 ms(cold)**。dashboard 単体 RSC SSR ~2000 ms。出所: lessons doc / `sessions/2026-05-25-stg-perf-rsc-prefetch-amplification.md`。
+- 上記は **prefetch 並列**かつ full-page RSC SSR の数字。本 §3.2 の warm(dashboard p50 91ms 等)が桁違いに速いのは、S-perf-1 で prefetch を切り並列 SSR が消えたこと + 本計測が単発 fetch であることによる(整合)。RLS の tx 直列化コストは §3.2 の warm を基準線に after で比較する。
 
 ---
 
@@ -171,12 +207,12 @@
 1. **Supabase Transaction Pooler の pool size**(project 設定の実値。Nano tier 既定 + 手動上書きの有無)。`max_client_conn` / `default_pool_size`。
 2. **Supabase 側 max backend connections**(compute tier 依存の上限)。postgres-js `max:10` × Vercel instance 数 がこの上限に収まるか。
 3. **現在の同時接続実態**(dashboard の connection グラフ、peak 値)。
-4. **§3 の per-route before 計測**(stg / seed 300)= OT 実行 or 計装 deploy 承認。CC が Playwright で read 経路 end-to-end p50/p95 のみなら実行可否を OT 判断。
+4. **read 経路 before 計測は完了(§3.2、Perf-0b)**。残 = DB 時間の切り出し(並列部 max vs sum)を測るなら server-timing 計装 deploy(案 b)の承認 — OT 方針では after で悪化が出た時のみ再検討。
 
 ---
 
 ## 付録: 調査メタ / 未確定
 
-- 裏取り済: pool 既定値(postgres-js src)/ proxy 保護経路(`/app(.*)` のみ)/ prefetch 全 grep / streak raw SQL Read / server-timing 不在 grep / sandbox network deny。
-- **未確定(計測フェーズで要確認)**: §3 の per-route 実測全て / §7 の dashboard 実値 / marketing link prefetch の実 Resource Timing。
-- subagent: 2 並列 general-purpose(§1 並列クエリ / §2 tx 内 I/O)。foreground dispatch(同一メッセージ内 2 call)、CLAUDE.md 規律。
+- 裏取り済: pool 既定値(postgres-js src)/ proxy 保護経路(`/app(.*)` のみ)/ prefetch 全 grep / streak raw SQL Read / server-timing 不在 grep / sandbox network deny。**Perf-0b: §3.2 read 経路 warm p50/p95 stg 実測**。
+- **未確定(据置)**: DB 時間の切り出し / 並列部 max vs sum(計装要)/ §7 の dashboard 実値 / marketing link prefetch の実 Resource Timing / write 経路(不採用)。
+- subagent: 2 並列 general-purpose(§1 並列クエリ / §2 tx 内 I/O)。foreground dispatch(同一メッセージ内 2 call)、CLAUDE.md 規律。Perf-0b 計測 = Playwright MCP(stg、非破壊 read)。
