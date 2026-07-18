@@ -73,7 +73,7 @@
 | context7 MCP | `.mcp.json` | `@upstash/context7-mcp@3.2.4` | |
 | Codex CLI | `post-create.sh` `CODEX_VERSION` | `0.144.5` | pin と postcondition 期待値は同一変数(二重管理なし)。更新は contract gate 必須(→ §7.3) |
 | pnpm | `package.json` `packageManager` field | (field が SSoT) | corepack が field に追従。ここに版番号を書かない(二重管理防止) |
-| PostgreSQL | `.devcontainer/pg-setup.sh` `PG_MAJOR` + PGDG repo | major `17`(Supabase prod=17 に合わせる。patch は PGDG 追随) | `pnpm test:iso` 専用の常駐 cluster。接続契約 = `127.0.0.1:5432` / user `postgres` / db `recallmint_test`。app 本体の `DATABASE_URL`(Supabase)とは無関係 |
+| PostgreSQL | `.devcontainer/pg-setup.sh` `PG_MAJOR` + PGDG repo | major `17`(Supabase prod=17 に合わせる。patch は PGDG 追随) | `pnpm test:iso` 専用の常駐 cluster。接続契約 = `127.0.0.1:5432` / user `postgres` / db `recallmint_test`。app 本体の `DATABASE_URL_APP`(Supabase)とは無関係。`pg-setup.sh` は最小権限 `recallmint_app` role(RLS-P1)も冪等に provision する |
 
 **意図的に pin しないもの**(「全部 exact pin」からの非対称。後から"統一"しないこと):
 

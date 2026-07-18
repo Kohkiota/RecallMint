@@ -1390,7 +1390,8 @@ async function submitReviewTx(tx, { userId, cardId, rating, now }) {
 |`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`|Clerk 公開鍵|All|
 |`CLERK_SECRET_KEY`|Clerk 秘密鍵|All|
 |`CLERK_WEBHOOK_SECRET`|Clerk webhook 署名検証|Production|
-|`DATABASE_URL`|Neon 接続|All|
+|`DATABASE_URL_APP`|Supabase 接続(app runtime・least-privilege `recallmint_app` role)|All|
+|`DATABASE_URL_ADMIN`|Supabase 接続(owner・migration/operator script 用。常設 env に置かず実行時 inline 供給。RLS-P1)|Migration/operator|
 |`STRIPE_SECRET_KEY`|Stripe|All|
 |`STRIPE_WEBHOOK_SECRET`|Stripe webhook 署名検証|All|
 |`STRIPE_PRICE_STANDARD_MONTHLY`|Standard 月額 price ID|All|

@@ -19,7 +19,7 @@
 ```bash
 pnpm install                       # 依存導入(native binding 含む)
 cp .env.example .env.local         # 環境変数(詳細 §5)。Clerk / Stripe / Supabase / Gemini 等
-pnpm db:migrate                    # DB migration(DATABASE_URL 設定後)
+DATABASE_URL_ADMIN='...' pnpm db:migrate   # DB migration(owner 権限・実行時 inline 供給。RLS-P1)
 pnpm dev                           # dev server → http://localhost:3000
 ```
 
@@ -181,7 +181,7 @@ pnpm lint             # eslint . --max-warnings=0(import 境界ルール含む)
 pnpm test             # Vitest 全件(現行 3004 test)
 pnpm test:contract    # 契約 golden(77・snapshot 固定 = 挙動不変の証明)
 pnpm db:generate      # schema 変更後に migration 生成
-pnpm db:migrate       # migration 適用(DATABASE_URL 設定要)
+DATABASE_URL_ADMIN='...' pnpm db:migrate   # migration 適用(owner 権限・実行時 inline 供給。RLS-P1)
 pnpm db:studio        # Drizzle Studio(DB 中身確認)
 ```
 
@@ -247,7 +247,8 @@ channel 混線防止のため env も分離:
 
 | 変数 | 取得元 | 形式 / 注意 |
 |---|---|---|
-| `DATABASE_URL` | Supabase → Connection(Transaction pooler) | `postgresql://...pooler.supabase.com:6543/...` |
+| `DATABASE_URL_APP` | Supabase → Connection(Transaction pooler) | `postgresql://...pooler.supabase.com:6543/...`(app runtime・least-privilege `recallmint_app` role) |
+| `DATABASE_URL_ADMIN` | Supabase → Connection(owner) | migration / operator script 用。**常設 env に置かず実行時に inline 供給**(RLS-P1) |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY` | Clerk Dashboard | `pk_test_` / `sk_test_`(prod = `_live_`) |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` / `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | 自分で決める | `/sign-in` / `/sign-up` |
 | `CLERK_WEBHOOK_SECRET` | Clerk → Webhooks | `whsec_...`(production deploy 後発行) |

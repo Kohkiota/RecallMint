@@ -320,7 +320,8 @@ brand 表示は別系統 (hardcode) のため本手順とは独立。
 
 | env | 用途 | 取得元 |
 |---|---|---|
-| `DATABASE_URL` | Neon connection | Neon Dashboard |
+| `DATABASE_URL_APP` | Supabase connection (app runtime・least-privilege `recallmint_app` role・Transaction pooler) | Supabase Dashboard |
+| `DATABASE_URL_ADMIN` | Supabase connection (owner・migration/operator script 用。常設 env に置かず実行時 inline 供給。RLS-P1) | Supabase Dashboard |
 | `CLERK_SECRET_KEY` / `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk credentials | Clerk Dashboard |
 | `CLERK_WEBHOOK_SECRET` | Clerk webhook verify | Clerk Dashboard (deploy 後) |
 | `STRIPE_SECRET_KEY` | Stripe credentials | Stripe Dashboard |

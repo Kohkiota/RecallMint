@@ -1,5 +1,7 @@
 # GC reconciler smoke④ 実行手順 fact-finding(read-only)
 
+> **RLS-P1 注記**: 本 doc は 2026-07-16 時点の調査記録だが、実行手順は live runbook として維持する。RLS-P1 で env 変数名が `DATABASE_URL` → `DATABASE_URL_ADMIN`(script は `getAdminDb()` 経由)に改名されたため、本文中の `DATABASE_URL` / `getDb()` 表記は現行名に置き換えてある(operator が向き先を目視する安全境界の趣旨・guard ロジック自体は無変更)。
+
 - **日付**: 2026-07-16
 - **性質**: read-only 現物調査のみ(script 実行・DB 接続・実装変更・commit なし)。Sprint I smoke④(GC 非孤児化 = 4面画像を孤児誤判定しない / 削除画像・選択肢 cascade 外れ画像は回収する)の実行手順確定。
 - **調査 HEAD**: `52a56b1`(develop)。全て `scripts/gc-image-assets.ts` / `lib/db/index.ts` / `lib/storage/r2.ts` / `lib/media/domain/asset-state.ts` / `lib/db/schema.ts` / `lib/cards/card-field-handlers.ts` の実コードで裏取り。
@@ -12,7 +14,7 @@
 本 doc の fact-finding を OT が stg 実機で実行し **PASS**。以下は実測で確定した事項(§10 手順の裏付け)。
 
 - **実行形は doc の記述どおりで正しかった**: `node --env-file=.env.local --conditions=react-server --import tsx scripts/gc-image-assets.ts ...` で動作。
-- **env file は `.env.local` で足りた**(`.env.gc-stg` の新規作成は不要だった): `.env.local` に stg の `DATABASE_URL`(6543 pooler)と R2 env 4 種が揃っていた。→ §10 の `.env.gc-stg` は「stg 専用 file を作るなら」の一般形。実運用は既存 `.env.local` を `--env-file` で指せば足りる(**ただし `.env.local` が stg を指すことの目視確認は依然必須**・§5)。
+- **env file は `.env.local` で足りた**(`.env.gc-stg` の新規作成は不要だった): `.env.local` に stg の `DATABASE_URL_ADMIN`(6543 pooler)と R2 env 4 種が揃っていた。→ §10 の `.env.gc-stg` は「stg 専用 file を作るなら」の一般形。実運用は既存 `.env.local` を `--env-file` で指せば足りる(**ただし `.env.local` が stg を指すことの目視確認は依然必須**・§5)。
 - **2 回実施し、1 回目は vacuous と判断してやり直した(記録として重要)**:
   1. **1 回目(空振り)**: `scanned=23 referenced=0` → sweep で `reclaimed=23`。試験データ全消去 → cards CASCADE で refs 消滅 → assets のみ残存(user→asset を単純 cascade にしない GC v2 設計どおり)ゆえ全 asset が孤児。**`referenced=0` = 守るべき対象がゼロ**ゆえ「誤収しない」の証明にならず **vacuous** と判断。
   2. **2 回目(本番・gate を通した)**: 画像添付 → 1 枚を残して削除 → dry-run で `scanned=4 referenced=1` / `imageUuidKeys=1 refRows=1`(divergence なし = 同期到達を確認)→ sweep で**孤児のみ回収・`referenced=1` の生存画像は非回収**。R2 ダッシュボードで生存 object 1 個のみ残存を目視確認。
@@ -36,19 +38,19 @@
 ## 1. 実行形
 
 - **script**: `scripts/gc-image-assets.ts`。CLI entry は `process.argv[1]` が本 file の時のみ発火(`:759`)。
-- **`--conditions=react-server` 必須(確定)**: 本 script は top-level で `@/lib/db`(getDb)と `@/lib/integration-failures`(→ `@/lib/db`)を import。`lib/db/index.ts:4` に `import 'server-only'`。素の実行では server-only が throw する。`--conditions=react-server` で react-server 条件が empty(no-op)に解決(header `:25-30`・seed/backfill と同前例)。**dry-run でも必須**(top-level import ゆえ)。
+- **`--conditions=react-server` 必須(確定)**: 本 script は top-level で `@/lib/db`(getAdminDb)と `@/lib/integration-failures`(→ `@/lib/db`)を import。`lib/db/index.ts:4` に `import 'server-only'`。素の実行では server-only が throw する。`--conditions=react-server` で react-server 条件が empty(no-op)に解決(header `:25-30`・seed/backfill と同前例)。**dry-run でも必須**(top-level import ゆえ)。
 - **env 供給 = `node --env-file=<file>`(GC v2 で確立した形・seed audit と一致)**:
   - `node --env-file=<file> --conditions=react-server --import tsx scripts/gc-image-assets.ts ...`
-  - `--env-file`(Node native・Node 24.13.0 で利用可)が file を process.env に先読み。`getDb()`(`lib/db/index.ts:15-22`)が `process.env.DATABASE_URL` を lazy に読む。
+  - `--env-file`(Node native・Node 24.13.0 で利用可)が file を process.env に先読み。`getAdminDb()`(`lib/db/index.ts:31-39`)が `process.env.DATABASE_URL_ADMIN` を lazy に読む(RLS-P1)。
   - `pnpm tsx --conditions=...`(script header `:17-23` の例)は `--conditions` は通るが `--env-file` は Node flag ゆえ **`node --import tsx` 形が確実**(header は env 供給を明示していない)。
   - 接続文字列(パスワード平文)を CLI に書かずに済む(env file 経由)。
 - **module-load 時に要求される env**:
-  - **dry-run(`--dry-run`)= `DATABASE_URL` のみ**。`@/lib/storage/r2` は top-level import しない(`:61-64`)。R2 実削除する本実行のときだけ dynamic import(`:552-560`・`willDeleteFromR2 = sweep && !dryRun`)。
-  - **本 sweep(`--sweep` かつ非 dry-run)= `DATABASE_URL` + R2 env 4 種**。`lib/storage/r2.ts:16-31` が module-load で `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` を fail-fast 検証(1つでも欠けると起動直後に throw・exit 1)。
-    - ⚠ **この 4 種は stg の R2 bucket を指すこと**。DATABASE_URL=stg でも R2 env が別 bucket を指すと、stg DB の objectKey を別 bucket に対し DELETE してしまう(向き先の二重確認が必要)。
+  - **dry-run(`--dry-run`)= `DATABASE_URL_ADMIN` のみ**。`@/lib/storage/r2` は top-level import しない(`:61-64`)。R2 実削除する本実行のときだけ dynamic import(`:552-560`・`willDeleteFromR2 = sweep && !dryRun`)。
+  - **本 sweep(`--sweep` かつ非 dry-run)= `DATABASE_URL_ADMIN` + R2 env 4 種**。`lib/storage/r2.ts:16-31` が module-load で `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` を fail-fast 検証(1つでも欠けると起動直後に throw・exit 1)。
+    - ⚠ **この 4 種は stg の R2 bucket を指すこと**。DATABASE_URL_ADMIN=stg でも R2 env が別 bucket を指すと、stg DB の objectKey を別 bucket に対し DELETE してしまう(向き先の二重確認が必要)。
 - **`.env.local` の自動ロードは効かない**: 本 script は `dotenv/config` すら import しない(top-level import に dotenv 無し = 実コード確認)。∴ **必ず `--env-file` で明示供給**する。
-- **pooler(6543)適合(確定)**: `getDb()` は `postgres(url, { prepare: false })`(`lib/db/index.ts:18`)= Supabase transaction pooler(6543)要件。reconciler は INSERT/UPDATE/DELETE のみ(DDL 無し)ゆえ 6543 で問題なし。→ `.env.local`/env file の `DATABASE_URL` が **stg・6543 を指しているならそのまま動く**。
-- **不明**: `.env.local` の `DATABASE_URL` が stg を指すか dev/local/prod を指すかは **CC から確認不可**(secret・未読)。stg を指さないと別 DB を触る(下記 §5・§9 参照)。
+- **pooler(6543)適合(確定)**: `getAdminDb()` は `postgres(url, { prepare: false })`(`lib/db/index.ts:36`)= Supabase transaction pooler(6543)要件。reconciler は INSERT/UPDATE/DELETE のみ(DDL 無し)ゆえ 6543 で問題なし。→ `.env.local`/env file の `DATABASE_URL_ADMIN` が **stg・6543 を指しているならそのまま動く**。
+- **不明**: `.env.local` の `DATABASE_URL_ADMIN` が stg を指すか dev/local/prod を指すかは **CC から確認不可**(secret・未読)。stg を指さないと別 DB を触る(下記 §5・§9 参照)。
 
 ---
 
@@ -94,7 +96,7 @@
 - **1 run で mark→promote→collect まで通るか**: 通る。mark(`SET unreferenced_at = now()`)と promote(`WHERE unreferenced_at < now()`)は別 statement = 別 transaction_timestamp ゆえ promote の `now()` が mark の値より厳密に後(ms 差)。∴ **その run で marked → promoted → reclaimed が同数で立つ**。万一同一 run で拾わなくても、2 回目の同一 run で確実に回収(unreferenced_at が過去に固定される)。
 - **grace 0 を使わないと即時回収は見えない**: mark しても既定 30 日は promote されない。smoke で「回収まで」見るには `--grace-days 0` が必要。
 - **prod ガード(`:509-516`)**: `VERCEL_ENV === 'production' || NODE_ENV === 'production'` の時のみ、grace < 30 を throw で reject。
-  - ⚠ **これは env 変数が literal `'production'` の時だけ発火する**。OT がローカル shell から `node --env-file=...` で回す場合、通常 `NODE_ENV`/`VERCEL_ENV` は unset ゆえ **発火しない**。→ **DATABASE_URL が誤って prod を指していても `--grace-days 0` は止まらない**(seed の SEED_FORCE L1/L2 と同じ穴)。**向き先は operator が保証する**(§5)。
+  - ⚠ **これは env 変数が literal `'production'` の時だけ発火する**。OT がローカル shell から `node --env-file=...` で回す場合、通常 `NODE_ENV`/`VERCEL_ENV` は unset ゆえ **発火しない**。→ **DATABASE_URL_ADMIN が誤って prod を指していても `--grace-days 0` は止まらない**(seed の SEED_FORCE L1/L2 と同じ穴)。**向き先は operator が保証する**(§5)。
   - **prod では絶対に `--grace-days 0`(や < 30)を打たない**: in-flight / offline-pending mutation を全収する。stg 検証専用。
 
 ---
@@ -108,7 +110,7 @@ reconciler には **seed の `--dry-run --cleanup` のような専用 identity �
   - `[dry-run] backfill divergence: imageUuidKeys=.. refRows=..`
 - これらの**件数が想定 stg(件数規模・テスト user の内訳)と一致**するなら向き先 = stg で正しい。想定外(0 / 桁違い / prod 規模)なら向き先違いを疑い中断。
 - **`--user <test-uuid>` で全操作を owner-scope に bound**(`:545` `userScope` を各 SQL に注入)。→ 万一 prod を指しても、触れるのは**そのテスト user の未参照 asset だけ**(seed L3 と同じ実質 bounding)。smoke④ は**必ず `--user` を付ける**。
-- **コードは Supabase URL の stg/prod を判別しない**(seed L2 相当のチェックすら reconciler には無い)。→ **DATABASE_URL と R2 env 4 種が stg を指すことは operator が目視確認する責任**。env file を開き、`DATABASE_URL` の host/port(6543 pooler・stg プロジェクト)と `R2_BUCKET_NAME` が stg bucket であることを実行前に確認。
+- **コードは Supabase URL の stg/prod を判別しない**(seed L2 相当のチェックすら reconciler には無い)。→ **DATABASE_URL_ADMIN と R2 env 4 種が stg を指すことは operator が目視確認する責任**。env file を開き、`DATABASE_URL_ADMIN` の host/port(6543 pooler・stg プロジェクト)と `R2_BUCKET_NAME` が stg bucket であることを実行前に確認。
 
 ---
 
@@ -163,8 +165,8 @@ reconciler には **seed の `--dry-run --cleanup` のような専用 identity �
 ## 9. 危険な操作 / 打ってはいけないもの
 
 - **prod で `--grace-days 0`(や < 30)= 禁止**。in-flight/offline-pending を全収する。prod ガードは NODE_ENV=production の時しか効かず、ローカルからは効かない(§4)。stg 検証専用。
-- **向き先未確認での `--sweep` = 禁止**。DATABASE_URL / R2 env(4 種)が stg を指すことを実行前に目視。dry-run を先に打って件数で裏取り(§5)。
-- **R2 env と DATABASE_URL の環境ズレ = 禁止**。DB=stg・R2=別 bucket だと別 bucket の object を消しに行く。env file 内で両方 stg に揃える。
+- **向き先未確認での `--sweep` = 禁止**。DATABASE_URL_ADMIN / R2 env(4 種)が stg を指すことを実行前に目視。dry-run を先に打って件数で裏取り(§5)。
+- **R2 env と DATABASE_URL_ADMIN の環境ズレ = 禁止**。DB=stg・R2=別 bucket だと別 bucket の object を消しに行く。env file 内で両方 stg に揃える。
 - **`--user` 無しの `--sweep` を smoke で打たない**。全 user の未参照 asset を回収対象にする。smoke は必ず `--user <test-uuid>`。
 - **W1 未 deploy / backfill 未実行環境での `--sweep` = 参照中 asset を消しうる**。pre-sweep guard(`:266-276`)は「refs 完全未投入」だけを backstop(部分 stale は検知不能)。stg が W1 deploy 済 + backfill 済であることを前提とする(GC v2 の運用不変条件)。**不安なら先に dry-run の divergence(imageUuidKeys ≒ refRows か)を確認**。
 - **書込/apply 系フラグは存在しない**が、`--grace-days` に負値・非整数を渡すと exit 1(害はない)。
@@ -174,7 +176,7 @@ reconciler には **seed の `--dry-run --cleanup` のような専用 identity �
 ## 10. 確定手順(コピペ可・パスワードを CLI に書かない)
 
 前提:
-- env file に **stg の `DATABASE_URL`(6543 pooler)** と **stg R2 の `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`** が揃っていること。**実測(2026-07-16)では既存 `.env.local` に全て揃っていたため `--env-file=.env.local` で足りた**(専用 file 作成は不要だった)。stg 専用に分離したい場合のみ `.env.gc-stg`(gitignore 済)を作る。いずれにせよ**その file の DATABASE_URL/R2 が stg を指すことの目視確認は必須**(§5・§9)。
+- env file に **stg の `DATABASE_URL_ADMIN`(6543 pooler・owner 接続。RLS-P1)** と **stg R2 の `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`** が揃っていること。**実測(2026-07-16)では既存 `.env.local` に全て揃っていたため `--env-file=.env.local` で足りた**(専用 file 作成は不要だった)。stg 専用に分離したい場合のみ `.env.gc-stg`(gitignore 済)を作る。いずれにせよ**その file の DATABASE_URL_ADMIN/R2 が stg を指すことの目視確認は必須**(§5・§9)。
 - `<uuid>` = テストアカウントの内部 DB UUID(Supabase `users` で Clerk ID から逆引き)。
 - stg が **W1 deploy 済 + backfill 実行済**であること。
 - 下記コマンドは実測どおり `.env.local` を使う形で記載(専用 file を作った場合は file 名を差し替え)。
@@ -217,7 +219,7 @@ node --env-file=.env.local --conditions=react-server --import tsx \
 ```
 
 - `--grace-days 0` は secret でないゆえ CLI 記載可。
-- **`--env-file` が指す file の DATABASE_URL(stg・6543)と R2_* (stg bucket)を ① の前に確認**(CC からは file 内容未確認 = 不明)。
+- **`--env-file` が指す file の DATABASE_URL_ADMIN(stg・6543)と R2_* (stg bucket)を ① の前に確認**(CC からは file 内容未確認 = 不明)。
 
 ---
 
@@ -225,7 +227,7 @@ node --env-file=.env.local --conditions=react-server --import tsx \
 
 以下は本 doc 作成時点の不明点。**2026-07-16 の smoke④ 実測で①②④は解消済**(下記に結果を併記)。
 
-- **`.env.local` の `DATABASE_URL` が stg を指すか**: 【解消】OT が `.env.local` で実行し smoke④ PASS。件数(scanned=4/referenced=1)が想定 stg・テスト user 規模と一致し、向き先 = stg を確認。※CC からは依然 secret 未読ゆえ、今後の実行でも OT の目視確認は必須。
+- **`.env.local` の `DATABASE_URL_ADMIN` が stg を指すか**: 【解消】OT が `.env.local` で実行し smoke④ PASS。件数(scanned=4/referenced=1)が想定 stg・テスト user 規模と一致し、向き先 = stg を確認。※CC からは依然 secret 未読ゆえ、今後の実行でも OT の目視確認は必須。
 - **R2 env 4 種が stg bucket を指すか**: 【解消】本 sweep が正常回収し、R2 ダッシュボードで stg の生存 object を目視確認 = R2 も stg を指していた。
 - **テストアカウントの内部 DB UUID の実値**: Supabase/Clerk で OT 取得(実測で取得済)。
 - **stg が W1 deploy 済 + backfill 実行済か**: 【解消】dry-run の divergence が `imageUuidKeys=1 refRows=1`(乖離なし)= refs が live に投入済 → W1 deploy 済 + backfill 実行済を実測で確認。pre-sweep guard も発火せず本 sweep 完走。
