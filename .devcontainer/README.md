@@ -16,7 +16,7 @@
 - **pnpm**: corepack 経由で `package.json` の `packageManager` field に完全追従(version のハードコード無し)
 - **port**: 3000(Next.js)/ 5173(Vite)/ 8000(汎用)/ 4983(Drizzle Studio)
 
-## 2. post-create.sh が入れるもの(7 step)
+## 2. post-create.sh が入れるもの(8 step)
 
 1. npm global prefix(EACCES 対策)
 2. pnpm(corepack install = packageManager field 準拠)
@@ -25,6 +25,9 @@
 5. TypeScript Language Server + **Codex CLI**(exact pin。独立レビュアー用 → §5)
 6. Google Chrome(Playwright MCP が `--browser chrome` で使用)
 7. Claude plugin 登録(marketplace: claude-plugins-official / plugin: typescript-lsp)
+8. **PostgreSQL 17**(`pg-setup.sh` を呼ぶ。実 PG 2 テナント統合テスト `pnpm test:iso` の乗り物 → §7.1)
+
+> step 8 の実体は独立 script `.devcontainer/pg-setup.sh`(冪等・postcondition 内蔵)。**手動適用と script が乖離しないよう**、開発中の PG セットアップも必ずこの script を実行する(rebuild checklist の担保対象)。cluster は `postStartCommand`(devcontainer.json)が restart 毎に idempotent start する。5432 は forward しない(コンテナ内 localhost のみ・外部公開しない安全境界)。
 
 ## 3. Claude Code の設定レイヤー(何がどこで決まるか)
 
@@ -57,6 +60,7 @@
 - **rebuild で残る**: `/root/.claude`(named volume: global settings・plugin・session 履歴・memory)/ bash history / workspace(settings.local.json 含む)
 - **rebuild で走る**: post-create.sh(全 postcondition 通過 = exit 0 が正常。落ちたら step 名が出る)
 - rebuild 後の確認 checklist: `docs/superpowers/sessions/2026-07-18-c1-workflow-cleanup-execution.md` §9
+- **PG(Iso-1)追加 checklist**: rebuild 後に ① `pg_lsclusters` で `17 main ... online` ② `PGPASSWORD=postgres psql -h 127.0.0.1 -p 5432 -U postgres -d recallmint_test -c 'SELECT 1'` 成功 ③ `pnpm test:iso` green を確認(postStartCommand の restart 永続はこの手順で担保)。手動適用と `pg-setup.sh` の乖離が無いこと(step 8 が同 script を呼ぶ)も確認。
 
 ## 7. バージョン pin 一覧と更新手順(2026-07-18 C2 制定)
 
@@ -69,6 +73,7 @@
 | context7 MCP | `.mcp.json` | `@upstash/context7-mcp@3.2.4` | |
 | Codex CLI | `post-create.sh` `CODEX_VERSION` | `0.144.5` | pin と postcondition 期待値は同一変数(二重管理なし)。更新は contract gate 必須(→ §7.3) |
 | pnpm | `package.json` `packageManager` field | (field が SSoT) | corepack が field に追従。ここに版番号を書かない(二重管理防止) |
+| PostgreSQL | `.devcontainer/pg-setup.sh` `PG_MAJOR` + PGDG repo | major `17`(Supabase prod=17 に合わせる。patch は PGDG 追随) | `pnpm test:iso` 専用の常駐 cluster。接続契約 = `127.0.0.1:5432` / user `postgres` / db `recallmint_test`。app 本体の `DATABASE_URL`(Supabase)とは無関係 |
 
 **意図的に pin しないもの**(「全部 exact pin」からの非対称。後から"統一"しないこと):
 

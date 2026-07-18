@@ -25,7 +25,7 @@ fail() { echo "✗ POSTCONDITION FAIL: $*" >&2; exit 1; }
 
 CODEX_VERSION="0.144.5"  # exact pin 必須: フラグ仕様が版で変わる実績。更新は contract gate 必須 (README §7.3)
 
-echo "==> [1/7] npm global prefix"
+echo "==> [1/8] npm global prefix"
 mkdir -p ~/.npm-global ~/.local/bin "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 npm config set prefix ~/.npm-global
 if ! grep -q ".npm-global/bin" ~/.bashrc 2>/dev/null; then
@@ -35,7 +35,7 @@ export PATH=~/.local/bin:~/.npm-global/bin:$PATH
 [ "$(npm config get prefix)" = "$HOME/.npm-global" ] \
   || fail "npm prefix が ~/.npm-global でない: $(npm config get prefix)"
 
-echo "==> [2/7] pnpm (corepack install: package.json packageManager field 準拠)"
+echo "==> [2/8] pnpm (corepack install: package.json packageManager field 準拠)"
 corepack enable
 corepack install
 pnpm config set store-dir ~/.local/share/pnpm-store
@@ -44,7 +44,7 @@ PNPM_EXPECTED="$(node -p "require('./package.json').packageManager.split('@')[1]
 [ "$(pnpm --version)" = "$PNPM_EXPECTED" ] \
   || fail "pnpm $(pnpm --version) != packageManager field ${PNPM_EXPECTED}"
 
-echo "==> [3/7] Claude Code (native installer, stable channel)"
+echo "==> [3/8] Claude Code (native installer, stable channel)"
 # 旧 npm-global 版が残ると PATH 次第で拾われるので消す(冪等)
 npm uninstall -g @anthropic-ai/claude-code >/dev/null 2>&1 || true
 curl -fsSL https://claude.ai/install.sh | bash -s stable
@@ -52,7 +52,7 @@ export PATH="$HOME/.local/bin:$PATH"
 hash -r
 claude --version >/dev/null || fail "claude CLI が起動しない"
 
-echo "==> [4/7] Stripe CLI"
+echo "==> [4/8] Stripe CLI"
 if ! command -v stripe &> /dev/null; then
   curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
     | gpg --dearmor -o /usr/share/keyrings/stripe.gpg
@@ -62,7 +62,7 @@ if ! command -v stripe &> /dev/null; then
 fi
 stripe --version >/dev/null || fail "stripe CLI が起動しない"
 
-echo "==> [5/7] TypeScript Language Server + Codex CLI"
+echo "==> [5/8] TypeScript Language Server + Codex CLI"
 npm install -g typescript typescript-language-server
 typescript-language-server --version >/dev/null || fail "typescript-language-server が起動しない"
 # Codex: 認証は手動 codex login (ChatGPT) 運用 = API key passthrough なし。
@@ -71,7 +71,7 @@ npm install -g "@openai/codex@${CODEX_VERSION}"
 codex --version | grep -qF "$CODEX_VERSION" \
   || fail "codex 版が pin ${CODEX_VERSION} と不一致: $(codex --version)"
 
-echo "==> [6/7] Google Chrome (playwright MCP 用)"
+echo "==> [6/8] Google Chrome (playwright MCP 用)"
 # playwright MCP は --browser chrome 指定で system Chrome を使う (自前 chromium 不要)
 if ! command -v google-chrome &> /dev/null; then
   curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
@@ -82,7 +82,7 @@ if ! command -v google-chrome &> /dev/null; then
 fi
 google-chrome --version >/dev/null || fail "google-chrome が起動しない"
 
-echo "==> [7/7] Plugin 登録"
+echo "==> [7/8] Plugin 登録"
 # claude-plugins-official: docs 上 "auto-available" だが clean 状態の named volume
 # では未登録のため明示 add が必須。既存時は "already exists" で exit 1 を返すため
 # || true で吸収し、成立は postcondition 側で担保する。
@@ -107,6 +107,11 @@ grep -q "typescript-lsp" <<<"$PLUGIN_LIST" || fail "typescript-lsp plugin が未
 #   承認プロンプトが 1 回出る(既存 workspace では .claude/settings.local.json の
 #   enabledMcpjsonServers が残るため出ない)。
 
+echo "==> [8/8] PostgreSQL 17 (統合テスト test:iso 用 常駐 cluster)"
+# Iso-1: 実 PG 2 テナント統合テストの乗り物。手動適用と乖離しないよう独立 script に
+# 分離し、ここから呼ぶ(pg-setup.sh が正本・冪等・postcondition 内蔵)。
+bash .devcontainer/pg-setup.sh
+
 echo "==> バージョン確認 (summary)"
 node --version
 pnpm --version
@@ -115,6 +120,7 @@ stripe --version
 codex --version
 typescript-language-server --version
 google-chrome --version
+psql --version
 
 cat << 'EOF'
 
