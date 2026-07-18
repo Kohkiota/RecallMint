@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
@@ -7,6 +7,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     setupFiles: ['./vitest.setup.ts'],
+    // 実 PG 統合 suite は専用 config (vitest.integration-pg.config.ts) 側で走らせる。
+    // default exclude (node_modules 等) を消さないよう spread して足す。
+    exclude: [...configDefaults.exclude, 'tests/integration/pg/**'],
     include: [
       'lib/**/*.test.ts',
       'lib/**/*.test.tsx',
