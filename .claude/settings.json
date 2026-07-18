@@ -1,11 +1,6 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(python3 -c \"import json; json.load\\(open\\('/home/komai/projects/devcontainer-template/.devcontainer/devcontainer.json'\\)\\); print\\('devcontainer.json: VALID'\\)\")",
-      "Bash(python3 -c \"import json; json.load\\(open\\('/home/komai/projects/devcontainer-template/.claude/settings.json'\\)\\); print\\('settings.json: VALID'\\)\")",
-      "Bash(git -C /home/komai/projects/devcontainer-template diff --no-color .devcontainer/devcontainer.json .claude/settings.json)",
-      "Bash(python3 -c ' *)"
-    ],
+    "allow": [],
     "deny": [
       "Bash(curl:*)",
       "Bash(wget:*)",
@@ -20,11 +15,16 @@
       "Bash(git remote remove:*)",
       "Bash(gh repo delete:*)",
       "Bash(gh repo edit:*)",
-      "Bash(gh release delete:*)"
+      "Bash(gh release delete:*)",
+      "Bash(git commit --no-verify)",
+      "Bash(git commit --no-verify *)",
+      "Bash(git commit * --no-verify)",
+      "Bash(git commit -n)",
+      "Bash(git commit -n *)",
+      "Bash(git commit * -n)"
     ],
     "defaultMode": "bypassPermissions"
   },
-  "model": "opus",
   "autoUpdatesChannel": "stable",
   "hooks": {
     "Stop": [
@@ -34,6 +34,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/check-review.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/detect-leaked-toolcall.sh"
           },
           {
             "type": "command",

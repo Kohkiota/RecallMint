@@ -56,29 +56,29 @@ except Exception:
 
 # background task 完了までの中間 Stop を抑止し、最終 Stop でだけ通知する。
 # Claude Code v2.1.x の Stop/SubagentStop 拡張入力は稼働中 background task を
-# background_tasks に載せる(v2.1.197 バイナリで存在確認)。残っている中間 Stop
-# では送らず、全 background 完了後(background_tasks 空)の Stop でのみ Discord へ。
-# フィールド不在の版では None → 従来どおり毎回通知(安全側の既定)。
+# background_tasks に載せる(list 形状は 2026-07-18 に実測 238 Stop 分で確認済)。
+# 残っている中間 Stop では送らず、全 background 完了後(background_tasks 空)の
+# Stop でのみ Discord へ。フィールド不在の版では None → 従来どおり毎回通知(安全側の既定)。
 #
-# TEMP(次イテレーションで検証後に削除): background_tasks の実形状を確認するため、
-# 抑止判定より前に全 Stop の関連フィールドを追記記録する。抑止された中間 Stop も
-# 残したいので guard より前に置く。
-try:
-    with open("/tmp/claude-stop-hook-debug.jsonl", "a", encoding="utf-8") as _dbg:
-        _dbg.write(
-            json.dumps(
-                {
-                    "ts": time.time(),
-                    "background_tasks": hook_input.get("background_tasks"),
-                    "session_crons": hook_input.get("session_crons"),
-                    "stop_hook_active": hook_input.get("stop_hook_active"),
-                },
-                ensure_ascii=False,
+# debug 記録は opt-in のみ(CLAUDE_HOOK_DEBUG=1 で hook 入力の関連フィールドを追記)。
+# 常時記録は形状検証完了に伴い 2026-07-18 に撤去(C1)。
+if os.environ.get("CLAUDE_HOOK_DEBUG") == "1":
+    try:
+        with open("/tmp/claude-stop-hook-debug.jsonl", "a", encoding="utf-8") as _dbg:
+            _dbg.write(
+                json.dumps(
+                    {
+                        "ts": time.time(),
+                        "background_tasks": hook_input.get("background_tasks"),
+                        "session_crons": hook_input.get("session_crons"),
+                        "stop_hook_active": hook_input.get("stop_hook_active"),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
             )
-            + "\n"
-        )
-except OSError:
-    pass
+    except OSError:
+        pass
 
 if hook_input.get("background_tasks"):
     sys.exit(0)
