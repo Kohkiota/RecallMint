@@ -108,6 +108,11 @@ issue #13783(context 累積バグ)が CC 2.1.x で修正済みかの確認のみ
 
 ---
 
+## 追記(2026-07-18 同日): A-2 の結論変更と C1 実装
+
+- **A-2 は「修理」でなく「削除」に確定**: transcript 実測(2026-06-23〜07-17)で chrome-devtools MCP は実呼び出し 24 / 成功 0(全件 `Target closed`)、全 stg smoke は Playwright MCP が実走。patch は当初から実効していなかった。
+- A 群 + 項目 2(noVNC)+ B-1 最小 + post-create postcondition 化は **C1 で実装済** → 記録 = `2026-07-18-c1-workflow-cleanup-execution.md`(再導入レシピ / deny の限界 / OT rebuild checklist 含む)。
+
 ## 5. 参考: 現在の未 push スタック
 
 59eda8f..5b17774(12 commits、test 品質監査 G1-G3 + 追加対処 + test-only 規律制定 + hook 強制)。本 doc の commit もこの上に積む。
