@@ -39,3 +39,52 @@
 
 - **request body / outbox / query param 由来の userId を `WHERE user_id` に使う経路は無い**(client 供給は row ID のみ・userId は常に auth 由来)。
 - 例外的性質 3 件: ① RSC 4 page が JWT claim `dbUserId`(server 署名・body 非由来)を tenant key に使用(理論上のみ)/ ② 上表 5o の OCR 2 write が id-only(= O1 で明示扱い)/ ③ webhook は別 trust anchor(署名)。①③ は本 behavioral suite の対象外(OUT)、② のみ IN で明示 pin する。
+
+---
+
+# RLS-P2 Task 10 追記: null 契約 7 分類の担保 + 5 表配線 matrix
+
+起点: `docs/audit/2026-07-20-rls-p2-lifecycle-null-affected-rows-factfinding.md` §2.2(null を受けた呼出側の全分類)。Task 10 (A) の新規 test `lifecycle-null-contract.test.ts` は 7 分類すべての **分岐元(SOURCE)= getCurrentUser が null/throw/User を返す条件**を実 PG(RLS on)で pin する(claim+行→User / claim+ghost→null / claim なし+未同期→null / claim なし+同期→User / no-session→throw)。下表 1 は **downstream 消費**(各 call site が SOURCE の null をどう扱うか)の担保 test を棚卸す。
+
+## 表 1: null 契約 7 分類 × 担保 test
+
+| # | 分類(FF §2.2) | 代表 call site | null 時挙動 | 担保 test(file:関心行) | 状態 |
+|---|---|---|---|---|---|
+| SOURCE | getCurrentUser の null/throw/User 契約 | `lib/auth/ensure-user.ts` | claim+行→User / ghost→null / 未同期→null / no-session→throw | **`tests/integration/pg/lifecycle-null-contract.test.ts`(新規・実 PG RLS on)** + `lib/auth/ensure-user.test.ts`(unit・DB mock で claim 呼分け) | 担保 |
+| 1 | provisioning 表示(SyncingPage) | `app/(app)/app/layout.tsx:34-39`(route-group layout。root `app/layout.tsx` ではない) | `<SyncingPage/>` render・children 非 render | — | **未担保**(layout 単体 test 無。FF §2.2 が SSR gate の defensive path と明記) |
+| 2 | 200 + 空 body | withReadOnlyAuth 4 route | 空 stats/statuses/delta/配列 + DB 未着手 | `app/api/dashboard/stats/route.test.ts:48` / `app/api/exams/status/route.test.ts:80` / `app/api/pull/route.test.ts` / `app/api/study-days/pull/route.test.ts:60`(+ contract 群) | 担保 |
+| 3 | 401 + `user_not_synced` | review-events/bulk・entity-mutations/bulk | `{ error: 'user_not_synced' }` 401・DB 未着手 | `app/api/review-events/bulk/route.test.ts:579` / `app/api/entity-mutations/bulk/route.test.ts:396`(+ `tests/contract/*bulk*.contract.test.ts`) | 担保 |
+| 4 | ActionResult エラー | settings 3 `_action` / create-exam / delete-exam / asset-actions / upload process | `{ ok:false, error:'認証が必要です' }`(upload は code:'AUTH') | `save-fsrs-mode.test.ts` / `save-session-limit.test.ts` / `save-custom-session-limit.test.ts` / `create-exam.test.ts` / `delete-exam.test.ts` / `asset-actions.test.ts` / `upload/_actions/process.test.ts` | 担保 |
+| 5 | throw(error boundary) | settings/actions / upgrade/actions | `Error('USER_NOT_SYNCED')` throw | `app/(app)/app/settings/actions.test.ts:41` / `app/(app)/app/upgrade/actions.test.ts` | 担保 |
+| 6 | null render | RSC 9 page(`page.tsx`) | `return null`(空 render) | `page.test.tsx` 群(app/settings/exams[id]/study)は正常系のみ・null-render 分岐は未 assert | **未担保**(FF §2.2「layout が先に SyncingPage → 通常不達の防御」= defensive dead-ish path) |
+| 7 | 匿名継続 | `app/(marketing)/page.tsx` / `app/(marketing)/pricing/page.tsx` | landing/pricing を未認証扱いで render | `components/pricing/pricing-table.test.tsx` は component のみ(page の getCurrentUser-null→匿名 render は未 assert) | **未担保** |
+
+**未担保の明示(brief 要件)**: 分類 **1(layout SyncingPage)/ 6(RSC page の `return null`)/ 7(marketing/pricing 匿名 render)** は自動 test 無。3 者とも「layout が先行して SyncingPage を出す / 未認証は proxy と landing が先に処理する」ため FF §2.2 が defensive・通常不達と位置づける SSR-render 経路であり、Task 10 の scope(getCurrentUser SOURCE 契約の実 PG pin + lifecycle behavioral)外。SOURCE 契約自体は (A) が実 PG で担保するため、これら 3 分類の未担保は「分岐元が壊れて全 call site が誤動作する」class ではなく「特定 SSR consumer の描画 assert 欠落」に留まる。
+
+## 表 2: 5 表 × 操作 × 経路 × context 供給元 × eq 述語(Task 3-8 配線の監査証跡)
+
+- **context 供給元** 語彙: `withTenantTx`(helper が tx 冒頭で `set_config('app.user_id')`)/ `内部 setTenantContext`(handler が自前で tx 内に張る=user.deleted tx)/ `definer`(SECURITY DEFINER 関数が RLS を迂回・context 非依存、users 特殊経路のみ)。
+- **RLS policy**(`db/policies/rls-p2-enable.sql`): 4 表は `*_tenant`(FOR ALL・USING=WITH CHECK=`user_id=app_current_user_id()`)/ users は SELECT/INSERT/UPDATE 3 policy 別建て・**DELETE policy 無**(app-role hard delete を構造 deny)。
+
+| 表 | 操作 | 代表経路 | app WHERE の eq | RLS policy | context 供給元 |
+|---|---|---|---|---|---|
+| **users** | read | `getCurrentUser`(claim-present) | `eq(id) AND isNull(deletedAt)` | users_select(`id=ctx AND deleted_at IS NULL`) | withTenantTx |
+| users | resolve(id 射影) | `app_bootstrap_user_from_clerk` / `app_resolve_user_for_stripe` | 関数内 `clerk_id`/`stripe_customer_id`/… | (bypass) | **definer**(context 不要・scrub 済/退会済も引ける) |
+| users | write(created) | `handleEvent(user.created)` | INSERT `id=newUuid` | users_insert(`id=ctx`) | withTenantTx(事前採番 uuid) |
+| users | write(scrub) | `app_scrub_deleted_user` | 関数内 `id=p_user_id` | (bypass・context 自衛検査 `app.user_id=arg`) | **definer** ∈ 内部 setTenantContext tx |
+| users | write(stripe 射影) | `projectStripeSubscription` / `applyDeletedReset` | `eq(clerkId)`/`eq(stripeCustomerId)` | users_update(`id=ctx AND deleted_at IS NULL`) | withTenantTx(resolved.id) |
+| users | delete | — | — | **policy 無 = deny** | (app-role 不可) |
+| **exams** | read | `getActiveExamsForUser`/`getExamByIdForUser` | `eq(userId)` | exams_tenant | withTenantTx |
+| exams | write | `createExam`/`deleteExam` | `eq(userId)` | exams_tenant | withTenantTx(user.id) |
+| exams | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | exams_tenant | 内部 setTenantContext(internalUserId) |
+| **cards** | read | `getCardsForExam`/`getCardsDelta` | `eq(userId)[+gte(cursor)]` | cards_tenant | withTenantTx / asTenant |
+| cards | write | `applyCard*`/`updateCardField` | `eq(userId)`(一部 `eq(id)`+field) | cards_tenant | withTenantTx |
+| cards | OCR write | `completeUploadTx`/`session applyCardFinalStates` | **`eq(id)` のみ(user_id 述語なし)** | cards_tenant(tenant scope は RLS 側が担保) | withTenantTx / 内部(provenance 依存・5o) |
+| **tombstones** | read | pull delta | `eq(userId)[+gte(cursor)]` | tombstones_tenant | withTenantTx |
+| tombstones | write | `apply-*-mutation`(insert)/`deleteExam` tx | `userId` 値 / `eq(userId)` | tombstones_tenant | withTenantTx |
+| tombstones | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | tombstones_tenant | 内部 setTenantContext |
+| **study_days** | read | dashboard stats(raw SQL)/ study-days pull | `user_id = ${userId}::uuid` / `eq(userId)` | study_days_tenant | withTenantTx |
+| study_days | write(UPSERT) | review ingest tx | `userId` PK + `eq(userId)` guard | study_days_tenant | withTenantTx |
+| study_days | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | study_days_tenant | 内部 setTenantContext |
+
+- **監査上の含意**: OCR write(cards / source_documents)は app-WHERE に user_id 述語を持たない唯一の逸脱(FF §5o)。RLS-on 後は cards_tenant policy が tenant scope を補完するため id-only でも越境不能(`rls-partial-chain.test.ts` / `ocr-owner-scope.test.ts` が behavioral pin)。users の hard delete は policy 不在で構造 deny、退会は definer scrub(soft delete)経由。この 2 点が「app 層 WHERE を信頼せず RLS が最終境界」を最も強く示す配線。
