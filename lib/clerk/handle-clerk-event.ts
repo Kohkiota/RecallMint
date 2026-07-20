@@ -1,7 +1,9 @@
 import 'server-only'
+import { randomUUID } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import Stripe from 'stripe'
 import { getDb } from '@/lib/db'
+import { withTenantTx, setTenantContext } from '@/lib/db/tenant-tx'
 import {
   users,
   exams,
@@ -38,25 +40,33 @@ export async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
   if (evt.type === 'user.created') {
     const data = evt.data
     const email = data.email_addresses?.[0]?.email_address ?? 'unknown@example.com'
-    // .returning({id}) で INSERT 成立 (新規) と conflict (既存) を区別する。
-    // 新規時のみ Clerk publicMetadata を初期 sync (dbUserId + plan='free')。
-    // conflict 時 (= webhook re-fire 等で既に users 行が存在) は metadata sync を
-    // skip — 既存 metadata の plan 値を 'free' に上書きする race を防ぐ。
-    // 復旧経路: conflict path で metadata が欠落した user は (a) 次の user 由来
-    // webhook (Stripe subscription 系) で publicMetadata.plan が補填される、
-    // (b) consumer 側の getAuthContext() が dbUserId 未設定時に getCurrentUser()
-    // へ fallback する設計、 の 2 段で degraded mode を吸収する。 一斉復旧は
-    // 別途 backfill (後続 sprint の chore commit) で実施予定。
-    const inserted = await db
-      .insert(users)
-      .values({ clerkId: data.id, email })
-      .onConflictDoNothing({ target: users.clerkId })
-      .returning({ id: users.id })
-    const dbUserId = inserted?.[0]?.id
-    if (dbUserId) {
+    // RLS-P2 (spec §2.5): 事前採番 UUID を id に固定し、単一 withTenantTx (context=新 uuid)
+    // 内で存在チェック → 不在なら INSERT。RETURNING / onConflictDoNothing は使わない
+    // (RLS-on 後は RETURNING が policy と干渉しうるため、新規判定を bootstrap 関数の
+    // 存在チェックに委ねる)。bootstrap 関数は SECURITY DEFINER (RLS 迂回) ゆえ context
+    // 非依存に clerk_id で既存を検出する。
+    //
+    // 新規判定 = 存在チェックが 0 行。既存 (webhook re-fire 等で users 行が先に存在) は
+    // INSERT せず metadata sync も skip — 既存 metadata の plan 値を 'free' に上書きする
+    // race を防ぐ。同 clerk_id の並行 created (存在チェックすり抜け) は clerk_id UNIQUE
+    // 制約が INSERT で throw → webhook route の outer catch が 200 + 通知で吸収 (spec §2.5)。
+    // 復旧経路: skip path で metadata が欠落した user は (a) 次の user 由来 webhook で
+    // publicMetadata.plan が補填、 (b) getAuthContext() の getCurrentUser() fallback、
+    // の 2 段で degraded mode を吸収する。
+    const newUserId = randomUUID()
+    const created = await withTenantTx(db, newUserId, async (tx) => {
+      const existing = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM public.app_bootstrap_user_from_clerk(${data.id})`,
+      )
+      if (existing[0]) return false // 既存 → INSERT / sync skip
+      await tx.insert(users).values({ id: newUserId, clerkId: data.id, email })
+      return true
+    })
+    // metadata sync は外部 I/O (Clerk API) ゆえ tx 外。新規作成時のみ (既存 gate 条件と同値)。
+    if (created) {
       await syncClerkPublicMetadata({
         clerkId: data.id,
-        dbUserId,
+        dbUserId: newUserId,
         plan: 'free',
       })
     }
@@ -73,28 +83,31 @@ export async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
 async function handleUserDeleted(clerkUserId: string): Promise<void> {
   const db = getDb()
 
-  // §6: SELECT users by clerkId to get internal id and Stripe customer.
-  // Using SELECT-first (instead of UPDATE-RETURNING) so Stripe cancel can run
-  // before the DB transaction, and unsynced users (SELECT 0 rows) are detected
-  // without issuing an UPDATE that would have no effect.
-  const rows = await db
-    .select({ id: users.id, stripeCustomerId: users.stripeCustomerId })
-    .from(users)
-    .where(eq(users.clerkId, clerkUserId))
-    .limit(1)
+  // §6 / RLS-P2 (spec §2.6): resolve internal id + Stripe customer via the
+  // SECURITY DEFINER bootstrap 関数 (clerk_id で 1 行・scrub 済みは clerk_id NULL ゆえ
+  // 0 行)。SELECT-first のまま (UPDATE-RETURNING でなく) なので Stripe cancel を DB
+  // transaction 前に走らせられ、resolve 不能 (0 行) を effect なしで検出できる。
+  // 手マッピングは snake_case 2 列のみ (stripe_customer_id キー名に注意)。
+  const rows = await db.execute<{ id: string; stripe_customer_id: string | null }>(
+    sql`SELECT id, stripe_customer_id FROM public.app_bootstrap_user_from_clerk(${clerkUserId})`,
+  )
   const internalUserId = rows[0]?.id
-  const customerId = rows[0]?.stripeCustomerId
+  const customerId = rows[0]?.stripe_customer_id ?? null
 
-  // F-5 fix-up (review M-1): users 未同期 (user.created webhook が user.deleted より
-  // 遅れて到達した順序逆転 edge case) は internalUserId が引けず、削除処理も台帳記録も
-  // 行えない。silent skip させず notifyOps で観測性を確保し、OT が Clerk webhook 配送
-  // 順序の異常を検知できるようにする。
+  // F-5 fix-up (review M-1) / RLS-P2 §2.6: bootstrap 0 行 = internalUserId 未解決。
+  // 原因は user.created 未到達の順序逆転、または既に scrub 済 (clerk_id NULL 化) の
+  // 2 通りがあり、データ上は判別できない (両者とも clerk_id で引けない) ため文言を
+  // 中立化する。silent skip させず notifyOps で観測性を確保し、OT が異常を検知できる
+  // ようにする点は不変。
   if (!internalUserId) {
-    await notifyOps('user.deleted received but users row not synced', {
-      clerkUserId,
-      environment: runtimeEnv(),
-      timestamp: new Date().toISOString(),
-    })
+    await notifyOps(
+      'user.deleted received but users row not found (not-synced or already-deleted)',
+      {
+        clerkUserId,
+        environment: runtimeEnv(),
+        timestamp: new Date().toISOString(),
+      },
+    )
     return
   }
 
@@ -189,10 +202,16 @@ async function handleUserDeleted(clerkUserId: string): Promise<void> {
   await runTransactionWithRetry(
     db,
     async (tx) => {
-      await tx
-        .update(users)
-        .set({ deletedAt: sql`now()`, email: null, clerkId: null })
-        .where(eq(users.id, internalUserId))
+      // RLS-P2: 冒頭で tenant context を張る。app_scrub_deleted_user の自衛検査が
+      // app.user_id と p_user_id の一致を要求するため必須・かつ RLS-on 後は Group I
+      // DELETE の owner scope をこの GUC が担う。retry の各試行で再実行される
+      // (SET LOCAL は前 tx の ROLLBACK で消えるため、試行ごとの再設定が正しい)。
+      await setTenantContext(tx, internalUserId)
+      // GDPR PII scrub (deleted_at=now(), email/clerk_id NULL) は現行 inline UPDATE を
+      // app_scrub_deleted_user (SECURITY DEFINER・context 自衛検査付き) へ移植したもの。
+      // stripe_customer_id は関数側で保持 (correlation key)。値レベル冪等 + 0 行 no-op ゆえ
+      // retry / 再送安全。
+      await tx.execute(sql`SELECT public.app_scrub_deleted_user(${internalUserId})`)
       await tx.delete(exams).where(eq(exams.userId, internalUserId))
       await tx.delete(studyDays).where(eq(studyDays.userId, internalUserId))
       await tx.delete(contactMessages).where(eq(contactMessages.userId, internalUserId))
@@ -314,8 +333,9 @@ function isTransientDbError(err: unknown): boolean {
 // §6 / T3: DB transaction を最大 3 retry (= 合計 4 試行) でラップする local 関数。
 // transient error (isTransientDbError=true) のときのみ retry、permanent は即中断。
 // backoff: retry1 前 500ms / retry2 前 1000ms / retry3 前 2000ms (ocr.ts callWithRetry と同値構造)。
-// transaction は idempotent (UPDATE deleted_at + PII scrub (email/clerkId NULL → NULL = no-op) /
-// DELETE WHERE は再実行安全) なので retry 安全。
+// transaction は idempotent (setTenantContext の SET LOCAL 再設定 + app_scrub_deleted_user
+// (deleted_at/email/clerk_id を値レベル冪等に上書き・0 行 no-op) / DELETE WHERE は再実行安全)
+// なので retry 安全。
 // Stripe cancel ループと recordFailure 本体はこの wrap 対象外。
 const MAX_DB_RETRIES = 3 // 初回 + 3 retries = 合計 4 試行
 

@@ -10,11 +10,13 @@
  *    - schema parse fail (unsupported event type) → HTTP 200, body 'ok'
  *    - duplicate event_id → HTTP 200, body 'duplicate'
  *    - handler error (outer catch) → HTTP 200, body 'handler error swallowed'
- * 2. user.created → users INSERT ON CONFLICT DO NOTHING + publicMetadata sync
- *    (captured: clerkId, email, dbUserId, plan=free)
- * 3. user.deleted → users soft delete (email=null, clerkId=null, deletedAt set,
- *    stripeCustomerId NOT touched) + exactly 10 child-table DELETEs + assets
- *    soft-delete (status='deleting' UPDATE, W2 image-GC-v2 spec §4.8).
+ * 2. user.created → 事前採番 UUID で users INSERT (id 明示・RLS-P2 spec §2.5、RETURNING /
+ *    onConflict 非使用) + publicMetadata sync (captured: clerkId, email, plan=free。
+ *    dbUserId は非決定 UUID ゆえ INSERT id との一致を boolean で凍結)
+ * 3. user.deleted → scrub は app_scrub_deleted_user 関数呼出 (RLS-P2 spec §2.6、
+ *    setTenantContext 先行・users を drizzle UPDATE しない = stripe_customer_id は関数側で
+ *    保持) + exactly 10 child-table DELETEs + assets soft-delete (status='deleting'
+ *    UPDATE, W2 image-GC-v2 spec §4.8)。実 PII NULL 化は iso (rls-functions.test.ts) が pin。
  *    NOTE: route header comment lists Group I テーブル (11 件)。 うち assets は W2 で
  *    物理 DELETE → deleting UPDATE に置換されたため、 ACTUAL DELETE contract is 10.
  *    Freeze 10 DELETE + 1 assets soft-delete.
@@ -32,6 +34,7 @@ const {
   mockDbUpdate,
   mockDbSelect,
   mockDbDelete,
+  mockDbExecute,
   mockDbTransaction,
   mockStripeListIterator,
   mockCancelWithRetry,
@@ -44,6 +47,7 @@ const {
   mockDbUpdate: vi.fn(),
   mockDbSelect: vi.fn(),
   mockDbDelete: vi.fn(),
+  mockDbExecute: vi.fn(),
   mockDbTransaction: vi.fn(),
   mockStripeListIterator: vi.fn(),
   mockCancelWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -64,6 +68,7 @@ vi.mock('@/lib/db', () => ({
     update: mockDbUpdate,
     select: mockDbSelect,
     delete: mockDbDelete,
+    execute: mockDbExecute,
     transaction: mockDbTransaction,
   }),
 }))
@@ -114,6 +119,32 @@ function chain(resolveTo: unknown = undefined): Record<string, unknown> {
   return c
 }
 
+// RLS-P2: drizzle SQL の静的 text + 補間値を平坦化して execute の SQL を判別する
+// (app_bootstrap_user_from_clerk = created 存在チェック / deleted resolve、set_config =
+// setTenantContext、app_scrub_deleted_user = scrub)。
+function sqlText(q: unknown): string {
+  const chunks = (q as { queryChunks?: unknown[] })?.queryChunks
+  if (!Array.isArray(chunks)) return ''
+  return chunks
+    .map((c) => {
+      const v = (c as { value?: unknown })?.value
+      if (Array.isArray(v)) return v.join('')
+      if (typeof c === 'string') return c
+      if (typeof v === 'string') return v
+      return ''
+    })
+    .join('')
+}
+
+// bootstrap 関数の戻り行 (created 存在チェック / deleted resolve が共有)。
+let bootstrapRows: unknown[] = []
+
+function executeCallsMatching(substr: string): unknown[] {
+  return mockDbExecute.mock.calls
+    .map((c) => c[0])
+    .filter((q) => sqlText(q).includes(substr))
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 beforeEach(() => {
   vi.clearAllMocks()
@@ -121,10 +152,27 @@ beforeEach(() => {
   mockNotifyOps.mockResolvedValue(undefined)
   mockCancelWithRetry.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
-  // Transaction mock: execute callback with same db shape as tx
+  bootstrapRows = []
+  // 既定 insert chain (clerk_events は各 test が mockReturnValueOnce で先に消費、
+  // 後続の tx.insert(users) はこの default chain を返す)。
+  mockDbInsert.mockReturnValue(chain(undefined))
+  // db.execute / tx.execute の router: bootstrap は bootstrapRows、set_config /
+  // app_scrub_deleted_user は no-op resolve。
+  mockDbExecute.mockImplementation((q: unknown) =>
+    sqlText(q).includes('app_bootstrap_user_from_clerk')
+      ? Promise.resolve(bootstrapRows)
+      : Promise.resolve(undefined),
+  )
+  // Transaction mock: execute callback with same db shape as tx (RLS-P2 で execute /
+  // insert も受ける)。
   mockDbTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) => {
-      const tx = { update: mockDbUpdate, delete: mockDbDelete }
+      const tx = {
+        execute: mockDbExecute,
+        insert: mockDbInsert,
+        update: mockDbUpdate,
+        delete: mockDbDelete,
+      }
       return await fn(tx)
     },
   )
@@ -210,7 +258,7 @@ describe('Clerk webhook: 400-vs-200 separation', () => {
 // ── 2. user.created ───────────────────────────────────────────────────────────
 
 describe('Clerk webhook: user.created', () => {
-  it('happy path → users INSERT + publicMetadata sync (captured clerkId / email / dbUserId / plan)', async () => {
+  it('happy path → 事前採番 UUID で users INSERT (id 明示) + publicMetadata sync (dbUserId は採番 id と一致)', async () => {
     mockSvixVerify.mockReturnValue({
       type: 'user.created',
       data: {
@@ -218,9 +266,7 @@ describe('Clerk webhook: user.created', () => {
         email_addresses: [{ email_address: 'new@contract.example.com' }],
       },
     })
-    mockDbInsert
-      .mockReturnValueOnce(chain([{ id: 'msg_new_contract' }])) // clerk_events
-      .mockReturnValueOnce(chain([{ id: '00000000-0000-4000-a000-000000000001' }])) // users INSERT
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_new_contract' }])) // clerk_events; bootstrapRows=[] 新規
 
     const res = await POST(
       makeReq({
@@ -230,7 +276,7 @@ describe('Clerk webhook: user.created', () => {
     )
     expect(res.status).toBe(200)
 
-    // Capture users INSERT values (2nd insert = index 1)
+    // users INSERT は withTenantTx 内の tx.insert (mockDbInsert 2 回目 = index 1)
     const usersInsertChain = mockDbInsert.mock.results[1]?.value as {
       values: ReturnType<typeof vi.fn>
     }
@@ -239,15 +285,22 @@ describe('Clerk webhook: user.created', () => {
     // Capture publicMetadata sync args
     const syncArgs = mockSyncClerkMetadata.mock.calls[0]?.[0] as Record<string, unknown>
 
+    const insertId = usersInsertArgs?.id as string
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(insertId)
+
     expect({
       status: res.status,
       usersInsert: {
         clerkId: usersInsertArgs?.clerkId,
         email: usersInsertArgs?.email,
+        // 事前採番: id が明示され UUID 形式 (RETURNING 非依存)
+        idIsUuid: isUuid,
       },
       publicMetadataSync: {
         clerkId: syncArgs?.clerkId,
-        dbUserId: syncArgs?.dbUserId,
+        // dbUserId は非決定 UUID ゆえ raw 値を snapshot せず、INSERT id と一致することを凍結
+        dbUserIdMatchesInsertId: syncArgs?.dbUserId === insertId,
         plan: syncArgs?.plan,
       },
     }).toMatchSnapshot()
@@ -257,19 +310,18 @@ describe('Clerk webhook: user.created', () => {
 // ── 3. user.deleted ───────────────────────────────────────────────────────────
 
 describe('Clerk webhook: user.deleted', () => {
-  it('soft delete users + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外)', async () => {
+  it('scrub via 関数 + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外)', async () => {
     // Group I 11 テーブル: exams, studyDays, contactMessages, aiUsageUsers,
     // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories,
     // assets. うち assets のみ W2 で物理 DELETE → status='deleting' UPDATE (soft-delete)。
-    // よって物理 DELETE は 10 件、 update は users scrub + assets deleting の 2 件。
-    // Hard assert DELETE count=10; snapshot the soft-delete SET shape + assets deleting.
+    // RLS-P2: scrub は app_scrub_deleted_user 関数呼出に移行 (users を drizzle UPDATE しない)
+    // ため drizzle update は assets deleting の 1 件のみ。物理 DELETE は 10 件。
+    const internalUserId = '22222222-0000-4000-a000-000000000001'
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_contract' }])) // clerk_events
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '22222222-0000-4000-a000-000000000001', stripeCustomerId: null }]),
-    )
-    // Free plan → no Stripe cancel loop. Transaction: update × 2 (users + assets) + 10 deletes.
-    // 呼び出しごとに新しい chain を返し、table 引数で users / assets の SET を区別する。
+    bootstrapRows = [{ id: internalUserId, stripe_customer_id: null }]
+    // Free plan → no Stripe cancel loop. Transaction: setTenantContext + scrub 関数 +
+    // 10 deletes + assets deleting UPDATE (drizzle update × 1)。
     mockDbUpdate.mockImplementation(() => chain(undefined))
     mockDbDelete.mockReturnValue(chain(undefined))
 
@@ -279,22 +331,24 @@ describe('Clerk webhook: user.deleted', () => {
     // Hard assert: exactly 10 child-table DELETEs (assets excluded = soft-delete) — freeze
     expect(mockDbDelete).toHaveBeenCalledTimes(10)
 
-    // 1st update = users scrub (handler tx.update 順序: users が先)
-    const usersUpdateChain = mockDbUpdate.mock.results[0]?.value as { set: ReturnType<typeof vi.fn> }
-    const setArgs = usersUpdateChain.set.mock.calls[0]?.[0] as Record<string, unknown>
-    // 2nd update = assets deleting soft-delete
-    const assetsUpdateChain = mockDbUpdate.mock.results[1]?.value as { set: ReturnType<typeof vi.fn> }
+    const scrubCalls = executeCallsMatching('app_scrub_deleted_user')
+    const setConfigCalls = executeCallsMatching('set_config')
+    // drizzle update は assets deleting のみ (results[0])
+    const assetsUpdateChain = mockDbUpdate.mock.results[0]?.value as { set: ReturnType<typeof vi.fn> }
     const assetsSetArgs = assetsUpdateChain.set.mock.calls[0]?.[0] as Record<string, unknown>
 
     expect({
       status: res.status,
-      softDelete: {
-        emailNull: setArgs.email === null,
-        clerkIdNull: setArgs.clerkId === null,
-        // deletedAt is sql`now()` (a SQL chunk) — assert presence only, not value
-        deletedAtSet: setArgs.deletedAt !== undefined,
-        // stripeCustomerId is kept as audit correlation key — must NOT be in SET
-        stripeCustomerIdTouched: 'stripeCustomerId' in setArgs,
+      scrub: {
+        // scrub は app_scrub_deleted_user(internalUserId) 関数呼出
+        viaFunction:
+          scrubCalls.length === 1 && sqlText(scrubCalls[0]).includes(internalUserId),
+        // setTenantContext が internalUserId で先行
+        tenantContextSet:
+          setConfigCalls.length >= 1 && sqlText(setConfigCalls[0]).includes(internalUserId),
+        // users を drizzle UPDATE しない (= stripe_customer_id は関数側で保持)。
+        // drizzle update は assets deleting の 1 件のみ。
+        drizzleUpdateCount: mockDbUpdate.mock.calls.length,
       },
       // W2: assets is soft-deleted to 'deleting' (not physically DELETEd)
       assetsSoftDelete: { status: assetsSetArgs.status },
@@ -307,9 +361,9 @@ describe('Clerk webhook: user.deleted', () => {
     // Verify that the sub-cancel and 10-DELETE contract holds even with a Stripe customer.
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_del_stripe_contract' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_del_stripe' }])) // clerk_events
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '33333333-0000-4000-a000-000000000001', stripeCustomerId: 'cus_del_contract' }]),
-    )
+    bootstrapRows = [
+      { id: '33333333-0000-4000-a000-000000000001', stripe_customer_id: 'cus_del_contract' },
+    ]
     // Stripe list: one active sub (should be canceled), one already-canceled (skip)
     mockStripeListIterator.mockReturnValue(
       asyncIterFrom([

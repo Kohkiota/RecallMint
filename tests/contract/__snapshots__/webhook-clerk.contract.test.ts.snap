@@ -35,32 +35,32 @@ exports[`Clerk webhook: 400-vs-200 separation > schema parse fail (unsupported e
 }
 `;
 
-exports[`Clerk webhook: user.created > happy path → users INSERT + publicMetadata sync (captured clerkId / email / dbUserId / plan) 1`] = `
+exports[`Clerk webhook: user.created > happy path → 事前採番 UUID で users INSERT (id 明示) + publicMetadata sync (dbUserId は採番 id と一致) 1`] = `
 {
   "publicMetadataSync": {
     "clerkId": "user_new_contract",
-    "dbUserId": "00000000-0000-4000-a000-000000000001",
+    "dbUserIdMatchesInsertId": true,
     "plan": "free",
   },
   "status": 200,
   "usersInsert": {
     "clerkId": "user_new_contract",
     "email": "new@contract.example.com",
+    "idIsUuid": true,
   },
 }
 `;
 
-exports[`Clerk webhook: user.deleted > soft delete users + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外) 1`] = `
+exports[`Clerk webhook: user.deleted > scrub via 関数 + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外) 1`] = `
 {
   "assetsSoftDelete": {
     "status": "deleting",
   },
   "childTableDeleteCount": 10,
-  "softDelete": {
-    "clerkIdNull": true,
-    "deletedAtSet": true,
-    "emailNull": true,
-    "stripeCustomerIdTouched": false,
+  "scrub": {
+    "drizzleUpdateCount": 1,
+    "tenantContextSet": true,
+    "viaFunction": true,
   },
   "status": 200,
 }

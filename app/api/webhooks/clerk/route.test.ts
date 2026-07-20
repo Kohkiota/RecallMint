@@ -8,6 +8,7 @@ const {
   mockDbUpdate,
   mockDbSelect,
   mockDbDelete,
+  mockDbExecute,
   mockDbTransaction,
   mockStripeListIterator,
   mockCancelWithRetry,
@@ -20,6 +21,7 @@ const {
   mockDbUpdate: vi.fn(),
   mockDbSelect: vi.fn(),
   mockDbDelete: vi.fn(),
+  mockDbExecute: vi.fn(),
   mockDbTransaction: vi.fn(),
   mockStripeListIterator: vi.fn(),
   mockCancelWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -40,6 +42,7 @@ vi.mock('@/lib/db', () => ({
     update: mockDbUpdate,
     select: mockDbSelect,
     delete: mockDbDelete,
+    execute: mockDbExecute,
     transaction: mockDbTransaction,
   }),
 }))
@@ -88,6 +91,54 @@ function chain(resolveTo: unknown = undefined) {
   return c
 }
 
+// RLS-P2 (Task 6): user.created の存在チェックと user.deleted の resolve は
+// どちらも db/tx.execute(sql`... app_bootstrap_user_from_clerk(...)`) を叩き、
+// setTenantContext は tx.execute(sql`... set_config(...)`)、scrub は
+// tx.execute(sql`... app_scrub_deleted_user(...)`) を叩く。call 順が interleave
+// するため mockReturnValueOnce では判別できない。drizzle SQL の静的 text + 補間値を
+// 平坦化して substring / 引数を判定する。
+function sqlText(q: unknown): string {
+  const chunks = (q as { queryChunks?: unknown[] })?.queryChunks
+  if (!Array.isArray(chunks)) return ''
+  return chunks
+    .map((c) => {
+      const v = (c as { value?: unknown })?.value
+      if (Array.isArray(v)) return v.join('') // StringChunk (静的 text)
+      if (typeof c === 'string') return c // 補間された primitive (param)
+      if (typeof v === 'string') return v // Param.value
+      return ''
+    })
+    .join('')
+}
+
+// bootstrap 関数 (app_bootstrap_user_from_clerk) が返す行。created の存在チェックと
+// deleted の resolve が同一関数を叩くため、各 test が本値を設定して分岐を制御する
+// (beforeEach で [] リセット = 未同期 / 新規)。
+let bootstrapRows: unknown[] = []
+
+// 目的の SQL を叩いた execute 呼び出しを substring で拾う (setTenantContext / scrub /
+// resolve の発火と引数を pin する)。
+function executeCallsMatching(substr: string): unknown[] {
+  return mockDbExecute.mock.calls
+    .map((c) => c[0])
+    .filter((q) => sqlText(q).includes(substr))
+}
+
+// scrub (app_scrub_deleted_user) 実行時に err を throw する tx を返す (setTenantContext の
+// set_config は成功)。DB transaction 内の scrub statement 失敗を realistic に再現する
+// (旧 test の「tx.update が throw」の後継 — scrub が最初の書込 statement に移行した)。
+function txThatThrowsOnScrub(err: unknown): Record<string, unknown> {
+  return {
+    execute: vi.fn((q: unknown) => {
+      if (sqlText(q).includes('app_scrub_deleted_user')) throw err
+      return Promise.resolve(undefined) // set_config は成功
+    }),
+    insert: mockDbInsert,
+    update: mockDbUpdate,
+    delete: mockDbDelete,
+  }
+}
+
 // Sprint 2 dual-write: recordFailure が recordIntegrationFailure 経由で
 // getDb().insert(integrationFailures).values({...}) を呼ぶ。mockDbInsert は
 // clerk_events (idempotency) と integration_failures (ledger) の両方で呼ばれるため、
@@ -121,20 +172,33 @@ beforeEach(() => {
   mockNotifyOps.mockResolvedValue(undefined)
   mockCancelWithRetry.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
+  bootstrapRows = [] // 既定 = users 未同期 / 新規 (bootstrap 0 行)
   // ledger INSERT の default chain。idempotency INSERT の mockReturnValueOnce 消費後に
   // helper の integration_failures INSERT が undefined を返して throw-safe path
   // (ledgerWriteError) へ落ちないよう default を敷く。各 test は clerk_events を
   // mockReturnValueOnce で先に消費する。
   mockDbInsert.mockReturnValue(chain(undefined))
-  // W2: tx.update は users (scrub) と assets (deleting soft-delete) の 2 件が走る。
-  // default は呼び出しごとに新しい chain を返す (両 update が有効な chain を得る)。
-  // table 引数は mockDbUpdate.mock.calls に残るので updateChainFor(table) で引ける。
-  // 個別 test は必要なら mockReturnValueOnce で特定 chain を差し込める (既存パターン)。
+  // W2: user 削除 tx の drizzle update は assets (deleting soft-delete) の 1 件のみ
+  // (users scrub は RLS-P2 で app_scrub_deleted_user 関数呼出 = tx.execute に移行)。
+  // 呼び出しごとに新しい chain を返す。table 引数は mockDbUpdate.mock.calls に残るので
+  // updateChainFor(table) で引ける。
   mockDbUpdate.mockImplementation(() => chain(undefined))
-  // デフォルト: transaction は callback をそのまま実行する (tx は db と同 shape)
+  // RLS-P2: db.execute / tx.execute の default router。app_bootstrap_user_from_clerk
+  // (created 存在チェック / deleted resolve) は bootstrapRows を返し、setTenantContext の
+  // set_config と app_scrub_deleted_user は no-op resolve する。
+  mockDbExecute.mockImplementation((q: unknown) =>
+    sqlText(q).includes('app_bootstrap_user_from_clerk')
+      ? Promise.resolve(bootstrapRows)
+      : Promise.resolve(undefined),
+  )
+  // デフォルト: transaction は callback をそのまま実行する (tx は db と同 shape)。
+  // RLS-P2 で tx は execute (setTenantContext / scrub) と insert (created の users INSERT)
+  // も受ける。
   mockDbTransaction.mockImplementation(
     async (fn: (tx: unknown) => Promise<unknown>) => {
       const tx = {
+        execute: mockDbExecute,
+        insert: mockDbInsert,
         update: mockDbUpdate,
         delete: mockDbDelete,
       }
@@ -161,7 +225,7 @@ async function* asyncIterFrom<T>(items: T[]): AsyncGenerator<T> {
 }
 
 describe('Clerk webhook user.created (publicMetadata sync)', () => {
-  it('happy path: users INSERT returning {id} → syncClerkPublicMetadata が clerkId + dbUserId + plan=free で呼ばれる → 200', async () => {
+  it('新規 (bootstrap 0 行): 事前採番 UUID で users INSERT (id 明示・RETURNING 非依存) → syncClerkPublicMetadata が同 id + clerkId + plan=free で呼ばれる → 200', async () => {
     mockSvixVerify.mockReturnValue({
       type: 'user.created',
       data: {
@@ -169,13 +233,8 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
         email_addresses: [{ email_address: 'new@example.com' }],
       },
     })
-    // 1st insert = clerk_events idempotency
-    mockDbInsert
-      .mockReturnValueOnce(chain([{ id: 'msg_test_1' }]))
-      // 2nd insert = users INSERT、 returning [{id: db-uuid}]
-      .mockReturnValueOnce(
-        chain([{ id: '00000000-0000-0000-0000-000000000abc' }]),
-      )
+    // 1st insert = clerk_events idempotency。bootstrapRows は beforeEach 既定 [] (新規)。
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }]))
 
     const res = await POST(
       makeReq({
@@ -188,17 +247,35 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
     )
 
     expect(res.status).toBe(200)
+    // users INSERT は withTenantTx 内の tx.insert (mockDbInsert 2 回目 = clerk_events の次)。
+    expect(mockDbInsert).toHaveBeenCalledTimes(2)
+    const usersInsertChain = mockDbInsert.mock.results[1]!.value as {
+      values: ReturnType<typeof vi.fn>
+    }
+    const insertValues = usersInsertChain.values.mock.calls[0]![0] as Record<
+      string,
+      unknown
+    >
+    // 事前採番 pin: id を明示、clerkId / email も値どおり。RETURNING / onConflict 非使用。
+    expect(insertValues.clerkId).toBe('user_new')
+    expect(insertValues.email).toBe('new@example.com')
+    const preNumberedId = insertValues.id as string
+    expect(preNumberedId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    )
+    // sync は RETURNING でなく事前採番 id を dbUserId として受ける。
     expect(mockSyncClerkMetadata).toHaveBeenCalledTimes(1)
     expect(mockSyncClerkMetadata).toHaveBeenCalledWith({
       clerkId: 'user_new',
-      dbUserId: '00000000-0000-0000-0000-000000000abc',
+      dbUserId: preNumberedId,
       plan: 'free',
     })
   })
 
-  it('conflict path (returning []): users 行が既に存在 → syncClerkPublicMetadata は呼ばれない (re-fire 安全)', async () => {
+  it('既存 (bootstrap が行を返す = re-fire 等): users INSERT を発行せず syncClerkPublicMetadata も skip (再配信安全)', async () => {
     // Clerk webhook の re-fire (同 svix-id ではないが users 行が他経路で先に作られた等)。
-    // 既存 publicMetadata が新規 webhook によって上書きされて plan が free に戻る race を防ぐ。
+    // 事前採番の存在チェック (app_bootstrap_user_from_clerk) が既存行を検出 → INSERT せず
+    // sync も skip。既存 publicMetadata の plan を free に上書きする race を防ぐ。
     mockSvixVerify.mockReturnValue({
       type: 'user.created',
       data: {
@@ -206,10 +283,8 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
         email_addresses: [{ email_address: 'dup@example.com' }],
       },
     })
-    mockDbInsert
-      .mockReturnValueOnce(chain([{ id: 'msg_test_dup' }]))
-      // users INSERT ON CONFLICT DO NOTHING → returning []
-      .mockReturnValueOnce(chain([]))
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_dup' }])) // clerk_events
+    bootstrapRows = [{ id: '00000000-0000-0000-0000-0000000000e1' }] // 既存 users 行
 
     const res = await POST(
       makeReq({
@@ -222,6 +297,8 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
     )
 
     expect(res.status).toBe(200)
+    // clerk_events INSERT のみ (users INSERT は発行されない)。
+    expect(mockDbInsert).toHaveBeenCalledTimes(1)
     expect(mockSyncClerkMetadata).not.toHaveBeenCalled()
   })
 
@@ -233,11 +310,7 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
         email_addresses: [{ email_address: 'mf@example.com' }],
       },
     })
-    mockDbInsert
-      .mockReturnValueOnce(chain([{ id: 'msg_test_2' }]))
-      .mockReturnValueOnce(
-        chain([{ id: '00000000-0000-0000-0000-000000000def' }]),
-      )
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_2' }])) // clerk_events; bootstrapRows=[] 新規
     mockSyncClerkMetadata.mockResolvedValueOnce({ ok: false })
 
     const res = await POST(
@@ -259,14 +332,12 @@ describe('Clerk webhook user.created (publicMetadata sync)', () => {
 })
 
 describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
-  it('正常系: clerk_events INSERT → SELECT users → Stripe sub cancel × N → DB transaction (update + 11 delete) → 200 + scrub payload 含む', async () => {
+  it('正常系: clerk_events INSERT → bootstrap resolve → Stripe sub cancel × N → DB transaction (setTenantContext + scrub 関数 + 10 delete + assets deleting) → 200', async () => {
+    const internalUserId = '00000000-0000-0000-0000-0000000000a1'
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_1' } })
-    // 1st insert = clerk_events idempotency (returning [{id}])
-    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }]))
-    // select = users (returning [{id, stripeCustomerId}])
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: 'cus_1' }]),
-    )
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events idempotency
+    // resolve は app_bootstrap_user_from_clerk (snake_case 2 列 id / stripe_customer_id)。
+    bootstrapRows = [{ id: internalUserId, stripe_customer_id: 'cus_1' }]
     mockStripeListIterator.mockReturnValue(
       asyncIterFrom([
         { id: 'sub_a', status: 'active' },
@@ -274,33 +345,38 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
         { id: 'sub_c', status: 'canceled' },
       ]),
     )
-    // transaction 内: update users (scrub) + delete Group I 10 件 + update assets (deleting)
-    const updateChain = chain(undefined)
-    mockDbUpdate.mockReturnValueOnce(updateChain) // 1st update = users scrub
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_1' } }))
 
     expect(res.status).toBe(200)
     expect(mockDbInsert).toHaveBeenCalledTimes(1) // clerk_events のみ (失敗 0)
-    expect(mockDbSelect).toHaveBeenCalledTimes(1)
+    expect(mockDbSelect).not.toHaveBeenCalled() // resolve は db.select → db.execute に移行
     expect(mockCancelWithRetry).toHaveBeenCalledTimes(2)
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_a')
     expect(mockCancelWithRetry).toHaveBeenCalledWith('sub_t')
     expect(mockCancelWithRetry).not.toHaveBeenCalledWith('sub_c')
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // transaction 内で update × 2 (users scrub + assets deleting) + delete × 10
-    // (Group I 11 件のうち assets は soft-delete なので DELETE でなく UPDATE = 10 件 DELETE)
-    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    // drizzle update は assets deleting の 1 件のみ (users scrub は app_scrub_deleted_user
+    // 関数呼出 = tx.execute に移行)。delete は Group I − assets = 10 件。
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
     expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
-    // 正常系でも scrub payload (email/clerkId NULL) が users UPDATE に乗ることを
-    // defense-in-depth で確認 — 専用 test (下) が削除された場合の二重保険。
-    expect(updateChain.set).toHaveBeenCalledTimes(1)
-    expect(updateChain.where).toHaveBeenCalledTimes(1)
-    const setArg = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
-    expect(setArg.email).toBeNull()
-    expect(setArg.clerkId).toBeNull()
+    // scrub は app_scrub_deleted_user(internalUserId) 経由 (drizzle UPDATE でない)。
+    // PII を実際に NULL 化する保証は iso (rls-functions.test.ts) が実 PG で pin する。
+    const scrubCalls = executeCallsMatching('app_scrub_deleted_user')
+    expect(scrubCalls).toHaveLength(1)
+    expect(sqlText(scrubCalls[0])).toContain(internalUserId)
+    // setTenantContext が scrub の前に張られる (set_config が internalUserId で先行)。
+    const setConfigIdx = mockDbExecute.mock.calls.findIndex((c) =>
+      sqlText(c[0]).includes('set_config'),
+    )
+    const scrubIdx = mockDbExecute.mock.calls.findIndex((c) =>
+      sqlText(c[0]).includes('app_scrub_deleted_user'),
+    )
+    expect(setConfigIdx).toBeGreaterThanOrEqual(0)
+    expect(sqlText(mockDbExecute.mock.calls[setConfigIdx]![0])).toContain(internalUserId)
+    expect(setConfigIdx).toBeLessThan(scrubIdx)
     // W2: assets は物理 DELETE でなく status='deleting' へ soft-delete される。
     const assetsUpdate = updateChainFor(schemaModule.assets)
     expect(assetsUpdate).toBeDefined()
@@ -308,42 +384,30 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(assetsSet.status).toBe('deleting')
   })
 
-  it('GDPR PII scrub: tx.update(users) の SET に email=null + clerkId=null + deletedAt set、 stripeCustomerId は触らない、 同 transaction で Group I 11 子テーブル DELETE も発火', async () => {
-    // GDPR 要件: users 行は監査 (integration_failures user_id 相関 / stripe correlation) の
-    // ため残置するが PII 列 (email, clerk_id) は退会と同じ transaction で NULL に
-    // 書き換える。 stripe_customer_id (cus_xxx) は個人特定不能で監査 correlation key
-    // のため保持 — SET 引数に含めない。
-    // 加えて、 scrub と Group I の子テーブル削除 (exams / studyDays /
-    // contactMessages / aiUsageUsers / uploadRecords / userSettings /
-    // studySessions / tombstones / entityMutations / tagCategories = 10 件 DELETE /
-    // assets = deleting soft-delete UPDATE) は同一 transaction 内で
-    // atomic に走る (= 部分 commit の漏れ無し) ことも本 test で確認する。
+  it('GDPR PII scrub: scrub は app_scrub_deleted_user(internalUserId) 関数呼出で行い users を drizzle UPDATE しない (stripe_customer_id は関数が保持)、同 transaction で Group I 子テーブル DELETE + assets deleting も発火', async () => {
+    // GDPR 要件: 退会と同 transaction で PII (email/clerk_id) を NULL 化する。RLS-P2 で
+    // これは app_scrub_deleted_user (SECURITY DEFINER・冒頭で tenant context 自衛検査) に
+    // 委譲された。実際の NULL 化 + stripe_customer_id 保持の behavioral 保証は iso
+    // (rls-functions.test.ts) が実 PG で pin する。unit 側は「scrub が関数経由で発火し
+    // users を drizzle UPDATE しない (= stripe_customer_id を上書きする経路が無い)」
+    // 「Group I 削除が同 tx で atomic」を pin する。
+    const internalUserId = '00000000-0000-0000-0000-0000000000cc'
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_scrub' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_scrub' }])) // clerk_events
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000cc', stripeCustomerId: 'cus_keep' }]),
-    )
+    bootstrapRows = [{ id: internalUserId, stripe_customer_id: 'cus_keep' }]
     mockStripeListIterator.mockReturnValue(asyncIterFrom([])) // no subs
-    const updateChain = chain(undefined)
-    mockDbUpdate.mockReturnValueOnce(updateChain) // 1st update = users scrub
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_scrub' } }))
 
     expect(res.status).toBe(200)
-    // scrub payload 検証
-    expect(updateChain.set).toHaveBeenCalledTimes(1)
-    expect(updateChain.where).toHaveBeenCalledTimes(1)
-    const setArg = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
-    expect(setArg.email).toBeNull()
-    expect(setArg.clerkId).toBeNull()
-    // deletedAt は sql`now()` (SQL chunk) — 値の存在のみ確認
-    expect(setArg.deletedAt).toBeDefined()
-    // stripe_customer_id は監査 correlation key として保持。 SET payload に
-    // 載せない (= キー自体不在)。
-    expect('stripeCustomerId' in setArg).toBe(false)
-    // atomicity: 同一 transaction 内で Group I の子テーブル削除も発火している
-    // こと (= 「scrub だけ通って子データが残る」 部分 commit を防ぐ)。
+    // scrub は関数呼出 (drizzle UPDATE でない)。internalUserId が引数。
+    const scrubCalls = executeCallsMatching('app_scrub_deleted_user')
+    expect(scrubCalls).toHaveLength(1)
+    expect(sqlText(scrubCalls[0])).toContain(internalUserId)
+    // users を drizzle で UPDATE しない (= stripe_customer_id を上書きする経路が無い)。
+    expect(updateChainFor(schemaModule.users)).toBeUndefined()
+    // atomicity: 同一 transaction 内で Group I の子テーブル削除も発火 (部分 commit 防止)。
     // assets は soft-delete (deleting UPDATE) ゆえ DELETE は 10 件。
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
     expect(mockDbDelete).toHaveBeenCalledTimes(10)
@@ -366,31 +430,33 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('duplicate')
-    expect(mockDbSelect).not.toHaveBeenCalled()
+    expect(mockDbExecute).not.toHaveBeenCalled() // resolve / scrub 不到達
     expect(mockDbTransaction).not.toHaveBeenCalled()
     expect(mockDbUpdate).not.toHaveBeenCalled()
   })
 
-  it('users 未同期 (SELECT 0 行): notifyOps で観測性確保 + Stripe loop 不到達 + transaction 不到達 + 200', async () => {
-    // F-5 fix-up (review M-1): user.created 未到達で user.deleted 受信 = 順序逆転
-    // edge case。internalUserId が undefined になる → silent skip させず notifyOps
-    // で OT 通知。
+  it('users 未同期 (bootstrap 0 行): notifyOps で観測性確保 (文言中立) + Stripe loop 不到達 + transaction 不到達 + 200', async () => {
+    // F-5 fix-up (review M-1): user.created 未到達 / 既に scrub 済 (clerk_id NULL 化) で
+    // user.deleted 受信 = bootstrap が 0 行。internalUserId が undefined になる →
+    // silent skip させず notifyOps で OT 通知。RLS-P2 でデータ上は「未同期」と
+    // 「削除済」を区別できないため文言を中立化 (spec §2.6)。
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_orphan' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-    mockDbSelect.mockReturnValueOnce(chain([])) // 0 rows (users 行なし)
+    bootstrapRows = [] // 0 rows (users 行なし or scrub 済)
 
     const res = await POST(
       makeReq({ type: 'user.deleted', data: { id: 'user_orphan' } }),
     )
 
     expect(res.status).toBe(200)
-    expect(mockDbSelect).toHaveBeenCalledTimes(1)
+    // resolve (bootstrap) は 1 回発火するが scrub / tx へは進まない。
+    expect(executeCallsMatching('app_bootstrap_user_from_clerk')).toHaveLength(1)
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).not.toHaveBeenCalled()
     expect(mockDbInsert).toHaveBeenCalledTimes(1) // clerk_events のみ、integration_failures に書かない
     expect(mockNotifyOps).toHaveBeenCalledOnce()
     expect(mockNotifyOps.mock.calls[0]![0]).toBe(
-      'user.deleted received but users row not synced',
+      'user.deleted received but users row not found (not-synced or already-deleted)',
     )
     const ctx = mockNotifyOps.mock.calls[0]![1] as Record<string, unknown>
     expect(ctx.clerkUserId).toBe('user_orphan')
@@ -399,10 +465,10 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
   it('customerId なし (Free プラン): Stripe ループ skip → transaction のみ実行', async () => {
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_free' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-    // SELECT users: customerId = null (Free プラン)
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000b1', stripeCustomerId: null }]),
-    )
+    // resolve: stripe_customer_id = null (Free プラン)
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000b1', stripe_customer_id: null },
+    ]
     mockDbDelete.mockReturnValue(chain(undefined))
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_free' } }))
@@ -410,8 +476,8 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(res.status).toBe(200)
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
-    // update × 2 (users scrub + assets deleting soft-delete) / delete × 10 (Group I − assets)
-    expect(mockDbUpdate).toHaveBeenCalledTimes(2)
+    // drizzle update × 1 (assets deleting soft-delete のみ) / delete × 10 (Group I − assets)
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1)
     expect(mockDbDelete).toHaveBeenCalledTimes(10)
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
@@ -423,19 +489,13 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
       .mockReturnValueOnce(chain(undefined)) // integration_failures INSERT
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: null }]),
-    )
-    // tx.update が permanent error を throw (callback 内 statement reject = realistic)
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000a1', stripe_customer_id: null },
+    ]
+    // scrub statement が permanent error を throw (callback 内 statement reject = realistic)
     const permanentErr = Object.assign(new Error('unique constraint violation'), { code: '23505' })
     mockDbTransaction.mockImplementationOnce(
-      async (fn: (tx: unknown) => Promise<unknown>) => {
-        const tx = {
-          update: vi.fn().mockImplementation(() => { throw permanentErr }),
-          delete: mockDbDelete,
-        }
-        return await fn(tx)
-      },
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(txThatThrowsOnScrub(permanentErr)),
     )
 
     const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_1' } }))
@@ -474,7 +534,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('duplicate')
-    expect(mockDbSelect).not.toHaveBeenCalled()
+    expect(mockDbExecute).not.toHaveBeenCalled() // resolve / scrub 不到達
     expect(mockCancelWithRetry).not.toHaveBeenCalled()
     expect(mockNotifyOps).not.toHaveBeenCalled()
   })
@@ -484,9 +544,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
       .mockReturnValueOnce(chain(undefined)) // integration_failures (sub_a 失敗)
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: 'cus_1' }]),
-    )
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000a1', stripe_customer_id: 'cus_1' },
+    ]
     mockStripeListIterator.mockReturnValue(
       asyncIterFrom([
         { id: 'sub_a', status: 'active' },
@@ -533,9 +593,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
       .mockReturnValueOnce(chain(undefined)) // integration_failures
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000a2', stripeCustomerId: 'cus_gone' }]),
-    )
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000a2', stripe_customer_id: 'cus_gone' },
+    ]
     const customerMissing = new Stripe.errors.StripeInvalidRequestError({
       message: 'No such customer',
       code: 'resource_missing',
@@ -632,7 +692,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     // beforeEach でセットアップする共通の select / stripe ヘルパー
     function setupUserAndNoStripe(userId = '00000000-0000-0000-0000-000000000099') {
       mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
-      mockDbSelect.mockReturnValueOnce(chain([{ id: userId, stripeCustomerId: null }]))
+      bootstrapRows = [{ id: userId, stripe_customer_id: null }]
     }
 
     it('① transient error (40P01 = deadlock) → 1 回失敗 → retry で成功', async () => {
@@ -645,18 +705,18 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
         async (fn: (tx: unknown) => Promise<unknown>) => {
           callCount++
           if (callCount === 1) {
-            // 1 回目: tx.update が transient error で throw
-            const tx = {
-              update: vi.fn().mockImplementation(() => { throw transientErr }),
-              delete: mockDbDelete,
-            }
-            return await fn(tx)
+            // 1 回目: scrub statement が transient error で throw
+            return fn(txThatThrowsOnScrub(transientErr))
           }
-          // 2 回目 (retry): 成功
-          const tx = { update: mockDbUpdate, delete: mockDbDelete }
-          mockDbUpdate.mockReturnValueOnce(chain(undefined))
+          // 2 回目 (retry): 成功。default router execute で set_config / scrub は no-op。
           mockDbDelete.mockReturnValue(chain(undefined))
-          return await fn(tx)
+          const tx = {
+            execute: mockDbExecute,
+            insert: mockDbInsert,
+            update: mockDbUpdate,
+            delete: mockDbDelete,
+          }
+          return fn(tx)
         },
       )
 
@@ -677,13 +737,8 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
       const transientErr = Object.assign(new Error('deadlock detected'), { code: '40P01' })
       mockDbTransaction.mockImplementation(
-        async (fn: (tx: unknown) => Promise<unknown>) => {
-          const tx = {
-            update: vi.fn().mockImplementation(() => { throw transientErr }),
-            delete: mockDbDelete,
-          }
-          return await fn(tx)
-        },
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn(txThatThrowsOnScrub(transientErr)),
       )
 
       const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r2' } }))
@@ -710,13 +765,8 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
 
       const permanentErr = Object.assign(new Error('unique constraint'), { code: '23505' })
       mockDbTransaction.mockImplementation(
-        async (fn: (tx: unknown) => Promise<unknown>) => {
-          const tx = {
-            update: vi.fn().mockImplementation(() => { throw permanentErr }),
-            delete: mockDbDelete,
-          }
-          return await fn(tx)
-        },
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn(txThatThrowsOnScrub(permanentErr)),
       )
 
       const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r3' } }))
@@ -749,18 +799,18 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
         async (fn: (tx: unknown) => Promise<unknown>) => {
           callCount++
           if (callCount === 1) {
-            // 1 回目: tx.update が transient error で throw
-            const tx = {
-              update: vi.fn().mockImplementation(() => { throw transientErr }),
-              delete: mockDbDelete,
-            }
-            return await fn(tx)
+            // 1 回目: scrub statement が transient error で throw
+            return fn(txThatThrowsOnScrub(transientErr))
           }
-          // 2 回目 (retry): 成功
-          mockDbUpdate.mockReturnValueOnce(chain(undefined))
+          // 2 回目 (retry): 成功。default router execute で set_config / scrub は no-op。
           mockDbDelete.mockReturnValue(chain(undefined))
-          const tx = { update: mockDbUpdate, delete: mockDbDelete }
-          return await fn(tx)
+          const tx = {
+            execute: mockDbExecute,
+            insert: mockDbInsert,
+            update: mockDbUpdate,
+            delete: mockDbDelete,
+          }
+          return fn(tx)
         },
       )
 
@@ -782,13 +832,7 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
       // permanent error で即停止 → errorMessage を検証
       const pgErr = Object.assign(new Error('FK violation'), { code: '23503', detail: 'foreign key constraint' })
       mockDbTransaction.mockImplementation(
-        async (fn: (tx: unknown) => Promise<unknown>) => {
-          const tx = {
-            update: vi.fn().mockImplementation(() => { throw pgErr }),
-            delete: mockDbDelete,
-          }
-          return await fn(tx)
-        },
+        async (fn: (tx: unknown) => Promise<unknown>) => fn(txThatThrowsOnScrub(pgErr)),
       )
 
       const promise = POST(makeReq({ type: 'user.deleted', data: { id: 'user_r5' } }))
@@ -810,9 +854,9 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     mockDbInsert
       .mockReturnValueOnce(chain([{ id: 'msg_test_1' }])) // clerk_events
       .mockReturnValueOnce(chain(undefined)) // integration_failures (list 失敗)
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000a1', stripeCustomerId: 'cus_1' }]),
-    )
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000a1', stripe_customer_id: 'cus_1' },
+    ]
     async function* failingIter(): AsyncGenerator<{
       id: string
       status: Stripe.Subscription.Status
@@ -902,9 +946,9 @@ describe('Clerk webhook user.deleted: 削除網羅性 invariant', () => {
     // handler を 1 回走らせて tx.delete(...) と tx.update(...) の引数 (= table 識別子) を捕捉
     mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_inv' } })
     mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_inv' }])) // clerk_events
-    mockDbSelect.mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-0000000000ff', stripeCustomerId: null }]),
-    )
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-0000000000ff', stripe_customer_id: null },
+    ]
     mockStripeListIterator.mockReturnValue(asyncIterFrom([]))
 
     const deleteCallTargets: unknown[] = []

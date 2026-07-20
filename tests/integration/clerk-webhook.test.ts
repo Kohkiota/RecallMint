@@ -24,14 +24,28 @@ vi.mock('@/lib/db', () => {
   const update = vi.fn()
   const select = vi.fn()
   const del = vi.fn()
-  // transaction: callback をそのまま実行する (tx は db と同 shape)
+  const execute = vi.fn()
+  // transaction: callback をそのまま実行する (RLS-P2 で tx は execute (setTenantContext /
+  // scrub) と insert (created の users INSERT) も受ける)
   const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-    return await fn({ update, delete: del })
+    return await fn({ execute, insert, update, delete: del })
   })
   return {
-    getDb: vi.fn(() => ({ insert, update, select, delete: del, transaction })),
+    getDb: vi.fn(() => ({
+      insert,
+      update,
+      select,
+      delete: del,
+      execute,
+      transaction,
+    })),
   }
 })
+
+// RLS-P2: created path が新規時に呼ぶ metadata sync は外部 I/O (Clerk API) ゆえ mock。
+vi.mock('@/lib/auth/clerk-metadata', () => ({
+  syncClerkPublicMetadata: vi.fn().mockResolvedValue({ ok: true }),
+}))
 
 // Spec §6.2: webhook handler が Stripe sub cancel を引き受ける。integration test
 // では実 Stripe API を叩かないため、empty iterator + cancelWithRetry no-op で stub。
@@ -51,6 +65,24 @@ vi.mock('@/lib/ops', () => ({
 
 import { POST } from '@/app/api/webhooks/clerk/route'
 import { getDb } from '@/lib/db'
+
+// RLS-P2: created 存在チェック / deleted resolve は共に app_bootstrap_user_from_clerk を
+// db/tx.execute で叩く。SQL text で判別して bootstrapRows を返す router を beforeEach で敷く。
+function sqlText(q: unknown): string {
+  const chunks = (q as { queryChunks?: unknown[] })?.queryChunks
+  if (!Array.isArray(chunks)) return ''
+  return chunks
+    .map((c) => {
+      const v = (c as { value?: unknown })?.value
+      if (Array.isArray(v)) return v.join('')
+      if (typeof c === 'string') return c
+      if (typeof v === 'string') return v
+      return ''
+    })
+    .join('')
+}
+
+let bootstrapRows: unknown[] = []
 
 // Must be a Svix-compatible secret: must start with "whsec_" and decode as base64.
 // "whsec_" + base64("testtesttesttesttesttest") is a valid fake.
@@ -80,6 +112,16 @@ function signed(body: string, overrides: Record<string, string> = {}) {
 beforeEach(() => {
   process.env.CLERK_WEBHOOK_SECRET = SECRET
   vi.clearAllMocks()
+  bootstrapRows = []
+  // clearAllMocks 後に execute router を再設定 (bootstrap は bootstrapRows、set_config /
+  // app_scrub_deleted_user は no-op)。transaction 実装は factory 由来で clearAllMocks では
+  // 消えない (impl 保持)。
+  const db = vi.mocked(getDb)()
+  vi.mocked(db.execute as ReturnType<typeof vi.fn>).mockImplementation((q: unknown) =>
+    sqlText(q).includes('app_bootstrap_user_from_clerk')
+      ? Promise.resolve(bootstrapRows)
+      : Promise.resolve(undefined),
+  )
 })
 
 describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
@@ -109,15 +151,15 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.insert).toHaveBeenCalledTimes(2)
   })
 
-  it('handles user.deleted → clerk_events INSERT + SELECT users + transaction (update × 2 + 10 delete) + 200', async () => {
+  it('handles user.deleted → clerk_events INSERT + bootstrap resolve + transaction (scrub 関数 + assets deleting UPDATE + 10 delete) + 200', async () => {
     const db = vi.mocked(getDb)()
     vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'msg_x' }]) as never)
-    // SELECT users: customerId=null (Free プラン) → Stripe ループ skip
-    vi.mocked(db.select).mockReturnValueOnce(
-      chain([{ id: '00000000-0000-0000-0000-000000000001', stripeCustomerId: null }]) as never,
-    )
-    // transaction 内: update users (soft-delete + PII scrub) + update assets (deleting
-    // soft-delete) + delete Group I 10 子テーブル
+    // resolve (app_bootstrap_user_from_clerk): stripe_customer_id=null (Free) → Stripe skip
+    bootstrapRows = [
+      { id: '00000000-0000-0000-0000-000000000001', stripe_customer_id: null },
+    ]
+    // transaction 内: setTenantContext + scrub 関数 (tx.execute) + assets deleting UPDATE
+    // (drizzle update × 1) + delete Group I 10 子テーブル
     vi.mocked(db.update).mockReturnValue(chain(undefined) as never)
     vi.mocked(db.delete).mockReturnValue(chain(undefined) as never)
     const body = JSON.stringify({
@@ -128,10 +170,11 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     const res = await POST(req)
     expect(res.status).toBe(200)
     expect(db.insert).toHaveBeenCalledTimes(1) // clerk_events のみ (Stripe skip, 失敗 0)
-    expect(db.select).toHaveBeenCalledTimes(1)  // users SELECT
+    expect(db.select).not.toHaveBeenCalled() // resolve は db.select → db.execute に移行
     expect(db.transaction).toHaveBeenCalledTimes(1)
-    // update × 2: users soft-delete + scrub / assets soft-delete (status='deleting', W2)
-    expect(db.update).toHaveBeenCalledTimes(2)
+    // RLS-P2: drizzle update は assets deleting の 1 件のみ (users scrub は
+    // app_scrub_deleted_user 関数呼出 = tx.execute に移行)。
+    expect(db.update).toHaveBeenCalledTimes(1)
     // Group I 11 件のうち assets のみ soft-delete (deleting UPDATE) ゆえ物理 DELETE は 10 件:
     // exams + study_days + contact_messages + ai_usage_users + upload_records +
     // user_settings + study_sessions + tombstones + entity_mutations + tag_categories
