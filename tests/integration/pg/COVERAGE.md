@@ -79,7 +79,7 @@
 | exams | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | exams_tenant | 内部 setTenantContext(internalUserId) |
 | **cards** | read | `getCardsForExam`/`getCardsDelta` | `eq(userId)[+gte(cursor)]` | cards_tenant | withTenantTx / asTenant |
 | cards | write | `applyCard*`/`updateCardField` | `eq(userId)`(一部 `eq(id)`+field) | cards_tenant | withTenantTx |
-| cards | OCR write | `completeUploadTx`/`session applyCardFinalStates` | **`eq(id)` のみ(user_id 述語なし)** | cards_tenant(tenant scope は RLS 側が担保) | withTenantTx / 内部(provenance 依存・5o) |
+| cards | OCR/session write | `session applyCardFinalStates`(cards UPDATE) | **`and(eq(userId), cards.id=v.id)`**(Iso-0 で user_id 述語追加済) | cards_tenant | withTenantTx / 内部 setTenantContext(dual-enforced) |
 | **tombstones** | read | pull delta | `eq(userId)[+gte(cursor)]` | tombstones_tenant | withTenantTx |
 | tombstones | write | `apply-*-mutation`(insert)/`deleteExam` tx | `userId` 値 / `eq(userId)` | tombstones_tenant | withTenantTx |
 | tombstones | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | tombstones_tenant | 内部 setTenantContext |
@@ -87,4 +87,4 @@
 | study_days | write(UPSERT) | review ingest tx | `userId` PK + `eq(userId)` guard | study_days_tenant | withTenantTx |
 | study_days | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | study_days_tenant | 内部 setTenantContext |
 
-- **監査上の含意**: OCR write(cards / source_documents)は app-WHERE に user_id 述語を持たない唯一の逸脱(FF §5o)。RLS-on 後は cards_tenant policy が tenant scope を補完するため id-only でも越境不能(`rls-partial-chain.test.ts` / `ocr-owner-scope.test.ts` が behavioral pin)。users の hard delete は policy 不在で構造 deny、退会は definer scrub(soft delete)経由。この 2 点が「app 層 WHERE を信頼せず RLS が最終境界」を最も強く示す配線。
+- **監査上の含意**: FF §5o が「OCR write は user_id 述語なし」と記した経路は Iso-0 で owner 述語追加済で**現在は dual-enforced**(`completeUploadTx`/`markFailed` = source_documents を `and(eq(id), eq(userId))` / `applyCardFinalStates` = cards を `and(eq(userId), id=v.id)`)。よって RLS-on 後は app-WHERE(user_id)と cards_tenant policy の**二重防御**(`rls-partial-chain.test.ts` / `ocr-owner-scope.test.ts` が behavioral pin)。users の hard delete は policy 不在で構造 deny、退会は definer scrub(soft delete)経由。RLS が「app 層 WHERE を信頼しない最終境界」であることは `rls-single-defense.test.ts`(eq(userId) を意図的に外して RLS 単独で隔離)が最も強く示す。
