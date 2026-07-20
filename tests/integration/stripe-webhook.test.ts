@@ -1,34 +1,60 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import Stripe from 'stripe'
+import { logger } from '@/lib/logger'
 
 // ---------------------------------------------------------------------------
 // Fake db: insert for stripe_events idempotency (returning[]) + update for users.
 // A module-level Map tracks seen event ids across tests to simulate the
 // ON CONFLICT DO NOTHING + RETURNING behavior.
 // ---------------------------------------------------------------------------
-const { mockDb, seenEventIds, mockStripeRetrieve, mockNotifyWebhookError } =
-  vi.hoisted(() => {
-    const seen = new Set<string>()
-    const onConflictReturning = vi.fn()
-    const insertValues = vi.fn()
-    const insert = vi.fn()
-    const updateSet = vi.fn()
-    const updateWhere = vi.fn()
-    const update = vi.fn()
-    const mockStripeRetrieve = vi.fn()
-    const mockNotifyWebhookError = vi.fn().mockResolvedValue(undefined)
+const {
+  mockDb,
+  mockDbExecute,
+  seenEventIds,
+  mockStripeRetrieve,
+  mockNotifyWebhookError,
+} = vi.hoisted(() => {
+  const seen = new Set<string>()
+  const onConflictReturning = vi.fn()
+  const insertValues = vi.fn()
+  const insert = vi.fn()
+  const updateSet = vi.fn()
+  const updateWhere = vi.fn()
+  const update = vi.fn()
+  // RLS-P2 (Task 7): resolve (app_resolve_user_for_stripe) は db.execute で叩く。
+  const execute = vi.fn()
+  // withTenantTx が使う db.transaction。callback を実行し、tx は users write を担う
+  // update / insert (module spy) と setTenantContext 用 execute (tx-local no-op) を渡す。
+  const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+    fn({
+      insert,
+      update,
+      execute: () => Promise.resolve([]),
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      delete: () => ({ where: () => Promise.resolve([]) }),
+    }),
+  )
+  const mockStripeRetrieve = vi.fn()
+  const mockNotifyWebhookError = vi.fn().mockResolvedValue(undefined)
 
-    return {
-      seenEventIds: seen,
-      mockDb: {
-        insert,
-        update,
-        _chains: { onConflictReturning, insertValues, updateSet, updateWhere },
-      },
-      mockStripeRetrieve,
-      mockNotifyWebhookError,
-    }
-  })
+  return {
+    seenEventIds: seen,
+    mockDb: {
+      insert,
+      update,
+      execute,
+      transaction,
+      _chains: { onConflictReturning, insertValues, updateSet, updateWhere },
+    },
+    mockDbExecute: execute,
+    mockStripeRetrieve,
+    mockNotifyWebhookError,
+  }
+})
+
+// RLS-P2 (Task 7): resolve が返す内部 id。tx-local set_config は mock では no-op ゆえ
+// 実 uuid 妥当性は問われない (実 PG 検証は test:iso / Task 10)。
+const RESOLVED_UUID = '00000000-0000-0000-0000-000000000001'
 
 // Partial mock: preserve the real webhooks.constructEvent (used for signature
 // verification with generateTestHeaderString) but override subscriptions.retrieve
@@ -81,6 +107,10 @@ beforeEach(() => {
   process.env.STRIPE_WEBHOOK_SECRET = SECRET
   seenEventIds.clear()
   vi.clearAllMocks()
+
+  // RLS-P2 (Task 7): resolve のデフォルト = 紐付き済み・退会前 (deleted_at null)。
+  // 各 users-touching event はこれで tenant context を張り既存 write 群へ進む。
+  mockDbExecute.mockResolvedValue([{ id: RESOLVED_UUID, deleted_at: null }])
 
   // insert(stripe_events).values({eventId, type}).onConflictDoNothing().returning()
   // Returns [{id}] for new events, [] for already-seen.
@@ -567,6 +597,266 @@ describe('POST /api/webhooks/stripe', () => {
     // Step2 plan sync が pro を書き込む (= recovery 成立)。
     expect(step2Set).toHaveBeenCalledWith(
       expect.objectContaining({ plan: 'pro', subscriptionStatus: 'active' }),
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// RLS-P2 (Task 7): 退会済み user (resolve が deleted_at 非 null を返す) 宛の Stripe
+// event は log + skip する (新規の明示挙動: 現状は scrub 済み行にも silent write が
+// 通り得た。spec §2.5 / §7-2)。skip = users write なし・外部 I/O (notifyOps / Clerk
+// sync / Stripe retrieve) なし・warn を PII/id なしで 1 行残す・200。
+// ---------------------------------------------------------------------------
+describe('POST /api/webhooks/stripe: 退会済み user は log + skip (RLS-P2 Task 7)', () => {
+  async function opsMock() {
+    const { notifyOps } = await import('@/lib/ops')
+    return vi.mocked(notifyOps)
+  }
+  async function clerkMock() {
+    const { syncClerkPublicMetadata } = await import('@/lib/auth/clerk-metadata')
+    return vi.mocked(syncClerkPublicMetadata)
+  }
+
+  it('customer.subscription.deleted → 退会済み: write なし・notifyOps/Clerk sync なし・warn 1 行 (PII なし)・200', async () => {
+    mockDbExecute.mockResolvedValue([
+      { id: RESOLVED_UUID, deleted_at: '2026-07-01T00:00:00.000Z' },
+    ])
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const notifyOps = await opsMock()
+    const syncClerk = await clerkMock()
+
+    const body = JSON.stringify({
+      id: 'evt_deleted_user_del',
+      type: 'customer.subscription.deleted',
+      data: { object: { id: 'sub_z', customer: 'cus_deleted', status: 'canceled' } },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    // skip: users write (update) は一切呼ばれない。
+    expect(mockDb.update).not.toHaveBeenCalled()
+    // 外部副作用は skip より先にも後にも起きない。
+    expect(notifyOps).not.toHaveBeenCalled()
+    expect(syncClerk).not.toHaveBeenCalled()
+    // warn 1 行: event + type のみ、PII/id は載せない。
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const payload = warnSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.event).toBe('stripe.event.skipped_deleted_user')
+    expect(payload.type).toBe('customer.subscription.deleted')
+    expect(payload).not.toHaveProperty('id')
+    expect(payload).not.toHaveProperty('customerId')
+    expect(payload).not.toHaveProperty('userId')
+    warnSpy.mockRestore()
+  })
+
+  it('customer.subscription.updated → 退会済み: write なし・notifyOps (unlinked/anomaly) なし・200', async () => {
+    mockDbExecute.mockResolvedValue([
+      { id: RESOLVED_UUID, deleted_at: '2026-07-01T00:00:00.000Z' },
+    ])
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const notifyOps = await opsMock()
+
+    const body = JSON.stringify({
+      id: 'evt_deleted_user_upd',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_z',
+          customer: 'cus_deleted',
+          status: 'active',
+          cancel_at: null,
+          items: { data: [{ current_period_end: 1735689600 }] },
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    expect(mockDb.update).not.toHaveBeenCalled()
+    expect(notifyOps).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
+  })
+
+  it('checkout.session.completed → 退会済み: users link write なし・Stripe retrieve なし・200', async () => {
+    mockDbExecute.mockResolvedValue([
+      { id: RESOLVED_UUID, deleted_at: '2026-07-01T00:00:00.000Z' },
+    ])
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    const body = JSON.stringify({
+      id: 'evt_deleted_user_checkout',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_z',
+          client_reference_id: 'user_deleted',
+          customer: 'cus_deleted',
+          subscription: 'sub_z',
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    // Step 1 (customer link) も Step 2 (retrieve + projection) も走らない。
+    expect(mockDb.update).not.toHaveBeenCalled()
+    expect(mockStripeRetrieve).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
+  })
+
+  // 上の checkout test は clerkId resolve が deleted 行を直接返す変種だが、実際の
+  // scrub は clerk_id=NULL 化 + deleted_at 付与するのが正なので scrub 済み user は
+  // clerkId では引けない (resolve []=null)。この場合 checkout は clerkId miss →
+  // customerId fallback resolve で退会判定して log+skip する必要がある (canonical/
+  // Codex Important: 他 path は元々 customerId 解決で deleted を捕捉済みだが checkout
+  // だけ clerkId 単独ゆえ deleted user を unlinked 経路に取りこぼして Stripe retrieve
+  // まで走らせていた)。
+  it('checkout.session.completed → 退会済み (clerk_id=NULL scrub): clerkId resolve [] → customerId fallback で deleted 検出 → link/retrieve なし・warn 1 行 (PII なし)・200', async () => {
+    // 1 回目 (clerkId resolve) = [] (scrub で clerk_id NULL)、2 回目 (customerId
+    // fallback resolve) = deleted_at 付き行。resolveStripeUser は rows[0] で判定。
+    mockDbExecute
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: RESOLVED_UUID, deleted_at: '2026-07-01T00:00:00.000Z' }])
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const notifyOps = await opsMock()
+    const syncClerk = await clerkMock()
+
+    const body = JSON.stringify({
+      id: 'evt_deleted_scrub_checkout',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_scrub',
+          client_reference_id: 'user_scrubbed',
+          customer: 'cus_scrubbed',
+          subscription: 'sub_scrub',
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    // customerId fallback が deleted を検出 → skip: Step1 link write も Step2 retrieve
+    // も走らない (fallback なしなら retrieve('sub_scrub') が走り warn は 0 → red)。
+    expect(mockDb.update).not.toHaveBeenCalled()
+    expect(mockStripeRetrieve).not.toHaveBeenCalled()
+    expect(notifyOps).not.toHaveBeenCalled()
+    expect(syncClerk).not.toHaveBeenCalled()
+    // warn 1 行: event + type のみ、PII/id は載せない。
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const payload = warnSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.event).toBe('stripe.event.skipped_deleted_user')
+    expect(payload.type).toBe('checkout.session.completed')
+    expect(payload).not.toHaveProperty('id')
+    expect(payload).not.toHaveProperty('customerId')
+    expect(payload).not.toHaveProperty('userId')
+    warnSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// RLS-P2 (Task 7): unlinked user = resolve が [] (該当行なし) を返すと resolved=null。
+// 退会 skip (deleted_at 非 null) とは別経路で、resolved=null の新分岐を駆動する:
+//   - checkout Step 1 の `if (resolved)` (customer link を発行しない)
+//   - projectStripeSubscription の `userId === null` 早期 return (DB/Clerk を触らず
+//     UNMATCHED_RESULT を返す) — checkout Step 2 と .updated の両経路から到達
+// 既存の "unlinked" test は mockDb.update.returning([]) で旧 0 行 match を模しており
+// resolve のデフォルトは resolved 済み id ゆえ、この resolve=null の新経路は未駆動
+// だった (canonical review Important)。挙動不変 = users write なし・Clerk sync なし・
+// old 0 行 match と同じ unlinked routing (checkout=silent / .updated=notifyOps)・200。
+// ---------------------------------------------------------------------------
+describe('POST /api/webhooks/stripe: unlinked user は resolve=null 経路で 0 行 match 相当 (RLS-P2 Task 7)', () => {
+  async function opsMock() {
+    const { notifyOps } = await import('@/lib/ops')
+    return vi.mocked(notifyOps)
+  }
+  async function clerkMock() {
+    const { syncClerkPublicMetadata } = await import('@/lib/auth/clerk-metadata')
+    return vi.mocked(syncClerkPublicMetadata)
+  }
+
+  it('checkout.session.completed → unlinked (resolve []): Step1 customer link write なし・Step2 projection write/Clerk sync なし・notifyOps なし・200', async () => {
+    // resolve 0 行 → resolveStripeUser が null を返す (rows[0] undefined)。
+    mockDbExecute.mockResolvedValue([])
+    const notifyOps = await opsMock()
+    const syncClerk = await clerkMock()
+    // 既知 price → projectStripeSubscription 内の anomaly notify は発火しない
+    // (userId===null 早期 return のみを純粋に観測するため)。
+    mockStripeRetrieve.mockResolvedValueOnce({
+      id: 'sub_u',
+      status: 'active',
+      cancel_at: null,
+      customer: 'cus_unlinked',
+      items: {
+        data: [
+          { price: { id: process.env.STRIPE_PRICE_PRO_MONTHLY }, current_period_end: 1735689600 },
+        ],
+      },
+    })
+
+    const body = JSON.stringify({
+      id: 'evt_unlinked_checkout',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_u',
+          client_reference_id: 'user_unlinked',
+          customer: 'cus_unlinked',
+          subscription: 'sub_u',
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    // Step 1 は `if (resolved)` が false ゆえ customer link を発行しない。 Step 2 は
+    // projectStripeSubscription(userId=null) が DB を触らず UNMATCHED_RESULT を返す。
+    expect(mockDb.update).not.toHaveBeenCalled()
+    expect(syncClerk).not.toHaveBeenCalled()
+    // checkout unlinked は silent (old Step2 returning [] path と同じ、notifyOps 不発)。
+    expect(notifyOps).not.toHaveBeenCalled()
+  })
+
+  it('customer.subscription.updated → unlinked (resolve []): saveProjection write なし・Clerk sync なし・notifyOps (unlinked anomaly) 発火・200', async () => {
+    // resolve 0 行 → resolveStripeUser が null → projectStripeSubscription(userId=null)。
+    mockDbExecute.mockResolvedValue([])
+    const notifyOps = await opsMock()
+    const syncClerk = await clerkMock()
+
+    const body = JSON.stringify({
+      id: 'evt_unlinked_upd',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_u',
+          customer: 'cus_unlinked',
+          status: 'active',
+          cancel_at: null,
+          items: {
+            data: [
+              { price: { id: process.env.STRIPE_PRICE_PRO_MONTHLY }, current_period_end: 1735689600 },
+            ],
+          },
+        },
+      },
+    })
+    const res = await POST(signed(body))
+
+    expect(res.status).toBe(200)
+    // userId=null ゆえ saveProjection (users write) は発行されない。
+    expect(mockDb.update).not.toHaveBeenCalled()
+    expect(syncClerk).not.toHaveBeenCalled()
+    // .updated の unlinked = OT 介入対象 anomaly → notifyOps (old returning [] path と同じ)。
+    expect(notifyOps).toHaveBeenCalledTimes(1)
+    expect(notifyOps).toHaveBeenCalledWith(
+      'stripe sub event for unlinked customer',
+      expect.objectContaining({
+        eventId: 'evt_unlinked_upd',
+        customerId: 'cus_unlinked',
+        eventType: 'customer.subscription.updated',
+      }),
     )
   })
 })

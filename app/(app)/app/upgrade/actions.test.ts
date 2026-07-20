@@ -79,9 +79,21 @@ vi.mock('@/lib/ops', () => ({
   notifyOps: mockNotifyOps,
 }))
 
-// getDb は changePlan downgrade + cancelDowngrade の DB write で呼ばれる。
-// singleton パターン (lib/db/index.ts) だが test では factory ごと差し替える。
-vi.mock('@/lib/db', () => ({ getDb: () => ({ update: mockDbUpdate }) }))
+// getDb は changePlan (upgrade projection / downgrade reservation) + cancelDowngrade の
+// DB write で呼ばれる。singleton パターン (lib/db/index.ts) だが test では factory ごと
+// 差し替える。RLS-P2 (Task 7): users write は withTenantTx 経由ゆえ transaction を提供し、
+// tx.update は同じ mockDbUpdate spy に routing する (assertion 不変)。upgrade actions は
+// getCurrentUser 由来 user.id ゆえ resolve/execute は使わない (Task 5)。
+vi.mock('@/lib/db', () => ({
+  getDb: () => ({
+    update: mockDbUpdate,
+    transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        update: mockDbUpdate,
+        execute: () => Promise.resolve([]),
+      }),
+  }),
+}))
 
 vi.mock('next/navigation', () => ({
   redirect: (url: string) => {

@@ -5,6 +5,7 @@ const {
   mockConstructEvent,
   mockDbInsert,
   mockDbUpdate,
+  mockDbExecute,
   mockSubscriptionsRetrieve,
   mockNotifyOps,
   mockNotifyWebhookError,
@@ -14,6 +15,8 @@ const {
   mockConstructEvent: vi.fn(),
   mockDbInsert: vi.fn(),
   mockDbUpdate: vi.fn(),
+  // RLS-P2 (Task 7): resolve (app_resolve_user_for_stripe) は db.execute で叩く。
+  mockDbExecute: vi.fn(),
   mockSubscriptionsRetrieve: vi.fn(),
   mockNotifyOps: vi.fn().mockResolvedValue(undefined),
   mockNotifyWebhookError: vi.fn().mockResolvedValue(undefined),
@@ -21,10 +24,24 @@ const {
   mockReleaseCompletedDowngrade: vi.fn().mockResolvedValue('released'),
 }))
 
+// RLS-P2 (Task 7): resolve が返す内部 id (tx-local set_config は mock では no-op)。
+const RESOLVED_UUID = '00000000-0000-0000-0000-000000000001'
+
 vi.mock('@/lib/db', () => ({
   getDb: () => ({
     insert: mockDbInsert,
     update: mockDbUpdate,
+    execute: mockDbExecute,
+    // withTenantTx が使う db.transaction。callback を実行し、tx は users write の
+    // update / insert (module spy) と setTenantContext 用 execute (tx-local no-op) を渡す。
+    transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        insert: mockDbInsert,
+        update: mockDbUpdate,
+        execute: () => Promise.resolve([]),
+        select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+        delete: () => ({ where: () => Promise.resolve([]) }),
+      }),
   }),
 }))
 
@@ -86,6 +103,8 @@ beforeEach(() => {
   mockNotifyOps.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
   mockReleaseCompletedDowngrade.mockResolvedValue('released')
+  // RLS-P2 (Task 7): resolve のデフォルト = 紐付き済み・退会前 (deleted_at null)。
+  mockDbExecute.mockResolvedValue([{ id: RESOLVED_UUID, deleted_at: null }])
   // recordIntegrationFailure (dual-write) は getDb().insert(integrationFailures) を
   // 呼ぶため、 idempotency INSERT (mockReturnValueOnce) 消費後の追加 insert が
   // undefined を返さないよう default chain を敷く。 これがないと helper の INSERT が
