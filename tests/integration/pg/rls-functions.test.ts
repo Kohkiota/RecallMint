@@ -13,10 +13,11 @@
 // 両方を見る (role-privilege.test.ts の permissionSemanticsIn と同型)。
 import { randomUUID } from 'node:crypto'
 
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb, getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { users } from '@/lib/db/schema'
 
 import {
@@ -252,5 +253,63 @@ describe('RLS-P2 tenant-context functions (migration 0025)', () => {
       const rows = await owner.select({ id: users.id }).from(users).where(eq(users.id, z))
       expect(rows).toHaveLength(0)
     })
+  })
+})
+
+// getCurrentUser の claim-present 読み (lib/auth/ensure-user.ts) の query semantics を
+// 実 PG で pin する。scrub(webhook)は clerk_id/email を NULL 化しつつ users 行と id を
+// 残し deleted_at を set するため、id で読むと 60s JWT window に ghost 行が返り得る。
+// 修正 = WHERE に isNull(deletedAt) を加え ghost を 0 行 → null にすること。ここでは
+// getCurrentUser 本体は auth()(Clerk)依存で iso から直接叩けないため、本体と同一の
+// withTenantTx(getDb(), id, ...) 読みを raw に再現して predicate の load-bearing 性を pin する。
+describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users', () => {
+  it('returns 0 rows for a soft-deleted user with the isNull(deletedAt) predicate, and 1 row without it (predicate is load-bearing)', async () => {
+    const owner = getFixtureOwnerDb()
+    // scrub 済み ghost を owner 接続で seed (deleted_at set + PII NULL、webhook 相当)。
+    const [seeded] = await owner
+      .insert(users)
+      .values({ deletedAt: new Date(), email: null, clerkId: null })
+      .returning({ id: users.id })
+    const ghostId = seeded!.id
+
+    // (1) getCurrentUser の claim-present 読みの正確な複製 (isNull 付き) → 0 行 → null 契約。
+    const withFilter = await withTenantTx(getDb(), ghostId, (tx) =>
+      tx
+        .select()
+        .from(users)
+        .where(and(eq(users.id, ghostId), isNull(users.deletedAt)))
+        .limit(1),
+    )
+    expect(withFilter).toHaveLength(0)
+
+    // (2) control: isNull を外すと同じ id で ghost 行が 1 行返る = predicate が
+    // load-bearing。この 1 行は非 null かつ deletedAt set ゆえ、呼出側の `!user`
+    // ガードを素通りし ghost 書込を許す (= 本 fix が塞ぐ regression の実証)。
+    const withoutFilter = await withTenantTx(getDb(), ghostId, (tx) =>
+      tx.select().from(users).where(eq(users.id, ghostId)).limit(1),
+    )
+    expect(withoutFilter).toHaveLength(1)
+    expect(withoutFilter[0]?.id).toBe(ghostId)
+    expect(withoutFilter[0]?.deletedAt).not.toBeNull()
+  })
+
+  it('still returns a live (deletedAt IS NULL) user under the same isNull-filtered read', async () => {
+    // positive control: filter が生存 user を誤って弾かないこと (両向き pin)。
+    const owner = getFixtureOwnerDb()
+    const [seeded] = await owner
+      .insert(users)
+      .values({ clerkId: 'ck_live_claim_present' })
+      .returning({ id: users.id })
+    const liveId = seeded!.id
+
+    const rows = await withTenantTx(getDb(), liveId, (tx) =>
+      tx
+        .select()
+        .from(users)
+        .where(and(eq(users.id, liveId), isNull(users.deletedAt)))
+        .limit(1),
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.id).toBe(liveId)
   })
 })

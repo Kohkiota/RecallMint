@@ -38,24 +38,22 @@ function makeFakeHeaders(ip?: string) {
   } as unknown as Headers
 }
 
-// Drizzle chain mock factory:
-// - select().from().where().limit() → resolves to provided rows (users lookup)
+// Drizzle mock factory:
+// - execute(sql`SELECT id FROM app_bootstrap_user_from_clerk(...)`) → resolves to
+//   provided bootstrap rows (認証済 user の内部 id 解決)。
 // - insert().values() → resolves to undefined (success) or rejects (failure)
 function makeFakeDb(opts: {
-  selectRows?: Array<{ id: string }>
+  bootstrapRows?: Array<{ id: string }>
   insertReject?: Error
 }) {
-  const limit = vi.fn(() => Promise.resolve(opts.selectRows ?? []))
-  const where = vi.fn(() => ({ limit }))
-  const from = vi.fn(() => ({ where }))
-  const select = vi.fn(() => ({ from }))
+  const execute = vi.fn(() => Promise.resolve(opts.bootstrapRows ?? []))
 
   const values = opts.insertReject
     ? vi.fn(() => Promise.reject(opts.insertReject))
     : vi.fn(() => Promise.resolve())
   const insert = vi.fn(() => ({ values }))
 
-  return { select, insert, _values: values } as unknown as DB & {
+  return { execute, insert, _values: values } as unknown as DB & {
     _values: ReturnType<typeof vi.fn>
   }
 }
@@ -120,7 +118,7 @@ describe('submitContact', () => {
   it('認証済 + 正常系 → ok:true、 user_id=内部 user.id で insert', async () => {
     const internalUserId = '00000000-0000-0000-0000-000000000123'
     vi.mocked(auth).mockResolvedValue({ userId: 'user_clerk_1' } as never)
-    const fake = makeFakeDb({ selectRows: [{ id: internalUserId }] })
+    const fake = makeFakeDb({ bootstrapRows: [{ id: internalUserId }] })
     vi.mocked(getDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
@@ -133,7 +131,7 @@ describe('submitContact', () => {
 
   it('認証済 + users 未同期 (lookup 0 件) → user_id=null で insert', async () => {
     vi.mocked(auth).mockResolvedValue({ userId: 'user_clerk_unsynced' } as never)
-    const fake = makeFakeDb({ selectRows: [] })
+    const fake = makeFakeDb({ bootstrapRows: [] })
     vi.mocked(getDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)

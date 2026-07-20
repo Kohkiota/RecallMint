@@ -2,10 +2,10 @@
 
 import { headers } from 'next/headers'
 import { auth } from '@clerk/nextjs/server'
-import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { contactSchema } from '@/lib/validation/contact'
 import { getDb } from '@/lib/db'
-import { users, contactMessages } from '@/lib/db/schema'
+import { contactMessages } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
 import { checkContactRateLimit } from '@/lib/rate-limit/contact-action'
@@ -60,7 +60,8 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
   try {
     const db = getDb()
 
-    // 認証済 user は内部 user.id を解決 (users.clerkId → users.id)。
+    // 認証済 user は内部 user.id を解決 (clerk_id → 内部 id、 SECURITY DEFINER
+    // 関数 app_bootstrap_user_from_clerk 経由で RLS 迂回。id 列だけ射影)。
     // 未認証 / users 未同期 / Clerk SDK 一時障害は user_id = null で受付
     // (schema 上 nullable)。 auth() 失敗を DB insert 失敗と混同すると
     // notifyOps の subject を誤って "contact_messages insert failed" に
@@ -70,12 +71,10 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
     try {
       const { userId: clerkId } = await auth()
       if (clerkId) {
-        const rows = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.clerkId, clerkId))
-          .limit(1)
-        userId = rows[0]?.id ?? null
+        const idRows = await db.execute<{ id: string }>(
+          sql`SELECT id FROM public.app_bootstrap_user_from_clerk(${clerkId})`,
+        )
+        userId = idRows[0]?.id ?? null
       }
     } catch (authErr) {
       logger.warn({ event: 'contact.auth_lookup.failed', err: authErr })
