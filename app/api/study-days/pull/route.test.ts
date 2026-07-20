@@ -16,6 +16,15 @@ vi.mock('@/lib/db/study-days-pull', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
+// RLS-P2: route は withTenantTx(getDb(), ...) で helper を包む。unit test では DB に
+// 触れないよう getDb を stub し、withTenantTx は fn(fakeTx) を直呼びする。
+vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => ({})) }))
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: vi.fn(
+    async (_db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
+      fn({}),
+  ),
+}))
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getAllStudyDaysForUser } from '@/lib/db/study-days-pull'
@@ -85,7 +94,10 @@ describe('GET /api/study-days/pull', () => {
     }
     expect(body.studyDays).toHaveLength(2)
     expect(body.studyDays[0]?.day).toBe('2026-05-25')
-    expect(getAllStudyDaysForUser).toHaveBeenCalledWith('user-uuid-1')
+    expect(getAllStudyDaysForUser).toHaveBeenCalledWith(
+      'user-uuid-1',
+      expect.anything(),
+    )
     expect(getAllStudyDaysForUser).toHaveBeenCalledTimes(1)
   })
 

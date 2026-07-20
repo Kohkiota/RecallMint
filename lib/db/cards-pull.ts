@@ -14,9 +14,11 @@ import { cards } from './schema'
 import type { ClientCard } from '@/lib/client-db'
 import { toClientCard } from './cards-mapper'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 export async function getCardsDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientCard[]; maxUpdatedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -28,6 +30,7 @@ export async function getCardsDelta(
       cursorValueOf: (r) => r.updated_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxUpdatedAt: max }

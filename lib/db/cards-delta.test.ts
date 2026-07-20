@@ -6,6 +6,9 @@
 // - 0 行のとき rows=[] / maxUpdatedAt=null
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// RLS-P2: helper は dbc を必須引数で受け取る。mock された getDb() をそのまま dbc
+// として渡し、既存 select().from().where() chain mock を通す (mock は @/lib/db)。
+import { getDb } from '@/lib/db'
 
 // ── hoisted mocks ─────────────────────────────────────────────────────────────
 // vi.hoisted は module 評価より前に実行されるため、外部定数を参照できない。
@@ -225,7 +228,7 @@ beforeEach(async () => {
 describe('getCardsDelta', () => {
   it('(a) rows が toClientCard 適用済で返る (updated_at が Z 付き ISO、 ClientCard shape)', async () => {
     const { getCardsDelta } = await importSubject()
-    const result = await getCardsDelta('user-uuid')
+    const result = await getCardsDelta('user-uuid', getDb())
     expect(result.rows).toHaveLength(2)
     // updated_at が Z 付き UTC ISO 文字列
     expect(result.rows[0].updated_at).toBe('2026-05-01T10:00:01.000Z')
@@ -241,7 +244,7 @@ describe('getCardsDelta', () => {
 
   it('(b) maxUpdatedAt = 2 行のうち新しい updated_at の ISO', async () => {
     const { getCardsDelta } = await importSubject()
-    const result = await getCardsDelta('user-uuid')
+    const result = await getCardsDelta('user-uuid', getDb())
     expect(result.maxUpdatedAt).toBe('2026-05-10T12:00:01.000Z')
   })
 
@@ -249,7 +252,7 @@ describe('getCardsDelta', () => {
     const { getCardsDelta } = await importSubject()
     const { spyGte } = await getSpies()
     const since = new Date('2026-05-05T00:00:00.000Z')
-    await getCardsDelta('user-uuid', since)
+    await getCardsDelta('user-uuid', getDb(), since)
     expect(spyGte).toHaveBeenCalled()
     const call = spyGte.mock.calls[0]
     // 第2引数が since と同一 Date
@@ -259,7 +262,7 @@ describe('getCardsDelta', () => {
   it('(c) since 未指定時は gte が呼ばれない', async () => {
     const { getCardsDelta } = await importSubject()
     const { spyGte } = await getSpies()
-    await getCardsDelta('user-uuid')
+    await getCardsDelta('user-uuid', getDb())
     expect(spyGte).not.toHaveBeenCalled()
   })
 
@@ -267,14 +270,14 @@ describe('getCardsDelta', () => {
     const { getCardsDelta } = await importSubject()
     const { spyEq } = await getSpies()
     const { cards } = await import('./schema')
-    await getCardsDelta('user-uuid')
+    await getCardsDelta('user-uuid', getDb())
     expect(vi.mocked(spyEq)).toHaveBeenCalledWith(cards.userId, 'user-uuid')
   })
 
   it('(e) 0 行のとき rows=[] / maxUpdatedAt=null', async () => {
     mockRows.value = []
     const { getCardsDelta } = await importSubject()
-    const result = await getCardsDelta('user-uuid')
+    const result = await getCardsDelta('user-uuid', getDb())
     expect(result.rows).toEqual([])
     expect(result.maxUpdatedAt).toBeNull()
   })

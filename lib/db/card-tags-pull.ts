@@ -18,6 +18,7 @@ import 'server-only'
 import { cardTags } from './schema'
 import type { ClientCardTag } from '@/lib/client-db'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 type CardTagRow = typeof cardTags.$inferSelect
 
@@ -32,6 +33,7 @@ export function toClientCardTag(row: CardTagRow): ClientCardTag {
 
 export async function getCardTagsDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientCardTag[]; maxCreatedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -43,6 +45,7 @@ export async function getCardTagsDelta(
       cursorValueOf: (r) => r.created_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxCreatedAt: max }

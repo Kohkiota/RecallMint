@@ -12,7 +12,7 @@ import 'server-only'
 import { and, eq, gte, SQL } from 'drizzle-orm'
 import type { Column } from 'drizzle-orm'
 import type { AnyPgTable } from 'drizzle-orm/pg-core'
-import { getDb } from '@/lib/db'
+import type { TenantDb } from './tenant-tx'
 import { maxIso } from './max-iso'
 
 // DeltaConfig — 各 module が getDeltaRows に渡す設定。
@@ -30,12 +30,15 @@ export interface DeltaConfig<TRow, TClient> {
 
 // getDeltaRows — 各 module 共通の delta 取得 body。
 // since 条件式は現行 `if (since)` を verbatim で置く (falsy 値の扱い保持)。
+// dbc は必須引数 (optional since より前に置く): withTenantTx が張った tenant
+// context 下の tx を受け取り、そこで query を実行する (RLS-P2)。
 export async function getDeltaRows<TRow, TClient>(
   config: DeltaConfig<TRow, TClient>,
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: TClient[]; max: string | null }> {
-  const db = getDb()
+  const db = dbc
   const conds: SQL[] = [eq(config.userIdCol, userId)]
   if (since) conds.push(gte(config.cursorCol, since))
   // AnyPgTable を from() に渡すため raw result の型は非特定。

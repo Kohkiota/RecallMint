@@ -11,10 +11,10 @@
 //   可能な形で切り出す。
 
 import { and, eq, gte } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { studyDays } from './schema'
 import { todayInJst } from '@/lib/jst'
 import type { ClientStudyDay } from '@/lib/client-db'
+import type { TenantDb } from './tenant-tx'
 
 type StudyDayRow = typeof studyDays.$inferSelect
 
@@ -49,9 +49,10 @@ export function toClientStudyDay(row: StudyDayRow): ClientStudyDay {
 
 export async function getAllStudyDaysForUser(
   userId: string,
+  dbc: TenantDb,
   now?: Date,
 ): Promise<ClientStudyDay[]> {
-  const db = getDb()
+  const db = dbc
   const lower = studyDaysLowerBound(now)
   const rows = await db
     .select()

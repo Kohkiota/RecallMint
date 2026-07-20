@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { todayInJst } from '@/lib/jst'
 import { computeStreak, addDays } from '@/lib/streak-core'
+import type { TenantDb } from './tenant-tx'
 
 /**
  * Fetch today's unique card count and current streak for a user.
@@ -24,9 +24,10 @@ import { computeStreak, addDays } from '@/lib/streak-core'
  */
 export async function getReviewStatsForUser(
   userId: string,
+  dbc: TenantDb,
   now?: Date,
 ): Promise<{ todayCardCount: number; streak: number }> {
-  const db = getDb()
+  const db = dbc
   const today = todayInJst(now)
 
   // Count distinct cards reviewed today (JST) via study_days.

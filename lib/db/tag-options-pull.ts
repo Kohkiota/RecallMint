@@ -11,6 +11,7 @@ import 'server-only'
 import { tagOptions } from './schema'
 import type { ClientTagOption } from '@/lib/client-db'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 type TagOptionRow = typeof tagOptions.$inferSelect
 
@@ -29,6 +30,7 @@ export function toClientTagOption(row: TagOptionRow): ClientTagOption {
 
 export async function getOptionsDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientTagOption[]; maxUpdatedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -40,6 +42,7 @@ export async function getOptionsDelta(
       cursorValueOf: (r) => r.updated_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxUpdatedAt: max }

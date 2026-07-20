@@ -1,5 +1,7 @@
 import Link from 'next/link'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
+import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
 import { limitsForOrFree, type Plan } from '@/lib/auth/plan-limits'
@@ -89,7 +91,7 @@ export default async function UploadPage() {
   // --- 通常描画: UploadForm ---
   // in-flight なし確定後に fetch する (処理中案内のときは不要な fetch を省く)。
   const [existingExams, currentMonthPages] = await Promise.all([
-    getActiveExamsForUser(userId),
+    withTenantTx(getDb(), userId, (tx) => getActiveExamsForUser(userId, tx)),
     getCurrentMonthOcrPages(userId),
   ])
   // C2 (S-perf-3 follow-up): `limitsFor` ではなく safety net 版を使う。 plan が

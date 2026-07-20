@@ -12,6 +12,9 @@
 // SQL レイヤなので別 file で mock chain を構築する。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// RLS-P2: list.ts の 5 query は dbc を必須末尾引数で受け取る。mock された getDb()
+// を dbc として渡し、既存 chain mock を通す (mock は @/lib/db)。
+import { getDb } from '@/lib/db'
 
 type SelectedRow = Record<string, unknown>
 
@@ -89,7 +92,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
   it('returns null when row not found (other user / unknown exam)', async () => {
     dbState.queue = [[]]
     const { getExamByIdForUser } = await importModule()
-    const r = await getExamByIdForUser('user-1', 'exam-unknown')
+    const r = await getExamByIdForUser('user-1', 'exam-unknown', getDb())
     expect(r).toBeNull()
   })
 
@@ -107,7 +110,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
       ],
     ]
     const { getExamByIdForUser } = await importModule()
-    const r = await getExamByIdForUser('user-1', 'exam-A')
+    const r = await getExamByIdForUser('user-1', 'exam-A', getDb())
     expect(r).toEqual({
       id: 'exam-A',
       name: 'My Exam',
@@ -132,7 +135,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
       ],
     ]
     const { getExamByIdForUser } = await importModule()
-    const r = await getExamByIdForUser('user-1', 'exam-A')
+    const r = await getExamByIdForUser('user-1', 'exam-A', getDb())
     expect(r?.archivedAt).toEqual(archived)
   })
 })
@@ -141,7 +144,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
   it('returns empty array when no rows (other user exam or empty exam)', async () => {
     dbState.queue = [[]]
     const { getCardsForExam } = await importModule()
-    const r = await getCardsForExam('user-1', 'exam-A')
+    const r = await getCardsForExam('user-1', 'exam-A', getDb())
     expect(r).toEqual([])
   })
 
@@ -165,7 +168,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
       ],
     ]
     const { getCardsForExam } = await importModule()
-    const r = await getCardsForExam('user-1', 'exam-A')
+    const r = await getCardsForExam('user-1', 'exam-A', getDb())
     expect(r).toHaveLength(1)
     // snippet 化せず問題文全文・全選択肢・card 解説・memo・images をそのまま返す
     expect(r[0]).toEqual({
@@ -196,7 +199,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
       ],
     ]
     const { getCardsForExam } = await importModule()
-    const r = await getCardsForExam('user-1', 'exam-A')
+    const r = await getCardsForExam('user-1', 'exam-A', getDb())
     expect(r[0]?.images).toEqual([])
   })
 
@@ -215,7 +218,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
       ],
     ]
     const { getCardsForExam } = await importModule()
-    const r = await getCardsForExam('user-1', 'exam-A')
+    const r = await getCardsForExam('user-1', 'exam-A', getDb())
     expect(r[0].sortKey).toBeNull()
     expect(r[0].options).toEqual([])
     expect(r[0].explanationText).toBeNull()
@@ -229,14 +232,14 @@ describe('getSourceDocumentForUser (owner isolation)', () => {
   it('returns null when row not found (other user / unknown / discarded)', async () => {
     dbState.queue = [[]]
     const { getSourceDocumentForUser } = await importModule()
-    const r = await getSourceDocumentForUser('user-1', 'sdoc-unknown')
+    const r = await getSourceDocumentForUser('user-1', 'sdoc-unknown', getDb())
     expect(r).toBeNull()
   })
 
   it('returns { id, examName } when found (own source_document)', async () => {
     dbState.queue = [[{ id: 'sdoc-A', examName: 'My Exam' }]]
     const { getSourceDocumentForUser } = await importModule()
-    const r = await getSourceDocumentForUser('user-1', 'sdoc-A')
+    const r = await getSourceDocumentForUser('user-1', 'sdoc-A', getDb())
     expect(r).toEqual({ id: 'sdoc-A', examName: 'My Exam' })
   })
 })
@@ -245,7 +248,7 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
   it('returns empty array when no rows (other user / discarded source_document)', async () => {
     dbState.queue = [[]]
     const { getCardsForSourceDocument } = await importModule()
-    const r = await getCardsForSourceDocument('user-1', 'sdoc-A')
+    const r = await getCardsForSourceDocument('user-1', 'sdoc-A', getDb())
     expect(r).toEqual([])
   })
 
@@ -266,7 +269,7 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
       ],
     ]
     const { getCardsForSourceDocument } = await importModule()
-    const r = await getCardsForSourceDocument('user-1', 'sdoc-A')
+    const r = await getCardsForSourceDocument('user-1', 'sdoc-A', getDb())
     expect(r).toHaveLength(1)
     expect(r[0]).toMatchObject({
       id: 'card-1',
@@ -284,7 +287,7 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
   it('getActiveExamsForUser: eq(exams.userId, userId) が呼ばれる', async () => {
     dbState.queue = [[]]
     const { getActiveExamsForUser } = await importModule()
-    await getActiveExamsForUser('user-1')
+    await getActiveExamsForUser('user-1', getDb())
     const { exams } = await getSchema()
     expect(await getEqSpy()).toHaveBeenCalledWith(exams.userId, 'user-1')
   })
@@ -292,7 +295,7 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
   it('getExamByIdForUser: eq(exams.userId, userId) と eq(exams.id, examId) が呼ばれる', async () => {
     dbState.queue = [[]]
     const { getExamByIdForUser } = await importModule()
-    await getExamByIdForUser('user-1', 'exam-A')
+    await getExamByIdForUser('user-1', 'exam-A', getDb())
     const { exams } = await getSchema()
     const spy = await getEqSpy()
     expect(spy).toHaveBeenCalledWith(exams.userId, 'user-1')
@@ -302,7 +305,7 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
   it('getCardsForExam: eq(cards.userId, userId) と eq(cards.examId, examId) が呼ばれる', async () => {
     dbState.queue = [[]]
     const { getCardsForExam } = await importModule()
-    await getCardsForExam('user-1', 'exam-A')
+    await getCardsForExam('user-1', 'exam-A', getDb())
     const { cards } = await getSchema()
     const spy = await getEqSpy()
     expect(spy).toHaveBeenCalledWith(cards.userId, 'user-1')
@@ -312,7 +315,7 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
   it('getSourceDocumentForUser: eq(sourceDocuments.userId, userId) と eq(sourceDocuments.id, id) が呼ばれる', async () => {
     dbState.queue = [[]]
     const { getSourceDocumentForUser } = await importModule()
-    await getSourceDocumentForUser('user-1', 'sdoc-A')
+    await getSourceDocumentForUser('user-1', 'sdoc-A', getDb())
     const { sourceDocuments } = await getSchema()
     const spy = await getEqSpy()
     expect(spy).toHaveBeenCalledWith(sourceDocuments.userId, 'user-1')
@@ -322,7 +325,7 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
   it('getCardsForSourceDocument: eq(cards.userId, userId) と eq(cards.sourceDocumentId, id) が呼ばれる', async () => {
     dbState.queue = [[]]
     const { getCardsForSourceDocument } = await importModule()
-    await getCardsForSourceDocument('user-1', 'sdoc-A')
+    await getCardsForSourceDocument('user-1', 'sdoc-A', getDb())
     const { cards } = await getSchema()
     const spy = await getEqSpy()
     expect(spy).toHaveBeenCalledWith(cards.userId, 'user-1')

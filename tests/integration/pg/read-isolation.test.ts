@@ -62,12 +62,12 @@ describe('read isolation (R1)', () => {
   // --- 代表 RED: eq(exams.userId, userId) を外すと B の active exam が漏れる ---
   describe('getActiveExamsForUser', () => {
     it('returns tenant A own exam (positive control)', async () => {
-      const rows = await getActiveExamsForUser(fixture.a.userId)
+      const rows = await getActiveExamsForUser(fixture.a.userId, getDb())
       expect(rows.map((r) => r.id)).toContain(fixture.a.examId)
     })
 
     it('does not leak tenant B exam into tenant A result (negative)', async () => {
-      const rows = await getActiveExamsForUser(fixture.a.userId)
+      const rows = await getActiveExamsForUser(fixture.a.userId, getDb())
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.examId)
     })
   })
@@ -77,12 +77,12 @@ describe('read isolation (R1)', () => {
   // は来ない)。「A が B の examId を渡しても B の card を得られない(0 件)」を assert。
   describe('getCardsForExam', () => {
     it('returns tenant A own card for own examId (positive control)', async () => {
-      const rows = await getCardsForExam(fixture.a.userId, fixture.a.examId)
+      const rows = await getCardsForExam(fixture.a.userId, fixture.a.examId, getDb())
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
     it('returns empty when A supplies B examId (negative, non-leak via shadowing)', async () => {
-      const rows = await getCardsForExam(fixture.a.userId, fixture.b.examId)
+      const rows = await getCardsForExam(fixture.a.userId, fixture.b.examId, getDb())
       expect(rows).toHaveLength(0)
     })
   })
@@ -93,12 +93,12 @@ describe('read isolation (R1)', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
     it('returns tenant A own due card (positive control)', async () => {
-      const rows = await getSessionCards(fixture.a.userId, null, now)
+      const rows = await getSessionCards(fixture.a.userId, null, getDb(), now)
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
     it('does not leak tenant B due card into tenant A result (negative)', async () => {
-      const rows = await getSessionCards(fixture.a.userId, null, now)
+      const rows = await getSessionCards(fixture.a.userId, null, getDb(), now)
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.cardId)
     })
   })
@@ -110,13 +110,13 @@ describe('read isolation (R1)', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
     it('returns tenant A own known stats (positive control)', async () => {
-      const stats = await getReviewStatsForUser(fixture.a.userId, now)
+      const stats = await getReviewStatsForUser(fixture.a.userId, getDb(), now)
       expect(stats.todayCardCount).toBe(3)
       expect(stats.streak).toBe(1)
     })
 
     it('does not mix tenant B known stats into tenant A result (negative)', async () => {
-      const stats = await getReviewStatsForUser(fixture.a.userId, now)
+      const stats = await getReviewStatsForUser(fixture.a.userId, getDb(), now)
       expect(stats.todayCardCount).not.toBe(9)
     })
   })

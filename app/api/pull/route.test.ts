@@ -38,6 +38,19 @@ vi.mock('@/lib/db/card-tags-pull', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
+// RLS-P2: route は withTenantTx(getDb(), ...) で 6 delta を 1 tx に包む。unit test
+// では DB に触れないよう getDb を stub し、withTenantTx は fn(fakeTx) を直呼びする
+// (context 設定は挙動不変・delta は上で mock 済)。
+vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => ({})) }))
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: vi.fn(
+    async (
+      _db: unknown,
+      _userId: string,
+      fn: (tx: unknown) => unknown,
+    ) => fn({}),
+  ),
+}))
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getCardsDelta } from '@/lib/db/cards-pull'
@@ -237,9 +250,9 @@ describe('GET /api/pull', () => {
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     expect(res.status).toBe(200)
-    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
-    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
-    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
+    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
+    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('正常: レスポンス body が cards/exams/tombstones/cursors を含む', async () => {
@@ -304,11 +317,12 @@ describe('GET /api/pull', () => {
     )
     expect(getCardsDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-25T00:00:00.000Z'),
     )
     // exams / tombstone は undefined (since_exams / since_tombstone 未指定)
-    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
-    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
+    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('since_exams に有効 ISO8601 → getExamsDelta が (user.id, Date) で呼ばれる', async () => {
@@ -323,10 +337,11 @@ describe('GET /api/pull', () => {
     )
     expect(getExamsDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-24T12:00:00.000Z'),
     )
-    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
-    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
+    expect(getTombstonesDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('since_tombstone に有効 ISO8601 → getTombstonesDelta が (user.id, Date) で呼ばれる', async () => {
@@ -343,10 +358,11 @@ describe('GET /api/pull', () => {
     )
     expect(getTombstonesDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-23T06:00:00.000Z'),
     )
-    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
-    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
+    expect(getExamsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('3 ストリームすべてに since を渡す → 各々が Date で呼ばれる', async () => {
@@ -363,14 +379,17 @@ describe('GET /api/pull', () => {
     )
     expect(getCardsDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-25T00:00:00.000Z'),
     )
     expect(getExamsDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-24T00:00:00.000Z'),
     )
     expect(getTombstonesDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-05-23T00:00:00.000Z'),
     )
   })
@@ -383,7 +402,7 @@ describe('GET /api/pull', () => {
     vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq('http://x/api/pull?since_cards=bad'))
-    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('since_cards 欠落 → getCardsDelta が (user.id, undefined) で呼ばれる', async () => {
@@ -394,7 +413,7 @@ describe('GET /api/pull', () => {
     vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq('http://x/api/pull'))
-    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   // -------------------------------------------------------------------------
@@ -482,6 +501,7 @@ describe('GET /api/pull', () => {
     )
     expect(getCardTagsDelta).toHaveBeenCalledWith(
       'user-uuid-1',
+      expect.anything(),
       new Date('2026-06-01T00:00:00.000Z'),
     )
   })
@@ -494,7 +514,7 @@ describe('GET /api/pull', () => {
     vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     await GET(makeReq())
-    expect(getCardTagsDelta).toHaveBeenCalledWith('user-uuid-1', undefined)
+    expect(getCardTagsDelta).toHaveBeenCalledWith('user-uuid-1', expect.anything(), undefined)
   })
 
   it('users 未 sync (null) → card_tags も空 + cursor null + getCardTagsDelta 呼ばれない', async () => {

@@ -7,6 +7,7 @@
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings, type Card } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
 import { AppContainer } from '../../_components/app-container'
@@ -34,7 +35,9 @@ export default async function SmartStudyPage() {
   // Dexie cards で続行できる。 Dexie / server 両方 0 件のときの empty UI も host 側。
   let serverCards: Card[] = []
   try {
-    serverCards = await getSessionCards(user.id, sessionLimit)
+    serverCards = await withTenantTx(db, user.id, (tx) =>
+      getSessionCards(user.id, sessionLimit, tx),
+    )
   } catch {
     // silent: client が Dexie cards mirror で代替する
   }

@@ -9,6 +9,9 @@ const { mockDb } = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({ getDb: () => mockDb }))
 
 import { computeStreak } from '@/lib/streak-core'
+// RLS-P2: getReviewStatsForUser は dbc を必須引数で受け取る。mock された getDb()
+// (= mockDb) を dbc として渡し、dbc.execute() を mockDb.execute に通す。
+import { getDb } from '@/lib/db'
 import { getReviewStatsForUser } from './streak'
 
 describe('computeStreak', () => {
@@ -62,7 +65,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([{ c: 5 }])
       .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(5)
     expect(res.streak).toBe(1)
   })
@@ -72,7 +75,7 @@ describe('getReviewStatsForUser', () => {
     // No row for today in study_days
     mockDb.execute.mockResolvedValueOnce([]).mockResolvedValueOnce([])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(0)
     expect(res.streak).toBe(0)
   })
@@ -83,7 +86,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([{ c: 7 }])
       .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(7)
   })
 
@@ -93,7 +96,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([{ c: 0 }])
       .mockResolvedValueOnce([])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.streak).toBe(0)
   })
 
@@ -107,7 +110,7 @@ describe('getReviewStatsForUser', () => {
         { d: '2026-04-20' },
       ])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.streak).toBe(3)
   })
 
@@ -118,7 +121,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([]) // no row for today
       .mockResolvedValueOnce([{ d: '2026-04-21' }, { d: '2026-04-20' }])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(0)
     expect(res.streak).toBe(2) // yesterday + day before = 2
   })
@@ -130,7 +133,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([{ c: 2 }])
       .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(2)
   })
 
@@ -142,7 +145,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([]) // no study_days row for 2026-04-23
       .mockResolvedValueOnce([{ d: '2026-04-22' }]) // yesterday has data
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res.todayCardCount).toBe(0)
     // yesterday ('2026-04-22') present relative to today ('2026-04-23') → streak 1
     expect(res.streak).toBe(1)
@@ -154,7 +157,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([{ c: 3 }])
       .mockResolvedValueOnce([{ d: '2026-04-22' }])
 
-    const res = await getReviewStatsForUser('user_1', fixedNow)
+    const res = await getReviewStatsForUser('user_1', getDb(), fixedNow)
     expect(res).toHaveProperty('todayCardCount', 3)
     expect(res).toHaveProperty('streak', 1)
     expect(res).not.toHaveProperty('todayWordCount')
@@ -166,7 +169,7 @@ describe('getReviewStatsForUser', () => {
       .mockResolvedValueOnce([])
 
     // Should not throw when now is omitted
-    const res = await getReviewStatsForUser('user_1')
+    const res = await getReviewStatsForUser('user_1', getDb())
     expect(res).toHaveProperty('todayCardCount')
     expect(res).toHaveProperty('streak')
   })

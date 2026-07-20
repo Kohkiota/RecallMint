@@ -1,5 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
+import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import {
   getCardsForSourceDocument,
   getSourceDocumentForUser,
@@ -23,10 +25,26 @@ export default async function UploadResultPage({
   const user = await getCurrentUser()
   if (!user) return null
 
-  const sourceDoc = await getSourceDocumentForUser(user.id, sourceDocumentId)
-  if (!sourceDoc) notFound()
-
-  const cards = await getCardsForSourceDocument(user.id, sourceDocumentId)
+  // source_document 所有確認 + cards 取得を 1 tenant tx に包む (RLS-P2)。不在時は
+  // tx 内で notFound() を throw し、cards query を実行しない (従来挙動を保持)。
+  const { sourceDoc, cards } = await withTenantTx(
+    getDb(),
+    user.id,
+    async (tx) => {
+      const sourceDoc = await getSourceDocumentForUser(
+        user.id,
+        sourceDocumentId,
+        tx,
+      )
+      if (!sourceDoc) notFound()
+      const cards = await getCardsForSourceDocument(
+        user.id,
+        sourceDocumentId,
+        tx,
+      )
+      return { sourceDoc, cards }
+    },
+  )
 
   return (
     <AppContainer>

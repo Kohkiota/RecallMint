@@ -12,6 +12,7 @@ import 'server-only'
 import { tagCategories } from './schema'
 import type { ClientTagCategory } from '@/lib/client-db'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 type TagCategoryRow = typeof tagCategories.$inferSelect
 
@@ -30,6 +31,7 @@ export function toClientTagCategory(row: TagCategoryRow): ClientTagCategory {
 
 export async function getCategoriesDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientTagCategory[]; maxUpdatedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -41,6 +43,7 @@ export async function getCategoriesDelta(
       cursorValueOf: (r) => r.updated_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxUpdatedAt: max }

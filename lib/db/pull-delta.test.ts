@@ -19,6 +19,9 @@
 // docs/audit/2026-07-17-test-quality-audit.md 台帳)の責務。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// RLS-P2: getDeltaRows / delta helper は dbc を必須引数で受け取る。mock された
+// getDb() を dbc として渡し、既存 select chain mock を通す。
+import { getDb } from '@/lib/db'
 
 const { mockRows } = vi.hoisted(() => ({
   mockRows: { value: [] as unknown[] },
@@ -82,7 +85,7 @@ describe('getDeltaRows (factory 直接)', () => {
   it('eq(userIdCol, userId) が必ず呼ばれる (owner-scope・since 有無に依らず)', async () => {
     const { getDeltaRows } = await import('./pull-delta')
     const { tagCategories } = await getSchema()
-    await getDeltaRows(await makeConfig(), 'user-1')
+    await getDeltaRows(await makeConfig(), 'user-1', getDb())
     const { spyEq } = await getSpies()
     expect(spyEq).toHaveBeenCalledWith(tagCategories.userId, 'user-1')
   })
@@ -93,11 +96,11 @@ describe('getDeltaRows (factory 直接)', () => {
     const { spyGte } = await getSpies()
 
     const since = new Date('2026-05-05T00:00:00.000Z')
-    await getDeltaRows(await makeConfig(), 'user-1', since)
+    await getDeltaRows(await makeConfig(), 'user-1', getDb(), since)
     expect(spyGte).toHaveBeenCalledWith(tagCategories.updatedAt, since)
 
     spyGte.mockClear()
-    await getDeltaRows(await makeConfig(), 'user-1')
+    await getDeltaRows(await makeConfig(), 'user-1', getDb())
     expect(spyGte).not.toHaveBeenCalled()
   })
 
@@ -107,7 +110,7 @@ describe('getDeltaRows (factory 直接)', () => {
       { id: 'a', updatedAt: new Date('2026-05-01T10:00:00.000Z') },
       { id: 'b', updatedAt: new Date('2026-05-10T12:00:00.000Z') },
     ]
-    const result = await getDeltaRows(await makeConfig(), 'user-1')
+    const result = await getDeltaRows(await makeConfig(), 'user-1', getDb())
     expect(result.rows).toEqual([
       { id: 'a', updated_at: '2026-05-01T10:00:00.000Z' },
       { id: 'b', updated_at: '2026-05-10T12:00:00.000Z' },
@@ -115,7 +118,7 @@ describe('getDeltaRows (factory 直接)', () => {
     expect(result.max).toBe('2026-05-10T12:00:00.000Z')
 
     mockRows.value = []
-    const empty = await getDeltaRows(await makeConfig(), 'user-1')
+    const empty = await getDeltaRows(await makeConfig(), 'user-1', getDb())
     expect(empty.rows).toEqual([])
     expect(empty.max).toBeNull()
   })
@@ -125,7 +128,7 @@ describe('tag 系 3 caller の owner-scope pin (正しい userIdCol を getDelta
   it('getCategoriesDelta: eq(tagCategories.userId, userId) が呼ばれる', async () => {
     const { getCategoriesDelta } = await import('./tag-categories-pull')
     const { tagCategories } = await getSchema()
-    await getCategoriesDelta('user-1')
+    await getCategoriesDelta('user-1', getDb())
     expect((await getSpies()).spyEq).toHaveBeenCalledWith(
       tagCategories.userId,
       'user-1',
@@ -135,7 +138,7 @@ describe('tag 系 3 caller の owner-scope pin (正しい userIdCol を getDelta
   it('getOptionsDelta: eq(tagOptions.userId, userId) が呼ばれる', async () => {
     const { getOptionsDelta } = await import('./tag-options-pull')
     const { tagOptions } = await getSchema()
-    await getOptionsDelta('user-1')
+    await getOptionsDelta('user-1', getDb())
     expect((await getSpies()).spyEq).toHaveBeenCalledWith(
       tagOptions.userId,
       'user-1',
@@ -145,7 +148,7 @@ describe('tag 系 3 caller の owner-scope pin (正しい userIdCol を getDelta
   it('getCardTagsDelta: eq(cardTags.userId, userId) が呼ばれる', async () => {
     const { getCardTagsDelta } = await import('./card-tags-pull')
     const { cardTags } = await getSchema()
-    await getCardTagsDelta('user-1')
+    await getCardTagsDelta('user-1', getDb())
     expect((await getSpies()).spyEq).toHaveBeenCalledWith(
       cardTags.userId,
       'user-1',

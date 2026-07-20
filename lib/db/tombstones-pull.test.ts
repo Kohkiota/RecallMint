@@ -6,6 +6,8 @@
 // - 0 行のとき rows=[] / maxDeletedAt=null
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// RLS-P2: helper は dbc を必須引数で受け取る。mock された getDb() を dbc として渡す。
+import { getDb } from '@/lib/db'
 
 // ── hoisted mocks ─────────────────────────────────────────────────────────────
 // vi.hoisted は module 評価より前に実行されるため、外部定数を参照できない。
@@ -137,7 +139,7 @@ describe('toClientTombstone', () => {
 describe('getTombstonesDelta', () => {
   it('(a) rows が toClientTombstone 適用済で返る', async () => {
     const { getTombstonesDelta } = await importSubject()
-    const result = await getTombstonesDelta('user-uuid')
+    const result = await getTombstonesDelta('user-uuid', getDb())
     expect(result.rows).toHaveLength(2)
     expect(result.rows[0]).toEqual({
       entity_type: 'card',
@@ -153,7 +155,7 @@ describe('getTombstonesDelta', () => {
 
   it('(b) maxDeletedAt = 2 行のうち新しい deleted_at の ISO', async () => {
     const { getTombstonesDelta } = await importSubject()
-    const result = await getTombstonesDelta('user-uuid')
+    const result = await getTombstonesDelta('user-uuid', getDb())
     expect(result.maxDeletedAt).toBe('2026-05-10T12:00:00.000Z')
   })
 
@@ -161,7 +163,7 @@ describe('getTombstonesDelta', () => {
     const { getTombstonesDelta } = await importSubject()
     const { spyGte } = await getSpies()
     const since = new Date('2026-05-05T00:00:00.000Z')
-    await getTombstonesDelta('user-uuid', since)
+    await getTombstonesDelta('user-uuid', getDb(), since)
     expect(spyGte).toHaveBeenCalled()
     const call = spyGte.mock.calls[0]
     // 第2引数が since と同一 Date
@@ -171,7 +173,7 @@ describe('getTombstonesDelta', () => {
   it('(c) since 未指定時は gte が呼ばれない', async () => {
     const { getTombstonesDelta } = await importSubject()
     const { spyGte } = await getSpies()
-    await getTombstonesDelta('user-uuid')
+    await getTombstonesDelta('user-uuid', getDb())
     expect(spyGte).not.toHaveBeenCalled()
   })
 
@@ -179,14 +181,14 @@ describe('getTombstonesDelta', () => {
     const { getTombstonesDelta } = await importSubject()
     const { spyEq } = await getSpies()
     const { tombstones } = await import('./schema')
-    await getTombstonesDelta('user-uuid')
+    await getTombstonesDelta('user-uuid', getDb())
     expect(vi.mocked(spyEq)).toHaveBeenCalledWith(tombstones.userId, 'user-uuid')
   })
 
   it('(e) 0 行のとき rows=[] / maxDeletedAt=null', async () => {
     mockRows.value = []
     const { getTombstonesDelta } = await importSubject()
-    const result = await getTombstonesDelta('user-uuid')
+    const result = await getTombstonesDelta('user-uuid', getDb())
     expect(result.rows).toEqual([])
     expect(result.maxDeletedAt).toBeNull()
   })

@@ -6,6 +6,7 @@
 
 import { tombstones } from './schema'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 type TombstoneRow = typeof tombstones.$inferSelect
 
@@ -25,6 +26,7 @@ export function toClientTombstone(row: TombstoneRow): ClientTombstone {
 
 export async function getTombstonesDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientTombstone[]; maxDeletedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -36,6 +38,7 @@ export async function getTombstonesDelta(
       cursorValueOf: (r) => r.deleted_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxDeletedAt: max }

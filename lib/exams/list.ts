@@ -11,8 +11,8 @@
 import 'server-only'
 
 import { and, desc, eq, isNull } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { cards, exams, sourceDocuments, type CardOption } from '@/lib/db/schema'
+import type { TenantDb } from '@/lib/db/tenant-tx'
 import type { ClientCardImage } from '@/lib/client-db'
 
 // 既存 importer (server pages) が `@/lib/exams/list` から ActiveExam / formatRelativeJa
@@ -23,8 +23,9 @@ import type { ActiveExam } from './format'
 
 export async function getActiveExamsForUser(
   userId: string,
+  dbc: TenantDb,
 ): Promise<ActiveExam[]> {
-  const db = getDb()
+  const db = dbc
   const rows = await db
     .select({
       id: exams.id,
@@ -49,8 +50,9 @@ export type ExamDetail = {
 export async function getExamByIdForUser(
   userId: string,
   examId: string,
+  dbc: TenantDb,
 ): Promise<ExamDetail | null> {
-  const db = getDb()
+  const db = dbc
   const rows = await db
     .select({
       id: exams.id,
@@ -95,8 +97,9 @@ export type ExamDetailCard = {
 export async function getCardsForExam(
   userId: string,
   examId: string,
+  dbc: TenantDb,
 ): Promise<ExamDetailCard[]> {
-  const db = getDb()
+  const db = dbc
   const rows = await db
     .select({
       id: cards.id,
@@ -140,8 +143,9 @@ export type SourceDocumentResult = {
 export async function getSourceDocumentForUser(
   userId: string,
   sourceDocumentId: string,
+  dbc: TenantDb,
 ): Promise<SourceDocumentResult | null> {
-  const db = getDb()
+  const db = dbc
   const rows = await db
     .select({
       id: sourceDocuments.id,
@@ -165,8 +169,9 @@ export async function getSourceDocumentForUser(
 export async function getCardsForSourceDocument(
   userId: string,
   sourceDocumentId: string,
+  dbc: TenantDb,
 ): Promise<CardListEntry[]> {
-  const db = getDb()
+  const db = dbc
   const rows = await db
     .select({
       id: cards.id,

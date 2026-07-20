@@ -12,6 +12,8 @@
 // stale 値を返さないことの保証)。
 
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
+import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getReviewStatsForUser } from '@/lib/db/streak'
 import { logger } from '@/lib/logger'
 
@@ -26,7 +28,9 @@ export const GET = withReadOnlyAuth(
   },
   async (user, headers) => {
     try {
-      const stats = await getReviewStatsForUser(user.id)
+      const stats = await withTenantTx(getDb(), user.id, (tx) =>
+        getReviewStatsForUser(user.id, tx),
+      )
       return Response.json(stats, { status: 200, headers })
     } catch (err) {
       logger.warn({ event: 'api.dashboard.stats.failed', userId: user.id, err })

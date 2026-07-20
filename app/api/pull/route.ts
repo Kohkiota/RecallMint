@@ -14,6 +14,8 @@
 
 import { z } from 'zod'
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
+import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getCardsDelta } from '@/lib/db/cards-pull'
 import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
@@ -63,14 +65,22 @@ export const GET = withReadOnlyAuth(
     const sct = parseSince(u.get('since_card_tags'))
 
     try {
-      const [c, e, t, tc, to, ct] = await Promise.all([
-        getCardsDelta(user.id, sc),
-        getExamsDelta(user.id, se),
-        getTombstonesDelta(user.id, st),
-        getCategoriesDelta(user.id, stc),
-        getOptionsDelta(user.id, sto),
-        getCardTagsDelta(user.id, sct),
-      ])
+      // 6 stream を 1 tenant tx に包み、tx 冒頭で app.user_id を張る (RLS-P2)。
+      // 単一 tx = 単一接続のため Promise.all の並列は接続競合を招く → 6 直列 await。
+      // wire (response の cards/cursors 等) は不変。
+      const { c, e, t, tc, to, ct } = await withTenantTx(
+        getDb(),
+        user.id,
+        async (tx) => {
+          const c = await getCardsDelta(user.id, tx, sc)
+          const e = await getExamsDelta(user.id, tx, se)
+          const t = await getTombstonesDelta(user.id, tx, st)
+          const tc = await getCategoriesDelta(user.id, tx, stc)
+          const to = await getOptionsDelta(user.id, tx, sto)
+          const ct = await getCardTagsDelta(user.id, tx, sct)
+          return { c, e, t, tc, to, ct }
+        },
+      )
       return Response.json(
         {
           cards: c.rows,

@@ -1,5 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
+import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getCardsForExam, getExamByIdForUser } from '@/lib/exams/list'
 import { formatRelativeJa } from '@/lib/exams/format'
 import { ExamDetailPullGate } from './_components/exam-detail-pull-gate'
@@ -25,10 +27,14 @@ export default async function ExamDetailPage({
     userId = user.id
   }
 
-  const exam = await getExamByIdForUser(userId, id)
-  if (!exam) notFound()
-
-  const cards = await getCardsForExam(userId, id)
+  // exam 所有確認 + cards 取得を 1 tenant tx に包む (RLS-P2)。exam 不在時は tx 内で
+  // notFound() を throw し、cards query を実行しない (従来挙動を保持)。
+  const { exam, cards } = await withTenantTx(getDb(), userId, async (tx) => {
+    const exam = await getExamByIdForUser(userId, id, tx)
+    if (!exam) notFound()
+    const cards = await getCardsForExam(userId, id, tx)
+    return { exam, cards }
+  })
 
   return (
     <div className="w-full">

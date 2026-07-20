@@ -48,6 +48,15 @@ vi.mock('@/lib/cards/get-session-cards', () => ({
   getSessionCards: mockGetSessionCards,
 }))
 
+// RLS-P2: page は getSessionCards を withTenantTx(db, ...) で包む。fake getDb() は
+// transaction を持たないため、withTenantTx を stub して fn(fakeTx) を直呼びする。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: vi.fn(
+    async (_db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
+      fn({}),
+  ),
+}))
+
 // S-cache-1: page.tsx は StudySessionHost を render する。 host が受け取る
 // `cards` / `fsrsMode` を従来の SessionRunner mock と同じ shape で受けて
 // 既存 assertion (`mockSessionRunner.mock.calls[0][0]` 等) を維持できる。
@@ -182,8 +191,12 @@ describe('SmartStudyPage', () => {
     settingsRowsState.rows = []
     mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
     await renderPage()
-    // getSessionCards に limit=20 が渡る
-    expect(mockGetSessionCards).toHaveBeenCalledWith('user-1', 20)
+    // getSessionCards に limit=20 が渡る (dbc = withTenantTx の tx)
+    expect(mockGetSessionCards).toHaveBeenCalledWith(
+      'user-1',
+      20,
+      expect.anything(),
+    )
     // SessionRunner には fsrsMode=false が渡る
     const props = mockSessionRunner.mock.calls[0][0]
     expect(props.fsrsMode).toBe(false)
@@ -193,7 +206,11 @@ describe('SmartStudyPage', () => {
     settingsRowsState.rows = [{ sessionLimit: 50, fsrsMode: false }]
     mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
     await renderPage()
-    expect(mockGetSessionCards).toHaveBeenCalledWith('user-1', 50)
+    expect(mockGetSessionCards).toHaveBeenCalledWith(
+      'user-1',
+      50,
+      expect.anything(),
+    )
   })
 
   it('userSettings 行存在 (fsrsMode=true) → SessionRunner に fsrsMode=true', async () => {

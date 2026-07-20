@@ -45,6 +45,9 @@ import {
   studyDaysLowerBound,
   STUDY_DAYS_WINDOW,
 } from './study-days-pull'
+// RLS-P2: getAllStudyDaysForUser は dbc を必須引数で受け取る。mock された getDb()
+// を dbc として渡し、既存 select chain mock を通す。
+import { getDb } from '@/lib/db'
 import type { studyDays } from './schema'
 
 type StudyDayRow = typeof studyDays.$inferSelect
@@ -122,6 +125,7 @@ describe('getAllStudyDaysForUser (owner-scope pin)', () => {
     const { studyDays: studyDaysTable } = await import('./schema')
     await getAllStudyDaysForUser(
       'user-1',
+      getDb(),
       new Date('2026-05-26T03:00:00.000Z'),
     )
     expect((await getSpies()).spyEq).toHaveBeenCalledWith(
@@ -135,6 +139,7 @@ describe('getAllStudyDaysForUser (owner-scope pin)', () => {
     const { studyDays: studyDaysTable } = await import('./schema')
     await getAllStudyDaysForUser(
       'user-1',
+      getDb(),
       new Date('2026-05-26T03:00:00.000Z'),
     )
     expect((await getSpies()).spyGte).toHaveBeenCalledWith(
@@ -156,6 +161,7 @@ describe('getAllStudyDaysForUser (owner-scope pin)', () => {
     ]
     const rows = await getAllStudyDaysForUser(
       'user-1',
+      getDb(),
       new Date('2026-05-26T03:00:00.000Z'),
     )
     expect(rows).toEqual([
@@ -170,7 +176,7 @@ describe('getAllStudyDaysForUser (owner-scope pin)', () => {
 
     mockRows.value = []
     expect(
-      await getAllStudyDaysForUser('user-1', new Date('2026-05-26T03:00:00.000Z')),
+      await getAllStudyDaysForUser('user-1', getDb(), new Date('2026-05-26T03:00:00.000Z')),
     ).toEqual([])
   })
 })

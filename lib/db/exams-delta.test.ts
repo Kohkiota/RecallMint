@@ -6,6 +6,8 @@
 // - 0 行のとき rows=[] / maxUpdatedAt=null
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+// RLS-P2: helper は dbc を必須引数で受け取る。mock された getDb() を dbc として渡す。
+import { getDb } from '@/lib/db'
 
 // ── hoisted mocks ─────────────────────────────────────────────────────────────
 // vi.hoisted は module 評価より前に実行されるため、外部定数を参照できない。
@@ -130,7 +132,7 @@ beforeEach(async () => {
 describe('getExamsDelta', () => {
   it('(a) rows が toClientExam 適用済で返る (updated_at が Z 付き ISO、 ClientExam shape)', async () => {
     const { getExamsDelta } = await importSubject()
-    const result = await getExamsDelta('user-uuid')
+    const result = await getExamsDelta('user-uuid', getDb())
     expect(result.rows).toHaveLength(2)
     // updated_at が Z 付き UTC ISO 文字列
     expect(result.rows[0].updated_at).toBe('2026-05-01T10:00:01.000Z')
@@ -147,7 +149,7 @@ describe('getExamsDelta', () => {
 
   it('(b) maxUpdatedAt = 2 行のうち新しい updated_at の ISO', async () => {
     const { getExamsDelta } = await importSubject()
-    const result = await getExamsDelta('user-uuid')
+    const result = await getExamsDelta('user-uuid', getDb())
     expect(result.maxUpdatedAt).toBe('2026-05-10T12:00:01.000Z')
   })
 
@@ -155,7 +157,7 @@ describe('getExamsDelta', () => {
     const { getExamsDelta } = await importSubject()
     const { spyGte } = await getSpies()
     const since = new Date('2026-05-05T00:00:00.000Z')
-    await getExamsDelta('user-uuid', since)
+    await getExamsDelta('user-uuid', getDb(), since)
     expect(spyGte).toHaveBeenCalled()
     const call = spyGte.mock.calls[0]
     // 第2引数が since と同一 Date
@@ -165,7 +167,7 @@ describe('getExamsDelta', () => {
   it('(c) since 未指定時は gte が呼ばれない', async () => {
     const { getExamsDelta } = await importSubject()
     const { spyGte } = await getSpies()
-    await getExamsDelta('user-uuid')
+    await getExamsDelta('user-uuid', getDb())
     expect(spyGte).not.toHaveBeenCalled()
   })
 
@@ -173,14 +175,14 @@ describe('getExamsDelta', () => {
     const { getExamsDelta } = await importSubject()
     const { spyEq } = await getSpies()
     const { exams } = await import('./schema')
-    await getExamsDelta('user-uuid')
+    await getExamsDelta('user-uuid', getDb())
     expect(vi.mocked(spyEq)).toHaveBeenCalledWith(exams.userId, 'user-uuid')
   })
 
   it('(e) 0 行のとき rows=[] / maxUpdatedAt=null', async () => {
     mockRows.value = []
     const { getExamsDelta } = await importSubject()
-    const result = await getExamsDelta('user-uuid')
+    const result = await getExamsDelta('user-uuid', getDb())
     expect(result.rows).toEqual([])
     expect(result.maxUpdatedAt).toBeNull()
   })

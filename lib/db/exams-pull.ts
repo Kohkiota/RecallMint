@@ -5,6 +5,7 @@
 import { exams } from './schema'
 import type { ClientExam } from '@/lib/client-db'
 import { getDeltaRows } from './pull-delta'
+import type { TenantDb } from './tenant-tx'
 
 type ExamRow = typeof exams.$inferSelect
 
@@ -24,6 +25,7 @@ export function toClientExam(row: ExamRow): ClientExam {
 
 export async function getExamsDelta(
   userId: string,
+  dbc: TenantDb,
   since?: Date,
 ): Promise<{ rows: ClientExam[]; maxUpdatedAt: string | null }> {
   const { rows, max } = await getDeltaRows(
@@ -35,6 +37,7 @@ export async function getExamsDelta(
       cursorValueOf: (r) => r.updated_at,
     },
     userId,
+    dbc,
     since,
   )
   return { rows, maxUpdatedAt: max }
