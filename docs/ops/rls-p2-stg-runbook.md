@@ -1,0 +1,277 @@
+# RLS-P2 stg 反映 Runbook
+
+RLS-P2(closure 5 表 {users, exams, cards, tombstones, study_days} への RLS 有効化)を stg
+に反映し、「動く・漏れない・遅くならない」を実機で実証するための実行手順。**正本 spec**:
+`docs/superpowers/specs/2026-07-20-rls-p2-representative-closure-design.md`(以下「spec」、§
+参照は全てこの doc)。**plan**: `docs/superpowers/plans/2026-07-20-rls-p2-representative-closure.md`
+Task 11。**対象 commit range**: `a546be6`(Task1)`..e216600`(Task10)、全 `[reviewed]`。
+
+**sprint 完了の定義 = 本 runbook の実証(§4-§6)合格まで**(spec §4)。code 完了 + test:iso
+green(Task 12 gate)は中間 checkpoint であり、本 runbook の実走完了で初めて sprint を close する。
+
+**実行タイミング**: 標準フロー(CLAUDE.md「task 完了後の標準フロー」)に従い、Task 12 の
+checkpoint 報告後、OT が push した時点から本 runbook を開始する(push 前に stg を叩かない)。
+
+## 0. 前提確認(反映着手前・OT)
+
+| # | 何を | どう | 期待結果 | NG 時 |
+|---|---|---|---|---|
+| 0.1 | RLS-P1(app role 分離)が稼働中であること | Supabase SQL Editor(owner)で `SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname='recallmint_app';` | 1 行、`rolbypassrls=f` | 0 行 → RLS-P1 未反映。本 runbook は前提が崩れるため中断し RLS-P1 session doc(`docs/superpowers/sessions/2026-07-18-rls-p1-app-role-separation-implementation.md`)を確認 |
+| 0.2 | Vercel(stg scope)に `DATABASE_URL_APP` / `DATABASE_URL_ADMIN` が設定済であること | Vercel dashboard → Project → Settings → Environment Variables → Preview scope を目視 | 両方存在(値は非公開でよい、存在確認のみ) | 欠落 → RLS-P1 の env 手順(同 session doc)に立ち戻る。0025 は関数 DDL のため `DATABASE_URL_ADMIN` 必須 |
+| 0.3 | 0025 functions が stg に未適用であること | SQL Editor(owner)で `SELECT proname FROM pg_proc WHERE proname IN ('app_current_user_id','app_bootstrap_user_from_clerk','app_resolve_user_for_stripe','app_scrub_deleted_user');` | 0 行(未適用) | 既に 4 行 = 適用済 → §1 Step 1 は re-run 相当(`CREATE OR REPLACE FUNCTION` は冪等)。実害なし、そのまま Step 2 へ進めてよい |
+| 0.4 | policy が stg に未適用であること | SQL Editor(owner)で `SELECT tablename, policyname FROM pg_policies WHERE schemaname='public';` | 0 行 | 既に行がある → 過去の途中適用の可能性。§1 Step 3 の確認 SQL(§2)で全 7 policy 揃っているか確認し、欠けていれば `rls-p2-enable.sql` を再適用(冪等 DROP IF EXISTS 付なので安全) |
+| 0.5 | `[PERF-SEED] 300-card exam` が test1(`komail9server+clerk_test@gmail.com`)に存在すること(after 計測の同条件維持) | stg にログインし `/app/exams` で exam 名 `[PERF-SEED]...` の有無を確認、または SQL Editor で `SELECT id, name FROM exams WHERE name LIKE '[PERF-SEED]%';` | 300 件規模の exam が 1 件存在 | 消失(過去 re-seed で流出した実績あり — `docs/superpowers/sessions/2026-07-17-sprint-t-md-table-readonly-completion.md`)→ OT が `docs/audit/2026-07-16-seed-perf-exam-reseed-procedure.md` の確定手順で再投入(`DATABASE_URL_ADMIN` inline・`--user-id=<test1 内部 uuid>` 必須) |
+
+## 1. 適用順序(厳守・逆順禁止)
+
+**順序 = ① 0025 functions migrate → ② push・stg deploy → ③ enable SQL(RLS on)。**
+理由: 0025 の関数は旧コードから未参照のため先行適用は無害(additive、RLS 状態を持たない)。
+新コードは 0025 の関数(`withTenantTx`/`setTenantContext` 経由の `app_current_user_id()` 呼出)
+を前提に書かれているが、**RLS がまだ off の間は policy 自体が存在しない**ため実害なく走る。
+**もし逆順(policy 先行)にすると**、まだ deploy されていない旧コードが RLS 有効化後の
+5 表に触れた瞬間、`app_current_user_id()` の呼出元である policy 式が評価されるが、旧コードは
+`set_config('app.user_id', …)` を張らないため GUC 未設定 = `app_current_user_id()` が
+loud に `RAISE EXCEPTION … USING ERRCODE = 'P0RLS'` する。5 表に触れる全リクエストが
+即 500 で壊れる(spec §2.9)。
+
+### 1.1 Step 1 — 0025 functions 適用(OT・ADMIN inline)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | `drizzle/migrations/0025_rls_p2_functions.sql`(loud 関数 `app_current_user_id` + SECURITY DEFINER 3 本 `app_bootstrap_user_from_clerk`/`app_resolve_user_for_stripe`/`app_scrub_deleted_user` + EXECUTE grants)を適用 |
+| どう | `DATABASE_URL_ADMIN='<stg owner 接続文字列>' pnpm db:migrate`(`drizzle.config.ts` が `DATABASE_URL_ADMIN` を読む。inline 供給は `.env.local` の値を上書きする — dotenv は既存 `process.env` を上書きしないため、shell 側で先に代入した inline 値が勝つ) |
+| 期待結果 | `drizzle-kit migrate` が `0025_rls_p2_functions` を適用して exit 0。前提 0.3 の SQL で 4 関数が 4 行返るようになる |
+| NG 時 | permission denied → `DATABASE_URL_ADMIN` が owner(postgres)でない可能性、接続先を再確認。接続不可 → stg Supabase の稼働状況を確認。**RLS 状態は変わらない操作のため、失敗しても既存機能に影響なし**(rollback 不要、原因解消後に再実行するだけ) |
+
+### 1.2 Step 2 — push + stg deploy(OT)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | `develop` を push して Vercel Preview(`stg.recallmint.nekotest.net`)に新コードを反映 |
+| どう | `git push origin develop`(通常の push。事前に `git status` / `git log origin/develop..develop` で対象 commit を確認) |
+| 期待結果 | Vercel dashboard で該当 deployment が `Ready` になる。**この時点では RLS はまだ off**(Step 3 未実施)なので挙動は反映前と不変 — 通常の deploy 後 smoke で十分(本 runbook の CC smoke は Step 3 後にやり直す) |
+| NG 時 | build 失敗 → Vercel build log を確認(Task 12 gate で lint/typecheck/build/test 済のはずなので通常は通る)。失敗時は原因を fix して再 push、RLS 適用(Step 3)には進まない |
+
+### 1.3 Step 3 — policy 適用(OT・Supabase SQL Editor)= RLS on
+
+| 項目 | 内容 |
+|---|---|
+| 何を | `db/policies/rls-p2-enable.sql` を owner(postgres)権限で適用。5 表に `ENABLE ROW LEVEL SECURITY` + policy 7 本を作成 |
+| どう | Supabase SQL Editor を開き、`db/policies/rls-p2-enable.sql` の全文をそのまま貼り付けて実行(ファイルが正本 — 下記は 2026-07-20 時点の内容の参考コピー) |
+| 期待結果 | エラーなく完了。§2 の確認 SQL で 7 policy + 5 表 `relrowsecurity=t` |
+| NG 時 | `lock_timeout`(5s)超過エラー(`55P03`)→ 対象表に長時間 lock を握っている query がないか確認し再実行(ファイルは冪等 `DROP POLICY IF EXISTS` 付なので再実行安全)。途中でエラーが出た場合、postgres-js/SQL Editor は 1 文ずつ独立実行のため**途中まで反映された状態であり得る**→ §2 の確認 SQL で実際の状態を確認してから再実行するかを判断 |
+
+参考コピー(正本は `db/policies/rls-p2-enable.sql`。実行直前に file を再確認すること):
+
+```sql
+SET lock_timeout = '5s';
+
+ALTER TABLE exams ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS exams_tenant ON exams;
+CREATE POLICY exams_tenant ON exams FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+ALTER TABLE cards ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS cards_tenant ON cards;
+CREATE POLICY cards_tenant ON cards FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+ALTER TABLE tombstones ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tombstones_tenant ON tombstones;
+CREATE POLICY tombstones_tenant ON tombstones FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+ALTER TABLE study_days ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS study_days_tenant ON study_days;
+CREATE POLICY study_days_tenant ON study_days FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS users_select ON users;
+CREATE POLICY users_select ON users FOR SELECT TO recallmint_app
+  USING (id = (SELECT public.app_current_user_id()) AND deleted_at IS NULL);
+DROP POLICY IF EXISTS users_insert ON users;
+CREATE POLICY users_insert ON users FOR INSERT TO recallmint_app
+  WITH CHECK (id = (SELECT public.app_current_user_id()));
+DROP POLICY IF EXISTS users_update ON users;
+CREATE POLICY users_update ON users FOR UPDATE TO recallmint_app
+  USING (id = (SELECT public.app_current_user_id()) AND deleted_at IS NULL)
+  WITH CHECK (id = (SELECT public.app_current_user_id()));
+```
+
+## 2. 適用後確認 SQL(Step 3 直後・OT)
+
+| # | 何を | どう(SQL) | 期待結果 |
+|---|---|---|---|
+| 2.1 | 7 policy の存在 | `SELECT tablename, policyname FROM pg_policies WHERE schemaname='public' ORDER BY 1,2;` | 7 行: `cards / cards_tenant`・`exams / exams_tenant`・`study_days / study_days_tenant`・`tombstones / tombstones_tenant`・`users / users_insert`・`users / users_select`・`users / users_update` |
+| 2.2 | 5 表の RLS 有効化 | `SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('users','exams','cards','tombstones','study_days');` | 5 行、全て `relrowsecurity = t` |
+
+どちらか欠けていたら Step 3 が不完全 — `rls-p2-enable.sql` を再実行(冪等)。
+
+## 3. Rollback
+
+### 3.1 即時 rollback(incident 時・いつでも実行可)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | `db/policies/rls-p2-disable.sql` で 5 表の RLS を DISABLE(policy 定義は残置) |
+| どう | SQL Editor(owner)で file 全文を実行 |
+| 期待結果 | §2.2 の確認 SQL で 5 表とも `relrowsecurity = f` に変わる。**旧來動作(RLS なし)に即時復帰**、policy 定義自体は残るため再 ENABLE すれば同じ policy が即復活 |
+| NG 時 | `lock_timeout` 超過 → enable.sql と同様、対象表の lock 保持 query を確認し再実行 |
+
+### 3.2 Rollback 演習(Step 3 の直後・「戻せること」を実証してから smoke に進む)
+
+spec §4 の明示要求: 反映直後に一度 disable→re-enable を回し、rollback が実際に機能することを
+事前実証してから本格 smoke・計測に入る。
+
+| # | 何を | どう | 期待結果 | NG 時 |
+|---|---|---|---|---|
+| 1 | disable | §3.1 の `rls-p2-disable.sql` を実行 | §2.2 で全表 `relrowsecurity=f` | 上記 NG 時と同じ |
+| 2 | 簡易 smoke(RLS off 状態で通常機能が壊れていないこと) | stg にログインし dashboard 表示 + exam 1 件開閉を目視(CC or OT どちらでも可、非破壊) | 通常どおり表示される | 壊れていれば RLS 以外の要因(直近 deploy の別問題)を疑う — 本 runbook のスコープ外の障害として調査に切替 |
+| 3 | 再 enable | `rls-p2-enable.sql` を再実行 | エラーなく完了(`DROP POLICY IF EXISTS` があるため `CREATE POLICY` の `42710` 重複衝突が起きない = 冪等性の実証そのもの) | `42710` が出た場合は enable.sql の DROP 文が抜けている退行 — file を確認 |
+| 4 | 復元確認 | §2.1 + §2.2 の確認 SQL | 7 policy + 5 表 `relrowsecurity=t` に復元 | 一部欠落 → 個別 `CREATE POLICY` 文を手動再実行 |
+
+演習完了後、本番の RLS on 状態(§4 以降の smoke・計測)に進む。
+
+## 4. CC smoke(DevTools MCP・Playwright MCP・非破壊)
+
+Step 3(+ §3.2 演習)完了後、RLS が実際に on の状態で実施する(off の間は `P0RLS` が
+そもそも発火しないため、この smoke は enable 後でなければ意味を持たない)。
+
+| # | 何を | どう | 期待結果 | NG 時 |
+|---|---|---|---|---|
+| 4.1 | 通常操作一巡 | test1(`komail9server+clerk_test@gmail.com`、OTP `424242`)でログイン → upload(小さい画像 1 枚)→ OCR 完了待ち → カード編集(タグ付け等)→ 復習セッション 1 往復 → 作成した exam を削除、を Playwright MCP で実行 | 各操作が通常どおり完了(200 系レスポンス・UI 上エラーなし) | 500 / OCR 失敗 / 保存失敗などが出たら該当 request の response body を確認(§4.3)、`P0RLS` を含むか要確認 |
+| 4.2 | Network / console 観測 | 一巡の間 `browser_network_requests` で全 request の status を確認、`browser_console_messages` で JS error 有無を確認 | 5xx が 0 件、console error 0 件 | 5xx あり → §4.3 で response body を掘る |
+| 4.3 | エラー時の掘り下げ(client 側から観測できる範囲) | 5xx が出た request を `browser_network_request`(`part: 'response-body'`)で確認 | production の Next.js は詳細 stack を client に返さない設計のため、client 側では「5xx が出たか」までしか判別できない場合がある | **`P0RLS` の SQLSTATE 文字列そのものは server 側 stack にしか出ない** — client 側で 5xx を確認できたら、その正確な原因確認(stack 中に `P0RLS` があるか)は OT が Vercel Runtime Logs(Vercel dashboard → Project → Logs)で該当 request 時刻を確認する。CC 単独では検証しきれない部分として役割分担する(§7) |
+| 4.4 | `current_user` 確認 | app role が実際に `recallmint_app` で動いていることの確認は DB 接続(psql / SQL Editor)を要するため CC の browser 経路では実行不可 — OT が app 用接続文字列(`DATABASE_URL_APP`)で `SELECT current_user;` を実行(RLS-P1 と同一手順) | `current_user = 'recallmint_app'` | owner 接続になっていたら env 設定の退行 — RLS-P1 session doc の手順に立ち戻る |
+
+**証拠**: 4.1-4.2 の Network reqid 一覧 / console 出力 / 主要画面の snapshot を report に添付。
+
+## 5. After 性能計測(CC・Perf-0b 同条件)
+
+**方法**(Perf-0b と同一・`docs/audit/2026-07-18-rls-performance-before-factfinding.md` §3.2-3.4):
+Playwright MCP browser の page-context `fetch(url, { credentials: 'include', cache: 'no-store' })`
+を `performance.now()` で計測(request → full body 読了)。各経路: **warmup 5 回捨て → 30 回計測**、
+`p50`/`p95` は **nearest-rank**(昇順 30 件で p50 = 15 番目、p95 = 29 番目、1-indexed)。認証は
+test1(`+clerk_test`)、seed は前提 0.5 の `[PERF-SEED] 300-card exam` を使い回す(before と同一
+データ量であることが比較の前提)。
+
+### 5.1 合格基準(spec §3.2)
+
+各経路 **p95 悪化 ≤ max(before_p95 の 10%, 20ms)**。ただし **`/api/pull` full のみ特例**で
+p50・p95 とも **+40ms 予算**(6-way 並列 → 1-tx 直列化による絶対増分を許容する経路のため)。
+
+| 経路 | before p50 | before p95 | 判定基準(p95) | 判定基準(p50, pull full のみ) |
+|---|---|---|---|---|
+| dashboard `/app` | 91 | 114 | ≤ 134ms | — |
+| exams 一覧 `/app/exams` | 91 | 162 | ≤ 182ms | — |
+| exam 詳細(300件)`/app/exams/{id}` | 131 | 204 | ≤ 224ms | — |
+| `/app/upload` | 94 | 138 | ≤ 158ms | — |
+| `GET /api/pull` full | 181 | 226 | ≤ 266ms(特例 +40ms) | ≤ 221ms(特例 +40ms) |
+| `GET /api/pull` delta(0行)| 77 | 85 | ≤ 105ms | — |
+
+超過した経路があれば、その場で fix せず「高度化 task」として起票し OT 判断を仰ぐ(spec §3.2
+の after 条項。チャンク分割等の高度化は今回スコープ外の YAGNI)。
+
+### 5.2 記録项目
+
+各経路: p50 / p95 / mean / min / max / resp bytes(Perf-0b と同一形式)を表にまとめ、before
+との差分(ms・%)を併記。
+
+## 6. Pooler 実機検証(§3.3)
+
+### 6.1 2nd Clerk test user
+
+| 項目 | 内容 |
+|---|---|
+| 何を | test1 とは別の内部 DB user を用意する(隔離検証には最低 2 tenant が要る) |
+| どう | Clerk test-mode 規約(`+clerk_test` を含むメールは固定 OTP `424242`)に沿った新規メールで通常のサインアップ UI を実行。例: `komail9server.rls2+clerk_test@gmail.com`(既存 test1 とは別の local-part、同じ `+clerk_test` suffix)。**注意**: Clerk の test-mode 判定 regex が `+clerk_test@` 終端のみを厳密に見る設定の場合、この alias が弾かれる可能性がある — その場合は OT が Clerk dashboard の test-mode 設定を確認し、確実に通る alias に差し替える |
+| 実行者 | CC(サインアップは非破壊・課金なし)。Clerk dashboard 側の確認が必要になった場合のみ OT |
+| 期待結果 | 新規 users 行が 1 件作成される(内部 DB uuid を SQL Editor `SELECT id, email FROM users WHERE email LIKE '%rls2%';` 等で確認し、以降 test2 として記録) |
+
+### 6.2 交互 pull ×30(残留検査)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | 同一 browser で test1 → test2 → test1 → … と交互にログインし直し、都度 `/api/pull`(full)を叩いて 30 回分の応答を集める。pooler 接続の再利用時に前 tenant の GUC(`app.user_id`)が残留していないかを検査 |
+| どう | Playwright MCP で ログイン→`fetch('/api/pull', {credentials:'include'})`→ 結果保存 → ログアウト→次の user でログイン、を 30 iteration 繰り返す。各回のレスポンス JSON の `cards[].user_id` / `exams[].user_id` / `tombstones[].user_id` 等を全て検査 |
+| 期待結果 | test1 の回はすべての行が test1 の内部 uuid、test2 の回はすべて test2 の uuid(1 件でも他 tenant の uuid が混入したら RLS/pooler 分離失敗) |
+| NG 時 | 即座に Critical 案件として OT へ報告(コード上の tenant 分離の失敗を意味する)。原因調査は本 runbook のスコープを超え、systematic-debugging へ切替 |
+| 実行者 | CC(非破壊 read のみ。ログイン/ログアウトの繰り返しは UI 操作で完結、課金なし) |
+
+### 6.3 並行同時 ×N(接続再利用・競合純度検査)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | test1 と test2 を**同時刻**に並行して `/api/pull` を叩き、pooler が同一物理接続を tenant 間で使い回す際に GUC 混線が起きないかを検査 |
+| **CC 環境制約** | Playwright MCP の `browser_tabs`(new/select)は同一 browser context 内でタブを増やすのみで cookie jar/session を共有する — 1 つの CC 制御下 browser instance では test1 と test2 に**同時に**ログインした状態を作れない(タブを増やしても Clerk session は 1 つしか保持できない)。したがって真の同時並行実行は CC 単独では実施不可 |
+| どう(OT 実行) | OT が 2 つの独立した browser プロファイル(通常ウィンドウ + シークレットウィンドウ、または 2 台の端末)でそれぞれ test1 / test2 にログインし、双方から手動 or 簡易スクリプトで `/api/pull` を同時に連打(目安 N=10 程度・数秒間隔なしで連続実行) |
+| 期待結果 | 6.2 と同じ purity 基準(応答行の `user_id` が要求元 tenant のものと完全一致) |
+| NG 時 | Critical。OT が気づいた時点で immediate 停止し CC に報告、systematic-debugging へ |
+| 実行者 | **OT**(role split §7 の「CC 環境で届かない条件」に該当するため委譲) |
+
+### 6.4 Pool 指標(OT・Supabase dashboard)
+
+| 何を | どう | 記録項目 |
+|---|---|---|
+| pool 利用状況(Perf-0 §7 の未取得項目と統合) | Supabase dashboard → Database → Connection Pooling / Reports | pool utilization、connection wait、6.2-6.3 実行中の同時接続 peak |
+
+## 7. 役割分担まとめ
+
+| 作業 | 担当 | 備考 |
+|---|---|---|
+| 0025 migrate(ADMIN inline) | OT | DDL・owner 権限必須 |
+| push + deploy | OT | 通常の git push |
+| policy 適用・確認 SQL・rollback(即時/演習) | OT | Supabase SQL Editor、owner 権限必須 |
+| CC smoke(通常操作一巡・network/console 観測) | CC | Playwright MCP、非破壊 |
+| `current_user` 確認・Vercel Runtime Logs の `P0RLS` 有無確認 | OT | DB 直接接続・server log アクセスが必要で CC の browser 経路では届かない |
+| after 性能計測(§5) | CC | Playwright MCP、read のみ |
+| 2nd test user 作成 | CC(必要なら Clerk dashboard 確認のみ OT) | サインアップ UI、非破壊・課金なし |
+| 交互 pull ×30(§6.2) | CC | 同一 browser 内で逐次ログイン切替、非破壊 |
+| 並行同時 ×N(§6.3) | OT | 複数 browser プロファイル/端末が必要、CC の単一 browser instance では同時多 tenant セッションを構成不可 |
+| pool 指標記録(§6.4) | OT | Supabase dashboard |
+| PERF-SEED 再投入(前提 0.5 の NG 時) | OT | `DATABASE_URL_ADMIN` inline・破壊的操作(削除含む)のため |
+
+## 8. prod 方針
+
+**Phase 2 は prod に反映しない**(stg 限定・短期間、spec §0.4-5)。policy は versioned SQL(
+`db/policies/`)であり drizzle migration に含まれないため、通常の migrate 経路から prod へ
+混入することはない(spec §2.9)。
+
+**ただし**、Phase 2 期間中に通常の prod deploy(develop → main へのリリース)が走る場合は
+注意が必要: 新コードは 0025 の関数(`app_current_user_id` 等)呼出を前提に書かれているため、
+**0025 が未適用の prod にこの新コードを出すと動作しない**(関数不在で例外)。0025 自体は
+RLS 状態を持たない additive migration で prod 適用しても安全(spec §2.9)。→ **Phase 2 期間中に
+prod deploy する場合は、0025 の prod 適用とセットで OT が判断する**(policy は出さない・
+functions のみ prod にも適用)。
+
+## 9. 完了判定
+
+以下すべて揃って本 runbook 完了(= RLS-P2 sprint 完了、spec §4 準拠):
+
+- [ ] §1-§2: 0025 migrate → deploy → policy 適用が順序どおり完了、確認 SQL で 7 policy + 5 表
+      `relrowsecurity=t`
+- [ ] §3.2: rollback 演習(disable→簡易 smoke→re-enable)が成功し、確認 SQL で復元確認
+- [ ] §4: CC smoke で 5xx 0 件・console error 0 件、OT が Vercel Runtime Logs で `P0RLS` 出現
+      なしを確認、`current_user='recallmint_app'` 確認
+- [ ] §5: 6 経路すべて合格基準内(超過があれば高度化 task 起票 + OT 判断済み)
+- [ ] §6: 交互 pull ×30 + 並行同時 ×N とも purity 突合 OK、pool 指標記録済み
+- [ ] 上記結果を session doc にまとめ、OT へ最終報告
+
+未解決 Critical(tenant 分離失敗等)が 1 件でもあれば completion 宣言せず、systematic-debugging
+へ切り替えて原因究明を優先する。
+
+## 関連 doc
+
+- spec: `docs/superpowers/specs/2026-07-20-rls-p2-representative-closure-design.md`
+- plan: `docs/superpowers/plans/2026-07-20-rls-p2-representative-closure.md`
+- Perf-0b(before 数値): `docs/audit/2026-07-18-rls-performance-before-factfinding.md`
+- RLS-P1(app role 分離・env 分離の前提): `docs/superpowers/sessions/2026-07-18-rls-p1-app-role-separation-implementation.md`
+- PERF-SEED 再投入手順: `docs/audit/2026-07-16-seed-perf-exam-reseed-procedure.md`
+- test:iso カバレッジ対応表: `tests/integration/pg/COVERAGE.md`
+- policy 正本: `db/policies/rls-p2-enable.sql` / `db/policies/rls-p2-disable.sql`
+- 0025 migration: `drizzle/migrations/0025_rls_p2_functions.sql`
