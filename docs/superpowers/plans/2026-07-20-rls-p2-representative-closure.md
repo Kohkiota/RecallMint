@@ -24,9 +24,9 @@
 
 ### Task 1: migration 0025 — loud 関数 + SECURITY DEFINER 3 本
 
-- 目的: `app_current_user_id()`(STABLE plpgsql、`nullif(current_setting('app.user_id', true), '')` NULL で **RAISE `ERRCODE = 'P0RLS'`**(カスタム SQLSTATE — 標準 28000 は認証系と混同するため不採用・test で pin)/ `app_bootstrap_user_from_clerk(text) RETURNS SETOF users`(STABLE・全列返却の根拠は spec §2.3)/ `app_resolve_user_for_stripe(p_by text, p_value text) RETURNS TABLE(id uuid, deleted_at timestamptz)`(whereFor 4 arm 忠実移植・**p_by allowlist 外は RAISE**・返却 2 列最小)/ `app_scrub_deleted_user(uuid) RETURNS void`(現行 scrub UPDATE の忠実移植・再設計禁止・0 行 = no-op)。
+- 目的: `app_current_user_id()`(STABLE plpgsql、`nullif(current_setting('app.user_id', true), '')` NULL で **RAISE `ERRCODE = 'P0RLS'`**(カスタム SQLSTATE — 標準 28000 は認証系と混同するため不採用・test で pin)/ `app_bootstrap_user_from_clerk(text) RETURNS SETOF users`(STABLE・全列返却の根拠は spec §2.3)/ `app_resolve_user_for_stripe(p_by text, p_value text) RETURNS TABLE(id uuid, deleted_at timestamptz)`(whereFor 4 arm 忠実移植・**p_by allowlist 外は RAISE**・返却 2 列最小)/ `app_scrub_deleted_user(uuid) RETURNS void`(現行 scrub UPDATE の忠実移植・再設計禁止・0 行 = no-op。**冒頭で `p_user_id = app_current_user_id()` 検査・不一致 RAISE `P0RLS`** = definer 自衛、spec §2.3)。
 - 制約: 3 本は SECURITY DEFINER + `SET search_path = public` + **本文完全修飾名** + 同一 migration 内で `REVOKE ALL FROM PUBLIC` → `GRANT EXECUTE TO recallmint_app`。migration は additive(旧コード無影響・RLS 状態を持たず prod 適用可)。
-- 完了条件: migrate green(test:iso 既存 85 本不変)+ 新規 iso test: SQLSTATE `P0RLS` pin(NULL / 空文字両形態)/ bootstrap 0-1 行 / resolver 4 arm + allowlist 外 RAISE + 退会行返却 / scrub NULL 化 3 列・0 行 no-op(**red 検証**: 関数 DROP 状態で fail)→ [reviewed]。
+- 完了条件: migrate green(test:iso 既存 85 本不変)+ 新規 iso test: SQLSTATE `P0RLS` pin(NULL / 空文字両形態)/ bootstrap 0-1 行 / resolver 4 arm + allowlist 外 RAISE + 退会行返却 / scrub NULL 化 3 列・0 行 no-op・**context 不一致 uuid で RAISE**(**red 検証**: 関数 DROP 状態で fail)→ [reviewed]。
 
 ### Task 2: tenant-tx wrapper
 
@@ -90,7 +90,7 @@
 
 ### Task 12: code 完了 gate + checkpoint 報告
 
-- 目的: whole-repo `pnpm lint`(--max-warnings=0)/ `pnpm typecheck` / `pnpm build` / `pnpm test`(full)/ `pnpm test:iso` 全 exit 0 → 報告(「whole-repo lint exit 0 確認済」「test:iso green 確認済」明記)。session doc に Phase 3 申し送り(標準反復部分 vs 特殊設計部分の切り分け / alert 設計)を記録。
+- 目的: whole-repo `pnpm lint`(--max-warnings=0)/ `pnpm typecheck` / `pnpm build` / `pnpm test`(full)/ `pnpm test:iso` 全 exit 0 → 報告(「whole-repo lint exit 0 確認済」「test:iso green 確認済」明記)。session doc に Phase 3 申し送り: **① tx 境界の DDD 整理を Phase 3 Step 0 正式項目に(use-case 入口で withTenantTx / repository は TenantTx のみ受領 / raw getDb 封じ込め。Phase 2 の dbc 必須引数は第一歩)** ② 標準反復部分 vs 特殊設計部分(users definer/lifecycle/Stripe/review-ingest)の切り分け ③ alert 設計(spec §4.1)。
 - 制約: `--no-verify` 禁止。review dispatch 観点 list に whole-repo lint / test:iso 実行確認を含める。
 - 完了条件: 全 gate green + session doc commit + **stop checkpoint 報告で停止**。**これは code 完了の中間 checkpoint であり sprint 完了ではない — sprint 完了 = OT push 後の stg 実証(Task 11 実走・spec §3.2-3.3)合格**(codex cross-check 採用)。
 

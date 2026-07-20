@@ -77,7 +77,7 @@ users は request 経路の通常 CRUD と lifecycle 特殊経路が交差する
 **SECURITY DEFINER 3 本**(owner=postgres 定義・`SET search_path = public` 固定 + **本文内は完全修飾名**・`REVOKE ALL ... FROM PUBLIC` + `GRANT EXECUTE TO recallmint_app` を同一 migration 内で(再作成時の default EXECUTE 復活を防ぐ)。app role の `public` CREATE 不可は RLS-P1 で確認済。定義者関数ゆえ policy 非適用):
 1. `app_bootstrap_user_from_clerk(p_clerk_id text) RETURNS SETOF users` — `SELECT * FROM users WHERE clerk_id = $1 LIMIT 1` の忠実移植。**全列返却の理由** = getCurrentUser の契約(`User | null`)が全列を要し、露出面は pre-RLS の app role 直 SELECT と等価(新規拡大なし)。呼出面は 3 箇所限定(getCurrentUser claim なし分岐 / contact / handleUserDeleted resolve)。scrub 済み行は clerk_id=NULL ゆえ構造的に 0 行(現挙動どおり)。
 2. `app_resolve_user_for_stripe(p_by text, p_value text) RETURNS TABLE(id uuid, deleted_at timestamptz)` — `whereFor` 4 arm の忠実移植。**p_by は allowlist(4 値以外 RAISE)・返却列は最小 2 列**(Codex 指摘採用)。**退会済み行も返す**(呼出側の log + skip 判定に必要、§2.5)。呼出側はこれで context を張る(set_config)。
-3. `app_scrub_deleted_user(p_user_id uuid) RETURNS void` — 現行 scrub UPDATE(`deletedAt=now(), email=NULL, clerkId=NULL WHERE id=$1`)の**ロジックを正とした忠実移植**(NULL 化対象・順序を変えない。再設計禁止)。**0 行 = no-op(void・不検査)は現行 unchecked-silent 挙動の維持**(再削除は resolve 段の 0 行 return で実質不達、FF §3.1)。
+3. `app_scrub_deleted_user(p_user_id uuid) RETURNS void` — 現行 scrub UPDATE(`deletedAt=now(), email=NULL, clerkId=NULL WHERE id=$1`)の**ロジックを正とした忠実移植**(NULL 化対象・順序を変えない。再設計禁止)。**0 行 = no-op(void・不検査)は現行 unchecked-silent 挙動の維持**(再削除は resolve 段の 0 行 return で実質不達、FF §3.1。GPT の「1 行以外 RAISE」を覆す採用理由は §7 意図的変更)。**definer 自衛(OT 追加条件)**: 関数冒頭で `p_user_id = app_current_user_id()` を検査し不一致なら RAISE(`ERRCODE = 'P0RLS'`)。SECURITY DEFINER は RLS を迂回するため、呼出側が context と異なる任意 uuid を scrub する経路を関数内で構造的に封じる(context は handleUserDeleted の tx 冒頭で internalUserId に set 済ゆえ正常系は常に一致)。
 
 ### 2.4 認証配管(GPT 修正 1 採用形)
 
@@ -160,15 +160,28 @@ users は request 経路の通常 CRUD と lifecycle 特殊経路が交差する
 - **sprint 完了の定義 = stg 実証(§3.2-3.3)合格まで**。code 完了 + test green は中間 checkpoint であり、stg 実証前に sprint を close しない(Codex 指摘採用 — Goal「stg で実証」に完了条件を一致させる)。
 - **prod へは出さない**(Phase 2 は stg 限定・短期間)。policy は versioned SQL ゆえ migrate 経路から prod へ混入しない(§2.9)。**コード側の挙動変更(claim-first / log+skip / 定義者関数呼出)は通常の prod deploy に乗り得るため、Phase 2 期間中に prod deploy する場合は 0025 の prod 適用とセットで OT 判断**(関数不在の prod に新コードが出る組合せを禁止 — Codex 指摘採用)。
 
+### 4.1 Phase 3 申し送り(spec レベル)
+
+- **tx 境界の DDD 整理を Phase 3 Step 0 の正式項目とする**: use-case 入口で `withTenantTx` を張り、repository / apply 層は `TenantTx` のみを受け取る構造へ寄せ、raw `getDb()` を封じ込める(lint / export 制限)。Phase 2 の「5 表 helper の dbc 必須引数」はその第一歩の位置づけ。
+- 標準反復部分(共通形 policy + set_config 配線)と特殊設計部分(users の definer 3 本 / lifecycle / Stripe / review-ingest の完全 closure)を成果物として切り分け、後者は Phase 3 で再設計対象と明示。
+- loud 例外の alert 条件設計(§3.3 監視形)。
+
 ## 5. 非目標(YAGNI)
 
 全表展開(Phase 3)/ tag 3 表・review-ingest 系の closure 化 / FORCE RLS / user tombstone / lifecycle への advisory lock / affected-rows 一括検査 / チャンク分割等の高度化(after 悪化時のみ)/ prod 反映 / raw getDb の lint 封じ(Phase 3)。
 
-## 6. 未解決論点(plan 確定時に OT 確認)
+## 6. 論点の確定(OT 決定・2026-07-20)
 
-1. **RETURNING・upsert 禁止の適用範囲の解釈**: users の lifecycle write(user.created INSERT / scrub)に限定し、subscription 系 UPDATE の `.returning → matched` 分岐(saveProjection / applyDeletedReset)は既存挙動保全を優先して維持 — この読みで確定してよいか(全面禁止だと FF §3.1 の checked 群が壊れ、確定 9 と矛盾するため CC はこの読みを推奨)。
-2. **notifyOps 文言**: 判別条件(deletedAt 行の存在で判別)は scrub 設計上**不成立**(§2.6)→ 中立文言のみ採用で確定してよいか。
-3. **users UPDATE policy の `deleted_at IS NULL`**: 含める(CC 推奨・log+skip との二重遮断。Codex も同方向 — 将来の管理・復旧処理は definer / owner 経路へ明示分離する条件付き)か、`id = fn()` のみとするか。
-4. **bootstrap 関数の `SETOF users`(全列返却)**: CC 推奨 = 維持(getCurrentUser 契約が全列を要し、露出面は pre-RLS と等価・呼出面 3 箇所限定、§2.3)。Codex は最小列化 or 経路限定を提示 — 対立 fork として OT 判断。
+1. **RETURNING・upsert 禁止 = users lifecycle write(user.created INSERT / scrub)限定**。subscription 系 UPDATE の `.returning → matched` 分岐(saveProjection / applyDeletedReset)は既存挙動保全で維持。
+2. **notifyOps = 中立文言のみ**。「未同期 vs 削除済み再配信」の判別情報はデータ上不在(scrub が clerk_id を消す)= tombstone 却下の受容コストとして記録(§7)。
+3. **users UPDATE policy に `deleted_at IS NULL` を含める**(log+skip との二重遮断)。将来の管理・復旧処理は definer / owner 経路へ明示分離する(Codex 条件・Phase 3 申し送り)。
+4. **bootstrap 関数 = `SETOF users` 維持**。返却は呼出者自身の行で RLS 下の可読内容と同一、露出面は pre-RLS と等価・呼出 3 箇所限定。Codex の最小列化見解は記録し不採用。
 
-(解消済み: SQLSTATE = `P0RLS` に確定(§2.1)/ policy 適用機構 = versioned SQL に確定(§2.9))
+(解消済み: SQLSTATE = `P0RLS`(§2.1)/ policy 適用機構 = versioned SQL(§2.9))
+
+## 7. 意図的変更の記録(既存挙動から意図して変える点)
+
+1. **scrub 0 行 = no-op を採用(GPT の「1 行以外 RAISE」を覆す)**。根拠 = webhook 常時 200 + 再送自動リカバリなしの設計では RAISE がノイズにしかならず、既存の値レベル冪等(NULL 上書き・DELETE 再実行安全、FF §1.4)と no-op が整合する。再削除は resolve 段の 0 行 return で実質不達ゆえ scrub まで 0 行が到達する経路自体が稀。definer 自衛の一致検査(§2.3)は「context と異なる uuid の scrub」を弾くもので「0 行の scrub」を弾くものではない(直交)。
+2. **退会後 Stripe イベント = log + skip**(§2.5)。現状は scrub 済み行にも silent write が通り得たものを明示遮断へ。
+3. **user.created の silent conflict-skip → 通知付き**(§2.5)。頻度は dedupe により実質ゼロ、運用ノイズ差として受容。
+4. **notifyOps 文言中立化**(§2.6・上記 6-2)。
