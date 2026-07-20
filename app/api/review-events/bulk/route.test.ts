@@ -102,6 +102,14 @@ vi.mock('@/lib/db', () => ({
   getDb: vi.fn(() => fakeDb),
 }))
 
+// RLS-P2: processSession の tx 冒頭 setTenantContext を no-op 化する。 実 tx.execute を
+// 使うと本 test の execute() が SQL N+1 計測用に executeCallCount / executeCalls を
+// カウントしており、 set_config の execute が混入して計測 assertion を汚すため。
+// tenant context の実 GUC 挙動は tenant-tx.test.ts + Task 9 実 PG で担保 (保証不変)。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  setTenantContext: vi.fn(async () => {}),
+}))
+
 // ---------------------------------------------------------------------------
 // fake tx — transaction callback に渡す drizzle tx 相当の fake
 // ---------------------------------------------------------------------------

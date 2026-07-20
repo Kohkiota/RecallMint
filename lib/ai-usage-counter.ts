@@ -14,6 +14,7 @@
 
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
+import { setTenantContext, type TenantDb } from '@/lib/db/tenant-tx'
 import { aiUsage, aiUsageUsers } from '@/lib/db/schema'
 import { todayInJst } from '@/lib/jst'
 
@@ -26,6 +27,7 @@ export async function incrementAiUsage(
   const today = todayInJst(now)
 
   await db.transaction(async (tx) => {
+    await setTenantContext(tx, userId)
     await tx
       .insert(aiUsage)
       .values({ date: today, count })
@@ -46,10 +48,14 @@ export async function incrementAiUsage(
 
 // 当日 (JST) のグローバル AI 呼び出し合計。 GEMINI_DAILY_LIMIT guard で利用。
 // row が無ければ 0 を返す。
-export async function getTodayAiUsageGlobal(now?: Date): Promise<number> {
-  const db = getDb()
+// RLS-P2 §6.6: 接続 (dbc) を必須引数で受け取り、 guard tx から呼ばれる時に別 getDb()
+// 接続を開かず tx をそのまま使う (pool 圧を避ける)。
+export async function getTodayAiUsageGlobal(
+  dbc: TenantDb,
+  now?: Date,
+): Promise<number> {
   const today = todayInJst(now)
-  const rows = await db
+  const rows = await dbc
     .select({ count: aiUsage.count })
     .from(aiUsage)
     .where(eq(aiUsage.date, today))

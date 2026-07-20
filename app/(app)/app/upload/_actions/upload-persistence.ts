@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
+import { setTenantContext } from '@/lib/db/tenant-tx'
 import {
   cards,
   sourceDocuments,
@@ -21,6 +22,8 @@ export async function saveExtractedCards(
   },
 ): Promise<Array<{ id: string; title: string }>> {
   return db.transaction(async (tx) => {
+    // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
+    await setTenantContext(tx, args.userId)
     const inserted = await tx
       .insert(cards)
       .values(args.cardRows)
@@ -57,6 +60,8 @@ export async function completeUploadTx(
   },
 ): Promise<void> {
   await db.transaction(async (tx) => {
+    // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
+    await setTenantContext(tx, args.userId)
     // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
     // 正常フローの sourceDocumentId は runUploadGuardTx が同一 user で INSERT した
     // owner-scoped な id ゆえ id/userId 一致で厳密 1 行。affected 0 行は所有権違反
@@ -112,6 +117,8 @@ export async function markFailed(
   const msg = err instanceof Error ? err.message : String(err)
   try {
     await db.transaction(async (tx) => {
+      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
+      await setTenantContext(tx, audit.userId)
       // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
       // best-effort no-throw 契約は維持: affected 0 行 (所有権違反 or doc 不在) は
       // warn のみで台帳 (upload_records) を残さず tx を no-op 化する。

@@ -1,5 +1,6 @@
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { exams, sourceDocuments, type User } from '@/lib/db/schema'
+import { setTenantContext } from '@/lib/db/tenant-tx'
 import { canRunOcr } from '@/lib/ai-usage-mcq'
 import { getTodayAiUsageGlobal } from '@/lib/ai-usage-counter'
 import { logger } from '@/lib/logger'
@@ -52,6 +53,9 @@ export async function runUploadGuardTx(
   meta: { filename: string; fileType: 'pdf' | 'image'; totalSize: number; totalPages: number },
 ): Promise<GuardTxResult> {
   return await db.transaction(async (tx): Promise<GuardTxResult> => {
+    // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
+    await setTenantContext(tx, user.id)
+
     // (a) advisory xact lock — 同時起動 (ms 窓) の race loser を弾く
     // postgres-js + drizzle: execute<T>() は RowList<T[]> (Array-like) を返す。
     // 旧 neon-serverless の .rows ラッピングは消失したので直接 index access。
@@ -87,8 +91,9 @@ export async function runUploadGuardTx(
     }
 
     // (c) plan-limits guard — 月次 OCR ページ上限
-    // canRunOcr は内部で getDb() を使う純粋 read helper。 tx に属さなくてよい。
-    const decision = await canRunOcr(user.id, user.plan, meta.totalPages)
+    // RLS-P2 §6.6: canRunOcr / getTodayAiUsageGlobal は guard tx (tx) をそのまま受け取り
+    // 別 getDb() 接続を開かない (旧: 純粋 read helper として tx 外接続を掴んでいた → pool 圧)。
+    const decision = await canRunOcr(user.id, user.plan, meta.totalPages, tx)
     if (!decision.ok) {
       return {
         outcome: 'quota_exceeded',
@@ -109,7 +114,7 @@ export async function runUploadGuardTx(
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
       })
     } else {
-      const todayCount = await getTodayAiUsageGlobal()
+      const todayCount = await getTodayAiUsageGlobal(tx)
       if (todayCount >= dailyLimit) {
         return {
           outcome: 'daily_limit_exceeded',

@@ -12,6 +12,11 @@ vi.mock('@/lib/db', () => ({
   getDb: () => ({ select: mockSelect }),
 }))
 
+// RLS-P2 §6.6: helper は dbc (接続) を必須引数で受け取るようになったため、 mocked
+// getDb() の戻り (= { select: mockSelect }) を dbc として渡す。 assertion は不変
+// (mockSelect の呼出/戻りで検証する形は同じ)。
+import { getDb } from '@/lib/db'
+
 async function importModule() {
   return await import('./ai-usage-mcq')
 }
@@ -54,19 +59,19 @@ describe('getCurrentMonthOcrPages', () => {
   it('returns 0 when no rows match', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 0 }])
     const { getCurrentMonthOcrPages } = await importModule()
-    expect(await getCurrentMonthOcrPages('user-1')).toBe(0)
+    expect(await getCurrentMonthOcrPages('user-1', getDb())).toBe(0)
   })
 
   it('returns sum from SQL', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 42 }])
     const { getCurrentMonthOcrPages } = await importModule()
-    expect(await getCurrentMonthOcrPages('user-1')).toBe(42)
+    expect(await getCurrentMonthOcrPages('user-1', getDb())).toBe(42)
   })
 
   it('handles null/undefined total defensively', async () => {
     mockWhere.mockResolvedValueOnce([])
     const { getCurrentMonthOcrPages } = await importModule()
-    expect(await getCurrentMonthOcrPages('user-1')).toBe(0)
+    expect(await getCurrentMonthOcrPages('user-1', getDb())).toBe(0)
   })
 })
 
@@ -77,7 +82,7 @@ describe('getCurrentMonthOcrPages', () => {
 describe('canRunOcr', () => {
   it('Pro (limit=null) always ok with remaining=null', async () => {
     const { canRunOcr } = await importModule()
-    const decision = await canRunOcr('user-1', 'pro', 1000)
+    const decision = await canRunOcr('user-1', 'pro', 1000, getDb())
     expect(decision).toEqual({ ok: true, remaining: null })
     // SELECT should not be issued for Pro (short circuit)
     expect(mockSelect).not.toHaveBeenCalled()
@@ -86,21 +91,21 @@ describe('canRunOcr', () => {
   it('Free user current=0 + requested=10 vs limit=30 → ok, remaining=20', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 0 }])
     const { canRunOcr } = await importModule()
-    const decision = await canRunOcr('user-1', 'free', 10)
+    const decision = await canRunOcr('user-1', 'free', 10, getDb())
     expect(decision).toEqual({ ok: true, remaining: 20 })
   })
 
   it('Free user current=25 + requested=5 = 30 (= limit) → ok, remaining=0 (境界等号許容)', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 25 }])
     const { canRunOcr } = await importModule()
-    const decision = await canRunOcr('user-1', 'free', 5)
+    const decision = await canRunOcr('user-1', 'free', 5, getDb())
     expect(decision).toEqual({ ok: true, remaining: 0 })
   })
 
   it('Free user current=25 + requested=6 = 31 > limit=30 → exceeded', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 25 }])
     const { canRunOcr } = await importModule()
-    const decision = await canRunOcr('user-1', 'free', 6)
+    const decision = await canRunOcr('user-1', 'free', 6, getDb())
     expect(decision).toEqual({
       ok: false,
       reason: 'exceeded',
@@ -113,7 +118,7 @@ describe('canRunOcr', () => {
   it('Standard user current=300 + requested=1 > limit=300 → exceeded', async () => {
     mockWhere.mockResolvedValueOnce([{ total: 300 }])
     const { canRunOcr } = await importModule()
-    const decision = await canRunOcr('user-1', 'standard', 1)
+    const decision = await canRunOcr('user-1', 'standard', 1, getDb())
     expect(decision).toEqual({
       ok: false,
       reason: 'exceeded',

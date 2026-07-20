@@ -162,6 +162,8 @@ function extractMutationIdFromWhere(
  */
 export function makeFakeTx(state: EntityMutationsState, shouldThrow = false) {
   return {
+    // RLS-P2: per-mutation tx 冒頭 setTenantContext(tx) が tx.execute を呼ぶため no-op execute を生やす。
+    execute: async () => [],
     select: (_cols?: unknown) => ({
       from: (_table: unknown) => ({
         where: (cond: unknown) => ({

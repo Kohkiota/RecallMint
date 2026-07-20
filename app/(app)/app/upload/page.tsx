@@ -92,7 +92,9 @@ export default async function UploadPage() {
   // in-flight なし確定後に fetch する (処理中案内のときは不要な fetch を省く)。
   const [existingExams, currentMonthPages] = await Promise.all([
     withTenantTx(getDb(), userId, (tx) => getActiveExamsForUser(userId, tx)),
-    getCurrentMonthOcrPages(userId),
+    // RLS-P2 §6.6: uploadRecords は RLS-off ゆえ standalone getDb() で足りる
+    // (上の active exams read とは別 read なので tx を共有しない)。
+    getCurrentMonthOcrPages(userId, getDb()),
   ])
   // C2 (S-perf-3 follow-up): `limitsFor` ではなく safety net 版を使う。 plan が
   // null / 未知の文字列で runtime に漏れた場合 (JWT claim 不整合 / DB 値異常等)

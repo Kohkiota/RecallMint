@@ -18,8 +18,8 @@
 //   旧 source_documents 方式にあった「stale processing 除外」 ロジックは不要。
 
 import { and, eq, gte, lt, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
 import { uploadRecords } from '@/lib/db/schema'
+import type { TenantDb } from '@/lib/db/tenant-tx'
 import { limitsFor, type Plan } from '@/lib/auth/plan-limits'
 
 // JST 当月の境界 (UTC で表現) を返す。 now を渡すと test で任意時刻を注入可能。
@@ -42,13 +42,15 @@ export function jstMonthBoundsUtc(now?: Date): { start: Date; end: Date } {
 // 当月 (JST 月境界) の OCR ページ消費合計。
 // upload_records のうち status='completed' かつ created_at が当月内の行の
 // pages_processed を SUM する。 `now` は test 注入用。
+// RLS-P2 §6.6: 接続 (dbc) を必須引数で受け取り、 呼び元 (guard tx など) が保持中の
+// tx をそのまま渡せるようにする (別 getDb() 接続を開かない = pool 圧を避ける)。
 export async function getCurrentMonthOcrPages(
   userId: string,
+  dbc: TenantDb,
   now?: Date,
 ): Promise<number> {
-  const db = getDb()
   const { start, end } = jstMonthBoundsUtc(now)
-  const rows = await db
+  const rows = await dbc
     .select({
       total: sql<number>`COALESCE(SUM(${uploadRecords.pagesProcessed}), 0)::int`,
     })
@@ -75,6 +77,7 @@ export async function canRunOcr(
   userId: string,
   plan: Plan,
   requestedPages: number,
+  dbc: TenantDb,
   now?: Date,
 ): Promise<OcrLimitDecision> {
   const limit = limitsFor(plan).ocrPagesPerMonth
@@ -82,7 +85,7 @@ export async function canRunOcr(
     // 公平利用 = Pro。 ソフト上限なし、 監視は外側 (ai_usage 全体 + Discord notify)。
     return { ok: true, remaining: null }
   }
-  const current = await getCurrentMonthOcrPages(userId, now)
+  const current = await getCurrentMonthOcrPages(userId, dbc, now)
   if (current + requestedPages > limit) {
     return {
       ok: false,

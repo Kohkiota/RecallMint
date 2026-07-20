@@ -34,6 +34,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
+import { setTenantContext } from '@/lib/db/tenant-tx'
 import { entityMutations, type User } from '@/lib/db/schema'
 import {
   ENTITY_MUTATION_REGISTRY,
@@ -100,6 +101,10 @@ async function processMutation(
   mutation: ParsedMutation,
 ): Promise<'applied' | 'skipped' | 'failed'> {
   return db.transaction(async (tx) => {
+    // RLS-P2: per-mutation tx の冒頭で tenant context (app.user_id GUC) を張る
+    // (group 並列は温存 — set_config は各 tx-local ゆえ mutation ごとに張る)。
+    await setTenantContext(tx, user.id)
+
     // ---- 1. registry 検索 ----
     const entry = lookupRegistryEntry(mutation.entity_type, mutation.op)
     if (!entry) {

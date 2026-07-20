@@ -16,7 +16,10 @@ vi.mock('@/lib/db', () => ({
     getDbCalls.count += 1
     // 透過的 tx mock: db.transaction(async (tx) => { ... }) を実行、
     // tx.insert(...).values(...).onConflictDoUpdate(...) の chain を record。
+    // RLS-P2: incrementAiUsage の tx 冒頭 setTenantContext(tx) が tx.execute を呼ぶため
+    // no-op execute を生やす (set_config は txCalls に影響しない = 保証不変)。
     const tx = {
+      execute: async () => [],
       insert: (table: { _: { name: string } } | { tableName?: string }) => {
         return {
           values: (vals: Record<string, unknown>) => ({
@@ -56,6 +59,9 @@ vi.mock('@/lib/db', () => ({
 // schema は drizzle pgTable object をそのまま使う (lib 側で table 識別に利用)。
 // test 側は import した同じ object reference を渡す前提。
 import { incrementAiUsage, getTodayAiUsageGlobal } from './ai-usage-counter'
+// RLS-P2 §6.6: getTodayAiUsageGlobal は dbc (接続) を必須引数で受け取るため、 mocked
+// getDb() の戻りを dbc として渡す (assertion 不変)。
+import { getDb } from '@/lib/db'
 
 beforeEach(() => {
   txCalls.length = 0
@@ -115,7 +121,7 @@ describe('incrementAiUsage', () => {
 
 describe('getTodayAiUsageGlobal', () => {
   it('returns 0 when ai_usage has no row for today', async () => {
-    const count = await getTodayAiUsageGlobal()
+    const count = await getTodayAiUsageGlobal(getDb())
     expect(count).toBe(0)
   })
 })

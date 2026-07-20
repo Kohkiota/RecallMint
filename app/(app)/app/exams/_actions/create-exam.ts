@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { exams } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
 
@@ -47,11 +48,14 @@ async function _createExam(
   const parsed = nameSchema.safeParse(name)
   if (!parsed.success) return { ok: false, error: firstError(parsed.error) }
 
-  const db = getDb()
-  const inserted = await db
-    .insert(exams)
-    .values({ userId: user.id, name: parsed.data })
-    .returning({ id: exams.id })
+  // RLS-P2 §B: exams は RLS-on ゆえ WITH CHECK 対象。INSERT を withTenantTx で包み
+  // tx 冒頭で tenant context (app.user_id GUC) を張る。
+  const inserted = await withTenantTx(getDb(), user.id, (tx) =>
+    tx
+      .insert(exams)
+      .values({ userId: user.id, name: parsed.data })
+      .returning({ id: exams.id }),
+  )
 
   return { ok: true, data: { examId: inserted[0].id } }
 }

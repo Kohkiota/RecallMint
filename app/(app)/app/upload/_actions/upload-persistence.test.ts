@@ -104,6 +104,9 @@ function freshCaptured(): Captured {
 function makeDb(captured: Captured) {
   const tx: Record<string, unknown> = {}
 
+  // RLS-P2: tx 冒頭 setTenantContext(tx) が tx.execute を呼ぶため no-op execute を生やす。
+  tx.execute = async () => []
+
   tx.insert = (table: unknown) => ({
     values: (rows: SaveArgs['cardRows']) => ({
       returning: (_cols?: unknown) => {
@@ -276,6 +279,8 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     // update() を呼んだ tx の identity を捕捉し、 callback tx と一致することを確認する。
     let txUsedByUpdate: unknown = null
     const tx: Record<string, unknown> = {}
+    // RLS-P2: tx 冒頭 setTenantContext(tx) の tx.execute 用 no-op。
+    tx.execute = async () => []
     tx.insert = (_table: unknown) => ({
       values: (rows: SaveArgs['cardRows']) => ({
         returning: () =>

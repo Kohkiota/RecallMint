@@ -125,6 +125,8 @@ vi.mock('@/lib/db', () => {
 
   function makeTx() {
     return {
+      // RLS-P2: tx 冒頭 setTenantContext(tx) が tx.execute を呼ぶため no-op execute を生やす。
+      execute: async () => [],
       select: (_columns: unknown) => ({
         from: (table: unknown) => {
           dbState.selectTables.push(table)

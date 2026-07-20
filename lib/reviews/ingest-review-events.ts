@@ -5,6 +5,7 @@ import 'server-only'
 import { z } from 'zod'
 import { type User } from '@/lib/db/schema'
 import type { getDb } from '@/lib/db'
+import { setTenantContext } from '@/lib/db/tenant-tx'
 import { type ReplayCardState } from '@/lib/cards/replay-card'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import { logger } from '@/lib/logger'
@@ -96,6 +97,8 @@ async function processSession(
 
   try {
     await db.transaction(async (tx) => {
+      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
+      await setTenantContext(tx, user.id)
       // ------------------------------------------------------------------
       // Phase 1 — cards SELECT (owner-scoped) → cardStateMap + option index
       // ------------------------------------------------------------------

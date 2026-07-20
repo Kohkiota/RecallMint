@@ -48,6 +48,15 @@ vi.mock('@/lib/db', () => {
   }
 })
 
+// RLS-P2 §B: createExam は exams INSERT を withTenantTx(getDb(), user.id, tx => ...) で
+// 包む。 unit test では DB に触れないよう withTenantTx を passthrough 化し、 fn には
+// getDb() の戻り (= insert を持つ db mock) をそのまま渡す (tx 冒頭の setTenantContext は
+// 経由しない = insert 捕捉の assertion 不変)。 実 tenant context 挙動は Task 9 実 PG で担保。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
+    fn(db),
+}))
+
 async function importAction() {
   return await import('./create-exam')
 }
