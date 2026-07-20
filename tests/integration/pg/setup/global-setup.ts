@@ -26,6 +26,14 @@ const GRANTS_FILE = path.resolve(
   '../../../../db/roles/recallmint_app-grants.sql',
 )
 
+// RLS-P2: 5 表 (users/exams/cards/tombstones/study_days) の policy 有効化 SQL。
+// migration にしない (spec §2.9) ため、grants の直後に owner client で適用する。
+// これで test:iso は毎 run RLS on で走る (= 「動く」の証明: spec §3.1-1)。
+const RLS_ENABLE_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/policies/rls-p2-enable.sql',
+)
+
 // DROP/CREATE DATABASE は対象 DB 自身に接続していると不可能なため、 同 host/port/user の
 // maintenance DB (postgres) へ繋ぐ。 host/port は上の assertLocalTestDb で検証済 —
 // db 名のみ postgres へ差し替える (別 host を作らない)。
@@ -58,6 +66,11 @@ export async function setup(): Promise<void> {
     // .simple() = simple query protocol で multi-statement SQL file を一括実行。
     const grantsSql = readFileSync(GRANTS_FILE, 'utf8')
     await client.unsafe(grantsSql).simple()
+
+    // RLS-P2: grants の直後に policy を有効化する (同 owner client)。owner は
+    // FORCE RLS していないため policy を bypass する = 以降の seed/truncate は素通し。
+    const rlsEnableSql = readFileSync(RLS_ENABLE_FILE, 'utf8')
+    await client.unsafe(rlsEnableSql).simple()
   } finally {
     await client.end({ timeout: 5 })
   }

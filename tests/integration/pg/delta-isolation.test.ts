@@ -17,7 +17,7 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { closeDb, getDb } from '@/lib/db'
+import { closeDb } from '@/lib/db'
 import { tombstones } from '@/lib/db/schema'
 import { getCardsDelta } from '@/lib/db/cards-pull'
 import { getExamsDelta } from '@/lib/db/exams-pull'
@@ -27,9 +27,11 @@ import { getOptionsDelta } from '@/lib/db/tag-options-pull'
 import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
 import { getAllStudyDaysForUser } from '@/lib/db/study-days-pull'
 
+import { asTenant } from './setup/as-tenant'
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -55,12 +57,14 @@ describe('delta isolation (R2)', () => {
     await truncateAllUserTables()
     fixture = await seedTwoTenants()
 
-    const db = getDb()
-    const aRows = await db
+    // 既知 id の取得は ground-truth read(A/B 双方の行を跨いで拾う)。RLS-P2:
+    // owner 接続で RLS を bypass して両テナントの tombstone を読む。
+    const owner = getFixtureOwnerDb()
+    const aRows = await owner
       .select()
       .from(tombstones)
       .where(eq(tombstones.userId, fixture.a.userId))
-    const bRows = await db
+    const bRows = await owner
       .select()
       .from(tombstones)
       .where(eq(tombstones.userId, fixture.b.userId))
@@ -72,12 +76,16 @@ describe('delta isolation (R2)', () => {
   // A の delta に漏れる(6 stream 単一 factory の代表)。---
   describe('getCardsDelta', () => {
     it('returns tenant A own card (positive control)', async () => {
-      const { rows } = await getCardsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCardsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
     it('does not leak tenant B card into tenant A delta (negative)', async () => {
-      const { rows } = await getCardsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCardsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.cardId)
     })
   })
@@ -85,12 +93,16 @@ describe('delta isolation (R2)', () => {
   // --- 非 RED・best-effort: cards と同 factory・同 pattern(cursor = updatedAt)。---
   describe('getExamsDelta', () => {
     it('returns tenant A own exam (positive control)', async () => {
-      const { rows } = await getExamsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getExamsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.examId)
     })
 
     it('does not leak tenant B exam into tenant A delta (negative)', async () => {
-      const { rows } = await getExamsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getExamsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.examId)
     })
   })
@@ -98,12 +110,16 @@ describe('delta isolation (R2)', () => {
   // --- 非 RED・best-effort: cursor = deletedAt。既知 id は beforeAll の raw select 由来。---
   describe('getTombstonesDelta', () => {
     it('returns tenant A own tombstone (positive control)', async () => {
-      const { rows } = await getTombstonesDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getTombstonesDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.entity_id)).toContain(aTombstoneEntityId)
     })
 
     it('does not leak tenant B tombstone into tenant A delta (negative)', async () => {
-      const { rows } = await getTombstonesDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getTombstonesDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.entity_id)).not.toContain(bTombstoneEntityId)
     })
   })
@@ -111,12 +127,16 @@ describe('delta isolation (R2)', () => {
   // --- 非 RED・best-effort: cursor = updatedAt。---
   describe('getCategoriesDelta', () => {
     it('returns tenant A own tag category (positive control)', async () => {
-      const { rows } = await getCategoriesDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCategoriesDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.tagCategoryId)
     })
 
     it('does not leak tenant B tag category into tenant A delta (negative)', async () => {
-      const { rows } = await getCategoriesDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCategoriesDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.tagCategoryId)
     })
   })
@@ -124,12 +144,16 @@ describe('delta isolation (R2)', () => {
   // --- 非 RED・best-effort: cursor = updatedAt。---
   describe('getOptionsDelta', () => {
     it('returns tenant A own tag option (positive control)', async () => {
-      const { rows } = await getOptionsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getOptionsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.tagOptionId)
     })
 
     it('does not leak tenant B tag option into tenant A delta (negative)', async () => {
-      const { rows } = await getOptionsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getOptionsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.tagOptionId)
     })
   })
@@ -138,12 +162,16 @@ describe('delta isolation (R2)', () => {
   // 既知 id として fixture の cardId(card_tags.card_id)を使う。---
   describe('getCardTagsDelta', () => {
     it('returns tenant A own card_tag (positive control)', async () => {
-      const { rows } = await getCardTagsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCardTagsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.card_id)).toContain(fixture.a.cardId)
     })
 
     it('does not leak tenant B card_tag into tenant A delta (negative)', async () => {
-      const { rows } = await getCardTagsDelta(fixture.a.userId, getDb(), since)
+      const { rows } = await asTenant(fixture.a.userId, (tx) =>
+        getCardTagsDelta(fixture.a.userId, tx, since),
+      )
       expect(rows.map((r) => r.card_id)).not.toContain(fixture.b.cardId)
     })
   })
@@ -156,12 +184,16 @@ describe('delta isolation (R2)', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
     it('returns tenant A own study day (positive control)', async () => {
-      const rows = await getAllStudyDaysForUser(fixture.a.userId, getDb(), now)
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getAllStudyDaysForUser(fixture.a.userId, tx, now),
+      )
       expect(rows.map((r) => r.user_id)).toContain(fixture.a.userId)
     })
 
     it('does not leak tenant B study day into tenant A result (negative)', async () => {
-      const rows = await getAllStudyDaysForUser(fixture.a.userId, getDb(), now)
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getAllStudyDaysForUser(fixture.a.userId, tx, now),
+      )
       expect(rows.map((r) => r.user_id)).not.toContain(fixture.b.userId)
     })
   })

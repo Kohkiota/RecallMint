@@ -27,13 +27,15 @@
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { closeDb, getDb } from '@/lib/db'
+import { closeDb } from '@/lib/db'
 import { cards, exams, tombstones, type User } from '@/lib/db/schema'
 import { applyCardDelete } from '@/lib/cards/apply-card-mutation'
 
+import { asTenant } from './setup/as-tenant'
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -73,16 +75,20 @@ describe('delete isolation (W2)', () => {
   // ゆえ片方だけの除去では越境しない — 因果は report に実測記録)。
   describe('applyCardDelete', () => {
     it('deletes tenant A own card (positive control)', async () => {
-      await applyCardDelete(getDb(), fixture.a.cardId, fixture.a.userId)
+      // 刺激: app-role + tenant context (本番の processMutation per-mutation tx と同配線)。
+      await asTenant(fixture.a.userId, (tx) =>
+        applyCardDelete(tx, fixture.a.cardId, fixture.a.userId),
+      )
 
-      const rows = await getDb()
+      // 観測は owner (RLS bypass で ground-truth を読む)。
+      const rows = await getFixtureOwnerDb()
         .select({ id: cards.id })
         .from(cards)
         .where(eq(cards.id, fixture.a.cardId))
       expect(rows).toHaveLength(0)
 
       // tombstone が A の userId で INSERT されている(mirror 削除反映の不変条件)。
-      const tombstoneRows = await getDb()
+      const tombstoneRows = await getFixtureOwnerDb()
         .select({ userId: tombstones.userId, entityType: tombstones.entityType })
         .from(tombstones)
         .where(
@@ -96,10 +102,12 @@ describe('delete isolation (W2)', () => {
     })
 
     it('does not delete tenant B card via tenant A context (negative)', async () => {
-      await applyCardDelete(getDb(), fixture.b.cardId, fixture.a.userId)
+      await asTenant(fixture.a.userId, (tx) =>
+        applyCardDelete(tx, fixture.b.cardId, fixture.a.userId),
+      )
 
       // 戻り値が無い(void)ため実 DB の行状態のみで判定する(vacuous 回避)。
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({ id: cards.id, title: cards.title })
         .from(cards)
         .where(eq(cards.id, fixture.b.cardId))
@@ -115,17 +123,19 @@ describe('delete isolation (W2)', () => {
     it('does not delete tenant B exam (+ its cards) via tenant A context (negative)', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: fixture.a.userId } as User)
 
+      // deleteExam は内部で withTenantTx(setTenantContext)を張るため asTenant 不要。
       const result = await deleteExam(fixture.b.examId)
       // owner SELECT gate が 0 行 → idempotent silent success(実削除なし)。
       expect(result.ok).toBe(true)
 
-      const examRows = await getDb()
+      // 観測は owner (RLS bypass で ground-truth を読む)。
+      const examRows = await getFixtureOwnerDb()
         .select({ id: exams.id })
         .from(exams)
         .where(eq(exams.id, fixture.b.examId))
       expect(examRows).toHaveLength(1)
 
-      const cardRows = await getDb()
+      const cardRows = await getFixtureOwnerDb()
         .select({ id: cards.id })
         .from(cards)
         .where(eq(cards.id, fixture.b.cardId))
@@ -138,14 +148,14 @@ describe('delete isolation (W2)', () => {
       const result = await deleteExam(fixture.a.examId)
       expect(result.ok).toBe(true)
 
-      const examRows = await getDb()
+      const examRows = await getFixtureOwnerDb()
         .select({ id: exams.id })
         .from(exams)
         .where(eq(exams.id, fixture.a.examId))
       expect(examRows).toHaveLength(0)
 
       // exams DELETE → FK CASCADE(onDelete: 'cascade')で配下 card も消える。
-      const cardRows = await getDb()
+      const cardRows = await getFixtureOwnerDb()
         .select({ id: cards.id })
         .from(cards)
         .where(eq(cards.id, fixture.a.cardId))
@@ -163,7 +173,7 @@ describe('delete isolation (W2)', () => {
       const result = await deleteExam(fixture.b.examId)
       expect(result.ok).toBe(true)
 
-      const examRows = await getDb()
+      const examRows = await getFixtureOwnerDb()
         .select({ id: exams.id })
         .from(exams)
         .where(eq(exams.id, fixture.b.examId))

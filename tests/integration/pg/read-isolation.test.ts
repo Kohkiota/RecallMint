@@ -10,15 +10,17 @@
 import { eq, inArray } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { closeDb, getDb } from '@/lib/db'
+import { closeDb } from '@/lib/db'
 import { cards, studyDays } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
 import { getReviewStatsForUser } from '@/lib/db/streak'
 import { getActiveExamsForUser, getCardsForExam } from '@/lib/exams/list'
 
+import { asTenant } from './setup/as-tenant'
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -35,12 +37,14 @@ describe('read isolation (R1)', () => {
     await truncateAllUserTables()
     fixture = await seedTwoTenants()
 
-    const db = getDb()
+    // decoy 差分の投入は ground-truth 側の seeding(A/B 両テナントに跨るため単一
+    // tenant context では張れない)。RLS-P2: owner 接続で RLS を bypass して直書きする。
+    const owner = getFixtureOwnerDb()
 
     // getSessionCards decoy 適格性: cards.due は defaultNow() で seed 時刻になる。
     // wall-clock 依存で due<=now が偶然成立/不成立になるのを避けるため、A/B 両方の
     // card due を確定的に過去へ固定する(fixture 自体は変更しない)。
-    await db
+    await owner
       .update(cards)
       .set({ due: new Date('2020-01-01T00:00:00.000Z') })
       .where(inArray(cards.id, [fixture.a.cardId, fixture.b.cardId]))
@@ -49,11 +53,11 @@ describe('read isolation (R1)', () => {
     // distinct_card_count=0 / review_count=0 のまま挿入される(既定値)ため、positive
     // control(A 自身の既知値が返る)も negative(B の既知値と別)も空振りする。
     // A/B に別々の既知値を入れて初めて「効いている」assertion になる。
-    await db
+    await owner
       .update(studyDays)
       .set({ distinctCardCount: 3, reviewCount: 2 })
       .where(eq(studyDays.userId, fixture.a.userId))
-    await db
+    await owner
       .update(studyDays)
       .set({ distinctCardCount: 9, reviewCount: 5 })
       .where(eq(studyDays.userId, fixture.b.userId))
@@ -62,12 +66,16 @@ describe('read isolation (R1)', () => {
   // --- 代表 RED: eq(exams.userId, userId) を外すと B の active exam が漏れる ---
   describe('getActiveExamsForUser', () => {
     it('returns tenant A own exam (positive control)', async () => {
-      const rows = await getActiveExamsForUser(fixture.a.userId, getDb())
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getActiveExamsForUser(fixture.a.userId, tx),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.examId)
     })
 
     it('does not leak tenant B exam into tenant A result (negative)', async () => {
-      const rows = await getActiveExamsForUser(fixture.a.userId, getDb())
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getActiveExamsForUser(fixture.a.userId, tx),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.examId)
     })
   })
@@ -77,12 +85,16 @@ describe('read isolation (R1)', () => {
   // は来ない)。「A が B の examId を渡しても B の card を得られない(0 件)」を assert。
   describe('getCardsForExam', () => {
     it('returns tenant A own card for own examId (positive control)', async () => {
-      const rows = await getCardsForExam(fixture.a.userId, fixture.a.examId, getDb())
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getCardsForExam(fixture.a.userId, fixture.a.examId, tx),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
     it('returns empty when A supplies B examId (negative, non-leak via shadowing)', async () => {
-      const rows = await getCardsForExam(fixture.a.userId, fixture.b.examId, getDb())
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getCardsForExam(fixture.a.userId, fixture.b.examId, tx),
+      )
       expect(rows).toHaveLength(0)
     })
   })
@@ -93,12 +105,16 @@ describe('read isolation (R1)', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
     it('returns tenant A own due card (positive control)', async () => {
-      const rows = await getSessionCards(fixture.a.userId, null, getDb(), now)
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getSessionCards(fixture.a.userId, null, tx, now),
+      )
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
     it('does not leak tenant B due card into tenant A result (negative)', async () => {
-      const rows = await getSessionCards(fixture.a.userId, null, getDb(), now)
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getSessionCards(fixture.a.userId, null, tx, now),
+      )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.cardId)
     })
   })
@@ -110,13 +126,17 @@ describe('read isolation (R1)', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
     it('returns tenant A own known stats (positive control)', async () => {
-      const stats = await getReviewStatsForUser(fixture.a.userId, getDb(), now)
+      const stats = await asTenant(fixture.a.userId, (tx) =>
+        getReviewStatsForUser(fixture.a.userId, tx, now),
+      )
       expect(stats.todayCardCount).toBe(3)
       expect(stats.streak).toBe(1)
     })
 
     it('does not mix tenant B known stats into tenant A result (negative)', async () => {
-      const stats = await getReviewStatsForUser(fixture.a.userId, getDb(), now)
+      const stats = await asTenant(fixture.a.userId, (tx) =>
+        getReviewStatsForUser(fixture.a.userId, tx, now),
+      )
       expect(stats.todayCardCount).not.toBe(9)
     })
   })

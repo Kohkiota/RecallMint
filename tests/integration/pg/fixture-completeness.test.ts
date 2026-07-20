@@ -15,6 +15,7 @@ import {
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -57,8 +58,11 @@ describe('two-tenant fixture row completeness', () => {
     fixture = await seedTwoTenants()
   })
 
+  // A/B 双方の decoy 行存在を数える ground-truth 観測。RLS-P2: RLS 対象表
+  // (exams/cards/tombstones/study_days) は app-role では単一 tenant しか見えず
+  // 両テナントを 1 query で数えられないため、owner 接続 (RLS bypass) で数える。
   async function countForUser(table: string, userId: string): Promise<number> {
-    const rows = await getDb().execute<{ n: number }>(
+    const rows = await getFixtureOwnerDb().execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE user_id = ${userId}::uuid`,
     )
     return rows[0].n

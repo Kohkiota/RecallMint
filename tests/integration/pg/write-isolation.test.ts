@@ -23,9 +23,11 @@ import { applyTagOptionUpdate } from '@/lib/tags/apply-tag-mutation'
 import { applyCardFinalStates } from '@/lib/reviews/session-repository'
 import type { ReplayCardState } from '@/lib/cards/replay-card'
 
+import { asTenant } from './setup/as-tenant'
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -49,15 +51,14 @@ describe('write isolation (W1)', () => {
   // 効いたか分からないため)。
   describe('CARD_FIELD_HANDLERS.title', () => {
     it('updates tenant A own card title (positive control)', async () => {
-      const result = await CARD_FIELD_HANDLERS.title(
-        getDb(),
-        fixture.a.cardId,
-        fixture.a.userId,
-        'A-new-title',
+      // 刺激: app-role + tenant context (本番の per-mutation tx と同配線)。
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        CARD_FIELD_HANDLERS.title(tx, fixture.a.cardId, fixture.a.userId, 'A-new-title'),
       )
       expect(result).toBe('applied')
 
-      const rows = await getDb()
+      // 観測: owner 接続で ground-truth 行状態を読む (RLS bypass)。
+      const rows = await getFixtureOwnerDb()
         .select({ title: cards.title })
         .from(cards)
         .where(eq(cards.id, fixture.a.cardId))
@@ -65,15 +66,12 @@ describe('write isolation (W1)', () => {
     })
 
     it('does not update tenant B card via tenant A context (negative)', async () => {
-      const result = await CARD_FIELD_HANDLERS.title(
-        getDb(),
-        fixture.b.cardId,
-        fixture.a.userId,
-        'HACKED',
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        CARD_FIELD_HANDLERS.title(tx, fixture.b.cardId, fixture.a.userId, 'HACKED'),
       )
       expect(result).toBe('failed')
 
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({ title: cards.title })
         .from(cards)
         .where(eq(cards.id, fixture.b.cardId))
@@ -176,13 +174,15 @@ describe('write isolation (W1)', () => {
     }
 
     it('updates tenant A own card FSRS state (positive control)', async () => {
-      await applyCardFinalStates(
-        getDb(),
-        fixture.a.userId,
-        new Map([[fixture.a.cardId, sampleFinalState]]),
+      await asTenant(fixture.a.userId, (tx) =>
+        applyCardFinalStates(
+          tx,
+          fixture.a.userId,
+          new Map([[fixture.a.cardId, sampleFinalState]]),
+        ),
       )
 
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({ stability: cards.stability })
         .from(cards)
         .where(eq(cards.id, fixture.a.cardId))
@@ -191,10 +191,12 @@ describe('write isolation (W1)', () => {
 
     it('does not update tenant B card via tenant A context (negative)', async () => {
       await expect(
-        applyCardFinalStates(
-          getDb(),
-          fixture.a.userId,
-          new Map([[fixture.b.cardId, sampleFinalState]]),
+        asTenant(fixture.a.userId, (tx) =>
+          applyCardFinalStates(
+            tx,
+            fixture.a.userId,
+            new Map([[fixture.b.cardId, sampleFinalState]]),
+          ),
         ),
       ).rejects.toThrow('bulk update card count mismatch')
     })

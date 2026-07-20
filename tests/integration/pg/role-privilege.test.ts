@@ -15,6 +15,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '@/lib/db'
 import { cards } from '@/lib/db/schema'
 
+import { asTenant } from './setup/as-tenant'
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
@@ -127,57 +128,62 @@ describe('role privilege (least-privilege structural proof)', () => {
 
   // --- positive: granted CRUD (SELECT/INSERT/UPDATE/DELETE) 全て succeed ---
   describe('positive: granted CRUD operations succeed', () => {
+    // CRUD は RLS 対象表 (cards) への行アクセスゆえ tenant context が要る。
+    // grant の positive 証明が主眼なので app-role + context (asTenant) で走らせる。
     it('selects a seeded card', async () => {
-      const rows = await getDb()
-        .select({ id: cards.id, title: cards.title })
-        .from(cards)
-        .where(eq(cards.id, fixture.a.cardId))
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        tx
+          .select({ id: cards.id, title: cards.title })
+          .from(cards)
+          .where(eq(cards.id, fixture.a.cardId)),
+      )
       expect(rows).toHaveLength(1)
       expect(rows[0]?.title).toBe('Card A')
     })
 
     it('inserts, updates, and deletes a card for the seeded tenant', async () => {
       const newCardId = randomUUID()
-      const db = getDb()
 
-      await db.insert(cards).values({
-        id: newCardId,
-        userId: fixture.a.userId,
-        examId: fixture.a.examId,
-        sourceDocumentId: fixture.a.sourceDocumentId,
-        title: 'RLS-P1 probe card',
-        questionText: 'Q?',
-        options: [
-          { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },
-          { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
-        ],
-        correctAnswerIds: ['a'],
+      await asTenant(fixture.a.userId, async (db) => {
+        await db.insert(cards).values({
+          id: newCardId,
+          userId: fixture.a.userId,
+          examId: fixture.a.examId,
+          sourceDocumentId: fixture.a.sourceDocumentId,
+          title: 'RLS-P1 probe card',
+          questionText: 'Q?',
+          options: [
+            { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },
+            { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
+          ],
+          correctAnswerIds: ['a'],
+        })
+
+        const inserted = await db
+          .select({ title: cards.title })
+          .from(cards)
+          .where(eq(cards.id, newCardId))
+        expect(inserted[0]?.title).toBe('RLS-P1 probe card')
+
+        await db
+          .update(cards)
+          .set({ title: 'RLS-P1 probe card (updated)' })
+          .where(eq(cards.id, newCardId))
+
+        const updated = await db
+          .select({ title: cards.title })
+          .from(cards)
+          .where(eq(cards.id, newCardId))
+        expect(updated[0]?.title).toBe('RLS-P1 probe card (updated)')
+
+        await db.delete(cards).where(eq(cards.id, newCardId))
+
+        const afterDelete = await db
+          .select({ id: cards.id })
+          .from(cards)
+          .where(eq(cards.id, newCardId))
+        expect(afterDelete).toHaveLength(0)
       })
-
-      const inserted = await db
-        .select({ title: cards.title })
-        .from(cards)
-        .where(eq(cards.id, newCardId))
-      expect(inserted[0]?.title).toBe('RLS-P1 probe card')
-
-      await db
-        .update(cards)
-        .set({ title: 'RLS-P1 probe card (updated)' })
-        .where(eq(cards.id, newCardId))
-
-      const updated = await db
-        .select({ title: cards.title })
-        .from(cards)
-        .where(eq(cards.id, newCardId))
-      expect(updated[0]?.title).toBe('RLS-P1 probe card (updated)')
-
-      await db.delete(cards).where(eq(cards.id, newCardId))
-
-      const afterDelete = await db
-        .select({ id: cards.id })
-        .from(cards)
-        .where(eq(cards.id, newCardId))
-      expect(afterDelete).toHaveLength(0)
     })
   })
 })

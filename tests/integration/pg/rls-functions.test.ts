@@ -263,7 +263,7 @@ describe('RLS-P2 tenant-context functions (migration 0025)', () => {
 // getCurrentUser 本体は auth()(Clerk)依存で iso から直接叩けないため、本体と同一の
 // withTenantTx(getDb(), id, ...) 読みを raw に再現して predicate の load-bearing 性を pin する。
 describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users', () => {
-  it('returns 0 rows for a soft-deleted user with the isNull(deletedAt) predicate, and 1 row without it (predicate is load-bearing)', async () => {
+  it('returns 0 rows for a soft-deleted user under the isNull(deletedAt) app-role read; the ghost decoy row exists and a bare-id read matches it via owner', async () => {
     const owner = getFixtureOwnerDb()
     // scrub 済み ghost を owner 接続で seed (deleted_at set + PII NULL、webhook 相当)。
     const [seeded] = await owner
@@ -282,12 +282,23 @@ describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users'
     )
     expect(withFilter).toHaveLength(0)
 
-    // (2) control: isNull を外すと同じ id で ghost 行が 1 行返る = predicate が
-    // load-bearing。この 1 行は非 null かつ deletedAt set ゆえ、呼出側の `!user`
-    // ガードを素通りし ghost 書込を許す (= 本 fix が塞ぐ regression の実証)。
-    const withoutFilter = await withTenantTx(getDb(), ghostId, (tx) =>
-      tx.select().from(users).where(eq(users.id, ghostId)).limit(1),
-    )
+    // (2) この control が示すのは「ghost decoy 行が実在し、その id を裸で引く bare-id SQL が
+    // 構造的に当該行へ一致する」ことのみ。owner 接続(RLS bypass)で観測するため、isNull を
+    // 外して同じ id を引けば ghost 行が 1 行返る。この 1 行は非 null かつ deletedAt set ゆえ、
+    // 呼出側の `!user` ガードを素通りし ghost 書込を許し得る(= (1) の isNull filter が塞ぐ先の姿)。
+    //
+    // 注意 — ここでは app 層 isNull の load-bearing 性は主張しない: RLS on では
+    // users_select policy 自身も `deleted_at IS NULL` を課すため、app-role で isNull 抜き読みを
+    // 走らせても RLS が ghost を弾いて 0 行になり、app 層 filter と RLS のどちらが効いたかは
+    // この読みからは切り分けられない。この control は RLS の追加防御から切り離して「decoy の
+    // 実在 + bare-id 一致」だけを owner で観測する。
+    // cross-ref: 「app-role が isNull 抜きでも RLS 単独で ghost を止める」単独防御の pin は
+    // Task 9 の管轄(spec §3.1 item 5 = ghost JWT: scrub 済み UUID context で 5 表 read 0 行)。
+    const withoutFilter = await getFixtureOwnerDb()
+      .select()
+      .from(users)
+      .where(eq(users.id, ghostId))
+      .limit(1)
     expect(withoutFilter).toHaveLength(1)
     expect(withoutFilter[0]?.id).toBe(ghostId)
     expect(withoutFilter[0]?.deletedAt).not.toBeNull()
