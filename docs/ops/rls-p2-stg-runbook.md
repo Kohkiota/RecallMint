@@ -160,6 +160,17 @@ Playwright MCP browser の page-context `fetch(url, { credentials: 'include', ca
 test1(`+clerk_test`)、seed は前提 0.5 の `[PERF-SEED] 300-card exam` を使い回す(before と同一
 データ量であることが比較の前提)。
 
+> **⚠️ before は「flip 直前に同日再取得」してから after を取る**(2026-07-20 Phase B 実証の教訓)。
+> Perf-0b の before(2026-07-18)を数日跨いで after と比較すると、network floor(実測で RTT
+> favicon 3→16ms)/ Vercel instance 状態 / server 負荷の **baseline drift** がコード変更・RLS の
+> 増分に上乗せされ、判定が汚染される。実際 Phase B では **pull delta(DB 仕事ほぼ皆無)が +77ms
+> 増**という「直列化でも RLS でも説明不能」な shift が観測され、drift とコード変更を分離できな
+> かった。**手順**: enable SQL 適用の**直前**に、その時点の deploy(= 新コード・RLS off)で全経路
+> の before を 30 回計測 → enable → 直後に after を 30 回計測。これで network/instance を共通化
+> し、**同一 delta 経路の増分を drift の proxy** として差し引ける(after − before の経路固有増分
+> のみを予算と突合)。旧並列 pull コードの before(181 等)は un-deploy 後は再取得不能ゆえ、この
+> 「直前 before」が唯一の clean baseline。Phase 3 全表展開でも同手順を必須とする。
+
 ### 5.1 合格基準(spec §3.2)
 
 各経路 **p95 悪化 ≤ max(before_p95 の 10%, 20ms)**。ただし **`/api/pull` full のみ特例**で
