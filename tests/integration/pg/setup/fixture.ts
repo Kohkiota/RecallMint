@@ -58,7 +58,9 @@ export type TenantFixture = { a: TenantIds; b: TenantIds }
 let _ownerDb: ReturnType<typeof drizzle> | null = null
 let _ownerClient: ReturnType<typeof postgres> | null = null
 
-function getFixtureOwnerDb() {
+// RLS-P2: bespoke user を owner 接続で seed したい test (rls-functions.test.ts 等)
+// のため export する。既存利用箇所は同 file 内のみで無影響 (additive)。
+export function getFixtureOwnerDb() {
   if (_ownerDb) return _ownerDb
   _ownerClient = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} })
   _ownerDb = drizzle(_ownerClient)
