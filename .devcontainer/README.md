@@ -72,6 +72,8 @@
 | playwright MCP | `.mcp.json` | `@playwright/mcp@0.0.78` | 内部に playwright `1.62.0-alpha-1783623505000` を exact 同梱(→ §7.6) |
 | context7 MCP | `.mcp.json` | `@upstash/context7-mcp@3.2.4` | |
 | Codex CLI | `post-create.sh` `CODEX_VERSION` | `0.144.5` | pin と postcondition 期待値は同一変数(二重管理なし)。更新は contract gate 必須(→ §7.3) |
+| typescript-language-server | `post-create.sh` `TSLS_VERSION` | `5.3.0` | pin と exact-match postcondition は同一変数(二重管理なし)。更新は §7.2 共通形。機能担保 = `verify-lsp-diagnostics.mjs`(stdio LSP で実診断受信を postcondition 化) |
+| global TypeScript | `post-create.sh` `TS_VERSION` | `6.0.3` | repo `package.json` の typescript(`^6.0.3`)と **lockstep**: repo を bump したら **同一 commit で `TS_VERSION` も更新**。**6.x 必須**: TS7 は native(Go)実装で `tsserver.js` を持たず typescript-language-server が動作しないため、drift 対策でなく LSP 機能の前提(7.x 移行は別イベント・互換再評価要) |
 | pnpm | `package.json` `packageManager` field | (field が SSoT) | corepack が field に追従。ここに版番号を書かない(二重管理防止) |
 | PostgreSQL | `.devcontainer/pg-setup.sh` `PG_MAJOR` + PGDG repo | major `17`(Supabase prod=17 に合わせる。patch は PGDG 追随) | `pnpm test:iso` 専用の常駐 cluster。接続契約 = `127.0.0.1:5432` / user `postgres` / db `recallmint_test`。app 本体の `DATABASE_URL_APP`(Supabase)とは無関係。`pg-setup.sh` は最小権限 `recallmint_app` role(RLS-P1)も冪等に provision する |
 
@@ -79,6 +81,9 @@
 
 - **Claude Code 本体 = stable channel**。「最新安定版に追随する」の実装が channel そのもので、auto-update を殺して exact pin する運用コストに見合う事故実績が無い。担保は ① rebuild 時の実版記録(post-create の `--version` postcondition 出力)② regression 時の特定版固定手順(→ §7.4)。
 - **Google Chrome = apt stable**(rebuild 時点の最新 stable が入る)。playwright MCP が CDP で駆動する対象で、playwright 側が branded Chrome stable を公式サポートするため版結合は緩い。実版は rebuild 時の post-create summary で記録される。
+- **typescript-lsp plugin**(`@claude-plugins-official` / v1.0.0 / user scope)= marketplace float 容認。plugin 層は auto-update の明示 toggle が無く、機能担保は post-create の `verify-lsp-diagnostics.mjs`(binary が実診断を返すかの postcondition)で行う。
+- **Superpowers plugin**(`@claude-plugins-official` / 6.1.1 稼働 / project scope)= 同じく marketplace float 容認。6.0.3 → 6.1.1 を無傷通過した実績あり(stale な 6.0.3 版 cache は撤去済)。
+- 上記 plugin 2 件の共通トリガー: **plugin 起因の挙動変化が疑われたら pin 検討を起票**(plugin 層は現状 float・特定版固定の機構は未整備ゆえ、事故時に初めて検討)。
 
 ### 7.2 更新手順(共通形)
 
