@@ -46,3 +46,19 @@ study_sessions / user_settings / assets / source_documents / upload_records。�
 3. **rollback 演習**: `disable.sql` → 確認 SQL(policy 5 行 / relrowsecurity 0 行)→ re-enable(冪等)→ `pg_policies` で 5 表 qual/with_check/roles/cmd 一致 spot-check。
 4. **after 計測** = drift 分離のため prod flip 直前(同日 before とセット)。Wave2 stg では取らない。
 5. prod flip は Phase 3 全表完了後(本 Wave では prod policy 不出し)。
+
+## stg 実証結果(2026-07-21・CC 実走・Playwright MCP・stg URL / policy=OT 適用済 pg_policies 5/relrowsecurity 5)
+
+RLS-on 下で配線経路を中心に実走。**P0RLS / 42501 / 5xx = 0**(console error は sign-in の装飾 SVG の CSP img-src block 1 件のみ=Wave2 無関係・既存 cosmetic)。
+
+| # | 項目 | 結果 | 証拠 / 副作用 |
+|---|---|---|---|
+| 1 | review-events/bulk(study_sessions Phase 0 withTenantTx 初実機) | **PASS** | smart 10 問完答→**POST /api/review-events/bulk ×2 = 200**(P0RLS なら 503)。study_sessions/answer_events(10)/reviews(10)/study_days/cards FSRS 更新 |
+| 2 | user_settings(save 3 + read 3) | **PASS** | settings/study-smart/study-custom 全 render(read OK)。saveSessionLimit/Custom/Fsrs = **POST /app/settings ×3 = 200** + refresh GET 200。副作用: sessionLimit 5→10 / custom 5→20 / fsrsMode on→off |
+| 3 | OCR upload(source_documents/upload_records + 月次クォータ read) | **PASS** | quota「300/300」表示(getCurrentMonthOcrPages read)。Gemini「✅ 2 問抽出」→ **POST /app/upload 200**(runUploadGuardTx source_documents insert + completeUploadTx upload_records insert)+ **/api/exams/status 200×3**(配線した source_documents read)。副作用: exam 1 + source_document 1 + card 2 + upload_records 1 + Gemini ~1p |
+| 4 | assets finalizeAsset(2 tx 分割・**テーブルビュー実添付**) | **PASS** | table view「問題文に画像を追加」→ reserveAsset 200 → **R2 PUT 200 OK**(`recallmint-dev/users/{uuid}/…webp`・owner namespace・**userId 非 undefined**)→ finalizeAsset(2tx)200 → **entity-mutations/bulk 200**(card_asset_refs)。**follow-up「テーブルビュー add の R2 実添付未検証(meta.userId undefined 懸念)」を close**(bug 非表面化) |
+| 5 | pull 6-stream + entity-mutations/bulk 回帰 | **PASS** | /api/pull(6 cursor: cards/exams/tombstones/tag_categories/tag_options/card_tags)= 200 + /api/study-days/pull 200 + entity-mutations/bulk 200(Wave1 8 表 + P2 継続正常) |
+| 6 | current_user='recallmint_app'(psql DATABASE_URL_APP) | **DEFERRED → OT** | `.env.local` の DATABASE_URL_APP が Supabase pooler だが **stg/prod 判別が取れず**(prod 境界規律)CC は psql 未実行。current_user は接続 role 属性ゆえ **Wave1 で確認済(recallmint_app)から Wave2 の policy 追加で不変**。fresh 確認要なら OT が Supabase SQL Editor で `SELECT current_user`(または RLS-P1 の rolbypassrls=f 確認済で代替) |
+| 7 | P0RLS / 42501 / 5xx = 0 | **PASS** | 全経路 200。console error = sign-in の CSP img cosmetic 1 件のみ(RLS 無関係) |
+
+**残(OT)**: ① item 6 の current_user fresh 確認(任意)② rollback 演習(disable.sql→policy 5/relrowsecurity 0→re-enable + pg_policies spot-check・SQL Editor ゆえ OT)③ after 計測(prod flip 直前)④ prod flip 判断(Phase3 全表完了後)。**smoke 副作用**(test user に exam/card/asset/review 等を実書込)は上表のとおり。
