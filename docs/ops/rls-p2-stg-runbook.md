@@ -276,8 +276,22 @@ functions のみ prod にも適用)。
 未解決 Critical(tenant 分離失敗等)が 1 件でもあれば completion 宣言せず、systematic-debugging
 へ切り替えて原因究明を優先する。
 
+## 10. RLS-P3 Wave 1 追記(stg 適用・8 表追加・stg 限定)
+
+RLS-P3 Wave 1 は配線ゼロ 8 表(`reviews`/`answer_events`/`tag_categories`/`tag_options`/`card_tags`/`entity_mutations`/`card_asset_refs`/`ai_usage_users`)を **P2 と同一の共通形 policy** で RLS 化する。stg 適用は本 runbook §1 Step 3 と**同機構**(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
+
+- **前提**: 0025 functions は P2 で適用済(Wave 1 は**新 function なし**・policy SQL のみ)。よって Step 1(functions)は不要、push→deploy 後に policy を適用するだけ。
+- **適用**: `db/policies/rls-p3-wave1-enable.sql` の全文を SQL Editor(owner)で実行(正本は file・実行直前に再確認)。
+- **確認 SQL**: `SELECT tablename, policyname FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%_tenant' AND tablename IN ('reviews','answer_events','tag_categories','tag_options','card_tags','entity_mutations','card_asset_refs','ai_usage_users');` で 8 policy、`SELECT relname FROM pg_class WHERE relrowsecurity AND relname IN (...上記 8 表...);` で 8 表 `relrowsecurity=t`。
+- **rollback**: `db/policies/rls-p3-wave1-disable.sql`(P2 disable と対称・re-enable は enable.sql が冪等)。演習手順は §3.2 と同型。
+- **smoke(CC・push 後)**: pull 全 6 stream / review-events/bulk / entity-mutations/bulk が RLS on で従来どおり通ること、`P0RLS`/`42501`/5xx が 0 件、`current_user='recallmint_app'`(§4 と同要領)。
+- **after 計測(perf)**: **Wave 1 単体では取らない**。prod 有効化直前に同日 before とセットで取る(Wave 1〜2 の policy が出揃ってから・drift 分離のため)。
+- **prod 方針**: Wave 1 も **prod に出さない**(§8 と同じ・部分 RLS を prod に出さない = Phase 3 全表完了後にまとめて反映)。
+
 ## 関連 doc
 
+- Wave 1 factfinding / wave 定義: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md`(§5.3 / 追補 / 追補2)
+- Wave 1 policy 正本: `db/policies/rls-p3-wave1-enable.sql` / `db/policies/rls-p3-wave1-disable.sql`
 - spec: `docs/superpowers/specs/2026-07-20-rls-p2-representative-closure-design.md`
 - plan: `docs/superpowers/plans/2026-07-20-rls-p2-representative-closure.md`
 - Perf-0b(before 数値): `docs/audit/2026-07-18-rls-performance-before-factfinding.md`
