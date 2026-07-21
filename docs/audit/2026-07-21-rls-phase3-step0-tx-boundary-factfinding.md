@@ -262,5 +262,44 @@ closure 台帳(C1-C19)から各表の readiness を判定:
 - pull: `app/api/pull/route.ts` / `lib/db/*-pull.ts` / `pull-delta.ts`
 - lifecycle: `lib/clerk/handle-clerk-event.ts`
 - RLS 正本: `db/policies/rls-p2-enable.sql` / `rls-p2-disable.sql` / `db/roles/recallmint_app-grants.sql` / `drizzle/migrations/0025_rls_p2_functions.sql`
+
+---
+
+## 追補: 特殊 3 表 read-path + contact GDPR 削除(2026-07-21 追加調査)
+
+**目的**: §2.3 の特殊 3 表の RLS 方針を read-path の実在有無で確定 + contact_messages が GDPR user 削除で実際に消えるか(FK 無しゆえ cascade でなく明示 DELETE の有無が全て)を実コードで確認。
+
+**全体所見**: 3 表とも **app 側 SELECT 地点 = 0 件**(全て write-only)。grep(`app/` + `lib/`・非 test・schema.ts 除く)で `.select()/.from()` 地点は 3 表いずれもゼロ。参照は INSERT / DELETE / コメント / validation のみ。
+
+### 1. contact_messages
+
+- **(a) read**: SELECT 地点 **0 件**。app に会員が自分の問い合わせ履歴を閲覧する UI/経路は**存在しない**。参照 = INSERT(`lib/actions/contact.ts:84`)/ lifecycle DELETE(`lib/clerk/handle-clerk-event.ts:217`)/ validation(`lib/validation/contact.ts`)のみ。→ **tenant read なし**。
+- **(b) GDPR 削除**: 明示 DELETE **あり**。`handle-clerk-event.ts:217` = `tx.delete(contactMessages).where(eq(contactMessages.userId, internalUserId))`、C12 lifecycle tx 内(`setTenantContext` 済・:209)。users は soft-delete で FK cascade 不発ゆえ Group I の明示 DELETE で消す設計と一致。→ **会員行は user 削除で消える**(PII 齟齬なし)。匿名行(`user_id` null)は WHERE に当たらず**残置**(帰属 account 無し = 設計通り。ただし匿名行の `email` 列は残る)。
+- **(c) 書込 user_id / PII 所在**: 会員 = 内部 UUID(`app_bootstrap_user_from_clerk` SECURITY DEFINER 解決・`contact.ts:74-77`、**raw db・context 無し**の execute)/ 非会員・未同期・Clerk 障害 = **null**(`contact.ts:70,81`)。email は **専用列**(`contact.ts:86` / `schema.ts:530` `email` NOT NULL)= PII 主所在(body/subject 自由文にも混入しうる)。
+- **binary → tenant read なし = tenant RLS 張らない**。理由: (1) 保護すべき app SELECT が無い、(2) 匿名 INSERT(user_id null)+ 会員 INSERT が **context 無し raw db** 上で DEFINER 解決するため、`user_id = current` の WITH CHECK は両経路を壊す(現設計は context を張らない)。
+  - **grant 訂正**: 「INSERT-only」は不正確 — lifecycle DELETE(:217)が app-role(`recallmint_app`)で走るため app-role には **INSERT + DELETE** が要る。SELECT / UPDATE は不要 → 縮小可。ops read は owner 限定。
+
+### 2. integration_failures
+
+- **read**: SELECT 地点 **0 件**。reconcile 系 UPDATE も**無し**(`retry_count`/`resolved_at` 等は dormant・`schema.ts:222`)。参照 = INSERT(`lib/integration-failures.ts:122`)+ コメントのみ。
+- **write role 分岐**: `const db = process.env.DATABASE_URL_APP ? getDb() : getAdminDb()`(`integration-failures.ts:120`)。runtime = app-role INSERT / operator script = owner INSERT。両 role INSERT 可(コメント :117)。tx 無し(単発 INSERT)。
+- **binary → app read なし = tenant RLS 張らない**。app-role は INSERT のみ(grant 既存)。将来の手動回収(reconcile UPDATE)も operator(owner・RLS bypass)想定。加えて `user_id` nullable + **FK 無し** + **user 削除後も残置**(lifecycle DELETE 対象外 = audit 保持・`schema.ts:219`)ゆえ tenant policy は原理的に不適(nullable 行 + 削除済 user 行を全 block する)。
+- **PII 申し送り(スコープ外・記録のみ)**: integration_failures は user 削除で scrub されない(`clerkId`/`stripeCustomerId`/`context` jsonb/`errorMessage` 保持)。audit correlation の既定判断だが、contact 匿名残置行と併せ将来 PII 監査の検討対象。
+
+### 3. ai_usage_users
+
+- **read**: SELECT 地点 **0 件**。日次上限判定は **global `ai_usage`** を読む — `getTodayAiUsageGlobal`(`ai-usage-counter.ts:53-64`)が select するのは `aiUsage`(global)であって `aiUsageUsers` **ではない**。`ai_usage_users` は write-only 台帳(ops/分析用途、app enforcement は global 側)。
+- **write / delete context**: `incrementAiUsage`(`ai-usage-counter.ts:29-46`)= `db.transaction` + `setTenantContext(tx, userId)`(:30)= **context 済**(C8。ai_usage(global)と同一 tx UPSERT)。lifecycle DELETE(`handle-clerk-event.ts:218`)も context 済(C12)。
+- **binary → read 無し / write・delete とも context 済 = 配線ゼロで RLS 化可**。標準 `user_id = current` policy が無改修で通る。「Wave 2 で 1 経路 wrap」は**不要** — 実質 **Wave 1 相当**(zero-wiring)。「特殊」なのは由来(server counter)だけで RLS 機構は標準形。
+
+### 方針更新(§2.3 / §5.3「特殊 3 表」の確定)
+
+| 表 | 確定方針 | app-role grant |
+|---|---|---|
+| contact_messages | **RLS 非対象**(write-only inbox・匿名 + DEFINER 経路) | INSERT + DELETE(SELECT/UPDATE revoke) |
+| integration_failures | **RLS 非対象**(audit・app read 無し・retained・nullable/FK 無し) | INSERT のみ |
+| ai_usage_users | **標準 RLS 可・配線ゼロ**(Wave 1 相当へ格上げ) | 標準(共通形 policy) |
+
+→ 当初「特殊 3 表 = 設計判断要」のうち、実質判断が残るのは **RLS を張らない 2 表(contact / integration)の grant 縮小可否**のみ。ai_usage_users は標準へ移す。global 3 表(ai_usage/stripe_events/clerk_events)と合わせ、**RLS 非対象 = 5 表**(global 3 + contact + integration)、**RLS 対象の残り = 13 表**(標準 12 + ai_usage_users)に整理される(§2.2 の「残り 15」= RLS 対象 13 + 非対象 2)。
 </content>
 </invoke>
