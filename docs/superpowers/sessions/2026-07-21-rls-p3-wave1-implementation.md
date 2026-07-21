@@ -47,7 +47,7 @@ OT 承認済み(論点1):
 Wave 1 は **stg 限定**(prod は Phase 3 全表完了後・部分 RLS を prod に出さない)。runbook §10 に手順追記済:
 - OT: push → stg deploy → `db/policies/rls-p3-wave1-enable.sql` を SQL Editor(owner)適用(0025 functions は P2 で適用済ゆえ policy のみ)。
 - CC smoke(push 後・DevTools/Playwright MCP): pull 全 6 stream / review-events/bulk / entity-mutations/bulk が RLS on で従来どおり通ること・`P0RLS`/`42501`/5xx 0 件・`current_user='recallmint_app'`。
-- rollback 演習: `rls-p3-wave1-disable.sql` 1 枚で復元・re-enable 冪等(§3.2 同型)。
+- rollback 演習: `rls-p3-wave1-disable.sql`(**RLS 無効化のみ**・`DROP POLICY` 無 = policy カタログ残置だが不活性 → **挙動は RLS 前と同一**)。disable 後の確認 SQL 期待値 = **policy 8 行 / relrowsecurity 0 行** → re-enable 冪等(§3.2 同型)。
 - **after 計測(perf)は Wave1 単体では取らない**(Wave1〜2 出揃い後・prod 有効化直前に同日 before とセット)。
 
 ## 7.5 stg 実証結果(2026-07-21・RLS-on 確認)
@@ -62,9 +62,10 @@ Wave 1 は **stg 限定**(prod は Phase 3 全表完了後・部分 RLS を prod
   - **item5 client = PASS**: 全 `/api` 200・5xx 0・console error 0(Clerk sign-in の CSP SVG noise のみ・RLS 無関係)。
   - **配線漏れ反証**: RLS-on で P0RLS/42501/5xx が 1 件も出ない = 8 表の全 read/write 経路が context 済(漏れがあれば当該経路で P0RLS/500 になる)。
 - **item4 current_user = PASS**(CC・psql + `.env.local` の `DATABASE_URL_APP`): `current_user = recallmint_app`(session_user 同・db=postgres・host=`aws-1-ap-northeast-1.pooler.supabase.com:6543` = stg pooler)。app 接続が least-privilege role = **RLS 素通しでない**(false-green 排除)。
-- **OT 残**: item5 server-log(Vercel + Supabase を user≠authenticator で P0RLS/42501/5xx 走査)/ item6 rollback 演習(`rls-p3-wave1-disable.sql`→確認 SQL 0 行→re-enable 冪等→enable 復帰)。
+- **item5 server-log = PASS**(OT・2026-07-21): Vercel + Supabase 両ログとも **P0RLS / 42501 / 5xx = 0 件**。
+- **item6 rollback 演習 = PASS**(OT・2026-07-21): `rls-p3-wave1-disable.sql` 適用後の中間状態 = **pg_policies 8 行 / relrowsecurity 0 行**。disable.sql は `DROP POLICY` を含まない設計(P2 完全対称・**RLS 無効化のみ**)ゆえこれが正しい期待値 — **policy はカタログに残置するが RLS 無効時は不活性**で、挙動は RLS 前と同一。re-enable は既存 policy 上でエラーなく通過(**冪等実証**)→ 最終 8 行 / 8 行・enable 状態で終了。
 
-**判定** = policy 適用(OT 確認)∧ current_user=recallmint_app(item4)∧ RLS-on app 非破壊(item1/2/3/5-client)∧ test:iso RLS 単独隔離(green)の 4 点成立 → **CC 側 stg 実証 PASS**。完全 close は OT の item5-log + item6 rollback 演習で。
+**判定** = policy 適用(OT)∧ current_user=recallmint_app(item4)∧ RLS-on app 非破壊(item1/2/3/5-client)∧ server-log 0 件(item5・OT)∧ rollback 冪等(item6・OT)∧ test:iso RLS 単独隔離(green)→ **Wave 1 stg 実証 完全 close(全 item PASS・2026-07-21)**。
 
 **smoke 副作用**(test1・PERF-SEED 300 中・計 5 枚を実書込): review = `5248b623`(reps 0→2)/`774380ca` / memo = `0e6f605a` / `bc348629` / `ceb44ce5`。負荷計測は Wave1〜2 出揃い後ゆえ 5/300 は無視可(要 pristine なら reseed 手順あり)。
 

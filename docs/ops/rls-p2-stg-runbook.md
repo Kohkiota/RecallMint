@@ -283,7 +283,7 @@ RLS-P3 Wave 1 は配線ゼロ 8 表(`reviews`/`answer_events`/`tag_categories`/`
 - **前提**: 0025 functions は P2 で適用済(Wave 1 は**新 function なし**・policy SQL のみ)。よって Step 1(functions)は不要、push→deploy 後に policy を適用するだけ。
 - **適用**: `db/policies/rls-p3-wave1-enable.sql` の全文を SQL Editor(owner)で実行(正本は file・実行直前に再確認)。
 - **確認 SQL**: `SELECT tablename, policyname FROM pg_policies WHERE schemaname='public' AND policyname LIKE '%_tenant' AND tablename IN ('reviews','answer_events','tag_categories','tag_options','card_tags','entity_mutations','card_asset_refs','ai_usage_users');` で 8 policy、`SELECT relname FROM pg_class WHERE relrowsecurity AND relname IN (...上記 8 表...);` で 8 表 `relrowsecurity=t`。
-- **rollback**: `db/policies/rls-p3-wave1-disable.sql`(P2 disable と対称・re-enable は enable.sql が冪等)。演習手順は §3.2 と同型。
+- **rollback**: `db/policies/rls-p3-wave1-disable.sql`(P2 disable と**完全対称 = RLS 無効化のみ・`DROP POLICY` を含まない**)。**disable 後の確認 SQL 期待値 = policy 8 行 / relrowsecurity 0 行**(policy はカタログに残置するが RLS 無効時は不活性 = 挙動 RLS 前と同一。**8 行/0 行 は正常であって適用漏れではない** — 2026-07-21 演習で確認)。re-enable は enable.sql が冪等(既存 policy 上でエラーなく通過)→ 8 行/8 行に復帰。演習手順は §3.2 と同型。
 - **smoke(CC・push 後)**: pull 全 6 stream / review-events/bulk / entity-mutations/bulk が RLS on で従来どおり通ること、`P0RLS`/`42501`/5xx が 0 件、`current_user='recallmint_app'`(§4 と同要領)。
 - **after 計測(perf)**: **Wave 1 単体では取らない**。prod 有効化直前に同日 before とセットで取る(Wave 1〜2 の policy が出揃ってから・drift 分離のため)。
 - **prod 方針**: Wave 1 も **prod に出さない**(§8 と同じ・部分 RLS を prod に出さない = Phase 3 全表完了後にまとめて反映)。
