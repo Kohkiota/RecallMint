@@ -8,7 +8,6 @@
 // 返さないことを保証する。
 
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getAllStudyDaysForUser } from '@/lib/db/study-days-pull'
 import { logger } from '@/lib/logger'
@@ -24,7 +23,7 @@ export const GET = withReadOnlyAuth(
   },
   async (user, headers) => {
     try {
-      const studyDays = await withTenantTx(getDb(), user.id, (tx) =>
+      const studyDays = await withTenantTx(user.id, (tx) =>
         getAllStudyDaysForUser(user.id, tx),
       )
       return Response.json({ studyDays }, { status: 200, headers })

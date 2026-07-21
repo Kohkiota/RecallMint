@@ -108,10 +108,11 @@ vi.mock('@/lib/db', () => ({
 // tenant context の実 GUC 挙動は tenant-tx.test.ts + Task 9 実 PG で担保 (保証不変)。
 vi.mock('@/lib/db/tenant-tx', () => ({
   setTenantContext: vi.fn(async () => {}),
-  // RLS-P3 Wave2: Phase 0 の upsertSessionGuarded は withTenantTx で包まれた。pass-through
-  // stub で fn(fakeDb) を直呼びし、session upsert は従来どおり fakeDb.insert で処理させる
+  // RLS-P3 Wave2: Phase 0 の upsertSessionGuarded は withTenantTx で包まれた。RLS-P3
+  // Task 2 で withTenantTx(userId, fn) 署名へ変更(getDb を内部取得)。pass-through stub で
+  // fn(fakeDb) を直呼びし、session upsert は従来どおり fakeDb.insert で処理させる
   // (processSession の Phase1+2 は db.transaction を直接使うため本 stub の影響外)。
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) => fn(fakeDb),
 }))
 
 // ---------------------------------------------------------------------------

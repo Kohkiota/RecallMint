@@ -1,6 +1,5 @@
 import 'server-only'
 import type Stripe from 'stripe'
-import type { DB } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { resolveFromPriceId } from '@/lib/stripe/price-mapping'
 import {
@@ -40,7 +39,6 @@ const UNMATCHED_RESULT: SaveResult = Object.freeze({
 // 発火 (どちらも順序不変)。userId=null (resolve で紐付く行なし = unlinked) のときは
 // context を張れないため DB を触らず UNMATCHED_RESULT を返す (0 行 match と等価)。
 export async function projectStripeSubscription(
-  db: DB,
   userId: string | null, // resolve 済み内部 id (tenant context)。null = unlinked
   key: SubKey, // checkout=clerkId / created・updated=stripeCustomerId / upgrade=id
   sub: Stripe.Subscription,
@@ -78,7 +76,7 @@ export async function projectStripeSubscription(
   if (userId === null) return UNMATCHED_RESULT
 
   const update = projectStripeSnapshot(sub, { plan, billingInterval })
-  const result = await withTenantTx(db, userId, (tx) => saveProjection(tx, key, update))
+  const result = await withTenantTx(userId, (tx) => saveProjection(tx, key, update))
 
   // RETURNING gate 付き Clerk sync: 行 match かつ clerkId 非 null のときのみ。tx 外で
   // 発火 (外部 I/O)。0 行 match (race) / scrub 行 (clerkId null) は sync skip。

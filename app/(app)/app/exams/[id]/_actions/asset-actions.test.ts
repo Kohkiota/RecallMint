@@ -173,10 +173,14 @@ vi.mock('@/lib/db', () => {
 })
 
 // RLS-P3 Wave2: reserve/finalize/resolve は withTenantTx で包まれた(finalize は
-// read tx → headObject → write tx の 2 分割)。unit では pass-through stub で query を
-// 素の mock db へ流す(select/update の呼び順は保持される)。GUC 挙動は iso で担保。
+// read tx → headObject → write tx の 2 分割)。RLS-P3 Task 2 で withTenantTx(userId, fn)
+// 署名へ変更(getDb を内部取得)。unit では pass-through stub が本物同様に getDb() を内部で
+// 呼び、その mock db を fn へ流す(select/update の呼び順は共有 dbState で保持)。GUC 挙動は iso で担保。
 vi.mock('@/lib/db/tenant-tx', () => ({
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+  withTenantTx: async (_userId: string, fn: (tx: unknown) => unknown) => {
+    const { getDb } = await import('@/lib/db')
+    return fn(getDb())
+  },
 }))
 
 async function importActions() {

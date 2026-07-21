@@ -41,7 +41,7 @@ export async function getExamStatusMap(
   now: Date = new Date(),
 ): Promise<Map<string, 'processing' | 'failed'>> {
   try {
-    const rows = await withTenantTx(getDb(), userId, (tx) =>
+    const rows = await withTenantTx(userId, (tx) =>
       tx
         .selectDistinctOn([sourceDocuments.examId], {
           examId: sourceDocuments.examId,
@@ -169,7 +169,7 @@ export async function hasActiveProcessingUpload(
     // 15 分より古い processing 行は stale orphan (reconcile 待ち) とみなし
     // 「in-flight」として数えない。
     const activeThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
-    const rows = await withTenantTx(getDb(), userId, (tx) =>
+    const rows = await withTenantTx(userId, (tx) =>
       tx
         .select({ id: sourceDocuments.id })
         .from(sourceDocuments)

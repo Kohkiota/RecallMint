@@ -261,7 +261,7 @@ describe('RLS-P2 tenant-context functions (migration 0025)', () => {
 // 残し deleted_at を set するため、id で読むと 60s JWT window に ghost 行が返り得る。
 // 修正 = WHERE に isNull(deletedAt) を加え ghost を 0 行 → null にすること。ここでは
 // getCurrentUser 本体は auth()(Clerk)依存で iso から直接叩けないため、本体と同一の
-// withTenantTx(getDb(), id, ...) 読みを raw に再現して predicate の load-bearing 性を pin する。
+// withTenantTx(id, ...) 読みを raw に再現して predicate の load-bearing 性を pin する。
 describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users', () => {
   it('returns 0 rows for a soft-deleted user under the isNull(deletedAt) app-role read; the ghost decoy row exists and a bare-id read matches it via owner', async () => {
     const owner = getFixtureOwnerDb()
@@ -273,7 +273,7 @@ describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users'
     const ghostId = seeded!.id
 
     // (1) getCurrentUser の claim-present 読みの正確な複製 (isNull 付き) → 0 行 → null 契約。
-    const withFilter = await withTenantTx(getDb(), ghostId, (tx) =>
+    const withFilter = await withTenantTx(ghostId, (tx) =>
       tx
         .select()
         .from(users)
@@ -313,7 +313,7 @@ describe('getCurrentUser claim-present read excludes soft-deleted (ghost) users'
       .returning({ id: users.id })
     const liveId = seeded!.id
 
-    const rows = await withTenantTx(getDb(), liveId, (tx) =>
+    const rows = await withTenantTx(liveId, (tx) =>
       tx
         .select()
         .from(users)

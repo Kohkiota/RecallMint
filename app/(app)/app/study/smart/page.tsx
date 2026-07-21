@@ -6,7 +6,6 @@
 
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings, type Card } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
@@ -23,8 +22,7 @@ export default async function SmartStudyPage() {
   // RLS-P3 Wave2: user_settings read を tenant context 下に入れる。cards の
   // withTenantTx(下記)とは別 tx = settings/cards が別 snapshot になる非原子性は
   // 配線前から不変(意図的に維持)。
-  const db = getDb()
-  const settingsRows = await withTenantTx(db, user.id, (tx) =>
+  const settingsRows = await withTenantTx(user.id, (tx) =>
     tx
       .select()
       .from(userSettings)
@@ -40,7 +38,7 @@ export default async function SmartStudyPage() {
   // Dexie cards で続行できる。 Dexie / server 両方 0 件のときの empty UI も host 側。
   let serverCards: Card[] = []
   try {
-    serverCards = await withTenantTx(db, user.id, (tx) =>
+    serverCards = await withTenantTx(user.id, (tx) =>
       getSessionCards(user.id, sessionLimit, tx),
     )
   } catch {

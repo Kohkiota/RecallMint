@@ -7,12 +7,11 @@
 //   - 観測 (ground-truth な行状態 read) + seed = owner (getFixtureOwnerDb)。RLS を bypass。
 //   - 自前で withTenantTx / setTenantContext する server 関数 (deleteExam /
 //     completeUploadTx 等) は既に内部で context を張るため asTenant で二重に包まない。
-import { getDb } from '@/lib/db'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
 
 export function asTenant<T>(
   userId: string,
   fn: (tx: TenantTx) => Promise<T>,
 ): Promise<T> {
-  return withTenantTx(getDb(), userId, fn)
+  return withTenantTx(userId, fn)
 }

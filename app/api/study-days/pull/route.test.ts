@@ -16,13 +16,12 @@ vi.mock('@/lib/db/study-days-pull', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
-// RLS-P2: route は withTenantTx(getDb(), ...) で helper を包む。unit test では DB に
+// RLS-P2: route は withTenantTx(userId, ...) で helper を包む。unit test では DB に
 // 触れないよう getDb を stub し、withTenantTx は fn(fakeTx) を直呼びする。
 vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => ({})) }))
 vi.mock('@/lib/db/tenant-tx', () => ({
   withTenantTx: vi.fn(
-    async (_db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
-      fn({}),
+    async (_userId: string, fn: (tx: unknown) => unknown) => fn({}),
   ),
 }))
 

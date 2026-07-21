@@ -1,7 +1,6 @@
 'use server'
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
@@ -19,9 +18,8 @@ export async function saveFsrsMode(
   const user = await getCurrentUser()
   if (!user) return { ok: false, error: '認証が必要です' }
 
-  const db = getDb()
   try {
-    await withTenantTx(db, user.id, (tx) =>
+    await withTenantTx(user.id, (tx) =>
       tx
         .insert(userSettings)
         .values({ userId: user.id, fsrsMode: value })

@@ -55,10 +55,14 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
-// RLS-P3 Wave2: save 経路は withTenantTx で包まれた。unit では pass-through stub で
-// query を素の mock db へ流す(tenant context の GUC 挙動は tenant-tx.test.ts + iso で担保)。
+// RLS-P3 Wave2: save 経路は withTenantTx で包まれた。RLS-P3 Task 2 で withTenantTx(userId, fn)
+// 署名へ変更(getDb を内部取得)。unit では pass-through stub が本物同様に getDb() を内部で
+// 呼び、その mock db を fn へ流す(tenant context の GUC 挙動は tenant-tx.test.ts + iso で担保)。
 vi.mock('@/lib/db/tenant-tx', () => ({
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+  withTenantTx: async (_userId: string, fn: (tx: unknown) => unknown) => {
+    const { getDb } = await import('@/lib/db')
+    return fn(getDb())
+  },
 }))
 
 import { saveCustomSessionLimit } from './save-custom-session-limit'

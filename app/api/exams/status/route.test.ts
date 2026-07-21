@@ -28,10 +28,12 @@ vi.mock('@/lib/exams/source-doc-status', async (importOriginal) => {
   return { ...actual, reconcileStaleProcessing: vi.fn() }
 })
 
-// RLS-P3 Wave2: source_documents read は withTenantTx で包まれた。unit では pass-through
-// stub で query を素の mock db (selectDistinctOn) へ流す(GUC 挙動は iso で担保)。
+// RLS-P3 Wave2: source_documents read は withTenantTx で包まれた。RLS-P3 Task 2 で
+// withTenantTx(userId, fn) 署名へ変更(getDb を内部取得)。unit では pass-through stub で
+// query を素の mock db (selectDistinctOn) へ流す(GUC 挙動は iso で担保)。
 vi.mock('@/lib/db/tenant-tx', () => ({
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) =>
+    fn({ selectDistinctOn: mockSelectDistinctOn }),
 }))
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'

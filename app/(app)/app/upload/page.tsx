@@ -1,6 +1,5 @@
 import Link from 'next/link'
 import { getAuthContext, getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
@@ -91,10 +90,10 @@ export default async function UploadPage() {
   // --- 通常描画: UploadForm ---
   // in-flight なし確定後に fetch する (処理中案内のときは不要な fetch を省く)。
   const [existingExams, currentMonthPages] = await Promise.all([
-    withTenantTx(getDb(), userId, (tx) => getActiveExamsForUser(userId, tx)),
+    withTenantTx(userId, (tx) => getActiveExamsForUser(userId, tx)),
     // RLS-P3 Wave2: upload_records も RLS-on 化。tenant context 下で読む
     // (上の active exams read とは別 tx = snapshot を共有しない既存方針は不変)。
-    withTenantTx(getDb(), userId, (tx) => getCurrentMonthOcrPages(userId, tx)),
+    withTenantTx(userId, (tx) => getCurrentMonthOcrPages(userId, tx)),
   ])
   // C2 (S-perf-3 follow-up): `limitsFor` ではなく safety net 版を使う。 plan が
   // null / 未知の文字列で runtime に漏れた場合 (JWT claim 不整合 / DB 値異常等)

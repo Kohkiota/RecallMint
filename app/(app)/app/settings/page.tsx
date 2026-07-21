@@ -1,7 +1,6 @@
 import Link from 'next/link'
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import { AppContainer } from '../_components/app-container'
@@ -29,7 +28,7 @@ export default async function SettingsPage() {
   if (!user) return null
 
   // 学習設定: user_settings を owner-scoped SELECT (RLS-P3 Wave2: tenant context 下)
-  const settingsRows = await withTenantTx(getDb(), user.id, (tx) =>
+  const settingsRows = await withTenantTx(user.id, (tx) =>
     tx
       .select()
       .from(userSettings)

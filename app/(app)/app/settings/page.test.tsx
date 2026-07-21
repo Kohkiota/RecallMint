@@ -57,10 +57,14 @@ vi.mock('next/link', () => ({
   ),
 }))
 
-// RLS-P3 Wave2: user_settings read は withTenantTx で包まれた。unit では pass-through
-// stub で query を素の mock db へ流す(tenant context の GUC 挙動は iso で担保)。
+// RLS-P3 Wave2: user_settings read は withTenantTx で包まれた。RLS-P3 Task 2 で
+// withTenantTx(userId, fn) 署名へ変更(getDb を内部取得)。unit では pass-through stub が
+// 本物同様に getDb() を内部で呼び、その mock db を fn へ流す(GUC 挙動は iso で担保)。
 vi.mock('@/lib/db/tenant-tx', () => ({
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+  withTenantTx: async (_userId: string, fn: (tx: unknown) => unknown) => {
+    const { getDb } = await import('@/lib/db')
+    return fn(getDb())
+  },
 }))
 
 import SettingsPage from './page'

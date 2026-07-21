@@ -48,13 +48,16 @@ vi.mock('@/lib/cards/get-session-cards', () => ({
   getSessionCards: mockGetSessionCards,
 }))
 
-// RLS-P2/P3 Wave2: page は getSessionCards と user_settings read を withTenantTx(db, ...)
-// で包む。fake getDb() は transaction を持たないため withTenantTx を stub し、fn に mock db
-// を渡す(user_settings read の tx.select().from()... が mock db 経由で解決される)。
+// RLS-P2/P3 Wave2: page は getSessionCards と user_settings read を withTenantTx(userId, ...)
+// で包む(RLS-P3 Task 2 で getDb を内部取得する署名へ変更)。fake getDb() は transaction を
+// 持たないため withTenantTx を stub し、本物同様に内部で getDb() を呼んで fn に mock db を
+// 渡す(user_settings read の tx.select().from()... が mock db 経由で解決される)。
 vi.mock('@/lib/db/tenant-tx', () => ({
   withTenantTx: vi.fn(
-    async (db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
-      fn(db),
+    async (_userId: string, fn: (tx: unknown) => unknown) => {
+      const { getDb } = await import('@/lib/db')
+      return fn(getDb())
+    },
   ),
 }))
 

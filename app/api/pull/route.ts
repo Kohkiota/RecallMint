@@ -14,7 +14,6 @@
 
 import { z } from 'zod'
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getCardsDelta } from '@/lib/db/cards-pull'
 import { getExamsDelta } from '@/lib/db/exams-pull'
@@ -69,7 +68,6 @@ export const GET = withReadOnlyAuth(
       // 単一 tx = 単一接続のため Promise.all の並列は接続競合を招く → 6 直列 await。
       // wire (response の cards/cursors 等) は不変。
       const { c, e, t, tc, to, ct } = await withTenantTx(
-        getDb(),
         user.id,
         async (tx) => {
           const c = await getCardsDelta(user.id, tx, sc)

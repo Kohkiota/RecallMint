@@ -4,7 +4,6 @@ import { z } from 'zod'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { assets } from '@/lib/db/schema'
 import type { User } from '@/lib/db/schema'
@@ -99,10 +98,9 @@ export async function reserveAsset(
     mime === 'image/webp' ? 'webp' : mime === 'image/jpeg' ? 'jpg' : 'png'
   const objectKey = `users/${user.id}/${assetId}.${ext}`
 
-  const db = getDb()
   // reference_count / unreferenced_at は書かない (spec §2.1: 将来 orphan 掃除用の
   // dormant 枠、 DB default に任せる)。RLS-P3 Wave2: tenant context 下で INSERT。
-  await withTenantTx(db, user.id, (tx) =>
+  await withTenantTx(user.id, (tx) =>
     tx.insert(assets).values({
       id: assetId,
       userId: user.id,
@@ -137,10 +135,9 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
     return { ok: false, error: 'アセットが見つかりません' }
   }
 
-  const db = getDb()
   // RLS-P3 Wave2: read/write を 2 tenant tx に分割する。R2 headObject を tx 内に入れない
   // ため(tx が外部 I/O を跨がない)。TOCTOU 防御は write の status='reserved' WHERE が担う。
-  const rows = await withTenantTx(db, user.id, (tx) =>
+  const rows = await withTenantTx(user.id, (tx) =>
     tx
       .select()
       .from(assets)
@@ -179,7 +176,7 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
   // 0 行更新に落とし、 その場合は成功を返さず not-found として扱う (read-time canFinalize
   // ガードは fast path として維持)。
   // RLS-P3 Wave2: UPDATE(+0 行時の状態判別 re-SELECT)を 1 write tx に束ねる。
-  return withTenantTx(db, user.id, async (tx) => {
+  return withTenantTx(user.id, async (tx) => {
     const updated = await tx
       .update(assets)
       .set({ status: 'ready', readyAt: new Date() })
@@ -249,10 +246,9 @@ export async function resolveAssetUrls(
     return { ok: true, data: [] }
   }
 
-  const db = getDb()
   // eq(status, 'ready') の gate が deleting/deleted (GC 回収中/済) の asset を
   // 既に排除する (allowsNewReference と同じ意味論。spec §3-4)。RLS-P3 Wave2: tenant context 下。
-  const rows = await withTenantTx(db, user.id, (tx) =>
+  const rows = await withTenantTx(user.id, (tx) =>
     tx
       .select()
       .from(assets)

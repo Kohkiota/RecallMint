@@ -2,7 +2,7 @@ import 'server-only'
 import type Stripe from 'stripe'
 import { eq, sql } from 'drizzle-orm'
 import { stripe } from '@/lib/stripe/client'
-import { getDb, getNonTenantDb, type DB } from '@/lib/db'
+import { getNonTenantDb, type DB } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { users } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
@@ -73,7 +73,7 @@ export function extractCustomerId(event: Stripe.Event): string | undefined {
 export async function handleEvent(event: Stripe.Event): Promise<void> {
   // RLS-P3 (Task 1): pre-tenant resolve — resolveStripeUser は SECURITY DEFINER
   // app_resolve_user_for_stripe を tenant context 未確定 (userId 解決前) に叩くため
-  // 非 tenant handle を使う (資格が判明した後段は withTenantTx(getDb(), ...) で
+  // 非 tenant handle を使う (資格が判明した後段は withTenantTx(resolved.id, ...) で
   // tenant context を張る、下記 evaluateReleaseGate 等は据え置き)。
   const db = getNonTenantDb()
   switch (event.type) {
@@ -100,7 +100,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       // Step 1: link customer to user (既存挙動)。context を張り tx 内で UPDATE。
       // unlinked (resolved=null) は紐付く行がないため skip = 従来の 0 行 match と等価。
       if (resolved) {
-        await withTenantTx(db, resolved.id, (tx) =>
+        await withTenantTx(resolved.id, (tx) =>
           tx
             .update(users)
             .set({ stripeCustomerId: customerId })
@@ -130,7 +130,6 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
         // では use-case 内で Clerk sync を fire させない (clobber 整合崩壊防止)。
         // RLS-P2: context = resolved.id、unlinked は null (use-case が DB を触らず 0 行相当)。
         await projectStripeSubscription(
-          db,
           resolved?.id ?? null,
           { by: 'clerkId', value: clerkId },
           sub,
@@ -150,7 +149,6 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       // Clerk sync を集約。 result で 0 行分岐 (unlinked notify) と §6.4 release gate を分岐。
       // context = resolved.id (unlinked は null で use-case が DB を触らず 0 行相当を返す)。
       const result = await projectStripeSubscription(
-        db,
         resolved?.id ?? null,
         { by: 'stripeCustomerId', value: customerId },
         sub,
@@ -204,7 +202,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       // cancelAtPeriodEnd は schema 廃止済み (cancel_at != null で解約予約判定)。
       // context を張り tx 内で write。unlinked (resolved=null) は 0 行 match 相当。
       const result: Pick<SaveResult, 'matched' | 'clerkId'> = resolved
-        ? await withTenantTx(db, resolved.id, (tx) =>
+        ? await withTenantTx(resolved.id, (tx) =>
             applyDeletedReset(
               tx,
               { by: 'stripeCustomerId', value: customerId },
@@ -266,7 +264,7 @@ export async function handleEvent(event: Stripe.Event): Promise<void> {
       const resolved = await resolveStripeUser(db, 'scheduleId', schedule.id)
       if (skipIfDeleted(resolved, event.type)) return
       if (resolved) {
-        await withTenantTx(db, resolved.id, (tx) =>
+        await withTenantTx(resolved.id, (tx) =>
           clearReservation(
             tx,
             { by: 'scheduleId', value: schedule.id },
@@ -314,7 +312,7 @@ async function evaluateReleaseGate(args: {
   switch (evaluateRelease({ subScheduleId, dbScheduleId, priceId, dbTargetPriceId })) {
     case 'clear_direct':
       // RLS-P2: context を張り tx 内で clear (owner-scope WHERE は不変)。
-      await withTenantTx(getDb(), userId, (tx) =>
+      await withTenantTx(userId, (tx) =>
         clearReservation(
           tx,
           { by: 'stripeCustomerId', value: customerId },
@@ -364,7 +362,7 @@ async function evaluateReleaseGate(args: {
       // clear throw は握らない — correctness 重大ゆえ outer catch に伝播させ
       // notifyWebhookError + 200 で処理する (release へは進まない)。
       // RLS-P2: context を張り tx 内で clear (owner-scope + schedule/target 照合は不変)。
-      await withTenantTx(getDb(), userId, (tx) =>
+      await withTenantTx(userId, (tx) =>
         clearReservationMatching(
           tx,
           { by: 'stripeCustomerId', value: customerId },

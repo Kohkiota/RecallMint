@@ -49,7 +49,7 @@ vi.mock('@/lib/db/card-tags-pull', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
-// RLS-P2: route は withTenantTx(getDb(), ...) で 6 delta を 1 tx に包む。contract
+// RLS-P2: route は withTenantTx(userId, ...) で 6 delta を 1 tx に包む。contract
 // test では DB に触れないよう getDb を stub し、withTenantTx は fn(fakeTx) を直呼び
 // する (context 設定は挙動不変・wire snapshot も不変)。
 vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => ({})) }))
@@ -126,7 +126,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   // withTenantTx は fakeTx を callback に渡して直呼び (afterEach の restoreAllMocks で
   // impl が消えるため毎 test 再設定する)。
-  vi.mocked(withTenantTx).mockImplementation((_db, _userId, fn) =>
+  vi.mocked(withTenantTx).mockImplementation((_userId, fn) =>
     fn(undefined as unknown as never),
   )
   // Default: card_tags stream empty (matches existing unit test pattern)

@@ -36,7 +36,6 @@ const CANCEL_TARGETS = new Set<Stripe.Subscription.Status>([
 ])
 
 export async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
-  const db = getDb()
   if (evt.type === 'user.created') {
     const data = evt.data
     const email = data.email_addresses?.[0]?.email_address ?? 'unknown@example.com'
@@ -54,7 +53,7 @@ export async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
     // publicMetadata.plan が補填、 (b) getAuthContext() の getCurrentUser() fallback、
     // の 2 段で degraded mode を吸収する。
     const newUserId = randomUUID()
-    const created = await withTenantTx(db, newUserId, async (tx) => {
+    const created = await withTenantTx(newUserId, async (tx) => {
       const existing = await tx.execute<{ id: string }>(
         sql`SELECT id FROM public.app_bootstrap_user_from_clerk(${data.id})`,
       )

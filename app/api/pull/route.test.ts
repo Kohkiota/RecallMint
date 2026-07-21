@@ -38,17 +38,13 @@ vi.mock('@/lib/db/card-tags-pull', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
-// RLS-P2: route は withTenantTx(getDb(), ...) で 6 delta を 1 tx に包む。unit test
+// RLS-P2: route は withTenantTx(userId, ...) で 6 delta を 1 tx に包む。unit test
 // では DB に触れないよう getDb を stub し、withTenantTx は fn(fakeTx) を直呼びする
 // (context 設定は挙動不変・delta は上で mock 済)。
 vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => ({})) }))
 vi.mock('@/lib/db/tenant-tx', () => ({
   withTenantTx: vi.fn(
-    async (
-      _db: unknown,
-      _userId: string,
-      fn: (tx: unknown) => unknown,
-    ) => fn({}),
+    async (_userId: string, fn: (tx: unknown) => unknown) => fn({}),
   ),
 }))
 

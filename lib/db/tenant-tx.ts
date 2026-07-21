@@ -1,5 +1,6 @@
 import 'server-only'
 import { sql } from 'drizzle-orm'
+import { getDb } from './index'
 import type { DB } from './index'
 
 // db.transaction のコールバックが受け取る tx ハンドル型。RLS 対象の repository /
@@ -20,13 +21,13 @@ export async function setTenantContext(tx: TenantTx, userId: string): Promise<vo
 }
 
 // owner-scoped な処理を 1 tx に包み、冒頭で tenant context を張る。RLS 有効表への
-// 全アクセスはこの中で行う。fn の戻り値・throw は透過する。
+// 全アクセスはこの中で行う。fn の戻り値・throw は透過する。接続は内部で getDb()
+// から取得する (呼出側は getDb を import せず userId だけ渡す・RLS-P3 Task 2)。
 export async function withTenantTx<T>(
-  db: DB,
   userId: string,
   fn: (tx: TenantTx) => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => {
+  return getDb().transaction(async (tx) => {
     await setTenantContext(tx, userId)
     return fn(tx)
   })

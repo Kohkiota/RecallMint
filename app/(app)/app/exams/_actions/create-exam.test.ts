@@ -48,13 +48,16 @@ vi.mock('@/lib/db', () => {
   }
 })
 
-// RLS-P2 §B: createExam は exams INSERT を withTenantTx(getDb(), user.id, tx => ...) で
-// 包む。 unit test では DB に触れないよう withTenantTx を passthrough 化し、 fn には
-// getDb() の戻り (= insert を持つ db mock) をそのまま渡す (tx 冒頭の setTenantContext は
-// 経由しない = insert 捕捉の assertion 不変)。 実 tenant context 挙動は Task 9 実 PG で担保。
+// RLS-P2 §B: createExam は exams INSERT を withTenantTx(user.id, tx => ...) で包む
+// (RLS-P3 Task 2 で getDb を内部取得する署名へ変更)。 unit test では DB に触れないよう
+// withTenantTx を passthrough 化し、 fn には本物同様に内部で呼んだ getDb() の戻り (= insert を
+// 持つ db mock) を渡す (tx 冒頭の setTenantContext は経由しない = insert 捕捉の assertion 不変)。
+// 実 tenant context 挙動は Task 9 実 PG で担保。
 vi.mock('@/lib/db/tenant-tx', () => ({
-  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) =>
-    fn(db),
+  withTenantTx: async (_userId: string, fn: (tx: unknown) => unknown) => {
+    const { getDb } = await import('@/lib/db')
+    return fn(getDb())
+  },
 }))
 
 async function importAction() {

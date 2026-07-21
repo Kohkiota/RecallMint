@@ -1,7 +1,6 @@
 'use server'
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
@@ -16,9 +15,8 @@ export async function saveSessionLimit(value: number | null): Promise<ActionResu
     return { ok: false, error: '1〜200 で指定してください' }
   }
 
-  const db = getDb()
   try {
-    await withTenantTx(db, user.id, (tx) =>
+    await withTenantTx(user.id, (tx) =>
       tx
         .insert(userSettings)
         .values({ userId: user.id, sessionLimit: value })

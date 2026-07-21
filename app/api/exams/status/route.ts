@@ -22,7 +22,6 @@
 
 import { desc, eq } from 'drizzle-orm'
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments } from '@/lib/db/schema'
 import {
@@ -47,7 +46,7 @@ export const GET = withReadOnlyAuth(
       // owner-scope 必須。examId / status / createdAt の 3 列のみ取得する。
       // D1 (S2.0c): DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で
       // exam ごと最新の source_document 1 行のみを DB 側で畳む。
-      const rows = await withTenantTx(getDb(), user.id, (tx) =>
+      const rows = await withTenantTx(user.id, (tx) =>
         tx
           .selectDistinctOn([sourceDocuments.examId], {
             examId: sourceDocuments.examId,

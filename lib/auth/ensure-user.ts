@@ -45,7 +45,7 @@ export const getCurrentUser = cache(
 
     // RLS-P3 (Task 1): pre-tenant bootstrap resolve — app_bootstrap_user_from_clerk
     // (SECURITY DEFINER) は内部 id を context 確立前に解決するため非 tenant handle を
-    // 使う (id 判明後は withTenantTx(db, resolvedId, ...) で tenant context を張る)。
+    // 使う (id 判明後は withTenantTx(resolvedId, ...) で tenant context を張る)。
     const db = getNonTenantDb()
 
     // 内部 UUID を解決する (claim-first・RLS bootstrap 循環の回避)。
@@ -69,7 +69,7 @@ export const getCurrentUser = cache(
     // app-WHERE で 0 行 → null になり、write 呼出側の `!user` ガードが ghost 書込を弾く。
     // claim あり分岐から bootstrap へ fallback しない (spec §2.4)。
     const resolvedId = dbUserId
-    const rows = await withTenantTx(db, resolvedId, (tx) =>
+    const rows = await withTenantTx(resolvedId, (tx) =>
       tx
         .select()
         .from(users)

@@ -15,9 +15,14 @@ vi.mock('@clerk/nextjs/server', () => ({
 // RLS-P3 (Task 1): ensure-user.ts's pre-tenant bootstrap resolve now calls
 // getNonTenantDb() instead of getDb() (same underlying connection — mechanical
 // mock-target rename, assertions/behavior unchanged).
-vi.mock('@/lib/db', () => ({
-  getNonTenantDb: vi.fn(),
-}))
+// RLS-P3 (Task 2): withTenantTx now sources its connection internally via getDb().
+// getDb and getNonTenantDb share the same memoized connection in production, so
+// the mock aliases both to one vi.fn — a single mockReturnValue per test drives
+// both the bootstrap resolve (getNonTenantDb) and withTenantTx's internal getDb().
+vi.mock('@/lib/db', () => {
+  const db = vi.fn()
+  return { getNonTenantDb: db, getDb: db }
+})
 
 import { auth } from '@clerk/nextjs/server'
 import { getNonTenantDb } from '@/lib/db'

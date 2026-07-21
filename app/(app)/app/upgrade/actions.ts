@@ -3,7 +3,6 @@
 import { redirect } from 'next/navigation'
 import { stripe } from '@/lib/stripe/client'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { type User } from '@/lib/db/schema'
 import { rankPlan } from '@/lib/plan-catalog'
@@ -143,7 +142,6 @@ export async function changePlan(formData: FormData): Promise<void> {
       typeof updatedSub.customer === 'string'
         ? updatedSub.customer
         : updatedSub.customer.id
-    const db = getDb()
     try {
       // 射影入力は Stripe response (updatedSub) = 「Stripe→DB」方向を維持 (逆流禁止)。
       // 支払保留時 (pending_if_incomplete) は items が旧 price を保つため旧 plan が
@@ -151,7 +149,7 @@ export async function changePlan(formData: FormData): Promise<void> {
       // RLS-P2: getCurrentUser 由来 user.id は退会済み到達不能 (Task 5) ゆえ resolve/skip
       // 不要。projectStripeSubscription が内部で withTenantTx(user.id) を張る (Stripe
       // API 呼出は tx 外)。
-      await projectStripeSubscription(db, user.id, { by: 'id', value: user.id }, updatedSub, {
+      await projectStripeSubscription(user.id, { by: 'id', value: user.id }, updatedSub, {
         // action 経由ゆえ Stripe event は無い。idempotencyKey を marker に流用する。
         eventId: idempotencyKey,
         customerId,
@@ -184,11 +182,10 @@ export async function changePlan(formData: FormData): Promise<void> {
     // §5.3: schedule 成功後すぐ DB 3 列を set してブロックを即時有効化する。
     // redirect より前に書く (redirect は throw でフローを終了させるため、後に書くと
     // DB write が実行されない)。end_date は Unix 秒 → Date 変換が必要。
-    const db = getDb()
     try {
       // RLS-P2: user.id (getCurrentUser 由来・退会済み到達不能) で context を張り tx 内で
       // 予約 3 列を write。Stripe schedule 作成は既に tx 外で完了済。
-      await withTenantTx(db, user.id, (tx) =>
+      await withTenantTx(user.id, (tx) =>
         saveReservation(tx, { by: 'id', value: user.id }, reserveDowngrade({
           scheduleId: schedule.id,
           targetPriceId,
@@ -256,7 +253,6 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
   // §5.5 例外: release 成功後 DB 3 列を clear (null に set) する。 R (Task 2): clear は
   // clearReservationMatching に差し替え (owner=id + schedule/target 照合で「消費した
   // この予約」に限定 clear)。 redirect より前に書く (redirect は throw でフローを終了させる)。
-  const db = getDb()
   // 上の NO_SCHEDULE guard で non-null 済だが、closure 内では property narrowing が
   // 失われるため local const に退避する (RLS-P2 tx 包み)。
   const matchScheduleId = pending.scheduleId
@@ -264,7 +260,7 @@ export async function cancelDowngrade(formData: FormData): Promise<void> {
   try {
     // RLS-P2: user.id で context を張り tx 内で 3 列 clear (owner=id + schedule/target
     // 照合の WHERE は不変)。Stripe schedule release は既に tx 外で完了済。
-    await withTenantTx(db, user.id, (tx) =>
+    await withTenantTx(user.id, (tx) =>
       clearReservationMatching(tx, { by: 'id', value: user.id }, clearReservationSlice(), {
         scheduleId: matchScheduleId,
         targetPriceId: matchTargetPriceId,

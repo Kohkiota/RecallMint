@@ -2,6 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { withTenantTx, setTenantContext, type TenantTx } from './tenant-tx'
 import type { DB } from './index'
 
+// RLS-P3 (Task 2): withTenantTx が接続を内部で getDb() から取得するようになったため、
+// unit test では getDb を mock し test の fake db を返させる (transaction は fake db 上で
+// 走る)。署名は withTenantTx(userId, fn) に変更。assertions は不変。
+const { mockGetDb } = vi.hoisted(() => ({ mockGetDb: vi.fn() }))
+vi.mock('./index', () => ({ getDb: mockGetDb }))
+
 // RLS Phase 2 配管の中核 wrapper。 実 PG での GUC 可視性 / ROLLBACK 後の消滅 /
 // savepoint 維持は Task 9 の real-PG 統合 test に集約する — ここでは
 // `db.transaction` / `tx.execute` を mock した単体 test のみ (drizzle の実 SQL
@@ -53,8 +59,9 @@ describe('withTenantTx', () => {
     const order: string[] = []
     const tx = makeMockTx(() => order.push('execute'))
     const { db, transaction } = makeMockDb(tx)
+    mockGetDb.mockReturnValue(db)
 
-    await withTenantTx(db, 'user-1', async () => {
+    await withTenantTx('user-1', async () => {
       order.push('fn')
       return 'result'
     })
@@ -66,8 +73,9 @@ describe('withTenantTx', () => {
   it('fn の戻り値を透過する', async () => {
     const tx = makeMockTx()
     const { db } = makeMockDb(tx)
+    mockGetDb.mockReturnValue(db)
 
-    const result = await withTenantTx(db, 'user-1', async () => 'ok')
+    const result = await withTenantTx('user-1', async () => 'ok')
 
     expect(result).toBe('ok')
   })
@@ -75,10 +83,11 @@ describe('withTenantTx', () => {
   it('fn が throw したら withTenantTx も同じ error で reject する', async () => {
     const tx = makeMockTx()
     const { db } = makeMockDb(tx)
+    mockGetDb.mockReturnValue(db)
     const boom = new Error('boom')
 
     await expect(
-      withTenantTx(db, 'user-1', async () => {
+      withTenantTx('user-1', async () => {
         throw boom
       }),
     ).rejects.toThrow(boom)

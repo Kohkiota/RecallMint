@@ -89,7 +89,7 @@ export async function POST(req: Request): Promise<Response> {
   // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
   let applied: boolean
   try {
-    ;({ applied } = await withTenantTx(db, user.id, (tx) =>
+    ;({ applied } = await withTenantTx(user.id, (tx) =>
       upsertSessionGuarded(tx, user, session),
     ))
   } catch (err) {
