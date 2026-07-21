@@ -1,13 +1,20 @@
-// RLS-P2 Task 9 — item (6): partial 残余の連鎖回帰 (spec §3.1-10)。
+// pull 6-stream + tag-mutation isolation under full RLS。
 //
-// 同一リクエストで RLS 表と非 RLS 表 (tag 3 表) を跨ぐ代表 2 経路が RLS-on でも
-// 挙動不変であることを pin する:
-//  - bulk mutation: CARD_FIELD_HANDLERS.tag_option_ids は 1 tx で cards[RLS] の
-//    存在確認 + updated_at bump と、tag_options/tag_categories/card_tags[非RLS] の
-//    検証・whole-set replace を行う。A の mutation は正常適用・B は不変。
-//  - pull mixed 6 stream: /api/pull の withTenantTx ブロックと同型に 6 delta を
-//    asTenant(A) で引く。cards/exams/tombstones[RLS] + tag_categories/tag_options/
-//    card_tags[非RLS] の全 stream が A の行を返し B は 1 行も混ざらない。
+// 旧: RLS-P2 Task 9 item (6) = partial 残余の連鎖回帰(RLS 表 + 非 RLS の tag 3 表を跨ぐ
+// mixed chain)。RLS-P3 Wave 1 で tag_categories/tag_options/card_tags も RLS 化されたため、
+// 下記 2 経路は **全表 RLS** となり mixed(partial)ではなくなった。assertion は不変
+// (隔離: A の行のみ・B 非混在)ゆえ、pull 全経路 + tag mutation が全表 RLS 下でも挙動不変
+// であることの regression として維持し、名称を実態に追従させる。
+// ※「partial-RLS(RLS 表 + off 表の混在 tx)が安全」の intentional な behavioral 証明は
+//   本 file から外れた(off 表を触らなくなったため)。その証明は Wave 2 で新設する
+//   (Step 0 factfinding 追補2 の follow-up 台帳・off 表 study_sessions 等 × RLS 表)。
+//
+//  - bulk mutation: CARD_FIELD_HANDLERS.tag_option_ids は 1 tx で cards[RLS] の存在確認 +
+//    updated_at bump と、tag_options/tag_categories/card_tags[RLS] の検証・whole-set
+//    replace を行う。A の mutation は正常適用・B は不変。
+//  - pull 6 stream: /api/pull の withTenantTx ブロックと同型に 6 delta を asTenant(A) で
+//    引く。cards/exams/tombstones + tag_categories/tag_options/card_tags[全て RLS] の
+//    全 stream が A の行を返し B は 1 行も混ざらない。
 //
 // mutating (bulk) を含むため beforeEach で truncate→seed。
 import { eq } from 'drizzle-orm'
@@ -37,7 +44,7 @@ afterAll(async () => {
   await closeFixtureOwnerDb()
 })
 
-describe('RLS partial-chain regression (mixed RLS + non-RLS tables)', () => {
+describe('RLS isolation: pull 6-stream + tag-mutation (all RLS after Wave 1)', () => {
   let fixture: TenantFixture
 
   beforeEach(async () => {
@@ -45,7 +52,7 @@ describe('RLS partial-chain regression (mixed RLS + non-RLS tables)', () => {
     fixture = await seedTwoTenants()
   })
 
-  describe('bulk mutation: tag_option_ids (cards[RLS] + tags[non-RLS] in one tx)', () => {
+  describe('bulk mutation: tag_option_ids (cards + tags, all RLS, one tx)', () => {
     it('A whole-set replace applies (clear then re-add); B card_tags unchanged', async () => {
       const owner = getFixtureOwnerDb()
 
@@ -101,10 +108,10 @@ describe('RLS partial-chain regression (mixed RLS + non-RLS tables)', () => {
     })
   })
 
-  describe('pull mixed 6-stream (asTenant, mirrors /api/pull withTenantTx block)', () => {
+  describe('pull 6-stream (asTenant, mirrors /api/pull withTenantTx block; all RLS)', () => {
     const since = new Date('2020-01-01T00:00:00.000Z')
 
-    it('every stream returns A rows and excludes B (RLS + non-RLS tables)', async () => {
+    it('every stream returns A rows and excludes B (all RLS tables)', async () => {
       const owner = getFixtureOwnerDb()
       // tombstones の entity_id は fixture 追跡外ゆえ owner で拾う。
       const aTomb = await owner
@@ -137,13 +144,13 @@ describe('RLS partial-chain regression (mixed RLS + non-RLS tables)', () => {
       // tombstones[RLS]
       expect(streams.t.rows.map((r) => r.entity_id)).toContain(aTombEntityId)
       expect(streams.t.rows.map((r) => r.entity_id)).not.toContain(bTombEntityId)
-      // tag_categories[non-RLS]
+      // tag_categories[RLS]
       expect(streams.tc.rows.map((r) => r.id)).toContain(fixture.a.tagCategoryId)
       expect(streams.tc.rows.map((r) => r.id)).not.toContain(fixture.b.tagCategoryId)
-      // tag_options[non-RLS]
+      // tag_options[RLS]
       expect(streams.to.rows.map((r) => r.id)).toContain(fixture.a.tagOptionId)
       expect(streams.to.rows.map((r) => r.id)).not.toContain(fixture.b.tagOptionId)
-      // card_tags[non-RLS]
+      // card_tags[RLS]
       expect(streams.ct.rows.map((r) => r.card_id)).toContain(fixture.a.cardId)
       expect(streams.ct.rows.map((r) => r.card_id)).not.toContain(fixture.b.cardId)
     })

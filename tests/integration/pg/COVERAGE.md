@@ -88,3 +88,37 @@
 | study_days | delete(退会) | `handleUserDeleted` tx | `eq(userId)` | study_days_tenant | 内部 setTenantContext |
 
 - **監査上の含意**: FF §5o が「OCR write は user_id 述語なし」と記した経路は Iso-0 で owner 述語追加済で**現在は dual-enforced**(`completeUploadTx`/`markFailed` = source_documents を `and(eq(id), eq(userId))` / `applyCardFinalStates` = cards を `and(eq(userId), id=v.id)`)。よって RLS-on 後は app-WHERE(user_id)と cards_tenant policy の**二重防御**(`rls-partial-chain.test.ts` / `ocr-owner-scope.test.ts` が behavioral pin)。users の hard delete は policy 不在で構造 deny、退会は definer scrub(soft delete)経由。RLS が「app 層 WHERE を信頼しない最終境界」であることは `rls-single-defense.test.ts`(eq(userId) を意図的に外して RLS 単独で隔離)が最も強く示す。
+
+---
+
+# RLS-P3 Wave 1 追記: 配線ゼロ 8 表 RLS matrix + test 配線
+
+起点: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md` §5.3 Wave 1(全 write/read path が既に setTenantContext 済の 7 表)+ 追補(ai_usage_users を Wave 1 相当へ格上げ)。P2 と同一形の共通 policy(`*_tenant`・FOR ALL・USING=WITH CHECK=`user_id=(SELECT app_current_user_id())`)を `db/policies/rls-p3-wave1-enable.sql` で追加。test:iso は global-setup が p2-enable の直後に適用(毎 run Wave 1 も RLS on)。rollback は `rls-p3-wave1-disable.sql`(P2 と対称・re-enable 冪等)。
+
+## 表 3: Wave 1 8 表 × 主経路 × context 供給元 × RLS 単独防御 test(IN)
+
+8 表すべて **IN**(tenant RLS 対象・owner-scoped)。RLS 単独防御(app 層 eq を外して policy 単独で隔離)+ context 未設定 P0RLS(loud)は `rls-wave1.test.ts` が read/write per 表で pin。
+
+| 表 | 主 write 経路(closure) | 主 read 経路 | app WHERE | context 供給元 | behavioral test |
+|---|---|---|---|---|---|
+| **reviews** | review ingest tx(C10・insertReviews) | upsertStudyDays distinct SELECT / streak | `userId` 値 / `eq(userId)` | withTenantTx(内部 setTenantContext) | rls-wave1(read/write/loud) |
+| **answer_events** | review ingest tx(C10・ON CONFLICT DO NOTHING) | — | `userId` 値 | 内部 setTenantContext | rls-wave1 + event_id ON CONFLICT 不変 pin |
+| **tag_categories** | upload persist(C4)/ entity-mut(C9)/ 退会(C12) | pull delta(getCategoriesDelta) | `eq(userId)` | withTenantTx / per-mutation | rls-wave1 + rls-partial-chain(pull) |
+| **tag_options** | C4 / C9 / 退会 | pull delta / applyTagOptionUpdate | `eq(userId)` | withTenantTx / per-mutation | rls-wave1 + write-isolation(applyTagOptionUpdate)+ rls-partial-chain |
+| **card_tags** | C4 / C9(whole-set replace)/ 退会 | pull delta(getCardTagsDelta) | `eq(userId)` / `userId` 値 | withTenantTx / per-mutation | rls-wave1 + rls-partial-chain |
+| **entity_mutations** | entity-mut per-mutation tx(C9・log INSERT + dedupe SELECT) | C9 dedupe pre-check | `eq(mutationId) AND eq(userId)` / `userId` 値 | per-mutation setTenantContext | rls-wave1 + dual-table pin |
+| **card_asset_refs** | entity-mut images field(C9・DELETE+INSERT) | handleImages 内 | `userId` 値 | per-mutation setTenantContext | rls-wave1 + dual-table pin |
+| **ai_usage_users** | incrementAiUsage(C8・UPSERT)/ 退会(C12) | **無**(上限判定は global `ai_usage`) | `userId` PK 値 | withTenantTx(内部 setTenantContext) | rls-wave1(read/write/loud) |
+
+## review-ingest 特有 + 既存 test adaptation(§3.3 / §4.3)
+
+- **answer_events.event_id global UNIQUE**: RLS 越しでも ON CONFLICT を従来どおり判定(同 tenant dup → 0 / cross-tenant dup → 0 + B 不変)。`rls-wave1.test.ts`「event_id ON CONFLICT is unchanged by RLS」2 ケースで pin(idempotency は RLS 導入で不変の回帰ガード)。
+- **card_asset_refs + entity_mutations 同 tx write**: entity-mutations/bulk 経路が 1 tx で両表を RLS 下でも書ける + cross-tenant user_id は WITH CHECK 42501。`rls-wave1.test.ts` dual-table 2 ケースで pin。
+- **既存 test adaptation**(Wave 1 で tag 3 表 RLS 化に伴う必須変更・assertion 不変):
+  - `write-isolation.test.ts`(applyTagOptionUpdate block): raw getDb → **asTenant + owner 検証**(tag_options RLS on で context 無し raw は P0RLS)。隔離 assertion('failed' + B 不変)保存 = RLS(USING)+ app 層 eq(userId)の二重防御。
+  - `rls-partial-chain.test.ts`: 2 block(pull 6-stream / tag mutation)が全表 RLS 化 → **改称 + comment 更新**(mixed → full-RLS)。assertion 不変。partial-RLS 安全性の intentional 証明は本 file から外れ、**Wave 2 で新設**(follow-up・factfinding 追補2)。
+
+## OUT(Wave 1 対象外・factfinding §2.3 / §5.3)
+
+- **RLS 非対象 5 表**: `ai_usage`/`stripe_events`/`clerk_events`(global・user_id 無)+ `contact_messages`(匿名 user_id null・app read 無)+ `integration_failures`(audit・nullable・FK 無・app read 無)。tenant RLS を張らず role grant で処理(最終 hardening wave)。
+- **Wave 2(5 表)**: `study_sessions`/`user_settings`/`assets`/`source_documents`/`upload_records`。各々 standalone raw write/read の context 配線後に RLS 化。本 Wave では touch しない。

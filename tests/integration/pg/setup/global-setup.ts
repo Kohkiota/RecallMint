@@ -34,6 +34,14 @@ const RLS_ENABLE_FILE = path.resolve(
   '../../../../db/policies/rls-p2-enable.sql',
 )
 
+// RLS-P3 Wave 1: 追加 8 表 (reviews/answer_events/tag_categories/tag_options/card_tags/
+// entity_mutations/card_asset_refs/ai_usage_users) の policy 有効化 SQL。P2 と同機構で
+// grants → p2-enable の直後に owner client で適用する (test:iso は毎 run Wave 1 も RLS on)。
+const RLS_WAVE1_ENABLE_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/policies/rls-p3-wave1-enable.sql',
+)
+
 // DROP/CREATE DATABASE は対象 DB 自身に接続していると不可能なため、 同 host/port/user の
 // maintenance DB (postgres) へ繋ぐ。 host/port は上の assertLocalTestDb で検証済 —
 // db 名のみ postgres へ差し替える (別 host を作らない)。
@@ -71,6 +79,10 @@ export async function setup(): Promise<void> {
     // FORCE RLS していないため policy を bypass する = 以降の seed/truncate は素通し。
     const rlsEnableSql = readFileSync(RLS_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsEnableSql).simple()
+
+    // RLS-P3 Wave 1: P2 enable の直後に追加 8 表の policy を有効化 (同 owner client)。
+    const rlsWave1EnableSql = readFileSync(RLS_WAVE1_ENABLE_FILE, 'utf8')
+    await client.unsafe(rlsWave1EnableSql).simple()
   } finally {
     await client.end({ timeout: 5 })
   }

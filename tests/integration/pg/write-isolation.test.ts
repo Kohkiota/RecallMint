@@ -16,7 +16,7 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeDb, getDb } from '@/lib/db'
+import { closeDb } from '@/lib/db'
 import { cards, tagOptions } from '@/lib/db/schema'
 import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
 import { applyTagOptionUpdate } from '@/lib/tags/apply-tag-mutation'
@@ -80,53 +80,55 @@ describe('write isolation (W1)', () => {
   })
 
   // --- 非 RED・behavioral: owner-scope `and(eq(tagOptions.id, optionId),
-  // eq(tagOptions.userId, userId))`。A の userId で B の tagOptionId を更新
-  // しても 0 行 → 'failed'(A 自身は 'applied')。
+  // eq(tagOptions.userId, userId))`。RLS-P3 Wave 1 で tag_options が RLS 有効化された
+  // ため、刺激は本番の per-mutation tx と同じ **asTenant(A) 下**で走らせる(RLS on の
+  // tag_options は context 無しの raw getDb では P0RLS になり叩けない)。隔離 assertion
+  // は不変: A の userId で B の tagOptionId を更新しても 'failed'(B 不変)。RLS 有効化後は
+  // これが **RLS(USING が B を A から不可視化)と app 層 eq(userId) の二重防御**で成立する。
+  // A 自身は 'applied'。観測は owner (RLS bypass)。
   describe('applyTagOptionUpdate', () => {
     it('updates tenant A own tag option (positive control)', async () => {
-      const result = await applyTagOptionUpdate(
-        getDb(),
-        fixture.a.userId,
-        fixture.a.tagOptionId,
-        { field: 'name', value: 'A-new-option' },
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        applyTagOptionUpdate(tx, fixture.a.userId, fixture.a.tagOptionId, {
+          field: 'name',
+          value: 'A-new-option',
+        }),
       )
       expect(result).toBe('applied')
     })
 
     it('does not update tenant B tag option via tenant A context (negative)', async () => {
-      const result = await applyTagOptionUpdate(
-        getDb(),
-        fixture.a.userId,
-        fixture.b.tagOptionId,
-        { field: 'name', value: 'HACKED' },
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        applyTagOptionUpdate(tx, fixture.a.userId, fixture.b.tagOptionId, {
+          field: 'name',
+          value: 'HACKED',
+        }),
       )
       expect(result).toBe('failed')
 
-      // 戻り値だけでなく B の実データが不変であることも確認(vacuous 回避)。
-      // 注: 'name' field は owner-scoped pre-check SELECT で短絡するため、共有 final
-      // UPDATE の WHERE 節そのものは本 test では独立に exercise されない(delete 系と
-      // 同じ defense-in-depth。full RED 化は follow-up)。
-      const rows = await getDb()
+      // B の実データ不変を owner で確認(vacuous 回避)。'name' field は owner-scoped
+      // pre-check SELECT で短絡するため共有 final UPDATE の WHERE 節そのものは独立に
+      // exercise されない(下の 'color' が担う)。RLS + app 層 eq(userId) の二重防御で 0 行。
+      const rows = await getFixtureOwnerDb()
         .select({ name: tagOptions.name })
         .from(tagOptions)
         .where(eq(tagOptions.id, fixture.b.tagOptionId))
       expect(rows[0]?.name).toBe('Option')
     })
 
-    // 'name'/'category_id' は owner-scoped pre-check SELECT で短絡するが、'color'/
-    // 'sort_key' は pre-check が無く、共有 final UPDATE の and(eq(id), eq(userId)) が
-    // 唯一の owner 節。その節を behavioral に exercise するため pre-check の無い
-    // 'color' で検証する(whole-branch review Important 対応)。
+    // 'name'/'category_id' は pre-check SELECT で短絡するが、'color'/'sort_key' は pre-check
+    // が無く、共有 final UPDATE の and(eq(id), eq(userId)) が app 層唯一の owner 節。RLS 有効化
+    // 後はそこに USING も重なる。pre-check の無い 'color' で両防御下の B 不変を exercise する。
     it('updates tenant A own tag option color (positive control)', async () => {
-      const result = await applyTagOptionUpdate(
-        getDb(),
-        fixture.a.userId,
-        fixture.a.tagOptionId,
-        { field: 'color', value: '#a11a11' },
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        applyTagOptionUpdate(tx, fixture.a.userId, fixture.a.tagOptionId, {
+          field: 'color',
+          value: '#a11a11',
+        }),
       )
       expect(result).toBe('applied')
 
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({ color: tagOptions.color })
         .from(tagOptions)
         .where(eq(tagOptions.id, fixture.a.tagOptionId))
@@ -134,16 +136,16 @@ describe('write isolation (W1)', () => {
     })
 
     it('does not update tenant B tag option color via tenant A context (negative, shared UPDATE owner clause)', async () => {
-      const result = await applyTagOptionUpdate(
-        getDb(),
-        fixture.a.userId,
-        fixture.b.tagOptionId,
-        { field: 'color', value: '#hacked' },
+      const result = await asTenant(fixture.a.userId, (tx) =>
+        applyTagOptionUpdate(tx, fixture.a.userId, fixture.b.tagOptionId, {
+          field: 'color',
+          value: '#hacked',
+        }),
       )
       expect(result).toBe('failed')
 
-      // color は pre-check 無し = 共有 UPDATE の owner 節のみが守る。B の color は不変 (null)。
-      const rows = await getDb()
+      // color は pre-check 無し = 共有 UPDATE の owner 節 + RLS USING のみが守る。B の color は不変 (null)。
+      const rows = await getFixtureOwnerDb()
         .select({ color: tagOptions.color })
         .from(tagOptions)
         .where(eq(tagOptions.id, fixture.b.tagOptionId))
