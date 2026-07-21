@@ -36,16 +36,24 @@ vi.mock('svix', () => ({
   },
 }))
 
-vi.mock('@/lib/db', () => ({
-  getDb: () => ({
+// RLS-P3 (Task 1): route.ts の event dedup と handle-clerk-event.ts の
+// handleUserDeleted pre-tenant resolve は getNonTenantDb() へ、user.created 側の
+// tenant 確立 withTenantTx(getDb(), ...) 呼出は getDb() のまま。同一 fake db を
+// 両 export 経由で返す (mechanical infra follow — assertion / 挙動は不変)。
+vi.mock('@/lib/db', () => {
+  const fakeDb = {
     insert: mockDbInsert,
     update: mockDbUpdate,
     select: mockDbSelect,
     delete: mockDbDelete,
     execute: mockDbExecute,
     transaction: mockDbTransaction,
-  }),
-}))
+  }
+  return {
+    getDb: () => fakeDb,
+    getNonTenantDb: () => fakeDb,
+  }
+})
 
 vi.mock('@/lib/stripe/client', () => ({
   stripe: {

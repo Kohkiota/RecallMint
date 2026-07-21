@@ -62,16 +62,25 @@ vi.mock('svix', () => ({
   },
 }))
 
-vi.mock('@/lib/db', () => ({
-  getDb: () => ({
+// RLS-P3 (Task 1): route.ts event dedup + handle-clerk-event.ts
+// handleUserDeleted pre-tenant resolve now call getNonTenantDb() (same
+// underlying connection as getDb() — mechanical mock-target alias,
+// assertions/behavior unchanged). getDb() remains used by user.created's
+// withTenantTx(db, ...) call site (handleEvent ~L39).
+vi.mock('@/lib/db', () => {
+  const fakeDb = {
     insert: mockDbInsert,
     update: mockDbUpdate,
     select: mockDbSelect,
     delete: mockDbDelete,
     execute: mockDbExecute,
     transaction: mockDbTransaction,
-  }),
-}))
+  }
+  return {
+    getDb: () => fakeDb,
+    getNonTenantDb: () => fakeDb,
+  }
+})
 
 vi.mock('@/lib/stripe/client', () => ({
   stripe: {

@@ -2,7 +2,7 @@ import '@/lib/clerk/env-check' // env prefix validation (side-effect, Node runti
 import { cache } from 'react'
 import { auth } from '@clerk/nextjs/server'
 import { and, eq, isNull, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { users, type User } from '@/lib/db/schema'
 import type { Plan } from './plan-limits'
@@ -43,7 +43,10 @@ export const getCurrentUser = cache(
     const { userId, sessionClaims } = await auth()
     if (!userId) throw new UnauthenticatedError()
 
-    const db = getDb()
+    // RLS-P3 (Task 1): pre-tenant bootstrap resolve — app_bootstrap_user_from_clerk
+    // (SECURITY DEFINER) は内部 id を context 確立前に解決するため非 tenant handle を
+    // 使う (id 判明後は withTenantTx(db, resolvedId, ...) で tenant context を張る)。
+    const db = getNonTenantDb()
 
     // 内部 UUID を解決する (claim-first・RLS bootstrap 循環の回避)。
     // - claim あり: JWT の dbUserId をそのまま使う (users SELECT 不要)。

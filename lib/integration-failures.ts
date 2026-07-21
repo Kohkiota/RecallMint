@@ -7,7 +7,7 @@
 //
 // 詳細: specs/2026-07-10-sprint2-integration-failures-design.md §5
 
-import { getAdminDb, getDb } from '@/lib/db'
+import { getAdminDb, getNonTenantDb } from '@/lib/db'
 import { integrationFailures } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
@@ -115,9 +115,13 @@ export async function recordIntegrationFailure(
     // 実行文脈で存在する接続を選ぶ: runtime は DATABASE_URL_APP(app role)、operator
     // script は DATABASE_URL_ADMIN(owner)のみを持つ (RLS-P1)。どちらでも失敗台帳の
     // INSERT を落とさないため (integration_failures は app/owner 両 role が INSERT 可)。
-    // 選択も try 内に置く: getDb/getAdminDb が env 未設定等で throw しても catch の
-    // best-effort (ledger 失敗 log + notifyOps) を通すため。
-    const db = process.env.DATABASE_URL_APP ? getDb() : getAdminDb()
+    // 選択も try 内に置く: getNonTenantDb/getAdminDb が env 未設定等で throw しても
+    // catch の best-effort (ledger 失敗 log + notifyOps) を通すため。
+    // RLS-P3 (Task 1): audit ledger — 呼出元は webhook / delete フロー等 tenant
+    // context が張られているかもしれない位置から来るが、本 INSERT 自体は呼出元の
+    // tenant に紐付かない横断監査書込のため非 tenant handle を使う (owner 分岐は
+    // operator script 限定・prod runtime は DATABASE_URL_APP 必須ゆえここへ落ちない)。
+    const db = process.env.DATABASE_URL_APP ? getNonTenantDb() : getAdminDb()
     await db
       .insert(integrationFailures)
       .values({

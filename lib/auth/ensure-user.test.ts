@@ -11,13 +11,16 @@ vi.mock('@clerk/nextjs/server', () => ({
   auth: vi.fn(),
 }))
 
-// `getDb()` is mocked per-test so getCurrentUser reads from a fake DB.
+// `getNonTenantDb()` is mocked per-test so getCurrentUser reads from a fake DB.
+// RLS-P3 (Task 1): ensure-user.ts's pre-tenant bootstrap resolve now calls
+// getNonTenantDb() instead of getDb() (same underlying connection — mechanical
+// mock-target rename, assertions/behavior unchanged).
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(),
+  getNonTenantDb: vi.fn(),
 }))
 
 import { auth } from '@clerk/nextjs/server'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 
 // ---------------------------------------------------------------------------
 // Fake DB factory (claim-first wiring).
@@ -96,7 +99,7 @@ describe('getCurrentUser', () => {
   it('userId あり / DB に行あり / deletedAt null → User を返す', async () => {
     vi.mocked(auth).mockResolvedValue({ userId: 'user_1' } as never)
     const row = makeUser({ clerkId: 'user_1', deletedAt: null })
-    vi.mocked(getDb).mockReturnValue(
+    vi.mocked(getNonTenantDb).mockReturnValue(
       makeFakeDb({ idRows: [{ id: row.id }], userRows: [row] }) as never,
     )
 
@@ -118,7 +121,7 @@ describe('getCurrentUser', () => {
       userId: 'user_1',
       sessionClaims: { dbUserId: '00000000-0000-0000-0000-0000000000bb' },
     } as never)
-    vi.mocked(getDb).mockReturnValue(makeFakeDb({ userRows: [] }) as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(makeFakeDb({ userRows: [] }) as never)
 
     const { getCurrentUser } = await import('@/lib/auth/ensure-user')
     const result = await getCurrentUser()
@@ -129,7 +132,7 @@ describe('getCurrentUser', () => {
   it('userId あり / DB 行欠損（webhook race）→ null を返す', async () => {
     vi.mocked(auth).mockResolvedValue({ userId: 'user_1' } as never)
     // bootstrap が 0 行 (users 未同期) → 内部 id 未解決 → null。
-    vi.mocked(getDb).mockReturnValue(makeFakeDb({ idRows: [] }) as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(makeFakeDb({ idRows: [] }) as never)
 
     const { getCurrentUser } = await import('@/lib/auth/ensure-user')
     const result = await getCurrentUser()
@@ -151,7 +154,7 @@ describe('getCurrentUser', () => {
       sessionClaims: { dbUserId: row.id },
     } as never)
     const fake = makeFakeDb({ userRows: [row] })
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const { getCurrentUser } = await import('@/lib/auth/ensure-user')
     const result = await getCurrentUser()
@@ -164,7 +167,7 @@ describe('getCurrentUser', () => {
     const row = makeUser({ clerkId: 'user_1' })
     vi.mocked(auth).mockResolvedValue({ userId: 'user_1' } as never)
     const fake = makeFakeDb({ idRows: [{ id: row.id }], userRows: [row] })
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const { getCurrentUser } = await import('@/lib/auth/ensure-user')
     const result = await getCurrentUser()

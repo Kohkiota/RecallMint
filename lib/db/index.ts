@@ -38,6 +38,19 @@ export function getAdminDb() {
   return _adminDb
 }
 
+// RLS-P3 (Task 1): app-role (recallmint_app) 接続はするが tenant context
+// (SET LOCAL app.user_id) を張らない経路。 対象は構造的に tenant が未確定な site
+// のみ: event dedup (stripe_events / clerk_events は user_id を持たない) /
+// pre-tenant resolve (SECURITY DEFINER 関数で内部 id を解決する前) / audit ledger
+// (integration_failures) / 匿名 write (contact_messages・user_id nullable)。
+// memoized client は getDb() とそのまま共有する (新規 pool を張らない・tenant
+// context は tx-local SET LOCAL のため pool 越しの漏洩はない)。 getDb() の raw 呼び
+// 出しは後続 task で lint 制限する予定 (tenant 表アクセスを型では防げない — 防壁は
+// lint + コメント + review のみ)。
+export function getNonTenantDb(): DB {
+  return getDb()
+}
+
 /**
  * Underlying postgres-js client (app + admin 両方) を close し、 module-level
  * singleton (_db/_client/_adminDb/_adminClient) を null clear する。 未呼出の

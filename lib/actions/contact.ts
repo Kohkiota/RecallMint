@@ -4,7 +4,7 @@ import { headers } from 'next/headers'
 import { auth } from '@clerk/nextjs/server'
 import { sql } from 'drizzle-orm'
 import { contactSchema } from '@/lib/validation/contact'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 import { contactMessages } from '@/lib/db/schema'
 import { notifyOps } from '@/lib/ops'
 import { logger } from '@/lib/logger'
@@ -58,7 +58,9 @@ export async function submitContact(input: unknown): Promise<ActionResult> {
   const { email, category, subject, body } = parsed.data
 
   try {
-    const db = getDb()
+    // RLS-P3 (Task 1): 匿名 contact — user_id は nullable、認証済でも SECURITY
+    // DEFINER bootstrap 解決前は tenant context を張れないため非 tenant handle を使う。
+    const db = getNonTenantDb()
 
     // 認証済 user は内部 user.id を解決 (clerk_id → 内部 id、 SECURITY DEFINER
     // 関数 app_bootstrap_user_from_clerk 経由で RLS 迂回。id 列だけ射影)。

@@ -71,7 +71,11 @@ vi.mock('@/lib/stripe/client', async (importActual) => {
   }
 })
 
-vi.mock('@/lib/db', () => ({ getDb: () => mockDb }))
+// RLS-P3 (Task 1): route.ts event dedup + handle-stripe-event.ts pre-tenant
+// resolve now call getNonTenantDb() (same underlying connection as getDb() —
+// mechanical mock-target alias, assertions/behavior unchanged). getDb() itself
+// remains used by evaluateReleaseGate's withTenantTx(getDb(), ...) call sites.
+vi.mock('@/lib/db', () => ({ getDb: () => mockDb, getNonTenantDb: () => mockDb }))
 
 vi.mock('@/lib/ops', () => ({
   notifyWebhookError: mockNotifyWebhookError,

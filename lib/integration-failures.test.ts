@@ -12,8 +12,12 @@ const { mockDbInsert, mockDbInsertValues, mockNotifyOps, mockLoggerError } =
     }
   })
 
+// RLS-P3 (Task 1): DATABASE_URL_APP is set in vitest.setup.ts, so the app-role
+// branch of the ternary now resolves via getNonTenantDb() instead of getDb()
+// (same underlying connection — mechanical mock-target rename, assertions
+// unchanged). getAdminDb is unused here since that branch isn't exercised.
 vi.mock('@/lib/db', () => ({
-  getDb: () => ({ insert: mockDbInsert }),
+  getNonTenantDb: () => ({ insert: mockDbInsert }),
 }))
 
 vi.mock('@/lib/ops', () => ({

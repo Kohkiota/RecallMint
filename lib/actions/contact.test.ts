@@ -5,8 +5,11 @@ vi.mock('@clerk/nextjs/server', () => ({
   auth: vi.fn(),
 }))
 
+// RLS-P3 (Task 1): contact.ts's anonymous contact write now calls
+// getNonTenantDb() instead of getDb() (same underlying connection — mechanical
+// mock-target rename, assertions/behavior unchanged).
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(),
+  getNonTenantDb: vi.fn(),
 }))
 
 vi.mock('@/lib/ops', () => ({
@@ -21,7 +24,7 @@ vi.mock('next/headers', () => ({
 
 import { auth } from '@clerk/nextjs/server'
 import { headers } from 'next/headers'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 import { notifyOps } from '@/lib/ops'
 import { submitContact } from './contact'
 import { __resetContactRateLimitStore } from '@/lib/rate-limit/contact-action'
@@ -75,7 +78,7 @@ describe('submitContact', () => {
 
   it('zod 違反 (subject 空) → ok:false + error message、 DB insert 走らず', async () => {
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact({ ...validInput, subject: '' })
 
@@ -85,7 +88,7 @@ describe('submitContact', () => {
 
   it('honeypot trip (website 値あり) → ok:true (silent reject)、 DB insert 走らず', async () => {
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact({
       ...validInput,
@@ -98,7 +101,7 @@ describe('submitContact', () => {
 
   it('未認証 + 正常系 → ok:true、 user_id=null で contact_messages に insert', async () => {
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
 
@@ -119,7 +122,7 @@ describe('submitContact', () => {
     const internalUserId = '00000000-0000-0000-0000-000000000123'
     vi.mocked(auth).mockResolvedValue({ userId: 'user_clerk_1' } as never)
     const fake = makeFakeDb({ bootstrapRows: [{ id: internalUserId }] })
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
 
@@ -132,7 +135,7 @@ describe('submitContact', () => {
   it('認証済 + users 未同期 (lookup 0 件) → user_id=null で insert', async () => {
     vi.mocked(auth).mockResolvedValue({ userId: 'user_clerk_unsynced' } as never)
     const fake = makeFakeDb({ bootstrapRows: [] })
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
 
@@ -148,7 +151,7 @@ describe('submitContact', () => {
     // (DB は健全) ため、 必ず匿名扱いで insert を完遂し ok:true を返すこと。
     vi.mocked(auth).mockRejectedValue(new Error('clerk SDK timeout'))
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
 
@@ -161,7 +164,7 @@ describe('submitContact', () => {
 
   it('honeypot 空文字 (送信時 default) は通常の送信扱い → insert 実行', async () => {
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact({ ...validInput, website: '' })
 
@@ -171,7 +174,7 @@ describe('submitContact', () => {
 
   it('DB insert 失敗 → ok:false + 汎用 error + notifyOps 起動', async () => {
     const fake = makeFakeDb({ insertReject: new Error('connection refused') })
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact(validInput)
 
@@ -192,7 +195,7 @@ describe('submitContact', () => {
 
   it('category enum 外 → ok:false + zod error message', async () => {
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
 
     const result = await submitContact({ ...validInput, category: 'spam' })
 
@@ -204,7 +207,7 @@ describe('submitContact', () => {
     // audit §10.3 (b) #15、 T-A7: 同 IP で 5 req/h を超えた 6 件目は
     // gate で弾く (DB insert / notifyOps 双方走らない)。
     const fake = makeFakeDb({})
-    vi.mocked(getDb).mockReturnValue(fake as never)
+    vi.mocked(getNonTenantDb).mockReturnValue(fake as never)
     // 全 6 件で同一 IP を返す (固定 fakeHeaders)。
     vi.mocked(headers).mockResolvedValue(
       makeFakeHeaders('192.0.2.99') as never,

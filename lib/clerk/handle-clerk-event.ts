@@ -2,7 +2,7 @@ import 'server-only'
 import { randomUUID } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import Stripe from 'stripe'
-import { getDb } from '@/lib/db'
+import { getDb, getNonTenantDb } from '@/lib/db'
 import { withTenantTx, setTenantContext } from '@/lib/db/tenant-tx'
 import {
   users,
@@ -81,7 +81,10 @@ export async function handleEvent(evt: ClerkWebhookEvent): Promise<void> {
 }
 
 async function handleUserDeleted(clerkUserId: string): Promise<void> {
-  const db = getDb()
+  // RLS-P3 (Task 1): pre-tenant bootstrap resolve — app_bootstrap_user_from_clerk
+  // (SECURITY DEFINER) は内部 user id を context 確立前に解決するため非 tenant handle
+  // を使う (以降 runTransactionWithRetry 内で setTenantContext が tenant context を張る)。
+  const db = getNonTenantDb()
 
   // §6 / RLS-P2 (spec §2.6): resolve internal id + Stripe customer via the
   // SECURITY DEFINER bootstrap 関数 (clerk_id で 1 行・scrub 済みは clerk_id NULL ゆえ

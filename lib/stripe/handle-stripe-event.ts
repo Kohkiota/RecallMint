@@ -2,7 +2,7 @@ import 'server-only'
 import type Stripe from 'stripe'
 import { eq, sql } from 'drizzle-orm'
 import { stripe } from '@/lib/stripe/client'
-import { getDb, type DB } from '@/lib/db'
+import { getDb, getNonTenantDb, type DB } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { users } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
@@ -71,7 +71,11 @@ export function extractCustomerId(event: Stripe.Event): string | undefined {
 }
 
 export async function handleEvent(event: Stripe.Event): Promise<void> {
-  const db = getDb()
+  // RLS-P3 (Task 1): pre-tenant resolve — resolveStripeUser は SECURITY DEFINER
+  // app_resolve_user_for_stripe を tenant context 未確定 (userId 解決前) に叩くため
+  // 非 tenant handle を使う (資格が判明した後段は withTenantTx(getDb(), ...) で
+  // tenant context を張る、下記 evaluateReleaseGate 等は据え置き)。
+  const db = getNonTenantDb()
   switch (event.type) {
     case 'checkout.session.completed': {
       const s = event.data.object as Stripe.Checkout.Session

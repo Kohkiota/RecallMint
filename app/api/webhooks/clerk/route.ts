@@ -9,7 +9,7 @@
 // 5. 200 強制 return (Clerk リトライ抑止、recovery は integration_failures + 手動)
 
 import { Webhook } from 'svix'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 import { clerkEvents } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { notifyWebhookError } from '@/lib/ops'
@@ -66,7 +66,9 @@ export async function POST(req: Request) {
   }
   const evt = parsed.data
 
-  const db = getDb()
+  // RLS-P3 (Task 1): event dedup — clerk_events は user_id を持たない構造的
+  // non-tenant table (tenant context を張らず app-role で読み書きする)。
+  const db = getNonTenantDb()
 
   // clerk_events idempotency. svix-id を PK として INSERT、
   // duplicate なら 200 即 return (Clerk が同一 message を再配信した場合の skip)。

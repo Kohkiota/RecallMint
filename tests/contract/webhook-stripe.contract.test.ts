@@ -58,8 +58,12 @@ const {
 // RLS-P2 (Task 7): resolve が返す内部 id (tx-local set_config は mock では no-op)。
 const RESOLVED_UUID = '00000000-0000-0000-0000-000000000001'
 
-vi.mock('@/lib/db', () => ({
-  getDb: () => ({
+// RLS-P3 (Task 1): route.ts event dedup + handle-stripe-event.ts pre-tenant
+// resolve now call getNonTenantDb() (same underlying connection as getDb() —
+// mechanical mock-target alias, assertions/behavior unchanged). getDb() itself
+// remains used by evaluateReleaseGate's withTenantTx(getDb(), ...) call sites.
+vi.mock('@/lib/db', () => {
+  const fakeDb = {
     insert: mockDbInsert,
     update: mockDbUpdate,
     execute: mockDbExecute,
@@ -73,8 +77,12 @@ vi.mock('@/lib/db', () => ({
         select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
         delete: () => ({ where: () => Promise.resolve([]) }),
       }),
-  }),
-}))
+  }
+  return {
+    getDb: () => fakeDb,
+    getNonTenantDb: () => fakeDb,
+  }
+})
 
 vi.mock('@/lib/stripe/client', () => ({
   stripe: {

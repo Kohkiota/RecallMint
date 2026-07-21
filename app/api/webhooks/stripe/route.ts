@@ -1,6 +1,6 @@
 import type Stripe from 'stripe'
 import { stripe } from '@/lib/stripe/client'
-import { getDb } from '@/lib/db'
+import { getNonTenantDb } from '@/lib/db'
 import { stripeEvents } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { notifyWebhookError } from '@/lib/ops'
@@ -30,7 +30,9 @@ export async function POST(req: Request) {
     return new Response('invalid signature', { status: 400 })
   }
 
-  const db = getDb()
+  // RLS-P3 (Task 1): event dedup — stripe_events は user_id を持たない構造的
+  // non-tenant table (tenant context を張らず app-role で読み書きする)。
+  const db = getNonTenantDb()
 
   // Idempotency: INSERT event_id with ON CONFLICT DO NOTHING RETURNING.
   // If RETURNING is empty, event was already processed → skip.

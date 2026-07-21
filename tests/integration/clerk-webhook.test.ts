@@ -30,15 +30,22 @@ vi.mock('@/lib/db', () => {
   const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
     return await fn({ execute, insert, update, delete: del })
   })
+  const fakeDb = {
+    insert,
+    update,
+    select,
+    delete: del,
+    execute,
+    transaction,
+  }
+  // RLS-P3 (Task 1): route.ts event dedup + handle-clerk-event.ts
+  // handleUserDeleted pre-tenant resolve now call getNonTenantDb() (same
+  // underlying connection as getDb() — mechanical mock-target alias,
+  // assertions/behavior unchanged). getDb() remains used by user.created's
+  // withTenantTx(db, ...) call site (handleEvent ~L39).
   return {
-    getDb: vi.fn(() => ({
-      insert,
-      update,
-      select,
-      delete: del,
-      execute,
-      transaction,
-    })),
+    getDb: vi.fn(() => fakeDb),
+    getNonTenantDb: vi.fn(() => fakeDb),
   }
 })
 
