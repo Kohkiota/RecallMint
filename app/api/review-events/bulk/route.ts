@@ -31,6 +31,7 @@
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { type User } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import {
@@ -88,7 +89,9 @@ export async function POST(req: Request): Promise<Response> {
   // Phase 0 失敗 → 500 (session sync 不整合を防ぐため events は処理しない)。
   let applied: boolean
   try {
-    ;({ applied } = await upsertSessionGuarded(db, user, session))
+    ;({ applied } = await withTenantTx(db, user.id, (tx) =>
+      upsertSessionGuarded(tx, user, session),
+    ))
   } catch (err) {
     logger.error({
       event: 'review_events.bulk.session_upsert_failed',

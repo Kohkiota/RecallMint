@@ -2,6 +2,7 @@
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
 import { logger } from '@/lib/logger'
@@ -20,15 +21,17 @@ export async function saveFsrsMode(
 
   const db = getDb()
   try {
-    await db
-      .insert(userSettings)
-      .values({ userId: user.id, fsrsMode: value })
-      // drizzle $onUpdate は onConflictDoUpdate で発火しないため
-      // conflict branch で updatedAt を明示更新 (S2.1 T5 I-1 由来)
-      .onConflictDoUpdate({
-        target: userSettings.userId,
-        set: { fsrsMode: value, updatedAt: new Date() },
-      })
+    await withTenantTx(db, user.id, (tx) =>
+      tx
+        .insert(userSettings)
+        .values({ userId: user.id, fsrsMode: value })
+        // drizzle $onUpdate は onConflictDoUpdate で発火しないため
+        // conflict branch で updatedAt を明示更新 (S2.1 T5 I-1 由来)
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: { fsrsMode: value, updatedAt: new Date() },
+        }),
+    )
   } catch (err) {
     logger.error({ event: 'save_fsrs_mode.error', err, userId: user.id, value })
     return { ok: false, error: '保存に失敗しました。しばらくしてからお試しください' }

@@ -80,6 +80,14 @@ vi.mock('@/lib/db', () => ({
   getDb: vi.fn(() => makeFakeDb(state)),
 }))
 
+// RLS-P3 Wave2: Phase 0 の upsertSessionGuarded は withTenantTx で包まれた。pass-through
+// stub で fn(fakeDb) を直呼びし、session upsert を従来どおり fakeDb.insert で処理させる。
+// setTenantContext は processSession の実 tx が使うため importOriginal で実物を残す。
+vi.mock('@/lib/db/tenant-tx', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/db/tenant-tx')>()),
+  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+}))
+
 // ── Route under test ──────────────────────────────────────────────────────────
 import { POST } from '../../app/api/review-events/bulk/route'
 

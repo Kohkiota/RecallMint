@@ -172,6 +172,13 @@ vi.mock('@/lib/db', () => {
   }
 })
 
+// RLS-P3 Wave2: reserve/finalize/resolve は withTenantTx で包まれた(finalize は
+// read tx → headObject → write tx の 2 分割)。unit では pass-through stub で query を
+// 素の mock db へ流す(select/update の呼び順は保持される)。GUC 挙動は iso で担保。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+}))
+
 async function importActions() {
   return await import('./asset-actions')
 }

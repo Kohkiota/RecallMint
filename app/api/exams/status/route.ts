@@ -23,6 +23,7 @@
 import { desc, eq } from 'drizzle-orm'
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments } from '@/lib/db/schema'
 import {
   STALE_PROCESSING_MS,
@@ -46,15 +47,17 @@ export const GET = withReadOnlyAuth(
       // owner-scope 必須。examId / status / createdAt の 3 列のみ取得する。
       // D1 (S2.0c): DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で
       // exam ごと最新の source_document 1 行のみを DB 側で畳む。
-      const rows = await getDb()
-        .selectDistinctOn([sourceDocuments.examId], {
-          examId: sourceDocuments.examId,
-          status: sourceDocuments.status,
-          createdAt: sourceDocuments.createdAt,
-        })
-        .from(sourceDocuments)
-        .where(eq(sourceDocuments.userId, user.id))
-        .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt))
+      const rows = await withTenantTx(getDb(), user.id, (tx) =>
+        tx
+          .selectDistinctOn([sourceDocuments.examId], {
+            examId: sourceDocuments.examId,
+            status: sourceDocuments.status,
+            createdAt: sourceDocuments.createdAt,
+          })
+          .from(sourceDocuments)
+          .where(eq(sourceDocuments.userId, user.id))
+          .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt)),
+      )
 
       // 表示用 status map。deriveExamStatuses が 15 分超 processing を failed に倒す。
       const statuses = deriveExamStatuses(rows, now)

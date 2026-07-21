@@ -53,6 +53,12 @@ vi.mock('@/lib/db', () => ({
   }),
 }))
 
+// RLS-P3 Wave2: save 経路は withTenantTx で包まれた。unit では pass-through stub で
+// query を素の mock db へ流す(tenant context の GUC 挙動は tenant-tx.test.ts + iso で担保)。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+}))
+
 import { saveFsrsMode } from './save-fsrs-mode'
 
 // ---------------------------------------------------------------------------

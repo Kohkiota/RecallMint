@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import { AppContainer } from '../_components/app-container'
 import { createBillingPortalSession } from './actions'
@@ -27,13 +28,14 @@ export default async function SettingsPage() {
   const user = await getCurrentUser()
   if (!user) return null
 
-  // 学習設定: user_settings を owner-scoped SELECT
-  const db = getDb()
-  const settingsRows = await db
-    .select()
-    .from(userSettings)
-    .where(eq(userSettings.userId, user.id))
-    .limit(1)
+  // 学習設定: user_settings を owner-scoped SELECT (RLS-P3 Wave2: tenant context 下)
+  const settingsRows = await withTenantTx(getDb(), user.id, (tx) =>
+    tx
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, user.id))
+      .limit(1),
+  )
   // 行不在 (row===undefined) のみ 20 にフォールバック。
   // null (= 上限なし) は ?? で潰してはいけないため三項演算子で分岐する。
   const row = settingsRows[0]

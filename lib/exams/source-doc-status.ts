@@ -15,7 +15,7 @@
 
 import { and, desc, eq, gte, lt } from 'drizzle-orm'
 import { getDb } from '@/lib/db'
-import { setTenantContext } from '@/lib/db/tenant-tx'
+import { setTenantContext, withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
@@ -41,16 +41,17 @@ export async function getExamStatusMap(
   now: Date = new Date(),
 ): Promise<Map<string, 'processing' | 'failed'>> {
   try {
-    const db = getDb()
-    const rows = await db
-      .selectDistinctOn([sourceDocuments.examId], {
-        examId: sourceDocuments.examId,
-        status: sourceDocuments.status,
-        createdAt: sourceDocuments.createdAt,
-      })
-      .from(sourceDocuments)
-      .where(eq(sourceDocuments.userId, userId)) // owner-scope 必須
-      .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt))
+    const rows = await withTenantTx(getDb(), userId, (tx) =>
+      tx
+        .selectDistinctOn([sourceDocuments.examId], {
+          examId: sourceDocuments.examId,
+          status: sourceDocuments.status,
+          createdAt: sourceDocuments.createdAt,
+        })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.userId, userId)) // owner-scope 必須
+        .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt)),
+    )
     return deriveExamStatuses(rows, now)
   } catch (err) {
     // best-effort: 一時的な DB エラーで一覧ページの render を落とさないよう warn のみ。
@@ -164,22 +165,23 @@ export async function hasActiveProcessingUpload(
   now: Date = new Date(),
 ): Promise<boolean> {
   try {
-    const db = getDb()
     // STALE_PROCESSING_MS (15 分) 以内に作成された processing 行があるか判定。
     // 15 分より古い processing 行は stale orphan (reconcile 待ち) とみなし
     // 「in-flight」として数えない。
     const activeThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
-    const rows = await db
-      .select({ id: sourceDocuments.id })
-      .from(sourceDocuments)
-      .where(
-        and(
-          eq(sourceDocuments.userId, userId), // owner-scope 必須
-          eq(sourceDocuments.status, 'processing'),
-          gte(sourceDocuments.createdAt, activeThreshold), // 15 分以内のみ in-flight 扱い
-        ),
-      )
-      .limit(1)
+    const rows = await withTenantTx(getDb(), userId, (tx) =>
+      tx
+        .select({ id: sourceDocuments.id })
+        .from(sourceDocuments)
+        .where(
+          and(
+            eq(sourceDocuments.userId, userId), // owner-scope 必須
+            eq(sourceDocuments.status, 'processing'),
+            gte(sourceDocuments.createdAt, activeThreshold), // 15 分以内のみ in-flight 扱い
+          ),
+        )
+        .limit(1),
+    )
     return rows.length > 0
   } catch (err) {
     // best-effort: DB エラー時は warn のみ、throw しない。

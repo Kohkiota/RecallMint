@@ -6,6 +6,7 @@
 import { eq } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import { AppContainer } from '../../_components/app-container'
 import { CustomSessionFlow } from './_components/custom-session-flow'
@@ -17,12 +18,13 @@ export default async function CustomStudyPage() {
   // ここで null が返ることは基本ない。 防御的に null チェックのみ。
   if (!user) return null
 
-  const db = getDb()
-  const settingsRows = await db
-    .select()
-    .from(userSettings)
-    .where(eq(userSettings.userId, user.id))
-    .limit(1)
+  const settingsRows = await withTenantTx(getDb(), user.id, (tx) =>
+    tx
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, user.id))
+      .limit(1),
+  )
   const row = settingsRows[0]
   // 行不在のみ 20。 明示 null = 上限なし は維持 (smart の sessionLimit と同方針)。
   const customLimit = row ? row.customSessionLimit : 20

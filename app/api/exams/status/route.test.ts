@@ -28,6 +28,12 @@ vi.mock('@/lib/exams/source-doc-status', async (importOriginal) => {
   return { ...actual, reconcileStaleProcessing: vi.fn() }
 })
 
+// RLS-P3 Wave2: source_documents read は withTenantTx で包まれた。unit では pass-through
+// stub で query を素の mock db (selectDistinctOn) へ流す(GUC 挙動は iso で担保)。
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: (db: unknown, _userId: string, fn: (tx: unknown) => unknown) => fn(db),
+}))
+
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { reconcileStaleProcessing } from '@/lib/exams/source-doc-status'
 import { GET } from '@/app/api/exams/status/route'

@@ -20,12 +20,17 @@ export default async function SmartStudyPage() {
   // ここで null が返ることは基本ない。 防御的に null チェックのみ。
   if (!user) return null
 
+  // RLS-P3 Wave2: user_settings read を tenant context 下に入れる。cards の
+  // withTenantTx(下記)とは別 tx = settings/cards が別 snapshot になる非原子性は
+  // 配線前から不変(意図的に維持)。
   const db = getDb()
-  const settingsRows = await db
-    .select()
-    .from(userSettings)
-    .where(eq(userSettings.userId, user.id))
-    .limit(1)
+  const settingsRows = await withTenantTx(db, user.id, (tx) =>
+    tx
+      .select()
+      .from(userSettings)
+      .where(eq(userSettings.userId, user.id))
+      .limit(1),
+  )
   const row = settingsRows[0]
   const sessionLimit = row ? row.sessionLimit : 20  // 行不在のみ 20。 明示 null = 上限なし は維持
   const fsrsMode = row ? row.fsrsMode : false

@@ -2,6 +2,7 @@
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { userSettings } from '@/lib/db/schema'
 import type { ActionResult } from '@/lib/actions/result'
 import { logger } from '@/lib/logger'
@@ -17,13 +18,15 @@ export async function saveCustomSessionLimit(value: number | null): Promise<Acti
 
   const db = getDb()
   try {
-    await db
-      .insert(userSettings)
-      .values({ userId: user.id, customSessionLimit: value })
-      .onConflictDoUpdate({
-        target: userSettings.userId,
-        set: { customSessionLimit: value, updatedAt: new Date() },
-      })
+    await withTenantTx(db, user.id, (tx) =>
+      tx
+        .insert(userSettings)
+        .values({ userId: user.id, customSessionLimit: value })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: { customSessionLimit: value, updatedAt: new Date() },
+        }),
+    )
   } catch (err) {
     logger.error({ event: 'save_custom_session_limit.error', err, userId: user.id, value })
     return { ok: false, error: '保存に失敗しました。しばらくしてからお試しください' }

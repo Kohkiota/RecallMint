@@ -5,6 +5,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { assets } from '@/lib/db/schema'
 import type { User } from '@/lib/db/schema'
 import { presignPutUrl, presignGetUrl, headObject } from '@/lib/storage/r2'
@@ -100,18 +101,20 @@ export async function reserveAsset(
 
   const db = getDb()
   // reference_count / unreferenced_at は書かない (spec §2.1: 将来 orphan 掃除用の
-  // dormant 枠、 DB default に任せる)。
-  await db.insert(assets).values({
-    id: assetId,
-    userId: user.id,
-    objectKey,
-    mime,
-    byteSize,
-    width,
-    height,
-    hash,
-    status: 'reserved',
-  })
+  // dormant 枠、 DB default に任せる)。RLS-P3 Wave2: tenant context 下で INSERT。
+  await withTenantTx(db, user.id, (tx) =>
+    tx.insert(assets).values({
+      id: assetId,
+      userId: user.id,
+      objectKey,
+      mime,
+      byteSize,
+      width,
+      height,
+      hash,
+      status: 'reserved',
+    }),
+  )
 
   // byteSize を presign の署名に焼き込む (Content-Length 固定) — 巨大 body PUT による
   // 5 MiB cap 迂回 (storage abuse) を R2 側で構造的に拒否させる。
@@ -135,10 +138,14 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
   }
 
   const db = getDb()
-  const rows = await db
-    .select()
-    .from(assets)
-    .where(and(eq(assets.id, assetId), eq(assets.userId, user.id)))
+  // RLS-P3 Wave2: read/write を 2 tenant tx に分割する。R2 headObject を tx 内に入れない
+  // ため(tx が外部 I/O を跨がない)。TOCTOU 防御は write の status='reserved' WHERE が担う。
+  const rows = await withTenantTx(db, user.id, (tx) =>
+    tx
+      .select()
+      .from(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.userId, user.id))),
+  )
 
   const asset = rows[0]
   if (!asset) {
@@ -171,35 +178,38 @@ export async function finalizeAsset(assetId: string): Promise<ActionResult> {
   // だけの WHERE では回収対象 asset を ready に復活させてしまう。 status='reserved' 条件で
   // 0 行更新に落とし、 その場合は成功を返さず not-found として扱う (read-time canFinalize
   // ガードは fast path として維持)。
-  const updated = await db
-    .update(assets)
-    .set({ status: 'ready', readyAt: new Date() })
-    .where(
-      and(
-        eq(assets.id, assetId),
-        eq(assets.userId, user.id),
-        eq(assets.status, 'reserved'),
-      ),
-    )
-    .returning({ id: assets.id })
+  // RLS-P3 Wave2: UPDATE(+0 行時の状態判別 re-SELECT)を 1 write tx に束ねる。
+  return withTenantTx(db, user.id, async (tx) => {
+    const updated = await tx
+      .update(assets)
+      .set({ status: 'ready', readyAt: new Date() })
+      .where(
+        and(
+          eq(assets.id, assetId),
+          eq(assets.userId, user.id),
+          eq(assets.status, 'reserved'),
+        ),
+      )
+      .returning({ id: assets.id })
 
-  if (updated.length === 0) {
-    // 0 行 = SELECT 後に status が reserved から動いた。 並行 finalize が先に ready 化
-    // した場合は冪等成功 (呼び出し側が望んだ end-state)、 GC が deleting/deleted へ
-    // promote した場合 (or 行消失) は復活させず not-found とする。 現状態を owner scope で
-    // 再取得して判別する。
-    const currentRows = await db
-      .select()
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, user.id)))
-    const current = currentRows[0]
-    if (current && isFinalized(current.status as AssetStatus)) {
-      return { ok: true }
+    if (updated.length === 0) {
+      // 0 行 = SELECT 後に status が reserved から動いた。 並行 finalize が先に ready 化
+      // した場合は冪等成功 (呼び出し側が望んだ end-state)、 GC が deleting/deleted へ
+      // promote した場合 (or 行消失) は復活させず not-found とする。 現状態を owner scope で
+      // 再取得して判別する。
+      const currentRows = await tx
+        .select()
+        .from(assets)
+        .where(and(eq(assets.id, assetId), eq(assets.userId, user.id)))
+      const current = currentRows[0]
+      if (current && isFinalized(current.status as AssetStatus)) {
+        return { ok: true }
+      }
+      return { ok: false, error: 'アセットが見つかりません' }
     }
-    return { ok: false, error: 'アセットが見つかりません' }
-  }
 
-  return { ok: true }
+    return { ok: true }
+  })
 }
 
 /**
@@ -241,17 +251,19 @@ export async function resolveAssetUrls(
 
   const db = getDb()
   // eq(status, 'ready') の gate が deleting/deleted (GC 回収中/済) の asset を
-  // 既に排除する (allowsNewReference と同じ意味論。spec §3-4)。
-  const rows = await db
-    .select()
-    .from(assets)
-    .where(
-      and(
-        inArray(assets.id, validIds),
-        eq(assets.userId, user.id),
-        eq(assets.status, 'ready'),
+  // 既に排除する (allowsNewReference と同じ意味論。spec §3-4)。RLS-P3 Wave2: tenant context 下。
+  const rows = await withTenantTx(db, user.id, (tx) =>
+    tx
+      .select()
+      .from(assets)
+      .where(
+        and(
+          inArray(assets.id, validIds),
+          eq(assets.userId, user.id),
+          eq(assets.status, 'ready'),
+        ),
       ),
-    )
+  )
 
   const data = await Promise.all(
     rows.map(async (row) => ({
