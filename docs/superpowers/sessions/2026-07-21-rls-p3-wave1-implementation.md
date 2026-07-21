@@ -50,6 +50,24 @@ Wave 1 は **stg 限定**(prod は Phase 3 全表完了後・部分 RLS を prod
 - rollback 演習: `rls-p3-wave1-disable.sql` 1 枚で復元・re-enable 冪等(§3.2 同型)。
 - **after 計測(perf)は Wave1 単体では取らない**(Wave1〜2 出揃い後・prod 有効化直前に同日 before とセット)。
 
+## 7.5 stg 実証結果(2026-07-21・RLS-on 確認)
+
+**policy 適用の経緯**(記録): 当初 OT が push 前提で smoke 指示 → CC が「Wave1 は policy-only(app コード変更ゼロ)= push は stg 挙動不変・browser は RLS-active/inactive を区別不能」と指摘 → OT が policy 未適用を確認 → `rls-p3-wave1-enable.sql` を stg 適用(確認 SQL 2 本が各 8 行 = 8 policy + 8 表 relrowsecurity=t)→ RLS-on で再走。
+
+- **RLS-off 先行 smoke ×2**(policy 未適用中): **「app 非破壊確認」のみ**として区別記録。全 `/api` 200・error 0 だが、app 層 `eq(userId)` が同結果を返すため **RLS enforcement の証明ではない**。
+- **RLS-on smoke**(policy 適用後・CC・Playwright MCP・全 7 req 200):
+  - **item1 pull 6 stream = PASS**: `/api/pull`→200・error:null・6 stream owner data(cards300/exams1/tombstones1066/**tag_categories7/tag_options28/card_tags1621**)。`/api/study-days/pull`→200。app 自身の auto-pull も 200。
+  - **item2 review-events/bulk = PASS**: 200 `{ok,failed:[]}`・reps 前進(非 vacuous)= answer_events/reviews/cards/study_days が RLS Phase1+2 tx で書けた。
+  - **item3 entity-mutations/bulk = PASS**: 200 `{applied:1,failed:[]}`・memo 適用 = cards + entity_mutations が per-mutation tx で書けた。**card_asset_refs は test:iso dual-table(直接 pin)+ 同一 C9 tx/context 共有で担保**・live image-attach ref 書込は R2 saga 不可ゆえ保留(既存 image follow-up と整合)。
+  - **item5 client = PASS**: 全 `/api` 200・5xx 0・console error 0(Clerk sign-in の CSP SVG noise のみ・RLS 無関係)。
+  - **配線漏れ反証**: RLS-on で P0RLS/42501/5xx が 1 件も出ない = 8 表の全 read/write 経路が context 済(漏れがあれば当該経路で P0RLS/500 になる)。
+- **item4 current_user = PASS**(CC・psql + `.env.local` の `DATABASE_URL_APP`): `current_user = recallmint_app`(session_user 同・db=postgres・host=`aws-1-ap-northeast-1.pooler.supabase.com:6543` = stg pooler)。app 接続が least-privilege role = **RLS 素通しでない**(false-green 排除)。
+- **OT 残**: item5 server-log(Vercel + Supabase を user≠authenticator で P0RLS/42501/5xx 走査)/ item6 rollback 演習(`rls-p3-wave1-disable.sql`→確認 SQL 0 行→re-enable 冪等→enable 復帰)。
+
+**判定** = policy 適用(OT 確認)∧ current_user=recallmint_app(item4)∧ RLS-on app 非破壊(item1/2/3/5-client)∧ test:iso RLS 単独隔離(green)の 4 点成立 → **CC 側 stg 実証 PASS**。完全 close は OT の item5-log + item6 rollback 演習で。
+
+**smoke 副作用**(test1・PERF-SEED 300 中・計 5 枚を実書込): review = `5248b623`(reps 0→2)/`774380ca` / memo = `0e6f605a` / `bc348629` / `ceb44ce5`。負荷計測は Wave1〜2 出揃い後ゆえ 5/300 は無視可(要 pristine なら reseed 手順あり)。
+
 ## 8. 次
 
 - **Wave 2**: `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(各 standalone raw write/read の context 配線後に RLS 化)+ **partial-RLS behavioral 証明の新設**(§追補2 follow-up)。
