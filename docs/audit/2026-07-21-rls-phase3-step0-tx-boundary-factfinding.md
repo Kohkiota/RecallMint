@@ -301,5 +301,21 @@ closure 台帳(C1-C19)から各表の readiness を判定:
 | ai_usage_users | **標準 RLS 可・配線ゼロ**(Wave 1 相当へ格上げ) | 標準(共通形 policy) |
 
 → 当初「特殊 3 表 = 設計判断要」のうち、実質判断が残るのは **RLS を張らない 2 表(contact / integration)の grant 縮小可否**のみ。ai_usage_users は標準へ移す。global 3 表(ai_usage/stripe_events/clerk_events)と合わせ、**RLS 非対象 = 5 表**(global 3 + contact + integration)、**RLS 対象の残り = 13 表**(標準 12 + ai_usage_users)に整理される(§2.2 の「残り 15」= RLS 対象 13 + 非対象 2)。
+
+---
+
+## 追補2: Wave 1 実装で判明した follow-up(partial-RLS behavioral 証明の宙吊り)
+
+Wave 1(reviews / answer_events / tag_categories / tag_options / card_tags / entity_mutations / card_asset_refs / ai_usage_users の 8 表 RLS 化)に着手する際、`rls-partial-chain.test.ts` の 2 block(pull 6-stream READ / tag_option_ids WRITE)が **全表 RLS 化 → mixed(RLS+off)でなくなる**ため、full-RLS isolation regression へ改称する(assertion 不変)。
+
+**binary 判定(OT 確認事項)**: 改称後、「partial-RLS 状態が安全(1 tx に RLS 有効表 + 無効表を混ぜても正しく動く)」を **intentional に behavioral 証明する test は他に残らない(NO)**。
+- `rls-cascade` = cascade は RLS 非適用(system 駆動)の pin。C2 explicit write(tombstones/exams)は全 RLS。→ 別物。
+- `rls-ghost` = ghost context の pin。→ 別物。
+- `delete-isolation` = deleteExam(C2・explicit write 全 RLS)の delete 隔離 pin。→ 別物。
+- `lifecycle-behavioral` = C12(user.deleted)mixed tx を実走するが child data 無し + `users` 行のみ assert = incidental・weak(intentional でない)。
+- `lifecycle-null-contract` = getCurrentUser null 契約(`users` のみ)。
+
+**follow-up(Wave 2 台帳)**: partial-RLS 安全性の intentional behavioral 証明を **Wave 2 で新設**する。Wave 2 は off 表(study_sessions 等)× RLS 表が 1 tx に実在(review-events Phase0/Phase1+2 の並置、lifecycle C12)= seed 済 fixture で clean に作れる。Wave 1 で無理に作らない(YAGNI)。
+※C12 は Wave 1 後すでに mixed(RLS 7 表 + off 表)ゆえ技術的には Wave 1 でも作成可だが、OT 指示により Wave 2 へ集約する。
 </content>
 </invoke>
