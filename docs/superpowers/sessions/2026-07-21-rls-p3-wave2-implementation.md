@@ -58,7 +58,24 @@ RLS-on 下で配線経路を中心に実走。**P0RLS / 42501 / 5xx = 0**(consol
 | 3 | OCR upload(source_documents/upload_records + 月次クォータ read) | **PASS** | quota「300/300」表示(getCurrentMonthOcrPages read)。Gemini「✅ 2 問抽出」→ **POST /app/upload 200**(runUploadGuardTx source_documents insert + completeUploadTx upload_records insert)+ **/api/exams/status 200×3**(配線した source_documents read)。副作用: exam 1 + source_document 1 + card 2 + upload_records 1 + Gemini ~1p |
 | 4 | assets finalizeAsset(2 tx 分割・**テーブルビュー実添付**) | **PASS** | table view「問題文に画像を追加」→ reserveAsset 200 → **R2 PUT 200 OK**(`recallmint-dev/users/{uuid}/…webp`・owner namespace・**userId 非 undefined**)→ finalizeAsset(2tx)200 → **entity-mutations/bulk 200**(card_asset_refs)。**follow-up「テーブルビュー add の R2 実添付未検証(meta.userId undefined 懸念)」を close**(bug 非表面化) |
 | 5 | pull 6-stream + entity-mutations/bulk 回帰 | **PASS** | /api/pull(6 cursor: cards/exams/tombstones/tag_categories/tag_options/card_tags)= 200 + /api/study-days/pull 200 + entity-mutations/bulk 200(Wave1 8 表 + P2 継続正常) |
-| 6 | current_user='recallmint_app'(psql DATABASE_URL_APP) | **DEFERRED → OT** | `.env.local` の DATABASE_URL_APP が Supabase pooler だが **stg/prod 判別が取れず**(prod 境界規律)CC は psql 未実行。current_user は接続 role 属性ゆえ **Wave1 で確認済(recallmint_app)から Wave2 の policy 追加で不変**。fresh 確認要なら OT が Supabase SQL Editor で `SELECT current_user`(または RLS-P1 の rolbypassrls=f 確認済で代替) |
+| 6 | current_user / session_user='recallmint_app'(psql) | **PASS**(OT 実走) | OT が psql で `current_user` / `session_user` とも **recallmint_app** を確認(CC は stg/prod 判別不能で未実行→OT 実施)。app 接続が least-priv role = RLS 迂回しないことを裏取り |
 | 7 | P0RLS / 42501 / 5xx = 0 | **PASS** | 全経路 200。console error = sign-in の CSP img cosmetic 1 件のみ(RLS 無関係) |
 
-**残(OT)**: ① item 6 の current_user fresh 確認(任意)② rollback 演習(disable.sql→policy 5/relrowsecurity 0→re-enable + pg_policies spot-check・SQL Editor ゆえ OT)③ after 計測(prod flip 直前)④ prod flip 判断(Phase3 全表完了後)。**smoke 副作用**(test user に exam/card/asset/review 等を実書込)は上表のとおり。
+**OT 確認(2026-07-21)= Wave 2 完全 close**:
+- **item 6**: psql で current_user / session_user とも **recallmint_app** 確認済(上表反映)。
+- **logs**: Vercel / Supabase とも **P0RLS / 42501 / 5xx = 0**。
+- **rollback 演習**: `disable` → policy 5 行 / relrowsecurity **0 行** → `re-enable`(冪等)→ 5 行 / 5 行 → **enable 状態で終了**。期待どおり(disable=RLS 無効化のみ・policy 残置)。
+- **人力 smoke 1 周**: 違和感なし。
+- **smoke 副作用**(test user へ実書込): exam1 / source_document1 / card2 / upload_records1 / asset1(R2 webp)/ card_asset_refs1 / study_session・answer_events(10)・reviews(10) / user_settings 変更(smart10/custom20/fsrs off)/ Gemini ~1p。
+
+→ **RLS Phase 3 Wave 2 完全 close**(range `3bf658a..HEAD`・stg 実証まで完了)。
+
+## セキュリティ follow-up(公開前必須・未実施)
+
+- **stg `DATABASE_URL_APP` パスワード露出**: Wave 2 smoke 中、CC が `.env.local` の redaction 目的の sed を誤り、**stg app-role(recallmint_app・least-priv)のパスワードを CC のコマンド出力に一度露出**。範囲 = **stg のみ・prod 非露出**・外部送信なし(ローカル context 内)。**rotation は未実施** → **公開前(次の prod deploy 前)に rotation 実施**を follow-up として記録。※本 doc に「rotation 済」記載はしない(実施は公開前)。
+
+## 次セッション引き継ぎ(RLS Phase 3 残)
+
+- **最終 hardening wave**: 非対象 5 表(global 3 = ai_usage/stripe_events/clerk_events + contact_messages + integration_failures)の **role grant 縮小**(contact=INSERT+DELETE / integration=INSERT のみ 等・SELECT/UPDATE revoke)+ **raw getDb 封じ込め**(repository/apply 層を TenantTx のみ受領へ・DDD tx 境界整理)+ **非 tenant handle**(owner-only 台帳化 or DEFINER 経路)。
+- **prod 有効化**: Phase 3 全表(Wave1+2 +最終 hardening)完了後、**同日 before/after 計測とセット**で prod policy flip(drift 分離)。
+- **push 状況**: feat 2 commit(`2cf7b04`/`7131872`)は OT push 済(stg deploy + policy 適用済で smoke 実走)。以降の docs commit(session/close 追記)は OT の追随 push 対象。
