@@ -4,7 +4,8 @@
 
 ## 運用(正本 = CLAUDE.md「Sprint 完了 gate」)
 
-- gate = `pnpm run audit`(= `pnpm audit --audit-level critical`)。**二段階制: 現在は critical** — 下記「bump 待ち」16 件の transitive bump sprint(別途)完了を条件に `--audit-level high` へ引き上げる。
+- gate = `pnpm run audit`(= 規律外 key 検査 `scripts/check-audit-config.mjs` + `pnpm audit --audit-level high`)。二段階制は 2026-07-21 の transitive bump sprint 完了で **high へ引き上げ済**(下記「解消済」)。
+- 規律外 key 検査は機械化済: `check-audit-config.mjs` が `auditConfig` 直下に `ignoreGhsas` 以外の key を検出したら非0 + key 名出力で gate を落とす(下記 `--ignore` 禁止の機械的裏付け)。
 - exit code 意味論(pnpm 10.33.0 実測・docs は exit code 無記載): `--audit-level` **以上**の advisory が 1 件でも存在 → exit 1 / 無ければ 0。
 - builtin `pnpm audit` は同名 script より優先され level 未指定(low)で走る → gate は必ず `pnpm run audit`。
 - `--ignore-registry-errors` は使わない(fail-closed 確定・registry 障害は見えて止まる方を選ぶ)。障害時は約 70 秒+の retry(10s→1min backoff)の後 exit 1 で止まる(実測)— hang ではない。
@@ -17,9 +18,33 @@
 
 (なし — 初期状態。登録時は上記書式で追記)
 
-## スナップショット(2026-07-21・`pnpm audit` 全 48 advisories: high 16 / moderate 26 / low 6)
+## 解消済(2026-07-21 transitive bump sprint)
 
-high 16 件は **bump 待ち**(全て transitive・patched 版リリース済・受容ではない)。bump sprint で解消後、gate を high へ引き上げ、本 section を更新する。
+high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指定・`--depth` 既定 Infinity)+ vite のみ override で解消。**到達版**: brace-expansion `1.1.16`/`5.0.7`・fast-uri `3.1.4`・hono `4.12.31`・js-yaml `4.3.0`・protobufjs `7.6.5`・undici `7.28.0`・vite `8.0.16`(override)・ws `8.21.1`。直接依存の版・package.json は不変。随伴解消: moderate 26→3・low 6→3。個別 GHSA は下記 bump 前 snapshot の high 表を参照。
+
+- **vite override(撤去条件付き)**: GHSA-fx2h-pf6j-xcff。vite は宣言 range 内(vitest `^6||^7||^8` / plugin-react peer `^8.0.0`)だが、pnpm 10.33.0 の `pnpm update` は peer-suffix 付き transitive(lockfile key `vite@x.y.z(...)`)を更新しない(名前指定・`vite@^8.0.16` range 指定・`--depth Infinity`・`-r` 全て実測不発)ため、overrides で `8.0.16` に exact 固定。**撤去条件 = vitest / @vitejs/plugin-react の直接 bump 時に override を外し、override 無しで `>=8.0.16` が解決されることを `pnpm why vite` で確認して撤去**(pnpm 側の当該 update 挙動が直った場合も同様)。**固定版に新規 vite CVE が出た場合は撤去でなく override 値を当該 patched 版へ bump する**(override は解決の固定であり検出の抑止ではない — gate は override 下でも検出する)。
+
+## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
+
+### moderate(3 件)
+
+| module | GHSA | CVE | vulnerable | patched | 経路(代表) |
+|---|---|---|---|---|---|
+| esbuild | GHSA-67mh-4wv8-2f99 | - | `<=0.24.2` | `>=0.25.0` | `.>drizzle-kit>@esbuild-kit/esm-loader>@esbuild-kit/core-utils>esbuild` |
+| ip-address | GHSA-v2v4-37r5-5v8g | CVE-2026-42338 | `<=10.1.0` | `>=10.1.1` | `.>@google/genai>@modelcontextprotocol/sdk>express-rate-limit>ip-address` |
+| qs | GHSA-q8mj-m7cp-5q26 | CVE-2026-8723 | `>=6.11.1 <=6.15.1` | `>=6.15.2` | `.>@google/genai>@modelcontextprotocol/sdk>express>qs` |
+
+### low(3 件)
+
+| module | GHSA | CVE | vulnerable | patched | 経路(代表) |
+|---|---|---|---|---|---|
+| @babel/core | GHSA-4x5r-pxfx-6jf8 | CVE-2026-49356 | `<=7.29.0` | `>=7.29.6` | `.>eslint-plugin-react-hooks>@babel/core` |
+| body-parser | GHSA-v422-hmwv-36x6 | CVE-2026-12590 | `>=2.0.0 <2.3.0` | `>=2.3.0` | `.>@google/genai>@modelcontextprotocol/sdk>express>body-parser` |
+| esbuild | GHSA-g7r4-m6w7-qqqr | - | `>=0.27.3 <0.28.1` | `>=0.28.1` | `.>@vitejs/plugin-react>vite>esbuild` |
+
+## スナップショット(2026-07-21 bump 前・全 48 advisories: high 16 / moderate 26 / low 6)
+
+履歴として保持(high 16 は上記「解消済」で解消済・moderate/low の大半も随伴解消。現況は上記「残存 follow-up」が正)。
 
 ### critical(0 件)
 

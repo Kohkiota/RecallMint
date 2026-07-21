@@ -13,7 +13,7 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "audit": "pnpm audit --audit-level critical",
+    "audit": "node scripts/check-audit-config.mjs && pnpm audit --audit-level high",
     "test": "vitest run",
     "test:iso": "vitest run --config vitest.integration-pg.config.ts",
     "test:contract": "vitest run tests/contract",
