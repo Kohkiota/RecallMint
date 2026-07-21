@@ -7,3 +7,9 @@ overrides:
   postcss: ^8.5.10
   react: 19.2.7
   react-dom: 19.2.7
+
+# audit gate の受容 allow-list。用途 = patched 不在 or 理由ある真の受容のみ
+# (bump 可能な検出は受容せず台帳「bump 待ち」へ)。追加時は GHSA/CVE・理由・
+# 再検討条件を docs/audit/dependency-audit-ledger.md にセットで記録する。
+auditConfig:
+  ignoreGhsas: []
