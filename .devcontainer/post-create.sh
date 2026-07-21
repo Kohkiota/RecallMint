@@ -24,6 +24,8 @@ set -euo pipefail
 fail() { echo "✗ POSTCONDITION FAIL: $*" >&2; exit 1; }
 
 CODEX_VERSION="0.144.5"  # exact pin 必須: フラグ仕様が版で変わる実績。更新は contract gate 必須 (README §7.3)
+TSLS_VERSION="5.3.0"  # exact pin: typescript-language-server の現稼働版
+TS_VERSION="6.0.3"  # exact pin: repo package.json の typescript (^6.0.3) と同値。bump 時は同一 commit で lockstep 更新すること
 
 echo "==> [1/8] npm global prefix"
 mkdir -p ~/.npm-global ~/.local/bin "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -63,8 +65,11 @@ fi
 stripe --version >/dev/null || fail "stripe CLI が起動しない"
 
 echo "==> [5/8] TypeScript Language Server + Codex CLI"
-npm install -g typescript typescript-language-server
-typescript-language-server --version >/dev/null || fail "typescript-language-server が起動しない"
+npm install -g "typescript@${TS_VERSION}" "typescript-language-server@${TSLS_VERSION}"
+[ "$(typescript-language-server --version)" = "$TSLS_VERSION" ] \
+  || fail "typescript-language-server 版が pin ${TSLS_VERSION} と不一致: $(typescript-language-server --version)"
+[ "$(tsc --version)" = "Version ${TS_VERSION}" ] \
+  || fail "global tsc 版が pin ${TS_VERSION} と不一致: $(tsc --version)"
 # Codex: 認証は手動 codex login (ChatGPT) 運用 = API key passthrough なし。
 # bwrap 回避のため scripts/ai は danger-full-access + git clean detector で read-only 運用。
 npm install -g "@openai/codex@${CODEX_VERSION}"
@@ -100,6 +105,12 @@ claude plugin install typescript-lsp@claude-plugins-official 2>&1 \
 PLUGIN_LIST="$(claude plugin list 2>/dev/null || true)"
 grep -q "typescript-lsp" <<<"$PLUGIN_LIST" || fail "typescript-lsp plugin が未導入"
 
+# typescript-lsp が実際に型診断を返すことの実証(plugin 登録だけでは binary が
+# 機能しているかは分からない。stdio LSP handshake で probe file を開き
+# publishDiagnostics を受信できるかを検証する)。
+node .devcontainer/verify-lsp-diagnostics.mjs \
+  || fail "typescript-language-server が型診断を返さない"
+
 # 検証不能(捏造しない)の明示:
 # - superpowers / frontend-design は project .claude/settings.json の enabledPlugins を
 #   初回 claude セッションが解決するため、post-create 時点では確認手段がない。
@@ -119,6 +130,7 @@ claude --version
 stripe --version
 codex --version
 typescript-language-server --version
+tsc --version
 google-chrome --version
 psql --version
 

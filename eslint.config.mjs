@@ -486,6 +486,7 @@ const config = [
       'next-env.d.ts',
       'coverage/**',
       'public/vendor/**',
+      '.devcontainer/**', // ops scripts (app source でない。React/Next 前提 rule と不整合)
     ],
   },
 ]
