@@ -122,3 +122,51 @@
 
 - **RLS 非対象 5 表**: `ai_usage`/`stripe_events`/`clerk_events`(global・user_id 無)+ `contact_messages`(匿名 user_id null・app read 無)+ `integration_failures`(audit・nullable・FK 無・app read 無)。tenant RLS を張らず role grant で処理(最終 hardening wave)。
 - **Wave 2(5 表)**: `study_sessions`/`user_settings`/`assets`/`source_documents`/`upload_records`。各々 standalone raw write/read の context 配線後に RLS 化。本 Wave では touch しない。
+
+---
+
+# RLS-P3 Wave 2 追記: 軽配線 5 表 RLS matrix + partial-RLS 証明 + 保証層
+
+起点: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md` §5.3 Wave 2(主要 path は context 済だが素の getDb 直呼びが数点残る 5 表)。各表の残存 raw getDb を `withTenantTx` で context 下に入れた後、P2/Wave 1 同型 policy(`*_tenant`・FOR ALL・USING=WITH CHECK=`user_id=(SELECT app_current_user_id())`)を `db/policies/rls-p3-wave2-enable.sql` で追加。test:iso は global-setup が p2/wave1-enable の直後に適用(毎 run Wave 2 も RLS on)。rollback は `rls-p3-wave2-disable.sql`(P2/Wave 1 と対称・re-enable 冪等)。
+
+## 表 4: Wave 2 5 表 × 配線した raw site × context 供給元 × behavioral test(IN)
+
+5 表すべて **IN**(tenant RLS 対象・owner-scoped)。単独防御(app 層 eq を外し policy 単独で隔離)+ WITH CHECK(42501)+ context 未設定 P0RLS(loud)+ 配線経路(DB 層)は `rls-wave2.test.ts` が pin。
+
+| 表 | 配線した raw site(withTenantTx 化) | context 供給元 | behavioral test |
+|---|---|---|---|
+| **study_sessions** | review-events/bulk Phase 0 `upsertSessionGuarded`(route:91) | withTenantTx(Phase 0 単純 wrap・processSession 合流せず) | rls-wave2(read/write/WITH CHECK/loud + upsertSessionGuarded 配線) |
+| **user_settings** | save-session-limit/custom/fsrs(write 3)+ settings/page・study/custom・study/smart(read 3) | withTenantTx(PK=user_id・述語 user_id のみ) | rls-wave2(read/write[whole-table→A のみ]/WITH CHECK/loud) |
+| **assets** | asset-actions: reserve insert / finalize(read tx→headObject→write tx の 2 分割)/ resolve select | withTenantTx(finalize は R2 I/O を tx 外に出す 2 tx。TOCTOU 防御=`status='reserved'` WHERE) | rls-wave2(read/write/WITH CHECK[A→B move 含む]/loud)+ `asset-actions.test.ts`(TOCTOU guard :503/:515/:542) |
+| **source_documents** | getExamStatusMap:44 / hasActiveProcessingUpload:167 / exams/status route:49(read 3。reconcileStale:86 は既 context 済) | withTenantTx | rls-wave2(read/write/WITH CHECK/loud)+ `ocr-owner-scope.test.ts`(O1・completeUploadTx/markFailed) |
+| **upload_records** | upload/page:97 `getCurrentMonthOcrPages` caller 差替(canRunOcr は既 guard tx) | withTenantTx(getCurrentMonthOcrPages は dbc: TenantDb 引数化済) | rls-wave2(read/write/WITH CHECK/loud + getCurrentMonthOcrPages 配線) |
+
+## 既 context 済サイト(Task 6 flip 前 re-grep で検証・本 Wave で変更なし)
+
+5 表を触る production 経路のうち、P2/Wave 1 の共有 tx で既に context 済のため配線不要と確認したサイト(RLS-on 化で P0RLS しないことの完全性証跡):
+- `lib/cards/card-field-handlers.ts:181`(assets read)= `handleImages(tx,…)` が processMutation の per-mutation tx(setTenantContext 済)で受ける tx。
+- `lib/exams/list.ts:154`(source_documents read)= `getActiveExamsForUser(dbc: TenantDb)` 引数化・呼び元が withTenantTx で wrap。
+- `lib/clerk/handle-clerk-event.ts:219-233`(study_sessions/user_settings/upload_records/assets の lifecycle DELETE/UPDATE)= tx 冒頭 setTenantContext(:211・C12)。
+- `app/(app)/app/upload/_actions/upload-persistence.ts`(source_documents/upload_records write・completeUploadTx/markFailed/saveExtractedCards)= 各 tx 冒頭 setTenantContext。
+- `app/(app)/app/upload/_actions/upload-guard.ts:57`(source_documents read/insert・runUploadGuardTx)= tx 冒頭 setTenantContext。
+- `lib/exams/source-doc-status.ts:87`(source_documents UPDATE + upload_records insert・reconcileStaleProcessing)= tx 冒頭 setTenantContext(RLS-P2)。
+
+## partial-RLS(混在 tx)の intentional 証明
+
+`rls-partial-mixed.test.ts` が「**global-off 表 × tenant-on 表** が 1 tx に同居しても on 隔離・off 非スコープ・on 違反時 tx 原子的 rollback」を pin。実経路 = `incrementAiUsage`(`ai_usage`[off・global] + `ai_usage_users`[on] を 1 tenant tx で UPSERT)。
+
+- **主張範囲(限定)**: 「global-off × tenant-on の transaction 互換性」に限る。移行期に tenant 表が一時的に off である安全性、および off 側の tenant 隔離は**証明しない**(off=global ゆえ隔離対象外)。
+- **実経路置換の理由**: Step 0 追補2 の想定「study_sessions off × on」は Wave 2 が study_sessions を on 化するため無効化。Wave 2 後も残る stable な mixed tx は恒久 off の global 表 × on 表ゆえ `incrementAiUsage` に置換(clean な実在経路・人工 fixture 不要)。
+
+## 保証層の分離(Codex cross-check 指摘)
+
+配線の保証は層で担う(同一 test を複数層の証明とみなさない):
+- **① caller 配線**(route/action/page が実際に withTenantTx で包む)= canonical review + Task 6 の機械 re-grep + `pnpm build`/`typecheck`。iso は Next auth/cache/R2 境界を叩かないため caller 配線自体は pin しない。全 site の context userId が auth 由来(`user.id`/`userId`)である点も review 観点。
+- **② policy 単独防御**(app 層 eq を外して policy 単独で隔離)= `rls-wave2.test.ts`。
+- **③ DB 層実経路**(wire 済関数/query が context 下で動く)= `rls-wave2.test.ts`(upsertSessionGuarded/getCurrentMonthOcrPages)+ `ocr-owner-scope.test.ts`。
+- **④ stg smoke** = RLS-on 下の operational(隔離証明でなく「配線経路が RLS-on で従来どおり動く」)。
+
+## 既存 test adaptation(Wave 2 で必須・assertion 不変)
+
+- `ocr-owner-scope.test.ts`: ground-truth 観測 helper(`statusOf`/`uploadRecordsWithFilename` + inline read 3)が source_documents/upload_records を raw getDb で読む → RLS-on 化で P0RLS。**owner 接続(getFixtureOwnerDb・RLS bypass)へ切替**(as-tenant.ts 規約: 観測/seed は owner)。刺激(completeUploadTx/markFailed)は自前 setTenantContext ゆえ getDb() のまま。
+- unit(save-*/settings・study page/exams-status route/review-events bulk route+contract/asset-actions): withTenantTx 化に伴い **pass-through stub**(`(db,_u,fn)=>fn(db)`)を追加(GUC 挙動は iso で担保)。

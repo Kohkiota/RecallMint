@@ -25,6 +25,7 @@ import {
 import {
   type TenantFixture,
   closeFixtureOwnerDb,
+  getFixtureOwnerDb,
   seedTwoTenants,
   truncateAllUserTables,
 } from './setup/fixture'
@@ -34,8 +35,11 @@ afterAll(async () => {
   await closeFixtureOwnerDb()
 })
 
+// RLS-P3 Wave2: source_documents / upload_records が RLS-on 化したため、ground-truth 観測は
+// owner 接続 (getFixtureOwnerDb・RLS bypass) で行う (as-tenant.ts 規約: 観測/seed は owner)。
+// 刺激 (completeUploadTx/markFailed) は自前で setTenantContext するため getDb() のまま。
 async function statusOf(sourceDocumentId: string): Promise<string | undefined> {
-  const rows = await getDb()
+  const rows = await getFixtureOwnerDb()
     .select({ status: sourceDocuments.status })
     .from(sourceDocuments)
     .where(eq(sourceDocuments.id, sourceDocumentId))
@@ -43,7 +47,7 @@ async function statusOf(sourceDocumentId: string): Promise<string | undefined> {
 }
 
 async function uploadRecordsWithFilename(filename: string) {
-  return getDb()
+  return getFixtureOwnerDb()
     .select({
       userId: uploadRecords.userId,
       status: uploadRecords.status,
@@ -76,7 +80,7 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
       ).resolves.toBeUndefined()
 
       // A の doc が completed + 完了メタが確定
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({
           status: sourceDocuments.status,
           pagesProcessed: sourceDocuments.pagesProcessed,
@@ -92,7 +96,7 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
 
       // 厳密 1 行 update の裏取り: completed になった doc は table 全体で 1 行のみ
       // (B の doc に波及していない)。
-      const completed = await getDb()
+      const completed = await getFixtureOwnerDb()
         .select({ id: sourceDocuments.id })
         .from(sourceDocuments)
         .where(eq(sourceDocuments.status, 'completed'))
@@ -143,7 +147,7 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
         }),
       ).resolves.toBeUndefined()
 
-      const rows = await getDb()
+      const rows = await getFixtureOwnerDb()
         .select({
           status: sourceDocuments.status,
           errorMessage: sourceDocuments.errorMessage,
