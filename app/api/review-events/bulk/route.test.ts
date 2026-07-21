@@ -108,11 +108,25 @@ vi.mock('@/lib/db', () => ({
 // tenant context の実 GUC 挙動は tenant-tx.test.ts + Task 9 実 PG で担保 (保証不変)。
 vi.mock('@/lib/db/tenant-tx', () => ({
   setTenantContext: vi.fn(async () => {}),
-  // RLS-P3 Wave2: Phase 0 の upsertSessionGuarded は withTenantTx で包まれた。RLS-P3
-  // Task 2 で withTenantTx(userId, fn) 署名へ変更(getDb を内部取得)。pass-through stub で
-  // fn(fakeDb) を直呼びし、session upsert は従来どおり fakeDb.insert で処理させる
-  // (processSession の Phase1+2 は db.transaction を直接使うため本 stub の影響外)。
-  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) => fn(fakeDb),
+  // RLS-P3 Task 3: Phase 0 (session upsert) に続き Phase 1+2 (processSession) も
+  // withTenantTx 経由になった。よって stub が渡す tx は session upsert (study_sessions
+  // insert = fakeDb の記録/merge fake) と Phase1+2 (select/insert/update/execute =
+  // makeFakeTx) の両方を満たす必要がある。study_sessions insert のみ fakeDb へ委譲し、
+  // 他 table + select/update/execute は makeFakeTx を使う (txShouldThrow も透過)。
+  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) => {
+    const tx = makeFakeTx(state.txShouldThrow) as Record<string, unknown>
+    const txInsert = tx.insert as (table: unknown) => unknown
+    tx.insert = (table: unknown) => {
+      let name = ''
+      try {
+        name = getTableName(table as Parameters<typeof getTableName>[0])
+      } catch {
+        name = ''
+      }
+      return name === 'study_sessions' ? fakeDb.insert(table) : txInsert(table)
+    }
+    return fn(tx)
+  },
 }))
 
 // ---------------------------------------------------------------------------

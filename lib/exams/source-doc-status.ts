@@ -14,8 +14,7 @@
 //     分離することで、cleanup 失敗時も表示は正しく維持される。
 
 import { and, desc, eq, gte, lt } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
-import { setTenantContext, withTenantTx } from '@/lib/db/tenant-tx'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
@@ -81,12 +80,9 @@ export async function reconcileStaleProcessing(
   now: Date = new Date(),
 ): Promise<void> {
   try {
-    const db = getDb()
     const staleThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
 
-    await db.transaction(async (tx) => {
-      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-      await setTenantContext(tx, userId)
+    await withTenantTx(userId, async (tx) => {
       // 1. stale processing 行を failed に UPDATE し、更新行の id / filename /
       //    fileSizeBytes を返す (二重計上回避のため RETURNING 結果のみを起点にする)
       const updated = await tx

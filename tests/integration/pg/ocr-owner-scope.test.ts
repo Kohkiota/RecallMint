@@ -15,7 +15,8 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeDb, getDb } from '@/lib/db'
+import { closeDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
 import {
   completeUploadTx,
@@ -37,7 +38,9 @@ afterAll(async () => {
 
 // RLS-P3 Wave2: source_documents / upload_records が RLS-on 化したため、ground-truth 観測は
 // owner 接続 (getFixtureOwnerDb・RLS bypass) で行う (as-tenant.ts 規約: 観測/seed は owner)。
-// 刺激 (completeUploadTx/markFailed) は自前で setTenantContext するため getDb() のまま。
+// RLS-P3 Task 3: completeUploadTx は tx を受け取る apply へ変わったため、刺激側は
+// withTenantTx(userId, ...) で tenant context 付き tx を張って渡す (markFailed は内部で
+// withTenantTx を張るため引数不変)。
 async function statusOf(sourceDocumentId: string): Promise<string | undefined> {
   const rows = await getFixtureOwnerDb()
     .select({ status: sourceDocuments.status })
@@ -68,15 +71,17 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
   describe('completeUploadTx', () => {
     it('completes tenant A own document (positive control)', async () => {
       await expect(
-        completeUploadTx(getDb(), {
-          sourceDocumentId: fixture.a.sourceDocumentId,
-          userId: fixture.a.userId,
-          filename: 'complete-A.pdf',
-          totalSize: 123,
-          totalPages: 3,
-          cardsExtracted: 5,
-          ocrCostYen: 1.5,
-        }),
+        withTenantTx(fixture.a.userId, (tx) =>
+          completeUploadTx(tx, {
+            sourceDocumentId: fixture.a.sourceDocumentId,
+            userId: fixture.a.userId,
+            filename: 'complete-A.pdf',
+            totalSize: 123,
+            totalPages: 3,
+            cardsExtracted: 5,
+            ocrCostYen: 1.5,
+          }),
+        ),
       ).resolves.toBeUndefined()
 
       // A の doc が completed + 完了メタが確定
@@ -114,15 +119,17 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
     // できてしまう。fix 後は 0 行 → throw し、B の doc は不変。
     it('does not complete tenant B document via tenant A context (negative)', async () => {
       await expect(
-        completeUploadTx(getDb(), {
-          sourceDocumentId: fixture.b.sourceDocumentId,
-          userId: fixture.a.userId,
-          filename: 'complete-cross.pdf',
-          totalSize: 999,
-          totalPages: 9,
-          cardsExtracted: 9,
-          ocrCostYen: 9.9,
-        }),
+        withTenantTx(fixture.a.userId, (tx) =>
+          completeUploadTx(tx, {
+            sourceDocumentId: fixture.b.sourceDocumentId,
+            userId: fixture.a.userId,
+            filename: 'complete-cross.pdf',
+            totalSize: 999,
+            totalPages: 9,
+            cardsExtracted: 9,
+            ocrCostYen: 9.9,
+          }),
+        ),
       ).rejects.toThrow()
 
       // B の doc は seed 時の 'processing' のまま

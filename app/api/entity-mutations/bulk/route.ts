@@ -33,8 +33,7 @@ import { z } from 'zod'
 import { eq, and, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
-import { getDb } from '@/lib/db'
-import { setTenantContext } from '@/lib/db/tenant-tx'
+import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
 import { entityMutations, type User } from '@/lib/db/schema'
 import {
   ENTITY_MUTATION_REGISTRY,
@@ -95,80 +94,78 @@ const payloadSchema = z
 // log INSERT する。
 // ---------------------------------------------------------------------------
 
+// RLS-P3: caller が per-mutation の withTenantTx(user.id, ...) で独立 tx (+ 冒頭
+// setTenantContext) を張り、この関数はその tx を受け取る。per-mutation の commit/
+// rollback 境界は caller の withTenantTx 1 呼び出し = 1 tx に一致し (group 並列も
+// 温存)、tx handle は tx 終了後に保持されない (apply 層 = TenantTx 受領)。
 async function processMutation(
-  db: ReturnType<typeof getDb>,
+  tx: TenantTx,
   user: User,
   mutation: ParsedMutation,
 ): Promise<'applied' | 'skipped' | 'failed'> {
-  return db.transaction(async (tx) => {
-    // RLS-P2: per-mutation tx の冒頭で tenant context (app.user_id GUC) を張る
-    // (group 並列は温存 — set_config は各 tx-local ゆえ mutation ごとに張る)。
-    await setTenantContext(tx, user.id)
+  // ---- 1. registry 検索 ----
+  const entry = lookupRegistryEntry(mutation.entity_type, mutation.op)
+  if (!entry) {
+    // 未知の (entity_type, op) は per-mutation failed
+    return 'failed'
+  }
 
-    // ---- 1. registry 検索 ----
-    const entry = lookupRegistryEntry(mutation.entity_type, mutation.op)
-    if (!entry) {
-      // 未知の (entity_type, op) は per-mutation failed
-      return 'failed'
+  // ---- 2. registry の per-op patch zod で検証 ----
+  const patchParsed = entry.patch.safeParse(mutation.patch)
+  if (!patchParsed.success) {
+    return 'failed'
+  }
+
+  // ---- 3. 冪等チェック: 同 mutation_id (+ user_id) が既存なら skipped ----
+  // skipLog の op (delete) は log 行を持たないため、 mutation_id 既存判定もできず
+  // skip 判定不能。 ただし apply 関数自体が冪等 (card_id 不在 → silent no-op、
+  // tombstone onConflictDoNothing) なので、 再送時に重複適用にはならない。
+  if (!entry.skipLog) {
+    const existing = await tx
+      .select({ mutationId: entityMutations.mutationId })
+      .from(entityMutations)
+      .where(
+        and(
+          eq(entityMutations.mutationId, mutation.mutation_id),
+          eq(entityMutations.userId, user.id),
+        ),
+      )
+      .limit(1)
+    if (existing.length > 0) {
+      // 既適用 → skip (applied にカウントしない、 failed でもない)
+      return 'skipped'
     }
+  }
 
-    // ---- 2. registry の per-op patch zod で検証 ----
-    const patchParsed = entry.patch.safeParse(mutation.patch)
-    if (!patchParsed.success) {
-      return 'failed'
-    }
+  // ---- 4. apply ----
+  const applyResult = await entry.apply(
+    tx,
+    user.id,
+    mutation.entity_id,
+    patchParsed.data,
+  )
+  if (applyResult !== 'applied') {
+    return applyResult
+  }
 
-    // ---- 3. 冪等チェック: 同 mutation_id (+ user_id) が既存なら skipped ----
-    // skipLog の op (delete) は log 行を持たないため、 mutation_id 既存判定もできず
-    // skip 判定不能。 ただし apply 関数自体が冪等 (card_id 不在 → silent no-op、
-    // tombstone onConflictDoNothing) なので、 再送時に重複適用にはならない。
-    if (!entry.skipLog) {
-      const existing = await tx
-        .select({ mutationId: entityMutations.mutationId })
-        .from(entityMutations)
-        .where(
-          and(
-            eq(entityMutations.mutationId, mutation.mutation_id),
-            eq(entityMutations.userId, user.id),
-          ),
-        )
-        .limit(1)
-      if (existing.length > 0) {
-        // 既適用 → skip (applied にカウントしない、 failed でもない)
-        return 'skipped'
-      }
-    }
+  // ---- 5. log INSERT (skipLog の op はスキップ) ----
+  if (!entry.skipLog) {
+    await tx
+      .insert(entityMutations)
+      .values({
+        mutationId: mutation.mutation_id,
+        entityType: mutation.entity_type,
+        entityId: mutation.entity_id,
+        userId: user.id,
+        op: mutation.op,
+        patch: mutation.patch,
+        editedAt: new Date(mutation.edited_at),
+        appliedAt: sql`now()`,
+      })
+      .onConflictDoNothing({ target: entityMutations.mutationId })
+  }
 
-    // ---- 4. apply ----
-    const applyResult = await entry.apply(
-      tx,
-      user.id,
-      mutation.entity_id,
-      patchParsed.data,
-    )
-    if (applyResult !== 'applied') {
-      return applyResult
-    }
-
-    // ---- 5. log INSERT (skipLog の op はスキップ) ----
-    if (!entry.skipLog) {
-      await tx
-        .insert(entityMutations)
-        .values({
-          mutationId: mutation.mutation_id,
-          entityType: mutation.entity_type,
-          entityId: mutation.entity_id,
-          userId: user.id,
-          op: mutation.op,
-          patch: mutation.patch,
-          editedAt: new Date(mutation.edited_at),
-          appliedAt: sql`now()`,
-        })
-        .onConflictDoNothing({ target: entityMutations.mutationId })
-    }
-
-    return 'applied'
-  })
+  return 'applied'
 }
 
 // ---------------------------------------------------------------------------
@@ -222,15 +219,16 @@ export async function POST(req: Request): Promise<Response> {
   // -- per-mutation 処理 (envelope-level catch で transient/permanent を分岐) --
   // per-mutation 内部の throw は loop 内 catch が 200+failed[] で吸収するため、 ここの
   // 外側 try/catch が拾うのは「per-mutation に閉じない envelope-level 致命 error」
-  // (getDb 失敗 / connection 全断 / 予期せぬ runtime error 等)。
+  // (loop 前の groupMutationsByEntityKey / 並列 orchestration 等の予期せぬ runtime error)。
+  // RLS-P3 以降: getDb init 失敗は auth (getCurrentUser) で先に surface し (500)、 per-mutation
+  // 中の connection 断は loop 内 catch が failed[] へ吸収する (client は pending 残置で再送) ため、
+  // いずれも envelope には到達しない。
   // classifyBulkError で transient なら 503 + Retry-After、 permanent-4xx は 400 系
   // (caller は zod 既存経路で 400 を返しているため到達想定なし)、 unknown DB は
   // 503 default (silent lost write 回避、 spec §1.1 目的 3)。
   let applied = 0
   const failed: string[] = []
   try {
-    const db = getDb()
-
     // Y-2 T-B3 #1b: 順序保証付き選択並列化 (案 X)。
     // - `${entity_type}:${entity_id}` で group 化
     // - cascade-like 1 件でも検出 → 全体 serial fallback (= 現状経路を丸ごと再利用)
@@ -246,7 +244,10 @@ export async function POST(req: Request): Promise<Response> {
       // cascade-like 検出: 現行 for-of 経路をそのまま使う (prod 実績ある経路丸ごと再利用)。
       for (const mutation of mutations) {
         try {
-          const result = await processMutation(db, user, mutation)
+          // RLS-P3: per-mutation の独立 tx (+ 冒頭 setTenantContext) を withTenantTx で張る。
+          const result = await withTenantTx(user.id, (tx) =>
+            processMutation(tx, user, mutation),
+          )
           if (result === 'applied') {
             applied++
           } else if (result === 'failed') {
@@ -289,7 +290,10 @@ export async function POST(req: Request): Promise<Response> {
             assertSequentialPath(group, 'serial')
             for (const mutation of group) {
               try {
-                const result = await processMutation(db, user, mutation)
+                // RLS-P3: per-mutation の独立 tx (+ 冒頭 setTenantContext) を withTenantTx で張る。
+                const result = await withTenantTx(user.id, (tx) =>
+                  processMutation(tx, user, mutation),
+                )
                 resultByMutationId.set(mutation.mutation_id, result)
               } catch (err) {
                 logger.warn({

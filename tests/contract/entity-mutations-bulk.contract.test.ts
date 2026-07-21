@@ -116,16 +116,36 @@ vi.mock('@/lib/tags/apply-tag-mutation', () => ({
   applyTagOptionDelete: vi.fn(async () => 'applied'),
 }))
 
-// getDb mock: throws if state.getDbError is set (envelope-level 503 path),
-// otherwise returns the fakeDb built from makeFakeDb(state).
+// getDb mock: returns the fakeDb built from makeFakeDb(state).
+// RLS-P3 Task 3: getDb は per-mutation withTenantTx (= 実 tenant-tx.ts) 内で呼ばれる
+// ようになったため、envelope-level 致命 (state.getDbError) の注入は下の group 化 helper
+// mock 側へ付け替える (loop 前に必ず走る = envelope catch が 503 で拾える)。
 // makeFakeDb is imported below and referenced lazily — it is resolved by the
 // time getDb() is called in any test (after all module imports are processed).
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(() => {
-    if (state.getDbError) throw state.getDbError
-    return makeFakeDb(state)
-  }),
+  getDb: vi.fn(() => makeFakeDb(state)),
 }))
+
+// RLS-P3 Task 3: envelope-level 致命の注入点。旧来 loop 前の `const db = getDb()` の
+// throw を envelope catch (503) が拾っていた。getDb が per-mutation withTenantTx へ
+// 移ったため、同じく loop 前に必ず走る groupMutationsByEntityKey を注入点にする
+// (503 / Retry-After / envelope_failed の assertion は不変)。getDbError=null の通常
+// path は actual に委譲するため他 test の挙動は不変。
+vi.mock('@/lib/sync/server/group-mutations-by-entity-key', async (importActual) => {
+  const actual =
+    await importActual<
+      typeof import('@/lib/sync/server/group-mutations-by-entity-key')
+    >()
+  return {
+    ...actual,
+    groupMutationsByEntityKey: (
+      ...args: Parameters<typeof actual.groupMutationsByEntityKey>
+    ) => {
+      if (state.getDbError) throw state.getDbError
+      return actual.groupMutationsByEntityKey(...args)
+    },
+  }
+})
 
 // ── Route under test ──────────────────────────────────────────────────────────
 import { POST } from '../../app/api/entity-mutations/bulk/route'

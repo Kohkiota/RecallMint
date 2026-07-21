@@ -66,9 +66,10 @@ const { state } = vi.hoisted(() => ({
     // tx を throw させるフラグ
     txShouldThrow: false,
 
-    // T-A1: envelope-level 致命 error (getDb 経路で throw 等) を simulate するため、
-    // getDb() 自体を throw させる error を test 側から差し替え可能にする。
-    // null = 既存挙動 (fakeDb を返す)、 非 null = throw する error。
+    // T-A1: envelope-level 致命 error を simulate するため、loop 前に必ず走る
+    // groupMutationsByEntityKey (下 mock) から throw させる error を差し替え可能にする。
+    // RLS-P3 Task 3 で注入点を getDb() から group 化 helper へ移した (名称は履歴踏襲)。
+    // null = 既存挙動 (throw なし)、 非 null = envelope-level で throw する error。
     getDbError: null as null | Error,
 
     // logger warn の記録
@@ -159,13 +160,34 @@ vi.mock('@/lib/tags/apply-tag-mutation', () => ({
   applyTagOptionDelete: vi.fn(async () => 'applied'),
 }))
 
-// getDb は fakeDb を返す (T-A1: state.getDbError 設定で throw に切替可能)
+// getDb は fakeDb を返す。
+// RLS-P3 Task 3: getDb 呼び出しは per-mutation withTenantTx (= 実 tenant-tx.ts) 内へ
+// 移ったため、getDb 自体は常に fakeDb を返すだけにする。envelope-level 致命の注入は
+// 下の group 化 helper mock 側へ付け替える。
 vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(() => {
-    if (state.getDbError) throw state.getDbError
-    return fakeDb
-  }),
+  getDb: vi.fn(() => fakeDb),
 }))
+
+// RLS-P3 Task 3: 旧来は envelope-level (loop 前) の `const db = getDb()` の throw を
+// envelope catch (503) が拾っていた。getDb が per-mutation withTenantTx へ移ったため、
+// 同じく loop 前に必ず走る groupMutationsByEntityKey を envelope-fatal の注入点にする
+// (state.getDbError をここで throw)。503 / Retry-After / envelope_failed の assertion は不変。
+// state.getDbError=null の通常 path では actual に委譲するため他 test の挙動は不変。
+vi.mock('@/lib/sync/server/group-mutations-by-entity-key', async (importActual) => {
+  const actual =
+    await importActual<
+      typeof import('@/lib/sync/server/group-mutations-by-entity-key')
+    >()
+  return {
+    ...actual,
+    groupMutationsByEntityKey: (
+      ...args: Parameters<typeof actual.groupMutationsByEntityKey>
+    ) => {
+      if (state.getDbError) throw state.getDbError
+      return actual.groupMutationsByEntityKey(...args)
+    },
+  }
+})
 
 // ---------------------------------------------------------------------------
 // fake tx
@@ -995,8 +1017,8 @@ describe('POST /api/entity-mutations/bulk', () => {
   // --- T-A1: envelope-level transient classification (audit §10.3 (b) #11) ---
 
   it('T-A1: envelope-level で transient PG code (40001) を catch → 503 + Retry-After:30', async () => {
-    // getDb 経路で transient SQLSTATE を持つ error を simulate する (実機では
-    // connection 全断 / serialization failure 等が envelope-level に到達する経路)。
+    // envelope-level (loop 前の group 化) で transient SQLSTATE を持つ error を simulate
+    // する (実機では connection 全断 / serialization failure 等が envelope-level に到達)。
     // client retry controller (lib/retry/transient-error.ts) は HTTP 503 を transient
     // 判定 → 自動 backoff retry が成立。
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
@@ -1235,14 +1257,14 @@ describe('POST /api/entity-mutations/bulk', () => {
   })
 
   // (e) R8 envelope 致命の分類 2 層不変 (並列化前後で 503/Retry-After 経路維持)
-  it('T-B3 (e): envelope-level getDb 致命 → 並列化前後で 503 + Retry-After 維持、 Promise.allSettled 不発火、 logger.error のみ', async () => {
+  it('T-B3 (e): envelope-level 致命 → 並列化前後で 503 + Retry-After 維持、 Promise.allSettled 不発火、 logger.error のみ', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const allSettledSpy = vi.spyOn(Promise, 'allSettled')
     state.getDbError = new Error('connection failed')
 
     // 10 件異 entity_id の update_field (= cascade なし、 通常なら並列 path に倒れる構成)
-    // を入れて、 getDb 自体の throw を踏ませる。 並列化前後で envelope catch が 503 に
-    // 倒れること、 group 内 throw として吸い込まれないことを pin する。
+    // を入れて、 loop 前の group 化で envelope-level throw を踏ませる。 並列化前後で
+    // envelope catch が 503 に倒れること、 group 内 throw として吸い込まれないことを pin する。
     const mutations = Array.from({ length: 10 }, (_, i) => {
       const cardId = `99999999-9999-4999-aaaa-${String(i).padStart(12, '0')}`
       const mutationId = `88888888-8888-4888-aaaa-${String(i).padStart(12, '0')}`

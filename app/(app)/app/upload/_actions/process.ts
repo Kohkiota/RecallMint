@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import {
   type CardOption,
   type CardImage,
@@ -209,8 +209,6 @@ async function _processUpload(
     }
   }
 
-  const db = getDb()
-
   // ---------------------------------------------------------------------------
   // -- guard transaction: advisory lock + in-flight check + quota + exam/sourceDoc INSERT --
   // ---------------------------------------------------------------------------
@@ -228,7 +226,11 @@ async function _processUpload(
   //
   // hashtext() 衝突は別 user の稀な直列化のみ (OCR queue に落ちる程度)、
   // correctness には影響しないため許容 (user.id は UUID、衝突確率は無視できる)。
-  const guardResult = await runUploadGuardTx(db, user, destination, { filename, fileType, totalSize, totalPages })
+  // RLS-P3: guard 一式を owner-scoped な単一 withTenantTx tx に閉じる
+  // (advisory xact lock + exam/source_documents INSERT の atomicity を保つ)。
+  const guardResult = await withTenantTx(user.id, (tx) =>
+    runUploadGuardTx(tx, user, destination, { filename, fileType, totalSize, totalPages }),
+  )
 
   // -- guard transaction 結果の分岐 --
   if (guardResult.outcome === 'in_progress') {
@@ -395,12 +397,14 @@ async function _processUpload(
     // 下 catch で SAVE_FAILED を返す。 inserted row index と pipelineResult.cards
     // の index 対応は drizzle bulk INSERT + RETURNING の VALUES 順保持に依拠
     // (preview 構築 L648-649 と同じ既存契約)。
-    insertedCards = await saveExtractedCards(db, {
-      userId: user.id,
-      examId,
-      cardRows,
-      customProps: pipelineResult.cards.map((c) => c.custom_props),
-    })
+    insertedCards = await withTenantTx(user.id, (tx) =>
+      saveExtractedCards(tx, {
+        userId: user.id,
+        examId,
+        cardRows,
+        customProps: pipelineResult.cards.map((c) => c.custom_props),
+      }),
+    )
   } catch (err) {
     // cards 保存失敗: OCR 自体は成功し cost が発生済のため実値を台帳に failed 記録
     await markFailed(sourceDocumentId, err, {
@@ -443,15 +447,17 @@ async function _processUpload(
   // source_documents が 'processing' のまま残留する。 markFailed で status を
   // 'failed' に確定させ、 stuck processing を防ぐ。
   try {
-    await completeUploadTx(db, {
-      sourceDocumentId,
-      userId: user.id,
-      filename,
-      totalSize,
-      totalPages,
-      cardsExtracted: insertedCards.length,
-      ocrCostYen: pipelineResult.costYen,
-    })
+    await withTenantTx(user.id, (tx) =>
+      completeUploadTx(tx, {
+        sourceDocumentId,
+        userId: user.id,
+        filename,
+        totalSize,
+        totalPages,
+        cardsExtracted: insertedCards.length,
+        ocrCostYen: pipelineResult.costYen,
+      }),
+    )
   } catch (err) {
     // OCR + cards INSERT は成功済 (cost 発生済) のため、 markFailed には実値
     // (pagesProcessed / ocrCostYen) を渡し台帳に failed として記録する。

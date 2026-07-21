@@ -13,8 +13,7 @@
 // OCR pipeline 内の `callWithRetry` から `onAttempt` callback 経由で呼ばれる。
 
 import { eq, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
-import { setTenantContext, type TenantDb } from '@/lib/db/tenant-tx'
+import { withTenantTx, type TenantDb } from '@/lib/db/tenant-tx'
 import { aiUsage, aiUsageUsers } from '@/lib/db/schema'
 import { todayInJst } from '@/lib/jst'
 
@@ -23,11 +22,9 @@ export async function incrementAiUsage(
   count = 1,
   now?: Date,
 ): Promise<void> {
-  const db = getDb()
   const today = todayInJst(now)
 
-  await db.transaction(async (tx) => {
-    await setTenantContext(tx, userId)
+  await withTenantTx(userId, async (tx) => {
     await tx
       .insert(aiUsage)
       .values({ date: today, count })
@@ -48,7 +45,7 @@ export async function incrementAiUsage(
 
 // 当日 (JST) のグローバル AI 呼び出し合計。 GEMINI_DAILY_LIMIT guard で利用。
 // row が無ければ 0 を返す。
-// RLS-P2 §6.6: 接続 (dbc) を必須引数で受け取り、 guard tx から呼ばれる時に別 getDb()
+// RLS-P2 §6.6: 接続 (dbc) を必須引数で受け取り、 guard tx から呼ばれる時に別の
 // 接続を開かず tx をそのまま使う (pool 圧を避ける)。
 export async function getTodayAiUsageGlobal(
   dbc: TenantDb,

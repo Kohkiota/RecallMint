@@ -8,8 +8,11 @@ import type { DB } from './index'
 export type TenantTx = Parameters<Parameters<DB['transaction']>[0]>[0]
 
 // RLS 対象の read/write helper が受け取る接続ハンドル。通常は withTenantTx が
-// 渡す TenantTx。DB を許すのは非 tx 文脈からの呼出互換のため (Phase 3 で
-// TenantTx のみへ絞る想定・spec §4.1)。
+// 渡す TenantTx。DB arm を残すのは非 tx 文脈からの呼出互換のため: read 系 helper
+// (getTodayAiUsageGlobal / canRunOcr / getSessionCards 等) の unit test が tx を
+// 張らずに mocked getDb() を直接渡して query 構築を検証する (RLS-P3 Task 3 時点で
+// production caller は全て TenantTx を渡すが、この test 経路が DB arm を実使用する
+// ため TenantTx へは絞らず union を維持・spec §4.1 の絞り込みは据え置き)。
 export type TenantDb = DB | TenantTx
 
 // tx-local に app.user_id GUC を設定する。第 3 引数 true = SET LOCAL 相当

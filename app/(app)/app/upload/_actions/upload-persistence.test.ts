@@ -101,11 +101,11 @@ function freshCaptured(): Captured {
 
 // returning() が cards INSERT rows を id/title で zip して返す挙動を再現する。
 // row.id は入力 row の id を使う (client 生成 id をそのまま採番する現挙動)。
+// RLS-P3: saveExtractedCards は自前で transaction を開かず、caller (withTenantTx) が
+// 張った tenant tx を受け取る。よって fake も transaction ラッパを持たず tx を直接返す。
+// tx identity 観測点 (txHandedToCallback) = 渡す tx そのもの。
 function makeDb(captured: Captured) {
   const tx: Record<string, unknown> = {}
-
-  // RLS-P2: tx 冒頭 setTenantContext(tx) が tx.execute を呼ぶため no-op execute を生やす。
-  tx.execute = async () => []
 
   tx.insert = (table: unknown) => ({
     values: (rows: SaveArgs['cardRows']) => ({
@@ -133,14 +133,9 @@ function makeDb(captured: Captured) {
     }),
   })
 
-  const db = {
-    transaction: (cb: (tx: unknown) => unknown) => {
-      captured.txHandedToCallback = tx
-      return cb(tx)
-    },
-  }
+  captured.txHandedToCallback = tx
 
-  return db as Parameters<
+  return tx as unknown as Parameters<
     typeof import('./upload-persistence').saveExtractedCards
   >[0]
 }
@@ -273,14 +268,12 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     ])
   })
 
-  it('exams UPDATE は transaction callback に渡された tx 経由で発生する (tx identity)', async () => {
+  it('exams UPDATE は渡された tx 経由で発生する (tx identity)', async () => {
     const { saveExtractedCards } = await import('./upload-persistence')
     const cardRows = makeCardRows(1)
-    // update() を呼んだ tx の identity を捕捉し、 callback tx と一致することを確認する。
+    // update() を呼んだ tx の identity を捕捉し、 渡した tx と一致することを確認する。
     let txUsedByUpdate: unknown = null
     const tx: Record<string, unknown> = {}
-    // RLS-P2: tx 冒頭 setTenantContext(tx) の tx.execute 用 no-op。
-    tx.execute = async () => []
     tx.insert = (_table: unknown) => ({
       values: (rows: SaveArgs['cardRows']) => ({
         returning: () =>
@@ -298,22 +291,18 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
         set: () => ({ where: () => Promise.resolve(undefined) }),
       }
     }
-    let txHanded: unknown = null
-    const db = {
-      transaction: (cb: (t: unknown) => unknown) => {
-        txHanded = tx
-        return cb(tx)
-      },
-    } as Parameters<
-      typeof import('./upload-persistence').saveExtractedCards
-    >[0]
 
-    await saveExtractedCards(db, {
-      userId: 'user-1',
-      examId: 'exam-1',
-      cardRows,
-      customProps: [undefined],
-    })
-    expect(txUsedByUpdate).toBe(txHanded)
+    await saveExtractedCards(
+      tx as unknown as Parameters<
+        typeof import('./upload-persistence').saveExtractedCards
+      >[0],
+      {
+        userId: 'user-1',
+        examId: 'exam-1',
+        cardRows,
+        customProps: [undefined],
+      },
+    )
+    expect(txUsedByUpdate).toBe(tx)
   })
 })

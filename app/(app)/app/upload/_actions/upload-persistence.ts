@@ -1,6 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm'
-import { getDb } from '@/lib/db'
-import { setTenantContext } from '@/lib/db/tenant-tx'
+import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
 import {
   cards,
   sourceDocuments,
@@ -10,10 +9,12 @@ import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
 import { bumpExamCardCount } from '@/lib/cards/card-count'
 import { logger } from '@/lib/logger'
 
-// 保存 tx: cards bulk INSERT + applyOcrTags (同 tx 採番) + exams.cardCount 加算。
-// 1 関数 = 1 tx 保証。 applyOcrTags は必ずこの tx 内に留まる (同 tx 採番が競合安全の前提)。
+// 保存 apply: cards bulk INSERT + applyOcrTags (同 tx 採番) + exams.cardCount 加算。
+// RLS-P3: caller が withTenantTx で tenant context 付き tx を張り、この関数はその tx
+// を受け取る (apply 層 = TenantTx 受領・tenant-tx.ts:6)。全操作は 1 tx = caller の
+// withTenantTx 境界に留まり、applyOcrTags も同 tx 採番 (競合安全の前提) が保たれる。
 export async function saveExtractedCards(
-  db: ReturnType<typeof getDb>,
+  tx: TenantTx,
   args: {
     userId: string
     examId: string
@@ -21,34 +22,31 @@ export async function saveExtractedCards(
     customProps: Array<Parameters<typeof applyOcrTags>[2][number]['custom_props']>
   },
 ): Promise<Array<{ id: string; title: string }>> {
-  return db.transaction(async (tx) => {
-    // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-    await setTenantContext(tx, args.userId)
-    const inserted = await tx
-      .insert(cards)
-      .values(args.cardRows)
-      .returning({ id: cards.id, title: cards.title })
-    await applyOcrTags(
-      tx,
-      args.userId,
-      inserted.map((row, i) => ({
-        id: row.id,
-        custom_props: args.customProps[i],
-      })),
-    )
-    await bumpExamCardCount(tx, {
-      examId: args.examId,
-      userId: args.userId,
-      delta: args.cardRows.length,
-    })
-    return inserted
+  const inserted = await tx
+    .insert(cards)
+    .values(args.cardRows)
+    .returning({ id: cards.id, title: cards.title })
+  await applyOcrTags(
+    tx,
+    args.userId,
+    inserted.map((row, i) => ({
+      id: row.id,
+      custom_props: args.customProps[i],
+    })),
+  )
+  await bumpExamCardCount(tx, {
+    examId: args.examId,
+    userId: args.userId,
+    delta: args.cardRows.length,
   })
+  return inserted
 }
 
-// 完了 tx: source_documents を completed に更新 + upload_records 台帳 append。
-// 1 関数 = 1 tx 保証。 cards INSERT 後に呼ばれ、 commit/rollback が一蓮托生。
+// 完了 apply: source_documents を completed に更新 + upload_records 台帳 append。
+// RLS-P3: caller の withTenantTx が張る tenant tx を受け取る。source_documents UPDATE
+// と upload_records INSERT は同 tx = commit/rollback が一蓮托生 (throw で両方 rollback)。
 export async function completeUploadTx(
-  db: ReturnType<typeof getDb>,
+  tx: TenantTx,
   args: {
     sourceDocumentId: string
     userId: string
@@ -59,42 +57,38 @@ export async function completeUploadTx(
     ocrCostYen: number
   },
 ): Promise<void> {
-  await db.transaction(async (tx) => {
-    // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-    await setTenantContext(tx, args.userId)
-    // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
-    // 正常フローの sourceDocumentId は runUploadGuardTx が同一 user で INSERT した
-    // owner-scoped な id ゆえ id/userId 一致で厳密 1 行。affected 0 行は所有権違反
-    // または doc 不在なので完了 tx を確定させず throw (tx rollback で台帳も残さない)。
-    const updated = await tx
-      .update(sourceDocuments)
-      .set({
-        status: 'completed',
-        pagesProcessed: args.totalPages,
-        cardsExtracted: args.cardsExtracted,
-        ocrCostYen: args.ocrCostYen,
-        completedAt: sql`now()`,
-      })
-      .where(
-        and(
-          eq(sourceDocuments.id, args.sourceDocumentId),
-          eq(sourceDocuments.userId, args.userId),
-        ),
-      )
-      .returning({ id: sourceDocuments.id })
-    if (updated.length === 0) {
-      throw new Error(
-        'completeUploadTx: source document not found or not owned by user',
-      )
-    }
-    await tx.insert(uploadRecords).values({
-      userId: args.userId,
-      filename: args.filename,
-      fileSizeBytes: args.totalSize,
-      pagesProcessed: args.totalPages,
-      ocrCostYen: args.ocrCostYen,
+  // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
+  // 正常フローの sourceDocumentId は runUploadGuardTx が同一 user で INSERT した
+  // owner-scoped な id ゆえ id/userId 一致で厳密 1 行。affected 0 行は所有権違反
+  // または doc 不在なので完了 tx を確定させず throw (tx rollback で台帳も残さない)。
+  const updated = await tx
+    .update(sourceDocuments)
+    .set({
       status: 'completed',
+      pagesProcessed: args.totalPages,
+      cardsExtracted: args.cardsExtracted,
+      ocrCostYen: args.ocrCostYen,
+      completedAt: sql`now()`,
     })
+    .where(
+      and(
+        eq(sourceDocuments.id, args.sourceDocumentId),
+        eq(sourceDocuments.userId, args.userId),
+      ),
+    )
+    .returning({ id: sourceDocuments.id })
+  if (updated.length === 0) {
+    throw new Error(
+      'completeUploadTx: source document not found or not owned by user',
+    )
+  }
+  await tx.insert(uploadRecords).values({
+    userId: args.userId,
+    filename: args.filename,
+    fileSizeBytes: args.totalSize,
+    pagesProcessed: args.totalPages,
+    ocrCostYen: args.ocrCostYen,
+    status: 'completed',
   })
 }
 
@@ -113,12 +107,9 @@ export async function markFailed(
     ocrCostYen: number
   },
 ): Promise<void> {
-  const db = getDb()
   const msg = err instanceof Error ? err.message : String(err)
   try {
-    await db.transaction(async (tx) => {
-      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-      await setTenantContext(tx, audit.userId)
+    await withTenantTx(audit.userId, async (tx) => {
       // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
       // best-effort no-throw 契約は維持: affected 0 行 (所有権違反 or doc 不在) は
       // warn のみで台帳 (upload_records) を残さず tx を no-op 化する。

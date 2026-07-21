@@ -4,8 +4,7 @@ import 'server-only'
 
 import { z } from 'zod'
 import { type User } from '@/lib/db/schema'
-import type { getDb } from '@/lib/db'
-import { setTenantContext } from '@/lib/db/tenant-tx'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { type ReplayCardState } from '@/lib/cards/replay-card'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
 import { logger } from '@/lib/logger'
@@ -79,7 +78,6 @@ type ParsedEvent = z.infer<typeof eventSchema>
 // future: multi-session payload 対応の拡張ポイント。 今日は handler から 1 回だけ呼ぶ。
 
 async function processSession(
-  db: ReturnType<typeof getDb>,
   user: User,
   session: BulkPayload['session'],
   events: ParsedEvent[],
@@ -96,9 +94,11 @@ async function processSession(
   let txFailed: string[] = []
 
   try {
-    await db.transaction(async (tx) => {
-      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-      await setTenantContext(tx, user.id)
+    // RLS-P3: withTenantTx が接続取得 + tenant tx + 冒頭 setTenantContext を担う。
+    // 内部 try/catch が rollback-on-throw を握って failed[] を組む契約を保つため、
+    // tx 境界はこの関数が withTenantTx で所有する (caller に tx を渡す形にすると
+    // throw を握った後に commit されてしまい partial write が残る)。
+    await withTenantTx(user.id, async (tx) => {
       // ------------------------------------------------------------------
       // Phase 1 — cards SELECT (owner-scoped) → cardStateMap + option index
       // ------------------------------------------------------------------

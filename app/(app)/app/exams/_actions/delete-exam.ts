@@ -3,8 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
-import { getDb } from '@/lib/db'
-import { setTenantContext } from '@/lib/db/tenant-tx'
+import { withTenantTx } from '@/lib/db/tenant-tx'
 import { cards, exams, tombstones } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
@@ -40,15 +39,12 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
   const user = await getCurrentUser()
   if (!user) return { ok: false, error: '認証が必要です' }
 
-  const db = getDb()
-
   // 子 card id は catch 節の serializeDbError に渡すため tx 外に宣言しておく。
   let childCardIds: string[] = []
 
   try {
-    await db.transaction(async (tx) => {
-      // RLS-P2: owner-scoped tx の冒頭で tenant context (app.user_id GUC) を張る。
-      await setTenantContext(tx, user.id)
+    // RLS-P3: withTenantTx が接続取得 + tenant tx + 冒頭 setTenantContext を担う。
+    await withTenantTx(user.id, async (tx) => {
       // §4-1: exam 存在・owner 確認
       // 0 行 = 不在 / 他 user → tombstone 挿入なしで早期 return (idempotent)。
       const examRows = await tx

@@ -30,7 +30,6 @@
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
-import { getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { type User } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
@@ -81,8 +80,6 @@ export async function POST(req: Request): Promise<Response> {
   }
   const { session, events } = parsed.data as BulkPayload
 
-  const db = getDb()
-
   // -- Phase 0: study_sessions upsert (events tx の外) --
   // PK = session_id。 同 session_id への再送は status / completed_at を
   // 最新値で上書き (updated_at は $onUpdate で自動)。
@@ -132,8 +129,8 @@ export async function POST(req: Request): Promise<Response> {
     })
   }
 
-  // -- Phase 1+2: events を単一 tx で処理 --
-  const { failed } = await processSession(db, user, session, events)
+  // -- Phase 1+2: events を単一 tx で処理 (processSession が内部で withTenantTx を張る) --
+  const { failed } = await processSession(user, session, events)
 
   return Response.json({ ok: true, failed }, { status: 200 })
 }

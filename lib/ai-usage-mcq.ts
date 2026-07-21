@@ -43,7 +43,7 @@ export function jstMonthBoundsUtc(now?: Date): { start: Date; end: Date } {
 // upload_records のうち status='completed' かつ created_at が当月内の行の
 // pages_processed を SUM する。 `now` は test 注入用。
 // RLS-P2 §6.6: 接続 (dbc) を必須引数で受け取り、 呼び元 (guard tx など) が保持中の
-// tx をそのまま渡せるようにする (別 getDb() 接続を開かない = pool 圧を避ける)。
+// tx をそのまま渡せるようにする (別接続を開かない = pool 圧を避ける)。
 export async function getCurrentMonthOcrPages(
   userId: string,
   dbc: TenantDb,

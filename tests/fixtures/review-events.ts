@@ -390,20 +390,40 @@ export function makeFakeTx(
 /**
  * Build the top-level fakeDb for the review-events route.
  *
+ * RLS-P3 Task 3: Phase 0 (session upsert) に続き Phase 1+2 (processSession) も
+ * withTenantTx 経由になった。contract test の withTenantTx stub は fn(makeFakeDb(state))
+ * で tx を直接渡すため、makeFakeDb 自体が session upsert (study_sessions insert =
+ * merge fake) と Phase1+2 (select/insert/update/execute = makeFakeTx) の両方を満たす
+ * 1 つの tx である必要がある。study_sessions insert のみ session upsert chain、他 table +
+ * select/update/execute は makeFakeTx へ委譲する。db.transaction 経由の旧呼出も維持する。
+ *
  * @example
- * vi.mock('@/lib/db', () => ({ getDb: vi.fn(() => makeFakeDb(state)) }))
+ * vi.mock('@/lib/db/tenant-tx', () => ({ withTenantTx: (_u, fn) => fn(makeFakeDb(state)) }))
  */
 export function makeFakeDb(state: ReviewEventsState) {
+  const tx = makeFakeTx(state, state.txShouldThrow)
+  const txInsert = tx.insert
   return {
-    insert: (_table: unknown) => ({
-      values: (vals: Record<string, unknown>) =>
-        makeSessionUpsertChain(state, vals),
-    }),
+    ...tx,
 
-    transaction: async (cb: (tx: unknown) => Promise<unknown>) => {
-      const tx = makeFakeTx(state, state.txShouldThrow)
-      return cb(tx)
+    insert: (table: unknown) => {
+      let name = ''
+      try {
+        name = getTableName(table as Parameters<typeof getTableName>[0])
+      } catch {
+        name = ''
+      }
+      if (name === 'study_sessions') {
+        return {
+          values: (vals: Record<string, unknown>) =>
+            makeSessionUpsertChain(state, vals),
+        }
+      }
+      return txInsert(table)
     },
+
+    transaction: async (cb: (tx: unknown) => Promise<unknown>) =>
+      cb(makeFakeTx(state, state.txShouldThrow)),
   }
 }
 

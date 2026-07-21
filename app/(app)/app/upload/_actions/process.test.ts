@@ -45,6 +45,12 @@ const {
     // Min4 test: true のとき完了 tx を強制 throw する (B1 後は guard / cards
     // INSERT tx に続く 3 番目の transaction = txIndex 2)
     completionTxShouldFail: false,
+    // RLS-P3: withTenantTx が tx ごとに getDb() を呼ぶため、tx 連番は getDb
+    // closure でなく dbState に持たせ processUpload 単位で beforeEach reset する。
+    // 注意: completionTxShouldFail の txIndex 2 targeting は guard(0)/cards(1)/completion(2)
+    // の間に他の withTenantTx caller (incrementAiUsage/canRunOcr 等) が mock 済で発火しない
+    // 前提。将来 _processUpload に未 mock の withTenantTx を挟むと ordinal がずれる。
+    txCallCount: 0,
   },
 }))
 
@@ -196,25 +202,19 @@ vi.mock('@/lib/db', () => {
   }
   return {
     getDb: () => {
-      // getDb() が呼ばれるたびに localTxCallCount をリセットすることで、
-      // processUpload 呼び出し単位で「1 回目 = guard tx」判定が正しく動く。
-      // vi.mock factory は module-scope で一度だけ評価されるが、 getDb() は
-      // _processUpload 内で毎回呼ばれるため、 テスト間で count がリセットされる。
-      let localTxCallCount = 0
+      // RLS-P3: withTenantTx が tx ごとに getDb() を呼ぶため、tx 連番は getDb
+      // closure ではなく dbState.txCallCount に持たせる (processUpload 単位で
+      // beforeEach reset)。txIndex 0 = guard / 1 = cards INSERT / 2 = 完了 tx。
+      // markFailed など後続 tx は連番が続くだけで isGuardTx=false、かつ完了 tx より
+      // 後に走るため completion 強制 throw (txIndex 2) の対象にもならない。
       return {
         ...dbApi(false),
         transaction: async (
           fn: (tx: ReturnType<typeof dbApi>) => Promise<unknown>,
         ) => {
-          // txIndex 0 = guard tx (advisory lock + in-flight check)
-          // txIndex 1 = B1 cards INSERT tx (cards bulk + exams.card_count +N)
-          // txIndex 2 = 完了 tx (source_documents completed + upload_records)
-          const isGuardTx = localTxCallCount === 0
-          const txIndex = localTxCallCount
-          localTxCallCount++
-          // Min4 test: 完了 tx (txIndex 2) を強制 throw。 markFailed は別 getDb()
-          // インスタンスで localTxCallCount=0 から始まるため txIndex 2 に達せず、
-          // この強制 throw の影響を受けない。
+          const isGuardTx = dbState.txCallCount === 0
+          const txIndex = dbState.txCallCount
+          dbState.txCallCount++
           if (txIndex === 2 && dbState.completionTxShouldFail) {
             throw new Error('Neon connection lost during completion tx')
           }
@@ -272,6 +272,7 @@ beforeEach(() => {
   dbState.advisoryLockAcquired = true
   dbState.inflightProcessingDoc = null
   dbState.completionTxShouldFail = false
+  dbState.txCallCount = 0
 
   mockGetCurrentUser.mockResolvedValue({
     id: 'user-uuid',
