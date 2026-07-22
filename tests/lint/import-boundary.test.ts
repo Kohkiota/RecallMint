@@ -284,3 +284,314 @@ describe('import-boundary: cross-feature visualization allowlist (P3 W7)', () =>
     ).toHaveLength(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// getDb repo-wide ban (RLS-P3 Task 4). Tasks 1-3 converted every structural
+// site so raw getDb() is now used ONLY inside lib/db/**; this rule ENFORCES
+// that permanently. Each assertion mirrors the GENERAL/EXEMPT pairing already
+// established above: a synthetic non-exempt site proves the rule fires, and a
+// real exempt site proves the carve-out actually applies.
+// ---------------------------------------------------------------------------
+describe('import-boundary: getDb repo-wide ban (RLS-P3 Task 4)', () => {
+  let eslint: ESLint
+
+  beforeAll(() => {
+    eslint = new ESLint({ cwd: ROOT })
+  })
+
+  it('GENERAL: a lib/ file (outside lib/db/) importing getDb via the @/lib/db alias IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getdb-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getDb import outside lib/db/ must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: an app/ file importing getDb via the @/lib/db alias IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'app/(app)/app/exams/_actions/synthetic-getdb-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getDb import in app/ must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: the @/lib/db/index subpath bypass IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db/index'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getdb-subpath-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      '@/lib/db/index subpath bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: a relative ../db bypass (from a lib/ subdir) IS flagged', async () => {
+    const code = `import { getDb } from '../db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getdb-relative-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'relative ../db bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: the @/lib/db/ trailing-slash alias bypass IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db/'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getdb-trailingslash-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      '@/lib/db/ trailing-slash bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: a relative ../db/ trailing-slash bypass IS flagged', async () => {
+    const code = `import { getDb } from '../db/'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getdb-relslash-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'relative ../db/ trailing-slash bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GENERAL: a root-level production entrypoint (proxy.ts) importing getDb IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'proxy.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getDb in a root-level production file (proxy.ts / instrumentation.ts) must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('EXEMPT: a root-level test file (proxy.test.ts) importing getDb is NOT flagged', async () => {
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'proxy.test.ts'),
+    })
+    expect(
+      restrictedMessages(results).filter((m) => /getDb/.test(m.message)),
+      'root-level test files legitimately connect as the app-role via getDb',
+    ).toHaveLength(0)
+  })
+
+  it('GENERAL: an ops script (scripts/*.ts) importing getDb IS flagged', async () => {
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'scripts/synthetic-getdb-script.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getDb in an ops script must be flagged (scripts use getAdminDb, not raw getDb)',
+    ).not.toHaveLength(0)
+  })
+
+  it('EXEMPT: getAdminDb in an ops script (scripts/*.ts) is NOT flagged', async () => {
+    const code = `import { getAdminDb } from '@/lib/db'\nexport const x = () => getAdminDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'scripts/synthetic-getadmindb-script.ts'),
+    })
+    expect(
+      restrictedMessages(results).filter((m) => /getDb/.test(m.message)),
+      'getAdminDb is the sanctioned owner handle for ops scripts and must NOT be flagged',
+    ).toHaveLength(0)
+  })
+
+  it('getNonTenantDb import (same location as the flagged getDb case) is NOT flagged', async () => {
+    const code = `import { getNonTenantDb } from '@/lib/db'\nexport const x = () => getNonTenantDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-getnontenantdb-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getNonTenantDb must NOT be flagged — the ban is getDb-specific',
+    ).toHaveLength(0)
+  })
+
+  it('`import type { DB }` (same location) is NOT flagged — type imports stay legal', async () => {
+    const code = `import type { DB } from '@/lib/db'\nexport type X = DB\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-dbtype-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'import type { DB } must NOT be flagged',
+    ).toHaveLength(0)
+  })
+
+  it('REGRESSION GUARD: a namespace import of an unrelated lib/db subpath (@/lib/db/schema) is NOT flagged', async () => {
+    // Guards against the gitignore-glob pitfall found while implementing this
+    // task: a `group`-style pattern like `@/lib/db/*` (or a bare `*/lib/db` /
+    // `**/lib/db`) recursively matches EVERY subpath under lib/db (gitignore
+    // directory semantics), so `import * as schema from '@/lib/db/schema'`
+    // got flagged even though schema.ts doesn't export getDb. The rule
+    // config uses an anchored `regex` (exact-match, no recursion) instead —
+    // this test pins that fix.
+    const code = `import * as schema from '@/lib/db/schema'\nexport const x = schema\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/exams/synthetic-schema-namespace-test.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'namespace import of @/lib/db/schema must NOT be flagged (real regression: tests/integration/pg/setup/completeness.ts)',
+    ).toHaveLength(0)
+  })
+
+  it('EXEMPT: real lib/db/tenant-tx.ts (internal relative getDb import) is NOT flagged', async () => {
+    const results = await eslint.lintFiles([path.join(ROOT, 'lib/db/tenant-tx.ts')])
+    const restricted = restrictedMessages(results).filter(m =>
+      /getDb/.test(m.message),
+    )
+    expect(
+      restricted,
+      'lib/db/tenant-tx.ts legitimately imports getDb internally and must not be flagged',
+    ).toHaveLength(0)
+  })
+
+  it('EXEMPT: real test file outside lib/db/ importing getDb (lib/exams/list.owner-isolation.test.ts) is NOT flagged', async () => {
+    const results = await eslint.lintFiles([
+      path.join(ROOT, 'lib/exams/list.owner-isolation.test.ts'),
+    ])
+    const restricted = restrictedMessages(results).filter(m => /getDb/.test(m.message))
+    expect(
+      restricted,
+      'test files legitimately connect as the app-role via getDb and must not be flagged',
+    ).toHaveLength(0)
+  })
+
+  it('EXEMPT: the integration setup fixture (tests/integration/pg/setup/fixture.ts) is NOT flagged', async () => {
+    const results = await eslint.lintFiles([
+      path.join(ROOT, 'tests/integration/pg/setup/fixture.ts'),
+    ])
+    const restricted = restrictedMessages(results).filter(m => /getDb/.test(m.message))
+    expect(
+      restricted,
+      'the H2 2-tenant fixture is the one deliberate non-.test.ts exemption under tests/**',
+    ).toHaveLength(0)
+  })
+
+  it('FIXED SITE: lib/clerk/handle-clerk-event.ts no longer imports getDb (Task 4 fix) and is not flagged', async () => {
+    const source = readFileSync(
+      path.join(ROOT, 'lib/clerk/handle-clerk-event.ts'),
+      'utf8',
+    )
+    expect(
+      source,
+      'handle-clerk-event.ts must not import getDb — it used ReturnType<typeof getDb> purely for typing and now uses the exported DB type instead',
+    ).not.toMatch(/import\s*\{[^}]*\bgetDb\b/)
+    const results = await eslint.lintFiles([
+      path.join(ROOT, 'lib/clerk/handle-clerk-event.ts'),
+    ])
+    const restricted = restrictedMessages(results).filter(m => /getDb/.test(m.message))
+    expect(restricted, 'handle-clerk-event.ts should have zero getDb-related restricted messages').toHaveLength(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // Bypass-gap regression pins (RLS-P3 Task 4 review follow-up). Three latent
+  // bypasses were closed after the initial implementation:
+  //   Gap 1 — the 4 per-file allowlists set no-restricted-imports to `off`,
+  //           which ALSO wiped the getDb ban for those production app files.
+  //   Gap 2 — the 5 domain-purity blocks banned the exact `@/lib/db` alias but
+  //           NOT its subpath (`@/lib/db/index`) / relative (`../../db`) getDb
+  //           forms.
+  //   Gap 3 — the ban regex omitted `./db` (a file directly in lib/ root
+  //           reaching lib/db/index.ts).
+  // Each is pinned below: flagged where it must be, and NOT over-reaching to
+  // getNonTenantDb / import type.
+  // -------------------------------------------------------------------------
+
+  it('GAP-1: an allowlisted app file (custom-filter-form.tsx path) importing getDb IS flagged', async () => {
+    // The per-file allowlist now re-sets the rule to the getDb ban only (was
+    // `off`, which dropped the ban). getDb must be flagged even though the
+    // file's own cross-feature exemption is preserved.
+    const code = `import { getDb } from '@/lib/db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'app/(app)/app/study/custom/_components/custom-filter-form.tsx'),
+    })
+    expect(
+      restrictedMessages(results),
+      'getDb in an allowlisted file must be flagged (allowlist keeps only the getDb ban)',
+    ).not.toHaveLength(0)
+  })
+
+  it('GAP-1: an allowlisted app file importing getNonTenantDb / import type DB is NOT flagged', async () => {
+    // The allowlist retains ONLY the getDb ban — it must not over-reach to other
+    // @/lib/db symbols, and type imports stay legal.
+    const fp = path.join(ROOT, 'app/(app)/app/study/custom/_components/custom-filter-form.tsx')
+    const nonTenant = `import { getNonTenantDb } from '@/lib/db'\nexport const y = () => getNonTenantDb()\n`
+    const typeOnly = `import type { DB } from '@/lib/db'\nexport type Z = DB\n`
+    expect(
+      restrictedMessages(await eslint.lintText(nonTenant, { filePath: fp })),
+      'getNonTenantDb must NOT be flagged in an allowlisted file (ban is getDb-specific)',
+    ).toHaveLength(0)
+    expect(
+      restrictedMessages(await eslint.lintText(typeOnly, { filePath: fp })),
+      'import type { DB } must NOT be flagged in an allowlisted file',
+    ).toHaveLength(0)
+  })
+
+  it('GAP-2: a domain-dir file importing getDb via the @/lib/db/index subpath IS flagged', async () => {
+    // Domain-purity blocks ban the exact `@/lib/db` alias but NOT the subpath;
+    // the composed GETDB_BAN.patterns close that in every domain dir.
+    const code = `import { getDb } from '@/lib/db/index'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/stripe/domain/synthetic-getdb-subpath.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'domain-dir @/lib/db/index getDb bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GAP-2: a domain-dir file importing getDb via a relative ../../db IS flagged', async () => {
+    // lib/stripe/domain/x.ts → ../../db === lib/db. The domain infra ban doesn't
+    // match this source string; GETDB_BAN.patterns does.
+    const code = `import { getDb } from '../../db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/stripe/domain/synthetic-getdb-relative.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'domain-dir ../../db getDb bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+
+  it('GAP-2: a domain-dir getNonTenantDb (subpath) / import type DB is NOT flagged — ban stays getDb-specific', async () => {
+    const fp = path.join(ROOT, 'lib/stripe/domain/synthetic-getnontenant.ts')
+    const nonTenant = `import { getNonTenantDb } from '@/lib/db/index'\nexport const y = () => getNonTenantDb()\n`
+    const typeOnly = `import type { DB } from '@/lib/db'\nexport type Z = DB\n`
+    expect(
+      restrictedMessages(await eslint.lintText(nonTenant, { filePath: fp })),
+      'getNonTenantDb via subpath must NOT be flagged by the getDb ban',
+    ).toHaveLength(0)
+    expect(
+      restrictedMessages(await eslint.lintText(typeOnly, { filePath: fp })),
+      'import type { DB } must NOT be flagged in a domain dir (allowTypeImports)',
+    ).toHaveLength(0)
+  })
+
+  it('GAP-3: a lib/-root file importing getDb via ./db IS flagged', async () => {
+    // A file sitting directly in lib/ root can reach lib/db/index.ts via `./db`
+    // — the regex now covers `./db` / `./db/index`.
+    const code = `import { getDb } from './db'\nexport const x = () => getDb()\n`
+    const results = await eslint.lintText(code, {
+      filePath: path.join(ROOT, 'lib/synthetic-getdb-libroot.ts'),
+    })
+    expect(
+      restrictedMessages(results),
+      'lib/-root ./db getDb bypass must be flagged',
+    ).not.toHaveLength(0)
+  })
+})

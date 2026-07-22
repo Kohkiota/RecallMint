@@ -218,6 +218,85 @@ const LIB_REVERSE_DEP_COMPONENTS = {
     '(1 known site — column-pinning.ts, columns-as-data SSoT — allowlisted per-file below.)',
 }
 
+// ---------------------------------------------------------------------------
+// getDb repo-wide ban (RLS-P3 Task 4, Codex#2.1/#2.2). Tasks 1-3 converted every
+// structural site so raw `getDb()` is now used ONLY inside `lib/db/**` (verified
+// by repo-wide grep). This block ENFORCES that permanently: production code
+// must use `withTenantTx(userId, fn)` (tenant path) or `getNonTenantDb()`
+// (non-tenant path) — never import `getDb` directly. `getDb` itself stays
+// exported (lib/db internals use it via relative import, e.g.
+// `lib/db/tenant-tx.ts`'s `import { getDb } from './index'`) — the restriction
+// is lint-only, not a removed export (Codex#2.2). Only the named symbol
+// `getDb` is restricted — `getNonTenantDb` / `withTenantTx` / `getAdminDb` /
+// `closeDb` / the `DB` type are all unrestricted, and `import type` is always
+// allowed (allowTypeImports).
+//
+// Bypass-route coverage (Codex#2.1): `paths` restricts the exact `@/lib/db`
+// alias named-import. `patterns` closes the subpath (`@/lib/db/index`) and
+// relative-import bypasses (`../db`, `../../db` [+ /index variants], and the
+// `../lib/db` [+ /index] forms reachable from lib/'s sibling directories, plus
+// `./index` per the brief's defensive suggestion).
+//
+// NOTE (gitignore-glob pitfall, found + fixed while implementing this task):
+// a `patterns.group` glob-style entry (`@/lib/db/*`, or even a bare `*/lib/db`
+// / `**/lib/db`) FALSE-POSITIVED on `import * as schema from '@/lib/db/schema'`
+// (tests/integration/pg/setup/completeness.ts). Two compounding reasons: (1)
+// `no-restricted-imports`'s `group` matcher is the `ignore` npm package
+// (gitignore semantics), where a pattern matching a "directory" path
+// (`@/lib/db`) recursively matches everything nested under it
+// (`@/lib/db/schema` included) — there is no glob syntax to match a path
+// WITHOUT its descendants; (2) separately, the rule always conservatively
+// flags a NAMESPACE import (`import * as x`) against every configured
+// `importNames` for any matching source, since it cannot statically prove the
+// namespace isn't used to reach the restricted name — even though
+// `@/lib/db/schema` doesn't export `getDb` at all. Fix: switch the subpath /
+// relative-bypass entry from `group` (glob) to `regex` (anchored `^...$`,
+// exact-match only, no directory recursion) — `no-restricted-imports` supports
+// either on a pattern entry, both composable with `importNames` /
+// `allowTypeImports`. Verified with the `ignore` package directly (matches
+// `@/lib/db` and `../db` but NOT `@/lib/db/schema` / `../db/schema`).
+// Dynamic `import()` / `require()` of getDb are NOT used anywhere in the
+// codebase (grep-verified 2026-07-21) — no additional detection is added for
+// them (over-engineering beyond what static `no-restricted-imports` covers).
+// ---------------------------------------------------------------------------
+const GETDB_BAN_MESSAGE =
+  'getDb is restricted to lib/db/ internals (RLS-P3 Task 4). Use withTenantTx(userId, fn) for the tenant path, or getNonTenantDb() for the non-tenant path.'
+
+const GETDB_BAN = {
+  paths: [
+    {
+      name: '@/lib/db',
+      importNames: ['getDb'],
+      allowTypeImports: true,
+      message: GETDB_BAN_MESSAGE,
+    },
+  ],
+  patterns: [
+    {
+      // Anchored (^...$) exact-match regex — deliberately NOT a `group` glob
+      // (see NOTE above for why glob recurses into unrelated subpaths like
+      // `@/lib/db/schema`). Matches the source strings that resolve to
+      // lib/db/index.ts and could import getDb: the alias with subpath or
+      // trailing slash (`@/lib/db/index`, `@/lib/db/`); relative via an
+      // explicit `lib/db` segment (`../lib/db`, `../../lib/db`); relative
+      // assuming the importer sits inside lib/ (`../db`, `../../db`); and
+      // same-directory `./db` from a file in lib/ root (a real bypass a future
+      // `lib/foo.ts` alongside `lib/ai-usage-mcq.ts` could use). The trailing
+      // `(?:/index)?/?` covers the optional `/index` subpath and directory
+      // trailing-slash forms (`@/lib/db/`, `../db/`, `./db/`). The `$` anchor
+      // keeps it from over-matching `@/lib/db/schema` / `./db/schema`, and
+      // `importNames: ['getDb']` keeps a `./db` in a non-lib dir (no getDb
+      // export) from ever firing.
+      regex:
+        '^(?:@/lib/db|(?:\\.\\./)+lib/db|(?:\\.\\./)+db|\\./db)(?:/index)?/?$',
+      caseSensitive: true,
+      importNames: ['getDb'],
+      allowTypeImports: true,
+      message: GETDB_BAN_MESSAGE,
+    },
+  ],
+}
+
 const config = [
   ...nextCoreWebVitals,
   ...nextTypescript,
@@ -247,6 +326,36 @@ const config = [
     },
   },
   // ---------------------------------------------------------------------------
+  // Block A-getdb: repo-wide getDb ban applied to lib/**/components/** (RLS-P3
+  // Task 4). Must come AFTER Block A (flat-config rule options REPLACE, not
+  // merge, per file — same caveat the domain blocks below document) so it wins
+  // for non-exempt files; re-includes LIB_NO_APP_IMPORTS so Block A's
+  // app/-layer boundary is not lost for those files. `ignores` exempts
+  // `lib/db/**` (internal legitimate getDb use — e.g. tenant-tx.ts) and test
+  // files (`**/*.test.ts`/`**/*.test.tsx` — e.g. lib/ai-usage-counter.test.ts
+  // connects as the app-role via getDb); for those files Block A's original
+  // (unignored) rule value remains in effect, unchanged from before this task.
+  // The Subscription/Session/Card/Tag/Media domain-purity blocks (A' below)
+  // REPLACE this block for their narrower scope. Their whole-`@/lib/db` deny
+  // covers the alias named-import, but NOT the subpath (`@/lib/db/index`) /
+  // relative (`../../db`) getDb bypass forms — so each domain block now
+  // explicitly composes `...GETDB_BAN.paths` / `...GETDB_BAN.patterns` (Gap-2
+  // fix) to inherit the exact same getDb coverage as this block.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/**/*', 'components/**/*'],
+    ignores: ['lib/db/**', '**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: GETDB_BAN.paths,
+          patterns: [LIB_NO_APP_IMPORTS, ...GETDB_BAN.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
   // Block A': Subscription domain purity guard (must come AFTER Block A so it wins
   // for `lib/stripe/domain/**` files). Flat-config rule options REPLACE (not merge)
   // per file — same caveat as Block C — so this block re-includes Block A's
@@ -263,8 +372,8 @@ const config = [
       'no-restricted-imports': [
         'error',
         {
-          paths: DOMAIN_NO_INFRA_IMPORTS.paths,
-          patterns: [LIB_NO_APP_IMPORTS, ...DOMAIN_NO_INFRA_IMPORTS.patterns],
+          paths: [...DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
@@ -287,8 +396,8 @@ const config = [
       'no-restricted-imports': [
         'error',
         {
-          paths: SESSION_DOMAIN_NO_INFRA_IMPORTS.paths,
-          patterns: [LIB_NO_APP_IMPORTS, ...SESSION_DOMAIN_NO_INFRA_IMPORTS.patterns],
+          paths: [...SESSION_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...SESSION_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
@@ -312,8 +421,8 @@ const config = [
       'no-restricted-imports': [
         'error',
         {
-          paths: CARD_DOMAIN_NO_INFRA_IMPORTS.paths,
-          patterns: [LIB_NO_APP_IMPORTS, ...CARD_DOMAIN_NO_INFRA_IMPORTS.patterns],
+          paths: [...CARD_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...CARD_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
@@ -336,8 +445,8 @@ const config = [
       'no-restricted-imports': [
         'error',
         {
-          paths: TAG_DOMAIN_NO_INFRA_IMPORTS.paths,
-          patterns: [LIB_NO_APP_IMPORTS, ...TAG_DOMAIN_NO_INFRA_IMPORTS.patterns],
+          paths: [...TAG_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...TAG_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
@@ -360,8 +469,8 @@ const config = [
       'no-restricted-imports': [
         'error',
         {
-          paths: MEDIA_DOMAIN_NO_INFRA_IMPORTS.paths,
-          patterns: [LIB_NO_APP_IMPORTS, ...MEDIA_DOMAIN_NO_INFRA_IMPORTS.patterns],
+          paths: [...MEDIA_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...MEDIA_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
@@ -383,34 +492,132 @@ const config = [
     },
   },
   // ---------------------------------------------------------------------------
-  // Block C: app/**/_lib/ reverse-layering guard (must come AFTER Block B so it
-  // wins for `_lib/` files). Flat-config rule options REPLACE (not merge) per
-  // file, so this block re-includes Block B's patterns to preserve coverage for
-  // `_lib/` files, then adds LIB_REVERSE_DEP_COMPONENTS on top.
-  // The `app/**/_lib/**` glob uses `**` (not literal `(app)`/`[id]`) so no escaping
-  // is required — `**` spans the route group / dynamic segment as literal dirs.
+  // Block B-getdb: repo-wide getDb ban applied to app/**/* (RLS-P3 Task 4).
+  // Same REPLACE-semantics rationale as Block A-getdb above — must come AFTER
+  // Block B so it wins for non-exempt files, re-includes Block B's patterns so
+  // the deep-relative / cross-feature boundaries are not lost. `ignores`
+  // exempts test files (no lib/db/** under app/, so that ignore is not
+  // needed here).
   // ---------------------------------------------------------------------------
   {
-    files: ['app/**/_lib/**'],
+    files: ['app/**/*'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
+          paths: GETDB_BAN.paths,
           patterns: [
             DEEP_RELATIVE_IMPORTS,
             CROSS_FEATURE_PRIVATE_COMPONENTS,
-            LIB_REVERSE_DEP_COMPONENTS,
+            ...GETDB_BAN.patterns,
           ],
         },
       ],
     },
   },
   // ---------------------------------------------------------------------------
+  // Block C: app/**/_lib/ reverse-layering guard (must come AFTER Block B /
+  // Block B-getdb so it wins for `_lib/` files). Flat-config rule options
+  // REPLACE (not merge) per file, so this block re-includes Block B's patterns
+  // AND the Block B-getdb getDb-ban patterns to preserve coverage for `_lib/`
+  // files, then adds LIB_REVERSE_DEP_COMPONENTS on top. `ignores` exempts test
+  // files, mirroring Block B-getdb (no known `_lib/**/*.test.ts` site imports
+  // getDb — grep-verified 2026-07-21 — but the exemption is added for
+  // consistency with the other getDb-ban blocks).
+  // The `app/**/_lib/**` glob uses `**` (not literal `(app)`/`[id]`) so no escaping
+  // is required — `**` spans the route group / dynamic segment as literal dirs.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['app/**/_lib/**'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: GETDB_BAN.paths,
+          patterns: [
+            DEEP_RELATIVE_IMPORTS,
+            CROSS_FEATURE_PRIVATE_COMPONENTS,
+            LIB_REVERSE_DEP_COMPONENTS,
+            ...GETDB_BAN.patterns,
+          ],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block D: getDb ban for tests/** (RLS-P3 Task 4). `tests/**` is not matched
+  // by any block above (it is a top-level dir, sibling to lib/app/components),
+  // so this has no REPLACE conflict. Test 除外は最小限 (Codex#2.3/#4 —
+  // production→test helper 逆流がないことを担保するため, blanket `tests/**`
+  // ignore is NOT used): `**/*.test.ts`/`**/*.test.tsx` plus exactly one
+  // non-test.ts site that legitimately imports real getDb() —
+  // `tests/integration/pg/setup/fixture.ts` (2-tenant H2 fixture, connects as
+  // the app-role) — grep-verified 2026-07-21 to be the ONLY such site under
+  // tests/**.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['tests/**/*.ts', 'tests/**/*.tsx'],
+    ignores: [
+      '**/*.test.ts',
+      '**/*.test.tsx',
+      'tests/integration/pg/setup/fixture.ts',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block getDb-scripts: repo-wide getDb ban for ops scripts (seed / GC /
+  // backfill). scripts/** are operator tooling that today connect via
+  // getAdminDb (owner) — never raw getDb — so this is latent; it forces any
+  // future script needing app-role access to use getNonTenantDb/withTenantTx
+  // instead of raw getDb. Exempts scripts/**/*.test.ts. Completes executable-
+  // scope coverage: lib/components/app/tests/root + scripts (types/*.d.ts have
+  // no runtime imports).
+  // ---------------------------------------------------------------------------
+  {
+    files: ['scripts/**/*.ts'],
+    ignores: ['scripts/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block getDb-root: repo-wide getDb ban for root-level production entrypoints
+  // (proxy.ts, instrumentation.ts) + root config .ts (Codex#2.2 round-3). Root
+  // files sit outside the lib/app/components/tests globs above, so without this
+  // they could import getDb. `files: ['*.ts']` matches ROOT-level only (flat
+  // config: `*` is non-recursive; `**/*` would be recursive). Exempts root
+  // `*.test.ts` (tests connect as the app-role) and `*.d.ts` (type decls, no
+  // runtime imports). None of these files import getDb today (grep-verified).
+  // ---------------------------------------------------------------------------
+  {
+    files: ['*.ts'],
+    ignores: ['*.test.ts', '*.d.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
   // Per-file allowlists (placed AFTER forbidding blocks so they win).
-  // Each turns `no-restricted-imports` fully off for that file.
-  // SIDE-EFFECT NOTE (§B / T9): `off` disables the whole rule for the file,
-  // not just the specific pattern — meaning app-to-app cross-feature imports
-  // (P0 out-of-scope / P3 target) inside these files are also unguarded.
+  // Each RE-SETS `no-restricted-imports` to keep ONLY the repo-wide getDb ban
+  // (GETDB_BAN.paths/patterns) while exempting the cross-feature / reverse-dep
+  // import each file legitimately needs (Gap-1 fix — a bare `off` would have
+  // silently dropped the getDb ban for these production app files too).
+  // SIDE-EFFECT NOTE (§B / T9): app-to-app cross-feature imports (P0
+  // out-of-scope / P3 target) inside these files remain unguarded (that is the
+  // intended exemption); only the getDb ban is retained.
   // See §B handoff in task-7-report.md for details.
   // ---------------------------------------------------------------------------
 
@@ -422,9 +629,10 @@ const config = [
   // ---------- Cross-feature visualization allowlist (P3 W7) ----------
   // These sites are FLAGGED by CROSS_FEATURE_PRIVATE_COMPONENTS / LIB_REVERSE_DEP_COMPONENTS
   // above and exempted here so they are tracked (not silently ignored) but not errors.
-  // Each `off` disables no-restricted-imports for the whole file (the rule is turned off
-  // entirely, not just the flagged pattern) — acceptable as none of these files also have
-  // a deep-relative import that would otherwise need Block B enforcement.
+  // Each block RE-SETS no-restricted-imports to the getDb ban only (Gap-1 fix): the
+  // cross-feature/reverse-dep pattern stays exempted (acceptable as none of these files
+  // also has a deep-relative import that would otherwise need Block B enforcement), while
+  // the repo-wide getDb ban is preserved instead of being dropped by a bare `off`.
   // 分類:
   //   study/custom→exams・exams→tags (下記 2 block) = 一時的負債 / 機能境界強化時に再評価
   //   column-pinning _lib→_components               = 意図的設計 (columns-as-data SSoT)
@@ -433,7 +641,13 @@ const config = [
   // (study → exams cross-feature). Fix = extract CardTagAddPopover to a shared location.
   {
     files: ['app/\\(app\\)/app/study/custom/_components/custom-filter-form.tsx'],
-    rules: { 'no-restricted-imports': 'off' },
+    // getDb ban is preserved here (Gap-1 fix): `off` would have wiped the
+    // repo-wide getDb ban for this file too. We keep ONLY the getDb ban and
+    // still exempt whatever cross-feature/reverse-dep import this file legitimately
+    // needed exempted (that restriction is intentionally NOT re-introduced).
+    rules: {
+      'no-restricted-imports': ['error', { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns }],
+    },
   },
   // 一時的負債: session-runner.tsx imports exams/[id]/_components/card-image-gallery
   // (study → exams cross-feature、 画像フェーズ A Task 11 / spec §5)。 brief で明示的に
@@ -441,21 +655,39 @@ const config = [
   // shared location へ抽出。
   {
     files: ['app/\\(app\\)/app/study/smart/_components/session-runner.tsx'],
-    rules: { 'no-restricted-imports': 'off' },
+    // getDb ban is preserved here (Gap-1 fix): `off` would have wiped the
+    // repo-wide getDb ban for this file too. We keep ONLY the getDb ban and
+    // still exempt whatever cross-feature/reverse-dep import this file legitimately
+    // needed exempted (that restriction is intentionally NOT re-introduced).
+    rules: {
+      'no-restricted-imports': ['error', { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns }],
+    },
   },
   // 一時的負債: card-tag-edit-fields.tsx imports tags/_components/color-palette-popover
   // + tags/_components/delete-confirm-dialog (exams → tags cross-feature, 2 imports).
   // Fix = extract those popovers/dialogs to a shared location.
   {
     files: ['app/\\(app\\)/app/exams/\\[id\\]/_components/card-tag-edit-fields.tsx'],
-    rules: { 'no-restricted-imports': 'off' },
+    // getDb ban is preserved here (Gap-1 fix): `off` would have wiped the
+    // repo-wide getDb ban for this file too. We keep ONLY the getDb ban and
+    // still exempt whatever cross-feature/reverse-dep import this file legitimately
+    // needed exempted (that restriction is intentionally NOT re-introduced).
+    rules: {
+      'no-restricted-imports': ['error', { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns }],
+    },
   },
   // 意図的設計 (columns-as-data SSoT): column-pinning.ts (_lib) imports
   // ../_components/exam-card-table-columns to derive column order from the single
   // source of truth. Intentional reverse-dep — see the file's header comment.
   {
     files: ['app/\\(app\\)/app/exams/\\[id\\]/_lib/column-pinning.ts'],
-    rules: { 'no-restricted-imports': 'off' },
+    // getDb ban is preserved here (Gap-1 fix): `off` would have wiped the
+    // repo-wide getDb ban for this file too. We keep ONLY the getDb ban and
+    // still exempt whatever cross-feature/reverse-dep import this file legitimately
+    // needed exempted (that restriction is intentionally NOT re-introduced).
+    rules: {
+      'no-restricted-imports': ['error', { paths: GETDB_BAN.paths, patterns: GETDB_BAN.patterns }],
+    },
   },
   {
     // TODO(Sync-fix-1): use-card-options.ts の refs structural fix は

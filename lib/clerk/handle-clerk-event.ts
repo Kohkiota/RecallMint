@@ -2,7 +2,7 @@ import 'server-only'
 import { randomUUID } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import Stripe from 'stripe'
-import { getDb, getNonTenantDb } from '@/lib/db'
+import { getNonTenantDb, type DB } from '@/lib/db'
 import { withTenantTx, setTenantContext } from '@/lib/db/tenant-tx'
 import {
   users,
@@ -342,8 +342,8 @@ function isTransientDbError(err: unknown): boolean {
 const MAX_DB_RETRIES = 3 // 初回 + 3 retries = 合計 4 試行
 
 async function runTransactionWithRetry(
-  db: ReturnType<typeof getDb>,
-  fn: Parameters<ReturnType<typeof getDb>['transaction']>[0],
+  db: DB,
+  fn: Parameters<DB['transaction']>[0],
   onFailure: (errorMessage: string) => Promise<void>,
 ): Promise<void> {
   let lastErr: unknown
