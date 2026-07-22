@@ -31,6 +31,7 @@
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { withTenantTx } from '@/lib/db/tenant-tx'
+import { reportRlsContextFailure } from '@/lib/db/report-rls-context-failure'
 import { type User } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import {
@@ -96,6 +97,10 @@ export async function POST(req: Request): Promise<Response> {
       userId: user.id,
       err,
     })
+    // RLS-P3 T7: Phase 0 も P0RLS alert に配線。この catch が review-events route で最初に
+    // 到達する write catch ゆえ、ここを配線しないと P0RLS が Phase 0 で短絡して
+    // processSession 側の alert がこの route で発火しない(非 P0RLS は short-circuit・additive)。
+    await reportRlsContextFailure(err, { route: 'review-events/bulk', op: 'ingest' })
     // T-A1 (audit §10.3 (b) #11): transient (DB conflict / lock timeout / connection
     // class / Drizzle wrap) なら 503 + Retry-After に倒し、 client retry controller
     // (lib/retry/transient-error.ts) の transient/permanent 分岐と整合させる。

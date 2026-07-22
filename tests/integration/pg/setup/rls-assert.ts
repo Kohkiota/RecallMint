@@ -3,22 +3,13 @@
 // cause-chain walker と同型だが、Task 9 の 3 file (per-command / context / ghost)
 // が同じ 2 種の reject を assert するため共有化する (rule of three)。
 //
-// drizzle-orm postgres-js driver は raw postgres-js の PostgresError (`.code` に
-// SQLSTATE) を DrizzleQueryError でラップし元 error を `.cause` に載せる
-// (drizzle-orm/errors.js)。ゆえに top-level と `.cause` chain の両方を見る。
+// RLS-P3 Task 7: hasSqlState / isP0RLS は production (lib/db/p0rls.ts) へ移し、
+// P0RLS loud alert (reportRlsContextFailure) と同一実装を共有する。test はそこから
+// re-export し、既存 import 面 (`from './setup/rls-assert'`) を維持する。依存方向は
+// production ← test の一方向 (production は tests/ に依存しない)。
+import { hasSqlState, isP0RLS } from '@/lib/db/p0rls'
 
-// error (と cause chain) のどこかに指定 SQLSTATE を持つか。
-export function hasSqlState(err: unknown, code: string): boolean {
-  if ((err as { code?: unknown } | undefined)?.code === code) return true
-  const cause = (err as { cause?: unknown } | undefined)?.cause
-  return cause !== undefined && cause !== err ? hasSqlState(cause, code) : false
-}
-
-// 'P0RLS' = app_current_user_id() が context 未設定/空文字で RAISE する custom
-// SQLSTATE (migration 0025)。tenant context が張られていない経路の loud 検出。
-export function isP0RLS(err: unknown): boolean {
-  return hasSqlState(err, 'P0RLS')
-}
+export { hasSqlState, isP0RLS }
 
 // RLS の WITH CHECK 違反 (INSERT / user_id 付替え UPDATE の new row が policy を
 // 満たさない) は SQLSTATE 42501 + message 'new row violates row-level security

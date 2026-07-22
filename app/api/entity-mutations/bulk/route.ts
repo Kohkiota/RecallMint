@@ -48,6 +48,7 @@ import {
   type ParsedMutation,
 } from '@/lib/sync/shared/parsed-mutation'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
+import { reportRlsContextFailure } from '@/lib/db/report-rls-context-failure'
 import { logger } from '@/lib/logger'
 import {
   classifyBulkError,
@@ -264,6 +265,12 @@ export async function POST(req: Request): Promise<Response> {
             userId: user.id,
             err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
           })
+          // RLS-P3 Task 7: P0RLS なら台帳 + Discord へ loud alert (非 P0RLS は short-circuit・
+          // 記録経路の throw は内部で握る = 200+failed[] 契約不変)。
+          await reportRlsContextFailure(err, {
+            route: 'entity-mutations/bulk',
+            op: 'mutation',
+          })
           failed.push(mutation.mutation_id)
         }
       }
@@ -304,6 +311,12 @@ export async function POST(req: Request): Promise<Response> {
                   userId: user.id,
                   err: serializeDbError(err, { cardIds: [mutation.entity_id] }),
                 })
+                // RLS-P3 Task 7: P0RLS なら台帳 + Discord へ loud alert (非 P0RLS は
+                // short-circuit・記録経路の throw は内部で握る = 200+failed[] 契約不変)。
+                await reportRlsContextFailure(err, {
+                  route: 'entity-mutations/bulk',
+                  op: 'mutation',
+                })
                 resultByMutationId.set(mutation.mutation_id, 'failed')
               }
             }
@@ -340,6 +353,12 @@ export async function POST(req: Request): Promise<Response> {
       event: 'entity_mutations.bulk.envelope_failed',
       userId: user.id,
       err: serializeDbError(err),
+    })
+    // RLS-P3 Task 7: envelope へ P0RLS が漏れた場合の defense-in-depth alert
+    // (非 P0RLS は short-circuit・記録経路の throw は内部で握る = 503/400 分岐不変)。
+    await reportRlsContextFailure(err, {
+      route: 'entity-mutations/bulk',
+      op: 'mutation',
     })
     const cls = classifyBulkError(err)
     if (cls === 'permanent-4xx') {

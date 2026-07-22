@@ -75,6 +75,16 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'asset_gc',
     failureCode: 'external_api_error',
   },
+  // RLS-P3 Task 7: tenant context 未設定で app_current_user_id() が P0RLS を RAISE
+  // した = withTenantTx を経由せずに tenant 表を叩いた bug の loud alert。Task 2-4 の
+  // 封じ込め後は near-impossible な defense-in-depth 警報 (現状 Vercel Logs 頼み →
+  // 台帳 + Discord へ)。workflow=null: 特定 workflow に紐付かない横断防御。
+  rls_context_missing: {
+    service: 'db',
+    operation: 'rls.context_missing',
+    workflow: null,
+    failureCode: 'state_mismatch',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG

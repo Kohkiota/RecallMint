@@ -87,3 +87,27 @@ Codex の逐次発覚方式(r1〜r4)でなく、**DB handle を import しうる
 非 RLS 5 表の grant 縮小のうち contact_messages のみ brief spec(`INSERT+DELETE`・SELECT revoke)から逸脱し **`INSERT+DELETE+SELECT` / `UPDATE` のみ revoke** とした。理由: GDPR 削除経路 `handle-clerk-event.ts:219` の `DELETE FROM contact_messages WHERE user_id = …` は、PostgreSQL が **DELETE の WHERE で参照する列に SELECT 権限**を要求するため、SELECT を revoke すると削除自体が 42501 で破綻する(PG17 実証: SELECT-revoked→42501 / granted→成功 / bare DELETE(WHERE 無し)→成功)。列単位 `SELECT(user_id)` は plan で out-of-scope ゆえ、table-level SELECT が唯一の correctness 解。攻撃面は UPDATE revoke で縮小維持。他 4 表(integration_failures INSERT のみ / stripe_events・clerk_events INSERT+SELECT / ai_usage SELECT+INSERT+UPDATE)は brief どおり。
 
 残余リスク(app-role が contact_messages(email/PII)を全行 SELECT 可)は **v47 todo「残件記録 > 公開前 PII 監査(バケット)」**に rotation / integration_failures PII 残置と併記(列単位 SELECT 化で公開前にまとめて判断)。
+
+---
+
+## T7 実装記録 — P0RLS loud alert(write-path scope)
+
+**成果物:**
+- `lib/db/p0rls.ts`(新規): production の `hasSqlState` / `isP0RLS`(.cause chain walk)。test-only の `tests/integration/pg/setup/rls-assert.ts` は本 module を re-export し実装単一化(依存方向 = production ← test の一方向・pure module ゆえ I/O 依存なし)。
+- `lib/integration-failures.ts`: catalog key `rls_context_missing` 追加(`{ service:'db', operation:'rls.context_missing', workflow:null, failureCode:'state_mismatch' }`・既存 axis 語彙内)。
+- `lib/db/report-rls-context-failure.ts`(新規): `reportRlsContextFailure(err, {route, op})`。非 P0RLS は即 return(short-circuit)/ P0RLS は `await recordIntegrationFailure`(fire-and-forget は serverless で消失ゆえ await)/ context は enum allowlist(`RlsAlertRoute` / `RlsAlertOp`)の route/op のみ = PII 非搭載 / inner try/catch で記録経路 throw を握り再 throw しない(既存 HTTP status / 例外伝播 / log 不変)。
+- 配線: entity-mutations/bulk(serial per-mutation catch + parallel per-mutation catch + envelope catch の 3 catch)/ delete-exam(catch)/ review-events/bulk(processSession catch)。既存 test は無修正 green(additive 確認)。
+- test: `lib/db/report-rls-context-failure.test.ts`(6 本・recordIntegrationFailure mock)+ integration-failures.test.ts に key pin 追加 & tuple 数 8→9。**RED 検証 2 件**: (a) `.cause` walk 除去 → nested-P0RLS test のみ fail / (b) userId leak 注入 → PII-free assert fail。両者 revert 後 green。
+
+### T7 未配線経路(REPORTED GAP・read-path 全面配線は follow-up)
+
+本 task の scope は **write-path の serializeDbError catch site のみ**。以下は P0RLS 到達し得る(= `withTenantTx` 内で tenant query を発行する)が **serializeDbError / reportRlsContextFailure を経由しない**ため、P0RLS が発生しても integration_failures 台帳に残らず generic 500 / unhandled throw になる。**「全 P0RLS = 必ず記録」の一般保証は主張しない**。
+
+- **read routes(catch→500、serializeDbError なし)**: `app/api/pull/route.ts` / `app/api/study-days/pull/route.ts` / `app/api/dashboard/stats/route.ts` / `app/api/exams/status/route.ts`(後者は auth 例外 rethrow の非対称あり)。いずれも `catch (err) → Response.json({error:'internal'}, 500)`。
+- **server actions(withTenantTx 使用・serializeDbError 経由しない)**: `create-exam.ts` / `exams/[id]/_actions/asset-actions.ts` / `settings/_actions/save-{custom-session-limit,fsrs-mode,session-limit}.ts` / `upgrade/actions.ts` / `upload/_actions/{process,upload-guard,upload-persistence}.ts`。
+- **その他 tenant query helper**: `lib/cards/get-session-cards.ts` / `lib/exams/source-doc-status.ts` / `lib/ai-usage-counter.ts` / `lib/db/pull-delta.ts`(呼出元 route 側 catch に依存)。
+- **entity-mutations の group-level fatal catch**(`route.ts` の `Promise.allSettled` map 内 outer catch)は **意図的に未配線**。この catch は `assertSequentialPath` / `logger.warn` / `serializeDbError` 自身の meta-throw のみを拾い、DB query の P0RLS はその内側の per-mutation catch(配線済)が先に握るため P0RLS は構造的に到達しない。
+
+follow-up 候補: read-path を含む横断配線を単一 wrapper(例: tenant route handler の共通 catch で `reportRlsContextFailure` を必ず通す)へ寄せる。本 wave では過剰実装として見送り(alert storm rate-limit と同じく plan 対象外)。
+
+**follow-up 注意(catalog key の射程)**: SQLSTATE `P0RLS` は migration 0025 の 3 関数が RAISE する — `app_current_user_id()`(context 未設定)/ `app_resolve_user_for_stripe()`(invalid p_by)/ `app_scrub_deleted_user()`(scrub 対象不一致)。本 wave の 3 write-path はいずれも resolve/scrub 関数を呼ばないため到達する P0RLS は context-missing のみで、subject「tenant context missing on write path」は正確。ただし follow-up で Stripe resolve / scrub path を配線する際は、`isP0RLS` を context-missing message へ絞るか catalog key を分割し、subject の誤分類を避けること(canonical T7 Minor #2)。

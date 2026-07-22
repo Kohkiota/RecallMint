@@ -7,6 +7,7 @@ import { type User } from '@/lib/db/schema'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { type ReplayCardState } from '@/lib/cards/replay-card'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
+import { reportRlsContextFailure } from '@/lib/db/report-rls-context-failure'
 import { logger } from '@/lib/logger'
 import {
   cardIdsSchema,
@@ -217,6 +218,9 @@ async function processSession(
       userId: user.id,
       err: serializeDbError(err, { cardIds: events.map((e) => e.card_id) }),
     })
+    // RLS-P3 Task 7: P0RLS (tenant context 未設定) なら台帳 + Discord へ loud alert。
+    // 非 P0RLS は short-circuit・記録経路の throw は内部で握る (failed[] 契約不変)。
+    await reportRlsContextFailure(err, { route: 'review-events/bulk', op: 'ingest' })
     txFailed = events
       .filter((ev) => !orphanFailed.includes(ev.event_id))
       .map((ev) => ev.event_id)

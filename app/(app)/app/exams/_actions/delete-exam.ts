@@ -7,6 +7,7 @@ import { withTenantTx } from '@/lib/db/tenant-tx'
 import { cards, exams, tombstones } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
 import { serializeDbError } from '@/lib/db/serialize-db-error'
+import { reportRlsContextFailure } from '@/lib/db/report-rls-context-failure'
 import type { ActionResult } from '@/lib/actions/result'
 
 // 試験一覧から exam を削除する server action。
@@ -96,6 +97,9 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
       userId: user.id,
       err: serializeDbError(err, { cardIds: childCardIds }),
     })
+    // RLS-P3 Task 7: P0RLS (tenant context 未設定) なら台帳 + Discord へ loud alert。
+    // 非 P0RLS は short-circuit・記録経路の throw は内部で握る (ActionResult 不変)。
+    await reportRlsContextFailure(err, { route: 'delete-exam', op: 'delete' })
     return {
       ok: false,
       error: '試験の削除に失敗しました。しばらくしてから再度お試しください。',

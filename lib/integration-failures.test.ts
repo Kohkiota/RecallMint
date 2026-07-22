@@ -193,14 +193,15 @@ describe('recordIntegrationFailure', () => {
     expect(notifyContext).toEqual({ ...snapshot, ledgerWriteError: 'db down' })
   })
 
-  // (g) all 8 catalog entries have unique 4-axis tuples
+  // (g) all catalog entries have unique 4-axis tuples
   it('has a unique 4-axis tuple for every catalog entry', () => {
     const tuples = CATALOG_KEYS.map((k) => {
       const e = INTEGRATION_FAILURE_CATALOG[k]
       return JSON.stringify([e.service, e.operation, e.workflow, e.failureCode])
     })
     expect(new Set(tuples).size).toBe(tuples.length)
-    expect(tuples.length).toBe(8)
+    // RLS-P3 Task 7: rls_context_missing 追加で 8 → 9。
+    expect(tuples.length).toBe(9)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -210,6 +211,16 @@ describe('recordIntegrationFailure', () => {
       operation: 'object.delete',
       workflow: 'asset_gc',
       failureCode: 'external_api_error',
+    })
+  })
+
+  // rls_context_missing: RLS-P3 Task 7 の P0RLS loud alert 用 4 軸 tuple 固定値
+  it('rls_context_missing has the 4-axis values pinned by RLS-P3 Task 7', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.rls_context_missing).toEqual({
+      service: 'db',
+      operation: 'rls.context_missing',
+      workflow: null,
+      failureCode: 'state_mismatch',
     })
   })
 })
