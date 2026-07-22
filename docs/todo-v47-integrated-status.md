@@ -86,7 +86,7 @@
 - **完全同時並行 pooler 検証**(2 device/profile)= 受容済み残余(接続再利用漏れは 180 req で確認済・完全同時は OT)。
 - **pull 直列化 +47〜69ms** = 許容確定(背景 sync 経路)。**trigger = Phase 3 計測で継続超過**なら高度化(チャンク分割)起票。
 - **列単位 GRANT**(Phase 3+ 検討)。
-- **公開前 PII 監査(バケット・公開前にまとめて判断)**: ① stg `DATABASE_URL_APP` パスワード rotation(Wave2 で露出・未実施)② integration_failures が user 削除で scrub されない(clerkId/stripeCustomerId/context jsonb/errorMessage 残置)③ contact_messages を app-role が全行 SELECT 可能に留まる(GDPR `DELETE WHERE user_id` が PG の「WHERE 参照列に SELECT」要求ゆえ RLS-P3 hardening で table SELECT を保持・**列単位 `SELECT(user_id)` 化で app-role の contact 全行 PII 読み取りを解消可**・上記 列単位 GRANT と同トラック)。
+- **公開前 PII 監査(バケット・公開前にまとめて判断)**: ① stg `DATABASE_URL_APP` パスワード rotation(Wave2 で露出・未実施)② integration_failures が user 削除で scrub されない(clerkId/stripeCustomerId/context jsonb/errorMessage 残置)③ contact_messages を app-role が全行 SELECT 可能に留まる(GDPR `DELETE WHERE user_id` が PG の「WHERE 参照列に SELECT」要求ゆえ RLS-P3 hardening で table SELECT を保持・**列単位 `SELECT(user_id)` 化で app-role の contact 全行 PII 読み取りを解消可**・上記 列単位 GRANT と同トラック)④ **予約残退会の Stripe 掃除確認**(サブスク変更予約を残したまま退会した場合の Stripe subscription/schedule の実掃除。hardening stg 実証の GDPR 退会で `stripe.event.skipped_deleted_user` 後追い無視は確認済だが Stripe dashboard 側の実掃除は未目視)⑤ **scrub 対象列 vs 保持列の PII 棚卸し**(退会 scrub で null 化する列 vs 業務保持する Stripe ID 等の妥当性)。①〜⑤ とも RLS スコープ外・公開前にまとめて判断。
 - current_user = recallmint_app(DB `SELECT current_user`)/ server-log P0RLS 確定不在 = OT 残件(browser 不可)。
 
 ### Phase 3 の後

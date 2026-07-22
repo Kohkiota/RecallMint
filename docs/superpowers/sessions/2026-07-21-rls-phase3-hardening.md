@@ -113,3 +113,19 @@ Codex の逐次発覚方式(r1〜r4)でなく、**DB handle を import しうる
 follow-up 候補: read-path を含む横断配線を単一 wrapper(例: tenant route handler の共通 catch で `reportRlsContextFailure` を必ず通す)へ寄せる。本 wave では過剰実装として見送り(alert storm rate-limit と同じく plan 対象外)。
 
 **follow-up 注意(catalog key の射程)**: SQLSTATE `P0RLS` は migration 0025 の 3 関数が RAISE する — `app_current_user_id()`(context 未設定)/ `app_resolve_user_for_stripe()`(invalid p_by)/ `app_scrub_deleted_user()`(scrub 対象不一致)。本 wave の 3 write-path はいずれも resolve/scrub 関数を呼ばないため到達する P0RLS は context-missing のみで、subject「tenant context missing on write path」は正確。ただし follow-up で Stripe resolve / scrub path を配線する際は、`isP0RLS` を context-missing message へ絞るか catalog key を分割し、subject の誤分類を避けること(canonical T7 Minor #2)。
+
+---
+
+## stg 完全実証(2026-07-22)— RLS Phase 3(Wave1+2+hardening)stg 全実証完了
+
+hardening wave の stg 実証(RLS-on・grant 適用後)**全 PASS で完全 close**。CC browser smoke(**contact 送信 PASS**: POST /contact 200・contact_messages INSERT 成功・P0RLS/意図しない 42501/5xx 0・匿名経路)+ OT の SQL/破壊/webhook(env 制約 = `.env.local` DB が stg/prod 判別不能ゆえ CC 不可・runbook §11.2/11.3/12=OT SQL Editor / §11.4 退会=OT 実機):
+
+- **grant readback(§11.2)**: 5 表期待 matrix 一致(contact=SELECT/INSERT/DELETE・integration_failures=INSERT のみ・stripe/clerk_events=INSERT/SELECT・ai_usage=SELECT/INSERT/UPDATE)。
+- **drift 監査(§12.1)**: RLS on **18** / policy **20** / roles=`recallmint_app` のみ・**drift ゼロ**。
+- **current_user = recallmint_app**(psql)。
+- **42501 意図発火**: integration_failures SELECT→**42501 拒否** / contact SELECT→**通過**(交差確認 = 意図した箇所のみ 42501)。
+- **GDPR 退会 end-to-end フル(§11.4・最重要 = T5 contact SELECT 保持判断の correctness 実機検証)**: 新規 test user でサブスク登録→変更予約→試験作成→学習→contact→退会 → **16 tenant 表全て count 0 に消去・contact_messages も 0**(SELECT 保持 grant で `DELETE FROM contact_messages WHERE user_id=` が app-role を通過)・webhook 処理中 **P0RLS/42501/5xx ゼロ**。→ **contact table-level SELECT 保持の OT 判断が実機で正しいことを確認**(SELECT revoke だったら退会 DELETE が 42501 で壊れていた)。
+- **users soft-delete + scrub 設計どおり実動**(deleted_at 設定 / clerk_id・email null 化 / 行残置 / Stripe ID 業務保持)= P2 users policy(deleted_at IS NULL / DELETE policy なし / definer scrub 専有)と整合。
+- warn 2 件(`stripe.event.skipped_deleted_user` / clerk `unknown_event_type`)= 退会後の後追いイベント冪等無視で正常。
+
+→ **決済/認証/削除/監査境界に触る T1/T2/T3/T5/T7 の [reviewed] は本 stg 実証を runtime 確認の正記録として完成**(CLAUDE.md「push→smoke ゆえ push 済 commit の tag は追わず session doc を [reviewed] 正記録」)。**RLS Phase 3(Wave1+2+hardening)= stg 全実証完了**。**残**: ① prod flip(Phase3 全表完了後・OT 別セッション)② audit high(`sharp<0.35.0`・無関係 dep・OT 判断)③ 公開前 PII 監査バケット(v47・rotation / integration_failures 非 scrub / contact 全行 SELECT / 予約残退会の Stripe 掃除確認 / scrub 列 vs 保持列 棚卸し)。
