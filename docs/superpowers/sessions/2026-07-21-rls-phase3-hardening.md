@@ -12,10 +12,12 @@
 | T1 | getNonTenantDb 新設 + 7 構造的非 tenant site 配線 | `608fcfe` | [reviewed] |
 | T2 | withTenantTx(userId,fn) 署名変更で getDb 封じ込め | `0822d7b` | [reviewed] |
 | T3 | A-manualtx 7 site を getDb-free 化(封じ込め達成) | `4488403` | [reviewed] |
-| T4 | getDb export 制限 + no-restricted-imports lint(恒久 enforce) | 未 commit | 完了・Codex 最終確認待ち |
-| T5 | grant 縮小 + test:iso matrix + runbook | — | 未着手 |
-| T6 | policy drift-detection(選択肢 B)+ COVERAGE.md | — | 未着手 |
-| T7 | P0RLS loud alert | — | 未着手 |
+| T4 | getDb export 制限 + no-restricted-imports lint(恒久 enforce) | `02661f8` | [reviewed] |
+| T5 | 非 RLS 5 表 grant 縮小 + test:iso 42501 matrix + runbook | `e07fbfe` | [reviewed] |
+| T6 | policy drift-detection(選択肢 B)+ COVERAGE.md | `653c694` | [reviewed] |
+| T7 | P0RLS loud alert(write-path scope) | `c4244b6` | [reviewed] |
+
+**Wave 完了(2026-07-22)**: 全 7 task [reviewed](各 canonical + Codex Crit0/Imp0)+ **最終 whole-branch review(opus)Ready to merge Crit0/Imp0**(cross-task coherence 確認: getDb 封じ込め provably complete=production の getDb は lib/db 内部のみ / T5↔T6↔T7 内部整合 / behavior-preserving。final Minor#1=review-events Phase 0 catch も P0RLS 配線→c4244b6 で対処 / Minor#2=wave 対象外の stale コメントゆえ触らず)。gate: **lint0 / typecheck0 / build0 / test 3829 / test:iso 217** 全 green。**audit のみ** 無関係な新規 high(`sharp<0.35.0` GHSA-f88m-g3jw-g9cj・libvips CVE-2026-33327 他・**patched >=0.35.0 あり**)で fail = 本 wave は依存不変ゆえ由来せず、dep bump(sharp override)/ ignoreGhsas は OT 判断(audit 台帳規律)。**残: push + stg 実証(grant SQL 適用 + readback + smoke)= OT**。range = `608fcfe..c4244b6`(+ plan `c7efb55`)・develop・**未 push**。
 
 ---
 
