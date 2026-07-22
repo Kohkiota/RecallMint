@@ -361,6 +361,67 @@ grant 縮小の rollback は base grants の再適用(`recallmint_app-grants.sql
 
 prod 有効化セッションで grant 縮小も一括適用する。順序: base grants(既存)→ phase3 REVOKE → §11.2 readback。policy 有効化とは独立(表非重複)ゆえ policy 適用順に依存しない(先行・後行どちらでも可)。失敗時停止条件 = readback matrix が期待と不一致なら prod 適用を中断し原因究明。
 
+## 12. RLS-P3 hardening 追記(policy drift 監査・operator read-only SQL)
+
+RLS-P3 最終 hardening wave (Task 6) は versioned SQL(`db/policies/{rls-p2,rls-p3-wave1,rls-p3-wave2}-enable.sql`)と実 DB の RLS 状態乖離を検出する drift-detection test(`tests/integration/pg/rls-drift.test.ts`)を test:iso に追加した。
+
+**⚠️ test:iso が保証する範囲の限界**: drift test は「repo の enable SQL ↔ **test DB**」の整合のみを検出する(global-setup が毎 run 3 enable SQL を適用した結果を期待カタログと突合)。**stg/prod で operator が手動適用した後に誰かが直接 policy を変更した「手動適用 drift」は test:iso では検出できない**。それを埋めるのが以下の operator 用 read-only 監査 SQL — 適用直後(§1.3 / §10 の policy 適用後)および定期監査で SQL Editor から実行し、実 DB の RLS 状態が期待カタログと一致することを readback する。
+
+### 12.1 policy drift 監査 SQL(read-only・OT・SQL Editor)
+
+いずれも read-only(SELECT のみ)。owner でも app 接続でも実行可(pg_policies / pg_class は誰でも読める)。
+
+```sql
+-- (A) RLS 対象 18 表 = relrowsecurity=true / 非対象 5 表 = false / FORCE は全 public 表 false。
+--     期待と異なる行 (unexpected true / 想定外の force) が 1 行でも出たら drift。
+SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind = 'r'
+ORDER BY c.relrowsecurity DESC, c.relname;
+
+-- (B) policy 全定義の readback。期待カタログ (下表) と (tablename, policyname, roles, cmd,
+--     permissive, qual, with_check) が完全一致すること。roles に recallmint_app 以外
+--     (特に public) が出たら即 drift。qual/with_check が下の正規化テキストと 1 文字でも違えば drift。
+SELECT tablename, policyname, roles, cmd, permissive, qual, with_check
+FROM pg_policies WHERE schemaname = 'public'
+ORDER BY tablename, policyname;
+
+-- (C) 件数の即時 sanity: RLS on 表 = 18 / policy 総数 = 20 (共通形 17 + users 3)。
+SELECT
+  (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_on_tables,   -- 期待 18
+  (SELECT count(*) FROM pg_policies WHERE schemaname='public') AS total_policies;         -- 期待 20
+```
+
+### 12.2 期待カタログ(独立 oracle・drift 判定基準)
+
+drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が式を正規化して pg_policies に格納した後のテキスト(PG17 実測)ゆえ、下記の正規化形と**完全一致**を照合する。
+
+**注意(PG major 差)**: (B) の qual/with_check 定数は devcontainer の **PG17** で正規化されたテキスト。stg/prod(Supabase)が異なる PG major の場合、正規化の綴り(空白・alias 形等)が cosmetic に違いうる — その text 差だけでは drift ではなく、enable SQL 再適用でも解消しない(正規化は版依存)。**PG 版に依らず authoritative な drift signal は §12.3 の semantic 兆候**(roles に `public` 混入 / qual が `true` 等の緩い述語に化ける = tenant 境界の実質無効化)。qual/with_check の text 差を見たら、まず §12.3 の semantic 兆候の有無で判定する。
+
+正規化述語(定数):
+
+- `TENANT_PRED` = `(user_id = ( SELECT app_current_user_id() AS app_current_user_id))`
+- `USERS_ID_PRED` = `(id = ( SELECT app_current_user_id() AS app_current_user_id))`
+- `USERS_LIVE_PRED` = `((id = ( SELECT app_current_user_id() AS app_current_user_id)) AND (deleted_at IS NULL))`
+
+| 表 | policyname | roles | cmd | permissive | qual | with_check |
+|---|---|---|---|---|---|---|
+| 共通形 17 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
+| users | `users_select` | `{recallmint_app}` | SELECT | PERMISSIVE | `USERS_LIVE_PRED` | (空) |
+| users | `users_insert` | `{recallmint_app}` | INSERT | PERMISSIVE | (空) | `USERS_ID_PRED` |
+| users | `users_update` | `{recallmint_app}` | UPDATE | PERMISSIVE | `USERS_LIVE_PRED` | `USERS_ID_PRED` |
+
+※ 共通形 17 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)。各表ちょうど 1 policy。
+
+**users に DELETE policy が無いこと**(FOR ALL も FOR DELETE も不在 = app-role の users hard delete を構造的 deny)を (B) の users 行が 3 件(select/insert/update)ちょうどであることで確認する。**非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)は (B) に 1 行も出ないこと(policy ゼロ)+ (A) で relrowsecurity=false。
+
+### 12.3 drift 検出時の対応
+
+- (A)/(B)/(C) が期待とズレた場合 = 手動適用 drift の疑い。**まず enable SQL(`db/policies/*-enable.sql`)を再適用**(冪等・DROP POLICY IF EXISTS 内蔵)して期待状態へ復元し、再度 (A)〜(C) で一致を確認する。
+- roles に `public` が混入・qual が `true` 等の緩い述語に化けている場合 = tenant 境界が実質無効化されている可能性。復元前に incident 扱いで OT にエスカレーション(§3 rollback 判断)。
+- prod 有効化セッションでは policy 適用直後に (A)〜(C) を必ず readback してから smoke に進む(適用「成功」≠ 期待状態、の原則は §11.2 grant readback と同じ)。
+
 ## 関連 doc
 
 - Wave 1 factfinding / wave 定義: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md`(§5.3 / 追補 / 追補2)
@@ -375,3 +436,4 @@ prod 有効化セッションで grant 縮小も一括適用する。順序: bas
 - 0025 migration: `drizzle/migrations/0025_rls_p2_functions.sql`
 - Phase 3 grant 縮小正本: `db/roles/recallmint_app-grants-phase3.sql`(base: `db/roles/recallmint_app-grants.sql`)
 - Phase 3 grant test: `tests/integration/pg/grant-narrowing.test.ts` / plan: `docs/superpowers/plans/2026-07-21-rls-phase3-hardening.md`(Task 5)
+- Phase 3 policy drift test: `tests/integration/pg/rls-drift.test.ts` / plan: `docs/superpowers/plans/2026-07-21-rls-phase3-hardening.md`(Task 6・drift 監査 SQL = 本 doc §12)

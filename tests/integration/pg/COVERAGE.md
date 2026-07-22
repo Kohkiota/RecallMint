@@ -203,3 +203,40 @@ brief 当初は contact_messages を「REVOKE SELECT+UPDATE」と指定してい
 
 - **command GRANT は行隔離を与えない**: DELETE を残す contact_messages は app-role が全 tenant の contact 行を削除でき、UPDATE を残す ai_usage は全 date 行を更新できる(blast radius 残存)。行スコープが要るなら RLS 化が必要だが本 5 表は非対象と確定。
 - **ALTER DEFAULT PRIVILEGES を維持**: base grants の default privileges はそのままゆえ、将来 owner が新規の非 RLS 表を作ると再び blanket CRUD が付与される(新表ごとに grants-phase3.sql へ REVOKE を追記する運用が必要)。
+
+---
+
+# RLS-P3 hardening 追記: policy drift-detection(`rls-drift.test.ts`)
+
+起点: `docs/superpowers/plans/2026-07-21-rls-phase3-hardening.md` Task 6(選択肢 B)。policy は drizzle migration に昇格せず versioned SQL(`db/policies/{rls-p2,rls-p3-wave1,rls-p3-wave2}-enable.sql`)のまま置く(spec §2.9 = enablement を deploy から分離・operator 手動適用)。その代償の「SQL と実 DB がズレていないか」を実 PG catalog で検出するのが drift test。global-setup が migrate + grants + 3 enable SQL を適用した結果を、hardcoded な期待カタログ(独立 oracle)と突き合わせる。
+
+## 何を pin するか(policy **全定義**・name+cmd では不十分)
+
+`pg_policies` の (roles, cmd, permissive, qual, with_check) 全 tuple + `pg_class` の relrowsecurity / relforcerowsecurity を期待カタログと完全一致で照合する(6 test):
+
+| # | test | pin する不変条件 |
+|---|---|---|
+| 1 | expected catalog is internally consistent | oracle 自体の内部整合(RLS 18 表 / 非 RLS 5 表 / policy 20 件)= file 編集ミスで oracle が壊れるのを防ぐ |
+| 2 | relrowsecurity split; forcerowsecurity off | 18 対象 true / 5 非対象 false / **意図しない表が true でない**(全 public 表 diff)/ FORCE は全 public 表 false(owner bypass 不変条件) |
+| 3 | every policy tuple matches exactly | 各 policy の (roles, cmd, permissive, **qual, with_check**) が期待正規化テキストと完全一致。**誤 predicate(USING (true) 等)を green にしない中核** |
+| 4 | full set of (table, policy) equals catalog | (tablename, policyname) の全集合が期待 20 件と一致 = 余計/不正 policy がどこにも無い(非対象 5 表に policy ゼロも同時保証) |
+| 5 | recallmint_app is the only role | 全 policy の roles が `{recallmint_app}` のみ(別 role・PUBLIC 混入検出) |
+| 6 | users has no DELETE policy | users は FOR ALL も FOR DELETE も不在(hard delete 構造的 deny)+ 3 per-command(select/insert/update)ちょうど |
+
+**qual/with_check の正規化テキスト扱い**: PostgreSQL は policy 式を正規化して pg_policies に格納する(`user_id = (SELECT public.app_current_user_id())` → `(user_id = ( SELECT app_current_user_id() AS app_current_user_id))`)。期待値は DB が返す正規化形をそのまま定数(`TENANT_PRED` / `USERS_ID_PRED` / `USERS_LIVE_PRED`)に pin する(PG17 実測)。共通形 17 表は同一 `TENANT_PRED` を共有、users 3 policy は `deleted_at IS NULL` 連言込みで個別 pin。
+
+**期待カタログを db/policies から生成せず hardcode する意図**(Codex#4.3): SQL と test が同一 SSoT を読むと「両方同時にズレる」盲点が生じる。fixture-completeness の三者一致と同思想で、独立した第二の記述(test file の期待カタログ)を照合軸にする。二重管理の drift は review 規約で守る。
+
+## RED 検証(保証増・代表 mutation 3 種)
+
+owner(`getFixtureOwnerDb`)で policy を改変 → drift test が fail することを実証 → enable SQL 再適用で復元。
+
+| mutation | 改変 | 落ちる test | 検出内容(quote) |
+|---|---|---|---|
+| ① policy drop | `DROP POLICY cards_tenant ON cards` | #3, #4 | `expected policy cards\|cards_tenant to exist: expected undefined to be defined` + set `[…(19)]` vs `[…(20)]` |
+| ② qual 改変(**load-bearing**) | `cards_tenant` を `USING (true) WITH CHECK (true)` で再作成 | #3 | `cards\|cards_tenant qual: expected 'true' to be '(user_id = ( SELECT app_current_user_…'` — name/cmd 不変で qual だけ変えても検出 = name+cmd 突合では素通りする誤 predicate を捕まえる実証 |
+| ③ role 変更 | `cards_tenant` を `TO PUBLIC` で再作成 | #3, #5 | `cards\|cards_tenant roles: expected [ 'public' ] to deeply equal [ 'recallmint_app' ]` |
+
+## 範囲の限界(runbook §12 が補完)
+
+**test:iso は「repo の enable SQL ↔ test DB」の整合のみ検出**。global-setup が毎 run enable SQL を適用した結果を照合するため、SQL 自体の変更ミス・適用漏れは捕まえるが、**stg/prod で operator 手動適用後に誰かが直接 policy をいじる「手動適用 drift」は検出できない**。それは `docs/ops/rls-p2-stg-runbook.md` §12 の operator 用 read-only 監査 SQL(同じ pg_policies / relrowsecurity 照合を実 DB へ)が担う。`app_current_user_id()` 関数本体の drift は `rls-functions.test.ts` が behavioral に担保(Codex#4.5)。
