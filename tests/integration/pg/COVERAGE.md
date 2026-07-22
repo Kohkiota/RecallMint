@@ -170,3 +170,36 @@
 
 - `ocr-owner-scope.test.ts`: ground-truth 観測 helper(`statusOf`/`uploadRecordsWithFilename` + inline read 3)が source_documents/upload_records を raw getDb で読む → RLS-on 化で P0RLS。**owner 接続(getFixtureOwnerDb・RLS bypass)へ切替**(as-tenant.ts 規約: 観測/seed は owner)。刺激(completeUploadTx/markFailed)は自前 setTenantContext ゆえ getDb() のまま。
 - unit(save-*/settings・study page/exams-status route/review-events bulk route+contract/asset-actions): withTenantTx 化に伴い **pass-through stub**(`(db,_u,fn)=>fn(db)`)を追加(GUC 挙動は iso で担保)。
+
+---
+
+# RLS-P3 hardening 追記: 非 RLS 5 表の grant 縮小 pin(`grant-narrowing.test.ts`)
+
+起点: `docs/superpowers/plans/2026-07-21-rls-phase3-hardening.md` Task 5。RLS **非対象** 5 表(`ai_usage`/`stripe_events`/`clerk_events`/`contact_messages`/`integration_failures`)は tenant RLS を張らないため **command-level GRANT が唯一の防壁**。base blanket grant(`ON ALL TABLES`)の後段で `db/roles/recallmint_app-grants-phase3.sql` を REVOKE 適用し、app-role の権限を「実コードが使うコマンドだけ」へ縮小する。global-setup は base grants の直後に phase3 REVOKE を適用するため test:iso は毎 run 縮小後の grant で走る。
+
+## 表 5: 5 表 × コマンド × 縮小後 grant(KEEP/REVOKE)+ pin
+
+app-role(`getDb()`)は非 RLS 表ゆえ setTenantContext 不要。seed/観測/truncate は owner(`getFixtureOwnerDb`・grant bypass)。
+
+| 表 | SELECT | INSERT | UPDATE | DELETE | 縮小根拠(実経路) |
+|---|---|---|---|---|---|
+| **ai_usage** | KEEP | KEEP | KEEP | ~~REVOKE~~ | 日次 UPSERT(`ON CONFLICT DO UPDATE SET count=count+N`)+ 上限判定 `select(count)`。DELETE は無 |
+| **stripe_events** | KEEP | KEEP | ~~REVOKE~~ | ~~REVOKE~~ | webhook idempotency `INSERT ON CONFLICT DO NOTHING RETURNING event_id`(RETURNING→SELECT 要)。追記のみ |
+| **clerk_events** | KEEP | KEEP | ~~REVOKE~~ | ~~REVOKE~~ | stripe_events と同型(INSERT+RETURNING event_id) |
+| **contact_messages** | **KEEP** | KEEP | ~~REVOKE~~ | KEEP | INSERT(contact form)+ 退会 DELETE `WHERE user_id=`。**SELECT は DELETE の WHERE が user_id を読むため保持必須**(下記 ⚠️) |
+| **integration_failures** | ~~REVOKE~~ | KEEP | ~~REVOKE~~ | ~~REVOKE~~ | audit 追記 INSERT のみ(RETURNING 無・回収列は dormant) |
+
+## pin 内訳(`grant-narrowing.test.ts`・14 test)
+
+- **42501 完全 matrix(9 test)**: 縮小で失った全コマンドが app-role で permission-denied(SQLSTATE 42501・`.cause` walk)になることを表 5 の REVOKE セル全数で pin — contact_messages:UPDATE / integration_failures:SELECT+UPDATE+DELETE / stripe_events:UPDATE+DELETE / clerk_events:UPDATE+DELETE / ai_usage:DELETE。
+- **positive control(5 test・実 query 形)**: 残したコマンドが実コードと同じ形で動く — stripe/clerk `INSERT ON CONFLICT DO NOTHING RETURNING`(RETURNING が SELECT grant で通る = SELECT 十分の実証)/ ai_usage `INSERT ON CONFLICT DO UPDATE`(count 読取+書込 = SELECT+UPDATE)/ contact_messages `INSERT` + `DELETE WHERE user_id=` / integration_failures audit `INSERT`。**sequence 権限所見**: 5 表とも PK は uuid `defaultRandom()`(gen_random_uuid)or 自然キー(event_id/date)で **SERIAL/sequence を使わない** → sequence USAGE 権限依存は無い。positive control は INSERT が default(gen_random_uuid/defaultNow)込みで通ることを併せて確認。
+- **RED 検証**: global-setup の phase3 REVOKE 適用を無効化(blanket grant のまま)すると 42501 matrix 9 test が全 fail(blanket = 全コマンド成功で `expected the operation to reject` に落ちる)、positive control 5 は pass のまま。= matrix が grant 縮小に実際に gated されている実証。
+
+## ⚠️ contact_messages:SELECT を残す理由(brief からの逸脱・要 OT 批准)
+
+brief 当初は contact_messages を「REVOKE SELECT+UPDATE」と指定していたが、**PostgreSQL は DELETE/UPDATE が WHERE 句で列値を読む場合その列への SELECT 権限も要求する**(PG17 で実測: `DELETE FROM t WHERE user_id=$1` は SELECT 剥奪下で 42501、SELECT 付与で成功)。退会 lifecycle の `DELETE FROM contact_messages WHERE user_id=…`(`handle-clerk-event.ts:219`)は user_id を読むため、SELECT を剥奪すると **GDPR 削除経路が 42501 で壊れる**。列単位 GRANT(`SELECT(user_id)` のみ)は本 wave 対象外ゆえ table-level SELECT を残す。positive control「contact_messages: INSERT + DELETE WHERE user_id=」が pin するのは **SELECT 保持下で DELETE が成功する = 十分性**であり、SELECT を残す必然性(剥奪すると 42501)は上記 PG 規則 + 手動 PG17 実験由来(test:iso は単一 grant 状態ゆえ counterfactual は pin しない)。他 4 表の REVOKE 対象コマンドは列を読まない(bare DELETE / INSERT-only 等)ため影響なし。
+
+## 残余リスク(本 wave では受容・記録のみ・plan 準拠)
+
+- **command GRANT は行隔離を与えない**: DELETE を残す contact_messages は app-role が全 tenant の contact 行を削除でき、UPDATE を残す ai_usage は全 date 行を更新できる(blast radius 残存)。行スコープが要るなら RLS 化が必要だが本 5 表は非対象と確定。
+- **ALTER DEFAULT PRIVILEGES を維持**: base grants の default privileges はそのままゆえ、将来 owner が新規の非 RLS 表を作ると再び blanket CRUD が付与される(新表ごとに grants-phase3.sql へ REVOKE を追記する運用が必要)。

@@ -1,0 +1,56 @@
+-- RLS Phase 3 最終 hardening: RLS 非対象 5 表の app-role grant 縮小。owner (postgres)
+-- 実行前提。base grants (recallmint_app-grants.sql の blanket
+-- `GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES`) の **直後** に適用する
+-- (base → revoke の順序固定。逆順にすると REVOKE が blanket GRANT に上書きされ無効化する)。
+--
+-- 位置づけ: この 5 表 (ai_usage / stripe_events / clerk_events / contact_messages /
+-- integration_failures) は tenant RLS を張らない (global 冪等 / 匿名 / 監査 audit で
+-- user_id 述語が無い or nullable)。よって **command-level GRANT が唯一の防壁**であり、
+-- 各表の実コード経路が実際に使うコマンドだけを残して他を REVOKE する。
+--
+-- ⚠️ PostgreSQL 権限セマンティクスの要点 (本 file の grant 設計の根拠):
+--   DELETE / UPDATE が WHERE 句や RETURNING で **列値を読む** 場合、その列への SELECT 権限が
+--   別途必要 (DELETE/UPDATE 権限だけでは足りない)。実測: `DELETE FROM t WHERE user_id = $1` は
+--   SELECT 剥奪下で 42501、SELECT 付与で成功 (PG17 で確認・下記 contact_messages 参照)。
+--   INSERT ... RETURNING col も同様に SELECT を要する。
+--
+-- 縮小内訳 (KEEP = 実経路が使う / REVOKE = 使わない・理由):
+--   contact_messages    KEEP INSERT, DELETE, SELECT  REVOKE UPDATE
+--     - INSERT = contact form (lib/actions/contact.ts)
+--     - DELETE = 退会 lifecycle が該当 user の行を消す (handle-clerk-event.ts:219・WHERE user_id=)
+--     - SELECT = 明示 app read は無いが、上記 DELETE の WHERE が user_id を読むため
+--                **SELECT を残さないと退会 DELETE 自体が 42501 で失敗する** (GDPR 削除経路)。
+--                列単位 GRANT (SELECT(user_id) のみ) は本 wave 対象外のため table-level SELECT を残す。
+--                ⚠️ brief 当初の「REVOKE SELECT」から逸脱 — 下記 report/COVERAGE に記録・要 OT 批准。
+--     - UPDATE = app 経路に無い (status 更新は operator/owner 手動のみ)
+--   integration_failures KEEP INSERT        REVOKE SELECT, UPDATE, DELETE
+--     - INSERT = recordIntegrationFailure の audit 追記のみ (RETURNING 無・列読取無)
+--     - SELECT/UPDATE/DELETE = 手動回収列 (retry_count/resolved_at 等) は dormant・app read 無
+--   stripe_events        KEEP INSERT, SELECT REVOKE UPDATE, DELETE
+--     - INSERT = webhook idempotency 記録 (route.ts)
+--     - SELECT = INSERT ... ON CONFLICT DO NOTHING RETURNING event_id の
+--                RETURNING が返す列読取に SELECT 権限が要る (RETURNING→SELECT)
+--     - UPDATE/DELETE = idempotency 台帳は追記のみ・書換/削除しない
+--   clerk_events         KEEP INSERT, SELECT REVOKE UPDATE, DELETE
+--     - stripe_events と同型 (INSERT + RETURNING event_id)
+--   ai_usage             KEEP SELECT, INSERT, UPDATE  REVOKE DELETE
+--     - INSERT+UPDATE = 日次 UPSERT (INSERT ... ON CONFLICT DO UPDATE SET count=count+N)
+--     - SELECT = UPSERT の count=count+N 式 (既存値読取) + 上限判定 select(count) に必要
+--     - DELETE = カウンタは追記/更新のみ・削除しない
+--
+-- 冪等性: REVOKE は対象権限を持たない role に対しても no-op で成功する (エラーにならない)
+-- ため、base grants → 本 file の順で何度再実行しても最終状態は同一 (毎 test run で
+-- global-setup が base grants を張り直した直後に本 file を流す前提)。列単位 GRANT には
+-- しない (簡潔性・table-level で十分・列単位は本 wave 対象外)。
+--
+-- 残余リスク (本 wave では受容・記録のみ):
+--   - command-level GRANT は行隔離を与えない: DELETE を残す contact_messages は app-role が
+--     全 tenant の contact 行を削除でき、UPDATE を残す ai_usage は全 date 行を更新できる
+--     (blast radius は残存)。行スコープが要るなら別途 RLS 化が必要 (本 5 表は非対象と確定)。
+--   - base grants の ALTER DEFAULT PRIVILEGES は維持するため、将来 owner が新規非 RLS 表を
+--     作ると再び blanket CRUD が付く (新表ごとに本 file へ REVOKE 追記する運用が要る)。
+REVOKE UPDATE ON contact_messages FROM recallmint_app;
+REVOKE SELECT, UPDATE, DELETE ON integration_failures FROM recallmint_app;
+REVOKE UPDATE, DELETE ON stripe_events FROM recallmint_app;
+REVOKE UPDATE, DELETE ON clerk_events FROM recallmint_app;
+REVOKE DELETE ON ai_usage FROM recallmint_app;

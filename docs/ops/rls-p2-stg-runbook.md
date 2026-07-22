@@ -288,6 +288,79 @@ RLS-P3 Wave 1 は配線ゼロ 8 表(`reviews`/`answer_events`/`tag_categories`/`
 - **after 計測(perf)**: **Wave 1 単体では取らない**。prod 有効化直前に同日 before とセットで取る(Wave 1〜2 の policy が出揃ってから・drift 分離のため)。
 - **prod 方針**: Wave 1 も **prod に出さない**(§8 と同じ・部分 RLS を prod に出さない = Phase 3 全表完了後にまとめて反映)。
 
+## 11. RLS-P3 hardening 追記(非 RLS 5 表の grant 縮小・stg 適用)
+
+RLS-P3 最終 hardening wave (Task 5) は **RLS 非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)の app-role grant を「実経路が使うコマンドだけ」へ縮小する。これらは tenant RLS を張らないため **command-level GRANT が唯一の防壁**。policy 適用(§1〜§2 / §10)とは**独立**(表が重ならない)ゆえ順序非依存 — grant 縮小は policy 有効化の前でも後でも安全に単独適用できる。
+
+### 11.1 適用(OT・Supabase SQL Editor・owner)
+
+| 項目 | 内容 |
+|---|---|
+| 何を | `db/roles/recallmint_app-grants-phase3.sql`(5 表の REVOKE 群)を owner(postgres)権限で適用 |
+| 順序 | **base grants → phase3 REVOKE の順が絶対**。base grants(`db/roles/recallmint_app-grants.sql` の blanket `GRANT ... ON ALL TABLES`)が既に適用済の前提で、その**後段**に REVOKE を流す。逆順(REVOKE 先→ blanket GRANT 後)にすると GRANT が REVOKE を上書きし縮小が無効化する。stg は既に RLS-P1 で base grants 適用済ゆえ、本 file を単独実行すればよい |
+| どう | SQL Editor に `recallmint_app-grants-phase3.sql` の全文を貼り付け実行(正本は file・実行直前に再確認)。冪等(REVOKE は権限非保持でも no-op 成功)ゆえ再実行安全 |
+| 期待結果 | エラーなく完了。§11.2 の readback で 5 表 × 全コマンドの実効権限が期待 matrix と一致 |
+| NG 時 | REVOKE 自体がエラーになることは通常ない(権限非保持でも成功)。readback が期待とズレたら base grants の再適用有無・適用順を確認して再実行 |
+
+### 11.2 適用確認 readback SQL(§11.1 直後・OT)
+
+**SQL Editor で「実行成功」しても実効権限が変わった保証にはならない**(REVOKE は no-op でも成功する)。必ず `has_table_privilege` で実効 matrix を readback して検証する。
+
+```sql
+-- 5 表 × 4 コマンドの app-role 実効権限 matrix。期待値は下表と完全一致すること。
+SELECT
+  t.relname AS table_name,
+  has_table_privilege('recallmint_app', 'public.' || t.relname, 'SELECT') AS can_select,
+  has_table_privilege('recallmint_app', 'public.' || t.relname, 'INSERT') AS can_insert,
+  has_table_privilege('recallmint_app', 'public.' || t.relname, 'UPDATE') AS can_update,
+  has_table_privilege('recallmint_app', 'public.' || t.relname, 'DELETE') AS can_delete
+FROM pg_class t
+JOIN pg_namespace n ON n.oid = t.relnamespace
+WHERE n.nspname = 'public'
+  AND t.relname IN ('ai_usage','stripe_events','clerk_events','contact_messages','integration_failures')
+ORDER BY t.relname;
+```
+
+期待 matrix(t=許可 / f=拒否):
+
+| table | SELECT | INSERT | UPDATE | DELETE |
+|---|---|---|---|---|
+| `ai_usage` | **t** | **t** | **t** | f |
+| `clerk_events` | **t** | **t** | f | f |
+| `contact_messages` | **t** | **t** | f | **t** |
+| `integration_failures` | f | **t** | f | f |
+| `stripe_events` | **t** | **t** | f | f |
+
+> **⚠️ contact_messages が SELECT=t なのは意図**。退会 lifecycle の `DELETE FROM contact_messages WHERE user_id=…`(`handle-clerk-event.ts:219`)が WHERE で user_id を読むため、PostgreSQL は DELETE 権限に加え **SELECT 権限も要求**する(SELECT 剥奪下では退会 DELETE 自体が 42501 で失敗)。列単位 GRANT(`SELECT(user_id)` のみ)は本 wave 対象外のため table-level SELECT を残す。詳細は grants-phase3.sql の根拠コメント。
+
+補助 readback(role_table_grants で付与コマンドを列挙・上の matrix と交差確認):
+
+```sql
+SELECT table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee = 'recallmint_app' AND table_schema = 'public'
+  AND table_name IN ('ai_usage','stripe_events','clerk_events','contact_messages','integration_failures')
+ORDER BY table_name, privilege_type;
+```
+
+期待: `ai_usage` = INSERT/SELECT/UPDATE / `clerk_events` = INSERT/SELECT / `contact_messages` = DELETE/INSERT/SELECT / `integration_failures` = INSERT / `stripe_events` = INSERT/SELECT。
+
+### 11.3 意図的 42501 発火(実効確認・任意)
+
+readback に加え、revoke 済コマンドを app 用接続(`DATABASE_URL_APP`)で 1 発叩き 42501 を確認できる(例: `DELETE FROM ai_usage;` / `SELECT id FROM integration_failures LIMIT 1;` → いずれも `permission denied` = SQLSTATE 42501)。破壊コマンドだが対象は非 RLS 台帳・件数少で影響軽微、かつ revoke 済ゆえ**実際には行が消えない**(権限拒否で plan 段階で止まる)。
+
+### 11.4 smoke(CC・push 後・非破壊)
+
+grant 縮小後、非 tenant handle 経路が従来どおり動くこと: contact 送信(匿名 + 会員)/ webhook 受信(Stripe or Clerk 実イベント 1 発 = INSERT+RETURNING)/ OCR 1 枚(ai_usage UPSERT)。`P0RLS` / 意図しない 42501 / 5xx = 0 件。特に**会員の退会**(contact DELETE を含む)は SELECT 保持の実機確認になるが破壊操作ゆえ OT 実機(test user の削除)。
+
+### 11.5 rollback
+
+grant 縮小の rollback は base grants の再適用(`recallmint_app-grants.sql` を再実行 = blanket CRUD 復帰)。policy と独立ゆえ RLS 状態には影響しない。
+
+### 11.6 prod 適用成果物(適用はしない・整備のみ)
+
+prod 有効化セッションで grant 縮小も一括適用する。順序: base grants(既存)→ phase3 REVOKE → §11.2 readback。policy 有効化とは独立(表非重複)ゆえ policy 適用順に依存しない(先行・後行どちらでも可)。失敗時停止条件 = readback matrix が期待と不一致なら prod 適用を中断し原因究明。
+
 ## 関連 doc
 
 - Wave 1 factfinding / wave 定義: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md`(§5.3 / 追補 / 追補2)
@@ -300,3 +373,5 @@ RLS-P3 Wave 1 は配線ゼロ 8 表(`reviews`/`answer_events`/`tag_categories`/`
 - test:iso カバレッジ対応表: `tests/integration/pg/COVERAGE.md`
 - policy 正本: `db/policies/rls-p2-enable.sql` / `db/policies/rls-p2-disable.sql`
 - 0025 migration: `drizzle/migrations/0025_rls_p2_functions.sql`
+- Phase 3 grant 縮小正本: `db/roles/recallmint_app-grants-phase3.sql`(base: `db/roles/recallmint_app-grants.sql`)
+- Phase 3 grant test: `tests/integration/pg/grant-narrowing.test.ts` / plan: `docs/superpowers/plans/2026-07-21-rls-phase3-hardening.md`(Task 5)

@@ -79,3 +79,11 @@ Codex の逐次発覚方式(r1〜r4)でなく、**DB handle を import しうる
 永続 regression: `tests/lint/import-boundary.test.ts` 39 tests(scope・notation・negative・exempt を lintText で pin、RED 検証済)。whole-repo `pnpm lint` --max-warnings=0 exit 0 / typecheck 0。
 
 → **executable scope 全列挙・全 notation カバー・各書き方 RED pin 済**を確定。以降 Codex は本照合を 1 回確認のみ(周回しない)。
+
+---
+
+## T5 裁定記録 — contact_messages の table-level SELECT 保持(OT 承認 2026-07-22)
+
+非 RLS 5 表の grant 縮小のうち contact_messages のみ brief spec(`INSERT+DELETE`・SELECT revoke)から逸脱し **`INSERT+DELETE+SELECT` / `UPDATE` のみ revoke** とした。理由: GDPR 削除経路 `handle-clerk-event.ts:219` の `DELETE FROM contact_messages WHERE user_id = …` は、PostgreSQL が **DELETE の WHERE で参照する列に SELECT 権限**を要求するため、SELECT を revoke すると削除自体が 42501 で破綻する(PG17 実証: SELECT-revoked→42501 / granted→成功 / bare DELETE(WHERE 無し)→成功)。列単位 `SELECT(user_id)` は plan で out-of-scope ゆえ、table-level SELECT が唯一の correctness 解。攻撃面は UPDATE revoke で縮小維持。他 4 表(integration_failures INSERT のみ / stripe_events・clerk_events INSERT+SELECT / ai_usage SELECT+INSERT+UPDATE)は brief どおり。
+
+残余リスク(app-role が contact_messages(email/PII)を全行 SELECT 可)は **v47 todo「残件記録 > 公開前 PII 監査(バケット)」**に rotation / integration_failures PII 残置と併記(列単位 SELECT 化で公開前にまとめて判断)。

@@ -26,6 +26,15 @@ const GRANTS_FILE = path.resolve(
   '../../../../db/roles/recallmint_app-grants.sql',
 )
 
+// RLS-P3 hardening: RLS 非対象 5 表 (ai_usage/stripe_events/clerk_events/
+// contact_messages/integration_failures) の app-role grant を最小コマンドへ縮小する
+// REVOKE 群。base grants (blanket ON ALL TABLES) の **直後** に owner で適用しないと
+// REVOKE が blanket GRANT に上書きされ無効化するため、順序 (base → phase3) が固定。
+const GRANTS_PHASE3_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/roles/recallmint_app-grants-phase3.sql',
+)
+
 // RLS-P2: 5 表 (users/exams/cards/tombstones/study_days) の policy 有効化 SQL。
 // migration にしない (spec §2.9) ため、grants の直後に owner client で適用する。
 // これで test:iso は毎 run RLS on で走る (= 「動く」の証明: spec §3.1-1)。
@@ -82,6 +91,12 @@ export async function setup(): Promise<void> {
     // .simple() = simple query protocol で multi-statement SQL file を一括実行。
     const grantsSql = readFileSync(GRANTS_FILE, 'utf8')
     await client.unsafe(grantsSql).simple()
+
+    // RLS-P3 hardening: base grants の直後に非 RLS 5 表の grant 縮小 (REVOKE) を適用する
+    // (同 owner client)。順序が絶対 — base の blanket GRANT を張った後でなければ REVOKE が
+    // 意味を持たない。これで test:iso は毎 run 縮小後の grant で走る (= 42501 matrix が効く)。
+    const grantsPhase3Sql = readFileSync(GRANTS_PHASE3_FILE, 'utf8')
+    await client.unsafe(grantsPhase3Sql).simple()
 
     // RLS-P2: grants の直後に policy を有効化する (同 owner client)。owner は
     // FORCE RLS していないため policy を bypass する = 以降の seed/truncate は素通し。
