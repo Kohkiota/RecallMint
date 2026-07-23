@@ -31,33 +31,27 @@ const FETCH_TIMEOUT_MS = 30_000
 // distinct asset 数ぶんの entry が残るのみで、 実用上 bounded (無限成長しない)。
 const objectUrlCache = new Map<string, string>()
 
+// in-flight 解決の共有 Map: `${userId}:${assetId}` → 進行中の Promise。 objectUrlCache は
+// 「完了した」 objectURL のみを保持するため、 同一 key への並行 call が completed cache に
+// 入る前に各自 resolve→fetch を走らせ presigned 発行 + download を重複させる (Task 4 の
+// openModal が thumbnail 解決中の兄弟を一括解決するため実際に発生する)。 完了前の並行 call を
+// 1 本の解決に合流させる。 settle 時に delete するため成功 objectURL のみが cache に残り、
+// 失敗は cache されない (= 次回 call が再試行する既存契約を維持)。
+const inFlight = new Map<string, Promise<string | null>>()
+
 function cacheKey(userId: string, assetId: string): string {
   return `${userId}:${assetId}`
 }
 
-/**
- * 表示用 objectURL を解決する。
- *
- * 1. objectUrlCache hit → 再利用 (resolve/fetch を再実行しない)。
- * 2. Cache API hit (`matchAssetBlob`) → そこから objectURL 生成。
- * 3. miss → `deps.resolveAssetUrls([assetId])` で presigned GET URL を解決 →
- *    fetch → Cache put → objectURL 生成。
- * 4. いずれの経路でも失敗 (resolve !ok / 空 / fetch !ok / throw) は null
- *    (呼出側で placeholder 表示、 spec §6)。
- */
-export async function getAssetObjectURL(
+// 解決本体 (Cache API → resolve → fetch → put → objectURL)。 getAssetObjectURL から in-flight
+// 合流のため切り出す。 null-on-failure 契約: どの失敗でも null に落とし throw を漏らさない。
+// 成功時のみ objectUrlCache に set する (失敗は cache しない)。
+async function resolveObjectURL(
   userId: string,
   assetId: string,
+  key: string,
   deps: { resolveAssetUrls: ResolveAssetUrlsFn },
 ): Promise<string | null> {
-  const key = cacheKey(userId, assetId)
-
-  const cached = objectUrlCache.get(key)
-  if (cached) return cached
-
-  // 全経路を try で囲い、 どの失敗 (Cache API read 失敗 / resolve !ok・reject /
-  // fetch !ok・timeout / put 失敗 / createObjectURL 失敗) でも null に落とす
-  // (null-on-failure 契約: 呼出側は placeholder 表示。 throw を漏らさない)。
   try {
     let blob = await matchAssetBlob(userId, assetId)
 
@@ -87,4 +81,38 @@ export async function getAssetObjectURL(
   } catch {
     return null
   }
+}
+
+/**
+ * 表示用 objectURL を解決する。
+ *
+ * 1. objectUrlCache hit → 再利用 (resolve/fetch を再実行しない)。
+ * 2. Cache API hit (`matchAssetBlob`) → そこから objectURL 生成。
+ * 3. miss → `deps.resolveAssetUrls([assetId])` で presigned GET URL を解決 →
+ *    fetch → Cache put → objectURL 生成。
+ * 4. いずれの経路でも失敗 (resolve !ok / 空 / fetch !ok / throw) は null
+ *    (呼出側で placeholder 表示、 spec §6)。
+ */
+export async function getAssetObjectURL(
+  userId: string,
+  assetId: string,
+  deps: { resolveAssetUrls: ResolveAssetUrlsFn },
+): Promise<string | null> {
+  const key = cacheKey(userId, assetId)
+
+  const cached = objectUrlCache.get(key)
+  if (cached) return cached
+
+  // 進行中の同一 key 解決があれば合流 (重複 presigned 発行 + download を防ぐ)。
+  const existing = inFlight.get(key)
+  if (existing) return existing
+
+  // 解決本体を 1 本の Promise に包んで inFlight に登録し、 settle 時に必ず解放する。
+  // 成功は resolveObjectURL 内で objectUrlCache に入るため以後は cache hit、 失敗は
+  // cache されないため inFlight 解放で次回 call が再試行できる (既存契約を維持)。
+  const pending = resolveObjectURL(userId, assetId, key, deps).finally(() => {
+    inFlight.delete(key)
+  })
+  inFlight.set(key, pending)
+  return pending
 }

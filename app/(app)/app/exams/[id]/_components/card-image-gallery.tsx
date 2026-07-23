@@ -24,6 +24,7 @@ import {
 } from '@/lib/media/upload'
 import { getAssetObjectURL } from '@/lib/media/get-asset'
 import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
+import { useImageZoom, type ZoomImage } from '@/components/media/use-image-zoom'
 import { reserveAsset, finalizeAsset, resolveAssetUrls } from '../_actions/asset-actions'
 
 export type CardImageGalleryProps = {
@@ -67,9 +68,12 @@ type ThumbnailProps = {
   userId: string
   readOnly: boolean
   onDelete: (assetId: string) => void
+  // 画像本体 tap → 全画面モーダル。 gallery が target 単位で ZoomImage[] を組むため、
+  // thumbnail は自 key を渡すだけ (解決/dims 収集は gallery 側 openModal)。
+  onOpen: (assetId: string) => void
 }
 
-function CardImageThumbnail({ image, userId, readOnly, onDelete }: ThumbnailProps) {
+function CardImageThumbnail({ image, userId, readOnly, onDelete, onOpen }: ThumbnailProps) {
   // undefined=loading / null=失敗(placeholder+retry) / string=resolved objectURL。
   const [url, setUrl] = React.useState<string | null | undefined>(undefined)
   const [retryTick, setRetryTick] = React.useState(0)
@@ -133,16 +137,34 @@ function CardImageThumbnail({ image, userId, readOnly, onDelete }: ThumbnailProp
 
   return (
     <div className="group relative shrink-0">
-      {/* objectURL は next/image の最適化対象外(remotePatterns 変更なし、 spec §5)。
-          既存 upload-form.tsx と同じ suppression pattern を踏襲。 */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={url}
-        alt={image.alt || ''}
-        width={dims?.width}
-        height={dims?.height}
-        className="h-16 w-16 rounded-md border border-slate-200 object-cover"
-      />
+      {/* 画像本体 tap = 全画面モーダル。 tap-gate: この resolved 分岐 (url が string) でのみ
+          button を出す = loading/失敗 placeholder は tap 不可 (空モーダル防止、 spec §3.6)。
+          × 削除とは別 hit target で、 button を入れ子にしない (兄弟に置く)。 button は
+          block h-16 w-16 で <img> と同寸ゆえ flex layout / × 配置を変えない。 */}
+      <button
+        type="button"
+        // iOS Safari は tap だけで button に focus が乗らないことがある。 open 前に明示 focus し、
+        // hook が focus 復帰 trigger として tap した button を確実に捕捉できるようにする (§3.6)。
+        onClick={(e) => {
+          e.currentTarget.focus()
+          void onOpen(image.key)
+        }}
+        // 操作要素の名前は「拡大」を常に含める (alt 有無どちらでも操作を伝える a11y)。
+        // alt 空 → 「画像を拡大」 / alt あり → 「<alt>を拡大」。
+        aria-label={`${image.alt || '画像'}を拡大`}
+        className="block h-16 w-16 rounded-md focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+      >
+        {/* objectURL は next/image の最適化対象外(remotePatterns 変更なし、 spec §5)。
+            既存 upload-form.tsx と同じ suppression pattern を踏襲。 */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={image.alt || ''}
+          width={dims?.width}
+          height={dims?.height}
+          className="h-16 w-16 rounded-md border border-slate-200 object-cover"
+        />
+      </button>
       {!readOnly && (
         <button
           type="button"
@@ -173,6 +195,7 @@ export function CardImageGallery({
 }: CardImageGalleryProps) {
   const [error, setError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const { open } = useImageZoom()
 
   // stale / 旧 schema の mirror row では images が undefined / 非配列でありうる。 filter で
   // throw して exam 詳細 view 全体を壊さないよう、 server mapper と同じく Array.isArray で
@@ -182,6 +205,52 @@ export function CardImageGallery({
   // 判別 invariant(spec §2.2): UUID key = asset 参照(描画対象)、 非 UUID = legacy OCR
   // passthrough(非描画)。 target 一致も併せて絞る(gallery は target 単位)。
   const targetImages = safeImages.filter((i) => i.key && isAssetKey(i.key) && i.target === target)
+
+  // 画像 tap → target 全体の解決済み ZoomImage[] を組み、 tap 画像を起点に全画面モーダルを
+  // 開く(swipe で target 内を移動できるよう ordinal 順を維持)。 未解決/decode 失敗は集合から
+  // 除外し、 startIndex は除外後に tap key で再計算する(spec §3.6)。
+  const openModal = async (tappedKey: string): Promise<void> => {
+    const resolved = await Promise.all(
+      targetImages.map(async (image) => {
+        // getAssetObjectURL は resolver cache の objectURL を返す(所有権は resolver、
+        // ここで revoke してはならない)。
+        const src = await getAssetObjectURL(userId, image.key, { resolveAssetUrls })
+        if (!src) return null // 解決不可 → 除外
+        const row = await getClientDb()
+          .media_assets.get(image.key)
+          .catch(() => undefined)
+        let width: number
+        let height: number
+        if (row) {
+          width = row.width
+          height = row.height
+        } else {
+          // 未表示兄弟は DOM <img> ref が無いため、 同じ cache URL を decode して natural 寸を得る
+          // (新 objectURL を作らない = revoke 対象なし)。 decode 失敗は集合から除外。
+          try {
+            const probe = new Image()
+            probe.src = src
+            await probe.decode()
+            width = probe.naturalWidth
+            height = probe.naturalHeight
+          } catch {
+            return null
+          }
+        }
+        return { key: image.key, zoom: { src, width, height, alt: image.alt || '' } satisfies ZoomImage }
+      }),
+    )
+
+    const usable = resolved.filter((r): r is NonNullable<typeof r> => r !== null)
+    const startIndex = usable.findIndex((r) => r.key === tappedKey)
+    // tap 画像は tap-gate で解決済みゆえ通常必ず含まれる。 万一 decode 失敗で外れた場合は
+    // 無効 index でモーダルを開かない。
+    if (startIndex < 0) return
+    await open(
+      usable.map((r) => r.zoom),
+      startIndex,
+    )
+  }
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -233,6 +302,7 @@ export function CardImageGallery({
             userId={userId}
             readOnly={readOnly}
             onDelete={handleDelete}
+            onOpen={openModal}
           />
         ))}
 

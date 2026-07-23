@@ -266,17 +266,39 @@ describe('useImageZoom', () => {
     });
 
     it('起動要素が DOM から消えていれば安全な既定(body)へ fallback', async () => {
-      const trigger = document.createElement('button');
-      document.body.appendChild(trigger);
-      trigger.focus();
+      // jsdom の body は既定で focusable でなく document.body.focus() が no-op になる。
+      // 実ブラウザは body へ focus が移るため、 tabindex=-1 を与えて実挙動を再現する
+      // (この shim が無いと本 test は effect を観測できない)。
+      document.body.setAttribute('tabindex', '-1');
 
-      const { result } = renderHook(() => useImageZoom());
-      await openWith(result.current.open);
-      const inst = firstInstance();
+      // shim の除去を finally に置き、 途中 assertion が throw しても <body> に tabindex=-1 を
+      // 残さない (残ると後続 test の focus 挙動に波及する)。
+      try {
+        const trigger = document.createElement('button');
+        document.body.appendChild(trigger);
+        trigger.focus();
 
-      trigger.remove(); // 起動要素が消える
-      act(() => inst.close());
-      expect(document.activeElement).toBe(document.body);
+        const { result } = renderHook(() => useImageZoom());
+        await openWith(result.current.open);
+        const inst = firstInstance();
+
+        trigger.remove(); // 起動要素(focus 復帰 trigger)が DOM から消える
+
+        // 弁別化: 消えた trigger による自然な body 落ちに頼ると、 hook が何もしなくても
+        // assertion が通り非弁別になる。 sentinel を focus し、 hook が明示 body.focus() を
+        // 呼んで初めて sentinel から外れることを assert する(no-op hook なら sentinel のまま fail)。
+        const sentinel = document.createElement('button');
+        document.body.appendChild(sentinel);
+        sentinel.focus();
+        expect(document.activeElement).toBe(sentinel);
+
+        act(() => inst.close());
+        // trigger 不在 → hook は body へ fallback。 focus は sentinel から body へ移る。
+        expect(document.activeElement).not.toBe(sentinel);
+        expect(document.activeElement).toBe(document.body);
+      } finally {
+        document.body.removeAttribute('tabindex');
+      }
     });
   });
 

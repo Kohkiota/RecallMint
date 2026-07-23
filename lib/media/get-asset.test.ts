@@ -241,6 +241,62 @@ describe('getAssetObjectURL', () => {
     ).toBe(1)
   })
 
+  it('in-flight dedup: 同一 key の並行 2 call は resolve/fetch を 1 回だけ実行し同一 objectURL を共有する', async () => {
+    const assetId = freshAssetId()
+    // resolve を手動制御の deferred にし、 両 call が「どちらも未解決の状態で」開始・合流する
+    // ことを保証する (release するまで 1 本目の解決は完了しない → 2 本目は inFlight に合流)。
+    let releaseResolve!: (value: ReturnType<typeof okResolve>) => void
+    const resolveGate = new Promise<ReturnType<typeof okResolve>>((resolve) => {
+      releaseResolve = resolve
+    })
+    const mockResolve = vi.fn().mockReturnValue(resolveGate)
+    const responseBlob = new Blob(['fetched-bytes'], { type: 'image/webp' })
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(responseBlob, { status: 200 }))
+
+    // await せず同時に起動 (inFlight は同期的に set されるため 2 本目は 1 本目に合流する)。
+    const p1 = getAssetObjectURL(USER_ID, assetId, { resolveAssetUrls: mockResolve })
+    const p2 = getAssetObjectURL(USER_ID, assetId, { resolveAssetUrls: mockResolve })
+
+    // どちらもまだ未解決 (gate 未 release) の状態で release し、 両者を待つ。
+    releaseResolve(okResolve(assetId))
+    const [first, second] = await Promise.all([p1, p2])
+
+    expect(first).toBe(second)
+    expect(first).toBe('blob:mock-1')
+    // resolve / fetch / createObjectURL は合流により 1 回ずつのみ。
+    expect(mockResolve).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(
+      (globalThis.URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls.length,
+    ).toBe(1)
+  })
+
+  it('in-flight は失敗で解放される: 失敗した解決は cache されず、 後続 call は再度 resolve を試みる', async () => {
+    const assetId = freshAssetId()
+    const mockResolve = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, error: 'unauth' }) // 1 回目: 失敗
+      .mockResolvedValueOnce(okResolve(assetId)) // 2 回目: 成功
+    const responseBlob = new Blob(['fetched-bytes'], { type: 'image/webp' })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(responseBlob, { status: 200 }),
+    )
+
+    const firstAttempt = await getAssetObjectURL(USER_ID, assetId, {
+      resolveAssetUrls: mockResolve,
+    })
+    expect(firstAttempt).toBeNull()
+
+    // 失敗は objectUrlCache にも inFlight にも残らない → 2 回目は再 resolve して成功する。
+    const secondAttempt = await getAssetObjectURL(USER_ID, assetId, {
+      resolveAssetUrls: mockResolve,
+    })
+    expect(secondAttempt).toBe('blob:mock-1')
+    expect(mockResolve).toHaveBeenCalledTimes(2)
+  })
+
   it('userId 名前空間: user-1 の objectURL cache は user-2 の同一 assetId に再利用されない (別 fetch が走る)', async () => {
     const assetId = freshAssetId()
     const mockResolve = vi.fn().mockResolvedValue(okResolve(assetId))
