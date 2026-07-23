@@ -2,6 +2,8 @@
 
 > **本 file が正本**。 改訂時は repo 側を更新し、 OT が claude.ai プロジェクトナレッジへ同期する。
 
+> **進捗(2026-07-23 更新)**: **next+sharp のみ先行 bump 実施**(画像表示 UX sprint 中の PhotoSwipe de-risk で audit high 5 検出 → 分離対応)。next `16.2.9→16.2.11`(security patch・GHSA proxy-bypass/DoS/SSRF×2)+ eslint-config-next 同版 lockstep + **sharp override `^0.35.0`(→0.35.3 解決)追加**(next の `optionalDependencies.sharp` が ^0.34.5 のままゆえ next bump では解消せず別途)。react/react-dom は要求不変ゆえ据え置き(実測)。audit high 5→0・6 gate green。**波3 は未実施**(実害なし・変更源分離のため据え置き。実施可否は別途)。実物差分は §7 スナップショット参照。台帳 = `docs/audit/dependency-audit-ledger.md`「解消済(2026-07-23)」。
+
 > **進捗(2026-06-11 更新)**: **波1 (Next 16 核) ✅ クローズ済 / 波2 (ESLint 9 + lefthook) ✅ クローズ済、 両方 prod deploy + P0/P1 secret rotate 済**。 残波 = **波3 (TS6 + Stripe 22.2.0 + minor 群)**。 波1 の Clerk 着地版は **7.5.1** (当初 7.4.3 を選定したが `@clerk/react` との dep declaration 不整合で build fail、 7.5.1 で解消。 詳細は §3.1 メモ + `docs/superpowers/lessons/2026-06-11-dep-declaration-bug-build-only-detection.md`)。 波1 plan 順序は実装中改訂で C1 → **C4 (pre-step)** → C2 → C3 → C5 → C6 (`docs/superpowers/lessons/2026-06-11-version-context-in-impact-evaluation.md` 参照)。
 
 > **進捗(2026-06-10)**: **波2(ESLint 9 flat config + lefthook gate)実装完了 → develop 10 commit・push/stg smoke 待ち**。`next lint` → `eslint .` 移行済。残り = 波1(Next 16 核)→ 波3(TS6/Stripe/minor)。
@@ -68,8 +70,8 @@
 
 | パッケージ | 現状 | ターゲット pin | 種別 | メモ |
 |---|---|---|---|---|
-| next | ^15.5.15 | **16.2.9 [exact]** | D | 15 EOS 回避。codemod 移行 |
-| eslint-config-next | ^16.2.4 | **16.2.9 [exact]** | V | **波1 で next と同時に bump**(波2 では現行 16.2.4 のまま) |
+| next | ^15.5.15 | **16.2.11 [exact]** | D | 15 EOS 回避。codemod 移行。**2026-07-23: 16.2.9→16.2.11 security patch**(GHSA proxy-bypass/DoS/SSRF×2) |
+| eslint-config-next | ^16.2.4 | **16.2.11 [exact]** | V | **波1 で next と同時に bump**(波2 では現行 16.2.4 のまま)。**2026-07-23: next と lockstep で 16.2.11** |
 | react | ^19.2.5 | **19.2.7 [exact]** | D | CVE 床超え。overrides で固定 |
 | react-dom | ^19.2.5 | **19.2.7 [exact]** | D | react と同 patch pair 必須。overrides 固定 |
 | @types/react | ^19.2.14 | **19.2.17 [exact]** | V | 型は patch でも型エラーを増やしうる → exact |
@@ -142,8 +144,10 @@ overrides:
   react-dom: 19.2.7      # 追加
   uuid: ^14.0.0          # 既存
   postcss: ^8.5.10       # 既存(tailwind4 + Next build)
+  # 2026-07-21: vite 8.0.16(GHSA-fx2h・台帳「解消済」)
+  # 2026-07-23: sharp ^0.35.0(GHSA-f88m・next の optionalDependencies 由来 transitive・台帳「解消済(2026-07-23)」)
 ```
-- **lockstep 注記**: 以後 next の patch bump で react 要求が上がったら **overrides も同時更新**。忘れると install は通るのに古い react に固定され続ける(唯一の罠)。
+- **lockstep 注記**: 以後 next の patch bump で react 要求が上がったら **overrides も同時更新**。忘れると install は通るのに古い react に固定され続ける(唯一の罠)。**2026-07-23 実測**: 16.2.9→16.2.11 では react/react-dom 要求不変(`^19.0.0`)ゆえ override 更新不要だった。
 ### 3.6 future（未 install・制約のみ記憶）
 
 | パッケージ | 制約 | 補足 |
@@ -221,3 +225,17 @@ CC 調査で判明した、claude.ai が記憶ベースで出した固定制約�
 | Node 22 LTS | **Node 24 LTS**(2025-10〜、22 は maintenance) |
 | ESLint 9.x(最新前提) | **現行 major は 10**。ただし eslint-config-next 互換で **9 維持が正**(別理由で結論一致) |
 | Gemini SDK 旧 `@google/generative-ai` か | **既に新 `@google/genai`**(移行完了済) |
+
+---
+
+## 7. 2026-07-23 実物差分スナップショット(next+sharp bump 時点)
+
+next+sharp 先行 bump に伴う「マトリクス(6/10)target と実物」の差分記録。**target は消さず据え置き**、ズレが読み取れる形で残す。
+
+**(a) 波3(TS6+Stripe+minor)= 6/10 時点の目標のまま未実行・据え置き**(実施可否は別途判断)。実物が target 未満 = stripe(実 `^22.0.2` / target 22.2.0)・svix(`^1.91.1` / `^1.95.2`)・vitest / @vitest/coverage-v8(`^4.1.5` / 4.1.8)・dexie(`^4.4.2` / `^4.4.3`)・ts-fsrs(`5.3.2` exact / `^5.4.1`)・radix-ui(`^1.4.3` / `^1.5.0`)・lucide-react(`^1.14.0` / `^1.17.0`)・tailwindcss / @tailwindcss/postcss(`^4.2.4` / `^4.3.0`)・tailwind-merge(`^3.5.0` / `^3.6.0`)・tsx(`^4.21.0` / `^4.22.4`)。理由 = 変更源分離(今回目的は audit gate 通過のみ)。
+
+**(b) pin 様式 drift(事実記録のみ・今回未修正)**: matrix `[exact]` 指定に対し実物が caret = typescript(`^6.0.3`)・eslint(`^9.39.4`)・@types/node(`^24.13.2`)・drizzle-kit(`^0.31.10`)。lockfile で解決版 pin ゆえ機能影響なし。exact 化判断は波3 or 別途。
+
+**(c) matrix 以後に追加された dep(install 済・matrix 未記載)**: aws4fetch(R2/画像)・react-markdown / remark-gfm / remark-parse / unified(Sprint T MD 表)・shadcn・photoswipe(画像表示 UX sprint・§3.1 と別 commit)。§3.6 future の @tanstack/react-table(`8.21.3`)・@tanstack/react-virtual(`3.14.5`)は **install 済に昇格**。
+
+**(d) pg = 実物に無い**: matrix §3.3 は `pg ^8.21.0` を記載するが、現 package.json に `pg` 依存なし(app runtime は `postgres` のみ)。§4.3「pg 降格/削除可」判断が削除方向で着地したものと解する(実測: 依存なし)。

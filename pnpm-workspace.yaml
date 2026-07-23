@@ -10,6 +10,11 @@ overrides:
   # GHSA-fx2h-pf6j-xcff 対処。range 内だが pnpm update が peer-suffix 付き
   # transitive を更新しないため override で固定(撤去条件 = 台帳「解消済」参照)
   vite: 8.0.16
+  # GHSA-f88m-g3jw-g9cj(sharp <0.35.0 = libvips 継承脆弱性)対処。sharp は next の
+  # optionalDependencies(^0.34.5)由来 transitive で、next 16.2.11 も optional 範囲が
+  # ^0.34.5 のままゆえ next bump では 0.34.5 に留まる → override で patched 化。
+  # 撤去条件 = next の optionalDependencies.sharp が >=0.35.0 に上がった時点。台帳参照。
+  sharp: ^0.35.0
 
 # audit gate の受容 allow-list。用途 = patched 不在 or 理由ある真の受容のみ
 # (bump 可能な検出は受容せず台帳「bump 待ち」へ)。追加時は GHSA/CVE・理由・

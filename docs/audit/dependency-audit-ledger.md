@@ -24,6 +24,24 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 
 - **vite override(撤去条件付き)**: GHSA-fx2h-pf6j-xcff。vite は宣言 range 内(vitest `^6||^7||^8` / plugin-react peer `^8.0.0`)だが、pnpm 10.33.0 の `pnpm update` は peer-suffix 付き transitive(lockfile key `vite@x.y.z(...)`)を更新しない(名前指定・`vite@^8.0.16` range 指定・`--depth Infinity`・`-r` 全て実測不発)ため、overrides で `8.0.16` に exact 固定。**撤去条件 = vitest / @vitejs/plugin-react の直接 bump 時に override を外し、override 無しで `>=8.0.16` が解決されることを `pnpm why vite` で確認して撤去**(pnpm 側の当該 update 挙動が直った場合も同様)。**固定版に新規 vite CVE が出た場合は撤去でなく override 値を当該 patched 版へ bump する**(override は解決の固定であり検出の抑止ではない — gate は override 下でも検出する)。
 
+## 解消済(2026-07-23 next+sharp 先行 bump)
+
+**記録 gap の是正**: 下記 high 5 は 2026-07-22(画像表示 UX sprint の PhotoSwipe de-risk で `pnpm run audit` 実行時)に検出されていたが **本台帳に未記載だった**(検出→未記録の gap)。2026-07-23 に bump と合わせて記載・解消し、検出→対応→解消の履歴を残す。
+
+- **対応**: next `16.2.9→16.2.11`(直接依存・package.json exact)+ eslint-config-next lockstep `16.2.11` + **sharp override `^0.35.0`(→ 0.35.3 解決)**。sharp は next の `optionalDependencies.sharp: ^0.34.5` 由来 transitive で、**next 16.2.11 も optional 範囲が ^0.34.5 のまま → next bump では 0.34.5 に留まる → override で patched 化**(撤去条件 = next の optional.sharp が >=0.35.0 に上がった時点)。
+- **結果**: audit **high 5→0**・随伴 moderate 9→4・6 gate(lint/typecheck/build/test/test:iso/audit/frozen install)green。react/react-dom は要求不変ゆえ override 据え置き(実測)。
+- **波3 は未実施**(gate は high 通過ゆえ不要・変更源分離のため据え置き。実施可否は別途)。
+
+| module | GHSA(概要) | vulnerable | patched | 到達版 | 経路 |
+|---|---|---|---|---|---|
+| next | GHSA-6gpp-xcg3-4w24(Proxy/Middleware bypass) | `>=16.0.0 <16.2.11` | `>=16.2.11` | 16.2.11 | `.>next`(直接) |
+| next | GHSA-m99w-x7hq-7vfj(DoS・Server Actions) | `>=16.0.0 <16.2.11` | `>=16.2.11` | 16.2.11 | `.>next` |
+| next | GHSA-89xv-2m56-2m9x(SSRF・Server Actions) | `>=16.0.0 <16.2.11` | `>=16.2.11` | 16.2.11 | `.>next` |
+| next | GHSA-p9j2-gv94-2wf4(SSRF・rewrites) | `>=16.0.0 <16.2.11` | `>=16.2.11` | 16.2.11 | `.>next` |
+| sharp | GHSA-f88m-g3jw-g9cj(libvips 継承) | `<0.35.0` | `>=0.35.0` | 0.35.3(override) | `.>next>sharp`(next optional 由来) |
+
+> **残存 follow-up 更新(2026-07-23)**: 現況 moderate 4 / low 3(gate 対象外)。下記「残存 follow-up(2026-07-21)」表からの差分は新規 advisory 随伴ゆえ個別再掲は省略(gate は high ゆえ非対象・次回 bump sprint で拾う)。
+
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
 ### moderate(3 件)
