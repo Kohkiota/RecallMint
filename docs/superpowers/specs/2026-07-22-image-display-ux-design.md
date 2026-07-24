@@ -96,6 +96,7 @@ target 内枚数での**単一の二分岐のみ**(枚数別の細分岐は作�
 | ズーム階層 | `secondaryZoomLevel`(double-tap/ボタン)・`maxZoomLevel`(pinch 上限)|
 | フォーカストラップ / ESC / 復帰 | `trapFocus: true` / `escKey: true` / `returnFocus: true`(組込)/ `arrowKeys: true` |
 
+- **[OT 承認 amendment 2026-07-24・Z2]** `escKey` は **`false`** に変更(当初 `true`)。理由 = side-peek(編集面の radix Dialog `modal={false}`)の上から画像モーダルを開くと、`escKey:true` の PhotoSwipe と radix の document 級 Escape ハンドラの**両方**に Escape が届き **side-peek まで閉じる**(PhotoSwipe は radix の DismissableLayer stack 外)。task6 stg smoke で検出。対策 = Escape を hook 側で所有し、`window` の **capture 段**(document へ降りる前)で `stopPropagation` して下層 radix へ伝播させずモーダルだけ閉じる。ゆえに PhotoSwipe 内蔵 escKey は切る。「ESC で閉じる」要件は不変(手段の差し替え)。open 中のみ有効・close/unmount で必ず listener 除去(close 後は radix の Escape が従来どおり効く)。`arrowKeys` 等 Escape 以外は素通し。実装 = `components/media/use-image-zoom.ts`。
 - **WCAG 2.5.1(複数点ジェスチャの単一ポインタ代替)** = `ui.registerElement` で **+/−/リセット** ボタンを追加(onClick で `pswp.currSlide.zoomTo(...)`)。閉じるボタン hit 領域 ≥44px。開いた直後に閉じるボタンへ focus・閉じた後にトリガーへ復帰(`returnFocus` + 明示フォーカス制御)。
 - **長尺判定** = per-slide の aspect(`naturalHeight / naturalWidth`)が閾値(**開始値 h/w > 2.0**)超で `'fill'`、それ以外 `'fit'`(数値は smoke で詰める。§3.3 の畳み判定とは独立の viewer 内判定)。
 
