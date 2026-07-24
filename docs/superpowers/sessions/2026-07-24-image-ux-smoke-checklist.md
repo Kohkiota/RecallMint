@@ -262,3 +262,13 @@ Clerk dev-keys=stg 既知)。
 - **follow-up 案**: useImageZoom で open 中に capture-phase keydown で Escape の伝播を下層 radix に届く前に止める(PhotoSwipe には処理させる)/ または escKey を切り自前 Escape で stopPropagation+close。**push 済ゆえ別 commit の follow-up 判断は OT**(Minor=記録可)。
 - **→ 修正済(`37dbfd8`・OT 指示で Minor 受容せず即 fix)**: escKey:false にし Escape を hook 側で所有、`window` の capture 段で `stopPropagation` して下層 radix へ伝播させずモーダルのみ close。open 中のみ有効・close/unmount で listener 除去(close 後は radix の Escape が従来どおり効く)。arrowKeys 等は素通し。§3.4 amendment(`d568a5b`)。review = canonical Ready/Crit0/Imp0 + Codex 2 周(P2 init-throw 巻き戻し→fix)Crit0/Imp0/Minor0。full 3889 green。
 - **push 後 CC 再 smoke(要)**: side-peek→画像モーダル→**Escape で画像モーダルのみ閉じ side-peek 継続** / close 後に side-peek で Escape→side-peek が閉じる / 画像モーダル中の矢印キーで slide 送りが効く(arrowKeys 不変)。desktop Chromium で実走可。
+
+---
+
+## OT iOS 実機 smoke 結果(2026-07-24・iPhone 相当)
+
+- **PASS**: G1 ピンチで閉じない / G2 ズーム中はドラッグで閉じない・初期倍率のみドラッグ閉じ / G3 はみ出し方向へ 1 本指移動 / G4 ダブルタップ拡大 / G5 画像 1 タップで閉じない / L1 背景非スクロール / G6 物理 hit 領域 OK / リセットで初期倍率復帰。
+- **FINDING 1(自前 +/−/リセットが背景に埋もれ視認不能)→ 修正済 `e44bae4`(fix `[reviewed]`)**: 白+影を PhotoSwipe `.pswp__counter` パターンで、`order` 11–13 で右上ツールバーに集約。**視認性は push 後 CC 再 smoke で確認**(色/glyph は unit 不能)。
+- **FINDING 2(画像外タップで閉じるを足せるか)→ (A) 現状維持(OT 決定 2026-07-24)**: 調査結果 = touch の tap は image/bg 問わず `tapAction`(既定 toggle-controls)を通り、`bgClickAction`/`imageClickAction` は **mouse 専用**(かつ bgClickAction は既に既定 'close')。ゆえに案 (b)(c) は iOS 無効。通常画像は下ドラッグ(実機 PASS)+ × で dismiss 可ゆえ画像外タップは冗長、最も閉じにくい長尺は背景余白が無く (B) でも不解決 → **効果薄の lever を足さない**。tap=toggle-controls は lightbox 慣習として受容、長尺は × 依存を受容。
+- **後日 OT(iPad)残**: **F1 iOS Safari の畳み発火(演習画面での clip+フェード+「拡大して全体を見る」= must-pass 本丸。モーダル内表示と混同回避のため演習画面で再確認)** / L2 / L3 / 横向き / iPad / PWA。
+- **push 後 CC 再 smoke**: Z2 Escape 隔離(上記)+ FINDING 1 ボタン視認性。

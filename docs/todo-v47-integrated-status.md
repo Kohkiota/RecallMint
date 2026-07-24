@@ -97,6 +97,7 @@
 ## 5. carry-forward backlog(repo-visible・OT が v46 と突合)
 
 ### 短期(launch blocker 寄り)
+- **[triage 未着手・2026-07-24 記録]** 削除済み exam がモバイルに残留する観測: 約1ヶ月前(6月 seed)に削除した **PERF-SEED exam** が モバイル(Chrome / PWA)に残っていた(PC には無し)。**サイトデータ消去で PC と一致**(= server 側は削除済・モバイルの IDB mirror にだけ古い row が残留)。**切り分けが必要**: (a) **削除が pull で伝わらなかった**(tombstone は立っていたが incremental pull が mirror に反映しなかった)= **実バグ** / (b) **6月の seed 削除が SQL 直接操作で tombstone を立てなかっただけ**(通常の削除 UI 経路では tombstone が立つため実害なし)= **非バグ**。後者濃厚だが未確認。関連: `docs/audit/2026-07-13-image-delete-sync-factfinding.md`(削除 sync 機構)/ `docs/recallmint-incremental-pull-steps.md`。**「ログアウト時 IDB クリア」検討とは別問題**(クリアを入れてもこの残留現象自体は直らない=pull 伝播 or tombstone の問題)。画像 sprint の切り分けを濁らせないため**今は調査しない**・記録のみ。
 - **LocalSync MVP**(card 編集/削除の local-first 化)— spec 確定・schema scaffold 済・sync helper/bulk route/orchestrator/inline Dexie 化 未着手。inline 編集 ~2.5s→~50ms。母艦: `docs/cache-fix-roadmap.md` §5。
 - **試験セットの手動新規作成経路**(OCR 代替・OT 提案)— spec 未着手。schema source 列 / manual dummy 行 / card 手動追加 UI 等の論点。
 

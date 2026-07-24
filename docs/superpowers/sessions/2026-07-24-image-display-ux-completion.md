@@ -146,6 +146,15 @@ OT push(`origin/develop`=`9685967`)後、CC 分担の stg smoke を Playwright/d
   capture 段 / M3 stale comment も反映)。gate lint0/tsc0/**full 3889**/build0。**push 後 CC 再 smoke 要**
   (side-peek Escape 隔離 / close 後 radix Escape 復活 / arrowKeys 不変)。
 
+### 4c. OT iOS 実機 smoke(iPhone 相当)+ FINDING 1/2(2026-07-24)
+
+OT が iPhone 相当で実機 smoke。**PASS**: G1〜G6 gesture / L1 scroll-lock / リセット。詳細 = smoke checklist §OT iOS 実機 smoke 結果。
+
+- **FINDING 1(自前 +/−/リセットが背景に埋もれ視認不能)→ fix `e44bae4` [reviewed]**: text glyph ゆえ既定 SVG の色指定が効かず不可視 → `.pswp__button--zoom-{in,out,reset}` に PhotoSwipe の `.pswp__counter` パターン(color: var(--pswp-icon-color) + text-shadow var(--pswp-icon-color-secondary))+ `order` 11–13(既定 zoom10/close20 の間=右上ツールバー集約)。canonical Ready/Crit0/Imp0 + Codex Crit0/Imp0/Minor0。視認性は push 後 CC 再 smoke。
+- **FINDING 2(画像外タップで閉じる追加可否)→ (A) 現状維持(OT 決定)**: PhotoSwipe source 確認 = touch tap は image/bg 問わず `tapAction`(既定 toggle-controls)経由、`bgClickAction`/`imageClickAction` は **mouse 専用**(bgClickAction は既に既定 'close')。OT 案 (b)(c) は iOS 無効。通常画像は下ドラッグ + × で dismiss 可(冗長)、長尺は背景余白無で (B) でも不解決 → lever 追加せず。長尺 = × 依存を受容。**実装なし**。
+- **後日 OT(iPad)残**: F1 iOS Safari 畳み発火(must-pass 本丸・演習画面で再確認)/ L2 / L3 / 横 / iPad / PWA。
+- **follow-up 記録(別件・triage 未着手)**: 削除済み exam のモバイル残留(サイトデータ消去で解消)= pull 伝播バグ or 6月 seed の SQL 直接削除で tombstone 不在、の切り分け未実施。台帳 = `docs/todo-v47-integrated-status.md` §5 短期。画像 sprint とは分離(調査せず記録のみ)。
+
 ### commit range 更新(未 push)
 
 origin/develop=`9685967`(OT push 済)。以降の未 push = `00f29d1`(CC smoke 結果 doc)/ `d568a5b`
