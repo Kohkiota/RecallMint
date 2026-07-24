@@ -4,6 +4,11 @@ onlyBuiltDependencies:
 
 overrides:
   uuid: ^14.0.0
+  # GHSA-6g55-p6wh-862q 対処(postcss <=8.5.11 = sourceMappingURL 経由の任意ファイル
+  # 読取)。caret は patched を許容するが lockfile が @tailwindcss/postcss + shadcn 経由で
+  # 8.5.10 に stale pin(pnpm は range 内の古い lock を install で bump しない)→ floor を
+  # ^8.5.12 に上げ再解決を強制(8.5.21 に単一化)。撤去条件 = 全消費側が >=8.5.12 を
+  # 自然解決した時点。台帳参照。
   postcss: ^8.5.12
   react: 19.2.7
   react-dom: 19.2.7
