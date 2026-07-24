@@ -7,7 +7,7 @@
 
 import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook } from '@testing-library/react';
 
 import { useImageZoom, ZOOM_STEP, type ZoomImage } from './use-image-zoom';
 
@@ -36,6 +36,10 @@ interface MockInstance {
 
 const hoisted = vi.hoisted(() => {
   const instances: MockInstance[] = [];
+  // test が「次の init を throw させる」ためのフラグ(構築失敗の巻き戻し検証用)。init が消費して
+  // false に戻す(one-shot)。mockImplementationOnce で bare object を返すと new 経由で実 instance
+  // にならず listener 付与前に別所で throw して非弁別になるため、実 mock instance の init を throw させる。
+  const state = { failNextInit: false };
 
   // 実 `new PhotoSwipe(opts)` を模すため通常 function(arrow は new 不可)。object を
   // 返すので new 式はその mock instance を評価する。
@@ -71,7 +75,13 @@ const hoisted = vi.hoisted(() => {
         (handlers[name] ??= []).push(fn);
       }),
       off: vi.fn(),
-      init: vi.fn(() => emit('uiRegister')),
+      init: vi.fn(() => {
+        if (state.failNextInit) {
+          state.failNextInit = false; // one-shot
+          throw new Error('init failed');
+        }
+        emit('uiRegister');
+      }),
       destroy: vi.fn(teardown),
       close: vi.fn(teardown),
       emit,
@@ -80,7 +90,7 @@ const hoisted = vi.hoisted(() => {
     return inst;
   });
 
-  return { ctor, instances };
+  return { ctor, instances, state };
 });
 
 vi.mock('photoswipe', () => ({ default: hoisted.ctor }));
@@ -130,7 +140,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // hook を unmount(vitest globals 未使用ゆえ RTL の auto-cleanup が走らない)。open したまま
+  // 閉じない test が window capture Escape listener を残すのを防ぐ(unmount cleanup が除去する)。
+  // DOM を消す前・mock を clear する前に呼ぶ(unmount 時の destroy が element/mock を使う)。
+  cleanup();
   hoisted.instances.length = 0;
+  hoisted.state.failNextInit = false;
   vi.clearAllMocks();
   scrollToSpy.mockRestore();
   stubScrollY(0);
@@ -158,7 +173,9 @@ describe('useImageZoom', () => {
     expect(opts.doubleTapAction).toBe('zoom');
     expect(opts.imageClickAction).toBe('zoom');
     expect(opts.clickToCloseNonZoomable).toBe(false);
-    expect(opts.escKey).toBe(true);
+    // escKey は false(§3.4 amendment): Escape は hook 側で所有し window capture で下層 radix への
+    // 伝播を止めるため PhotoSwipe 内蔵 Escape は切る(下記「Escape 隔離」describe で挙動を pin)。
+    expect(opts.escKey).toBe(false);
     expect(opts.arrowKeys).toBe(true);
     expect(opts.trapFocus).toBe(true);
     expect(opts.returnFocus).toBe(true);
@@ -475,6 +492,105 @@ describe('useImageZoom', () => {
       expect(document.body.style.position).toBe('');
       expect(document.body.style.overflow).toBe('scroll');
       expect(scrollToSpy).toHaveBeenCalledWith(0, 140);
+    });
+  });
+
+  describe('Escape 隔離(side-peek layering・§3.4 amendment)', () => {
+    it('open 中の Escape は画像モーダルのみ閉じ、下層 radix の document Escape へ伝播しない', async () => {
+      // 下層 side-peek(radix Dialog modal={false})の document 級 Escape ハンドラを模す spy。
+      const radixEscape = vi.fn();
+      document.addEventListener('keydown', radixEscape, true); // 実 radix useEscapeKeydown と同じ capture 段
+      try {
+        const { result } = renderHook(() => useImageZoom());
+        await openWith(result.current.open);
+        const inst = firstInstance();
+
+        act(() => {
+          // 実 keydown は深い target から window→document→target と伝播する。document.body を
+          // target にして window capture(hook)→ document bubble(radix)の経路を再現する。
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+          );
+        });
+
+        // 画像モーダルは閉じる(hook が所有する close)。
+        expect(inst.close).toHaveBeenCalledTimes(1);
+        // window capture の stopPropagation により document 級の radix ハンドラには届かない。
+        expect(radixEscape).not.toHaveBeenCalled();
+      } finally {
+        document.removeEventListener('keydown', radixEscape, true);
+      }
+    });
+
+    it('close 後は Escape 抑止が解除され下層 radix の Escape が従来どおり効く(listener 取り残しなし)', async () => {
+      const radixEscape = vi.fn();
+      document.addEventListener('keydown', radixEscape, true); // 実 radix useEscapeKeydown と同じ capture 段
+      try {
+        const { result } = renderHook(() => useImageZoom());
+        await openWith(result.current.open);
+        const inst = firstInstance();
+
+        act(() => inst.close()); // close → destroy ハンドラで capture listener を除去
+
+        act(() => {
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+          );
+        });
+
+        // 抑止が外れているので radix の document Escape に届く(listener を leak していたら届かず fail)。
+        expect(radixEscape).toHaveBeenCalledTimes(1);
+      } finally {
+        document.removeEventListener('keydown', radixEscape, true);
+      }
+    });
+
+    it('open 中でも Escape 以外(ArrowRight 等)は素通しする(PhotoSwipe の arrowKeys を阻害しない)', async () => {
+      const other = vi.fn();
+      document.addEventListener('keydown', other);
+      try {
+        const { result, unmount } = renderHook(() => useImageZoom());
+        await openWith(result.current.open);
+
+        act(() => {
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+          );
+        });
+
+        // Escape 以外は capture で早期 return ゆえ document 級ハンドラ(PhotoSwipe arrowKeys 相当)へ届く。
+        expect(other).toHaveBeenCalledTimes(1);
+        unmount(); // モーダルは開いたままゆえ明示 unmount で capture listener を除去(後続 test へ leak させない)。
+      } finally {
+        document.removeEventListener('keydown', other);
+      }
+    });
+
+    it('構築/init が throw しても Escape listener・instance を巻き戻し、再 open できる(Codex P2)', async () => {
+      // radix と同じ document capture 段に spy を置く(実 radix useEscapeKeydown は {capture:true})。
+      const radixEscape = vi.fn();
+      document.addEventListener('keydown', radixEscape, true);
+      try {
+        // 1 回目の init を throw させる(実 mock instance ゆえ listener は付与済み → 巻き戻しを検証)。
+        hoisted.state.failNextInit = true;
+
+        const { result } = renderHook(() => useImageZoom());
+        await openWith(result.current.open); // init throw → open() 内 catch が巻き戻す(swallow)
+
+        // Escape listener が取り残されていない: dispatch した Escape は下層 radix に届く。
+        act(() => {
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+          );
+        });
+        expect(radixEscape).toHaveBeenCalledTimes(1); // 巻き戻し済(取り残しなら stopPropagation で 0)
+
+        // pswpRef が reset され、再 open が新インスタンスを生成する(2 回目は正常 init)。
+        await openWith(result.current.open);
+        expect(hoisted.ctor).toHaveBeenCalledTimes(2);
+      } finally {
+        document.removeEventListener('keydown', radixEscape, true);
+      }
     });
   });
 });

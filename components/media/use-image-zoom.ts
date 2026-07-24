@@ -24,13 +24,18 @@ type ZoomLevelOption = NonNullable<PhotoSwipeOptions['initialZoomLevel']>;
 type ZoomLevelObject = Parameters<Extract<ZoomLevelOption, (...args: never[]) => number>>[0];
 
 // spec §3.4 の config 表を verbatim。initialZoomLevel は数値を返す関数として別途付与。
+// 例外: escKey は false(§3.4 amendment 2026-07-24・OT 承認)。§3.4 は Escape で閉じる要件で
+// PhotoSwipe 内蔵の escKey:true を指定していたが、side-peek(radix Dialog modal={false})の上から
+// 開くと Escape が PhotoSwipe と radix の document 級 Escape の両方に届き side-peek まで閉じる
+// (PhotoSwipe は radix の DismissableLayer stack 外)。Escape を hook 側で所有し window capture で
+// 伝播を止めてモーダルだけ閉じるため escKey は切る(下記「Escape 隔離」helper と open() 内の onEscape 参照)。
 const OPTS = {
   pinchToClose: false,
   closeOnVerticalDrag: true,
   doubleTapAction: 'zoom',
   imageClickAction: 'zoom',
   clickToCloseNonZoomable: false,
-  escKey: true,
+  escKey: false,
   arrowKeys: true,
   trapFocus: true,
   returnFocus: true,
@@ -146,6 +151,20 @@ function unlockBodyScroll(ref: ScrollLockRef): void {
   window.scrollTo(0, saved.scrollY);
 }
 
+// --- Escape 隔離(§3.4 amendment・side-peek との layering)------------------------
+// side-peek(radix Dialog modal={false})の上から画像モーダルを開くと、Escape が PhotoSwipe と
+// radix の document 級 Escape ハンドラの両方に届き side-peek まで閉じてしまう。window の capture 段は
+// document へ降りる前に最初に走るため、ここで Escape を先取りして下層(radix・その他 document 級
+// ハンドラ)へ伝播させず、モーダルだけ自前で閉じる。open 中のみ有効・close/unmount で必ず除去する
+// (取り残しゼロ = close 後は radix の Escape が従来どおり効く)。arrowKeys 等 Escape 以外は素通し。
+type EscapeHandlerRef = { current: ((e: KeyboardEvent) => void) | null };
+
+function removeEscapeCapture(ref: EscapeHandlerRef): void {
+  if (!ref.current) return; // 未登録 → no-op(冪等)
+  window.removeEventListener('keydown', ref.current, true);
+  ref.current = null;
+}
+
 export function useImageZoom(): {
   open: (images: ZoomImage[], startIndex: number) => Promise<void>;
 } {
@@ -154,11 +173,14 @@ export function useImageZoom(): {
   const mountedRef = useRef(true);
   const triggerRef = useRef<HTMLElement | null>(null);
   const scrollLockRef = useRef<ScrollLockState>(null);
+  const escapeHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // Escape capture listener を必ず除去(destroy が走らない path の取り残し防止)。
+      removeEscapeCapture(escapeHandlerRef);
       // unmount 時に開いていれば強制 teardown する(leak 防止・Codex plan-gap5)。
       // close() は soft: PhotoSwipe は opening アニメ中の close を内部で no-op にする
       // (opener.close() が isOpening 時 early-return)ため、その窓で unmount すると
@@ -197,16 +219,41 @@ export function useImageZoom(): {
       pswpRef.current = pswp;
       pswp.on('uiRegister', () => registerZoomButtons(pswp));
       pswp.on('destroy', () => {
-        // 参照解放 / scroll-lock 解除 / focus 復帰は destroy(close アニメ後)で行う。
+        // 参照解放 / Escape listener 除去 / scroll-lock 解除 / focus 復帰は destroy(close アニメ後)で行う。
         pswpRef.current = null;
+        removeEscapeCapture(escapeHandlerRef);
         unlockBodyScroll(scrollLockRef);
         returnFocusTo(triggerRef.current);
         triggerRef.current = null;
       });
+      // Escape 隔離(§3.4 amendment): window capture で Escape を先取りし下層 radix へ伝播させず
+      // モーダルのみ閉じる。escKey:false ゆえ close はここで所有する(§helper 注釈)。
+      // Escape のみ先取り(他キーは素通し = PhotoSwipe の arrowKeys 等を阻害しない)。close は
+      // listener 除去(destroy/unmount)までの間だけ有効ゆえ、正常動作では pswpRef は非 null。
+      // optional chaining は「listener 取り残し時に null.close で throw しない」ための安全弁で、
+      // 取り残しがあれば stopPropagation だけが残り radix が閉じなくなる = 後述 test が検出する。
+      const onEscape = (e: KeyboardEvent) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        e.preventDefault();
+        pswpRef.current?.close();
+      };
+      window.addEventListener('keydown', onEscape, true);
+      escapeHandlerRef.current = onEscape;
       pswp.init();
       // fixed 固定は focus 前に行う(focus によるページスクロールを抑止)。
       lockBodyScroll(scrollLockRef);
       focusCloseButton(pswp);
+    } catch {
+      // 構築 / init が throw した場合: init 前に付与済みの Escape capture listener が取り残されると
+      // Escape が app 全体で握られ(stopPropagation)、かつ pswpRef 残留で再 open もできなくなる。
+      // listener・lock(lock 前 throw なら no-op)・instance を巻き戻し、再 open 可能な clean state
+      // に戻す。open 失敗自体は非致命(モーダルが出ないだけ)ゆえ error は握りつぶす。
+      removeEscapeCapture(escapeHandlerRef);
+      unlockBodyScroll(scrollLockRef);
+      const failed = pswpRef.current;
+      pswpRef.current = null;
+      failed?.destroy();
     } finally {
       openingRef.current = false;
     }
