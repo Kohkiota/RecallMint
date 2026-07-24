@@ -168,7 +168,7 @@
 - **OT 実機 smoke 依頼パッケージ(spec §5 必須合否・plan 内で整理)**:
   - **URL**: stg `stg.recallmint.nekotest.net` の演習画面(実カード画像ある deck。seed 状況により mirror 直注入・`reference_stg` 参照)。
   - **手順**: ① 編集画面でテキスト入力にフォーカス(ソフトキーボード表示)したまま画像 tap→モーダル起動 ② pinch / ダブルタップ / pan / 長尺の横幅fit+縦スクロール / +−リセット ③ 閉じる。
-  - **期待挙動(合否)**: (a) モーダル表示中に背景がスクロールしない (b) 閉じた後に元 scroll 位置とフォーカスへ復帰 (c) タップ位置がずれない (d) pinch-to-close しない / 下ドラッグ閉じは初期倍率のみ / 画像タップで閉じない。
+  - **期待挙動(合否)**: (a) モーダル表示中に背景がスクロールしない (b) 閉じた後に元 scroll 位置とフォーカスへ復帰 (c) タップ位置がずれない (d) pinch-to-close しない / 下ドラッグ閉じは初期倍率のみ / 画像タップで閉じない (e) **[畳み発火 must-pass・S3] 実 tall 画像で演習 in-flow の畳みが効く**(clip + 下端フェード + 「拡大して全体を見る」ボタンが **iOS Safari / Chrome で出る**・短い画像は畳まない)= `capPx` の `clientHeight` 測定が実機で px を返す検証(spec §5⑥・§3.3 S3。scroll-lock だけ見て畳み機能の生死を見逃さない)。
   - **環境**: iOS Safari(縦/横)/ iPad / ホーム画面追加版(PWA standalone)/ **ページズーム中も同基準**。
   - **mobile 要否**: 要(物理 iOS・CC 到達不能ゆえ OT 実機)。
 - **完了 gate(全体ルール 5)**: whole-repo 6 gate exit0。session doc に commit range・per-task 要点・OT smoke checklist・**検証開始値の smoke 詰め欄**(capPx/absMargin/ratio/tile/aspect の実測調整の受け皿)を記載し `docs(session) [no-review]` commit。

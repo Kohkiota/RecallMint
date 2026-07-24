@@ -72,8 +72,9 @@ target 内枚数での**単一の二分岐のみ**(枚数別の細分岐は作�
 
 ### 3.3 畳み処理(縦長・単一画像 in-flow)
 
-- **高さ上限 `capPx` = `min(70svh, 44rem)`**(検証開始値・**svh**。dvh でない)。CSS で wrapper に `max-height:min(70svh,44rem)`。**`computeFold` へ渡す `capPx` は `getComputedStyle(wrapper).maxHeight` を px 解決して用いる**(svh を JS で再計算せず、CSS の clip と数値を一致させる — 判定と実 clip の乖離防止)。
-- ラッパー = `max-height:capPx; overflow:hidden; position:relative` に幅100%画像を入れ、`computeFold.fold === true` の時のみ **下端フェード(gradient overlay)+ 画像外の明示ボタン**「拡大して全体を見る」を出す。
+- **高さ上限 `capPx` = `min(70svh, 44rem)`**(検証開始値・**svh**。dvh でない)。**`capPx` は、`max-height:min(70svh,44rem)` + 高い spacer を持つ測定要素の `clientHeight`(= browser が layout で解決した used max-height の px)を読む**(svh を JS で再計算せず、CSS の clip と数値を一致させる)。測定要素は clip wrapper と **分離**(fold=false 画像を silently clip しないため)。
+  - **[OT 承認 amendment 2026-07-24・S3]** 当初 `getComputedStyle(wrapper).maxHeight` を指定していたが、CSSOM 上 `max-height` は computed value を返す規定で、一部エンジン(旧 iOS Safari 等)が `"min(70svh,44rem)"` 文字列を返し `parseFloat`→`NaN`→ 畳みが **silently 恒久無効**になるため、used value を読む `clientHeight` 方式へ変更。手段の差し替えであり「svh を JS で再計算しない」設計趣旨は不変。
+- **fold 適用**: **`computeFold.fold === true` の時のみ** clip wrapper に `max-height:capPx; overflow:hidden` + 下端フェード(gradient・`pointer-events:none`)+ clip 外の明示ボタン「拡大して全体を見る」を付ける。**`fold === false` は clip/フェード/ボタンなし = 全高表示**(computeFold の『数 px 超過で畳まない』と DOM を一致 = silent-clip 回避)。
   - ボタンは `<button type="button">`(画像内の擬似要素でなく独立要素)・aria-label 付き・hit 領域 ≥44px。onClick = `useImageZoom.open`。
   - **画像本体 tap でも**モーダル(§3.1 の tap 経路と同一)。
 - **畳み判定の dims 供給**(§6): `media_assets` mirror にあれば予測式(load 前でも判定可)、無ければ `<img>` の `onLoad` で `naturalWidth/Height` を得て `computeFold` を再評価(DL のみ端末のフォールバック)。予測不能な間は畳まず全高表示 → load 後に確定(layout jump を最小化するため、mirror dims がある一般ケースは load 前に確定する)。
@@ -132,7 +133,7 @@ PhotoSwipe 5.4.4(MIT・依存ゼロ・ESM・`type:module`)。dynamic import + `p
 - **gesture 実挙動は unit 不能 → DevTools/実機 smoke**(§5 smoke): pinch / ダブルタップ / pan / 長尺 `'fill'`(幅fit+縦スクロール)/ pinch-to-close 無効 / ドラッグ閉じ条件 / +/−/リセット。
 - **smoke(必須合否・§修正2 + OT 承認 2026-07-22)** — **iOS scroll-lock + 長尺パン + safe-area 非破壊**:
   - **主再現 = ページズーム中(pinch でページ拡大)にモーダルを開く**(visual<layout viewport の mismatch を確実に作る)。キーボード表示中経路(画像タップは通常 input を blur するため不安定)は best-effort 併記。
-  - 合否 = ① モーダル表示中に背景がスクロールしない ② 閉じた後に元の scroll 位置とフォーカスへ戻る ③ タップ位置がずれない ④ **[S2] 長尺画像を 1 本指で自然に上下閲覧できる**(pan を「縦スクロール」充足と認める)⑤ **[S1] `viewport-fit=cover` 追加で既存 inert-前提箇所(`inline-card-list.tsx:497-498` 等)が壊れない**。
+  - 合否 = ① モーダル表示中に背景がスクロールしない ② 閉じた後に元の scroll 位置とフォーカスへ戻る ③ タップ位置がずれない ④ **[S2] 長尺画像を 1 本指で自然に上下閲覧できる**(pan を「縦スクロール」充足と認める)⑤ **[S1] `viewport-fit=cover` 追加で既存 inert-前提箇所(`inline-card-list.tsx:497-498` 等)が壊れない** ⑥ **[S3・畳み発火 must-pass] 実 tall 画像で演習 in-flow の畳みが実際に効く**(clip + 下端フェード + 「拡大して全体を見る」ボタンが **iOS Safari / Chrome 両方で出る**)= `capPx` の `clientHeight` 測定が実機で px を返すことの検証。短い画像は畳まない(全高)ことも併せて確認(scroll-lock だけ見て畳み機能の生死を見逃さない)。
   - 環境 = **iOS Safari(縦 / 横)/ iPad / ホーム画面追加版(PWA standalone)**。
   - iOS 実機は CC 到達不能 = **OT acceptance**(URL / 手順 / 期待挙動 / mobile 要否を整理して依頼・結果を session doc に記録)。
 - **完了 gate(CLAUDE.md 恒久)**: whole-repo `pnpm lint` exit0 / `pnpm test` green / `pnpm typecheck` 0 / **`pnpm build` 0(新 dep + dynamic import + CSS import ゆえ必須)** / `pnpm test:iso` green(DB 不変) / `pnpm run audit` exit0。report chat に各 1 行明記。
