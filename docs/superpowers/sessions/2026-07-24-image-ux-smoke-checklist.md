@@ -271,4 +271,8 @@ Clerk dev-keys=stg 既知)。
 - **FINDING 1(自前 +/−/リセットが背景に埋もれ視認不能)→ 修正済 `e44bae4`(fix `[reviewed]`)**: 白+影を PhotoSwipe `.pswp__counter` パターンで、`order` 11–13 で右上ツールバーに集約。**視認性は push 後 CC 再 smoke で確認**(色/glyph は unit 不能)。
 - **FINDING 2(画像外タップで閉じるを足せるか)→ (A) 現状維持(OT 決定 2026-07-24)**: 調査結果 = touch の tap は image/bg 問わず `tapAction`(既定 toggle-controls)を通り、`bgClickAction`/`imageClickAction` は **mouse 専用**(かつ bgClickAction は既に既定 'close')。ゆえに案 (b)(c) は iOS 無効。通常画像は下ドラッグ(実機 PASS)+ × で dismiss 可ゆえ画像外タップは冗長、最も閉じにくい長尺は背景余白が無く (B) でも不解決 → **効果薄の lever を足さない**。tap=toggle-controls は lightbox 慣習として受容、長尺は × 依存を受容。
 - **後日 OT(iPad)残**: **F1 iOS Safari の畳み発火(演習画面での clip+フェード+「拡大して全体を見る」= must-pass 本丸。モーダル内表示と混同回避のため演習画面で再確認)** / L2 / L3 / 横向き / iPad / PWA。
-- **push 後 CC 再 smoke**: Z2 Escape 隔離(上記)+ FINDING 1 ボタン視認性。
+- **push 後 CC 再 smoke = 全 PASS(2026-07-24・desktop Chromium・deploy 反映確認済)**:
+  - **Z2 主**: side-peek(問1)→画像モーダル→Escape で **画像モーダルのみ閉じ side-peek 継続**(pswpGone / sidePeekStillOpen=true / scroll-lock 解放)。PASS。
+  - **Z2 裏**: 続けて side-peek 単体で Escape → **side-peek が閉じる**(listener 取り残しなし=伝播停止の後始末が効く。片方直して片方壊す回帰なし)。PASS。
+  - **FINDING 1**: 右上ツールバーが 🔍 + − ↺ ×(自前 +/−/リセットが**白**で既定と同列・従来の左上グレーから改善)。PASS。console 0 errors。
+  - 注: card 問1 の question_text に real 画像 2 枚(a0fc6177 + OT が iOS smoke で添付したと思われる 8bcede00)。CC の旧注入(d/c/e key)は cleanup 済(media_assets=a0fc6177 のみ)。
