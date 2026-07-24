@@ -72,14 +72,17 @@ function makeZoomHandler(pswp: PhotoSwipe, kind: 'in' | 'out' | 'reset'): () => 
 function registerZoomButtons(pswp: PhotoSwipe): void {
   const ui = pswp.ui;
   if (!ui) return;
+  // order は既定 zoom(10)と close(20)の間に置き、右上ツールバーで既定ボタンと並べる
+  // (無指定だと左上に分離して表示される・iOS smoke FINDING 1)。
   const buttons = [
-    { name: 'zoom-in', ariaLabel: 'Zoom in', glyph: '+', kind: 'in' },
-    { name: 'zoom-out', ariaLabel: 'Zoom out', glyph: '−', kind: 'out' },
-    { name: 'zoom-reset', ariaLabel: 'Reset zoom', glyph: '↺', kind: 'reset' },
+    { name: 'zoom-in', ariaLabel: 'Zoom in', glyph: '+', kind: 'in', order: 11 },
+    { name: 'zoom-out', ariaLabel: 'Zoom out', glyph: '−', kind: 'out', order: 12 },
+    { name: 'zoom-reset', ariaLabel: 'Reset zoom', glyph: '↺', kind: 'reset', order: 13 },
   ] as const;
   for (const b of buttons) {
     ui.registerElement({
       name: b.name,
+      order: b.order,
       ariaLabel: b.ariaLabel,
       isButton: true,
       html: b.glyph,

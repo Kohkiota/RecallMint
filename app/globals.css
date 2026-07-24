@@ -100,3 +100,18 @@
 .pswp__button--close {
   touch-action: manipulation;
 }
+
+/* 自前ズームボタン(+/−/リセット)の視認性(iOS smoke FINDING 1)。既定ボタンは SVG アイコン
+   (.pswp__icn の fill: var(--pswp-icon-color))で白く見えるが、自前ボタンは text glyph ゆえ fill が
+   効かず背景(グレー)に埋もれる。PhotoSwipe 自身のテキスト用パターン(.pswp__counter)と同じ
+   icon-color(白)+ secondary の影を当て、既定ボタンと同列の見た目にする(ボタン独自色を足すのでなく
+   PhotoSwipe の CSS 変数に揃える)。glyph は 50×60 の button 内で中央寄せ。 */
+.pswp__button--zoom-in,
+.pswp__button--zoom-out,
+.pswp__button--zoom-reset {
+  color: var(--pswp-icon-color);
+  text-shadow: 1px 1px 3px var(--pswp-icon-color-secondary);
+  font-size: 26px;
+  line-height: 60px; /* .pswp__button の height = 60px と一致させ縦中央 */
+  text-align: center; /* width 50px 内で横中央 */
+}

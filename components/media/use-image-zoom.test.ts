@@ -227,6 +227,13 @@ describe('useImageZoom', () => {
     const reset = registeredButton(inst, 'zoom-reset');
     expect(reset.ariaLabel).toBe('Reset zoom');
     expect(reset.isButton).toBe(true);
+
+    // 3 ボタンとも order は既定 zoom(10)と close(20)の間 = 右上ツールバーに既定と並ぶ
+    // (無指定だと左上に分離する・iOS smoke FINDING 1)。厳密値でなく「既定の間」を pin する。
+    for (const b of [plus, minus, reset]) {
+      expect(b.order).toBeGreaterThan(10);
+      expect(b.order).toBeLessThan(20);
+    }
   });
 
   describe('ズームボタンの onClick(WCAG 2.5.1・実挙動を pin)', () => {
