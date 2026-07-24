@@ -220,3 +220,43 @@
 | R3 CSP UI 適用 | — | — | — | — | ● | CC | |
 
 (記入: PASS / FAIL / N/A / 再現せず。○=任意・△=部分)
+
+---
+
+## CC smoke 実施結果(2026-07-24・Chrome / desktop・Playwright MCP)
+
+stg `f664675..9685967` 反映後に実走。実カード画像(`a0fc6177` 1280×1178)+ mirror 直注入
+(tall 400×1600 / short 900×180 / fail=cache blob 無)で検証。注入は全て cleanup 済(mirror を
+server-backed 状態へ復元・server は outbox 非経由ゆえ不変)。console 0 errors(唯一の warning =
+Clerk dev-keys=stg 既知)。
+
+| 項目 | 結果 | 根拠 |
+|---|---|---|
+| deploy 反映 | **PASS** | 演習 in-flow が 64px サムネ→大きめ表示+畳みに変化(新コード live) |
+| **F1 畳み発火** | **PASS** | 実画像(1178px)+ tall注入 とも clip+下端フェード+「拡大して全体を見る」= clientHeight が px を返す(§S3 の Chrome 側) |
+| F2 短い画像 非畳み | **PASS** | short 900×180 = 全高表示・フェード/ボタン無(silent-clip なし) |
+| モーダル open(tap→zoom)| **PASS** | 畳みボタン / 画像 tap / thumb tap の 3 経路とも起動 |
+| モーダル fill(aspect>2.0)| **PASS** | tall(4.0)= 横幅fit+縦スクロール(initialZoomLevel='fill') |
+| G5 画像 click 非 close | **PASS** | 画像クリック後も pswpOpen=true(imageClickAction:'zoom') |
+| G6 機能 | **PASS** | +/−/↺=Zoom in/out/Reset zoom・+で拡大・↺で transform none(initial 復帰) |
+| scroll-lock 機構 | **PASS** | body position:fixed / top:-400px(scrollY 退避)|
+| close→scroll/focus 復帰 | **PASS** | 閉→position:static・scrollY 400 復帰・focus=起動 button |
+| Z1 z-index | **PASS** | pswp z=100000 > side-peek dialog z=45・中心の topmost=pswp__img |
+| **Z2 Escape 隔離** | **FINDING(Minor)** | ×ボタン=画像モーダルのみ閉じ side-peek 継続(正)。**Escape=画像モーダル+side-peek の両方が閉じる**(radix side-peek の document Escape も発火)。下記参照 |
+| Z3 focus 復帰 | **PASS** | ×閉→focus=side-peek 内の画像 button(activeInsideDialog=true) |
+| R1 縮退 | **PASS** | 解決不可→「画像を取得できません」+「再読み込み」・tap 不可(空モーダル防止)|
+| R3 CSP | **PASS** | ズーム UI/CSS 適用・style/script violation 0 |
+| B1 back(観測)| **記録** | back=ページ遷移(history 非統合=仕様どおり)。**route-change-during-open で scroll-lock leak せず**(position:static・task6 Critical fix の実地確認)|
+| thumb 面不変 | **PASS** | テーブル 64px サムネ + 画像を拡大(tap→modal)+ × 削除 |
+| a11y 名 | **PASS** | alt 基「smoke tallを拡大」/「拡大して全体を見る」|
+
+**CC 未実施(OT iOS or unit 担保)**: G1〜G4 touch gesture / F1 の iOS Safari 側 / L1 主再現
+(ページズーム中=visual<layout・desktop で作れず=機構は position:fixed で確認済)/ R2 兄弟 decode
+除外・P2 fix #1/#2(timing 依存=unit red 検証済)。
+
+### FINDING(Minor)— side-peek 上で Escape が両方閉じる
+
+- **現象**: side-peek(radix Dialog `modal={false}`)から画像モーダルを開き **Escape** を押すと、画像モーダルだけでなく **side-peek も閉じる**。× 閉じるボタンは正しく画像モーダルのみ閉じ side-peek は残る(focus も side-peek 内へ復帰)。
+- **原因**: PhotoSwipe は radix の DismissableLayer stack 外の独立 overlay ゆえ、Escape が PhotoSwipe の escKey と radix side-peek の document 級 Escape の**両方**に届く。
+- **影響 = Minor**: ① 一次閉じ affordance(×)は正常 ② touch/iOS は Escape 無し(本 sprint の主対象=モバイルは無関係)③ データ影響なし。checklist Z2 の期待(Escape は画像モーダルのみ)からの逸脱だが desktop キーボード限定の edge。
+- **follow-up 案**: useImageZoom で open 中に capture-phase keydown で Escape の伝播を下層 radix に届く前に止める(PhotoSwipe には処理させる)/ または escKey を切り自前 Escape で stopPropagation+close。**push 済ゆえ別 commit の follow-up 判断は OT**(Minor=記録可)。
