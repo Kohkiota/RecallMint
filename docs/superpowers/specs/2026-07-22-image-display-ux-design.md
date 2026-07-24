@@ -14,7 +14,7 @@
 1. **演習画面(スマート復習・カスタム演習)の in-flow 画像を「大きめ表示」へ**。演習の画像 slot 全て(問題文 / 各選択肢 / 解説)に効かせる(`session-runner.tsx` L445/L509/L551)。
 2. **縦長画像の畳み処理**(幅100%維持 + 高さ clip + 下端フェード + 明示ボタン + タップでモーダル)。
 3. **全画面拡大モーダル**(PhotoSwipe)。編集 / 演習 / サイドピーク / カードビューの全表示箇所で共通。通常画像=viewport fit + ピンチ + ダブルタップ、長尺=横幅 fit + 縦スクロール + ピンチ。ピンチ以外の +/−/リセット も用意(WCAG 2.5.1)。
-4. **iOS WebKit 対応**(viewport = user-scalable 不変・**`viewport-fit=cover` 追加**[S1・OT 承認 2026-07-22]・touch-action 領域分離・svh/safe-area・**fixed-body** scroll-lock)。
+4. **iOS WebKit 対応**(viewport 不変[user-scalable]・touch-action 領域分離・**fixed-body** scroll-lock。**S1 `viewport-fit=cover` は revert 2026-07-24** = app 全体 safe-area 未対応ゆえ cover が app-wide regression。edge-to-edge は将来 app-shell safe-area sprint)。
 5. **単一 object 前提**(R2 は 1 asset=1 object・≤1600/2048px 縮小済。variant 追加はしない)。
 
 **Out(非スコープ・§9 台帳)**: deck-download が実寸 dims を書かない既存の穴の根治 / alt テキスト a11y / インライン二段階展開 / 編集の長尺警告・画像分割 / 4 欄ギャラリー切替 UX 高度化 / メモ本文表示と Sprint I docs 前提記述の齟齬(OT 確認事項)/ next/image 導入(生 `<img>`+blob objectURL 経路を踏襲)。
@@ -101,7 +101,8 @@ target 内枚数での**単一の二分岐のみ**(枚数別の細分岐は作�
 
 ### 3.5 iOS WebKit
 
-- **viewport(OT 承認 amendment 2026-07-22・S1)**: `app/layout.tsx` の `export const viewport` は **`user-scalable` を封じない**(ページズーム維持・width=device-width / initialScale=1 維持)。**`viewport-fit=cover` は追加可**(safe-area 有効化のため。user-scalable/zoom に無関係ゆえ「viewport を封じない」趣旨は保持)。cover は root layout ゆえ全ページに効く → **既存で `env(safe-area-inset-*)` を inert 前提にしていた箇所(fact-finding §6・`inline-card-list.tsx:497-498` 等)が壊れないかの回帰確認**を §5 smoke 観察項目に含める(新規 safe-area 対応の追加ではなく既存非破壊の確認のみ)。
+- **viewport 不変**: `app/layout.tsx` の `export const viewport`(width=device-width / initialScale=1)は変更しない。`user-scalable` を封じない = ページズーム維持。
+  - **[S1 revert 2026-07-24]** 当初 `viewport-fit=cover` 追加を承認(2026-07-22)したが、cover は root layout ゆえ **app 全体**に効き、safe-area 未対応の app が unsafe 領域(notch/home-indicator)へ広がる(特に `exam-card-table-action-bar.tsx:78` の `fixed inset-x-0 bottom-0` 操作バーが home-indicator に被る実害)。app-shell 全面 safe-area 対応はスコープ外ゆえ **cover を revert**。モーダルは cover なしでも safe viewport 内で完動(chrome 安全・画像が edge-to-edge でないだけ = nice-to-have)。edge-to-edge は将来 app-shell safe-area sprint とセットで follow-up。
 - **touch-action 領域分離**: モーダル内のみ。画像操作面は PhotoSwipe が自面(`.pswp__img` 等)に touch-action を設定する前提。自前 UI ボタン(+/−/リセット/閉じる)は `touch-action: manipulation`(300ms 遅延回避・意図しないズーム抑止)。in-flow のページ画像は標準タップ(touch-action 指定不要)。
 - **高さ/safe-area**: モーダルは PhotoSwipe の全画面 overlay(JS で `innerHeight` 追従)。ページ側で全画面高を組む箇所は **svh/dvh** を使い、`100vh` は使わない(既存規律 `exam-detail-view.tsx:247` に準拠)。safe-area-inset を閉じるボタン/ツールバーに適用(`.pswp__top-bar` へ `env(safe-area-inset-top)` 等)。
 - **scroll-lock(§修正2 + OT 承認 2026-07-22・fixed-body 既定)**:
@@ -133,7 +134,7 @@ PhotoSwipe 5.4.4(MIT・依存ゼロ・ESM・`type:module`)。dynamic import + `p
 - **gesture 実挙動は unit 不能 → DevTools/実機 smoke**(§5 smoke): pinch / ダブルタップ / pan / 長尺 `'fill'`(幅fit+縦スクロール)/ pinch-to-close 無効 / ドラッグ閉じ条件 / +/−/リセット。
 - **smoke(必須合否・§修正2 + OT 承認 2026-07-22)** — **iOS scroll-lock + 長尺パン + safe-area 非破壊**:
   - **主再現 = ページズーム中(pinch でページ拡大)にモーダルを開く**(visual<layout viewport の mismatch を確実に作る)。キーボード表示中経路(画像タップは通常 input を blur するため不安定)は best-effort 併記。
-  - 合否 = ① モーダル表示中に背景がスクロールしない ② 閉じた後に元の scroll 位置とフォーカスへ戻る ③ タップ位置がずれない ④ **[S2] 長尺画像を 1 本指で自然に上下閲覧できる**(pan を「縦スクロール」充足と認める)⑤ **[S1] `viewport-fit=cover` 追加で既存 inert-前提箇所(`inline-card-list.tsx:497-498` 等)が壊れない** ⑥ **[S3・畳み発火 must-pass] 実 tall 画像で演習 in-flow の畳みが実際に効く**(clip + 下端フェード + 「拡大して全体を見る」ボタンが **iOS Safari / Chrome 両方で出る**)= `capPx` の `clientHeight` 測定が実機で px を返すことの検証。短い画像は畳まない(全高)ことも併せて確認(scroll-lock だけ見て畳み機能の生死を見逃さない)。
+  - 合否 = ① モーダル表示中に背景がスクロールしない ② 閉じた後に元の scroll 位置とフォーカスへ戻る ③ タップ位置がずれない ④ **[S2] 長尺画像を 1 本指で自然に上下閲覧できる**(pan を「縦スクロール」充足と認める)⑤ **[S3・畳み発火 must-pass] 実 tall 画像で演習 in-flow の畳みが実際に効く**(clip + 下端フェード + 「拡大して全体を見る」ボタンが **iOS Safari / Chrome 両方で出る**)= `capPx` の `clientHeight` 測定が実機で px を返すことの検証。短い画像は畳まない(全高)ことも併せて確認(scroll-lock だけ見て畳み機能の生死を見逃さない)。
   - 環境 = **iOS Safari(縦 / 横)/ iPad / ホーム画面追加版(PWA standalone)**。
   - iOS 実機は CC 到達不能 = **OT acceptance**(URL / 手順 / 期待挙動 / mobile 要否を整理して依頼・結果を session doc に記録)。
 - **完了 gate(CLAUDE.md 恒久)**: whole-repo `pnpm lint` exit0 / `pnpm test` green / `pnpm typecheck` 0 / **`pnpm build` 0(新 dep + dynamic import + CSS import ゆえ必須)** / `pnpm test:iso` green(DB 不変) / `pnpm run audit` exit0。report chat に各 1 行明記。
@@ -154,7 +155,7 @@ PhotoSwipe 5.4.4(MIT・依存ゼロ・ESM・`type:module`)。dynamic import + `p
 - カード画像の `<img>` src は blob objectURL のみ(署名 URL を `<img src>`/DB/Dexie に置かない・`card-image-gallery.tsx:9`)。モーダルも同経路の objectURL を再利用。
 - 新規に **target 部分集合の独自 commit を作らない**(表示専用改修ゆえ attach/remove 経路に触れない)。
 - `display='thumb'`(既定)の面(編集/テーブル/サイドピーク)は **64px 表示を不変**に保つ(モーダル tap のみ追加)。
-- viewport は **`user-scalable` を封じない**(ズーム維持)。**`viewport-fit=cover` の追加は可**(S1・OT 承認 amendment 2026-07-22。既存 inert-前提箇所の非破壊を §5 smoke で確認)。
+- viewport は **`user-scalable` を封じない**(ズーム維持)。**`viewport-fit=cover` は導入しない**(S1 revert 2026-07-24 = app 全体 safe-area 未対応ゆえ cover が app-wide regression。§3.5 参照)。
 - next/image を導入しない。
 
 ## 8. Out of scope(follow-up 台帳)

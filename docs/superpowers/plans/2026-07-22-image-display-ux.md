@@ -177,7 +177,7 @@
 - **status 分離(plan-gap14,15)**: task 6 の完了 = 『コード実装 + [reviewed] + 6 gate exit0』。**iOS 実機 smoke は別ステータス(OT acceptance・結果を session doc に記録)**。依頼パッケージ提示だけで『実装完了』にしない。scroll-lock を堅牢方式(fixed-body)既定にしたため smoke は検証位置づけ(循環解消)。
 - **keyboard 経路の再現(Codex 独立15)**: 画像タップは通常 input を blur しキーボードを閉じるため『キーボード表示中に開く』は不安定。**主再現 = 『ページズーム中(pinch でページ拡大)にモーダルを開く』**(visual<layout viewport の mismatch を確実に作る)。キーボード経路は best-effort 併記。
 - **smoke 追加経路(plan-gap16,17,21・独立18,21)**: Cache miss/低速/decode 失敗の縮退 / side-peek 上から開いた時の z-index・Escape が**画像モーダルのみ**閉じる・focus 復帰 / iOS/Android back でモーダルが閉じるか遷移するか(観測)/ CSP 下でズーム UI/CSS が実適用。
-- **[S1・OT 承認 2026-07-22] safe-area**: `viewport-fit=cover` を **viewport export に追加**(`app/layout.tsx`・`user-scalable` 無関係)。spec §3.5/§7 amendment 済。cover は全ページ適用ゆえ **既存で `env(safe-area-inset-*)` を inert 前提にしていた箇所(`inline-card-list.tsx:497-498` 等)が壊れない回帰確認を smoke 観察項目に追加**(新規 safe-area 追加でなく既存非破壊の確認のみ)。
+- **[S1 revert 2026-07-24] safe-area**: 当初 `viewport-fit=cover` 追加を承認したが、cover は root layout = **app 全体**に効き safe-area 未対応の app が unsafe 領域へ広がる(`exam-card-table-action-bar.tsx:78` の `fixed inset-x-0 bottom-0` 操作バーが home-indicator に被る等)。app-shell 全面 safe-area はスコープ外ゆえ **cover を revert**(モーダルは cover なしで完動)。touch-action / scroll-lock は残す。edge-to-edge は app-shell safe-area sprint の follow-up。
 - **[S2・OT 承認 2026-07-22] 縦スクロール**: 長尺 `'fill'` の PhotoSwipe 1 本指パンを『縦スクロール』充足と認める。smoke 合否に **『1 本指で自然に上下閲覧できる』** を明記(spec §5 ④)。
 
 **完了条件**: iOS CSS/scroll-lock(fixed-body)実装 + unit(付与/解除/`scrollTo` 復帰呼出)green + `[reviewed]`(code は表示系ゆえ canonical+Codex pass で付与)+ 6 gate exit0 + session doc commit。**iOS 実機 smoke は別ステータス = OT acceptance**(依頼パッケージ提示 + 結果を session doc に記録)。stop checkpoint 報告。
@@ -219,7 +219,7 @@ raw findings = `docs/codex/2026-07-22-plan-image-display-ux.md`(独立論点 22 
 **見送り(YAGNI・記録のみ)**: scroll-lock の参照カウント(画像モーダル同時 1・独立16)/ back 操作の history 統合(smoke 観測に留める・独立21)/ 多画像の行数制限・横スクロール(per-target 複数は tail・独立11/リスク)/ 兄弟 decode の同時実行数リミッタ(lazy load 委譲で足りる・独立6)。
 
 **OT 判断(2026-07-22 = 全承認・plan 確定)**:
-- **S1 safe-area = 承認**: `viewport-fit=cover` 追加 + spec §3.5/§7 amendment 済 + 既存 inert-前提箇所の非破壊回帰を smoke 観察項目に追加(task 6)。
+- **S1 safe-area = 承認 → 2026-07-24 revert**: cover が app 全体 safe-area 未対応で app-wide regression(`exam-card-table-action-bar.tsx:78` bottom-0 操作バー被り等)ゆえ revert。モーダルは cover なしで完動。edge-to-edge は app-shell safe-area sprint の follow-up。
 - **S2 縦スクロール = 承認**: パンを充足と認める。smoke 合否④に明記(task 6)。
 - 依存 NG 時 = 停止して OT 再設計(task 1 NG 分岐修正済)。
 
