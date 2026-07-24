@@ -711,3 +711,273 @@ describe('CardImageGallery 表示面別 tap 回帰 (Task 4)', () => {
     await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(1))
   })
 })
+
+// ---------------------------------------------------------------------------
+// ⑪ display='inflow' (Task 5): 演習 in-flow 大きめ表示。単一(===1)は幅100%画像 +
+// 縦長畳み(computeFold 実関数)、複数(>=2)は 128px タイル wrap(畳みなし)。
+//
+// jsdom は CSS `min(70svh,44rem)` の computed px や実 layout 幅を解決できない。畳み分岐は
+// capPx(実装が読む measure.clientHeight = used max-height の px 値)/ renderedWidthPx
+// (wrapper.clientWidth)を注入して computeFold 実関数を通す(実 CSS↔JS 一致は smoke で担保・
+// Codex 独立12)。computeFold は mock せず実関数(renderedHeightPx = renderedWidthPx * naturalHeight
+// / naturalWidth)。
+// ---------------------------------------------------------------------------
+describe("CardImageGallery display='inflow' (Task 5)", () => {
+  // capPx(実装が読む measure.clientHeight = used max-height の px 値)と renderedWidthPx
+  // (wrapper.clientWidth)を注入する。実装は capPx を getComputedStyle().maxHeight ではなく
+  // measure.clientHeight で読む(iOS Safari が maxHeight に式文字列を返し parseFloat→NaN で畳みが
+  // 永久 no-op 化するのを避けた robustness fix)。jsdom は layout しないため clientHeight/clientWidth は
+  // 既定 0。clientWidth と clientHeight は別プロパティゆえ衝突せず、prototype getter として両方生やす。
+  // recomputeFold は wrapper.clientWidth と measure.clientHeight のみ読むため、この 2 getter で
+  // computeFold 実関数へ実数を通せる。
+  function stubLayout(capPx: number, renderedWidthPx: number): void {
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => renderedWidthPx,
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get: () => capPx,
+    })
+  }
+
+  afterEach(() => {
+    // prototype に生やした clientWidth/clientHeight override を除去(jsdom 既定 = 0 に戻す)。
+    delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+    delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+  })
+
+  it('単一 inflow・縦長 dims → 畳みラッパー(overflow-hidden + max-h clip + フェード + 「拡大して全体を見る」button)描画・button tap→open', async () => {
+    // capPx=400, renderedWidthPx=400。縦長 400x1200 → renderedHeightPx=1200 > 448 → fold=true。
+    stubLayout(400, 400)
+    mockGetAssetObjectURL.mockResolvedValue('blob:tall')
+    await seedAssetDims(UUID_A, 400, 1200)
+    const images: ClientCardImage[] = [{ key: UUID_A, target: TARGET, alt: '縦長図' }]
+    const { container } = render(
+      <CardImageGallery
+        images={images}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    const foldBtn = await screen.findByRole('button', { name: /拡大して全体を見る/ })
+    expect(foldBtn).toBeInTheDocument()
+    // clip wrapper = <img> の最近接 div(overflow-hidden + max-h クラス)。
+    const img = container.querySelector('img')!
+    const clip = img.closest('div')!
+    expect(clip.className).toContain('overflow-hidden')
+    expect(clip.className).toContain('max-h-[min(70svh,44rem)]')
+    // フェード overlay(gradient・pointer-events-none)
+    expect(container.querySelector('.pointer-events-none.bg-gradient-to-t')).toBeInTheDocument()
+    // inflow は full-width(64px サムネではない)
+    expect(img.className).not.toContain('h-16')
+    expect(img.className).toContain('w-full')
+    // 畳みボタン tap → 同一 openModal 経路で open が呼ばれる
+    fireEvent.click(foldBtn)
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(1))
+  })
+
+  it('単一 inflow・横長 dims → 畳まない(button 不在・clip なし・フェードなし = 全高表示)', async () => {
+    // capPx=400, renderedWidthPx=400。横長 800x100 → renderedHeightPx=50 < 448 → fold=false。
+    stubLayout(400, 400)
+    mockGetAssetObjectURL.mockResolvedValue('blob:wide')
+    await seedAssetDims(UUID_A, 800, 100)
+    const images: ClientCardImage[] = [{ key: UUID_A, target: TARGET, alt: '横長図' }]
+    const { container } = render(
+      <CardImageGallery
+        images={images}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    // 任意 setTimeout(flaky)を排し、mirror dims(width=800)が img に乗る = fold 判定材料が
+    // 揃い computeFold が走った deterministic 信号を待つ(横長ゆえ fold は false のまま)。
+    const img = await waitFor(() => {
+      const el = container.querySelector('img') as HTMLImageElement | null
+      if (!el || el.getAttribute('width') !== '800') throw new Error('mirror dims not applied yet')
+      return el
+    })
+    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    const clip = img.closest('div')!
+    // fold=false は max-height/overflow-hidden clip を当てない(silent-clip bug 防止)。
+    expect(clip.className).not.toContain('overflow-hidden')
+    expect(clip.className).not.toContain('max-h-')
+    expect(container.querySelector('.bg-gradient-to-t')).not.toBeInTheDocument()
+    expect(img.className).toContain('w-full')
+  })
+
+  it('単一 inflow・dims 未取得 → 初期は畳まず、onLoad の naturalWidth/Height(縦長)で再評価して畳む', async () => {
+    // media_assets に seed しない = mirror dims 無し。onLoad で natural を stub 供給。
+    stubLayout(400, 400)
+    mockGetAssetObjectURL.mockResolvedValue('blob:unknown')
+    const images: ClientCardImage[] = [{ key: UUID_A, target: TARGET, alt: '' }]
+    const { container } = render(
+      <CardImageGallery
+        images={images}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    const img = await waitFor(() => {
+      const el = container.querySelector('img')
+      if (!el) throw new Error('no img yet')
+      return el as HTMLImageElement
+    })
+    // dims 未取得 → 初期は畳まない
+    await new Promise((r) => setTimeout(r, 30))
+    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    // onLoad で縦長 natural(400x1200)供給 → computeFold 再評価で畳む
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 400 })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 1200 })
+    fireEvent.load(img)
+    expect(await screen.findByRole('button', { name: /拡大して全体を見る/ })).toBeInTheDocument()
+  })
+
+  // ResizeObserver wiring(P2 fix): recomputeFold は wrapper.clientWidth と measure.clientHeight
+  // を読むが、measure.clientHeight(= capPx = min(70svh,44rem))は viewport 高さ変化(desktop 縦
+  // リサイズ等)で wrapper 幅不変のまま変わる。よって RO は wrapper だけでなく measure も observe
+  // しなければ、その変化で recomputeFold が呼ばれず fold が stale になる。RO の発火は jsdom no-op
+  // stub で unit 検証不能だが、observe 配線(どの element を渡すか)は検証できる。
+  // ro.observe(measure) を外すと measure が observed 集合に入らず本 test は FAIL する(discriminating)。
+  it('単一 inflow: ResizeObserver は wrapper と measure の両方を observe する(viewport 高さ変化追従)', async () => {
+    const observed: Element[] = []
+    // 記録専用 stub(disconnect/unobserve は no-op 維持・observe だけ記録)。
+    vi.stubGlobal(
+      'ResizeObserver',
+      class RecordingResizeObserver {
+        observe(el: Element): void {
+          observed.push(el)
+        }
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    )
+    mockGetAssetObjectURL.mockResolvedValue('blob:ro')
+    await seedAssetDims(UUID_A, 400, 1200)
+    const images: ClientCardImage[] = [{ key: UUID_A, target: TARGET, alt: '' }]
+    const { container } = render(
+      <CardImageGallery
+        images={images}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    const img = await waitFor(() => {
+      const el = container.querySelector('img')
+      if (!el) throw new Error('inflow img not rendered yet')
+      return el
+    })
+    // wrapper = <img> の最近接 div(ref=wrapperRef)。measure = 唯一の .w-0 div(ref=measureRef・
+    // 幅 0 の測定要素。内側 spacer は .w-px ゆえ .w-0 は measure に一意)。
+    const wrapper = img.closest('div')!
+    const measure = container.querySelector('.w-0')!
+    expect(wrapper).not.toBe(measure)
+    // observed に wrapper と measure の両方が入る(effect は複数回走りうるが同一 element instance)。
+    expect(observed).toContain(wrapper)
+    expect(observed).toContain(measure)
+    expect(new Set(observed).size).toBeGreaterThanOrEqual(2)
+  })
+
+  it('複数 inflow(2 枚)→ 128px タイル flex-wrap・畳みラッパー不在・各タイル tap→open', async () => {
+    mockGetAssetObjectURL.mockImplementation(async (_u: string, key: string) => `blob:${key}`)
+    await seedAssetDims(UUID_A, 100, 200)
+    await seedAssetDims(UUID_B, 300, 400)
+    const images: ClientCardImage[] = [
+      { key: UUID_A, target: TARGET, alt: 'a' },
+      { key: UUID_B, target: TARGET, alt: 'b' },
+    ]
+    const { container } = render(
+      <CardImageGallery
+        images={images}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(2))
+    // 複数は畳まない = 畳みボタン不在
+    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    // 128px タイル(h-32 w-32)・object-cover・flex-wrap コンテナ
+    const imgs = Array.from(container.querySelectorAll('img'))
+    imgs.forEach((im) => {
+      expect(im.className).toContain('h-32')
+      expect(im.className).toContain('object-cover')
+    })
+    expect(container.querySelector('.flex.flex-wrap')).toBeInTheDocument()
+    // 各タイル tap → 同一 openModal 経路
+    fireEvent.click(imageButtons(container)[0]!)
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(1))
+    fireEvent.click(imageButtons(container)[1]!)
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(2))
+  })
+
+  // key regression(Critical): 演習で次カードへ進むと同 position の inflow single が再利用され
+  // (key 不在時)useAssetObjectUrl の url / dims が前 asset のまま残留する。mirror row 無しの
+  // 新 asset では dims が更新されず旧 dims が居座り fold 誤り + 旧画像残像になる。key で asset
+  // ごとに remount して state を rest することを、別 key・mirror row 無しの B へ rerender して pin。
+  // (key を外すと B の img に A の url/dims が残り、下の 2 assert が FAIL する = discriminating)
+  it('単一 inflow: 別 key の asset へ rerender すると state を rest する(前 asset の url / dims を引き継がない・mirror row 無し)', async () => {
+    // A = url:blob:A + mirror dims(400x1200)。B = 別 key・url:blob:B・mirror row 無し。
+    mockGetAssetObjectURL.mockImplementation(async (_u: string, key: string) =>
+      key === UUID_A ? 'blob:A' : 'blob:B',
+    )
+    await seedAssetDims(UUID_A, 400, 1200)
+    // B は seedAssetDims しない = media_assets mirror row 無し(新 asset で dims が空になる経路)。
+
+    const { container, rerender } = render(
+      <CardImageGallery
+        images={[{ key: UUID_A, target: TARGET, alt: 'A' }]}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    // A が解決 → img(src=blob:A)+ A の mirror dims(width=400/height=1200)が乗る。
+    const imgA = await waitFor(() => {
+      const el = container.querySelector('img') as HTMLImageElement | null
+      if (!el || el.getAttribute('src') !== 'blob:A' || el.getAttribute('width') !== '400') {
+        throw new Error('A not resolved with dims yet')
+      }
+      return el
+    })
+    expect(imgA.getAttribute('height')).toBe('1200')
+
+    // 別 key の B(mirror row 無し)へ rerender = 演習の次カード相当。
+    rerender(
+      <CardImageGallery
+        images={[{ key: UUID_B, target: TARGET, alt: 'B' }]}
+        target={TARGET}
+        cardId={CARD_ID}
+        userId={USER_ID}
+        readOnly
+        display="inflow"
+      />,
+    )
+    // B の img(src=blob:B)が乗るのを待つ。
+    const imgB = await waitFor(() => {
+      const el = container.querySelector('img') as HTMLImageElement | null
+      if (!el || el.getAttribute('src') !== 'blob:B') throw new Error('B not resolved yet')
+      return el
+    })
+    // key で remount → dims は fresh(null)。B は mirror row 無しゆえ width/height 属性が付かない。
+    // key を外すと同一 instance が A の dims(400/1200)を保持し B の img に旧 dims が居座る = FAIL。
+    expect(imgB.getAttribute('width')).toBeNull()
+    expect(imgB.getAttribute('height')).toBeNull()
+  })
+})

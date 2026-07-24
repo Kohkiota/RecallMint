@@ -2267,3 +2267,87 @@ describe('Sprint T: 学習面のメモ表示', () => {
     expect(memoBlock.textContent).toContain('ユーザーメモテキスト')
   })
 })
+
+// -----------------------------------------------------------------------
+// Task 5: 演習 in-flow 画像を大きめ表示(display='inflow')。3 slot(問題文 / 選択肢 /
+// 解説)が inflow で描画される(64px サムネ = h-16 ではない)。メモ画像は非描画不変(spec §7)。
+// getClientDb().media_assets.get は上部 mock で undefined を返す = mirror dims 無し →
+// fold=false(全高)で描画。ここでは「inflow face(full-width)で描かれる」ことを pin する。
+// -----------------------------------------------------------------------
+describe('SessionRunner (Task 5: in-flow 画像 display=inflow)', () => {
+  const IMG_Q = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const OPT_A_UID = 'a0000000-0000-4000-8000-00000000000a'
+  const IMG_OPT = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const IMG_EXP = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+  const IMG_MEMO = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+
+  it('問題文画像は inflow(full-width)で描画され、64px サムネ(h-16)ではない', async () => {
+    const card = makeCard({
+      id: 'c1',
+      userId: 'u',
+      images: [{ key: IMG_Q, target: 'question_text', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+    const img = container.querySelector('img')!
+    expect(img.className).toContain('w-full')
+    expect(img.className).not.toContain('h-16')
+  })
+
+  it('選択肢画像(option:<uid>)も inflow(full-width)で描画される(h-16 でない)', async () => {
+    const card = makeCard({
+      id: 'c1',
+      userId: 'u',
+      options: [
+        { id: 'a', uid: OPT_A_UID, text: '選択肢A', is_correct: false },
+        { id: 'b', uid: 'b0000000-0000-4000-8000-00000000000b', text: '選択肢B', is_correct: true },
+      ],
+      images: [{ key: IMG_OPT, target: `option:${OPT_A_UID}`, alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+    const img = container.querySelector('img')!
+    expect(img.className).toContain('w-full')
+    expect(img.className).not.toContain('h-16')
+  })
+
+  it('解説画像(explanation_text)も判定後 inflow(full-width)で描画される(h-16 でない)', async () => {
+    const card = makeCard({
+      id: 'c1',
+      userId: 'u',
+      explanationText: 'カード解説',
+      images: [{ key: IMG_EXP, target: 'explanation_text', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+    const img = container.querySelector('img')!
+    expect(img.className).toContain('w-full')
+    expect(img.className).not.toContain('h-16')
+  })
+
+  it('メモに画像 target があっても学習面ではメモ画像は描画されない(memo 島は非配線・spec §7)', () => {
+    const card = makeCard({
+      id: 'c1',
+      userId: 'u',
+      memo: 'メモ本文',
+      images: [{ key: IMG_MEMO, target: 'memo', alt: '' }],
+    })
+    const { container } = render(
+      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    // メモ島は表示されるが gallery は配線されていない = memo target の画像は描画されない
+    expect(screen.getByText('メモ本文')).toBeInTheDocument()
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+    expect(mockGetAssetObjectURL).not.toHaveBeenCalled()
+  })
+})

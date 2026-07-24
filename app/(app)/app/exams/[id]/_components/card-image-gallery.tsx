@@ -23,6 +23,7 @@ import {
   type AttachErrorCode,
 } from '@/lib/media/upload'
 import { getAssetObjectURL } from '@/lib/media/get-asset'
+import { computeFold } from '@/lib/media/compute-fold'
 import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
 import { useImageZoom, type ZoomImage } from '@/components/media/use-image-zoom'
 import { reserveAsset, finalizeAsset, resolveAssetUrls } from '../_actions/asset-actions'
@@ -45,6 +46,10 @@ export type CardImageGalleryProps = {
   // 収める)/ 'thumbnails' = thumbnail のみ(add はラベル/行側に置いたので下は表示専用)。
   // readOnly は add を出さないため slot と直交(学習面は 'full' のまま thumbnail のみ)。
   slot?: 'full' | 'add' | 'thumbnails'
+  // Task 5(spec §3.2/§3.3): 表示モード。'thumb'(既定)= 64px サムネ(編集/一覧/side-peek)。
+  // 'inflow' = 演習 in-flow の大きめ表示(単一 = 幅100%画像 + 縦長畳み、複数 = 128px タイル wrap)。
+  // inflow は学習面 read-only 前提で add affordance を持たない。
+  display?: 'thumb' | 'inflow'
 }
 
 // attach 失敗 code → 短い JP エラーメッセージ(brief 指定の文言、 変更禁止)。
@@ -180,6 +185,277 @@ function CardImageThumbnail({ image, userId, readOnly, onDelete, onOpen }: Thumb
 }
 
 // ---------------------------------------------------------------------------
+// display='inflow' (Task 5): 演習 in-flow 大きめ表示。
+// 単一(===1)= 幅100%画像 + 縦長畳み(computeFold 実関数)、複数(>=2)= 128px タイル wrap。
+// ---------------------------------------------------------------------------
+
+// asset objectURL を解決する共通 hook(inflow single / tile 用)。thumbnail は既存の inline
+// 実装を保つ(display='thumb' 面の byte 不変を優先)ため refactor しない。
+// undefined=loading / null=失敗(retry) / string=resolved objectURL。
+function useAssetObjectUrl(userId: string, key: string) {
+  const [url, setUrl] = React.useState<string | null | undefined>(undefined)
+  const [retryTick, setRetryTick] = React.useState(0)
+  React.useEffect(() => {
+    let alive = true
+    getAssetObjectURL(userId, key, { resolveAssetUrls }).then((u) => {
+      if (alive) setUrl(u)
+    })
+    return () => {
+      alive = false
+    }
+  }, [userId, key, retryTick])
+  const retry = React.useCallback(() => {
+    // 失敗 placeholder の再読み込み: loading 表示へ戻し resolve をやり直す。
+    setUrl(undefined)
+    setRetryTick((t) => t + 1)
+  }, [])
+  return { url, retry }
+}
+
+// inflow 畳み定数(spec §3.3 開始値)。閾値は computeFold へ引数で渡す(pure 関数に埋め込まない)。
+const INFLOW_ABS_MARGIN_PX = 48
+const INFLOW_RATIO = 1.15
+// cap の CSS。測定要素 / clip wrapper が共有する min(70svh,44rem)(svh を JS で再計算しない)。
+const INFLOW_CAP_MAX_H_CLASS = 'max-h-[min(70svh,44rem)]'
+
+type InflowImageProps = {
+  image: ClientCardImage
+  userId: string
+  // 画像 tap / 畳みボタン → target 単位の全画面モーダル(gallery 側 openModal)。
+  onOpen: (assetId: string) => void
+}
+
+// 単一(===1): 幅100%画像 + 縦長畳み。
+// capPx = 測定要素の clientHeight(= used max-height min(70svh,44rem) の px 値。clip とは分離 =
+// fold=false 画像を silently clip しない)。getComputedStyle().maxHeight は CSSOM 上 computed 値で
+// 式文字列を返す engine があり(iOS Safari)parseFloat が NaN 化して畳みが永久 no-op になるため
+// 使わない。renderedWidthPx = clip wrapper の clientWidth。dims は media_assets mirror 優先、無ければ
+// onLoad の naturalWidth/Height で再評価。ResizeObserver で幅/向き/split view 変化に追従(unmount で cleanup)。
+function CardImageInflowSingle({ image, userId, onOpen }: InflowImageProps) {
+  const { url, retry } = useAssetObjectUrl(userId, image.key)
+  const [dims, setDims] = React.useState<{ width: number; height: number } | null>(null)
+  const [fold, setFold] = React.useState(false)
+  const wrapperRef = React.useRef<HTMLDivElement>(null)
+  const measureRef = React.useRef<HTMLDivElement>(null)
+  const imgRef = React.useRef<HTMLImageElement>(null)
+  // onLoad で読む natural 寸(mirror dims 欠落時の fallback)。render を跨いで保持するため ref。
+  const naturalRef = React.useRef<{ width: number; height: number } | null>(null)
+
+  // best-effort: mirror から dims を読む(layout-shift 回避 + 初回 fold 判定材料)。
+  React.useEffect(() => {
+    let alive = true
+    getClientDb()
+      .media_assets.get(image.key)
+      .then((row) => {
+        if (alive && row) setDims({ width: row.width, height: row.height })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [image.key])
+
+  const recomputeFold = React.useCallback(() => {
+    const wrapper = wrapperRef.current
+    const measure = measureRef.current
+    if (!wrapper || !measure) return
+    // capPx = 測定要素の clientHeight = used max-height(min(70svh,44rem))を px 解決した値。
+    // getComputedStyle().maxHeight は CSSOM 上 computed 値で式文字列("min(70svh, 44rem)")を返す
+    // engine があり(iOS Safari)parseFloat が NaN になり畳みが永久 no-op 化する。測定要素は
+    // overflow-hidden + 超高 spacer で自身の used height を max-height に clamp するため、
+    // clientHeight が used px を返す(svh→px はブラウザが layout で解決・JS は svh を再計算しない)。
+    const capPx = measure.clientHeight
+    const renderedWidthPx = wrapper.clientWidth
+    const naturalWidth = dims?.width ?? naturalRef.current?.width ?? 0
+    const naturalHeight = dims?.height ?? naturalRef.current?.height ?? 0
+    // dims 未確定 / 測定不能(未 layout)は畳まない(全高)。
+    if (
+      naturalWidth <= 0 ||
+      naturalHeight <= 0 ||
+      !Number.isFinite(capPx) ||
+      capPx <= 0 ||
+      renderedWidthPx <= 0
+    ) {
+      setFold(false)
+      return
+    }
+    const result = computeFold({
+      naturalWidth,
+      naturalHeight,
+      renderedWidthPx,
+      capPx,
+      absMarginPx: INFLOW_ABS_MARGIN_PX,
+      ratio: INFLOW_RATIO,
+    })
+    setFold(result.fold)
+  }, [dims])
+
+  // mount / dims 変化 / url 解決時に再評価し、ResizeObserver で幅・向き変化に追従(cleanup 付き)。
+  // wrapper(clientWidth = renderedWidthPx)に加え measure(clientHeight = capPx = min(70svh,44rem))も
+  // observe する。capPx は svh 基準ゆえ wrapper 幅が不変でも viewport 高さ変化(desktop 縦リサイズ等)で
+  // 変わり、その時 measure だけが resize するため。単一 disconnect が両方の cleanup を兼ねる。
+  React.useEffect(() => {
+    recomputeFold()
+    const wrapper = wrapperRef.current
+    if (!wrapper) return
+    const measure = measureRef.current
+    const ro = new ResizeObserver(() => recomputeFold())
+    ro.observe(wrapper)
+    if (measure) ro.observe(measure)
+    return () => ro.disconnect()
+  }, [recomputeFold, url])
+
+  const handleLoad = () => {
+    const img = imgRef.current
+    if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      naturalRef.current = { width: img.naturalWidth, height: img.naturalHeight }
+    }
+    recomputeFold()
+  }
+
+  if (url === undefined) {
+    return (
+      <div
+        className="h-48 w-full animate-pulse rounded-md border border-slate-200 bg-slate-100"
+        aria-hidden="true"
+      />
+    )
+  }
+
+  if (url === null) {
+    return (
+      <div className="flex w-full flex-col items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-4 text-center">
+        <span className="text-xs text-slate-500">画像を取得できません</span>
+        <button
+          type="button"
+          onClick={retry}
+          className="min-h-8 rounded px-1 text-xs font-medium text-slate-600 underline hover:text-slate-900"
+        >
+          再読み込み
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full">
+      <div
+        ref={wrapperRef}
+        className={
+          fold ? `relative w-full overflow-hidden ${INFLOW_CAP_MAX_H_CLASS}` : 'relative w-full'
+        }
+      >
+        {/* 画像本体 tap = 全画面モーダル(iOS pre-focus)。 */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.focus()
+            void onOpen(image.key)
+          }}
+          aria-label={`${image.alt || '画像'}を拡大`}
+          className="block w-full rounded-md focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+        >
+          {/* objectURL は next/image 最適化対象外。既存 upload-form.tsx の suppression を踏襲。 */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            ref={imgRef}
+            src={url}
+            alt={image.alt || ''}
+            onLoad={handleLoad}
+            width={dims?.width}
+            height={dims?.height}
+            className="block h-auto w-full rounded-md border border-slate-200"
+          />
+        </button>
+        {/* 下端フェード(clip 端の視覚的つながり)。clip 内・pointer-events-none = tap は画像へ透過。 */}
+        {fold && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-white via-white/70 to-transparent"
+          />
+        )}
+      </div>
+      {/* 「拡大して全体を見る」= clip wrapper の外(clip されない)。hit ≥44px・同一 openModal 経路。 */}
+      {fold && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.focus()
+            void onOpen(image.key)
+          }}
+          aria-label={`${image.alt || '画像'}を拡大して全体を見る`}
+          className="mt-2 flex min-h-11 w-full items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+        >
+          拡大して全体を見る
+        </button>
+      )}
+      {/* capPx 測定要素(常時 max-height を保持 = fold=false でも読める)。overflow-hidden + 超高
+          spacer(cap を必ず超える高さ)で自身の used height を max-height の px 値に clamp させ、
+          measure.clientHeight で used px を読む(getComputedStyle().maxHeight は computed=式文字列を
+          返す engine があり NaN 化するため使わない)。clip とは分離 = fold=false 画像の silent-clip を
+          防ぐ(measurement ≠ clipping)。invisible absolute + w-0 で実 layout に干渉しない。 */}
+      <div
+        ref={measureRef}
+        aria-hidden="true"
+        className={`pointer-events-none invisible absolute w-0 overflow-hidden ${INFLOW_CAP_MAX_H_CLASS}`}
+      >
+        {/* cap(min(70svh,44rem))より必ず高い spacer。overflow-hidden 親の height を max-height に
+            張り付かせるためだけの要素(視覚・layout には出ない)。 */}
+        <div aria-hidden="true" className="h-[100000px] w-px" />
+      </div>
+    </div>
+  )
+}
+
+// 複数(>=2): 中サイズ 128px タイル(object-cover)。畳みなし・各タイル tap→モーダル。
+function CardImageInflowTile({ image, userId, onOpen }: InflowImageProps) {
+  const { url, retry } = useAssetObjectUrl(userId, image.key)
+
+  if (url === undefined) {
+    return (
+      <div
+        className="h-32 w-32 shrink-0 animate-pulse rounded-md border border-slate-200 bg-slate-100"
+        aria-hidden="true"
+      />
+    )
+  }
+
+  if (url === null) {
+    return (
+      <div className="flex h-32 w-32 shrink-0 flex-col items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1 text-center">
+        <span className="text-[10px] text-slate-500">画像を取得できません</span>
+        <button
+          type="button"
+          onClick={retry}
+          className="min-h-8 rounded px-1 text-[10px] font-medium text-slate-600 underline hover:text-slate-900"
+        >
+          再読み込み
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.currentTarget.focus()
+        void onOpen(image.key)
+      }}
+      aria-label={`${image.alt || '画像'}を拡大`}
+      className="block h-32 w-32 shrink-0 rounded-md focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt={image.alt || ''}
+        className="h-32 w-32 rounded-md border border-slate-200 object-cover"
+      />
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // CardImageGallery
 // ---------------------------------------------------------------------------
 
@@ -192,6 +468,7 @@ export function CardImageGallery({
   compact = false,
   attachAriaLabel,
   slot = 'full',
+  display = 'thumb',
 }: CardImageGalleryProps) {
   const [error, setError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -290,6 +567,42 @@ export function CardImageGallery({
   // 想定外併用)は空 wrapper を出さず null(§9 行高: 空 div も出さない)。
   if (!(showThumbnails && targetImages.length > 0) && !showAdd) {
     return null
+  }
+
+  // Task 5: 演習 in-flow 大きめ表示。null-guard を抜けた = targetImages.length >= 1 が保証される。
+  // 単一 / 複数の二分のみ(枚数別の細分岐は作らない・spec §3.2 / YAGNI)。inflow は学習面
+  // read-only 前提で add affordance / attach error を描画しない(thumb 面は不変)。
+  if (display === 'inflow') {
+    return (
+      <div className="w-full">
+        {targetImages.length === 1 ? (
+          // key で asset ごとに remount する(演習で次カードへ進むと同 position の single が
+          // 再利用され、useAssetObjectUrl の url / dims / fold / naturalRef が前 asset のまま
+          // 残留する — mirror row 無しの新 asset で旧 dims が居座り fold 誤りになる。keyed な
+          // 兄弟(tile / thumbnail)と同じく key で state を rest する)。
+          <CardImageInflowSingle
+            key={targetImages[0].key}
+            image={targetImages[0]}
+            userId={userId}
+            onOpen={openModal}
+          />
+        ) : (
+          // 複数(>=2): 128px タイル wrap。畳みなし。128px タイルは行数を厳密に上限しないが、
+          // 幅100%単列積み上げに比べ高さが有界(per-target 複数は tail、有限枚数 ≤10 に留め
+          // 行数制限/横スクロールは足さない・YAGNI・spec §3.2)。
+          <div className="flex flex-wrap gap-2">
+            {targetImages.map((image) => (
+              <CardImageInflowTile
+                key={image.key}
+                image={image}
+                userId={userId}
+                onOpen={openModal}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (

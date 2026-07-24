@@ -448,6 +448,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
             cardId={current.id}
             userId={current.userId}
             readOnly
+            display="inflow"
           />
         </div>
       </div>
@@ -512,6 +513,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
                     cardId={current.id}
                     userId={current.userId}
                     readOnly
+                    display="inflow"
                   />
                 </div>
               )}
@@ -554,6 +556,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
               cardId={current.id}
               userId={current.userId}
               readOnly
+              display="inflow"
             />
           </div>
         </div>
