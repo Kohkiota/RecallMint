@@ -42,6 +42,16 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 
 > **残存 follow-up 更新(2026-07-23)**: 現況 moderate 4 / low 3(gate 対象外)。下記「残存 follow-up(2026-07-21)」表からの差分は新規 advisory 随伴ゆえ個別再掲は省略(gate は high ゆえ非対象・次回 bump sprint で拾う)。
 
+## 解消済(2026-07-24 postcss floor 引き上げ)
+
+- **対応**: postcss override を **floor 引き上げ** `^8.5.10 → ^8.5.12`(exact pin でなく caret 下限のみ上げ)。既存 caret は宣言 range 上 patched を許容するが、lockfile が `@tailwindcss/postcss` + `shadcn` 経由で 8.5.10 に **stale pin**(pnpm は宣言 range 内の古い lock を `install` で bump しない = vite の peer-suffix 知見と同族の「範囲満足ゆえ据え置き」)→ floor を patched 以上に上げて再解決を強制し、全消費側を postcss@8.5.21 に単一化。**新規 override 追加でなく既存 override の floor 引き上げが正**(next/vite 側は先行 bump で既に 8.5.21・古いのは tailwind/shadcn subtree のみだった)。撤去条件 = 全消費側が >=8.5.12 を自然解決した時点(override 無しで `pnpm why postcss` が >=8.5.12 単一を示す)。floor 固定ゆえ将来 patch は自然追従。
+- **結果**: audit **high 1→0**・随伴 moderate/low 不変(4 mod / 3 low・gate 対象外)。lockfile 差分は postcss + orphan `nanoid@3.3.11` の dedupe のみ(直接依存・他 override 不変)。postcss は build 経路専用(app/lib/components に import なし・client bundle 非混入を build 出力で確認)。commit `fc7ce57`。
+- gate: frozen install / lint / typecheck / build / test / test:iso + audit 全 green(unit 3889 / iso 217)。
+
+| module | GHSA(概要) | vulnerable | patched | 到達版 | 経路 |
+|---|---|---|---|---|---|
+| postcss | GHSA-6g55-p6wh-862q(sourceMappingURL 経由の任意ファイル読取・情報漏洩) | `<=8.5.11` | `>=8.5.12` | 8.5.21(override floor) | `.>@tailwindcss/postcss>postcss`(+ `.>shadcn>postcss`) |
+
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
 ### moderate(3 件)
