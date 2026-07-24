@@ -4,7 +4,7 @@ onlyBuiltDependencies:
 
 overrides:
   uuid: ^14.0.0
-  postcss: ^8.5.10
+  postcss: ^8.5.12
   react: 19.2.7
   react-dom: 19.2.7
   # GHSA-fx2h-pf6j-xcff 対処。range 内だが pnpm update が peer-suffix 付き
