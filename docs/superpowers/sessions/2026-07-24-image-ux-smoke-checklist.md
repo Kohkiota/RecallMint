@@ -242,7 +242,7 @@ Clerk dev-keys=stg 既知)。
 | scroll-lock 機構 | **PASS** | body position:fixed / top:-400px(scrollY 退避)|
 | close→scroll/focus 復帰 | **PASS** | 閉→position:static・scrollY 400 復帰・focus=起動 button |
 | Z1 z-index | **PASS** | pswp z=100000 > side-peek dialog z=45・中心の topmost=pswp__img |
-| **Z2 Escape 隔離** | **FINDING(Minor)** | ×ボタン=画像モーダルのみ閉じ side-peek 継続(正)。**Escape=画像モーダル+side-peek の両方が閉じる**(radix side-peek の document Escape も発火)。下記参照 |
+| **Z2 Escape 隔離** | **FINDING→修正済(`37dbfd8`)** | ×ボタン=画像モーダルのみ閉じ side-peek 継続(正)。**Escape=画像モーダル+side-peek の両方が閉じた**(radix side-peek の document Escape も発火)→ OT 指示で fix(escKey:false + window capture 隔離)。**push 後に stg 再 smoke で確認**(下記)|
 | Z3 focus 復帰 | **PASS** | ×閉→focus=side-peek 内の画像 button(activeInsideDialog=true) |
 | R1 縮退 | **PASS** | 解決不可→「画像を取得できません」+「再読み込み」・tap 不可(空モーダル防止)|
 | R3 CSP | **PASS** | ズーム UI/CSS 適用・style/script violation 0 |
@@ -260,3 +260,5 @@ Clerk dev-keys=stg 既知)。
 - **原因**: PhotoSwipe は radix の DismissableLayer stack 外の独立 overlay ゆえ、Escape が PhotoSwipe の escKey と radix side-peek の document 級 Escape の**両方**に届く。
 - **影響 = Minor**: ① 一次閉じ affordance(×)は正常 ② touch/iOS は Escape 無し(本 sprint の主対象=モバイルは無関係)③ データ影響なし。checklist Z2 の期待(Escape は画像モーダルのみ)からの逸脱だが desktop キーボード限定の edge。
 - **follow-up 案**: useImageZoom で open 中に capture-phase keydown で Escape の伝播を下層 radix に届く前に止める(PhotoSwipe には処理させる)/ または escKey を切り自前 Escape で stopPropagation+close。**push 済ゆえ別 commit の follow-up 判断は OT**(Minor=記録可)。
+- **→ 修正済(`37dbfd8`・OT 指示で Minor 受容せず即 fix)**: escKey:false にし Escape を hook 側で所有、`window` の capture 段で `stopPropagation` して下層 radix へ伝播させずモーダルのみ close。open 中のみ有効・close/unmount で listener 除去(close 後は radix の Escape が従来どおり効く)。arrowKeys 等は素通し。§3.4 amendment(`d568a5b`)。review = canonical Ready/Crit0/Imp0 + Codex 2 周(P2 init-throw 巻き戻し→fix)Crit0/Imp0/Minor0。full 3889 green。
+- **push 後 CC 再 smoke(要)**: side-peek→画像モーダル→**Escape で画像モーダルのみ閉じ side-peek 継続** / close 後に side-peek で Escape→side-peek が閉じる / 画像モーダル中の矢印キーで slide 送りが効く(arrowKeys 不変)。desktop Chromium で実走可。

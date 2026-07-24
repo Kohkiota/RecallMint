@@ -126,6 +126,32 @@ base=`f664675` / head(review 時)=`5175fe6`。
 - 再 review: **canonical(opus, focused)Crit0/Imp0/Minor3 + Codex(--uncommitted)Crit0/Imp0/Minor0** → 収束(未解決 Crit0/Imp0)。
 - Minor(record・非 blocking): **M1** guard の sub-frame race(`useLayoutEffect` で更に閉じ得るが `'use client'` の SSR 警告回避に isomorphic wrapper 要=YAGNI・#1 fix で window は数 ms に収縮し表示のみの glitch ゆえ record)/ **M2** §3.6 準拠の未解決兄弟除外(仕様・非 bug)/ **M3** peek test の tautological assert(意図明示・据置)。
 
+### 4b. CC stg smoke(Chrome/desktop)+ Z2 Escape fix(OT 指示で即 fix)
+
+OT push(`origin/develop`=`9685967`)後、CC 分担の stg smoke を Playwright/desktop Chromium で完走。
+実カード画像 + mirror 直注入(tall/short/fail)で検証、注入は全 cleanup(server 不変)。結果詳細 =
+`docs/superpowers/sessions/2026-07-24-image-ux-smoke-checklist.md` §CC smoke 実施結果。
+
+- **全 CC 項目 PASS**: deploy 反映 / F1 畳み発火(clip+フェード+ボタン・clientHeight px)/ F2 非畳み /
+  モーダル open(3 経路)/ fill(aspect>2.0)/ G5 / G6 機能 / scroll-lock(position:fixed top:-scrollY)/
+  Escape 閉+scroll/focus 復帰 / Z1 z-index(pswp 100000>dialog 45)/ Z3 focus 復帰 / R1 縮退 / R3 CSP /
+  thumb 面不変 / a11y 名。**bonus**: back の route-change-during-open で scroll-lock leak せず(task6
+  Critical fix の実地裏取り)。console 0 errors。
+- **Z2 finding→fix**: side-peek 上で Escape が画像モーダル+side-peek 両方を閉じた。**OT 指示で Minor 受容せず
+  即 fix**(desktop も table/side-peek の対象ゆえ)。fix `37dbfd8`[reviewed] + §3.4 amendment `d568a5b`:
+  escKey:false + `window` capture で Escape 隔離(下層 radix へ伝播させずモーダルのみ close)、close/unmount で
+  listener 除去、arrowKeys 素通し、init-throw 巻き戻し(Codex P2)。red 検証 3 点(stopPropagation /
+  destroy-removal / init-throw catch を各 neuter で対応 test fail→復元 green)。review = canonical
+  Ready/Crit0/Imp0 + Codex 2 周 Crit0/Imp0/Minor0(canonical Minor M1 test-hygiene cleanup / M2 radix spy
+  capture 段 / M3 stale comment も反映)。gate lint0/tsc0/**full 3889**/build0。**push 後 CC 再 smoke 要**
+  (side-peek Escape 隔離 / close 後 radix Escape 復活 / arrowKeys 不変)。
+
+### commit range 更新(未 push)
+
+origin/develop=`9685967`(OT push 済)。以降の未 push = `00f29d1`(CC smoke 結果 doc)/ `d568a5b`
+(§3.4 amendment)/ `37dbfd8`(Z2 fix [reviewed])/ `4a8bdd2`(Codex 記録)/ 本締め doc。Z2 fix は OT が
+まとめて push 予定(OT 指示)。
+
 ### 5. push 判断(OT へ)
 - **コード完了**: task 1〜6 + P2 fix 全 [reviewed]。gate 5/6 exit 0(audit のみ無関係 postcss high)。whole-branch canonical Ready + Codex P2 全 resolved。→ **push 可**。
 - **OT 判断 2 点**: ① audit postcss high の扱い(別 chore(deps) override 推奨 or 受容判断)② push タイミング。
