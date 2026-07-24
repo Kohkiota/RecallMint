@@ -91,3 +91,12 @@
     @apply font-sans;
     }
 }
+
+/* 画像ズームモーダル(PhotoSwipe)の閉じるボタンに touch-action:manipulation で二重タップ
+   遅延を抑止(+/−/リセットは onInit で付与済・spec §3.5)。safe-area/viewport-fit=cover は
+   S1 revert(2026-07-24)= app 全体が safe-area 未対応ゆえ cover の browser 予約解除が
+   app-wide regression(bottom-0 操作バー等が home-indicator に被る)になるため。edge-to-edge
+   没入は将来 app-shell safe-area sprint で再検討(follow-up)。 */
+.pswp__button--close {
+  touch-action: manipulation;
+}

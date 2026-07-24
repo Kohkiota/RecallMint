@@ -6,7 +6,7 @@
 // 配線していることを個別に pin する。実 pinch/pan は mock 不能 = smoke(task 6)。
 
 import type { Mock } from 'vitest';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
 import { useImageZoom, ZOOM_STEP, type ZoomImage } from './use-image-zoom';
@@ -115,10 +115,27 @@ async function openWith(
   });
 }
 
+// jsdom の window.scrollY は getter。scroll-lock は open 時に scrollY を退避するため
+// nonzero に差し替えて top:-<scrollY>px を検証できるようにする。
+function stubScrollY(value: number): void {
+  Object.defineProperty(window, 'scrollY', { value, configurable: true, writable: true });
+}
+
+// jsdom の window.scrollTo は未実装(呼ぶと console.error)。unlock は必ず scrollTo を
+// 呼ぶため、全 test で no-op stub にして出力を汚さず呼出を観測する。
+let scrollToSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  scrollToSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+});
+
 afterEach(() => {
   hoisted.instances.length = 0;
   vi.clearAllMocks();
+  scrollToSpy.mockRestore();
+  stubScrollY(0);
   document.body.innerHTML = '';
+  document.body.removeAttribute('style');
 });
 
 describe('useImageZoom', () => {
@@ -332,13 +349,17 @@ describe('useImageZoom', () => {
       expect(hoisted.ctor).not.toHaveBeenCalled();
     });
 
-    it('unmount 時に開いていれば close() する', async () => {
+    it('unmount 時に開いていれば destroy() で強制 teardown する(soft close ではない)', async () => {
+      // unmount cleanup は close() でなく destroy() を呼ぶ: close() は opening アニメ中
+      // 内部 no-op になり得る(PhotoSwipe opener.close の isOpening early-return)ため、
+      // どの状態でも同期 teardown する destroy() を使う(scroll-lock leak 防止)。
       const { result, unmount } = renderHook(() => useImageZoom());
       await openWith(result.current.open);
       const inst = firstInstance();
 
       unmount();
-      expect(inst.close).toHaveBeenCalledTimes(1);
+      expect(inst.destroy).toHaveBeenCalledTimes(1);
+      expect(inst.close).not.toHaveBeenCalled();
     });
 
     it('close→destroy で参照解放し、次の open は新インスタンスを生成する(destroy 冪等)', async () => {
@@ -352,6 +373,108 @@ describe('useImageZoom', () => {
 
       await openWith(result.current.open);
       expect(hoisted.ctor).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('scroll-lock(fixed-body・iOS WebKit・実スクロール漏れは smoke)', () => {
+    it('open() で body を fixed 固定し top:-<scrollY>px + width を付与する', async () => {
+      stubScrollY(250);
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+
+      expect(document.body.style.position).toBe('fixed');
+      expect(document.body.style.top).toBe('-250px');
+      expect(document.body.style.width).toBe('100%');
+    });
+
+    it('close/destroy で元 body style へ復帰し window.scrollTo(0, scrollY) を呼ぶ', async () => {
+      // 退避対象の original を非既定値にして「復帰」を弁別する。
+      document.body.style.overflow = 'scroll';
+      stubScrollY(250);
+
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      const inst = firstInstance();
+      // lock 中は overflow が hidden に上書きされている。
+      expect(document.body.style.overflow).toBe('hidden');
+
+      act(() => inst.close());
+
+      expect(document.body.style.position).toBe('');
+      expect(document.body.style.top).toBe('');
+      expect(document.body.style.width).toBe('');
+      expect(document.body.style.overflow).toBe('scroll'); // original へ復帰
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 250);
+    });
+
+    it('冪等: lock 中の 2 度目 open は退避 scrollY を上書きしない', async () => {
+      stubScrollY(100);
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      expect(document.body.style.top).toBe('-100px');
+
+      // 開いたまま scrollY が変化しても、2 度目 open は無視され退避値は不変。
+      stubScrollY(999);
+      await openWith(result.current.open);
+      expect(document.body.style.top).toBe('-100px'); // 999 で clobber されない
+
+      act(() => firstInstance().close());
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 100); // 退避値 100 で復帰
+    });
+
+    it('冪等: unlock 済みで再度 destroy が来ても no-op(scrollTo を再呼出しない)', async () => {
+      stubScrollY(80);
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      const inst = firstInstance();
+
+      act(() => inst.close());
+      expect(scrollToSpy).toHaveBeenCalledTimes(1);
+
+      // 既に unlock 済み → 2 度目の destroy は release-while-unlocked の no-op。
+      act(() => inst.emit('destroy'));
+      expect(scrollToSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('unmount-while-open で lock が解除され body が復帰する', async () => {
+      document.body.style.overflow = 'scroll';
+      stubScrollY(120);
+      const { result, unmount } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      expect(document.body.style.position).toBe('fixed');
+
+      unmount(); // 開いたまま unmount → destroy() → teardown → destroy ハンドラ → unlock
+
+      expect(document.body.style.position).toBe('');
+      expect(document.body.style.overflow).toBe('scroll');
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 120);
+    });
+
+    it('unmount-while-opening で teardown が no-op でも fallback unlock で lock が解放される', async () => {
+      // Critical leak(review 指摘)の再現: opening アニメ中に unmount すると、実 PhotoSwipe
+      // では close() も destroy() も内部 opener.close() の isOpening early-return により
+      // teardown せず destroy イベントを発火しない。これを mock で忠実に再現するため、
+      // open 後に inst.close / inst.destroy を「destroy を発火しない no-op」に差し替える。
+      // このとき body の position:fixed を解除する唯一の経路は cleanup の fallback
+      // unlockBodyScroll。fix が無い(soft close のみ)と body は fixed のまま = ページ恒久
+      // フリーズ。fallback があれば destroy ハンドラが走らなくても復帰する(多層防御)。
+      document.body.style.overflow = 'scroll';
+      stubScrollY(140);
+      const { result, unmount } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      const inst = firstInstance();
+      expect(document.body.style.position).toBe('fixed');
+
+      // opening アニメ中の PhotoSwipe を模す: teardown も destroy 発火も起きない。
+      inst.close.mockImplementation(() => {});
+      inst.destroy.mockImplementation(() => {});
+
+      unmount();
+
+      // destroy ハンドラは走らないが、fallback unlockBodyScroll が lock を解放する。
+      expect(document.body.style.position).toBe('');
+      expect(document.body.style.overflow).toBe('scroll');
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 140);
     });
   });
 });
