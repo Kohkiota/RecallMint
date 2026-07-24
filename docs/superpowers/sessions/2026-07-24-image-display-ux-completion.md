@@ -82,3 +82,51 @@ image sprint の task 1 de-risk 中に audit high 5 検出(next 16.2.9 SSRF×2/p
 - fact-finding(Step0): `docs/superpowers/sessions/2026-07-22-image-ux-factfinding.md`
 - codex 記録: `docs/codex/2026-07-2[234]-image-ux-*.md`(plan cross-check + 各 task review trail)
 - 実装コード: `lib/media/compute-fold.ts` / `lib/media/get-asset.ts` / `components/media/use-image-zoom.ts` / `app/(app)/app/exams/[id]/_components/card-image-gallery.tsx` / `app/(app)/app/study/smart/_components/session-runner.tsx`
+
+---
+
+## task 6 締め session(2026-07-24 続き)— smoke パッケージ + gate + whole-branch review + P2 fix
+
+前セッションからの残作業(smoke パッケージ提示 / whole-repo gate / whole-branch review / push 判断)を実施。
+
+### 追加 commit(未 push・`5175fe6` の後)
+
+| commit | 内容 |
+|---|---|
+| `8cefdcc` | docs(session) 実機 smoke チェックリスト(分担確定)+ whole-branch Codex 記録 [no-review] |
+| `c2867a0` | **fix(media) openModal 兄弟 peek 化(spec §3.6)+ stale open guard** [reviewed] |
+| (本 commit) | docs(session) 本締め記録 [no-review] |
+
+origin/develop = `f664675`。task 6 締め後の local ahead = **16 commit**。tree clean。
+
+### 1. OT 実機 smoke パッケージ
+`docs/superpowers/sessions/2026-07-24-image-ux-smoke-checklist.md`(19 項目・URL/手順/期待/環境)。OT が分担確定:
+- **CC(stg push 後・Playwright・desktop Chromium)**: F1/F2 の Chrome 側(F1 は OT 実機の前に先行)/ Z1〜Z3(side-peek z-index/Escape/focus)/ R1〜R3(縮退/decode 除外/CSP UI)/ G6 機能面 / L1・B1 の desktop 部分。
+- **OT 実機(物理 iOS/iPad)**: G1〜G5 gesture / F1 の iOS Safari 側(must-pass=clientHeight px)/ L1 主再現+L2+L3 / G6 物理 / B1。**L4(キーボード表示中)は検証対象外**(再現困難・L1 で充足)。
+- **環境カバレッジ**: iPhone 縦=全 OT 項目 / 横・iPad=F1+L1 / PWA=L1 のみ(絞り込み理由=checklist「環境カバレッジ」節。CC 判定=不足なし)。
+
+### 2. whole-repo 6 gate(fix 後・最終)
+- `pnpm lint` exit 0(--max-warnings=0)
+- `pnpm test` **3885 passed**(前 3880 + peek 3 + P2 2)
+- `pnpm typecheck` exit 0
+- `pnpm build` exit 0
+- `pnpm test:iso` **217 passed**(DB 不変)
+- `pnpm run audit` **exit 1** = **pre-existing・無関係 `postcss<=8.5.11` high(GHSA-6g55-p6wh-862q)**。`@tailwindcss/postcss@4.2.4` 経由の transitive で **origin/develop(f664675)の lockfile にも同一 entry**(本 sprint は zero-dep photoswipe のみ追加ゆえ由来せず)。patched あり(`>=8.5.12`・latest 8.5.22)。**OT dep 判断**(推奨=別 `chore(deps)` で `postcss` override `^8.5.12`・f664675 の deps-fix と同型。allow-list は patched 不在限定ゆえ不適)。
+
+### 3. whole-branch 最終 review(SDD 終端)
+base=`f664675` / head(review 時)=`5175fe6`。
+- **canonical**(general-purpose subagent, opus, template `code-reviewer.md` 改変なし): **Ready to merge=Yes / Crit0 / Imp0**。6 不変条件保持・iOS scroll-lock leak resolved 確認・test discriminating。
+- **Codex**(`--base origin/develop`・read-only・detector PASS): **P2×2**(openModal:①兄弟解決の開扉ブロック ②カード遷移中の stale open)。→ 記録 `docs/codex/2026-07-24-image-ux-whole-branch.md`。
+
+### 4. P2 fix(`c2867a0`)+ 再 review(fix loop 収束)
+両 P2 は実在(#2 は session-runner の gallery 再利用ゆえ reachable / #1 は spec §3.6「解決済みのみ」への実装逸脱)。CC 吸収:
+- #1 = 兄弟を `peekAssetObjectURL`(objectUrlCache 済のみ同期返し)で集め非ブロック化・tap 画像のみ getAssetObjectURL(cache hit)。
+- #2 = `latestCardRef`(useEffect で cardId 追従)を open 直前照合。
+- red 検証済(両 fix neuter で新 2 test fail)。
+- 再 review: **canonical(opus, focused)Crit0/Imp0/Minor3 + Codex(--uncommitted)Crit0/Imp0/Minor0** → 収束(未解決 Crit0/Imp0)。
+- Minor(record・非 blocking): **M1** guard の sub-frame race(`useLayoutEffect` で更に閉じ得るが `'use client'` の SSR 警告回避に isomorphic wrapper 要=YAGNI・#1 fix で window は数 ms に収縮し表示のみの glitch ゆえ record)/ **M2** §3.6 準拠の未解決兄弟除外(仕様・非 bug)/ **M3** peek test の tautological assert(意図明示・据置)。
+
+### 5. push 判断(OT へ)
+- **コード完了**: task 1〜6 + P2 fix 全 [reviewed]。gate 5/6 exit 0(audit のみ無関係 postcss high)。whole-branch canonical Ready + Codex P2 全 resolved。→ **push 可**。
+- **OT 判断 2 点**: ① audit postcss high の扱い(別 chore(deps) override 推奨 or 受容判断)② push タイミング。
+- **push 後**: stg deploy → CC smoke(上記 CC 分担・F1 Chrome 先行)→ OT 実機 smoke(iOS acceptance)。**iOS 実機 smoke は別ステータス = OT acceptance**(結果を smoke checklist「結果」欄 + 本 doc に追記)。
