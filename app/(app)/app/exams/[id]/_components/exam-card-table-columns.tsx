@@ -12,7 +12,6 @@
 import type { ColumnDef, FilterFn } from '@tanstack/react-table'
 import { PanelRightOpen } from 'lucide-react'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
-import { cn } from '@/lib/utils'
 import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
@@ -75,9 +74,10 @@ const makeTextFilterFn = (
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    // チェックボックス実体 (~16px) + px-1 左右 合計 (8px) = 24px コンテンツ幅 →
-    // text-center で前後 ~4px 余白 → 合計 32px (クリップなしの最小幅)。
-    size: 32,
+    // チェックボックス実体 (~16px) + gap-1 (4px) + 「カードを開く」button (size-6=24px) +
+    // px-1 左右 合計 (8px) = 52px コンテンツ幅 → 常時表示化(iPad 横向き等 hover 不能環境でも
+    // 不可視にならない)に伴い title 列から本 button を移設したため余白込みで 64px に拡大。
+    size: 64,
     header: ({ table }) => (
       <input
         type="checkbox"
@@ -92,17 +92,43 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         aria-label="全選択"
       />
     ),
-    cell: ({ row }) => (
-      <input
-        type="checkbox"
-        checked={row.getIsSelected()}
-        onChange={row.getToggleSelectedHandler()}
-        // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
-        //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
-        onClick={(e) => e.stopPropagation()}
-        aria-label={`行選択: ${row.original.card.title}`}
-      />
-    ),
+    // 行操作ボタン(カードを開く)の常時表示化: title 列 hover 隠しは md: 幅ブレークポイントを
+    // hover 能力の代理にしていたが、iPad 横向きは md 以上に該当しつつ hover が無く不可視になる
+    // 構造的欠陥だった。select 列(checkbox 隣接)へ移設し、幅/hover 分岐なしで常時表示する。
+    cell: ({ row, table }) => {
+      const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // openCard が実際に配線された時だけボタンを描画する。T3 が配線するまでは undefined のため非表示。
+      const openCard = meta?.openCard
+      return (
+        <div className="flex items-center justify-center gap-1">
+          <input
+            type="checkbox"
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+            // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
+            //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
+            onClick={(e) => e.stopPropagation()}
+            aria-label={`行選択: ${row.original.card.title}`}
+          />
+          {openCard && (
+            <button
+              type="button"
+              aria-label="カードを開く"
+              aria-pressed={meta?.activeCardId === card.id}
+              onClick={(e) => {
+                // select td 全域の onClick(行選択トグル)への bubbling を止める(checkbox と同理由)。
+                e.stopPropagation()
+                openCard(card.id)
+              }}
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground aria-pressed:text-foreground"
+            >
+              <PanelRightOpen className="size-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )
+    },
     enableSorting: false,
   },
   {
@@ -114,36 +140,17 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // getSortedRowModel がフィルタアウトするため、title を非 null accessor で sortable 化。
     // sortingFn は row.original から直接読んで localeCompare('ja') で比較する。
     accessorFn: (row) => row.card.title,
-    cell: ({ row, table }) => {
+    // T2/T3: side peek 起動button(カードを開く)は select 列(checkbox 隣接)へ移設済(常時表示化)。
+    // title セルは InlineTextField のみ(他の text 列 = sort_key 等と同型)。
+    cell: ({ row }) => {
       const card = row.original.card
-      const meta = table.options.meta as ExamCardTableMeta | undefined
-      // openCard が実際に配線された時だけボタンを描画する。T3 が配線するまでは undefined のため非表示。
-      const openCard = meta?.openCard
       return (
-        <div className="relative w-full group/peek">
-          <InlineTextField
-            cardId={card.id}
-            field="title"
-            initialValue={card.title}
-            ariaLabel="タイトル 編集"
-          />
-          {openCard && (
-            <button
-              type="button"
-              aria-label="カードを開く"
-              aria-pressed={meta?.activeCardId === card.id}
-              onClick={() => openCard(card.id)}
-              className={cn(
-                'absolute right-0.5 top-0.5 z-[1] inline-flex size-7 items-center justify-center rounded bg-background shadow-sm text-muted-foreground hover:text-foreground',
-                'opacity-100 md:opacity-0 md:group-hover/peek:opacity-100 md:focus-visible:opacity-100',
-                'group-has-[input]/peek:opacity-0 group-has-[input]/peek:pointer-events-none',
-                'aria-pressed:text-foreground',
-              )}
-            >
-              <PanelRightOpen className="size-4" aria-hidden="true" />
-            </button>
-          )}
-        </div>
+        <InlineTextField
+          cardId={card.id}
+          field="title"
+          initialValue={card.title}
+          ariaLabel="タイトル 編集"
+        />
       )
     },
     enableSorting: true,

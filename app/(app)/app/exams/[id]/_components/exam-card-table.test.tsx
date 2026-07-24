@@ -1860,7 +1860,7 @@ describe('S5-2 (d): boundary null 時 — pinning 由来のクラスが th に�
 // select / title が left-pinned → th/td に sticky + left style。
 // title が最右可視 pinned → th/td に border-r。
 // question (非 pinned) → sticky / left / border-r なし。
-// <table> style に --col-select-start=0 / --col-title-start=32(select size=32) が emit される。
+// <table> style に --col-select-start=0 / --col-title-start=64(select size=64) が emit される。
 // boundary null → start 変数 emit なし + sticky class ゼロ (S5-2 (d) の回帰を兼用)。
 // ===========================================================================
 
@@ -1902,7 +1902,7 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(questionTh.className, 'question th に border-r なし').not.toContain('border-r')
   })
 
-  it('<table> style に --col-select-start=0 / --col-title-start=32 が emit される', async () => {
+  it('<table> style に --col-select-start=0 / --col-title-start=64 が emit される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(
@@ -1921,10 +1921,10 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(selectStart, '--col-select-start が emit されている').not.toBe('')
     expect(parseFloat(selectStart), '--col-select-start = 0 (select が先頭 pinned)').toBe(0)
 
-    // --col-title-start: title は select (size=32) の直後 → offset=32
+    // --col-title-start: title は select (size=64) の直後 → offset=64
     const titleStart = tableEl.style.getPropertyValue('--col-title-start')
     expect(titleStart, '--col-title-start が emit されている').not.toBe('')
-    expect(parseFloat(titleStart), '--col-title-start = 32 (select size 分 offset)').toBe(32)
+    expect(parseFloat(titleStart), '--col-title-start = 64 (select size 分 offset)').toBe(64)
   })
 
   it('boundary null → --col-select-start / --col-title-start が emit されず、th に sticky がない', async () => {
@@ -2154,6 +2154,25 @@ describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)
     fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
     await waitFor(() => expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).not.toBeChecked())
     expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument()
+  })
+})
+
+describe('T3 ⑦-b: 「カードを開く」button click が行選択チェックボックスをトグルしない(逆方向・stopPropagation)', () => {
+  it('select 列 td 全域は onClick で行選択トグルするが、button click は stopPropagation で bubbling を止めるため checkbox は unchecked のまま', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ }) as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+
+    // 「カードを開く」button は select 列(checkbox 隣接)に配置済 — button click が
+    // 親 td の onClick(行選択トグル)へ bubbling しないことを検証する。
+    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
+
+    expect(checkbox.checked).toBe(false)
   })
 })
 
