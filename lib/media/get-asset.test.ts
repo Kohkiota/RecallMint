@@ -12,7 +12,7 @@
 // resolve を再度呼ばない) / userId 名前空間分離。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { getAssetObjectURL } from './get-asset'
+import { getAssetObjectURL, peekAssetObjectURL } from './get-asset'
 import { putAssetBlob } from './cache'
 
 // ---------------------------------------------------------------------------
@@ -310,5 +310,44 @@ describe('getAssetObjectURL', () => {
 
     // 別 user は別 cache key ゆえ resolve が 2 回呼ばれる (module Map が user 名前空間分離)。
     expect(mockResolve).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// peekAssetObjectURL: 同期 peek。既に解決済み (objectUrlCache 済) のみ返し、未解決は
+// null。resolve/fetch を一切走らせない (spec §3.6 の「解決済みのみ」を非ブロックで満たす)。
+// ---------------------------------------------------------------------------
+describe('peekAssetObjectURL', () => {
+  it('未解決 (objectUrlCache 未登録) の key は null を返し resolve/fetch を走らせない', () => {
+    const assetId = freshAssetId()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    // peek は同期 (Promise でない) — resolve/fetch なしで即 null。
+    expect(peekAssetObjectURL(USER_ID, assetId)).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('getAssetObjectURL 成功後は同一 key の objectURL を返す (兄弟が解決済みなら peek でヒット)', async () => {
+    const assetId = freshAssetId()
+    const blob = new Blob(['bytes'], { type: 'image/webp' })
+    await putAssetBlob(USER_ID, assetId, blob)
+
+    // 解決前は null。
+    expect(peekAssetObjectURL(USER_ID, assetId)).toBeNull()
+
+    const url = await getAssetObjectURL(USER_ID, assetId, { resolveAssetUrls: vi.fn() })
+
+    // 解決後は同一 objectURL を同期で返す (resolve 契約と同じ Map から)。
+    expect(peekAssetObjectURL(USER_ID, assetId)).toBe(url)
+  })
+
+  it('user 名前空間分離: 別 user の解決は同一 assetId の peek をヒットさせない', async () => {
+    const assetId = freshAssetId()
+    const blob = new Blob(['bytes'], { type: 'image/webp' })
+    await putAssetBlob(USER_ID, assetId, blob)
+    await getAssetObjectURL(USER_ID, assetId, { resolveAssetUrls: vi.fn() })
+
+    expect(peekAssetObjectURL(USER_ID, assetId)).not.toBeNull()
+    expect(peekAssetObjectURL('user-2', assetId)).toBeNull()
   })
 })

@@ -22,7 +22,7 @@ import {
   removeImageFromCard,
   type AttachErrorCode,
 } from '@/lib/media/upload'
-import { getAssetObjectURL } from '@/lib/media/get-asset'
+import { getAssetObjectURL, peekAssetObjectURL } from '@/lib/media/get-asset'
 import { computeFold } from '@/lib/media/compute-fold'
 import { reclaimLocalAssetBlobs } from '@/lib/media/reclaim-local-asset-blobs'
 import { useImageZoom, type ZoomImage } from '@/components/media/use-image-zoom'
@@ -474,6 +474,16 @@ export function CardImageGallery({
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const { open } = useImageZoom()
 
+  // 解決中に別カードへ進んだら旧カードの画像でモーダルを開かないための現行 card 識別。
+  // session-runner は同 position の gallery(問題文/解説)を card 跨ぎで再利用し、useImageZoom
+  // hook が mount のまま残るため、tap→解決の途中でカードが進むと stale closure が旧 targetImages
+  // で open を呼び「前カードの画像が新カードに重なる」誤表示になり得る。commit ごとに ref を更新し
+  // (render 中の ref 書込は不可)、open 直前に照合する。
+  const latestCardRef = React.useRef(cardId)
+  React.useEffect(() => {
+    latestCardRef.current = cardId
+  }, [cardId])
+
   // stale / 旧 schema の mirror row では images が undefined / 非配列でありうる。 filter で
   // throw して exam 詳細 view 全体を壊さないよう、 server mapper と同じく Array.isArray で
   // 防御する(Codex 指摘)。
@@ -487,12 +497,19 @@ export function CardImageGallery({
   // 開く(swipe で target 内を移動できるよう ordinal 順を維持)。 未解決/decode 失敗は集合から
   // 除外し、 startIndex は除外後に tap key で再計算する(spec §3.6)。
   const openModal = async (tappedKey: string): Promise<void> => {
+    const invocationCard = cardId
     const resolved = await Promise.all(
       targetImages.map(async (image) => {
-        // getAssetObjectURL は resolver cache の objectURL を返す(所有権は resolver、
-        // ここで revoke してはならない)。
-        const src = await getAssetObjectURL(userId, image.key, { resolveAssetUrls })
-        if (!src) return null // 解決不可 → 除外
+        // tap 画像は tap-gate で解決済ゆえ getAssetObjectURL は cache hit(network 不発)で
+        // 常に含める。 兄弟は「既に解決済み(objectUrlCache 済)」のみ同期 peek で拾い、 未解決
+        // 兄弟の presigned 発行 + download で開扉をブロックしない(spec §3.6「解決済み画像のみ・
+        // 未解決は除外」)。 どちらも resolver cache の objectURL = 所有権は resolver、 ここで
+        // revoke してはならない。
+        const src =
+          image.key === tappedKey
+            ? await getAssetObjectURL(userId, image.key, { resolveAssetUrls })
+            : peekAssetObjectURL(userId, image.key)
+        if (!src) return null // 未解決/解決不可 → 除外
         const row = await getClientDb()
           .media_assets.get(image.key)
           .catch(() => undefined)
@@ -502,8 +519,8 @@ export function CardImageGallery({
           width = row.width
           height = row.height
         } else {
-          // 未表示兄弟は DOM <img> ref が無いため、 同じ cache URL を decode して natural 寸を得る
-          // (新 objectURL を作らない = revoke 対象なし)。 decode 失敗は集合から除外。
+          // mirror dims 無しは cached blob を decode して natural 寸を得る(cache URL ゆえ
+          // network 不発・新 objectURL も作らない = revoke 対象なし)。 decode 失敗は除外。
           try {
             const probe = new Image()
             probe.src = src
@@ -523,6 +540,9 @@ export function CardImageGallery({
     // tap 画像は tap-gate で解決済みゆえ通常必ず含まれる。 万一 decode 失敗で外れた場合は
     // 無効 index でモーダルを開かない。
     if (startIndex < 0) return
+    // 解決中に別カードへ進んでいたら旧カードの画像でモーダルを開かない(session-runner の
+    // gallery 再利用による stale open 防止)。
+    if (latestCardRef.current !== invocationCard) return
     await open(
       usable.map((r) => r.zoom),
       startIndex,

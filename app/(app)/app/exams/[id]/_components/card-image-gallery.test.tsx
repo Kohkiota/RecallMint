@@ -27,6 +27,7 @@ const {
   mockAbandonUpload,
   mockRemoveImageFromCard,
   mockGetAssetObjectURL,
+  mockPeekAssetObjectURL,
   mockReserveAsset,
   mockFinalizeAsset,
   mockResolveAssetUrls,
@@ -37,6 +38,7 @@ const {
   mockAbandonUpload: vi.fn(),
   mockRemoveImageFromCard: vi.fn(async () => undefined),
   mockGetAssetObjectURL: vi.fn(),
+  mockPeekAssetObjectURL: vi.fn(),
   mockReserveAsset: vi.fn(),
   mockFinalizeAsset: vi.fn(),
   mockResolveAssetUrls: vi.fn(),
@@ -56,6 +58,7 @@ vi.mock('@/lib/media/reclaim-local-asset-blobs', () => ({
 }))
 vi.mock('@/lib/media/get-asset', () => ({
   getAssetObjectURL: mockGetAssetObjectURL,
+  peekAssetObjectURL: mockPeekAssetObjectURL,
 }))
 vi.mock('../_actions/asset-actions', () => ({
   reserveAsset: mockReserveAsset,
@@ -89,6 +92,10 @@ beforeEach(async () => {
   vi.clearAllMocks()
   vi.unstubAllGlobals()
   mockGetAssetObjectURL.mockResolvedValue('blob:mock-object-url')
+  // 兄弟は openModal で同期 peek される(実コードでは各 thumbnail の解決で objectUrlCache に
+  // 載るため tap 時には解決済み)。既定は「解決済み(blob:<key>)」を返す(未解決兄弟を検証する
+  // test は個別に null を返させる)。tap 画像は getAssetObjectURL 経路ゆえ peek 既定と独立。
+  mockPeekAssetObjectURL.mockImplementation((_u: string, key: string) => `blob:${key}`)
   // 実 Dexie を使うため test 間で media_assets を掃除する (dims seed の残留防止)。
   await getClientDb().media_assets.clear()
 })
@@ -627,9 +634,14 @@ describe('CardImageGallery 画像 tap → zoom modal (Task 4)', () => {
     ])
   })
 
-  it('解決不可(getAssetObjectURL=null)の兄弟は集合から除外、 startIndex は tap key で再計算', async () => {
-    // ordinal 順は [B(解決不可), A(tap)]。 除外後 A は index 0 (ordinal 1 ではない)。
+  it('未解決の兄弟(peek=null)は集合から除外、 startIndex は tap key で再計算', async () => {
+    // ordinal 順は [B(未解決), A(tap)]。 除外後 A は index 0 (ordinal 1 ではない)。
+    // B は解決不可 → thumbnail は failed placeholder(getAssetObjectURL=null)、 かつ objectUrlCache
+    // 未登録ゆえ openModal の兄弟 peek も null → 集合から除外(spec §3.6「未解決は除外」)。
     mockGetAssetObjectURL.mockImplementation(async (_u: string, key: string) =>
+      key === UUID_B ? null : `blob:${key}`,
+    )
+    mockPeekAssetObjectURL.mockImplementation((_u: string, key: string) =>
       key === UUID_B ? null : `blob:${key}`,
     )
     await seedAssetDims(UUID_A, 10, 20)
@@ -649,6 +661,83 @@ describe('CardImageGallery 画像 tap → zoom modal (Task 4)', () => {
     const [zoomImages, startIndex] = mockOpen.mock.calls[0]!
     expect(zoomImages).toEqual([{ src: `blob:${UUID_A}`, width: 10, height: 20, alt: 'a' }])
     expect(startIndex).toBe(0)
+  })
+
+  it('未解決兄弟の解決を待たず tap 画像で即 open(開扉ブロック防止・spec §3.6 / Codex whole-branch P2)', async () => {
+    // B は in-flight(解決しない): getAssetObjectURL(B) は resolve しない promise、 peek(B)=null
+    //(未 cache)。 openModal が兄弟を getAssetObjectURL で解決していたら B の未解決 fetch を await し
+    // 最大 FETCH_TIMEOUT_MS ブロックする(→ mockOpen 未呼で waitFor timeout=discriminating)。
+    // peek 経路なら未解決 B を除外し tap 画像 A で即 open する。
+    let resolveB: (v: string | null) => void = () => {}
+    mockGetAssetObjectURL.mockImplementation(async (_u: string, key: string) => {
+      if (key === UUID_A) return `blob:${UUID_A}`
+      return new Promise<string | null>((r) => {
+        resolveB = r // B は永久 pending(in-flight download 相当)
+      })
+    })
+    mockPeekAssetObjectURL.mockImplementation((_u: string, key: string) =>
+      key === UUID_A ? `blob:${UUID_A}` : null,
+    )
+    await seedAssetDims(UUID_A, 10, 20)
+    const images: ClientCardImage[] = [
+      { key: UUID_A, target: TARGET, alt: 'a' },
+      { key: UUID_B, target: TARGET, alt: 'b' },
+    ]
+    const { container } = render(
+      <CardImageGallery images={images} target={TARGET} cardId={CARD_ID} userId={USER_ID} />,
+    )
+    // A のみ img 描画(B は永久 loading skeleton)。
+    await waitFor(() => expect(container.querySelector('img')).toBeInTheDocument())
+
+    fireEvent.click(imageButtons(container)[0]!) // A
+
+    // B の未解決を await せず A のみで即 open(ブロックしていたら timeout する)。
+    await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(1))
+    const [zoomImages, startIndex] = mockOpen.mock.calls[0]!
+    expect(zoomImages).toEqual([{ src: `blob:${UUID_A}`, width: 10, height: 20, alt: 'a' }])
+    expect(startIndex).toBe(0)
+    resolveB(null) // dangling promise を解放
+  })
+
+  it('解決中にカードが進んだら旧カードの画像で open しない(session-runner 再利用の stale open 防止・Codex whole-branch P2)', async () => {
+    // A の thumbnail は解決(tappable)、 openModal 内の getAssetObjectURL(A) は保留させる。
+    // 保留中に cardId を変えて再 render(カード送り = 同 position gallery 再利用で hook は mount のまま)
+    // → 解放後も stale guard(現行 card != 起動時 card)で open されない。 guard 無しなら open が呼ばれ
+    // る=discriminating。
+    let callCount = 0
+    let resolveOpen: (v: string | null) => void = () => {}
+    mockGetAssetObjectURL.mockImplementation(async (_u: string, key: string) => {
+      if (key !== UUID_A) return null
+      callCount += 1
+      // 1 回目 = thumbnail mount(解決 → tappable)、 2 回目 = openModal(保留)。
+      if (callCount === 1) return `blob:${UUID_A}`
+      return new Promise<string | null>((r) => {
+        resolveOpen = r
+      })
+    })
+    await seedAssetDims(UUID_A, 10, 20)
+    const images: ClientCardImage[] = [{ key: UUID_A, target: TARGET, alt: 'a' }]
+    const { container, rerender } = render(
+      <CardImageGallery images={images} target={TARGET} cardId={CARD_ID} userId={USER_ID} />,
+    )
+    const btn = await waitFor(() => {
+      const b = imageButtons(container)[0]
+      if (!b) throw new Error('image button not rendered yet')
+      return b
+    })
+
+    fireEvent.click(btn) // openModal 開始 → getAssetObjectURL(A) 2 回目 = 保留
+
+    // 解決中にカードが進む(cardId 変化 → latestCardRef 更新)。
+    rerender(
+      <CardImageGallery images={images} target={TARGET} cardId="card-next" userId={USER_ID} />,
+    )
+
+    resolveOpen(`blob:${UUID_A}`) // openModal 継続 → stale guard で return
+
+    // openModal の残り(dims 読み + guard)を flush してから open 未呼を確認。
+    await new Promise((r) => setTimeout(r, 10))
+    expect(mockOpen).not.toHaveBeenCalled()
   })
 })
 

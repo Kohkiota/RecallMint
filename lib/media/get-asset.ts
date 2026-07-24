@@ -116,3 +116,16 @@ export async function getAssetObjectURL(
   inFlight.set(key, pending)
   return pending
 }
+
+/**
+ * 同期 peek: 既に解決済み(objectUrlCache 済)の objectURL のみを返す。resolve/fetch を
+ * 一切行わない(未解決・in-flight・失敗は null)。
+ *
+ * 用途: モーダルが tap 対象 target の兄弟画像を集める際、spec §3.6 の「解決済み画像のみ
+ * (未解決/失敗は除外)」を満たしつつ、未解決兄弟の presigned 発行 + download で開扉を
+ * ブロックしない(getAssetObjectURL は miss 時に network 解決へ進み最大 FETCH_TIMEOUT_MS
+ * ブロックし得る)。返す objectURL の所有権は resolver 側 — 呼出側で revoke してはならない。
+ */
+export function peekAssetObjectURL(userId: string, assetId: string): string | null {
+  return objectUrlCache.get(cacheKey(userId, assetId)) ?? null
+}
