@@ -27,6 +27,10 @@
 - **ESLint 10 移行 watch(2026-07-25 新設)**: 上記 GHSA-mh99 の v1(eslint)線が構造的に消える契機。**現状 ESLint 10 は塞がれている** — `eslint-config-next@16.2.11` が `dependencies` として抱える 3 plugin(eslint-plugin-react / -import / -jsx-a11y)の peer が `^10` 未対応で、うち **eslint-plugin-react@7.37.5 は ESLint 10 で `context.getFilename()` 削除により実行時クラッシュ**(`jsx-eslint/eslint-plugin-react#3977` = **OPEN・未修正**)。eslint core 単体を 10 化しても 3 plugin が `minimatch@3`(→ brace-expansion@1.1.16)を保持するため **v1 線は消えない**(GHSA-mh99 撤去条件は eslint-core bump 単体では不成立)。**解除条件(3 つ全部)** = ① config-next 同梱 3 plugin の ESLint 10 peer 対応 ② plugin-react #3977 修正リリース ③ peer override なしで eslint@10 install が成立。達成時に eslint 10 移行 → GHSA-mh99 allowlist エントリ削除を検討。出典 = Step0 factfinding `docs/audit/2026-07-25-deps-rebaseline-matrix-v2-step0-factfinding.md` 領域 A。
 - **pnpm 11 audit endpoint 移行 watch(2026-07-25 新設)**: pnpm 11 で audit の registry endpoint / 出力仕様が変わる可能性。wrapper(`scripts/audit-gate.mjs`)は `pnpm audit --prod/--dev --audit-level high --json` の出力構造(`advisories` map / `metadata.vulnerabilities.high|critical` / `findings[].version`)+ exit code(0/1)に依存するため、pnpm 11 bump 時は wrapper の fail-closed 検証(期待構造)が正しく働くか再確認する。現状 pnpm 10.33.0。
 
+## OT 作業(CC 不可・棚卸し起票)
+
+- **stripe webhook endpoint 版の棚卸し(2026-07-25 起票・OT のみ)**: stripe SDK 22.3.2 は apiVersion 未指定ゆえ SDK pinned 版 `2026-06-24.dahlia` を送信する(matrix v2 §6・SDK core 実測)。Stripe Dashboard の webhook endpoint 登録版がこの送信版と齟齬ないか確認は **Dashboard アクセスが要るため OT のみ可能**。齟齬時の影響は限定的(webhook 署名検証は送信版非依存)だが、API 応答 shape の差を避けるため棚卸し推奨。
+
 ## 解消済(2026-07-21 transitive bump sprint)
 
 high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指定・`--depth` 既定 Infinity)+ vite のみ override で解消。**到達版**: brace-expansion `1.1.16`/`5.0.7`・fast-uri `3.1.4`・hono `4.12.31`・js-yaml `4.3.0`・protobufjs `7.6.5`・undici `7.28.0`・vite `8.0.16`(override)・ws `8.21.1`。直接依存の版・package.json は不変。随伴解消: moderate 26→3・low 6→3。個別 GHSA は下記 bump 前 snapshot の high 表を参照。

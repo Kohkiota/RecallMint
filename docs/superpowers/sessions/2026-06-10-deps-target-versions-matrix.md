@@ -1,5 +1,7 @@
 # RecallMint 依存ターゲット版 確定マトリクス (2026-06-10 v1.3)
 
+> **⚠️ SUPERSEDED（2026-07-25）**: pin 方針・目標版・audit gate 構造の正本は **v2 = `docs/superpowers/sessions/2026-07-25-deps-target-versions-matrix-v2.md`** に移行。本 v1.3 は Next16/ESLint9/波1-2 のクローズ記録・§7 の 2026-07-23 snapshot として履歴保持する(§3 の目標版は v2 で確定版へ更新済ゆえ参照しない)。
+
 > **本 file が正本**。 改訂時は repo 側を更新し、 OT が claude.ai プロジェクトナレッジへ同期する。
 
 > **進捗(2026-07-23 更新)**: **next+sharp のみ先行 bump 実施**(画像表示 UX sprint 中の PhotoSwipe de-risk で audit high 5 検出 → 分離対応)。next `16.2.9→16.2.11`(security patch・GHSA proxy-bypass/DoS/SSRF×2)+ eslint-config-next 同版 lockstep + **sharp override `^0.35.0`(→0.35.3 解決)追加**(next の `optionalDependencies.sharp` が ^0.34.5 のままゆえ next bump では解消せず別途)。react/react-dom は要求不変ゆえ据え置き(実測)。audit high 5→0・6 gate green。**波3 は未実施**(実害なし・変更源分離のため据え置き。実施可否は別途)。実物差分は §7 スナップショット参照。台帳 = `docs/audit/dependency-audit-ledger.md`「解消済(2026-07-23)」。
