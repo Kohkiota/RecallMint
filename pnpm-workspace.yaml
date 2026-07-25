@@ -25,4 +25,13 @@ overrides:
 # (bump 可能な検出は受容せず台帳「bump 待ち」へ)。追加時は GHSA/CVE・理由・
 # 再検討条件を docs/audit/dependency-audit-ledger.md にセットで記録する。
 auditConfig:
-  ignoreGhsas: []
+  # GHSA-mh99-v99m-4gvg(CVE-2026-14257・High・brace-expansion OOM 型 DoS)受容。受容経路 =
+  # eslint@9 → minimatch@3 → brace-expansion@1.1.16(**dev 依存のみ**・build/lint 時 tooling)。根拠 =
+  # v1 系に patched backport 無し(patched=5.0.8=v5 のみ・1.1.16 が v1 最新で affected)+ 強制 5.0.8 は
+  # minimatch@3(CJS default `require()` 期待)を壊す(v5 は named export・実証済)+ glob 入力は repo 管理
+  # config 由来で攻撃者制御なし・runtime/client bundle 非混入。v5 線(typescript-estree>minimatch@10)は
+  # 5.0.8 に実 patch 済。注意: ignoreGhsas は advisory 単位ゆえ将来 <=5.0.7 が別経路で再導入されても
+  # 同 GHSA として沈黙(残余リスク)。撤去条件 = v1 系公式 backport / ESLint 10 移行(v1 線消滅=本行削除)/
+  # 新経路で同 GHSA 該当。再検討期限 = 2026-08-22 or deps 再基線 sprint 完了の早い方。台帳参照。
+  ignoreGhsas:
+    - GHSA-mh99-v99m-4gvg
