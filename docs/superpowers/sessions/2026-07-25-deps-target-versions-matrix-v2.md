@@ -14,7 +14,7 @@
 
 **判定基準(1 行)**: 「**バージョン・挙動が動く = 触る**」/「**宣言形式のみ(caret→exact・版不変)= 触らない**」。後者は「触らないもの」制約(eslint 系 / @google/genai / shadcn 等)と両立する — v2 で全 direct を exact 化した際、これら含む全 caret を現行解決版で exact 化したが版は不変(lockfile 差分ゼロ=解決不変が「触っていない」ことの証明)。
 
-> 実測注記(v2 の exact 化時): exact specifier は pnpm の再解決を誘発し、caret が grandfather していた stale 重複下位 transitive を既存の上位/direct 版へ集約する(benign dedup)。direct 解決版は不変(importers version 変化ゼロ)。
+> 実測注記(v2 の exact 化時): exact specifier は pnpm の再解決を誘発し、caret が grandfather していた stale 重複下位 transitive を既存の上位/direct 版へ集約する(benign dedup)。**dedup で集約された transitive はすべて lockfile に既存の解決版への統合であり、新規版の install/導入はゼロ**(reused のみ・downloaded 0 を実測)。direct 解決版は不変(importers version 変化ゼロ)。
 
 ---
 
