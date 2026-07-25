@@ -53,11 +53,11 @@ importers:
         specifier: 2.1.1
         version: 2.1.1
       dexie:
-        specifier: 4.4.2
-        version: 4.4.2
+        specifier: 4.4.4
+        version: 4.4.4
       dexie-react-hooks:
         specifier: 4.4.0
-        version: 4.4.0(dexie@4.4.2)(react@19.2.7)
+        version: 4.4.0(dexie@4.4.4)(react@19.2.7)
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(pg@8.20.0)(postgres@3.4.9)
@@ -107,8 +107,8 @@ importers:
         specifier: 3.6.0
         version: 3.6.0
       ts-fsrs:
-        specifier: 5.3.2
-        version: 5.3.2
+        specifier: 5.4.1
+        version: 5.4.1
       tw-animate-css:
         specifier: 1.4.0
         version: 1.4.0
@@ -3062,8 +3062,8 @@ packages:
       dexie: '>=4.2.0-alpha.1 <5.0.0'
       react: 19.2.7
 
-  dexie@4.4.2:
-    resolution: {integrity: sha512-zMtV8q79EFE5U8FKZvt0Y/77PCU/Hr/RDxv1EDeo228L+m/HTbeN2AjoQm674rhQCX8n3ljK87lajt7UQuZfvw==}
+  dexie@4.4.4:
+    resolution: {integrity: sha512-jIwsYI8Os2hgnqc6O49YwFDKGc5v5QjGx0wPVp543ip1F53VFAKMLthV2pQosQcVTv3eAskTWYspOx195PM0FQ==}
 
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
@@ -5367,8 +5367,8 @@ packages:
     peerDependencies:
       typescript: '>=4.8.4'
 
-  ts-fsrs@5.3.2:
-    resolution: {integrity: sha512-moJJfYAeG9ynyyGCNaQPUloi0sspTMHFtgCvsx2wDchELu3O2c513/7fp+6PxsGth0ztxNjEtG8d85gX4ce0og==}
+  ts-fsrs@5.4.1:
+    resolution: {integrity: sha512-mOp9+oexJexBTkwjg/jQI1aSUQRLIAvbimeKHLSmVdNJPwObugFNKmZkoggH5d6kZ0uaWLboP1Al1DnXAfIb9w==}
     engines: {node: '>=20.0.0'}
 
   ts-morph@26.0.0:
@@ -8382,12 +8382,12 @@ snapshots:
     dependencies:
       dequal: 2.0.3
 
-  dexie-react-hooks@4.4.0(dexie@4.4.2)(react@19.2.7):
+  dexie-react-hooks@4.4.0(dexie@4.4.4)(react@19.2.7):
     dependencies:
-      dexie: 4.4.2
+      dexie: 4.4.4
       react: 19.2.7
 
-  dexie@4.4.2: {}
+  dexie@4.4.4: {}
 
   diff@8.0.4: {}
 
@@ -11216,7 +11216,7 @@ snapshots:
     dependencies:
       typescript: 6.0.3
 
-  ts-fsrs@5.3.2: {}
+  ts-fsrs@5.4.1: {}
 
   ts-morph@26.0.0:
     dependencies:
