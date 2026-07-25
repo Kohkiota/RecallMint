@@ -16,7 +16,8 @@
 
 ## 受容済(ignoreGhsas 登録済)
 
-(なし — 初期状態。登録時は上記書式で追記)
+- **GHSA-mh99-v99m-4gvg(CVE-2026-14257・High・brace-expansion OOM 型 DoS)** / module = brace-expansion / **受容経路 = `eslint@9 → minimatch@3 → brace-expansion@1.1.16`(dev 依存のみ)** / **受容根拠** = v1 系に patched backport が存在しない(patched=5.0.8=v5 のみ・1.1.16 が v1 最新で affected)+ override で 5.0.8 へ強制すると minimatch@3(CJS default `require()` を期待)を壊す(brace-expansion@5 は named export・`TypeError: expand is not a function` を実証)+ build/lint 時 tooling のみで runtime / client bundle 非混入 + glob 入力は repo 管理の config 由来で攻撃者制御なし(`pnpm audit --prod` で high 0 = prod 非波及を実証)/ **再検討条件** = ①v1 系への公式 backport 公開 ②ESLint 10 移行完了(v1 線が構造的に消える→ ignore 行ごと削除)③新経路から同 GHSA 該当が入った場合 / **再検討期限 = 2026-08-22(4 週間)または deps 再基線 sprint 完了の早い方**。
+  - **残余リスク(明記)**: `ignoreGhsas` は **advisory 単位**で効くため、将来 `<=5.0.7` が**別経路で再導入されても同 GHSA として沈黙**する。上記 v5 線は実 patch(5.0.8)済ゆえ現時点の実効残余は v1(eslint)線のみ。詳細 = 下記「解消+受容(2026-07-25)」。
 
 ## 解消済(2026-07-21 transitive bump sprint)
 
@@ -51,6 +52,15 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 | module | GHSA(概要) | vulnerable | patched | 到達版 | 経路 |
 |---|---|---|---|---|---|
 | postcss | GHSA-6g55-p6wh-862q(sourceMappingURL 経由の任意ファイル読取・情報漏洩) | `<=8.5.11` | `>=8.5.12` | 8.5.21(override floor) | `.>@tailwindcss/postcss>postcss`(+ `.>shadcn>postcss`) |
+
+## 解消+受容(2026-07-25 brace-expansion 新 advisory)
+
+**GHSA-mh99-v99m-4gvg / CVE-2026-14257**(High・CVSS 7.5・2026-07-23 公開・brace 展開の総長無制限による OOM 型リソース枯渇 DoS。ReDoS ではない)。affected `<=5.0.7` / patched は **5.0.8 のみ**(v1 系 backport 無し)。**別 advisory GHSA-f886-m6hf-6m8v(v1.1.13 backport 済)とは別物**。tree に 2 版並存で high ×2 検出。
+
+- **v5 線 = 実 patch(5.0.8)**: `brace-expansion@5.0.7` ← `minimatch@10.2.5`(`^5.0.5`)← typescript-estree / ts-morph(shadcn)。`pnpm update brace-expansion` で range 内 5.0.7→5.0.8。
+- **v1 線 = ignoreGhsas 受容**: `brace-expansion@1.1.16` ← `minimatch@3.1.5`(`^1.1.7`)← `@eslint/config-array` ← eslint@9。v1 patch 無し + 5.0.8 強制は eslint 破綻(named export 非互換・実証)ゆえ受容(詳細・根拠・再検討条件・期限は上記「受容済」参照)。
+- **随伴(scope 注記)**: v5 の再解決に伴い **`vite@8.0.16` subtree の nested postcss が `8.5.21→8.5.23`**(lockfile に新規 entry)。**`@tailwindcss/postcss@4.2.4` / `shadcn@4.6.0` 側の postcss は `8.5.21` 据え置き**(= 元は両 subtree が 8.5.21 で dedup されていたのが部分的に分離。`pnpm why postcss` で確認)。override `^8.5.12` caret 配下ゆえ再解決時に vite subtree が最新 patch を拾い、`pnpm update brace-expansion`(targeted)でも回避不能。patched line 内の benign な patch refresh(postcss は GHSA-6g55 対処済 line の前進)。pin 回避は postcss override 変更=別 scope creep ゆえ受容。
+- gate: install --frozen-lockfile / lint / typecheck / build / test(3892)/ test:iso(217)/ `pnpm run audit` exit0 全 green。**`pnpm audit --prod` = high 0**(prod 依存に本件非波及の証明)。ignore は「1 high (1 ignored)」で確認。
 
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
