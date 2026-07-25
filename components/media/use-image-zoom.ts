@@ -23,12 +23,42 @@ export const ZOOM_STEP = 1.5;
 type ZoomLevelOption = NonNullable<PhotoSwipeOptions['initialZoomLevel']>;
 type ZoomLevelObject = Parameters<Extract<ZoomLevelOption, (...args: never[]) => number>>[0];
 
+// tapAction の関数形も同様に option 型から導出(内部 path 依存を避ける)。
+type TapActionOption = NonNullable<PhotoSwipeOptions['tapAction']>;
+type TapActionFn = Extract<TapActionOption, (...args: never[]) => void>;
+type TapActionPoint = Parameters<TapActionFn>[0];
+
+// タッチの単タップは画像/背景を区別しない(bgClickAction/imageClickAction は mouse 専用・
+// photoswipe.esm.js の click() のみが pswp__img で分岐する)ため、tapAction をカスタム関数に
+// して originalEvent.target で自前判定する。カスタム関数を渡すと default の 'toggle-controls'
+// (タッチ単タップで UI コントロール表示トグル)が失われるため、画像上タップではその実体
+// (`pswp.element.classList.toggle('pswp--ui-visible')`; photoswipe.esm.js:2032)を再現して
+// 維持し、画像外タップでのみ close する。
+// PhotoSwipe はカスタム tapAction を `optionValue.call(pswp, point, originalEvent)` で呼ぶ
+// (photoswipe.esm.js:2007)ため、呼出時の `this` が pswp インスタンスになる。これにより
+// module-level の単一関数のまま(instance ごとの closure を用意せず)複数 open() 呼出に安全に
+// 共有できる — OPTS が module-level の単一 literal である現構造に最も合う到達手段。
+function handleTapAction(
+  this: PhotoSwipe,
+  _point: TapActionPoint,
+  originalEvent: PointerEvent,
+): void {
+  const target = originalEvent.target;
+  const isImage = target instanceof Element && target.classList.contains('pswp__img');
+  if (isImage) {
+    this.element?.classList.toggle('pswp--ui-visible'); // 'toggle-controls' 実体(photoswipe.esm.js:2032)
+  } else {
+    this.close();
+  }
+}
+
 // spec §3.4 の config 表を verbatim。initialZoomLevel は数値を返す関数として別途付与。
 // 例外: escKey は false(§3.4 amendment 2026-07-24・OT 承認)。§3.4 は Escape で閉じる要件で
 // PhotoSwipe 内蔵の escKey:true を指定していたが、side-peek(radix Dialog modal={false})の上から
 // 開くと Escape が PhotoSwipe と radix の document 級 Escape の両方に届き side-peek まで閉じる
 // (PhotoSwipe は radix の DismissableLayer stack 外)。Escape を hook 側で所有し window capture で
 // 伝播を止めてモーダルだけ閉じるため escKey は切る(下記「Escape 隔離」helper と open() 内の onEscape 参照)。
+// 例外2: tapAction はカスタム関数(画像以外タップで close・案 b・OT 承認。上記 handleTapAction 参照)。
 const OPTS = {
   pinchToClose: false,
   closeOnVerticalDrag: true,
@@ -39,6 +69,7 @@ const OPTS = {
   arrowKeys: true,
   trapFocus: true,
   returnFocus: true,
+  tapAction: handleTapAction,
 } as const satisfies Partial<PhotoSwipeOptions>;
 
 const CLOSE_BUTTON_SELECTOR = '.pswp__button--close';

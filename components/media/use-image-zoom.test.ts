@@ -181,6 +181,47 @@ describe('useImageZoom', () => {
     expect(opts.returnFocus).toBe(true);
   });
 
+  describe('tapAction(タッチ単タップ・画像以外タップで close・案 b)', () => {
+    // 実 PhotoSwipe は `optionValue.call(pswp, point, originalEvent)` で呼ぶ(photoswipe.esm.js:2007)
+    // ため、素の関数呼出でなく instance を this に束縛して呼ぶ(handleTapAction は this.element /
+    // this.close に依存する)。
+    function callTapAction(inst: MockInstance, target: Element): void {
+      const opts = hoisted.ctor.mock.calls[0][0] as Record<string, unknown>;
+      const tapAction = opts.tapAction as (
+        this: MockInstance,
+        point: { x: number; y: number },
+        originalEvent: { target: Element },
+      ) => void;
+      tapAction.call(inst, { x: 0, y: 0 }, { target });
+    }
+
+    it('画像(.pswp__img)上タップは toggle-controls(pswp--ui-visible)を維持し close しない', async () => {
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      const inst = firstInstance();
+      expect(inst.element.classList.contains('pswp--ui-visible')).toBe(false);
+
+      const img = document.createElement('img');
+      img.className = 'pswp__img';
+      act(() => callTapAction(inst, img));
+
+      expect(inst.element.classList.contains('pswp--ui-visible')).toBe(true);
+      expect(inst.close).not.toHaveBeenCalled();
+    });
+
+    it('画像以外タップは pswp.close() を呼ぶ(toggle-controls はしない)', async () => {
+      const { result } = renderHook(() => useImageZoom());
+      await openWith(result.current.open);
+      const inst = firstInstance();
+
+      const bg = document.createElement('div'); // 画像以外(背景/コントロール等)を代表する任意 target
+      act(() => callTapAction(inst, bg));
+
+      expect(inst.element.classList.contains('pswp--ui-visible')).toBe(false);
+      expect(inst.close).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('dataSource === images / index === startIndex', async () => {
     const { result } = renderHook(() => useImageZoom());
     await openWith(result.current.open, 1);
