@@ -836,7 +836,7 @@ describe("CardImageGallery display='inflow' (Task 5)", () => {
     delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
   })
 
-  it('単一 inflow・縦長 dims → 畳みラッパー(overflow-hidden + max-h clip + フェード + 「拡大して全体を見る」button)描画・button tap→open', async () => {
+  it('単一 inflow・縦長 dims → 畳み時は「全体を見る」pill(pointer-events-none・視覚合図のみ)を表示・独立ボタンは無し・画像 button tap→open', async () => {
     // capPx=400, renderedWidthPx=400。縦長 400x1200 → renderedHeightPx=1200 > 448 → fold=true。
     stubLayout(400, 400)
     mockGetAssetObjectURL.mockResolvedValue('blob:tall')
@@ -852,24 +852,49 @@ describe("CardImageGallery display='inflow' (Task 5)", () => {
         display="inflow"
       />,
     )
-    const foldBtn = await screen.findByRole('button', { name: /拡大して全体を見る/ })
-    expect(foldBtn).toBeInTheDocument()
-    // clip wrapper = <img> の最近接 div(overflow-hidden + max-h クラス)。
+    // 「全体を見る」pill(縦幅を食わない畳み表示 fix の中心保証)。装飾のみ = aria-hidden +
+    // pointer-events-none。旧実装(独立ブロックボタン)にはこの要素が存在しないため、この
+    // assert は旧コードで findByTestId が timeout して fail する(red 確認済)。
+    const pill = await screen.findByTestId('inflow-fold-pill')
+    expect(pill).toHaveTextContent('全体を見る')
+    expect(pill.getAttribute('aria-hidden')).toBe('true')
+    expect(pill.className).toContain('pointer-events-none')
+    // pill 自体が absolute 配置であること(縦幅増分ゼロ保証の直接 pin)。DOM nesting
+    // (clip.contains(pill))だけでは in-flow static 化(52px フロー回帰)を検知できないため、
+    // position クラスを明示的に assert する(canonical review Important 指摘)。
+    expect(pill.className).toContain('absolute')
+    // clip wrapper = <img> の最近接 div(overflow-hidden + max-h クラス)。pill は clip wrapper の
+    // 内側(フェード領域への重ね)= wrapper.contains(pill) で縦幅を消費しない配置を確認。
     const img = container.querySelector('img')!
     const clip = img.closest('div')!
     expect(clip.className).toContain('overflow-hidden')
     expect(clip.className).toContain('max-h-[min(70svh,44rem)]')
+    expect(clip.contains(pill)).toBe(true)
     // フェード overlay(gradient・pointer-events-none)
     expect(container.querySelector('.pointer-events-none.bg-gradient-to-t')).toBeInTheDocument()
     // inflow は full-width(64px サムネではない)
     expect(img.className).not.toContain('h-16')
     expect(img.className).toContain('w-full')
-    // 畳みボタン tap → 同一 openModal 経路で open が呼ばれる
-    fireEvent.click(foldBtn)
+    // 独立ブロックボタン(旧 mt-2 + min-h-11 = 52px 占有)は廃止 = 画像 button のみで button は
+    // ちょうど 1 個。旧コードは image button + 独立ボタンの 2 個描画するため、この assert は
+    // 旧コードで fail する(red 確認済)。
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    // 唯一のキーボード起動口(画像 button)の aria-label が畳み状態で「全体を見る」意図を伝える。
+    // 旧コードは常に「<alt>を拡大」固定でこの文言を含まないため、この assert は旧コードで
+    // fail する(red 確認済)。
+    const imgBtn = img.closest('button')!
+    expect(imgBtn.getAttribute('aria-label')).toContain('全体を見る')
+    // 畳み時は wrapper が overflow-hidden + button 下端が fold 下端より下に伸びるため、外側
+    // outline(outline-offset)は clip されて不可視になる(Codex P2 a11y 回帰)。inset ring は
+    // button 自身の border-box 内側に描画され clip されない。旧コードは outline-offset-1 の
+    // ままのため、この assert は旧コードで fail する(red 確認済)。
+    expect(imgBtn.className).toContain('ring-inset')
+    // 画像 button tap → 同一 openModal 経路で open が呼ばれる(タップは画像 button に委譲)。
+    fireEvent.click(imgBtn)
     await waitFor(() => expect(mockOpen).toHaveBeenCalledTimes(1))
   })
 
-  it('単一 inflow・横長 dims → 畳まない(button 不在・clip なし・フェードなし = 全高表示)', async () => {
+  it('単一 inflow・横長 dims → 畳まない(pill 不在・clip なし・フェードなし = 全高表示)', async () => {
     // capPx=400, renderedWidthPx=400。横長 800x100 → renderedHeightPx=50 < 448 → fold=false。
     stubLayout(400, 400)
     mockGetAssetObjectURL.mockResolvedValue('blob:wide')
@@ -892,13 +917,18 @@ describe("CardImageGallery display='inflow' (Task 5)", () => {
       if (!el || el.getAttribute('width') !== '800') throw new Error('mirror dims not applied yet')
       return el
     })
-    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    // fold=false は pill(視覚合図)を出さない(fold ガード踏襲)。
+    expect(screen.queryByTestId('inflow-fold-pill')).not.toBeInTheDocument()
     const clip = img.closest('div')!
     // fold=false は max-height/overflow-hidden clip を当てない(silent-clip bug 防止)。
     expect(clip.className).not.toContain('overflow-hidden')
     expect(clip.className).not.toContain('max-h-')
     expect(container.querySelector('.bg-gradient-to-t')).not.toBeInTheDocument()
     expect(img.className).toContain('w-full')
+    // 画像 button のみ(button は 1 個)・aria-label は非畳み文言(「全体を見る」を含まない)。
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    const imgBtn = img.closest('button')!
+    expect(imgBtn.getAttribute('aria-label')).toBe('横長図を拡大')
   })
 
   it('単一 inflow・dims 未取得 → 初期は畳まず、onLoad の naturalWidth/Height(縦長)で再評価して畳む', async () => {
@@ -923,12 +953,12 @@ describe("CardImageGallery display='inflow' (Task 5)", () => {
     })
     // dims 未取得 → 初期は畳まない
     await new Promise((r) => setTimeout(r, 30))
-    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('inflow-fold-pill')).not.toBeInTheDocument()
     // onLoad で縦長 natural(400x1200)供給 → computeFold 再評価で畳む
     Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 400 })
     Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 1200 })
     fireEvent.load(img)
-    expect(await screen.findByRole('button', { name: /拡大して全体を見る/ })).toBeInTheDocument()
+    expect(await screen.findByTestId('inflow-fold-pill')).toBeInTheDocument()
   })
 
   // ResizeObserver wiring(P2 fix): recomputeFold は wrapper.clientWidth と measure.clientHeight
@@ -998,8 +1028,8 @@ describe("CardImageGallery display='inflow' (Task 5)", () => {
       />,
     )
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(2))
-    // 複数は畳まない = 畳みボタン不在
-    expect(screen.queryByRole('button', { name: /拡大して全体を見る/ })).not.toBeInTheDocument()
+    // 複数は畳まない(CardImageInflowTile は fold を持たない)= pill 不在
+    expect(screen.queryByTestId('inflow-fold-pill')).not.toBeInTheDocument()
     // 128px タイル(h-32 w-32)・object-cover・flex-wrap コンテナ
     const imgs = Array.from(container.querySelectorAll('img'))
     imgs.forEach((im) => {

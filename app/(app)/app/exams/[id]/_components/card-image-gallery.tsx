@@ -345,15 +345,24 @@ function CardImageInflowSingle({ image, userId, onOpen }: InflowImageProps) {
           fold ? `relative w-full overflow-hidden ${INFLOW_CAP_MAX_H_CLASS}` : 'relative w-full'
         }
       >
-        {/* 画像本体 tap = 全画面モーダル(iOS pre-focus)。 */}
+        {/* 画像本体 tap = 全画面モーダル(iOS pre-focus)。畳み時は唯一のキーボード起動口になる
+            (独立「拡大して全体を見る」ボタンは廃止・下記 pill 参照)ため、aria-label を畳み状態で
+            出し分け、SR にも「全体を見る」意図を伝える。 */}
         <button
           type="button"
           onClick={(e) => {
             e.currentTarget.focus()
             void onOpen(image.key)
           }}
-          aria-label={`${image.alt || '画像'}を拡大`}
-          className="block w-full rounded-md focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+          aria-label={fold ? `${image.alt || '画像'}の全体を見る` : `${image.alt || '画像'}を拡大`}
+          // 畳み時(fold=true)は wrapper が overflow-hidden + button 下端が fold 下端より下に
+          // 伸びる(§349 コメント)。既存の外側 outline(outline-offset-1)は button box の外に
+          // 描画されるため clip されて不可視になる — 畳み時に唯一のキーボード起動口がフォーカス
+          // 不可視になる a11y 回帰(Codex P2)。ring-inset は button 自身の border-box 内側に
+          // 描画される(box-shadow: inset)ため、fold で見えている上端部分に focus リングが乗り、
+          // clip されない。非畳み時は clip 自体が無く従来の視認性を保つ(色/太さは他 focusable
+          // 要素の outline-ring 慣行に合わせ、リング化のみ)。
+          className="block w-full rounded-md outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           {/* objectURL は next/image 最適化対象外。既存 upload-form.tsx の suppression を踏襲。 */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -374,21 +383,25 @@ function CardImageInflowSingle({ image, userId, onOpen }: InflowImageProps) {
             className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-white via-white/70 to-transparent"
           />
         )}
+        {/* 「全体を見る」pill(縦幅を食わない畳み表示 fix)。旧実装は clip wrapper の外に独立
+            ブロックボタン(mt-2 + min-h-11 = 52px)を置き、畳みで節約した縦幅を食い返していた。
+            フェード領域(元々読めない領域)に重ねる絶対配置の pill に変え、縦幅増分をゼロにする。
+            タップは画像 button に委譲する視覚合図のみ = pointer-events-none + aria-hidden(SR には
+            上の画像 button の aria-label で伝わる)。フェードは白へ収束するグラデ(直上)ゆえ、
+            白 pill は border + shadow で輪郭を確保し白地に埋もれないようにする(ズームモーダル
+            自前ボタンの「白 + 影で視認性確保」FINDING1 fix と同じ狙いを、通常 UI pill として
+            border/shadow で表現)。fade の後の兄弟に置き、同一 stacking context の DOM 順で
+            fade の上に paint させる。 */}
+        {fold && (
+          <div
+            aria-hidden="true"
+            data-testid="inflow-fold-pill"
+            className="pointer-events-none absolute bottom-2 right-2 rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-md"
+          >
+            全体を見る
+          </div>
+        )}
       </div>
-      {/* 「拡大して全体を見る」= clip wrapper の外(clip されない)。hit ≥44px・同一 openModal 経路。 */}
-      {fold && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.currentTarget.focus()
-            void onOpen(image.key)
-          }}
-          aria-label={`${image.alt || '画像'}を拡大して全体を見る`}
-          className="mt-2 flex min-h-11 w-full items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
-        >
-          拡大して全体を見る
-        </button>
-      )}
       {/* capPx 測定要素(常時 max-height を保持 = fold=false でも読める)。overflow-hidden + 超高
           spacer(cap を必ず超える高さ)で自身の used height を max-height の px 値に clamp させ、
           measure.clientHeight で used px を読む(getComputedStyle().maxHeight は computed=式文字列を
