@@ -20,16 +20,16 @@ importers:
         specifier: 7.5.1
         version: 7.5.1(next@16.2.11(@babel/core@7.29.0)(@types/node@24.13.2)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@dnd-kit/core':
-        specifier: ^6.3.1
+        specifier: 6.3.1
         version: 6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@dnd-kit/sortable':
-        specifier: ^10.0.0
+        specifier: 10.0.0
         version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
       '@dnd-kit/utilities':
-        specifier: ^3.2.2
+        specifier: 3.2.2
         version: 3.2.2(react@19.2.7)
       '@google/genai':
-        specifier: ^1.50.1
+        specifier: 1.50.1
         version: 1.50.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.1))(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@tanstack/react-table':
         specifier: 8.21.3
@@ -38,31 +38,31 @@ importers:
         specifier: 3.14.5
         version: 3.14.5(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       aws4fetch:
-        specifier: ^1.0.20
+        specifier: 1.0.20
         version: 1.0.20
       browser-image-compression:
-        specifier: ^2.0.2
+        specifier: 2.0.2
         version: 2.0.2
       bufferutil:
-        specifier: ^4.1.0
+        specifier: 4.1.0
         version: 4.1.0
       class-variance-authority:
-        specifier: ^0.7.1
+        specifier: 0.7.1
         version: 0.7.1
       clsx:
-        specifier: ^2.1.1
+        specifier: 2.1.1
         version: 2.1.1
       dexie:
-        specifier: ^4.4.2
+        specifier: 4.4.2
         version: 4.4.2
       dexie-react-hooks:
-        specifier: ^4.4.0
+        specifier: 4.4.0
         version: 4.4.0(dexie@4.4.2)(react@19.2.7)
       drizzle-orm:
-        specifier: ^0.45.2
+        specifier: 0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(pg@8.20.0)(postgres@3.4.9)
       lucide-react:
-        specifier: ^1.14.0
+        specifier: 1.14.0
         version: 1.14.0(react@19.2.7)
       next:
         specifier: 16.2.11
@@ -71,10 +71,10 @@ importers:
         specifier: 5.4.4
         version: 5.4.4
       postgres:
-        specifier: ^3.4.9
+        specifier: 3.4.9
         version: 3.4.9
       radix-ui:
-        specifier: ^1.4.3
+        specifier: 1.4.3
         version: 1.4.3(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       react:
         specifier: 19.2.7
@@ -92,47 +92,47 @@ importers:
         specifier: 11.0.0
         version: 11.0.0
       server-only:
-        specifier: ^0.0.1
+        specifier: 0.0.1
         version: 0.0.1
       shadcn:
-        specifier: ^4.6.0
+        specifier: 4.6.0
         version: 4.6.0(@types/node@24.13.2)(typescript@6.0.3)
       stripe:
-        specifier: ^22.0.2
+        specifier: 22.0.2
         version: 22.0.2(@types/node@24.13.2)
       svix:
-        specifier: ^1.91.1
+        specifier: 1.91.1
         version: 1.91.1
       tailwind-merge:
-        specifier: ^3.5.0
+        specifier: 3.5.0
         version: 3.5.0
       ts-fsrs:
         specifier: 5.3.2
         version: 5.3.2
       tw-animate-css:
-        specifier: ^1.4.0
+        specifier: 1.4.0
         version: 1.4.0
       unified:
         specifier: 11.0.5
         version: 11.0.5
       utf-8-validate:
-        specifier: ^6.0.6
+        specifier: 6.0.6
         version: 6.0.6
       zod:
-        specifier: ^4.4.1
+        specifier: 4.4.1
         version: 4.4.1
     devDependencies:
       '@tailwindcss/postcss':
-        specifier: ^4.2.4
+        specifier: 4.2.4
         version: 4.2.4
       '@testing-library/jest-dom':
-        specifier: ^6.9.1
+        specifier: 6.9.1
         version: 6.9.1
       '@testing-library/react':
-        specifier: ^16.3.2
+        specifier: 16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/node':
-        specifier: ^24.13.2
+        specifier: 24.13.2
         version: 24.13.2
       '@types/react':
         specifier: 19.2.17
@@ -141,46 +141,46 @@ importers:
         specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
-        specifier: ^6.0.1
+        specifier: 6.0.1
         version: 6.0.1(vite@8.0.16(@types/node@24.13.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
       '@vitest/coverage-v8':
-        specifier: ^4.1.5
+        specifier: 4.1.5
         version: 4.1.5(vitest@4.1.5)
       dotenv:
-        specifier: ^17.4.2
+        specifier: 17.4.2
         version: 17.4.2
       drizzle-kit:
-        specifier: ^0.31.10
+        specifier: 0.31.10
         version: 0.31.10
       eslint:
-        specifier: ^9.39.4
+        specifier: 9.39.4
         version: 9.39.4(jiti@2.6.1)
       eslint-config-next:
         specifier: 16.2.11
         version: 16.2.11(@typescript-eslint/parser@8.59.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
       eslint-plugin-react-hooks:
-        specifier: ^7.1.1
+        specifier: 7.1.1
         version: 7.1.1(eslint@9.39.4(jiti@2.6.1))
       fake-indexeddb:
-        specifier: ^6.2.5
+        specifier: 6.2.5
         version: 6.2.5
       jsdom:
-        specifier: ^29.1.1
+        specifier: 29.1.1
         version: 29.1.1(@noble/hashes@1.8.0)
       lefthook:
-        specifier: ^2.1.9
+        specifier: 2.1.9
         version: 2.1.9
       tailwindcss:
-        specifier: ^4.2.4
+        specifier: 4.2.4
         version: 4.2.4
       tsx:
-        specifier: ^4.21.0
+        specifier: 4.21.0
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 6.0.3
         version: 6.0.3
       vitest:
-        specifier: ^4.1.5
+        specifier: 4.1.5
         version: 4.1.5(@types/node@24.13.2)(@vitest/coverage-v8@4.1.5)(jsdom@29.1.1(@noble/hashes@1.8.0))(msw@2.14.2(@types/node@24.13.2)(typescript@6.0.3))(vite@8.0.16(@types/node@24.13.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
 
 packages:
@@ -206,10 +206,6 @@ packages:
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
-
-  '@babel/code-frame@7.29.0':
-    resolution: {integrity: sha512-9NhCeYjq9+3uxgdtp20LSiJXJvN0FeCtNGpJxuMFZ1Kv3cWUNb6DOhJwUvcVCzKGR66cw4njwM6hrJLqgOwbcw==}
-    engines: {node: '>=6.9.0'}
 
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
@@ -281,10 +277,6 @@ packages:
     resolution: {integrity: sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==}
     engines: {node: '>=6.9.0'}
 
-  '@babel/helper-validator-identifier@7.28.5':
-    resolution: {integrity: sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==}
-    engines: {node: '>=6.9.0'}
-
   '@babel/helper-validator-identifier@7.29.7':
     resolution: {integrity: sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==}
     engines: {node: '>=6.9.0'}
@@ -331,10 +323,6 @@ packages:
     engines: {node: '>=6.9.0'}
     peerDependencies:
       '@babel/core': ^7.0.0-0
-
-  '@babel/runtime@7.29.2':
-    resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
-    engines: {node: '>=6.9.0'}
 
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
@@ -476,9 +464,11 @@ packages:
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild-kit/esm-loader@2.6.5':
     resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -2378,9 +2368,6 @@ packages:
 
   '@types/node@24.13.2':
     resolution: {integrity: sha512-fRa09kZTgu8o71KFcDjUFuc7F+dEbZYZmkI0mg5YBTRs0yMKjYHsq/c0urDKeDb+D5qVgXOdFcuu+DZPKOITwA==}
-
-  '@types/node@24.13.3':
-    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
@@ -4603,6 +4590,7 @@ packages:
   node-domexception@1.0.0:
     resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
     engines: {node: '>=10.5.0'}
+    deprecated: Use your platform's native DOMException instead
 
   node-exports-info@1.6.0:
     resolution: {integrity: sha512-pyFS63ptit/P5WqUkt+UUfe+4oevH+bFeIiPPdfb0pFeYEu/1ELnJu5l+5EcTKYL5M7zaAa7S8ddywgXypqKCw==}
@@ -4805,10 +4793,6 @@ packages:
   picomatch@2.3.2:
     resolution: {integrity: sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA==}
     engines: {node: '>=8.6'}
-
-  picomatch@4.0.4:
-    resolution: {integrity: sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==}
-    engines: {node: '>=12'}
 
   picomatch@4.0.5:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
@@ -5079,11 +5063,6 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.7.4:
-    resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
-    engines: {node: '>=10'}
-    hasBin: true
-
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
@@ -5344,10 +5323,6 @@ packages:
   tinyexec@1.1.1:
     resolution: {integrity: sha512-VKS/ZaQhhkKFMANmAOhhXVoIfBXblQxGX1myCQ2faQrfmobMftXeJPcZGp0gS07ocvGJWDLZGyOZDadDBqYIJg==}
     engines: {node: '>=18'}
-
-  tinyglobby@0.2.16:
-    resolution: {integrity: sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==}
-    engines: {node: '>=12.0.0'}
 
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
@@ -5812,12 +5787,6 @@ snapshots:
 
   '@asamuzakjp/nwsapi@2.3.9': {}
 
-  '@babel/code-frame@7.29.0':
-    dependencies:
-      '@babel/helper-validator-identifier': 7.28.5
-      js-tokens: 4.0.0
-      picocolors: 1.1.1
-
   '@babel/code-frame@7.29.7':
     dependencies:
       '@babel/helper-validator-identifier': 7.29.7
@@ -5828,7 +5797,7 @@ snapshots:
 
   '@babel/core@7.29.0':
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       '@babel/generator': 7.29.1
       '@babel/helper-compilation-targets': 7.28.6
       '@babel/helper-module-transforms': 7.28.6(@babel/core@7.29.0)
@@ -5899,7 +5868,7 @@ snapshots:
     dependencies:
       '@babel/core': 7.29.0
       '@babel/helper-module-imports': 7.28.6
-      '@babel/helper-validator-identifier': 7.28.5
+      '@babel/helper-validator-identifier': 7.29.7
       '@babel/traverse': 7.29.0
     transitivePeerDependencies:
       - supports-color
@@ -5927,8 +5896,6 @@ snapshots:
       - supports-color
 
   '@babel/helper-string-parser@7.27.1': {}
-
-  '@babel/helper-validator-identifier@7.28.5': {}
 
   '@babel/helper-validator-identifier@7.29.7': {}
 
@@ -5983,19 +5950,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@babel/runtime@7.29.2': {}
-
   '@babel/runtime@7.29.7': {}
 
   '@babel/template@7.28.6':
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       '@babel/parser': 7.29.2
       '@babel/types': 7.29.0
 
   '@babel/traverse@7.29.0':
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       '@babel/generator': 7.29.1
       '@babel/helper-globals': 7.28.0
       '@babel/parser': 7.29.2
@@ -6008,7 +5973,7 @@ snapshots:
   '@babel/types@7.29.0':
     dependencies:
       '@babel/helper-string-parser': 7.27.1
-      '@babel/helper-validator-identifier': 7.28.5
+      '@babel/helper-validator-identifier': 7.29.7
 
   '@bcoe/v8-coverage@1.0.2': {}
 
@@ -6108,10 +6073,10 @@ snapshots:
       dotenv: 17.4.2
       eciesjs: 0.4.18
       execa: 5.1.1
-      fdir: 6.5.0(picomatch@4.0.4)
+      fdir: 6.5.0(picomatch@4.0.5)
       ignore: 5.3.2
       object-treeify: 1.1.33
-      picomatch: 4.0.4
+      picomatch: 4.0.5
       which: 4.0.0
       yocto-spinner: 1.2.0
 
@@ -7663,7 +7628,7 @@ snapshots:
       '@alloc/quick-lru': 5.2.0
       '@tailwindcss/node': 4.2.4
       '@tailwindcss/oxide': 4.2.4
-      postcss: 8.5.21
+      postcss: 8.5.23
       tailwindcss: 4.2.4
 
   '@tanstack/query-core@5.100.6': {}
@@ -7706,7 +7671,7 @@ snapshots:
 
   '@testing-library/react@16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@babel/runtime': 7.29.2
+      '@babel/runtime': 7.29.7
       '@testing-library/dom': 10.4.1
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
@@ -7762,14 +7727,9 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
-  '@types/node@24.13.3':
-    dependencies:
-      undici-types: 7.18.2
-    optional: true
-
   '@types/pg@8.20.0':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.13.2
       pg-protocol: 1.15.0
       pg-types: 2.2.0
     optional: true
@@ -7864,7 +7824,7 @@ snapshots:
       '@typescript-eslint/visitor-keys': 8.59.0
       debug: 4.4.3
       minimatch: 10.2.5
-      semver: 7.7.4
+      semver: 7.8.5
       tinyglobby: 0.2.17
       ts-api-utils: 2.5.0(typescript@6.0.3)
       typescript: 6.0.3
@@ -9028,10 +8988,6 @@ snapshots:
     dependencies:
       reusify: 1.1.0
 
-  fdir@6.5.0(picomatch@4.0.4):
-    optionalDependencies:
-      picomatch: 4.0.4
-
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
       picomatch: 4.0.5
@@ -9366,7 +9322,7 @@ snapshots:
 
   is-bun-module@2.0.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   is-callable@1.2.7: {}
 
@@ -9814,7 +9770,7 @@ snapshots:
 
   make-dir@4.0.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   markdown-table@3.0.4: {}
 
@@ -10420,7 +10376,7 @@ snapshots:
 
   parse-json@5.2.0:
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       error-ex: 1.3.4
       json-parse-even-better-errors: 2.3.1
       lines-and-columns: 1.2.4
@@ -10496,8 +10452,6 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@2.3.2: {}
-
-  picomatch@4.0.4: {}
 
   picomatch@4.0.5: {}
 
@@ -10883,10 +10837,7 @@ snapshots:
 
   semver@6.3.1: {}
 
-  semver@7.7.4: {}
-
-  semver@7.8.5:
-    optional: true
+  semver@7.8.5: {}
 
   send@1.2.1:
     dependencies:
@@ -10966,7 +10917,7 @@ snapshots:
       node-fetch: 3.3.2
       open: 11.0.0
       ora: 8.2.0
-      postcss: 8.5.21
+      postcss: 8.5.23
       postcss-selector-parser: 7.1.1
       prompts: 2.4.2
       recast: 0.23.11
@@ -11234,11 +11185,6 @@ snapshots:
   tinybench@2.9.0: {}
 
   tinyexec@1.1.1: {}
-
-  tinyglobby@0.2.16:
-    dependencies:
-      fdir: 6.5.0(picomatch@4.0.4)
-      picomatch: 4.0.4
 
   tinyglobby@0.2.17:
     dependencies:
@@ -11523,11 +11469,11 @@ snapshots:
       magic-string: 0.30.21
       obug: 2.1.1
       pathe: 2.0.3
-      picomatch: 4.0.4
+      picomatch: 4.0.5
       std-env: 4.1.0
       tinybench: 2.9.0
       tinyexec: 1.1.1
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
       vite: 8.0.16(@types/node@24.13.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
       why-is-node-running: 2.3.0
