@@ -1,0 +1,14 @@
+{
+  "note": "audit gate (scripts/audit-gate.mjs) の dev-only 受容 allowlist。prod は allowlist 不適用 = high/critical 検出で無条件 fail。追加/変更時は GHSA/CVE・理由・再検討条件を docs/audit/dependency-audit-ledger.md にセットで記録する。照合は version-aware = advisory の findings[].version が vulnerableRange 内のものだけが受容対象。**vulnerableRange は advisory の affected 範囲の転記ではなく『受容している現物の系列』を書く**(受容根拠が『その系列に patched 版が無い』ことなら、受容範囲もその系列と一対一。patched への道がある版が新規混入したら fail させて bump するのが正しい挙動)。path は人間向けの記述フィールドで照合キーにしない(依存木の良性再構成で path が変わり誤 fail する brittleness を避けるため)。vulnerableRange は空白 AND 連結の comparator (<=, <, >=, >, =) のみ対応(|| 不可・想定外表記は fail-closed で gate 落ち)。expiry は最終有効日(today > expiry で期限切れ・全 entry 無条件強制)。",
+  "entries": [
+    {
+      "ghsa": "GHSA-mh99-v99m-4gvg",
+      "cve": "CVE-2026-14257",
+      "module": "brace-expansion",
+      "vulnerableRange": "<2.0.0",
+      "expiry": "2026-08-22",
+      "path": "eslint plugin 系 (dev): .>eslint>minimatch>brace-expansion@1.1.16",
+      "reason": "High・OOM 型リソース枯渇 DoS。受容範囲 = v1 系(<2.0.0)= patched 版が存在しない系列(1.1.16 が v1 最新で affected・backport 無し)。5.0.8 強制は minimatch@3 の CJS require を壊す(v5 は named export・実証済)+ build/lint 時 tooling のみで runtime/client bundle 非混入・glob 入力は repo 管理 config 由来で攻撃者制御なし。v2〜5.0.7 は patched(5.0.8=v5)への道がある版ゆえ受容範囲に含めない(新規混入したら fail=bump 誘導が正)。撤去条件 = v1 系公式 backport / ESLint 10 移行(v1 線消滅)/ 新経路で同 GHSA 該当。台帳参照。"
+    }
+  ]
+}

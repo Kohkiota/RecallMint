@@ -14,12 +14,19 @@
 //   層1 substring: file 全文(コメント含む)に `ignoreCves` が現れたら非0。
 //       コメント内出現も trip する仕様は意図 — この file にドキュメントを書かない、
 //       記録は台帳へ。exotic な key 表現(!!str / ? explicit key)もここで捕まる。
-//   層2 whitelist: auditConfig block はサニクション形のみ通す:
-//       auditConfig: / 2-space indent の ignoreGhsas:([] or 後続 list)/
-//       list 項目 / コメント / 空行。それ以外の行は全て非0(規律外 key の
-//       indent 変種・quoted key・colon 前空白等は認識外として弾く)。
-//   既知の非対象: tab indent / 重複 auditConfig block は YAML parse error になり
-//   pnpm 自体が受け付けない(検査到達前に壊れる)ため対象外。
+//   層2 auditConfig 全拒否: 受容は scripts/audit-allowlist.json 管理の wrapper
+//       (scripts/audit-gate.mjs)へ移行済(matrix v2 / 2026-07-25)ため、この file の
+//       auditConfig は用途を失った。pnpm は auditConfig.ignoreGhsas/ignoreCves を
+//       wrapper へ渡す前に advisory を沈黙 filter する(silent-filter による allowlist
+//       迂回)ため、**auditConfig 行が現れたら無条件で非0**(旧 ignoreGhsas whitelist は撤去)。
+//   layer2 の regex は先頭 whitespace を許容する: YAML は root mapping 全体を一律
+//   indent しても有効で、pnpm はその indent された auditConfig も honor する(space indent
+//   を実測 = ignoreGhsas が効き advisory が消える)。column1 固定だと indent 版が素通りする
+//   bypass になるため `^\s*` で拾う(tab indent は pnpm 側が parse error だが拾って害なし)。
+//   既知の非対象: 重複 auditConfig block は YAML parse error になり pnpm 自体が受け付けない
+//   (検査到達前に壊れる)ため対象外。敵対的難読化(!!str auditConfig / ? explicit key /
+//   escape 分断等・ignoreCves token を漏らさない形)は層1 も層2 も素通りしうるが
+//   threat model 上 review governance の管掌(上記 non-goal・js-yaml parse は不採用)。
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -33,24 +40,11 @@ export function checkAuditConfig(yamlText) {
     if (line.includes('ignoreCves')) offending.push(line);
   }
 
-  // 層2: auditConfig block の whitelist
-  // `auditConfig :` / `'auditConfig':` も有効 YAML で pnpm は同一 key に解決する
-  const start = lines.findIndex((l) => /^(['"]?)auditConfig\1\s*:/.test(l));
-  if (start !== -1) {
-    if (!/^(['"]?)auditConfig\1\s*:\s*(#.*)?$/.test(lines[start])) {
-      offending.push(lines[start]); // inline flow (`auditConfig: { ... }`) 等
-    } else {
-      for (let i = start + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (/^\S/.test(line)) break; // 次の top-level key で block 終端
-        if (/^\s*$/.test(line)) continue; // 空行
-        if (/^\s*#/.test(line)) continue; // コメント行
-        if (/^ {2}ignoreGhsas:\s*(\[\]\s*)?(#.*)?$/.test(line)) continue; // 唯一の key
-        if (/^ {3,}-\s*\S/.test(line)) continue; // ignoreGhsas 配下の list 項目
-        offending.push(line);
-      }
-    }
-  }
+  // 層2: auditConfig 行そのものを拒否(受容は scripts/audit-allowlist.json のみ)。
+  // `auditConfig :` / `'auditConfig':` / `"auditConfig":` も有効 YAML で pnpm は同一 key に解決する。
+  // 先頭 `\s*` = root mapping 一律 indent 版(pnpm が honor する実測)も拾う(冒頭コメント参照)。
+  const start = lines.findIndex((l) => /^\s*(['"]?)auditConfig\1\s*:/.test(l));
+  if (start !== -1) offending.push(lines[start]);
 
   return [...new Set(offending)];
 }
@@ -63,7 +57,7 @@ function main() {
     console.error(
       `NG: pnpm-workspace.yaml の audit 検査で認識外/規律外の内容(fail-closed で拒否): ${offending
         .map((l) => JSON.stringify(l.trim()))
-        .join(', ')} — 受容は auditConfig.ignoreGhsas のみ。ignoreCves はコメント含め本 file に書かない(ドキュメント・記録は docs/audit/dependency-audit-ledger.md へ)。無許可 suppression の疑いとして扱う(台帳「運用」参照)`,
+        .join(', ')} — 受容は scripts/audit-allowlist.json のみ。pnpm-workspace.yaml に auditConfig を置かない(ignoreCves/ignoreGhsas いずれも pnpm が advisory を沈黙 filter するため)。記録は docs/audit/dependency-audit-ledger.md へ。無許可 suppression の疑いとして扱う(台帳「運用」参照)`,
     );
     process.exit(1);
   }
