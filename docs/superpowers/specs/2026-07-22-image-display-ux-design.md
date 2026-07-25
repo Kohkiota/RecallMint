@@ -72,6 +72,8 @@ target 内枚数での**単一の二分岐のみ**(枚数別の細分岐は作�
 
 ### 3.3 畳み処理(縦長・単一画像 in-flow)
 
+> **⚠️ SUPERSEDED(2026-07-25 image-ux2 sprint item3・凍結ゆえ in-place 書換せず注記のみ)**: 本 §3.3 と §5 が記す「**clip 外の明示ボタン「拡大して全体を見る」**」(下記 fold 適用箇所 / 「ボタンは `<button>`…独立要素」/ §5 の a11y・smoke 記述)は **image-ux2 で廃止**され、**clip 内フェード領域に重ねる装飾 pill**(`pointer-events-none` + `aria-hidden`・縦幅増分ゼロ)へ変更(`feat(media) d266b20` [reviewed])。tap/キーボードは既存の画像 `<button>`(fold 時 aria-label「…の全体を見る」+ inset focus ring)に委譲。閾値(`capPx`/`absMarginPx`/`ratio`)・畳み判定・フェード自体は不変。詳細 = `docs/codex/2026-07-25-image-ux2-task3-pill*.md`。関連: モーダルの「画像外タップで閉じる」(§3.4 / 旧 FINDING 2「実装なし」)も image-ux2 item2 で反転実装(`89eb156`)。
+
 - **高さ上限 `capPx` = `min(70svh, 44rem)`**(検証開始値・**svh**。dvh でない)。**`capPx` は、`max-height:min(70svh,44rem)` + 高い spacer を持つ測定要素の `clientHeight`(= browser が layout で解決した used max-height の px)を読む**(svh を JS で再計算せず、CSS の clip と数値を一致させる)。測定要素は clip wrapper と **分離**(fold=false 画像を silently clip しないため)。
   - **[OT 承認 amendment 2026-07-24・S3]** 当初 `getComputedStyle(wrapper).maxHeight` を指定していたが、CSSOM 上 `max-height` は computed value を返す規定で、一部エンジン(旧 iOS Safari 等)が `"min(70svh,44rem)"` 文字列を返し `parseFloat`→`NaN`→ 畳みが **silently 恒久無効**になるため、used value を読む `clientHeight` 方式へ変更。手段の差し替えであり「svh を JS で再計算しない」設計趣旨は不変。
 - **fold 適用**: **`computeFold.fold === true` の時のみ** clip wrapper に `max-height:capPx; overflow:hidden` + 下端フェード(gradient・`pointer-events:none`)+ clip 外の明示ボタン「拡大して全体を見る」を付ける。**`fold === false` は clip/フェード/ボタンなし = 全高表示**(computeFold の『数 px 超過で畳まない』と DOM を一致 = silent-clip 回避)。

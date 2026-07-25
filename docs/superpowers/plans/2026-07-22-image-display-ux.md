@@ -134,6 +134,7 @@
 **Produces**: `CardImageGallery` に `display?: 'thumb' | 'inflow'`(既定 `'thumb'`・本 task で新規導入)。
 
 **制約**:
+> **⚠️ SUPERSEDED(2026-07-25 image-ux2 sprint item3)**: 下記の「**clip wrapper の外**に `<button>`「拡大して全体を見る」」(本 task 制約 + test 記述)は **image-ux2 で廃止** → **clip 内フェードに重ねる装飾 pill**(`pointer-events-none`+`aria-hidden`・縦幅増分ゼロ・tap/kbd は既存画像 button 委譲・inset focus ring)へ変更(`d266b20` [reviewed])。畳み判定・閾値・フェードは不変。詳細 = `docs/codex/2026-07-25-image-ux2-task3-pill*.md`。
 - `display='inflow'` 分岐は **`targetImages.length` の二分のみ**(枚数別の細分岐を作らない・spec §3.2):
   - **単一(===1)**: 幅100%画像(`width:100%; height:auto`)。**`capPx` は wrapper の `getComputedStyle().maxHeight`(CSS `min(70svh,44rem)`)を px 解決して得る**(svh を JS で再計算しない・spec §3.3)→ `computeFold({ naturalWidth, naturalHeight, renderedWidthPx, capPx, absMarginPx: 48, ratio: 1.15 })`。**clip は `fold=true` の時だけ有効化**(`max-height:capPx; overflow:hidden` + 下端フェード[gradient・`pointer-events:none`]+ **clip wrapper の外**に `<button>`「拡大して全体を見る」[aria-label・hit ≥44px・onClick=`openModal`])。`fold=false` は clip/フェード/ボタンなし = 全高表示(`computeFold` の『数 px 超過で畳まない』と DOM を一致させる = Codex 独立9/plan-gap10 の silent-clip bug 修正)。dims 未取得時は load 前は畳まず全高 → `<img>.onLoad` の `naturalWidth/Height` で再評価 + **`ResizeObserver`(wrapper)で回転/split view/幅変化時に再計算**(cleanup 付き・Codex 独立8/plan-gap9)。
   - **複数(>=2)**: 中サイズタイル(開始値 `128px`・`object-cover`)の `flex-wrap`・**畳みなし**・各タイル tap→`openModal`(spec §3.2)。
