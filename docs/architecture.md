@@ -57,7 +57,7 @@
 |---|---|---|---|
 | 退会 = users soft-delete(deleted_at + email/clerk_id scrub・stripe_customer_id 保持)+ Group I 明示 DELETE + assets soft-delete(deleting)| GDPR PII 消去 + audit 相関保持 | 証明: `webhook-clerk.contract` + route invariant + iso GDPR | `lib/clerk/handle-clerk-event.ts` |
 | 削除表分類: Group I(handler 明示 DELETE)/ Group II(FK cascade)| 明示 vs cascade の境界(§2 cascade 用語分離参照)| 証明: route invariant test(Group I 集合一致)| `lib/clerk/handle-clerk-event.ts` |
-| **匿名 contact_messages(user_id null)行は退会 scrub で残る** | 実装 = scrub は `DELETE WHERE user_id` ゆえ匿名行は tenant 非紐付で消えない(現物確認済)。**理由 = 理由未確定(2026-07-26 時点)**: 匿名データ保持が意図的ポリシーか実装の副産物か記録なし。公開前 PII 判断項目(→ §証明の空白)| 決定(理由未確定・2026-07-26)| `lib/clerk/handle-clerk-event.ts` |
+| **匿名 contact_messages(user_id null)は退会 scrub の対象外** | scrub が `WHERE user_id` で引くため構造的に当たらない。非会員からの削除要求は稀であり、手動 1 行 DELETE で適法に対応できると判断(受付窓口はプライバシーポリシーに明記して担保)| 決定 2026-07-22 / 明文化 2026-07-26 | `lib/clerk/handle-clerk-event.ts` |
 
 ## 5. レンダリング / Next
 
@@ -113,7 +113,7 @@
 | 空白 | 重さの所見 |
 |---|---|
 | **レンダリングモード(全 dynamic)を守る lint/test なし**(§5 E1)| 中〜重。誤って `dynamic='force-static'`/ISR を入れると認証ページが別ユーザーにキャッシュされうる(RLS より前段のレンダリング層漏れ)。本 sprint では実装しない |
-| **exam+子 card tombstone の end-to-end 多デバイス伝播**(§2)| 重。欠くと子 card が他端末に永久残留。server 側 tombstone INSERT は unit で守るが多デバイス伝播は自動 test の射程外 |
+| **exam+子 card tombstone の end-to-end 多デバイス伝播**(§2)| 重。欠くと子 card が他端末に永久残留。server 側 tombstone INSERT は unit で守るが多デバイス伝播は自動 test の射程外。**手当て = OT の実機 2 端末 smoke(PC で試験作成→削除→モバイルで消失確認)で担保予定**(実端末 2 台の IDB 状態が要るため自動 test 射程外)。背景 = `docs/audit/2026-07-24-deleted-exam-mobile-residue-factfinding.md` |
 | **cross-device 競合の収束**(§1 A5)| 中。単一 client の optimistic/rollback は unit あり・multi-device 収束 test なし |
 | **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い |
 | **webhook 順序非保証の全パターン**(§7)| 中(決済)。clear site 複数で吸収する設計だが全到達順の網羅 test なし(Test Clock 手動 smoke が補完)|
