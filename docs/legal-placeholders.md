@@ -14,8 +14,7 @@
 
 **SERVICE_NAME placeholder 撤回** (2026-05-17):
 chrome / footer / logo / hero の `{{SERVICE_NAME}}` は `"RecallMint"` hardcode
-に統一済。 別サービステンプレ流用は本 repo の責務ではなく
-`Kohkiota/devcontainer-template` repo で対応する方針。 残る 12 placeholder は
+に統一済（本 repo は RecallMint 固有 product ゆえ service 名を placeholder 化しない）。 残る 12 placeholder は
 本気運用切替時の fill-in 値 (個人情報 / 価格 / 日付等) として sed 置換で運用。
 
 ---
@@ -25,9 +24,9 @@ chrome / footer / logo / hero の `{{SERVICE_NAME}}` は `"RecallMint"` hardcode
 | # | プレースホルダ | 仮値の例 | 用途 / 出現 page |
 |---|---|---|---|
 | 1 | `{{COMPANY_NAME}}` | `<戸籍上氏名>` (個人事業主は本名、屋号併記可) | terms 冒頭 / privacy 第1条 / privacy 第11条 |
-| 2 | `{{OPERATOR_NAME}}` | `<戸籍上氏名>` | 特商法「運営責任者」(請求時開示前提なら不使用、template 用) |
-| 3 | `{{ADDRESS}}` | `〒XXX-XXXX 都道府県市区町村...` | 特商法「所在地」(請求時開示前提なら不使用、template 用) |
-| 4 | `{{PHONE}}` | `XX-XXXX-XXXX` | 特商法「電話番号」(請求時開示前提なら不使用、template 用) |
+| 2 | `{{OPERATOR_NAME}}` | `<戸籍上氏名>` | 特商法「運営責任者」(請求時開示前提なら現状未使用) |
+| 3 | `{{ADDRESS}}` | `〒XXX-XXXX 都道府県市区町村...` | 特商法「所在地」(請求時開示前提なら現状未使用) |
+| 4 | `{{PHONE}}` | `XX-XXXX-XXXX` | 特商法「電話番号」(請求時開示前提なら現状未使用) |
 | 5 | `{{EMAIL}}` | `support@example.com` | privacy 第9・11条 / 特商法 冒頭・dl |
 | 6 | `{{DOMAIN}}` | `<your-vercel-app>.vercel.app` | 特商法「ホームページ URL」 |
 | 7 | `{{PRICE}}` | `990 円` | terms 第4条 / 特商法「販売価格」 |
@@ -37,7 +36,7 @@ chrome / footer / logo / hero の `{{SERVICE_NAME}}` は `"RecallMint"` hardcode
 | 11 | `{{DISCLOSURE_FEE}}` | `無料` (or `1,000 円` 等) | privacy 第9条 4項 (開示請求手数料) |
 | 12 | `{{BUSINESS_HOURS}}` | `平日 10:00-18:00` | 特商法「営業時間」 |
 
-`{{OPERATOR_NAME}}` / `{{ADDRESS}}` / `{{PHONE}}` は現状の特商法 page では「ご請求があった場合は遅滞なく開示」固定 text を採用しているため**未使用**。本気運用で「最初から公開」に方針転換した場合、特商法 page の該当箇所を `{'{{OPERATOR_NAME}}'}` 等に書き換えてから sed 置換する (template 用に残置)。
+`{{OPERATOR_NAME}}` / `{{ADDRESS}}` / `{{PHONE}}` は現状の特商法 page では「ご請求があった場合は遅滞なく開示」固定 text を採用しているため**未使用**。本気運用で「最初から公開」に方針転換した場合、特商法 page の該当箇所を `{'{{OPERATOR_NAME}}'}` 等に書き換えてから sed 置換する (この 3 placeholder は将来「最初から公開」方針に転換する場合に備え残置)。
 
 ---
 
@@ -122,4 +121,3 @@ grep -rn '{{[A-Z_]*}}' app/\(marketing\)/
 
 - 関連 sprint: Phase 1 E-4 (法務 page 整備、`docs/TODO.md` 参照)、 2026-05-17 (SERVICE_NAME 撤回)
 - 関連 lesson: `docs/superpowers/lessons/2026-04-29-vercel-domain-confusion.md` (`{{DOMAIN}}` 設定の罠)
-- 別サービステンプレ流用: `Kohkiota/devcontainer-template` repo (本 repo は RecallMint 固有 project のため template 化責務を切り出し済)

@@ -51,17 +51,17 @@
 
 ### 2.1 設計原則
 
-1. **PK は全テーブル `id` 統一**（plan00 既存スキーマで確認済、`gen_random_uuid()` で生成）
+1. **PK は全テーブル `id` 統一**（`gen_random_uuid()` で生成）
 2. **FK は `<table>_id` 形式**（例: `user_id`, `exam_id`, `card_id`）
 3. **試験ごとに変わるメタデータは freeform jsonb で持つ**（cards.custom_props のみ。 discover mode 一本化により事前定義 schema は不要、 AI が文書から自由なキー名で抽出する。 経緯: `docs/research/ocr-schema-vs-discover.md`）
 4. **学習統計はデノーマライズ**（reviews 履歴と並行して cards にスナップショット保持、ユーザー単位の学習日数は study_days に独立保持）
 5. **画像は R2 に保存、DB には URL/key のみ**（Anki 流、Postgres BLOB 不使用）
 6. **テキストフィールドは Markdown**（画像参照は `![](key)` で flat な images 配列を引く）
-7. **全テーブルに RLS** で user_id ベース分離（plan00 流用テーブルの RLS 状況は §13.7 で確認）
-8. **timestamp は `timestamp with time zone`**（plan00 既存スキーマと整合）
+7. **全テーブルに RLS** で user_id ベース分離
+8. **timestamp は `timestamp with time zone`**
 9. **soft delete は `users` のみ**（Stripe / audit retention 用、 `deleted_at`）。 他 (exams / cards / source_documents / study_days / contact_messages / ai_usage_users) は hard delete、 reviews は append-only。 個人情報削除依頼への対応容易性を優先 (Sprint A-2 確定、 `lib/db/schema.ts:11-17` コメント参照)
-10. **subscription 情報は users に統合**（plan00 既存、subscriptions 別テーブルなし）
-11. **plan00 既存命名を尊重**（`last_review` / `difficulty` / `state` integer 等、リネームしない）
+10. **subscription 情報は users に統合**（subscriptions 別テーブルなし）
+11. **FSRS カラム命名を現行実装で維持**（`last_review` / `difficulty` / `state` integer 等、リネームしない・2026-07-26 実装確認）
 12. **append-only テーブル**: reviews は INSERT のみ（UPDATE / DELETE 禁止）。同期時の競合発生を完全に回避するための設計原則。v1.x で local-first 化したとき、複数デバイス間で reviews を競合なくマージできる
 13. **同期準備**: 同期対象テーブル（exams / cards / source_documents）は、UUID PK + updated_at + クライアント採番可能 ID の 3 条件を満たし、v1.x の local-first 化を阻害しない設計とする。 削除追跡 (Anki graves 相当) は MVP で hard delete 採用のため未対応、 v1.x で再評価（§13.14）
 14. **同期非対象**: ai_usage_users / study_days はサーバー側集計テーブル、同期対象外。クライアントから直接書き込まず、サーバー側で reviews 等から再計算する想定
@@ -70,16 +70,16 @@
 
 |区分|テーブル名|用途|状態|
 |---|---|---|---|
-|plan00 流用|`users`|認証・プラン情報・subscription 状態（統合）|変更なし|
-|plan00 流用|`ai_usage`|全体 AI 利用量集計（date PK）。GEMINI_DAILY_LIMIT guard 用、count は Gemini API call 回数|変更なし|
-|plan00 流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）。count は Gemini API call 回数（S1.8 で配線、月次 OCR quota とは無関係）|変更なし|
-|plan00 流用|`clerk_events`|Clerk webhook 重複処理防止|変更なし|
-|plan00 流用|`stripe_events`|Stripe webhook 重複処理防止|変更なし|
-|plan00 流用|`deletion_failures`|アカウント削除失敗ログ|変更なし|
-|plan00 流用|`reviews`|FSRS 評価履歴|word_id → card_id にリネーム|
-|plan00 流用|`contact_messages`|お問い合わせ（提示 schema に含まれず、要確認 §13.1）|変更なし想定|
-|plan00 drop|`words`|vocab 学習用、不要|drop|
-|plan00 drop|`ai_examples`|vocab 専用例文、汎用化困難|drop（F-101 解説生成は v1.x で別テーブル新設）|
+|流用|`users`|認証・プラン情報・subscription 状態（統合）|変更なし|
+|流用|`ai_usage`|全体 AI 利用量集計（date PK）。GEMINI_DAILY_LIMIT guard 用、count は Gemini API call 回数|変更なし|
+|流用|`ai_usage_users`|ユーザー別 AI 利用量（user_id, date 複合 PK）。count は Gemini API call 回数（S1.8 で配線、月次 OCR quota とは無関係）|変更なし|
+|流用|`clerk_events`|Clerk webhook 重複処理防止|変更なし|
+|流用|`stripe_events`|Stripe webhook 重複処理防止|変更なし|
+|流用|`deletion_failures`|アカウント削除失敗ログ|変更なし|
+|流用|`reviews`|FSRS 評価履歴|word_id → card_id にリネーム|
+|流用|`contact_messages`|お問い合わせ（提示 schema に含まれず、要確認 §13.1）|変更なし想定|
+|drop|`words`|vocab 学習用、不要|drop|
+|drop|`ai_examples`|vocab 専用例文、汎用化困難|drop（F-101 解説生成は v1.x で別テーブル新設）|
 |新規|`exams`|試験 + プロパティスキーマ|新設|
 |新規|`cards`|問題本体（words の置換）|新設|
 |新規|`source_documents`|OCR ジョブの作業 / trace（exam と同寿命）|新設|
@@ -88,11 +88,11 @@
 |新規|`user_settings`|ユーザーごとの学習設定 (session_limit, fsrs_mode)|S2.1 新設 / S2.2 fsrs_mode 追加|
 |採否保留|`custom_property_definitions`|プロパティテンプレ|MVP 不採用 (discover mode 一本化、 `docs/research/ocr-schema-vs-discover.md` 参照)|
 
-### 2.3 plan00 流用テーブル（変更なし、参照のみ）
+### 2.3 流用テーブル（変更なし、参照のみ）
 
 #### 2.3.1 users
 
-plan00 で subscription 情報も統合されている設計。`subscriptions` 別テーブルは存在しない。
+subscription 情報も users に統合されている設計。`subscriptions` 別テーブルは存在しない。
 
 ```sql
 CREATE TABLE "users" (
@@ -147,7 +147,7 @@ ALTER TABLE "ai_usage_users" ADD CONSTRAINT "ai_usage_users_user_id_users_id_fk"
 
 mcq-platform での運用:
 
-- `count` = 「OCR で抽出した問題数」として運用（plan00 では「AI 例文生成回数」）
+- `count` = 「OCR で抽出した問題数」として運用
 - プラン別月次上限制御は SQL で `SUM(count) WHERE date BETWEEN month_start AND month_end` で集計
 - 日次粒度でレコード保持、月次集計は GROUP BY で出す
 - コスト追跡（cost_yen 等）は MVP では持たない（v1.x で必要なら ALTER で追加）
@@ -175,7 +175,7 @@ ALTER TABLE reviews ADD CONSTRAINT reviews_card_id_cards_id_fk
 CREATE INDEX "reviews_card_idx" ON "reviews" USING btree ("card_id","reviewed_at");
 ```
 
-rating の値マッピング（plan00 既存、踏襲）:
+rating の値マッピング:
 
 - 1 = again（不正解）
 - 2 = hard（v1.x で使用、MVP では書き込まない）
@@ -186,7 +186,7 @@ MVP は二値モード運用、`is_correct = rating IN (3, 4)`。アプリ層で
 
 設計メモ:
 
-- plan00 既存をそのまま流用（state_before / state_after / stability_after / due_after / elapsed_days / duration_ms 等は持たない）。シンプル、レコードサイズ小、書き込み負荷小、plan00 で動作確認済
+- reviews は最小構成（state_before / state_after / stability_after / due_after / elapsed_days / duration_ms 等は持たない）。シンプル、レコードサイズ小、書き込み負荷小
 - 詳細履歴が必要なら v1.x で ALTER で追加
 - `cards` 削除で CASCADE で消える。月次総学習回数等の集計は MVP では「直近の値のみ」許容（過去履歴の保全は study_days と組み合わせて補完）
 
@@ -227,9 +227,7 @@ CREATE TABLE "deletion_failures" (
 
 #### 2.3.7 contact_messages
 
-**※ 提示された plan00 schema にこのテーブルは含まれていなかった**（§13.1 確認事項）。memory に「I-J (contact form) 完了」とあるため、別の migration ファイルにある可能性。Sprint A-1 で確認 → 流用するか新設するか決定。
-
-仮の構造（plan00 の I-J で実装されたと推定）:
+現行 `contact_messages` の構造（`lib/db/schema.ts` で実装確認・2026-07-26。`email` / `subject` / `body` は NOT NULL、`category` / `status` は NOT NULL + default）:
 
 - `id` uuid PK
 - `user_id` uuid FK → users.id（NULL 可、未認証受付）
@@ -240,7 +238,7 @@ CREATE TABLE "deletion_failures" (
 - `status` text DEFAULT 'open' — 'open' / 'in_progress' / 'resolved'
 - `created_at` timestamp
 
-### 2.4 plan00 由来の drop テーブル
+### 2.4 drop テーブル
 
 `words` / `ai_examples` は Sprint A-2 (commit `fa4dcd9`) で drop 済。 mcq-platform は
 `cards` で置換 (§2.5.2)、 解説生成 (F-101) は v1.x で別テーブル新設方針。
@@ -275,12 +273,12 @@ export const exams = pgTable('exams', {
 
 #### 2.5.2 cards（メインテーブル）
 
-plan00 の words テーブルを drop して新設。**plan00 既存の FSRS カラム命名を踏襲**:
+旧 words テーブルを drop して新設。**既存の FSRS カラム命名を維持**:
 
 - `state` integer（0/1/2/3）— text enum にしない
 - `difficulty` real — `fsrs_difficulty` にリネームしない
 - `last_review` — `last_reviewed_at` にリネームしない
-- `elapsed_days` / `scheduled_days` / `reps` / `lapses` / `learning_steps` — plan00 既存
+- `elapsed_days` / `scheduled_days` / `reps` / `lapses` / `learning_steps`
 
 ```typescript
 export const cards = pgTable('cards', {
@@ -312,7 +310,7 @@ export const cards = pgTable('cards', {
   last_correct: boolean('last_correct'),  // NULL = 未回答
   current_streak: integer('current_streak').notNull().default(0),
 
-  // FSRS 状態（plan00 既存命名を踏襲）
+  // FSRS 状態
   due: timestamp('due', { withTimezone: true }).notNull().defaultNow(),
   stability: real('stability').notNull().default(0),
   difficulty: real('difficulty').notNull().default(0),
@@ -370,7 +368,7 @@ custom_props の構造（discover mode で AI が文書から自由に抽出し�
 
 key 名・値の制約は MVP では freeform (string / string[] が中心、 詳細は OCR sprint で確定)。 discover mode の挙動と key 揺れ評価は `docs/research/ocr-schema-vs-discover.md` 参照。
 
-state の値マッピング（plan00 既存踏襲）:
+state の値マッピング:
 
 - 0 = new
 - 1 = learning
@@ -587,13 +585,13 @@ user_id = ?` 必須) で対応。 RLS 復活は v1.x で再評価 (multi-tenant 
 
 ### 2.8 インデックス一覧
 
-#### plan00 流用（既存）
+#### 既存
 
 |テーブル|index 名|カラム|
 |---|---|---|
 |reviews|`reviews_user_reviewed_idx`|(user_id, reviewed_at)|
 
-#### plan00 流用（mcq-platform で追加）
+#### mcq-platform で追加
 
 |テーブル|index 名|カラム|用途|
 |---|---|---|---|
@@ -991,7 +989,7 @@ lib/
     schemas/
       ocr_response.ts     # Gemini Structured Output 用 JSON Schema（discover mode = additionalProperties で freeform custom_props）
   fsrs/
-    scheduler.ts          # FSRS 6 アルゴリズム（plan00 流用）
+    scheduler.ts          # FSRS 6 アルゴリズム
   exams/
     presets.ts            # 試験名サジェスト候補（ハードコード）
   cards/
@@ -1121,7 +1119,7 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 ### 解説生成 (F-101) は v1.x
 
 - MVP では実装しない
-- 実装時に `lib/ai/prompts/explanation.ts`、AI 解説生成用テーブルを新設（plan00 の ai_examples は drop 済のため）
+- 実装時に `lib/ai/prompts/explanation.ts`、AI 解説生成用テーブルを新設（ai_examples は drop 済のため）
 
 ### OCR pipeline タイムアウト・リトライ仕様 (S2.0.5 確定)
 
@@ -1197,7 +1195,7 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
     5. テキストフィールドのカーソル位置に `![](key)` を挿入
 - **整合性チェック**: テキスト内の `![](key)` 全部が cards.images に存在するか / cards.images の全 key が参照されているか。不整合は編集ビューで警告表示（Anki の Check Media 相当）
 
-### Logic 3: FSRS 6 スケジューリング（plan00 流用、S2.1 確定形 / S2.2 rating mapping 追記）
+### Logic 3: FSRS 6 スケジューリング（S2.1 確定形 / S2.2 rating mapping 追記）
 
 - **入力**: `cardId`, `rating: RatingInt` (1=Again / 2=Hard / 3=Good / 4=Easy)
 - **正解定義 (server 側)**: `rating >= 2`（Anki 互換、`submitReviewTx` 内 study_days /
@@ -1284,7 +1282,7 @@ async function submitReviewTx(tx, { userId, cardId, rating, now }) {
 
 - §6 のアカウント削除フロー参照
 - soft delete（`users.deleted_at`）+ 子データ物理削除 + transient retry。
-  S1.9.5 で新規確立（plan00 は soft delete のみ）
+  S1.9.5 で新規確立
 - R2 等の外部ストレージは未使用のためファイル削除ステップなし
 
 ---
@@ -1449,7 +1447,7 @@ v1.x で Phase 0b 相当の PoC を実施し、Gemini bbox 精度を実測して
 
 ### 13.5 FSRS 6 のパラメータ最適化
 
-個人最適化（per-user weights）は v1.x、MVP はデフォルト値（plan00 流用）。
+個人最適化（per-user weights）は v1.x、MVP はデフォルト値。
 
 ### 13.8 Phase 0d 復活（PWA 機能の実機検証）
 
