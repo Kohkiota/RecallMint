@@ -4,6 +4,8 @@
 > ロードマップ / 改訂履歴) は Obsidian 管理、 本 doc は data model / API / module / 認証認可
 > / 課金技術仕様 / AI 呼び出し / ビジネスロジック / 非機能 / 環境変数 / セキュリティ /
 > 技術系 Open Questions のみ。 schema.ts が最終 source of truth。
+>
+> **設計不変条件の正 = `docs/architecture.md`**(2026-07-26 新設)。本書の他章は現行実装との一致を未検証。
 
 ---
 
@@ -1070,33 +1072,11 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 
 - Stripe ホスト型、`/settings` から遷移
 
-### アカウント削除フロー（`app/api/webhooks/clerk/route.ts` の `handleUserDeleted`）
+### アカウント削除フロー
 
-削除ロジックは独立 file ではなく Clerk webhook handler に inline（S1.9.5 確定）。
+**現行の削除契約は `docs/architecture.md` §4(GDPR 削除契約)が正**。退会 = users soft-delete + PII scrub + Group I 明示 DELETE + assets soft-delete、Group II は FK cascade。正本 = `lib/clerk/handle-clerk-event.ts`。
 
-1. ユーザーが `/settings` の削除ボタンで削除リクエスト（client `user.delete()`、
-   Clerk の reverification を `useReverification` で処理）
-2. Clerk が user を削除 → Webhook `user.deleted` 発火
-3. `handleUserDeleted` が `users` を `clerk_id` で SELECT し内部 id / Stripe customer
-   を取得（0 行 = webhook 順序逆転で users 未同期 → notifyOps 通知して終了）
-4. Stripe subscription cancel（`for await` 全件、transaction 外。失敗は
-   `deletion_failures` 記録 + Discord 通知）
-5. DB transaction（transient error 時 最大 3 retry、backoff 500/1000/2000ms）:
-   - `users` は **soft delete**（`deleted_at` set）— Stripe webhook 遅延発火 /
-     audit retention のため物理削除しない
-   - `exams` / `study_days` / `contact_messages` を物理 DELETE。`exams` DELETE は
-     FK ON DELETE CASCADE で `cards` / `source_documents` / `reviews` を連動削除
-   - transaction 全失敗 → `deletion_failures`（`failure_kind='data_deletion'`）
-     記録 + Discord 通知（forward-only、rollback なし）
-6. **保持**（削除しない）: `upload_records` / `ai_usage_users`（不正追跡用）
-
-物理削除対象: exams / cards / source_documents / reviews / study_days /
-contact_messages。本フローは S1.9.5 で新規確立（plan00 は soft delete のみで
-物理 cascade の前例なし）。
-
-※ OCR スキャン元ファイルは R2 等に保存しないため、ファイル削除ステップは不要。
-カード添付画像（将来機能）を R2 に保存する設計を実装する際は、本フローに
-`/users/{user_id}/` プレフィックス配下の R2 オブジェクト削除を追加する。
+> 本節の旧記述(S1.9.5 版・`deletion_failures` 前提・「exams/study_days/contact_messages の 3 表削除 + upload_records/ai_usage_users 保持」)は現行実装(Group I 11 表 + `integration_failures`)と乖離していたため撤去した(注記追加でなく置換・2026-07-26)。
 
 ---
 
