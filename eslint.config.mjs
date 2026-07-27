@@ -610,6 +610,67 @@ const config = [
     },
   },
   // ---------------------------------------------------------------------------
+  // Block E1-render: 認証必須 route group (app/(app)/**) で静的レンダリング /
+  // ISR を強制する segment config export を禁止する。認証必須ページを静的化 /
+  // ISR 化すると、レンダリング層でユーザー間のキャッシュ漏れが起きうる (DB 層で
+  // RLS が塞ぐのと同種の漏れが、レンダリング層には無防備で残る)。正本 =
+  // docs/architecture.md §5。
+  //
+  // 禁止対象 (認証 group 配下の production route file のみ・test は ignore):
+  //   - export const revalidate  (false=永久 cache / N=ISR、値によらず static cache 化)
+  //   - export const dynamic     (force-static 等の静的強制。値判定でなく export 自体を
+  //                               禁止 = computed 値も塞ぐ robust 側。既に auth() で全
+  //                               dynamic ゆえ force-dynamic 等の明示は不要・冗長)
+  //   - generateStaticParams     (function / const いずれの export 形も。動的 route の SSG 化)
+  // 例外が要る場合は当該行に `// eslint-disable-next-line no-restricted-syntax` +
+  // 理由コメントを付す (getDb ban と同じ escape hatch 運用)。
+  //
+  // scope 外 (非認証 = (marketing) / (auth) / api) は禁止しない (将来 LP を静的化する
+  // 余地を残す)。`no-restricted-syntax` は他 block の `no-restricted-imports` と別 rule
+  // key ゆえ REPLACE 干渉なし (別 key は flat-config で merge される)。route group
+  // `(app)` は minimatch で `\\(app\\)` escape (escape 不在で silent に不発)。
+  //
+  // 残余 (accepted): `const x = ...; export { x }` の re-export 形は inline export
+  // selector に載らない (getDb ban の dynamic-form 残余受容と同思想)。実在する authoring
+  // 形は全て inline export ゆえ実害なし。segment config より下層の cache 経路
+  // (`'use cache'` / `unstable_cache` / `cacheLife`) は AST 上の別形で本 rule の視界外
+  // (grep 上 (app) 配下は現状ゼロ)。user-scoped data にこれらを採用する時は同種の
+  // cross-user 漏れが再発しうるため、導入時に別途 guard を検討する (本 sprint 対象外)。
+  // ---------------------------------------------------------------------------
+  {
+    files: ['app/\\(app\\)/**/*.ts', 'app/\\(app\\)/**/*.tsx'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="revalidate"]',
+          message:
+            '認証必須 route group で `export const revalidate` は禁止 (ISR / 永続 cache がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="dynamic"]',
+          message:
+            '認証必須 route group で `export const dynamic` は禁止 (force-static 等の静的化がユーザー間のキャッシュ漏れになる。既に auth() で全 dynamic)。真に必要なら eslint-disable + 理由。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > FunctionDeclaration[id.name="generateStaticParams"]',
+          message:
+            '認証必須 route group で generateStaticParams は禁止 (動的 route の SSG 化がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="generateStaticParams"]',
+          message:
+            '認証必須 route group で generateStaticParams は禁止 (動的 route の SSG 化がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
   // Per-file allowlists (placed AFTER forbidding blocks so they win).
   // Each RE-SETS `no-restricted-imports` to keep ONLY the repo-wide getDb ban
   // (GETDB_BAN.paths/patterns) while exempting the cross-feature / reverse-dep

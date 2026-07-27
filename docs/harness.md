@@ -27,6 +27,7 @@
 | audit gate 判定(prod 無条件 / dev version-aware / fail-closed / tripwire / expiry 強制)| 脆弱性・allowlist 迂回・期限切れ受容 | 機械(**起動はプロセス**→§3)| `scripts/audit-gate.mjs` |
 | exact pin による install 非 bump | 意図しない依存 bump | 機械(caret 不在)| `package.json` |
 | post-create step postcondition / LSP 実診断 postcondition | pin 不一致・未 install で build を落とす | 機械 | `.devcontainer/post-create.sh` / `.devcontainer/verify-lsp-diagnostics.mjs` |
+| 認証必須ページの静的化 / ISR 化 ban(`revalidate`/`dynamic`/`generateStaticParams` export)| レンダリング層のユーザー間キャッシュ漏れ(RLS より前段)| 機械(lint)| `eslint.config.mjs`(Block E1-render)/ 決定 = `docs/architecture.md` §5 |
 
 ## 2. 構成(コンテナ・権限で構造的に不可能)
 

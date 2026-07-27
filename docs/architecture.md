@@ -63,7 +63,7 @@
 
 | 不変条件 / 決定 | 理由 | 証明 or 決定日 | 正本 |
 |---|---|---|---|
-| **ISR / SSG を使わない(`revalidate`/`generateStaticParams` ゼロ)。認証必須ページは `auth()` 経由で dynamic** | 実装 = 全 dynamic(marketing の静的法務 page は App Router 既定で prerender)。**理由 = 今回明文化**: 認証必須ページを静的化 / ISR 化すると**レンダリング層でユーザー間のキャッシュ漏れ**が起きうる(DB 層で RLS が塞ぐのと同種の漏れが、レンダリング層には無防備で残る)。**決定日 = 2026-07-26**。**証明する lint/test は現状なし = §証明の空白**(本 sprint では実装しない)| 決定(2026-07-26 明文化・証明なし)| 現物: grep ゼロ / `next.config.ts` |
+| **ISR / SSG を使わない(`revalidate`/`dynamic`/`generateStaticParams` ゼロ)。認証必須ページは `auth()` 経由で dynamic** | 実装 = 全 dynamic(marketing の静的法務 page は App Router 既定で prerender)。**理由 = 今回明文化**: 認証必須ページを静的化 / ISR 化すると**レンダリング層でユーザー間のキャッシュ漏れ**が起きうる(DB 層で RLS が塞ぐのと同種の漏れが、レンダリング層には無防備で残る)。**決定日 = 2026-07-26**。**機械強制済み**: 認証必須 group(`app/(app)/**`)配下の `revalidate`/`dynamic`/`generateStaticParams` export を lint が fail させる | 証明(lint・決定 2026-07-26): `eslint.config.mjs` Block E1-render | `eslint.config.mjs`(Block E1-render)/ `next.config.ts` |
 | nav / dynamic への Link は `prefetch={false}` | prefetch 並列 SSR が server 負荷を増幅 | 決定(記録あり)| `docs/superpowers/lessons/2026-05-25-link-prefetch-amplifies-server-load.md` |
 | 全 API route は `runtime='nodejs'` / serverActions bodySizeLimit + security headers | pg driver 依存 / upload 上限 app-level 集約 / prod grade header | 決定(各 route + config)| `next.config.ts` / `app/api/**/route.ts` |
 
@@ -112,7 +112,6 @@
 
 | 空白 | 重さの所見 |
 |---|---|
-| **レンダリングモード(全 dynamic)を守る lint/test なし**(§5 E1)| 中〜重。誤って `dynamic='force-static'`/ISR を入れると認証ページが別ユーザーにキャッシュされうる(RLS より前段のレンダリング層漏れ)。本 sprint では実装しない |
 | **exam+子 card tombstone の end-to-end 多デバイス伝播**(§2)| 重。欠くと子 card が他端末に永久残留。server 側 tombstone INSERT は unit で守るが多デバイス伝播は自動 test の射程外。**手当て = OT の実機 2 端末 smoke(PC で試験作成→削除→モバイルで消失確認)で担保予定**(実端末 2 台の IDB 状態が要るため自動 test 射程外)。背景 = `docs/audit/2026-07-24-deleted-exam-mobile-residue-factfinding.md` |
 | **cross-device 競合の収束**(§1 A5)| 中。単一 client の optimistic/rollback は unit あり・multi-device 収束 test なし |
 | **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い |
