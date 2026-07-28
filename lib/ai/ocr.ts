@@ -146,7 +146,7 @@ async function callWithRetry(
   throw lastErr
 }
 
-function parseAndValidate(text: string): ExtractedCard[] {
+export function parseOcrResponse(text: string): ExtractedCard[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -195,7 +195,7 @@ async function runPipelineInner(
       inputTokens: flash.inputTokens,
       outputTokens: flash.outputTokens,
     })
-    cards = parseAndValidate(flash.text)
+    cards = parseOcrResponse(flash.text)
     if (cards.length === 0) throw new Error('Flash returned 0 cards')
   } catch (e) {
     flashError = e instanceof Error ? e.message : String(e)
