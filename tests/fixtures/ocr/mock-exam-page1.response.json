@@ -1,0 +1,126 @@
+{
+  "cards": [
+    {
+      "title": "問1",
+      "sort_key": "1",
+      "question_text": "架空物質アルファに関する次の記述の正誤について、正しい組合せはどれか。\na 常温常圧では水に溶けない。\nb 融点は 120 °Cである。\nc 光により分解しやすい。\n※表中の「正」は当該記述が正しいことを示す。",
+      "options": [
+        {
+          "id": "1",
+          "text": "正 正 誤",
+          "is_correct": false
+        },
+        {
+          "id": "2",
+          "text": "正 誤 正",
+          "is_correct": false
+        },
+        {
+          "id": "3",
+          "text": "誤 正 正",
+          "is_correct": false
+        },
+        {
+          "id": "4",
+          "text": "誤 誤 正",
+          "is_correct": false
+        },
+        {
+          "id": "5",
+          "text": "正 正 正",
+          "is_correct": false
+        }
+      ],
+      "correct_answer_ids": [],
+      "images": []
+    },
+    {
+      "title": "問2",
+      "sort_key": "2",
+      "question_text": "次の図のうち、頂点をもたない図形はどれか。",
+      "options": [
+        {
+          "id": "a",
+          "text": "a",
+          "is_correct": false
+        },
+        {
+          "id": "b",
+          "text": "b",
+          "is_correct": false
+        },
+        {
+          "id": "c",
+          "text": "c",
+          "is_correct": false
+        },
+        {
+          "id": "d",
+          "text": "d",
+          "is_correct": false
+        }
+      ],
+      "correct_answer_ids": [],
+      "images": [
+        {
+          "key": "q2-img-1",
+          "target": "option_a",
+          "alt": "四角形",
+          "source_ref": "a"
+        },
+        {
+          "key": "q2-img-2",
+          "target": "option_b",
+          "alt": "円",
+          "source_ref": "b"
+        },
+        {
+          "key": "q2-img-3",
+          "target": "option_c",
+          "alt": "三角形",
+          "source_ref": "c"
+        },
+        {
+          "key": "q2-img-4",
+          "target": "option_d",
+          "alt": "星形",
+          "source_ref": "d"
+        }
+      ]
+    },
+    {
+      "title": "問3",
+      "sort_key": "3",
+      "question_text": "架空薬ベータの取扱いに関する次の記述のうち、正しくないものはどれか。",
+      "options": [
+        {
+          "id": "1",
+          "text": "成人には１回 500 mg を 1 日 3 回服用させる。",
+          "is_correct": false
+        },
+        {
+          "id": "2",
+          "text": "製剤中の有効成分の含有率は 0.5 % である。",
+          "is_correct": false
+        },
+        {
+          "id": "3",
+          "text": "保存温度は 2～8 °C とし、凍結させてはならない。",
+          "is_correct": false
+        },
+        {
+          "id": "4",
+          "text": "服用後 30 分以内に効果が現れることはない。",
+          "is_correct": false
+        },
+        {
+          "id": "5",
+          "text": "１日の最大投与量は 1,500 mg を超えない。",
+          "is_correct": false
+        }
+      ],
+      "correct_answer_ids": [],
+      "images": []
+    }
+  ]
+}
