@@ -35,6 +35,7 @@ OT が実教材を `scripts/ai/ocr-samples/` に配置し、**実 API 実走の�
    tsx scripts/ai/ocr-box2d-viz.ts --images scripts/ai/ocr-samples
    ```
    → 画像毎の `scripts/ai/ocr-samples/out/<filename>.html` を OT に提示(ブラウザで矩形を目視)。
+   - **HTML の開き方**: VS Code の Live Preview 拡張で右クリック → Show Preview、または `python3 -m http.server`(ポート転送)で開く。HTML は画像を base64 で自己完結しているため、**コンテナ外へコピーしても表示可能**。
 
 ### OT gate 2 → batch2
 
