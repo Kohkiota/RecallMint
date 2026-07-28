@@ -46,3 +46,8 @@ tsconfig.tsbuildinfo
 
 # subagent-driven-development scratch (ledger/briefs)
 .superpowers/
+
+# ②-0 OCR regression tools: 実教材 drop-zone + 実行出力 (README のみ追跡)
+# 実教材は著作物/PII を含みうるため非 commit。応答 fixture は tests/fixtures/ocr/ に別途 commit。
+scripts/ai/ocr-samples/*
+!scripts/ai/ocr-samples/README.md

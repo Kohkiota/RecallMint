@@ -170,7 +170,7 @@
 - [ ] **OT gate1(実 API 合図・T9 と共通の 1 回)**: OT が実教材(3-5枚・選択肢図≥1・MD表≥1)を `scripts/ai/ocr-samples/` に配置 + 合図。→ 合図まで停止。
 - [ ] batch1: `tsx scripts/ai/ocr-compare.ts --images scripts/ai/ocr-samples --arm A`(5 モデル)+ `tsx scripts/ai/ocr-box2d-viz.ts --images scripts/ai/ocr-samples`(arm A と独立ゆえ同 batch)→ 出力(比較レポート + 可視化 HTML)を OT に提示。
 - [ ] **OT gate2(`--arm-model` 指定)**: OT が arm A 結果を見て比較モデルを指定。→ 停止・待機。
-- [ ] batch2: `tsx scripts/ai/ocr-compare.ts --images scripts/ai/ocr-samples --arm B --arm-model <OT指定>` → 出力を OT に提示。
+- [ ] batch2: `tsx scripts/ai/ocr-compare.ts --images scripts/ai/ocr-samples --arm both --arm-model <OT指定>` → 出力を OT に提示。(訂正: 当初 `--arm B` としていたが単独では A/B ペア不成立 — T6 review で判明。`--arm both --arm-model X` が正。standalone `--arm B` は reject。runbook 参照)
 - [ ] 完了 = 判定材料一式(arm A/B 比較・実コスト・評価観点・box_2d HTML)を OT に提示。良し悪し判定は OT。出力は gitignored ゆえ commit 対象なし。
 
 ---
