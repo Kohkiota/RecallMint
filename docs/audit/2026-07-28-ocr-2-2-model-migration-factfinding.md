@@ -65,12 +65,39 @@
 
 ---
 
+## §1' 追加調査 — プロンプト側から見た画像設計(§1 の再調査・OT 提起の「契約ズレ」仮説の検証)
+
+前回 §1 は**描画側**の観点(壊れ画像か literal か)だった。OT 提起の「プロンプトが本文位置挿入を指示したままで、`![図](qNNN-img-1)` は lite が**指示どおり**出力しているだけでは?」を**プロンプト側**から検証した。結論は**仮説の反転**: プロンプトは本文位置挿入を指示しておらず、schema とも整合。lite が指示に無い markdown を出している。
+
+**Q1 プロンプトが images[] に何を指示しているか**(`lib/ai/prompts/ocr-extract.ts:110-155 IMAGE_REFERENCE_RULES`):
+- 文中の画像参照表現(別冊No.N / 図X / 下図 等)を検出し、**紐付け先(target)と参照表記(source_ref)を images[] に構造化記録**する。画像本体は解釈しない。
+- `target` = `question` / `option_{id}`(options[].id と完全一致)/ `explanation`(:124-129)= **target 単位設計**。`key` = `q{sort_key}-img-{連番}`(:131-134)。`alt` 30 字以内(:136)。
+
+**Q2 本文中の位置指定を求める記述があるか** → **なし**。`:228` 「図表参照は本文中に**テキストで残す**」・`:233` 「本文中の図表参照テキストは残す、images[] に構造化する」は、**元の参照表記(「下図」「別冊No.1」)をそのまま本文に残せ**という意味(削除するなの意)であって、画像 placeholder/marker を位置挿入せよではない。
+
+**Q3 `![...](...)` markdown 画像記法の明示指示があるか** → **逆に「不要」と明示**。`:152-155` 「プレースホルダ埋め込みについて: question_text / options[].text / explanation_text 内に Markdown 画像記法(`![](key)`)を**埋め込む必要はない**。対応関係は images[].target で表現する」。→ lite の `![図](qNNN-img-1)` は**プロンプトが不要と言っている出力を、images[].key を流用して勝手に本文へ inline している**。2.5-flash はこの「埋め込み不要」に従っていた/ lite は従っていない = **モデル側の逸脱**(プロンプト契約どおりではない)。
+
+**Q4 schema が prompt に先行してズレていないか** → **完全に整合(ズレなし)**。`buildDiscoverResponseJsonSchema`(`lib/ai/schemas/ocr-response.ts:76-89`)の `ExtractedImage = {key, target, alt, source_ref?}` は **target 単位のみ・position/offset field なし**。question_text は素の string(位置マーカー構造なし)。prompt も schema も target 単位で一致。
+
+**Q5 設計決定の記録** → **あり**(推測で埋めていない・原文):
+- `docs/superpowers/specs/2026-07-12-image-phase-a-design.md:212-213` 「**形式: target 単位の gallery**(question 下 / 該当 option 下に添付順で並べる)。**inline 位置指定(`![](key)` marker)・リッチ編集・alt 編集は B1**」。
+- 同 `:293` 「target 単位 gallery を … **picker のみ・inline 記法なし**」。
+- 補強: `docs/audit/2026-07-13-card-asset-refs-normalization-factfinding.md:45` target 値域 = `'question_text'` | `/^option:.+/`(zod 強制・`lib/validation/card.ts` 相当)。
+- → **「本文任意位置 vs target 単位」は検討の上 target 単位に確定済**(inline 位置指定は B1 へ明示 defer)。prompt/schema/設計記録の三者が target 単位で一貫。
+
+**§1 の結論の更新**: `![図](qNNN-img-1)` は「モデル固有の cosmetic な癖(据え置き可)」というより、**target 単位契約に反する lite 出力**。壊れ画像は出ない(§1 描画結論は不変)が、性質は「契約非準拠の本文汚染」。プロンプトは既に target 単位を宣言し埋め込み不要と言っている(=プロンプトは古くない)。
+
+**②-4 への含意(OT の懸念に直接回答)**: target 単位は prompt / schema / image-phase-a 設計記録の**三者で確定・一貫**。本文位置挿入の構造は**どこにも残っていない**(inline は B1 へ defer 済)。→ **②-4(切り出し図を images[] に座標付きで target 単位保持)の前提は安全**。本文中インライン配置を想定した構造は不在ゆえ、②-4 設計を変える必要はない。
+
+---
+
 ## §5 判断材料まとめ(OT へ)
 
 | # | 項目 | 事実 | ②-2 での扱い(判断材料) |
 |---|---|---|---|
 | 0 | 移行本体 | modelId 1 行 + cost.ts flash 単価を lite 値へ | 必須(単価更新は結合必須)。ModelKind 命名は温存 or rename の判断 |
-| 1 | 本文 markdown 画像混入 | MdTableText で literal 表示(壊れ画像なし)。表外=literal / 表内=alt | cosmetic 劣化。描画側で抑制するか(②-3 型)= 判断 |
+| 1 | 本文 markdown 画像混入 | 壊れ画像なし(§1)。**§1': prompt は埋め込み「不要」と明示・schema/設計記録も target 単位で一貫 → lite の逸脱=契約非準拠の本文汚染**(cosmetic でなく契約違反) | 描画側単一点で除去/alt 抽出(=契約 enforce)か据え置きか = 判断。prompt 強化は凍結対象 |
+| 1★ | ②-4 前提 | target 単位は prompt/schema/image-phase-a 記録の**三者で確定・inline は B1 defer**。本文位置構造は不在 | **②-4 前提は安全**(設計変更不要) |
 | 2 | option id 形式 | 値一致・card 内閉・uid 別・混在無害・追加は改善 | **対処不要**(regression なし) |
 | 3 | thoughtsTokenCount 本体 | 未加算(latent)。lite は非発火。修正 3 file | ②-2 で機会的に直すか別 sprint か = 判断 |
 | 3b | 2.5-pro tier / audio | prod OCR 不到達 / 経路なし | **据え置き**(②-2 無関係) |
