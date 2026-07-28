@@ -2,7 +2,7 @@
 
 - 日付: 2026-07-28
 - Sprint: ②-1(OCR track)
-- 状態: **Phase 1(offline bump)完了・未 push**。Phase 2(再 capture)は OT 実 API 合図待ち。
+- 状態: **Phase 1(offline bump)完了・OT push 済**。Phase 2(再 capture)も完了 = **②-1 全体完了**。Phase 2 記録: `2026-07-28-genai-2x-bump-phase2-recapture.md`。
 - spec: `docs/superpowers/specs/2026-07-28-genai-sdk-2x-bump-design.md`
 - plan: `docs/superpowers/plans/2026-07-28-genai-sdk-2x-bump.md`
 
