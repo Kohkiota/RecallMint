@@ -28,7 +28,8 @@ fact-finding で「SDK・モデル・プロンプトのどれが変わっても�
 - (b) モデル比較スクリプト。**モデル軸** (5 モデル、任意 ID 可) × **呼び出し方軸** (arm A = 本番 schema のみ / arm B = 本番 schema + 図版 box_2d)。1 画像あたり実コスト算出 (thinking 含む) + 評価観点整形。
 - (c) box_2d 可視化スクリプト (探索用、HTML overlay)。
 - fixture 取り込み機構 (capture スクリプト) + 実行 runbook。
-- 実 fixture の commit まで (OT 画像提供 + OT 合図での capture 実走を経て、本 sprint 内で完結)。
+- 実 fixture の commit まで (擬似問題 capture を OT 合図で実走、本 sprint 内で完結)。
+- **実教材での (b)(c) 初回実走**(判定材料一式を OT に提示するところまで。良し悪しの判定は OT・§12-D)。
 
 ### Out of scope
 
@@ -153,11 +154,13 @@ fact-finding で「SDK・モデル・プロンプトのどれが変わっても�
 ## 5. sequencing と OT gate
 
 1. **CC (自走)**: (a) の型契約 + golden harness (fixture 0 件 = RED)、(b)(c)(capture) スクリプト + 共有 + pure helper 単体 test を実装。この時点で golden は **RED** (実 fixture 未投入。論点2 で許容 = 順序問題)。
-2. **OT gate**: OT が試験画像 (3〜5 枚、**選択肢に図あり ≥1** / **MD 表あり ≥1**) を `scripts/ai/ocr-samples/` に配置し、**capture 実走の合図**を出す。
-3. **CC (OT 合図後)**: capture を実走 → `tests/fixtures/ocr/` に response + expected-cards を commit → golden **green** 化 → golden の **red 検証** (§6) → 完了 gate。
-4. (b)(c) の実走・判定は OT (分担どおり)。CC は runbook で手順提示。arm A/B の比較対象モデルは (b) 初回結果を見て OT 指定。
+2. **golden の入力 = 擬似試験問題** (OT 生成・架空・`tests/fixtures/ocr/mock-exam-page1.png`/`.pdf` として commit 済 = §12-C)。OT が試験画像を別途渡す必要はない。
+3. **OT gate1 = 実 API 合図 1 回**: OT が実教材 (3〜5 枚、**選択肢に図あり ≥1** / **MD 表あり ≥1**) を `scripts/ai/ocr-samples/` (gitignored・**非 commit**) に配置し、実 API 実走の合図を出す (fixture 本文の内容確認 gate は不要=架空・判断14)。この 1 合図で capture(擬似問題)と (b) arm A・(c) が続けて走る。
+4. **CC (合図後・batch1)**: ① 擬似問題を capture → `tests/fixtures/ocr/` に response + expected-cards を commit → golden **green** 化 → **red 検証** (§6・0件RED実証 + expected改変)。② 実教材で **(b) arm A(5 モデル)** + **(c) box_2d** を実走 → 判定材料を OT に提示。
+5. **OT gate2 = `--arm-model` 指定**: OT が arm A 結果を見て arm A/B 比較モデルを指定 → CC 停止・待機。
+6. **CC (指定後・batch2)**: **(b) arm B**(指定モデル)を実走 → 提示。**分担 = 実行 CC / 判定 OT**((b)(c) が OT 担当なのは判定の話。実行は CC)。②-0 完了 = 判定材料一式提示まで。
 
-`.env.local` に key 有りだが、2・3 の実 API 実走は必ず OT 合図を待つ。
+`.env.local` に key 有りだが、実 API 実走 (capture/(b)/(c)) は必ず OT 合図を待つ。
 
 ## 6. テスト & red 検証戦略
 
@@ -228,3 +231,31 @@ CLAUDE.md「test-only 変更は保証の増減で分岐」+「保証の増 = red
 2. target 語彙のマッピング (OCR 側 `option_1` ↔ 保存側 `option:<id>`)。
 3. placeholder key (`q013-img-1` 形式) → UUID asset への昇格経路。
 4. 現状の非描画設計を、切り出し画像に対してどう変えるか。
+
+## 12. Codex plan cross-check の設計確定 + 擬似問題 fixture 方針
+
+Codex 独立論点 (`docs/codex/2026-07-28-plan-ocr-regression-foundation.md`) を反映した**設計確定**。plan の task 制約/interface に落とす。
+
+**(A) 比較・検出の正確性 (fold 済):**
+- `callGeminiRaw` は `finishReason` を返す。末尾選択肢欠落を **MAX_TOKENS 打切り**と区別するため (両者を混同すると比較が誤る)。
+- usage 欠測は **0 でなく N/A** (token/コストを nullable 化。0 だとコスト優位を偽装)。
+- カード比較は index でなく **`sort_key`→`title` で alignment**、選択肢は **`id` 照合** (1 枚欠落で全崩れを防ぐ)。
+- 致命的差分は **field-level 原文 diff を正本**、否定語/数値/単位/記号抽出は**強調のみ** (日本語否定・全角数字・μ/± を regex で取りこぼすため)。
+- 表直下空行は **card×field×表番号の粒度**で出す。`segmentMdTables` は **root-level 表限定** (blockquote/list 内表は評価対象外 = 明記)。
+- arm B schema は本番 `buildDiscoverResponseJsonSchema()` の**出力を deep-clone して figure_regions を注入** (手書き複製の drift 防止)。
+- box_2d 異常 (要素数/NaN/範囲外/min>max/ゼロ面積) は**補正せず raw 併記 + invalid 明示**。HTML overlay は target/label を **escape** (ローカル HTML でも injection 防止)。
+- 実行は**逐次** + **429 は結果保存後に run 全体を停止**。SDK 1.50.1 は内部 retry を持つ (prod gemini.ts で確認済) ため、CC は retry を足さず「1 call = 複数 HTTP になりうる (本番同挙動)」を明記 (無効化 config は実装時確認)。error は HTTP/model不在/429/timeout/parse/empty で分類。
+- SDK 型契約は「実 `generateContent` 引数型から config 導出 + 使用 field の存在・代入可能性」で検証 (厳密一致は無害な型狭まりで false-fail するため避ける)。
+- compare 出力に provenance (modelId/SDK版/日時/arm/prompt・schema・image hash/timeout/finishReason/usage/raw/parse 成否/error 分類)。
+- capture の安全書込: safe name (path traversal 防止) / 既存 fail (無言上書き禁止) / pair atomic (temp→rename)。
+- golden: **0 件 RED を実証** (空 fixture で count guard が実際に fail することを確認) + orphan/duplicate fixture を fail。
+
+**(B) fold せず caveat 化 (YAGNI):** EXIF orientation 完全対応 → overlay に raw 座標併記で緩和。Unicode 正規化網羅 → field-level 原文 diff が正本ゆえ heuristic の穴は非致命。
+
+**(C) 擬似問題 fixture 方針 (判断14・OT 生成物差し替え):**
+- golden の入力は OT 生成の**架空**擬似試験 (`mock-exam-page1.png`/`.pdf`)。実在教材・著作物を含まず、ヘッダ/フッタに架空明記 → **本文も含め commit 可**、内容確認 gate 不要。
+- **配置**: gitignored の `scripts/ai/ocr-samples/` (実教材 drop-zone) とは別に、**tracked な `tests/fixtures/ocr/` に png/pdf を配置** (commit 済 `2b93d4a`)。理由 = 入力素材 + 派生 fixture (response/expected) を同一 tracked ディレクトリに置き golden を再現可能な自己完結単位にする (Codex 指摘の fixture provenance)。生成元 `mock-exam.html` も OT が `tests/fixtures/ocr/` に配置予定 → **tracked commit** (生成元 provenance・条件追加時の撮り直し再現用。png/pdf だけでは再現不能なため)。
+- 擬似問題は 3 条件充足を目視確認済: 問1=正誤組合せ表 + 直後注記行 (②-3 条件) / 問2=選択肢 a〜d に別図 (②-4 target 判定) / 問3=否定設問「正しくないもの」+「現れることはない」+ 単位 mg/%/℃ + 桁区切り 1,500 mg。
+- **expected-cards の provenance**: capture 時の `parseOcrResponse` 出力を pin = **parse 層 drift 検出**用であり **OCR 品質の golden ではない** (auto 生成・未校正)。README に明記。
+
+**(D) 完了境界 (判断15 = (ii) 採用・訂正):** ②-0 完了 = 機構 + golden live + **実教材での (b)(c) 初回実走(判定材料一式を OT に提示)まで**。実走を後続に切ると ②-1 着手時に材料が無く、土台を先に作った意味が薄れるため。**分担 = 実行 CC / 判定 OT**(「(b)(c) は OT」は判定の話であって実行を OT に寄せる意味ではない)。実行順 = (b) arm A(5 モデル)→ OT が `--arm-model` 指定 → (b) arm B → (c)(arm A と独立ゆえ順序任意)。**arm B を初回から全モデルで回さない**(--arm-model の決めが無意味になる)。実 API 合図は 1 回にまとめ、capture(T9)と (b) arm A(T10)が続けて走る。
