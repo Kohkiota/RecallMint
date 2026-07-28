@@ -135,9 +135,9 @@ export const OUT_DIR = join(process.cwd(), 'scripts/ai/ocr-samples/out')
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.pdf'])
 
-// provenance 用。 @google/genai の版は CLAUDE.md/spec §1 で「本 sprint は 1.50.1 のまま」
-// と不変条件化されているため、 実際の pinned dependency 値を記録する(将来 ②-1 で
-// 版上げされても、この行はそのまま最新値を追随する)。
+// provenance 用。 @google/genai の pinned version を package.json から動的読取して
+// 記録する(②-0 では 1.50.1 固定、 ②-1 で 2.x へ bump 済。 この行は値を hardcode せず
+// 常に現在の pinned 値を追随する)。
 const GENAI_SDK_VERSION = (rootPackageJson.dependencies as Record<string, string>)[
   '@google/genai'
 ]

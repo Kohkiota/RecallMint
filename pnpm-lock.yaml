@@ -29,8 +29,8 @@ importers:
         specifier: 3.2.2
         version: 3.2.2(react@19.2.7)
       '@google/genai':
-        specifier: 1.50.1
-        version: 1.50.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.1))(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+        specifier: 2.13.0
+        version: 2.13.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.1))(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@tanstack/react-table':
         specifier: 8.21.3
         version: 8.21.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -976,8 +976,8 @@ packages:
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
 
-  '@google/genai@1.50.1':
-    resolution: {integrity: sha512-YbkX7H9+1Pt8wOt7DDREy8XSoiL6fRDzZQRyaVBarFf8MR3zHGqVdvM4cLbDXqPhxqvegZShgfxb8kw9C7YhAQ==}
+  '@google/genai@2.13.0':
+    resolution: {integrity: sha512-GM7C8Kaomvjz05x5JEO6+l3d/pciL9LxAG9dUjJLD7nTPZ9X0Cfsf2Z7eET6UjgWyUmxXCHtYnQoQ77F9+ZIOQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@modelcontextprotocol/sdk': ^1.25.2
@@ -6397,7 +6397,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
-  '@google/genai@1.50.1(@modelcontextprotocol/sdk@1.29.0(zod@4.4.1))(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
+  '@google/genai@2.13.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.1))(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
