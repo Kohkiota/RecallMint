@@ -39,9 +39,26 @@ describe('estimateUsdPerImage', () => {
   it.each([
     ['promptTokenCount 欠測', { candidatesTokenCount: 200, thoughtsTokenCount: 50 }],
     ['candidatesTokenCount 欠測', { promptTokenCount: 1000, thoughtsTokenCount: 50 }],
-    ['thoughtsTokenCount 欠測', { promptTokenCount: 1000, candidatesTokenCount: 200 }],
-  ])('%s → null (0 に潰さない・欠測を安価に見せかけない)', (_label, usage) => {
+  ])('%s → null (0 に潰さない・欠測を安価に見せかけない。この2つは成功呼び出しで常に存在し、欠測=usage 未報告=真に算出不能)', (_label, usage) => {
     expect(estimateUsdPerImage(usage, 'gemini-2.5-flash')).toBeNull()
+  })
+
+  it('thoughtsTokenCount のみ欠測 → null にせず 0 として算出する (optional field: thinking を行わなかった場合は省略される。欠測 = 0 課金であり算出不能ではない)', () => {
+    const usage = { promptTokenCount: 1000, candidatesTokenCount: 200 }
+    const result = estimateUsdPerImage(usage, 'gemini-2.5-flash')
+    expect(result).not.toBeNull()
+    expect(typeof result).toBe('number')
+    const expected = (1000 * 0.3) / 1_000_000 + (200 * 2.5) / 1_000_000
+    expect(result).toBeCloseTo(expected, 12)
+  })
+
+  it('lite モデル実運用ケース: thinking をしないため thoughtsTokenCount が省略されても N/A にならず厳密な USD を算出する', () => {
+    const usage = { promptTokenCount: 3697, candidatesTokenCount: 461 }
+    // gemini-3.1-flash-lite: input 0.25 / output 1.50 ($/1M tokens)、thoughts 省略=0
+    const expected = (3697 * 0.25) / 1_000_000 + (461 * 1.5) / 1_000_000
+    const result = estimateUsdPerImage(usage, 'gemini-3.1-flash-lite')
+    expect(result).not.toBeNull()
+    expect(result).toBeCloseTo(expected, 12)
   })
 
   it('token count が正当な 0(欠測ではない実測値)でも算出される (=== undefined のみ null 化。0 は falsy だが欠測ではない)', () => {
