@@ -3,8 +3,6 @@ onlyBuiltDependencies:
   - utf-8-validate
 
 overrides:
-  # 導入経緯不明・現在ツリー未到達(pnpm why uuid が空・2026-07-26 確認)。次に deps を触る際に撤去可否を判断
-  uuid: ^14.0.0
   # GHSA-6g55-p6wh-862q 対処(postcss <=8.5.11 = sourceMappingURL 経由の任意ファイル
   # 読取)。caret は patched を許容するが lockfile が @tailwindcss/postcss + shadcn 経由で
   # 8.5.10 に stale pin(pnpm は range 内の古い lock を install で bump しない)→ floor を
