@@ -10,14 +10,17 @@
 
 ① prod OCR モデルを `gemini-3.1-flash-lite` → `gemini-3.5-flash-lite` へ移行(世代を上げ解答群の重複抽出が改善するかを見る・単価は 2.5-flash と同額ゆえ値上がりなし)。② prompt の解答群記述を「問題タイプ名(正誤組合せ問題のように)」条件付けから「受験者は何を選ぶか」の単一の問いへ差し替える(「のように」がモデルの類推による適用範囲拡大を招いていたため)。
 
-## 2. 事前確認の結果(OT 要求・②-0 sweep の 3.5-flash-lite)
+## 2. 事前確認の結果(OT 要求・実 API・現行コード・組合せ問題サンプル)
 
-`scripts/ai/ocr-samples/out/compare-armA-1785240172583`(②-0・5 モデル arm A sweep)残存。全 16 行(model×card)を programmatic 解析(option 本文が question_text に substring 出現 = 重複):
+OT が組合せ問題を含む新サンプル(`mock-exam-set-p-1..5.png`・5 ページ・実教材ゆえ非 commit)を配置。**現行コード(cost.ts/prompt 変更前)**のまま `ocr-compare.ts --arm A` を **gemini-3.1-flash-lite(現行)+ gemini-3.5-flash-lite(移行先候補)の 2 モデル × 5 ページ**で実行(2026-07-29・OT 合図)。目的 = 変更前に「3.5 でも重複が出るか」を切り分け、モデル移行 / prompt 差し替えのどちらが効くかを isolate。option 本文が question_text に substring 出現 = 重複を programmatic 解析(22 card 行):
 
-- **全モデル・全 card で解答群重複 = 0**(3.5-flash-lite / 3.1-flash-lite とも検出されず)。
-- この sweep の 3 画像は全て「図 + 選択肢」型で、**正誤組合せ表(選択肢が表形式)のケースを含まない** → OT が 3.1-flash-lite で観測した重複はこれらサンプル外(組合せ問題 / production 由来)。
-- 3.5-flash-lite の別事象: chushou.png Card1 = **図を ASCII art で question_text に描画**(②-4 材料)/ chushou2 Card3 = `![図]` 混入(②-3 で描画側除去済)。
-- **結論**: 移行が重複を改善するかは既存 sweep からは**結論不能**。②-3.5 の主眼は **prompt 差し替え**(直接的な重複対策)であり、モデル移行は同額での探索。Phase 2 arm 比較で観測する。
+- **決定的結果(組合せ問題 = p-2)**:
+  - **gemini-3.5-flash-lite**: Card003 で **全 5 選択肢を question_text に列挙(「〔解答群〕ア…オ…」)+ options[] にも同 5 = 完全重複**(dupCount 5)。Card004 も **全 4 選択肢重複**(dupCount 4)。
+  - **gemini-3.1-flash-lite(現行)**: 同 Card003/004 で **重複ゼロ**(question_text = リード文+参考表のみ・選択肢は options[] のみ)。
+- **→ 移行の前提が反証された**: 3.5-flash-lite は組合せ問題で解答群重複を **悪化**させる(現行 3.1 は重複しない)。「世代を上げて改善」の仮説は**成立せず**。**モデル移行(commit A)は重複目的には逆効果**。
+- 他観測: ASCII art 描画は本サンプルでは無し / `![…]` 混入は 3.5 が 2 card・3.1 が 1 card(3.5 やや多)/ 表は参考表が question_text に入る(両モデル・legitimate)・選択肢の表再掲は無し / 致命数値(表の価格・数量・指数値)は両モデル保持(3.5 に軽微な字落ち「物価指数→物価数」)。card/option 脱落は両モデルなし。
+
+- **結論(§1 の再検討が必要)**: **prompt 差し替え(commit B)は必須で確定**(現行 prompt の曖昧性が重複を許し、モデル世代 up では直らない)。一方 **モデル移行(commit A・→3.5-flash-lite)は重複を悪化させるため、この理由での移行は不適**。→ **commit A の是非は OT 判断**(重複以外の移行理由がなければ ②-3.5 から commit A を外し prompt 差し替え単独にする案が有力)。§4.1 / §7 は commit A の可否確定後に調整する。
 
 ## 3. 非目標(凍結)
 
