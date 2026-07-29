@@ -34,10 +34,12 @@ OT が組合せ問題を含む新サンプル(`mock-exam-set-p-1..5.png`・5 ペ
 
 `lib/ai/prompts/ocr-extract.ts` の COMMON_EXTRACTION_RULES を差し替え。OT 指定の差し替え後ルール:
 
-- `question_text`: 受験者が最終的に選ぶ選択肢そのもの以外のすべて(リード文 / 前提記述 a〜d / 穴埋め本文 / 参考表 を含む)。
+- `question_text`: 設問の問い、解答条件、症例文、資料文、穴埋め等を含む本文、および後続の選択肢から番号・記号で参照される前提記述を入れる(**ポジティブリスト定義**)。Markdown 可。
 - `options[]`: 受験者が最終的に選ぶ選択肢(1〜5、ア〜オ 等の番号付き行)。
 - 同じ内容を question_text と options[] の両方に入れない。
 - 選択肢が表形式で並ぶ場合、その表は options[] として抽出し question_text に表として再掲しない。
+
+**Codex Critical(P1)対処(2026-07-29)**: 当初案「question_text = 選ぶ選択肢以外のすべて」は正答キー / 解説 / メタデータも question_text に含めてしまい、専用 field(correct_answer_ids / explanation_text / options[].explanation / custom_props)と矛盾し**学習者に正答が露出**しうる(旧「リード文のみ」は narrow で安全だったのを broad 化して regression を導入)。OT 判断で question_text を「入れるものを列挙する**ポジティブリスト**」(問い/解答条件/症例文/資料文/穴埋め本文/参照される前提記述)へ変更。正答・解説・メタデータはリストに含まれず各専用 field へ = 露出せず既存 ANSWER_GROUNDING_RULES / EXPLANATION_USAGE_RULES と整合。
 
 **line 223 も併せて置換**(承認済): 既存 line 223「question_text: … 通常は、解答選択肢を除いた *リード文のみ* を入れる」が新ルール「question_text = 前提記述/参考表を含む」と矛盾する(前提記述 a〜d は「リード文」でない)。「のように」を消してもこの矛盾が残ると狙い(prompt の曖昧性除去)が半減するため、line 223 の「リード文のみ」を撤去し新 question_text 定義に統一する。差し替え対象 = line 223-227。line 228/233(images)は不触。
 
