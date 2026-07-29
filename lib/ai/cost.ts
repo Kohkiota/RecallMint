@@ -7,12 +7,17 @@
 // S1.9.2: ocr_cost_yen 列が numeric(10,4) 化されたため (S1.9.1)、 integer 丸めを
 // 廃止し小数 4 桁で保持する。
 
-// USD per 1M tokens (2026-05 時点の概算、 公式値が変わったら手動更新)
+// USD per 1M tokens (公式値が変わったら手動更新)。
+// flash = 主 OCR モデル。②-2 で lite 系モデルへ移行し単価も lite 値へ更新した
+// (実体のモデル ID は modelId() が単一 source ゆえここでは綴らない)。lite 単価の
+// 出典 = scripts/ai/lib/pricing.ts PRICE_TABLE の lite 系エントリ。ここは JPY 本体
+// 計上(ModelKind キー)ゆえ pricing.ts(USD eval・model 文字列キー)とは別テーブル
+// だが lite 単価は一致させる(drift 注意)。
 const PRICING_USD_PER_1M: Record<
   ModelKind,
   { input: number; output: number }
 > = {
-  flash: { input: 0.3, output: 2.5 },
+  flash: { input: 0.25, output: 1.5 },
   pro: { input: 1.25, output: 10.0 },
 }
 
@@ -35,6 +40,9 @@ export function estimateCostYen(
   return Math.round(usd * JPY_PER_USD * 10_000) / 10_000
 }
 
+// ModelKind 'flash' は主 OCR モデルの歴史的ラベル(②-2 で実体は lite 系へ移行)。
+// 実体のモデル ID はこの modelId() の返り値が単一 source — ラベルやコメントに
+// 実体 ID を重複させない(二重書きすると次の移行で片方だけ直して矛盾する)。
 export function modelId(kind: ModelKind): string {
-  return kind === 'flash' ? 'gemini-2.5-flash' : 'gemini-2.5-pro'
+  return kind === 'flash' ? 'gemini-3.1-flash-lite' : 'gemini-2.5-pro'
 }
