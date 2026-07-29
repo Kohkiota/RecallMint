@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 
-import { MdTableText } from './md-table-text'
+import { MdTableText, MdTableBlock } from './md-table-text'
 
 afterEach(cleanup)
 
@@ -25,12 +25,17 @@ describe('MdTableText', () => {
     expect(container.querySelector('*')).toBeNull()
   })
 
-  it('画像記法 → <img> 不在・alt テキスト表示', () => {
+  it('表内画像記法 → <img> も alt も出さない(②-3 契約変更: 本文に画像記法が現れない)', () => {
+    // alt は header/body の他セル文字列と衝突しない distinctive な語にする
+    // (旧 test は header「薬剤」「画像」連結が alt「薬剤画像」と偶然一致していた)。
     const { container } = render(
-      <MdTableText value={'| 薬剤 | 画像 |\n|---|---|\n| A | ![薬剤画像](https://x.test/y.png) |'} />,
+      <MdTableText value={'| 名称 | 図 |\n|---|---|\n| A | ![キャプション画像](https://x.test/y.png) |'} />,
     )
     expect(container.querySelector('img')).toBeNull()
-    expect(container.textContent).toContain('薬剤画像')
+    // ②-3: 旧挙動は alt「キャプション画像」を表示していたが、target 単位契約の描画側強制で
+    // alt も出さない(inline 画像記法は本文に現れない)。表構造は区切り温存で保持。
+    expect(container.textContent).not.toContain('キャプション画像')
+    expect(container.querySelector('table')).not.toBeNull()
   })
 
   it('空 alt 画像 → <img> 不在(表示なし)', () => {
@@ -83,5 +88,40 @@ describe('MdTableText', () => {
     expect(container.querySelector('table')).not.toBeNull()
     expect(container.textContent).toContain('まえがき')
     expect(container.textContent).toContain('あとがき')
+  })
+
+  it('text セグメントの画像記法 → literal も img も出さない(②-3 行ごと除去)', () => {
+    const { container } = render(
+      <MdTableText value={'問題文は次のとおり。\n\n![下図](q1-img-1)\n続きの本文'} />,
+    )
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).not.toContain('![')
+    expect(container.textContent).not.toContain('q1-img-1')
+    expect(container.textContent).toContain('問題文は次のとおり。')
+    expect(container.textContent).toContain('続きの本文')
+  })
+
+  it('MdTableBlock: 画像除去で表構造が変わっても wrapper 判定と描画が一致(<table> in <p> にしない・Codex r2)', () => {
+    // 元は | a | と |---| の間に画像行があり表として無効 → 画像除去で有効な表になる。
+    // hasTable 判定と描画を同じ strip 後 segments で行うため、表が出るなら <div> でラップされ
+    // <table> が <p> の子にならない(HTML パーサの <p> auto-close による hydration mismatch を防ぐ)。
+    const { container } = render(<MdTableBlock value={'| a |\n![x](u)\n|---|\n| 1 |'} />)
+    const table = container.querySelector('table')
+    // 画像除去で表が有効化する scenario を確実に踏むため table 存在も assert(vacuous 回避)。
+    expect(table).not.toBeNull()
+    expect(table?.closest('p')).toBeNull()
+  })
+
+  it('reference 画像の definition が表を挟んで別セグメントでも除去(complete document parse・Codex P2)', () => {
+    // ![x][img] の image 記法と definition [img]: /asset が root-level 表を挟んで別セグメントに
+    // 分かれるケース。segment 独立 parse では imageReference が解決されず残るが、whole で strip
+    // するため除去される(definition 行そのものは MVP 範囲外で残りうる)。
+    const { container } = render(
+      <MdTableText value={'前文 ![x][img]\n\n| a |\n|---|\n| 1 |\n\n[img]: /asset'} />,
+    )
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).not.toContain('![x]')
+    expect(container.textContent).toContain('前文')
+    expect(container.querySelector('table')).not.toBeNull()
   })
 })

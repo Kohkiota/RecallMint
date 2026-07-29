@@ -10,8 +10,8 @@
 // - table セグメント = react-markdown。切り出しが表だけゆえフル MD で描いても表しか出ない。
 //
 // react-markdown 設定(spec §3.4・全体ルール4):
-// - components.img 無効(alt テキストのみ描画・<img> を出さない = assetId 間接参照の迂回と
-//   CSP img-src 違反を防ぐ。外部リクエスト 0 = 不変条件③)。
+// - components.img は null(②-3: 本文に画像記法が現れない契約の描画側強制で <img> も alt も
+//   出さない。通常は MdTableSegments の stripInlineImages で画像ノード除去済・これは防御)。
 // - components.a 無効(children のみ描画・<a> を出さない = display 全体クリック編集と競合防止)。
 // - singleTilde: false(セル内 ~x~ を打消し線にしない・GFM 準拠)。
 // - rehype-raw 不使用ゆえセル内 raw HTML は要素化されない。
@@ -22,6 +22,7 @@ import remarkGfm from 'remark-gfm'
 import type { PluggableList } from 'unified'
 
 import { segmentMdTables, type MdSegment } from '@/lib/markdown/segment-md-tables'
+import { stripInlineImages } from '@/lib/markdown/strip-inline-images'
 
 const REMARK_PLUGINS: PluggableList = [[remarkGfm, { singleTilde: false }]]
 
@@ -29,8 +30,10 @@ const REMARK_PLUGINS: PluggableList = [[remarkGfm, { singleTilde: false }]]
 // width 固定なし(shrink-to-fit)。セルに overflow-wrap:anywhere で min-content 寄与を潰し、
 // テーブルビュー(table-layout auto)で外側列を押し広げない。
 const COMPONENTS: Components = {
-  // img: alt のみ(黙って消さず alt を出す)。src は DOM に到達しない。
-  img: ({ alt }) => <>{alt ?? ''}</>,
+  // ②-3: inline 画像記法は本文に現れない契約(target 単位で images[] に紐づける確定設計の
+  // 描画側強制)。旧挙動は alt を出したが、alt も出さず非表示にする。通常は MdTableSegments の
+  // stripInlineImages で画像ノードが除去済ゆえここへ到達しないが、すり抜け時の防御として null。
+  img: () => null,
   // a: children(リンク文字列)のみ。href は DOM に到達しない。
   a: ({ children }) => <>{children}</>,
   table: ({ children }) => (
@@ -48,9 +51,21 @@ const COMPONENTS: Components = {
   ),
 }
 
-// 低レベル: 事前計算済みの segments を描画する。C/E(学習面)が segmentMdTables を 1 回だけ
-// 呼び、tag 判定(p/div)と描画で結果を共有するために export(二重パース回避・spec §3.3)。
-export function MdTableSegments({ segments }: { segments: MdSegment[] }) {
+// ②-3: card body の描画経路は inline 画像記法(![…](…) / 参照記法 ![x][id])を除去してから
+// segment する。**complete document で strip**するため reference 記法の definition([id]: url)が
+// 別行にあっても解決される(Codex r1)。strip 後の segments を hasTable 判定(<p>/<div>)と描画の
+// 両方に使うため、wrapper 判定と render が常に一致する(画像除去で表構造が変わっても不整合しない・
+// Codex r2)。画像なしは stripInlineImages が同一 string を返し segmentMdTables(value) と等価
+// = DOM 不変(不変条件①)。
+function segmentStrippedForRender(value: string): MdSegment[] {
+  return segmentMdTables(stripInlineImages(value))
+}
+
+// 低レベル: 事前計算済みの(呼び出し側で strip 済)segments をそのまま描画する。二重パース回避・
+// spec §3.3。画像除去は segmentStrippedForRender が担うため、ここは受け取った segments を素直に
+// 描画する。**module 内部限定(非 export)**: 画像除去の不変条件は segmentStrippedForRender に
+// 移ったため、直接 raw segments を渡す経路を外に開かない(外部は MdTableText / MdTableBlock を使う)。
+function MdTableSegments({ segments }: { segments: MdSegment[] }) {
   return (
     <>
       {segments.map((seg, i) =>
@@ -68,7 +83,7 @@ export function MdTableSegments({ segments }: { segments: MdSegment[] }) {
 }
 
 export function MdTableText({ value }: { value: string }) {
-  const segments = React.useMemo(() => segmentMdTables(value), [value])
+  const segments = React.useMemo(() => segmentStrippedForRender(value), [value])
   return <MdTableSegments segments={segments} />
 }
 
@@ -83,7 +98,7 @@ export function MdTableBlock({
   value: string
   className?: string
 }) {
-  const segments = React.useMemo(() => segmentMdTables(value), [value])
+  const segments = React.useMemo(() => segmentStrippedForRender(value), [value])
   const hasTable = segments.some((s) => s.type === 'table')
   const Tag = hasTable ? 'div' : 'p'
   return (
