@@ -33,18 +33,28 @@ card body の本文フィールドに混入する markdown 画像記法 `![…](
 
 全描画経路(`MdTableText` / `MdTableBlock` / 直接 caller = session-runner の tag 判定共有)は低レベル render **`MdTableSegments`**(`components/markdown/md-table-text.tsx`)に収束する(pre-segmented `segments` を描画)。ここで:
 
-- **text セグメント**: 現状 `<React.Fragment>{seg.value}</React.Fragment>`(raw)→ `stripInlineImages(seg.value)` を適用して描画。
-- **table セグメント**: react-markdown の `components.img` を **`() => null`**(現状 `({alt}) => alt` から変更)にし、table セル内 inline 画像を非表示化。
+全 caller が `MdTableSegments` を通るため、ここに strip を置けば**どの caller もバイパスできない**(caller 各所に散らさない)。各セグメントの値に `stripInlineImages(seg.value)` を適用してから描画:
 
-`segmentMdTables` は不変(strip は segment 後の各 text セグメント値に適用ゆえ、segment 関数の `value 連結 === 入力` 不変条件に影響しない)。
+- **text セグメント**: 現状 `<React.Fragment>{seg.value}</React.Fragment>`(raw)→ strip 後の値を描画。
+- **table セグメント**: strip 後の値を react-markdown へ。加えて防御として `components.img` を **`() => null`**(現状 `({alt}) => alt` から変更)にし、万一 strip をすり抜けた画像も非表示化(belt-and-suspenders)。
 
-### 4.3 `stripInlineImages` helper
+`segmentMdTables` は**触らない**(不変条件 `value 連結 === 入力` を保つ)。strip は segment 後の各セグメント値に適用するため segment 関数に影響しない。tag 判定(hasTable)は画像除去で不変(画像 ≠ 表)。
 
-新 pure 関数(`lib/markdown/strip-inline-images.ts`・unit test 厚く):
+### 4.3 `stripInlineImages` helper — **AST ノードの offset で削除(再文字列化しない)**
 
-- 任意の markdown 画像記法 `![alt](url)` を除去。
-- **orphaned 空行を残さない**: `![…]` の直前が blank 行(`\n\n![…]`)の場合、除去で末尾に空行が残ると whitespace-pre-wrap で空行描画される。除去は隣接する余剰空白/改行も畳む(例: 画像記法とその前後の空行を 1 単位で除去、または除去後に連続空行を 1 つに正規化)。具体 regex は plan で確定。
-- alt 内に `]` を含む稀ケースは非対応で可(MVP・OCR 出力は単純 alt)。
+新 pure 関数(`lib/markdown/strip-inline-images.ts`・unit test 厚く)。**正規表現による字面除去はしない**(`![alt](foo(and(bar)))` / `![alt](<foo bar>)` / `![alt](url "title")` / reference 記法 `![alt][id]` を誤り、code span・code block 内・escape `\![...]` を巻き込んで**正解選択肢を消す**危険がある)。
+
+実装方針:
+1. **mdast で parse**(`remark-parse` + `remark-gfm` = 既存依存・`segment-md-tables.ts` と同 processor。**新規依存なし**)。
+2. tree を再帰 walk(unist-util-visit の新規依存を避け手書き walk)し、**`type==='image'` と `type==='imageReference'` のノードの `position.start.offset` / `position.end.offset` を収集**。code span(`inlineCode`)/ code block(`code`)内はそもそも image ノードにならず、escape された `\![...]` も image ノードにならない → **自然に対象外**。nested paren / angle URL / title / reference もパーサが正しく解釈する。
+3. **AST を再文字列化しない**(空白・改行・箇条書き・表整形が正規化され「改行 \n 保持」prompt 最優先ルール + segmentMdTables 不変条件に衝突する)。代わりに **収集した [start, end) を offset 降順にソートし、元文字列から後ろ向きに該当範囲だけ削除**(後ろ向きゆえ削除で offset がズレない)。他の全文字はバイト等価で保存。
+4. **imageReference の definition 行**(`[id]: url`)は MVP 範囲外(OCR は reference 記法を出さない・出た場合の残 definition 行は稀な軽微 artifact として記録に留める)。alt 内 `]` 等の稀ケースもパーサ任せ。
+
+**空白・空行の扱い**(全体 trim / 空白圧縮は**禁止** = 表・code を壊す。処理は画像ノードの左右に限定):
+- **画像が行の唯一の内容**(前後改行の間が空白 + 画像のみ)→ **その行を削除**(削除範囲を行頭空白 + 片側改行まで拡張し orphaned 空行を残さない)。
+- **画像が段落の途中** → **画像構文のみ削除**(周囲 text 保持)。
+- **表セル内が画像のみ** → **セルは空にするが区切り `|` は残す**(offset 削除は画像ノード範囲のみ = セル区切りはノード外ゆえ自然に温存・行/列は変えない)。
+- **日本語文中に隣接する場合の空白**の扱いは実装時に決定し **test で固定**。
 
 ## 5. 完了 gate(全 exit 0)
 
@@ -57,16 +67,31 @@ card body の本文フィールドに混入する markdown 画像記法 `![…](
 
 **保証増ゆえ red 検証必須**(契約 pin が壊す変異で fail する実証)。
 
-- `lib/markdown/strip-inline-images.test.ts`(新規): 各種入力(表外 `![下図](q1-img-1)` 除去 / 複数 / alt 空 / 前後空行の畳み / 画像なし no-op / 非画像 markdown `[link](url)` は残す)を pin。
+- `lib/markdown/strip-inline-images.test.ts`(新規):
+  - **除去 pin**: 表外 `![下図](q1-img-1)` 除去 / 複数 / alt 空 / nested paren `![a](foo(bar))` / angle URL `![a](<foo bar>)` / title `![a](url "t")` / reference `![a][id]`。
+  - **非対象 pin(正解選択肢を消さない証明)**: **code span 内**（`` `![a](x)` `` は残す)/ **code block 内**(残す)/ **escape** `\![a](x)`(残す)/ 非画像 link `[link](url)`(残す)/ 画像なし no-op。
+  - **空白ルール pin**: 行唯一の画像 → 行削除(orphaned 空行なし)/ 段落途中 → 構文のみ / 表セル内画像 → セル空・`|` 温存(行/列不変)。
+  - **冪等性 pin**: `stripInlineImages(stripInlineImages(x)) === stripInlineImages(x)`。
+  - **性質ベース pin**: 除去後の文字列を再 parse(mdast)して **image / imageReference ノード 0 件**。
 - `components/markdown/md-table-text.test.tsx`(更新): **text セグメントに `![…]` → DOM に literal も img も現れない** を追加 pin。**既存 `画像記法 → <img> 不在・alt テキスト表示`(:28-32)を「table image → alt も出さない(非表示)」へ更新**(論点 1 の契約変更)。
 - **red 検証**: strip を無効化(helper が入力素通し)or img override を alt 復帰させる変異で当該 pin が fail することを示し、commit message に「**red 検証**」記録。
 
-## 7. 持ち越し(②-4)= prompt 画像記述 3 件
+## 7. 持ち越し(②-4)
 
-②-4(図版切り出し)が prompt を触る際に一括(②-3 では触らない):
+**②-3 では扱わない。** ②-4(図版切り出し)着手時に対処する。
+
+### prompt 画像記述 3 件(②-4 で一括整理)
 1. `IMAGE_REFERENCE_RULES` 冒頭コメント「画像本体切り出せない」= 同ページ図は誤(box_2d 実証)→ 書き換え。
 2. `COMMON_EXTRACTION_RULES`「画像は抽出しない」= ②-4 方針変更そのもの。
 3. 「プレースホルダ埋め込みについて」行削除。
+
+### 設計制約 2 件(OT 提起・②-4 spec で反映)
+4. **bbox を捨てない**: 切り出した画像を通常 asset として保存するだけでなく、**元ページ上の座標・検出領域 ID を別途保持**する。座標が無いとパディングを調整して切り直せない(box2d 可視化目視で「矩形がぎりぎりで出所表記が切れる」等の調整が後から不能になる)。
+5. **`ambiguous` を許す**: 図が question と option_1 の境界にある場合、モデルに必ずどちらかを選ばせると silent error になる。**target の値域に「判定不能」を含めるか、候補を複数返せる形**にする。
+
+### test 素材(②-4 用・②-3 では未使用)
+- OT が擬似問題 `mock-exam-page2.{png,pdf,html}` を追加(全て架空: 問1=問題文+解説に別図 2 つ / 問2=選択肢 1〜4 に別図 / 問3=「別冊No.1」参照のみ・ページ内図なし=切り出し対象不在)。OT 提供後 **`tests/fixtures/ocr/` へ tracked** で取り込む(page1 と同様)。既存実教材 3 枚が全て「問題文の図」で **選択肢ごとの図の target 判定が未検証**という穴を埋める素材。
+- 実教材(看護師国家試験)は OT 用意・**commit しない**(`scripts/ai/ocr-samples/` に置き比較 run でのみ使用)。
 
 ## 8. commit 構成と tag
 
