@@ -2,7 +2,7 @@
 
 - 日付: 2026-07-29
 - Sprint: ②-3.5(OCR track / 小)
-- 状態: **Phase 1 完了・未 push**(feat 1 commit `[reviewed]`)。Phase 2(prompt 前後 arm 比較)は OT 実 API 合図待ち。
+- 状態: **②-3.5 完了**(Phase 1 = feat `1f40985` `[reviewed]` OT push 済 / Phase 2 = 観測完了・OT 判定で完了)。Phase 2 記録は末尾 §Phase2。
 - spec: `docs/superpowers/specs/2026-07-29-ocr-2-3-5-model-and-answer-group-design.md`
 - plan: `docs/superpowers/plans/2026-07-29-ocr-2-3-5-answer-group-prompt.md`
 
@@ -45,6 +45,17 @@ lint 0 / typecheck 0 / build 0 / **test 4041**(prompt は unit test 無しゆえ
 - 主目的 = 組合せ問題 p-2 Card003/004 の解答群完全重複(dupCount 5/4)が after で 0 になるか(programmatic 解析・結果 scratchpad 出力 → Read)。
 - 併せ: 表再掲 / `![…]` 混入 / 表出力率 / 致命シグナル劣化(劣化 = 停止 OT)。実教材出力・scratch は報告後掃除(commit しない)。
 
-## ②-4 持ち越し(記録済)
+## Phase2 観測結果(OT 判定 = 完了)
 
-spec §10(A-E + prompt 3 件 + test 素材)/ architecture.md §10(検証失敗の隔離原則)/ ledger(cross-field 検証 / 100 問分割 / 3.5-lite 除外・trigger 付き)。
+3.1-flash-lite 固定・prompt 前後・組合せ問題サンプル 5 ページ(before = 現行 prompt / after = 新 prompt)。
+
+- **主目的(dupCount 5→0)は 3.1 では実証不能**: 5/4 は §2 の **3.5-flash-lite** の値。**3.1(維持モデル)は同 p-2 で before から既に 0**(3.1 は重複しない・3.5 が悪化させていた)。3.1 固定ゆえ before/after とも全 card 0 → 潰すべき 5 が無く改善を示せない。
+- **逆方向確認 = 全 PASS**(無回帰 + 答え露出解消の実証): ① 通常 4 択で選択肢 question_text 非混入(after dup 全 0)② 解説は explanation_text へ(p-5 Card9・question_text 漏れなし)= **Codex 答え露出 Critical が実機で解消**③ 正答は correct_answer_ids へ(漏れなし)④ 組合せの前提記述(参考表)保持・optCount 不変で欠落なし。card/option 脱落なし・表再掲なし・`![…]`混入 before/after 同程度。
+- **OT 判定 = 完了**: 主目的(重複解消そのもの)は未実証だが、① 答え露出が実機で塞がれた実証(新 prompt でしか検証不能・本 sprint 最大の成果)② 逆方向の副作用ゼロ ③ prompt の曖昧性除去(拡大解釈 + 残余定義の巻き込みを構造解消)をもって完了。原因は潰れている。
+- **追加検証を行わない理由**: 3.1 が重複する入力の再現は、確率的挙動ゆえ同一画像再実行でも再現しない場合があり「直った/直っていない」を確定できない。実ユーザー 0 ゆえコスト>便益。→ ledger に「解答群重複の再発監視」を trigger 付き記録。
+
+**claude.ai 指定誤りの訂正(記録)**: Phase 2 の合否基準「p-2 Card003 の dupCount 5→0」は **claude.ai の指定誤り**だった。5/4 は 3.5-flash-lite の値で、3.1 固定にモデルを撤回した時点でこの基準は成立しなくなっていた(撤回判断は正しかったが判定基準の更新を忘れた)。CC が指示どおり実行の上「構造的に取れない」と説明したのは正しい対応。→ 「判定基準はスコープ変更(モデル撤回等)と同時に更新する」教訓。
+
+## ②-4 持ち越し(統合記録 = `docs/audit/2026-07-29-ocr-2-4-carryover-and-design-notes.md`)
+
+spec §10(A-E + prompt 3 件 + test 素材)/ architecture.md §10(検証失敗の隔離原則)/ ledger(cross-field 検証 / 100 問分割 / 3.5-lite 除外 / 解答群重複再発監視・trigger 付き)+ **OT の全 ②-4 リストを統合した carryover doc**(検出条件の視覚領域化・表/図切り分け・パディング・表示順・ASCII art・client-side crop 等の新規項目含む)。
