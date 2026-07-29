@@ -32,11 +32,14 @@ export function estimateCostYen(
   model: ModelKind,
   inputTokens: number,
   outputTokens: number,
+  thoughtsTokens = 0,
 ): number {
   const p = PRICING_USD_PER_1M[model]
+  // thinking(thoughtsTokens)は output 単価で課金される(公式・②-0 helper pricing.ts と同式)。
+  // thinking しないモデル(lite 系)は欠測 = 0 ゆえ第 4 引数省略で従来どおり。
   const usd =
     (inputTokens / 1_000_000) * p.input +
-    (outputTokens / 1_000_000) * p.output
+    ((outputTokens + thoughtsTokens) / 1_000_000) * p.output
   return Math.round(usd * JPY_PER_USD * 10_000) / 10_000
 }
 

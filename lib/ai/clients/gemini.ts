@@ -48,6 +48,9 @@ export type GeminiCallResult = {
   text: string
   inputTokens: number
   outputTokens: number
+  // thinking トークン。thinking しないモデル(lite 系)は API 欠測ゆえ 0。
+  // cost 計上で output 単価課金に加算する(estimateCostYen 第 4 引数)。
+  thoughtsTokens: number
 }
 
 // @google/genai SDK の ApiError (generateContent が throw するクラス) は
@@ -151,5 +154,6 @@ export async function callGemini(
     text,
     inputTokens: usage.promptTokenCount ?? 0,
     outputTokens: usage.candidatesTokenCount ?? 0,
+    thoughtsTokens: usage.thoughtsTokenCount ?? 0,
   }
 }

@@ -48,7 +48,7 @@ afterEach(() => {
 })
 
 describe('callGemini', () => {
-  it('text + token usage を返す', async () => {
+  it('text + token usage を返す (thoughtsTokenCount 欠測 → thoughtsTokens=0)', async () => {
     mockGenerateContent.mockResolvedValue({
       text: '{"cards":[]}',
       usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200 },
@@ -59,7 +59,22 @@ describe('callGemini', () => {
       text: '{"cards":[]}',
       inputTokens: 100,
       outputTokens: 200,
+      thoughtsTokens: 0,
     })
+  })
+
+  it('usageMetadata.thoughtsTokenCount を thoughtsTokens として返す', async () => {
+    mockGenerateContent.mockResolvedValue({
+      text: '{"cards":[]}',
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 200,
+        thoughtsTokenCount: 50,
+      },
+    })
+    const { callGemini } = await importCallGemini()
+    const r = await callGemini(baseInput)
+    expect(r.thoughtsTokens).toBe(50)
   })
 
   it('空 response text は throw', async () => {
@@ -184,7 +199,7 @@ describe('callGemini', () => {
     })
     const { callGemini } = await importCallGemini()
     const r = await callGemini(baseInput)
-    expect(r).toEqual({ text: '{"cards":[]}', inputTokens: 10, outputTokens: 20 })
+    expect(r).toEqual({ text: '{"cards":[]}', inputTokens: 10, outputTokens: 20, thoughtsTokens: 0 })
   })
 
   it('abort 以外の error は timeout に変換せずそのまま throw する', async () => {

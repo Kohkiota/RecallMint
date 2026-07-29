@@ -48,6 +48,7 @@ describe('runOcrPipeline', () => {
       text: validResponseText,
       inputTokens: 1_000_000,
       outputTokens: 100_000,
+      thoughtsTokens: 0,
     })
     const { runOcrPipeline } = await importOcr()
     const result = await runOcrPipeline([sampleFile])
@@ -55,12 +56,29 @@ describe('runOcrPipeline', () => {
     expect(result.modelChain).toEqual(['flash'])
     expect(result.flashError).toBeUndefined()
     expect(result.tokenUsage).toEqual([
-      { model: 'flash', inputTokens: 1_000_000, outputTokens: 100_000 },
+      { model: 'flash', inputTokens: 1_000_000, outputTokens: 100_000, thoughtsTokens: 0 },
     ])
     // Flash(lite) 1M input * $0.25 + 100k output * $1.5 = $0.40 * 150 = ¥60
     // (②-2: gemini-3.1-flash-lite 単価。S1.9.2: integer 丸め廃止、 小数 4 桁保持)
     expect(result.costYen).toBe(60)
     expect(mockCallGemini).toHaveBeenCalledTimes(1)
+  })
+
+  it('thoughtsTokens を tokenUsage に透過し costYen の output 課金に加算', async () => {
+    mockCallGemini.mockResolvedValueOnce({
+      text: validResponseText,
+      inputTokens: 1_000_000,
+      outputTokens: 100_000,
+      thoughtsTokens: 200_000,
+    })
+    const { runOcrPipeline } = await importOcr()
+    const result = await runOcrPipeline([sampleFile])
+    expect(result.tokenUsage).toEqual([
+      { model: 'flash', inputTokens: 1_000_000, outputTokens: 100_000, thoughtsTokens: 200_000 },
+    ])
+    // Flash(lite): 1M in * $0.25 + (100k out + 200k thoughts) * $1.5
+    //   = $0.25 + 300k/1M*$1.5 = $0.25 + $0.45 = $0.70 * 150 = ¥105
+    expect(result.costYen).toBe(105)
   })
 
   // Pro fallback 撤去: Flash 0 cards → 即 throw (Pro へ移らない)

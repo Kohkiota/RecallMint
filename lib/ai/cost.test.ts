@@ -26,6 +26,14 @@ describe('estimateCostYen', () => {
   it('sub-yen request (1k input + 0 output) Flash(lite) = 0.00025 USD * 150 = 0.0375 JPY (integer 丸めで 0 に潰れない)', () => {
     expect(estimateCostYen('flash', 1_000, 0)).toBe(0.0375)
   })
+
+  it('Flash(lite): thoughtsTokens は output 課金に加算 (0 in + 1M out + 1M thoughts = (2M*1.5/1M)*150 = 450 JPY)', () => {
+    expect(estimateCostYen('flash', 0, 1_000_000, 1_000_000)).toBe(450)
+  })
+
+  it('thoughtsTokens 省略時は 0 として従来どおり (0 in + 1M out = 225 JPY)', () => {
+    expect(estimateCostYen('flash', 0, 1_000_000)).toBe(225)
+  })
 })
 
 describe('modelId', () => {

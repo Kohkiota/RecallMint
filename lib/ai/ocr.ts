@@ -83,6 +83,7 @@ export type OcrPipelineResult = {
     model: ModelKind
     inputTokens: number
     outputTokens: number
+    thoughtsTokens: number
   }>
 }
 
@@ -112,7 +113,7 @@ async function callWithRetry(
   // rng は jitter 生成に使う乱数関数。 デフォルトは Math.random。
   // test では固定値を渡して待機時間を決定論的に検証する。
   rng: () => number = Math.random,
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ text: string; inputTokens: number; outputTokens: number; thoughtsTokens: number }> {
   let lastErr: unknown
   for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt++) {
     // onAttempt は callGemini 直前で発火。 成功・失敗・retry すべて 1 回ずつ計上
@@ -194,6 +195,7 @@ async function runPipelineInner(
       model: 'flash',
       inputTokens: flash.inputTokens,
       outputTokens: flash.outputTokens,
+      thoughtsTokens: flash.thoughtsTokens,
     })
     cards = parseOcrResponse(flash.text)
     if (cards.length === 0) throw new Error('Flash returned 0 cards')
@@ -212,7 +214,8 @@ async function runPipelineInner(
   }
 
   const costYen = tokenUsage.reduce(
-    (sum, u) => sum + estimateCostYen(u.model, u.inputTokens, u.outputTokens),
+    (sum, u) =>
+      sum + estimateCostYen(u.model, u.inputTokens, u.outputTokens, u.thoughtsTokens),
     0,
   )
 
