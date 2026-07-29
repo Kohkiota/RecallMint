@@ -19,6 +19,8 @@
 - **既存 flaky**(`inline-text-field` / `card-image-gallery`)は当該 file 単体 PASS で切り分け報告(retry 糊塗禁止)。
 - **commit**: helper + md-table-text + test を **1 commit**(`feat(markdown)` + `[reviewed]`・canonical + Codex)。実 API 不使用。
 
+> **行数の記録(OT 判断 2026-07-29)**: 本 plan は 311 行で CLAUDE.md「300 行超で STOP・OT 相談」に該当するが、**超過分はほぼ全て writing-plans の no-placeholder 原則が要求する具体コード(test 約 55 行 + 実装約 55 行)であり、設計スコープは小(3 task / 1 commit / helper 1 本 + 配線 1 箇所)**。閾値は設計スコープ膨張の検知装置であり本件は趣旨に抵触しない。要約圧縮は実装時の CC 判断余地を増やし逆効果ゆえ **OT 判断で 311 行のまま続行**。次に同状況が来た際の前例として記録。
+
 ---
 
 ## Task 1: `stripInlineImages` helper(AST-offset 削除)
