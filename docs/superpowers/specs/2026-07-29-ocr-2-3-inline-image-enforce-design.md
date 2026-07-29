@@ -40,6 +40,8 @@ card body の本文フィールドに混入する markdown 画像記法 `![…](
 
 `segmentMdTables` は**触らない**(不変条件 `value 連結 === 入力` を保つ)。strip は segment 後の各セグメント値に適用するため segment 関数に影響しない。tag 判定(hasTable)は画像除去で不変(画像 ≠ 表)。
 
+> **実装時修正(2026-07-29・Codex review 駆動)**: 上記「MdTableSegments で per-segment strip」は実装で **entry-point strip** に修正した(単一点の所在が変わった。**契約・凍結・単一収束・依存の意図はすべて不変**)。理由 2 点: ① per-segment 独立 parse は reference 記法 `![x][id]` の definition が別セグメントにある時に解決できず除去漏れる(complete document で strip すべき)。② 画像除去で表構造が変わる(無効表→有効表)と、`MdTableBlock` の wrapper 判定(`<p>`/`<div>`)と render が別 segments を見て `<table> in <p>`(hydration mismatch)になりうる。→ **`segmentStrippedForRender(value) = segmentMdTables(stripInlineImages(value))`** を導入し、`MdTableText` / `MdTableBlock`(= render の segmentMdTables caller は実質この 2 つ・session-runner はこれら経由)が使う。hasTable 判定と描画が同一の strip 後 segments を共有する。`MdTableSegments` は raw 描画へ戻し **非 export 化**(bypass footgun 除去)。`img: () => null` は防御として維持。詳細 = plan Task 2 / session doc。
+
 ### 4.3 `stripInlineImages` helper — **AST ノードの offset で削除(再文字列化しない)**
 
 新 pure 関数(`lib/markdown/strip-inline-images.ts`・unit test 厚く)。**正規表現による字面除去はしない**(`![alt](foo(and(bar)))` / `![alt](<foo bar>)` / `![alt](url "title")` / reference 記法 `![alt][id]` を誤り、code span・code block 内・escape `\![...]` を巻き込んで**正解選択肢を消す**危険がある)。
