@@ -4,6 +4,7 @@
 - 位置付け: ②-4 の本体を **画像入稿のみ**にスコープした ②-4a の設計正本。PDF rasterize / Files API / page 固有メタは ②-4b。
 - 前提資料: fact-finding(`docs/audit/2026-07-29-ocr-2-4-factfinding.md`)/ 実測 exp1-6(`scripts/ai/_ocr-*.ts`・出力は gitignored out/)/ 持越統合(`docs/audit/2026-07-29-ocr-2-4-carryover-and-design-notes.md`)。
 - モデル: Opus。実装・実 API・commit は spec 承認(凍結)後。
+- **状態: 凍結(2026-07-30 OT レビュー反映済)**。決定 = sharp direct 化 / padding 6% / 回転入力の明示除外(§12 に反映)。
 
 ---
 
@@ -17,7 +18,7 @@
 
 ---
 
-## 1. アーキテクチャ決定 — server 側 crop 【OT 確認点あり】
+## 1. アーキテクチャ決定 — server 側 crop 【sharp 承認済】
 
 **決定: crop は server 側で行う。** client が source 画像を R2 に presigned PUT で保存 → server が processUpload 内で R2 から source を取得し、Gemini 送信と crop の**両方に同一 R2 バイト**を使う。
 
@@ -29,7 +30,7 @@
 
 **これは持越 §7「client-side crop で server decoder を回避」の反転。** server crop には画像 decode/crop ライブラリが要る。
 
-> **OT 確認点 A(新ライブラリ)**: server 側 crop に `sharp`(native・Vercel 実績・Next 画像最適化が既に利用)を導入したい。CLAUDE.md「新ライブラリ導入は事前相談」に該当。sharp が既存 transitive で入っているかは実装前に registry 直叩きで確認する。**代替案(fallback)**: sharp 不可なら pure-JS(`@napi-rs/canvas` or jimp)。いずれも新規依存。**この 1 点のみ OT 承認が要る。** 却下なら client-side crop へ設計を戻す(その場合 §5 の同期一発・§2 の冪等保証は弱まる旨を再設計時に明記)。
+> **OT 承認済(2026-07-30)**: server 側 crop に `sharp` を採用。`pnpm why sharp` で **sharp@0.35.3 が next@16.2.11 の transitive として既にツリーに存在**することを確認 → これは新規ライブラリ追加ではなく **transitive → direct 化**(自コードが直接 import するものを package.json に宣言し、上流 bump による drift 事故を防ぐ。deps matrix の eslint-plugin-react-hooks と同型)。`package.json` dependencies に `"sharp": "0.35.3"` を **exact pin**(caret 不使用)。next 側が将来 sharp を bump した場合の lockstep は deps sprint で扱う。**client-side crop 再設計は不要**。package.json/lockfile への追加 + dep gates(`pnpm install` → 以降 `--frozen-lockfile`/typecheck/build)は **plan の先頭 task**(§実装は凍結後)。
 
 ---
 
@@ -88,10 +89,15 @@ y_px = y_1000 / 1000 × decoded_height
 - exp5 の一部で観測された「粗い座標」(run 間で辺が数十/1000 揺れる・キャプション取り込みの有無)は、**変換式のずれではなく Gemini の検出品質の run 間変動**である(§3.1 の式は正しく座標を引ける)。
 - 「**座標は正しく引ける**」と「**切り出しが常に綺麗**」は別問題。後者は §7 の**既定の防御 3 点**(padding / clamp / 原 bbox 保持による再 crop 余地)で受ける。品質完璧化は本 spec の目的ではない。
 
-### 3.5 未検証 → exp7(実装前の追加裏取り)
+### 3.5 回転入力の扱い(exp7 は gate にしない・入口で明示除外)
 
 - 実測サンプルは全て縦向き portrait・PNG(EXIF 無)。**横向き/回転スキャン・EXIF orientation≠1 の JPEG は未検証**。
-- **exp7 項目**: 回転 JPEG を browser-image-compression に通した出力で「Gemini 送信バイト = crop 元バイト = 正立・decoded 寸法一致」を裏取りしてから、当該入力の crop を本番投入する。§3.3 の前提の実証。
+- **②-4a は portrait/PNG 前提で進める。exp7 は実装前 gate にしない。feature flag も使わない。** 代わりに**入口での明示的除外**とする:
+  - **EXIF orientation ≠ 1 の source は、その source の図版検出をスキップ**する(カードの**テキスト抽出は通常どおり実行**)。
+  - 除外件数に「**向き未対応**」の理由を追加(§8.2)。
+- 理由: flag で「動くかもしれない状態」を作るより、未検証入力を明示除外して可視化する方が **loud failure over silent green** に合致する。exp7 が通ったらこの除外を外す、という順序が clean。
+- **副次的検出器**: client 圧縮が EXIF を焼き込む前提(§3.3)が正しければ、orientation は常に 1 になるはず。ゆえに**この除外分岐の発火自体が §3.3 前提の破綻検出器**になる(意図的)。
+- **exp7(follow-up)**: 回転 JPEG を browser-image-compression に通した出力で「Gemini 送信バイト = crop 元バイト = 正立・decoded 寸法一致」を裏取り → 通れば上記除外を外す。§3.3 前提の実証。
 
 ---
 
@@ -153,7 +159,8 @@ card 側 `required` に figure_regions を追加しない(図なし card を壊�
 
 ### 6.1 padding / clamp(固定規則)
 
-- **padding = 各辺 4%**(0-1000 空間で `y_min-=40, x_min-=40, y_max+=40, x_max+=40`)。出所表記・軸ラベルの端切れを吸収(exp6 の下端 ~3.5% 揺れを包含)。
+- **padding = 各辺 6%**(0-1000 空間で `y_min-=60, x_min-=60, y_max+=60, x_max+=60`)。
+  - **なぜ 6%(揺れ実測 ~3.5% より広く)**: exp6 の run 間揺れ ~3.5% とは**別に**、box2d 可視化の目視で「枠が図に密着しすぎて円グラフの出所表記・軸ラベルが枠外に落ちる」実欠けが観測された。揺れの実測値に張り付けた 4% では不足。**非対称性で判断** — 余白過多の実害はほぼゼロ(やや大きい画像がカードに載るだけ)/ 切れは情報欠落で回復不能。よって余裕を持たせる側に倒す。監査メタに原 bbox を保持するため実データを見て後から狭められる = **広めから始めて狭める順序**が正しい。
 - **clamp**: padding 後に各値を **[0,1000] にクランプ**(ページ端超えを抑止)→ decoded 寸法で px 化 → 整数 px に丸め。
 - 退化(clamp 後に幅/高さ ≤ 0)は crop せず「crop 失敗」計上。
 
@@ -204,7 +211,7 @@ crop ごとに保持(assets の付随 or 監査列/JSON): **原 bbox(0-1000)・p
 完了時に**理由を区別して**件数提示(loud failure over silent zero):
 
 - 「カード N 件 / M 件作成できず」
-- 図版: 「K 件取り込み / 除外内訳: **座標 null** a 件 / **source_id 不正** b 件 / **crop 失敗** c 件 / **制限超過** d 件」
+- 図版: 「K 件取り込み / 除外内訳: **座標 null** a 件 / **source_id 不正** b 件 / **crop 失敗** c 件 / **制限超過** d 件 / **向き未対応**(EXIF orientation≠1・§3.5) e 件」
 
 ②-4a は**件数提示まで**。警告バッジ/除外一覧 UI/再試行導線は実害観測後(②-4b 以降)。
 
@@ -217,7 +224,9 @@ crop ごとに保持(assets の付随 or 監査列/JSON): **原 bbox(0-1000)・p
 - **deskew 前処理なし**。**crop 元統一の不変条件(§3.2)は PDF 入稿固有の規則**であり、画像入稿では「Gemini 送信バイト=crop 元」を変換なしで満たす【修正1】。
 - **全ファイルを 1 回の generateContent に同一コンテキストで渡す**(exp5 で欠落ゼロ・text/figure 相互作用でデータ表が MD テキストへ回る好挙動も確認)。
 - **account quota は ②-5**。
-- server 側 crop 採用(§1・OT 確認点 A の sharp のみ承認要)。
+- **server 側 crop 採用 + sharp direct 化**(§1・OT 承認済。transitive→direct・exact pin 0.35.3)。
+- **padding 6%(広めから始めて狭める)**(§6.1・非対称性: 切れは回復不能)。
+- **回転入力(EXIF≠1)は入口で明示除外**(§3.5・図版検出のみスキップ / テキスト抽出は実行 / §3.3 前提の破綻検出器を兼ねる)。
 
 ---
 
@@ -241,11 +250,14 @@ crop ごとに保持(assets の付随 or 監査列/JSON): **原 bbox(0-1000)・p
 
 ---
 
-## 12. OT レビュー観点(未決 / 要確認)
+## 12. OT レビュー結果(2026-07-30・凍結)
 
-1. **【要承認】OT 確認点 A**: server 側 crop の画像ライブラリ `sharp` 導入可否(新ライブラリ事前相談)。却下なら client-side crop へ再設計(冪等・同期一発の保証が弱まる旨を再設計 spec に明記)。
-2. **既定案の是非**(異議あれば): source_assets 新表(§5.1)/ 冪等 ledger 新表(§2)/ padding 4%(§6.1)/ ambiguous→question_text(§8.1)/ 入口制限の暫定値(§7.2)。
-3. **exp7**(§3.5)を実装前 gate とするか、②-4a では portrait/PNG 前提で進め回転入力を feature-flag で後追いにするか。
+1. **sharp** = 承認(§1)。transitive→direct 化・exact pin `0.35.3`・client-side crop 再設計は不要。
+2. **既定案** = source_assets 新表 / 冪等 ledger 新表 / ambiguous→question_text / 入口制限は既存 cap 起点 を承認。**padding は 4%→6% に変更**(§6.1・広めから始めて狭める)。
+3. **exp7** = 実装前 gate に**しない**・feature flag も**使わない**。回転入力(EXIF≠1)は**入口で明示除外**(§3.5・§8.2 に「向き未対応」追加)。exp7 通過で除外を外す。
+4. **fact-finding doc** = commit(記録として残す)。
+
+→ 本 spec は凍結。次は writing-plans(task 分割: source 保存基盤 / 冪等 ledger / crop 本体 / 提示 + commit 分離方針)。
 
 ---
 
