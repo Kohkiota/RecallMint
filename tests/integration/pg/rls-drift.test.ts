@@ -59,12 +59,13 @@ const COMMON_FORM_RLS_TABLES = [
   'assets',
   'source_documents',
   'upload_records',
-  // ②-4a Phase A Task 1-2
+  // ②-4a Phase A Task 1-3
   'source_assets',
   'upload_operations',
+  'asset_derivations',
 ] as const
 
-// RLS 対象 20 表 = 共通形 19 + users (per-command 特殊)。
+// RLS 対象 21 表 = 共通形 20 + users (per-command 特殊)。
 const EXPECTED_RLS_TABLES: readonly string[] = [
   ...COMMON_FORM_RLS_TABLES,
   'users',
@@ -88,7 +89,7 @@ type PolicyTuple = {
 }
 
 // 期待 policy カタログ: key = `${tablename}|${policyname}`。
-// 共通形 19 + users 3 = 22 policy。
+// 共通形 20 + users 3 = 23 policy。
 const EXPECTED_POLICIES: Record<string, PolicyTuple> = {}
 for (const table of COMMON_FORM_RLS_TABLES) {
   EXPECTED_POLICIES[`${table}|${table}_tenant`] = {
@@ -162,10 +163,10 @@ describe('RLS policy drift-detection (versioned SQL ↔ test DB integrity)', () 
   })
 
   // 期待カタログ自体の内部整合を守る (この file の編集ミスで oracle が壊れるのを防ぐ)。
-  it('expected catalog is internally consistent (20 RLS tables, 22 policies)', () => {
-    expect(EXPECTED_RLS_TABLES).toHaveLength(20)
+  it('expected catalog is internally consistent (21 RLS tables, 23 policies)', () => {
+    expect(EXPECTED_RLS_TABLES).toHaveLength(21)
     expect(EXPECTED_NON_RLS_TABLES).toHaveLength(5)
-    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(22)
+    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(23)
   })
 
   // 1. relrowsecurity / relforcerowsecurity: 18 対象 true / 5 非対象 false /

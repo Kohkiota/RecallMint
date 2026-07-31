@@ -7,3 +7,4 @@
 SET lock_timeout = '5s';
 ALTER TABLE source_assets DISABLE ROW LEVEL SECURITY;
 ALTER TABLE upload_operations DISABLE ROW LEVEL SECURITY;
+ALTER TABLE asset_derivations DISABLE ROW LEVEL SECURITY;

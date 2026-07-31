@@ -33,3 +33,11 @@ DROP POLICY IF EXISTS upload_operations_tenant ON upload_operations;
 CREATE POLICY upload_operations_tenant ON upload_operations FOR ALL TO recallmint_app
   USING (user_id = (SELECT public.app_current_user_id()))
   WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+-- asset_derivations (②-4a Task 3・crop 由来の provenance メタ。PK は asset_id だが
+-- tenant 述語は他表と同じ user_id = ... の common-form)
+ALTER TABLE asset_derivations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS asset_derivations_tenant ON asset_derivations;
+CREATE POLICY asset_derivations_tenant ON asset_derivations FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));

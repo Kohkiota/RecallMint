@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (25 tables; ②-4a Phase A Task 2 で upload_operations 追加)
+// Drizzle schema — mcq-platform (26 tables; ②-4a Phase A Task 3 で asset_derivations 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -995,6 +995,42 @@ export const uploadOperations = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// asset_derivations (②-4a Phase A Task 3 新設) — crop 由来の provenance メタ。
+// assets 行の payload (R2 バイト) が将来 NULL 化/GC された後も、「どの source_asset の
+// どの領域を、どういうパディング/検出パラメータで切り出したか」を追跡可能に残すための
+// 1:1 台帳 (PK = asset_id 自身、assets への 1:1 拡張)。
+// asset_id / source_asset_id ともに cascade (derivation は provenance メタに過ぎず、
+// assets 行 (crop 結果) か source_assets 行 (crop 元) のどちらが消えても存在意義が
+// 無くなる)。RESTRICT は当初検討したが (card_asset_refs.asset_id 前例)、本表は
+// tenant 階層 (exam 削除 → source_documents cascade → source_assets cascade) の
+// 末端で、上位が正しく連鎖削除できる必要があるため不適 (iso RED: rls-cascade /
+// delete-isolation / rls-ghost の exam cascade 削除が RESTRICT で FK 違反した)。
+// orig_bbox/clamped_bbox は検出座標系の jsonb (shape は usecase 層で zod 検証、
+// DB 列は shape を強制しない — query/patch jsonb 列と同じ方針)。
+// GDPR: user_id cascade で users 削除に連動 (cascade 対象)。
+// 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-3-brief.md
+// ---------------------------------------------------------------------------
+export const assetDerivations = pgTable('asset_derivations', {
+  assetId: uuid('asset_id')
+    .primaryKey()
+    .references(() => assets.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  sourceAssetId: uuid('source_asset_id')
+    .notNull()
+    .references(() => sourceAssets.id, { onDelete: 'cascade' }),
+  origBbox: jsonb('orig_bbox').notNull().$type<Record<string, unknown>>(),
+  paddingPct: real('padding_pct').notNull(),
+  clampedBbox: jsonb('clamped_bbox').notNull().$type<Record<string, unknown>>(),
+  cropW: integer('crop_w').notNull(),
+  cropH: integer('crop_h').notNull(),
+  detectTarget: text('detect_target').notNull(),
+  pipelineVersion: text('pipeline_version').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -1044,3 +1080,5 @@ export type SourceAsset = typeof sourceAssets.$inferSelect
 export type NewSourceAsset = typeof sourceAssets.$inferInsert
 export type UploadOperation = typeof uploadOperations.$inferSelect
 export type NewUploadOperation = typeof uploadOperations.$inferInsert
+export type AssetDerivation = typeof assetDerivations.$inferSelect
+export type NewAssetDerivation = typeof assetDerivations.$inferInsert
