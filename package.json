@@ -51,6 +51,7 @@
     "remark-parse": "11.0.0",
     "server-only": "0.0.1",
     "shadcn": "4.6.0",
+    "sharp": "0.35.3",
     "stripe": "22.3.2",
     "svix": "1.99.1",
     "tailwind-merge": "3.6.0",
