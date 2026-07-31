@@ -46,3 +46,13 @@ export const PREPARE_AWAITING_TTL_MS = 15 * 60 * 1000
 // 共有 file に置く(claim-operation.ts / iso test の両方がここから import する)。
 export const LEASE_TTL_MS = 15 * 60 * 1000
 
+// ②-4a T8b(stage-prepared.ts)の retryable-failed backoff(暫定値)。 Gemini
+// call が technical に失敗した(rate-limited / transient 尽き / JSON parse 不能
+// 等)operation を再 claim 可能にするまでの待機時間。 spec §2 は
+// `attempt_count++`/`next_retry_at`/`last_error_code` を記録する、とだけ定め
+// 具体的な backoff 式は規定していない(exponential 化・7 日 terminal 化は T14
+// の範囲)。 固定 1 分は「ユーザーが手動 retry しても Gemini を秒間隔で叩かない」
+// 最小限の安全弁として選んだ暫定値 — T14 で式ごと再設計されうる前提で単独
+// 定数として持つ(HTTP-level retry の backoff とは別軸、混同しない)。
+export const RETRYABLE_BACKOFF_MS = 60 * 1000
+
