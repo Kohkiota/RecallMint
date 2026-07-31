@@ -94,6 +94,7 @@
 |---|---|---|---|
 | 薄い DDD: domain=pure / repository・apply=書込 / usecase・action・handler=orchestration / infra=I/O | 不変条件が実在するから(YAGNI と両立)| 決定 + lint(harness Domain purity)| `docs/plans/2026-07-08-full-ddd-intent-and-factfinding.md` / `CLAUDE.md`「設計方針(DDD)」 |
 | client は repository を持たない(pure fn + `runOptimistic*`)| local-first 優先 | 決定 | `CLAUDE.md`「設計方針(DDD)」 |
+| **同一の業務不変条件を複数経路で強制する場合、同一の executable contract(schema・純関数・共有定数)を再利用する。表現や信頼境界が異なる場合は別 schema を許容するが、変換後の共通契約を定義し、部分的な再実装で模倣しない** | 契約の部分模倣は列挙漏れが構造的に残り silent drift を生む(本 sprint で 3 回: UUIDv5 判定 / handleImages の refs 射影 / ②-4a prepared card 検証)| 決定 2026-07-31 | 本表 + `docs/superpowers/specs/2026-07-30-ocr-2-4a-image-figure-crop-design.md` §5.4 |
 
 ## 9. 運用境界
 

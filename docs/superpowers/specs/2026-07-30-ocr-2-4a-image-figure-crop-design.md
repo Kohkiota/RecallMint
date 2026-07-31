@@ -162,6 +162,26 @@ client が source ごとに source_id 発行。parts は `[text "source_id=X", i
 ### 5.3 要素単位 safeParse
 親 schema で `figure_regions[]`/`images[]` を一括検証しない。入力境界用と正規化後用で schema を分け、**要素ごとに safeParse**。JSON 全体が truncate/parse 不能なら operation を retryable failed(要素隔離は「親 JSON が parse 可能」条件付き・§C1 の deadline 経路とは別)。隔離: card 本体破損→card 除外 / figure 破損→その figure 除外 / box_2d null→「座標 null」除外計上。
 
+### 5.4 prepared schema = executable contract SSoT(2026-07-31 OT 確定・T8a 収束設計)
+
+**根本原因**: `PreparedCard` を TS 型で手書きしていたため実行時検証 schema が無く、normalize が publisher の card 検証を field ごとに部分模倣するしかなく、両者の一致保証がどこにも無い(uid→cardId/assetId→option bounds→sort_key の whack-a-mole・4 回検出)。→ **単一 runtime schema を SSoT 化**する。
+
+- **`prepared*Schema` を 1 file に定義**: `preparedOptionSchema` / `preparedFigureSchema` / `preparedCardSchema` / `preparedPayloadSchema`。**leaf 境界値は `lib/validation/card.ts` の既存 schema を compose**(再定義しない)。
+- **`PreparedCard` 型は手書きせず `z.infer<typeof preparedCardSchema>` から導出**。candidate は `z.output<typeof preparedCardSchema>` として型付け。
+- **normalize**: 変換・ID 発行後に card ごと `preparedCardSchema.safeParse(candidate)` → **`data` を返す(candidate をそのまま返さない)** → 失敗は isolate + tally。
+- **publisher(T12)**: 保存済み payload に **同じ schema** で `parse()` → 失敗を loud に扱う。**`parse` 戻り値だけを使用**。**publisher は `normalizePreparedCard` を呼ばない**(ID 再発行・再正規化しない)。
+- **DB INSERT 用の変換は 1 関数に固定**。
+- **契約テスト(要)**: 「normalize が生成する全 card は publisher schema(`preparedCardSchema`)を通る」を実行時に保証 = 包含関係の担保。
+
+**正規形(3 点・確定・議論不要)**:
+1. **undefined でなく null**: 永続化 `PreparedCard` は**キー必須・値に null**(`sortKey: string|null` / `explanationText: string|null`)。undefined は JSON/JSONB 化でキーごと消えるが null は残る(DB nullable 列・既存 manual schema と整合・再送 payload 比較が安定)。**配列は空配列・タグは空オブジェクト**を正規形とする。
+2. **customProps 必須 + 空オブジェクト**: ②-4a でもタグ保持(既存機能・OCR 経路だけ欠落は退行)。`customProps: Record<string, string|string[]>`、raw に無ければ `{}` に正規化。**`customProps?` にしない**(optional だと builder の転記忘れが schema を通り「静かな欠落」が残る)。`applyOcrTags` が既に名称・値を防御選別ゆえ T8 は形状確認+保持+既存 helper へ渡すのが最小。
+3. **`preparedPayloadSchema` は version 固定**: prepared payload は最大 7 日 retry でデプロイを跨ぐ。単一 schema を将来直接変更すると「旧デプロイが V1 保存 → 新デプロイで必須 field 追加 → 新 publisher が旧 payload を reject」が起きる。→ **`schemaVersion` を実 dispatch に使う**: `preparedPayloadSchema = z.discriminatedUnion('schemaVersion', [preparedPayloadV1Schema])`。**将来変更は V1 を書き換えず V2 を追加**し、**最大 retry 保持期間(7 日)は旧 schema を残す**(運用ルール)。
+
+**統一しないもの(範囲の線引き・無理に 1 つにしない)**: OCR raw schema(Gemini 出力形状検証)/ manual card schema(UI 入力検証)/ DB schema は目的が異なるため統一しない。DB 文脈検証(asset の owner/ready/hash・exam/source 存在・fencing)は **publisher 専用**のまま(element isolation とは別の不変条件)。
+
+**実装条件(これがないと収束しない)**: schema 上 optional の field / `.default()` 補完 field / schema 通過後の手動マッピング / **parsed 結果でなく元 candidate を後続処理で使う** — のいずれかで漏れる。ゆえに: normalize は `safeParse` の `data` を返す / publisher は `parse` 戻り値だけ使う / candidate は `PreparedCard`(`z.output`)型付け / DB INSERT 変換は 1 関数 / 上記契約テストを置く。
+
 ---
 
 ## 6. source_assets 保存
@@ -263,6 +283,7 @@ publisher 検証: title/question/explanation 長さ・必須 / options 1-50 / op
 
 ## 9. prepared_payload 運用(§D)
 - `upload_operations` に jsonb。card 同型の staging table は作らない。**正規化後に原則 1 回だけ保存**(crop 進捗で書き換えない)。routine query は列明示・**`SELECT *` 禁止**。`prepared_schema_version`/`prepared_hash` 別列。**publish 成功で 1 回だけ NULL 化**。**Supabase Realtime publication に追加しない**。gzip bytea 化しない(TOAST と二重)。分離閾値: p95 payload が 5〜10MB を継続超過等で `upload_operation_payloads(operation_id PK, …)` 1:1 cold table へ(現段階は同一行で十分)。
+- **payload の実行時契約は `preparedPayloadSchema`(§5.4)= `discriminatedUnion('schemaVersion', [preparedPayloadV1Schema, …])`。`prepared_schema_version` 列はこの `schemaVersion` の外出し(query/monitoring 用)で、dispatch の正は payload 内 `schemaVersion`**。将来 schema 変更は **V1 を書き換えず V2 追加**、旧 schema は **最大 retry 保持期間(7 日・§11)以上残す**(旧デプロイ保存 payload を新 publisher が reject しないため)。publisher は保存 payload を `preparedPayloadSchema.parse()` で読み、失敗を loud 扱い。
 
 ---
 
