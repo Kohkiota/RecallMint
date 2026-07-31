@@ -10,6 +10,7 @@ import type { User } from '@/lib/db/schema'
 import { presignPutUrl, presignGetUrl, headObject } from '@/lib/storage/r2'
 import type { ActionResult } from '@/lib/actions/result'
 import { isFinalized, canFinalize, type AssetStatus } from '@/lib/media/domain/asset-state'
+import { MAX_ASSET_BYTES, MAX_IMAGE_DIMENSION } from './asset-limits'
 
 // 画像アップロード saga の server 側 3 action (画像フェーズ A design spec §3.1/§6)。
 //
@@ -19,9 +20,11 @@ import { isFinalized, canFinalize, type AssetStatus } from '@/lib/media/domain/a
 //
 // dedup 再利用 branch は spec §3.5 により後続 sprint (hash は記録のみ、本 task では
 // 参照しない)。
-
-// 5 MiB hard cap (圧縮バイパスした不正 client への上限。spec §3.1/§4)。
-const MAX_ASSET_BYTES = 5 * 1024 * 1024
+//
+// MAX_ASSET_BYTES / MAX_IMAGE_DIMENSION は ./asset-limits(directive 無し file)へ
+// 集約済み(rule of three — ②-4a T4 の prepare-upload.ts が同値を再利用するため。
+// このファイルは 'use server' ディレクティブを持ち、非 async 関数の export は
+// Next.js の compile error になるため定数はここから直接 export できない)。
 
 // resolve 1 回あたりの assetId 上限 (spec §6)。
 const MAX_RESOLVE_IDS = 50
@@ -31,11 +34,7 @@ const MAX_RESOLVE_IDS = 50
 // 事前 zod 検証。
 const assetIdSchema = z.uuid()
 
-// width/height の上限。 assets.width/height は Postgres integer (max 2^31-1) ゆえ、
-// untrusted な直接呼び出しが巨大値を送ると INSERT が integer-out-of-range で throw し
-// 500 に化ける。 実画像は圧縮後で高々数千 px ゆえ 100,000 で domain 上限 + DB range
-// 防衛を兼ねる。 hash は SHA-256 hex (64 字) なので 128 で余裕を持って上限 (finding 4)。
-const MAX_IMAGE_DIMENSION = 100_000
+// hash は SHA-256 hex (64 字) なので 128 で余裕を持って上限 (finding 4)。
 const MAX_HASH_LEN = 128
 
 /**

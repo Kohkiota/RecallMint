@@ -24,3 +24,13 @@ export const MAX_PDF_PAGES = 40
 // 各定数の bytes 換算 (MB は 1_000_000、 1024 系統一しない 平易化重視)。
 export const MB = 1_000_000
 export const TOTAL_UPLOAD_LIMIT_BYTES = TOTAL_UPLOAD_LIMIT_MB * MB
+
+// ②-4a T4(prepare-upload.ts)の upload_operations「live」判定のうち
+// awaiting_sources の経過時間しきい値(暫定値、spec §11・T14 で正本確定)。
+// prepare-upload.ts はファイル先頭に 'use server' を持つため定数を直接 export
+// できず(Next.js の "use server" file 制約 — 非 async 関数の export は compile
+// error)、この directive 無し共有 file に置く(prepare-upload.ts / iso test の
+// 両方がここから import する)。
+// 旧 source_documents の 15 分窓(STALE_PROCESSING_MS)はそのまま流用しない —
+// 新状態機械は prepared の 7 日 retry を持ち意味が異なるため独立値として定義。
+export const PREPARE_AWAITING_TTL_MS = 15 * 60 * 1000
