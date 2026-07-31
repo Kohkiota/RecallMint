@@ -204,6 +204,13 @@
       "when": 1785466630783,
       "tag": "0028_huge_colossus",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785476172324,
+      "tag": "0029_slow_tarantula",
+      "breakpoints": true
     }
   ]
 }

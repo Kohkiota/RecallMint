@@ -903,11 +903,11 @@ export const sourceAssets = pgTable(
       .references(() => sourceDocuments.id, { onDelete: 'cascade' }),
     sourceId: text('source_id').notNull(),
     objectKey: text('object_key').notNull().unique(),
-    mime: text('mime').notNull(),
-    contentHash: text('content_hash').notNull(),
-    byteSize: integer('byte_size').notNull(),
-    width: integer('width').notNull(),
-    height: integer('height').notNull(),
+    mime: text('mime'),
+    contentHash: text('content_hash'),
+    byteSize: integer('byte_size'),
+    width: integer('width'),
+    height: integer('height'),
     status: text('status')
       .$type<'reserved' | 'ready' | 'deleting'>()
       .notNull()
@@ -937,7 +937,7 @@ export const sourceAssets = pgTable(
 // lease_version/lease_expires_at は claim の楽観的排他制御 (Phase B で worker が
 // claim 時に version を進める想定、本 phase は列のみ確保)。source_document_id は
 // 生成時点 (awaiting_sources) では未確定のため nullable、以降 (lease_expires_at /
-// next_retry_at / last_error_code / input_fingerprint / prepared_schema_version /
+// next_retry_at / last_error_code / prepared_schema_version /
 // prepared_hash / prepared_payload / result_summary / completed_at) も同じ理由で
 // 状態遷移が進むまで値を持たない nullable 列とする (source_document_id と同じ
 // 「生成時点では未確定」判断)。UNIQUE(user_id, idempotency_key) で同一ユーザー内の
@@ -974,7 +974,6 @@ export const uploadOperations = pgTable(
     attemptCount: integer('attempt_count').notNull().default(0),
     nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
     lastErrorCode: text('last_error_code'),
-    inputFingerprint: text('input_fingerprint'),
     preparedSchemaVersion: integer('prepared_schema_version'),
     preparedHash: text('prepared_hash'),
     preparedPayload: jsonb('prepared_payload').$type<Record<string, unknown>>(),
