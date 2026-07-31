@@ -1,7 +1,7 @@
 // H2: 三者一致 completeness + 2 テナント fixture の行存在 assertion。
 // これは後続 隔離 assertion(R1/R2/W1/W2)の vacuous green(WHERE が消えても餌が
 // 無く空振り)を構造的に防ぐ backbone。三者一致で「検出器 と fixture が同じ漏れ方を
-// する」盲点を塞ぎ、19 table A/B 行存在で「餌データが確かに置かれた」を保証する。
+// する」盲点を塞ぎ、20 table A/B 行存在で「餌データが確かに置かれた」を保証する。
 import { sql } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -34,11 +34,11 @@ afterAll(async () => {
 })
 
 describe('user_id table three-way completeness', () => {
-  it('Drizzle schema introspect === expected 19', () => {
+  it('Drizzle schema introspect === expected 20', () => {
     expect(sorted(userIdTablesFromSchema())).toEqual(EXPECTED_SORTED)
   })
 
-  it('live PG catalog === expected 19', async () => {
+  it('live PG catalog === expected 20', async () => {
     const catalog = await userIdTablesFromCatalog(getDb())
     expect(sorted(catalog)).toEqual(EXPECTED_SORTED)
   })

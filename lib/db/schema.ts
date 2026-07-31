@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (23 tables; 画像 GC v2 Task G1 で card_asset_refs 追加)
+// Drizzle schema — mcq-platform (24 tables; ②-4a Phase A Task 1 で source_assets 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -879,6 +879,57 @@ export const cardAssetRefs = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// source_assets (②-4a Phase A Task 1 新設) — 1 upload : N ファイルの source 台帳。
+// source_document (アップロード全体) 配下の個別ファイルを表す。object_key は R2 の
+// 実体キー (UNIQUE)。content_hash は将来の dedup 判定用 (assets.hash と同じ役割だが、
+// 目的が「crop 元画像の内容特定」であることを列名で明示する)。
+// UNIQUE(source_document_id, source_id) で同一 upload 内のファイル識別子重複を防ぐ。
+// page_count/rotation/rasterizer は ②-4b (PDF page-source 対応) の予約列 (本 phase は
+// 常に NULL、source_kind は 'image' のみ)。
+// user 削除: source_document_id (cascade) と user_id (cascade) の二重 FK を張る
+// (cards の user_id/exam_id 二重 cascade と同型 — どちらの親が先に消えても整合する)。
+// 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-1-brief.md
+// ---------------------------------------------------------------------------
+export const sourceAssets = pgTable(
+  'source_assets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    sourceDocumentId: uuid('source_document_id')
+      .notNull()
+      .references(() => sourceDocuments.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').notNull(),
+    objectKey: text('object_key').notNull().unique(),
+    mime: text('mime').notNull(),
+    contentHash: text('content_hash').notNull(),
+    byteSize: integer('byte_size').notNull(),
+    width: integer('width').notNull(),
+    height: integer('height').notNull(),
+    status: text('status')
+      .$type<'reserved' | 'ready' | 'deleting'>()
+      .notNull()
+      .default('reserved'),
+    originalFilename: text('original_filename').notNull(),
+    sourceKind: text('source_kind').$type<'image'>().notNull().default('image'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    readyAt: timestamp('ready_at', { withTimezone: true }),
+    // ②-4b 予約 (PDF page-source 対応): 本 phase は常に NULL。
+    pageCount: integer('page_count'),
+    rotation: integer('rotation'),
+    rasterizer: text('rasterizer'),
+  },
+  (t) => [
+    uniqueIndex('source_assets_doc_source_uq').on(t.sourceDocumentId, t.sourceId),
+    index('source_assets_user_status_idx').on(t.userId, t.status),
+    index('source_assets_source_document_idx').on(t.sourceDocumentId),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -924,3 +975,5 @@ export type Asset = typeof assets.$inferSelect
 export type NewAsset = typeof assets.$inferInsert
 export type CardAssetRef = typeof cardAssetRefs.$inferSelect
 export type NewCardAssetRef = typeof cardAssetRefs.$inferInsert
+export type SourceAsset = typeof sourceAssets.$inferSelect
+export type NewSourceAsset = typeof sourceAssets.$inferInsert

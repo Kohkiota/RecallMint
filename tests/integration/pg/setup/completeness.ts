@@ -1,14 +1,14 @@
 // H2: 三者一致 completeness helper — user_id 保持 table 集合を 3 経路で導出する。
 // 「検出器(schema introspect)と fixture が同じ漏れ方をする」盲点を塞ぐため、
 // (1) Drizzle schema introspect / (2) 実 PG catalog / (3) 明示 hardcode の 3 者を
-// test で突き合わせる (fixture-completeness.test.ts)。母集団は user_id 列を持つ 19 table。
+// test で突き合わせる (fixture-completeness.test.ts)。母集団は user_id 列を持つ 20 table。
 import { is, sql } from 'drizzle-orm'
 import { PgTable, getTableConfig } from 'drizzle-orm/pg-core'
 
 import type { DB } from '@/lib/db'
 import * as schema from '@/lib/db/schema'
 
-// user_id 列を持つ 19 table の明示 list (三者一致の第 3 経路 = 独立した SSoT)。
+// user_id 列を持つ 20 table の明示 list (三者一致の第 3 経路 = 独立した SSoT)。
 // 非保持 = users(tenant 本体・PK は id)/ ai_usage / stripe_events / clerk_events。
 export const EXPECTED_USER_ID_TABLES: readonly string[] = [
   'reviews',
@@ -30,6 +30,7 @@ export const EXPECTED_USER_ID_TABLES: readonly string[] = [
   'tombstones',
   'assets',
   'card_asset_refs',
+  'source_assets',
 ]
 
 // Drizzle schema (lib/db/schema.ts) の pgTable 定義を introspect し、user_id 列を

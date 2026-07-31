@@ -59,6 +59,15 @@ const RLS_WAVE2_ENABLE_FILE = path.resolve(
   '../../../../db/policies/rls-p3-wave2-enable.sql',
 )
 
+// ②-4a Phase A: 新設 tenant 表 (source_assets / upload_operations /
+// asset_derivations) の policy 有効化 SQL。Wave 2 と同機構で wave2-enable の直後に
+// owner client で適用する (test:iso は毎 run 本 SQL も RLS on で走る)。3 task に
+// またがり同一 file に追記されていく (db/policies/ocr-2-4a-enable.sql 冒頭コメント参照)。
+const RLS_OCR_2_4A_ENABLE_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/policies/ocr-2-4a-enable.sql',
+)
+
 // DROP/CREATE DATABASE は対象 DB 自身に接続していると不可能なため、 同 host/port/user の
 // maintenance DB (postgres) へ繋ぐ。 host/port は上の assertLocalTestDb で検証済 —
 // db 名のみ postgres へ差し替える (別 host を作らない)。
@@ -110,6 +119,10 @@ export async function setup(): Promise<void> {
     // RLS-P3 Wave 2: Wave 1 enable の直後に軽配線 5 表の policy を有効化 (同 owner client)。
     const rlsWave2EnableSql = readFileSync(RLS_WAVE2_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsWave2EnableSql).simple()
+
+    // ②-4a Phase A: Wave 2 enable の直後に新設 tenant 表の policy を有効化 (同 owner client)。
+    const rlsOcr24aEnableSql = readFileSync(RLS_OCR_2_4A_ENABLE_FILE, 'utf8')
+    await client.unsafe(rlsOcr24aEnableSql).simple()
   } finally {
     await client.end({ timeout: 5 })
   }
