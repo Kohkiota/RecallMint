@@ -1,4 +1,4 @@
-// H2: 2 テナント(A/B)fixture。real getDb() で users 2 行 + user_id 保持 20 table
+// H2: 2 テナント(A/B)fixture。real getDb() で users 2 行 + user_id 保持 21 table
 // すべてに A・B 双方 ≥1 行を FK 依存順で INSERT する。B の行は後続 隔離 assertion
 // (R1/R2/W1/W2)の「餌(decoy)」であり、WHERE user_id が消えたら B が混ざる状況を
 // 作るための土台。よって各 table で A と同種・同 shape(active/非 archived)にする。
@@ -28,6 +28,7 @@ import {
   tagCategories,
   tagOptions,
   tombstones,
+  uploadOperations,
   uploadRecords,
   userSettings,
   users,
@@ -80,9 +81,9 @@ export async function closeFixtureOwnerDb(): Promise<void> {
   }
 }
 
-// truncate 対象 = users(tenant 本体) + 20 user_id table。CASCADE で FK 子も掃くが、
+// truncate 対象 = users(tenant 本体) + 21 user_id table。CASCADE で FK 子も掃くが、
 // downstream の per-test beforeEach が truncate→reseed で使うため全 table を明示列挙する。
-// 20 の list は completeness.ts の SSoT を再利用(重複 list の drift を防ぐ — この file の
+// 21 の list は completeness.ts の SSoT を再利用(重複 list の drift を防ぐ — この file の
 // 目的そのもの)。TRUNCATE は列挙順に依存しない(CASCADE で全掃)。
 const ALL_TABLES = ['users', ...EXPECTED_USER_ID_TABLES] as const
 
@@ -192,6 +193,14 @@ async function seedTenant(
     status: 'ready',
     originalFilename: 'src.webp',
   })
+  await db.insert(uploadOperations).values({
+    userId,
+    idempotencyKey: `idem_${label}`,
+    examId,
+    sourceDocumentId,
+    status: 'awaiting_sources',
+    leaseVersion: 0,
+  })
   await db.insert(cards).values({
     id: cardId,
     userId,
@@ -250,7 +259,7 @@ export async function seedTwoTenants(): Promise<TenantFixture> {
   return { a, b }
 }
 
-// 20 user_id table + users を単文 TRUNCATE で全消し(RESTART IDENTITY CASCADE)。
+// 21 user_id table + users を単文 TRUNCATE で全消し(RESTART IDENTITY CASCADE)。
 // downstream の per-test beforeEach で truncate→reseed に使う。app role は
 // TRUNCATE 権限を持たないため owner 接続で実行する。
 export async function truncateAllUserTables(): Promise<void> {

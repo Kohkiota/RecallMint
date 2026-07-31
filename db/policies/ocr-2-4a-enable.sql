@@ -26,3 +26,10 @@ DROP POLICY IF EXISTS source_assets_tenant ON source_assets;
 CREATE POLICY source_assets_tenant ON source_assets FOR ALL TO recallmint_app
   USING (user_id = (SELECT public.app_current_user_id()))
   WITH CHECK (user_id = (SELECT public.app_current_user_id()));
+
+-- upload_operations (②-4a Task 2・冪等 upload/OCR 操作の状態機械 ledger)
+ALTER TABLE upload_operations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS upload_operations_tenant ON upload_operations;
+CREATE POLICY upload_operations_tenant ON upload_operations FOR ALL TO recallmint_app
+  USING (user_id = (SELECT public.app_current_user_id()))
+  WITH CHECK (user_id = (SELECT public.app_current_user_id()));

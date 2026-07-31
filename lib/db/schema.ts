@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (24 tables; ②-4a Phase A Task 1 で source_assets 追加)
+// Drizzle schema — mcq-platform (25 tables; ②-4a Phase A Task 2 で upload_operations 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
@@ -25,6 +25,7 @@
 // 詳細: docs/02-tech-spec.md §2 / lessons/2026-04-30-users-schema-decoupling.md
 import { sql } from 'drizzle-orm'
 import {
+  bigint,
   boolean,
   date,
   index,
@@ -930,6 +931,70 @@ export const sourceAssets = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// upload_operations (②-4a Phase A Task 2 新設) — 冪等 upload/OCR 操作の状態機械 ledger。
+// 1 クライアント操作 (idempotency_key) : 1 行。正常遷移は
+// awaiting_sources → claimed → prepared → completed、失敗は terminal_failed。
+// lease_version/lease_expires_at は claim の楽観的排他制御 (Phase B で worker が
+// claim 時に version を進める想定、本 phase は列のみ確保)。source_document_id は
+// 生成時点 (awaiting_sources) では未確定のため nullable、以降 (lease_expires_at /
+// next_retry_at / last_error_code / input_fingerprint / prepared_schema_version /
+// prepared_hash / prepared_payload / result_summary / completed_at) も同じ理由で
+// 状態遷移が進むまで値を持たない nullable 列とする (source_document_id と同じ
+// 「生成時点では未確定」判断)。UNIQUE(user_id, idempotency_key) で同一ユーザー内の
+// 再送を同一行に収束させる。
+// Realtime publication 非追加: 本 repo は Supabase realtime publication を管理して
+// いない (追加すべき対象が存在しない、意図的に何もしない)。
+// exam_id: exam cascade (この ledger は 1 exam に対する 1 回の upload 操作)。
+// source_document_id: source_document 削除後も操作記録は残したいため set null
+// (source_documents → cards の SET NULL 方針と同型、schema.ts 冒頭コメント参照)。
+// 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-2-brief.md
+// ---------------------------------------------------------------------------
+export const uploadOperations = pgTable(
+  'upload_operations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    examId: uuid('exam_id')
+      .notNull()
+      .references(() => exams.id, { onDelete: 'cascade' }),
+    sourceDocumentId: uuid('source_document_id').references(() => sourceDocuments.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status')
+      .$type<
+        'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed'
+      >()
+      .notNull()
+      .default('awaiting_sources'),
+    leaseVersion: bigint('lease_version', { mode: 'number' }).notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+    lastErrorCode: text('last_error_code'),
+    inputFingerprint: text('input_fingerprint'),
+    preparedSchemaVersion: integer('prepared_schema_version'),
+    preparedHash: text('prepared_hash'),
+    preparedPayload: jsonb('prepared_payload').$type<Record<string, unknown>>(),
+    resultSummary: jsonb('result_summary').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('upload_operations_user_idempotency_uq').on(
+      t.userId,
+      t.idempotencyKey,
+    ),
+    index('upload_operations_user_status_idx').on(t.userId, t.status),
+    index('upload_operations_next_retry_idx').on(t.nextRetryAt),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // Type exports for downstream use
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
@@ -977,3 +1042,5 @@ export type CardAssetRef = typeof cardAssetRefs.$inferSelect
 export type NewCardAssetRef = typeof cardAssetRefs.$inferInsert
 export type SourceAsset = typeof sourceAssets.$inferSelect
 export type NewSourceAsset = typeof sourceAssets.$inferInsert
+export type UploadOperation = typeof uploadOperations.$inferSelect
+export type NewUploadOperation = typeof uploadOperations.$inferInsert

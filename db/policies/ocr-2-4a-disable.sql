@@ -6,3 +6,4 @@
 -- 対称に lock_timeout を張る。P2 / Wave 1 / Wave 2 disable と完全対称。
 SET lock_timeout = '5s';
 ALTER TABLE source_assets DISABLE ROW LEVEL SECURITY;
+ALTER TABLE upload_operations DISABLE ROW LEVEL SECURITY;
