@@ -40,6 +40,11 @@ const HEAD_TIMEOUT_MS = 10_000
 // DELETE (GC sweep) のnetwork timeout。 HEAD_TIMEOUT_MSと同値 (CLAUDE.md AI-2)。
 const DELETE_TIMEOUT_MS = 10_000
 
+// GET (finalize saga の実バイト取得)・PUT (finalize saga の最終 immutable key への
+// server 書込) のnetwork timeout。 HEAD_TIMEOUT_MS/DELETE_TIMEOUT_MSと同値 (CLAUDE.md AI-2)。
+const GET_TIMEOUT_MS = 10_000
+const PUT_TIMEOUT_MS = 10_000
+
 // retries: 0 が必須 — AwsClient は既定で retries:10 の指数 backoff を行うが、 その
 // backoff sleep は fetch へ渡す AbortSignal.timeout を観測しないため、 R2 が 5xx/429 を
 // 返し続けると headObject が 10 秒の外部 API timeout (CLAUDE.md AI-2) を大幅に超えて
@@ -132,6 +137,81 @@ export async function headObject(
     return { exists: true, contentLength }
   } catch {
     return { exists: false, contentLength: null }
+  }
+}
+
+/**
+ * R2オブジェクトの実バイト取得 (source finalize saga の server 検証用。 ②-4a spec §6.2)。
+ *
+ * finalize は temp key の実バイトを取得し、 magic-byte/decode/hash/寸法を server で
+ * 検証してから最終 key へ promote する (client 申告値を信用しない・Codex P1 対処)。
+ *
+ * headObject/deleteObject と同じ never-throw契約: fetchのthrow/timeout(abort)・
+ * 非2xx(404含む)はcatchせずnullに正規化する。 呼出側(finalize)にtry/catchを
+ * 強制せず、 「検証不能」を一律 null で扱えるようにする。
+ */
+export async function getObject(
+  objectKey: string,
+): Promise<{ bytes: Buffer } | null> {
+  try {
+    const res = await client.fetch(objectUrl(objectKey), {
+      method: 'GET',
+      signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      return null
+    }
+    const arrayBuffer = await res.arrayBuffer()
+    return { bytes: Buffer.from(arrayBuffer) }
+  } catch {
+    return null
+  }
+}
+
+// putObject の結果種別。 'success' = 書込成功。 'precondition_failed' = 条件付き
+// PUT(ifNoneMatch)で既に key が存在し 412 が返った(first-writer-wins の敗者)。
+// 'error' = その他の失敗(非2xx・throw・timeout — never-throw契約でここに正規化)。
+export type PutObjectOutcome = 'success' | 'precondition_failed' | 'error'
+
+/**
+ * R2オブジェクトへのserver直PUT (source finalize saga の最終 immutable key への
+ * promote。 ②-4a spec §6.2 Codex P1 対処 — 最終 key は client presigned URL を
+ * 一切持たず、 server 検証済バイトのみが書き込まれる=finalize 後 immutable)。
+ *
+ * `options.ifNoneMatch: true` で条件付き PUT(`If-None-Match: *`)を行う —
+ * key が未存在の場合のみ書き込む(spec §7.4 の first-writer-wins discipline。
+ * Task 5 の finalize 同時実行 race 対処・Task 10 の crop 保存でも共有する)。
+ * 既存 key があれば R2 が 412 を返す想定(呼出側が getObject で実体を再取得し
+ * hash 照合する — 本関数は 412 を示すのみで内容比較はしない)。
+ *
+ * headObject/deleteObject と同じ never-throw契約: fetchのthrow/timeout(abort)は
+ * catchし 'error' に正規化する。 呼出側(finalize)にtry/catchを強制しない。
+ */
+export async function putObject(
+  objectKey: string,
+  bytes: Uint8Array,
+  mime: string,
+  options: { ifNoneMatch?: boolean } = {},
+): Promise<PutObjectOutcome> {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': mime }
+    if (options.ifNoneMatch) {
+      headers['If-None-Match'] = '*'
+    }
+    const res = await client.fetch(objectUrl(objectKey), {
+      method: 'PUT',
+      // `as BodyInit`: lib.dom.d.ts の fetch overload は `Uint8Array<ArrayBuffer>`
+      // を要求するが、 @types/node の Buffer/Uint8Array は `ArrayBufferLike` 版の
+      // generic を持つため型上噛み合わない (実行時には無害な既知の型定義乖離)。
+      body: bytes as BodyInit,
+      headers,
+      signal: AbortSignal.timeout(PUT_TIMEOUT_MS),
+    })
+    if (res.ok) return 'success'
+    if (res.status === 412) return 'precondition_failed'
+    return 'error'
+  } catch {
+    return 'error'
   }
 }
 
