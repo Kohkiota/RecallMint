@@ -207,6 +207,87 @@ describe('callGemini', () => {
     const { callGemini } = await importCallGemini()
     await expect(callGemini(baseInput)).rejects.toThrow(/500 Internal/)
   })
+
+  // ②-4a 探索: input.parts (optional override) が指定されたときの挙動。
+  // 既存 caller (lib/ai/ocr.ts) は parts を渡さないため、 このブロックのみが
+  // 新しい経路を検証する — 上記の全 test は parts 未指定 = 従来どおりの
+  // files/prompt 組立を通っており、 regression の無いことを保証する。
+  describe('input.parts (②-4a source_id-interleave override)', () => {
+    it('parts 指定時は files/prompt から自動組立てず、 指定した配列をそのまま contents に使う', async () => {
+      mockGenerateContent.mockResolvedValue({
+        text: '{"cards":[]}',
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2 },
+      })
+      const { callGemini } = await importCallGemini()
+      const overrideParts = [
+        { text: 'source_id=img1' },
+        { inlineData: { mimeType: 'image/png', data: 'AAA' } },
+        { text: 'this is not baseInput.prompt' },
+      ]
+      await callGemini({ ...baseInput, parts: overrideParts })
+
+      const callArgs = mockGenerateContent.mock.calls[0][0] as {
+        contents: Array<{ role: string; parts: unknown }>
+      }
+      expect(callArgs.contents).toEqual([{ role: 'user', parts: overrideParts }])
+    })
+
+    it('parts 未指定時は従来どおり [...files, prompt] を組み立てる (回帰なし)', async () => {
+      mockGenerateContent.mockResolvedValue({ text: '{"cards":[]}', usageMetadata: {} })
+      const { callGemini } = await importCallGemini()
+      await callGemini(baseInput)
+
+      const callArgs = mockGenerateContent.mock.calls[0][0] as {
+        contents: Array<{ role: string; parts: unknown }>
+      }
+      expect(callArgs.contents).toEqual([
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: 'application/pdf', data: 'base64data' } },
+            { text: 'extract' },
+          ],
+        },
+      ])
+    })
+
+    it('②-4a: source_id-interleaved parts + exploration schema が callGemini 経由でそのまま渡る (call path 統合 test)', async () => {
+      mockGenerateContent.mockResolvedValue({ text: '{"cards":[]}', usageMetadata: {} })
+      const { callGemini } = await importCallGemini()
+      const { buildSourceIdInterleavedParts } = await import('./ocr-image-crop-parts')
+      const { buildImageCropResponseJsonSchema } = await import(
+        '@/lib/ai/schemas/ocr-image-crop-response'
+      )
+      const { buildImageCropExplorationPrompt } = await import(
+        '@/lib/ai/prompts/ocr-figure-suffix'
+      )
+
+      const prompt = buildImageCropExplorationPrompt()
+      const schema = buildImageCropResponseJsonSchema()
+      const parts = buildSourceIdInterleavedParts(
+        [
+          { sourceId: 'src-1', file: { mimeType: 'image/png', data: 'AAA' } },
+          { sourceId: 'src-2', file: { mimeType: 'image/jpeg', data: 'BBB' } },
+        ],
+        prompt,
+      )
+
+      await callGemini({
+        model: 'flash',
+        files: [],
+        prompt,
+        responseJsonSchema: schema,
+        parts,
+      })
+
+      const callArgs = mockGenerateContent.mock.calls[0][0] as {
+        contents: Array<{ role: string; parts: unknown }>
+        config: { responseJsonSchema: unknown }
+      }
+      expect(callArgs.contents).toEqual([{ role: 'user', parts }])
+      expect(callArgs.config.responseJsonSchema).toBe(schema)
+    })
+  })
 })
 
 // parseRetryAfterMs: @google/genai SDK の ApiError は status と message のみを持ち、

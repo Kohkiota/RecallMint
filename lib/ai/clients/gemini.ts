@@ -37,11 +37,24 @@ export type GeminiInputFile = {
   data: string
 }
 
+// generateContent の contents[0].parts の 1 要素。 text または inlineData (画像)。
+// ②-4a 探索 (lib/ai/clients/ocr-image-crop-parts.ts の source_id-interleaved parts)
+// が GeminiCallInput.parts の型としてもこれを共有する。
+export type GeminiContentPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+
 export type GeminiCallInput = {
   model: ModelKind
   files: GeminiInputFile[]
   prompt: string
   responseJsonSchema: Record<string, unknown>
+  // ②-4a 探索専用 (optional)。 指定時は files/prompt から parts を自動組立てず、
+  // この配列をそのまま contents[0].parts に使う (source_id-interleaved parts を
+  // 渡すため。spec §5.2)。 files/prompt は型の一貫性のため引き続き必須だが、
+  // parts 指定時は未使用。既存 caller はこの field を渡さないため挙動は不変
+  // (後方互換、 lib/ai/ocr.ts の本番 pipeline は無改修)。
+  parts?: GeminiContentPart[]
 }
 
 export type GeminiCallResult = {
@@ -96,12 +109,14 @@ export async function callGemini(
   input: GeminiCallInput,
 ): Promise<GeminiCallResult> {
   const ai = getAi()
-  const parts = [
-    ...input.files.map((f) => ({
-      inlineData: { mimeType: f.mimeType, data: f.data },
-    })),
-    { text: input.prompt },
-  ]
+  const parts =
+    input.parts ??
+    [
+      ...input.files.map((f) => ({
+        inlineData: { mimeType: f.mimeType, data: f.data },
+      })),
+      { text: input.prompt },
+    ]
   // AbortController で SDK の HTTP request を client 側から打ち切る
   // (@google/genai GenerateContentConfig.abortSignal、 client-side cancel)。
   const controller = new AbortController()
