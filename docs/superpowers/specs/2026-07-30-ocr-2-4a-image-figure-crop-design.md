@@ -51,10 +51,13 @@ prepareUpload(operation / exam / source_document / source reservation を先に�
 - `status ('awaiting_sources'|'claimed'|'prepared'|'completed'|'terminal_failed')`
 - `lease_version (bigint)`(or ランダム `lease_token`)/ `lease_expires_at` / `attempt_count (int)` / `next_retry_at` / `last_error_code (text)`
 - `prepared_schema_version (int)` / `prepared_hash (text)` / `prepared_payload (jsonb, nullable)` / `result_summary (jsonb, nullable)`
+- **`expected_source_count (int)`**(T4 が operation 作成時に確定する immutable manifest。claim(T6)の source 集合検証の**独立 oracle**。検査対象の source_assets の COUNT から導出しない=行欠落を検出するため)
 - `created_at` / `completed_at`
 - **UNIQUE(user_id, idempotency_key)**。index(user_id, status)/(next_retry_at)。**RLS 対象**。
 
-> **改訂(2026-07-31・OT 確定): `input_fingerprint` 列を廃止**。二重処理防止は UNIQUE(user_id, idempotency_key) + T4 の並行再送収束(user 単位 advisory lock)+ T6 の lease CAS + T12 の fencing + source finalize 後 immutability + stage 済 UUID 再利用で成立し、fingerprint の一致/不一致分岐は不要。`prepared_hash` は残す(payload の破損・drift 検知という別目的)。**冪等契約(不変条件)**: 同一 idempotency key は常に**最初に作成された operation**を指す。再送時の引数が異なっても新規 operation として扱わず、既存 operation / result_summary を返す。source 集合は **unordered** として扱い、常に `source_id` で決定的に処理する(順序付き fingerprint 廃止に伴い `ordinal` 列は設けない)。
+> **改訂(2026-07-31・OT 確定): `input_fingerprint` 列を廃止**。二重処理防止は UNIQUE(user_id, idempotency_key) + T4 の並行再送収束(user 単位 advisory lock)+ T6 の lease CAS + T12 の fencing + source finalize 後 immutability + stage 済 UUID 再利用で成立し、fingerprint の一致/不一致分岐は不要。`prepared_hash` は残す(payload の破損・drift 検知という別目的)。source 集合は **unordered** として扱い、常に `source_id` で決定的に処理する(順序付き fingerprint 廃止に伴い `ordinal` 列は設けない)。
+
+> **冪等 replay 契約(不変条件・2026-07-31 OT 拡張)**: 同一 idempotency key は常に**最初に作成された operation**を指す。再送時の引数が異なっても新規 operation として扱わず、既存 operation / 保存済み終端結果(result_summary / 終端 failure)を返す。**再送時に再適用してはいけないもの**(operation 作成時点の判断で確定済): 現在の daily cap / 現在のプラン・quota / 後から変更されたサイズポリシー / source の現在状態 / 現在の model・prompt・schema version / 現在の exam 状態。**再送でも常に適用するのは**: 認証・tenant/owner 確認と最低限の入力形式検証のみ。→ 具体的に、既に `completed`/`terminal_failed` の operation は **daily cap を適用せず**保存済み結果を返す(新規 Gemini call を要しないため)。
 
 **状態遷移**: `awaiting_sources → claimed → prepared → completed` / `claimed|prepared → terminal_failed`。retryable error は **status を維持したまま lease を解放**し `last_error_code` / `next_retry_at` / `attempt_count++` を記録(再 claim 可)。
 
@@ -64,6 +67,40 @@ prepareUpload(operation / exam / source_document / source reservation を先に�
 - `publishPreparedUploadTx` 冒頭で operation を **`SELECT … FOR UPDATE`** し、`status='prepared' AND lease_version = :mine` 不一致なら**旧実行を拒否**。
 - version 検証は publish に限らず **asset reservation / finalize / operation 状態更新にも可能な限り適用**。
 - 補足: 現設定 Vercel 上限 800s < lease 15min ゆえ 15 分後に同関数が生存する可能性は通常ない。それでも `lease_version` は**将来の lease 値変更・手動回収・複数リクエスト化に対する状態機械の正当性**として必須。最低限 publish で不一致を必ず拒否すればカード二重作成は防げる。
+
+### 2.1 claim(T6)の atomicity・lock order・source 検証(2026-07-31 OT 確定)
+
+claim は **1 transaction** に以下を束ねる(size race・欠落・二重処理を構造的に閉じる):
+
+1. `upload_operations` を `SELECT … FOR UPDATE`
+2. owner / status / lease / next_retry_at を分類(**認証・owner・status 分類は daily cap より前**・上記冪等契約)
+3. **claim 候補(awaiting_sources / 期限切れ claimed で実際に Gemini 再実行する経路)だけ** daily cap を確認
+4. operation に属する **全 source_assets** を `ORDER BY id … FOR UPDATE`(**`status='ready'` で絞らない** — reserved 行もロックし欠落も見えるようにするため)
+5. source 集合を検証(下記)
+6. claim UPDATE で `lease_version` / `attempt_count` を加算
+7. commit
+
+**lock order(全処理で統一・spec 固定)= `operation → source_document → source_assets(ID 順) → derived assets(ID 順)`**。operation 先行は隙間を閉じるためだけでなく、将来の publish(T12)/ GC(T14)/ GDPR(T15)と**逆順にしてデッドロックを作らない**ため。§8.1 の publish ロック順もこれに準拠。
+
+**source 検証要件(全て要求)**:
+- **T4 の immutable `expected_source_count`** と実際の行数が一致(**検査対象の source_assets COUNT から期待値を作らない**=欠落を検出するため)
+- 全行 `status='ready'` / 全行 `byte_size IS NOT NULL` / `deleting`・未知状態・欠落なし
+- server 検証済 `byte_size` の合計 ≤ `TOTAL_UPLOAD_LIMIT_BYTES`
+
+**outcome 設計**:
+- **一部 reserved**(まだ finalize 途中)→ **一時的 `sources_not_ready`**(永続 status に追加しない・operation は `awaiting_sources` のまま・再送で回復しうる)
+- **全 ready だが合計超過** → 同一 operation では回復不能ゆえ **終端結果(`terminal_failed`/`rejected` 相当)を保存**し、同一 idempotency key 再送で同じ結果を返す(`awaiting_sources` に残さない=再送毎の再検査を避ける)
+- **行欠落 / `deleting` 混在 / `byte_size` NULL** → `sources_not_ready` と混同せず、データ不整合 or terminal failure として扱う
+
+**lease 時刻は DB 時刻に統一(fencing 正しさに直結)**: lease 期限・`next_retry_at` の比較/設定は app 側 `new Date()` でなく PostgreSQL の `now()` を基準にする(Vercel 複数インスタンスの時計ずれで lease 裁定が不整合になるのを防ぐ。**lease の裁定者は PostgreSQL**)。
+
+### 2.2 prepared takeover(T12 で実装・T12 fencing checkpoint 項目)
+
+現 claim は `prepared` を `already_prepared` として返すのみで、**旧 worker が prepared 保存後に死ぬと誰も引き継げない**。これは **T12(publish)側の別経路(claimPrepared / publish-resume)** で実装する(T6 の blocker にしない・未完了項目として固定):
+- lease 期限切れの `prepared` を**新 lease_version で takeover** できる
+- 旧 worker は fencing(§8.1)で prepared 更新 / publish を拒否される
+- **Gemini を再実行しないため daily cap は適用しない**
+→ **T12 fencing checkpoint の確認項目に含める**。
 
 ---
 
@@ -152,6 +189,12 @@ client: 各画像を既存圧縮(browser-image-compression)で source 化 → re
 
 ### 6.4 source_assets の GC(§F 決定)
 現行 GC script は `assets` のみ(`gc-image-assets.ts:52`)ゆえ source_assets は対象外。**決定 = 共通化**: 既存 image-GC の asset-state 機構(reserved TTL / 参照ゼロ→deleting→R2 delete・reconciler は W1 deploy 後)を source_assets にも適用する lane を足す(状態列 reserved/ready/deleting を共有ゆえ自然)。参照ゼロ判定 = source_document FK + operation 状態(live operation の source は除外・§11)。加えて **未 promote の stale temp key(`src/tmp/`)は reserved TTL 超過で R2 delete**(§6.2 の immutability 経路の後始末)。
+
+### 6.5 R2 staging の bounded residual risk(明示受容・2026-07-31 OT 確定)
+
+claim(§2.1)の `TOTAL_UPLOAD_LIMIT_BYTES`(4MB)検査は **OCR admission limit**(Gemini に投入する source の総量制限)であって、**claim 前の R2 staging 容量制限ではない**。finalize は 1 source ≤ `MAX_ASSET_BYTES`(5MiB)を強制し、1 operation ≤ `MAX_SOURCES_PER_UPLOAD`(40)ゆえ、**claim 前の R2 には最大 40×5MiB=200MB が staging されうる**。
+
+**T6 では finalize 側に aggregate budget を追加しない**。これは**「解消済み」ではなく明示的に受容した bounded residual risk**である。受容が成立する条件(いずれも本 sprint で成立 or 台帳管理):① 40 件・各 5MiB がサーバー側で確実に強制される(T4 件数上限 + T5 finalize の byte_size 検証)② 同一ユーザーの active upload が 1 件に制限される(T4 user advisory lock + live-op gate)③ rejected・abandoned source に短い GC 期限がある(§6.4)④ operation 作成の反復を rate limit または将来 quota で抑える。**②-5 follow-up 台帳に記録**: 短期 GC(rejected/abandoned source)/ operation 作成の反復 rate limit / ユーザー quota。
 
 ---
 
