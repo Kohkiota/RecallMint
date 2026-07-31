@@ -548,6 +548,7 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
           leaseVersion: 1,
           attemptCount: 1,
           createdAt: oldCreatedAt,
+          expectedSourceCount: 1,
         })
 
         const input: PrepareUploadInput = {
@@ -586,6 +587,7 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
         leaseVersion: 0,
         attemptCount: 0,
         createdAt: staleCreatedAt,
+        expectedSourceCount: 1,
       })
 
       const input: PrepareUploadInput = {

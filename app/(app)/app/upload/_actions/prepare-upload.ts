@@ -369,7 +369,9 @@ export async function prepareUploadTx(
 
   // 8. upload_operation INSERT(status='awaiting_sources')。prepared_payload /
   // result_summary / prepared_hash 等は後続 task(claim/prepare/publish)が
-  // 埋めるため null のまま。
+  // 埋めるため null のまま。expectedSourceCount = 検証済 sources 件数(T6 fencing
+  // checkpoint 裁定・spec §2/§2.1: claim(T6)の source 集合検証が使う immutable
+  // manifest oracle。ここで一度確定させ、以降は不変)。
   const opInsert = await tx
     .insert(uploadOperations)
     .values({
@@ -380,6 +382,7 @@ export async function prepareUploadTx(
       status: 'awaiting_sources',
       leaseVersion: 0,
       attemptCount: 0,
+      expectedSourceCount: sources.length,
     })
     .returning({ id: uploadOperations.id })
   const operationId = opInsert[0].id

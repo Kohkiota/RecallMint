@@ -1,0 +1,663 @@
+// ②-4a Phase B Task 6: claim + lease CAS(+ 日次 cap 判定・単一 tx)の実 PG 検証。
+//
+// 2026-07-31 T6 fencing checkpoint 裁定(OT 確定)により全面改訂: claim を
+// 1 transaction に統合(`upload_operations` SELECT…FOR UPDATE → 分類(daily cap
+// より前)→ claim 候補のみ daily cap → 全 source_assets ORDER BY id FOR UPDATE
+// (status で絞らない)→ source 集合検証 → claim CAS)。**契約変更**: 旧版の
+// 「reserved 行を除外して claim 成功」テストは Critical #2(finalize 途中の部分
+// 合計で claim してしまう欠陥)を「正しい挙動」として pin していたため削除し、
+// 新契約(reserved が 1 件でもあれば `sources_not_ready`)のテストへ差し替えた。
+//
+// claimOperationTx は Clerk 認証を持たない(prepareUploadTx と同型 — tx と user を
+// 呼出側から受け取るだけ)ため asTenant + Pick<User,'id'> で直接 exercise できる。
+// 外側の claimOperation(Clerk 経由)はこの iso suite の対象外。
+//
+// ★ concurrent-claim 系 test が本 task の核心(OT checkpoint 対象)。claim は
+// `upload_operations` を冒頭で SELECT…FOR UPDATE するため、同一行への並行 claim
+// は「後着 tx がこの行ロックでブロック → 先着 commit 後に最新のコミット済み行を
+// 読んで分類し直す」という pessimistic locking で解決する。ゆえに 2 つの
+// claimOperationTx 呼出を Promise.all で並行実行するだけで、Postgres の
+// 行ロックにより「どちらが先に実行されても・どれだけ重なっても、必ず一方だけが
+// claim できる」ことが DB レベルで保証される — app 側で明示的な gate/signal を
+// 組む必要がない(T5 finalize の TOCTOU race テスト(read-tx/外部I/O/write-tx に
+// 分割)とは異なり、claim は 1 tx に閉じているため)。
+//
+// 日次 cap 判定は getTodayAiUsageGlobal(tx) 経由で実 ai_usage 表を読む。ai_usage は
+// user_id を持たない global 表で truncateAllUserTables の対象外(rls-partial-mixed
+// test と同じ理由)なので、対象日付行を beforeEach/afterEach で個別掃除する。
+//
+// mutating test ゆえ beforeEach で truncate→seed(各 test を clean state から)。
+import { randomUUID } from 'node:crypto'
+import { eq } from 'drizzle-orm'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { closeDb } from '@/lib/db'
+import {
+  aiUsage,
+  exams,
+  sourceAssets,
+  sourceDocuments,
+  uploadOperations,
+  users,
+} from '@/lib/db/schema'
+import { todayInJst } from '@/lib/jst'
+import {
+  claimOperationTx,
+  type ClaimOperationResult,
+} from '@/app/(app)/app/upload/_actions/claim-operation'
+import { TOTAL_UPLOAD_LIMIT_BYTES } from '@/app/(app)/app/upload/_lib/constants'
+
+import { asTenant } from './setup/as-tenant'
+import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
+
+afterAll(async () => {
+  await closeDb()
+  await closeFixtureOwnerDb()
+})
+
+type SeedOverrides = Partial<{
+  status: 'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed'
+  leaseVersion: number
+  leaseExpiresAt: Date | null
+  attemptCount: number
+  nextRetryAt: Date | null
+  resultSummary: Record<string, unknown> | null
+  lastErrorCode: string | null
+  idempotencyKey: string
+  expectedSourceCount: number
+}>
+
+async function seedOperation(
+  userId: string,
+  overrides: SeedOverrides = {},
+): Promise<{ operationId: string; examId: string; sourceDocumentId: string }> {
+  const owner = getFixtureOwnerDb()
+  const examId = randomUUID()
+  await owner.insert(exams).values({ id: examId, userId, name: 'テスト試験' })
+  const sourceDocumentId = randomUUID()
+  await owner.insert(sourceDocuments).values({
+    id: sourceDocumentId,
+    userId,
+    examId,
+    mode: 'new',
+    fileType: 'image',
+    filename: 'test.png',
+    fileSizeBytes: 1000,
+    status: 'processing',
+    pagesTotal: 1,
+  })
+  const operationId = randomUUID()
+  await owner.insert(uploadOperations).values({
+    id: operationId,
+    userId,
+    idempotencyKey: overrides.idempotencyKey ?? `idem-${operationId}`,
+    examId,
+    sourceDocumentId,
+    status: overrides.status ?? 'awaiting_sources',
+    leaseVersion: overrides.leaseVersion ?? 0,
+    leaseExpiresAt: overrides.leaseExpiresAt ?? null,
+    attemptCount: overrides.attemptCount ?? 0,
+    nextRetryAt: overrides.nextRetryAt ?? null,
+    resultSummary: overrides.resultSummary ?? null,
+    lastErrorCode: overrides.lastErrorCode ?? null,
+    // T6 fencing checkpoint 裁定: immutable manifest oracle。既定 1(既定で
+    // 1 件の ready source_asset を伴わせる seedOperationWithReadySource と対
+    // にする)。source 集合検証そのものをテストする describe では明示上書き。
+    expectedSourceCount: overrides.expectedSourceCount ?? 1,
+  })
+  return { operationId, examId, sourceDocumentId }
+}
+
+async function seedSourceAsset(
+  userId: string,
+  sourceDocumentId: string,
+  sourceId: string,
+  overrides: Partial<{ status: 'reserved' | 'ready' | 'deleting'; byteSize: number | null }> = {},
+): Promise<string> {
+  const owner = getFixtureOwnerDb()
+  const assetId = randomUUID()
+  const status = overrides.status ?? 'ready'
+  const byteSize =
+    overrides.byteSize === undefined ? (status === 'ready' ? 1000 : null) : overrides.byteSize
+  await owner.insert(sourceAssets).values({
+    id: assetId,
+    userId,
+    sourceDocumentId,
+    sourceId,
+    objectKey:
+      status === 'reserved'
+        ? `users/${userId}/src/tmp/${assetId}`
+        : `users/${userId}/src/${assetId}.png`,
+    mime: status === 'reserved' ? null : 'image/png',
+    contentHash: status === 'reserved' ? null : `hash-${assetId}`,
+    byteSize,
+    width: status === 'reserved' ? null : 100,
+    height: status === 'reserved' ? null : 100,
+    status,
+    originalFilename: `${sourceId}.png`,
+    readyAt: status === 'ready' ? new Date() : null,
+  })
+  return assetId
+}
+
+async function seedReadySourceAsset(
+  userId: string,
+  sourceDocumentId: string,
+  sourceId: string,
+  byteSize: number,
+): Promise<string> {
+  return seedSourceAsset(userId, sourceDocumentId, sourceId, { status: 'ready', byteSize })
+}
+
+// claim CAS まで到達させたい test 用の便宜 helper: expectedSourceCount=1 の
+// operation + それに一致する 1 件の ready source_asset(既定 1000 bytes、
+// TOTAL_UPLOAD_LIMIT_BYTES 内)をまとめて作る。
+async function seedClaimableOperation(
+  userId: string,
+  overrides: SeedOverrides = {},
+  byteSize = 1000,
+): Promise<{ operationId: string; examId: string; sourceDocumentId: string }> {
+  const seeded = await seedOperation(userId, { expectedSourceCount: 1, ...overrides })
+  await seedReadySourceAsset(userId, seeded.sourceDocumentId, 's1', byteSize)
+  return seeded
+}
+
+async function readOperationRow(operationId: string) {
+  const owner = getFixtureOwnerDb()
+  const rows = await owner
+    .select({
+      status: uploadOperations.status,
+      leaseVersion: uploadOperations.leaseVersion,
+      leaseExpiresAt: uploadOperations.leaseExpiresAt,
+      attemptCount: uploadOperations.attemptCount,
+      nextRetryAt: uploadOperations.nextRetryAt,
+      resultSummary: uploadOperations.resultSummary,
+      lastErrorCode: uploadOperations.lastErrorCode,
+    })
+    .from(uploadOperations)
+    .where(eq(uploadOperations.id, operationId))
+  return rows[0]
+}
+
+describe('claimOperationTx (T6)', () => {
+  let userAId: string
+  let userBId: string
+
+  beforeEach(async () => {
+    await truncateAllUserTables()
+    const owner = getFixtureOwnerDb()
+    userAId = randomUUID()
+    userBId = randomUUID()
+    await owner.insert(users).values([
+      { id: userAId, clerkId: `clerk_A_${userAId}` },
+      { id: userBId, clerkId: `clerk_B_${userBId}` },
+    ])
+  })
+
+  // --- concurrent-claim CAS: 本 task の核心 ---
+  describe('concurrent claim CAS', () => {
+    it('exactly one of two concurrent claims on the same awaiting_sources operation wins ("claimed"); the other gets "already_processing"; lease_version bumps by exactly 1', async () => {
+      const { operationId } = await seedClaimableOperation(userAId)
+
+      const [r1, r2] = await Promise.all([
+        asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+        asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+      ])
+
+      const outcomes = [r1.outcome, r2.outcome].sort()
+      expect(outcomes).toEqual(['already_processing', 'claimed'])
+
+      const winner = (r1.outcome === 'claimed' ? r1 : r2) as Extract<
+        ClaimOperationResult,
+        { outcome: 'claimed' }
+      >
+      expect(winner.leaseVersion).toBe(1)
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+      expect(row?.leaseVersion).toBe(1)
+      expect(row?.attemptCount).toBe(1)
+    })
+
+    it('expired-lease takeover race: two concurrent claims on the same claimed+expired-lease operation → exactly one wins ("claimed", lease bumps by 1); the other gets "already_processing" (sees the winner\'s fresh valid lease)', async () => {
+      const { operationId } = await seedClaimableOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ
+        attemptCount: 1,
+      })
+
+      const [r1, r2] = await Promise.all([
+        asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+        asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+      ])
+
+      const outcomes = [r1.outcome, r2.outcome].sort()
+      expect(outcomes).toEqual(['already_processing', 'claimed'])
+
+      const winner = (r1.outcome === 'claimed' ? r1 : r2) as Extract<
+        ClaimOperationResult,
+        { outcome: 'claimed' }
+      >
+      expect(winner.leaseVersion).toBe(2) // 1 → 2
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+      expect(row?.leaseVersion).toBe(2)
+      expect(row?.attemptCount).toBe(2)
+    })
+  })
+
+  // --- 二重 Gemini 抑止: claimed + lease 有効中の再 claim ---
+  describe('double-suppression (claimed + valid lease)', () => {
+    it('a 2nd claim while claimed with a still-valid lease returns already_processing and writes nothing', async () => {
+      const leaseExpiresAt = new Date(Date.now() + 10 * 60 * 1000)
+      const { operationId } = await seedOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt,
+        attemptCount: 1,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('already_processing')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+      expect(row?.leaseVersion).toBe(1)
+      expect(row?.attemptCount).toBe(1)
+    })
+  })
+
+  // --- 再 claim: retryable-failed(next_retry_at 到達 vs 未到達) ---
+  describe('retryable re-claim (next_retry_at gate)', () => {
+    it('a retryable-failed op with next_retry_at in the past re-claims (lease bumps)', async () => {
+      const { operationId } = await seedClaimableOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ
+        attemptCount: 1,
+        nextRetryAt: new Date(Date.now() - 30_000), // 到達済み
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toMatchObject({ outcome: 'claimed', leaseVersion: 2 })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+      expect(row?.leaseVersion).toBe(2)
+      expect(row?.attemptCount).toBe(2)
+    })
+
+    it('a retryable-failed op with next_retry_at in the future is not claimable (not_found) and writes nothing', async () => {
+      const { operationId } = await seedOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ(lease だけなら takeover 可)
+        attemptCount: 1,
+        nextRetryAt: new Date(Date.now() + 5 * 60 * 1000), // 未到達(backoff 待ち)
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('not_found')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+      expect(row?.leaseVersion).toBe(1)
+      expect(row?.attemptCount).toBe(1)
+    })
+  })
+
+  // --- 日次 Gemini cap ---
+  describe('daily Gemini cap', () => {
+    let originalDailyLimit: string | undefined
+    const today = todayInJst()
+
+    beforeEach(async () => {
+      originalDailyLimit = process.env.GEMINI_DAILY_LIMIT
+      process.env.GEMINI_DAILY_LIMIT = '5'
+      await getFixtureOwnerDb().delete(aiUsage).where(eq(aiUsage.date, today))
+    })
+
+    afterEach(async () => {
+      if (originalDailyLimit === undefined) {
+        delete process.env.GEMINI_DAILY_LIMIT
+      } else {
+        process.env.GEMINI_DAILY_LIMIT = originalDailyLimit
+      }
+      await getFixtureOwnerDb().delete(aiUsage).where(eq(aiUsage.date, today))
+    })
+
+    it('global daily count at the limit → daily_limit_exceeded, operation stays awaiting_sources (no claim)', async () => {
+      await getFixtureOwnerDb().insert(aiUsage).values({ date: today, count: 5 })
+      const { operationId } = await seedOperation(userAId)
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toMatchObject({
+        outcome: 'daily_limit_exceeded',
+        current: 5,
+        limit: 5,
+      })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('awaiting_sources')
+      expect(row?.leaseVersion).toBe(0)
+      expect(row?.attemptCount).toBe(0)
+    })
+
+    it('global daily count over the limit → daily_limit_exceeded, operation stays awaiting_sources', async () => {
+      await getFixtureOwnerDb().insert(aiUsage).values({ date: today, count: 9 })
+      const { operationId } = await seedOperation(userAId)
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toMatchObject({ outcome: 'daily_limit_exceeded', current: 9, limit: 5 })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('awaiting_sources')
+    })
+
+    it('global daily count under the limit → cap does not block a real claim', async () => {
+      await getFixtureOwnerDb().insert(aiUsage).values({ date: today, count: 4 })
+      const { operationId } = await seedClaimableOperation(userAId)
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('claimed')
+    })
+
+    // [Critical #1 regression] classification (completed/terminal_failed の冪等
+    // replay) は daily cap より前でなければならない — 再送は新規 Gemini call を
+    // 要しないため、cap 枯渇状態でも保存済み結果をそのまま返す(spec §2 冪等
+    // replay 契約)。
+    it('a completed operation still returns its stored result_summary even when the daily cap is exhausted', async () => {
+      await getFixtureOwnerDb().insert(aiUsage).values({ date: today, count: 999 })
+      const resultSummary = { schemaVersion: 1, cardsExtracted: 3 }
+      const { operationId } = await seedOperation(userAId, {
+        status: 'completed',
+        resultSummary,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toEqual({ outcome: 'completed', resultSummary })
+    })
+  })
+
+  // --- source 集合検証(spec §2.1 手順4-5) ---
+  describe('source set validation', () => {
+    it('any source_asset still reserved (finalize in progress) → sources_not_ready (transient, operation status unchanged, no persisted failure)', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 2,
+      })
+      await seedSourceAsset(userAId, sourceDocumentId, 's1', { status: 'ready', byteSize: 1000 })
+      await seedSourceAsset(userAId, sourceDocumentId, 's2', { status: 'reserved' })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toEqual({ outcome: 'sources_not_ready' })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('awaiting_sources') // 永続 status 不変
+      expect(row?.leaseVersion).toBe(0)
+      expect(row?.lastErrorCode).toBeNull()
+    })
+
+    // [Critical #2 regression / 契約変更] 旧版はここで「reserved 行は除外して
+    // claim 成功」と assert していた(=部分合計での claim を pin していた)。
+    // 新契約では finalize↔claim の実競合を real PG で駆動し、claim は決して
+    // 古い/部分的な合計で claim しない(reserved を 1 件でも見れば
+    // sources_not_ready で確定する・全 ready を見た時のみ完全な合計で claim
+    // する)ことを確認する。 SELECT…FOR UPDATE による行ロックのおかげで、どちらの
+    // 順序で実行されても不正な中間状態は観測されない — 両方の正当な帰結を
+    // 許容しつつ、どちらでも「finalize 未反映の部分合計で claim」が起きないことを
+    // 検証する。
+    it('finalize↔claim race: claim never computes the total from a stale/partial read — resolves to sources_not_ready (claim locks first) or a claim using the FULLY finalized total (finalize commits first), and the row ends up ready either way', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 2,
+      })
+      const owner = getFixtureOwnerDb()
+      await seedReadySourceAsset(userAId, sourceDocumentId, 's1', 1000)
+      const reservedAssetId = await seedSourceAsset(userAId, sourceDocumentId, 's2', {
+        status: 'reserved',
+      })
+
+      // finalize 相当: reserved → ready への単文 UPDATE(単文ゆえ暗黙 auto-commit
+      // の独立 tx)。claim の SELECT…FOR UPDATE と同じ行を取り合う。
+      const finalizeRace = () =>
+        owner
+          .update(sourceAssets)
+          .set({
+            status: 'ready',
+            byteSize: 2000,
+            mime: 'image/png',
+            contentHash: 'hash-finalized',
+            width: 100,
+            height: 100,
+            readyAt: new Date(),
+          })
+          .where(eq(sourceAssets.id, reservedAssetId))
+
+      const [claimResult] = await Promise.all([
+        asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+        finalizeRace(),
+      ])
+
+      if (claimResult.outcome === 'sources_not_ready') {
+        // claim が先に source_assets をロックした: 一時的outcome・永続status不変。
+        const row = await readOperationRow(operationId)
+        expect(row?.status).toBe('awaiting_sources')
+      } else {
+        // finalize が先に commit した: claim は完全な合計(1000+2000)を見たはず
+        // (reserved が 1 件でも残っていれば sources_not_ready に分岐するため、
+        // 'claimed' に到達したこと自体が「両行 ready を見た」ことの証明)。
+        expect(claimResult.outcome).toBe('claimed')
+      }
+
+      // どちらの順序でも、最終的に reservedAssetId は ready 化されている。
+      const finalRows = await owner
+        .select({ status: sourceAssets.status })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, reservedAssetId))
+      expect(finalRows[0]?.status).toBe('ready')
+    })
+
+    it('all ready but the real byte_size sum exceeds TOTAL_UPLOAD_LIMIT_BYTES → persists a terminal_failed result (size_exceeded), and a re-send returns the SAME terminal result (no re-check)', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 2,
+      })
+      const half = Math.floor(TOTAL_UPLOAD_LIMIT_BYTES / 2) + 1000
+      await seedReadySourceAsset(userAId, sourceDocumentId, 's1', half)
+      await seedReadySourceAsset(userAId, sourceDocumentId, 's2', half)
+
+      const first = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(first.outcome).toBe('terminal_failed')
+      if (first.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(first.lastErrorCode).toBe('size_exceeded')
+      expect(first.resultSummary).toMatchObject({
+        reason: 'size_exceeded',
+        current: half * 2,
+        limit: TOTAL_UPLOAD_LIMIT_BYTES,
+      })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+      expect(row?.leaseVersion).toBe(0) // 一度も claim CAS に到達していない
+
+      // 再送: 同じ idempotency key(= 同じ operationId)で再度呼んでも、size 判定
+      // を再実行せず保存済みの同じ終端結果をそのまま返す。
+      const second = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(second).toEqual(first)
+    })
+
+    it('actual source_assets row count below expected_source_count (missing row) → terminal_failed (source_count_mismatch), not conflated with sources_not_ready', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 2,
+      })
+      // 1 件だけ seed(expected=2 に対し欠落)。
+      await seedReadySourceAsset(userAId, sourceDocumentId, 's1', 1000)
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('terminal_failed')
+      if (result.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(result.lastErrorCode).toBe('source_count_mismatch')
+      expect(result.resultSummary).toMatchObject({ expected: 2, actual: 1 })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+    })
+
+    it('a ready row with byte_size IS NULL → terminal_failed (source_byte_size_missing)', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 1,
+      })
+      await seedSourceAsset(userAId, sourceDocumentId, 's1', { status: 'ready', byteSize: null })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('terminal_failed')
+      if (result.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(result.lastErrorCode).toBe('source_byte_size_missing')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+    })
+
+    it('a deleting row mixed with a ready row → terminal_failed (source_deleting), not conflated with sources_not_ready', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        expectedSourceCount: 2,
+      })
+      await seedReadySourceAsset(userAId, sourceDocumentId, 's1', 1000)
+      await seedSourceAsset(userAId, sourceDocumentId, 's2', { status: 'deleting' })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('terminal_failed')
+      if (result.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(result.lastErrorCode).toBe('source_deleting')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+    })
+  })
+
+  // --- completed / terminal_failed: 冪等成功・再 claim なし ---
+  describe('completed / terminal_failed operations (idempotent replay)', () => {
+    it('completed: returns the stored result_summary and does not re-claim (row unchanged)', async () => {
+      const resultSummary = { schemaVersion: 1, cardsExtracted: 3 }
+      const { operationId } = await seedOperation(userAId, {
+        status: 'completed',
+        leaseVersion: 3,
+        attemptCount: 2,
+        resultSummary,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toEqual({ outcome: 'completed', resultSummary })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('completed')
+      expect(row?.leaseVersion).toBe(3)
+      expect(row?.attemptCount).toBe(2)
+    })
+
+    it('terminal_failed: returns the same stored terminal result on repeated calls (idempotent replay), row unchanged', async () => {
+      const resultSummary = { reason: 'size_exceeded', current: 5_000_000, limit: 4_000_000 }
+      const { operationId } = await seedOperation(userAId, {
+        status: 'terminal_failed',
+        leaseVersion: 0,
+        lastErrorCode: 'size_exceeded',
+        resultSummary,
+      })
+
+      const first = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      const second = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(first).toEqual({
+        outcome: 'terminal_failed',
+        lastErrorCode: 'size_exceeded',
+        resultSummary,
+      })
+      expect(second).toEqual(first)
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+      expect(row?.leaseVersion).toBe(0)
+    })
+  })
+
+  // --- prepared: 再 claim せず already_prepared(takeover は T12) ---
+  describe('prepared operation', () => {
+    it('returns already_prepared and does not re-claim', async () => {
+      const { operationId } = await seedOperation(userAId, {
+        status: 'prepared',
+        leaseVersion: 1,
+        attemptCount: 1,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('already_prepared')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('prepared')
+      expect(row?.leaseVersion).toBe(1)
+    })
+  })
+
+  // --- not-claimable / not-found ---
+  describe('not-claimable / not-found', () => {
+    it('a nonexistent operationId returns not_found', async () => {
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, randomUUID()),
+      )
+      expect(result.outcome).toBe('not_found')
+    })
+
+    it('a malformed (non-UUID) operationId returns not_found without hitting the DB with a bad cast', async () => {
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, 'not-a-uuid'),
+      )
+      expect(result.outcome).toBe('not_found')
+    })
+
+    it("another user's operation is not claimable by the caller (owner scope) → not_found, foreign row untouched", async () => {
+      const { operationId } = await seedOperation(userBId)
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('not_found')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('awaiting_sources')
+      expect(row?.leaseVersion).toBe(0)
+    })
+  })
+})

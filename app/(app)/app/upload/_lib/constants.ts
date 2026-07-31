@@ -34,3 +34,15 @@ export const TOTAL_UPLOAD_LIMIT_BYTES = TOTAL_UPLOAD_LIMIT_MB * MB
 // 旧 source_documents の 15 分窓(STALE_PROCESSING_MS)はそのまま流用しない —
 // 新状態機械は prepared の 7 日 retry を持ち意味が異なるため独立値として定義。
 export const PREPARE_AWAITING_TTL_MS = 15 * 60 * 1000
+
+// ②-4a T6(claim-operation.ts)の lease TTL(spec §2)。claim/takeover 時に
+// `lease_expires_at = now + LEASE_TTL_MS` を設定し、期限切れ lease は次の claim
+// 呼出が takeover できる(claimable WHERE の一部)。spec §2 の注記どおり、現行
+// Vercel 関数上限(800s)< この lease(15分)ゆえ「lease 保持中に同一実行が生存し
+// 続ける」通常ケースは起きない —lease はライブネス保証ではなく、
+// 状態機械の正当性(fencing の CAS token)を担保するための値。
+// claim-operation.ts はファイル先頭に 'use server' を持つため定数を直接 export
+// できず(PREPARE_AWAITING_TTL_MS と同じ Next.js 制約)、この directive 無し
+// 共有 file に置く(claim-operation.ts / iso test の両方がここから import する)。
+export const LEASE_TTL_MS = 15 * 60 * 1000
+
