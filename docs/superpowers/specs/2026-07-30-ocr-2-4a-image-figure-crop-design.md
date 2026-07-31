@@ -2,7 +2,7 @@
 
 - 日付: 2026-07-30(初版)/ **2026-07-31 改訂: prepare→publish 方式へ全面改訂**。
 - 位置付け: ②-4 本体を **画像入稿のみ**にスコープした ②-4a の設計正本。PDF rasterize / Files API / page 固有メタは ②-4b。
-- 状態: **改訂済(未凍結)**。方式(未公開 payload + atomic publish)は Codex plan cross-check で妥当判定済。**§H Codex 差分レビュー実施済**(2026-07-31・`docs/codex/2026-07-31-ocr-2-4a-revision.md`): **P1=1(source finalize 後の immutability・§6.2 で対処済)/ Important 0 / Minor 0**。→ **OT 再レビューで凍結**。
+- 状態: **凍結(実装中)**。方式(未公開 payload + atomic publish)は Codex plan cross-check で妥当判定済。**§H Codex 差分レビュー実施済**(2026-07-31・`docs/codex/2026-07-31-ocr-2-4a-revision.md`): P1=1(§6.2 で対処済)。**2026-07-31 実装中改訂(OT 確定・Codex 再レビュー不要と OT 判断)**: (a) `input_fingerprint` 廃止 + 冪等契約明記(§2)(b) source_assets の検証済 5 列 nullable + lean reservation + `client_declared_*` 非採用(§6.1)(c) 日次 Gemini cap 配線 + T4 user advisory lock + 同時 1 upload 制限(§3・非原子)(d) §7.3 を crop-derived に限定。以降の仕様変更は停止して OT 相談。
 - 前提資料: fact-finding(`docs/audit/2026-07-29-ocr-2-4-factfinding.md`)/ 実測 exp1-6(`scripts/ai/_ocr-*.ts`)/ Codex plan cross-check(`docs/codex/2026-07-30-plan-ocr-2-4a.md`)/ sync 調査(本 session)。
 
 ---
@@ -50,9 +50,11 @@ prepareUpload(operation / exam / source_document / source reservation を先に�
 - `id (uuid pk)` / `user_id (uuid fk cascade)` / `idempotency_key (text)` / `exam_id (uuid)` / `source_document_id (uuid nullable)`
 - `status ('awaiting_sources'|'claimed'|'prepared'|'completed'|'terminal_failed')`
 - `lease_version (bigint)`(or ランダム `lease_token`)/ `lease_expires_at` / `attempt_count (int)` / `next_retry_at` / `last_error_code (text)`
-- `input_fingerprint (text)` / `prepared_schema_version (int)` / `prepared_hash (text)` / `prepared_payload (jsonb, nullable)` / `result_summary (jsonb, nullable)`
+- `prepared_schema_version (int)` / `prepared_hash (text)` / `prepared_payload (jsonb, nullable)` / `result_summary (jsonb, nullable)`
 - `created_at` / `completed_at`
 - **UNIQUE(user_id, idempotency_key)**。index(user_id, status)/(next_retry_at)。**RLS 対象**。
+
+> **改訂(2026-07-31・OT 確定): `input_fingerprint` 列を廃止**。二重処理防止は UNIQUE(user_id, idempotency_key) + T4 の並行再送収束(user 単位 advisory lock)+ T6 の lease CAS + T12 の fencing + source finalize 後 immutability + stage 済 UUID 再利用で成立し、fingerprint の一致/不一致分岐は不要。`prepared_hash` は残す(payload の破損・drift 検知という別目的)。**冪等契約(不変条件)**: 同一 idempotency key は常に**最初に作成された operation**を指す。再送時の引数が異なっても新規 operation として扱わず、既存 operation / result_summary を返す。source 集合は **unordered** として扱い、常に `source_id` で決定的に処理する(順序付き fingerprint 廃止に伴い `ordinal` 列は設けない)。
 
 **状態遷移**: `awaiting_sources → claimed → prepared → completed` / `claimed|prepared → terminal_failed`。retryable error は **status を維持したまま lease を解放**し `last_error_code` / `next_retry_at` / `attempt_count++` を記録(再 claim 可)。
 
@@ -71,6 +73,25 @@ prepareUpload(operation / exam / source_document / source reservation を先に�
 
 - 状態 `awaiting_sources` の間に client が source を presigned PUT → finalize(§6)。
 - source upload / prepare / claim / publish の各段階に **abandonment GC と再開契約**(§11)。
+
+**T4 の並行制御 + 同時 1 upload 制限(2026-07-31・OT 確定)**: 旧 flow の同時 1 upload 制限は `runUploadGuardTx`(`upload-guard.ts:58` の user 単位 advisory lock + `:69` の processing 検査)で成立していたが、新 `prepareUpload` はこれを移植していない。ゆえに `prepareUpload` は **user 単位 advisory xact lock を冒頭で取得**し、以下の順で判定する:
+
+1. user 単位 advisory lock(`pg_try_advisory_xact_lock(hashtext(userId))`)取得。取れなければ並行 prepare として弾く。
+2. 同一 idempotency key の既存 operation があれば**それを返す**(冪等・§2 契約)。
+3. 別 key の **live operation** があれば `in_progress` を返す(同時 1 upload 制限)。
+4. なければ新規 operation + exam + source_document + **source reservation 行**を作成。
+
+**live 判定の基準**: 旧 `source_documents.created_at` 15 分窓を**そのまま流用しない**(新状態機械は 7 日 retry を持ち矛盾する)。`upload_operations` の **status(非終端 = awaiting_sources|claimed|prepared)/ lease(lease_expires_at)/ abandonment TTL** を基準にする。abandonment TTL の正本は §11(T14 で確定)。T4 時点では暫定 TTL を定義し、T14 で §11 の値と整合させる。
+
+**日次 Gemini cap の配線(2026-07-31・OT 確定)**: 新 prepare→publish flow は現状 **同時 1 upload 制限と日次 cap の両方を素通し**している(旧 `runUploadGuardTx` の guard を未移植)。account quota(月次ページ)は ②-5 だが、service 全体の **日次 Gemini call cap(`GEMINI_DAILY_LIMIT`・CLAUDE.md AI 絶対ルール 2 の安全弁)は本 sprint で配線する**。原子化(枠確保)は不要だが配線は必須:
+
+1. **T4 冒頭で user 単位 advisory lock**(上記)。これで並行再送収束と同時 1 upload 制限を 1 機構で解決。
+2. **T6 の claim 直前に日次 cap 判定**(現行と同じ global daily count)。上限到達なら claim せず operation を `awaiting_sources` のまま返す。
+3. **T7 では各 attempt で `incrementAiUsage`**(既存どおり)。
+4. `GEMINI_DAILY_LIMIT_EXCEEDED` を既存 UI エラーへ接続。
+5. `parseDailyLimit`(`upload-guard.ts:23` private)を**再利用可能な helper へ切り出し**、T6 の日次 cap 判定で共有。
+
+**原子的枠確保(`INSERT … ON CONFLICT … WHERE count < limit`)は実装しない**: 実ユーザー 0 で、超過してもサービス全体上限を 1〜2 回超える程度ゆえ。**実ユーザー増加後に再判断**する(この判断理由を記録)。
 
 ---
 
@@ -109,17 +130,21 @@ client が source ごとに source_id 発行。parts は `[text "source_id=X", i
 ## 6. source_assets 保存
 
 ### 6.1 新表 `source_assets`(1 upload : N ファイル)
-列: `id (uuid pk)` / `user_id (fk cascade)` / `source_document_id (fk cascade)` / `source_id (text)` / `object_key (text unique)` / `mime` / `content_hash (server 計算 SHA-256)` / **`byte_size (int)`** / `width` / `height` / `status ('reserved'|'ready'|'deleting')` / `original_filename` / `source_kind ('image')` / `created_at` / `ready_at`。②-4b 予約: `page_count`/`rotation`/`rasterizer`(nullable)。**UNIQUE(source_document_id, source_id)**。index(user_id, status)/(source_document_id)。**RLS 対象**。
+列: `id (uuid pk)` / `user_id (fk cascade)` / `source_document_id (fk cascade)` / `source_id (text)` / `object_key (text unique)` / `mime (nullable)` / `content_hash (server 計算 SHA-256・nullable)` / **`byte_size (int・nullable)`** / `width (nullable)` / `height (nullable)` / `status ('reserved'|'ready'|'deleting')` / `original_filename` / `source_kind ('image')` / `created_at` / `ready_at`。②-4b 予約: `page_count`/`rotation`/`rasterizer`(nullable)。**UNIQUE(source_document_id, source_id)**。index(user_id, status)/(source_document_id)。**RLS 対象**。
 > 註: `byte_size` は Codex 指摘の初版漏れ。finalize の HEAD byteSize 一致に必須。
+
+> **改訂(2026-07-31・OT 確定): 検証済み 5 列(`mime` / `content_hash` / `byte_size` / `width` / `height`)を NULLABLE 化**。これらは finalize で **server が実バイトから確定**する値であり reserve 時は未定。finalize の**条件付き UPDATE で 5 列の値と `status='ready'` を同時に確定**する(reserve 時に placeholder を入れない)。
+> **reservation 行(T4 が作成)に保存するのは lean set のみ**: `id` / `user_id` / `source_document_id` / `source_id` / temp `object_key` / `status='reserved'` / `source_kind` / `original_filename` / `created_at`。
+> **`client_declared_*` 列は作らない**。client 申告の size / MIME は **T5 の入力として検証し presigned URL 署名(content-length-range / content-type 条件)にのみ使用**、DB に永続化しない(§B 決定)。reservation 行を維持する理由(遅延作成しない): ① T4 再送時に同じ asset ID / temp key を返す ② presigned URL 発行時の owner/source 認可 ③ source 数・source_id 集合の固定 ④ finalize の `reserved → ready` CAS ⑤ **放棄された temp object の GC 手がかり** ⑥ **GDPR 削除時の object_key 保持**(特に ⑤⑥ が決定的 — 行が無いと放棄 object を DB から辿れず R2 prefix listing に依存する)。
 
 ### 6.2 保存フロー + finalize 後の immutability(Codex P1 対処)
 client: 各画像を既存圧縮(browser-image-compression)で source 化 → reserve → **temp key へ presigned PUT** → finalize。
 
-**finalize(server)**: temp key を R2 GET → **magic-byte / decode / byte_size / content_hash(SHA-256)/ decoded 寸法を実バイトから検証・算出**(client 申告は予約ヒントのみ)→ **その検証済バイトを server が最終 key へ PUT(server 書込)** → source_assets を 'ready'(status='reserved' WHERE で TOCTOU 防御)。
+**finalize(server)**: temp key を R2 GET → **magic-byte / decode / byte_size / content_hash(SHA-256)/ decoded 寸法(+ mime)を実バイトから検証・算出**(client 申告は署名時のヒントのみ・DB 非永続)→ **その検証済バイトを server が最終 key へ PUT(server 書込)** → **条件付き UPDATE で検証済み 5 列(mime/content_hash/byte_size/width/height)+ ready_at を set し `status='ready'` へ遷移**(`WHERE status='reserved'` で TOCTOU 防御・reserved→ready CAS)。
 
 - temp key = `users/{userId}/src/tmp/{assetId}` / 最終 key = `users/{userId}/src/{assetId}.{ext}`。
 - **最終 key は server 書込専用(client は最終 key の presigned を持たない)= finalize 後の source は immutable**。Gemini 送信・crop は**最終 key**を読む。
-- **[Codex P1]** これにより「finalize 後に client が同 presigned で最終バイトを上書き → 記録 hash/dims/fingerprint と Gemini/crop の実バイトが乖離(不正 crop・completed 再利用の誤判定)」という TOCTOU を**構造的に排除**。temp の再上書きは promote 済ゆえ無害、未 promote の stale temp は GC(§6.4)。
+- **[Codex P1]** これにより「finalize 後に client が同 presigned で最終バイトを上書き → 記録 hash/dims と Gemini/crop の実バイトが乖離(不正 crop・completed 再利用の誤判定)」という TOCTOU を**構造的に排除**。temp の再上書きは promote 済ゆえ無害、未 promote の stale temp は GC(§6.4)。
 - コスト: finalize で server R2 GET + PUT が 1 往復増える(source は圧縮後 ≤ 数百 KB ゆえ許容)。decode bomb 対策に sharp `limitInputPixels` を課す。
 
 ### 6.3 GDPR(Codex #8)
@@ -138,8 +163,8 @@ padding = 各辺 **6%**(0-1000 で ±60)→ clamp[0,1000] → px 化(**left/top=
 ### 7.2 asset ID = stage 時 UUIDv4(§D・UUIDv5 撤回)
 `isAssetKey` は UUIDv4 のみ asset 判定(`card.ts:87`)。UUIDv5 では ready 検証・デッキ DL・ギャラリー・refs 射影の全対象外=画像が一切表示されない。→ **card ID / option uid / asset ID を stage 時 UUIDv4 発行し payload に保存。retry は payload 内の同 ID を再利用**。object key も asset ID 由来。「決定的」= 再計算でなく「再試行で同 ID」で足りる。
 
-### 7.3 crop は prepared commit 後のみ(Codex #1)
-claim 直後〜payload 保存前の crash で UUID が再発行されても、**asset 行・R2 オブジェクトを作っていなければ孤児は生まれない**(Gemini 再呼出費用のみ残る)。この順序を不変条件として明記。
+### 7.3 crop-derived asset は prepared commit 後のみ(Codex #1)
+不変条件は **crop-derived asset 行(`assets` table)・その R2 object を prepared_payload commit 前に作らない**ことに限定する(2026-07-31 明確化)。source_assets の reservation 行は reserve 時=prepared 前に作る(§6.1・GC/GDPR 手がかりのため意図的)ので本規則の対象外。claim 直後〜payload 保存前の crash で UUID が再発行されても、**crop asset 行・crop R2 オブジェクトを作っていなければ孤児は生まれない**(Gemini 再呼出費用のみ残る)。この順序を不変条件として明記。
 
 ### 7.4 R2 条件付き PUT + 412 hash 検証(Codex #7)
 crop 画像は最初から最終 key へ `If-None-Match: *` の条件付き PUT。照合:
@@ -229,6 +254,8 @@ payload を publish 後 NULL 化するため、**bbox / padding 率 / clamp 後 
 
 ## 15. 確定済み設計判断
 prepare→publish(未完成 card は DB 非存在)/ server crop + sharp direct(0.35.3)/ padding 6%(広め→狭める)/ 回転入力の明示除外 / **UUIDv4 stage 発行 + retry 再利用**(UUIDv5 撤回)/ option:`<uid>` / crop 全滅でも text card publish(enum 追加せず completed+warnings)/ cards に ON CONFLICT 不使用 / 選択肢=図は 1 枠 question / 冗長表枠は非対応 / 全ファイル 1 generateContent / account quota は ②-5。
+
+**2026-07-31 改訂で確定(OT)**: `input_fingerprint` 廃止(冪等は UNIQUE key + advisory lock + lease CAS + fencing + immutability + UUID 再利用で成立・§2)/ source 集合は unordered・`source_id` 決定処理・`ordinal` 列なし / source_assets 検証済 5 列(mime/content_hash/byte_size/width/height)nullable・finalize 条件付き UPDATE で確定 / `client_declared_*` 列なし(申告 size/MIME は署名用のみ・非永続)/ reservation 行は lean で維持(遅延作成しない・GC/GDPR 手がかり)/ T4 user advisory lock で並行再送収束 + 同時 1 upload 制限 / 日次 Gemini cap を配線(T4 lock→T6 claim 前判定→T7 increment→UI エラー)・**原子的枠確保は非実装**(実ユーザー 0・超過 1〜2 回許容・増加後再判断)/ T5 は T4 作成済 reserved 行を認可・検証し temp PUT URL 発行(source_assets 行を新規作成しない)/ §7.3 は crop-derived asset に限定。
 
 ---
 

@@ -17,7 +17,8 @@
 - **fencing**: publish 冒頭で operation `SELECT … FOR UPDATE` + `status='prepared' AND lease_version=:mine` 不一致は拒否。
 - **target 語彙**: `question→question_text` / `explanation→explanation_text` / `option_{id}→option:<uid>`(2 段: id 一致→uid)。ambiguous→question_text。
 - **回転(EXIF≠1)**: 図版検出スキップ(text は実行)・「向き未対応」計上。
-- **全 table に user_id + RLS**(withTenantTx 経由)。**AI は mock 必須**。**crop は prepared commit 後のみ**(それ以前に asset 行/R2 を作らない)。
+- **全 table に user_id + RLS**(withTenantTx 経由)。**AI は mock 必須**。**crop-derived asset(`assets` table)は prepared commit 後のみ**(それ以前に crop asset 行/crop R2 を作らない・spec §7.3)。**source_assets の reservation 行は reserve 時=prepared 前に作る**(GC/GDPR 手がかり・本規則の対象外)。
+- **改訂(2026-07-31・OT 確定・spec §2/§3/§6/§7.3・§15)**: `input_fingerprint` 廃止(冪等=UNIQUE key+advisory lock+lease CAS+fencing)/ source 集合 unordered・`source_id` 決定処理・`ordinal` 列なし / source_assets 検証済 5 列 nullable・finalize 条件付き UPDATE 確定 / `client_declared_*` 列なし / reservation 行 lean で維持 / T4 user advisory lock + 同時 1 upload 制限 / 日次 Gemini cap 配線(T4 lock→T6 claim 前→T7 increment→UI)・原子的枠確保は非実装。
 - **gate**(完了時): whole-repo `pnpm lint`(--max-warnings=0)/ `pnpm test:iso` green / `pnpm run audit` exit0。deps/lockfile を触る task は `pnpm install --frozen-lockfile`+`typecheck`+`build` exit0 も。
 
 ## Commit 分離方針(1 commit に収めない)
@@ -37,12 +38,12 @@ Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Cod
 
 ### Task 1: `source_assets` 表
 - **目的/file**: `lib/db/schema.ts` + migration。1 upload:N ファイルの source。
-- **制約**: 列 = id/user_id(fk cascade)/source_document_id(fk cascade)/source_id/object_key(unique)/mime/content_hash/**byte_size**/width/height/status(reserved|ready|deleting)/original_filename/source_kind('image')/created_at/ready_at + ②-4b 予約(page_count/rotation/rasterizer nullable)。**UNIQUE(source_document_id, source_id)**。index(user_id,status)/(source_document_id)。**RLS**(policy+grant+drift test)。
+- **制約**: 列 = id/user_id(fk cascade)/source_document_id(fk cascade)/source_id/object_key(unique)/**mime(nullable)**/**content_hash(nullable)**/**byte_size(nullable)**/**width(nullable)**/**height(nullable)**/status(reserved|ready|deleting)/original_filename/source_kind('image')/created_at/ready_at + ②-4b 予約(page_count/rotation/rasterizer nullable)。**UNIQUE(source_document_id, source_id)**。index(user_id,status)/(source_document_id)。**RLS**(policy+grant+drift test)。**改訂(2026-07-31): 検証済 5 列(mime/content_hash/byte_size/width/height)nullable**(finalize が条件付き UPDATE で確定・spec §6.1)。`client_declared_*` 列は作らない。reservation 行は lean(id/user_id/source_document_id/source_id/temp object_key/status/source_kind/original_filename/created_at)。
 - **完了条件**: iso 2 テナント apply / unique 実測 / RLS drift green。schema 追加=`[no-review]`(保証不変)。OT DB 反映同期。
 
 ### Task 2: `upload_operations` 表(状態機械)
 - **目的/file**: `lib/db/schema.ts` + migration。冪等 ledger + prepared_payload。
-- **制約**: 列 = id/user_id(fk cascade)/idempotency_key/exam_id/source_document_id(nullable)/status('awaiting_sources'|'claimed'|'prepared'|'completed'|'terminal_failed')/lease_version(bigint)/lease_expires_at/attempt_count/next_retry_at/last_error_code/input_fingerprint/prepared_schema_version/prepared_hash/prepared_payload(jsonb nullable)/result_summary(jsonb nullable)/created_at/completed_at。**UNIQUE(user_id,idempotency_key)**。index(user_id,status)/(next_retry_at)。**RLS**。**Realtime publication 非追加**。
+- **制約**: 列 = id/user_id(fk cascade)/idempotency_key/exam_id/source_document_id(nullable)/status('awaiting_sources'|'claimed'|'prepared'|'completed'|'terminal_failed')/lease_version(bigint)/lease_expires_at/attempt_count/next_retry_at/last_error_code/prepared_schema_version/prepared_hash/prepared_payload(jsonb nullable)/result_summary(jsonb nullable)/created_at/completed_at。**UNIQUE(user_id,idempotency_key)**。index(user_id,status)/(next_retry_at)。**RLS**。**Realtime publication 非追加**。**改訂(2026-07-31): `input_fingerprint` 廃止**(冪等は UNIQUE key + advisory lock + lease CAS + fencing で成立・spec §2)。`ordinal` 列なし(source 集合 unordered・source_id 決定処理)。`prepared_hash` は残す。
 - **完了条件**: iso apply / unique 実測 / RLS drift green。schema 追加。OT DB 反映同期。
 
 ### Task 3: `asset_derivations` 表(provenance)
@@ -52,26 +53,26 @@ Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Cod
 
 ## Phase B — prepare + source lifecycle
 
-### Task 4: prepareUpload(operation/exam/source 先行作成)
+### Task 4: prepareUpload(operation/exam/source 先行作成 + 並行制御)
 - **目的/file**: `app/(app)/app/upload/_actions/prepare-upload.ts`。client 事前 PUT の循環解消(spec §3)。
-- **制約**: operation(status='awaiting_sources')+ exam(new/existing)+ source_document(processing)+ source_asset reservation を 1 tx で作成し ID 群を返す。idempotency_key 受領・UNIQUE 衝突は既存 operation 返却。withTenantTx。
-- **完了条件**: iso(新規/既存 exam・冪等 key 再送で同 operation)。feat→`[reviewed]`。
+- **制約**: 1 tx(withTenantTx)冒頭で **user 単位 advisory xact lock**(`pg_try_advisory_xact_lock(hashtext(userId))`・取得不可=並行 prepare を弾く)。順序: lock → 同一 idempotency_key 既存 operation は**それを返す**(冪等契約・引数差でも新規化しない・spec §2)→ 別 key の **live operation** あれば `in_progress`(同時 1 upload 制限)→ なければ operation(status='awaiting_sources')+ exam(new/existing)+ source_document(processing)+ **lean な source reservation 行**を作成し ID 群返却。**live 判定**は upload_operations の status(非終端)/lease/abandonment TTL 基準(旧 source_documents 15 分窓を流用しない・T14 で §11 と整合)。**全体サイズ上限を client 申告合計で早期検査**(server 実測での再検査は T6)。**入力検証は既存 `reserveAsset` の Zod 境界(`asset-actions.ts:57`)に揃える**。reservation 行は検証済 5 列を書かない(nullable・finalize 確定)。
+- **完了条件**: iso(新規/既存 exam・冪等 key 再送で同 operation・別 key live で in_progress・advisory lock 並行弾き・サイズ超過弾き)。feat→`[reviewed]`。
 
 ### Task 5: source reserve/finalize(temp→server promote・immutable)
 - **目的/file**: `app/(app)/app/upload/_actions/source-asset-actions.ts` + `lib/storage/r2.ts`(server `getObject`/`putObject` 追加・T10 と共有)。
-- **制約**: reserve=source_assets 'reserved' + **temp key(`src/tmp/`)への presigned PUT**。finalize=temp を R2 GET → **magic-byte/decode/byte_size/content_hash(SHA-256)/decoded 寸法を検証・算出 → 検証済バイトを server が最終 immutable key へ PUT** → 'ready'(TOCTOU=status='reserved' WHERE)。**最終 key は client presigned 無し=finalize 後 immutable**(Codex P1)。sharp `limitInputPixels` で decode bomb 防御。client 申告は予約ヒント。owner scope。
-- **完了条件**: unit(mock r2: hash/dims 再計算・size/magic 不一致 reject・**temp→最終 promote で最終 key が server 書込**)+ iso。feat→`[reviewed]`。
+- **制約**: **reserve は T4 で作成済みの reserved 行を認可・検証し temp key(`src/tmp/`)への presigned PUT URL を発行する。source_assets 行は新規作成しない**(改訂 2026-07-31)。client 申告 size/MIME は検証し presigned URL 署名(content-length-range/content-type)にのみ使用・DB 非永続。finalize=temp を R2 GET → **magic-byte/decode/byte_size/content_hash(SHA-256)/decoded 寸法/mime を検証・算出 → 検証済バイトを server が最終 immutable key へ PUT** → **条件付き UPDATE で検証済 5 列 + ready_at を set し 'ready' へ**(TOCTOU=status='reserved' WHERE・reserved→ready CAS)。**最終 key は client presigned 無し=finalize 後 immutable**(Codex P1)。sharp `limitInputPixels` で decode bomb 防御。owner scope。
+- **完了条件**: unit(mock r2: hash/dims 再計算・size/magic 不一致 reject・**temp→最終 promote で最終 key が server 書込**・条件付き UPDATE で 5 列+ready 同時確定)+ iso。feat→`[reviewed]`。
 
-### Task 6: claim + lease CAS + fingerprint
-- **目的/file**: `lib/ocr/domain/upload-fingerprint.ts`(pure)+ `app/(app)/app/upload/_actions/claim-operation.ts`。
-- **制約**: fingerprint = **server 検証済 source SHA-256(順序付き)+ params/prompt/schema/pipeline_version** の canonical encoding(件数+順序含む)→ pure。claim/takeover = `lease_version` CAS 更新 + lease_expires_at 設定。分岐: awaiting_sources→claimed / 既存 completed+fp 一致=result_summary 再利用 / claimed+fp 一致=処理中(二重 Gemini 抑止)/ fp 不一致=拒否 / retryable failed=再 claim(fp 一致・next_retry_at 到達)。
-- **完了条件**: pure test(fp 決定性・順序/件数)+ iso(CAS lease・二重抑止・再 claim・拒否)。feat→`[reviewed]`。
+### Task 6: claim + lease CAS(+ 日次 cap 判定)
+- **目的/file**: `app/(app)/app/upload/_actions/claim-operation.ts` + 日次 cap helper(`parseDailyLimit` を `upload-guard.ts:23` から再利用可能な helper へ切出・spec §3 daily cap 配線)。**改訂(2026-07-31): fingerprint pure module(`upload-fingerprint.ts`)と fp 一致/不一致分岐を廃止**。
+- **制約**: **claim 直前に日次 Gemini cap 判定**(現行と同じ global daily count)。上限到達なら claim せず operation を `awaiting_sources` のまま返す(`GEMINI_DAILY_LIMIT_EXCEEDED`)。claim/takeover = `lease_version` CAS 更新 + lease_expires_at 設定。分岐(fp なし): awaiting_sources→claimed / 既存 completed=result_summary 再利用 / claimed(lease 有効)=処理中(二重 Gemini 抑止)/ retryable failed=再 claim(next_retry_at 到達)。**server 実測 byte_size 合計で全体サイズ上限を再検査**(T4 の client 申告合計を server 側で裏取り・改変クライアント対策)。**原子的枠確保は非実装**(spec §3)。
+- **完了条件**: iso(CAS lease・二重抑止・再 claim・日次 cap 到達で claim せず awaiting のまま・server 実測サイズ再検査で超過弾き)+ unit(cap helper)。feat→`[reviewed]`。
 
 ## Phase C — OCR → 正規化 → stage payload
 
 ### Task 7: 統合 schema + prompt + source_id interleave
 - **目的/file**: `lib/ai/schemas/ocr-image-crop-response.ts` + `lib/ai/prompts/ocr-figure-suffix.ts` + Gemini parts 組立(`text "source_id=X"`→image interleave)。本番 schema/prompt 不触。
-- **制約**: figure_regions{source_id, box_2d nullable, target, label, (page 予約)} を per-card 注入(required 非追加)。box_2d nullable。
+- **制約**: figure_regions{source_id, box_2d nullable, target, label, (page 予約)} を per-card 注入(required 非追加)。box_2d nullable。**各 OCR attempt で既存どおり `incrementAiUsage`**(日次 cap 配線・spec §3)。
 - **完了条件**: unit(注入形・nullable・interleave 順)。feat(Gemini mock)→`[reviewed]`。
 
 ### Task 8: 要素隔離 + 正規化 + UUIDv4 stage 発行 → payload
@@ -101,7 +102,7 @@ Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Cod
 ### Task 12: publishPreparedUploadTx
 - **目的/file**: `app/(app)/app/upload/_actions/publish-prepared.ts`(orchestrator)。
 - **制約**: 冒頭で operation `FOR UPDATE`+`status='prepared' AND lease_version=:mine` 不一致拒否(fencing)。**ロック順 = operation→exam→source_document→assets(ID順)→cards→tags→refs→counters/status/operation**。asset は **条件付き保護 UPDATE**(`SET unreferenced_at=NULL WHERE user_id AND id IN(...) AND status='ready' RETURNING id`・期待件数未満で fail)。cards/tags/refs/card_count/status を同一 TenantTx で確定(saveExtractedCards 改修=card ID で customProps 対応 / applyOcrTags は §T13 の determinism 版 / completeUploadTx 相当は開始 status 検証込みで新規 / bumpExamCardCount affected row 検証)。**cards に ON CONFLICT 不使用**。images≤10 超過は決定順先頭採用+`image_limit_exceeded`。publish 条件(有効 card≥1 かつ 全 figure 終端 / 0→failed / DB 失敗→retryable)。成功で payload NULL 化 + result_summary 保存 + status='completed'(全滅/一部=completed+warnings、enum 追加せず warnings は result_summary/件数)。
-- **完了条件**: iso(fencing 拒否・ロック順・保護 UPDATE 期待未満 fail・冪等再 publish で増えない・crop 全滅 text publish・ON CONFLICT なし重複 loud fail)。**外部副作用ゆえ stg smoke 後 [reviewed]**。
+- **完了条件**: iso(fencing 拒否・ロック順・保護 UPDATE 期待未満 fail・冪等再 publish で増えない・crop 全滅 text publish・ON CONFLICT なし重複 loud fail)。**外部副作用ゆえ stg smoke 後 [reviewed]**。**T12 完了時に別 stop checkpoint(publish の fencing を OT + claude.ai で確認・2026-07-31 OT 指示)**。
 
 ### Task 13: applyOcrTags の deterministic 化
 - **目的/file**: `lib/tags/apply-ocr-tags.ts`(同名 category は `(created_at,id)` 最古を canonical)。
