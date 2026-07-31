@@ -978,6 +978,11 @@ export const uploadOperations = pgTable(
     preparedHash: text('prepared_hash'),
     preparedPayload: jsonb('prepared_payload').$type<Record<string, unknown>>(),
     resultSummary: jsonb('result_summary').$type<Record<string, unknown>>(),
+    // ②-4a T6 fencing checkpoint 裁定(2026-07-31・OT 確定・spec §2/§2.1): T4 が
+    // operation 作成時に確定する immutable な source 件数 manifest。claim(T6)の
+    // source 集合検証はこの列を独立 oracle として使い、検査対象の source_assets の
+    // COUNT からは期待値を導出しない(行欠落の検出可能性を保つため)。
+    expectedSourceCount: integer('expected_source_count').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

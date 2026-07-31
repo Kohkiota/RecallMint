@@ -1,0 +1,1 @@
+ALTER TABLE "upload_operations" ADD COLUMN "expected_source_count" integer NOT NULL;

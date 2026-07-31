@@ -213,6 +213,10 @@ async function seedTenant(
     sourceDocumentId,
     status: 'awaiting_sources',
     leaseVersion: 0,
+    // T6 fencing checkpoint 裁定: expected_source_count は NOT NULL の immutable
+    // manifest 列。この fixture は tenant あたり source_asset 1 件のみ seed する
+    // (上の sourceAssetId insert)ため 1 に揃える。
+    expectedSourceCount: 1,
   })
   await db.insert(cards).values({
     id: cardId,
