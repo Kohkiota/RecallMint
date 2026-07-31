@@ -76,7 +76,7 @@ Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Cod
 - **完了条件**: unit(注入形・nullable・interleave 順)。feat(Gemini mock)→`[reviewed]`。
 
 ### Task 8: 要素隔離 + 正規化 + UUIDv4 stage 発行 → payload
-- **目的/file**: `lib/ocr/domain/normalize-prepared.ts`(pure)+ stage 保存 action。
+- **目的/file**: `lib/ocr/normalize-prepared.ts`(boundary+normalize)+ stage 保存 action。**改訂(2026-07-31・OT): `lib/ocr/domain/` でなく `lib/ocr/`(non-domain)に置く** — raw Gemini JSON の未検証入力を zod で境界検証するため(domain zod-free 原則・F3 spec §3.4/§3.2。lib/ocr/ocr.ts が既に zod 使用の boundary 層)。8a=pure normalize / 8b=stage action に分割実装。
 - **制約**: 入力境界/正規化後 schema 分離・要素 safeParse。JSON 全体 parse 不能→retryable failed。card ID/option uid/asset ID を **UUIDv4 発行**。target: option_{id}→id 一致→`option:<uid>` / null 座標→「座標 null」除外理由 / source_id 未解決→「source_id 不正」。normalizePreparedCard(title/options 1-50/uid 一意/correct 再導出)。**正規化後 prepared_payload を 1 回 atomic 保存**(status→'prepared'・prepared_hash/schema_version 記録)。
 - **完了条件**: pure test(隔離・null・target 各種・ambiguous・重複 source_id)+ iso(payload atomic 保存・status 遷移)。feat→`[reviewed]`。
 
