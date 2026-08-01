@@ -88,6 +88,9 @@ export async function applyOcrTags(
   const categoryByName = new Map<string, string>()
 
   // Step 1: 既存 SELECT (find)。 user-scope + name IN (...) で 1 回。
+  // 同名重複は意図的許可 (unique 化しない、 spec 通り) だが find-or-create の勝者は
+  // 決定的でなければならない。 ORDER BY (created_at, id) 昇順 + 下の Map 構築を
+  // first-wins にすることで、 常に最古 (created_at, id 最小) row が canonical になる。
   const candidateCats = Array.from(categoryNames)
   const existingCats = await tx
     .select({
@@ -102,9 +105,11 @@ export async function applyOcrTags(
         inArray(tagCategories.name, candidateCats),
       ),
     )
+    .orderBy(tagCategories.createdAt, tagCategories.id)
 
   for (const row of existingCats) {
-    categoryByName.set(row.name, row.id)
+    // first-wins: ORDER BY 昇順のため最初に見た row が最古。 同名重複時も上書きしない。
+    if (!categoryByName.has(row.name)) categoryByName.set(row.name, row.id)
   }
 
   // Step 2: 未存在 category を INSERT ... ON CONFLICT DO NOTHING (race 安全)。
@@ -140,6 +145,11 @@ export async function applyOcrTags(
     // 再 SELECT で回収する (spec §3.1)。 「自分の INSERT が DO NOTHING された」 ケースの
     // id 回収。 missing 名のみ再 SELECT。 並走で別 id の row が確定していれば自分の予測 id は
     // 誤りなので上書きする (caller tx 内 INSERT は ROLLBACK されるため孤立 row になる懸念なし)。
+    // Step 1 と同じ理由で ORDER BY (created_at, id) 昇順を付ける。 同名重複時は reselect 結果
+    // 内で first-wins (最古が勝つ) にした上で、 Step 2 の楽観的 set を必ず上書きする
+    // (reselect 内 first-wins だけだと Step 2 の先行 set にブロックされて上書きされない
+    // ため、 一旦別 map に集約してから確定させる。 drift seam 防止: Step 1 / Step 3 で
+    // 選択順を揃える)。
     const reselect = await tx
       .select({ id: tagCategories.id, name: tagCategories.name })
       .from(tagCategories)
@@ -149,8 +159,13 @@ export async function applyOcrTags(
           inArray(tagCategories.name, missingCats),
         ),
       )
+      .orderBy(tagCategories.createdAt, tagCategories.id)
+    const reselectWinners = new Map<string, string>()
     for (const row of reselect) {
-      categoryByName.set(row.name, row.id)
+      if (!reselectWinners.has(row.name)) reselectWinners.set(row.name, row.id)
+    }
+    for (const [name, id] of reselectWinners) {
+      categoryByName.set(name, id)
     }
   }
 
