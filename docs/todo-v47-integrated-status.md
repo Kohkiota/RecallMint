@@ -112,6 +112,13 @@
 ## 5. carry-forward backlog(repo-visible・OT が v46 と突合)
 
 ### 短期(launch blocker 寄り)
+- **[②-4a-cutover — ②-4a 完了後・②-4b 前の必須独立タスク・2026-08-01 OT 定義]** upload UI を新 flow へ切替。②-4a は server-side-only で新 flow は **UI 未配線**(`upload-form.tsx:434` は今もレガシー `processUpload`)。②-4b(PDF)は「画像入稿と同一経路に合流」前提ゆえ cutover は ②-4b より**前**に必須。
+  - upload-form の呼び出し列を新 flow へ: 圧縮 → `prepareUpload` → presigned PUT(temp)→ `finalizeSource` → `claimOperation` →(server: OCR → stage → crop → publish)→ 結果表示。
+  - `processUpload`(レガシー)呼び出しの削除。
+  - **旧 flow 共存チェック(T4 暫定措置)の撤去** — 既存 follow-up(commit `004edf4` docs(todo): ②-4a 旧 flow 共存チェック撤去 trigger)が**ここで発火**。
+  - **end-to-end 一括 smoke**: T10 #4(実 R2 412 冪等)/ #5(実 sharp 決定性)/ #6(§7.3 guard)+ publish 経路(cards / `source_documents completed` / `upload_records` 記帳 / UI)+ T14/T15 の実環境分 → 通過で **T10/T14/T15 の [reviewed] 確定**(T12 は既に session doc で [reviewed])。
+  - レガシー `process.ts` の削除タイミング判断。
+  - 判断記録=`docs/superpowers/sessions/2026-08-01-ocr-2-4a-t12-checkpoint.md` §8。
 - **[triage 未着手・2026-07-24 記録]** 削除済み exam がモバイルに残留する観測: 約1ヶ月前(6月 seed)に削除した **PERF-SEED exam** が モバイル(Chrome / PWA)に残っていた(PC には無し)。**サイトデータ消去で PC と一致**(= server 側は削除済・モバイルの IDB mirror にだけ古い row が残留)。**切り分けが必要**: (a) **削除が pull で伝わらなかった**(tombstone は立っていたが incremental pull が mirror に反映しなかった)= **実バグ** / (b) **6月の seed 削除が SQL 直接操作で tombstone を立てなかっただけ**(通常の削除 UI 経路では tombstone が立つため実害なし)= **非バグ**。後者濃厚だが未確認。関連: `docs/audit/2026-07-13-image-delete-sync-factfinding.md`(削除 sync 機構)/ `docs/recallmint-incremental-pull-steps.md`。**「ログアウト時 IDB クリア」検討とは別問題**(クリアを入れてもこの残留現象自体は直らない=pull 伝播 or tombstone の問題)。画像 sprint の切り分けを濁らせないため**今は調査しない**・記録のみ。
 - **LocalSync MVP**(card 編集/削除の local-first 化)— spec 確定・schema scaffold 済・sync helper/bulk route/orchestrator/inline Dexie 化 未着手。inline 編集 ~2.5s→~50ms。母艦: `docs/cache-fix-roadmap.md` §5。
 - **試験セットの手動新規作成経路**(OCR 代替・OT 提案)— spec 未着手。schema source 列 / manual dummy 行 / card 手動追加 UI 等の論点。

@@ -3,7 +3,7 @@
 **日付**: 2026-08-01
 **対象**: T12(publish)= T12a(publishPreparedUploadTx orchestrator + 最終防衛 fencing)+ T12b(prepared takeover)
 **commit**: T12a `cc2b196`(feat・**tagless**)/ T12b `3bae12d`(feat・**tagless**)+ codex docs `667127d`/`6e7439b`/`b6ca0d0`(spec/plan 明示)
-**status**: review 収束(canonical + Codex 両者 Crit0/Imp0)。**stg-smoke gate + T12 mandated stop checkpoint**。`[reviewed]` は combined T10+T12 smoke 後に本 doc を正記録とする(push 済 commit の tag 後付けはしない)。
+**status**: review 収束(canonical + Codex 両者 Crit0/Imp0)。checkpoint **OT 承認済(2026-08-01・§8)**。**T12 = [reviewed] 確定**(本 doc が正記録・publish tx/fencing/takeover 本体は実 PG iso で検証・UI end-to-end は cutover smoke)。**T10 = tagless 維持**(#4/#5/#6 は cutover smoke 通過後に [reviewed])。詳細 = §8。push 済 commit の tag 後付けはしない。
 
 このドキュメントは T12 完了時の stop checkpoint(2026-07-31 OT 指示)の正記録。OT + claude.ai が fencing + prepared takeover を確認するための材料。
 
@@ -86,3 +86,14 @@ crop→publish が実経路で繋がるのは T12。ゆえに T10 と T12 を **
 ## 7. 残タスク(T12 後)
 
 T14(deadline/retry/source_assets GC/stale 統合・stg-smoke gate)→ T15(GDPR Group I・stg-smoke gate)→ T16(提示/回転除外)。T12b の takeover を実際に発火させる retry sweep は T14。
+
+## 8. smoke 判定(2026-08-01 OT)— 新 flow 未配線ゆえ combined smoke は cutover へ defer
+
+**現物**: ②-4a の新 flow(prepare→claim→stage→crop→publish)は **UI 未配線**。`upload-form.tsx:434` は今もレガシー `processUpload`(`runUploadGuardTx`)を呼び、新 flow 関数群に production/UI caller ゼロ。→ stg UI で画像 upload してもレガシー経路を通り T10/T12 新コードに到達しない = combined end-to-end UI smoke 不可(ブラウザは開かず現物確認で停止・OT が適切と評価)。
+
+**OT 決定**:
+- **②-4a は server-side-only で正しい**(plan T4-T16 に client orchestration 無しは設計どおり・spec §1 は server 状態機械の定義)。**UI cutover は ②-4a 完了後・②-4b 前の必須独立タスク**(`②-4a-cutover`・todo-v47 §5 短期に定義)。
+- **T12 = [reviewed] 確定**: publish tx / fencing / takeover 本体は実 PG iso で検証済(T12 の検証対象の中心)。UI 経由 end-to-end は cutover smoke で検証。本 doc が [reviewed] 正記録(push 済ゆえ commit tag は追わない)。
+- **T10 = tagless 維持**: #4(実 R2 412 冪等)/ #5(実 sharp 決定性)/ #6(§7.3 guard)は T10 本体機能そのもので mock のまま。cutover smoke 通過で [reviewed] 確定。
+- **T14 → T15 → T16 続行**(全て server-side・iso 検証範囲)。各 task の stg-smoke gate は **「cutover smoke に統合」と読み替え**、本 doc / 各 session doc に記録。
+- claude.ai 見落とし記録: combined smoke 承認時に「T12 で繋がる」= server 内部配線であって UI cutover でないことを未確認(T4「not UI-wired」記録を引き当てられず)。
