@@ -25,7 +25,6 @@ import {
   tagCategories,
   tagOptions,
   type CardOption,
-  type NewCardAssetRef,
 } from '@/lib/db/schema'
 import {
   titleSchema,
@@ -42,6 +41,7 @@ import {
   normalizeNullableTextField,
 } from '@/lib/cards/domain/card-rules'
 import { hasSingleCategoryOverflow } from '@/lib/cards/domain/card-tag-constraint'
+import { projectCardAssetRefs } from '@/lib/cards/domain/card-asset-refs'
 import type { DbExecutor } from './apply-card-mutation'
 
 // ---------------------------------------------------------------------------
@@ -204,24 +204,12 @@ const handleImages: CardFieldHandler = async (tx, cardId, userId, value) => {
     .delete(cardAssetRefs)
     .where(and(eq(cardAssetRefs.cardId, cardId), eq(cardAssetRefs.userId, userId)))
 
-  // 射影 (G4 backfill と同一 semantics): isAssetKey true の entry を配列順で走査し、
-  // field_key = target verbatim / ordinal = 同 field_key 内 0-based 連番。legacy 非
-  // UUID entry は refs に入らない (配列にのみ存在 = 二重持ちの非対称は意図的)。全
-  // UUID key は上の ready 検証で ready+owned 確定済ゆえ gap なし (PK 衝突なし)。
-  const ordinalByField = new Map<string, number>()
-  const refRows: NewCardAssetRef[] = []
-  for (const entry of images) {
-    if (!isAssetKey(entry.key)) continue
-    const ordinal = ordinalByField.get(entry.target) ?? 0
-    ordinalByField.set(entry.target, ordinal + 1)
-    refRows.push({
-      cardId,
-      assetId: entry.key,
-      userId,
-      fieldKey: entry.target,
-      ordinal,
-    })
-  }
+  // 射影 (Task 11: backfill/T12 publisher と同一定義を共有・純粋関数に抽出済み):
+  // isAssetKey true の entry を配列順で走査し、field_key = target verbatim /
+  // ordinal = 同 field_key 内 0-based 連番。legacy 非 UUID entry は refs に入らない
+  // (配列にのみ存在 = 二重持ちの非対称は意図的)。全 UUID key は上の ready 検証で
+  // ready+owned 確定済ゆえ gap なし (PK 衝突なし)。
+  const refRows = projectCardAssetRefs(cardId, userId, images)
   // 空 (= UUID key 皆無) は INSERT skip = refs クリア。INSERT が throw すれば
   // 同 tx の images SET ごと rollback される (swallow しない = atomicity)。
   if (refRows.length > 0) {

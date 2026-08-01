@@ -39,6 +39,7 @@ import { getAdminDb } from '@/lib/db'
 import { cards, assets, cardAssetRefs } from '@/lib/db/schema'
 import type { CardImage, NewCardAssetRef } from '@/lib/db/schema'
 import { isAssetKey } from '@/lib/validation/card'
+import { projectCardAssetRefs } from '@/lib/cards/domain/card-asset-refs'
 
 export type BackfillCardRow = {
   id: string
@@ -85,7 +86,8 @@ export type ProjectionResult = {
 /**
  * card 1 件の images 配列を card_asset_refs 行に射影する。
  * - UUIDv4 key (isAssetKey) のみ対象。legacy 非 UUID key は対象外 (refs に入らない)。
- * - ordinal は同一 field_key (= target) 内で配列順に 0-based で採番する。
+ * - ordinal は同一 field_key (= target) 内で配列順に 0-based で採番する (Task 11:
+ *   採番自体は共有 pure 関数 projectCardAssetRefs に委譲。 handleImages と同一定義)。
  * - ready-ref 化する条件は「asset が実在し status='ready' かつ card と同一 user 所有」
  *   (handleImages の owner-scope 検証に一致)。分類:
  *   - 実在せず / 他 user 所有 → missingAssetIds (どちらも「自 user の有効な asset で
@@ -93,6 +95,12 @@ export type ProjectionResult = {
  *     owner-scope invariant を破るため ref 化しない)。
  *   - 実在・同一 user 所有だが非 ready → nonReadyAssetIds。
  *   いずれの分類でも ref 行は生成しない (skip = RESTRICT FK 事故の事前検出)。
+ *
+ * 注意 (旧実装と挙動一致): projectCardAssetRefs は「全 UUID key が ready 前提」で
+ * ordinal を採番する (missing/nonReady も採番対象に含む)。本関数はその候補 refs を
+ * assetInfos で後段フィルタするだけなので、ready-ref の ordinal には missing/nonReady
+ * 分だけ欠番が生じ得る (旧実装も同じ — ordinalByField の increment は分類前に行われて
+ * いた)。
  */
 export function projectCardRefs(
   card: BackfillCardRow,
@@ -101,32 +109,20 @@ export function projectCardRefs(
   const refs: NewCardAssetRef[] = []
   const missingAssetIds: string[] = []
   const nonReadyAssetIds: string[] = []
-  const ordinalByField = new Map<string, number>()
 
-  for (const entry of card.images) {
-    if (!isAssetKey(entry.key)) continue // legacy 非 UUID entry は対象外
-
-    const fieldKey = entry.target
-    const ordinal = ordinalByField.get(fieldKey) ?? 0
-    ordinalByField.set(fieldKey, ordinal + 1)
-
-    const info = assetInfos.get(entry.key)
+  const candidateRefs = projectCardAssetRefs(card.id, card.userId, card.images)
+  for (const candidate of candidateRefs) {
+    const info = assetInfos.get(candidate.assetId)
     const ownedBySameUser = info?.userId === card.userId
 
     if (info && ownedBySameUser && info.status === 'ready') {
-      refs.push({
-        cardId: card.id,
-        assetId: entry.key,
-        userId: card.userId,
-        fieldKey,
-        ordinal,
-      })
+      refs.push(candidate)
     } else if (info && ownedBySameUser) {
       // 実在・同一 user 所有だが status != 'ready'
-      nonReadyAssetIds.push(entry.key)
+      nonReadyAssetIds.push(candidate.assetId)
     } else {
       // 実在しない / 他 user 所有 → 参照不可 (missing 扱い)
-      missingAssetIds.push(entry.key)
+      missingAssetIds.push(candidate.assetId)
     }
   }
 

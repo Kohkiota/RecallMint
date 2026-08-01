@@ -215,6 +215,49 @@ describe('projectCardRefs', () => {
     const result = projectCardRefs(card, infoMap([]))
     expect(result).toEqual({ refs: [], missingAssetIds: [], nonReadyAssetIds: [] })
   })
+
+  // Task 11 fix round 1 (Important #1): ordinal は「全 UUID entry (ready/owned
+  // 問わず) を対象に projectCardAssetRefs で先に採番 → 後段で ready/owned だけを
+  // filter する」契約 (旧実装と同一)。同一 target 内で真ん中の entry が
+  // nonReady/missing の場合、生き残った ref の ordinal は 0-based 詰め直し
+  // (compact) されず、元の出現順の ordinal がそのまま欠番として残ることを
+  // pin する。これが崩れる (= 先に card.images を filter してから
+  // projectCardAssetRefs を呼ぶ実装に変わる) と ordinal が 0,1 に詰まってしまい、
+  // 他 test (別 target に分離済み・missing/nonReady が末尾のみ) では検出できない
+  // drift になる。
+  it('ordinal gap 保存: 同一 target 内で中間 entry が nonReady でも、生き残る ref の ordinal は詰め直されない', () => {
+    const card = mkCard({
+      images: [
+        { key: UUID_1, target: 'question_text', alt: '' }, // ready → ordinal 0 で残る
+        { key: UUID_2, target: 'question_text', alt: '' }, // nonReady → 除外 (ordinal 1 を消費)
+        { key: UUID_3, target: 'question_text', alt: '' }, // ready → ordinal 2 で残る (詰め直しなら 1 になってしまう)
+      ],
+    })
+    const infos = infoMap([
+      [UUID_1, 'ready'],
+      [UUID_2, 'reserved'],
+      [UUID_3, 'ready'],
+    ])
+    const result = projectCardRefs(card, infos)
+    expect(result.refs).toEqual([
+      {
+        cardId: CARD_ID,
+        assetId: UUID_1,
+        userId: USER_ID,
+        fieldKey: 'question_text',
+        ordinal: 0,
+      },
+      {
+        cardId: CARD_ID,
+        assetId: UUID_3,
+        userId: USER_ID,
+        fieldKey: 'question_text',
+        ordinal: 2,
+      },
+    ])
+    expect(result.nonReadyAssetIds).toEqual([UUID_2])
+    expect(result.missingAssetIds).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
