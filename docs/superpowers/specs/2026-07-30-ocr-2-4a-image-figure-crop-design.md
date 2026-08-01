@@ -268,7 +268,7 @@ publisher 検証: title/question/explanation 長さ・必須 / options 1-50 / op
 既存 helper 再利用可否:
 - `saveExtractedCards`: 要改修(`RETURNING` 順と `customProps[i]` の位置対応依存・`upload-persistence.ts:25` → stage 済 card ID を使うなら custom props も **card ID で対応付け**)
 - `applyOcrTags`: そのまま不可(§12 の非決定性)
-- `completeUploadTx`: 不可(`id+userId` のみ・開始 status 非検証・`upload-persistence.ts:64`)
+- `completeUploadTx`: そのまま不可(`id+userId` のみ・開始 status 非検証・`upload-persistence.ts:64`)。publish は「**completeUploadTx 相当**」を開始 status 検証込みで**新規**実装する = ① operation を completed 化(fenced)② `source_documents.status='completed'`(+ `pages_processed`/`cards_extracted`/`completed_at`。spec §9 open item「後から publisher が completed へ戻す」の実体)③ **`upload_records` 記帳**(`status='completed'`・`pages_processed`=source 画像数=月次 quota SUM 対象列・`file_size_bytes`=source byte 合計・`filename`)。**upload_records への記帳(bookkeeping)は ②-4a で行う**(旧 flow=`completeUploadTx` と同一の完了不変条件を経路で崩さない・architecture §8)。**月次 quota の強制(enforcement)のみ ②-5**(記帳 ≠ 強制)。`ocr_cost_yen` は新 flow で publish 時に未取得ゆえ **nullable のまま**(quota SUM は `pages_processed` で成立ゆえ影響なし)
 - `bumpExamCardCount`: 要改修(affected row 非検証・`card-count.ts:24`)
 
 `publishPreparedUploadTx` は上記を同一 `TenantTx` 上で順に呼ぶ **orchestrator** に留める。型変換境界: `optionSchema` は camelCase `isCorrect`(`card.ts:14`)/ DB `CardOption` は snake_case `is_correct`(`schema.ts:46`)→ **変換を 1 箇所に固定**。**cards に `ON CONFLICT DO NOTHING` 不使用**(同一 tx 内重複=設計破綻・loud fail。upsert/条件付き PUT は DB/R2 境界の asset reservation 限定)。
