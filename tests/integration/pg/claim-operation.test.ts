@@ -26,14 +26,20 @@
 // user_id を持たない global 表で truncateAllUserTables の対象外(rls-partial-mixed
 // test と同じ理由)なので、対象日付行を beforeEach/afterEach で個別掃除する。
 //
+// T12b(2026-08-01): prepared takeover の CAS 検証を追加(「prepared operation」
+// describe 参照)。旧 worker fencing の統合 test は T12a の publishPreparedUpload
+// を実際に呼ぶ — R2/Clerk は publish-prepared.test.ts と同じ理由(module load 時
+// fail-fast の r2.ts / 実 Clerk 非依存)で mock する。
+//
 // mutating test ゆえ beforeEach で truncate→seed(各 test を clean state から)。
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeDb } from '@/lib/db'
 import {
   aiUsage,
+  cards,
   exams,
   sourceAssets,
   sourceDocuments,
@@ -46,9 +52,29 @@ import {
   type ClaimOperationResult,
 } from '@/app/(app)/app/upload/_actions/claim-operation'
 import { TOTAL_UPLOAD_LIMIT_BYTES } from '@/app/(app)/app/upload/_lib/constants'
+import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 
 import { asTenant } from './setup/as-tenant'
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
+
+const { mockGetCurrentUser } = vi.hoisted(() => ({
+  mockGetCurrentUser: vi.fn(),
+}))
+
+vi.mock('@/lib/auth/ensure-user', () => ({
+  getCurrentUser: mockGetCurrentUser,
+}))
+// crop-and-store.ts(publish-prepared.ts の import chain)が module load 時に
+// @/lib/storage/r2 を評価すると env fail-fast で throw しうる(publish-prepared.test.ts
+// と同じ理由)。 本 file の統合 test は figures:[] の text-only card しか publish
+// しないため getObject/putObject は呼ばれないが、import 自体を安全にするため mock する。
+vi.mock('@/lib/storage/r2', () => ({
+  getObject: vi.fn(),
+  putObject: vi.fn(),
+}))
+
+// vi.mock は import より前に hoist される。
+import { publishPreparedUpload } from '@/app/(app)/app/upload/_actions/publish-prepared'
 
 afterAll(async () => {
   await closeDb()
@@ -65,6 +91,8 @@ type SeedOverrides = Partial<{
   lastErrorCode: string | null
   idempotencyKey: string
   expectedSourceCount: number
+  // T12b: old-worker-rejection 統合 test(publishPreparedUpload を叩く)向け。
+  preparedPayload: Record<string, unknown> | null
 }>
 
 async function seedOperation(
@@ -104,6 +132,7 @@ async function seedOperation(
     // 1 件の ready source_asset を伴わせる seedOperationWithReadySource と対
     // にする)。source 集合検証そのものをテストする describe では明示上書き。
     expectedSourceCount: overrides.expectedSourceCount ?? 1,
+    preparedPayload: overrides.preparedPayload ?? null,
   })
   return { operationId, examId, sourceDocumentId }
 }
@@ -185,6 +214,7 @@ describe('claimOperationTx (T6)', () => {
 
   beforeEach(async () => {
     await truncateAllUserTables()
+    mockGetCurrentUser.mockReset()
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
     userBId = randomUUID()
@@ -611,12 +641,14 @@ describe('claimOperationTx (T6)', () => {
     })
   })
 
-  // --- prepared: 再 claim せず already_prepared(takeover は T12) ---
+  // --- prepared: LIVE lease は再 claim せず already_prepared / 期限切れ・解放
+  // 済み lease は T12b の takeover CAS で新 lease_version を発行する(spec §2.2)。
   describe('prepared operation', () => {
-    it('returns already_prepared and does not re-claim', async () => {
+    it('a prepared op with a LIVE lease returns already_prepared and does not take over (lease_version unchanged)', async () => {
       const { operationId } = await seedOperation(userAId, {
         status: 'prepared',
         leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 有効
         attemptCount: 1,
       })
 
@@ -628,6 +660,212 @@ describe('claimOperationTx (T6)', () => {
       const row = await readOperationRow(operationId)
       expect(row?.status).toBe('prepared')
       expect(row?.leaseVersion).toBe(1)
+    })
+
+    // --- prepared takeover CAS(T12b・spec §2.2 の実装本体) ---
+    describe('takeover (expired/released lease)', () => {
+      it('expired lease → takes over with lease_version incremented by 1 (attempt_count unchanged: no Gemini re-run)', async () => {
+        const { operationId } = await seedOperation(userAId, {
+          status: 'prepared',
+          leaseVersion: 3,
+          leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ
+          attemptCount: 2,
+          lastErrorCode: 'stale-note',
+        })
+
+        const result = await asTenant(userAId, (tx) =>
+          claimOperationTx(tx, { id: userAId }, operationId),
+        )
+        expect(result).toMatchObject({ outcome: 'prepared_taken_over', leaseVersion: 4 })
+
+        const row = await readOperationRow(operationId)
+        expect(row?.status).toBe('prepared') // status は不変(publish はまだしていない)
+        expect(row?.leaseVersion).toBe(4)
+        expect(row?.leaseExpiresAt).not.toBeNull()
+        expect(row!.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now())
+        expect(row?.attemptCount).toBe(2) // takeover は Gemini attempt ではない
+        expect(row?.lastErrorCode).toBeNull() // takeover 時にクリア
+      })
+
+      it('null lease (released by a prior publish-retryable) → takes over', async () => {
+        // T12a persistPublishRetryCas と同型の state: status='prepared' のまま
+        // leaseExpiresAt=null(lease 解放済み)・next_retry_at 既に到達済み。
+        const { operationId } = await seedOperation(userAId, {
+          status: 'prepared',
+          leaseVersion: 1,
+          leaseExpiresAt: null,
+          nextRetryAt: new Date(Date.now() - 1_000), // backoff 到達済み
+          lastErrorCode: 'figure_retryable',
+        })
+
+        const result = await asTenant(userAId, (tx) =>
+          claimOperationTx(tx, { id: userAId }, operationId),
+        )
+        expect(result).toMatchObject({ outcome: 'prepared_taken_over', leaseVersion: 2 })
+
+        const row = await readOperationRow(operationId)
+        expect(row?.leaseVersion).toBe(2)
+        expect(row?.nextRetryAt).toBeNull()
+        expect(row?.lastErrorCode).toBeNull()
+      })
+
+      it('expired lease but next_retry_at in the future (publish backoff not yet elapsed) → no takeover (already_prepared)', async () => {
+        const { operationId } = await seedOperation(userAId, {
+          status: 'prepared',
+          leaseVersion: 2,
+          leaseExpiresAt: null,
+          nextRetryAt: new Date(Date.now() + 5 * 60 * 1000), // backoff 未到達
+        })
+
+        const result = await asTenant(userAId, (tx) =>
+          claimOperationTx(tx, { id: userAId }, operationId),
+        )
+        expect(result.outcome).toBe('already_prepared')
+
+        const row = await readOperationRow(operationId)
+        expect(row?.leaseVersion).toBe(2) // 不変
+      })
+
+      // [Global Constraint AI-2 相当] Gemini を再実行しないため、日次 cap
+      // 枯渇でも takeover はブロックされない — この分岐は cap 判定(daily
+      // Gemini cap describe が検証する手順3)より前で return するため、cap
+      // 判定自体に到達しない。
+      it('daily Gemini cap exhausted does NOT block a takeover (no Gemini re-run)', async () => {
+        const originalDailyLimit = process.env.GEMINI_DAILY_LIMIT
+        process.env.GEMINI_DAILY_LIMIT = '1'
+        const today = todayInJst()
+        await getFixtureOwnerDb().delete(aiUsage).where(eq(aiUsage.date, today))
+        await getFixtureOwnerDb().insert(aiUsage).values({ date: today, count: 999 }) // 大幅超過
+        try {
+          const { operationId } = await seedOperation(userAId, {
+            status: 'prepared',
+            leaseVersion: 1,
+            leaseExpiresAt: new Date(Date.now() - 60_000),
+          })
+
+          const result = await asTenant(userAId, (tx) =>
+            claimOperationTx(tx, { id: userAId }, operationId),
+          )
+          expect(result).toMatchObject({ outcome: 'prepared_taken_over', leaseVersion: 2 })
+        } finally {
+          if (originalDailyLimit === undefined) {
+            delete process.env.GEMINI_DAILY_LIMIT
+          } else {
+            process.env.GEMINI_DAILY_LIMIT = originalDailyLimit
+          }
+          await getFixtureOwnerDb().delete(aiUsage).where(eq(aiUsage.date, today))
+        }
+      })
+
+      it('concurrent takeover race: exactly one of two concurrent calls wins ("prepared_taken_over"); the other gets "already_prepared"; lease_version bumps by exactly 1', async () => {
+        const { operationId } = await seedOperation(userAId, {
+          status: 'prepared',
+          leaseVersion: 5,
+          leaseExpiresAt: new Date(Date.now() - 60_000),
+        })
+
+        const [r1, r2] = await Promise.all([
+          asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+          asTenant(userAId, (tx) => claimOperationTx(tx, { id: userAId }, operationId)),
+        ])
+
+        const outcomes = [r1.outcome, r2.outcome].sort()
+        expect(outcomes).toEqual(['already_prepared', 'prepared_taken_over'])
+
+        const winner = (
+          r1.outcome === 'prepared_taken_over' ? r1 : r2
+        ) as Extract<ClaimOperationResult, { outcome: 'prepared_taken_over' }>
+        expect(winner.leaseVersion).toBe(6)
+
+        const row = await readOperationRow(operationId)
+        expect(row?.leaseVersion).toBe(6)
+      })
+    })
+
+    // --- old worker fencing after takeover(T12b の checkpoint 要件・T12a 統合) ---
+    describe('old-worker rejection after takeover (T12a fencing integration)', () => {
+      function makePreparedCard(): PreparedCard {
+        return {
+          cardId: randomUUID(),
+          title: 'T',
+          sortKey: null,
+          questionText: 'Q?',
+          options: [
+            { id: 'a', uid: randomUUID(), text: 'A', isCorrect: true },
+            { id: 'b', uid: randomUUID(), text: 'B', isCorrect: false },
+          ],
+          correctAnswerIds: ['a'],
+          explanationText: null,
+          memo: null,
+          figures: [], // text-only: R2 crop 不要(mock 済 r2 も未使用のまま)
+          customProps: {},
+        }
+      }
+
+      async function countCards(userId: string): Promise<number> {
+        const rows = await getFixtureOwnerDb()
+          .select({ id: cards.id })
+          .from(cards)
+          .where(eq(cards.userId, userId))
+        return rows.length
+      }
+
+      it('after takeover, the OLD worker\'s publishPreparedUpload(oldLeaseVersion) is rejected (stale, zero cards); the NEW lease_version then publishes successfully', async () => {
+        mockGetCurrentUser.mockResolvedValue({ id: userAId })
+        const card = makePreparedCard()
+        const payload: PreparedPayloadV1 = {
+          schemaVersion: 1,
+          cards: [card],
+          cardsTotal: 1,
+          cardsExcluded: 0,
+          figuresExcluded: {
+            coordinate_null: 0,
+            source_id_invalid: 0,
+            malformed: 0,
+            asset_id_invalid: 0,
+          },
+        }
+        // 旧 worker が保存した prepared payload(lease_version=1 で claim/stage
+        // した想定)。lease 期限切れ = 旧 worker は死亡済み。
+        const { operationId } = await seedOperation(userAId, {
+          status: 'prepared',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000),
+          preparedPayload: payload as unknown as Record<string, unknown>,
+        })
+        const oldLeaseVersion = 1
+
+        // T12b takeover: 新 worker が新 lease_version を取得する。
+        const takeoverResult = await asTenant(userAId, (tx) =>
+          claimOperationTx(tx, { id: userAId }, operationId),
+        )
+        expect(takeoverResult.outcome).toBe('prepared_taken_over')
+        if (takeoverResult.outcome !== 'prepared_taken_over') throw new Error('unreachable')
+        const newLeaseVersion = takeoverResult.leaseVersion
+        expect(newLeaseVersion).toBe(2)
+        expect(newLeaseVersion).toBeGreaterThan(oldLeaseVersion)
+
+        // 旧 worker が(takeover を知らず)自分の古い lease_version で publish
+        // しようとする → T12a の final-defense fencing が拒否(stale・cards 0)。
+        const oldWorkerResult = await publishPreparedUpload({
+          operationId,
+          leaseVersion: oldLeaseVersion,
+        })
+        expect(oldWorkerResult).toEqual({ outcome: 'stale' })
+        expect(await countCards(userAId)).toBe(0)
+        const rowAfterOldAttempt = await readOperationRow(operationId)
+        expect(rowAfterOldAttempt?.status).toBe('prepared') // 旧 worker は何も書けない
+
+        // 新 worker(takeover 後の lease_version)で publish → 正常に成功する。
+        const newWorkerResult = await publishPreparedUpload({
+          operationId,
+          leaseVersion: newLeaseVersion,
+        })
+        expect(newWorkerResult).toMatchObject({ outcome: 'published', cardsPublished: 1 })
+        expect(await countCards(userAId)).toBe(1)
+        const rowAfterPublish = await readOperationRow(operationId)
+        expect(rowAfterPublish?.status).toBe('completed')
+      })
     })
   })
 

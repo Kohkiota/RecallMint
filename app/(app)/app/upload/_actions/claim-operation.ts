@@ -14,8 +14,15 @@ import { TOTAL_UPLOAD_LIMIT_BYTES, LEASE_TTL_MS } from '../_lib/constants'
 // ②-4a Phase B Task 6(2026-07-31 T6 fencing checkpoint 裁定・OT 確定): claim +
 // lease CAS(+ 日次 cap 判定・単一 tx)。spec §2(状態機械 + lease/fencing・冪等
 // replay 契約)/ §2.1(claim の atomicity・lock order・source 検証・outcome 設計・
-// DB 時計)/ §2.2(prepared takeover は T12)/ §6.5(R2 staging bounded residual
-// risk・明示受容)。
+// DB 時計)/ §2.2(prepared takeover・T12b で実装 — 本 file の prepared 分岐)/
+// §6.5(R2 staging bounded residual risk・明示受容)。
+//
+// T12b(2026-08-01): prepared takeover の CAS を追加(下記 prepared 分岐)。旧
+// worker が prepared 保存後に死んだ場合、期限切れ lease を新 lease_version で
+// 引き継ぐ。旧 worker は publishPreparedUploadTx(T12a)冒頭の fencing
+// (status='prepared' AND lease_version=:mine 不一致)で拒否される — 本 file は
+// T12a を変更しない・呼ばない(呼出元が takeover 後に
+// publishPreparedUpload(operationId, newLeaseVersion)を呼ぶ)。
 //
 // 改訂(2026-07-31・OT 確定): input_fingerprint 列と fp 一致/不一致分岐は廃止済
 // (spec §2)。本 file はそれを前提とし、fp 関連の分岐は一切持たない。
@@ -64,6 +71,10 @@ export type ClaimOperationResult =
   | { outcome: 'already_processing' }
   | { outcome: 'completed'; resultSummary: Record<string, unknown> | null }
   | { outcome: 'already_prepared' }
+  // prepared takeover(spec §2.2・T12b): 期限切れ lease の prepared を新
+  // lease_version で引き継いだ。呼出元は publishPreparedUpload(operationId,
+  // leaseVersion)を呼んで publish する(Gemini は再実行しない)。
+  | { outcome: 'prepared_taken_over'; leaseVersion: number }
   // 終端: status='terminal_failed' を保存済み。合計サイズ超過 / source 集合の
   // データ不整合(件数不一致・deleting 混在・byte_size NULL)のいずれも、この形で
   // 同一 idempotency key の再送に対し常に同じ結果を返す(spec §2.1)。
@@ -158,8 +169,62 @@ export async function claimOperationTx(
     return { outcome: 'already_processing' }
   }
   if (op.status === 'prepared') {
-    // 期限切れ prepared の takeover は T12 の責務(spec §2.2)。ここでは再 claim
-    // しない(Gemini 再実行は不要なため cap 適用対象にもしない)。
+    // prepared takeover(spec §2.2・T12b)。ここに到達するのは lease が無効
+    // (期限切れ/未設定)な prepared のみ — 有効 lease の prepared はこの if の
+    // 前段では弾かれない(leaseValid 判定は status==='claimed' 限定)が、
+    // 直後の CAS の WHERE 句(lease_expires_at IS NULL OR < now())が有効 lease を
+    // 弾くため、結果的に「有効 lease の prepared は takeover しない」という
+    // 制約は CAS 自身が担保する(旧実行の書込権を奪わない・spec §2 fencing 冒頭)。
+    //
+    // Gemini を再実行しない(既存 prepared payload を publish するだけ)ため
+    // 日次 cap を適用しない — この分岐は手順3(daily cap 判定)より前で return
+    // するので、cap 判定に到達すること自体がない。
+    //
+    // 時刻比較/設定は PostgreSQL now() 基準(app new Date() は使わない・spec
+    // §2.1 fencing 正しさ)。next_retry_at 未到達(T12a の
+    // persistPublishRetryCas が記録した publish-retryable backoff)中は
+    // takeover せず、まだ backoff 中として already_prepared を返す — 旧
+    // worker がまだ owner の可能性がある lease-still-valid のケースと区別する
+    // 必要はない(どちらも「取れなかった」で同じ扱い)。
+    //
+    // 手順1の SELECT…FOR UPDATE でこの行のロックは既に tx 開始から保持して
+    // いるため(claim CAS と同じ設計)、この CAS の WHERE 句は defense in
+    // depth — 単独の並行 takeover 呼出はここで必ず成功する。複数の同時
+    // takeover 呼出は「後着 tx がロック待ちでブロック → 先着 commit 後に
+    // 再分類」で exactly-one-winner になる(先着が lease_version を bump 済み
+    // = 後着が読む lease_expires_at は新しい未来値 → CAS 不成立
+    // → already_prepared)。
+    const takenOver = await tx
+      .update(uploadOperations)
+      .set({
+        leaseVersion: sql`${uploadOperations.leaseVersion} + 1`,
+        leaseExpiresAt: sql`now() + make_interval(secs => ${LEASE_TTL_MS / 1000})`,
+        lastErrorCode: null,
+        nextRetryAt: null,
+      })
+      .where(
+        and(
+          eq(uploadOperations.id, operationId),
+          eq(uploadOperations.userId, user.id),
+          eq(uploadOperations.status, 'prepared'),
+          or(
+            isNull(uploadOperations.leaseExpiresAt),
+            sql`${uploadOperations.leaseExpiresAt} < now()`,
+          ),
+          or(
+            isNull(uploadOperations.nextRetryAt),
+            sql`${uploadOperations.nextRetryAt} <= now()`,
+          ),
+        ),
+      )
+      .returning({ leaseVersion: uploadOperations.leaseVersion })
+
+    if (takenOver.length > 0) {
+      return { outcome: 'prepared_taken_over', leaseVersion: takenOver[0].leaseVersion }
+    }
+    // 0 行 = lease がまだ有効、または backoff 未到達、または別 worker が
+    // 先に takeover 済み — いずれも「この呼出では取れなかった」として同じ
+    // already_prepared に丸める(区別の必要なし・spec §2.2)。
     return { outcome: 'already_prepared' }
   }
 
