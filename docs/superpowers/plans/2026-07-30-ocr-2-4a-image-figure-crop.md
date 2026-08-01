@@ -25,6 +25,14 @@
 
 Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Codex→`[reviewed]` / schema+migration や純関数抽出で logic 不変は分類どおり)。**破壊/外部副作用(source GC=T14 / crop 保存=T10 / publish=T12 / GDPR=T15)は push→stg smoke 後に [reviewed] 確定**(session doc 正記録)。migration 追加(T1-3)は OT の DB 反映と同期。
 
+## 実行順序改訂(2026-08-01・OT 指示)
+
+T7〜T9 landed。**残タスクの実行順序 = T13 → T10 → T11 → T12(stop checkpoint)→ T14 → T15 → T16**(本節が実行順の正)。
+- **変更点**: T13(applyOcrTags determinism)を T12(publish)より前に実行する(下記 Phase E でも T13 ブロックを T12 の前に配置した)。
+- **理由**: T12 の制約が「applyOcrTags は §T13 の determinism 版」を**前方参照**する。T13 を先に land すれば T12 を最終 applyOcrTags に対して 1 回で実装でき、T12 の再 touch を避けられる(§G/architecture §8 の「契約を再利用し部分模倣で drift させない」判断と同型)。
+- **task 番号は変更しない**(spec / ledger / memory の cross-reference 維持のため)。番号は非単調になるが実行順序は本節が正。
+- **停止点**: T10/T14/T15 = stg-smoke gate(commit tagless → OT push → CC smoke → [reviewed])。T12 完了時 = fencing + prepared takeover の stop checkpoint(OT + claude.ai 確認)。
+
 ---
 
 ## Phase 0 — prep
@@ -99,16 +107,16 @@ Phase 単位で複数 commit・各 task = 1 commit(feat は canonical review+Cod
 - **制約**: handleImages は既存 card 前提ゆえ publisher から呼べない → 射影を pure 抽出(実質 3 経路で根拠十分)。挙動不変。
 - **完了条件**: 抽出前後の等価 test(既存 handleImages 経路の回帰 + backfill)。test 増=red 検証 + 簡易 review→`[reviewed]`。
 
-### Task 12: publishPreparedUploadTx
+### Task 13: applyOcrTags の deterministic 化 〔実行順=T12 の前・§実行順序改訂〕
+- **目的/file**: `lib/tags/apply-ocr-tags.ts`(同名 category は `(created_at,id)` 最古を canonical)。
+- **制約**: `tag_categories` の同名重複は意図的許可(unique 化しない)。ORDER BY(created_at,id) 追加で選択順固定。挙動変更は「非決定→決定」。
+- **完了条件**: unit(同名複数で最古選択・red 検証)。feat→`[reviewed]`。
+
+### Task 12: publishPreparedUploadTx 〔実行順=T13 の後・§実行順序改訂〕
 - **目的/file**: `app/(app)/app/upload/_actions/publish-prepared.ts`(orchestrator)。
 - **制約**: 冒頭で operation `FOR UPDATE`+`status='prepared' AND lease_version=:mine` 不一致拒否(fencing)。**ロック順 = operation→exam→source_document→assets(ID順)→cards→tags→refs→counters/status/operation**。asset は **条件付き保護 UPDATE**(`SET unreferenced_at=NULL WHERE user_id AND id IN(...) AND status='ready' RETURNING id`・期待件数未満で fail)。cards/tags/refs/card_count/status を同一 TenantTx で確定(saveExtractedCards 改修=card ID で customProps 対応 / applyOcrTags は §T13 の determinism 版 / completeUploadTx 相当は開始 status 検証込みで新規 / bumpExamCardCount affected row 検証)。**cards に ON CONFLICT 不使用**。images≤10 超過は決定順先頭採用+`image_limit_exceeded`。publish 条件(有効 card≥1 かつ 全 figure 終端 / 0→failed / DB 失敗→retryable)。成功で payload NULL 化 + result_summary 保存 + status='completed'(全滅/一部=completed+warnings、enum 追加せず warnings は result_summary/件数)。
 - **prepared takeover(spec §2.2・2026-07-31 OT)**: 別経路 `claimPrepared`/publish-resume で **lease 期限切れの `prepared` を新 lease_version で takeover**(旧 worker が prepared 保存後に死んだ場合の引き継ぎ)。旧 worker は fencing で prepared 更新/publish を拒否。**Gemini 再実行しないため daily cap 非適用**。
 - **完了条件**: iso(fencing 拒否・ロック順・保護 UPDATE 期待未満 fail・冪等再 publish で増えない・crop 全滅 text publish・ON CONFLICT なし重複 loud fail・**prepared takeover(期限切れ lease で新 version 取得・旧 worker fencing 拒否)**)。**外部副作用ゆえ stg smoke 後 [reviewed]**。**T12 完了時に別 stop checkpoint(publish の fencing + prepared takeover を OT + claude.ai で確認・2026-07-31 OT 指示)**。
-
-### Task 13: applyOcrTags の deterministic 化
-- **目的/file**: `lib/tags/apply-ocr-tags.ts`(同名 category は `(created_at,id)` 最古を canonical)。
-- **制約**: `tag_categories` の同名重複は意図的許可(unique 化しない)。ORDER BY(created_at,id) 追加で選択順固定。挙動変更は「非決定→決定」。
-- **完了条件**: unit(同名複数で最古選択・red 検証)。feat→`[reviewed]`。
 
 ## Phase F — lifecycle / 提示 / 回転
 
