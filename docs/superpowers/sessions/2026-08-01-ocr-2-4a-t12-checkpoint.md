@@ -75,8 +75,7 @@ crop→publish が実経路で繋がるのは T12。ゆえに T10 と T12 を **
 **publish 経路**(T12):
 1. 画像+図版を upload → OCR → prepared → **publish** → cards が DB に出現・描画(UI で処理中→完了)。
 2. `source_documents.status='completed'` + `upload_records` 1 行(`pages_processed`=画像数)= 月次 quota に反映。
-3. fencing: 旧 lease で publish → 拒否(stale)・二重作成なし(手法要検討=lease 操作は env 制約で OT 実機の可能性)。
-4. prepared takeover: 期限切れ prepared を takeover → publish(手法=lease_expires_at 操作)。
+3. **fencing / takeover の実機再現はしない(2026-08-01 OT)**: 正しさは DB 状態遷移 + SQL 述語で決まり、opus の全 interleaving trace + 実 PG iso test で検証済。人工的 lease 操作で race を stg DB に作ると他 smoke 項目(#4 冪等 / #5 決定性)を汚染するリスクが上回る。**smoke での fencing 確認 = 「通常経路で published が 1 回だけ起きる」で足りる**(中途半端な状態を作らない)。
 
 **crop 経路**(T10・mock 非証明):
 - #4 冪等: 同 figureAssetId 再実行 → reused・行数不変・R2 実体不変(412→hash 一致)。
