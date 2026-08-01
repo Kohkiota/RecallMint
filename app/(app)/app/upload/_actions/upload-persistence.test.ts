@@ -253,7 +253,11 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
       userId: 'user-1',
       examId: 'exam-1',
       cardRows,
-      customProps: ['p0', 'p1', 'p2'] as unknown as SaveArgs['customProps'],
+      // ②-4a T12 §改修: 引数型が discriminated union 化したため
+      // `SaveArgs['customProps']` は `Array<...> | undefined` になった。 legacy
+      // positional 経路の cast target は非 null の配列型に固定する(NonNullable で
+      // union の undefined 枝を除去・runtime 値と assertion は不変 = 保証不変)。
+      customProps: ['p0', 'p1', 'p2'] as unknown as NonNullable<SaveArgs['customProps']>,
     })
     expect(applyOcrTagsMock).toHaveBeenCalledTimes(1)
     const [txArg, userIdArg, ocrCards] = applyOcrTagsMock.mock.calls[0]!
@@ -265,6 +269,36 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
       { id: 'card-0', custom_props: 'p0' },
       { id: 'card-1', custom_props: 'p1' },
       { id: 'card-2', custom_props: 'p2' },
+    ])
+  })
+
+  // ②-4a T12 §改修: publisher 経路(customPropsById)は RETURNING 順に依存せず
+  // card ID で custom_props を引く。 legacy positional 経路(上の全 test)は byte-for-byte
+  // 不変で、 この test は新経路の対応付けだけを pin する。
+  it('customPropsById 経路: inserted row.id で custom_props を引く (RETURNING 順非依存)', async () => {
+    const { saveExtractedCards } = await import('./upload-persistence')
+    const cardRows = makeCardRows(3)
+    await saveExtractedCards(makeDb(captured), {
+      userId: 'user-1',
+      examId: 'exam-1',
+      cardRows,
+      customPropsById: {
+        // わざと cardRows と異なる key 順で定義し、 positional でなく id lookup で
+        // あることを示す。
+        'card-2': { year: '2026' },
+        'card-0': { subject: 'math' },
+        'card-1': { unit: ['a', 'b'] },
+      },
+    })
+    expect(applyOcrTagsMock).toHaveBeenCalledTimes(1)
+    const [txArg, userIdArg, ocrCards] = applyOcrTagsMock.mock.calls[0]!
+    expect(txArg).toBe(captured.txHandedToCallback)
+    expect(userIdArg).toBe('user-1')
+    // RETURNING(= zip 順 card-0/1/2)に対し、 各 row の id で custom_props を引く。
+    expect(ocrCards).toEqual([
+      { id: 'card-0', custom_props: { subject: 'math' } },
+      { id: 'card-1', custom_props: { unit: ['a', 'b'] } },
+      { id: 'card-2', custom_props: { year: '2026' } },
     ])
   })
 

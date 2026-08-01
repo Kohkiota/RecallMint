@@ -9,31 +9,46 @@ import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
 import { bumpExamCardCount } from '@/lib/cards/card-count'
 import { logger } from '@/lib/logger'
 
+// custom_props の 1 card 分(applyOcrTags 入力の要素型)。
+type OcrCustomProps = Parameters<typeof applyOcrTags>[2][number]['custom_props']
+
 // 保存 apply: cards bulk INSERT + applyOcrTags (同 tx 採番) + exams.cardCount 加算。
 // RLS-P3: caller が withTenantTx で tenant context 付き tx を張り、この関数はその tx
 // を受け取る (apply 層 = TenantTx 受領・tenant-tx.ts:6)。全操作は 1 tx = caller の
 // withTenantTx 境界に留まり、applyOcrTags も同 tx 採番 (競合安全の前提) が保たれる。
+//
+// ②-4a T12(§改修): custom_props の card 対応付けを 2 経路に分岐する(排他)。
+//   - legacy(process.ts)= `customProps`(cardRows と同順の配列)。 RETURNING が
+//     VALUES 順を保つ前提で inserted[i] ↔ customProps[i] を positional に zip する。
+//     この挙動は F3 G1 characterization test(upload-persistence.test.ts)で pin
+//     済みで、 本 §改修 で byte-for-byte 維持する(配列経路の map は不変)。
+//   - publisher(T12)= `customPropsById`(card ID → custom_props)。 prepared
+//     payload の card は自前の UUID cardId を持つため、 RETURNING 順に依存せず
+//     card ID で custom_props を引く(spec §8.2「stage 済 card ID を使うなら
+//     custom props も card ID で対応付け」)。 discriminated union で「どちらか
+//     一方のみ」を型で強制する。
 export async function saveExtractedCards(
   tx: TenantTx,
   args: {
     userId: string
     examId: string
     cardRows: Array<typeof cards.$inferInsert>
-    customProps: Array<Parameters<typeof applyOcrTags>[2][number]['custom_props']>
-  },
+  } & (
+    | { customProps: Array<OcrCustomProps>; customPropsById?: undefined }
+    | { customPropsById: Record<string, OcrCustomProps>; customProps?: undefined }
+  ),
 ): Promise<Array<{ id: string; title: string }>> {
   const inserted = await tx
     .insert(cards)
     .values(args.cardRows)
     .returning({ id: cards.id, title: cards.title })
-  await applyOcrTags(
-    tx,
-    args.userId,
-    inserted.map((row, i) => ({
-      id: row.id,
-      custom_props: args.customProps[i],
-    })),
-  )
+  const ocrCards =
+    args.customPropsById !== undefined
+      ? // publisher 経路: card ID で引く(RETURNING 順に非依存)。
+        inserted.map((row) => ({ id: row.id, custom_props: args.customPropsById[row.id] }))
+      : // legacy 経路: positional zip(既存挙動・byte-for-byte 維持)。
+        inserted.map((row, i) => ({ id: row.id, custom_props: args.customProps[i] }))
+  await applyOcrTags(tx, args.userId, ocrCards)
   await bumpExamCardCount(tx, {
     examId: args.examId,
     userId: args.userId,
