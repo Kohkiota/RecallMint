@@ -99,6 +99,8 @@ WHERE user_id = :uid ORDER BY created_at DESC LIMIT 5;
   - publish 失敗: `ocr.publish.*`(`payload_parse_failed` / `retryable` / `terminal_failed` / `tx_failed`)。
 - **UI の詳細欄**(stg のみ): エラー時に「詳細 (staging / dev only)」を開くと code / rawError / sourceDocumentId 等が出る。
 - **ブラウザ DevTools Network**: 失敗した server action の response body。
+- **★ Vercel Function trace の「External APIs」表示(R2 呼出の決定打)**: Vercel Dashboard → Logs / 該当 request の trace を開くと、その invocation 内の **外部 API 呼出(R2 の GET/PUT/HEAD 等)が status code 付きで一覧**される。**server 側 R2 操作は logger 出力しない never-throw 契約**(`finalizeSource`/`r2.ts` は失敗を null/'error' に正規化するだけ)ゆえ、**finalize saga のどこで落ちたかはこの trace が唯一の決定打**。例(5 回目 smoke): `GET .../src/tmp/{id} → 200` / `PUT .../src/{id}.webp → 411` で server PUT の Content-Length 欠落(`fix 0171a6c`)を特定。R2 の GET=temp 読み / PUT=最終 key 書き / crop の PUT を、この trace の status で切り分ける。
+  - **follow-up 候補**: `finalizeSource` の失敗分岐に `logger.warn`(どの分岐 + assetId・PII-free)を足せば trace 無しでも特定可能になる（現状 silent・要 OT 判断）。
 
 ## 5. T10 の 6 基準(cutover smoke が実環境で初検証する #4/#5/#6)
 
