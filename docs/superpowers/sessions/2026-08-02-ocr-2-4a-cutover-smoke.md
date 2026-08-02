@@ -151,3 +151,39 @@ ORDER BY created_at DESC;
 ---
 
 **この後**: OT が push → 本手順で smoke。結果(実測値 + #4/#5/#6)を持ち帰り、CC が暫定値を確定 → T14b(source_assets GC・破壊)→ T15(GDPR)→ T16。cutover + T10/T12/T14a の [reviewed] は smoke 後 session doc に記録。
+
+---
+
+## 9. 6 回目 smoke 完走 + [reviewed] 正記録(close・2026-08-02)
+
+**結果**: 3 種の実環境 500 fix(§下記)投入後の 6 回目 smoke が **実 Vercel 環境で happy path e2e を完走**。
+
+- **投入**: 画像 **5 枚** → **11 cards** 抽出 + **図版が card に attach**(crop→R2→provenance→publish が実 upload で成立)。所要 **~1-2 分/5 枚**。
+- **auto-nav 事象(follow-up 起点)**: 5 枚 ~1-2 分の長さで publish の client-await が hang しうる窓に初めて入り、result page 自動遷移が不発 → 90 秒 longRunning banner「試験一覧で確認」に誘導される(実機でこれが機能)。**mis-abandon なし**(成功は `router.push` で abandon 非経由・op は completed)。→ **auto-nav 案 a(poll ベース遷移)を follow-up 起票**(todo v48 §0.5 残 #5 / §4)。
+- **実測(粗)**: 5 枚 ~1-2 分は全暫定時間予算(`CROP_PHASE_BUDGET` 600s / `CROP_MIN_REMAINING_MS` 5s / sharp `.timeout()` 30s / OCR 720s)を大きく下回り、**deadline_excluded / timeout / maxDuration hard-kill いずれも未発火**。→ 暫定値は当該スケールで妥当性検証済(精密 per-stage 確定は要 OT 判断・§下記)。
+
+### 6 回目までに解いた実環境限定 500(local gate 検出不能クラス)
+1. **sharp libvips `.so` NFT トレース漏れ** → `fb65412`(next.config `outputFileTracingIncludes`)。
+2. **`'use server'` 型 named re-export → Turbopack server reference 裸参照 → 500** → `71c2e05`(型 re-export 削除 + **eslint Block E2-useserver-typeexport 機械強制**)。
+3. **R2 server PUT の Content-Length 欠落 → 411** → `0171a6c`(headers に Content-Length 明示・RED→GREEN)。
+- **maxDuration 300s 消滅(2 回目 smoke)** = 6 回目で**非再発**ゆえ observe-close(build emit=800・根因未解明・再発時のみ Vercel Functions 設定を確認)。
+- **教訓(記録済)**: 調査 ≠ 実装(fix commit 不在を smoke 前に SHA 確認・手順書 §0)/ local gate は NFT・型 export・maxDuration を原理的に検出不能 → 機械化(eslint E2 / nft.json / build-chunk grep)。
+
+### stg DB 反映(検証済)
+migration **0026-0030** + grants(base→phase3)+ RLS policy(`ocr-2-4a-enable.sql`)適用。`docs/ops/ocr-2-4a-stg-migration-runbook.md` §2 検証 SQL 合格(RLS 3 表 on / policy 3 本 / GRANT 4 コマンド / expected_source_count 列)。**検証 SQL は schema 固定版(runbook)を正**。
+
+### [reviewed] 正記録(全 commit push 済 = commit message tag は追わない・CLAUDE.md stg-smoke discipline)
+
+| task | commit | [reviewed] 根拠 |
+|---|---|---|
+| **②-4a-cutover(案 D)** | `19f34cb`(tagless) | canonical 最終 Crit0/Imp0(review doc §7・Imp#1 解消)+ Codex P2 bounded residual **OT 受容**。**6 回目 smoke で新 flow e2e が実環境成立**。 |
+| **T10 crop+R2+provenance** | `dc45711`(tagless) | crop→R2 PUT→provenance→attach が**実 upload で成立**(図版 attach 確認)。**※ #4 冪等(同ファイル2回)/ #5 決定性(同 hash)/ #6 §7.3 guard の discrete 検証は 6 回目 happy path では未実施** → **T14b smoke に GC 整合と併せて折り込む**(下記 判断点)。 |
+| **T12a publish+fencing** | `cc2b196`(tagless) | fencing/publish tx は opus 3-interleaving + PG iso 実証。**publish 経路が実環境で成立**(cards / source_documents completed / upload_records 記帳)。 |
+| **T12b prepared takeover** | `3bae12d`(tagless) | takeover CAS は opus + PG iso 実証(cutover は勝ち筋 e2e ゆえ takeover は smoke では非発火・iso が本体保証)。 |
+| **T14a lifecycle** | `709fc06`(tagless) | deadline/7日cap/reconciler/手動sweep は iso 実証。**display op-aware が実環境で機能**(longRunning banner 誘導・非-failed 表示)。 |
+
+**OT 承認**: 本 close は OT kickoff の明示指示(「T10/T12/T14a の smoke gate 達成([reviewed] 化は本セッションで処理)」「cutover/T10/T12/T14a を [reviewed] 化(OT 承認済み)」)に基づく。canonical + Codex の review 結論は cutover review doc §7 + 各 T の ledger を正本とする。
+
+### 未 close(判断点・T14b/実運用へ持越)
+1. **T10 #4/#5/#6 の discrete 実環境検証**: 6 回目は happy path 中心ゆえ同ファイル2回の reuse・決定性 hash・§7.3 guard を個別に踏んでいない。**T14b smoke(GC 整合)に統合して検証**する(GC 整合 smoke が同一 asset 参照・content-hash reuse を必然的に踏むため相性良)。OT が別途 #4/#5/#6 を 6 回目で確認済なら証拠を示されたし(記録追記する)。
+2. **精密時間予算の確定**: per-stage discrete 計測(Gemini 応答 / crop 1 枚)は未取得。今確定するか実運用まで defer するかは OT 判断(暫定値は妥当性検証済)。
