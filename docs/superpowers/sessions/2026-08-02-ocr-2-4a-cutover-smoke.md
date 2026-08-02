@@ -5,7 +5,17 @@
 
 ---
 
-## 0. 案 D の retry 挙動(先に理解)
+## 0. smoke 前の必須確認(deploy に fix が入っているか)
+
+**smoke 開始前に、deploy された commit が最新 fix を含むことを必ず確認する**(過去 3 回、古い build を smoke して 1 周ずつ無駄にした):
+
+1. **deploy の commit SHA を確認**: Vercel Dashboard → 対象 Deployment → **Source**(git commit SHA / branch を表示)。この SHA が **`origin/develop` の最新**(最新 fix commit を含む)であること。ズレていたら redeploy(古い commit の再ビルドでないこと)。
+2. **maxDuration の実適用値を確認**(2 回目 smoke の 300s 死対策・別軸): 同 Deployment → **Functions タブ** → `/app/upload` の Max Duration が **800**(300 でない)。300 なら Project → Settings → Functions で Fluid compute 有効 + Default Max Duration を確認(→ §6 実測前の必須確認)。
+3. **(参考)build-chunk 検証**: 'use server'/native 起因の実環境 500 は local build で先取り可能 — `.next/server/**/*.nft.json` の `.so` 有無(sharp)/ chunk の `registerServerReference(型名)` 裸参照有無(型 export)。CI 化は台帳(§NFT/型 export follow-up)。
+
+---
+
+## 0.5 案 D の retry 挙動(先に理解)
 
 - **1 submit = 1 operation**。失敗したら**普通にもう一度アップロード**すればよい(UI が失敗表示時に旧 operation を abandon 済み。fresh key の新 operation が走る)。
 - **例外**: 実行中の submit(valid lease 保持中の claimed/prepared)がある間は「現在 OCR を実行中です」表示で最大 **15 分**(LEASE_TTL_MS)ブロックされる。これは同時 1 upload 制限の保護。待てば自動解除。

@@ -86,3 +86,17 @@
 **規律教訓(OT 記録指示)**: **外部レビュー(GPT 等)の指摘も、CC の現物確認を経てから採用する**。claude.ai が外部レビューを現物確認なしに受け入れて指示したのは本 sprint で繰り返した誤り(client crop 前提 / UUIDv5 / schema 個別 import / 状態問い合わせ API 要否 と同型)。**独断で実装せず「spec/現物 食い違い = 停止点」として停止し確認した CC の判断が正しかった**。実装指示が現物と食い違う前提に基づく時は、指示があっても停止して現物で裁定する。
 
 **表示 fix タスク(案 Y=smoke 後・T14b と並列)**: claim-lost を素直に failed 化。`claimed` branch だけ tighten(claim-lost=claimed+lease切れ+next_retry_at NULL+last_error_code NULL+payload NULL を非-live)/ `prepared`+payload は 7日 live 維持(将来 retry worker で publish 再開可)/ reconciler が operation も terminal_failed 化(write 順序: op 先→DB now() 再検証→terminal+clear+`last_error_code='claim_lost'`→UPDATE 成功 op の doc だけ failed)/ 3 site real-PG RED→GREEN。**smoke の実測結果を見て T14b との順序決定**。
+
+---
+
+## 9. cutover smoke の 3 失敗経緯 + 教訓(2026-08-02)
+
+新 flow は local build 成功でも **Vercel の実環境でしか出ない 500 が 3 種**連続した(いずれも local の全 gate で検出不能):
+
+1. **sharp libvips `.so` の NFT トレース漏れ**(1 回目)→ `fix(build) fb65412`(next.config outputFileTracingIncludes)。診断=nft.json の `.so` 有無。
+2. **claim 成功 → 約 300s で関数消滅・last_error_code NULL**(2 回目)= Vercel Fluid compute 既定 300s の hard kill 疑い。**未解明のまま**。現物では build が `/app/upload` に maxDuration=800 を emit 済(functions-config-manifest.json)ゆえ **Vercel プロジェクト設定側**(Fluid 有効/Default Max Duration)。→ **本 fix 後の 4 回目 smoke で再発するか観察**(再発したら Vercel Functions タブの実 Max Duration 確認 → Fluid/Default 設定へ)。
+3. **publish 実行時 334ms 即死・chunk ReferenceError**(3 回目)= 'use server' file の型 named re-export を Turbopack が server reference 登録 → 裸参照 → 500 → `fix(build) 71c2e05`(型 re-export 削除 + eslint ban)。build-chunk grep で裸参照消滅を実証。
+
+**教訓(調査 ≠ 実装)**: 前セッションは #3 を「調査報告」で終え、fix commit を作らないまま停止した。OT はそれを「実装済」と誤認して smoke に進み 1 周無駄にした(HEAD=fb65412・fix commit 不存在を今回 CC が現物確認)。→ **調査で終わる時は「未実装・次アクション=実装」と明示**し、**smoke 前に deploy の commit SHA が fix を含むか確認**(手順書 §0 に追加・OT が Vercel Source 表示で発見した方法)。
+
+**教訓(local gate の限界)**: sharp NFT(deploy tracing)/ maxDuration(プラットフォーム関数設定)/ 型 export(Turbopack 'use server' 変換)は **local build/test/lint が原理的に検出できないクラス**。build-chunk / nft.json の機械検証(型: `registerServerReference(型名)` 裸参照 / native: `.so` トレース)を smoke 前チェックに組込む(CI 化は台帳・trigger=次の bundling 起因 500)。**再発防止は mechanization**: 型 export は eslint Block E2-useserver-typeexport で機械強制(71c2e05)。
