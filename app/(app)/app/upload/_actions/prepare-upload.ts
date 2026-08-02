@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { and, eq, gte, inArray, ne, or, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, ne, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
@@ -16,9 +16,10 @@ import {
 import { todayInJst } from '@/lib/jst'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
-import { TOTAL_UPLOAD_LIMIT_BYTES, PREPARE_AWAITING_TTL_MS } from '../_lib/constants'
+import { TOTAL_UPLOAD_LIMIT_BYTES } from '../_lib/constants'
 import { type Destination } from './upload-guard'
 import { MAX_ASSET_BYTES, MAX_IMAGE_DIMENSION } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
+import { terminalizeAbandonedOperation } from '../_lib/terminalize-abandoned-operation'
 
 // ②-4a Phase B Task 4 (2026-07-31 改訂): prepareUpload — client 事前 PUT の循環依存を
 // 解消するエントリーポイント(spec §1 flow / §3)。client はまだファイルの実バイトを
@@ -43,12 +44,6 @@ import { MAX_ASSET_BYTES, MAX_IMAGE_DIMENSION } from '@/app/(app)/app/exams/[id]
 // MAX_ASSET_BYTES / MAX_IMAGE_DIMENSION: asset-actions.ts の reserveInputSchema と
 // 同値を ./asset-limits(directive 無し共有 module)から import する(rule of three
 // — asset-actions.ts / lib/media/upload.ts に続く private コピーを作らない)。
-
-// PREPARE_AWAITING_TTL_MS(live-operation gate の awaiting_sources しきい値、
-// 改訂 2026-07-31・OT 確定・spec §3・暫定値、正本は §11・T14 で確定)は
-// '../_lib/constants' から import する — 本 file は 'use server' を持ち、非 async
-// 関数の export は Next.js compile error になるため、iso test から参照する定数は
-// directive 無し共有 file 側に置く。
 
 // 1 回の upload で受け付ける source 数上限。既存 OCR_MAX_PAGES(lib/ai/ocr-limits.ts
 // = 40、process.ts の旧 flow で「1 回の upload の合計ページ数上限」として使われて
@@ -233,30 +228,55 @@ export async function prepareUploadTx(
     }
   }
 
-  // 3. live-operation gate(spec §3 手順 3): 別 key の live operation があれば
-  // in_progress(同時 1 upload 制限)。live = 非終端 status(claimed|prepared、
-  // createdAt を問わない)、または awaiting_sources かつ PREPARE_AWAITING_TTL_MS
-  // 以内に作成されたもの(それより古い awaiting_sources は放棄とみなし通す)。
-  const liveThreshold = new Date(Date.now() - PREPARE_AWAITING_TTL_MS)
-  const liveOps = await tx
-    .select({ id: uploadOperations.id })
+  // 3. live-operation gate + supersede(spec §3 手順 3・②-4a-cutover 案 D 2026-08-02
+  // OT 確定)。別 key の非終端 operation を分類する:
+  //   - claimed/prepared かつ valid lease(= 実行中の worker)→ in_progress で
+  //     ブロック(最大 LEASE_TTL_MS の保護・実行中を clobber しない)。
+  //   - awaiting_sources(経過時間問わず)、または claimed/prepared かつ lease
+  //     NULL/期限切れ → 旧 submit の放棄とみなし terminalize(+ doc failed)して
+  //     新 operation へ進む(1 submit = 1 operation・resume はしない — 案 D)。
+  //   - completed/terminal は非 live ゆえ対象外(select で除外・触らない)。
+  // 対象行は SELECT…FOR UPDATE でロックしてから terminalize する(claim/takeover
+  // との race を行ロックで直列化 — user advisory lock は prepare 同士のみ直列化する)。
+  // 時刻裁定は PostgreSQL now() 基準(claim-operation.ts と同規律・spec §2.1)。
+  const conflicting = await tx
+    .select({
+      id: uploadOperations.id,
+      status: uploadOperations.status,
+      leaseExpiresAt: uploadOperations.leaseExpiresAt,
+      sourceDocumentId: uploadOperations.sourceDocumentId,
+      dbNow: sql<string>`now()`,
+    })
     .from(uploadOperations)
     .where(
       and(
         eq(uploadOperations.userId, user.id),
         ne(uploadOperations.idempotencyKey, input.idempotencyKey),
-        or(
-          inArray(uploadOperations.status, ['claimed', 'prepared']),
-          and(
-            eq(uploadOperations.status, 'awaiting_sources'),
-            gte(uploadOperations.createdAt, liveThreshold),
-          ),
-        ),
+        inArray(uploadOperations.status, ['awaiting_sources', 'claimed', 'prepared']),
       ),
     )
-    .limit(1)
-  if (liveOps.length > 0) {
-    return { outcome: 'in_progress' }
+    .for('update')
+
+  if (conflicting.length > 0) {
+    const dbNow = new Date(conflicting[0].dbNow)
+    const hasActiveWorker = conflicting.some(
+      (c) =>
+        c.status !== 'awaiting_sources' &&
+        c.leaseExpiresAt !== null &&
+        c.leaseExpiresAt.getTime() >= dbNow.getTime(),
+    )
+    if (hasActiveWorker) {
+      return { outcome: 'in_progress' }
+    }
+    // 実行中 worker 不在 → 非終端 op を全て supersede(terminalize + doc failed)。
+    for (const c of conflicting) {
+      await terminalizeAbandonedOperation(
+        tx,
+        user.id,
+        { operationId: c.id, sourceDocumentId: c.sourceDocumentId },
+        'superseded',
+      )
+    }
   }
 
   // review fix #D(Critical・cross-flow coexistence): legacy runUploadGuardTx flow

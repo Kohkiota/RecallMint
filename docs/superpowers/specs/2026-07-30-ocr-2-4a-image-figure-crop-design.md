@@ -118,7 +118,7 @@ claim は **1 transaction** に以下を束ねる(size race・欠落・二重処
 3. 別 key の **live operation** があれば `in_progress` を返す(同時 1 upload 制限)。
 4. なければ新規 operation + exam + source_document + **source reservation 行**を作成。
 
-**live 判定の基準**: 旧 `source_documents.created_at` 15 分窓を**そのまま流用しない**(新状態機械は 7 日 retry を持ち矛盾する)。`upload_operations` の **status(非終端 = awaiting_sources|claimed|prepared)/ lease(lease_expires_at)/ abandonment TTL** を基準にする。abandonment TTL の正本は §11(T14 で確定)。T4 時点では暫定 TTL を定義し、T14 で §11 の値と整合させる。
+**live 判定の基準(②-4a-cutover 案 D で改訂・2026-08-02 OT 確定 → §3.1)**: 別 key の非終端 operation のうち **claimed/prepared かつ valid lease(= 実行中の worker)だけを `in_progress`** でブロックする(最大 `LEASE_TTL_MS`=15 分の保護)。それ以外の非終端 op(awaiting_sources 全般 / lease NULL・期限切れの claimed・prepared)は**旧 submit の放棄とみなし supersede**(terminal 化)して新 operation へ進む。旧 `abandonment TTL`(awaiting_sources の経過時間しきい値)は撤去した — supersede で不要になったため。詳細は §3.1。
 
 **日次 Gemini cap の配線(2026-07-31・OT 確定)**: 新 prepare→publish flow は現状 **同時 1 upload 制限と日次 cap の両方を素通し**している(旧 `runUploadGuardTx` の guard を未移植)。account quota(月次ページ)は ②-5 だが、service 全体の **日次 Gemini call cap(`GEMINI_DAILY_LIMIT`・CLAUDE.md AI 絶対ルール 2 の安全弁)は本 sprint で配線する**。原子化(枠確保)は不要だが配線は必須:
 
@@ -129,6 +129,28 @@ claim は **1 transaction** に以下を束ねる(size race・欠落・二重処
 5. `parseDailyLimit`(`upload-guard.ts:23` private)を**再利用可能な helper へ切り出し**、T6 の日次 cap 判定で共有。
 
 **原子的枠確保(`INSERT … ON CONFLICT … WHERE count < limit`)は実装しない**: 実ユーザー 0 で、超過してもサービス全体上限を 1〜2 回超える程度ゆえ。**実ユーザー増加後に再判断**する(この判断理由を記録)。
+
+### 3.1 失敗時 abandon + supersede + client resume なし(案 D・2026-08-02 OT 確定)
+
+cutover 実装レビュー(canonical + Codex)で、UI が毎 submit で fresh idempotency key を生成しサーバ側冪等 resume を使わないため、**失敗後の retry が旧 live operation に衝突して回復不能**(post-claim 失敗は無期限 block・手動掃除まで)という Critical が判明。OT 裁定 = **resume を作らず「失敗のクリーンアップ」で解く(案 D)**。原則(spec 明記事項):
+
+> UI は retryable operation を resume せず、失敗表示時に abandon する。1 submit = 1 operation。失敗した submit は abandon され、再アップロードは新 operation となる。claimed / prepared からの takeover(§2.2)は client resume 用ではなく、server crash からの回復・将来の retry worker・operator による手動回復のための基盤である。
+
+fresh idempotency key(毎 submit 新規)は resume を作らない以上**正しい挙動**。同一 key の replay 契約(§2)は transport レベルの重複送信対策として残す。
+
+実装(3 点):
+
+1. **`abandonUploadOperation` action**: owner 確認 → operation lock → `awaiting_sources`(lease 不問)/ client 保持 `lease_version` と一致する `claimed`・`prepared` を terminal 化(`prepared_payload`/`lease_expires_at`/`next_retry_at` を NULL)。**同一 tx で関連 source_document を failed 化**。`completed` は上書きせず既存結果へ誘導(`sourceDocumentId` 返却・transport lost success 対策)。既に terminal は冪等成功。lease 不一致の claimed/prepared は clobber せず `stale`。
+2. **UI は operation 作成後の失敗表示時にこの action を await**(best-effort 不可)。対象 = source reserve/PUT/finalize 失敗 / claim 各失敗 / Gemini retry 枯渇 / crop・publish retryable / 予期せぬ throw。abandon が `completed` を返せば result page へ遷移。
+3. **`prepareUploadTx` の supersede**: fresh key を受けた際、別 key の旧 op が inactive(awaiting_sources 全般、または lease NULL/期限切れの claimed/prepared)なら terminal 化(+ doc failed)して新 op へ。**valid lease → 従来どおり `in_progress`**(最大 `LEASE_TTL_MS`)。completed/terminal は触らない。tab 閉鎖で abandon を呼べなくても次回 submit が旧 op を掃除する fallback。
+
+**共通不変条件は単一 executable contract**(`_lib/terminalize-abandoned-operation.ts` の `terminalizeAbandonedOperation`)を abandon と supersede の両経路が共有(architecture.md §8)。**critical 副次発見**: operation を terminal にしても source_document が `processing` のままだと legacy 共存 gate(status='processing' 検出)に引っかかり最大 `STALE_PROCESSING_MS`(15 分)`in_progress` が継続する → terminal 化と doc failed 化を**同一 tx**に含めることで解消。
+
+**残骸(受容)**: `source_assets` GC は T14b 予定のため、PUT 成功後・finalize 前離脱の temp object / finalize 失敗の reserved source / terminal operation の ready source は現時点で自然回収されない。**smoke 中に溜まるが実害なし(実ユーザー 0)。一般公開前に T14b で閉じることを必須 gate**(ledger 記録)。
+
+**bounded residual(明示受容・2026-08-02 Codex round-3 検出)**: **claim 応答喪失**(claim がサーバ commit した直後に network 断/client parse throw)時、UI は catch へ飛び `abandonLeaseVersion` 未設定ゆえ abandon が fencing token を送れず `stale` 返却 → その claimed op は valid lease のまま残り、次回 submit は lease 期限切れ(最大 `LEASE_TTL_MS`=15 分)まで `in_progress`。**self-heal**(期限切れ後 supersede が掃除)。token 無しで valid-lease op を terminal 化するのは実行中 worker の clobber ゆえ不可(fencing が正しく機能した帰結)。完全解消は op 状態再取得の往復追加を要し実ユーザー 0 では YAGNI。cutover 前の「無期限 block」より厳密に改善。§6.5 と同型の bounded residual として受容(公開前に retry worker/往復回復を再評価)。
+
+**resume の再評価トリガー(将来・今は作らない)**: ① OCR 成功後に publish だけ失敗 → prepared payload から再開すれば Gemini 再課金を避けられる ② ②-4b の大容量 PDF(数十 MB の再送コスト)— 発動条件 = ②-4b 実測後に再評価。
 
 ---
 

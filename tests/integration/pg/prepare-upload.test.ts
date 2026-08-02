@@ -31,10 +31,7 @@ import {
   prepareUploadTx,
   type PrepareUploadInput,
 } from '@/app/(app)/app/upload/_actions/prepare-upload'
-import {
-  TOTAL_UPLOAD_LIMIT_BYTES,
-  PREPARE_AWAITING_TTL_MS,
-} from '@/app/(app)/app/upload/_lib/constants'
+import { TOTAL_UPLOAD_LIMIT_BYTES } from '@/app/(app)/app/upload/_lib/constants'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
 
@@ -493,61 +490,25 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
 
   // --- (d) live-operation gate: 別 key かつ live な awaiting operation があれば in_progress ---
   describe('live-operation gate (同時 1 upload 制限)', () => {
-    it('a different idempotency key while a live awaiting_sources operation exists returns in_progress', async () => {
-      const input1: PrepareUploadInput = {
-        idempotencyKey: 'idem-live-1',
-        destination: { mode: 'new' },
-        sources: twoSources('live1'),
-      }
-      const input2: PrepareUploadInput = {
-        idempotencyKey: 'idem-live-2',
-        destination: { mode: 'new' },
-        sources: twoSources('live2'),
-      }
-
-      const first = await asTenant(userAId, (tx) =>
-        prepareUploadTx(tx, { id: userAId }, input1),
-      )
-      if (first.outcome !== 'success') {
-        throw new Error(`expected success, got ${first.outcome}`)
-      }
-
-      const second = await asTenant(userAId, (tx) =>
-        prepareUploadTx(tx, { id: userAId }, input2),
-      )
-      expect(second).toEqual({ outcome: 'in_progress' })
-
-      // 2 回目呼出は何も書かない (operation は 1 件のまま)
-      const owner = getFixtureOwnerDb()
-      const opRows = await owner
-        .select({ id: uploadOperations.id, idempotencyKey: uploadOperations.idempotencyKey })
-        .from(uploadOperations)
-        .where(eq(uploadOperations.userId, userAId))
-      expect(opRows).toHaveLength(1)
-      expect(opRows[0]?.idempotencyKey).toBe('idem-live-1')
-    })
-
-    // review fix #4 (a): claimed/prepared は createdAt を問わず live 扱い。
-    // 直接 upload_operations 行を owner db で seed し(claim/publish 相当の状態
-    // 遷移は T6/T12 の責務でここでは対象外)、createdAt を意図的に古くしても
-    // ブロックされることを確認する。
+    // ②-4a-cutover 案 D(2026-08-02・OT 確定): 別 key + valid lease の claimed/prepared
+    // (= 実行中の worker が存在)だけが in_progress でブロックする(最大 LEASE_TTL_MS の
+    // 保護)。それ以外の非終端 op は supersede される(下記)。
     it.each(['claimed', 'prepared'] as const)(
-      'a %s operation blocks a different-key call regardless of createdAt age',
+      'a %s operation with a valid lease blocks a different-key call (in_progress)',
       async (status) => {
         const owner = getFixtureOwnerDb()
         const seedExamId = randomUUID()
         await owner
           .insert(exams)
           .values({ id: seedExamId, userId: userAId, name: 'seed exam' })
-        const oldCreatedAt = new Date(Date.now() - 24 * 3600 * 1000) // 1 日前
         await owner.insert(uploadOperations).values({
           userId: userAId,
           idempotencyKey: `idem-seed-${status}`,
           examId: seedExamId,
           status,
           leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000), // valid lease
           attemptCount: 1,
-          createdAt: oldCreatedAt,
           expectedSourceCount: 1,
         })
 
@@ -561,32 +522,45 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
         )
         expect(result).toEqual({ outcome: 'in_progress' })
 
-        // 新規呼出は何も書かない (seed した 1 件のみ)
+        // 新規呼出は何も書かない・seed した 1 件は不変(clobber しない)
         const opRows = await owner
-          .select({ id: uploadOperations.id })
+          .select({ id: uploadOperations.id, status: uploadOperations.status })
           .from(uploadOperations)
           .where(eq(uploadOperations.userId, userAId))
         expect(opRows).toHaveLength(1)
+        expect(opRows[0]?.status).toBe(status)
       },
     )
 
-    // review fix #4 (b): awaiting_sources で PREPARE_AWAITING_TTL_MS を超えて
-    // 古いものは live 扱いしない(放棄とみなし、別 key の新規呼出を通す = TTL 失効脱出)。
-    it('an awaiting_sources operation older than PREPARE_AWAITING_TTL_MS does not block a different-key call', async () => {
+    // 案 D: awaiting_sources は経過時間を問わず「旧 submit の放棄意思」とみなして
+    // supersede する(terminal_failed 化 + doc failed)。resume はしない(1 submit =
+    // 1 operation)。旧 op の doc を failed にするのは legacy 共存 gate の processing
+    // 検出を避けるため(OT critical 副次発見)。
+    it('supersedes a different-key awaiting_sources operation (terminalize + doc failed) and creates a fresh one', async () => {
       const owner = getFixtureOwnerDb()
       const seedExamId = randomUUID()
       await owner
         .insert(exams)
         .values({ id: seedExamId, userId: userAId, name: 'seed exam' })
-      const staleCreatedAt = new Date(Date.now() - PREPARE_AWAITING_TTL_MS - 60_000) // TTL + 1 分
+      const staleDocId = randomUUID()
+      await owner.insert(sourceDocuments).values({
+        id: staleDocId,
+        userId: userAId,
+        examId: seedExamId,
+        mode: 'new',
+        fileType: 'image',
+        filename: 'stale.png',
+        fileSizeBytes: 100,
+        status: 'processing',
+      })
       await owner.insert(uploadOperations).values({
         userId: userAId,
-        idempotencyKey: 'idem-seed-stale',
+        idempotencyKey: 'idem-seed-await',
         examId: seedExamId,
+        sourceDocumentId: staleDocId,
         status: 'awaiting_sources',
         leaseVersion: 0,
         attemptCount: 0,
-        createdAt: staleCreatedAt,
         expectedSourceCount: 1,
       })
 
@@ -602,15 +576,220 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
         throw new Error(`expected success, got ${result.outcome}`)
       }
 
-      // stale 行はそのまま残り (T14 GC/terminal 化の対象外)、新規 operation が
-      // 追加で 1 件作られる (計 2 件)。
+      // 旧 op は terminal_failed 化、旧 doc は failed 化、新規 op が追加(計 2 件)。
       const opRows = await owner
-        .select({ idempotencyKey: uploadOperations.idempotencyKey })
+        .select({ idempotencyKey: uploadOperations.idempotencyKey, status: uploadOperations.status })
         .from(uploadOperations)
         .where(eq(uploadOperations.userId, userAId))
       expect(opRows).toHaveLength(2)
-      const keys = opRows.map((r) => r.idempotencyKey).sort()
-      expect(keys).toEqual(['idem-fresh', 'idem-seed-stale'])
+      const seeded = opRows.find((r) => r.idempotencyKey === 'idem-seed-await')
+      expect(seeded?.status).toBe('terminal_failed')
+      const staleDoc = await owner
+        .select({ status: sourceDocuments.status })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, staleDocId))
+      expect(staleDoc[0]?.status).toBe('failed')
+    })
+
+    // 案 D: lease が NULL / 期限切れの claimed/prepared(= 実行中 worker 不在)は
+    // supersede する(terminalize + doc failed)。stage/publish 失敗で lease を解放した
+    // まま放置された op が次回 submit で掃除される中核パス。
+    it.each(['claimed', 'prepared'] as const)(
+      'supersedes a different-key %s operation whose lease is expired (terminalize + doc failed)',
+      async (status) => {
+        const owner = getFixtureOwnerDb()
+        const seedExamId = randomUUID()
+        await owner
+          .insert(exams)
+          .values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+        const staleDocId = randomUUID()
+        await owner.insert(sourceDocuments).values({
+          id: staleDocId,
+          userId: userAId,
+          examId: seedExamId,
+          mode: 'new',
+          fileType: 'image',
+          filename: 'stale.png',
+          fileSizeBytes: 100,
+          status: 'processing',
+        })
+        await owner.insert(uploadOperations).values({
+          userId: userAId,
+          idempotencyKey: `idem-seed-${status}`,
+          examId: seedExamId,
+          sourceDocumentId: staleDocId,
+          status,
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000), // expired
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        })
+
+        const input: PrepareUploadInput = {
+          idempotencyKey: 'idem-fresh',
+          destination: { mode: 'new' },
+          sources: twoSources('fresh'),
+        }
+        const result = await asTenant(userAId, (tx) =>
+          prepareUploadTx(tx, { id: userAId }, input),
+        )
+        if (result.outcome !== 'success') {
+          throw new Error(`expected success, got ${result.outcome}`)
+        }
+
+        const seeded = await owner
+          .select({ status: uploadOperations.status })
+          .from(uploadOperations)
+          .where(
+            and(
+              eq(uploadOperations.userId, userAId),
+              eq(uploadOperations.idempotencyKey, `idem-seed-${status}`),
+            ),
+          )
+        expect(seeded[0]?.status).toBe('terminal_failed')
+        const staleDoc = await owner
+          .select({ status: sourceDocuments.status })
+          .from(sourceDocuments)
+          .where(eq(sourceDocuments.id, staleDocId))
+        expect(staleDoc[0]?.status).toBe('failed')
+      },
+    )
+
+    // 案 D: completed op は非 live(触らない)。別 key の新規呼出は success。
+    it('does not touch a completed operation and proceeds with a fresh one', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner
+        .insert(exams)
+        .values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values({
+        userId: userAId,
+        idempotencyKey: 'idem-seed-completed',
+        examId: seedExamId,
+        status: 'completed',
+        leaseVersion: 1,
+        attemptCount: 1,
+        expectedSourceCount: 1,
+      })
+
+      const input: PrepareUploadInput = {
+        idempotencyKey: 'idem-fresh',
+        destination: { mode: 'new' },
+        sources: twoSources('fresh'),
+      }
+      const result = await asTenant(userAId, (tx) =>
+        prepareUploadTx(tx, { id: userAId }, input),
+      )
+      if (result.outcome !== 'success') {
+        throw new Error(`expected success, got ${result.outcome}`)
+      }
+
+      const seeded = await owner
+        .select({ status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(
+          and(
+            eq(uploadOperations.userId, userAId),
+            eq(uploadOperations.idempotencyKey, 'idem-seed-completed'),
+          ),
+        )
+      expect(seeded[0]?.status).toBe('completed')
+    })
+
+    // 案 D: 複数の別 key 非終端 op のうち **1 件でも valid lease** があれば in_progress で
+    // ブロックし、どれも terminalize しない(実行中 worker を保護)。
+    it('mixed-state: valid-lease claimed + expired claimed が併存 → in_progress・どちらも不変', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values([
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-valid',
+          examId: seedExamId,
+          status: 'claimed',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000), // valid
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-expired',
+          examId: seedExamId,
+          status: 'claimed',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000), // expired
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+      ])
+
+      const result = await asTenant(userAId, (tx) =>
+        prepareUploadTx(tx, { id: userAId }, {
+          idempotencyKey: 'idem-fresh',
+          destination: { mode: 'new' },
+          sources: twoSources('fresh'),
+        }),
+      )
+      expect(result).toEqual({ outcome: 'in_progress' })
+
+      // どちらの seed op も terminalize されない(valid worker がいるため全体をブロック)。
+      const rows = await owner
+        .select({ idempotencyKey: uploadOperations.idempotencyKey, status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.userId, userAId))
+      expect(rows).toHaveLength(2) // 新規 op は作られない
+      expect(rows.every((r) => r.status === 'claimed')).toBe(true)
+    })
+
+    // 案 D: valid lease が 1 件も無ければ、複数の inactive op を **全て** terminalize して進む。
+    it('multi-op: awaiting_sources + expired claimed(いずれも inactive)→ 両方 supersede + 新規 success', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values([
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-await',
+          examId: seedExamId,
+          status: 'awaiting_sources',
+          leaseVersion: 0,
+          attemptCount: 0,
+          expectedSourceCount: 1,
+        },
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-expired',
+          examId: seedExamId,
+          status: 'claimed',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000), // expired
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+      ])
+
+      const result = await asTenant(userAId, (tx) =>
+        prepareUploadTx(tx, { id: userAId }, {
+          idempotencyKey: 'idem-fresh',
+          destination: { mode: 'new' },
+          sources: twoSources('fresh'),
+        }),
+      )
+      if (result.outcome !== 'success') {
+        throw new Error(`expected success, got ${result.outcome}`)
+      }
+
+      const rows = await owner
+        .select({ idempotencyKey: uploadOperations.idempotencyKey, status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.userId, userAId))
+      expect(rows).toHaveLength(3) // 2 seed + 1 新規
+      const byKey = Object.fromEntries(rows.map((r) => [r.idempotencyKey, r.status]))
+      expect(byKey['idem-await']).toBe('terminal_failed')
+      expect(byKey['idem-expired']).toBe('terminal_failed')
+      expect(byKey['idem-fresh']).toBe('awaiting_sources')
     })
 
     // review fix #D (Critical・cross-flow coexistence): legacy runUploadGuardTx

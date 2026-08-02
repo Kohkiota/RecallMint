@@ -20,11 +20,18 @@ import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { pdfPageCount } from '../_lib/pdf-page-count'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
-  processUpload,
   type ProcessUploadErrorCode,
   type ProcessUploadErrorDetails,
 } from '../_actions/process'
 import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
+// ②-4a-cutover: legacy processUpload(fd) 呼出を新 flow(prepare→reserve/PUT/finalize→
+// claim→stage→publish)へ差し替える(process.ts 自体は revert 用に残置・呼出のみ削除)。
+import { prepareUpload, type PrepareUploadSourceInput } from '../_actions/prepare-upload'
+import { reserveSource, finalizeSource } from '../_actions/source-asset-actions'
+import { claimOperation } from '../_actions/claim-operation'
+import { stagePrepared } from '../_actions/stage-prepared'
+import { publishPreparedUpload } from '../_actions/publish-prepared'
+import { abandonUploadOperation } from '../_actions/abandon-operation'
 
 // 投入先選択 state:
 //  - null: 未選択 (submit disable)
@@ -58,6 +65,26 @@ function formatBytes(b: number): string {
   if (b < 1_000_000) return `${(b / 1_000).toFixed(1)} KB`
   return `${(b / 1_000_000).toFixed(2)} MB`
 }
+
+// ②-4a-cutover: prepareUpload の source manifest(spec §5.2)は width/height を必須で
+// 要求する。圧縮済み file から寸法を取得するだけの最小限 decode
+// (`createImageBitmap` は使わない — WebKit 不安定・lib/media/image-validation.ts /
+// compress-image-safe.ts と同方針。EXIF orientation はブラウザ既定に委ね再回転しない)。
+async function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode()
+    return { width: img.naturalWidth, height: img.naturalHeight }
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+// lib/media/upload.ts の直 PUT timeout(60s)と同値。 presigned PUT が hang した場合の
+// 保険(CLAUDE.md AI-2: 外部 API call はタイムアウト必須・upload.ts:230 の値を踏襲)。
+const R2_PUT_TIMEOUT_MS = 60_000
 
 const planLabelMap = {
   free: 'Free プラン',
@@ -246,6 +273,11 @@ export function UploadForm({
         maxSizeMB: MAX_IMAGE_FILE_MB,
         maxWidthOrHeight: MAX_IMAGE_WIDTH_OR_HEIGHT,
         useWebWorker: true,
+        // 出力 mime を webp に固定する。 未指定だと browser-image-compression は
+        // 入力 file.type をそのまま出力 mime にするため、 HEIC(UI は「HEIC」と案内)
+        // や GIF 等は prepareUpload / reserveSource の mime enum(image/webp|png|jpeg)
+        // で invalid_input になる。 lib/media/upload.ts の COMPRESSION_OPTIONS と同値。
+        fileType: 'image/webp',
       })
       const thumbUrl = URL.createObjectURL(compressed)
       setEntries((prev) =>
@@ -395,16 +427,24 @@ export function UploadForm({
     })
   }
 
-  function buildFormData(): FormData {
-    const fd = new FormData()
-    if (destination?.mode === 'new') {
-      fd.set('mode', 'new')
-    } else if (destination?.mode === 'existing') {
-      fd.set('mode', 'existing')
-      fd.set('examId', destination.examId)
-    }
-    for (const e of entries) fd.append('files', e.file, e.file.name)
-    return fd
+  // ②-4a-cutover: エラー表示の共通 helper。 hideRetryHint は元の processUpload 経路
+  // (旧 runProcess の `!result.ok` 分岐)と同じ導出規則を維持する — UPLOAD_IN_PROGRESS
+  // は「並列 OCR 実行中」という状態エラーなので「ファイルを変更して再試行」が誤誘導に
+  // なるため隠す。 PAGE_LIMIT_EXCEEDED は新 flow では発生しない outcome だが、 コード自体は
+  // ProcessUploadErrorCode に残っているため条件はそのまま維持する(規約変更なし)。
+  function setError(
+    code: ProcessUploadErrorCode,
+    message: string,
+    details?: ProcessUploadErrorDetails,
+  ) {
+    setLongRunning(false)
+    setPhase({
+      kind: 'error',
+      code,
+      message,
+      details,
+      hideRetryHint: code === 'UPLOAD_IN_PROGRESS' || code === 'PAGE_LIMIT_EXCEEDED',
+    })
   }
 
   // runProcess は phase 切替を行わない (caller が setPhase('submitting') を
@@ -417,54 +457,341 @@ export function UploadForm({
   // 待つ方針に変更。 代わりに 90 秒経過後は longRunning=true にして banner 文言を
   // 「閉じてよい」 旨に切替え、 離脱ガードも解除する。 spinner は submitting 中
   // ずっと表示し続ける。
-  // processUpload が throw (504 / network error 等) した場合は catch で 'OTHER'
-  // error にして「試験一覧で確認を」 と案内する。 server 側では source_document が
-  // 作成済みの場合もあるため、 無条件に retry 誘導しない文言にする。
+  //
+  // ②-4a-cutover(2026-08-02・stg only): legacy processUpload(fd) 呼出を新 flow へ
+  // 差し替える。 呼出列 = 圧縮(既存)→ prepareUpload → 各 source を
+  // reserveSource(presigned PUT 発行)→ client 直 PUT(R2)→ finalizeSource →
+  // claimOperation(lease 取得)→ stagePrepared(OCR→正規化→payload staging。
+  // prepared_taken_over 時は skip)→ publishPreparedUpload(crop→cards 確定)。
+  // leaseVersion は claimOperation → stagePrepared → publishPreparedUpload の 3 者で
+  // 同一値を使い回す(fencing の CAS token)。 途中の unexpected throw は catch で
+  // 既存同様 'OTHER' + hideRetryHint(「試験一覧で確認を」)に丸める。
+  //
+  // ②-4a は画像入稿のみ(PDF rasterize は ②-4b・spec 冒頭)。 PDF が 1 件でも混在すると
+  // prepareUpload の source manifest に含められず「一部ファイルが黙って抜け落ちる」
+  // (silent partial exclusion)事故になるため、 送信前に明示ブロックする。
   async function runProcess() {
-    const fd = buildFormData()
-
     // 90 秒経過したら longRunning=true にして banner / 離脱ガードを切替える。
     // submitting が終わる (成功 / 失敗 / throw) 時点でタイマーを clear する。
     longRunningTimerRef.current = setTimeout(() => {
       setLongRunning(true)
     }, 90_000)
 
-    let result
-    try {
-      result = await processUpload(fd)
-    } catch (err) {
-      // 413 (body size limit 超過) を message ベースで best-effort 検出する。
-      // - Next.js `experimental.serverActions.bodySizeLimit` を超えた場合は
-      //   `Error('Body exceeded N mb limit ...')` が throw される (現状の realistic trigger:
-      //   bodySizeLimit=4.5mb + client cap=4MB の組合せで framework path がまず効く)。
-      // - "payload too large" / "413" の substring 検出は defensive coverage:
-      //   bodySizeLimit が将来 raise されたり Vercel/Next の error 文言が変更された場合に
-      //   platform / fetch 層 message へ fall back するための保険 (現状は dead branch 寄り)。
-      // production では Next.js が error.message を digest (hash) 化する場合があり
-      // 検出は best-effort。 一致しなければ既存 OTHER 経路 (504 / network error /
-      // server side で source_document 既作成の可能性等) に fall through する。
-      const message = err instanceof Error ? err.message : ''
-      const isPayloadTooLarge =
-        message.includes('Body exceeded') ||
-        message.toLowerCase().includes('payload too large') ||
-        message.includes('413')
-      setLongRunning(false)
-      if (isPayloadTooLarge) {
-        // server 側 SIZE_LIMIT_EXCEEDED 経路 (process.ts L222) と文言を完全一致させ、
-        // log/grep / user UX の一貫性を担保する (同一 error code で 2 種類の文言を避ける)。
-        // hideRetryHint=false: 「ファイルを変更して再試行」 が正しい誘導。
-        setPhase({
-          kind: 'error',
-          code: 'SIZE_LIMIT_EXCEEDED',
-          message: `合計サイズは ${TOTAL_UPLOAD_LIMIT_MB} MB までです。 ファイルを分けてアップロードしてください`,
+    // ②-4a-cutover 案 D(2026-08-02・OT 確定): UI は失敗した operation を resume せず、
+    // 失敗表示時に abandon する(1 submit = 1 operation)。以下 2 値は flow 進行に伴い
+    // 確定する。operationId は prepareUpload 成功後、leaseVersion は claim 成功後。
+    let abandonOpId: string | undefined
+    let abandonLeaseVersion: number | undefined
+
+    // operation 作成後(operationId 確定後)の失敗経路で abandon を **await** する
+    // (best-effort でなく原則 await)。abandon が 'completed' を返したら operation は
+    // 実際には完了していた(transport lost success 等)ため result page へ遷移し true を
+    // 返す(呼出元は error 表示せず return)。abandon 自体が失敗しても次回 submit の
+    // prepareUploadTx supersede が旧 operation を掃除する(案 D fallback)。
+    async function abandonIfNeeded(): Promise<boolean> {
+      if (!abandonOpId) return false
+      try {
+        const res = await abandonUploadOperation({
+          operationId: abandonOpId,
+          leaseVersion: abandonLeaseVersion,
         })
+        if (res.outcome === 'completed' && res.sourceDocumentId) {
+          router.push(`/app/upload/result/${res.sourceDocumentId}`)
+          return true
+        }
+      } catch {
+        // supersede が backstop。ここでは元のエラーを表示する。
+      }
+      return false
+    }
+
+    // operation 作成後の失敗表示の共通経路。abandon → (completed なら遷移) → error 表示。
+    async function failAndAbandon(
+      code: ProcessUploadErrorCode,
+      message: string,
+      details?: ProcessUploadErrorDetails,
+    ) {
+      if (await abandonIfNeeded()) return
+      setError(code, message, details)
+    }
+
+    try {
+      if (destination === null) {
+        // submitDisabled が destinationReady を要求するため通常到達しない
+        // (defensive・TS narrowing 目的)。
+        setError('OTHER', '投入先が選択されていません。')
         return
       }
-      // 504 / network error 等、 server action が throw した場合。
-      // server 側で source_document が作成されている可能性があるため、
-      // 無条件再試行でなく「試験一覧で確認を」と案内する。
-      // hideRetryHint=true: このエラーメッセージは再試行を推奨しないため、
-      // 「ファイルを変更して再試行」サブタイトルを非表示にする (Fix 2)。
+      if (entries.some((e) => e.kind === 'pdf')) {
+        setError(
+          'INVALID_INPUT',
+          'PDF は現在このアップロードでは対応していません(画像のみ対応)。PDF を削除するか、画像のみで投入してください。',
+        )
+        return
+      }
+
+      const imageEntries = entries.filter(
+        (e): e is Extract<FileEntry, { kind: 'image'; status: 'ready' }> =>
+          e.kind === 'image' && e.status === 'ready',
+      )
+
+      // 1. source manifest 組立(prepareUpload は width/height を必須要求・spec §5.2)。
+      const sources: PrepareUploadSourceInput[] = []
+      for (const e of imageEntries) {
+        const { width, height } = await getImageDimensions(e.file)
+        sources.push({
+          sourceId: e.id,
+          mime: e.file.type,
+          byteSize: e.file.size,
+          width,
+          height,
+          filename: e.file.name,
+        })
+      }
+
+      // 2. prepareUpload(operation/exam/source_document/source reservation 先行作成)。
+      const idempotencyKey =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`
+      const prepared = await prepareUpload({ idempotencyKey, destination, sources })
+
+      if (prepared.outcome !== 'success') {
+        switch (prepared.outcome) {
+          case 'exam_not_found':
+            setError(
+              'EXAM_NOT_FOUND',
+              prepared.archived
+                ? '選択した試験はアーカイブされています。'
+                : '選択した試験が見つかりません。',
+            )
+            break
+          case 'in_progress':
+            setError('UPLOAD_IN_PROGRESS', '現在 OCR を実行中です。完了までお待ちください。')
+            break
+          case 'size_exceeded':
+            setError(
+              'SIZE_LIMIT_EXCEEDED',
+              `合計サイズは ${TOTAL_UPLOAD_LIMIT_MB} MB までです。 ファイルを分けてアップロードしてください`,
+              { current: prepared.current, limit: prepared.limit },
+            )
+            break
+          case 'invalid_input':
+            setError('INVALID_INPUT', prepared.error)
+            break
+          case 'unauthenticated':
+            setError('AUTH', '認証が必要です。再度ログインしてください。')
+            break
+        }
+        return
+      }
+      const { operationId, sourceDocumentId, reserved } = prepared
+      // operation は作成済み — 以降の失敗は abandon 対象(案 D)。
+      abandonOpId = operationId
+
+      // 3. 各 source を reserve(presigned PUT 発行)→ client 直 PUT(R2)→ finalize
+      //    (server が temp→最終 immutable key へ promote)。 reserved は server が
+      //    確定した source 集合(prepareUpload の sources と 1:1)。
+      const fileBySourceId = new Map(imageEntries.map((e) => [e.id, e.file]))
+      for (const r of reserved) {
+        const file = fileBySourceId.get(r.sourceId)
+        if (!file) {
+          // 理論上到達しない(reserved は prepareUpload に渡した sources 由来)。
+          await failAndAbandon('OTHER', '内部エラーが発生しました。もう一度お試しください。')
+          return
+        }
+
+        let reserveResult
+        try {
+          reserveResult = await reserveSource({
+            assetId: r.assetId,
+            mime: file.type,
+            byteSize: file.size,
+          })
+        } catch {
+          await failAndAbandon('OTHER', 'アップロードの準備に失敗しました。もう一度お試しください。')
+          return
+        }
+        if (!reserveResult.ok || !reserveResult.data) {
+          await failAndAbandon(
+            'OTHER',
+            reserveResult.ok ? 'アップロードの準備に失敗しました。' : reserveResult.error,
+          )
+          return
+        }
+
+        // 直 PUT(browser → R2)。 lib/media/upload.ts の attachImageToCardInner と
+        // 同じ契約(mode:'cors' / credentials:'omit' / redirect:'error' / timeout 付き)。
+        let putOk = false
+        try {
+          const put = await fetch(reserveResult.data.uploadUrl, {
+            method: 'PUT',
+            body: file,
+            headers: { 'Content-Type': file.type },
+            mode: 'cors',
+            credentials: 'omit',
+            redirect: 'error',
+            signal: AbortSignal.timeout(R2_PUT_TIMEOUT_MS),
+          })
+          putOk = put.ok
+        } catch {
+          putOk = false
+        }
+        if (!putOk) {
+          await failAndAbandon('OTHER', '画像のアップロードに失敗しました。もう一度お試しください。')
+          return
+        }
+
+        let finalizeResult
+        try {
+          finalizeResult = await finalizeSource(r.assetId)
+        } catch {
+          await failAndAbandon('OTHER', 'アップロードの検証に失敗しました。もう一度お試しください。')
+          return
+        }
+        if (!finalizeResult.ok) {
+          await failAndAbandon('OTHER', finalizeResult.error)
+          return
+        }
+      }
+
+      // 4. claim(lease 取得 + 日次 cap 判定)。
+      // 既知 bounded residual(案 D・OT 認識済): claim がサーバ commit した直後に応答が
+      // 失われる(network 断/parse throw)と catch へ飛び、abandonLeaseVersion 未設定
+      // (下記 assignment に未到達)ゆえ abandon が fencing token を送れず 'stale' 返却
+      // → claimed op が valid lease のまま残り、次回 submit は lease 期限切れ(最大
+      // LEASE_TTL_MS=15分)まで in_progress。self-heal する(期限切れ後 supersede)。
+      // token 無しで valid-lease op を terminal 化するのは実行中 worker の clobber ゆえ
+      // 不可(fencing が正しく機能した帰結)。完全解消は op 状態再取得の往復追加を要し
+      // 実ユーザー 0 の現時点では YAGNI。cutover 前の「無期限 block」より厳密に改善。
+      const claimed = await claimOperation(operationId)
+      let leaseVersion: number
+      // prepared_taken_over: 旧 worker が prepared 保存後に死んだ場合の引き継ぎ。
+      // Gemini を再実行しないため stagePrepared を skip し publish へ直行する(spec §2.2)。
+      let skipStage = false
+      switch (claimed.outcome) {
+        case 'claimed':
+          leaseVersion = claimed.leaseVersion
+          break
+        case 'prepared_taken_over':
+          leaseVersion = claimed.leaseVersion
+          skipStage = true
+          break
+        case 'completed':
+          // 同一 operation が既に publish 済み(通常この flow では起きないが契約上の
+          // 冪等 replay に備える)。 result はそのまま既存 result page に委ねる。
+          router.push(`/app/upload/result/${sourceDocumentId}`)
+          return
+        case 'daily_limit_exceeded':
+          // claim 前の cap 判定ゆえ operation は awaiting_sources のまま → abandon で掃除。
+          await failAndAbandon(
+            'GEMINI_DAILY_LIMIT_EXCEEDED',
+            '本日の AI 利用上限に達しました。しばらくしてから再度お試しください。',
+            { current: claimed.current, limit: claimed.limit },
+          )
+          return
+        case 'sources_not_ready':
+          await failAndAbandon('OTHER', 'アップロードの検証が完了していません。もう一度お試しください。')
+          return
+        case 'already_processing':
+          // 別実行が valid lease 保持中 → abandon は lease 不一致で stale(clobber しない)。
+          await failAndAbandon('UPLOAD_IN_PROGRESS', '現在 OCR を実行中です。完了までお待ちください。')
+          return
+        case 'already_prepared':
+          await failAndAbandon('OTHER', '前回の処理が進行中です。しばらくしてから再度お試しください。')
+          return
+        case 'terminal_failed':
+          await failAndAbandon(
+            'OTHER',
+            `処理に失敗しました${claimed.lastErrorCode ? `(${claimed.lastErrorCode})` : ''}。`,
+            { rawError: claimed.lastErrorCode ?? undefined },
+          )
+          return
+        case 'not_found':
+          await failAndAbandon('OTHER', '対象の処理が見つかりません。もう一度お試しください。')
+          return
+        case 'unauthenticated':
+          await failAndAbandon('AUTH', '認証が必要です。再度ログインしてください。')
+          return
+      }
+      // claim 成功(claimed / prepared_taken_over)。以降の失敗は lease 一致で終端化できる。
+      abandonLeaseVersion = leaseVersion
+
+      // 5. stage(OCR → 正規化 → prepared_payload 保存)。 takeover 済みは skip。
+      if (!skipStage) {
+        const staged = await stagePrepared({ operationId, leaseVersion })
+        switch (staged.outcome) {
+          case 'staged':
+            break
+          case 'stale':
+            await failAndAbandon('OTHER', '処理が別の実行によって上書きされました。もう一度お試しください。')
+            return
+          case 'retryable_failed':
+            await failAndAbandon(
+              'GEMINI_FAILED',
+              'AI による抽出に失敗しました。もう一度お試しください。',
+              { rawError: staged.reason },
+            )
+            return
+          case 'empty':
+            await failAndAbandon(
+              'GEMINI_FAILED',
+              '問題を抽出できませんでした。画像を確認してもう一度お試しください。',
+            )
+            return
+          case 'terminal_failed':
+            await failAndAbandon('OTHER', `処理に失敗しました(${staged.reason})。`, {
+              rawError: staged.reason,
+            })
+            return
+          case 'not_found':
+            await failAndAbandon('OTHER', '対象の処理が見つかりません。もう一度お試しください。')
+            return
+          case 'unauthenticated':
+            await failAndAbandon('AUTH', '認証が必要です。再度ログインしてください。')
+            return
+        }
+      }
+
+      // 6. publish(crop → cards/tags/refs 確定 → source_document/operation completed)。
+      const published = await publishPreparedUpload({ operationId, leaseVersion })
+      switch (published.outcome) {
+        case 'published':
+          // S1.9.2: OCR 成功 → result page に遷移。 phase は 'submitting' のままにして
+          // navigation 完了まで spinner を出す(success phase は廃止)。
+          router.push(`/app/upload/result/${sourceDocumentId}`)
+          return
+        case 'stale':
+          await failAndAbandon('OTHER', '処理が別の実行によって上書きされました。もう一度お試しください。')
+          return
+        case 'retryable':
+          await failAndAbandon(
+            'GEMINI_FAILED',
+            '抽出結果の保存に失敗しました。もう一度お試しください。',
+            { rawError: published.reason },
+          )
+          return
+        case 'failed':
+          await failAndAbandon('GEMINI_FAILED', `処理に失敗しました(${published.reason})。`, {
+            rawError: published.reason,
+          })
+          return
+        case 'not_found':
+          await failAndAbandon('OTHER', '対象の処理が見つかりません。もう一度お試しください。')
+          return
+        case 'unauthenticated':
+          await failAndAbandon('AUTH', '認証が必要です。再度ログインしてください。')
+          return
+      }
+    } catch {
+      // network error / unexpected throw 等。 operation が作成済みなら abandon する
+      // (案 D: 失敗した submit は掃除する)。abandon が 'completed' を返せば operation は
+      // 実際には完了していた(transport lost success)ため result page へ遷移する。
+      if (await abandonIfNeeded()) return
+      // それ以外は server 側で source_document が残っている可能性があり、 無条件再試行
+      // でなく「試験一覧で確認を」と案内する(旧 processUpload 経路の catch と同じ方針)。
+      // hideRetryHint=true: 「ファイルを変更して再試行」サブタイトルを非表示にする。
+      setLongRunning(false)
       setPhase({
         kind: 'error',
         code: 'OTHER',
@@ -472,10 +799,8 @@ export function UploadForm({
           '処理状況を確認できませんでした。「試験一覧」で結果をご確認ください。',
         hideRetryHint: true,
       })
-      return
     } finally {
       // 成功・失敗どちらでも longRunning タイマーは不要になるので clear する。
-      // catch ブロック内で既に return した後でも finally は実行されるが、
       // 二重 clear は無害。 setLongRunning(false) はここでは呼ばない:
       // 成功時は router.push で遷移するため state は破棄され不要、かつ
       // 90 秒後に longRunning=true になっていた場合に成功 → 「閉じないで」
@@ -484,34 +809,6 @@ export function UploadForm({
         clearTimeout(longRunningTimerRef.current)
         longRunningTimerRef.current = null
       }
-    }
-
-    if (result.ok && result.data) {
-      // S1.9.2: OCR 成功 → result page に遷移。 phase は 'submitting' のまま
-      // にして navigation 完了まで spinner を出す (success phase は廃止)。
-      // setLongRunning(false) は不要: component は router.push で破棄される。
-      router.push(`/app/upload/result/${result.data.sourceDocumentId}`)
-    } else if (!result.ok) {
-      setLongRunning(false)
-      setPhase({
-        kind: 'error',
-        message: result.error,
-        code: result.code,
-        details: result.details,
-        // UPLOAD_IN_PROGRESS はファイルの問題ではなく「並列 OCR 実行中」という
-        // 状態エラーなので、「ファイルを変更して再試行」サブタイトルは誤誘導になる。
-        // PAGE_LIMIT_EXCEEDED は「ファイルを分けて投入」が正解であり、
-        // 「変更して再試行」は不適切なため同様に非表示にする。
-        // 他の error code (QUOTA_EXCEEDED / GEMINI_FAILED 等) は retry hint を出す。
-        hideRetryHint: result.code === 'UPLOAD_IN_PROGRESS' || result.code === 'PAGE_LIMIT_EXCEEDED',
-      })
-    } else {
-      setLongRunning(false)
-      setPhase({
-        kind: 'error',
-        message: '予期しないエラー',
-        code: 'OTHER',
-      })
     }
   }
 

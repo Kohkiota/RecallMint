@@ -4,8 +4,8 @@
 // 再利用可能な helper へ切り出したもの。 upload-guard.ts(legacy flow)と
 // claim-operation.ts(T6・新 flow の claim 直前 cap 判定)の両方がここから import
 // する — 日次 cap 判定ロジックを 2 箇所にコピーしない(rule of three 未満だが
-// 「1 定義を両呼出元が共有」という既存方針、prepare-upload.ts の
-// PREPARE_AWAITING_TTL_MS / asset-limits.ts の MAX_ASSET_BYTES と同型)。
+// 「1 定義を両呼出元が共有」という既存方針、constants.ts の
+// LEASE_TTL_MS / asset-limits.ts の MAX_ASSET_BYTES と同型)。
 //
 // directive 無し(sync 関数を export するため)。claim-operation.ts は
 // 'use server' file であり、Next.js の "use server" transform は非 async 関数の
