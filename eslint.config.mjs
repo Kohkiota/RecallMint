@@ -671,6 +671,66 @@ const config = [
     },
   },
   // ---------------------------------------------------------------------------
+  // Block E2-useserver-typeexport: 'use server' file(_actions)から型を export しない。
+  // Next 16 + Turbopack の 'use server' 変換は named type export/re-export を value export
+  // と誤認し `registerServerReference(型名, …)` を生成する → built chunk で型名が裸参照
+  // (runtime undefined)→ module load 時 ReferenceError → 実環境で 500(local build は
+  // 成功するため smoke でしか表面化しない・②-4a-cutover の publish-prepared.ts で実発生)。
+  // inline `export type X = {…}`(型宣言)は SWC が strip するため安全 = ban 対象外。
+  // 共有型は _lib/(directive 無し)に定義し、定義元から直接 import すること。
+  //
+  // 本 block は _actions に scope。_actions は app/(app) 配下ゆえ Block E1-render とも重なり、
+  // 同一 rule key(no-restricted-syntax)は flat-config で REPLACE(merge されない)。
+  // E1-render の route-segment selector は 'use server' 関数 file には無関係(route segment
+  // config を持たない)で vacuous だが、silent gap を避けるため re-include する
+  // (getDb ban 系 block と同じ re-include 規律)。
+  // ---------------------------------------------------------------------------
+  {
+    files: ['app/**/_actions/**/*.ts', 'app/**/_actions/**/*.tsx'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        // re-include: Block E1-render の 4 selector(_actions では vacuous だが REPLACE 対策)。
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="revalidate"]',
+          message:
+            '認証必須 route group で `export const revalidate` は禁止 (ISR / 永続 cache がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="dynamic"]',
+          message:
+            '認証必須 route group で `export const dynamic` は禁止 (force-static 等の静的化がユーザー間のキャッシュ漏れになる。既に auth() で全 dynamic)。真に必要なら eslint-disable + 理由。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > FunctionDeclaration[id.name="generateStaticParams"]',
+          message:
+            '認証必須 route group で generateStaticParams は禁止 (動的 route の SSG 化がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name="generateStaticParams"]',
+          message:
+            '認証必須 route group で generateStaticParams は禁止 (動的 route の SSG 化がユーザー間のキャッシュ漏れになる)。正本 = docs/architecture.md §5。',
+        },
+        // new(②-4a-cutover): 'use server' file の型 export/re-export ban。
+        {
+          selector: 'ExportNamedDeclaration[exportKind="type"]:not([declaration])',
+          message:
+            "'use server' file(_actions)から型を named export/re-export(`export type { … }`)しない。Next 16 + Turbopack が型を server reference 登録し runtime ReferenceError → 500 になる(②-4a-cutover・publish-prepared.ts で実発生)。共有型は _lib/ に定義し定義元から直接 import。inline `export type X = {…}` は可。",
+        },
+        {
+          selector: 'ExportSpecifier[exportKind="type"]',
+          message:
+            "'use server' file(_actions)から型を export(`export { type … }`)しない。同上の理由で runtime ReferenceError → 500 リスク。共有型は _lib/ に置き定義元から import。",
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
   // Per-file allowlists (placed AFTER forbidding blocks so they win).
   // Each RE-SETS `no-restricted-imports` to keep ONLY the repo-wide getDb ban
   // (GETDB_BAN.paths/patterns) while exempting the cross-feature / reverse-dep

@@ -24,11 +24,14 @@ import {
   type PublishPreparedResult,
 } from '../_lib/publish-prepared-orchestrate'
 
-// T14a fix round 1(Codex P2): `PublishPreparedInput`/`PublishPreparedResult`
-// は orchestrator 本体(publish-prepared-orchestrate.ts・directive 無し)の型
-// 定義を re-export するだけ(既存 import 経路を壊さないための互換維持)。
-// type export は SWC の 'use server' 変換の対象外(値を持たない)なので安全。
-export type { PublishPreparedInput, PublishPreparedResult }
+// ②-4a-cutover smoke fix(2026-08-02): **'use server' file から型を re-export しない**。
+// 旧: `export type { PublishPreparedInput, PublishPreparedResult }`(T14a fix round1 が
+// 互換維持で追加・「型 export は安全」と誤認)。実際は Next 16 + Turbopack の 'use server'
+// 変換が named type re-export を value export と誤認し `registerServerReference(型名, …)` を
+// 生成 → built chunk で裸参照(runtime undefined)→ module load 時 ReferenceError → 500。
+// 型が要る consumer は定義元 `publish-prepared-orchestrate.ts` から直接 import する
+// (現状 consumer 0 件・本 file 自身は上の import で signature に使うのみ=re-export 不要)。
+// 再導入防止 = eslint no-restricted-syntax(_actions の 'use server' 型 export を ban)。
 
 // ②-4a Phase E Task 12: publishPreparedUploadTx orchestrator。 spec:
 // docs/superpowers/specs/2026-07-30-ocr-2-4a-image-figure-crop-design.md §8(publish・
