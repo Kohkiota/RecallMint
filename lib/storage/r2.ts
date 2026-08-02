@@ -194,7 +194,17 @@ export async function putObject(
   options: { ifNoneMatch?: boolean } = {},
 ): Promise<PutObjectOutcome> {
   try {
-    const headers: Record<string, string> = { 'Content-Type': mime }
+    const headers: Record<string, string> = {
+      'Content-Type': mime,
+      // server 直 PUT は Content-Length を**明示**する。未設定だと aws4fetch/undici が
+      // chunked transfer-encoding で body を送り、R2(S3 互換)は PUT に Content-Length を
+      // 要求するため **411(Length Required)** を返す(②-4a smoke で finalize の最終 key
+      // への server PUT が 411 で失敗 → finalize saga が「検証失敗」に落ちていた)。
+      // presigned client PUT(presignPutUrl)は Content-Length を署名 + browser が自動送信
+      // するため無影響で、この非対称が smoke まで露見しなかった。bytes は全長既知の
+      // Buffer/Uint8Array(finalize=getObject の実バイト / crop=sharp().toBuffer())。
+      'Content-Length': String(bytes.byteLength),
+    }
     if (options.ifNoneMatch) {
       headers['If-None-Match'] = '*'
     }

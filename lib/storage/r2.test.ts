@@ -270,3 +270,27 @@ describe('deleteObject', () => {
     expect(result).toEqual({ ok: false, status: null })
   })
 })
+
+describe('putObject Content-Length', () => {
+  beforeEach(() => {
+    setValidEnv()
+  })
+
+  it('sends an explicit Content-Length header (R2 requires it for PUT; missing → 411)', async () => {
+    // ②-4a smoke fix: aws4fetch/undici は Content-Length を省くと chunked で送り、R2 は
+    // PUT に Content-Length を要求するため 411(Length Required)を返す(finalize の最終
+    // key PUT / crop の PUT が 411 で失敗した)。putObject が Content-Length を明示すること
+    // を回帰 pin する。aws4fetch は署名後に global fetch を Request で呼ぶ。
+    let capturedReq: Request | undefined
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (input) => {
+      capturedReq = input as Request
+      return new Response(null, { status: 200 })
+    })
+    const { putObject } = await import('./r2')
+    const bytes = new Uint8Array([10, 20, 30, 40, 50, 60, 70]) // 7 bytes
+    const result = await putObject('users/u1/src/a1.webp', bytes, 'image/webp')
+    expect(result).toBe('success')
+    expect(capturedReq).toBeDefined()
+    expect(capturedReq!.headers.get('content-length')).toBe('7')
+  })
+})
