@@ -35,6 +35,24 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // ②-4a-cutover smoke fix(2026-08-02): sharp(crop 経路・lib/media/crop-and-store.ts)は
+  // Next の default で external 扱いされ、NFT が `@img/sharp-linux-x64` の `.node` は
+  // トレースするが、その `.node` が C++ 層で dlopen する `@img/sharp-libvips-linux-x64`
+  // の実バイナリ `libvips-cpp.so.<ver>` を**トレースしない**(dlopen は JS require で
+  // 辿れないため)。結果 Vercel の serverless function から `.so` が脱落し、実行時に
+  // `ERR_DLOPEN_FAILED: libvips-cpp.so.8.18.3: cannot open shared object file` で 500。
+  // local(devcontainer=linux-x64-glibc)は `.pnpm` に `.so` が実在するため再現せず、
+  // smoke で初めて表面化した(module load 段階の失敗ゆえ crop ロジックは未実行)。
+  // → NFT が拾えない native binary を outputFileTracingIncludes で手動包含する(Next 公式
+  //   が sharp に推奨する機構)。pnpm は @img を top-level でなく `.pnpm` 実体に置くため
+  //   `.pnpm/@img+...@*/...` を直接指定(version 非依存に `@*`)。install/lockfile は不変
+  //   (binary は既に install 済で欠落していない=`supportedArchitectures` は不要)。
+  outputFileTracingIncludes: {
+    '/*': [
+      './node_modules/.pnpm/@img+sharp-libvips-linux-x64@*/node_modules/@img/sharp-libvips-linux-x64/**/*',
+      './node_modules/.pnpm/@img+sharp-linux-x64@*/node_modules/@img/sharp-linux-x64/**/*',
+    ],
+  },
   experimental: {
     serverActions: {
       // Next.js 16 の framework default は 1MB。 default のまま運用すると Server
