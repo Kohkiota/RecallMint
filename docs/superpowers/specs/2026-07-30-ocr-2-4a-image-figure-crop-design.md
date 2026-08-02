@@ -148,7 +148,14 @@ fresh idempotency key(毎 submit 新規)は resume を作らない以上**正し
 
 **残骸(受容)**: `source_assets` GC は T14b 予定のため、PUT 成功後・finalize 前離脱の temp object / finalize 失敗の reserved source / terminal operation の ready source は現時点で自然回収されない。**smoke 中に溜まるが実害なし(実ユーザー 0)。一般公開前に T14b で閉じることを必須 gate**(ledger 記録)。
 
-**bounded residual(明示受容・2026-08-02 Codex round-3 検出)**: **claim 応答喪失**(claim がサーバ commit した直後に network 断/client parse throw)時、UI は catch へ飛び `abandonLeaseVersion` 未設定ゆえ abandon が fencing token を送れず `stale` 返却 → その claimed op は valid lease のまま残り、次回 submit は lease 期限切れ(最大 `LEASE_TTL_MS`=15 分)まで `in_progress`。**self-heal**(期限切れ後 supersede が掃除)。token 無しで valid-lease op を terminal 化するのは実行中 worker の clobber ゆえ不可(fencing が正しく機能した帰結)。完全解消は op 状態再取得の往復追加を要し実ユーザー 0 では YAGNI。cutover 前の「無期限 block」より厳密に改善。§6.5 と同型の bounded residual として受容(公開前に retry worker/往復回復を再評価)。
+**claim 応答喪失の 2 residual(2026-08-02・現物確認で訂正確定)**: claim がサーバ commit した直後に network 断/client parse throw が起きると、UI は catch へ飛び `abandonLeaseVersion` 未設定ゆえ abandon が fencing token を送れず `stale` 返却 → その claimed op は残る(claim-lost)。ここから 2 つの residual に分かれる:
+
+1. **valid lease 中の block(最大 `LEASE_TTL_MS`=15 分)= 受容**。lease が生きている間は claim-lost と stage 実行中が DB 上で完全に同一(status='claimed'・進捗なし・valid lease)のため区別できない。heartbeat 無しでは原理的に解決不能。token 無しで valid-lease op を terminal 化するのは実行中 worker の clobber ゆえ不可(fencing が正しく機能した帰結)。**lease 切れ後は supersede(§3.1 手順3)が終端化するため再アップロードで続行できる**(`prepare-upload.test.ts` の expired-lease supersede test で green 実証)。→ §6.5 同型の bounded residual として受容(heartbeat/retry worker 実装時に再評価)。
+2. **放置された claim-lost の「処理中」表示(最長 7 日)= 表示 fix で対処(smoke 後・独立タスク)**。ユーザーが再アップロードしない場合のみ、`isLiveUploadOperationCondition` の 7 日 retention branch が claim-lost 'claimed' op を live 扱いし続け、exam badge が cosmetic に 'processing' を表示する。再アップロードすれば supersede が doc を failed 化して解消する。fix = `claimed` branch だけ tighten(claim-lost=claimed+lease切れ+next_retry_at NULL+last_error_code NULL+payload NULL を非-live)+ reconciler が operation も terminal_failed 化。**prepareUpload は変更不要**(supersede が既に lease 切れ claimed を終端化)。詳細 = todo 台帳 §残件記録。
+
+> **前提訂正の記録**: 外部レビュー(GPT)由来の「prepareUpload が claimed を独自に無期限 live 扱い(→ lease 切れ後も無期限 block)」「status endpoint で解決」は**いずれも誤り**(現物と食い違い)。block gate は valid lease のみ(`prepare-upload.ts:260-280` の `hasActiveWorker`)で、外部レビューが指した `status IN ('claimed','prepared')` は supersede の分類 SELECT。
+
+> **T14a "resumable" 前提の消失(経緯記録)**: `isLiveUploadOperationCondition` が非終端 op を 7 日 retention で live 扱いする設計(spec §11・`source-doc-status.ts:41` "still **resumable**")は、**op が resume される前提**で書かれた(T14a は cutover=案 D より前)。retryable な prepared の再試行が 15 分を跨ぐ矛盾を防ぐのが本来の意図で、claim-lost を区別する必要は**まだ存在しなかった**。**案 D(client resume を作らない)を決めた時点でこの前提が消え**、claim-lost('claimed'・payload 無・retry 意図無)が非-resumable なのに live 扱いされる齟齬が顕在化した。T14a が意図的に区別しなかったのではなく、区別する必要がまだ無かった、が正確。
 
 **resume の再評価トリガー(将来・今は作らない)**: ① OCR 成功後に publish だけ失敗 → prepared payload から再開すれば Gemini 再課金を避けられる ② ②-4b の大容量 PDF(数十 MB の再送コスト)— 発動条件 = ②-4b 実測後に再評価。
 

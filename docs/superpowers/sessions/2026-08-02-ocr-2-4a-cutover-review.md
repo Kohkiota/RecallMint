@@ -71,3 +71,18 @@
 
 **gate**: typecheck0 / whole lint0 / full test:iso 353 / build0 / audit prod-high0。
 **commit 方針**: cutover は TAGLESS(stg-smoke gate=cutover smoke ゆえ [reviewed] は smoke 後 session doc)。canonical 最終 Crit0/Imp0(Imp#1 解消)+ Codex P2 は bounded residual 受容(OT 確認要)。
+
+---
+
+## 8. 前提訂正 + 規律教訓(2026-08-02・OT 確認済)
+
+**訂正**: 外部レビュー(GPT)由来で claude.ai が出した「prepareUpload が `status IN ('claimed','prepared')` で claimed を独自に無期限 live 扱い → lease 切れ後も無期限 block ゆえ smoke ブロッカー・4 site 修正が必要」という指示は**現物と食い違い**。CC 現物確認で:
+- block gate は `hasActiveWorker`(valid lease のみ・`prepare-upload.ts:260-280`)。外部レビューが指した `status IN (...)`(255 行)は supersede の**分類 SELECT**で block gate ではない。
+- **lease 切れ後の無期限 block は存在しない**。supersede が lease 切れ claimed を terminalize して続行する(`prepare-upload.test.ts` の expired-lease supersede test が green で実証)。
+- ゆえに **prepareUpload は変更不要 / smoke ブロッカーでない / 修正対象は 3 site**(display/reconciler/sweep)。**smoke 手順書の「claim-lost 時は再アップロードで続行できる」は正しい**。
+
+**残 residual 確定(2 件)**: ① valid lease 中の block(≤15分・受容・原理的解決不能)② 放置 claim-lost の「処理中」表示(最長7日・cosmetic・表示 fix で対処=案 Y smoke 後)。台帳 §残件記録 + spec §3.1 に反映済。「status endpoint で解決」は誤り(local-first の pull+poll が結果を届け、状態は poll で分かる)。
+
+**規律教訓(OT 記録指示)**: **外部レビュー(GPT 等)の指摘も、CC の現物確認を経てから採用する**。claude.ai が外部レビューを現物確認なしに受け入れて指示したのは本 sprint で繰り返した誤り(client crop 前提 / UUIDv5 / schema 個別 import / 状態問い合わせ API 要否 と同型)。**独断で実装せず「spec/現物 食い違い = 停止点」として停止し確認した CC の判断が正しかった**。実装指示が現物と食い違う前提に基づく時は、指示があっても停止して現物で裁定する。
+
+**表示 fix タスク(案 Y=smoke 後・T14b と並列)**: claim-lost を素直に failed 化。`claimed` branch だけ tighten(claim-lost=claimed+lease切れ+next_retry_at NULL+last_error_code NULL+payload NULL を非-live)/ `prepared`+payload は 7日 live 維持(将来 retry worker で publish 再開可)/ reconciler が operation も terminal_failed 化(write 順序: op 先→DB now() 再検証→terminal+clear+`last_error_code='claim_lost'`→UPDATE 成功 op の doc だけ failed)/ 3 site real-PG RED→GREEN。**smoke の実測結果を見て T14b との順序決定**。
