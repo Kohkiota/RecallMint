@@ -293,7 +293,7 @@ payload を publish 後 NULL 化するため、**bbox / padding 率 / clamp 後 
 ---
 
 ## 11. deadline / retry / GC grace(Codex #5/#8)
-- **deadline**: operation 全体の **absolute deadline を 1 つ**持つ。現行 `OCR_OVERALL_DEADLINE_MS` は OCR だけで 720s(`ocr.ts:60`)。OCR 後の残時間が crop 最低予算を下回れば残図を **`deadline_excluded`** とし text card を atomic publish(architecture.md §10 隔離と整合)。
+- **deadline(2026-08-02・OT 改訂: 実測前ゆえ最小記載)**: `CROP_PHASE_BUDGET_MS` は**各 `publishPreparedUpload` 呼び出しの crop フェーズ予算(per-invocation)**。予算切れ(crop 開始直前に残予算が `CROP_MIN_REMAINING_MS` 未満)の残図は **`deadline_excluded`** とし text card を atomic publish(§8.3 crop 全滅と同型)。開始した crop 自体は sharp `.timeout()` + r2 I/O timeout で上限を持つ(上限未定義の穴を塞ぐ)。**現在の予算値(`CROP_PHASE_BUDGET_MS` / `CROP_MIN_REMAINING_MS` / sharp timeout / `OCR_OVERALL_DEADLINE_MS` 720s)はすべて暫定であり、cutover 後の実測(Gemini 応答時間・crop 1 枚所要・upload 全体)で見直す**。数値の配分理屈は実測前には決めない。**operation 全体の時間上限は 7 日 retention cap** が担う(§11 retry 保持)。
 - **retry 保持 < GC grace**: 不変条件は「grace > lease」でなく「**grace > operation が非終端で再開可能な最大保持期間**」。初期値 = lease 15 分 / retryable prepared 保持 最大 7 日 / **7 日超で terminal_failed・payload NULL 化・ref ゼロ asset は GC へ** / GC grace 30 日(現行)。
 - **stale source 回収統合**: 現行は `source_documents.created_at` 15 分超で failed(`source-doc-status.ts:64`/`upload-guard.ts:69`)。prepared 再試行が 15 分跨ぐと「source failed → 後から publisher が completed へ戻す」矛盾。→ source status/active-upload 判定を **operation lease と統合** or **reconciler が live operation を除外**。
 
