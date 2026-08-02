@@ -33,6 +33,13 @@ T7〜T9 landed。**残タスクの実行順序 = T13 → T10 → T11 → T12(sto
 - **task 番号は変更しない**(spec / ledger / memory の cross-reference 維持のため)。番号は非単調になるが実行順序は本節が正。
 - **停止点**: T10/T14/T15 = stg-smoke gate(commit tagless → OT push → CC smoke → [reviewed])。T12 完了時 = fencing + prepared takeover の stop checkpoint(OT + claude.ai 確認)。
 
+### 追加改訂(2026-08-02・OT 指示: cutover 前倒し = 検証の土台化)
+未検証実装(T10 #4/#5/#6 mock / T12 UI 未検証 / T14-16)を積み上げてから初 smoke だと問題の切り分けが不能ゆえ、**cutover(UI 配線)を「最後の仕上げ」から「検証の土台」へ前倒し**する。
+- **新順序**: (T13→T10→T11→T12 landed)→ **T14a**(operation lifecycle・下記 split)→ **②-4a-cutover**(UI 配線・最小・Phase Cut)→ **OT 手動 smoke**(stg・画像/PDF)→ 問題潰し → **T14b → T15 → T16**(動く状態の上で・各 OT 手確認)。
+- **T14 split**(CC・spec §11): T14a = deadline_excluded + 7日 retry cap + stale reconciler live-op 除外 + display op-aware + 手動 abandonment lane(**非破壊 lifecycle**)/ T14b = source_assets GC lane(**破壊**)。
+- **smoke は OT 手動**(CC は手順・DB SQL・R2 key・失敗ログ箇所・T10 6 基準の確認法を提示)。**cutover は stg only・prod 出さない**(prod は ②-4a 完了後 OT 判断)。
+- **リスク受容**: T14/T15 未完のまま cutover ゆえ abandon operation が stg に溜まる(実ユーザー 0・stg ゴミのみ・許容)。
+
 ---
 
 ## Phase 0 — prep
@@ -117,6 +124,14 @@ T7〜T9 landed。**残タスクの実行順序 = T13 → T10 → T11 → T12(sto
 - **制約**: 冒頭で operation `FOR UPDATE`+`status='prepared' AND lease_version=:mine` 不一致拒否(fencing)。**ロック順 = operation→exam→source_document→assets(ID順)→cards→tags→refs→counters/status/operation**。asset は **条件付き保護 UPDATE**(`SET unreferenced_at=NULL WHERE user_id AND id IN(...) AND status='ready' RETURNING id`・期待件数未満で fail)。cards/tags/refs/card_count/status を同一 TenantTx で確定(saveExtractedCards 改修=card ID で customProps 対応 / applyOcrTags は §T13 の determinism 版 / completeUploadTx 相当は開始 status 検証込みで新規(**= operation completed 化 + `source_documents.status='completed'` + `upload_records` 記帳〔`pages_processed`=source 画像数=月次 quota SUM 対象・`file_size_bytes`/`filename`〕。記帳は ②-4a・月次 quota **強制**のみ ②-5・`ocr_cost_yen` は nullable のまま。spec §8.2**) / bumpExamCardCount affected row 検証)。**cards に ON CONFLICT 不使用**。images≤10 超過は決定順先頭採用+`image_limit_exceeded`。publish 条件(有効 card≥1 かつ 全 figure 終端 / 0→failed / DB 失敗→retryable)。成功で payload NULL 化 + result_summary 保存 + status='completed'(全滅/一部=completed+warnings、enum 追加せず warnings は result_summary/件数)。
 - **prepared takeover(spec §2.2・2026-07-31 OT)**: 別経路 `claimPrepared`/publish-resume で **lease 期限切れの `prepared` を新 lease_version で takeover**(旧 worker が prepared 保存後に死んだ場合の引き継ぎ)。旧 worker は fencing で prepared 更新/publish を拒否。**Gemini 再実行しないため daily cap 非適用**。
 - **完了条件**: iso(fencing 拒否・ロック順・保護 UPDATE 期待未満 fail・冪等再 publish で増えない・crop 全滅 text publish・ON CONFLICT なし重複 loud fail・**prepared takeover(期限切れ lease で新 version 取得・旧 worker fencing 拒否)**)。**外部副作用ゆえ stg smoke 後 [reviewed]**。**T12 完了時に別 stop checkpoint(publish の fencing + prepared takeover を OT + claude.ai で確認・2026-07-31 OT 指示)**。
+
+## Phase Cut — ②-4a-cutover(UI 配線 = 検証の土台・2026-08-02 OT 前倒し)
+
+### ②-4a-cutover: upload UI を新 flow へ配線(最小スコープ・T14a の後 / T14b の前)
+- **目的/file**: `app/(app)/app/upload/_components/upload-form.tsx` の呼び出し列を新 flow へ差し替え。**動かすことが目的**ゆえ最小限に絞る。
+- **制約**: 呼び出し列 = 圧縮 → `prepareUpload` → presigned PUT(temp・`reserveSourceAsset` 発行 URL)→ `finalizeSource` → `claimOperation` →(server: OCR → stage → crop → `publishPreparedUpload`)→ 結果表示(最低限「完了しました」でよい)。legacy `processUpload` 呼び出しを削除する(**`process.ts` 自体は残す = 戻せる状態を保つ**)。**旧 flow 共存チェック(T4 暫定)は撤去しない**(`process.ts` が残るため)。**stg only・prod には出さない**。
+- **スコープ外**: 除外理由別件数表示(T16)/ 表示作り込み全般 / レガシー削除。
+- **完了条件**: build/typecheck/lint/test:iso green。**stg 手動 smoke(OT 実機)後に [reviewed]** — この smoke が実 R2 / 実 sharp / UI e2e を初めて通す(= T10 #4 冪等 / #5 決定性 / #6 §7.3 guard + publish 経路 + display op-aware の実環境検証)。CC は smoke 手順書(期待画面遷移 / DB 確認 SQL / R2 key 形式 / 失敗時ログ箇所 / 冪等=同ファイル 2 回)を提示する。
 
 ## Phase F — lifecycle / 提示 / 回転
 
