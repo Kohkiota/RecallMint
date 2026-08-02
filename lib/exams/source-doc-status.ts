@@ -13,11 +13,82 @@
 //   - 表示 fallback (deriveExamStatuses) と DB cleanup (reconcileStaleProcessing) を
 //     分離することで、cleanup 失敗時も表示は正しく維持される。
 
-import { and, desc, eq, gte, lt } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm'
 import { withTenantTx } from '@/lib/db/tenant-tx'
-import { sourceDocuments, uploadRecords } from '@/lib/db/schema'
+import { sourceDocuments, uploadOperations, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
-import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
+import {
+  PREPARED_RETENTION_MS,
+  STALE_PROCESSING_MS,
+  deriveExamStatuses,
+} from './derive-exam-statuses'
+
+// ---------------------------------------------------------------------------
+// isLiveUploadOperationCondition
+// ---------------------------------------------------------------------------
+// spec §11: an `upload_operations` row is "live" (still resumable) iff it is
+// non-terminal (awaiting_sources/claimed/prepared) AND either (a) within
+// `PREPARED_RETENTION_MS` of its immutable `created_at`, or (b) currently
+// holding a valid lease (`lease_expires_at > now()` — a concurrently-
+// advancing operation must never be swept/hidden regardless of age). All
+// time comparisons use PostgreSQL `now()` (same discipline as the rest of the
+// lease-fencing regime — the DB, not app clocks, is the arbiter).
+//
+// This condition builds a `WHERE`-fragment only (no I/O) so it composes with
+// whichever query calls it. Shared by 3 call sites (rule of three, T14a fix
+// round 2): `reconcileStaleProcessing` (source protection, negated form via
+// NOT EXISTS below), `getExamStatusMap` (display op-awareness), and
+// `scripts/gc-abandoned-operations.ts` (sweep candidate selection — the
+// negation of this predicate, i.e. operations that do NOT satisfy it).
+//
+// Return type: drizzle's `and()`/`or()` are typed `SQL | undefined` in
+// general (they can receive filtered-out/undefined branches elsewhere in the
+// codebase), but here both arguments are always concrete `SQLWrapper`s, so
+// `and(...)` is guaranteed non-undefined at runtime — the `!` below is safe
+// and centralizes the assertion in this one place (rather than at every call
+// site, notably `not(isLiveUploadOperationCondition())` in
+// gc-abandoned-operations.ts, which requires a non-optional `SQLWrapper`).
+//
+// fix round 3(Codex + canonical Critical, both against real PG17): the lease
+// branch MUST be NULL-free. SQL is three-valued — `lease_expires_at > now()`
+// evaluates to NULL (not false) when `lease_expires_at IS NULL`, which is the
+// **dominant** abandoned state (prepare-upload never sets a lease; every
+// retryable-failure path resets `leaseExpiresAt: null`). For an aged-out row
+// with a null lease: `false OR NULL = NULL`, so the whole condition is NULL.
+// The 3 positive consumers (reconciler NOT EXISTS / getExamStatusMap /
+// route.ts) use this un-negated in a WHERE/NOT-EXISTS, where NULL and false
+// are both "excluded" — so they were accidentally correct despite the bug.
+// But `scripts/gc-abandoned-operations.ts` uses `not(isLiveUploadOperationCondition())`
+// as its WHERE predicate: `not(NULL) = NULL`, and Postgres WHERE treats NULL
+// as false → the row was silently excluded from the sweep — i.e. the sweep
+// found NOTHING for exactly the dominant case it exists to clean. Guarding
+// the lease branch with `isNotNull` first (mirroring the `isNull`/`isNotNull`
+// pattern already used in claim-operation.ts's CAS WHERE clauses) makes the
+// branch a definite `false` when the lease is null, so the whole predicate is
+// always a definite true/false — `not(...)` now works correctly. This is a
+// no-op for the 3 positive consumers (verified by re-running their iso
+// suites unchanged) and fixes the 4th (the sweep).
+export function isLiveUploadOperationCondition(): SQL {
+  return and(
+    inArray(uploadOperations.status, ['awaiting_sources', 'claimed', 'prepared']),
+    or(
+      sql`${uploadOperations.createdAt} > now() - make_interval(secs => ${PREPARED_RETENTION_MS / 1000})`,
+      and(isNotNull(uploadOperations.leaseExpiresAt), sql`${uploadOperations.leaseExpiresAt} > now()`),
+    ),
+  )!
+}
 
 // ---------------------------------------------------------------------------
 // getExamStatusMap
@@ -32,9 +103,23 @@ import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 // status で絞り込まないのは従来どおり: 「最新が completed か」を判定するには
 // 最新行の status が必要で、 完了済 exam を取りこぼさないため。
 //
+// T14a fix round 2(Codex P2#1・display op-awareness): reconciler(DB cleanup)を
+// window-aware にしただけでは不十分 — 表示 fallback(deriveExamStatuses)は
+// 独立に「processing かつ 15 分超 → failed」を計算するため、live な
+// upload_operations を持つ source_document でも DB 上は 'processing' のまま
+// 正しく残る一方、表示だけが最大 7 日間 "failed" バッジを誤表示しうる。
+// ゆえに live な upload_operations を持つ source_document の id 集合を追加で
+// 取得し(owner-scope・同じ isLiveUploadOperationCondition 述語)、
+// deriveExamStatuses(pure)へ渡して「live op を持つなら stale でも processing」
+// 判定をさせる。 legacy(upload_operations 行が無い)source_document は空集合との
+// 非包含により今までどおり 15 分超で failed 表示になる(挙動不変)。
+//
 // best-effort 設計:
 //   - DB エラーで一覧ページの render を止めないため全体を try-catch で包む。
 //   - 失敗時は空 Map を返す (バッジなし表示)。reconcileStaleProcessing と同じ方針。
+//   - live-op 集合の取得は主 query とは別の try-catch に包み、失敗時は空集合
+//     (= legacy と同じ「live-op 非考慮」の従来挙動)に degrade する — 主 query が
+//     成功している限り、live-op 判定の失敗だけで exam 一覧全体を空 Map にしない。
 export async function getExamStatusMap(
   userId: string,
   now: Date = new Date(),
@@ -44,6 +129,7 @@ export async function getExamStatusMap(
       tx
         .selectDistinctOn([sourceDocuments.examId], {
           examId: sourceDocuments.examId,
+          id: sourceDocuments.id,
           status: sourceDocuments.status,
           createdAt: sourceDocuments.createdAt,
         })
@@ -51,7 +137,27 @@ export async function getExamStatusMap(
         .where(eq(sourceDocuments.userId, userId)) // owner-scope 必須
         .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt)),
     )
-    return deriveExamStatuses(rows, now)
+
+    let liveOpSourceDocumentIds = new Set<string>()
+    try {
+      const liveRows = await withTenantTx(userId, (tx) =>
+        tx
+          .selectDistinct({ sourceDocumentId: uploadOperations.sourceDocumentId })
+          .from(uploadOperations)
+          .where(
+            and(eq(uploadOperations.userId, userId), isLiveUploadOperationCondition()),
+          ),
+      )
+      liveOpSourceDocumentIds = new Set(
+        liveRows
+          .map((r) => r.sourceDocumentId)
+          .filter((id): id is string => id !== null),
+      )
+    } catch (err) {
+      logger.warn({ event: 'source_documents.get_status_map.live_ops_failed', userId, err })
+    }
+
+    return deriveExamStatuses(rows, now, liveOpSourceDocumentIds)
   } catch (err) {
     // best-effort: 一時的な DB エラーで一覧ページの render を落とさないよう warn のみ。
     // バッジ表示が消えるだけで、exam 一覧自体は正常に表示される。
@@ -75,6 +181,26 @@ export async function getExamStatusMap(
 // 二重計上回避:
 //   - UPDATE ... RETURNING で実際に processing→failed に変えた行のぶんだけを
 //     upload_records に INSERT する (= 0 件更新なら upload_records に触らない)。
+//
+// T14a(spec §11「stale source 回収統合」): ②-4a の新 prepare→publish flow は
+// prepared の再試行が 15 分(STALE_PROCESSING_MS)を跨ぎうる — 「source failed
+// → 後から publisher が completed へ戻す」矛盾を避けるため、対象の
+// source_document に紐づく upload_operations が **live(非終端: awaiting_sources
+// /claimed/prepared)** な行を 1 件でも持つ場合はこの stale sweep の対象から
+// 除外する(NOT EXISTS)。 legacy path(upload_operations 行が無い旧 flow)は
+// 従来どおり 15 分超で failed 化される — 挙動不変。
+//
+// fix round 1(Codex P1): この除外は **window-aware**(無条件ではない)。
+// claim-operation.ts の 7 日保持 cap(PREPARED_RETENTION_MS)は
+// claimOperationTx が実際に呼ばれた時にしか発火しない — ゆえに一度も再 claim
+// されない放置 op(例: source を最後まで upload しなかった awaiting_sources)は
+// 非終端のまま**永久に**残り、無条件の除外だと対応する stale source_document を
+// 永久に保護してしまう(定常的なリーク)。 「再開可能」とみなすのは
+// (a) created_at が PREPARED_RETENTION_MS 以内、または (b) 現在有効な lease を
+// 保持中(lease_expires_at > now() — concurrently-advancing operation を
+// 絶対に sweep しない)のいずれかのみ。 両方外れた(=期限切れかつ 7 日超 =
+// 誰かが claim すれば terminal_failed になる状態)非終端行はもはや source を
+// 保護しない。 時刻比較は全て PostgreSQL now() 基準。
 export async function reconcileStaleProcessing(
   userId: string,
   now: Date = new Date(),
@@ -96,6 +222,23 @@ export async function reconcileStaleProcessing(
             eq(sourceDocuments.userId, userId), // owner-scope 必須
             eq(sourceDocuments.status, 'processing'),
             lt(sourceDocuments.createdAt, staleThreshold),
+            // T14a: live な upload_operations(非終端)を持つ source_document は
+            // 除外する(spec §11)。 相関 subquery も owner-scope を明示する
+            // (RLS に加えて query 自体でも user_id を絞る・CLAUDE.md 絶対ルール)。
+            notExists(
+              tx
+                .select({ id: uploadOperations.id })
+                .from(uploadOperations)
+                .where(
+                  and(
+                    eq(uploadOperations.userId, userId),
+                    eq(uploadOperations.sourceDocumentId, sourceDocuments.id),
+                    // window-aware(fix round 1・shared predicate as of fix
+                    // round 2): 再開可能な間だけ保護する。
+                    isLiveUploadOperationCondition(),
+                  ),
+                ),
+            ),
           ),
         )
         .returning({

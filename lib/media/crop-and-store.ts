@@ -53,6 +53,19 @@ const CROP_DECODE_MAX_PIXELS = 40_000_000
 const CROP_WEBP_QUALITY = 90
 const CROP_WEBP_LOSSLESS = false
 
+// T14a fix round 2(Codex P2#2・spec §11 deadline): hard CPU-time bound on the
+// sharp pipeline itself. The crop-phase orchestrator (publish-prepared-
+// orchestrate.ts) only checks the remaining time budget BEFORE starting a
+// crop (soft pre-crop gate via `CROP_MIN_REMAINING_MS`) — without a hard cap
+// on the pipeline that already started, a single pathological decode/extract/
+// encode could still run past the operation's crop-phase deadline. `.timeout()`
+// makes libvips itself abort processing after N seconds (throws an error
+// containing "timeout", caught by the existing try/catch below and mapped to
+// `crop_failed` — no new outcome variant needed). Provisional value —
+// revisit after cutover measurement (2026-08-02 OT: don't pre-tune time
+// budgets before real usage data).
+const CROP_SHARP_TIMEOUT_SEC = 30
+
 // この crop pipeline の識別子(asset_derivations.pipeline_version)。 decode
 // (auto-rotate 禁止)/ extract(toCropRect 由来の整数 px rect)/ webp encode
 // (quality/lossless 固定)の組み合わせを指す。 これらのいずれかを変更する場合は
@@ -350,13 +363,15 @@ export async function cropFigureAndStore(input: CropFigureInput): Promise<CropAn
   let cropBytes: Buffer
   try {
     cropBytes = await sharp(srcObj.bytes, { limitInputPixels: CROP_DECODE_MAX_PIXELS })
+      .timeout({ seconds: CROP_SHARP_TIMEOUT_SEC })
       .extract({ left: rect.left, top: rect.top, width: rect.cropW, height: rect.cropH })
       .webp({ quality: CROP_WEBP_QUALITY, lossless: CROP_WEBP_LOSSLESS })
       .toBuffer()
   } catch {
     // corrupt source / limitInputPixels 超過 / extract 領域が画像外(丸め等の
-    // 極端な境界ケース)。 toCropRect 自体は退化を null で弾いているが、 sharp
-    // 側の実際の decode 結果に対する最終防御として catch する。
+    // 極端な境界ケース)/ CROP_SHARP_TIMEOUT_SEC 超過(T14a fix round 2・spec §11
+    // hard per-crop bound)。 toCropRect 自体は退化を null で弾いているが、 sharp
+    // 側の実際の decode 結果 + 処理時間に対する最終防御として catch する。
     logger.warn({ event: 'ocr.crop.sharp_pipeline_failed', figureAssetId, sourceId })
     return { outcome: 'crop_failed' }
   }

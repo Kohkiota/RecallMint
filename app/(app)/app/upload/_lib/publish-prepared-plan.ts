@@ -28,8 +28,17 @@ import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 //   operation 全体を再試行に回す(§8.3)。
 // - not_ours: crop 中に operation が 'prepared' でなくなった(takeover/完了)。
 //   この worker は stale — publish を中止する。
+// - deadline_excluded: crop フェーズの time budget が尽きたため、この figure
+//   (以降の残り figure すべて)は crop を試みずに除外した(spec §11 deadline・
+//   §13 reason g)。 orchestrator が cropFigureAndStore を呼ぶ前に直接この
+//   disposition を割り当てる — raw crop outcome からの翻訳ではない。
 // ---------------------------------------------------------------------------
-export type FigureDisposition = 'attach' | 'exclude' | 'retryable' | 'not_ours'
+export type FigureDisposition =
+  | 'attach'
+  | 'exclude'
+  | 'retryable'
+  | 'not_ours'
+  | 'deadline_excluded'
 
 export type FigureExclusionCounts = {
   // crop の terminal 失敗 + source race(spec §13 の「crop 失敗」に集約)。
@@ -37,6 +46,21 @@ export type FigureExclusionCounts = {
   // images ≤ 10 超過で決定順の先頭 10 件のみ採用し、 溢れた分(§13 の
   // image_limit_exceeded)。
   image_limit_exceeded: number
+  // crop フェーズの time budget 枯渇で crop を試みなかった figure(spec §13
+  // reason g・§11 deadline)。
+  deadline_excluded: number
+}
+
+// crop フェーズの残り予算が最低予算を下回ったか判定する純関数(spec §11
+// deadline)。 orchestrator(publish-prepared.ts Step B)が各 figure の crop を
+// 試みる直前に呼ぶ。 nowMs/deadlineAtMs は呼出側が注入する(この関数自体は
+// Date.now() を読まない・iso/unit test で決定論的に検証できる)。
+export function isCropBudgetExhausted(
+  nowMs: number,
+  deadlineAtMs: number,
+  minRemainingMs: number,
+): boolean {
+  return deadlineAtMs - nowMs < minRemainingMs
 }
 
 export type PublishDecision =
@@ -102,7 +126,11 @@ export function planPublish(
   const cardImagesByCardId: Record<string, CardImage[]> = {}
   const expectedReadyAssetIds = new Set<string>()
   let figuresAttached = 0
-  const figureExclusions: FigureExclusionCounts = { crop_failed: 0, image_limit_exceeded: 0 }
+  const figureExclusions: FigureExclusionCounts = {
+    crop_failed: 0,
+    image_limit_exceeded: 0,
+    deadline_excluded: 0,
+  }
 
   for (const card of preparedCards) {
     const candidates: CardImage[] = []
@@ -114,9 +142,13 @@ export function planPublish(
           target: figure.target,
           alt: figure.label ?? '',
         })
+      } else if (disp === 'deadline_excluded') {
+        // crop フェーズの time budget 枯渇(spec §11・§13 reason g)。
+        figureExclusions.deadline_excluded += 1
       } else {
         // exclude(terminal crop 失敗 / source race)。 retryable / not_ours は
-        // 上の優先順位で既に return 済みのため、 ここに来る非 attach は exclude のみ。
+        // 上の優先順位で既に return 済みのため、 ここに来る非 attach/非
+        // deadline_excluded は exclude のみ。
         figureExclusions.crop_failed += 1
       }
     }
@@ -196,9 +228,10 @@ export function buildResultSummary(
       source_id_invalid: payload.figuresExcluded.source_id_invalid,
       malformed: payload.figuresExcluded.malformed,
       asset_id_invalid: payload.figuresExcluded.asset_id_invalid,
-      // crop 時(spec §13 c/f)。 source race(source_not_ready)は crop 失敗に集約。
+      // crop 時(spec §13 c/f/g)。 source race(source_not_ready)は crop 失敗に集約。
       crop_failed: plan.figureExclusions.crop_failed,
       image_limit_exceeded: plan.figureExclusions.image_limit_exceeded,
+      deadline_excluded: plan.figureExclusions.deadline_excluded,
     },
     cardsPreview: payload.cards.map((c) => ({
       id: c.cardId,

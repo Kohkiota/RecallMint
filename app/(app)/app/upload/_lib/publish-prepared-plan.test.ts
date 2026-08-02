@@ -5,6 +5,7 @@ import {
   planPublish,
   buildCardRows,
   buildResultSummary,
+  isCropBudgetExhausted,
   type FigureDisposition,
   type PublishDecision,
 } from './publish-prepared-plan'
@@ -134,6 +135,27 @@ describe('planPublish', () => {
     expect(plan.expectedReadyAssetIds).toHaveLength(10)
   })
 
+  it('deadline_excluded は crop_failed と別カウント(spec §13 reason g)、text card は publish される', () => {
+    const fAttach = makeFigure('question_text')
+    const fDeadline = makeFigure('explanation_text')
+    const card = makeCard({ figures: [fAttach, fDeadline] })
+    const plan = asPublish(
+      planPublish(
+        [card],
+        dispositions([
+          [fAttach.assetId, 'attach'],
+          [fDeadline.assetId, 'deadline_excluded'],
+        ]),
+      ),
+    )
+    expect(plan.cardImagesByCardId[card.cardId]).toEqual([
+      { key: fAttach.assetId, target: 'question_text', alt: '' },
+    ])
+    expect(plan.figuresAttached).toBe(1)
+    expect(plan.figureExclusions.deadline_excluded).toBe(1)
+    expect(plan.figureExclusions.crop_failed).toBe(0)
+  })
+
   it('expectedReadyAssetIds は複数 card 横断で union・昇順・重複排除', () => {
     const f1 = makeFigure()
     const f2 = makeFigure()
@@ -209,7 +231,7 @@ describe('buildResultSummary', () => {
     const planWithCounts = {
       ...plan,
       figuresAttached: 5,
-      figureExclusions: { crop_failed: 6, image_limit_exceeded: 7 },
+      figureExclusions: { crop_failed: 6, image_limit_exceeded: 7, deadline_excluded: 8 },
     }
     const summary = buildResultSummary(payload, planWithCounts, {
       operationId: 'op1',
@@ -227,10 +249,31 @@ describe('buildResultSummary', () => {
       asset_id_invalid: 4,
       crop_failed: 6,
       image_limit_exceeded: 7,
+      deadline_excluded: 8,
     })
     const preview = summary.cardsPreview as Array<{ questionSnippet: string; title: string }>
     expect(preview[0].title).toBe('カード1')
     // snippet は 80 文字上限(本文全文は保存しない・spec §14)。
     expect(preview[0].questionSnippet).toHaveLength(80)
+  })
+})
+
+// ②-4a T14a: crop フェーズ time budget 判定の純関数(spec §11 deadline)。
+describe('isCropBudgetExhausted', () => {
+  it('残り予算が最低予算以上なら false(まだ crop を試みてよい)', () => {
+    // deadline まで 10_000ms 残っており、 最低予算 5_000ms 以上ある。
+    expect(isCropBudgetExhausted(0, 10_000, 5_000)).toBe(false)
+  })
+
+  it('残り予算がちょうど最低予算なら false(境界は許容側)', () => {
+    expect(isCropBudgetExhausted(0, 5_000, 5_000)).toBe(false)
+  })
+
+  it('残り予算が最低予算を下回れば true(次の crop を試みない)', () => {
+    expect(isCropBudgetExhausted(0, 4_999, 5_000)).toBe(true)
+  })
+
+  it('deadline を過ぎていれば true(残り予算が負)', () => {
+    expect(isCropBudgetExhausted(10_000, 1_000, 5_000)).toBe(true)
   })
 })

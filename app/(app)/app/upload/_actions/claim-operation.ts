@@ -9,7 +9,11 @@ import { sourceAssets, uploadOperations, type User } from '@/lib/db/schema'
 import { getTodayAiUsageGlobal } from '@/lib/ai-usage-counter'
 import { logger } from '@/lib/logger'
 import { parseDailyLimit } from '../_lib/daily-limit'
-import { TOTAL_UPLOAD_LIMIT_BYTES, LEASE_TTL_MS } from '../_lib/constants'
+import {
+  TOTAL_UPLOAD_LIMIT_BYTES,
+  LEASE_TTL_MS,
+  PREPARED_RETENTION_MS,
+} from '../_lib/constants'
 
 // ②-4a Phase B Task 6(2026-07-31 T6 fencing checkpoint 裁定・OT 確定): claim +
 // lease CAS(+ 日次 cap 判定・単一 tx)。spec §2(状態機械 + lease/fencing・冪等
@@ -23,6 +27,13 @@ import { TOTAL_UPLOAD_LIMIT_BYTES, LEASE_TTL_MS } from '../_lib/constants'
 // (status='prepared' AND lease_version=:mine 不一致)で拒否される — 本 file は
 // T12a を変更しない・呼ばない(呼出元が takeover 後に
 // publishPreparedUpload(operationId, newLeaseVersion)を呼ぶ)。
+//
+// T14a(2026-08-01・spec §11 deadline/retry/GC grace の非破壊半分): 7 日保持
+// cap を追加(下記「7 日保持 cap」コメント)。 非終端(awaiting_sources/claimed/
+// prepared)かつ誰も lease を保持していない行が created_at から
+// PREPARED_RETENTION_MS を超えて経過していれば、claim/takeover せず fenced に
+// terminal_failed + payload NULL へ確定する。 leaseValid な行(concurrently-
+// advancing operation)は対象外 — clobber しない。
 //
 // 改訂(2026-07-31・OT 確定): input_fingerprint 列と fp 一致/不一致分岐は廃止済
 // (spec §2)。本 file はそれを前提とし、fp 関連の分岐は一切持たない。
@@ -99,7 +110,11 @@ async function persistTerminalFailure(
 ): Promise<ClaimOperationResult> {
   await tx
     .update(uploadOperations)
-    .set({ status: 'terminal_failed', lastErrorCode, resultSummary })
+    // preparedPayload: null(spec §11「terminal_failed・payload NULL 化」)。 この
+    // helper が呼ばれる分岐(source 不整合 / T14a 7 日保持 cap)のうち大半は
+    // 'prepared' 未到達(payload はまだ null)だが、7 日保持 cap は 'prepared'
+    // (payload 保持中)にも適用されるため、ここで一律 NULL 化して保証する。
+    .set({ status: 'terminal_failed', preparedPayload: null, lastErrorCode, resultSummary })
     .where(and(eq(uploadOperations.id, operationId), eq(uploadOperations.userId, userId)))
   return { outcome: 'terminal_failed', lastErrorCode, resultSummary }
 }
@@ -132,6 +147,9 @@ export async function claimOperationTx(
       lastErrorCode: uploadOperations.lastErrorCode,
       sourceDocumentId: uploadOperations.sourceDocumentId,
       expectedSourceCount: uploadOperations.expectedSourceCount,
+      // T14a 7 日保持 cap の測定対象(spec §11)。 insert 時のみ設定される不変列
+      // (他のどの update も書き換えない・constants.ts PREPARED_RETENTION_MS 参照)。
+      createdAt: uploadOperations.createdAt,
       // raw sql fragment には drizzle の列型マッパーが付かないため postgres-js は
       // timestamptz のテキスト表現(例 '2026-07-31 10:35:23.907297+00')をそのまま
       // 返す(型付き column なら自動で Date化される — drizzle 標準 column にだけ
@@ -164,6 +182,28 @@ export async function claimOperationTx(
   }
   const leaseValid =
     op.leaseExpiresAt !== null && op.leaseExpiresAt.getTime() >= dbNow.getTime()
+
+  // 2.5. 7 日保持 cap(spec §11・T14a)。 誰も lease を保持していない
+  // (!leaseValid)非終端行(awaiting_sources/claimed/prepared のいずれか — この
+  // 時点で completed/terminal_failed は既に return 済み)が、created_at から
+  // PREPARED_RETENTION_MS を超えて経過していれば、この呼出でのその後の
+  // claim/takeover を行わず fenced に terminal_failed へ確定する。leaseValid な
+  // 行(現在進行中のワーカーが存在する = concurrently-advancing operation)は
+  // 対象外にし、絶対に clobber しない。 手順1の SELECT…FOR UPDATE でこの行の
+  // ロックを保持し続けているため、id+userId のみの WHERE(persistTerminalFailure)
+  // で安全に一意行を更新できる。 時刻比較は PostgreSQL dbNow 基準(lease 裁定と
+  // 同じ規律・spec §2.1)。
+  if (!leaseValid) {
+    const ageMs = dbNow.getTime() - op.createdAt.getTime()
+    if (ageMs > PREPARED_RETENTION_MS) {
+      return persistTerminalFailure(tx, operationId, user.id, 'retention_exceeded', {
+        reason: 'retention_exceeded',
+        ageMs,
+        retentionMs: PREPARED_RETENTION_MS,
+      })
+    }
+  }
+
   if (op.status === 'claimed' && leaseValid) {
     // lease がまだ有効 = 他の実行が処理中(二重 Gemini 抑止)。
     return { outcome: 'already_processing' }

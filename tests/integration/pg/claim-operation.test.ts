@@ -93,6 +93,9 @@ type SeedOverrides = Partial<{
   expectedSourceCount: number
   // T12b: old-worker-rejection 統合 test(publishPreparedUpload を叩く)向け。
   preparedPayload: Record<string, unknown> | null
+  // T14a: 7 日保持 cap の測定対象(spec §11)。既定は defaultNow()(擬似的に
+  // "たった今" 作成された operation)— 明示上書きで経過時間をシミュレートする。
+  createdAt: Date
 }>
 
 async function seedOperation(
@@ -133,6 +136,7 @@ async function seedOperation(
     // にする)。source 集合検証そのものをテストする describe では明示上書き。
     expectedSourceCount: overrides.expectedSourceCount ?? 1,
     preparedPayload: overrides.preparedPayload ?? null,
+    ...(overrides.createdAt !== undefined ? { createdAt: overrides.createdAt } : {}),
   })
   return { operationId, examId, sourceDocumentId }
 }
@@ -866,6 +870,136 @@ describe('claimOperationTx (T6)', () => {
         const rowAfterPublish = await readOperationRow(operationId)
         expect(rowAfterPublish?.status).toBe('completed')
       })
+    })
+  })
+
+  // --- 7 日保持 cap(T14a・spec §11)---
+  describe('7-day retention cap (T14a)', () => {
+    const OLD_CREATED_AT = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) // 8 日前(cap 超過)
+    const YOUNG_CREATED_AT = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000) // 6 日前(cap 未超過)
+
+    it('claimed + 期限切れ lease + backoff 到達済み + 8 日経過 → terminal_failed(retention_exceeded)・payload NULL・再 claim しない', async () => {
+      const { operationId } = await seedClaimableOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ
+        attemptCount: 5,
+        nextRetryAt: new Date(Date.now() - 30_000), // backoff 到達済み(通常なら再 claim できる)
+        createdAt: OLD_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('terminal_failed')
+      if (result.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(result.lastErrorCode).toBe('retention_exceeded')
+      expect(result.resultSummary).toMatchObject({ reason: 'retention_exceeded' })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('terminal_failed')
+      expect(row?.leaseVersion).toBe(1) // claim CAS に到達していない(bump なし)
+    })
+
+    it('prepared + 期限切れ lease + 8 日経過 → takeover せず terminal_failed(retention_exceeded)・prepared_payload が NULL 化される', async () => {
+      const payload = { schemaVersion: 1, marker: 'should-be-nulled' }
+      const { operationId } = await seedOperation(userAId, {
+        status: 'prepared',
+        leaseVersion: 3,
+        leaseExpiresAt: new Date(Date.now() - 60_000), // 期限切れ(通常なら takeover 対象)
+        preparedPayload: payload,
+        createdAt: OLD_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('terminal_failed')
+      if (result.outcome !== 'terminal_failed') throw new Error('unreachable')
+      expect(result.lastErrorCode).toBe('retention_exceeded')
+
+      const owner = getFixtureOwnerDb()
+      const rows = await owner
+        .select({
+          status: uploadOperations.status,
+          leaseVersion: uploadOperations.leaseVersion,
+          preparedPayload: uploadOperations.preparedPayload,
+        })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, operationId))
+      expect(rows[0]?.status).toBe('terminal_failed')
+      expect(rows[0]?.leaseVersion).toBe(3) // takeover CAS(bump)は起きていない
+      expect(rows[0]?.preparedPayload).toBeNull() // spec §11: terminal_failed + payload NULL
+    })
+
+    it('6 日経過(cap 未満)の claimed + 期限切れ lease + backoff 到達済みは通常どおり再 claim できる', async () => {
+      const { operationId } = await seedClaimableOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+        attemptCount: 1,
+        nextRetryAt: new Date(Date.now() - 30_000),
+        createdAt: YOUNG_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toMatchObject({ outcome: 'claimed', leaseVersion: 2 })
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed')
+    })
+
+    it('6 日経過(cap 未満)の prepared + 期限切れ lease は通常どおり takeover できる', async () => {
+      const { operationId } = await seedOperation(userAId, {
+        status: 'prepared',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+        createdAt: YOUNG_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result).toMatchObject({ outcome: 'prepared_taken_over', leaseVersion: 2 })
+    })
+
+    it('8 日経過していても lease が有効(concurrently-advancing)な claimed 行は clobber しない(already_processing のまま)', async () => {
+      const { operationId } = await seedClaimableOperation(userAId, {
+        status: 'claimed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 有効
+        attemptCount: 1,
+        createdAt: OLD_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('already_processing')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('claimed') // terminal_failed に化けていない
+      expect(row?.leaseVersion).toBe(1)
+    })
+
+    it('8 日経過していても lease が有効な prepared 行は clobber しない(already_prepared のまま)', async () => {
+      const { operationId } = await seedOperation(userAId, {
+        status: 'prepared',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 有効
+        createdAt: OLD_CREATED_AT,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        claimOperationTx(tx, { id: userAId }, operationId),
+      )
+      expect(result.outcome).toBe('already_prepared')
+
+      const row = await readOperationRow(operationId)
+      expect(row?.status).toBe('prepared')
+      expect(row?.leaseVersion).toBe(1)
     })
   })
 

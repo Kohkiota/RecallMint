@@ -20,15 +20,18 @@
 // rethrow (framework default 500、no-store なし)。この挙動は既存の非対称を保存し
 // authFailEvent を設定しないことで実現する。
 
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { withReadOnlyAuth } from '@/lib/auth/with-read-only-auth'
 import { withTenantTx } from '@/lib/db/tenant-tx'
-import { sourceDocuments } from '@/lib/db/schema'
+import { sourceDocuments, uploadOperations } from '@/lib/db/schema'
 import {
   STALE_PROCESSING_MS,
   deriveExamStatuses,
 } from '@/lib/exams/derive-exam-statuses'
-import { reconcileStaleProcessing } from '@/lib/exams/source-doc-status'
+import {
+  isLiveUploadOperationCondition,
+  reconcileStaleProcessing,
+} from '@/lib/exams/source-doc-status'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -50,6 +53,7 @@ export const GET = withReadOnlyAuth(
         tx
           .selectDistinctOn([sourceDocuments.examId], {
             examId: sourceDocuments.examId,
+            id: sourceDocuments.id,
             status: sourceDocuments.status,
             createdAt: sourceDocuments.createdAt,
           })
@@ -58,8 +62,33 @@ export const GET = withReadOnlyAuth(
           .orderBy(sourceDocuments.examId, desc(sourceDocuments.createdAt)),
       )
 
-      // 表示用 status map。deriveExamStatuses が 15 分超 processing を failed に倒す。
-      const statuses = deriveExamStatuses(rows, now)
+      // T14a fix round 2(Codex P2#1): live な upload_operations を持つ
+      // source_document は reconciler と同じ述語(isLiveUploadOperationCondition)
+      // で保護し、15 分超でも processing 表示のまま維持する(getExamStatusMap と
+      // 同型の fix — この polling endpoint は独自に同じ query を持つため個別に
+      // 適用する必要がある)。 失敗時は空集合に degrade(= legacy と同じ挙動)。
+      let liveOpSourceDocumentIds = new Set<string>()
+      try {
+        const liveRows = await withTenantTx(user.id, (tx) =>
+          tx
+            .selectDistinct({ sourceDocumentId: uploadOperations.sourceDocumentId })
+            .from(uploadOperations)
+            .where(
+              and(eq(uploadOperations.userId, user.id), isLiveUploadOperationCondition()),
+            ),
+        )
+        liveOpSourceDocumentIds = new Set(
+          liveRows
+            .map((r) => r.sourceDocumentId)
+            .filter((id): id is string => id !== null),
+        )
+      } catch (err) {
+        logger.warn({ event: 'api.exams.status.live_ops_failed', userId: user.id, err })
+      }
+
+      // 表示用 status map。deriveExamStatuses が 15 分超 processing を failed に倒す
+      // (live-op 保護がある場合を除く)。
+      const statuses = deriveExamStatuses(rows, now, liveOpSourceDocumentIds)
 
       // 15 分超の processing 残骸があれば DB cleanup を実行する。
       // D1 後 rows は exam ごと最新行のみ。 hasStale は「いずれかの exam の最新が

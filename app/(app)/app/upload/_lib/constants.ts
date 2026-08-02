@@ -56,3 +56,32 @@ export const LEASE_TTL_MS = 15 * 60 * 1000
 // 定数として持つ(HTTP-level retry の backoff とは別軸、混同しない)。
 export const RETRYABLE_BACKOFF_MS = 60 * 1000
 
+// ②-4a T14a(claim-operation.ts)の「非終端で再開可能な最大保持期間」(spec §11:
+// 「grace > operation が非終端で再開可能な最大保持期間」/ 「retryable prepared
+// 保持 最大 7 日 / 7 日超で terminal_failed・payload NULL 化」)。 measured from
+// `upload_operations.created_at`(insert 時のみ設定される不変フィールド — 他の
+// どの update も書き換えない。 claim-operation.ts / prepare-upload.ts で確認済)。
+// GC grace(現行 30 日・画像 GC v2)より確実に短くする不変条件を保つ値として 7 日を
+// 採用(30 日 > 7 日 を維持したまま運用値を変える場合は両方を見直す)。
+//
+// T14a fix round 1(Codex P1): 正本は `lib/exams/derive-exam-statuses.ts` に
+// 置く(`lib/exams/source-doc-status.ts` の `reconcileStaleProcessing` も同じ
+// 値を要求するが、eslint Block A が `lib/` からの `app/` layer import を禁止
+// するため lib 側で定義せざるを得ない)。 ここは再 export のみ — upload 側の
+// 既存 import 経路(`claim-operation.ts` 等)を変えないための互換維持。
+export { PREPARED_RETENTION_MS } from '@/lib/exams/derive-exam-statuses'
+
+// ②-4a T14a(publish-prepared.ts Step B)の crop フェーズ全体の time budget
+// (spec §11 deadline)。 新 prepare→publish 方式では OCR(stage-prepared.ts・
+// 別 invocation)と crop(publishPreparedUpload の Step B・本 invocation)が
+// 別の server action 呼出に分かれているため、 現行 `OCR_OVERALL_DEADLINE_MS`
+// (ocr.ts・720s・OCR 専用)をそのまま流用しない — この定数は crop フェーズ専用の
+// 独立予算(この呼出の開始時刻起点・per-invocation。 operation 全体を跨ぐ
+// deadline は持たない — 2026-08-02 OT 確定)。 暫定値 — cutover 後の実測で見直す。
+export const CROP_PHASE_BUDGET_MS = 600 * 1000
+
+// crop 1 件を新たに試みるために要求する最低残り予算(spec §11「crop 最低予算」・
+// soft pre-crop gate)。 暫定値 — cutover 後の実測で見直す(2026-08-02 OT 確定:
+// 時間予算の精緻化は測定前に決め打ちしない)。
+export const CROP_MIN_REMAINING_MS = 5 * 1000
+

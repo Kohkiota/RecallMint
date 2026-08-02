@@ -12,7 +12,7 @@ const FRESH_TIME = new Date(NOW.getTime() - STALE_PROCESSING_MS + 60_000)
 describe('deriveExamStatuses', () => {
   it('最新が completed の exam は Map に出ない', () => {
     const rows = [
-      { examId: 'exam-a', status: 'completed' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-a', id: 'sd-a', status: 'completed' as const, createdAt: FRESH_TIME },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.has('exam-a')).toBe(false)
@@ -20,7 +20,7 @@ describe('deriveExamStatuses', () => {
 
   it('最新が failed の exam は "failed" になる', () => {
     const rows = [
-      { examId: 'exam-b', status: 'failed' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-b', id: 'sd-b', status: 'failed' as const, createdAt: FRESH_TIME },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.get('exam-b')).toBe('failed')
@@ -28,15 +28,15 @@ describe('deriveExamStatuses', () => {
 
   it('最新が processing かつ 15 分以内の exam は "processing" になる', () => {
     const rows = [
-      { examId: 'exam-c', status: 'processing' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-c', id: 'sd-c', status: 'processing' as const, createdAt: FRESH_TIME },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.get('exam-c')).toBe('processing')
   })
 
-  it('最新が processing だが 15 分超の exam は "failed" になる (timeout fallback)', () => {
+  it('最新が processing だが 15 分超の exam は "failed" になる (timeout fallback・live-op 保護なし = legacy 挙動)', () => {
     const rows = [
-      { examId: 'exam-d', status: 'processing' as const, createdAt: STALE_TIME },
+      { examId: 'exam-d', id: 'sd-d', status: 'processing' as const, createdAt: STALE_TIME },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.get('exam-d')).toBe('failed')
@@ -47,11 +47,13 @@ describe('deriveExamStatuses', () => {
     const rows = [
       {
         examId: 'exam-e',
+        id: 'sd-e-old',
         status: 'processing' as const,
         createdAt: new Date('2026-05-20T09:00:00Z'),
       },
       {
         examId: 'exam-e',
+        id: 'sd-e-new',
         status: 'completed' as const,
         createdAt: new Date('2026-05-20T09:30:00Z'),
       },
@@ -64,11 +66,13 @@ describe('deriveExamStatuses', () => {
     const rows = [
       {
         examId: 'exam-f',
+        id: 'sd-f-old',
         status: 'completed' as const,
         createdAt: new Date('2026-05-19T08:00:00Z'),
       },
       {
         examId: 'exam-f',
+        id: 'sd-f-new',
         status: 'failed' as const,
         createdAt: new Date('2026-05-20T09:00:00Z'),
       },
@@ -81,11 +85,13 @@ describe('deriveExamStatuses', () => {
     const rows = [
       {
         examId: 'exam-g',
+        id: 'sd-g-old',
         status: 'failed' as const,
         createdAt: new Date('2026-05-19T08:00:00Z'),
       },
       {
         examId: 'exam-g',
+        id: 'sd-g-new',
         status: 'processing' as const,
         createdAt: FRESH_TIME,
       },
@@ -99,7 +105,12 @@ describe('deriveExamStatuses', () => {
     // この境界が inclusive であることをドキュメントとして確認する。
     const exactThresholdTime = new Date(NOW.getTime() - STALE_PROCESSING_MS)
     const rows = [
-      { examId: 'exam-boundary', status: 'processing' as const, createdAt: exactThresholdTime },
+      {
+        examId: 'exam-boundary',
+        id: 'sd-boundary',
+        status: 'processing' as const,
+        createdAt: exactThresholdTime,
+      },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.get('exam-boundary')).toBe('failed')
@@ -112,15 +123,74 @@ describe('deriveExamStatuses', () => {
 
   it('複数 exam が混在しても各 exam の判定は独立している', () => {
     const rows = [
-      { examId: 'exam-h', status: 'completed' as const, createdAt: FRESH_TIME },
-      { examId: 'exam-i', status: 'failed' as const, createdAt: FRESH_TIME },
-      { examId: 'exam-j', status: 'processing' as const, createdAt: FRESH_TIME },
-      { examId: 'exam-k', status: 'processing' as const, createdAt: STALE_TIME },
+      { examId: 'exam-h', id: 'sd-h', status: 'completed' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-i', id: 'sd-i', status: 'failed' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-j', id: 'sd-j', status: 'processing' as const, createdAt: FRESH_TIME },
+      { examId: 'exam-k', id: 'sd-k', status: 'processing' as const, createdAt: STALE_TIME },
     ]
     const result = deriveExamStatuses(rows, NOW)
     expect(result.has('exam-h')).toBe(false) // completed → 出ない
     expect(result.get('exam-i')).toBe('failed')
     expect(result.get('exam-j')).toBe('processing')
     expect(result.get('exam-k')).toBe('failed') // stale processing → failed
+  })
+
+  // --- T14a fix round 2(Codex P2#1): live-op 保護による表示 op-awareness ---
+  describe('liveOpSourceDocumentIds (T14a fix round 2)', () => {
+    it('processing かつ 15 分超だが liveOpSourceDocumentIds に id あり → "processing"(reconciler の window-aware 除外と一致)', () => {
+      const rows = [
+        { examId: 'exam-live', id: 'sd-live', status: 'processing' as const, createdAt: STALE_TIME },
+      ]
+      const result = deriveExamStatuses(rows, NOW, new Set(['sd-live']))
+      expect(result.get('exam-live')).toBe('processing')
+    })
+
+    it('processing かつ 15 分超・liveOpSourceDocumentIds に id が無い(legacy: upload_operations 行なし)→ 従来どおり "failed"', () => {
+      const rows = [
+        {
+          examId: 'exam-legacy',
+          id: 'sd-legacy',
+          status: 'processing' as const,
+          createdAt: STALE_TIME,
+        },
+      ]
+      // 空集合を明示的に渡す = legacy(live op が一切無い)ケースを模す。
+      const result = deriveExamStatuses(rows, NOW, new Set())
+      expect(result.get('exam-legacy')).toBe('failed')
+    })
+
+    it('liveOpSourceDocumentIds を省略(デフォルト空集合)しても legacy 呼出は今までどおり動く(後方互換)', () => {
+      const rows = [
+        {
+          examId: 'exam-default',
+          id: 'sd-default',
+          status: 'processing' as const,
+          createdAt: STALE_TIME,
+        },
+      ]
+      const result = deriveExamStatuses(rows, NOW)
+      expect(result.get('exam-default')).toBe('failed')
+    })
+
+    it('liveOpSourceDocumentIds に別 exam の id が入っていても、無関係な exam の stale processing は "failed" のまま(誤保護しない)', () => {
+      const rows = [
+        {
+          examId: 'exam-other',
+          id: 'sd-other',
+          status: 'processing' as const,
+          createdAt: STALE_TIME,
+        },
+      ]
+      const result = deriveExamStatuses(rows, NOW, new Set(['sd-unrelated']))
+      expect(result.get('exam-other')).toBe('failed')
+    })
+
+    it('live-op 保護は 15 分以内(そもそも processing 判定)には影響しない', () => {
+      const rows = [
+        { examId: 'exam-fresh', id: 'sd-fresh', status: 'processing' as const, createdAt: FRESH_TIME },
+      ]
+      const result = deriveExamStatuses(rows, NOW, new Set(['sd-fresh']))
+      expect(result.get('exam-fresh')).toBe('processing')
+    })
   })
 })

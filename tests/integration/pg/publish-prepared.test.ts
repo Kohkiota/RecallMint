@@ -7,7 +7,11 @@
 //
 // R2(getObject/putObject)と Clerk(getCurrentUser)は mock(実 R2/実 Clerk を
 // 叩かない)。 tx 系 test は publishPreparedUploadTx を直接叩く(crop/auth 不要)。
-// orchestrator 系(crop 全滅)のみ publishPreparedUpload を叩く。
+// orchestrator 系(crop 全滅等)は公開 action `publishPreparedUpload` を叩く。
+// deadline 注入が要る T14a test だけ、内部 orchestrator `runPublishPrepared`
+// (`_lib/publish-prepared-orchestrate.ts`・deadline を直接受け取れる)を叩く
+// (T14a fix round 1・Codex P2: 公開 action の引数を client-controlled deadline
+// にしない)。
 //
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
@@ -52,6 +56,11 @@ import {
   publishPreparedUpload,
   publishPreparedUploadTx,
 } from '@/app/(app)/app/upload/_actions/publish-prepared'
+// T14a fix round 1(Codex P2): 公開 action `publishPreparedUpload` は単一引数
+// (deadline は server 側でのみ計算)。 deadline 注入が要る test だけ
+// `runPublishPrepared`(directive 無し・publish-prepared-orchestrate.ts)を
+// 直接叩く。
+import { runPublishPrepared } from '@/app/(app)/app/upload/_lib/publish-prepared-orchestrate'
 
 afterAll(async () => {
   await closeDb()
@@ -514,6 +523,62 @@ describe('publishPreparedUpload (T12 orchestrator) — crop 全滅 text publish'
     expect(op.preparedPayload).toBeNull()
     const summary = op.resultSummary as { figuresExcluded: { crop_failed: number } }
     expect(summary.figuresExcluded.crop_failed).toBe(1)
+  })
+
+  it('T14a: crop フェーズの deadline 超過分は deadline_excluded として計上され、text card は publish される(§11/§13 reason g)', async () => {
+    const userId = await seedUser()
+    mockGetCurrentUser.mockResolvedValue({ id: userId })
+    const { examId, sourceDocumentId } = await seedExamAndSourceDoc(userId)
+    // source は ready(crop を試みれば成功しうる状態)。 それでも deadline が
+    // 尽きていれば crop 自体を試みない — mockGetObject/mockPutObject 呼出ゼロで
+    // 「本当に crop を skip した」ことを検証する(source race による exclude と
+    // 区別するため、あえて source を健全な状態にする)。
+    await seedReadySourceAsset(userId, sourceDocumentId, 's1', 'ready')
+
+    const card = makePreparedCard({
+      figures: [
+        { assetId: randomUUID(), sourceId: 's1', box_2d: [0, 0, 100, 100], target: 'question_text', label: null },
+      ],
+    })
+    const payload: PreparedPayloadV1 = {
+      schemaVersion: 1,
+      cards: [card],
+      cardsTotal: 1,
+      cardsExcluded: 0,
+      figuresExcluded: { coordinate_null: 0, source_id_invalid: 0, malformed: 0, asset_id_invalid: 0 },
+    }
+    const operationId = await seedPreparedOperation(userId, examId, sourceDocumentId, {
+      preparedPayload: payload as unknown as Record<string, unknown>,
+    })
+
+    // 注入した deadline は既に過去 → Step B の最初の budget チェックで即座に
+    // 枯渇判定(isCropBudgetExhausted)。
+    const pastDeadline = new Date(Date.now() - 1_000)
+    const result = await runPublishPrepared({ operationId, leaseVersion: 1 }, pastDeadline)
+    expect(result).toEqual({ outcome: 'published', cardsPublished: 1, figuresAttached: 0 })
+
+    // crop は一切試みられていない(R2 I/O ゼロ)。
+    expect(mockGetObject).not.toHaveBeenCalled()
+    expect(mockPutObject).not.toHaveBeenCalled()
+
+    const owner = getFixtureOwnerDb()
+    const cardRows = await owner.select().from(cards).where(eq(cards.id, card.cardId))
+    expect(cardRows).toHaveLength(1)
+    expect(cardRows[0]!.images).toEqual([]) // text-only(deadline 超過)
+    const refRows = await owner
+      .select()
+      .from(cardAssetRefs)
+      .where(eq(cardAssetRefs.cardId, card.cardId))
+    expect(refRows).toHaveLength(0)
+
+    const op = await readOp(operationId)
+    expect(op.status).toBe('completed')
+    expect(op.preparedPayload).toBeNull()
+    const summary = op.resultSummary as {
+      figuresExcluded: { deadline_excluded: number; crop_failed: number }
+    }
+    expect(summary.figuresExcluded.deadline_excluded).toBe(1)
+    expect(summary.figuresExcluded.crop_failed).toBe(0)
   })
 
   it('Fix #1: source_document 削除済(source_document_id=NULL)は publish せず terminal_failed(cards 0)', async () => {
