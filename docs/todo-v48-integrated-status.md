@@ -40,8 +40,13 @@
    - **auto-nav 案 a**(長時間 upload の result page 自動遷移): upload page が自 sourceDocumentId の source_document status を poll し completed で `router.push(result)`(`/api/exams/status` 基盤流用・応答喪失に堅牢)。publish await hang(resolve も throw もしない)で両遷移経路が不発 → スピナー継続の残余への対処。mis-abandon なし(成功は router.push で abandon 非経由)。
 6. **whole-branch review → sprint 完了 gate**(whole-repo lint --max-warnings=0 / test:iso green / audit prod-high0 / build0)。
 
+### ★ 新軸 follow-up(2026-08-03・source R2 非保持=著作物・T14b′ から派生・OT 指示で起票のみ)
+- **[公開前トラック] source GC の自動化(scheduler 導入)**。現状 GC は手動 script のみ(scheduler 皆無=fact-finding §2)。T14b′ の主経路(op terminal 時同期 purge)で正常系の残留はゼロ化するが、**網(取りこぼし回収)は手動のまま**ゆえ異常系残骸が回収されるまで滞留する。公開前に cron / scheduled function 化を判定。正本 = `docs/audit/2026-08-03-ocr-2-4a-source-lifecycle-factfinding.md` §2/§4-A。
+- **[②-5 入口論点] source 再利用 / dedup 前提の再考**。②-5 の「文書ライブラリ / content-hash dedup で source 再利用」は **source を保持することが前提**だが、新軸(著作物ゆえ非保持)と矛盾する。dedup の土台(server 実測 content-hash)は残るが、**source 実体を残せない以上 dedup 設計そのものを ②-5 入口で再検討**する(下記の旧 dedup 起票は新軸未反映)。
+- **[T15 scope 拡張] 退会 / exam 削除時の source_assets 処理**(fact-finding 経路 C = 行だけ cascade 消滅し R2 永久 orphan)。**T15 の担当**として、assets 同様の 'deleting' soft-delete + R2 削除へ。T14b′ では触らない(別 task)。
+
 ### 起票済み(重複させない・cross-ref のみ)
-- **②-5: source 文書 hash dedup**(同一 PDF/画像再 upload で既存 source 再利用)= §4 「cutover 完了後 follow-up」line。server 実測 content-hash 保存済=土台あり。crop 画像が upload ごとに増えるのは仕様どおり。
+- **②-5: source 文書 hash dedup**(同一 PDF/画像再 upload で既存 source 再利用)= §4 「cutover 完了後 follow-up」line。server 実測 content-hash 保存済=土台あり。crop 画像が upload ごとに増えるのは仕様どおり。**※ 新軸(source 非保持)で前提が崩れる — 上記「新軸 follow-up」の ②-5 入口論点で再検討する**。
 - **②-5: 文書ライブラリ本体**(一覧・サムネ・再処理・quota)= §5 中期 + **②-5 R2 staging aggregate budget**(§4・spec §6.5 bounded residual)。
 - **公開前 gate**: 自動 abandonment sweep(handoff §6 = 手動 sweep `scripts/gc-abandoned-operations.ts` 済・**cron 化は post-cutover ops**)/ GRANT 最小権限化の判定(DELETE・asset_derivations UPDATE の要否)= §4 PII バケット + RLS Phase 3 列単位 GRANT トラック。
 - **finalize 失敗分岐への PII-free `logger.warn`**(どの分岐 + assetId・現状 silent)= smoke 手順書 §4 follow-up 候補。

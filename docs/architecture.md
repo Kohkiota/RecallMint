@@ -73,6 +73,7 @@
 |---|---|---|---|
 | card は assetId を保存(URL 非保存)。表示時に presigned GET を resolve。R2 private + presigned PUT/GET | URL 失効・非公開 bucket | 証明: `lib/media/get-asset.test.ts` / `lib/storage/r2.test.ts` | `lib/storage/r2.ts` / `lib/media/get-asset.ts` |
 | GC v2: 状態機械 reserved→ready→deleting→deleted・card_asset_refs 正規化・状態ベース遅延 GC(mark→grace→promote→collect)。語彙 SSoT = pure domain(DB CHECK なし)| 参照ゼロ検出 + grace 猶予・reconciler は deploy 後実行 | 証明: `asset-state.test.ts` / `gc-image-assets.test.ts` | `lib/media/domain/asset-state.ts` / `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md` |
+| **source(OCR 元画像・`source_assets`)を R2 に保持しない(処理に必要な最小時間のみ・キャッシュ/再利用しない)。op terminal 時に同期 purge・GC は取りこぼしの網** | 著作物の疑い(残さない方針)。retain 方向の設計は撤回 | 決定 2026-08-03(OT)| `docs/audit/2026-08-03-ocr-2-4a-source-lifecycle-factfinding.md` / spec §6.4 |
 | dedup は据え置き(未実装)。refs は many-to-many で dedup 布石のみ | YAGNI(現状 dedup 分岐なし)| 決定(spec 明示)| 同 image-gc spec |
 | **表示側 UI 契約(モーダル/畳み/4 欄ギャラリー)と個別 UI 値の線引き** | 実装 = 表示専用で sync/DB 不変(現物確認済)。**理由 = 理由未確定(2026-07-26 時点)**: どこまでが「契約」でどこからが「個別 UI 値」かの architecture 級の宣言がなく memory/session doc に分散 | 決定(理由未確定・2026-07-26)| memory `project_image_display_ux_sprint` / session doc |
 
