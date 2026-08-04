@@ -33,8 +33,9 @@ export type AbandonUploadOperationResult =
   | { outcome: 'abandoned' }
   // 既に completed。上書きせず既存結果へ誘導する。
   | { outcome: 'completed'; sourceDocumentId: string | null }
-  // claimed / prepared だが client が正当な lease_version を保持していない
-  // (別 worker/takeover の可能性)→ clobber しない。
+  // clobber しない: claimed / prepared だが client が正当な lease_version を保持して
+  // いない(別 worker/takeover の可能性)、または 'processing'(実行中 invocation を
+  // client からは落とせない・下記分岐参照)。
   | { outcome: 'stale' }
   | { outcome: 'not_found' }
   | { outcome: 'unauthenticated' }
@@ -87,6 +88,16 @@ export async function abandonUploadOperationTx(
       'operation terminal_failed',
     )
     return { outcome: 'abandoned' }
+  }
+  // 'processing'(②-4a 単一 invocation 経路)は client からの abandon を受け付けない。
+  // この status は定義上つねに実行中の invocation が存在する状態であり、かつ新経路は
+  // leaseVersion を bump しない(0 のまま)ため claimed/prepared と同じ版一致 fencing が
+  // 原理的に成立しない — 受け付けると client が握る operationId で走行中の Gemini 実行を
+  // 落とせてしまう。実行中 op の即時キャンセルは「本 sprint では作らない follow-up」と
+  // 論点 A で確定済みの別課題ゆえ、client 契約に新 outcome を足さず既存の 'stale'
+  // (= clobber しない)に丸める。
+  if (op.status === 'processing') {
+    return { outcome: 'stale' }
   }
   // claimed / prepared は client が現在の lease_version を保持している時だけ終端化する
   // (別 worker/takeover が進めている operation を clobber しない fencing)。lease の

@@ -60,7 +60,13 @@ async function seedUploadOperation(
   userId: string,
   examId: string,
   sourceDocumentId: string,
-  status: 'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed',
+  status:
+    | 'awaiting_sources'
+    | 'claimed'
+    | 'prepared'
+    | 'processing'
+    | 'completed'
+    | 'terminal_failed',
   overrides: Partial<{ createdAt: Date; leaseExpiresAt: Date | null }> = {},
 ): Promise<string> {
   const owner = getFixtureOwnerDb()
@@ -109,7 +115,10 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
     expect(await countUploadRecords(userId)).toBe(1)
   })
 
-  it.each(['awaiting_sources', 'claimed', 'prepared'] as const)(
+  // 'processing' = ②-4a 単一 invocation 経路(submit-upload.ts)の実行中状態。
+  // reconciler の live 判定に含まれないと、sync phase 直後の source_document が
+  // 15 分後に failed へ落ち、実行中の invocation の成果が巻き添えになる。
+  it.each(['awaiting_sources', 'claimed', 'prepared', 'processing'] as const)(
     'a stale processing source_document WITH a live upload_operations row (status=%s) is NOT marked failed',
     async (liveStatus) => {
       const userId = await seedUser()

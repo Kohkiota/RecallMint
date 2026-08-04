@@ -963,9 +963,18 @@ export const uploadOperations = pgTable(
     sourceDocumentId: uuid('source_document_id').references(() => sourceDocuments.id, {
       onDelete: 'set null',
     }),
+    // 'processing' = ②-4a 単一 invocation 経路(spec 2026-08-04 §4.5)が sync phase で
+    // 作る「実行中」状態。'claimed'(掴んだ)の流用はしない — 中断した op を後から
+    // 読むときに新旧経路を区別できなくなるため。status は text + TS union(DB CHECK
+    // なし)ゆえ値追加に migration は要らない。
     status: text('status')
       .$type<
-        'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed'
+        | 'awaiting_sources'
+        | 'claimed'
+        | 'prepared'
+        | 'processing'
+        | 'completed'
+        | 'terminal_failed'
       >()
       .notNull()
       .default('awaiting_sources'),

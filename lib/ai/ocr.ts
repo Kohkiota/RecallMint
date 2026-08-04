@@ -60,6 +60,13 @@ const responseSchema = z.object({
 // Vercel Pro function maxDuration は 800s。 pipeline 全体を 720s で自前停止し、
 // 残り ~80s を caller 後処理 (cards INSERT + markFailed + notifyOps 等) のバッファとして確保する。
 // ※ 800 - 720 = 80s が後処理余裕; Vercel ハード上限 900s より手前で自前停止する設計。
+// ②-4a 単一 invocation(2026-08-04): route の maxDuration が 720s になり、この内部
+// deadline は同値 = 名目化した(platform kill が先に来るため後処理余裕は残らない)。
+// 読み手は headroom の存在を前提にしないこと。S-2 の統合予算(単一 deadlineAt)で置換予定。
+// 名目化が実害にならない理由(Codex P1 裁定・2026-08-04): この定数を使うのは
+// runOcrPipeline ただ 1 つで、その唯一の呼出元 process.ts は cutover で UI 呼出を
+// 撤去済み = 現在到達不能。稼働中の stage-prepared 経路は callImageCropWithRetry を
+// 使い overall deadline を元々持たない(= 失われた graceful cleanup は無い)。
 export const OCR_OVERALL_DEADLINE_MS = 720_000
 
 // 全体 deadline 超過を通常の pipeline error と instanceof で識別するための専用 class。

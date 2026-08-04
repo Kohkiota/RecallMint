@@ -12,8 +12,14 @@ import { UploadForm } from './_components/upload-form'
 
 // Server Actions の実行時間上限 (秒)。 maxDuration は呼び出し page の route
 // segment config に従うため、process.ts ('use server') ではなくここに宣言する。
-// Vercel Pro Function timeout (900s) 内で OCR pipeline deadline (720s) をカバーする。
-export const maxDuration = 800
+// Vercel Pro Function timeout (900s) の内側で、かつ lease TTL (15 分) に対して
+// 3 分の余裕を残す値として 720 を採る (②-4a 単一 invocation・OT 決定): 単一
+// invocation が maxDuration いっぱい走っても lease が先に失効しないことが
+// live-op gate の不変条件。値は Dashboard の Function Max Duration (既定値) を
+// route segment config が上書きするため、この literal が実効値になる。
+// literal 固定の理由 = route segment config は静的解析される (import 定数不可)。
+// drift 検出 = _actions/submit-upload.test.ts の maxDuration pin (行の消失も fail)。
+export const maxDuration = 720
 
 // Server Component: 認証確認 → in-flight 判定 → 分岐描画。
 //

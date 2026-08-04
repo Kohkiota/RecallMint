@@ -274,7 +274,15 @@ export async function prepareUploadTx(
       and(
         eq(uploadOperations.userId, user.id),
         ne(uploadOperations.idempotencyKey, input.idempotencyKey),
-        inArray(uploadOperations.status, ['awaiting_sources', 'claimed', 'prepared']),
+        // 'processing' = ②-4a 単一 invocation 経路(submit-upload.ts)の実行中状態。
+        // 旧経路のこの gate も新経路の live op を見なければ、併存期間に二重 submit
+        // 防止が片側から抜ける(spec 2026-08-04 §4.5)。
+        inArray(uploadOperations.status, [
+          'awaiting_sources',
+          'claimed',
+          'prepared',
+          'processing',
+        ]),
       ),
     )
     .for('update')

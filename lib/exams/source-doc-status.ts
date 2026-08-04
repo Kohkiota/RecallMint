@@ -82,7 +82,14 @@ import {
 // suites unchanged) and fixes the 4th (the sweep).
 export function isLiveUploadOperationCondition(): SQL {
   return and(
-    inArray(uploadOperations.status, ['awaiting_sources', 'claimed', 'prepared']),
+    // 'processing' = ②-4a 単一 invocation 経路の実行中状態(spec 2026-08-04 §4.5)。
+    // 旧経路の 3 値と併存する(S-5 の旧経路撤去まで)。
+    inArray(uploadOperations.status, [
+      'awaiting_sources',
+      'claimed',
+      'prepared',
+      'processing',
+    ]),
     or(
       sql`${uploadOperations.createdAt} > now() - make_interval(secs => ${PREPARED_RETENTION_MS / 1000})`,
       and(isNotNull(uploadOperations.leaseExpiresAt), sql`${uploadOperations.leaseExpiresAt} > now()`),

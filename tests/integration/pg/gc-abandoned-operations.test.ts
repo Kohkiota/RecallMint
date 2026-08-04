@@ -63,7 +63,13 @@ async function seedOp(
   userId: string,
   examId: string,
   overrides: Partial<{
-    status: 'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed'
+    status:
+      | 'awaiting_sources'
+      | 'claimed'
+      | 'prepared'
+      | 'processing'
+      | 'completed'
+      | 'terminal_failed'
     createdAt: Date
     leaseExpiresAt: Date | null
   }> = {},
@@ -131,6 +137,28 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
       status: 'claimed',
       createdAt: PAST_RETENTION,
       leaseExpiresAt: new Date(Date.now() - 60_000), // expired, but not null
+    })
+
+    const db = getFixtureOwnerDb()
+    const summary = await runAbandonedOperationsSweep(
+      { dryRun: false, userId },
+      buildProductionDeps(db, userId),
+    )
+
+    expect(summary).toEqual({ scanned: 1, terminated: 1, ids: [operationId] })
+    expect((await readOp(operationId)).status).toBe('terminal_failed')
+  })
+
+  // 'processing' = ②-4a 単一 invocation 経路(submit-upload.ts)の実行中状態。
+  // sweep の非終端集合に含まれないと、死んだ invocation が残した op が永久に
+  // 掃かれず prepared_payload(PII)も NULL 化されない。
+  it('an abandoned PROCESSING op (new single-invocation path) past retention is swept', async () => {
+    const userId = await seedUser()
+    const examId = await seedExam(userId)
+    const operationId = await seedOp(userId, examId, {
+      status: 'processing',
+      createdAt: PAST_RETENTION,
+      leaseExpiresAt: new Date(Date.now() - 60_000), // 失効済
     })
 
     const db = getFixtureOwnerDb()

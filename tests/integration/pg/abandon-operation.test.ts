@@ -49,7 +49,13 @@ afterAll(async () => {
   await closeFixtureOwnerDb()
 })
 
-type OpStatus = 'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed'
+type OpStatus =
+  | 'awaiting_sources'
+  | 'claimed'
+  | 'prepared'
+  | 'processing'
+  | 'completed'
+  | 'terminal_failed'
 
 type SeedOverrides = Partial<{
   status: OpStatus
@@ -250,6 +256,28 @@ describe('abandonUploadOperationTx (案 D)', () => {
 
     expect(res.outcome).toBe('stale')
     expect((await readOp(operationId)).status).toBe('claimed')
+  })
+
+  // ②-4a 単一 invocation 経路の 'processing' は client からの abandon を受け付けない
+  // (実行中 invocation を client が落とせてしまう + 新経路は leaseVersion を bump
+  // しないため版一致 fencing が原理的に成立しない)。即時キャンセルは論点 A の
+  // follow-up。leaseVersion を「正しく」渡しても通らないことまで pin する。
+  it('processing → stale; operation/doc は不変(実行中 invocation を clobber しない)', async () => {
+    const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+      status: 'processing',
+      leaseVersion: 0,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    })
+
+    const res = await asTenant(userAId, (tx) =>
+      abandonUploadOperationTx(tx, { id: userAId }, { operationId, leaseVersion: 0 }),
+    )
+
+    expect(res.outcome).toBe('stale')
+    const op = await readOp(operationId)
+    expect(op.status).toBe('processing')
+    expect(op.leaseExpiresAt).not.toBeNull()
+    expect((await readDoc(sourceDocumentId)).status).toBe('processing')
   })
 
   it('completed → completed(上書きしない); sourceDocumentId を返す', async () => {

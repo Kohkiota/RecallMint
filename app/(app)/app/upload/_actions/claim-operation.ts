@@ -270,10 +270,13 @@ export async function claimOperationTx(
   }
 
   const nextRetryDue = op.nextRetryAt === null || op.nextRetryAt.getTime() <= dbNow.getTime()
-  // ここに到達した時点で op.status は 'awaiting_sources' か 'claimed'(かつ上の
-  // if で leaseValid=false は確定済み)のいずれか。claim 候補 = awaiting_sources、
-  // または claimed かつ lease 期限切れ かつ next_retry_at 到達済み(retryable
-  // failure の backoff 待ちでない)。
+  // ここに到達した時点で op.status は 'awaiting_sources' / 'claimed'(かつ上の if で
+  // leaseValid=false は確定済み)/ 'processing' のいずれか。claim 候補 =
+  // awaiting_sources、または claimed かつ lease 期限切れ かつ next_retry_at 到達済み
+  // (retryable failure の backoff 待ちでない)。
+  // 'processing'(②-4a 単一 invocation 経路)はここを素通りしうるが、下段 CAS の
+  // WHERE が awaiting_sources / claimed しか受けないため 0 行 → not_found に落ちる
+  // (旧経路の claim 対象ではないので、これが正しい振る舞い)。
   const isClaimCandidate = op.status === 'awaiting_sources' || nextRetryDue
   if (!isClaimCandidate) {
     // status='claimed' だが lease 期限切れ かつ next_retry_at 未到来(backoff 待
@@ -421,10 +424,11 @@ export async function claimOperationTx(
     return { outcome: 'claimed', leaseVersion: claimed[0].leaseVersion }
   }
 
-  // 0 行は理論上到達しない(手順1の SELECT…FOR UPDATE でこの行のロックを tx の
-  // 間ずっと保持しているため、他 tx がこの行の status/lease を書き換えることは
-  // できない)。防御的 fallback として not_found を返す(claim できなかったと
-  // 保守的に扱う — 誤って claimed を返すよりも安全)。
+  // 0 行になるのは status='processing'(②-4a 単一 invocation 経路の op — 上の CAS の
+  // WHERE が受けない)を渡された場合のみ。それ以外では理論上到達しない(手順1の
+  // SELECT…FOR UPDATE でこの行のロックを tx の間ずっと保持しているため、他 tx が
+  // この行の status/lease を書き換えることはできない)。いずれも not_found を返す
+  // (claim できなかったと保守的に扱う — 誤って claimed を返すよりも安全)。
   return { outcome: 'not_found' }
 }
 

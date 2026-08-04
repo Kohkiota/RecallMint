@@ -517,7 +517,10 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
     // ②-4a-cutover 案 D(2026-08-02・OT 確定): 別 key + valid lease の claimed/prepared
     // (= 実行中の worker が存在)だけが in_progress でブロックする(最大 LEASE_TTL_MS の
     // 保護)。それ以外の非終端 op は supersede される(下記)。
-    it.each(['claimed', 'prepared'] as const)(
+    // 'processing' = ②-4a 単一 invocation 経路(submit-upload.ts)の実行中状態。
+    // 旧経路のこの gate が新経路の live op を見なければ、併存期間に旧経路からの
+    // submit が実行中の invocation を supersede してしまう。
+    it.each(['claimed', 'prepared', 'processing'] as const)(
       'a %s operation with a valid lease blocks a different-key call (in_progress)',
       async (status) => {
         const owner = getFixtureOwnerDb()
@@ -777,7 +780,7 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
     // 案 D: lease が NULL / 期限切れの claimed/prepared(= 実行中 worker 不在)は
     // supersede する(terminalize + doc failed)。stage/publish 失敗で lease を解放した
     // まま放置された op が次回 submit で掃除される中核パス。
-    it.each(['claimed', 'prepared'] as const)(
+    it.each(['claimed', 'prepared', 'processing'] as const)(
       'supersedes a different-key %s operation whose lease is expired (terminalize + doc failed)',
       async (status) => {
         const owner = getFixtureOwnerDb()

@@ -53,7 +53,13 @@ type SweepDb = Pick<ReturnType<typeof getAdminDb>, 'select' | 'update'>
 
 // abandoned sweep が対象とする終端未到達 status(claim-operation.ts / spec §2
 // の非終端集合と同一)。
-const NON_TERMINAL_STATUSES = ['awaiting_sources', 'claimed', 'prepared'] as const
+// 'processing' = ②-4a 単一 invocation 経路の実行中状態(spec 2026-08-04 §4.5)。
+const NON_TERMINAL_STATUSES = [
+  'awaiting_sources',
+  'claimed',
+  'prepared',
+  'processing',
+] as const
 
 export type AbandonedOpCandidate = {
   id: string
