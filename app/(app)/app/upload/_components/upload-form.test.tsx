@@ -352,6 +352,7 @@ describe('hideRetryHint: 新 flow の outcome から retry hint 表示/非表示
       examName: 'Exam',
       sourceDocumentId: 'doc-123',
       reserved: [],
+      supersededSourceDocumentIds: [],
     })
     vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
     vi.mocked(stagePrepared).mockResolvedValueOnce({
@@ -496,6 +497,7 @@ describe('requestOcrPoll: submit 時に layout poller へ kick', () => {
       examName: 'Exam',
       sourceDocumentId: 'doc-123',
       reserved: [],
+      supersededSourceDocumentIds: [],
     })
     vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
     vi.mocked(stagePrepared).mockResolvedValueOnce({
@@ -574,6 +576,7 @@ describe('reserve→PUT→finalize ループ(非空 reserved)', () => {
       examName: 'Exam',
       sourceDocumentId: 'doc-123',
       reserved: [{ sourceId: SRC_ID, assetId: 'asset-1', objectKey: 'users/u/src/tmp/asset-1' }],
+      supersededSourceDocumentIds: [],
     })
     vi.mocked(reserveSource).mockResolvedValueOnce({
       ok: true,
@@ -635,6 +638,7 @@ describe('案 D: operation 作成後の失敗で abandon を await', () => {
       examName: 'Exam',
       sourceDocumentId: 'doc-123',
       reserved: [],
+      supersededSourceDocumentIds: [],
     })
     vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 7 })
     vi.mocked(stagePrepared).mockResolvedValueOnce({
@@ -681,6 +685,7 @@ describe('案 D: operation 作成後の失敗で abandon を await', () => {
       examName: 'Exam',
       sourceDocumentId: 'doc-123',
       reserved: [],
+      supersededSourceDocumentIds: [],
     })
     vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
     vi.mocked(stagePrepared).mockResolvedValueOnce({

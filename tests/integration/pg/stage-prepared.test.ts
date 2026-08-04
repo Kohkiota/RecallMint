@@ -22,18 +22,22 @@ import { preparedPayloadSchema } from '@/lib/ocr/prepared-schema'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
 
-const { mockGetCurrentUser, mockGetObject, mockCallGemini } = vi.hoisted(() => ({
+const { mockGetCurrentUser, mockGetObject, mockCallGemini, mockDeleteObject } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockGetObject: vi.fn(),
   mockCallGemini: vi.fn(),
+  mockDeleteObject: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
 }))
 
+// deleteObject: ②-4a Task 14b′ の purgeOperationSourcesForOp(stagePrepared が
+// terminal_failed 観測後に呼ぶ)向け。
 vi.mock('@/lib/storage/r2', () => ({
   getObject: mockGetObject,
+  deleteObject: mockDeleteObject,
 }))
 
 // parseRetryAfterMs は実実装のまま使う(プレーン Error には反応せず null を返す
@@ -161,6 +165,8 @@ describe('stagePrepared (T8b)', () => {
     mockGetCurrentUser.mockReset()
     mockGetObject.mockReset()
     mockCallGemini.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
 
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
@@ -256,7 +262,7 @@ describe('stagePrepared (T8b)', () => {
         expectedSourceCount: 2,
       })
       const assetId1 = await seedReadySourceAsset(userAId, sourceDocumentId, 's1')
-      await seedReadySourceAsset(userAId, sourceDocumentId, 's2')
+      const assetId2 = await seedReadySourceAsset(userAId, sourceDocumentId, 's2')
       // claim 後の GC/GDPR race を模す: s1 の行が消える(claim は 2 件とも
       // ready を確認済みだったはず — stage 時点で 1 件しか残っていない)。
       await getFixtureOwnerDb().delete(sourceAssets).where(eq(sourceAssets.id, assetId1))
@@ -275,6 +281,15 @@ describe('stagePrepared (T8b)', () => {
       expect(row?.preparedPayload).toBeNull()
       expect(mockCallGemini).not.toHaveBeenCalled()
       expect(mockGetObject).not.toHaveBeenCalled()
+
+      // ②-4a Task 14b′ 主経路 completeness(loadFencedSourceManifest 経由の
+      // terminal): この op に残っていた s2(ready)も purge される。
+      expect(mockDeleteObject).toHaveBeenCalledWith(`users/${userAId}/src/${assetId2}.png`)
+      const remaining = await getFixtureOwnerDb()
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, assetId2))
+      expect(remaining).toHaveLength(0)
     })
 
     it('a source row transitions to deleting after claim (all rows present, one non-ready) → terminal_failed, no Gemini call, no payload', async () => {
@@ -380,6 +395,40 @@ describe('stagePrepared (T8b)', () => {
       // test の核心は「呼ばれた後でも payload を commit しない」こと。
       expect(mockGetObject).toHaveBeenCalledTimes(1)
       expect(mockCallGemini).toHaveBeenCalledTimes(1)
+    })
+
+    // ②-4a Task 14b′ 主経路 completeness(stageSaveCas 経由の terminal): 手順1
+    // (fast-fail 読取)は 2 件とも ready で通過させ、Gemini call のタイミングで
+    // 1 件(s1)だけ削除する(s2 は残す)。stageSaveCas の atomic re-check が
+    // 行数不一致(1 < 2)を検出して terminal 化する経路であり、上のテストとは
+    // 異なり残存 source(s2)が存在する — その s2 が purge されることを確認する。
+    it('stageSaveCas の atomic re-check が terminal 化した後、残存 source も purge される', async () => {
+      const { operationId, sourceDocumentId } = await seedOperation(userAId, {
+        leaseVersion: 1,
+        expectedSourceCount: 2,
+      })
+      const assetId1 = await seedReadySourceAsset(userAId, sourceDocumentId, 's1')
+      const assetId2 = await seedReadySourceAsset(userAId, sourceDocumentId, 's2')
+      mockCallGemini.mockImplementationOnce(async () => {
+        await getFixtureOwnerDb().delete(sourceAssets).where(eq(sourceAssets.id, assetId1))
+        return {
+          text: validGeminiResponseText('s1'),
+          inputTokens: 100,
+          outputTokens: 50,
+          thoughtsTokens: 0,
+        }
+      })
+
+      const result = await stagePrepared({ operationId, leaseVersion: 1 })
+      expect(result).toEqual({ outcome: 'terminal_failed', reason: 'source_manifest_incomplete' })
+      expect((await readOperationRow(operationId))?.status).toBe('terminal_failed')
+
+      expect(mockDeleteObject).toHaveBeenCalledWith(`users/${userAId}/src/${assetId2}.png`)
+      const remaining = await getFixtureOwnerDb()
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, assetId2))
+      expect(remaining).toHaveLength(0)
     })
 
     // --- [Important fix #2] source_id-ordered OCR request, independent of DB insertion order ---

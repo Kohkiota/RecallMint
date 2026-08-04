@@ -48,6 +48,7 @@ import {
 } from '@/lib/db/schema'
 import { todayInJst } from '@/lib/jst'
 import {
+  claimOperation,
   claimOperationTx,
   type ClaimOperationResult,
 } from '@/app/(app)/app/upload/_actions/claim-operation'
@@ -57,8 +58,9 @@ import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 import { asTenant } from './setup/as-tenant'
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
 
-const { mockGetCurrentUser } = vi.hoisted(() => ({
+const { mockGetCurrentUser, mockDeleteObject } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
+  mockDeleteObject: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({
@@ -68,9 +70,12 @@ vi.mock('@/lib/auth/ensure-user', () => ({
 // @/lib/storage/r2 を評価すると env fail-fast で throw しうる(publish-prepared.test.ts
 // と同じ理由)。 本 file の統合 test は figures:[] の text-only card しか publish
 // しないため getObject/putObject は呼ばれないが、import 自体を安全にするため mock する。
+// deleteObject: ②-4a Task 14b′ の purgeOperationSourcesForOp(claimOperation
+// wrapper が terminal_failed 観測後に呼ぶ)向け。
 vi.mock('@/lib/storage/r2', () => ({
   getObject: vi.fn(),
   putObject: vi.fn(),
+  deleteObject: mockDeleteObject,
 }))
 
 // vi.mock は import より前に hoist される。
@@ -219,6 +224,8 @@ describe('claimOperationTx (T6)', () => {
   beforeEach(async () => {
     await truncateAllUserTables()
     mockGetCurrentUser.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
     userBId = randomUUID()
@@ -1031,5 +1038,52 @@ describe('claimOperationTx (T6)', () => {
       expect(row?.status).toBe('awaiting_sources')
       expect(row?.leaseVersion).toBe(0)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ②-4a Task 14b′ 主経路 completeness: claimOperation(Clerk 経由の公開 wrapper)が
+// terminal_failed 観測後に purgeOperationSourcesForOp を呼ぶことを実 PG 上で pin
+// する。claimOperationTx の 6 terminal_failed 分岐(retention_exceeded/
+// source_document_missing/source_count_mismatch/source_deleting/
+// source_byte_size_missing/size_exceeded)は同一 call-site
+// (persistTerminalFailure)を経由するため、代表として size_exceeded(既存
+// describe で使う seed が単純)で wiring を確認する — 他 5 分岐は file:line 根拠
+// (claim-operation.ts の各 persistTerminalFailure 呼出が同一構造)で
+// completeness を担保する(report 参照)。
+// ---------------------------------------------------------------------------
+describe('claimOperation(wrapper)主経路 purge(②-4a Task 14b′)', () => {
+  let userId: string
+
+  beforeEach(async () => {
+    await truncateAllUserTables()
+    mockGetCurrentUser.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
+    const owner = getFixtureOwnerDb()
+    userId = randomUUID()
+    await owner.insert(users).values({ id: userId, clerkId: `clerk_${userId}` })
+    mockGetCurrentUser.mockResolvedValue({ id: userId })
+  })
+
+  it('terminal_failed(size_exceeded): op の source_assets が purge される(main-path)', async () => {
+    const { operationId, sourceDocumentId } = await seedOperation(userId, {
+      expectedSourceCount: 2,
+    })
+    const half = Math.floor(TOTAL_UPLOAD_LIMIT_BYTES / 2) + 1000
+    const s1 = await seedReadySourceAsset(userId, sourceDocumentId, 's1', half)
+    const s2 = await seedReadySourceAsset(userId, sourceDocumentId, 's2', half)
+
+    const result = await claimOperation(operationId)
+    expect(result.outcome).toBe('terminal_failed')
+
+    const owner = getFixtureOwnerDb()
+    const remaining = await owner
+      .select({ id: sourceAssets.id })
+      .from(sourceAssets)
+      .where(eq(sourceAssets.sourceDocumentId, sourceDocumentId))
+    expect(remaining).toHaveLength(0)
+    expect(mockDeleteObject).toHaveBeenCalledWith(`users/${userId}/src/${s1}.png`)
+    expect(mockDeleteObject).toHaveBeenCalledWith(`users/${userId}/src/${s2}.png`)
   })
 })

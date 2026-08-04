@@ -16,11 +16,30 @@
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeDb } from '@/lib/db'
-import { exams, sourceDocuments, uploadOperations, users } from '@/lib/db/schema'
-import { abandonUploadOperationTx } from '@/app/(app)/app/upload/_actions/abandon-operation'
+import { exams, sourceAssets, sourceDocuments, uploadOperations, users } from '@/lib/db/schema'
+
+const { mockGetCurrentUser, mockDeleteObject } = vi.hoisted(() => ({
+  mockGetCurrentUser: vi.fn(),
+  mockDeleteObject: vi.fn(),
+}))
+
+vi.mock('@/lib/auth/ensure-user', () => ({
+  getCurrentUser: mockGetCurrentUser,
+}))
+// deleteObject: ②-4a Task 14b′ の purgeOperationSourcesForOp/purgeOperationSources
+// (abandonUploadOperation wrapper が 'abandoned'/'completed' 観測後に呼ぶ)向け。
+vi.mock('@/lib/storage/r2', () => ({
+  deleteObject: mockDeleteObject,
+}))
+
+// vi.mock は import より前に hoist される。
+import {
+  abandonUploadOperation,
+  abandonUploadOperationTx,
+} from '@/app/(app)/app/upload/_actions/abandon-operation'
 
 import { asTenant } from './setup/as-tenant'
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
@@ -104,12 +123,40 @@ async function readDoc(sourceDocumentId: string) {
   return rows[0]
 }
 
+async function seedSourceAsset(
+  userId: string,
+  sourceDocumentId: string,
+  status: 'reserved' | 'ready' = 'ready',
+): Promise<{ id: string; objectKey: string }> {
+  const owner = getFixtureOwnerDb()
+  const id = randomUUID()
+  const objectKey =
+    status === 'reserved'
+      ? `users/${userId}/src/tmp/${id}`
+      : `users/${userId}/src/${id}.png`
+  await owner.insert(sourceAssets).values({
+    id,
+    userId,
+    sourceDocumentId,
+    sourceId: `s-${id}`,
+    objectKey,
+    status,
+    mime: status === 'ready' ? 'image/png' : null,
+    byteSize: status === 'ready' ? 100 : null,
+    originalFilename: 'a.png',
+  })
+  return { id, objectKey }
+}
+
 describe('abandonUploadOperationTx (案 D)', () => {
   let userAId: string
   let userBId: string
 
   beforeEach(async () => {
     await truncateAllUserTables()
+    mockGetCurrentUser.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
     userBId = randomUUID()
@@ -269,5 +316,40 @@ describe('abandonUploadOperationTx (案 D)', () => {
     // user A の operation/doc は無傷。
     expect((await readOp(operationId)).status).toBe('awaiting_sources')
     expect((await readDoc(sourceDocumentId)).status).toBe('processing')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ②-4a Task 14b′ 主経路 completeness: abandonUploadOperation(Clerk 経由の公開
+// wrapper)が terminal 遷移(fresh 'abandoned' / 冪等 'completed')の後に
+// purgeOperationSources(ForOp)を呼ぶことを実 PG 上で pin する。
+// ---------------------------------------------------------------------------
+describe('abandonUploadOperation(wrapper)主経路 purge(②-4a Task 14b′)', () => {
+  let userId: string
+
+  beforeEach(async () => {
+    await truncateAllUserTables()
+    mockGetCurrentUser.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
+    const owner = getFixtureOwnerDb()
+    userId = randomUUID()
+    await owner.insert(users).values({ id: userId, clerkId: `clerk_${userId}` })
+    mockGetCurrentUser.mockResolvedValue({ id: userId })
+  })
+
+  it('awaiting_sources → abandoned(fresh 遷移): reserved source_asset が purge される', async () => {
+    const { operationId, sourceDocumentId } = await seedOperation(userId, {
+      status: 'awaiting_sources',
+    })
+    const { id, objectKey } = await seedSourceAsset(userId, sourceDocumentId, 'reserved')
+
+    const res = await abandonUploadOperation({ operationId })
+    expect(res.outcome).toBe('abandoned')
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(objectKey)
+    const owner = getFixtureOwnerDb()
+    const rows = await owner.select().from(sourceAssets).where(eq(sourceAssets.id, id))
+    expect(rows).toHaveLength(0)
   })
 })

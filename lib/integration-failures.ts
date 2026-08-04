@@ -75,6 +75,17 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'asset_gc',
     failureCode: 'external_api_error',
   },
+  // ②-4a T14b: source_assets GC sweep(scripts/gc-image-assets.ts の source lane)の
+  // R2 物理削除失敗。r2_gc_delete(assets lane)とは別 workflow に分ける(異なる GC
+  // 対象・異なる残骸クラスを台帳上で区別可能にするため)。decouple 契約は同一
+  // (R2 失敗は行を deleting のまま存置 + 台帳記録のみ)。
+  // context = { sourceAssetId, objectKey }。
+  r2_gc_delete_source: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'source_asset_gc',
+    failureCode: 'external_api_error',
+  },
   // RLS-P3 Task 7: tenant context 未設定で app_current_user_id() が P0RLS を RAISE
   // した = withTenantTx を経由せずに tenant 表を叩いた bug の loud alert。Task 2-4 の
   // 封じ込め後は near-impossible な defense-in-depth 警報 (現状 Vercel Logs 頼み →

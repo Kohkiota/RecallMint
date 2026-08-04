@@ -14,6 +14,7 @@ import {
   LEASE_TTL_MS,
   PREPARED_RETENTION_MS,
 } from '../_lib/constants'
+import { purgeOperationSourcesForOp } from '@/lib/media/source-purge'
 
 // ②-4a Phase B Task 6(2026-07-31 T6 fencing checkpoint 裁定・OT 確定): claim +
 // lease CAS(+ 日次 cap 判定・単一 tx)。spec §2(状態機械 + lease/fencing・冪等
@@ -441,9 +442,23 @@ async function currentUserOrNull(): Promise<User | null> {
 
 // Server Action entry point。 Clerk 認証 + tenant tx を張って claimOperationTx を
 // 呼ぶだけの薄い wrapper(prepareUpload と同型)。
+//
+// ②-4a Task 14b′(主経路・post-commit): claimOperationTx の 6 terminal_failed
+// 分岐(retention_exceeded/source_document_missing/source_count_mismatch/
+// source_deleting/source_byte_size_missing/size_exceeded)は同一 ambient tx 内で
+// 直接 UPDATE する(fenced tx 自体は変更しない・行ロック保持中ゆえ CAS 不要)ため、
+// purge は tx 外(ここ)でしか呼べない。claimOperationTx は fresh 遷移と冪等
+// replay(既に completed/terminal_failed だった行を観測しただけ)を型で区別しない
+// ため、ここでは outcome が 'completed'/'terminal_failed' なら常に
+// purgeOperationSourcesForOp を呼ぶ(冪等・source-purge.ts のコメント参照 —
+// 主経路の取りこぼしに対する defense-in-depth にもなる)。
 export async function claimOperation(operationId: string): Promise<ClaimOperationResult> {
   const user = await currentUserOrNull()
   if (!user) return { outcome: 'unauthenticated' }
 
-  return withTenantTx(user.id, (tx) => claimOperationTx(tx, user, operationId))
+  const result = await withTenantTx(user.id, (tx) => claimOperationTx(tx, user, operationId))
+  if (result.outcome === 'completed' || result.outcome === 'terminal_failed') {
+    await purgeOperationSourcesForOp(user.id, operationId)
+  }
+  return result
 }

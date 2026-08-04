@@ -20,6 +20,7 @@ import { TOTAL_UPLOAD_LIMIT_BYTES } from '../_lib/constants'
 import { type Destination } from './upload-guard'
 import { MAX_ASSET_BYTES, MAX_IMAGE_DIMENSION } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
 import { terminalizeAbandonedOperation } from '../_lib/terminalize-abandoned-operation'
+import { purgeOperationSources } from '@/lib/media/source-purge'
 
 // ②-4a Phase B Task 4 (2026-07-31 改訂): prepareUpload — client 事前 PUT の循環依存を
 // 解消するエントリーポイント(spec §1 flow / §3)。client はまだファイルの実バイトを
@@ -120,6 +121,15 @@ export type PrepareUploadResult =
       examName: string
       sourceDocumentId: string
       reserved: ReservedSource[]
+      // ②-4a Task 14b′(主経路・supersede): この呼出が terminalize した(供給元は
+      // 別 idempotencyKey の非 live 非終端 op)op の sourceDocumentId 一覧。
+      // idempotent 再送(既存 operation 返却)経路は supersede しないため常に
+      // 空配列。 fix(Codex Important・2026-08-03): success 以外の outcome
+      // (in_progress/invalid_input/size_exceeded/exam_not_found)でも supersede は
+      // 既に commit 済でありうるため、wrapper は本 field ではなく
+      // prepareUploadTx の第4引数(out-param)経由で outcome に関わらず全件を
+      // 読み取って purge する — この field は 'success' 到達時の参考値として残す。
+      supersededSourceDocumentIds: string[]
     }
   | { outcome: 'exam_not_found'; archived: boolean }
   | { outcome: 'in_progress' }
@@ -157,10 +167,19 @@ async function selectReservedSources(
 // tx 本体。 user (Pick<User,'id'>) と tx を呼出側から受け取るだけで、Clerk 認証や
 // withTenantTx を自前で張らない (upload-guard.ts の runUploadGuardTx と同型 — iso
 // test が Clerk なしで直接 exercise できるようにする設計)。
+//
+// ②-4a Task 14b′ fix(Codex Important・review 2026-08-03): 第4引数
+// `supersededSourceDocumentIdsOut` は wrapper(prepareUpload)が purge するための
+// out-param。 supersede した op はこの tx 内で commit 済 — その後どの outcome で
+// return しても(success 以外の in_progress/invalid_input/size_exceeded/
+// exam_not_found を含め)呼出元がこの配列を読める必要がある(fenced tx の書込
+// 自体は不変・この引数は観測用の追加でしかない)。 呼出元が渡さない場合(既存の
+// 直接呼出 iso test 群)は既定で毎回新しい空配列を使う(呼出間で共有されない)。
 export async function prepareUploadTx(
   tx: TenantTx,
   user: Pick<User, 'id'>,
   input: PrepareUploadInput,
+  supersededSourceDocumentIdsOut: string[] = [],
 ): Promise<PrepareUploadResult> {
   // 0. idempotencyKey は idempotency lookup の検索 key そのものなので、lock を
   // 取る前・DB を触る前に形だけ検証する(review fix #2 手順 a)。sources/destination
@@ -225,6 +244,9 @@ export async function prepareUploadTx(
       // (schema の nullable は将来の別経路のための予約)。
       sourceDocumentId: op.sourceDocumentId ?? '',
       reserved: reservedRows,
+      // idempotent 再送は supersede を実行しない経路(この if ブロックで即 return)
+      // ため常に空配列。
+      supersededSourceDocumentIds: [],
     }
   }
 
@@ -276,6 +298,12 @@ export async function prepareUploadTx(
         { operationId: c.id, sourceDocumentId: c.sourceDocumentId },
         'superseded',
       )
+      // ②-4a Task 14b′ fix: out-param に集めておく(T4 の生成経路では常に
+      // non-null だが、防御的に null を除外する)。この後どの outcome で
+      // return しても(success 以外を含め)wrapper がこの配列を読める。
+      if (c.sourceDocumentId !== null) {
+        supersededSourceDocumentIdsOut.push(c.sourceDocumentId)
+      }
     }
   }
 
@@ -439,6 +467,7 @@ export async function prepareUploadTx(
     examName: resolvedExamName,
     sourceDocumentId,
     reserved,
+    supersededSourceDocumentIds: supersededSourceDocumentIdsOut,
   }
 }
 
@@ -476,5 +505,20 @@ export async function prepareUpload(
   const user = await currentUserOrNull()
   if (!user) return { outcome: 'unauthenticated' }
 
-  return withTenantTx(user.id, (tx) => prepareUploadTx(tx, user, input))
+  // ②-4a Task 14b′(主経路・post-commit・supersede)fix(Codex Important・
+  // 2026-08-03): supersede は prepareUploadTx 内で commit 済(tx が rollback しない
+  // 限り、どの outcome で return しても既に書込まれている)。ゆえに purge は
+  // 'success' に限定せず、out-param(supersededOut)を outcome に関わらず読んで
+  // 行う — in_progress(legacyInFlight)/invalid_input/size_exceeded/
+  // exam_not_found のいずれで早期 return しても、supersede 済 op の source が
+  // 取りこぼされない。purgeOperationSources は冪等なので 'success' 経路で
+  // 二重に呼んでも無害(success 分岐に旧来あった特別扱いは不要になった)。
+  const supersededOut: string[] = []
+  const result = await withTenantTx(user.id, (tx) =>
+    prepareUploadTx(tx, user, input, supersededOut),
+  )
+  for (const sourceDocumentId of supersededOut) {
+    await purgeOperationSources(user.id, sourceDocumentId)
+  }
+  return result
 }

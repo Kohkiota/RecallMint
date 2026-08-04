@@ -40,6 +40,7 @@ import {
 import { preparedPayloadSchema, type PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 import { logger } from '@/lib/logger'
 import { RETRYABLE_BACKOFF_MS, CROP_MIN_REMAINING_MS } from './constants'
+import { purgeOperationSources } from '@/lib/media/source-purge'
 import {
   planPublish,
   buildResultSummary,
@@ -192,6 +193,28 @@ async function persistTerminalFailed(
   return { outcome: 'failed', reason }
 }
 
+// ②-4a Task 14b′(主経路・post-commit): persistTerminalFailed の CAS が実際に
+// このtx で terminal_failed を書き込んだ(= 'failed' を返した)場合のみ
+// purgeOperationSources を呼ぶ。CAS が 'stale' を返した(lease を横取りされ何も
+// 書かなかった)場合は呼ばない — この呼出の役目ではなくなった(横取りした側が
+// 自分の terminal 遷移で呼ぶ)。sourceDocumentId が null(= 'source_document_deleted'
+// 分岐・FK が既に SET NULL 済)は purge 対象が無いので呼ばない。fenced tx
+// (persistTerminalFailedCas)自体は変更しない — purge は commit 後にここで呼ぶ
+// (brief「Do NOT modify the fenced publish/claim/stage txs themselves」)。
+async function persistTerminalFailedAndPurge(
+  userId: string,
+  operationId: string,
+  leaseVersion: number,
+  reason: string,
+  sourceDocumentId: string | null,
+): Promise<PublishPreparedResult> {
+  const result = await persistTerminalFailed(userId, operationId, leaseVersion, reason)
+  if (result.outcome === 'failed' && sourceDocumentId !== null) {
+    await purgeOperationSources(userId, sourceDocumentId)
+  }
+  return result
+}
+
 async function currentUserOrNull(): Promise<User | null> {
   try {
     return await getCurrentUser()
@@ -246,8 +269,15 @@ export async function runPublishPrepared(
   // これを publish すると「削除ワークフロー中にユーザーコンテンツを再作成」= privacy
   // boundary 侵害。 crop より前(無駄 crop 回避)に fenced terminal_failed で確定する。
   if (op.sourceDocumentId === null) {
-    return persistTerminalFailed(userId, operationId, leaseVersion, 'source_document_deleted')
+    return persistTerminalFailedAndPurge(
+      userId,
+      operationId,
+      leaseVersion,
+      'source_document_deleted',
+      null,
+    )
   }
+  const sourceDocumentId = op.sourceDocumentId
 
   if (op.preparedPayload === null) {
     // status='prepared' なのに payload 無し = 内部不整合(現状コード上は到達不能 —
@@ -258,7 +288,13 @@ export async function runPublishPrepared(
     // corrupt / empty / null-payload)を一貫して fenced terminal に揃える。 warn は
     // observability のため維持。
     logger.warn({ event: 'ocr.publish.prepared_without_payload', operationId })
-    return persistTerminalFailed(userId, operationId, leaseVersion, 'prepared_without_payload')
+    return persistTerminalFailedAndPurge(
+      userId,
+      operationId,
+      leaseVersion,
+      'prepared_without_payload',
+      sourceDocumentId,
+    )
   }
 
   // 保存済み payload を **同じ schema で parse するだけ**(publisher は再正規化 /
@@ -270,13 +306,25 @@ export async function runPublishPrepared(
     payload = preparedPayloadSchema.parse(op.preparedPayload)
   } catch (err) {
     logger.error({ event: 'ocr.publish.payload_parse_failed', operationId, err })
-    return persistTerminalFailed(userId, operationId, leaseVersion, 'payload_corrupt')
+    return persistTerminalFailedAndPurge(
+      userId,
+      operationId,
+      leaseVersion,
+      'payload_corrupt',
+      sourceDocumentId,
+    )
   }
 
   if (payload.cards.length === 0) {
     // 有効カード 0 → 恒久失敗(spec §8.3。 stage が cards≥1 を保証するため防御的)。
     // Fix #2: 同上 — fenced terminal 化(prepared のままだと再試行で無限ループ)。
-    return persistTerminalFailed(userId, operationId, leaseVersion, 'empty_payload')
+    return persistTerminalFailedAndPurge(
+      userId,
+      operationId,
+      leaseVersion,
+      'empty_payload',
+      sourceDocumentId,
+    )
   }
 
   // Step B: 全 figure を crop(tx の外・R2 I/O。 spec §7.3「crop-derived asset は
@@ -354,6 +402,11 @@ export async function runPublishPrepared(
   }
 
   if (txResult.outcome === 'stale') return { outcome: 'stale' }
+
+  // ②-4a Task 14b′(主経路・post-commit・completed): publishPreparedUploadTx が
+  // 'published' を返した = tx は既に commit 済(status='completed')。fenced tx
+  // 自体は変更せず、ここ(action level)で source を purge する(brief「主経路」)。
+  await purgeOperationSources(userId, sourceDocumentId)
 
   return {
     outcome: 'published',

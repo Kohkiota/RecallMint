@@ -16,7 +16,7 @@
 // mutating test ゆえ beforeEach で truncate→seed(各 test を clean state から)。
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeDb } from '@/lib/db'
 import {
@@ -26,14 +26,35 @@ import {
   uploadOperations,
   users,
 } from '@/lib/db/schema'
+import { TOTAL_UPLOAD_LIMIT_BYTES } from '@/app/(app)/app/upload/_lib/constants'
+import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
+import { STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
+
+const { mockGetCurrentUser, mockDeleteObject } = vi.hoisted(() => ({
+  mockGetCurrentUser: vi.fn(),
+  mockDeleteObject: vi.fn(),
+}))
+
+// prepareUpload(外側 wrapper)は既存 test(malformed input guard)がすでに
+// Clerk mock 無しで直接呼んでいる(currentUserOrNull() より前に return する
+// 分岐のみ)。 ②-4a Task 14b′ の completeness test はここで初めて Clerk を
+// 実際に通す必要があるため、file 全体にこの mock を追加する(既存 test は
+// mock 追加後も無影響 — 呼ばれない分岐のため)。
+vi.mock('@/lib/auth/ensure-user', () => ({
+  getCurrentUser: mockGetCurrentUser,
+}))
+// deleteObject: purgeOperationSources(prepareUpload wrapper が supersede 後に
+// 呼ぶ)向け。
+vi.mock('@/lib/storage/r2', () => ({
+  deleteObject: mockDeleteObject,
+}))
+
+// vi.mock は import より前に hoist される。
 import {
   prepareUpload,
   prepareUploadTx,
   type PrepareUploadInput,
 } from '@/app/(app)/app/upload/_actions/prepare-upload'
-import { TOTAL_UPLOAD_LIMIT_BYTES } from '@/app/(app)/app/upload/_lib/constants'
-import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
-import { STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
 
 import { asTenant } from './setup/as-tenant'
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
@@ -89,6 +110,9 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
 
   beforeEach(async () => {
     await truncateAllUserTables()
+    mockGetCurrentUser.mockReset()
+    mockDeleteObject.mockReset()
+    mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
     userBId = randomUUID()
@@ -589,6 +613,165 @@ describe('prepareUploadTx (T4, 2026-07-31 改訂)', () => {
         .from(sourceDocuments)
         .where(eq(sourceDocuments.id, staleDocId))
       expect(staleDoc[0]?.status).toBe('failed')
+    })
+
+    // ②-4a Task 14b′ 主経路 completeness: prepareUpload(外側 wrapper・Clerk 経由)が
+    // supersede した旧 op の source_assets を purge することを実 PG 上で pin する。
+    // prepareUploadTx を直接叩く上のテスト群は wrapper をバイパスするため、
+    // purge 配線(post-commit・wrapper level)はこのテストでのみ検証できる。
+    it('wrapper(prepareUpload)は supersede した旧 op の reserved source_asset を purge する', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      const staleDocId = randomUUID()
+      await owner.insert(sourceDocuments).values({
+        id: staleDocId,
+        userId: userAId,
+        examId: seedExamId,
+        mode: 'new',
+        fileType: 'image',
+        filename: 'stale.png',
+        fileSizeBytes: 100,
+        status: 'processing',
+      })
+      await owner.insert(uploadOperations).values({
+        userId: userAId,
+        idempotencyKey: 'idem-seed-await-2',
+        examId: seedExamId,
+        sourceDocumentId: staleDocId,
+        status: 'awaiting_sources',
+        leaseVersion: 0,
+        attemptCount: 0,
+        expectedSourceCount: 1,
+      })
+      const staleAssetId = randomUUID()
+      const staleObjectKey = `users/${userAId}/src/tmp/${staleAssetId}`
+      await owner.insert(sourceAssets).values({
+        id: staleAssetId,
+        userId: userAId,
+        sourceDocumentId: staleDocId,
+        sourceId: 's-stale',
+        objectKey: staleObjectKey,
+        status: 'reserved',
+        originalFilename: 'stale.png',
+      })
+
+      const input: PrepareUploadInput = {
+        idempotencyKey: 'idem-fresh-2',
+        destination: { mode: 'new' },
+        sources: twoSources('fresh2'),
+      }
+      const result = await prepareUpload(input)
+      if (result.outcome !== 'success') {
+        throw new Error(`expected success, got ${result.outcome}`)
+      }
+      expect(result.supersededSourceDocumentIds).toEqual([staleDocId])
+
+      expect(mockDeleteObject).toHaveBeenCalledWith(staleObjectKey)
+      const remaining = await owner
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, staleAssetId))
+      expect(remaining).toHaveLength(0)
+    })
+
+    // Codex Important fix(2026-08-03 review): supersede は commit 済のまま、
+    // その後の別チェック(ここでは size_exceeded)で early return しても、
+    // supersede した旧 op の source は main-path で purge されなければならない
+    // (旧実装は 'success' 到達時にしか purge しておらず、この経路は main-path
+    // miss だった — RED 検証は report §12 参照)。
+    it('wrapper(prepareUpload)は supersede 後に size_exceeded で早期 return しても旧 op の source を purge する', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      const staleDocId = randomUUID()
+      await owner.insert(sourceDocuments).values({
+        id: staleDocId,
+        userId: userAId,
+        examId: seedExamId,
+        mode: 'new',
+        fileType: 'image',
+        filename: 'stale.png',
+        fileSizeBytes: 100,
+        status: 'processing',
+      })
+      await owner.insert(uploadOperations).values({
+        userId: userAId,
+        idempotencyKey: 'idem-seed-await-3',
+        examId: seedExamId,
+        sourceDocumentId: staleDocId,
+        status: 'awaiting_sources',
+        leaseVersion: 0,
+        attemptCount: 0,
+        expectedSourceCount: 1,
+      })
+      const staleAssetId = randomUUID()
+      const staleObjectKey = `users/${userAId}/src/tmp/${staleAssetId}`
+      await owner.insert(sourceAssets).values({
+        id: staleAssetId,
+        userId: userAId,
+        sourceDocumentId: staleDocId,
+        sourceId: 's-stale',
+        objectKey: staleObjectKey,
+        status: 'reserved',
+        originalFilename: 'stale.png',
+      })
+
+      // 合計サイズが TOTAL_UPLOAD_LIMIT_BYTES を超える新規 submit(別
+      // idempotencyKey)。 supersede(step 3)は size 検査(step 5)より前に走る
+      // ため、supersede は commit された上で size_exceeded が返る。
+      const half = Math.floor(TOTAL_UPLOAD_LIMIT_BYTES / 2) + 1000
+      const input: PrepareUploadInput = {
+        idempotencyKey: 'idem-fresh-3',
+        destination: { mode: 'new' },
+        sources: [
+          {
+            sourceId: 's1',
+            mime: 'image/png',
+            byteSize: half,
+            width: 100,
+            height: 100,
+            filename: 'big-1.png',
+          },
+          {
+            sourceId: 's2',
+            mime: 'image/png',
+            byteSize: half,
+            width: 100,
+            height: 100,
+            filename: 'big-2.png',
+          },
+        ],
+      }
+      const result = await prepareUpload(input)
+      expect(result).toEqual({
+        outcome: 'size_exceeded',
+        current: half * 2,
+        limit: TOTAL_UPLOAD_LIMIT_BYTES,
+      })
+
+      // supersede 自体は commit 済(旧 op は terminal_failed 化)。
+      const seeded = await owner
+        .select({ status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(
+          and(
+            eq(uploadOperations.userId, userAId),
+            eq(uploadOperations.idempotencyKey, 'idem-seed-await-3'),
+          ),
+        )
+      expect(seeded[0]?.status).toBe('terminal_failed')
+
+      // Codex fix の核心: size_exceeded(非 success)でも旧 op の source は
+      // main-path で purge される(消え残らない)。
+      expect(mockDeleteObject).toHaveBeenCalledWith(staleObjectKey)
+      const remaining = await owner
+        .select({ id: sourceAssets.id })
+        .from(sourceAssets)
+        .where(eq(sourceAssets.id, staleAssetId))
+      expect(remaining).toHaveLength(0)
     })
 
     // 案 D: lease が NULL / 期限切れの claimed/prepared(= 実行中 worker 不在)は

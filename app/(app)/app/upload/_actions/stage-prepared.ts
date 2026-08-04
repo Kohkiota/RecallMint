@@ -18,6 +18,7 @@ import { normalizePrepared } from '@/lib/ocr/normalize-prepared'
 import { callImageCropWithRetry } from '../_lib/stage-prepared-retry'
 import { assemblePreparedPayload, computePreparedHash } from '../_lib/stage-prepared-payload'
 import { RETRYABLE_BACKOFF_MS } from '../_lib/constants'
+import { purgeOperationSourcesForOp } from '@/lib/media/source-purge'
 
 // ②-4a Phase C Task 8b: OCR → 正規化 → stage payload orchestration action。
 // spec §5.4(prepared schema SSoT)/ §2・§2.1(状態機械 + fencing)/ §9(payload
@@ -440,6 +441,10 @@ export async function stagePrepared(input: StagePreparedInput): Promise<StagePre
     loadFencedSourceManifest(tx, user.id, operationId, leaseVersion),
   )
   if (loaded.outcome === 'terminal') {
+    // ②-4a Task 14b′(主経路・post-commit): loadFencedSourceManifest 内の
+    // persistManifestIncompleteTerminal は自前の withTenantTx で既に commit 済
+    // (fenced tx 自体は変更しない)。purge はここ(action level・tx 外)で呼ぶ。
+    await purgeOperationSourcesForOp(user.id, operationId)
     return { outcome: 'terminal_failed', reason: loaded.reason }
   }
   if (loaded.outcome !== 'ok') return { outcome: loaded.outcome }
@@ -527,6 +532,10 @@ export async function stagePrepared(input: StagePreparedInput): Promise<StagePre
   )
   if (stageOutcome === 'stale') return { outcome: 'stale' }
   if (stageOutcome === 'manifest_incomplete') {
+    // ②-4a Task 14b′(主経路・post-commit): stageSaveCas 内の
+    // persistManifestIncompleteTerminal も上と同じく自前の withTenantTx で commit
+    // 済(fenced tx 自体は変更しない)。
+    await purgeOperationSourcesForOp(user.id, operationId)
     return { outcome: 'terminal_failed', reason: 'source_manifest_incomplete' }
   }
 

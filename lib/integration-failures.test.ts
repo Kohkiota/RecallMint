@@ -201,7 +201,8 @@ describe('recordIntegrationFailure', () => {
     })
     expect(new Set(tuples).size).toBe(tuples.length)
     // RLS-P3 Task 7: rls_context_missing 追加で 8 → 9。
-    expect(tuples.length).toBe(9)
+    // ②-4a T14b: r2_gc_delete_source 追加で 9 → 10。
+    expect(tuples.length).toBe(10)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -210,6 +211,17 @@ describe('recordIntegrationFailure', () => {
       service: 'r2',
       operation: 'object.delete',
       workflow: 'asset_gc',
+      failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_gc_delete_source: ②-4a T14b(source_assets GC sweep)の 4 軸 tuple 固定値。
+  // r2_gc_delete(assets lane)とは workflow で区別する(source_asset_gc)。
+  it('r2_gc_delete_source has the 4-axis values pinned by T14b', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_gc_delete_source).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'source_asset_gc',
       failureCode: 'external_api_error',
     })
   })

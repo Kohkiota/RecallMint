@@ -10,6 +10,7 @@ import {
   failSourceDocumentForTerminalOp,
   terminalizeAbandonedOperation,
 } from '../_lib/terminalize-abandoned-operation'
+import { purgeOperationSources, purgeOperationSourcesForOp } from '@/lib/media/source-purge'
 
 // ②-4a-cutover 案 D(2026-08-02・OT 確定): UI は失敗した operation を resume せず
 // 「失敗表示時に abandon」する(1 submit = 1 operation)。この action は client が
@@ -114,6 +115,14 @@ async function currentUserOrNull(): Promise<User | null> {
   }
 }
 
+// ②-4a Task 14b′(主経路・post-commit): abandonUploadOperationTx は同一 ambient
+// tx 内(terminalizeAbandonedOperation・fresh 遷移)または「既に terminal」
+// (冪等 replay・doc-status fixup のみ)のいずれでも 'abandoned' を返す —
+// claim-operation.ts と同じ理由で型上区別しない。purgeOperationSourcesForOp は
+// 冪等なので両ケースとも呼んで安全(source-purge.ts のコメント参照)。
+// 'completed' 分岐は既に sourceDocumentId を保持しているため re-query 不要
+// (このケースは本来 publishPreparedUpload 自身の主経路で既に purge 済のはずだが、
+// 万一の main-path miss に対する defense-in-depth として呼ぶ)。
 export async function abandonUploadOperation(
   input: AbandonUploadOperationInput,
 ): Promise<AbandonUploadOperationResult> {
@@ -122,5 +131,11 @@ export async function abandonUploadOperation(
   }
   const user = await currentUserOrNull()
   if (!user) return { outcome: 'unauthenticated' }
-  return withTenantTx(user.id, (tx) => abandonUploadOperationTx(tx, user, input))
+  const result = await withTenantTx(user.id, (tx) => abandonUploadOperationTx(tx, user, input))
+  if (result.outcome === 'abandoned') {
+    await purgeOperationSourcesForOp(user.id, input.operationId)
+  } else if (result.outcome === 'completed' && result.sourceDocumentId) {
+    await purgeOperationSources(user.id, result.sourceDocumentId)
+  }
+  return result
 }

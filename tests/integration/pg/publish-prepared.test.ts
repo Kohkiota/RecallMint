@@ -37,18 +37,23 @@ import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
 
-const { mockGetCurrentUser, mockGetObject, mockPutObject } = vi.hoisted(() => ({
+const { mockGetCurrentUser, mockGetObject, mockPutObject, mockDeleteObject } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockGetObject: vi.fn(),
   mockPutObject: vi.fn(),
+  mockDeleteObject: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({
   getCurrentUser: mockGetCurrentUser,
 }))
+// deleteObject: ②-4a Task 14b′(主経路)の purgeOperationSources が terminal 遷移
+// (completed/terminal_failed)の commit 後に呼ぶ。既定は 2xx 成功(source purge の
+// R2 DELETE 成功)。
 vi.mock('@/lib/storage/r2', () => ({
   getObject: mockGetObject,
   putObject: mockPutObject,
+  deleteObject: mockDeleteObject,
 }))
 
 // vi.mock は import より前に hoist される。
@@ -228,6 +233,8 @@ beforeEach(async () => {
   mockGetCurrentUser.mockReset()
   mockGetObject.mockReset()
   mockPutObject.mockReset()
+  mockDeleteObject.mockReset()
+  mockDeleteObject.mockResolvedValue({ ok: true, status: 200 })
 })
 
 describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / idempotent', () => {
@@ -692,5 +699,85 @@ describe('publishPreparedUpload (T12 orchestrator) — crop 全滅 text publish'
     const result = await publishPreparedUpload({ operationId, leaseVersion: 3 })
     expect(result).toEqual({ outcome: 'stale' })
     expect(await countCards(userId)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ②-4a Task 14b′ 主経路(purgeOperationSources)regression + completeness。
+// この source_document 配下の source_assets が publish 完走(completed)/ 恒久失敗
+// (terminal_failed)の commit 直後に purge されることを実 PG 上で pin する
+// (brief「主経路 regression(iso・必須)」)。
+// ---------------------------------------------------------------------------
+describe('purgeOperationSources 主経路(②-4a Task 14b′)', () => {
+  async function readSourceAssetRow(id: string) {
+    const owner = getFixtureOwnerDb()
+    const rows = await owner.select().from(sourceAssets).where(eq(sourceAssets.id, id))
+    return rows[0]
+  }
+
+  // 主経路 regression(RED 検証は report 記載: publish-prepared-orchestrate.ts の
+  // `await purgeOperationSources(userId, sourceDocumentId)` 呼出を一時的に削除→
+  // このtest が fail することを確認済)。
+  it('completed(正常完走): op の source_assets が R2 delete + 行 DELETE される(main-path)', async () => {
+    const userId = await seedUser()
+    mockGetCurrentUser.mockResolvedValue({ id: userId })
+    const { examId, sourceDocumentId } = await seedExamAndSourceDoc(userId)
+    // text-only card(figures なし)でも、この op に属する source_assets 全件が
+    // purge 対象になることを見るため、crop に使われない ready source を 1 件 seed
+    // する(brief「主経路は当該 source_document の reserved|ready 全部を無条件
+    // mark」— figure に採用されたか否かは無関係)。
+    const sourceAssetId = await seedReadySourceAsset(userId, sourceDocumentId, 's1', 'ready')
+    const objectKey = `users/${userId}/src/${sourceAssetId}.png`
+
+    const card = makePreparedCard()
+    const payload: PreparedPayloadV1 = {
+      schemaVersion: 1,
+      cards: [card],
+      cardsTotal: 1,
+      cardsExcluded: 0,
+      figuresExcluded: { coordinate_null: 0, source_id_invalid: 0, malformed: 0, asset_id_invalid: 0 },
+    }
+    const operationId = await seedPreparedOperation(userId, examId, sourceDocumentId, {
+      preparedPayload: payload as unknown as Record<string, unknown>,
+    })
+
+    const result = await publishPreparedUpload({ operationId, leaseVersion: 1 })
+    expect(result).toEqual({ outcome: 'published', cardsPublished: 1, figuresAttached: 0 })
+    expect((await readOp(operationId)).status).toBe('completed')
+
+    // 主経路 purge が実行された証拠: R2 DELETE 呼出 + source_assets 行の消滅。
+    expect(mockDeleteObject).toHaveBeenCalledWith(objectKey)
+    expect(await readSourceAssetRow(sourceAssetId)).toBeUndefined()
+  })
+
+  // completeness: publish の terminal_failed 4 分岐は同一の
+  // persistTerminalFailedAndPurge を経由する(publish-prepared-orchestrate.ts)。
+  // 代表として empty_payload(最も seed が単純)で wiring を確認する — 他 3 分岐
+  // (source_document_deleted/prepared_without_payload/payload_corrupt)は同一
+  // call-site のコード共有ゆえ file:line 根拠で completeness を担保する(report 参照)。
+  it('terminal_failed(empty_payload): op の source_assets が purge される(main-path)', async () => {
+    const userId = await seedUser()
+    mockGetCurrentUser.mockResolvedValue({ id: userId })
+    const { examId, sourceDocumentId } = await seedExamAndSourceDoc(userId)
+    const sourceAssetId = await seedReadySourceAsset(userId, sourceDocumentId, 's1', 'ready')
+    const objectKey = `users/${userId}/src/${sourceAssetId}.png`
+
+    const emptyPayload: PreparedPayloadV1 = {
+      schemaVersion: 1,
+      cards: [],
+      cardsTotal: 0,
+      cardsExcluded: 0,
+      figuresExcluded: { coordinate_null: 0, source_id_invalid: 0, malformed: 0, asset_id_invalid: 0 },
+    }
+    const operationId = await seedPreparedOperation(userId, examId, sourceDocumentId, {
+      preparedPayload: emptyPayload as unknown as Record<string, unknown>,
+    })
+
+    const result = await publishPreparedUpload({ operationId, leaseVersion: 1 })
+    expect(result).toEqual({ outcome: 'failed', reason: 'empty_payload' })
+    expect((await readOp(operationId)).status).toBe('terminal_failed')
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(objectKey)
+    expect(await readSourceAssetRow(sourceAssetId)).toBeUndefined()
   })
 })
