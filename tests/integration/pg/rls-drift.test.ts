@@ -15,113 +15,30 @@
 //
 // **範囲の限界** (Codex#4.4): 本 test が保証するのは「repo の enable SQL ↔ test DB」の整合
 // のみ。stg/prod で operator が手動適用した後に誰かが直接 policy をいじる「手動適用 drift」は
-// 検出できない — それは runbook §12 の operator 用 readback SQL が担う。app_current_user_id()
-// 関数本体の drift は rls-functions.test.ts が behavioral に担保する (Codex#4.5)。
+// 検出できない — それは runbook §12 の operator 用 readback SQL と
+// `scripts/verify-rls-state.ts` (S-0・実環境を app role で検証する read-only ツール) が担う。
+// app_current_user_id() 関数本体の drift は rls-functions.test.ts が behavioral に担保する (Codex#4.5)。
 //
-// 期待カタログを db/policies から生成せず hardcode するのは意図 (Codex#4.3): SQL と test が
+// 期待カタログを db/policies から生成せず hand-written に持つのは意図 (Codex#4.3): SQL と test が
 // 同じ SSoT を読むと「両方同時にズレる」盲点が生じる。fixture-completeness.test.ts の三者一致と
-// 同思想で、独立した第二の記述 (この file) を照合軸にする。二重管理の drift は review で守る。
+// 同思想で、独立した第二の記述を照合軸にする。
+//
+// **カタログの置き場所 (S-0・2026-08-04 で移設)**: 同じ期待値を実環境検証 script
+// (`scripts/verify-rls-state.ts`) も必要とするため、カタログ本体は script 側へ移し本 file は
+// import する。独立性の相手は **`db/policies/*.sql`** であって別の検査器ではないため、
+// 「SQL から生成しない hand-written な第二の記述」という oracle の性質は変わらない
+// (逆向き = script が本 file を import する形は不可 — `.test.ts` を import すると vitest の
+// describe/it が import 時に走り CLI が落ちる)。二重管理の drift は消滅した。
 import { sql } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import {
+  EXPECTED_NON_RLS_TABLES,
+  EXPECTED_POLICIES,
+  EXPECTED_RLS_TABLES,
+} from '@/scripts/verify-rls-state'
+
 import { closeFixtureOwnerDb, getFixtureOwnerDb } from './setup/fixture'
-
-// --- 期待カタログ (独立 oracle・PG17 で正規化テキストを実測して pin) ---
-
-// tenant 共通形述語: `user_id = (SELECT public.app_current_user_id())` を PG が正規化した形。
-const TENANT_PRED = '(user_id = ( SELECT app_current_user_id() AS app_current_user_id))'
-// users 用述語: 主キーが id ゆえ `id = (SELECT app_current_user_id())`。
-const USERS_ID_PRED = '(id = ( SELECT app_current_user_id() AS app_current_user_id))'
-// users の SELECT/UPDATE USING: 上に `AND deleted_at IS NULL` が付く (退会済を app-role から隠す)。
-const USERS_LIVE_PRED =
-  '((id = ( SELECT app_current_user_id() AS app_current_user_id)) AND (deleted_at IS NULL))'
-
-// 共通形 17 表 (P2 4 + Wave1 8 + Wave2 5)。各表ちょうど 1 policy `<table>_tenant`
-// (FOR ALL・TO recallmint_app・USING=WITH CHECK=TENANT_PRED)。
-const COMMON_FORM_RLS_TABLES = [
-  // P2 共通形 4
-  'exams',
-  'cards',
-  'tombstones',
-  'study_days',
-  // Wave 1 (8)
-  'reviews',
-  'answer_events',
-  'tag_categories',
-  'tag_options',
-  'card_tags',
-  'entity_mutations',
-  'card_asset_refs',
-  'ai_usage_users',
-  // Wave 2 (5)
-  'study_sessions',
-  'user_settings',
-  'assets',
-  'source_documents',
-  'upload_records',
-  // ②-4a Phase A Task 1-3
-  'source_assets',
-  'upload_operations',
-  'asset_derivations',
-] as const
-
-// RLS 対象 21 表 = 共通形 20 + users (per-command 特殊)。
-const EXPECTED_RLS_TABLES: readonly string[] = [
-  ...COMMON_FORM_RLS_TABLES,
-  'users',
-]
-
-// RLS 非対象 5 表: relrowsecurity=false かつ policy ゼロ。
-const EXPECTED_NON_RLS_TABLES: readonly string[] = [
-  'ai_usage',
-  'stripe_events',
-  'clerk_events',
-  'contact_messages',
-  'integration_failures',
-]
-
-type PolicyTuple = {
-  roles: string[]
-  cmd: string
-  permissive: string
-  qual: string | null
-  with_check: string | null
-}
-
-// 期待 policy カタログ: key = `${tablename}|${policyname}`。
-// 共通形 20 + users 3 = 23 policy。
-const EXPECTED_POLICIES: Record<string, PolicyTuple> = {}
-for (const table of COMMON_FORM_RLS_TABLES) {
-  EXPECTED_POLICIES[`${table}|${table}_tenant`] = {
-    roles: ['recallmint_app'],
-    cmd: 'ALL',
-    permissive: 'PERMISSIVE',
-    qual: TENANT_PRED,
-    with_check: TENANT_PRED,
-  }
-}
-// users: per-command・DELETE policy なし (= app-role の users hard delete を構造的 deny)。
-EXPECTED_POLICIES['users|users_select'] = {
-  roles: ['recallmint_app'],
-  cmd: 'SELECT',
-  permissive: 'PERMISSIVE',
-  qual: USERS_LIVE_PRED,
-  with_check: null,
-}
-EXPECTED_POLICIES['users|users_insert'] = {
-  roles: ['recallmint_app'],
-  cmd: 'INSERT',
-  permissive: 'PERMISSIVE',
-  qual: null,
-  with_check: USERS_ID_PRED,
-}
-EXPECTED_POLICIES['users|users_update'] = {
-  roles: ['recallmint_app'],
-  cmd: 'UPDATE',
-  permissive: 'PERMISSIVE',
-  qual: USERS_LIVE_PRED,
-  with_check: USERS_ID_PRED,
-}
 
 type PolicyRow = {
   tablename: string
@@ -169,9 +86,9 @@ describe('RLS policy drift-detection (versioned SQL ↔ test DB integrity)', () 
     expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(23)
   })
 
-  // 1. relrowsecurity / relforcerowsecurity: 18 対象 true / 5 非対象 false /
+  // 1. relrowsecurity / relforcerowsecurity: RLS 対象 true / 非対象 false /
   //    意図しない表が true でない / FORCE は全 public 表で false (owner bypass 不変条件)。
-  it('relrowsecurity matches the 18-RLS / 5-non-RLS split; forcerowsecurity off everywhere', () => {
+  it('relrowsecurity matches the expected RLS / non-RLS split; forcerowsecurity off everywhere', () => {
     const byName = new Map(relRows.map((r) => [r.relname, r]))
 
     for (const table of EXPECTED_RLS_TABLES) {
