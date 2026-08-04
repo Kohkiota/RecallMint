@@ -1,6 +1,6 @@
 # ②-4a S-1〜S-5 設計 spec: OCR+crop の 1 invocation 化(source を R2 に置かない)
 
-- 日付: 2026-08-04 / 状態: **ドラフト(OT + claude.ai レビュー待ち)**
+- 日付: 2026-08-04 / 状態: **OT レビュー反映済(論点 4〜8 確定・§9)。次 = writing-plans(Fable)+ plan 確定前 Codex cross-check**
 - 前提 fact-finding(固定入力・再オープンしない):
   `docs/audit/2026-08-04-why-source-goes-through-r2.md` /
   `docs/audit/2026-08-04-ocr-crop-invocation-split-factfinding.md` /
@@ -74,7 +74,7 @@ client: 応答受領後は doc 粒度 poll(§6)→ completed で result へ auto
 | `expected_source_count` | — **`upload_operations` 側の列**(`schema.ts:985`)。影響なし | 列は残す。ただし manifest oracle の役割は消え、`files.length` の bookkeeping に降格(§4.2) |
 
 - **②-4b(PDF)予約列(`source_kind`/`page_count`/`rotation`/`rasterizer`)は「source を R2 に保持する」前提の設計**(schema コメント `schema.ts:888-889`)。新軸では PDF も同様に server 受領 → メモリ rasterize → crop のみ R2 となるべきで、page 概念は prepared_payload / `asset_derivations` 側(figure の page 属性)で表現できる。**表を残すと「保持前提だった」と将来誤読される**ため drop が正。②-4b を阻害しない。
-- **副作用 1**: `asset_derivations.source_asset_id`(FK cascade・`schema.ts:1024-1026`)の参照先が消える。→ **列を `source_id text NOT NULL` + `source_width integer` + `source_height integer` に置換**(提案)。理由: bbox は 0-1000 正規化で保存されており、分母(source 寸法)が無いと px 変換の事後検証が再現不能になる。切り直し(旧 spec §10 の動機)は source 非保持で原理的に不能になるが、座標バグの事後調査価値は残る。代替案 = 単純 drop(§9 論点 2)。
+- **副作用 1**: `asset_derivations.source_asset_id`(FK cascade・`schema.ts:1024-1026`)の参照先が消える。→ **列を単純 drop する**(OT 確定・§9-5)。裏取り: ① 読者ゼロ(asset_derivations の production 参照は `crop-and-store.ts:305` の INSERT 1 箇所のみ・SELECT 0 件)② 元画像上の位置は `orig_bbox`/`clamped_bbox` が **0-1000 正規化比率のまま**保存しており(`crop-geometry.ts:20,29`)寸法なしで再現可能 ③ 元画像寸法自体も `crop_w = ceil(xMaxC/1000×W) − floor(xMinC/1000×W)`(`:108-113`)から丸め誤差 ±数 px で逆算可能 ④ 厳密 px 再現が要るのは切り直しのみで、元バイト必須 = 新軸で原理的に不能。**指す先が永久に存在しない ID を残すと「保持前提の設計だった」と将来誤読される**ため drop が正。
 - **副作用 2**: claim の server 実測サイズ enforcement の移設 → sync phase の受領時検証(§2)。
 
 ### 4.2 manifest 検証 = 概念ごと廃止
@@ -113,8 +113,8 @@ client: 応答受領後は doc 粒度 poll(§6)→ completed で result へ auto
 ### 4.5 op 状態機械の改訂
 
 - **新経路の状態**: `(なし) → processing → prepared → completed | terminal_failed`。
-  - `processing`(**新値**・§9 論点 1): sync phase で op 作成と同時に。`awaiting_sources`(source 待ちが存在しない)と `claimed`(claim が独立 invocation でない)は新経路で不使用。
-  - `prepared`: payload commit 時の checkpoint として**維持**(§9 論点 3)。crash 時の forensics(どこまで進んだか)+ 旧 spec §7.3 の順序不変条件「**crop-derived asset 行・R2 object は prepared commit 後にのみ**」の観測点。挙動分岐には使わない(UI は processing と同扱い)。
+  - `processing`(**新値・OT 確定 §9-4**): sync phase で op 作成と同時に。`claimed` の流用は不採用 — 「掴んだ」と「実行中」は意味が異なり、中断した op を後から読むときに新旧経路・意味を区別できないと困る(実ユーザー 0 ゆえ状態追加コストはゼロ・流用は将来の誤読を生む)。`awaiting_sources` も新経路で不使用(source 待ちが存在しない)。
+  - `prepared`: payload commit 時の checkpoint として**維持**(OT 確定 §9-6)。理由 3 点: ① 旧 spec §7.3 の順序不変条件「**crop-derived asset 行・R2 object は prepared commit 後にのみ**」の観測点 ② crash 時の forensics ③ **「crop 失敗で OCR 成果を巻き添えにしない」を 1 invocation でも満たす**(OT 当初意図・従来記録が無かったためここで設計判断として明示採用): 順序 = OCR → payload commit → crop → publish とし、crop が落ちても Gemini を再実行せず、committed payload から text card publish(§4.4・旧 spec §8.3)へ倒す。挙動分岐には使わない(UI は processing と同扱い)。
   - status 列は text + TS union(DB CHECK なし・現物確認済)ゆえ値追加に migration 不要。非終端集合のハードコード 3 箇所(`source-doc-status.ts:85` / `gc-abandoned-operations.ts:56` / `prepare-upload.ts:277`)を更新。
 - **中断時に残る状態と回収**: `processing` / `prepared` + lease 失効。回収 3 経路 = ① reconciler(≤15 分で doc failed 化 + op terminal 化・§6)② 次 submit の supersede(既存 `prepare-upload.ts:294-307`・維持)③ ユーザーが exam ごと削除(Step 0-①・可能)。**カード 0 件 exam も削除可能**のため「消せないゴミ」は生まれない。
 - `prepared_payload` は publish 成功で NULL 化 / terminal 化で NULL 化(既存規律不変)。手動 sweep script(`gc-abandoned-operations.ts`)は残置するが、reconciler の op terminal 化により主経路ではなくなる。
@@ -148,15 +148,17 @@ client: 応答受領後は doc 粒度 poll(§6)→ completed で result へ auto
 
 ## 7. task 分割と完了の証明
 
-前進方式: S-1〜S-3 で新経路を構築(S-3 で UI 切替)、S-4 で after() 化、S-5 で旧経路撤去。cutover 前例と同型に「切替は `upload-form.tsx` の呼出列に閉じ込める」。
+前進方式: S-1〜S-3 で新経路を構築(**S-3 で UI 切替 = OT 確定 §9-7**・切替 diff と after() 化 diff を分離)、S-4 で after() 化、S-5 で旧経路撤去。cutover 前例(旧経路を残して呼出だけ差し替え・可逆)と同型に「切替は `upload-form.tsx` の呼出列に閉じ込める」。
+
+**S-4 着手の前提条件(OT 確定 §9-8)**: Fluid compute 有効/無効・実 Max Duration を OT が Vercel Dashboard で確認し、結果を S-4 着手前に渡す。**値は本 spec に埋めない**(確認結果を plan / session doc に記録)。背景 = ~300s で関数消滅した未解明事象が observe-close のままであり、after() の実行余地(応答後も maxDuration まで走れること)の実環境前提が未確認。
 
 | # | task | 完了の証明(検証可能な形で) |
 |---|---|---|
 | **S-1** | 単一 action の骨組み: FormData 受領 → 入力検証 → 1 tx(advisory lock / 冪等 replay / live-op gate / daily cap / op+exam+doc 作成 / lease 発行)。**非終端集合 3 箇所(§4.5)へ `processing` 追加**(これが無いと live-op gate が新 op を素通しし二重 submit 防止が壊れる)。OCR/crop は未実装(この時点では即 terminal 化して返るスタブ・UI 未接続) | iso(実 PG): ① 同時 2 submit で 1 つだけ通る(valid-lease の `processing` op を gate が拒否)② cap 超過拒否 ③ 同一 key 再送が同一 op に収束 ④ **R2 client の呼出 0 回**(mock 計測)。unit: 入力検証の境界(41 枚 / 5MiB+1 / 合計 4MB+1 / 偽 magic bytes) |
 | **S-2** | メモリのバイトで OCR → normalize → prepared_payload commit(status='prepared')。`incrementAiUsage` 配線 | iso(Gemini mock): ① payload commit までに **R2 GET 0 回** ② Gemini が受け取る base64 = 渡した Buffer と一致 ③ `normalize-prepared` / `preparedPayloadSchema` の既存契約 test が無改変で green |
 | **S-3** | メモリのバイトから crop(`crop-and-store` をバイト+寸法引数受けに改修)→ crop 済みのみ R2 PUT → `publishPreparedUploadTx`(SUM/filename 依存の引数化)→ **UI 切替**(upload-form 呼出列を新 action 1 本へ・同期版) | iso: ① **R2 PUT の key が crop asset key のみで `src/` を含まない**(新軸の実行可能な証明)② 図版なし publish 成立(crop 全滅 mock)③ publish tx の出力(cards/tags/refs/upload_records)が現行経路と同値(fixture 比較)。stg smoke: 新経路で upload → cards 生成(同期版・現行 UX と同一) |
-| **S-4** | `after()` 化(即応答)+ doc 粒度 polling + auto-nav + 失敗表示 + live-op 述語簡素化 + reconciler の op terminal 化 + catalog 新 key | iso: ① after 相当の handler に throw 注入 → op terminal + doc failed + `integration_failures` 1 行 ② lease 失効 op を reconciler が terminal 化。stg 実測: ③ submit 応答が本処理完了前に返る ④ **タブを閉じても completed に到達**(fact-finding §5 の手順・Fluid/実 maxDuration の OT 確認込み)⑤ poll → result へ auto-nav |
-| **S-5** | 旧経路撤去: `source-asset-actions.ts` / `source-purge.ts` / GC source lane / manifest 検証 / takeover / retry marker / `source_assets` 表 drop migration + `asset_derivations` 改修 + 旧 status 値整理 + stg `src/` prefix 一掃 | ① 撤去対象の参照 0 件(grep: `sourceAssets` / `reserveSource` / `finalizeSource` / `purgeOperationSources` / `prepared_taken_over`)② 全 gate green(lint 0 / typecheck 0 / build / full test / **test:iso** / audit)③ **stg の `users/*/src/` prefix が空**(row-less orphan 14 件含む一掃・R2 listing で確認)④ GDPR 退会 sweep の対象表更新が iso で green |
+| **S-4** | `after()` 化(即応答)+ doc 粒度 polling + auto-nav + 失敗表示 + live-op 述語簡素化 + reconciler の op terminal 化 + catalog 新 key。**着手前提 = Fluid/実 maxDuration の OT 確認(§7 冒頭)** | iso: ① after 相当の handler に throw 注入 → op terminal + doc failed + `integration_failures` 1 行 ② lease 失効 op を reconciler が terminal 化。stg 実測: ③ submit 応答が本処理完了前に返る ④ **タブを閉じても completed に到達**(fact-finding §5 の手順)⑤ poll → result へ auto-nav |
+| **S-5** | 旧経路撤去: `source-asset-actions.ts` / `source-purge.ts` / GC source lane / manifest 検証 / takeover / retry marker / `source_assets` 表 drop migration + `asset_derivations.source_asset_id` 列 drop + 旧 status 値整理 + stg `src/` prefix 一掃 | ① 撤去対象の参照 0 件(grep: `sourceAssets` / `reserveSource` / `finalizeSource` / `purgeOperationSources` / `prepared_taken_over`)② 全 gate green(lint 0 / typecheck 0 / build / full test / **test:iso** / audit)③ **stg の `users/*/src/` prefix が空**(row-less orphan 14 件含む一掃・R2 listing で確認)④ GDPR 退会 sweep の対象表更新が iso で green |
 
 - 各 task とも feat/fix の canonical review + Codex 協調 + [reviewed] は既存規律どおり(spec では省略)。
 - S-4 の stg 実測 ④ は CC の stg ログイン資格情報が無いため実施者は OT(または資格情報供与後の CC)— fact-finding Part1 §4 の既知制約。
@@ -164,7 +166,7 @@ client: 応答受領後は doc 粒度 poll(§6)→ completed で result へ auto
 ## 8. 壊すもの(明示)
 
 1. `source_assets` 表 drop(データごと・migration)。iso fixture / completeness カタログ / RLS 検証 oracle(`verify-rls-state.test.ts:91`)/ 関連 test 群(source-asset-finalize / gc-source-assets / source-purge ほか)を同時撤去・改修。
-2. `asset_derivations.source_asset_id` FK → `source_id text + source_width + source_height` に置換(§4.1・論点 2)。
+2. `asset_derivations.source_asset_id` FK 列を drop(§4.1・置換はしない)。
 3. server action 群: `reserveSource` / `finalizeSource` / `claimOperation` / `stagePrepared` / `publishPreparedUpload` の公開列が単一 action に置換(client 呼出列変更)。`abandonUploadOperation` も撤去(失敗 terminal 化は server 側で完結・client abandon の役割消滅)。
 4. `publishPreparedUploadTx` の署名変更(`fileSizeBytes` / `pagesProcessed` / filename を引数化 — source_assets SUM 依存の除去)。**fact-finding S-3 の「byte-for-byte 不変」は不成立**(§10 の SUM が表依存)— 本 spec で訂正。
 5. `crop-and-store` の署名変更(source 行 SELECT + R2 GET → バイト + 寸法引数)。
@@ -172,13 +174,16 @@ client: 応答受領後は doc 粒度 poll(§6)→ completed で result へ auto
 7. `/api/exams/status` 応答拡張(additive・既存 key 不変)。
 8. upload-form の同期完了依存(`'published'` → `router.push`)→ poll ベース遷移。
 
-## 9. 未確定論点(OT 判断待ち)
+## 9. OT レビュー結果(2026-08-04 確定)
 
-1. **op status 新値 `processing` の新設** vs 既存 `claimed` の流用。CC 推奨 = 新設(1 invocation の意味に合致・観測時に新旧経路が判別できる。text 列ゆえ migration 不要)。
-2. **`asset_derivations` の source 参照の置換**(`source_id text + source_width/height int` を追加)vs 単純 drop。CC 推奨 = 置換(座標検証の分母を保全・3 列で済む)。YAGNI 判定は OT。
-3. **`prepared_payload` の commit 維持**(checkpoint として)vs メモリ内のみ(DB に書かない)。CC 推奨 = 維持(旧 spec §7.3 の順序不変条件の観測点 + crash forensics + 既存資産の最小改変。コスト = jsonb 1 write/upload)。
-4. **UI 切替を S-3(同期版)で行う** vs S-4 まで遅延。CC 推奨 = S-3(切替 diff と after() 化 diff を分離し、各段で stg smoke 可能にする)。
-5. **Fluid compute 有効/無効・実 Max Duration の確認**(Vercel Dashboard・OT のみ可能)— S-4 着手前に必要(after() の実行余地の前提。~300s で関数消滅した未解明事象が observe-close のまま)。
+kickoff 時の論点番号(4〜8)で記録する:
+
+- **9-4(op status)**: 新値 `processing` を**新設**。`claimed` は「掴んだ」の意味で「実行中」と異なり、中断した op を後から読むときに区別できないと困る。実ユーザー 0 ゆえ状態追加コストはゼロ・流用は将来の誤読を生む。→ §4.5
+- **9-5(asset_derivations.source_asset_id)**: **単純 drop**(CC の置換案は裏取りの結果撤回・OT 同意)。読者ゼロ / 位置は 0-1000 正規化比率で保存済み / 元画像寸法は既存列から近似逆算可能 / 厳密 px 再現は re-crop のみに意味があり新軸で原理的に不能。指す先が永久に存在しない ID を残すと「保持前提の設計だった」と将来誤読される。→ §4.1
+- **9-6(prepared_payload)**: DB commit を**維持**。§7.3 順序不変条件の観測点 + forensics に加え、OT 当初意図「**crop 失敗で OCR を巻き添えにしない**」(従来未記録・ここで設計判断として明示採用)を 1 invocation でも満たす: 順序 = OCR → payload commit → crop → publish、crop が落ちても Gemini を再実行しない。→ §4.5
+- **9-7(UI 切替)**: **S-3 で行う**。切替 diff と after() 化 diff を分離。cutover の「旧経路を残して呼出だけ差し替え」前例と同型。→ §7
+- **9-8(Fluid compute / 実 Max Duration)**: OT が Vercel Dashboard で確認し S-4 着手前に結果を渡す。spec には **S-4 着手の前提条件として記載し、値は埋めない**。→ §7 冒頭
+- その他: §8-4 の「byte-for-byte 不変」訂正は妥当・維持 / Step 0-③ の発見と §5 の設計は妥当・維持。
 
 ## 10. 付録: 主要裏取り(現 HEAD)
 
