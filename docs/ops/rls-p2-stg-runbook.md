@@ -372,7 +372,7 @@ RLS-P3 最終 hardening wave (Task 6) は versioned SQL(`db/policies/{rls-p2,rls
 いずれも read-only(SELECT のみ)。owner でも app 接続でも実行可(pg_policies / pg_class は誰でも読める)。
 
 ```sql
--- (A) RLS 対象 18 表 = relrowsecurity=true / 非対象 5 表 = false / FORCE は全 public 表 false。
+-- (A) RLS 対象 21 表 = relrowsecurity=true / 非対象 5 表 = false / FORCE は全 public 表 false。
 --     期待と異なる行 (unexpected true / 想定外の force) が 1 行でも出たら drift。
 SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -386,11 +386,11 @@ SELECT tablename, policyname, roles, cmd, permissive, qual, with_check
 FROM pg_policies WHERE schemaname = 'public'
 ORDER BY tablename, policyname;
 
--- (C) 件数の即時 sanity: RLS on 表 = 18 / policy 総数 = 20 (共通形 17 + users 3)。
+-- (C) 件数の即時 sanity: RLS on 表 = 21 / policy 総数 = 23 (共通形 20 + users 3)。
 SELECT
   (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_on_tables,   -- 期待 18
-  (SELECT count(*) FROM pg_policies WHERE schemaname='public') AS total_policies;         -- 期待 20
+     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_on_tables,   -- 期待 21
+  (SELECT count(*) FROM pg_policies WHERE schemaname='public') AS total_policies;         -- 期待 23
 ```
 
 ### 12.2 期待カタログ(独立 oracle・drift 判定基準)
@@ -407,12 +407,12 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 
 | 表 | policyname | roles | cmd | permissive | qual | with_check |
 |---|---|---|---|---|---|---|
-| 共通形 17 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
+| 共通形 20 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
 | users | `users_select` | `{recallmint_app}` | SELECT | PERMISSIVE | `USERS_LIVE_PRED` | (空) |
 | users | `users_insert` | `{recallmint_app}` | INSERT | PERMISSIVE | (空) | `USERS_ID_PRED` |
 | users | `users_update` | `{recallmint_app}` | UPDATE | PERMISSIVE | `USERS_LIVE_PRED` | `USERS_ID_PRED` |
 
-※ 共通形 17 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)。各表ちょうど 1 policy。
+※ 共通形 20 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `source_assets` / `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。
 
 **users に DELETE policy が無いこと**(FOR ALL も FOR DELETE も不在 = app-role の users hard delete を構造的 deny)を (B) の users 行が 3 件(select/insert/update)ちょうどであることで確認する。**非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)は (B) に 1 行も出ないこと(policy ゼロ)+ (A) で relrowsecurity=false。
 
@@ -421,6 +421,42 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 - (A)/(B)/(C) が期待とズレた場合 = 手動適用 drift の疑い。**まず enable SQL(`db/policies/*-enable.sql`)を再適用**(冪等・DROP POLICY IF EXISTS 内蔵)して期待状態へ復元し、再度 (A)〜(C) で一致を確認する。
 - roles に `public` が混入・qual が `true` 等の緩い述語に化けている場合 = tenant 境界が実質無効化されている可能性。復元前に incident 扱いで OT にエスカレーション(§3 rollback 判断)。
 - prod 有効化セッションでは policy 適用直後に (A)〜(C) を必ず readback してから smoke に進む(適用「成功」≠ 期待状態、の原則は §11.2 grant readback と同じ)。
+
+## 13. ②-4a 追記(source_assets / upload_operations / asset_derivations・3 表)
+
+②-4a(OCR 画像図版切り出し)の新設 tenant 表 3 つを **P2 / Wave1 / Wave2 と同一の共通形 policy** で RLS 化する。適用機構は §1.3 Step 3 と同一(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
+
+- **前提**: 0025 functions は P2 で適用済(新 function なし・policy SQL のみ)。migration 0026-0030 で 3 表が存在すること。
+- **適用**: `db/policies/ocr-2-4a-enable.sql` の全文を SQL Editor(owner)で実行(正本は file・実行直前に再確認)。
+- **rollback**: `db/policies/ocr-2-4a-disable.sql`(RLS 無効化のみ・policy 定義は残置。§3.1 と同型)。
+- **確認**: §13.2 の実効検証を必ず実施する(SQL Editor の readback だけでは足りない — 下記)。
+
+### 13.1 恒久規律 — 新規 tenant 表は migration と policy を同一作業内で当てる(分けない)
+
+**新しい tenant 表を追加する migration を適用したら、その同じ作業の中で対応する policy SQL(`db/policies/*-enable.sql`)を当てる。別作業に分けてはならない。**
+
+根拠(2026-08-04 実測):
+
+- **stg**: migration 0026-0030 は適用済・grant も付いていたが、`ocr-2-4a-enable.sql` は**当たっていなかった**。ledger には「適用済み・合格」と記録されていた(記録と現物の乖離)。app role 接続で無関係な tenant context を張ると `source_assets` の他 user 行が 2 件読めた。
+- **prod**: migrate 直後の状態を実測したところ **「3 表あり / RLS off / policy なし / grant は 12 行フル」**。つまり **migrate は RLS を伴わず、既定 grant だけが自動で付く**(`db/roles/recallmint_app-grants.sql:5-6` の `ALTER DEFAULT PRIVILEGES`)。**migration と policy を別作業に分けた瞬間、「表とフル権限はあるが tenant 境界は無い」窓が開く。**
+
+新表を追加する sprint では、この runbook に §13 と同型の節(対象表 / enable SQL / disable SQL / 実効検証)を**その sprint 内で追記**する。追記していない = 適用手順が存在しない = 今回と同じ漏れが起きる。
+
+### 13.2 「合格」と書いてよい条件 — app role 実効検証の出力を証跡に残すまで書かない
+
+**SQL Editor(owner)での readback は検証にならない。** owner 接続は policy を素通しするため、RLS が無効でも「見える」= false-green になる(`db/policies/ocr-2-4a-enable.sql:2-3` の非 FORCE 設計の帰結)。**実効検証は必ず app role(`recallmint_app`)接続で行い、その生出力を session doc / ledger に貼るまで「合格」と記録しない。**
+
+検証手段 = `scripts/verify-rls-state.ts`(read-only・app role 専用・カタログ突合 + 実効検証を 1 コマンド):
+
+```bash
+RLS_VERIFY_DATABASE_URL='postgresql://recallmint_app:...@<host>:6543/postgres' \
+  pnpm tsx scripts/verify-rls-state.ts [--user <uuid>]
+```
+
+- **app role 以外(owner / superuser / BYPASSRLS)では実行を拒否**して exit 2(false-green を構造的に封じる)。
+- exit code: `0` = カタログ突合合格 / `1` = カタログ不一致 or 実効検証 FAIL / `2` = 前提エラー(未検証)。
+- **実効検証が「判定不能」と出力されることがある**(migrate 直後の prod 等)。決定的証拠は「context 無しで読むと P0RLS が raise する」ことだが、**raise の有無は行数ではなく実行計画依存**(同じ空表でも index scan なら raise し seq scan なら raise しない・PG17 実測)。ゆえに raise しなかった場合は「qual はあるが評価されなかった」と「**そもそも qual が無い = RLS 未適用**」の両方を含み、観測だけでは区別できない。この場合は**カタログ突合の結果をもって判断**すること。判定不能を「合格」と書き替えないこと。
+- 期待カタログの正本は script 側(`scripts/verify-rls-state.ts`)。`tests/integration/pg/rls-drift.test.ts` は同じカタログを import する(二重管理なし)。ただし **drift test の実行先は local iso PG 固定**(`tests/integration/pg/setup/db-url.ts` の `assertLocalTestDb`)ゆえ、**stg/prod の drift を検出できるのは本 script だけ**。
 
 ## 関連 doc
 

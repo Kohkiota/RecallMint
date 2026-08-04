@@ -137,6 +137,7 @@
 | **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い |
 | **webhook 順序非保証の全パターン**(§7)| 中(決済)。clear site 複数で吸収する設計だが全到達順の網羅 test なし(Test Clock 手動 smoke が補完)|
 | **破壊 script の機械境界**(§9)| 中(運用)。env 目視 + dry-run の人手境界のみ・機械停止層なし |
+| **実環境(stg/prod)の RLS 状態が repo の enable SQL と一致していること** | 重。判定自体は機械化済(`scripts/verify-rls-state.ts` = app role 専用・read-only・カタログ突合 + 実効検証)だが、**起動が人手**のまま(定期実行なし)。drift test は local 固定ゆえ実環境には届かない。実際に、新表の policy 適用が丸ごと漏れたまま ledger には「適用済み」と記録されていた事例がある(2026-08-04)。**手当て = 新表追加時に runbook §13 の手順で適用+実効検証し、生出力を証跡に残す** |
 
 ## 残余リスク(公開前 PII 判断・記録のみ)
 

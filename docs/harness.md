@@ -23,6 +23,7 @@
 | test-only 増減宣言の形式検査 | test 変更の分類申告漏れ | 機械(Stop hook・形式)| `.claude/hooks/check-review.sh` |
 | ツール呼び出しテキスト漏れ検出 | 既知 harness バグの未実行放置 | 機械(Stop hook)| `.claude/hooks/detect-leaked-toolcall.sh` |
 | RLS 隔離 / policy drift / grant narrowing の判定 | user 間データ暴露・SQL↔DB ズレ・権限逸脱 | 機械(test:iso 内・**起動はプロセス**→§3)| `tests/integration/pg/COVERAGE.md` / `db/policies/` / `db/roles/` |
+| 実環境(stg/prod)の RLS 状態検証 | **drift test は `assertLocalTestDb` で local iso PG 固定ゆえ stg/prod の未適用・手動改変を検出できない**。実環境の照合と app role 実効検証はこの script が担う(起動はプロセス・app role 以外は実行拒否)| 機械(判定)/ プロセス(起動)| `scripts/verify-rls-state.ts` / 手順 = `docs/ops/rls-p2-stg-runbook.md` §13 |
 | Codex read-only 担保(内容ベース git clean detector)| danger-full-access 下の working tree 書換 | 機械 | `scripts/ai/worktree-snapshot.sh` |
 | audit gate 判定(prod 無条件 / dev version-aware / fail-closed / tripwire / expiry 強制)| 脆弱性・allowlist 迂回・期限切れ受容 | 機械(**起動はプロセス**→§3)| `scripts/audit-gate.mjs` |
 | exact pin による install 非 bump | 意図しない依存 bump | 機械(caret 不在)| `package.json` |
