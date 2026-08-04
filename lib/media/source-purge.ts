@@ -38,6 +38,27 @@ import { deleteObject } from '@/lib/storage/r2'
 import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { logger } from '@/lib/logger'
 
+// ②-4a Task 14b′ observability fix(2026-08-03・OT 指示): purge は成功時に無言
+// だった — stg smoke が「purge が走って速かった」と「purge が一度も呼ばれて
+// いない」を区別できないのは、新軸の中核 action として受容できない。5つの
+// terminal action それぞれが渡す trigger を union 型(string でなく)にすることで、
+// 呼出側の追加漏れを typecheck が強制する(この union が本 task の completeness
+// 保証そのもの)。
+export type SourcePurgeTrigger =
+  | 'publish_completed'
+  | 'publish_terminal'
+  | 'claim_terminal'
+  | 'stage_terminal'
+  | 'abandon'
+  | 'supersede'
+
+// R2/行とも実際に削除できた source の識別子(PII/画像内容は含まない・uuid と
+// R2 key のみ)。stg smoke の「何が消えたか」証跡。
+export type PurgedSourceAsset = {
+  sourceAssetId: string
+  objectKey: string
+}
+
 export type PurgeOperationSourcesSummary = {
   marked: number
   r2DeleteOk: number
@@ -45,6 +66,7 @@ export type PurgeOperationSourcesSummary = {
   r2DeleteFailed: number
   rowDeleteOk: number
   rowDeleteFailed: number
+  reclaimed: PurgedSourceAsset[]
 }
 
 /**
@@ -52,10 +74,14 @@ export type PurgeOperationSourcesSummary = {
  * purge する。呼出元(action 層)は「op が terminal になった直後」にのみ呼ぶ
  * (post-commit・fenced tx 自体は変更しない — brief「主経路は各 action が terminal
  * 遷移の commit 後に呼ぶ」)。冪等: 対象が無ければ何もしない(重複呼出は安全)。
+ *
+ * `trigger`: どの terminal action がこの呼出を発火させたか(observability
+ * fix・2026-08-03)。ログにのみ使う(purge の判定/削除ロジックには一切影響しない)。
  */
 export async function purgeOperationSources(
   userId: string,
   sourceDocumentId: string,
+  trigger: SourcePurgeTrigger,
 ): Promise<PurgeOperationSourcesSummary> {
   const summary: PurgeOperationSourcesSummary = {
     marked: 0,
@@ -64,6 +90,7 @@ export async function purgeOperationSources(
     r2DeleteFailed: 0,
     rowDeleteOk: 0,
     rowDeleteFailed: 0,
+    reclaimed: [],
   }
 
   // 1. mark(bulk UPDATE・grace 無し・object_key 保全)。
@@ -130,12 +157,28 @@ export async function purgeOperationSources(
 
     // decouple 順序厳守: R2 success-equivalent 確認済 → THEN 行 DELETE。
     try {
-      await withTenantTx(userId, (tx) =>
+      // Codex fix(2026-08-03 review): `.returning()` で実際に影響した行を見る。
+      // 並行 purge(design が明示的に許容する冪等 replay / defense-in-depth の
+      // 二重呼出・例 abandon-operation.ts の 'abandoned'/'completed' 両分岐)が
+      // 同じ 'deleting' candidate を select しうる — 先着の DELETE だけが行に
+      // 効き、後着は 0 行 DELETE になる。Drizzle は 0 行 DELETE で throw しない
+      // ため、`.returning()` を見ずに rowDeleteOk++/reclaimed.push すると
+      // 後着が「自分が reclaim した」と誤って報告してしまう(telemetry の目的
+      // そのものに反する)。0 行 = 他の並行呼出が既に消していた(R2 側の 404 と
+      // 対称の状況)ため、silent に何もカウントしない(loud failure ではない —
+      // エラーではなく正常な race の帰結)。
+      const deletedRows = await withTenantTx(userId, (tx) =>
         tx
           .delete(sourceAssets)
-          .where(and(eq(sourceAssets.id, sa.id), eq(sourceAssets.userId, userId))),
+          .where(and(eq(sourceAssets.id, sa.id), eq(sourceAssets.userId, userId)))
+          .returning({ id: sourceAssets.id }),
       )
-      summary.rowDeleteOk++
+      if (deletedRows.length > 0) {
+        summary.rowDeleteOk++
+        // R2+行とも実際に消えた source のみ reclaimed(観測用・識別子+R2 key
+        // のみ、PII/画像内容を含まない)。
+        summary.reclaimed.push({ sourceAssetId: sa.id, objectKey: sa.objectKey })
+      }
     } catch (err) {
       summary.rowDeleteFailed++
       logger.error({
@@ -145,6 +188,31 @@ export async function purgeOperationSources(
         err,
       })
     }
+  }
+
+  // success-path observability(2026-08-03 OT 指示): purge は従来 成功時に無言
+  // だった — stg smoke が「purge が走って速かった」と「一度も呼ばれていない」を
+  // 区別できないのは新軸の中核 action として受容できない。failure は既に
+  // recordIntegrationFailure + logger.error(上記)で trace 済のためここでは
+  // 二重報告しない — ここは「呼ばれたこと自体」+ 成功実績の trace。
+  if (summary.marked === 0 && candidates.length === 0) {
+    // mark 対象も既存 'deleting' 残置もゼロ = 呼ばれたが purge すべき source が
+    // 無かった(「呼ばれて何もしなかった」を「呼ばれていない」と区別する)。
+    logger.info({ event: 'source_purge.noop', trigger, userId, sourceDocumentId })
+  } else {
+    logger.info({
+      event: 'source_purge.done',
+      trigger,
+      userId,
+      sourceDocumentId,
+      marked: summary.marked,
+      r2DeleteOk: summary.r2DeleteOk,
+      r2Delete404: summary.r2Delete404,
+      r2DeleteFailed: summary.r2DeleteFailed,
+      rowDeleteOk: summary.rowDeleteOk,
+      rowDeleteFailed: summary.rowDeleteFailed,
+      reclaimed: summary.reclaimed,
+    })
   }
 
   return summary
@@ -163,10 +231,14 @@ export async function purgeOperationSources(
  * 観測するたびに毎回呼んでも安全かつ無害(主経路の取りこぼしに対する
  * defense-in-depth にもなる)。区別のために ClaimOperationResult 等の型を
  * 拡張しない、という簡潔性規律に基づく判断(report 参照)。
+ *
+ * `trigger`: purgeOperationSources へそのまま透過する(observability fix・
+ * 2026-08-03)。
  */
 export async function purgeOperationSourcesForOp(
   userId: string,
   operationId: string,
+  trigger: SourcePurgeTrigger,
 ): Promise<void> {
   const rows = await withTenantTx(userId, (tx) =>
     tx
@@ -176,6 +248,17 @@ export async function purgeOperationSourcesForOp(
   )
   const sourceDocumentId = rows[0]?.sourceDocumentId
   if (sourceDocumentId) {
-    await purgeOperationSources(userId, sourceDocumentId)
+    await purgeOperationSources(userId, sourceDocumentId, trigger)
+  } else {
+    // sourceDocumentId が無い(FK が SET NULL 済 = source_document が既に
+    // 削除された)= purge 対象が無い呼出。「呼ばれたが対象が無かった」を
+    // 「呼ばれていない」と区別するための trace(observability fix)。
+    logger.info({
+      event: 'source_purge.noop',
+      trigger,
+      userId,
+      operationId,
+      reason: 'source_document_null',
+    })
   }
 }

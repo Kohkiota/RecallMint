@@ -458,7 +458,7 @@ export async function claimOperation(operationId: string): Promise<ClaimOperatio
 
   const result = await withTenantTx(user.id, (tx) => claimOperationTx(tx, user, operationId))
   if (result.outcome === 'completed' || result.outcome === 'terminal_failed') {
-    await purgeOperationSourcesForOp(user.id, operationId)
+    await purgeOperationSourcesForOp(user.id, operationId, 'claim_terminal')
   }
   return result
 }

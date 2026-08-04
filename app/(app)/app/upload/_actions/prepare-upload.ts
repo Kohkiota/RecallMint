@@ -518,7 +518,7 @@ export async function prepareUpload(
     prepareUploadTx(tx, user, input, supersededOut),
   )
   for (const sourceDocumentId of supersededOut) {
-    await purgeOperationSources(user.id, sourceDocumentId)
+    await purgeOperationSources(user.id, sourceDocumentId, 'supersede')
   }
   return result
 }

@@ -444,7 +444,7 @@ export async function stagePrepared(input: StagePreparedInput): Promise<StagePre
     // ②-4a Task 14b′(主経路・post-commit): loadFencedSourceManifest 内の
     // persistManifestIncompleteTerminal は自前の withTenantTx で既に commit 済
     // (fenced tx 自体は変更しない)。purge はここ(action level・tx 外)で呼ぶ。
-    await purgeOperationSourcesForOp(user.id, operationId)
+    await purgeOperationSourcesForOp(user.id, operationId, 'stage_terminal')
     return { outcome: 'terminal_failed', reason: loaded.reason }
   }
   if (loaded.outcome !== 'ok') return { outcome: loaded.outcome }
@@ -535,7 +535,7 @@ export async function stagePrepared(input: StagePreparedInput): Promise<StagePre
     // ②-4a Task 14b′(主経路・post-commit): stageSaveCas 内の
     // persistManifestIncompleteTerminal も上と同じく自前の withTenantTx で commit
     // 済(fenced tx 自体は変更しない)。
-    await purgeOperationSourcesForOp(user.id, operationId)
+    await purgeOperationSourcesForOp(user.id, operationId, 'stage_terminal')
     return { outcome: 'terminal_failed', reason: 'source_manifest_incomplete' }
   }
 

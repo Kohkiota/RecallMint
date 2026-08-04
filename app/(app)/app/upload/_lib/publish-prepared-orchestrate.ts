@@ -210,7 +210,7 @@ async function persistTerminalFailedAndPurge(
 ): Promise<PublishPreparedResult> {
   const result = await persistTerminalFailed(userId, operationId, leaseVersion, reason)
   if (result.outcome === 'failed' && sourceDocumentId !== null) {
-    await purgeOperationSources(userId, sourceDocumentId)
+    await purgeOperationSources(userId, sourceDocumentId, 'publish_terminal')
   }
   return result
 }
@@ -406,7 +406,7 @@ export async function runPublishPrepared(
   // ②-4a Task 14b′(主経路・post-commit・completed): publishPreparedUploadTx が
   // 'published' を返した = tx は既に commit 済(status='completed')。fenced tx
   // 自体は変更せず、ここ(action level)で source を purge する(brief「主経路」)。
-  await purgeOperationSources(userId, sourceDocumentId)
+  await purgeOperationSources(userId, sourceDocumentId, 'publish_completed')
 
   return {
     outcome: 'published',

@@ -133,9 +133,9 @@ export async function abandonUploadOperation(
   if (!user) return { outcome: 'unauthenticated' }
   const result = await withTenantTx(user.id, (tx) => abandonUploadOperationTx(tx, user, input))
   if (result.outcome === 'abandoned') {
-    await purgeOperationSourcesForOp(user.id, input.operationId)
+    await purgeOperationSourcesForOp(user.id, input.operationId, 'abandon')
   } else if (result.outcome === 'completed' && result.sourceDocumentId) {
-    await purgeOperationSources(user.id, result.sourceDocumentId)
+    await purgeOperationSources(user.id, result.sourceDocumentId, 'abandon')
   }
   return result
 }
