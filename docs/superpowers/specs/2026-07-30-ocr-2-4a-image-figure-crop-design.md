@@ -2,7 +2,7 @@
 
 - 日付: 2026-07-30(初版)/ **2026-07-31 改訂: prepare→publish 方式へ全面改訂**。
 - 位置付け: ②-4 本体を **画像入稿のみ**にスコープした ②-4a の設計正本。PDF rasterize / Files API / page 固有メタは ②-4b。
-- 状態: **凍結(実装中)**。方式(未公開 payload + atomic publish)は Codex plan cross-check で妥当判定済。**§H Codex 差分レビュー実施済**(2026-07-31・`docs/codex/2026-07-31-ocr-2-4a-revision.md`): P1=1(§6.2 で対処済)。**2026-07-31 実装中改訂(OT 確定・Codex 再レビュー不要と OT 判断)**: (a) `input_fingerprint` 廃止 + 冪等契約明記(§2)(b) source_assets の検証済 5 列 nullable + lean reservation + `client_declared_*` 非採用(§6.1)(c) 日次 Gemini cap 配線 + T4 user advisory lock + 同時 1 upload 制限(§3・非原子)(d) §7.3 を crop-derived に限定。以降の仕様変更は停止して OT 相談。
+- 状態: **部分置換済(2026-08-05・S-1〜S-5 の 1 invocation 化による)**。invocation 構造・source 保存(source は R2 非経由・`source_assets` 表撤去)・reserve/finalize/claim/stage/manifest・retry/resume/takeover 系の記述は `docs/superpowers/specs/2026-08-04-ocr-2-4a-single-invocation-design.md` が置換した。crop / 座標 / 除外 / publish 各契約の現行性は同 spec §6「引き継ぐ不変条件」の列挙を正とする。(以下は履歴)方式(未公開 payload + atomic publish)は Codex plan cross-check で妥当判定済。**§H Codex 差分レビュー実施済**(2026-07-31・`docs/codex/2026-07-31-ocr-2-4a-revision.md`): P1=1(§6.2 で対処済)。**2026-07-31 実装中改訂(OT 確定・Codex 再レビュー不要と OT 判断)**: (a) `input_fingerprint` 廃止 + 冪等契約明記(§2)(b) source_assets の検証済 5 列 nullable + lean reservation + `client_declared_*` 非採用(§6.1)(c) 日次 Gemini cap 配線 + T4 user advisory lock + 同時 1 upload 制限(§3・非原子)(d) §7.3 を crop-derived に限定。以降の仕様変更は停止して OT 相談。
 - 前提資料: fact-finding(`docs/audit/2026-07-29-ocr-2-4-factfinding.md`)/ 実測 exp1-6(`scripts/ai/_ocr-*.ts`)/ Codex plan cross-check(`docs/codex/2026-07-30-plan-ocr-2-4a.md`)/ sync 調査(本 session)。
 
 ---
