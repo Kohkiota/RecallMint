@@ -281,3 +281,69 @@ env 注入)を検証しない** — この形(外部 I/O module を丸ごと moc
 行駆動の GC(DB の `object_key` 列を起点にする方式)では原理的に発見できず、listing 駆動なら
 拾えることが今回実証された。follow-up「crop lane の row-less orphan 検出」(§4 既述の
 `listObjects` 転用先)の判断材料として記録する。
+
+---
+
+## 9. `src/` 一掃の本実行(2026-08-05・OT 指示・**実施済**)
+
+対象 bucket = `recallmint-dev`(**local dev と stg で意図的に共有**・OT 確定)。したがって
+以下は **stg の実物に対する削除**である。commit = `58139cd`(S-5fix)時点の script。
+
+### 9.1 手順(確認 → 削除の 2 段・既存の破壊 script 規律)
+
+**① 実行直前の再 dry-run**(前回 dry-run から時間が経っており、その間の upload で増減しうるため):
+
+```
+[dry-run] listed=105 matched=14 skipped=91 (would delete 14 object(s); rerun with --execute to delete)
+```
+
+前回実測と**完全一致(14 件)**したため本実行へ進んだ。不一致なら実行せず停止する取り決め。
+
+**② `--execute`**(生出力):
+
+```
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/091fab53-54af-4d78-876a-9e7da336dd23.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/1214b786-2d4e-4835-bc83-c125bd267ded.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/4c209654-5fd6-41ae-bc53-6d594dc720ee.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/4e66526c-9027-4fc1-9caa-c087de2372c0.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/5bb42439-1b40-48ee-936e-d3b3e4ccf4b5.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/654e3523-86bc-431f-9910-7ab819656ca3.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/90b1347c-d0ab-4be3-9f40-43472e7826c0.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/9b455431-b46d-46a0-b94c-6fa1d604cb3c.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/c4d46ec7-5a8b-4e95-ac98-de0f4dd76a1c.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/cd5db7cb-54e9-4c79-b8f7-cc24564fef0e.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/f2b0c1c0-550a-472e-8114-8d613bee08dc.webp
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/tmp/2c8889ca-4c33-4e9a-941b-32ff7f7e1663
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/tmp/74882112-48dc-4bc6-800b-4bd2a430fe8f
+users/85541b25-51e9-44a3-8952-e383f98d4ae3/src/tmp/a8490063-87d6-4078-930b-043e5e97fde1
+done. listed=105 matched=14 skipped=91 deleted=14 failed=0 remainingAfterReadback=0
+```
+
+exit 0 / `deleted=14` / `failed=0` / script 内蔵の readback も `remainingAfterReadback=0`。
+
+**③ 独立 readback**(script 内蔵の確認とは別に、もう一度 listing した結果):
+
+```
+[dry-run] listed=91 matched=0 skipped=91 (would delete 0 object(s); rerun with --execute to delete)
+```
+
+`users/*/src/` 配下 = **0 件**。`listed` は 105 → 91 と**ちょうど 14 減**り、`skipped=91` は不変
+= crop / 添付 asset(`users/{uid}/{assetId}.webp`)には一切触れていない。
+
+### 9.2 削除した 14 件(証跡)
+
+上記 ② の一覧が全件。内訳:
+
+- `users/85541b25-…/src/{uuid}.webp` **11 件** = finalize 済の source object(旧経路の最終 key)
+- `users/85541b25-…/src/tmp/{uuid}` **3 件**(拡張子なし)= finalize が `object_key` を最終 key へ
+  差し替えた後に残った **row-less orphan**。行駆動 GC では原理的に発見できなかったもの
+  (§8 の記録どおり、listing 駆動でのみ回収できた)
+
+user は 1 名(`85541b25-51e9-44a3-8952-e383f98d4ae3`)のみ。既知 orphan
+`654e3523-86bc-431f-9910-7ab819656ca3` も削除済。
+
+### 9.3 これで満たされた完了条件
+
+plan Task S-5 ③ の「stg: `src/` prefix 空(listing で確認)」= **達成**。
+残る stg 側の完了条件は **migration 0032 の適用**と **GDPR 退会 iso**(いずれも push 後)。
+0032 との順序制約は無い(§5.0.2 のとおり listing 駆動のため)。
