@@ -65,7 +65,7 @@ export default async function UploadPage() {
     <>
       <h1 className="text-2xl font-bold">アップロード</h1>
       <p className="text-sm text-slate-600">
-        試験問題の画像や PDF を選択すると、 AI が問題を抽出します。
+        試験問題の画像を選択すると、 AI が問題を抽出します。
         抽出結果は次の画面で確認 / 保存できます。
       </p>
     </>

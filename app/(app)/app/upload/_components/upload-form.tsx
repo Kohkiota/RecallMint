@@ -654,15 +654,15 @@ export function UploadForm({
       <section>
         <h2 className="text-lg font-bold mb-2">ファイルを選択</h2>
         <p className="text-sm text-slate-600 mb-3">
-          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF はそのまま投入されます。
+          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF は現在未対応です。
           <br />
-          1 ファイル最大 {MAX_PDF_PAGES} ページ、 合計 {OCR_MAX_PAGES} ページ・サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB まで。
+          合計 {OCR_MAX_PAGES} 枚・サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB まで。
         </p>
         <input
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*,application/pdf"
+          accept="image/*"
           disabled={isSubmitting}
           onChange={(e) => handleAdd(e.target.files)}
           className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:font-medium disabled:opacity-50 disabled:cursor-not-allowed"
