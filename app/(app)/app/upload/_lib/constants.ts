@@ -93,6 +93,35 @@ export const CROP_PHASE_BUDGET_MS = 600 * 1000
 // 測定前に決め打ちしない。phase 別所要時間を logger.warn で出しているのが材料)。
 export const UPLOAD_PIPELINE_BUDGET_MS = 660 * 1000
 
+// ②-4a 単一 invocation S-4: upload page の完了検知 poll(/api/exams/status の
+// `docStatuses`)。 5 秒間隔は spec 2026-08-04 §5 の確定値。
+export const DOC_STATUS_POLL_INTERVAL_MS = 5 * 1000
+
+// poll の縮退条件 1: 連続で fetch に失敗した回数(ネットワーク断 / 5xx)。到達したら
+// poll を止めて「試験一覧で確認」へ倒す(既存 kick session の「error で無限 poll」を
+// 再現しない)。
+export const DOC_STATUS_POLL_MAX_FETCH_FAILURES = 6
+
+// poll の縮退条件 2: 絶対上限。 `processing` が返り続ける hard-death ケース
+// (after() の callback が死に、lease 失効 → reconciler 収束を待つ間)で poll が
+// 無限に続くのを防ぐ(Codex #7)。 **暫定値**(時間予算と同じく実測後に見直す)。
+export const DOC_STATUS_POLL_LIMIT_MS = 20 * 60 * 1000
+
+// ②-4a 単一 invocation S-4: 「この upload がどうなったか今この場では確定できない」
+// ときの**公開文言(単一の正)**。 spec 論点 A の確定事項どおり **待ち時間の数値を
+// 書かない / 試験の削除を案内しない**。
+//
+// 適用面は 4 つ(同じ状況を別の言い方で説明しないための単一定義):
+//   ① upload page の poll が `failed` を返したとき
+//   ② `submitUpload` が `in_progress`(別 op が valid lease を保持)を返したとき
+//   ③ `/app/upload` 再訪時の「処理中」カード(hasActiveProcessingUpload)
+//   ④ result page の失敗パネル(S-3 で導入)
+// ②③ に同じ文言を当てるのは、どちらも「生きている実行」と「死んだが lease が
+// まだ切れていない実行」を **アプリ側から区別できない**ため — 「実行中です」と
+// 断定すると、既に死んでいる場合に嘘になる。
+export const UPLOAD_INTERRUPTED_NOTICE =
+  '処理が中断された可能性があります。 しばらく待ってから再度お試しください。 処理状況は試験一覧で確認できます。'
+
 // crop 1 件を新たに試みるために要求する最低残り予算(spec §11「crop 最低予算」・
 // soft pre-crop gate)。 暫定値 — cutover 後の実測で見直す(2026-08-02 OT 確定:
 // 時間予算の精緻化は測定前に決め打ちしない)。

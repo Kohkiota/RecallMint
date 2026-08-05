@@ -69,7 +69,7 @@ const MIN_MS = 60 * 1000
 // Class A(reserved-not-live)専用 margin(16分)の境界を試験するための基準時刻。
 const OLD_CREATED = new Date(Date.now() - (SOURCE_RESERVED_NET_GRACE_MS + 10 * MIN_MS)) // margin 超
 const RECENT_CREATED = new Date(Date.now() - 5 * MIN_MS) // margin 未満
-const OP_RECENT = new Date(Date.now() - 1 * MIN_MS) // PREPARED_RETENTION_MS(7日)以内 = live
+const OP_RECENT = new Date(Date.now() - 1 * MIN_MS) // 直近作成(S-4 以降 live 判定は lease のみ)
 
 async function seedUser(): Promise<string> {
   const owner = getFixtureOwnerDb()
@@ -275,14 +275,17 @@ describe('gc-image-assets source lane (T14b′・網) — 実 PG 破壊 end-to-e
     expect(await readSourceAsset(id)).toBeUndefined()
   })
 
-  it('④ live-op 除外: reserved source 自体は margin 超だが owning op が live(直近作成・非終端)→ GC されない', async () => {
+  // ②-4a S-4: live 述語から 7 日 window を撤去したため、live の条件は「非終端 かつ
+  // valid lease」だけになった(seed を lease 保持へ最小追随)。 旧経路 file 群と
+  // 併せて S-5 で撤去予定。
+  it('④ live-op 除外: reserved source 自体は margin 超だが owning op が live(valid lease 保持・非終端)→ GC されない', async () => {
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const sourceDocumentId = await seedSourceDocument(userId, examId)
     await seedOp(userId, examId, sourceDocumentId, {
       status: 'awaiting_sources',
-      createdAt: OP_RECENT, // PREPARED_RETENTION_MS 以内 = live
-      leaseExpiresAt: null,
+      createdAt: OP_RECENT,
+      leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // S-4: live = valid lease
     })
     const { id } = await seedSourceAsset(userId, sourceDocumentId, {
       status: 'reserved',

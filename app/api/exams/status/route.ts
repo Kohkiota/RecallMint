@@ -26,6 +26,7 @@ import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments, uploadOperations } from '@/lib/db/schema'
 import {
   STALE_PROCESSING_MS,
+  deriveDocStatuses,
   deriveExamStatuses,
 } from '@/lib/exams/derive-exam-statuses'
 import {
@@ -36,16 +37,43 @@ import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
 
+// `?doc=<uuid>` の抽出。 uuid v1-v8 の canonical 形だけを通す(それ以外は null =
+// 無視)。 URL 自体が壊れている場合も null(poll を 500 にしない)。
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function parseDocParam(req: Request): string | null {
+  let raw: string | null
+  try {
+    raw = new URL(req.url).searchParams.get('doc')
+  } catch {
+    return null
+  }
+  return raw !== null && UUID_RE.test(raw) ? raw : null
+}
+
 export const GET = withReadOnlyAuth(
   {
     // Clerk session はあるが users 行が未 sync (sign-up race) → 空 statuses を返す。
-    emptyBody: { statuses: {} },
+    // docStatuses も空で返す(②-4a S-4): poll する client は「key 不在 = まだ
+    // 結果が出ていない」として待ち続ける — completed へ誤って倒さない。
+    emptyBody: { statuses: {}, docStatuses: {} },
     // authFailEvent なし → 予期しない auth エラーは rethrow (framework default 500)。
     // この非対称は既存挙動を保存する (他 3 route の 500+no-store 統一とは異なる)。
   },
-  async (user, headers) => {
+  async (user, headers, req) => {
     try {
       const now = new Date()
+      // ②-4a S-4 fix round 2(Codex P2): poll する client が **自分の doc を名指しで**
+      // 問い合わせるための optional param。 下の主 query は DISTINCT ON (exam_id) で
+      // exam ごと最新 1 件に縮約するため、同じ exam に 2 件目の upload が入ると
+      // 1 件目の doc が `docStatuses` から落ちる。 client は key 不在を「まだ処理中」
+      // として扱うので、実際には completed でも絶対上限(20 分)まで待たされる。
+      // param 経由で 1 件だけ足せばこの構造的依存が切れる。
+      // uuid 形式でなければ**無視**する(400 にしない): poll endpoint は壊れるより
+      // 無害側に倒す。 加えて素の文字列を PK 比較に渡すと Postgres が 22P02 で
+      // 落ち、poll 全体が 500 になる。
+      const requestedDocId = parseDocParam(req)
       // owner-scope 必須。examId / status / createdAt の 3 列のみ取得する。
       // D1 (S2.0c): DISTINCT ON (exam_id) + ORDER BY exam_id, created_at DESC で
       // exam ごと最新の source_document 1 行のみを DB 側で畳む。
@@ -90,6 +118,39 @@ export const GET = withReadOnlyAuth(
       // (live-op 保護がある場合を除く)。
       const statuses = deriveExamStatuses(rows, now, liveOpSourceDocumentIds)
 
+      // ②-4a 単一 invocation S-4(spec 2026-08-04 §5): doc 粒度の status を
+      // **additive** に足す。 upload page が自分の source_document 1 件を poll して
+      // completed で result page へ auto-nav / failed で中断案内を出すための最小
+      // 情報で、既存 `statuses`(exam 粒度)と exam-status-live.tsx は無改変。
+      // owner-scope は上の SELECT(user_id 絞り)が担保する = 他人の doc は
+      // そもそも rows に入らない。
+      //
+      // fix round 2: 名指しされた doc が DISTINCT ON から漏れている場合だけ、
+      // PK 引き 1 件を足す(owner-scope を query 自体でも明示 = 他人の doc は
+      // 0 行で返る)。 rows に既に居るなら追加 query は撃たない。
+      const docRows = [...rows]
+      if (requestedDocId !== null && !rows.some((r) => r.id === requestedDocId)) {
+        const extra = await withTenantTx(user.id, (tx) =>
+          tx
+            .select({
+              examId: sourceDocuments.examId,
+              id: sourceDocuments.id,
+              status: sourceDocuments.status,
+              createdAt: sourceDocuments.createdAt,
+            })
+            .from(sourceDocuments)
+            .where(
+              and(
+                eq(sourceDocuments.id, requestedDocId),
+                eq(sourceDocuments.userId, user.id), // owner-scope 必須
+              ),
+            )
+            .limit(1),
+        )
+        docRows.push(...extra)
+      }
+      const docStatuses = deriveDocStatuses(docRows, now, liveOpSourceDocumentIds)
+
       // 15 分超の processing 残骸があれば DB cleanup を実行する。
       // D1 後 rows は exam ごと最新行のみ。 hasStale は「いずれかの exam の最新が
       // stale processing か」を見る。 reconcile は user の stale processing 行を
@@ -106,7 +167,10 @@ export const GET = withReadOnlyAuth(
       }
 
       return Response.json(
-        { statuses: Object.fromEntries(statuses) },
+        {
+          statuses: Object.fromEntries(statuses),
+          docStatuses: Object.fromEntries(docStatuses),
+        },
         { status: 200, headers },
       )
     } catch (err) {

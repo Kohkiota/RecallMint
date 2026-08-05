@@ -12,7 +12,13 @@
 // 差し替えたため、 submit を実際に fire するテスト群は submitUpload だけをモックする。
 // entries 管理 / page-cap 判定 (submit を fire しない範囲)は runProcess 変更の影響を
 // 受けないため無改修。
+//
+// Task S-4: server は sync tx 直後に `accepted` を返し、本処理は after() で走る。
+// ゆえに `accepted` 単体では result page へ遷移せず、/api/exams/status の
+// `docStatuses` を 5 秒 poll して `completed` を見てから遷移する。 poll の縮退
+// (連続 fetch 失敗 / 絶対上限)と離脱ガード撤去もここで pin する。
 
+import { StrictMode } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 
@@ -562,8 +568,10 @@ describe('submitUpload に渡す FormData', () => {
     expect(files.every((f) => f instanceof File)).toBe(true)
     expect((files as File[]).map((f) => f.name)).toEqual(['a.jpg', 'b.jpg'])
 
-    // client 直 PUT は無くなった(fetch を一切使わない)。
-    expect(mockRouterPush).toHaveBeenCalledWith('/app/upload/result/doc-123')
+    // S-4: `accepted` を受け取っただけでは result page へ遷移しない(本処理は
+    // after() で走っており、この時点では何も完了していない)。遷移は poll が
+    // completed を返してから — 下の「docStatuses poll」describe で pin する。
+    expect(mockRouterPush).not.toHaveBeenCalled()
   })
 
   it('既存 exam を選ぶと mode=existing + examId が載る', async () => {
@@ -613,7 +621,8 @@ describe('submitUpload に渡す FormData', () => {
   })
 
   it('submit のたびに新しい idempotencyKey を発行する(ユーザー再試行 = 別 operation)', async () => {
-    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
+    // 2 回とも in_progress にして poll に入らせない(この test の関心は key だけ)。
+    vi.mocked(submitUpload).mockResolvedValue({ outcome: 'in_progress' })
     await renderWithFiles([makeImage('a.jpg')])
 
     const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
@@ -630,5 +639,264 @@ describe('submitUpload に渡す FormData', () => {
     const first = vi.mocked(submitUpload).mock.calls[0][0].get('idempotencyKey')
     const second = vi.mocked(submitUpload).mock.calls[1][0].get('idempotencyKey')
     expect(first).not.toBe(second)
+  })
+})
+
+// ─── S-4: docStatuses poll / 縮退 / 離脱ガード撤去 ─────────────────────────────
+
+import {
+  DOC_STATUS_POLL_INTERVAL_MS,
+  DOC_STATUS_POLL_LIMIT_MS,
+  DOC_STATUS_POLL_MAX_FETCH_FAILURES,
+  UPLOAD_INTERRUPTED_NOTICE,
+} from '../_lib/constants'
+
+function statusOk(docStatuses: Record<string, string>) {
+  return {
+    ok: true,
+    json: async () => ({ statuses: {}, docStatuses }),
+  } as unknown as Response
+}
+
+describe('docStatuses poll(S-4)', () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    mockFetch = vi.fn().mockResolvedValue(statusOk({ 'doc-123': 'processing' }))
+    vi.stubGlobal('fetch', mockFetch)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  /** fake timer 下で file を追加して render する(renderWithFiles の fake 版)。 */
+  async function renderAndSubmit(
+    files: File[] = [makeImage('a.jpg')],
+    opts: { strict?: boolean } = {},
+  ) {
+    const form = <UploadForm {...DEFAULT_PROPS} />
+    render(opts.strict ? <StrictMode>{form}</StrictMode> : form)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      Object.defineProperty(input, 'files', {
+        value: makeFileList(files),
+        configurable: true,
+      })
+      fireEvent.change(input)
+      await vi.advanceTimersByTimeAsync(50)
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('completed を観測してから result page へ遷移する(それまでは遷移しない)', async () => {
+    await renderAndSubmit()
+
+    // 受付直後: まだ 1 度も poll していない = 遷移もしない。
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockRouterPush).not.toHaveBeenCalled()
+
+    // 1 周期目は processing → まだ遷移しない。
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    // fix round 2(Codex P2): 自分の doc を名指しする(endpoint の既定 map は
+    // exam ごと最新 1 件に縮約されるため、名指ししないと自分の doc が落ちうる)。
+    expect(mockFetch.mock.calls[0][0]).toBe('/api/exams/status?doc=doc-123')
+    expect(mockRouterPush).not.toHaveBeenCalled()
+
+    // 2 周期目で completed → 遷移。
+    mockFetch.mockResolvedValue(statusOk({ 'doc-123': 'completed' }))
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(mockRouterPush).toHaveBeenCalledWith('/app/upload/result/doc-123')
+  })
+
+  // StrictMode(next.config.ts: reactStrictMode: true)の dev 二重実行
+  // setup→cleanup→setup で mountedRef が false 固定になると、poll は最初の周期で
+  // 'aborted' を返し、spinner が出たまま auto-nav も失敗表示も永久に起きない。
+  // production build では二重実行しないため stg smoke には出ず、ローカル開発でだけ
+  // 新 flow が丸ごと死ぬ — 素の render では検出できないのでここで張る。
+  it('StrictMode の二重 mount 後も poll が動く(mountedRef が false 固定にならない)', async () => {
+    await renderAndSubmit([makeImage('a.jpg')], { strict: true })
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    mockFetch.mockResolvedValue(statusOk({ 'doc-123': 'completed' }))
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(mockRouterPush).toHaveBeenCalledWith('/app/upload/result/doc-123')
+  })
+
+  it('自分以外の doc が completed でも遷移しない(自 doc の key だけを見る)', async () => {
+    mockFetch.mockResolvedValue(statusOk({ 'doc-other': 'completed' }))
+    await renderAndSubmit()
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * 3)
+    expect(mockRouterPush).not.toHaveBeenCalled()
+  })
+
+  it('failed を観測したら公開文言を出す(削除案内なし・待ち時間の数値なし)', async () => {
+    mockFetch.mockResolvedValue(statusOk({ 'doc-123': 'failed' }))
+    await renderAndSubmit()
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+
+    expect(mockRouterPush).not.toHaveBeenCalled()
+    // 開発用 ErrorDetails(staging/dev のみ)にも同文が出るため件数で見る。
+    expect(screen.getAllByText(UPLOAD_INTERRUPTED_NOTICE).length).toBeGreaterThanOrEqual(1)
+    // 公開文言の規律(3 面共通): 待ち時間の数値を書かない / 試験の削除を案内しない。
+    expect(UPLOAD_INTERRUPTED_NOTICE).not.toMatch(/\d+\s*(分|秒|時間)/)
+    expect(UPLOAD_INTERRUPTED_NOTICE).not.toContain('削除')
+    // 「ファイルを変更して再試行」は出さない(ファイルの問題ではない)。
+    expect(
+      screen.queryByText(/ファイルを変更して再度お試しください/),
+    ).not.toBeInTheDocument()
+    // poll は止まる(失敗確定後に叩き続けない)。
+    const callsAtFailure = mockFetch.mock.calls.length
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * 3)
+    expect(mockFetch.mock.calls.length).toBe(callsAtFailure)
+  })
+
+  it(`連続 ${DOC_STATUS_POLL_MAX_FETCH_FAILURES} 回の fetch 失敗で poll を止め「試験一覧で確認」へ縮退する`, async () => {
+    mockFetch.mockRejectedValue(new Error('offline'))
+    await renderAndSubmit()
+
+    // 1 回手前(5 回)ではまだ縮退しない。
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * (DOC_STATUS_POLL_MAX_FETCH_FAILURES - 1))
+    expect(
+      screen.queryByText(/処理状況を確認できませんでした/),
+    ).not.toBeInTheDocument()
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(
+      screen.getAllByText(/処理状況を確認できませんでした/).length,
+    ).toBeGreaterThanOrEqual(1)
+
+    const callsAtDegrade = mockFetch.mock.calls.length
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * 3)
+    expect(mockFetch.mock.calls.length).toBe(callsAtDegrade)
+  })
+
+  it('連続でない失敗(間に成功が挟まる)は縮退させない(連続カウンタが reset される)', async () => {
+    await renderAndSubmit()
+
+    for (let i = 0; i < DOC_STATUS_POLL_MAX_FETCH_FAILURES - 1; i++) {
+      mockFetch.mockRejectedValueOnce(new Error('offline'))
+      await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    }
+    // 成功を 1 回挟む(既定 mock = processing)。
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    for (let i = 0; i < DOC_STATUS_POLL_MAX_FETCH_FAILURES - 1; i++) {
+      mockFetch.mockRejectedValueOnce(new Error('offline'))
+      await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    }
+
+    expect(
+      screen.queryByText(/処理状況を確認できませんでした/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('endpoint が正常でも processing のままなら絶対上限で poll を止める(hard-death の無限 poll 防止)', async () => {
+    await renderAndSubmit()
+
+    // 上限の 1 周期手前まではまだ回り続ける。
+    await advance(DOC_STATUS_POLL_LIMIT_MS - DOC_STATUS_POLL_INTERVAL_MS)
+    expect(
+      screen.queryByText(/処理状況を確認できませんでした/),
+    ).not.toBeInTheDocument()
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    expect(
+      screen.getAllByText(/処理状況を確認できませんでした/).length,
+    ).toBeGreaterThanOrEqual(1)
+
+    const callsAtDegrade = mockFetch.mock.calls.length
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * 5)
+    expect(mockFetch.mock.calls.length).toBe(callsAtDegrade)
+  })
+
+  it('!res.ok(5xx)は fetch 失敗として数える', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'internal' }),
+    } as unknown as Response)
+    await renderAndSubmit()
+
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * DOC_STATUS_POLL_MAX_FETCH_FAILURES)
+    expect(
+      screen.getAllByText(/処理状況を確認できませんでした/).length,
+    ).toBeGreaterThanOrEqual(1)
+  })
+
+  it('unmount 後は poll を続けない(離脱後に fetch を撃ち続けない)', async () => {
+    await renderAndSubmit()
+    await advance(DOC_STATUS_POLL_INTERVAL_MS)
+    const callsBefore = mockFetch.mock.calls.length
+
+    cleanup()
+    await advance(DOC_STATUS_POLL_INTERVAL_MS * 5)
+
+    expect(mockFetch.mock.calls.length).toBe(callsBefore)
+  })
+})
+
+// ─── S-4: 離脱ガードの撤去 + 処理中案内の文言 ─────────────────────────────────
+describe('離脱ガード撤去(S-4)', () => {
+  it('submitting 中に beforeunload / popstate を登録しない(閉じても処理は続く)', async () => {
+    const addSpy = vi.spyOn(window, 'addEventListener')
+    const pushStateSpy = vi.spyOn(window.history, 'pushState')
+
+    await renderWithFiles([makeImage('a.jpg')])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    const events = addSpy.mock.calls.map((c) => c[0])
+    expect(events).not.toContain('beforeunload')
+    expect(events).not.toContain('popstate')
+    // popstate sentinel(history.pushState でダミー entry を積む)も撤去済み。
+    expect(pushStateSpy).not.toHaveBeenCalled()
+
+    addSpy.mockRestore()
+    pushStateSpy.mockRestore()
+  })
+
+  it('処理中案内は「閉じても後で確認できる」旨(「閉じないでください」を出さない)', async () => {
+    await renderWithFiles([makeImage('a.jpg')])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    expect(
+      screen.getByText(/この画面を閉じても処理は続き/),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/閉じたり戻ったりしないでください/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('in_progress は公開文言(単一定義)を出す — 「実行中」と断定しない', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
+
+    await renderWithFiles([makeImage('a.jpg')])
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    expect(screen.getAllByText(UPLOAD_INTERRUPTED_NOTICE).length).toBeGreaterThanOrEqual(1)
   })
 })

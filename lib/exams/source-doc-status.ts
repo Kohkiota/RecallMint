@@ -20,6 +20,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   notExists,
   or,
@@ -29,29 +30,46 @@ import {
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { sourceDocuments, uploadOperations, uploadRecords } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
-import {
-  PREPARED_RETENTION_MS,
-  STALE_PROCESSING_MS,
-  deriveExamStatuses,
-} from './derive-exam-statuses'
+import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 
 // ---------------------------------------------------------------------------
 // isLiveUploadOperationCondition
 // ---------------------------------------------------------------------------
-// spec §11: an `upload_operations` row is "live" (still resumable) iff it is
-// non-terminal (awaiting_sources/claimed/prepared) AND either (a) within
-// `PREPARED_RETENTION_MS` of its immutable `created_at`, or (b) currently
-// holding a valid lease (`lease_expires_at > now()` — a concurrently-
-// advancing operation must never be swept/hidden regardless of age). All
-// time comparisons use PostgreSQL `now()` (same discipline as the rest of the
-// lease-fencing regime — the DB, not app clocks, is the arbiter).
+// ②-4a 単一 invocation spec(2026-08-04)§5: an `upload_operations` row is
+// "live" iff it is non-terminal AND currently holding a valid lease
+// (`lease_expires_at > now()`). All time comparisons use PostgreSQL `now()`
+// (same discipline as the rest of the lease-fencing regime — the DB, not app
+// clocks, is the arbiter).
+//
+// **S-4 の簡素化(仕様変更)**: 旧述語は「(a) `created_at` が
+// `PREPARED_RETENTION_MS`(7 日)以内 **または** (b) valid lease」だった。(a) の
+// 存在理由は「retryable な prepared operation を後から再 claim して再開できる」
+// という旧 prepare→publish flow の resume 機構(旧 spec §11)であり、新経路は
+// resume を持たない(失敗は全て terminal・再試行主体は居ない = spec §4.5)ため
+// 根拠ごと消滅した。lease だけが「今このオペレーションを進めている invocation が
+// 生存している」表明であり、それが唯一の live の定義になる。
+// 帰結 = invocation が死んだときの「処理中」表示が **最大 7 日 → 最大 ~15 分**
+// (LEASE_TTL_MS)に短縮される。
+//
+// `PREPARED_RETENTION_MS` 定数そのものは残す(claim-operation.ts の 7 日 cap が
+// 旧経路で参照中 — 撤去は S-5)。
 //
 // This condition builds a `WHERE`-fragment only (no I/O) so it composes with
-// whichever query calls it. Shared by 3 call sites (rule of three, T14a fix
-// round 2): `reconcileStaleProcessing` (source protection, negated form via
-// NOT EXISTS below), `getExamStatusMap` (display op-awareness), and
-// `scripts/gc-abandoned-operations.ts` (sweep candidate selection — the
-// negation of this predicate, i.e. operations that do NOT satisfy it).
+// whichever query calls it. **Shared by 5 call sites** (count corrected in
+// S-4 — the comment said 3 while route.ts and gc-image-assets.ts had already
+// been added; anyone assessing a change to this predicate must weigh all 5):
+//   1. `reconcileStaleProcessing` (source protection, negated form via
+//      NOT EXISTS below)
+//   2. `getExamStatusMap` (display op-awareness)
+//   3. `app/api/exams/status/route.ts` (poll endpoint — same display awareness)
+//   4. `scripts/gc-abandoned-operations.ts` (sweep candidate selection — the
+//      negation of this predicate, i.e. operations that do NOT satisfy it)
+//   5. `scripts/gc-image-assets.ts` source lane (`opIsLive` in the dry-run
+//      preview + the Class A `promoteSourceAssets` NOT EXISTS — a live owning
+//      op keeps a `reserved` source_asset out of the destructive lane)
+// 5 が最も重い: 判定が false へ倒れると R2 object + 行の削除に繋がる。S-4 の
+// lease-only 化で「lease を持たない非終端 op」が守らなくなった影響はそこにも及ぶ
+// (該当 script 側にも同趣旨の注記を置いた)。
 //
 // Return type: drizzle's `and()`/`or()` are typed `SQL | undefined` in
 // general (they can receive filtered-out/undefined branches elsewhere in the
@@ -61,25 +79,19 @@ import {
 // site, notably `not(isLiveUploadOperationCondition())` in
 // gc-abandoned-operations.ts, which requires a non-optional `SQLWrapper`).
 //
-// fix round 3(Codex + canonical Critical, both against real PG17): the lease
-// branch MUST be NULL-free. SQL is three-valued — `lease_expires_at > now()`
-// evaluates to NULL (not false) when `lease_expires_at IS NULL`, which is the
-// **dominant** abandoned state (prepare-upload never sets a lease; every
-// retryable-failure path resets `leaseExpiresAt: null`). For an aged-out row
-// with a null lease: `false OR NULL = NULL`, so the whole condition is NULL.
-// The 3 positive consumers (reconciler NOT EXISTS / getExamStatusMap /
-// route.ts) use this un-negated in a WHERE/NOT-EXISTS, where NULL and false
-// are both "excluded" — so they were accidentally correct despite the bug.
-// But `scripts/gc-abandoned-operations.ts` uses `not(isLiveUploadOperationCondition())`
-// as its WHERE predicate: `not(NULL) = NULL`, and Postgres WHERE treats NULL
-// as false → the row was silently excluded from the sweep — i.e. the sweep
-// found NOTHING for exactly the dominant case it exists to clean. Guarding
-// the lease branch with `isNotNull` first (mirroring the `isNull`/`isNotNull`
-// pattern already used in claim-operation.ts's CAS WHERE clauses) makes the
-// branch a definite `false` when the lease is null, so the whole predicate is
-// always a definite true/false — `not(...)` now works correctly. This is a
-// no-op for the 3 positive consumers (verified by re-running their iso
-// suites unchanged) and fixes the 4th (the sweep).
+// fix round 3(T14a・Codex + canonical Critical, both against real PG17): the
+// lease branch MUST be NULL-free. SQL is three-valued — `lease_expires_at >
+// now()` evaluates to NULL (not false) when `lease_expires_at IS NULL`, which
+// is the **dominant** abandoned state (prepare-upload never sets a lease;
+// every retryable-failure path resets `leaseExpiresAt: null`). `not(NULL) =
+// NULL`, and Postgres WHERE treats NULL as false → the row would be silently
+// excluded from `scripts/gc-abandoned-operations.ts`'s sweep, i.e. the sweep
+// would find NOTHING for exactly the dominant case it exists to clean.
+// Guarding with `isNotNull` first (mirroring the `isNull`/`isNotNull` pattern
+// already used in claim-operation.ts's CAS WHERE clauses) makes the branch a
+// definite `false` when the lease is null, so the whole predicate is always a
+// definite true/false. **This guard is load-bearing after the S-4
+// simplification too** — the lease branch is now the ONLY branch.
 export function isLiveUploadOperationCondition(): SQL {
   return and(
     // 'processing' = ②-4a 単一 invocation 経路の実行中状態(spec 2026-08-04 §4.5)。
@@ -90,10 +102,8 @@ export function isLiveUploadOperationCondition(): SQL {
       'prepared',
       'processing',
     ]),
-    or(
-      sql`${uploadOperations.createdAt} > now() - make_interval(secs => ${PREPARED_RETENTION_MS / 1000})`,
-      and(isNotNull(uploadOperations.leaseExpiresAt), sql`${uploadOperations.leaseExpiresAt} > now()`),
-    ),
+    isNotNull(uploadOperations.leaseExpiresAt),
+    sql`${uploadOperations.leaseExpiresAt} > now()`,
   )!
 }
 
@@ -197,17 +207,21 @@ export async function getExamStatusMap(
 // 除外する(NOT EXISTS)。 legacy path(upload_operations 行が無い旧 flow)は
 // 従来どおり 15 分超で failed 化される — 挙動不変。
 //
-// fix round 1(Codex P1): この除外は **window-aware**(無条件ではない)。
-// claim-operation.ts の 7 日保持 cap(PREPARED_RETENTION_MS)は
-// claimOperationTx が実際に呼ばれた時にしか発火しない — ゆえに一度も再 claim
-// されない放置 op(例: source を最後まで upload しなかった awaiting_sources)は
-// 非終端のまま**永久に**残り、無条件の除外だと対応する stale source_document を
-// 永久に保護してしまう(定常的なリーク)。 「再開可能」とみなすのは
-// (a) created_at が PREPARED_RETENTION_MS 以内、または (b) 現在有効な lease を
-// 保持中(lease_expires_at > now() — concurrently-advancing operation を
-// 絶対に sweep しない)のいずれかのみ。 両方外れた(=期限切れかつ 7 日超 =
-// 誰かが claim すれば terminal_failed になる状態)非終端行はもはや source を
-// 保護しない。 時刻比較は全て PostgreSQL now() 基準。
+// fix round 1(Codex P1)/ S-4: この除外は **lease-aware**(無条件ではない)。
+// 保護するのは「今このオペレーションを進めている invocation が生存している」
+// (= valid lease を持つ)行だけ(isLiveUploadOperationCondition)。 lease が
+// 失効 / NULL の非終端行はもはや source を保護しない — 保護し続けると、再開する
+// 主体が居ない放置 op が対応する stale source_document を永久に processing で
+// 固定してしまう(定常的なリーク)。 時刻比較は全て PostgreSQL now() 基準。
+//
+// ②-4a 単一 invocation S-4(spec 2026-08-04 §5「reconciler の拡張」): doc を
+// failed 化したら **同一 tx で対応する非終端 op も terminal 化する**。 必要な理由:
+//   ① 新経路には `after()` の callback が一度も走らない窓(登録直後の
+//      hard-death / platform kill)があり、そのとき op を終端化する主体が誰も
+//      居ない。 lease 失効後のこの reconciler が唯一の収束点になる(spec §4.4
+//      (c)(d))。
+//   ② 「doc failed / op 非終端」のねじれを残すと、live-op gate(submit-upload.ts)
+//      や GC の候補判定が「まだ実行中」と読める行を見続ける。
 export async function reconcileStaleProcessing(
   userId: string,
   now: Date = new Date(),
@@ -240,8 +254,8 @@ export async function reconcileStaleProcessing(
                   and(
                     eq(uploadOperations.userId, userId),
                     eq(uploadOperations.sourceDocumentId, sourceDocuments.id),
-                    // window-aware(fix round 1・shared predicate as of fix
-                    // round 2): 再開可能な間だけ保護する。
+                    // lease-aware(fix round 1・shared predicate as of fix
+                    // round 2 / S-4 で lease 単独へ): 生きている間だけ保護する。
                     isLiveUploadOperationCondition(),
                   ),
                 ),
@@ -254,9 +268,66 @@ export async function reconcileStaleProcessing(
           fileSizeBytes: sourceDocuments.fileSizeBytes,
         })
 
-      // 2. 実際に更新された行が 0 件なら upload_records には触らない
-      //    (空配列 INSERT は避けつつ、不要な DB round-trip も防ぐ)
+      // 2. 実際に更新された行が 0 件なら upload_records にも upload_operations にも
+      //    触らない(空配列 INSERT / 無駄な UPDATE を避ける)
       if (updated.length === 0) return
+
+      // 2.5. S-4: failed 化した doc に紐づく **非終端** op を同一 tx で terminal 化する。
+      //    prepared_payload(PII/機微)と lease/next_retry の NULL 化は
+      //    terminalizeAbandonedOperation(app 層・eslint Block A で lib から import
+      //    不可)と同じ不変条件を満たす。
+      //
+      //    **文 2 自身で生存を再確認する**(fix round 3・Codex P1): 上の文 1 が
+      //    NOT EXISTS(live op) を通過したことは、この文 2 の時点でも live op が居ない
+      //    ことを意味しない。 PostgreSQL の READ COMMITTED では **同一 tx 内でも文ごとに
+      //    スナップショットが進む**ため、文 1 の判定後・文 2 の実行前に別 tx が commit
+      //    した再 lease を文 2 は見る。 文 1 が取るのは source_documents の行ロックで
+      //    あって upload_operations の行ロックではなく、claimOperationTx は op 行しか
+      //    ロックしない — つまり「競合相手が居ない」は**保証されていない**(以前この
+      //    comment はそう書いていた)。 論証依存をやめて WHERE の条件にする。
+      //
+      //    **肯定形で書く理由(3VL 依存を持ち込まない)**: `not(isLiveUploadOperation
+      //    Condition())` は **現時点では正しく動く** — 述語が `isNotNull(lease_expires_at)`
+      //    を含み NULL-free だからで、NULL lease 行では `true AND false AND NULL = false`
+      //    → `not(false) = true` で拾われる(実測で確認済: 否定形へ書き換えても iso は
+      //    全 pass する)。 それでも否定形を採らないのは、**その正しさが「別関数の内部に
+      //    `isNotNull` が在り続けること」という遠隔の不変条件に依存する**ため。 そこが
+      //    将来緩むと、この site は**無言で「1 件も拾わない」に転ぶ**(まさに
+      //    gc-abandoned-operations.ts が T14a fix round 3 で踏んだ形)。 肯定形はその依存を
+      //    持たない。 危険なのは「今この式が NULL を返す」ことではなく「**この形の依存が
+      //    将来壊れる**」こと。
+      //    なお肯定形自身の罠は `isNull(...)` 枝の脱落で、こちらは iso の
+      //    「lease が NULL の非終端 op も terminal 化する」が検出する。
+      await tx
+        .update(uploadOperations)
+        .set({
+          status: 'terminal_failed',
+          preparedPayload: null,
+          leaseExpiresAt: null,
+          nextRetryAt: null,
+          lastErrorCode: 'stale_reconciled',
+          resultSummary: { reason: 'stale_reconciled' },
+        })
+        .where(
+          and(
+            eq(uploadOperations.userId, userId), // owner-scope 必須
+            inArray(
+              uploadOperations.sourceDocumentId,
+              updated.map((row) => row.id),
+            ),
+            inArray(uploadOperations.status, [
+              'awaiting_sources',
+              'claimed',
+              'prepared',
+              'processing',
+            ]),
+            // 生存していない = lease が無い or 失効済(NULL は「生きていない」側)。
+            or(
+              isNull(uploadOperations.leaseExpiresAt),
+              sql`${uploadOperations.leaseExpiresAt} <= now()`,
+            ),
+          ),
+        )
 
       // 3. 更新した行それぞれについて upload_records に failed 台帳行を append。
       //    markFailed (process.ts) と同じ値の入れ方: pagesProcessed=0, ocrCostYen=0。

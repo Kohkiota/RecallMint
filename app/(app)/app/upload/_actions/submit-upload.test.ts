@@ -26,16 +26,34 @@ const {
   mockWithTenantTx,
   mockRunUploadPipeline,
   mockAbsorbUploadPipelineFailure,
+  mockAfter,
+  mockRecordIntegrationFailure,
+  mockLoggerError,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockWithTenantTx: vi.fn(),
   mockRunUploadPipeline: vi.fn(),
   mockAbsorbUploadPipelineFailure: vi.fn(),
+  mockAfter: vi.fn(),
+  mockRecordIntegrationFailure: vi.fn(),
+  mockLoggerError: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: mockGetCurrentUser }))
 vi.mock('@/lib/db/tenant-tx', () => ({ withTenantTx: mockWithTenantTx }))
-// OCR phase 本体(S-2)は tests/integration/pg/upload-pipeline.test.ts で検証する。
+// S-4: 本処理は `after()` に載る。実物の `after` は request scope の外(vitest)では
+// 必ず throw する仕様(next/dist/server/after: workStore が無ければ E468)なので、
+// 「登録された callback」を捕まえて test 側から明示的に走らせる形にする。
+// 登録失敗の分岐は mockAfter.mockImplementationOnce(throw) で個別に注入する。
+vi.mock('next/server', () => ({ after: mockAfter }))
+// after() 境界の防波堤が best-effort 記録に使う 2 面。
+vi.mock('@/lib/integration-failures', () => ({
+  recordIntegrationFailure: mockRecordIntegrationFailure,
+}))
+vi.mock('@/lib/logger', () => ({
+  logger: { warn: vi.fn(), error: mockLoggerError, info: vi.fn() },
+}))
+// pipeline 本体(S-2/S-3)は tests/integration/pg/upload-pipeline.test.ts で検証する。
 // ここで見るのは action → pipeline の受け渡し契約だけ。
 vi.mock('../_lib/upload-pipeline', () => ({
   runUploadPipeline: mockRunUploadPipeline,
@@ -44,6 +62,16 @@ vi.mock('../_lib/upload-pipeline', () => ({
 
 // vi.mock は import より前に hoist される。
 import { submitUpload } from './submit-upload'
+
+// after() に登録された callback。 submitUpload の応答後に platform が走らせる分を
+// test が明示的に再現する。
+let afterTasks: Array<() => unknown>
+
+async function runAfterTasks(): Promise<void> {
+  const tasks = afterTasks
+  afterTasks = []
+  for (const task of tasks) await task()
+}
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
@@ -104,6 +132,14 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     mockRunUploadPipeline.mockResolvedValue(undefined)
     mockAbsorbUploadPipelineFailure.mockReset()
     mockAbsorbUploadPipelineFailure.mockResolvedValue(undefined)
+    mockRecordIntegrationFailure.mockReset()
+    mockRecordIntegrationFailure.mockResolvedValue(undefined)
+    mockLoggerError.mockReset()
+    afterTasks = []
+    mockAfter.mockReset()
+    mockAfter.mockImplementation((task: () => unknown) => {
+      afterTasks.push(task)
+    })
     mockGetCurrentUser.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000001' })
   })
 
@@ -187,6 +223,7 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     })
     // sync phase の tx は 1 本(OCR phase 以降の DB 書込は pipeline の内部責務)。
     expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+    await runAfterTasks()
     expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
   })
 
@@ -196,6 +233,9 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     const result = await submitUpload(buildFormData([imageFile('a.png', 100)]))
     expect(result).toMatchObject({ outcome: 'accepted', replayed: true })
     expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+    // after() の登録自体が起きない = 再送のたびに Gemini を再実行しない。
+    expect(mockAfter).not.toHaveBeenCalled()
+    await runAfterTasks()
     expect(mockRunUploadPipeline).not.toHaveBeenCalled()
   })
 
@@ -206,6 +246,7 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     const before = Date.now()
 
     await submitUpload(buildFormData([a, b]))
+    await runAfterTasks()
 
     expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
     const [userId, refs, leaseVersion, files, deadlineAt] = mockRunUploadPipeline.mock.calls[0]
@@ -237,8 +278,10 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     vi.spyOn(broken, 'arrayBuffer').mockRejectedValue(new Error('body stream aborted'))
 
     const result = await submitUpload(buildFormData([broken]))
+    await runAfterTasks()
 
     expect(result.outcome).toBe('accepted')
+    expect(mockAfter).not.toHaveBeenCalled()
     expect(mockRunUploadPipeline).not.toHaveBeenCalled()
     expect(mockAbsorbUploadPipelineFailure).toHaveBeenCalledTimes(1)
     const [userId, refs, leaseVersion, err] = mockAbsorbUploadPipelineFailure.mock.calls[0]
@@ -275,6 +318,130 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
       error: '入力内容が正しくありません',
     })
     expect(mockWithTenantTx).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S-4: after() 化(即応答 + 本処理は応答後)
+// ---------------------------------------------------------------------------
+describe('submitUpload — after() 境界(S-4)', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset()
+    mockWithTenantTx.mockReset()
+    mockRunUploadPipeline.mockReset()
+    mockRunUploadPipeline.mockResolvedValue(undefined)
+    mockAbsorbUploadPipelineFailure.mockReset()
+    mockAbsorbUploadPipelineFailure.mockResolvedValue(undefined)
+    mockRecordIntegrationFailure.mockReset()
+    mockRecordIntegrationFailure.mockResolvedValue(undefined)
+    mockLoggerError.mockReset()
+    afterTasks = []
+    mockAfter.mockReset()
+    mockAfter.mockImplementation((task: () => unknown) => {
+      afterTasks.push(task)
+    })
+    mockGetCurrentUser.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000001' })
+  })
+
+  it('応答は pipeline の完了を待たない(after() に 1 件登録し、その時点では未実行)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+
+    const result = await submitUpload(buildFormData([imageFile('a.png', 100)]))
+
+    expect(result.outcome).toBe('accepted')
+    expect(mockAfter).toHaveBeenCalledTimes(1)
+    // 応答を返した時点で pipeline は 1 度も走っていない = 同期 await でない。
+    expect(mockRunUploadPipeline).not.toHaveBeenCalled()
+
+    await runAfterTasks()
+    expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
+  })
+
+  it('File の Buffer 化は after() 登録より **前** に完了する(request 由来を closure に残さない)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    const order: string[] = []
+    const a = imageFile('a.png', 100)
+    const b = imageFile('b.png', 100)
+    for (const [name, file] of [['a', a], ['b', b]] as const) {
+      const original = file.arrayBuffer.bind(file)
+      vi.spyOn(file, 'arrayBuffer').mockImplementation(async () => {
+        order.push(`read:${name}`)
+        return original()
+      })
+    }
+    mockAfter.mockImplementation((task: () => unknown) => {
+      order.push('after')
+      afterTasks.push(task)
+    })
+
+    await submitUpload(buildFormData([a, b]))
+
+    // 全 file を読み切ってから登録する。逆順だと応答後に request body を読むことになる。
+    expect(order).toEqual(['read:a', 'read:b', 'after'])
+  })
+
+  it('after() の **登録** が失敗したら同期側で即 terminal 化する(callback 不実行の穴)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ leaseVersion: 5 }))
+    mockAfter.mockImplementationOnce(() => {
+      throw new Error('after() unavailable')
+    })
+
+    const result = await submitUpload(buildFormData([imageFile('a.png', 100)]))
+
+    // client には accepted のまま返す(op は同期側で終端化済み = poll が failed を返す)。
+    expect(result.outcome).toBe('accepted')
+    expect(mockRunUploadPipeline).not.toHaveBeenCalled()
+    // 登録に失敗した = pipeline 内部の catch も after() 境界の catch も発火しない。
+    // 同期側の terminal 化がこのクラスの唯一の検出経路。
+    expect(mockAbsorbUploadPipelineFailure).toHaveBeenCalledTimes(1)
+    const [userId, refs, leaseVersion, err] = mockAbsorbUploadPipelineFailure.mock.calls[0]
+    expect(userId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(refs).toEqual({
+      operationId: 'op-1',
+      examId: 'exam-1',
+      sourceDocumentId: 'doc-1',
+    })
+    expect(leaseVersion).toBe(5)
+    expect((err as Error).message).toBe('after() unavailable')
+  })
+
+  // 境界 catch は「防波堤」であって分類器ではない。ここで確認するのは
+  // **best-effort 記録が発火すること**だけ(失敗クラスの assert は置かない —
+  // 分類は runUploadPipeline の責務で、二重に持たないのが S-4 の責務分担)。
+  it('after() 内で pipeline が throw しても外へ出さず、best-effort 記録だけ行う', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    mockRunUploadPipeline.mockRejectedValueOnce(new Error('no-throw contract broken'))
+
+    await submitUpload(buildFormData([imageFile('a.png', 100)]))
+    await expect(runAfterTasks()).resolves.toBeUndefined()
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.after_boundary_failed' }),
+    )
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledTimes(1)
+    const arg = mockRecordIntegrationFailure.mock.calls[0][0]
+    expect(arg.key).toBe('ocr_pipeline')
+    expect(arg.userId).toBe('00000000-0000-4000-8000-000000000001')
+    // PII-free: context は operationId + errorCode のみ(filename / バイトを載せない)。
+    expect(arg.context).toEqual({
+      operationId: 'op-1',
+      errorCode: 'after_boundary_error',
+    })
+    // 分類は pipeline の責務ゆえ、境界は terminal 化を試みない。
+    expect(mockAbsorbUploadPipelineFailure).not.toHaveBeenCalled()
+  })
+
+  it('台帳書込にも失敗したら log だけ残して飲む(境界から throw を出さない)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    mockRunUploadPipeline.mockRejectedValueOnce(new Error('boom'))
+    mockRecordIntegrationFailure.mockRejectedValueOnce(new Error('ledger down'))
+
+    await submitUpload(buildFormData([imageFile('a.png', 100)]))
+    await expect(runAfterTasks()).resolves.toBeUndefined()
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.after_boundary_record_failed' }),
+    )
   })
 })
 

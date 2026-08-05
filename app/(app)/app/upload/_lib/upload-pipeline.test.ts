@@ -223,10 +223,17 @@ const txState = {
   opRows: [{ status: 'processing', leaseVersion: 0 }] as Record<string, unknown>[],
   // commitPreparedCas の `.returning()`(0 行 = CAS 敗北)。
   commitReturning: [{ id: 'op' }] as Record<string, unknown>[],
+  // 開始 CAS(S-4)の `.limit(1)`(0 行 = 行消滅 / lease_version 不一致)。
+  startCasRows: [{ id: 'op' }] as Record<string, unknown>[],
 }
 const fakeTx = {
   select: () => ({
-    from: () => ({ where: () => ({ for: async () => txState.opRows }) }),
+    from: () => ({
+      where: () => ({
+        for: async () => txState.opRows,
+        limit: async () => txState.startCasRows,
+      }),
+    }),
   }),
   update: () => ({
     set: () => ({
@@ -278,6 +285,7 @@ beforeEach(() => {
   vi.mocked(classifyCropOutcome).mockImplementation(realClassifyCropOutcome)
   txState.opRows = [{ status: 'processing', leaseVersion: 0 }]
   txState.commitReturning = [{ id: 'op' }]
+  txState.startCasRows = [{ id: 'op' }]
   mockWithTenantTx.mockImplementation(
     async (_userId: string, fn: (tx: unknown) => unknown) => fn(fakeTx),
   )
@@ -285,6 +293,53 @@ beforeEach(() => {
   mockCallGemini.mockResolvedValue(geminiOk())
   mockIncrementAiUsage.mockResolvedValue(undefined)
   mockRecordIntegrationFailure.mockResolvedValue(undefined)
+})
+
+// ---------------------------------------------------------------------------
+// 開始 CAS(S-4)
+// ---------------------------------------------------------------------------
+// after() の callback は応答の**後**に走るため、その間に op 行が消えている
+// (exam 削除 cascade / GDPR 退会)ことがある。 Gemini を呼ぶ前に 1 回だけ確認して、
+// 自分の op でなければ何もせず終わる = 課金だけ発生して置き場が無い状態を作らない。
+describe('runUploadPipeline — 開始 CAS', () => {
+  it('op 行が消えていたら decode も Gemini も行わずに静かに終わる', async () => {
+    txState.startCasRows = [] // 行消滅(削除競合)
+
+    await run(filesOf('a', 'b'))
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(sharpState.calls).toBe(0)
+    // 「予期される失敗」ですらない(ユーザー起点の削除)ので terminal 化もしない。
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.start_cas_lost',
+        operationId: REFS.operationId,
+      }),
+    )
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.failed' }),
+    )
+    // 台帳(予期しない失敗)にも積まない。
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+  })
+
+  // 名前は主張に合わせている(canonical M-1): fake tx は WHERE を評価せず
+  // `startCasRows` をそのまま返すため、この unit が pin できるのは「CAS の SELECT が
+  // 0 行なら Gemini を呼ばない」まで。 **WHERE が実際に id + user_id + lease_version で
+  // 絞れているか**は実 PG(tests/integration/pg/upload-pipeline.test.ts)の担当。
+  it('開始 CAS が 0 行を返せば Gemini を呼ばない(WHERE の内容は iso で検証)', async () => {
+    txState.startCasRows = []
+
+    await run(filesOf('a'), { leaseVersion: 3 })
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+  })
+
+  it('自分の op が残っていれば通常どおり Gemini まで進む', async () => {
+    await run(filesOf('a'))
+
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('runUploadPipeline — decode phase', () => {

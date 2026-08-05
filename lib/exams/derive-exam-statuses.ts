@@ -34,6 +34,62 @@ export const STALE_PROCESSING_MS = 15 * 60 * 1000 // 900,000 ms
 export const PREPARED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 // ---------------------------------------------------------------------------
+// SourceDocumentStatusRow / isStaleProcessingRow
+// ---------------------------------------------------------------------------
+// exam 粒度(deriveExamStatuses)と doc 粒度(deriveDocStatuses)の 2 つの導出は
+// 同じ入力行から計算し、「processing をいつ failed 表示に倒すか」の規則も同じで
+// なければならない — 一方だけが stale 判定を持つと、試験一覧のバッジと upload
+// page の poll が同じ source_document について別の結論を出す。規則をこの 1 箇所に
+// 置いて両方から使う。
+export type SourceDocumentStatusRow = {
+  examId: string
+  id: string
+  status: 'processing' | 'completed' | 'failed'
+  createdAt: Date
+}
+
+function isStaleProcessingRow(
+  row: SourceDocumentStatusRow,
+  now: Date,
+  liveOpSourceDocumentIds: ReadonlySet<string>,
+): boolean {
+  return (
+    now.getTime() - row.createdAt.getTime() >= STALE_PROCESSING_MS &&
+    !liveOpSourceDocumentIds.has(row.id)
+  )
+}
+
+// ---------------------------------------------------------------------------
+// deriveDocStatuses — 純関数(②-4a 単一 invocation S-4)
+// ---------------------------------------------------------------------------
+// upload page の poll(/api/exams/status の `docStatuses`)用。exam 粒度の
+// `statuses` と違い **completed を明示値で返す**(key 不在ではない)— poll する
+// client は「まだ結果が無い」と「完了した」を区別する必要があり、key 不在を
+// completed とみなす設計だと、まだ作られていない doc / 他人の doc / 取得失敗が
+// すべて「完了」に見えてしまう。
+//
+// stale 判定は deriveExamStatuses と共有(isStaleProcessingRow)。呼出側が渡す
+// 行集合の owner-scope は SQL 側の責務(route.ts が user_id で絞る)。
+export function deriveDocStatuses(
+  rows: Array<SourceDocumentStatusRow>,
+  now: Date,
+  liveOpSourceDocumentIds: ReadonlySet<string> = new Set(),
+): Map<string, 'processing' | 'completed' | 'failed'> {
+  const result = new Map<string, 'processing' | 'completed' | 'failed'>()
+  for (const row of rows) {
+    if (row.status === 'processing') {
+      result.set(
+        row.id,
+        isStaleProcessingRow(row, now, liveOpSourceDocumentIds) ? 'failed' : 'processing',
+      )
+    } else {
+      result.set(row.id, row.status)
+    }
+  }
+  return result
+}
+
+// ---------------------------------------------------------------------------
 // deriveExamStatuses — 純関数
 // ---------------------------------------------------------------------------
 // DB アクセスなし・副作用なしの純関数として実装し、テスト容易性を担保。
@@ -57,12 +113,7 @@ export const PREPARED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 // パラメータを渡さない/渡せない)は今までどおり「15 分超 → failed」のみで判定
 // される(挙動不変)。
 export function deriveExamStatuses(
-  rows: Array<{
-    examId: string
-    id: string
-    status: 'processing' | 'completed' | 'failed'
-    createdAt: Date
-  }>,
+  rows: Array<SourceDocumentStatusRow>,
   now: Date,
   liveOpSourceDocumentIds: ReadonlySet<string> = new Set(),
 ): Map<string, 'processing' | 'failed'> {
@@ -96,8 +147,13 @@ export function deriveExamStatuses(
       continue
     }
     // status === 'processing'
-    const ageMs = now.getTime() - createdAt.getTime()
-    if (ageMs >= STALE_PROCESSING_MS && !liveOpSourceDocumentIds.has(id)) {
+    if (
+      isStaleProcessingRow(
+        { examId, id, status, createdAt },
+        now,
+        liveOpSourceDocumentIds,
+      )
+    ) {
       // STALE_PROCESSING_MS 超過 かつ live-op 保護なし: timeout 残骸として
       // 表示上 failed 扱いにする。 DB cleanup (reconcileStaleProcessing) が
       // 失敗しても表示は正しく維持される。

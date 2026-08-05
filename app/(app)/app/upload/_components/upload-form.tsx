@@ -10,11 +10,15 @@ import { Card, CardContent } from '@/components/ui/card'
 // `@/lib/exams/list` 側は `server-only` 付きで DB 接続を引き込むため使用不可。
 import { formatRelativeJa, type ActiveExam } from '@/lib/exams/format'
 import {
+  DOC_STATUS_POLL_INTERVAL_MS,
+  DOC_STATUS_POLL_LIMIT_MS,
+  DOC_STATUS_POLL_MAX_FETCH_FAILURES,
   MAX_IMAGE_FILE_MB,
   MAX_IMAGE_WIDTH_OR_HEIGHT,
   MAX_PDF_PAGES,
   TOTAL_UPLOAD_LIMIT_BYTES,
   TOTAL_UPLOAD_LIMIT_MB,
+  UPLOAD_INTERRUPTED_NOTICE,
 } from '../_lib/constants'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { pdfPageCount } from '../_lib/pdf-page-count'
@@ -28,6 +32,10 @@ import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
 // stage→publish)を **submitUpload 1 本**へ差し替える。 client は画像バイトを FormData で
 // 1 回だけ送り、server が同一 invocation で OCR→crop→publish まで完了させる
 // (spec 2026-08-04 §2)。 旧 action file 群は S-5 で撤去するまで残置(呼出のみ削除)。
+//
+// Task S-4: server は sync tx の直後に応答し、本処理は `after()` で走る。 ゆえに
+// `accepted` は「受け付けた」以上の意味を持たない — 完了 / 失敗の検知は
+// /api/exams/status の `docStatuses` を poll して行う(spec 2026-08-04 §5)。
 import { submitUpload } from '../_actions/submit-upload'
 
 // 投入先選択 state:
@@ -69,13 +77,15 @@ const planLabelMap = {
   pro: 'Pro プラン',
 } as const
 
-// phase: 'idle' = ファイル選択中 / 'submitting' = OCR 実行中 (server action 中) /
-// 'error' = エラー表示中。
+// phase: 'idle' = ファイル選択中 / 'submitting' = 受付 + 完了待ち (submitUpload 呼出中
+// および docStatuses poll 中) / 'error' = エラー表示中。
 // S1.9.2: 'success' phase を廃止。 OCR 成功時は preview を同 component で描画せず、
 // 独立 route /app/upload/result/[sourceDocumentId] に router.push で遷移する
 // (Bug B = 残量 banner stale 表示の構造解消、 page 遷移で fresh server render)。
 // S1.9.3: 'CLIENT_TIMEOUT' を廃止。 Vercel Pro 昇格で server maxDuration=800s に
 // 延長されたため、 client は server の完走をそのまま待つ方針に変更。
+// S-4: 'submitting' は「server の完走を待つ」ではなく「poll で完了を待つ」に意味が
+// 変わった(処理は after() で走っており、このタブが閉じても進む)。
 type Phase =
   | { kind: 'idle' }
   | { kind: 'submitting' }
@@ -116,23 +126,27 @@ export function UploadForm({
     existingExams.length === 0 ? { mode: 'new' } : null,
   )
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
-  // 派生 flag: OCR Server Action 実行中。 UI controls の disable 判定に集約利用。
+  // 派生 flag: 受付 + 完了待ちの最中。 UI controls の disable 判定に集約利用。
   const isSubmitting = phase.kind === 'submitting'
-  // S1.9.3: submitting 開始から 90 秒経過したことを示す flag。
-  // phase とは独立した state で管理する。 90 秒を超えたら banner を「閉じてよい」
-  // 旨に切替え、 離脱ガード (beforeunload / popstate) も解除する。
-  // spinner 自体は isSubmitting が true の間ずっと表示し続ける。
-  const [longRunning, setLongRunning] = useState(false)
-  const longRunningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 重複した filename を 4 秒間 banner 表示するための transient state。
   const [duplicateWarnings, setDuplicateWarnings] = useState<string[]>([])
   const duplicateClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // unmount 後に poll ループを回し続けない(最長 DOC_STATUS_POLL_LIMIT_MS ぶんの
+  // fetch が page 離脱後も残るのを防ぐ)。
+  const mountedRef = useRef(true)
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
-  // 重複警告の transient timer と longRunning timer も unmount で確実 clear
-  // (stale fire 防止)。
+  // 重複警告の transient timer も unmount で確実 clear (stale fire 防止)。
   useEffect(() => {
+    // **effect 本体で必ず true に戻す**(`components/media/use-image-zoom.ts` と同型)。
+    // cleanup でしか false→true を戻さないと、StrictMode(next.config.ts の
+    // `reactStrictMode: true`)の dev 二重実行 setup→cleanup→setup で ref が false の
+    // まま固定され、poll が最初の周期で 'aborted' を返して spinner が出たまま
+    // auto-nav も失敗表示も起きなくなる(production build では二重実行しないため
+    // stg smoke に出ず、ローカル開発でだけ新 flow が丸ごと死ぬ出方をする)。
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
       for (const e of entries) {
         if (e.kind === 'image' && 'thumbUrl' in e && e.thumbUrl) URL.revokeObjectURL(e.thumbUrl)
       }
@@ -140,73 +154,18 @@ export function UploadForm({
         clearTimeout(duplicateClearTimerRef.current)
         duplicateClearTimerRef.current = null
       }
-      if (longRunningTimerRef.current) {
-        clearTimeout(longRunningTimerRef.current)
-        longRunningTimerRef.current = null
-      }
     }
     // entries 依存 ではなく unmount のみ cleanup (removeEntry で個別 revoke 済)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // OCR submitting 中 かつ longRunning でないときのみ、タブ閉じる / リロード /
-  // ブラウザ戻る を block。
-  // S1.9.3: 90 秒経過後 (longRunning=true) は「もう閉じても大丈夫」とユーザーに
-  // 案内するため、 ガードを解除する。 banner 文言も同タイミングで切替わる。
-  // 詳細:
-  //   - beforeunload: 標準 browser confirm dialog を発火 (modern browsers は
-  //     custom 文言を無視するが dialog 自体は出る)
-  //   - popstate: sentinel state pattern。 effect 入りで history.pushState で
-  //     ダミー entry を仕込み、 ユーザーが back を押すと popstate が発火する。
-  //     confirm で「中断する」 なら navigation を許可 (sentinel 消費済)、
-  //     「キャンセル」 なら history.pushState で sentinel を再配置して
-  //     現在 page に留まらせる
-  //   - Next.js Link クリックによる soft navigation は popstate を発火しない
-  //     ため block 対象外 (spinner banner の文言で expectation 設定)
-  useEffect(() => {
-    if (!isSubmitting || longRunning) return
-
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault()
-      // returnValue は modern TS lib で deprecated marking されているが、
-      // 一部 legacy browser (Edge 旧 / Safari) は preventDefault のみでは dialog を
-      // 出さず returnValue を見るため、 cross-browser 互換のため維持。 MDN も
-      // 「set to empty string」 と案内している。 TS の deprecation hint
-      // (6385) は build を block しないため受け流す (eslint disable や
-      // ts-expect-error は他の警告で対応している file との一貫性を欠くため
-      // 不要、 コメントで意図を残すのみ)。
-      e.returnValue = ''
-    }
-
-    let sentinelActive = true
-    const handlePopState = () => {
-      if (!sentinelActive) return
-      const ok = window.confirm(
-        'AI 抽出を実行中です。 このまま戻ると抽出結果が失われる可能性があります。 中断して戻りますか?',
-      )
-      if (!ok) {
-        // sentinel を再配置し、 現在 page に留まらせる
-        window.history.pushState(null, '', window.location.href)
-      } else {
-        // 一度だけ「中断」 を許可、 以降の popstate (forward etc.) は block しない
-        sentinelActive = false
-      }
-    }
-
-    // sentinel state を仕込む (back を押されたときに popstate が発火する余地を作る)
-    window.history.pushState(null, '', window.location.href)
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    window.addEventListener('popstate', handlePopState)
-
-    return () => {
-      sentinelActive = false
-      window.removeEventListener('beforeunload', handleBeforeUnload)
-      window.removeEventListener('popstate', handlePopState)
-      // sentinel push は cleanup で pop しない (タイミング次第で
-      // navigation を妨害する risk)。 ユーザーには「戻る」 を 1 回余分に押す
-      // 必要が残るが、 submitting 終了後の通常 page では問題なし。
-    }
-  }, [isSubmitting, longRunning])
+  // S-4: **離脱ガード(beforeunload / popstate sentinel)を撤去した**。
+  // あれは「処理が request 内で走っていた時代」の遺物 — 当時は離脱 = invocation
+  // 打ち切りで抽出結果が失われうるという前提があった。 S-4 で本処理は `after()`
+  // (応答後の server 側実行)へ移り、タブを閉じても処理は完走して結果は試験一覧に
+  // 出る。 ガードを残すと「閉じても大丈夫」という設計と UI が矛盾し、 実害
+  // (S-3 stg smoke: 同一タブで result へ遷移すると確認 dialog + 60 秒待ち)も出る。
+  // 90 秒でガードを外す longRunning の分岐も同じ理由で消えた(切替える対象が無い)。
 
   const totalBytes = entries.reduce((s, e) => s + e.file.size, 0)
   const totalExceeded = totalBytes > TOTAL_UPLOAD_LIMIT_BYTES
@@ -414,7 +373,6 @@ export function UploadForm({
     message: string,
     details?: ProcessUploadErrorDetails,
   ) {
-    setLongRunning(false)
     setPhase({
       kind: 'error',
       code,
@@ -429,16 +387,17 @@ export function UploadForm({
   // 「submitting 」 が transition priority 化して React 19 のバッチング判定で
   // skip される (S1a 後の staging smoke で発覚した bug、 詳細は handoff doc)。
   //
-  // S1.9.3: client 側 90 秒 timeout (error 化) を廃止。 Vercel Pro 昇格で
-  // server maxDuration=800s に延長されたため、 client は server の完走をそのまま
-  // 待つ方針に変更。 代わりに 90 秒経過後は longRunning=true にして banner 文言を
-  // 「閉じてよい」 旨に切替え、 離脱ガードも解除する。 spinner は submitting 中
-  // ずっと表示し続ける。
+  // S1.9.3: client 側 90 秒 timeout (error 化) を廃止。 client は server の完走を
+  // そのまま待つ方針に変更。
   //
   // ②-4a 単一 invocation Sprint Task S-3(2026-08-05): 呼出列を `submitUpload` 1 本へ
   // 差し替える。 呼出 = 圧縮(既存・client)→ FormData(idempotencyKey / mode / examId /
-  // files)→ submitUpload。 server は同一 invocation で sync tx → OCR → crop → publish
-  // まで完了させてから返す(この時点では同期 await・`after()` 化は S-4)。
+  // files)→ submitUpload。
+  //
+  // Task S-4: server は sync tx 直後に `accepted` を返し、本処理は `after()` で走る。
+  // ゆえに client は **`accepted` で result page へ push しない** — push すると
+  // 「⏳ まだ処理中です」の page に着地するだけで、完了しても自動で更新されない。
+  // 代わりに自分の source_document を poll し、`completed` で初めて遷移する。
   //
   // **client は operation を終端化しない**(S-1 申し送り): 新経路の operation は
   // server 側 pipeline が失敗も含めて必ず終端化する。 client 発の abandon(旧 案 D)は
@@ -447,13 +406,55 @@ export function UploadForm({
   //
   // ②-4a は画像入稿のみ(PDF rasterize は ②-4b・spec 冒頭)。 PDF が 1 件でも混在すると
   // server 側の入力検証で全体が弾かれるため、 送信前に明示ブロックして理由を出す。
-  async function runProcess() {
-    // 90 秒経過したら longRunning=true にして banner / 離脱ガードを切替える。
-    // submitting が終わる (成功 / 失敗 / throw) 時点でタイマーを clear する。
-    longRunningTimerRef.current = setTimeout(() => {
-      setLongRunning(true)
-    }, 90_000)
+  // 自分の source_document 1 件の完了 / 失敗を poll する(spec 2026-08-04 §5)。
+  // 戻り値: 'completed' / 'failed' / 'degraded'(判定不能のまま打ち切り)/
+  // 'aborted'(unmount — 呼出側は何も表示しない)。
+  //
+  // 縮退は 2 条件(どちらも「無限 poll を作らない」ため):
+  //   ① 連続 fetch 失敗が DOC_STATUS_POLL_MAX_FETCH_FAILURES 回
+  //   ② 開始からの経過が DOC_STATUS_POLL_LIMIT_MS(絶対上限)
+  // ② が要るのは、endpoint が正常に応答しつつ `processing` を返し続ける
+  // hard-death(after() の callback が platform kill された)ケースがあるため —
+  // ①(fetch 失敗)だけでは永久に止まらない。
+  async function pollDocStatus(
+    sourceDocumentId: string,
+  ): Promise<'completed' | 'failed' | 'degraded' | 'aborted'> {
+    const startedAt = Date.now()
+    let consecutiveFailures = 0
+    for (;;) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, DOC_STATUS_POLL_INTERVAL_MS),
+      )
+      if (!mountedRef.current) return 'aborted'
+      if (Date.now() - startedAt >= DOC_STATUS_POLL_LIMIT_MS) return 'degraded'
+      try {
+        // 自分の doc を **名指しで**問い合わせる(fix round 2 / Codex P2)。 endpoint の
+        // 既定 map は exam ごと最新 1 件に縮約されるため、同じ exam に 2 件目の upload が
+        // 入ると自分の doc が落ちる — 落ちた key を「まだ処理中」と読んで絶対上限まで
+        // 待たされるのを防ぐ。
+        const res = await fetch(
+          `/api/exams/status?doc=${encodeURIComponent(sourceDocumentId)}`,
+          { cache: 'no-store' },
+        )
+        if (!res.ok) throw new Error(`status ${res.status}`)
+        const body: unknown = await res.json()
+        consecutiveFailures = 0
+        const docStatuses =
+          typeof body === 'object' && body !== null && 'docStatuses' in body
+            ? (body as { docStatuses?: Record<string, string> }).docStatuses
+            : undefined
+        const status = docStatuses?.[sourceDocumentId]
+        if (status === 'completed') return 'completed'
+        if (status === 'failed') return 'failed'
+        // 'processing' / key 不在(まだ結果が出ていない)は継続。
+      } catch {
+        consecutiveFailures += 1
+        if (consecutiveFailures >= DOC_STATUS_POLL_MAX_FETCH_FAILURES) return 'degraded'
+      }
+    }
+  }
 
+  async function runProcess() {
     try {
       if (destination === null) {
         // submitDisabled が destinationReady を要求するため通常到達しない
@@ -489,12 +490,11 @@ export function UploadForm({
 
       const result = await submitUpload(fd)
       switch (result.outcome) {
-        case 'accepted':
+        case 'accepted': {
           if (result.sourceDocumentId.length === 0) {
             // 冪等 replay で返った既存 operation の source_document が既に消えている
             // (GDPR 削除 / GC)。空 id で result page へ飛ばすと 404 になるため、
             // 一覧で確認してもらう(server 側 replay は状態不問で 3 ID を返す契約)。
-            setLongRunning(false)
             setPhase({
               kind: 'error',
               code: 'OTHER',
@@ -504,12 +504,39 @@ export function UploadForm({
             })
             return
           }
-          // server が publish まで完了した後に返る(S-3 時点は同期 await)。
-          // phase は 'submitting' のままにして navigation 完了まで spinner を出す。
-          router.push(`/app/upload/result/${result.sourceDocumentId}`)
+          // 受付済み。本処理は server の after() で走っているので、完了を poll で待つ。
+          // phase は 'submitting' のまま(spinner + 「閉じても大丈夫」案内を出し続ける)。
+          const outcome = await pollDocStatus(result.sourceDocumentId)
+          if (outcome === 'aborted') return
+          if (outcome === 'completed') {
+            router.push(`/app/upload/result/${result.sourceDocumentId}`)
+            return
+          }
+          if (outcome === 'failed') {
+            // client は operation を終端化しない(S-1 申し送り)。表示するだけ。
+            setPhase({
+              kind: 'error',
+              code: 'OTHER',
+              message: UPLOAD_INTERRUPTED_NOTICE,
+              hideRetryHint: true,
+            })
+            return
+          }
+          // degraded: 判定不能のまま打ち切った。処理自体は server 側で継続しうる。
+          setPhase({
+            kind: 'error',
+            code: 'OTHER',
+            message:
+              '処理状況を確認できませんでした。「試験一覧」で結果をご確認ください。',
+            hideRetryHint: true,
+          })
           return
+        }
         case 'in_progress':
-          setError('UPLOAD_IN_PROGRESS', '現在 OCR を実行中です。完了までお待ちください。')
+          // 別の operation が valid lease を保持している。それが生きているのか
+          // 既に死んで lease の失効待ちなのかを client からは区別できないため、
+          // 「実行中です」と断定せず公開文言(単一定義)を出す。
+          setError('UPLOAD_IN_PROGRESS', UPLOAD_INTERRUPTED_NOTICE)
           return
         case 'daily_limit_exceeded':
           setError(
@@ -540,7 +567,6 @@ export function UploadForm({
       // どうかを client からは判別できないため、 無条件再試行でなく「試験一覧で確認を」と
       // 案内する(旧 processUpload 経路の catch と同じ方針)。
       // hideRetryHint=true: 「ファイルを変更して再試行」サブタイトルを非表示にする。
-      setLongRunning(false)
       setPhase({
         kind: 'error',
         code: 'OTHER',
@@ -548,16 +574,6 @@ export function UploadForm({
           '処理状況を確認できませんでした。「試験一覧」で結果をご確認ください。',
         hideRetryHint: true,
       })
-    } finally {
-      // 成功・失敗どちらでも longRunning タイマーは不要になるので clear する。
-      // 二重 clear は無害。 setLongRunning(false) はここでは呼ばない:
-      // 成功時は router.push で遷移するため state は破棄され不要、かつ
-      // 90 秒後に longRunning=true になっていた場合に成功 → 「閉じないで」
-      // 文言に逆戻りするフラッシュを避ける (Fix 1)。
-      if (longRunningTimerRef.current) {
-        clearTimeout(longRunningTimerRef.current)
-        longRunningTimerRef.current = null
-      }
     }
   }
 
@@ -569,9 +585,6 @@ export function UploadForm({
 
   function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
-    // 新しい submit は必ず longRunning=false から開始する。
-    // (前回の submit で longRunning=true になっていた場合の防御的リセット)
-    setLongRunning(false)
     setPhase({ kind: 'submitting' })
     // OCR 開始を layout 常駐 poller に通知する。
     // processUpload は blocking で完了時にしか戻らないため、開始検知は client submit を起点にする。
@@ -616,33 +629,22 @@ export function UploadForm({
       </section>
 
       {isSubmitting && (
-        // S1.8: 中断 = 利用枠だけ消費されて cards が得られない事を強調するため
-        // amber 警告色 + alert role に格上げ。 amber は result page
-        // (result-actions.tsx) の破棄注意 banner と統一感を持たせる。
-        // S1.9.3: 90 秒経過 (longRunning=true) で「もう閉じても大丈夫」旨に切替え。
-        // それまでは「閉じないでください」の従来文言を維持する。
+        // S-4: 処理は server 側(after())で走っており、この画面を閉じても完走する。
+        // ゆえに「閉じないでください」の警告(および離脱ガード)は撤去し、
+        // 「閉じても後で確認できる」案内に統一した。 警告ではなくなったので amber の
+        // 警告色から slate の情報色へ落とし、role も status(非割込)にする。
         <section
-          role="alert"
-          aria-live="assertive"
-          className="rounded-md bg-amber-50 border border-amber-400 p-4 flex items-start gap-3"
+          role="status"
+          aria-live="polite"
+          className="rounded-md bg-slate-50 border border-slate-300 p-4 flex items-start gap-3"
         >
-          <Loader2 className="h-5 w-5 animate-spin text-amber-700 mt-0.5 flex-shrink-0" aria-hidden="true" />
-          <div className="text-sm text-amber-900">
-            {longRunning ? (
-              <>
-                <p className="font-semibold">AI が問題を抽出しています。通常より時間がかかっています。</p>
-                <p className="mt-1">
-                  このまま閉じても、後で「試験一覧」から抽出結果を確認できます。
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="font-semibold">AI が問題を抽出しています… (30 秒〜数分かかります)</p>
-                <p className="mt-1">
-                  ⚠ この画面を閉じたり戻ったりしないでください。 中断しても AI 抽出の利用枠は消費されます。
-                </p>
-              </>
-            )}
+          <Loader2 className="h-5 w-5 animate-spin text-slate-700 mt-0.5 flex-shrink-0" aria-hidden="true" />
+          <div className="text-sm text-slate-800">
+            <p className="font-semibold">AI が問題を抽出しています…</p>
+            <p className="mt-1">
+              完了すると自動で結果画面に切り替わります。 この画面を閉じても処理は続き、
+              後で「試験一覧」から結果を確認できます。
+            </p>
           </div>
         </section>
       )}
@@ -861,7 +863,8 @@ export function UploadForm({
           className="w-full py-3 text-base font-bold"
         >
           {phase.kind === 'submitting'
-            ? 'AI で抽出中… (1-2 分かかる場合があります)'
+            ? // S-4: 所要時間の数値は出さない(公開文言の規律と揃える)。
+              'AI で抽出中…'
             : anyProcessing
               ? '処理中…'
               : !destinationReady

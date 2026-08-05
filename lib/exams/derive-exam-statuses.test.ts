@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { deriveExamStatuses, STALE_PROCESSING_MS } from './derive-exam-statuses'
+import {
+  deriveDocStatuses,
+  deriveExamStatuses,
+  STALE_PROCESSING_MS,
+} from './derive-exam-statuses'
 
 // 固定基準時刻: テスト全体で "now" を統一する
 const NOW = new Date('2026-05-20T10:00:00Z')
@@ -192,5 +196,67 @@ describe('deriveExamStatuses', () => {
       const result = deriveExamStatuses(rows, NOW, new Set(['sd-fresh']))
       expect(result.get('exam-fresh')).toBe('processing')
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// deriveDocStatuses(②-4a 単一 invocation S-4)
+// ---------------------------------------------------------------------------
+// upload page の poll が読む doc 粒度 map。exam 粒度との決定的な違いは
+// **completed を明示値で返す**こと — poll する client は「まだ結果が無い(key 不在)」
+// と「完了した」を区別する必要があり、key 不在を completed とみなすと、まだ作られて
+// いない doc / 取得失敗が全て「完了」に見えてしまう。
+describe('deriveDocStatuses', () => {
+  it('completed は key 不在ではなく明示値 "completed" で返る', () => {
+    const rows = [
+      { examId: 'exam-a', id: 'sd-a', status: 'completed' as const, createdAt: FRESH_TIME },
+    ]
+    const result = deriveDocStatuses(rows, NOW)
+    expect(result.get('sd-a')).toBe('completed')
+    // exam 粒度側は従来どおり entry を作らない(2 つの map の意味論が違うことの pin)。
+    expect(deriveExamStatuses(rows, NOW).has('exam-a')).toBe(false)
+  })
+
+  it('failed はそのまま "failed"', () => {
+    const rows = [
+      { examId: 'exam-b', id: 'sd-b', status: 'failed' as const, createdAt: FRESH_TIME },
+    ]
+    expect(deriveDocStatuses(rows, NOW).get('sd-b')).toBe('failed')
+  })
+
+  it('15 分以内の processing は "processing"', () => {
+    const rows = [
+      { examId: 'exam-c', id: 'sd-c', status: 'processing' as const, createdAt: FRESH_TIME },
+    ]
+    expect(deriveDocStatuses(rows, NOW).get('sd-c')).toBe('processing')
+  })
+
+  it('15 分超の processing(live-op 保護なし)は exam 粒度と同じく "failed" に倒れる', () => {
+    const rows = [
+      { examId: 'exam-d', id: 'sd-d', status: 'processing' as const, createdAt: STALE_TIME },
+    ]
+    expect(deriveDocStatuses(rows, NOW).get('sd-d')).toBe('failed')
+    // 同じ入力で exam 粒度も failed = 2 つの導出が同じ stale 規則を共有している。
+    expect(deriveExamStatuses(rows, NOW).get('exam-d')).toBe('failed')
+  })
+
+  it('15 分超でも live-op 保護があれば "processing"(reconciler と表示を一致させる)', () => {
+    const rows = [
+      { examId: 'exam-e', id: 'sd-e', status: 'processing' as const, createdAt: STALE_TIME },
+    ]
+    expect(deriveDocStatuses(rows, NOW, new Set(['sd-e'])).get('sd-e')).toBe('processing')
+  })
+
+  it('key は source_document id(exam id ではない)', () => {
+    const rows = [
+      { examId: 'exam-f', id: 'sd-f', status: 'completed' as const, createdAt: FRESH_TIME },
+    ]
+    const result = deriveDocStatuses(rows, NOW)
+    expect(result.has('sd-f')).toBe(true)
+    expect(result.has('exam-f')).toBe(false)
+  })
+
+  it('行が無ければ空 map(未知の doc を completed に倒さない)', () => {
+    expect(deriveDocStatuses([], NOW).size).toBe(0)
   })
 })

@@ -13,9 +13,9 @@
 //      'use server' file の export は client から action-id 経由で到達可能なため、
 //      これらを公開 action の引数にしてはいけない(T14a fix round 1・Codex P2 と
 //      同じ判断)。
-//   ② S-4 で `after()` に載せ替える(request 応答後に走らせる)ため、request 由来の
-//      オブジェクト(File / FormData)を一切受け取らない形に固定しておく。
-//      呼出側が Buffer を実体化してから渡す契約(引数は Buffer + 文字列のみ)。
+//   ② S-4 で `after()` に載せ替えた(request 応答後に走る)。request 由来の
+//      オブジェクト(File / FormData)を一切受け取らない形に固定してある —
+//      呼出側が応答前に Buffer を実体化してから渡す契約(引数は Buffer + 文字列のみ)。
 //
 // **source を R2 に置かない**: 新経路の source は request body のバイトだけで完結
 // する(spec §2)。本 file は R2 module を import しない(unit/iso 両方で pin)—
@@ -23,8 +23,11 @@
 // 責務(PUT key は `users/{uid}/{assetId}.webp` 形のみ・`src/` を作らない)。
 //
 // **throw しない契約**: 失敗の分類・terminal 化・台帳記録はすべてこの module の
-// 内部責務で、呼出側(S-4 の after())は薄い呼出だけを持つ。予期しない throw も
-// catch-all で吸収する。
+// 内部責務(spec §4.4 の 5 クラス)で、呼出側(submit-upload.ts の `after()`)は
+// 薄い呼出 + 防波堤だけを持つ。予期しない throw も catch-all で吸収する。
+// **分類ロジックを after() 境界に二重化しない** — 境界の catch は「この契約が
+// 破れた場合」だけを best-effort で記録する防波堤であって、失敗クラスの判定者では
+// ない(S-4 controller 指示 A)。
 //
 // **失敗は全て terminal**(spec §4.5): 新経路に resume は無い(旧経路の
 // retryable_failed / next_retry_at は移植しない)。op を terminal_failed にし、
@@ -180,6 +183,27 @@ async function runOcrPhase(
   files: UploadPipelineFile[],
   deadlineAt: Date,
 ): Promise<void> {
+  // ---- 開始 CAS(S-4・spec §4.4 (e)) ----
+  // `after()` の callback は応答返却の**後**に走るため、sync tx で作った op が
+  // その間に消えている可能性がある(ユーザーが exam ごと削除 / GDPR 退会 →
+  // cascade で op 行が消滅)。 Gemini を呼ぶ前に 1 回だけ確認して、消えていれば
+  // 静かに終わる — 課金だけ発生して結果の置き場が無い、を避ける。
+  //
+  // 確認するのは「行が存在し、lease_version が自分のもの」の 2 点だけ(spec の
+  // 削除競合クラス (e) が対象)。 status は見ない: この時点の op は必ず valid
+  // lease を持つため live-op gate が supersede を構造的に禁じており、status が
+  // 動く経路が無い(commit 側の fenced CAS が status='processing' を改めて要求する)。
+  // **以降の各 I/O 前に再確認はしない** — 稀な競合で余分な Gemini 呼出 1 回や
+  // ref ゼロの crop asset が残るのは bounded residual として受容し、既存 GC lane が
+  // 回収する(Codex #15)。
+  const stillOurs = await withTenantTx(userId, (tx) =>
+    isOperationStillOurs(tx, userId, refs.operationId, leaseVersion),
+  )
+  if (!stillOurs) {
+    logger.warn({ event: 'upload.pipeline.start_cas_lost', operationId: refs.operationId })
+    return
+  }
+
   // 各 phase の所要時間 log は **失敗分岐より前**に出す(log の目的は暫定予算の
   // 較正であり、較正上いちばん危ないのは「遅い / timeout する呼出」= 失敗する
   // 呼出そのもの。成功時しか出ないと測りたい値が落ちる)。
@@ -497,6 +521,27 @@ function buildPrepared(
   }
   const payload = assemblePreparedPayload(normalized)
   return { payload, preparedHash: computePreparedHash(payload) }
+}
+
+// 開始 CAS の読取(S-4): 行が存在し lease_version が自分のものか。
+async function isOperationStillOurs(
+  tx: TenantTx,
+  userId: string,
+  operationId: string,
+  leaseVersion: number,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: uploadOperations.id })
+    .from(uploadOperations)
+    .where(
+      and(
+        eq(uploadOperations.id, operationId),
+        eq(uploadOperations.userId, userId),
+        eq(uploadOperations.leaseVersion, leaseVersion),
+      ),
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 // prepared_payload の fenced CAS(spec §4.3): 自分が作った processing op で、かつ

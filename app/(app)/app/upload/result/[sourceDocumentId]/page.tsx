@@ -7,6 +7,7 @@ import {
 } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
 import { AppContainer } from '@/app/(app)/app/_components/app-container'
+import { UPLOAD_INTERRUPTED_NOTICE } from '../../_lib/constants'
 import { ResultActions } from './_components/result-actions'
 
 // S1.9.2: OCR result page。 旧来 upload-form の success phase で描画していた
@@ -77,10 +78,11 @@ export default async function UploadResultPage({
             >
               {failed ? '⚠ 問題を抽出できませんでした' : '⏳ まだ処理中です'}
             </h1>
-            {/* 公開文言(spec 論点 A): 待ち時間の数値は書かない / 試験の削除は案内しない。 */}
+            {/* 公開文言(spec 論点 A): 待ち時間の数値は書かない / 試験の削除は案内
+                しない。失敗面は S-4 で単一定義(_lib/constants.ts)へ集約した。 */}
             <p className="text-sm text-slate-700">
               {failed
-                ? '処理が中断された可能性があります。 しばらく待ってから再度お試しください。 処理状況は試験一覧で確認できます。'
+                ? UPLOAD_INTERRUPTED_NOTICE
                 : `試験「${sourceDoc.examName}」 への取り込みを実行中です。 処理状況は試験一覧で確認できます。`}
             </p>
           </section>

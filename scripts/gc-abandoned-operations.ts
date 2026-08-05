@@ -8,6 +8,15 @@
 // `prepared_payload`(カード本文 = PII を含みうる)が永久に保持されてしまう —
 // これが claim-time cap では閉じられない残存経路(この script の存在意義)。
 //
+// **②-4a S-4(2026-08-05)で対象範囲が広がった**: 共有述語
+// `isLiveUploadOperationCondition` から 7 日 window(created_at 基準)が外れ、
+// live = 「非終端 かつ valid lease」だけになった。 ゆえに本 sweep の候補は
+// 「非終端 かつ valid lease を持たない」全行 = **年齢を問わない**。 新経路は
+// resume を持たないため、lease を持たない非終端 op を進める主体が存在しない
+// (放置 op の payload をより早く落とせる)。 旧経路の awaiting_sources は
+// lease を持たないため即日候補になる — 本 script は手動運用ゆえ影響は運用者の
+// 実行タイミング次第で、S-5 の旧経路撤去まではその点を意識して走らせる。
+//
 // 本 script は `scripts/gc-image-assets.ts` の model(DI core + production
 // deps 束縛 + `--dry-run` 既定安全 + `--user` scope + loud PII-free logging)を
 // 踏襲する。 破壊操作だが「非終端→terminal_failed + payload NULL」のみで
@@ -75,7 +84,7 @@ export type AbandonedOpsSweepOptions = {
 
 export type AbandonedOpsSweepDeps = {
   // 候補取得: 非終端 かつ isLiveUploadOperationCondition を満たさない
-  // (= created_at が PREPARED_RETENTION_MS を超え かつ 有効 lease も無い)行。
+  // (= S-4 以降は「有効 lease を持たない」= 年齢を問わない)行。
   fetchCandidates: () => Promise<AbandonedOpCandidate[]>
   // fenced terminal 化。 candidate 選定と同じ述語を WHERE に再適用する CAS —
   // select〜update の間に re-claim/takeover された行は 0 行更新(false)で

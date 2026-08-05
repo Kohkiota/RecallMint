@@ -1,5 +1,6 @@
 'use server'
 
+import { after } from 'next/server'
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 
 import { MAX_ASSET_BYTES } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
@@ -9,6 +10,7 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { exams, sourceDocuments, uploadOperations, type User } from '@/lib/db/schema'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
+import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { todayInJst } from '@/lib/jst'
 import { logger } from '@/lib/logger'
 import {
@@ -35,9 +37,13 @@ import { type Destination } from './upload-guard'
 // R2 client を import しない(unit/iso 両方で pin 済)。
 //
 // 範囲は「入力検証 → 1 tx(advisory lock / 冪等 replay / live-op gate / daily cap /
-// op + exam + source_document 作成 + lease 発行)→ OCR phase(S-2・
-// _lib/upload-pipeline.ts)」まで。crop・publish(S-3)は未実装のため、成功した
-// operation は status='prepared' で止まる(UI 未接続 = S-4)。
+// op + exam + source_document 作成 + lease 発行)→ 応答 → `after()` で本処理
+// (OCR → crop → publish・_lib/upload-pipeline.ts)」。
+//
+// S-4(spec 2026-08-04 §5): 本処理を `after()` に載せ、action は sync tx の直後に
+// 返す。完了 / 失敗の伝達は client の poll(/api/exams/status の `docStatuses`)。
+// 応答前に全 file を Buffer 化してから callback を登録するため、request / File /
+// FormData は closure に入らない(応答後に読むオブジェクトを残さない)。
 
 // sniffMagicBytes が判定に必要とする先頭バイト数(最長 signature = WebP の
 // RIFF....WEBP = 12 バイト)。全バイトをメモリへ展開せず先頭だけを読む。
@@ -374,7 +380,40 @@ async function currentUserOrNull(): Promise<User | null> {
   }
 }
 
-// Server Action entry point。認証 → 入力検証 → sync phase tx → OCR phase。
+// after() 境界の防波堤(best-effort 記録のみ)。**失敗クラスの分類はしない** —
+// それは runUploadPipeline の責務(no-throw 契約)で、二重に持たない。ここへ来た
+// 時点で「pipeline が自力で記録できなかった」ことだけが分かるので、operationId と
+// 固定 errorCode だけを台帳へ載せる(PII-free: filename / バイト / カード本文は
+// 入れない)。台帳書込も失敗したら log だけ残して飲む。
+async function recordAfterBoundaryFailure(
+  userId: string,
+  operationId: string,
+  err: unknown,
+): Promise<void> {
+  logger.error({
+    event: 'upload.pipeline.after_boundary_failed',
+    operationId,
+    err,
+  })
+  try {
+    await recordIntegrationFailure({
+      key: 'ocr_pipeline',
+      userId,
+      subject: 'upload OCR pipeline after() boundary error',
+      errorMessage: err instanceof Error ? err.message : String(err),
+      context: { operationId, errorCode: 'after_boundary_error' },
+    })
+  } catch (recordErr) {
+    logger.error({
+      event: 'upload.pipeline.after_boundary_record_failed',
+      operationId,
+      err: recordErr,
+    })
+  }
+}
+
+// Server Action entry point。認証 → 入力検証 → sync phase tx → 即応答 +
+// after() で本処理。
 export async function submitUpload(formData: FormData): Promise<SubmitUploadResult> {
   // 統合 time budget の起点は **action 入口**(sync tx の消費分も予算内)。
   const startedAt = Date.now()
@@ -403,18 +442,20 @@ export async function submitUpload(formData: FormData): Promise<SubmitUploadResu
   )
   if (result.outcome !== 'accepted') return result
 
-  // OCR phase(S-2)。`replayed` を必ず見る: replay で返った既存 op は「この呼出が
-  // 作った op」ではないため対象にしてはいけない — 見ないと transport retry のたびに
-  // Gemini が再実行される(spec §4.3 違反)。
+  // 本処理(OCR → crop → publish)。`replayed` を必ず見る: replay で返った既存 op は
+  // 「この呼出が作った op」ではないため対象にしてはいけない — 見ないと transport
+  // retry のたびに Gemini が再実行される(spec §4.3 違反)。
   if (!result.replayed) {
+    const userId = user.id
     const refs = {
       operationId: result.operationId,
       examId: result.examId,
       sourceDocumentId: result.sourceDocumentId,
     }
-    // pipeline へ渡す前に実バイトを Buffer 化する。File / FormData(request 由来の
-    // オブジェクト)を pipeline に持ち込まないため — S-4 で pipeline を after() に
-    // 載せると、request 応答後に closure に残った File を読むことになる。
+    const leaseVersion = result.leaseVersion
+    // **応答前に**実バイトを Buffer 化する。File / FormData(request 由来の
+    // オブジェクト)を after() の closure に持ち込まないため — 応答後に request の
+    // stream を読む形にすると、platform が body を回収したあとの読取になる。
     // この区間も pipeline と同じ no-throw envelope に入れる: ここで throw させると
     // operation が processing + live lease・error code 無し・台帳行無しで残る。
     let files: UploadPipelineFile[] | null = null
@@ -428,16 +469,40 @@ export async function submitUpload(formData: FormData): Promise<SubmitUploadResu
       }
       files = materialized
     } catch (err) {
-      await absorbUploadPipelineFailure(user.id, refs, result.leaseVersion, err)
+      await absorbUploadPipelineFailure(userId, refs, leaseVersion, err)
     }
     if (files !== null) {
-      await runUploadPipeline(
-        user.id,
-        refs,
-        result.leaseVersion,
-        files,
-        new Date(startedAt + UPLOAD_PIPELINE_BUDGET_MS),
-      )
+      const pipelineFiles = files
+      // 統合予算の起点は action 入口(sync tx の消費分も予算内)。after() の実行時間
+      // 上限は route の maxDuration に従う(追加枠なし)ため、予算の意味は不変。
+      const deadlineAt = new Date(startedAt + UPLOAD_PIPELINE_BUDGET_MS)
+      try {
+        after(async () => {
+          try {
+            await runUploadPipeline(
+              userId,
+              refs,
+              leaseVersion,
+              pipelineFiles,
+              deadlineAt,
+            )
+          } catch (err) {
+            // **防波堤(分類はしない)**: runUploadPipeline は no-throw 契約
+            // (spec §4.4 の 5 クラスを自前で分類・terminal 化・台帳記録する)。
+            // ここへ来る = その契約が破れたか、pipeline 自身の failure-handler が
+            // 落ちたか。どちらも「どのクラスか」を境界からは判定できないので、
+            // best-effort の記録だけをして飲む(after() の外へ throw を出さない)。
+            await recordAfterBoundaryFailure(userId, refs.operationId, err)
+          }
+        })
+      } catch (err) {
+        // **防波堤のもう半分**: after() の**登録**が失敗した場合。callback が一度も
+        // 走らない = pipeline 内部の catch も境界の catch も発火しないため、spec
+        // §4.4 の (a)〜(e) いずれにも属さない穴になる(lease が切れるまで
+        // 「処理中」に見え続ける)。同期側の terminal 化がこのクラスの唯一の検出
+        // 経路なので、ここだけは pipeline と同じ envelope へ倒す。
+        await absorbUploadPipelineFailure(userId, refs, leaseVersion, err)
+      }
     }
   }
 

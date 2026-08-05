@@ -8,6 +8,7 @@ import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
 import { AppContainer } from '../_components/app-container'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { UPLOAD_INTERRUPTED_NOTICE } from './_lib/constants'
 import { UploadForm } from './_components/upload-form'
 
 // Server Actions の実行時間上限 (秒)。 maxDuration は呼び出し page の route
@@ -77,12 +78,16 @@ export default async function UploadPage() {
           {header}
           <Card>
             <CardContent className="p-6 space-y-3">
+              {/* S-4: **見出しでも「実行中」と断定しない**。この gate は
+                  source_document が processing であることしか見ておらず、その実行が
+                  生きているのか既に死んで lease の失効待ちなのかを区別できない —
+                  見出しが断定したままだと直下の公開文言(「中断された可能性が
+                  あります」)と同じカード内で矛盾する。公開文言は _lib/constants.ts に
+                  単一定義(待ち時間の数値なし / 削除案内なし)。 */}
               <p className="font-medium text-slate-800">
-                現在 AI が問題を抽出中です。完了までしばらくお待ちください。
+                直前のアップロードがまだ完了していません。
               </p>
-              <p className="text-sm text-slate-600">
-                処理状況は試験一覧で確認できます。
-              </p>
+              <p className="text-sm text-slate-600">{UPLOAD_INTERRUPTED_NOTICE}</p>
               <Button asChild variant="outline">
                 <Link href="/app/exams" prefetch={false}>試験一覧を見る</Link>
               </Button>

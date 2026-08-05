@@ -25,6 +25,7 @@ import { closeDb } from '@/lib/db'
 import {
   aiUsage,
   exams,
+  integrationFailures,
   sourceDocuments,
   uploadOperations,
   users,
@@ -32,18 +33,32 @@ import {
 import { todayInJst } from '@/lib/jst'
 import { LEASE_TTL_MS } from '@/app/(app)/app/upload/_lib/constants'
 
-const { mockGetCurrentUser, mockCallGemini, ...r2Spies } = vi.hoisted(() => ({
-  mockGetCurrentUser: vi.fn(),
-  mockCallGemini: vi.fn(),
-  presignPutUrl: vi.fn(),
-  presignGetUrl: vi.fn(),
-  headObject: vi.fn(),
-  getObject: vi.fn(),
-  putObject: vi.fn(),
-  deleteObject: vi.fn(),
-}))
+const { mockGetCurrentUser, mockCallGemini, mockAfter, mockNotifyOps, ...r2Spies } =
+  vi.hoisted(() => ({
+    mockGetCurrentUser: vi.fn(),
+    mockCallGemini: vi.fn(),
+    mockAfter: vi.fn(),
+    mockNotifyOps: vi.fn(),
+    presignPutUrl: vi.fn(),
+    presignGetUrl: vi.fn(),
+    headObject: vi.fn(),
+    getObject: vi.fn(),
+    putObject: vi.fn(),
+    deleteObject: vi.fn(),
+  }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: mockGetCurrentUser }))
+// S-4: 本処理は `after()` に載る。実物の `after` は request scope の外(vitest)では
+// 必ず throw する(next/dist/server/after: workStore 不在 → E468)ため、登録された
+// callback を捕まえて test が明示的に走らせる = platform が応答後に実行する分の再現。
+vi.mock('next/server', () => ({ after: mockAfter }))
+// 外部副作用の遮断: after() 境界の防波堤 / pipeline の台帳記録は実
+// `recordIntegrationFailure` → `notifyOps` を通るため、通知だけ mock で塞ぐ
+// (integration_failures への実書込は検証し続ける)。
+vi.mock('@/lib/ops', () => ({
+  notifyOps: mockNotifyOps,
+  notifyWebhookError: vi.fn(),
+}))
 // spec §2: 新経路は source を R2 に置かない(request body のバイトのみを使う)。
 // R2 client の全 export を spy にして「1 度も呼ばれない」ことを pin する
 // (将来 submit-upload が R2 を import したらここが落ちる)。
@@ -65,6 +80,15 @@ import {
 
 import { asTenant } from './setup/as-tenant'
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
+
+// after() に登録された callback。応答後に platform が走らせる分を test が再現する。
+let afterTasks: Array<() => unknown> = []
+
+async function runAfterTasks(): Promise<void> {
+  const tasks = afterTasks
+  afterTasks = []
+  for (const task of tasks) await task()
+}
 
 afterAll(async () => {
   await closeDb()
@@ -133,6 +157,12 @@ describe('submitUploadTx (S-1)', () => {
     mockCallGemini.mockReset()
     mockCallGemini.mockResolvedValue(geminiOk())
     for (const spy of Object.values(r2Spies)) spy.mockReset()
+    mockNotifyOps.mockReset()
+    afterTasks = []
+    mockAfter.mockReset()
+    mockAfter.mockImplementation((task: () => unknown) => {
+      afterTasks.push(task)
+    })
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
     userBId = randomUUID()
@@ -564,9 +594,9 @@ describe('submitUploadTx (S-1)', () => {
     })
   })
 
-  // --- (e) action 経路(sync tx → OCR → crop → publish)+ source の R2 呼出 0 ---
-  describe('submitUpload(action・S-2 OCR phase + S-3 crop/publish)', () => {
-    it('accepted を返し、同一 invocation で publish まで走らせて completed にする(図版なしゆえ R2 client 未使用)', async () => {
+  // --- (e) action 経路(sync tx → 即応答 → after() で OCR → crop → publish)---
+  describe('submitUpload(action・S-2 OCR phase + S-3 crop/publish + S-4 after())', () => {
+    it('応答は sync tx の直後に返り、pipeline は after() の実行で completed になる', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: userAId })
 
       const result = await submitUpload(
@@ -582,6 +612,18 @@ describe('submitUploadTx (S-1)', () => {
       expect(result).not.toHaveProperty('leaseVersion')
 
       const owner = getFixtureOwnerDb()
+
+      // **応答時点では本処理は 1 度も走っていない**(即応答の実体)。
+      expect(mockCallGemini).not.toHaveBeenCalled()
+      const beforeAfter = await owner
+        .select({ status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(beforeAfter[0]?.status).toBe('processing')
+
+      // 応答後に platform が after() の callback を走らせる。
+      expect(mockAfter).toHaveBeenCalledTimes(1)
+      await runAfterTasks()
       const opRows = await owner
         .select({
           status: uploadOperations.status,
@@ -610,6 +652,7 @@ describe('submitUploadTx (S-1)', () => {
       if (result.outcome !== 'accepted') {
         throw new Error(`expected accepted, got ${result.outcome}`)
       }
+      await runAfterTasks()
 
       const owner = getFixtureOwnerDb()
       const opRows = await owner
@@ -643,6 +686,7 @@ describe('submitUploadTx (S-1)', () => {
       if (first.outcome !== 'accepted') {
         throw new Error(`expected accepted, got ${first.outcome}`)
       }
+      await runAfterTasks()
       expect(first.replayed).toBe(false)
       expect(mockCallGemini).toHaveBeenCalledTimes(1)
 
@@ -663,6 +707,9 @@ describe('submitUploadTx (S-1)', () => {
         .where(eq(sourceDocuments.id, first.sourceDocumentId))
 
       const second = await submitUpload(buildFormData([file], 'idem-action-replay'))
+      // replay は after() を登録すらしない(再送のたびに Gemini を再実行しない)。
+      expect(mockAfter).toHaveBeenCalledTimes(1)
+      await runAfterTasks()
       expect(second).toEqual({ ...first, replayed: true })
       expect(mockCallGemini).toHaveBeenCalledTimes(1)
 
@@ -683,6 +730,61 @@ describe('submitUploadTx (S-1)', () => {
         .from(sourceDocuments)
         .where(eq(sourceDocuments.id, first.sourceDocumentId))
       expect(docRows[0]?.status).toBe('completed')
+    })
+
+    // spec §4.4 の (a)〜(e) いずれにも属さない穴: after() の **登録** が失敗すると
+    // callback が一度も走らず、pipeline 内部の catch も境界の catch も発火しない。
+    // 同期側の terminal 化がこのクラスの唯一の検出経路。
+    it('after() の登録が失敗したら同期側で op + doc を terminal 化する', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+      mockAfter.mockImplementationOnce(() => {
+        throw new Error('after() unavailable')
+      })
+
+      const result = await submitUpload(
+        buildFormData([await realImageFile('a.png')], 'idem-after-register-fail'),
+      )
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+
+      // callback は 1 度も走っていない = Gemini も呼ばれない。
+      expect(afterTasks).toHaveLength(0)
+      expect(mockCallGemini).not.toHaveBeenCalled()
+
+      const owner = getFixtureOwnerDb()
+      const opRows = await owner
+        .select({
+          status: uploadOperations.status,
+          lastErrorCode: uploadOperations.lastErrorCode,
+          leaseExpiresAt: uploadOperations.leaseExpiresAt,
+          preparedPayload: uploadOperations.preparedPayload,
+        })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(opRows[0]?.status).toBe('terminal_failed')
+      expect(opRows[0]?.lastErrorCode).toBe('pipeline_unexpected_error')
+      expect(opRows[0]?.leaseExpiresAt).toBeNull()
+      expect(opRows[0]?.preparedPayload).toBeNull()
+
+      // doc も同一 tx で failed(「processing のまま」を残さない)。
+      const docRows = await owner
+        .select({ status: sourceDocuments.status })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, result.sourceDocumentId))
+      expect(docRows[0]?.status).toBe('failed')
+
+      // 予期しない失敗ゆえ台帳にも 1 行載る(運用シグナル・PII-free)。
+      const failures = await owner
+        .select()
+        .from(integrationFailures)
+        .where(eq(integrationFailures.userId, userAId))
+      expect(failures).toHaveLength(1)
+      expect(failures[0]!.operation).toBe('upload.ocr_pipeline')
+      expect(failures[0]!.context).toEqual({
+        operationId: result.operationId,
+        errorCode: 'pipeline_unexpected_error',
+      })
     })
   })
 })

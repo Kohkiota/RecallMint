@@ -171,7 +171,12 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     expect((await readOp(operationId)).status).toBe('terminal_failed')
   })
 
-  it('a WITHIN-retention non-terminal op (null lease) is NOT swept (still resumable)', async () => {
+  // **②-4a S-4 の仕様変更**: `isLiveUploadOperationCondition` から 7 日 window
+  // (created_at 基準)を撤去し「非終端 かつ valid lease」だけを live とした。
+  // 旧実装ではこの行(作成 7 日以内 / lease NULL)は「まだ再開可能」として sweep
+  // 対象外だったが、新経路に resume は無く、lease を持たない非終端 op を進める
+  // 主体は居ない。 ゆえに **年齢に関わらず sweep 対象**になる。
+  it('a RECENT non-terminal op with a null lease IS swept (S-4: 7 日 window 撤去・年齢は問わない)', async () => {
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
@@ -186,8 +191,8 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
       buildProductionDeps(db, userId),
     )
 
-    expect(summary).toEqual({ scanned: 0, terminated: 0, ids: [] })
-    expect((await readOp(operationId)).status).toBe('claimed')
+    expect(summary).toEqual({ scanned: 1, terminated: 1, ids: [operationId] })
+    expect((await readOp(operationId)).status).toBe('terminal_failed')
   })
 
   it('a past-retention op with a currently VALID lease is NOT swept (concurrently-advancing operation must not be clobbered)', async () => {

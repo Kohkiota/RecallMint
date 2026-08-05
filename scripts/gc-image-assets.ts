@@ -64,7 +64,17 @@
 // lib/media/domain/source-asset-state.ts(G2 asset-state.ts とは別 module)。
 // live-op 除外は isLiveUploadOperationCondition(lib/exams/source-doc-status.ts・
 // T14a が NULL-safe 化した共有述語)を SQL WHERE に直接埋め込み再利用する(JS 側で
-// 再実装しない)。source lane は `--sweep`(dry-run 込み)でのみ走る(asset lane の
+// 再実装しない)。
+//
+// **②-4a S-4(2026-08-05)で source lane の保護範囲が狭まった**(gc-abandoned-
+// operations.ts:11-19 と同趣旨の注記): 共有述語から 7 日 window(created_at 基準)が
+// 外れ、live = 「非終端 かつ valid lease」だけになった。 ゆえに **lease を持たない
+// 非終端 op(= 旧経路の `awaiting_sources` — prepare-upload は lease を発行しない)は
+// 所有 source_asset を守らなくなり**、Class A(reserved-not-live)の margin
+// `SOURCE_RESERVED_NET_GRACE_MS`(16 分)超で **R2 object + 行の削除対象に昇格する**
+// (旧: 最大 7 日保護)。 方向は T14b′ の新軸(source は R2 に残さない)と同じだが、
+// 本 lane は破壊操作ゆえ、S-5 の旧経路撤去まではこの点を意識して走らせること
+// (`--dry-run` 既定で対象を確認してから本実行する)。source lane は `--sweep`(dry-run 込み)でのみ走る(asset lane の
 // mark-only 相当の概念が無いため、`--sweep` 無しでは何もしない)。既存 asset lane
 // の挙動・DI・CLI flag 処理は変更しない(追加のみ)。
 // 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-14b-brief.md

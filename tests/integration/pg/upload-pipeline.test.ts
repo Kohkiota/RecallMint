@@ -71,6 +71,12 @@ vi.mock('@/lib/media/crop-and-store', async (importOriginal) => {
     classifyCropOutcome: vi.fn(actual.classifyCropOutcome),
   }
 })
+// catch-all(予期しない throw)の注入点。crop の外側 = pipeline 本体で throw させる。
+// 既定は実実装のまま(正規化契約は lib/ocr 側の test が担保)。
+vi.mock('@/lib/ocr/normalize-prepared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ocr/normalize-prepared')>()
+  return { ...actual, normalizePrepared: vi.fn(actual.normalizePrepared) }
+})
 vi.mock('@/app/(app)/app/upload/_actions/publish-prepared', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('@/app/(app)/app/upload/_actions/publish-prepared')>()
@@ -80,6 +86,7 @@ vi.mock('@/app/(app)/app/upload/_actions/publish-prepared', async (importOrigina
 // vi.mock は import より前に hoist される。
 import { GEMINI_TIMEOUT_MS, type GeminiContentPart } from '@/lib/ai/clients/gemini'
 import { classifyCropOutcome, cropFigureFromBuffer } from '@/lib/media/crop-and-store'
+import { normalizePrepared } from '@/lib/ocr/normalize-prepared'
 import { publishPreparedUploadTx } from '@/app/(app)/app/upload/_actions/publish-prepared'
 import {
   runUploadPipeline,
@@ -97,6 +104,9 @@ afterAll(async () => {
 const realClassifyCropOutcome = vi
   .mocked(classifyCropOutcome)
   .getMockImplementation() as typeof classifyCropOutcome
+const realNormalizePrepared = vi
+  .mocked(normalizePrepared)
+  .getMockImplementation() as typeof normalizePrepared
 
 const VALID_CARD = {
   title: '問 1',
@@ -178,6 +188,7 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
     vi.mocked(publishPreparedUploadTx).mockClear()
     // mockImplementationOnce は mockClear で戻らないため実実装へ戻す。
     vi.mocked(classifyCropOutcome).mockImplementation(realClassifyCropOutcome)
+    vi.mocked(normalizePrepared).mockImplementation(realNormalizePrepared)
     putKeys = []
     opStatusAtPut = []
     r2Spies.putObject.mockImplementation(async (key: string) => {
@@ -286,6 +297,39 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
       .where(eq(aiUsage.date, today))
     return rows[0]?.count ?? 0
   }
+
+  // --- 開始 CAS(S-4)---
+  // after() の callback は応答の**後**に走るため、その間に op 行が消えることがある
+  // (exam 削除 cascade / GDPR 退会)。Gemini を呼ぶ前に実 PG で 1 回だけ確認する。
+  it('op 行が消えていたら Gemini を呼ばずに静かに終わる(削除競合の課金を削る)', async () => {
+    await getFixtureOwnerDb()
+      .delete(uploadOperations)
+      .where(eq(uploadOperations.id, operationId))
+
+    await run()
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(await readAiUsage()).toBe(0)
+    // doc は触らない(ユーザーが exam ごと消した場合は doc も cascade で消えている)。
+    expect(await countCards()).toBe(0)
+  })
+
+  it('lease_version が自分のものでなければ Gemini を呼ばない(開始 CAS)', async () => {
+    // 実行開始前に takeover / supersede が入って lease_version が進んだ状況。
+    await getFixtureOwnerDb()
+      .update(uploadOperations)
+      .set({ leaseVersion: 1 })
+      .where(eq(uploadOperations.id, operationId))
+
+    await run(0)
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(await readAiUsage()).toBe(0)
+    const op = await readOperation()
+    // 他の書き手の状態を上書きしない。
+    expect(op?.status).toBe('processing')
+    expect(op?.preparedPayload).toBeNull()
+  })
 
   it('メモリのバイトで OCR → publish まで走り切る(図版なし: R2 は 1 度も呼ばれない)', async () => {
     await run()
@@ -451,6 +495,39 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
     expect(await countCards()).toBe(0)
   })
 
+  // no-throw 契約の実体(spec §4.4 (b)): pipeline **内部**の catch-all が、予期しない
+  // throw を「op terminal + doc failed(同一 tx)+ 台帳 1 行」へ変換する。after() 境界の
+  // 防波堤はこの分類を持たない(持たせると二重化する)ので、ここが唯一の検証点。
+  it('pipeline 内部の予期しない throw は op terminal + doc failed + 台帳 1 行になる', async () => {
+    vi.mocked(normalizePrepared).mockImplementationOnce(() => {
+      throw new Error('unexpected pipeline explosion')
+    })
+
+    await expect(run()).resolves.toBeUndefined()
+
+    const op = await readOperation()
+    expect(op?.status).toBe('terminal_failed')
+    expect(op?.lastErrorCode).toBe('pipeline_unexpected_error')
+    expect(op?.leaseExpiresAt).toBeNull()
+    expect(op?.preparedPayload).toBeNull()
+    // 同一 tx で doc も failed(「op terminal / doc processing」のねじれを残さない)。
+    expect(await readDocStatus()).toBe('failed')
+    expect(await countCards()).toBe(0)
+
+    const failures = await getFixtureOwnerDb()
+      .select()
+      .from(integrationFailures)
+      .where(eq(integrationFailures.userId, userAId))
+    expect(failures).toHaveLength(1)
+    expect(failures[0]!.operation).toBe('upload.ocr_pipeline')
+    // PII-free: context は operationId + errorCode のみ。
+    expect(failures[0]!.context).toEqual({
+      operationId,
+      errorCode: 'pipeline_unexpected_error',
+    })
+    expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+  })
+
   it('二重起動は fencing が拒否する(cards / assets が増えない)', async () => {
     mockCallGemini.mockImplementation(geminiWithFigures(1))
 
@@ -577,14 +654,20 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
   })
 
   it('lease_version が一致しなければ payload を commit しない(fenced CAS)', async () => {
-    // 実行中に takeover/supersede が起きて lease_version が進んだ状況。
-    await getFixtureOwnerDb()
-      .update(uploadOperations)
-      .set({ leaseVersion: 1 })
-      .where(eq(uploadOperations.id, operationId))
+    // **開始 CAS の後**に takeover/supersede が起きて lease_version が進んだ状況を
+    // 作る(Gemini 呼出の最中に bump)。開始時点で bump してしまうと開始 CAS で
+    // 止まり、commit CAS の保証が検証されないまま緑になる。
+    mockCallGemini.mockImplementation(async () => {
+      await getFixtureOwnerDb()
+        .update(uploadOperations)
+        .set({ leaseVersion: 1 })
+        .where(eq(uploadOperations.id, operationId))
+      return geminiOk()
+    })
 
     await run(0)
 
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
     const op = await readOperation()
     expect(op?.status).toBe('processing')
     expect(op?.preparedPayload).toBeNull()
