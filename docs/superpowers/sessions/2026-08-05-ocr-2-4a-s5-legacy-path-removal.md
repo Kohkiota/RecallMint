@@ -282,6 +282,23 @@ env 注入)を検証しない** — この形(外部 I/O module を丸ごと moc
 拾えることが今回実証された。follow-up「crop lane の row-less orphan 検出」(§4 既述の
 `listObjects` 転用先)の判断材料として記録する。
 
+### 8.3 規律逸脱の申告(S-5fix・Minor-1)
+
+S-5fix の canonical review が挙げた **Minor-1**(runbook §5.0 の見出しが「順序厳守」を包括的に
+主張しており、直下の 5.0.2「順序は必須ではない」と矛盾)の修正に対し、**SDD の scoped
+re-review を省いた**。
+
+- **判断根拠**: 変更が md 見出し 1 行で挙動を持たず、controller が表の 3 行と併せて現物を
+  確認済であり、かつ **Codex が同 diff 全体を独立レビュー**していた(Critical 0 / Important 0 /
+  Minor 0)。CLAUDE.md が必須とする経路(canonical + Codex)は満たしている。
+- **省いたのは skill 側のループ機構**(fix round ごとの scoped re-review)であって、
+  repo の review 必須要件ではない。
+- **残るリスク**: 「1 行だから」を理由に省く判断は積み重なると形骸化する。同種の省略は
+  ledger でなくこの節に記録し、頻度が上がったら規律側を見直す。
+
+同 sprint の T16-a fix round 3(コメント 1 行 + test scaffolding 移動)でも同じ省略を行った
+(そちらは T16-a の記録に属するため、完了時にその session doc へ記載する)。
+
 ---
 
 ## 9. `src/` 一掃の本実行(2026-08-05・OT 指示・**実施済**)
