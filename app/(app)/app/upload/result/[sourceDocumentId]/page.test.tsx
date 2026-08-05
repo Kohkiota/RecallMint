@@ -291,6 +291,27 @@ describe('UploadResultPage — 取り込み内訳(result_summary)の提示', () 
     expect(screen.queryByText(/取り込めませんでした/)).not.toBeInTheDocument()
   })
 
+  // 「取り込めなかった」束版(brief: figuresAttached=0 + 失敗束 1 件以上)。
+  // 上限版(:276)の対になる面 — 図版が 1 件も取り込めなかったのに、黙って何も
+  // 出さずに消えるのを防ぐ(spec §13「loud failure over silent zero」)。
+  it('取り込めなかった分だけがある doc は失敗行だけ出す(取り込み行 / 上限行を出さない)', async () => {
+    completedDoc()
+    mockGetLatestCompletedUploadSummary.mockResolvedValue(
+      summaryRow({
+        figuresAttached: 0,
+        figuresExcluded: { crop_failed: 3 },
+      }),
+    )
+
+    render(await UploadResultPage({ params: params() }))
+
+    expect(screen.getByText('3 件の図版は取り込めませんでした。')).toBeInTheDocument()
+    // 0 件を「取り込みました」と言わない。
+    expect(screen.queryByText(/図版 .* 件を取り込みました/)).not.toBeInTheDocument()
+    // 失敗束だけで上限は 0 件 → 上限行を出さない。
+    expect(screen.queryByText(/上限のため省略/)).not.toBeInTheDocument()
+  })
+
   it('summary が引けなくても既存表示は壊れない(op 無し)', async () => {
     completedDoc()
     mockGetLatestCompletedUploadSummary.mockResolvedValue(null)
