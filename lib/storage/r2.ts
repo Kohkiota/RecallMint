@@ -45,6 +45,15 @@ const DELETE_TIMEOUT_MS = 10_000
 const GET_TIMEOUT_MS = 10_000
 const PUT_TIMEOUT_MS = 10_000
 
+// LIST (ListObjectsV2 — 破壊 script の削除前 listing / 削除後 readback) の
+// network timeout。 他の *_TIMEOUT_MS と同値 (CLAUDE.md AI-2)。
+const LIST_TIMEOUT_MS = 10_000
+
+// listObjects の pagination 無限ループ耐性。 1 page ≈ 最大 1000 key (S3 互換の既定)
+// なので 10,000 page は数百万 key 相当の余裕。 token が壊れて進まない/異常応答を
+// 繰り返す場合に無限に fetch し続けないための上限 (超過は throw で異常を露出する)。
+const MAX_LIST_PAGES = 10_000
+
 // retries: 0 が必須 — AwsClient は既定で retries:10 の指数 backoff を行うが、 その
 // backoff sleep は fetch へ渡す AbortSignal.timeout を観測しないため、 R2 が 5xx/429 を
 // 返し続けると headObject が 10 秒の外部 API timeout (CLAUDE.md AI-2) を大幅に超えて
@@ -222,6 +231,129 @@ export async function putObject(
     return 'error'
   } catch {
     return 'error'
+  }
+}
+
+// XML entity unescape (ListObjectsV2 応答の <Key> 内で `&` `<` `>` `"` `'` が
+// entity化されて返りうるため)。 `&amp;` は最後に処理する — 先に処理すると
+// `&amp;lt;` (元は key に literal な `&lt;` という文字列を含む場合の正しい
+// entity化) が二重展開されて `<` に化ける誤りを避けるため。
+function unescapeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+/**
+ * R2オブジェクトの一覧 (ListObjectsV2。 破壊 script(scripts/gc-src-prefix.ts等)が
+ * 削除対象を DB を介さず R2 listing だけから求めるための唯一の口)。
+ *
+ * pagination を全列挙する (IsTruncated/NextContinuationToken を追随)。 token が
+ * 欠落/非進行(壊れた応答の無限ループ)なら throw、 MAX_LIST_PAGES 超過でも throw
+ * する (無限ループ耐性)。
+ *
+ * **既存5関数(presignPutUrl/presignGetUrl/headObject/getObject/putObject/
+ * deleteObject)の never-throw 契約を、この関数は意図的に継承しない — 失敗
+ * (非2xx・fetch throw・timeout)は catch せずそのまま throw する。** 理由:
+ * 本関数は破壊操作の事後検証(「削除後 readback = listing 0件」で削除完了を
+ * 確認する)を支える。 失敗を空配列に正規化すると、 network 失敗時も
+ * 「0件 = 削除完了」に見えてしまい検証そのものが無意味になる — 「空」と
+ * 「分からない」を混同してはならない。
+ */
+// ListObjectsV2 応答の構造検証(Codex fix round 1 P1・②-4a S-5a)。
+//
+// 背景: 200 応答であっても body が空/途中で切れた/壊れている場合、旧実装は
+// <Key>/<IsTruncated> の regex がどちらも一致せず「listing 0件」を静かに返して
+// いた — never-throw 契約を破ってまで避けようとした「分からない」を「空」として
+// 扱う失敗が、非2xx経路でなく **2xx経路から** 再侵入していた(破壊 script の削除後
+// readback が「残0件=削除完了」と誤認しうる)。
+//
+// 検出できる範囲(2点のみを必須にする — ListObjectsV2 の正常応答は必ず両方を
+// 含むため正常系を壊さない):
+//   (a) root 要素 `<ListBucketResult>` の開閉タグが両方存在する。 これは
+//       「明らかな truncation(応答が途中で切れて閉じタグに到達しない)」の
+//       主要形を捕まえる — 開閉タグが揃うには内側の各要素も概ね閉じている
+//       必要があるため、個々の <Key> が中途半端に切れたケースの一部もここで
+//       捕まる。
+//   (b) `<IsTruncated>` が存在し `true`/`false` のどちらかとして曖昧さ無く
+//       parse できる(欠落・空・他の値は reject)。
+// 検出できない残余(regex ベースゆえの限界・隠さず明記する): root 要素の開閉
+// タグが揃っていても **内部の値が改竄/破損**している(例: 中間プロキシが正しい
+// XML構造を保ったまま <Key> の中身を差し替えた)ケースは検出できない。 完全な
+// 検証には XML schema validation が要るが、CLAUDE.md の新規依存追加禁止(事前
+// 相談)制約のもとでは、readback の偽陰性を引き起こす「主要な」経路(空 body・
+// 明らかな truncation・IsTruncated 欠落)を塞ぐのがこの検証の目的であり範囲。
+function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boolean } {
+  const hasOpenRoot = /<ListBucketResult[\s>]/.test(xml)
+  const hasCloseRoot = /<\/ListBucketResult>/.test(xml)
+  if (!hasOpenRoot || !hasCloseRoot) {
+    throw new Error(
+      `listObjects: malformed response — <ListBucketResult> root element not found/closed ` +
+        `(prefix=${prefix}, bodyLength=${xml.length}) — refusing to treat as an empty page`,
+    )
+  }
+  const truncatedMatch = xml.match(/<IsTruncated>\s*(true|false)\s*<\/IsTruncated>/)
+  if (!truncatedMatch) {
+    throw new Error(
+      `listObjects: malformed response — <IsTruncated> missing or not true/false ` +
+        `(prefix=${prefix}, bodyLength=${xml.length}) — refusing to treat as an empty page`,
+    )
+  }
+  return { isTruncated: truncatedMatch[1] === 'true' }
+}
+
+export async function listObjects(prefix: string): Promise<string[]> {
+  const keys: string[] = []
+  let continuationToken: string | undefined
+
+  for (let page = 1; ; page++) {
+    if (page > MAX_LIST_PAGES) {
+      throw new Error(
+        `listObjects: aborted after ${MAX_LIST_PAGES} pages (prefix=${prefix}) — ` +
+          'pagination loop guard triggered',
+      )
+    }
+
+    const url = new URL(`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET_NAME}`)
+    url.searchParams.set('list-type', '2')
+    url.searchParams.set('prefix', prefix)
+    if (continuationToken) {
+      url.searchParams.set('continuation-token', continuationToken)
+    }
+
+    const res = await client.fetch(url.toString(), {
+      method: 'GET',
+      signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      throw new Error(`listObjects failed: prefix=${prefix} status=${res.status}`)
+    }
+
+    const xml = await res.text()
+    const { isTruncated } = parseListObjectsPage(xml, prefix)
+
+    for (const match of xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g)) {
+      keys.push(unescapeXmlEntities(match[1]))
+    }
+
+    if (!isTruncated) {
+      return keys
+    }
+
+    const tokenMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/)
+    const nextToken = tokenMatch ? unescapeXmlEntities(tokenMatch[1]) : ''
+    if (!nextToken || nextToken === continuationToken) {
+      // IsTruncated=true なのに token が無い/前回と同じ = 応答が壊れているか
+      // R2 側の異常。 無限ループするより throw で異常を露出させる。
+      throw new Error(
+        `listObjects: IsTruncated=true but NextContinuationToken is missing or not ` +
+          `advancing (prefix=${prefix}) — refusing to loop forever`,
+      )
+    }
+    continuationToken = nextToken
   }
 }
 

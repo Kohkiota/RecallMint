@@ -271,6 +271,115 @@ describe('deleteObject', () => {
   })
 })
 
+describe('listObjects', () => {
+  beforeEach(() => {
+    setValidEnv()
+    vi.restoreAllMocks()
+  })
+
+  function listObjectsXml(keys: string[], opts: { truncated?: boolean; nextToken?: string } = {}) {
+    const keyXml = keys.map((k) => `<Key>${k}</Key>`).join('')
+    const truncatedXml = `<IsTruncated>${opts.truncated ? 'true' : 'false'}</IsTruncated>`
+    const tokenXml = opts.nextToken
+      ? `<NextContinuationToken>${opts.nextToken}</NextContinuationToken>`
+      : ''
+    return `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>${truncatedXml}${tokenXml}${keyXml}</ListBucketResult>`
+  }
+
+  it('issues a GET against the bucket root with list-type=2 and the given prefix', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(listObjectsXml(['users/u1/src/a.pdf']), { status: 200 }))
+    const { listObjects } = await import('./r2')
+    await listObjects('users/u1/src/')
+    const request = fetchSpy.mock.calls[0][0] as Request
+    expect(request.method).toBe('GET')
+    const url = new URL(request.url)
+    expect(url.pathname).toBe(`/${BUCKET_NAME}`)
+    expect(url.searchParams.get('list-type')).toBe('2')
+    expect(url.searchParams.get('prefix')).toBe('users/u1/src/')
+  })
+
+  it('paginates: follows NextContinuationToken and returns keys from both pages', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsXml(['users/u1/src/a.pdf', 'users/u1/src/b.pdf'], {
+            truncated: true,
+            nextToken: 'token-page-2',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(listObjectsXml(['users/u1/src/c.pdf']), { status: 200 }),
+      )
+    const { listObjects } = await import('./r2')
+    const keys = await listObjects('users/u1/src/')
+    expect(keys).toEqual(['users/u1/src/a.pdf', 'users/u1/src/b.pdf', 'users/u1/src/c.pdf'])
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const secondRequest = fetchSpy.mock.calls[1][0] as Request
+    const secondUrl = new URL(secondRequest.url)
+    expect(secondUrl.searchParams.get('continuation-token')).toBe('token-page-2')
+  })
+
+  it('unescapes XML entities in returned keys', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(listObjectsXml(['users/u1/src/a&amp;b.pdf']), { status: 200 }),
+    )
+    const { listObjects } = await import('./r2')
+    const keys = await listObjects('users/u1/src/')
+    expect(keys).toEqual(['users/u1/src/a&b.pdf'])
+  })
+
+  it('throws (does not return an empty array) on a non-2xx response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 500 }))
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow(/listObjects failed/)
+  })
+
+  it('throws (does not return an empty array) when fetch throws (network error / abort)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new DOMException('The operation was aborted', 'AbortError'))
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow()
+  })
+
+  it('throws when IsTruncated=true but NextContinuationToken is missing (refuses to loop forever)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(listObjectsXml(['users/u1/src/a.pdf'], { truncated: true }), { status: 200 }),
+    )
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow(/NextContinuationToken/)
+  })
+
+  // Codex fix round 1 (P1): a 200 response with a malformed/empty/truncated body
+  // must not silently be treated as "0 keys" — that would let a destructive
+  // script's post-delete readback misread "can't tell" as "confirmed empty".
+  it('throws on a 200 response with a completely empty body (does not silently return [])', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }))
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow(/malformed response/)
+  })
+
+  it('throws on a 200 response missing <IsTruncated> even though the root element is present and closed', async () => {
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Key>users/u1/src/a.pdf</Key></ListBucketResult>'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(xml, { status: 200 }))
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow(/malformed response/)
+  })
+
+  it('throws on a 200 response whose root element is never closed (body cut off mid-stream)', async () => {
+    // truncated mid-<Key>: no </ListBucketResult> ever appears.
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated><Key>users/u1/src/a.p'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(xml, { status: 200 }))
+    const { listObjects } = await import('./r2')
+    await expect(listObjects('users/u1/src/')).rejects.toThrow(/malformed response/)
+  })
+})
+
 describe('putObject Content-Length', () => {
   beforeEach(() => {
     setValidEnv()
