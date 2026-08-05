@@ -73,7 +73,7 @@
 |---|---|---|---|
 | card は assetId を保存(URL 非保存)。表示時に presigned GET を resolve。R2 private + presigned PUT/GET | URL 失効・非公開 bucket | 証明: `lib/media/get-asset.test.ts` / `lib/storage/r2.test.ts` | `lib/storage/r2.ts` / `lib/media/get-asset.ts` |
 | GC v2: 状態機械 reserved→ready→deleting→deleted・card_asset_refs 正規化・状態ベース遅延 GC(mark→grace→promote→collect)。語彙 SSoT = pure domain(DB CHECK なし)| 参照ゼロ検出 + grace 猶予・reconciler は deploy 後実行 | 証明: `asset-state.test.ts` / `gc-image-assets.test.ts` | `lib/media/domain/asset-state.ts` / `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md` |
-| **source(OCR 元画像・`source_assets`)を R2 に保持しない(処理に必要な最小時間のみ・キャッシュ/再利用しない)。op terminal 時に同期 purge・GC は取りこぼしの網** | 著作物の疑い(残さない方針)。retain 方向の設計は撤回 | 決定 2026-08-03(OT)| `docs/audit/2026-08-03-ocr-2-4a-source-lifecycle-factfinding.md` / spec §6.4 |
+| **source(OCR 元画像)を R2 に置かない(メモリで受領 → 同一 invocation 内で OCR+crop → R2 は crop 済みのみ)。`source_assets` 表は存在しない** | 著作物の疑い(残さない方針)。「最小時間のみ保持 + purge」は「そもそも置かない」へ強化され、purge / GC source lane は保護対象ごと消滅 | 証明: `submit-upload.test.ts` / `upload-pipeline.test.ts` の R2 非 import pin + iso の PUT key pin。決定 2026-08-04(OT)| `docs/superpowers/specs/2026-08-04-ocr-2-4a-single-invocation-design.md` |
 | dedup は据え置き(未実装)。refs は many-to-many で dedup 布石のみ | YAGNI(現状 dedup 分岐なし)| 決定(spec 明示)| 同 image-gc spec |
 | **表示側 UI 契約(モーダル/畳み/4 欄ギャラリー)と個別 UI 値の線引き** | 実装 = 表示専用で sync/DB 不変(現物確認済)。**理由 = 理由未確定(2026-07-26 時点)**: どこまでが「契約」でどこからが「個別 UI 値」かの architecture 級の宣言がなく memory/session doc に分散 | 決定(理由未確定・2026-07-26)| memory `project_image_display_ux_sprint` / session doc |
 
@@ -108,7 +108,7 @@
 
 ---
 
-## 10. 検証失敗の隔離範囲(OCR / upload・②-4 で実装予定の原則)
+## 10. 検証失敗の隔離範囲(OCR / upload・②-4a で実装済み)
 
 **原則**: 検証失敗は、影響を受ける**最小の価値単位**まで隔離する。後続処理の安全性を保証できない場合のみ、その親単位を失敗させる。除外・修復した結果は必ず利用者に明示する(loud failure over silent zero-rows =「落とすな」でなく「黙って落とすな」)。
 
@@ -122,7 +122,7 @@
 | image が壊れている | その **image だけ除外**(要素ごと safeParse・親 array 検証で card を巻き込まない) |
 | tag が壊れている | その **tag だけ除外**(既存挙動) |
 
-型エラーでも image だけ落とす場合があり、内容エラーでも card 全体を落とす場合がある。**現在の「型崩れ=upload 全滅 / 内容不正=個別 skip」という型/内容ベースの分類は粗い**ため、上記の依存関係ベースに統一する(②-4 で実装)。除外件数は利用者に提示(「カード N 件作成 / M 件作成できず / K 件の図版取り込めず」)。決定: 2026-07-29(OT・②-4 設計事項)。正本 = `docs/superpowers/specs/2026-07-29-ocr-2-3-5-model-and-answer-group-design.md` §10-C/D。
+型エラーでも image だけ落とす場合があり、内容エラーでも card 全体を落とす場合がある。旧来の「型崩れ=upload 全滅 / 内容不正=個別 skip」という型/内容ベースの分類は粗く、上記の依存関係ベースへ統一済み(②-4a で実装。証明 = `normalize-prepared.test.ts` の隔離 test 群)。除外件数は result page が束で提示(実装 = `_lib/result-summary-view.ts`・producer/reader の束整合は drift pin)。決定: 2026-07-29(OT・②-4 設計事項)。正本 = `docs/superpowers/specs/2026-07-29-ocr-2-3-5-model-and-answer-group-design.md` §10-C/D + `docs/superpowers/specs/2026-07-30-ocr-2-4a-image-figure-crop-design.md` §13。
 
 ---
 
@@ -137,6 +137,7 @@
 | **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い |
 | **webhook 順序非保証の全パターン**(§7)| 中(決済)。clear site 複数で吸収する設計だが全到達順の網羅 test なし(Test Clock 手動 smoke が補完)|
 | **破壊 script の機械境界**(§9)| 中(運用)。env 目視 + dry-run の人手境界のみ・機械停止層なし |
+| **upload pipeline の「発火しない系」機構の実機発火(予期しない throw の integration_failures 台帳書込 / EXIF≠1 検知)**(§6/§10)| 中。どちらも UI から誘発できない(前者は正常経路に throw が無く、後者は client の canvas 再エンコードが EXIF を剥がす)ため、iso の注入 test(throw 注入 / 実 EXIF JPEG)が唯一の証明。client を経由しない投入経路(②-4b の PDF / API 直叩き)が現れた時に実機発火の確認を足す |
 | **実環境(stg/prod)の RLS 状態が repo の enable SQL と一致していること** | 重。判定自体は機械化済(`scripts/verify-rls-state.ts` = app role 専用・read-only・カタログ突合 + 実効検証)だが、**起動が人手**のまま(定期実行なし)。drift test は local 固定ゆえ実環境には届かない。実際に、新表の policy 適用が丸ごと漏れたまま ledger には「適用済み」と記録されていた事例がある(2026-08-04)。**手当て = 新表追加時に runbook §13 の手順で適用+実効検証し、生出力を証跡に残す** |
 
 ## 残余リスク(公開前 PII 判断・記録のみ)
