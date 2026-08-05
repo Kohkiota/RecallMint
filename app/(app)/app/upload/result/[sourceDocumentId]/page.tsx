@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import {
   getCardsForSourceDocument,
+  getLatestCompletedUploadSummary,
   getSourceDocumentForUser,
 } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
@@ -10,7 +11,12 @@ import { AppContainer } from '@/app/(app)/app/_components/app-container'
 import {
   UPLOAD_INTERRUPTED_NOTICE,
   UPLOAD_PENDING_NOTICE,
+  uploadCardsExtractedNotice,
+  uploadFiguresAttachedNotice,
+  uploadFiguresCappedNotice,
+  uploadFiguresFailedNotice,
 } from '../../_lib/constants'
+import { buildUploadResultSummaryView } from '../../_lib/result-summary-view'
 import { ResultActions } from './_components/result-actions'
 
 // S1.9.2: OCR result page。 旧来 upload-form の success phase で描画していた
@@ -40,7 +46,10 @@ export default async function UploadResultPage({
 
   // source_document 所有確認 + cards 取得を 1 tenant tx に包む (RLS-P2)。不在時は
   // tx 内で notFound() を throw し、cards query を実行しない (従来挙動を保持)。
-  const { sourceDoc, cards } = await withTenantTx(
+  //
+  // ②-4a T16-a: 取り込み内訳 (upload_operations.result_summary) も同じ tx で引く
+  // (tx を増やさない)。 成功面だけが出す情報なので `completed` 以外では引かない。
+  const { sourceDoc, cards, summary } = await withTenantTx(
     user.id,
     async (tx) => {
       const sourceDoc = await getSourceDocumentForUser(
@@ -54,7 +63,11 @@ export default async function UploadResultPage({
         sourceDocumentId,
         tx,
       )
-      return { sourceDoc, cards }
+      const summary =
+        sourceDoc.status === 'completed'
+          ? await getLatestCompletedUploadSummary(user.id, sourceDocumentId, tx)
+          : null
+      return { sourceDoc, cards, summary }
     },
   )
 
@@ -100,6 +113,10 @@ export default async function UploadResultPage({
     )
   }
 
+  // 見出しの件数は DB の実 card 行数のまま (それが正)。 summary は内訳ブロックにだけ
+  // 使い、出すものが無ければ null が返る (「除外 0 件」を毎回見せない)。
+  const summaryView = buildUploadResultSummaryView(summary)
+
   return (
     <AppContainer>
       <div className="space-y-6">
@@ -110,6 +127,31 @@ export default async function UploadResultPage({
           <p className="text-sm text-slate-700">
             試験「{sourceDoc.examName}」 に保存されました。
           </p>
+          {/* 公開文言 (spec §13「loud failure over silent zero」): 除外が起きたことを
+              画面に出す。 文言は _lib/constants.ts の単一定義で、各行は**独立した
+              1 文**として使う (述語として連結しない — I-3(b))。 理由コードは出さず
+              3 束 (取り込み / 取り込めなかった / 上限で省いた) に畳んだ言い方だけ。 */}
+          {summaryView && (
+            <ul className="mt-2 space-y-0.5 text-sm text-slate-700">
+              {summaryView.cardsExcluded > 0 && (
+                <li>
+                  {uploadCardsExtractedNotice(
+                    summaryView.cardsExtracted,
+                    summaryView.cardsTotal,
+                  )}
+                </li>
+              )}
+              {summaryView.figuresAttached > 0 && (
+                <li>{uploadFiguresAttachedNotice(summaryView.figuresAttached)}</li>
+              )}
+              {summaryView.figuresFailed > 0 && (
+                <li>{uploadFiguresFailedNotice(summaryView.figuresFailed)}</li>
+              )}
+              {summaryView.figuresCapped > 0 && (
+                <li>{uploadFiguresCappedNotice(summaryView.figuresCapped)}</li>
+              )}
+            </ul>
+          )}
         </section>
 
         <section>

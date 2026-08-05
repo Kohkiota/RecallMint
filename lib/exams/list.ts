@@ -11,7 +11,13 @@
 import 'server-only'
 
 import { and, desc, eq, isNull } from 'drizzle-orm'
-import { cards, exams, sourceDocuments, type CardOption } from '@/lib/db/schema'
+import {
+  cards,
+  exams,
+  sourceDocuments,
+  uploadOperations,
+  type CardOption,
+} from '@/lib/db/schema'
 import type { TenantDb } from '@/lib/db/tenant-tx'
 import type { ClientCardImage } from '@/lib/client-db'
 
@@ -200,6 +206,44 @@ export async function getCardsForSourceDocument(
     questionTextSnippet: snippet(r.questionText, 80),
     optionCount: Array.isArray(r.options) ? r.options.length : 0,
   }))
+}
+
+// ②-4a T16-a: OCR result page 用。 当該 source_document の取り込み内訳
+// (`upload_operations.result_summary`) を owner-scoped で 1 件取る。
+//
+// **completed の op に限る**のが要点。 1 doc に複数 op が並ぶのは replay か supersede
+// のときで、supersede された側は terminal になる。 「作成が最新の op」で選ぶと、その
+// terminal 行(result_summary は NULL)を拾って「何も取り込めなかった」と誤誘導する。
+//
+// 順序は completed_at DESC。 publish は result_summary と completed_at を**同じ
+// UPDATE** で書くため、completed の行では常に non-null。 同値時の決定性のために
+// id DESC を tie-break に足す(値の意味は無く、返り値を 1 つに固定するためだけ)。
+// `NULLS LAST` は付けていない(起きえない分岐を防御しない)。 ただし失敗形の向きは
+// 押さえておくこと — **PG 既定の DESC は NULLS FIRST** なので、上の不変条件が壊れて
+// completed_at が NULL の completed 行が現れた場合、その行は「後ろに落ちる」のでなく
+// **選ばれる**。
+//
+// 返り値の中身は検証しない(jsonb ゆえ型は何も保証しない)— 検証は読み手側の
+// `buildUploadResultSummaryView` が narrow schema で行う。
+export async function getLatestCompletedUploadSummary(
+  userId: string,
+  sourceDocumentId: string,
+  dbc: TenantDb,
+): Promise<Record<string, unknown> | null> {
+  const db = dbc
+  const rows = await db
+    .select({ resultSummary: uploadOperations.resultSummary })
+    .from(uploadOperations)
+    .where(
+      and(
+        eq(uploadOperations.userId, userId),
+        eq(uploadOperations.sourceDocumentId, sourceDocumentId),
+        eq(uploadOperations.status, 'completed'),
+      ),
+    )
+    .orderBy(desc(uploadOperations.completedAt), desc(uploadOperations.id))
+    .limit(1)
+  return rows[0]?.resultSummary ?? null
 }
 
 // formatRelativeJa は `./format` に移動済 (client-safe)。 本ファイル冒頭で

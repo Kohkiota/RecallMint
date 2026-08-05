@@ -110,6 +110,30 @@ export const UPLOAD_INTERRUPTED_NOTICE =
 export const UPLOAD_PENDING_NOTICE =
   '処理中です。 完了すると試験一覧に反映されます。'
 
+// ②-4a T16-a: result page の成功面が出す**取り込み内訳の公開文言**。 spec §13
+// 「loud failure over silent zero」— 除外が起きたことを画面に出さないと、11 問取れた
+// ときと 0 問のときが同じ見た目になる。
+//
+// I-3(b) の規律: 各関数は**常に独立した 1 文**を返し、述語として文中に連結しない
+// (連結すると文言の書換が他面では正しいまま この面だけ壊れた日本語になり、誰も
+// 気付かない)。 件数だけを変数として埋め、文の骨格はここに持つ。
+// 理由コード(crop_failed 等)は画面に出さない — 束に畳んだ言い方だけを持つ。
+export function uploadFiguresAttachedNotice(count: number): string {
+  return `図版 ${count} 件を取り込みました。`
+}
+export function uploadFiguresFailedNotice(count: number): string {
+  return `${count} 件の図版は取り込めませんでした。`
+}
+export function uploadFiguresCappedNotice(count: number): string {
+  return `${count} 件の図版は上限のため省略しました。`
+}
+export function uploadCardsExtractedNotice(
+  extracted: number,
+  total: number,
+): string {
+  return `${total} 問中 ${extracted} 問を取り込みました。`
+}
+
 // crop 1 件を新たに試みるために要求する最低残り予算(spec §11「crop 最低予算」・
 // soft pre-crop gate)。 暫定値 — cutover 後の実測で見直す(2026-08-02 OT 確定:
 // 時間予算の精緻化は測定前に決め打ちしない)。
