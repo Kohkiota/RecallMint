@@ -1,7 +1,9 @@
 -- ②-4a S-5(単一 invocation 経路への cutover): 旧 prepare→publish 経路の撤去に伴う
 -- **不可逆**な schema 縮小。適用後は旧経路へ戻せない(source_assets の行は復元不能)。
--- 適用前に R2 の `users/*/src/` 一掃(scripts/gc-src-prefix.ts)を済ませること —
--- 表を消すと object_key の台帳が失われ、残った source object を辿る手段が無くなる。
+-- R2 の `users/*/src/` 一掃(scripts/gc-src-prefix.ts)と本 migration の順序は必須では
+-- ない — 同 script は listing 駆動で DB を一切見ないため、0032 の前後どちらでも同様に
+-- 動く。0032 より前に実施すると listing 結果を source_assets.object_key と突合できる、
+-- という弱い利点があるのみ。
 -- 手順: docs/ops/ocr-2-4a-stg-migration-runbook.md §5。
 
 -- 0. lock 待ちの上限(値は db/policies/*.sql の先行例と同じ 5s)。下の 4/5/6 は

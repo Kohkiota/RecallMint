@@ -95,12 +95,12 @@ Step 1-3 + §2 確認 → deploy に fix commit(`71c2e05` 以降)が含まれる
 
 §1-§4 は Phase A(新表の作成)の記録。本節は逆向き = 単一 invocation 経路への cutover 完了後に、**旧 prepare→publish 経路の schema を落とす** 0032 の適用手順。
 
-### 5.0 前提(順序厳守・逆順は不可逆な取りこぼしを生む)
+### 5.0 前提(順序が効くのは 5.0.1 のみ — 新経路 GREEN 未確認のまま適用すると旧経路へ戻す手段が無くなる。5.0.2/5.0.3 は順序制約ではない)
 
 | # | 前提 | 理由 |
 |---|---|---|
 | 5.0.1 | 新経路(S-1〜S-4 + I-3(b))が stg に deploy 済 + smoke pass 済 | 旧経路へ戻す手段が無くなるため、新経路が GREEN であることが唯一の安全網 |
-| 5.0.2 | **R2 の `users/*/src/` 一掃を先に完了**(`scripts/gc-src-prefix.ts`・dry-run → 本実行 → listing readback 0 件) | `source_assets` を drop すると `object_key` の台帳が消え、残った source object を辿る手段が無くなる(orphan が永久に残る) |
+| 5.0.2 | R2 の `users/*/src/` 一掃(`scripts/gc-src-prefix.ts`・dry-run → 本実行 → listing readback 0 件)。0032 の前後どちらでも実施可 | 順序は必須ではない。同 script は listing 駆動で DB を一切見ないため 0032 の前後どちらでも同様に動く。0032 より前に実施すると listing 結果を `source_assets.object_key` と突合できる、という弱い利点があるのみ |
 | 5.0.3 | **手作業は不要**(0032 が同一 tx で処理する)。件数だけ見ておきたい場合は下記 SELECT | 旧 status(`awaiting_sources` / `claimed`)の行が非終端で残ったまま drop すると、どの gate / sweep / reconciler からも到達不能な dead row になる。**`scripts/gc-abandoned-operations.ts` では掃けない** — S-5 で同 script の非終端集合が `['prepared','processing']` に縮み、旧 status を候補にできないため(0 件を見て clean と誤認する)。ゆえに手順書でなく 0032 の 1 文目で構造的に閉じる |
 
 ### 5.0.4 事前観測(任意・read-only)

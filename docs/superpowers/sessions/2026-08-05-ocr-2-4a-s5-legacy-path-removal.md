@@ -244,13 +244,40 @@ canonical reviewer / re-reviewer が 1・2・4・5・6 を独立再現。migrati
 
 1. **migration 0032 の stg 適用 = 不可逆点。** OT の push 判断がゲート。手順 =
    `docs/ops/ocr-2-4a-stg-migration-runbook.md` §5。
-2. **`src/` 一掃の実行はまだ**。順序 = 一掃 → 0032 適用(表を消すと `object_key` の台帳が失われ、
-   残った object を辿る手段が無くなる)。実行は OT 指示下で「dry-run で一覧確認 → `--execute`」の 2 段。
-   **stg の実 object 件数は未計測** — `--user` を付けない run は `users/` 全体を listing するため、
-   件数が多い場合の所要は未知。
+2. **`src/` 一掃の `--execute` はまだ**(S-5fix で dry-run のみ実測済・§8 参照)。0032 との
+   順序は必須ではない(訂正済 — `scripts/gc-src-prefix.ts` は listing 駆動で DB を一切見ないため
+   0032 の前後どちらでも同様に動く。0032 より前だと listing 結果を `source_assets.object_key`
+   と突合できる、という弱い利点があるのみ)。`--execute` は OT 指示下で別途実行。
+   **stg の実 object 件数は実測済**(S-5fix・2026-08-05): `listed=105 matched=14 skipped=91`。
 3. **`pnpm run audit` exit 1** = 上流 advisory 3 件。本 task 起因ではない(依存無変更)。基線更新は別 sprint。
 4. **prod の RLS flip** は Phase 3 の別作業。0032 適用前の環境では `verify-rls-state` が
    `source_assets` を「カタログ外の表が RLS on」として出すのが正常(runbook §5.3 に注記済)。
 5. **legacy `process.ts` / `upload-guard.ts`** は revert 保険として射程外。`upload-guard.ts:25,55` の
    stale なコメント 2 箇所は撤去 task の carry-forward に申し送り済(`docs/todo-v48-integrated-status.md`)。
 6. **stg smoke は未実施**(push 後)。0032 適用 + `src/` prefix 空の確認 + GDPR 退会が必要。
+
+---
+
+## 8. S-5fix(2026-08-05・push 前の CLI 起動不能 + 順序理由訂正 + dry-run 実測)
+
+### 8.1 教訓: CLI script は test の緑と別に、documented なコマンドで一度実起動して確認する
+
+`gc-src-prefix.ts` は header に `pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts`
+を documented コマンドとして書いていたが、実際は module load 時点で
+`Error: R2_ACCOUNT_ID is not set` を投げて起動しなかった(`lib/storage/r2.ts` の module 先頭
+fail-fast に対し、script 側が env を注入していなかったため)。**S-5a canonical / S-5a Codex /
+最終 whole-range review の 3 者が揃って見逃した** — 理由は `scripts/gc-src-prefix.test.ts` が
+`@/lib/storage/r2` を `vi.mock` しており、test 実行が一度も実 module を load しないため
+r2.ts の fail-fast を経由しないこと。**mock された module の test は起動経路(module load /
+env 注入)を検証しない** — この形(外部 I/O module を丸ごと mock する DI-less script)は
+再発条件になるため、同種 script を書く際は test green を「起動可能」の証拠として扱わない。
+
+### 8.2 dry-run 実測: `src/tmp/` 拡張子なし 3 件は row-less orphan の実物
+
+修正後の dry-run(`.env.local` 経由・実 R2 read-only LIST)で `listed=105 matched=14 skipped=91`
+を実測。matched 14 件のうち 3 件が拡張子なしの `users/{uid}/src/tmp/{uuid}` 形(例:
+`src/tmp/2c8889ca-4c33-4e9a-941b-32ff7f7e1663`)— これは finalize が `object_key` を最終 key
+(`users/{uid}/src/{uuid}.webp` 等)へ差し替えた後に残る **row-less orphan の実物**である。
+行駆動の GC(DB の `object_key` 列を起点にする方式)では原理的に発見できず、listing 駆動なら
+拾えることが今回実証された。follow-up「crop lane の row-less orphan 検出」(§4 既述の
+`listObjects` 転用先)の判断材料として記録する。

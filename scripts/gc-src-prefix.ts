@@ -9,11 +9,14 @@
 //
 // 実行(`--conditions=react-server` は必須フラグ — lib/storage/r2.ts が
 // `import 'server-only'` を持つため。gc-image-assets.ts / gc-abandoned-operations.ts
-// と同じ理由):
-//   pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts               # 既定 = dry-run(削除ゼロ・listing + 集計のみ)
-//   pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --execute     # 本実行(削除する)
-//   pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --user <uuid> # 対象を 1 user の src/ 配下に限定
-//   pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --execute --user <uuid>
+// と同じ理由。`DOTENV_CONFIG_PATH=.env.local` は本 script が読む `import 'dotenv/config'`
+// (seed-perf-exam.ts と同型)に読込先を指定するため必須 — dotenv の既定読込先は `.env`
+// で `.env.local` ではなく、無指定だと env 未注入のまま r2.ts の fail-fast(`R2_ACCOUNT_ID
+// is not set`)に落ちる):
+//   DOTENV_CONFIG_PATH=.env.local pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts               # 既定 = dry-run(削除ゼロ・listing + 集計のみ)
+//   DOTENV_CONFIG_PATH=.env.local pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --execute     # 本実行(削除する)
+//   DOTENV_CONFIG_PATH=.env.local pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --user <uuid> # 対象を 1 user の src/ 配下に限定
+//   DOTENV_CONFIG_PATH=.env.local pnpm tsx --conditions=react-server scripts/gc-src-prefix.ts --execute --user <uuid>
 //
 // 既定を dry-run にする(gc-image-assets.ts / gc-abandoned-operations.ts とは逆の
 // 既定): 他 2 script は無指定でも mark-only / 何も terminate しない、のような弱い
@@ -22,11 +25,13 @@
 // 要求する(brief 指定)。
 //
 // 実効境界(既知の制約・script では判別不能): 環境(stg/prod)の取り違えは検出でき
-// ない。実効境界 = env 目視(実行前に R2_ACCOUNT_ID 等を確認)+ `--user` scope +
+// ない。実効境界 = env 目視(実行前に `.env.local` の R2_* を確認)+ `--user` scope +
 // dry-run 先行、の 3 点のみ。
 //
 // `integration_failures` への記録は行わない: 本 script は OT 手動実行の one-shot
 // であり、台帳は「調査を要する異常」用。DB にも一切触らない(R2 のみを見る)。
+
+import 'dotenv/config'
 
 import { listObjects, deleteObject } from '@/lib/storage/r2'
 
