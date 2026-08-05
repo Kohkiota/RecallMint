@@ -1,21 +1,18 @@
 // ②-4a T14a fix round 2(Codex residual・spec §11): manual operator-run sweep
 // lane for ABANDONED `upload_operations`.
 //
-// なぜ必要か: claim-operation.ts の 7 日保持 cap(PREPARED_RETENTION_MS)は
-// **claimOperationTx が実際に呼ばれた時**にしか発火しない。 一度も再 claim
-// されない放置 op(例: source を最後まで upload しなかった awaiting_sources、
-// あるいは claimed/prepared のまま誰も戻ってこない)は非終端のまま永久に残り、
-// `prepared_payload`(カード本文 = PII を含みうる)が永久に保持されてしまう —
-// これが claim-time cap では閉じられない残存経路(この script の存在意義)。
+// なぜ必要か: 新経路には resume が無く、lease を持たない非終端 op を進める主体が
+// 存在しない。 lease 失効後の回収経路は ① reconcileStaleProcessing(対応する
+// source_document が stale processing のときだけ発火)② 次 submit の supersede
+// (ユーザーが再度 upload したときだけ発火)③ exam 削除の cascade の 3 つで、
+// いずれも「誰かが何かをする」ことが前提。 一度も戻ってこないユーザーの放置 op は
+// 非終端のまま残り、`prepared_payload`(カード本文 = PII を含みうる)が保持され
+// 続ける — それを無条件に掃くのがこの script の存在意義。
 //
 // **②-4a S-4(2026-08-05)で対象範囲が広がった**: 共有述語
 // `isLiveUploadOperationCondition` から 7 日 window(created_at 基準)が外れ、
 // live = 「非終端 かつ valid lease」だけになった。 ゆえに本 sweep の候補は
-// 「非終端 かつ valid lease を持たない」全行 = **年齢を問わない**。 新経路は
-// resume を持たないため、lease を持たない非終端 op を進める主体が存在しない
-// (放置 op の payload をより早く落とせる)。 旧経路の awaiting_sources は
-// lease を持たないため即日候補になる — 本 script は手動運用ゆえ影響は運用者の
-// 実行タイミング次第で、S-5 の旧経路撤去まではその点を意識して走らせる。
+// 「非終端 かつ valid lease を持たない」全行 = **年齢を問わない**。
 //
 // 本 script は `scripts/gc-image-assets.ts` の model(DI core + production
 // deps 束縛 + `--dry-run` 既定安全 + `--user` scope + loud PII-free logging)を
@@ -34,9 +31,9 @@
 // fencing: candidate 選定と実際の UPDATE の両方が同じ述語
 // (`isLiveUploadOperationCondition` の否定 + 非終端 status)を WHERE に持つ
 // (select→update の間の TOCTOU を再チェックで閉じる — select 時点の判定を
-// 信用しない。 claim-operation.ts / reconcileStaleProcessing と同じ fencing
-// 規律)。 0 行更新(= その間に claim/takeover されて live 化した)は静かに
-// skip し、terminated count に数えない。
+// 信用しない。 reconcileStaleProcessing と同じ fencing 規律)。 0 行更新
+// (= その間に新しい submit が走って live 化した)は静かに skip し、
+// terminated count に数えない。
 //
 // PII-free logging: ログには operationId のみを出す(prepared_payload の中身
 // = カード本文は一切出力しない)。
@@ -44,7 +41,10 @@
 import { and, eq, inArray, not } from 'drizzle-orm'
 import { getAdminDb } from '@/lib/db'
 import { uploadOperations } from '@/lib/db/schema'
-import { isLiveUploadOperationCondition } from '@/lib/exams/source-doc-status'
+import {
+  NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
+  isLiveUploadOperationCondition,
+} from '@/lib/exams/source-doc-status'
 
 // fix round 3(Codex + canonical Critical): `db` is typed via `Pick<..., 'select'
 // | 'update'>` — drizzle's `select`/`update`/`insert`/`execute` are NOT
@@ -59,16 +59,6 @@ import { isLiveUploadOperationCondition } from '@/lib/exams/source-doc-status'
 // requires `DATABASE_URL_ADMIN`, which the iso harness doesn't set — only
 // `DATABASE_URL_APP`, via `hardSetTestDatabaseUrl()`).
 type SweepDb = Pick<ReturnType<typeof getAdminDb>, 'select' | 'update'>
-
-// abandoned sweep が対象とする終端未到達 status(claim-operation.ts / spec §2
-// の非終端集合と同一)。
-// 'processing' = ②-4a 単一 invocation 経路の実行中状態(spec 2026-08-04 §4.5)。
-const NON_TERMINAL_STATUSES = [
-  'awaiting_sources',
-  'claimed',
-  'prepared',
-  'processing',
-] as const
 
 export type AbandonedOpCandidate = {
   id: string
@@ -161,7 +151,9 @@ export function buildProductionDeps(db: SweepDb, userId: string | undefined): Ab
         .from(uploadOperations)
         .where(
           and(
-            inArray(uploadOperations.status, NON_TERMINAL_STATUSES),
+            inArray(uploadOperations.status, [
+              ...NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
+            ]),
             not(isLiveUploadOperationCondition()),
             userId ? eq(uploadOperations.userId, userId) : undefined,
           ),
@@ -183,7 +175,9 @@ export function buildProductionDeps(db: SweepDb, userId: string | undefined): Ab
             eq(uploadOperations.userId, uid),
             // fenced CAS: candidate 選定と同じ述語を再適用(select〜update の
             // 間に re-claim/takeover された行を上書きしない)。
-            inArray(uploadOperations.status, NON_TERMINAL_STATUSES),
+            inArray(uploadOperations.status, [
+              ...NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
+            ]),
             not(isLiveUploadOperationCondition()),
           ),
         )

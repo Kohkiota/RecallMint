@@ -212,8 +212,8 @@ export function UploadForm({
         useWebWorker: true,
         // 出力 mime を webp に固定する。 未指定だと browser-image-compression は
         // 入力 file.type をそのまま出力 mime にするため、 HEIC(UI は「HEIC」と案内)
-        // や GIF 等は prepareUpload / reserveSource の mime enum(image/webp|png|jpeg)
-        // で invalid_input になる。 lib/media/upload.ts の COMPRESSION_OPTIONS と同値。
+        // や GIF 等は submitUpload の magic-byte 検証(image/webp|png|jpeg のみ)で
+        // invalid_input になる。 lib/media/upload.ts の COMPRESSION_OPTIONS と同値。
         fileType: 'image/webp',
       })
       const thumbUrl = URL.createObjectURL(compressed)
@@ -833,8 +833,25 @@ export function UploadForm({
       )}
 
       {phase.kind === 'error' && (
-        <section className="rounded-md bg-red-50 border border-red-200 p-4 space-y-2">
-          <p className="text-sm text-red-700">{phase.message}</p>
+        /* UPLOAD_IN_PROGRESS は失敗ではなく「別の upload がまだ実行中」という
+           状態通知(文言も中立の UPLOAD_PENDING_NOTICE)。赤の error panel だと
+           「失敗した」と読めてしまうため amber に落とす(follow-up・挙動不変)。 */
+        <section
+          className={
+            phase.code === 'UPLOAD_IN_PROGRESS'
+              ? 'rounded-md bg-amber-50 border border-amber-200 p-4 space-y-2'
+              : 'rounded-md bg-red-50 border border-red-200 p-4 space-y-2'
+          }
+        >
+          <p
+            className={
+              phase.code === 'UPLOAD_IN_PROGRESS'
+                ? 'text-sm text-amber-800'
+                : 'text-sm text-red-700'
+            }
+          >
+            {phase.message}
+          </p>
           {/* hideRetryHint=true (throw/catch 経由) のときは再試行サブタイトルを
               非表示: メッセージが「試験一覧で確認を」なのに「再試行を」と
               矛盾しないようにするため (Fix 2) */}

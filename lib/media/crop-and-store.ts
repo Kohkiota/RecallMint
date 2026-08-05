@@ -2,23 +2,19 @@
 // asset_derivations provenance 保存。②-4a Task 10(docs/superpowers/specs/
 // 2026-07-30-ocr-2-4a-image-figure-crop-design.md §7.3/§10・Global Constraint)。
 //
-// スコープ(brief 明記): 1 figure を crop して保存する「原子的な単位操作」のみ。
-// prepared_payload 全体を走査して figure を列挙する orchestration(source_id →
-// source_assets 解決を含む fan-out・publish への配線)は T12 の責務(本 file は
-// 呼ばない・呼ばれない)。
+// スコープ: 1 figure を crop して保存する「原子的な単位操作」のみ。prepared_payload
+// 全体を走査して figure を列挙する orchestration は呼出元
+// (app/(app)/app/upload/_lib/upload-pipeline.ts の crop phase)の責務。
 //
-// PURE ではない(lib/media/domain/ に置かない理由): R2 I/O(GET/PUT)・sharp
-// decode/encode・DB 書込(withTenantTx)を行う usecase 層。crop-geometry.ts
+// PURE ではない(lib/media/domain/ に置かない理由): R2 I/O(PUT + 412 時の GET)・
+// sharp decode/encode・DB 書込(withTenantTx)を行う usecase 層。crop-geometry.ts
 // (T9・pure)の座標算術のみを呼ぶ。
 //
-// なぜ「operation status='prepared' 確認」を本 file 自身が行うか(Global
-// Constraint「crop-derived asset は prepared commit 後のみ」): 呼出側(将来の
-// T12)を信用せず、本関数自身が入口で保証する — 呼出側のバグで prepared 前に
-// 呼ばれても構造的に何も作らない。T12 の publish fencing(lease_version CAS)を
-// 代替するものではない(そちらが最終的な正しさの gate — 本チェックは「prepared
-// commit より前に crop 資産を作らない」という時系列順序のみを保証する単発の
-// 事前確認であり、確認後に operation が状態遷移しても再チェックしない。次点の
-// 権威 gate は T12)。
+// 「crop-derived asset は prepared_payload commit 後にのみ作る」という時系列の
+// 不変条件(Global Constraint)は、**呼出元の phase 順序**が担保する — S-5 の旧経路
+// 撤去で、operation を読んで status='prepared' を確認していた旧 entry
+// (`cropFigureAndStore`)ごと無くなった。最終的な正しさの gate は publish tx の
+// fencing(`publishPreparedUploadTx` の lease_version CAS)であり、それは不変。
 
 import 'server-only'
 
@@ -26,7 +22,7 @@ import { createHash } from 'node:crypto'
 import sharp from 'sharp'
 import { and, eq } from 'drizzle-orm'
 import { withTenantTx } from '@/lib/db/tenant-tx'
-import { assets, assetDerivations, sourceAssets, uploadOperations } from '@/lib/db/schema'
+import { assets, assetDerivations } from '@/lib/db/schema'
 import { getObject, putObject } from '@/lib/storage/r2'
 import { logger } from '@/lib/logger'
 import { toCropRect, type Box2d, type CropRect } from './domain/crop-geometry'
@@ -54,8 +50,8 @@ const CROP_WEBP_QUALITY = 90
 const CROP_WEBP_LOSSLESS = false
 
 // T14a fix round 2(Codex P2#2・spec §11 deadline): hard CPU-time bound on the
-// sharp pipeline itself. The crop-phase orchestrator (publish-prepared-
-// orchestrate.ts) only checks the remaining time budget BEFORE starting a
+// sharp pipeline itself. The crop-phase caller (upload-pipeline.ts) only checks
+// the remaining time budget BEFORE starting a
 // crop (soft pre-crop gate via `CROP_MIN_REMAINING_MS`) — without a hard cap
 // on the pipeline that already started, a single pathological decode/extract/
 // encode could still run past the operation's crop-phase deadline. `.timeout()`
@@ -72,26 +68,9 @@ const CROP_SHARP_TIMEOUT_SEC = 30
 // 値を上げる(過去の provenance 行との区別のため)。
 export const CROP_PIPELINE_VERSION = 'crop-v1'
 
-export interface CropFigureInput {
-  userId: string
-  operationId: string
-  // prepared payload の figure.sourceId(source_assets.source_id と照合)。
-  sourceId: string
-  // prepared payload の figure.assetId(UUIDv4・stage 時発行済 — 新規 assets 行の
-  // PK になる。retry は同じ値を渡すことで同一 object key に収束する)。
-  figureAssetId: string
-  box2d: Box2d
-  // 解決済み target 文字列(question_text / explanation_text / option:<uid>)。
-  // asset_derivations.detect_target にそのまま保存する(spec §13 の語彙)。
-  detectTarget: string
-}
-
 // ②-4a 単一 invocation 経路(spec 2026-08-04 §2・Task S-3)の crop 入力。
-// 旧 entry との唯一の違いは **source の入手経路**: 新経路は source を R2 に置かず、
-// request body で受け取ったバイトを invocation のメモリのまま crop する。ゆえに
-// operationId(status='prepared' 確認)も source_assets 解決も持たない
-// (順序不変条件 = 「payload commit 後にのみ crop」は呼出元 pipeline が phase 順序
-// そのもので担保する)。
+// source は R2 に置かず、request body で受け取ったバイトを invocation のメモリの
+// まま crop する。
 export interface CropFigureFromBufferInput {
   userId: string
   // decode 検証済みの source 実バイト(呼出元が保持しているもの)。
@@ -114,13 +93,6 @@ export type CropAndStoreOutcome =
   // toCropRect が退化と判定(null)、または sharp extract が対象領域を画像外と
   // 判定して throw した(spec §16 の「crop失敗」計上対象・T16 が集計)。
   | { outcome: 'crop_failed' }
-  // operation が見つからない / 他 user 所有 / status !== 'prepared'。
-  | { outcome: 'not_prepared' }
-  // 対応する source_assets 行が見つからない、または status !== 'ready'
-  // (claim/stage 後の GC/GDPR race・通常は到達しない防御的分岐)。
-  | { outcome: 'source_not_ready' }
-  // source object の R2 GET が失敗(never-throw 契約の null 正規化を受けた)。
-  | { outcome: 'source_unreadable' }
   // 412 + 実体 hash 不一致(同一 key に別内容が書き込まれている・データ破損 or
   // バグ)。 loud fail — 自分の metadata を書かない。
   | { outcome: 'hash_mismatch' }
@@ -132,21 +104,23 @@ export type CropAndStoreOutcome =
   | { outcome: 'error' }
 
 // ---------------------------------------------------------------------------
-// Important#2 fix(canonical 指摘): T12 が「全 figure 終端」を判定するために
-// 各 outcome を再試行してよいか/確定として計上してよいかを知る必要がある。
-// ここでは事実の分類のみを提供する(retry engine・backoff policy は実装しない
-// — それは T12/T14 の責務・YAGNI)。
+// Important#2 fix(canonical 指摘): 呼出元が「この figure を完了として計上して
+// よいか」を判定するための分類。ここでは事実の分類のみを提供する(retry engine・
+// backoff policy は実装しない — 新経路に retry は無い)。
 //
 // - success: この figure の crop は完了している('reused' も「既に完了済」を
 //   意味するため success 扱い)。
 // - terminal: 同じ入力(同一 figureAssetId/box2d/source)を再試行しても状態は
 //   変わらない(figure 単位で確定的に crop できない、またはしてはいけない)。
-//   spec §16 の「crop失敗」等の計上対象(T16 が集計)。
-// - retryable: 一時的な外部要因(R2 の技術的失敗)。 再試行で成功しうる。
-// - caller_error: 呼出前提(operation/source の状態)が満たされていない —
-//   crop 自体の失敗ではなく、呼出側(T12)が別途正しく扱うべき state/race。
+//   spec §16 の「crop失敗」等の計上対象。
+// - retryable: 一時的な外部要因(R2 の技術的失敗)。 再試行で成功しうる
+//   (単一 invocation 経路は再試行しないため、呼出元は exclude に倒す)。
+//
+// S-5(旧経路撤去)で 'caller_error' 級は消えた: それを返していた分岐
+// (not_prepared / source_not_ready / source_unreadable)は、operation 行と旧
+// source 台帳を読んでいた旧 entry `cropFigureAndStore` に固有だった。
 // ---------------------------------------------------------------------------
-export type CropOutcomeClass = 'success' | 'terminal' | 'retryable' | 'caller_error'
+export type CropOutcomeClass = 'success' | 'terminal' | 'retryable'
 
 export const CROP_OUTCOME_CLASS: Record<CropAndStoreOutcome['outcome'], CropOutcomeClass> = {
   stored: 'success',
@@ -154,10 +128,7 @@ export const CROP_OUTCOME_CLASS: Record<CropAndStoreOutcome['outcome'], CropOutc
   crop_failed: 'terminal',
   forbidden: 'terminal',
   hash_mismatch: 'terminal',
-  source_unreadable: 'retryable',
   error: 'retryable',
-  not_prepared: 'caller_error',
-  source_not_ready: 'caller_error',
 }
 
 export function classifyCropOutcome(outcome: CropAndStoreOutcome['outcome']): CropOutcomeClass {
@@ -173,66 +144,6 @@ export function classifyCropOutcome(outcome: CropAndStoreOutcome['outcome']): Cr
 function box2dToJsonb(box: Box2d): Record<string, unknown> {
   const [yMin, xMin, yMax, xMax] = box
   return { y_min: yMin, x_min: xMin, y_max: yMax, x_max: xMax }
-}
-
-type SourceInfo = { id: string; objectKey: string; width: number; height: number }
-
-type GuardResult =
-  | { outcome: 'ok'; source: SourceInfo }
-  | { outcome: 'not_prepared' }
-  | { outcome: 'source_not_ready' }
-
-// operation status='prepared' 確認 + source_assets(sourceDocumentId 経由)解決を
-// 1 read-only tx にまとめる(いずれも guard であり CAS/FOR UPDATE は不要 — 権威的な
-// fencing は T12 publish の役割。 ここでの読取は「時系列順序の事前確認」)。
-async function loadPreparedSource(
-  userId: string,
-  operationId: string,
-  sourceId: string,
-): Promise<GuardResult> {
-  return withTenantTx(userId, async (tx) => {
-    const opRows = await tx
-      .select({
-        status: uploadOperations.status,
-        sourceDocumentId: uploadOperations.sourceDocumentId,
-      })
-      .from(uploadOperations)
-      .where(and(eq(uploadOperations.id, operationId), eq(uploadOperations.userId, userId)))
-
-    const op = opRows[0]
-    if (!op || op.status !== 'prepared' || op.sourceDocumentId === null) {
-      return { outcome: 'not_prepared' }
-    }
-
-    const srcRows = await tx
-      .select({
-        id: sourceAssets.id,
-        objectKey: sourceAssets.objectKey,
-        width: sourceAssets.width,
-        height: sourceAssets.height,
-        status: sourceAssets.status,
-      })
-      .from(sourceAssets)
-      .where(
-        and(
-          eq(sourceAssets.sourceDocumentId, op.sourceDocumentId),
-          eq(sourceAssets.sourceId, sourceId),
-          eq(sourceAssets.userId, userId),
-        ),
-      )
-
-    const src = srcRows[0]
-    // width/height は 'ready' なら finalize(T5)が同時確定させた非 null 値のはず
-    // (schema 上は nullable — 防御的に null も未 ready 扱いする)。
-    if (!src || src.status !== 'ready' || src.width === null || src.height === null) {
-      return { outcome: 'source_not_ready' }
-    }
-
-    return {
-      outcome: 'ok',
-      source: { id: src.id, objectKey: src.objectKey, width: src.width, height: src.height },
-    }
-  })
 }
 
 type WriteOutcome =
@@ -262,16 +173,12 @@ type WriteOutcome =
 // に対して 1 対 1 に決定的に定まるため、conflict は「同一内容の正当な再試行」
 // であり意図的に idempotent 再利用可能(既存の 412 分岐と対称的な設計)。
 //
-// `sourceAssetId` が null なのは ②-4a 単一 invocation 経路(source を R2/DB に
-// 置かない = 参照すべき source_assets 行が存在しない)。列は migration 0031 で
-// nullable 化済み(列 drop は旧経路撤去の S-5)。
 async function writeCropAssetRows(
   userId: string,
   objectKey: string,
   bytes: Buffer,
   hash: string,
   rect: CropRect,
-  sourceAssetId: string | null,
   figureAssetId: string,
   detectTarget: string,
 ): Promise<WriteOutcome> {
@@ -331,7 +238,6 @@ async function writeCropAssetRows(
     await tx.insert(assetDerivations).values({
       assetId: figureAssetId,
       userId,
-      sourceAssetId,
       // 制約#2/#7: toCropRect の戻り値(rect)からのみ導出する — 独立再計算しない。
       origBbox: box2dToJsonb(rect.origBbox),
       paddingPct: rect.paddingPct,
@@ -346,85 +252,32 @@ async function writeCropAssetRows(
 }
 
 /**
- * 1 figure を crop して保存する(spec §7.3/§10・制約#1-9 準拠)。
+ * 1 figure を crop して保存する(spec §7.3/§10・制約#1-9 準拠)。source 行の SELECT も
+ * R2 GET も**行わず**、呼出元が持っているバイトと decode 済み寸法をそのまま受け取る。
  *
- * 手順: ① operation status='prepared' 確認 + source_assets 解決(guard read)
- * ② R2 GET(source の実バイト取得)③ toCropRect(T9・pure・唯一の rect 算出点)
- * ④ sharp decode(auto-rotate 禁止・limitInputPixels)→ extract(rect そのもの)
- * → webp encode(quality/lossless 固定)⑤ 条件付き PUT(If-None-Match: *)
- * ⑥ 412 なら HEAD 相当(GET)+ SHA-256 照合 → 分岐(制約#5)⑦ assets +
- * asset_derivations を 1 tx で INSERT(status='ready' で直接確定 — crop-derived
- * asset に reserved 状態は存在しない)。
+ * 手順: ① toCropRect(T9・pure・唯一の rect 算出点)② sharp decode(auto-rotate
+ * 禁止・limitInputPixels)→ extract(rect そのもの)→ webp encode(quality/lossless
+ * 固定)③ 条件付き PUT(If-None-Match: *)④ 412 なら実体 GET + SHA-256 照合 → 分岐
+ * (制約#5)⑤ assets + asset_derivations を 1 tx で INSERT(status='ready' で直接確定
+ * — crop-derived asset に reserved 状態は存在しない)。
  *
- * 決定性(制約#3): figureAssetId・box2d・sourceId は prepared_payload に固定
- * 済み(stage 時 UUIDv4 発行・retry 再利用)。 source の実バイトは finalize
- * (T5)後 immutable。 sharp は auto-rotate しない(.rotate() を一切呼ばない —
- * sharp は明示 `.rotate()` 呼び出し時のみ EXIF Orientation を見て
- * autoOrient() を行う仕様であり、呼ばなければ EXIF に関わらずデコード時の
- * 生ピクセル配置のまま出力される。 T5 finalize の寸法検証も同じ「.rotate() を
- * 呼ばない」decode 経路のため、box_2d の座標系(decoded 寸法基準)と一致する)。
- * .withMetadata() も呼ばない(既定で EXIF/ICC 等の可変メタデータを出力に
- * 含めない — 出力バイトが画素データのみで決まる)。 webp の quality/lossless は
- * 上記モジュール定数で固定。 これらにより同一入力から常に同一バイト列が
- * 生成され、conditional PUT の再試行が idempotent に機能する。
- */
-export async function cropFigureAndStore(input: CropFigureInput): Promise<CropAndStoreOutcome> {
-  const { userId, operationId, sourceId, figureAssetId, box2d, detectTarget } = input
-
-  const guard = await loadPreparedSource(userId, operationId, sourceId)
-  if (guard.outcome !== 'ok') return { outcome: guard.outcome }
-  const { source } = guard
-
-  const srcObj = await getObject(source.objectKey)
-  if (srcObj === null) {
-    logger.warn({ event: 'ocr.crop.source_unreadable', figureAssetId, sourceId })
-    return { outcome: 'source_unreadable' }
-  }
-
-  return cropBytesAndStore({
-    userId,
-    sourceBytes: srcObj.bytes,
-    sourceWidth: source.width,
-    sourceHeight: source.height,
-    sourceAssetId: source.id,
-    sourceId,
-    figureAssetId,
-    box2d,
-    detectTarget,
-  })
-}
-
-/**
- * ②-4a 単一 invocation 経路(Task S-3)の crop entry。source 行の SELECT と R2 GET を
- * **行わず**、呼出元が持っているバイトと decode 済み寸法をそのまま受け取る。
+ * 決定性(制約#3): figureAssetId・box2d・sourceId は prepared_payload に固定済み
+ * (正規化時 UUIDv4 発行)。 source の実バイトは受領後 immutable。 sharp は
+ * auto-rotate しない(`.rotate()` を一切呼ばない — sharp は明示 `.rotate()` 呼出時
+ * のみ EXIF Orientation を見て autoOrient() する仕様であり、呼ばなければ EXIF に
+ * 関わらずデコード時の生ピクセル配置のまま出力される。 decode 検証
+ * (source-image-verify.ts)の寸法も同じ「.rotate() を呼ばない」経路のため、box_2d
+ * の座標系(decoded 寸法基準)と一致する)。 `.withMetadata()` も呼ばない(既定で
+ * EXIF/ICC 等の可変メタデータを出力に含めない = 出力バイトが画素データのみで決まる)。
+ * webp の quality/lossless は上記モジュール定数で固定。 これらにより同一入力から常に
+ * 同一バイト列が生成され、conditional PUT の再試行が idempotent に機能する。
  *
- * 以降(③ toCropRect → ④ sharp → ⑤ 条件付き PUT → ⑥ 412 hash 照合 → ⑦ 行確定)は
- * `cropFigureAndStore` と**同一の機構**を共有する(`cropBytesAndStore`)— 保存側の
- * 不変条件(決定性 / first-writer-wins / hash 照合 / ON CONFLICT idempotent)を
- * 新経路のために作り直さない。差分は provenance の `source_asset_id` が NULL に
- * なる点のみ(新経路に source_assets 行が存在しないため)。
- *
- * 到達しない outcome: `not_prepared` / `source_not_ready` / `source_unreadable`
- * (いずれも本 entry が行わない source 解決・R2 GET に由来する)。
+ * `asset_derivations.source_asset_id` は書かない(S-5 の migration 0032 で列ごと drop
+ * 済み — source を R2/DB に置かない設計に参照先が存在しない)。
  */
 export async function cropFigureFromBuffer(
-  input: CropFigureFromBufferInput,
+  args: CropFigureFromBufferInput,
 ): Promise<CropAndStoreOutcome> {
-  return cropBytesAndStore({ ...input, sourceAssetId: null })
-}
-
-// source バイト + 寸法が確定した後の共通経路(旧 entry / 新 entry の唯一の実装)。
-async function cropBytesAndStore(args: {
-  userId: string
-  sourceBytes: Buffer
-  sourceWidth: number
-  sourceHeight: number
-  sourceAssetId: string | null
-  sourceId: string
-  figureAssetId: string
-  box2d: Box2d
-  detectTarget: string
-}): Promise<CropAndStoreOutcome> {
   const { userId, sourceBytes, sourceId, figureAssetId, box2d, detectTarget } = args
 
   // 制約#2: この 1 回の toCropRect 呼出の戻り値だけを、以降 sharp extract の
@@ -513,7 +366,6 @@ async function cropBytesAndStore(args: {
     cropBytes,
     contentHash,
     rect,
-    args.sourceAssetId,
     figureAssetId,
     detectTarget,
   )

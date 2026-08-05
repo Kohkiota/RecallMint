@@ -6,10 +6,10 @@
 // (「source failed → 後から publisher が completed へ戻す」矛盾を避ける)。
 // upload_operations 行が無い legacy path は従来どおり failed 化される。
 //
-// **S-4 の仕様変更**: 旧述語の「created_at が PREPARED_RETENTION_MS(7 日)以内
-// なら lease 無しでも live」枝を撤去した。 その枝の存在理由は旧 flow の resume
-// (retryable prepared を後から再 claim して再開)であり、新経路は resume を
-// 持たない(失敗は全て terminal)ため根拠ごと消滅している。 lease だけが「今この
+// **S-4 の仕様変更**: 旧述語の「created_at が 7 日以内なら lease 無しでも live」
+// 枝を撤去した。 その枝の存在理由は旧 flow の resume(retryable prepared を後から
+// 再 claim して再開)であり、新経路は resume を持たない(失敗は全て terminal)ため
+// 根拠ごと消滅している。 lease だけが「今この
 // オペレーションを進めている invocation が生存している」表明。
 //
 // **S-4 の追加**: doc を failed 化したとき、同一 tx で対応する非終端 op も
@@ -17,13 +17,13 @@
 //
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb } from '@/lib/db'
 import { exams, sourceDocuments, uploadOperations, uploadRecords, users } from '@/lib/db/schema'
 import { getExamStatusMap, reconcileStaleProcessing } from '@/lib/exams/source-doc-status'
-import { PREPARED_RETENTION_MS, STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
+import { STALE_PROCESSING_MS } from '@/lib/exams/derive-exam-statuses'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
 
@@ -33,6 +33,10 @@ afterAll(async () => {
 })
 
 const STALE_CREATED_AT = new Date(Date.now() - STALE_PROCESSING_MS - 60_000) // 16 分前
+// S-4 で live 述語から created_at window が外れたため、op の年齢は保護の有無に
+// 影響しない。 かつて 7 日 window の境界だった値の前後を使い、「年齢では変わらない」
+// ことを実証する。
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
 async function seedUser(): Promise<string> {
   const owner = getFixtureOwnerDb()
@@ -67,13 +71,7 @@ async function seedUploadOperation(
   userId: string,
   examId: string,
   sourceDocumentId: string,
-  status:
-    | 'awaiting_sources'
-    | 'claimed'
-    | 'prepared'
-    | 'processing'
-    | 'completed'
-    | 'terminal_failed',
+  status: 'prepared' | 'processing' | 'completed' | 'terminal_failed',
   overrides: Partial<{ createdAt: Date; leaseExpiresAt: Date | null }> = {},
 ): Promise<string> {
   const owner = getFixtureOwnerDb()
@@ -135,7 +133,7 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
   // reconciler の live 判定に含まれないと、sync phase 直後の source_document が
   // 15 分後に failed へ落ち、実行中の invocation の成果が巻き添えになる。
   // **S-4: live = 非終端 かつ valid lease**(lease が唯一の生存表明)。
-  it.each(['awaiting_sources', 'claimed', 'prepared', 'processing'] as const)(
+  it.each(['prepared', 'processing'] as const)(
     'a stale processing source_document WITH a live upload_operations row (status=%s, valid lease) is NOT marked failed',
     async (liveStatus) => {
       const userId = await seedUser()
@@ -174,8 +172,8 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
     it('an ABANDONED non-terminal op (no valid lease) does NOT protect its stale source_document', async () => {
       const userId = await seedUser()
       const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
-      await seedUploadOperation(userId, examId, sourceDocumentId, 'awaiting_sources', {
-        createdAt: new Date(Date.now() - PREPARED_RETENTION_MS - 60_000), // 7日+1分前
+      await seedUploadOperation(userId, examId, sourceDocumentId, 'prepared', {
+        createdAt: new Date(Date.now() - SEVEN_DAYS_MS - 60_000), // 7日+1分前
         leaseExpiresAt: null,
       })
 
@@ -190,8 +188,8 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
     it('a RECENT non-terminal op with NO valid lease no longer protects its stale source_document (S-4: 7 日 window 撤去)', async () => {
       const userId = await seedUser()
       const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
-      await seedUploadOperation(userId, examId, sourceDocumentId, 'claimed', {
-        createdAt: new Date(Date.now() - (PREPARED_RETENTION_MS - 60_000)), // 7日-1分前
+      await seedUploadOperation(userId, examId, sourceDocumentId, 'prepared', {
+        createdAt: new Date(Date.now() - (SEVEN_DAYS_MS - 60_000)), // 7日-1分前
         leaseExpiresAt: null,
       })
 
@@ -216,8 +214,8 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
     it('a non-terminal op PAST retention but with a currently VALID lease still protects its stale source_document (a concurrently-advancing op must not be swept)', async () => {
       const userId = await seedUser()
       const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
-      await seedUploadOperation(userId, examId, sourceDocumentId, 'claimed', {
-        createdAt: new Date(Date.now() - PREPARED_RETENTION_MS - 60_000), // past retention
+      await seedUploadOperation(userId, examId, sourceDocumentId, 'prepared', {
+        createdAt: new Date(Date.now() - SEVEN_DAYS_MS - 60_000), // 7日+1分前
         leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // still valid
       })
 
@@ -232,7 +230,7 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
   // after() の callback が一度も走らない窓(登録直後の hard-death / platform kill)は
   // op を終端化する主体を持たない。 lease 失効後のこの reconciler が唯一の収束点。
   describe('op terminalization (S-4・spec 2026-08-04 §5)', () => {
-    it.each(['awaiting_sources', 'claimed', 'prepared', 'processing'] as const)(
+    it.each(['prepared', 'processing'] as const)(
       'failed 化した doc に紐づく非終端 op (status=%s) を terminal_failed にする',
       async (status) => {
         const userId = await seedUser()
@@ -259,16 +257,19 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
         // (terminalizeAbandonedOperation と同じ不変条件)。
         expect(op.preparedPayload).toBeNull()
         expect(op.leaseExpiresAt).toBeNull()
-        expect(op.nextRetryAt).toBeNull()
       },
     )
 
     // **3VL 罠の検出点(fix round 3 / Codex P1)**: 文 2 の生存ガードを
-    // `lease_expires_at <= now()` だけで書くと、`lease_expires_at IS NULL`
-    // (旧経路 awaiting_sources の支配的状態)で NULL → WHERE 偽 となり、**回収したい
-    // 行を 1 件も拾わなくなる**(gc-abandoned-operations.ts の T14a fix round 3 と同型)。
+    // `lease_expires_at <= now()` だけで書くと、`lease_expires_at IS NULL` で
+    // NULL → WHERE 偽 となり、**回収したい行を 1 件も拾わなくなる**
+    // (gc-abandoned-operations.ts の T14a fix round 3 と同型)。
     // 上の it.each は失効済(非 NULL)lease で seed しているためこの罠を検出できない —
     // NULL lease を別途 pin する。
+    // **S-5b**: seed status を旧経路の値から `prepared` へ付け替えた。
+    // lease NULL は status に依存せず起きうる状態(terminalize が lease を NULL 化する /
+    // 途中で落ちた invocation)で、検出したい罠は「NULL 枝の脱落」そのものゆえ、
+    // 付け替えで assert は空振りしない(生存ガードの `isNull(...)` を外すと fail する)。
     it('lease が NULL の非終端 op も terminal 化する(NULL を「生きていない」側に倒す)', async () => {
       const userId = await seedUser()
       const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
@@ -276,7 +277,7 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
         userId,
         examId,
         sourceDocumentId,
-        'awaiting_sources',
+        'prepared',
         { leaseExpiresAt: null },
       )
 
@@ -288,13 +289,67 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
       expect(op.lastErrorCode).toBe('stale_reconciled')
     })
 
-    // 文 2 単体の生存ガード(fix round 3 / Codex P1)。 READ COMMITTED では同一 tx でも
-    // 文ごとにスナップショットが進むため、文 1 の NOT EXISTS 通過は文 2 の時点の生存を
-    // 保証しない。 **文間の race 自体は単一スレッドの test で決定的に再現できない**
-    // (文 1 と文 2 の間に別 tx の commit を挟む注入点が無い)ので、ここで pin できるのは
-    // 「valid lease を持つ op は文 2 の WHERE に合致しない」という条件そのものまで。
-    // 罠(NULL 落ち)の検出は上の test が担う。
-    it('valid lease を持つ op は terminal 化されない(文 2 の生存ガード)', async () => {
+    // **文 2 の生存ガードの検出力**(S-5b で追加・fix round 3 / Codex P1 の守り)。
+    //
+    // 文 1(doc の UPDATE)は `NOT EXISTS(live op)` を通った doc だけを failed にする
+    // ため、**単に seed を並べただけでは live op が文 2 に到達しない** — 文 2 の
+    // WHERE から生存ガードを丸ごと外しても、下の「seed だけ」の test 群は全て green の
+    // ままだった(実測)。 つまりガードは無検証のまま静かに失効しうる。
+    //
+    // ガードが守っているのは **READ COMMITTED で文ごとにスナップショットが進む**こと
+    // (文 1 の判定後・文 2 の実行前に別 tx が lease を張り直す)であり、別接続では
+    // その窓を決定的に狙えない。 そこで **同一 tx 内で文 1 の直後に lease を張り直す**
+    // AFTER UPDATE trigger を test 側で仕込み、同じ状態遷移を決定的に再現する
+    // (自 tx の変更は次の文のスナップショットに必ず見えるため、文 2 は「今 live な op」を
+    // 見ることになる = 実運用の race と同じ入力)。
+    //
+    // 期待: ガードがあれば terminal 化しない / ガードを外すと terminal 化して fail する。
+    it('文 1 の後に lease が張り直された op は terminal 化しない(文 2 の生存ガード・同一 tx 注入)', async () => {
+      const userId = await seedUser()
+      const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
+      const operationId = await seedUploadOperation(
+        userId,
+        examId,
+        sourceDocumentId,
+        'processing',
+        { leaseExpiresAt: new Date(Date.now() - 60_000) }, // 文 1 の時点では失効済
+      )
+
+      const owner = getFixtureOwnerDb()
+      await owner.execute(sql`
+        CREATE OR REPLACE FUNCTION test_renew_lease_after_doc_failed() RETURNS trigger AS $$
+        BEGIN
+          UPDATE upload_operations
+          SET lease_expires_at = now() + interval '10 minutes'
+          WHERE source_document_id = NEW.id;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql
+      `)
+      await owner.execute(sql`
+        CREATE TRIGGER test_renew_lease_trigger
+        AFTER UPDATE ON source_documents
+        FOR EACH ROW WHEN (NEW.status = 'failed')
+        EXECUTE FUNCTION test_renew_lease_after_doc_failed()
+      `)
+      try {
+        await reconcileStaleProcessing(userId)
+      } finally {
+        await owner.execute(sql`DROP TRIGGER IF EXISTS test_renew_lease_trigger ON source_documents`)
+        await owner.execute(sql`DROP FUNCTION IF EXISTS test_renew_lease_after_doc_failed()`)
+      }
+
+      // 文 1 は doc を failed にした(trigger が発火した証跡)。
+      expect(await readSourceDocStatus(sourceDocumentId)).toBe('failed')
+      // 文 2 は「今 live な op」を上書きしない。
+      const op = await readOperation(operationId)
+      expect(op.status).toBe('processing')
+      expect(op.lastErrorCode).toBeNull()
+      expect(op.preparedPayload).toBeNull() // 元から NULL(上書きされていないことの確認)
+    })
+
+    // 文 1 側の保護(live op を持つ doc は failed にしない)。 文 2 まで到達しない
+    // 経路の pin であり、上の trigger test とは見ているものが違う。
+    it('valid lease を持つ op の doc は文 1 で守られ、op も無傷(文 1 の保護)', async () => {
       const userId = await seedUser()
       const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
       // 同じ user の別 doc も stale にして、文 1 が実際に 1 件 failed 化する状況を作る
@@ -416,8 +471,8 @@ describe('reconcileStaleProcessing — live upload_operations exclusion (T14a sp
 // 'processing' in the DB, but the display fallback (deriveExamStatuses, via
 // getExamStatusMap) independently recomputes "processing AND >15min → failed"
 // from raw rows — without live-op awareness, a live retryable/prepared op's
-// exam would show a "failed" badge for up to PREPARED_RETENTION_MS (7 days)
-// even though the DB row is still 'processing'. These tests exercise the
+// exam would show a "failed" badge even though the DB row is still
+// 'processing'. These tests exercise the
 // real DB query getExamStatusMap now runs (isLiveUploadOperationCondition)
 // to source that awareness, reusing the same seed helpers as the reconciler
 // tests above (same predicate, same DB module).
@@ -449,8 +504,8 @@ describe('getExamStatusMap — live-op display awareness (T14a fix round 2)', ()
   it('an ABANDONED non-terminal op (no valid lease) does NOT protect the display either — still "failed" (consistent with the reconciler)', async () => {
     const userId = await seedUser()
     const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
-    await seedUploadOperation(userId, examId, sourceDocumentId, 'awaiting_sources', {
-      createdAt: new Date(Date.now() - PREPARED_RETENTION_MS - 60_000),
+    await seedUploadOperation(userId, examId, sourceDocumentId, 'prepared', {
+      createdAt: new Date(Date.now() - SEVEN_DAYS_MS - 60_000),
       leaseExpiresAt: null,
     })
 
@@ -462,8 +517,8 @@ describe('getExamStatusMap — live-op display awareness (T14a fix round 2)', ()
   it('a non-terminal op with a currently VALID lease protects the display even past retention (concurrently-advancing op shows "processing")', async () => {
     const userId = await seedUser()
     const { examId, sourceDocumentId } = await seedStaleProcessingSourceDoc(userId)
-    await seedUploadOperation(userId, examId, sourceDocumentId, 'claimed', {
-      createdAt: new Date(Date.now() - PREPARED_RETENTION_MS - 60_000),
+    await seedUploadOperation(userId, examId, sourceDocumentId, 'prepared', {
+      createdAt: new Date(Date.now() - SEVEN_DAYS_MS - 60_000),
       leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
     })
 

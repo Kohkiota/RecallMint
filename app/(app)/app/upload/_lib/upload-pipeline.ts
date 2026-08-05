@@ -6,8 +6,8 @@
 // publish。crop-derived asset 行・R2 object は payload commit の後にのみ作られ、
 // crop が落ちても Gemini を再実行せず committed payload の text card を publish する。
 //
-// directive 無し共有 module(publish-prepared-orchestrate.ts / stage-prepared-retry.ts
-// と同じ「'use server' file から参照される directive 無し module」パターン)。
+// directive 無し共有 module(stage-prepared-retry.ts と同じ「'use server' file から
+// 参照される directive 無し module」パターン)。
 // ここに置く理由は 2 つ:
 //   ① `deadlineAt` / `leaseVersion` といったサーバー側の安全弁を引数に持つ。
 //      'use server' file の export は client から action-id 経由で到達可能なため、
@@ -29,8 +29,8 @@
 // 破れた場合」だけを best-effort で記録する防波堤であって、失敗クラスの判定者では
 // ない(S-4 controller 指示 A)。
 //
-// **失敗は全て terminal**(spec §4.5): 新経路に resume は無い(旧経路の
-// retryable_failed / next_retry_at は移植しない)。op を terminal_failed にし、
+// **失敗は全て terminal**(spec §4.5): 新経路に resume は無い(旧経路が持っていた
+// retryable-failed 再開と backoff の仕組みは移植しなかった)。op を terminal_failed にし、
 // 同一 tx で source_document を failed にする(terminalizeAbandonedOperation)。
 import { randomUUID } from 'node:crypto'
 
@@ -90,8 +90,8 @@ export type UploadPipelineFile = {
 // Buffer への参照で、crop が同じバイトを再利用する(R2 GET しない = spec §2)。
 type VerifiedSource = VerifiedImage & { sourceId: string; bytes: Buffer }
 
-// 失敗理由(upload_operations.last_error_code に入る値)。旧経路
-// (stage-prepared.ts)の語彙に倣い、新経路固有のものだけを足している。
+// 失敗理由(upload_operations.last_error_code に入る値)。旧経路の語彙に倣い、
+// 新経路固有のものだけを足している。
 type PipelineErrorCode =
   | 'image_decode_failed'
   | 'deadline_exceeded'
@@ -265,11 +265,10 @@ async function runOcrPhase(
     geminiResult = await callImageCropWithRetry(
       parts,
       buildImageCropResponseJsonSchema(),
-      // 日次 cap の計上は attempt ごと(retry も 1 call として数える)。
-      () => incrementAiUsage(userId, 1),
-      undefined,
       // retry ループの内側で残余を見させる(I-1)。
       deadlineAt,
+      // 日次 cap の計上は attempt ごと(retry も 1 call として数える)。
+      () => incrementAiUsage(userId, 1),
     )
   } catch (err) {
     geminiError = err
@@ -369,7 +368,7 @@ async function runCropPhase(
     let budgetExhausted = false
     for (const figure of allFigures) {
       // 予算は OCR と共通の統合予算の残余で見る(旧経路の crop 専用予算ではない)。
-      // 一度枯渇したら以降は判定を揺り戻さない(publish-prepared-orchestrate.ts と同型)。
+      // 一度枯渇したら以降は判定を揺り戻さない(旧経路の crop loop と同型)。
       if (
         !budgetExhausted &&
         isCropBudgetExhausted(Date.now(), deadlineAt.getTime(), CROP_MIN_REMAINING_MS)
@@ -472,8 +471,8 @@ async function runPublishPhase(
           cards: payload.cards,
           cardImagesByCardId: plan.cardImagesByCardId,
           resultSummary,
-          // 受領 Buffer の合計(新経路は source を R2/DB に置かないため
-          // source_assets.byte_size の SUM は存在しない)。
+          // 受領 Buffer の合計(新経路は source を R2/DB に置かないため、旧経路が
+          // 使っていた source 台帳の byte_size 合計という概念が無い)。
           fileSizeBytes,
         }),
       )

@@ -354,7 +354,7 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
     }
   })
 
-  it('upload_records は受領 Buffer 合計と受領枚数で記帳する(source_assets を参照しない)', async () => {
+  it('upload_records は受領 Buffer 合計と受領枚数で記帳する(source 台帳を参照しない)', async () => {
     await run()
 
     const records = await getFixtureOwnerDb()
@@ -394,13 +394,13 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
       .from(cards)
       .where(eq(cards.userId, userAId))
     expect(cardRows[0]!.images).toHaveLength(2)
-    // provenance は残るが source_asset_id は NULL(新経路に source_assets 行は無い)。
+    // provenance は残る(source 参照列は S-5 の migration 0032 で drop 済)。
     const derivations = await getFixtureOwnerDb()
       .select()
       .from(assetDerivations)
       .where(eq(assetDerivations.userId, userAId))
     expect(derivations).toHaveLength(2)
-    for (const d of derivations) expect(d.sourceAssetId).toBeNull()
+    for (const d of derivations) expect(d).not.toHaveProperty('sourceAssetId')
   })
 
   it('crop 全滅(R2 PUT が全て失敗)でも text card は publish する(§8.3 / §9-6)', async () => {

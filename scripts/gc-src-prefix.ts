@@ -3,9 +3,9 @@
 // 「stg R2 users/*/src/ prefix 一掃」部分を切り出した先行 task。旧経路の file 削除 /
 // migration 0032 / schema 変更は本 script のスコープ外 = 後続 S-5b の担当)。
 //
-// なぜ DB 起点でないか: S-5b で `source_assets` 表ごと drop するため、行駆動の GC
-// (scripts/gc-image-assets.ts の source lane)は撤去後に機能しない。R2 側だけが
-// 残骸の唯一の所在になる。
+// なぜ DB 起点でないか: 旧経路の source 台帳(表)と、それを起点にした行駆動の GC
+// lane は S-5b で撤去済み。台帳が消えたあとは **R2 側の listing だけが残骸の唯一の
+// 所在**になるため、この script は DB を一切見ない。
 //
 // 実行(`--conditions=react-server` は必須フラグ — lib/storage/r2.ts が
 // `import 'server-only'` を持つため。gc-image-assets.ts / gc-abandoned-operations.ts
@@ -36,8 +36,9 @@ import { listObjects, deleteObject } from '@/lib/storage/r2'
 // 固定する)。
 // **この uuid は Clerk ID(`user_...`)ではなく `users` 表の内部 uuid**(Codex fix
 // round 2・false positive 裁定): key を組む `user.id` は `users.$inferSelect`
-// (`uuid('id').primaryKey()`)由来で、同じ値が `sourceAssets.userId`(uuid FK)にも
-// 渡っている — Clerk 形式なら uuid cast error で旧経路が一度も動かなかったはず。
+// (`uuid('id').primaryKey()`)由来。同じ値が `withTenantTx(userId, …)` の tenant
+// context(`app_current_user_id()` が uuid として比較する)にも渡っており、Clerk 形式
+// なら uuid cast error になるため、この形以外の key は生まれえない。
 export const SRC_KEY_PATTERN = /^users\/[0-9a-f-]{36}\/src\//
 
 export type GcSrcPrefixSummary = {

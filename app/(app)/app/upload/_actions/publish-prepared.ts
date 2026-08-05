@@ -15,42 +15,27 @@ import { isAssetKey } from '@/lib/validation/card'
 import { saveExtractedCards } from './upload-persistence'
 import { projectCardAssetRefs } from '@/lib/cards/domain/card-asset-refs'
 import { type PreparedCard } from '@/lib/ocr/prepared-schema'
-import { CROP_PHASE_BUDGET_MS } from '../_lib/constants'
 import { buildCardRows } from '../_lib/publish-prepared-plan'
-import {
-  runPublishPrepared,
-  type PublishPreparedInput,
-  type PublishPreparedResult,
-} from '../_lib/publish-prepared-orchestrate'
 
 // ②-4a-cutover smoke fix(2026-08-02): **'use server' file から型を re-export しない**。
-// 旧: `export type { PublishPreparedInput, PublishPreparedResult }`(T14a fix round1 が
-// 互換維持で追加・「型 export は安全」と誤認)。実際は Next 16 + Turbopack の 'use server'
-// 変換が named type re-export を value export と誤認し `registerServerReference(型名, …)` を
-// 生成 → built chunk で裸参照(runtime undefined)→ module load 時 ReferenceError → 500。
-// 型が要る consumer は定義元 `publish-prepared-orchestrate.ts` から直接 import する
-// (現状 consumer 0 件・本 file 自身は上の import で signature に使うのみ=re-export 不要)。
+// Next 16 + Turbopack の 'use server' 変換が named type re-export を value export と
+// 誤認し `registerServerReference(型名, …)` を生成 → built chunk で裸参照(runtime
+// undefined)→ module load 時 ReferenceError → 500。
 // 再導入防止 = eslint no-restricted-syntax(_actions の 'use server' 型 export を ban)。
 
-// ②-4a Phase E Task 12: publishPreparedUploadTx orchestrator。 spec:
+// ②-4a Phase E Task 12: publishPreparedUploadTx。 spec:
 // docs/superpowers/specs/2026-07-30-ocr-2-4a-image-figure-crop-design.md §8(publish・
 // ロック順・保護 UPDATE)/ §2(fencing = 最終防衛)/ §5.4(publisher は保存済み
 // payload を parse するだけで再正規化しない)。
 //
-// ★ 本 task の最重要不変条件 = **最終防衛 fencing**。 crop は idempotent かつ tx の
-// 外(R2 I/O を DB tx に持ち込まない・spec §7.3)。 lease を横取りされた(takeover・
-// T12b)stale worker は crop まで到達しうる(crop は status='prepared' だけを見て
-// lease_version を見ない)が、 この publish tx 冒頭の `SELECT … FOR UPDATE` +
-// `status='prepared' AND lease_version=:mine` 不一致拒否で必ず弾かれる。 これが
-// カード二重作成を防ぐ唯一の権威 gate であり、 T6 の claim-time CAS の代替ではない。
+// ★ 本 file の最重要不変条件 = **最終防衛 fencing**。 crop は idempotent かつ tx の
+// 外(R2 I/O を DB tx に持ち込まない・spec §7.3)。 この publish tx 冒頭の
+// `SELECT … FOR UPDATE` + `status='prepared' AND lease_version=:mine` 不一致拒否が、
+// カード二重作成を防ぐ唯一の権威 gate。
 //
-// prepared takeover(claimPrepared / publish-resume・spec §2.2)は T12b の責務で
-// 本 file には無い。 だが本 file の fencing が「stale worker を必ず拒否する」ことが
-// T12b を安全にする前提になっている。
-//
-// flow(brief 準拠):
-//   [orchestrator] payload 読取(fenced fast-fail)→ 全 figure crop(tx 外・R2 I/O)
-//     → publish 条件判定(planPublish・純粋)→ publishPreparedUploadTx(短い DB tx)
+// flow(呼出元 = `_lib/upload-pipeline.ts`):
+//   [pipeline] payload commit → 全 figure crop(tx 外・R2 I/O)→ publish 条件判定
+//     (planPublish・純粋)→ publishPreparedUploadTx(短い DB tx)
 //   [tx] fence → exam → source_document → 保護 asset UPDATE → cards/tags(saveExtractedCards)
 //     → refs → counter(bump)→ finalize(payload NULL + result_summary + completed)
 
@@ -62,11 +47,10 @@ import {
 // 返り値は 'published' / 'stale'(fencing 不一致)のみ。 保護 UPDATE 期待未満 /
 // 重複 card id(ON CONFLICT なし)/ その他 DB error は **throw** して tx 全体を
 // rollback する(部分 commit させない・重複は silent に握らず loud fail・spec
-// Global Constraint「cards に ON CONFLICT 不使用」)。 orchestrator が throw を
-// catch して retryable に写像する。
+// Global Constraint「cards に ON CONFLICT 不使用」)。 呼出元(upload-pipeline.ts)が
+// throw を catch して operation を terminal 化する。
 //
-// iso test が Clerk 無しで直接 exercise できるよう Tx-suffix で export する
-// (claimOperationTx と同流儀)。
+// iso test が Clerk 無しで直接 exercise できるよう Tx-suffix で export する。
 // ---------------------------------------------------------------------------
 export async function publishPreparedUploadTx(
   tx: TenantTx,
@@ -78,10 +62,8 @@ export async function publishPreparedUploadTx(
     cardImagesByCardId: Record<string, CardImage[]>
     resultSummary: Record<string, unknown>
     // upload_records.file_size_bytes に記帳する受領バイト総量(step 7)。
-    // ②-4a Task S-3 で引数化した: 旧経路は source_assets.byte_size の SUM を
-    // 呼出側(publish-prepared-orchestrate.ts)が計算して渡し、新経路(単一
-    // invocation)は source を R2/DB に置かないため受領 Buffer の合計を渡す。
-    // 「どこから来た値か」は呼出経路の知識であり、この tx の責務ではない。
+    // ②-4a Task S-3 で引数化した: 呼出元(upload-pipeline.ts)が受領 Buffer の合計を
+    // 渡す。「どこから来た値か」は呼出経路の知識であり、この tx の責務ではない。
     fileSizeBytes: number
   },
 ): Promise<{ outcome: 'published' } | { outcome: 'stale' }> {
@@ -105,9 +87,8 @@ export async function publishPreparedUploadTx(
       leaseVersion: uploadOperations.leaseVersion,
       examId: uploadOperations.examId,
       sourceDocumentId: uploadOperations.sourceDocumentId,
-      // fix round 3: source_documents/upload_records の pages_processed(= source
-      // 画像数)は T6 が確定させた immutable oracle を使う(source_assets の COUNT
-      // から導出しない・spec §8.2/§2.1)。
+      // fix round 3: source_documents/upload_records の pages_processed(= 受領
+      // 画像数)は sync tx が確定させた immutable oracle を使う(spec §8.2/§2.1)。
       expectedSourceCount: uploadOperations.expectedSourceCount,
     })
     .from(uploadOperations)
@@ -134,7 +115,7 @@ export async function publishPreparedUploadTx(
 
   // 3. source_document を finalize(ロック順 #3)。 prepared operation は
   //    source_document_id を確定済み(T4)。 Fix #1 defense-in-depth(Codex P1):
-  //    null は orchestrator が terminal_failed で弾く(source_document 削除 =
+  //    null は呼出元が terminal_failed で弾く(source_document 削除 =
   //    FK onDelete:set null)。 それでも null が tx へ到達したら **skip-and-publish
   //    せず throw(rollback)** — detached content を絶対に作らない。
   //
@@ -195,8 +176,7 @@ export async function publishPreparedUploadTx(
     if (readyRows.length < expectedReadyAssetIds.length) {
       // 期待未満 = crop 済み asset の一部が prepared〜publish 間に GC/GDPR で
       // ready を外れた。 非 ready asset への ref を作らない(spec §8.1)— tx 全体を
-      // rollback して retryable にする(次の試行で当該 figure は再 crop され、
-      // deleting なら terminal 除外となり text card は publish される)。
+      // rollback する(新経路に retry は無く、呼出元が operation ごと terminal 化する)。
       throw new PublishProtectiveMismatchError(readyRows.length, expectedReadyAssetIds.length)
     }
     await tx
@@ -286,9 +266,8 @@ export async function publishPreparedUploadTx(
 }
 
 // 保護 UPDATE の期待件数未満(GC/GDPR race で ready asset が消えた)を表す sentinel。
-// orchestrator が retryable に写像する(DB error と同じ扱い)。 'use server' file は
-// 非 async の value export を許さない(SWC 71011)ため export しない — orchestrator は
-// throw を error 種別で区別せず一律 retryable にするので export 不要。
+// 呼出元(upload-pipeline.ts)は throw を error 種別で区別せず一律 terminal 化する
+// ため export しない('use server' file は非 async の value export を許さない・SWC 71011)。
 class PublishProtectiveMismatchError extends Error {
   constructor(
     readonly ready: number,
@@ -297,24 +276,4 @@ class PublishProtectiveMismatchError extends Error {
     super(`publish protective UPDATE returned ${ready} < expected ${expected} ready assets`)
     this.name = 'PublishProtectiveMismatchError'
   }
-}
-
-// ---------------------------------------------------------------------------
-// publishPreparedUpload — 公開 Server Action(単一引数)。
-//
-// T14a fix round 1(Codex P2): 以前はここに orchestrator 本体(auth + payload
-// 読取 + crop + 条件判定 + tx)があり、crop フェーズの deadline を第 2 引数
-// `deadlineAt` として受け取っていた。 だが 'use server' file の export は
-// (client から実際に import/呼出された時点で)client が直接叩ける HTTP endpoint
-// になる — 全引数は client-controlled という前提を置く必要がある。 crop 予算
-// という **サーバー側の安全弁**を client 入力で決められる形にしてはならない
-// ため、orchestrator 本体は directive 無しの `runPublishPrepared`
-// (`../_lib/publish-prepared-orchestrate.ts`)へ移設し、deadline は**ここで
-// サーバー側のみで計算**して渡す。 本関数は単一引数(`input`)のみを公開する。
-// テストは `runPublishPrepared` を直接 import して `deadlineAt` を注入する。
-// ---------------------------------------------------------------------------
-export async function publishPreparedUpload(
-  input: PublishPreparedInput,
-): Promise<PublishPreparedResult> {
-  return runPublishPrepared(input, new Date(Date.now() + CROP_PHASE_BUDGET_MS))
 }

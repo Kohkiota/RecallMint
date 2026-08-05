@@ -59,10 +59,9 @@ const RLS_WAVE2_ENABLE_FILE = path.resolve(
   '../../../../db/policies/rls-p3-wave2-enable.sql',
 )
 
-// ②-4a Phase A: 新設 tenant 表 (source_assets / upload_operations /
-// asset_derivations) の policy 有効化 SQL。Wave 2 と同機構で wave2-enable の直後に
-// owner client で適用する (test:iso は毎 run 本 SQL も RLS on で走る)。3 task に
-// またがり同一 file に追記されていく (db/policies/ocr-2-4a-enable.sql 冒頭コメント参照)。
+// ②-4a Phase A: 新設 tenant 表 (upload_operations / asset_derivations) の policy
+// 有効化 SQL。Wave 2 と同機構で wave2-enable の直後に owner client で適用する
+// (test:iso は毎 run 本 SQL も RLS on で走る)。
 const RLS_OCR_2_4A_ENABLE_FILE = path.resolve(
   import.meta.dirname,
   '../../../../db/policies/ocr-2-4a-enable.sql',

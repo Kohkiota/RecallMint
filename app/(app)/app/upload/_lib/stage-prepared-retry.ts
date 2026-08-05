@@ -1,11 +1,8 @@
-// ②-4a Task 8b: source_id-interleaved Gemini call + retry/backoff for the
-// stage-prepared orchestrator (`../_actions/stage-prepared.ts`).
+// ②-4a Task 8b: source_id-interleaved Gemini call + retry/backoff。
+// 唯一の呼出元は OCR phase(`./upload-pipeline.ts`)。
 //
-// directive 無し(この file 自体は 'use server' を持たない — stage-prepared.ts が
-// 'use server' file であり、非 async な export を直接持てない Next.js 制約は
-// この file には掛からないが、テスト容易性のため独立 module に切り出す。既存
-// constants.ts / daily-limit.ts / asset-limits.ts / source-image-verify.ts と
-// 同じ「'use server' file から参照される directive 無し共有 module」パターン)。
+// directive 無しの独立 module(テスト容易性のため — 既存 constants.ts /
+// daily-limit.ts / asset-limits.ts / source-image-verify.ts と同じパターン)。
 //
 // 設計: 本番 OCR pipeline (`lib/ai/ocr.ts` の private `callWithRetry`)を書き換え
 // ずに retry/backoff の規律だけを踏襲する薄い呼び出しループ(task brief: 「reuse
@@ -45,23 +42,25 @@ const RETRY_AFTER_CAP_MS = 60_000
  * 指数 backoff で最大 2 回 retry・429 は即 throw)で実行する。
  *
  * `onAttempt` は各 call 直前(初回 + retry すべて)に発火する — caller
- * (stage-prepared.ts)がここで `incrementAiUsage` を呼ぶ(spec §3 の日次 cap
+ * がここで `incrementAiUsage` を呼ぶ(spec §3 の日次 cap
  * 配線)。 callback 失敗は本処理を止めない(ベストエフォート計上、 ocr.ts の
  * callWithRetry と同じ try/catch 握り潰し)。
  *
+ * `deadlineAt`(②-4a 単一 invocation S-2)は retry ループが呼出側の time budget を
+ * 食い破らないための打ち切り基準。 **必須**: 旧経路(別 invocation で OCR し、
+ * 全体 deadline を持たなかった)は S-5 で撤去済で、未指定にしてよい呼出元はもう
+ * 存在しない。 optional のまま残すと、将来の呼出元が黙って打ち切りガードを
+ * 外せてしまう(= invocation が platform に打ち切られ失敗理由がどこにも残らない)。
+ *
  * `rng` は jitter 生成用(test から固定値を渡して決定論的に検証する。 デフォルト
  * は Math.random、 ocr.ts と同じ注入点)。
- *
- * `deadlineAt`(optional・②-4a 単一 invocation S-2)は retry ループが呼出側の
- * time budget を食い破らないための打ち切り基準。 未指定なら従来どおり
- * (旧経路 `stage-prepared.ts` は別 invocation で全体 deadline を持たないため不変)。
  */
 export async function callImageCropWithRetry(
   parts: GeminiContentPart[],
   responseJsonSchema: Record<string, unknown>,
+  deadlineAt: Date,
   onAttempt?: () => Promise<void> | void,
   rng: () => number = Math.random,
-  deadlineAt?: Date,
 ): Promise<GeminiCallResult> {
   let lastErr: unknown
   for (let attempt = 0; attempt <= MAX_HTTP_RETRIES; attempt++) {
@@ -99,10 +98,7 @@ export async function callImageCropWithRetry(
       // 打ち切る(入ってしまうと invocation が platform に打ち切られ、失敗理由が
       // どこにも残らない)。 backoff の前に判定するのは、どうせ打ち切る待ち時間を
       // 予算から使わないため。 初回 attempt の可否判断は呼出側の責務。
-      if (
-        deadlineAt !== undefined &&
-        deadlineAt.getTime() - Date.now() - backoffMs < GEMINI_TIMEOUT_MS
-      ) {
+      if (deadlineAt.getTime() - Date.now() - backoffMs < GEMINI_TIMEOUT_MS) {
         // 打ち切りは直前の失敗をそのまま伝播する(呼出側の error 分類を変えない)。
         throw err
       }

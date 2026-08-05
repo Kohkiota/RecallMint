@@ -3,7 +3,7 @@
 // 提供する 3 エクスポート (すべて DB 関数):
 //   1. getExamStatusMap            — DB 取得 + deriveExamStatuses の組み合わせ
 //   2. reconcileStaleProcessing    — best-effort DB cleanup (stale processing → failed)
-//   3. hasActiveProcessingUpload   — /app/upload UI guard 用 in-flight 存在判定
+//   3. hasLiveUploadOperation      — /app/upload UI guard 用 live operation 存在判定
 //
 // pure 層 (STALE_PROCESSING_MS 定数 + deriveExamStatuses 純関数) は
 // ./derive-exam-statuses に分離済みで、ここから import して使う。
@@ -17,7 +17,6 @@ import {
   and,
   desc,
   eq,
-  gte,
   inArray,
   isNotNull,
   isNull,
@@ -33,6 +32,21 @@ import { logger } from '@/lib/logger'
 import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 
 // ---------------------------------------------------------------------------
+// NON_TERMINAL_UPLOAD_OPERATION_STATUSES
+// ---------------------------------------------------------------------------
+// `upload_operations.status` のうち **終端に達していない**値の集合。S-5 の旧経路
+// 撤去まで、この直値が 4 箇所(本 file の live 述語と reconciler 文 2 /
+// submit-upload.ts の live-op gate / scripts/gc-abandoned-operations.ts の sweep)に
+// 散っていた。集合が食い違うと「gate は live と読むが sweep は候補に含める」のような
+// 静かな不整合になるため、1 定義を全 site が import する。
+//
+// 置き場所がここなのは、`isLiveUploadOperationCondition` が既に同じ 4 site から
+// import されており(app/ からも scripts/ からも到達済み)、新しい依存方向を作らずに
+// 済むため。eslint Block A(`lib/` は `app/` を import 禁止)により逆向き
+// (app/ 側に置いて lib/ から読む)は取れない。
+export const NON_TERMINAL_UPLOAD_OPERATION_STATUSES = ['prepared', 'processing'] as const
+
+// ---------------------------------------------------------------------------
 // isLiveUploadOperationCondition
 // ---------------------------------------------------------------------------
 // ②-4a 単一 invocation spec(2026-08-04)§5: an `upload_operations` row is
@@ -41,8 +55,8 @@ import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 // (same discipline as the rest of the lease-fencing regime — the DB, not app
 // clocks, is the arbiter).
 //
-// **S-4 の簡素化(仕様変更)**: 旧述語は「(a) `created_at` が
-// `PREPARED_RETENTION_MS`(7 日)以内 **または** (b) valid lease」だった。(a) の
+// **S-4 の簡素化(仕様変更)**: 旧述語は「(a) `created_at` が 7 日以内
+// **または** (b) valid lease」だった。(a) の
 // 存在理由は「retryable な prepared operation を後から再 claim して再開できる」
 // という旧 prepare→publish flow の resume 機構(旧 spec §11)であり、新経路は
 // resume を持たない(失敗は全て terminal・再試行主体は居ない = spec §4.5)ため
@@ -51,25 +65,23 @@ import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 // 帰結 = invocation が死んだときの「処理中」表示が **最大 7 日 → 最大 ~15 分**
 // (LEASE_TTL_MS)に短縮される。
 //
-// `PREPARED_RETENTION_MS` 定数そのものは残す(claim-operation.ts の 7 日 cap が
-// 旧経路で参照中 — 撤去は S-5)。
-//
 // This condition builds a `WHERE`-fragment only (no I/O) so it composes with
-// whichever query calls it. **Shared by 5 call sites** (count corrected in
-// S-4 — the comment said 3 while route.ts and gc-image-assets.ts had already
-// been added; anyone assessing a change to this predicate must weigh all 5):
-//   1. `reconcileStaleProcessing` (source protection, negated form via
+// whichever query calls it. **Invoked from 7 sites** (grep
+// `isLiveUploadOperationCondition()` — S-5 で source lane の 2 site が消え、
+// `hasLiveUploadOperation` と `submitUploadTx` が加わった。anyone assessing a
+// change to this predicate must weigh all 7):
+//   1. `reconcileStaleProcessing` 文 1 (source protection, negated form via
 //      NOT EXISTS below)
 //   2. `getExamStatusMap` (display op-awareness)
 //   3. `app/api/exams/status/route.ts` (poll endpoint — same display awareness)
-//   4. `scripts/gc-abandoned-operations.ts` (sweep candidate selection — the
-//      negation of this predicate, i.e. operations that do NOT satisfy it)
-//   5. `scripts/gc-image-assets.ts` source lane (`opIsLive` in the dry-run
-//      preview + the Class A `promoteSourceAssets` NOT EXISTS — a live owning
-//      op keeps a `reserved` source_asset out of the destructive lane)
-// 5 が最も重い: 判定が false へ倒れると R2 object + 行の削除に繋がる。S-4 の
-// lease-only 化で「lease を持たない非終端 op」が守らなくなった影響はそこにも及ぶ
-// (該当 script 側にも同趣旨の注記を置いた)。
+//   4. `scripts/gc-abandoned-operations.ts` の候補 SELECT (negation)
+//   5. 同 script の terminate CAS (同じ negation を UPDATE の WHERE に再適用)
+//   6. `hasLiveUploadOperation` (/app/upload の form 表示 gate)
+//   7. `submitUploadTx` の live-op gate (boolean 列として評価)
+// 6 と 7 は**同じ述語を読むこと自体が要件**: 片方だけ変えると「form は出るのに
+// submit すると拒否される」窓が無言で生まれる(S-5b 追加項目 A)。
+// 4/5 が最も重い: 判定が false へ倒れると prepared_payload(PII)を持つ行の
+// terminal 化に繋がる(逆に true へ倒れると回収されず残る)。
 //
 // Return type: drizzle's `and()`/`or()` are typed `SQL | undefined` in
 // general (they can receive filtered-out/undefined branches elsewhere in the
@@ -82,26 +94,19 @@ import { STALE_PROCESSING_MS, deriveExamStatuses } from './derive-exam-statuses'
 // fix round 3(T14a・Codex + canonical Critical, both against real PG17): the
 // lease branch MUST be NULL-free. SQL is three-valued — `lease_expires_at >
 // now()` evaluates to NULL (not false) when `lease_expires_at IS NULL`, which
-// is the **dominant** abandoned state (prepare-upload never sets a lease;
-// every retryable-failure path resets `leaseExpiresAt: null`). `not(NULL) =
+// is the **dominant** abandoned state (the legacy prepare path never set a
+// lease; every retryable-failure path reset `leaseExpiresAt: null`, and the
+// current path NULLs it on terminalize). `not(NULL) =
 // NULL`, and Postgres WHERE treats NULL as false → the row would be silently
 // excluded from `scripts/gc-abandoned-operations.ts`'s sweep, i.e. the sweep
 // would find NOTHING for exactly the dominant case it exists to clean.
-// Guarding with `isNotNull` first (mirroring the `isNull`/`isNotNull` pattern
-// already used in claim-operation.ts's CAS WHERE clauses) makes the branch a
+// Guarding with `isNotNull` first makes the branch a
 // definite `false` when the lease is null, so the whole predicate is always a
 // definite true/false. **This guard is load-bearing after the S-4
 // simplification too** — the lease branch is now the ONLY branch.
 export function isLiveUploadOperationCondition(): SQL {
   return and(
-    // 'processing' = ②-4a 単一 invocation 経路の実行中状態(spec 2026-08-04 §4.5)。
-    // 旧経路の 3 値と併存する(S-5 の旧経路撤去まで)。
-    inArray(uploadOperations.status, [
-      'awaiting_sources',
-      'claimed',
-      'prepared',
-      'processing',
-    ]),
+    inArray(uploadOperations.status, [...NON_TERMINAL_UPLOAD_OPERATION_STATUSES]),
     isNotNull(uploadOperations.leaseExpiresAt),
     sql`${uploadOperations.leaseExpiresAt} > now()`,
   )!
@@ -199,13 +204,12 @@ export async function getExamStatusMap(
 //   - UPDATE ... RETURNING で実際に processing→failed に変えた行のぶんだけを
 //     upload_records に INSERT する (= 0 件更新なら upload_records に触らない)。
 //
-// T14a(spec §11「stale source 回収統合」): ②-4a の新 prepare→publish flow は
-// prepared の再試行が 15 分(STALE_PROCESSING_MS)を跨ぎうる — 「source failed
-// → 後から publisher が completed へ戻す」矛盾を避けるため、対象の
-// source_document に紐づく upload_operations が **live(非終端: awaiting_sources
-// /claimed/prepared)** な行を 1 件でも持つ場合はこの stale sweep の対象から
-// 除外する(NOT EXISTS)。 legacy path(upload_operations 行が無い旧 flow)は
-// 従来どおり 15 分超で failed 化される — 挙動不変。
+// T14a(spec §11「stale source 回収統合」): upload の処理は 15 分
+// (STALE_PROCESSING_MS)を跨ぎうる — 「source failed → 後から publisher が
+// completed へ戻す」矛盾を避けるため、対象の source_document に紐づく
+// upload_operations が **live(非終端 かつ valid lease)** な行を 1 件でも持つ場合は
+// この stale sweep の対象から除外する(NOT EXISTS)。 legacy path(upload_operations
+// 行が無い旧 flow)は従来どおり 15 分超で failed 化される — 挙動不変。
 //
 // fix round 1(Codex P1)/ S-4: この除外は **lease-aware**(無条件ではない)。
 // 保護するのは「今このオペレーションを進めている invocation が生存している」
@@ -273,18 +277,30 @@ export async function reconcileStaleProcessing(
       if (updated.length === 0) return
 
       // 2.5. S-4: failed 化した doc に紐づく **非終端** op を同一 tx で terminal 化する。
-      //    prepared_payload(PII/機微)と lease/next_retry の NULL 化は
-      //    terminalizeAbandonedOperation(app 層・eslint Block A で lib から import
-      //    不可)と同じ不変条件を満たす。
+      //    prepared_payload(PII/機微)と lease の NULL 化は
+      //    `app/(app)/app/upload/_lib/terminalize-abandoned-operation.ts` の
+      //    `terminalizeAbandonedOperation` と同じ不変条件を満たす。
+      //
+      //    **統合しない(S-5b 追加項目 B・controller 裁定)**: 同じ不変条件を書く
+      //    site は 2 つ(向こうと ここ)あるが、**前提が違う**ため 1 本にしない。
+      //      ・向こう = 呼出元が対象行を `SELECT … FOR UPDATE` 済み(ゆえに WHERE は
+      //        id + user_id のみで足りる)。
+      //      ・ここ  = 行ロックを取らず **WHERE 条件だけで守る**(下の生存ガード
+      //        `isNull(lease) OR lease <= now()` がその守り)。
+      //    1 本に寄せると呼出側ごとに違うこの前提が混ざり、生存ガードが silent に
+      //    失効しうる(本 sprint で 2 回踏んだ失敗形)。加えて eslint Block A により
+      //    `lib/` から `app/` を import できず、共有するには contract を `lib/` へ
+      //    動かす必要がある(本 task の範囲外)。site は 2 つで rule of three にも
+      //    達しない。
       //
       //    **文 2 自身で生存を再確認する**(fix round 3・Codex P1): 上の文 1 が
       //    NOT EXISTS(live op) を通過したことは、この文 2 の時点でも live op が居ない
       //    ことを意味しない。 PostgreSQL の READ COMMITTED では **同一 tx 内でも文ごとに
       //    スナップショットが進む**ため、文 1 の判定後・文 2 の実行前に別 tx が commit
       //    した再 lease を文 2 は見る。 文 1 が取るのは source_documents の行ロックで
-      //    あって upload_operations の行ロックではなく、claimOperationTx は op 行しか
-      //    ロックしない — つまり「競合相手が居ない」は**保証されていない**(以前この
-      //    comment はそう書いていた)。 論証依存をやめて WHERE の条件にする。
+      //    あって upload_operations の行ロックではない — つまり「競合相手が居ない」は
+      //    **保証されていない**(以前この comment はそう書いていた)。 論証依存をやめて
+      //    WHERE の条件にする。
       //
       //    **肯定形で書く理由(3VL 依存を持ち込まない)**: `not(isLiveUploadOperation
       //    Condition())` は **現時点では正しく動く** — 述語が `isNotNull(lease_expires_at)`
@@ -304,7 +320,6 @@ export async function reconcileStaleProcessing(
           status: 'terminal_failed',
           preparedPayload: null,
           leaseExpiresAt: null,
-          nextRetryAt: null,
           lastErrorCode: 'stale_reconciled',
           resultSummary: { reason: 'stale_reconciled' },
         })
@@ -316,10 +331,7 @@ export async function reconcileStaleProcessing(
               updated.map((row) => row.id),
             ),
             inArray(uploadOperations.status, [
-              'awaiting_sources',
-              'claimed',
-              'prepared',
-              'processing',
+              ...NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
             ]),
             // 生存していない = lease が無い or 失効済(NULL は「生きていない」側)。
             or(
@@ -355,46 +367,49 @@ export async function reconcileStaleProcessing(
 }
 
 // ---------------------------------------------------------------------------
-// hasActiveProcessingUpload
+// hasLiveUploadOperation
 // ---------------------------------------------------------------------------
 // /app/upload ページの UI guard 用 helper。
-// 「current user に、15 分以内に作成された status='processing' の
-// source_documents が 1 件でもあるか」 を boolean で返す。
+// 「current user に live な upload_operation(非終端 かつ valid lease)が 1 件でも
+// あるか」 を boolean で返す。
 //
-// 15 分 window の理由:
-//   stale orphan (reconcile 前の死骸: >15 分の processing 残骸) を
-//   「in-flight」 と誤判定しないための safety net。
-//   process.ts の server-side guard (in-flight check) と同じ条件
-//   (STALE_PROCESSING_MS を共有) で揃えることで、 UI guard と server guard の
-//   判定が drift しない。
+// **S-5b 追加項目 A(挙動変更)**: 旧実装(`hasActiveProcessingUpload`)は
+// `source_documents` を見て「status='processing' かつ作成が STALE_PROCESSING_MS
+// (15 分)以内」で判定しており、**lease を読んでいなかった**。 一方 submit を
+// 実際に弾く gate(`submitUploadTx` の live-op gate)は `upload_operations` の
+// 「非終端 + valid lease」を見る。 値がたまたま同じ 15 分だったため結果は一致して
+// いたが、片方だけを変えると「form は出るのに submit すると in_progress で拒否
+// される」窓が無言で生まれる。 ゆえに **数字を揃えるのではなく判定そのものを
+// 共有**し、この helper は gate と同一の `isLiveUploadOperationCondition()` を問う。
+//
+// 帰結として、`upload_operations` 行を持たない legacy な `source_documents`
+// (旧 `process.ts` 経路)が processing で残っていても form は出るようになる。
+// これは **gate と一致する方向**の変更(gate も元々 legacy doc を弾かない)であり、
+// 「隠すのに submit は通る」ねじれの解消。`process.ts` に live caller は無いため
+// 新規の legacy doc は生まれない。
+//
+// メモリ上の in-flight フラグで代替はできない: Vercel の関数はリクエストごとに
+// 別インスタンスで動き(複数端末なら確実に別)、DB が唯一の共有点。/app/upload は
+// 既に DB へ行っているため往復は増えない。
 //
 // best-effort 設計:
-//   この helper は /app/upload の UI guard 用で、 UI guard は advisory な
-//   第一層に過ぎず、 真の enforcement は process.ts の server-side guard が担う。
-//   helper が DB エラーで失敗した場合は「form を出す」 側に倒し (false を返す)、
-//   ユーザーを不当にブロックしない。 実際の重複起動は server-side guard で弾かれる。
+//   この helper は UI guard(advisory な第一層)に過ぎず、真の enforcement は
+//   `submitUploadTx` の live-op gate が担う。 DB エラー時は「form を出す」側に
+//   倒し (false を返す)、ユーザーを不当にブロックしない。
 //
 // index 利用:
-//   source_docs_status_idx (user_id, status) を直撃する軽量 query。
+//   upload_operations_user_status_idx (user_id, status) を直撃する軽量 query。
 //   SELECT は存在判定のみなので最小列 (id) + LIMIT 1 で十分。
-export async function hasActiveProcessingUpload(
-  userId: string,
-  now: Date = new Date(),
-): Promise<boolean> {
+export async function hasLiveUploadOperation(userId: string): Promise<boolean> {
   try {
-    // STALE_PROCESSING_MS (15 分) 以内に作成された processing 行があるか判定。
-    // 15 分より古い processing 行は stale orphan (reconcile 待ち) とみなし
-    // 「in-flight」として数えない。
-    const activeThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
     const rows = await withTenantTx(userId, (tx) =>
       tx
-        .select({ id: sourceDocuments.id })
-        .from(sourceDocuments)
+        .select({ id: uploadOperations.id })
+        .from(uploadOperations)
         .where(
           and(
-            eq(sourceDocuments.userId, userId), // owner-scope 必須
-            eq(sourceDocuments.status, 'processing'),
-            gte(sourceDocuments.createdAt, activeThreshold), // 15 分以内のみ in-flight 扱い
+            eq(uploadOperations.userId, userId), // owner-scope 必須
+            isLiveUploadOperationCondition(),
           ),
         )
         .limit(1),
@@ -402,10 +417,10 @@ export async function hasActiveProcessingUpload(
     return rows.length > 0
   } catch (err) {
     // best-effort: DB エラー時は warn のみ、throw しない。
-    // UI guard が失敗しても server-side guard が enforcement を担うため、
+    // UI guard が失敗しても live-op gate が enforcement を担うため、
     // false (= form を表示) 側に倒してユーザーを不当にブロックしない。
     logger.warn({
-      event: 'source_documents.has_active_processing.failed',
+      event: 'upload_operations.has_live_operation.failed',
       userId,
       err,
     })

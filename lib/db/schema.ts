@@ -880,68 +880,16 @@ export const cardAssetRefs = pgTable(
 )
 
 // ---------------------------------------------------------------------------
-// source_assets (②-4a Phase A Task 1 新設) — 1 upload : N ファイルの source 台帳。
-// source_document (アップロード全体) 配下の個別ファイルを表す。object_key は R2 の
-// 実体キー (UNIQUE)。content_hash は将来の dedup 判定用 (assets.hash と同じ役割だが、
-// 目的が「crop 元画像の内容特定」であることを列名で明示する)。
-// UNIQUE(source_document_id, source_id) で同一 upload 内のファイル識別子重複を防ぐ。
-// page_count/rotation/rasterizer は ②-4b (PDF page-source 対応) の予約列 (本 phase は
-// 常に NULL、source_kind は 'image' のみ)。
-// user 削除: source_document_id (cascade) と user_id (cascade) の二重 FK を張る
-// (cards の user_id/exam_id 二重 cascade と同型 — どちらの親が先に消えても整合する)。
-// 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-1-brief.md
-// ---------------------------------------------------------------------------
-export const sourceAssets = pgTable(
-  'source_assets',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    sourceDocumentId: uuid('source_document_id')
-      .notNull()
-      .references(() => sourceDocuments.id, { onDelete: 'cascade' }),
-    sourceId: text('source_id').notNull(),
-    objectKey: text('object_key').notNull().unique(),
-    mime: text('mime'),
-    contentHash: text('content_hash'),
-    byteSize: integer('byte_size'),
-    width: integer('width'),
-    height: integer('height'),
-    status: text('status')
-      .$type<'reserved' | 'ready' | 'deleting'>()
-      .notNull()
-      .default('reserved'),
-    originalFilename: text('original_filename').notNull(),
-    sourceKind: text('source_kind').$type<'image'>().notNull().default('image'),
-    createdAt: timestamp('created_at', { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    readyAt: timestamp('ready_at', { withTimezone: true }),
-    // ②-4b 予約 (PDF page-source 対応): 本 phase は常に NULL。
-    pageCount: integer('page_count'),
-    rotation: integer('rotation'),
-    rasterizer: text('rasterizer'),
-  },
-  (t) => [
-    uniqueIndex('source_assets_doc_source_uq').on(t.sourceDocumentId, t.sourceId),
-    index('source_assets_user_status_idx').on(t.userId, t.status),
-    index('source_assets_source_document_idx').on(t.sourceDocumentId),
-  ],
-)
-
-// ---------------------------------------------------------------------------
 // upload_operations (②-4a Phase A Task 2 新設) — 冪等 upload/OCR 操作の状態機械 ledger。
 // 1 クライアント操作 (idempotency_key) : 1 行。正常遷移は
-// awaiting_sources → claimed → prepared → completed、失敗は terminal_failed。
-// lease_version/lease_expires_at は claim の楽観的排他制御 (Phase B で worker が
-// claim 時に version を進める想定、本 phase は列のみ確保)。source_document_id は
-// 生成時点 (awaiting_sources) では未確定のため nullable、以降 (lease_expires_at /
-// next_retry_at / last_error_code / prepared_schema_version /
-// prepared_hash / prepared_payload / result_summary / completed_at) も同じ理由で
-// 状態遷移が進むまで値を持たない nullable 列とする (source_document_id と同じ
-// 「生成時点では未確定」判断)。UNIQUE(user_id, idempotency_key) で同一ユーザー内の
-// 再送を同一行に収束させる。
+// processing → prepared → completed、失敗は terminal_failed。
+// lease_version/lease_expires_at は「この invocation が生存している」表明 (live-op
+// gate と pipeline の fenced CAS が読む)。source_document_id は旧経路が生成時点で
+// 未確定だった名残で nullable (単一 invocation 経路は sync tx で必ず確定させる)、
+// 以降 (lease_expires_at / last_error_code / prepared_schema_version /
+// prepared_hash / prepared_payload / result_summary / completed_at) も
+// 状態遷移が進むまで値を持たない nullable 列。UNIQUE(user_id, idempotency_key) で
+// 同一ユーザー内の再送を同一行に収束させる。
 // Realtime publication 非追加: 本 repo は Supabase realtime publication を管理して
 // いない (追加すべき対象が存在しない、意図的に何もしない)。
 // exam_id: exam cascade (この ledger は 1 exam に対する 1 回の upload 操作)。
@@ -964,33 +912,24 @@ export const uploadOperations = pgTable(
       onDelete: 'set null',
     }),
     // 'processing' = ②-4a 単一 invocation 経路(spec 2026-08-04 §4.5)が sync phase で
-    // 作る「実行中」状態。'claimed'(掴んだ)の流用はしない — 中断した op を後から
-    // 読むときに新旧経路を区別できなくなるため。status は text + TS union(DB CHECK
-    // なし)ゆえ値追加に migration は要らない。
+    // 作る「実行中」状態。'prepared' = payload commit 済(crop/publish 待ち)。
+    // S-5 の旧経路撤去で旧 flow の 2 値を union から外した — DB CHECK は無いが、
+    // 列 default は migration 0032 で 'processing' へ移した(default に頼る INSERT が
+    // union に無い値を書かないため)。
     status: text('status')
-      .$type<
-        | 'awaiting_sources'
-        | 'claimed'
-        | 'prepared'
-        | 'processing'
-        | 'completed'
-        | 'terminal_failed'
-      >()
+      .$type<'prepared' | 'processing' | 'completed' | 'terminal_failed'>()
       .notNull()
-      .default('awaiting_sources'),
+      .default('processing'),
     leaseVersion: bigint('lease_version', { mode: 'number' }).notNull().default(0),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     attemptCount: integer('attempt_count').notNull().default(0),
-    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
     lastErrorCode: text('last_error_code'),
     preparedSchemaVersion: integer('prepared_schema_version'),
     preparedHash: text('prepared_hash'),
     preparedPayload: jsonb('prepared_payload').$type<Record<string, unknown>>(),
     resultSummary: jsonb('result_summary').$type<Record<string, unknown>>(),
-    // ②-4a T6 fencing checkpoint 裁定(2026-07-31・OT 確定・spec §2/§2.1): T4 が
-    // operation 作成時に確定する immutable な source 件数 manifest。claim(T6)の
-    // source 集合検証はこの列を独立 oracle として使い、検査対象の source_assets の
-    // COUNT からは期待値を導出しない(行欠落の検出可能性を保つため)。
+    // operation 作成時に確定する immutable な受領枚数 manifest。publish 時の
+    // pages_processed / upload_records の記帳はこの列を独立 oracle として使う。
     expectedSourceCount: integer('expected_source_count').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -1003,19 +942,18 @@ export const uploadOperations = pgTable(
       t.idempotencyKey,
     ),
     index('upload_operations_user_status_idx').on(t.userId, t.status),
-    index('upload_operations_next_retry_idx').on(t.nextRetryAt),
   ],
 )
 
 // ---------------------------------------------------------------------------
 // asset_derivations (②-4a Phase A Task 3 新設) — crop 由来の provenance メタ。
-// assets 行の payload (R2 バイト) が将来 NULL 化/GC された後も、「どの source_asset の
-// どの領域を、どういうパディング/検出パラメータで切り出したか」を追跡可能に残すための
+// assets 行の payload (R2 バイト) が将来 NULL 化/GC された後も、「どの領域を、
+// どういうパディング/検出パラメータで切り出したか」を追跡可能に残すための
 // 1:1 台帳 (PK = asset_id 自身、assets への 1:1 拡張)。
-// asset_id / source_asset_id ともに cascade (derivation は provenance メタに過ぎず、
-// assets 行 (crop 結果) か source_assets 行 (crop 元) のどちらが消えても存在意義が
-// 無くなる)。RESTRICT は当初検討したが (card_asset_refs.asset_id 前例)、本表は
-// tenant 階層 (exam 削除 → source_documents cascade → source_assets cascade) の
+// asset_id は cascade (derivation は provenance メタに過ぎず、
+// assets 行 (crop 結果) が消えれば存在意義が無くなる)。RESTRICT は当初検討したが
+// (card_asset_refs.asset_id 前例)、本表は
+// tenant 階層 (exam 削除 → cards cascade → assets cascade) の
 // 末端で、上位が正しく連鎖削除できる必要があるため不適 (iso RED: rls-cascade /
 // delete-isolation / rls-ghost の exam cascade 削除が RESTRICT で FK 違反した)。
 // orig_bbox/clamped_bbox は検出座標系の jsonb (shape は usecase 層で zod 検証、
@@ -1030,12 +968,6 @@ export const assetDerivations = pgTable('asset_derivations', {
   userId: uuid('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  // ②-4a 単一 invocation 経路(Task S-3・migration 0031)で nullable 化。新経路は
-  // source を R2/DB に置かないため参照すべき source_assets 行が存在せず NULL を書く
-  // (旧経路は撤去まで従来どおり non-null で書き続ける)。列自体の drop は S-5。
-  sourceAssetId: uuid('source_asset_id').references(() => sourceAssets.id, {
-    onDelete: 'cascade',
-  }),
   origBbox: jsonb('orig_bbox').notNull().$type<Record<string, unknown>>(),
   paddingPct: real('padding_pct').notNull(),
   clampedBbox: jsonb('clamped_bbox').notNull().$type<Record<string, unknown>>(),
@@ -1092,8 +1024,6 @@ export type Asset = typeof assets.$inferSelect
 export type NewAsset = typeof assets.$inferInsert
 export type CardAssetRef = typeof cardAssetRefs.$inferSelect
 export type NewCardAssetRef = typeof cardAssetRefs.$inferInsert
-export type SourceAsset = typeof sourceAssets.$inferSelect
-export type NewSourceAsset = typeof sourceAssets.$inferInsert
 export type UploadOperation = typeof uploadOperations.$inferSelect
 export type NewUploadOperation = typeof uploadOperations.$inferInsert
 export type AssetDerivation = typeof assetDerivations.$inferSelect

@@ -30,6 +30,7 @@ import {
   uploadOperations,
   users,
 } from '@/lib/db/schema'
+import { hasLiveUploadOperation } from '@/lib/exams/source-doc-status'
 import { todayInJst } from '@/lib/jst'
 import { LEASE_TTL_MS } from '@/app/(app)/app/upload/_lib/constants'
 
@@ -347,7 +348,7 @@ describe('submitUploadTx (S-1)', () => {
       expect(opRows[0]?.status).toBe('processing')
     })
 
-    it.each(['claimed', 'prepared', 'processing'] as const)(
+    it.each(['prepared', 'processing'] as const)(
       'a %s operation with a valid lease blocks a different-key call (in_progress)',
       async (status) => {
         const owner = getFixtureOwnerDb()
@@ -442,6 +443,148 @@ describe('submitUploadTx (S-1)', () => {
       expect(staleDoc[0]?.status).toBe('failed')
     })
 
+    // --- S-5b: 撤去した prepare-upload.test.ts の supersede 系保証をここへ移植 ---
+    // (旧 test は prepareUploadTx を対象にしていたため file ごと消えるが、gate の
+    //  semantics 自体は新経路へそのまま引き継がれている。移植しないと「終端 op を
+    //  巻き込まない」「1 件でも live なら全体を守る」「live が無ければ全件掃く」の
+    //  3 つが無検証になる。)
+    it('終端 operation(completed)は gate に無関係・触られもしない', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values({
+        userId: userAId,
+        idempotencyKey: 'idem-seed-completed',
+        examId: seedExamId,
+        status: 'completed',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000), // 終端なので lease は無視される
+        attemptCount: 1,
+        expectedSourceCount: 1,
+      })
+
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(
+          tx,
+          { id: userAId },
+          { idempotencyKey: 'idem-fresh', destination: { mode: 'new' } },
+          twoFiles('fresh'),
+        ),
+      )
+      expect(result.outcome).toBe('accepted')
+
+      const seeded = await owner
+        .select({ status: uploadOperations.status })
+        .from(uploadOperations)
+        .where(
+          and(
+            eq(uploadOperations.userId, userAId),
+            eq(uploadOperations.idempotencyKey, 'idem-seed-completed'),
+          ),
+        )
+      expect(seeded[0]?.status).toBe('completed')
+    })
+
+    it('mixed-state: 1 件でも valid lease があれば in_progress・失効側も terminalize しない', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values([
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-valid',
+          examId: seedExamId,
+          status: 'processing',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000), // valid
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-expired',
+          examId: seedExamId,
+          status: 'processing',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000), // expired
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+      ])
+
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(
+          tx,
+          { id: userAId },
+          { idempotencyKey: 'idem-fresh', destination: { mode: 'new' } },
+          twoFiles('fresh'),
+        ),
+      )
+      expect(result).toEqual({ outcome: 'in_progress' })
+
+      // 実行中の worker を守るため、どちらの seed op も terminalize しない。
+      const rows = await owner
+        .select({
+          idempotencyKey: uploadOperations.idempotencyKey,
+          status: uploadOperations.status,
+        })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.userId, userAId))
+      expect(rows).toHaveLength(2) // 新規 op は作られない
+      expect(rows.every((r) => r.status === 'processing')).toBe(true)
+    })
+
+    it('multi-op: valid lease が 1 件も無ければ非終端 op を全て supersede して進む', async () => {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values([
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-null-lease',
+          examId: seedExamId,
+          status: 'prepared',
+          leaseVersion: 0,
+          leaseExpiresAt: null,
+          attemptCount: 0,
+          expectedSourceCount: 1,
+        },
+        {
+          userId: userAId,
+          idempotencyKey: 'idem-expired',
+          examId: seedExamId,
+          status: 'processing',
+          leaseVersion: 1,
+          leaseExpiresAt: new Date(Date.now() - 60_000),
+          attemptCount: 1,
+          expectedSourceCount: 1,
+        },
+      ])
+
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(
+          tx,
+          { id: userAId },
+          { idempotencyKey: 'idem-fresh', destination: { mode: 'new' } },
+          twoFiles('fresh'),
+        ),
+      )
+      expect(result.outcome).toBe('accepted')
+
+      const rows = await owner
+        .select({
+          idempotencyKey: uploadOperations.idempotencyKey,
+          status: uploadOperations.status,
+        })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.userId, userAId))
+      expect(rows).toHaveLength(3) // 2 seed + 1 新規
+      const byKey = Object.fromEntries(rows.map((r) => [r.idempotencyKey, r.status]))
+      expect(byKey['idem-null-lease']).toBe('terminal_failed')
+      expect(byKey['idem-expired']).toBe('terminal_failed')
+      expect(byKey['idem-fresh']).toBe('processing')
+    })
+
     it('別テナントの live operation は gate に影響しない', async () => {
       const owner = getFixtureOwnerDb()
       const bExamId = randomUUID()
@@ -466,6 +609,113 @@ describe('submitUploadTx (S-1)', () => {
         ),
       )
       expect(result.outcome).toBe('accepted')
+    })
+  })
+
+  // --- (b') S-5b 追加項目 A: form を隠す判定と live-op gate が同じ述語を読む ---
+  // 「form は出るのに submit すると in_progress で拒否される」窓を構造的に作らない
+  // ため、`/app/upload` の form 表示 gate(`hasLiveUploadOperation`)と submit を弾く
+  // gate(`submitUploadTx`)を **同一の seed 状態に対して突き合わせる**。
+  //
+  // 数字を揃えているのではなく判定そのものを共有していることの pin: 旧実装
+  // (`source_documents` の `status='processing'` かつ作成が 15 分以内 = lease を
+  // 読まない)へ戻すと、下の legacy ケースで両者の結論が割れて fail する。
+  describe('form 表示 gate と live-op gate の一致(S-5b 追加項目 A)', () => {
+    async function seedOp(
+      idempotencyKey: string,
+      status: 'prepared' | 'processing' | 'completed' | 'terminal_failed',
+      leaseExpiresAt: Date | null,
+    ): Promise<void> {
+      const owner = getFixtureOwnerDb()
+      const seedExamId = randomUUID()
+      await owner.insert(exams).values({ id: seedExamId, userId: userAId, name: 'seed exam' })
+      await owner.insert(uploadOperations).values({
+        userId: userAId,
+        idempotencyKey,
+        examId: seedExamId,
+        status,
+        leaseVersion: 1,
+        leaseExpiresAt,
+        attemptCount: 1,
+        expectedSourceCount: 1,
+      })
+    }
+
+    // 判定を **submit の前**に取る(submit が accepted だと自分で live op を作るため)。
+    async function bothGates(): Promise<{ formHidden: boolean; submitBlocked: boolean }> {
+      const formHidden = await hasLiveUploadOperation(userAId)
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(
+          tx,
+          { id: userAId },
+          { idempotencyKey: 'idem-parity-probe', destination: { mode: 'new' } },
+          twoFiles('parity'),
+        ),
+      )
+      return { formHidden, submitBlocked: result.outcome === 'in_progress' }
+    }
+
+    it('valid lease の非終端 op: 両方とも「実行中」と判定する', async () => {
+      await seedOp('idem-live', 'processing', new Date(Date.now() + 60_000))
+      expect(await bothGates()).toEqual({ formHidden: true, submitBlocked: true })
+    })
+
+    it('lease 失効の非終端 op: 両方とも「実行中でない」と判定する', async () => {
+      await seedOp('idem-expired', 'processing', new Date(Date.now() - 60_000))
+      expect(await bothGates()).toEqual({ formHidden: false, submitBlocked: false })
+    })
+
+    it('lease NULL の非終端 op: 両方とも「実行中でない」と判定する', async () => {
+      await seedOp('idem-null-lease', 'prepared', null)
+      expect(await bothGates()).toEqual({ formHidden: false, submitBlocked: false })
+    })
+
+    it('終端 op は lease が生きていても両方とも「実行中でない」', async () => {
+      await seedOp('idem-completed', 'completed', new Date(Date.now() + 60_000))
+      expect(await bothGates()).toEqual({ formHidden: false, submitBlocked: false })
+    })
+
+    // **本 describe の中核**(挙動変更を固定する)。`upload_operations` 行を持たない
+    // legacy な processing の `source_document`(旧 process.ts 経路の残骸)は、
+    // live-op gate が元々弾かない。旧実装の form gate はこれを「実行中」と読んで
+    // form を隠していたため、隠すのに submit は通るというねじれがあった。
+    // 判定を共有した今は **両方とも false** で一致する。
+    it('upload_operations 行を持たない legacy な processing doc: 両方とも「実行中でない」', async () => {
+      const owner = getFixtureOwnerDb()
+      const legacyExamId = randomUUID()
+      await owner
+        .insert(exams)
+        .values({ id: legacyExamId, userId: userAId, name: 'legacy exam' })
+      await owner.insert(sourceDocuments).values({
+        userId: userAId,
+        examId: legacyExamId,
+        mode: 'new',
+        fileType: 'image',
+        filename: 'legacy.png',
+        fileSizeBytes: 100,
+        status: 'processing',
+        // createdAt は既定(たった今)= 旧実装の 15 分 window の内側。
+      })
+
+      expect(await bothGates()).toEqual({ formHidden: false, submitBlocked: false })
+    })
+
+    it('別テナントの live op は form 表示 gate にも影響しない(owner-scope)', async () => {
+      const owner = getFixtureOwnerDb()
+      const bExamId = randomUUID()
+      await owner.insert(exams).values({ id: bExamId, userId: userBId, name: 'B の試験' })
+      await owner.insert(uploadOperations).values({
+        userId: userBId,
+        idempotencyKey: 'idem-b-live',
+        examId: bExamId,
+        status: 'processing',
+        leaseVersion: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        attemptCount: 1,
+        expectedSourceCount: 1,
+      })
+
+      expect(await bothGates()).toEqual({ formHidden: false, submitBlocked: false })
     })
   })
 

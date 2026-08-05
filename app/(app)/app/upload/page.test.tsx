@@ -3,10 +3,10 @@
 // **中立文言**(_lib/constants.ts の UPLOAD_PENDING_NOTICE)を出すことの pin。
 //
 // なぜ pin するか: この面は **結果がまだ確定していない**面である。 gate
-// (hasActiveProcessingUpload)が見ているのは `status='processing'` かつ作成が
-// STALE_PROCESSING_MS(15 分)以内、それだけで lease は読んでいない — ゆえに文言の
-// 根拠は「実行が生きている」ことではなく「確定していない」こと(区別できない間は
-// 区別できないと言う・_lib/constants.ts の分割根拠)。 ここで失敗面の文言
+// (hasLiveUploadOperation)は submit を弾く live-op gate と同じ述語(非終端 +
+// valid lease)を読むが、それは「実行が本当に生きている」ことの証明ではない
+// (hard-death は区別できない)— ゆえに文言の根拠は「確定していない」こと
+// (区別できない間は区別できないと言う・_lib/constants.ts の分割根拠)。 ここで失敗面の文言
 // (「中断された可能性があります。 …再度お試しください」)を出すと、gate が閉じていて
 // UploadForm を描画しない = 行き場のない再試行を案内することになり、かつ submit 直後の
 // 「閉じても処理は続きます」案内と矛盾する。 negative assert(再試行案内・中断の主張が
@@ -21,13 +21,13 @@ import { render, screen, cleanup } from '@testing-library/react'
 const {
   mockGetAuthContext,
   mockGetCurrentUser,
-  mockHasActiveProcessingUpload,
+  mockHasLiveUploadOperation,
   mockGetActiveExamsForUser,
   mockGetCurrentMonthOcrPages,
 } = vi.hoisted(() => ({
   mockGetAuthContext: vi.fn(),
   mockGetCurrentUser: vi.fn(),
-  mockHasActiveProcessingUpload: vi.fn(),
+  mockHasLiveUploadOperation: vi.fn(),
   mockGetActiveExamsForUser: vi.fn(),
   mockGetCurrentMonthOcrPages: vi.fn(),
 }))
@@ -46,7 +46,7 @@ vi.mock('@/lib/ai-usage-mcq', () => ({
   getCurrentMonthOcrPages: mockGetCurrentMonthOcrPages,
 }))
 vi.mock('@/lib/exams/source-doc-status', () => ({
-  hasActiveProcessingUpload: mockHasActiveProcessingUpload,
+  hasLiveUploadOperation: mockHasLiveUploadOperation,
 }))
 // UploadForm は client component(圧縮 / PDF 解析 / poll)。この page test の関心は
 // gate 分岐と文言だけなので、module ごと差し替えて client 依存を引き込まない。
@@ -73,7 +73,7 @@ afterEach(() => {
 
 describe('UploadPage — 処理中カードの公開文言(S-4 / I-3(b))', () => {
   it('in-flight あり: 中立文言を出し、UploadForm を出さない', async () => {
-    mockHasActiveProcessingUpload.mockResolvedValue(true)
+    mockHasLiveUploadOperation.mockResolvedValue(true)
 
     render(await UploadPage())
 
@@ -83,10 +83,10 @@ describe('UploadPage — 処理中カードの公開文言(S-4 / I-3(b))', () =>
     expect(screen.getByRole('link', { name: /試験一覧/ })).toBeInTheDocument()
   })
 
-  // I-3(b) の実質的な検出力: この面(valid lease あり)で失敗面の文言を出さない。
+  // I-3(b) の実質的な検出力: この面(未確定)で失敗面の文言を出さない。
   // 定数を 1 本に戻す(= 中立面にも failed 文言を当てる)と、この test が落ちる。
   it('in-flight あり: 中断を主張しない / 再試行を勧めない(失敗面の文言を出さない)', async () => {
-    mockHasActiveProcessingUpload.mockResolvedValue(true)
+    mockHasLiveUploadOperation.mockResolvedValue(true)
 
     const { container } = render(await UploadPage())
 
@@ -97,7 +97,7 @@ describe('UploadPage — 処理中カードの公開文言(S-4 / I-3(b))', () =>
   })
 
   it('公開文言の規律: 待ち時間の数値を出さない / 試験の削除を案内しない / 待たせない', async () => {
-    mockHasActiveProcessingUpload.mockResolvedValue(true)
+    mockHasLiveUploadOperation.mockResolvedValue(true)
 
     const { container } = render(await UploadPage())
 
@@ -111,7 +111,7 @@ describe('UploadPage — 処理中カードの公開文言(S-4 / I-3(b))', () =>
   })
 
   it('in-flight なし: 従来どおり UploadForm を描画する(gate の挙動不変)', async () => {
-    mockHasActiveProcessingUpload.mockResolvedValue(false)
+    mockHasLiveUploadOperation.mockResolvedValue(false)
 
     render(await UploadPage())
 

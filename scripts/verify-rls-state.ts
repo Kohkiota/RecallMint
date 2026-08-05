@@ -4,7 +4,7 @@
 // 背景: `tests/integration/pg/rls-drift.test.ts` は期待カタログと実 DB を突合するが、
 // 実行先が `setup/db-url.ts` の `assertLocalTestDb` で **local iso PG に固定**されて
 // いるため、stg / prod の drift(適用漏れ・手動改変)を構造的に検出できない。2026-08-04 に
-// stg で ②-4a の 3 表(source_assets / upload_operations / asset_derivations)が
+// stg で ②-4a Phase A が新設した 3 表(うち 1 表は S-5 で drop 済)が
 // **RLS 未適用**のまま運用されていたのを手動 SQL で偶然検出した実績がある
 // (`docs/audit/2026-08-04-stg-rls-remediation-verification.md`)。本 script はその手動 SQL の
 // 製品化 = runbook §12.1(policy drift 監査)+ §11.2(grant readback)を 1 コマンドにしたもの。
@@ -64,7 +64,7 @@ export const USERS_LIVE_PRED =
 
 /**
  * 共通形 RLS 表(各表ちょうど 1 policy `<table>_tenant`・FOR ALL・TO recallmint_app・
- * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 8 + Wave2 5 + ②-4a 3。
+ * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 8 + Wave2 5 + ②-4a 2。
  */
 export const COMMON_FORM_RLS_TABLES = [
   // P2 共通形 4
@@ -87,8 +87,7 @@ export const COMMON_FORM_RLS_TABLES = [
   'assets',
   'source_documents',
   'upload_records',
-  // ②-4a Phase A Task 1-3
-  'source_assets',
+  // ②-4a Phase A Task 2-3(Task 1 の 1 表は S-5 / migration 0032 で drop 済)
   'upload_operations',
   'asset_derivations',
 ] as const
@@ -113,7 +112,7 @@ export type PolicyTuple = {
   with_check: string | null
 }
 
-/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 20 + users 3 = 23。 */
+/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 19 + users 3 = 22。 */
 export const EXPECTED_POLICIES: Record<string, PolicyTuple> = {}
 for (const table of COMMON_FORM_RLS_TABLES) {
   EXPECTED_POLICIES[`${table}|${table}_tenant`] = {

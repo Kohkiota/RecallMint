@@ -1,7 +1,7 @@
 // ②-4a Task 8b: prepared payload 組立 + prepared_hash 算出(純関数)。
 //
 // directive 無し共有 module(stage-prepared-retry.ts と同じ理由 — 'use server'
-// file である stage-prepared.ts から参照されつつ、 単体 test しやすいよう独立
+// file である OCR phase の呼出元から参照されつつ、 単体 test しやすいよう独立
 // させる)。
 //
 // normalizePrepared(lib/ocr/normalize-prepared.ts・T8a)の出力を V1 payload の
@@ -12,7 +12,7 @@
 //
 // normalize の出力は T8a の契約 test(「normalize が生成する全 card は
 // preparedCardSchema を通る」)により常に本 parse を通る前提 — 失敗はここでは
-// 想定内の分岐にせず、 呼出元(stage-prepared.ts)が「loud internal error」として
+// 想定内の分岐にせず、 呼出元が「loud internal error」として
 // 扱う(バグとして throw をそのまま伝播させる。 brief: 「a parse failure here is
 // a loud internal error ... treat a failure as a bug, not a user error」)。
 import { createHash } from 'node:crypto'

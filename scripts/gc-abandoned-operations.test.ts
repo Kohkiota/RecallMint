@@ -23,7 +23,7 @@ function makeCandidate(id: string, overrides: Partial<AbandonedOpCandidate> = {}
   return {
     id,
     userId: USER_ID,
-    status: 'awaiting_sources',
+    status: 'processing',
     createdAt: new Date('2026-01-01T00:00:00Z'),
     ...overrides,
   }

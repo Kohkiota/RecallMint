@@ -16,16 +16,9 @@
 -- 42710 が ENABLE 群ごと rollback するのを DROP で構造的に封じる)。ENABLE ROW LEVEL
 -- SECURITY 自体は冪等 no-op。
 --
--- 本 file は Phase A の 3 task (source_assets / upload_operations /
--- asset_derivations) にまたがり、task ごとに 1 表ずつ追記される。
+-- 本 file は Phase A の 3 task にまたがっていたが、1 表は S-5 (単一 invocation
+-- 経路への cutover・migration 0032) で表ごと drop したため 2 表になった。
 SET lock_timeout = '5s';
-
--- source_assets (①-4a Task 1・1 upload:N ファイルの source 台帳)
-ALTER TABLE source_assets ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS source_assets_tenant ON source_assets;
-CREATE POLICY source_assets_tenant ON source_assets FOR ALL TO recallmint_app
-  USING (user_id = (SELECT public.app_current_user_id()))
-  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
 
 -- upload_operations (②-4a Task 2・冪等 upload/OCR 操作の状態機械 ledger)
 ALTER TABLE upload_operations ENABLE ROW LEVEL SECURITY;

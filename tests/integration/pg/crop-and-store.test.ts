@@ -1,15 +1,20 @@
-// ②-4a Task 10: cropFigureAndStore の実 PG 検証。
+// ②-4a Task 10 / S-5: cropFigureFromBuffer の実 PG 検証。
 //
 // R2(getObject/putObject)を mock し(実 R2 を叩かない・CLAUDE.md AI 絶対
-// ルール 2 と同根拠)、実 PG 上で以下を検証する: ① operation status='prepared'
-// 確認済みの guard read(実 RLS 下での owner scope) ② assets +
-// asset_derivations の実際の INSERT 内容(列レベルで一致)③ tenancy(RLS 有効
-// 下で他 user の operation/source_asset を owner scope が正しく弾く)。
+// ルール 2 と同根拠)、実 PG 上で **assets + asset_derivations に実際に何が
+// 書かれるか**(列レベルで toCropRect の戻り値と一致)と、**同一 figureAssetId の
+// 再試行が idempotent**(412 + hash 一致 + ready → reused・行が増えない)ことを
+// 検証する。
+//
+// S-5(旧経路撤去)で削除したもの: operation status='prepared' の guard read と
+// 旧 source 台帳の解決に依存していた tenancy / not_prepared の 2 test。どちらも旧
+// entry `cropFigureAndStore` 固有の分岐で、対象そのものが消えた(cross-tenant の
+// RLS 検証は rls-* iso 群と upload-pipeline.test.ts が引き続き担う)。
 //
 // 412 分岐の意思決定ロジック自体(hash 一致/不一致・deleting 禁止)は
 // lib/media/crop-and-store.test.ts(unit・fake tx)で網羅済み — 本 file は
-// 「実 DB に実際に何が書かれるか」と「RLS tenancy」に焦点を絞る(brief の
-// unit/iso 分担どおり)。sharp は mock しない(tiny real buffer 方針)。
+// 「実 DB に実際に何が書かれるか」に焦点を絞る。sharp は mock しない
+// (tiny real buffer 方針)。
 //
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
@@ -18,15 +23,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 
 import { closeDb } from '@/lib/db'
-import {
-  assetDerivations,
-  assets,
-  exams,
-  sourceAssets,
-  sourceDocuments,
-  uploadOperations,
-  users,
-} from '@/lib/db/schema'
+import { assetDerivations, assets, users } from '@/lib/db/schema'
 import { toCropRect, type Box2d } from '@/lib/media/domain/crop-geometry'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
@@ -43,7 +40,7 @@ vi.mock('@/lib/storage/r2', () => ({
 
 // crop-and-store.ts は directive 無し module(server action ではない)なので
 // top-level import で問題ない(vi.mock は import より前に hoist される)。
-import { cropFigureAndStore, CROP_PIPELINE_VERSION } from '@/lib/media/crop-and-store'
+import { cropFigureFromBuffer, CROP_PIPELINE_VERSION } from '@/lib/media/crop-and-store'
 
 afterAll(async () => {
   await closeDb()
@@ -56,14 +53,10 @@ const VALID_BOX2D: Box2d = [100, 100, 800, 800]
 const SOURCE_WIDTH = 100
 const SOURCE_HEIGHT = 100
 
-describe('cropFigureAndStore (T10) — 実 PG', () => {
+describe('cropFigureFromBuffer (T10 / S-5) — 実 PG', () => {
   let userAId: string
-  let userBId: string
-  let examAId: string
-  let sourceDocAId: string
   let sourcePngBytes: Buffer
-  // 簡易 in-memory R2 store(source-asset-finalize.test.ts と同方針): key →
-  // bytes。 putObject の ifNoneMatch 意味論を再現する。
+  // 簡易 in-memory R2 store: key → bytes。 putObject の ifNoneMatch 意味論を再現する。
   let r2Store: Map<string, Buffer>
 
   beforeEach(async () => {
@@ -94,88 +87,25 @@ describe('cropFigureAndStore (T10) — 実 PG', () => {
 
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
-    userBId = randomUUID()
-    await owner.insert(users).values([
-      { id: userAId, clerkId: `clerk_A_${userAId}` },
-      { id: userBId, clerkId: `clerk_B_${userBId}` },
-    ])
-    examAId = randomUUID()
-    await owner.insert(exams).values({ id: examAId, userId: userAId, name: 'exam A' })
-    sourceDocAId = randomUUID()
-    await owner.insert(sourceDocuments).values({
-      id: sourceDocAId,
-      userId: userAId,
-      examId: examAId,
-      mode: 'new',
-      fileType: 'image',
-      filename: 'a.png',
-      fileSizeBytes: 1000,
-      pagesTotal: 1,
-    })
+    await owner.insert(users).values({ id: userAId, clerkId: `clerk_A_${userAId}` })
   })
 
-  async function seedPreparedOperation(
-    userId: string,
-    sourceDocumentId: string,
-    overrides: Partial<{ status: 'awaiting_sources' | 'claimed' | 'prepared' | 'completed' | 'terminal_failed' }> = {},
-  ): Promise<string> {
-    const owner = getFixtureOwnerDb()
-    const operationId = randomUUID()
-    await owner.insert(uploadOperations).values({
-      id: operationId,
-      userId,
-      idempotencyKey: `idem-${operationId}`,
-      examId: examAId,
-      sourceDocumentId,
-      status: overrides.status ?? 'prepared',
-      leaseVersion: 1,
-      expectedSourceCount: 1,
-    })
-    return operationId
-  }
-
-  async function seedReadySourceAsset(
-    userId: string,
-    sourceDocumentId: string,
-    sourceId: string,
-    objectKey: string,
-  ): Promise<string> {
-    const owner = getFixtureOwnerDb()
-    const assetId = randomUUID()
-    await owner.insert(sourceAssets).values({
-      id: assetId,
-      userId,
-      sourceDocumentId,
-      sourceId,
-      objectKey,
-      mime: 'image/png',
-      contentHash: `hash-${assetId}`,
-      byteSize: sourcePngBytes.length,
-      width: SOURCE_WIDTH,
-      height: SOURCE_HEIGHT,
-      status: 'ready',
-      originalFilename: 'a.png',
-      readyAt: new Date(),
-    })
-    return assetId
-  }
-
   it('happy path: writes assets(status=ready) + asset_derivations rows scoped to the caller, values equal to a direct toCropRect(...) call', async () => {
-    const sourceObjectKey = `users/${userAId}/src/s1.png`
-    r2Store.set(sourceObjectKey, sourcePngBytes)
-    const sourceAssetId = await seedReadySourceAsset(userAId, sourceDocAId, 's1', sourceObjectKey)
-    const operationId = await seedPreparedOperation(userAId, sourceDocAId)
     const figureAssetId = randomUUID()
 
-    const result = await cropFigureAndStore({
+    const result = await cropFigureFromBuffer({
       userId: userAId,
-      operationId,
+      sourceBytes: sourcePngBytes,
+      sourceWidth: SOURCE_WIDTH,
+      sourceHeight: SOURCE_HEIGHT,
       sourceId: 's1',
       figureAssetId,
       box2d: VALID_BOX2D,
       detectTarget: 'question_text',
     })
     expect(result).toEqual({ outcome: 'stored' })
+    // 新経路は source を R2 に置かない = GET も `src/` key の PUT も起きない。
+    expect(mockGetObject).not.toHaveBeenCalled()
 
     const owner = getFixtureOwnerDb()
     const assetRows = await owner.select().from(assets).where(eq(assets.id, figureAssetId))
@@ -199,7 +129,6 @@ describe('cropFigureAndStore (T10) — 実 PG', () => {
     expect(derivationRows).toHaveLength(1)
     const derivationRow = derivationRows[0]!
     expect(derivationRow.userId).toBe(userAId)
-    expect(derivationRow.sourceAssetId).toBe(sourceAssetId)
     expect(derivationRow.cropW).toBe(expectedRect!.cropW)
     expect(derivationRow.cropH).toBe(expectedRect!.cropH)
     expect(derivationRow.paddingPct).toBe(expectedRect!.paddingPct)
@@ -220,28 +149,26 @@ describe('cropFigureAndStore (T10) — 実 PG', () => {
   })
 
   it('retry with the same figureAssetId is idempotent: second call hits 412+hash-match+ready -> reused, row count unchanged (deterministic id/object-key reproduction)', async () => {
-    const sourceObjectKey = `users/${userAId}/src/s1.png`
-    r2Store.set(sourceObjectKey, sourcePngBytes)
-    await seedReadySourceAsset(userAId, sourceDocAId, 's1', sourceObjectKey)
-    const operationId = await seedPreparedOperation(userAId, sourceDocAId)
     const figureAssetId = randomUUID()
     const input = {
       userId: userAId,
-      operationId,
+      sourceBytes: sourcePngBytes,
+      sourceWidth: SOURCE_WIDTH,
+      sourceHeight: SOURCE_HEIGHT,
       sourceId: 's1',
       figureAssetId,
       box2d: VALID_BOX2D,
       detectTarget: 'question_text',
     }
 
-    const first = await cropFigureAndStore(input)
+    const first = await cropFigureFromBuffer(input)
     expect(first).toEqual({ outcome: 'stored' })
 
     const owner = getFixtureOwnerDb()
     const afterFirst = await owner.select().from(assets).where(eq(assets.id, figureAssetId))
     expect(afterFirst).toHaveLength(1)
 
-    const second = await cropFigureAndStore(input)
+    const second = await cropFigureFromBuffer(input)
     expect(second).toEqual({ outcome: 'reused' })
 
     const afterSecond = await owner.select().from(assets).where(eq(assets.id, figureAssetId))
@@ -252,68 +179,5 @@ describe('cropFigureAndStore (T10) — 実 PG', () => {
       .from(assetDerivations)
       .where(eq(assetDerivations.assetId, figureAssetId))
     expect(derivationRows).toHaveLength(1) // no duplicate derivation row
-  })
-
-  it('tenancy: operation owned by another tenant (userB) is not croppable by userA (owner scope) -> not_prepared, no rows written', async () => {
-    const sourceObjectKey = `users/${userBId}/src/s1.png`
-    r2Store.set(sourceObjectKey, sourcePngBytes)
-    const sourceDocBId = randomUUID()
-    const owner = getFixtureOwnerDb()
-    await owner.insert(exams).values({ id: randomUUID(), userId: userBId, name: 'exam B' })
-    await owner.insert(sourceDocuments).values({
-      id: sourceDocBId,
-      userId: userBId,
-      examId: (await owner.select().from(exams).where(eq(exams.userId, userBId)))[0]!.id,
-      mode: 'new',
-      fileType: 'image',
-      filename: 'b.png',
-      fileSizeBytes: 1000,
-      pagesTotal: 1,
-    })
-    await seedReadySourceAsset(userBId, sourceDocBId, 's1', sourceObjectKey)
-    const operationBId = await seedPreparedOperation(userBId, sourceDocBId)
-    const figureAssetId = randomUUID()
-
-    // userA が userB の operationId を騙って呼ぶ(cross-tenant)。
-    const result = await cropFigureAndStore({
-      userId: userAId,
-      operationId: operationBId,
-      sourceId: 's1',
-      figureAssetId,
-      box2d: VALID_BOX2D,
-      detectTarget: 'question_text',
-    })
-    expect(result).toEqual({ outcome: 'not_prepared' })
-
-    const assetRows = await owner.select().from(assets).where(eq(assets.id, figureAssetId))
-    expect(assetRows).toHaveLength(0)
-    // userB 自身の operation/source は無傷。
-    const bOpRows = await owner
-      .select()
-      .from(uploadOperations)
-      .where(eq(uploadOperations.id, operationBId))
-    expect(bOpRows[0]?.status).toBe('prepared')
-  })
-
-  it("operation status !== 'prepared' (still 'claimed') -> not_prepared, no rows written (RLS-scoped read confirms real DB state, not a stale local guess)", async () => {
-    const sourceObjectKey = `users/${userAId}/src/s1.png`
-    r2Store.set(sourceObjectKey, sourcePngBytes)
-    await seedReadySourceAsset(userAId, sourceDocAId, 's1', sourceObjectKey)
-    const operationId = await seedPreparedOperation(userAId, sourceDocAId, { status: 'claimed' })
-    const figureAssetId = randomUUID()
-
-    const result = await cropFigureAndStore({
-      userId: userAId,
-      operationId,
-      sourceId: 's1',
-      figureAssetId,
-      box2d: VALID_BOX2D,
-      detectTarget: 'question_text',
-    })
-    expect(result).toEqual({ outcome: 'not_prepared' })
-
-    const owner = getFixtureOwnerDb()
-    const assetRows = await owner.select().from(assets).where(eq(assets.id, figureAssetId))
-    expect(assetRows).toHaveLength(0)
   })
 })

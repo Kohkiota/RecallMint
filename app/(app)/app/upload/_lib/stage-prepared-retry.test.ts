@@ -23,6 +23,13 @@ async function importRetry() {
 const dummyParts = [{ text: 'source_id=s1' }]
 const dummySchema = { type: 'object' }
 
+// `deadlineAt` は必須引数(S-5b: optional を撤去 — 未指定にしてよい呼出元が
+// 旧経路の撤去で存在しなくなったため)。 打ち切りを見ない test は「残余が十分」な
+// 値を渡す(打ち切り境界そのものの検証は下の deadlineAt 系 2 本が担う)。
+function ampleDeadline(): Date {
+  return new Date(Date.now() + 60 * 60 * 1000)
+}
+
 beforeEach(() => {
   mockCallGemini.mockReset()
   mockParseRetryAfterMs.mockReturnValue(null)
@@ -43,7 +50,7 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    const result = await callImageCropWithRetry(dummyParts, dummySchema, onAttempt)
+    const result = await callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt)
 
     expect(result.text).toBe('{"cards":[]}')
     expect(mockCallGemini).toHaveBeenCalledTimes(1)
@@ -62,7 +69,8 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    await expect(callImageCropWithRetry(dummyParts, dummySchema, onAttempt)).rejects.toThrow(
+    await expect(callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt),
+    ).rejects.toThrow(
       /429/,
     )
     expect(mockCallGemini).toHaveBeenCalledTimes(1)
@@ -82,7 +90,7 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    const p = callImageCropWithRetry(dummyParts, dummySchema, onAttempt, () => 0)
+    const p = callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt, () => 0)
     // 1st retry backoff = BACKOFF_BASE_MS[0] (5000ms) + jitter(0) = 5000ms.
     await vi.advanceTimersByTimeAsync(5_000)
     const result = await p
@@ -98,7 +106,7 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    const p = callImageCropWithRetry(dummyParts, dummySchema, onAttempt, () => 0).catch(
+    const p = callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt, () => 0).catch(
       (e: unknown) => e,
     )
     await vi.advanceTimersByTimeAsync(5_000) // 1st retry backoff
@@ -116,7 +124,8 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    await expect(callImageCropWithRetry(dummyParts, dummySchema, onAttempt)).rejects.toThrow(
+    await expect(callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt),
+    ).rejects.toThrow(
       /400/,
     )
     expect(mockCallGemini).toHaveBeenCalledTimes(1)
@@ -133,7 +142,7 @@ describe('callImageCropWithRetry', () => {
     const onAttempt = vi.fn().mockRejectedValueOnce(new Error('counter db down'))
     const { callImageCropWithRetry } = await importRetry()
 
-    const result = await callImageCropWithRetry(dummyParts, dummySchema, onAttempt)
+    const result = await callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt)
     expect(result.text).toBe('{"cards":[]}')
   })
 
@@ -151,9 +160,9 @@ describe('callImageCropWithRetry', () => {
     const err = await callImageCropWithRetry(
       dummyParts,
       dummySchema,
+      new Date(Date.now() + 10_000),
       onAttempt,
       () => 0,
-      new Date(Date.now() + 10_000),
     ).catch((e: unknown) => e)
 
     expect(err).toBeInstanceOf(Error)
@@ -178,9 +187,9 @@ describe('callImageCropWithRetry', () => {
     const p = callImageCropWithRetry(
       dummyParts,
       dummySchema,
+      new Date(Date.now() + 600_000),
       onAttempt,
       () => 0,
-      new Date(Date.now() + 600_000),
     )
     await vi.advanceTimersByTimeAsync(5_000)
     const result = await p
@@ -189,13 +198,13 @@ describe('callImageCropWithRetry', () => {
     expect(mockCallGemini).toHaveBeenCalledTimes(2)
   })
 
-  it('deadlineAt 未指定(旧経路 stage-prepared.ts)は挙動不変で 3 attempts まで retry する', async () => {
+  it('残余が潤沢なら打ち切りは効かず 3 attempts(初回 + 2 retries)まで走る', async () => {
     vi.useFakeTimers()
     mockCallGemini.mockRejectedValue(new Error('503 Service Unavailable'))
     const onAttempt = vi.fn()
     const { callImageCropWithRetry } = await importRetry()
 
-    const p = callImageCropWithRetry(dummyParts, dummySchema, onAttempt, () => 0).catch(
+    const p = callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline(), onAttempt, () => 0).catch(
       (e: unknown) => e,
     )
     await vi.advanceTimersByTimeAsync(5_000)
@@ -214,7 +223,7 @@ describe('callImageCropWithRetry', () => {
       thoughtsTokens: 0,
     })
     const { callImageCropWithRetry } = await importRetry()
-    const result = await callImageCropWithRetry(dummyParts, dummySchema)
+    const result = await callImageCropWithRetry(dummyParts, dummySchema, ampleDeadline())
     expect(result.text).toBe('{"cards":[]}')
   })
 })

@@ -10,6 +10,10 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { exams, sourceDocuments, uploadOperations, type User } from '@/lib/db/schema'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
+import {
+  NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
+  isLiveUploadOperationCondition,
+} from '@/lib/exams/source-doc-status'
 import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { todayInJst } from '@/lib/jst'
 import { logger } from '@/lib/logger'
@@ -48,18 +52,6 @@ import { type Destination } from './upload-guard'
 // sniffMagicBytes が判定に必要とする先頭バイト数(最長 signature = WebP の
 // RIFF....WEBP = 12 バイト)。全バイトをメモリへ展開せず先頭だけを読む。
 const MAGIC_BYTES_LENGTH = 12
-
-// 非終端 operation の集合(spec §4.5)。cutover(S-5)まで旧経路
-// (awaiting_sources / claimed / prepared)と新経路(processing)が併存するため
-// 両方を見る — 片方しか見ないと、もう一方が実行中の upload を live と判定できず
-// 二重 submit 防止が抜ける。同じ集合の直値が source-doc-status.ts /
-// gc-abandoned-operations.ts / prepare-upload.ts にもある(旧経路撤去時に整理)。
-const NON_TERMINAL_STATUSES = [
-  'awaiting_sources',
-  'claimed',
-  'prepared',
-  'processing',
-] as const
 
 export type SubmitUploadInput = {
   idempotencyKey: string
@@ -176,16 +168,16 @@ async function validateFormData(formData: FormData): Promise<ValidatedSubmission
 }
 
 // sync phase の tx 本体。user(Pick<User,'id'>)と tx を呼出側から受け取るだけで
-// Clerk 認証や withTenantTx を自前で張らない(prepare-upload.ts の prepareUploadTx
-// と同型 — iso test が Clerk 無しで直接 exercise できるようにする設計)。
+// Clerk 認証や withTenantTx を自前で張らない(iso test が Clerk 無しで直接
+// exercise できるようにする設計)。
 export async function submitUploadTx(
   tx: TenantTx,
   user: Pick<User, 'id'>,
   input: SubmitUploadInput,
   files: SubmitUploadFileMeta[],
 ): Promise<SubmitUploadTxResult> {
-  // 1. user 単位 advisory xact lock(prepare-upload.ts:199-205 と同機構)。取得
-  // できなければ並行 submit として弾く(xact-scoped ゆえ commit/rollback で自動解放)。
+  // 1. user 単位 advisory xact lock。取得できなければ並行 submit として弾く
+  // (xact-scoped ゆえ commit/rollback で自動解放)。
   const lockResult = await tx.execute<{ locked: boolean }>(
     sql`SELECT pg_try_advisory_xact_lock(hashtext(${user.id})) AS locked`,
   )
@@ -225,39 +217,33 @@ export async function submitUploadTx(
     }
   }
 
-  // 3. live-operation gate + supersede(prepare-upload.ts:264-308 と同 semantics)。
+  // 3. live-operation gate + supersede。
   //   - 別 key の非終端 op が valid lease を持つ(= 実行中の invocation)→ in_progress。
-  //   - lease NULL / 失効、または awaiting_sources(旧経路の source 待ち)→ 放棄と
-  //     みなして terminalize(+ doc failed)し新規へ進む。
-  // 対象行は SELECT…FOR UPDATE でロックしてから terminalize する(claim/takeover
-  // との race を行ロックで直列化)。時刻裁定は PostgreSQL now() 基準。
+  //   - lease NULL / 失効 → 放棄とみなして terminalize(+ doc failed)し新規へ進む。
+  // 行の列挙(supersede 対象の特定)には SELECT…FOR UPDATE が要るのでロックは残すが、
+  // **live 判定は JS で書き直さず共有 SQL 断片に委ねる**(S-5b 追加項目 A):
+  // `isLiveUploadOperationCondition()` を boolean 列として同じ文で評価させる。
+  // form を隠す判定(hasLiveUploadOperation)も同じ述語を読むため、両者が drift
+  // しない(= 「form は出るのに submit は拒否される」窓を構造的に作らない)。
+  // 時刻裁定は述語の中の PostgreSQL now() 基準。
   const conflicting = await tx
     .select({
       id: uploadOperations.id,
-      status: uploadOperations.status,
-      leaseExpiresAt: uploadOperations.leaseExpiresAt,
+      isLive: sql<boolean>`(${isLiveUploadOperationCondition()})`,
       sourceDocumentId: uploadOperations.sourceDocumentId,
-      dbNow: sql<string>`now()`,
     })
     .from(uploadOperations)
     .where(
       and(
         eq(uploadOperations.userId, user.id),
         ne(uploadOperations.idempotencyKey, input.idempotencyKey),
-        inArray(uploadOperations.status, [...NON_TERMINAL_STATUSES]),
+        inArray(uploadOperations.status, [...NON_TERMINAL_UPLOAD_OPERATION_STATUSES]),
       ),
     )
     .for('update')
 
   if (conflicting.length > 0) {
-    const dbNow = new Date(conflicting[0].dbNow)
-    const hasActiveWorker = conflicting.some(
-      (c) =>
-        c.status !== 'awaiting_sources' &&
-        c.leaseExpiresAt !== null &&
-        c.leaseExpiresAt.getTime() >= dbNow.getTime(),
-    )
-    if (hasActiveWorker) {
+    if (conflicting.some((c) => c.isLive)) {
       return { outcome: 'in_progress' }
     }
     for (const c of conflicting) {
@@ -270,7 +256,7 @@ export async function submitUploadTx(
     }
   }
 
-  // 4. 日次 Gemini cap(claim-operation.ts:289-305 と同型・同 tx)。上限到達なら
+  // 4. 日次 Gemini cap(同 tx 内で判定する)。上限到達なら
   // 行を一切作らずに返す。原子的な枠確保は非実装(spec §6.5・超過 1〜2 回は許容)。
   // guard off(limit=null)は upload-guard.ts と同じ扱い(warn で可視化して素通し)。
   const dailyLimit = parseDailyLimit(process.env.GEMINI_DAILY_LIMIT)
@@ -291,7 +277,7 @@ export async function submitUploadTx(
   const { destination } = input
   let resolvedExamId: string
   if (destination.mode === 'new') {
-    // 仮 name フォーマットは prepare-upload.ts / upload-guard.ts と揃える
+    // 仮 name フォーマットは upload-guard.ts と揃える
     // (JST date + HH:mm、ユーザーは後で rename 可能)。
     const today = todayInJst()
     const nowJst = new Date(Date.now() + 9 * 3600 * 1000)
@@ -318,7 +304,7 @@ export async function submitUploadTx(
   }
 
   // 6. source_document INSERT(status='processing')。filename 合成と pages_total の
-  // 意味(= 受領枚数)は現行踏襲(prepare-upload.ts:399-402)。
+  // 意味(= 受領枚数)は旧経路から踏襲。
   const firstFile = files[0]
   const filename =
     files.length === 1
@@ -369,8 +355,8 @@ export async function submitUploadTx(
 
 // getCurrentUser() は「未認証」を UnauthenticatedError の throw で、「session は
 // あるが DB に user 行がまだ無い」(webhook sync race)を null で表現する二態。
-// prepare-upload.ts に同名の private helper があるが、あちらは S-5 の旧経路撤去で
-// file ごと消える予定ゆえ共有 module へは切り出さない。
+// 旧経路(prepare-upload.ts)にも同名の private helper があったが、S-5 の旧経路撤去で
+// file ごと消えたため共有 module は作らない。
 async function currentUserOrNull(): Promise<User | null> {
   try {
     return await getCurrentUser()
@@ -420,8 +406,7 @@ export async function submitUpload(formData: FormData): Promise<SubmitUploadResu
 
   // Server Action の引数は実行時には untrusted(TS 型は compile-time の保証のみ)。
   // FormData でない payload が渡されると validateFormData の .get() が TypeError で
-  // 例外化し 500 になる — auth より前に弾いて invalid_input に落とす
-  // (prepare-upload.ts:504-511 の同趣旨 guard と規律を揃える)。
+  // 例外化し 500 になる — auth より前に弾いて invalid_input に落とす。
   if (!(formData instanceof FormData)) {
     return { outcome: 'invalid_input', error: '入力内容が正しくありません' }
   }

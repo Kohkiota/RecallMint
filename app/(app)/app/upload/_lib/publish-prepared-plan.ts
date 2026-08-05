@@ -4,11 +4,11 @@
 // §13-14(除外理由・result_summary)。
 //
 // directive 無し共有 module(stage-prepared-payload.ts と同じ理由 — 'use server'
-// file である publish-prepared.ts から参照されつつ、 crop / DB / R2 の重い依存や
-// tx を一切持たない純関数に閉じて単体 test しやすくする)。
+// file から参照されつつ、 crop / DB / R2 の重い依存や tx を一切持たない純関数に
+// 閉じて単体 test しやすくする)。
 //
 // crop-and-store.ts(sharp/R2/drizzle を引き込む server-only module)を本 file に
-// import しない: 呼出側(publish-prepared.ts の orchestrator)が各 figure の raw
+// import しない: 呼出側(upload-pipeline.ts の crop phase)が各 figure の raw
 // crop outcome を `FigureDisposition` へ翻訳して渡す。 これにより本 planner は
 // crop の外部依存を一切持たず、 disposition だけを見る純粋な決定器になる
 // (`CropAndStoreOutcome` は type-only import ではなく参照すらしない)。
@@ -18,20 +18,23 @@ import { imagesSchema } from '@/lib/validation/card'
 import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 
 // ---------------------------------------------------------------------------
-// figure disposition(orchestrator が raw crop outcome から翻訳して渡す)
+// figure disposition(crop phase の呼出元が raw crop outcome から翻訳して渡す)
 //
 // - attach: crop 成功('stored'/'reused')— 当該 figure は card image になる。
-// - exclude: この figure は最終的に取り込めない(crop 失敗の terminal outcome、
-//   または source が race で消えた 'source_not_ready')。 spec §13 の「crop 失敗」
-//   相当として計上し、 それでも text card は publish する(§8.3)。
+// - exclude: この figure は最終的に取り込めない(crop 失敗の terminal outcome)。
+//   spec §13 の「crop 失敗」相当として計上し、 それでも text card は publish する(§8.3)。
 // - retryable: 一時的失敗(R2 の技術的失敗等)。 1 件でもあれば publish せず
 //   operation 全体を再試行に回す(§8.3)。
 // - not_ours: crop 中に operation が 'prepared' でなくなった(takeover/完了)。
 //   この worker は stale — publish を中止する。
+//   **S-5(旧経路撤去)以降、`retryable` / `not_ours` を生成する呼出元は居ない**
+//   (単一 invocation 経路は retry も takeover も持たない)。純関数側の分岐は
+//   契約破れの検出用に残してあり、到達したら呼出元(upload-pipeline.ts)が
+//   catch-all へ送る。
 // - deadline_excluded: crop フェーズの time budget が尽きたため、この figure
 //   (以降の残り figure すべて)は crop を試みずに除外した(spec §11 deadline・
-//   §13 reason g)。 orchestrator が cropFigureAndStore を呼ぶ前に直接この
-//   disposition を割り当てる — raw crop outcome からの翻訳ではない。
+//   §13 reason g)。 呼出元が crop を呼ぶ前に直接この disposition を割り当てる —
+//   raw crop outcome からの翻訳ではない。
 // ---------------------------------------------------------------------------
 export type FigureDisposition =
   | 'attach'
@@ -52,7 +55,7 @@ export type FigureExclusionCounts = {
 }
 
 // crop フェーズの残り予算が最低予算を下回ったか判定する純関数(spec §11
-// deadline)。 orchestrator(publish-prepared.ts Step B)が各 figure の crop を
+// deadline)。 呼出側(upload-pipeline.ts の crop loop)が各 figure の crop を
 // 試みる直前に呼ぶ。 nowMs/deadlineAtMs は呼出側が注入する(この関数自体は
 // Date.now() を読まない・iso/unit test で決定論的に検証できる)。
 export function isCropBudgetExhausted(
@@ -101,8 +104,8 @@ function capImagesToSchemaLimit(images: CardImage[]): { kept: CardImage[]; exces
  * image_limit_exceeded 計上)。
  *
  * @param cards 保存済み payload の card 群(publisher は再正規化しない・spec §5.4)。
- * @param dispositionByAssetId figure.assetId → disposition。 orchestrator が
- *   全 figure を crop した結果を翻訳して渡す(全 figure が map に存在する前提)。
+ * @param dispositionByAssetId figure.assetId → disposition。 呼出側が全 figure を
+ *   crop した結果を翻訳して渡す(全 figure が map に存在する前提)。
  */
 export function planPublish(
   preparedCards: readonly PreparedCard[],
@@ -113,7 +116,7 @@ export function planPublish(
   let hasRetryable = false
   for (const card of preparedCards) {
     for (const figure of card.figures) {
-      // orchestrator が全 figure を crop する契約ゆえ通常 undefined にならない。
+      // 呼出側が全 figure を crop する契約ゆえ通常 undefined にならない。
       // 防御的に undefined は retryable 扱い(crop 結果欠落のまま publish して
       // 画像を silent に落とさない)。
       const disp = dispositionByAssetId.get(figure.assetId) ?? 'retryable'
@@ -228,7 +231,7 @@ export function buildResultSummary(
       source_id_invalid: payload.figuresExcluded.source_id_invalid,
       malformed: payload.figuresExcluded.malformed,
       asset_id_invalid: payload.figuresExcluded.asset_id_invalid,
-      // crop 時(spec §13 c/f/g)。 source race(source_not_ready)は crop 失敗に集約。
+      // crop 時(spec §13 c/f/g)。 成功以外の crop outcome は crop 失敗に集約する。
       crop_failed: plan.figureExclusions.crop_failed,
       image_limit_exceeded: plan.figureExclusions.image_limit_exceeded,
       deadline_excluded: plan.figureExclusions.deadline_excluded,

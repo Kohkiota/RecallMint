@@ -5,9 +5,8 @@
 // (`buildProductionDeps`), not a re-typed duplicate.
 //
 // Why this needs real PG (a DI-mock test structurally cannot catch this):
-// `lease_expires_at IS NULL` is the DOMINANT abandoned state (prepare-upload
-// never sets a lease; every retryable-failure path resets
-// `leaseExpiresAt: null`). Pre-fix, `isLiveUploadOperationCondition()`'s
+// `lease_expires_at IS NULL` is the DOMINANT abandoned state (terminalize NULLs
+// the lease; the legacy prepare path never set one). Pre-fix, `isLiveUploadOperationCondition()`'s
 // lease branch (`leaseExpiresAt > now()`) evaluated to SQL NULL (not false)
 // when the lease was null. For an aged-out row: `false OR NULL = NULL` →
 // the whole predicate is NULL. The sweep's WHERE uses
@@ -32,7 +31,6 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb } from '@/lib/db'
 import { exams, uploadOperations, users } from '@/lib/db/schema'
-import { PREPARED_RETENTION_MS } from '@/lib/exams/derive-exam-statuses'
 import {
   buildProductionDeps,
   runAbandonedOperationsSweep,
@@ -63,13 +61,7 @@ async function seedOp(
   userId: string,
   examId: string,
   overrides: Partial<{
-    status:
-      | 'awaiting_sources'
-      | 'claimed'
-      | 'prepared'
-      | 'processing'
-      | 'completed'
-      | 'terminal_failed'
+    status: 'prepared' | 'processing' | 'completed' | 'terminal_failed'
     createdAt: Date
     leaseExpiresAt: Date | null
   }> = {},
@@ -81,7 +73,7 @@ async function seedOp(
     userId,
     idempotencyKey: `idem-${operationId}`,
     examId,
-    status: overrides.status ?? 'awaiting_sources',
+    status: overrides.status ?? 'processing',
     expectedSourceCount: 1,
     leaseExpiresAt: overrides.leaseExpiresAt ?? null,
     ...(overrides.createdAt !== undefined ? { createdAt: overrides.createdAt } : {}),
@@ -95,8 +87,12 @@ async function readOp(operationId: string) {
   return rows[0]!
 }
 
-const PAST_RETENTION = new Date(Date.now() - PREPARED_RETENTION_MS - 60_000) // 7日+1分前
-const WITHIN_RETENTION = new Date(Date.now() - (PREPARED_RETENTION_MS - 60_000)) // 7日-1分前
+// S-4 で live 述語から created_at window が外れたため、年齢は sweep 対象性に
+// 影響しない。 それでも「古い行 / 新しい行のどちらも同じ扱い」を実証するために
+// 両方の age を作る(かつて 7 日 window の境界だった値の前後に置く)。
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
+const OLD_ROW = new Date(Date.now() - SEVEN_DAYS_MS - 60_000) // 7日+1分前
+const RECENT_ROW = new Date(Date.now() - (SEVEN_DAYS_MS - 60_000)) // 7日-1分前
 
 beforeEach(async () => {
   await truncateAllUserTables()
@@ -107,9 +103,9 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
-      status: 'awaiting_sources',
-      createdAt: PAST_RETENTION,
-      leaseExpiresAt: null, // dominant abandoned state: never claimed, no lease ever set
+      status: 'prepared',
+      createdAt: OLD_ROW,
+      leaseExpiresAt: null, // dominant abandoned state: lease NULLed / never set
     })
     const payload = { schemaVersion: 1, marker: 'should-be-nulled' }
     await getFixtureOwnerDb()
@@ -134,8 +130,8 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
-      status: 'claimed',
-      createdAt: PAST_RETENTION,
+      status: 'prepared',
+      createdAt: OLD_ROW,
       leaseExpiresAt: new Date(Date.now() - 60_000), // expired, but not null
     })
 
@@ -157,7 +153,7 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
       status: 'processing',
-      createdAt: PAST_RETENTION,
+      createdAt: OLD_ROW,
       leaseExpiresAt: new Date(Date.now() - 60_000), // 失効済
     })
 
@@ -176,12 +172,12 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
   // 旧実装ではこの行(作成 7 日以内 / lease NULL)は「まだ再開可能」として sweep
   // 対象外だったが、新経路に resume は無く、lease を持たない非終端 op を進める
   // 主体は居ない。 ゆえに **年齢に関わらず sweep 対象**になる。
-  it('a RECENT non-terminal op with a null lease IS swept (S-4: 7 日 window 撤去・年齢は問わない)', async () => {
+  it('a recent non-terminal op with a null lease IS swept (S-4: 7 日 window 撤去・年齢は問わない)', async () => {
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
-      status: 'claimed',
-      createdAt: WITHIN_RETENTION,
+      status: 'prepared',
+      createdAt: RECENT_ROW,
       leaseExpiresAt: null,
     })
 
@@ -199,8 +195,8 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
-      status: 'claimed',
-      createdAt: PAST_RETENTION,
+      status: 'prepared',
+      createdAt: OLD_ROW,
       leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // valid
     })
 
@@ -211,15 +207,15 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     )
 
     expect(summary).toEqual({ scanned: 0, terminated: 0, ids: [] })
-    expect((await readOp(operationId)).status).toBe('claimed')
+    expect((await readOp(operationId)).status).toBe('prepared')
   })
 
   it('dry-run: reports the null-lease abandoned op as a would-be-terminated candidate but writes nothing', async () => {
     const userId = await seedUser()
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
-      status: 'awaiting_sources',
-      createdAt: PAST_RETENTION,
+      status: 'prepared',
+      createdAt: OLD_ROW,
       leaseExpiresAt: null,
     })
 
@@ -231,7 +227,7 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
 
     expect(summary).toEqual({ scanned: 1, terminated: 0, ids: [operationId] })
     // no write: status/lease untouched.
-    expect((await readOp(operationId)).status).toBe('awaiting_sources')
+    expect((await readOp(operationId)).status).toBe('prepared')
   })
 
   it('a terminal (completed) op is never a candidate, regardless of age or lease state', async () => {
@@ -239,7 +235,7 @@ describe('gc-abandoned-operations — real-PG NULL-lease sweep (T14a fix round 3
     const examId = await seedExam(userId)
     const operationId = await seedOp(userId, examId, {
       status: 'completed',
-      createdAt: PAST_RETENTION,
+      createdAt: OLD_ROW,
       leaseExpiresAt: null,
     })
 

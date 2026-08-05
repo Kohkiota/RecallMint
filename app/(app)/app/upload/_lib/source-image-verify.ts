@@ -1,28 +1,21 @@
 import sharp from 'sharp'
 import { MAX_IMAGE_DIMENSION } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
 
-// ②-4a Task 5(build-blocker fix・2026-07-31): source finalize の実バイト検証
-// helper を集約する directive 無し module。
+// ②-4a Task 5(build-blocker fix・2026-07-31): 受領画像の実バイト検証 helper を
+// 集約する directive 無し module。単一 invocation 経路では submit-upload.ts
+// (magic bytes)と upload-pipeline.ts の decode phase(sharp 検証)が使う。
 //
-// なぜ独立 file か: `../_actions/source-asset-actions.ts` は 'use server' を
-// 持つ Server Actions file であり、 Next.js の SWC "use server" transform は
+// なぜ独立 file か: 'use server' file は Next.js の SWC transform が
 // 「非 async 関数の export」を compile error(71011: Only async functions are
 // allowed to be exported in a "use server" file)にする(asset-limits.ts の
-// 既存コメント・②-4a T4 の前例と同じ制約 — tsc/eslint はこの制約を検出せず
-// `pnpm build` でのみ表面化する)。 `reconcileSniffedAndDecodedMime` のような
-// sync pure 関数を 'use server' file から export すると build がここで落ちる
-// ため、 pure/sync な検証ヘルパー・定数をこの file へ切り出し、
-// source-asset-actions.ts からは import のみ行う(reserveSource/finalizeSource
-// という async server action 2 つだけを export する形に保つ)。
+// 既存コメントと同じ制約 — tsc/eslint はこの制約を検出せず `pnpm build` でのみ
+// 表面化する)。 `reconcileSniffedAndDecodedMime` のような sync pure 関数を
+// 'use server' file に置くと build がここで落ちるため、 pure/sync な検証
+// ヘルパー・定数をこの file へ切り出す。
 
-export const IMAGE_MIME_ENUM = ['image/webp', 'image/png', 'image/jpeg'] as const
-export type ImageMime = (typeof IMAGE_MIME_ENUM)[number]
-
-export const MIME_EXT: Record<ImageMime, string> = {
-  'image/webp': 'webp',
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-}
+// 受理する画像形式。S-5 の旧経路撤去で zod enum の消費者が無くなったため、
+// `as const` 配列から型を導出せず union 型そのものを持つ。
+export type ImageMime = 'image/webp' | 'image/png' | 'image/jpeg'
 
 // Critical fix(Codex 指摘・2026-07-31): sharp 既定値(268,402,689px =
 // 0x3FFF×0x3FFF)は本用途には高すぎる — 4 channel(RGBA)想定で ≈1GB の decode

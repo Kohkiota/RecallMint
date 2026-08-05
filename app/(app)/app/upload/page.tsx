@@ -4,7 +4,7 @@ import { withTenantTx } from '@/lib/db/tenant-tx'
 import { getActiveExamsForUser } from '@/lib/exams/list'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
 import { limitsForOrFree, type Plan } from '@/lib/auth/plan-limits'
-import { hasActiveProcessingUpload } from '@/lib/exams/source-doc-status'
+import { hasLiveUploadOperation } from '@/lib/exams/source-doc-status'
 import { AppContainer } from '../_components/app-container'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -27,16 +27,17 @@ export const maxDuration = 720
 // S2.0.7: render 冒頭の reconcileStaleProcessing 呼び出しを撤去した。
 //   無条件の書き込み tx (stale 0 件でも BEGIN/UPDATE/COMMIT) がページ遷移を
 //   ブロックしていたため。stale processing 残骸の DB cleanup は polling
-//   endpoint (/api/exams/status) が担う。hasActiveProcessingUpload は
-//   STALE_PROCESSING_MS (15 分) window を内蔵しており、reconcile 前の死骸を
-//   in-flight と誤判定しないため、reconcile 撤去後も判定は正しい。
+//   endpoint (/api/exams/status) が担う。hasLiveUploadOperation は lease の
+//   生死だけを見る (死んだ invocation の残骸は lease 失効で自動的に外れる) ため、
+//   reconcile 撤去後も判定は正しい。
 //
-// in-flight ジョブあり (hasActiveProcessingUpload = true):
+// live operation あり (hasLiveUploadOperation = true):
 //   UploadForm を出さず「処理中」案内を表示する。
 //   並列 upload の UI 第一層 guard (advisory)。真の enforcement は
-//   app/upload/process の server-side guard (S1.9.4 T1) が担う。
+//   submitUploadTx の live-op gate が担い、**両者は同じ述語を読む**
+//   (S-5b 追加項目 A: 判定を共有して「form は出るが submit は拒否」を作らない)。
 //
-// in-flight なし (false):
+// live operation なし (false):
 //   従来どおり UploadForm を描画する (S1.7 T3 以降の既存ロジックを維持)。
 //
 // C2: getAuthContext() で JWT 経由の dbUserId + plan 読込に切替、 users SELECT
@@ -57,7 +58,7 @@ export default async function UploadPage() {
     plan = user.plan
   }
 
-  const isProcessing = await hasActiveProcessingUpload(userId)
+  const hasLiveOperation = await hasLiveUploadOperation(userId)
 
   // --- 共通ヘッダー ---
   const header = (
@@ -71,7 +72,7 @@ export default async function UploadPage() {
   )
 
   // --- in-flight guard: UploadForm を出さず案内を表示 ---
-  if (isProcessing) {
+  if (hasLiveOperation) {
     return (
       <AppContainer>
         <div className="space-y-6">
@@ -79,14 +80,13 @@ export default async function UploadPage() {
           <Card>
             <CardContent className="p-6 space-y-3">
               {/* I-3(b): **中断を主張せず再試行も勧めない**中立文言を出す。 根拠は
-                  「実行が生きている」ことではなく **まだ確定していない**こと —
-                  この gate(hasActiveProcessingUpload)が見ているのは
-                  `status='processing'` かつ作成が STALE_PROCESSING_MS(15 分)以内、
-                  それだけで、lease は読んでいない(lib/exams/source-doc-status.ts)。
-                  区別できない間は区別できないと言う、が設計判断(_lib/constants.ts
-                  の分割根拠を参照)。 加えて gate が閉じている間は UploadForm 自体を
-                  描画しないため、再試行の案内はそもそも行き場がない。 文言は
-                  _lib/constants.ts に単一定義(待ち時間の数値なし / 削除案内なし)。 */}
+                  **まだ確定していない**こと — この gate(hasLiveUploadOperation)は
+                  submit を弾く live-op gate と同じ述語(非終端 + valid lease)を読む
+                  だけで、実行が本当に生きているか(hard-death かどうか)は誰にも
+                  区別できない。 区別できない間は区別できないと言う、が設計判断
+                  (_lib/constants.ts の分割根拠を参照)。 加えて gate が閉じている間は
+                  UploadForm 自体を描画しないため、再試行の案内はそもそも行き場がない。
+                  文言は _lib/constants.ts に単一定義(待ち時間の数値なし / 削除案内なし)。 */}
               <p className="font-medium text-slate-800">
                 直前のアップロードがまだ完了していません。
               </p>

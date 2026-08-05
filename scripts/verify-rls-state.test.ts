@@ -68,12 +68,13 @@ function healthyGrantRows(): GrantRow[] {
 }
 
 describe('期待カタログ自体の内部整合', () => {
-  it('RLS 21 表 / 非 RLS 5 表 / policy 23 本(rls-drift.test.ts と同一 oracle)', () => {
-    expect(EXPECTED_RLS_TABLES).toHaveLength(21)
+  it('RLS 20 表 / 非 RLS 5 表 / policy 22 本(rls-drift.test.ts と同一 oracle)', () => {
+    expect(EXPECTED_RLS_TABLES).toHaveLength(20)
     expect(EXPECTED_NON_RLS_TABLES).toHaveLength(5)
-    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(23)
-    // ②-4a の 3 表がカタログに載っていること(2026-08-04 の未適用検出の再発防止)。
-    for (const t of ['source_assets', 'upload_operations', 'asset_derivations']) {
+    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(22)
+    // ②-4a の残る 2 表がカタログに載っていること(2026-08-04 の未適用検出の再発防止。
+    // 3 表目は S-5 / migration 0032 で drop 済)。
+    for (const t of ['upload_operations', 'asset_derivations']) {
       expect(EXPECTED_RLS_TABLES).toContain(t)
       expect(EXPECTED_POLICIES[`${t}|${t}_tenant`]).toBeDefined()
     }
@@ -104,11 +105,11 @@ describe('compareRlsTables', () => {
 
   it('RLS 対象表の RLS が無効なら検出する(2026-08-04 stg 実障害の再現)', () => {
     const rows = healthyRelRows().map((r) =>
-      r.relname === 'source_assets' ? { ...r, relrowsecurity: false } : r,
+      r.relname === 'asset_derivations' ? { ...r, relrowsecurity: false } : r,
     )
     const findings = compareRlsTables(rows)
     expect(findings).toHaveLength(1)
-    expect(findings[0]).toMatchObject({ area: 'rls', subject: 'source_assets' })
+    expect(findings[0]).toMatchObject({ area: 'rls', subject: 'asset_derivations' })
     expect(findings[0]!.detail).toContain('RLS が無効')
   })
 
@@ -150,10 +151,10 @@ describe('comparePolicies', () => {
   })
 
   it('policy が存在しないなら検出する', () => {
-    const rows = healthyPolicyRows().filter((p) => p.tablename !== 'source_assets')
+    const rows = healthyPolicyRows().filter((p) => p.tablename !== 'asset_derivations')
     const findings = comparePolicies(rows)
     expect(findings).toHaveLength(1)
-    expect(findings[0]!.subject).toBe('source_assets|source_assets_tenant')
+    expect(findings[0]!.subject).toBe('asset_derivations|asset_derivations_tenant')
   })
 
   it('qual が緩い述語に化けたら検出する(名前と cmd は同じでも tenant 境界は無効化される)', () => {
@@ -196,9 +197,9 @@ describe('compareGrants', () => {
 
   it('grant 不足を検出する(経路が 42501 で壊れる側)', () => {
     const rows = healthyGrantRows().filter(
-      (g) => !(g.table_name === 'source_assets' && g.privilege_type === 'DELETE'),
+      (g) => !(g.table_name === 'asset_derivations' && g.privilege_type === 'DELETE'),
     )
-    expect(compareGrants(rows).map((f) => f.subject)).toEqual(['source_assets'])
+    expect(compareGrants(rows).map((f) => f.subject)).toEqual(['asset_derivations'])
   })
 
   it('縮小した grant が戻っていたら検出する(phase3 REVOKE の巻き戻し)', () => {
@@ -241,12 +242,12 @@ describe('evaluateEffectiveness', () => {
 
   it('P0RLS を raise した表があれば PASS(行数に依らない決定的証拠)', () => {
     const probes = noProbes.map((p) =>
-      p.table === 'source_assets' ? { ...p, raisedP0RLS: true } : p,
+      p.table === 'asset_derivations' ? { ...p, raisedP0RLS: true } : p,
     )
     const result = evaluateEffectiveness(probes, emptyObservations)
     expect(result.verdict).toBe('PASS')
     expect(result.findings).toEqual([])
-    expect(result.reason).toContain('source_assets')
+    expect(result.reason).toContain('asset_derivations')
   })
 
   it('全表 0 行・raise 無しは INCONCLUSIVE(silent PASS しない = 本 task の中核要件)', () => {
@@ -265,7 +266,7 @@ describe('evaluateEffectiveness', () => {
 
   it('実在しない tenant context で行が見えたら FAIL', () => {
     const observations = emptyObservations.map((o) =>
-      o.table === 'source_assets' ? { ...o, visible: 2 } : o,
+      o.table === 'asset_derivations' ? { ...o, visible: 2 } : o,
     )
     const result = evaluateEffectiveness(noProbes, observations)
     expect(result.verdict).toBe('FAIL')
@@ -439,14 +440,14 @@ describe('formatTable', () => {
       ['table', 'rls'],
       [
         ['exams', 'true'],
-        ['source_assets', 'false'],
+        ['upload_operations', 'false'],
       ],
     )
     expect(out.split('\n')).toEqual([
-      'table         | rls  ',
-      '--------------+------',
-      'exams         | true ',
-      'source_assets | false',
+      'table             | rls  ',
+      '------------------+------',
+      'exams             | true ',
+      'upload_operations | false',
     ])
   })
 })

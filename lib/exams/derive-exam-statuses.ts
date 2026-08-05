@@ -4,7 +4,7 @@
 //   1. STALE_PROCESSING_MS — timeout 判定の閾値定数
 //   2. deriveExamStatuses  — 純関数: rows → Map<examId, status>
 //
-// DB 関数 (getExamStatusMap / reconcileStaleProcessing / hasActiveProcessingUpload)
+// DB 関数 (getExamStatusMap / reconcileStaleProcessing / hasLiveUploadOperation)
 // は lib/exams/source-doc-status.ts に残置し、この pure symbol を import して使う。
 
 // ---------------------------------------------------------------------------
@@ -16,22 +16,6 @@
 // 600s × 1.5 ≒ 900s = 15 分をマージンとして設定し、それ以上前の 'processing' 行を
 // 「事実上 timeout」 として failed 扱いに変換する。
 export const STALE_PROCESSING_MS = 15 * 60 * 1000 // 900,000 ms
-
-// ---------------------------------------------------------------------------
-// PREPARED_RETENTION_MS
-// ---------------------------------------------------------------------------
-// ②-4a T14a(spec §11「grace > operation が非終端で再開可能な最大保持期間」)。
-// 「非終端で再開可能な最大保持期間」= 7 日。 canonical な定義をここに置く理由:
-// `app/(app)/app/upload/_actions/claim-operation.ts`(7 日保持 cap の claim-time
-// 判定)と本 file 下流の `reconcileStaleProcessing`(T14a fix round 1: 非終端
-// upload_operations による stale sweep 除外を「再開可能な間だけ」に絞る
-// window-aware 判定)の**両方**がこの値を要求するが、eslint Block A
-// (`lib/`/`components/` は `app/` layer を import 禁止)により `lib/exams/*` から
-// `app/(app)/app/upload/_lib/constants.ts` を参照できない。 ゆえに `lib/` 側に
-// 正本を置き、`app/(app)/app/upload/_lib/constants.ts` はこれを re-export する
-// (upload 側の既存 import 経路を変えない)。 GC grace(現行 30 日・画像 GC v2)より
-// 確実に短くする不変条件(grace > 保持)を保つ値として 7 日を採用。
-export const PREPARED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 // ---------------------------------------------------------------------------
 // SourceDocumentStatusRow / isStaleProcessingRow
@@ -102,9 +86,9 @@ export function deriveDocStatuses(
 //   - processing かつ 15 分超 かつ live-op 保護なし → 'failed' (= stale timeout
 //     残骸の表示 fallback)
 //   - processing かつ 15 分超 だが liveOpSourceDocumentIds に id あり →
-//     'processing' (T14a fix round 2・Codex P2#1: reconciler の window-aware
-//     除外と表示を一致させる — live な upload_operations を持つ source は
-//     7 日 retention の間 DB 上も 'processing' のまま残るため、表示だけが
+//     'processing' (T14a fix round 2・Codex P2#1: reconciler の live-op 除外と
+//     表示を一致させる — live な upload_operations(valid lease)を持つ source は
+//     lease が切れるまで DB 上も 'processing' のまま残るため、表示だけが
 //     独自に 15 分超で failed 化するのは reconciler と矛盾する)
 //
 // `liveOpSourceDocumentIds` は呼出元(getExamStatusMap)が別 query で用意した
