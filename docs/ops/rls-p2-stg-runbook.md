@@ -386,11 +386,14 @@ SELECT tablename, policyname, roles, cmd, permissive, qual, with_check
 FROM pg_policies WHERE schemaname = 'public'
 ORDER BY tablename, policyname;
 
--- (C) 件数の即時 sanity: RLS on 表 = 21 / policy 総数 = 23 (共通形 20 + users 3)。
+-- (C) 件数の即時 sanity: RLS on 表 = 20 / policy 総数 = 22 (共通形 19 + users 3)。
+--     ②-4a S-5 の migration 0032 で 1 表(旧 source 台帳)を drop したため、旧値
+--     (21 / 23) からそれぞれ 1 減っている。**0032 未適用の環境では旧値のまま**
+--     (その環境では表がまだ実在し RLS on = カタログ外の表として finding に出るのが正常)。
 SELECT
   (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_on_tables,   -- 期待 21
-  (SELECT count(*) FROM pg_policies WHERE schemaname='public') AS total_policies;         -- 期待 23
+     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_on_tables,   -- 期待 20
+  (SELECT count(*) FROM pg_policies WHERE schemaname='public') AS total_policies;         -- 期待 22
 ```
 
 ### 12.2 期待カタログ(独立 oracle・drift 判定基準)
@@ -407,12 +410,12 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 
 | 表 | policyname | roles | cmd | permissive | qual | with_check |
 |---|---|---|---|---|---|---|
-| 共通形 20 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
+| 共通形 19 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
 | users | `users_select` | `{recallmint_app}` | SELECT | PERMISSIVE | `USERS_LIVE_PRED` | (空) |
 | users | `users_insert` | `{recallmint_app}` | INSERT | PERMISSIVE | (空) | `USERS_ID_PRED` |
 | users | `users_update` | `{recallmint_app}` | UPDATE | PERMISSIVE | `USERS_LIVE_PRED` | `USERS_ID_PRED` |
 
-※ 共通形 20 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `source_assets` / `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。
+※ 共通形 19 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。正本は `scripts/verify-rls-state.ts` の `COMMON_FORM_RLS_TABLES`(本表はその写し — 食い違ったら script 側が正)。
 
 **users に DELETE policy が無いこと**(FOR ALL も FOR DELETE も不在 = app-role の users hard delete を構造的 deny)を (B) の users 行が 3 件(select/insert/update)ちょうどであることで確認する。**非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)は (B) に 1 行も出ないこと(policy ゼロ)+ (A) で relrowsecurity=false。
 
@@ -422,11 +425,13 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 - roles に `public` が混入・qual が `true` 等の緩い述語に化けている場合 = tenant 境界が実質無効化されている可能性。復元前に incident 扱いで OT にエスカレーション(§3 rollback 判断)。
 - prod 有効化セッションでは policy 適用直後に (A)〜(C) を必ず readback してから smoke に進む(適用「成功」≠ 期待状態、の原則は §11.2 grant readback と同じ)。
 
-## 13. ②-4a 追記(source_assets / upload_operations / asset_derivations・3 表)
+## 13. ②-4a 追記(upload_operations / asset_derivations・2 表)
 
-②-4a(OCR 画像図版切り出し)の新設 tenant 表 3 つを **P2 / Wave1 / Wave2 と同一の共通形 policy** で RLS 化する。適用機構は §1.3 Step 3 と同一(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
+②-4a(OCR 画像図版切り出し)の新設 tenant 表を **P2 / Wave1 / Wave2 と同一の共通形 policy** で RLS 化する。適用機構は §1.3 Step 3 と同一(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
 
-- **前提**: 0025 functions は P2 で適用済(新 function なし・policy SQL のみ)。migration 0026-0030 で 3 表が存在すること。
+**当初 3 表だったが 2 表になった**(2026-08-05・S-5): 単一 invocation 経路への cutover に伴い、旧 source 台帳を migration 0032 が drop した。`ocr-2-4a-{enable,disable}.sql` も 2 表に縮んでいる。**0032 未適用の環境で disable.sql を打っても、drop 前のその 1 表だけは RLS が有効なまま残る**(§3 の緊急 rollback を打つ場合の既知の穴・実害は低い = prod は ocr-2-4a policy 自体が未適用)。
+
+- **前提**: 0025 functions は P2 で適用済(新 function なし・policy SQL のみ)。migration 0026-0032 が適用済で 2 表が存在すること。
 - **適用**: `db/policies/ocr-2-4a-enable.sql` の全文を SQL Editor(owner)で実行(正本は file・実行直前に再確認)。
 - **rollback**: `db/policies/ocr-2-4a-disable.sql`(RLS 無効化のみ・policy 定義は残置。§3.1 と同型)。
 - **確認**: §13.2 の実効検証を必ず実施する(SQL Editor の readback だけでは足りない — 下記)。
