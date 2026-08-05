@@ -15,15 +15,32 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { MAX_ASSET_BYTES } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
-import { LEASE_TTL_MS, TOTAL_UPLOAD_LIMIT_BYTES } from '../_lib/constants'
+import {
+  LEASE_TTL_MS,
+  TOTAL_UPLOAD_LIMIT_BYTES,
+  UPLOAD_PIPELINE_BUDGET_MS,
+} from '../_lib/constants'
 
-const { mockGetCurrentUser, mockWithTenantTx } = vi.hoisted(() => ({
+const {
+  mockGetCurrentUser,
+  mockWithTenantTx,
+  mockRunUploadPipeline,
+  mockAbsorbUploadPipelineFailure,
+} = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockWithTenantTx: vi.fn(),
+  mockRunUploadPipeline: vi.fn(),
+  mockAbsorbUploadPipelineFailure: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: mockGetCurrentUser }))
 vi.mock('@/lib/db/tenant-tx', () => ({ withTenantTx: mockWithTenantTx }))
+// OCR phase 本体(S-2)は tests/integration/pg/upload-pipeline.test.ts で検証する。
+// ここで見るのは action → pipeline の受け渡し契約だけ。
+vi.mock('../_lib/upload-pipeline', () => ({
+  runUploadPipeline: mockRunUploadPipeline,
+  absorbUploadPipelineFailure: mockAbsorbUploadPipelineFailure,
+}))
 
 // vi.mock は import より前に hoist される。
 import { submitUpload } from './submit-upload'
@@ -57,6 +74,19 @@ function buildFormData(
   return fd
 }
 
+function acceptedTx(
+  overrides: { replayed?: boolean; leaseVersion?: number } = {},
+): Record<string, unknown> {
+  return {
+    outcome: 'accepted',
+    operationId: 'op-1',
+    examId: 'exam-1',
+    sourceDocumentId: 'doc-1',
+    replayed: overrides.replayed ?? false,
+    leaseVersion: overrides.leaseVersion ?? 0,
+  }
+}
+
 async function expectInvalidInput(formData: FormData): Promise<string> {
   const result = await submitUpload(formData)
   expect(result.outcome).toBe('invalid_input')
@@ -70,6 +100,10 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset()
     mockWithTenantTx.mockReset()
+    mockRunUploadPipeline.mockReset()
+    mockRunUploadPipeline.mockResolvedValue(undefined)
+    mockAbsorbUploadPipelineFailure.mockReset()
+    mockAbsorbUploadPipelineFailure.mockResolvedValue(undefined)
     mockGetCurrentUser.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000001' })
   })
 
@@ -141,14 +175,7 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     )
     expect(files.reduce((s, f) => s + f.size, 0)).toBe(TOTAL_UPLOAD_LIMIT_BYTES)
 
-    mockWithTenantTx.mockResolvedValueOnce({
-      outcome: 'accepted',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      sourceDocumentId: 'doc-1',
-      replayed: false,
-    })
-    mockWithTenantTx.mockResolvedValueOnce(undefined)
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
 
     const result = await submitUpload(buildFormData(files))
     expect(result).toEqual({
@@ -158,22 +185,85 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
       sourceDocumentId: 'doc-1',
       replayed: false,
     })
-    // main tx + post-tx phase(S-1 スタブの terminalize)= ちょうど 2 回。
-    expect(mockWithTenantTx).toHaveBeenCalledTimes(2)
+    // sync phase の tx は 1 本(OCR phase 以降の DB 書込は pipeline の内部責務)。
+    expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+    expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
   })
 
-  it('replay(replayed=true)では post-tx phase を実行しない(tx は main の 1 回だけ)', async () => {
-    mockWithTenantTx.mockResolvedValueOnce({
-      outcome: 'accepted',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      sourceDocumentId: 'doc-1',
-      replayed: true,
-    })
+  it('replay(replayed=true)では OCR phase を実行しない(Gemini を再実行しない)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ replayed: true }))
 
     const result = await submitUpload(buildFormData([imageFile('a.png', 100)]))
     expect(result).toMatchObject({ outcome: 'accepted', replayed: true })
     expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+    expect(mockRunUploadPipeline).not.toHaveBeenCalled()
+  })
+
+  it('pipeline には実バイトの Buffer を渡す(File / FormData を渡さない)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ leaseVersion: 7 }))
+    const a = imageFile('a.png', 100)
+    const b = imageFile('b.png', 120)
+    const before = Date.now()
+
+    await submitUpload(buildFormData([a, b]))
+
+    expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
+    const [userId, refs, leaseVersion, files, deadlineAt] = mockRunUploadPipeline.mock.calls[0]
+    expect(userId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(refs).toEqual({
+      operationId: 'op-1',
+      examId: 'exam-1',
+      sourceDocumentId: 'doc-1',
+    })
+    // lease_version は client を往復させず tx の戻り値から直接引き継ぐ。
+    expect(leaseVersion).toBe(7)
+    expect(files).toHaveLength(2)
+    for (const [i, file] of [a, b].entries()) {
+      expect(Buffer.isBuffer(files[i].buffer)).toBe(true)
+      expect(files[i].buffer.equals(Buffer.from(await file.arrayBuffer()))).toBe(true)
+      expect(files[i].filename).toBe(file.name)
+      expect(files[i]).not.toHaveProperty('file')
+    }
+    // 予算の起点は action 入口(sync tx の消費分も予算内)。
+    const deadlineMs = (deadlineAt as Date).getTime()
+    expect(deadlineMs).toBeGreaterThanOrEqual(before + UPLOAD_PIPELINE_BUDGET_MS)
+    expect(deadlineMs).toBeLessThanOrEqual(Date.now() + UPLOAD_PIPELINE_BUDGET_MS)
+  })
+
+  it('Buffer 実体化が失敗しても 500 化せず terminal 化に落とす(no-throw envelope)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ leaseVersion: 2 }))
+    const broken = imageFile('a.png', 100)
+    // request body の読み出しが途中で切れた等(到達可能性は低いが契約の穴)。
+    vi.spyOn(broken, 'arrayBuffer').mockRejectedValue(new Error('body stream aborted'))
+
+    const result = await submitUpload(buildFormData([broken]))
+
+    expect(result.outcome).toBe('accepted')
+    expect(mockRunUploadPipeline).not.toHaveBeenCalled()
+    expect(mockAbsorbUploadPipelineFailure).toHaveBeenCalledTimes(1)
+    const [userId, refs, leaseVersion, err] = mockAbsorbUploadPipelineFailure.mock.calls[0]
+    expect(userId).toBe('00000000-0000-4000-8000-000000000001')
+    expect(refs).toEqual({
+      operationId: 'op-1',
+      examId: 'exam-1',
+      sourceDocumentId: 'doc-1',
+    })
+    expect(leaseVersion).toBe(2)
+    expect((err as Error).message).toBe('body stream aborted')
+  })
+
+  it('action の戻り値に lease_version を含めない(client 往復の廃止)', async () => {
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ leaseVersion: 3 }))
+
+    const result = await submitUpload(buildFormData([imageFile('a.png', 100)]))
+    expect(result).not.toHaveProperty('leaseVersion')
+    expect(Object.keys(result).sort()).toEqual([
+      'examId',
+      'operationId',
+      'outcome',
+      'replayed',
+      'sourceDocumentId',
+    ])
   })
 
   it('FormData でない payload は 500 化せず invalid_input(Server Action 引数は untrusted)', async () => {
@@ -227,5 +317,12 @@ describe('/app/upload page.tsx の maxDuration', () => {
     // margin 180s = OT 決定「720 なら余裕 3 分」の明文化。invocation が
     // maxDuration いっぱい走っても lease が先に失効しないことが不変条件。
     expect(Number(matched![1]) * 1000 + 180_000).toBeLessThanOrEqual(LEASE_TTL_MS)
+  })
+
+  it('統合 time budget が maxDuration より短い', () => {
+    expect(matched).not.toBeNull()
+    // 予算が maxDuration 以上になると「自前 terminal 化 + log」より先に platform が
+    // 関数を打ち切り、失敗理由が operation にも台帳にも残らなくなる。
+    expect(UPLOAD_PIPELINE_BUDGET_MS).toBeLessThan(Number(matched![1]) * 1000)
   })
 })

@@ -96,6 +96,22 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: null,
     failureCode: 'state_mismatch',
   },
+  // ②-4a 単一 invocation Sprint S-2: upload OCR pipeline
+  // (app/(app)/app/upload/_lib/upload-pipeline.ts)の **予期しない** throw の
+  // catch-all。予期される失敗(Gemini エラー / JSON 不読 / decode 失敗 / 有効カード 0)は
+  // upload_operations.last_error_code + logger.warn に留めここへは積まない — 台帳は
+  // 「調査を要する異常」だけを保持する(ユーザー起因の失敗で埋めない)。
+  // service='app': 相手先ではなく自コード内のバグを表す(外部 service でない失敗を
+  // service='db' で表す deletion_data と同じ扱い。pipeline 内の throw 源は sharp /
+  // Gemini / DB のいずれでもありうるため特定の相手先に決め打ちしない)。
+  // context = { operationId, errorCode } のみ(filename / 画像バイト / payload は
+  // 入れない — context は Discord へもそのまま出るため)。
+  ocr_pipeline: {
+    service: 'app',
+    operation: 'upload.ocr_pipeline',
+    workflow: 'upload_single_invocation',
+    failureCode: 'unexpected_error',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG

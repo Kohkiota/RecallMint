@@ -14,7 +14,10 @@ import { modelId, type ModelKind } from '../cost'
 // Vercel Pro function timeout (900s) に収まる範囲で十分な余裕を持った 220s に設定。
 // AbortController で client 側から打ち切り、 ocr.ts の isTransientError が
 // /timeout/i でマッチして retry 対象と判定できるよう message に "timeout" を残す。
-const GEMINI_TIMEOUT_MS = 220_000
+// export 済み(②-4a 単一 invocation S-2): 呼出側が「次の attempt を始めてよいか」を
+// 判断するのに 1 attempt の最悪所要時間が要るため。値の複製を避ける(drift すると
+// 判断が静かに誤る)。
+export const GEMINI_TIMEOUT_MS = 220_000
 
 let _ai: GoogleGenAI | null = null
 

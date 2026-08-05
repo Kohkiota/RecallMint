@@ -73,6 +73,26 @@ export { PREPARED_RETENTION_MS } from '@/lib/exams/derive-exam-statuses'
 // deadline は持たない — 2026-08-02 OT 確定)。 暫定値 — cutover 後の実測で見直す。
 export const CROP_PHASE_BUDGET_MS = 600 * 1000
 
+// ②-4a 単一 invocation 経路(submit-upload.ts → upload-pipeline.ts)の統合 time
+// budget(spec 2026-08-04 §11)。 起点は **action 入口時刻**(sync tx の消費分も
+// 予算内)。 route の maxDuration(720s・page.tsx)より 60s 短い。
+//
+// **この 60s 差だけでは超過を防げない**(canonical review I-1・実際の算術):
+// 1 回の Gemini call は最悪 `GEMINI_TIMEOUT_MS`(220s)、`callImageCropWithRetry` は
+// 初回 + 2 retries = 3 attempts で backoff は Retry-After 有りなら最大 60s×2 /
+// 無しなら 5s + 20s(+ jitter 最大 7s)。 ゆえに Gemini phase 単体の最悪値は
+//   Retry-After 有り: 3×220 + 2×60 = **780s**(maxDuration 720s すら超える)
+//   Retry-After 無し: 3×220 + 25〜32 = **685〜692s**(本予算 660s を超える)
+// で、呼出直前の残余チェック 1 回では防げない(pre-call 時点では残余が足りている)。
+// → 実効的な歯止めは `callImageCropWithRetry` の `deadlineAt`(retry ループの内側で
+// 「残余 < GEMINI_TIMEOUT_MS なら次の attempt を始めない」)。 本定数はそこへ渡す
+// 予算の起点であり、60s 差は「最後の attempt が timeout 一杯まで走っても
+// maxDuration に届かない」ための余白ではなく、terminal 化 + log の書込に要する余白。
+//
+// **暫定値 — cutover 後の実測で見直す**(2026-08-02 OT 方針: 時間予算の精緻化は
+// 測定前に決め打ちしない。phase 別所要時間を logger.warn で出しているのが材料)。
+export const UPLOAD_PIPELINE_BUDGET_MS = 660 * 1000
+
 // crop 1 件を新たに試みるために要求する最低残り予算(spec §11「crop 最低予算」・
 // soft pre-crop gate)。 暫定値 — cutover 後の実測で見直す(2026-08-02 OT 確定:
 // 時間予算の精緻化は測定前に決め打ちしない)。

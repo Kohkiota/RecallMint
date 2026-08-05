@@ -202,7 +202,8 @@ describe('recordIntegrationFailure', () => {
     expect(new Set(tuples).size).toBe(tuples.length)
     // RLS-P3 Task 7: rls_context_missing 追加で 8 → 9。
     // ②-4a T14b: r2_gc_delete_source 追加で 9 → 10。
-    expect(tuples.length).toBe(10)
+    // ②-4a 単一 invocation S-2: ocr_pipeline 追加で 10 → 11。
+    expect(tuples.length).toBe(11)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -223,6 +224,18 @@ describe('recordIntegrationFailure', () => {
       operation: 'object.delete',
       workflow: 'source_asset_gc',
       failureCode: 'external_api_error',
+    })
+  })
+
+  // ocr_pipeline: ②-4a 単一 invocation S-2(upload OCR pipeline の予期しない
+  // throw の catch-all)の 4 軸 tuple 固定値。service='app' は「外部 service では
+  // なく自コード内のバグ」を表す(deletion_data の service='db' と同じ扱い)。
+  it('ocr_pipeline has the 4-axis values pinned by S-2', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.ocr_pipeline).toEqual({
+      service: 'app',
+      operation: 'upload.ocr_pipeline',
+      workflow: 'upload_single_invocation',
+      failureCode: 'unexpected_error',
     })
   })
 

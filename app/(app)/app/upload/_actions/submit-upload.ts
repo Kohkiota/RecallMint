@@ -15,10 +15,16 @@ import {
   LEASE_TTL_MS,
   TOTAL_UPLOAD_LIMIT_BYTES,
   TOTAL_UPLOAD_LIMIT_MB,
+  UPLOAD_PIPELINE_BUDGET_MS,
 } from '../_lib/constants'
 import { parseDailyLimit } from '../_lib/daily-limit'
 import { sniffMagicBytes } from '../_lib/source-image-verify'
 import { terminalizeAbandonedOperation } from '../_lib/terminalize-abandoned-operation'
+import {
+  absorbUploadPipelineFailure,
+  runUploadPipeline,
+  type UploadPipelineFile,
+} from '../_lib/upload-pipeline'
 import { type Destination } from './upload-guard'
 
 // ②-4a 単一 invocation Sprint Task S-1(spec 2026-08-04 §2): upload の入口を
@@ -28,10 +34,10 @@ import { type Destination } from './upload-guard'
 // invocation のメモリ上でのみ扱う — source を R2 に置かない設計ゆえ、本 file は
 // R2 client を import しない(unit/iso 両方で pin 済)。
 //
-// 本 task の範囲は「入力検証 → 1 tx(advisory lock / 冪等 replay / live-op gate /
-// daily cap / op + exam + source_document 作成 + lease 発行)」まで。OCR(S-2)/
-// crop・publish(S-3)は未実装で、action は tx 成立後にその場で operation を
-// not_implemented として terminal 化する(UI 未接続)。
+// 範囲は「入力検証 → 1 tx(advisory lock / 冪等 replay / live-op gate / daily cap /
+// op + exam + source_document 作成 + lease 発行)→ OCR phase(S-2・
+// _lib/upload-pipeline.ts)」まで。crop・publish(S-3)は未実装のため、成功した
+// operation は status='prepared' で止まる(UI 未接続 = S-4)。
 
 // sniffMagicBytes が判定に必要とする先頭バイト数(最長 signature = WebP の
 // RIFF....WEBP = 12 バイト)。全バイトをメモリへ展開せず先頭だけを読む。
@@ -68,10 +74,10 @@ export type SubmitUploadResult =
       examId: string
       sourceDocumentId: string
       // true = 既存 operation を冪等 replay で返しただけ(この呼出は何も作って
-      // いない)。呼出側が post-tx phase(S-1 はスタブ / S-2 以降は OCR)を
-      // 実行してよいのは **false のときだけ** — transport retry のたびに Gemini を
-      // 再実行しないという §4.3 の冪等契約は、この判別子でしか履行できない
-      // (client 向けには accepted 一本のままで、UI 分岐は増えない)。
+      // いない)。呼出側が post-tx phase(OCR)を実行してよいのは **false のとき
+      // だけ** — transport retry のたびに Gemini を再実行しないという §4.3 の
+      // 冪等契約は、この判別子でしか履行できない(client 向けには accepted 一本の
+      // ままで、UI 分岐は増えない)。
       replayed: boolean
     }
   | { outcome: 'in_progress' }
@@ -80,8 +86,16 @@ export type SubmitUploadResult =
   | { outcome: 'invalid_input'; error: string }
   | { outcome: 'unauthenticated' }
 
+// tx 内部の戻り型。client 向けの SubmitUploadResult と分けているのは
+// `leaseVersion` のため — OCR phase の fenced CAS が必要とする値だが、client に
+// 往復させない(spec §4.3: lease_version の client 往復は廃止)。ゆえに action が
+// tx から直接受け取って pipeline へ渡し、戻り値からは落とす。
+export type SubmitUploadTxResult =
+  | (Extract<SubmitUploadResult, { outcome: 'accepted' }> & { leaseVersion: number })
+  | Exclude<SubmitUploadResult, { outcome: 'accepted' }>
+
 type ValidatedSubmission =
-  | { ok: true; input: SubmitUploadInput; files: SubmitUploadFileMeta[] }
+  | { ok: true; input: SubmitUploadInput; files: File[] }
   | { ok: false; error: string }
 
 // 入力検証は tx より手前で完結させる(spec §2 の flow)。冪等 replay が「今回の
@@ -150,11 +164,9 @@ async function validateFormData(formData: FormData): Promise<ValidatedSubmission
     }
   }
 
-  return {
-    ok: true,
-    input: { idempotencyKey, destination },
-    files: files.map((f) => ({ filename: f.name, byteSize: f.size })),
-  }
+  // File のまま返す(実バイトの Buffer 化は tx 成立後・OCR phase の直前に行う —
+  // 弾かれる呼出や replay で body を展開しないため)。
+  return { ok: true, input: { idempotencyKey, destination }, files }
 }
 
 // sync phase の tx 本体。user(Pick<User,'id'>)と tx を呼出側から受け取るだけで
@@ -165,7 +177,7 @@ export async function submitUploadTx(
   user: Pick<User, 'id'>,
   input: SubmitUploadInput,
   files: SubmitUploadFileMeta[],
-): Promise<SubmitUploadResult> {
+): Promise<SubmitUploadTxResult> {
   // 1. user 単位 advisory xact lock(prepare-upload.ts:199-205 と同機構)。取得
   // できなければ並行 submit として弾く(xact-scoped ゆえ commit/rollback で自動解放)。
   const lockResult = await tx.execute<{ locked: boolean }>(
@@ -183,6 +195,7 @@ export async function submitUploadTx(
       id: uploadOperations.id,
       examId: uploadOperations.examId,
       sourceDocumentId: uploadOperations.sourceDocumentId,
+      leaseVersion: uploadOperations.leaseVersion,
     })
     .from(uploadOperations)
     .where(
@@ -202,6 +215,7 @@ export async function submitUploadTx(
       // 常に non-null(schema の nullable は別経路のための予約)。
       sourceDocumentId: op.sourceDocumentId ?? '',
       replayed: true,
+      leaseVersion: op.leaseVersion,
     }
   }
 
@@ -335,7 +349,7 @@ export async function submitUploadTx(
       expectedSourceCount: files.length,
       leaseExpiresAt: sql`now() + make_interval(secs => ${LEASE_TTL_MS / 1000})`,
     })
-    .returning({ id: uploadOperations.id })
+    .returning({ id: uploadOperations.id, leaseVersion: uploadOperations.leaseVersion })
 
   return {
     outcome: 'accepted',
@@ -343,6 +357,7 @@ export async function submitUploadTx(
     examId: resolvedExamId,
     sourceDocumentId,
     replayed: false,
+    leaseVersion: opInsert[0].leaseVersion,
   }
 }
 
@@ -359,8 +374,11 @@ async function currentUserOrNull(): Promise<User | null> {
   }
 }
 
-// Server Action entry point。認証 → 入力検証 → sync phase tx。
+// Server Action entry point。認証 → 入力検証 → sync phase tx → OCR phase。
 export async function submitUpload(formData: FormData): Promise<SubmitUploadResult> {
+  // 統合 time budget の起点は **action 入口**(sync tx の消費分も予算内)。
+  const startedAt = Date.now()
+
   // Server Action の引数は実行時には untrusted(TS 型は compile-time の保証のみ)。
   // FormData でない payload が渡されると validateFormData の .get() が TypeError で
   // 例外化し 500 になる — auth より前に弾いて invalid_input に落とす
@@ -376,30 +394,61 @@ export async function submitUpload(formData: FormData): Promise<SubmitUploadResu
   if (!validated.ok) return { outcome: 'invalid_input', error: validated.error }
 
   const result = await withTenantTx(user.id, (tx) =>
-    submitUploadTx(tx, user, validated.input, validated.files),
+    submitUploadTx(
+      tx,
+      user,
+      validated.input,
+      validated.files.map((f) => ({ filename: f.name, byteSize: f.size })),
+    ),
   )
+  if (result.outcome !== 'accepted') return result
 
-  // S-1 スタブ: OCR(S-2)/ crop・publish(S-3)は未実装。ここで terminal 化せずに
-  // 返すと lease が生きたままの operation が残り、次の submit が最大
-  // LEASE_TTL_MS(15 分)ブロックされる。S-2 でこの分岐が OCR phase に置き換わる。
-  //
-  // `replayed` を必ず見る: replay で返った既存 op は「この呼出が作った op」では
-  // ないため、post-tx phase の対象にしてはいけない。既に completed / terminal な
-  // op を terminalizeAbandonedOperation の contract(非終端 op 前提・呼出元が
-  // FOR UPDATE 済み前提)に流し込むことになり、S-2 で本 phase が OCR に置き換わった
-  // 瞬間 transport retry のたびに Gemini が再実行される(spec §4.3 違反)。
-  // 対象 op はこの呼出が直前に作ったもので他の書き手がいないため、
-  // terminalizeAbandonedOperation が前提とする行ロックは取らない。
-  if (result.outcome === 'accepted' && !result.replayed) {
-    await withTenantTx(user.id, (tx) =>
-      terminalizeAbandonedOperation(
-        tx,
+  // OCR phase(S-2)。`replayed` を必ず見る: replay で返った既存 op は「この呼出が
+  // 作った op」ではないため対象にしてはいけない — 見ないと transport retry のたびに
+  // Gemini が再実行される(spec §4.3 違反)。
+  if (!result.replayed) {
+    const refs = {
+      operationId: result.operationId,
+      examId: result.examId,
+      sourceDocumentId: result.sourceDocumentId,
+    }
+    // pipeline へ渡す前に実バイトを Buffer 化する。File / FormData(request 由来の
+    // オブジェクト)を pipeline に持ち込まないため — S-4 で pipeline を after() に
+    // 載せると、request 応答後に closure に残った File を読むことになる。
+    // この区間も pipeline と同じ no-throw envelope に入れる: ここで throw させると
+    // operation が processing + live lease・error code 無し・台帳行無しで残る。
+    let files: UploadPipelineFile[] | null = null
+    try {
+      const materialized: UploadPipelineFile[] = []
+      for (const file of validated.files) {
+        materialized.push({
+          buffer: Buffer.from(await file.arrayBuffer()),
+          filename: file.name,
+        })
+      }
+      files = materialized
+    } catch (err) {
+      await absorbUploadPipelineFailure(user.id, refs, result.leaseVersion, err)
+    }
+    if (files !== null) {
+      await runUploadPipeline(
         user.id,
-        { operationId: result.operationId, sourceDocumentId: result.sourceDocumentId },
-        'not_implemented',
-      ),
-    )
+        refs,
+        result.leaseVersion,
+        files,
+        new Date(startedAt + UPLOAD_PIPELINE_BUDGET_MS),
+      )
+    }
   }
 
-  return result
+  // client へは lease_version を出さない(spec §4.3: client 往復の廃止)。tx の
+  // 戻り値をそのまま返すと構造的部分型で leaseVersion が response に載るため、
+  // 明示的に組み直す。
+  return {
+    outcome: 'accepted',
+    operationId: result.operationId,
+    examId: result.examId,
+    sourceDocumentId: result.sourceDocumentId,
+    replayed: result.replayed,
+  }
 }

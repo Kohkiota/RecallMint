@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { and, eq } from 'drizzle-orm'
+import sharp from 'sharp'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeDb } from '@/lib/db'
@@ -31,8 +32,9 @@ import {
 import { todayInJst } from '@/lib/jst'
 import { LEASE_TTL_MS } from '@/app/(app)/app/upload/_lib/constants'
 
-const { mockGetCurrentUser, ...r2Spies } = vi.hoisted(() => ({
+const { mockGetCurrentUser, mockCallGemini, ...r2Spies } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
+  mockCallGemini: vi.fn(),
   presignPutUrl: vi.fn(),
   presignGetUrl: vi.fn(),
   headObject: vi.fn(),
@@ -46,6 +48,12 @@ vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: mockGetCurrentUser })
 // R2 client の全 export を spy にして「1 度も呼ばれない」ことを pin する
 // (将来 submit-upload が R2 を import したらここが落ちる)。
 vi.mock('@/lib/storage/r2', () => r2Spies)
+// S-2 以降 action は OCR phase(pipeline)まで走るため実 API を叩かせない
+// (CLAUDE.md AI 絶対ルール 3)。
+vi.mock('@/lib/ai/clients/gemini', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/clients/gemini')>()
+  return { ...actual, callGemini: mockCallGemini }
+})
 
 // vi.mock は import より前に hoist される。
 import {
@@ -78,6 +86,35 @@ function imageFile(name: string, byteSize: number): File {
   return new File([bytes], name, { type: 'image/png' })
 }
 
+// action 経路は S-2 で OCR phase(実 sharp decode)まで走るため、magic bytes だけ
+// 揃えた合成バイトでは decode に失敗する。実 PNG を作る。
+async function realImageFile(name: string): Promise<File> {
+  const bytes = await sharp({
+    create: { width: 8, height: 6, channels: 3, background: { r: 10, g: 120, b: 60 } },
+  })
+    .png()
+    .toBuffer()
+  return new File([bytes], name, { type: 'image/png' })
+}
+
+const VALID_CARD = {
+  title: '問 1',
+  question_text: '設問本文',
+  options: [
+    { id: 'a', text: '選択肢 A', is_correct: true },
+    { id: 'b', text: '選択肢 B', is_correct: false },
+  ],
+}
+
+function geminiOk() {
+  return {
+    text: JSON.stringify({ cards: [VALID_CARD] }),
+    inputTokens: 10,
+    outputTokens: 20,
+    thoughtsTokens: 0,
+  }
+}
+
 function buildFormData(files: File[], idempotencyKey: string): FormData {
   const fd = new FormData()
   fd.set('idempotencyKey', idempotencyKey)
@@ -93,6 +130,8 @@ describe('submitUploadTx (S-1)', () => {
   beforeEach(async () => {
     await truncateAllUserTables()
     mockGetCurrentUser.mockReset()
+    mockCallGemini.mockReset()
+    mockCallGemini.mockResolvedValue(geminiOk())
     for (const spy of Object.values(r2Spies)) spy.mockReset()
     const owner = getFixtureOwnerDb()
     userAId = randomUUID()
@@ -525,13 +564,48 @@ describe('submitUploadTx (S-1)', () => {
     })
   })
 
-  // --- (e) action 経路(S-1 スタブ)+ R2 呼出 0 ---
-  describe('submitUpload(action・S-1 スタブ)', () => {
-    it('accepted を返しつつ op を not_implemented で terminal 化し、R2 client を一度も呼ばない', async () => {
+  // --- (e) action 経路(sync tx → OCR phase)+ R2 呼出 0 ---
+  describe('submitUpload(action・S-2 OCR phase)', () => {
+    it('accepted を返し、同一 invocation で OCR まで走らせて prepared にする(R2 client 未使用)', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: userAId })
 
       const result = await submitUpload(
-        buildFormData([imageFile('a.png', 500), imageFile('b.png', 700)], 'idem-action-1'),
+        buildFormData(
+          [await realImageFile('a.png'), await realImageFile('b.png')],
+          'idem-action-1',
+        ),
+      )
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+      // client 向けの戻り値に lease_version を出さない(client 往復の廃止)。
+      expect(result).not.toHaveProperty('leaseVersion')
+
+      const owner = getFixtureOwnerDb()
+      const opRows = await owner
+        .select({
+          status: uploadOperations.status,
+          lastErrorCode: uploadOperations.lastErrorCode,
+          preparedSchemaVersion: uploadOperations.preparedSchemaVersion,
+        })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(opRows[0]?.status).toBe('prepared')
+      expect(opRows[0]?.lastErrorCode).toBeNull()
+      expect(opRows[0]?.preparedSchemaVersion).toBe(1)
+      expect(mockCallGemini).toHaveBeenCalledTimes(1)
+
+      for (const [name, spy] of Object.entries(r2Spies)) {
+        expect(spy, `R2 client の ${name} が呼ばれた`).not.toHaveBeenCalled()
+      }
+    })
+
+    it('decode できない file は OCR を呼ばずに terminal(op + doc failed)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+
+      // magic bytes は PNG だが本体は 0 埋め = sharp decode に失敗する。
+      const result = await submitUpload(
+        buildFormData([imageFile('a.png', 500)], 'idem-action-broken'),
       )
       if (result.outcome !== 'accepted') {
         throw new Error(`expected accepted, got ${result.outcome}`)
@@ -547,7 +621,7 @@ describe('submitUploadTx (S-1)', () => {
         .from(uploadOperations)
         .where(eq(uploadOperations.id, result.operationId))
       expect(opRows[0]?.status).toBe('terminal_failed')
-      expect(opRows[0]?.lastErrorCode).toBe('not_implemented')
+      expect(opRows[0]?.lastErrorCode).toBe('image_decode_failed')
       expect(opRows[0]?.leaseExpiresAt).toBeNull()
 
       const docRows = await owner
@@ -555,36 +629,31 @@ describe('submitUploadTx (S-1)', () => {
         .from(sourceDocuments)
         .where(eq(sourceDocuments.id, result.sourceDocumentId))
       expect(docRows[0]?.status).toBe('failed')
-
-      for (const [name, spy] of Object.entries(r2Spies)) {
-        expect(spy, `R2 client の ${name} が呼ばれた`).not.toHaveBeenCalled()
-      }
+      expect(mockCallGemini).not.toHaveBeenCalled()
     })
 
-    // 冪等 replay(transport retry)で post-tx phase を再実行しないことの pin。
-    // S-1 では「既に終状態の op を terminalize しない」に見えるが、S-2 でこの phase が
-    // OCR に置き換わると「再送のたびに Gemini を再実行しない」(spec §4.3)そのものに
-    // なる。1 回目の後に op を completed へ戻し、2 回目が terminalize したら観測できる
-    // 状態(status / result_summary / last_error_code)を作って確認する。
-    it('同一 key で action を 2 回呼んでも 2 回目は post-tx phase を実行しない', async () => {
+    // 冪等 replay(transport retry)で OCR phase を再実行しないことの pin
+    // (spec §4.3「再送のたびに Gemini を再実行しない」そのもの)。
+    it('同一 key で action を 2 回呼んでも Gemini は 1 度しか走らない', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: userAId })
       const owner = getFixtureOwnerDb()
+      const file = await realImageFile('a.png')
 
-      const first = await submitUpload(
-        buildFormData([imageFile('a.png', 500)], 'idem-action-replay'),
-      )
+      const first = await submitUpload(buildFormData([file], 'idem-action-replay'))
       if (first.outcome !== 'accepted') {
         throw new Error(`expected accepted, got ${first.outcome}`)
       }
       expect(first.replayed).toBe(false)
+      expect(mockCallGemini).toHaveBeenCalledTimes(1)
 
-      // 1 回目のスタブ terminalize の結果を「完了した operation」に置き換える
-      // (2 回目が誤って terminalize したら必ず観測できる状態にする)。
+      // 1 回目の結果を「完了した operation」に置き換える(2 回目が誤って OCR phase を
+      // 走らせたら必ず観測できる状態にする)。
       await owner
         .update(uploadOperations)
         .set({
           status: 'completed',
           lastErrorCode: null,
+          preparedPayload: null,
           resultSummary: { cardsPublished: 3 },
         })
         .where(eq(uploadOperations.id, first.operationId))
@@ -593,10 +662,9 @@ describe('submitUploadTx (S-1)', () => {
         .set({ status: 'completed' })
         .where(eq(sourceDocuments.id, first.sourceDocumentId))
 
-      const second = await submitUpload(
-        buildFormData([imageFile('a.png', 500)], 'idem-action-replay'),
-      )
+      const second = await submitUpload(buildFormData([file], 'idem-action-replay'))
       expect(second).toEqual({ ...first, replayed: true })
+      expect(mockCallGemini).toHaveBeenCalledTimes(1)
 
       const opRows = await owner
         .select({
