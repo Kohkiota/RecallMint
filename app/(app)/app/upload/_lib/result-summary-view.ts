@@ -25,10 +25,14 @@ const resultSummarySchema = z.object({
   cardsTotal: count,
   cardsExcluded: count,
   figuresAttached: count,
-  // 7 キーすべてを必須にする。 欠けたキーを 0 と読み替えると「除外は無かった」と
-  // 嘘をつくことになるため、欠けたら丸ごと表示しない側へ倒す。
-  // T16-b で `orientation_unsupported` を足すときは producer と本 schema と下の
-  // 束分けを同時に更新すること(片方だけだと新理由が静かにどちらの束にも入らない)。
+  // 既存 7 キーは必須。 欠けたキーを 0 と読み替えると「除外は無かった」と嘘をつく
+  // ことになるため、欠けたら丸ごと表示しない側へ倒す(T12 以降どの producer も
+  // この 7 キーを必ず書いている = 欠けていたら本当に壊れた行)。
+  // 理由キーを producer に足すときは本 schema と下の束分けを**同 commit で**更新する
+  // (片方だけだと z.object が未知キーを strip して parse は成功し、新理由が
+  // どちらの束にも入らず静かに過少計上される)。 drift pin が CI で赤くする —
+  // **その pin は required/optional でなく「各 producer key がちょうど 1 束に入るか」を
+  // 見ているので、下の `.default(0)` で弱まらない**(runtime は寛容 / CI は厳格)。
   figuresExcluded: z.object({
     coordinate_null: count,
     source_id_invalid: count,
@@ -37,6 +41,14 @@ const resultSummarySchema = z.object({
     crop_failed: count,
     image_limit_exceeded: count,
     deadline_excluded: count,
+    // **新設キーだけ `.default(0)`**(T16-b)。 本 deploy 前に書かれた行はこのキーを
+    // 持たず、必須にすると過去 doc の内訳ブロックが丸ごと消える = T16-a が潰した
+    // silent zero の再発になる。 0 と読むのが嘘にならないのは、**旧 deploy には
+    // EXIF 検知の機構自体が存在せず**、旧行の実値が推定でなく事実として 0 だから。
+    // **sunset 条件**: T16-b deploy 前に書かれた `result_summary` 行が出尽くしたら
+    // (= 旧 op が 7 日 retention で terminal 化 + stg リセットで消えたら)`.default(0)`
+    // を外して他 7 キーと同じ必須へ戻せる。 寛容さを恒久化しないための条件。
+    orientation_unsupported: count.default(0),
   }),
 })
 
@@ -46,7 +58,7 @@ export type UploadResultSummaryView = {
   cardsExcluded: number
   /** 取り込めた図版。 */
   figuresAttached: number
-  /** 取り込めなかった図版(検出座標不正 / crop 失敗など、こちらの都合)。 */
+  /** 取り込めなかった図版(検出座標不正 / crop 失敗 / 向き未対応 = 扱えなかった分)。 */
   figuresFailed: number
   /** 上限で省いた図版(枚数上限 / 時間予算切れ)。 */
   figuresCapped: number
@@ -65,12 +77,18 @@ export function buildUploadResultSummaryView(
 
   const { cardsExtracted, cardsTotal, cardsExcluded, figuresAttached } = parsed.data
   const fx = parsed.data.figuresExcluded
+  // `orientation_unsupported`(EXIF≠1)を**失敗束に入れる**(OT 決定・T16-b):
+  // 「上限のため」は嘘になる — こちらが上限を決めて打ち切ったのではなく**扱えなかった**
+  // から。 回転が入力側の性質なのは事実だが、ユーザーから見れば「上げた画像が使われ
+  // なかった」であり、原因の帰属より扱えなかったことが伝わるべき。 仕様上の打ち切りと
+  // 混ぜると除外の意味が薄まる。
   const figuresFailed =
     fx.coordinate_null +
     fx.source_id_invalid +
     fx.malformed +
     fx.asset_id_invalid +
-    fx.crop_failed
+    fx.crop_failed +
+    fx.orientation_unsupported
   const figuresCapped = fx.image_limit_exceeded + fx.deadline_excluded
 
   if (

@@ -198,7 +198,7 @@ client が source ごとに source_id 発行。parts は `[text "source_id=X", i
 - **`prepared*Schema` を 1 file に定義**: `preparedOptionSchema` / `preparedFigureSchema` / `preparedCardSchema` / `preparedPayloadSchema`。**leaf 境界値は `lib/validation/card.ts` の既存 schema を compose**(再定義しない)。
 - **`PreparedCard` 型は手書きせず `z.infer<typeof preparedCardSchema>` から導出**。candidate は `z.output<typeof preparedCardSchema>` として型付け。
 - **normalize**: 変換・ID 発行後に card ごと `preparedCardSchema.safeParse(candidate)` → **`data` を返す(candidate をそのまま返さない)** → 失敗は isolate + tally。
-- **publisher(T12)**: 保存済み payload に **同じ schema** で `parse()` → 失敗を loud に扱う。**`parse` 戻り値だけを使用**。**publisher は `normalizePreparedCard` を呼ばない**(ID 再発行・再正規化しない)。
+- **publisher(T12)**: normalize 直後に **同じ schema** で `parse()` した payload(= `assemblePreparedPayload` の戻り値)を**そのまま消費**し、失敗は loud に扱う。**`parse` 戻り値だけを使用**。**publisher は `normalizePreparedCard` を呼ばない**(ID 再発行・再正規化しない)。※ **「保存済み payload を読み戻して parse する」経路は現存しない** — S-1〜S-5 の 1 invocation 化で publisher は同一 invocation の in-memory payload を受け取る形になり、`prepared_payload` 列は fencing / durability 用の書込先だけになった(2026-08-05 T16-b で §9 と併せて訂正。§9 の注記参照)。
 - **DB INSERT 用の変換は 1 関数に固定**。
 - **契約テスト(要)**: 「normalize が生成する全 card は publisher schema(`preparedCardSchema`)を通る」を実行時に保証 = 包含関係の担保。
 
@@ -312,7 +312,9 @@ publisher 検証: title/question/explanation 長さ・必須 / options 1-50 / op
 
 ## 9. prepared_payload 運用(§D)
 - `upload_operations` に jsonb。card 同型の staging table は作らない。**正規化後に原則 1 回だけ保存**(crop 進捗で書き換えない)。routine query は列明示・**`SELECT *` 禁止**。`prepared_schema_version`/`prepared_hash` 別列。**publish 成功で 1 回だけ NULL 化**。**Supabase Realtime publication に追加しない**。gzip bytea 化しない(TOAST と二重)。分離閾値: p95 payload が 5〜10MB を継続超過等で `upload_operation_payloads(operation_id PK, …)` 1:1 cold table へ(現段階は同一行で十分)。
-- **payload の実行時契約は `preparedPayloadSchema`(§5.4)= `discriminatedUnion('schemaVersion', [preparedPayloadV1Schema, …])`。`prepared_schema_version` 列はこの `schemaVersion` の外出し(query/monitoring 用)で、dispatch の正は payload 内 `schemaVersion`**。将来 schema 変更は **V1 を書き換えず V2 追加**、旧 schema は **最大 retry 保持期間(7 日・§11)以上残す**(旧デプロイ保存 payload を新 publisher が reject しないため)。publisher は保存 payload を `preparedPayloadSchema.parse()` で読み、失敗を loud 扱い。
+- **payload の実行時契約は `preparedPayloadSchema`(§5.4)= `discriminatedUnion('schemaVersion', [preparedPayloadV1Schema, …])`。`prepared_schema_version` 列はこの `schemaVersion` の外出し(query/monitoring 用)で、dispatch の正は payload 内 `schemaVersion`**。**schema 変更は V1 を直接改めてよい(V2 追加も旧 schema の保持期間も要らない)**。payload は `assemblePreparedPayload` が組み立てる時点で 1 回だけ `preparedPayloadSchema.parse()` を通り、以後この invocation の in-memory 値がそのまま crop / publish へ渡る(DB の `prepared_payload` は fencing / durability 用で、**読み戻して parse する経路はコード上に存在しない**)。
+
+> 旧ルール(「V1 を書き換えず V2 追加、旧 schema は最大 retry 保持期間 7 日以上残す」)は **payload が別 invocation に跨いで読まれる**前提のものだった。S-1〜S-5 の 1 invocation 化で resume 機構が撤去され、`prepared_payload` は同一 invocation 内で commit → 数秒後に消費される形になったため、**cross-version read が構造的に起きず**前提が消えた。2026-08-05(T16-b)にルールごと置換。**この置換は T16-b の変更を通すためではない** — T16-b は `lib/ocr/prepared-schema.ts` を触らない設計(除外理由 `orientation_unsupported` は crop/publish 層の `FigureExclusionCounts` 側に置いた)ゆえ旧ルールに抵触しない。**前提が事実として古いから**更新した。
 
 ---
 

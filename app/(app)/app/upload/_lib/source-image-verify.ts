@@ -73,7 +73,34 @@ const SHARP_FORMAT_TO_MIME: Partial<Record<string, ImageMime>> = {
   webp: 'image/webp',
 }
 
-export type VerifiedImage = { mime: ImageMime; width: number; height: number }
+export type VerifiedImage = {
+  mime: ImageMime
+  width: number
+  height: number
+  // EXIF orientation(sharp `metadata()` 由来)。 **EXIF 非搭載なら `undefined`**、
+  // 有れば 1..8。 値を潰さず生のまま外へ出すのは、pipeline の warn に載せて
+  // 「何が起きたか」を運用が判別できるようにするため(下記 T16-b の位置づけ参照)。
+  orientation: number | undefined
+}
+
+/**
+ * EXIF orientation が扱える向きでないか(②-4a T16-b・spec §4.5「回転入力の明示除外」)。
+ *
+ * **これはユーザーのための除外ではなく「前提破綻の検知」**であり、**通常は発火しない**。
+ * client は upload 時に画像を無条件で canvas 再エンコードする(`upload-form.tsx` の
+ * `imageCompression(file, { fileType: 'image/webp' })`)ため EXIF は pixel へ焼き込まれて
+ * 剥がれ、EXIF≠1 のバイトは現行 UI 経路では server に到達しない(spec §4.3 の前提)。
+ * true になったら **その前提が壊れている**合図 — client 圧縮の仕様変更 / UI を経由しない
+ * 呼出 / ②-4b の PDF 経路のいずれか。 `source_assets.rotation` 予約列が migration 0032 で
+ * 消えた今、それを知る手段は本判定と pipeline の `logger.warn` しかない。
+ *
+ * **`undefined` を異常にしない**: sharp は EXIF 非搭載なら `orientation` を返さない
+ * (実測: PNG / EXIF 無し JPEG とも `undefined`)。 undefined を異常にすると全 PNG と
+ * client 圧縮済 WebP が誤検知になる。 異常は「**1 でも undefined でもない**」。
+ */
+export function isUnsupportedOrientation(orientation: number | undefined): boolean {
+  return orientation !== undefined && orientation !== 1
+}
 
 /**
  * magic-byte sniff の結果と sharp decode 結果の format を突合せる(pure・
@@ -96,8 +123,10 @@ export function reconcileSniffedAndDecodedMime(
 }
 
 /**
- * 実バイトから mime/寸法を検証・算出する(client 申告値は一切参照しない)。
- * 失敗は null に正規化(呼出側は headObject 同様「検証不能」を一律扱えばよい)。
+ * 実バイトから mime/寸法/EXIF orientation を検証・算出する(client 申告値は一切
+ * 参照しない)。 失敗は null に正規化(呼出側は headObject 同様「検証不能」を一律
+ * 扱えばよい)。 **orientation は判定せずそのまま返す** — 異常判定は
+ * `isUnsupportedOrientation`、warn は呼出側(spec §4.5・T16-b)。
  *
  * 手順: ① magic-byte sniff(enum 外形式を早期 reject)② sharp `metadata()`
  * (ヘッダのみ読込・圧縮ピクセルデータは decode しない)で width×height を取得し
@@ -119,7 +148,7 @@ export async function verifyImageBytes(bytes: Buffer): Promise<VerifiedImage | n
 
   const pipeline = sharp(bytes, { limitInputPixels: DECODE_MAX_PIXELS })
 
-  let meta: { width?: number; height?: number }
+  let meta: { width?: number; height?: number; orientation?: number }
   try {
     meta = await pipeline.metadata()
   } catch {
@@ -150,5 +179,13 @@ export async function verifyImageBytes(bytes: Buffer): Promise<VerifiedImage | n
   if (!decodedMime) return null
   if (info.width > MAX_IMAGE_DIMENSION || info.height > MAX_IMAGE_DIMENSION) return null
 
-  return { mime: decodedMime, width: info.width, height: info.height }
+  // orientation は ② で読んだ metadata をそのまま使う(追加 I/O ゼロ)。 判定は
+  // 呼出側(upload-pipeline.ts)— warn に operationId を載せる必要があり、この関数は
+  // operationId を持たないため。
+  return {
+    mime: decodedMime,
+    width: info.width,
+    height: info.height,
+    orientation: meta.orientation,
+  }
 }

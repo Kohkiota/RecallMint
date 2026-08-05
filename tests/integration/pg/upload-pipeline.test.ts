@@ -166,6 +166,21 @@ async function pngBytes(width: number, height: number): Promise<Buffer> {
     .toBuffer()
 }
 
+// EXIF orientation を焼いた JPEG(pixel は回さない = 現行 client の canvas 再エンコード
+// とは逆の、EXIF が残ったままのバイト)。 T16-b の検知対象そのもの。
+async function jpegBytesWithOrientation(
+  width: number,
+  height: number,
+  orientation: number,
+): Promise<Buffer> {
+  return sharp({
+    create: { width, height, channels: 3, background: { r: 200, g: 30, b: 30 } },
+  })
+    .withMetadata({ orientation })
+    .jpeg()
+    .toBuffer()
+}
+
 describe('runUploadPipeline (S-2 / S-3)', () => {
   let userAId: string
   let operationId: string
@@ -454,6 +469,37 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
     expect(failures[0]!.context).toEqual({ operationId, errorCode: 'crop_phase_failed' })
     // 通知面まで到達する(実送信は mock で遮断済み)。
     expect(mockNotifyOps).toHaveBeenCalledTimes(1)
+  })
+
+  // T16-b: EXIF≠1 の source は **前提破綻の検知**(spec §4.3 の前提 = client の canvas
+  // 再エンコードで EXIF が剥がれる、が壊れた合図)。 unit(upload-pipeline.test.ts)は
+  // sharp を mock するため「実 sharp が本当に orientation を返し、それが disposition
+  // まで届くか」は観測できない — 実バイト + 実 sharp + 実 PG のここでだけ通しで見る。
+  it('EXIF≠1 の source の figure は crop されず orientation_unsupported で publish される', async () => {
+    // 1 枚目 = EXIF orientation 6 の JPEG / 2 枚目 = EXIF 無しの PNG。
+    // figure i は sources[i % 2] に紐づく(geminiWithFigures)ので 1 件ずつに割れる。
+    files = [
+      { buffer: await jpegBytesWithOrientation(8, 6, 6), filename: 'rotated.jpg' },
+      { buffer: await pngBytes(10, 4), filename: 'p2.png' },
+    ]
+    mockCallGemini.mockImplementation(geminiWithFigures(2))
+
+    await run()
+
+    const op = await readOperation()
+    expect(op?.status).toBe('completed')
+    expect(await countCards()).toBe(1)
+    // 回転 source の figure には crop を試みない(CPU も R2 PUT も使わない)。
+    expect(vi.mocked(cropFigureFromBuffer)).toHaveBeenCalledTimes(1)
+    expect(await countAssets()).toBe(1)
+    const summary = op?.resultSummary as {
+      figuresAttached: number
+      figuresExcluded: { orientation_unsupported: number; crop_failed: number }
+    }
+    expect(summary.figuresAttached).toBe(1)
+    expect(summary.figuresExcluded.orientation_unsupported).toBe(1)
+    // crop を試みていない以上 crop 失敗ではない(理由を混ぜない)。
+    expect(summary.figuresExcluded.crop_failed).toBe(0)
   })
 
   // 層 2(backstop): loop 骨格側の throw でも既 attach 分を活かして publish へ進む。

@@ -64,7 +64,11 @@ import {
   planPublish,
   type FigureDisposition,
 } from './publish-prepared-plan'
-import { verifyImageBytes, type VerifiedImage } from './source-image-verify'
+import {
+  isUnsupportedOrientation,
+  verifyImageBytes,
+  type VerifiedImage,
+} from './source-image-verify'
 import { assemblePreparedPayload, computePreparedHash } from './stage-prepared-payload'
 import { callImageCropWithRetry } from './stage-prepared-retry'
 import { terminalizeAbandonedOperation } from './terminalize-abandoned-operation'
@@ -229,6 +233,21 @@ async function runOcrPhase(
     // source_id」になり誤った画像へ silent に紐付く。uuid ならその推測は
     // validSourceIds に弾かれ source_id_invalid として集計に現れる。
     const sourceId = randomUUID()
+    if (isUnsupportedOrientation(verified.orientation)) {
+      // **本命はこの warn**(ユーザー向けの除外表示は副次)。 EXIF≠1 は
+      // 「ユーザーのための除外」ではなく **前提破綻の検知** — client が upload 時に
+      // 画像を無条件で canvas 再エンコードする(spec §4.3)ため、現行 UI 経路では
+      // ここは**通常 絶対に発火しない**。 発火したら前提が壊れている合図で、
+      // `source_assets.rotation` 予約列が migration 0032 で消えた今、それを知る手段は
+      // この 1 行しかない(isUnsupportedOrientation の doc を参照)。
+      // PII-free: operationId と orientation 値のみ(filename / バイト / payload は載せない)。
+      logger.warn({
+        event: 'upload.pipeline.source_orientation_unsupported',
+        operationId: refs.operationId,
+        orientation: verified.orientation,
+      })
+    }
+    // decode 自体は失敗させない — text 抽出は継続する(spec §4.5)。効くのは crop 段。
     sources.push({ sourceId, bytes: file.buffer, ...verified })
     sourceImages.push({
       // mimeType は decode 結果(sharp)由来 — client 申告や拡張子は使わない。
@@ -367,8 +386,34 @@ async function runCropPhase(
     const sourceById = new Map(sources.map((s) => [s.sourceId, s]))
     let budgetExhausted = false
     for (const figure of allFigures) {
+      const source = sourceById.get(figure.sourceId)
+      if (source === undefined) {
+        // normalizePrepared が validSourceIds で弾く契約ゆえ到達しない(narrowing 用)。
+        dispositionByAssetId.set(figure.assetId, 'exclude')
+        continue
+      }
+      // **orientation は予算判定より前**(Codex P2)。 EXIF≠1 は decode 段で既に
+      // 判明しており、この figure は**そもそも crop され得なかった** — 予算判定を
+      // 先に置くと予算切れ後の回転 figure が deadline_excluded に食われ、画面に
+      // 「**上限のため**省略しました」と出る。 束を「取り込めませんでした」に決めた
+      // 理由(こちらが上限を決めて打ち切ったのではなく扱えなかった = 「上限のため」は
+      // 嘘になる)を corner case で復活させてしまうため、順序で潰す。
+      if (isUnsupportedOrientation(source.orientation)) {
+        // crop を**呼ばない** — 座標基準(decode 寸法)と Gemini の解釈が一致する
+        // 保証が無いため、CPU も R2 PUT も使う意味がない(warn は decode 時に出済み)。
+        //
+        // **spec §4.5 の文言との差を明記する**: spec は「図版**検出**をスキップ」と
+        // 書いているが、prompt は凍結で、text 抽出のために画像は Gemini へ送る。
+        // 実際に実現するのは「**検出はされるが attach しない**」。
+        dispositionByAssetId.set(figure.assetId, 'orientation_unsupported')
+        continue
+      }
       // 予算は OCR と共通の統合予算の残余で見る(旧経路の crop 専用予算ではない)。
       // 一度枯渇したら以降は判定を揺り戻さない(旧経路の crop loop と同型)。
+      // 上の `continue` で評価を飛ばす figure があっても latch は壊れない —
+      // 枯渇判定は時間について単調(Date.now() は増える一方・deadline は固定)ゆえ、
+      // 評価を skip しても後続の figure が同じか「より枯渇した」答えを得るだけで、
+      // 一度 true になった値を false へ戻す経路はどこにも無い。
       if (
         !budgetExhausted &&
         isCropBudgetExhausted(Date.now(), deadlineAt.getTime(), CROP_MIN_REMAINING_MS)
@@ -377,12 +422,6 @@ async function runCropPhase(
       }
       if (budgetExhausted) {
         dispositionByAssetId.set(figure.assetId, 'deadline_excluded')
-        continue
-      }
-      const source = sourceById.get(figure.sourceId)
-      if (source === undefined) {
-        // normalizePrepared が validSourceIds で弾く契約ゆえ到達しない(narrowing 用)。
-        dispositionByAssetId.set(figure.assetId, 'exclude')
         continue
       }
       // **逐次**: crop 出力 Buffer を溜めない(1 件ずつ PUT して手放す)。unit test が
@@ -449,7 +488,8 @@ async function runPublishPhase(
   try {
     const plan = planPublish(payload.cards, dispositionByAssetId)
     if (plan.decision !== 'publish') {
-      // 本経路が作る disposition は attach / exclude / deadline_excluded だけで、
+      // 本経路が作る disposition は attach / exclude / deadline_excluded /
+      // orientation_unsupported だけで、
       // planPublish が stale / retryable を返す入力(not_ours / retryable / 欠落)は
       // 生じない。到達したら契約破れ = バグゆえ catch-all(台帳記録)へ送る。
       throw new Error(`upload pipeline: unexpected publish decision '${plan.decision}'`)

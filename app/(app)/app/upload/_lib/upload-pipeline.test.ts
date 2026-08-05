@@ -58,6 +58,11 @@ const {
     calls: 0,
     // metadata() を throw させる 0-origin index(decode 失敗の注入点)。
     failAt: null as number | null,
+    // metadata() が返す EXIF orientation(0-origin index → 値)。 既定は未設定 =
+    // `undefined` = EXIF 非搭載で、これが現行 client 経路(canvas 再エンコードで
+    // EXIF が剥がれる)の形。 **実 sharp が本当にこの形を返すこと**は
+    // source-image-verify.test.ts(実 sharp)が担保する。
+    orientationAt: {} as Record<number, number>,
   }
   const mockSharp = vi.fn(() => {
     const index = sharpState.calls++
@@ -80,7 +85,7 @@ const {
           leave()
           throw new Error('corrupt header')
         }
-        return { width: 100, height: 50 }
+        return { width: 100, height: 50, orientation: sharpState.orientationAt[index] }
       },
       toBuffer: async () => {
         await new Promise((r) => setTimeout(r, 0))
@@ -274,6 +279,7 @@ beforeEach(() => {
   sharpState.peakInFlight = 0
   sharpState.calls = 0
   sharpState.failAt = null
+  sharpState.orientationAt = {}
   cropState.inFlight = 0
   cropState.peakInFlight = 0
   cropState.calls = 0
@@ -684,6 +690,116 @@ describe('runUploadPipeline — crop phase(S-3)', () => {
     }
     expect(args.resultSummary.figuresExcluded.deadline_excluded).toBe(2)
     expect(args.resultSummary.figuresExcluded.crop_failed).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// EXIF orientation(T16-b)= **前提破綻の検知機構**であって、ユーザーのための除外ではない。
+//
+// **通常この分岐は発火しない**: client は upload 時に画像を無条件で canvas 再エンコード
+// する(`upload-form.tsx` の `imageCompression(file, { fileType: 'image/webp' })`)ため
+// EXIF は焼き込まれて剥がれ、EXIF≠1 のバイトは現行 UI 経路では server に到達しない。
+// 発火しないこと自体が想定内で、発火したら **spec §4.3 の前提が壊れている**合図
+// (client 圧縮の仕様変更 / UI を経由しない呼出 / ②-4b の PDF 経路)。
+// `source_assets.rotation` 予約列が migration 0032 で消えた今、それを知る手段は
+// pipeline の `logger.warn` しかない — ゆえに**本命の assert は warn**(除外計上は副次)。
+// ---------------------------------------------------------------------------
+describe('runUploadPipeline — EXIF orientation(前提破綻の検知)', () => {
+  it('EXIF≠1 の source は warn を出す(本命・PII-free で orientation 値を載せる)', async () => {
+    sharpState.orientationAt = { 1: 6 } // 2 枚目だけ回転
+
+    await run(filesOf('a', 'b'))
+
+    const warns = mockLoggerWarn.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((w) => w.event === 'upload.pipeline.source_orientation_unsupported')
+    // 回転していない 1 枚目では鳴らさない(1 source につき最大 1 行)。
+    expect(warns).toHaveLength(1)
+    // context は operationId + orientation 値のみ(filename / バイト / payload を入れない)。
+    expect(warns[0]).toEqual({
+      event: 'upload.pipeline.source_orientation_unsupported',
+      operationId: REFS.operationId,
+      orientation: 6,
+    })
+    expect(JSON.stringify(warns[0])).not.toContain('b.png')
+    // decode 自体は失敗させない — text 抽出は継続する(spec §4.5)。
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+    expect(mockPublishPreparedUploadTx).toHaveBeenCalledTimes(1)
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.failed' }),
+    )
+  })
+
+  it('EXIF≠1 の source の figure は crop を呼ばずに orientation_unsupported へ計上する', async () => {
+    // figure i は sources[i % 2] に紐づく(geminiWithFigures)。 2 枚目だけ回転させ、
+    // 「片方だけ除外され、もう片方は通常どおり crop される」面にする。
+    sharpState.orientationAt = { 1: 6 }
+    mockCallGemini.mockImplementation(geminiWithFigures(2))
+
+    await run(filesOf('a', 'b'))
+
+    // 回転 source の figure には crop の CPU を使わない。
+    expect(cropState.calls).toBe(1)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      cardImagesByCardId: Record<string, unknown[]>
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    expect(args.resultSummary.figuresExcluded.orientation_unsupported).toBe(1)
+    // crop を試みていない以上 crop 失敗ではない(理由を混ぜない)。
+    expect(args.resultSummary.figuresExcluded.crop_failed).toBe(0)
+    // 正立 source の figure は通常どおり card image になる。
+    expect(Object.values(args.cardImagesByCardId).flat()).toHaveLength(1)
+  })
+
+  // Codex P2(fix round 3): orientation は **decode 段で判明**しており、その figure は
+  // そもそも crop され得なかった。 予算判定より後ろで見ると deadline_excluded に食われ、
+  // 画面には「**上限のため**省略しました」と出る — 束を「取り込めませんでした」に決めた
+  // 理由(こちらが上限を決めて打ち切ったのではなく扱えなかった)を corner case で
+  // ひっくり返す。 「稀だから」は本機構では受容理由にならない(機構全体が rare path の
+  // 検知である)。
+  it('予算枯渇後でも回転 source の figure は orientation_unsupported(deadline_excluded に食われない)', async () => {
+    sharpState.orientationAt = { 0: 6 } // 1 枚目だけ回転
+    // 予算は Gemini mock の中で時計を進めて枯渇させる(既存 deadline test と同手口)。
+    const realNow = Date.now.bind(Date)
+    let clockOffset = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset)
+    try {
+      const withFigures = geminiWithFigures(2)
+      mockCallGemini.mockImplementation(async (req: { parts: GeminiContentPart[] }) => {
+        clockOffset += GEMINI_TIMEOUT_MS
+        return withFigures(req)
+      })
+      await run(filesOf('a', 'b'), { deadlineOffsetMs: GEMINI_TIMEOUT_MS + 1_000 })
+    } finally {
+      nowSpy.mockRestore()
+    }
+
+    expect(cropState.calls).toBe(0)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    // fig0 = 回転 source(向き未対応)/ fig1 = 正立 source(予算切れ)。 同じ run で
+    // 「回転は食われない」と「回転でなければ従来どおり deadline」を同時に見る。
+    expect(args.resultSummary.figuresExcluded.orientation_unsupported).toBe(1)
+    expect(args.resultSummary.figuresExcluded.deadline_excluded).toBe(1)
+  })
+
+  it('EXIF=1 / EXIF 非搭載では何も起きない(warn 無し・除外 0・crop は通常どおり)', async () => {
+    // 1 枚目 = EXIF orientation 1(正立の明示)/ 2 枚目 = EXIF 非搭載(undefined)。
+    // **undefined を異常にすると全 PNG が誤検知**になるため、ここが通常経路の gate。
+    sharpState.orientationAt = { 0: 1 }
+    mockCallGemini.mockImplementation(geminiWithFigures(2))
+
+    await run(filesOf('a', 'b'))
+
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.source_orientation_unsupported' }),
+    )
+    expect(cropState.calls).toBe(2)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    expect(args.resultSummary.figuresExcluded.orientation_unsupported).toBe(0)
   })
 })
 

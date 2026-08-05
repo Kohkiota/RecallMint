@@ -156,6 +156,30 @@ describe('planPublish', () => {
     expect(plan.figureExclusions.crop_failed).toBe(0)
   })
 
+  // T16-b: EXIF≠1 の source(= spec §4.3 の前提破綻)由来の figure。 crop を試みて
+  // いないので crop_failed に混ぜない。 publish 自体は止めない — text card は出す。
+  it('orientation_unsupported は crop_failed と別カウント、publish は止めない', () => {
+    const fAttach = makeFigure('question_text')
+    const fRotated = makeFigure('explanation_text')
+    const card = makeCard({ figures: [fAttach, fRotated] })
+    const plan = asPublish(
+      planPublish(
+        [card],
+        dispositions([
+          [fAttach.assetId, 'attach'],
+          [fRotated.assetId, 'orientation_unsupported'],
+        ]),
+      ),
+    )
+    expect(plan.cardImagesByCardId[card.cardId]).toEqual([
+      { key: fAttach.assetId, target: 'question_text', alt: '' },
+    ])
+    expect(plan.figuresAttached).toBe(1)
+    expect(plan.figureExclusions.orientation_unsupported).toBe(1)
+    expect(plan.figureExclusions.crop_failed).toBe(0)
+    expect(plan.figureExclusions.deadline_excluded).toBe(0)
+  })
+
   it('expectedReadyAssetIds は複数 card 横断で union・昇順・重複排除', () => {
     const f1 = makeFigure()
     const f2 = makeFigure()
@@ -231,7 +255,12 @@ describe('buildResultSummary', () => {
     const planWithCounts = {
       ...plan,
       figuresAttached: 5,
-      figureExclusions: { crop_failed: 6, image_limit_exceeded: 7, deadline_excluded: 8 },
+      figureExclusions: {
+        crop_failed: 6,
+        image_limit_exceeded: 7,
+        deadline_excluded: 8,
+        orientation_unsupported: 9,
+      },
     }
     const summary = buildResultSummary(payload, planWithCounts, {
       operationId: 'op1',
@@ -250,6 +279,7 @@ describe('buildResultSummary', () => {
       crop_failed: 6,
       image_limit_exceeded: 7,
       deadline_excluded: 8,
+      orientation_unsupported: 9,
     })
     const preview = summary.cardsPreview as Array<{ questionSnippet: string; title: string }>
     expect(preview[0].title).toBe('カード1')

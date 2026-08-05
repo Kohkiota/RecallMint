@@ -47,6 +47,7 @@ function summary(over: {
       crop_failed: 0,
       image_limit_exceeded: 0,
       deadline_excluded: 0,
+      orientation_unsupported: 0,
       ...over.figuresExcluded,
     },
     cardsPreview: [],
@@ -59,6 +60,9 @@ const FAILED_REASONS = [
   'malformed',
   'asset_id_invalid',
   'crop_failed',
+  // T16-b: EXIF≠1(向き未対応)。 回転は入力側の性質だが、「上限のため」は嘘になる —
+  // こちらが上限を決めて打ち切ったのではなく**扱えなかった**から(OT 決定)。
+  'orientation_unsupported',
 ] as const
 
 const CAPPED_REASONS = ['image_limit_exceeded', 'deadline_excluded'] as const
@@ -100,6 +104,7 @@ describe('buildUploadResultSummaryView — 3 束への畳み込み', () => {
           crop_failed: 5,
           image_limit_exceeded: 6,
           deadline_excluded: 7,
+          orientation_unsupported: 8,
         },
       }),
     )
@@ -108,7 +113,7 @@ describe('buildUploadResultSummaryView — 3 束への畳み込み', () => {
       cardsTotal: 3,
       cardsExcluded: 0,
       figuresAttached: 2,
-      figuresFailed: 15,
+      figuresFailed: 23,
       figuresCapped: 13,
     })
   })
@@ -139,6 +144,29 @@ describe('buildUploadResultSummaryView — 表示しない条件', () => {
 
   it('取り込んだ図版があれば null にしない(除外 0 でも成功を出す)', () => {
     expect(buildUploadResultSummaryView(summary({ figuresAttached: 1 }))).not.toBeNull()
+  })
+})
+
+// T16-b Fix round 1: 新設キーだけ `.default(0)`。 本 deploy 前に書かれた行(7 キー)を
+// 必須で弾くと、過去 doc の内訳ブロックが丸ごと消える = T16-a が潰した silent zero の
+// 再発(11 問取れたときと 0 問のときが同じ見た目に戻る)。
+describe('buildUploadResultSummaryView — 旧 deploy が書いた行の後方互換', () => {
+  it('orientation_unsupported が無い(T16-b 以前の)summary も内訳を描画する', () => {
+    const raw = summary({
+      figuresAttached: 2,
+      figuresExcluded: { crop_failed: 3, deadline_excluded: 1 },
+    })
+    delete (raw.figuresExcluded as Record<string, unknown>).orientation_unsupported
+
+    const view = buildUploadResultSummaryView(raw)
+
+    // 表示が消えない(この 1 行が後方互換の本体)。
+    expect(view).not.toBeNull()
+    expect(view!.figuresAttached).toBe(2)
+    // 欠けたキーは 0 扱い = 束の合計を動かさない。 0 と読むのが嘘にならないのは、
+    // 旧 deploy に EXIF 検知の機構自体が無く、実値が推定でなく事実として 0 だから。
+    expect(view!.figuresFailed).toBe(3)
+    expect(view!.figuresCapped).toBe(1)
   })
 })
 
@@ -177,8 +205,8 @@ describe('buildUploadResultSummaryView — 契約外の入力は黙る', () => {
 // ---------------------------------------------------------------------------
 // drift pin: producer が書く理由キー集合 == 読み手が畳む理由キー集合
 //
-// なぜ要るか: T16-b で `orientation_unsupported` を producer に足し、読み手の束分けを
-// 更新し忘れると、zod が未知キーを **strip して parse は成功する**ため、
+// なぜ要るか: 理由キーを producer に足して読み手の束分けを更新し忘れると、
+// zod が未知キーを **strip して parse は成功する**ため、
 // **新理由がどちらの束にも入らず静かに過少計上される**(「取り込めなかった 2 件」という
 // もっともらしいが誤った数字が出る)。 表示が消えるより悪い — 消えれば気付くが、
 // 少ない数字は気付かない。 spec §13「loud failure over silent zero」を潰すために作った面に

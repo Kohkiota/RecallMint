@@ -35,6 +35,14 @@ import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 //   (以降の残り figure すべて)は crop を試みずに除外した(spec §11 deadline・
 //   §13 reason g)。 呼出元が crop を呼ぶ前に直接この disposition を割り当てる —
 //   raw crop outcome からの翻訳ではない。
+// - orientation_unsupported: source の EXIF orientation が 1 でも undefined でも
+//   ない(spec §4.5 の「向き未対応」・§13 reason e)。 deadline_excluded と同じく
+//   呼出元が crop を呼ぶ**前に**割り当てる。 **これはユーザーのための除外ではなく
+//   前提破綻の検知**で、通常発火しない(client の canvas 再エンコードで EXIF は
+//   剥がれる = spec §4.3)。 発火したらその前提が壊れている — 本命の signal は
+//   pipeline の `logger.warn` で、この計上はその副次。
+//   判定は decode 時に確定し attach 時に効くため、normalize 時の tally
+//   (`figureExclusionTalliesSchema`)ではなく crop/publish 層のここに置く。
 // ---------------------------------------------------------------------------
 export type FigureDisposition =
   | 'attach'
@@ -42,6 +50,7 @@ export type FigureDisposition =
   | 'retryable'
   | 'not_ours'
   | 'deadline_excluded'
+  | 'orientation_unsupported'
 
 export type FigureExclusionCounts = {
   // crop の terminal 失敗 + source race(spec §13 の「crop 失敗」に集約)。
@@ -52,6 +61,10 @@ export type FigureExclusionCounts = {
   // crop フェーズの time budget 枯渇で crop を試みなかった figure(spec §13
   // reason g・§11 deadline)。
   deadline_excluded: number
+  // source の EXIF orientation が 1 でも undefined でもないため crop を試みなかった
+  // figure(spec §13 reason e「向き未対応」)。 通常 0 のまま — 0 でない値が出たら
+  // spec §4.3 の前提が壊れている(FigureDisposition の説明を参照)。
+  orientation_unsupported: number
 }
 
 // crop フェーズの残り予算が最低予算を下回ったか判定する純関数(spec §11
@@ -101,7 +114,8 @@ function capImagesToSchemaLimit(images: CardImage[]): { kept: CardImage[]; exces
  *
  * 優先順位: not_ours(operation 横取り)→ stale / retryable が 1 件でも → retryable /
  * それ以外 → publish(attach=image、 exclude=crop 失敗計上、 ≤10 超過は
- * image_limit_exceeded 計上)。
+ * image_limit_exceeded 計上)。 deadline_excluded / orientation_unsupported は
+ * **この優先順位に影響しない**(publish を止めず、理由別に計上するだけ)。
  *
  * @param cards 保存済み payload の card 群(publisher は再正規化しない・spec §5.4)。
  * @param dispositionByAssetId figure.assetId → disposition。 呼出側が全 figure を
@@ -133,6 +147,7 @@ export function planPublish(
     crop_failed: 0,
     image_limit_exceeded: 0,
     deadline_excluded: 0,
+    orientation_unsupported: 0,
   }
 
   for (const card of preparedCards) {
@@ -148,10 +163,14 @@ export function planPublish(
       } else if (disp === 'deadline_excluded') {
         // crop フェーズの time budget 枯渇(spec §11・§13 reason g)。
         figureExclusions.deadline_excluded += 1
+      } else if (disp === 'orientation_unsupported') {
+        // EXIF≠1(spec §4.5・§13 reason e)。 crop を試みていない以上 crop 失敗では
+        // ないので混ぜない — 混ぜると前提破綻が平凡な crop 失敗に埋もれる。
+        figureExclusions.orientation_unsupported += 1
       } else {
         // exclude(terminal crop 失敗 / source race)。 retryable / not_ours は
         // 上の優先順位で既に return 済みのため、 ここに来る非 attach/非
-        // deadline_excluded は exclude のみ。
+        // deadline_excluded/非 orientation_unsupported は exclude のみ。
         figureExclusions.crop_failed += 1
       }
     }
@@ -231,10 +250,13 @@ export function buildResultSummary(
       source_id_invalid: payload.figuresExcluded.source_id_invalid,
       malformed: payload.figuresExcluded.malformed,
       asset_id_invalid: payload.figuresExcluded.asset_id_invalid,
-      // crop 時(spec §13 c/f/g)。 成功以外の crop outcome は crop 失敗に集約する。
+      // crop フェーズ(spec §13 c/e/f/g)。 c(crop_failed)だけが raw crop outcome の
+      // 翻訳で「成功以外は crop 失敗に集約」される。 e / g は crop outcome が生まれる
+      // 前に(= crop を呼ばずに)割り当てられ、f は crop 後の ≤10 cap で決まる。
       crop_failed: plan.figureExclusions.crop_failed,
       image_limit_exceeded: plan.figureExclusions.image_limit_exceeded,
       deadline_excluded: plan.figureExclusions.deadline_excluded,
+      orientation_unsupported: plan.figureExclusions.orientation_unsupported,
     },
     cardsPreview: payload.cards.map((c) => ({
       id: c.cardId,

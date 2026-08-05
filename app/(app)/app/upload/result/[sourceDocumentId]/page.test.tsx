@@ -172,6 +172,7 @@ describe('UploadResultPage — 取り込み内訳(result_summary)の提示', () 
         crop_failed: 0,
         image_limit_exceeded: 0,
         deadline_excluded: 0,
+        orientation_unsupported: 0,
         ...over.figuresExcluded,
       },
       cardsPreview: [],
@@ -224,6 +225,7 @@ describe('UploadResultPage — 取り込み内訳(result_summary)の提示', () 
       'crop_failed',
       'image_limit_exceeded',
       'deadline_excluded',
+      'orientation_unsupported',
     ]) {
       expect(body).not.toContain(code)
     }
