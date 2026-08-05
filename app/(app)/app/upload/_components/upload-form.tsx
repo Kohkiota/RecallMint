@@ -588,7 +588,8 @@ export function UploadForm({
     e.preventDefault()
     setPhase({ kind: 'submitting' })
     // OCR 開始を layout 常駐 poller に通知する。
-    // processUpload は blocking で完了時にしか戻らないため、開始検知は client submit を起点にする。
+    // submitUpload は sync phase 完了で即返る(本処理は after() 継続)が、
+    // 応答を待たず開始を検知させるため client submit を起点にする。
     // requestOcrPoll は同期関数で listener を呼ぶだけ (例外は内部 try/catch で隔離済み)。
     // setPhase の urgent priority batching を壊さないよう setPhase 直後・runProcess 前に置く。
     requestOcrPoll()

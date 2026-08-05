@@ -77,8 +77,8 @@ export type AbandonedOpsSweepDeps = {
   // (= S-4 以降は「有効 lease を持たない」= 年齢を問わない)行。
   fetchCandidates: () => Promise<AbandonedOpCandidate[]>
   // fenced terminal 化。 candidate 選定と同じ述語を WHERE に再適用する CAS —
-  // select〜update の間に re-claim/takeover された行は 0 行更新(false)で
-  // skip する(次の run が再評価する。誤って re-claim 済み行を上書きしない)。
+  // select〜update の間に状態が変わった行(reconciler / supersede が先に
+  // terminal 化した等)は 0 行更新(false)で skip する(次の run が再評価する)。
   terminate: (id: string, userId: string) => Promise<boolean>
   log: (msg: string) => void
 }
@@ -174,7 +174,7 @@ export function buildProductionDeps(db: SweepDb, userId: string | undefined): Ab
             eq(uploadOperations.id, id),
             eq(uploadOperations.userId, uid),
             // fenced CAS: candidate 選定と同じ述語を再適用(select〜update の
-            // 間に re-claim/takeover された行を上書きしない)。
+            // 間に状態が変わった行を上書きしない)。
             inArray(uploadOperations.status, [
               ...NON_TERMINAL_UPLOAD_OPERATION_STATUSES,
             ]),

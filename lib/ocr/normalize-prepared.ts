@@ -45,9 +45,9 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * card ID / option uid / asset ID の発行元。 prod は `crypto.randomUUID`、 retry は
- * 保存済み payload の同 ID を再利用する factory、 test は決定的 counter を渡す
- * (spec §D「retry は payload 内の同 ID を再利用」)。 呼出順は本 module 内で card →
+ * card ID / option uid / asset ID の発行元。 prod は `crypto.randomUUID`、 test は
+ * 決定的 counter を渡す(旧 retry 経路の「保存済み payload の同 ID 再利用」は
+ * 1 invocation 化で消滅)。 呼出順は本 module 内で card →
  * options(配列順)→ figures(配列順、隔離後の生存要素のみ)に固定する — 同一入力 +
  * 同一 factory 呼出列で同一出力を保証するのに必要な決定性の根拠。
  */
@@ -246,8 +246,9 @@ function resolveFigures(
 
 // ---------------------------------------------------------------------------
 // normalizePreparedCard — 1 card 単位の正規化 + 検証。
-// T12(publish)は本関数を呼ばない(spec §5.4: publisher は保存済み payload を
-// `preparedPayloadSchema.parse()` するのみ・ID 再発行/再正規化しない)。
+// publish 層は本関数を呼ばない(spec §5.4: publisher は組み立て時に 1 回
+// `preparedPayloadSchema.parse()` 済みの in-memory payload を消費するのみ・
+// ID 再発行/再正規化しない)。
 // ---------------------------------------------------------------------------
 
 export type NormalizePreparedCardResult = {

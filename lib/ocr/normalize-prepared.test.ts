@@ -851,9 +851,9 @@ describe('normalizePrepared: トップレベル不正入力', () => {
 })
 
 // ---------------------------------------------------------------------------
-// normalizePreparedCard 単体(T12 が同名の関数を再利用する想定は撤回済み・
-// spec §5.4 で publisher は保存済み payload を preparedPayloadSchema.parse()
-// するのみで normalizePreparedCard を呼ばない。本関数は normalizePrepared の
+// normalizePreparedCard 単体(publish 層が同名の関数を再利用する想定は撤回済み・
+// spec §5.4 で publisher は組み立て時に 1 回 parse 済みの in-memory payload を
+// 消費するのみで normalizePreparedCard を呼ばない。本関数は normalizePrepared の
 // 内部 orchestration 単位として単体テストする)。
 // ---------------------------------------------------------------------------
 

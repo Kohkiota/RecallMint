@@ -10,11 +10,12 @@
 // ---------------------------------------------------------------------------
 // STALE_PROCESSING_MS
 // ---------------------------------------------------------------------------
-// Vercel Pro Function の maxDuration は 600s。 OCR pipeline はその上限内で完了する
-// はずだが、予期しない中断 (Vercel 強制終了 / network error など) で status が
-// 'processing' のまま残ることがある。
-// 600s × 1.5 ≒ 900s = 15 分をマージンとして設定し、それ以上前の 'processing' 行を
-// 「事実上 timeout」 として failed 扱いに変換する。
+// upload の maxDuration は 720s(app/(app)/app/upload/page.tsx の literal を
+// drift pin test が守る)。pipeline はその枠内で完了するはずだが、hard-death
+// (platform kill / OOM 等)では status が 'processing' のまま残る。
+// 15 分(> maxDuration + 終了余白)より前の 'processing' 行を「事実上 timeout」
+// として failed 扱いに変換する。LEASE_TTL_MS(15 分)と同値だが定義は独立
+// (こちらは source_documents の表示上の timeout・あちらは upload_operations の lease)。
 export const STALE_PROCESSING_MS = 15 * 60 * 1000 // 900,000 ms
 
 // ---------------------------------------------------------------------------

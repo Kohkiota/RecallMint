@@ -154,9 +154,9 @@ type WriteOutcome =
   | { outcome: 'error' }
 
 // Important#1 fix(canonical+Codex 独立指摘・concurrent double-invocation race):
-// 2 つの呼出が同じ figureAssetId を並行処理しうる(例: T12 の lease-takeover で
-// 同一 operation+payload を 2 worker が跨って処理した場合、両方が同じ
-// figureAssetId 集合を持つ)。 呼出前の SELECT(412 分岐の existingRows チェック
+// 2 つの呼出が同じ figureAssetId を並行処理しうる(例: transport 重複で同一
+// operation を 2 invocation が処理した極小窓 — takeover 撤去後も CAS を残すのと
+// 同じ理由・spec §4.3)。 呼出前の SELECT(412 分岐の existingRows チェック
 // 等)は TOCTOU を閉じない — この INSERT 文自体で race-safe にする。
 //
 // `ON CONFLICT (id) DO NOTHING` + `RETURNING`(try/catch でなくこちらを選ぶ理由:

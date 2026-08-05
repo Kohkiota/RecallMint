@@ -139,8 +139,8 @@ export function reconcileSniffedAndDecodedMime(
  * デコードが強制される=「decodeability」検証を兼ねる。 truncated body は
  * ここで throw する)④ sniff と decode format の一致
  * (reconcileSniffedAndDecodedMime)⑤ MAX_IMAGE_DIMENSION(辺長)上限。 promote
- * するのは GET で取得した元バイトそのもの(sharp の再エンコード出力は使わない
- * — 「検証済バイト」= 実在確認済みの元バイト)。
+ * するのは受領した元バイトそのもの(request body 由来・sharp の再エンコード出力は
+ * 使わない — 「検証済バイト」= 実在確認済みの元バイト)。
  */
 export async function verifyImageBytes(bytes: Buffer): Promise<VerifiedImage | null> {
   const sniffed = sniffMagicBytes(bytes)
