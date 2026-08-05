@@ -7,7 +7,10 @@ import {
 } from '@/lib/exams/list'
 import { Card, CardContent } from '@/components/ui/card'
 import { AppContainer } from '@/app/(app)/app/_components/app-container'
-import { UPLOAD_INTERRUPTED_NOTICE } from '../../_lib/constants'
+import {
+  UPLOAD_INTERRUPTED_NOTICE,
+  UPLOAD_PENDING_NOTICE,
+} from '../../_lib/constants'
 import { ResultActions } from './_components/result-actions'
 
 // S1.9.2: OCR result page。 旧来 upload-form の success phase で描画していた
@@ -79,11 +82,15 @@ export default async function UploadResultPage({
               {failed ? '⚠ 問題を抽出できませんでした' : '⏳ まだ処理中です'}
             </h1>
             {/* 公開文言(spec 論点 A): 待ち時間の数値は書かない / 試験の削除は案内
-                しない。失敗面は S-4 で単一定義(_lib/constants.ts)へ集約した。 */}
+                しない。 失敗面 / 処理中面とも _lib/constants.ts の単一定義を使う
+                (I-3(b): 同じ状況を別の言い方で説明しない)。 定数は**常に独立した
+                1 文**として使い、述語として文中に連結しない — 連結すると定数の書換が
+                他面では正しいまま この面だけ壊れた日本語になり、誰も気付かない
+                (canonical M-2)。 exam 名はこの面だけが持てる情報なので併記する。 */}
             <p className="text-sm text-slate-700">
               {failed
                 ? UPLOAD_INTERRUPTED_NOTICE
-                : `試験「${sourceDoc.examName}」 への取り込みを実行中です。 処理状況は試験一覧で確認できます。`}
+                : `${UPLOAD_PENDING_NOTICE}(取り込み先: 試験「${sourceDoc.examName}」)`}
             </p>
           </section>
 

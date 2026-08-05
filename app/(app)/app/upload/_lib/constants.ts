@@ -107,20 +107,46 @@ export const DOC_STATUS_POLL_MAX_FETCH_FAILURES = 6
 // 無限に続くのを防ぐ(Codex #7)。 **暫定値**(時間予算と同じく実測後に見直す)。
 export const DOC_STATUS_POLL_LIMIT_MS = 20 * 60 * 1000
 
-// ②-4a 単一 invocation S-4: 「この upload がどうなったか今この場では確定できない」
-// ときの**公開文言(単一の正)**。 spec 論点 A の確定事項どおり **待ち時間の数値を
-// 書かない / 試験の削除を案内しない**。
+// ②-4a 単一 invocation S-4: upload の現況をユーザーに伝える**公開文言**。 spec 論点 A の
+// 確定事項どおり、下の 2 本とも **待ち時間の数値を書かない / 試験の削除を案内しない**。
 //
-// 適用面は 4 つ(同じ状況を別の言い方で説明しないための単一定義):
+// I-3(b)(仕様変更 2026-08-05): S-4 完了時点では 1 本を 3 面共通で当てていたが、
+// その根拠(「ユーザーから見て failed と in_progress は区別できず、次の行動も同じ」)は
+// S-4 の after() 化で両方とも崩れたため、**確定した失敗**と**未確定(処理中)**に割った:
+//   ・次の行動が同じでない — in_progress の間は live-op gate が submit を弾くので、
+//     「再度お試しください」は**実行できない行動**の案内になる。
+//   ・支配的ケースが逆転した — 以前は離脱すると処理が止まった。 after() 化後は離脱が
+//     正常系で、戻ってきたユーザーの operation はたいてい健全に実行中。
+//   ・自己矛盾 — submit 直後の banner は「この画面を閉じても処理は続きます」と離脱を
+//     勧めており、そのとおりにして戻った人が「中断された可能性があります」を見る。
+//
+// hard-death(after() の callback が platform kill された)のユーザーは最大 15 分
+// (LEASE_TTL_MS)「処理中」を見てから failed に変わるが、**これは正直な表示**である —
+// 生きているか死んでいるか区別できない間は「区別できない」と言い、確定してから
+// 「失敗した」と言う。 lease 失効後は live-op gate も開くため、**再試行の案内は
+// 実行可能になったタイミングでのみ出る**。
+
+// 失敗が確定した面(operation は terminal 化済み = 再試行が実行可能)。
 //   ① upload page の poll が `failed` を返したとき
-//   ② `submitUpload` が `in_progress`(別 op が valid lease を保持)を返したとき
-//   ③ `/app/upload` 再訪時の「処理中」カード(hasActiveProcessingUpload)
-//   ④ result page の失敗パネル(S-3 で導入)
-// ②③ に同じ文言を当てるのは、どちらも「生きている実行」と「死んだが lease が
-// まだ切れていない実行」を **アプリ側から区別できない**ため — 「実行中です」と
-// 断定すると、既に死んでいる場合に嘘になる。
+//   ② result page の失敗パネル(S-3 で導入)
 export const UPLOAD_INTERRUPTED_NOTICE =
   '処理が中断された可能性があります。 しばらく待ってから再度お試しください。 処理状況は試験一覧で確認できます。'
+
+// まだ確定していない面。**中断を主張しない / 再試行を勧めない**中立文言。
+// 3 面が共有するのは「**結果が未確定である**」ことだけで、判定の実体は面ごとに違う —
+// 「lease が生きている」と一括りに述べない(canonical I-1: 遠隔の不変条件に依存する
+// 主張をコメントに置かない):
+//   ① `submitUpload` が `in_progress` を返したとき — live-op gate が **lease を評価**
+//      している(別 op が valid lease を保持)
+//   ② `/app/upload` 再訪時の「処理中」カード(hasActiveProcessingUpload)—
+//      `status='processing'` かつ作成が STALE_PROCESSING_MS(15 分)以内だけを見る。
+//      **lease は読まない**
+//   ③ result page の処理中パネル — `source_documents.status` ベース(同じく lease は
+//      読まない。 同じ状況を別の言い方で説明しないための共有)
+// 中立文言の根拠は上の設計判断のとおり「区別できない間は区別できないと言う」であり、
+// どの面でも lease の生死に依存しない。
+export const UPLOAD_PENDING_NOTICE =
+  '処理中です。 完了すると試験一覧に反映されます。'
 
 // crop 1 件を新たに試みるために要求する最低残り予算(spec §11「crop 最低予算」・
 // soft pre-crop gate)。 暫定値 — cutover 後の実測で見直す(2026-08-02 OT 確定:

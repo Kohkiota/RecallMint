@@ -38,6 +38,10 @@ vi.mock('@/lib/exams/list', () => ({
 }))
 
 import UploadResultPage from './page'
+import {
+  UPLOAD_INTERRUPTED_NOTICE,
+  UPLOAD_PENDING_NOTICE,
+} from '../../_lib/constants'
 
 const USER = { id: 'user-1' }
 
@@ -67,6 +71,9 @@ describe('UploadResultPage — source_documents.status で成功 / 失敗を出�
 
     expect(screen.getByRole('alert')).toBeInTheDocument()
     expect(screen.getByText(/問題を抽出できませんでした/)).toBeInTheDocument()
+    // I-3(b): 失敗面は従来文言を維持(terminal 化済み = 再試行が実行可能な面)。
+    expect(screen.getByText(UPLOAD_INTERRUPTED_NOTICE)).toBeInTheDocument()
+    expect(screen.queryByText(UPLOAD_PENDING_NOTICE)).not.toBeInTheDocument()
     // 「N 問を抽出しました」「保存されました」は出さない — 失敗を成功として見せない。
     expect(screen.queryByText(/問を抽出しました/)).not.toBeInTheDocument()
     expect(screen.queryByText(/に保存されました/)).not.toBeInTheDocument()
@@ -97,6 +104,13 @@ describe('UploadResultPage — source_documents.status で成功 / 失敗を出�
     const alertText = screen.getByRole('alert').textContent ?? ''
     expect(alertText).not.toMatch(/\d+\s*(分|秒|時間)/)
     expect(alertText).not.toContain('削除')
+    // I-3(b): この面も未確定(処理中)面 — 中断を主張せず再試行も勧めない。
+    // 文言は _lib/constants.ts の中立定数を共有する(同じ状況を別の言い方で説明しない)。
+    // 定数は独立した 1 文として使い、exam 名は併記で保持する(canonical M-2)。
+    expect(alertText).toContain(UPLOAD_PENDING_NOTICE)
+    expect(alertText).toContain('テスト試験')
+    expect(alertText).not.toContain('再度お試しください')
+    expect(alertText).not.toContain('中断')
   })
 
   it("status='completed' は従来どおり成功表示(件数 + 保存先 exam 名)", async () => {

@@ -19,6 +19,7 @@ import {
   TOTAL_UPLOAD_LIMIT_BYTES,
   TOTAL_UPLOAD_LIMIT_MB,
   UPLOAD_INTERRUPTED_NOTICE,
+  UPLOAD_PENDING_NOTICE,
 } from '../_lib/constants'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { pdfPageCount } from '../_lib/pdf-page-count'
@@ -533,10 +534,10 @@ export function UploadForm({
           return
         }
         case 'in_progress':
-          // 別の operation が valid lease を保持している。それが生きているのか
-          // 既に死んで lease の失効待ちなのかを client からは区別できないため、
-          // 「実行中です」と断定せず公開文言(単一定義)を出す。
-          setError('UPLOAD_IN_PROGRESS', UPLOAD_INTERRUPTED_NOTICE)
+          // 別の operation が valid lease を保持している(= 生きている。死んで lease が
+          // 切れていれば supersede される)。 gate が閉じている間の再試行は実行不能ゆえ、
+          // 中断を主張しない中立文言(I-3(b))。
+          setError('UPLOAD_IN_PROGRESS', UPLOAD_PENDING_NOTICE)
           return
         case 'daily_limit_exceeded':
           setError(

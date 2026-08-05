@@ -649,6 +649,7 @@ import {
   DOC_STATUS_POLL_LIMIT_MS,
   DOC_STATUS_POLL_MAX_FETCH_FAILURES,
   UPLOAD_INTERRUPTED_NOTICE,
+  UPLOAD_PENDING_NOTICE,
 } from '../_lib/constants'
 
 function statusOk(docStatuses: Record<string, string>) {
@@ -745,7 +746,7 @@ describe('docStatuses poll(S-4)', () => {
     expect(mockRouterPush).not.toHaveBeenCalled()
   })
 
-  it('failed を観測したら公開文言を出す(削除案内なし・待ち時間の数値なし)', async () => {
+  it('failed を観測したら失敗面の文言を出す(I-3(b) 後も従来どおり)', async () => {
     mockFetch.mockResolvedValue(statusOk({ 'doc-123': 'failed' }))
     await renderAndSubmit()
 
@@ -754,9 +755,10 @@ describe('docStatuses poll(S-4)', () => {
     expect(mockRouterPush).not.toHaveBeenCalled()
     // 開発用 ErrorDetails(staging/dev のみ)にも同文が出るため件数で見る。
     expect(screen.getAllByText(UPLOAD_INTERRUPTED_NOTICE).length).toBeGreaterThanOrEqual(1)
-    // 公開文言の規律(3 面共通): 待ち時間の数値を書かない / 試験の削除を案内しない。
-    expect(UPLOAD_INTERRUPTED_NOTICE).not.toMatch(/\d+\s*(分|秒|時間)/)
-    expect(UPLOAD_INTERRUPTED_NOTICE).not.toContain('削除')
+    // failed = terminal 化済み = 再試行が実行可能な面。ここでは再試行を勧める。
+    expect(screen.getAllByText(/再度お試しください/).length).toBeGreaterThanOrEqual(1)
+    // 中立文言(未確定面)を混ぜない。
+    expect(screen.queryByText(UPLOAD_PENDING_NOTICE)).not.toBeInTheDocument()
     // 「ファイルを変更して再試行」は出さない(ファイルの問題ではない)。
     expect(
       screen.queryByText(/ファイルを変更して再度お試しください/),
@@ -888,7 +890,10 @@ describe('離脱ガード撤去(S-4)', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('in_progress は公開文言(単一定義)を出す — 「実行中」と断定しない', async () => {
+  // I-3(b): in_progress = 別 op が valid lease を保持 = 生きている面。 live-op gate が
+  // submit を弾いている最中なので「再度お試しください」は実行不能な行動の案内になる。
+  // 定数を 1 本に戻す(= この面にも failed 文言を当てる)と negative assert が落ちる。
+  it('in_progress は中立文言を出す — 中断を主張しない / 再試行を勧めない', async () => {
     vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
 
     await renderWithFiles([makeImage('a.jpg')])
@@ -897,6 +902,28 @@ describe('離脱ガード撤去(S-4)', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
 
-    expect(screen.getAllByText(UPLOAD_INTERRUPTED_NOTICE).length).toBeGreaterThanOrEqual(1)
+    // 開発用 ErrorDetails(staging/dev のみ)にも同文が出るため件数で見る。
+    expect(screen.getAllByText(UPLOAD_PENDING_NOTICE).length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/再度お試しください/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/中断された可能性があります/)).not.toBeInTheDocument()
+    expect(screen.queryByText(UPLOAD_INTERRUPTED_NOTICE)).not.toBeInTheDocument()
+  })
+})
+
+// ─── I-3(b): 公開文言 2 本に共通の規律(機械強制) ─────────────────────────────
+describe('公開文言の規律(失敗面 / 中立面の両方)', () => {
+  it('どちらも待ち時間の数値を書かない / 試験の削除を案内しない', () => {
+    for (const notice of [UPLOAD_INTERRUPTED_NOTICE, UPLOAD_PENDING_NOTICE]) {
+      expect(notice).not.toMatch(/\d+\s*(分|秒|時間)/)
+      expect(notice).not.toContain('削除')
+    }
+  })
+
+  it('2 本は別文言であり、中立面の文言は中断も再試行も言わない', () => {
+    expect(UPLOAD_PENDING_NOTICE).not.toBe(UPLOAD_INTERRUPTED_NOTICE)
+    expect(UPLOAD_PENDING_NOTICE).not.toContain('中断')
+    expect(UPLOAD_PENDING_NOTICE).not.toContain('再度お試しください')
+    // 失敗面は逆に、再試行が実行可能になった面なので勧める。
+    expect(UPLOAD_INTERRUPTED_NOTICE).toContain('再度お試しください')
   })
 })
