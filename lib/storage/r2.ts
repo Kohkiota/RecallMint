@@ -247,22 +247,6 @@ function unescapeXmlEntities(value: string): string {
     .replace(/&amp;/g, '&')
 }
 
-/**
- * R2オブジェクトの一覧 (ListObjectsV2。 破壊 script(scripts/gc-src-prefix.ts等)が
- * 削除対象を DB を介さず R2 listing だけから求めるための唯一の口)。
- *
- * pagination を全列挙する (IsTruncated/NextContinuationToken を追随)。 token が
- * 欠落/非進行(壊れた応答の無限ループ)なら throw、 MAX_LIST_PAGES 超過でも throw
- * する (無限ループ耐性)。
- *
- * **既存5関数(presignPutUrl/presignGetUrl/headObject/getObject/putObject/
- * deleteObject)の never-throw 契約を、この関数は意図的に継承しない — 失敗
- * (非2xx・fetch throw・timeout)は catch せずそのまま throw する。** 理由:
- * 本関数は破壊操作の事後検証(「削除後 readback = listing 0件」で削除完了を
- * 確認する)を支える。 失敗を空配列に正規化すると、 network 失敗時も
- * 「0件 = 削除完了」に見えてしまい検証そのものが無意味になる — 「空」と
- * 「分からない」を混同してはならない。
- */
 // ListObjectsV2 応答の構造検証(Codex fix round 1 P1・②-4a S-5a)。
 //
 // 背景: 200 応答であっても body が空/途中で切れた/壊れている場合、旧実装は
@@ -305,6 +289,22 @@ function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boole
   return { isTruncated: truncatedMatch[1] === 'true' }
 }
 
+/**
+ * R2オブジェクトの一覧 (ListObjectsV2。 破壊 script(scripts/gc-src-prefix.ts等)が
+ * 削除対象を DB を介さず R2 listing だけから求めるための唯一の口)。
+ *
+ * pagination を全列挙する (IsTruncated/NextContinuationToken を追随)。 token が
+ * 欠落/非進行(壊れた応答の無限ループ)なら throw、 MAX_LIST_PAGES 超過でも throw
+ * する (無限ループ耐性)。
+ *
+ * **既存5関数(presignPutUrl/presignGetUrl/headObject/getObject/putObject/
+ * deleteObject)の never-throw 契約を、この関数は意図的に継承しない — 失敗
+ * (非2xx・fetch throw・timeout)は catch せずそのまま throw する。** 理由:
+ * 本関数は破壊操作の事後検証(「削除後 readback = listing 0件」で削除完了を
+ * 確認する)を支える。 失敗を空配列に正規化すると、 network 失敗時も
+ * 「0件 = 削除完了」に見えてしまい検証そのものが無意味になる — 「空」と
+ * 「分からない」を混同してはならない。
+ */
 export async function listObjects(prefix: string): Promise<string[]> {
   const keys: string[] = []
   let continuationToken: string | undefined

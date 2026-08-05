@@ -6,11 +6,12 @@
 // allowed to be exported in a "use server" file.` — crates/next-custom-transforms/
 // src/transforms/server_actions.rs、Context7 裏取り済)。よって定数(値)は
 // asset-actions.ts から直接 export できない — 本 file(directive 無し)に切り出し、
-// asset-actions.ts と ②-4a T4(prepare-upload.ts)の両方がここから import する。
+// asset-actions.ts と upload 経路(現行は `_actions/submit-upload.ts`)の両方が
+// ここから import する。
 //
 // 値の由来はどちらも asset-actions.ts の元コメントに準拠(rule of three: 同値の
-// ローカル private const が asset-actions.ts / lib/media/upload.ts / 旧
-// prepare-upload.ts の 3 箇所に分散していたため、この 2 値を単一定義へ集約した。
+// ローカル private const が asset-actions.ts / lib/media/upload.ts / 当時の upload
+// 入口 action の 3 箇所に分散していたため、この 2 値を単一定義へ集約した。
 // lib/media/upload.ts は別 import 境界の制約があり対象外のまま)。
 
 // 5 MiB hard cap (圧縮バイパスした不正 client への上限。spec §3.1/§4)。

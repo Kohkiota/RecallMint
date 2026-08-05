@@ -138,8 +138,24 @@
 | **study_sessions** | review-events/bulk Phase 0 `upsertSessionGuarded`(route:91) | withTenantTx(Phase 0 単純 wrap・processSession 合流せず) | rls-wave2(read/write/WITH CHECK/loud + upsertSessionGuarded 配線) |
 | **user_settings** | save-session-limit/custom/fsrs(write 3)+ settings/page・study/custom・study/smart(read 3) | withTenantTx(PK=user_id・述語 user_id のみ) | rls-wave2(read/write[whole-table→A のみ]/WITH CHECK/loud) |
 | **assets** | asset-actions: reserve insert / finalize(read tx→headObject→write tx の 2 分割)/ resolve select | withTenantTx(finalize は R2 I/O を tx 外に出す 2 tx。TOCTOU 防御=`status='reserved'` WHERE) | rls-wave2(read/write/WITH CHECK[A→B move 含む]/loud)+ `asset-actions.test.ts`(TOCTOU guard :503/:515/:542) |
-| **source_documents** | getExamStatusMap:44 / hasActiveProcessingUpload:167 / exams/status route:49(read 3。reconcileStale:86 は既 context 済) | withTenantTx | rls-wave2(read/write/WITH CHECK/loud)+ `ocr-owner-scope.test.ts`(O1・completeUploadTx/markFailed) |
-| **upload_records** | upload/page:97 `getCurrentMonthOcrPages` caller 差替(canRunOcr は既 guard tx) | withTenantTx(getCurrentMonthOcrPages は dbc: TenantDb 引数化済) | rls-wave2(read/write/WITH CHECK/loud + getCurrentMonthOcrPages 配線) |
+| **source_documents** | getExamStatusMap:150 / exams/status route:80,133(read 2。reconcileStale:236 は既 context 済) | withTenantTx | rls-wave2(read/write/WITH CHECK/loud)+ `ocr-owner-scope.test.ts`(O1・completeUploadTx/markFailed) |
+| **upload_records** | upload/page:110 `getCurrentMonthOcrPages` caller 差替(canRunOcr は既 guard tx) | withTenantTx(getCurrentMonthOcrPages は dbc: TenantDb 引数化済) | rls-wave2(read/write/WITH CHECK/loud + getCurrentMonthOcrPages 配線) |
+
+### 追随記録: ②-4a S-5(2026-08-05)で source_documents の read 経路が 1 本減った
+
+`hasActiveProcessingUpload`(`/app/upload` の form 表示 gate・`source_documents` を
+`status='processing' AND created_at >= now - 15min` で読んでいた)は **`hasLiveUploadOperation` へ
+置換**され、読む表が `source_documents` → **`upload_operations`** に変わった(S-5b 追加項目 A:
+submit を弾く live-op gate と同じ述語 `isLiveUploadOperationCondition()` を共有するため)。
+
+- 上表の `source_documents` 行は **read 3 → read 2**(getExamStatusMap / exams/status route)。
+- 後継の `hasLiveUploadOperation`(`lib/exams/source-doc-status.ts:403-427`)は
+  `withTenantTx(userId, …)` + `eq(uploadOperations.userId, userId)` の owner-scoped read。
+  `upload_operations` は **Wave 2 の 5 表ではなく ②-4a Phase A の RLS 対象表**
+  (`db/policies/ocr-2-4a-enable.sql`)なので上表には足さない。behavioral な隔離検証は
+  `rls-drift.test.ts`(policy/RLS 有効性)+ `tests/integration/pg/submit-upload.test.ts` の
+  「form 表示 gate と live-op gate の一致」describe(別テナントの live op が
+  `hasLiveUploadOperation` に漏れないことを実 PG で pin)が担う。
 
 ## 既 context 済サイト(Task 6 flip 前 re-grep で検証・本 Wave で変更なし)
 
@@ -149,7 +165,7 @@
 - `lib/clerk/handle-clerk-event.ts:219-233`(study_sessions/user_settings/upload_records/assets の lifecycle DELETE/UPDATE)= tx 冒頭 setTenantContext(:211・C12)。
 - `app/(app)/app/upload/_actions/upload-persistence.ts`(source_documents/upload_records write・completeUploadTx/markFailed/saveExtractedCards)= 各 tx 冒頭 setTenantContext。
 - `app/(app)/app/upload/_actions/upload-guard.ts:57`(source_documents read/insert・runUploadGuardTx)= tx 冒頭 setTenantContext。
-- `lib/exams/source-doc-status.ts:87`(source_documents UPDATE + upload_records insert・reconcileStaleProcessing)= tx 冒頭 setTenantContext(RLS-P2)。
+- `lib/exams/source-doc-status.ts:236`(source_documents UPDATE + upload_operations UPDATE + upload_records insert・reconcileStaleProcessing)= `withTenantTx`(RLS-P2。②-4a S-4 で op の terminal 化を同一 tx に追加)。
 
 ## partial-RLS(混在 tx)の intentional 証明
 

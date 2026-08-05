@@ -4,6 +4,16 @@
 -- 表を消すと object_key の台帳が失われ、残った source object を辿る手段が無くなる。
 -- 手順: docs/ops/ocr-2-4a-stg-migration-runbook.md §5。
 
+-- 0. lock 待ちの上限(値は db/policies/*.sql の先行例と同じ 5s)。下の 4/5/6 は
+--    現役 table `upload_operations` に ACCESS EXCLUSIVE を取るため、長い先行 query が
+--    居ると migration が無期限に待ち、その後ろに全 query が lock queue で詰む。
+--    **`SET LOCAL` を使う理由**: 先行例(db/policies/*.sql)は素の `SET` だが、あちらは
+--    専用の短命 owner 接続で 1 file を流して閉じる運用。こちらは drizzle-kit が file 全体を
+--    BEGIN/COMMIT で包んだうえで接続を使い回すため、素の `SET` は commit 後も接続に残る。
+--    tx を抜けたら戻る `SET LOCAL` が等価な形。
+--    timeout で abort しても **file 全体が単一 tx** なので中途半端な適用にはならない
+--    (全文 rollback → 再実行するだけ)。
+SET LOCAL lock_timeout = '5s';--> statement-breakpoint
 -- 1. 旧 status の非終端 operation を終端化する(**列 drop より前・同一 migration tx 内**)。
 --    S-5 で status の TS union から 'awaiting_sources' / 'claimed' が消えたため、この行が
 --    残ったまま drop すると **どの gate / sweep / reconciler からも到達不能な dead row**

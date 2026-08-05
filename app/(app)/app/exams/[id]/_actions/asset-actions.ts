@@ -22,7 +22,7 @@ import { MAX_ASSET_BYTES, MAX_IMAGE_DIMENSION } from './asset-limits'
 // 参照しない)。
 //
 // MAX_ASSET_BYTES / MAX_IMAGE_DIMENSION は ./asset-limits(directive 無し file)へ
-// 集約済み(rule of three — ②-4a T4 の prepare-upload.ts が同値を再利用するため。
+// 集約済み(rule of three — upload 入口の action も同値を再利用するため。
 // このファイルは 'use server' ディレクティブを持ち、非 async 関数の export は
 // Next.js の compile error になるため定数はここから直接 export できない)。
 
