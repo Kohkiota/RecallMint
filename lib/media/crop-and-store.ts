@@ -86,6 +86,28 @@ export interface CropFigureInput {
   detectTarget: string
 }
 
+// ②-4a 単一 invocation 経路(spec 2026-08-04 §2・Task S-3)の crop 入力。
+// 旧 entry との唯一の違いは **source の入手経路**: 新経路は source を R2 に置かず、
+// request body で受け取ったバイトを invocation のメモリのまま crop する。ゆえに
+// operationId(status='prepared' 確認)も source_assets 解決も持たない
+// (順序不変条件 = 「payload commit 後にのみ crop」は呼出元 pipeline が phase 順序
+// そのもので担保する)。
+export interface CropFigureFromBufferInput {
+  userId: string
+  // decode 検証済みの source 実バイト(呼出元が保持しているもの)。
+  sourceBytes: Buffer
+  // decode 済み source の寸法 = box_2d(0-1000 正規化)を px へ戻す分母。
+  // 呼出元の decode 結果由来(client 申告値ではない)。
+  sourceWidth: number
+  sourceHeight: number
+  // prepared payload の figure.sourceId。本 entry では DB 解決に使わず log にのみ
+  // 出す(どの source 画像で失敗したかの forensics)。
+  sourceId: string
+  figureAssetId: string
+  box2d: Box2d
+  detectTarget: string
+}
+
 export type CropAndStoreOutcome =
   | { outcome: 'stored' }
   | { outcome: 'reused' }
@@ -239,13 +261,17 @@ type WriteOutcome =
 // **assets** には適用されない — figureAssetId は同一 figure(同一 source+box2d)
 // に対して 1 対 1 に決定的に定まるため、conflict は「同一内容の正当な再試行」
 // であり意図的に idempotent 再利用可能(既存の 412 分岐と対称的な設計)。
+//
+// `sourceAssetId` が null なのは ②-4a 単一 invocation 経路(source を R2/DB に
+// 置かない = 参照すべき source_assets 行が存在しない)。列は migration 0031 で
+// nullable 化済み(列 drop は旧経路撤去の S-5)。
 async function writeCropAssetRows(
   userId: string,
   objectKey: string,
   bytes: Buffer,
   hash: string,
   rect: CropRect,
-  sourceAssetId: string,
+  sourceAssetId: string | null,
   figureAssetId: string,
   detectTarget: string,
 ): Promise<WriteOutcome> {
@@ -355,14 +381,60 @@ export async function cropFigureAndStore(input: CropFigureInput): Promise<CropAn
     return { outcome: 'source_unreadable' }
   }
 
+  return cropBytesAndStore({
+    userId,
+    sourceBytes: srcObj.bytes,
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    sourceAssetId: source.id,
+    sourceId,
+    figureAssetId,
+    box2d,
+    detectTarget,
+  })
+}
+
+/**
+ * ②-4a 単一 invocation 経路(Task S-3)の crop entry。source 行の SELECT と R2 GET を
+ * **行わず**、呼出元が持っているバイトと decode 済み寸法をそのまま受け取る。
+ *
+ * 以降(③ toCropRect → ④ sharp → ⑤ 条件付き PUT → ⑥ 412 hash 照合 → ⑦ 行確定)は
+ * `cropFigureAndStore` と**同一の機構**を共有する(`cropBytesAndStore`)— 保存側の
+ * 不変条件(決定性 / first-writer-wins / hash 照合 / ON CONFLICT idempotent)を
+ * 新経路のために作り直さない。差分は provenance の `source_asset_id` が NULL に
+ * なる点のみ(新経路に source_assets 行が存在しないため)。
+ *
+ * 到達しない outcome: `not_prepared` / `source_not_ready` / `source_unreadable`
+ * (いずれも本 entry が行わない source 解決・R2 GET に由来する)。
+ */
+export async function cropFigureFromBuffer(
+  input: CropFigureFromBufferInput,
+): Promise<CropAndStoreOutcome> {
+  return cropBytesAndStore({ ...input, sourceAssetId: null })
+}
+
+// source バイト + 寸法が確定した後の共通経路(旧 entry / 新 entry の唯一の実装)。
+async function cropBytesAndStore(args: {
+  userId: string
+  sourceBytes: Buffer
+  sourceWidth: number
+  sourceHeight: number
+  sourceAssetId: string | null
+  sourceId: string
+  figureAssetId: string
+  box2d: Box2d
+  detectTarget: string
+}): Promise<CropAndStoreOutcome> {
+  const { userId, sourceBytes, sourceId, figureAssetId, box2d, detectTarget } = args
+
   // 制約#2: この 1 回の toCropRect 呼出の戻り値だけを、以降 sharp extract の
   // 入力と asset_derivations の監査メタの両方に使う(再計算・再導出しない)。
-  const rect = toCropRect(box2d, source.width, source.height)
+  const rect = toCropRect(box2d, args.sourceWidth, args.sourceHeight)
   if (rect === null) return { outcome: 'crop_failed' }
 
   let cropBytes: Buffer
   try {
-    cropBytes = await sharp(srcObj.bytes, { limitInputPixels: CROP_DECODE_MAX_PIXELS })
+    cropBytes = await sharp(sourceBytes, { limitInputPixels: CROP_DECODE_MAX_PIXELS })
       .timeout({ seconds: CROP_SHARP_TIMEOUT_SEC })
       .extract({ left: rect.left, top: rect.top, width: rect.cropW, height: rect.cropH })
       .webp({ quality: CROP_WEBP_QUALITY, lossless: CROP_WEBP_LOSSLESS })
@@ -441,7 +513,7 @@ export async function cropFigureAndStore(input: CropFigureInput): Promise<CropAn
     cropBytes,
     contentHash,
     rect,
-    source.id,
+    args.sourceAssetId,
     figureAssetId,
     detectTarget,
   )

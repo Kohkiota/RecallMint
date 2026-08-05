@@ -6,7 +6,6 @@ import {
   assets,
   cardAssetRefs,
   exams,
-  sourceAssets,
   sourceDocuments,
   uploadOperations,
   uploadRecords,
@@ -78,9 +77,23 @@ export async function publishPreparedUploadTx(
     cards: readonly PreparedCard[]
     cardImagesByCardId: Record<string, CardImage[]>
     resultSummary: Record<string, unknown>
+    // upload_records.file_size_bytes に記帳する受領バイト総量(step 7)。
+    // ②-4a Task S-3 で引数化した: 旧経路は source_assets.byte_size の SUM を
+    // 呼出側(publish-prepared-orchestrate.ts)が計算して渡し、新経路(単一
+    // invocation)は source を R2/DB に置かないため受領 Buffer の合計を渡す。
+    // 「どこから来た値か」は呼出経路の知識であり、この tx の責務ではない。
+    fileSizeBytes: number
   },
 ): Promise<{ outcome: 'published' } | { outcome: 'stale' }> {
-  const { userId, operationId, leaseVersion, cards, cardImagesByCardId, resultSummary } = args
+  const {
+    userId,
+    operationId,
+    leaseVersion,
+    cards,
+    cardImagesByCardId,
+    resultSummary,
+    fileSizeBytes,
+  } = args
 
   // 1. FINAL-DEFENSE FENCING(本 task の top invariant・spec §2/§8.1)。 operation を
   //    SELECT … FOR UPDATE(ロック順の起点)し、 status='prepared' AND
@@ -231,20 +244,9 @@ export async function publishPreparedUploadTx(
   //    rollback すれば source_documents/cards/operation と共にこの行も消える)。
   //    append-only 台帳・月次 quota SUM の対象(getCurrentMonthOcrPages が
   //    status='completed' の pages_processed を SUM)ゆえ pages_processed は 0 でなく
-  //    実 source 画像数(= expectedSourceCount)を書く。 file_size_bytes は
-  //    source_assets.byte_size 合計(finalize 後 immutable ゆえ plain SELECT・lock 不要)。
-  //    ocr_cost_yen は新 flow が publish 時に cost を持たないため NULL(quota SUM は
+  //    実 source 画像数(= expectedSourceCount)を書く。 file_size_bytes は呼出側が
+  //    渡す(Task S-3 で引数化・上記 args のコメント参照)。 ocr_cost_yen は新 flow が publish 時に cost を持たないため NULL(quota SUM は
   //    pages_processed で成立し cost に非依存・spec §8.2)。 enforcement は ②-5(記帳 ≠ 強制)。
-  const sizeRows = await tx
-    .select({ total: sql<number>`COALESCE(SUM(${sourceAssets.byteSize}), 0)::int` })
-    .from(sourceAssets)
-    .where(
-      and(
-        eq(sourceAssets.sourceDocumentId, sourceDocumentId),
-        eq(sourceAssets.userId, userId),
-      ),
-    )
-  const fileSizeBytes = Number(sizeRows[0]?.total ?? 0)
   await tx.insert(uploadRecords).values({
     userId,
     filename: sourceFilename,

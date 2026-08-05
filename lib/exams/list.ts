@@ -139,6 +139,9 @@ function snippet(text: string, max: number): string {
 export type SourceDocumentResult = {
   id: string
   examName: string
+  // ②-4a 単一 invocation Sprint Task S-3: result page が成功 / 失敗を出し分けるために
+  // 必要(新経路は失敗しても呼出側に outcome を返さず、doc の status だけが正)。
+  status: string
 }
 export async function getSourceDocumentForUser(
   userId: string,
@@ -150,6 +153,7 @@ export async function getSourceDocumentForUser(
     .select({
       id: sourceDocuments.id,
       examName: exams.name,
+      status: sourceDocuments.status,
     })
     .from(sourceDocuments)
     .innerJoin(exams, eq(exams.id, sourceDocuments.examId))

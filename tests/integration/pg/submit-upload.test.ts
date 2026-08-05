@@ -564,9 +564,9 @@ describe('submitUploadTx (S-1)', () => {
     })
   })
 
-  // --- (e) action 経路(sync tx → OCR phase)+ R2 呼出 0 ---
-  describe('submitUpload(action・S-2 OCR phase)', () => {
-    it('accepted を返し、同一 invocation で OCR まで走らせて prepared にする(R2 client 未使用)', async () => {
+  // --- (e) action 経路(sync tx → OCR → crop → publish)+ source の R2 呼出 0 ---
+  describe('submitUpload(action・S-2 OCR phase + S-3 crop/publish)', () => {
+    it('accepted を返し、同一 invocation で publish まで走らせて completed にする(図版なしゆえ R2 client 未使用)', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: userAId })
 
       const result = await submitUpload(
@@ -590,7 +590,7 @@ describe('submitUploadTx (S-1)', () => {
         })
         .from(uploadOperations)
         .where(eq(uploadOperations.id, result.operationId))
-      expect(opRows[0]?.status).toBe('prepared')
+      expect(opRows[0]?.status).toBe('completed')
       expect(opRows[0]?.lastErrorCode).toBeNull()
       expect(opRows[0]?.preparedSchemaVersion).toBe(1)
       expect(mockCallGemini).toHaveBeenCalledTimes(1)

@@ -1,12 +1,14 @@
-// ②-4a 単一 invocation Sprint Task S-2: runUploadPipeline(OCR phase)の unit 検証。
+// ②-4a 単一 invocation Sprint Task S-2 / S-3: runUploadPipeline の unit 検証。
 //
 // 本 file が担うのは「DB を張らずに観測できる契約」だけ:
-//   ① decode は**逐次**(論点 B: sharp を計測 mock にして peak 同時実行数 = 1)
-//   ② R2 を一切使わない(source 走査)
+//   ① decode / crop はどちらも**逐次**(計測 mock で peak 同時実行数 = 1)
+//   ② source を R2 から読まない(source 走査)
 //   ③ Gemini に渡す parts の順序・内容(受領順の source_id interleave)
 //   ④ deadline 超過 / decode 失敗で Gemini を呼ばずに terminal へ落ちる
 //   ⑤ 予期しない throw を外へ漏らさず integration_failures に PII-free で積む
-// 実 PG 上の CAS / terminal 化 / ai_usage は tests/integration/pg/upload-pipeline.test.ts。
+//   ⑥ crop の失敗(個別 / phase 共通例外)で publish を止めない(spec §9-6)
+// 実 PG 上の CAS / terminal 化 / ai_usage / 順序不変条件は
+// tests/integration/pg/upload-pipeline.test.ts。
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -22,7 +24,31 @@ const {
   mockLoggerInfo,
   mockSharp,
   sharpState,
+  mockCropFigureFromBuffer,
+  cropState,
+  mockPublishPreparedUploadTx,
 } = vi.hoisted(() => {
+  // crop の in-flight 計測 mock。decode と同じ規律(逐次)を pin する — Promise.all 化
+  // すると crop 出力 Buffer が同時に複数メモリへ載る。
+  const cropState = {
+    inFlight: 0,
+    peakInFlight: 0,
+    calls: 0,
+    outcome: 'stored' as string,
+    // 指定 index(0-origin)の crop 呼出で throw させる(個別 figure 例外の注入点)。
+    throwAt: null as number | null,
+    // 全 crop 呼出で throw させる(台帳の丸め検証用)。
+    throwAll: false,
+  }
+  const mockCropFigureFromBuffer = vi.fn(async () => {
+    const index = cropState.calls++
+    cropState.inFlight += 1
+    cropState.peakInFlight = Math.max(cropState.peakInFlight, cropState.inFlight)
+    await new Promise((r) => setTimeout(r, 0))
+    cropState.inFlight -= 1
+    if (cropState.throwAll || cropState.throwAt === index) throw new Error('crop exploded')
+    return { outcome: cropState.outcome }
+  })
   // sharp の in-flight 計測 mock(論点 B)。 decode 窓 = metadata() 開始 〜
   // toBuffer() 解決(verifyImageBytes がこの順で 1 画像を処理する)。 逐次なら
   // peak = 1、Promise.all 化すると同時に metadata() へ入るため peak = 枚数。
@@ -73,6 +99,9 @@ const {
     mockLoggerInfo: vi.fn(),
     mockSharp,
     sharpState,
+    mockCropFigureFromBuffer,
+    cropState,
+    mockPublishPreparedUploadTx: vi.fn(),
   }
 })
 
@@ -96,11 +125,35 @@ vi.mock('@/lib/ocr/normalize-prepared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ocr/normalize-prepared')>()
   return { ...actual, normalizePrepared: vi.fn(actual.normalizePrepared) }
 })
+// crop 本体は計測 mock(実 sharp / 実 R2 を叩かない)。 outcome → disposition の
+// 翻訳規則は実実装(classifyCropOutcome)のまま — test 側で複製すると drift する。
+vi.mock('@/lib/media/crop-and-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/media/crop-and-store')>()
+  return {
+    ...actual,
+    cropFigureFromBuffer: mockCropFigureFromBuffer,
+    // 既定は実実装(翻訳規則を test 側に複製しない)。 層 2(phase 共通 throw)の
+    // 注入点としてだけ spy でくるむ — per-figure try の**外側**で呼ばれるため。
+    classifyCropOutcome: vi.fn(actual.classifyCropOutcome),
+  }
+})
+// publish tx は mock(実 DB を張らない)。 引数(cardImagesByCardId / fileSizeBytes /
+// resultSummary)の検証点として使う。
+vi.mock('../_actions/publish-prepared', () => ({
+  publishPreparedUploadTx: mockPublishPreparedUploadTx,
+}))
 
 // vi.mock は import より前に hoist される。
 import { GEMINI_TIMEOUT_MS, type GeminiContentPart } from '@/lib/ai/clients/gemini'
+import { classifyCropOutcome } from '@/lib/media/crop-and-store'
 import { normalizePrepared } from '@/lib/ocr/normalize-prepared'
 import { runUploadPipeline, type UploadPipelineFile } from './upload-pipeline'
+
+// 実実装への参照(module mock の factory が `vi.fn(actual.classifyCropOutcome)` で
+// くるんでいるので、初期 implementation がそれ)。
+const realClassifyCropOutcome = vi
+  .mocked(classifyCropOutcome)
+  .getMockImplementation() as typeof classifyCropOutcome
 
 const USER_ID = '00000000-0000-4000-8000-00000000000a'
 const REFS = {
@@ -139,6 +192,52 @@ function geminiOk(body: unknown = { cards: [VALID_CARD] }) {
   }
 }
 
+// figure_regions 付きの Gemini 応答。source_id は pipeline が実行時に採番するため、
+// 受け取った parts から読み出して echo する(iso と同じ手口)。
+function geminiWithFigures(figureCount: number) {
+  return async (req: { parts: GeminiContentPart[] }) => {
+    const sourceIds = req.parts
+      .filter((p): p is { text: string } => 'text' in p)
+      .map((p) => /^source_id=(.+)$/.exec(p.text)?.[1])
+      .filter((id): id is string => id !== undefined)
+    return geminiOk({
+      cards: [
+        {
+          ...VALID_CARD,
+          figure_regions: Array.from({ length: figureCount }, (_, i) => ({
+            source_id: sourceIds[i % sourceIds.length],
+            box_2d: [100, 100, 800, 800],
+            target: 'question_text',
+            label: `fig${i}`,
+          })),
+        },
+      ],
+    })
+  }
+}
+
+// 軽量 fake tx: commitPreparedCas(`.returning()`)と terminalize(`.for('update')` +
+// 素の await)の 2 形だけを満たす(crop-and-store.test.ts の fake tx と同じ方針)。
+const txState = {
+  // terminalize の fence 読取が返す行。phase に応じて test 側が差し替える。
+  opRows: [{ status: 'processing', leaseVersion: 0 }] as Record<string, unknown>[],
+  // commitPreparedCas の `.returning()`(0 行 = CAS 敗北)。
+  commitReturning: [{ id: 'op' }] as Record<string, unknown>[],
+}
+const fakeTx = {
+  select: () => ({
+    from: () => ({ where: () => ({ for: async () => txState.opRows }) }),
+  }),
+  update: () => ({
+    set: () => ({
+      where: () => ({
+        then: (resolve: (v: unknown) => void) => resolve(undefined),
+        returning: async () => txState.commitReturning,
+      }),
+    }),
+  }),
+}
+
 function phasesOf(warnSpy: { mock: { calls: unknown[][] } }): unknown[] {
   return warnSpy.mock.calls
     .map((c) => c[0] as Record<string, unknown>)
@@ -168,7 +267,21 @@ beforeEach(() => {
   sharpState.peakInFlight = 0
   sharpState.calls = 0
   sharpState.failAt = null
-  mockWithTenantTx.mockResolvedValue('committed')
+  cropState.inFlight = 0
+  cropState.peakInFlight = 0
+  cropState.calls = 0
+  cropState.outcome = 'stored'
+  cropState.throwAt = null
+  cropState.throwAll = false
+  // mockImplementationOnce / mockRejectedValue は clearAllMocks で戻らないため、
+  // 層 2 の注入点(classifyCropOutcome)は毎回 実実装へ戻す。
+  vi.mocked(classifyCropOutcome).mockImplementation(realClassifyCropOutcome)
+  txState.opRows = [{ status: 'processing', leaseVersion: 0 }]
+  txState.commitReturning = [{ id: 'op' }]
+  mockWithTenantTx.mockImplementation(
+    async (_userId: string, fn: (tx: unknown) => unknown) => fn(fakeTx),
+  )
+  mockPublishPreparedUploadTx.mockResolvedValue({ outcome: 'published' })
   mockCallGemini.mockResolvedValue(geminiOk())
   mockIncrementAiUsage.mockResolvedValue(undefined)
   mockRecordIntegrationFailure.mockResolvedValue(undefined)
@@ -312,6 +425,9 @@ describe('runUploadPipeline — phase 別所要時間 log', () => {
       'gemini',
       'normalize',
       'commit',
+      // 順序不変条件(spec §7.3): crop / publish は commit の**後**にしか出ない。
+      'crop',
+      'publish',
       'total',
     ])
     // PII-free: operationId / phase 名 / ミリ秒のみ(filename・カード本文を含めない)。
@@ -361,6 +477,202 @@ describe('runUploadPipeline — phase 別所要時間 log', () => {
         event: 'upload.pipeline.failed',
         errorCode: 'empty_cards',
       }),
+    )
+  })
+})
+
+describe('runUploadPipeline — crop phase(S-3)', () => {
+  it('crop は逐次実行される(peak 同時 crop = 1・crop 出力 Buffer を溜めない前提)', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(3))
+
+    await run(filesOf('a'))
+
+    expect(cropState.calls).toBe(3)
+    expect(cropState.peakInFlight).toBe(1)
+  })
+
+  it('prepared commit に負けた(CAS 0 行)ら crop も publish もしない(順序不変条件)', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(2))
+    txState.commitReturning = []
+
+    await run(filesOf('a'))
+
+    expect(cropState.calls).toBe(0)
+    expect(mockPublishPreparedUploadTx).not.toHaveBeenCalled()
+    expect(phasesOf(mockLoggerWarn)).toEqual(['decode', 'gemini', 'normalize', 'commit', 'total'])
+  })
+
+  it('個別 figure の crop 失敗は publish を止めない(crop_failed 計上 + text card は publish)', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(2))
+    // 'error'(R2 の技術的失敗)は旧経路では retryable だが、新経路に再試行主体が
+    // 居ないため exclude(crop_failed)へ倒す — publish 自体は止めない。
+    cropState.outcome = 'error'
+
+    await run(filesOf('a'))
+
+    expect(mockPublishPreparedUploadTx).toHaveBeenCalledTimes(1)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      cardImagesByCardId: Record<string, unknown[]>
+      resultSummary: { figuresExcluded: Record<string, number>; cardsExtracted: number }
+    }
+    expect(Object.values(args.cardImagesByCardId).flat()).toHaveLength(0)
+    expect(args.resultSummary.cardsExtracted).toBe(1)
+    expect(args.resultSummary.figuresExcluded.crop_failed).toBe(2)
+  })
+
+  // 層 1(throw 版・canonical review M-1): 個別 figure の throw は**その figure だけ**を
+  // crop_failed にして続行する(隔離原則: 1 figure の事故で残りを巻き込まない)。
+  it('個別 figure の crop が throw しても他の figure は crop され publish へ進む', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(3))
+    cropState.throwAt = 1 // 2 件目だけ throw
+
+    await expect(run(filesOf('a'))).resolves.toBeUndefined()
+
+    // 3 件すべて crop を試みる(2 件目で loop を打ち切らない)。
+    expect(cropState.calls).toBe(3)
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.crop_figure_failed' }),
+    )
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      cardImagesByCardId: Record<string, unknown[]>
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    expect(Object.values(args.cardImagesByCardId).flat()).toHaveLength(2)
+    expect(args.resultSummary.figuresExcluded.crop_failed).toBe(1)
+  })
+
+  // I-2: ユーザー向けは縮退(publish 続行)でも**運用向けには黙らない**。
+  // 台帳が無いと「全 upload が静かに text-only で completed」になり誰も気付けない。
+  it('crop の予期しない throw は integration_failures に載せる(op は completed へ進む)', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(3))
+    cropState.throwAt = 0
+
+    await run(filesOf('a'))
+
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledTimes(1)
+    const args = mockRecordIntegrationFailure.mock.calls[0][0] as Record<string, unknown>
+    expect(args.key).toBe('ocr_pipeline')
+    expect(args.userId).toBe(USER_ID)
+    // PII-free(filename / base64 / payload を含めない)。
+    expect(args.context).toEqual({
+      operationId: REFS.operationId,
+      errorCode: 'crop_phase_failed',
+    })
+    expect(JSON.stringify(args)).not.toContain('a.png')
+    // terminal 化はしない = publish は走る(crop 失敗で OCR を巻き添えにしない)。
+    expect(mockPublishPreparedUploadTx).toHaveBeenCalledTimes(1)
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.failed' }),
+    )
+  })
+
+  it('台帳は 1 operation につき 1 行に丸める(figure ごとに 40 件鳴らさない)', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(3))
+    cropState.throwAll = true
+
+    await run(filesOf('a'))
+
+    expect(mockCropFigureFromBuffer).toHaveBeenCalledTimes(3)
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledTimes(1)
+  })
+
+  // 層 2(backstop): loop 骨格側の throw。attach 済みは活かし、残りを crop_failed に
+  // して publish へ進む。注入点は classifyCropOutcome(per-figure try の外側)。
+  it('crop phase 共通の throw でも既 attach 分は採用し、残りだけ crop_failed で publish へ進む', async () => {
+    mockCallGemini.mockImplementation(geminiWithFigures(3))
+    vi.mocked(classifyCropOutcome)
+      .mockImplementationOnce(() => 'success')
+      .mockImplementationOnce(() => {
+        throw new Error('phase exploded')
+      })
+
+    await expect(run(filesOf('a'))).resolves.toBeUndefined()
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.crop_phase_failed' }),
+    )
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledTimes(1)
+    expect(mockPublishPreparedUploadTx).toHaveBeenCalledTimes(1)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      cardImagesByCardId: Record<string, unknown[]>
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    // 1 件目は attach 済み / 2 件目(例外)と 3 件目(未処理)は crop_failed。
+    expect(Object.values(args.cardImagesByCardId).flat()).toHaveLength(1)
+    expect(args.resultSummary.figuresExcluded.crop_failed).toBe(2)
+  })
+
+  it('残り予算が crop 最低予算を切ったら以降の figure は deadline_excluded(crop を試みない)', async () => {
+    // crop の予算は **統合予算の残余**(OCR と共有)。Gemini が予算を食い潰した状況を
+    // 作るため、Gemini mock の中で時計を進める(mock は瞬時に返るので実時間では作れない)。
+    const realNow = Date.now.bind(Date)
+    let clockOffset = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset)
+    try {
+      const withFigures = geminiWithFigures(2)
+      mockCallGemini.mockImplementation(async (req: { parts: GeminiContentPart[] }) => {
+        clockOffset += GEMINI_TIMEOUT_MS
+        return withFigures(req)
+      })
+
+      // 初回 attempt の pre-call gate は通る(残余 = GEMINI_TIMEOUT_MS + 1s)が、
+      // call 後の残余は 1s < CROP_MIN_REMAINING_MS(5s)。
+      await run(filesOf('a'), { deadlineOffsetMs: GEMINI_TIMEOUT_MS + 1_000 })
+    } finally {
+      nowSpy.mockRestore()
+    }
+
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+    expect(cropState.calls).toBe(0)
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as {
+      resultSummary: { figuresExcluded: Record<string, number> }
+    }
+    expect(args.resultSummary.figuresExcluded.deadline_excluded).toBe(2)
+    expect(args.resultSummary.figuresExcluded.crop_failed).toBe(0)
+  })
+})
+
+describe('runUploadPipeline — publish phase(S-3)', () => {
+  it('upload_records の file_size_bytes は受領 Buffer の合計を渡す', async () => {
+    const files = filesOf('a', 'b', 'c')
+
+    await run(files)
+
+    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as { fileSizeBytes: number }
+    expect(args.fileSizeBytes).toBe(files.reduce((s, f) => s + f.buffer.length, 0))
+  })
+
+  it('publish tx の失敗は terminal(publish_failed)— commit 後ゆえ fence は prepared', async () => {
+    txState.opRows = [{ status: 'prepared', leaseVersion: 0 }]
+    mockPublishPreparedUploadTx.mockRejectedValue(new Error('duplicate card id'))
+
+    await expect(run(filesOf('a'))).resolves.toBeUndefined()
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.publish_tx_failed' }),
+    )
+    // 'raced' ではなく実際に terminal 化される(fence を processing 固定にすると
+    // ここが 'raced' に化けて op が prepared + live lease のまま残る)。
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'publish_failed',
+        outcome: 'terminalized',
+      }),
+    )
+  })
+
+  it('publish tx が stale(fencing 敗北)なら terminal 化しない', async () => {
+    txState.opRows = [{ status: 'prepared', leaseVersion: 0 }]
+    mockPublishPreparedUploadTx.mockResolvedValue({ outcome: 'stale' })
+
+    await run(filesOf('a'))
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.publish_raced' }),
+    )
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.failed' }),
     )
   })
 })

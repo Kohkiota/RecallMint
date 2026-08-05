@@ -13,8 +13,18 @@ import { ResultActions } from './_components/result-actions'
 // preview を独立 route に切り出した。 page 遷移ごとに fresh server render される
 // ため、 残量 banner stale 表示 (Bug B) が構造的に発生しない。
 //
-// 到達経路: processUpload 成功 → upload-form が router.push でここへ。
+// 到達経路: upload 完了 → upload-form が router.push でここへ。
 // URL 直叩き (他 user のリソース) は owner-scoped query が null → notFound()。
+//
+// ②-4a 単一 invocation Sprint Task S-3: **成功前提で描画しない**。 新経路の
+// `submitUpload` は pipeline の成否を呼出側に返さない(失敗も含めて server 側で
+// 終端化する契約)ため、 client は結果を知らずにこの page へ遷移する。 唯一の正は
+// `source_documents.status` で、 `completed` **以外**(failed = spec §4.4 の全失敗
+// クラス = Gemini rate limit / 呼出失敗 / JSON 不読 / 有効カード 0 / decode 不能 /
+// 予算切れ / publish 失敗 / 予期しない throw、 processing = 未完了)は緑の成功
+// パネルを出さない。
+// この分岐は S-4(poll → 遷移)後も生きる — URL 直叩き / back-button でもここへ
+// 到達しうるため、表示の正しさを page 側で閉じる。
 export default async function UploadResultPage({
   params,
 }: {
@@ -43,6 +53,43 @@ export default async function UploadResultPage({
       return { sourceDoc, cards }
     },
   )
+
+  // **完了以外はすべて成功パネルを出さない**(`!== 'completed'`)。 `failed` だけを
+  // 弾く形にすると `processing` が「✅ 0 問を抽出しました」になる — S-3 では狭い race
+  // (replay で in-flight op の 3 ID が返る / commit_raced / publish stale)経由でしか
+  // 到達しないが、 S-4(after() + poll)では processing が常態になり同じ穴が主経路で
+  // 開く。 クラスごと閉じておく。
+  if (sourceDoc.status !== 'completed') {
+    const failed = sourceDoc.status === 'failed'
+    return (
+      <AppContainer>
+        <div className="space-y-6">
+          <section
+            role="alert"
+            className={`rounded-md border p-4 ${
+              failed ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'
+            }`}
+          >
+            <h1
+              className={`text-lg font-bold mb-1 ${
+                failed ? 'text-red-800' : 'text-amber-900'
+              }`}
+            >
+              {failed ? '⚠ 問題を抽出できませんでした' : '⏳ まだ処理中です'}
+            </h1>
+            {/* 公開文言(spec 論点 A): 待ち時間の数値は書かない / 試験の削除は案内しない。 */}
+            <p className="text-sm text-slate-700">
+              {failed
+                ? '処理が中断された可能性があります。 しばらく待ってから再度お試しください。 処理状況は試験一覧で確認できます。'
+                : `試験「${sourceDoc.examName}」 への取り込みを実行中です。 処理状況は試験一覧で確認できます。`}
+            </p>
+          </section>
+
+          <ResultActions label="試験一覧へ" />
+        </div>
+      </AppContainer>
+    )
+  }
 
   return (
     <AppContainer>

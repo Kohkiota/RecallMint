@@ -31,7 +31,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { UnauthenticatedError } from '@/lib/auth/errors'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
-import { uploadOperations, type User } from '@/lib/db/schema'
+import { sourceAssets, uploadOperations, type User } from '@/lib/db/schema'
 import {
   cropFigureAndStore,
   classifyCropOutcome,
@@ -383,16 +383,39 @@ export async function runPublishPrepared(
 
   let txResult: { outcome: 'published' } | { outcome: 'stale' }
   try {
-    txResult = await withTenantTx(userId, (tx) =>
-      publishPreparedUploadTx(tx, {
+    txResult = await withTenantTx(userId, async (tx) => {
+      // Task S-3 で `publishPreparedUploadTx` から引数化された値。旧経路の挙動を
+      // 変えないため、同じ tx 内で同じ SUM を計算して渡す(source_assets.byte_size は
+      // finalize 後 immutable ゆえ plain SELECT・lock 不要)。
+      //
+      // **fencing の前に実行される**のは意図的(canonical review M-6)。fence は
+      // publishPreparedUploadTx の冒頭 `SELECT … FOR UPDATE` にあり、引数を先に
+      // 評価する以上その前になる。安全な理由: ① ACCESS SHARE のみで lock 順に影響
+      // しない ② finalize 後 immutable ゆえ読む時点で値が変わらない ③ 同一 tx なので
+      // fence 敗北時は他の読取と一緒に rollback される。コストは「crop 中に takeover
+      // された」稀な race での SELECT 1 回だけ(Step A の fenced fast-fail で弾かれる
+      // 通常の stale はここまで来ない)。fence の後に移すには fenced tx へ callback を
+      // 注入する間接層が要り、簡潔性規律(層を足す前にそれ無しで書けないか試す)と
+      // T14a の「fenced tx 本体を触らない」指示の両方に反するため採らない。
+      const sizeRows = await tx
+        .select({ total: sql<number>`COALESCE(SUM(${sourceAssets.byteSize}), 0)::int` })
+        .from(sourceAssets)
+        .where(
+          and(
+            eq(sourceAssets.sourceDocumentId, sourceDocumentId),
+            eq(sourceAssets.userId, userId),
+          ),
+        )
+      return publishPreparedUploadTx(tx, {
         userId,
         operationId,
         leaseVersion,
         cards: payload.cards,
         cardImagesByCardId: plan.cardImagesByCardId,
         resultSummary,
-      }),
-    )
+        fileSizeBytes: Number(sizeRows[0]?.total ?? 0),
+      })
+    })
   } catch (err) {
     // 保護 UPDATE 期待未満 / 重複 card id(loud fail)/ その他 DB error は tx 全体が
     // rollback 済み(部分 commit なし)。 retryable に写像し loud に記録する

@@ -38,11 +38,13 @@ vi.mock('@/lib/db/tenant-tx', () => ({
 
 import {
   cropFigureAndStore,
+  cropFigureFromBuffer,
   classifyCropOutcome,
   CROP_OUTCOME_CLASS,
   CROP_PIPELINE_VERSION,
   type CropAndStoreOutcome,
   type CropFigureInput,
+  type CropFigureFromBufferInput,
 } from './crop-and-store'
 
 // ---------------------------------------------------------------------------
@@ -649,5 +651,116 @@ describe('classifyCropOutcome / CROP_OUTCOME_CLASS (constraint: T12 terminal/ret
     // every outcome variant has an entry (no silent gaps if a new outcome is
     // added to the union without updating the classification map).
     expect(Object.keys(CROP_OUTCOME_CLASS).sort()).toEqual(Object.keys(expected).sort())
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ②-4a Task S-3: cropFigureFromBuffer(単一 invocation 経路の crop entry)。
+//
+// 旧 entry との差分だけを pin する:
+//   ① source 行の SELECT も R2 GET も行わない(バイトと寸法を引数で受ける)
+//   ② PUT key は crop asset key のみ(`src/` を含まない = source を R2 に置かない)
+//   ③ provenance の source_asset_id は NULL(参照すべき source_assets 行が無い)
+//   ④ 保存側の機構(rect の単一算出点 / 条件付き PUT / 412 hash 照合 / ON CONFLICT)は
+//      旧 entry と同一実装を共有する
+// ---------------------------------------------------------------------------
+describe('cropFigureFromBuffer (S-3) — メモリのバイトから crop', () => {
+  function bufferInput(overrides: Partial<CropFigureFromBufferInput> = {}): CropFigureFromBufferInput {
+    return {
+      userId: USER_ID,
+      sourceBytes: sourcePngBytes,
+      sourceWidth: SOURCE_WIDTH,
+      sourceHeight: SOURCE_HEIGHT,
+      sourceId: SOURCE_ID,
+      figureAssetId: 'figure-asset-buf',
+      box2d: VALID_BOX2D,
+      detectTarget: 'question_text',
+      ...overrides,
+    }
+  }
+
+  it('source 行 SELECT も R2 GET もせず crop → PUT → 行確定する(key は crop asset のみ・src/ を含まない)', async () => {
+    const state = makeFakeState()
+    // upload_operations / source_assets を読もうとしたら fake tx が throw する
+    // (installFakeTx は未知 table のみ throw するが、この 2 つは空配列を返して
+    // guard 不成立になるため、そもそも読まないことを mockGetObject 側でも pin する)。
+    installFakeTx(state)
+    mockPutObject.mockResolvedValueOnce('success')
+
+    const input = bufferInput()
+    const result = await cropFigureFromBuffer(input)
+    expect(result).toEqual({ outcome: 'stored' })
+
+    // R2 GET は 1 度も呼ばれない(source は呼出元のメモリにある)。
+    expect(mockGetObject).not.toHaveBeenCalled()
+
+    expect(mockPutObject).toHaveBeenCalledTimes(1)
+    const [putKey, putBytes, putMime, putOpts] = mockPutObject.mock.calls[0]
+    expect(putKey).toBe(`users/${USER_ID}/figure-asset-buf.webp`)
+    // 新経路は source を R2 に置かない = `src/` prefix の key を一切作らない。
+    expect(putKey).not.toContain('/src/')
+    expect(putMime).toBe('image/webp')
+    expect(putOpts).toEqual({ ifNoneMatch: true })
+
+    // rect は toCropRect の**単一呼出結果**由来(独立再計算しない・制約#2)。
+    const expectedRect = toCropRect(input.box2d, SOURCE_WIDTH, SOURCE_HEIGHT)
+    expect(expectedRect).not.toBeNull()
+    const assetRow = state.insertedAssets[0]!
+    expect(assetRow.objectKey).toBe(putKey)
+    expect(assetRow.status).toBe('ready')
+    expect(assetRow.byteSize).toBe((putBytes as Buffer).length)
+    expect(assetRow.width).toBe(expectedRect!.cropW)
+    expect(assetRow.height).toBe(expectedRect!.cropH)
+
+    const derivationRow = state.insertedDerivations[0]!
+    // 新経路に source_assets 行は存在しない(migration 0031 で nullable 化)。
+    expect(derivationRow.sourceAssetId).toBeNull()
+    expect(derivationRow.cropW).toBe(expectedRect!.cropW)
+    expect(derivationRow.cropH).toBe(expectedRect!.cropH)
+    expect(derivationRow.detectTarget).toBe('question_text')
+    expect(derivationRow.pipelineVersion).toBe(CROP_PIPELINE_VERSION)
+  })
+
+  it('退化 box_2d は crop_failed(PUT も行 INSERT もしない)', async () => {
+    const state = makeFakeState()
+    installFakeTx(state)
+
+    const result = await cropFigureFromBuffer(bufferInput({ box2d: [100, 800, 800, 100] }))
+    expect(result).toEqual({ outcome: 'crop_failed' })
+    expect(mockPutObject).not.toHaveBeenCalled()
+    expect(state.insertedAssets).toHaveLength(0)
+  })
+
+  it('412 + hash 一致 + ready 行あり → reused(旧 entry と同じ 412 機構を共有)', async () => {
+    const state = makeFakeState()
+    installFakeTx(state)
+    // 1 回目: 実バイトを作って R2 の既存実体として使い回す。
+    mockPutObject.mockResolvedValueOnce('success')
+    await cropFigureFromBuffer(bufferInput())
+    const storedBytes = mockPutObject.mock.calls[0][1] as Buffer
+
+    mockPutObject.mockReset()
+    mockGetObject.mockReset()
+    mockPutObject.mockResolvedValueOnce('precondition_failed')
+    mockGetObject.mockResolvedValueOnce({ bytes: storedBytes })
+    state.assetsResult = [{ status: 'ready' }]
+    state.insertedAssets.length = 0
+    state.insertedDerivations.length = 0
+
+    const result = await cropFigureFromBuffer(bufferInput())
+    expect(result).toEqual({ outcome: 'reused' })
+    expect(state.insertedAssets).toHaveLength(0)
+    expect(state.insertedDerivations).toHaveLength(0)
+  })
+
+  it("putObject が 'error' なら error(行を作らない)", async () => {
+    const state = makeFakeState()
+    installFakeTx(state)
+    mockPutObject.mockResolvedValueOnce('error')
+
+    const result = await cropFigureFromBuffer(bufferInput())
+    expect(result).toEqual({ outcome: 'error' })
+    expect(state.insertedAssets).toHaveLength(0)
+    expect(state.insertedDerivations).toHaveLength(0)
   })
 })

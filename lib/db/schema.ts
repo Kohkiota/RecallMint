@@ -1030,9 +1030,12 @@ export const assetDerivations = pgTable('asset_derivations', {
   userId: uuid('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  sourceAssetId: uuid('source_asset_id')
-    .notNull()
-    .references(() => sourceAssets.id, { onDelete: 'cascade' }),
+  // ②-4a 単一 invocation 経路(Task S-3・migration 0031)で nullable 化。新経路は
+  // source を R2/DB に置かないため参照すべき source_assets 行が存在せず NULL を書く
+  // (旧経路は撤去まで従来どおり non-null で書き続ける)。列自体の drop は S-5。
+  sourceAssetId: uuid('source_asset_id').references(() => sourceAssets.id, {
+    onDelete: 'cascade',
+  }),
   origBbox: jsonb('orig_bbox').notNull().$type<Record<string, unknown>>(),
   paddingPct: real('padding_pct').notNull(),
   clampedBbox: jsonb('clamped_bbox').notNull().$type<Record<string, unknown>>(),

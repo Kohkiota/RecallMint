@@ -1,5 +1,10 @@
-// ②-4a 単一 invocation Sprint Task S-2(spec 2026-08-04 §4): submit で受け取った
-// バイトを**そのメモリのまま** OCR に掛け、prepared_payload を commit する phase。
+// ②-4a 単一 invocation Sprint Task S-2 / S-3(spec 2026-08-04 §4): submit で受け
+// 取ったバイトを**そのメモリのまま** OCR に掛け、prepared_payload を commit し、
+// 同じバイトから図版を crop して publish するまでの post-tx phase。
+//
+// **phase 順序は不変条件**(spec §7.3 / §9-6): OCR → payload commit → crop →
+// publish。crop-derived asset 行・R2 object は payload commit の後にのみ作られ、
+// crop が落ちても Gemini を再実行せず committed payload の text card を publish する。
 //
 // directive 無し共有 module(publish-prepared-orchestrate.ts / stage-prepared-retry.ts
 // と同じ「'use server' file から参照される directive 無し module」パターン)。
@@ -12,8 +17,10 @@
 //      オブジェクト(File / FormData)を一切受け取らない形に固定しておく。
 //      呼出側が Buffer を実体化してから渡す契約(引数は Buffer + 文字列のみ)。
 //
-// **R2 を使わない**: 新経路の source は request body のバイトだけで完結し、R2 に
-// 置かない(spec §2)。本 file は R2 module を import しない(unit/iso 両方で pin)。
+// **source を R2 に置かない**: 新経路の source は request body のバイトだけで完結
+// する(spec §2)。本 file は R2 module を import しない(unit/iso 両方で pin)—
+// R2 へ出るのは crop-derived asset のみで、それは lib/media/crop-and-store.ts の
+// 責務(PUT key は `users/{uid}/{assetId}.webp` 形のみ・`src/` を作らない)。
 //
 // **throw しない契約**: 失敗の分類・terminal 化・台帳記録はすべてこの module の
 // 内部責務で、呼出側(S-4 の after())は薄い呼出だけを持つ。予期しない throw も
@@ -38,9 +45,22 @@ import { uploadOperations } from '@/lib/db/schema'
 import { withTenantTx, type TenantTx } from '@/lib/db/tenant-tx'
 import { recordIntegrationFailure } from '@/lib/integration-failures'
 import { logger } from '@/lib/logger'
+import {
+  classifyCropOutcome,
+  cropFigureFromBuffer,
+  type CropAndStoreOutcome,
+} from '@/lib/media/crop-and-store'
 import { normalizePrepared } from '@/lib/ocr/normalize-prepared'
 import { type PreparedPayload } from '@/lib/ocr/prepared-schema'
 import { isRateLimitError } from '@/lib/retry/transient-error'
+import { publishPreparedUploadTx } from '../_actions/publish-prepared'
+import { CROP_MIN_REMAINING_MS } from './constants'
+import {
+  buildResultSummary,
+  isCropBudgetExhausted,
+  planPublish,
+  type FigureDisposition,
+} from './publish-prepared-plan'
 import { verifyImageBytes, type VerifiedImage } from './source-image-verify'
 import { assemblePreparedPayload, computePreparedHash } from './stage-prepared-payload'
 import { callImageCropWithRetry } from './stage-prepared-retry'
@@ -60,11 +80,12 @@ export type UploadPipelineFile = {
   filename: string
 }
 
-// decode 検証で確定した source ごとのメタ。width/height は S-3 の crop が
+// decode 検証で確定した source ごとのメタ。width/height は crop(S-3)が
 // box_2d(0-1000 正規化座標)を実ピクセルへ戻す際の分母になるため、decode の
 // 場で確定させてここに保持する(decode 済み pixel 自体は verifyImageBytes の
-// 中で解放され、この配列には載らない = メモリ見積りの前提)。
-type VerifiedSource = VerifiedImage & { sourceId: string }
+// 中で解放され、この配列には載らない = メモリ見積りの前提)。`bytes` は受領
+// Buffer への参照で、crop が同じバイトを再利用する(R2 GET しない = spec §2)。
+type VerifiedSource = VerifiedImage & { sourceId: string; bytes: Buffer }
 
 // 失敗理由(upload_operations.last_error_code に入る値)。旧経路
 // (stage-prepared.ts)の語彙に倣い、新経路固有のものだけを足している。
@@ -75,14 +96,32 @@ type PipelineErrorCode =
   | 'gemini_call_failed'
   | 'json_parse_failed'
   | 'empty_cards'
+  | 'publish_failed'
   | 'pipeline_unexpected_error'
 
+// terminal 化してよい operation の status = 「その phase でこの実行が自分の op に
+// 期待する状態」。prepared_payload commit の前は 'processing'、commit 後(crop /
+// publish)は 'prepared'。
+//
+// **これを 'processing' 固定にしてはいけない**(S-2 fix round 1 M-6 の申し送り):
+// commit 後の失敗まで 'processing' で fence すると、自分が起こした genuine failure が
+// 「他の書き手に取られた(raced)」と誤分類され、terminal 化されるべき op が
+// prepared + live lease のまま静かに残る(握り潰し)。raced の実体は lease_version
+// 不一致 or 想定外 status であって、phase 由来の status 差ではない。
+type FenceStatus = 'processing' | 'prepared'
+const PRE_COMMIT_FENCE: readonly FenceStatus[] = ['processing']
+const POST_COMMIT_FENCE: readonly FenceStatus[] = ['prepared']
+// 予期しない throw は commit の前後どちらでも起きうる(どの phase かを catch-all は
+// 知らない)ため両方を許す。「自分の op か」の判定は lease_version が担う。
+const ANY_PHASE_FENCE: readonly FenceStatus[] = ['processing', 'prepared']
+
 /**
- * 受領バイト → decode 検証 → Gemini → 正規化 → prepared_payload commit。
+ * 受領バイト → decode 検証 → Gemini → 正規化 → prepared_payload commit →
+ * crop → publish。
  *
  * 呼出前提: `refs.operationId` は呼出側がこの invocation で作った
  * `status='processing'` の operation で、`leaseVersion` はその行の値。
- * 成功時は `status='prepared'` で終わる(crop / publish は S-3)。
+ * 成功時は `status='completed'`(source_document も completed)で終わる。
  */
 export async function runUploadPipeline(
   userId: string,
@@ -120,7 +159,7 @@ export async function absorbUploadPipelineFailure(
   err: unknown,
 ): Promise<void> {
   try {
-    await terminalize(userId, refs, leaseVersion, 'pipeline_unexpected_error')
+    await terminalize(userId, refs, leaseVersion, 'pipeline_unexpected_error', ANY_PHASE_FENCE)
   } catch (terminalizeErr) {
     // DB 自体が落ちている等、terminal 化すら失敗する場合。ここで throw させると
     // 「throw しない契約」が破れるため飲む(operation は lease 失効後に
@@ -166,7 +205,7 @@ async function runOcrPhase(
     // source_id」になり誤った画像へ silent に紐付く。uuid ならその推測は
     // validSourceIds に弾かれ source_id_invalid として集計に現れる。
     const sourceId = randomUUID()
-    sources.push({ sourceId, ...verified })
+    sources.push({ sourceId, bytes: file.buffer, ...verified })
     sourceImages.push({
       // mimeType は decode 結果(sharp)由来 — client 申告や拡張子は使わない。
       sourceId,
@@ -175,7 +214,7 @@ async function runOcrPhase(
   }
   logPhase(refs.operationId, 'decode', Date.now() - decodeStartedAt)
   if (decodeFailed) {
-    await terminalize(userId, refs, leaseVersion, 'image_decode_failed')
+    await terminalize(userId, refs, leaseVersion, 'image_decode_failed', PRE_COMMIT_FENCE)
     return
   }
 
@@ -186,7 +225,7 @@ async function runOcrPhase(
   // 220s の call を始めてしまうと invocation が platform に打ち切られ、失敗理由が
   // op にも台帳にも残らない(constants.ts の算術参照)。
   if (deadlineAt.getTime() - Date.now() < GEMINI_TIMEOUT_MS) {
-    await terminalize(userId, refs, leaseVersion, 'deadline_exceeded')
+    await terminalize(userId, refs, leaseVersion, 'deadline_exceeded', PRE_COMMIT_FENCE)
     return
   }
 
@@ -218,6 +257,7 @@ async function runOcrPhase(
       refs,
       leaseVersion,
       isRateLimitError(geminiError) ? 'gemini_rate_limited' : 'gemini_call_failed',
+      PRE_COMMIT_FENCE,
     )
     return
   }
@@ -230,7 +270,7 @@ async function runOcrPhase(
   )
   logPhase(refs.operationId, 'normalize', Date.now() - normalizeStartedAt)
   if (typeof prepared === 'string') {
-    await terminalize(userId, refs, leaseVersion, prepared)
+    await terminalize(userId, refs, leaseVersion, prepared, PRE_COMMIT_FENCE)
     return
   }
   const { payload, preparedHash } = prepared
@@ -245,6 +285,194 @@ async function runOcrPhase(
     // supersede / GDPR 削除等でこの operation が既に別の状態へ移っている。この実行の
     // 結果で上書きしない(何も書かずに終わる)。
     logger.warn({ event: 'upload.pipeline.commit_raced', operationId: refs.operationId })
+    return
+  }
+
+  // ---- crop(payload commit の**後**にのみ・逐次) ----
+  const dispositionByAssetId = await runCropPhase(
+    userId,
+    refs.operationId,
+    payload,
+    sources,
+    deadlineAt,
+  )
+
+  // ---- publish(cards/tags/refs/記帳/finalize を 1 tx) ----
+  // upload_records.file_size_bytes は受領 Buffer の合計(spec 2026-08-04 §4)。
+  const fileSizeBytes = files.reduce((sum, f) => sum + f.buffer.length, 0)
+  await runPublishPhase(userId, refs, leaseVersion, payload, dispositionByAssetId, fileSizeBytes)
+}
+
+/**
+ * 全 figure を逐次 crop し、figure ごとの disposition を返す(spec §7.3 の順序
+ * 不変条件「crop-derived asset 行・R2 object は prepared_payload commit 後にのみ」は
+ * この関数を commit の後でしか呼ばないことで担保する)。
+ *
+ * **crop の失敗で OCR 成果を巻き添えにしない**(spec §9-6)を 3 層で実装する:
+ *   層 1: 個別 figure の失敗 — outcome(crop_failed 等)でも **throw でも**、
+ *         その figure だけを 'exclude' にして次の figure へ進む(隔離原則:
+ *         検証失敗は影響を受ける最小の価値単位まで隔離する)。
+ *   層 2: phase 共通の予期しない throw — 既に attach 済みの figure は活かし、
+ *         未処理分だけ 'exclude' にして publish へ進む(backstop)。
+ *   層 3: publish tx の失敗だけが terminal(runPublishPhase)。
+ *
+ * ユーザー向けには縮退(text card は publish)だが、**運用向けには黙らない**:
+ * 予期しない throw は spec §4.4 (b) どおり `integration_failures` + Discord へ
+ * 載せる(1 operation あたり 1 行に丸める — figure ごとに鳴らすと 40 件の同一
+ * 通知になる)。これが無いと、deploy 環境固有の crop 全滅(sharp の .so 欠落・
+ * migration 0031 未適用など)が「全 upload が静かに text-only で completed」に
+ * なり、カードは正常に見えるので誰も気付けない。
+ */
+async function runCropPhase(
+  userId: string,
+  operationId: string,
+  payload: PreparedPayload,
+  sources: readonly VerifiedSource[],
+  deadlineAt: Date,
+): Promise<Map<string, FigureDisposition>> {
+  const cropStartedAt = Date.now()
+  const dispositionByAssetId = new Map<string, FigureDisposition>()
+  const allFigures = payload.cards.flatMap((card) => card.figures)
+  // 台帳は 1 operation につき 1 行(同一原因で 40 件鳴らさない)。
+  let ledgerRecorded = false
+  const recordCropFailureOnce = async (err: unknown): Promise<void> => {
+    if (ledgerRecorded) return
+    ledgerRecorded = true
+    await recordUnexpectedFailure(userId, operationId, err, 'crop_phase_failed')
+  }
+  try {
+    const sourceById = new Map(sources.map((s) => [s.sourceId, s]))
+    let budgetExhausted = false
+    for (const figure of allFigures) {
+      // 予算は OCR と共通の統合予算の残余で見る(旧経路の crop 専用予算ではない)。
+      // 一度枯渇したら以降は判定を揺り戻さない(publish-prepared-orchestrate.ts と同型)。
+      if (
+        !budgetExhausted &&
+        isCropBudgetExhausted(Date.now(), deadlineAt.getTime(), CROP_MIN_REMAINING_MS)
+      ) {
+        budgetExhausted = true
+      }
+      if (budgetExhausted) {
+        dispositionByAssetId.set(figure.assetId, 'deadline_excluded')
+        continue
+      }
+      const source = sourceById.get(figure.sourceId)
+      if (source === undefined) {
+        // normalizePrepared が validSourceIds で弾く契約ゆえ到達しない(narrowing 用)。
+        dispositionByAssetId.set(figure.assetId, 'exclude')
+        continue
+      }
+      // **逐次**: crop 出力 Buffer を溜めない(1 件ずつ PUT して手放す)。unit test が
+      // 計測 mock で「peak 同時 crop = 1」を機械強制している。
+      let outcome: CropAndStoreOutcome
+      try {
+        outcome = await cropFigureFromBuffer({
+          userId,
+          sourceBytes: source.bytes,
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          sourceId: figure.sourceId,
+          figureAssetId: figure.assetId,
+          box2d: figure.box_2d,
+          detectTarget: figure.target,
+        })
+      } catch (err) {
+        // 層 1(throw 版)。cropFigureFromBuffer は never-throw 契約だが、その内側の
+        // sharp / R2 / DB のどれかが契約を破った場合にここへ来る。1 figure の事故で
+        // 残りの figure まで落とさない。
+        logger.error({ event: 'upload.pipeline.crop_figure_failed', operationId, err })
+        await recordCropFailureOnce(err)
+        dispositionByAssetId.set(figure.assetId, 'exclude')
+        continue
+      }
+      // 新経路に retry / takeover は無いため、成功以外はすべて exclude に倒す
+      // (retryable 相当を disposition 'retryable' にすると planPublish が publish 自体を
+      // 止め、再試行する主体が居ないまま text card まで失われる)。
+      dispositionByAssetId.set(
+        figure.assetId,
+        classifyCropOutcome(outcome.outcome) === 'success' ? 'attach' : 'exclude',
+      )
+    }
+  } catch (err) {
+    // 層 2(backstop): loop 骨格側の予期しない失敗。ここで throw を通すと catch-all が
+    // operation ごと terminal 化してしまい、commit 済みの OCR 成果を捨てることになる。
+    logger.error({ event: 'upload.pipeline.crop_phase_failed', operationId, err })
+    await recordCropFailureOnce(err)
+  }
+  // 例外で中断した場合の未処理分(と、通常完了時は 0 件)を crop 失敗として計上する。
+  for (const figure of allFigures) {
+    if (!dispositionByAssetId.has(figure.assetId)) {
+      dispositionByAssetId.set(figure.assetId, 'exclude')
+    }
+  }
+  logPhase(operationId, 'crop', Date.now() - cropStartedAt)
+  return dispositionByAssetId
+}
+
+// publish tx(cards/tags/refs/upload_records/finalize)。失敗はこの pipeline で唯一の
+// terminal 化対象(spec §9-6)。fence は commit 後ゆえ 'prepared' を期待する。
+async function runPublishPhase(
+  userId: string,
+  refs: UploadPipelineRefs,
+  leaseVersion: number,
+  payload: PreparedPayload,
+  dispositionByAssetId: ReadonlyMap<string, FigureDisposition>,
+  fileSizeBytes: number,
+): Promise<void> {
+  // phase 所要時間は **失敗分岐より前**に確定させる(S-2 M-2 と同じ規律)。契約違反の
+  // throw(下記 plan.decision)を catch-all へ通す経路でも log を落とさないよう
+  // finally で出す — まさに事後解析したいケースで時系列の最後が欠けるため。
+  const publishStartedAt = Date.now()
+  try {
+    const plan = planPublish(payload.cards, dispositionByAssetId)
+    if (plan.decision !== 'publish') {
+      // 本経路が作る disposition は attach / exclude / deadline_excluded だけで、
+      // planPublish が stale / retryable を返す入力(not_ours / retryable / 欠落)は
+      // 生じない。到達したら契約破れ = バグゆえ catch-all(台帳記録)へ送る。
+      throw new Error(`upload pipeline: unexpected publish decision '${plan.decision}'`)
+    }
+
+    const resultSummary = buildResultSummary(payload, plan, {
+      operationId: refs.operationId,
+      examId: refs.examId,
+      sourceDocumentId: refs.sourceDocumentId,
+    })
+    let published: { outcome: 'published' } | { outcome: 'stale' } | null = null
+    let publishError: unknown = null
+    try {
+      published = await withTenantTx(userId, (tx) =>
+        publishPreparedUploadTx(tx, {
+          userId,
+          operationId: refs.operationId,
+          leaseVersion,
+          cards: payload.cards,
+          cardImagesByCardId: plan.cardImagesByCardId,
+          resultSummary,
+          // 受領 Buffer の合計(新経路は source を R2/DB に置かないため
+          // source_assets.byte_size の SUM は存在しない)。
+          fileSizeBytes,
+        }),
+      )
+    } catch (err) {
+      publishError = err
+    }
+    if (published === null) {
+      // 保護 UPDATE 期待未満 / 重複 card id(loud fail)/ DB error。tx は rollback 済み
+      // (部分 commit なし)。新経路に retry は無いためそのまま terminal。
+      logger.error({
+        event: 'upload.pipeline.publish_tx_failed',
+        operationId: refs.operationId,
+        err: publishError,
+      })
+      await terminalize(userId, refs, leaseVersion, 'publish_failed', POST_COMMIT_FENCE)
+      return
+    }
+    if (published.outcome === 'stale') {
+      // fencing に負けた(supersede / GDPR 削除等)。この実行の結果で上書きしない。
+      logger.warn({ event: 'upload.pipeline.publish_raced', operationId: refs.operationId })
+    }
+  } finally {
+    logPhase(refs.operationId, 'publish', Date.now() - publishStartedAt)
   }
 }
 
@@ -302,11 +530,13 @@ async function commitPreparedCas(
 }
 
 // 失敗の確定(op terminal_failed + source_document failed を同一 tx)。
+// `expectedStatuses` = この phase で自分の op に期待する status(FenceStatus 参照)。
 async function terminalize(
   userId: string,
   refs: UploadPipelineRefs,
   leaseVersion: number,
   errorCode: PipelineErrorCode,
+  expectedStatuses: readonly FenceStatus[],
 ): Promise<void> {
   const outcome = await withTenantTx(userId, async (tx) => {
     // terminalizeAbandonedOperation は「呼出元が対象行を owner-scope で FOR UPDATE
@@ -327,11 +557,11 @@ async function terminalize(
       )
       .for('update')
     const op = rows[0]
-    // **S-3 への義務**: crop / publish は prepared commit の**後**(status='prepared')に
-    // 走るため、その区間の失敗をここに流すと 'processing' 以外 = 'raced' と誤分類され、
-    // op が prepared + live lease のまま残る。S-3 は許容 status をその phase に合わせて
-    // 広げること(この fence を「processing 固定」のまま流用しない)。
-    if (!op || op.status !== 'processing' || op.leaseVersion !== leaseVersion) {
+    if (
+      !op ||
+      op.leaseVersion !== leaseVersion ||
+      !expectedStatuses.some((s) => s === op.status)
+    ) {
       return 'raced'
     }
     await terminalizeAbandonedOperation(
@@ -352,10 +582,15 @@ async function terminalize(
   })
 }
 
+// 予期しない throw を台帳(+ Discord)へ載せる(spec §4.4 (b))。`errorCode` は
+// 「operation ごと terminal 化したのか(pipeline_unexpected_error)」と「crop だけ
+// 縮退して publish は成功したのか(crop_phase_failed)」を通知面で区別するため —
+// 後者は op が `completed` で終わるので、この 1 行が唯一の運用シグナルになる。
 async function recordUnexpectedFailure(
   userId: string,
   operationId: string,
   err: unknown,
+  errorCode: 'pipeline_unexpected_error' | 'crop_phase_failed' = 'pipeline_unexpected_error',
 ): Promise<void> {
   try {
     await recordIntegrationFailure({
@@ -365,7 +600,7 @@ async function recordUnexpectedFailure(
       // 台帳 DB 列にのみ入る開発者向け情報。context(= Discord にもそのまま出る)側は
       // operationId + errorCode だけに絞る。
       errorMessage: err instanceof Error ? err.message : String(err),
-      context: { operationId, errorCode: 'pipeline_unexpected_error' },
+      context: { operationId, errorCode },
     })
   } catch (recordErr) {
     // 台帳書込/通知の失敗で pipeline を throw させない(throw しない契約)。

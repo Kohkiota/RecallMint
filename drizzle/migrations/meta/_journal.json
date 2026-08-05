@@ -218,6 +218,13 @@
       "when": 1785493254536,
       "tag": "0030_messy_blazing_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785893506932,
+      "tag": "0031_tricky_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

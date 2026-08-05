@@ -1,0 +1,1 @@
+ALTER TABLE "asset_derivations" ALTER COLUMN "source_asset_id" DROP NOT NULL;

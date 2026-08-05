@@ -256,6 +256,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { marker: 'stale-attempt' },
+        fileSizeBytes: 0,
       }),
     )
     expect(result).toEqual({ outcome: 'stale' })
@@ -288,6 +289,9 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: { [card.cardId]: [image] },
         resultSummary: { marker: 'published' },
+        // Task S-3: 記帳値は引数で決まる(tx は source_assets を読まない)。source_asset の
+        // byte_size(100)とは**別の値**を渡し、SUM 由来でないことを pin する。
+        fileSizeBytes: 4242,
       }),
     )
     expect(result).toEqual({ outcome: 'published' })
@@ -332,7 +336,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     expect(records).toHaveLength(1)
     expect(records[0]!.status).toBe('completed')
     expect(records[0]!.pagesProcessed).toBe(1) // 実 source 画像数(0 でない)
-    expect(records[0]!.fileSizeBytes).toBe(100) // SUM(source_assets.byte_size)
+    expect(records[0]!.fileSizeBytes).toBe(4242) // 引数で渡した値(SUM 由来ではない)
     expect(records[0]!.ocrCostYen).toBeNull() // 新 flow は cost を持たない
     expect(records[0]!.filename).toBe('a.png') // source_documents.filename
     // 月次 quota SUM がこの行を数える(記帳の実効を pin・enforcement は ②-5)。
@@ -370,6 +374,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
           cards: [card],
           cardImagesByCardId: { [card.cardId]: [image] },
           resultSummary: {},
+          fileSizeBytes: 0,
         }),
       ),
     ).rejects.toThrow()
@@ -396,6 +401,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { n: 1 },
+        fileSizeBytes: 0,
       }),
     )
     expect(first).toEqual({ outcome: 'published' })
@@ -411,6 +417,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { n: 2 },
+        fileSizeBytes: 0,
       }),
     )
     expect(second).toEqual({ outcome: 'stale' })
@@ -445,6 +452,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
           cards: [dupCard, otherCard],
           cardImagesByCardId: {},
           resultSummary: {},
+          fileSizeBytes: 0,
         }),
       ),
     ).rejects.toThrow()
@@ -477,6 +485,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: {},
+        fileSizeBytes: 0,
       }),
     )
     expect(result).toEqual({ outcome: 'stale' })
@@ -530,6 +539,11 @@ describe('publishPreparedUpload (T12 orchestrator) — crop 全滅 text publish'
     expect(op.preparedPayload).toBeNull()
     const summary = op.resultSummary as { figuresExcluded: { crop_failed: number } }
     expect(summary.figuresExcluded.crop_failed).toBe(1)
+    // Task S-3 の引数化後も **旧経路の記帳は SUM(source_assets.byte_size) のまま**
+    // (orchestrator が同じ tx で計算して渡す)。seed した source_asset 1 件 = 100B。
+    const records = await readUploadRecords(userId)
+    expect(records).toHaveLength(1)
+    expect(records[0]!.fileSizeBytes).toBe(100)
   })
 
   it('T14a: crop フェーズの deadline 超過分は deadline_excluded として計上され、text card は publish される(§11/§13 reason g)', async () => {
