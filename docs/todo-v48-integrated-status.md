@@ -127,6 +127,7 @@
 - **loud alert 設計**(P0RLS を専用 log event 化・本番展開時 alert 条件)。
 
 ### 残件記録(受容済み残余 / trigger 付き)
+- **crop lane の row-less orphan(②-4a S-4 で起票・2026-08-05)**。crop lane は **R2 PUT 先行**(`lib/media/crop-and-store.ts:454`)で **reserved 状態を持たない**(`:495`「crop-derived asset は常に 'ready' で直接 INSERT する設計」)ため、「PUT 成功 → `assets` 行 INSERT 失敗」で **DB に行が無い R2 object** が残りうる。一方 GC v2 の asset lane は **行駆動**と確定(`scripts/gc-image-assets.ts:1084-1101` が `assets` 表を SELECT して候補化 / R2 に触れるのは `deleteObject` のみ `:399` / `lib/storage/r2.ts` の export 6 つに **list 系は無い**)→ **既存 GC では永久に発見できない**。**旧経路が prod で既に持つ性質であり ②-4a の新規退行ではない**(plan の Codex #13 不採用根拠が事実誤認だった件は `406fcca` で訂正済)。**trigger = S-5 で `listObjects()` が入ったら**(`scripts/gc-src-prefix.ts` が prefix 列挙を必要とするため必ず入る)、asset lane の row-less orphan 検出に**拡張できるか評価する**。そのため S-5 の `listObjects()` は **prefix を引数に取る汎用形**で書く(plan S-5 に注記済)。**急がない理由**: 発生条件が稀(PUT 成功かつ直後の DB 書込のみ失敗)・実ユーザー 0・影響は R2 容量と退会時の取り残しのみ。
 - **完全同時並行 pooler 検証**(2 device/profile)= 受容済み残余(接続再利用漏れは 180 req で確認済・完全同時は OT)。
 - **pull 直列化 +47〜69ms** = 許容確定(背景 sync 経路)。**trigger = Phase 3 計測で継続超過**なら高度化(チャンク分割)起票。
 - **列単位 GRANT**(Phase 3+ 検討)。
