@@ -7,11 +7,11 @@
 // - overPageCap 超過時に 40 page 上限文言が表示される
 // - 既存の overQuota / alreadyAtQuota banner との併存
 //
-// ②-4a-cutover(2026-08-02): submit 時の呼出列を legacy processUpload(fd) から
-// 新 flow(prepareUpload → reserveSource/PUT/finalizeSource → claimOperation →
-// stagePrepared → publishPreparedUpload)へ差し替えたため、 submit を実際に fire する
-// テスト群は新 action group をモックする。 entries 管理 / page-cap 判定 (submit を
-// fire しない範囲)は runProcess 変更の影響を受けないため無改修。
+// ②-4a 単一 invocation Sprint Task S-3(2026-08-05): submit 時の呼出列を
+// prepare→reserve→PUT→finalize→claim→stage→publish から **submitUpload 1 本**へ
+// 差し替えたため、 submit を実際に fire するテスト群は submitUpload だけをモックする。
+// entries 管理 / page-cap 判定 (submit を fire しない範囲)は runProcess 変更の影響を
+// 受けないため無改修。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
@@ -24,27 +24,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockRouterPush }),
 }))
 
-// ②-4a-cutover: 新 flow の 5 action をモックする(legacy processUpload はもう
-// upload-form.tsx から呼ばれないため vi.mock 対象から除去)。
-vi.mock('../_actions/prepare-upload', () => ({
-  prepareUpload: vi.fn(),
-}))
-vi.mock('../_actions/source-asset-actions', () => ({
-  reserveSource: vi.fn(),
-  finalizeSource: vi.fn(),
-}))
-vi.mock('../_actions/claim-operation', () => ({
-  claimOperation: vi.fn(),
-}))
-vi.mock('../_actions/stage-prepared', () => ({
-  stagePrepared: vi.fn(),
-}))
-vi.mock('../_actions/publish-prepared', () => ({
-  publishPreparedUpload: vi.fn(),
-}))
-// ②-4a-cutover 案 D: operation 作成後の失敗表示時に abandon を await する。
-vi.mock('../_actions/abandon-operation', () => ({
-  abandonUploadOperation: vi.fn(),
+// S-3: upload の入口は submitUpload 1 本(旧 action 群は呼ばれない)。
+vi.mock('../_actions/submit-upload', () => ({
+  submitUpload: vi.fn(),
 }))
 
 // browser-image-compression: input file をそのまま返す no-op(spy で呼出 options を検証)。
@@ -84,37 +66,16 @@ if (!globalThis.crypto?.randomUUID) {
   })
 }
 
-// ②-4a-cutover: upload-form.tsx の getImageDimensions が使う Image.decode() stub
-// (WebKit-safe pattern。 card-image-gallery.test.tsx の stub と同型)。 画像 source の
-// width/height は固定値を返せば十分(prepareUpload はモックのため実値は無関係)。
-class StubImage {
-  src = ''
-  decode(): Promise<void> {
-    return Promise.resolve()
-  }
-  get naturalWidth(): number {
-    return 800
-  }
-  get naturalHeight(): number {
-    return 600
-  }
-}
-vi.stubGlobal('Image', StubImage)
-
 import { UploadForm } from './upload-form'
-import { prepareUpload } from '../_actions/prepare-upload'
-import { reserveSource, finalizeSource } from '../_actions/source-asset-actions'
-import { claimOperation } from '../_actions/claim-operation'
-import { stagePrepared } from '../_actions/stage-prepared'
-import { publishPreparedUpload } from '../_actions/publish-prepared'
-import { abandonUploadOperation } from '../_actions/abandon-operation'
+import { submitUpload } from '../_actions/submit-upload'
 import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
+import { type ActiveExam } from '@/lib/exams/format'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { MAX_PDF_PAGES } from '../_lib/constants'
 
 // デフォルト props (Pro: 上限なし、残量制限なし)
 const DEFAULT_PROPS = {
-  existingExams: [],
+  existingExams: [] as ActiveExam[],
   currentMonthPages: 0,
   monthlyLimit: null as number | null,
   remaining: null as number | null,
@@ -177,8 +138,14 @@ beforeEach(() => {
   vi.clearAllMocks()
   // デフォルト: PDF は 10 ページ
   mockPdfPageCount.mockResolvedValue(10)
-  // デフォルト: abandon は terminalize 成功(completed でない)。
-  vi.mocked(abandonUploadOperation).mockResolvedValue({ outcome: 'abandoned' })
+  // デフォルト: submit は成功(publish 済みの operation を返す)。
+  vi.mocked(submitUpload).mockResolvedValue({
+    outcome: 'accepted',
+    operationId: 'op-1',
+    examId: 'exam-1',
+    sourceDocumentId: 'doc-123',
+    replayed: false,
+  })
 })
 
 afterEach(() => {
@@ -298,18 +265,14 @@ describe('overPageCap: UI 文言表示', () => {
 })
 
 // ─── hideRetryHint テスト ────────────────────────────────────────────────────
-// ②-4a-cutover: legacy processUpload の ProcessUploadErrorCode(PAGE_LIMIT_EXCEEDED /
-// UPLOAD_IN_PROGRESS / GEMINI_FAILED)を返す server 結果はもう存在しないため、
-// 同じ hideRetryHint 導出規則(setError 内で code==='UPLOAD_IN_PROGRESS' の時だけ
-// 隠す)を新 flow の outcome から検証する。 加えて ②-4a は画像入稿のみ(PDF は
-// ②-4b)であるため、 PDF 1 件でも混在すると送信前に明示ブロックされることを検証する
-// (silent partial exclusion 防止・スコープ外の PDF pipeline を新設しない)。
+// S-3: submitUpload の outcome 集合(accepted / in_progress / daily_limit_exceeded /
+// exam_not_found / invalid_input / unauthenticated)から、 旧 flow と同じ
+// hideRetryHint 導出規則(setError 内で code==='UPLOAD_IN_PROGRESS' の時だけ隠す)を
+// 検証する。 加えて ②-4a は画像入稿のみ(PDF は ②-4b)であるため、 PDF 1 件でも
+// 混在すると送信前に明示ブロックされることを検証する(silent partial exclusion 防止)。
 
-describe('hideRetryHint: 新 flow の outcome から retry hint 表示/非表示を検証', () => {
+describe('hideRetryHint: submitUpload の outcome から retry hint 表示/非表示を検証', () => {
   it('PDF が混在した submit は送信前にブロックされ、 retry hint は表示される(ファイル変更で解決可能なため)', async () => {
-    // PDF 1 枚 (submit できるページ数で投入、 client 制限を回避するため 1 ページ)。
-    // prepareUpload 等の action は一切呼ばれない(送信前ガードで return するため
-    // モックの設定は不要)。
     mockPdfPageCount.mockResolvedValue(1)
     await renderWithFiles([makePdf('test.pdf')])
 
@@ -325,11 +288,11 @@ describe('hideRetryHint: 新 flow の outcome から retry hint 表示/非表示
     expect(
       screen.getByText(/ファイルを変更して再度お試しください/),
     ).toBeInTheDocument()
-    expect(vi.mocked(prepareUpload)).not.toHaveBeenCalled()
+    expect(vi.mocked(submitUpload)).not.toHaveBeenCalled()
   })
 
-  it('prepareUpload が in_progress(UPLOAD_IN_PROGRESS 相当)を返すと retry hint が非表示 (既存挙動の regression なし)', async () => {
-    vi.mocked(prepareUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
+  it('in_progress(UPLOAD_IN_PROGRESS)は retry hint 非表示', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
 
     await renderWithFiles([makeImage('test.jpg')])
 
@@ -344,20 +307,10 @@ describe('hideRetryHint: 新 flow の outcome から retry hint 表示/非表示
     ).not.toBeInTheDocument()
   })
 
-  it('stagePrepared が retryable_failed(GEMINI_FAILED 相当)を返すと retry hint が表示される (UPLOAD_IN_PROGRESS と異なる挙動)', async () => {
-    vi.mocked(prepareUpload).mockResolvedValueOnce({
-      outcome: 'success',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      examName: 'Exam',
-      sourceDocumentId: 'doc-123',
-      reserved: [],
-      supersededSourceDocumentIds: [],
-    })
-    vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
-    vi.mocked(stagePrepared).mockResolvedValueOnce({
-      outcome: 'retryable_failed',
-      reason: 'gemini_call_failed',
+  it('invalid_input は server 文言をそのまま出し retry hint も表示する', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({
+      outcome: 'invalid_input',
+      error: '1 ファイルのサイズ上限を超えています',
     })
 
     await renderWithFiles([makeImage('test.jpg')])
@@ -369,20 +322,66 @@ describe('hideRetryHint: 新 flow の outcome から retry hint 表示/非表示
     })
 
     expect(
+      screen.getAllByText(/1 ファイルのサイズ上限を超えています/).length,
+    ).toBeGreaterThanOrEqual(1)
+    expect(
       screen.getByText(/ファイルを変更して再度お試しください/),
     ).toBeInTheDocument()
+  })
+
+  it('daily_limit_exceeded は上限文言 + current/limit を出す', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({
+      outcome: 'daily_limit_exceeded',
+      current: 50,
+      limit: 50,
+    })
+
+    await renderWithFiles([makeImage('test.jpg')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    expect(
+      screen.getAllByText(/本日の AI 利用上限に達しました/).length,
+    ).toBeGreaterThanOrEqual(1)
+    // 開発表示(NEXT_PUBLIC_VERCEL_ENV !== 'production')の詳細に current/limit が載る。
+    expect(screen.getByText('GEMINI_DAILY_LIMIT_EXCEEDED')).toBeInTheDocument()
+  })
+
+  it('exam_not_found(archived)はアーカイブ文言、 unauthenticated は認証文言', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({
+      outcome: 'exam_not_found',
+      archived: true,
+    })
+    await renderWithFiles([makeImage('test.jpg')])
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+    expect(
+      screen.getAllByText(/選択した試験はアーカイブされています/).length,
+    ).toBeGreaterThanOrEqual(1)
+
+    cleanup()
+    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'unauthenticated' })
+    await renderWithFiles([makeImage('test2.jpg')])
+    const btn2 = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn2)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+    expect(screen.getAllByText(/認証が必要です/).length).toBeGreaterThanOrEqual(1)
   })
 })
 
 // ─── 予期しない throw → OTHER 経路 ─────────────────────────────────────────────
-// ②-4a-cutover: 新 flow の各 action は小さな JSON payload のみを運ぶ(file bytes は
-// client → R2 presigned PUT で直送する)ため、 Next.js の server action
-// body-size-limit(旧 413 検出ロジックが対象にしていた `Body exceeded ...`)はもはや
-// 到達不能(構造的に発生し得ない)。 旧「413 文言マップ」テストのうち、 その分岐は
-// 削除し、 catch-all(無関係な throw → OTHER + hideRetryHint)のみを維持する。
 describe('予期しない throw → OTHER 経路', () => {
-  it('prepareUpload が無関係な Error を throw した場合、 既存 OTHER 経路 (試験一覧で確認を) に fall through', async () => {
-    vi.mocked(prepareUpload).mockRejectedValueOnce(new Error('connect ETIMEDOUT'))
+  it('submitUpload が無関係な Error を throw した場合、 既存 OTHER 経路 (試験一覧で確認を) に fall through', async () => {
+    vi.mocked(submitUpload).mockRejectedValueOnce(new Error('connect ETIMEDOUT'))
 
     await renderWithFiles([makeImage('test.jpg')])
 
@@ -393,7 +392,6 @@ describe('予期しない throw → OTHER 経路', () => {
     })
 
     // 既存挙動: OTHER 経路、 「試験一覧で確認を」、 retry hint 非表示
-    // ErrorDetails <dd> にも同文言が出るため getAllByText で確認
     expect(
       screen.getAllByText(/処理状況を確認できませんでした/).length,
     ).toBeGreaterThanOrEqual(1)
@@ -487,29 +485,7 @@ describe('requestOcrPoll: submit 時に layout poller へ kick', () => {
   it('submit 成功フローで requestOcrPoll が 1 回呼ばれる', async () => {
     const mockedRequestOcrPoll = vi.mocked(requestOcrPoll)
 
-    // 新 flow 全体(prepareUpload → claimOperation → stagePrepared →
-    // publishPreparedUpload)が成功する正常ケース(router.push に進む前に検証できれば
-    // 十分)。 reserved:[] のため reserveSource/finalizeSource/fetch は呼ばれない。
-    vi.mocked(prepareUpload).mockResolvedValueOnce({
-      outcome: 'success',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      examName: 'Exam',
-      sourceDocumentId: 'doc-123',
-      reserved: [],
-      supersededSourceDocumentIds: [],
-    })
-    vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
-    vi.mocked(stagePrepared).mockResolvedValueOnce({
-      outcome: 'staged',
-      cardsTotal: 1,
-      cardsExcluded: 0,
-    })
-    vi.mocked(publishPreparedUpload).mockResolvedValueOnce({
-      outcome: 'published',
-      cardsPublished: 1,
-      figuresAttached: 0,
-    })
+    // submitUpload の既定 mock(accepted)がそのまま成功ケース。
 
     await renderWithFiles([makeImage('test.jpg')])
 
@@ -532,7 +508,7 @@ describe('requestOcrPoll: submit 時に layout poller へ kick', () => {
     // B3 grace period 内に kick されるため、 server 結果には依存しない。
     const mockedRequestOcrPoll = vi.mocked(requestOcrPoll)
 
-    vi.mocked(prepareUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
+    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
 
     await renderWithFiles([makeImage('test.jpg')])
 
@@ -560,145 +536,67 @@ describe('圧縮 fileType pin', () => {
   })
 })
 
-// ─── reserve→PUT→finalize ループ(直 R2 配線・canonical Important #3)──────────────
-// 全 submit テストが reserved:[] だと最も novel な直 R2 配線が未カバーになるため、
-// non-empty reserved で reserveSource/PUT/finalizeSource の引数と呼出順序を pin する。
-describe('reserve→PUT→finalize ループ(非空 reserved)', () => {
-  const SRC_ID = '00000000-0000-0000-0000-000000000001'
+// ─── S-3: submitUpload へ渡す FormData の中身 pin ────────────────────────────
+// 切替の本体は「何を 1 回で送るか」。 idempotencyKey / mode / examId / files 全件が
+// 1 つの FormData に載ることを pin する(client 直 PUT が無くなったことの裏返し)。
+describe('submitUpload に渡す FormData', () => {
+  it('idempotencyKey + mode + files 全件を 1 回の呼出で送り、成功で result page へ遷移する', async () => {
+    await renderWithFiles([makeImage('a.jpg'), makeImage('b.jpg')])
 
-  it('各 source を reserveSource → PUT(uploadUrl) → finalizeSource の順に正しい引数で呼ぶ', async () => {
-    // entry.id / idempotencyKey を固定して reserved.sourceId と一致させる。
-    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(SRC_ID)
-    vi.mocked(prepareUpload).mockResolvedValueOnce({
-      outcome: 'success',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      examName: 'Exam',
-      sourceDocumentId: 'doc-123',
-      reserved: [{ sourceId: SRC_ID, assetId: 'asset-1', objectKey: 'users/u/src/tmp/asset-1' }],
-      supersededSourceDocumentIds: [],
-    })
-    vi.mocked(reserveSource).mockResolvedValueOnce({
-      ok: true,
-      data: { uploadUrl: 'https://r2.example/put-target' },
-    })
-    const fetchMock = vi.fn(async () => ({ ok: true }) as Response)
-    vi.stubGlobal('fetch', fetchMock)
-    vi.mocked(finalizeSource).mockResolvedValueOnce({ ok: true })
-    vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
-    vi.mocked(stagePrepared).mockResolvedValueOnce({
-      outcome: 'staged',
-      cardsTotal: 1,
-      cardsExcluded: 0,
-    })
-    vi.mocked(publishPreparedUpload).mockResolvedValueOnce({
-      outcome: 'published',
-      cardsPublished: 1,
-      figuresAttached: 0,
-    })
-
-    await renderWithFiles([makeImage('a.jpg')])
     const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
     await act(async () => {
       fireEvent.click(btn)
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
 
-    // reserveSource は assetId / mime / byteSize を渡す(mime は圧縮後 file.type)。
-    expect(vi.mocked(reserveSource)).toHaveBeenCalledWith({
-      assetId: 'asset-1',
-      mime: 'image/jpeg',
-      byteSize: expect.any(Number),
-    })
-    // PUT は uploadUrl 宛て・method PUT・body は File。
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://r2.example/put-target',
-      expect.objectContaining({ method: 'PUT', body: expect.any(File) }),
-    )
-    // finalizeSource は assetId で呼ぶ。
-    expect(vi.mocked(finalizeSource)).toHaveBeenCalledWith('asset-1')
-    // 呼出順序 = reserve → PUT → finalize。
-    const reserveOrder = vi.mocked(reserveSource).mock.invocationCallOrder[0]
-    const fetchOrder = fetchMock.mock.invocationCallOrder[0]
-    const finalizeOrder = vi.mocked(finalizeSource).mock.invocationCallOrder[0]
-    expect(reserveOrder).toBeLessThan(fetchOrder)
-    expect(fetchOrder).toBeLessThan(finalizeOrder)
-    // 成功 → result page へ遷移。
+    expect(vi.mocked(submitUpload)).toHaveBeenCalledTimes(1)
+    const fd = vi.mocked(submitUpload).mock.calls[0][0]
+    expect(fd).toBeInstanceOf(FormData)
+    expect(typeof fd.get('idempotencyKey')).toBe('string')
+    expect((fd.get('idempotencyKey') as string).length).toBeGreaterThan(0)
+    // existingExams=[] ゆえ destination は既定の { mode: 'new' }。
+    expect(fd.get('mode')).toBe('new')
+    expect(fd.get('examId')).toBeNull()
+    const files = fd.getAll('files')
+    expect(files).toHaveLength(2)
+    expect(files.every((f) => f instanceof File)).toBe(true)
+    expect((files as File[]).map((f) => f.name)).toEqual(['a.jpg', 'b.jpg'])
+
+    // client 直 PUT は無くなった(fetch を一切使わない)。
     expect(mockRouterPush).toHaveBeenCalledWith('/app/upload/result/doc-123')
   })
-})
 
-// ─── 案 D: 失敗表示時に abandon を await ─────────────────────────────────────────
-describe('案 D: operation 作成後の失敗で abandon を await', () => {
-  it('stage retryable_failed で abandonUploadOperation が operationId+leaseVersion 付きで呼ばれる', async () => {
-    vi.mocked(prepareUpload).mockResolvedValueOnce({
-      outcome: 'success',
-      operationId: 'op-1',
-      examId: 'exam-1',
-      examName: 'Exam',
-      sourceDocumentId: 'doc-123',
-      reserved: [],
-      supersededSourceDocumentIds: [],
-    })
-    vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 7 })
-    vi.mocked(stagePrepared).mockResolvedValueOnce({
-      outcome: 'retryable_failed',
-      reason: 'gemini_call_failed',
+  it('既存 exam を選ぶと mode=existing + examId が載る', async () => {
+    await renderWithFiles([makeImage('a.jpg')], {
+      existingExams: [
+        { id: 'exam-9', name: '既存試験', updatedAt: new Date('2026-08-01T00:00:00Z') },
+      ],
     })
 
-    await renderWithFiles([makeImage('a.jpg')])
+    fireEvent.click(screen.getByRole('button', { name: /既存 exam に追加/ }))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'exam-9' } })
+
     const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
     await act(async () => {
       fireEvent.click(btn)
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
 
-    // claim 済みの lease_version を保持して abandon する(server 側の fencing 照合用)。
-    expect(vi.mocked(abandonUploadOperation)).toHaveBeenCalledWith({
-      operationId: 'op-1',
-      leaseVersion: 7,
-    })
-    // エラー表示は維持される(abandon は掃除のみ)。
-    expect(
-      screen.getByText(/ファイルを変更して再度お試しください/),
-    ).toBeInTheDocument()
+    const fd = vi.mocked(submitUpload).mock.calls[0][0]
+    expect(fd.get('mode')).toBe('existing')
+    expect(fd.get('examId')).toBe('exam-9')
   })
 
-  it('operation 作成前の失敗(prepareUpload in_progress)では abandon を呼ばない', async () => {
-    vi.mocked(prepareUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
-
-    await renderWithFiles([makeImage('a.jpg')])
-    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
-    await act(async () => {
-      fireEvent.click(btn)
-      await new Promise<void>((resolve) => setTimeout(resolve, 100))
-    })
-
-    expect(vi.mocked(abandonUploadOperation)).not.toHaveBeenCalled()
-  })
-
-  it('throw 経路で abandon が completed を返すと result page へ遷移する(transport lost success)', async () => {
-    vi.mocked(prepareUpload).mockResolvedValueOnce({
-      outcome: 'success',
+  // 冪等 replay は状態不問で既存 op の 3 ID を返す契約ゆえ、source_document が既に
+  // 消えている op では sourceDocumentId が空文字で返りうる(submit-upload.ts の `?? ''`)。
+  // 空 id で result page へ push すると 404 になるため一覧へ誘導する。
+  it('sourceDocumentId が空で返った replay では result page へ push しない', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({
+      outcome: 'accepted',
       operationId: 'op-1',
       examId: 'exam-1',
-      examName: 'Exam',
-      sourceDocumentId: 'doc-123',
-      reserved: [],
-      supersededSourceDocumentIds: [],
-    })
-    vi.mocked(claimOperation).mockResolvedValueOnce({ outcome: 'claimed', leaseVersion: 1 })
-    vi.mocked(stagePrepared).mockResolvedValueOnce({
-      outcome: 'staged',
-      cardsTotal: 1,
-      cardsExcluded: 0,
-    })
-    // publish で throw(network 断等)→ catch → abandon。
-    vi.mocked(publishPreparedUpload).mockRejectedValueOnce(new Error('connect ETIMEDOUT'))
-    // abandon は operation が実際には完了していたと返す。
-    vi.mocked(abandonUploadOperation).mockResolvedValueOnce({
-      outcome: 'completed',
-      sourceDocumentId: 'doc-completed',
+      sourceDocumentId: '',
+      replayed: true,
     })
 
     await renderWithFiles([makeImage('a.jpg')])
@@ -708,10 +606,29 @@ describe('案 D: operation 作成後の失敗で abandon を await', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
 
-    expect(mockRouterPush).toHaveBeenCalledWith('/app/upload/result/doc-completed')
-    // 遷移したのでエラー表示は出さない。
+    expect(mockRouterPush).not.toHaveBeenCalled()
     expect(
-      screen.queryByText(/処理状況を確認できませんでした/),
-    ).not.toBeInTheDocument()
+      screen.getAllByText(/処理状況を確認できませんでした/).length,
+    ).toBeGreaterThanOrEqual(1)
+  })
+
+  it('submit のたびに新しい idempotencyKey を発行する(ユーザー再試行 = 別 operation)', async () => {
+    vi.mocked(submitUpload).mockResolvedValueOnce({ outcome: 'in_progress' })
+    await renderWithFiles([makeImage('a.jpg')])
+
+    const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
+    await act(async () => {
+      fireEvent.click(btn)
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+
+    expect(vi.mocked(submitUpload)).toHaveBeenCalledTimes(2)
+    const first = vi.mocked(submitUpload).mock.calls[0][0].get('idempotencyKey')
+    const second = vi.mocked(submitUpload).mock.calls[1][0].get('idempotencyKey')
+    expect(first).not.toBe(second)
   })
 })
