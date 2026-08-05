@@ -176,7 +176,7 @@ crop 元 = **Gemini に送ったバイトと同一の画像**。画像入稿は�
 exp5 の粗い座標(辺の run 間揺れ)は Gemini 検出品質の変動で、式のずれではない。切り出し品質は防御 3 点(padding/clamp/原 bbox 保持で再 crop 余地)で受ける。
 
 ### 4.5 回転入力の明示除外(exp7 は gate にしない)
-portrait/PNG 前提で進める。**EXIF orientation ≠ 1 の source は図版検出をスキップ**(text 抽出は実行)、除外理由「向き未対応」計上(§13)。検出可能ケース限定(EXIF 無し回転は非対象)。前提破綻検出器を兼ねる。exp7(回転 JPEG 座標裏取り)通過で除外を外す follow-up。
+portrait/PNG 前提で進める。**EXIF orientation ≠ 1 の source は図版を attach しない**(prompt は凍結でテキスト抽出のため画像は Gemini に送る = 図版検出自体は起きる。crop を呼ばずに除外し、`orientation_unsupported` を「取り込めませんでした」束に計上・§13)。検出可能ケース限定(EXIF 無し回転は非対象)。前提破綻検出器を兼ねる。exp7(回転 JPEG 座標裏取り)通過で除外を外す follow-up。
 
 ---
 
