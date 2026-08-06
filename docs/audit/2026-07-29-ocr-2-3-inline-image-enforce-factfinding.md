@@ -10,13 +10,21 @@
 
 本 sprint は「見栄えの調整」ではなく **target 単位契約の描画側強制**。成果物には **「本文に markdown 画像記法が現れない」ことの test 固定**を含む(除去して終わりにすると次に別モデルが同出力をした時に静かに戻る)。prompt での抑制が効かないことは ②-2 arm 比較(lite が `![…]` を出す)で実証済ゆえ、描画側 enforce が必要。
 
-## §1 描画経路の単一点(現状の収束確認)
+## §1 markdown 描画経路の収束確認(**card 本文の全 surface ではない**)
 
-- **card body 全 text field の描画は `MdTableText` 系(`components/markdown/md-table-text.tsx`)に収束**:
+> **2026-08-06 訂正**: 本節は「`MdTableText` 系に収束」を **card body 全 text field の描画**の話として書いていたが、
+> 実際に確認したのは「**markdown として描画する経路**が 1 つに収束すること」であって、
+> 「card 本文がユーザーに届く経路」ではない。調査手法が `react-markdown` の利用箇所を探す形だったため、
+> markdown を通さず素のテキストとして本文を出す surface(upload result page の preview =
+> `lib/exams/list.ts` の `snippet(question_text, 80)`)が視野に入っていなかった。
+> 実機観測 = `docs/superpowers/sessions/2026-08-06-ocr-2-4a-close-stg-smoke.md` §4 /
+> 教訓 = `docs/superpowers/lessons/2026-08-06-single-point-claims-decay-silently.md`
+
+- **card body の text field を markdown として描く経路は `MdTableText` 系(`components/markdown/md-table-text.tsx`)に収束**:
   - 学習面(演習): `app/(app)/app/study/smart/_components/session-runner.tsx`(question=displayText / options[].text / options[].explanation / explanation 等・MdTableText/MdTableBlock)。
   - 編集面: `inline-text-field.tsx`(question_text / title / explanation_text / memo・:319 `<MdTableText value={displayText}/>`)/ `inline-option-row.tsx`(option value)。
 - **card content を描く別 markdown 経路なし**: react-markdown 直使用は `md-table-text.tsx` のみ(rg 確認)。`dangerouslySetInnerHTML` の card content 経路なし。
-- **②-1/②-2 で経路は不変**(両 sprint は cost/gemini/ocr のみ改変・描画未 touch)。→ **②-0 の「MdTableText 単一収束」は現在も有効**。
+- **②-1/②-2 で経路は不変**(両 sprint は cost/gemini/ocr のみ改変・描画未 touch)。→ **②-0 の「MdTableText 単一収束」は markdown 描画経路については現在も有効**(上記訂正のとおり、本文を素のテキストで出す surface はこの収束の外側にある)。
 
 ## §2 除去 vs alt 抽出の材料
 
@@ -36,7 +44,7 @@
 
 ## §4 既存データへの影響
 
-- card body は `question_text` string に inline `![…]` を**保持したまま**保存(②-3 は storage/parse を変えない=描画側単一点)。
+- card body は `question_text` string に inline `![…]` を**保持したまま**保存(②-3 は storage/parse を変えず描画側で処理する)。**保存側に記法が残る以上、markdown 描画経路を通らない surface ではそのまま見える**(§1 の訂正)。
 - 描画側処理は **render 時に適用**ゆえ、②-2 移行後に作成され既に混入を持つカードも **自動的に救われる**(data migration 不要)。→ 描画時処理で既存・新規とも一律カバー。
 
 ## §5 test の置き所

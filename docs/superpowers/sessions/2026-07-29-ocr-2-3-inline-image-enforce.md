@@ -20,7 +20,8 @@
 ## 実装結論
 
 - **`stripInlineImages`(pure・`lib/markdown/strip-inline-images.ts`)**: mdast の image/imageReference ノードの position offset を取り、元文字列から後ろ向きに該当範囲のみ削除。**AST を再文字列化しない**(改行/表整形を壊さず「改行 \n 保持」prompt ルール + segmentMdTables 不変条件と両立)。regex 不使用ゆえ code span / code block / escape `\![` / nested paren / reference を誤らず、**正解選択肢を消さない**(canonical adversarial probe + unit test で実証)。空白 3 分岐(行唯一→行削除 / 段落途中→構文のみ / 表セル→区切り温存)。冪等 + 性質(再 parse で image ノード 0)pin。
-- **単一点 = entry-point strip**: `segmentStrippedForRender(value) = segmentMdTables(stripInlineImages(value))` を `MdTableText` / `MdTableBlock` が使用。hasTable 判定と描画が**同一の strip 後 segments** を共有。`MdTableSegments` は raw 描画へ戻し**非 export 化**(bypass footgun 除去)。`img: () => null` は防御。
+- **strip の適用点 = markdown 描画経路の entry point**: `segmentStrippedForRender(value) = segmentMdTables(stripInlineImages(value))` を `MdTableText` / `MdTableBlock` が使用。hasTable 判定と描画が**同一の strip 後 segments** を共有。`MdTableSegments` は raw 描画へ戻し**非 export 化**(この 2 component の内側での bypass footgun 除去)。`img: () => null` は防御。
+  **適用範囲は「この 2 component を通る描画」に限られ、card 本文がユーザーに届く全経路を覆ってはいない**(2026-08-06 の stg smoke で確定)。実例 = upload result page の preview は `lib/exams/list.ts` の `snippet(question_text, 80)` を素のテキストとして出しており strip を通らず、`![](q010-img-1)` が生表示される。**当初この bullet は「単一点 = entry-point strip」と書いていたが、その完全性の主張は偽だった。** 経緯と観測 = `docs/superpowers/sessions/2026-08-06-ocr-2-4a-close-stg-smoke.md` §4 / 教訓 = `docs/superpowers/lessons/2026-08-06-single-point-claims-decay-silently.md`。
 - **契約変更(意図的)**: `md-table-text.test.tsx` の旧 pin『表内画像記法 → alt 表示』を『alt も出さない(非表示)』へ。target 単位契約の描画側強制であり見栄え調整ではない = 契約を test で固定し直した。
 - **既存データ**: render 時処理ゆえ ②-2 後の混入カードも migration なしで一律救済。
 

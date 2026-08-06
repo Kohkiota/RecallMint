@@ -2,13 +2,14 @@
 
 - 日付: 2026-07-29
 - Sprint: ②-3(OCR track / ②-2 モデル移行の直後・②-4 の前提)
-- 種別: 描画側単一点の契約強制(sync/tx なし)
+- 種別: 描画側の契約強制(sync/tx なし)
+- **2026-08-06 訂正**: 本 spec は当初 strip を「描画側**単一点**」と位置づけていたが、その完全性の主張は**偽**だった。適用範囲は markdown 描画 component(`MdTableText` / `MdTableBlock`)を通る描画に限られ、card 本文がユーザーに届く他の surface(upload result page の preview = `lib/exams/list.ts` の snippet)は strip を通らない。実機観測 = `docs/superpowers/sessions/2026-08-06-ocr-2-4a-close-stg-smoke.md` §4 / 教訓 = `docs/superpowers/lessons/2026-08-06-single-point-claims-decay-silently.md`
 - モデル: Opus
 - 前提: fact-finding = `docs/audit/2026-07-29-ocr-2-3-inline-image-enforce-factfinding.md`
 
 ## 1. 目的
 
-card body の本文フィールドに混入する markdown 画像記法 `![…](…)` を **描画側単一点で除去**し、「**本文に markdown 画像記法が現れない**」ことを **test で契約固定**する。これは見栄えの調整ではなく **target 単位契約(images[].target で図を紐づける確定設計・②-2 FF §1')の描画側強制**である。prompt での抑制は効かないことが ②-2 arm 比較(lite が「埋め込み不要」を無視)で実証済ゆえ、描画側の決定的処理が要る。
+card body の本文フィールドに混入する markdown 画像記法 `![…](…)` を **markdown 描画側で除去**し、「**markdown 描画経路を通る本文に markdown 画像記法が現れない**」ことを **test で契約固定**する(冒頭の 2026-08-06 訂正のとおり、これは全 surface の保証ではない)。これは見栄えの調整ではなく **target 単位契約(images[].target で図を紐づける確定設計・②-2 FF §1')の描画側強制**である。prompt での抑制は効かないことが ②-2 arm 比較(lite が「埋め込み不要」を無視)で実証済ゆえ、描画側の決定的処理が要る。
 
 ## 2. 背景 — なぜ ②-3 が ②-4 の前提か(OT 提起への回答・記録)
 
@@ -29,18 +30,18 @@ card body の本文フィールドに混入する markdown 画像記法 `![…](
 - **論点 1 = 表内も揃える(採用)**: 現状は表外(text セグメント)= literal 表示 / 表内(table セル)= img override で alt 表示、の非対称。同一契約違反への扱いが 2 通りは望ましくないため**揃える**。text = 除去、table = alt もやめて**除去(非表示)**に統一。regression risk 低(strip helper 1 + img override 1 行 + 既存 test 1 更新)。
 - **論点 2 = 全て除去(採用)**: OCR key pattern(`qNNN-img-N`)に絞らず**任意の `![alt](url)`** を除去。inline 画像記法はどこでも画像描画されない設計(表外 literal / 表内 alt・実 asset は非 UUID key ゆえ `CardImageGallery` 非描画)ゆえ、「本文に inline 画像記法は存在しない」で契約統一。pattern 依存は変化時に漏れる。
 
-### 4.2 単一点の所在 = `MdTableSegments`
+### 4.2 strip の適用点 = markdown 描画 component の内側(全 surface を覆うものではない)
 
-全描画経路(`MdTableText` / `MdTableBlock` / 直接 caller = session-runner の tag 判定共有)は低レベル render **`MdTableSegments`**(`components/markdown/md-table-text.tsx`)に収束する(pre-segmented `segments` を描画)。ここで:
+markdown 描画経路(`MdTableText` / `MdTableBlock` / 直接 caller = session-runner の tag 判定共有)は低レベル render **`MdTableSegments`**(`components/markdown/md-table-text.tsx`)に収束する(pre-segmented `segments` を描画)。ここで:
 
-全 caller が `MdTableSegments` を通るため、ここに strip を置けば**どの caller もバイパスできない**(caller 各所に散らさない)。各セグメントの値に `stripInlineImages(seg.value)` を適用してから描画:
+**この 2 component を通る描画に関しては** strip をここに置けばバイパスされない(caller 各所に散らさない)。各セグメントの値に `stripInlineImages(seg.value)` を適用してから描画:
 
 - **text セグメント**: 現状 `<React.Fragment>{seg.value}</React.Fragment>`(raw)→ strip 後の値を描画。
 - **table セグメント**: strip 後の値を react-markdown へ。加えて防御として `components.img` を **`() => null`**(現状 `({alt}) => alt` から変更)にし、万一 strip をすり抜けた画像も非表示化(belt-and-suspenders)。
 
 `segmentMdTables` は**触らない**(不変条件 `value 連結 === 入力` を保つ)。strip は segment 後の各セグメント値に適用するため segment 関数に影響しない。tag 判定(hasTable)は画像除去で不変(画像 ≠ 表)。
 
-> **実装時修正(2026-07-29・Codex review 駆動)**: 上記「MdTableSegments で per-segment strip」は実装で **entry-point strip** に修正した(単一点の所在が変わった。**契約・凍結・単一収束・依存の意図はすべて不変**)。理由 2 点: ① per-segment 独立 parse は reference 記法 `![x][id]` の definition が別セグメントにある時に解決できず除去漏れる(complete document で strip すべき)。② 画像除去で表構造が変わる(無効表→有効表)と、`MdTableBlock` の wrapper 判定(`<p>`/`<div>`)と render が別 segments を見て `<table> in <p>`(hydration mismatch)になりうる。→ **`segmentStrippedForRender(value) = segmentMdTables(stripInlineImages(value))`** を導入し、`MdTableText` / `MdTableBlock`(= render の segmentMdTables caller は実質この 2 つ・session-runner はこれら経由)が使う。hasTable 判定と描画が同一の strip 後 segments を共有する。`MdTableSegments` は raw 描画へ戻し **非 export 化**(bypass footgun 除去)。`img: () => null` は防御として維持。詳細 = plan Task 2 / session doc。
+> **実装時修正(2026-07-29・Codex review 駆動)**: 上記「MdTableSegments で per-segment strip」は実装で **entry-point strip** に修正した(適用点が `MdTableText` / `MdTableBlock` の入口へ移った。**契約・凍結・依存の意図は不変**)。理由 2 点: ① per-segment 独立 parse は reference 記法 `![x][id]` の definition が別セグメントにある時に解決できず除去漏れる(complete document で strip すべき)。② 画像除去で表構造が変わる(無効表→有効表)と、`MdTableBlock` の wrapper 判定(`<p>`/`<div>`)と render が別 segments を見て `<table> in <p>`(hydration mismatch)になりうる。→ **`segmentStrippedForRender(value) = segmentMdTables(stripInlineImages(value))`** を導入し、`MdTableText` / `MdTableBlock`(= render の segmentMdTables caller は実質この 2 つ・session-runner はこれら経由)が使う。hasTable 判定と描画が同一の strip 後 segments を共有する。`MdTableSegments` は raw 描画へ戻し **非 export 化**(bypass footgun 除去)。`img: () => null` は防御として維持。詳細 = plan Task 2 / session doc。
 
 ### 4.3 `stripInlineImages` helper — **AST ノードの offset で削除(再文字列化しない)**
 
