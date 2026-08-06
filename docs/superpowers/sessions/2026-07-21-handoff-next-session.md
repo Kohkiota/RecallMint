@@ -7,7 +7,7 @@
 - **stg 実証 Phase A-C 全合格**: A(RLS off deploy 健全)/ B(RLS on・write 含む・P0RLS 0・RLS 自体 ~+6ms)/ C(pooler 純度 ~180 req 双方向漏れ 0)。
 - **git 状態**: `develop` = `origin/develop` = `3050f5b`(push 済)。**`main` は local ff-merge 済(3050f5b)だが `origin/main` は `e10ce32` のまま未 push**。
 - 前提サブ成果: C1/C2(devcontainer 掃除・版 pin・OT rebuild + `codex login` 待ち)/ Iso-0/1(test:iso 基盤)/ Perf-0/0b(before 計測)/ RLS-P1(recallmint_app role)。
-- 統合ステータス: `docs/todo-v47-integrated-status.md`(本セッション全成果 + backlog)。
+- 統合ステータス: claude.ai 管理の todo(本セッション全成果 + backlog。当時は `docs/todo-v47-integrated-status.md` にも mirror していたが 2026-08-06 に repo 側を削除)。
 
 ## 2. 次タスク = **Phase 3(RLS 全表展開 + 標準化)**
 最優先。Phase 2 の型の反復 + 標準化。着手時は brainstorm→spec→plan→codex-plan-review の full flow。
@@ -32,7 +32,7 @@
 - OT 出力規律: 結論のみ・番号 bullet・判断必要 yes/no・詳細 doc path。
 
 ## 5. 参照 doc パス
-- 統合ステータス: `docs/todo-v47-integrated-status.md`
+- 統合ステータス: claude.ai 管理の todo(repo に置かない)
 - RLS-P2: spec `docs/superpowers/specs/2026-07-20-rls-p2-representative-closure-design.md` / plan `docs/superpowers/plans/2026-07-20-rls-p2-representative-closure.md` / session `docs/superpowers/sessions/2026-07-20-rls-p2-representative-closure-implementation.md` / runbook `docs/ops/rls-p2-stg-runbook.md`
 - 設計基盤: Perf-0 `docs/audit/2026-07-18-rls-performance-before-factfinding.md` / Iso-0 `docs/audit/2026-07-18-tenant-isolation-integration-test-factfinding.md` / RLS-P1 `docs/superpowers/specs/2026-07-18-rls-p1-app-role-separation-design.md`
 - 現場確認: `docs/audit/2026-07-20-rls-p2-lifecycle-null-affected-rows-factfinding.md`

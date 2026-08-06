@@ -95,7 +95,7 @@ T12(publish)は本 sprint で最も判断が集中する。**完了時に別 sto
 
 ## 5. 未解決・持ち越し
 
-### follow-up 台帳(`docs/todo-v47-integrated-status.md` §残件記録・全て trigger 付き)
+### follow-up 台帳(claude.ai 管理の todo・全て trigger 付き)
 - **旧 flow 共存チェックの撤去**(T16 で UI が新 flow 切替 + 旧 `runUploadGuardTx` 削除時)。
 - **②-5 R2 staging aggregate budget**(下記 residual risk)。
 - **`lib/ocr/domain/` への zod ban 追加**(実 pure 関数を置く時に機械強制へ昇格)。

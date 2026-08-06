@@ -58,7 +58,7 @@ OT が push → 手動 smoke → 結果を見て T14b 以降再開。cutover [re
 
 - **時間予算は全て暫定**(§4 の実測で確定)。実測前に配分理屈を積まない(OT 方針)。
 - **deadline P2 = per-invocation で確定**(operation-wide persist しない・spec §11 明文化済 `05d42e8`)。operation 全体上限 = 7 日 retention cap。
-- **T12 checkpoint 持ち越し(OT bless 済)**: (a) bumpExamCardCount を exam FOR UPDATE 代替 (b) counter を refs より前に書く (c) dup-card-id→retryable(7日 cap backstop)(d) domain-purity 先例(`lib/cards/domain/card-asset-refs.ts` の isAssetKey=transitively zod・2 例目で eslint 原則化=todo-v47 trigger)(e) T12b old-worker test の fence-leg wording。詳細=`2026-08-01-ocr-2-4a-t12-checkpoint.md` §5。
+- **T12 checkpoint 持ち越し(OT bless 済)**: (a) bumpExamCardCount を exam FOR UPDATE 代替 (b) counter を refs より前に書く (c) dup-card-id→retryable(7日 cap backstop)(d) domain-purity 先例(`lib/cards/domain/card-asset-refs.ts` の isAssetKey=transitively zod・2 例目で eslint 原則化 = trigger 付き follow-up・台帳は claude.ai 管理の todo)(e) T12b old-worker test の fence-leg wording。詳細=`2026-08-01-ocr-2-4a-t12-checkpoint.md` §5。
 - **abandoned op PII**: T14a `#3` 手動 sweep `scripts/gc-abandoned-operations.ts`(operator 手動・dry-run/--user)で対処済(aged-out 非終端 op → terminal_failed + payload NULL)。cron 化は post-cutover ops。
 - **completeUploadTx 相当の scope 訂正**(T12a fix3・OT 承認): publish が source_documents.status='completed' + upload_records 記帳(pages_processed=画像数=月次 quota SUM 源)。記帳=②-4a・quota 強制=②-5。spec §8.2 明文化済。
 - **null-lease SQL 3-valued-logic 教訓**(T14a fix3): `not(and(..., lease>now()))` は lease NULL で NULL→row 除外。DI-mock は SQL NULL を捕まえない → real-PG iso test 必須。共有述語 `isLiveUploadOperationCondition` は `isNotNull` guard で NULL-safe 化済。

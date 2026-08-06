@@ -92,7 +92,7 @@ T14(deadline/retry/source_assets GC/stale 統合・stg-smoke gate)→ T15(GDPR G
 **現物**: ②-4a の新 flow(prepare→claim→stage→crop→publish)は **UI 未配線**。`upload-form.tsx:434` は今もレガシー `processUpload`(`runUploadGuardTx`)を呼び、新 flow 関数群に production/UI caller ゼロ。→ stg UI で画像 upload してもレガシー経路を通り T10/T12 新コードに到達しない = combined end-to-end UI smoke 不可(ブラウザは開かず現物確認で停止・OT が適切と評価)。
 
 **OT 決定**:
-- **②-4a は server-side-only で正しい**(plan T4-T16 に client orchestration 無しは設計どおり・spec §1 は server 状態機械の定義)。**UI cutover は ②-4a 完了後・②-4b 前の必須独立タスク**(`②-4a-cutover`・todo-v47 §5 短期に定義)。
+- **②-4a は server-side-only で正しい**(plan T4-T16 に client orchestration 無しは設計どおり・spec §1 は server 状態機械の定義)。**UI cutover は ②-4a 完了後・②-4b 前の必須独立タスク**(`②-4a-cutover`・当時の todo で定義。todo は claude.ai 管理)。
 - **T12 = [reviewed] 確定**: publish tx / fencing / takeover 本体は実 PG iso で検証済(T12 の検証対象の中心)。UI 経由 end-to-end は cutover smoke で検証。本 doc が [reviewed] 正記録(push 済ゆえ commit tag は追わない)。
 - **T10 = tagless 維持**: #4(実 R2 412 冪等)/ #5(実 sharp 決定性)/ #6(§7.3 guard)は T10 本体機能そのもので mock のまま。cutover smoke 通過で [reviewed] 確定。
 - **T14 → T15 → T16 続行**(全て server-side・iso 検証範囲)。各 task の stg-smoke gate は **「cutover smoke に統合」と読み替え**、本 doc / 各 session doc に記録。

@@ -142,7 +142,7 @@
 
 ## 残余リスク(公開前 PII 判断・記録のみ)
 
-todo-v47 §4「公開前 PII バケット」由来の設計事実(移管でなく抜粋):
+公開前にまとめて判断する PII 関連の設計事実(判断そのものは claude.ai 側 todo が持つ):
 - **integration_failures は退会 scrub の対象外**(user 削除で clerkId/stripeCustomerId/context/errorMessage 残置)。
 - **contact_messages は app-role が全行 SELECT 可能に留まる**(GDPR `DELETE WHERE user_id` が PG の「WHERE 参照列に SELECT」要求ゆえ table SELECT 保持。列単位 `SELECT(user_id)` 化で解消可)。
 - **退会 scrub で null 化する列 vs 保持する Stripe ID 等の妥当性**は公開前にまとめて判断。

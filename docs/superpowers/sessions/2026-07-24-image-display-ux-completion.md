@@ -154,7 +154,7 @@ OT が iPhone 相当で実機 smoke。**PASS**: G1〜G6 gesture / L1 scroll-lock
 - **FINDING 2(画像外タップで閉じる追加可否)→ (A) 現状維持(OT 決定)**: PhotoSwipe source 確認 = touch tap は image/bg 問わず `tapAction`(既定 toggle-controls)経由、`bgClickAction`/`imageClickAction` は **mouse 専用**(bgClickAction は既に既定 'close')。OT 案 (b)(c) は iOS 無効。通常画像は下ドラッグ + × で dismiss 可(冗長)、長尺は背景余白無で (B) でも不解決 → lever 追加せず。長尺 = × 依存を受容。**実装なし**。
   - **⚠️ SUPERSEDED(2026-07-25 image-ux2 sprint / OT 再承認)**: 本決定は **image-ux2 sprint item2 で反転・実装済**(`feat(media) 89eb156` [reviewed])。反転の根拠 = 上記「touch は image/bg 問わず `tapAction` 経由」という**事実そのものが lever**だった点を当時見落としていた。案 b = **`tapAction` にカスタム関数**を渡し `originalEvent.target` が `.pswp__img` か自前判定し、画像上 → toggle-controls 維持 / 画像外 → close。当時「案 (b)(c) は iOS 無効」としたのは「PhotoSwipe 既定の bg/image click は mouse 専用」までの評価で、**tapAction 自体をカスタム化する選択肢を検討していなかった**(事実は不変、結論のみ更新)。長尺=×依存の受容は不変。OT 再承認 = image-ux2 sprint brief(2026-07-25)で item2 として明示要求 + 案 b 採用を明示回答。詳細 = `docs/codex/2026-07-25-image-ux2-task2-tapclose.md`。
 - **後日 OT(iPad)残**: F1 iOS Safari 畳み発火(must-pass 本丸・演習画面で再確認)/ L2 / L3 / 横 / iPad / PWA。
-- **follow-up 記録(別件・triage 未着手)**: 削除済み exam のモバイル残留(サイトデータ消去で解消)= pull 伝播バグ or 6月 seed の SQL 直接削除で tombstone 不在、の切り分け未実施。台帳 = `docs/todo-v47-integrated-status.md` §5 短期。画像 sprint とは分離(調査せず記録のみ)。
+- **follow-up 記録(別件・triage 未着手)**: 削除済み exam のモバイル残留(サイトデータ消去で解消)= pull 伝播バグ or 6月 seed の SQL 直接削除で tombstone 不在、の切り分け未実施。台帳 = claude.ai 管理の todo(短期・launch blocker 寄り)。FF = `docs/audit/2026-07-13-image-delete-sync-factfinding.md`(削除 sync 機構)。画像 sprint とは分離(調査せず記録のみ)。
 
 ### commit range 更新(未 push)
 

@@ -25,7 +25,7 @@ T8a(pure normalize)の canonical review が「domain 内 zod は DDD 慣習違�
 
 ## 重要な明記事項
 
-**`lib/ocr/domain/` は現状 eslint の zod ban 対象外だが、domain zod-free 原則(F3 spec §3.4)は適用される。** lint 未強制と原則不適用は別。将来 `lib/ocr/domain/` に実際の pure 関数を置く際、ban を追加して機械強制へ昇格する(follow-up 台帳・todo-v47 §残件記録に trigger 付き記録済)。
+**`lib/ocr/domain/` は現状 eslint の zod ban 対象外だが、domain zod-free 原則(F3 spec §3.4)は適用される。** lint 未強制と原則不適用は別。将来 `lib/ocr/domain/` に実際の pure 関数を置く際、ban を追加して機械強制へ昇格する(trigger 付き follow-up・台帳は claude.ai 管理の todo)。
 
 ## 併せて修正した Critical(cardId / assetId 検証欠落)
 
