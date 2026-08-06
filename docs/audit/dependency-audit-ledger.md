@@ -14,6 +14,7 @@
 - 器の検証注意: `pnpm audit --json` の metadata 件数は **ignore filter 前の値**。`ignoreGhsas` が効いているかは表出力の「(N ignored)」注記と exit code で確認する(実証 2026-07-21: high 15 GHSA 全登録で `--audit-level high` exit 1→0 反転・「16 high (16 ignored)」表示を確認後、空 list へ復元)。
 - 記録規律: moderate 以下 = gate 対象外・本台帳に follow-up 記録 / high・critical = 「bump 待ち」記載 or `scripts/audit-allowlist.json` へ dev エントリ追加(追加時は GHSA/CVE・理由・再検討条件をセットで本台帳に記録・prod は allowlist 不適用ゆえ受容不可)。
 - 受容エントリ書式: `- GHSA-xxxx(CVE-xxxx)/ module / 理由 / 再検討条件(例: patched 版リリース時・依存元の major 更新時)`
+- **scope(prod / dev)の増減を測る基準 = `pnpm-lock.yaml` からの推移閉包**(2026-08-06 T3 制定)。`importers['.']` の各群を根に `snapshots[].dependencies / optionalDependencies` を辿り `name@版`(peer suffix 除去)へ正規化して数える。**`pnpm ls --dev` の件数や `pnpm audit --json` の `metadata.totalDependencies` と混ぜない**(基準が違い、同じ表に並べると存在しない矛盾を生む)。scope 移動を主張する時は **① prod 離脱 ② prod 流入 ③ 離脱のうち既に dev 到達可 ④ 離脱のうち dev 新規 ⑤ prod 残留のまま dev 経路も得た数** の 5 値を出す(全 package が両側で説明でき、**advisory が動かなくても成立する**)。
 
 ## 受容済(allowlist 登録済 = `scripts/audit-allowlist.json`)
 
@@ -84,6 +85,8 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 
 ## 解消済(2026-08-06 deps 基線更新 T1)
 
+経緯と一般化した教訓は `docs/superpowers/sessions/2026-08-06-deps-baseline-update.md`。本節は **audit 上の事実**(GHSA / 範囲 / 到達版 / 受容判断)を持つ。
+
 high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で解消。**override 追加ゼロ / package.json 無変更 / 直接依存の版不変**(= 差分は `pnpm-lock.yaml` 1 file・何か壊れれば原因は transitive の版に限定される、という検証性を意図した設計)。全 7 件に上流 patched 版が実在し「上流の上流待ち」ゼロ。
 
 `vulnerable` 列は **本 repo の tree に実在する系列のみ**を書く(brace-expansion の 2.x / 3.x 線は advisory には存在するが本 tree に無いため省略 — 完全性の主張ではない)。`scope` は **base commit で `pnpm audit --prod` / `--dev` を別実行した実測**。
@@ -99,7 +102,7 @@ high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で�
 内訳の照合: **prod 3** = fast-uri / ip-address / brace-expansion@5.0.8(rgw5)。**dev 3(gate 表示)** = undici / brace-expansion@5.0.8(rgw5)/ brace-expansion@1.1.16(rgw5)。**dev 受容 1(非表示)** = brace-expansion@1.1.16(mh99)。`pnpm why --dev -r fast-uri` / 同 `ip-address` はいずれも**空**(= dev 到達なし)。
 
 - **ip-address は単体再解決が効かない**: `express-rate-limit@8.4.1` が `ip-address` を **exact `10.1.0`** で宣言していたため(range 内に patched が無い = 名前指定 update は不発)。8.5.2 以降が `^10.2.0` へ緩和しており、親 `@modelcontextprotocol/sdk@1.29.0` の宣言が `^8.2.1` ゆえ **`pnpm update express-rate-limit`(→ 8.6.2)で連鎖解決**。**ip-address を直接 override しない** — exact pin した親を残したまま子だけ剥がすと、親の想定と解決版の乖離が lockfile に固定され、以後 override を外せなくなる。**exact pin された transitive は親を上げるのが正**。
-- **peer-suffix の壁は今回発生せず(matrix v2 知見の適用範囲を限定)**: `express-rate-limit` は lockfile key が `8.4.1(express@5.2.1)` = peer-suffix 付きだが `pnpm update` で 8.6.2 に更新された。matrix v2 の vite 知見「peer-suffix 付き transitive は `pnpm update` が更新しない」は **無条件命題ではない**(vite は消費側が **peer として** vite を要求する構図・本件は通常の dependency が peer 解決で suffix を得ているだけ)。**壁の有無は着手時に実測で判定する**(先に override へ逃げない)。
+- **peer-suffix の壁は今回発生せず → override 追加ゼロ**: `express-rate-limit`(lockfile key `8.4.1(express@5.2.1)` = peer-suffix 付き)も `pnpm update` で 8.6.2 に更新された。**matrix v2 の vite 知見「peer-suffix 付き transitive は `pnpm update` が更新しない」は無条件命題ではない** — 分かれ目と運用(先に override へ逃げず着手時に実測する)は session doc の知見 1。
 - **GHSA-mh99 受容の撤去根拠**: 受容根拠の第一項「v1 系に patched backport が存在しない」は、上流が **1.1.17 を backport** したことで **偽になった**。allowlist は「**patched 不在の系列**」単位で受容する設計(2026-07-25 OT 裁定)ゆえ、その系列に patched が生えた時点で受容は成立しない。**残置した場合の害** = v1 の affected 版が別経路から再混入しても `vulnerableRange <2.0.0` に合致して**無言で受容され続ける**(bump 可能なのに fail しない = 本台帳冒頭の原則「bump で解消できる検出は受容しない」違反)。よって `entries: []` へ。
 - **v1 backport の CJS 互換は実証済**: 受容根拠の第二項「5.0.8 強制は minimatch@3 の CJS `require()` を壊す」への対処が不要になった(v5 を強制せず v1 系内で 1.1.16→1.1.18)。`pnpm lint` exit 0 = eslint → minimatch@3 → brace-expansion@1.1.18 の実経路が動作。
 - **随伴(scope 注記)**: `pnpm update` の再解決に伴い ① vite subtree の postcss `8.5.23→8.5.25`(+ その dep `nanoid@3.3.17` が新規 entry)② optional な `@napi-rs/wasm-runtime 1.1.6→1.2.2`(`@rolldown/binding-wasm32-wasi` 配下・linux x64 では未使用)。**いずれも宣言 range 内 dev 側の patch refresh で advisory 起因ではない**。①は「解消+受容(2026-07-25)」と**同型の既知現象**(override `postcss ^8.5.12` の caret 配下ゆえ targeted update でも回避不能)。③ `express-rate-limit@8.6.2` が `debug` への依存 edge を新設(+ `transitivePeerDependencies: supports-color`)— ただし `debug@4.4.3` は `express` 経由で既に tree 内にあり、**新規 package は増えない**(edge のみ)。**基線が不動点であることは実測済** — base lockfile から `pnpm install --no-frozen-lockfile` を実走して `git diff pnpm-lock.yaml` がゼロ(推論でなく実行)→ 随伴は `update` の再解決由来と確定(pending drift ではない)。
@@ -108,19 +111,21 @@ high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で�
 
 ## 分類是正(2026-08-06 deps 基線更新 T3・shadcn を devDependencies へ)
 
+経緯と一般化した教訓は `docs/superpowers/sessions/2026-08-06-deps-baseline-update.md`(知見 4-6)。本節は **audit 上の事実**(使われ方 / 面の数値 / 政策面の帰結)を持つ。
+
 **これは分類の是正であって、実行時の危険を消す作業ではない。**`shadcn@4.6.0`(版は据え置き・exact pin 維持)を `dependencies` → `devDependencies` へ移した。変わったのは **`pnpm audit --prod` が評価する面**だけで、成果物の中身は変わっていない(下記 CSS バイト一致)。効果は「**prod scope の評価対象から外れた**」ことに尽きる — セキュリティ上の危険が減ったわけではない。
 
 ### shadcn の使われ方(移動前に測定)
 
 - **TS / JS / TSX からの import = 0 件**(`from 'shadcn'` / `require('shadcn')` / `import('shadcn')` を全 `*.ts,tsx,js,mjs,cjs` に対し grep・test 含めて 0)。
 - **ただし CSS 経由の import は実在する**: `app/globals.css:3` の `@import "shadcn/tailwind.css";`(`shadcn` の `exports["./tailwind.css"]` を解決)。これは **build 時に Tailwind/PostCSS が解決する**参照で、runtime 依存ではない。**「source から一切 import されていない」は正確ではない** — 正しくは「**runtime に読み込まれる経路が無い**」。
-- **devDependencies が build phase で解決されることの根拠**: `app/globals.css:1` の `@import "tailwindcss";` は devDependency `tailwindcss@4.3.3` を、`postcss.config.mjs` が読む `@tailwindcss/postcss@4.3.3` も devDependency を解決している。**Vercel の build phase が devDependencies を install しないなら現行の prod build が既に失敗しているはず**であり、shadcn は既存の実証済みクラスに加わるだけで新しい失敗様態を作らない。**下記の CSS バイト一致は local 実行の傍証であって、この点の証明ではない**(local では前後どちらの状態でも devDependencies が install されるため判別力を持たない)。
+- **devDependencies が build phase で解決されることの根拠**: `app/globals.css:1` の `@import "tailwindcss";` は devDependency `tailwindcss@4.3.3` を、`postcss.config.mjs` が読む `@tailwindcss/postcss@4.3.3` も devDependency を解決している。**Vercel の build phase が devDependencies を install しないなら現行の prod build が既に失敗しているはず**であり、shadcn は既存の実証済みクラスに加わるだけで新しい失敗様態を作らない。**local build の CSS バイト一致はこの点の証明にならない**(理由 = session doc 知見 6)。
 - `components.json` は shadcn CLI の設定 file(component 生成時のエイリアス定義)。生成された `components/ui/*` は `shadcn` package を import しない。
 - **実行対象 file(`*.ts,tsx,js,mjs,cjs,css,yaml,json`)における** その他の "shadcn" 出現は、全てコメント(radix/popover の挙動説明)/ `pnpm-workspace.yaml` の override コメント / `components.json` の `$schema` URL。`docs/**` には多数の言及があるが実行対象外。
 
 ### 面の変化(移動前後の実測)
 
-パッケージ集合は **lockfile からの推移閉包**(`importers['.']` の各群を根に `snapshots[].dependencies/optionalDependencies` を辿り `name@版` へ正規化)で、**prod / dev を同一方法で**測る。`pnpm ls --dev` の件数や `pnpm audit --json` の `totalDependencies` とは基準が異なるので混ぜない。
+測定基準は上記「運用」の **推移閉包**(prod / dev を同一方法で・`pnpm ls --dev` や `totalDependencies` と混ぜない)。
 
 | 指標 | before | after |
 |---|---|---|
@@ -166,7 +171,7 @@ shadcn **固有**の prod 経路だったのは `shadcn → ts-morph → @ts-mor
 | body-parser | GHSA-v422-hmwv-36x6 | CVE-2026-12590 | `>=2.0.0 <2.3.0` | `>=2.3.0` | `.>@google/genai>@modelcontextprotocol/sdk>express>body-parser` |
 | esbuild | GHSA-g7r4-m6w7-qqqr | - | `>=0.27.3 <0.28.1` | `>=0.28.1` | `.>@vitejs/plugin-react>vite>esbuild` |
 
-## 現況(2026-08-06 T1 後・`pnpm audit --json` 実測 = moderate 5 / low 2 / **high 0 / critical 0**)
+## 現況(2026-08-06 sprint 後・`pnpm audit --json` 実測 = moderate 5 / low 2 / **high 0 / critical 0**)
 
 **moderate 以下の正本はこの節**(上の「残存 follow-up」2 表は 2026-07-21 時点の snapshot として保存 — 現況ではない)。**gate 対象外**(閾値 high)ゆえ T1 では対処せず記録のみ。
 
