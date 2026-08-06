@@ -32,7 +32,7 @@
 
 - **ESLint 10 移行 watch(2026-07-25 新設)**: 上記 GHSA-mh99 の v1(eslint)線が構造的に消える契機。**現状 ESLint 10 は塞がれている** — `eslint-config-next@16.2.11` が `dependencies` として抱える 3 plugin(eslint-plugin-react / -import / -jsx-a11y)の peer が `^10` 未対応で、うち **eslint-plugin-react@7.37.5 は ESLint 10 で `context.getFilename()` 削除により実行時クラッシュ**(`jsx-eslint/eslint-plugin-react#3977` = **OPEN・未修正**)。eslint core 単体を 10 化しても 3 plugin が `minimatch@3`(→ brace-expansion@1.1.16)を保持するため **v1 線は消えない**(GHSA-mh99 撤去条件は eslint-core bump 単体では不成立)。**解除条件(3 つ全部)** = ① config-next 同梱 3 plugin の ESLint 10 peer 対応 ② plugin-react #3977 修正リリース ③ peer override なしで eslint@10 install が成立。達成時に eslint 10 移行 → GHSA-mh99 allowlist エントリ削除を検討。出典 = Step0 factfinding `docs/audit/2026-07-25-deps-rebaseline-matrix-v2-step0-factfinding.md` 領域 A。**2026-08-06 更新: GHSA-mh99 の allowlist エントリは上流の v1 backport(1.1.17)到達により先に撤去済** — 本 watch の動機から「受容の解除」は外れた(v1 線は現在 `brace-expansion@1.1.18` = patched で audit 上無害)。watch は **eslint 10 移行の可否そのもの**として存続させる(3 plugin の peer 未対応は未解消)。
 - **allowlist 照合機構の無稼働 watch(2026-08-06 新設)**: 受容が `entries: []` になったことで、`scripts/audit-gate.mjs` の **受容側経路**(`loadAllowlist` の必須 field 検証 / `satisfiesRange` の version-aware 照合 / expiry 判定)が **gate 実行で一度も通らなくなった**。従来は唯一の live entry が毎回この経路を通していた。安全側の性質は不変(entry 無しは fail-closed = 未受容 high で落ちる)だが、**expiry 判定だけは腐ると fail-open 方向**(受容が無期限に延命する側)であり、次に誰かが entry を追加するまで劣化が検出されない。これらの helper は未 export ゆえ単体 test も無い(`check-audit-config.test.ts` は tripwire のみ)。**解除条件** = helper を export して fixture 駆動の unit test で pin する(別 task・T1 scope 外)。
-- **prod audit scope の縮小余地 watch(2026-08-06 新設・要 OT 判断)**: `shadcn@4.6.0` が `devDependencies` でなく **`dependencies`** に置かれている。shadcn は build 時 CLI だが prod 依存であるため、その配下(`ts-morph → @ts-morph/common → minimatch@10 → brace-expansion`、および 2 つ目の `@modelcontextprotocol/sdk` 実体)が **prod audit scope に入る** — prod は allowlist 不適用で受容が一切できない最も厳しい面。T1 の prod high 3 件のうち brace-expansion@5.0.8 はこの経路由来で、devDependencies へ移せば構造的に消える。**`package.json` 変更を伴うため T1(lockfile-only)には含めない** — 起票は claude.ai 側 todo。
+- ~~**prod audit scope の縮小余地 watch(2026-08-06 新設)**: `shadcn@4.6.0` が `dependencies` に置かれ、配下が prod audit scope に入っている~~ → **2026-08-06 T3 で実施済**(下記「分類是正(2026-08-06 deps 基線更新 T3)」)。起票時の見立て「brace-expansion@5 系列は devDependencies へ移せば prod 面から構造的に消える」は実測で成立(prod から 201 package が離脱)。ただし**同時に見込んでいた「prod advisory が減る」は成立しなかった** — 現 prod advisory 6 件は shadcn 非依存の経路(`@google/genai` / `next`)からも到達するため。詳細は当該節。
 - **pnpm 11 audit endpoint 移行 watch(2026-07-25 新設)**: pnpm 11 で audit の registry endpoint / 出力仕様が変わる可能性。wrapper(`scripts/audit-gate.mjs`)は `pnpm audit --prod/--dev --audit-level high --json` の出力構造(`advisories` map / `metadata.vulnerabilities.high|critical` / `findings[].version`)+ exit code(0/1)に依存するため、pnpm 11 bump 時は wrapper の fail-closed 検証(期待構造)が正しく働くか再確認する。現状 pnpm 10.33.0。
 
 ## OT 作業(CC 不可・棚卸し起票)
@@ -106,6 +106,48 @@ high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で�
 - **随伴解消(moderate 5 件)**: all-scope moderate **10 → 5**。内訳 = `GHSA-v2v4-37r5-5v8g`(ip-address `<=10.1.0` → 10.4.0)+ **undici `<7.29.0` の 4 件**(`GHSA-8xcm-r25x-g524` / `GHSA-m8rv-5g2x-5cg5` / `GHSA-jr45-8vmc-qm54` / `GHSA-v3r7-h72x-cjcm` — いずれも patched 7.29.0)。moderate/low の現況は下記 **「現況(2026-08-06 T1 後)」** 節(2026-07-21 の表は当時の snapshot として別に保存)。
 - gate: `pnpm install --frozen-lockfile` / typecheck / lint(`--max-warnings=0`)/ build / test(**4428**)/ test:iso(**316**)/ `pnpm run audit` **全 exit 0**。
 
+## 分類是正(2026-08-06 deps 基線更新 T3・shadcn を devDependencies へ)
+
+**これは分類の是正であって、実行時の危険を消す作業ではない。**`shadcn@4.6.0`(版は据え置き・exact pin 維持)を `dependencies` → `devDependencies` へ移した。変わったのは **`pnpm audit --prod` が評価する面**だけで、成果物の中身は変わっていない(下記 CSS バイト一致)。効果は「**prod scope の評価対象から外れた**」ことに尽きる — セキュリティ上の危険が減ったわけではない。
+
+### shadcn の使われ方(移動前に測定)
+
+- **TS / JS / TSX からの import = 0 件**(`from 'shadcn'` / `require('shadcn')` / `import('shadcn')` を全 `*.ts,tsx,js,mjs,cjs` に対し grep・test 含めて 0)。
+- **ただし CSS 経由の import は実在する**: `app/globals.css:3` の `@import "shadcn/tailwind.css";`(`shadcn` の `exports["./tailwind.css"]` を解決)。これは **build 時に Tailwind/PostCSS が解決する**参照で、runtime 依存ではない。**「source から一切 import されていない」は正確ではない** — 正しくは「**runtime に読み込まれる経路が無い**」。
+- **devDependencies が build phase で解決されることの根拠**: `app/globals.css:1` の `@import "tailwindcss";` は devDependency `tailwindcss@4.3.3` を、`postcss.config.mjs` が読む `@tailwindcss/postcss@4.3.3` も devDependency を解決している。**Vercel の build phase が devDependencies を install しないなら現行の prod build が既に失敗しているはず**であり、shadcn は既存の実証済みクラスに加わるだけで新しい失敗様態を作らない。**下記の CSS バイト一致は local 実行の傍証であって、この点の証明ではない**(local では前後どちらの状態でも devDependencies が install されるため判別力を持たない)。
+- `components.json` は shadcn CLI の設定 file(component 生成時のエイリアス定義)。生成された `components/ui/*` は `shadcn` package を import しない。
+- **実行対象 file(`*.ts,tsx,js,mjs,cjs,css,yaml,json`)における** その他の "shadcn" 出現は、全てコメント(radix/popover の挙動説明)/ `pnpm-workspace.yaml` の override コメント / `components.json` の `$schema` URL。`docs/**` には多数の言及があるが実行対象外。
+
+### 面の変化(移動前後の実測)
+
+パッケージ集合は **lockfile からの推移閉包**(`importers['.']` の各群を根に `snapshots[].dependencies/optionalDependencies` を辿り `name@版` へ正規化)で、**prod / dev を同一方法で**測る。`pnpm ls --dev` の件数や `pnpm audit --json` の `totalDependencies` とは基準が異なるので混ぜない。
+
+| 指標 | before | after |
+|---|---|---|
+| prod 閉包 | 646 | **445** |
+| prod 離脱 / 流入 | — | **離脱 201 / 流入 0** |
+| dev 閉包 | 655 | **840**(流入 185) |
+| **prod advisory** | low 2 / moderate 4(6 件) | **low 2 / moderate 4(6 件)= 完全に不変** |
+| dev advisory | low 1 / moderate 1(2 件) | low 2 / moderate 4(6 件) |
+| **prod ∪ dev** | 1132 | **1132(差分 0)** |
+
+**突合(全 package を両側で説明できる)**: prod 離脱 201 の内訳 = 既に dev から到達可だった **86** + dev に新規出現した **115**、**どちらでもない孤児 = 0**(= 「抜けた 201 件は全て dev 側に存在する」)。これとは別に **prod に残ったまま dev 経路も得た package が 70**(`@google/genai` と共有する MCP SDK 配下)。検算 `115 + 70 = 185` = dev 流入と一致。prod ∪ dev の差分は 0 = **版は 1 つも動いていない**。
+
+**prod の advisory 件数は 1 件も減っていない。** 現在 prod に出ている 6 件はいずれも shadcn 固有経路ではなく、`@google/genai`(→ `@modelcontextprotocol/sdk` → express/hono 系: body-parser / qs / hono / @hono/node-server)または `next`(postcss@8.5.21 / styled-jsx → @babel/core)から**独立に到達する**ため、shadcn を外しても prod に残る。したがって「moderate/low が prod → dev へ移り件数が一致する」形の証明にはならなかった。**面が変わったことの証明は advisory でなくパッケージ集合の突合で取る**(上表)。
+
+shadcn **固有**の prod 経路だったのは `shadcn → ts-morph → @ts-morph/common → minimatch@10 → brace-expansion@5`(5 件とも prod 離脱を実測)。T1 で 5.0.9(patched)に上がっており現在 advisory は無いが、この系列が prod 面から外れたことが本作業の実質。逆方向の副作用として、**MCP SDK 配下(body-parser / qs / hono / @hono/node-server)が dev 面にも現れるようになった**(shadcn が dev 経路として同じ subtree に到達するため)。prod からは消えていないので gate 上の意味は変わらない(いずれも moderate/low = 閾値 high の対象外)。
+
+**政策面の帰結(favorable 一方向で書かない)**: prod を離脱した 201 package は「**受容不可**(prod は allowlist 不適用 = high で無条件 fail)」から「**allowlist 受容可能**(dev)」の面へ移った。分類としては正しい扱いだが、**今後この subtree に high が出た場合の強制力は落ちる**。実例として `brace-expansion` は本 repo で唯一 allowlist 受容が発生したモジュールであり、その v5 系列が今回の 201 に含まれる — 昨日なら prod で無条件 fail、今日は dev として受容の余地がある。一方、**prod 残留のまま dev 面にも現れた 70 package(MCP SDK 配下)は prod に居続けるため強制力は不変**。
+
+版は 1 つも動いていないため、prod ∪ dev の advisory 集合(= all-scope)は不変。変わったのは scope への帰属のみ。
+
+### 検証
+
+- **build 出力の CSS がバイト一致**(`.next/static/chunks/*.css` の file 名・md5 とも移動前後で同一)= local build において `@import "shadcn/tailwind.css"` の解決と出力内容が維持されていることの実証(Vercel の install phase の証明ではない — 上記)。
+- **build 出力に shadcn / ts-morph の混入ゼロ**(移動**前から**ゼロ): `.next/server/**/*.nft.json`(runtime トレース)/ `.next/server` 全体 / `.next/static` 全体のいずれにも該当なし。= runtime 成果物は元々 shadcn を含んでいない(これも「分類の是正」である根拠)。
+- lockfile 差分は **importers セクションの移動のみ**(specifier `4.6.0` / 解決版 `4.6.0(@types/node@24.13.2)(typescript@6.0.3)` とも不変・`packages:` / `snapshots:` に変更ゼロ)。
+- gate: `pnpm install --frozen-lockfile` / typecheck / lint(`--max-warnings=0`)/ build / test(**4428**)/ test:iso(**316**)/ `pnpm run audit` **全 exit 0**。
+
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
 ### moderate(3 件)
@@ -127,6 +169,8 @@ high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で�
 ## 現況(2026-08-06 T1 後・`pnpm audit --json` 実測 = moderate 5 / low 2 / **high 0 / critical 0**)
 
 **moderate 以下の正本はこの節**(上の「残存 follow-up」2 表は 2026-07-21 時点の snapshot として保存 — 現況ではない)。**gate 対象外**(閾値 high)ゆえ T1 では対処せず記録のみ。
+
+本表は **all-scope**(prod ∪ dev)の件数。T3(shadcn の devDependencies 移動)は**版を 1 つも変えていないため本表は不変**で、変わったのは prod / dev への帰属のみ(T3 節参照 — 移動後は prod low2/mod4・dev low2/mod4)。
 
 | sev | module | GHSA | 検出版 | patched | T1 との関係 |
 |---|---|---|---|---|---|
