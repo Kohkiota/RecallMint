@@ -302,7 +302,7 @@ DB 実測(記法は保存側に存在する = ②-3 の設計どおり):
 - **影響は表示のみ**。保存データ・実カード描画・図版 attach はいずれも正常。
 - ②-3 が記録した「**単一点 = entry-point strip**」という主張は**偽**だった(→ §7 の doc 訂正へ)。
 - fix は `lib/` から `components/` を import する形になり eslint Block A に当たる可能性が高く、
-  strip の共有化(配置換え)が要るため小さくない → **follow-up 起票**(todo-v48 公開前トラック)。
+  strip の共有化(配置換え)が要るため小さくない → **follow-up は claude.ai 側 todo へ**(公開前トラック / UIUX 整理)。
 
 ---
 

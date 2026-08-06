@@ -253,7 +253,10 @@ canonical reviewer / re-reviewer が 1・2・4・5・6 を独立再現。migrati
 4. **prod の RLS flip** は Phase 3 の別作業。0032 適用前の環境では `verify-rls-state` が
    `source_assets` を「カタログ外の表が RLS on」として出すのが正常(runbook §5.3 に注記済)。
 5. **legacy `process.ts` / `upload-guard.ts`** は revert 保険として射程外。`upload-guard.ts:25,55` の
-   stale なコメント 2 箇所は撤去 task の carry-forward に申し送り済(`docs/todo-v48-integrated-status.md`)。
+   stale なコメント 2 箇所は撤去 task の carry-forward に申し送り済(**todo は claude.ai 管理・repo に置かない**。
+   内容 = `upload-guard.ts:25` が削除済 `claim-operation.ts` を、`:55` が改名済 `hasActiveProcessingUpload`
+   〈後継 `hasLiveUploadOperation`・読む表も `source_documents` → `upload_operations`〉を名指ししている。
+   両 file を削除する task で一緒に消えるため単独では直さない)。
 6. **stg smoke は未実施**(push 後)。0032 適用 + `src/` prefix 空の確認 + GDPR 退会が必要。
 
 ---

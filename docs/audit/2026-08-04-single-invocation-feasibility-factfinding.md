@@ -60,7 +60,7 @@ policies_on_ocr_tables=0   -- source_assets / upload_operations / asset_derivati
 ### 2. Fluid Compute の有効/無効
 
 - **repo からは判定不能 = OT 確認事項**(Vercel Dashboard → Project → Settings → Functions)。
-- 関連する既知事象: 2 回目 smoke で「claim 成功 → 約 300s で関数消滅」(`docs/superpowers/sessions/2026-08-02-ocr-2-4a-cutover-review.md:97`)。build は `/app/upload` に maxDuration=800 を emit 済で、原因は **Vercel プロジェクト設定側(Fluid 有効 / Default Max Duration)の疑い**のまま **未解明**、6 回目非再発で observe-close(`docs/todo-v48-integrated-status.md:30`)。
+- 関連する既知事象: 2 回目 smoke で「claim 成功 → 約 300s で関数消滅」(`docs/superpowers/sessions/2026-08-02-ocr-2-4a-cutover-review.md:97`)。build は `/app/upload` に maxDuration=800 を emit 済で、原因は **Vercel プロジェクト設定側(Fluid 有効 / Default Max Duration)の疑い**のまま **未解明**、6 回目非再発で observe-close(同 review doc §「maxDuration 300s 消滅事象」)。**2026-08-05 追記**: OT の Dashboard 確認で Fluid Compute 有効・実効 720s が判明し、根因候補から「設定由来」は外れた(`docs/superpowers/sessions/2026-08-05-ocr-2-4a-s4-preconditions.md`)。
 - → **Fluid の有効/無効・実 Max Duration は不明**。1 invocation 化の前提確認としてここは潰しておく価値がある(Functions タブの実 Max Duration 表示)。
 
 ### 3. `request.signal` / `AbortSignal` 参照

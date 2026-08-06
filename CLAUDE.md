@@ -4,6 +4,7 @@
 
 RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復習する学習 SaaS。local-first(Dexie/IndexedDB mirror + outbox)。リポジトリ: `Kohkiota/RecallMint`。
 現フェーズ・ロードマップは sprint docs(`docs/plans/` / `docs/superpowers/`)と OT 管理の todo が正本。**本 file に進捗を書かない**。
+**todo / backlog / roadmap は claude.ai 側が正本で repo に置かない**(2026-08-06 一本化)。repo 側に todo doc を新設・復活させない。恒久の記録先は用途で決まる: 機構 = `docs/harness.md` / 設計不変条件・証明の空白 = `docs/architecture.md` / 経緯と実測 = `docs/superpowers/sessions/` / 教訓 = `docs/superpowers/lessons/`。**follow-up は claude.ai の todo へ渡す**(chat 報告に全文を出す)。
 
 - Next.js 16.x(App Router)/ TypeScript strict / Tailwind v4 / pnpm(packageManager field が SSoT)
 - PostgreSQL(Supabase)+ Drizzle / Dexie(client mirror + entity_mutations outbox)
