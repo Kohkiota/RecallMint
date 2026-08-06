@@ -17,14 +17,22 @@
 
 ## 受容済(allowlist 登録済 = `scripts/audit-allowlist.json`)
 
+**現在ゼロ件**(`entries: []`)。唯一の受容だった GHSA-mh99-v99m-4gvg は **2026-08-06 の deps 基線更新 T1 で撤去**(上流が v1 系 backport `1.1.17` を公開し受容根拠が失効)。撤去の判断と履歴は下記「解消済(2026-08-06 deps 基線更新 T1)」へ移設。
+
+<details><summary>撤去前の受容記録(2026-07-25〜2026-08-06・allowlist の設計根拠を含むため保存)</summary>
+
 - **GHSA-mh99-v99m-4gvg(CVE-2026-14257・High・brace-expansion OOM 型 DoS)** / module = brace-expansion / **受容経路 = `eslint@9 → minimatch@3 → brace-expansion@1.1.16`(dev 依存のみ)** / **受容根拠** = v1 系に patched backport が存在しない(patched=5.0.8=v5 のみ・1.1.16 が v1 最新で affected)+ override で 5.0.8 へ強制すると minimatch@3(CJS default `require()` を期待)を壊す(brace-expansion@5 は named export・`TypeError: expand is not a function` を実証)+ build/lint 時 tooling のみで runtime / client bundle 非混入 + glob 入力は repo 管理の config 由来で攻撃者制御なし(`pnpm audit --prod` で high 0 = prod 非波及を実証)/ **再検討条件** = ①v1 系への公式 backport 公開 ②ESLint 10 移行完了(v1 線が構造的に消える→ allowlist エントリ削除)③新経路から同 GHSA 該当が入った場合 / **再検討期限 = 2026-08-22(4 週間)または deps 再基線 sprint 完了の早い方**。
   - **管理方式の移行(2026-07-25 matrix v2)**: 本受容は pnpm の `auditConfig.ignoreGhsas` から **wrapper 管理の `scripts/audit-allowlist.json`** へ移行済(エントリ = `GHSA-mh99-v99m-4gvg` / brace-expansion / **`vulnerableRange <2.0.0`** / `expiry 2026-08-22` / path=eslint plugin 系 dev)。移行の実利 = **① version-aware 照合**(`findings[].version` が `<2.0.0` 内のものだけ受容 → patched への道がある版が同 GHSA を別経路で踏んでも自動受容しない=名前一致 false-positive の排除)**② dev 限定**(prod は allowlist 不適用ゆえ、この受容が公開面へ波及した瞬間 gate が落ちる)**③ expiry 全 entry 無条件強制**(2026-08-22 経過で advisory 未検出でも自動 fail=台帳テキスト運用だった期限が機械強制になる)。
   - **受容範囲 = `<2.0.0`(v1 系)の根拠(2026-07-25 OT 裁定・Codex r4 P1 対応)**: allowlist の `vulnerableRange` は advisory の affected 範囲(`<=5.0.7`)の**転記ではなく『受容している現物の系列』**を書く。本件の受容根拠は「**v1 系に patched 版が存在しない**」ことゆえ、受容範囲も v1 系(`<2.0.0`)と一対一。v2〜5.0.7 は patched(5.0.8=v5)への道がある版で、新規混入したら **fail させて bump 誘導**するのが正しい挙動(初期案 `<=5.0.7` は affected 転記で over-accept だった)。`=1.1.16` まで絞らないのは、backport 無しのまま v1 系の新 patch(例 1.1.17)が出る可能性があり(1.1.14→1.1.16 実績)その都度 allowlist を触ると version-aware の利点を損なうため — **『patched 不在の系列』単位で受容**する。**path 照合は不採用**(依存木の良性再構成で path が変わり誤 fail する brittleness)— 経路は記述フィールドに留め照合キーにしない。
   - **残余リスク(明記・移行後）**: version-aware かつ dev 限定・v1 線限定になり、旧 `ignoreGhsas`(advisory 単位・経路非依存・prod/dev 無差別)の残余は大幅縮小。残る過受容は「`<2.0.0` の v1 版が eslint 以外の dev 経路から入った場合も同エントリで受容」— ただし v1 系は patched 不在ゆえ経路が変わっても受容根拠(bump 先が無い)は不変で、実害は dev tooling(repo 管理 glob 入力)に限定。詳細 = 下記「解消+受容(2026-07-25)」。
 
+</details>
+
 ## 監視(watch・受容でなく解除条件付きの棚卸し対象)
 
-- **ESLint 10 移行 watch(2026-07-25 新設)**: 上記 GHSA-mh99 の v1(eslint)線が構造的に消える契機。**現状 ESLint 10 は塞がれている** — `eslint-config-next@16.2.11` が `dependencies` として抱える 3 plugin(eslint-plugin-react / -import / -jsx-a11y)の peer が `^10` 未対応で、うち **eslint-plugin-react@7.37.5 は ESLint 10 で `context.getFilename()` 削除により実行時クラッシュ**(`jsx-eslint/eslint-plugin-react#3977` = **OPEN・未修正**)。eslint core 単体を 10 化しても 3 plugin が `minimatch@3`(→ brace-expansion@1.1.16)を保持するため **v1 線は消えない**(GHSA-mh99 撤去条件は eslint-core bump 単体では不成立)。**解除条件(3 つ全部)** = ① config-next 同梱 3 plugin の ESLint 10 peer 対応 ② plugin-react #3977 修正リリース ③ peer override なしで eslint@10 install が成立。達成時に eslint 10 移行 → GHSA-mh99 allowlist エントリ削除を検討。出典 = Step0 factfinding `docs/audit/2026-07-25-deps-rebaseline-matrix-v2-step0-factfinding.md` 領域 A。
+- **ESLint 10 移行 watch(2026-07-25 新設)**: 上記 GHSA-mh99 の v1(eslint)線が構造的に消える契機。**現状 ESLint 10 は塞がれている** — `eslint-config-next@16.2.11` が `dependencies` として抱える 3 plugin(eslint-plugin-react / -import / -jsx-a11y)の peer が `^10` 未対応で、うち **eslint-plugin-react@7.37.5 は ESLint 10 で `context.getFilename()` 削除により実行時クラッシュ**(`jsx-eslint/eslint-plugin-react#3977` = **OPEN・未修正**)。eslint core 単体を 10 化しても 3 plugin が `minimatch@3`(→ brace-expansion@1.1.16)を保持するため **v1 線は消えない**(GHSA-mh99 撤去条件は eslint-core bump 単体では不成立)。**解除条件(3 つ全部)** = ① config-next 同梱 3 plugin の ESLint 10 peer 対応 ② plugin-react #3977 修正リリース ③ peer override なしで eslint@10 install が成立。達成時に eslint 10 移行 → GHSA-mh99 allowlist エントリ削除を検討。出典 = Step0 factfinding `docs/audit/2026-07-25-deps-rebaseline-matrix-v2-step0-factfinding.md` 領域 A。**2026-08-06 更新: GHSA-mh99 の allowlist エントリは上流の v1 backport(1.1.17)到達により先に撤去済** — 本 watch の動機から「受容の解除」は外れた(v1 線は現在 `brace-expansion@1.1.18` = patched で audit 上無害)。watch は **eslint 10 移行の可否そのもの**として存続させる(3 plugin の peer 未対応は未解消)。
+- **allowlist 照合機構の無稼働 watch(2026-08-06 新設)**: 受容が `entries: []` になったことで、`scripts/audit-gate.mjs` の **受容側経路**(`loadAllowlist` の必須 field 検証 / `satisfiesRange` の version-aware 照合 / expiry 判定)が **gate 実行で一度も通らなくなった**。従来は唯一の live entry が毎回この経路を通していた。安全側の性質は不変(entry 無しは fail-closed = 未受容 high で落ちる)だが、**expiry 判定だけは腐ると fail-open 方向**(受容が無期限に延命する側)であり、次に誰かが entry を追加するまで劣化が検出されない。これらの helper は未 export ゆえ単体 test も無い(`check-audit-config.test.ts` は tripwire のみ)。**解除条件** = helper を export して fixture 駆動の unit test で pin する(別 task・T1 scope 外)。
+- **prod audit scope の縮小余地 watch(2026-08-06 新設・要 OT 判断)**: `shadcn@4.6.0` が `devDependencies` でなく **`dependencies`** に置かれている。shadcn は build 時 CLI だが prod 依存であるため、その配下(`ts-morph → @ts-morph/common → minimatch@10 → brace-expansion`、および 2 つ目の `@modelcontextprotocol/sdk` 実体)が **prod audit scope に入る** — prod は allowlist 不適用で受容が一切できない最も厳しい面。T1 の prod high 3 件のうち brace-expansion@5.0.8 はこの経路由来で、devDependencies へ移せば構造的に消える。**`package.json` 変更を伴うため T1(lockfile-only)には含めない** — 起票は claude.ai 側 todo。
 - **pnpm 11 audit endpoint 移行 watch(2026-07-25 新設)**: pnpm 11 で audit の registry endpoint / 出力仕様が変わる可能性。wrapper(`scripts/audit-gate.mjs`)は `pnpm audit --prod/--dev --audit-level high --json` の出力構造(`advisories` map / `metadata.vulnerabilities.high|critical` / `findings[].version`)+ exit code(0/1)に依存するため、pnpm 11 bump 時は wrapper の fail-closed 検証(期待構造)が正しく働くか再確認する。現状 pnpm 10.33.0。
 
 ## OT 作業(CC 不可・棚卸し起票)
@@ -74,6 +82,30 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 - **随伴(scope 注記)**: v5 の再解決に伴い **`vite@8.0.16` subtree の nested postcss が `8.5.21→8.5.23`**(lockfile に新規 entry)。**`@tailwindcss/postcss@4.2.4` / `shadcn@4.6.0` 側の postcss は `8.5.21` 据え置き**(= 元は両 subtree が 8.5.21 で dedup されていたのが部分的に分離。`pnpm why postcss` で確認)。override `^8.5.12` caret 配下ゆえ再解決時に vite subtree が最新 patch を拾い、`pnpm update brace-expansion`(targeted)でも回避不能。patched line 内の benign な patch refresh(postcss は GHSA-6g55 対処済 line の前進)。pin 回避は postcss override 変更=別 scope creep ゆえ受容。
 - gate: install --frozen-lockfile / lint / typecheck / build / test(3892)/ test:iso(217)/ `pnpm run audit` exit0 全 green。**`pnpm audit --prod` = high 0**(prod 依存に本件非波及の証明)。ignore は「1 high (1 ignored)」で確認。
 
+## 解消済(2026-08-06 deps 基線更新 T1)
+
+high 7 件(prod 3 / dev 3 + allowlist 受容 1)を **lockfile 更新のみ**で解消。**override 追加ゼロ / package.json 無変更 / 直接依存の版不変**(= 差分は `pnpm-lock.yaml` 1 file・何か壊れれば原因は transitive の版に限定される、という検証性を意図した設計)。全 7 件に上流 patched 版が実在し「上流の上流待ち」ゼロ。
+
+`vulnerable` 列は **本 repo の tree に実在する系列のみ**を書く(brace-expansion の 2.x / 3.x 線は advisory には存在するが本 tree に無いため省略 — 完全性の主張ではない)。`scope` は **base commit で `pnpm audit --prod` / `--dev` を別実行した実測**。
+
+| module | GHSA(概要) | scope | vulnerable | patched | 到達版 | 手段 |
+|---|---|---|---|---|---|---|
+| fast-uri | GHSA-7p8r-x3mc-p8w7(backslash authority による host confusion) | **prod のみ** | `>=3.0.0 <3.1.5` | 3.1.5 | 3.1.5 | `pnpm update fast-uri`(ajv@8.20.0 `^3.0.1` 内) |
+| ip-address | GHSA-mwp4-54f8-5fhr(先頭ゼロ octet を decimal 解釈 = resolver との齟齬) | **prod のみ** | `<=10.3.0` | 10.3.1 | 10.4.0 | **親の再解決**(下記) |
+| brace-expansion | GHSA-rgw5-rvv9-x895(中間配列の無制限確保 DoS・CVE-2026-14257 の緩和を迂回) | prod+dev(**5.x 線** = prod+dev / **1.x 線** = dev のみ) | `<1.1.18` / `>=4.0.0 <5.0.9` | 1.1.18 / 5.0.9 | 1.1.18 / 5.0.9 | `pnpm update brace-expansion`(minimatch@3.1.5 `^1.1.7` / minimatch@10.2.5 `^5.0.5` 内) |
+| brace-expansion | GHSA-mh99-v99m-4gvg(**allowlist 受容中だった 1 件**) | dev | `<1.1.17` / `>=4.0.0 <5.0.8` | **1.1.17** / 5.0.8 | 1.1.18 / 5.0.9 | 同上 → **allowlist エントリ撤去** |
+| undici | GHSA-4cwx-7wf7-3272(cross-user 情報漏洩 + parse 時 crash) | dev | `>=7.0.0 <7.29.0` | 7.29.0 | 7.29.0 | `pnpm update undici`(jsdom@29.1.1 `^7.25.0` 内) |
+
+内訳の照合: **prod 3** = fast-uri / ip-address / brace-expansion@5.0.8(rgw5)。**dev 3(gate 表示)** = undici / brace-expansion@5.0.8(rgw5)/ brace-expansion@1.1.16(rgw5)。**dev 受容 1(非表示)** = brace-expansion@1.1.16(mh99)。`pnpm why --dev -r fast-uri` / 同 `ip-address` はいずれも**空**(= dev 到達なし)。
+
+- **ip-address は単体再解決が効かない**: `express-rate-limit@8.4.1` が `ip-address` を **exact `10.1.0`** で宣言していたため(range 内に patched が無い = 名前指定 update は不発)。8.5.2 以降が `^10.2.0` へ緩和しており、親 `@modelcontextprotocol/sdk@1.29.0` の宣言が `^8.2.1` ゆえ **`pnpm update express-rate-limit`(→ 8.6.2)で連鎖解決**。**ip-address を直接 override しない** — exact pin した親を残したまま子だけ剥がすと、親の想定と解決版の乖離が lockfile に固定され、以後 override を外せなくなる。**exact pin された transitive は親を上げるのが正**。
+- **peer-suffix の壁は今回発生せず(matrix v2 知見の適用範囲を限定)**: `express-rate-limit` は lockfile key が `8.4.1(express@5.2.1)` = peer-suffix 付きだが `pnpm update` で 8.6.2 に更新された。matrix v2 の vite 知見「peer-suffix 付き transitive は `pnpm update` が更新しない」は **無条件命題ではない**(vite は消費側が **peer として** vite を要求する構図・本件は通常の dependency が peer 解決で suffix を得ているだけ)。**壁の有無は着手時に実測で判定する**(先に override へ逃げない)。
+- **GHSA-mh99 受容の撤去根拠**: 受容根拠の第一項「v1 系に patched backport が存在しない」は、上流が **1.1.17 を backport** したことで **偽になった**。allowlist は「**patched 不在の系列**」単位で受容する設計(2026-07-25 OT 裁定)ゆえ、その系列に patched が生えた時点で受容は成立しない。**残置した場合の害** = v1 の affected 版が別経路から再混入しても `vulnerableRange <2.0.0` に合致して**無言で受容され続ける**(bump 可能なのに fail しない = 本台帳冒頭の原則「bump で解消できる検出は受容しない」違反)。よって `entries: []` へ。
+- **v1 backport の CJS 互換は実証済**: 受容根拠の第二項「5.0.8 強制は minimatch@3 の CJS `require()` を壊す」への対処が不要になった(v5 を強制せず v1 系内で 1.1.16→1.1.18)。`pnpm lint` exit 0 = eslint → minimatch@3 → brace-expansion@1.1.18 の実経路が動作。
+- **随伴(scope 注記)**: `pnpm update` の再解決に伴い ① vite subtree の postcss `8.5.23→8.5.25`(+ その dep `nanoid@3.3.17` が新規 entry)② optional な `@napi-rs/wasm-runtime 1.1.6→1.2.2`(`@rolldown/binding-wasm32-wasi` 配下・linux x64 では未使用)。**いずれも宣言 range 内 dev 側の patch refresh で advisory 起因ではない**。①は「解消+受容(2026-07-25)」と**同型の既知現象**(override `postcss ^8.5.12` の caret 配下ゆえ targeted update でも回避不能)。③ `express-rate-limit@8.6.2` が `debug` への依存 edge を新設(+ `transitivePeerDependencies: supports-color`)— ただし `debug@4.4.3` は `express` 経由で既に tree 内にあり、**新規 package は増えない**(edge のみ)。**基線が不動点であることは実測済** — base lockfile から `pnpm install --no-frozen-lockfile` を実走して `git diff pnpm-lock.yaml` がゼロ(推論でなく実行)→ 随伴は `update` の再解決由来と確定(pending drift ではない)。
+- **随伴解消(moderate 5 件)**: all-scope moderate **10 → 5**。内訳 = `GHSA-v2v4-37r5-5v8g`(ip-address `<=10.1.0` → 10.4.0)+ **undici `<7.29.0` の 4 件**(`GHSA-8xcm-r25x-g524` / `GHSA-m8rv-5g2x-5cg5` / `GHSA-jr45-8vmc-qm54` / `GHSA-v3r7-h72x-cjcm` — いずれも patched 7.29.0)。moderate/low の現況は下記 **「現況(2026-08-06 T1 後)」** 節(2026-07-21 の表は当時の snapshot として別に保存)。
+- gate: `pnpm install --frozen-lockfile` / typecheck / lint(`--max-warnings=0`)/ build / test(**4428**)/ test:iso(**316**)/ `pnpm run audit` **全 exit 0**。
+
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
 ### moderate(3 件)
@@ -91,6 +123,22 @@ high 16 行(unique 15 GHSA)を range 内 lockfile 更新(`pnpm update` 名前指
 | @babel/core | GHSA-4x5r-pxfx-6jf8 | CVE-2026-49356 | `<=7.29.0` | `>=7.29.6` | `.>eslint-plugin-react-hooks>@babel/core` |
 | body-parser | GHSA-v422-hmwv-36x6 | CVE-2026-12590 | `>=2.0.0 <2.3.0` | `>=2.3.0` | `.>@google/genai>@modelcontextprotocol/sdk>express>body-parser` |
 | esbuild | GHSA-g7r4-m6w7-qqqr | - | `>=0.27.3 <0.28.1` | `>=0.28.1` | `.>@vitejs/plugin-react>vite>esbuild` |
+
+## 現況(2026-08-06 T1 後・`pnpm audit --json` 実測 = moderate 5 / low 2 / **high 0 / critical 0**)
+
+**moderate 以下の正本はこの節**(上の「残存 follow-up」2 表は 2026-07-21 時点の snapshot として保存 — 現況ではない)。**gate 対象外**(閾値 high)ゆえ T1 では対処せず記録のみ。
+
+| sev | module | GHSA | 検出版 | patched | T1 との関係 |
+|---|---|---|---|---|---|
+| moderate | esbuild | GHSA-67mh-4wv8-2f99 | 0.18.20 | `>=0.25.0` | 継続(drizzle-kit 配下・T1 非関与) |
+| moderate | qs | GHSA-q8mj-m7cp-5q26 | 6.15.1 | `>=6.15.2` | 継続(express 配下・T1 非関与) |
+| moderate | hono | GHSA-8j4g-w8fx-2239 | 4.12.31 | `>=4.12.34` | **新規**(前回記録以降の新 advisory・T1 非関与) |
+| moderate | @hono/node-server | GHSA-frvp-7c67-39w9 | 1.19.14 | `>=2.0.5` | **新規**(同上) |
+| moderate | postcss | GHSA-fxqj-rqcc-2cmp | 8.5.21 | `>=8.5.23` | **新規**。検出されるのは **next@16.2.11 配下の 8.5.21 のみ**(override `^8.5.12` は floor ゆえ next の解決を引き上げない)。tailwind/shadcn 側 8.5.23 と vite 側 8.5.25 は patched。 |
+| low | @babel/core | GHSA-4x5r-pxfx-6jf8 | 7.29.0 | `>=7.29.6` | 継続 |
+| low | body-parser | GHSA-v422-hmwv-36x6 | 2.2.2 | `>=2.3.0` | 継続 |
+
+**2026-07-21 表からの消滅 2 件**: `GHSA-v2v4-37r5-5v8g`(ip-address・**T1 で 10.4.0 到達**)/ `GHSA-g7r4-m6w7-qqqr`(esbuild・vite 配下が 0.28.1 到達済で **T1 前**に解消)。これは 2026-07-21 表との差分であり、**T1 が解消した moderate は計 5 件**(上記 undici 4 件は 2026-07-21 以降に公開された advisory ゆえ当該表に載っていない)。
 
 ## スナップショット(2026-07-21 bump 前・全 48 advisories: high 16 / moderate 26 / low 6)
 
