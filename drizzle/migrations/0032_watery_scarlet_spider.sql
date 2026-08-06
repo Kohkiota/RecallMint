@@ -41,7 +41,12 @@ ALTER TABLE "asset_derivations" DROP COLUMN "source_asset_id";--> statement-brea
 -- 3. source_assets 本体(RLS policy / grant は表と共に消える)。
 DROP TABLE "source_assets";--> statement-breakpoint
 -- 4. 新経路が書かない列とその index(retryable 再開が無くなり next_retry_at が dead)。
---    attempt_count / last_error_code は新経路も書くため残す。
+--    last_error_code は新経路も書くため残す。
+--    attempt_count は残すが **dormant**: 新経路の writer は INSERT 時の 0 のみで
+--    (submit-upload.ts)、increment する経路は存在しない。retry marker と一緒に
+--    落とさなかったのは、列を消す判断より dormant のまま置く方が安いため。
+--    配線するか列ごと落とすかは未決(whole-branch review M-5 =
+--    docs/superpowers/sessions/2026-08-05-ocr-2-4a-whole-branch-review.md)。
 DROP INDEX "upload_operations_next_retry_idx";--> statement-breakpoint
 ALTER TABLE "upload_operations" DROP COLUMN "next_retry_at";--> statement-breakpoint
 -- 5. status の DB default。TS union から 'awaiting_sources' が消えるため、列 default に
