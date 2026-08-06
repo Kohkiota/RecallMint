@@ -243,6 +243,13 @@ export function buildResultSummary(
     cardsExtracted: payload.cards.length,
     cardsTotal: payload.cardsTotal,
     cardsExcluded: payload.cardsExcluded,
+    // 除外理由の内訳(A・2026-08-06)。 figure 側と同じく **DB には残すが画面には
+    // 出さない**(表示は T16-a の 3 束のまま・本 sprint の scope 外)。
+    // figuresExcluded と違いキーを個別に書き写さないのは、card 側は **単一 source**
+    // (normalize 層のみ・crop/publish からの合流が無い)で、値は既に
+    // `cardExclusionTalliesSchema` を通っており余計なキーを持ち得ないため。
+    // そのまま透過すれば将来 4 つ目の区分が黙って落ちる drift も生まれない。
+    cardsExcludedReasons: payload.cardsExcludedReasons,
     figuresAttached: plan.figuresAttached,
     figuresExcluded: {
       // normalize 時(T8a・spec §13 a/b)

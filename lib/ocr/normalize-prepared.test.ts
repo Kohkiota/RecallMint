@@ -80,6 +80,12 @@ const ZERO_FIGURE_EXCLUSIONS = {
   asset_id_invalid: 0,
 }
 
+const ZERO_CARD_EXCLUSIONS = {
+  malformed: 0,
+  invariant_failed: 0,
+  card_id_invalid: 0,
+}
+
 const SRC1 = new Set(['src-1'])
 
 // ---------------------------------------------------------------------------
@@ -809,6 +815,96 @@ describe('normalizePrepared: cardId/assetId 一意性・v4 shape 検証(cross-ca
 // 決定性(spec §D retry 再利用契約の基盤)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// card 除外理由の内訳(A)
+//
+// 3 分岐が同一の戻り値を返していたため「何件落ちたか」しか残らず、除外理由が
+// result_summary / last_error_code / ログのいずれにも存在しなかった。ここでは
+// **3 分岐を 1 つずつ単独で踏ませ**、対応する区分だけが 1 増えることを見る
+// (まとめて壊して「1 件除外された」を見る形にしない — それでは区分の配線が
+// 入れ替わっていても気付けない)。各 test は他 2 区分が 0 のままであることも
+// 同時に assert するため、区分の取り違えが必ず落ちる。
+// ---------------------------------------------------------------------------
+
+describe('normalizePrepared: card 除外理由の内訳', () => {
+  it('分岐 1 単独: rawCardSchema 形状破損 → malformed だけが 1', () => {
+    // question_text が string でない = loose 構造で落ちる(factory は呼ばれない)。
+    const raw = { cards: [rawCard({ question_text: 123 })] }
+    const result = normalizePrepared(raw, SRC1, throwingFactory)
+    expect(result.cardsExcluded).toBe(1)
+    expect(result.cardsExcludedReasons).toEqual({
+      ...ZERO_CARD_EXCLUSIONS,
+      malformed: 1,
+    })
+  })
+
+  it('分岐 2 単独: preparedCardSchema の hard invariant 違反 → invariant_failed だけが 1', () => {
+    // question_text は string ゆえ loose は通り、questionTextSchema の
+    // 「trim して非空」で落ちる = 分岐 2 のみを踏む。
+    const raw = { cards: [rawCard({ question_text: '   ' })] }
+    const result = normalizePrepared(raw, SRC1, makeUuidFactory())
+    expect(result.cardsExcluded).toBe(1)
+    expect(result.cardsExcludedReasons).toEqual({
+      ...ZERO_CARD_EXCLUSIONS,
+      invariant_failed: 1,
+    })
+  })
+
+  it('分岐 3 単独: cardId の cross-card 重複 → card_id_invalid だけが 1', () => {
+    // 2 card とも単独では valid。2 枚目が 1 枚目と同じ cardId を得る配線にして
+    // 分岐 3 のみを踏む(分岐 1/2 は通過する)。
+    const raw = {
+      cards: [
+        rawCard({ title: 'card 1', options: [rawOption('a', true)] }),
+        rawCard({ title: 'card 2', options: [rawOption('a', true)] }),
+      ],
+    }
+    const dupId = uuidAt(1)
+    const result = normalizePrepared(
+      raw,
+      SRC1,
+      sequenceFactory([dupId, uuidAt(2), dupId, uuidAt(3)]),
+    )
+    expect(result.cardsExcluded).toBe(1)
+    expect(result.cardsExcludedReasons).toEqual({
+      ...ZERO_CARD_EXCLUSIONS,
+      card_id_invalid: 1,
+    })
+  })
+
+  it('除外ゼロなら全区分 0(生存 card が誤って計上されない)', () => {
+    const result = normalizePrepared({ cards: [rawCard()] }, SRC1, makeUuidFactory())
+    expect(result.cardsExcluded).toBe(0)
+    expect(result.cardsExcludedReasons).toEqual(ZERO_CARD_EXCLUSIONS)
+  })
+
+  it('内訳の総和は必ず cardsExcluded に一致する(区分を返さない除外経路が無いことの pin)', () => {
+    // 3 分岐を 1 response に同居させる。1 枚目 = 分岐 1(factory 非消費)、
+    // 2 枚目 = 分岐 2、3 枚目 = 生存、4 枚目 = 3 枚目と同じ cardId で分岐 3。
+    const dupId = uuidAt(10)
+    const raw = {
+      cards: [
+        rawCard({ question_text: 123 }),
+        rawCard({ question_text: '   ', options: [rawOption('a', true)] }),
+        rawCard({ title: 'survivor', options: [rawOption('a', true)] }),
+        rawCard({ title: 'dup', options: [rawOption('a', true)] }),
+      ],
+    }
+    const result = normalizePrepared(
+      raw,
+      SRC1,
+      sequenceFactory([uuidAt(1), uuidAt(2), dupId, uuidAt(3), dupId, uuidAt(4)]),
+    )
+    const r = result.cardsExcludedReasons
+    expect(r).toEqual({ malformed: 1, invariant_failed: 1, card_id_invalid: 1 })
+    expect(r.malformed + r.invariant_failed + r.card_id_invalid).toBe(
+      result.cardsExcluded,
+    )
+    expect(result.cards).toHaveLength(1)
+    expect(result.cards[0].title).toBe('survivor')
+  })
+})
+
 describe('normalizePrepared: 決定性', () => {
   it('同一入力 + 同一 factory 呼出列 → 同一出力', () => {
     const raw = {
@@ -834,6 +930,7 @@ describe('normalizePrepared: トップレベル不正入力', () => {
       cards: [],
       cardsTotal: 0,
       cardsExcluded: 0,
+      cardsExcludedReasons: ZERO_CARD_EXCLUSIONS,
       figuresExcluded: ZERO_FIGURE_EXCLUSIONS,
     })
   })
@@ -858,19 +955,23 @@ describe('normalizePrepared: トップレベル不正入力', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizePreparedCard: 単体', () => {
-  it('正常 card を渡すと {card, figuresExcluded} を返す', () => {
+  it('正常 card を渡すと生存側 union({card, figuresExcluded})を返す', () => {
     const result = normalizePreparedCard(rawCard(), SRC1, makeUuidFactory())
     expect(result.card).not.toBeNull()
     expect(result.card?.options).toHaveLength(2)
     expect(result.figuresExcluded).toEqual(ZERO_FIGURE_EXCLUSIONS)
+    // 生存側に除外区分が載らないことは union で型強制されるが、実体でも確認する
+    // (生存 card が誤って理由付きで返ると集計が水増しされる)。
+    expect('excludedReason' in result).toBe(false)
   })
 
-  it('破損 card を渡すと card=null を返す(例外を投げない)', () => {
+  it('破損 card を渡すと card=null + 区分を返す(例外を投げない)', () => {
     const result = normalizePreparedCard(
       { title: 42 },
       SRC1,
       throwingFactory,
     )
     expect(result.card).toBeNull()
+    expect(result.card === null ? result.excludedReason : null).toBe('malformed')
   })
 })

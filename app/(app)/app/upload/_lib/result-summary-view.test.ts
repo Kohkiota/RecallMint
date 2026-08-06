@@ -245,6 +245,10 @@ function readProducerKeys() {
     cards: [],
     cardsTotal: 0,
     cardsExcluded: 0,
+    // 本 pin は **figure** 理由キーの producer↔読み手 drift を見る。card 側の
+    // 内訳(A)は読み手の束分けに入らない(表示 scope 外)ため、ここでは 0 で埋めて
+    // figure 側の測定に影響させない。
+    cardsExcludedReasons: { malformed: 0, invariant_failed: 0, card_id_invalid: 0 },
     figuresExcluded: Object.fromEntries(
       normalizeKeys.map((k) => [k, 1]),
     ) as FigureExclusionTallies,

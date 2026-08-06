@@ -241,8 +241,16 @@ describe('buildResultSummary', () => {
     const payload: PreparedPayloadV1 = {
       schemaVersion: 1,
       cards: [card],
-      cardsTotal: 3,
-      cardsExcluded: 2,
+      cardsTotal: 11,
+      cardsExcluded: 10,
+      // **3 区分とも相異なる値**にする(1/1/0 のように同値が並ぶと
+      // malformed↔invariant_failed の取り違えを assert が素通ししてしまう)。
+      // 総和 2+3+5 = 10 = cardsExcluded で内訳の整合も保つ。
+      cardsExcludedReasons: {
+        malformed: 2,
+        invariant_failed: 3,
+        card_id_invalid: 5,
+      },
       figuresExcluded: {
         coordinate_null: 1,
         source_id_invalid: 2,
@@ -268,8 +276,16 @@ describe('buildResultSummary', () => {
       sourceDocumentId: 'sd1',
     })
     expect(summary.cardsExtracted).toBe(1)
-    expect(summary.cardsTotal).toBe(3)
-    expect(summary.cardsExcluded).toBe(2)
+    expect(summary.cardsTotal).toBe(11)
+    expect(summary.cardsExcluded).toBe(10)
+    // card 除外理由の内訳が **区分を取り違えず** result_summary へ載ることを pin する
+    // (ここが抜けていると、件数だけ正しく内訳が全 0 / 入れ替わった状態で静かに
+    // 出荷されうる = spec §13「loud failure over silent zero」の再発)。
+    expect(summary.cardsExcludedReasons).toEqual({
+      malformed: 2,
+      invariant_failed: 3,
+      card_id_invalid: 5,
+    })
     expect(summary.figuresAttached).toBe(5)
     expect(summary.figuresExcluded).toEqual({
       coordinate_null: 1,

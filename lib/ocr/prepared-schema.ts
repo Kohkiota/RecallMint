@@ -92,6 +92,40 @@ export const figureExclusionTalliesSchema = z.object({
 export type FigureExclusionTallies = z.infer<typeof figureExclusionTalliesSchema>
 
 // ---------------------------------------------------------------------------
+// card 除外理由の集計 — figure 側(上記)と同じ形・同じ語彙で持つ。
+//
+// なぜ要るか: card が落ちる分岐は 3 つあるのに戻り値が 3 つとも同一だったため、
+// 「何件落ちたか」は分かっても「なぜ落ちたか」がどの層(result_summary /
+// last_error_code / ログ)にも残らなかった。figure 側は 8 区分が result_summary に
+// 残るのに card 側は件数だけ、という非対称を埋める。
+//
+// 区分名は figure 側の命名規則(`malformed` / `*_invalid` / `*_failed`)に揃え、
+// 独自語彙を作らない。3 区分は normalize 層だけで判定でき、crop/publish 層は
+// card を落とさないためこの schema で閉じる(figure の `crop_failed` 等のような
+// 後段合流が無い)。
+// ---------------------------------------------------------------------------
+
+export const cardExclusionTalliesSchema = z.object({
+  // card 要素そのものが loose schema(`rawCardSchema`)の形状として壊れている。
+  // figure の `malformed` と同義ゆえ同名にする。
+  malformed: z.number().int().nonnegative(),
+  // loose 形状は通ったが `preparedCardSchema` の hard invariant(title / 本文 /
+  // options の個数・一意性・上限等)で落ちた。figure 側に対応区分が無いのは
+  // figure が schema 1 枚で閉じるため。命名は `crop_failed` と同じ語形。
+  invariant_failed: z.number().int().nonnegative(),
+  // 発行された cardId が既出 cardId と**衝突**する(response 内グローバル一意性)。
+  // 健全な `randomUUID` factory では本来発生しない安全網。
+  // **範囲注記**: figure の `asset_id_invalid` は「非 v4 shape **または** 衝突」の
+  // 両方を含むが、本区分は**衝突のみ**。cardId の v4 shape 検証は
+  // `preparedCardSchema` が行うため、非 v4 な cardId は `invariant_failed` に入る。
+  card_id_invalid: z.number().int().nonnegative(),
+})
+export type CardExclusionTallies = z.infer<typeof cardExclusionTalliesSchema>
+
+/** card 除外の区分 1 つ。`normalizePreparedCard` が「どの分岐で落ちたか」を返す。 */
+export type CardExclusionReason = keyof CardExclusionTallies
+
+// ---------------------------------------------------------------------------
 // card(publisher の card-field schema を compose)
 // ---------------------------------------------------------------------------
 
@@ -134,6 +168,13 @@ export const preparedPayloadV1Schema = z.object({
   // spec §13「カード N/M 不可」の M / N。
   cardsTotal: z.number().int().nonnegative(),
   cardsExcluded: z.number().int().nonnegative(),
+  // `cardsExcluded` の内訳。件数は据え置きで**加算**する(置換しない)— 既存の
+  // 読み手(result page の表示)は件数だけを見ており、内訳は運用調査向けに
+  // result_summary を直接引く用途。`.optional()` にしないのは figure 側と同じ
+  // 理由(spec §5.4 ②: optional は転記忘れを素通しさせる)。 永続化された
+  // prepared_payload を読み戻して parse する経路は存在しない(publish は同一
+  // invocation の in-memory 値を引数で受ける)ため、必須追加で既存行が壊れない。
+  cardsExcludedReasons: cardExclusionTalliesSchema,
   figuresExcluded: figureExclusionTalliesSchema,
 })
 export type PreparedPayloadV1 = z.infer<typeof preparedPayloadV1Schema>

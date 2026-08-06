@@ -32,6 +32,7 @@ export function assemblePreparedPayload(
     cards: normalized.cards,
     cardsTotal: normalized.cardsTotal,
     cardsExcluded: normalized.cardsExcluded,
+    cardsExcludedReasons: normalized.cardsExcludedReasons,
     figuresExcluded: normalized.figuresExcluded,
   })
 }

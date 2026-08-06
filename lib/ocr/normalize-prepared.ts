@@ -38,6 +38,8 @@ import {
   type PreparedOption,
   type PreparedFigure,
   type FigureExclusionTallies,
+  type CardExclusionTallies,
+  type CardExclusionReason,
 } from './prepared-schema'
 
 // ---------------------------------------------------------------------------
@@ -126,6 +128,10 @@ function addFigureExclusions(
     malformed: a.malformed + b.malformed,
     asset_id_invalid: a.asset_id_invalid + b.asset_id_invalid,
   }
+}
+
+function zeroCardExclusions(): CardExclusionTallies {
+  return { malformed: 0, invariant_failed: 0, card_id_invalid: 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,11 +257,29 @@ function resolveFigures(
 // ID 再発行/再正規化しない)。
 // ---------------------------------------------------------------------------
 
-export type NormalizePreparedCardResult = {
-  /** 検証を通過した正規化済み card。 hard invariant 不成立時は null(除外)。 */
-  card: PreparedCard | null
-  figuresExcluded: FigureExclusionTallies
-}
+/**
+ * 3 分岐が同一の戻り値を返していたため呼び出し元から理由を判別できず、除外理由が
+ * どの層にも残らなかったのを埋める(figure 側との非対称の解消)。
+ *
+ * **discriminated union にしている理由**: 「除外なら必ず区分がある / 生存なら区分は
+ * 存在しない」を **型で強制**するため。単一 object + `reason: R | null` だと
+ * ①将来 4 つ目の除外経路が区分を付け忘れても型が通る ②生存 card に区分を載せても
+ * 型が通る、の 2 つが doc コメントでしか守られない。union なら両方が compile error
+ * になり、呼び出し側の `if (result.excludedReason !== null)` 握りも不要になる。
+ */
+export type NormalizePreparedCardResult =
+  | {
+      /** 検証を通過した正規化済み card。 */
+      card: PreparedCard
+      figuresExcluded: FigureExclusionTallies
+    }
+  | {
+      /** hard invariant 不成立 or 構造破損で除外された。 */
+      card: null
+      /** どの分岐で落ちたかを 1 区分で表す(除外時は必ず存在する)。 */
+      excludedReason: CardExclusionReason
+      figuresExcluded: FigureExclusionTallies
+    }
 
 export function normalizePreparedCard(
   rawCard: unknown,
@@ -277,7 +301,11 @@ export function normalizePreparedCard(
   //    判定する(dropped card は id を消費しない)。
   const parsed = rawCardSchema.safeParse(rawCard)
   if (!parsed.success) {
-    return { card: null, figuresExcluded: zeroFigureExclusions() }
+    return {
+      card: null,
+      excludedReason: 'malformed',
+      figuresExcluded: zeroFigureExclusions(),
+    }
   }
   const data = parsed.data
 
@@ -343,7 +371,11 @@ export function normalizePreparedCard(
     // card 自体が drop されるため、 この card に属していた figure の除外理由は
     // 結果に反映しない(「生存した card に属する figure」だけを集計対象とする
     // — dropped card の内部事情は response 全体の集計には現れない)。
-    return { card: null, figuresExcluded: zeroFigureExclusions() }
+    return {
+      card: null,
+      excludedReason: 'invariant_failed',
+      figuresExcluded: zeroFigureExclusions(),
+    }
   }
 
   // 7. cardId の cross-card 一意性(schema は他 card を見えないため、 ここで
@@ -353,7 +385,11 @@ export function normalizePreparedCard(
   //    後続の別 card が同じ cardId を正当に再利用しようとしても誤って重複
   //    扱いされる(OT 再レビュー Important 修正で確定した discipline)。
   if (seenCardIds.has(result.data.cardId)) {
-    return { card: null, figuresExcluded: zeroFigureExclusions() }
+    return {
+      card: null,
+      excludedReason: 'card_id_invalid',
+      figuresExcluded: zeroFigureExclusions(),
+    }
   }
 
   // 8. 本 card は完全に生存確定した(schema 通過 + cardId 重複なし)。 ここで
@@ -381,6 +417,11 @@ export type NormalizePreparedResult = {
   cardsTotal: number
   /** hard invariant 不成立 or 構造破損で除外された card 数(同 N)。 */
   cardsExcluded: number
+  /**
+   * `cardsExcluded` の理由別内訳。総和は必ず `cardsExcluded` に一致する
+   * (3 分岐すべてが区分を返し、区分を返さない除外経路が存在しないため)。
+   */
+  cardsExcludedReasons: CardExclusionTallies
   figuresExcluded: FigureExclusionTallies
 }
 
@@ -413,6 +454,7 @@ export function normalizePrepared(
 
   const cards: PreparedCard[] = []
   let cardsExcluded = 0
+  const cardsExcludedReasons = zeroCardExclusions()
   let figuresExcluded = zeroFigureExclusions()
   // response 全体で共有する accumulator(cardId は他 card と、 assetId は他
   // card の figure とも衝突しないことを見る必要がある — spec の cardId/assetId
@@ -431,10 +473,19 @@ export function normalizePrepared(
     figuresExcluded = addFigureExclusions(figuresExcluded, result.figuresExcluded)
     if (result.card === null) {
       cardsExcluded += 1
+      // union の narrowing により `excludedReason` はここで必ず存在する。
+      // 区分を付け忘れた除外経路は compile error になるため guard は要らない。
+      cardsExcludedReasons[result.excludedReason] += 1
       continue
     }
     cards.push(result.card)
   }
 
-  return { cards, cardsTotal: rawCards.length, cardsExcluded, figuresExcluded }
+  return {
+    cards,
+    cardsTotal: rawCards.length,
+    cardsExcluded,
+    cardsExcludedReasons,
+    figuresExcluded,
+  }
 }
