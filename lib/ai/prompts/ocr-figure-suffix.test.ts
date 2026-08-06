@@ -53,3 +53,19 @@ describe('buildFigureDetectionSuffix', () => {
     expect(suffix).toContain('explanation')
   })
 })
+
+describe('送信 prompt に画像記法テンプレートが無い', () => {
+  // 実際に起きた根本原因の直接 pin。本文へ混入していた `![](qNNN-img-N)` は、
+  // prompt が持っていた `![](key)` テンプレートと、同 section 内の key 命名規則
+  // ("q{sort_key}-img-{連番}") の合成形だった。記法そのものを prompt から消した
+  // ので、再び現れないことをここで見る。
+  // **語彙全般を禁止する検査には広げない** — 「画像」「Markdown」等を一律で
+  // 禁じると、正しい指示(図表参照テキストを残す / images[] に構造化する)まで
+  // 書けなくなる。pin するのは混入した記法そのものだけ。
+  // 検査対象を **live 経路が実際に送る exploration prompt** にしているのは、
+  // discover を verbatim に含む(同 file 冒頭の test で pin 済)ため discover 側の
+  // 清浄も含意しつつ、将来 suffix 側へ記法が混入した場合も捕まえられるため。
+  it('本文へ埋め込む画像記法テンプレートを含まない', () => {
+    expect(buildImageCropExplorationPrompt()).not.toContain('![](')
+  })
+})

@@ -158,10 +158,6 @@ const IMAGE_REFERENCE_RULES = [
   '',
   '画像参照が無い問題:',
   '- images: [] (空配列、required なので必ず返す)',
-  '',
-  'プレースホルダ埋め込みについて:',
-  '- question_text / options[].text / explanation_text 内に Markdown 画像記法',
-  '  (![](key)) を埋め込む必要はない。対応関係は images[].target で表現する',
 ].join('\n')
 
 // ============================================================================
