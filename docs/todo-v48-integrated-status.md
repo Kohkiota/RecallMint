@@ -45,6 +45,11 @@
 - **[②-5 入口論点] source 再利用 / dedup 前提の再考**。②-5 の「文書ライブラリ / content-hash dedup で source 再利用」は **source を保持することが前提**だが、新軸(著作物ゆえ非保持)と矛盾する。dedup の土台(server 実測 content-hash)は残るが、**source 実体を残せない以上 dedup 設計そのものを ②-5 入口で再検討**する(下記の旧 dedup 起票は新軸未反映)。
 - **[T15 scope 拡張] 退会 / exam 削除時の source_assets 処理**(fact-finding 経路 C = 行だけ cascade 消滅し R2 永久 orphan)。**T15 の担当**として、assets 同様の 'deleting' soft-delete + R2 削除へ。T14b′ では触らない(別 task)。
 
+### ★ ②-4a クローズ smoke follow-up(2026-08-06・実機観測から起票)
+
+- **[公開前トラック / UIUX 整理] upload result page の preview に本文 markdown 画像記法が生表示される**。②-3 の strip(`stripInlineImages`)は `MdTableText` / `MdTableBlock` の入口にしか無く、result page の preview は `lib/exams/list.ts:206` の `snippet(question_text, 80)` を素のテキストとして `page.tsx:166` が出しているため strip を通らない → `![](q010-img-1)` がそのまま見える(stg 実機観測・記法を含む card は 24 件)。**影響は表示のみ**(保存データ・実カード描画・図版 attach はいずれも正常)。**fix が小さくない理由**: strip は `lib/markdown/strip-inline-images.ts` にある pure 関数だが、preview 側は `lib/exams/list.ts` = server の list 層で、ここから `components/` を import するのは eslint Block A(`lib/` → `app/`・`components/` 逆流禁止)に抵触しうる。素直には「snippet を作る前に `stripInlineImages` を通す」で足りるはずだが、**snippet の 80 字カットと strip の順序**(先に切ると記法が途中で切れて残る)と、他に同種の素テキスト surface が無いかの棚卸しがセットで要る。**「単一点」主張が偽だった件の doc 訂正は完了済**(`docs/superpowers/lessons/2026-08-06-single-point-claims-decay-silently.md`)。観測 = `docs/superpowers/sessions/2026-08-06-ocr-2-4a-close-stg-smoke.md` §4。
+- **[test 制約・恒久] 図版検出数は同一入力でも揺れる — 「同じ入力で同じ結果」を前提にした test を書かない**。同じ 5 枚を投入して `figuresAttached` が **10 → 5** と変化した(除外束は全 0 = 除外ではなく Gemini が検出した figure region 数そのものの非決定性・`card_asset_refs` も 5 で整合)。実 API を叩く比較 script / smoke 判定では**図版数の一致を合否条件にしない**(致命シグナルの有無で判定する ②-2 Phase2 の方式に倣う)。unit / iso は mock ゆえ影響なし。観測 = 同 session doc §6。**関連**: 無地画像は failed の誘発手段として成立しない(Gemini が捏造カードを返し completed になる・同 §5)ため、失敗系の確認は既存 failed doc を開く方法で行う。
+
 ### 起票済み(重複させない・cross-ref のみ)
 - **②-5: source 文書 hash dedup**(同一 PDF/画像再 upload で既存 source 再利用)= §4 「cutover 完了後 follow-up」line。server 実測 content-hash 保存済=土台あり。crop 画像が upload ごとに増えるのは仕様どおり。**※ 新軸(source 非保持)で前提が崩れる — 上記「新軸 follow-up」の ②-5 入口論点で再検討する**。
 - **②-5: 文書ライブラリ本体**(一覧・サムネ・再処理・quota)= §5 中期 + **②-5 R2 staging aggregate budget**(§4・spec §6.5 bounded residual)。
