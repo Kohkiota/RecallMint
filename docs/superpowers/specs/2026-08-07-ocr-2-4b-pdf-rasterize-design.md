@@ -1,6 +1,6 @@
 # ②-4b PDF 対応(R2 一時保存 + server WASM rasterize)— 設計 spec
 
-**日付**: 2026-08-07(同日改訂: OT 指示 7 点 — client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / 既存誤り修正 / legacy 削除 / 未確定追記)/ **status**: OT レビュー待ち(確定前)
+**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正)/ **status**: OT レビュー待ち(確定前)
 **位置付け**: ②-4a(画像入稿・単一 invocation)の上に PDF 入稿を足す。②-4a の pipeline 本体(Gemini 契約 / normalize / crop / publish)は**不変**が本 spec の中心的主張。
 **根拠調査**: `docs/audit/2026-08-07-ocr-2-4b-pdf-factfinding.md` / `…-r2-source-retention-factfinding.md` / `…-rasterize-feasibility-measurement.md`(以下「調査①②③」)。
 **やらないこと(非スコープ)**: Files API / resume 復活(②-4a spec:160 の再評価トリガーのまま)/ 選択的 rasterize(D2 で棄却)/ account quota 強制(②-5)/ CSV・markdown 入稿 / UI 文言の確定(状態の種類と遷移のみ定義・文言は design token 後)。
@@ -44,19 +44,20 @@
 [client] poll(既存 /api/exams/status・変更なし)
 ```
 
-**新設が要る要素(既存にあると仮定しない)**: ① OCR source 用 presigned PUT 発行(`reservePdfUploadUrls`)② R2 CORS の `application/pdf` PUT(Cloudflare 実設定 = OT 確認・§12)③ **PUT 完了通知の受け口(`finalizePdfSource`)** ④ 通知後の R2 読み出し(source GET・専用 timeout)⑤ object ↔ user/operation の対応付け(key 規約 §3。台帳なし)。
+**新設が要る要素(既存にあると仮定しない)**: ① OCR source 用 presigned PUT 発行(`reservePdfUploadUrls`)② R2 CORS の `application/pdf` PUT(Cloudflare 実設定 = OT 確認・§12)③ **PUT 完了通知の受け口(`finalizePdfSource`)** ④ 通知後の R2 読み出し(source GET・専用 timeout)⑤ object ↔ **user / upload attempt** の対応付け(key 規約 §3。台帳なし)。
 
 **カード画像添付経路は「型」としてのみ参照**(OCR source 用の経路は存在しない): 写せる形 = `presignPutUrl`(Content-Length/Type 署名焼込)の呼出形・HEAD + contentLength 検証(`finalizeAsset:166-168` と同型)・client 直 PUT の saga 形(`lib/media/upload.ts:729`)。新設する部分 = 上記 ①③④⑤ の全部と、`reserveAsset` 不再利用(入力 zod が画像 mime enum + 寸法必須で、`assets` 台帳 INSERT が本質。PDF は台帳を持たない)。
 
-## 3. key 設計と「台帳を作らない」の決定
+## 3. key 設計と対応付けの時期 — 分岐 (a)/(b) の決定
 
 **key = `src/{userId}/{idempotencyKey}/{fileId}.pdf`**(kickoff 第 1 案 `src/{operationId}/…` は presign 時点で op 行が無く不成立 — op 前倒し作成は新 status + `exam_id` NOT NULL 解除 = migration が要る)。top-level `src/` = lifecycle rule 1 本(調査②§2.4)。3 セグメント全て server 導出(idempotencyKey / fileId は client 発行だが **uuid v4 形状を検証してから埋める** — path injection 不能)。client は key 文字列を送らない。idempotencyKey は **batch 開始時(最初の presign 時)に発行**し submit まで同一。file 追加 = 同 batch に fileId 追加 / 削除 = manifest から外すのみ(残骸は lifecycle)。
 
-**分岐の決定: reserve レコードは作らない(台帳なし)。** 理由:
-1. **operation より前に生きるレコード = 新しいライフサイクル**(放棄行の sweep・RLS・policy・iso completeness・migration)が丸ごと増える。②-4b の必要(所有解決と回収)に対して過大。
-2. 所有解決は key 規約 + op 行の (userId, idempotencyKey)(既存 UNIQUE)で足りる。回収は §6 の「明示 DELETE + lifecycle」で閉じ、op 以前の残骸に台帳を要求しない(`listObjects('src/')` で運用列挙は可能)。
-3. 0032 の「表を残すと保持前提と誤読される」判断(②-4a spec §4.1)と整合。
-**対価(明示)**: 完了通知が返した pageCount を server が**保持しない**ため、submit の pre-tx 合計判定は client echo に依る(→ D6 の二重ゲートで機械保証は pipeline 側に置く)。台帳ありなら count 1 回 + 厳密な pre-tx 保証が得られるが、上記コストと引き換えにしない。
+**分岐の決定 = (a) reserve レコードを作らない(台帳なし)。**
+
+- **PUT 時点の対応付けは upload attempt 単位**(userId + idempotencyKey)を **key 規約で**表現する — DB 行なし。
+- page count 判定(完了通知 = 単体 / submit pre-tx = 合計)に合格した後、**現行どおり入力検証がすべて終わってから tx を開き**(`submit-upload.ts:417`)、operation / source document を作る。object との対応付けは after() closure の manifest(fileId 列)経由 — op 行に key 列は足さない。**現行順序は維持される。**
+- (b)(presign 時に reserve 行を作る)は不採用: operation より前に生きるレコードができ、**期限切れ reserve の回収 lane・RLS・policy・iso completeness・migration** が丸ごと増える(現行順序も変わる)。②-4b の必要(所有解決と回収)は (a) で足り、0032 の「表を残すと保持前提と誤読される」判断(②-4a spec §4.1)とも整合。
+- **対価(明示)**: 完了通知が返した pageCount を server が**保持しない**ため、submit pre-tx の合計判定は client echo に依る(→ D6 の 3 層で機械保証は pipeline 側)。台帳ありなら count 1 回 + 厳密な pre-tx 保証が得られるが、上記コストと引き換えにしない。
 
 ## 4. 設計決定
 
@@ -69,7 +70,7 @@
 **D3. 混在可(画像 + PDF を 1 upload に)。** 合計 = 画像枚数(1 file = 1 ページ)+ 各 PDF のページ数、上限は既存 `OCR_MAX_PAGES = 40` **一本**。`MAX_PDF_PAGES`(PDF 単体 40)は冗長ゆえ**廃止**(単体 >40 は「合計に収まり得ない」として完了通知が弾く)。submit は順序付き manifest(`[{kind:'image', fileIndex} | {kind:'pdf', fileId, filename, pageCount(echo), declaredBytes}]`)で選択順を運び、Gemini parts 順 = 選択順を維持。`source_documents.fileType` = **PDF を 1 つでも含めば 'pdf'**、画像のみは 'image'(用途 = 運用 SQL での経路切り分け。読者現存なしは承知の上で永続行に虚偽を書かない)。filename は既存合成規則(単一 = 原名 / 複数 = 「A.pdf ほか N 件」)。
 
 **D4. page count の正本 = server rasterizer(2 箇所・同一関数)。client 判定は廃止。**
-- **`pdf-page-count.ts`(regex)と test を削除**。理由: PDF 1.5+ は ObjStm 圧縮で正規表現に見えず(repo の 8p_textonly.pdf が実際に 0・調査③§2.5)、0 は `pages > 40` を false にする fail-open。直すには ObjStm inflate + PDF パース = 自作対象でない。client と server の 2 実装は無言でズレる。**client に wasm は入れない**(PDF 選択のたびに 4MB を落とす価値がない)。
+- **`pdf-page-count.ts`(regex)と test を削除**。理由: PDF 1.5 以降はページ辞書が ObjStm 内に圧縮**され得る** — 圧縮されていると正規表現には見えない(repo の 8p_textonly.pdf が実際に 0・調査③§2.5)。実装はバージョンを見ておらず単に出現数を数えるだけで、0 は `pages > 40` を false にする fail-open。直すには ObjStm inflate + PDF パース = 自作対象でない。client と server の 2 箇所判定は無言でズレる。**client bundle に WASM は追加しない**(PDF 選択のたびに 4MB を落とす価値がない)。
 - **1 箇所目 = 完了通知(`finalizePdfSource`)**: GET → `loadDocument` → `getPageCount()`(**レンダリングなし**)。単体 >40 / 解析不能(壊れ・暗号化)は**そこで止め**、object を即 DELETE して error を返す(§6 マトリクス)。正常は `{pageCount}` を返す(DB 書込なし・§3)。
 - **2 箇所目 = pipeline count phase(authoritative)**: render 前に全 PDF を数え直し(render 用 GET とは別の 1 巡・§D8)、合計 >40 は **1 ページも rasterize せず** terminal(`page_limit_exceeded`)。通知後に object が差し替わる窓(presign 有効 600s 内の再 PUT)もここが塞ぐ。
 - 通知の応答 pageCount は **UI 表示と pre-tx 判定の echo** に使う(D6)。
@@ -82,13 +83,14 @@
 | pdf | `uploading`(presign→PUT 中)→ `counting`(完了通知往復中)→ `ready`(pageCount 確定・N ページ表示)/ `error`(PUT 失敗・単体 40 超過・解析不能) |
 | image | `processing`(圧縮中)→ `ready` / `error`(**従来どおり**・選択時に 1 file = 1 ページ確定) |
 
-合計ページ数(ready の画像枚数 + Σ ready PDF の pageCount)と上限 40 を**常時表示**し、超過時はどの entry を外せば収まるか判別できる表示にする(実文言・見た目は ③ design token 後)。`uploading` / `counting` 中の entry は合計に含めない(不確定)。submit は全 entry が `ready` かつ合計 ≤ 40 で有効化。
+**合計は PDF が確認中の間は確定しない** — 表示するのは数値でなく**合計の確定 / 未確定状態**: ① `uploading` / `counting` の PDF が 1 つでもある → **合計未確定** ② 全 PDF 確定 → **合計 N ページ**(N = 画像枚数 + Σ pageCount)③ 確定かつ N > 40 → **合計 N / 超過**(どの entry を外せば収まるか判別できる表示)。実文言・見た目は ③ design token 後。
+**現行 reducer 構造は踏襲する**(処理中 entry ゼロ加算 + `anyProcessing` で送信停止・`upload-form.tsx:180,197`): `uploading` / `counting` を「処理中」集合に加えるだけで送信ゲートは既存構造のまま。変えるのは**表示のみ**(処理中に部分和の数値を出さず「未確定」を明示する — 現行は少なく見える部分和が出る)。submit 有効化 = 全 entry `ready` かつ合計 ≤ 40(既存 `submitDisabled` 導出に吸収)。
 
-**D6. 上限判定の配置(3 層)と既存誤りの修正。**
+**D6. 上限判定の配置(3 層)と PDF 受理に伴う必須変更。**
 - 層 1(UI): D5 の常時表示 + submit 無効化。
 - 層 2(submit pre-tx): 画像枚数 + PDF manifest の echo pageCount の合計で判定し、超過は **行ゼロで却下**。→ **「入力検証がすべて終わってから tx を開く」現行順序は維持される**。ただし echo は改竄可能なため機械保証ではない — 改竄 echo は層 3 で terminal になり、その場合のみ「行(exam/doc/op)が生まれてから失敗」へ倒れる(**bounded residual・明示**)。
 - 層 3(pipeline count phase・**authoritative**): D4 の 2 箇所目。ここが唯一の機械保証。
-- **既存誤りの修正**: `submit-upload.ts:135` の `files.length > OCR_MAX_PAGES` と `:323` の `pagesTotal: files.length` は**ファイル数**基準 — 画像のみの現行では 1 file = 1 ページで偶然一致するが、PDF 混在で破綻する。層 2 をページ数基準(画像枚数 + Σecho)に書き換え、`pagesTotal` は: 画像のみ = 枚数(従来値・意味は「ページ数」に確定)/ PDF 含み = **NULL で INSERT → pipeline count phase の fenced CAS で確定値を書く**。`expected_source_count` も同形(画像のみ = 枚数 / PDF 含み = 0 sentinel → CAS で 画像枚数+実ページ数)。schema コメントは「作成時確定(画像)/ count phase 確定(PDF)」へ改訂。publish の読者 3 箇所(`publish-prepared.ts:92,135,234`)は無変更。
+- **PDF 受理に伴う必須変更(既存の誤りではない)**: `submit-upload.ts:135` の `files.length > OCR_MAX_PAGES` と `:323` の `pagesTotal: files.length` は、現状(PNG/JPEG/WebP のみ受理)では 1 file = 1 ページが成立し**正しい**。PDF を受理した時点で成立しなくなるため、層 2 をページ数基準(画像枚数 + Σecho)に書き換え、`pagesTotal` は: 画像のみ = 枚数(従来値・意味は「ページ数」に確定)/ PDF 含み = **NULL で INSERT → pipeline count phase の fenced CAS で確定値を書く**。`expected_source_count` も同形(画像のみ = 枚数 / PDF 含み = 0 sentinel → CAS で 画像枚数+実ページ数)。schema コメントは「作成時確定(画像)/ count phase 確定(PDF)」へ改訂。publish の読者 3 箇所(`publish-prepared.ts:92,135,234`)は無変更。
 
 **D7. 上限(暫定・実測後見直し)**: per-file **50MB**(presign の Content-Length 署名 + HEAD 再検証)/ 1 upload の PDF 冊数 **≤ 10** / 合計ページ ≤ 40(D3)。
 
@@ -102,7 +104,12 @@
 
 ## 5. legacy `process.ts` の削除(②-4b と独立・別 commit)
 
-`processUpload()` は runtime 呼出元ゼロのまま `'use server'` で生存し、PDF 受理実装(Gemini への PDF 丸投げ)と旧ページ合算を持つ(調査①§1.4)。**②-4b の前提整理として独立 commit で削除する**。既知の残参照(削除 closure に含める): `upload-form.tsx:27-30` の **型 import 2 つ**(`ProcessUploadErrorCode` / `ProcessUploadErrorDetails` — 移設先を用意)/ `tests/contract/upload-result.contract.test.ts`(対象消滅)/ `upload-persistence.ts` の専属 export(他所参照の有無を含め **`git grep` で参照ゼロを確認し出力を commit message / session doc に提示**)。
+`processUpload()` は runtime 呼出元ゼロのまま `'use server'` で生存し、PDF 受理実装(Gemini への PDF 丸投げ)と旧ページ合算を持つ(調査①§1.4)。**②-4b と独立に別 commit で削除する**。**ただし完全な参照ゼロではない**: `upload-form.tsx:27` が型 2 つ(`ProcessUploadErrorCode` / `ProcessUploadErrorDetails`)を module import しており、削除には**型の移動または不要化**が要る。ほか `tests/contract/upload-result.contract.test.ts`(対象消滅)/ `upload-persistence.ts` の専属 export の要否も削除 closure に含める。確認は **2 種類に分けて出力を提示**する:
+
+```
+git grep -n "processUpload"      # runtime symbol の参照
+git grep -n "_actions/process"   # type-only を含む module 参照
+```
 
 ## 6. 削除設計 — 明示 DELETE 本線 + lifecycle 保険(回収経路は本 spec で新規定義)
 
@@ -111,6 +118,7 @@
 **本線 1(完了通知)**: 単体 40 超過・解析不能の reject 時、**通知 handler がその場で DELETE**(key を知っている唯一の即時点)。
 **本線 2(pipeline 出口)**: 成功 publish 後 / terminal 化後 / start_cas_lost / commit_raced の**全経路**で、closure の manifest から導出した全 source key に `deleteObject`(never-throw・404=ok)。失敗は `integration_failures` **`r2_source_delete`(catalog 新設**・0032 で消えた `r2_gc_delete_source` の後継)+ lifecycle へ委譲。raced/lost でも削除してよい根拠: key は (userId, idempotencyKey) 専有で、op が死んでいれば読む者はいない。
 **保険**: lifecycle rule — prefix `src/`・maxAge 86400s(1 日・暫定)。削除実行は「典型 24h 以内」で**保証なし**(調査③§3)→ 実効上限 ≈48h と明記。設定 = OT 手動(§12)。
+**前提**: `listObjects('src/')` で見つかるのは**実際に PUT された object だけ**(presign のみでは DB にも R2 にも何も残らない = 回収対象なし)。分岐 (b) なら加わったはずの「期限切れ reserve 行の回収」は、(a) 採用(§3)により存在しない。
 
 | 放棄ケース | 残るもの | 回収 |
 |---|---|---|
