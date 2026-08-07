@@ -209,6 +209,68 @@ describe('headObject', () => {
   })
 })
 
+describe('getObject', () => {
+  beforeEach(() => {
+    setValidEnv()
+    vi.restoreAllMocks()
+  })
+
+  it('returns { bytes } from the response body on an ok response', async () => {
+    const body = new Uint8Array([1, 2, 3, 4])
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
+    const { getObject } = await import('./r2')
+    const result = await getObject('src/u1/idem1/f1.pdf')
+    expect(result).not.toBeNull()
+    expect(Buffer.compare(result!.bytes, Buffer.from(body))).toBe(0)
+  })
+
+  it('issues a GET request against the object URL', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }))
+    const { getObject } = await import('./r2')
+    await getObject('src/u1/idem1/f1.pdf')
+    const request = fetchSpy.mock.calls[0][0] as Request
+    expect(request.method).toBe('GET')
+    const url = new URL(request.url)
+    expect(url.pathname).toBe(`/${BUCKET_NAME}/src/u1/idem1/f1.pdf`)
+  })
+
+  it('returns null when the response is not ok (e.g. 404)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 404 }))
+    const { getObject } = await import('./r2')
+    const result = await getObject('src/u1/idem1/f1.pdf')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when fetch throws (network error / abort)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new DOMException('The operation was aborted', 'AbortError'),
+    )
+    const { getObject } = await import('./r2')
+    const result = await getObject('src/u1/idem1/f1.pdf')
+    expect(result).toBeNull()
+  })
+
+  // ②-4b: opts.timeoutMs が AbortSignal.timeout へ渡ることを pin する(省略時は
+  // 既定 GET_TIMEOUT_MS=10s のまま=既存呼出無改変)。
+  it('uses the default 10s timeout when opts.timeoutMs is omitted', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }))
+    const { getObject } = await import('./r2')
+    await getObject('src/u1/idem1/f1.pdf')
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000)
+  })
+
+  it('passes opts.timeoutMs through to AbortSignal.timeout when provided', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }))
+    const { getObject } = await import('./r2')
+    await getObject('src/u1/idem1/f1.pdf', { timeoutMs: 60_000 })
+    expect(timeoutSpy).toHaveBeenCalledWith(60_000)
+  })
+})
+
 describe('deleteObject', () => {
   beforeEach(() => {
     setValidEnv()

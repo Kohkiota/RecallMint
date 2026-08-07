@@ -204,7 +204,8 @@ describe('recordIntegrationFailure', () => {
     // ②-4a T14b: source lane の GC key 追加で 9 → 10。
     // ②-4a 単一 invocation S-2: ocr_pipeline 追加で 10 → 11。
     // ②-4a 単一 invocation S-5: 旧経路撤去で source lane の GC key が dead 化 → 10。
-    expect(tuples.length).toBe(10)
+    // ②-4b T3: r2_source_delete 追加で 10 → 11。
+    expect(tuples.length).toBe(11)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -236,6 +237,17 @@ describe('recordIntegrationFailure', () => {
       operation: 'rls.context_missing',
       workflow: null,
       failureCode: 'state_mismatch',
+    })
+  })
+
+  // r2_source_delete: ②-4b spec §6 本線 2(upload pipeline 出口の source PDF
+  // DELETE 失敗)の 4 軸 tuple 固定値。
+  it('r2_source_delete has the 4-axis values pinned by ②-4b spec §6', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_source_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'upload_single_invocation',
+      failureCode: 'external_api_error',
     })
   })
 })

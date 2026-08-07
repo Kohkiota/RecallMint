@@ -25,6 +25,21 @@ export const MAX_PDF_PAGES = 40
 export const MB = 1_000_000
 export const TOTAL_UPLOAD_LIMIT_BYTES = TOTAL_UPLOAD_LIMIT_MB * MB
 
+// ②-4b: PDF 一時保存(R2 `src/` prefix)の per-file バイト上限(spec D7)。
+// presign(reserve-pdf-upload)の Content-Length 署名 + 完了通知
+// (finalize-pdf-source)の HEAD 再検証の両方で使う。 商品仕様の冊数上限ではなく
+// システム保護値。 暫定 — 実測後見直し。
+export const MAX_PDF_BYTES = 50 * MB
+
+// ②-4b: PDF batch 合計(declaredBytes の Σ)上限(spec D7 r4)。 reserve と
+// submit pre-tx の両方で検証する。 暫定 — 実測後見直し。
+export const MAX_PDF_TOTAL_BYTES = 200 * MB
+
+// ②-4b: pipeline render phase の webp 累計バイト上限(spec D7 r4)。 超過は
+// terminal `webp_limit_exceeded`(loud) — 高エントロピー PDF が Gemini inline /
+// メモリの既存 ~4-5.5MB 前提を外れるのを塞ぐ。 暫定 — 実測後見直し。
+export const MAX_RENDERED_WEBP_TOTAL_BYTES = 30 * MB
+
 // ②-4a 単一 invocation 経路(submit-upload.ts)の lease TTL。sync tx が
 // `lease_expires_at = now + LEASE_TTL_MS` を発行し、live-op gate
 // (isLiveUploadOperationCondition)が唯一の読者になる — 「今この upload を進めて

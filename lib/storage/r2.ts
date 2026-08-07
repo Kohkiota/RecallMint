@@ -155,17 +155,23 @@ export async function headObject(
  * finalize は temp key の実バイトを取得し、 magic-byte/decode/hash/寸法を server で
  * 検証してから最終 key へ promote する (client 申告値を信用しない・Codex P1 対処)。
  *
+ * `opts.timeoutMs`(②-4b spec D8): 省略時は既定 `GET_TIMEOUT_MS`(10s)のまま —
+ * 既存呼出側は無改変で通る。 PDF source(最大 50MB・spec D7)の GET は既定 10s
+ * では不足しうるため、 呼出側(finalize-pdf-source / pipeline count・render
+ * phase)が明示的に長い timeoutMs(暫定 60s)を渡す。
+ *
  * headObject/deleteObject と同じ never-throw契約: fetchのthrow/timeout(abort)・
  * 非2xx(404含む)はcatchせずnullに正規化する。 呼出側(finalize)にtry/catchを
  * 強制せず、 「検証不能」を一律 null で扱えるようにする。
  */
 export async function getObject(
   objectKey: string,
+  opts?: { timeoutMs?: number },
 ): Promise<{ bytes: Buffer } | null> {
   try {
     const res = await client.fetch(objectUrl(objectKey), {
       method: 'GET',
-      signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? GET_TIMEOUT_MS),
     })
     if (!res.ok) {
       return null

@@ -75,6 +75,20 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'asset_gc',
     failureCode: 'external_api_error',
   },
+  // ②-4b spec §6 本線 2: upload pipeline 出口(成功 publish 後 / terminal 化後 /
+  // start_cas_lost / commit_raced の全経路)での source PDF R2 実体 DELETE 失敗の
+  // 記帳先。0032 で撤去した r2_gc_delete_source(旧 source_asset_gc GC lane)の
+  // 後継だが、GC sweep ではなく pipeline 出口の**即時 DELETE**が失敗したケースを
+  // 表す点が異なる(workflow は asset_gc ではなく upload_single_invocation =
+  // ocr_pipeline と同じ pipeline に属する失敗であることを表す)。DB側の掃除とは
+  // decouple される(r2_gc_delete と同型)。context = { objectKey, ... }(呼出配線
+  // は T8)。
+  r2_source_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'upload_single_invocation',
+    failureCode: 'external_api_error',
+  },
   // RLS-P3 Task 7: tenant context 未設定で app_current_user_id() が P0RLS を RAISE
   // した = withTenantTx を経由せずに tenant 表を叩いた bug の loud alert。Task 2-4 の
   // 封じ込め後は near-impossible な defense-in-depth 警報 (現状 Vercel Logs 頼み →
