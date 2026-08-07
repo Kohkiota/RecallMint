@@ -27,7 +27,7 @@ import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
   type ProcessUploadErrorCode,
   type ProcessUploadErrorDetails,
-} from '../_actions/process'
+} from '../_lib/upload-error-types'
 import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
 // ②-4a 単一 invocation Sprint Task S-3: 呼出列(prepare→reserve→PUT→finalize→claim→
 // stage→publish)を **submitUpload 1 本**へ差し替える。 client は画像バイトを FormData で
@@ -364,7 +364,7 @@ export function UploadForm({
     })
   }
 
-  // エラー表示の共通 helper。 hideRetryHint は元の processUpload 経路
+  // エラー表示の共通 helper。 hideRetryHint は元の legacy action 経路
   // (旧 runProcess の `!result.ok` 分岐)と同じ導出規則を維持する — UPLOAD_IN_PROGRESS
   // は「並列 OCR 実行中」という状態エラーなので「ファイルを変更して再試行」が誤誘導に
   // なるため隠す。 PAGE_LIMIT_EXCEEDED は新 flow では発生しない outcome だが、 コード自体は
@@ -566,7 +566,7 @@ export function UploadForm({
     } catch {
       // network error / body 上限超過 / unexpected throw 等。 operation が作成済みか
       // どうかを client からは判別できないため、 無条件再試行でなく「試験一覧で確認を」と
-      // 案内する(旧 processUpload 経路の catch と同じ方針)。
+      // 案内する(旧 legacy action 経路の catch と同じ方針)。
       // hideRetryHint=true: 「ファイルを変更して再試行」サブタイトルを非表示にする。
       setPhase({
         kind: 'error',

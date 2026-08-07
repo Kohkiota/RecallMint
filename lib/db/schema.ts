@@ -390,7 +390,7 @@ export const sourceDocuments = pgTable(
     // 追加したか (= 'existing') を記録。 discard 時に「auto 作成 exam を
     // cascade 削除するか / 既存 exam を残すか」 を server 側で DB から判定する
     // 真実 source。 旧来 client が examWasAutoCreated を持ち回っていたのを廃止し、
-    // URL / client 改竄に対して堅牢化。 default なし = processUpload で必ず set。
+    // URL / client 改竄に対して堅牢化。 default なし = upload action で必ず set。
     mode: text('mode').$type<'new' | 'existing'>().notNull(),
     fileType: text('file_type')
       .$type<'pdf' | 'image' | 'csv' | 'markdown'>()
@@ -398,7 +398,7 @@ export const sourceDocuments = pgTable(
     filename: text('filename').notNull(),
     fileSizeBytes: integer('file_size_bytes').notNull(),
     // S1.9.1: 'uploading' を廃止 (R2 presigned upload 段階の状態だったが、
-    // inline base64 方式では到達経路がない)。 processUpload は常に 'processing'
+    // inline base64 方式では到達経路がない)。 upload action は常に 'processing'
     // で INSERT するため default も 'processing' に変更。
     status: text('status')
       .$type<'processing' | 'completed' | 'failed'>()
