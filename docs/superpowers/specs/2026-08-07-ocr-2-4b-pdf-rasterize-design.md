@@ -1,6 +1,6 @@
 # ②-4b PDF 対応(R2 一時保存 + server WASM rasterize)— 設計 spec
 
-**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正)/ **status**: OT レビュー待ち(確定前)
+**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正。r3: 冊数上限廃止 = 上限はページ数 1 本 / 層 2=UX・層 3=正本の区別を恒久明記)/ **status**: **確定(2026-08-07 OT 承認)**
 **位置付け**: ②-4a(画像入稿・単一 invocation)の上に PDF 入稿を足す。②-4a の pipeline 本体(Gemini 契約 / normalize / crop / publish)は**不変**が本 spec の中心的主張。
 **根拠調査**: `docs/audit/2026-08-07-ocr-2-4b-pdf-factfinding.md` / `…-r2-source-retention-factfinding.md` / `…-rasterize-feasibility-measurement.md`(以下「調査①②③」)。
 **やらないこと(非スコープ)**: Files API / resume 復活(②-4a spec:160 の再評価トリガーのまま)/ 選択的 rasterize(D2 で棄却)/ account quota 強制(②-5)/ CSV・markdown 入稿 / UI 文言の確定(状態の種類と遷移のみ定義・文言は design token 後)。
@@ -88,11 +88,13 @@
 
 **D6. 上限判定の配置(3 層)と PDF 受理に伴う必須変更。**
 - 層 1(UI): D5 の常時表示 + submit 無効化。
-- 層 2(submit pre-tx): 画像枚数 + PDF manifest の echo pageCount の合計で判定し、超過は **行ゼロで却下**。→ **「入力検証がすべて終わってから tx を開く」現行順序は維持される**。ただし echo は改竄可能なため機械保証ではない — 改竄 echo は層 3 で terminal になり、その場合のみ「行(exam/doc/op)が生まれてから失敗」へ倒れる(**bounded residual・明示**)。
-- 層 3(pipeline count phase・**authoritative**): D4 の 2 箇所目。ここが唯一の機械保証。
+- 層 2(submit pre-tx): 画像枚数 + PDF manifest の echo pageCount の合計で判定し、超過は **行ゼロで却下**。→ **「入力検証がすべて終わってから tx を開く」現行順序は維持される**。
+- 層 3(pipeline count phase・**authoritative**): D4 の 2 箇所目。
+- **層 2 と層 3 の区別(誤読防止・恒久)**: **client echo は信頼していない。層 2 は UX のための早期棄却であり、防御ではない。正本(唯一の機械保証)は層 3 の count phase** — echo が改竄されても層 3 が弾く。改竄時に残るのは operation 行が 1 つ生まれて terminal になることだけ(bounded residual)で、**データの正しさ(課金記帳・レンダリング量・publish 内容)は層 3 が守る**。後から層 2 を防御と誤読して層 3 を緩めることを禁じる。
 - **PDF 受理に伴う必須変更(既存の誤りではない)**: `submit-upload.ts:135` の `files.length > OCR_MAX_PAGES` と `:323` の `pagesTotal: files.length` は、現状(PNG/JPEG/WebP のみ受理)では 1 file = 1 ページが成立し**正しい**。PDF を受理した時点で成立しなくなるため、層 2 をページ数基準(画像枚数 + Σecho)に書き換え、`pagesTotal` は: 画像のみ = 枚数(従来値・意味は「ページ数」に確定)/ PDF 含み = **NULL で INSERT → pipeline count phase の fenced CAS で確定値を書く**。`expected_source_count` も同形(画像のみ = 枚数 / PDF 含み = 0 sentinel → CAS で 画像枚数+実ページ数)。schema コメントは「作成時確定(画像)/ count phase 確定(PDF)」へ改訂。publish の読者 3 箇所(`publish-prepared.ts:92,135,234`)は無変更。
 
-**D7. 上限(暫定・実測後見直し)**: per-file **50MB**(presign の Content-Length 署名 + HEAD 再検証)/ 1 upload の PDF 冊数 **≤ 10** / 合計ページ ≤ 40(D3)。
+**D7. 上限 = ページ数 1 本 + per-file バイト(別軸)。冊数・ファイル数の上限は設けない。**
+合計ページ ≤ 40(`OCR_MAX_PAGES`・D3)が唯一の数量上限(`MAX_PDF_PAGES` 廃止と併せ、上限はページ数 1 本)。per-file **50MB**(presign の Content-Length 署名 + HEAD 再検証・暫定・実測後見直し)はサイズの別軸として残す。echo pageCount は **≥1 を要求**(0/負値 echo で層 2 判定を素通りさせない — 正当な PDF は必ず 1 ページ以上)。
 
 **D8. rasterize の実行制約**: after() 内・**count phase と render phase の 2 巡 GET**(合計判定をレンダリング前に完了させつつ、同時保持を 1 冊分に保つ — 全冊のバイトを掴んだまま数えない)。render は 1 ページずつ逐次(既存「peak 同時 decode = 1」の拡張)。出力 = webp(quality 80・長辺 2048px = 既存 `MAX_IMAGE_WIDTH_OR_HEIGHT` 同値)。ページ画像は既存 `verifyImageBytes` ループへそのまま合流(経路統一・寸法取得点を増やさない)。source_id はページごとに server 採番(既存 `randomUUID()`)。source GET は専用 timeout(暫定 60s — 既定 `GET_TIMEOUT_MS` 10s は 50MB に不足しうる)。
 
