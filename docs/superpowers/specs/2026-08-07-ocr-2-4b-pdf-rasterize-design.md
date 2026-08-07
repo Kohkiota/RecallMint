@@ -1,6 +1,6 @@
 # ②-4b PDF 対応(R2 一時保存 + server WASM rasterize)— 設計 spec
 
-**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正。r3: 冊数上限廃止 = 上限はページ数 1 本 / 層 2=UX・層 3=正本の区別を恒久明記)/ **status**: **確定(2026-08-07 OT 承認)**
+**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正。r3: 冊数上限廃止 = 上限はページ数 1 本 / 層 2=UX・層 3=正本の区別を恒久明記。r4: plan cross-check 由来のシステム保護 2 値を D7 に追加(OT 承認))/ **status**: **確定(2026-08-07 OT 承認)**
 **位置付け**: ②-4a(画像入稿・単一 invocation)の上に PDF 入稿を足す。②-4a の pipeline 本体(Gemini 契約 / normalize / crop / publish)は**不変**が本 spec の中心的主張。
 **根拠調査**: `docs/audit/2026-08-07-ocr-2-4b-pdf-factfinding.md` / `…-r2-source-retention-factfinding.md` / `…-rasterize-feasibility-measurement.md`(以下「調査①②③」)。
 **やらないこと(非スコープ)**: Files API / resume 復活(②-4a spec:160 の再評価トリガーのまま)/ 選択的 rasterize(D2 で棄却)/ account quota 強制(②-5)/ CSV・markdown 入稿 / UI 文言の確定(状態の種類と遷移のみ定義・文言は design token 後)。
@@ -95,6 +95,7 @@
 
 **D7. 上限 = ページ数 1 本 + per-file バイト(別軸)。冊数・ファイル数の上限は設けない。**
 合計ページ ≤ 40(`OCR_MAX_PAGES`・D3)が唯一の数量上限(`MAX_PDF_PAGES` 廃止と併せ、上限はページ数 1 本)。per-file **50MB**(presign の Content-Length 署名 + HEAD 再検証・暫定・実測後見直し)はサイズの別軸として残す。echo pageCount は **≥1 を要求**(0/負値 echo で層 2 判定を素通りさせない — 正当な PDF は必ず 1 ページ以上)。
+**システム保護 2 値(r4 追加・いずれも暫定・実測後見直し = per-file 50MB / lifecycle 86400s と同じ扱い。商品仕様の冊数上限ではない・plan cross-check C2 採用)**: ① batch 合計 declaredBytes ≤ **200MB**(reserve と submit pre-tx の両方で検証)② render 後 webp 累計 ≤ **30MB**(超過 = terminal `webp_limit_exceeded`・loud — 高エントロピー PDF が Gemini inline / メモリの既存 ~4-5.5MB 前提を外れるのを塞ぐ)。
 
 **D8. rasterize の実行制約**: after() 内・**count phase と render phase の 2 巡 GET**(合計判定をレンダリング前に完了させつつ、同時保持を 1 冊分に保つ — 全冊のバイトを掴んだまま数えない)。render は 1 ページずつ逐次(既存「peak 同時 decode = 1」の拡張)。出力 = webp(quality 80・長辺 2048px = 既存 `MAX_IMAGE_WIDTH_OR_HEIGHT` 同値)。ページ画像は既存 `verifyImageBytes` ループへそのまま合流(経路統一・寸法取得点を増やさない)。source_id はページごとに server 採番(既存 `randomUUID()`)。source GET は専用 timeout(暫定 60s — 既定 `GET_TIMEOUT_MS` 10s は 50MB に不足しうる)。
 
