@@ -29,6 +29,7 @@
     "@dnd-kit/sortable": "10.0.0",
     "@dnd-kit/utilities": "3.2.2",
     "@google/genai": "2.13.0",
+    "@hyzyla/pdfium": "2.1.13",
     "@tanstack/react-table": "8.21.3",
     "@tanstack/react-virtual": "3.14.8",
     "aws4fetch": "1.0.20",
