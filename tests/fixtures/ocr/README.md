@@ -9,6 +9,8 @@
 | `mock-exam-page1.png` / `.pdf` | golden 入力(架空の擬似試験問題・OT 生成) | commit |
 | `<name>.response.json` | 本番モデル (`gemini-2.5-flash`) + 本番 prompt/schema での**生応答 text(逐語)** | commit |
 | `<name>.expected-cards.json` | `parseOcrResponse(<name>.response.json)` の出力 `ExtractedCard[]` を pin | commit |
+| `mock-exam-page1-encrypted.pdf` | `mock-exam-page1.pdf` を `qpdf --encrypt` (256bit AES) で暗号化した fixture。`lib/media/pdf-rasterize.test.ts` の暗号化 PDF → `PdfParseError` (Codex I8) を検証する。再生成: `qpdf --encrypt userpass ownerpass 256 -- mock-exam-page1.pdf mock-exam-page1-encrypted.pdf` | commit |
+| `mock-exam-3p.pdf` | `mock-exam-page1.pdf`(架空・A4 595×842pt)を `qpdf --empty --pages` で 3 回連結した 3 ページ fixture。`lib/media/pdf-rasterize.test.ts` の pageCount / renderPageWebp 寸法・webp magic bytes / 逐次 pin を検証する(元は `scripts/ai/ocr-samples/mock-exam-set.pdf` を使っていたが、同 dir は gitignore 対象で fresh clone / CI が落ちるため tracked fixture へ切替)。再生成: `qpdf --empty --pages mock-exam-page1.pdf 1 mock-exam-page1.pdf 1 mock-exam-page1.pdf 1 -- mock-exam-3p.pdf` | commit |
 
 ## 生成方法(再現)
 
