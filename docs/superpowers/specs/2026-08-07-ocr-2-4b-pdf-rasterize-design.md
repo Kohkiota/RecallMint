@@ -1,6 +1,6 @@
 # ②-4b PDF 対応(R2 一時保存 + server WASM rasterize)— 設計 spec
 
-**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正。r3: 冊数上限廃止 = 上限はページ数 1 本 / 層 2=UX・層 3=正本の区別を恒久明記。r4: plan cross-check 由来のシステム保護 2 値を D7 に追加(OT 承認))/ **status**: **確定(2026-08-07 OT 承認)**
+**日付**: 2026-08-07(同日改訂 2 回 — r1: client 判定廃止 / 完了通知新設 / 回収定義 / UI 状態 / legacy 削除 / 未確定追記。r2: 対応付け分岐 (a)/(b) の明示決定 / 合計の確定・未確定表示 / 「既存の誤り」→「PDF 受理に伴う必須変更」へ位置づけ訂正。r3: 冊数上限廃止 = 上限はページ数 1 本 / 層 2=UX・層 3=正本の区別を恒久明記。r4: plan cross-check 由来のシステム保護 2 値を D7 に追加。**r5(2026-08-08): T6 実装中に発見した spec の穴を解消 — R2 key を `idempotencyKey` から `uploadSessionId` へ分離(§3.1-3.4)+ client 状態機械の terminal 再試行を具体化(D5)+ 影響 task の申し送り(§13)**)/ **status**: **確定(r5 = 2026-08-08 OT 承認)**
 **位置付け**: ②-4a(画像入稿・単一 invocation)の上に PDF 入稿を足す。②-4a の pipeline 本体(Gemini 契約 / normalize / crop / publish)は**不変**が本 spec の中心的主張。
 **根拠調査**: `docs/audit/2026-08-07-ocr-2-4b-pdf-factfinding.md` / `…-r2-source-retention-factfinding.md` / `…-rasterize-feasibility-measurement.md`(以下「調査①②③」)。
 **やらないこと(非スコープ)**: Files API / resume 復活(②-4a spec:160 の再評価トリガーのまま)/ 選択的 rasterize(D2 で棄却)/ account quota 強制(②-5)/ CSV・markdown 入稿 / UI 文言の確定(状態の種類と遷移のみ定義・文言は design token 後)。
@@ -28,7 +28,8 @@
                → 単体 40 超過 or 解析不能 → source を即 DELETE + error 応答
                → 正常 → {pageCount} 応答(DB 書込なし)
   → UI: N ページ表示・合計(画像枚数 + Σ PDF ページ)/ 上限 40 を常時表示 … entry: ready(N)
-  → submitUpload(既存 action 拡張。画像 = FormData バイト / PDF = メタのみ)
+  → submitUpload(既存 action 拡張。画像 = FormData バイト / PDF = メタのみ
+                 + uploadSessionId を top-level field で送る・§3.4)
 [server: submitUpload]
   pre-tx 検証: 画像(既存)+ PDF HEAD × N + 合計ページ判定(echo・§4 D6)
     → 超過は行ゼロで却下(現行の「検証完了後に tx を開く」順序を維持)
@@ -44,17 +45,62 @@
 [client] poll(既存 /api/exams/status・変更なし)
 ```
 
-**新設が要る要素(既存にあると仮定しない)**: ① OCR source 用 presigned PUT 発行(`reservePdfUploadUrls`)② R2 CORS の `application/pdf` PUT(Cloudflare 実設定 = OT 確認・§12)③ **PUT 完了通知の受け口(`finalizePdfSource`)** ④ 通知後の R2 読み出し(source GET・専用 timeout)⑤ object ↔ **user / upload attempt** の対応付け(key 規約 §3。台帳なし)。
+**新設が要る要素(既存にあると仮定しない)**: ① OCR source 用 presigned PUT 発行(`reservePdfUploadUrls`)② R2 CORS の `application/pdf` PUT(Cloudflare 実設定 = OT 確認・§12)③ **PUT 完了通知の受け口(`finalizePdfSource`)** ④ 通知後の R2 読み出し(source GET・専用 timeout)⑤ object ↔ **user / upload session** の対応付け(key 規約 §3。台帳なし)。
 
 **カード画像添付経路は「型」としてのみ参照**(OCR source 用の経路は存在しない): 写せる形 = `presignPutUrl`(Content-Length/Type 署名焼込)の呼出形・HEAD + contentLength 検証(`finalizeAsset:166-168` と同型)・client 直 PUT の saga 形(`lib/media/upload.ts:729`)。新設する部分 = 上記 ①③④⑤ の全部と、`reserveAsset` 不再利用(入力 zod が画像 mime enum + 寸法必須で、`assets` 台帳 INSERT が本質。PDF は台帳を持たない)。
 
 ## 3. key 設計と対応付けの時期 — 分岐 (a)/(b) の決定
 
-**key = `src/{userId}/{idempotencyKey}/{fileId}.pdf`**(kickoff 第 1 案 `src/{operationId}/…` は presign 時点で op 行が無く不成立 — op 前倒し作成は新 status + `exam_id` NOT NULL 解除 = migration が要る)。top-level `src/` = lifecycle rule 1 本(調査②§2.4)。3 セグメント全て server 導出(idempotencyKey / fileId は client 発行だが **uuid v4 形状を検証してから埋める** — path injection 不能)。client は key 文字列を送らない。idempotencyKey は **batch 開始時(最初の presign 時)に発行**し submit まで同一。file 追加 = 同 batch に fileId 追加 / 削除 = manifest から外すのみ(残骸は lifecycle)。
+**key = `src/{userId}/{uploadSessionId}/{fileId}.pdf`**(r5 改訂。kickoff 第 1 案 `src/{operationId}/…` は presign 時点で op 行が無く不成立 — op 前倒し作成は新 status + `exam_id` NOT NULL 解除 = migration が要る)。top-level `src/` = lifecycle rule 1 本(調査②§2.4)。3 セグメント全て server 導出(uploadSessionId / fileId は client 発行だが **uuid v4 形状を検証してから埋める** — path injection 不能)。client は key 文字列を送らない。file 追加 = 同 session に fileId 追加 / 削除 = manifest から外すのみ(残骸は lifecycle)。
+
+### 3.1 `uploadSessionId` と `idempotencyKey` の分離(r5・実装中に発見した spec の穴の解消)
+
+r4 までは 1 つの値(`idempotencyKey`)で **2 つの別物**を表していた。両者は要求が逆向きで、両立しない:
+
+| 識別子 | 何の同一性か | 要求 |
+|---|---|---|
+| `idempotencyKey` | **論理 submit 試行**の同一性 | 同一 transport retry では維持。**ユーザー再試行では必ず新規**(`submit-upload.ts:99-103` の契約 — 同一 key は**状態不問で replay** され旧 operation の ID を返す。内容は照合しない) |
+| `uploadSessionId` | **R2 namespace** の同一性 | PUT 済み object 群を指す。再 upload させたくない限り**維持したい** |
+
+同じ値にすると、再試行のたびに ① key を変えれば既 PUT の object が旧 namespace に取り残される ② 変えなければ別内容を送っても旧 operation が replay される、のどちらかが必ず起きる。→ **値を分ける**。
+
+### 3.2 `uploadSessionId` の生存範囲 — server outcome で定義する
+
+境界は「transaction の前後」ではなく **新規 operation が作成されたか**:
+
+| submit 結果 | uploadSessionId |
+|---|---|
+| **新規 operation を作らないことが確定した outcome** — `in_progress`(advisory lock 失敗 `submit-upload.ts:185` / live-op gate `:247` の両方)/ 入力検証 reject / `exam_not_found` / `daily_limit_exceeded` | **維持可能**(object はそのまま再利用) |
+| **`accepted`(`replayed` を含む)** | **消費済み・再利用不可** |
+| **throw / 応答不明** | 作成済みか判別できないため **無効化** |
+| **accepted 後の terminal 失敗**(pipeline が failed 化) | **新 session で reserve→PUT→finalize をやり直す** |
+
+**terminal 後に session を維持しない理由(限定の根拠)**: 維持すると**異なる operation が同じ source key を共有**する。全出口 DELETE(§6 本線 2)を維持する以上、遅れて終了した旧 operation の `finally` が **新 operation の使用中 object を DELETE** しうる。出口 DELETE を捨てないためにこの限定が要る。
+
+### 3.3 強制力の限界(裁定済み・受容)
+
+`uploadSessionId` は client 入力を **uuid v4 形状検証するだけで DB に保存しない**(台帳なし = §3 (a) 決定)。したがって:
+
+> **「1 uploadSessionId は高々 1 accepted operation」は client 状態機械の規約であって、server の機械保証ではない。** 改変 client が同じ session を別の `idempotencyKey` で再 submit することを server は検出できない。
+
+**受容する。** 根拠と残余:
+- key は **認証済み userId から server が導出**するため、**他ユーザーの object の機密性・完全性には到達しない**(所有境界は機械強制されている)。
+- データ上の直接影響は**当該 user 自身の upload 失敗に閉じる**。
+- **残余リスク**: 重複 R2 GET / WASM parse / 失敗 operation 等の**サービス資源消費**は残る。reserve / finalize の濫用対策は plan の**公開前 rate limit 裁定**で別途扱う(本 task では導入しない)。
+- session 単一使用を機械強制するには **durable な消費記録**(= 台帳)が必要で、§3 (a) の決定を覆す。本 task では導入しない。
+
+**この区別を doc 上で混ぜない**: 機械強制のある主張(所有境界 / key 構築経路 / 層 3 の上限)と、doc に書いただけの規約(session 単一使用)は別物として書く([[lesson_single_point_claims_decay]])。
+
+### 3.4 wire 契約(T7 が受ける形)
+
+- `uploadSessionId` は **FormData の top-level field**。
+- PDF を含む manifest では **uuid v4 として必須**。画像のみでは**送らない**。
+- manifest の各要素は従来どおり **`fileId` だけ**を持つ(session は top-level に 1 つ)。
+- **raw object key を client から受け取らない**(server が `sourcePdfObjectKey(認証済み userId, uploadSessionId, fileId)` で導出)。
 
 **分岐の決定 = (a) reserve レコードを作らない(台帳なし)。**
 
-- **PUT 時点の対応付けは upload attempt 単位**(userId + idempotencyKey)を **key 規約で**表現する — DB 行なし。
+- **PUT 時点の対応付けは upload session 単位**(userId + uploadSessionId)を **key 規約で**表現する — DB 行なし(r5)。
 - page count 判定(完了通知 = 単体 / submit pre-tx = 合計)に合格した後、**現行どおり入力検証がすべて終わってから tx を開き**(`submit-upload.ts:417`)、operation / source document を作る。object との対応付けは after() closure の manifest(fileId 列)経由 — op 行に key 列は足さない。**現行順序は維持される。**
 - (b)(presign 時に reserve 行を作る)は不採用: operation より前に生きるレコードができ、**期限切れ reserve の回収 lane・RLS・policy・iso completeness・migration** が丸ごと増える(現行順序も変わる)。②-4b の必要(所有解決と回収)は (a) で足り、0032 の「表を残すと保持前提と誤読される」判断(②-4a spec §4.1)とも整合。
 - **対価(明示)**: 完了通知が返した pageCount を server が**保持しない**ため、submit pre-tx の合計判定は client echo に依る(→ D6 の 3 層で機械保証は pipeline 側)。台帳ありなら count 1 回 + 厳密な pre-tx 保証が得られるが、上記コストと引き換えにしない。
@@ -85,6 +131,13 @@
 
 **合計は PDF が確認中の間は確定しない** — 表示するのは数値でなく**合計の確定 / 未確定状態**: ① `uploading` / `counting` の PDF が 1 つでもある → **合計未確定** ② 全 PDF 確定 → **合計 N ページ**(N = 画像枚数 + Σ pageCount)③ 確定かつ N > 40 → **合計 N / 超過**(どの entry を外せば収まるか判別できる表示)。実文言・見た目は ③ design token 後。
 **現行 reducer 構造は踏襲する**(処理中 entry ゼロ加算 + `anyProcessing` で送信停止・`upload-form.tsx:180,197`): `uploading` / `counting` を「処理中」集合に加えるだけで送信ゲートは既存構造のまま。変えるのは**表示のみ**(処理中に部分和の数値を出さず「未確定」を明示する — 現行は少なく見える部分和が出る)。submit 有効化 = 全 entry `ready` かつ合計 ≤ 40(既存 `submitDisabled` 導出に吸収)。
+
+**`uploadSessionId` の client 状態機械(r5・§3.2 の client 側実装)**:
+1. **最初の PDF presign 時に発行**(uuid v4)。以後 同 session の全 PDF が同じ値を使う。
+2. **operation 未作成 outcome(§3.2 の「維持可能」行)では維持** — object をそのまま再利用し、再 upload させない。
+3. **`accepted`(replayed 含む)/ throw では無効化**。
+4. **全 entry 削除 / page 離脱でも終了**。
+5. **terminal 失敗後の再試行では、`ready` の PDF entry を `uploading` へ戻し、新 session で reserve → PUT → finalize を実行し直す**(`counting` を経て `ready` へ)。**この 5 が無いと** 「新 session が要る」と書いても既存 `ready` entry は再アップロードされず、新 namespace に object が存在しないまま submit されて T7 の HEAD で落ちる。
 
 **D6. 上限判定の配置(3 層)と PDF 受理に伴う必須変更。**
 - 層 1(UI): D5 の常時表示 + submit 無効化。
@@ -119,7 +172,7 @@ git grep -n "_actions/process"   # type-only を含む module 参照
 **既存の回収経路は存在しない**(gc-image-assets の source lane・`r2_gc_delete_source` catalog は 0032 で撤去済・調査②§2.3)。以下を新規に定義:
 
 **本線 1(完了通知)**: 単体 40 超過・解析不能の reject 時、**通知 handler がその場で DELETE**(key を知っている唯一の即時点)。
-**本線 2(pipeline 出口)**: 成功 publish 後 / terminal 化後 / start_cas_lost / commit_raced の**全経路**で、closure の manifest から導出した全 source key に `deleteObject`(never-throw・404=ok)。失敗は `integration_failures` **`r2_source_delete`(catalog 新設**・0032 で消えた `r2_gc_delete_source` の後継)+ lifecycle へ委譲。raced/lost でも削除してよい根拠: key は (userId, idempotencyKey) 専有で、op が死んでいれば読む者はいない。
+**本線 2(pipeline 出口)**: 成功 publish 後 / terminal 化後 / start_cas_lost / commit_raced の**全経路**で、closure の manifest から導出した全 source key に `deleteObject`(never-throw・404=ok)。失敗は `integration_failures` **`r2_source_delete`(catalog 新設**・0032 で消えた `r2_gc_delete_source` の後継)+ lifecycle へ委譲。raced/lost でも削除してよい根拠: key は (userId, uploadSessionId) 専有で、§3.2 が「terminal 後は新 session」を課すため **1 つの session の object を 2 つの operation が共有しない**。ゆえに op が死んでいれば読む者はいない(r5 で根拠を session 限定に更新)。
 **保険**: lifecycle rule — prefix `src/`・maxAge 86400s(1 日・暫定)。削除実行は「典型 24h 以内」で**保証なし**(調査③§3)→ 実効上限 ≈48h と明記。設定 = OT 手動(§12)。
 **前提**: `listObjects('src/')` で見つかるのは**実際に PUT された object だけ**(presign のみでは DB にも R2 にも何も残らない = 回収対象なし)。分岐 (b) なら加わったはずの「期限切れ reserve 行の回収」は、(a) 採用(§3)により存在しない。
 
@@ -169,7 +222,19 @@ copy 差し替え(「PDF は現在未対応です」撤回・`accept` 復帰・�
 
 ## 11. architecture.md §6 行の置換文言(実装時にこの内容で置換)
 
-> | **source(OCR 元 PDF)の R2 保持は「処理中のみ」。置き場は top-level `src/` prefix(`src/{userId}/{idempotencyKey}/{fileId}.pdf`)のみ・server は source を PUT しない(client presigned のみ)・完了通知 reject と pipeline 出口(成功/失敗とも)で明示 DELETE + lifecycle(`src/` maxAge 1 日・実効 ≈48h)が保険。`source_assets` 表は存在しない(台帳なし・key 規約で辿る)** | 著作物の疑い(恒久保持しない)は維持。経緯: 「最小時間のみ保持 + purge」→「そもそも置かない」(2026-08-04 OT・旧 ②-4a)→ **PDF 対応で body cap(4.5MB)を原本が越えるため「処理中のみ置く」へ改訂(2026-08-07 OT・②-4b)**。画像入稿は従来どおり R2 非経由(FormData → メモリ) | 証明: source key builder unit + iso(出口 DELETE 両経路 / server PUT は crop key のみ)| 本 spec |
+> | **source(OCR 元 PDF)の R2 保持は「処理中のみ」。置き場は top-level `src/` prefix(`src/{userId}/{uploadSessionId}/{fileId}.pdf`)のみ・server は source を PUT しない(client presigned のみ)・完了通知 reject と pipeline 出口(成功/失敗とも)で明示 DELETE + lifecycle(`src/` maxAge 1 日・実効 ≈48h)が保険。`source_assets` 表は存在しない(台帳なし・key 規約で辿る)** | 著作物の疑い(恒久保持しない)は維持。経緯: 「最小時間のみ保持 + purge」→「そもそも置かない」(2026-08-04 OT・旧 ②-4a)→ **PDF 対応で body cap(4.5MB)を原本が越えるため「処理中のみ置く」へ改訂(2026-08-07 OT・②-4b)**。画像入稿は従来どおり R2 非経由(FormData → メモリ) | 証明: source key builder unit + iso(出口 DELETE 両経路 / server PUT は crop key のみ)| 本 spec |
+
+## 13. r5 の影響範囲(実装への申し送り)
+
+| task | 変更 |
+|---|---|
+| **T3**(`3c40eda` commit 済) | `sourcePdfObjectKey` の第 2 引数の**意味と名前**を `idempotencyKey` → `uploadSessionId` へ(ロジック不変)。**別 commit**・元の `[reviewed]` は書き換えない |
+| **T5**(`351d556` commit 済) | 2 action の入力 field 名を同上へ(ロジック不変)。**別 commit**・同上 |
+| **T6** | §D5 の client 状態機械(発行 / 維持 / 無効化 / terminal 再試行での `ready` → `uploading` 戻し) |
+| **T7** | wire 契約(§3.4)の受領 + uuid v4 検証 + HEAD 対象 key の導出 + **after() closure へ `uploadSessionId` を渡す** |
+| **T8** | count / render の GET と出口 DELETE の対象 key 導出 + **replay / raced / lost 時の DELETE 安全性の再確認**(§3.2 の「terminal 後は新 session」限定が守られている前提で、旧 session の object を新 operation が使っていないこと) |
+
+**修正 commit も review→commit(canonical + Codex)を通す。** 既 commit の tag を後から書き換えない(順序則)。
 
 ## 12. OT 作業(repo 外・実装と並行可)
 
