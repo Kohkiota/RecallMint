@@ -9,7 +9,7 @@
 ## Global Constraints(全 task 共通・task からは参照のみ)
 
 - **凍結境界**: prompt / OCR schema / normalize-prepared / crop-and-store / publish 契約に触らない(spec の中心的主張)。
-- key = `src/{userId}/{idempotencyKey}/{fileId}.pdf`(3 セグメント uuid v4 検証・client は key を送らない)。
+- key = `src/{userId}/{uploadSessionId}/{fileId}.pdf`(3 セグメント uuid v4 検証・client は key を送らない)。**spec r5: `uploadSessionId`(R2 namespace)と `idempotencyKey`(submit 試行)は別値**。生存範囲 = spec §3.2 の server outcome 表(accepted / throw で無効化・terminal 後は新 session)。強制力の限界 = §3.3(client 規約であり server の機械保証ではない)。
 - 暫定値(実測後見直しコメント必須): `MAX_PDF_BYTES = 50MB` / `MAX_PDF_TOTAL_BYTES = 200MB`(batch 合計・spec r4)/ `MAX_RENDERED_WEBP_TOTAL_BYTES = 30MB`(render 累計・超過 = terminal `webp_limit_exceeded`・spec r4)/ source GET timeout 60s / webp quality 80・長辺 2048(`MAX_IMAGE_WIDTH_OR_HEIGHT` 共用)/ lifecycle maxAge 86400s(OT 設定)。
 - 上限 = 合計ページ 40(`OCR_MAX_PAGES`)1 本。冊数上限なし。echo pageCount ≥1 要求。
 - 層 2(pre-tx echo)= UX の早期棄却・防御ではない。正本 = 層 3 count phase(spec D6 の誤読禁止条項)。
@@ -66,6 +66,12 @@
 - 目的: 層 3 正本・source 削除本線 2・既存 pipeline への合流(spec D2 / D4 / D6 / D8 / §6)。
 - 制約: **count phase** = PDF を 1 冊ずつ `getObject({timeoutMs:60_000})` → `loadPdf` → pageCount + **bytes の sha256 を記録** → `destroy` + 解放(全冊保持しない)。合計(画像 + Σ実ページ)> 40 → `page_limit_exceeded` terminal(**render 0 呼出**)。合格 → fenced CAS UPDATE(`expected_source_count` = 合計 / `pages_total` を**同一 UPDATE 文で原子的に**・WHERE id + lease_version + status='processing')。**CAS 更新件数 0 なら render / Gemini へ進まない**(Codex I9)。**render phase** = 再 GET → **sha256 を count 時の記録と照合し不一致 = terminal `source_changed` (Codex C1: 2 巡 GET 間の差し替え TOCTOU を塞ぐ・presign 600s 窓内の再 PUT 対策)** → `renderPageWebp` を 1 ページずつ・**webp 累計 > `MAX_RENDERED_WEBP_TOTAL_BYTES` で terminal `webp_limit_exceeded`**(spec r4・loud)→ 既存 `verifyImageBytes` 逐次ループへ **manifest 順**で合流(source_id 採番・parts 組立・以降の既存 phase は無改変)。count/render 開始前に残余予算チェック(既存 pre-Gemini と同型)。**出口 DELETE は列挙分岐でなく pipeline 外周の try/finally で構造保証**(Codex C4: 削除対象 key 集合を pipeline 開始前に固定し、成功 / terminal / raced / lost / **unexpected throw** の全経路を外周 1 箇所で覆う)・失敗は `r2_source_delete` 記帳。`logPhase` に `fetch_source` / `count` / `rasterize` + **40p 相当 fixture でのピーク保持量を計測 log に出す**(Codex C3・assert でなく実測材料)。regex pin 置換: r2 import 許可 = `getObject` / `deleteObject` のみ。**Task 1 の probe route を削除**。
 - 完了条件: iso(成功経路 DELETE 全 key / terminal 経路 DELETE / **throw 注入(unexpected)でも DELETE** / CAS fencing = lease 不一致・更新 0 件で不進行・**sentinel(0)のまま publish に到達しない** / **同一 idempotencyKey の replay 並行で敗者 DELETE が勝者を壊さない時系列**(Codex I10)/ server putObject key = crop のみ維持 / **terminal 後 doc failed = poll 'failed'**(Codex I18))+ unit(超過時 render 0 呼出 / sha256 不一致 → source_changed / **webp 累計超過 → webp_limit_exceeded**)+ **red = DELETE・CAS・超過 gate・sha 照合・webp 累計 gate を個別変異** + `feat(ocr)` [reviewed]。
+
+### Task 8.5(r5 追補): uploadSessionId 分離の反映
+
+- 目的: spec r5(`794717a`)§13 の申し送りを既 commit / 進行中 task へ反映する。
+- 制約: **T3 `sourcePdfObjectKey` / T5 の 2 action は引数の意味と名前のみ変更**(ロジック不変)→ **別 commit**・元の `[reviewed]`(`3c40eda` / `351d556`)は書き換えない・修正 commit も canonical + Codex を通す。T6 は spec D5 の client 状態機械(発行 / 維持 / 無効化 / **terminal 再試行で `ready` → `uploading` 戻し + 新 session で reserve→PUT→finalize**)。T7 は wire 契約(§3.4)受領 + uuid v4 検証 + HEAD 対象 key 導出 + after() closure へ `uploadSessionId` を渡す。T8 は count/render/DELETE の key 導出 + **replay / raced / lost 時の DELETE 安全性の再確認**(§3.2 の session 限定が根拠)。
+- 完了条件: 各 task の完了条件に吸収(独立 task として切らず、T6 / T7 / T8 の中で実施)。T3/T5 の rename は T6 の前に 1 commit で済ませる。
 
 ### Task 9: docs 改訂
 
