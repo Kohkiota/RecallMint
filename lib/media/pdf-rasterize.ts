@@ -45,8 +45,15 @@ export class PdfHandleDestroyedError extends Error {
 }
 
 // wasm init は起動コストが高い(WASM instantiate)ため module 内 lazy singleton で
-// invocation 内使い回す。 PDFiumLibrary.init() はライブラリ内蔵の base64 wasm を使う
-// (network fetch 不要 = Vercel serverless で完結)。
+// invocation 内使い回す。 PDFiumLibrary.init() は既定(import 版 = dist/index.esm.js)
+// では library 同梱の外部 `pdfium.wasm` を `new URL("pdfium.wasm", import.meta.url)`
+// 経由で fs から読む(base64 内蔵 wasm ではない — network fetch は不要だが fs read が
+// 必須)。 Turbopack がこの `new URL(...)` を静的アセットとして public URL 文字列へ
+// 書き換えると production worker の fs パスと食い違い ENOENT になるため、
+// next.config.ts で `@hyzyla/pdfium` を `serverExternalPackages` に入れて bundle 対象
+// から外し、実 node_modules 配置のまま require させている(実 fs パスを保つ)。
+// packaging の 3 点一致(runtime lookup path / 実ファイル存在 / NFT trace)は
+// scripts/verify-pdfium-wasm-packaging.mjs で build 後に機械検証する。
 let libraryPromise: ReturnType<typeof PDFiumLibrary.init> | null = null
 function getLibrary() {
   if (!libraryPromise) {

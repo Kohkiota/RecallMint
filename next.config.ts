@@ -53,6 +53,18 @@ const nextConfig: NextConfig = {
       './node_modules/.pnpm/@img+sharp-linux-x64@*/node_modules/@img/sharp-linux-x64/**/*',
     ],
   },
+  // ②-4b pdfium packaging fix: `@hyzyla/pdfium` の import 版(`dist/index.esm.js`)は
+  // wasm 実体を `new URL("pdfium.wasm", import.meta.url)` で参照する。 Turbopack が
+  // これを静的アセット扱いして public URL 文字列(`/_next/static/media/pdfium.*.wasm`)
+  // へ置換してしまうと、emscripten 側はその文字列をそのまま `fs.readFileSync` に渡す
+  // (Node 実行パスは file URL/文字列いずれも fs 直読み)ため、production worker の
+  // cwd から見て存在しない絶対パスとなり ENOENT で 500 になる(stg で実際に発生)。
+  // `serverExternalPackages` でこの package を bundle 対象から外すと、Turbopack の
+  // asset 静的置換が発生せず、`import.meta.url` は実際に deploy された
+  // `node_modules/@hyzyla/pdfium/dist/index.esm.js` を指す実 file URL のまま残る
+  // (NFT が package 全体を trace する前提。 verify-pdfium-wasm-packaging.mjs で
+  // 3 点一致を機械検証)。
+  serverExternalPackages: ['@hyzyla/pdfium'],
   experimental: {
     serverActions: {
       // Next.js 16 の framework default は 1MB。 default のまま運用すると Server
