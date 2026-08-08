@@ -28,7 +28,7 @@ async function importAction() {
 }
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
-const IDEMPOTENCY_KEY = '22222222-2222-4222-8222-222222222222'
+const UPLOAD_SESSION_ID = '22222222-2222-4222-8222-222222222222'
 
 function makeFile(declaredBytes = 1000) {
   return { fileId: randomUUID(), declaredBytes }
@@ -54,7 +54,7 @@ describe('reservePdfUploadUrls', () => {
     mockGetCurrentUser.mockResolvedValueOnce(null)
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [makeFile()],
     })
     expect(r.ok).toBe(false)
@@ -67,7 +67,7 @@ describe('reservePdfUploadUrls', () => {
     mockGetCurrentUser.mockRejectedValueOnce(new UnauthenticatedError())
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [makeFile()],
     })
     expect(r.ok).toBe(false)
@@ -78,14 +78,14 @@ describe('reservePdfUploadUrls', () => {
     mockGetCurrentUser.mockRejectedValueOnce(new Error('db down'))
     const { reservePdfUploadUrls } = await importAction()
     await expect(
-      reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files: [makeFile()] }),
+      reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files: [makeFile()] }),
     ).rejects.toThrow('db down')
   })
 
   it('正常 → N 件の presigned URL を fileId 対応で返す', async () => {
     const { reservePdfUploadUrls } = await importAction()
     const files = [makeFile(1000), makeFile(2000), makeFile(3000)]
-    const r = await reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files })
+    const r = await reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files })
     expect(r.ok).toBe(true)
     if (r.ok && r.data) {
       expect(r.data).toHaveLength(3)
@@ -97,9 +97,9 @@ describe('reservePdfUploadUrls', () => {
       }
     }
     expect(mockPresignPutUrl).toHaveBeenCalledTimes(3)
-    // key は authed userId + idempotencyKey + fileId から構築される。
+    // key は authed userId + uploadSessionId + fileId から構築される。
     expect(mockPresignPutUrl).toHaveBeenCalledWith(
-      `src/${USER_ID}/${IDEMPOTENCY_KEY}/${files[0].fileId}.pdf`,
+      `src/${USER_ID}/${UPLOAD_SESSION_ID}/${files[0].fileId}.pdf`,
       'application/pdf',
       1000,
     )
@@ -109,7 +109,7 @@ describe('reservePdfUploadUrls', () => {
     const { reservePdfUploadUrls } = await importAction()
     const dupId = randomUUID()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [
         { fileId: dupId, declaredBytes: 1000 },
         { fileId: dupId, declaredBytes: 2000 },
@@ -122,7 +122,7 @@ describe('reservePdfUploadUrls', () => {
   it('件数 > 40(OCR_MAX_PAGES)→ { ok: false }, presign 発行なし', async () => {
     const { reservePdfUploadUrls } = await importAction()
     const files = Array.from({ length: 41 }, () => makeFile())
-    const r = await reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files })
+    const r = await reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files })
     expect(r.ok).toBe(false)
     expect(mockPresignPutUrl).not.toHaveBeenCalled()
   })
@@ -130,7 +130,7 @@ describe('reservePdfUploadUrls', () => {
   it('件数 = 40 は valid(境界)', async () => {
     const { reservePdfUploadUrls } = await importAction()
     const files = Array.from({ length: 40 }, () => makeFile())
-    const r = await reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files })
+    const r = await reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files })
     expect(r.ok).toBe(true)
   })
 
@@ -138,7 +138,7 @@ describe('reservePdfUploadUrls', () => {
     const { MAX_PDF_BYTES } = await import('../_lib/constants')
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [makeFile(MAX_PDF_BYTES + 1)],
     })
     expect(r.ok).toBe(false)
@@ -149,7 +149,7 @@ describe('reservePdfUploadUrls', () => {
     const { MAX_PDF_BYTES } = await import('../_lib/constants')
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [makeFile(MAX_PDF_BYTES)],
     })
     expect(r.ok).toBe(true)
@@ -160,7 +160,7 @@ describe('reservePdfUploadUrls', () => {
     const { reservePdfUploadUrls } = await importAction()
     // 各 file は per-file 上限(50MB)以内・件数も 5 ≤ 40 だが、合計 250MB > 200MB。
     const files = Array.from({ length: 5 }, () => makeFile(MAX_PDF_BYTES))
-    const r = await reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files })
+    const r = await reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files })
     expect(r.ok).toBe(false)
     expect(mockPresignPutUrl).not.toHaveBeenCalled()
   })
@@ -171,14 +171,14 @@ describe('reservePdfUploadUrls', () => {
     // 4 file × 50MB = 200MB ちょうど(per-file 上限内・合計は上限ちょうど)。
     const perFile = MAX_PDF_TOTAL_BYTES / 4
     const files = Array.from({ length: 4 }, () => makeFile(perFile))
-    const r = await reservePdfUploadUrls({ idempotencyKey: IDEMPOTENCY_KEY, files })
+    const r = await reservePdfUploadUrls({ uploadSessionId: UPLOAD_SESSION_ID, files })
     expect(r.ok).toBe(true)
   })
 
-  it('非 uuid idempotencyKey → { ok: false }, presign 発行なし', async () => {
+  it('非 uuid uploadSessionId → { ok: false }, presign 発行なし', async () => {
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: 'not-a-uuid',
+      uploadSessionId: 'not-a-uuid',
       files: [makeFile()],
     })
     expect(r.ok).toBe(false)
@@ -188,7 +188,7 @@ describe('reservePdfUploadUrls', () => {
   it('非 uuid fileId → { ok: false }, presign 発行なし', async () => {
     const { reservePdfUploadUrls } = await importAction()
     const r = await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [{ fileId: 'not-a-uuid', declaredBytes: 1000 }],
     })
     expect(r.ok).toBe(false)
@@ -196,13 +196,13 @@ describe('reservePdfUploadUrls', () => {
   })
 
   it(
-    '所有権 pin: key は authed userId + 検証済み idempotencyKey/fileId のみから' +
+    '所有権 pin: key は authed userId + 検証済み uploadSessionId/fileId のみから' +
       '構築される — 入力に紛れ込ませた key 系 field は無視される(Codex I7)',
     async () => {
       const { reservePdfUploadUrls } = await importAction()
       const fileId = randomUUID()
       const forged = {
-        idempotencyKey: IDEMPOTENCY_KEY,
+        uploadSessionId: UPLOAD_SESSION_ID,
         files: [{ fileId, declaredBytes: 1000 }],
         // `ReservePdfUploadInput` は key 文字列を受け取る field を型として
         // 持たない。 as unknown で無理やり紛れ込ませ、action が実際に無視する
@@ -216,7 +216,7 @@ describe('reservePdfUploadUrls', () => {
       )
       expect(r.ok).toBe(true)
       expect(mockPresignPutUrl).toHaveBeenCalledWith(
-        `src/${USER_ID}/${IDEMPOTENCY_KEY}/${fileId}.pdf`,
+        `src/${USER_ID}/${UPLOAD_SESSION_ID}/${fileId}.pdf`,
         'application/pdf',
         1000,
       )
@@ -237,11 +237,11 @@ describe('reservePdfUploadUrls', () => {
     const { reservePdfUploadUrls } = await importAction()
     const fileId = randomUUID()
     await reservePdfUploadUrls({
-      idempotencyKey: IDEMPOTENCY_KEY,
+      uploadSessionId: UPLOAD_SESSION_ID,
       files: [{ fileId, declaredBytes: 1000 }],
     })
     expect(mockPresignPutUrl).toHaveBeenCalledWith(
-      `src/${otherUserId}/${IDEMPOTENCY_KEY}/${fileId}.pdf`,
+      `src/${otherUserId}/${UPLOAD_SESSION_ID}/${fileId}.pdf`,
       'application/pdf',
       1000,
     )

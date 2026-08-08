@@ -40,9 +40,9 @@ async function importAction() {
 }
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
-const IDEMPOTENCY_KEY = '22222222-2222-4222-8222-222222222222'
+const UPLOAD_SESSION_ID = '22222222-2222-4222-8222-222222222222'
 const FILE_ID = '33333333-3333-4333-8333-333333333333'
-const OBJECT_KEY = `src/${USER_ID}/${IDEMPOTENCY_KEY}/${FILE_ID}.pdf`
+const OBJECT_KEY = `src/${USER_ID}/${UPLOAD_SESSION_ID}/${FILE_ID}.pdf`
 const DECLARED_BYTES = 1000
 
 function makeHandle(pageCount: number) {
@@ -50,7 +50,7 @@ function makeHandle(pageCount: number) {
 }
 
 const validInput = {
-  idempotencyKey: IDEMPOTENCY_KEY,
+  uploadSessionId: UPLOAD_SESSION_ID,
   fileId: FILE_ID,
   declaredBytes: DECLARED_BYTES,
 }
@@ -206,15 +206,15 @@ describe('finalizePdfSource', () => {
     expect(mockHeadObject).not.toHaveBeenCalled()
   })
 
-  it('非 uuid idempotencyKey → { ok: false }, headObject 呼出なし', async () => {
+  it('非 uuid uploadSessionId → { ok: false }, headObject 呼出なし', async () => {
     const { finalizePdfSource } = await importAction()
-    const r = await finalizePdfSource({ ...validInput, idempotencyKey: 'not-a-uuid' })
+    const r = await finalizePdfSource({ ...validInput, uploadSessionId: 'not-a-uuid' })
     expect(r.ok).toBe(false)
     expect(mockHeadObject).not.toHaveBeenCalled()
   })
 
   it(
-    '所有権 pin: key は authed userId + 検証済み idempotencyKey/fileId のみから' +
+    '所有権 pin: key は authed userId + 検証済み uploadSessionId/fileId のみから' +
       '構築される — 入力に紛れ込ませた key 系 field は無視される(Codex I7)',
     async () => {
       const { finalizePdfSource } = await importAction()
@@ -248,7 +248,7 @@ describe('finalizePdfSource', () => {
     const { finalizePdfSource } = await importAction()
     await finalizePdfSource(validInput)
     expect(mockHeadObject).toHaveBeenCalledWith(
-      `src/${otherUserId}/${IDEMPOTENCY_KEY}/${FILE_ID}.pdf`,
+      `src/${otherUserId}/${UPLOAD_SESSION_ID}/${FILE_ID}.pdf`,
     )
   })
 })

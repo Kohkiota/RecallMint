@@ -14,9 +14,13 @@ import { MAX_PDF_BYTES } from '../_lib/constants'
 // ②-4b T5: PUT 完了通知(design spec §2 / §4 D4 / §6 本線 1)。
 //
 // 無状態(DB 書込なし・spec §3) — 正常時は pageCount を保持しない。 key は
-// `reserve-pdf-upload.ts` と同じく認証済み userId + 検証済み idempotencyKey/
+// `reserve-pdf-upload.ts` と同じく認証済み userId + 検証済み uploadSessionId/
 // fileId から `sourcePdfObjectKey` が構築する(入力 schema に key 文字列 field
 // なし・Codex I7 所有権 pin)。
+//
+// uploadSessionId = **R2 namespace の同一性**(spec §3.1)。 submit action の
+// 別の同一性キー(論理 submit 試行の同一性・再試行では必ず新規)とは別物 —
+// 値を分離している理由は `reserve-pdf-upload.ts` と同じ(r5)。
 //
 // 単体 pageCount > OCR_MAX_PAGES or 解析不能(PdfParseError)の reject 時は、
 // 通知 handler がその場で対象 object を DELETE してから typed error(ActionResult
@@ -44,13 +48,13 @@ async function currentUserOrNull(): Promise<User | null> {
 }
 
 const finalizeInputSchema = z.object({
-  idempotencyKey: z.uuid({ version: 'v4' }),
+  uploadSessionId: z.uuid({ version: 'v4' }),
   fileId: z.uuid({ version: 'v4' }),
   declaredBytes: z.number().int().positive().max(MAX_PDF_BYTES),
 })
 
 export interface FinalizePdfSourceInput {
-  idempotencyKey: string
+  uploadSessionId: string
   fileId: string
   declaredBytes: number
 }
@@ -69,9 +73,9 @@ export async function finalizePdfSource(
   if (!parsed.success) {
     return { ok: false, error: '入力内容が正しくありません' }
   }
-  const { idempotencyKey, fileId, declaredBytes } = parsed.data
+  const { uploadSessionId, fileId, declaredBytes } = parsed.data
 
-  const objectKey = sourcePdfObjectKey(user.id, idempotencyKey, fileId)
+  const objectKey = sourcePdfObjectKey(user.id, uploadSessionId, fileId)
 
   // contentLength === declaredBytes の一致検証(Codex I5)。 declaredBytes は
   // zod で既に `≤ MAX_PDF_BYTES` を満たすため、一致が取れれば contentLength も
