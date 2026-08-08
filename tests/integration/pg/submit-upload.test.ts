@@ -21,6 +21,7 @@ import { and, eq } from 'drizzle-orm'
 import sharp from 'sharp'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { closeDb } from '@/lib/db'
 import {
   aiUsage,
@@ -60,9 +61,16 @@ vi.mock('@/lib/ops', () => ({
   notifyOps: mockNotifyOps,
   notifyWebhookError: vi.fn(),
 }))
-// spec §2: 新経路は source を R2 に置かない(request body のバイトのみを使う)。
-// R2 client の全 export を spy にして「1 度も呼ばれない」ことを pin する
-// (将来 submit-upload が R2 を import したらここが落ちる)。
+// spec §2: 新経路は source を R2 に置かない(画像は request body のバイトのみを
+// 使う)。R2 client の全 export を spy にしているが、**「1 度も呼ばれない」は
+// 画像のみ経路(orderManifest 不在)にのみ当てはまる主張**である点に注意
+// ([[lesson_single_point_claims_decay]] — 完全性の主張は適用範囲を書かないと
+// 黙って部分的に偽になる)。②-4b T7 以降、PDF 経路の pre-tx 層 2(spec D6)は
+// `headObject` を**正当に**呼ぶ(下記「PDF manifest 経路」describe が
+// `r2Spies.headObject.mockResolvedValue(...)` している)。呼ばれてよいのは
+// `headObject` のみ — 他の export(presignPutUrl/presignGetUrl/getObject/
+// putObject/deleteObject)は submit-upload.ts の責務外のままで、file 全体を通じて
+// 未使用のはず(unit 側 `submit-upload.test.ts` の regex pin と二重に担保)。
 vi.mock('@/lib/storage/r2', () => r2Spies)
 // S-2 以降 action は OCR phase(pipeline)まで走るため実 API を叩かせない
 // (CLAUDE.md AI 絶対ルール 3)。
@@ -77,6 +85,7 @@ import {
   submitUploadTx,
   type SubmitUploadFileMeta,
   type SubmitUploadInput,
+  type SubmitUploadPdfMeta,
 } from '@/app/(app)/app/upload/_actions/submit-upload'
 
 import { asTenant } from './setup/as-tenant'
@@ -145,6 +154,23 @@ function buildFormData(files: File[], idempotencyKey: string): FormData {
   fd.set('idempotencyKey', idempotencyKey)
   fd.set('mode', 'new')
   for (const f of files) fd.append('files', f)
+  return fd
+}
+
+// ②-4b T7: orderManifest(PDF 経路)を積んだ FormData(spec §3.4 の wire 契約)。
+function buildManifestFormData(
+  images: File[],
+  pdfEntries: SubmitUploadPdfMeta[],
+  idempotencyKey: string,
+  uploadSessionId: string,
+): FormData {
+  const fd = buildFormData(images, idempotencyKey)
+  const manifest = [
+    ...images.map((_, i) => ({ kind: 'image', fileIndex: i })),
+    ...pdfEntries.map((e) => ({ kind: 'pdf', ...e })),
+  ]
+  fd.set('orderManifest', JSON.stringify(manifest))
+  fd.set('uploadSessionId', uploadSessionId)
   return fd
 }
 
@@ -1035,6 +1061,186 @@ describe('submitUploadTx (S-1)', () => {
         operationId: result.operationId,
         errorCode: 'pipeline_unexpected_error',
       })
+    })
+  })
+
+  // --- (f) ②-4b T7: PDF manifest 経路の sentinel 値(spec D6) ---
+  describe('②-4b T7: PDF manifest 経路(sentinel 値)', () => {
+    function twoPdfFiles(prefix: string): SubmitUploadPdfMeta[] {
+      return [
+        { fileId: randomUUID(), filename: `${prefix}-1.pdf`, pageCount: 3, declaredBytes: 1000 },
+        { fileId: randomUUID(), filename: `${prefix}-2.pdf`, pageCount: 5, declaredBytes: 2000 },
+      ]
+    }
+
+    it('画像 + PDF 混在: fileType=pdf / pagesTotal=NULL / expectedSourceCount=0 sentinel', async () => {
+      const pdfFiles = twoPdfFiles('mix')
+      const input: SubmitUploadInput = {
+        idempotencyKey: 'idem-pdf-mix',
+        destination: { mode: 'new' },
+      }
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(tx, { id: userAId }, input, twoFiles('mix-img'), pdfFiles),
+      )
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+
+      const owner = getFixtureOwnerDb()
+      const docRows = await owner
+        .select({
+          fileType: sourceDocuments.fileType,
+          pagesTotal: sourceDocuments.pagesTotal,
+          filename: sourceDocuments.filename,
+          fileSizeBytes: sourceDocuments.fileSizeBytes,
+        })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, result.sourceDocumentId))
+      expect(docRows[0]?.fileType).toBe('pdf')
+      expect(docRows[0]?.pagesTotal).toBeNull()
+      // filename 合成(D3「単一=原名/複数=Aほか N件」・「先頭」= 画像優先):
+      // 画像 2 + PDF 2 = 合計 4 件。
+      expect(docRows[0]?.filename).toBe('mix-img-1.png ほか 3 件')
+      // fileSizeBytes = 画像 byteSize 合計(1000+2000)+ PDF declaredBytes 合計(1000+2000)。
+      expect(docRows[0]?.fileSizeBytes).toBe(6000)
+
+      const opRows = await owner
+        .select({ expectedSourceCount: uploadOperations.expectedSourceCount })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(opRows[0]?.expectedSourceCount).toBe(0)
+    })
+
+    it('PDF のみ(画像 0 件): fileType=pdf / pagesTotal=NULL / expectedSourceCount=0 / filename は PDF 先頭', async () => {
+      const pdfFiles = twoPdfFiles('pdfonly')
+      const input: SubmitUploadInput = {
+        idempotencyKey: 'idem-pdf-only',
+        destination: { mode: 'new' },
+      }
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(tx, { id: userAId }, input, [], pdfFiles),
+      )
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+      const owner = getFixtureOwnerDb()
+      const docRows = await owner
+        .select({
+          fileType: sourceDocuments.fileType,
+          pagesTotal: sourceDocuments.pagesTotal,
+          filename: sourceDocuments.filename,
+        })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, result.sourceDocumentId))
+      expect(docRows[0]?.fileType).toBe('pdf')
+      expect(docRows[0]?.pagesTotal).toBeNull()
+      expect(docRows[0]?.filename).toBe('pdfonly-1.pdf ほか 1 件')
+
+      const opRows = await owner
+        .select({ expectedSourceCount: uploadOperations.expectedSourceCount })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(opRows[0]?.expectedSourceCount).toBe(0)
+    })
+
+    it('画像のみ(pdfFiles 省略)は従来値のまま不変(fileType=image / pagesTotal=枚数 / expectedSourceCount=枚数)', async () => {
+      // 既存 test(本 describe 冒頭の「creates operation…」)が同じ保証を既に
+      // カバーしているが、pdfFiles 引数追加後も default `[]` 経由で完全に
+      // 同一の値になることをここで明示 pin する(brief 完了条件「画像のみ経路の
+      // 従来値が不変であること」)。
+      const input: SubmitUploadInput = {
+        idempotencyKey: 'idem-img-unchanged',
+        destination: { mode: 'new' },
+      }
+      const result = await asTenant(userAId, (tx) =>
+        submitUploadTx(tx, { id: userAId }, input, twoFiles('unchanged')),
+      )
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+      const owner = getFixtureOwnerDb()
+      const docRows = await owner
+        .select({ fileType: sourceDocuments.fileType, pagesTotal: sourceDocuments.pagesTotal })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, result.sourceDocumentId))
+      expect(docRows[0]?.fileType).toBe('image')
+      expect(docRows[0]?.pagesTotal).toBe(2)
+      const opRows = await owner
+        .select({ expectedSourceCount: uploadOperations.expectedSourceCount })
+        .from(uploadOperations)
+        .where(eq(uploadOperations.id, result.operationId))
+      expect(opRows[0]?.expectedSourceCount).toBe(2)
+    })
+  })
+
+  // --- (g) ②-4b T7: 層 2 却下(spec D6・行ゼロ) ---
+  describe('②-4b T7: layer 2 却下(行ゼロ)', () => {
+    it('画像枚数 + Σecho pageCount > OCR_MAX_PAGES は tx を開かず、exam/source_document/upload_operation 行ゼロ(HEAD fan-out 前に却下)', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+      const uploadSessionId = randomUUID()
+      // fix round 2(Codex Important): headObject は mock しない — 層 2 の判定が
+      // HEAD fan-out より前にあることをこの test 自体が強制する(呼ばれたら
+      // mock 未設定で reject し見逃さない)。
+
+      const fd = buildManifestFormData(
+        [],
+        [
+          {
+            fileId: randomUUID(),
+            filename: 'big.pdf',
+            pageCount: OCR_MAX_PAGES + 1,
+            declaredBytes: 1000,
+          },
+        ],
+        'idem-layer2-reject',
+        uploadSessionId,
+      )
+      const result = await submitUpload(fd)
+      expect(result.outcome).toBe('invalid_input')
+      expect(r2Spies.headObject).not.toHaveBeenCalled()
+
+      await expectNoOperationsOrDocs(userAId)
+      const examRows = await getFixtureOwnerDb()
+        .select({ id: exams.id })
+        .from(exams)
+        .where(eq(exams.userId, userAId))
+      expect(examRows).toHaveLength(0)
+      expect(mockCallGemini).not.toHaveBeenCalled()
+    })
+
+    it('層 2 の境界(合計ちょうど OCR_MAX_PAGES)は受理され、pagesTotal=NULL/expectedSourceCount=0 で行が作られる', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: userAId })
+      const uploadSessionId = randomUUID()
+      r2Spies.headObject.mockResolvedValue({ exists: true, contentLength: 1000 })
+
+      const fd = buildManifestFormData(
+        [],
+        [
+          {
+            fileId: randomUUID(),
+            filename: 'exact.pdf',
+            pageCount: OCR_MAX_PAGES,
+            declaredBytes: 1000,
+          },
+        ],
+        'idem-layer2-boundary',
+        uploadSessionId,
+      )
+      const result = await submitUpload(fd)
+      if (result.outcome !== 'accepted') {
+        throw new Error(`expected accepted, got ${result.outcome}`)
+      }
+
+      const owner = getFixtureOwnerDb()
+      const docRows = await owner
+        .select({
+          fileType: sourceDocuments.fileType,
+          pagesTotal: sourceDocuments.pagesTotal,
+        })
+        .from(sourceDocuments)
+        .where(eq(sourceDocuments.id, result.sourceDocumentId))
+      expect(docRows[0]?.fileType).toBe('pdf')
+      expect(docRows[0]?.pagesTotal).toBeNull()
     })
   })
 })

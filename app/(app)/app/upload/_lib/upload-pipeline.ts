@@ -87,6 +87,30 @@ export type UploadPipelineFile = {
   filename: string
 }
 
+// ②-4b T7(spec §3.4/D6/D7・T8 の申し送り §13 r5 表): submit-upload.ts の層 2
+// (pre-tx echo 検証)を通過した PDF manifest の 1 冊分。PDF 本体バイトはこの
+// invocation に無い(R2 直 PUT 済)— T8 の count/render phase が
+// `sourcePdfObjectKey(userId, uploadSessionId, fileId)` で GET し直す。
+// **T7 時点では受け取るだけで未使用**(型を通すためのプレースホルダ)。
+export type UploadPipelineSourcePdf = {
+  fileId: string
+  filename: string
+  pageCount: number
+  declaredBytes: number
+}
+
+// ②-4b T7 fix round 1(canonical review Critical): `files`(画像バイト)と
+// `sourcePdfManifest`(PDF echo)は disjoint な 2 配列で、画像/PDF が混在した
+// submit の **元の選択順(spec §2「manifest 順で合流」/ D3「Gemini parts 順 =
+// 選択順を維持」)を復元する手段を失う**。orderManifest を kind で filter した
+// 後にはその順序情報は存在しないため、filter する**前**の manifest 順をそのまま
+// 写した配列を境界の向こうへ渡す。T8 はこれで `files`/`sourcePdfManifest` を
+// manifest 順に zip し直せる。legacy(画像のみ・orderManifest 不在)経路では
+// 空配列でよい(選択順 = FormData `files` の到着順のまま・挙動不変)。
+export type UploadPipelineSourceOrderEntry =
+  | { kind: 'image'; fileIndex: number }
+  | { kind: 'pdf'; fileId: string }
+
 // decode 検証で確定した source ごとのメタ。width/height は crop(S-3)が
 // box_2d(0-1000 正規化座標)を実ピクセルへ戻す際の分母になるため、decode の
 // 場で確定させてここに保持する(decode 済み pixel 自体は verifyImageBytes の
@@ -136,7 +160,22 @@ export async function runUploadPipeline(
   leaseVersion: number,
   files: UploadPipelineFile[],
   deadlineAt: Date,
+  // ②-4b T7 が渡す PDF manifest + R2 namespace(spec §13 r5 表)。**T7 時点では
+  // 受け取るだけで未使用** — T8(count/render phase の実装)がここを消費する。
+  // 既定 `[]`/`undefined` により既存呼出元(images-only・upload-pipeline.test.ts /
+  // tests/integration/pg/upload-pipeline.test.ts)は無改変で通る。
+  sourcePdfManifest: UploadPipelineSourcePdf[] = [],
+  uploadSessionId?: string,
+  // ②-4b T7 fix round 1(canonical Critical): 混在 submit の manifest 順(spec §2/
+  // D3)。**T7 時点では受け取るだけで未使用**(型を通すためのプレースホルダ・
+  // T8 が files/sourcePdfManifest を zip し直すのに使う)。
+  sourceOrder: UploadPipelineSourceOrderEntry[] = [],
 ): Promise<void> {
+  // eslint 用の明示的な no-op 参照(T8 実装までの一時措置)。値そのものは使わない —
+  // 未使用引数として扱われないよう void で捨てる(brief: 「受け取るだけで未使用」)。
+  void sourcePdfManifest
+  void uploadSessionId
+  void sourceOrder
   const startedAt = Date.now()
   try {
     await runOcrPhase(userId, refs, leaseVersion, files, deadlineAt)

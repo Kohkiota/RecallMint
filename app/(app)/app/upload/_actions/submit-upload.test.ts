@@ -7,6 +7,7 @@
 //
 // tx 本体(advisory lock / 冪等 replay / live-op gate / daily cap / 行作成)の
 // 検証は実 PG が要るため tests/integration/pg/submit-upload.test.ts が担う。
+import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -17,6 +18,8 @@ import { UnauthenticatedError } from '@/lib/auth/errors'
 import { MAX_ASSET_BYTES } from '@/app/(app)/app/exams/[id]/_actions/asset-limits'
 import {
   LEASE_TTL_MS,
+  MAX_PDF_BYTES,
+  MAX_PDF_TOTAL_BYTES,
   TOTAL_UPLOAD_LIMIT_BYTES,
   UPLOAD_PIPELINE_BUDGET_MS,
 } from '../_lib/constants'
@@ -29,6 +32,7 @@ const {
   mockAfter,
   mockRecordIntegrationFailure,
   mockLoggerError,
+  mockHeadObject,
 } = vi.hoisted(() => ({
   mockGetCurrentUser: vi.fn(),
   mockWithTenantTx: vi.fn(),
@@ -37,6 +41,7 @@ const {
   mockAfter: vi.fn(),
   mockRecordIntegrationFailure: vi.fn(),
   mockLoggerError: vi.fn(),
+  mockHeadObject: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: mockGetCurrentUser }))
@@ -53,6 +58,10 @@ vi.mock('@/lib/integration-failures', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: mockLoggerError, info: vi.fn() },
 }))
+// ②-4b T7: submit-upload.ts が R2 に触れるのは PDF 経路の headObject(pre-tx 検証・
+// spec D6 層 2)だけ。他の export は無いダミーにし、誤って追加 import されたら
+// 実行時に落ちて気付ける形にする(regex pin と二重に担保)。
+vi.mock('@/lib/storage/r2', () => ({ headObject: mockHeadObject }))
 // pipeline 本体(S-2/S-3)は tests/integration/pg/upload-pipeline.test.ts で検証する。
 // ここで見るのは action → pipeline の受け渡し契約だけ。
 vi.mock('../_lib/upload-pipeline', () => ({
@@ -102,6 +111,66 @@ function buildFormData(
   return fd
 }
 
+// ---------------------------------------------------------------------------
+// ②-4b T7: orderManifest 分岐(PDF 経路)の unit test 用 helper。
+// ---------------------------------------------------------------------------
+const UPLOAD_SESSION_ID = '11111111-1111-4111-8111-111111111111'
+const PDF_FILE_ID_A = '22222222-2222-4222-8222-222222222222'
+const PDF_FILE_ID_B = '33333333-3333-4333-8333-333333333333'
+
+type ManifestEntry =
+  | { kind: 'image'; fileIndex: number }
+  | {
+      kind: 'pdf'
+      fileId: string
+      filename: string
+      pageCount: number
+      declaredBytes: number
+    }
+
+function pdfManifestEntry(
+  overrides: Partial<Extract<ManifestEntry, { kind: 'pdf' }>> = {},
+): Extract<ManifestEntry, { kind: 'pdf' }> {
+  return {
+    kind: 'pdf',
+    fileId: PDF_FILE_ID_A,
+    filename: 'a.pdf',
+    pageCount: 3,
+    declaredBytes: 1000,
+    ...overrides,
+  }
+}
+
+// orderManifest(JSON 文字列)+ uploadSessionId を積んだ FormData(spec §3.4 の
+// wire 契約どおり両方 top-level field)。`uploadSessionId: null` を渡すと
+// field 自体を送らない(未送信のケースを作るため)。
+function buildManifestFormData(
+  images: File[],
+  manifest: ManifestEntry[],
+  opts: {
+    idempotencyKey?: string | null
+    mode?: string | null
+    examId?: string
+    uploadSessionId?: string | null
+  } = {},
+): FormData {
+  const fd = buildFormData(images, opts)
+  fd.set('orderManifest', JSON.stringify(manifest))
+  if (opts.uploadSessionId !== null) {
+    fd.set('uploadSessionId', opts.uploadSessionId ?? UPLOAD_SESSION_ID)
+  }
+  return fd
+}
+
+// headObject の既定成功応答: manifest 中の全 pdf entry の declaredBytes と一致させる。
+function mockHeadObjectVerifiedFor(pdfEntries: Extract<ManifestEntry, { kind: 'pdf' }>[]): void {
+  mockHeadObject.mockImplementation(async (key: string) => {
+    const entry = pdfEntries.find((e) => key.endsWith(`/${e.fileId}.pdf`))
+    if (!entry) return { exists: false, contentLength: null }
+    return { exists: true, contentLength: entry.declaredBytes }
+  })
+}
+
 function acceptedTx(
   overrides: { replayed?: boolean; leaseVersion?: number } = {},
 ): Record<string, unknown> {
@@ -135,6 +204,7 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     mockRecordIntegrationFailure.mockReset()
     mockRecordIntegrationFailure.mockResolvedValue(undefined)
     mockLoggerError.mockReset()
+    mockHeadObject.mockReset()
     afterTasks = []
     mockAfter.mockReset()
     mockAfter.mockImplementation((task: () => unknown) => {
@@ -269,6 +339,9 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
     const deadlineMs = (deadlineAt as Date).getTime()
     expect(deadlineMs).toBeGreaterThanOrEqual(before + UPLOAD_PIPELINE_BUDGET_MS)
     expect(deadlineMs).toBeLessThanOrEqual(Date.now() + UPLOAD_PIPELINE_BUDGET_MS)
+    // 画像のみ経路(orderManifest 不在)は sourceOrder が空(spec §2 の manifest 順
+    // 復元は PDF 経路にのみ要る・fix round 1)。
+    expect(mockRunUploadPipeline.mock.calls[0][7]).toEqual([])
   })
 
   it('Buffer 実体化が失敗しても 500 化せず terminal 化に落とす(no-throw envelope)', async () => {
@@ -322,6 +395,267 @@ describe('submitUpload — 入力検証(tx 手前)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// ②-4b T7: orderManifest 分岐(PDF 経路)。spec §3.4 / D6 / D7。
+// ---------------------------------------------------------------------------
+describe('submitUpload — orderManifest 分岐(PDF 経路・T7)', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset()
+    mockWithTenantTx.mockReset()
+    mockRunUploadPipeline.mockReset()
+    mockRunUploadPipeline.mockResolvedValue(undefined)
+    mockAbsorbUploadPipelineFailure.mockReset()
+    mockAbsorbUploadPipelineFailure.mockResolvedValue(undefined)
+    mockRecordIntegrationFailure.mockReset()
+    mockRecordIntegrationFailure.mockResolvedValue(undefined)
+    mockLoggerError.mockReset()
+    mockHeadObject.mockReset()
+    afterTasks = []
+    mockAfter.mockReset()
+    mockAfter.mockImplementation((task: () => unknown) => {
+      afterTasks.push(task)
+    })
+    mockGetCurrentUser.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000001' })
+  })
+
+  describe('zod strict 検証', () => {
+    it('uploadSessionId が uuid v4 でない → invalid_input(headObject を呼ばない)', async () => {
+      const entry = pdfManifestEntry()
+      mockHeadObjectVerifiedFor([entry])
+      const error = await expectInvalidInput(
+        buildManifestFormData([], [entry], { uploadSessionId: 'not-a-uuid' }),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+
+    it('PDF fileId が uuid v4 でない → invalid_input', async () => {
+      const error = await expectInvalidInput(
+        buildManifestFormData([], [pdfManifestEntry({ fileId: 'not-a-uuid' })]),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+
+    it('pageCount が 0 → invalid_input(pageCount ≥ 1)', async () => {
+      const error = await expectInvalidInput(
+        buildManifestFormData([], [pdfManifestEntry({ pageCount: 0 })]),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+
+    it('declaredBytes が MAX_PDF_BYTES 超過 → invalid_input', async () => {
+      const error = await expectInvalidInput(
+        buildManifestFormData(
+          [],
+          [pdfManifestEntry({ declaredBytes: MAX_PDF_BYTES + 1 })],
+        ),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+
+    it('空 manifest([])→ invalid_input', async () => {
+      const error = await expectInvalidInput(buildManifestFormData([], []))
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+
+    // fix round 2(Codex Important・controller 実在確定): 件数上限が無いと、
+    // 却下確定の manifest(合計ページ超過)でも headObject が entry 数ぶん fan-out
+    // する増幅ベクタになる。schema の `.max(OCR_MAX_PAGES)` がここで発火し、
+    // headObject を 1 回も呼ばずに却下されることを pin する。
+    it(`entry ${OCR_MAX_PAGES + 1} 件の manifest → invalid_input(headObject を 1 回も呼ばない)`, async () => {
+      const entries = Array.from({ length: OCR_MAX_PAGES + 1 }, () =>
+        pdfManifestEntry({ fileId: randomUUID(), filename: 'p.pdf', pageCount: 1, declaredBytes: 1 }),
+      )
+      const error = await expectInvalidInput(buildManifestFormData([], entries))
+      expect(error).toContain('入力内容が正しくありません')
+      expect(mockHeadObject).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('完全性(Codex I6)', () => {
+    it('同一 fileId の PDF entry が 2 件 → invalid_input(fileId 重複禁止)', async () => {
+      const error = await expectInvalidInput(
+        buildManifestFormData(
+          [],
+          [pdfManifestEntry(), pdfManifestEntry({ filename: 'b.pdf' })],
+        ),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+    })
+
+    it('image fileIndex が重複 → invalid_input(全単射)', async () => {
+      const files = [imageFile('a.png', 100), imageFile('b.png', 100)]
+      const error = await expectInvalidInput(
+        buildManifestFormData(files, [
+          { kind: 'image', fileIndex: 0 },
+          { kind: 'image', fileIndex: 0 },
+        ]),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+    })
+
+    it('image fileIndex に欠番(FormData files 件数と manifest 件数が不一致)→ invalid_input', async () => {
+      const files = [imageFile('a.png', 100), imageFile('b.png', 100), imageFile('c.png', 100)]
+      const error = await expectInvalidInput(
+        buildManifestFormData(files, [
+          { kind: 'image', fileIndex: 0 },
+          { kind: 'image', fileIndex: 1 },
+        ]),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+    })
+
+    it('image fileIndex が範囲外 → invalid_input', async () => {
+      const files = [imageFile('a.png', 100), imageFile('b.png', 100)]
+      const error = await expectInvalidInput(
+        buildManifestFormData(files, [
+          { kind: 'image', fileIndex: 0 },
+          { kind: 'image', fileIndex: 5 },
+        ]),
+      )
+      expect(error).toContain('入力内容が正しくありません')
+    })
+  })
+
+  it('Σ declaredBytes が MAX_PDF_TOTAL_BYTES 超過 → invalid_input(spec D7 r4)', async () => {
+    // 各 entry は MAX_PDF_BYTES ちょうど(per-entry zod 上限の境界・pass)。
+    // 5 件 × 50MB = 250MB > MAX_PDF_TOTAL_BYTES(200MB)で Σ 上限だけが発火する。
+    const entries = Array.from({ length: 5 }, (_, i) =>
+      pdfManifestEntry({
+        fileId: `4444444${i}-4444-4444-8444-444444444444`,
+        filename: `p${i}.pdf`,
+        declaredBytes: MAX_PDF_BYTES,
+      }),
+    )
+    expect(entries.reduce((s, e) => s + e.declaredBytes, 0)).toBeGreaterThan(MAX_PDF_TOTAL_BYTES)
+    const error = await expectInvalidInput(buildManifestFormData([], entries))
+    expect(error).toContain('合計サイズが上限を超えています')
+    expect(mockHeadObject).not.toHaveBeenCalled()
+  })
+
+  describe('headObject 検証(tx 外)', () => {
+    it('R2 に実在しない(exists:false)→ invalid_input', async () => {
+      const entry = pdfManifestEntry()
+      mockHeadObject.mockResolvedValue({ exists: false, contentLength: null })
+      const error = await expectInvalidInput(buildManifestFormData([], [entry]))
+      expect(error).toContain('アップロードの検証に失敗しました')
+      expect(mockHeadObject).toHaveBeenCalledTimes(1)
+    })
+
+    it('contentLength が declaredBytes と不一致 → invalid_input', async () => {
+      const entry = pdfManifestEntry({ declaredBytes: 1000 })
+      mockHeadObject.mockResolvedValue({ exists: true, contentLength: 999 })
+      const error = await expectInvalidInput(buildManifestFormData([], [entry]))
+      expect(error).toContain('アップロードの検証に失敗しました')
+    })
+  })
+
+  it('層 2 却下: 画像枚数 + Σecho pageCount > OCR_MAX_PAGES は行ゼロで却下(tx 未到達・HEAD fan-out 前に却下)', async () => {
+    // fix round 2(Codex Important): headObject は mock しない — 層 2 の判定が
+    // HEAD より前にあることをこの test 自体が強制する(呼ばれたら mock 未設定で
+    // 例外化 = 見逃さない)。
+    const entry = pdfManifestEntry({ pageCount: OCR_MAX_PAGES + 1 })
+    const error = await expectInvalidInput(buildManifestFormData([], [entry]))
+    expect(error).toContain(`合計ページ数は ${OCR_MAX_PAGES} ページまでです`)
+    expect(mockHeadObject).not.toHaveBeenCalled()
+  })
+
+  it('境界(層 2 の合計ちょうど OCR_MAX_PAGES)は tx に到達する', async () => {
+    const entry = pdfManifestEntry({ pageCount: OCR_MAX_PAGES - 1 })
+    mockHeadObjectVerifiedFor([entry])
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    const files = [imageFile('a.png', 100)]
+    const result = await submitUpload(
+      buildManifestFormData(files, [
+        { kind: 'image', fileIndex: 0 },
+        entry,
+      ]),
+    )
+    expect(result.outcome).toBe('accepted')
+    expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+  })
+
+  it('画像 + PDF 混在(有効 manifest)は tx に到達し、pipeline へ pdfFiles + uploadSessionId を渡す', async () => {
+    const pdfA = pdfManifestEntry({ fileId: PDF_FILE_ID_A, filename: 'a.pdf', pageCount: 3 })
+    const pdfB = pdfManifestEntry({ fileId: PDF_FILE_ID_B, filename: 'b.pdf', pageCount: 2 })
+    mockHeadObjectVerifiedFor([pdfA, pdfB])
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx({ leaseVersion: 4 }))
+    const files = [imageFile('a.png', 100)]
+
+    const result = await submitUpload(
+      buildManifestFormData(files, [
+        { kind: 'image', fileIndex: 0 },
+        pdfA,
+        pdfB,
+      ]),
+    )
+    expect(result.outcome).toBe('accepted')
+    expect(mockHeadObject).toHaveBeenCalledTimes(2)
+
+    await runAfterTasks()
+    expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
+    const call = mockRunUploadPipeline.mock.calls[0]
+    // [userId, refs, leaseVersion, files, deadlineAt, sourcePdfManifest, uploadSessionId, sourceOrder]
+    expect(call[5]).toEqual([
+      { fileId: PDF_FILE_ID_A, filename: 'a.pdf', pageCount: 3, declaredBytes: 1000 },
+      { fileId: PDF_FILE_ID_B, filename: 'b.pdf', pageCount: 2, declaredBytes: 1000 },
+    ])
+    expect(call[6]).toBe(UPLOAD_SESSION_ID)
+    // manifest 順(image, pdfA, pdfB)がそのまま写っていること(fix round 1 Critical)。
+    expect(call[7]).toEqual([
+      { kind: 'image', fileIndex: 0 },
+      { kind: 'pdf', fileId: PDF_FILE_ID_A },
+      { kind: 'pdf', fileId: PDF_FILE_ID_B },
+    ])
+  })
+
+  // fix round 1(canonical Critical): `files`(画像)/`pdfFiles`(PDF)は disjoint な
+  // 2 配列で、画像/PDF が交互に混在した選択順を復元する手段を持たない。境界へ渡す
+  // `sourceOrder` が manifest の到着順そのままであることをこの test が pin する
+  // (spec §2「manifest 順で合流」/ D3「Gemini parts 順 = 選択順を維持」)。
+  it('画像 → PDF → 画像 → PDF の混在順は sourceOrder に manifest 順そのまま反映される', async () => {
+    const PDF_FILE_ID_C = '44444444-4444-4444-8444-444444444444'
+    const pdfA = pdfManifestEntry({ fileId: PDF_FILE_ID_A, filename: 'a.pdf' })
+    const pdfC = pdfManifestEntry({ fileId: PDF_FILE_ID_C, filename: 'c.pdf' })
+    mockHeadObjectVerifiedFor([pdfA, pdfC])
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    const files = [imageFile('img0.png', 100), imageFile('img1.png', 100)]
+
+    const result = await submitUpload(
+      buildManifestFormData(files, [
+        { kind: 'image', fileIndex: 0 },
+        pdfA,
+        { kind: 'image', fileIndex: 1 },
+        pdfC,
+      ]),
+    )
+    expect(result.outcome).toBe('accepted')
+
+    await runAfterTasks()
+    expect(mockRunUploadPipeline).toHaveBeenCalledTimes(1)
+    const sourceOrder = mockRunUploadPipeline.mock.calls[0][7]
+    expect(sourceOrder).toEqual([
+      { kind: 'image', fileIndex: 0 },
+      { kind: 'pdf', fileId: PDF_FILE_ID_A },
+      { kind: 'image', fileIndex: 1 },
+      { kind: 'pdf', fileId: PDF_FILE_ID_C },
+    ])
+  })
+
+  it('PDF のみ(画像 0 件)提出は tx に到達する(files.length===0 の早期 reject をしない)', async () => {
+    const entry = pdfManifestEntry()
+    mockHeadObjectVerifiedFor([entry])
+    mockWithTenantTx.mockResolvedValueOnce(acceptedTx())
+    const result = await submitUpload(buildManifestFormData([], [entry]))
+    expect(result.outcome).toBe('accepted')
+    expect(mockWithTenantTx).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // S-4: after() 化(即応答 + 本処理は応答後)
 // ---------------------------------------------------------------------------
 describe('submitUpload — after() 境界(S-4)', () => {
@@ -335,6 +669,7 @@ describe('submitUpload — after() 境界(S-4)', () => {
     mockRecordIntegrationFailure.mockReset()
     mockRecordIntegrationFailure.mockResolvedValue(undefined)
     mockLoggerError.mockReset()
+    mockHeadObject.mockReset()
     afterTasks = []
     mockAfter.mockReset()
     mockAfter.mockImplementation((task: () => unknown) => {
@@ -445,13 +780,25 @@ describe('submitUpload — after() 境界(S-4)', () => {
   })
 })
 
-describe('submit-upload.ts は R2 module を import しない(spec §2: source は R2 に置かない)', () => {
-  it('source 上に @/lib/storage/r2 への import が存在しない', () => {
+// ②-4b T7: 画像経路は R2 を経由しない(spec §2)が、PDF 経路の層 2 は pre-tx の
+// HEAD 検証(spec D6)のため R2 に触れる必要がある。「一切 import しない」pin は
+// もう成立しないため、「許可 import は headObject のみ」pin へ置換する(brief
+// 「regex pin の置換」)— PUT/GET/DELETE を新たに import したら本 test が落ちる。
+describe('submit-upload.ts の R2 import は headObject のみ(spec D6 層 2 の HEAD 検証以外は R2 に触れない)', () => {
+  it('@/lib/storage/r2 からの import 節が headObject 以外を含まない', () => {
     const source = readFileSync(
       path.resolve(import.meta.dirname, 'submit-upload.ts'),
       'utf8',
     )
-    expect(source).not.toMatch(/from\s+['"][^'"]*lib\/storage\/r2['"]/)
+    const match = source.match(
+      /import\s*\{([^}]*)\}\s*from\s*['"][^'"]*lib\/storage\/r2['"]/,
+    )
+    expect(match).not.toBeNull()
+    const importedNames = match![1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    expect(importedNames).toEqual(['headObject'])
   })
 })
 
