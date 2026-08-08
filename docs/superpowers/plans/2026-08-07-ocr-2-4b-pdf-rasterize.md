@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development(task 単位 fresh subagent + task 間 review)。
 
 **Goal:** PDF を R2 一時保存 + server WASM rasterize で既存 OCR pipeline(不変)に合流させる。
-**Spec(凍結)**: `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(r3 確定)。仕様変更が要る場合は停止して OT。
+**Spec(凍結)**: `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(**r5 確定**)。仕様変更が要る場合は停止して OT。
 **調査正本**: `docs/audit/2026-08-07-ocr-2-4b-*.md` 3 本。
 
 ## Global Constraints(全 task 共通・task からは参照のみ)
@@ -34,7 +34,7 @@
 ### Task 3: 基盤 pure 層(key builder / 定数 / r2 timeout / catalog)
 
 - 目的: 後続 task が乗る純関数と定数(spec §3 / D7 / D8 / §6)。
-- 制約: `lib/media/source-object-key.ts` 新規 — `sourcePdfObjectKey(userId: string, idempotencyKey: string, fileId: string): string`。3 引数とも uuid v4 形状検証、不一致は throw(path injection 遮断)。`_lib/constants.ts` に `MAX_PDF_BYTES` / `MAX_PDF_TOTAL_BYTES` / `MAX_RENDERED_WEBP_TOTAL_BYTES`(3 つとも暫定・実測後見直しコメント)。`lib/storage/r2.ts` の `getObject` に `opts?: { timeoutMs?: number }`(既定 10s 不変・呼出側非破壊)。`lib/integration-failures.ts` catalog に `r2_source_delete`(§6 本線 2 の記帳先・`r2_gc_delete` の書式に倣う)。
+- 制約: `lib/media/source-object-key.ts` 新規 — `sourcePdfObjectKey(userId: string, uploadSessionId: string, fileId: string): string`(r5 改名・`0b22686`)。3 引数とも uuid v4 形状検証、不一致は throw(path injection 遮断)。`_lib/constants.ts` に `MAX_PDF_BYTES` / `MAX_PDF_TOTAL_BYTES` / `MAX_RENDERED_WEBP_TOTAL_BYTES`(3 つとも暫定・実測後見直しコメント)。`lib/storage/r2.ts` の `getObject` に `opts?: { timeoutMs?: number }`(既定 10s 不変・呼出側非破壊)。`lib/integration-failures.ts` catalog に `r2_source_delete`(§6 本線 2 の記帳先・`r2_gc_delete` の書式に倣う)。
 - 完了条件: unit(key 形状 + 非 uuid reject。**red = 検証を 1 つずつ外して fail 実証**)+ 既存 r2/catalog test green + `feat(ocr)` [reviewed]。
 
 ### Task 4: `pdf-rasterize` module
