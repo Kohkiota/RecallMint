@@ -189,6 +189,14 @@ spec / plan は fixture の具体的な中身に非言及(page count や寸法�
 | 単一 40 ページ文書のメモリ | **未測定のまま**(spec 記載どおり 5p/8p の反復調査止まり) |
 | lifecycle maxAge 秒指定が実 API で受理されるか | **未確認**。lifecycle rule 自体が **未設定**(OT 作業・spec §12・harness.md にも明記した外部設定) |
 
+### close §0(terminal 経路の出口 DELETE が実際に走るか)= **解消(2026-08-08)**
+
+失敗(terminal)経路の外周 `finally` → `deleteSourceKeys` が R2 source を実削除しているかは
+本クローズ時点では未確定だった(初回 stg smoke は client の自動再 PUT `retryPdfSession` と
+削除が同数の増分を作り INCONCLUSIVE)。stg 再実測で **`page_limit_exceeded` terminal の
+source 6 本が submit の約 23 秒後に 0 本へ収束**することを確認し、DELETE 成功が確定した。
+記録 = `2026-08-08-ocr-2-4b-close-s0-terminal-delete.md`。
+
 ### review で park された Minor(各 task report / ledger より)
 
 - T1: probe route が識別を gating 以外に使わない(意図どおり)/ 埋込み PDF の xref offset に自動検査なし(T8 で probe 自体を削除済 = 解消)
