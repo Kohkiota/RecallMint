@@ -12,14 +12,12 @@
 export const MAX_IMAGE_FILE_MB = 0.5
 export const MAX_IMAGE_WIDTH_OR_HEIGHT = 2048
 
-// 合計 (圧縮後画像 + PDF 原本) の上限。 Vercel platform body 上限 4.5MB + Next.js
+// submitUpload の FormData body 上限。 Vercel platform body 上限 4.5MB + Next.js
 // `bodySizeLimit: '4.5mb'` 設定 (next.config.ts) と整合させた client cap。
-// 安全マージンを取り 4MB。
+// 安全マージンを取り 4MB。 ②-4b: PDF は R2 直 PUT で body を経由しない(バイトは
+// FormData に載らず orderManifest でメタデータのみ運ぶ)ため、 この上限は
+// **圧縮後画像 entry のみ**が対象(PDF バイトは含まない)。
 export const TOTAL_UPLOAD_LIMIT_MB = 4
-
-// PDF 1 file の page 数上限 (per-file 上限、 per-upload 合計上限 OCR_MAX_PAGES とは別軸)。
-// 超過時は該当ファイルを error 表示し submit 不可にする。
-export const MAX_PDF_PAGES = 40
 
 // 各定数の bytes 換算 (MB は 1_000_000、 1024 系統一しない 平易化重視)。
 export const MB = 1_000_000
@@ -30,6 +28,11 @@ export const TOTAL_UPLOAD_LIMIT_BYTES = TOTAL_UPLOAD_LIMIT_MB * MB
 // (finalize-pdf-source)の HEAD 再検証の両方で使う。 商品仕様の冊数上限ではなく
 // システム保護値。 暫定 — 実測後見直し。
 export const MAX_PDF_BYTES = 50 * MB
+
+// ②-4b Task 6: PDF 直 PUT(browser → R2)の timeout。 外部 fetch は
+// AbortSignal.timeout 必須の repo 慣習(lib/media/upload.ts の画像直 PUT と同型)。
+// PDF は画像より大きい(≤ MAX_PDF_BYTES)ため画像 PUT と同じ値を流用(暫定)。
+export const PDF_PUT_TIMEOUT_MS = 60_000
 
 // ②-4b: PDF batch 合計(declaredBytes の Σ)上限(spec D7 r4)。 reserve と
 // submit pre-tx の両方で検証する。 暫定 — 実測後見直し。

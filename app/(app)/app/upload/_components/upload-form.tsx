@@ -15,14 +15,17 @@ import {
   DOC_STATUS_POLL_MAX_FETCH_FAILURES,
   MAX_IMAGE_FILE_MB,
   MAX_IMAGE_WIDTH_OR_HEIGHT,
-  MAX_PDF_PAGES,
+  MAX_PDF_BYTES,
+  MB,
+  PDF_PUT_TIMEOUT_MS,
   TOTAL_UPLOAD_LIMIT_BYTES,
   TOTAL_UPLOAD_LIMIT_MB,
   UPLOAD_INTERRUPTED_NOTICE,
   UPLOAD_PENDING_NOTICE,
 } from '../_lib/constants'
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
-import { pdfPageCount } from '../_lib/pdf-page-count'
+import { reservePdfUploadUrls } from '../_actions/reserve-pdf-upload'
+import { finalizePdfSource } from '../_actions/finalize-pdf-source'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
   type ProcessUploadErrorCode,
@@ -49,8 +52,13 @@ export type Destination =
   | { mode: 'new' }
   | { mode: 'existing'; examId: string }
 
-// 個別 file の処理状態。 'processing' = 圧縮 / page count 解析中、
-// 'ready' = 投入可、 'error' = 上限超過 / 解析失敗で使用不可。
+// 個別 file の処理状態。
+// image: 'processing' = 圧縮中、 'ready' = 投入可、 'error' = 解析失敗で使用不可
+//   (**従来どおり**・spec D5)。
+// pdf: 'uploading'(presign → R2 直 PUT 中)→ 'counting'(finalizePdfSource 往復中)
+//   → 'ready'(pageCount 確定)/ 'error'(PUT 失敗 / 0 ページ / 40 超 / parse 失敗)。
+// pdf の fileId は `id` を再利用する(reserve/finalize action へそのまま渡す・
+// uuid v4 は handleAdd の generateId() が発行)。
 type FileEntry =
   | { id: string; kind: 'image'; file: File; thumbUrl: string; originalSize: number; status: 'ready' }
   | {
@@ -62,9 +70,48 @@ type FileEntry =
       status: 'processing'
     }
   | { id: string; kind: 'image'; file: File; thumbUrl?: string; originalSize: number; status: 'error'; error: string }
+  | { id: string; kind: 'pdf'; file: File; originalSize: number; status: 'uploading' }
+  | { id: string; kind: 'pdf'; file: File; originalSize: number; status: 'counting' }
   | { id: string; kind: 'pdf'; file: File; pageCount: number; originalSize: number; status: 'ready' }
-  | { id: string; kind: 'pdf'; file: File; pageCount?: number; originalSize: number; status: 'processing' }
-  | { id: string; kind: 'pdf'; file: File; pageCount?: number; originalSize: number; status: 'error'; error: string }
+  | { id: string; kind: 'pdf'; file: File; originalSize: number; status: 'error'; error: string }
+
+// submit payload の PDF 側は R2 直 PUT 済のためバイトを運ばない — fileId(=entry id)
+// と echo 用のメタデータだけを選択順で送る(T7 が消費)。画像は従来どおり FormData の
+// `files` を fileIndex で指す(orderManifest 自体は画像バイトを運ばない)。
+type OrderManifestEntry =
+  | { kind: 'image'; fileIndex: number }
+  | { kind: 'pdf'; fileId: string; filename: string; pageCount: number; declaredBytes: number }
+
+// entry id(= pdf の fileId)/ uploadSessionId / idempotencyKey の生成。
+// crypto.randomUUID 非対応環境向けの fallback を含む既存 idiom(3 箇所で使うため
+// 関数化・rule of three)。
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  // Codex fix round 5(P2-②): crypto.randomUUID 非対応環境向け fallback。 r5 以降
+  // uploadSessionId / fileId は reserve/finalize で `z.uuid({ version: 'v4' })`
+  // 検証されるため、旧 `${Date.now()}-${Math.random()}` は形式不一致で常に
+  // invalid_input になっていた(idempotencyKey は server 側で「≤256 文字の文字列」
+  // としか検証されないため r5 以前は無害だったが、uuid 検証 field へ流用された
+  // ことで欠陥になった)。 実際の UUID v4 を生成するよう修正する — PDF 経路を
+  // 「crypto.randomUUID 必須」として無効化する案(実装判断の一方)も検討したが、
+  // fallback 自体を正しくする方が該当環境でも機能が使え続けて losslessy(採用理由)。
+  // crypto.getRandomValues があれば暗号論的乱数を使い、無ければ Math.random に
+  // フォールバックする(いずれも version=4/variant=10 bit を明示的に立てる)。
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10xx
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 
 function formatBytes(b: number): string {
   if (b < 1_000) return `${b} B`
@@ -135,6 +182,24 @@ export function UploadForm({
   // unmount 後に poll ループを回し続けない(最長 DOC_STATUS_POLL_LIMIT_MS ぶんの
   // fetch が page 離脱後も残るのを防ぐ)。
   const mountedRef = useRef(true)
+  // uploadSessionId(spec r5 §3.1/§3.2・R2 namespace の同一性)。 idempotencyKey
+  // (submit 試行の同一性)とは別の値 — 両者は要求が逆向き(retry で idempotencyKey は
+  // 必ず新規発行 / uploadSessionId は維持したい)であり、r4 までは 1 値で兼ねていた
+  // のが実装中に発見された spec の穴だった(r5 で分離)。 null = 現在有効な session
+  // が無い(画像のみ / まだ PDF を 1 件も presign していない / 前回 submit で
+  // 消費・無効化済み)。 生存範囲(spec §3.2 の表・server outcome で決まる):
+  //   維持 — 新規 operation を作らないことが確定した outcome(in_progress /
+  //     invalid_input / exam_not_found / daily_limit_exceeded / unauthenticated)。
+  //     object をそのまま再利用でき、再 upload させない。
+  //   無効化 — accepted(replayed 含む)/ throw・応答不明(runProcess で判定)。
+  //   終了 — entries が空になった時点(removeEntry・「削除 = manifest から外す
+  //     のみ、残骸は lifecycle」)。
+  const uploadSessionIdRef = useRef<string | null>(null)
+  // entry ごとの generation token(Codex I11: stale 応答排除)。 entry 作成時に
+  // 発行し、削除時に revoke する。 PUT / finalize の非同期応答は、書込直前に
+  // 自分の token がまだ有効か確認してから setEntries する — 削除済み entry への
+  // 旧応答が state を書き戻すのを防ぐ。
+  const generationRef = useRef<Map<string, number>>(new Map())
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
   // 重複警告の transient timer も unmount で確実 clear (stale fire 防止)。
@@ -169,8 +234,19 @@ export function UploadForm({
   // 90 秒でガードを外す longRunning の分岐も同じ理由で消えた(切替える対象が無い)。
 
   const totalBytes = entries.reduce((s, e) => s + e.file.size, 0)
-  const totalExceeded = totalBytes > TOTAL_UPLOAD_LIMIT_BYTES
-  const anyProcessing = entries.some((e) => e.status === 'processing')
+  // TOTAL_UPLOAD_LIMIT_BYTES は submitUpload の FormData body 上限 — PDF は R2 直 PUT
+  // で body を経由しない(バイトは orderManifest に載らない)ため、判定は画像 entry
+  // のみで行う(全 entry 込みで判定すると PDF 追加だけで誤ってブロックされる)。
+  const totalImageBytes = entries.reduce(
+    (s, e) => (e.kind === 'image' ? s + e.file.size : s),
+    0,
+  )
+  const totalExceeded = totalImageBytes > TOTAL_UPLOAD_LIMIT_BYTES
+  // 「処理中」集合(spec D5): image の 'processing' に加え、 pdf の
+  // 'uploading' / 'counting' も含める(送信ゲートは既存構造のまま・変えるのは表示)。
+  const anyProcessing = entries.some(
+    (e) => e.status === 'processing' || e.status === 'uploading' || e.status === 'counting',
+  )
   const anyError = entries.some((e) => e.status === 'error')
   const destinationReady =
     destination !== null &&
@@ -193,6 +269,15 @@ export function UploadForm({
   // OCR pipeline の 1 リクエスト上限 (plan-limits とは独立した別軸)。
   // 超過時はファイルを分割して投入するよう案内する。
   const overPageCap = totalRequestedPages > OCR_MAX_PAGES
+
+  // 合計ページの 3 状態表示(spec D5): 処理中の PDF が 1 つでもあれば数値でなく
+  // 「未確定」を明示する(処理中は totalRequestedPages がゼロ加算で少なく見える
+  // 部分和になるため、確定した N と誤読させない)。
+  const pageSummaryText = anyProcessing
+    ? '合計未確定'
+    : overPageCap
+      ? `合計 ${totalRequestedPages} ページ・超過`
+      : `合計 ${totalRequestedPages} ページ`
 
   const submitDisabled =
     entries.length === 0 ||
@@ -249,57 +334,205 @@ export function UploadForm({
     }
   }
 
-  async function processPdf(file: File, id: string) {
+  // generation token を確認してから setEntries する共通 helper(Codex I11)。
+  // 呼出時点で token が一致しなければ(entry 削除済み)何も書かない。
+  function writeEntry(id: string, generation: number, updater: (prev: FileEntry) => FileEntry) {
+    if (generationRef.current.get(id) !== generation) return
+    setEntries((prev) => prev.map((e) => (e.id === id ? updater(e) : e)))
+  }
+
+  function pdfErrorEntry(id: string, file: File, error: string): FileEntry {
+    return { id, kind: 'pdf', file, originalSize: file.size, status: 'error', error }
+  }
+
+  // reserve 後続き: 直 PUT(browser→R2)→ finalize(完了通知・pageCount 確定)。
+  // reserve はバッチ単位で呼出元(reservePdfBatch)がまとめて完了させるため、
+  // ここは uploadUrl を受け取ってから始まる。
+  async function continuePdfUpload(
+    file: File,
+    id: string,
+    generation: number,
+    uploadSessionId: string,
+    uploadUrl: string,
+  ) {
+    // 直 PUT(browser → R2)。 lib/media/upload.ts の画像直 PUT saga と同型
+    // (mode/credentials/redirect/timeout)。 署名済み URL への PUT ゆえ cookie 不要。
+    let putOk = false
     try {
-      const pages = await pdfPageCount(file)
-      if (pages > MAX_PDF_PAGES) {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === id
-              ? {
-                  id,
-                  kind: 'pdf' as const,
-                  file,
-                  pageCount: pages,
-                  originalSize: file.size,
-                  status: 'error' as const,
-                  error: `PDF が ${pages} ページ (1 ファイル上限 ${MAX_PDF_PAGES} ページ)`,
-                }
-              : e,
-          ),
-        )
+      const put = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': 'application/pdf' },
+        mode: 'cors',
+        credentials: 'omit',
+        redirect: 'error',
+        signal: AbortSignal.timeout(PDF_PUT_TIMEOUT_MS),
+      })
+      putOk = put.ok
+    } catch {
+      putOk = false
+    }
+    if (!putOk) {
+      writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF のアップロードに失敗しました'))
+      return
+    }
+
+    writeEntry(id, generation, (prev) =>
+      prev.kind === 'pdf'
+        ? { id, kind: 'pdf' as const, file, originalSize: file.size, status: 'counting' as const }
+        : prev,
+    )
+
+    try {
+      const finalized = await finalizePdfSource({
+        uploadSessionId,
+        fileId: id,
+        declaredBytes: file.size,
+      })
+      if (!finalized.ok) {
+        writeEntry(id, generation, () => pdfErrorEntry(id, file, finalized.error))
         return
       }
-      setEntries((prev) =>
-        prev.map((e) =>
-          e.id === id
-            ? {
-                id,
-                kind: 'pdf' as const,
-                file,
-                pageCount: pages,
-                originalSize: file.size,
-                status: 'ready' as const,
-              }
-            : e,
-        ),
-      )
+      const pageCount = finalized.data?.pageCount
+      if (pageCount === undefined) {
+        writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF の検証に失敗しました'))
+        return
+      }
+      writeEntry(id, generation, () => ({
+        id,
+        kind: 'pdf' as const,
+        file,
+        pageCount,
+        originalSize: file.size,
+        status: 'ready' as const,
+      }))
     } catch (err) {
-      setEntries((prev) =>
-        prev.map((e) =>
-          e.id === id
-            ? {
-                id,
-                kind: 'pdf' as const,
-                file,
-                originalSize: file.size,
-                status: 'error' as const,
-                error: err instanceof Error ? err.message : 'PDF 解析に失敗しました',
-              }
-            : e,
-        ),
+      writeEntry(id, generation, () =>
+        pdfErrorEntry(id, file, err instanceof Error ? err.message : 'PDF の検証に失敗しました'),
       )
     }
+  }
+
+  // reserve を **バッチ単位**でまとめて 1 回呼び(canonical review Important 2
+  // fix)、成功した file だけ PUT+finalize(continuePdfUpload)へ進める。
+  // sessionFiles = この reserve 呼出の Σ declaredBytes 検証に使う全体集合
+  // (呼出元が「既存アクティブ分」を含めるかどうかを決める)。 toUpload = 実際に
+  // PUT+finalize を実行する対象(sessionFiles の部分集合、または同一)。 1 file
+  // ずつ presign すると個々が必ず ≤ MAX_PDF_BYTES(50MB)以下になり、
+  // reserve-pdf-upload.ts の Σ declaredBytes ≤ MAX_PDF_TOTAL_BYTES(200MB)判定
+  // (spec D7)が構造的に発火しないため、呼出元で常にまとめる。
+  async function reservePdfBatch(
+    sessionFiles: { fileId: string; declaredBytes: number }[],
+    toUpload: { file: File; id: string; generation: number }[],
+    uploadSessionId: string,
+  ) {
+    if (toUpload.length === 0) return
+    let reserved: Awaited<ReturnType<typeof reservePdfUploadUrls>>
+    try {
+      reserved = await reservePdfUploadUrls({ uploadSessionId, files: sessionFiles })
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'アップロードURLの発行に失敗しました'
+      for (const f of toUpload) {
+        writeEntry(f.id, f.generation, () => pdfErrorEntry(f.id, f.file, message))
+      }
+      return
+    }
+    if (!reserved.ok) {
+      for (const f of toUpload) {
+        writeEntry(f.id, f.generation, () => pdfErrorEntry(f.id, f.file, reserved.error))
+      }
+      return
+    }
+
+    for (const f of toUpload) {
+      // ActionResult.data は型上 optional(action の成功時は必ず設定されるが、
+      // TS 上は undefined を許すため防御的に確認する)。
+      const entry = reserved.data?.find((d) => d.fileId === f.id)
+      if (!entry) {
+        writeEntry(f.id, f.generation, () =>
+          pdfErrorEntry(f.id, f.file, 'アップロードURLの発行に失敗しました'),
+        )
+        continue
+      }
+      void continuePdfUpload(f.file, f.id, f.generation, uploadSessionId, entry.uploadUrl)
+    }
+  }
+
+  // PDF batch flow(spec D5 / §2 / §3.1): handleAdd で新規追加された PDF 群を
+  // 1 回の reserve にまとめる。 このバッチには「既存のアクティブ(非 error)な
+  // PDF entry」も declaredBytes ぶん含める(自分は再アップロードしない・再 PUT
+  // はしない — Σ が既存分を含むことが要件)。 失敗すれば **この呼出で新規追加した
+  // PDF だけ** を error にする(既存の進行中 entry はこの呼出の失敗に巻き込まない)。
+  async function processPdfBatch(
+    newFiles: { file: File; id: string; generation: number }[],
+  ) {
+    if (newFiles.length === 0) return
+    // uploadSessionId: 最初の presign 要求時に発行し、以後同 session の全 PDF が
+    // 使い回す(spec D5 / §3.1)。 submit 試行の同一性(idempotencyKey)とは
+    // 独立 — session の無効化/維持は runProcess が server outcome から判定する
+    // (§3.2)。
+    if (uploadSessionIdRef.current === null) {
+      uploadSessionIdRef.current = generateId()
+    }
+    const uploadSessionId = uploadSessionIdRef.current
+
+    const existingActive = entries.filter(
+      (e): e is Extract<FileEntry, { kind: 'pdf' }> => e.kind === 'pdf' && e.status !== 'error',
+    )
+    const sessionFiles = [
+      ...existingActive.map((e) => ({ fileId: e.id, declaredBytes: e.file.size })),
+      ...newFiles.map((f) => ({ fileId: f.id, declaredBytes: f.file.size })),
+    ]
+
+    await reservePdfBatch(sessionFiles, newFiles, uploadSessionId)
+  }
+
+  // D5 point 5(terminal 失敗後の再試行): submit が accepted された時点で
+  // uploadSessionId は既に無効化されている(spec §3.2「accepted は消費済み」)。
+  // 完了通知が failed(terminal 失敗)を返すと、server 側の全出口 DELETE
+  // (spec §6 本線 2)で旧 session の R2 object も削除される — この時点で
+  // `ready` の PDF entry を `uploading` へ戻し、**新 session**で
+  // reserve→PUT→finalize をやり直しておく(counting を経て ready へ復帰)。
+  // これが無いと、次の submit クリック時に新 namespace へ object が存在しない
+  // まま送信され、T7 の HEAD 検証で落ちる。 fire-and-forget(runProcess の
+  // 'failed' 分岐から呼ぶ・失敗表示自体はブロックしない)。
+  async function retryPdfSession() {
+    const readyPdfs = entries.filter(
+      (e): e is Extract<FileEntry, { kind: 'pdf'; status: 'ready' }> =>
+        e.kind === 'pdf' && e.status === 'ready',
+    )
+    if (readyPdfs.length === 0) return
+
+    const retryFiles = readyPdfs.map((e) => {
+      const generation = (generationRef.current.get(e.id) ?? 0) + 1
+      generationRef.current.set(e.id, generation)
+      return { file: e.file, id: e.id, generation }
+    })
+    setEntries((prev) =>
+      prev.map((e) => {
+        const match = retryFiles.find((f) => f.id === e.id)
+        return match
+          ? {
+              id: e.id,
+              kind: 'pdf' as const,
+              file: match.file,
+              originalSize: match.file.size,
+              status: 'uploading' as const,
+            }
+          : e
+      }),
+    )
+
+    if (uploadSessionIdRef.current === null) {
+      uploadSessionIdRef.current = generateId()
+    }
+    const uploadSessionId = uploadSessionIdRef.current
+    const sessionFiles = retryFiles.map((f) => ({
+      fileId: f.id,
+      declaredBytes: f.file.size,
+    }))
+    await reservePdfBatch(sessionFiles, retryFiles, uploadSessionId)
   }
 
   function handleAdd(filesList: FileList | null) {
@@ -322,20 +555,24 @@ export function UploadForm({
       }, 4000)
     }
     const newEntries: FileEntry[] = []
+    // このバッチ(1 回の handleAdd 呼出)で新規追加された PDF は 1 回の
+    // reservePdfUploadUrls にまとめて渡す(Important 2 fix・processPdfBatch)。
+    const newPdfFiles: { file: File; id: string; generation: number }[] = []
     for (const file of unique) {
-      const id =
-        typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random()}`
+      const id = generateId()
       if (file.type === 'application/pdf') {
+        // 新規 id ゆえ generation は常に 1 から開始(id は generateId() が毎回
+        // 発行する乱数、再利用しない)。
+        const generation = 1
+        generationRef.current.set(id, generation)
         newEntries.push({
           id,
           kind: 'pdf',
           file,
           originalSize: file.size,
-          status: 'processing',
+          status: 'uploading',
         })
-        void processPdf(file, id)
+        newPdfFiles.push({ file, id, generation })
       } else if (file.type.startsWith('image/')) {
         newEntries.push({
           id,
@@ -350,17 +587,27 @@ export function UploadForm({
       }
     }
     setEntries((prev) => [...prev, ...newEntries])
+    if (newPdfFiles.length > 0) void processPdfBatch(newPdfFiles)
     // input value を reset、 同じ file 連続選択でも change が発火するように
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   function removeEntry(id: string) {
+    // generation token を revoke(Codex I11): 削除後に届く旧 PUT / finalize 応答は
+    // writeEntry の token 比較で弾かれ、state を書き戻せなくなる。
+    generationRef.current.delete(id)
     setEntries((prev) => {
       const target = prev.find((e) => e.id === id)
       if (target && target.kind === 'image' && 'thumbUrl' in target && target.thumbUrl) {
         URL.revokeObjectURL(target.thumbUrl)
       }
-      return prev.filter((e) => e.id !== id)
+      const next = prev.filter((e) => e.id !== id)
+      // entries が空になったら uploadSessionId も畳む(D5 point 4「終了」・残った
+      // R2 object は lifecycle が回収する・spec「削除 = manifest から外すのみ」)。
+      if (next.length === 0) {
+        uploadSessionIdRef.current = null
+      }
+      return next
     })
   }
 
@@ -381,6 +628,22 @@ export function UploadForm({
       details,
       hideRetryHint: code === 'UPLOAD_IN_PROGRESS' || code === 'PAGE_LIMIT_EXCEEDED',
     })
+  }
+
+  // Codex fix round 5(P2-①): `accepted` を受けた後、form を再操作可能な状態
+  // (= error phase で submit ボタンが再有効化される)へ戻す**全ての出口**で
+  // 必ず通す共通 helper。 `accepted` 受信時点で uploadSessionId は既に
+  // 無効化済み(このファイル内 `if (result.outcome === 'accepted')`)なので、
+  // ready な PDF entry を再アップロードしておかないと次の submit が空
+  // uploadSessionId を送って必ず invalid_input になる(D5 point 5 と同じクラス
+  // の穴)。 出口ごとに個別に `retryPdfSession()` を呼ぶと今後の分岐追加で
+  // 取りこぼすため、`accepted` 分岐内で「表示して抜ける」箇所はこの helper
+  // 経由に統一する(sourceDocumentId 空 / failed / degraded の 3 箇所)。
+  // `completed`(router.push で離脱)と `aborted`(unmount)は form を再操作
+  // 可能にしないため対象外。
+  function setErrorAfterAccepted(phase: Extract<Phase, { kind: 'error' }>) {
+    void retryPdfSession()
+    setPhase(phase)
   }
 
   // runProcess は phase 切替を行わない (caller が setPhase('submitting') を
@@ -463,40 +726,91 @@ export function UploadForm({
         setError('OTHER', '投入先が選択されていません。')
         return
       }
-      if (entries.some((e) => e.kind === 'pdf')) {
-        setError(
-          'INVALID_INPUT',
-          'PDF は現在このアップロードでは対応していません(画像のみ対応)。PDF を削除するか、画像のみで投入してください。',
-        )
-        return
-      }
-
-      const imageEntries = entries.filter(
-        (e): e is Extract<FileEntry, { kind: 'image'; status: 'ready' }> =>
-          e.kind === 'image' && e.status === 'ready',
+      // 混在可(spec D3)。 選択順(= entries 配列順)を維持したまま、画像は従来どおり
+      // FormData の `files` へ、 PDF は orderManifest(JSON)へ echo メタデータのみを積む
+      // (PDF バイト本体は presign 済 直 PUT で既に R2 にある)。
+      const readyEntries = entries.filter(
+        (e): e is Extract<FileEntry, { status: 'ready' }> => e.status === 'ready',
       )
+      const manifestEntries: OrderManifestEntry[] = []
+      const imageFiles: File[] = []
+      for (const e of readyEntries) {
+        if (e.kind === 'image') {
+          manifestEntries.push({ kind: 'image', fileIndex: imageFiles.length })
+          imageFiles.push(e.file)
+        } else {
+          manifestEntries.push({
+            kind: 'pdf',
+            fileId: e.id,
+            filename: e.file.name,
+            pageCount: e.pageCount,
+            declaredBytes: e.originalSize,
+          })
+        }
+      }
+      const hasPdf = manifestEntries.some((m) => m.kind === 'pdf')
 
-      // 冪等 key は submit ごとに新規発行する(同一 key = transport retry のみ、
-      // ユーザー再試行は別 operation という server 側の冪等契約に対応)。
-      const idempotencyKey =
-        typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random()}`
+      // idempotencyKey(spec §3.1: 論理 submit 試行の同一性)は **常に新規発行**
+      // する — session(R2 namespace)とは独立で、image-only 経路と同じ扱い
+      // (ユーザー再試行 = 別 operation という既存契約・submit-upload.ts:99-103)。
+      const idempotencyKey = generateId()
 
       const fd = new FormData()
       fd.set('idempotencyKey', idempotencyKey)
       fd.set('mode', destination.mode)
       if (destination.mode === 'existing') fd.set('examId', destination.examId)
-      for (const e of imageEntries) fd.append('files', e.file, e.file.name)
+      for (const file of imageFiles) fd.append('files', file, file.name)
+      if (hasPdf) {
+        // 後方互換: PDF が 1 つも無ければ manifest / uploadSessionId を送らない
+        // (T7 は manifest 不在を従来経路と解釈する)。 uploadSessionId は spec
+        // §3.4 の wire 契約どおり FormData の top-level field(manifest 各要素は
+        // fileId のみ)。 hasPdf な readyEntries が存在する時点で
+        // uploadSessionIdRef は reserve 済みのはずで non-null — 万一 null なら
+        // 空文字を送り、T7 の zod uuid 検証で invalid_input として弾かせる
+        // (silent failure にしない)。
+        fd.set('orderManifest', JSON.stringify(manifestEntries))
+        fd.set('uploadSessionId', uploadSessionIdRef.current ?? '')
+      }
 
-      const result = await submitUpload(fd)
+      let result: Awaited<ReturnType<typeof submitUpload>>
+      try {
+        result = await submitUpload(fd)
+      } catch (err) {
+        // throw / 応答不明(spec §3.2 行 3): server 側で uploadSessionId が
+        // 既に消費されているかどうか判別できないため無効化する。
+        uploadSessionIdRef.current = null
+        // Codex fix round 4(Important P2): 無効化しただけだと ready な PDF
+        // entry が旧 session 配下の object を指したまま残り、次の submit で
+        // 空 session が送られる/新規 PDF 追加時は新旧 session の object が
+        // manifest に混在する(D5 point 5 の terminal 失敗経路と同じクラスの
+        // 欠陥)。 throw も「応答不明」= 実質 terminal 失敗として扱い、既存の
+        // retryPdfSession()(D5 point 5)をそのまま再利用して ready な PDF を
+        // uploading へ戻し新 session で reserve→PUT→finalize をやり直す
+        // (fire-and-forget・エラー表示自体はブロックしない)。
+        // 安全性: throw 時に実際には operation が作成済みだった場合でも、
+        // 回復後の再 submit は live-op gate(submit-upload.ts の advisory lock /
+        // 非終端 op チェック)に当たって in_progress を返すだけで、二重
+        // operation は作られない(既存 gate が担保する)。
+        void retryPdfSession()
+        throw err
+      }
+      // uploadSessionId の生存範囲(spec §3.2 の表): 新規 operation を作らない
+      // ことが確定した outcome(in_progress / invalid_input / exam_not_found /
+      // daily_limit_exceeded / unauthenticated)は**維持**する(object を再利用
+      // でき、再 upload させない)。 accepted(replayed 含む)だけ消費済みとして
+      // 無効化する — それ以外の outcome は下の switch へ進む前に何もしない
+      // (デフォルトで「維持」)。
+      if (result.outcome === 'accepted') {
+        uploadSessionIdRef.current = null
+      }
       switch (result.outcome) {
         case 'accepted': {
           if (result.sourceDocumentId.length === 0) {
             // 冪等 replay で返った既存 operation の source_document が既に消えている
             // (GDPR 削除 / GC)。空 id で result page へ飛ばすと 404 になるため、
             // 一覧で確認してもらう(server 側 replay は状態不問で 3 ID を返す契約)。
-            setPhase({
+            // form が再操作可能に戻るため setErrorAfterAccepted 経由(P2-①)。
+            setErrorAfterAccepted({
               kind: 'error',
               code: 'OTHER',
               message:
@@ -514,8 +828,11 @@ export function UploadForm({
             return
           }
           if (outcome === 'failed') {
-            // client は operation を終端化しない(S-1 申し送り)。表示するだけ。
-            setPhase({
+            // D5 point 5: uploadSessionId は accepted 受信時に既に無効化済み。
+            // server 側の全出口 DELETE で旧 session の R2 object も削除される
+            // ため setErrorAfterAccepted 経由で回復する(client は operation を
+            // 終端化しない・S-1 申し送り・表示するだけ)。
+            setErrorAfterAccepted({
               kind: 'error',
               code: 'OTHER',
               message: UPLOAD_INTERRUPTED_NOTICE,
@@ -524,7 +841,9 @@ export function UploadForm({
             return
           }
           // degraded: 判定不能のまま打ち切った。処理自体は server 側で継続しうる。
-          setPhase({
+          // form は再操作可能に戻るため setErrorAfterAccepted 経由(P2-①・failed
+          // と同じクラスの回復が必要 — round 4 まではここが取りこぼされていた)。
+          setErrorAfterAccepted({
             kind: 'error',
             code: 'OTHER',
             message:
@@ -654,15 +973,16 @@ export function UploadForm({
       <section>
         <h2 className="text-lg font-bold mb-2">ファイルを選択</h2>
         <p className="text-sm text-slate-600 mb-3">
-          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF は現在未対応です。
+          画像 (JPG / PNG / HEIC 等) は自動で圧縮されます。 PDF にも対応しています。
           <br />
-          合計 {OCR_MAX_PAGES} 枚・サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB まで。
+          合計 {OCR_MAX_PAGES} ページ・PDF 1 ファイルあたり {MAX_PDF_BYTES / MB} MB・
+          画像合計サイズ上限 {TOTAL_UPLOAD_LIMIT_MB} MB まで。
         </p>
         <input
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*"
+          accept="image/*,application/pdf"
           disabled={isSubmitting}
           onChange={(e) => handleAdd(e.target.files)}
           className="block w-full text-sm text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:font-medium disabled:opacity-50 disabled:cursor-not-allowed"
@@ -685,7 +1005,7 @@ export function UploadForm({
       {entries.length > 0 && (
         <section>
           <h3 className="font-medium mb-2 text-sm text-slate-700">
-            {entries.length} 件選択中 (合計 {formatBytes(totalBytes)} / 上限 {TOTAL_UPLOAD_LIMIT_MB} MB、 合計 {totalRequestedPages} ページ)
+            {entries.length} 件選択中 (合計 {formatBytes(totalBytes)}、 {pageSummaryText})
           </h3>
           {overQuota && remaining !== null && (
             <div
@@ -723,9 +1043,9 @@ export function UploadForm({
                         {e.kind === 'pdf' ? (
                           <>
                             <span className="text-2xl">PDF</span>
-                            {e.kind === 'pdf' && e.status === 'ready' && (
-                              <span>{e.pageCount} ページ</span>
-                            )}
+                            {e.status === 'ready' && <span>{e.pageCount} ページ</span>}
+                            {e.status === 'uploading' && <span>アップロード中…</span>}
+                            {e.status === 'counting' && <span>ページ数確認中…</span>}
                           </>
                         ) : (
                           <span>処理中…</span>
@@ -736,8 +1056,12 @@ export function UploadForm({
                       {e.file.name}
                     </div>
                     <div className="text-xs text-slate-500">
-                      {e.status === 'processing'
-                        ? '処理中…'
+                      {e.status === 'processing' || e.status === 'uploading' || e.status === 'counting'
+                        ? e.status === 'uploading'
+                          ? 'アップロード中…'
+                          : e.status === 'counting'
+                            ? 'ページ数確認中…'
+                            : '処理中…'
                         : e.status === 'error'
                           ? <span className="text-red-700">{e.error}</span>
                           : `${formatBytes(e.file.size)}${
