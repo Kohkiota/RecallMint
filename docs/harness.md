@@ -39,6 +39,7 @@
 | overrides による transitive 固定 | 脆弱 transitive の再解決 | 構成(lockfile)| `pnpm-workspace.yaml` |
 | MCP / Codex / TSLS の pin(postcondition で構造保証)| ツール挙動の暗黙 drift・LSP 不動作 | 構成(postcondition)| `.mcp.json` / `.devcontainer/post-create.sh` |
 | pnpm 依存 lifecycle script 既定 block + `onlyBuiltDependencies` 明示許可 | supply-chain 面の任意 postinstall 実行 | 構成(pnpm 既定 + 設定)| `pnpm-workspace.yaml` |
+| R2 lifecycle rule(prefix `src/`・maxAge 86400s)| PDF source(②-4b)の DELETE 漏れ残骸(明示 DELETE 本線の保険)。**設定は R2 側・OT 手動**(repo に定義なし)。削除実行は「典型 24h 以内」で保証なし = 実効上限 ≈48h と明記(保証しない値を保証扱いしない)| 構成(外部設定・OT 管理)| `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md` §6/§12 |
 
 ## 3. プロセス(人の約束・ずれうる)
 
