@@ -14,6 +14,73 @@ import path from 'node:path'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { mockGetObject, mockDeleteObject, r2State, mockLoadPdf, pdfState } = vi.hoisted(() => {
+  // ②-4b T8: count/render phase の R2 mock。key → 応答 bytes の queue(2 件登録すれば
+  // 1 回目(count の GET)/ 2 回目以降(render の再 GET)で別バイトを返せる — sha256
+  // 不一致 test が使う)。1 件しか無ければ以後もその値を返し続ける。
+  const r2State = {
+    bytesByKey: new Map<string, Buffer[]>(),
+    deleteResult: { ok: true, status: 200 } as { ok: boolean; status: number | null },
+  }
+  const mockGetObject = vi.fn(async (key: string) => {
+    const queue = r2State.bytesByKey.get(key)
+    if (!queue || queue.length === 0) return null
+    const bytes = queue.length > 1 ? queue.shift()! : queue[0]
+    return { bytes }
+  })
+  const mockDeleteObject = vi.fn(async (_key: string) => r2State.deleteResult)
+
+  // pdf-rasterize mock: bytes(base64) → 各ページの webp buffer 列。count phase は
+  // pageCount(= pages.length)だけを読み、render phase は renderPageWebp(i) で
+  // 1 ページずつ取り出す。renderCalls は handle 個体を跨いだ**全呼出**を記録する
+  // (「render を一度も呼ばない」を pin するにはグローバル集計が要る)。
+  //
+  // fix round 1(Important 1 の test 用): `renderErrorAt`(bytes b64 → page index)+
+  // `renderErrorFactory` で特定ページの renderPageWebp だけを任意の Error で
+  // 失敗させられる。**実 `PdfParseError` を投げたい**が、vi.hoisted のコールバックは
+  // 通常の import より前に実行されるためモジュールトップレベルの import を直接
+  // 参照できない — `renderErrorFactory` を test 本体(実行時 = import 解決済)側で
+  // 差し込む間接化でこれを回避する。
+  const pdfState = {
+    pagesByBytesB64: new Map<string, Buffer[]>(),
+    renderCalls: [] as string[],
+    destroyCalls: 0,
+    renderErrorAt: new Map<string, number>(),
+    renderErrorFactory: null as (() => Error) | null,
+    // fix round 4(deadline-in-loop test 用): renderPageWebp 呼出のたびに呼ばれる
+    // 副作用フック(既定 no-op)。test 側がページ間で時計を進める(deadline 消費を
+    // 模す)ために使う — 「残り予算が crop 最低予算を切ったら」既存 test と同じ
+    // 「mock 内で共有 state を書き換える」手口。
+    onRenderPage: null as ((b64: string, i: number) => void) | null,
+  }
+  const mockLoadPdf = vi.fn(async (buf: Buffer) => {
+    const b64 = buf.toString('base64')
+    const pages = pdfState.pagesByBytesB64.get(b64) ?? []
+    return {
+      pageCount: pages.length,
+      renderPageWebp: async (i: number) => {
+        pdfState.renderCalls.push(`${b64.slice(0, 12)}:${i}`)
+        pdfState.onRenderPage?.(b64, i)
+        if (pdfState.renderErrorAt.get(b64) === i && pdfState.renderErrorFactory) {
+          throw pdfState.renderErrorFactory()
+        }
+        return { webp: pages[i], width: 800, height: 1200 }
+      },
+      destroy: () => {
+        pdfState.destroyCalls += 1
+      },
+    }
+  })
+
+  return {
+    mockGetObject,
+    mockDeleteObject,
+    r2State,
+    mockLoadPdf,
+    pdfState,
+  }
+})
+
 const {
   mockWithTenantTx,
   mockCallGemini,
@@ -111,6 +178,12 @@ const {
 })
 
 vi.mock('sharp', () => ({ default: mockSharp }))
+// ②-4b T8: R2 import は getObject / deleteObject のみ(regex pin と同じ主張)。
+vi.mock('@/lib/storage/r2', () => ({ getObject: mockGetObject, deleteObject: mockDeleteObject }))
+vi.mock('@/lib/media/pdf-rasterize', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/media/pdf-rasterize')>()
+  return { ...actual, loadPdf: mockLoadPdf }
+})
 vi.mock('@/lib/db/tenant-tx', () => ({ withTenantTx: mockWithTenantTx }))
 vi.mock('@/lib/ai-usage-counter', () => ({ incrementAiUsage: mockIncrementAiUsage }))
 vi.mock('@/lib/integration-failures', () => ({
@@ -151,8 +224,17 @@ vi.mock('../_actions/publish-prepared', () => ({
 // vi.mock は import より前に hoist される。
 import { GEMINI_TIMEOUT_MS, type GeminiContentPart } from '@/lib/ai/clients/gemini'
 import { classifyCropOutcome } from '@/lib/media/crop-and-store'
+// PdfParseError は mock module が `...actual` で再 export する実クラス(vi.mock
+// factory 参照)。production 側の `instanceof PdfParseError` と同一クラス参照。
+import { PdfParseError } from '@/lib/media/pdf-rasterize'
+import { sourcePdfObjectKey } from '@/lib/media/source-object-key'
 import { normalizePrepared } from '@/lib/ocr/normalize-prepared'
-import { runUploadPipeline, type UploadPipelineFile } from './upload-pipeline'
+import {
+  runUploadPipeline,
+  type UploadPipelineFile,
+  type UploadPipelineSourceOrderEntry,
+  type UploadPipelineSourcePdf,
+} from './upload-pipeline'
 
 // 実実装への参照(module mock の factory が `vi.fn(actual.classifyCropOutcome)` で
 // くるんでいるので、初期 implementation がそれ)。
@@ -177,6 +259,65 @@ function pngLike(tag: string): Buffer {
 
 function filesOf(...tags: string[]): UploadPipelineFile[] {
   return tags.map((t) => ({ buffer: pngLike(t), filename: `${t}.png` }))
+}
+
+// ②-4b T8: rasterize 済みページを模した webp-like バイト列(RIFF....WEBP magic)。
+// verifyImageBytes の sniffMagicBytes(実実装)が image/webp と判定できる最小形。
+function webpLike(tag: string, padBytes = 0): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x52, 0x49, 0x46, 0x46]), // 'RIFF'
+    Buffer.from([0, 0, 0, 0]),
+    Buffer.from([0x57, 0x45, 0x42, 0x50]), // 'WEBP'
+    Buffer.from(`-${tag}`, 'utf8'),
+    padBytes > 0 ? Buffer.alloc(padBytes) : Buffer.alloc(0),
+  ])
+}
+
+const SESSION_ID = '00000000-0000-4000-8000-0000000000f0'
+
+// R2 に置かれた PDF 原本を模した bytes(内容は sha256 の同一性判定にのみ使われ、
+// pdf-rasterize 側は mock なので実 PDF 構造である必要はない)。
+function pdfBytes(tag: string): Buffer {
+  return Buffer.from(`FAKE-PDF-${tag}`, 'utf8')
+}
+
+// count/render 両 phase の getObject が読む R2 mock + pdf-rasterize mock の両方に
+// 1 冊分を登録する。`pages` = renderPageWebp が返す webp buffer 列(pageCount は
+// この長さ)。戻り値の `manifestEntry` はそのまま sourcePdfManifest に積める。
+function registerPdf(
+  fileId: string,
+  pages: Buffer[],
+  opts: { sessionId?: string; declaredBytes?: number } = {},
+): UploadPipelineSourcePdf {
+  const sessionId = opts.sessionId ?? SESSION_ID
+  const key = sourcePdfObjectKey(USER_ID, sessionId, fileId)
+  const bytes = pdfBytes(fileId)
+  r2State.bytesByKey.set(key, [bytes])
+  pdfState.pagesByBytesB64.set(bytes.toString('base64'), pages)
+  return {
+    fileId,
+    filename: `${fileId}.pdf`,
+    pageCount: pages.length,
+    declaredBytes: opts.declaredBytes ?? bytes.length,
+  }
+}
+
+function runWithPdf(
+  files: UploadPipelineFile[],
+  sourcePdfManifest: UploadPipelineSourcePdf[],
+  sourceOrder: UploadPipelineSourceOrderEntry[],
+  opts: { deadlineOffsetMs?: number; leaseVersion?: number; uploadSessionId?: string } = {},
+): Promise<void> {
+  return runUploadPipeline(
+    USER_ID,
+    REFS,
+    opts.leaseVersion ?? 0,
+    files,
+    new Date(Date.now() + (opts.deadlineOffsetMs ?? GEMINI_TIMEOUT_MS * 2)),
+    sourcePdfManifest,
+    opts.uploadSessionId ?? SESSION_ID,
+    sourceOrder,
+  )
 }
 
 const VALID_CARD = {
@@ -286,6 +427,14 @@ beforeEach(() => {
   cropState.outcome = 'stored'
   cropState.throwAt = null
   cropState.throwAll = false
+  r2State.bytesByKey.clear()
+  r2State.deleteResult = { ok: true, status: 200 }
+  pdfState.pagesByBytesB64.clear()
+  pdfState.renderCalls = []
+  pdfState.destroyCalls = 0
+  pdfState.renderErrorAt.clear()
+  pdfState.renderErrorFactory = null
+  pdfState.onRenderPage = null
   // mockImplementationOnce / mockRejectedValue は clearAllMocks で戻らないため、
   // 層 2 の注入点(classifyCropOutcome)は毎回 実実装へ戻す。
   vi.mocked(classifyCropOutcome).mockImplementation(realClassifyCropOutcome)
@@ -890,12 +1039,574 @@ describe('runUploadPipeline — 予期しない throw(catch-all)', () => {
   })
 })
 
-describe('upload-pipeline.ts は R2 module を import しない(spec §2: source は R2 に置かない)', () => {
-  it('source 上に @/lib/storage/r2 への import が存在しない', () => {
+// ---------------------------------------------------------------------------
+// ②-4b T8: PDF count phase / render phase(spec D4/D6/D8/§6)
+// ---------------------------------------------------------------------------
+describe('runUploadPipeline — PDF count phase(spec D4/D8: 層 3 = 唯一の機械保証)', () => {
+  it('合計(画像+Σ実ページ)が上限超過なら render を一度も呼ばず page_limit_exceeded で terminal', async () => {
+    // 41 ページ 1 冊(pageCount echo は無視される値 — 正本は実ページ数)。
+    const pdf = registerPdf(
+      'aaaaaaaa-0000-4000-8000-000000000001',
+      Array.from({ length: 41 }, (_, i) => webpLike(`p${i}`)),
+    )
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(pdfState.renderCalls).toHaveLength(0)
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'page_limit_exceeded',
+      }),
+    )
+    // 出口 DELETE は render 0 呼出でも走る(spec §6 本線 2)。
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, pdf.fileId)
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
+  })
+
+  it('画像枚数 + 複数 PDF の合算で判定する(count phase が実ページ数を数え直す)', async () => {
+    const pdfA = registerPdf(
+      'aaaaaaaa-0000-4000-8000-000000000002',
+      Array.from({ length: 20 }, (_, i) => webpLike(`a${i}`)),
+    )
+    const pdfB = registerPdf(
+      'aaaaaaaa-0000-4000-8000-000000000003',
+      Array.from({ length: 20 }, (_, i) => webpLike(`b${i}`)),
+    )
+    // 画像 1 枚 + PDF 20p + PDF 20p = 41 > 40。
+    await runWithPdf(filesOf('img'), [pdfA, pdfB], [
+      { kind: 'image', fileIndex: 0 },
+      { kind: 'pdf', fileId: pdfA.fileId },
+      { kind: 'pdf', fileId: pdfB.fileId },
+    ])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'page_limit_exceeded',
+      }),
+    )
+  })
+
+  // fix round 4(canonical/Codex Critical 修正1): 上限超過が「途中の 1 冊」で確定したら
+  // その場で return し、後続 PDF を 1 冊も GET しない(旧: loop を最後まで回してから
+  // 判定していたため、超過確定後も残り全冊の GET/parse を続けていた)。
+  it('途中の PDF でページ超過が確定したら後続 PDF を GET しない', async () => {
+    const pdfA = registerPdf(
+      'aaaaaaaa-0000-4000-8000-000000000013',
+      Array.from({ length: 41 }, (_, i) => webpLike(`a${i}`)),
+    )
+    const pdfB = registerPdf('aaaaaaaa-0000-4000-8000-000000000014', [webpLike('b0')])
+
+    await runWithPdf([], [pdfA, pdfB], [
+      { kind: 'pdf', fileId: pdfA.fileId },
+      { kind: 'pdf', fileId: pdfB.fileId },
+    ])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'page_limit_exceeded',
+      }),
+    )
+    // pdfA(超過確定した冊)だけ GET され、pdfB は 1 度も GET されない。
+    const keyA = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfA.fileId)
+    const keyB = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfB.fileId)
+    expect(mockGetObject).toHaveBeenCalledTimes(1)
+    expect(mockGetObject).toHaveBeenCalledWith(keyA, expect.anything())
+    expect(mockGetObject).not.toHaveBeenCalledWith(keyB, expect.anything())
+    // 所有権があるため(raced ではない)出口 DELETE は両 key に対して通常どおり
+    // 行われる(brief 要件 5: terminal + 所有権があれば DELETE)。
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyA)
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyB)
+  })
+})
+
+describe('runUploadPipeline — PDF render phase: TOCTOU(spec §6/Codex C1)', () => {
+  it('count phase の GET と render phase の再 GET で bytes の sha256 が変わっていたら terminal(source_changed)', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000004'
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, fileId)
+    const countBytes = pdfBytes(fileId)
+    const renderBytes = Buffer.from('DIFFERENT-BYTES-AFTER-REPUT')
+    // count phase(1 回目の GET)は countBytes / render phase(2 回目以降)は renderBytes。
+    r2State.bytesByKey.set(key, [countBytes, renderBytes])
+    pdfState.pagesByBytesB64.set(countBytes.toString('base64'), [webpLike('p0'), webpLike('p1')])
+
+    const pdf: UploadPipelineSourcePdf = {
+      fileId,
+      filename: 'x.pdf',
+      pageCount: 2,
+      declaredBytes: countBytes.length,
+    }
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'source_changed',
+      }),
+    )
+    // sha 不一致は loadPdf(render 用)より前に検出する — render 用 bytes で
+    // renderPageWebp は 1 度も呼ばれない。
+    expect(pdfState.renderCalls).toHaveLength(0)
+  })
+})
+
+describe('runUploadPipeline — PDF render phase: webp 累計上限(spec D7 r4・loud)', () => {
+  it('webp 累計が MAX_RENDERED_WEBP_TOTAL_BYTES を超えたら terminal(webp_limit_exceeded・loud 記帳)', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000005'
+    // page0=10MB(累計 10MB・OK)/ page1=25MB(累計 35MB > 30MB・ここで打ち切り)/
+    // page2 は到達しないことを確認するためのダミー。
+    const pages = [
+      webpLike('p0', 10_000_000),
+      webpLike('p1', 25_000_000),
+      webpLike('p2', 1_000_000),
+    ]
+    const pdf = registerPdf(fileId, pages)
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'webp_limit_exceeded',
+      }),
+    )
+    // page2 まで進んでいない(累計超過で即打ち切り)。
+    expect(pdfState.renderCalls).toEqual([
+      expect.stringContaining(':0'),
+      expect.stringContaining(':1'),
+    ])
+    // loud: recordUnexpectedFailure 経由で integration_failures にも積む。
+    expect(mockRecordIntegrationFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'ocr_pipeline',
+        context: expect.objectContaining({ errorCode: 'webp_limit_exceeded' }),
+      }),
+    )
+  })
+})
+
+// fix round 1(canonical Important 1): pdf-rasterize.ts は getPage/render/sharp
+// encode のあらゆる失敗を PdfParseError に包む(count phase を通過した後でも
+// 1 ページだけ壊れている PDF は render 呼出時にこれで失敗しうる)。ユーザー入力
+// 起因の予期される失敗であり、integration_failures/Discord を鳴らすシステム障害
+// ではない — この file 自身の規律(`:1052` 付近「台帳はユーザー起因の失敗で
+// 埋めない」)に従い、terminal 化のみで台帳には積まないことを pin する。
+describe('runUploadPipeline — PDF render phase: ページ単位の render 失敗(Important 1 fix)', () => {
+  it('renderPageWebp が PdfParseError を投げたら terminal 化するだけで台帳には積まない', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000009'
+    const pages = [webpLike('p0'), webpLike('p1')]
+    const pdf = registerPdf(fileId, pages)
+    const bytesB64 = pdfBytes(fileId).toString('base64')
+    // 2 ページ目(index 1)の render で PdfParseError を投げる。
+    pdfState.renderErrorAt.set(bytesB64, 1)
+    pdfState.renderErrorFactory = () => new PdfParseError('mock render failure')
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'pdf_render_failed',
+      }),
+    )
+    // ユーザー入力起因 — 台帳(loud)には積まない(webp_limit_exceeded と異なる扱い)。
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+    // handle は失敗経路でも destroy される(既存 pdf-rasterize.ts の try/finally 契約
+    // + 本 file の finally が呼ぶ)。
+    expect(pdfState.destroyCalls).toBeGreaterThan(0)
+  })
+})
+
+// fix round 1(canonical Minor 11): 既定 GET_TIMEOUT_MS(10s)への regression を
+// 「型でも uuid 検証でも捕まらない」まま静かに戻さないための pin
+// (PDF_SOURCE_GET_TIMEOUT_MS は upload-pipeline.ts の非 export 定数のため、
+// ここでは spec 値 60_000 を直接期待値として持つ)。
+describe('runUploadPipeline — PDF source GET timeout(spec D8: 既定 10s は 50MB PDF に不足しうる)', () => {
+  it('count/render phase の getObject は timeoutMs:60000 を明示する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000a', [pngLike('p0')])
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockGetObject).toHaveBeenCalledTimes(2) // count phase 1 回 + render phase 1 回
+    const calls = mockGetObject.mock.calls as unknown as [string, { timeoutMs?: number }][]
+    for (const [, opts] of calls) {
+      expect(opts).toEqual({ timeoutMs: 60_000 })
+    }
+  })
+})
+
+// fix round 4(canonical/Codex Critical 修正2): 残余予算チェックは phase 開始前の
+// 1 回だけでなく、count/render 両 phase の **loop 内**(各 PDF の GET 前・render は
+// 各 renderPageWebp 前も)に置く — 修正1(in-loop 上限判定)だけでは「40 冊 × 1
+// ページ」のように上限には収まったまま多数の GET を続けるケースを防げない。
+// PDF_SOURCE_GET_TIMEOUT_MS(60_000ms・upload-pipeline.ts の非 export 定数)を
+// loop 内チェックの閾値としても流用している(定数コメント参照)。
+describe('runUploadPipeline — PDF count/render phase: loop 内 deadline チェック(fix round 4 Critical)', () => {
+  it('count phase 中に予算が尽きたら次の PDF を GET せず deadline_exceeded で terminal(所有権があるため DELETE される)', async () => {
+    const pdfA = registerPdf('aaaaaaaa-0000-4000-8000-000000000015', [pngLike('a0')])
+    const pdfB = registerPdf('aaaaaaaa-0000-4000-8000-000000000016', [pngLike('b0')])
+    const keyA = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfA.fileId)
+    const keyB = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfB.fileId)
+
+    const realNow = Date.now.bind(Date)
+    let clockOffset = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset)
+    try {
+      mockGetObject.mockImplementation(async (key: string) => {
+        const queue = r2State.bytesByKey.get(key)
+        const bytes = queue && queue.length > 0 ? (queue.length > 1 ? queue.shift()! : queue[0]) : null
+        if (key === keyA) {
+          // pdfA の GET(count phase の 1 回目)が予算をほぼ使い切ったことにする —
+          // pdfB の GET **前**の loop 内チェックが deadline_exceeded で落ちるはず。
+          clockOffset += 61_000
+        }
+        return bytes ? { bytes } : null
+      })
+
+      await runWithPdf([], [pdfA, pdfB], [
+        { kind: 'pdf', fileId: pdfA.fileId },
+        { kind: 'pdf', fileId: pdfB.fileId },
+      ], { deadlineOffsetMs: 65_000 })
+    } finally {
+      nowSpy.mockRestore()
+    }
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'deadline_exceeded',
+      }),
+    )
+    // pdfB は count phase で 1 度も GET されない。
+    expect(mockGetObject).toHaveBeenCalledWith(keyA, expect.anything())
+    expect(mockGetObject).not.toHaveBeenCalledWith(keyB, expect.anything())
+    // 所有権があるため出口 DELETE は両 key に対して通常どおり行われる(要件5)。
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyA)
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyB)
+  })
+
+  it('render phase 中に予算が尽きたら次の PDF を GET しない', async () => {
+    const pdfA = registerPdf('aaaaaaaa-0000-4000-8000-000000000017', [pngLike('a0')])
+    const pdfB = registerPdf('aaaaaaaa-0000-4000-8000-000000000018', [pngLike('b0')])
+    const keyA = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfA.fileId)
+    const keyB = sourcePdfObjectKey(USER_ID, SESSION_ID, pdfB.fileId)
+    const bytesAB64 = pdfBytes(pdfA.fileId).toString('base64')
+
+    const realNow = Date.now.bind(Date)
+    let clockOffset = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset)
+    try {
+      // pdfA の(唯一の)page 0 が render された直後に予算をほぼ使い切ったことにする
+      // — これで pdfA 自身の render は完走し、pdfB の GET **前**の loop 内チェック
+      // だけが deadline_exceeded で落ちる(GET 直後に飛ばすと pdfA 自身の
+      // renderPageWebp 前チェックまで巻き込んでしまうため、page render 側で
+      // 飛ばす)。
+      pdfState.onRenderPage = (b64: string) => {
+        if (b64 === bytesAB64) {
+          clockOffset += 61_000
+        }
+      }
+
+      await runWithPdf([], [pdfA, pdfB], [
+        { kind: 'pdf', fileId: pdfA.fileId },
+        { kind: 'pdf', fileId: pdfB.fileId },
+      ], { deadlineOffsetMs: 65_000 })
+    } finally {
+      nowSpy.mockRestore()
+    }
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'deadline_exceeded',
+      }),
+    )
+    // pdfA は自身の 1 ページを render し切る(renderCalls に現れる)。
+    expect(pdfState.renderCalls).toHaveLength(1)
+    // pdfA は count + render で計 2 回 GET されるが、pdfB は count phase の 1 回
+    // だけで render phase の再 GET には至らない。
+    expect(
+      (mockGetObject.mock.calls as unknown as [string][]).filter(([k]) => k === keyA),
+    ).toHaveLength(2)
+    expect(
+      (mockGetObject.mock.calls as unknown as [string][]).filter(([k]) => k === keyB),
+    ).toHaveLength(1)
+    // 所有権があるため出口 DELETE は両 key に対して通常どおり行われる(要件5)。
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyA)
+    expect(mockDeleteObject).toHaveBeenCalledWith(keyB)
+  })
+
+  it('ページ間で予算が尽きたら次の renderPageWebp を呼ばない', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-000000000019', [
+      pngLike('p0'),
+      pngLike('p1'),
+      pngLike('p2'),
+    ])
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, pdf.fileId)
+
+    const realNow = Date.now.bind(Date)
+    let clockOffset = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset)
+    try {
+      pdfState.onRenderPage = (_b64: string, i: number) => {
+        // page 0 の render 直後に予算をほぼ使い切ったことにする — page 1 の
+        // renderPageWebp **前**の loop 内チェックが deadline_exceeded で落ちるはず。
+        if (i === 0) {
+          clockOffset += 61_000
+        }
+      }
+
+      await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }], {
+        deadlineOffsetMs: 65_000,
+      })
+    } finally {
+      nowSpy.mockRestore()
+    }
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'deadline_exceeded',
+      }),
+    )
+    // page 0 だけ render され、page 1/2 は呼ばれない。
+    expect(pdfState.renderCalls).toEqual([expect.stringContaining(':0')])
+    // 所有権があるため出口 DELETE は通常どおり行われる(要件5)。
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
+  })
+})
+
+describe('runUploadPipeline — sourceOrder の合流(spec §2/D3)', () => {
+  it('画像/PDF が混在した manifest 順どおりに Gemini parts へ合流する', async () => {
+    const images = filesOf('imgA', 'imgB')
+    // decode phase は mock 済 sharp が常に format:'png' を返す(source-image-verify.ts
+    // の sniff/decode 一致検証を通すため、ここでは rasterize 済みページも
+    // pngLike で表す — 実 webp 出力の形状は pdf-rasterize.test.ts(実 sharp)が
+    // 別途保証する。本 test の主張は「合流順」であって mimeType の実値ではない)。
+    const pdfX = registerPdf('aaaaaaaa-0000-4000-8000-000000000006', [
+      pngLike('x0'),
+      pngLike('x1'),
+    ])
+    const pdfY = registerPdf('aaaaaaaa-0000-4000-8000-000000000007', [pngLike('y0')])
+
+    await runWithPdf(images, [pdfX, pdfY], [
+      { kind: 'image', fileIndex: 0 },
+      { kind: 'pdf', fileId: pdfX.fileId },
+      { kind: 'image', fileIndex: 1 },
+      { kind: 'pdf', fileId: pdfY.fileId },
+    ])
+
+    expect(mockCallGemini).toHaveBeenCalledTimes(1)
+    const parts = mockCallGemini.mock.calls[0][0].parts as GeminiContentPart[]
+    const images_ = parts.filter(
+      (p): p is { inlineData: { mimeType: string; data: string } } => 'inlineData' in p,
+    )
+    // 合流順 = imgA, x0, x1, imgB, y0(sourceOrder どおり)。
+    expect(images_.map((p) => p.inlineData.data)).toEqual([
+      images[0].buffer.toString('base64'),
+      pngLike('x0').toString('base64'),
+      pngLike('x1').toString('base64'),
+      images[1].buffer.toString('base64'),
+      pngLike('y0').toString('base64'),
+    ])
+
+    const op = mockPublishPreparedUploadTx.mock.calls[0]?.[1] as
+      | { fileSizeBytes: number }
+      | undefined
+    // fix round 2(canonical Important 2): fileSizeBytes は**受領 Buffer の合計**
+    // (画像は原 Buffer・PDF は count phase が GET した実 source バイト長)であって
+    // rasterize 済み webp の合計ではない — pdfX/pdfY の source bytes(`pdfBytes(fileId)`。
+    // registerPdf が r2State に登録した値)を使う。
+    const expectedTotal =
+      images.reduce((sum, f) => sum + f.buffer.length, 0) +
+      pdfBytes(pdfX.fileId).length +
+      pdfBytes(pdfY.fileId).length
+    expect(op?.fileSizeBytes).toBe(expectedTotal)
+
+    // fix round 1(canonical Important 2): 出口 DELETE が**全** source key を
+    // 対象にすることを、単一 key への `toHaveBeenCalledWith` ではなく呼ばれた
+    // key の**集合**(件数込み)で pin する — 単一 key 版では `keys[0]` だけ
+    // 消す実装でも green になってしまう(検出力ゼロだった)。
+    const deletedKeys = mockDeleteObject.mock.calls.map((c) => c[0])
+    const expectedKeys = [
+      sourcePdfObjectKey(USER_ID, SESSION_ID, pdfX.fileId),
+      sourcePdfObjectKey(USER_ID, SESSION_ID, pdfY.fileId),
+    ]
+    expect(deletedKeys).toHaveLength(expectedKeys.length)
+    expect(deletedKeys).toEqual(expect.arrayContaining(expectedKeys))
+  })
+})
+
+// fix round 2(canonical Critical): 無条件 DELETE は所有権を失った invocation が
+// 共有 source を消しうる(fence に負けた側が finally で消すと、count と render の
+// 間にいる勝者の再 GET が null になり誤って terminal 化されうる)。「fence に負けたと
+// 明示的に判明した経路」(start_cas_lost / count_cas_lost / commit_raced /
+// publish_raced)でのみ DELETE を skip することを pin する。予期しない throw では
+// 所有権喪失の証拠が無いため従来どおり削除する。
+describe('runUploadPipeline — PDF 出口 DELETE: fence 敗北時は skip する(fix round 2 Critical)', () => {
+  it('start_cas_lost では DELETE を skip する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000b', [pngLike('p0')])
+    txState.startCasRows = []
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.start_cas_lost' }),
+    )
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('count_cas_lost では DELETE を skip する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000c', [pngLike('p0')])
+    // count-phase CAS(commitPdfCountCas)の `.returning()` も txState.commitReturning
+    // を読む(fakeTx は table 非依存)。開始時点から空にしておけば、count phase 自体
+    // (GET/loadPdf は tx を触らない)は正常に進み、CAS だけが 0 行で敗れる。
+    txState.commitReturning = []
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.count_cas_lost' }),
+    )
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('commit_raced(prepared payload CAS 敗北)では DELETE を skip する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000d', [pngLike('p0')])
+    // count-phase CAS は既定どおり成功させ、Gemini 呼出の中で(count-phase CAS
+    // 通過後・prepared payload CAS 直前のタイミングで)txState.commitReturning を
+    // 空にする — 既存「残り予算が crop 最低予算を切ったら」test と同じ「mock 内で
+    // 共有 state を書き換える」手口。
+    mockCallGemini.mockImplementation(async () => {
+      txState.commitReturning = []
+      return geminiOk()
+    })
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.commit_raced' }),
+    )
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('publish_raced(fencing 敗北)では DELETE を skip する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000e', [pngLike('p0')])
+    mockPublishPreparedUploadTx.mockResolvedValue({ outcome: 'stale' })
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'upload.pipeline.publish_raced' }),
+    )
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('予期しない throw では所有権喪失の証拠が無いため従来どおり DELETE する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-00000000000f', [pngLike('p0')])
+    vi.mocked(normalizePrepared).mockImplementationOnce(() => {
+      throw new Error('boom')
+    })
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(
+      sourcePdfObjectKey(USER_ID, SESSION_ID, pdf.fileId),
+    )
+  })
+
+  it('成功経路(publish 完了)では従来どおり DELETE する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-000000000010', [pngLike('p0')])
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(
+      sourcePdfObjectKey(USER_ID, SESSION_ID, pdf.fileId),
+    )
+  })
+
+  // fix round 3(canonical/Codex Critical): fix round 2 が塞いだ 4 経路(start_cas_lost/
+  // count_cas_lost/commit_raced/publish_raced)とは別に、`terminalize` 自身が内部で
+  // 検知する fence 敗北(= 別の書き手が既にこの op を終端化済み)も所有権喪失の
+  // 5 つ目のシグナル。`image_decode_failed` の terminalize 呼出を題材に、fence 確認
+  // (txState.opRows)を「既に別の書き手が terminal_failed 済」に見せることで
+  // raced を発火させる。
+  it('terminalize が raced を返す(別 invocation が既に終端化済み)状況では DELETE を skip する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-000000000011', [pngLike('p0')])
+    sharpState.failAt = 0 // decode 失敗 → terminalize('image_decode_failed', PRE_COMMIT_FENCE)
+    // PRE_COMMIT_FENCE = ['processing'] に含まれない status = raced。
+    txState.opRows = [{ status: 'terminal_failed', leaseVersion: 0 }]
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'image_decode_failed',
+        outcome: 'raced',
+      }),
+    )
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('terminalize が raced でない(通常の)場合は従来どおり DELETE する', async () => {
+    const pdf = registerPdf('aaaaaaaa-0000-4000-8000-000000000012', [pngLike('p0')])
+    sharpState.failAt = 0 // decode 失敗 → terminalize('image_decode_failed', PRE_COMMIT_FENCE)
+    // txState.opRows は既定(processing・自分の lease)のまま = raced にならない。
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'image_decode_failed',
+        outcome: 'terminalized',
+      }),
+    )
+    expect(mockDeleteObject).toHaveBeenCalledWith(
+      sourcePdfObjectKey(USER_ID, SESSION_ID, pdf.fileId),
+    )
+  })
+})
+
+// ②-4b T8: PDF source は一時的に R2 に置く(spec §2/§6)ため、この file が R2 module
+// から import してよいのは count/render phase の `getObject` と 出口 DELETE の
+// `deleteObject` の 2 つだけに置き換える(旧: 完全非 import pin・submit-upload.ts:448
+// の後継と同型)。`putObject` 不可 = source を server が書かない(server が書くのは
+// crop-derived asset のみ・crop-and-store.ts の責務)。
+describe('upload-pipeline.ts の R2 import は getObject / deleteObject のみ(spec §2/§6)', () => {
+  // fix round 1(canonical Minor 1): `.match()` は最初の import 文しか見ないため、
+  // 別の import 文で `putObject` 等を追加で import しても検出できなかった
+  // (regex pin が「強制している」と主張する完全性が実際には部分的だった —
+  // [[lesson_single_point_claims_decay]])。`matchAll` で全 import 文を集約し、
+  // その**集合**が許可 2 export のみであることを検証する。
+  it('許可された 2 export 以外を import していない(全 import 文を対象)', () => {
     const source = readFileSync(
       path.resolve(import.meta.dirname, 'upload-pipeline.ts'),
       'utf8',
     )
-    expect(source).not.toMatch(/from\s+['"][^'"]*lib\/storage\/r2['"]/)
+    const matches = [
+      ...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*lib\/storage\/r2['"]/g),
+    ]
+    expect(matches.length).toBeGreaterThan(0)
+    const imported = matches.flatMap((m) =>
+      m[1]
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+    expect(new Set(imported)).toEqual(new Set(['getObject', 'deleteObject']))
   })
 })

@@ -10,8 +10,15 @@
 // ai_usage が Gemini attempt ごとに +1 / **順序不変条件(spec §7.3): R2 PUT は
 // payload commit の後にしか起きない** / crop 失敗で OCR を巻き添えにしない(§9-6)。
 //
+// ②-4b T8: count/render phase + CAS + 出口 DELETE の実 PG 検証を追加する
+// (下方の `describe('runUploadPipeline — PDF …')` ブロック群)。PDF は実 wasm +
+// tracked fixture(tests/fixtures/ocr/mock-exam-3p.pdf・3p)を使う — pdf-rasterize
+// 自体は mock しない(T4 が別途 wasm を単体検証済・ここでは pipeline 合流を見る)。
+//
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 
 import { eq } from 'drizzle-orm'
 import sharp from 'sharp'
@@ -31,6 +38,7 @@ import {
   users,
 } from '@/lib/db/schema'
 import { todayInJst } from '@/lib/jst'
+import { sourcePdfObjectKey } from '@/lib/media/source-object-key'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
 
@@ -91,6 +99,8 @@ import { publishPreparedUploadTx } from '@/app/(app)/app/upload/_actions/publish
 import {
   runUploadPipeline,
   type UploadPipelineFile,
+  type UploadPipelineSourceOrderEntry,
+  type UploadPipelineSourcePdf,
 } from '@/app/(app)/app/upload/_lib/upload-pipeline'
 
 afterAll(async () => {
@@ -180,6 +190,15 @@ async function jpegBytesWithOrientation(
     .jpeg()
     .toBuffer()
 }
+
+// ②-4b T8: 実 wasm(PDFiumLibrary.init())の初回コストを見込んだ timeout
+// (lib/media/pdf-rasterize.test.ts の WASM_TEST_TIMEOUT_MS と同値・DB 往復も
+// 加わるため余裕を持たせる)。
+const WASM_TEST_TIMEOUT_MS = 30_000
+
+// 3p・A4 の tracked fixture(pdf-rasterize.test.ts と共有・生成手順は
+// tests/fixtures/ocr/README.md)。pdf-rasterize 自体は mock せず実 wasm で通す。
+const PDF_FIXTURE_3P = path.join(process.cwd(), 'tests/fixtures/ocr/mock-exam-3p.pdf')
 
 describe('runUploadPipeline (S-2 / S-3)', () => {
   let userAId: string
@@ -745,5 +764,212 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
 
     const op = await readOperation()
     expect(op?.lastErrorCode).toBe('superseded')
+  })
+
+  // ---------------------------------------------------------------------
+  // ②-4b T8: PDF count phase / render phase + CAS + 出口 DELETE(実 wasm + 実 PG)。
+  // outer beforeEach が作った op/doc(images 経路)を PDF 経路の初期状態
+  // (spec D6: pagesTotal NULL / expected_source_count 0 sentinel)へ変換して使う。
+  // ---------------------------------------------------------------------
+  describe('runUploadPipeline — PDF(T8: count/render phase + CAS + 出口 DELETE)', () => {
+    const PDF_SESSION_ID = '00000000-0000-4000-8000-0000000000f0'
+    const PDF_FILE_ID = '00000000-0000-4000-8000-0000000000f1'
+    let pdfFixtureBytes: Buffer
+
+    const sourceKey = () => sourcePdfObjectKey(userAId, PDF_SESSION_ID, PDF_FILE_ID)
+
+    function pdfManifestOf(): UploadPipelineSourcePdf[] {
+      return [
+        {
+          fileId: PDF_FILE_ID,
+          filename: 'mock-exam-3p.pdf',
+          // echo は信用しない(spec D6)— count phase が実ページ数(3)を数え直す。
+          pageCount: 3,
+          declaredBytes: pdfFixtureBytes.length,
+        },
+      ]
+    }
+    const PDF_ORDER: UploadPipelineSourceOrderEntry[] = [{ kind: 'pdf', fileId: PDF_FILE_ID }]
+
+    function runWithPdf(leaseVersion = 0, budgetMs = GEMINI_TIMEOUT_MS * 2): Promise<void> {
+      return runUploadPipeline(
+        userAId,
+        { operationId, examId, sourceDocumentId },
+        leaseVersion,
+        files,
+        new Date(Date.now() + budgetMs),
+        pdfManifestOf(),
+        PDF_SESSION_ID,
+        PDF_ORDER,
+      )
+    }
+
+    beforeEach(async () => {
+      pdfFixtureBytes = readFileSync(PDF_FIXTURE_3P)
+      files = []
+      const owner = getFixtureOwnerDb()
+      await owner
+        .update(sourceDocuments)
+        // fix round 2(canonical Important 2・2 表整合 test 用): fileSizeBytes は
+        // T7(submit-upload.ts)が算出する値(画像 byteSize 合計 + Σ declaredBytes)を
+        // 模す。files=[] のこの describe では PDF の declaredBytes(= 実 fixture 長。
+        // pdfManifestOf() が同じ値を使う)のみ。
+        .set({ fileType: 'pdf', pagesTotal: null, fileSizeBytes: pdfFixtureBytes.length })
+        .where(eq(sourceDocuments.id, sourceDocumentId))
+      await owner
+        .update(uploadOperations)
+        .set({ expectedSourceCount: 0 })
+        .where(eq(uploadOperations.id, operationId))
+      r2Spies.getObject.mockImplementation(async (key: string) =>
+        key === sourceKey() ? { bytes: pdfFixtureBytes } : null,
+      )
+      r2Spies.deleteObject.mockResolvedValue({ ok: true, status: 200 })
+    })
+
+    it(
+      '成功経路: count/render を経て publish し、source key を DELETE する',
+      async () => {
+        await runWithPdf()
+
+        const op = await readOperation()
+        expect(op?.status).toBe('completed')
+        // count phase が実ページ数(3)を確定させる(echo でなく正本)。
+        expect(op?.expectedSourceCount).toBe(3)
+        expect(await readDocStatus()).toBe('completed')
+        const doc = await getFixtureOwnerDb()
+          .select({ pagesTotal: sourceDocuments.pagesTotal, fileSizeBytes: sourceDocuments.fileSizeBytes })
+          .from(sourceDocuments)
+          .where(eq(sourceDocuments.id, sourceDocumentId))
+        expect(doc[0]?.pagesTotal).toBe(3)
+        expect(await countCards()).toBeGreaterThan(0)
+
+        // 出口 DELETE(spec §6 本線 2)。
+        expect(r2Spies.deleteObject).toHaveBeenCalledWith(sourceKey())
+        // server putObject の key は crop のみ(既存 pin 維持・src/ を含まない)。
+        for (const call of r2Spies.putObject.mock.calls as unknown as [string][]) {
+          expect(call[0]).not.toContain('/src/')
+        }
+
+        // sentinel(0)が publish に到達していない — 記帳される pages は実ページ数。
+        const records = await getFixtureOwnerDb()
+          .select()
+          .from(uploadRecords)
+          .where(eq(uploadRecords.userId, userAId))
+        expect(records[0]!.pagesProcessed).toBe(3)
+
+        // fix round 2(canonical Important 2): upload_records.file_size_bytes は
+        // rasterize 済み webp の合計ではなく count phase が GET した実 source(PDF
+        // 原本)バイト長。files=[] のこの test では PDF 1 冊分のみ。
+        expect(records[0]!.fileSizeBytes).toBe(pdfFixtureBytes.length)
+        // 2 表整合: T7 が source_documents.file_size_bytes に書く値(画像 byteSize
+        // 合計 + Σ declaredBytes・このテストの beforeEach が模している)と、T8 が
+        // upload_records.file_size_bytes に書く値(実 source バイト)が一致する
+        // (非改竄シナリオでは両者は一致する — T7 の declaredBytes は presign 署名値
+        // との contentLength 一致を HEAD 検証済のため)。
+        expect(records[0]!.fileSizeBytes).toBe(doc[0]!.fileSizeBytes)
+      },
+      WASM_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'terminal 経路(Gemini 失敗)でも DELETE する・doc は failed(poll 用・Codex I18)',
+      async () => {
+        mockCallGemini.mockRejectedValue(new Error('400 Bad Request'))
+
+        await runWithPdf()
+
+        const op = await readOperation()
+        expect(op?.status).toBe('terminal_failed')
+        expect(op?.lastErrorCode).toBe('gemini_call_failed')
+        expect(await readDocStatus()).toBe('failed')
+        expect(r2Spies.deleteObject).toHaveBeenCalledWith(sourceKey())
+      },
+      WASM_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      '予期しない throw(catch-all)でも DELETE する',
+      async () => {
+        vi.mocked(normalizePrepared).mockImplementationOnce(() => {
+          throw new Error('unexpected pipeline explosion')
+        })
+
+        await expect(runWithPdf()).resolves.toBeUndefined()
+
+        const op = await readOperation()
+        expect(op?.status).toBe('terminal_failed')
+        expect(op?.lastErrorCode).toBe('pipeline_unexpected_error')
+        expect(r2Spies.deleteObject).toHaveBeenCalledWith(sourceKey())
+      },
+      WASM_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'count phase CAS が lease 不一致で 0 行なら render/Gemini へ進まず sentinel のまま(publish に到達しない)',
+      async () => {
+        // count phase の GET の最中に takeover が起きた状況(lease bump)を再現する。
+        r2Spies.getObject.mockImplementation(async (key: string) => {
+          if (key !== sourceKey()) return null
+          await getFixtureOwnerDb()
+            .update(uploadOperations)
+            .set({ leaseVersion: 1 })
+            .where(eq(uploadOperations.id, operationId))
+          return { bytes: pdfFixtureBytes }
+        })
+
+        await runWithPdf(0)
+
+        expect(mockCallGemini).not.toHaveBeenCalled()
+        const op = await readOperation()
+        expect(op?.status).toBe('processing')
+        // CAS(status=processing AND lease_version=0)が 0 行 → sentinel のまま。
+        expect(op?.expectedSourceCount).toBe(0)
+        expect(op?.preparedPayload).toBeNull()
+        const doc = await getFixtureOwnerDb()
+          .select({ pagesTotal: sourceDocuments.pagesTotal, status: sourceDocuments.status })
+          .from(sourceDocuments)
+          .where(eq(sourceDocuments.id, sourceDocumentId))
+        expect(doc[0]?.pagesTotal).toBeNull()
+        expect(doc[0]?.status).toBe('processing')
+        expect(await countCards()).toBe(0)
+      },
+      WASM_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      '同一 operation の 2 回目実行(敗者)は所有権を失っているため DELETE を skip し、1 回目(勝者)の完了状態を壊さない(Codex I10 / fix round 2 Critical)',
+      async () => {
+        await runWithPdf()
+        const afterFirst = await readOperation()
+        expect(afterFirst?.status).toBe('completed')
+        const cardsAfterFirst = await countCards()
+        expect(cardsAfterFirst).toBeGreaterThan(0)
+        expect(r2Spies.deleteObject).toHaveBeenCalledWith(sourceKey())
+        const deleteCallsAfterFirst = (
+          r2Spies.deleteObject.mock.calls as unknown as [string][]
+        ).filter(([k]) => k === sourceKey()).length
+
+        // 同一 operationId・同一 leaseVersion・同一 session/key で再実行する
+        // (after() の二重発火 相当)。count phase 自体は再実行されるが、
+        // count-phase CAS が status='processing' を要求するため
+        // (現在は 'completed')0 行で敗れ、render/Gemini/publish には進まない。
+        await runWithPdf()
+
+        const op = await readOperation()
+        expect(op?.status).toBe('completed')
+        expect(await countCards()).toBe(cardsAfterFirst)
+        // fix round 2(canonical Critical): 敗者(2 回目・count_cas_lost)は所有権を
+        // 失ったと判明しているため出口 DELETE を skip する — 無条件 DELETE だと
+        // 「count と render の間にいる勝者」の再 GET を壊しうる(このテストでは勝者は
+        // 既に完了済だが、一般に安全な skip 条件であることを「敗者が消さない」で
+        // 直接 pin する)。2 回目実行後も deleteObject 呼出数は 1 回目のままで
+        // 増えない。
+        const deleteCallsAfterSecond = (
+          r2Spies.deleteObject.mock.calls as unknown as [string][]
+        ).filter(([k]) => k === sourceKey()).length
+        expect(deleteCallsAfterSecond).toBe(deleteCallsAfterFirst)
+      },
+      WASM_TEST_TIMEOUT_MS,
+    )
   })
 })
