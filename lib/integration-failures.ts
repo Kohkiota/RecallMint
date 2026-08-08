@@ -75,9 +75,10 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'asset_gc',
     failureCode: 'external_api_error',
   },
-  // ②-4b spec §6 本線 2: upload pipeline 出口(成功 publish 後 / terminal 化後 /
-  // start_cas_lost / commit_raced の全経路)での source PDF R2 実体 DELETE 失敗の
-  // 記帳先。0032 で撤去した r2_gc_delete_source(旧 source_asset_gc GC lane)の
+  // ②-4b spec §6 本線 2: upload pipeline 出口(所有権を保持したまま
+  // `runUploadPipeline` を抜けた経路すべて — 所有権喪失 5 経路と pipeline 未到達
+  // 2 経路を除く)での source PDF R2 実体 DELETE 失敗の記帳先。0032 で撤去した
+  // r2_gc_delete_source(旧 source_asset_gc GC lane)の
   // 後継だが、GC sweep ではなく pipeline 出口の**即時 DELETE**が失敗したケースを
   // 表す点が異なる(workflow は asset_gc ではなく upload_single_invocation =
   // ocr_pipeline と同じ pipeline に属する失敗であることを表す)。DB側の掃除とは

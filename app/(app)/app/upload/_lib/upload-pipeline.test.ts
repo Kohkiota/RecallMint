@@ -21,8 +21,18 @@ const { mockGetObject, mockDeleteObject, r2State, mockLoadPdf, pdfState } = vi.h
   const r2State = {
     bytesByKey: new Map<string, Buffer[]>(),
     deleteResult: { ok: true, status: 200 } as { ok: boolean; status: number | null },
+    // whole-branch review fix(必須3): key 単位の呼出回数(1-origin)を数え、
+    // `nullAtCall` に登録された回数の呼出だけ null を返す。count phase(1 回目)は
+    // 成功させたまま render phase(2 回目)の再 GET だけを不在にする、といった
+    // call 順分岐の注入点(mockImplementation の恒久上書きだと後続 test に
+    // 漏れるため、この状態ベースの形にする — beforeEach で毎回 clear する)。
+    nullAtCall: new Map<string, number>(),
+    callCountByKey: new Map<string, number>(),
   }
   const mockGetObject = vi.fn(async (key: string) => {
+    const callNo = (r2State.callCountByKey.get(key) ?? 0) + 1
+    r2State.callCountByKey.set(key, callNo)
+    if (r2State.nullAtCall.get(key) === callNo) return null
     const queue = r2State.bytesByKey.get(key)
     if (!queue || queue.length === 0) return null
     const bytes = queue.length > 1 ? queue.shift()! : queue[0]
@@ -52,9 +62,22 @@ const { mockGetObject, mockDeleteObject, r2State, mockLoadPdf, pdfState } = vi.h
     // 模す)ために使う — 「残り予算が crop 最低予算を切ったら」既存 test と同じ
     // 「mock 内で共有 state を書き換える」手口。
     onRenderPage: null as ((b64: string, i: number) => void) | null,
+    // whole-branch review fix(必須3 + Minor4): loadPdf 自体を b64 単位の呼出回数
+    // (1-origin)で失敗させる。count phase(1 回目)と render phase(2 回目)は
+    // 同じ b64 で loadPdf を呼ぶため、`renderErrorAt` と同様に「実 PdfParseError を
+    // 投げたいが vi.hoisted からは import 不可」の間接化(loadErrorFactory)+
+    // 呼出回数で「どちらの phase で落とすか」を分岐する。
+    loadErrorAtCall: new Map<string, number>(),
+    loadErrorFactory: null as (() => Error) | null,
+    loadCallCountByB64: new Map<string, number>(),
   }
   const mockLoadPdf = vi.fn(async (buf: Buffer) => {
     const b64 = buf.toString('base64')
+    const loadCallNo = (pdfState.loadCallCountByB64.get(b64) ?? 0) + 1
+    pdfState.loadCallCountByB64.set(b64, loadCallNo)
+    if (pdfState.loadErrorAtCall.get(b64) === loadCallNo && pdfState.loadErrorFactory) {
+      throw pdfState.loadErrorFactory()
+    }
     const pages = pdfState.pagesByBytesB64.get(b64) ?? []
     return {
       pageCount: pages.length,
@@ -429,12 +452,17 @@ beforeEach(() => {
   cropState.throwAll = false
   r2State.bytesByKey.clear()
   r2State.deleteResult = { ok: true, status: 200 }
+  r2State.nullAtCall.clear()
+  r2State.callCountByKey.clear()
   pdfState.pagesByBytesB64.clear()
   pdfState.renderCalls = []
   pdfState.destroyCalls = 0
   pdfState.renderErrorAt.clear()
   pdfState.renderErrorFactory = null
   pdfState.onRenderPage = null
+  pdfState.loadErrorAtCall.clear()
+  pdfState.loadErrorFactory = null
+  pdfState.loadCallCountByB64.clear()
   // mockImplementationOnce / mockRejectedValue は clearAllMocks で戻らないため、
   // 層 2 の注入点(classifyCropOutcome)は毎回 実実装へ戻す。
   vi.mocked(classifyCropOutcome).mockImplementation(realClassifyCropOutcome)
@@ -1123,6 +1151,61 @@ describe('runUploadPipeline — PDF count phase(spec D4/D8: 層 3 = 唯一の機
     expect(mockDeleteObject).toHaveBeenCalledWith(keyA)
     expect(mockDeleteObject).toHaveBeenCalledWith(keyB)
   })
+
+  // whole-branch review 必須3(分岐①): count phase の GET null(upload-pipeline.ts
+  // :255-256)が test でゼロだった。registerPdf を使わず r2State/pdfState どちらにも
+  // 登録しない(= mockGetObject が null を返す既定挙動)。
+  it('R2 GET が null(オブジェクト不在)を返したら pdf_source_unavailable で terminal', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000020'
+    const pdf: UploadPipelineSourcePdf = {
+      fileId,
+      filename: 'missing.pdf',
+      pageCount: 1,
+      declaredBytes: 100,
+    }
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(pdfState.renderCalls).toHaveLength(0)
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'pdf_source_unavailable',
+      }),
+    )
+    // ユーザー起因の失敗 — 台帳(loud)には積まない(pdf_render_failed と同じ扱い)。
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+    // 所有権があるため出口 DELETE は通常どおり行われる。
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, fileId)
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
+  })
+
+  // whole-branch review 必須3(分岐②): count phase の loadPdf が PdfParseError を
+  // 投げるケース(upload-pipeline.ts :264-266)が test でゼロだった。
+  it('loadPdf が PdfParseError を投げたら pdf_source_unavailable で terminal(壊れ/暗号化 PDF)', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000021'
+    const pdf = registerPdf(fileId, [webpLike('p0')])
+    const bytesB64 = pdfBytes(fileId).toString('base64')
+    // 1 回目(count phase)の loadPdf 呼出だけを失敗させる。
+    pdfState.loadErrorAtCall.set(bytesB64, 1)
+    pdfState.loadErrorFactory = () => new PdfParseError('mock load failure (count phase)')
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    // count phase で terminal 化するため render phase の renderPageWebp は呼ばれない。
+    expect(pdfState.renderCalls).toHaveLength(0)
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'pdf_source_unavailable',
+      }),
+    )
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, fileId)
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
+  })
 })
 
 describe('runUploadPipeline — PDF render phase: TOCTOU(spec §6/Codex C1)', () => {
@@ -1222,6 +1305,61 @@ describe('runUploadPipeline — PDF render phase: ページ単位の render 失�
     // handle は失敗経路でも destroy される(既存 pdf-rasterize.ts の try/finally 契約
     // + 本 file の finally が呼ぶ)。
     expect(pdfState.destroyCalls).toBeGreaterThan(0)
+  })
+})
+
+// whole-branch review 必須3(分岐③)+ Minor4 fix: render phase の再 GET null /
+// loadPdf の PdfParseError が test でゼロだった(Minor4 fix はこの wave で
+// render phase の loadPdf に catch を新設した分)。
+describe('runUploadPipeline — PDF render phase: R2 再 GET null / loadPdf 失敗(必須3 + Minor4 fix)', () => {
+  it('render phase の再 GET が null を返したら pdf_source_unavailable で terminal(必須3 分岐③)', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000022'
+    const pdf = registerPdf(fileId, [webpLike('p0')])
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, fileId)
+    // 1 回目(count phase の GET)は成功・2 回目(render phase の再 GET)だけ null。
+    r2State.nullAtCall.set(key, 2)
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    // render phase の再 GET で terminal 化するため renderPageWebp は呼ばれない。
+    expect(pdfState.renderCalls).toHaveLength(0)
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'pdf_source_unavailable',
+      }),
+    )
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
+  })
+
+  // Minor4 fix 本体: render phase の loadPdf(count phase の loadPdf とは別呼出)が
+  // PdfParseError を投げるケース。fix 前は catch が無く catch-all(予期しない
+  // throw → integration_failures/Discord)に落ちていた。
+  it('render phase の loadPdf が PdfParseError を投げたら pdf_source_unavailable で terminal(台帳には積まない)', async () => {
+    const fileId = 'aaaaaaaa-0000-4000-8000-000000000023'
+    const pdf = registerPdf(fileId, [webpLike('p0')])
+    const bytesB64 = pdfBytes(fileId).toString('base64')
+    // 1 回目(count phase)は成功・2 回目(render phase)の loadPdf だけ失敗させる。
+    pdfState.loadErrorAtCall.set(bytesB64, 2)
+    pdfState.loadErrorFactory = () => new PdfParseError('mock load failure (render phase)')
+
+    await runWithPdf([], [pdf], [{ kind: 'pdf', fileId: pdf.fileId }])
+
+    expect(mockCallGemini).not.toHaveBeenCalled()
+    expect(pdfState.renderCalls).toHaveLength(0)
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'upload.pipeline.failed',
+        errorCode: 'pdf_source_unavailable',
+      }),
+    )
+    // fix 前はここが呼ばれてしまっていた(catch-all 経由の loud 記録)— fix 後は
+    // ユーザー起因の失敗として静かに terminal 化するだけ。
+    expect(mockRecordIntegrationFailure).not.toHaveBeenCalled()
+    const key = sourcePdfObjectKey(USER_ID, SESSION_ID, fileId)
+    expect(mockDeleteObject).toHaveBeenCalledWith(key)
   })
 })
 

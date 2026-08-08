@@ -88,7 +88,10 @@ export async function publishPreparedUploadTx(
       examId: uploadOperations.examId,
       sourceDocumentId: uploadOperations.sourceDocumentId,
       // fix round 3: source_documents/upload_records の pages_processed(= 受領
-      // 画像数)は sync tx が確定させた immutable oracle を使う(spec §8.2/§2.1)。
+      // 枚数)は expected_source_count を独立 oracle として使う(spec §8.2/§2.1)。
+      // 画像のみの upload は sync tx(作成時 INSERT)が確定させた immutable 値。
+      // PDF を含む upload は count phase の fenced CAS(spec D6)が確定させた値 —
+      // publish 時点(この SELECT)では既に確定済みで以降書き換わらない。
       expectedSourceCount: uploadOperations.expectedSourceCount,
     })
     .from(uploadOperations)

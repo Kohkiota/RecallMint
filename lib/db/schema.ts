@@ -405,6 +405,9 @@ export const sourceDocuments = pgTable(
       .notNull()
       .default('processing'),
     pagesProcessed: integer('pages_processed').notNull().default(0),
+    // PDF を含む upload は作成時 NULL で INSERT され、count phase の fenced CAS
+    // (`commitPdfCountCas`・upload-pipeline.ts)が実ページ数確定時に書く(spec D6・
+    // expected_source_count と同一 CAS)。画像のみの upload は作成時に確定値(NULL 窓なし)。
     pagesTotal: integer('pages_total'),
     cardsExtracted: integer('cards_extracted').notNull().default(0),
     // S1.9.1: integer → numeric(10,4)。 cost を小数で保持 (integer 切り捨ての
@@ -928,8 +931,12 @@ export const uploadOperations = pgTable(
     preparedHash: text('prepared_hash'),
     preparedPayload: jsonb('prepared_payload').$type<Record<string, unknown>>(),
     resultSummary: jsonb('result_summary').$type<Record<string, unknown>>(),
-    // operation 作成時に確定する immutable な受領枚数 manifest。publish 時の
-    // pages_processed / upload_records の記帳はこの列を独立 oracle として使う。
+    // 受領枚数 manifest。publish 時の pages_processed / upload_records の記帳は
+    // この列を独立 oracle として使う。**確定タイミングは経路で異なる**(spec D6):
+    // 画像のみの upload は operation 作成時(INSERT)に確定する immutable な値。
+    // PDF を含む upload は作成時 `0` sentinel で INSERT され(submit-upload.ts)、
+    // count phase の fenced CAS(`commitPdfCountCas`・upload-pipeline.ts)が実
+    // ページ数で確定する — CAS 成功後は同じく immutable(以降この列を書く経路は無い)。
     expectedSourceCount: integer('expected_source_count').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()

@@ -159,7 +159,9 @@ type PipelineErrorCode =
   // ②-4b T8(spec D7 r4): render phase の webp 累計が MAX_RENDERED_WEBP_TOTAL_BYTES
   // を超過(loud — recordUnexpectedFailure にも積む)。
   | 'webp_limit_exceeded'
-  // ②-4b T8: count/render phase の R2 GET が失敗(オブジェクト不在・network 異常)。
+  // ②-4b T8: count/render phase の R2 GET が失敗(オブジェクト不在・network 異常)
+  // または loadPdf が PdfParseError を投げた(壊れ/暗号化 PDF・Minor 4 fix で
+  // render phase にも catch を追加・count phase と同一 reason)。
   | 'pdf_source_unavailable'
   // ②-4b T8 fix round 1(canonical Important 1): render phase の 1 ページ単位の
   // render 失敗(壊れ/非対応ページ等 — pdf-rasterize.ts があらゆる render 失敗を
@@ -391,7 +393,21 @@ async function runPdfRenderPhase(
     if (sha256Hex(got.bytes) !== shaByFileId.get(pdf.fileId)) {
       return { ok: false, reason: 'source_changed' }
     }
-    const handle = await loadPdf(got.bytes)
+    // whole-branch review Minor 4 fix: count phase(:264-268 相当)と同じ形で
+    // loadPdf の PdfParseError を catch する。sha256 一致は「count phase の
+    // loadPdf が成功した bytes と同一」を保証するだけで loadPdf 自体の成功は
+    // 保証しないため理論上到達しうる(near-unreachable だが未 catch のままだと
+    // catch-all(予期しない throw)に落ち、ユーザー起因の失敗が
+    // integration_failures/Discord に飛ぶ — canonical Important 1 と同じクラス)。
+    let handle
+    try {
+      handle = await loadPdf(got.bytes)
+    } catch (err) {
+      if (err instanceof PdfParseError) {
+        return { ok: false, reason: 'pdf_source_unavailable' }
+      }
+      throw err
+    }
     try {
       const pages: UploadPipelineFile[] = []
       for (let i = 0; i < handle.pageCount; i++) {
