@@ -39,7 +39,8 @@
 | overrides による transitive 固定 | 脆弱 transitive の再解決 | 構成(lockfile)| `pnpm-workspace.yaml` |
 | MCP / Codex / TSLS の pin(postcondition で構造保証)| ツール挙動の暗黙 drift・LSP 不動作 | 構成(postcondition)| `.mcp.json` / `.devcontainer/post-create.sh` |
 | pnpm 依存 lifecycle script 既定 block + `onlyBuiltDependencies` 明示許可 | supply-chain 面の任意 postinstall 実行 | 構成(pnpm 既定 + 設定)| `pnpm-workspace.yaml` |
-| R2 lifecycle rule(prefix `src/`・maxAge 86400s)| PDF source(②-4b)の DELETE 漏れ残骸(明示 DELETE 本線の保険)。**設定は R2 側・OT 手動**(repo に定義なし)。削除実行は「典型 24h 以内」で保証なし = 実効上限 ≈48h と明記(保証しない値を保証扱いしない)| 構成(外部設定・OT 管理)| `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md` §6/§12 |
+| R2 lifecycle rule(prefix `src/`・maxAge 86400s)| PDF source(②-4b)の DELETE 漏れ残骸(明示 DELETE 本線の保険)。**設定は R2 側・OT 手動**(repo に定義なし)。削除実行は「典型 24h 以内」で保証なし = 実効上限 ≈48h と明記(保証しない値を保証扱いしない)。**効果の実測はゼロのまま**(現行 credential では rule 本体の readback が 403)— 効果監視は下行の sweeper の overdue alert(72h)が担うが、その観測は **listing 上限 10 page(≈10,000 key)内の partial observation** であって `src/` 全域ではない | 構成(外部設定・OT 管理)| `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md` §6/§12 |
+| `src/` age-based sweeper(日次 Vercel Cron・**repo 初の cron**)| `src/` に残った期限超過 PDF(§1 staging DELETE の取り漏らし / 所有権喪失 skip / §2 退会 purge の打ち切り残 / finalize reject の削除失敗)。cutoff 6h・age で判定し、`src/{uuid}/{uuid}/{uuid}.pdf`(case-insensitive)一致かつ live-op を持たない user の object だけを消す。**`CRON_SECRET` 未設定 = 401 = 何も掃かれない**(fail-closed。secret 不在が「壊れる」でなく「守る」側に倒れる反転は非自明ゆえ明記)。`?cutoffMinutes=` の override は production では 400。**HEAD も Next 16 の auto-implement で同一 handler = valid secret 付き HEAD は実削除を走らせる**(冪等だが health-check に使わない)| 構成(cron・`vercel.json` crons)+ 機械(route の auth / 台帳)| `docs/superpowers/specs/2026-08-09-ocr-2-4b-s3-src-sweeper-design.md` / `app/api/cron/sweep/route.ts` |
 
 ## 3. プロセス(人の約束・ずれうる)
 
