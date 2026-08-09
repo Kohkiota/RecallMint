@@ -308,8 +308,8 @@ fail-fast するため、mock hoisting を誤ると suite 全体が import 時�
 | `lib/storage/r2.test.ts` | bounded の truncated / 引数境界 / timeout 上書き + 既存 throw 文言の互換 pin |
 | `app/api/webhooks/clerk/route.ts` | `POST()` 冒頭で `handlerStart` 取得 → `handleEvent(evt, handlerStart)` |
 | `lib/clerk/handle-clerk-event.ts` | 定数 7 + purge helper(named export)+ **外周 try/finally** + `handlerStart` の引数伝播(`handleEvent` / `handleUserDeleted` は**必須引数**) |
-| `lib/integration-failures.ts` | catalog に `r2_deletion_src_delete` 追加 |
-| `lib/integration-failures.test.ts` | 件数 pin 12→13 + 4 軸 pin 1 本 |
+| `lib/integration-failures.ts` | catalog に **2 entry** 追加(`r2_deletion_src_delete` / `r2_deletion_src_incomplete`・§3.3) |
+| `lib/integration-failures.test.ts` | 件数 pin **12→14** + 4 軸 pin **2 本** |
 | `app/api/webhooks/clerk/route.test.ts`(or 単体) | §5 の pin |
 | `docs/architecture.md` | source 行の DELETE 経路列挙に退会 prefix purge を追記 |
 
