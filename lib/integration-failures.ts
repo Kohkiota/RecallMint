@@ -136,7 +136,10 @@ export const INTEGRATION_FAILURE_CATALOG = {
   // 結果 = 個々の source PDF の DELETE が失敗した(1 件 1 行)。他 lane の
   // r2/object.delete(asset_gc / upload_single_invocation / upload_staging)とは
   // workflow='user_deletion' で区別する(4 軸 tuple は stable identifier・相乗り禁止)。
-  // context = { userId, objectKey, status }。key 以外の PII は入れない(clerkId は
+  // context = { userId, objectKey, status } + 破壊境界の二重関門で prefix 不一致を弾いた行のみ
+  // reason: 'prefix_mismatch'(DELETE を試行していないことの構造化 discriminator。この行だけは
+  // status: null が「fetch throw / timeout」を意味しないため、free text でなく列で区別する)。
+  // key 以外の PII は入れない(clerkId は
   // 渡さない = データ最小化。Discord へもそのまま出るため)。
   r2_deletion_src_delete: {
     service: 'r2',
