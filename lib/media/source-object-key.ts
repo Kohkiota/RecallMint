@@ -32,6 +32,12 @@ function assertUuidV4(value: string, argName: string): void {
 /**
  * PDF 一時保存の R2 object key を構築する(spec §3)。
  * 3 引数とも uuid v4 形状でなければ throw する(path injection 遮断)。
+ *
+ * **この採番規約は ②-4b §3 sweeper の削除関門と対になっている**:
+ * `lib/storage/src-sweep.ts` の `SRC_KEY_SEGMENTS_PATTERN` + uuid v4 検証が
+ * 「消してよい key か」を同じ形で判定する(case-insensitive)。ここで v4 以外を
+ * 採番するようになると sweeper は全件 mismatch へ倒れ、`src/` の回収が止まる
+ * (倒れ方は非削除 + 毎日 alert なので安全側だが、気づくのは Discord 経由になる)。
  */
 export function sourcePdfObjectKey(
   userId: string,

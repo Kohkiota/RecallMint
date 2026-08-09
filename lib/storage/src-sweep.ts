@@ -211,6 +211,10 @@ export type SrcSweepSummary = {
  * `cutoffMs` を引数で受けるのは手動 GET の `?cutoffMinutes=` override のため
  * (受理・下限・prod 拒否の検証は route の領分)。overdue 判定は `selectSweepTargets`
  * が `ALERT_AGE_MS` を直接参照するので override の影響を受けない。
+ * **`cutoffMs` の下限検証は route の責務**であり、ここでは検証しない(起きえない分岐を
+ * 握らない方針)。`0` / 負 / `NaN` を渡すと `src/` の全 object が候補化する(`NaN` は
+ * 比較が常に false になるため特に危険)。2 本目の lane や別 caller を足すときは、
+ * この不変条件の担い手が route 1 箇所であることを引き継ぐこと。
  *
  * `now` は時刻注入 — 実 sleep なしで打ち切りを test するため(§2 と同じ idiom)。
  *
@@ -467,6 +471,11 @@ function higherPriorityPhase(
  * UI guard の best-effort で、DB エラーを握って **false(= live でない)** を返す。
  * sweeper がそれを信じると「判定不能なので消す」に倒れ、不変条件 3 の fail-safe が
  * 裏返る。ここでは throw をそのまま呼出側へ返し、呼出側が skip に倒す。
+ *
+ * ただし fail-safe が覆うのは **throw** であって「無言で 0 行」ではない: RLS の
+ * tenant context が意図と違う値で張られる等で読み取りが静かに空になると `false` =
+ * 削除側へ倒れる。極性が「行が返ること」に依存している事実は backstop(cutoff 6h =
+ * lease TTL の 24 倍・§3.3)に頼っており、判定そのものでは守っていない。
  *
  * RLS 下でも `user_id` 条件は query 側にも明示する(CLAUDE.md 絶対ルール)。
  */

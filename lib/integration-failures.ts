@@ -184,10 +184,12 @@ export const INTEGRATION_FAILURE_CATALOG = {
   // 壊さないよう別 entry にする(r2_deletion_src_incomplete と同型)。
   // failureCode='incomplete' は既存 4 語彙(external_api_error / state_mismatch /
   // db_error / unexpected_error)のどれにも相乗りしない打ち切り専用語彙(既存語彙を再利用)。
-  // context = `{ phase, listed, deleteRequested, remaining, suppressedFailures? }`。
+  // context = `{ phase?, listed, deleteRequested, remaining, suppressedFailures? }`。
   // phase 語彙 = `['list', 'live_check', 'list_truncated', 'deadline']`(配列順 =
-  // 優先順位)。context に入る PII は objectKey / userId(内部 uuid)のみ。Clerk ID は
-  // 扱わない。
+  // 優先順位)。**phase は optional** — quota 超過だけで打ち切り以外は起きなかった run
+  // (`suppressedFailures > 0` かつ phase なし)が実在するため、`context->>'phase'` で
+  // 分類する集計はその行を落とす。context に入る PII は objectKey / userId(内部 uuid)
+  // のみ。Clerk ID は扱わない。
   r2_sweep_incomplete: {
     service: 'r2',
     operation: 'src_sweep.incomplete',

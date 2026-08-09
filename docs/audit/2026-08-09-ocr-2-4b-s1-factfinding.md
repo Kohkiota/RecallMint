@@ -204,6 +204,14 @@ rule の**存在**ではなく**効果**を測る readback で、§3 sweeper と
 
 **次回確認**: A = 2026-08-10T11:44Z 以降 / B = 2026-08-11T01:09Z 以降。
 
+> ⚠ **この判定が終わるまで stg に `CRON_SECRET` を設定しないこと**(2026-08-09 追記)。
+> ②-4b §3 sweeper(`GET /api/cron/sweep`・実装済・未 push)は cutoff 6h で走るため、
+> 設定した瞬間に **sentinel 2 本とも回収対象**になり lifecycle 効果の測定が成立しなくなる。
+> 未設定 = 掃かれない(fail-closed)がそのまま保護になっている。判定を記録した後は
+> 保護不要 — 以後 sweeper が回収すれば、それ自体が sweeper 実削除の実証になる。
+> 同旨は spec `2026-08-09-ocr-2-4b-s3-src-sweeper-design.md` §8 / session doc §6 にもあるが、
+> **判定日に開くのはこの台帳**なのでここにも置く。
+
 ---
 
 ## 4. `integration_failures` の実列契約
