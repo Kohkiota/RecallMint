@@ -171,11 +171,18 @@ red 検証は gate を個別に変異させる(まとめ壊し禁止・既存 le
 
 plan 側に反映(spec 不変): parse 契約の詳細 / user 処理順 = oldest 昇順 / `recordErrors` summary / auth 先行評価 / `Cache-Control: no-store` / 成功判定は lane summary(HTTP 200 ≠ lane 成功)/ `summary.error` に R2 応答 body を載せない。
 
-## 11. §4 判定の分岐(spec 構造はどちらでも不変)
+## 11. §4 判定 — **確定: lifecycle は効いている**(2026-08-09)
 
-- **lifecycle が効いている**(sentinel が境界前に消える)→ sweeper = 二次回収 + 期限超過検知。architecture.md には「lifecycle = backstop・sweeper が主たる期限保証(正常時 ≈30h / 前提つき worst ≈55h・前提は §4)」と書く
-- **効いていない**(境界越え残存)→ sweeper = **唯一の期限保証**。architecture.md に「lifecycle rule は設定済みだが実削除の実証なし・当てにしない」と明記し、harness.md の lifecycle 行にも注記
-- 判定確定後に本 spec のこの節をどちらかへ確定させる(§1/§2 の受け皿記述の参照先も同時に更新)
+sentinel A(`src/85541b25…/f4f91e6d…/5ff46746….pdf`・PUT 2026-08-08T11:44:57Z)が **24h 通過後・48h 境界前に消失**した。観測は 2 経路(OT の Cloudflare dashboard 目視 / CC の `listObjectsWithMetaBounded('src/')` readback = 2026-08-09T23:45:35Z 時点で不在)。消失時刻の上下界は age **(23.7h, 36.0h]**。台帳 = `docs/audit/2026-08-09-ocr-2-4b-s1-factfinding.md` §3.5。
+
+**帰結(この spec の確定文言)**:
+
+- **sweeper = 二次回収 + 期限超過検知**。lifecycle = backstop
+- 保持時間は「正常時 ≈30h / 前提つき worst ≈55h」(前提 = cron 稼働・走査完了・skip ≤1 回。§4)。lifecycle の実効上限 ≈48h がその外側にもう 1 枚ある
+- ただし **lifecycle の削除実行は依然「典型 24h 以内」で無保証**であり、今回得たのは「1 例が 24h〜36h の間に消えた」という上下界のみ。**厳密な消失時刻も、常にこの範囲に収まる保証も無い** — 恒常的な効果監視は §3.6 の overdue alert(72h・listing 上限内の partial observation)が担い続ける
+- sentinel B は保護解除(smoke で sweeper が回収してよい)
+
+判定前に置いていた「効いていない場合は sweeper が唯一の期限保証」という分岐は**破棄**(条件が成立しなかった)。
 
 ## 12. 変更一覧
 
