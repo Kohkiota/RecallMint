@@ -20,6 +20,12 @@ import { handleEvent } from '@/lib/clerk/handle-clerk-event'
 export const runtime = 'nodejs'
 
 export async function POST(req: Request) {
+  // ②-4b §2 (spec §3.2): 退会 prefix purge の予算原点。予算は守るべき境界と同じ
+  // 原点から測る — 守る対象は本 route 全体の maxDuration: 60 なので handler 入口で
+  // 取り、引数で handleEvent → handleUserDeleted へ伝播する (省略可にしない:
+  // 渡し忘れが silent に誤った原点になるのを型で防ぐ)。
+  const handlerStart = Date.now()
+
   // T-A8 (audit §10.3 (b) #17): 3-tier env-aware gate に統一。
   // production = env 必須 (helper throw → Next.js 500、 既存 wire format と一致)、
   // preview = logger.warn + '' fallback (既存 svix verify が空文字で fail → 400)、
@@ -86,7 +92,7 @@ export async function POST(req: Request) {
   const userId = evt.data.id
 
   try {
-    await handleEvent(evt)
+    await handleEvent(evt, handlerStart)
     return new Response('ok', { status: 200 })
   } catch (err) {
     // outer catch で notifyWebhookError 経由 (Stripe 側

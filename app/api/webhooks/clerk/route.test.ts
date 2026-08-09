@@ -15,6 +15,9 @@ const {
   mockNotifyOps,
   mockNotifyWebhookError,
   mockSyncClerkMetadata,
+  mockListObjectsBounded,
+  mockDeleteObject,
+  mockLogger,
 } = vi.hoisted(() => ({
   mockSvixVerify: vi.fn(),
   mockDbInsert: vi.fn(),
@@ -28,6 +31,9 @@ const {
   mockNotifyOps: vi.fn().mockResolvedValue(undefined),
   mockNotifyWebhookError: vi.fn().mockResolvedValue(undefined),
   mockSyncClerkMetadata: vi.fn().mockResolvedValue({ ok: true }),
+  mockListObjectsBounded: vi.fn(),
+  mockDeleteObject: vi.fn(),
+  mockLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
 vi.mock('svix', () => ({
@@ -73,7 +79,30 @@ vi.mock('@/lib/auth/clerk-metadata', () => ({
   syncClerkPublicMetadata: mockSyncClerkMetadata,
 }))
 
+// ②-4b §2: 退会 prefix purge が R2 を叩く。r2.ts は module load 時に R2_* env を
+// fail-fast する (import しただけで throw する) ため、mock は必須 — hoisting を
+// 誤ると suite 全体が import 時に落ちる。
+vi.mock('@/lib/storage/r2', async (importOriginal) => {
+  // 既定 timeout だけ実 module から取る (写すと divergence を検出できない)。全 spread
+  // にしない — 未 override の export が実装のまま残ると、将来この経路から呼ばれたときに
+  // loud に落ちず実 R2 へ request を投げてしまう。
+  const { LIST_TIMEOUT_MS, DELETE_TIMEOUT_MS } =
+    await importOriginal<typeof import('@/lib/storage/r2')>()
+  return {
+    LIST_TIMEOUT_MS,
+    DELETE_TIMEOUT_MS,
+    listObjectsBounded: mockListObjectsBounded,
+    deleteObject: mockDeleteObject,
+  }
+})
+
+// purge の記帳失敗 / 大域 catch は logger.error に落ちる。実 logger は console へ
+// JSON を吐くだけ (never-throw) だが、負のケースを流す test で出力を汚さないため mock する。
+vi.mock('@/lib/logger', () => ({ logger: mockLogger }))
+
 import { POST } from './route'
+import { purgeSourcePrefix } from '@/lib/clerk/handle-clerk-event'
+import { LIST_TIMEOUT_MS, DELETE_TIMEOUT_MS } from '@/lib/storage/r2'
 import { integrationFailures } from '@/lib/db/schema'
 import { INTEGRATION_FAILURE_CATALOG } from '@/lib/integration-failures'
 
@@ -174,9 +203,34 @@ function updateChainFor(table: unknown):
   }
 }
 
+// ②-4b §2: 台帳 INSERT された行を発行順に全件返す (purge は 1 回の退会で複数行
+// 書きうるため単数版 integrationInsertRow では足りない)。beforeEach の
+// mockDbInsert.mockReturnValue は同一 chain を使い回すので、chain 単位で重複排除して
+// その chain の .values 呼出を全部拾う。
+function integrationInsertRows(): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = []
+  const seen = new Set<unknown>()
+  mockDbInsert.mock.calls.forEach((c, i) => {
+    if (c[0] !== integrationFailures) return
+    const chainObj = mockDbInsert.mock.results[i].value as {
+      values: ReturnType<typeof vi.fn>
+    }
+    if (seen.has(chainObj)) return
+    seen.add(chainObj)
+    for (const call of chainObj.values.mock.calls) {
+      rows.push(call[0] as Record<string, unknown>)
+    }
+  })
+  return rows
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.CLERK_WEBHOOK_SECRET = SECRET
+  // ②-4b §2: 既定 = purge 対象なし (listing 0 件) → 既存 test の台帳 / notifyOps
+  // 件数 pin に影響しない。
+  mockListObjectsBounded.mockResolvedValue({ keys: [], truncated: false })
+  mockDeleteObject.mockResolvedValue({ ok: true, status: 204 })
   mockNotifyOps.mockResolvedValue(undefined)
   mockCancelWithRetry.mockResolvedValue(undefined)
   mockSyncClerkMetadata.mockResolvedValue({ ok: true })
@@ -906,6 +960,389 @@ describe('Clerk webhook user.deleted (Webhook 駆動再設計)', () => {
     expect(String(row!.errorMessage)).toMatch(/page fetch failed at offset 1/)
     // list 失敗後も transaction は実行される (forward-only)
     expect(mockDbTransaction).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ②-4b §2: 退会時の src/{userId}/ prefix purge
+// ---------------------------------------------------------------------------
+// spec: docs/superpowers/specs/2026-08-09-ocr-2-4b-s2-deletion-src-purge-design.md
+// 配線 (route → handleEvent → handleUserDeleted → 外周 finally) をここで pin し、
+// 予算 / 上限 / 台帳の細目は purgeSourcePrefix の直接 unit test (下の describe) で
+// 時刻注入して pin する。
+
+const PURGE_UID = '00000000-0000-0000-0000-0000000000d1'
+const PURGE_PREFIX = `src/${PURGE_UID}/`
+
+function srcKeys(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `${PURGE_PREFIX}sess/${i}.pdf`)
+}
+
+// 台帳行を 4 軸の operation で振り分ける (delete 失敗行 = object.delete /
+// 打ち切り行 = src_purge.incomplete)。
+function purgeRows(operation: 'object.delete' | 'src_purge.incomplete') {
+  return integrationInsertRows().filter(
+    (r) => r.operation === operation && r.workflow === 'user_deletion',
+  )
+}
+
+describe('Clerk webhook user.deleted: src/ prefix purge 配線 (②-4b §2)', () => {
+  function setupDeleted(clerkId: string, stripeCustomerId: string | null = null) {
+    mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: clerkId } })
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_purge' }])) // clerk_events
+    bootstrapRows = [{ id: PURGE_UID, stripe_customer_id: stripeCustomerId }]
+    mockDbDelete.mockReturnValue(chain(undefined))
+  }
+
+  it('正常系: 末尾スラッシュ付き prefix で listing → 返った key 全件に deleteObject → 台帳行なし', async () => {
+    setupDeleted('user_purge_ok')
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(3), truncated: false })
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_purge_ok' } }))
+
+    expect(res.status).toBe(200)
+    // 末尾スラッシュ必須 (`src/{uid}` だと別 uuid の前方一致を拾いうる)。
+    expect(mockListObjectsBounded).toHaveBeenCalledTimes(1)
+    expect(mockListObjectsBounded.mock.calls[0]![0]).toBe(PURGE_PREFIX)
+    expect(mockDeleteObject).toHaveBeenCalledTimes(3)
+    for (const key of srcKeys(3)) {
+      expect(mockDeleteObject).toHaveBeenCalledWith(key, expect.anything())
+    }
+    // 成功のみ = 台帳不呼出 (clerk_events INSERT の 1 件だけ)
+    expect(mockDbInsert).toHaveBeenCalledTimes(1)
+    expect(mockNotifyOps).not.toHaveBeenCalled()
+  })
+
+  it('bootstrap 0 行 (early return): prefix を導出できないので listing しない', async () => {
+    mockSvixVerify.mockReturnValue({ type: 'user.deleted', data: { id: 'user_orphan_p' } })
+    mockDbInsert.mockReturnValueOnce(chain([{ id: 'msg_purge' }]))
+    bootstrapRows = []
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_orphan_p' } }))
+
+    expect(res.status).toBe(200)
+    expect(mockListObjectsBounded).not.toHaveBeenCalled()
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+  })
+
+  it('不変条件 2: B (Stripe cancel の記帳) が throw しても purge は実行される (外周 finally)', async () => {
+    // recordFailure → recordIntegrationFailure → notifyOps は production misconfig で
+    // throw する契約 (lib/integration-failures.ts) = B は throw しうる。
+    setupDeleted('user_purge_b', 'cus_p')
+    mockStripeListIterator.mockReturnValue(asyncIterFrom([{ id: 'sub_a', status: 'active' }]))
+    mockCancelWithRetry.mockRejectedValueOnce(new Error('stripe down'))
+    mockNotifyOps.mockRejectedValue(new Error('OPS_DISCORD_WEBHOOK_URL must be set'))
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(1), truncated: false })
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_purge_b' } }))
+
+    expect(res.status).toBe(200)
+    // B の記帳 throw で DB tx へは進まない (既存挙動) が、purge は finally で到達する。
+    expect(mockDbTransaction).not.toHaveBeenCalled()
+    expect(mockListObjectsBounded).toHaveBeenCalledTimes(1)
+    expect(mockDeleteObject).toHaveBeenCalledWith(srcKeys(1)[0], expect.anything())
+  })
+
+  it('不変条件 2: C (DB tx 失敗の記帳) が throw しても purge は実行される (外周 finally)', async () => {
+    setupDeleted('user_purge_c')
+    const permanentErr = Object.assign(new Error('unique constraint'), { code: '23505' })
+    mockDbTransaction.mockImplementationOnce(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(txThatThrowsOnScrub(permanentErr)),
+    )
+    mockNotifyOps.mockRejectedValue(new Error('OPS_DISCORD_WEBHOOK_URL must be set'))
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(2), truncated: false })
+
+    const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_purge_c' } }))
+
+    // route は 200 を返し続ける (outer catch が notifyWebhookError で吸収)
+    expect(res.status).toBe(200)
+    expect(mockNotifyWebhookError).toHaveBeenCalledTimes(1)
+    expect(mockListObjectsBounded).toHaveBeenCalledTimes(1)
+    expect(mockDeleteObject).toHaveBeenCalledTimes(2)
+  })
+
+  it('予算の原点は POST() 冒頭: 先行処理が 55s 使っていたら listing すら開始せず no_budget', async () => {
+    // 時間の消費を **svix 検証の時点** (= POST 冒頭より後・handleEvent 呼出より前) に
+    // 置く。これにより「原点が POST 冒頭であること」を pin できる —
+    //   - 原点が purge 開始 (handlerStart 伝播なし) なら 20s 予算で走ってしまう
+    //   - 原点が handleEvent 呼出直前なら先行処理の 55s を数え落として走ってしまう
+    // のどちらでも red になる。
+    vi.useFakeTimers()
+    try {
+      setupDeleted('user_purge_slow')
+      mockSvixVerify.mockImplementation(() => {
+        vi.setSystemTime(new Date(Date.now() + 55_000))
+        return { type: 'user.deleted', data: { id: 'user_purge_slow' } }
+      })
+      mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(3), truncated: false })
+
+      const res = await POST(makeReq({ type: 'user.deleted', data: { id: 'user_purge_slow' } }))
+
+      expect(res.status).toBe(200)
+      expect(mockListObjectsBounded).not.toHaveBeenCalled()
+      expect(mockDeleteObject).not.toHaveBeenCalled()
+      const rows = purgeRows('src_purge.incomplete')
+      expect(rows).toHaveLength(1)
+      expect((rows[0]!.context as Record<string, unknown>).phase).toBe('no_budget')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('purgeSourcePrefix (②-4b §2 spec §3.2 / §3.3)', () => {
+  // 時刻注入: 実 sleep なしで予算切れを再現する。deadline は絶対時刻で渡す。
+  let clockNow = 0
+  const now = () => clockNow
+
+  beforeEach(() => {
+    clockNow = 0
+  })
+
+  // 予算たっぷり (workDeadline = 16_000 / floor 2_000) の既定 deadline。
+  const AMPLE_DEADLINE = 20_000
+
+  it('truncated: phase=list_truncated を 1 行 + 取れた分の DELETE は実行される', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(2), truncated: true })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(mockDeleteObject).toHaveBeenCalledTimes(2)
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.failureCode).toBe('incomplete')
+    expect(rows[0]!.context).toMatchObject({
+      userId: PURGE_UID,
+      phase: 'list_truncated',
+      deleteRequested: 2,
+      remaining: 0,
+    })
+    expect(purgeRows('object.delete')).toHaveLength(0)
+  })
+
+  it('listing throw: phase=list + errorMessage を 1 行にして飲む (throw しない)', async () => {
+    mockListObjectsBounded.mockRejectedValue(
+      new Error('listObjects failed: prefix=src/x/ status=500'),
+    )
+
+    await expect(purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)).resolves.toBeUndefined()
+
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect((rows[0]!.context as Record<string, unknown>).phase).toBe('list')
+    expect(String(rows[0]!.errorMessage)).toContain('listObjects failed')
+  })
+
+  it('上限: 失敗 20 件ちょうど → 個別 20 行のみ (打ち切り行を書かない)', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(20), truncated: false })
+    mockDeleteObject.mockResolvedValue({ ok: false, status: 500 })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(purgeRows('object.delete')).toHaveLength(20)
+    expect(purgeRows('src_purge.incomplete')).toHaveLength(0)
+  })
+
+  it('上限: 失敗 21 件 → 個別 19 行 + incomplete 1 行 (計 20) で suppressedFailures = 総数 - 19', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(21), truncated: false })
+    mockDeleteObject.mockResolvedValue({ ok: false, status: 500 })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(purgeRows('object.delete')).toHaveLength(19)
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect((rows[0]!.context as Record<string, unknown>).suppressedFailures).toBe(2)
+  })
+
+  it('deadline: 残予算が floor を切ったら残 chunk を deleteObject せず phase=deadline を記録', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(40), truncated: false })
+    // 1 chunk (20 件) で 15s 消費 → 残 1s < floor 2s で 2 chunk 目に入らない。
+    mockDeleteObject.mockImplementation(async () => {
+      clockNow += 750
+      return { ok: true, status: 204 }
+    })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(mockDeleteObject).toHaveBeenCalledTimes(20)
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.context).toMatchObject({
+      phase: 'deadline',
+      deleteRequested: 20,
+      remaining: 20,
+    })
+  })
+
+  it('記帳の予算 gate: 残予算が尽きたら個別行の書き込みを止め、書けなかった分を suppressedFailures に計上する', async () => {
+    // 記帳は 1 件あたり DB INSERT + notifyOps で最大数秒かかる。gate が無いと 19 回の
+    // 記帳だけで workDeadline を大幅に超え、feature が守ろうとしている予算を自ら壊す。
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(5), truncated: false })
+    mockDeleteObject.mockResolvedValue({ ok: false, status: 500 })
+    // 記帳 1 本 = 6s 消費 (残予算 16s → 3 本で floor を割る)。
+    mockNotifyOps.mockImplementation(async () => {
+      clockNow += 6_000
+    })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(purgeRows('object.delete')).toHaveLength(3)
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.context).toMatchObject({ phase: 'deadline', suppressedFailures: 2 })
+  })
+
+  it('phase 優先順位: list_truncated と deadline の同時成立は list_truncated 1 本に統合する', async () => {
+    // truncated (2 page ≈ 1000 key 超) は chunk 数が多く deadline にも当たりやすい =
+    // 構造的に最も起きやすい組合せ。より早い段階で諦めた事実 (list_truncated) を残す。
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(40), truncated: true })
+    mockDeleteObject.mockImplementation(async () => {
+      clockNow += 750
+      return { ok: true, status: 204 }
+    })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(mockDeleteObject).toHaveBeenCalledTimes(20) // chunk 2 は deadline で skip
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.context).toMatchObject({
+      phase: 'list_truncated',
+      deleteRequested: 20,
+      remaining: 20,
+    })
+  })
+
+  it('4 軸の意味: deadline 打ち切りは external_api_error で記録されない (R2 障害として集計しない)', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(40), truncated: false })
+    mockDeleteObject.mockImplementation(async () => {
+      clockNow += 750
+      return { ok: true, status: 204 }
+    })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    const rows = integrationInsertRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.failureCode).toBe('incomplete')
+    expect(rows[0]!.operation).toBe('src_purge.incomplete')
+    expect(rows.some((r) => r.failureCode === 'external_api_error')).toBe(false)
+  })
+
+  it('no_budget: 開始時点で残予算が floor 未満なら listing すら開始しない', async () => {
+    await purgeSourcePrefix(PURGE_UID, 1_000, now) // workDeadline = -3_000
+
+    expect(mockListObjectsBounded).not.toHaveBeenCalled()
+    expect(mockDeleteObject).not.toHaveBeenCalled()
+    const rows = purgeRows('src_purge.incomplete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.context).toMatchObject({
+      phase: 'no_budget',
+      deleteRequested: 0,
+      remaining: 0,
+    })
+  })
+
+  it('不変条件 7: 個別記帳が throw しても後続 key の DELETE は続く', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(21), truncated: false })
+    mockDeleteObject.mockImplementation(async (key: string) =>
+      key === srcKeys(21)[0] ? { ok: false, status: 500 } : { ok: true, status: 204 },
+    )
+    // 記帳は notifyOps の throw を伝播する (= 記帳 1 本が throw する realistic な形)。
+    mockNotifyOps.mockRejectedValue(new Error('OPS_DISCORD_WEBHOOK_URL must be set'))
+
+    await expect(purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)).resolves.toBeUndefined()
+
+    // chunk 1 (0..19) の記帳が throw した後も chunk 2 (20 件目) の DELETE が走る。
+    expect(mockDeleteObject).toHaveBeenCalledTimes(21)
+    expect(mockDeleteObject).toHaveBeenCalledWith(srcKeys(21)[20], expect.anything())
+  })
+
+  it('不変条件 1: 契約外の throw (deleteObject が throw) でも purge 自身は throw しない', async () => {
+    // finally 内から throw すると B / C の元例外を握り潰すため never-throw は構造的に必須。
+    // deleteObject は never-throw 契約 (r2.ts) だがそれに依存しない大域 catch を pin する。
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(1), truncated: false })
+    mockDeleteObject.mockRejectedValue(new Error('contract violation'))
+
+    await expect(purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)).resolves.toBeUndefined()
+  })
+
+  it('不変条件 7: list_truncated の記帳が throw しても取得済み key の DELETE は実行される', async () => {
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(3), truncated: true })
+    mockNotifyOps.mockRejectedValue(new Error('OPS_DISCORD_WEBHOOK_URL must be set'))
+
+    await expect(purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)).resolves.toBeUndefined()
+
+    expect(mockDeleteObject).toHaveBeenCalledTimes(3)
+  })
+
+  it('不変条件 8: prefix 外の key は deleteObject せず記録する (破壊境界の二重関門)', async () => {
+    const outside = 'src/00000000-0000-0000-0000-0000000000ff/sess/x.pdf'
+    mockListObjectsBounded.mockResolvedValue({
+      keys: [srcKeys(1)[0]!, outside],
+      truncated: false,
+    })
+
+    await purgeSourcePrefix(PURGE_UID, AMPLE_DEADLINE, now)
+
+    expect(mockDeleteObject).toHaveBeenCalledTimes(1)
+    expect(mockDeleteObject).toHaveBeenCalledWith(srcKeys(1)[0], expect.anything())
+    expect(mockDeleteObject).not.toHaveBeenCalledWith(outside, expect.anything())
+    // DELETE を試行していない行は context.reason で識別する (errorMessage の free text を
+    // parse させない)。status===null は「fetch throw / timeout」の識別子なので、この行に
+    // errorMessage は付けない (§3.3)。
+    const rows = purgeRows('object.delete')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.context).toMatchObject({
+      objectKey: outside,
+      status: null,
+      reason: 'prefix_mismatch',
+    })
+    expect(rows[0]!.errorMessage).toBeUndefined()
+  })
+
+  it('in-flight I/O の timeout: 残予算が十分なら既定 (LIST / DELETE それぞれの既定) が上限', async () => {
+    // 既定値は literal で写さず r2.ts の export を照合相手にする (写すと divergence を
+    // 検出できない)。LIST / DELETE は別々の既定を持ちうるので別々に照合する。
+    // 残予算 26s → listing の 1 page 取り分 13s > 既定 10s ゆえ既定側が binding。
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(1), truncated: false })
+
+    await purgeSourcePrefix(PURGE_UID, 30_000, now) // workDeadline 26_000
+
+    expect(mockListObjectsBounded).toHaveBeenCalledWith(PURGE_PREFIX, 2, {
+      timeoutMs: LIST_TIMEOUT_MS,
+    })
+    expect(mockDeleteObject).toHaveBeenCalledWith(srcKeys(1)[0], {
+      timeoutMs: DELETE_TIMEOUT_MS,
+    })
+  })
+
+  it('DELETE の timeout は min(既定, 残予算) — 残予算が既定より小さい場合', async () => {
+    // DELETE は 1 回の呼出ごとに残予算を再評価する = 多重化しないので残予算そのままでよい。
+    mockListObjectsBounded.mockResolvedValue({ keys: srcKeys(1), truncated: false })
+
+    await purgeSourcePrefix(PURGE_UID, 12_000, now) // workDeadline 8_000 = 残予算 8s
+
+    expect(mockDeleteObject).toHaveBeenCalledWith(srcKeys(1)[0], { timeoutMs: 8_000 })
+  })
+
+  it('listing の timeout は 1 page あたりの取り分 — maxPages 倍しても残予算を超えない', async () => {
+    // listObjectsBounded の timeoutMs は **page ごとに** AbortSignal.timeout へ適用される
+    // (全体の上限ではない)。残予算をそのまま渡すと最悪 maxPages 倍かかり workDeadline を
+    // 超え、tail reserve ごと食い潰して incomplete 行すら書けなくなる。
+    mockListObjectsBounded.mockResolvedValue({ keys: [], truncated: false })
+
+    await purgeSourcePrefix(PURGE_UID, 12_000, now) // workDeadline 8_000 = 残予算 8s
+
+    const [, maxPages, opts] = mockListObjectsBounded.mock.calls[0] as [
+      string,
+      number,
+      { timeoutMs: number },
+    ]
+    expect(opts.timeoutMs * maxPages).toBeLessThanOrEqual(8_000)
+    expect(opts.timeoutMs).toBe(4_000)
   })
 })
 

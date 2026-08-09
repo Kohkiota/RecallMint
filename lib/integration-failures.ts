@@ -128,6 +128,34 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'upload_single_invocation',
     failureCode: 'unexpected_error',
   },
+  // ②-4b §2(design spec 2026-08-09 §3.3): 退会時の `src/{userId}/` prefix purge。
+  // **4 軸は原因ではなく結果を識別する**(原因は context.phase が持つ)ため、
+  // 「個々の object DELETE が失敗した」と「purge が列挙/削除を完遂しなかった」を
+  // 別 entry に分ける — 1 行 = 1 object DELETE 失敗という集計前提を制御系の行が壊す。
+  //
+  // 結果 = 個々の source PDF の DELETE が失敗した(1 件 1 行)。他 lane の
+  // r2/object.delete(asset_gc / upload_single_invocation / upload_staging)とは
+  // workflow='user_deletion' で区別する(4 軸 tuple は stable identifier・相乗り禁止)。
+  // context = { userId, objectKey, status }。key 以外の PII は入れない(clerkId は
+  // 渡さない = データ最小化。Discord へもそのまま出るため)。
+  r2_deletion_src_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'user_deletion',
+    failureCode: 'external_api_error',
+  },
+  // 結果 = purge が列挙/削除を完遂しなかった(1 回の退会につき最大 1 行)。
+  // failureCode='incomplete' は新設語彙 — 既存 4 語彙(external_api_error /
+  // state_mismatch / db_error / unexpected_error)に「予算内に収まらず打ち切った」を
+  // 表すものが無く、特に external_api_error で書くと deadline 打ち切りが R2 障害として
+  // 集計される。failure_code は text 列(enum 制約なし)ゆえ migration 不要。
+  // context = { userId, phase, deleteRequested, remaining, suppressedFailures }(該当分のみ)。
+  r2_deletion_src_incomplete: {
+    service: 'r2',
+    operation: 'src_purge.incomplete',
+    workflow: 'user_deletion',
+    failureCode: 'incomplete',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG

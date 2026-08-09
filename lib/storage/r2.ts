@@ -38,7 +38,7 @@ const DEFAULT_EXPIRES_SEC = 600
 const HEAD_TIMEOUT_MS = 10_000
 
 // DELETE (GC sweep) のnetwork timeout。 HEAD_TIMEOUT_MSと同値 (CLAUDE.md AI-2)。
-const DELETE_TIMEOUT_MS = 10_000
+export const DELETE_TIMEOUT_MS = 10_000
 
 // GET (finalize saga の実バイト取得)・PUT (finalize saga の最終 immutable key への
 // server 書込) のnetwork timeout。 HEAD_TIMEOUT_MS/DELETE_TIMEOUT_MSと同値 (CLAUDE.md AI-2)。
@@ -47,7 +47,7 @@ const PUT_TIMEOUT_MS = 10_000
 
 // LIST (ListObjectsV2 — 破壊 script の削除前 listing / 削除後 readback) の
 // network timeout。 他の *_TIMEOUT_MS と同値 (CLAUDE.md AI-2)。
-const LIST_TIMEOUT_MS = 10_000
+export const LIST_TIMEOUT_MS = 10_000
 
 // listObjects の pagination 無限ループ耐性。 1 page ≈ 最大 1000 key (S3 互換の既定)
 // なので 10,000 page は数百万 key 相当の余裕。 token が壊れて進まない/異常応答を
@@ -310,6 +310,14 @@ function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boole
  * `opts.timeoutMs` は `getObject` の `{ timeoutMs }` idiom に倣う — 省略時は既定
  * `LIST_TIMEOUT_MS`、指定時は各 page の `AbortSignal.timeout` に反映する(退会 purge
  * が残予算を渡す口)。
+ *
+ * ⚠ **`timeoutMs` は 1 page ごとに適用される値であって listing 全体の上限ではない**。
+ * pagination は最大 `maxPages` 回 fetch するため、全体の最悪所要は
+ * `maxPages × timeoutMs` になる。残予算を配る呼出側(budgeted caller)は
+ * **`maxPages` で割った 1 page あたりの取り分**を渡すこと — 残予算をそのまま渡すと
+ * 予算が page 数ぶん多重化する(②-4b §2 fix round 2 の実障害)。helper 側に絶対
+ * deadline を持たせない理由: 「deadline 由来の打ち切り」と「page 上限由来の truncated」が
+ * 同じ `truncated` フラグに潰れ、呼出側の phase 判別(§3.3)の意味が濁るため。
  *
  * 既存の throw 契約(`!res.ok` / malformed root / malformed IsTruncated / token
  * 非前進)はそのまま保持する — never-throw ではない(listObjects と同じ非対称。

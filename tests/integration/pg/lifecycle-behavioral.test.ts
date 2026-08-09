@@ -10,6 +10,7 @@
 //   - @/lib/auth/clerk-metadata : syncClerkPublicMetadata (実 Clerk API 遮断・呼分け観測)
 //   - @/lib/ops            : notifyOps / notifyWebhookError (Discord 遮断・文言 assert)
 //   - @/lib/integration-failures : recordIntegrationFailure (Discord+DB 遮断・happy path 未呼)
+//   - @/lib/storage/r2     : listObjectsBounded / deleteObject (実 R2 遮断・②-4b §2 の退会 purge)
 //   - logger.warn は spy (stripe skip log の観測)
 // getDb は mock しない (real PG・RLS on)。module-cache 注意は lifecycle-null-contract.test.ts 参照。
 import type Stripe from 'stripe'
@@ -26,6 +27,8 @@ const {
   notifyOpsMock,
   notifyWebhookErrorMock,
   recordFailureMock,
+  listObjectsBoundedMock,
+  deleteObjectMock,
 } = vi.hoisted(() => ({
   stripeListMock: vi.fn(() => (async function* () {})()),
   stripeRetrieveMock: vi.fn(),
@@ -34,6 +37,8 @@ const {
   notifyOpsMock: vi.fn().mockResolvedValue(undefined),
   notifyWebhookErrorMock: vi.fn().mockResolvedValue(undefined),
   recordFailureMock: vi.fn().mockResolvedValue(undefined),
+  listObjectsBoundedMock: vi.fn().mockResolvedValue({ keys: [], truncated: false }),
+  deleteObjectMock: vi.fn().mockResolvedValue({ ok: true, status: 204 }),
 }))
 
 vi.mock('@/lib/stripe/client', () => ({
@@ -46,6 +51,19 @@ vi.mock('@/lib/ops', () => ({
   notifyWebhookError: notifyWebhookErrorMock,
 }))
 vi.mock('@/lib/integration-failures', () => ({ recordIntegrationFailure: recordFailureMock }))
+// ②-4b §2: user.deleted は R2 の src/ prefix purge を伴う (外部 I/O ゆえ mock)。
+vi.mock('@/lib/storage/r2', async (importOriginal) => {
+  // 既定 timeout のみ実 module から取る (全 spread にすると未 override の export が
+  // 実装のまま残り、実 R2 へ request が飛びうる)。
+  const { LIST_TIMEOUT_MS, DELETE_TIMEOUT_MS } =
+    await importOriginal<typeof import('@/lib/storage/r2')>()
+  return {
+    LIST_TIMEOUT_MS,
+    DELETE_TIMEOUT_MS,
+    listObjectsBounded: listObjectsBoundedMock,
+    deleteObject: deleteObjectMock,
+  }
+})
 
 import { closeDb } from '@/lib/db'
 import { clerkEvents, users } from '@/lib/db/schema'
@@ -94,6 +112,8 @@ beforeEach(async () => {
   notifyOpsMock.mockResolvedValue(undefined)
   notifyWebhookErrorMock.mockResolvedValue(undefined)
   recordFailureMock.mockResolvedValue(undefined)
+  listObjectsBoundedMock.mockResolvedValue({ keys: [], truncated: false })
+  deleteObjectMock.mockResolvedValue({ ok: true, status: 204 })
   process.env.CLERK_WEBHOOK_SECRET = CLERK_SECRET
   warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 })
@@ -107,12 +127,15 @@ describe('clerk lifecycle behavioral (real PG, RLS on)', () => {
     const owner = getFixtureOwnerDb()
     const clerkId = 'clerk_redelete_1'
 
-    await handleClerkEvent({
-      type: 'user.created',
-      data: { id: clerkId, email_addresses: [{ email_address: 'rd@example.test' }] },
-    })
+    await handleClerkEvent(
+      {
+        type: 'user.created',
+        data: { id: clerkId, email_addresses: [{ email_address: 'rd@example.test' }] },
+      },
+      Date.now(),
+    )
     // 1st delete: resolve OK → scrub (deleted_at set + clerk_id NULL) + cascade。
-    await handleClerkEvent({ type: 'user.deleted', data: { id: clerkId } })
+    await handleClerkEvent({ type: 'user.deleted', data: { id: clerkId } }, Date.now())
 
     const afterFirst = await owner
       .select({ id: users.id, deletedAt: users.deletedAt, clerkId: users.clerkId })
@@ -123,7 +146,7 @@ describe('clerk lifecycle behavioral (real PG, RLS on)', () => {
 
     // 2nd delete (別 event): clerk_id NULL 化済 → bootstrap 0 行 → 中立文言 no-op。
     await expect(
-      handleClerkEvent({ type: 'user.deleted', data: { id: clerkId } }),
+      handleClerkEvent({ type: 'user.deleted', data: { id: clerkId } }, Date.now()),
     ).resolves.toBeUndefined()
 
     expect(notifyOpsMock).toHaveBeenCalledWith(
@@ -141,10 +164,13 @@ describe('clerk lifecycle behavioral (real PG, RLS on)', () => {
       .returning({ id: users.id })
 
     const newClerkId = 'clerk_recreated_1'
-    await handleClerkEvent({
-      type: 'user.created',
-      data: { id: newClerkId, email_addresses: [{ email_address: 'again@example.test' }] },
-    })
+    await handleClerkEvent(
+      {
+        type: 'user.created',
+        data: { id: newClerkId, email_addresses: [{ email_address: 'again@example.test' }] },
+      },
+      Date.now(),
+    )
 
     const all = await owner
       .select({ id: users.id, clerkId: users.clerkId, deletedAt: users.deletedAt })

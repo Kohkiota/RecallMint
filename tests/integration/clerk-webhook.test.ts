@@ -70,6 +70,21 @@ vi.mock('@/lib/ops', () => ({
   notifyWebhookError: vi.fn().mockResolvedValue(undefined),
 }))
 
+// ②-4b §2: user.deleted は R2 の src/ prefix purge を伴う。実 R2 を叩かせない
+// (listing 0 件 = 削除対象なし) — 他の外部 I/O stub と同じ扱い。
+vi.mock('@/lib/storage/r2', async (importOriginal) => {
+  // 既定 timeout のみ実 module から取る (全 spread にすると未 override の export が
+  // 実装のまま残り、実 R2 へ request が飛びうる)。
+  const { LIST_TIMEOUT_MS, DELETE_TIMEOUT_MS } =
+    await importOriginal<typeof import('@/lib/storage/r2')>()
+  return {
+    LIST_TIMEOUT_MS,
+    DELETE_TIMEOUT_MS,
+    listObjectsBounded: vi.fn().mockResolvedValue({ keys: [], truncated: false }),
+    deleteObject: vi.fn().mockResolvedValue({ ok: true, status: 204 }),
+  }
+})
+
 import { POST } from '@/app/api/webhooks/clerk/route'
 import { getDb } from '@/lib/db'
 

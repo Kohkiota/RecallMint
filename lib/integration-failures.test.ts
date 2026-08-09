@@ -206,7 +206,8 @@ describe('recordIntegrationFailure', () => {
     // ②-4a 単一 invocation S-5: 旧経路撤去で source lane の GC key が dead 化 → 10。
     // ②-4b T3: r2_source_delete 追加で 10 → 11。
     // ②-4b §1: r2_staging_delete 追加で 11 → 12。
-    expect(tuples.length).toBe(12)
+    // ②-4b §2: 退会 prefix purge の 2 entry 追加で 12 → 14。
+    expect(tuples.length).toBe(14)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -260,6 +261,32 @@ describe('recordIntegrationFailure', () => {
       operation: 'object.delete',
       workflow: 'upload_staging',
       failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_deletion_src_delete: ②-4b §2 spec §3.3(退会 prefix purge の個別 object
+  // DELETE 失敗 = 1 件 1 行)の 4 軸 tuple 固定値。他 lane の r2/object.delete とは
+  // workflow='user_deletion' で区別する。
+  it('r2_deletion_src_delete has the 4-axis values pinned by ②-4b §2 spec §3.3', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_deletion_src_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'user_deletion',
+      failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_deletion_src_incomplete: ②-4b §2 spec §3.3(退会 prefix purge が列挙/削除を
+  // 完遂しなかった = 制御系の結果)の 4 軸 tuple 固定値。**4 軸は原因でなく結果を
+  // 識別する**(原因は context.phase が持つ)ため個別 DELETE 失敗とは別 entry。
+  // failureCode='incomplete' は新設語彙 — 打ち切りを 'external_api_error' で書くと
+  // R2 障害として集計されてしまうため既存 4 語彙のどれにも相乗りしない。
+  it('r2_deletion_src_incomplete has the 4-axis values pinned by ②-4b §2 spec §3.3', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_deletion_src_incomplete).toEqual({
+      service: 'r2',
+      operation: 'src_purge.incomplete',
+      workflow: 'user_deletion',
+      failureCode: 'incomplete',
     })
   })
 })
