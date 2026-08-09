@@ -92,7 +92,57 @@ helper に絶対 deadline を持たせる案は、「deadline 由来の打ち切
 - **`LIST_TIMEOUT_MS === DELETE_TIMEOUT_MS`(10s)ゆえ「LIST/DELETE 取り違え」変異は検出不能**。
   min-binding の 2 pin が方向を独立に押さえているので、**この 2 pin を 1 本に統合しないこと**。
 
-## 8. stg smoke(OT push 後・spec §8.1 の手順)
+## 8. stg smoke 実測(2026-08-09・**PASS**)
+
+deploy = `ab43957` push 済。判定 = R2 `src/` の 2.5 秒間隔 polling。
+
+### 8.0 経緯(手順 1 の変更)
+
+**sign-up の自動化は不可能**だった: Clerk の bot 保護(Cloudflare Turnstile)が出て、
+トークンが 25 秒経っても空のまま Continue ボタン自体が消える。→ **使い捨て account は OT が
+Clerk dashboard で作成**(`+clerk_test1` / `+clerk_test2` の 2 つ)。
+**sign-in 側は Turnstile なし**で、password + 新デバイス OTP `424242`(dev instance の固定値)で
+CC が自力ログインできた。以後の退会 smoke はこの経路を使う。
+
+### 8.1 gate(手順 3・削除前の必須確認)= PASS
+
+| | 内部 userId | `src/` 本数 |
+|---|---|---|
+| test1(削除対象) | `2ac594a5-7965-4323-b47d-1057abb54c26` | 3(455KB/40KB/337KB = 投入 fixture と一致) |
+| sentinel 所有者(**不可触**) | `85541b25-51e9-44a3-8952-e383f98d4ae3` | 2 |
+
+listing で**別 user であることを実測**してから OT に退会を依頼した。
+
+### 8.2 判定
+
+| 時刻(UTC) | 事象 |
+|---|---|
+| 11:09:10 | test1 で 3 本 staging(submit しない)→ `src/2ac594a5…/` = 3 |
+| 11:10:07〜11:15:02 | n=5 で安定(sentinel 2 + test1 3) |
+| **11:15:04** | **test1 の 3 本が一括消滅 → n=2** = 退会 purge 発火 |
+| 11:16:16 以降 | **34 回連続で n=2**・逸脱ゼロ(再出現なし) |
+
+- **手順 4(0 件収束)= PASS**。3 本が同一 poll 周期で消えており、外周 `finally` の purge が
+  1 回の webhook で列挙分を消し切ったことと整合。
+- **手順 7(sentinel 不変)= PASS**。`lastModified` が baseline と完全一致
+  (`2026-08-09T01:09:31.220Z` / `2026-08-08T11:44:57.201Z`)。
+
+### 8.3 観測された transient(本判定とは独立・**CC 由来ではない**)
+
+11:15:50 に `src/85541b25…/`(= sentinel 所有者 = 既存 smoke アカウント)へ 344,798 B の
+object が 1 本出現し、**11:16:16 までに消滅**した。
+
+- **CC の browser は当該時刻に test1 の session を保持**しており(`Clerk.client.sessions` を実測)、
+  PUT すれば `2ac594a5…` 配下になる。よって **CC 由来ではない**。
+- 出現 → 26 秒で消滅という形は §1 の staging DELETE(entry × → best-effort DELETE)と整合する。
+- test1 の prefix とは別 prefix ゆえ、§2 の判定には影響しない。**OT 側の操作かどうかは要確認**。
+
+### 8.4 後始末
+
+削除済み account の stale session は `Clerk.signOut()` で解消済み(activeUser=null)。
+**sentinel 2 本には一切触れていない。**
+
+## 9. (参考)spec §8.1 の手順
 
 **退会は破壊操作かつ不可逆。専用の使い捨て test account を新規作成して行う。**
 既存 smoke アカウント(`85541b25…`)は **lifecycle 観測 sentinel 2 本を prefix 配下に持つ**ため、
