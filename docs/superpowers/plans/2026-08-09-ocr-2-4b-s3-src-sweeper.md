@@ -41,7 +41,7 @@ export async function listObjectsWithMetaBounded(
 
 **制約:** 既存 `listObjects` / `listObjectsBounded` の signature・挙動不変(既存 test green が regression pin・不変条件 8)。`<Contents>` 内に parse 不能な `LastModified` があれば page 全体を失敗(throw)にする fail-closed(不変条件 1)。pagination(continuation-token 前進検証・truncated)は既存実装を共有し二重実装しない。
 
-**完了条件:** `lib/storage/r2.test.ts` に red→green で追加 — ① Contents 単位の Key/LastModified 対応付け(順序入替 XML でも組が崩れない)② LastModified 欠落・非 ISO 文字列 page = throw ③ truncated / token 前進の既存挙動が entries 版でも成立 ④ 既存 test 全 green。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `lib/storage/r2.test.ts` に red→green で追加 — ① Contents 単位の Key/LastModified 対応付け(順序入替 XML でも組が崩れない)② parse 契約 = `Date.parse` が NaN を返す値(欠落・非 ISO・空文字)は page throw、正例は R2 実形式 `2026-08-09T01:09:31.220Z` ③ truncated / token 前進の既存挙動が entries 版でも成立 ④ 既存 test 全 green(Key 抽出仕様は escape 含め不変)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 2: catalog 新 entry 3(`lib/integration-failures.ts`)
 
@@ -62,7 +62,9 @@ export async function listObjectsWithMetaBounded(
 export const SWEEP_CUTOFF_MS = 6 * 60 * 60 * 1000
 export const ALERT_AGE_MS = 72 * 60 * 60 * 1000
 export type SweepSelection = {
-  candidatesByUser: Map<string, string[]>  // userId → pattern 一致かつ age > cutoff の keys
+  // oldest 昇順(最古候補を持つ user が先)— deadline 打ち切り時に最古 garbage を優先し、
+  // 毎回同じ後半 user が打ち切られる形にしない(Codex 論点採用)
+  candidates: { userId: string; keys: string[]; oldestMs: number }[]
   patternMismatch: string[]                // age > cutoff だが key 規約非一致(削除しない・記録のみ)
   overdue: { count: number; oldestKey: string; oldestAgeHours: number } | null
 }
@@ -73,7 +75,7 @@ export function selectSweepTargets(
 
 **制約:** key 関門 = `^src/{uuidv4}/{uuidv4}/{uuidv4}\.pdf$`(uuid は v4 形式・大文字不許容は既存 `source-object-key.ts` の生成形に合わせ小文字)。overdue は **cutoffMs でなく ALERT_AGE_MS 固定**で評価(OT 裁定: override の影響を受けない・不変条件 4 の「DELETE 前 snapshot」はこの関数が listing 直後に呼ばれることで成立)。age ちょうど cutoff は候補外(`>` 比較)。
 
-**完了条件:** `lib/storage/src-sweep.test.ts` red→green — ① cutoff 境界(±1ms)② pattern 不一致の分離(似て非なる key: 大文字 uuid / `.PDF` / セグメント欠落 / 旧経路 `users/...`)③ user 別グルーピング ④ overdue: 72h±1ms 境界・oldest 選定・0 件で null・**cutoffMs を 15min に縮めても overdue 判定不変**。red 検証は gate 個別変異(まとめ壊し禁止)。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `lib/storage/src-sweep.test.ts` red→green — ① cutoff 境界(±1ms)② pattern 不一致の分離(似て非なる key: `.PDF` 拡張子 / セグメント欠落 / 旧経路 `users/...` / uuid 非形式)③ user 別グルーピング + oldest 昇順 ④ overdue: 72h±1ms 境界・oldest 選定・0 件で null・**cutoffMs を 15min に縮めても overdue 判定不変**。red 検証は gate 個別変異(まとめ壊し禁止)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 4: lane orchestration(`lib/storage/src-sweep.ts` 後半)
 
@@ -86,6 +88,7 @@ export type SrcSweepSummary = {
   lane: 'src_sweep'; listed: number; candidates: number; deleted: number
   failed: number; skippedLiveUsers: number; patternMismatch: number
   overdueCount: number; truncated: boolean; phase: string | null
+  recordErrors: number  // 記帳(recordIntegrationFailure)自体の失敗数 — alert 経路の劣化を summary で可視化(Codex 論点採用)
   cutoffOverrideMinutes?: number; error?: string
 }
 export async function runSrcSweepLane(args: {
@@ -96,7 +99,7 @@ export async function runSrcSweepLane(args: {
 
 **制約:** live 除外 = 各 user の DELETE batch **直前**に `withTenantTx(userId, tx => EXISTS(live 条件 AND user_id = userId))`(不変条件 3・判定失敗も skip = phase `live_check`)。phase 語彙 `['list', 'live_check', 'list_truncated', 'deadline']`(配列順 = 優先順位・§2 idiom)。記帳は §2 `recordSrcPurgeRow` 同形の個別 try/catch ラッパ(不変条件 6)+ MAX_FAILURE_ROWS 20 と heldFailure(最後の 1 枠を incomplete に譲る)。`patternMismatch` の各 key は DELETE 未試行のまま `r2_sweep_delete` + `reason: 'pattern_mismatch'` で 1 件 1 行記帳(行数上限に算入)。listing は `listObjectsWithMetaBounded('src/', MAX_LIST_PAGES=10)`・LIST / DELETE の timeoutMs は残 slice で cap(§2 idiom)。workDeadline = `deadlineAt - TAIL_RESERVE(10s)`・chunk 境界で `slice < MIN_SLICE(2s)` 打ち切り。overdue 記帳(1 run ≤1 行)は DELETE 開始前・incomplete 記帳(1 run ≤1 行)は最後。lane は throw しない(大域 catch → summary.error + logger.error)。
 
-**完了条件:** `lib/storage/src-sweep.test.ts` red→green(全 I/O mock・時刻注入)— ① 呼び出し順 pin: overdue 記帳 → live check → DELETE(spy 順序 assert)② live user の全候補 skip / check reject → skip + phase `live_check` ③ deadline 打ち切り・phase 優先順位統合 ④ MAX_FAILURE_ROWS + heldFailure ⑤ 記帳 throw(notifyOps 相当)で後続 DELETE が止まらない ⑥ DELETE 404 = 成功系 ⑦ summary の各カウントと `cutoffOverrideMinutes` 透過。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `lib/storage/src-sweep.test.ts` red→green(全 I/O mock・時刻注入)— ① 呼び出し順 pin: overdue 記帳 → live check → DELETE(spy 順序 assert)② live user の全候補 skip / check reject → skip + phase `live_check` ③ deadline 打ち切り・phase 優先順位統合 ④ MAX_FAILURE_ROWS + heldFailure ⑤ 記帳 throw(notifyOps 相当)で後続 DELETE が止まらない + `logger.error` に残り `recordErrors` に加算される(silent 劣化禁止)⑥ DELETE 404 = 成功系 ⑦ summary の各カウントと `cutoffOverrideMinutes` 透過 ⑧ user 処理順 = oldest 昇順(deadline 打ち切りで最古が残らない)。`summary.error` は `String(err)` のみ(R2 応答 body・URL を載せない)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 5: cron runner route + 配線(`app/api/cron/sweep/route.ts` + `vercel.json` + `.env.example`)
 
@@ -105,7 +108,7 @@ export async function runSrcSweepLane(args: {
 **Interfaces(Consumes):** Task 4 の `runSrcSweepLane` / 既存 `requireWebhookSecret`。
 **Produces:** `GET /api/cron/sweep` — 200 `{ runs: SrcSweepSummary[] }` / 401 / 400(override 不正)/ 500(runner 外周 catch)。`export const runtime = 'nodejs'` / `export const maxDuration = 300`(literal)。
 
-**制約:** auth = `requireWebhookSecret('CRON_SECRET', 'Vercel cron')` 再利用・**空文字 secret は無条件 401**(不変条件 7)・Bearer 完全一致。`?cutoffMinutes=` は整数かつ ≥15 のみ許容、それ以外 400(clamp しない)。lane 配列は `[srcSweepLane]` の汎用形(判定ロジックは lane 内・runner は入口/auth/deadline 配布/readback のみ)。毎 run `logger.info({ event: 'cron.lane.run', lane, ...summary })`。zod 不使用(§2 骨格踏襲)。vercel.json: `"crons": [{ "path": "/api/cron/sweep", "schedule": "0 18 * * *" }]`。`.env.example` に `CRON_SECRET=`(空値記法・実値は OT が Vercel 設定)を**同 commit**で追加。
+**制約:** auth = `requireWebhookSecret('CRON_SECRET', 'Vercel cron')` 再利用・**空文字 secret は無条件 401**(不変条件 7)・Bearer 完全一致。**auth を query validation より先に評価**(未認証 caller に validation 差を返さない)。`?cutoffMinutes=` は整数かつ ≥15 のみ許容、それ以外 400(clamp しない)。応答に `Cache-Control: no-store`。運用上の成功判定 = 各 lane summary の `error` / `phase`(HTTP 200 は「runner が走破した」のみを意味する — 手動 GET の読み方として §8 smoke に引き継ぐ)。lane 配列は `[srcSweepLane]` の汎用形(判定ロジックは lane 内・runner は入口/auth/deadline 配布/readback のみ)。毎 run `logger.info({ event: 'cron.lane.run', lane, ...summary })`。zod 不使用(§2 骨格踏襲)。vercel.json: `"crons": [{ "path": "/api/cron/sweep", "schedule": "0 18 * * *" }]`。`.env.example` に `CRON_SECRET=`(空値記法・実値は OT が Vercel 設定)を**同 commit**で追加。
 
 **完了条件:** `app/api/cron/sweep/route.test.ts` red→green — ① secret 未設定(local ''): 401 ② Bearer 不一致 401 ③ `cutoffMinutes=14`・`=abc` → 400(lane 不呼出を spy で確認)④ `=15` → lane に 900_000ms が渡り summary に `cutoffOverrideMinutes: 15` ⑤ クエリ無し → cutoff 6h・summary に override key 無し ⑥ lane throw(stub lane)→ runner の per-lane 防御 catch で当該 lane summary が error になり後続 lane は実行・response 200(「lane throw が外に漏れない」= spec §9。500 は runner 自体の失敗用)⑦ production tier + env 欠落 → gate throw → 外周 catch 500(spec §9)。**`pnpm build` exit 0**(新 route + vercel.json を触るため per-task gate)。canonical + Codex pass → `[reviewed]`。
 
