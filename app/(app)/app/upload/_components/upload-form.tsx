@@ -26,6 +26,7 @@ import {
 import { OCR_MAX_PAGES } from '@/lib/ai/ocr-limits'
 import { reservePdfUploadUrls } from '../_actions/reserve-pdf-upload'
 import { finalizePdfSource } from '../_actions/finalize-pdf-source'
+import { deletePdfSource } from '../_actions/delete-pdf-source'
 import { partitionByDuplicateFilename } from '../_lib/dedupe-filenames'
 import {
   type ProcessUploadErrorCode,
@@ -81,6 +82,10 @@ type FileEntry =
 type OrderManifestEntry =
   | { kind: 'image'; fileIndex: number }
   | { kind: 'pdf'; fileId: string; filename: string; pageCount: number; declaredBytes: number }
+
+// ②-4b §1(design spec 2026-08-09 §2.2): PDF entry の R2 staging 所在(どの session
+// namespace に object があるか)と continuation の飛行状態。
+type PdfSourceRecord = { uploadSessionId: string; inFlight: boolean }
 
 // entry id(= pdf の fileId)/ uploadSessionId / idempotencyKey の生成。
 // crypto.randomUUID 非対応環境向けの fallback を含む既存 idiom(3 箇所で使うため
@@ -192,14 +197,21 @@ export function UploadForm({
   //     invalid_input / exam_not_found / daily_limit_exceeded / unauthenticated)。
   //     object をそのまま再利用でき、再 upload させない。
   //   無効化 — accepted(replayed 含む)/ throw・応答不明(runProcess で判定)。
-  //   終了 — entries が空になった時点(removeEntry・「削除 = manifest から外す
-  //     のみ、残骸は lifecycle」)。
+  //   終了 — entries が空になった時点(removeEntry)。 ②-4b §1 以降、staging object は
+  //     削除時に best-effort DELETE 済みで、回収に失敗した残骸だけを lifecycle が拾う。
   const uploadSessionIdRef = useRef<string | null>(null)
   // entry ごとの generation token(Codex I11: stale 応答排除)。 entry 作成時に
   // 発行し、削除時に revoke する。 PUT / finalize の非同期応答は、書込直前に
   // 自分の token がまだ有効か確認してから setEntries する — 削除済み entry への
   // 旧応答が state を書き戻すのを防ぐ。
   const generationRef = useRef<Map<string, number>>(new Map())
+  // ②-4b §1(spec §2.2): entry 削除時に「その object がどの session に居るか」と
+  // 「continuation が飛行中か(= 削除主体は continuation 側か)」を引くための registry。
+  // status(uploading / counting)で飛行判定しないのは、continuation 完了 →
+  // re-render の 1 commit 窓で × を押されると status は「飛行中」と誤読し、誰も
+  // DELETE しない orphan になるため — ref なら checkpoint → 解除が JS 単一 thread 上で
+  // 原子的に連続し、この窓がない。
+  const pdfSourceRef = useRef<Map<string, PdfSourceRecord>>(new Map())
 
   // entry 削除時に object URL を必ず revoke (memory leak 防止)。
   // 重複警告の transient timer も unmount で確実 clear (stale fire 防止)。
@@ -348,68 +360,117 @@ export function UploadForm({
   // reserve 後続き: 直 PUT(browser→R2)→ finalize(完了通知・pageCount 確定)。
   // reserve はバッチ単位で呼出元(reservePdfBatch)がまとめて完了させるため、
   // ここは uploadUrl を受け取ってから始まる。
+  //
+  // ②-4b §1(spec §2.1): 飛行中に entry が削除された(= generation が revoke された)
+  // ことを各 checkpoint で検知したら、以後の工程を打ち切って **自分が PUT した object を
+  // 自分で DELETE** する。 飛行中は removeEntry 側が撃たない(spec §2 の削除主体一意化)
+  // ため、この経路が唯一の回収者になる。
   async function continuePdfUpload(
     file: File,
     id: string,
     generation: number,
     uploadSessionId: string,
     uploadUrl: string,
+    rec: PdfSourceRecord,
   ) {
-    // 直 PUT(browser → R2)。 lib/media/upload.ts の画像直 PUT saga と同型
-    // (mode/credentials/redirect/timeout)。 署名済み URL への PUT ゆえ cookie 不要。
-    let putOk = false
-    try {
-      const put = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': 'application/pdf' },
-        mode: 'cors',
-        credentials: 'omit',
-        redirect: 'error',
-        signal: AbortSignal.timeout(PDF_PUT_TIMEOUT_MS),
-      })
-      putOk = put.ok
-    } catch {
-      putOk = false
+    // registry の掃除は「自分が登録した record が今も現役」の時だけ行う(identity
+    // guard): retry 等で別 record に差し替わっていたら、その id の削除主体は新しい
+    // continuation であり、ここで消すと registry から所在が失われる。
+    const releaseRegistry = () => {
+      if (pdfSourceRef.current.get(id) === rec) pdfSourceRef.current.delete(id)
     }
-    if (!putOk) {
-      writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF のアップロードに失敗しました'))
-      return
-    }
-
-    writeEntry(id, generation, (prev) =>
-      prev.kind === 'pdf'
-        ? { id, kind: 'pdf' as const, file, originalSize: file.size, status: 'counting' as const }
-        : prev,
-    )
-
     try {
-      const finalized = await finalizePdfSource({
-        uploadSessionId,
-        fileId: id,
-        declaredBytes: file.size,
-      })
-      if (!finalized.ok) {
-        writeEntry(id, generation, () => pdfErrorEntry(id, file, finalized.error))
+      // checkpoint 1(spec §2.1-1): PUT 前に無効化済みなら object を作らないので
+      // DELETE は不要。 判定と registry 解除の間に await を置かない — 置くとその窓で
+      // removeEntry が「非飛行」を見て二重の削除主体になる(spec §5-1)。
+      if (generationRef.current.get(id) !== generation) {
+        releaseRegistry()
         return
       }
-      const pageCount = finalized.data?.pageCount
-      if (pageCount === undefined) {
-        writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF の検証に失敗しました'))
+      // 直 PUT(browser → R2)。 lib/media/upload.ts の画像直 PUT saga と同型
+      // (mode/credentials/redirect/timeout)。 署名済み URL への PUT ゆえ cookie 不要。
+      let putOk = false
+      try {
+        const put = await fetch(uploadUrl, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': 'application/pdf' },
+          mode: 'cors',
+          credentials: 'omit',
+          redirect: 'error',
+          signal: AbortSignal.timeout(PDF_PUT_TIMEOUT_MS),
+        })
+        putOk = put.ok
+      } catch {
+        putOk = false
+      }
+      // checkpoint 2(spec §2.1-2): **putOk 不問**で DELETE する — client timeout
+      // (AbortSignal.timeout)後に R2 側で着地している可能性があり(uncertain outcome)、
+      // DELETE は 404 = 成功系ゆえ無条件化のコストがない。 判定 → DELETE → registry 解除
+      // の間に await を挟まない(挟むと解除前の窓で removeEntry も撃てる・spec §5-1)。
+      if (generationRef.current.get(id) !== generation) {
+        void deletePdfSource({ uploadSessionId, fileId: id }).catch(() => {})
+        releaseRegistry()
         return
       }
-      writeEntry(id, generation, () => ({
-        id,
-        kind: 'pdf' as const,
-        file,
-        pageCount,
-        originalSize: file.size,
-        status: 'ready' as const,
-      }))
-    } catch (err) {
-      writeEntry(id, generation, () =>
-        pdfErrorEntry(id, file, err instanceof Error ? err.message : 'PDF の検証に失敗しました'),
+      if (!putOk) {
+        writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF のアップロードに失敗しました'))
+        return
+      }
+
+      writeEntry(id, generation, (prev) =>
+        prev.kind === 'pdf'
+          ? { id, kind: 'pdf' as const, file, originalSize: file.size, status: 'counting' as const }
+          : prev,
       )
+
+      try {
+        const finalized = await finalizePdfSource({
+          uploadSessionId,
+          fileId: id,
+          declaredBytes: file.size,
+        })
+        // checkpoint 3(spec §2.1-3): 無効なら state は書かず DELETE だけ撃つ
+        // (reject 経路は server 側が削除済 → 404 no-op ゆえ、成否で分岐しない一様規則)。
+        // ここも判定 → DELETE → registry 解除の間に await を挟まない(spec §5-1)。
+        if (generationRef.current.get(id) !== generation) {
+          void deletePdfSource({ uploadSessionId, fileId: id }).catch(() => {})
+          releaseRegistry()
+          return
+        }
+        if (!finalized.ok) {
+          writeEntry(id, generation, () => pdfErrorEntry(id, file, finalized.error))
+          return
+        }
+        const pageCount = finalized.data?.pageCount
+        if (pageCount === undefined) {
+          writeEntry(id, generation, () => pdfErrorEntry(id, file, 'PDF の検証に失敗しました'))
+          return
+        }
+        writeEntry(id, generation, () => ({
+          id,
+          kind: 'pdf' as const,
+          file,
+          pageCount,
+          originalSize: file.size,
+          status: 'ready' as const,
+        }))
+      } catch (err) {
+        // checkpoint 3(catch 節先頭・spec §2.1-3): finalize throw でも回収経路は同じ。
+        // 判定 → DELETE → registry 解除の間に await を挟まない(spec §5-1)。
+        if (generationRef.current.get(id) !== generation) {
+          void deletePdfSource({ uploadSessionId, fileId: id }).catch(() => {})
+          releaseRegistry()
+          return
+        }
+        writeEntry(id, generation, () =>
+          pdfErrorEntry(id, file, err instanceof Error ? err.message : 'PDF の検証に失敗しました'),
+        )
+      }
+    } finally {
+      // 全終了経路(throw 含む)で必ず飛行フラグを落とす(spec §5-1): 漏れると
+      // その entry が「永遠に飛行中」に見えて誰も DELETE しない orphan になる。
+      rec.inFlight = false
     }
   }
 
@@ -455,7 +516,14 @@ export function UploadForm({
         )
         continue
       }
-      void continuePdfUpload(f.file, f.id, f.generation, uploadSessionId, entry.uploadUrl)
+      // ②-4b §1(spec §2.2): registry 登録は continuation の dispatch と同一同期区間で
+      // 行う(間に await が入ると「object を作りにいくのに registry に居ない」窓ができ、
+      // その窓の removeEntry が所在を知らないまま orphan を残す)。 record object 自体を
+      // continuation へ渡し、以後の registry 操作は identity 比較で自分の登録に限定する
+      // (retryPdfSession も同じ loop を通るため、retry では新 record が上書きする)。
+      const rec: PdfSourceRecord = { uploadSessionId, inFlight: true }
+      pdfSourceRef.current.set(f.id, rec)
+      void continuePdfUpload(f.file, f.id, f.generation, uploadSessionId, entry.uploadUrl, rec)
     }
   }
 
@@ -596,14 +664,26 @@ export function UploadForm({
     // generation token を revoke(Codex I11): 削除後に届く旧 PUT / finalize 応答は
     // writeEntry の token 比較で弾かれ、state を書き戻せなくなる。
     generationRef.current.delete(id)
+    // ②-4b §1(spec §2.3): 非飛行(ready / error)の PDF は removeEntry が削除主体。
+    // 飛行中は continuation が checkpoint で自分の object を回収するため撃たない
+    // (削除主体の一意性・spec §5-3)。 登録なし(image / reserve 前・reserve 失敗)は
+    // R2 に object が無いので何もしない。 revoke → 飛行判定 → DELETE → registry 解除の
+    // 間に await を挟まない — 挟むとその窓で continuation の checkpoint と両方が撃つ
+    // (= 一意性が崩れる)(spec §5-1)。
+    const rec = pdfSourceRef.current.get(id)
+    if (rec && !rec.inFlight) {
+      void deletePdfSource({ uploadSessionId: rec.uploadSessionId, fileId: id }).catch(() => {})
+      pdfSourceRef.current.delete(id)
+    }
     setEntries((prev) => {
       const target = prev.find((e) => e.id === id)
       if (target && target.kind === 'image' && 'thumbUrl' in target && target.thumbUrl) {
         URL.revokeObjectURL(target.thumbUrl)
       }
       const next = prev.filter((e) => e.id !== id)
-      // entries が空になったら uploadSessionId も畳む(D5 point 4「終了」・残った
-      // R2 object は lifecycle が回収する・spec「削除 = manifest から外すのみ」)。
+      // entries が空になったら uploadSessionId も畳む(D5 point 4「終了」)。
+      // ②-4b §1 以降、staging object は削除時に best-effort DELETE 済み(上の registry
+      // 分岐 / continuation の checkpoint)— 回収に失敗した残骸だけを lifecycle が拾う。
       if (next.length === 0) {
         uploadSessionIdRef.current = null
       }
@@ -718,6 +798,18 @@ export function UploadForm({
     }
   }
 
+  // ②-4b §1(spec §2.2): 消費済み session の object は server pipeline が所有している
+  // (読取中でありうる)ため、client DELETE が競合すると pdf_source_unavailable の誤
+  // terminal 化を誘発する。 uploadSessionId を無効化する 2 点で当該 session の全登録を
+  // registry からも落とし、以後 removeEntry がその session を指せなくする。 inFlight は
+  // 不問 — 「accepted 時点で飛行中は無い」(submit gate が anyProcessing 不在を要求)と
+  // いう前提に purge の網羅性を依存させない。
+  function purgePdfSourceRegistry(sessionId: string) {
+    for (const [id, rec] of pdfSourceRef.current) {
+      if (rec.uploadSessionId === sessionId) pdfSourceRef.current.delete(id)
+    }
+  }
+
   async function runProcess() {
     try {
       if (destination === null) {
@@ -755,6 +847,11 @@ export function UploadForm({
       // (ユーザー再試行 = 別 operation という既存契約・submit-upload.ts:99-103)。
       const idempotencyKey = generateId()
 
+      // ②-4b §1(spec §2.2): この submit が消費する session を捕捉しておき、無効化する
+      // 2 点(accepted 受信 / submitUpload throw)で registry からも同期して落とす。
+      // null = PDF を含まない submit(registry に該当登録が無く purge も不要)。
+      const submittedSessionId = uploadSessionIdRef.current
+
       const fd = new FormData()
       fd.set('idempotencyKey', idempotencyKey)
       fd.set('mode', destination.mode)
@@ -769,7 +866,7 @@ export function UploadForm({
         // 空文字を送り、T7 の zod uuid 検証で invalid_input として弾かせる
         // (silent failure にしない)。
         fd.set('orderManifest', JSON.stringify(manifestEntries))
-        fd.set('uploadSessionId', uploadSessionIdRef.current ?? '')
+        fd.set('uploadSessionId', submittedSessionId ?? '')
       }
 
       let result: Awaited<ReturnType<typeof submitUpload>>
@@ -779,6 +876,11 @@ export function UploadForm({
         // throw / 応答不明(spec §3.2 行 3): server 側で uploadSessionId が
         // 既に消費されているかどうか判別できないため無効化する。
         uploadSessionIdRef.current = null
+        // ②-4b §1(spec §2.2 / §5-1): null 化と**同一同期区間**で registry も落とす。
+        // 間に await を挟むと「session は無効化済みだが registry には残る」窓ができ、
+        // その窓の removeEntry が consumed session へ DELETE を撃てる。 下の
+        // retryPdfSession が新 session で再登録するより前に実行される必要もある。
+        if (submittedSessionId) purgePdfSourceRegistry(submittedSessionId)
         // Codex fix round 4(Important P2): 無効化しただけだと ready な PDF
         // entry が旧 session 配下の object を指したまま残り、次の submit で
         // 空 session が送られる/新規 PDF 追加時は新旧 session の object が
@@ -802,6 +904,9 @@ export function UploadForm({
       // (デフォルトで「維持」)。
       if (result.outcome === 'accepted') {
         uploadSessionIdRef.current = null
+        // ②-4b §1(spec §2.2 / §5-1): null 化と同一同期区間で registry も落とす
+        // (上の throw 経路と同型 — await を挟むと consumed session へ撃てる窓ができる)。
+        if (submittedSessionId) purgePdfSourceRegistry(submittedSessionId)
       }
       switch (result.outcome) {
         case 'accepted': {

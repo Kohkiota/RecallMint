@@ -85,6 +85,16 @@ vi.mock('../_actions/finalize-pdf-source', () => ({
     ),
 }))
 
+// ②-4b §1(spec 2026-08-09): entry 削除に同期した staging DELETE。 client は結果を
+// 一切表示しない fire-and-forget ゆえ、呼出の有無と引数だけを spy する。
+const mockDeletePdfSource = vi.fn<
+  (input: { uploadSessionId: string; fileId: string }) => Promise<{ ok: boolean }>
+>()
+vi.mock('../_actions/delete-pdf-source', () => ({
+  deletePdfSource: (input: unknown) =>
+    mockDeletePdfSource(input as { uploadSessionId: string; fileId: string }),
+}))
+
 // PDF の直 PUT(browser → R2)先。 global fetch を差し替える(docStatuses poll の
 // describe は自前で別の mock に差し替えるため衝突しない — 後勝ちで local が勝つ)。
 const mockFetchPut = vi.fn()
@@ -217,6 +227,7 @@ beforeEach(() => {
   }))
   mockFetchPut.mockResolvedValue({ ok: true } as unknown as Response)
   mockFinalizePdfSource.mockResolvedValue({ ok: true, data: { pageCount: 10 } })
+  mockDeletePdfSource.mockResolvedValue({ ok: true })
   // デフォルト: submit は成功(publish 済みの operation を返す)。
   vi.mocked(submitUpload).mockResolvedValue({
     outcome: 'accepted',
@@ -505,6 +516,271 @@ describe('stale 応答排除(entry generation token)', () => {
     expect(screen.queryByText('7 ページ')).not.toBeInTheDocument()
     // 何も選択されていない状態に戻っている(合計 3 状態の describe と独立の観点)。
     expect(screen.queryByText(/件選択中/)).not.toBeInTheDocument()
+  })
+})
+
+// ─── ②-4b §1: entry 削除時の R2 staging cleanup(design spec 2026-08-09) ────────
+// 削除主体を常に一意にすることで「DELETE 先行 → PUT 後着地で object 復活」を構造的に
+// 排除する(spec §2): continuation 飛行中は continuation 本人が checkpoint で自分の
+// object を DELETE し、非飛行(ready / error)は removeEntry が即撃つ。 image entry は
+// R2 object を持たないので誰も撃たない。 消費済み session(accepted / throw で無効化)
+// へは registry purge により以後撃たない(spec §2.2)。
+
+describe('②-4b §1: entry 削除時の staging DELETE', () => {
+  it('ready の PDF entry を削除すると deletePdfSource が (uploadSessionId, fileId) で呼ばれる', async () => {
+    await renderWithFiles([makePdf('a.pdf')])
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).toHaveBeenCalledTimes(1)
+    expect(mockDeletePdfSource).toHaveBeenCalledWith({
+      uploadSessionId: reserveInput.uploadSessionId,
+      fileId: reserveInput.files[0].fileId,
+    })
+  })
+
+  // error entry(finalize throw = network 断)は object が残る唯一の非飛行残留経路。
+  // PUT 失敗 / finalize reject 由来の error は object 不在 or server 削除済で
+  // DELETE は 404 = 成功系の no-op ゆえ、error を一律に即 DELETE 対象へ含める(spec §2)。
+  it('error(finalize throw 由来)の PDF entry を削除しても deletePdfSource が呼ばれる', async () => {
+    mockFinalizePdfSource.mockRejectedValueOnce(new Error('network down'))
+    await renderWithFiles([makePdf('a.pdf')])
+    expect(screen.getAllByText('network down').length).toBeGreaterThanOrEqual(1)
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).toHaveBeenCalledTimes(1)
+    expect(mockDeletePdfSource).toHaveBeenCalledWith({
+      uploadSessionId: reserveInput.uploadSessionId,
+      fileId: reserveInput.files[0].fileId,
+    })
+  })
+
+  // PUT 失敗由来の error entry は object 不在(または R2 側で不完全)だが、DELETE は
+  // 404 = 成功系の no-op ゆえ finalize throw 由来と同じ扱いで撃つ(spec §2)。
+  // finalize throw 経路とは continuation の抜け方(checkpoint 2 の下の `!putOk`
+  // 分岐 vs catch 節)が違うため、registry が非飛行で残ることを別 pin で押さえる。
+  it('error(PUT 失敗由来)の PDF entry を削除しても deletePdfSource が呼ばれる', async () => {
+    mockFetchPut.mockResolvedValueOnce({ ok: false, status: 500 } as unknown as Response)
+    await renderWithFiles([makePdf('a.pdf')])
+    expect(
+      screen.getAllByText(/PDF のアップロードに失敗しました/).length,
+    ).toBeGreaterThanOrEqual(1)
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).toHaveBeenCalledTimes(1)
+    expect(mockDeletePdfSource).toHaveBeenCalledWith({
+      uploadSessionId: reserveInput.uploadSessionId,
+      fileId: reserveInput.files[0].fileId,
+    })
+  })
+
+  it('image entry の削除では deletePdfSource を呼ばない(R2 object が存在しない)', async () => {
+    await renderWithFiles([makeImage('a.jpg')])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+  })
+
+  it('uploading 中(PUT 飛行中)の削除は即時には撃たず、PUT 解決後に continuation が撃つ(checkpoint 2)', async () => {
+    const putDeferred = deferred<{ ok: boolean }>()
+    mockFetchPut.mockReturnValueOnce(putDeferred.promise)
+
+    render(<UploadForm {...DEFAULT_PROPS} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      Object.defineProperty(input, 'files', {
+        value: makeFileList([makePdf('a.pdf')]),
+        configurable: true,
+      })
+      fireEvent.change(input)
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getAllByText('アップロード中…').length).toBeGreaterThanOrEqual(1)
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+    // 飛行中は removeEntry が撃たない(削除主体は continuation・spec §2 表)。
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+
+    await resolveAndFlush(() => putDeferred.resolve({ ok: true }))
+
+    expect(mockDeletePdfSource).toHaveBeenCalledTimes(1)
+    expect(mockDeletePdfSource).toHaveBeenCalledWith({
+      uploadSessionId: reserveInput.uploadSessionId,
+      fileId: reserveInput.files[0].fileId,
+    })
+    // checkpoint 2 で打ち切るため finalize へは進まない。
+    expect(mockFinalizePdfSource).not.toHaveBeenCalled()
+  })
+
+  it('counting 中(finalize 飛行中)の削除は finalize 解決後に撃つ(checkpoint 3)', async () => {
+    const finalizeDeferred = deferred<FinalizeResult>()
+    mockFinalizePdfSource.mockReturnValueOnce(finalizeDeferred.promise)
+
+    render(<UploadForm {...DEFAULT_PROPS} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      Object.defineProperty(input, 'files', {
+        value: makeFileList([makePdf('a.pdf')]),
+        configurable: true,
+      })
+      fireEvent.change(input)
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    })
+    expect(screen.getAllByText('ページ数確認中…').length).toBeGreaterThanOrEqual(1)
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+
+    await resolveAndFlush(() =>
+      finalizeDeferred.resolve({ ok: true, data: { pageCount: 7 } }),
+    )
+
+    expect(mockDeletePdfSource).toHaveBeenCalledTimes(1)
+    expect(mockDeletePdfSource).toHaveBeenCalledWith({
+      uploadSessionId: reserveInput.uploadSessionId,
+      fileId: reserveInput.files[0].fileId,
+    })
+  })
+
+  it('reserve 未解決中の削除では PUT 自体が発火せず、DELETE も撃たない(checkpoint 1・object 未作成)', async () => {
+    const reserveDeferred = deferred<ReserveResult>()
+    mockReservePdfUploadUrls.mockReturnValueOnce(reserveDeferred.promise)
+
+    render(<UploadForm {...DEFAULT_PROPS} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await act(async () => {
+      Object.defineProperty(input, 'files', {
+        value: makeFileList([makePdf('a.pdf')]),
+        configurable: true,
+      })
+      fireEvent.change(input)
+    })
+    const reserveInput = mockReservePdfUploadUrls.mock.calls[0][0]
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    // 削除後に presign が今さら成功しても PUT は撃たない(object を作らない)。
+    await resolveAndFlush(() =>
+      reserveDeferred.resolve({
+        ok: true,
+        data: [
+          { fileId: reserveInput.files[0].fileId, uploadUrl: 'https://r2.example.test/put' },
+        ],
+      }),
+    )
+
+    expect(mockFetchPut).not.toHaveBeenCalled()
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+  })
+
+  // 消費済み session の object は server pipeline が所有している(読取中でありうる)。
+  // client DELETE が競合すると pdf_source_unavailable の誤 terminal 化を誘発するため、
+  // uploadSessionId の無効化と同時に registry からも当該 session の登録を落とす。
+  // 再 reserve を失敗させるのは「新 session の登録で旧登録が上書きされない」状況を
+  // 作るため — purge が無ければ旧 session の登録が残り、削除で旧 session へ飛ぶ。
+  it('accepted(session 消費)後は旧 session へ DELETE を撃たない(registry purge)', async () => {
+    await renderWithFiles([makePdf('a.pdf')])
+    expect(mockReservePdfUploadUrls).toHaveBeenCalledTimes(1)
+
+    vi.mocked(submitUpload).mockResolvedValueOnce({
+      outcome: 'accepted',
+      operationId: 'op-1',
+      examId: 'exam-1',
+      sourceDocumentId: '',
+      replayed: true,
+    })
+    mockReservePdfUploadUrls.mockResolvedValueOnce({
+      ok: false,
+      error: 'アップロードURLの発行に失敗しました',
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+    // 自動回復(setErrorAfterAccepted → retryPdfSession)が走り、その再 reserve は失敗。
+    expect(mockReservePdfUploadUrls).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+  })
+
+  // 無効化点は 2 つ(accepted 受信 / submitUpload throw)あり、purge も 2 箇所ある。
+  // 上の accepted 側 pin は throw 側の行を消しても green のままなので、throw 側にも
+  // 対称の pin を張る(spec §3.2 行 3: throw = 応答不明ゆえ session は消費済みとして
+  // 扱う → registry も同時に落とす)。 再 reserve を失敗させる構成理由は accepted 側と
+  // 同じ(成功すると新 record が旧 record を上書きして purge の検出力が消える)。
+  it('submitUpload throw(応答不明)後も旧 session へ DELETE を撃たない(registry purge)', async () => {
+    await renderWithFiles([makePdf('a.pdf')])
+    const sessionId1 = mockReservePdfUploadUrls.mock.calls[0][0].uploadSessionId
+
+    vi.mocked(submitUpload).mockRejectedValueOnce(new Error('connect ETIMEDOUT'))
+    mockReservePdfUploadUrls.mockResolvedValueOnce({
+      ok: false,
+      error: 'アップロードURLの発行に失敗しました',
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    })
+    // 自動回復(retryPdfSession)が新 session で走り、その再 reserve は失敗する。
+    expect(mockReservePdfUploadUrls).toHaveBeenCalledTimes(2)
+    expect(mockReservePdfUploadUrls.mock.calls[1][0].uploadSessionId).not.toBe(sessionId1)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    })
+
+    expect(mockDeletePdfSource).not.toHaveBeenCalled()
+  })
+
+  // spec §5-2(OT 指定): 「consumed session へ client DELETE を撃たない」は
+  // この UI gate + registry purge の 2 層に依存する。 gate を外す変更は保証を
+  // 無言で崩すため、gate 自体を pin する。
+  it('submit 中は削除ボタンが disabled(不変条件 2 の UI gate)', async () => {
+    const submitDeferred = deferred<Awaited<ReturnType<typeof submitUpload>>>()
+    vi.mocked(submitUpload).mockReturnValueOnce(submitDeferred.promise)
+
+    await renderWithFiles([makePdf('a.pdf')])
+    expect(screen.getByRole('button', { name: '削除' })).toBeEnabled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /AI で問題を抽出する/ }))
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(screen.getByRole('button', { name: '削除' })).toBeDisabled()
+
+    // 後始末: pending の submit を解いてから抜ける(未解決の promise を残さない)。
+    await resolveAndFlush(() =>
+      submitDeferred.resolve({ outcome: 'invalid_input', error: '入力内容が正しくありません' }),
+    )
   })
 })
 
