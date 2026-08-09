@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 
@@ -7,6 +9,7 @@ import {
   selectSweepTargets,
   runSrcSweepLane,
   SWEEP_CUTOFF_MS,
+  SWEEP_BUDGET_MS,
   ALERT_AGE_MS,
 } from './src-sweep'
 import type { R2ObjectMeta } from './r2'
@@ -704,5 +707,40 @@ describe('runSrcSweepLane — summary(§3.1 readback)', () => {
 
     expect(summary.overdueCount).toBe(0)
     expect(recordedKeys()).not.toContain('r2_sweep_overdue')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// cron route(Task 5)の maxDuration drift pin
+// ---------------------------------------------------------------------------
+// route.ts を import せず readFileSync + regex で読む理由: route segment config は
+// 静的解析される literal で、値そのものを読むのが素直(既存 precedent =
+// app/(app)/app/upload/_actions/submit-upload.test.ts の maxDuration pin)。
+// route.test.ts でなく本 file に置くのは、あちらが SWEEP_BUDGET_MS を mock している
+// ため実値との関係式を pin できないため。
+describe('/api/cron/sweep route.ts の maxDuration', () => {
+  const source = readFileSync(
+    path.resolve(import.meta.dirname, '../../app/api/cron/sweep/route.ts'),
+    'utf8',
+  )
+  const matched = source.match(/^export const maxDuration = (\d+)$/m)
+
+  it('export const maxDuration の行が存在する', () => {
+    // 行が消えると function は Vercel Dashboard の Function Max Duration(既定値)へ
+    // 黙って戻る。値の不一致と同格の失敗として扱う。
+    expect(matched).not.toBeNull()
+  })
+
+  it('値が 300 である', () => {
+    expect(matched).not.toBeNull()
+    expect(Number(matched![1])).toBe(300)
+  })
+
+  it('lane 予算が maxDuration より短い', () => {
+    expect(matched).not.toBeNull()
+    // 予算が maxDuration 以上になると、tail reserve(10s)で書くはずの incomplete 行より
+    // 先に platform が invocation を打ち切る。打ち切りを観測できる唯一の signal が
+    // その行なので、失われると「掃けていない」ことが誰にも見えなくなる。
+    expect(SWEEP_BUDGET_MS).toBeLessThan(Number(matched![1]) * 1000)
   })
 })
