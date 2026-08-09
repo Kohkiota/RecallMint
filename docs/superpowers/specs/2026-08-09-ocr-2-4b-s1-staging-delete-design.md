@@ -71,7 +71,9 @@ pdfSourceRef: Map<entryId, { uploadSessionId: string; inFlight: boolean }>
   指す者は居ない)に `map.delete(id)`。
 - **session 無効化との同期(purge)**: `uploadSessionIdRef` を null 化する 2 点(accepted 受信 /
   submitUpload throw)で、**当該 session に属する全登録を purge** する。以後 removeEntry は
-  その session へ DELETE を撃てない。
+  その session へ DELETE を撃てない。purge は **inFlight の値に関わらず**当該 session の全登録を
+  消す — accepted 時点で inFlight:true の登録は存在しないはず(submit gate が `anyProcessing`
+  不在を要求する)だが、この前提には依存しない(前提が将来崩れても purge の網羅性が保たれる)。
 
 purge が要る理由: consumed session の object は server pipeline が所有しており(読取中でありうる)、
 client DELETE が競合すると `pdf_source_unavailable` の誤 terminal 化を誘発する(r5 の fenced CAS が
@@ -135,7 +137,9 @@ r2_staging_delete: {
 1. **checkpoint 判定と ref 解除は同一同期区間で行う**(間に await を挟まない)。挟むと
    「削除主体が常に一意」の論拠が崩れる。continuation 終了時の inFlight 解除は throw 経路を
    含め **finally で必ず実行**する — 漏れると error entry が「永遠に飛行中」に見えて誰も
-   DELETE しない orphan になる。
+   DELETE しない orphan になる。**§2.2 の purge も同じ規律に含める**: `uploadSessionIdRef` の
+   null 化と purge の間に await を挟まない(挟むと「session は無効化済みだが registry には
+   残っている」窓ができ、その窓内の removeEntry が consumed session へ DELETE を撃てる)。
 2. **`disabled={isSubmitting}`(`upload-form.tsx` 削除ボタン)が race 排除の前提**。
    「consumed session の object を client DELETE が pipeline と取り合わない」はこの UI gate +
    §2.2 の purge の 2 層に依存する。将来 disabled が外れても purge が第 2 層として残るが、
