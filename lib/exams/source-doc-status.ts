@@ -66,10 +66,10 @@ export const NON_TERMINAL_UPLOAD_OPERATION_STATUSES = ['prepared', 'processing']
 // (LEASE_TTL_MS)に短縮される。
 //
 // This condition builds a `WHERE`-fragment only (no I/O) so it composes with
-// whichever query calls it. **Invoked from 7 sites** (grep
+// whichever query calls it. **Invoked from 8 sites** (grep
 // `isLiveUploadOperationCondition()` — S-5 で source lane の 2 site が消え、
-// `hasLiveUploadOperation` と `submitUploadTx` が加わった。anyone assessing a
-// change to this predicate must weigh all 7):
+// `hasLiveUploadOperation` と `submitUploadTx` が加わった。②-4b §3 で src sweeper が
+// 8 番目として加わった。anyone assessing a change to this predicate must weigh all 8):
 //   1. `reconcileStaleProcessing` 文 1 (source protection, negated form via
 //      NOT EXISTS below)
 //   2. `getExamStatusMap` (display op-awareness)
@@ -78,6 +78,9 @@ export const NON_TERMINAL_UPLOAD_OPERATION_STATUSES = ['prepared', 'processing']
 //   5. 同 script の terminate CAS (同じ negation を UPDATE の WHERE に再適用)
 //   6. `hasLiveUploadOperation` (/app/upload の form 表示 gate)
 //   7. `submitUploadTx` の live-op gate (boolean 列として評価)
+//   8. `lib/storage/src-sweep.ts` の `hasLiveUploadOperationForSweep`
+//      (②-4b §3: `src/` age-based sweeper が user の DELETE batch 直前に評価する
+//      除外条件。判定が false へ倒れると処理中 invocation の source PDF を消しうる)
 // 6 と 7 は**同じ述語を読むこと自体が要件**: 片方だけ変えると「form は出るのに
 // submit すると拒否される」窓が無言で生まれる(S-5b 追加項目 A)。
 // 4/5 が最も重い: 判定が false へ倒れると prepared_payload(PII)を持つ行の
