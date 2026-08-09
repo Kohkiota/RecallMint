@@ -296,31 +296,40 @@ function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boole
 }
 
 /**
- * R2オブジェクトの一覧 (ListObjectsV2。 破壊 script(scripts/gc-src-prefix.ts等)が
- * 削除対象を DB を介さず R2 listing だけから求めるための唯一の口)。
+ * R2オブジェクトの一覧を bounded page 数で取得する core(②-4b spec §3.2)。
  *
- * pagination を全列挙する (IsTruncated/NextContinuationToken を追随)。 token が
- * 欠落/非進行(壊れた応答の無限ループ)なら throw、 MAX_LIST_PAGES 超過でも throw
- * する (無限ループ耐性)。
+ * `listObjects` と同じ pagination(IsTruncated/NextContinuationToken を追随)だが、
+ * `maxPages` 到達時に throw せず `{ truncated: true }` + 収集済み keys で打ち切る —
+ * 呼出元(退会時の R2 prefix purge)は「上限で打ち切ったが取れた分の削除は続行する」
+ * 必要があり、throw では呼出側に強制的な catch を課してしまうため。`listObjects`
+ * (既存の全列挙 + throw 契約)はこの core に `maxPages=MAX_LIST_PAGES` で委譲し、
+ * `truncated:true` を従来と同一文言の throw に変換するだけ — 外部契約は完全に不変。
  *
- * **既存5関数(presignPutUrl/presignGetUrl/headObject/getObject/putObject/
- * deleteObject)の never-throw 契約を、この関数は意図的に継承しない — 失敗
- * (非2xx・fetch throw・timeout)は catch せずそのまま throw する。** 理由:
- * 本関数は破壊操作の事後検証(「削除後 readback = listing 0件」で削除完了を
- * 確認する)を支える。 失敗を空配列に正規化すると、 network 失敗時も
- * 「0件 = 削除完了」に見えてしまい検証そのものが無意味になる — 「空」と
- * 「分からない」を混同してはならない。
+ * `maxPages` は数値引数を public にする以上、型だけでは不正入力を防げないため
+ * fail-fast で reject する(正の整数以外 — `0`/負数/非整数/`NaN`/`Infinity`)。
+ * `opts.timeoutMs` は `getObject` の `{ timeoutMs }` idiom に倣う — 省略時は既定
+ * `LIST_TIMEOUT_MS`、指定時は各 page の `AbortSignal.timeout` に反映する(退会 purge
+ * が残予算を渡す口)。
+ *
+ * 既存の throw 契約(`!res.ok` / malformed root / malformed IsTruncated / token
+ * 非前進)はそのまま保持する — never-throw ではない(listObjects と同じ非対称。
+ * 下記 docstring 参照)。
  */
-export async function listObjects(prefix: string): Promise<string[]> {
+export async function listObjectsBounded(
+  prefix: string,
+  maxPages: number,
+  opts?: { timeoutMs?: number },
+): Promise<{ keys: string[]; truncated: boolean }> {
+  if (!Number.isInteger(maxPages) || maxPages < 1) {
+    throw new Error(`listObjectsBounded: maxPages must be a positive integer (received ${maxPages})`)
+  }
+
   const keys: string[] = []
   let continuationToken: string | undefined
 
   for (let page = 1; ; page++) {
-    if (page > MAX_LIST_PAGES) {
-      throw new Error(
-        `listObjects: aborted after ${MAX_LIST_PAGES} pages (prefix=${prefix}) — ` +
-          'pagination loop guard triggered',
-      )
+    if (page > maxPages) {
+      return { keys, truncated: true }
     }
 
     const url = new URL(`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET_NAME}`)
@@ -332,7 +341,7 @@ export async function listObjects(prefix: string): Promise<string[]> {
 
     const res = await client.fetch(url.toString(), {
       method: 'GET',
-      signal: AbortSignal.timeout(LIST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? LIST_TIMEOUT_MS),
     })
     if (!res.ok) {
       throw new Error(`listObjects failed: prefix=${prefix} status=${res.status}`)
@@ -346,7 +355,7 @@ export async function listObjects(prefix: string): Promise<string[]> {
     }
 
     if (!isTruncated) {
-      return keys
+      return { keys, truncated: false }
     }
 
     const tokenMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/)
@@ -364,6 +373,35 @@ export async function listObjects(prefix: string): Promise<string[]> {
 }
 
 /**
+ * R2オブジェクトの一覧 (ListObjectsV2。 破壊 script(scripts/gc-src-prefix.ts等)が
+ * 削除対象を DB を介さず R2 listing だけから求めるための唯一の口)。
+ *
+ * pagination を全列挙する (IsTruncated/NextContinuationToken を追随)。 token が
+ * 欠落/非進行(壊れた応答の無限ループ)なら throw、 MAX_LIST_PAGES 超過でも throw
+ * する (無限ループ耐性)。**実装は `listObjectsBounded(prefix, MAX_LIST_PAGES)` へ
+ * 委譲**(②-4b spec §3.2)し、`truncated:true` を従来と同一文言の throw に変換する
+ * だけ — signature・throw タイミング・文言を含め外部契約は完全に不変。
+ *
+ * **既存5関数(presignPutUrl/presignGetUrl/headObject/getObject/putObject/
+ * deleteObject)の never-throw 契約を、この関数は意図的に継承しない — 失敗
+ * (非2xx・fetch throw・timeout)は catch せずそのまま throw する。** 理由:
+ * 本関数は破壊操作の事後検証(「削除後 readback = listing 0件」で削除完了を
+ * 確認する)を支える。 失敗を空配列に正規化すると、 network 失敗時も
+ * 「0件 = 削除完了」に見えてしまい検証そのものが無意味になる — 「空」と
+ * 「分からない」を混同してはならない。
+ */
+export async function listObjects(prefix: string): Promise<string[]> {
+  const { keys, truncated } = await listObjectsBounded(prefix, MAX_LIST_PAGES)
+  if (truncated) {
+    throw new Error(
+      `listObjects: aborted after ${MAX_LIST_PAGES} pages (prefix=${prefix}) — ` +
+        'pagination loop guard triggered',
+    )
+  }
+  return keys
+}
+
+/**
  * R2オブジェクトの物理削除 (画像GC sweep がR2実体を消す唯一の口。 design spec §4.6)。
  *
  * success-equivalent判定: 2xx または 404 は「objectが存在しない」という望むend-stateに
@@ -376,14 +414,19 @@ export async function listObjects(prefix: string): Promise<string[]> {
  *
  * presigned DELETEは採用しない — 本関数はserver直DELETE専用 (reconcilerはserver環境の
  * scriptとして動くため、presign経由の間接呼び出しは不要)。
+ *
+ * `opts.timeoutMs`(②-4b spec §3.2): 省略時は既定 `DELETE_TIMEOUT_MS`(10s)のまま —
+ * 既存呼出側は無改変で通る。`getObject` と同じ `{ timeoutMs }` idiom(退会 prefix
+ * purge が残予算を渡す口)。
  */
 export async function deleteObject(
   objectKey: string,
+  opts?: { timeoutMs?: number },
 ): Promise<{ ok: boolean; status: number | null }> {
   try {
     const res = await client.fetch(objectUrl(objectKey), {
       method: 'DELETE',
-      signal: AbortSignal.timeout(DELETE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? DELETE_TIMEOUT_MS),
     })
     if (res.ok || res.status === 404) {
       return { ok: true, status: res.status }

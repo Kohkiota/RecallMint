@@ -331,6 +331,24 @@ describe('deleteObject', () => {
     const result = await deleteObject('users/u1/asset1.webp')
     expect(result).toEqual({ ok: false, status: null })
   })
+
+  // ②-4b: opts.timeoutMs が AbortSignal.timeout へ渡ることを pin する(getObject と
+  // 同じ idiom。省略時は既定 DELETE_TIMEOUT_MS=10s のまま=既存呼出 3 箇所は無改変)。
+  it('uses the default 10s DELETE_TIMEOUT_MS when opts.timeoutMs is omitted', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const { deleteObject } = await import('./r2')
+    await deleteObject('users/u1/asset1.webp')
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000)
+  })
+
+  it('passes opts.timeoutMs through to AbortSignal.timeout when provided', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+    const { deleteObject } = await import('./r2')
+    await deleteObject('users/u1/asset1.webp', { timeoutMs: 30_000 })
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000)
+  })
 })
 
 describe('listObjects', () => {
@@ -439,6 +457,141 @@ describe('listObjects', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(xml, { status: 200 }))
     const { listObjects } = await import('./r2')
     await expect(listObjects('users/u1/src/')).rejects.toThrow(/malformed response/)
+  })
+
+  // ②-4b pin②: listObjects は listObjectsBounded(prefix, MAX_LIST_PAGES) へ委譲するが、
+  // maxPages 到達(=truncated:true)を従来と**文言同一**の throw に変換する契約を保つ
+  // (既存 test が regex で pin している契約の維持を明示的に確認する)。MAX_LIST_PAGES
+  // は r2.ts 内部定数(非export)につき、値 10000 は throw message から観測する。
+  it(
+    'MAX_LIST_PAGES cap: still throws with the legacy pagination-guard message after delegating to listObjectsBounded',
+    async () => {
+      let callCount = 0
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        callCount++
+        return new Response(
+          listObjectsXml([], { truncated: true, nextToken: `token-${callCount}` }),
+          { status: 200 },
+        )
+      })
+      const { listObjects } = await import('./r2')
+      await expect(listObjects('users/u1/src/')).rejects.toThrow(
+        /listObjects: aborted after 10000 pages \(prefix=users\/u1\/src\/\) — pagination loop guard triggered/,
+      )
+      expect(callCount).toBe(10_000)
+    },
+    20_000,
+  )
+})
+
+describe('listObjectsBounded', () => {
+  beforeEach(() => {
+    setValidEnv()
+    vi.restoreAllMocks()
+  })
+
+  // listObjects describe 内の同名 helper と同一実装(local scope のため複製・
+  // 既存 describe を触らないための独立コピー)。
+  function listObjectsXml(keys: string[], opts: { truncated?: boolean; nextToken?: string } = {}) {
+    const keyXml = keys.map((k) => `<Key>${k}</Key>`).join('')
+    const truncatedXml = `<IsTruncated>${opts.truncated ? 'true' : 'false'}</IsTruncated>`
+    const tokenXml = opts.nextToken
+      ? `<NextContinuationToken>${opts.nextToken}</NextContinuationToken>`
+      : ''
+    return `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>${truncatedXml}${tokenXml}${keyXml}</ListBucketResult>`
+  }
+
+  // pin①: maxPages 到達で throw せず { truncated: true } + 収集済み keys を返す
+  // (listObjects の throw 契約とは非対称 — 呼出元の退会 prefix purge は「上限で
+  // 打ち切ったが取れた分の削除は続行する」ため throw では扱えない・spec §3.2)。
+  it('returns { truncated: true } with the keys collected so far instead of throwing when maxPages is reached', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsXml(['users/u1/src/a.pdf'], { truncated: true, nextToken: 'token-2' }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsXml(['users/u1/src/b.pdf'], { truncated: true, nextToken: 'token-3' }),
+          { status: 200 },
+        ),
+      )
+    const { listObjectsBounded } = await import('./r2')
+    const result = await listObjectsBounded('users/u1/src/', 2)
+    expect(result).toEqual({
+      keys: ['users/u1/src/a.pdf', 'users/u1/src/b.pdf'],
+      truncated: true,
+    })
+  })
+
+  // pin④: 境界 maxPages=1 × IsTruncated=true — 1 page だけ fetch し truncated:true。
+  it('maxPages=1 boundary with IsTruncated=true: fetches exactly 1 page and reports truncated:true', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsXml(['users/u1/src/a.pdf'], { truncated: true, nextToken: 'token-2' }),
+          { status: 200 },
+        ),
+      )
+    const { listObjectsBounded } = await import('./r2')
+    const result = await listObjectsBounded('users/u1/src/', 1)
+    expect(result).toEqual({ keys: ['users/u1/src/a.pdf'], truncated: true })
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // pin④: 境界 maxPages=1 × IsTruncated=false — 1 page で完了・truncated:false。
+  it('maxPages=1 boundary with IsTruncated=false: fetches exactly 1 page and reports truncated:false', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(listObjectsXml(['users/u1/src/a.pdf'], { truncated: false }), { status: 200 }),
+      )
+    const { listObjectsBounded } = await import('./r2')
+    const result = await listObjectsBounded('users/u1/src/', 1)
+    expect(result).toEqual({ keys: ['users/u1/src/a.pdf'], truncated: false })
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // pin③: maxPages の不正値は fail-fast reject する(数値引数を public にする以上、
+  // 型だけでは不正入力を防げない)。fetch が一切呼ばれないこと(network 到達前に
+  // 検証が効くこと)も確認する。
+  it.each([0, -1, 1.5, NaN, Infinity])(
+    'rejects maxPages=%p (not a positive integer) without calling fetch',
+    async (invalidMaxPages) => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      const { listObjectsBounded } = await import('./r2')
+      await expect(listObjectsBounded('users/u1/src/', invalidMaxPages)).rejects.toThrow(
+        /maxPages must be a positive integer/,
+      )
+      expect(fetchSpy).not.toHaveBeenCalled()
+    },
+  )
+
+  // pin⑤: opts.timeoutMs 省略時は既定 LIST_TIMEOUT_MS(10s)のまま(既存 listObjects
+  // 経由の呼出は無改変で通る)。
+  it('uses the default 10s LIST_TIMEOUT_MS when opts.timeoutMs is omitted', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(listObjectsXml(['users/u1/src/a.pdf']), { status: 200 }),
+    )
+    const { listObjectsBounded } = await import('./r2')
+    await listObjectsBounded('users/u1/src/', 10)
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000)
+  })
+
+  // pin⑤: opts.timeoutMs 指定時は各 page fetch の AbortSignal.timeout に反映される
+  // (退会 prefix purge が残予算を渡す口・getObject と同じ idiom)。
+  it('passes opts.timeoutMs through to AbortSignal.timeout for each page fetch', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(listObjectsXml(['users/u1/src/a.pdf']), { status: 200 }),
+    )
+    const { listObjectsBounded } = await import('./r2')
+    await listObjectsBounded('users/u1/src/', 10, { timeoutMs: 5_000 })
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000)
   })
 })
 
