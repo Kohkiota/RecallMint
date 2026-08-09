@@ -51,7 +51,8 @@ workflow 軸区別を 1 行)。
 **完了条件(test で pin・mock 構成 = `finalize-pdf-source.test.ts` の `vi.hoisted` 様式):**
 未認証→不呼出 / 非 uuid→不呼出 / 正常→`sourcePdfObjectKey` の key で呼出+台帳不呼出+`{ok:true}` /
 `deleteObject` 失敗(`{ok:false,status:500}`)→台帳が 4 軸 key と `{objectKey,status}` context で
-呼ばれる / `recordIntegrationFailure` reject→飲んで `{ok:false}` を返す(throw しない)。
+呼ばれる / **404(`{ok:true,status:404}`)→ `{ok:true}` + 台帳不呼出**(重複 DELETE の中心契約・
+Codex 採用 4)/ `recordIntegrationFailure` reject→飲んで `{ok:false}` を返す(throw しない)。
 red→green 実証・canonical + Codex pass → `[reviewed]` commit。
 
 ---
@@ -63,7 +64,8 @@ red→green 実証・canonical + Codex pass → `[reviewed]` commit。
 - Modify: `app/(app)/app/upload/_components/upload-form.test.tsx`
 
 **Interfaces(Task 1 を消費):** `deletePdfSource({ uploadSessionId, fileId })` を
-`void deletePdfSource(...)` で fire-and-forget(結果不使用・UI 変更なし)。
+`void deletePdfSource(...).catch(() => {})` で fire-and-forget(結果不使用・UI 変更なし。
+`.catch` は action 呼出自体の network reject による unhandled rejection 防止 — Codex 採用 3)。
 test 側は既存 idiom で `vi.mock('../_actions/delete-pdf-source', …)` を追加。
 
 **目的:** spec §2 の削除主体一意化を既存機構(generationRef)相乗りで配線する。
@@ -71,13 +73,19 @@ test 側は既存 idiom で `vi.mock('../_actions/delete-pdf-source', …)` を�
 **実装(spec §2.1〜2.3 の写像・この 5 点のみ):**
 1. `const pdfSourceRef = useRef<Map<string, { uploadSessionId: string; inFlight: boolean }>>(new Map())`
 2. `reservePdfBatch` 成功 loop: `void continuePdfUpload(...)` の直前(同一同期区間)に
-   `pdfSourceRef.current.set(f.id, { uploadSessionId, inFlight: true })`
-3. `continuePdfUpload`: 本体を try/finally で包み finally で `rec.inFlight = false`(rec 残存時)。
-   checkpoint = 無効判定 `generationRef.current.get(id) !== generation` を
-   (a) PUT fetch 前 — 無効なら `pdfSourceRef.current.delete(id)` して return(PUT しない)
-   (b) PUT await 直後 — 無効なら putOk のときのみ `void deletePdfSource(...)` → `map.delete(id)` → return
-   (c) finalize await 直後と catch 節先頭 — 無効なら `void deletePdfSource(...)` → `map.delete(id)` → return
-   (checkpoint 判定〜map 操作の間に await を挟まない・spec §5-1)
+   `const rec = { uploadSessionId, inFlight: true }` を作って `pdfSourceRef.current.set(f.id, rec)`
+   し、**record object を continuation へ引数で渡す**(identity guard・Codex 採用 2)。
+3. `continuePdfUpload(file, id, generation, uploadSessionId, uploadUrl, rec)`: 本体を try/finally で
+   包み、registry への mutate/delete は**すべて `pdfSourceRef.current.get(id) === rec` の時のみ**
+   (自分の登録した record だけを触る — retry 等で別 record に差し替わっていたら何もしない)。
+   finally で `rec.inFlight = false`。checkpoint = 無効判定
+   `generationRef.current.get(id) !== generation` を
+   (a) PUT fetch 前 — 無効なら map.delete(guard 付)して return(PUT しない・object 未作成)
+   (b) PUT await 直後 — 無効なら **putOk 不問で** `void deletePdfSource(...).catch(() => {})`
+       → map.delete(guard 付)→ return(uncertain outcome 回収・spec §2.1-2 改訂)
+   (c) finalize await 直後と catch 節先頭 — 無効なら同上 DELETE → map.delete(guard 付)→ return
+   (checkpoint 判定〜map 操作の間に await を挟まない・spec §5-1。**この順序保証はコードの
+   comment でも pin する** — Codex 採用 5)
 4. `removeEntry`: `generationRef.current.delete(id)` の直後に
    `const rec = pdfSourceRef.current.get(id)` → `rec && !rec.inFlight` なら
    `void deletePdfSource({ uploadSessionId: rec.uploadSessionId, fileId: id })` + `map.delete(id)`。

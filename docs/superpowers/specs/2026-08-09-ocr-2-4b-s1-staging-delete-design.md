@@ -47,7 +47,10 @@ PUT が後から着地して object が復活する。これを**削除主体を
 ### 2.1 continuation の checkpoint(`continuePdfUpload` 内・3 点)
 
 1. **PUT 開始前**: 無効なら PUT 自体を skip(object を作らないので DELETE 不要)。
-2. **PUT 完了後**: 無効なら(putOk のときのみ)自分の object を DELETE して return(finalize へ進まない)。
+2. **PUT 完了後**: 無効なら **putOk に関わらず**自分の object を DELETE して return(finalize へ
+   進まない)。putOk=false でも client timeout(`AbortSignal.timeout`)後に R2 側で着地している
+   可能性があり(uncertain outcome)、DELETE は 404 = 成功系ゆえ無条件化のコストがない
+   (Codex cross-check 採用 1・OT 承認 2026-08-09)。
 3. **finalize 完了後**(成功 / reject / throw の全て): 無効なら自分の object を DELETE して return
    (state は書かない — `writeEntry` の既存 guard と二重だが、DELETE はここでしか撃てない)。
 
@@ -177,6 +180,8 @@ r2_staging_delete: {
 - unmount(ページ離脱)時の飛行中 continuation — generation は有効なままなので自己削除しない
 - finalize が応答しないまま hang した continuation(checkpoint に到達しない)
 - submitUpload throw 後の purge 済 session(§2.2)
+- abort した PUT が server 側で DELETE の後に着地する極小窓(client からは追跡不能。
+  checkpoint 2 を putOk 分岐にしても防げない類 — 元からこの節に属する限界)
 
 ## 8. 変更一覧
 
