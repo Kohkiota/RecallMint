@@ -74,7 +74,41 @@
 - spec §7 の限界(unmount / DELETE 失敗 / purge 済 / finalize hang)は §3 sweeper +
   lifecycle が受け皿。**lifecycle rule の「効果」の実測は依然ゼロ**(§4 論点)。
 
-## 6. stg smoke 手順(OT push 後・CC 実走・spec §9)
+## 6. stg smoke 実測(2026-08-09・CC 実走・**全 PASS**)
+
+deploy = `a0c254d` push 済(`dpl_34hie4gvAdZ66AxkcWaQjn8LDFt9`)。判定は R2 `src/` の
+session prefix scope listing(2.5 秒間隔 polling で transient も採取)。
+**既存 sentinel 2 本(`55b4316c…` / `f4f91e6d…`)は全工程で lastModified 不変 = 不可触を維持。**
+
+| # | 経路 | 操作 | 実測 | 判定 |
+|---|---|---|---|---|
+| 1 | **ready 削除**(removeEntry 即 DELETE) | case1-exam-5p.pdf を ready 化 → × | 07:13:56 に `8155c44c/fc7d049d` 出現 → 削除後 07:14:34 に消滅(3→2) | **PASS** |
+| 1' | 同上(41.9MB) | s1-big-40mb.pdf を ready 化 → × | 07:15:19 出現 `52801406` → 07:15:36 消滅 | **PASS** |
+| 2 | **checkpoint 1**(PUT 開始前に無効検知 → PUT 自体を発火せず) | 4 冊 setFiles の **37ms 後**に entry1 を ×(status = アップロード中…) | 新 session `18b0…` は **3 本しか出現せず**(削除分は一度も R2 に現れない) | **PASS** |
+| 3 | **checkpoint 2**(PUT 着地後の自己削除 = putOk 不問) | 4 冊 setFiles の **1.2 秒後**に entry1 を ×(status = アップロード中…) | `0d2e…` が 07:19:11 に **4 本**(削除分 `2a31d2` も着地)→ 07:19:16 に `2a31d2` のみ消滅 → 3 本 | **PASS** |
+
+- **#3 が Codex 採用 1 / OT 承認の spec 改訂(checkpoint 2 を putOk 不問にする)を実機で立証**した:
+  削除後に PUT が着地する uncertain outcome を continuation が回収している。
+- 最終状態 = sentinel 2 本のみ(自分が PUT した 12 object はすべて回収)。console error 0。
+- 手法メモ: tool 往復(数秒)が PUT 窓を食うため、`setInputFiles` と `削除` click を
+  **同一 Playwright 実行内**で行い待ち時間を制御した。窓を広げるため 41.9MB × 4 冊の
+  同時 PUT(合計 167.7MB < `MAX_PDF_TOTAL_BYTES` 200MB)を使用。fixture は
+  `.playwright-mcp/smoke/s1-big-40mb.pdf`(git 管理外・生成 script は scratchpad)。
+
+### 未実施(OT 照会)
+
+- `integration_failures` に `workflow='upload_staging'` の行が**無い**ことの確認
+  (app role は SELECT 42501 ゆえ CC 不可)。全 DELETE が成功しているため行は無いはず。
+
+```sql
+select created_at, user_id, context ->> 'objectKey' as object_key,
+       context ->> 'status' as http_status, error_message
+from integration_failures
+where service='r2' and operation='object.delete' and workflow='upload_staging'
+order by created_at desc;
+```
+
+## 7. (旧)stg smoke 手順(spec §9)
 
 1. **ready 削除**: PDF 1 冊を form に投入 → ready 化 → ×클릭 → session prefix listing
    (`src/{uid}/{sessionId}/`)で **0 件**を確認(手法 = §0 close doc と同じ prefix scope)。
