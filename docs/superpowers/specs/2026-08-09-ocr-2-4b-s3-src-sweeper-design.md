@@ -37,6 +37,7 @@
 - `lib/storage/r2.ts` の parse を `<Contents>` block 単位で `Key` + `LastModified` の組に拡張し、`listObjectsWithMetaBounded(prefix, maxPages, opts): Promise<{ entries: { key: string; lastModifiedMs: number }[]; truncated: boolean }>` を追加する(§2 spec からの申し送りの決着 = 「別 helper 追加」でなく **parse 共通・公開関数追加**。既存 `listObjects` / `listObjectsBounded` の signature と挙動は不変で、既存 test が regression pin になる)。
 - **strict parse は fail-closed**: `<Contents>` block に parse 可能な `LastModified` が無い page は listing 失敗として扱う(既存の壊れた 200 応答を「空」に正規化しない方針の延長)。**age が読めない object は削除しない**。
 - 候補 = `now - lastModifiedMs > SWEEP_CUTOFF_MS(6h)`。時計は sweeper の `Date.now()` と R2 の lastModified の比較になるが、skew は cutoff 6h に対し無視できる。
+- **smoke 用 cutoff override(OT 裁定・採用)**: 手動 GET 限定の `?cutoffMinutes=`(**下限 15min** = presign 600s + PUT 60s + 余裕。cron 発火はクエリ無しのため既定 6h のまま)。非整数・下限未満は **400 で拒否**(clamp しない — silent な意味変更を作らない)。**override 使用時は summary / log に実効 cutoff を `cutoffOverrideMinutes` として必ず含める**(既定 run か override run かを readback で区別できない記録を残さない)。
 - **key 形の関門**: 候補は `^src/{uuidv4}/{uuidv4}/{uuidv4}\.pdf$` に一致するものだけ DELETE 対象にする(§2 の破壊境界二重関門と同旨)。不一致 object は**削除せず** `reason: 'pattern_mismatch'` で記録して lifecycle に委ねる(§10 論点 3)。
 - listing page 上限 `SWEEP_MAX_LIST_PAGES = 10`(≈ 10,000 key)。truncated は phase `list_truncated` として incomplete 行に記録し、残りは翌日 run が拾う(age 条件は翌日も真のまま = 台帳なし retry の原理)。
 
@@ -76,6 +77,7 @@
 - **DELETE 実行前の listing snapshot** に対して `age > ALERT_AGE_MS(72h)` の object を数え、1 件以上なら `r2_sweep_overdue` を 1 行記録(→ Discord)。**先に評価する理由**: 今回の DELETE が成功しても「72h 生き延びた = 過去の sweeper run(≥2 回)と lifecycle(実効 ≈48h)の両方が回収に失敗していた」という事実は消えないため。
 - 72h の根拠: sweeper の保持上限(§4 の式・worst ≈ 55h)と lifecycle 実効上限(≈48h)の両方を超える最小の丸い値。ここに到達した object は「どの機構も回収しなかった」ことの証拠で、これが lifecycle の効果監視の常設 readback(fact-finding §3.3 の「最古 object age を測る」の運用形・§4 台帳の後継)。
 - 条件が続く限り毎日 1 行 = 毎日 1 通知。rate-limit しない(P0RLS と同じ「実障害の loud signal」受容・1 run 1 行で bounded)。
+- **overdue alert は cutoff override(§3.2)の影響を受けない**(OT 裁定): `ALERT_AGE_MS` は `SWEEP_CUTOFF_MS` から独立した定数で、`?cutoffMinutes=` で cutoff を縮めても alert 閾値は 72h のまま。test で pin する(§9)。
 
 ### 3.7 やらないこと
 
@@ -126,7 +128,7 @@ Vercel Cron は duplicate delivery・並走を公式に許容し、手動 GET �
 手順(§4 判定完了後):
 
 1. fixture: test1 user(`2ac594a5-…`・sentinel 所有者と別 user であることを listing で実測してから)で通常 upload flow により PDF を staging(PUT のみ・submit しない)し、key と lastModified を記録
-2. cutoff 経過を待つ(§10 論点 1 の override 採用なら短縮)
+2. cutoff 経過を待つ(override `?cutoffMinutes=15` で 15min に短縮可・§3.2)
 3. `CRON_SECRET` 付き手動 GET → response summary で `deleted ≥ 1` を確認
 4. listing readback: fixture 消滅・想定外 key の消滅が無いこと(実行前後の listing diff)
 5. 失敗系: 誤 Bearer で 401 / 台帳に想定外の行が無いこと(`workflow='src_sweep'` で DB 照会)
@@ -141,15 +143,16 @@ Vercel Cron は duplicate delivery・並走を公式に許容し、手動 GET �
 - 予算: 時刻注入(§2 の `now: () => number` idiom)で deadline 打ち切り / phase 優先順位統合 / MAX_FAILURE_ROWS + heldFailure
 - 台帳: catalog tuple 追加(14→17・ユニーク性 test の件数更新)/ 記帳個別 try/catch(notifyOps throw で後続削除が止まらない)
 - auth: 空 secret → 401 / Bearer 不一致 → 401 / production env 欠落 → throw(既存 gate の挙動確認)
+- override: 下限未満・非整数 → 400 / override 使用時 summary に `cutoffOverrideMinutes` が載る / **override で cutoff を縮めても overdue 閾値(72h)は不変**(OT 裁定条件の pin)
 - runner: lane throw が外に漏れない(stub lane)
 
 red 検証は gate を個別に変異させる(まとめ壊し禁止・既存 lesson)。
 
-## 10. 論点(OT 裁定待ち)
+## 10. 論点の裁定(OT・2026-08-09・確定)
 
-1. **smoke 用 cutoff override**: 手動 GET 限定の `?cutoffMinutes=`(下限 15min = presign 600s + PUT 60s + 余裕)を入れるか。入れない場合 smoke は fixture 投入後 6h 待ちになる。cron 発火はクエリ無しのため既定 6h のまま。**推奨 = 入れる**(下限があればクラス (0) は保護され、リスクは stg のクラス (i) 相当のみ)
-2. **schedule 時刻**: `0 18 * * *`(03:00 JST・低トラフィック帯)で良いか
-3. **pattern 不一致 object の扱い**: 削除しない(fail-safe・lifecycle 委ね・推奨)か、src/ 配下 age 超過は無条件削除か。前者は lifecycle 不全時に不一致 object だけ残り続ける(overdue alert が検知する)
+1. **smoke 用 cutoff override = 採用**(条件 2 つ付き): ① override 使用時は summary / log に実効 cutoff(`cutoffOverrideMinutes`)を必ず含める ② overdue alert(72h)は override の影響を受けないことを明記 + test で pin。下限 15min の根拠(presign 600s + PUT 60s + 余裕)は妥当、リスクは CRON_SECRET 保護下で stg のクラス (i) 相当に閉じる — 受容。→ §3.2 / §3.6 / §9 に反映済
+2. **schedule = `0 18 * * *`(03:00 JST)承認**。Hobby だった場合の ±59min は §4 の式に織込み済み
+3. **pattern 不一致 = 削除しない(記録のみ・lifecycle 委ね)承認**。不一致 key は「未知の将来 lane か配置ミス」でありうるため無条件削除は二重関門の意義を自壊させる。lifecycle 不全時に残り続ける帰結は overdue alert が毎日検知する = operator に判断が上がる loud な形で正しい。前者は lifecycle 不全時に不一致 object だけ残り続ける(overdue alert が検知する)
 
 ## 11. §4 判定の分岐(spec 構造はどちらでも不変)
 
