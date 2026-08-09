@@ -8,8 +8,9 @@
 
 ## Global Constraints(全 task 共通)
 
-- 不変条件は spec §7 の 8 項(age 不明は消さない / 二重関門 / live-op 除外は DELETE batch 直前 / overdue は DELETE 前 snapshot / lane never-throw / 記帳個別 try/catch / 空 secret 401 / 既存 listObjects 系 signature・挙動不変)
-- 数値: cutoff 6h / ALERT 72h / override 下限 15min(未満・非整数 = 400)/ maxDuration 300(literal)/ SWEEP_BUDGET_MS 270_000 / TAIL_RESERVE 10_000 / MIN_SLICE 2_000 / DELETE_CHUNK 20 / MAX_FAILURE_ROWS 20 / MAX_LIST_PAGES 10
+- 不変条件は spec §7 の 10 項(age 不明は消さない / 二重関門 case-insensitive / live-op 除外は DELETE batch 直前 / overdue は DELETE 前 snapshot・閾値 cutoff 独立 / lane never-throw / 記帳個別 try/catch + `recordErrors` / 空 secret 401・auth 先行 / production override 400 / quota 種別独立 / 既存 listObjects 系 signature・挙動不変)
+- 数値: cutoff 6h / ALERT 72h / override 下限 15min(未満・非整数・**production tier** = 400)/ maxDuration 300(literal)/ SWEEP_BUDGET_MS 270_000 / TAIL_RESERVE 10_000 / MIN_SLICE 2_000 / DELETE_CHUNK 20 / MAX_LIST_PAGES 10 / MAX_DELETE_FAILURE_ROWS 20 / MAX_MISMATCH_ROWS 5
+- 台帳行 quota(spec §3.5・種別独立): 実削除失敗 ≤20 / pattern 不一致 ≤5 / overdue ≤1 / incomplete ≤1(overdue・incomplete は枠外)。超過分は incomplete の `suppressedFailures`。**heldFailure は採らない**(§2 実装は不変)
 - catalog 4 軸は spec §3.5 の表のとおり(workflow = `src_sweep`・相乗り禁止)。context の PII は objectKey / 内部 uuid のみ
 - §2 idiom を踏襲するが定数・phase 語彙は sweeper 側で独立定義(import 共有しない — rule of three 未満・意味が別)
 - TDD(red→green)。時刻は `now: () => number` 注入(実 sleep 禁止)。R2 / DB / recordIntegrationFailure は mock(実 API 禁止)
@@ -73,9 +74,9 @@ export function selectSweepTargets(
 ): SweepSelection
 ```
 
-**制約:** key 関門 = `^src/{uuidv4}/{uuidv4}/{uuidv4}\.pdf$`(uuid は v4 形式・大文字不許容は既存 `source-object-key.ts` の生成形に合わせ小文字)。overdue は **cutoffMs でなく ALERT_AGE_MS 固定**で評価(OT 裁定: override の影響を受けない・不変条件 4 の「DELETE 前 snapshot」はこの関数が listing 直後に呼ばれることで成立)。age ちょうど cutoff は候補外(`>` 比較)。
+**制約:** key 関門 = `^src/{uuid}/{uuid}/{uuid}\.pdf$` を **case-insensitive** で照合(A6・OT 裁定: `z.uuid` は大文字 hex を通すため小文字限定だと正規 object を恒久 skip する)。overdue は **cutoffMs でなく ALERT_AGE_MS 固定**で評価(OT 裁定: override の影響を受けない・不変条件 4 の「DELETE 前 snapshot」はこの関数が listing 直後に呼ばれることで成立)。age ちょうど cutoff は候補外(`>` 比較)。
 
-**完了条件:** `lib/storage/src-sweep.test.ts` red→green — ① cutoff 境界(±1ms)② pattern 不一致の分離(似て非なる key: `.PDF` 拡張子 / セグメント欠落 / 旧経路 `users/...` / uuid 非形式)③ user 別グルーピング + oldest 昇順 ④ overdue: 72h±1ms 境界・oldest 選定・0 件で null・**cutoffMs を 15min に縮めても overdue 判定不変**。red 検証は gate 個別変異(まとめ壊し禁止)。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `lib/storage/src-sweep.test.ts` red→green — ① cutoff 境界(±1ms)② pattern 不一致の分離(似て非なる key: `.PDF` 拡張子 / セグメント欠落 / 旧経路 `users/...` / uuid 非形式)+ **大文字 uuid = 一致の正例**(A6)③ user 別グルーピング + oldest 昇順 ④ overdue: 72h±1ms 境界・oldest 選定・0 件で null・**cutoffMs を 15min に縮めても overdue 判定不変**。red 検証は gate 個別変異(まとめ壊し禁止)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 4: lane orchestration(`lib/storage/src-sweep.ts` 後半)
 
@@ -97,9 +98,9 @@ export async function runSrcSweepLane(args: {
 }): Promise<SrcSweepSummary>
 ```
 
-**制約:** live 除外 = 各 user の DELETE batch **直前**に `withTenantTx(userId, tx => EXISTS(live 条件 AND user_id = userId))`(不変条件 3・判定失敗も skip = phase `live_check`)。phase 語彙 `['list', 'live_check', 'list_truncated', 'deadline']`(配列順 = 優先順位・§2 idiom)。記帳は §2 `recordSrcPurgeRow` 同形の個別 try/catch ラッパ(不変条件 6)+ MAX_FAILURE_ROWS 20 と heldFailure(最後の 1 枠を incomplete に譲る)。`patternMismatch` の各 key は DELETE 未試行のまま `r2_sweep_delete` + `reason: 'pattern_mismatch'` で 1 件 1 行記帳(行数上限に算入)。listing は `listObjectsWithMetaBounded('src/', MAX_LIST_PAGES=10)`・LIST / DELETE の timeoutMs は残 slice で cap(§2 idiom)。workDeadline = `deadlineAt - TAIL_RESERVE(10s)`・chunk 境界で `slice < MIN_SLICE(2s)` 打ち切り。overdue 記帳(1 run ≤1 行)は DELETE 開始前・incomplete 記帳(1 run ≤1 行)は最後。lane は throw しない(大域 catch → summary.error + logger.error)。
+**制約:** live 除外 = 各 user の DELETE batch **直前**に `withTenantTx(userId, tx => EXISTS(live 条件 AND user_id = userId))`(不変条件 3・判定失敗も skip = phase `live_check`)。phase 語彙 `['list', 'live_check', 'list_truncated', 'deadline']`(配列順 = 優先順位・§2 idiom)。記帳は §2 `recordSrcPurgeRow` 同形の個別 try/catch ラッパ(不変条件 6)+ 失敗時 `recordErrors++`。**quota は種別独立**(実失敗 ≤20 / mismatch ≤5 / overdue ≤1 / incomplete ≤1・超過は `suppressedFailures` へ)。`patternMismatch` の各 key は DELETE 未試行のまま `r2_sweep_delete` + `reason: 'pattern_mismatch'` で 1 件 1 行記帳(mismatch 枠 5 を消費)。overdue 記帳 context に `partial: truncated`(A3)。listing は `listObjectsWithMetaBounded('src/', MAX_LIST_PAGES=10)`・LIST / DELETE の timeoutMs は残 slice で cap(§2 idiom)。workDeadline = `deadlineAt - TAIL_RESERVE(10s)`・chunk 境界で `slice < MIN_SLICE(2s)` 打ち切り。overdue 記帳(1 run ≤1 行)は DELETE 開始前・incomplete 記帳(1 run ≤1 行)は最後。lane は throw しない(大域 catch → summary.error + logger.error)。
 
-**完了条件:** `lib/storage/src-sweep.test.ts` red→green(全 I/O mock・時刻注入)— ① 呼び出し順 pin: overdue 記帳 → live check → DELETE(spy 順序 assert)② live user の全候補 skip / check reject → skip + phase `live_check` ③ deadline 打ち切り・phase 優先順位統合 ④ MAX_FAILURE_ROWS + heldFailure ⑤ 記帳 throw(notifyOps 相当)で後続 DELETE が止まらない + `logger.error` に残り `recordErrors` に加算される(silent 劣化禁止)⑥ DELETE 404 = 成功系 ⑦ summary の各カウントと `cutoffOverrideMinutes` 透過 ⑧ user 処理順 = oldest 昇順(deadline 打ち切りで最古が残らない)。`summary.error` は `String(err)` のみ(R2 応答 body・URL を載せない)。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `lib/storage/src-sweep.test.ts` red→green(全 I/O mock・時刻注入)— ① 呼び出し順 pin: overdue 記帳 → live check → DELETE(spy 順序 assert)② live user の全候補 skip / check reject → skip + phase `live_check` ③ deadline 打ち切り・phase 優先順位統合 ④ **quota 各境界**(実失敗 21 件目が落ちる / mismatch 6 件目が落ちる / それでも overdue・incomplete は書かれる / 落ちた数が `suppressedFailures`)⑤ 記帳 throw(notifyOps 相当)で後続 DELETE が止まらない + `logger.error` に残り `recordErrors` に加算される(silent 劣化禁止)⑥ DELETE 404 = 成功系 ⑦ summary の各カウントと `cutoffOverrideMinutes` 透過 ⑧ user 処理順 = oldest 昇順(deadline 打ち切りで最古が残らない)。`summary.error` は `String(err)` のみ(R2 応答 body・URL を載せない)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 5: cron runner route + 配線(`app/api/cron/sweep/route.ts` + `vercel.json` + `.env.example`)
 
@@ -108,15 +109,15 @@ export async function runSrcSweepLane(args: {
 **Interfaces(Consumes):** Task 4 の `runSrcSweepLane` / 既存 `requireWebhookSecret`。
 **Produces:** `GET /api/cron/sweep` — 200 `{ runs: SrcSweepSummary[] }` / 401 / 400(override 不正)/ 500(runner 外周 catch)。`export const runtime = 'nodejs'` / `export const maxDuration = 300`(literal)。
 
-**制約:** auth = `requireWebhookSecret('CRON_SECRET', 'Vercel cron')` 再利用・**空文字 secret は無条件 401**(不変条件 7)・Bearer 完全一致。**auth を query validation より先に評価**(未認証 caller に validation 差を返さない)。`?cutoffMinutes=` は整数かつ ≥15 のみ許容、それ以外 400(clamp しない)。応答に `Cache-Control: no-store`。運用上の成功判定 = 各 lane summary の `error` / `phase`(HTTP 200 は「runner が走破した」のみを意味する — 手動 GET の読み方として §8 smoke に引き継ぐ)。lane 配列は `[srcSweepLane]` の汎用形(判定ロジックは lane 内・runner は入口/auth/deadline 配布/readback のみ)。毎 run `logger.info({ event: 'cron.lane.run', lane, ...summary })`。zod 不使用(§2 骨格踏襲)。vercel.json: `"crons": [{ "path": "/api/cron/sweep", "schedule": "0 18 * * *" }]`。`.env.example` に `CRON_SECRET=`(空値記法・実値は OT が Vercel 設定)を**同 commit**で追加。
+**制約:** auth = `requireWebhookSecret('CRON_SECRET', 'Vercel cron')` 再利用・**空文字 secret は無条件 401**(不変条件 7)・Bearer 完全一致。**auth を query validation より先に評価**(未認証 caller に validation 差を返さない)。`?cutoffMinutes=` は整数かつ ≥15 のみ許容、それ以外 400(clamp しない)。**`VERCEL_ENV === 'production'` で `cutoffMinutes` 指定があれば 400**(A1・prod の保持 policy を secret 保持者が変更できないようにする機械強制)。応答に `Cache-Control: no-store`。運用上の成功判定 = 各 lane summary の `error` / `phase`(HTTP 200 は「runner が走破した」のみを意味する — 手動 GET の読み方として §8 smoke に引き継ぐ)。lane 配列は `[srcSweepLane]` の汎用形(判定ロジックは lane 内・runner は入口/auth/deadline 配布/readback のみ)。毎 run `logger.info({ event: 'cron.lane.run', lane, ...summary })`。zod 不使用(§2 骨格踏襲)。vercel.json: `"crons": [{ "path": "/api/cron/sweep", "schedule": "0 18 * * *" }]`。`.env.example` に `CRON_SECRET=`(空値記法・実値は OT が Vercel 設定)を**同 commit**で追加。
 
-**完了条件:** `app/api/cron/sweep/route.test.ts` red→green — ① secret 未設定(local ''): 401 ② Bearer 不一致 401 ③ `cutoffMinutes=14`・`=abc` → 400(lane 不呼出を spy で確認)④ `=15` → lane に 900_000ms が渡り summary に `cutoffOverrideMinutes: 15` ⑤ クエリ無し → cutoff 6h・summary に override key 無し ⑥ lane throw(stub lane)→ runner の per-lane 防御 catch で当該 lane summary が error になり後続 lane は実行・response 200(「lane throw が外に漏れない」= spec §9。500 は runner 自体の失敗用)⑦ production tier + env 欠落 → gate throw → 外周 catch 500(spec §9)。**`pnpm build` exit 0**(新 route + vercel.json を触るため per-task gate)。canonical + Codex pass → `[reviewed]`。
+**完了条件:** `app/api/cron/sweep/route.test.ts` red→green — ① secret 未設定(local ''): 401 ② Bearer 不一致 401 ③ `cutoffMinutes=14`・`=abc` → 400(lane 不呼出を spy で確認)③' **`VERCEL_ENV='production'` + `cutoffMinutes=15` → 400**(A1)/ production + クエリ無し → 既定 6h で lane 実行 ④ `=15`(非 production)→ lane に 900_000ms が渡り summary に `cutoffOverrideMinutes: 15` ⑤ クエリ無し → cutoff 6h・summary に override key 無し ⑥ lane throw(stub lane)→ runner の per-lane 防御 catch で当該 lane summary が error になり後続 lane は実行・response 200(「lane throw が外に漏れない」= spec §9。500 は runner 自体の失敗用)⑦ production tier + env 欠落 → gate throw → 外周 catch 500(spec §9)。**`pnpm build` exit 0**(新 route + vercel.json を触るため per-task gate)。canonical + Codex pass → `[reviewed]`。
 
 ### Task 6: docs 反映(`docs/architecture.md` / `docs/harness.md`)
 
-**目的:** architecture.md source 行の「§3 sweeper / lifecycle が受け皿」を実装済み記述へ更新(worst ≈55h の保持上限・§4 分岐は判定確定後に文言確定 = spec §11)。harness.md に cron 機構行(CRON_SECRET・fail-closed・schedule)を追加し、lifecycle 行に「効果監視 = sweeper overdue alert が常設 readback」を注記。
+**目的:** architecture.md source 行の「§3 sweeper / lifecycle が受け皿」を実装済み記述へ更新。harness.md に cron 機構行(CRON_SECRET・fail-closed・schedule・production override 禁止)を追加し、lifecycle 行に「効果監視 = sweeper overdue alert(**listing 上限内の partial observation**)」を注記。
 
-**制約:** 適用範囲を同じ文に書く(単一点主張の教訓)。§4 判定が未確定の間は分岐未確定と明記(推定を断定に固化させない)。
+**制約:** 適用範囲を同じ文に書く(単一点主張の教訓)。保持上限は「正常時 ≈30h / 前提つき worst ≈55h(前提 = cron 稼働・走査完了・skip≤1)」の形で書き、**hard upper bound として書かない**(A4)。overdue alert の観測範囲が bounded であることを同じ文に併記(A3)。§4 判定が未確定の間は分岐未確定と明記(推定を断定に固化させない)。
 
 **完了条件:** docs 2 file 更新・`docs(_)` + `[no-review]` で即 commit。
 
@@ -128,6 +129,6 @@ whole-repo `pnpm lint --max-warnings=0` exit 0 / `pnpm test` green / `pnpm test:
 
 ## 実装後(plan 外・OT 管理)
 
-- OT: push → Vercel env `CRON_SECRET` 設定(**stg は §4 判定記録完了まで設定しない** — fail-closed 保護)/ Vercel plan・stg deployment 形態の readback(spec §4)
-- stg smoke = spec §8(fixture staging → override 15min → 手動 GET → listing diff・CC 実走・OT 指示後)
-- scheduler 実発火検証 = prod 反映後(close 条件外)
+- OT: push → Vercel env `CRON_SECRET` 設定(**stg は §4 判定記録完了まで設定しない** — fail-closed 保護)/ Vercel plan・stg deployment 形態の readback(spec §4。**stg が production tier なら A1 により override 不可 = smoke は 6h 待ち**)/ prod 反映後チェックリストに「Vercel dashboard の cron 実行履歴を随時確認」を追加(dead-man 監視の代替・spec §13)
+- stg smoke = spec §8(fixture staging → cutoff 経過 → 手動 GET → listing diff・CC 実走・OT 指示後)
+- scheduler 実発火検証 = prod 反映後(close 条件外)。恒久監視(外形 / dead-man switch)は asset reconciler lane 追加 sprint で再訪
