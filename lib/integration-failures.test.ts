@@ -205,7 +205,8 @@ describe('recordIntegrationFailure', () => {
     // ②-4a 単一 invocation S-2: ocr_pipeline 追加で 10 → 11。
     // ②-4a 単一 invocation S-5: 旧経路撤去で source lane の GC key が dead 化 → 10。
     // ②-4b T3: r2_source_delete 追加で 10 → 11。
-    expect(tuples.length).toBe(11)
+    // ②-4b §1: r2_staging_delete 追加で 11 → 12。
+    expect(tuples.length).toBe(12)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -247,6 +248,17 @@ describe('recordIntegrationFailure', () => {
       service: 'r2',
       operation: 'object.delete',
       workflow: 'upload_single_invocation',
+      failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_staging_delete: ②-4b §1 spec §4(entry 削除同期の staging DELETE 失敗)の
+  // 4 軸 tuple 固定値。r2_source_delete とは workflow 軸で区別する。
+  it('r2_staging_delete has the 4-axis values pinned by ②-4b §1 spec §4', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_staging_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'upload_staging',
       failureCode: 'external_api_error',
     })
   })
