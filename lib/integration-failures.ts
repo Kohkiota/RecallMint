@@ -90,6 +90,18 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'upload_single_invocation',
     failureCode: 'external_api_error',
   },
+  // ②-4b §1(design spec 2026-08-09 §3/§4): entry 削除に同期した staging PDF の
+  // client 起点 DELETE(`delete-pdf-source.ts`)失敗の記帳先。workflow を
+  // `upload_single_invocation`(r2_source_delete = pipeline 出口)ではなく
+  // `upload_staging` にしているのは、この DELETE は pipeline が一度も走らない
+  // reserve→PUT→finalize の staging 段で起きるため(4 軸 tuple は stable
+  // identifier・相乗り禁止)。context = { objectKey, status }(r2_source_delete と同形)。
+  r2_staging_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'upload_staging',
+    failureCode: 'external_api_error',
+  },
   // RLS-P3 Task 7: tenant context 未設定で app_current_user_id() が P0RLS を RAISE
   // した = withTenantTx を経由せずに tenant 表を叩いた bug の loud alert。Task 2-4 の
   // 封じ込め後は near-impossible な defense-in-depth 警報 (現状 Vercel Logs 頼み →
