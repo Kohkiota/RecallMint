@@ -595,6 +595,366 @@ describe('listObjectsBounded', () => {
   })
 })
 
+describe('listObjectsWithMetaBounded', () => {
+  beforeEach(() => {
+    setValidEnv()
+    vi.restoreAllMocks()
+  })
+
+  // ②-4b §3 Task 1: <Contents> block 単位で Key + LastModified を組み立てる XML
+  // helper。 `swapOrder` で block 内の <LastModified>/<Key> の出現順を入れ替えられる
+  // (順序入替 XML でも組が崩れないことを確認する pin①用)。 `lastModified: undefined`
+  // (省略)は <LastModified> tag 自体を出さない(欠落ケース)。
+  function listObjectsMetaXml(
+    entries: Array<{ key: string; lastModified?: string; swapOrder?: boolean }>,
+    opts: { truncated?: boolean; nextToken?: string } = {},
+  ) {
+    const contentsXml = entries
+      .map((e) => {
+        const keyTag = `<Key>${e.key}</Key>`
+        const lastModifiedTag =
+          e.lastModified !== undefined ? `<LastModified>${e.lastModified}</LastModified>` : ''
+        return e.swapOrder
+          ? `<Contents>${lastModifiedTag}${keyTag}</Contents>`
+          : `<Contents>${keyTag}${lastModifiedTag}</Contents>`
+      })
+      .join('')
+    const truncatedXml = `<IsTruncated>${opts.truncated ? 'true' : 'false'}</IsTruncated>`
+    const tokenXml = opts.nextToken
+      ? `<NextContinuationToken>${opts.nextToken}</NextContinuationToken>`
+      : ''
+    return `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>${truncatedXml}${tokenXml}${contentsXml}</ListBucketResult>`
+  }
+
+  // pin①: <Contents> block 単位の Key/LastModified 対応付け。 2 件目は block 内で
+  // <LastModified> が <Key> より先に出現する(R2 実測の要素順は Key, Size,
+  // LastModified, ETag, StorageClass — AWS の公開例と順序が異なるため、tag 出現順に
+  // 依存しない実装であることを確認する)。 2 つの独立 matchAll を index で突き合わせる
+  // 実装だと、この swap では組がずれないので落ちない — mutation で個別に確認する
+  // (report 参照)。
+  it('pairs Key and LastModified per <Contents> block even when element order is swapped within a block', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([
+          { key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31.220Z' },
+          { key: 'src/u1/idem1/b.pdf', lastModified: '2026-08-08T00:00:00.000Z', swapOrder: true },
+        ]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result).toEqual({
+      entries: [
+        { key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1786237771220 },
+        { key: 'src/u1/idem1/b.pdf', lastModifiedMs: Date.parse('2026-08-08T00:00:00.000Z') },
+      ],
+      truncated: false,
+    })
+  })
+
+  // pin②(正例): R2 実形式(ミリ秒付き ISO8601 + Z)を epoch ms へ正しく parse する。
+  // 値は独立算出した pin(`Date.parse` を assertion 内で呼ばない — 実装のバグで
+  // Date.parse の呼び方自体が壊れても検出できるようにする)。
+  it('parses R2-format LastModified (ms-precision ISO8601 with Z) into the exact epoch ms', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31.220Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result.entries).toEqual([{ key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1786237771220 }])
+  })
+
+  // pin②(負例 a): <LastModified> tag 自体が欠落 → page 全体を throw(fail-closed —
+  // 「age が読めない object は削除しない」を parse 層で保証する)。
+  it('throws when a <Contents> block is missing <LastModified> entirely (fail-closed)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf' }]), { status: 200 }),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // pin②(負例 b): 非 ISO 文字列(Date.parse が NaN を返す)→ throw。
+  it('throws when <LastModified> is not a parseable date (non-ISO string)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: 'not-a-date' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // pin②(負例 c): 空文字 → throw(`Date.parse('')` は NaN)。
+  it('throws when <LastModified> is an empty string', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 制約④(2つの独立 matchAll を index で突き合わせる実装は不可)の discriminating
+  // test: 中間の <Contents> block が <Key> を欠く(<LastModified> はある)場合、
+  // 「全体から Key を全部・全体から LastModified を全部」を index で zip する実装は
+  // 個数が食い違うぶん後続の組がずれ、3件目の Key に2件目の LastModified が
+  // 静かに誤対応してしまう(NaN にならないため fail-closed の NaN チェックも
+  // すり抜ける)。block 単位実装は該当 block の <Key> 欠落そのもので即 throw する
+  // ため、この XML は必ず throw になるはず — mutation で実際に区別を確認した
+  // (report 参照: 素朴な index-zip 実装に差し替えると本 test だけが green のまま
+  // 通ってしまう=検出できない。 この test を追加して初めて検出できるようになった)。
+  it('does not silently mispair Key/LastModified across blocks when a middle <Contents> block lacks <Key>', async () => {
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>' +
+      '<Contents><Key>src/u1/idem1/a.pdf</Key><LastModified>2026-08-09T01:09:31.220Z</LastModified></Contents>' +
+      '<Contents><LastModified>2026-08-07T00:00:00.000Z</LastModified></Contents>' +
+      '<Contents><Key>src/u1/idem1/c.pdf</Key><LastModified>2026-08-06T00:00:00.000Z</LastModified></Contents>' +
+      '</ListBucketResult>'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(xml, { status: 200 }))
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // Codex round 2 指摘: R2/S3 実形式(`YYYY-MM-DDTHH:MM:SS[.sss]Z`)以外は
+  // `Date.parse` が NaN を返さず解釈してしまうため、format regex で追加拒否する
+  // (詳細は r2.ts の `R2_LAST_MODIFIED_FORMAT` コメント参照)。
+  // 負例②: タイムゾーン無し — ローカル時刻解釈により UTC でないランタイムで
+  // age が最大 ±14h ずれ、cutoff 6h を不当に跨いで生きている object を削除しうる。
+  it('throws when <LastModified> has no timezone designator (would be interpreted as local time)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 負例③: 日付のみ(`Date.parse` は UTC 解釈で通ってしまうが R2 実形式ではない)。
+  it('throws when <LastModified> is date-only (no time component)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 負例④: offset 形(`+09:00`)— R2 は常に `Z` を返すため意図的に受容しない
+  // (受容を広げると round 2 で塞ぐ穴が戻る)。
+  it('throws when <LastModified> uses a UTC offset instead of Z (R2 always returns Z)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31+09:00' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 負例⑤: format regex は通るが暦として不正(`Date.parse` が NaN を返す)場合も
+  // throw する — format regex と NaN 判定は独立した2つの gate であることを pin
+  // (round 2 の完了条件: format regex だけ通しても NaN 判定は残す)。
+  it('throws when <LastModified> matches the format regex but is not a valid calendar date (NaN gate still applies)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-13-45T99:99:99Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 正例(round 2 追加): 小数秒なしの R2/S3 実形式(`YYYY-MM-DDTHH:MM:SSZ`)は
+  // 受理される(S3 は常に小数秒を付けるが、format regex は任意にしている)。
+  it('accepts R2-format LastModified without fractional seconds', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result.entries).toEqual([{ key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1786237771000 }])
+  })
+
+  // Codex round 3 指摘: format regex を通っても `Date.parse` は暦として存在しない
+  // 日付を正規化してしまう(Feb 30 → 3/2 等)。NaN にも format 不一致にもならず
+  // 素通りするため、round-trip 検証(暦フィールド突き合わせ)で追加拒否する。
+  // 負例①: 2月30日は存在しない(`Date.parse` は3月2日として正規化する)。
+  it('throws when <LastModified> is a calendar-invalid date normalized by Date.parse (Feb 30 -> Mar 2)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-02-30T01:00:00Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 負例②: 4月31日は存在しない(`Date.parse` は5月1日として正規化する)。
+  it('throws when <LastModified> is a calendar-invalid date normalized by Date.parse (Apr 31 -> May 1)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-04-31T01:00:00Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // 正例(round 3 回帰確認): うるう年の2月29日は正当な日付であり round-trip 検証を
+  // 通らなければならない(round-trip gate が正しい日付まで誤って弾かないこと)。
+  it('accepts a valid leap-year date (2028-02-29, round-trip gate must not over-reject)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified: '2028-02-29T01:00:00Z' }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result.entries).toEqual([{ key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1835398800000 }])
+  })
+
+  // 正例(round 3 回帰確認): 小数秒の桁数違い(2桁 `.22Z` / 6桁 `.220000Z`)を
+  // round-trip 検証が誤って弾かないこと — 実装は小数秒を比較対象に含めていない
+  // (Y/M/D/h/m/s のみ比較)ため、桁数に関わらず通る設計であることを pin する。
+  it.each([
+    ['2026-08-09T01:09:31.22Z', 1786237771220],
+    ['2026-08-09T01:09:31.220000Z', 1786237771220],
+  ])('accepts fractional-second digit-count variant %s without over-rejecting', async (lastModified, expectedMs) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([{ key: 'src/u1/idem1/a.pdf', lastModified }]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result.entries).toEqual([{ key: 'src/u1/idem1/a.pdf', lastModifiedMs: expectedMs }])
+  })
+
+  // canonical + Codex 収束指摘(fix round 1): 2件目の <Contents> block が
+  // </Contents> を欠く(壊れた 200 応答)が、root(<ListBucketResult>)と
+  // <IsTruncated> は健全なため既存の parseListObjectsPage 検証はすり抜ける。
+  // <Contents>...<\/Contents> の非貪欲 matchAll は「閉じタグに到達しない block」を
+  // 単に「見つからない」ものとして無視し、1件目だけの「成功・ただし件数が少ない」
+  // page として黙って返してしまう — parseListObjectsPage が root 要素の開閉検証で
+  // 塞いだのと同じ失敗クラスが Contents block 単位で再発する。開始タグ数と実際に
+  // 組めた block 数の parity 検証で検出し throw する。
+  it('throws when a <Contents> block is unclosed (missing </Contents>) even though root/IsTruncated are healthy', async () => {
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>' +
+      '<Contents><Key>src/u1/idem1/a.pdf</Key><LastModified>2026-08-09T01:09:31.220Z</LastModified></Contents>' +
+      '<Contents><Key>src/u1/idem1/b.pdf</Key><LastModified>2026-08-08T00:00:00.000Z</LastModified>' +
+      '</ListBucketResult>'
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(xml, { status: 200 }))
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 10)).rejects.toThrow(/malformed response/)
+  })
+
+  // pin③: truncated/token 前進の既存挙動(listObjectsBounded と同じ pagination core)
+  // が entries 版でも成立する — 2 page を跨いで NextContinuationToken を追随する。
+  it('paginates: follows NextContinuationToken and returns entries from both pages', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsMetaXml(
+            [{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31.220Z' }],
+            { truncated: true, nextToken: 'token-page-2' },
+          ),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          listObjectsMetaXml([{ key: 'src/u1/idem1/b.pdf', lastModified: '2026-08-08T00:00:00.000Z' }]),
+          { status: 200 },
+        ),
+      )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result).toEqual({
+      entries: [
+        { key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1786237771220 },
+        { key: 'src/u1/idem1/b.pdf', lastModifiedMs: Date.parse('2026-08-08T00:00:00.000Z') },
+      ],
+      truncated: false,
+    })
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const secondRequest = fetchSpy.mock.calls[1][0] as Request
+    const secondUrl = new URL(secondRequest.url)
+    expect(secondUrl.searchParams.get('continuation-token')).toBe('token-page-2')
+  })
+
+  // pin③: maxPages 到達で throw せず { truncated: true } + 収集済み entries を返す
+  // (listObjectsBounded の pin①と同じ非 throw 契約が entries 版でも成立する)。
+  it('returns { truncated: true } with entries collected so far instead of throwing when maxPages is reached', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        listObjectsMetaXml(
+          [{ key: 'src/u1/idem1/a.pdf', lastModified: '2026-08-09T01:09:31.220Z' }],
+          { truncated: true, nextToken: 'token-2' },
+        ),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 1)
+    expect(result).toEqual({
+      entries: [{ key: 'src/u1/idem1/a.pdf', lastModifiedMs: 1786237771220 }],
+      truncated: true,
+    })
+  })
+
+  // 制約①(二重実装禁止)の regression pin: maxPages の fail-fast 検証が
+  // listObjectsBounded と同じ core を経由していることを、同じ挙動(fetch 未到達で
+  // reject)で確認する。
+  it('rejects maxPages that are not a positive integer without calling fetch (shares core validation with listObjectsBounded)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    await expect(listObjectsWithMetaBounded('src/u1/idem1/', 0)).rejects.toThrow(
+      /maxPages must be a positive integer/,
+    )
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  // ④の補強: Key 抽出仕様(XML entity unescape)は listObjects/listObjectsBounded と
+  // 不変のはずだが、meta 版は <Contents> block 単位の独自 regex で Key を抽出する
+  // 新しいコード経路のため、既存 test(listObjects describe)だけでは検証されない。
+  it('unescapes XML entities in returned keys (same escaping contract as listObjects)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        listObjectsMetaXml([
+          { key: 'src/u1/idem1/a&amp;b.pdf', lastModified: '2026-08-09T01:09:31.220Z' },
+        ]),
+        { status: 200 },
+      ),
+    )
+    const { listObjectsWithMetaBounded } = await import('./r2')
+    const result = await listObjectsWithMetaBounded('src/u1/idem1/', 10)
+    expect(result.entries).toEqual([{ key: 'src/u1/idem1/a&b.pdf', lastModifiedMs: 1786237771220 }])
+  })
+})
+
 describe('putObject Content-Length', () => {
   beforeEach(() => {
     setValidEnv()

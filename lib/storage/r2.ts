@@ -295,21 +295,32 @@ function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boole
   return { isTruncated: truncatedMatch[1] === 'true' }
 }
 
+// R2 の listing entry 1件分のメタ情報(②-4b spec §3.2)。src/ prefix の
+// age-based sweeper が「削除してよい古さか」を判定するには key に加えて
+// LastModified(epoch ms)が要るため、 key-only な `R2ObjectMeta` 無しの listing
+// (listObjects/listObjectsBounded)とは別に公開する。
+export type R2ObjectMeta = { key: string; lastModifiedMs: number }
+
 /**
- * R2オブジェクトの一覧を bounded page 数で取得する core(②-4b spec §3.2)。
+ * R2オブジェクトの一覧を bounded page 数で取得する pagination core(②-4b spec
+ * §3.2)。 `listObjectsBounded`(key のみ)と `listObjectsWithMetaBounded`
+ * (key+LastModified)は 1 page 分の応答から entry を抽出する方法だけが異なり、
+ * continuation-token の前進検証・`maxPages` 到達時の打ち切り・`timeoutMs` の
+ * 適用は完全に同一のため、 ここに一本化して二重実装を避ける(`extractEntries` が
+ * xml 文字列から 1 page 分の entry 配列を返す差し替え点)。
  *
- * `listObjects` と同じ pagination(IsTruncated/NextContinuationToken を追随)だが、
- * `maxPages` 到達時に throw せず `{ truncated: true }` + 収集済み keys で打ち切る —
- * 呼出元(退会時の R2 prefix purge)は「上限で打ち切ったが取れた分の削除は続行する」
- * 必要があり、throw では呼出側に強制的な catch を課してしまうため。`listObjects`
- * (既存の全列挙 + throw 契約)はこの core に `maxPages=MAX_LIST_PAGES` で委譲し、
- * `truncated:true` を従来と同一文言の throw に変換するだけ — 外部契約は完全に不変。
+ * `maxPages` 到達時は throw せず `{ truncated: true }` + 収集済み entries で
+ * 打ち切る — 呼出元(退会時の R2 prefix purge 等)は「上限で打ち切ったが取れた分の
+ * 削除は続行する」必要があり、throw では呼出側に強制的な catch を課してしまう
+ * ため。`listObjects`(既存の全列挙 + throw 契約)は `listObjectsBounded` に
+ * `maxPages=MAX_LIST_PAGES` で委譲し、`truncated:true` を従来と同一文言の throw に
+ * 変換するだけ — 外部契約は完全に不変。
  *
  * `maxPages` は数値引数を public にする以上、型だけでは不正入力を防げないため
  * fail-fast で reject する(正の整数以外 — `0`/負数/非整数/`NaN`/`Infinity`)。
  * `opts.timeoutMs` は `getObject` の `{ timeoutMs }` idiom に倣う — 省略時は既定
- * `LIST_TIMEOUT_MS`、指定時は各 page の `AbortSignal.timeout` に反映する(退会 purge
- * が残予算を渡す口)。
+ * `LIST_TIMEOUT_MS`、指定時は各 page の `AbortSignal.timeout` に反映する(予算付き
+ * 呼出側が残予算を渡す口)。
  *
  * ⚠ **`timeoutMs` は 1 page ごとに適用される値であって listing 全体の上限ではない**。
  * pagination は最大 `maxPages` 回 fetch するため、全体の最悪所要は
@@ -320,24 +331,26 @@ function parseListObjectsPage(xml: string, prefix: string): { isTruncated: boole
  * 同じ `truncated` フラグに潰れ、呼出側の phase 判別(§3.3)の意味が濁るため。
  *
  * 既存の throw 契約(`!res.ok` / malformed root / malformed IsTruncated / token
- * 非前進)はそのまま保持する — never-throw ではない(listObjects と同じ非対称。
- * 下記 docstring 参照)。
+ * 非前進)はそのまま保持する — never-throw ではない(listObjects と同じ非対称)。
+ * `extractEntries` が追加で throw した場合(meta 版の fail-closed 検証)もこの
+ * page 単位の失敗としてそのまま伝播する。
  */
-export async function listObjectsBounded(
+async function listPagesCore<T>(
   prefix: string,
   maxPages: number,
-  opts?: { timeoutMs?: number },
-): Promise<{ keys: string[]; truncated: boolean }> {
+  opts: { timeoutMs?: number } | undefined,
+  extractEntries: (xml: string) => T[],
+): Promise<{ entries: T[]; truncated: boolean }> {
   if (!Number.isInteger(maxPages) || maxPages < 1) {
     throw new Error(`listObjectsBounded: maxPages must be a positive integer (received ${maxPages})`)
   }
 
-  const keys: string[] = []
+  const entries: T[] = []
   let continuationToken: string | undefined
 
   for (let page = 1; ; page++) {
     if (page > maxPages) {
-      return { keys, truncated: true }
+      return { entries, truncated: true }
     }
 
     const url = new URL(`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET_NAME}`)
@@ -358,12 +371,10 @@ export async function listObjectsBounded(
     const xml = await res.text()
     const { isTruncated } = parseListObjectsPage(xml, prefix)
 
-    for (const match of xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g)) {
-      keys.push(unescapeXmlEntities(match[1]))
-    }
+    entries.push(...extractEntries(xml))
 
     if (!isTruncated) {
-      return { keys, truncated: false }
+      return { entries, truncated: false }
     }
 
     const tokenMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/)
@@ -378,6 +389,146 @@ export async function listObjectsBounded(
     }
     continuationToken = nextToken
   }
+}
+
+/**
+ * R2オブジェクトの一覧を bounded page 数で取得する(②-4b spec §3.2)。 pagination
+ * (継続 token の前進検証・`maxPages` 到達時の打ち切り・`timeoutMs` の適用)は
+ * `listPagesCore` に一本化されており、ここでは 1 page 分の xml から `<Key>` だけを
+ * 抽出する(既存正規表現のまま — LastModified は見ないため `listObjectsWithMetaBounded`
+ * の fail-closed 化を継承しない。既存 test green がこの非継承を pin する)。
+ * signature・挙動は完全不変(呼出元は退会時の R2 prefix purge 等)。
+ */
+export async function listObjectsBounded(
+  prefix: string,
+  maxPages: number,
+  opts?: { timeoutMs?: number },
+): Promise<{ keys: string[]; truncated: boolean }> {
+  const { entries, truncated } = await listPagesCore(prefix, maxPages, opts, (xml) =>
+    Array.from(xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g), (match) => unescapeXmlEntities(match[1])),
+  )
+  return { keys: entries, truncated }
+}
+
+// `<Contents>` block 単位で Key と LastModified を対応付けて抽出する
+// (`listObjectsWithMetaBounded` 専用)。 block 単位にする理由: 全体から <Key> を
+// 全部・全体から <LastModified> を全部、という 2 つの独立 matchAll を index で
+// 突き合わせる実装は、 R2 実測で block 内の要素順が Key/Size/LastModified/ETag/
+// StorageClass(AWS の公開例=Key/LastModified/ETag/Size/StorageClass と順序が
+// 異なる)こともあり、どちらかの tag が 1 件でも欠けると以降の組が丸ごとずれる。
+// block を先に切り出し、その内側で <Key>/<LastModified> を探すことで tag の
+// 出現順に依らず正しい組を保証する。
+//
+// fail-closed: <LastModified> が欠落/空/非ISO で `Date.parse` が NaN を返す、または
+// <Key> が欠落している場合、この page 全体を throw で失敗させる(「age が読めない
+// object は削除しない」という sweeper 側の上位不変条件を parse 層で保証する —
+// 個別 entry を黙って落とすと、その object が sweep から永久に不可視になる)。
+//
+// fail-closed(format 厳格化・Codex round 2 指摘): `Date.parse` は ISO8601 以外にも
+// タイムゾーン無し(`2026-08-09T01:09:31` — ローカル時刻として解釈され、UTC でない
+// ランタイムでは epoch が最大 ±14h ずれる)・日付のみ(`2026-08-09`)・offset 形
+// (`+09:00`)等、R2 が実際には返さない形式まで受理してしまう。JST(UTC+9)ランタイム
+// でタイムゾーン無し値を解釈すると age が 9h 過大に出て、cutoff 6h を不当に跨いで
+// まだ生きている object を削除しうる(spec §7 不変条件1違反)。R2/S3 実形式
+// (`YYYY-MM-DDTHH:MM:SS[.sss]Z`)に regex で一致することを `Date.parse` の前に
+// 要求する — offset 形は意図的に受容しない(R2 は常に `Z` を返すため、受容を
+// 広げると今回塞ぐ穴が戻る)。regex 一致後も `Date.parse` の NaN 判定は残す
+// (`2026-13-45T99:99:99Z` は regex には一致するが暦として不正で NaN になる —
+// 2つの gate は独立に必要)。
+//
+// fail-closed(閉じタグ欠落・canonical/Codex 収束指摘 fix round 1): `<Contents>...
+// </Contents>` の非貪欲 matchAll は、閉じタグに到達しない block を単に「見つから
+// ない」ものとして無視する — root(`<ListBucketResult>`)/`<IsTruncated>` が健全な
+// 200 応答でも、途中の <Contents> block だけが壊れていると「成功・ただし件数が
+// 少ない」page として黙って返ってしまう(parseListObjectsPage が root 要素の開閉
+// 検証で塞いだのと同じ失敗クラスが Contents block 単位で再発する)。full XML
+// validation は不要 — 開始タグ `<Contents>` の出現数と実際に組めた block 数の
+// parity(数の一致)だけを見る軽量な検証で、閉じタグ欠落/block 跨ぎの誤結合を
+// 両方とも検出できる。
+// R2/S3 実形式(`YYYY-MM-DDTHH:MM:SS[.sss]Z`)のみを受理する — 小数秒は任意
+// (S3 は常に付けるが無しも受ける)。offset 形(`+09:00` 等)は意図的に受容しない
+// (`parseContentsMeta` 上のコメント参照)。年/月/日/時/分/秒を capture group で
+// 個別に取れるようにしておく(小数秒は round-trip 検証で比較しないため
+// capture 不要 — 非 capturing group `(?:\.\d+)?` にしている)。
+const R2_LAST_MODIFIED_FORMAT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/
+
+/**
+ * `<LastModified>` の生文字列を epoch ms へ変換する(3 gate: format regex →
+ * `Date.parse` の NaN 判定 → 暦としての round-trip 妥当性)。 いずれかの gate に
+ * 落ちたら `NaN` を返し、呼出側 `parseContentsMeta` が fail-closed へ倒す。
+ *
+ * round-trip 検証(Codex round 3 指摘): `Date.parse` は `2026-02-30T...Z`(存在
+ * しない日付)を **3月2日として正規化**してしまい、NaN にも format 不一致にも
+ * ならず素通りする(`2026-04-31` → 5/1 等も同様)。age が日単位でずれ、cutoff 6h
+ * を不当に跨いでまだ生きている object を削除しうるため、`Date.parse` が返した
+ * ms を UTC 暦フィールドへ戻し、入力の capture group と個別に突き合わせる。
+ *
+ * 実装選択(`toISOString()` の文字列比較でなくフィールド個別比較にした理由):
+ * `toISOString()` は小数秒を常に3桁 `.sssZ` で返すため、入力の小数秒表記
+ * (`.22Z` / `.220000Z` / 小数秒なし)ごとに文字列側を正規化するコードが要る。
+ * 年/月/日/時/分/秒だけを個別比較すれば小数秒の桁数問題自体が発生しない
+ * (比較対象に含めないため)。
+ */
+function parseR2LastModifiedMs(raw: string | undefined): number {
+  if (raw === undefined) return NaN
+  const fields = raw.match(R2_LAST_MODIFIED_FORMAT)
+  if (!fields) return NaN
+  const ms = Date.parse(raw)
+  if (Number.isNaN(ms)) return NaN
+  const d = new Date(ms)
+  const roundTripOk =
+    d.getUTCFullYear() === Number(fields[1]) &&
+    d.getUTCMonth() + 1 === Number(fields[2]) &&
+    d.getUTCDate() === Number(fields[3]) &&
+    d.getUTCHours() === Number(fields[4]) &&
+    d.getUTCMinutes() === Number(fields[5]) &&
+    d.getUTCSeconds() === Number(fields[6])
+  return roundTripOk ? ms : NaN
+}
+
+function parseContentsMeta(xml: string, prefix: string): R2ObjectMeta[] {
+  const openTagCount = (xml.match(/<Contents>/g) ?? []).length
+  const blocks = Array.from(xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g))
+  if (blocks.length !== openTagCount) {
+    throw new Error(
+      `listObjectsWithMetaBounded: malformed response — <Contents> open tag count (${openTagCount}) ` +
+        `does not match matched block count (${blocks.length}) (prefix=${prefix}, bodyLength=${xml.length}) ` +
+        `— refusing to treat a malformed/unclosed <Contents> block as an empty page`,
+    )
+  }
+
+  const entries: R2ObjectMeta[] = []
+  for (const contentsMatch of blocks) {
+    const block = contentsMatch[1]
+    const keyMatch = block.match(/<Key>([\s\S]*?)<\/Key>/)
+    const lastModifiedMatch = block.match(/<LastModified>([\s\S]*?)<\/LastModified>/)
+    const lastModifiedMs = parseR2LastModifiedMs(lastModifiedMatch ? lastModifiedMatch[1] : undefined)
+    if (!keyMatch || Number.isNaN(lastModifiedMs)) {
+      throw new Error(
+        `listObjectsWithMetaBounded: malformed response — <Contents> entry with missing <Key> or ` +
+          `unparseable <LastModified> (prefix=${prefix}, bodyLength=${xml.length}) — refusing to treat the object's age as known`,
+      )
+    }
+    entries.push({ key: unescapeXmlEntities(keyMatch[1]), lastModifiedMs })
+  }
+  return entries
+}
+
+/**
+ * R2オブジェクトの一覧を LastModified 付きで bounded page 数で取得する(②-4b spec
+ * §3.2 — src/ prefix の age-based sweeper が削除可否を判定するための入口)。
+ * pagination 契約(継続 token の前進検証・`maxPages` 到達時の打ち切り・
+ * `timeoutMs`)は `listObjectsBounded` と同一(`listPagesCore` を共有)。相違点は
+ * 1 page 分の entry 抽出のみ: `<Contents>` block 単位で Key+LastModified を対応
+ * 付け、LastModified が読めない entry があれば page 全体を throw する
+ * (`parseContentsMeta` 参照)。
+ */
+export async function listObjectsWithMetaBounded(
+  prefix: string,
+  maxPages: number,
+  opts?: { timeoutMs?: number },
+): Promise<{ entries: R2ObjectMeta[]; truncated: boolean }> {
+  return listPagesCore(prefix, maxPages, opts, (xml) => parseContentsMeta(xml, prefix))
 }
 
 /**
