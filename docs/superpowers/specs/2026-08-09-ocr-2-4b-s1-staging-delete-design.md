@@ -88,6 +88,12 @@ purge の帰結として受容する残留: submitUpload throw 後に `retryPdfS
 場合、旧 session の object は client から指せなくなる(operation 未作成なら orphan)。受け皿は
 lifecycle / §3(§7)。
 
+purge の適用範囲(canonical review recommendation・2026-08-09 追記): purge が消すのは
+**registry の登録のみ**で、飛行中 continuation は session を closure に保持するため purge の
+対象外。continuation 経路で consumed session へ DELETE が飛ばないのは submit gate
+(`anyProcessing` = 飛行中 PDF があると submit 不可)が保証しており、「inFlight 前提に依存
+しない」(§2.2 上記)が成立するのは removeEntry 経路について — この非対称を過大に読まないこと。
+
 なお status(uploading/counting)でなく ref で飛行判定する理由: continuation 完了 → re-render の
 1 commit 窓で × click されると status 判定は「飛行中」と誤読し、削除主体が消える(誰も撃たない
 orphan)。ref は checkpoint→解除が JS 単一 thread 上で原子的に連続し、この窓がない。
