@@ -207,7 +207,8 @@ describe('recordIntegrationFailure', () => {
     // ②-4b T3: r2_source_delete 追加で 10 → 11。
     // ②-4b §1: r2_staging_delete 追加で 11 → 12。
     // ②-4b §2: 退会 prefix purge の 2 entry 追加で 12 → 14。
-    expect(tuples.length).toBe(14)
+    // ②-4b §3: src sweeper の 3 entry 追加で 14 → 17。
+    expect(tuples.length).toBe(17)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -287,6 +288,43 @@ describe('recordIntegrationFailure', () => {
       operation: 'src_purge.incomplete',
       workflow: 'user_deletion',
       failureCode: 'incomplete',
+    })
+  })
+
+  // r2_sweep_delete: ②-4b §3 spec §3.5(src sweeper の個別 object DELETE 失敗 =
+  // 1 件 1 行)の 4 軸 tuple 固定値。他 lane の r2/object.delete とは
+  // workflow='src_sweep' で区別する。
+  it('r2_sweep_delete has the 4-axis values pinned by ②-4b §3 spec §3.5', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_sweep_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'src_sweep',
+      failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_sweep_incomplete: ②-4b §3 spec §3.5(sweeper が listing/live-op 判定/予算で
+  // 打ち切った = 制御系の結果)の 4 軸 tuple 固定値。**4 軸は原因でなく結果を識別する**
+  // (原因は context.phase が持つ)ため個別 DELETE 失敗とは別 entry。
+  it('r2_sweep_incomplete has the 4-axis values pinned by ②-4b §3 spec §3.5', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_sweep_incomplete).toEqual({
+      service: 'r2',
+      operation: 'src_sweep.incomplete',
+      workflow: 'src_sweep',
+      failureCode: 'incomplete',
+    })
+  })
+
+  // r2_sweep_overdue: ②-4b §3 spec §3.6(cutoff を大幅超過した object の残存
+  // alert・72h)の 4 軸 tuple 固定値。failureCode='state_mismatch' は「本来もう
+  // 存在しないはずの object が残っている」という状態不整合を表す(incomplete の
+  // 打ち切りとは別種の失敗のため別 failureCode)。
+  it('r2_sweep_overdue has the 4-axis values pinned by ②-4b §3 spec §3.6', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_sweep_overdue).toEqual({
+      service: 'r2',
+      operation: 'src_sweep.overdue',
+      workflow: 'src_sweep',
+      failureCode: 'state_mismatch',
     })
   })
 })

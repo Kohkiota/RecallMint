@@ -159,6 +159,58 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'user_deletion',
     failureCode: 'incomplete',
   },
+  // ②-4b §3(design spec 2026-08-09-ocr-2-4b-s3-src-sweeper-design.md §3.5): 日次
+  // src sweeper(user 横断の age-based 定期回収。§1 の registry purge / §2 の退会
+  // purge とは別機構)の個別 object DELETE 失敗の記帳先(1 件 1 行)。新 workflow 値
+  // `src_sweep` を足すのは、upload pipeline 出口(r2_source_delete =
+  // upload_single_invocation)/ staging DELETE(r2_staging_delete = upload_staging)/
+  // 退会 purge(r2_deletion_src_delete = user_deletion)と sweeper の失敗が 4 軸上で
+  // 区別不能になるのを防ぐため(4 軸 tuple は stable identifier・相乗り禁止)。
+  // context = `{ objectKey, status }` + pattern 不一致で DELETE を試行しなかった行のみ
+  // `reason: 'pattern_mismatch'`(§2 の `prefix_mismatch` と同形の構造化
+  // discriminator: その行だけ status が DELETE 未試行を意味し、free text ではなく列で
+  // 区別しないと「fetch throw / timeout による status」と読み違えられるため)。
+  // context に入る PII は objectKey / userId(内部 uuid)のみ。Clerk ID は扱わない。
+  r2_sweep_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'src_sweep',
+    failureCode: 'external_api_error',
+  },
+  // ②-4b §3 spec §3.5: sweeper が listing / live-op 判定 / 予算のいずれかで
+  // 打ち切った(1 run 最大 1 行・最後に書く)= 制御系の結果。**4 軸は原因ではなく
+  // 結果を識別し、原因は context.phase が持つ**(catalog 内の既存原則を踏襲)。
+  // 個々の DELETE 失敗(r2_sweep_delete)と 1 行 = 1 object の集計前提を制御系の行が
+  // 壊さないよう別 entry にする(r2_deletion_src_incomplete と同型)。
+  // failureCode='incomplete' は既存 4 語彙(external_api_error / state_mismatch /
+  // db_error / unexpected_error)のどれにも相乗りしない打ち切り専用語彙(既存語彙を再利用)。
+  // context = `{ phase, listed, deleteRequested, remaining, suppressedFailures? }`。
+  // phase 語彙 = `['list', 'live_check', 'list_truncated', 'deadline']`(配列順 =
+  // 優先順位)。context に入る PII は objectKey / userId(内部 uuid)のみ。Clerk ID は
+  // 扱わない。
+  r2_sweep_incomplete: {
+    service: 'r2',
+    operation: 'src_sweep.incomplete',
+    workflow: 'src_sweep',
+    failureCode: 'incomplete',
+  },
+  // ②-4b §3 spec §3.6: cutoff を大幅に超過(72h)した object の残存 alert(1 run
+  // 最大 1 行)。「どの機構(sweeper 本線 / lifecycle rule)も回収しなかった」という
+  // 状態不整合を表すため failureCode は state_mismatch(incomplete = 打ち切りとは
+  // 別種の失敗 — こちらは「本来もう存在しないはずの object が残っている」事実の記録)。
+  // 結果を r2_sweep_delete / r2_sweep_incomplete と別 entry にするのは、原因(なぜ
+  // 残ったか)ではなく結果(残っている事実そのもの)を記録する行のため、他 2 entry の
+  // 集計(削除試行回数・打ち切り理由)に混ざると意味が変わるから。
+  // context = `{ count, oldestKey, oldestAgeHours, partial }`(`partial: true` =
+  // listing 上限 `SWEEP_MAX_LIST_PAGES` で全域を見ていない = bounded partial
+  // observation であることの明示。全域 0 件と見た範囲で 0 件を混同しない)。
+  // context に入る PII は objectKey / userId(内部 uuid)のみ。Clerk ID は扱わない。
+  r2_sweep_overdue: {
+    service: 'r2',
+    operation: 'src_sweep.overdue',
+    workflow: 'src_sweep',
+    failureCode: 'state_mismatch',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
