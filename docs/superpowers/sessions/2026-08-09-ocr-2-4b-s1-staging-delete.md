@@ -1,0 +1,86 @@
+# ②-4b §1 entry 削除時の R2 staging cleanup — 実装クローズ記録
+
+- spec: `docs/superpowers/specs/2026-08-09-ocr-2-4b-s1-staging-delete-design.md`(案 A・OT 承認 + Codex cross-check 統合済)
+- plan: `docs/superpowers/plans/2026-08-09-ocr-2-4b-s1-staging-delete.md`(134 行・3 task)
+- fact-finding: `docs/audit/2026-08-09-ocr-2-4b-s1-factfinding.md`
+
+## 1. commit 一覧(範囲 6c47cba..本 doc・全て develop 未 push)
+
+| commit | 内容 | tag |
+|---|---|---|
+| `6c47cba` | §1 fact-finding(5 項目・read-only 実測込) | no-review |
+| `35052f9` | 設計 spec(案 A) | no-review |
+| `7350775` | plan ドラフト + spec 微修正 2 点(OT 指定) | no-review |
+| `7239728` | Codex plan cross-check raw findings | no-review |
+| `573fcf2` | plan r2 = cross-check 統合(採用 5 / 不採用 8・OT 裁定済) | no-review |
+| `8eeded3` | **Task 1**: server action `deletePdfSource` + 台帳 `r2_staging_delete` | **reviewed** |
+| `6cdaa35` | Task 1 Codex findings | no-review |
+| `88f1062` | **Task 2**: client 配線(registry / removeEntry / checkpoint / purge) | **reviewed** |
+| `b83a5cc` | architecture.md source 行 + spec §2.2 適用範囲追記(Task 3) | no-review |
+| `653f049` | catalog 件数 pin 追随(11→12)+ 4 軸 pin(**red 検証** R-1/R-2) | **reviewed** |
+| (本 doc と同 commit) | 最終 review Minor 2 = architecture.md 対象外列挙に finalize-hang 追加 | no-review |
+
+## 2. review 実績
+
+- **Task 1**: canonical(sonnet)Ready・Crit0/Imp0/Minor2。Codex P1×1「action 未配線」=
+  **却下裁定**(plan 順序の意図的中間状態・cross-check 指摘 14 で OT 不採用済の同型)。
+  最終 whole-branch review が配線済を現物確認し裁定の正しさを追認。
+- **Task 2**: canonical(opus)With fixes → **Imp1 = throw 経路 purge の pin 検出力ゼロ**
+  (plan 完了条件の列挙漏れ由来)→ fix round 1(+Minor 3 件同乗)→ scoped re-review
+  all addressed(66/66 実走)。Codex clean(1 周)。implementer deviation 3 件
+  (comment 差し替え / submittedSessionId 同値置換 / inFlight 解除の無 guard)は全て
+  justified 裁定 — 特に inFlight 無 guard は「orphan record への mutate は inert」で
+  guard 不要が正(brief の字面より実装が正しい)。
+- **catalog 追随**(full gate で検出した Task 1 の既存 pin 追随漏れ): red 検証
+  R-1(workflow 変異 → 4 軸 pin + uniqueness pin の 2 件 fail = 重複 tuple 化)/
+  R-2(件数変異 → 当該 it fail)。簡易 review = Codex clean。
+- **最終 whole-branch(fable)**: **Ready to merge・Crit0/Imp0/Minor4**(全て残置可 triage)。
+  縫い目の adversarial trace 3 本(consumed session vs 遅延 continuation / retry 再登録 /
+  key 再利用)全て構造的に閉じていることを確認。
+
+## 3. 設計上の非自明判断(経緯)
+
+- **削除主体の一意化**(飛行中 = continuation checkpoint 自己削除 / 非飛行 = removeEntry 即
+  DELETE)+ 既存 generationRef 相乗り。飛行判定は status でなく ref(1 commit 窓の orphan 回避)。
+- **checkpoint 2 は putOk 不問**(Codex cross-check 採用 1・OT 承認で spec 改訂): client
+  timeout 後の R2 側着地(uncertain outcome)を回収。404=成功系ゆえコストゼロ。
+- **purge は session 無効化 2 点と同一同期区間**: consumed session への client DELETE を
+  `disabled={isSubmitting}` UI gate と registry の 2 層で遮断。**purge が効くのは registry
+  のみ**(飛行中 continuation の closure は対象外・submit gate が保証)— spec §2.2 に非対称を明記。
+- **releaseRegistry 閉包**(implementer 発案): identity guard(`get(id) === rec`)を 4 call
+  site に繰り返さず構造化。canonical が「brief より良い」と裁定。
+- **purge pin の構成**: 再 reserve が成功すると新 record が旧 record を上書きし pin の検出力が
+  消えるため、**再 reserve を意図的に失敗させる**(accepted 側・throw 側とも同構成)。
+
+## 4. gate 結果(2026-08-09)
+
+- whole-repo lint(--max-warnings=0)exit 0 / typecheck exit 0 / build exit 0
+  (pdfium packaging postbuild 検証 PASS 込)
+- full `pnpm test` **4515 green**(274 file)/ `pnpm test:iso` **326 green**
+- **`pnpm run audit` = fail(本 branch 無関係)**: 新規 advisory 3 件 —
+  **prod high: nanoid@3.3.16 GHSA-2v37-7h3g-55p8**(postcss←next/@clerk 経由)+
+  dev: 同 nanoid / js-yaml@4.3.0 GHSA-5p4m-2wfm-xmqj(allowlist 未登録)。
+  本 branch は lockfile/package.json 不変(573fcf2..HEAD で diff ゼロ)= 上流の新規公表。
+  対処は deps 基線 sprint 事案(OT 判断)。
+
+## 5. 残余(全て bounded・OT/follow-up)
+
+- 最終 review Minor 1: checkpoint 2「putOk 不問」/ checkpoint 3 catch 節 DELETE の
+  mutation-proof pin 2 本が無い(regression で `if (putOk)` が復活しても 4515 green の
+  まま)。影響は bounded(lifecycle ≤48h)— follow-up(claude.ai todo)。
+- Task 1 Minor: swallow-catch log の相関 id 欠落(二重失敗時のみ)/ currentUserOrNull
+  再 throw 分岐 pin 無し(finalize 側の同一 copy で pin 済)— 残置。
+- currentUserOrNull が 5 箇所目 = rule-of-three 超 → 抽出 chore を別 task 起票(follow-up)。
+- spec §7 の限界(unmount / DELETE 失敗 / purge 済 / finalize hang)は §3 sweeper +
+  lifecycle が受け皿。**lifecycle rule の「効果」の実測は依然ゼロ**(§4 論点)。
+
+## 6. stg smoke 手順(OT push 後・CC 実走・spec §9)
+
+1. **ready 削除**: PDF 1 冊を form に投入 → ready 化 → ×클릭 → session prefix listing
+   (`src/{uid}/{sessionId}/`)で **0 件**を確認(手法 = §0 close doc と同じ prefix scope)。
+2. **uploading 中削除**: 大きめ PDF を投入 → uploading 表示中に × → PUT 完走後の自己削除で
+   最終的に **0 件**へ収束(数十秒待って listing)。
+3. **不可触**: 既存 `src/` の残置 object(lifecycle 観測 sentinel)。消してよいのは自分の
+   試験で PUT した key のみ。
+4. 台帳(`integration_failures` の `workflow='upload_staging'` 行が**無い**こと)= OT 照会
+   (app role SELECT 42501)。SQL は fact-finding §4.5 の workflow 変形。
