@@ -153,6 +153,25 @@ shadcn **固有**の prod 経路だったのは `shadcn → ts-morph → @ts-mor
 - lockfile 差分は **importers セクションの移動のみ**(specifier `4.6.0` / 解決版 `4.6.0(@types/node@24.13.2)(typescript@6.0.3)` とも不変・`packages:` / `snapshots:` に変更ゼロ)。
 - gate: `pnpm install --frozen-lockfile` / typecheck / lint(`--max-warnings=0`)/ build / test(**4428**)/ test:iso(**316**)/ `pnpm run audit` **全 exit 0**。
 
+## 解消済(2026-08-10 audit sprint・繰り越し high 2 種)
+
+4 sprint 繰り越していた **gate fail 3 表示 = advisory 2 種**(nanoid は prod / dev の両方に出るため 2 表示)を **lockfile 更新のみ**で解消。**override 追加ゼロ / `package.json` 無変更(sha256 一致)/ `pnpm-workspace.yaml` 無変更 / allowlist は `entries: []` のまま**(受容ではなく bump で解消したため記録すべき受容が無い)。差分は `pnpm-lock.yaml` 1 file(**21 insertions / 48 deletions** = 版の寄せによる正味減)で、**版が動いた package は 4 つ**(対象 3 + 随伴 1 = 下記)。
+
+| module | GHSA(概要) | scope | vulnerable | patched | 到達版 | 手段 |
+|---|---|---|---|---|---|---|
+| nanoid | GHSA-2v37-7h3g-55p8(custom generator が size 0 で無限ループ) | **prod + dev** | `<3.3.17` | 3.3.17 | **3.3.18** | `pnpm update postcss`(**nanoid は postcss 経由でしか入っていない**) |
+| js-yaml | GHSA-5p4m-2wfm-xmqj(`!!omap` 解決の二次 CPU 消費・CVE-2026-59870) | dev | `>=4.0.0 <4.3.1` | 4.3.1 | **4.3.1** | `pnpm update js-yaml`(`@eslint/eslintrc` の range 内) |
+
+- **nanoid を直接 update しない**: nanoid の唯一の到達経路が `postcss>nanoid` であり、**postcss を上げれば nanoid は追随する**(実際 tree には既に postcss 8.5.25 → nanoid 3.3.17 が vite 経由で存在していた = 上流に道があることの証拠)。子だけを直接指定して上げると、親の宣言と解決版の乖離を lockfile に固定することになる(2026-08-06 T1 の ip-address 知見「exact pin された transitive は親を上げるのが正」と同じ形)。
+- **随伴解消(moderate 1 件)**: `GHSA-fxqj-rqcc-2cmp`(postcss `<=8.5.22` = sourceMappingURL 経由の任意ファイル読取の不完全修正)。前回現況表で「next@16.2.11 配下の 8.5.21 のみ検出」と記録していたもので、**同じ postcss 再解決で消えた**。
+- **重複解消も随伴**: postcss **3 版(8.5.21 / 8.5.23 / 8.5.25)→ 1 版(8.5.26)** / nanoid **2 版(3.3.16 / 3.3.17)→ 1 版(3.3.18)**。lockfile が正味 27 行減ったのはこれが理由(依存の追加ではない)。
+- **随伴(advisory 非関与・prod)**: `pg-protocol@1.15.0 → 1.16.0`。**本 sprint の対象 advisory とは無関係**だが lockfile diff に含まれるため記録する。原因 = `@types/pg` が `pg-protocol: "*"`・`pg` が `^1.13.0` と**制約が緩く**、`pnpm update` の既定(全グラフ再解決)が 2026-08-08 公開の 1.16.0 を拾った。**新規 package の追加ではなく版の float**(単一版のまま)で advisory も無い。基線の不動点確認(下記)を通っているのは、`install` が既存 lock を尊重するのに対し `update` が再解決するという差による。**lockfile diff に現れた package はこの 4 つで全部**(`js-yaml` / `nanoid` / `postcss` / `pg-protocol`)。
+  - **検出経緯(process の記録)**: CC の自己確認は `grep -E '(postcss|nanoid|js-yaml)@'` と**期待した package 名で絞っていた**ため取りこぼし、canonical review が package 名を絞らない grep で検出した。**「期待したものが変わったか」ではなく「期待したものだけが変わったか」を見る**のが lockfile 差分の正しい確認方法。
+- **override `postcss: ^8.5.12` は障害にならなかった**: caret は floor なので 8.5.26 は範囲内。**ただし「撤去条件 = 全消費側が >=8.5.12 を自然解決した時点」が満たされたかは本 sprint では未検証** — override を外して再解決する実験は `pnpm-workspace.yaml` 変更を伴い、本 sprint の lockfile-only 制約の外。**撤去可否の判定は別途**(推測で撤去しない)。
+- **peer-suffix の壁は今回も発生せず**: `pnpm update` が transitive を素直に更新した。`pnpm-workspace.yaml` の vite override コメントにある「pnpm update が peer-suffix 付き transitive を更新しない」は**無条件命題ではない**(2026-08-06 T1 と同じ結論を再確認 — 先に override へ逃げず着手時に実測する)。
+- **基線が不動点であることを実測**: base lockfile に戻して `pnpm install --no-frozen-lockfile` を実走 → `git diff pnpm-lock.yaml` ゼロ。よって差分は `update` の再解決由来であり、放置されていた pending drift ではない(推論でなく実行で確認)。
+- gate: `pnpm install --frozen-lockfile` / typecheck / lint(`--max-warnings=0`)/ build / test(**4734**)/ test:iso(**335**)/ `pnpm run audit` **全 exit 0**。
+
 ## 残存 follow-up(2026-07-21 bump 後・gate 対象外)
 
 ### moderate(3 件)
@@ -171,9 +190,29 @@ shadcn **固有**の prod 経路だったのは `shadcn → ts-morph → @ts-mor
 | body-parser | GHSA-v422-hmwv-36x6 | CVE-2026-12590 | `>=2.0.0 <2.3.0` | `>=2.3.0` | `.>@google/genai>@modelcontextprotocol/sdk>express>body-parser` |
 | esbuild | GHSA-g7r4-m6w7-qqqr | - | `>=0.27.3 <0.28.1` | `>=0.28.1` | `.>@vitejs/plugin-react>vite>esbuild` |
 
-## 現況(2026-08-06 sprint 後・`pnpm audit --json` 実測 = moderate 5 / low 2 / **high 0 / critical 0**)
+## 現況(2026-08-10 audit sprint 後・`pnpm audit --json` 実測 = moderate 6 / low 3 / **high 0 / critical 0**)
 
-**moderate 以下の正本はこの節**(上の「残存 follow-up」2 表は 2026-07-21 時点の snapshot として保存 — 現況ではない)。**gate 対象外**(閾値 high)ゆえ T1 では対処せず記録のみ。
+**moderate 以下の正本はこの節**(下の 2026-08-06 表と「残存 follow-up」は当時の snapshot として保存 — 現況ではない)。**gate 対象外**(閾値 high)ゆえ本 sprint では対処せず記録のみ。
+
+本表は **all-scope**(prod ∪ dev)。scope 別の実測は **prod: moderate 5 / low 3** / **dev: moderate 6 / low 3**(和が all-scope を超えるのは prod と dev の両方から到達する module があるため)。
+
+| sev | module | GHSA | 検出版 | patched | 2026-08-06 表との関係 |
+|---|---|---|---|---|---|
+| moderate | esbuild | GHSA-67mh-4wv8-2f99 | 0.18.20 | `>=0.25.0` | 継続(drizzle-kit 配下) |
+| moderate | qs | GHSA-q8mj-m7cp-5q26 | 6.15.1 | `>=6.15.2` | 継続(express 配下) |
+| moderate | hono | GHSA-8j4g-w8fx-2239 | 4.12.31 | `>=4.12.34` | 継続 |
+| moderate | hono | GHSA-f23p-vx2j-j53r | 4.12.31 | `>=4.12.34` | **新規**(前回記録以降の新 advisory) |
+| moderate | hono | GHSA-54fx-42gc-7vw4 | 4.12.31 | `>=4.12.34` | **新規**(同上) |
+| moderate | @hono/node-server | GHSA-frvp-7c67-39w9 | 1.19.14 | `>=2.0.5` | 継続 |
+| low | @babel/core | GHSA-4x5r-pxfx-6jf8 | 7.29.0 | `>=7.29.6` | 継続 |
+| low | body-parser | GHSA-v422-hmwv-36x6 | 2.2.2 | `>=2.3.0` | 継続 |
+| low | hono | GHSA-79qm-7rj5-m7r9 | 4.12.31 | `>=4.12.34` | **新規**(同上) |
+
+**2026-08-06 表からの消滅 1 件**: `GHSA-fxqj-rqcc-2cmp`(postcss・本 sprint の再解決で 8.5.26 到達)。**増加 3 件はいずれも hono 系の新規 advisory** で、`shadcn>@modelcontextprotocol/sdk>hono` 配下の 4.12.31。patched は 4 件とも `>=4.12.34` ゆえ **親(shadcn / MCP SDK)の bump で一括解消する見込み** — gate 対象外につき別 sprint。
+
+## 2026-08-06 sprint 後の snapshot(**現況ではない** — 正本は上の「現況(2026-08-10 …)」)
+
+当時の記録として保持。**gate 対象外**(閾値 high)ゆえ T1 では対処せず記録のみ。
 
 本表は **all-scope**(prod ∪ dev)の件数。T3(shadcn の devDependencies 移動)は**版を 1 つも変えていないため本表は不変**で、変わったのは prod / dev への帰属のみ(T3 節参照 — 移動後は prod low2/mod4・dev low2/mod4)。
 
