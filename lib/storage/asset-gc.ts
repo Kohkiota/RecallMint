@@ -496,6 +496,16 @@ function refsExists(assetId: unknown) {
  * 先に握って onRecordError?.() を呼ぶことで、core を改造せず lane 側に集約させる
  * (recordFailure がここで throw しなくなるため core 側の catch は事実上発火しない
  * が、素の deps を直接使う既存 test の経路のためにも core 側の catch は残す)。
+ *
+ * `shouldRecord` / `onSuppressed` は記帳の上限(spec §3.3a の 3 番目の bounding
+ * 手段: 「記帳の上限 — `recordFailure` は残 slice が `MIN_SLICE` 未満なら書かず
+ * suppressed 加算」)を lane 側から注入する seam。記帳 1 本(`recordIntegrationFailure`
+ * → `notifyOps`)は fetch で最大 ~3s 待ちうるため、1 user あたり最大
+ * `COLLECT_LIMIT_PER_USER` 件の R2 削除失敗を無条件に記帳すると tail reserve の
+ * 予算を超え、この run 唯一の観測信号である incomplete 行を書く前に platform に
+ * 殺されうる(行 DELETE 失敗の記帳 loop に同種の guard が既にある — round 1 の
+ * fix と同じ失敗様式)。**未指定なら現行挙動(常に記帳)を維持する**
+ * (CLI 経路・既存 test の後方互換)。
  */
 export function buildReconcilerDeps(args: {
   exec: ReconcilerExec
@@ -503,9 +513,20 @@ export function buildReconcilerDeps(args: {
   collectLimit?: number
   deleteObject: ReconcilerDeps['deleteObject']
   onRecordError?: () => void
+  shouldRecord?: () => boolean
+  onSuppressed?: () => void
   log: (msg: string) => void
 }): ReconcilerDeps {
-  const { exec, userId, collectLimit, deleteObject, onRecordError, log } = args
+  const {
+    exec,
+    userId,
+    collectLimit,
+    deleteObject,
+    onRecordError,
+    shouldRecord,
+    onSuppressed,
+    log,
+  } = args
 
   // --user 指定時は owner-scope の追加 WHERE を raw SQL 系の query に足す
   // (CLAUDE.md Clerk-3)。
@@ -687,6 +708,12 @@ export function buildReconcilerDeps(args: {
       }),
     deleteObject,
     recordFailure: async ({ userId, assetId, objectKey, status, errorMessage }) => {
+      // 記帳の上限(本 function の doc comment 参照・spec §3.3a 3 番目の bounding
+      // 手段)。shouldRecord 未指定(CLI 経路)なら常に記帳(現行挙動)。
+      if (shouldRecord && !shouldRecord()) {
+        onSuppressed?.()
+        return
+      }
       // B-4 seam(本 function の doc comment 参照): ここで握って onRecordError?.() を
       // 呼ぶ — core(runReconciler)の recordFailure 呼出は無改造のまま。
       try {

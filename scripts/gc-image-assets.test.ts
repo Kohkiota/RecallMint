@@ -1105,3 +1105,61 @@ describe('buildReconcilerDeps — recordFailure / onRecordError(B-4 seam)', () =
     expect(onRecordError).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// buildReconcilerDeps(review round 3・asset レーン整合 sprint spec §3.3a 3 番目の
+// bounding 手段): recordFailure の記帳上限 seam(shouldRecord / onSuppressed)。
+// lane(Task 5)が残 slice 枯渇時に記帳自体を止めるための注入口。
+// ---------------------------------------------------------------------------
+describe('buildReconcilerDeps — recordFailure の記帳上限(shouldRecord / onSuppressed)', () => {
+  const neverCalledExec: ReconcilerExec = async () => {
+    throw new Error('recordFailure must not use exec (bypasses DI, calls recordIntegrationFailure directly)')
+  }
+
+  it('shouldRecord が false を返すと recordIntegrationFailure を呼ばず onSuppressed を呼ぶ', async () => {
+    const onSuppressed = vi.fn()
+    const onRecordError = vi.fn()
+    const deps = buildReconcilerDeps({
+      exec: neverCalledExec,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      shouldRecord: () => false,
+      onSuppressed,
+      onRecordError,
+      log: vi.fn(),
+    })
+
+    await expect(
+      deps.recordFailure({
+        userId: USER_ID,
+        assetId: ASSET_A,
+        objectKey: 'users/u/a.webp',
+        status: 'deleting',
+        errorMessage: 'R2 delete failed (status=500)',
+      }),
+    ).resolves.toBeUndefined()
+
+    expect(recordIntegrationFailureMock).not.toHaveBeenCalled()
+    expect(onSuppressed).toHaveBeenCalledTimes(1)
+    // 記帳自体を試みていないため、記帳失敗の seam(onRecordError)は無関係に呼ばれない。
+    expect(onRecordError).not.toHaveBeenCalled()
+  })
+
+  it('shouldRecord 未指定なら現行挙動どおり常に記帳する(後方互換)', async () => {
+    recordIntegrationFailureMock.mockResolvedValueOnce(undefined)
+    const deps = buildReconcilerDeps({
+      exec: neverCalledExec,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      log: vi.fn(),
+    })
+
+    await deps.recordFailure({
+      userId: USER_ID,
+      assetId: ASSET_A,
+      objectKey: 'users/u/a.webp',
+      status: 'deleting',
+      errorMessage: 'R2 delete failed (status=500)',
+    })
+
+    expect(recordIntegrationFailureMock).toHaveBeenCalledTimes(1)
+  })
+})
