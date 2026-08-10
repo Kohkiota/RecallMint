@@ -5,6 +5,7 @@
 - Codex plan cross-check(1 パス): `docs/codex/2026-08-09-plan-ocr-2-4b-s3-src-sweeper.md`
 - 範囲: `60ea6b5`(spec/plan 確定)..`f973098`(docs)。**未 push**
 - 本 doc が **[reviewed] の正記録**(SDD ledger `.superpowers/sdd/` は git-ignored scratch ゆえ正本にしない)
+- **②-4b 全体の close 記録 = `2026-08-10-ocr-2-4b-close.md`**(doc 群の索引)。レーン間の設計契約は `docs/architecture.md` §11
 
 ## 1. 成果物
 
