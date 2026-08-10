@@ -208,7 +208,9 @@ describe('recordIntegrationFailure', () => {
     // ②-4b §1: r2_staging_delete 追加で 11 → 12。
     // ②-4b §2: 退会 prefix purge の 2 entry 追加で 12 → 14。
     // ②-4b §3: src sweeper の 3 entry 追加で 14 → 17。
-    expect(tuples.length).toBe(17)
+    // asset レーン整合 sprint T3: asset_gc 側 2 entry + asset_orphan_scan 側 2
+    // entry 追加(spec §3.5 / §4.3)で 17 → 21。
+    expect(tuples.length).toBe(21)
   })
 
   // r2_gc_delete: image-GC spec §4.6 の 4 軸 tuple 固定値
@@ -325,6 +327,60 @@ describe('recordIntegrationFailure', () => {
       operation: 'src_sweep.overdue',
       workflow: 'src_sweep',
       failureCode: 'state_mismatch',
+    })
+  })
+
+  // r2_gc_row_delete: asset レーン整合 sprint spec §3.5(assets 行 DELETE 失敗 =
+  // RESTRICT FK 拒否等)の 4 軸 tuple 固定値。workflow='asset_gc' は r2_gc_delete
+  // (object.delete)と同じレーンの失敗であることを表すが、operation を分けて
+  // R2 物理削除失敗と行 DELETE 失敗を区別する。
+  it('r2_gc_row_delete has the 4-axis values pinned by asset lane spec §3.5', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_gc_row_delete).toEqual({
+      service: 'db',
+      operation: 'asset.row.delete',
+      workflow: 'asset_gc',
+      failureCode: 'db_error',
+    })
+  })
+
+  // r2_gc_incomplete: asset レーン整合 sprint spec §3.5(asset_gc lane が deadline
+  // または user 単位 throw で打ち切った = 制御系の結果)の 4 軸 tuple 固定値。
+  // **4 軸は原因でなく結果を識別する**(原因は context.phase が持つ)ため個々の
+  // 失敗(r2_gc_delete / r2_gc_row_delete)とは別 entry(r2_sweep_incomplete と同型)。
+  it('r2_gc_incomplete has the 4-axis values pinned by asset lane spec §3.5', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_gc_incomplete).toEqual({
+      service: 'r2',
+      operation: 'asset_gc.incomplete',
+      workflow: 'asset_gc',
+      failureCode: 'incomplete',
+    })
+  })
+
+  // r2_orphan_delete: asset レーン整合 sprint spec §4.3(orphan scan の個別 object
+  // DELETE 失敗 = 1 件 1 行)の 4 軸 tuple 固定値。他 lane の r2/object.delete とは
+  // 新 workflow='asset_orphan_scan' で区別する(4 軸 tuple は stable identifier・
+  // 相乗り禁止)。pattern mismatch(key 規約不一致で DELETE を試行しなかった行)も
+  // `reason: 'pattern_mismatch'` discriminator を添えてこの key に記帳する
+  // (r2_sweep_delete と同型)。
+  it('r2_orphan_delete has the 4-axis values pinned by asset lane spec §4.3', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_orphan_delete).toEqual({
+      service: 'r2',
+      operation: 'object.delete',
+      workflow: 'asset_orphan_scan',
+      failureCode: 'external_api_error',
+    })
+  })
+
+  // r2_orphan_incomplete: asset レーン整合 sprint spec §4.3(orphan scan lane が
+  // listing / live-op 判定 / deadline のいずれかで打ち切った = 制御系の結果)の
+  // 4 軸 tuple 固定値。**4 軸は原因でなく結果を識別する**(原因は context.phase が
+  // 持つ)ため r2_orphan_delete とは別 entry(r2_sweep_incomplete と同型)。
+  it('r2_orphan_incomplete has the 4-axis values pinned by asset lane spec §4.3', () => {
+    expect(INTEGRATION_FAILURE_CATALOG.r2_orphan_incomplete).toEqual({
+      service: 'r2',
+      operation: 'orphan_scan.incomplete',
+      workflow: 'asset_orphan_scan',
+      failureCode: 'incomplete',
     })
   })
 })

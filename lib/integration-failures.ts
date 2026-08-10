@@ -213,6 +213,66 @@ export const INTEGRATION_FAILURE_CATALOG = {
     workflow: 'src_sweep',
     failureCode: 'state_mismatch',
   },
+  // asset レーン整合 sprint(design spec 2026-08-10-asset-lane-gc-design.md §3.5):
+  // `assets` 行の DELETE 失敗(`card_asset_refs` → `assets` の RESTRICT FK 拒否等)。
+  // 現状 core は logger.error に落とすだけで台帳に載らない — 手動 script 時代は
+  // stdout を人が読んだが cron 化すると誰も読まないため台帳化する(1 件 1 行・
+  // quota 付き)。workflow='asset_gc' は r2_gc_delete(R2 物理削除失敗)と同じ
+  // レーンの失敗であることを表すが、operation を分けて DB 側の行 DELETE 失敗と
+  // R2 側の物理削除失敗を区別する(4 軸 tuple は stable identifier・相乗り禁止)。
+  // context = { assetId, objectKey, status }(r2_gc_delete と同形)。PII は
+  // objectKey / 内部 uuid(assetId)のみ、Clerk ID は扱わない。
+  r2_gc_row_delete: {
+    service: 'db',
+    operation: 'asset.row.delete',
+    workflow: 'asset_gc',
+    failureCode: 'db_error',
+  },
+  // asset レーン整合 sprint spec §3.5: asset_gc lane(per-user 実行)が deadline
+  // 打ち切り、または pre-sweep guard trip・user 単位の throw で当該 user を skip
+  // した = 1 run 1 行の制御系。**4 軸は原因ではなく結果を識別する**(原因は
+  // context.phase が持つ)ため、個々の失敗(r2_gc_delete / r2_gc_row_delete)と
+  // 混ぜず別 entry にする(r2_sweep_incomplete と同型の理由)。phase 語彙 =
+  // `deadline`(予算切れ)/ `user_error`(guard trip・user 単位 throw)。
+  // context = { phase?, usersProcessed, usersSkipped, suppressedFailures? }
+  // (r2_sweep_incomplete と同形)。PII は内部 uuid(userId)のみ、Clerk ID は
+  // 扱わない。
+  r2_gc_incomplete: {
+    service: 'r2',
+    operation: 'asset_gc.incomplete',
+    workflow: 'asset_gc',
+    failureCode: 'incomplete',
+  },
+  // asset レーン整合 sprint spec §4.3: orphan scan(`users/` prefix listing →
+  // 三重条件 + 行不在確認 → DELETE)の個別 object DELETE 失敗の記帳先(1 件 1 行)。
+  // 新 workflow 値 `asset_orphan_scan` を足すのは、判定原理が asset_gc(行が正)
+  // と根本的に異なる(orphan scan は行の無い object を時間駆動で回収する)ため、
+  // 他 lane の r2/object.delete と 4 軸上で区別不能になるのを防ぐ(4 軸 tuple は
+  // stable identifier・相乗り禁止)。key 規約(uuid/uuid.ext)に合わない object も
+  // 削除を試みずこの key に `reason: 'pattern_mismatch'` discriminator 付きで
+  // 記帳する(r2_sweep_delete と同型)。context = { objectKey, status } + pattern
+  // mismatch 行のみ `reason: 'pattern_mismatch'`。PII は objectKey / 内部 uuid
+  // のみ、Clerk ID は扱わない。
+  r2_orphan_delete: {
+    service: 'r2',
+    operation: 'object.delete',
+    workflow: 'asset_orphan_scan',
+    failureCode: 'external_api_error',
+  },
+  // asset レーン整合 sprint spec §4.3: orphan scan lane が listing / live-op 判定 /
+  // deadline のいずれかで打ち切った = 1 run 1 行の制御系。**4 軸は原因ではなく
+  // 結果を識別する**(原因は context.phase が持つ)ため r2_orphan_delete とは別
+  // entry(r2_sweep_incomplete と同型)。phase 語彙 = `list` / `live_check` /
+  // `list_truncated` / `deadline`(spec §4.3 の記載順)。context =
+  // `{ phase?, listed, deleteRequested, remaining, suppressedFailures? }`
+  // (r2_sweep_incomplete と同形)。PII は objectKey / 内部 uuid(userId)のみ、
+  // Clerk ID は扱わない。
+  r2_orphan_incomplete: {
+    service: 'r2',
+    operation: 'orphan_scan.incomplete',
+    workflow: 'asset_orphan_scan',
+    failureCode: 'incomplete',
+  },
 } as const
 
 export type IntegrationFailureKey = keyof typeof INTEGRATION_FAILURE_CATALOG
