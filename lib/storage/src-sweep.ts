@@ -411,6 +411,24 @@ export async function runSrcSweepLane(args: {
       if (deadlineReached) break
     }
 
+    // 終端 path の一様な overrun 検知(final review I-4 fix・2026-08-10・
+    // orphan-scan.ts の post-loop check と同型の責務分離を導入)。
+    //
+    // 上記の in-loop check(candidate loop 先頭 / chunk 先頭)は「新しい仕事を
+    // 始めない」side の guard で、**候補 loop が自然終了した場合には走らない**
+    // (最後の chunk が成功して予算を使い切ったが、次の chunk 開始 check に到達する
+    // 前に loop 自体が終わるケース)。この lane には「超過した事実を報告する」側が
+    // 無かったため、予算を使い切って自然終了した run が `phase: null` = 正常完走
+    // として報告されていた(I-4)。ここ(候補 loop を抜けた直後)の 1 箇所だけがその
+    // 役目を一様に担う — in-loop の break/continue 経路・自然終了経路のどちらを
+    // 通っても必ずここへ来るため、新しい終端 path が増えても漏れない。`break` は
+    // しない(既に loop の外)— `phase` を立てるだけ。higherPriorityPhase 経由なので、
+    // より早く諦めた事実(list / live_check / list_truncated)が既にあればそちらが
+    // 優先され、この post-loop check で上書きされることはない。
+    if (slice() < SWEEP_MIN_SLICE_MS) {
+      phase = higherPriorityPhase(phase, 'deadline')
+    }
+
     // incomplete 行は 1 run 最大 1 行(§3.5)。phase が複数該当しても優先順位で 1 本に
     // 統合し、suppressedFailures もこの行に載せる — ゆえに list_truncated も含め
     // **最後に**書く(途中で書くと後続の deadline を統合できない)。

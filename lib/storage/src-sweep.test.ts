@@ -537,6 +537,34 @@ describe('runSrcSweepLane — 予算と phase(不変条件 9 以外の §3.4)', 
   })
 })
 
+// ---------------------------------------------------------------------------
+// 終端 path の一様な overrun 検知(final review I-4 fix)
+//
+// orphan-scan.ts の post-loop check と同じ構造修正。in-loop check(候補 loop 先頭 /
+// chunk 先頭)は自然終了した run には走らない — 最終 DELETE chunk が成功して予算を
+// 使い切った時点で loop の body は自然に終わり(次 chunk の先頭 check に到達しない)、
+// 候補も他に無ければ候補 loop 自体も自然終了する。post-loop check が無いと、この
+// run は `phase: null` = 正常完走として報告される(I-4)。
+// ---------------------------------------------------------------------------
+describe('runSrcSweepLane — 終端 path の一様な overrun 検知(I-4 fix)', () => {
+  it('最終 DELETE が成功して予算を使い切っても phase=deadline を立て incomplete 行を書く(自然終了は in-loop check を通らない)', async () => {
+    deleteCostMs = 4_000
+    const key = srcKey(USER_A, 1)
+    listing([aged(key, CANDIDATE_AGE)])
+
+    // workDeadline = deadlineAt(+15s) - TAIL_RESERVE(10s) = +5s。DELETE 成功後 clock が
+    // 4s 進み slice = 1s < MIN_SLICE(2s)。chunk loop は 1 key しか無いため次の chunk
+    // 先頭 check に到達せず(body が自然終了)、candidate loop も自然終了する — in-loop
+    // check はどちらも発火しない。post-loop check だけがこの経路を拾う。
+    const summary = await run({ deadlineAt: new Date(NOW_MS + 15_000) })
+
+    expect(summary.deleted).toBe(1)
+    expect(summary.failed).toBe(0)
+    expect(summary.phase).toBe('deadline')
+    expect(recordedRow('r2_sweep_incomplete')?.context).toMatchObject({ phase: 'deadline' })
+  })
+})
+
 describe('runSrcSweepLane — 台帳 quota(不変条件 9)', () => {
   it('実削除失敗は 20 行で頭打ちになり、超過分は suppressedFailures に載る', async () => {
     mockDeleteObject.mockImplementation(async (objectKey: string) => {

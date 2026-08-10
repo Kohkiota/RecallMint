@@ -33,7 +33,10 @@ const ASSET_GC_MAX_ROW_DELETE_FAILURE_ROWS = 20
 
 // incomplete 行の phase(spec §3.5)。配列順 = 優先順位(より早く諦めた事実を残す)。
 // user_error(guard trip・user 単位 throw)が deadline より優先(plan Task 5 記載順)。
-const ASSET_GC_PHASES = ['user_error', 'deadline'] as const
+// `enumerate`(final review I-2 fix・2026-08-10): user 列挙(app_list_asset_gc_user_ids)
+// 自体が失敗した最優先(配列先頭)の失敗様式。列挙が取れない = lane 全体が 0 user で
+// 無効化される最も早い段階の失敗であり、他 2 つ(user 単位の後発失敗)より常に優先する。
+const ASSET_GC_PHASES = ['enumerate', 'user_error', 'deadline'] as const
 type AssetGcPhase = (typeof ASSET_GC_PHASES)[number]
 
 function higherPriorityPhase(
@@ -158,10 +161,24 @@ export async function runAssetGcLane(args: {
       // のみを返す迂回口を提供する(spec §3.2)。得た uuid だけでは他 user の行を読める
       // わけではなく、安全性は「以降の per-user 実行が必ず withTenantTx を張ること」に
       // 依存する(関数コメント参照)。
-      const rows = await getNonTenantDb().execute<{
-        app_list_asset_gc_user_ids: string
-      }>(sql`SELECT * FROM public.app_list_asset_gc_user_ids()`)
-      userIds = rows.map((r) => r.app_list_asset_gc_user_ids)
+      //
+      // 独自 try/catch(final review I-2 fix): この throw が内側 catch 無しに
+      // 大域 catch まで抜けると usersProcessed=0 かつ suppressedFailures=0 のまま
+      // summary.error にだけ畳まれ、末尾の `if (phase !== null || suppressedFailures
+      // > 0)` が不成立で r2_gc_incomplete が 1 行も書かれない(= lane を無効化する
+      // 唯一の失敗が唯一観測できない失敗になる・migration 0033 未適用 / GRANT 漏れ等
+      // で現実的に起きうる)。兄弟 2 lane(listing 失敗)と同じく phase 化して必ず
+      // 記帳経路に載せる。
+      try {
+        const rows = await getNonTenantDb().execute<{
+          app_list_asset_gc_user_ids: string
+        }>(sql`SELECT * FROM public.app_list_asset_gc_user_ids()`)
+        userIds = rows.map((r) => r.app_list_asset_gc_user_ids)
+      } catch (err) {
+        phase = higherPriorityPhase(phase, 'enumerate')
+        logger.error({ event: 'asset_gc.enumerate_failed', err })
+        userIds = []
+      }
     }
     usersListed = userIds.length
 

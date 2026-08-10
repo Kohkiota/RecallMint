@@ -122,6 +122,16 @@ const ORPHAN_TAIL_RESERVE_MS = 10_000 // 最終 incomplete 行を書くための
 const ORPHAN_MIN_SLICE_MS = 2_000 // floor。残予算がこれ未満なら次 user/chunk を起動しない
 const ORPHAN_DELETE_CHUNK = 20 // chunk 並列。chunk ごとに deadline を確認して打ち切れる粒度
 const ORPHAN_MAX_LIST_PAGES = 10 // 1 page ≈ 最大 1000 key
+// per-run 削除上限(final review I-1(a)・2026-08-10 追加)。ORPHAN_DELETE_CHUNK は
+// 並列度であって上限ではなく、証拠(assets 行)を持つ asset_gc が 20/user/run に
+// bound されているのに対し、証拠の無い object を消すこの lane は無制限だった —
+// 唯一の安全弁(下記「行不在確認」のコメント参照)が fail-open な以上、1 run の
+// 削除量そのものに上限を設ける。実測 row-less は 0 件のため、この上限に当たる run
+// 自体が初日から異常(黙って大量削除するより、上限到達を Discord に出す方が安全)。
+// chunk 境界での check(ORPHAN_DELETE_CHUNK=20 粒度)ゆえ実削除数は上限をチャンク
+// 1 個分(最大 19)超えうるが、桁を守る安全弁としては十分 — byte-exact な cap は
+// 過大実装(簡潔性規律)。
+const ORPHAN_MAX_DELETE_PER_RUN = 50
 // 台帳の暴走防止(src-sweep と同規律): 種別ごとに独立(mismatch の洪水が実削除失敗を
 // 抑圧しない)。
 const ORPHAN_MAX_DELETE_FAILURE_ROWS = 20
@@ -130,10 +140,21 @@ const ORPHAN_MAX_MISMATCH_ROWS = 5
 const USERS_PREFIX = 'users/'
 
 // incomplete 行の phase(spec §4.3 + canonical review Important #1 で `row_check`
-// を追加)。配列順 = 優先順位(より早く諦めた事実を残す)。`row_check` は `live_check`
-// の直後に置く — どちらも「1 candidate の DB 読出しが transient に失敗し、その
-// candidate だけ skip して続行する」という同じ severity の失敗様式のため。
-const ORPHAN_PHASES = ['list', 'live_check', 'row_check', 'list_truncated', 'deadline'] as const
+// を追加 + final review I-1(a) で `max_delete` を追加)。配列順 = 優先順位(より
+// 早く諦めた事実を残す)。`row_check` は `live_check` の直後に置く — どちらも
+// 「1 candidate の DB 読出しが transient に失敗し、その candidate だけ skip して
+// 続行する」という同じ severity の失敗様式のため。`max_delete`(per-run 削除上限
+// 到達)は `list_truncated` の後・`deadline` の前に置く — 意図的な安全弁の作動
+// であって観測の穴(list_truncated)ほど深刻ではないが、単なる時間切れ(deadline)
+// より明確な signal(想定外の削除量)であるため。
+const ORPHAN_PHASES = [
+  'list',
+  'live_check',
+  'row_check',
+  'list_truncated',
+  'max_delete',
+  'deadline',
+] as const
 type OrphanPhase = (typeof ORPHAN_PHASES)[number]
 
 // 単位が field ごとに違う(object 数 / user 数)。src-sweep の SrcSweepSummary と
@@ -287,6 +308,17 @@ export async function runOrphanScanLane(args: {
       // 分割 — SQL parameter 上限 / statement size)。行のある key は正当データ
       // ゆえ候補から外す(それは asset_gc の領分・絶対に触らない)。
       //
+      // **この lane の唯一の安全弁**(final review I-1(b)・過大な主張をしない: この
+      // 判定 1 つが「行がある object を消さない」不変条件の全体を担う): live-upload-
+      // check.ts の docstring と同じ極性の危険がここにも当てはまる — fail-safe が
+      // 覆うのは **throw** であって「無言で 0 行」ではない。RLS の tenant context が
+      // 意図と違う値で張られる等で読み取りが静かに空になると、全 key が rowless
+      // (削除対象)に見えてしまう。この極性を backstop する機構(asset_gc の
+      // `checkRefsPopulated` pre-sweep guard に相当するもの)はここには無い — cutoff
+      // 7 日は「新しすぎる正当データ」を守るだけで、この「行が読めていないのに読めた
+      // つもりになる」経路は防がない。緩和は per-run 削除上限(`ORPHAN_MAX_DELETE_PER_RUN`)
+      // のみ — 誤って大量 rowless と判定されても、1 run で削除される量に天井を作る。
+      //
       // この lane で唯一 catch されていなかった I/O(canonical review Important #1)。
       // live check と同じ fail-safe 判断: throw(transient DB error)は「行の有無が
       // 分からない」ことを意味し、false と読んで削除側へ倒すと正当データを消しうる。
@@ -370,10 +402,22 @@ export async function runOrphanScanLane(args: {
       }
 
       let deadlineReached = false
+      let maxDeleteReached = false
       for (let i = 0; i < rowlessKeys.length; i += ORPHAN_DELETE_CHUNK) {
         if (slice() < ORPHAN_MIN_SLICE_MS) {
           phase = higherPriorityPhase(phase, 'deadline')
           deadlineReached = true
+          break
+        }
+        // per-run 削除上限(final review I-1(a)。ORPHAN_MAX_DELETE_PER_RUN の doc
+        // comment 参照)。以降のこの candidate の rowlessKeys(および後続 candidate
+        // 全部)を今回は削除しない — 打ち切り分は suppressedFailures に計上する
+        // (実失敗ではないが r2_orphan_incomplete の「今回消せなかった量」に載せる
+        // 既存慣習に合わせる)。
+        if (deleteRequested >= ORPHAN_MAX_DELETE_PER_RUN) {
+          phase = higherPriorityPhase(phase, 'max_delete')
+          suppressedFailures += rowlessKeys.length - i
+          maxDeleteReached = true
           break
         }
         const chunk = rowlessKeys.slice(i, i + ORPHAN_DELETE_CHUNK)
@@ -423,7 +467,7 @@ export async function runOrphanScanLane(args: {
           })
         }
       }
-      if (deadlineReached) break
+      if (deadlineReached || maxDeleteReached) break
     }
 
     // 終端 path の一様な overrun 検知(Codex 2 周目・round 4 で構造修正)。

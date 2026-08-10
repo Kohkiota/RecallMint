@@ -550,6 +550,11 @@ export function buildReconcilerDeps(args: {
           referenced: Number(rows[0]?.referenced ?? 0),
         }
       }),
+    // co-update trigger(final review M-4・2026-08-10 追記): 以下 markSet /
+    // markClear / promote / fetchCollectCandidates の WHERE は
+    // tests/integration/pg/asset-gc.test.ts の oracle 同値性 pin(B-2)が手写しして
+    // いる。この WHERE を変えたら iso 側の oracle probe も co-update すること
+    // (忘れると両者が揃って drift し、oracle pin が無言で無効化される)。
     markSet: () =>
       exec(async (db) => {
         // G2 shouldMarkUnreferenced の SQL 表現:
@@ -683,7 +688,17 @@ export function buildReconcilerDeps(args: {
           const rows = await db
             .selectDistinct({ assetId: cardAssetRefs.assetId })
             .from(cardAssetRefs)
-            .where(inArray(cardAssetRefs.assetId, batch))
+            .where(
+              and(
+                inArray(cardAssetRefs.assetId, batch),
+                // final review M-6(2026-08-10): 他 deps と同形で明示する
+                // (CLAUDE.md「query は必ず WHERE user_id = ?」)。RLS 下では tenant
+                // context が既に絞るため実害は無い(失敗方向も「refs が余計に見える
+                // = 削除しない側」)が、lane 側の同種 query が明示している規律に
+                // ここだけ不揃いだった。CLI 経路(userId 未指定)の挙動は変えない。
+                userId ? eq(cardAssetRefs.userId, userId) : undefined,
+              ),
+            )
           for (const r of rows) found.add(r.assetId)
         }
         return found

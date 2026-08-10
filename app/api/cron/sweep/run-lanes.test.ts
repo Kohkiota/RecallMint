@@ -109,10 +109,10 @@ describe('runLanes — 絶対 deadline(spec §2.1・完了条件②)', () => {
 })
 
 describe('runLanes — notStarted(spec §2.1・完了条件③)', () => {
-  it('残 slice が MIN_SLICE(2_000ms)未満なら lane を起動せず notStarted を積む', async () => {
+  it('残 slice が MIN_SLICE(12_000ms)未満なら lane を起動せず notStarted を積む', async () => {
     const startMs = 1_000_000
     // deadline = startMs + 210_000。now をそれより 1_000ms 手前に置くと残 slice(1_000ms)
-    // が MIN_SLICE(2_000ms)未満になる。
+    // が MIN_SLICE(12_000ms)未満になる。
     const now = () => startMs + 210_000 - 1_000
     const b = stubLane('b', 210_000, async () => ({ lane: 'b' }))
     const runs = await runLanes([b], startMs, now)
@@ -120,9 +120,18 @@ describe('runLanes — notStarted(spec §2.1・完了条件③)', () => {
     expect(runs).toEqual([{ lane: 'b', notStarted: true }])
   })
 
-  it('残 slice がちょうど MIN_SLICE なら起動する(境界は起動側)', async () => {
+  it('残 slice が MIN_SLICE 未満(floor-1ms)なら起動しない(floor 値そのものの pin・I-3 fix)', async () => {
     const startMs = 1_000_000
-    const now = () => startMs + 210_000 - 2_000 // 残 slice = 2_000 = MIN_SLICE ちょうど
+    const now = () => startMs + 210_000 - 11_999 // 残 slice = 11_999 < 12_000
+    const b = stubLane('b', 210_000, async () => ({ lane: 'b' }))
+    const runs = await runLanes([b], startMs, now)
+    expect(b.run).not.toHaveBeenCalled()
+    expect(runs).toEqual([{ lane: 'b', notStarted: true }])
+  })
+
+  it('残 slice がちょうど MIN_SLICE(12_000ms)なら起動する(境界は起動側・I-3 fix: floor = tail reserve 10_000 + lane min slice 2_000)', async () => {
+    const startMs = 1_000_000
+    const now = () => startMs + 210_000 - 12_000 // 残 slice = 12_000 = MIN_SLICE ちょうど
     const b = stubLane('b', 210_000, async () => ({ lane: 'b' }))
     const runs = await runLanes([b], startMs, now)
     expect(b.run).toHaveBeenCalledTimes(1)

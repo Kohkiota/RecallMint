@@ -337,6 +337,45 @@ describe('runAssetGcLane — per-user throw が後続 user を巻き込まない
 })
 
 // ---------------------------------------------------------------------------
+// user 列挙失敗(final review I-2 fix)
+//
+// 大域 catch まで抜けると phase=null かつ suppressedFailures=0 のまま
+// summary.error だけに畳まれ、末尾の `if (phase !== null || suppressedFailures > 0)`
+// が不成立で r2_gc_incomplete が 1 行も書かれない = lane を無効化する唯一の失敗が
+// 唯一観測できない失敗になる(migration 0033 未適用 / GRANT 漏れ等で現実的に起きうる)。
+// 兄弟 2 lane(listing 失敗)と同じく phase 化して必ず記帳経路に載せることを pin する。
+// ---------------------------------------------------------------------------
+describe('runAssetGcLane — user 列挙失敗(I-2 fix)', () => {
+  it('app_list_asset_gc_user_ids() が throw したら phase enumerate で r2_gc_incomplete を書き、lane は throw しない(never-throw 契約)', async () => {
+    mockExecute.mockRejectedValueOnce(new Error('relation "app_list_asset_gc_user_ids" does not exist'))
+
+    const summary = await run()
+
+    expect(summary.error).toBeUndefined()
+    expect(summary.usersListed).toBe(0)
+    expect(summary.usersProcessed).toBe(0)
+    expect(summary.phase).toBe('enumerate')
+    expect(mockBuildReconcilerDeps).not.toHaveBeenCalled()
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'asset_gc.enumerate_failed' }),
+    )
+    const incomplete = recordedCalls('r2_gc_incomplete')
+    expect(incomplete).toHaveLength(1)
+    expect(incomplete[0]?.context).toMatchObject({ phase: 'enumerate' })
+  })
+
+  it('userScope 指定時は列挙を打たないため enumerate 失敗は起きない', async () => {
+    fixtures.set(USER_C, { scanned: 1 })
+
+    const summary = await run({ userScope: USER_C })
+
+    expect(summary.phase).toBeNull()
+    expect(summary.usersProcessed).toBe(1)
+    expect(mockExecute).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // ④ rowDeleteFailures → r2_gc_row_delete 記帳(objectKey 解決成功 / 失敗→null)
 // ---------------------------------------------------------------------------
 describe('runAssetGcLane — 行 DELETE 失敗の台帳化(④)', () => {

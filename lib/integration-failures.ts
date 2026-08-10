@@ -229,11 +229,13 @@ export const INTEGRATION_FAILURE_CATALOG = {
     failureCode: 'db_error',
   },
   // asset レーン整合 sprint spec §3.5: asset_gc lane(per-user 実行)が deadline
-  // 打ち切り、または pre-sweep guard trip・user 単位の throw で当該 user を skip
-  // した = 1 run 1 行の制御系。**4 軸は原因ではなく結果を識別する**(原因は
-  // context.phase が持つ)ため、個々の失敗(r2_gc_delete / r2_gc_row_delete)と
-  // 混ぜず別 entry にする(r2_sweep_incomplete と同型の理由)。phase 語彙 =
-  // `deadline`(予算切れ)/ `user_error`(guard trip・user 単位 throw)。
+  // 打ち切り、pre-sweep guard trip・user 単位の throw で当該 user を skip、または
+  // user 列挙自体が失敗した(final fix wave I-2・2026-08-10 追記)= 1 run 1 行の
+  // 制御系。**4 軸は原因ではなく結果を識別する**(原因は context.phase が持つ)ため、
+  // 個々の失敗(r2_gc_delete / r2_gc_row_delete)と混ぜず別 entry にする
+  // (r2_sweep_incomplete と同型の理由)。phase 語彙 = `enumerate`(user 列挙失敗・
+  // 優先度最高)/ `deadline`(予算切れ)/ `user_error`(guard trip・user 単位 throw)
+  // (lib/storage/asset-gc-lane.ts の ASSET_GC_PHASES 配列順 = 優先順位)。
   // context = { phase?, usersProcessed, usersSkipped, suppressedFailures? }
   // (r2_sweep_incomplete と同形)。PII は内部 uuid(userId)のみ、Clerk ID は
   // 扱わない。
@@ -260,12 +262,14 @@ export const INTEGRATION_FAILURE_CATALOG = {
     failureCode: 'external_api_error',
   },
   // asset レーン整合 sprint spec §4.3: orphan scan lane が listing / live-op 判定 /
-  // 行不在確認 / deadline のいずれかで打ち切った = 1 run 1 行の制御系。**4 軸は
-  // 原因ではなく結果を識別する**(原因は context.phase が持つ)ため r2_orphan_delete
-  // とは別 entry(r2_sweep_incomplete と同型)。phase 語彙 = `list` / `live_check` /
-  // `row_check`(行不在確認の DB 読出し失敗・canonical review Important #1 で追加)/
-  // `list_truncated` / `deadline`(lib/storage/orphan-scan.ts の ORPHAN_PHASES 配列順
-  // = 優先順位)。context = `{ phase?, listed, deleteRequested, remaining,
+  // 行不在確認 / per-run 削除上限 / deadline のいずれかで打ち切った = 1 run 1 行の
+  // 制御系。**4 軸は原因ではなく結果を識別する**(原因は context.phase が持つ)ため
+  // r2_orphan_delete とは別 entry(r2_sweep_incomplete と同型)。phase 語彙 = `list` /
+  // `live_check` / `row_check`(行不在確認の DB 読出し失敗・canonical review
+  // Important #1 で追加)/ `list_truncated` / `max_delete`(per-run 削除上限
+  // `ORPHAN_MAX_DELETE_PER_RUN` 到達・final review I-1(a) で追加)/ `deadline`
+  // (lib/storage/orphan-scan.ts の ORPHAN_PHASES 配列順 = 優先順位)。context =
+  // `{ phase?, listed, deleteRequested, remaining,
   // suppressedFailures? }`。**remaining の式は r2_sweep_incomplete と異なる**
   // (canonical review Important #2): `rowless - deleted - failed`(行不在確認済みの
   // 真の orphan で未削除のものだけ)— `candidateKeys - deleteRequested` にすると

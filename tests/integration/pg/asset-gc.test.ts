@@ -250,6 +250,13 @@ describe('asset GC cron — Task 1: app_list_asset_gc_user_ids() definer functio
   })
 
   describe('oracle 同値性 pin(B-2・Codex 指摘 12): core reconciler の 3 WHERE から独立導出した集合と一致', () => {
+    // co-update trigger(final review M-4・2026-08-10 追記): 下の oracle 3 probe
+    // (collectRows / markClearOrPromoteRows / markSetRows)は lib/storage/asset-gc.ts
+    // の fetchCollectCandidates / markClear・promote / markSet の WHERE を手写しした
+    // ものであり、repo 内に自動 co-update trigger は無い(手写しゆえの構造的リスク)。
+    // **core 側の該当 WHERE を変えたら、この 3 probe も同時に直すこと** — 忘れると
+    // 両者が揃って drift し、この pin が無言で無効化される(oracle が変更後の core を
+    // 追認するだけになる)。
     it('matches the union of collect / markClear-or-promote / markSet candidates across 5 fixture states', async () => {
       const owner = getFixtureOwnerDb()
 

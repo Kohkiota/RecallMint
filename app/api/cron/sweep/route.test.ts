@@ -367,7 +367,7 @@ describe('GET /api/cron/sweep — user override(asset_gc 専用・spec §5.1・�
   })
 })
 
-describe('GET /api/cron/sweep — lane selector(spec §5.1 amend B-10・完了条件⑥⑦)', () => {
+describe('GET /api/cron/sweep — lane selector(plan Task 7 制約・cross-check B-10・完了条件⑥⑦)', () => {
   it('lane=asset_gc 指定時は asset_gc のみ実行し他 2 lane は走らない', async () => {
     const res = await GET(
       request({ auth: `Bearer ${SECRET}`, query: '?lane=asset_gc' }),

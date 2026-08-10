@@ -35,8 +35,12 @@ const SRC_SWEEP_DEADLINE_OFFSET_MS = 90_000
 const ASSET_GC_DEADLINE_OFFSET_MS = 210_000
 const ORPHAN_SCAN_DEADLINE_OFFSET_MS = 260_000
 
-// 手動 GET `?lane=` の allowlist(spec §5.1 amend B-10: smoke で他 lane の実削除まで
-// 巻き込まないため)。
+// 手動 GET `?lane=` の allowlist(plan Task 7 制約 + cross-check B-10: smoke で他
+// lane の実削除まで巻き込まないため。出典 =
+// docs/superpowers/plans/2026-08-10-asset-lane-gc.md Task 7 制約 /
+// docs/superpowers/sessions/2026-08-10-asset-lane-gc-plan-crosscheck.md B-10。
+// spec §5.1 は graceDays / user の 2 param のみを定義しており `lane` を含まない —
+// spec は凍結のため追記せず、実在する plan + cross-check doc を出典とする)。
 const LANE_NAMES = ['src_sweep', 'asset_gc', 'asset_orphan_scan'] as const
 type LaneName = (typeof LANE_NAMES)[number]
 function isLaneName(v: string): v is LaneName {
@@ -135,7 +139,8 @@ export async function GET(req: Request) {
       userScope = rawUser
     }
 
-    // `?lane=` は他 override と独立(3 lane どれにも効く選別) — B-10: これが無いと
+    // `?lane=` は他 override と独立(3 lane どれにも効く選別) — plan Task 7 制約 /
+    // cross-check B-10(出典は上記 import 直後のコメント参照): これが無いと
     // 「asset_gc だけ stg smoke したい」操作が src_sweep と全域 asset_orphan_scan の
     // 実削除まで起動してしまう。
     const rawLane = url.searchParams.get('lane')

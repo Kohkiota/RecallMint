@@ -28,10 +28,23 @@ export type CronLane = {
 }
 
 // lane 起動可否の floor(spec §2.1 の `MIN_SLICE`)。開始時点でこれ未満の slice しか
-// 残っていない lane は起動しない。各 lane 内部の floor(`SWEEP_MIN_SLICE_MS` 等)と
-// 同じ値だが、runner 自身の判断はここで独立に持つ(lane ごとに定数を独立定義する
-// 既存規律のとおり、import 共有しない)。
-const MIN_SLICE_MS = 2_000
+// 残っていない lane は起動しない。runner 自身の判断はここで独立に持つ(lane ごとに
+// 定数を独立定義する既存規律のとおり、各 lane 内部の floor を import しない)。
+//
+// 12_000 の導出(final review I-3 fix・2026-08-10): 各 lane は起動直後に自身の
+// tail reserve(現状 asset_gc・orphan_scan とも 10_000ms・`*_TAIL_RESERVE_MS`)を
+// 先取りしてから、lane 側の min slice floor(現状とも 2_000ms・`*_MIN_SLICE_MS`)を
+// 満たして初めて処理を始める。旧値(2_000)だと、tail reserve 控除後の残 slice が
+// 2_000〜10_000ms の lane が起動でき、起動直後から内部の `slice()` が負になる —
+// listing timeout の計算(`Math.floor(slice() / MAX_LIST_PAGES)`)が負値を
+// `AbortSignal.timeout()` に渡して同期 RangeError を投げ、lane が listing 失敗と
+// 同じ phase(`list`)を立てて実際の原因(starvation)を隠す(controller が実測で
+// 確認済み)。floor = tail reserve(10_000)+ lane min slice(2_000)= 12_000 と
+// することで、起動した lane には必ず tail reserve 控除後も正の slice(≥ lane min
+// slice)が残ることを保証する。**runner は lane 側の定数を import しない規律**
+// (lane ごとに定数を独立定義)ゆえ、この結合は doc 上のものにとどまる —
+// いずれかの lane が tail reserve / min slice を変えたら、この floor も追随が要る。
+const MIN_SLICE_MS = 12_000
 
 /**
  * lane を順に実行し summary を集める。

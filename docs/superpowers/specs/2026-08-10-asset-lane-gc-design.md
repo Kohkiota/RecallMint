@@ -100,7 +100,7 @@ lane は 列挙 → user ごとに **app-role deps を bind して `runReconcile
 |---|---|---|
 | `r2_gc_delete`(既存) | r2 / object.delete / asset_gc / external_api_error | 不変(cron 化しても workflow は変えない — 4 軸は「どの workflow の失敗か」であり「誰が起動したか」でない) |
 | **`r2_gc_row_delete`(新)** | db / asset.row.delete / asset_gc / db_error | 行 DELETE 失敗(RESTRICT 等)。現状 logger.error のみ = cron 化で不可視になる穴を塞ぐ。1 件 1 行・quota 付き |
-| **`r2_gc_incomplete`(新)** | r2 / asset_gc.incomplete / asset_gc / incomplete(`r2_sweep_incomplete` の 4 軸に倣う) | 1 run 1 行。phase 語彙 = `deadline` / `user_error`(guard trip・user 単位 throw)。suppressed 件数同梱 |
+| **`r2_gc_incomplete`(新)** | r2 / asset_gc.incomplete / asset_gc / incomplete(`r2_sweep_incomplete` の 4 軸に倣う) | 1 run 1 行。phase 語彙 = `enumerate`(user 列挙失敗・final fix wave 2026-08-10 追記。優先度最高 — 列挙が取れないと lane 全体が無効化される最も早い段階の失敗)/ `deadline` / `user_error`(guard trip・user 単位 throw)。suppressed 件数同梱 |
 
 quota は src と同規律(種別ごと独立・洪水が実失敗を抑圧しない)。記帳失敗は `recordErrors` + logger(観測経路の破損を別経路で可視化)。
 
@@ -210,3 +210,4 @@ row-less の**発見**(summary の `rowlessFound` / readback)と**回収**を同
 - prod bucket の中身・R2 lifecycle 実設定は未確認のまま(credential 403・別件)。**asset prefix に rule が無いことは repo 内記述の確認どまり**で dashboard 目視をしていない — release 前確認条件に置く(§6)。
 - cron 未起動 / platform kill は本 sprint の観測系(失敗台帳のみ)では検出できない。全 lane 横断の別課題として扱う(成功 heartbeat を作らない判断は §10)。
 - **row-check の deadline guard が閉じるのは「期限切れ後に次の batch を開始しない」ことだけ**で、`withTenantTx` に query timeout が無いため単一 query が長時間ブロックする経路は残り、lane 全体の hard bound は無い(OT 裁定・2026-08-10 追記)。
+- **行不在確認(row-check)は orphan scan の唯一の安全弁で、backstop が無い**(final fix wave・2026-08-10 追記)。throw は skip に倒れるが、RLS の tenant context が意図と違う値で張られる等で読み取りが静かに空になると、全 key が rowless(削除対象)に見えてしまう — `asset_gc` の pre-sweep guard(`checkRefsPopulated`)に相当する同種の backstop はここには無い。緩和として per-run 削除上限(`ORPHAN_MAX_DELETE_PER_RUN` = 50)を導入し、誤判定が起きても 1 run の削除量そのものに天井を作る(実測 row-less は 0 件のため、上限到達自体が異常 signal として Discord に出る)。根本的な backstop(独立した二重判定等)の要否は再訪トリガー(§13 上記の各項と同様、恒常的な `max_delete` 到達が観測されたら)扱いとする。

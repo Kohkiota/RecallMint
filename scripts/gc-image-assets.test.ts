@@ -1053,6 +1053,43 @@ describe('buildReconcilerDeps — fetchCollectCandidates SQL', () => {
 })
 
 // ---------------------------------------------------------------------------
+// buildReconcilerDeps(final review M-6・2026-08-10): fetchReferencedAssetIds の
+// userId 条件(CLAUDE.md「query は必ず WHERE user_id = ?」)。他 deps(markSet 等)は
+// 既に `userId ? eq(...) : undefined` で明示していたが、この deps だけ抜けていた
+// (RLS 下では tenant context が絞るため実害は無い defense-in-depth の追加)。
+// ---------------------------------------------------------------------------
+describe('buildReconcilerDeps — fetchReferencedAssetIds SQL(M-6 fix)', () => {
+  it('userId 指定時は WHERE に card_asset_refs.user_id 条件を含める', async () => {
+    const deps = buildReconcilerDeps({
+      exec: makeFakeExec(),
+      userId: USER_ID,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      log: vi.fn(),
+    })
+
+    await deps.fetchReferencedAssetIds([ASSET_A])
+
+    expect(unsafeMock).toHaveBeenCalledTimes(1)
+    const [query, params] = unsafeMock.mock.calls[0] as [string, unknown[]]
+    expect(query).toMatch(/"card_asset_refs"\."user_id" = /i)
+    expect(params).toContain(USER_ID)
+  })
+
+  it('userId 未指定(CLI 全 user scan)時は user_id 条件を発行しない(現行挙動維持)', async () => {
+    const deps = buildReconcilerDeps({
+      exec: makeFakeExec(),
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      log: vi.fn(),
+    })
+
+    await deps.fetchReferencedAssetIds([ASSET_A])
+
+    const [query] = unsafeMock.mock.calls[0] as [string, unknown[]]
+    expect(query).not.toMatch(/user_id/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // buildReconcilerDeps(Task 2): recordFailure の onRecordError 集約 seam(B-4)。
 // core(runReconciler)を無改造のまま lane が記帳失敗回数を集約できる唯一の経路。
 // ---------------------------------------------------------------------------

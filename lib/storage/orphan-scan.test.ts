@@ -446,8 +446,13 @@ describe('runOrphanScanLane — 行不在確認の batch 分割(④)', () => {
     expect(rowCheckCalls).toHaveLength(2)
     expect(summary.candidates).toBe(501)
     expect(summary.rowSkipped).toBe(0)
+    // 行不在確認(rowless の判定)は per-run 削除上限と無関係に全 501 件を評価する —
+    // 上限は「削除実行」側の bound(final review I-1(a))であって「判定」側では
+    // ない。deleted は上限(50)に chunk 粒度(20)で頭打ちになり 60(3 チャンク分)で
+    // 止まる(I-1(a) fix・per-run 削除上限の test は「per-run 削除上限」describe 参照)。
     expect(summary.rowless).toBe(501)
-    expect(summary.deleted).toBe(501)
+    expect(summary.deleted).toBe(60)
+    expect(summary.phase).toBe('max_delete')
   })
 
   it('500 件ちょうどの候補は行確認が 1 batch で済む', async () => {
@@ -708,6 +713,49 @@ describe('runOrphanScanLane — pattern mismatch の記帳 quota(⑥)', () => {
       status: null,
       reason: 'pattern_mismatch',
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// per-run 削除上限(final review I-1(a) fix)
+//
+// 証拠(assets 行)を持つ asset_gc が COLLECT_LIMIT_PER_USER=20/user/run に bound
+// されているのに対し、証拠の無い object を消すこの lane の唯一の安全弁(行不在確認)
+// は fail-open — 1 run の削除量そのものに ORPHAN_MAX_DELETE_PER_RUN(50)の上限を
+// 追加する。chunk 境界での check(ORPHAN_DELETE_CHUNK=20 粒度)ゆえ、上限到達を
+// 検出するには 1 チャンク分の余裕(70 件 = 3 チャンク目で 60 に到達 → 4 チャンク目
+// 先頭で検出)を持たせる。
+// ---------------------------------------------------------------------------
+describe('runOrphanScanLane — per-run 削除上限(I-1(a) fix)', () => {
+  it('削除要求が上限(50)に達したら以降のチャンクを打ち切り、未削除分を suppressedFailures に計上する', async () => {
+    const entries = Array.from({ length: 70 }, (_, i) =>
+      aged(orphanKey(USER_A, i + 1), CANDIDATE_AGE),
+    )
+    listing(entries)
+
+    const summary = await run()
+
+    expect(summary.rowless).toBe(70)
+    expect(mockDeleteObject).toHaveBeenCalledTimes(60)
+    expect(summary.deleted).toBe(60)
+    expect(summary.phase).toBe('max_delete')
+    expect(recordedRow('r2_orphan_incomplete')?.context).toMatchObject({
+      phase: 'max_delete',
+      suppressedFailures: 10,
+    })
+  })
+
+  it('削除要求が上限未満の run では max_delete phase を立てない', async () => {
+    const entries = Array.from({ length: 40 }, (_, i) =>
+      aged(orphanKey(USER_A, i + 1), CANDIDATE_AGE),
+    )
+    listing(entries)
+
+    const summary = await run()
+
+    expect(summary.deleted).toBe(40)
+    expect(mockDeleteObject).toHaveBeenCalledTimes(40)
+    expect(summary.phase).toBeNull()
   })
 })
 
