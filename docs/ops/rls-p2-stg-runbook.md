@@ -429,7 +429,7 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 
 ②-4a(OCR 画像図版切り出し)の新設 tenant 表を **P2 / Wave1 / Wave2 と同一の共通形 policy** で RLS 化する。適用機構は §1.3 Step 3 と同一(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
 
-**当初 3 表だったが 2 表になった**(2026-08-05・S-5): 単一 invocation 経路への cutover に伴い、旧 source 台帳を migration 0032 が drop した。`ocr-2-4a-{enable,disable}.sql` も 2 表に縮んでいる。**0032 未適用の環境で disable.sql を打っても、drop 前のその 1 表だけは RLS が有効なまま残る**(§3 の緊急 rollback を打つ場合の既知の穴・実害は低い = prod は ocr-2-4a policy 自体が未適用)。
+**当初 3 表だったが 2 表になった**(2026-08-05・S-5): 単一 invocation 経路への cutover に伴い、旧 source 台帳を migration 0032 が drop した。`ocr-2-4a-{enable,disable}.sql` も 2 表に縮んでいる。**0032 未適用の環境で disable.sql を打っても、drop 前のその 1 表だけは RLS が有効なまま残る**(§3 の緊急 rollback を打つ場合の既知の穴)。**この穴は 0032 未適用の環境にのみ当てはまる — stg / prod はいずれも 0032 適用済**(prod は 2026-08-10 の app role 実効検証で `source_assets` の不在を確認・§13.3)。**prod は ocr-2-4a policy 適用済み**(同検証で `upload_operations` / `asset_derivations` とも RLS 有効・policy あり・実効検証 P0RLS)。
 
 - **前提**: 0025 functions は P2 で適用済(新 function なし・policy SQL のみ)。migration 0026-0032 が適用済で 2 表が存在すること。
 - **適用**: `db/policies/ocr-2-4a-enable.sql` の全文を SQL Editor(owner)で実行(正本は file・実行直前に再確認)。
@@ -462,6 +462,107 @@ RLS_VERIFY_DATABASE_URL='postgresql://recallmint_app:...@<host>:6543/postgres' \
 - exit code: `0` = カタログ突合合格 / `1` = カタログ不一致 or 実効検証 FAIL / `2` = 前提エラー(未検証)。
 - **実効検証が「判定不能」と出力されることがある**(migrate 直後の prod 等)。決定的証拠は「context 無しで読むと P0RLS が raise する」ことだが、**raise の有無は行数ではなく実行計画依存**(同じ空表でも index scan なら raise し seq scan なら raise しない・PG17 実測)。ゆえに raise しなかった場合は「qual はあるが評価されなかった」と「**そもそも qual が無い = RLS 未適用**」の両方を含み、観測だけでは区別できない。この場合は**カタログ突合の結果をもって判断**すること。判定不能を「合格」と書き替えないこと。
 - 期待カタログの正本は script 側(`scripts/verify-rls-state.ts`)。`tests/integration/pg/rls-drift.test.ts` は同じカタログを import する(二重管理なし)。ただし **drift test の実行先は local iso PG 固定**(`tests/integration/pg/setup/db-url.ts` の `assertLocalTestDb`)ゆえ、**stg/prod の drift を検出できるのは本 script だけ**。
+
+### 13.3 実効検証の証跡(env ごとに生出力を並べる)
+
+**§13.2 の「合格と書いてよい条件」を満たした実行の記録**。新しい実行をしたらこの節に追記する(上書きしない)。
+
+| env | 実行日 | 接続 role | RLS 表 | policy | grant | 実効検証 | exit | 生出力 |
+|---|---|---|---|---|---|---|---|---|
+| **prod** | 2026-08-10 | `recallmint_app`(rolsuper=false / rolbypassrls=false) | 20 / 20 | 22 / 22 | 25 表 / 25 表 | **PASS**(decisive 19 / **inconclusive 0**) | 0 | 下記 |
+| stg | 2026-07-22 | `recallmint_app` | 18 | 20 | 5 表 readback 一致 | PASS(drift ゼロ) | — | `docs/superpowers/sessions/`(RLS P2/Wave 実証記録)+ §11.2 / §12 の readback |
+
+**stg 18 表 / prod 20 表の差は設計差ではなく時点差**: ②-4a の 2 表(`upload_operations` / `asset_derivations`)が stg 実証(2026-07-22)の時点では存在しなかった。policy の形・非 RLS 5 表の集合・`force` 全 false・grant 突合はすべて一致している。
+
+#### prod 生出力(2026-08-10・read-only・`scripts/verify-rls-state.ts`)
+
+```
+## 1. 接続
+項目             | 値
+-----------------+--------------------------------------------------------------------
+接続元 env       | RLS_VERIFY_DATABASE_URL
+接続先           | host=aws-1-ap-northeast-1.pooler.supabase.com port=6543 db=postgres
+current_user     | recallmint_app
+current_database | postgres
+rolsuper         | false
+rolbypassrls     | false
+
+## 2. カタログ突合
+観点            | 実測  | 期待  | 判定
+----------------+-------+-------+-----
+RLS 有効表      | 20    | 20    | OK
+policy 総数     | 22    | 22    | OK
+grant(app role) | 25 表 | 25 表 | OK
+
+table                | rowsecurity | force
+---------------------+-------------+------
+ai_usage             | false       | false
+ai_usage_users       | true        | false
+answer_events        | true        | false
+asset_derivations    | true        | false
+assets               | true        | false
+card_asset_refs      | true        | false
+card_tags            | true        | false
+cards                | true        | false
+clerk_events         | false       | false
+contact_messages     | false       | false
+entity_mutations     | true        | false
+exams                | true        | false
+integration_failures | false       | false
+reviews              | true        | false
+source_documents     | true        | false
+stripe_events        | false       | false
+study_days           | true        | false
+study_sessions       | true        | false
+tag_categories       | true        | false
+tag_options          | true        | false
+tombstones           | true        | false
+upload_operations    | true        | false
+upload_records       | true        | false
+user_settings        | true        | false
+users                | true        | false
+
+## 3. 実効検証
+前提                                           | 結果
+-----------------------------------------------+------------------------
+app_current_user_id() 直接呼出(context 未設定) | P0RLS(raise 機構は健在)
+
+table             | no-context probe  | bogus ctx 可視
+------------------+-------------------+---------------
+exams             | P0RLS(効いている) | 0
+cards             | P0RLS(効いている) | 0
+tombstones        | P0RLS(効いている) | 0
+study_days        | P0RLS(効いている) | 0
+reviews           | P0RLS(効いている) | 0
+answer_events     | P0RLS(効いている) | 0
+tag_categories    | P0RLS(効いている) | 0
+tag_options       | P0RLS(効いている) | 0
+card_tags         | P0RLS(効いている) | 0
+entity_mutations  | P0RLS(効いている) | 0
+card_asset_refs   | P0RLS(効いている) | 0
+ai_usage_users    | P0RLS(効いている) | 0
+study_sessions    | P0RLS(効いている) | 0
+user_settings     | P0RLS(効いている) | 0
+assets            | P0RLS(効いている) | 0
+source_documents  | P0RLS(効いている) | 0
+upload_records    | P0RLS(効いている) | 0
+upload_operations | P0RLS(効いている) | 0
+asset_derivations | P0RLS(効いている) | 0
+
+実効検証 = PASS
+理由: decisive 19 / inconclusive 0 — no-context probe が P0RLS を raise した表 19 件(例: exams, cards, tombstones)= policy が実効で評価されている決定的証拠。
+
+## 4. 総合判定
+項目         | 結果
+-------------+-----
+カタログ突合 | 合格
+実効検証     | PASS
+exit code    | 0
+```
+
+policy 一覧(§2 の 3 つ目の表)は tenant 20 表が各 1 policy(`<table>_tenant`・FOR ALL・TO `recallmint_app`・qual/with_check とも `(user_id = ( SELECT app_current_user_id() AS app_current_user_id))`)、`users` のみ 3 policy(`users_select` / `users_update` は `AND (deleted_at IS NULL)` 付き・`users_insert` は with_check のみ)で合計 22。**紙幅のため本節では省略**(再取得はコマンド 1 本)。
+
+**この実行で分かった付随事実**: prod に `source_assets` は存在しない(= migration 0032 適用済み)。**inconclusive 0** ゆえ、0 行を「合格」に流した表は無い。
 
 ## 関連 doc
 
