@@ -78,9 +78,11 @@ export const NON_TERMINAL_UPLOAD_OPERATION_STATUSES = ['prepared', 'processing']
 //   5. 同 script の terminate CAS (同じ negation を UPDATE の WHERE に再適用)
 //   6. `hasLiveUploadOperation` (/app/upload の form 表示 gate)
 //   7. `submitUploadTx` の live-op gate (boolean 列として評価)
-//   8. `lib/storage/src-sweep.ts` の `hasLiveUploadOperationForSweep`
+//   8. `lib/storage/live-upload-check.ts` の `hasLiveUploadOperationForSweep`
 //      (②-4b §3: `src/` age-based sweeper が user の DELETE batch 直前に評価する
-//      除外条件。判定が false へ倒れると処理中 invocation の source PDF を消しうる)
+//      除外条件。判定が false へ倒れると処理中 invocation の source PDF を消しうる。
+//      Task 4(2026-08-10)で `src-sweep.ts` から抽出移設 — 2 lane が同一定義を
+//      import するため)
 // 6 と 7 は**同じ述語を読むこと自体が要件**: 片方だけ変えると「form は出るのに
 // submit すると拒否される」窓が無言で生まれる(S-5b 追加項目 A)。
 // 4/5 が最も重い: 判定が false へ倒れると prepared_payload(PII)を持つ行の
