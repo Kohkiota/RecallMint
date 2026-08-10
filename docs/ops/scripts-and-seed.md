@@ -17,7 +17,7 @@ node --env-file=.env.local --conditions=react-server --import tsx scripts/<name>
 | script | 用途 | 接続 |
 |---|---|---|
 | `seed-perf-exam.ts` | perf 計測用 `[PERF-SEED]` exam の seed / `--cleanup` | owner(`getAdminDb`)|
-| `gc-image-assets.ts` | 画像 GC reconciler(mark / promote / collect・dry-run 付)| owner |
+| `gc-image-assets.ts` | 画像 GC reconciler の **thin CLI wrapper**(core = `lib/storage/asset-gc.ts`)。**本線は日次 cron `asset_gc` lane**(`/api/cron/sweep`)— 本 script は dry-run 観測 / 調査 / 緊急実行専用(mark / promote / collect・`--dry-run`・`--user` 付)| owner |
 | `backfill-card-asset-refs.ts` | `card_asset_refs` 正規化 backfill | owner |
 | `backfill-clerk-metadata.ts` | Clerk publicMetadata backfill | owner |
 | `stripe-test-clock-verify.ts` | Stripe Test Clock 回帰検証(setup/observe/advance/cleanup)| app-role(`DATABASE_URL_APP`)|
@@ -35,3 +35,4 @@ node --env-file=.env.local --conditions=react-server --import tsx scripts/<name>
 - **`seed-perf-exam.ts --cleanup` は tombstone を立てない**: owner の DB 直 DELETE(FK cascade で子も消えるが)ゆえ、その exam を mirror 済みの他端末に削除が伝播せず残留する。**実ユーザー経路でない**(perf 計測 seed/cleanup 専用)ため現状非修正。
 - 次に `seed-perf-exam.ts` を触る際(perf 計測再開時)に「cleanup も正規経路同様 tombstone を立てる or cleanup 後に対象端末の IDB を消す運用」を同梱する。
 - 正本 = `docs/audit/2026-07-24-deleted-exam-mobile-residue-factfinding.md`。
+- **`gc-image-assets.ts` の prod ガードはローカル env unset で効かない**(2026-07-16 smoke4 手順書 §4 の既知の穴。asset レーン整合 sprint で cron 化した後もこの CLI 経路自体は残るため未修理のまま)。修理せず、実効境界は §3 どおり運用で担保する(env 目視 + `--user` + dry-run 先行)。**cron 経路(`asset_gc` lane)はこの穴を持たない**(override は非 prod 限定・production では 400)。

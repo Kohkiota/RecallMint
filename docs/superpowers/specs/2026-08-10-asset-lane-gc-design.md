@@ -209,3 +209,4 @@ row-less の**発見**(summary の `rowlessFound` / readback)と**回収**を同
 - **collect queue の停滞**(最古 20 件が連続失敗すると当該 user の queue を占有)は修理せず観測する。トリガー = 同一 `objectKey` の失敗行が連日出る(§3.3a)。
 - prod bucket の中身・R2 lifecycle 実設定は未確認のまま(credential 403・別件)。**asset prefix に rule が無いことは repo 内記述の確認どまり**で dashboard 目視をしていない — release 前確認条件に置く(§6)。
 - cron 未起動 / platform kill は本 sprint の観測系(失敗台帳のみ)では検出できない。全 lane 横断の別課題として扱う(成功 heartbeat を作らない判断は §10)。
+- **row-check の deadline guard が閉じるのは「期限切れ後に次の batch を開始しない」ことだけ**で、`withTenantTx` に query timeout が無いため単一 query が長時間ブロックする経路は残り、lane 全体の hard bound は無い(OT 裁定・2026-08-10 追記)。

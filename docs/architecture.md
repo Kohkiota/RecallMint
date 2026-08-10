@@ -144,9 +144,11 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーン**に属�
 | | `src/`(ephemeral・**時間駆動**) | 画像 asset `users/{uid}/{assetId}.{webp,png,jpg}`(長命・**行駆動**) | 旧 `users/{uid}/src/…`(**絶滅**) |
 |---|---|---|---|
 | 一次削除 | pipeline 出口 `finally` + entry 削除同期 DELETE(§1)+ 退会 prefix purge(§2) | refs ゼロ → mark → grace → promote → collect(reconciler) | **無い**(生成コードを `80ef3b4`・2026-08-05 で削除 = 新規発生しない) |
-| 二次回収 | **日次 sweeper**(§3・cron・age 駆動) | 同 reconciler(mark/collect は同一 run) | `scripts/gc-src-prefix.ts`(**手動 one-shot**・既定 dry-run・`--execute` 必須) |
+| 二次回収 | **日次 sweeper**(§3・cron・age 駆動) | **日次 cron `asset_gc` lane**(mark/promote/collect を per-user 実行・asset レーン整合 sprint 2026-08-10)。`scripts/gc-image-assets.ts` は thin CLI wrapper として存続(dry-run 観測・調査・緊急用) | `scripts/gc-src-prefix.ts`(**手動 one-shot**・既定 dry-run・`--execute` 必須) |
 | backstop | **lifecycle**(`src/` maxAge 1 日・**2026-08-09 に実削除を 1 例実測**) | **無い(張れない)** — prefix lifecycle は参照中の正当 object を消すため | **無い(張れなかった)** — asset prefix の**内側**にあり、ListObjectsV2 も lifecycle も `users/*/src/` の wildcard を持たないため user ごとに rule が要る。**これが top-level `src/` へ移した理由** |
-| 期限・滞留の検知 | overdue alert(72h・`r2_sweep_overdue`。**観測範囲は listing 上限 10 page 内の partial observation**) | **未整備** — row-less orphan(行が無い R2 object)の発見は listing 走査の将来適用で補う想定 | 無い(**2026-08-10 の全 listing で 0 件**を実測。生成源が無いため増えない) |
+| 期限・滞留の検知 | overdue alert(72h・`r2_sweep_overdue`。**観測範囲は listing 上限 10 page 内の partial observation**) | **`asset_orphan_scan` lane**(cron・age 駆動・cutoff 7 日)が三重条件(key 規約 + age + live 無し)+ DELETE 直前の行不在確認で row-less orphan を発見・回収。**観測範囲は listing 上限(10 page)内の partial observation**(`src/` overdue alert と同じ限界。上限到達は `r2_orphan_incomplete` phase `list_truncated` で毎日鳴る) | 無い(**2026-08-10 の全 listing で 0 件**を実測。生成源が無いため増えない) |
+
+**回収レートは soft**: `asset_gc` lane の collect は `COLLECT_LIMIT_PER_USER`(user あたり 20 object/run)で bound される — 「日次で消える」ではなく「日次で最大 20 件ずつ消える」。退会 user の R2 実体削除は ⌈残件数/20⌉ 日かかる(hard SLA ではない)。この上限を外さない理由・具体的な滞留規模の見積りは spec §3.3a / §7 を見る。
 
 **やってはいけない 2 つ**
 
@@ -157,9 +159,9 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーン**に属�
 
 **非要件(②-4b が保証しないもの・確定)**: ②-4b が保証するのは source object の**期限内削除**であり、**削除後の個体履歴・元 filename・content identity の監査保存ではない**。個体追跡を公開要件にする場合は、別 sprint で台帳を導入する。台帳を採らなかった根拠 = ① filename は PII になりうる ② 台帳を作っても object 自体は消えない(削除保証は別機構が要る)③ 期限切れ reserve の回収 lane・RLS・policy・migration が丸ごと増える(親 spec §3 の分岐決定)。**再検討トリガー = 法務・監査・サポート要件の具体化**で、**公開前 gate で再判定する項目**。
 
-**asset レーンの未解決事項(②-4b の scope 外・close 後の「asset レーン整合 sprint」で扱う)**: ① reconciler が手動実行のまま(`scripts/gc-image-assets.ts`・cron 化されていない)② 退会由来 asset の grace 30 日の要否未確定(grace は `reserved|ready → deleting` の promote 判定にのみ効き、退会で直接 `deleting` に倒れた行は grace を経ず collect 対象になる)③ refs↔GC の smoke 未実施 ④ zero-ref の滞留。
+**asset レーンの旧未解決事項(②-4b close 時点の 4 件・「asset レーン整合 sprint」2026-08-10 で解消)**: ① reconciler が手動実行のまま → **解決**(日次 cron `asset_gc` lane 化。`scripts/gc-image-assets.ts` は thin wrapper として存続)② 退会由来 asset の grace 30 日の要否未確定 → **解決**(grace は付与しない — cron が日次で走ること自体が回収頻度の答え。退会で直接 `deleting` に倒れた行は従来どおり grace を経ず collect 対象)③ refs↔GC の smoke 未実施 → **iso で恒久 pin 済**(下記「証明の空白」参照。stg 実機 smoke は別途・未実施)④ zero-ref の滞留 → **cron(`asset_gc`)が回収を開始**(ただし上記「回収レートは soft」のとおり無制限ではない)。
 
-正本: `src/` = `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(親・凍結)+ §1〜§3 spec / asset = `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md`。close 記録 = `docs/superpowers/sessions/2026-08-10-ocr-2-4b-close.md`。**prefix × 作る/読む/消す の運用表と実 bucket 実測 = `docs/ops/r2-key-inventory.md`**(key 生成経路を増減させたら同時に更新する)。
+正本: `src/` = `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(親・凍結)+ §1〜§3 spec / asset の状態機械・GC v2 設計 = `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md` / asset の cron lane 化(`asset_gc` / `asset_orphan_scan`)= `docs/superpowers/specs/2026-08-10-asset-lane-gc-design.md`(凍結)。close 記録 = `docs/superpowers/sessions/2026-08-10-ocr-2-4b-close.md`。**prefix × 作る/読む/消す の運用表と実 bucket 実測 = `docs/ops/r2-key-inventory.md`**(key 生成経路を増減させたら同時に更新する)。
 
 ---
 
@@ -176,6 +178,7 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーン**に属�
 | **破壊 script の機械境界**(§9)| 中(運用)。env 目視 + dry-run の人手境界のみ・機械停止層なし |
 | **upload pipeline の「発火しない系」機構の実機発火(予期しない throw の integration_failures 台帳書込 / EXIF≠1 検知)**(§6/§10)| 中。どちらも UI から誘発できない(前者は正常経路に throw が無く、後者は client の canvas 再エンコードが EXIF を剥がす)ため、iso の注入 test(throw 注入 / 実 EXIF JPEG)が唯一の証明。client を経由しない投入経路(②-4b の PDF / API 直叩き)が現れた時に実機発火の確認を足す |
 | **実環境(stg/prod)の RLS 状態が repo の enable SQL と一致していること** | 重。判定自体は機械化済(`scripts/verify-rls-state.ts` = app role 専用・read-only・カタログ突合 + 実効検証)だが、**起動が人手**のまま(定期実行なし)。drift test は local 固定ゆえ実環境には届かない。実際に、新表の policy 適用が丸ごと漏れたまま ledger には「適用済み」と記録されていた事例がある(2026-08-04)。**手当て = 新表追加時に runbook §13 の手順で適用+実効検証し、生出力を証跡に残す** |
+| **画像 asset の refs↔GC 整合(A/B 2 card が同一 asset を共有する時の mark 判定)**(§11) | 中。片方の card から ref を外しただけでは mark してはならず、両方外れて初めて mark→promote→collect が進むべきだが、既存 unit(`gc-image-assets.test.ts`)は全 DI mock で実 SQL を一度も通していなかった。**手当て = iso で恒久 pin 済**(`tests/integration/pg/asset-gc.test.ts`・2026-08-10「asset レーン整合 sprint」— 片方削除で mark 保留 / 両方削除で mark→promote→collect が実 SQL で完走することを regression として pin)。**残る空白 = 実環境(stg)での実機 smoke は未実施**(OT 指示後に CC が実施予定)。正本 = `docs/superpowers/specs/2026-08-10-asset-lane-gc-design.md` §9 |
 
 ## 残余リスク(公開前 PII 判断・記録のみ)
 
