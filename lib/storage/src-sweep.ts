@@ -154,9 +154,10 @@ export function selectSweepTargets(
 
 // lane 予算(spec §3.4)。§2(退会 purge)と同じ idiom だが値・phase 語彙・quota 方式は
 // sweeper 側で独立に定義する(2 箇所目で rule of three 未満・意味も別)。
-// 本 lane は `deadlineAt` を受け取る側なので、この定数を使うのは deadline を配る
-// cron runner(route)— 値の正本をここに置いて runner が import する。
-export const SWEEP_BUDGET_MS = 270_000 // route の maxDuration: 300 に 30s の余裕
+// 本 lane は `deadlineAt` を受け取る側(cron runner が配る・asset レーン整合 sprint
+// spec §2.1)なので、lane 単体の想定予算を表す定数はここには置かない — cron 全体の
+// per-lane offset(runner 側)と maxDuration の関係式は route.test.ts が pin する
+// (旧 `SWEEP_BUDGET_MS` pin の後継。dead export 化に伴い削除・2026-08-10)。
 const SWEEP_TAIL_RESERVE_MS = 10_000 // 最終 incomplete 行を書くための先取り分
 const SWEEP_MIN_SLICE_MS = 2_000 // floor。残予算がこれ未満なら次の chunk を開始しない
 const SWEEP_DELETE_CHUNK = 20 // chunk 並列。chunk ごとに deadline を確認して打ち切れる粒度

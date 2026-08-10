@@ -9,7 +9,6 @@ import {
   selectSweepTargets,
   runSrcSweepLane,
   SWEEP_CUTOFF_MS,
-  SWEEP_BUDGET_MS,
   ALERT_AGE_MS,
 } from './src-sweep'
 import type { R2ObjectMeta } from './r2'
@@ -716,8 +715,11 @@ describe('runSrcSweepLane — summary(§3.1 readback)', () => {
 // route.ts を import せず readFileSync + regex で読む理由: route segment config は
 // 静的解析される literal で、値そのものを読むのが素直(既存 precedent =
 // app/(app)/app/upload/_actions/submit-upload.test.ts の maxDuration pin)。
-// route.test.ts でなく本 file に置くのは、あちらが SWEEP_BUDGET_MS を mock している
-// ため実値との関係式を pin できないため。
+// 「予算(lane 予算)が maxDuration より短い」という**関係式**の pin は、asset レーン
+// 整合 sprint Task 7 で lane 予算が単一定数(`SWEEP_BUDGET_MS`)から 3 lane 分割後の
+// per-lane offset に変わったことに伴い app/api/cron/sweep/route.test.ts 側へ移設した
+// (offset の正本が route.ts にあるため・2026-08-10)。ここに残るのは maxDuration の
+// 行そのものの存在・値の pin のみ。
 describe('/api/cron/sweep route.ts の maxDuration', () => {
   const source = readFileSync(
     path.resolve(import.meta.dirname, '../../app/api/cron/sweep/route.ts'),
@@ -734,13 +736,5 @@ describe('/api/cron/sweep route.ts の maxDuration', () => {
   it('値が 300 である', () => {
     expect(matched).not.toBeNull()
     expect(Number(matched![1])).toBe(300)
-  })
-
-  it('lane 予算が maxDuration より短い', () => {
-    expect(matched).not.toBeNull()
-    // 予算が maxDuration 以上になると、tail reserve(10s)で書くはずの incomplete 行より
-    // 先に platform が invocation を打ち切る。打ち切りを観測できる唯一の signal が
-    // その行なので、失われると「掃けていない」ことが誰にも見えなくなる。
-    expect(SWEEP_BUDGET_MS).toBeLessThan(Number(matched![1]) * 1000)
   })
 })
