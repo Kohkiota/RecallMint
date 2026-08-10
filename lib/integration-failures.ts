@@ -260,12 +260,18 @@ export const INTEGRATION_FAILURE_CATALOG = {
     failureCode: 'external_api_error',
   },
   // asset レーン整合 sprint spec §4.3: orphan scan lane が listing / live-op 判定 /
-  // deadline のいずれかで打ち切った = 1 run 1 行の制御系。**4 軸は原因ではなく
-  // 結果を識別する**(原因は context.phase が持つ)ため r2_orphan_delete とは別
-  // entry(r2_sweep_incomplete と同型)。phase 語彙 = `list` / `live_check` /
-  // `list_truncated` / `deadline`(spec §4.3 の記載順)。context =
-  // `{ phase?, listed, deleteRequested, remaining, suppressedFailures? }`
-  // (r2_sweep_incomplete と同形)。PII は objectKey / 内部 uuid(userId)のみ、
+  // 行不在確認 / deadline のいずれかで打ち切った = 1 run 1 行の制御系。**4 軸は
+  // 原因ではなく結果を識別する**(原因は context.phase が持つ)ため r2_orphan_delete
+  // とは別 entry(r2_sweep_incomplete と同型)。phase 語彙 = `list` / `live_check` /
+  // `row_check`(行不在確認の DB 読出し失敗・canonical review Important #1 で追加)/
+  // `list_truncated` / `deadline`(lib/storage/orphan-scan.ts の ORPHAN_PHASES 配列順
+  // = 優先順位)。context = `{ phase?, listed, deleteRequested, remaining,
+  // suppressedFailures? }`。**remaining の式は r2_sweep_incomplete と異なる**
+  // (canonical review Important #2): `rowless - deleted - failed`(行不在確認済みの
+  // 真の orphan で未削除のものだけ)— `candidateKeys - deleteRequested` にすると
+  // age+key 規約だけで数えた候補(7 日超過なだけの正当な参照中 asset を毎 run 恒久的に
+  // 含む)を実 backlog と混ぜてしまい、この lane では意味が異なる(詳細は
+  // orphan-scan.ts の該当コメント参照)。PII は objectKey / 内部 uuid(userId)のみ、
   // Clerk ID は扱わない。
   r2_orphan_incomplete: {
     service: 'r2',
