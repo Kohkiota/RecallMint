@@ -50,7 +50,7 @@
 ## 4. この調査で確認できなかったこと(推測しない)
 
 - **R2 側 lifecycle rule の実設定内容**: repo に定義も読取コードも無く(`GetBucketLifecycle` 等 0 hit)、現行 credential では rule 本体の readback が 403。上表の lifecycle 行はすべて **repo 内の記述の引用**であって設定の実物確認ではない。効果としては 2026-08-09 に sentinel 1 例で実削除を実測済(`docs/audit/2026-08-09-ocr-2-4b-s1-factfinding.md` §3.5)
-- **242 件の画像 asset に `assets` 行が対応しているか**(= row-less orphan が実在するか)は**未照合**。本調査は R2 listing のみで DB を突き合わせていない。照合には `assets.object_key` との差分取りが要る(reconciler の `--dry-run` が出力する backfill-divergence が該当)
+- **R2 と `assets` 行の照合手段は repo に存在しない**: reconciler(`scripts/gc-image-assets.ts`)の `--dry-run` が出す backfill-divergence は `cards.images` 内 UUID key 数 vs `card_asset_refs` 行数の **DB 内比較**で、R2 を一切見ない(reconciler は listing を import しない)。row-less orphan の照合には listing 駆動の `assets.object_key` 差分取りが別途要る。なお 2026-08-10 の fact-finding が read-only probe で実施し **242 件中 row-less 0 / object-less 0** を実測(`docs/audit/2026-08-10-asset-lane-gc-factfinding.md` §0/§3)
 - **prod bucket の中身**: 接続していない。OT が dashboard で目視する
 
 ## 5. 更新のきっかけ
