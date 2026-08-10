@@ -80,14 +80,57 @@ Task3: 「cutoff を 15min に縮めても overdue 不変」の最初の test �
 
 **本 sprint は依存を一切変更していない**(`package.json` / `pnpm-lock.yaml` / `pnpm-workspace.yaml` の `60ea6b5..f973098` diff が空)。nanoid は §1 クローズ時点で既知の新規 advisory として記録済み。`nanoid@3.3.17` はツリー内に既に存在する(vite 系 postcss 経由)ため override で解ける可能性があるが、**依存 bump / allowlist 追加は別 sprint の OT 判断**(過去の `sharp<0.35.0` と同型の扱い)。
 
+## 5.5 stg smoke — **全項目 PASS**(2026-08-09T23:47Z〜2026-08-10T00:04Z・CC 実走)
+
+前提(OT 提供): stg = 通常の Preview(別 project の production ではない)→ **override 使用可** / Vercel plan = **Pro** / `CRON_SECRET` を Vercel(Development / Preview)へ登録 + redeploy 済 + 同値を `.env.local` へ追記。§4 判定完了により sentinel 保護は解除済。
+
+実行経路: 認証付き GET は **tsx script + Node `fetch`**(`process.env.CRON_SECRET` を読むだけで出力しない)。listing readback は `listObjectsWithMetaBounded('src/', 10)` を同一 script 内で前後に実行。認証失敗系のみ Playwright の same-origin `fetch` で実施。
+
+| # | 項目 | 実測 | 判定 |
+|---|---|---|---|
+| 1 | fixture staging | `+clerk_test`(= user `85541b25…`)で PDF を PUT のみ・submit せず離脱 → `src/85541b25…/e38bbde6…/d45f836b….pdf`(2026-08-09T23:48:35.458Z) | PASS |
+| 2 | 離脱で消えないこと | 3 分後も在(× を押さない離脱は §1 の DELETE 対象外 = sweeper が受け皿になるべき残骸) | PASS |
+| 3 | 誤 Bearer | **401** `{"error":"unauthorized"}` | PASS |
+| 4 | header 無し | **401** | PASS |
+| 5 | **誤 Bearer + `cutoffMinutes=14`** | **401(400 ではない)** = auth 先行が実機で成立 | PASS |
+| 6 | 正 Bearer + `?cutoffMinutes=15`(1 回目) | 200 / `cache-control: no-store` / 1.1s。`listed:2 candidates:1 deleted:1 failed:0 skippedLiveUsers:0 patternMismatch:0 overdueCount:0 truncated:false phase:null recordErrors:0 cutoffOverrideMinutes:15` | PASS |
+| 7 | listing diff(1 回目) | **sentinel B(age 22.83h)のみ消滅・fixture(age 11min)は残存** | PASS |
+| 8 | 正 Bearer + 同上(2 回目・fixture が 15min 超過後) | `listed:1 candidates:1 deleted:1`。listing diff = **fixture 消滅・`src/` 0 件** | PASS |
+| 9 | 空 listing での run | `listed:0 candidates:0 deleted:0` / 200 / 0.2s(候補ゼロ経路で異常なし) | PASS |
+
+**この smoke が実証したもの**:
+
+- **sweeper の実削除**(sentinel B の回収 = OT 裁定どおり「回収されればそれ自体が実削除の実証」)
+- **cutoff 境界の判別が本番環境で効く**: **同一 object** が age 11.6min では残り、15.5min で削除された。境界を跨いだ前後を 1 つの object で観測できたのは設計上の偶然だが、`age > cutoff` の実機実証としては単独 fixture より強い
+- **override の透過**: summary に `cutoffOverrideMinutes: 15` が載り、既定 run と区別できる(A1 の条件 ①)
+- **overdue が override の影響を受けない**: cutoff を 15min に縮めても `overdueCount: 0`(B は 22.83h < 72h)。A1 の条件 ② が実機で成立
+- **auth 先行**(#5)/ **no-store**(#6)/ **候補ゼロ経路**(#9)
+
+**未実証(記録)**: 失敗系(DELETE 失敗・打ち切り・overdue 発火・live-op skip)は stg で自然発生させられず未観測。これらは unit test で pin 済(順序 pin / quota / phase 優先順位)。**scheduler の実発火は prod 反映後**(close 条件外・kickoff 確定)。
+
+**台帳照会(OT・`integration_failures` は RLS で CC が読めない)**: 期待値 **0 行**。
+
+```sql
+SELECT created_at, service, operation, workflow, failure_code,
+       user_id, context, error_message
+FROM integration_failures
+WHERE workflow = 'src_sweep'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+読み方: `failure_code='external_api_error'` = 実削除失敗(`context.objectKey` / `status`)/ `'incomplete'` = 打ち切り(`context.phase`。**quota 超過のみの run は phase を持たない**)/ `'state_mismatch'` = 72h 超残存 alert。
+
 ## 6. 残作業(OT)
 
-1. **push**(`60ea6b5..f973098`)
-2. **Vercel env `CRON_SECRET` 設定** — ただし **§4 sentinel 判定の記録が完了するまで stg には設定しない**(未設定 = 401 = 掃かれない fail-closed が sentinel 保護の防波堤。spec §8 の順序則)
-3. **readback 2 件**(spec §4): ① Vercel plan(Hobby / Pro)の確定 — 保持上限の式の揺らぎ定数 ② stg deployment の形態 — **stg が別 project の production なら A1 により override が使えず、smoke は 6h 待ちになる**
-4. **stg smoke**(spec §8・CC 実走・OT 指示後): fixture staging → cutoff 経過 → `CRON_SECRET` 付き手動 GET → listing diff
-5. prod 反映後チェックリストに「Vercel dashboard の cron 実行履歴を随時確認」を追加(dead-man 監視の代替・spec §13)
-6. audit の prod high(nanoid)= 依存 sprint の OT 判断
+1. ~~push~~ **完了**(`f6ab301` まで OT が push 済)。**未 push は `07db1cb`(§4 判定確定)/ `b9ed6e4`(.env.example 並べ替え)/ 本 doc の smoke 追記**
+2. ~~Vercel env `CRON_SECRET` 設定~~ **完了**(Development / Preview に登録 + redeploy 済)。§4 判定完了により順序則は解除済
+3. ~~readback 2 件~~ **完了**: stg = 通常の Preview(override 使用可)/ Vercel plan = **Pro**(保持上限の式は Pro 定数 = 正常時 ≈30h / 前提つき worst ≈54.2h で確定)
+4. ~~stg smoke~~ **完了・全項目 PASS**(§5.5)
+5. **prod 反映判断**(smoke 結果を見て OT)。prod 反映時は `CRON_SECRET` を **Production scope にも**登録すること — 未登録だと production は 401 でなく **gate throw → 500**(§5.5 の tier 差)。cron は production でのみ発火するため、未登録なら日次 run が毎日 500 で失敗し続ける
+6. prod 反映後チェックリストに「Vercel dashboard の cron 実行履歴を随時確認」を追加(dead-man 監視の代替・spec §13)
+7. audit の prod high(nanoid)= 依存 sprint の OT 判断
+8. 台帳照会(§5.5 の SQL・期待値 0 行)
 
 ## 7. follow-up(claude.ai todo へ渡す)
 
