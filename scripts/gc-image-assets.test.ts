@@ -1,13 +1,56 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import postgres from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
+
 import {
   runReconciler,
-  parseUserFlag,
-  parseGraceDays,
+  buildReconcilerDeps,
   DEFAULT_GRACE_DAYS,
+  COLLECT_LIMIT_PER_USER,
   type ReconcilerDeps,
   type ReconcilerOptions,
+  type ReconcilerExec,
   type CollectCandidate,
-} from './gc-image-assets'
+} from '@/lib/storage/asset-gc'
+import * as schema from '@/lib/db/schema'
+
+import { parseUserFlag, parseGraceDays } from './gc-image-assets'
+
+// buildReconcilerDeps(Task 2)の SQL 生成 test 用: 実 postgres 接続はしない。
+// drizzle-orm/postgres-js 自身の内部 `import postgres`(node_modules は Vitest の
+// module 変換対象外 = externalize される)は vi.mock を素通りするため、本 file 側で
+// postgres(url) を先に呼んで client を作り、drizzle(client, {schema}) へ渡す
+// (lib/db/index.ts の getDb() と同じ経路)ことで mock を効かせる
+// (lib/db/index.test.ts と同技法)。
+const { unsafeMock, recordIntegrationFailureMock } = vi.hoisted(() => ({
+  unsafeMock: vi.fn((_query: string, _params: unknown[]) => ({
+    values: () => Promise.resolve([]),
+  })),
+  recordIntegrationFailureMock: vi.fn(async () => {}),
+}))
+
+vi.mock('postgres', () => ({
+  default: vi.fn(() => ({
+    options: { parsers: {}, serializers: {} },
+    unsafe: unsafeMock,
+  })),
+}))
+
+// buildReconcilerDeps の recordFailure は exec を経由せず直接
+// recordIntegrationFailure(@/lib/integration-failures)を呼ぶ実装のため、記帳 throw
+// を再現するにはこちらを mock する(postgres mock とは独立の経路)。
+vi.mock('@/lib/integration-failures', () => ({
+  recordIntegrationFailure: recordIntegrationFailureMock,
+}))
+
+// fetchCollectCandidates 等が実際に発行する SQL(client.unsafe への引数)を検証する
+// ための exec。owner 経路(scripts/gc-image-assets.ts の main())と同じ形
+// (`(fn) => fn(db)`)。
+function makeFakeExec(): ReconcilerExec {
+  const client = postgres('postgresql://fake:fake@localhost:5432/fake', { prepare: false })
+  const db = drizzle(client, { schema })
+  return (fn) => fn(db)
+}
 
 const ASSET_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const ASSET_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -967,5 +1010,98 @@ describe('parseGraceDays', () => {
         VERCEL_ENV: 'preview',
       }),
     ).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildReconcilerDeps(Task 2): collectLimit の LIMIT/ORDER BY 発行
+// ---------------------------------------------------------------------------
+describe('buildReconcilerDeps — fetchCollectCandidates SQL', () => {
+  it('collectLimit 未指定: 現行 SQL と同一(ORDER BY / LIMIT を発行しない)', async () => {
+    const deps = buildReconcilerDeps({
+      exec: makeFakeExec(),
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      log: vi.fn(),
+    })
+
+    await deps.fetchCollectCandidates()
+
+    expect(unsafeMock).toHaveBeenCalledTimes(1)
+    const [query] = unsafeMock.mock.calls[0] as [string, unknown[]]
+    expect(query).not.toMatch(/order by/i)
+    expect(query).not.toMatch(/limit/i)
+  })
+
+  it('collectLimit 指定: ORDER BY unreferenced_at NULLS FIRST, created_at, id + LIMIT が発行される', async () => {
+    const deps = buildReconcilerDeps({
+      exec: makeFakeExec(),
+      collectLimit: COLLECT_LIMIT_PER_USER,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      log: vi.fn(),
+    })
+
+    await deps.fetchCollectCandidates()
+
+    const [query, params] = unsafeMock.mock.calls[0] as [string, unknown[]]
+    // NULLS FIRST の理由(退会由来 asset を最優先で回収)は lib/storage/asset-gc.ts の
+    // buildReconcilerDeps doc comment 参照。
+    expect(query).toMatch(
+      /order by "assets"\."unreferenced_at" NULLS FIRST, "assets"\."created_at", "assets"\."id" limit/i,
+    )
+    expect(params).toEqual(['deleting', 'deleted', COLLECT_LIMIT_PER_USER])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildReconcilerDeps(Task 2): recordFailure の onRecordError 集約 seam(B-4)。
+// core(runReconciler)を無改造のまま lane が記帳失敗回数を集約できる唯一の経路。
+// ---------------------------------------------------------------------------
+describe('buildReconcilerDeps — recordFailure / onRecordError(B-4 seam)', () => {
+  const neverCalledExec: ReconcilerExec = async () => {
+    throw new Error('recordFailure must not use exec (bypasses DI, calls recordIntegrationFailure directly)')
+  }
+
+  it('記帳(recordIntegrationFailure)が throw → onRecordError が呼ばれ、throw は外に出ない(握って続行)', async () => {
+    recordIntegrationFailureMock.mockRejectedValueOnce(new Error('notifyOps misconfig'))
+    const onRecordError = vi.fn()
+    const deps = buildReconcilerDeps({
+      exec: neverCalledExec,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      onRecordError,
+      log: vi.fn(),
+    })
+
+    await expect(
+      deps.recordFailure({
+        userId: USER_ID,
+        assetId: ASSET_A,
+        objectKey: 'users/u/a.webp',
+        status: 'deleting',
+        errorMessage: 'R2 delete failed (status=500)',
+      }),
+    ).resolves.toBeUndefined()
+
+    expect(onRecordError).toHaveBeenCalledTimes(1)
+  })
+
+  it('記帳が成功 → onRecordError は呼ばれない', async () => {
+    recordIntegrationFailureMock.mockResolvedValueOnce(undefined)
+    const onRecordError = vi.fn()
+    const deps = buildReconcilerDeps({
+      exec: neverCalledExec,
+      deleteObject: async () => ({ ok: true, status: 200 }),
+      onRecordError,
+      log: vi.fn(),
+    })
+
+    await deps.recordFailure({
+      userId: USER_ID,
+      assetId: ASSET_A,
+      objectKey: 'users/u/a.webp',
+      status: 'deleting',
+      errorMessage: 'R2 delete failed (status=500)',
+    })
+
+    expect(onRecordError).not.toHaveBeenCalled()
   })
 })

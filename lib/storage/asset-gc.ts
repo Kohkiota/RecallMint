@@ -1,0 +1,738 @@
+// 画像 GC v2 reconciler(Task G5)— DI core(runReconciler)+ production deps SQL。
+// 参照ゼロの asset を mark(orphaned_at set)→ grace 超で promote(deleting)→
+// collect(R2 実体削除 + assets 行 DELETE)する状態ベース遅延 GC の本体
+// (spec §4.4/§4.5 = 正本)。
+//
+// core は CLI(scripts/gc-image-assets.ts・owner 接続)と cron lane(app 接続 +
+// withTenantTx・Task 5)の両方から呼ばれる。判定 SQL を owner/app で二重実装しない
+// ため、production deps 束縛(buildReconcilerDeps)を本 file に置き、接続方式は
+// `ReconcilerExec` で注入する(§3.1)。boundedness(collect の LIMIT/deadline)は
+// core を無改造のまま deps 側(fetchCollectCandidates の LIMIT)で作る(§3.3a)。
+//
+// ⚠ PREREQUISITE(必読・順序厳守): 本 reconciler は「card_asset_refs 行が無い asset
+//   = 未参照」と定義する。以下の両方が満たされた環境でのみ実行すること:
+//     (a) task W1(handleImages が同 tx で refs を書く seam)が DEPLOY 済み
+//     (b) backfill script(scripts/backfill-card-asset-refs.ts)が実行済み
+//   deploy 順序(plan): W1 deploy → backfill 実行 → reconciler 運用開始。
+//   W1 未 deploy(refs が live 維持されない)または backfill 未実行だと、実利用中の
+//   画像が cards.images にのみ存在し card_asset_refs に無い状態になり、reconciler は
+//   それを未参照とみなす — この状態で sweep 本実行すると参照中 asset の R2 object + 行を
+//   削除してしまう。必ず dry-run を先に実行し backfill-divergence 出力を確認せよ。
+//   下記 runtime pre-sweep guard は「refs 完全未投入」の明白ケースのみ backstop する
+//   (部分的 stale は検知不能 — それは deploy 順序 + dry-run divergence で担保)。
+//
+// decouple 順序(絶対不変・spec §4.4/§4.6): R2 DELETE → success-equivalent 確認 →
+// THEN assets 行 DELETE。逆順(行 DELETE 先)は object_key を喪失させ R2 に永久
+// orphan を残す。R2 失敗は行を deleting のまま存置 + integration_failures に積み、
+// 次 asset へ続行(1 件失敗が run 全体を止めない)。
+//
+// 状態機械の語彙 SSoT は lib/media/domain/asset-state.ts(G2 domain)。本 file は
+// per-asset の判定をその純粋関数(isSweepEligible / canSweepDelete /
+// shouldClearUnreferenced)に委ね、判定ロジックを inline 再実装しない。
+//
+// 安全性: dry-run は write を一切行わない(mark/promote/R2 DELETE/行 DELETE/台帳
+// 記録すべて skip し、予告集計のみ出力)。
+//
+// CLI 実行方法(`--conditions=react-server` の理由含む)・prod grace-days ガード・
+// R2 module の dynamic import 分岐は scripts/gc-image-assets.ts(CLI wrapper)側の
+// 領分 — 本 file には無い(core の不変条件のみここに置く)。
+
+import { and, eq, inArray, isNull, isNotNull, sql } from 'drizzle-orm'
+
+import { assets, cardAssetRefs } from '@/lib/db/schema'
+import type { TenantDb } from '@/lib/db/tenant-tx'
+import { recordIntegrationFailure } from '@/lib/integration-failures'
+import { logger } from '@/lib/logger'
+import {
+  isSweepEligible,
+  canSweepDelete,
+  shouldClearUnreferenced,
+  type AssetStatus,
+} from '@/lib/media/domain/asset-state'
+
+// grace の既定日数(spec §2-5 / §4.5)。--grace-days での上書き・production ガード
+// は scripts/gc-image-assets.ts の parseGraceDays が持つ(CLI 固有)。
+export const DEFAULT_GRACE_DAYS = 30
+
+// collect 候補取得の 1 batch あたり上限。全 user sweep で candidate 集合が Postgres
+// の bind パラメータ上限を大きく下回るよう分割する(backfill script の
+// ASSET_LOOKUP_BATCH_SIZE と同規律)。
+export const COLLECT_BATCH_SIZE = 1000
+
+// cron lane(Task 5)が buildReconcilerDeps に渡す既定の collectLimit。deadline
+// 内で collect ループを bounded にするのは deps 側の役目(spec §3.3a — core の
+// collect ループ自体は無改造で LIMIT/deadline を持たない。boundedness は
+// fetchCollectCandidates の SQL の LIMIT で作る)。CLI(scripts/gc-image-assets.ts)
+// は collectLimit を渡さない(現行挙動 = 無制限を維持)。
+export const COLLECT_LIMIT_PER_USER = 20
+
+// collect が処理する 1 asset の最小情報。判定は G2 domain 関数に渡す(status /
+// unreferencedAt)。object_key は R2 DELETE の対象。
+export type CollectCandidate = {
+  id: string
+  userId: string
+  objectKey: string
+  status: string
+  unreferencedAt: Date | null
+}
+
+// ---------------------------------------------------------------------------
+// DI deps — 各操作は SQL 表現(mark/promote は bulk UPDATE、collect は per-asset
+// primitive)。dry-run では write 系(markSet/markClear/promote/deleteObject/
+// restoreToReady/markDeleted/deleteAssetRow/recordFailure)は core 側で呼ばない。
+// ---------------------------------------------------------------------------
+export type ReconcilerDeps = {
+  // scan 全体の観測用: 対象 asset 総数と参照ありの数(dry-run summary で使う)。
+  countScannedAssets: () => Promise<{ scanned: number; referenced: number }>
+
+  // mark set: 参照ゼロ + 未マークの reserved|ready を orphaned_at=now() に。
+  // WHERE は G2 shouldMarkUnreferenced の意味論(status IN ('reserved','ready')
+  // AND unreferenced_at IS NULL AND NOT EXISTS refs)を SQL で表現したもの。
+  // 影響行数(= set 件数)を返す。
+  markSet: () => Promise<number>
+  // mark clear: 再参照された(EXISTS refs)マーク済み(unreferenced_at IS NOT NULL)
+  // を orphaned_at=NULL に。G2 shouldClearUnreferenced の意味論。影響行数を返す。
+  markClear: () => Promise<number>
+
+  // promote: grace 超 + 参照ゼロの reserved|ready を status='deleting' に(単文
+  // UPDATE で TOCTOU 最小化・spec §4.4)。grace 境界は G2 isSweepEligible と同じ
+  // strict older(unreferenced_at < now() - graceDays days)を SQL で表現。影響行数
+  // (= promote 件数)を返す。本実行のみ呼ぶ(dry-run は write せず下記 preview を使う)。
+  promote: (graceDays: number) => Promise<number>
+  // dry-run 限定の promote 予告候補: 参照ゼロ + マーク済みの reserved|ready(まだ
+  // grace 未判定)を返す。core が G2 isSweepEligible で 1 件ずつ grace 適格を判定し、
+  // 「本実行なら promote されるであろう件数」を write ゼロで予告する。
+  fetchPromoteCandidates: () => Promise<{ unreferencedAt: Date | null }[]>
+
+  // pre-sweep guard(--sweep のみ・promote 前)の材料: card_asset_refs 行数と、
+  // cards.images に UUIDv4(isAssetKey)image key が 1 つでも存在するか。core が
+  // 「refs 空 かつ UUID image key あり」= refs 完全未投入(W1 未 deploy or backfill
+  // 未実行)を検知して sweep を abort する backstop に使う。--user 指定時は同 user に
+  // scope する(guard も owner-scope query 規律に整合)。mark-only / dry-run では
+  // 呼ばれない(dry-run が operator の観測手段)。
+  checkRefsPopulated: () => Promise<{ refRowCount: number; hasUuidImageKeys: boolean }>
+
+  // collect 候補: status IN ('deleting','deleted') の asset を取得。ループ直前に
+  // 呼ぶ(promote 直後の最新 snapshot)。
+  fetchCollectCandidates: () => Promise<CollectCandidate[]>
+  // collect ループ直前の fresh 参照再読み: 候補 asset のうち現在参照が存在する
+  // asset_id 集合を返す(TOCTOU 防御 = mark/promote 時点の判定を信用しない)。
+  fetchReferencedAssetIds: (assetIds: string[]) => Promise<Set<string>>
+
+  // self-heal: deleting asset に参照が戻った → status='ready' + unreferenced_at=NULL。
+  restoreToReady: (assetId: string) => Promise<void>
+  // R2 成功後の crash マーカー: status='deleting' → 'deleted'(decouple の中間状態)。
+  markDeleted: (assetId: string) => Promise<void>
+  // 行 DELETE(最終掃除)。refs→assets RESTRICT が最後の防衛(refs 残存なら DB 拒否)。
+  deleteAssetRow: (assetId: string) => Promise<void>
+
+  // R2 実体削除(never-throw・2xx/404 = ok:true)。
+  deleteObject: (objectKey: string) => Promise<{ ok: boolean; status: number | null }>
+  // R2 失敗の台帳記録(key='r2_gc_delete')。DB 側失敗は積まない(script 出力で可視)。
+  recordFailure: (args: {
+    userId: string
+    assetId: string
+    objectKey: string
+    status: string
+    errorMessage: string
+  }) => Promise<void>
+
+  // dry-run 限定の backfill 乖離検査(cards.images 内 UUID key 総数 vs refs 行数)。
+  // 乖離大 = backfill 漏れ疑いの観測材料。毎 run の jsonb 全読は本末転倒ゆえ
+  // dry-run のときだけ呼ぶ(未実装環境は undefined で省略可)。
+  countRefDivergence?: () => Promise<{ imageUuidKeys: number; refRows: number }>
+
+  log: (msg: string) => void
+}
+
+export type ReconcilerOptions = {
+  sweep: boolean
+  dryRun: boolean
+  graceDays: number
+  userId?: string
+  // 「現在時刻」の注入口(既定 = new Date())。dry-run promote 予告の grace 適格判定
+  // (isSweepEligible)が参照する now を固定でき、境界テストを決定的にする。本実行の
+  // promote は DB `now()` で判定するため本値は影響しない(dry-run preview 専用)。
+  now?: Date
+}
+
+// ---------------------------------------------------------------------------
+// summary
+// ---------------------------------------------------------------------------
+export type ReconcilerSummary = {
+  scannedAssets: number
+  referencedAssets: number
+  marked: number // set 件数
+  cleared: number
+  promoted: number
+  // collect 内訳
+  r2DeleteOk: number // 2xx で ok:true
+  r2Delete404: number // 404 で ok:true(不在 = 望む end-state)
+  r2DeleteFailed: number // ok:false = 台帳記録した件数
+  rowDeleteOk: number // 行 DELETE 成功
+  rowDeleteFailed: number // 行 DELETE 失敗(RESTRICT 等 → logger.error 済)
+  deletedLaneProcessed: number // 'deleted' 発見(R2 済 crash マーカー)= 行 DELETE のみ
+  selfHealed: number // 参照復活で ready 戻し
+  unknownStatus: number // AssetStatus union 外の status 行(CHECK なしの防衛)
+  // forensic: 実際に回収した (assetId, objectKey) 一覧。
+  reclaimed: { assetId: string; objectKey: string }[]
+  // 行 DELETE 失敗の assetId(台帳に積まないため summary に明示)。
+  rowDeleteFailures: string[]
+  // dry-run 限定: backfill 乖離観測(未実行なら null)。
+  refDivergence: { imageUuidKeys: number; refRows: number } | null
+}
+
+function emptySummary(): ReconcilerSummary {
+  return {
+    scannedAssets: 0,
+    referencedAssets: 0,
+    marked: 0,
+    cleared: 0,
+    promoted: 0,
+    r2DeleteOk: 0,
+    r2Delete404: 0,
+    r2DeleteFailed: 0,
+    rowDeleteOk: 0,
+    rowDeleteFailed: 0,
+    deletedLaneProcessed: 0,
+    selfHealed: 0,
+    unknownStatus: 0,
+    reclaimed: [],
+    rowDeleteFailures: [],
+    refDivergence: null,
+  }
+}
+
+// status が AssetStatus union に属するか(CHECK なし列の防衛判定)。union 外は
+// warn して collect 対象から外す。
+const KNOWN_STATUSES: readonly AssetStatus[] = [
+  'reserved',
+  'ready',
+  'deleting',
+  'deleted',
+]
+function isKnownStatus(status: string): status is AssetStatus {
+  return (KNOWN_STATUSES as readonly string[]).includes(status)
+}
+
+// ---------------------------------------------------------------------------
+// DI core
+// ---------------------------------------------------------------------------
+export async function runReconciler(
+  opts: ReconcilerOptions,
+  deps: ReconcilerDeps,
+): Promise<ReconcilerSummary> {
+  const summary = emptySummary()
+
+  const { scanned, referenced } = await deps.countScannedAssets()
+  summary.scannedAssets = scanned
+  summary.referencedAssets = referenced
+
+  // --- mark(常時実行・orphaned_at のみ書込) -------------------------------
+  // dry-run は write せず「set/clear の対象になる件数」を予告として集計する。
+  // 予告集計は referenced 差分で近似せず、markSet/markClear と同一 WHERE を持つ
+  // dry-run 用 count に委ねるのが本来だが、本 script は「実 UPDATE の影響行数」を
+  // 正とする(dry-run では UPDATE を打たず count 差分の見積りを出さない — spec は
+  // dry-run を「予告のみ」と定義。過剰な count を足すより write ゼロを厳守する)。
+  if (!opts.dryRun) {
+    summary.marked = await deps.markSet()
+    summary.cleared = await deps.markClear()
+  }
+
+  // --- dry-run 限定: backfill 乖離検査 -------------------------------------
+  if (opts.dryRun && deps.countRefDivergence) {
+    summary.refDivergence = await deps.countRefDivergence()
+  }
+
+  if (!opts.sweep) {
+    logSummary(deps, opts, summary)
+    return summary
+  }
+
+  // --- pre-sweep guard(FIX 8・destructive な promote/collect の前) ---------
+  // refs 完全未投入(card_asset_refs が空 かつ cards.images に UUID image key あり)
+  // = W1 未 deploy または backfill 未実行の明白ケース。この状態では実利用中の画像が
+  // 未参照に見え、--sweep が参照中 asset の R2 object + 行を削除しうる。abort する。
+  // ※部分的 stale は検知不能(それは deploy 順序 + dry-run divergence で担保)。
+  // ※dry-run は gate しない(operator が refs 未投入環境で予告を観測する手段ゆえ)。
+  if (!opts.dryRun) {
+    const refsState = await deps.checkRefsPopulated()
+    if (refsState.refRowCount === 0 && refsState.hasUuidImageKeys) {
+      throw new Error(
+        'card_asset_refs is empty but cards.images contains UUID image keys — ' +
+          'refs are not populated (W1 not deployed or backfill not run). ' +
+          'Aborting --sweep to avoid deleting referenced assets. ' +
+          'Run the backfill and ensure W1 is live, then retry.',
+      )
+    }
+  }
+
+  // --- promote(grace 超 + 参照ゼロ → deleting) ---------------------------
+  // 本実行: 単文 UPDATE(spec §4.4 = TOCTOU 最小化ゆえ per-row loop にしない)。
+  // dry-run: write せず、G2 isSweepEligible で 1 件ずつ grace 適格を判定して
+  //          「本実行なら promote されるであろう件数」を予告する(preview のみ)。
+  if (!opts.dryRun) {
+    summary.promoted = await deps.promote(opts.graceDays)
+  } else {
+    const now = opts.now ?? new Date()
+    const cands = await deps.fetchPromoteCandidates()
+    summary.promoted = cands.filter((c) =>
+      isSweepEligible(c.unreferencedAt, opts.graceDays, now),
+    ).length
+  }
+
+  // --- collect(deleting/deleted の per-asset 処理) -----------------------
+  const candidates = await deps.fetchCollectCandidates()
+
+  // ループ直前に refs を fresh 再読(TOCTOU 防御 = mark/promote 時点の判定を信用
+  // しない。窓を collect ループ長に縮小)。空配列なら空集合。
+  const candidateIds = candidates.map((c) => c.id)
+  const referencedNow = candidateIds.length
+    ? await deps.fetchReferencedAssetIds(candidateIds)
+    : new Set<string>()
+
+  for (const asset of candidates) {
+    // 未知 status(CHECK なし列の防衛): AssetStatus union 外は warn して skip。
+    if (!isKnownStatus(asset.status)) {
+      summary.unknownStatus++
+      logger.warn({
+        event: 'gc.collect.unknown_status',
+        assetId: asset.id,
+        status: asset.status,
+      })
+      continue
+    }
+
+    // collect 対象は deleting|deleted のみ(G2 canSweepDelete)。promote 済でない
+    // reserved|ready がここに来ることは fetchCollectCandidates の WHERE 上ないが、
+    // 防衛として domain 判定で確認する(judgment を inline 再実装しない)。
+    if (!canSweepDelete(asset.status)) {
+      logger.warn({
+        event: 'gc.collect.non_sweep_status',
+        assetId: asset.id,
+        status: asset.status,
+      })
+      continue
+    }
+
+    const hasRefs = referencedNow.has(asset.id)
+
+    // self-heal は deleting lane 限定(spec §4.4)。deleting は R2 実体が未削除ゆえ
+    // ready に戻せば参照が生きる。deleted(= R2 実体が既に消えた crash マーカー)に
+    // 参照が付いていても ready に戻してはならない — R2 object 不在の壊れた ready を
+    // 生む。deleted+refs は下の collectDeleteRow に落とし、RESTRICT / logger.error で
+    // 異常を表面化させる(silent に broken ready を鋳造しない)。
+    if (hasRefs && asset.status === 'deleting') {
+      // fresh 参照が復活した deleting asset → ready に戻す(誤収阻止)。判定は G2
+      // shouldClearUnreferenced(hasRefs=true かつ現在マーク済み)。
+      // ※deleting 中は handleImages が弾くため通常起きない = promote と handleImages
+      //   並走 race の最終防衛線。R2 は叩かない。
+      if (shouldClearUnreferenced(hasRefs, asset.unreferencedAt)) {
+        if (!opts.dryRun) await deps.restoreToReady(asset.id)
+        summary.selfHealed++
+        deps.log(
+          `self-heal: asset=${asset.id} refs reappeared → restored to ready`,
+        )
+        continue
+      }
+      // hasRefs だが unreferencedAt が null(mark 未実行で deleting になった稀な
+      // 状態: user 削除 lane 由来)。参照が実在する以上、収集してはならない。
+      // status='ready' に戻す(unreferenced_at は既に null)。
+      if (!opts.dryRun) await deps.restoreToReady(asset.id)
+      summary.selfHealed++
+      deps.log(
+        `self-heal: asset=${asset.id} refs present on deleting (no orphaned_at) → restored to ready`,
+      )
+      continue
+    }
+
+    // --- deleted lane(R2 済 crash マーカー): 行 DELETE のみ ----------------
+    if (asset.status === 'deleted') {
+      summary.deletedLaneProcessed++
+      await collectDeleteRow(asset, opts, deps, summary)
+      continue
+    }
+
+    // --- deleting lane: R2 DELETE → success-equivalent → deleted → 行 DELETE -
+    // decouple 順序厳守。R2 失敗は行存置(deleting のまま)+ 台帳 + 次 asset へ。
+    if (opts.dryRun) {
+      // dry-run は R2 も DB も叩かず、回収予定として reclaimed に積むのみ。
+      summary.reclaimed.push({ assetId: asset.id, objectKey: asset.objectKey })
+      continue
+    }
+
+    const res = await deps.deleteObject(asset.objectKey)
+    if (!res.ok) {
+      // R2 失敗: 行を deleting のまま存置し台帳記録。次 asset へ続行。
+      summary.r2DeleteFailed++
+      // recordFailure(recordIntegrationFailure → notifyOps)は Ops config 欠落時
+      // (例: OPS_DISCORD_WEBHOOK_URL 未設定)に fail-fast で throw する
+      // (integration-failures helper が notifyOps の throw を意図的に伝播)。この
+      // throw を runReconciler の外に出すと 1 asset の台帳書込失敗が run 全体を中断し、
+      // 「1 件の R2 失敗はその asset を deleting のまま残し、記録できる範囲で記録して
+      // 続行する」per-asset isolation を破る。ゆえに握って logger.error + 続行する
+      // (asset は deleting のまま = 次 run が再試行)。
+      try {
+        await deps.recordFailure({
+          userId: asset.userId,
+          assetId: asset.id,
+          objectKey: asset.objectKey,
+          status: asset.status,
+          errorMessage: `R2 delete failed (status=${res.status ?? 'null'})`,
+        })
+      } catch (err) {
+        logger.error({
+          event: 'gc.collect.record_failure_threw',
+          assetId: asset.id,
+          objectKey: asset.objectKey,
+          err,
+        })
+      }
+      continue
+    }
+
+    if (res.status === 404) summary.r2Delete404++
+    else summary.r2DeleteOk++
+
+    // success-equivalent 確認済 → crash マーカーを立ててから行 DELETE。
+    await deps.markDeleted(asset.id)
+    await collectDeleteRow(asset, opts, deps, summary)
+  }
+
+  logSummary(deps, opts, summary)
+  return summary
+}
+
+// 行 DELETE の共通処理(deleted lane / deleting lane 成功後の双方から呼ぶ)。
+// RESTRICT 拒否等の失敗は台帳に積まず logger.error + summary に assetId を明示
+// (次 run が再試行 = 状態から収束)。dry-run は呼ばれない経路(caller が guard)。
+async function collectDeleteRow(
+  asset: CollectCandidate,
+  opts: ReconcilerOptions,
+  deps: ReconcilerDeps,
+  summary: ReconcilerSummary,
+): Promise<void> {
+  if (opts.dryRun) {
+    summary.reclaimed.push({ assetId: asset.id, objectKey: asset.objectKey })
+    return
+  }
+  try {
+    await deps.deleteAssetRow(asset.id)
+    summary.rowDeleteOk++
+    summary.reclaimed.push({ assetId: asset.id, objectKey: asset.objectKey })
+  } catch (err) {
+    // refs→assets RESTRICT で万一 refs 残存なら拒否される。台帳でなく logger。
+    summary.rowDeleteFailed++
+    summary.rowDeleteFailures.push(asset.id)
+    logger.error({
+      event: 'gc.collect.row_delete_failed',
+      assetId: asset.id,
+      objectKey: asset.objectKey,
+      err,
+    })
+  }
+}
+
+function logSummary(
+  deps: ReconcilerDeps,
+  opts: ReconcilerOptions,
+  s: ReconcilerSummary,
+): void {
+  deps.log(
+    `done. mode=${opts.sweep ? 'sweep' : 'mark'} dryRun=${opts.dryRun} ` +
+      `grace=${opts.graceDays}d user=${opts.userId ?? 'all'} | ` +
+      `scanned=${s.scannedAssets} referenced=${s.referencedAssets} ` +
+      `marked=${s.marked} cleared=${s.cleared} promoted=${s.promoted} | ` +
+      `r2Ok=${s.r2DeleteOk} r2_404=${s.r2Delete404} r2Failed=${s.r2DeleteFailed} ` +
+      `rowDeleteOk=${s.rowDeleteOk} rowDeleteFailed=${s.rowDeleteFailed} ` +
+      `deletedLane=${s.deletedLaneProcessed} selfHealed=${s.selfHealed} ` +
+      `unknownStatus=${s.unknownStatus} reclaimed=${s.reclaimed.length}`,
+  )
+  if (s.rowDeleteFailures.length > 0) {
+    deps.log(
+      `row DELETE failures (assetIds, not in ledger): ${s.rowDeleteFailures.join(', ')}`,
+    )
+  }
+  if (s.refDivergence) {
+    deps.log(
+      `[dry-run] backfill divergence: imageUuidKeys=${s.refDivergence.imageUuidKeys} refRows=${s.refDivergence.refRows}`,
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// production deps 束縛(§4.4 SQL を drizzle で実装)。接続方式は注入(§3.1)。
+// ---------------------------------------------------------------------------
+
+// production deps の各 SQL 呼出を実接続に束縛する注入口。owner 経路
+// (scripts/gc-image-assets.ts の CLI)= `(fn) => fn(getAdminDb())`(tx を張らない
+// 単発接続)。app 経路(cron lane・Task 5)= `(fn) => withTenantTx(userId, fn)`
+// (RLS tenant context を張った tx)。core(runReconciler)はこの型を知らない —
+// buildReconcilerDeps だけが接続方式を選ぶ(判定 SQL は owner/app で共有・1 定義)。
+export type ReconcilerExec = <T>(fn: (db: TenantDb) => Promise<T>) => Promise<T>
+
+// 未参照 EXISTS probe: card_asset_refs.asset_id = assets.id の存在。mark/promote の
+// WHERE 節で共有する(spec §4.4 の NOT EXISTS(SELECT 1 FROM card_asset_refs …))。
+function refsExists(assetId: unknown) {
+  return sql`EXISTS (SELECT 1 FROM ${cardAssetRefs} r WHERE r.asset_id = ${assetId})`
+}
+
+/**
+ * production ReconcilerDeps を組み立てる。owner(CLI)/ app(cron lane)いずれの
+ * 接続方式でも同じ判定 SQL を使う(exec 経由で束縛するだけ・二重実装しない)。
+ *
+ * `collectLimit` 省略 = LIMIT 無し(CLI 既定・現行挙動と完全一致。既存 test が
+ * この SQL 同一性を pin する)。指定時のみ fetchCollectCandidates が
+ * `ORDER BY unreferenced_at NULLS FIRST, created_at, id LIMIT collectLimit` を足す。
+ * NULLS FIRST の理由 = 退会由来 asset(unreferenced_at が NULL のまま deleting に
+ * 倒れた行)を最優先で回収するため — 通常の promote 経由は unreferenced_at が必ず
+ * 埋まっているが、退会 lane(user 削除)は unreferenced_at を経由せず直接 deleting
+ * にする経路があり、その行が LIMIT で毎回後回しにされ続けるのを防ぐ。
+ *
+ * `onRecordError` は recordFailure(記帳)が throw した回数を lane に伝える唯一の
+ * seam(B-4)。core(runReconciler)の recordFailure 呼出自体は無改造 — core は自前の
+ * try/catch で recordFailure の throw を吸収して logger に落とすだけで、「何回
+ * 失敗したか」を外部(cron summary)へ返す経路を持たない。ここで内側の try/catch が
+ * 先に握って onRecordError?.() を呼ぶことで、core を改造せず lane 側に集約させる
+ * (recordFailure がここで throw しなくなるため core 側の catch は事実上発火しない
+ * が、素の deps を直接使う既存 test の経路のためにも core 側の catch は残す)。
+ */
+export function buildReconcilerDeps(args: {
+  exec: ReconcilerExec
+  userId?: string
+  collectLimit?: number
+  deleteObject: ReconcilerDeps['deleteObject']
+  onRecordError?: () => void
+  log: (msg: string) => void
+}): ReconcilerDeps {
+  const { exec, userId, collectLimit, deleteObject, onRecordError, log } = args
+
+  // --user 指定時は owner-scope の追加 WHERE を raw SQL 系の query に足す
+  // (CLAUDE.md Clerk-3)。
+  const userScope = userId ? sql` AND ${assets.userId} = ${userId}::uuid` : sql``
+
+  return {
+    countScannedAssets: () =>
+      exec(async (db) => {
+        // 対象 asset 総数と、参照ありの数(EXISTS refs)を 1 回で数える。
+        const rows = await db.execute<{ scanned: number; referenced: number }>(sql`
+          SELECT
+            COUNT(*)::int AS scanned,
+            COUNT(*) FILTER (WHERE EXISTS (
+              SELECT 1 FROM ${cardAssetRefs} r WHERE r.asset_id = ${assets.id}
+            ))::int AS referenced
+          FROM ${assets}
+          WHERE TRUE${userScope}
+        `)
+        return {
+          scanned: Number(rows[0]?.scanned ?? 0),
+          referenced: Number(rows[0]?.referenced ?? 0),
+        }
+      }),
+    markSet: () =>
+      exec(async (db) => {
+        // G2 shouldMarkUnreferenced の SQL 表現:
+        //   status IN ('reserved','ready') AND unreferenced_at IS NULL AND NOT EXISTS refs
+        // postgres-js drizzle は update に rowCount を持たないため .returning() の
+        // 行数で影響件数を得る(backfill script が select 系で count を数える規律に整合)。
+        const rows = await db
+          .update(assets)
+          .set({ unreferencedAt: sql`now()` })
+          .where(
+            and(
+              inArray(assets.status, ['reserved', 'ready']),
+              isNull(assets.unreferencedAt),
+              sql`NOT ${refsExists(assets.id)}`,
+              userId ? eq(assets.userId, userId) : undefined,
+            ),
+          )
+          .returning({ id: assets.id })
+        return rows.length
+      }),
+    markClear: () =>
+      exec(async (db) => {
+        // G2 shouldClearUnreferenced の SQL 表現:
+        //   unreferenced_at IS NOT NULL AND EXISTS refs
+        const rows = await db
+          .update(assets)
+          .set({ unreferencedAt: null })
+          .where(
+            and(
+              isNotNull(assets.unreferencedAt),
+              refsExists(assets.id),
+              userId ? eq(assets.userId, userId) : undefined,
+            ),
+          )
+          .returning({ id: assets.id })
+        return rows.length
+      }),
+    promote: (graceDays) =>
+      exec(async (db) => {
+        // G2 isSweepEligible の SQL 表現(strict older): status IN ('reserved','ready')
+        //   AND unreferenced_at < now() - interval AND NOT EXISTS refs。
+        const rows = await db
+          .update(assets)
+          .set({ status: 'deleting' })
+          .where(
+            and(
+              inArray(assets.status, ['reserved', 'ready']),
+              sql`${assets.unreferencedAt} < now() - (${graceDays} * interval '1 day')`,
+              sql`NOT ${refsExists(assets.id)}`,
+              userId ? eq(assets.userId, userId) : undefined,
+            ),
+          )
+          .returning({ id: assets.id })
+        return rows.length
+      }),
+    fetchPromoteCandidates: () =>
+      exec(async (db) => {
+        // dry-run 予告用: 参照ゼロ + マーク済みの reserved|ready(grace 未判定)。
+        // grace 適格判定は core が G2 isSweepEligible で行う(write ゼロ)。
+        const rows = await db
+          .select({ unreferencedAt: assets.unreferencedAt })
+          .from(assets)
+          .where(
+            and(
+              inArray(assets.status, ['reserved', 'ready']),
+              isNotNull(assets.unreferencedAt),
+              sql`NOT ${refsExists(assets.id)}`,
+              userId ? eq(assets.userId, userId) : undefined,
+            ),
+          )
+        return rows
+      }),
+    checkRefsPopulated: () =>
+      exec(async (db) => {
+        // pre-sweep guard 材料。--user 指定時は両問い合わせを同 user に scope する。
+        // UUID image key の存在は EXISTS で早期打切り(全 jsonb 展開を避ける)。
+        // UUIDv4 判別は divergence 検査と同じ緩い正規表現(観測/backstop 用途)。
+        const refUserScope = userId
+          ? sql` WHERE ${cardAssetRefs.userId} = ${userId}::uuid`
+          : sql``
+        const imgUserScope = userId ? sql` AND c.user_id = ${userId}::uuid` : sql``
+        const refRows = await db.execute<{ n: number }>(sql`
+          SELECT COUNT(*)::int AS n FROM ${cardAssetRefs}${refUserScope}
+        `)
+        const hasKeyRows = await db.execute<{ present: boolean }>(sql`
+          SELECT EXISTS (
+            SELECT 1
+            FROM cards c, jsonb_array_elements(c.images) AS elem
+            WHERE elem->>'key' ~*
+              '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'${imgUserScope}
+          ) AS present
+        `)
+        return {
+          refRowCount: Number(refRows[0]?.n ?? 0),
+          hasUuidImageKeys: Boolean(hasKeyRows[0]?.present),
+        }
+      }),
+    fetchCollectCandidates: () =>
+      exec(async (db) => {
+        const baseQuery = db
+          .select({
+            id: assets.id,
+            userId: assets.userId,
+            objectKey: assets.objectKey,
+            status: assets.status,
+            unreferencedAt: assets.unreferencedAt,
+          })
+          .from(assets)
+          .where(
+            and(
+              inArray(assets.status, ['deleting', 'deleted']),
+              userId ? eq(assets.userId, userId) : undefined,
+            ),
+          )
+        // collectLimit 省略 = LIMIT/ORDER BY 無し(現行 SQL と完全一致・既存 test が
+        // pin)。指定時のみ ORDER BY + LIMIT を足す(NULLS FIRST の理由は本 function
+        // の doc comment 参照)。
+        const rows =
+          collectLimit === undefined
+            ? await baseQuery
+            : await baseQuery
+                .orderBy(sql`${assets.unreferencedAt} NULLS FIRST`, assets.createdAt, assets.id)
+                .limit(collectLimit)
+        return rows as CollectCandidate[]
+      }),
+    fetchReferencedAssetIds: (assetIds) =>
+      exec(async (db) => {
+        const found = new Set<string>()
+        for (let i = 0; i < assetIds.length; i += COLLECT_BATCH_SIZE) {
+          const batch = assetIds.slice(i, i + COLLECT_BATCH_SIZE)
+          const rows = await db
+            .selectDistinct({ assetId: cardAssetRefs.assetId })
+            .from(cardAssetRefs)
+            .where(inArray(cardAssetRefs.assetId, batch))
+          for (const r of rows) found.add(r.assetId)
+        }
+        return found
+      }),
+    restoreToReady: (assetId) =>
+      exec(async (db) => {
+        await db
+          .update(assets)
+          .set({ status: 'ready', unreferencedAt: null })
+          .where(eq(assets.id, assetId))
+      }),
+    markDeleted: (assetId) =>
+      exec(async (db) => {
+        await db
+          .update(assets)
+          .set({ status: 'deleted' })
+          .where(eq(assets.id, assetId))
+      }),
+    deleteAssetRow: (assetId) =>
+      exec(async (db) => {
+        await db.delete(assets).where(eq(assets.id, assetId))
+      }),
+    deleteObject,
+    recordFailure: async ({ userId, assetId, objectKey, status, errorMessage }) => {
+      // B-4 seam(本 function の doc comment 参照): ここで握って onRecordError?.() を
+      // 呼ぶ — core(runReconciler)の recordFailure 呼出は無改造のまま。
+      try {
+        await recordIntegrationFailure({
+          key: 'r2_gc_delete',
+          userId,
+          errorMessage,
+          subject: 'R2 GC: object delete failed',
+          context: { assetId, objectKey, status },
+        })
+      } catch (err) {
+        onRecordError?.()
+        logger.error({
+          event: 'asset_gc.record_failure_threw',
+          assetId,
+          objectKey,
+          err,
+        })
+      }
+    },
+    countRefDivergence: () =>
+      exec(async (db) => {
+        // dry-run 限定。cards.images(jsonb 配列)内 UUIDv4 key の総数 vs refs 行数。
+        // 乖離大 = backfill 漏れ疑いの観測材料(spec §4.11-5)。全 jsonb 読みは重い
+        // ため dry-run のみ。UUIDv4 判別は SQL 正規表現(isAssetKey と同 version=4 /
+        // variant=8-b の緩い版 — 観測用途ゆえ厳密一致不要)。
+        // --user 指定時は両カウントを同 user に絞る(reconciler 全体の owner-scope に
+        // 整合)。全 user で数えると targeted stg 検証が偽の乖離を報告するため。
+        const imgUserScope = userId ? sql` AND c.user_id = ${userId}::uuid` : sql``
+        const refUserScope = userId
+          ? sql` WHERE ${cardAssetRefs.userId} = ${userId}::uuid`
+          : sql``
+        const imgRows = await db.execute<{ n: number }>(sql`
+          SELECT COUNT(*)::int AS n
+          FROM cards c, jsonb_array_elements(c.images) AS elem
+          WHERE elem->>'key' ~*
+            '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'${imgUserScope}
+        `)
+        const refRows = await db.execute<{ n: number }>(sql`
+          SELECT COUNT(*)::int AS n FROM ${cardAssetRefs}${refUserScope}
+        `)
+        return {
+          imageUuidKeys: Number(imgRows[0]?.n ?? 0),
+          refRows: Number(refRows[0]?.n ?? 0),
+        }
+      }),
+    log,
+  }
+}
