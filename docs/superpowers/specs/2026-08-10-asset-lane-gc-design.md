@@ -2,7 +2,7 @@
 
 > fact-finding = `docs/audit/2026-08-10-asset-lane-gc-factfinding.md`(数値・根拠 path はそちら)。
 > OT 裁定済(蒸し返さない): ① user 列挙 = SECURITY DEFINER 4 本目 ② row-less 判定 = 三重条件 ③ 台帳 2 件追加 ④ iso test を scope に含める ⑤ 退会由来 grace = 無し(cron 化が答え)。
-> status: **確定(2026-08-10 OT 承認・論点 5 件裁定済 = §12)**。以後、実装フェーズでの書き換え禁止(仕様変更は停止して OT 相談)。
+> status: **確定(2026-08-10 OT 承認・論点 5 件裁定 = §12・Codex cross-check 反映 amend 済 = §2.1 / §3.3a / §7 / §13)**。以後、実装フェーズでの書き換え禁止(仕様変更は停止して OT 相談)。
 
 ## 1. 目的
 
@@ -21,6 +21,24 @@ architecture.md §11 の asset レーン未解決 4 件を閉じる: ① reconci
 実行順 = この表の順。根拠 = §11 の v58 原理そのまま: 記録がない側(`src/`・orphan)は時間駆動、記録がある側(asset 行)は遅延してよい — 予算逼迫時に asset_gc が打ち切られても行が durable に残り翌日収束する。orphan scan を最後に置くのは発生源が crash のみで現在 0 件のため。
 
 `LaneContext` は共通部 `{ deadlineAt }` のみに縮め、lane 固有 config(cutoffMs / graceDays 等)は route が lane closure に bind する(現行の `cutoffMs` を context に持つ形は src 固有語彙の漏れ — 2 本目追加のこの時点で直す)。
+
+### 2.1 予算配分 — per-lane 固定絶対 deadline(2026-08-10 amend・Codex cross-check A-2)
+
+共有 deadline 1 本(= 全 lane が `start + 270s` を見る)は**採らない**: 先行 lane が予算を使い切ると後続 lane が毎日 0 実行になり、日次回収の前提が静かに崩れる(先行 lane 側の incomplete しか鳴らないため、asset レーンが止まっている事実が観測に出ない)。
+
+route が **run 開始時刻を原点とする固定絶対 deadline** を lane ごとに配る:
+
+| lane | deadline | 実効上限 |
+|---|---|---|
+| `src_sweep` | `start + 90s` | 90s |
+| `asset_gc` | `start + 210s` | ≤120s |
+| `asset_orphan_scan` | `start + 260s` | ≤50s |
+
+(tail 40s は route の `maxDuration = 300` に対する余裕。各 lane 内部の tail reserve は従来どおり lane 側が別途先取りする。)
+
+**絶対時刻ゆえ、先行 lane が早く終わればその余りは後続 lane の開始を早める**(後続の着手が前倒しされ実働時間が伸びる)。ただし**各 lane の絶対上限は前倒しでは動かない** — 上限は原点固定で、早い開始が上限を押し上げることはない。これが「予算は守るべき境界と同じ原点から測る」の lane 版。
+
+lane 開始時点で残 slice が `MIN_SLICE` 未満なら **lane を起動せず `not_started` を summary に立てる**(runner の責務)。理由 = ① 開始時点でゼロ以下の slice を lane に渡すと、lane が listing 失敗と同じ phase を立てて silent に誤ったラベルを残す(src route が固定オフセットを選んだのと同じ既知問題)② 「実行されなかった」と「実行して 0 件だった」を readback で区別できる必要がある。
 
 ## 3. `asset_gc` lane
 
@@ -49,8 +67,28 @@ lane は 列挙 → user ごとに **app-role deps を bind して `runReconcile
 - 退会済 user にも tenant context は張れる(`setTenantContext` は GUC を書くだけ・`assets_tenant` に `deleted_at` 条件なし — fact-finding §5)。
 - pre-sweep guard(`checkRefsPopulated`)は per-user 評価。trip(throw)は **その user だけ skip** し summary に記録(lane の per-user catch)。
 - summary は per-user `ReconcilerSummary` を lane が集約(件数加算 + `usersProcessed` / `usersSkipped`)。`scanned`/`referenced` の母集合は「列挙された user の assets」に変わる(作業ゼロ user は列挙されず数に入らない — 全表 scan の旧意味論との差は readback の解釈のみで判定に影響しない)。
-- deadline slicing: user 境界と collect chunk 境界で `slice()` 確認(src idiom)。collect の R2 DELETE は `SWEEP_DELETE_CHUNK` 同様の chunk 並列。打ち切り時は `r2_gc_incomplete` 1 行 + 翌日継続。
-- user の処理順 = 列挙順(uuid 順)。starve 対策の順序制御は入れない(現規模で打ち切り自体が起きない見込み。§7)— 恒常的 incomplete が観測されたら再訪。
+- deadline slicing: **user 境界**で `slice()` 確認(打ち切り時は `r2_gc_incomplete` 1 行 + 翌日継続)。
+- user の処理順 = 列挙順(uuid 順)。starve 対策の順序制御は入れない — 下記 §3.3a の per-user LIMIT が 1 user の占有時間を構造的に bound するため。恒常的 incomplete が観測されたら再訪。
+
+### 3.3a boundedness は deps 注入で作る(2026-08-10 amend・Codex cross-check A-1)
+
+**`runReconciler` core は無改造**(§3.1)。core の collect ループは候補を一括取得して逐次処理する形で、内部に deadline 判定も LIMIT も並列も持たない。ゆえに「core 無改造」と「collect ループ内部での chunk 境界 deadline 確認 / chunk 並列」は**両立しない** — 後者を捨て、boundedness を **deps 側(本 sprint の新規コード)** で作る:
+
+| 手段 | deps | 効果 |
+|---|---|---|
+| 候補の上限と順序 | `fetchCollectCandidates` に **ORDER BY(最古の作業優先)+ per-user per-run LIMIT = `COLLECT_LIMIT_PER_USER` = 20** | 1 user あたりの collect ループ長が構造的に bound。core は渡された候補だけ処理する |
+| I/O の上限 | `deleteObject` に `min(DELETE_TIMEOUT_MS, slice())` を注入 | 1 call の超過が lane 予算を壊さない |
+| 記帳の上限 | `recordFailure` は残 slice が `MIN_SLICE` 未満なら書かず suppressed 加算 | 記帳の連鎖(notifyOps の fetch 待ち)が tail reserve を食わない |
+
+**chunk 20 並列は行わない**(逐次のまま)。実測 204 件・LIMIT 20 では並列の実益がなく、core 改造を要するため(YAGNI)。
+
+**帰結(正直に書く)**: 回収レートは **user あたり 20 object / run(= 日次なら 20/day)** が上限。
+
+- 30 日後の promote+collect spike(実測起点 204 件・うち 1 user に 202 件)は **~11 日かけて drain** する。
+- 退会 user の R2 実体削除は **⌈N/20⌉ 日**(N ≤ 20 なら翌 run で完了)。
+- これを許すのは §11 v58 原理そのもの: **`deleting` 行が durable な削除意図として残るため、回収が遅れても意図は失われない**。時間駆動レーン(`src/`)なら同じ遅延は許されない。
+
+**受容する停滞シナリオ(修理しない・観測する)**: 最古 20 件が R2 側の理由で DELETE 失敗し続けると、その user の queue を恒久占有し、後から入った garbage が順番待ちのまま進まない。skip/backoff 機構は導入しない(over-engineering)。**この停滞は `r2_gc_row_delete` / `r2_gc_delete` に同一 `objectKey` の失敗行が連日出る形で観測可能**であり、それを手動介入のトリガーとする(§13)。
 
 ### 3.4 flag の定数化(cron 経路)
 
@@ -102,11 +140,21 @@ row-less の**発見**(summary の `rowlessFound` / readback)と**回収**を同
 
 ## 6. 適用順序
 
-migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 と同経路)→ deploy(lane code)→ 手動 GET で確認 → prod は migration → deploy の同順。policies 変更なし・新表なし(runbook §13 の新表手順は非該当)。**prod 反映時は `CRON_SECRET` が Production scope に登録済みであること**(§3 sweeper と同前提・未登録は 401 でなく 500)。iso は global-setup が実 migration を適用するため 0033 が自動で入る。
+既存規律(functions = migrate / deploy = push / policies = SQL Editor)に従う。本 sprint は **policies 変更なし・新表なし**(runbook §13 の新表手順は非該当)ゆえ 3 段のうち 2 段のみ:
+
+1. **migration 0033 適用**(OT・`drizzle-kit migrate`)— function・additive・旧コード無影響ゆえ deploy 前でよい
+2. **deploy**(OT push → Vercel)— lane code
+3. 手動 GET で readback 確認 → prod は 1→2 の同順
+
+**prod 反映時の追加確認**: ① `CRON_SECRET` が **Production scope** に登録済み(§3 sweeper と同前提・未登録は 401 でなく 500 で日次 run が毎日失敗)② asset prefix に R2 lifecycle rule が無いこと(OT dashboard 目視・§13)。iso は global-setup が実 migration を適用するため 0033 が自動で入る。
 
 ## 7. 初回 run の規模(実測 204 起点)
 
-初回 = mark 204 件(per-user bulk UPDATE・現 3 user)で数秒。promote 0(grace 30 日)。**30 日後に promote + collect 204 件が 1 run に集中**: DB 操作 ~600 回 ≈ 30s + R2 DELETE 204 / chunk 20 ≈ 11 chunk ≈ 数十 s → 予算 270s 内に収まる。収まらなくても incomplete 記帳 + 翌日継続で収束(行駆動 = 状態が残る)ため、平滑化・分散機構は作らない。`maxDuration = 300` 不変。
+初回 = mark 204 件(per-user bulk UPDATE・現 3 user)で数秒。promote 0(grace 30 日)。
+
+**30 日後に promote 204 件が一斉に `deleting` へ落ちる**が、collect は §3.3a の per-user LIMIT 20 で bound される: 202 件を持つ user は **1 run 20 件 × ~11 日**で drain する。promote 自体は単文 bulk UPDATE ゆえ集中しても数秒。1 run の実働は「列挙 + 3 user × (bulk 3 文 + 最大 20 回の R2 DELETE)」= `asset_gc` の 120s 枠に十分収まる。
+
+**平滑化・分散機構は作らない**。理由 = LIMIT が既に平滑化そのものであり、行が durable に残る以上 drain が複数日に跨っても意図は失われない(§3.3a)。`maxDuration = 300` 不変。
 
 ## 8. 不変条件(実装が守るもの)
 
@@ -118,6 +166,8 @@ migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 �
 6. 記帳失敗は recordErrors + logger(観測経路の破損を別経路で可視化)
 7. HTTP 200 = runner 走破のみ(成否は lane summary を読む)
 8. 判定原理はレーン別・統一は入口と観測のみ(§11 契約不変。asset prefix への lifecycle / src の行駆動化はしない)
+9. **lane 予算は run 開始時刻を原点とする固定絶対 deadline**(§2.1)。先行 lane の早期完了は後続の開始を早めるが、**各 lane の絶対上限は動かない**。開始時に slice 枯渇なら `not_started`(silent skip にしない)
+10. **1 user 1 run あたりの collect は `COLLECT_LIMIT_PER_USER` = 20 で bound**(§3.3a)。core は無改造で、上限・順序・timeout はすべて deps 側が持つ
 
 ## 9. テスト(実装 task が TDD で書く。pin する主張)
 
@@ -132,6 +182,7 @@ migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 �
 
 - asset prefix への lifecycle / `src/` の行駆動化(§11 禁止 2 つ)
 - dedup(据え置き不変)・mark/promote の平滑化(§7 が不要と示す)・orphan scan の dry-run mode・user 処理順の starve 制御(§3.3)・`users/` listing の全域保証(bounded + truncated 記録)
+- **collect の chunk 並列**(§3.3a: core 改造を要し、LIMIT 20 では実益なし)・**失敗候補の skip / backoff**(§3.3a の停滞は観測して手動介入)・**listing の checkpoint / shard**(§13 の再訪トリガー待ち)・**成功 run の heartbeat 記録**(既存「成功 run は台帳に書かない」方針と一貫。cron 死の検知は全 lane 横断の別課題)
 - prod への反映判断・R2 lifecycle 実設定の readback(credential 403 のまま・別件)
 
 ## 11. 変更一覧(file 粒度)
@@ -153,6 +204,8 @@ migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 �
 ## 13. 限界(受容・記録)
 
 - **CLI(手動 script)の prod ガードはローカル env unset で効かない**(smoke4 手順書 §4 の既知の穴)。修理しない — 破壊 script の機械境界は証明の空白 #5 の別件で、実効境界は従来どおり運用(env 目視 + `--user` + dry-run 先行)。**cron 経路はこの穴を持たない**(§8-4)ことが本 sprint の前進。
-- orphan scan の観測範囲は listing 上限(10 page)内の partial observation(truncated で明示・src overdue と同じ限界)。
-- prod bucket の中身・R2 lifecycle 実設定は未確認のまま(credential 403・別件)。
-- 30 日後の初回 promote+collect 集中は §7 の見積りに依存(外れても incomplete + 翌日継続で収束するため hard limit ではない)。
+- orphan scan の観測範囲は listing 上限(10 page ≈ 10,000 key)内の partial observation。**上限超過時は辞書順後半が恒久的に未観測になる**(毎回 prefix 先頭から読むため前進しない)— これは「安全な部分観測」ではなく構造的な盲点。**受容する根拠 = 盲点は無音でない**: 到達時は `truncated: true` → `r2_orphan_incomplete`(phase `list_truncated`)→ Discord で毎日鳴る。**この行の出現が StartAfter shard / checkpoint 導入の再訪トリガー**(現規模 242 件では YAGNI ゆえ今回作らない)。
+- **退会 asset の R2 削除期限は soft**(⌈N/20⌉ 日・§3.3a)。hard SLA ではない。SLA 化の要否は公開前 gate で判定する(法務・監査要件の具体化待ち。§11 非要件の再判定と同じ扱い)。
+- **collect queue の停滞**(最古 20 件が連続失敗すると当該 user の queue を占有)は修理せず観測する。トリガー = 同一 `objectKey` の失敗行が連日出る(§3.3a)。
+- prod bucket の中身・R2 lifecycle 実設定は未確認のまま(credential 403・別件)。**asset prefix に rule が無いことは repo 内記述の確認どまり**で dashboard 目視をしていない — release 前確認条件に置く(§6)。
+- cron 未起動 / platform kill は本 sprint の観測系(失敗台帳のみ)では検出できない。全 lane 横断の別課題として扱う(成功 heartbeat を作らない判断は §10)。
