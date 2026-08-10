@@ -128,7 +128,7 @@
 
 ## 11. R2 削除の 2 レーン契約(②-4b close・2026-08-10)
 
-R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーンのみ**で、**全 object はどちらかに属する**。両者は削除の駆動原理が違う(時間駆動 / 行駆動)ため機構を統一しない。以下はレーンをまたぐ契約で、各レーンの機構詳細は §6 の該当行と正本 spec を見る(ここには how を書かない)。
+R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーン**に属する。両者は削除の駆動原理が違う(時間駆動 / 行駆動)ため機構を統一しない。加えて**絶滅した 3 つ目の prefix**(旧 `users/{userId}/src/…`)があり、下表に含めて数える — **現存する key 形はこの 3 つで尽きる**(実測 = `docs/ops/r2-key-inventory.md`・2026-08-10 に bucket 全 listing で確認)。以下はレーンをまたぐ契約で、各レーンの機構詳細は §6 の該当行と正本 spec を見る(ここには how を書かない)。
 
 **共通不変条件(両レーンが守る)**
 
@@ -141,12 +141,12 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーンのみ**�
 
 **レーン表**
 
-| | `src/`(ephemeral・**時間駆動**) | 画像 asset(長命・**行駆動**) |
-|---|---|---|
-| 一次削除 | pipeline 出口 `finally` + entry 削除同期 DELETE(§1)+ 退会 prefix purge(§2) | refs ゼロ → mark → grace → promote → collect(reconciler) |
-| 二次回収 | **日次 sweeper**(§3・cron・age 駆動) | 同 reconciler(mark/collect は同一 run) |
-| backstop | **lifecycle**(`src/` maxAge 1 日・**2026-08-09 に実削除を 1 例実測**) | **無い(張れない)** — prefix lifecycle は参照中の正当 object を消すため |
-| 期限・滞留の検知 | overdue alert(72h・`r2_sweep_overdue`。**観測範囲は listing 上限 10 page 内の partial observation**) | **未整備** — row-less orphan(行が無い R2 object)の発見は listing 走査の将来適用で補う想定 |
+| | `src/`(ephemeral・**時間駆動**) | 画像 asset `users/{uid}/{assetId}.{webp,png,jpg}`(長命・**行駆動**) | 旧 `users/{uid}/src/…`(**絶滅**) |
+|---|---|---|---|
+| 一次削除 | pipeline 出口 `finally` + entry 削除同期 DELETE(§1)+ 退会 prefix purge(§2) | refs ゼロ → mark → grace → promote → collect(reconciler) | **無い**(生成コードを `80ef3b4`・2026-08-05 で削除 = 新規発生しない) |
+| 二次回収 | **日次 sweeper**(§3・cron・age 駆動) | 同 reconciler(mark/collect は同一 run) | `scripts/gc-src-prefix.ts`(**手動 one-shot**・既定 dry-run・`--execute` 必須) |
+| backstop | **lifecycle**(`src/` maxAge 1 日・**2026-08-09 に実削除を 1 例実測**) | **無い(張れない)** — prefix lifecycle は参照中の正当 object を消すため | **無い(張れなかった)** — asset prefix の**内側**にあり、ListObjectsV2 も lifecycle も `users/*/src/` の wildcard を持たないため user ごとに rule が要る。**これが top-level `src/` へ移した理由** |
+| 期限・滞留の検知 | overdue alert(72h・`r2_sweep_overdue`。**観測範囲は listing 上限 10 page 内の partial observation**) | **未整備** — row-less orphan(行が無い R2 object)の発見は listing 走査の将来適用で補う想定 | 無い(**2026-08-10 の全 listing で 0 件**を実測。生成源が無いため増えない) |
 
 **やってはいけない 2 つ**
 
@@ -159,7 +159,7 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーンのみ**�
 
 **asset レーンの未解決事項(②-4b の scope 外・close 後の「asset レーン整合 sprint」で扱う)**: ① reconciler が手動実行のまま(`scripts/gc-image-assets.ts`・cron 化されていない)② 退会由来 asset の grace 30 日の要否未確定(grace は `reserved|ready → deleting` の promote 判定にのみ効き、退会で直接 `deleting` に倒れた行は grace を経ず collect 対象になる)③ refs↔GC の smoke 未実施 ④ zero-ref の滞留。
 
-正本: `src/` = `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(親・凍結)+ §1〜§3 spec / asset = `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md`。close 記録 = `docs/superpowers/sessions/2026-08-10-ocr-2-4b-close.md`。
+正本: `src/` = `docs/superpowers/specs/2026-08-07-ocr-2-4b-pdf-rasterize-design.md`(親・凍結)+ §1〜§3 spec / asset = `docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md`。close 記録 = `docs/superpowers/sessions/2026-08-10-ocr-2-4b-close.md`。**prefix × 作る/読む/消す の運用表と実 bucket 実測 = `docs/ops/r2-key-inventory.md`**(key 生成経路を増減させたら同時に更新する)。
 
 ---
 
