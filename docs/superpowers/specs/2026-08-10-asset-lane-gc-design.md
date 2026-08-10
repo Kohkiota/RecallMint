@@ -1,0 +1,151 @@
+# asset レーン整合 sprint: asset GC cron 化 + row-less orphan 走査 設計 spec
+
+> fact-finding = `docs/audit/2026-08-10-asset-lane-gc-factfinding.md`(数値・根拠 path はそちら)。
+> OT 裁定済(蒸し返さない): ① user 列挙 = SECURITY DEFINER 4 本目 ② row-less 判定 = 三重条件 ③ 台帳 2 件追加 ④ iso test を scope に含める ⑤ 退会由来 grace = 無し(cron 化が答え)。
+> status: **draft(OT 承認待ち)**
+
+## 1. 目的
+
+architecture.md §11 の asset レーン未解決 4 件を閉じる: ① reconciler の cron 化 ② 退会由来 asset の R2 残留期間の確定(cron 頻度 = 日次が答え・裁定済)③ refs↔GC 整合の証明(空白 #8)④ zero-ref 滞留(実測 204+)+ row-less orphan の走査(現在 0 件・crop の PUT→INSERT 順ゆえ将来発生しうる)。
+
+## 2. 全体像 — lane を 2 本追加(cron 入口・観測は統一、判定原理はレーン別)
+
+`/api/cron/sweep` の `LANES` 配列に追加(`vercel.json` 不変・path 増やさない):
+
+| lane | 駆動原理 | やること |
+|---|---|---|
+| `src_sweep`(既存) | 時間 | 変更なし |
+| **`asset_gc`(新)** | **行**(`assets` 行が正) | mark / promote / collect の 3 相を per-user で実行 |
+| **`asset_orphan_scan`(新)** | **時間**(行が無い object に記録は無い) | `users/` listing → 三重条件 + 行不在確認 → DELETE |
+
+実行順 = この表の順。根拠 = §11 の v58 原理そのまま: 記録がない側(`src/`・orphan)は時間駆動、記録がある側(asset 行)は遅延してよい — 予算逼迫時に asset_gc が打ち切られても行が durable に残り翌日収束する。orphan scan を最後に置くのは発生源が crash のみで現在 0 件のため。
+
+`LaneContext` は共通部 `{ deadlineAt }` のみに縮め、lane 固有 config(cutoffMs / graceDays 等)は route が lane closure に bind する(現行の `cutoffMs` を context に持つ形は src 固有語彙の漏れ — 2 本目追加のこの時点で直す)。
+
+## 3. `asset_gc` lane
+
+### 3.1 core の移設(挙動不変 refactor)
+
+`runReconciler` core(DI・`scripts/gc-image-assets.ts`)を **`lib/storage/asset-gc.ts` へ移設**する。app code は `scripts/` を import できない。core は無改造(fact-finding §1: core は userId を知らず deps が scope する)。`scripts/gc-image-assets.ts` は owner-deps を bind する thin CLI wrapper として**存続**(dry-run 観測・調査・緊急用。runbook `docs/audit/2026-07-16-gc-reconciler-smoke4-procedure.md` の資産を生かす)。既存 unit test は import 先変更のみ(**保証不変**)。置き場が `lib/media/` でなく `lib/storage/` なのは src-sweep と同判断(domain aggregate でなく infra 層の GC)。
+
+cron と手動 script の並走は安全: TOCTOU 防御は core 内(collect 直前の fresh refs 再読・status WHERE・404 = ok 正規化)にあり、二重実行は 404 収束する。
+
+### 3.2 user 列挙 — SECURITY DEFINER 4 本目(migration 0033)
+
+```sql
+CREATE FUNCTION public.app_list_asset_gc_user_ids() RETURNS SETOF uuid
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
+```
+
+- 返すのは **GC 作業のある user の id のみ**(3 arm の DISTINCT: ① `status IN ('deleting','deleted')` 行あり ② `unreferenced_at IS NOT NULL` 行あり ③ mark 候補あり = `status IN ('reserved','ready') AND unreferenced_at IS NULL AND NOT EXISTS refs`)。走査量 = O(作業のある user)。
+- 迂回するもの = `assets` の RLS(user_id 列挙のみ・**行データ非返却**)。安全な理由 = 露出は「GC 作業を持つ user の uuid 集合」に限定され、得た uuid で他 user の行は読めない(RLS が塞ぐ)。cron lane 専用であることを関数名コメントに明示。`REVOKE ALL FROM PUBLIC` + `GRANT EXECUTE TO recallmint_app`(0025 の 3 本と同型)。
+- 退会済 user も拾える(`users` を見ない)— 退会由来 `deleting` 行の回収に必須(arm ①)。
+
+### 3.3 per-user 実行
+
+lane は 列挙 → user ごとに **app-role deps を bind して `runReconciler` を呼ぶ**:
+
+- deps の各 DB 操作は `withTenantTx(userId, …)` の **per-op tx**(R2 I/O を tx の成功条件に混ぜない共通不変条件を維持。core の呼び順がそのまま「R2 DELETE → 確認 → 行 DELETE」を守る)。
+- 退会済 user にも tenant context は張れる(`setTenantContext` は GUC を書くだけ・`assets_tenant` に `deleted_at` 条件なし — fact-finding §5)。
+- pre-sweep guard(`checkRefsPopulated`)は per-user 評価。trip(throw)は **その user だけ skip** し summary に記録(lane の per-user catch)。
+- summary は per-user `ReconcilerSummary` を lane が集約(件数加算 + `usersProcessed` / `usersSkipped`)。`scanned`/`referenced` の母集合は「列挙された user の assets」に変わる(作業ゼロ user は列挙されず数に入らない — 全表 scan の旧意味論との差は readback の解釈のみで判定に影響しない)。
+- deadline slicing: user 境界と collect chunk 境界で `slice()` 確認(src idiom)。collect の R2 DELETE は `SWEEP_DELETE_CHUNK` 同様の chunk 並列。打ち切り時は `r2_gc_incomplete` 1 行 + 翌日継続。
+- user の処理順 = 列挙順(uuid 順)。starve 対策の順序制御は入れない(現規模で打ち切り自体が起きない見込み。§7)— 恒常的 incomplete が観測されたら再訪。
+
+### 3.4 flag の定数化(cron 経路)
+
+`--sweep` = 常に true / `--dry-run` = 常に false / `--user` = 列挙が置換 / `--grace-days` = `DEFAULT_GRACE_DAYS`(30)固定。cron 経路には override の入口自体を作らない(手動 GET の override は §5.1)。
+
+### 3.5 台帳(workflow = `asset_gc` 不変・裁定済の 2 件)
+
+| key | 4 軸 | 意味 |
+|---|---|---|
+| `r2_gc_delete`(既存) | r2 / object.delete / asset_gc / external_api_error | 不変(cron 化しても workflow は変えない — 4 軸は「どの workflow の失敗か」であり「誰が起動したか」でない) |
+| **`r2_gc_row_delete`(新)** | db / asset.row.delete / asset_gc / db_error | 行 DELETE 失敗(RESTRICT 等)。現状 logger.error のみ = cron 化で不可視になる穴を塞ぐ。1 件 1 行・quota 付き |
+| **`r2_gc_incomplete`(新)** | r2 / asset_gc.incomplete / asset_gc / incomplete(`r2_sweep_incomplete` の 4 軸に倣う) | 1 run 1 行。phase 語彙 = `deadline` / `user_error`(guard trip・user 単位 throw)。suppressed 件数同梱 |
+
+quota は src と同規律(種別ごと独立・洪水が実失敗を抑圧しない)。記帳失敗は `recordErrors` + logger(観測経路の破損を別経路で可視化)。
+
+## 4. `asset_orphan_scan` lane
+
+### 4.1 src_sweep との違い(設計の根拠)
+
+`src/` は全 object が消してよい前提(ephemeral)で age だけが判定材料。asset prefix は**行が正の判定材料**: 行がある object は参照中でありうる正当データで、絶対に触らない。lane の仕事は「行の無い object」だけを、発生窓(crop の PUT→INSERT)と誤検出(listing と INSERT の race)を排除した上で回収すること。長命レーンゆえ回収を急ぐ理由が無い — 判定はすべて保守側に倒す。
+
+### 4.2 発見と判定(三重条件 + 行不在)
+
+1. `listObjectsWithMetaBounded('users/', 10 pages)`(bounded・truncated は記録)。
+2. **key 規約**: `users/{uuidv4}/{uuidv4}.(webp|png|jpg)`(uuid は case-insensitive・拡張子/prefix は生成側固定ゆえ case-sensitive — src sweeper と同判断)。旧 `users/{uid}/src/…` 等の規約不一致は**記録のみ**(`gc-src-prefix.ts` の領分・消さない)。
+3. **age > `ORPHAN_CUTOFF_MS` = 7 日**。実測窓(crop PUT→INSERT ≤ 720s / lease TTL 15 分)の ~670 倍。src の「6h = lease の 24 倍」より大きく取るのは、長命レーンで急ぐ理由が無く、crash した prepare の残骸は恒久 garbage で待っても失うものが無いため。
+4. **live 判定**: その user に live upload operation が無いこと。src-sweep の `hasLiveUploadOperationForSweep` を `lib/storage/live-upload-check.ts` へ抽出し両 lane が同一定義を import(§8 の「同一 invariant は 1 定義」・`hasLiveUploadOperation`(UI 用 fail-open)は再利用禁止のまま)。**判定失敗(throw)= skip**。
+5. **行不在確認を DELETE 直前に**(user 単位): `withTenantTx(userId)` で候補 `object_key IN (…)` を SELECT し、**行のある key は候補から外す**(それは asset_gc の領分)。直前性は live 判定と同じ理由(listing 時点の判定を信用しない)。
+
+age > 7 日 + 行不在 + live 無しで「後から行が生える」経路は存在しない: 行の出現源は reserve(行が先)と crop(PUT 先だが窓 ≤ 720s、以後の 412-recovery は live operation を要する)のみ(fact-finding §3)。
+
+### 4.3 台帳(新 workflow = `asset_orphan_scan`)
+
+別 lane・別判定原理ゆえ workflow を分ける(4 軸相乗り禁止): **`r2_orphan_delete`**(r2 / object.delete / asset_orphan_scan / external_api_error・1 件 1 行・quota。pattern mismatch の記録もこの key に `reason` で載せる — `r2_sweep_delete` と同型)+ **`r2_orphan_incomplete`**(r2 / orphan_scan.incomplete / asset_orphan_scan / incomplete・1 run 1 行・phase = `list` / `live_check` / `list_truncated` / `deadline`)。台帳 4 entry 新設の計 = §3.5 の 2 + ここの 2。
+
+### 4.4 §11 の「期限・滞留の検知」欄を埋める
+
+row-less の**発見**(summary の `rowlessFound` / readback)と**回収**を同 lane が担う。観測範囲は listing 上限内の partial observation(src overdue と同じ限界・truncated で明示)。
+
+## 5. 手動入口
+
+### 5.1 手動 GET override(非 prod 限定・src の A1 と同型)
+
+`?graceDays=N`(整数 ≥ 0)と `?user=<uuid>` を追加。両方 **`asset_gc` lane にのみ効く**(orphan scan は対象外・listing prefix は `users/` 全体のまま)。**`VERCEL_ENV === 'production'` では両方 400**(clamp せず reject — silent なズレを作らない)。これで stg の refs↔GC smoke が CC 自走可能になり(grace 0 + user scope を endpoint から)、**cron 経路の prod grace 短縮は構造的に閉じる**。dry-run param は作らない(YAGNI: 事前観測は app role SQL で可・script の dry-run も残る)。
+
+### 5.2 手動 script の存続(論点 → 推奨 = 存続)
+
+`scripts/gc-image-assets.ts` は thin wrapper 化して残す。理由: dry-run 観測は endpoint に無い機能 / owner 経路の調査・緊急手段 / runbook 資産 / `gc-src-prefix.ts`(手動 one-shot 存続)と同じ前例。CLI の prod ガードがローカル env unset で効かない既知の穴(smoke4 手順書 §4)は**残る** — 実効境界は従来どおり運用(env 目視 + `--user` + dry-run 先行・architecture §9)。cron 経路がこの穴を持たないことが本 sprint の前進。
+
+## 6. 適用順序
+
+migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 と同経路)→ deploy(lane code)→ 手動 GET で確認 → prod は migration → deploy の同順。policies 変更なし・新表なし(runbook §13 の新表手順は非該当)。**prod 反映時は `CRON_SECRET` が Production scope に登録済みであること**(§3 sweeper と同前提・未登録は 401 でなく 500)。iso は global-setup が実 migration を適用するため 0033 が自動で入る。
+
+## 7. 初回 run の規模(実測 204 起点)
+
+初回 = mark 204 件(per-user bulk UPDATE・現 3 user)で数秒。promote 0(grace 30 日)。**30 日後に promote + collect 204 件が 1 run に集中**: DB 操作 ~600 回 ≈ 30s + R2 DELETE 204 / chunk 20 ≈ 11 chunk ≈ 数十 s → 予算 270s 内に収まる。収まらなくても incomplete 記帳 + 翌日継続で収束(行駆動 = 状態が残る)ため、平滑化・分散機構は作らない。`maxDuration = 300` 不変。
+
+## 8. 不変条件(実装が守るもの)
+
+1. R2 DELETE → success-equivalent 確認 → 行 DELETE の順序絶対(既存・core が保持)
+2. 判定失敗・age 不明・pattern 不一致・live 判定失敗 = すべて skip 側(fail-safe)
+3. **行が実在する object を orphan scan は消さない**(行不在確認は DELETE 直前・per-user)
+4. grace の prod 短縮は構造的拒否(cron = 定数のみ / 手動 GET = production 400 / CLI = 既存 parseGraceDays + 運用境界)
+5. lane は throw しない契約(summary.error に畳む・runner の per-lane catch は契約違反の backstop)
+6. 記帳失敗は recordErrors + logger(観測経路の破損を別経路で可視化)
+7. HTTP 200 = runner 走破のみ(成否は lane summary を読む)
+8. 判定原理はレーン別・統一は入口と観測のみ(§11 契約不変。asset prefix への lifecycle / src の行駆動化はしない)
+
+## 9. テスト(実装 task が TDD で書く。pin する主張)
+
+- **iso 新規 `tests/integration/pg/asset-gc.test.ts`(実 PG・証明の空白 #8 のクローズ条件)**:
+  - A/B 2 card が同一 asset を参照 → A の refs 削除 → mark 実行 → `unreferenced_at` **立たない** → B も削除 → mark で立つ → grace 0 promote → collect(deleteObject 注入)で行消滅・`reclaimed` 計上
+  - definer 関数: 作業のある user のみ返す / 作業ゼロ user を返さない / app role が EXECUTE 可
+- unit: core 移設は既存 test の import 追従のみ(**保証不変**)。lane 新規分(per-user 集約 / deadline 打ち切り / 台帳 quota / guard trip の user 単位 skip)と orphan-scan(三重条件境界 / 行あり skip / live 失敗 skip / pattern mismatch 記録のみ)は src-sweep.test.ts の idiom 踏襲
+- route: `graceDays` / `user` override の受理・下限・**production 400**(cutoffMinutes test と同型)
+- 変異 red: 新規 pin は gate 個別変異で red 実証(既存規律)
+
+## 10. やらないこと
+
+- asset prefix への lifecycle / `src/` の行駆動化(§11 禁止 2 つ)
+- dedup(据え置き不変)・mark/promote の平滑化(§7 が不要と示す)・orphan scan の dry-run mode・user 処理順の starve 制御(§3.3)・`users/` listing の全域保証(bounded + truncated 記録)
+- prod への反映判断・R2 lifecycle 実設定の readback(credential 403 のまま・別件)
+
+## 11. 変更一覧(file 粒度)
+
+| 種別 | file |
+|---|---|
+| 新規 | `drizzle/migrations/0033_*.sql`(definer 関数)/ `lib/storage/asset-gc.ts`(core 移設先 + lane)/ `lib/storage/orphan-scan.ts` / `lib/storage/live-upload-check.ts`(抽出)/ `tests/integration/pg/asset-gc.test.ts` + 各 unit test |
+| 変更 | `app/api/cron/sweep/route.ts`(LANES 3 本 + override 2 param)/ `run-lanes.ts`(LaneContext 縮小)/ `lib/storage/src-sweep.ts`(live check import 先変更)/ `lib/integration-failures.ts`(catalog 4 entry)/ `scripts/gc-image-assets.ts`(thin wrapper 化)/ `scripts/gc-image-assets.test.ts`(import 追従) |
+| docs | `docs/architecture.md` §11(レーン表: asset の二次回収 = cron・検知 = orphan scan)/ `docs/ops/r2-key-inventory.md`(誰が消す列)/ `docs/ops/scripts-and-seed.md`(script の位置づけ) |
+
+## 12. 論点(OT 裁定待ち・spec 確定に必要)
+
+1. **手動 script 存続**(§5.2)— 推奨 = 存続(thin wrapper)。廃止なら runbook も同時に廃止対象。
+2. **orphan cutoff = 7 日**(§4.2)— 保守側の任意定数。短縮の実益は無い認識。
+3. **手動 GET param 2 つ**(§5.1・graceDays / user・非 prod 限定)— endpoint 表面積の増加と CC 自走 smoke の交換。
+4. **definer 関数 = 作業 predicate 版**(§3.2)— 単純版(assets を持つ全 user)より露出小・SQL は複雑。
+5. **orphan lane の workflow 語彙新設**(§4.3・`asset_orphan_scan`)— `asset_gc` 相乗りとの二択。
