@@ -2,7 +2,7 @@
 
 > fact-finding = `docs/audit/2026-08-10-asset-lane-gc-factfinding.md`(数値・根拠 path はそちら)。
 > OT 裁定済(蒸し返さない): ① user 列挙 = SECURITY DEFINER 4 本目 ② row-less 判定 = 三重条件 ③ 台帳 2 件追加 ④ iso test を scope に含める ⑤ 退会由来 grace = 無し(cron 化が答え)。
-> status: **draft(OT 承認待ち)**
+> status: **確定(2026-08-10 OT 承認・論点 5 件裁定済 = §12)**。以後、実装フェーズでの書き換え禁止(仕様変更は停止して OT 相談)。
 
 ## 1. 目的
 
@@ -94,7 +94,7 @@ row-less の**発見**(summary の `rowlessFound` / readback)と**回収**を同
 
 ### 5.1 手動 GET override(非 prod 限定・src の A1 と同型)
 
-`?graceDays=N`(整数 ≥ 0)と `?user=<uuid>` を追加。両方 **`asset_gc` lane にのみ効く**(orphan scan は対象外・listing prefix は `users/` 全体のまま)。**`VERCEL_ENV === 'production'` では両方 400**(clamp せず reject — silent なズレを作らない)。これで stg の refs↔GC smoke が CC 自走可能になり(grace 0 + user scope を endpoint から)、**cron 経路の prod grace 短縮は構造的に閉じる**。dry-run param は作らない(YAGNI: 事前観測は app role SQL で可・script の dry-run も残る)。
+`?graceDays=N`(整数 ≥ 0)と `?user=<uuid>` を追加。両方 **`asset_gc` lane にのみ効く**(orphan scan は対象外・listing prefix は `users/` 全体のまま)。**`VERCEL_ENV === 'production'` では両方 400**(clamp せず reject — silent なズレを作らない)。**override の実効値は lane summary に必ず含める**(`graceDaysOverride` / `userScope` — override run と既定 run を readback で区別できること。src の `cutoffOverrideMinutes` と同型・OT 裁定 3)。これで stg の refs↔GC smoke が CC 自走可能になり(grace 0 + user scope を endpoint から)、**cron 経路の prod grace 短縮は構造的に閉じる**。dry-run param は作らない(YAGNI: 事前観測は app role SQL で可・script の dry-run も残る)。
 
 ### 5.2 手動 script の存続(論点 → 推奨 = 存続)
 
@@ -123,7 +123,7 @@ migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 �
 
 - **iso 新規 `tests/integration/pg/asset-gc.test.ts`(実 PG・証明の空白 #8 のクローズ条件)**:
   - A/B 2 card が同一 asset を参照 → A の refs 削除 → mark 実行 → `unreferenced_at` **立たない** → B も削除 → mark で立つ → grace 0 promote → collect(deleteObject 注入)で行消滅・`reclaimed` 計上
-  - definer 関数: 作業のある user のみ返す / 作業ゼロ user を返さない / app role が EXECUTE 可
+  - definer 関数の**両方向 pin**(OT 裁定 4): ① 作業のある user が**返る**(3 arm 各々に fixture: deleting 行 / marked 行 / mark 候補)② 作業の無い user が**返らない**(referenced ready のみの user)。片方向だけでは predicate の緩み/締まりの一方しか検出できない — 返らない側の欠陥は「その user の作業が永遠に残る」silent skip に直結するため両方向必須。+ app role が EXECUTE 可
 - unit: core 移設は既存 test の import 追従のみ(**保証不変**)。lane 新規分(per-user 集約 / deadline 打ち切り / 台帳 quota / guard trip の user 単位 skip)と orphan-scan(三重条件境界 / 行あり skip / live 失敗 skip / pattern mismatch 記録のみ)は src-sweep.test.ts の idiom 踏襲
 - route: `graceDays` / `user` override の受理・下限・**production 400**(cutoffMinutes test と同型)
 - 変異 red: 新規 pin は gate 個別変異で red 実証(既存規律)
@@ -142,10 +142,17 @@ migration 0033(function・additive・旧コード無影響)→ stg 反映(0025 �
 | 変更 | `app/api/cron/sweep/route.ts`(LANES 3 本 + override 2 param)/ `run-lanes.ts`(LaneContext 縮小)/ `lib/storage/src-sweep.ts`(live check import 先変更)/ `lib/integration-failures.ts`(catalog 4 entry)/ `scripts/gc-image-assets.ts`(thin wrapper 化)/ `scripts/gc-image-assets.test.ts`(import 追従) |
 | docs | `docs/architecture.md` §11(レーン表: asset の二次回収 = cron・検知 = orphan scan)/ `docs/ops/r2-key-inventory.md`(誰が消す列)/ `docs/ops/scripts-and-seed.md`(script の位置づけ) |
 
-## 12. 論点(OT 裁定待ち・spec 確定に必要)
+## 12. 論点の裁定(OT・2026-08-10・確定)
 
-1. **手動 script 存続**(§5.2)— 推奨 = 存続(thin wrapper)。廃止なら runbook も同時に廃止対象。
-2. **orphan cutoff = 7 日**(§4.2)— 保守側の任意定数。短縮の実益は無い認識。
-3. **手動 GET param 2 つ**(§5.1・graceDays / user・非 prod 限定)— endpoint 表面積の増加と CC 自走 smoke の交換。
-4. **definer 関数 = 作業 predicate 版**(§3.2)— 単純版(assets を持つ全 user)より露出小・SQL は複雑。
-5. **orphan lane の workflow 語彙新設**(§4.3・`asset_orphan_scan`)— `asset_gc` 相乗りとの二択。
+1. **手動 script = 存続(thin wrapper 化)**。dry-run 観測は endpoint に無い機能・runbook 資産。CLI prod ガードの穴は §13 に記録(修理しない)。
+2. **orphan cutoff = 7 日**。実測窓の ~670 倍・短縮の実益なし。保守側は長命レーンの性質に合う。
+3. **手動 GET param 2 つ承認**(graceDays / user・非 prod 限定・production 400)。**summary に実効値必須**(§5.1 に反映済)。
+4. **definer 関数 = 作業 predicate 版**。露出最小を SQL の複雑さより優先。**iso で両方向 pin 必須**(§9 に反映済)。
+5. **workflow 語彙 = `asset_orphan_scan` 新設**。4 軸相乗り禁止どおり。workflow は計 8 値になる。
+
+## 13. 限界(受容・記録)
+
+- **CLI(手動 script)の prod ガードはローカル env unset で効かない**(smoke4 手順書 §4 の既知の穴)。修理しない — 破壊 script の機械境界は証明の空白 #5 の別件で、実効境界は従来どおり運用(env 目視 + `--user` + dry-run 先行)。**cron 経路はこの穴を持たない**(§8-4)ことが本 sprint の前進。
+- orphan scan の観測範囲は listing 上限(10 page)内の partial observation(truncated で明示・src overdue と同じ限界)。
+- prod bucket の中身・R2 lifecycle 実設定は未確認のまま(credential 403・別件)。
+- 30 日後の初回 promote+collect 集中は §7 の見積りに依存(外れても incomplete + 翌日継続で収束するため hard limit ではない)。
