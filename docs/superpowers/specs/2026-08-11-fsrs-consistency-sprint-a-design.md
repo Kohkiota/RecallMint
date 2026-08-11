@@ -1,6 +1,6 @@
-# FSRS 整合 Sprint A — 設計 spec(r3・確定)
+# FSRS 整合 Sprint A — 設計 spec(r4・確定)
 
-- 状態: **確定**(r2 への OT 条件付き承認 3 点 + 付随修正を反映。以後は spec 凍結 — 仕様変更が要る場合は停止して OT 相談)。次工程 = writing-plans。
+- 状態: **確定・凍結**(r3 = OT 条件付き承認 3 点を反映 / **r4 = plan 段階 Codex cross-check 由来の 2 点を OT 裁定で amend** — §5 の day 行ロック追加・§2.1 の tx throw 分類。以後の仕様変更は停止して OT 相談)。実装 plan = `docs/superpowers/plans/2026-08-11-fsrs-consistency-sprint-a.md`。
 - 事実基盤: `docs/audit/2026-08-11-fsrs-consistency-factfinding.md`(第 1 弾)/ `2026-08-11-review-domain-schema-inventory.md`(第 2 弾)/ `2026-08-11-db-schema-full-inventory.md`(第 3 弾)。commit `1906c71`。
 - Codex cross-check: `docs/codex/2026-08-11-plan-fsrs-sprint-a-spec.md`(1 パス)。r1→r2 の変更は Codex 指摘由来を「(Codex #n)」で帰属表示。
 - 前提: ユーザー 0(stg/prod とも実データ保護不要)。互換レイヤー・backfill なしでクリーン形へ直行(§10)。
@@ -66,7 +66,12 @@ res:
                                       // failed = event_id 衝突(所有権 or 内容不一致・§2.2 手順 4)。
                                       // client は受領時に 'failed' へ terminal 化(§3)
   400                                  // schema 不正(client 送信前検証の突破 = client/server 不一致バグ)
-  503 + Retry-After                    // tx throw(transient・全体再送)— 旧「200 + 全件 failed」を廃止
+  503 + Retry-After / 400              // tx throw は classifyBulkError で分類(r4):
+                                       //   transient(DB conflict / lock timeout / connection / unknown)
+                                       //     → 503 + Retry-After(全体再送)
+                                       //   permanent-4xx(CHECK 違反・SQL shape 不良など実装/データ欠陥)
+                                       //     → 400(client は再送しない = 恒久バグの無限 retry を作らない)
+                                       // 旧「200 + 全件 failed」は廃止
   401 / 429                            // 既存どおり
 ```
 
@@ -87,7 +92,7 @@ res:
 6. cards UPDATE(既存 VALUES join・count-mismatch throw 維持・`::double precision`)。
 7. `UPDATE answer_events SET applied = true WHERE event_id IN (applied 集合)`。
 8. study_days 再集計(§5)。
-9. tx throw → rollback → **503**(§2.1)。
+9. tx throw → rollback → `classifyBulkError` で **503 + Retry-After / 400** に分岐(§2.1・r4)。
 
 ### 2.3 clamp(論点 2 の確定)
 
@@ -178,7 +183,13 @@ res:
   ```
 
   min〜max の連続 range は**採らない**(遠く離れた 2 event で間の全履歴を走査し「event 数で bound」が崩れるため — r2 の誤り)。VALUES 列挙により走査は対象 day の range scan × day 数に固定され、**bound = day 数 ≤ event 数(≤1000)**。結果行を UPSERT(絶対値 set)。day ごとの N+1 はしない。
-- **ゼロ件 day は発生しない**(再集計対象 = 今回 applied が属する day のみ・applied/answered_at/user_id は不変 — §1.1 の applied 不変契約が前提。event の削除・訂正・修復を将来導入する場合は full-rebuild で対応 = 非スコープに明記。Codex 指摘 10)。
+- **day 行ロックによる cross-card 直列化(r4 追加・必須)**: card 行ロック(§2.2 手順 3)は**同一 card しか直列化しない**ため、同一 user・**異なる card**・同一 JST day の 2 flush が並走すると、双方が相手の未 commit event を含まない集計値を作り `study_days(user_id, day)` を後勝ちで上書きしうる(full 再集計にしても消えない別種の lost update)。したがって再集計の**前**に対象 day 行を確保しロックする:
+  1. 対象 day を **昇順ソート**し `INSERT INTO study_days (user_id, day, …) VALUES … ON CONFLICT DO NOTHING`(行を必ず存在させる。値は 0 でよい — 直後に絶対値 UPDATE する)
+  2. 同じ昇順で `SELECT … WHERE user_id = ? AND day IN (…) ORDER BY day FOR UPDATE`
+  3. 上記 CTE 再集計 → 絶対値 UPDATE
+  これにより後続 tx の再集計 SELECT は先行 tx の commit 後に走り、正しい合計を読む。
+  **ロック順序の全 tx 共通規約**: `cards`(ID 昇順)→ `study_days`(day 昇順)。ingest は全経路この順序でのみロックを取るため deadlock は生じない(publish-prepared の ID 順規律と同型)。
+- **ゼロ件 day は発生しない**(再集計対象 = 今回 applied が属する day のみ・applied/answered_at/user_id は不変 — §1.1 の applied 不変契約が前提。event の削除・訂正・修復を将来導入する場合は full-rebuild で対応 = 非スコープに明記。Codex 指摘 10)。上記手順 1 で先に 0 行を作るが、手順 3 の UPDATE が必ず同 tx 内で実値に置き換えるため、0 行が残ることはない(tx throw 時は rollback で消える)。
 - **correct_count の定義 = is_correct**(rating>=2 から変更・裁定)。
 - **JST 1 定義**: day 導出は `todayInJst`(lib/jst.ts)のみ。SQL の `AT TIME ZONE 'Asia/Tokyo'` は全廃し、新 pure 関数 `jstDayRange(day)` の timestamptz 境界を bind(JS/SQL 二重実装の解消 — 第 2 弾 §2.8)。境界(日跨ぎ前後 1ms・閏日)は unit で pin(Codex 独立 10)。`lib/db/in-date-list.ts` は唯一の使用元消滅につき削除。
 - 性能: `(user_id, answered_at)` の range scan × 対象 day 数(VALUES への nested loop)。1 user × 1 day 数百 event 想定 — **想定であって保証ではない**(Codex 指摘 11)ため、iso で 1000 event flush の所要を計測し記録する(閾値 gate にはしない)。
@@ -278,6 +289,11 @@ red 検証(test-only 増分): gate を**個別に**変異(FOR UPDATE 外し / �
 - (ii) §3 の終端規則修正: **failed[] 受領 event は 'failed' に terminal 化**(r2 の「pending 維持」は「残る pending は transient のみ」を偽にする誤りだった)。
 - (iii) §5 の集計 SQL を **VALUES CTE + JOIN + GROUP BY** に確定(r2 の day_bucket GROUP BY は AT TIME ZONE 全廃方針下で成立せず、min〜max 連続 range は bound 主張を崩す誤りだった)。
 - 付随: §2.4「到着順」= card 行ロック取得順(serialization 順)と厳密化 / §0 再現性の限定を明確化(保証 = 入力の監査可能性 + 現行コードによる再計算の 2 点)。
+
+**r4 amend(2026-08-11・plan 段階 Codex cross-check 由来・OT 裁定済み)**:
+
+- (iv) **§5 に day 行ロックを追加**(Codex plan 独立 1 = 真の指摘)。card 行ロックは同一 card しか直列化せず、異なる card・同一 day の並走で study_days が後勝ち上書きになる — r3 の「full 再集計だから加算競合が消える」はこのケースで偽だった。ロック順序規約 `cards(ID 昇順)→ study_days(day 昇順)` を全 tx 共通として明記。
+- (v) **§2.1 の tx throw を classifyBulkError 分類に修正**(Codex plan 独立 9)。一律 503 は permanent な実装/データ欠陥まで client に永久再送させる。transient→503+Retry-After / permanent-4xx→400。
 
 以下は r2 時点の乖離・確認点の記録(全て承認済み):
 
