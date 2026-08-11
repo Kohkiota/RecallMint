@@ -5,6 +5,10 @@
 - 前提: `docs/audit/2026-08-11-fsrs-consistency-factfinding.md`(第 1 弾)は既知。重複は最小限にし、参照で示す。
 - 実 DB(stg/prod)の行数・実データは**未確認**(migration は `_journal.json` 34 本・最終 `0033_asset_gc_user_ids` まで生成済み。stg/prod への適用状態そのものは repo からは読めない — 未確認)。
 
+> **訂正(2026-08-11・Sprint A T2 実装中に発覚)**: 本 doc の **§2.8 と §6-12 が主張する「streak 計算の二重実装」は偽**。実際には `lib/streak-core.ts` が既に存在し(commit `c79b1af`「computeStreak+addDays を lib/streak-core.ts へ hoist(P1 Task2)」)、server(`lib/db/streak.ts:3`)・client(`lib/client/streak.ts:16`)の**両方がそこから import している = 既に 1 定義**だった。
+> 誤りの原因: `dashboard-stats.tsx:12-14` の「server 版と同仕様で port した」という**コメントだけを根拠に判定し、実際の import 文を確認しなかった**(コメントが hoist 前のまま stale だった)。本 doc 自身が §8-5 で「comment を信じると現物を誤読する」と指摘しておきながら同じ罠を踏んだ形。
+> **帰結**: spec §7.2 の「二重実装の解消」は不要作業と判明し、Sprint A から除外(spec 側も amend 済み)。§2.8 の表の該当行・§6-12 は**無効**として読むこと。なお同 §2.8 の「JST 日付バケツ(JS `todayInJst` vs SQL `AT TIME ZONE`)の 2 実装」は現物確認済みで**有効**(Sprint A で解消対象のまま)。
+
 ---
 
 ## 1. 対象表の現物 schema 全量

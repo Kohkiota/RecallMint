@@ -1,6 +1,6 @@
-# FSRS 整合 Sprint A — 設計 spec(r4・確定)
+# FSRS 整合 Sprint A — 設計 spec(r5・確定)
 
-- 状態: **確定・凍結**(r3 = OT 条件付き承認 3 点を反映 / **r4 = plan 段階 Codex cross-check 由来の 2 点を OT 裁定で amend** — §5 の day 行ロック追加・§2.1 の tx throw 分類。以後の仕様変更は停止して OT 相談)。実装 plan = `docs/superpowers/plans/2026-08-11-fsrs-consistency-sprint-a.md`。
+- 状態: **確定・凍結**(r3 = OT 条件付き承認 3 点を反映 / r4 = plan 段階 Codex cross-check 由来の 2 点を OT 裁定で amend — §5 の day 行ロック追加・§2.1 の tx throw 分類 / **r5 = 実装中に判明した事実誤認の訂正・OT 裁定で §7.2 の streak 統合を撤回**。以後の仕様変更は停止して OT 相談)。実装 plan = `docs/superpowers/plans/2026-08-11-fsrs-consistency-sprint-a.md`。
 - 事実基盤: `docs/audit/2026-08-11-fsrs-consistency-factfinding.md`(第 1 弾)/ `2026-08-11-review-domain-schema-inventory.md`(第 2 弾)/ `2026-08-11-db-schema-full-inventory.md`(第 3 弾)。commit `1906c71`。
 - Codex cross-check: `docs/codex/2026-08-11-plan-fsrs-sprint-a-spec.md`(1 パス)。r1→r2 の変更は Codex 指摘由来を「(Codex #n)」で帰属表示。
 - 前提: ユーザー 0(stg/prod とも実データ保護不要)。互換レイヤー・backfill なしでクリーン形へ直行(§10)。
@@ -8,7 +8,7 @@
 
 ## 0. 目的と「正本」の意味の限定
 
-復習イベントの正本を answer_events 1 表に一本化し、同一 card への FSRS 適用を DB 行ロックで直列化、時系列逆転 event を順序ガードで隔離する。reviews / study_sessions は廃止。24h drop・二重実装(streak / JST / 初期値)・正誤二義性を同時に解消する。
+復習イベントの正本を answer_events 1 表に一本化し、同一 card への FSRS 適用を DB 行ロックで直列化、時系列逆転 event を順序ガードで隔離する。reviews / study_sessions は廃止。24h drop・二重実装(JST day 導出 / 初期 FSRS 値。**streak は r5 で撤回 — 既に 1 定義だった・§7.2**)・正誤二義性を同時に解消する。
 
 **正本の意味(Codex 独立 3 / 指摘 8,9,26 を受けて限定・r3 で明確化)**: answer_events が保証するのは 2 点のみ — **① 入力の監査可能性**(全回答 event の恒久記録)と **② 現行コードによる再計算可能性**。cards の **bit-exact な過去再現(決定的 rebuild)は保証しない**。崩れる要因は同時刻 event の適用順(= §2.4 のロック取得順)だけでなく、**scheduler(ts-fsrs)の版・パラメータ・ライブラリ更新**が含まれる — つまり同時刻が絡まない普通の履歴でも、コードが更新されれば過去状態の bit-exact 再現は不能になる。rebuild コマンドは非スコープ(§11)。ReviewLog スナップショット不採用の裁定はこの限定の上で成立する。
 
@@ -211,9 +211,11 @@ res:
 - `lib/cards/domain/initial-fsrs-state.ts`(pure・**now を引数注入** — Codex 独立 14)を新設し、**3 生成点**(client `build-new-client-card` / server `applyCardCreateWithId` / OCR `saveExtractedCards`)を全てここからの明示 set に統一。client optimistic は client 時刻・server は server 時刻(reconcile-on-pull で収束 — 現行と同じ)。cards の FSRS 列 DB default は撤去。ts-fsrs `createEmptyCard` との一致は unit test で pin(client bundle に ts-fsrs を入れない)。
 - **default 撤去の影響網羅**(Codex 指摘 19): production 3 経路に加え、tests/fixtures・`scripts/seed-perf-exam.ts`・iso setup の cards INSERT 全数を plan の探索 task で洗い、必須列供給へ更新する。
 
-### 7.2 streak の 1 定義
+### 7.2 streak の 1 定義 — **本 sprint 作業なし(r5 で撤回)**
 
-- `computeStreak` + `addDays` + window 定数を `lib/reviews/domain/streak.ts`(pure)へ移設し、`lib/db/streak.ts` / `lib/client/streak.ts` は I/O + import に縮退。`getReviewStatsForUser`(fallback route 用)は維持。
+- **前提が誤りだった**: `computeStreak` / `addDays` は既に `lib/streak-core.ts` に hoist 済み(commit `c79b1af`)で、server(`lib/db/streak.ts:3`)・client(`lib/client/streak.ts:16`)の両方がそこから import している = **1 定義は既に成立**。r1〜r4 の「二重実装の解消」は、`dashboard-stats.tsx` の stale なコメント(「同仕様で port した」)を現物確認せず採用した fact-finding 第 2 弾 §2.8 / §6-12 の誤りに基づく(同 doc に訂正注記済み)。
+- したがって本 sprint では **streak に一切触れない**。`lib/streak-core.ts` の配置(`lib/reviews/domain/` 配下でない)は欠陥ではなく配置の好みの問題で、扱うなら Sprint B(整理)の範疇。
+- なお §5 の **JST day 導出の 1 定義化(JS `todayInJst` vs SQL `AT TIME ZONE` の 2 実装解消)は現物確認済みで有効**であり、本 sprint のスコープに残る。
 
 ---
 
@@ -294,6 +296,10 @@ red 検証(test-only 増分): gate を**個別に**変異(FOR UPDATE 外し / �
 
 - (iv) **§5 に day 行ロックを追加**(Codex plan 独立 1 = 真の指摘)。card 行ロックは同一 card しか直列化せず、異なる card・同一 day の並走で study_days が後勝ち上書きになる — r3 の「full 再集計だから加算競合が消える」はこのケースで偽だった。ロック順序規約 `cards(ID 昇順)→ study_days(day 昇順)` を全 tx 共通として明記。
 - (v) **§2.1 の tx throw を classifyBulkError 分類に修正**(Codex plan 独立 9)。一律 503 は permanent な実装/データ欠陥まで client に永久再送させる。transient→503+Retry-After / permanent-4xx→400。
+
+**r5 amend(2026-08-11・実装 T2 で発覚・OT 裁定済み)**:
+
+- (vi) **§7.2 の streak 統合を撤回**。前提だった「二重実装」が偽で、`lib/streak-core.ts`(commit `c79b1af`)で**既に 1 定義**だった。誤りの出所 = fact-finding 第 2 弾 §2.8/§6-12 が `dashboard-stats.tsx` の stale コメントのみを根拠に判定し import 現物を未確認だったこと(同 doc に訂正注記済み)。T2 で実装された移設は revert し、**本 sprint では streak に触れない**。§0 の「二重実装」列挙からも streak を除外。§7.1(初期 FSRS 値)と §5(JST day 導出)は現物確認済みで有効なまま。
 
 以下は r2 時点の乖離・確認点の記録(全て承認済み):
 
