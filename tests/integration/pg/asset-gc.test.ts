@@ -24,6 +24,7 @@ import { closeDb, getDb } from '@/lib/db'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { assets, cardAssetRefs, cards, exams, users } from '@/lib/db/schema'
 import { runReconciler, buildReconcilerDeps } from '@/lib/storage/asset-gc'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 
 import {
   closeFixtureOwnerDb,
@@ -94,6 +95,7 @@ async function seedReferencedAsset(userId: string): Promise<string> {
       { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
     ],
     correctAnswerIds: ['a'],
+    ...initialFsrsState(new Date()),
   })
   await owner
     .insert(cardAssetRefs)
@@ -151,6 +153,7 @@ async function seedSharedAssetTwoCards(label: string): Promise<{
         { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
       ],
       correctAnswerIds: ['a'],
+      ...initialFsrsState(new Date()),
     })
     await owner
       .insert(cardAssetRefs)
@@ -419,6 +422,7 @@ describe('asset GC cron — Task 8: A/B shared-asset refs↔GC 整合 pin(実 SQ
         { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
       ],
       correctAnswerIds: ['a'],
+      ...initialFsrsState(new Date()),
     })
     await owner
       .insert(cardAssetRefs)

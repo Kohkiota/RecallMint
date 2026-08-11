@@ -13,6 +13,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb } from '@/lib/db'
 import { cards, users } from '@/lib/db/schema'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 
 import { asTenant } from './setup/as-tenant'
 import { assertRejectsWithRlsViolation } from './setup/rls-assert'
@@ -59,6 +60,7 @@ describe('RLS per-command', () => {
           questionText: 'Q?',
           options: CARD_OPTIONS,
           correctAnswerIds: ['a'],
+          ...initialFsrsState(new Date()),
         }),
       )
       const inserted = await owner
@@ -81,6 +83,7 @@ describe('RLS per-command', () => {
             questionText: 'Q?',
             options: CARD_OPTIONS,
             correctAnswerIds: ['a'],
+            ...initialFsrsState(new Date()),
           }),
         ),
       )

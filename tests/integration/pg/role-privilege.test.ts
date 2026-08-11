@@ -14,6 +14,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb, getDb } from '@/lib/db'
 import { cards } from '@/lib/db/schema'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 
 import { asTenant } from './setup/as-tenant'
 import {
@@ -157,6 +158,7 @@ describe('role privilege (least-privilege structural proof)', () => {
             { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
           ],
           correctAnswerIds: ['a'],
+          ...initialFsrsState(new Date()),
         })
 
         const inserted = await db

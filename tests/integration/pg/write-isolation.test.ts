@@ -159,9 +159,16 @@ describe('write isolation (W1)', () => {
   // count-mismatch throw (session-repository.ts の安全網)。A 自身は resolve し
   // 実 DB の値が書き換わる。
   describe('applyCardFinalStates', () => {
+    // stability / difficulty は double precision 化(Task 3・spec §1.3、2 列を
+    // 1 つの変更として扱う)の実証 pin に使う値。5.5 は単精度 (real, IEEE754
+    // float32) でも正確に表現できてしまうため(real cast でも toBe(5.5) が
+    // 通ってしまい pin として機能しない)、単精度の 24bit 仮数部を超える有効桁を
+    // 持つ値を選ぶ(real cast だと丸められ、double precision cast だとそのまま
+    // 保たれる)。difficulty の 3.3 も同じ理由で区別できる値
+    // (Math.fround(3.3) = 3.299999952316284 ≠ 3.3)。
     const sampleFinalState: ReplayCardState = {
       due: new Date('2030-01-01T00:00:00.000Z'),
-      stability: 5.5,
+      stability: 5.123456789012345,
       difficulty: 3.3,
       elapsedDays: 10,
       scheduledDays: 20,
@@ -185,10 +192,14 @@ describe('write isolation (W1)', () => {
       )
 
       const rows = await getFixtureOwnerDb()
-        .select({ stability: cards.stability })
+        .select({ stability: cards.stability, difficulty: cards.difficulty })
         .from(cards)
         .where(eq(cards.id, fixture.a.cardId))
-      expect(rows[0]?.stability).toBeCloseTo(5.5)
+      // 厳密一致(Task 3): double precision 化が実際に効いていることの pin。
+      // stability / difficulty 双方の cast を個別に ::real へ戻す変異でそれぞれ
+      // fail することを red 検証済み(task-3-report.md)。
+      expect(rows[0]?.stability).toBe(5.123456789012345)
+      expect(rows[0]?.difficulty).toBe(3.3)
     })
 
     it('does not update tenant B card via tenant A context (negative)', async () => {

@@ -92,6 +92,7 @@ import {
   cardTags,
 } from '@/lib/db/schema'
 import type { CardOption } from '@/lib/db/schema'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 
 // ---------------------------------------------------------------------------
 // CLI args parser (--key=value / --flag pattern)
@@ -506,7 +507,11 @@ async function main(): Promise<void> {
     questionText: string
     options: CardOption[]
     correctAnswerIds: string[]
-  }
+  } & ReturnType<typeof initialFsrsState>
+
+  // FSRS 列は DB default が無い(Task 3)ため、1 定義(initialFsrsState)から明示 set
+  // する。seed 対象の全 card で共用(due は「この seed 実行時点」で揃えば足りる)。
+  const fsrsDefaults = initialFsrsState(new Date())
 
   const cardRows: CardRow[] = []
   for (let i = 0; i < cardCount; i++) {
@@ -538,6 +543,7 @@ async function main(): Promise<void> {
       questionText,
       options: shuffledOpts,
       correctAnswerIds: [correctId],
+      ...fsrsDefaults,
     })
   }
 

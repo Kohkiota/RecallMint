@@ -16,6 +16,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb, getDb } from '@/lib/db'
 import { cards } from '@/lib/db/schema'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 
 import { asTenant } from './setup/as-tenant'
 import { assertRejectsWithP0RLS } from './setup/rls-assert'
@@ -78,6 +79,7 @@ describe('RLS tenant context: isolation across tx + loud on missing context', ()
             questionText: 'Q?',
             options: CARD_OPTIONS,
             correctAnswerIds: ['a'],
+            ...initialFsrsState(new Date()),
           })
           throw new Error('boom')
         }),
@@ -130,6 +132,7 @@ describe('RLS tenant context: isolation across tx + loud on missing context', ()
           questionText: 'Q?',
           options: CARD_OPTIONS,
           correctAnswerIds: ['a'],
+          ...initialFsrsState(new Date()),
         }),
       )
     })

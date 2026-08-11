@@ -36,6 +36,7 @@ import {
   users,
   type CardImage,
 } from '@/lib/db/schema'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 import type { PreparedCard } from '@/lib/ocr/prepared-schema'
 
 import { closeFixtureOwnerDb, getFixtureOwnerDb, truncateAllUserTables } from './setup/fixture'
@@ -402,6 +403,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
       questionText: 'pre?',
       options: [{ id: 'a', uid: randomUUID(), text: 'A', is_correct: true }],
       correctAnswerIds: ['a'],
+      ...initialFsrsState(new Date()),
     })
 
     await expect(

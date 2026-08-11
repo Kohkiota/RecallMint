@@ -19,6 +19,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { cards, exams, tombstones, type CardOption } from '@/lib/db/schema'
 import type { DB } from '@/lib/db'
 import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 import { bumpExamCardCount } from '@/lib/cards/card-count'
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,9 @@ export async function applyCardCreateWithId(
 
   // 3. cards INSERT: id = client 生成 cardId
   //    ON CONFLICT (id) DO NOTHING — 同 cardId の再送は静かにスキップ
+  //    FSRS / 学習統計列は DB default が無い(Task 3)ため、1 定義(initialFsrsState)
+  //    から明示 set する。due は server 時刻(client optimistic は client 時刻、
+  //    reconcile-on-pull で収束 — spec §7.1)。
   const inserted = await tx
     .insert(cards)
     .values({
@@ -100,6 +104,7 @@ export async function applyCardCreateWithId(
       correctAnswerIds,
       explanationText,
       memo,
+      ...initialFsrsState(new Date()),
     })
     .onConflictDoNothing({ target: cards.id })
     .returning({ id: cards.id })

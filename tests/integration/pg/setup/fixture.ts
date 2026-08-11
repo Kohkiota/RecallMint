@@ -9,6 +9,7 @@ import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 
 import { getDb } from '@/lib/db'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 import {
   aiUsageUsers,
   answerEvents,
@@ -212,6 +213,7 @@ async function seedTenant(
       { id: 'b', uid: randomUUID(), text: 'opt b', is_correct: false },
     ],
     correctAnswerIds: ['a'],
+    ...initialFsrsState(now),
   })
   await db
     .insert(tagOptions)

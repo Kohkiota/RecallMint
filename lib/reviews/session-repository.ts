@@ -143,7 +143,7 @@ export async function applyCardFinalStates(
     // timestamptz (due / last_review) は ISO string 化してから embed (Drizzle #5789、
     // toPgTimestamptz 参照)。 数値 / boolean / uuid はそのまま bind 可。
     const rows = [...finalStates.entries()].map(([cardId, final]) =>
-      sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::real, ${final.difficulty}::real, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
+      sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::double precision, ${final.difficulty}::double precision, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
     )
     const valuesList = sql.join(rows, sql`, `)
 

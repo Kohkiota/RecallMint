@@ -206,6 +206,7 @@ export async function publishPreparedUploadTx(
     userId,
     examId,
     sourceDocumentId,
+    now: new Date(),
   })
   const customPropsById: Record<string, PreparedCard['customProps']> = {}
   for (const card of cards) customPropsById[card.cardId] = card.customProps

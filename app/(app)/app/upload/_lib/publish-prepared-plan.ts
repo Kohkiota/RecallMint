@@ -15,6 +15,7 @@
 
 import { cards, type CardImage, type CardOption } from '@/lib/db/schema'
 import { imagesSchema } from '@/lib/validation/card'
+import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 
 // ---------------------------------------------------------------------------
@@ -204,10 +205,13 @@ function toCardOption(o: PreparedCard['options'][number]): CardOption {
  * 再正規化せず payload の値をそのまま使う・spec §5.4)。 images は planPublish が
  * 決めた採用 image(crop 成功・≤10 cap 後)。 option は camelCase→snake_case 変換。
  */
+// now は呼出元が注入する(Task 3: FSRS 列の DB default 撤去に伴い、1 定義
+// initialFsrsState から明示 set する。純関数のまま保つため Date.now() を内部で
+// 呼ばない — initialFsrsState 自体の「now を引数注入」方針と揃える)。
 export function buildCardRows(
   preparedCards: readonly PreparedCard[],
   cardImagesByCardId: Record<string, CardImage[]>,
-  ctx: { userId: string; examId: string; sourceDocumentId: string | null },
+  ctx: { userId: string; examId: string; sourceDocumentId: string | null; now: Date },
 ): Array<typeof cards.$inferInsert> {
   return preparedCards.map((card) => ({
     id: card.cardId,
@@ -222,6 +226,7 @@ export function buildCardRows(
     explanationText: card.explanationText,
     memo: card.memo,
     images: cardImagesByCardId[card.cardId] ?? [],
+    ...initialFsrsState(ctx.now),
   }))
 }
 

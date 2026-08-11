@@ -27,7 +27,9 @@ import { sql } from 'drizzle-orm'
 import {
   bigint,
   boolean,
+  check,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -293,7 +295,8 @@ export const exams = pgTable(
 // ---------------------------------------------------------------------------
 // cards (mcq メインテーブル、words を置換)
 // hard delete (deleted_at なし、Sprint A-2 確定)。 FSRS カラム命名は plan00
-// 踏襲 (state integer / difficulty real / last_review)。 source_documents →
+// 踏襲 (state integer / difficulty double precision / last_review。 real →
+// double precision は FSRS 整合 Sprint A Task 3・spec §1.3)。 source_documents →
 // cards は SET NULL (OCR 元削除しても抽出 card は保持)。
 // ---------------------------------------------------------------------------
 export const cards = pgTable(
@@ -324,21 +327,27 @@ export const cards = pgTable(
       .default(sql`'[]'::jsonb`)
       .$type<CardImage[]>(),
     // 学習統計 (デノーマライズ、 mcq 新規追加)
-    answered: boolean('answered').notNull().default(false),
+    // FSRS 整合 Sprint A Task 3(spec §1.3 / §7.1): この block の DB default を撤去。
+    // 初期値は lib/cards/domain/initial-fsrs-state.ts の 1 定義から全 insert 経路が
+    // 明示 set する(default 撤去済 = 供給漏れは INSERT 時 NOT NULL 違反で loud fail)。
+    answered: boolean('answered').notNull(),
     // NULL = 未回答
     lastCorrect: boolean('last_correct'),
-    currentStreak: integer('current_streak').notNull().default(0),
+    currentStreak: integer('current_streak').notNull(),
     // FSRS 状態 (plan00 既存命名踏襲)
-    due: timestamp('due', { withTimezone: true }).notNull().defaultNow(),
-    stability: real('stability').notNull().default(0),
-    difficulty: real('difficulty').notNull().default(0),
-    elapsedDays: integer('elapsed_days').notNull().default(0),
-    scheduledDays: integer('scheduled_days').notNull().default(0),
-    reps: integer('reps').notNull().default(0),
-    lapses: integer('lapses').notNull().default(0),
-    // 0=New, 1=Learning, 2=Review, 3=Relearning
-    state: integer('state').$type<0 | 1 | 2 | 3>().notNull().default(0),
-    learningSteps: integer('learning_steps').notNull().default(0),
+    due: timestamp('due', { withTimezone: true }).notNull(),
+    // real → double precision(Task 3): FSRS 計算(ts-fsrs)は倍精度で行われるため、
+    // 単精度 real への丸めは値の drift を招く。書込側 cast(session-repository.ts)も
+    // ::double precision に合わせて変更する。
+    stability: doublePrecision('stability').notNull(),
+    difficulty: doublePrecision('difficulty').notNull(),
+    elapsedDays: integer('elapsed_days').notNull(),
+    scheduledDays: integer('scheduled_days').notNull(),
+    reps: integer('reps').notNull(),
+    lapses: integer('lapses').notNull(),
+    // 0=New, 1=Learning, 2=Review, 3=Relearning。CHECK は下記 extras 参照。
+    state: integer('state').$type<0 | 1 | 2 | 3>().notNull(),
+    learningSteps: integer('learning_steps').notNull(),
     lastReview: timestamp('last_review', { withTimezone: true }),
     // S-cache-0 (§14.9): local-first 同期用の version 列 (exams と同様)。
     contentVersion: integer('content_version').notNull().default(0),
@@ -366,6 +375,9 @@ export const cards = pgTable(
     // 再作成を避けるための前方互換 (現クエリは ORDER BY 無しのため機能上は
     // (user_id, updated_at) で足りる)。
     index('cards_user_updated_id_idx').on(t.userId, t.updatedAt, t.id),
+    // FSRS 整合 Sprint A Task 3(spec §1.3): state は ts-fsrs の 4 状態(0-3)のみが
+    // 有効値。DB default 撤去に合わせ、無効値の混入を DB 層でも塞ぐ。
+    check('cards_state_range', sql`${t.state} BETWEEN 0 AND 3`),
   ],
 )
 
