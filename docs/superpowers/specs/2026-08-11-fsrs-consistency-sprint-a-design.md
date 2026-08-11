@@ -1,6 +1,6 @@
-# FSRS 整合 Sprint A — 設計 spec(r2)
+# FSRS 整合 Sprint A — 設計 spec(r3・確定)
 
-- 状態: **ドラフト(Codex cross-check 反映済み・OT 承認待ち)**。承認後に writing-plans へ。
+- 状態: **確定**(r2 への OT 条件付き承認 3 点 + 付随修正を反映。以後は spec 凍結 — 仕様変更が要る場合は停止して OT 相談)。次工程 = writing-plans。
 - 事実基盤: `docs/audit/2026-08-11-fsrs-consistency-factfinding.md`(第 1 弾)/ `2026-08-11-review-domain-schema-inventory.md`(第 2 弾)/ `2026-08-11-db-schema-full-inventory.md`(第 3 弾)。commit `1906c71`。
 - Codex cross-check: `docs/codex/2026-08-11-plan-fsrs-sprint-a-spec.md`(1 パス)。r1→r2 の変更は Codex 指摘由来を「(Codex #n)」で帰属表示。
 - 前提: ユーザー 0(stg/prod とも実データ保護不要)。互換レイヤー・backfill なしでクリーン形へ直行(§10)。
@@ -10,7 +10,7 @@
 
 復習イベントの正本を answer_events 1 表に一本化し、同一 card への FSRS 適用を DB 行ロックで直列化、時系列逆転 event を順序ガードで隔離する。reviews / study_sessions は廃止。24h drop・二重実装(streak / JST / 初期値)・正誤二義性を同時に解消する。
 
-**正本の意味(Codex 独立 3 / 指摘 8,9,26 を受けて限定)**: answer_events は「**全回答入力の監査可能な恒久記録**」である。cards の bit-exact な過去再現(決定的 rebuild)は**保証しない** — scheduler(ts-fsrs)の版・パラメータ・適用順(同時刻は到着順 = §2.4)を event に保存しないため、rebuild は「その時点のコードでの再計算」にしかならない。rebuild コマンドは非スコープ(§11)。ReviewLog スナップショット不採用の裁定はこの限定の上で成立する。
+**正本の意味(Codex 独立 3 / 指摘 8,9,26 を受けて限定・r3 で明確化)**: answer_events が保証するのは 2 点のみ — **① 入力の監査可能性**(全回答 event の恒久記録)と **② 現行コードによる再計算可能性**。cards の **bit-exact な過去再現(決定的 rebuild)は保証しない**。崩れる要因は同時刻 event の適用順(= §2.4 のロック取得順)だけでなく、**scheduler(ts-fsrs)の版・パラメータ・ライブラリ更新**が含まれる — つまり同時刻が絡まない普通の履歴でも、コードが更新されれば過去状態の bit-exact 再現は不能になる。rebuild コマンドは非スコープ(§11)。ReviewLog スナップショット不採用の裁定はこの限定の上で成立する。
 
 ---
 
@@ -63,7 +63,8 @@ event: { event_id, card_id, session_id?, selected_answer_ids, is_correct,
          rating(1|2|3|4 必須), answered_at(iso), elapsed_ms?(int 0..86_400_000) }
 res:
   200 { ok: true, failed: string[] }  // 200 = failed に無い event は保存確定(synced 化可)。
-                                      // failed = event_id 所有権衝突のみ(§2.2 手順 4。pending 維持 + 観測)
+                                      // failed = event_id 衝突(所有権 or 内容不一致・§2.2 手順 4)。
+                                      // client は受領時に 'failed' へ terminal 化(§3)
   400                                  // schema 不正(client 送信前検証の突破 = client/server 不一致バグ)
   503 + Retry-After                    // tx throw(transient・全体再送)— 旧「200 + 全件 failed」を廃止
   401 / 429                            // 既存どおり
@@ -76,7 +77,10 @@ res:
 1. zod parse(400 は request 単位)。payload 内 event_id 重複は**先勝ち dedupe**(内容不一致の重複は logger.warn 1 行 — 監査痕跡。Codex 指摘 7)。
 2. **clamp**(§2.3)→ 各 event の実効 answered_at 確定。
 3. distinct card_id を **ID 昇順ソート → `SELECT … WHERE user_id = ? AND id IN (…) ORDER BY id FOR UPDATE`**(直列化。複数行ロックの順序規律は publish-prepared.ts:153 の既存規律に従う。owner-scope により不在・他人 card は返らない)。ロック範囲の意味論(Codex 独立 7): card 削除・entity-mutation の同一行更新とは行ロックで相互直列化(先行した方が勝ち、削除が先なら該当 event は card-less として applied=false)。
-4. **全 event を INSERT**(applied=false・ON CONFLICT (event_id) DO NOTHING・RETURNING で新規集合)。**非新規 event_id は所有権検証**(Codex 独立 4 / 指摘 6): `SELECT event_id WHERE event_id IN (非新規) AND user_id = 自分` — 自分の既存 = 正当な再送(200 で synced 化)/ **他人の既存 = failed[] + logger.warn**(uuid 衝突 or event_id 先取り攻撃の観測点。client は pending 維持 — 実発生は uuid v4 衝突確率まで低い)。
+4. **全 event を INSERT**(applied=false・ON CONFLICT (event_id) DO NOTHING・RETURNING で新規集合)。**非新規 event_id は 2 段検証**(Codex 独立 4 / 指摘 6 — r3 で内容一致検証を追加):
+   - **所有権**: 既存行の user_id ≠ 自分 → failed[] + logger.warn(uuid 衝突 or 先取り攻撃の観測点)。
+   - **内容一致(immutable fields 照合)**: 自分の既存行に対し card_id / selected_answer_ids / is_correct / rating / answered_at / session_id / elapsed_ms を照合。**answered_at の比較基準 = `min(再送 raw answered_at, 既存行 created_at)` と既存行 answered_at の一致**(= 初回 insert と同じ clamp 式を既存行の受信時刻で再評価する。正当な再送は raw が同一なので必ず一致し、初回に clamp された event の再送が受信時刻の差で偽陽性 mismatch になる罠を避ける)。一致 = 正当な再送(200・synced 化)/ **不一致 = failed[] + logger.warn**(既存行は不変 — 先勝ち immutable)。
+   - failed[] を受けた event の client 側処理は §3(terminal 化)。
 5. fold 対象 = 新規 ∧ card ロック済み ∧ A-2(option 実在)pass。per-card group を **answered_at 昇順 stable sort(同時刻は payload 順)** で fold:
    - 適用条件(順序ガード・漸進比較): `current.lastReview === null || ev.answered_at >= current.lastReview`
    - 適用 → `rate()` で state 前進 + applied 集合へ / 不適用(厳密に古い)→ skip(applied=false のまま)
@@ -95,7 +99,7 @@ res:
 
 - 境界 = **`>=` で適用**(不適用は「厳密に古い」のみ)。ガードの目的は時系列逆転の防止であり、同時刻は逆転ではない。重複排除は event_id PK が担う。
 - 同一 request 内の tie = per-card stable sort(answered_at 昇順・同時刻は payload 順)で決定的。
-- **cross-request の同時刻**(別 POST / 別端末・Codex 独立 1 / 指摘 1,2): **到着順(= card 行ロックの取得順)を正式な適用順とする**。cards に順序 watermark(last_event_id 等)は追加しない。根拠: 同一 user の 2 端末が同一 ms に同一 card へ回答する事象は実用上発生せず、発生しても両 event とも適用され差は適用順のみ(FSRS 状態の微差)。この非決定性は §0 の「bit-exact rebuild 非保証」の一部として明示的に受容する。不採用案 = `(answered_at, event_id)` 全順序 + watermark 列(cards に列追加・uuid 順に業務的意味なし・得られるのは実用上起きないケースの決定性のみ)。
+- **cross-request の同時刻**(別 POST / 別端末・Codex 独立 1 / 指摘 1,2): **「到着順」= DB の card 行ロック取得順(= serialization 順)を正式な適用順とする**(HTTP 到着順・handler 開始順ではない — 順序を決めるのは §2.2 手順 3 の FOR UPDATE が付与する直列化のみ)。cards に順序 watermark(last_event_id 等)は追加しない。根拠: 同一 user の 2 端末が同一 ms に同一 card へ回答する事象は実用上発生せず、発生しても両 event とも適用され差は適用順のみ(FSRS 状態の微差)。この非決定性は §0 の「bit-exact rebuild 非保証」の一部として明示的に受容する。不採用案 = `(answered_at, event_id)` 全順序 + watermark 列(cards に列追加・uuid 順に業務的意味なし・得られるのは実用上起きないケースの決定性のみ)。
 - lastReview = null(未回答 card)は常に適用。未来クロック汚染は clamp(§2.3)で先に断たれる。
 
 ---
@@ -107,7 +111,10 @@ res:
 - 従来 orphan reject の理由は (i) card_id FK 違反回避 (ii) replay 不能 — (i) は FK 撤去で消滅、(ii) は applied=false が受け皿。A-2 検証は「reject 条件」から「applied 条件」へ降格(不正 selected_answer_ids が入るのは自 user のデータ領域のみ・zod bound 済)。
 - **poison-pill 対策(Codex 独立 5 / 指摘 4,15 — r1 の「local 残置で無害」は不正確だったため修正)**: 形式不正 event が chunk ごと 400 を誘発して正常 event を道連れにする経路を、**client 送信前検証**で断つ。flush 時に server と共有の event schema(`lib/sync/shared/` の前例に倣い zod 1 定義を両側 import)で per-event 検証し、不正 event は送信対象から外して **`sync_status='failed'` に隔離**(時間でなく形式による決定的 terminal 化 — 24h drop 廃止の裁定と両立。'failed' の review 側唯一の用途になる)。これにより server 400 は「共有 schema を通ったのに 400」= client/server 不一致バグの loud signal に純化。
 - chunk 逐次送信の失敗時規則(Codex 指摘 15): chunk N が失敗(4xx/5xx/network)したら**以降の chunk は送らず中断**(次 trigger で先頭から。event 冪等ゆえ重複送信は無害)。429 は即停止(既存)。
-- 帰結: server 判定の terminal('rejected' 状態・理由 enum wire)は不要。終端 = synced(受理)or failed(client 形式検証)。「server 判定が永遠に来ない event」は形式不正(failed 隔離)に吸収され、残る pending は transient 再送のみ = 残置しても配送保証を損なわない。
+- **failed[] の terminal 化(r3 修正)**: 200 応答の failed[] に載った event は client で **`sync_status='failed'` に terminal 化**する(pending 維持しない)。所有権・内容不一致の衝突は再送で永久に解消しないため、pending 維持では「残る pending は transient のみ」が偽になる(r2 の誤り)。local 行は残す(データ非損失と両立)。
+- **'failed' の意味の統一**: 「**形式不正(client 送信前検証)または server 衝突(failed[])による決定的 terminal**」。時間ベース(24h)の failed 化は存在しない。
+- **現行との差分(明記)**: 現行は 200 + failed[] を `classifyFlushResults` が 'permanent' に分類する(review-flush.ts:53-71)一方、行は pending のまま残り(review-events.ts:331-337 は synced のみ mark)、次 trigger で毎回再送される — 「分類は permanent・挙動は無限再送」の不整合。新設計は failed[] 受領 = 即 'failed' terminal で分類と挙動を一致させる。
+- 帰結: 終端 = synced(受理)or failed(形式不正 / server 衝突)。残る pending は transient(503 / network / 429 / chunk 中断)のみ = 残置しても配送保証を損なわない。
 
 ---
 
@@ -119,7 +126,7 @@ res:
   - 追加: `user_id` / 削除: `last_attempted_at` / `rating` 型必須化
   - index: `'++local_id, event_id, [user_id+sync_status]'`(pending 選別 = 等値。card_id / session_id / 単独 sync_status index は読み手なしにつき廃止)
 - `study_sessions` store 削除(`null`)。
-- SyncStatus 4 値のまま(review 側 'failed' = 形式不正隔離 §3。entity 側は不変)。
+- SyncStatus 4 値のまま(review 側 'failed' = 形式不正 or server 衝突の決定的 terminal — §3 の統一定義。entity 側は不変)。
 
 ### 4.2 flush の一本化(論点 4 の確定)
 
@@ -153,11 +160,28 @@ res:
 
 - 全列を「**applied=true event からの full 再集計・UPSERT 上書き**」に統一(加算意味論の廃止)。
 - 範囲 = **今回 applied になった event が跨る JST day 全部**。
-- 集計は **1 文の GROUP BY**(Codex 独立 9 の day 数 bound 対策): `SELECT day_bucket, count(*), count(*) FILTER (WHERE is_correct), count(DISTINCT card_id) FROM answer_events WHERE user_id = ? AND applied AND answered_at >= :min AND < :max GROUP BY day_bucket` を jstDayRange 境界の bind で構成(day ごとの N+1 をしない)→ 対象 day を UPSERT(絶対値 set)。day 数は event 数(≤1000)で bound・自 user の行のみ。
+- 集計は **対象 day の VALUES CTE + JOIN + GROUP BY の 1 文**(r3 で実装可能形に確定。day_bucket 実列は無く SQL の AT TIME ZONE も全廃方針のため、境界は JS 側 `jstDayRange()` で計算して bind する):
+
+  ```sql
+  WITH days(day, start_at, end_at) AS (
+    VALUES (:day1::date, :start1::timestamptz, :end1::timestamptz), ...  -- 対象 day のみ列挙
+  )
+  SELECT d.day,
+         count(*)                                AS review_count,
+         count(*) FILTER (WHERE ae.is_correct)   AS correct_count,
+         count(DISTINCT ae.card_id)              AS distinct_card_count
+  FROM days d
+  JOIN answer_events ae
+    ON ae.user_id = :userId AND ae.applied
+   AND ae.answered_at >= d.start_at AND ae.answered_at < d.end_at
+  GROUP BY d.day
+  ```
+
+  min〜max の連続 range は**採らない**(遠く離れた 2 event で間の全履歴を走査し「event 数で bound」が崩れるため — r2 の誤り)。VALUES 列挙により走査は対象 day の range scan × day 数に固定され、**bound = day 数 ≤ event 数(≤1000)**。結果行を UPSERT(絶対値 set)。day ごとの N+1 はしない。
 - **ゼロ件 day は発生しない**(再集計対象 = 今回 applied が属する day のみ・applied/answered_at/user_id は不変 — §1.1 の applied 不変契約が前提。event の削除・訂正・修復を将来導入する場合は full-rebuild で対応 = 非スコープに明記。Codex 指摘 10)。
 - **correct_count の定義 = is_correct**(rating>=2 から変更・裁定)。
 - **JST 1 定義**: day 導出は `todayInJst`(lib/jst.ts)のみ。SQL の `AT TIME ZONE 'Asia/Tokyo'` は全廃し、新 pure 関数 `jstDayRange(day)` の timestamptz 境界を bind(JS/SQL 二重実装の解消 — 第 2 弾 §2.8)。境界(日跨ぎ前後 1ms・閏日)は unit で pin(Codex 独立 10)。`lib/db/in-date-list.ts` は唯一の使用元消滅につき削除。
-- 性能: `(user_id, answered_at)` range scan 1 回。1 user × 1 day 数百 event 想定 — **想定であって保証ではない**(Codex 指摘 11)ため、iso で 1000 event flush の所要を計測し記録する(閾値 gate にはしない)。
+- 性能: `(user_id, answered_at)` の range scan × 対象 day 数(VALUES への nested loop)。1 user × 1 day 数百 event 想定 — **想定であって保証ではない**(Codex 指摘 11)ため、iso で 1000 event flush の所要を計測し記録する(閾値 gate にはしない)。
 - 副次効果: 母集合が answer_events(card 非依存)になり、card 削除で distinct だけ縮む自己矛盾(第 2 弾 §6-6)が消える。dangling event も applied=true なら数え続ける。
 
 ---
@@ -199,10 +223,13 @@ res:
 2. **順序ガード**: (a) 適用済み card へ古い event → applied=false ∧ cards 不変 (b) 同一 request 内の新旧混在(sort で全適用)(c) 中間時刻 event の遅着 → applied=false (d) 同時刻 event(>= で適用)(e) lastReview=null。(Codex 指摘 21)
 3. **clamp**: 未来 answered_at → 保存値 <= created_at ∧ due 非汚染。
 4. **dangling**: card 不在 event → insert(applied=false)∧ failed に載らない。
-5. **event_id 衝突**: 他 user の既存 event_id → failed[] ∧ 行不変(Codex 指摘 20)。
+5. **event_id 衝突**(Codex 指摘 20 + r3 拡張): (a) 他 user の既存 event_id → failed[] ∧ 行不変 (b) **自 user・内容不一致の再送 → failed[] ∧ 既存行不変**(immutable 照合)(c) **正当再送(内容一致)→ 200 ∧ failed に載らない** — 初回に clamp された event の再送も一致判定されること(§2.2 手順 4 の比較式の pin)。
 6. **schema contract**(Codex 指摘 23): 新 answer_events の PK / CHECK / index / RLS policy / grant を実 PG から readback して pin(DROP/CREATE で policy・grant が失われる事故の恒久検出)。
+7. **study_days CTE 集計**(r3): 複数 day 跨ぎ flush で全対象 day が絶対値 UPSERT されること + 遠く離れた 2 day の flush で中間 day の行が生成・変更されないこと(VALUES 列挙形の検証)。
 
-red 検証(test-only 増分): gate を**個別に**変異(FOR UPDATE 外し / ガード外し / clamp 外し / 所有権検証外し)して各 pin が単独で fail することを実証。
+client 側 pin(unit / sync test・iso 外だが本 sprint 必須): **failed[] 受領 event が 'failed' に terminal 化され以降の flush 対象から外れること**(§3)+ 送信前検証の形式不正隔離。
+
+red 検証(test-only 増分): gate を**個別に**変異(FOR UPDATE 外し / 順序ガード外し / clamp 外し / 所有権検証外し / **内容一致検証外し**)して各 pin が単独で fail することを実証。
 
 ### 9.2 既存 test 波及(論点 6 の確定 — 全量は第 1 弾 §6.1 が基礎)
 
@@ -243,7 +270,16 @@ red 検証(test-only 増分): gate を**個別に**変異(FOR UPDATE 外し / �
 - entity_mutations outbox の owner-scope 化(同型の穴 — Sprint B 候補)
 - tech-spec §14 系の全面改稿はしない。ただし**旧 wire / reviews / study_sessions を記述する節の冒頭に「2026-08-11 spec が正・本節は歴史記述」の注記 1 行を挿入**(正本競合の回避 — Codex 指摘 25 を最小形で反映)
 
-## 12. 裁定との乖離・OT 確認点(text 番号 bullet)
+## 12. 裁定との乖離・OT 承認記録
+
+**r2 は 2026-08-11 に OT 条件付き承認**(下記 1〜7 は承認済み)。条件 = r3 修正 3 点 + 付随修正 2 点(いずれも本 r3 に反映済み):
+
+- (i) event_id 再送の**内容一致検証**を §2.2 手順 4 に追加(Codex 独立 4 の残り半分の取り込み。answered_at 比較基準 = 既存行 created_at での clamp 式再評価)。
+- (ii) §3 の終端規則修正: **failed[] 受領 event は 'failed' に terminal 化**(r2 の「pending 維持」は「残る pending は transient のみ」を偽にする誤りだった)。
+- (iii) §5 の集計 SQL を **VALUES CTE + JOIN + GROUP BY** に確定(r2 の day_bucket GROUP BY は AT TIME ZONE 全廃方針下で成立せず、min〜max 連続 range は bound 主張を崩す誤りだった)。
+- 付随: §2.4「到着順」= card 行ロック取得順(serialization 順)と厳密化 / §0 再現性の限定を明確化(保証 = 入力の監査可能性 + 現行コードによる再計算の 2 点)。
+
+以下は r2 時点の乖離・確認点の記録(全て承認済み):
 
 1. **確定事項 8 の実現形変更**(CC 提案・Codex も「裁定変更であり OT 確認必須」と指摘 #3 で一致): 「server permanent 判定 → client terminal 化」の代わりに「全受理(applied=false)+ client 送信前検証で形式不正を failed 隔離」(§3)。目的(再送停止・データ非損失)は同一で機構が単純。不採用案 = reject + 'rejected' 状態 + 理由 enum wire(状態・語彙・migration が増えるだけで利得なし)。
 2. **同時刻 cross-request の適用順 = 到着順を正式仕様とする**(Codex 独立 1 は watermark 全順序化も選択肢として提示 — §2.4 に両論と採否理由)。合わせて **§0 の「正本の意味の限定」**(bit-exact rebuild 非保証)を明文化した(Codex 独立 3 由来)。ReviewLog 不採用裁定の再確認を含む。
