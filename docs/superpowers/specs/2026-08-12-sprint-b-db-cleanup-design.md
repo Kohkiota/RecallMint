@@ -1,6 +1,6 @@
 # Sprint B — DB 全体掃除 設計 spec(r4)
 
-- 状態: **ドラフト(Fable 再作成・r3 への Codex cross-check 反映済み・OT 承認待ち)**。**実装開始条件 = 本 spec の承認 + §8 の新規 3 点の裁定**(Codex r3 指摘 22)。承認後 writing-plans へ。
+- 状態: **確定・凍結**(2026-08-12 OT 承認)。**§8 の新規 3 点も全て承認済み**(① FK `set null`→`cascade` ② `card.create` の cascadeLike 保守的維持 ③ deploy 窓の upload INSERT 断受容 + drain 条件)。実装 plan = `docs/superpowers/plans/2026-08-12-sprint-b-db-cleanup.md`(r2・同時凍結)。**以後、本 spec は実装フェーズで書き換えない** — 仕様判断が必要になった時点で停止し OT に相談する。
 - 経緯: r2(Opus 作成・9fe9f52)を下書きとして扱い、Fable が **Step 0 を全件再実走** + **設計判断(§2 / §5.2 / §5.3 / §9)を白紙から再導出**(= r3)。r2 の Codex cross-check(`docs/codex/2026-08-12-plan-sprint-b-db-cleanup-spec.md`)は既知として取り込み、r3 に対する 2 回目の cross-check(`docs/codex/2026-08-12-plan-sprint-b-db-cleanup-spec-r3.md`)の反映を「(Codex r3 …)」で帰属表示する。
 - 入力: `docs/audit/2026-08-11-db-schema-full-inventory.md`(第 3 弾)§8/§9 + OT 裁定(採否確定済み。本 spec は**実現形の設計のみ**を扱う)。r2 の OT 確認点 5 件は**全て承認済み**(archived_at gate 消滅の architecture.md 受容 / CHECK 27 本許容 / width・height `> 0` / FlushResult 撤去の entity 波及受容 / Dexie 破壊 upgrade 受容)。
 - 前提: ユーザー 0・破壊的変更自由・互換レイヤー不要。Sprint A(migration 0034/0035)適用済みが起点。次 migration は 0036。
