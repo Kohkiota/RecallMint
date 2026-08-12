@@ -163,3 +163,56 @@ sprint の完了は **code + docs** まで。deploy readiness は別 phase で�
 **先頭の ★ を飛ばすと取り返しがつかない**: IndexedDB は origin scope なので、deploy 後に stg origin で `/app` を開くとその瞬間に v12 へ上がり、**「他タブが v10 接続を保持した状態での upgrade 調停」を二度と再現できない**(Vercel の deployment 個別 URL は別 origin なので回避にならない)。deploy 前に stg origin で v10 まで育てたタブを**開いたまま**にしておく。なお検証対象は「blocked のまま止まること」ではなく **Dexie 既定の `versionchange` 自動 close で upgrade が自力で完走すること**(期待値の取り違えに注意 — runbook §6.2(a))。
 
 手順・診断 SQL・drain 不達時の分岐・postflight 照合は `docs/ops/sprint-b-db-cleanup-runbook.md` にある。**stg 適用は「データの入った 0035 DB → 0036」という経路の唯一の実証**(自動テストは常にまっさらな DB を頭から流すため、この経路を一度も踏んでいない)なので、診断と照合の**生出力**を残すこと。
+
+---
+
+## stg smoke(2026-08-13 JST・migrate/照合/2 タブ upgrade 完了後・CC 実走)
+
+前提確認: IDB **v12(idbVersion=120)**・`user_settings` store 不在・`entity_mutations` = `[user_id+sync_status]` + `mutation_id`(空)・user = `85541b25-…`。旧 exam mirror 行の stale prop(archived_at 等)は spec どおり inert 残存(pull 再送時に置換)。
+
+| # | 項目 | 判定 | 証跡 |
+|---|---|---|---|
+| 1 | upload 一巡(image → OCR → publish → 一覧) | **PASS** | UI「✅ 3 問を抽出・図版 1 件」→ exam `1b61e6bf…`。DB readback(app role・row_to_json): source_documents 全列に **mode / ocr_cost_yen キー無し**(filename/file_size_bytes は設計どおり残存・status=completed・cards_extracted=3)/ upload_records = **`{id, user_id, pages_processed, status, created_at}` のみ** / upload_operations = completed・source_document_id 充足 |
+| 2 | 一覧件数の Dexie 動的集計 | **PASS** | 新 exam「カード 3 件」→ 問1 削除 → 詳細「カード (2 件)」即時・一覧「カード 2 件」・**server 実数も 2**(削除 mutation の server 適用まで一巡) |
+| 3 | カード編集 + タグ並べ替え → bulk 200 | **PASS** | title 編集 → POST /api/entity-mutations/bulk **200**(req #54)・server title「問2(smoke 編集)」反映。カテゴリ DnD(keyboard)→ POST **200**(req #48)・server sort_key = 難易度 0 / ドメイン 1 / …(UI 順序と一致)。outbox は全行 synced・user_id 帰属正 |
+| 4 | EXPLAIN(app role・実在 user) | **FAIL(基準未達・下記診断)** | 生出力 ↓ |
+
+### smoke 4 の生出力と診断
+
+自然 plan(app role・`85541b25-…`):
+
+```
+ Unique  (cost=1.31..1.32 rows=2 width=50) (actual time=0.088..0.091 rows=4 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1
+     ->  Result  (cost=0.00..0.26 rows=1 width=16) (actual time=0.030..0.030 rows=1 loops=1)
+   ->  Sort  (cost=1.05..1.05 rows=2 width=50) (actual time=0.088..0.088 rows=4 loops=1)
+         Sort Key: source_documents.exam_id, source_documents.created_at DESC
+         Sort Method: quicksort  Memory: 25kB
+         ->  Result  (cost=0.00..1.04 rows=2 width=50) (actual time=0.062..0.064 rows=4 loops=1)
+               One-Time Filter: ((InitPlan 1).col1 = '85541b25-…'::uuid)
+               ->  Seq Scan on source_documents  (cost=0.00..1.04 rows=2 width=50) (actual rows=4)
+                     Filter: (user_id = '85541b25-…'::uuid)
+ Execution Time: 0.128 ms
+```
+
+強制 plan(`SET LOCAL enable_seqscan = off`・診断のみ):
+
+```
+ Unique  (cost=2.07..3.82 rows=2 width=50) (actual time=0.172..0.175 rows=4 loops=1)
+   ->  Incremental Sort  (actual time=0.171..0.172 rows=4 loops=1)
+         Sort Key: source_documents.exam_id, source_documents.created_at DESC
+         Presorted Key: source_documents.exam_id
+         ->  Result  ...
+               ->  Index Scan using source_docs_user_exam_created_idx on source_documents
+                     Index Cond: (user_id = '85541b25-…'::uuid)
+ Execution Time: 0.209 ms
+```
+
+診断(3 点・**0036 の regression ではない**):
+
+1. **自然 plan の Seq Scan は表規模由来**(`relpages=1` — 表全体が 1 ページ)。runbook §4 が予告した「小規模では planner が index を選ばない」ケースそのもので、index の当否について何も言わない。
+2. **強制 plan は `source_docs_user_exam_created_idx` を使う = index は健在・使用可能**。削除した `source_docs_user_exam_idx`(prefix)で出来たことは全て現 index で出来ることの実証でもある。
+3. **「Sort ノードが無いこと」は現 query/index の組では原理的に達成不能**(既存問題の新発見): query は drizzle `desc()` = `created_at DESC`(暗黙 **NULLS FIRST**)を発行、index は `created_at DESC NULLS LAST`(0008 で作成)。PG の pathkey 照合は NULLS 位置まで厳密なため、`created_at` が NOT NULL で意味論的に同一でも planner は index 順を ORDER BY の充足とみなさず Incremental Sort を挿む。**0036 以前から存在**し(削除した prefix index はそもそも created_at を持たず同様に Sort が必要)、初めて実 EXPLAIN を取ったことで顕在化した。schema comment(D1)の「index 走査で解決する」は NULLS 位置の一致まで含めて初めて真になる。
+
+follow-up 候補(修正せず報告のみ・指示どおり): query 側に `NULLS LAST` を付ける(drizzle: `sql`${col} DESC NULLS LAST``)か index を `DESC`(= NULLS FIRST)に揃えるかの 1 語変更で pathkey が一致し Sort が消える。created_at は NOT NULL のため挙動差はゼロ。行数が 1 ページに収まる現状では実性能差もゼロ(0.128ms)。
