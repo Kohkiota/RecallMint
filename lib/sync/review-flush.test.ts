@@ -25,11 +25,8 @@ import type { FlushResult } from './review-events'
 
 function fr(partial: Partial<FlushResult>): FlushResult {
   return {
-    attempted: 0,
     syncedEventIds: [],
     failedEventIds: [],
-    sessionSynced: false,
-    reachable: true,
     httpStatus: 200,
     ...partial,
   }
@@ -42,25 +39,25 @@ describe('classifyFlushResults', () => {
 
   it('全件 synced (failed なし) → ok', () => {
     expect(
-      classifyFlushResults([fr({ attempted: 2, syncedEventIds: ['a', 'b'] })]),
+      classifyFlushResults([fr({ syncedEventIds: ['a', 'b'] })]),
     ).toBe('ok')
   })
 
   it('5xx 失敗 → transient', () => {
     expect(
-      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 503, reachable: true })]),
+      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 503 })]),
     ).toBe('transient')
   })
 
   it('network 断 (httpStatus=0 + failed) → transient', () => {
     expect(
-      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 0, reachable: false })]),
+      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 0 })]),
     ).toBe('transient')
   })
 
   it('429 失敗 → rate-limited', () => {
     expect(
-      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 429, reachable: true })]),
+      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 429 })]),
     ).toBe('rate-limited')
   })
 
@@ -75,19 +72,19 @@ describe('classifyFlushResults', () => {
 
   it('通常 4xx (400) 失敗 → permanent (自動 retry しない)', () => {
     expect(
-      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 400, reachable: true })]),
+      classifyFlushResults([fr({ failedEventIds: ['a'], httpStatus: 400 })]),
     ).toBe('permanent')
   })
 
-  it('skip (attempted:0, syncedEventIds 空, failedEventIds 空) → no-pending (pull-back 対象外)', () => {
+  it('skip (syncedEventIds 空, failedEventIds 空) → no-pending (pull-back 対象外)', () => {
     // in-flight 空振りは sync していないので 'ok' ではなく 'no-pending' に畳む (回帰核心)。
-    expect(classifyFlushResults([fr({ attempted: 0 })])).toBe('no-pending')
+    expect(classifyFlushResults([fr({})])).toBe('no-pending')
   })
 
   it('複数 result の一部でも syncedEventIds 非空なら → ok', () => {
     // 1 件でも実 sync があれば pull-back 対象とする。
     expect(
-      classifyFlushResults([fr({ syncedEventIds: ['a'] }), fr({ attempted: 0 })]),
+      classifyFlushResults([fr({ syncedEventIds: ['a'] }), fr({})]),
     ).toBe('ok')
   })
 })
@@ -110,7 +107,7 @@ describe('runGuardedFlush — Web Locks 排他', () => {
   }
 
   it('lock 取得成功 → lock 内で flushAll を実行し結果を classify', async () => {
-    const flushAll = vi.fn(async () => [fr({ attempted: 1, syncedEventIds: ['a'] })])
+    const flushAll = vi.fn(async () => [fr({ syncedEventIds: ['a'] })])
     const locks = fakeLocks(true)
     const outcome = await runGuardedFlush({ flushAll, locks })
     expect(outcome).toBe('ok')
@@ -129,7 +126,7 @@ describe('runGuardedFlush — Web Locks 排他', () => {
   })
 
   it('navigator.locks 非対応 (locks=undefined) → defensive に lock なしで flush', async () => {
-    const flushAll = vi.fn(async () => [fr({ attempted: 1, syncedEventIds: ['a'] })])
+    const flushAll = vi.fn(async () => [fr({ syncedEventIds: ['a'] })])
     const outcome = await runGuardedFlush({ flushAll, locks: undefined })
     expect(outcome).toBe('ok')
     expect(flushAll).toHaveBeenCalledTimes(1)
@@ -143,7 +140,7 @@ describe('runGuardedAnswerEventFlush — 演習 flush の唯一の経路', () =>
 
   it('owner-scope の userId を flush 本体に渡し、結果を classify して返す', async () => {
     mockFlushPendingAnswerEvents.mockResolvedValue(
-      fr({ attempted: 1, syncedEventIds: ['e1'] }),
+      fr({ syncedEventIds: ['e1'] }),
     )
     const outcome = await runGuardedAnswerEventFlush('user-1')
     expect(outcome).toBe('ok')
@@ -153,7 +150,7 @@ describe('runGuardedAnswerEventFlush — 演習 flush の唯一の経路', () =>
 
   it('flush 失敗 (503) は transient に分類される', async () => {
     mockFlushPendingAnswerEvents.mockResolvedValue(
-      fr({ attempted: 1, failedEventIds: ['e1'], httpStatus: 503 }),
+      fr({ failedEventIds: ['e1'], httpStatus: 503 }),
     )
     expect(await runGuardedAnswerEventFlush('user-1')).toBe('transient')
   })

@@ -134,11 +134,8 @@ describe('flushAllPendingEntityMutations — 全件成功', () => {
 
     expect(results).toHaveLength(1)
     const r = results[0]
-    expect(r.attempted).toBe(2)
     expect(r.syncedEventIds.sort()).toEqual([m1.mutation_id, m2.mutation_id].sort())
     expect(r.failedEventIds).toEqual([])
-    expect(r.sessionSynced).toBe(false) // card-mutation に session 概念なし
-    expect(r.reachable).toBe(true)
     expect(r.httpStatus).toBe(200)
 
     // Dexie 側: 全件 synced
@@ -226,7 +223,6 @@ describe('flushAllPendingEntityMutations — 部分失敗', () => {
     const r = results[0]
     expect(r.syncedEventIds).toEqual([m1.mutation_id])
     expect(r.failedEventIds).toEqual([m2.mutation_id])
-    expect(r.reachable).toBe(true)
 
     // synced 分は synced
     const syncedRow = await getClientDb().entity_mutations
@@ -260,14 +256,13 @@ describe('flushAllPendingEntityMutations — network / HTTP 失敗', () => {
     const r = results[0]
     expect(r.syncedEventIds).toEqual([])
     expect(r.failedEventIds).toEqual([m.mutation_id])
-    expect(r.reachable).toBe(false)
     expect(r.httpStatus).toBe(0)
 
     const pending = await getPendingEntityMutations()
     expect(pending).toHaveLength(1)
   })
 
-  it('5xx エラー → pending 残置、 reachable=true', async () => {
+  it('5xx エラー → pending 残置', async () => {
     const m = await enqueueEntityMutation({
       entity_type: 'card', entity_id: newId(),
       op: 'delete',
@@ -279,7 +274,6 @@ describe('flushAllPendingEntityMutations — network / HTTP 失敗', () => {
 
     expect(results).toHaveLength(1)
     expect(results[0].httpStatus).toBe(503)
-    expect(results[0].reachable).toBe(true) // 5xx は API まで届いた
     expect(results[0].syncedEventIds).toEqual([])
     expect(results[0].failedEventIds).toEqual([m.mutation_id])
 
@@ -306,7 +300,7 @@ describe('flushAllPendingEntityMutations — network / HTTP 失敗', () => {
     // classifyFlushResults による分類確認は runGuardedEntityMutationFlush test で担当
   })
 
-  it('4xx (400) → pending 残置、 reachable=true', async () => {
+  it('4xx (400) → pending 残置', async () => {
     const m = await enqueueEntityMutation({
       entity_type: 'card', entity_id: newId(),
       op: 'update_field',
@@ -318,7 +312,6 @@ describe('flushAllPendingEntityMutations — network / HTTP 失敗', () => {
 
     expect(results).toHaveLength(1)
     expect(results[0].httpStatus).toBe(400)
-    expect(results[0].reachable).toBe(true)
     expect(results[0].syncedEventIds).toEqual([])
     expect(results[0].failedEventIds).toEqual([m.mutation_id])
 
@@ -662,7 +655,6 @@ describe('flushAllPendingEntityMutations — in-flight guard', () => {
 
     expect(results).toHaveLength(1)
     // m2 のみ送られる
-    expect(results[0].attempted).toBe(1)
     expect(results[0].syncedEventIds).toEqual([m2.mutation_id])
     expect(client.calls).toHaveLength(1)
 
@@ -680,11 +672,8 @@ describe('runGuardedEntityMutationFlush — Web Locks 排他', () => {
   it('lock 取得成功 → lock 内で flushAll を実行し classifyFlushResults で分類', async () => {
     const flushAll = async (): Promise<FlushResult[]> => [
       {
-        attempted: 1,
         syncedEventIds: ['mut-1'],
         failedEventIds: [],
-        sessionSynced: false,
-        reachable: true,
         httpStatus: 200,
       },
     ]
@@ -712,11 +701,8 @@ describe('runGuardedEntityMutationFlush — Web Locks 排他', () => {
   it('navigator.locks 非対応 (locks=undefined) → lock なしで直接 flush', async () => {
     const flushAll = async (): Promise<FlushResult[]> => [
       {
-        attempted: 1,
         syncedEventIds: ['mut-1'],
         failedEventIds: [],
-        sessionSynced: false,
-        reachable: true,
         httpStatus: 200,
       },
     ]
@@ -740,11 +726,8 @@ describe('runGuardedEntityMutationFlush — classifyFlushResults 経由の分類
   function makeFlushWithStatus(httpStatus: number, mutId = 'mut-x'): () => Promise<FlushResult[]> {
     return async () => [
       {
-        attempted: 1,
         syncedEventIds: [],
         failedEventIds: [mutId],
-        sessionSynced: false,
-        reachable: httpStatus >= 400 && httpStatus < 600,
         httpStatus,
       },
     ]
@@ -791,11 +774,8 @@ describe('runGuardedEntityMutationFlush — classifyFlushResults 経由の分類
     const outcome = await runGuardedEntityMutationFlush({
       flushAll: async () => [
         {
-          attempted: 2,
           syncedEventIds: ['mut-a', 'mut-b'],
           failedEventIds: [],
-          sessionSynced: false,
-          reachable: true,
           httpStatus: 200,
         },
       ],
@@ -808,24 +788,5 @@ describe('runGuardedEntityMutationFlush — classifyFlushResults 経由の分類
     const locks = fakeLocks(true)
     await runGuardedEntityMutationFlush({ flushAll: async () => [], locks })
     expect(locks.calls[0].name).toBe('recallmint:entity-mutations:flush')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// flushAllPendingEntityMutations — FlushResult shape 適合 (sessionSynced 固定)
-// ---------------------------------------------------------------------------
-
-describe('flushAllPendingEntityMutations — FlushResult shape 適合', () => {
-  it('sessionSynced は常に false (card-mutation に session 概念なし)', async () => {
-    await enqueueEntityMutation({
-      entity_type: 'card', entity_id: newId(),
-      op: 'update_field',
-      patch: { field: 'title', value: 'Check' },
-    })
-    const client = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
-    const results = await flushAllPendingEntityMutations(client)
-
-    expect(results).toHaveLength(1)
-    expect(results[0].sessionSynced).toBe(false)
   })
 })

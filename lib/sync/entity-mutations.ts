@@ -259,7 +259,6 @@ const defaultEntityMutationClient: BulkApiClient = createBulkApiClient(ENTITY_MU
  * FlushResult は review-events.ts で定義された型を再利用する。
  * classifyFlushResults (review-flush.ts) 再利用のため FlushResult shape に適合させており、
  * *EventIds フィールドには mutation_id を保持する (フィールド名は event 由来だが流用)。
- * sessionSynced は entity-mutation に session 概念がないため常に false 固定。
  */
 export async function flushAllPendingEntityMutations(
   client: BulkApiClient = defaultEntityMutationClient,
@@ -325,11 +324,8 @@ export async function flushAllPendingEntityMutations(
       // 429 受信時: classifyFlushResults が rate-limited を返す経路を維持 (CLAUDE.md §AI 5)。
       return [
         {
-          attempted: targets.length,
           syncedEventIds: [],
           failedEventIds: targetIds,
-          sessionSynced: false, // entity-mutation に session 概念なし (固定 false)
-          reachable: response.status >= 400 && response.status < 600,
           httpStatus: response.status,
         },
       ]
@@ -344,11 +340,8 @@ export async function flushAllPendingEntityMutations(
 
     return [
       {
-        attempted: targets.length,
         syncedEventIds,
         failedEventIds,
-        sessionSynced: false, // entity-mutation に session 概念なし (固定 false)
-        reachable: true,
         httpStatus: response.status,
       },
     ]

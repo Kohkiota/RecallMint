@@ -181,10 +181,8 @@ describe('flushPendingAnswerEvents — owner-scope 選別', () => {
 
     const result = await flushPendingAnswerEvents(USER_A, makeMockClient())
 
-    expect(result.attempted).toBe(2)
     expect(result.syncedEventIds.sort()).toEqual([e1.event_id, e2.event_id].sort())
     expect(result.failedEventIds).toEqual([])
-    expect(result.reachable).toBe(true)
     expect(result.httpStatus).toBe(200)
     expect(await countPendingAnswerEvents(USER_A)).toBe(0)
   })
@@ -218,7 +216,6 @@ describe('flushPendingAnswerEvents — owner-scope 選別', () => {
     const result = await flushPendingAnswerEvents(USER_A, client)
 
     expect(client.calls).toHaveLength(0)
-    expect(result.attempted).toBe(0)
     expect(result.httpStatus).toBe(0)
   })
 })
@@ -267,10 +264,9 @@ describe('flushPendingAnswerEvents — 送信前検証 (poison-pill 隔離)', ()
     })
 
     const client = makeMockClient()
-    const result = await flushPendingAnswerEvents(USER_A, client)
+    await flushPendingAnswerEvents(USER_A, client)
 
     expect(client.calls).toHaveLength(0)
-    expect(result.attempted).toBe(0)
     expect(await countPendingAnswerEvents(USER_A)).toBe(0)
   })
 })
@@ -412,20 +408,18 @@ describe('flushPendingAnswerEvents — httpStatus (retry 分類用)', () => {
       makeMockClient({ ok: false, status: 503, body: null }),
     )
     expect(result.httpStatus).toBe(503)
-    expect(result.reachable).toBe(true)
     expect(result.failedEventIds).toEqual([e1.event_id])
     expect(result.syncedEventIds).toEqual([])
     expect(await countPendingAnswerEvents(USER_A)).toBe(1)
   })
 
-  it('network 断 (fetch throw) は httpStatus=0 / reachable=false', async () => {
+  it('network 断 (fetch throw) は httpStatus=0', async () => {
     await recordAnswerEvent(makeInput())
     const result = await flushPendingAnswerEvents(
       USER_A,
       makeMockClient({ ok: false, status: 0, body: null }),
     )
     expect(result.httpStatus).toBe(0)
-    expect(result.reachable).toBe(false)
   })
 
   it('429 は status をそのまま載せる (即停止分類は classifyFlushResults 側)', async () => {
@@ -449,7 +443,6 @@ describe('flushPendingAnswerEvents — httpStatus (retry 分類用)', () => {
       makeMockClient({ ok: false, status: 400, body: null }),
     )
     expect(result.httpStatus).toBe(400)
-    expect(result.reachable).toBe(true)
     expect(result.syncedEventIds).toEqual([])
     expect(await countPendingAnswerEvents(USER_A)).toBe(1)
     const row = await getClientDb().answer_events.where('event_id').equals(e1.event_id).first()
@@ -483,9 +476,8 @@ describe('flushPendingAnswerEvents — in-flight guard', () => {
 
     // 2 回目は対象 0 件 → POST しない
     const second = makeMockClient()
-    const secondResult = await flushPendingAnswerEvents(USER_A, second)
+    await flushPendingAnswerEvents(USER_A, second)
     expect(second.calls).toHaveLength(0)
-    expect(secondResult.attempted).toBe(0)
 
     releasePost({ ok: true, status: 200, body: { ok: true, failed: [] } })
     await first

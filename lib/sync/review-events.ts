@@ -121,14 +121,8 @@ const FLUSH_CHUNK_SIZE = 1000
 export const inFlightEventIds = new Set<string>()
 
 export type FlushResult = {
-  attempted: number
   syncedEventIds: string[]
   failedEventIds: string[]
-  // entity_mutations flush と共有する shape の名残。 review 側は study_sessions 廃止で
-  // session 概念が無くなったため常に false (entity 側も固定 false)。
-  sessionSynced: boolean
-  // network / 4xx 5xx 失敗を区別 (true=API までは届いた、 false=fetch level fail)
-  reachable: boolean
   // POST の HTTP status (成功=200、 失敗=応答 status、 network 断 / POST 未試行=0)。
   // orchestrator が 429 (即停止) / 5xx (transient retry) / 4xx (永続) を分類するために使う。
   httpStatus: number
@@ -139,11 +133,8 @@ const defaultClient: BulkApiClient = createBulkApiClient(BULK_ENDPOINT)
 
 function noFlushResult(): FlushResult {
   return {
-    attempted: 0,
     syncedEventIds: [],
     failedEventIds: [],
-    sessionSynced: false,
-    reachable: false,
     httpStatus: 0,
   }
 }
@@ -212,13 +203,11 @@ export async function flushPendingAnswerEvents(
     const syncedEventIds: string[] = []
     const failedEventIds: string[] = []
     let unsentEventIds: string[] = []
-    let attempted = 0
     let httpStatus = 0
     let aborted = false
 
     for (let i = 0; i < wires.length; i += FLUSH_CHUNK_SIZE) {
       const chunk = wires.slice(i, i + FLUSH_CHUNK_SIZE)
-      attempted += chunk.length
       const response = await client.post({ events: chunk })
       httpStatus = response.status
       if (!response.ok || !response.body || response.body.ok !== true) {
@@ -242,13 +231,10 @@ export async function flushPendingAnswerEvents(
     await markAnswerEvents(failedEventIds, 'failed')
 
     return {
-      attempted,
       syncedEventIds,
       // 中断時は失敗 chunk + 未送信 chunk を「今回送れなかった分」 として返す
       // (retry するか否かの分類は httpStatus 側で決まる)。
       failedEventIds: aborted ? [...failedEventIds, ...unsentEventIds] : failedEventIds,
-      sessionSynced: false,
-      reachable: aborted ? httpStatus >= 400 && httpStatus < 600 : true,
       httpStatus,
     }
   } finally {
