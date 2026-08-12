@@ -229,7 +229,7 @@ describe('buildCardRows', () => {
     const rows = buildCardRows(
       [withFig, withoutFig],
       { [withFig.cardId]: [img] },
-      { userId: 'u1', examId: 'e1', sourceDocumentId: null, now: new Date('2026-05-31T00:00:00.000Z') },
+      { userId: 'u1', examId: 'e1', sourceDocumentId: 'sd1', now: new Date('2026-05-31T00:00:00.000Z') },
     )
     expect(rows[0].images).toEqual([img])
     expect(rows[1].images).toEqual([])

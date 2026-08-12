@@ -18,9 +18,6 @@ const { mockRows } = vi.hoisted(() => {
     id: string
     userId: string
     name: string
-    questionNoFormat: string | null
-    archivedAt: Date | null
-    cardCount: number
     contentVersion: number
     createdAt: Date
     updatedAt: Date
@@ -30,9 +27,6 @@ const { mockRows } = vi.hoisted(() => {
       id: 'exam-uuid-1',
       userId: 'user-uuid',
       name: 'Exam One',
-      questionNoFormat: null,
-      archivedAt: null,
-      cardCount: 3,
       contentVersion: 1,
       createdAt: new Date('2026-05-01T10:00:00.000Z'),
       updatedAt: new Date('2026-05-01T10:00:01.000Z'),
@@ -41,9 +35,6 @@ const { mockRows } = vi.hoisted(() => {
       id: 'exam-uuid-2',
       userId: 'user-uuid',
       name: 'Exam Two',
-      questionNoFormat: 'numeric',
-      archivedAt: null,
-      cardCount: 5,
       contentVersion: 2,
       createdAt: new Date('2026-05-01T10:00:02.000Z'),
       updatedAt: new Date('2026-05-10T12:00:01.000Z'),
@@ -58,9 +49,6 @@ const CANNED_ROWS = [
     id: 'exam-uuid-1',
     userId: 'user-uuid',
     name: 'Exam One',
-    questionNoFormat: null,
-    archivedAt: null,
-    cardCount: 3,
     contentVersion: 1,
     createdAt: new Date('2026-05-01T10:00:00.000Z'),
     updatedAt: new Date('2026-05-01T10:00:01.000Z'),
@@ -69,9 +57,6 @@ const CANNED_ROWS = [
     id: 'exam-uuid-2',
     userId: 'user-uuid',
     name: 'Exam Two',
-    questionNoFormat: 'numeric',
-    archivedAt: null,
-    cardCount: 5,
     contentVersion: 2,
     createdAt: new Date('2026-05-01T10:00:02.000Z'),
     updatedAt: new Date('2026-05-10T12:00:01.000Z'),
@@ -139,8 +124,8 @@ describe('getExamsDelta', () => {
     expect(result.rows[0].updated_at.endsWith('Z')).toBe(true)
     expect(result.rows[1].updated_at).toBe('2026-05-10T12:00:01.000Z')
     // ClientExam shape の主要フィールド
-    // Sprint B (DB 全体掃除) T5: card_count / question_no_format は ClientExam から
-    // 撤去済 (toClientExam mapper がもう運ばない) のためここでは assert しない。
+    // Sprint B (DB 全体掃除): card_count / question_no_format は ClientExam から撤去済
+    // (toClientExam mapper がもう運ばず、DB 列も migration 0036 で drop) ゆえ assert しない。
     expect(result.rows[0].id).toBe('exam-uuid-1')
     expect(result.rows[0].user_id).toBe('user-uuid')
     expect(result.rows[0].name).toBe('Exam One')

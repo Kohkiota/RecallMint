@@ -84,7 +84,6 @@ async function seedExamAndSourceDoc(userId: string): Promise<{ examId: string; s
     id: sourceDocumentId,
     userId,
     examId,
-    mode: 'new',
     fileType: 'image',
     filename: 'a.png',
     fileSizeBytes: 1000,
@@ -96,7 +95,7 @@ async function seedExamAndSourceDoc(userId: string): Promise<{ examId: string; s
 async function seedPreparedOperation(
   userId: string,
   examId: string,
-  sourceDocumentId: string | null,
+  sourceDocumentId: string,
   overrides: Partial<{
     status: 'prepared' | 'processing' | 'completed' | 'terminal_failed'
     leaseVersion: number
@@ -215,7 +214,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { marker: 'stale-attempt' },
-        fileSizeBytes: 0,
       }),
     )
     expect(result).toEqual({ outcome: 'stale' })
@@ -246,8 +244,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: { [card.cardId]: [image] },
         resultSummary: { marker: 'published' },
-        // Task S-3: 記帳値は引数で決まる(tx は source 台帳を読まない)。
-        fileSizeBytes: 4242,
       }),
     )
     expect(result).toEqual({ outcome: 'published' })
@@ -291,9 +287,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     expect(records).toHaveLength(1)
     expect(records[0]!.status).toBe('completed')
     expect(records[0]!.pagesProcessed).toBe(1) // 実 source 画像数(0 でない)
-    expect(records[0]!.fileSizeBytes).toBe(4242) // 引数で渡した値がそのまま入る
-    expect(records[0]!.ocrCostYen).toBeNull() // 新 flow は cost を持たない
-    expect(records[0]!.filename).toBe('a.png') // source_documents.filename
     // 月次 quota SUM がこの行を数える(記帳の実効を pin・enforcement は ②-5)。
     const monthPages = await withTenantTx(userId, (tx) => getCurrentMonthOcrPages(userId, tx))
     expect(monthPages).toBe(1)
@@ -329,7 +322,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
           cards: [card],
           cardImagesByCardId: { [card.cardId]: [image] },
           resultSummary: {},
-          fileSizeBytes: 0,
         }),
       ),
     ).rejects.toThrow()
@@ -356,7 +348,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { n: 1 },
-        fileSizeBytes: 0,
       }),
     )
     expect(first).toEqual({ outcome: 'published' })
@@ -371,7 +362,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: { n: 2 },
-        fileSizeBytes: 0,
       }),
     )
     expect(second).toEqual({ outcome: 'stale' })
@@ -406,7 +396,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
           cards: [dupCard, otherCard],
           cardImagesByCardId: {},
           resultSummary: {},
-          fileSizeBytes: 0,
         }),
       ),
     ).rejects.toThrow()
@@ -439,7 +428,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
         cards: [card],
         cardImagesByCardId: {},
         resultSummary: {},
-        fileSizeBytes: 0,
       }),
     )
     expect(result).toEqual({ outcome: 'stale' })

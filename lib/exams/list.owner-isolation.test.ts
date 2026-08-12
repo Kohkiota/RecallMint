@@ -28,8 +28,9 @@ const { dbState } = vi.hoisted(() => ({
 }))
 
 // drizzle-orm: eq を spy 化し実動作は real に委譲 (owner-scope 実引数 pin 用)。
-// isNull も spy 化: Task 4(archived_at 読み手撤去)後、getActiveExamsForUser が
-// isNull 条件を一切構成しないことを実引数の不在で pin する。
+// isNull も spy 化: 旧 archived_at 絞り込みの撤去(Task 4)以後、getActiveExamsForUser が
+// isNull 条件を一切構成しないことを実引数の不在で pin する(列自体は migration 0036 で
+// drop 済 — この pin は「別の暗黙フィルタが増えていない」ことの backstop)。
 vi.mock('drizzle-orm', async (importActual) => {
   const real = await importActual<typeof import('drizzle-orm')>()
   const spyEq = vi.fn((...args: Parameters<typeof real.eq>) => real.eq(...args))
@@ -280,9 +281,8 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
     expect(await getEqSpy()).toHaveBeenCalledWith(exams.userId, 'user-1')
   })
 
-  // Task 4(archived_at 読み手撤去): 一覧 query は owner 絞り (userId) のみで、
-  // archived 関連条件 (isNull(exams.archivedAt)) を一切構成しない。
-  it('getActiveExamsForUser: archived 関連条件 (isNull) を構成しない', async () => {
+  // 一覧 query は owner 絞り (userId) のみで、isNull による暗黙フィルタを構成しない。
+  it('getActiveExamsForUser: isNull による暗黙フィルタを構成しない', async () => {
     dbState.queue = [[]]
     const { getActiveExamsForUser } = await importModule()
     await getActiveExamsForUser('user-1', getDb())

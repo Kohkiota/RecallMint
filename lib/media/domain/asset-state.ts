@@ -1,7 +1,13 @@
 // asset-state — asset ライフサイクル状態機械を集約する純粋 domain module。
-// 画像 GC v2 Task G2 (DDD 監査 D-1 是正)。DB に CHECK 制約が無い status 列の
-// 語彙 SSoT はこの module (assets.status は text 列・migration 0023 時点で
-// CHECK なし)。状態遷移: reserved → ready → deleting → deleted。
+// 画像 GC v2 Task G2 (DDD 監査 D-1 是正)。状態遷移: reserved → ready → deleting → deleted。
+//
+// status 語彙の SSoT は **この module の ASSET_STATUSES**。migration 0036 (Sprint B
+// (DB 全体掃除)) で `assets_status_enum` CHECK を張ったが、それは **backstop**
+// (アプリ層を通らない直接 INSERT を弾く) であって語彙の正本ではない。両者の集合一致は
+// iso (tests/integration/pg/check-constraints.test.ts) が pg_get_constraintdef と
+// 突き合わせて強制する。**語彙を増やすときは ASSET_STATUSES + schema.ts の CHECK +
+// migration を同時に更新し、deploy 順は「CHECK を広げる migration 先行 → 新値を書く
+// code」**(旧 CHECK が新値を弾くため逆順は本番で INSERT 失敗になる)。
 //
 // PURE 制約 (lib/cards/domain/card-rules.ts 前例に厳密に倣う): Dexie / React /
 // 'use client' / drizzle / @/lib/db / @/lib/logger / server-only / zod / next

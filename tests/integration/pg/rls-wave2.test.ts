@@ -244,7 +244,6 @@ describe('RLS Wave 2 single-defense (user_settings/assets/source_documents/uploa
             id: randomUUID(),
             userId: fixture.b.userId,
             examId: fixture.a.examId, // 有効 FK (WITH CHECK が user_id で先に落ちる)
-            mode: 'new',
             fileType: 'pdf',
             filename: 'x.pdf',
             fileSizeBytes: 10,
@@ -258,8 +257,6 @@ describe('RLS Wave 2 single-defense (user_settings/assets/source_documents/uploa
         asTenant(fixture.a.userId, (tx) =>
           tx.insert(uploadRecords).values({
             userId: fixture.b.userId,
-            filename: 'x.pdf',
-            fileSizeBytes: 10,
             status: 'completed',
           }),
         ),
@@ -310,8 +307,6 @@ describe('RLS Wave 2 single-defense (user_settings/assets/source_documents/uploa
       // 当月 completed 行を A に 1 件追加 (fixture の seed 行は pagesProcessed=0)。
       await owner.insert(uploadRecords).values({
         userId: fixture.a.userId,
-        filename: 'ocr.pdf',
-        fileSizeBytes: 100,
         pagesProcessed: 5,
         status: 'completed',
       })

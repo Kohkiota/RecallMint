@@ -58,11 +58,8 @@ export async function completeUploadTx(
   args: {
     sourceDocumentId: string
     userId: string
-    filename: string
-    totalSize: number
     totalPages: number
     cardsExtracted: number
-    ocrCostYen: number
   },
 ): Promise<void> {
   // Iso-0 §1.3: WHERE に user_id 述語を追加し cross-tenant write を塞ぐ。
@@ -75,7 +72,6 @@ export async function completeUploadTx(
       status: 'completed',
       pagesProcessed: args.totalPages,
       cardsExtracted: args.cardsExtracted,
-      ocrCostYen: args.ocrCostYen,
       completedAt: sql`now()`,
     })
     .where(
@@ -92,10 +88,7 @@ export async function completeUploadTx(
   }
   await tx.insert(uploadRecords).values({
     userId: args.userId,
-    filename: args.filename,
-    fileSizeBytes: args.totalSize,
     pagesProcessed: args.totalPages,
-    ocrCostYen: args.ocrCostYen,
     status: 'completed',
   })
 }
@@ -109,10 +102,7 @@ export async function markFailed(
   err: unknown,
   audit: {
     userId: string
-    filename: string
-    fileSizeBytes: number
     pagesProcessed: number
-    ocrCostYen: number
   },
 ): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err)
@@ -140,10 +130,7 @@ export async function markFailed(
       }
       await tx.insert(uploadRecords).values({
         userId: audit.userId,
-        filename: audit.filename,
-        fileSizeBytes: audit.fileSizeBytes,
         pagesProcessed: audit.pagesProcessed,
-        ocrCostYen: audit.ocrCostYen,
         status: 'failed',
       })
     })

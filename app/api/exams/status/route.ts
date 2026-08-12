@@ -105,11 +105,7 @@ export const GET = withReadOnlyAuth(
               and(eq(uploadOperations.userId, user.id), isLiveUploadOperationCondition()),
             ),
         )
-        liveOpSourceDocumentIds = new Set(
-          liveRows
-            .map((r) => r.sourceDocumentId)
-            .filter((id): id is string => id !== null),
-        )
+        liveOpSourceDocumentIds = new Set(liveRows.map((r) => r.sourceDocumentId))
       } catch (err) {
         logger.warn({ event: 'api.exams.status.live_ops_failed', userId: user.id, err })
       }

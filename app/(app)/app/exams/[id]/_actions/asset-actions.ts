@@ -97,8 +97,8 @@ export async function reserveAsset(
     mime === 'image/webp' ? 'webp' : mime === 'image/jpeg' ? 'jpg' : 'png'
   const objectKey = `users/${user.id}/${assetId}.${ext}`
 
-  // reference_count / unreferenced_at は書かない (spec §2.1: 将来 orphan 掃除用の
-  // dormant 枠、 DB default に任せる)。RLS-P3 Wave2: tenant context 下で INSERT。
+  // unreferenced_at は書かない (GC v2 の mark run が付ける列で、reserve 時点では
+  // 未参照でなく「まだ参照され得る」状態)。RLS-P3 Wave2: tenant context 下で INSERT。
   await withTenantTx(user.id, (tx) =>
     tx.insert(assets).values({
       id: assetId,

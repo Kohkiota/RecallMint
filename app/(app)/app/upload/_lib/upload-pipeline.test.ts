@@ -238,7 +238,7 @@ vi.mock('@/lib/media/crop-and-store', async (importOriginal) => {
     classifyCropOutcome: vi.fn(actual.classifyCropOutcome),
   }
 })
-// publish tx は mock(実 DB を張らない)。 引数(cardImagesByCardId / fileSizeBytes /
+// publish tx は mock(実 DB を張らない)。 引数(cardImagesByCardId /
 // resultSummary)の検証点として使う。
 vi.mock('../_actions/publish-prepared', () => ({
   publishPreparedUploadTx: mockPublishPreparedUploadTx,
@@ -981,15 +981,6 @@ describe('runUploadPipeline — EXIF orientation(前提破綻の検知)', () => 
 })
 
 describe('runUploadPipeline — publish phase(S-3)', () => {
-  it('upload_records の file_size_bytes は受領 Buffer の合計を渡す', async () => {
-    const files = filesOf('a', 'b', 'c')
-
-    await run(files)
-
-    const args = mockPublishPreparedUploadTx.mock.calls[0][1] as { fileSizeBytes: number }
-    expect(args.fileSizeBytes).toBe(files.reduce((s, f) => s + f.buffer.length, 0))
-  })
-
   it('publish tx の失敗は terminal(publish_failed)— commit 後ゆえ fence は prepared', async () => {
     txState.opRows = [{ status: 'prepared', leaseVersion: 0 }]
     mockPublishPreparedUploadTx.mockRejectedValue(new Error('duplicate card id'))
@@ -1558,19 +1549,6 @@ describe('runUploadPipeline — sourceOrder の合流(spec §2/D3)', () => {
       images[1].buffer.toString('base64'),
       pngLike('y0').toString('base64'),
     ])
-
-    const op = mockPublishPreparedUploadTx.mock.calls[0]?.[1] as
-      | { fileSizeBytes: number }
-      | undefined
-    // fix round 2(canonical Important 2): fileSizeBytes は**受領 Buffer の合計**
-    // (画像は原 Buffer・PDF は count phase が GET した実 source バイト長)であって
-    // rasterize 済み webp の合計ではない — pdfX/pdfY の source bytes(`pdfBytes(fileId)`。
-    // registerPdf が r2State に登録した値)を使う。
-    const expectedTotal =
-      images.reduce((sum, f) => sum + f.buffer.length, 0) +
-      pdfBytes(pdfX.fileId).length +
-      pdfBytes(pdfY.fileId).length
-    expect(op?.fileSizeBytes).toBe(expectedTotal)
 
     // fix round 1(canonical Important 2): 出口 DELETE が**全** source key を
     // 対象にすることを、単一 key への `toHaveBeenCalledWith` ではなく呼ばれた

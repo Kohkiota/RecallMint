@@ -49,14 +49,27 @@ async function statusOf(sourceDocumentId: string): Promise<string | undefined> {
   return rows[0]?.status
 }
 
-async function uploadRecordsWithFilename(filename: string) {
-  return getFixtureOwnerDb()
+// 台帳行の識別: Sprint B (DB 全体掃除) で filename 列が消えたため、刺激で **増えた行**
+// を id 差分で取る (fixture が seed 済の 1 行と混ざらないようにする)。
+async function ledgerIdsOf(userId: string): Promise<Set<string>> {
+  const rows = await getFixtureOwnerDb()
+    .select({ id: uploadRecords.id })
+    .from(uploadRecords)
+    .where(eq(uploadRecords.userId, userId))
+  return new Set(rows.map((r) => r.id))
+}
+
+async function ledgerRowsAppendedSince(userId: string, before: Set<string>) {
+  const rows = await getFixtureOwnerDb()
     .select({
+      id: uploadRecords.id,
       userId: uploadRecords.userId,
       status: uploadRecords.status,
+      pagesProcessed: uploadRecords.pagesProcessed,
     })
     .from(uploadRecords)
-    .where(eq(uploadRecords.filename, filename))
+    .where(eq(uploadRecords.userId, userId))
+  return rows.filter((row) => !before.has(row.id))
 }
 
 describe('OCR completion/failure owner-scope isolation (O1)', () => {
@@ -70,16 +83,14 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
   // --- completeUploadTx: 正常単一テナント経路は厳密 1 行 update ---
   describe('completeUploadTx', () => {
     it('completes tenant A own document (positive control)', async () => {
+      const ledgerBefore = await ledgerIdsOf(fixture.a.userId)
       await expect(
         withTenantTx(fixture.a.userId, (tx) =>
           completeUploadTx(tx, {
             sourceDocumentId: fixture.a.sourceDocumentId,
             userId: fixture.a.userId,
-            filename: 'complete-A.pdf',
-            totalSize: 123,
             totalPages: 3,
             cardsExtracted: 5,
-            ocrCostYen: 1.5,
           }),
         ),
       ).resolves.toBeUndefined()
@@ -108,26 +119,26 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
       expect(completed).toHaveLength(1)
       expect(completed[0]?.id).toBe(fixture.a.sourceDocumentId)
 
-      // 台帳: 渡した filename の completed 行が A 名義で 1 行 append
-      const ledger = await uploadRecordsWithFilename('complete-A.pdf')
+      // 台帳: completed 行が A 名義で 1 行 append (pages は渡した totalPages)
+      const ledger = await ledgerRowsAppendedSince(fixture.a.userId, ledgerBefore)
       expect(ledger).toHaveLength(1)
       expect(ledger[0]?.userId).toBe(fixture.a.userId)
       expect(ledger[0]?.status).toBe('completed')
+      expect(ledger[0]?.pagesProcessed).toBe(3)
     })
 
     // 代表 RED: fix 前は WHERE が id のみのため、A の文脈で B の doc を completed に
     // できてしまう。fix 後は 0 行 → throw し、B の doc は不変。
     it('does not complete tenant B document via tenant A context (negative)', async () => {
+      const ledgerBeforeA = await ledgerIdsOf(fixture.a.userId)
+      const ledgerBeforeB = await ledgerIdsOf(fixture.b.userId)
       await expect(
         withTenantTx(fixture.a.userId, (tx) =>
           completeUploadTx(tx, {
             sourceDocumentId: fixture.b.sourceDocumentId,
             userId: fixture.a.userId,
-            filename: 'complete-cross.pdf',
-            totalSize: 999,
             totalPages: 9,
             cardsExtracted: 9,
-            ocrCostYen: 9.9,
           }),
         ),
       ).rejects.toThrow()
@@ -135,22 +146,20 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
       // B の doc は seed 時の 'processing' のまま
       expect(await statusOf(fixture.b.sourceDocumentId)).toBe('processing')
 
-      // 完了 tx が rollback され、越境 filename の台帳行も残らない
-      const ledger = await uploadRecordsWithFilename('complete-cross.pdf')
-      expect(ledger).toHaveLength(0)
+      // 完了 tx が rollback され、どちらの名義でも台帳行は増えない
+      expect(await ledgerRowsAppendedSince(fixture.a.userId, ledgerBeforeA)).toHaveLength(0)
+      expect(await ledgerRowsAppendedSince(fixture.b.userId, ledgerBeforeB)).toHaveLength(0)
     })
   })
 
   // --- markFailed: best-effort no-throw。所有権違反は warn のみ ---
   describe('markFailed', () => {
     it('marks tenant A own document failed (positive control)', async () => {
+      const ledgerBefore = await ledgerIdsOf(fixture.a.userId)
       await expect(
         markFailed(fixture.a.sourceDocumentId, new Error('ocr boom'), {
           userId: fixture.a.userId,
-          filename: 'fail-A.pdf',
-          fileSizeBytes: 100,
           pagesProcessed: 2,
-          ocrCostYen: 0.5,
         }),
       ).resolves.toBeUndefined()
 
@@ -164,31 +173,31 @@ describe('OCR completion/failure owner-scope isolation (O1)', () => {
       expect(rows[0]?.status).toBe('failed')
       expect(rows[0]?.errorMessage).toBe('ocr boom')
 
-      const ledger = await uploadRecordsWithFilename('fail-A.pdf')
+      const ledger = await ledgerRowsAppendedSince(fixture.a.userId, ledgerBefore)
       expect(ledger).toHaveLength(1)
       expect(ledger[0]?.userId).toBe(fixture.a.userId)
       expect(ledger[0]?.status).toBe('failed')
+      expect(ledger[0]?.pagesProcessed).toBe(2)
     })
 
     // RED: fix 前は A の文脈で B の doc を failed にできてしまう。markFailed は
     // best-effort ゆえ throw はしない (fix 前後とも) が、fix 後は B が不変。
     it('does not mark tenant B document failed via tenant A context (negative)', async () => {
+      const ledgerBeforeA = await ledgerIdsOf(fixture.a.userId)
+      const ledgerBeforeB = await ledgerIdsOf(fixture.b.userId)
       await expect(
         markFailed(fixture.b.sourceDocumentId, new Error('ocr boom'), {
           userId: fixture.a.userId,
-          filename: 'fail-cross.pdf',
-          fileSizeBytes: 100,
           pagesProcessed: 2,
-          ocrCostYen: 0.5,
         }),
       ).resolves.toBeUndefined()
 
       // B の doc は seed 時の 'processing' のまま
       expect(await statusOf(fixture.b.sourceDocumentId)).toBe('processing')
 
-      // 越境 filename の台帳行も残らない (no-row は台帳 append しない)
-      const ledger = await uploadRecordsWithFilename('fail-cross.pdf')
-      expect(ledger).toHaveLength(0)
+      // 越境の台帳行も残らない (no-row は台帳 append しない)
+      expect(await ledgerRowsAppendedSince(fixture.a.userId, ledgerBeforeA)).toHaveLength(0)
+      expect(await ledgerRowsAppendedSince(fixture.b.userId, ledgerBeforeB)).toHaveLength(0)
     })
   })
 })

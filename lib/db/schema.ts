@@ -39,7 +39,6 @@ import {
   index,
   integer,
   jsonb,
-  numeric,
   pgTable,
   primaryKey,
   real,
@@ -85,75 +84,99 @@ export type CardImage = {
 // ため、 scrub 済み行 (clerk_id=NULL) と新規 user.created (異なる新 clerk_id) は
 // ON CONFLICT 衝突せず、 新規行が作られて旧 scrub 行は audit として残る = 仕様通り。
 // ---------------------------------------------------------------------------
-export const users = pgTable('users', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  clerkId: text('clerk_id').unique(),
-  email: text('email'),
-  stripeCustomerId: text('stripe_customer_id').unique(),
-  // in-place プラン変更の識別 key。1 user 1 active subscription invariant を
-  // 保持し、subscription 系 webhook (created/updated/deleted) で populate/clear する。
-  stripeSubscriptionId: text('stripe_subscription_id').unique(),
-  // 方針C: ダウングレード予約 (subscription_schedule) のトラッキング 3 列。
-  // changePlan のダウングレード経路で set、release 完了 webhook で clear する。
-  // scheduledDowngradeScheduleId: ブロック条件の本体 (§5.5) + release 照合 #1 (§6.4)。
-  // scheduledTargetPriceId: 予約先 price。release 照合 #5 (§6.4) で使用。
-  // scheduledChangeEffectiveAt: schedule phase0 の end_date。UI 表示専用 (切替発効日時)。
-  scheduledDowngradeScheduleId: text('scheduled_downgrade_schedule_id'),
-  scheduledTargetPriceId: text('scheduled_target_price_id'),
-  scheduledChangeEffectiveAt: timestamp('scheduled_change_effective_at', {
-    withTimezone: true,
-  }),
-  plan: text('plan')
-    .$type<'free' | 'standard' | 'pro'>()
-    .notNull()
-    .default('free'),
-  // subscription_status: Stripe emits more states (trialing, incomplete,
-  // incomplete_expired, unpaid, paused). Webhook handler normalizes to these
-  // 3 (trialing -> active, unpaid -> past_due, etc.) before writing.
-  //
-  // 注: past_due は 2 つの semantics を兼ねる:
-  //   (a) past_due + plan IN ('standard','pro') = 初回支払失敗 retry 期間中、
-  //       grace window でアクセス保持
-  //   (b) past_due + plan='free'                = unpaid/incomplete 由来の
-  //       downgrade 完了後 (max retry 経過 or 初回支払未完了)
-  // downstream UI は (plan, subscriptionStatus) 組合せで区別する必要あり
-  // (route.ts resolvePlanFromSub 参照)。 4 値化 (unpaid 別立て) は v1.x 検討。
-  subscriptionStatus: text('subscription_status').$type<
-    'active' | 'past_due' | 'canceled'
-  >(),
-  currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
-  // キャンセル予定日時: Stripe が返す cancel_at を保存。null = キャンセル予約なし。
-  cancelAt: timestamp('cancel_at', { withTimezone: true }),
-  // 課金サイクル: NULL = 課金プランなし (free)、'month' = 月額、'year' = 年額。
-  // plan 軸 (free/standard/pro) と直交し、 機能差は plan のみが決定。 cycle は
-  // 表示・upsell・price_id 選択にのみ使用。 webhook で price_id → (plan, interval)
-  // を解決して同時更新 (lib/stripe/price-mapping.ts 参照)。
-  //
-  // Invariants (webhook handler + price-mapping で担保):
-  //   plan='free'                 ⇒ billingInterval IS NULL
-  //   plan IN ('standard','pro')  ⇒ billingInterval IN ('month','year')
-  // 例外: 本列導入 (2026-05-17) 以前の課金 user の billingInterval は NULL の
-  // まま、 次回 webhook 受信時に resync される (この transition window のみ
-  // paid plan && interval NULL が legal、 frontend は NULL を 'month' として
-  // 暫定表示する fallback 必須)。
-  billingInterval: text('billing_interval').$type<'month' | 'year'>(),
-  createdAt: timestamp('created_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true })
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
-  deletedAt: timestamp('deleted_at', { withTimezone: true }),
-})
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clerkId: text('clerk_id').unique(),
+    email: text('email'),
+    stripeCustomerId: text('stripe_customer_id').unique(),
+    // in-place プラン変更の識別 key。1 user 1 active subscription invariant を
+    // 保持し、subscription 系 webhook (created/updated/deleted) で populate/clear する。
+    stripeSubscriptionId: text('stripe_subscription_id').unique(),
+    // 方針C: ダウングレード予約 (subscription_schedule) のトラッキング 3 列。
+    // changePlan のダウングレード経路で set、release 完了 webhook で clear する。
+    // scheduledDowngradeScheduleId: ブロック条件の本体 (§5.5) + release 照合 #1 (§6.4)。
+    // scheduledTargetPriceId: 予約先 price。release 照合 #5 (§6.4) で使用。
+    // scheduledChangeEffectiveAt: schedule phase0 の end_date。UI 表示専用 (切替発効日時)。
+    scheduledDowngradeScheduleId: text('scheduled_downgrade_schedule_id'),
+    scheduledTargetPriceId: text('scheduled_target_price_id'),
+    scheduledChangeEffectiveAt: timestamp('scheduled_change_effective_at', {
+      withTimezone: true,
+    }),
+    plan: text('plan')
+      .$type<'free' | 'standard' | 'pro'>()
+      .notNull()
+      .default('free'),
+    // subscription_status: Stripe emits more states (trialing, incomplete,
+    // incomplete_expired, unpaid, paused). Webhook handler normalizes to these
+    // 3 (trialing -> active, unpaid -> past_due, etc.) before writing.
+    //
+    // 注: past_due は 2 つの semantics を兼ねる:
+    //   (a) past_due + plan IN ('standard','pro') = 初回支払失敗 retry 期間中、
+    //       grace window でアクセス保持
+    //   (b) past_due + plan='free'                = unpaid/incomplete 由来の
+    //       downgrade 完了後 (max retry 経過 or 初回支払未完了)
+    // downstream UI は (plan, subscriptionStatus) 組合せで区別する必要あり
+    // (route.ts resolvePlanFromSub 参照)。 4 値化 (unpaid 別立て) は v1.x 検討。
+    subscriptionStatus: text('subscription_status').$type<
+      'active' | 'past_due' | 'canceled'
+    >(),
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
+    // キャンセル予定日時: Stripe が返す cancel_at を保存。null = キャンセル予約なし。
+    cancelAt: timestamp('cancel_at', { withTimezone: true }),
+    // 課金サイクル: NULL = 課金プランなし (free)、'month' = 月額、'year' = 年額。
+    // plan 軸 (free/standard/pro) と直交し、 機能差は plan のみが決定。 cycle は
+    // 表示・upsell・price_id 選択にのみ使用。 webhook で price_id → (plan, interval)
+    // を解決して同時更新 (lib/stripe/price-mapping.ts 参照)。
+    //
+    // Invariants (webhook handler + price-mapping で担保):
+    //   plan='free'                 ⇒ billingInterval IS NULL
+    //   plan IN ('standard','pro')  ⇒ billingInterval IN ('month','year')
+    // 例外: 本列導入 (2026-05-17) 以前の課金 user の billingInterval は NULL の
+    // まま、 次回 webhook 受信時に resync される (この transition window のみ
+    // paid plan && interval NULL が legal、 frontend は NULL を 'month' として
+    // 暫定表示する fallback 必須)。
+    billingInterval: text('billing_interval').$type<'month' | 'year'>(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => [
+    // Sprint B (DB 全体掃除) §5.2: 課金判定の分岐に使う文字列列を DB 側でも縛る
+    // (webhook が正規化した後の値のみが入るという不変条件の backstop)。
+    check('users_plan_enum', sql`${t.plan} IN ('free', 'standard', 'pro')`),
+    // NULL 可 (未課金 / free) の 2 本は `IS NULL OR` を明示する。PG の CHECK は NULL を
+    // 素通しするが、それに依存すると「NULL 許容が意図か否か」が式から読めなくなる。
+    check(
+      'users_subscription_status_enum',
+      sql`${t.subscriptionStatus} IS NULL OR ${t.subscriptionStatus} IN ('active', 'past_due', 'canceled')`,
+    ),
+    check(
+      'users_billing_interval_enum',
+      sql`${t.billingInterval} IS NULL OR ${t.billingInterval} IN ('month', 'year')`,
+    ),
+  ],
+)
 
 // ---------------------------------------------------------------------------
 // ai_usage (グローバル日次カウンタ、JST date) — 変更なし
 // ---------------------------------------------------------------------------
-export const aiUsage = pgTable('ai_usage', {
-  date: date('date', { mode: 'string' }).primaryKey(),
-  count: integer('count').notNull().default(0),
-})
+export const aiUsage = pgTable(
+  'ai_usage',
+  {
+    date: date('date', { mode: 'string' }).primaryKey(),
+    count: integer('count').notNull().default(0),
+  },
+  // Sprint B (DB 全体掃除) §5.2: server 自身が計算して書く quota カウンタ。負値は
+  // 集計バグ以外に発生源が無く、発生したら早く落ちるほうがよい。
+  (t) => [check('ai_usage_count_nonneg', sql`${t.count} >= 0`)],
+)
 
 // ---------------------------------------------------------------------------
 // ai_usage_users (ユーザー別日次カウンタ、複合 PK)
@@ -170,7 +193,10 @@ export const aiUsageUsers = pgTable(
     date: date('date', { mode: 'string' }).notNull(),
     count: integer('count').notNull().default(0),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.date] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.date] }),
+    check('ai_usage_users_count_nonneg', sql`${t.count} >= 0`),
+  ],
 )
 
 // ---------------------------------------------------------------------------
@@ -203,8 +229,9 @@ export const clerkEvents = pgTable('clerk_events', {
 // で enforce するため $type<> union は付けない (catalog を語彙の SSoT に一本化)。
 // FK なし (audit 行は user 削除後も残置)。
 // user_id / error_message nullable (webhook 文脈に userId 無し・anomaly 検知系は
-// 合成エラー文字列を作らない)。retry_count / next_retry_at / resolved_at /
-// resolution_note は手動回収用で Sprint 2 では読み書きしない (dormant)。index は
+// 合成エラー文字列を作らない)。手動回収用の 4 列 (retry_count / next_retry_at /
+// resolved_at / resolution_note) は Sprint 2 から一度も読み書きされず、回収も
+// 「OT が SQL で見る」運用に落ち着いたため Sprint B (DB 全体掃除) で削除した。index は
 // PK のみ (YAGNI)。
 // 詳細: specs/2026-07-10-sprint2-integration-failures-design.md §4
 // ---------------------------------------------------------------------------
@@ -221,10 +248,6 @@ export const integrationFailures = pgTable('integration_failures', {
   scheduleId: text('schedule_id'),
   context: jsonb('context').notNull(),
   errorMessage: text('error_message'),
-  retryCount: integer('retry_count').notNull().default(0),
-  nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
-  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
-  resolutionNote: text('resolution_note'),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -232,8 +255,7 @@ export const integrationFailures = pgTable('integration_failures', {
 
 // ---------------------------------------------------------------------------
 // exams (mcq 新規)
-// hard delete (deleted_at なし、Sprint A-2 確定)。 archived_at で
-// ダウングレード時の自動アーカイブ (NULL = アクティブ)。
+// hard delete (deleted_at なし、Sprint A-2 確定)。
 // ---------------------------------------------------------------------------
 export const exams = pgTable(
   'exams',
@@ -243,16 +265,6 @@ export const exams = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    questionNoFormat: text('question_no_format').$type<
-      'numeric' | 'hierarchical' | 'free'
-    >(),
-    archivedAt: timestamp('archived_at', { withTimezone: true }),
-    // 非正規化 (B1 / S2.0c): この exam に属する cards 件数のキャッシュ列。
-    // 試験一覧の件数表示を cards への JOIN+GROUP BY 集計から定数読みに変える。
-    // card の INSERT (process.ts の OCR bulk) / DELETE (delete-card.ts) と
-    // 同一 transaction で増減する。 exam 削除時は exam 行ごと消えるため更新不要。
-    // 単体 card 作成 (createCard) は未実装、 実装時に +1 を同 tx で行うこと。
-    cardCount: integer('card_count').notNull().default(0),
     // S-cache-0 (§14.9): local-first 同期用の version 列。 server 側 bulk API が
     // mutation 適用時に +1 する楽観ロック相当の数値。 client は受領済 version を
     // 保持し、 push 時に比較に使う。
@@ -345,7 +357,6 @@ export const cards = pgTable(
   (t) => [
     index('cards_sort_idx').on(t.userId, t.examId, t.sortKey),
     index('cards_due_idx').on(t.userId, t.due),
-    index('cards_answered_idx').on(t.userId, t.examId, t.answered),
     index('cards_exam_idx').on(t.examId),
     // C1 (S2.0c): source_document_id は FK (ON DELETE SET NULL) だが index が
     // 無いと source_documents 削除時の SET NULL cascade が cards 全表 seq scan に
@@ -383,15 +394,16 @@ export const sourceDocuments = pgTable(
     examId: uuid('exam_id')
       .notNull()
       .references(() => exams.id, { onDelete: 'cascade' }),
-    // S1.9.2: この upload が exam を新規作成したか (= 'new') / 既存 exam に
-    // 追加したか (= 'existing') を記録。 discard 時に「auto 作成 exam を
-    // cascade 削除するか / 既存 exam を残すか」 を server 側で DB から判定する
-    // 真実 source。 旧来 client が examWasAutoCreated を持ち回っていたのを廃止し、
-    // URL / client 改竄に対して堅牢化。 default なし = upload action で必ず set。
-    mode: text('mode').$type<'new' | 'existing'>().notNull(),
     fileType: text('file_type')
       .$type<'pdf' | 'image' | 'csv' | 'markdown'>()
       .notNull(),
+    // filename / file_size_bytes は **write-only**(§4 の意図明記対象)。
+    // 書き手 = submit-upload.ts の INSERT 1 箇所のみ、app に読み手は無い
+    // (Sprint B (DB 全体掃除) で upload_records 側の同名 2 列を削除した際、
+    // その値を運んでいた RETURNING が最後の読み手だったため消滅した)。
+    // 残す理由 = 「ユーザーが実際に何を上げたか」の記録。問い合わせ対応・事後調査で
+    // 運用者が SQL で直接引く(ai_usage_users と同型の運用台帳)。
+    // app が読まないことは仕様であって死列を意味しない。
     filename: text('filename').notNull(),
     fileSizeBytes: integer('file_size_bytes').notNull(),
     // S1.9.1: 'uploading' を廃止 (R2 presigned upload 段階の状態だったが、
@@ -407,13 +419,6 @@ export const sourceDocuments = pgTable(
     // expected_source_count と同一 CAS)。画像のみの upload は作成時に確定値(NULL 窓なし)。
     pagesTotal: integer('pages_total'),
     cardsExtracted: integer('cards_extracted').notNull().default(0),
-    // S1.9.1: integer → numeric(10,4)。 cost を小数で保持 (integer 切り捨ての
-    // 集計誤差を排除)。 mode:'number' で TS 上は number として読み書きする。
-    ocrCostYen: numeric('ocr_cost_yen', {
-      precision: 10,
-      scale: 4,
-      mode: 'number',
-    }),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -421,21 +426,37 @@ export const sourceDocuments = pgTable(
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
   (t) => [
-    index('source_docs_user_exam_idx').on(t.userId, t.examId),
     index('source_docs_status_idx').on(t.userId, t.status),
-    // C2 (S2.0c): exam_id 単独の FK cascade 用。 source_docs_user_exam_idx は
-    // (user_id, exam_id) 複合で exam_id が非先頭のため、 exam 削除時の
-    // cascade (WHERE exam_id = ?) に使えず seq scan になる。
+    // C2 (S2.0c): exam_id 単独の FK cascade 用。 (user_id, exam_id) 系の複合 index は
+    // exam_id が非先頭のため、 exam 削除時の cascade (WHERE exam_id = ?) に使えず
+    // seq scan になる。
     index('source_docs_exam_idx').on(t.examId),
     // D1 (S2.0c): /api/exams/status の polling 用。 DISTINCT ON (exam_id)
     // ORDER BY exam_id, created_at DESC を index 走査で解決する。 user_id 固定後
     // は (exam_id, created_at DESC) 順で並ぶため、 exam ごと最新行を先頭で拾える。
-    // 註: source_docs_user_exam_idx (user_id, exam_id) は本 index の prefix で
-    // 冗長になる — drop は scope 外 (D1 は「追加」指定)、 follow-up で要検討。
+    // Sprint B (DB 全体掃除): 旧 source_docs_user_exam_idx (user_id, exam_id) は
+    // 本 index の厳密 prefix (列順・方向とも一致) で冗長だったため削除した。
     index('source_docs_user_exam_created_idx').on(
       t.userId,
       t.examId,
       t.createdAt.desc(),
+    ),
+    // Sprint B (DB 全体掃除) §5.2: 状態機械の分岐に使う 2 列と、 server が自ら計算して
+    // 書く bytes / pages を DB 側でも縛る。
+    check(
+      'source_documents_file_type_enum',
+      sql`${t.fileType} IN ('pdf', 'image', 'csv', 'markdown')`,
+    ),
+    check(
+      'source_documents_status_enum',
+      sql`${t.status} IN ('processing', 'completed', 'failed')`,
+    ),
+    check('source_documents_file_size_bytes_nonneg', sql`${t.fileSizeBytes} >= 0`),
+    check('source_documents_pages_processed_nonneg', sql`${t.pagesProcessed} >= 0`),
+    // pages_total は PDF count phase 前が NULL (上記列コメント) — NULL 許容を式で明示する。
+    check(
+      'source_documents_pages_total_nonneg',
+      sql`${t.pagesTotal} IS NULL OR ${t.pagesTotal} >= 0`,
     ),
   ],
 )
@@ -456,15 +477,8 @@ export const uploadRecords = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    filename: text('filename').notNull(),
-    fileSizeBytes: integer('file_size_bytes').notNull(),
     // 月次 quota SUM の対象列 (status='completed' の行のみ集計)。
     pagesProcessed: integer('pages_processed').notNull().default(0),
-    ocrCostYen: numeric('ocr_cost_yen', {
-      precision: 10,
-      scale: 4,
-      mode: 'number',
-    }),
     // 失敗も台帳として append する (status='failed')。 quota SUM は completed で
     // 絞るため failed 行は消費に計上されない。
     status: text('status').$type<'completed' | 'failed'>().notNull(),
@@ -472,7 +486,12 @@ export const uploadRecords = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index('upload_records_user_created_idx').on(t.userId, t.createdAt)],
+  (t) => [
+    index('upload_records_user_created_idx').on(t.userId, t.createdAt),
+    // Sprint B (DB 全体掃除) §5.2: quota SUM の絞り込みキーと集計対象列を DB 側でも縛る。
+    check('upload_records_status_enum', sql`${t.status} IN ('completed', 'failed')`),
+    check('upload_records_pages_processed_nonneg', sql`${t.pagesProcessed} >= 0`),
+  ],
 )
 
 // ---------------------------------------------------------------------------
@@ -491,7 +510,14 @@ export const studyDays = pgTable(
     correctCount: integer('correct_count').notNull().default(0),
     distinctCardCount: integer('distinct_card_count').notNull().default(0),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.day] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.day] }),
+    // Sprint B (DB 全体掃除) §5.2: server が再集計して書く統計 3 列。相関制約
+    // (correct <= review 等) は張らない — 同一 SQL からの絶対値再集計で冗長なため。
+    check('study_days_review_count_nonneg', sql`${t.reviewCount} >= 0`),
+    check('study_days_correct_count_nonneg', sql`${t.correctCount} >= 0`),
+    check('study_days_distinct_card_count_nonneg', sql`${t.distinctCardCount} >= 0`),
+  ],
 )
 
 // ---------------------------------------------------------------------------
@@ -548,9 +574,17 @@ export const contactMessages = pgTable(
       .notNull()
       .defaultNow(),
   },
-  // C3 (S2.0c): user_id FK (ON DELETE CASCADE) 用 index。 user 削除時の
-  // cascade および clerk webhook の明示 delete が seq scan になるのを防ぐ。
-  (t) => [index('contact_messages_user_idx').on(t.userId)],
+  (t) => [
+    // C3 (S2.0c): user_id FK (ON DELETE CASCADE) 用 index。 user 削除時の
+    // cascade および clerk webhook の明示 delete が seq scan になるのを防ぐ。
+    index('contact_messages_user_idx').on(t.userId),
+    // Sprint B (DB 全体掃除) §5.2: 運用者が SQL で直接更新する状態列ゆえ、typo を
+    // DB 側で弾く価値が特に高い (app 側に書き手が居ない = 型検査が効かない)。
+    check(
+      'contact_messages_status_enum',
+      sql`${t.status} IN ('open', 'in_progress', 'resolved')`,
+    ),
+  ],
 )
 
 // ---------------------------------------------------------------------------
@@ -609,9 +643,16 @@ export const answerEvents = pgTable(
 // 再送安全性を担保。 entity_type で対象 entity (card / 将来 tag_category 等) を識別、
 // entity_id は対象 entity の PK。 entity_type ごとに参照先 table が異なるため
 // entity_id に FK は付けず、 app 層 (apply registry) で整合保証する。
-// op は registry で定義する文字列 (現状 card: 'update_field' | 'create' | 'delete')。
 // patch jsonb は client が確定した部分更新 payload で、 server 側 registry の
 // apply 関数が解釈する。
+//
+// op / entity_type の語彙 (Sprint B (DB 全体掃除) §5.2): **SSoT は
+// lib/sync/server/entity-mutation-registry.ts の ENTITY_MUTATION_REGISTRY**、DB CHECK は
+// その backstop (registry を通らない直接 INSERT を弾く)。両者の集合一致は iso
+// (tests/integration/pg/check-constraints.test.ts) が pg_get_constraintdef と registry を
+// 突き合わせて強制する。**語彙を増やすときは registry + 本 CHECK + migration を同時に
+// 更新し、deploy 順は「CHECK を広げる migration 先行 → 新値を書く code」**
+// (旧 CHECK が新値を弾くため逆順は本番で INSERT 失敗になる)。
 // ---------------------------------------------------------------------------
 export const entityMutations = pgTable(
   'entity_mutations',
@@ -632,8 +673,12 @@ export const entityMutations = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index('entity_mutations_entity_idx').on(t.entityType, t.entityId, t.editedAt),
     index('entity_mutations_user_idx').on(t.userId, t.editedAt),
+    check(
+      'entity_mutations_entity_type_enum',
+      sql`${t.entityType} IN ('card', 'tag_category', 'tag_option')`,
+    ),
+    check('entity_mutations_op_enum', sql`${t.op} IN ('create', 'update_field', 'delete')`),
   ],
 )
 
@@ -666,6 +711,8 @@ export const tagCategories = pgTable(
   (t) => [
     // pull delta 用 (WHERE user_id=? AND updated_at >= ?)
     index('tag_categories_user_updated_idx').on(t.userId, t.updatedAt, t.id),
+    // Sprint B (DB 全体掃除) §5.2: single/multi は タグ付け UI の分岐そのもの。
+    check('tag_categories_select_type_enum', sql`${t.selectType} IN ('single', 'multi')`),
   ],
 )
 
@@ -759,6 +806,11 @@ export const tombstones = pgTable(
   (t) => [
     index('tombstones_user_deleted_idx').on(t.userId, t.deletedAt),
     uniqueIndex('tombstones_entity_uq').on(t.entityType, t.entityId),
+    // Sprint B (DB 全体掃除) §5.2: pull 側の削除反映が entity_type で分岐する。
+    check(
+      'tombstones_entity_type_enum',
+      sql`${t.entityType} IN ('exam', 'card', 'tag_category', 'tag_option')`,
+    ),
   ],
 )
 
@@ -768,13 +820,18 @@ export const tombstones = pgTable(
 // reserved→ready 状態遷移が card と無関係) のため cards.images に内包しない。
 // object_key は 'users/{user_id}/{assetId}.{webp|png|jpg}' 形式で UNIQUE (jpg は
 // iOS/WebKit 修正の fallback で元 jpeg を直 PUT する際の拡張子。 R2 key の
-// 一意性を DB 側でも担保)。status / mime は DB CHECK を張らずアプリ層 invariant
-// とする (Sprint 2 integration_failures catalog 前例と同判断)。
+// 一意性を DB 側でも担保)。
+//
+// status の語彙 (Sprint B (DB 全体掃除) §5.2): **SSoT は
+// lib/media/domain/asset-state.ts の ASSET_STATUSES**、DB CHECK はその backstop。
+// 集合一致は iso (tests/integration/pg/check-constraints.test.ts) が強制する。
+// **語彙追加時は ASSET_STATUSES + 本 CHECK + migration を同時に更新し、deploy 順は
+// 「CHECK を広げる migration 先行 → 新値を書く code」**。mime は語彙が外部由来
+// (ブラウザ / sharp 出力) で閉じないため CHECK を張らない (アプリ層 invariant のまま)。
+//
 // unreferenced_at は画像 GC v2 の中核列に昇格済み (mark/promote/sweep の判定を
 // lib/media/domain/asset-state.ts が pure に表現し、 lib/storage/asset-gc.ts の
 // reconciler と app/(app)/app/upload/_actions/publish-prepared.ts が読み書きする)。
-// reference_count のみ将来の orphan 掃除用の枠のまま dormant (列のみ確保、
-// アプリコードは一切読み書きしない)。
 // pull 同期非対象 (学習データでない、client 側は Dexie media_assets が別途持つ)。
 // user 削除: cascade で台帳は消える (R2 object 自体の自動掃除は scope 外)。
 // 詳細: docs/superpowers/specs/2026-07-12-image-phase-a-design.md §2.1
@@ -797,14 +854,20 @@ export const assets = pgTable(
       .notNull()
       .defaultNow(),
     readyAt: timestamp('ready_at', { withTimezone: true }),
-    // dormant: 将来の orphan 掃除 (手動 SQL) 用の枠。アプリコードは読み書きしない
-    // (unreferencedAt と異なり本列のみ dormant — 上記 table comment 参照)。
-    referenceCount: integer('reference_count').notNull().default(0),
     unreferencedAt: timestamp('unreferenced_at', { withTimezone: true }),
   },
   (t) => [
     index('assets_user_hash_idx').on(t.userId, t.hash),
     index('assets_user_status_idx').on(t.userId, t.status),
+    check(
+      'assets_status_enum',
+      sql`${t.status} IN ('reserved', 'ready', 'deleting', 'deleted')`,
+    ),
+    // Sprint B (DB 全体掃除) §5.2: byte_size は課金・容量集計の素、width/height は
+    // 表示計算の除数になりうるため 0 も不正 (寸法 0 の画像は存在しない)。
+    check('assets_byte_size_nonneg', sql`${t.byteSize} >= 0`),
+    check('assets_width_positive', sql`${t.width} > 0`),
+    check('assets_height_positive', sql`${t.height} > 0`),
   ],
 )
 
@@ -845,9 +908,7 @@ export const cardAssetRefs = pgTable(
 // 1 クライアント操作 (idempotency_key) : 1 行。正常遷移は
 // processing → prepared → completed、失敗は terminal_failed。
 // lease_version/lease_expires_at は「この invocation が生存している」表明 (live-op
-// gate と pipeline の fenced CAS が読む)。source_document_id は旧経路が生成時点で
-// 未確定だった名残で今は nullable だが、単一 invocation 経路は sync tx で必ず
-// 確定させるため実質必須値 (本 sprint の後続 task で NOT NULL 化する予定)。
+// gate と pipeline の fenced CAS が読む)。
 // 以降 (lease_expires_at / last_error_code / prepared_schema_version /
 // prepared_hash / prepared_payload / result_summary / completed_at) も
 // 状態遷移が進むまで値を持たない nullable 列。UNIQUE(user_id, idempotency_key) で
@@ -855,13 +916,13 @@ export const cardAssetRefs = pgTable(
 // Realtime publication 非追加: 本 repo は Supabase realtime publication を管理して
 // いない (追加すべき対象が存在しない、意図的に何もしない)。
 // exam_id: exam cascade (この ledger は 1 exam に対する 1 回の upload 操作)。
-// source_document_id: 現在は FK が ON DELETE SET NULL だが、NOT NULL 化と
-// 両立しないため本 sprint の後続 task で FK を ON DELETE CASCADE へ張り替える
+// source_document_id: NOT NULL + ON DELETE CASCADE (Sprint B (DB 全体掃除) §5.1)。
+// operation は source doc 無しでは意味を持たず、単一 invocation 経路が sync tx で必ず
+// 確定させるため NOT NULL。旧 SET NULL は NOT NULL と両立しないので CASCADE へ張り替えた
 // (source_documents の単独 DELETE 経路が production に存在しない現物確認により、
-// cascade で失われる操作記録は無いと判断)。「削除後も操作記録は残す」という
-// 旧意図は単独削除経路が無いことで既に空洞化している。 将来 source_documents の
-// 単独 DELETE 経路を新設する場合は、この operation 保持方針 (cascade で消える)
-// を再判断すること。
+// cascade で失われる操作記録は無いと判断)。**将来 source_documents の単独 DELETE 経路を
+// 新設する場合は、この operation 保持方針 (cascade で消える) を再判断すること**
+// — 「経路が無い」はコード現況であって DB 側の不変条件ではない。
 // 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-2-brief.md
 // ---------------------------------------------------------------------------
 export const uploadOperations = pgTable(
@@ -875,14 +936,13 @@ export const uploadOperations = pgTable(
     examId: uuid('exam_id')
       .notNull()
       .references(() => exams.id, { onDelete: 'cascade' }),
-    sourceDocumentId: uuid('source_document_id').references(() => sourceDocuments.id, {
-      onDelete: 'set null',
-    }),
+    sourceDocumentId: uuid('source_document_id')
+      .notNull()
+      .references(() => sourceDocuments.id, { onDelete: 'cascade' }),
     // 'processing' = ②-4a 単一 invocation 経路(spec 2026-08-04 §4.5)が sync phase で
     // 作る「実行中」状態。'prepared' = payload commit 済(crop/publish 待ち)。
-    // S-5 の旧経路撤去で旧 flow の 2 値を union から外した — DB CHECK は無いが、
-    // 列 default は migration 0032 で 'processing' へ移した(default に頼る INSERT が
-    // union に無い値を書かないため)。
+    // S-5 の旧経路撤去で旧 flow の 2 値を union から外し、Sprint B (DB 全体掃除) で
+    // 同じ 4 値の CHECK を張った(列 default は migration 0032 で 'processing')。
     status: text('status')
       .$type<'prepared' | 'processing' | 'completed' | 'terminal_failed'>()
       .notNull()
@@ -913,6 +973,18 @@ export const uploadOperations = pgTable(
       t.idempotencyKey,
     ),
     index('upload_operations_user_status_idx').on(t.userId, t.status),
+    // Sprint B (DB 全体掃除) §5.2: 状態機械 + server が自ら計算して書くカウンタ。
+    // expected_source_count は PDF count phase 前の 0 sentinel が正当値ゆえ非負
+    // (正数ではない)。
+    check(
+      'upload_operations_status_enum',
+      sql`${t.status} IN ('prepared', 'processing', 'completed', 'terminal_failed')`,
+    ),
+    check('upload_operations_attempt_count_nonneg', sql`${t.attemptCount} >= 0`),
+    check(
+      'upload_operations_expected_source_count_nonneg',
+      sql`${t.expectedSourceCount} >= 0`,
+    ),
   ],
 )
 

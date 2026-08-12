@@ -13,9 +13,6 @@ function fakeRow(overrides?: Partial<ExamRow>): ExamRow {
     id: 'exam-1',
     userId: 'user-1',
     name: 'Test Exam',
-    questionNoFormat: null,
-    archivedAt: null,
-    cardCount: 0,
     contentVersion: 0,
     createdAt: new Date('2026-05-01T00:00:00.000Z'),
     updatedAt: new Date('2026-05-02T00:00:00.000Z'),
@@ -41,10 +38,9 @@ describe('toClientExam', () => {
     expect(out.content_version).toBe(4)
   })
 
-  // Sprint B (DB 全体掃除) T5 置換 pin: card_count / question_no_format は両側 dead
-  // (server 読み手ゼロ / client mirror 撤去) につき mapper 出力から撤去した。
-  // 出力 shape にこの 2 key が含まれないことを構造的に pin する (schema.ts の DB 列
-  // 自体は本 task では残置・別 migration task で drop)。
+  // Sprint B (DB 全体掃除) 置換 pin: card_count / question_no_format は両側 dead
+  // (server 読み手ゼロ / client mirror 撤去) につき mapper 出力から撤去し、DB 列自体も
+  // migration 0036 で drop 済。出力 shape にこの 2 key が復活しないことを pin する。
   it('mapper 出力に card_count / question_no_format キーが含まれない', () => {
     const out = toClientExam(fakeRow())
     expect(out).not.toHaveProperty('card_count')

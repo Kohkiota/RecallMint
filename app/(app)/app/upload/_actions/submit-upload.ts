@@ -462,9 +462,7 @@ export async function submitUploadTx(
       outcome: 'accepted',
       operationId: op.id,
       examId: op.examId,
-      // 本経路が作る operation は source_document_id を生成と同時に確定するため
-      // 常に non-null(schema の nullable は別経路のための予約)。
-      sourceDocumentId: op.sourceDocumentId ?? '',
+      sourceDocumentId: op.sourceDocumentId,
       replayed: true,
       leaseVersion: op.leaseVersion,
     }
@@ -575,7 +573,6 @@ export async function submitUploadTx(
     .values({
       userId: user.id,
       examId: resolvedExamId,
-      mode: destination.mode,
       fileType: hasPdf ? 'pdf' : 'image',
       filename,
       fileSizeBytes,

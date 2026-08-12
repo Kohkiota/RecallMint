@@ -152,19 +152,13 @@ async function seedTenant(
     patch: {},
     editedAt: now,
   })
-  await db.insert(uploadRecords).values({
-    userId,
-    filename: 'src.pdf',
-    fileSizeBytes: 100,
-    status: 'completed',
-  })
+  await db.insert(uploadRecords).values({ userId, status: 'completed' })
 
   // --- tier2: tier1 を参照 ---
   await db.insert(sourceDocuments).values({
     id: sourceDocumentId,
     userId,
     examId,
-    mode: 'new',
     fileType: 'pdf',
     filename: 'src.pdf',
     fileSizeBytes: 100,

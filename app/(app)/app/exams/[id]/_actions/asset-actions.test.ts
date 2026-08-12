@@ -346,8 +346,7 @@ describe('reserveAsset', () => {
     expect(vals.height).toBe(600)
     expect(vals.hash).toBe('abc123hash')
     expect(vals.status).toBe('reserved')
-    // reference_count / unreferenced_at は書かない (dormant column、 DB default 任せ)
-    expect(vals).not.toHaveProperty('referenceCount')
+    // unreferenced_at は書かない (GC v2 の mark run が付ける列)
     expect(vals).not.toHaveProperty('unreferencedAt')
 
     if (r.ok && r.data) {
@@ -386,7 +385,6 @@ describe('finalizeAsset', () => {
     status: 'reserved',
     createdAt: new Date(),
     readyAt: null,
-    referenceCount: 0,
     unreferencedAt: null,
   }
 
@@ -628,7 +626,6 @@ describe('resolveAssetUrls', () => {
         status: 'ready',
         createdAt: new Date(),
         readyAt: new Date(),
-        referenceCount: 0,
         unreferencedAt: null,
       },
     ]
@@ -685,7 +682,6 @@ describe('resolveAssetUrls', () => {
         status: 'ready',
         createdAt: new Date(),
         readyAt: new Date(),
-        referenceCount: 0,
         unreferencedAt: null,
       },
     ]
@@ -734,7 +730,6 @@ describe('resolveAssetUrls', () => {
         status: 'ready',
         createdAt: new Date(),
         readyAt: new Date(),
-        referenceCount: 0,
         unreferencedAt: null,
       },
     ]

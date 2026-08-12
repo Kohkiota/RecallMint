@@ -25,7 +25,8 @@
 --     - UPDATE = app 経路に無い (status 更新は operator/owner 手動のみ)
 --   integration_failures KEEP INSERT        REVOKE SELECT, UPDATE, DELETE
 --     - INSERT = recordIntegrationFailure の audit 追記のみ (RETURNING 無・列読取無)
---     - SELECT/UPDATE/DELETE = 手動回収列 (retry_count/resolved_at 等) は dormant・app read 無
+--     - SELECT/UPDATE/DELETE = app read 無 (台帳の照会・回収は operator が owner 接続の SQL で行う。
+--                dormant のまま残っていた手動回収 4 列は Sprint B (DB 全体掃除) で削除済)
 --   stripe_events        KEEP INSERT, SELECT REVOKE UPDATE, DELETE
 --     - INSERT = webhook idempotency 記録 (route.ts)
 --     - SELECT = INSERT ... ON CONFLICT DO NOTHING RETURNING event_id の

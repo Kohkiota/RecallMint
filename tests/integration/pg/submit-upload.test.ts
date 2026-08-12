@@ -107,6 +107,22 @@ afterAll(async () => {
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
+// upload_operations.source_document_id は NOT NULL (Sprint B (DB 全体掃除) §5.1)。
+// seed する operation にも実在の source_document を対応させる。
+async function seedSourceDoc(userId: string, examId: string): Promise<string> {
+  const id = randomUUID()
+  await getFixtureOwnerDb().insert(sourceDocuments).values({
+    id,
+    userId,
+    examId,
+    fileType: 'image',
+    filename: 'seed.png',
+    fileSizeBytes: 100,
+    status: 'processing',
+  })
+  return id
+}
+
 function twoFiles(prefix: string): SubmitUploadFileMeta[] {
   return [
     { filename: `${prefix}-1.png`, byteSize: 1000 },
@@ -227,7 +243,6 @@ describe('submitUploadTx (S-1)', () => {
       .select({
         userId: sourceDocuments.userId,
         examId: sourceDocuments.examId,
-        mode: sourceDocuments.mode,
         fileType: sourceDocuments.fileType,
         status: sourceDocuments.status,
         fileSizeBytes: sourceDocuments.fileSizeBytes,
@@ -239,7 +254,6 @@ describe('submitUploadTx (S-1)', () => {
     expect(docRows).toHaveLength(1)
     expect(docRows[0]?.userId).toBe(userAId)
     expect(docRows[0]?.examId).toBe(result.examId)
-    expect(docRows[0]?.mode).toBe('new')
     expect(docRows[0]?.fileType).toBe('image')
     expect(docRows[0]?.status).toBe('processing')
     expect(docRows[0]?.fileSizeBytes).toBe(3000) // 1000 + 2000
@@ -292,35 +306,6 @@ describe('submitUploadTx (S-1)', () => {
     expect(result.examId).toBe(activeExamId)
     const examRows = await owner.select({ id: exams.id }).from(exams).where(eq(exams.userId, userAId))
     expect(examRows).toHaveLength(1)
-  })
-
-  // Task 4(archived_at 読み手撤去): archived_at 列自体は残る(DROP は別 task)が、
-  // 読み手が無くなったので値が非 null でも通常の既存 exam と同じ扱い(accepted)になる。
-  it('accepts upload to an exam with archived_at set (column stays; no reader filters on it)', async () => {
-    const owner = getFixtureOwnerDb()
-    const examId = randomUUID()
-    await owner.insert(exams).values({
-      id: examId,
-      userId: userAId,
-      name: '旧アーカイブ列 セット済',
-      archivedAt: new Date(),
-    })
-
-    const result = await asTenant(userAId, (tx) =>
-      submitUploadTx(
-        tx,
-        { id: userAId },
-        {
-          idempotencyKey: 'idem-archived-1',
-          destination: { mode: 'existing', examId },
-        },
-        twoFiles('archived'),
-      ),
-    )
-    if (result.outcome !== 'accepted') {
-      throw new Error(`expected accepted, got ${result.outcome}`)
-    }
-    expect(result.examId).toBe(examId)
   })
 
   it('rejects a foreign exam (owned by another tenant) as not-found', async () => {
@@ -388,6 +373,7 @@ describe('submitUploadTx (S-1)', () => {
           userId: userAId,
           idempotencyKey: `idem-seed-${status}`,
           examId: seedExamId,
+          sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
           status,
           leaseVersion: 1,
           leaseExpiresAt: new Date(Date.now() + 60_000), // valid lease
@@ -423,7 +409,6 @@ describe('submitUploadTx (S-1)', () => {
         id: staleDocId,
         userId: userAId,
         examId: seedExamId,
-        mode: 'new',
         fileType: 'image',
         filename: 'stale.png',
         fileSizeBytes: 100,
@@ -486,6 +471,7 @@ describe('submitUploadTx (S-1)', () => {
         userId: userAId,
         idempotencyKey: 'idem-seed-completed',
         examId: seedExamId,
+        sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
         status: 'completed',
         leaseVersion: 1,
         leaseExpiresAt: new Date(Date.now() + 60_000), // 終端なので lease は無視される
@@ -524,6 +510,7 @@ describe('submitUploadTx (S-1)', () => {
           userId: userAId,
           idempotencyKey: 'idem-valid',
           examId: seedExamId,
+          sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
           status: 'processing',
           leaseVersion: 1,
           leaseExpiresAt: new Date(Date.now() + 60_000), // valid
@@ -534,6 +521,7 @@ describe('submitUploadTx (S-1)', () => {
           userId: userAId,
           idempotencyKey: 'idem-expired',
           examId: seedExamId,
+          sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
           status: 'processing',
           leaseVersion: 1,
           leaseExpiresAt: new Date(Date.now() - 60_000), // expired
@@ -573,6 +561,7 @@ describe('submitUploadTx (S-1)', () => {
           userId: userAId,
           idempotencyKey: 'idem-null-lease',
           examId: seedExamId,
+          sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
           status: 'prepared',
           leaseVersion: 0,
           leaseExpiresAt: null,
@@ -583,6 +572,7 @@ describe('submitUploadTx (S-1)', () => {
           userId: userAId,
           idempotencyKey: 'idem-expired',
           examId: seedExamId,
+          sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
           status: 'processing',
           leaseVersion: 1,
           leaseExpiresAt: new Date(Date.now() - 60_000),
@@ -623,6 +613,7 @@ describe('submitUploadTx (S-1)', () => {
         userId: userBId,
         idempotencyKey: 'idem-b-live',
         examId: bExamId,
+        sourceDocumentId: await seedSourceDoc(userBId, bExamId),
         status: 'processing',
         leaseVersion: 1,
         leaseExpiresAt: new Date(Date.now() + 60_000),
@@ -663,6 +654,7 @@ describe('submitUploadTx (S-1)', () => {
         userId: userAId,
         idempotencyKey,
         examId: seedExamId,
+        sourceDocumentId: await seedSourceDoc(userAId, seedExamId),
         status,
         leaseVersion: 1,
         leaseExpiresAt,
@@ -719,7 +711,6 @@ describe('submitUploadTx (S-1)', () => {
       await owner.insert(sourceDocuments).values({
         userId: userAId,
         examId: legacyExamId,
-        mode: 'new',
         fileType: 'image',
         filename: 'legacy.png',
         fileSizeBytes: 100,
@@ -738,6 +729,7 @@ describe('submitUploadTx (S-1)', () => {
         userId: userBId,
         idempotencyKey: 'idem-b-live',
         examId: bExamId,
+        sourceDocumentId: await seedSourceDoc(userBId, bExamId),
         status: 'processing',
         leaseVersion: 1,
         leaseExpiresAt: new Date(Date.now() + 60_000),

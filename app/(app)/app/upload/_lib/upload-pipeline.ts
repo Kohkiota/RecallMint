@@ -215,10 +215,6 @@ type PdfCountResult =
       ok: true
       totalPages: number
       shaByFileId: ReadonlyMap<string, string>
-      // fix round 2(canonical Important 2): 実際に GET したバイト長(fileId 単位)。
-      // `upload_records.file_size_bytes` の PDF 分をここから合算する(rasterize 済み
-      // webp ではなく受領 source バイトを記帳するため)。
-      sourceBytesByFileId: ReadonlyMap<string, number>
     }
   | { ok: false; reason: 'page_limit_exceeded' | 'pdf_source_unavailable' | 'deadline_exceeded' }
 
@@ -245,7 +241,6 @@ async function runPdfCountPhase(
   deadlineAt: Date,
 ): Promise<PdfCountResult> {
   const shaByFileId = new Map<string, string>()
-  const sourceBytesByFileId = new Map<string, number>()
   let totalPages = imageCount
   for (const pdf of sourcePdfManifest) {
     // 修正2: 次の GET(worst case PDF_SOURCE_GET_TIMEOUT_MS)に着手してよいか。
@@ -258,7 +253,6 @@ async function runPdfCountPhase(
       return { ok: false, reason: 'pdf_source_unavailable' }
     }
     shaByFileId.set(pdf.fileId, sha256Hex(got.bytes))
-    sourceBytesByFileId.set(pdf.fileId, got.bytes.length)
     let handle
     try {
       handle = await loadPdf(got.bytes)
@@ -277,7 +271,7 @@ async function runPdfCountPhase(
       return { ok: false, reason: 'page_limit_exceeded' }
     }
   }
-  return { ok: true, totalPages, shaByFileId, sourceBytesByFileId }
+  return { ok: true, totalPages, shaByFileId }
 }
 
 /**
@@ -678,9 +672,6 @@ async function runOcrPhase(
   // ---- ②-4b T8: PDF count phase + render phase(spec D4/D6/D8/§6) ----
   // 画像のみ(sourcePdfManifest 空)は完全に無改変で下の decode へ進む。
   let mergedFiles = files
-  // fix round 2(canonical Important 2): `upload_records.file_size_bytes` の PDF 分は
-  // count phase が GET した実バイト長(images-only では空 Map のまま = 寄与ゼロ)。
-  let pdfSourceBytesByFileId: ReadonlyMap<string, number> = new Map()
   if (sourcePdfManifest.length > 0) {
     // sourcePdfManifest が非空なら T7 の wire 契約(spec §3.4)により uploadSessionId
     // は必ず v4 uuid 文字列(この関数へ来る前に zod 検証済)。
@@ -719,8 +710,6 @@ async function runOcrPhase(
       await terminalizeOwned(countResult.reason, PRE_COMMIT_FENCE)
       return
     }
-    pdfSourceBytesByFileId = countResult.sourceBytesByFileId
-
     // fenced CAS(spec D6/D8・Codex I9): expected_source_count(upload_operations)/
     // pages_total(source_documents)を同一 tx 内で確定する。lease_version 不一致 or
     // status≠'processing' なら 0 行 = 他の書き手に取られた — **render/Gemini へ
@@ -916,25 +905,7 @@ async function runOcrPhase(
   )
 
   // ---- publish(cards/tags/refs/記帳/finalize を 1 tx) ----
-  // upload_records.file_size_bytes は**受領 Buffer の合計**(spec 2026-08-04 §4)。
-  // fix round 2(canonical Important 2): rasterize 済み webp(mergedFiles)ではなく
-  // 実際に受領した source バイトを合計する — 画像は原 Buffer、PDF は count phase の
-  // GET で読んだ実バイト長(`pdfSourceBytesByFileId`。render phase の sha 一致検証を
-  // 通過しているため、この時点で publish に到達している PDF のバイト長は render 時の
-  // 実 GET と一致する)。images-only では `pdfSourceBytesByFileId` が空 Map のため
-  // `files` の合計のみとなり既存挙動と一致する。
-  const fileSizeBytes =
-    files.reduce((sum, f) => sum + f.buffer.length, 0) +
-    Array.from(pdfSourceBytesByFileId.values()).reduce((sum, n) => sum + n, 0)
-  await runPublishPhase(
-    userId,
-    refs,
-    leaseVersion,
-    payload,
-    dispositionByAssetId,
-    fileSizeBytes,
-    ownership,
-  )
+  await runPublishPhase(userId, refs, leaseVersion, payload, dispositionByAssetId, ownership)
 }
 
 /**
@@ -1071,7 +1042,6 @@ async function runPublishPhase(
   leaseVersion: number,
   payload: PreparedPayload,
   dispositionByAssetId: ReadonlyMap<string, FigureDisposition>,
-  fileSizeBytes: number,
   ownership: OwnershipState,
 ): Promise<void> {
   // phase 所要時間は **失敗分岐より前**に確定させる(S-2 M-2 と同じ規律)。契約違反の
@@ -1104,9 +1074,6 @@ async function runPublishPhase(
           cards: payload.cards,
           cardImagesByCardId: plan.cardImagesByCardId,
           resultSummary,
-          // 受領 Buffer の合計(新経路は source を R2/DB に置かないため、旧経路が
-          // 使っていた source 台帳の byte_size 合計という概念が無い)。
-          fileSizeBytes,
         }),
       )
     } catch (err) {

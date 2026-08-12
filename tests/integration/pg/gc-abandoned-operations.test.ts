@@ -30,7 +30,7 @@ import { eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb } from '@/lib/db'
-import { exams, uploadOperations, users } from '@/lib/db/schema'
+import { exams, sourceDocuments, uploadOperations, users } from '@/lib/db/schema'
 import {
   buildProductionDeps,
   runAbandonedOperationsSweep,
@@ -68,11 +68,22 @@ async function seedOp(
 ): Promise<string> {
   const owner = getFixtureOwnerDb()
   const operationId = randomUUID()
+  // source_document_id は NOT NULL (Sprint B (DB 全体掃除) §5.1) ゆえ op ごとに 1 件 seed する。
+  const sourceDocumentId = randomUUID()
+  await owner.insert(sourceDocuments).values({
+    id: sourceDocumentId,
+    userId,
+    examId,
+    fileType: 'image',
+    filename: 'a.png',
+    fileSizeBytes: 1000,
+  })
   await owner.insert(uploadOperations).values({
     id: operationId,
     userId,
     idempotencyKey: `idem-${operationId}`,
     examId,
+    sourceDocumentId,
     status: overrides.status ?? 'processing',
     expectedSourceCount: 1,
     leaseExpiresAt: overrides.leaseExpiresAt ?? null,

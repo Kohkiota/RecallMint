@@ -1,11 +1,12 @@
-// Gemini 2.5 token → JPY cost 推定 (本実装側、 source_documents / upload_records の
-// ocr_cost_yen 計上用)。
+// Gemini 2.5 token → JPY cost 推定。
+//
+// 読み手 (Sprint B (DB 全体掃除) で DB 永続化を廃止した後): upload 失敗時のエラー詳細
+// 表示のみ (ocr.ts の costYen → upload-error-types.ts → upload-form.tsx)。旧 source_documents
+// / upload_records の ocr_cost_yen 列は読み手ゼロのまま残っていたため migration 0036 で削除した。
 //
 // 由来: scripts/ocr-poc/cost.ts (commit 26a1c4e、 commit 0a5ec0d で削除済)。
 // PoC では「概算」 目的だったが、 本実装でも MVP は同じ単価 + JPY/USD レートで
 // 円コストを推定する。 公式値が変わったら本 file の定数を手動更新する。
-// S1.9.2: ocr_cost_yen 列が numeric(10,4) 化されたため (S1.9.1)、 integer 丸めを
-// 廃止し小数 4 桁で保持する。
 
 // USD per 1M tokens (公式値が変わったら手動更新)。
 // flash = 主 OCR モデル。②-2 で lite 系モデルへ移行し単価も lite 値へ更新した
@@ -25,9 +26,8 @@ const JPY_PER_USD = 150
 
 export type ModelKind = 'flash' | 'pro'
 
-// 小数 4 桁で四捨五入 (DB 列 ocr_cost_yen は numeric(10,4))。 integer 丸めだと
-// 1 ページ規模の sub-yen コストが 0 円に潰れ集計が不正確になるため、 4 桁精度で
-// 保持する。
+// 小数 4 桁で四捨五入。 integer 丸めだと 1 ページ規模の sub-yen コストが 0 円に
+// 潰れ、エラー詳細の表示が「コスト 0」に見えてしまうため 4 桁精度で保持する。
 export function estimateCostYen(
   model: ModelKind,
   inputTokens: number,

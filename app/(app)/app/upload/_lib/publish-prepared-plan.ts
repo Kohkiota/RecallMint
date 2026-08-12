@@ -211,7 +211,7 @@ function toCardOption(o: PreparedCard['options'][number]): CardOption {
 export function buildCardRows(
   preparedCards: readonly PreparedCard[],
   cardImagesByCardId: Record<string, CardImage[]>,
-  ctx: { userId: string; examId: string; sourceDocumentId: string | null; now: Date },
+  ctx: { userId: string; examId: string; sourceDocumentId: string; now: Date },
 ): Array<typeof cards.$inferInsert> {
   return preparedCards.map((card) => ({
     id: card.cardId,
@@ -238,7 +238,7 @@ export function buildCardRows(
 export function buildResultSummary(
   payload: PreparedPayloadV1,
   plan: Extract<PublishDecision, { decision: 'publish' }>,
-  ctx: { operationId: string; examId: string; sourceDocumentId: string | null },
+  ctx: { operationId: string; examId: string; sourceDocumentId: string },
 ): Record<string, unknown> {
   return {
     schemaVersion: 1,

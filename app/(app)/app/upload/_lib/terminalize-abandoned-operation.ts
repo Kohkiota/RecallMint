@@ -27,7 +27,7 @@ import type { TenantTx } from '@/lib/db/tenant-tx'
 export async function terminalizeAbandonedOperation(
   tx: TenantTx,
   userId: string,
-  op: { operationId: string; sourceDocumentId: string | null },
+  op: { operationId: string; sourceDocumentId: string },
   lastErrorCode: string,
 ): Promise<void> {
   await tx
@@ -59,10 +59,9 @@ export async function terminalizeAbandonedOperation(
 async function failSourceDocumentForTerminalOp(
   tx: TenantTx,
   userId: string,
-  sourceDocumentId: string | null,
+  sourceDocumentId: string,
   errorMessage: string,
 ): Promise<void> {
-  if (sourceDocumentId === null) return
   await tx
     .update(sourceDocuments)
     .set({ status: 'failed', errorMessage })

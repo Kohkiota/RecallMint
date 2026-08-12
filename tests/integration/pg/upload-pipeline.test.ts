@@ -247,7 +247,6 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
       id: sourceDocumentId,
       userId: userAId,
       examId,
-      mode: 'new',
       fileType: 'image',
       filename: 'p1.png ほか 1 件',
       fileSizeBytes: 2000,
@@ -388,7 +387,7 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
     }
   })
 
-  it('upload_records は受領 Buffer 合計と受領枚数で記帳する(source 台帳を参照しない)', async () => {
+  it('upload_records は受領枚数で記帳する(source 台帳を参照しない)', async () => {
     await run()
 
     const records = await getFixtureOwnerDb()
@@ -396,7 +395,6 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
       .from(uploadRecords)
       .where(eq(uploadRecords.userId, userAId))
     expect(records).toHaveLength(1)
-    expect(records[0]!.fileSizeBytes).toBe(files.reduce((s, f) => s + f.buffer.length, 0))
     expect(records[0]!.pagesProcessed).toBe(files.length)
     expect(records[0]!.status).toBe('completed')
   })
@@ -810,11 +808,7 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
       const owner = getFixtureOwnerDb()
       await owner
         .update(sourceDocuments)
-        // fix round 2(canonical Important 2・2 表整合 test 用): fileSizeBytes は
-        // T7(submit-upload.ts)が算出する値(画像 byteSize 合計 + Σ declaredBytes)を
-        // 模す。files=[] のこの describe では PDF の declaredBytes(= 実 fixture 長。
-        // pdfManifestOf() が同じ値を使う)のみ。
-        .set({ fileType: 'pdf', pagesTotal: null, fileSizeBytes: pdfFixtureBytes.length })
+        .set({ fileType: 'pdf', pagesTotal: null })
         .where(eq(sourceDocuments.id, sourceDocumentId))
       await owner
         .update(uploadOperations)
@@ -837,7 +831,7 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
         expect(op?.expectedSourceCount).toBe(3)
         expect(await readDocStatus()).toBe('completed')
         const doc = await getFixtureOwnerDb()
-          .select({ pagesTotal: sourceDocuments.pagesTotal, fileSizeBytes: sourceDocuments.fileSizeBytes })
+          .select({ pagesTotal: sourceDocuments.pagesTotal })
           .from(sourceDocuments)
           .where(eq(sourceDocuments.id, sourceDocumentId))
         expect(doc[0]?.pagesTotal).toBe(3)
@@ -856,17 +850,6 @@ describe('runUploadPipeline (S-2 / S-3)', () => {
           .from(uploadRecords)
           .where(eq(uploadRecords.userId, userAId))
         expect(records[0]!.pagesProcessed).toBe(3)
-
-        // fix round 2(canonical Important 2): upload_records.file_size_bytes は
-        // rasterize 済み webp の合計ではなく count phase が GET した実 source(PDF
-        // 原本)バイト長。files=[] のこの test では PDF 1 冊分のみ。
-        expect(records[0]!.fileSizeBytes).toBe(pdfFixtureBytes.length)
-        // 2 表整合: T7 が source_documents.file_size_bytes に書く値(画像 byteSize
-        // 合計 + Σ declaredBytes・このテストの beforeEach が模している)と、T8 が
-        // upload_records.file_size_bytes に書く値(実 source バイト)が一致する
-        // (非改竄シナリオでは両者は一致する — T7 の declaredBytes は presign 署名値
-        // との contentLength 一致を HEAD 検証済のため)。
-        expect(records[0]!.fileSizeBytes).toBe(doc[0]!.fileSizeBytes)
       },
       WASM_TEST_TIMEOUT_MS,
     )

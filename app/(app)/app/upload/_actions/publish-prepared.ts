@@ -61,21 +61,10 @@ export async function publishPreparedUploadTx(
     cards: readonly PreparedCard[]
     cardImagesByCardId: Record<string, CardImage[]>
     resultSummary: Record<string, unknown>
-    // upload_records.file_size_bytes に記帳する受領バイト総量(step 7)。
-    // ②-4a Task S-3 で引数化した: 呼出元(upload-pipeline.ts)が受領 Buffer の合計を
-    // 渡す。「どこから来た値か」は呼出経路の知識であり、この tx の責務ではない。
-    fileSizeBytes: number
   },
 ): Promise<{ outcome: 'published' } | { outcome: 'stale' }> {
-  const {
-    userId,
-    operationId,
-    leaseVersion,
-    cards,
-    cardImagesByCardId,
-    resultSummary,
-    fileSizeBytes,
-  } = args
+  const { userId, operationId, leaseVersion, cards, cardImagesByCardId, resultSummary } =
+    args
 
   // 1. FINAL-DEFENSE FENCING(本 task の top invariant・spec §2/§8.1)。 operation を
   //    SELECT … FOR UPDATE(ロック順の起点)し、 status='prepared' AND
@@ -115,21 +104,12 @@ export async function publishPreparedUploadTx(
     throw new Error('publishPreparedUploadTx: exam not found or not owned')
   }
 
-  // 3. source_document を finalize(ロック順 #3)。 prepared operation は
-  //    source_document_id を確定済み(T4)。 Fix #1 defense-in-depth(Codex P1):
-  //    null は呼出元が terminal_failed で弾く(source_document 削除 =
-  //    FK onDelete:set null)。 それでも null が tx へ到達したら **skip-and-publish
-  //    せず throw(rollback)** — detached content を絶対に作らない。
-  //
+  // 3. source_document を finalize(ロック順 #3)。
   //    fix round 3(spec §8.2「completeUploadTx 相当」②): この UPDATE が source_document
   //    の行ロックを取得(ロック順 #3 を満たす)しつつ status='completed' へ確定する
   //    (spec §9 の open item「後から publisher が completed へ戻す」の実体・exam status
   //    API / source-doc-status.ts が読む)。 legacy completeUploadTx は再利用しない
-  //    (id+userId のみ・開始 status 非検証)。 filename は upload_records 記帳(step 8)で
-  //    使うため同 UPDATE の RETURNING で取得する。
-  if (sourceDocumentId === null) {
-    throw new Error('publishPreparedUploadTx: source_document_id is null (deleted?)')
-  }
+  //    (id+userId のみ・開始 status 非検証)。
   const sdRows = await tx
     .update(sourceDocuments)
     .set({
@@ -139,11 +119,10 @@ export async function publishPreparedUploadTx(
       completedAt: sql`now()`,
     })
     .where(and(eq(sourceDocuments.id, sourceDocumentId), eq(sourceDocuments.userId, userId)))
-    .returning({ id: sourceDocuments.id, filename: sourceDocuments.filename })
+    .returning({ id: sourceDocuments.id })
   if (sdRows.length === 0) {
     throw new Error('publishPreparedUploadTx: source_document not found or not owned')
   }
-  const sourceFilename = sdRows[0].filename
 
   // 4. 保護 asset UPDATE(spec §8.1・ロック順 #4「assets(ID 順)」)。 refs を張る
   //    対象 asset が今も 'ready' か確認してから refs を張る — FK は行存在のみ検証し
@@ -226,15 +205,10 @@ export async function publishPreparedUploadTx(
   //    rollback すれば source_documents/cards/operation と共にこの行も消える)。
   //    append-only 台帳・月次 quota SUM の対象(getCurrentMonthOcrPages が
   //    status='completed' の pages_processed を SUM)ゆえ pages_processed は 0 でなく
-  //    実 source 画像数(= expectedSourceCount)を書く。 file_size_bytes は呼出側が
-  //    渡す(Task S-3 で引数化・上記 args のコメント参照)。 ocr_cost_yen は新 flow が publish 時に cost を持たないため NULL(quota SUM は
-  //    pages_processed で成立し cost に非依存・spec §8.2)。 enforcement は ②-5(記帳 ≠ 強制)。
+  //    実 source 画像数(= expectedSourceCount)を書く。 enforcement は ②-5(記帳 ≠ 強制)。
   await tx.insert(uploadRecords).values({
     userId,
-    filename: sourceFilename,
-    fileSizeBytes,
     pagesProcessed: expectedSourceCount,
-    ocrCostYen: null,
     status: 'completed',
   })
 

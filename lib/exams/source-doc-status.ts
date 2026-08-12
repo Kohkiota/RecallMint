@@ -175,11 +175,7 @@ export async function getExamStatusMap(
             and(eq(uploadOperations.userId, userId), isLiveUploadOperationCondition()),
           ),
       )
-      liveOpSourceDocumentIds = new Set(
-        liveRows
-          .map((r) => r.sourceDocumentId)
-          .filter((id): id is string => id !== null),
-      )
+      liveOpSourceDocumentIds = new Set(liveRows.map((r) => r.sourceDocumentId))
     } catch (err) {
       logger.warn({ event: 'source_documents.get_status_map.live_ops_failed', userId, err })
     }
@@ -239,8 +235,8 @@ export async function reconcileStaleProcessing(
     const staleThreshold = new Date(now.getTime() - STALE_PROCESSING_MS)
 
     await withTenantTx(userId, async (tx) => {
-      // 1. stale processing 行を failed に UPDATE し、更新行の id / filename /
-      //    fileSizeBytes を返す (二重計上回避のため RETURNING 結果のみを起点にする)
+      // 1. stale processing 行を failed に UPDATE し、更新行の id を返す
+      //    (二重計上回避のため RETURNING 結果のみを起点にする)
       const updated = await tx
         .update(sourceDocuments)
         .set({
@@ -271,11 +267,7 @@ export async function reconcileStaleProcessing(
             ),
           ),
         )
-        .returning({
-          id: sourceDocuments.id,
-          filename: sourceDocuments.filename,
-          fileSizeBytes: sourceDocuments.fileSizeBytes,
-        })
+        .returning({ id: sourceDocuments.id })
 
       // 2. 実際に更新された行が 0 件なら upload_records にも upload_operations にも
       //    触らない(空配列 INSERT / 無駄な UPDATE を避ける)
@@ -347,17 +339,10 @@ export async function reconcileStaleProcessing(
         )
 
       // 3. 更新した行それぞれについて upload_records に failed 台帳行を append。
-      //    markFailed (process.ts) と同じ値の入れ方: pagesProcessed=0, ocrCostYen=0。
+      //    markFailed と同じ値の入れ方: pagesProcessed=0。
       //    月次 quota SUM は status='completed' のみ対象のため、消費には計上されない。
       await tx.insert(uploadRecords).values(
-        updated.map((row) => ({
-          userId,
-          filename: row.filename,
-          fileSizeBytes: row.fileSizeBytes,
-          pagesProcessed: 0,
-          ocrCostYen: 0,
-          status: 'failed' as const,
-        })),
+        updated.map(() => ({ userId, pagesProcessed: 0, status: 'failed' as const })),
       )
     })
   } catch (err) {
