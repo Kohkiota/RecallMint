@@ -253,7 +253,7 @@ const defaultEntityMutationClient: BulkApiClient = createBulkApiClient(ENTITY_MU
  * 全 pending entity mutations を 1 回の bulk POST で送信する。
  *
  * entity-mutation には session grouping がないため全 pending を 1 batch にまとめる
- * (review の flushAllPendingEvents の「session 別並列」を「全件 1 回」に圧縮)。
+ * (review 側 flush と同じく全 pending を 1 経路でまとめて送る形)。
  *
  * 戻り値は FlushResult[] (0 または 1 要素)。
  * FlushResult は review-events.ts で定義された型を再利用する。

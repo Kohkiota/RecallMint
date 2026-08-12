@@ -52,7 +52,7 @@
 // 等) 中に submit が resolve しても、 React 18+ の setState on unmounted は silent
 // no-op (旧 warning は React 18 で削除済) のため害なし。 mountedRef は不要。
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Card, CardOption } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
@@ -61,21 +61,28 @@ import { CardImageGallery } from '@/app/(app)/app/exams/[id]/_components/card-im
 import { isAssetKey } from '@/lib/validation/card'
 import { equalSet } from '../_lib/equal-set'
 import {
-  completeStudySession,
   countPendingAnswerEvents,
-  flushAllPendingEvents,
-  flushPendingEvents,
   recordAnswerEvent,
 } from '@/lib/sync/review-events'
-import { classifyFlushResults } from '@/lib/sync/review-flush'
+import { runGuardedAnswerEventFlush } from '@/lib/sync/review-flush'
 import { pullBack } from '@/lib/sync/pull-back'
 import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 
 // S-cache-1: pending answer_events がこの件数に達した時点で bulk flush。
 // §14.7.1 「pending 5 件以上 / セッション終了 / ネット復活 / アプリ起動・復帰」 の
-// 5 件しきい値。 他トリガー (ネット復活 / 起動・復帰 / visibilitychange) は
-// 後続 sprint で実装、 本 sprint は「5 件 / セッション終了」 のみ配線する。
+// 5 件しきい値。 ネット復活 / 起動・復帰 / visibilitychange は ReviewFlushTrigger 側。
 const FLUSH_THRESHOLD = 5
+
+// elapsed_ms の上限 (24h)。 共有 wire schema の max と同値 — 超過は clip して送る。
+const ELAPSED_MS_MAX = 86_400_000
+
+// card 表示開始 → submit の wall-clock 差分 (spec §4.5)。 tab 非表示・スリープ時間を
+// **含む** (操作時間であって注意時間ではない)。
+// performance.now() は単調ゆえ負値は本来起きないが、 起きた場合は計測不能として送らない。
+function measureElapsedMs(shownAtMs: number): number | undefined {
+  const elapsed = Math.round(performance.now() - shownAtMs)
+  return elapsed < 0 ? undefined : Math.min(elapsed, ELAPSED_MS_MAX)
+}
 
 type Phase = 'selecting' | 'judged' | 'finished'
 type Rating = 1 | 2 | 3 | 4
@@ -83,9 +90,10 @@ type Rating = 1 | 2 | 3 | 4
 type SessionRunnerProps = {
   cards: Card[]
   fsrsMode: boolean
-  // S-cache-1: 演習開始時に呼出 client が uuidv4 で発行する session_id。
-  // Dexie study_sessions の PK に対応、 全 answer_events を紐付ける。
-  // 親 (SessionLauncher) が Dexie に session 行を入れてから渡す。
+  // flush の owner-scope 用 (RSC の認証済み値・spec §4.6)。
+  userId: string
+  // 演習開始時に呼出 client (SessionLauncher) が uuidv4 で発行する session_id。
+  // 親表は無く、 各 answer_event に載せる label 列 (spec §4.4)。
   sessionId: string
   // セッション見出し。 省略時は 'スマート復習'。 custom mode など呼出側が差し替え可能。
   heading?: string
@@ -139,7 +147,7 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマート復習' }: SessionRunnerProps) {
+export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = 'スマート復習' }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -161,6 +169,13 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
     () => new Set(),
   )
   const [error, setError] = useState<string | null>(null)
+  // 当該 card の表示開始時刻。 index 遷移 / リトライ reset / 前へ戻りの再表示で打ち直し、
+  // submit 時との差分を elapsed_ms として送る (spec §4.5)。 初期打刻は mount effect で
+  // 行う (performance.now() は impure ゆえ render 中に呼べない — react-hooks/purity)。
+  const shownAtRef = useRef(0)
+  useEffect(() => {
+    shownAtRef.current = performance.now()
+  }, [])
 
   const current = cards[idx]
 
@@ -168,6 +183,7 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
   // card 切替時の共通 reset (selecting に戻し、 判定 / rate / error も全 clear)
   // ---------------------------------------------------------------------------
   const resetCardState = () => {
+    shownAtRef.current = performance.now()
     setSelectedIds([])
     setCurrentCorrect(null)
     setLastRating(null)
@@ -255,6 +271,8 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
     if (currentCorrect === null) return
     const correctSnapshot = currentCorrect
     const cardId = current.id
+    // onAfter() が resetCardState 経由で shownAtRef を打ち直すため、 その前に計測する。
+    const elapsedMs = measureElapsedMs(shownAtRef.current)
     // card 単位で初回 submit のみ tally 加算。 rate 連打 / リトライ後再回答 /
     // 前へ戻り後再回答 いずれも 1 枚 1 カウント。 server 側は review-events/bulk 経路
     // (lib/reviews/ingest-review-events) の UPDATE で常に最新 rating で上書き (= 二重登録なし)。
@@ -289,20 +307,21 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
     void (async () => {
       try {
         await recordAnswerEvent({
+          user_id: userId,
           session_id: sessionId,
           card_id: cardId,
           selected_answer_ids: [...selectedIds],
           is_correct: correctSnapshot,
-          answered_at: new Date().toISOString(),
           rating,
+          answered_at: new Date().toISOString(),
+          ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
         })
-        const pending = await countPendingAnswerEvents(sessionId)
+        const pending = await countPendingAnswerEvents(userId)
         if (pending >= FLUSH_THRESHOLD) {
-          const r = await flushPendingEvents(sessionId)
           // daily=threshold のとき threshold flush が実 sync を担う(session 完了 flush は残件 0 で skip)。
-          // 実 sync 成功(syncedEventIds 非空 → classify 'ok')のときだけ pull-back して FSRS 値を mirror へ戻す。
-          // skip(attempted:0 → classify 'no-pending')や失敗では不発。
-          if (classifyFlushResults([r]) === 'ok') pullBack('threshold-flush')
+          // 実 sync 成功('ok')のときだけ pull-back して FSRS 値を mirror へ戻す。
+          // lock-busy / no-pending / 失敗では不発。
+          if ((await runGuardedAnswerEventFlush(userId)) === 'ok') pullBack('threshold-flush')
         }
       } catch {
         // Dexie write / flush の background 失敗は UI に出さず、 次 trigger で再試行。
@@ -311,25 +330,19 @@ export function SessionRunner({ cards, fsrsMode, sessionId, heading = 'スマー
   }
 
   // ---------------------------------------------------------------------------
-  // phase='finished' で study_sessions を completed に + 全 session group flush。
-  // §14.7.1 「セッション終了 → bulk flush」 のトリガ。
-  // completeStudySession で完了 status を Dexie に書いてから group flush する順序を維持。
+  // phase='finished' で pending を flush。 §14.7.1 「セッション終了 → bulk flush」 のトリガ。
   // 失敗は silent (Dexie 側 pending が残るので次 session 開始や online 復帰時に拾える前提)。
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (phase !== 'finished') return
     void (async () => {
       try {
-        await completeStudySession(sessionId)
-      } catch {}
-      try {
-        const results = await flushAllPendingEvents()
         // 通常復習はこの直叩き経路で queue を drain するため controller hook では拾えない。
-        // flush 成功 (全件 synced) のときのみ pull-back: FSRS 再計算後のサーバー値を mirror へ戻す。
-        if (classifyFlushResults(results) === 'ok') pullBack('session-complete')
+        // flush 成功のときのみ pull-back: FSRS 再計算後のサーバー値を mirror へ戻す。
+        if ((await runGuardedAnswerEventFlush(userId)) === 'ok') pullBack('session-complete')
       } catch {}
     })()
-  }, [phase, sessionId])
+  }, [phase, userId])
 
   // 通常モード「次へ」: client 判定結果から rating 自動決定 (correct→3 / incorrect→1)、
   // 即時 next card に遷移 + submit fire-and-forget (失敗時は次 card 上に error 表示)

@@ -4,7 +4,7 @@
 // 検証観点:
 // 1. 初期表示: CustomFilterForm が render される
 // 2. onStart(criteria) → getCustomSessionCards が {…criteria, userId, limit: customLimit} で呼ばれる
-// 3. 解決済み cards → SessionLauncher が mode="custom" / heading="カスタム演習" で render される
+// 3. 解決済み cards → SessionLauncher が userId / heading="カスタム演習" で render される
 // 4. 0 件 → SessionLauncher に渡った emptyState が render される (cards.length===0 path)
 // 5. 「条件を変更」 click → フォームに戻る (filter フェーズに遷移)
 // 6. getCustomSessionCards throw → empty 扱い (page crash しない)
@@ -53,7 +53,7 @@ vi.mock('./custom-filter-form', () => ({
 // SessionLauncher: props を記録して emptyState を render できる stub
 const lastLauncherProps: {
   cards?: unknown[]
-  mode?: string
+  userId?: string
   heading?: string
   fsrsMode?: boolean
   emptyState?: React.ReactNode
@@ -61,14 +61,14 @@ const lastLauncherProps: {
 vi.mock('../../_components/session-launcher', () => ({
   SessionLauncher: (props: {
     cards: unknown[]
-    mode: string
+    userId: string
     heading: string
     fsrsMode: boolean
     emptyState: React.ReactNode
   }) => {
     // props を記録
     lastLauncherProps.cards = props.cards
-    lastLauncherProps.mode = props.mode
+    lastLauncherProps.userId = props.userId
     lastLauncherProps.heading = props.heading
     lastLauncherProps.fsrsMode = props.fsrsMode
     lastLauncherProps.emptyState = props.emptyState
@@ -149,7 +149,7 @@ describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
     )
   })
 
-  it('選定完了後、SessionLauncher が mode="custom" + heading="カスタム演習" で render される', async () => {
+  it('選定完了後、SessionLauncher が userId + heading="カスタム演習" で render される', async () => {
     mockGetCustomSessionCards.mockResolvedValue(CARDS)
     render(<CustomSessionFlow {...DEFAULT_PROPS} />)
 
@@ -161,7 +161,8 @@ describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
       expect(screen.getByTestId('session-launcher')).toBeInTheDocument()
     })
 
-    expect(lastLauncherProps.mode).toBe('custom')
+    // userId は flush の owner-scope 供給 (spec §4.6)
+    expect(lastLauncherProps.userId).toBe('user-1')
     expect(lastLauncherProps.heading).toBe('カスタム演習')
     expect(lastLauncherProps.cards).toHaveLength(CARDS.length)
   })

@@ -7,7 +7,7 @@
 // - mount 時に `getDueCardsFromDexie(userId, sessionLimit)` を試行
 // - 戻り値 >= 1 件: Dexie 由来 cards を使う (= mirror 経由の local read 経路)
 // - 戻り値 0 件 / throw: props.cards (server fetch fallback) を使う
-// - cards 確定後は SessionLauncher に委譲 (createStudySession / sessionId 採番は不要)
+// - cards 確定後は SessionLauncher に委譲 (sessionId 採番は launcher 側)
 //
 // S-local-4 (Phase γ) 拡張: Dexie 0 件 + props.cards (server) 0 件のとき empty UI
 // を render する。 旧 page.tsx の「ありません」 page を host 内に集約し、 offline
@@ -34,11 +34,6 @@ type StudySessionHostProps = {
   // S-local-3: Dexie cards mirror から due cards を引き直すために必要。
   userId: string
   sessionLimit: number | null
-  // 全 exam 横断 smart session では exam_id を指定しない (null になる)。
-  // custom mode (将来) では絞り込み対象の exam_id を渡す。
-  examId?: string
-  // 'smart' (due card 横断) / 'custom' (将来用フィルタ session)。
-  mode?: 'smart' | 'custom'
 }
 
 export function StudySessionHost({
@@ -46,8 +41,6 @@ export function StudySessionHost({
   fsrsMode,
   userId,
   sessionLimit,
-  examId,
-  mode = 'smart',
 }: StudySessionHostProps) {
   const [resolvedCards, setResolvedCards] = useState<Card[] | null>(null)
 
@@ -100,8 +93,7 @@ export function StudySessionHost({
     <SessionLauncher
       cards={resolvedCards}
       fsrsMode={fsrsMode}
-      mode={mode}
-      examId={examId}
+      userId={userId}
       heading="スマート復習"
       emptyState={emptyUI}
     />

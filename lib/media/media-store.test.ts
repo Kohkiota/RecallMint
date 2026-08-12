@@ -51,11 +51,13 @@ beforeEach(async () => {
   ])
 })
 
-describe('ClientDb version(8)', () => {
-  it('db が version 8 で open する', async () => {
+describe('ClientDb version(10)', () => {
+  // v9 = 旧 answer_events / study_sessions の drop、 v10 = answer_events 再作成
+  // (FSRS 整合 Sprint A・spec §4.1)。 media 系 store は v8 のまま無変更。
+  it('db が最新 version (10) で open する', async () => {
     const db = getClientDb()
     await db.open()
-    expect(db.verno).toBe(8)
+    expect(db.verno).toBe(10)
   })
 
   it('既存 store (cards) が引き続き定義されている(回帰なし)', () => {

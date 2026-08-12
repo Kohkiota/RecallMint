@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-// ReviewFlushTrigger client component の test。 mount で 24h drop → flush kick、
+// ReviewFlushTrigger client component の test。 mount で flush kick、
 // visibilitychange(visible) / online で再 kick、 unmount で controller.stop + listener 解除。
-// controller / dropStale は injection mock で差し替え、 wiring のみ verify する。
+// controller / flush は injection mock で差し替え、 wiring のみ verify する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, waitFor } from '@testing-library/react'
 
-const { mockKick, mockStop, mockCreateController, mockDropStale, mockPullBack } =
+const { mockKick, mockStop, mockCreateController, mockRunGuardedFlush, mockPullBack } =
   vi.hoisted(() => {
     const mockKick = vi.fn(async () => {})
     const mockStop = vi.fn()
@@ -14,22 +14,22 @@ const { mockKick, mockStop, mockCreateController, mockDropStale, mockPullBack } 
       mockKick,
       mockStop,
       mockCreateController: vi.fn(() => ({ kick: mockKick, stop: mockStop })),
-      mockDropStale: vi.fn(async (_now: number, _maxAgeMs: number) => [] as string[]),
+      mockRunGuardedFlush: vi.fn(async () => 'ok'),
       mockPullBack: vi.fn(),
     }
   })
 
 vi.mock('@/lib/sync/review-flush', () => ({
   createReviewFlushController: mockCreateController,
-}))
-vi.mock('@/lib/sync/review-events', () => ({
-  dropStalePendingAnswerEvents: mockDropStale,
+  runGuardedAnswerEventFlush: mockRunGuardedFlush,
 }))
 vi.mock('@/lib/sync/pull-back', () => ({
   pullBack: mockPullBack,
 }))
 
 import { ReviewFlushTrigger } from './review-flush-trigger'
+
+const USER_ID = 'user-1'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -39,21 +39,18 @@ afterEach(() => {
 })
 
 describe('ReviewFlushTrigger', () => {
-  it('mount で 24h drop を走らせてから flush を kick("mount") する', async () => {
-    render(<ReviewFlushTrigger />)
+  it('mount で flush を kick("mount") する', async () => {
+    render(<ReviewFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
-    expect(mockDropStale).toHaveBeenCalledTimes(1)
-    // drop の maxAge は 24h (ms)
-    expect(mockDropStale.mock.calls[0][1]).toBe(24 * 60 * 60 * 1000)
   })
 
   it('UI は何も描画しない (null)', () => {
-    const { container } = render(<ReviewFlushTrigger />)
+    const { container } = render(<ReviewFlushTrigger userId={USER_ID} />)
     expect(container.firstChild).toBeNull()
   })
 
   it('visibilitychange(visible) で kick("visibilitychange")', async () => {
-    render(<ReviewFlushTrigger />)
+    render(<ReviewFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     mockKick.mockClear()
     document.dispatchEvent(new Event('visibilitychange'))
@@ -63,7 +60,7 @@ describe('ReviewFlushTrigger', () => {
   })
 
   it('online イベントで kick("online")', async () => {
-    render(<ReviewFlushTrigger />)
+    render(<ReviewFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     mockKick.mockClear()
     window.dispatchEvent(new Event('online'))
@@ -71,7 +68,7 @@ describe('ReviewFlushTrigger', () => {
   })
 
   it('unmount で controller.stop() を呼び、 以降の online で kick しない', async () => {
-    const { unmount } = render(<ReviewFlushTrigger />)
+    const { unmount } = render(<ReviewFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     unmount()
     expect(mockStop).toHaveBeenCalledTimes(1)
@@ -82,8 +79,17 @@ describe('ReviewFlushTrigger', () => {
     expect(mockKick).not.toHaveBeenCalled()
   })
 
+  it('runGuarded は owner-scope の userId で runGuardedAnswerEventFlush を呼ぶ (Web Locks 経由)', async () => {
+    render(<ReviewFlushTrigger userId={USER_ID} />)
+    const deps = (mockCreateController.mock.calls[0] as unknown[])[0] as {
+      runGuarded: () => Promise<unknown>
+    }
+    await deps.runGuarded()
+    expect(mockRunGuardedFlush).toHaveBeenCalledWith(USER_ID)
+  })
+
   it('onFlushed が pull-back("flush") を配線している', () => {
-    render(<ReviewFlushTrigger />)
+    render(<ReviewFlushTrigger userId={USER_ID} />)
     // createReviewFlushController は onFlushed を含む deps オブジェクトで呼ばれる
     expect(mockCreateController).toHaveBeenCalledWith(
       expect.objectContaining({ onFlushed: expect.any(Function) }),

@@ -3,9 +3,11 @@
 //
 // 設計 (事前調査 docs/superpowers/sessions/2026-05-29-review-events-retry-weblocks-inventory.md):
 // - flush の最外を Web Locks で囲む。 lock 名は演習 flush 用の単一固定キー。
-//   入れ子順 = lock 取得 → (flushPendingEvents 内の) in-flight guard 追加 → bulk POST →
-//   in-flight 解放 → lock 解放 (後入れ先出し)。 in-flight guard は flushPendingEvents が
-//   既に持つため、 ここでは lock を最外に被せるだけ。
+//   入れ子順 = lock 取得 → (flushPendingAnswerEvents 内の) in-flight guard 追加 →
+//   bulk POST → in-flight 解放 → lock 解放 (後入れ先出し)。 in-flight guard は
+//   flushPendingAnswerEvents が既に持つため、 ここでは lock を最外に被せるだけ。
+// - 演習 flush の 3 入口 (threshold / セッション完了 / trigger) はすべて
+//   runGuardedAnswerEventFlush を通す (lock 抜け経路を作らない・spec §4.2)。
 // - lock 取得失敗 (他タブ保持中) は flush せず即 return (queue で待たない)。 server 側
 //   event_id UNIQUE + ON CONFLICT 冪等性により、 待たず諦めても二重適用にならない。
 // - retry timer は controller の closure scope に持つ (React state ではないので
@@ -21,7 +23,7 @@
 // 全て event_id UNIQUE + ON CONFLICT の既存冪等性の上に乗る加算的変更で、 問題 2/3 の
 // pattern (in-flight guard / bulk SQL / serializeDbError / RETURNING 照合) を壊さない。
 
-import { flushAllPendingEvents, type FlushResult } from './review-events'
+import { flushPendingAnswerEvents, type FlushResult } from './review-events'
 import {
   isRateLimitError,
   isTransientError,
@@ -48,7 +50,7 @@ function statusToSignal(status: number): string {
   return status === 0 ? 'fetch failed' : String(status)
 }
 
-// flushAllPendingEvents の結果配列を 1 つの outcome に畳む。
+// flush 結果配列を 1 つの outcome に畳む。
 // 失敗が 1 つでも 429 を含めば rate-limited を優先 (即停止、 ルール 5)。
 export function classifyFlushResults(results: FlushResult[]): FlushOutcome {
   if (results.length === 0) return 'no-pending'
@@ -71,7 +73,8 @@ export function classifyFlushResults(results: FlushResult[]): FlushOutcome {
 }
 
 export type GuardedFlushDeps = {
-  flushAll?: () => Promise<FlushResult[]>
+  // flush 本体は owner-scope の userId を要するため、 呼出側が必ず渡す (既定値なし)。
+  flushAll: () => Promise<FlushResult[]>
   // 'locks' を明示指定すると navigator を見ない (undefined 指定で非対応 path を test 可能)。
   locks?: MinimalLockManager<FlushOutcome> | undefined
 }
@@ -79,13 +82,11 @@ export type GuardedFlushDeps = {
 // flush の最外を Web Locks で囲んで実行する (lib/sync/with-web-lock の共有 helper 経由)。
 // lock 取得失敗時は flush せず lock-busy を返す。
 export async function runGuardedFlush(
-  deps: GuardedFlushDeps = {},
+  deps: GuardedFlushDeps,
 ): Promise<FlushOutcome> {
-  const flushAll = deps.flushAll ?? (() => flushAllPendingEvents())
-
   return withWebLock<FlushOutcome>({
     lockName: FLUSH_LOCK_NAME,
-    run: async () => classifyFlushResults(await flushAll()),
+    run: async () => classifyFlushResults(await deps.flushAll()),
     onLockBusy: () => {
       // 他タブが保持中 → flush せず即 return (queue で待たない)。
       logger.info({ event: 'review_events.flush.lock_busy', lockName: FLUSH_LOCK_NAME })
@@ -93,6 +94,16 @@ export async function runGuardedFlush(
     },
     // 'locks' key 明示時のみ helper に転送 (undefined で非対応 path test)。
     ...('locks' in deps ? { locks: deps.locks } : {}),
+  })
+}
+
+// 演習 flush の 3 入口 (threshold / セッション完了 / trigger) が共有する唯一の経路
+// (entity 側 runGuardedEntityMutationFlush と同型)。
+export async function runGuardedAnswerEventFlush(
+  userId: string,
+): Promise<FlushOutcome> {
+  return runGuardedFlush({
+    flushAll: async () => [await flushPendingAnswerEvents(userId)],
   })
 }
 
@@ -111,7 +122,9 @@ export type ReviewFlushController = {
 type TimerHandle = ReturnType<typeof setTimeout>
 
 export type ControllerDeps = {
-  runGuarded?: () => Promise<FlushOutcome>
+  // outbox ごとに flush 経路が違う (review = runGuardedAnswerEventFlush / entity =
+  // runGuardedEntityMutationFlush) ため、 呼出側が必ず渡す (既定値なし)。
+  runGuarded: () => Promise<FlushOutcome>
   setTimeoutFn?: (cb: () => void, ms: number) => TimerHandle
   clearTimeoutFn?: (handle: TimerHandle) => void
   backoffBaseMs?: readonly number[]
@@ -126,9 +139,9 @@ export type ControllerDeps = {
 }
 
 export function createReviewFlushController(
-  deps: ControllerDeps = {},
+  deps: ControllerDeps,
 ): ReviewFlushController {
-  const runGuarded = deps.runGuarded ?? (() => runGuardedFlush())
+  const runGuarded = deps.runGuarded
   const setT =
     deps.setTimeoutFn ??
     ((cb: () => void, ms: number): TimerHandle => setTimeout(cb, ms))

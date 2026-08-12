@@ -3,9 +3,20 @@
 // (module-scope state 汚染を避けるため controller は factory)。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// runGuardedAnswerEventFlush の配線 (userId 転送 + lock 経由) だけを見たいので
+// flush 本体は mock する (Dexie 実体は review-events.test.ts 側で検証済)。
+const { mockFlushPendingAnswerEvents } = vi.hoisted(() => ({
+  mockFlushPendingAnswerEvents: vi.fn(),
+}))
+vi.mock('./review-events', () => ({
+  flushPendingAnswerEvents: mockFlushPendingAnswerEvents,
+}))
+
 import {
   classifyFlushResults,
   runGuardedFlush,
+  runGuardedAnswerEventFlush,
   createReviewFlushController,
   FLUSH_LOCK_NAME,
   type FlushOutcome,
@@ -73,13 +84,6 @@ describe('classifyFlushResults', () => {
     expect(classifyFlushResults([fr({ attempted: 0 })])).toBe('no-pending')
   })
 
-  it('session-only (syncedEventIds 空 + sessionSynced:true, failed 空) → no-pending', () => {
-    // events なし・session のみ更新の場合も実 sync なし → pull-back 不要。
-    expect(
-      classifyFlushResults([fr({ attempted: 0, sessionSynced: true, httpStatus: 200 })]),
-    ).toBe('no-pending')
-  })
-
   it('複数 result の一部でも syncedEventIds 非空なら → ok', () => {
     // 1 件でも実 sync があれば pull-back 対象とする。
     expect(
@@ -129,6 +133,29 @@ describe('runGuardedFlush — Web Locks 排他', () => {
     const outcome = await runGuardedFlush({ flushAll, locks: undefined })
     expect(outcome).toBe('ok')
     expect(flushAll).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runGuardedAnswerEventFlush — 演習 flush の唯一の経路', () => {
+  beforeEach(() => {
+    mockFlushPendingAnswerEvents.mockReset()
+  })
+
+  it('owner-scope の userId を flush 本体に渡し、結果を classify して返す', async () => {
+    mockFlushPendingAnswerEvents.mockResolvedValue(
+      fr({ attempted: 1, syncedEventIds: ['e1'] }),
+    )
+    const outcome = await runGuardedAnswerEventFlush('user-1')
+    expect(outcome).toBe('ok')
+    expect(mockFlushPendingAnswerEvents).toHaveBeenCalledTimes(1)
+    expect(mockFlushPendingAnswerEvents).toHaveBeenCalledWith('user-1')
+  })
+
+  it('flush 失敗 (503) は transient に分類される', async () => {
+    mockFlushPendingAnswerEvents.mockResolvedValue(
+      fr({ attempted: 1, failedEventIds: ['e1'], httpStatus: 503 }),
+    )
+    expect(await runGuardedAnswerEventFlush('user-1')).toBe('transient')
   })
 })
 

@@ -4,37 +4,28 @@
 // Dexie helper / SessionLauncher を mock し、 props で受け渡される
 // cards が「Dexie 由来」 か「server 由来」 かを assertion する。
 //
-// T7 変更: createStudySession / sessionId 採番は SessionLauncher に移管済。
-// host test では SessionLauncher mock に渡された cards を検証する。
+// T7 変更: sessionId 採番は SessionLauncher に移管済。
+// host test では SessionLauncher mock に渡された cards / userId を検証する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, waitFor } from '@testing-library/react'
 import type { Card } from '@/lib/db/schema'
 
-const {
-  mockGetDueCardsFromDexie,
-  mockCreateStudySession,
-  mockNewId,
-  mockSessionLauncher,
-} = vi.hoisted(() => ({
+const { mockGetDueCardsFromDexie, mockSessionLauncher } = vi.hoisted(() => ({
   mockGetDueCardsFromDexie: vi.fn(),
-  mockCreateStudySession: vi.fn(),
-  mockNewId: vi.fn(),
   mockSessionLauncher: vi.fn(),
 }))
 
 vi.mock('@/lib/cards/get-dexie-session-cards', () => ({
   getDueCardsFromDexie: mockGetDueCardsFromDexie,
 }))
-// createStudySession は SessionLauncher 内で使われるが、 host test では SessionLauncher を
-// 丸ごと mock するため、 review-events mock は SessionLauncher mock と重複しない。
-// ここでは host が直接呼ばないことを保証するために mock は残すが assertions は launcher test で行う。
-vi.mock('@/lib/sync/review-events', () => ({
-  createStudySession: mockCreateStudySession,
-  newId: mockNewId,
-}))
 vi.mock('../../_components/session-launcher', () => ({
-  SessionLauncher: (props: { cards: Card[]; heading: string; emptyState: React.ReactNode }) => {
+  SessionLauncher: (props: {
+    cards: Card[]
+    userId: string
+    heading: string
+    emptyState: React.ReactNode
+  }) => {
     mockSessionLauncher(props)
     // cards が空のときは emptyState を render し、 non-empty のときは stub runner を返す。
     if (props.cards.length === 0) {
@@ -82,8 +73,6 @@ function fakeCard(overrides?: Partial<Card>): Card {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockNewId.mockReturnValue('00000000-0000-4000-a000-000000000001')
-  mockCreateStudySession.mockResolvedValue(undefined)
   mockGetDueCardsFromDexie.mockResolvedValue([])
 })
 
@@ -103,7 +92,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
@@ -120,8 +108,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
     // server cards は使われていない (= dexie で上書き)
     const lastCall = mockSessionLauncher.mock.lastCall?.[0] as { cards: Card[] }
     expect(lastCall.cards.map((c) => c.id)).toEqual(['dexie-a', 'dexie-b'])
-    // host は createStudySession を直接呼ばない (launcher が担う)
-    expect(mockCreateStudySession).not.toHaveBeenCalled()
   })
 
   it('Dexie cards 0 件 → server cards で fallback render', async () => {
@@ -134,7 +120,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
@@ -153,7 +138,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
@@ -169,12 +153,28 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-xyz"
         sessionLimit={42}
-        mode="smart"
       />,
     )
 
     await waitFor(() => expect(mockGetDueCardsFromDexie).toHaveBeenCalled())
     expect(mockGetDueCardsFromDexie).toHaveBeenCalledWith('user-xyz', 42)
+  })
+
+  it('userId を SessionLauncher に転送する (flush の owner-scope 供給・spec §4.6)', async () => {
+    render(
+      <StudySessionHost
+        cards={[fakeCard()]}
+        fsrsMode={false}
+        userId="user-xyz"
+        sessionLimit={20}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(mockSessionLauncher).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user-xyz' }),
+      ),
+    )
   })
 
   // -------------------------------------------------------------------------
@@ -183,7 +183,7 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
   // 渡し + Dexie も 0 件のときの一元判断)。
   // -------------------------------------------------------------------------
 
-  it('Dexie 0 件 + server cards 0 件 → empty UI 表示、 createStudySession は呼ばれない', async () => {
+  it('Dexie 0 件 + server cards 0 件 → empty UI 表示', async () => {
     mockGetDueCardsFromDexie.mockResolvedValueOnce([])
     const { getByText, getByRole } = render(
       <StudySessionHost
@@ -191,7 +191,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
@@ -203,8 +202,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
       'href',
       '/app',
     )
-    // 空 session を作らない (host は createStudySession を直接呼ばない)
-    expect(mockCreateStudySession).not.toHaveBeenCalled()
     // SessionLauncher には cards=[] が渡り、 emptyState が render される
     expect(mockSessionLauncher).toHaveBeenCalledWith(
       expect.objectContaining({ cards: [] }),
@@ -220,7 +217,6 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
@@ -239,13 +235,11 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
         fsrsMode={false}
         userId="user-1"
         sessionLimit={20}
-        mode="smart"
       />,
     )
 
     await waitFor(() => {
       expect(getByText(/現在復習する card はありません/)).toBeInTheDocument()
     })
-    expect(mockCreateStudySession).not.toHaveBeenCalled()
   })
 })

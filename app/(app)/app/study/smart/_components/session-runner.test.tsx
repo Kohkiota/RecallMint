@@ -60,18 +60,14 @@ const {
   mockPush,
   mockRecordAnswerEvent,
   mockCountPendingAnswerEvents,
-  mockFlushPendingEvents,
-  mockFlushAllPendingEvents,
-  mockCompleteStudySession,
+  mockRunGuardedFlush,
   mockPullBack,
 } = vi.hoisted(() => ({
   mockRefresh: vi.fn(),
   mockPush: vi.fn(),
   mockRecordAnswerEvent: vi.fn(),
   mockCountPendingAnswerEvents: vi.fn(),
-  mockFlushPendingEvents: vi.fn(),
-  mockFlushAllPendingEvents: vi.fn(),
-  mockCompleteStudySession: vi.fn(),
+  mockRunGuardedFlush: vi.fn(),
   mockPullBack: vi.fn(),
 }))
 
@@ -82,19 +78,22 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/sync/review-events', () => ({
   recordAnswerEvent: mockRecordAnswerEvent,
   countPendingAnswerEvents: mockCountPendingAnswerEvents,
-  flushPendingEvents: mockFlushPendingEvents,
-  flushAllPendingEvents: mockFlushAllPendingEvents,
-  completeStudySession: mockCompleteStudySession,
 }))
 
-// pullBack は mock (void)。classifyFlushResults は real を使う (@/lib/sync/review-flush は mock しない)。
+// 演習 flush は 3 入口とも runGuardedAnswerEventFlush (Web Locks 経由) を通る。
+// component test は「どの入口が何を渡して呼ぶか」 の配線のみを見る。
+vi.mock('@/lib/sync/review-flush', () => ({
+  runGuardedAnswerEventFlush: mockRunGuardedFlush,
+}))
+
 vi.mock('@/lib/sync/pull-back', () => ({
   pullBack: mockPullBack,
 }))
 
-// 各 test の SessionRunner JSX に渡す session_id。 mock injection 済のため値は
-// 形式が合っていれば bulk API には実際には届かない。
+// 各 test の SessionRunner JSX に渡す session_id / user_id。 mock injection 済のため
+// 値は形式が合っていれば bulk API には実際には届かない。
 const TEST_SESSION_ID = '00000000-0000-4000-a000-000000000001'
+const TEST_USER_ID = '00000000-0000-4000-a000-0000000000ff'
 
 // -----------------------------------------------------------------------
 // Import under test (after mocks)
@@ -149,17 +148,9 @@ beforeEach(() => {
   // 各 test は必要に応じて mockResolvedValueOnce で override する。
   mockRecordAnswerEvent.mockResolvedValue(undefined)
   mockCountPendingAnswerEvents.mockResolvedValue(0)
-  mockFlushPendingEvents.mockResolvedValue({
-    attempted: 0,
-    syncedEventIds: [],
-    failedEventIds: [],
-    sessionSynced: true,
-    reachable: true,
-    httpStatus: 0,
-  })
-  mockCompleteStudySession.mockResolvedValue(undefined)
-  // flushAllPendingEvents は経路 2 (finished useEffect) で呼ばれる。 デフォルト success。
-  mockFlushAllPendingEvents.mockResolvedValue([])
+  // flush は threshold (経路 1) / finished useEffect (経路 2) の両方から呼ばれる。
+  // デフォルトは「送るものなし」= pull-back 不発。
+  mockRunGuardedFlush.mockResolvedValue('no-pending')
   // T11: CardImageGallery (readOnly) の thumbnail 解決。 デフォルトは resolve 成功。
   mockGetAssetObjectURL.mockResolvedValue('blob:mock-object-url')
 })
@@ -186,7 +177,7 @@ const NAME_RETRY = /リトライ/
 // -----------------------------------------------------------------------
 describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   it('初期描画: 問題文 + 選択肢 + 3 button (前へ disabled / 回答する 常時 enabled / 次へ enabled)', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByText('問題文テキスト')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /選択肢A/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /選択肢B/ })).toBeInTheDocument()
@@ -197,7 +188,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('opt click で selectedIds 追加、 再 click で削除 (toggle)', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     const optA = screen.getByRole('button', { name: /選択肢A/ })
     fireEvent.click(optA)
     expect(optA).toHaveAttribute('aria-pressed', 'true')
@@ -206,13 +197,13 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('1 件以上選択で 「回答する」 が enabled (通常モード)', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
   it('selecting (両モード共通): FSRS モードでも footer は 3 button、 rate ボタンは存在しない', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByRole('button', { name: '回答する' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: NAME_NEXT })).toBeInTheDocument()
@@ -224,14 +215,14 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('1 件以上選択で 「回答する」 が enabled (FSRS モードも同じ)', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     clickOption('選択肢B')
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
   })
 
   it('通常モード: 「回答する」 押下時に recordAnswerEvent は呼ばれず、 judged 遷移 + 解説 + 3 button (前へ/リトライ/次へ) 表示', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -248,7 +239,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('通常モード: 誤答選択 → 「回答する」 で判定のみ (submit せず) + 不正解表示', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -261,7 +252,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -279,7 +270,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -300,7 +291,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -317,7 +308,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('FSRS モード: 「回答する」 押下時に recordAnswerEvent は呼ばれず、 judged 遷移 + 4 rate + 3 nav (下段) 表示', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -346,7 +337,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -375,7 +366,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -401,7 +392,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   it('FSRS モード (rate-then-confirm): Again/Good/Easy 押下では 0 件 / 「次へ」 で rating=1|3|4 が 1 件 fire (連続 unmount)', async () => {
     {
       const { unmount } = render(
-        <SessionRunner cards={[makeCard({ id: 'cA' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />,
+        <SessionRunner cards={[makeCard({ id: 'cA' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
       )
       clickOption('選択肢A')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -421,7 +412,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
     }
     {
       const { unmount } = render(
-        <SessionRunner cards={[makeCard({ id: 'cG' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />,
+        <SessionRunner cards={[makeCard({ id: 'cG' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
       )
       clickOption('選択肢A')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -440,7 +431,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       unmount()
     }
     {
-      render(<SessionRunner cards={[makeCard({ id: 'cE' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'cE' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢A')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
@@ -460,7 +451,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   // lastRating / button enable 状態は Optimistic のまま保持されることを検証。
   it('FSRS モード: rate 時 Dexie 失敗でも judged 維持 + 4 ボタン enable のまま + lastRating Optimistic + 「次へ」 enable (alert なし、 S-cache-1)', async () => {
     mockRecordAnswerEvent.mockRejectedValueOnce(new Error('idb write failed'))
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: 'Good' }))
@@ -487,7 +478,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     expect(screen.queryByText('1誤正正誤', { exact: true })).not.toBeInTheDocument()
     const opt1Btn = screen.getByRole('button', { name: /誤正正誤/ })
@@ -505,7 +496,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     const opt1Btn = screen.getByRole('button', { name: /1990s/ })
     expect(opt1Btn).toBeInTheDocument()
   })
@@ -518,7 +509,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     const opt1Btn = screen.getByRole('button', { name: /^○?\s*1\s*答え$/ })
     expect(opt1Btn).toBeInTheDocument()
     expect(screen.queryByText('1) 答え', { exact: true })).not.toBeInTheDocument()
@@ -532,7 +523,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.queryByText('1. 答え', { exact: true })).not.toBeInTheDocument()
     const opt1Btn = screen.getByRole('button', { name: /答え/ })
     expect(opt1Btn).toBeInTheDocument()
@@ -546,7 +537,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.queryByText('1 答え', { exact: true })).not.toBeInTheDocument()
     const opt1Btn = screen.getByRole('button', { name: /答え/ })
     expect(opt1Btn).toBeInTheDocument()
@@ -560,7 +551,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     const opt1Btn = screen.getByRole('button', { name: /単独/ })
     expect(opt1Btn).toBeInTheDocument()
   })
@@ -573,7 +564,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['13'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.queryByText('12誤正', { exact: true })).not.toBeInTheDocument()
     const opt12Btn = screen.getByRole('button', { name: /誤正/ })
     expect(opt12Btn).toBeInTheDocument()
@@ -587,14 +578,14 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['2'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     const opt1Btn = screen.getByRole('button', { name: /5g/ })
     expect(opt1Btn).toBeInTheDocument()
     expect(screen.queryByText('1.5g', { exact: true })).not.toBeInTheDocument()
   })
 
   it('judged 後: 正答 opt に ○、 非正答 opt に × mark', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     expect(screen.getByText('カード全体の解説')).toBeInTheDocument()
@@ -603,7 +594,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('judged 後 opt click は無効 (selectedIds 変わらない)', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     expect(screen.getByRole('button', { name: NAME_NEXT })).toBeInTheDocument()
@@ -618,7 +609,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c2', questionText: '問2' }),
       makeCard({ id: 'c3', questionText: '問3' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     // Card 1: 正答 → 回答する → 次へ (submit)
     clickOption('選択肢B')
@@ -650,7 +641,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -664,7 +655,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('完了画面の「もう一度」で router.refresh が呼ばれる', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -675,21 +666,21 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
   })
 
   it('完了画面の「ダッシュボードへ」は <button> として render される (Link ではない)', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
 
     // Link → Button: click で即 router.push('/app')。
-    // flush (flushAllPendingEvents) は finished useEffect が fire-and-forget で担う。
+    // flush は finished useEffect が fire-and-forget で担う。
     expect(screen.queryByRole('link', { name: 'ダッシュボードへ' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'ダッシュボードへ' })).toBeInTheDocument()
   })
 
   it('カード進行インジケーター (1 / N) が表示される', () => {
     const cards = [makeCard({ id: 'c1' }), makeCard({ id: 'c2' })]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByText('1 / 2')).toBeInTheDocument()
   })
 
@@ -702,7 +693,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['a', 'b'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     expect(screen.getByText(/不正解/)).toBeInTheDocument()
@@ -719,7 +710,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['a', 'b'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -736,7 +727,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: ['a'],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢A')
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -752,7 +743,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       <SessionRunner
         cards={[makeCard({ title: '問109' })]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     expect(screen.getByText('問109')).toBeInTheDocument()
@@ -768,7 +759,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 何も選択せず 「回答する」
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     // equalSet([], ['b']) = false → 不正解
@@ -793,7 +784,7 @@ describe('SessionRunner (3-button nav, S2.2.3 T1)', () => {
       ],
       correctAnswerIds: [],
     })
-    render(<SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     // equalSet([], []) = true → 「正解」 banner (現仕様、 ガード追加なし)
     expect(screen.getByText(/^正解/)).toBeInTheDocument()
@@ -812,7 +803,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // ---------------------------------------------------------------------
 
   it('selecting: idx=0 で「前へ」 disabled、 「回答する」 常時 enabled、 「次へ」 常時 enabled', () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeDisabled()
     expect(screen.getByRole('button', { name: '回答する' })).not.toBeDisabled()
     expect(screen.getByRole('button', { name: NAME_NEXT })).not.toBeDisabled()
@@ -823,7 +814,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 1 件選択した上で「次へ」 (スキップ) → submit せず進む
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -838,7 +829,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1 を選択せずスキップ → 問2 へ
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     expect(screen.getByText('問2')).toBeInTheDocument()
@@ -857,7 +848,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   })
 
   it('selecting: 最後の card で「次へ」 押下 → finished phase', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     // finished
     expect(screen.getByText('🎉')).toBeInTheDocument()
@@ -871,7 +862,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // ---------------------------------------------------------------------
 
   it('judged 通常モード: 3 button (前へ / リトライ / 次へ) 表示、 idx=0 で「前へ」 disabled、 「リトライ」 / 「次へ」 enabled', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     expect(screen.getByRole('button', { name: NAME_PREV })).toBeDisabled()
@@ -880,7 +871,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   })
 
   it('judged 通常モード: 「リトライ」 押下 → selecting reset + 選択解除 + submit なし', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     // judged 中
@@ -902,7 +893,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1 スキップ → 問2
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     expect(screen.getByText('問2')).toBeInTheDocument()
@@ -928,7 +919,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1 スキップ → 問2 (idx=1) で「前へ」 が idx 条件単独では enable のはず
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     clickOption('選択肢B')
@@ -947,7 +938,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   })
 
   it('judged FSRS モード (rate-then-confirm): Hard 押下では fire しない + lastRating セット → 「次へ」 enable (idx=0 で「前へ」 は idx 条件で disabled)', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
@@ -967,7 +958,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1 スキップ → 問2 で回答 → judged
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     clickOption('選択肢B')
@@ -986,7 +977,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     const cards = [
       makeCard({ id: 'c1', questionText: '問1' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     // 1 回目: Good (Optimistic tally +1、 state-only)
@@ -1014,7 +1005,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   })
 
   it('judged FSRS モード (rate-then-confirm): 「リトライ」 → selecting reset + lastRating=null + 4 rate / 「次へ」 が再 disabled (rate click では fire しない)', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: 'Good' }))
@@ -1041,7 +1032,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1 スキップ → 問2 で回答 → Good (state-only、 fire しない)
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     clickOption('選択肢B')
@@ -1066,7 +1057,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   })
 
   it('FSRS モード最後の card (rate-then-confirm): rate 押下 0 件 / 「次へ」 で 1 件 fire + finished phase', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
@@ -1092,7 +1083,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // ---------------------------------------------------------------------
 
   it('FSRS モード (rate-then-confirm): リトライ後の再 submit で tally が二重加算されない (1 枚 / 1 正解)', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 1 回目: 正答選択 → 回答 → Good (state-only、 Optimistic tally +1)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1131,7 +1122,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     // 問1: 選択B → 回答 → 次へ (auto submit rating=3、 tally=1/1)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1166,7 +1157,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // -------------------------------------------------------------------------
   describe('S2.2.5: FSRS rate ボタン押下ハイライト (濃色 fill)', () => {
     it('rate 未押下 (lastRating=null) では 4 ボタンとも idle class (selected fill class なし)', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       await waitFor(() => expect(screen.getByRole('button', { name: 'Again' })).toBeInTheDocument())
@@ -1179,7 +1170,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     })
 
     it('Hard 押下後 (rate-then-confirm): Hard のみ orange-600 fill + text-white、 他 3 つは idle のまま (rate click は state-only / fire しない)', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
@@ -1196,7 +1187,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     })
 
     it('Hard → Good に切替 (rate-then-confirm): Good に selected fill、 Hard は idle に戻る (highlight 即時反映 / rate click では fire しない)', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
@@ -1225,7 +1216,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
             resolveSubmit = () => res()
           }),
       )
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -1269,7 +1260,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
             resolveFlush = () => res()
           }),
       )
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -1316,7 +1307,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
         makeCard({ id: 'c1', questionText: '問1' }),
         makeCard({ id: 'c2', questionText: '問2' }),
       ]
-      render(<SessionRunner cards={cards} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={cards} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -1336,7 +1327,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     })
 
     it('リトライで lastRating=null 化、 再 judged 時 4 ボタンとも idle (fill なし)', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B')
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: 'Easy' }))
@@ -1356,7 +1347,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
   // ---------------------------------------------------------------------------
   describe('rating forwarding to recordAnswerEvent', () => {
     it('通常モード correct: 「次へ」 で rating=3 が recordAnswerEvent に渡る', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢B') // 正解
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -1368,7 +1359,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
     })
 
     it('通常モード incorrect: 「次へ」 で rating=1 が recordAnswerEvent に渡る', async () => {
-      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+      render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
       clickOption('選択肢A') // 誤答
       fireEvent.click(screen.getByRole('button', { name: '回答する' }))
       fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -1388,7 +1379,7 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
       ]
       for (const c of cases) {
         const { unmount } = render(
-          <SessionRunner cards={[makeCard({ id: `c-${c.rating}` })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />,
+          <SessionRunner cards={[makeCard({ id: `c-${c.rating}` })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
         )
         clickOption('選択肢B') // 正解選択 (is_correct=true)
         fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1416,19 +1407,19 @@ describe('SessionRunner (S2.2.3 T1: 前後ナビ + リトライ)', () => {
 
 // ---------------------------------------------------------------------------
 // S-cache-3.1 (新仕様): 完了画面「ダッシュボードへ」 は flush を await せず即
-// router.push('/app')。 finished useEffect が flushAllPendingEvents (group flush)
-// を fire-and-forget するのみ。 NavState / warning UI / 保存中 label は撤去済。
+// router.push('/app')。 finished useEffect が flush を fire-and-forget するのみ。
+// NavState / warning UI / 保存中 label は撤去済。
 // ---------------------------------------------------------------------------
 describe('SessionRunner (完了画面ナビゲーション: flush 非同期化)', () => {
   // 完了画面に到達するまでの共通 step (1 card 正答 → 次へ → finished)。
   async function reachCompletion() {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
-    // completeStudySession + flushAllPendingEvents が走り終わるまで待機
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    // 完了 flush が走り終わるまで待機
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalled())
   }
 
   it('「ダッシュボードへ」 click で flush を await せず即 router.push("/app")', async () => {
@@ -1440,9 +1431,9 @@ describe('SessionRunner (完了画面ナビゲーション: flush 非同期化)'
     expect(mockPush).toHaveBeenCalledWith('/app')
     expect(mockPush).toHaveBeenCalledTimes(1)
     // click handler 経由の追加 flush は発生しない
-    const callsAfterClick = mockFlushAllPendingEvents.mock.calls.length
+    const callsAfterClick = mockRunGuardedFlush.mock.calls.length
     await new Promise((r) => setTimeout(r, 20))
-    expect(mockFlushAllPendingEvents.mock.calls.length).toBe(callsAfterClick)
+    expect(mockRunGuardedFlush.mock.calls.length).toBe(callsAfterClick)
   })
 
   it('warning UI は存在しない (NavState 撤去後)', async () => {
@@ -1464,19 +1455,17 @@ describe('SessionRunner (完了画面ナビゲーション: flush 非同期化)'
     expect(screen.queryByRole('button', { name: '保存中...' })).not.toBeInTheDocument()
   })
 
-  it('finished phase で flushAllPendingEvents が呼ばれる (旧 flushPendingEvents ではなく)', async () => {
-    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+  it('finished phase の flush は owner-scope の userId で runGuardedAnswerEventFlush を 1 回呼ぶ', async () => {
+    render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
     await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
 
-    // 経路 2 (finished useEffect) が flushAllPendingEvents (全 session group flush) を呼ぶ
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
-    // 経路 2 は flushAllPendingEvents を 1 回のみ呼ぶ。
-    // 経路 1 (runSubmit IIFE 内の threshold flush = flushPendingEvents) とは別関数であり、
-    // このテストが検証するのは経路 2 の flushAllPendingEvents のみ。
-    expect(mockFlushAllPendingEvents).toHaveBeenCalledTimes(1)
+    // 経路 2 (finished useEffect)。 経路 1 (threshold) は countPending=0 で不発のため
+    // ここでの呼び出しは完了 flush 1 回だけ。
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalledWith(TEST_USER_ID))
+    expect(mockRunGuardedFlush).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1488,7 +1477,7 @@ describe('SessionRunner (完了画面ナビゲーション: flush 非同期化)'
 // ---------------------------------------------------------------------------
 describe('rate-then-confirm (Step 3b)', () => {
   it('FSRS rate 連打 → 次へ で lastRating の 1 件のみ submit (Step 3b)', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B') // 正答 (is_correct=true)
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
 
@@ -1522,7 +1511,7 @@ describe('rate-then-confirm (Step 3b)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     // 問1 スキップ → 問2 へ (mockRecordAnswerEvent 呼ばれない、 idx=1)
     fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
@@ -1560,7 +1549,7 @@ describe('rate-then-confirm (Step 3b)', () => {
       makeCard({ id: 'c1', questionText: '問1' }),
       makeCard({ id: 'c2', questionText: '問2' }),
     ]
-    render(<SessionRunner cards={cards} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={cards} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
 
     // 問1: 選択肢B → 回答 → Good → 次へ (submit 1: c1 rating=3)
     clickOption('選択肢B')
@@ -1633,7 +1622,7 @@ describe('rate-then-confirm (Step 3b)', () => {
   })
 
   it('FSRS リトライ → submit 呼ばれない regression guard (Step 3b)', async () => {
-    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} sessionId={TEST_SESSION_ID} />)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
     clickOption('選択肢B')
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
     fireEvent.click(screen.getByRole('button', { name: 'Good' }))
@@ -1654,36 +1643,86 @@ describe('rate-then-confirm (Step 3b)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// session 完了 flush 成功で pull-back (Task 4)
-// 通常の復習完了は session-runner が controller を通らず flushAllPendingEvents を
-// 直叩きするため、 controller hook (Task 3) だけでは pull-back が発火しない。
-// よって session 完了 flush 成功点に直接 hook する。
-// classifyFlushResults は real を使い、 FlushResult 値で ok/非ok を end-to-end 検証。
+// flush の 2 入口 (threshold / セッション完了) — FSRS 整合 Sprint A T5
+// どちらも runGuardedAnswerEventFlush (Web Locks 経由) を owner-scope の userId で呼ぶ。
+// 'ok' のときだけ pull-back で FSRS 後の値を mirror へ戻す。
+// 入口を分離して検証するため、 threshold 側は 2 枚構成 (finished に到達させない)、
+// 完了側は countPending=0 (threshold を発火させない) で駆動する。
 // ---------------------------------------------------------------------------
 
-// 1 card 正答 → 次へ → finished まで共通駆動 (countPending を 5 にしておけば threshold も走る)。
-// pull-back 系 describe (session 完了 / threshold) で共有。
+// 1 card 正答 → 次へ → finished まで共通駆動。
 async function reachFinished() {
-  render(<SessionRunner cards={[makeCard()]} fsrsMode={false} sessionId={TEST_SESSION_ID} />)
+  render(<SessionRunner cards={[makeCard()]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
   clickOption('選択肢B')
   fireEvent.click(screen.getByRole('button', { name: '回答する' }))
   fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
   await waitFor(() => expect(screen.getByText('🎉')).toBeInTheDocument())
 }
 
-describe('session 完了 flush 成功で pull-back', () => {
+// 2 枚構成で 1 枚目だけ確定する (finished 未到達 = 完了 flush と混ざらない)。
+async function answerFirstOfTwo() {
+  render(
+    <SessionRunner
+      cards={[makeCard({ id: 'c1', questionText: '問1' }), makeCard({ id: 'c2', questionText: '問2' })]}
+      fsrsMode={false}
+      userId={TEST_USER_ID}
+      sessionId={TEST_SESSION_ID}
+    />,
+  )
+  clickOption('選択肢B')
+  fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+  fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+  await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
+}
+
+describe('threshold flush', () => {
+  it('pending が閾値 (5) に達したら owner-scope の userId で flush する', async () => {
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    mockRunGuardedFlush.mockResolvedValue('ok')
+
+    await answerFirstOfTwo()
+
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalledWith(TEST_USER_ID))
+    expect(mockRunGuardedFlush).toHaveBeenCalledTimes(1)
+    // pending 件数の集計も owner-scope
+    expect(mockCountPendingAnswerEvents).toHaveBeenCalledWith(TEST_USER_ID)
+  })
+
+  it('閾値未満 (4) では flush しない', async () => {
+    mockCountPendingAnswerEvents.mockResolvedValue(4)
+
+    await answerFirstOfTwo()
+
+    await waitFor(() => expect(mockRecordAnswerEvent).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockRunGuardedFlush).not.toHaveBeenCalled()
+  })
+
+  it('flush ok → pullBack("threshold-flush")', async () => {
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    mockRunGuardedFlush.mockResolvedValue('ok')
+
+    await answerFirstOfTwo()
+
+    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('threshold-flush'))
+    expect(mockPullBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('flush が ok 以外 (lock-busy) → pull-back なし', async () => {
+    mockCountPendingAnswerEvents.mockResolvedValue(5)
+    mockRunGuardedFlush.mockResolvedValue('lock-busy')
+
+    await answerFirstOfTwo()
+
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mockPullBack).not.toHaveBeenCalled()
+  })
+})
+
+describe('セッション完了 flush', () => {
   it('完了 flush ok → pullBack("session-complete") が 1 回呼ばれる', async () => {
-    // real classify → 'ok': attempted>0, failedEventIds empty, results non-empty
-    mockFlushAllPendingEvents.mockResolvedValue([
-      {
-        attempted: 1,
-        syncedEventIds: ['e1'],
-        failedEventIds: [],
-        sessionSynced: true,
-        reachable: true,
-        httpStatus: 200,
-      },
-    ])
+    mockRunGuardedFlush.mockResolvedValue('ok')
 
     await reachFinished()
 
@@ -1691,129 +1730,139 @@ describe('session 完了 flush 成功で pull-back', () => {
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 
-  it('完了 flush 非 ok (transient: 503) → pull-back なし', async () => {
-    // real classify → 'transient': failedEventIds 非空 + httpStatus 5xx (503) で isTransientError 一致
-    mockFlushAllPendingEvents.mockResolvedValue([
-      {
-        attempted: 1,
-        syncedEventIds: [],
-        failedEventIds: ['e1'],
-        sessionSynced: false,
-        reachable: true,
-        httpStatus: 503,
-      },
-    ])
+  it('完了 flush 非 ok (transient) → pull-back なし', async () => {
+    mockRunGuardedFlush.mockResolvedValue('transient')
 
     await reachFinished()
 
-    // flushAllPendingEvents が呼ばれるまで待機してから pullBack 呼ばれていないことを確認
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 20))
     expect(mockPullBack).not.toHaveBeenCalled()
   })
 
   it('完了 flush throw → pull-back なし (catch 内で握り潰される)', async () => {
-    mockFlushAllPendingEvents.mockRejectedValue(new Error('net'))
+    mockRunGuardedFlush.mockRejectedValue(new Error('net'))
 
     await reachFinished()
 
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 20))
     expect(mockPullBack).not.toHaveBeenCalled()
   })
 
-  it('完了 flush 0 件 (no-pending) → pull-back なし', async () => {
-    // 送る pending が無い (= 空配列) → real classify → 'no-pending'。 サーバー未更新のため pull-back 不要。
-    mockFlushAllPendingEvents.mockResolvedValue([])
+  it('完了 flush no-pending → pull-back なし', async () => {
+    mockRunGuardedFlush.mockResolvedValue('no-pending')
 
     await reachFinished()
 
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
+    await waitFor(() => expect(mockRunGuardedFlush).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 20))
     expect(mockPullBack).not.toHaveBeenCalled()
   })
 })
 
 // ---------------------------------------------------------------------------
-// threshold flush で pull-back (Task 2, U6 反転)
-// daily=threshold(5枚) のとき threshold flush が実 sync を担う。
-// 実 sync 成功時のみ pull-back('threshold-flush')、skip/失敗では不発。
-// classifyFlushResults は real を使い FlushResult 値で end-to-end 検証。
+// answer_events の payload (owner-scope + elapsed_ms 計測) — spec §4.5 / §4.6
 // ---------------------------------------------------------------------------
-describe('threshold flush で pull-back', () => {
-  it('threshold 実 sync → pullBack("threshold-flush") が呼ばれる', async () => {
-    // countPendingAnswerEvents >= FLUSH_THRESHOLD(5) → flushPendingEvents が実行される
-    mockCountPendingAnswerEvents.mockResolvedValue(5)
-    // 実 sync: syncedEventIds 非空 → real classify → 'ok'
-    mockFlushPendingEvents.mockResolvedValue({
-      attempted: 1,
-      syncedEventIds: ['e1'],
-      failedEventIds: [],
-      sessionSynced: true,
-      reachable: true,
-      httpStatus: 200,
-    })
+describe('recordAnswerEvent payload', () => {
+  it('user_id / session_id / rating を載せる', async () => {
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
 
-    await reachFinished()
-
-    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('threshold-flush'))
+    await waitFor(() =>
+      expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_id: TEST_USER_ID,
+          session_id: TEST_SESSION_ID,
+          card_id: 'c1',
+          rating: 3,
+        }),
+      ),
+    )
   })
 
-  it('threshold skip(attempted:0, syncedEventIds 空) → pullBack("threshold-flush") なし', async () => {
-    // countPendingAnswerEvents >= FLUSH_THRESHOLD(5) → flushPendingEvents が実行されるが skip
-    mockCountPendingAnswerEvents.mockResolvedValue(5)
-    // skip: syncedEventIds 空 → real classify → 'no-pending'
-    mockFlushPendingEvents.mockResolvedValue({
-      attempted: 0,
-      syncedEventIds: [],
-      failedEventIds: [],
-      sessionSynced: false,
-      reachable: false,
-      httpStatus: 0,
-    })
+  it('表示開始 → submit の wall-clock を elapsed_ms として載せる', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    nowSpy.mockReturnValue(3_500)
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
 
-    await reachFinished()
-
-    // flushPendingEvents が呼ばれるまで待機 + macrotask 後
-    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 20))
-    expect(mockPullBack).not.toHaveBeenCalledWith('threshold-flush')
+    await waitFor(() =>
+      expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ elapsed_ms: 2_500 }),
+      ),
+    )
+    nowSpy.mockRestore()
   })
 
-  it('race regression: threshold=実 sync / session完了=skip → threshold のみ pull-back(1回)', async () => {
-    // threshold flush = 実 sync
-    mockCountPendingAnswerEvents.mockResolvedValue(5)
-    mockFlushPendingEvents.mockResolvedValue({
-      attempted: 1,
-      syncedEventIds: ['e1'],
-      failedEventIds: [],
-      sessionSynced: true,
-      reachable: true,
-      httpStatus: 200,
-    })
-    // session 完了 flush = skip (attempted:0, syncedEventIds 空) → real classify → 'no-pending'
-    mockFlushAllPendingEvents.mockResolvedValue([
-      {
-        attempted: 0,
-        syncedEventIds: [],
-        failedEventIds: [],
-        sessionSynced: false,
-        reachable: false,
-        httpStatus: 0,
-      },
-    ])
+  it('card 遷移で計測を打ち直す (前 card の表示時間を繰り越さない)', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    render(
+      <SessionRunner
+        cards={[makeCard({ id: 'c1', questionText: '問1' }), makeCard({ id: 'c2', questionText: '問2' })]}
+        fsrsMode={false}
+        userId={TEST_USER_ID}
+        sessionId={TEST_SESSION_ID}
+      />,
+    )
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    nowSpy.mockReturnValue(2_000)
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT })) // c1: 1000ms、c2 の計測開始
+    await waitFor(() => expect(screen.getByText('問2')).toBeInTheDocument())
 
-    await reachFinished()
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    nowSpy.mockReturnValue(2_600)
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
 
-    // 両 flush が呼ばれるまで待機 + macrotask 後
-    await waitFor(() => expect(mockFlushPendingEvents).toHaveBeenCalled())
-    await waitFor(() => expect(mockFlushAllPendingEvents).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 20))
+    await waitFor(() => expect(mockRecordAnswerEvent).toHaveBeenCalledTimes(2))
+    expect(mockRecordAnswerEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ card_id: 'c1', elapsed_ms: 1_000 }),
+    )
+    expect(mockRecordAnswerEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ card_id: 'c2', elapsed_ms: 600 }),
+    )
+    nowSpy.mockRestore()
+  })
 
-    // threshold-flush のみ pull-back、session-complete は pull-back しない
-    expect(mockPullBack).toHaveBeenCalledWith('threshold-flush')
-    expect(mockPullBack).not.toHaveBeenCalledWith('session-complete')
-    expect(mockPullBack).toHaveBeenCalledTimes(1)
+  it('24h 超は 86_400_000 に clip する (wire schema 上限)', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(0)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    nowSpy.mockReturnValue(90_000_000)
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+
+    await waitFor(() =>
+      expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ elapsed_ms: 86_400_000 }),
+      ),
+    )
+    nowSpy.mockRestore()
+  })
+
+  it('FSRS の rate 連打は 1 計測 = 1 event (最終 confirm までを測る)', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    render(<SessionRunner cards={[makeCard({ id: 'c1' })]} fsrsMode={true} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />)
+    clickOption('選択肢B')
+    fireEvent.click(screen.getByRole('button', { name: '回答する' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Good' }))
+    nowSpy.mockReturnValue(5_000)
+    fireEvent.click(screen.getByRole('button', { name: NAME_NEXT }))
+
+    await waitFor(() => expect(mockRecordAnswerEvent).toHaveBeenCalledTimes(1))
+    expect(mockRecordAnswerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ rating: 3, elapsed_ms: 4_000 }),
+    )
+    nowSpy.mockRestore()
   })
 })
 
@@ -1830,7 +1879,7 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
       images: [{ key: UUID_IMAGE, target: 'question_text', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
 
     await waitFor(() => {
@@ -1850,7 +1899,7 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
   it('images が空配列 → thumbnail も添付 control も render されない', () => {
     const card = makeCard({ id: 'c1', images: [] })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     expect(container.querySelectorAll('img')).toHaveLength(0)
     expect(container.querySelector('input[type="file"]')).not.toBeInTheDocument()
@@ -1873,7 +1922,7 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
       images: [{ key: OPT_IMG, target: `option:${OPT_A_UID}`, alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     await waitFor(() => {
       expect(container.querySelectorAll('img')).toHaveLength(1)
@@ -1895,7 +1944,7 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
       images: [{ key: EXP_IMG, target: 'explanation_text', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     // 判定前は解説節なし
     expect(container.querySelectorAll('img')).toHaveLength(0)
@@ -1915,7 +1964,7 @@ describe('SessionRunner (T11: read-only image gallery)', () => {
       images: [{ key: EXP_IMG, target: 'explanation_text', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -1941,7 +1990,7 @@ describe('Sprint T: MD 表 read-only 描画(学習面 C/D/E)', () => {
       <SessionRunner
         cards={[makeCard(card)]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
 
@@ -2055,7 +2104,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('アルファ誤')
@@ -2078,7 +2127,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('ベータ正')
@@ -2102,7 +2151,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('アルファ正') // 正解を 1 つだけ選ぶ(b は選び逃し)
@@ -2128,7 +2177,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('アルファ誤')
@@ -2150,7 +2199,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('アルファ誤') // 判定前に選択
@@ -2173,7 +2222,7 @@ describe('Sprint T: 回答後の選択保持(2 軸表示)', () => {
           }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('アルファ誤')
@@ -2192,7 +2241,7 @@ describe('Sprint T: 学習面のメモ表示', () => {
   const judge = () => fireEvent.click(screen.getByRole('button', { name: '回答する' }))
   const renderCard = (memo: string | null) =>
     render(
-      <SessionRunner cards={[makeCard({ memo })]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[makeCard({ memo })]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
 
   it('回答前はメモが DOM に存在しない', () => {
@@ -2228,7 +2277,7 @@ describe('Sprint T: 学習面のメモ表示', () => {
           makeCard({ id: 'card-mm-2', memo: 'カード2のメモ' }),
         ]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('選択肢B')
@@ -2254,7 +2303,7 @@ describe('Sprint T: 学習面のメモ表示', () => {
       <SessionRunner
         cards={[makeCard({ explanationText: '公式解説テキスト', memo: 'ユーザーメモテキスト' })]}
         fsrsMode={false}
-        sessionId={TEST_SESSION_ID}
+        userId={TEST_USER_ID} sessionId={TEST_SESSION_ID}
       />,
     )
     clickOption('選択肢B')
@@ -2288,7 +2337,7 @@ describe('SessionRunner (Task 5: in-flow 画像 display=inflow)', () => {
       images: [{ key: IMG_Q, target: 'question_text', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
     const img = container.querySelector('img')!
@@ -2307,7 +2356,7 @@ describe('SessionRunner (Task 5: in-flow 画像 display=inflow)', () => {
       images: [{ key: IMG_OPT, target: `option:${OPT_A_UID}`, alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
     const img = container.querySelector('img')!
@@ -2323,7 +2372,7 @@ describe('SessionRunner (Task 5: in-flow 画像 display=inflow)', () => {
       images: [{ key: IMG_EXP, target: 'explanation_text', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))
@@ -2341,7 +2390,7 @@ describe('SessionRunner (Task 5: in-flow 画像 display=inflow)', () => {
       images: [{ key: IMG_MEMO, target: 'memo', alt: '' }],
     })
     const { container } = render(
-      <SessionRunner cards={[card]} fsrsMode={false} sessionId={TEST_SESSION_ID} />,
+      <SessionRunner cards={[card]} fsrsMode={false} userId={TEST_USER_ID} sessionId={TEST_SESSION_ID} />,
     )
     fireEvent.click(screen.getByRole('button', { name: /選択肢B/ }))
     fireEvent.click(screen.getByRole('button', { name: '回答する' }))

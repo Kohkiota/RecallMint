@@ -5,11 +5,10 @@
 // - exams / cards / user_settings: server からの pull 結果を保持し、 演習 / 編集の
 //   読み出し source を Dexie に一元化 (§9.1 で旧 StaleWhileRevalidate キャッシュは
 //   廃止、 ここが正本)。
-// - study_sessions: 演習開始時に client (uuidv4) で作成し、 answer_events の親に
-//   なる。 status / completed_at は session ライフサイクルで更新。
-// - answer_events: 演習中の回答 click で即時 insert (debounce なし、 §14.7.1)。
+// - answer_events: 演習中の回答確定で即時 insert (debounce なし、 §14.7.1)。
 //   bulk flush で /api/review-events/bulk に送信し、 server から sync OK を受領で
-//   sync_status='synced' へ。
+//   sync_status='synced' へ。 復習の正本は server answer_events 1 表 (FSRS 整合
+//   Sprint A)、 client 側は送信待ちの outbox。
 // - entity_mutations: mutation-driven push の汎用 outbox (S-sync-1 で旧 card_mutations
 //   から汎用化)。 entity_type + entity_id で対象 entity を識別、 server 送信は
 //   debounce、 mutation_id で冪等化。 現状の entity_type は 'card' のみ、 後続で
@@ -141,36 +140,25 @@ export type ClientUserSettings = {
   updated_at: string
 }
 
-// study_sessions: client 採番、 §14.3a 準拠。
-// updated_at は §13.14 全テーブル更新基準に従い保持 (server upsert 判定 hook)。
-export type ClientStudySession = {
-  session_id: string
-  exam_id?: string
-  mode: 'smart' | 'custom'
-  card_ids: string[]
-  query?: Record<string, unknown>
-  started_at: string
-  completed_at?: string | null
-  status: 'active' | 'completed' | 'abandoned'
-  updated_at: string
-  sync_status: SyncStatus
-}
-
-// answer_events: §14.4 準拠。 local_id は Dexie auto-increment、 event_id は冪等化キー。
-// rating は FSRS モードで user が選んだ 1-4 を保持し、 bulk payload に含めて server に
-// 届けるための optional 列 (Dexie schema の index 列ではない、 保存のみ)。
+// answer_events: FSRS 整合 Sprint A の新 wire (spec §1.1 / §4.1)。 local_id は Dexie
+// auto-increment、 event_id は冪等化キー。
+// - user_id: flush の owner-scope 選別 ([user_id+sync_status]) と、 synced / failed 化を
+//   閉じた scope に限定するための列 (アカウント切替中の応答が別 user に作用しない)。
+// - session_id: event ごとの label (server 側に親表はない)。
+// - rating: scheduling の唯一の入力ゆえ必須 (旧 optional + server derive は廃止)。
+// - last_attempted_at は 24h drop 撤去に伴い削除 (読み手なし)。
 export type ClientAnswerEvent = {
   local_id?: number
   event_id: string
+  user_id: string
   session_id: string
   card_id: string
   selected_answer_ids: string[]
   is_correct: boolean
+  rating: 1 | 2 | 3 | 4
   answered_at: string
   elapsed_ms?: number
-  rating?: 1 | 2 | 3 | 4
   sync_status: SyncStatus
-  last_attempted_at?: string | null
 }
 
 // entity_mutations (S-sync-1 で旧 card_mutations を汎用化): mutation-driven push の
@@ -251,7 +239,6 @@ export class ClientDb extends Dexie {
   exams!: Table<ClientExam, string>
   cards!: Table<ClientCard, string>
   user_settings!: Table<ClientUserSettings, string>
-  study_sessions!: Table<ClientStudySession, string>
   answer_events!: Table<ClientAnswerEvent, number>
   // S-sync-1: 旧 `card_mutations` を `entity_mutations` に汎用化。 entity_type +
   // entity_id の複合 index で entity-scoped coalesce 検索を高速化する余地を持つ
@@ -356,6 +343,24 @@ export class ClientDb extends Dexie {
     this.version(8).stores({
       media_assets: 'id, user_id, [user_id+hash], status',
       media_download_jobs: '[user_id+exam_id], user_id, status',
+    })
+    // v9 (FSRS 整合 Sprint A): study_sessions 廃止 + 旧 wire の answer_events 破棄。
+    // 旧 store には rating 欠落 / user_id 不在の pending 行が残りうるため、 index 変更
+    // (= 行を保持する ALTER) ではなく store ごと drop して持ち越しを構造的に断つ
+    // (v3 の `card_mutations: null` と同形)。 ユーザー 0 につき許容 (spec §10)。
+    this.version(9).stores({
+      study_sessions: null,
+      answer_events: null,
+    })
+    // v10: answer_events を新 schema で再作成 (空 store で start)。 Dexie は 1 つの
+    // version 内で同名 store の drop + create を表現できない (stores() は table 名を
+    // キーに持つ 1 object) ため、 drop (v9) と create (v10) を 2 version に分ける。
+    // index:
+    //   - &event_id: 冪等キーの一意性を store 側で強制 (同 event の二重 add を弾く)
+    //   - [user_id+sync_status]: flush の owner-scope 選別と件数 count (等値 2 列)
+    // card_id / session_id / 単独 sync_status の index は読み手が居ないため持たない。
+    this.version(10).stores({
+      answer_events: '++local_id, &event_id, [user_id+sync_status]',
     })
   }
 }

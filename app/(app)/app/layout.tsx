@@ -61,8 +61,8 @@ export default async function AppLayout({
         <PullTrigger />
         {/* 演習 push の保全 trigger。 演習画面を離れた後の未送信 pending を mount /
             フォーカス復帰 / 再接続時に回復 flush する (Web Locks 多タブ排他 + transient
-            backoff retry + 24h drop は controller 側)。 UI なし、 失敗 silent。 */}
-        <ReviewFlushTrigger />
+            backoff retry は controller 側)。 UI なし、 失敗 silent。 */}
+        <ReviewFlushTrigger userId={user.id} />
         {/* entity-mutation push の保全 trigger (S-sync-1 で旧 card-mutation-flush-trigger を
             汎用化、 配線は不変)。 inline 編集後の未送信 pending を mount / フォーカス復帰 /
             再接続 / pagehide 時に回復 flush する。 ReviewFlushTrigger と同 controller
