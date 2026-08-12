@@ -9,7 +9,7 @@ RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復�
 - Next.js 16.x(App Router)/ TypeScript strict / Tailwind v4 / pnpm(packageManager field が SSoT)
 - PostgreSQL(Supabase)+ Drizzle / Dexie(client mirror + entity_mutations outbox)
 - Clerk(認証)/ Stripe(決済)/ Gemini 2.5 Flash(@google/genai)
-- Vercel(hnd1 / Function timeout 900s)/ Node 24
+- Vercel(hnd1 / Function 上限は **route segment config が dashboard 値を上書き** — 単一値の断定をせず各 route の現物を見る。例: `/app/upload` = `page.tsx` の `maxDuration = 720`)/ Node 24
 - 新ライブラリ導入は事前相談。API 仕様は Context7 MCP で裏取り、**最新 patch 版の判定は registry 直叩きが正**(Context7 は patch に遅れる)
 
 ## Stripe(絶対)
