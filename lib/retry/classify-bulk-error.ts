@@ -46,6 +46,21 @@ const TRANSIENT_POSTGRESJS_CONN_CODES: ReadonlySet<string> = new Set([
   'CONNECTION_ENDED',
 ])
 
+// PostgreSQL SQLSTATE のうち permanent-4xx 扱いにする集合 (spec §2、 OT 裁定確定)。
+// 判定原理: 「同一 payload の再送が現 schema 契約の下で決して成功しない」かつ
+// 「payload の形だけから決定的に失敗する」code のみ。 共有 zod を通過した payload が
+// これらの DB 制約で落ちる = client/server 契約 drift バグの signal。
+// 42xxx (undefined_table 等の server/deploy 欠陥) や 23503/23505 (DB 状態依存) は
+// 意図的に含めない — retry で解消しうるため transient のまま倒す (spec §2 参照)。
+// 列の育て方は本 file 冒頭 comment (`:14-18`) の方針と同じ (production log 観測で追加)。
+const PERMANENT_PG_CODES: ReadonlySet<string> = new Set([
+  '23514', // check_violation
+  '23502', // not_null_violation
+  '22P02', // invalid_text_representation
+  '22001', // string_data_right_truncation
+  '22003', // numeric_value_out_of_range
+])
+
 // 戻り値型。 caller (bulk route) は `transient` → 503 + Retry-After、 `permanent-4xx` →
 // 400 系維持、 `permanent-other` → 503 default (= unknown DB error は silent lost write
 // 回避のため transient に倒す、 spec §1.1 目的 3)。 公衆 contract としては
@@ -67,13 +82,15 @@ function classifyChain(err: unknown, depth = 0): BulkErrorClass {
     return classifyChain(err.cause, depth + 1)
   }
 
-  // 3. 自身 / cause 上の `.code` で transient PG / postgres-js conn code を判定。
+  // 3. 自身 / cause 上の `.code` で transient PG / postgres-js conn code / permanent PG
+  //    code を判定 (両 code 集合は互いに素なので判定順は挙動に影響しない)。
   if (err !== null && typeof err === 'object') {
     const o = err as Record<string, unknown>
     const code = typeof o['code'] === 'string' ? (o['code'] as string) : null
     if (code) {
       if (TRANSIENT_PG_CODES.has(code)) return 'transient'
       if (TRANSIENT_POSTGRESJS_CONN_CODES.has(code)) return 'transient'
+      if (PERMANENT_PG_CODES.has(code)) return 'permanent-4xx'
     }
     // 4. cause 上に native PG error が居る場合 (Drizzle 以外の wrap でも整合する) を辿る。
     if (o['cause'] !== undefined && o['cause'] !== null) {

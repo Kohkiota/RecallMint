@@ -1052,6 +1052,44 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(body.error).toBe('transient_unavailable')
   })
 
+  it('spec §2: envelope-level で permanent PG code (23502 not_null_violation) → 400 invalid_payload', async () => {
+    // classifyBulkError の PERMANENT_PG_CODES 追加で到達可能になった分岐 (spec §2)。
+    // envelope-level の DB throw が契約 drift 由来の permanent-4xx として分類された場合、
+    // 400 + Retry-After 無しで返す (client の自動 backoff retry を止める)。
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const pgErr = new Error('null value in column violates not-null constraint')
+    ;(pgErr as Error & { code: string }).code = '23502'
+    state.getDbError = pgErr
+
+    const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
+    expect(res.status).toBe(400)
+    expect(res.headers.get('Retry-After')).toBeNull()
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('invalid_payload')
+  })
+
+  it('spec §2: envelope-level で 42xxx (undefined_table、server/deploy 欠陥) は transient のまま → 503', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const pgErr = new Error('relation "x" does not exist')
+    ;(pgErr as Error & { code: string }).code = '42P01'
+    state.getDbError = pgErr
+
+    const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+  })
+
+  it('spec §2: envelope-level で 23505 (unique_violation、DB 状態依存) は transient のまま → 503', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const pgErr = new Error('duplicate key value violates unique constraint')
+    ;(pgErr as Error & { code: string }).code = '23505'
+    state.getDbError = pgErr
+
+    const res = await POST(makeReq({ mutations: [makeUpdateFieldMutation()] }))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+  })
+
   it('T-A1: 明示 permanent 4xx (zod validation failure) は 既存挙動 (400 系) を維持', async () => {
     // T-A1 (OT 裁定 2026-06-12): zod 等の明示 4xx は default transient 対象外。
     // 400 が既存挙動として維持されることを assert (envelope catch 経由ではなく

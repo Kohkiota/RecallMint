@@ -787,6 +787,35 @@ describe('tx throw の分類', () => {
     expect(await res.json()).toEqual({ error: 'invalid_payload' })
   })
 
+  it('permanent-4xx PG code (23502 not_null_violation) → 400 (spec §2、契約 drift 由来)', async () => {
+    state.txShouldThrow = true
+    state.txError = Object.assign(new Error('null value in column violates not-null constraint'), {
+      code: '23502',
+    })
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(400)
+    expect(res.headers.get('Retry-After')).toBeNull()
+    expect(await res.json()).toEqual({ error: 'invalid_payload' })
+  })
+
+  it('42xxx (undefined_table、server/deploy 欠陥) は transient のまま → 503 (spec §2、client 責任に転嫁しない)', async () => {
+    state.txShouldThrow = true
+    state.txError = Object.assign(new Error('relation "x" does not exist'), { code: '42P01' })
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+  })
+
+  it('23505 (unique_violation、DB 状態依存) は transient のまま → 503', async () => {
+    state.txShouldThrow = true
+    state.txError = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+    })
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+  })
+
   it('cards UPDATE の RETURNING 件数 mismatch → throw → 503 (rollback)', async () => {
     state.bulkUpdateReturnOverride = []
     const res = await POST(makeReq(makeValidPayload()))

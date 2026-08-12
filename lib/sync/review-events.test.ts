@@ -437,6 +437,26 @@ describe('flushPendingAnswerEvents — httpStatus (retry 分類用)', () => {
     expect(result.httpStatus).toBe(429)
     expect(await countPendingAnswerEvents(USER_A)).toBe(1)
   })
+
+  it('4xx (400、契約 drift 由来の permanent-4xx) も 503 と同じく chunk 中断・pending 残置 (spec §2 既知例外)', async () => {
+    // classify-bulk-error.ts の PERMANENT_PG_CODES 追加で server 側は 400 を返す
+    // ようになったが、 client 側の受け手 (この chunk-abort 分岐) は response.ok の
+    // 真偽だけで判定するため挙動は不変 — server 修正後の自然 trigger 再送に賭けて
+    // pending 残置する既存挙動をこの status 値で pin する。
+    const e1 = await recordAnswerEvent(makeInput())
+    const result = await flushPendingAnswerEvents(
+      USER_A,
+      makeMockClient({ ok: false, status: 400, body: null }),
+    )
+    expect(result.httpStatus).toBe(400)
+    expect(result.reachable).toBe(true)
+    expect(result.syncedEventIds).toEqual([])
+    expect(await countPendingAnswerEvents(USER_A)).toBe(1)
+    const row = await getClientDb().answer_events.where('event_id').equals(e1.event_id).first()
+    // synced/failed どちらにも terminal 化されず pending のまま (outbox 削除相当の
+    // silent lost write を作らない)。
+    expect(row!.sync_status).toBe('pending')
+  })
 })
 
 describe('flushPendingAnswerEvents — in-flight guard', () => {
