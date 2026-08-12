@@ -184,7 +184,10 @@ answer_events_user_id_users_id_fk       | FOREIGN KEY (user_id) REFERENCES users
 
 同 file は `pg_constraint` の取得を `contype IN ('p','f','c')` で絞ってある(PG18 が NOT NULL を `contype='n'` で記録しても偽 red にならないようにするため)が、**定義文書式の変化はこの絞りでは防げない**。`rls-drift.test.ts` の `TENANT_PRED` 等の正規化述語 pin も同じ性質を持つ(既知)。
 
-## 9. gate(T7 実走・2026-08-12)
+## 9. gate(T7 実走・2026-08-12。**最終 HEAD `5e22faf` で全項目を再実走し同結果を確認済**)
+
+> 下表は T7(`feb2d0c`)時点の実走。その後の最終 fix wave(`5e22faf`・comment/doc のみ)後に **controller が全 gate を再実走**し、すべて同じ結果(lint / typecheck / audit / frozen-lockfile 各 exit 0、unit 278 files 4733 passed、iso 32 files 351 passed、build exit 0)であることを確認した。したがって本表は最終 HEAD の実態と一致する。
+
 
 | gate | 結果 |
 |---|---|
