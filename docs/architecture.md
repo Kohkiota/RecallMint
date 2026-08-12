@@ -14,10 +14,12 @@
 
 | 不変条件 / 決定 | 理由 | 証明 or 決定日 | 正本 |
 |---|---|---|---|
-| IDB = クライアント正本(mirror)。server 反映は 3 系統(entity_mutations outbox = card/tag / review-events bulk / server action = exam・settings・upload)| local-first・offline 編集 | 証明: sync unit + `tests/contract/*bulk*` | `lib/sync/` / `lib/client-db.ts` |
+| IDB = クライアント正本(mirror)。server 反映は 3 系統(entity_mutations outbox = card/tag / review-events bulk = 演習回答 / server action = exam・settings・upload)| local-first・offline 編集 | 証明: sync unit + `tests/contract/*bulk*` | `lib/sync/` / `lib/client-db.ts` |
 | pull は id-upsert のみ(`clear()` しない)。mirror 削除の唯一経路 = tombstone bulkDelete | 削除の決定性・部分 pull 安全 | 証明: `lib/sync/pull.test.ts` | `lib/sync/pull.ts` |
 | pull = 1 GET・6 stream・cursor は inclusive(`gte`)| 増分整合・取りこぼし防止 | 証明: `tests/contract/pull.contract.test.ts` / `lib/db/pull-delta.test.ts` | `app/api/pull/route.ts` |
 | entity-mutation flush = 全 pending 1 bulk POST(上限あり)。多重送信防止 3 重(mutation_id UNIQUE + in-flight set + Web Locks)| transport 単純化・冪等・多タブ安全 | 証明: `tests/contract/entity-mutations-bulk.contract.test.ts` | `lib/sync/entity-mutations.ts` / `app/api/entity-mutations/bulk/route.ts` |
+| **review-events flush = 自 user の pending を `{ events: [] }` の 1 POST に一本化(session オブジェクトなし・session 単位並列なし)。server は単一 tx で受け、同一 card への FSRS 適用を行ロックで直列化し、時系列を逆行する event を隔離する(applied=false)** | 並列送信を client が調停する形をやめ、順序と直列化の責務を server 1 点に集約する。復習の正本は `answer_events` 1 表 | 証明: `tests/contract/review-events-bulk.contract.test.ts` / `tests/integration/pg/answer-events-serialization.test.ts`。決定 2026-08-11 | `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` / `lib/reviews/ingest-review-events.ts` |
+| **pending answer_event の終端は synced(200 受理)か failed(送信前検証の形式不正 / 応答 `failed[]` の衝突)の 2 つだけ。時間ベースの drop は無い** | 「分類は permanent・挙動は無限再送」の不整合と、24h 経過で回答を捨てる silent なデータ喪失を同時に断つ。残る pending が transient のみになるため、再送し続けてよい | 証明: `lib/sync/review-events.test.ts` / `lib/sync/review-flush.test.ts`。決定 2026-08-11 | 同 spec §3 / `lib/sync/review-events.ts` |
 | **競合解決 = server 権威 reconcile-on-pull(cross-device merge なし)** | 実装 = client optimistic + silent catch → 次 pull が server 値で mirror を上書き。cross-device 同時編集は「最後に server apply された field 値が勝ち pull で全端末伝播」。**理由 = 今回明文化**: local-first で複数端末衝突の調停を単純化するため server を唯一の権威に固定する(ローカル FSRS 化を「複数端末衝突を新規に抱える」ゆえ廃案にしたのと同じ判断)。**決定日 = 2026-07-26** | 決定(2026-07-26 明文化)| `lib/sync/optimistic-mutation.ts` |
 | **書込経路の非対称(card/tag = outbox / exam・review・settings = 別経路)** | 実装 = 3 系統併存(現物確認済)。**理由 = 理由未確定(2026-07-26 時点)**: 「なぜ exam を outbox に通さないか」を横断決定した記録は無く、各 sprint で個別に決まった。今後 exam を local-first 化する際に要決定 | 決定(理由未確定・2026-07-26)| `lib/sync/` / `app/(app)/app/exams/_actions/` |
 | client/server 共有 invariant は pure 関数 1 定義を両側 import(二重実装しない)| drift 防止 | 決定 + lint(harness Domain purity)| `CLAUDE.md`「設計方針(DDD)」 |
@@ -34,7 +36,8 @@
 ### cascade の用語分離(同語で 2 つの別物)
 
 台帳では別語で書く:
-- **DB の FK cascade**(server 行削除の correctness): 退会時 Group II(cards/source_documents/reviews/answer_events/tag_options/card_tags)は exams・tag_categories の明示 DELETE に FK cascade で連鎖。**load-bearing に依存**。正本 = `lib/db/schema.ts`(`onDelete: 'cascade'`)。
+- **DB の FK cascade**(server 行削除の correctness): 退会時 Group II(cards/source_documents/tag_options/card_tags)は exams・tag_categories の明示 DELETE に FK cascade で連鎖。**load-bearing に依存**。正本 = `lib/db/schema.ts`(`onDelete: 'cascade'`)。
+- **`answer_events` は Group II から外れた(2026-08-11・FSRS 整合 Sprint A)**: `card_id` の FK を撤去し、**dangling(参照先 card が存在しない)を正規状態**とした。理由 = **学習履歴は card ではなく user に帰属する** — card / exam を消しても「いつ何に答えたか」は本人の学習実績として残るべきで、card CASCADE はそれを card の寿命に従属させていた(card 削除で `study_days.distinct_card_count` だけが縮む自己矛盾も同源)。**従来の cascade 設計を意図的に override した唯一の表**。帰結として退会時の実削除は FK に任せられず **Group I(handler 明示 DELETE)へ移動**(§4)。`reviews` は表ごと廃止。証明 = `tests/integration/pg/rls-cascade.test.ts`(card 削除で answer_events が**消えない**ことの反転 pin)。正本 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` §1.1 / §8。
 - **client の cascade purge**(hygiene・tags 系由来): tag option/category 削除時に子 card_tags を Dexie mirror から optimistic purge。正本 = `app/(app)/app/tags/_components/{option-list,category-list}.tsx`。
 - **1 行で二層を明示**: **client への削除伝播は FK cascade が担わない(担うのは tombstone)** — cascade で消えた行は SELECT 増分に出ないため(`lib/db/schema.ts` の FK cascade は server 行のみ・`lib/sync/pull.ts` の tombstone bulkDelete が client 伝播)。
 
@@ -56,7 +59,7 @@
 | 不変条件 / 決定 | 理由 | 証明 or 決定日 | 正本 |
 |---|---|---|---|
 | 退会 = users soft-delete(deleted_at + email/clerk_id scrub・stripe_customer_id 保持)+ Group I 明示 DELETE + assets soft-delete(deleting)| GDPR PII 消去 + audit 相関保持 | 証明: `webhook-clerk.contract` + route invariant + iso GDPR | `lib/clerk/handle-clerk-event.ts` |
-| 削除表分類: Group I(handler 明示 DELETE)/ Group II(FK cascade)| 明示 vs cascade の境界(§2 cascade 用語分離参照)| 証明: route invariant test(Group I 集合一致)| `lib/clerk/handle-clerk-event.ts` |
+| 削除表分類: Group I(handler 明示 DELETE)/ Group II(FK cascade)。**`answer_events` は Group I**(2026-08-11 移動) | 明示 vs cascade の境界(§2 cascade 用語分離参照)。answer_events が Group I なのは、card FK 撤去で cascade 元が無く、users FK の CASCADE も退会が soft-delete なので発火しないため — **明示 DELETE が唯一の消去経路**であり、抜けると PII 相当の学習履歴が残置する | 証明: route invariant test(Group I 集合一致)| `lib/clerk/handle-clerk-event.ts` |
 | **匿名 contact_messages(user_id null)は退会 scrub の対象外** | scrub が `WHERE user_id` で引くため構造的に当たらない。非会員からの削除要求は稀であり、手動 1 行 DELETE で適法に対応できると判断(受付窓口はプライバシーポリシーに明記して担保)| 決定 2026-07-22 / 明文化 2026-07-26 | `lib/clerk/handle-clerk-event.ts` |
 
 ## 5. レンダリング / Next
@@ -96,6 +99,8 @@
 | 薄い DDD: domain=pure / repository・apply=書込 / usecase・action・handler=orchestration / infra=I/O | 不変条件が実在するから(YAGNI と両立)| 決定 + lint(harness Domain purity)| `docs/plans/2026-07-08-full-ddd-intent-and-factfinding.md` / `CLAUDE.md`「設計方針(DDD)」 |
 | client は repository を持たない(pure fn + `runOptimistic*`)| local-first 優先 | 決定 | `CLAUDE.md`「設計方針(DDD)」 |
 | **同一の業務不変条件を複数経路で強制する場合、同一の executable contract(schema・純関数・共有定数)を再利用する。表現や信頼境界が異なる場合は別 schema を許容するが、変換後の共通契約を定義し、部分的な再実装で模倣しない** | 契約の部分模倣は列挙漏れが構造的に残り silent drift を生む(本 sprint で 3 回: UUIDv5 判定 / handleImages の refs 射影 / ②-4a prepared card 検証)| 決定 2026-07-31 | 本表 + `docs/superpowers/specs/2026-07-30-ocr-2-4a-image-figure-crop-design.md` §5.4 |
+| **複数行ロックの取得順は全 tx 共通で `cards`(ID 昇順)→ `study_days`(day 昇順)** | ロック順序を tx ごとに決めると deadlock が出る。復習 ingest は「同一 card の直列化」と「同一 day の cross-card 直列化」の 2 種を同一 tx で取るため、順序を規約として固定した(`publish-prepared.ts` の ID 昇順規律と同型)。**新たに複数行ロックを取る tx はこの順序に従う**| 証明: `app/api/review-events/bulk/route.test.ts`(取得 sequence pin)+ `tests/integration/pg/answer-events-serialization.test.ts`(実 PG 2 接続)。決定 2026-08-11 | `lib/reviews/session-repository.ts` / 同 spec §5 |
+| **正誤は 2 本立て — 統計・フィルタ = `is_correct`(選択肢一致)/ scheduling = `rating`(1-4)** | 1 列で兼ねると「正解だが Hard」「不正解だが自己申告 Good」のどちらかを必ず歪める。両方を event に保存し読み手ごとに使い分ける(`rating>=2` を正解の代用にしない)| 証明: `lib/cards/replay-card.test.ts` + iso の study_days 集計 pin(2 定義が発散する event で判別)。決定 2026-08-11 | 同 spec §6 |
 
 ## 9. 運用境界
 
@@ -173,7 +178,9 @@ R2 の object は **`src/`(source PDF)と 画像 asset の 2 レーン**に属�
 |---|---|
 | **exam+子 card tombstone の end-to-end 多デバイス伝播**(§2)| 重。欠くと子 card が他端末に永久残留。server 側 tombstone INSERT は unit で守るが多デバイス伝播は自動 test の射程外。**手当て = OT の実機 2 端末 smoke(PC で試験作成→削除→モバイルで消失確認)で担保予定**(実端末 2 台の IDB 状態が要るため自動 test 射程外)。背景 = `docs/audit/2026-07-24-deleted-exam-mobile-residue-factfinding.md` |
 | **cross-device 競合の収束**(§1 A5)| 中。単一 client の optimistic/rollback は unit あり・multi-device 収束 test なし |
-| **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い |
+| **cascade 依存(Group II)**(§2/§4)| 中。FK を `SET NULL` 等に変えると退会削除が漏れうる。route invariant test は Group I 集合を守るが Group II cascade 経路自体は薄い。**2026-08-11 に `answer_events` が Group II を抜けた**ため空白の射程は cards/source_documents/tag_options/card_tags に縮んだ(answer_events 側は逆に「card 削除で消えないこと」を `rls-cascade.test.ts` が pin する)|
+| **同一 card への並走 flush の lost update / 時系列を逆行する event の適用**(§1)| 重。欠くと復習回数と FSRS 状態が黙って失われる(lost update)か、遅着した古い event が最新状態を巻き戻す。どちらも silent で、利用者からは「復習したのに反映されない」としか見えない。**手当て = 2026-08-11「FSRS 整合 Sprint A」で埋めた** — `tests/integration/pg/answer-events-serialization.test.ts` が実 PG・同一 user の 2 接続同時実行で、直列化(`cards.reps` が両方分進む)・順序ガード 5 形・study_days の cross-card 競合を pin し、`cards` / `study_days` の `FOR UPDATE` を**個別に**外す変異で各 pin が単独 red になることを実証済み(**変異注入位置は repo に残らないため再現手順は `docs/superpowers/sessions/2026-08-12-fsrs-consistency-sprint-a.md` §6.2 が唯一の記録**)。**残る空白** = 3 接続以上 / 同時刻 cross-request の適用順(spec §2.4 が明示的に非決定と受容)/ stg 実機での並走 smoke |
+| **Dexie v8 → v10 の実 IndexedDB upgrade path**(§1)| 重(**新規・2026-08-11**)。`answer_events` store の破棄(v9)→ 再作成(v10)は自動 test で一度も実行されていない — unit は `fake-indexeddb` で毎回空の DB を新規作成するため、**既存 DB に対する upgrade は構造的に走らない**。失敗すると `getClientDb().open()` が reject し local-first 機能が全停止する(blast radius = 演習・カード編集・pull の全部)。**手当て = stg smoke の必須項目**(v8 世代の IDB を持つ実ブラウザで `/app` を開き `db.verno === 10` と `answer_events` の新 schema・0 件を確認 — `docs/ops/fsrs-sprint-a-stg-migration-runbook.md` §4.1)。自動化されていない |
 | **webhook 順序非保証の全パターン**(§7)| 中(決済)。clear site 複数で吸収する設計だが全到達順の網羅 test なし(Test Clock 手動 smoke が補完)|
 | **破壊 script の機械境界**(§9)| 中(運用)。env 目視 + dry-run の人手境界のみ・機械停止層なし |
 | **upload pipeline の「発火しない系」機構の実機発火(予期しない throw の integration_failures 台帳書込 / EXIF≠1 検知)**(§6/§10)| 中。どちらも UI から誘発できない(前者は正常経路に throw が無く、後者は client の canvas 再エンコードが EXIF を剥がす)ため、iso の注入 test(throw 注入 / 実 EXIF JPEG)が唯一の証明。client を経由しない投入経路(②-4b の PDF / API 直叩き)が現れた時に実機発火の確認を足す |

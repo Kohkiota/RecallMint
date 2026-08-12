@@ -241,6 +241,20 @@ brief 当初は contact_messages を「REVOKE SELECT+UPDATE」と指定してい
 
 **qual/with_check の正規化テキスト扱い**: PostgreSQL は policy 式を正規化して pg_policies に格納する(`user_id = (SELECT public.app_current_user_id())` → `(user_id = ( SELECT app_current_user_id() AS app_current_user_id))`)。期待値は DB が返す正規化形をそのまま定数(`TENANT_PRED` / `USERS_ID_PRED` / `USERS_LIVE_PRED`)に pin する(PG17 実測)。共通形 17 表は同一 `TENANT_PRED` を共有、users 3 policy は `deleted_at IS NULL` 連言込みで個別 pin。
 
+---
+
+# 追随記録: FSRS 整合 Sprint A(2026-08-11)— `reviews` / `study_sessions` の消滅と `answer_events` 再定義
+
+**本 doc の位置づけは変えない**(RLS テナント隔離の棚卸しに特化・iso 全 file の一覧ではない)。同 sprint で新設した `answer_events-serialization.test.ts` は主題が**直列化と順序**であり隔離ではないため上表群には追加しない。ただし同 file が RLS 面で持つ pin(下記 3)だけはここから辿れるようにする。
+
+migration 0035 で `reviews` / `study_sessions` を DROP、`answer_events` を DROP/CREATE(PK=`event_id` / `card_id` に FK なし / `rating`・`applied`・`created_at` 追加 / `sync_status` 廃止)。正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`。上表群は**歴史記述として残し**、差分だけをここに書く(過去 wave の監査証跡を書き換えないため)。
+
+1. **経路分類表 #6(review events / FSRS)**: 代表関数 `processSession` / `upsertSessionGuarded` は消滅。後継は `processAnswerEvents`(`lib/reviews/ingest-review-events.ts`・単一 `withTenantTx`)。分類は **IN のまま**(全 repo call が auth 由来 `user.id`・client 供給は row ID のみ)。`upsertSessionGuarded` が担っていた「client 供給 session_id の cross-tenant 封鎖」は**表ごと消えたため不要**になり、代わりに `event_id` 衝突時の**所有権検証**(既存行の `user_id` が自分でなければ `failed[]`・行不変)が同じ trust-boundary を担う。
+2. **表 2 の `study_days | write(UPSERT)`**: 加算 UPSERT ではなく、対象 day 行を **day 昇順で `FOR UPDATE`** した後の**絶対値再集計**(VALUES CTE)。app WHERE の `eq(userId)` と `study_days_tenant` policy の二重防御は不変。
+3. **表 3(Wave 1)の `reviews` 行は消滅 / `answer_events` 行は差し替え**: 主 write 経路 = 上記 ingest tx(`ON CONFLICT (event_id) DO NOTHING` + `UPDATE … SET applied`)、**主 read 経路が新設**(所有権検証の own-scope SELECT + study_days 再集計の JOIN 元)。`rls-wave1.test.ts` の read/write/loud pin は `event_id` PK 基準へ改稿済み。加えて `answer-events-serialization.test.ts` の **schema contract readback** が RLS 有効・policy 1 本(`answer_events_tenant` / cmd=ALL / roles=`{recallmint_app}`)・grant 4 件ちょうどを実 PG から pin する — **表を DROP/CREATE すると policy と grant が同時に落ちる**ため、その事故の恒久検出がこの pin の目的。
+4. **表 4(Wave 2)の `study_sessions` 行は消滅**: `db/policies/rls-p3-wave2-{enable,disable}.sql` から block を削除(Wave 2 は 5 表 → 4 表)、`rls-p3-wave1-{enable,disable}.sql` から `reviews` を削除(Wave 1 は 8 表 → 7 表)。`scripts/verify-rls-state.ts` の期待カタログは **RLS 対象 20 表 → 18 表 / policy 22 → 20**。
+5. **drift test の期待カタログ**(`rls-drift.test.ts` #1 の「RLS 18 表 / 非 RLS 5 表 / policy 20 件」)も上記に追随済み。**stg/prod は migration 適用で policy/grant が落ちるため、`migrate → grants → wave1-enable → verify-rls-state` を同一メンテ窓で連続実行**すること(runbook = `docs/ops/fsrs-sprint-a-stg-migration-runbook.md`)。
+
 **期待カタログを db/policies から生成せず hardcode する意図**(Codex#4.3): SQL と test が同一 SSoT を読むと「両方同時にズレる」盲点が生じる。fixture-completeness の三者一致と同思想で、独立した第二の記述(test file の期待カタログ)を照合軸にする。二重管理の drift は review 規約で守る。
 
 ## RED 検証(保証増・代表 mutation 3 種)

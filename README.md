@@ -65,7 +65,7 @@ lib/
 | サーバー専用コードのブラウザ混入 | `import 'server-only'`(17 file)+ build | build |
 | Dexie をサーバーで呼ぶ | `getClientDb()` の実行時 throw | runtime |
 | 層の向き(domain→app 等) | ESLint import 境界ルール(Block A/B/C・`error`)+ lefthook pre-commit | commit |
-| 契約(API 形状・error code・文言等)の不変 | contract golden test 77(snapshot 固定) | test |
+| 契約(API 形状・error code・文言等)の不変 | contract golden test 70(snapshot 固定) | test |
 
 DDD リファクタ(P0〜P4)で import 境界の allowlist は **0 件化**済み。
 
@@ -77,14 +77,15 @@ DDD リファクタ(P0〜P4)で import 境界の allowlist は **0 件化**済�
 
 ### 2.4 データモデル(主なテーブル)
 
-- **ドメイン**: `exams` / `cards` / `tag_categories` / `tag_options` / `card_tags` / `source_documents` / `upload_records` / `study_sessions` / `answer_events` / `reviews` / `study_days` / `tombstones` / `entity_mutations`
+- **ドメイン**: `exams` / `cards` / `tag_categories` / `tag_options` / `card_tags` / `source_documents` / `upload_records` / `answer_events` / `study_days` / `tombstones` / `entity_mutations`
+  - 復習ドメインの正本は `answer_events` 1 表(2026-08-11)。`reviews` / `study_sessions` は廃止済み。`study_days` は `answer_events` からの絶対値再集計で、`answer_events.card_id` は FK を持たない(学習履歴は card でなく user に帰属する)
 - **認証・課金・運用**: `users` / `user_settings` / `ai_usage` / `ai_usage_users` / `clerk_events` / `stripe_events` / `deletion_failures` / `contact_messages`
 
 ```mermaid
 erDiagram
     users ||--o{ exams : "user_id (uuid)"
     users ||--o{ cards : "user_id (uuid)"
-    users ||--o{ reviews : "user_id (uuid)"
+    users ||--o{ answer_events : "user_id (uuid)"
     users {
         uuid id PK "internal identity (provider-agnostic)"
         text clerk_id UK "Clerk connector"

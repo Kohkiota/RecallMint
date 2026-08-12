@@ -278,6 +278,8 @@ functions のみ prod にも適用)。
 
 ## 10. RLS-P3 Wave 1 追記(stg 適用・8 表追加・stg 限定)
 
+> **追随(2026-08-11「FSRS 整合 Sprint A」)**: `reviews` は表ごと DROP され、**Wave 1 は 8 表 → 7 表**(`db/policies/rls-p3-wave1-{enable,disable}.sql` は更新済)。以下の「8 表 / 8 policy」は当時の記述。加えて `answer_events` は同 sprint で **DROP/CREATE** されたため、migration 適用後は **policy と grant が同時に落ちる** — 適用手順は `docs/ops/fsrs-sprint-a-stg-migration-runbook.md` が正。
+
 RLS-P3 Wave 1 は配線ゼロ 8 表(`reviews`/`answer_events`/`tag_categories`/`tag_options`/`card_tags`/`entity_mutations`/`card_asset_refs`/`ai_usage_users`)を **P2 と同一の共通形 policy** で RLS 化する。stg 適用は本 runbook §1 Step 3 と**同機構**(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
 
 - **前提**: 0025 functions は P2 で適用済(Wave 1 は**新 function なし**・policy SQL のみ)。よって Step 1(functions)は不要、push→deploy 後に policy を適用するだけ。
@@ -410,12 +412,12 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 
 | 表 | policyname | roles | cmd | permissive | qual | with_check |
 |---|---|---|---|---|---|---|
-| 共通形 19 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
+| 共通形 17 表※ | `<表>_tenant` | `{recallmint_app}` | ALL | PERMISSIVE | `TENANT_PRED` | `TENANT_PRED` |
 | users | `users_select` | `{recallmint_app}` | SELECT | PERMISSIVE | `USERS_LIVE_PRED` | (空) |
 | users | `users_insert` | `{recallmint_app}` | INSERT | PERMISSIVE | (空) | `USERS_ID_PRED` |
 | users | `users_update` | `{recallmint_app}` | UPDATE | PERMISSIVE | `USERS_LIVE_PRED` | `USERS_ID_PRED` |
 
-※ 共通形 19 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `reviews` / `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `study_sessions` / `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。正本は `scripts/verify-rls-state.ts` の `COMMON_FORM_RLS_TABLES`(本表はその写し — 食い違ったら script 側が正)。
+※ 共通形 17 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。正本は `scripts/verify-rls-state.ts` の `COMMON_FORM_RLS_TABLES`(本表はその写し — 食い違ったら script 側が正)。**2026-08-11「FSRS 整合 Sprint A」で `reviews`(Wave1)/ `study_sessions`(Wave2)が表ごと DROP され 19 → 17 表**(RLS 対象 = 17 + users = 18 表 / policy = 17 + users 3 = 20 件)。**prod は本 sprint の migration 未適用**のため、prod へ本 script を向けると当面この 2 表が「カタログ外の表が RLS on」として finding に出るのが正常。
 
 **users に DELETE policy が無いこと**(FOR ALL も FOR DELETE も不在 = app-role の users hard delete を構造的 deny)を (B) の users 行が 3 件(select/insert/update)ちょうどであることで確認する。**非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)は (B) に 1 行も出ないこと(policy ゼロ)+ (A) で relrowsecurity=false。
 

@@ -51,6 +51,8 @@
 
 ### 2.1 設計原則
 
+> **復習ドメインに関する記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): 原則 4 / 9 / 12 / 14 の `reviews` は表ごと廃止され `answer_events` 1 表に統合済み(PK も `id` ではなく `event_id`)。
+
 1. **PK は全テーブル `id` 統一**（`gen_random_uuid()` で生成）
 2. **FK は `<table>_id` 形式**（例: `user_id`, `exam_id`, `card_id`）
 3. **試験ごとに変わるメタデータは freeform jsonb で持つ**（cards.custom_props のみ。 discover mode 一本化により事前定義 schema は不要、 AI が文書から自由なキー名で抽出する。 経緯: `docs/research/ocr-schema-vs-discover.md`）
@@ -67,6 +69,8 @@
 14. **同期非対象**: ai_usage_users / study_days はサーバー側集計テーブル、同期対象外。クライアントから直接書き込まず、サーバー側で reviews 等から再計算する想定
 
 ### 2.2 テーブル一覧
+
+> **本表は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): `reviews` / `study_sessions` は DROP 済み。現行の表構成は `lib/db/schema.ts` が SSoT。
 
 |区分|テーブル名|用途|状態|
 |---|---|---|---|
@@ -153,6 +157,8 @@ mcq-platform での運用:
 - コスト追跡（cost_yen 等）は MVP では持たない（v1.x で必要なら ALTER で追加）
 
 #### 2.3.4 reviews（FSRS 評価履歴）
+
+> **本節は歴史記述・表は廃止済み**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): `reviews` は migration 0035 で DROP され、rating 履歴は `answer_events`(PK=`event_id`・`card_id` は FK なし)に統合された。
 
 ```sql
 CREATE TABLE "reviews" (
@@ -272,6 +278,8 @@ export const exams = pgTable('exams', {
 - 試験名サジェスト候補は `lib/exams/presets.ts` にハードコード（5-10 試験）。 MVP では DB マスタ化しない
 
 #### 2.5.2 cards（メインテーブル）
+
+> **FSRS 列に関する記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): `stability` / `difficulty` は `real` → **`double precision`**、`state` に CHECK(0-3)追加、**FSRS 列の DB default は全撤去**(初期値は `lib/cards/domain/initial-fsrs-state.ts` の pure 関数 1 定義から全 insert 経路が明示 set)。`reviews` の FK CASCADE 記述も表の廃止に伴い無効。
 
 旧 words テーブルを drop して新設。**既存の FSRS カラム命名を維持**:
 
@@ -481,6 +489,8 @@ export const uploadRecords = pgTable('upload_records', {
 
 #### 2.5.4 study_days（学習日カレンダー）
 
+> **書込意味論の記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` §5): 集計元は `reviews` ではなく `answer_events`(applied=true)、加算 UPSERT ではなく**対象 day のみを VALUES CTE で絶対値再集計**、SQL の `AT TIME ZONE 'Asia/Tokyo'` は全廃し JST 境界は `jstDayRange()` が bind する。
+
 ユーザー単位の学習日付ログ。**reviews と独立** で持つことで cards 削除の影響を受けない。
 
 ```typescript
@@ -584,6 +594,8 @@ user_id = ?` 必須) で対応。 RLS 復活は v1.x で再評価 (multi-tenant 
 接続される場面が出てきた時点で検討)。
 
 ### 2.8 インデックス一覧
+
+> **reviews 行は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` §1.1): `reviews` の 2 index は表ごと消滅。後継 `answer_events` の index は **`(user_id, answered_at)` の 1 本のみ**(card_id 系は読み手ゼロにつき意識的に張らない)。
 
 #### 既存
 
@@ -689,6 +701,8 @@ ORDER BY created_at DESC;
 ダウングレード時等で archived_at が立った exam は通常一覧から除外。 「アーカイブ済を表示」 UI を出すかは後 sprint で確定。
 
 ### 2.10 ER 概略
+
+> **本図は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `lib/db/schema.ts`): `reviews` は廃止、後継 `answer_events` は `users` にのみ FK を持ち **`cards` への FK は無い**(dangling が正規状態)。
 
 ```mermaid
 erDiagram
@@ -816,6 +830,8 @@ erDiagram
 
 ### Server Actions（`'use server'`）
 
+> **復習系の記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): `submitReviewTx` / `reviews` INSERT は存在せず、回答の反映は `POST /api/review-events/bulk` の単一 tx(`lib/reviews/ingest-review-events.ts`)に一本化。exam / card 削除は `answer_events` に波及しない。
+
 **試験**:
 
 - `createExam(input)` → `Result<Exam>`
@@ -933,6 +949,8 @@ erDiagram
 ---
 
 ## 4. 主要モジュール構成
+
+> **復習系 module の記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `lib/reviews/`): `db/reviews.ts` / `domain/review.ts`(`submitReviewTx`)は存在せず、現行は `lib/reviews/ingest-review-events.ts`(use-case)+ `session-repository.ts`(書込)+ `domain/session-aggregate.ts`(pure)。
 
 ```
 app/
@@ -1197,6 +1215,8 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 
 ### Logic 3: FSRS 6 スケジューリング（S2.1 確定形 / S2.2 rating mapping 追記）
 
+> **tx 構成の記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` §2): `submitReviewTx` の 1 回答 1 tx ではなく、bulk ingest の**単一 tx 9 手順**(clamp → cards を ID 昇順 FOR UPDATE → event INSERT → 衝突 2 段検証 → 順序ガード fold → cards UPDATE → applied 更新 → study_days 再集計)。`reviews` INSERT は無く、`rating` は client 必須送信(`deriveRating` の fallback は撤去)。
+
 - **入力**: `cardId`, `rating: RatingInt` (1=Again / 2=Hard / 3=Good / 4=Easy)
 - **正解定義 (server 側)**: `rating >= 2`（Anki 互換、`submitReviewTx` 内 study_days /
   cards 列更新に使用、全コードで一貫使用）
@@ -1246,6 +1266,8 @@ Standard / Pro は monthly / yearly の 2 cycle を提供 (yearly は割引付�
 - バリデーション失敗時は行番号 + エラー理由を返却、部分成功（成功した行だけ insert）
 
 ### Logic 6: カード学習統計の同期更新（S2.1 確定形）
+
+> **本節は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md` §5/§6): `submitReviewTx` は存在せず、統計は `answer_events` からの再集計。**正誤は 2 本立て**で、統計・フィルタ(`answered` / `last_correct` / `current_streak` / `correct_count`)は `is_correct`、scheduling のみ `rating` を使う(`rating>=2` を正解の代用にしない)。
 
 review 完了時に `submitReviewTx` 純関数が 1 tx で cards / reviews / study_days を一括更新。
 
@@ -1467,6 +1489,8 @@ AI に「title から sort_key を生成」させる際の正規化ルール（�
 
 ### 13.14 local-first 設計 (Dexie) を MVP に含める
 
+> **`reviews` / `study_sessions` に関する記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`): 「reviews は append-only ゆえ競合不発生」の前提は表の廃止で消え、競合は `answer_events` の `event_id` PK 冪等 + server 側の card 行ロック直列化が担う。`study_sessions` は server / Dexie とも新設されなかった(廃止)。
+
 **決定**: local-first 設計 (Dexie / IndexedDB) は **MVP スコープに含める**。 v1.x 送り
 方針は撤回。 設計詳細は §14 を参照。
 
@@ -1514,6 +1538,8 @@ AI に「title から sort_key を生成」させる際の正規化ルール（�
 > 既存 §9.1 (PWA キャッシュ戦略) / §13.14 (v1.x で local-first 化を検討) / §2.1 設計原則
 > 12-14 (同期準備) と隣接する領域のため、 重複する観点は §14.10 で関係を整理する。
 > **適用スコープ (MVP 採否 / v1.x 送り) は未確定** — §14.10 で論点を明示。
+
+> **§14 全体(14.3 / 14.3a / 14.3b / 14.4 / 14.7.1 / 14.8 / 14.9 / 14.11)の復習系記述は歴史記述**(2026-08-11「FSRS 整合 Sprint A」以降の正 = `docs/superpowers/specs/2026-08-11-fsrs-consistency-sprint-a-design.md`)。実際に landed した形との主な差: **① `study_sessions` は server 表も Dexie store も廃止**(`session_id` は event に載る単なるラベル)/ **② `reviews` との二系統並走はせず `answer_events` が唯一の正本**(rating も `answer_events` が持つ)/ **③ bulk の wire は `{ events: [] }` の 1 POST**(session オブジェクトなし・応答は 200+`failed[]` / 400 / 503)/ **④ Dexie の現行 version は 10**、`answer_events` の index は `'++local_id, &event_id, [user_id+sync_status]'`。現行の Dexie schema は `lib/client-db.ts` が SSoT。
 
 ### 14.1 基本方針
 
