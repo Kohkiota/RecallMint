@@ -29,7 +29,6 @@ export function ExamListLive({ userId }: { userId: string }) {
     const allExams = await db.exams.where('user_id').equals(userId).toArray()
 
     const activeExams = allExams
-      .filter((e) => e.archived_at == null) // undefined も null も除外 (archived)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) // ISO 文字列の辞書順 DESC
 
     // T-B4: per-exam materialize 0 の構造保証。

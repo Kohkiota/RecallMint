@@ -7,11 +7,13 @@
 // 他 3 関数は非 RED・best-effort の behavioral assertion(詳細は各 describe 内コメント)。
 //
 // read-only test ゆえ beforeAll で truncate→seed を 1 回のみ(per-test reset 不要)。
+import { randomUUID } from 'node:crypto'
+
 import { eq, inArray } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { closeDb } from '@/lib/db'
-import { cards, studyDays } from '@/lib/db/schema'
+import { cards, exams, studyDays } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
 import { getReviewStatsForUser } from '@/lib/db/streak'
 import { getActiveExamsForUser, getCardsForExam } from '@/lib/exams/list'
@@ -77,6 +79,29 @@ describe('read isolation (R1)', () => {
         getActiveExamsForUser(fixture.a.userId, tx),
       )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.examId)
+    })
+
+    // Task 4(archived_at 読み手撤去)の直接証明: fixture.a.examId は archived_at
+    // NULL(既定値)。ここに archived_at を実タイムスタンプで立てた同一 owner の exam を
+    // 追加投入し、どちらも返ることを実 PG で確認する — 「isNull 条件を構成しない」
+    // (unit spy pin)だけでは「除外されていた行が実際に返る」ことまでは証明できない
+    // ため、この iso test がその欠落を埋める。
+    it('returns exams regardless of archived_at (archived_at IS NULL and archived_at set 両方を返す)', async () => {
+      const owner = getFixtureOwnerDb()
+      const archivedExamId = randomUUID()
+      await owner.insert(exams).values({
+        id: archivedExamId,
+        userId: fixture.a.userId,
+        name: 'Exam A (archived_at set)',
+        archivedAt: new Date('2026-07-01T00:00:00.000Z'),
+      })
+
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getActiveExamsForUser(fixture.a.userId, tx),
+      )
+      const ids = rows.map((r) => r.id)
+      expect(ids).toContain(fixture.a.examId) // archived_at IS NULL(fixture 既定値)
+      expect(ids).toContain(archivedExamId) // archived_at 設定済でも除外されない
     })
   })
 

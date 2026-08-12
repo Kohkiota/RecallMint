@@ -127,7 +127,6 @@ function makeExam(id: string, name: string): ClientExam {
     id,
     user_id: 'user-1',
     name,
-    archived_at: null,
     card_count: 0,
     content_version: 1,
     created_at: '2026-01-01T00:00:00.000Z',

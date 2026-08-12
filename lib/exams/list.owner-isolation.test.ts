@@ -28,15 +28,23 @@ const { dbState } = vi.hoisted(() => ({
 }))
 
 // drizzle-orm: eq を spy 化し実動作は real に委譲 (owner-scope 実引数 pin 用)。
+// isNull も spy 化: Task 4(archived_at 読み手撤去)後、getActiveExamsForUser が
+// isNull 条件を一切構成しないことを実引数の不在で pin する。
 vi.mock('drizzle-orm', async (importActual) => {
   const real = await importActual<typeof import('drizzle-orm')>()
   const spyEq = vi.fn((...args: Parameters<typeof real.eq>) => real.eq(...args))
-  return { ...real, eq: spyEq }
+  const spyIsNull = vi.fn((...args: Parameters<typeof real.isNull>) => real.isNull(...args))
+  return { ...real, eq: spyEq, isNull: spyIsNull }
 })
 
 async function getEqSpy() {
   const { eq } = await import('drizzle-orm')
   return vi.mocked(eq)
+}
+
+async function getIsNullSpy() {
+  const { isNull } = await import('drizzle-orm')
+  return vi.mocked(isNull)
 }
 
 // schema は静的 import しない: mock 適用後の動的 import 経路 (list.ts 側) と
@@ -83,6 +91,7 @@ async function importModule() {
 beforeEach(async () => {
   dbState.queue = []
   ;(await getEqSpy()).mockClear()
+  ;(await getIsNullSpy()).mockClear()
 })
 
 // getActiveExamsWithCardCount は ExamListLive (Dexie useLiveQuery) への切替により撤去済。
@@ -96,7 +105,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
     expect(r).toBeNull()
   })
 
-  it('returns exam detail with archived_at when found (own exam)', async () => {
+  it('returns exam detail when found (own exam)', async () => {
     const now = new Date('2026-05-19T05:00:00Z')
     dbState.queue = [
       [
@@ -105,7 +114,6 @@ describe('getExamByIdForUser (owner isolation)', () => {
           name: 'My Exam',
           createdAt: now,
           updatedAt: now,
-          archivedAt: null,
         },
       ],
     ]
@@ -116,27 +124,7 @@ describe('getExamByIdForUser (owner isolation)', () => {
       name: 'My Exam',
       createdAt: now,
       updatedAt: now,
-      archivedAt: null,
     })
-  })
-
-  it('returns exam with archivedAt populated for archived exam', async () => {
-    const created = new Date('2026-05-10T05:00:00Z')
-    const archived = new Date('2026-05-18T05:00:00Z')
-    dbState.queue = [
-      [
-        {
-          id: 'exam-A',
-          name: 'Archived Exam',
-          createdAt: created,
-          updatedAt: created,
-          archivedAt: archived,
-        },
-      ],
-    ]
-    const { getExamByIdForUser } = await importModule()
-    const r = await getExamByIdForUser('user-1', 'exam-A', getDb())
-    expect(r?.archivedAt).toEqual(archived)
   })
 })
 
@@ -290,6 +278,15 @@ describe('owner-scope WHERE 検証 (eq-spy)', () => {
     await getActiveExamsForUser('user-1', getDb())
     const { exams } = await getSchema()
     expect(await getEqSpy()).toHaveBeenCalledWith(exams.userId, 'user-1')
+  })
+
+  // Task 4(archived_at 読み手撤去): 一覧 query は owner 絞り (userId) のみで、
+  // archived 関連条件 (isNull(exams.archivedAt)) を一切構成しない。
+  it('getActiveExamsForUser: archived 関連条件 (isNull) を構成しない', async () => {
+    dbState.queue = [[]]
+    const { getActiveExamsForUser } = await importModule()
+    await getActiveExamsForUser('user-1', getDb())
+    expect(await getIsNullSpy()).not.toHaveBeenCalled()
   })
 
   it('getExamByIdForUser: eq(exams.userId, userId) と eq(exams.id, examId) が呼ばれる', async () => {

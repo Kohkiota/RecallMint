@@ -294,13 +294,15 @@ describe('submitUploadTx (S-1)', () => {
     expect(examRows).toHaveLength(1)
   })
 
-  it('rejects an archived exam and writes nothing', async () => {
+  // Task 4(archived_at 読み手撤去): archived_at 列自体は残る(DROP は別 task)が、
+  // 読み手が無くなったので値が非 null でも通常の既存 exam と同じ扱い(accepted)になる。
+  it('accepts upload to an exam with archived_at set (column stays; no reader filters on it)', async () => {
     const owner = getFixtureOwnerDb()
-    const archivedExamId = randomUUID()
+    const examId = randomUUID()
     await owner.insert(exams).values({
-      id: archivedExamId,
+      id: examId,
       userId: userAId,
-      name: 'アーカイブ済',
+      name: '旧アーカイブ列 セット済',
       archivedAt: new Date(),
     })
 
@@ -310,13 +312,15 @@ describe('submitUploadTx (S-1)', () => {
         { id: userAId },
         {
           idempotencyKey: 'idem-archived-1',
-          destination: { mode: 'existing', examId: archivedExamId },
+          destination: { mode: 'existing', examId },
         },
         twoFiles('archived'),
       ),
     )
-    expect(result).toEqual({ outcome: 'exam_not_found', archived: true })
-    await expectNoOperationsOrDocs(userAId)
+    if (result.outcome !== 'accepted') {
+      throw new Error(`expected accepted, got ${result.outcome}`)
+    }
+    expect(result.examId).toBe(examId)
   })
 
   it('rejects a foreign exam (owned by another tenant) as not-found', async () => {
@@ -335,7 +339,7 @@ describe('submitUploadTx (S-1)', () => {
         twoFiles('foreign'),
       ),
     )
-    expect(result).toEqual({ outcome: 'exam_not_found', archived: false })
+    expect(result).toEqual({ outcome: 'exam_not_found' })
     await expectNoOperationsOrDocs(userAId)
   })
 

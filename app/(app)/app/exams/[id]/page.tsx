@@ -56,7 +56,6 @@ export default async function ExamDetailPage({
         examName={exam.name}
         createdLabel={formatRelativeJa(exam.createdAt)}
         updatedLabel={formatRelativeJa(exam.updatedAt)}
-        archivedAt={exam.archivedAt}
       />
     </div>
   )

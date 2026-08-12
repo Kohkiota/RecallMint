@@ -124,7 +124,6 @@ const defaultProps = {
   examName: 'テスト試験',
   createdLabel: '1ヶ月前',
   updatedLabel: '2日前',
-  archivedAt: null,
 }
 
 beforeEach(async () => {
@@ -466,16 +465,6 @@ describe('ExamDetailView — Case ⑨: card view タイトル/日付 視覚維�
     expect(screen.getByText(/最終更新/)).toBeInTheDocument()
     expect(screen.getByText(/1ヶ月前/)).toBeInTheDocument()
     expect(screen.getByText(/2日前/)).toBeInTheDocument()
-  })
-
-  it('archivedAt が非 null のとき (アーカイブ済) バッジが描画される', async () => {
-    render(<ExamDetailView {...defaultProps} archivedAt={new Date('2026-01-03T00:00:00Z')} />)
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
-    })
-
-    expect(screen.getByText('(アーカイブ済)')).toBeInTheDocument()
   })
 })
 

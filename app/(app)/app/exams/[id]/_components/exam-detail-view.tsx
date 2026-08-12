@@ -39,7 +39,6 @@ type ExamDetailViewProps = {
   examName: string
   createdLabel: string
   updatedLabel: string
-  archivedAt: Date | null
 }
 
 type View = 'card' | 'table'
@@ -51,7 +50,6 @@ export function ExamDetailView({
   examName,
   createdLabel,
   updatedLabel,
-  archivedAt,
 }: ExamDetailViewProps) {
   const [view, setView] = useState<View>('card')
   // S2b-1: table-chrome の collapse 状態。ExamCardTable の onCollapsedChange で更新。
@@ -195,14 +193,13 @@ export function ExamDetailView({
     </div>
   )
 
-  // 日付行 (作成 / 最終更新 + アーカイブ済バッジ)。 テキストは両 view で共通、
+  // 日付行 (作成 / 最終更新)。 テキストは両 view で共通、
   // 見た目 (font-size 等) は各 view の p 側 className で調整する。
   // S2-1 fix: server preformat 済み文字列 (createdLabel/updatedLabel) を描画 — client で
   // formatRelativeJa を呼ばないことで SSR/hydration 2 回評価による mismatch を解消。
   const dateText = (
     <>
       作成 {createdLabel} ・ 最終更新 {updatedLabel}
-      {archivedAt && <span className="ml-2 text-amber-700">(アーカイブ済)</span>}
     </>
   )
 

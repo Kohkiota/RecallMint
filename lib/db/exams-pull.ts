@@ -15,7 +15,6 @@ export function toClientExam(row: ExamRow): ClientExam {
     user_id: row.userId,
     name: row.name,
     question_no_format: row.questionNoFormat,
-    archived_at: row.archivedAt ? row.archivedAt.toISOString() : null,
     card_count: row.cardCount,
     content_version: row.contentVersion,
     created_at: row.createdAt.toISOString(),

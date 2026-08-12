@@ -145,7 +145,7 @@ export type SubmitUploadResult =
     }
   | { outcome: 'in_progress' }
   | { outcome: 'daily_limit_exceeded'; current: number; limit: number }
-  | { outcome: 'exam_not_found'; archived: boolean }
+  | { outcome: 'exam_not_found' }
   | { outcome: 'invalid_input'; error: string }
   | { outcome: 'unauthenticated' }
 
@@ -543,15 +543,12 @@ export async function submitUploadTx(
     resolvedExamId = inserted[0].id
   } else {
     const found = await tx
-      .select({ id: exams.id, archivedAt: exams.archivedAt })
+      .select({ id: exams.id })
       .from(exams)
       .where(and(eq(exams.id, destination.examId), eq(exams.userId, user.id)))
       .limit(1)
     if (found.length === 0) {
-      return { outcome: 'exam_not_found', archived: false }
-    }
-    if (found[0].archivedAt !== null) {
-      return { outcome: 'exam_not_found', archived: true }
+      return { outcome: 'exam_not_found' }
     }
     resolvedExamId = found[0].id
   }

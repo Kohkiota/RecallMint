@@ -1489,10 +1489,9 @@ describe('hideRetryHint: submitUpload の outcome から retry hint 表示/非�
     expect(screen.getByText('GEMINI_DAILY_LIMIT_EXCEEDED')).toBeInTheDocument()
   })
 
-  it('exam_not_found(archived)はアーカイブ文言、 unauthenticated は認証文言', async () => {
+  it('exam_not_foundは試験不明文言、 unauthenticated は認証文言', async () => {
     vi.mocked(submitUpload).mockResolvedValueOnce({
       outcome: 'exam_not_found',
-      archived: true,
     })
     await renderWithFiles([makeImage('test.jpg')])
     const btn = screen.getByRole('button', { name: /AI で問題を抽出する/ })
@@ -1501,7 +1500,7 @@ describe('hideRetryHint: submitUpload の outcome から retry hint 表示/非�
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
     })
     expect(
-      screen.getAllByText(/選択した試験はアーカイブされています/).length,
+      screen.getAllByText(/選択した試験が見つかりません/).length,
     ).toBeGreaterThanOrEqual(1)
 
     cleanup()

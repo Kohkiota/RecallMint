@@ -971,12 +971,7 @@ export function UploadForm({
           )
           return
         case 'exam_not_found':
-          setError(
-            'EXAM_NOT_FOUND',
-            result.archived
-              ? '選択した試験はアーカイブされています。'
-              : '選択した試験が見つかりません。',
-          )
+          setError('EXAM_NOT_FOUND', '選択した試験が見つかりません。')
           return
         case 'invalid_input':
           // 上限超過(1 file / 合計サイズ / 枚数)・未対応形式はここに集約される

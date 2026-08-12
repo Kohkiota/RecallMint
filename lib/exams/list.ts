@@ -4,13 +4,10 @@
 // drizzle / postgres-js / fs / net / tls まで client 側に巻き込んでビルド失敗する。
 // `import 'server-only'` で build 時に loud に失敗させる。
 // client から使いたい「経過時間 format」 や `ActiveExam` 型は `./format` を参照する。
-//
-// MVP では archived_at IS NULL の exam 一覧を updated_at DESC で取る。
-// archived UX 詳細 (一覧で archived を表示するか / 復元 button 等) は S2 で確定。
 
 import 'server-only'
 
-import { and, desc, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import {
   cards,
   exams,
@@ -39,19 +36,18 @@ export async function getActiveExamsForUser(
       updatedAt: exams.updatedAt,
     })
     .from(exams)
-    .where(and(eq(exams.userId, userId), isNull(exams.archivedAt)))
+    .where(eq(exams.userId, userId))
     .orderBy(desc(exams.updatedAt))
   return rows
 }
 
-// S1.7 T7 用: 詳細 page で exam + その user の所有確認をしつつ archived 状態も取る。
+// S1.7 T7 用: 詳細 page で exam + その user の所有確認を取る。
 // 不在 / 他 user の場合は null を返す (詳細 page 側で notFound() に変換)。
 export type ExamDetail = {
   id: string
   name: string
   createdAt: Date
   updatedAt: Date
-  archivedAt: Date | null
 }
 export async function getExamByIdForUser(
   userId: string,
@@ -65,7 +61,6 @@ export async function getExamByIdForUser(
       name: exams.name,
       createdAt: exams.createdAt,
       updatedAt: exams.updatedAt,
-      archivedAt: exams.archivedAt,
     })
     .from(exams)
     .where(and(eq(exams.id, examId), eq(exams.userId, userId)))

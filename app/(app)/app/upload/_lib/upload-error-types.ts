@@ -1,7 +1,7 @@
 // 失敗時の error code (UI 側で分岐に使用、 T4 詳細表示用 details も含む)。
 //   AUTH:                    認証なし / user.id 取得失敗
 //   INVALID_INPUT:           formData の mode / examId / files が不正
-//   EXAM_NOT_FOUND:          既存 exam が見つからない / archived
+//   EXAM_NOT_FOUND:          既存 exam が見つからない
 //   UPLOAD_IN_PROGRESS:      同一 user の OCR ジョブが既に走行中 (S1.9.4)
 //                            advisory xact lock 取得失敗 (ms 窓の race) または
 //                            in-flight processing 行が存在 (先行ジョブ走行中) の

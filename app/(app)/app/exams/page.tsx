@@ -3,7 +3,7 @@ import { AppContainer } from '../_components/app-container'
 import { CreateExamForm } from './_components/create-exam-form'
 import { ExamListLive } from './_components/exam-list-live'
 
-// S1.7 T7: read-only exam 一覧 (archived_at IS NULL、 updated_at DESC)。
+// S1.7 T7: read-only exam 一覧 (updated_at DESC)。
 // 編集 / 削除 / 並び替えなし、 S2 で正式 CRUD を実装する。
 //
 // S2.0.7: render 冒頭の reconcileStaleProcessing 呼び出しを撤去した。

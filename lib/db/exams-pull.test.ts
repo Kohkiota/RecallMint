@@ -1,7 +1,6 @@
 // exams-pull mapper test (S-local-2 Task 3)。
 // pure な toClientExam mapper の verify。 DB query 部分は route 統合 test で
-// mock 化。 Date → ISO 文字列 / archived_at null 取扱い / camelCase → snake_case
-// rename を assert。
+// mock 化。 Date → ISO 文字列 / camelCase → snake_case rename を assert。
 
 import { describe, it, expect } from 'vitest'
 import { toClientExam } from './exams-pull'
@@ -29,15 +28,7 @@ describe('toClientExam', () => {
     const out = toClientExam(fakeRow())
     expect(out.created_at).toBe('2026-05-01T00:00:00.000Z')
     expect(out.updated_at).toBe('2026-05-02T00:00:00.000Z')
-    expect(out.archived_at).toBeNull()
     expect(out.question_no_format).toBeNull()
-  })
-
-  it('archivedAt が Date のとき ISO 文字列化', () => {
-    const out = toClientExam(
-      fakeRow({ archivedAt: new Date('2026-05-10T03:00:00.000Z') }),
-    )
-    expect(out.archived_at).toBe('2026-05-10T03:00:00.000Z')
   })
 
   it('camelCase → snake_case の field rename', () => {

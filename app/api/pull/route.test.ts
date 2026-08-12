@@ -169,7 +169,6 @@ function fakeExam(overrides?: Partial<ClientExam>): ClientExam {
     user_id: 'user-uuid-1',
     name: 'Test Exam',
     question_no_format: null,
-    archived_at: null,
     card_count: 0,
     content_version: 0,
     created_at: '2026-05-01T00:00:00.000Z',

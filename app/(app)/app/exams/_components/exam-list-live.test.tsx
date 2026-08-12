@@ -4,9 +4,9 @@
 //
 // 検証観点:
 // 1. active exam が card_count 付きで表示される (Dexie cards から動的集計)
-// 2. archived exam は除外される
+// 2. Dexie mirror の全 exam が表示される (Task 4: archived 概念撤去 → client 側 filter なし)
 // 3. updated_at DESC 順で表示される
-// 4. active exam 0 件 → 空状態 CTA 表示
+// 4. exam 0 件 → 空状態 CTA 表示
 // 5. mount 直後は skeleton (role="status") が出て、waitFor 後に list に変わる
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -53,7 +53,6 @@ function fakeExam(overrides?: Partial<ClientExam>): ClientExam {
     id: 'exam-1',
     user_id: 'user-1',
     name: 'テスト試験',
-    archived_at: null,
     card_count: 0,
     content_version: 1,
     created_at: '2026-04-01T00:00:00.000Z',
@@ -144,19 +143,21 @@ describe('ExamListLive (Dexie useLiveQuery)', () => {
     expect(screen.getByText(/カード 1 件/)).toBeInTheDocument()
   })
 
-  it('2. archived exam は除外される', async () => {
+  // Task 4 置換 pin: archived_at の読み手を撤去したため、Dexie mirror にある
+  // exam は全件表示される (client 側 filter なし)。
+  it('2. Dexie mirror の全 exam が表示される (client 側 filter なし)', async () => {
     const db = getClientDb()
     await db.exams.bulkPut([
-      fakeExam({ id: 'active', name: 'アクティブ試験', archived_at: null }),
-      fakeExam({ id: 'archived', name: 'アーカイブ試験', archived_at: '2026-03-01T00:00:00.000Z' }),
+      fakeExam({ id: 'exam-a', name: '試験 A' }),
+      fakeExam({ id: 'exam-b', name: '試験 B' }),
     ])
 
     renderWithProvider('user-1')
 
     await waitFor(() => {
-      expect(screen.getByText('アクティブ試験')).toBeInTheDocument()
+      expect(screen.getByText('試験 A')).toBeInTheDocument()
     })
-    expect(screen.queryByText('アーカイブ試験')).not.toBeInTheDocument()
+    expect(screen.getByText('試験 B')).toBeInTheDocument()
   })
 
   it('3. updated_at DESC 順で表示される', async () => {
@@ -182,13 +183,9 @@ describe('ExamListLive (Dexie useLiveQuery)', () => {
     expect(midIdx).toBeLessThan(oldIdx)
   })
 
-  it('4. active exam 0 件 → 空状態 CTA 表示', async () => {
-    // archived のみ存在 → active は 0 件
-    const db = getClientDb()
-    await db.exams.bulkPut([
-      fakeExam({ id: 'archived', name: 'アーカイブ', archived_at: '2026-03-01T00:00:00.000Z' }),
-    ])
-
+  it('4. exam 0 件 → 空状態 CTA 表示', async () => {
+    // beforeEach で db.exams / db.cards は空に clear 済 (Task 4: 全件表示になった
+    // ため、archived exam ではなく exam が 1 件も無い状態で空状態を確認する)。
     renderWithProvider('user-1')
 
     await waitFor(() => {
