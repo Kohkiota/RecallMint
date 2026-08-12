@@ -321,6 +321,60 @@ source_document 単独削除: 経路なし(exam cascade でのみ消える)
 | distinct 集計の式 index | 追加の要否判断 | §5.2(実行計画未確認のまま先走らない) |
 | schema.ts stale comment 群(§8-5) | 修正候補(schema 変更と同時に) | comment が現物を誤説明 |
 
+### 9.4 追記(2026-08-12)— Sprint B「DB 全体掃除」での採否結果
+
+本節は**後日追記**。上の §9.1〜9.3 は 2026-08-11 時点の候補列挙のまま**書き換えていない**(調査時点の snapshot として保存する)。OT 裁定と実装の結果は下表で読む。
+
+- 設計の正 = `docs/superpowers/specs/2026-08-12-sprint-b-db-cleanup-design.md`(凍結)
+- 実施記録 = `docs/superpowers/sessions/2026-08-12-sprint-b-db-cleanup.md`
+- DDL の現物 = `drizzle/migrations/0036_sprint_b_db_cleanup.sql`(**未適用**。適用手順 = `docs/ops/sprint-b-db-cleanup-runbook.md`)
+
+#### 9.1(表の統廃合候補)
+
+| 候補 | 結果 |
+|---|---|
+| ai_usage_users | **維持**。削除しない — 読み手は app でなく**運用者**(濫用 user の特定・ban 判断で OT が SQL を引く)。「読み手ゼロ」は app 内の話で死表を意味しない。意図を schema comment に明記して解消 |
+| answer_events / reviews 統合 | **Sprint A(2026-08-11)で解消済**(`reviews` は表ごと廃止) |
+| study_sessions | **Sprint A で表ごと廃止** |
+| asset_derivations / integration_failures | 維持(既存の意図宣言を再掲のみ) |
+| Dexie `user_settings` store | **削除**(Dexie v11 で drop) |
+
+#### 9.2(列の削除候補)
+
+| 候補 | 結果 |
+|---|---|
+| exams.question_no_format / archived_at / card_count | **3 列とも削除**(0036)。`archived_at` は読み手(一覧 filter / upload gate / UI / client filter)ごと撤去 — **upload 受付 gate が消えることを受容**(architecture.md §7 に記録) |
+| source_documents.mode | **削除**(0036) |
+| source_documents.ocr_cost_yen / upload_records.ocr_cost_yen | **削除**(0036)。ただし `costYen` の計算チェーン(`cost.ts` / `ocr.ts`)は**残す** — upload エラー詳細表示という生きた読者があるため。消したのは DB 列と台帳 insert 値、およびそれで不要化した引数まで |
+| upload_records.filename / file_size_bytes | **削除**(0036) |
+| assets.reference_count | **削除**(0036)。`unreferenced_at` は GC v2 の中核に昇格済で対象外 |
+| integration_failures の dormant 4 列 | **削除**(0036) |
+| contact_messages.status | **維持**。将来の管理 UI の状態列(それまで OT が SQL で更新)という意図を schema comment に明記。加えて **CHECK を追加**(open / in_progress / resolved) |
+| stripe_events.type / clerk_events.type | **維持**(forensic の意図を再掲) |
+| entity_mutations の forensic 列 | **維持** |
+| upload_operations.source_document_id の nullable | **NOT NULL 化**(0036)。併せて FK を `SET NULL` → `CASCADE` に張替(両立しないため。architecture.md §2 に不変条件を記録) |
+
+#### 9.3(制約追加候補)
+
+| 候補 | 結果 |
+|---|---|
+| enum 系 / count・size・pages 系 | **CHECK 27 本を追加**(0036 = enum 13 + 非負 12 + 正数 2)。基準は spec §5.2(enum = 課金判定・状態機械・sync/冪等の分岐に使う文字列列 / 非負 = server 自身が計算して書く課金・quota・台帳・統計系)。**相関制約**(`correct_count <= review_count` / `pages_processed <= pages_total`)は**張らない** — 前者は同一 SQL からの絶対値再集計で冗長、後者は PDF count phase の途中状態で一時的に不等が成立しうるため |
+| reviews.rating / cards.state | **Sprint A で解決済**(`cards_state_range` + answer_events 3 本。改名しない) |
+| 未使用 index 群 | **3 本削除**(`entity_mutations_entity_idx` / `source_docs_user_exam_idx` / `cards_answered_idx`)。残りは Sprint A で**表ごと消滅**済。`source_docs_user_exam_idx` は `source_docs_user_exam_created_idx` の厳密 prefix という削除根拠を、**実データ EXPLAIN で適用後に確認する**(runbook §4 — 小さい fixture では planner が seq scan を選ぶため自動テストに入れられない) |
+| assets (user_id, hash) UNIQUE / exams (user_id, name) UNIQUE / distinct 集計の式 index | **非スコープ**(spec §7)。前者のトリガー = image dedup の実機能化(同 hash の正当な複数 asset を弾く恐れ)。残り 2 件は裁定一覧に無く現状維持 |
+| reviews.reviewed_at の defaultNow() | **Sprint A で表ごと廃止** |
+| schema.ts stale comment 群 | **解消**(冒頭の user cascade 説明 / assets dormant / contact_messages 実装状況 / source_document_id の nullable 名残 / card_count 非正規化説明) |
+
+#### §8 の歪みのうち本 sprint で解消しなかったもの
+
+**残るのは #12 / #13 / #14 の 3 件**(spec §6 の対応表と一致)。いずれも**意図的な非スコープ**であって、見落としではない。
+
+| # | 歪み | なぜ残すか |
+|---|---|---|
+| **#12** | `upload_operations.exam_id` CASCADE で冪等 ledger が消滅する | OT 裁定一覧に無い。exam 削除後に同一 idempotency_key で再送が来ても `exam_not_found` に落ちるため実害が薄い。**なお 0036 で `source_document_id` 側にも CASCADE が増えた**(上記 9.2)ので、ledger の消滅経路は 1 本増えている — この 2 つは同じ判断の下にある |
+| **#13** | 匿名 contact_messages の PII(email) | **既に記録済み — 追記しない**。`docs/architecture.md` §4「GDPR 削除契約」に決定行(**匿名 contact_messages(user_id null)は退会 scrub の対象外**・決定 2026-07-22 / 明文化 2026-07-26・理由込み)があり、末尾の「残余リスク(公開前 PII 判断)」にも contact_messages の項が載っている。**§8-13 の「残余リスク一覧に未記載」という記述は現況と食い違う**(2026-08-12 に architecture.md を現物確認)。重複エントリは作らない |
+| **#14** | stripe_events / clerk_events の無期限蓄積 | 保持方針が未決・実害が薄い。retention の実制御は spec §7 で非スコープ確定 |
+
 ---
 
 ## 付記: 三部作の関係
