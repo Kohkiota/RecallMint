@@ -15,6 +15,8 @@ export const answerEventWireSchema = z.object({
   // (旧 review-session-bounds 経路の optional + is_correct derive とは異なる)。
   rating: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
   answered_at: z.iso.datetime(),
+  // max = 24h (ms)。 client 側の対 (session-runner.tsx の ELAPSED_MS_MAX) と同値 —
+  // 1 card の表示時間としてありえない上限を切るための cap で、 それ以上の妥当性判定はしない。
   elapsed_ms: z.number().int().min(0).max(86_400_000).optional(),
 })
 

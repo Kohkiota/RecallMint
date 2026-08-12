@@ -273,9 +273,13 @@ export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = '�
     const cardId = current.id
     // onAfter() が resetCardState 経由で shownAtRef を打ち直すため、 その前に計測する。
     const elapsedMs = measureElapsedMs(shownAtRef.current)
-    // card 単位で初回 submit のみ tally 加算。 rate 連打 / リトライ後再回答 /
-    // 前へ戻り後再回答 いずれも 1 枚 1 カウント。 server 側は review-events/bulk 経路
-    // (lib/reviews/ingest-review-events) の UPDATE で常に最新 rating で上書き (= 二重登録なし)。
+    // card 単位で初回 submit のみ tally 加算 (client の表示上の tally に限る)。
+    // rate 連打 / リトライ後再回答 / 前へ戻り後再回答 いずれも tally は 1 枚 1 カウント。
+    // ただし server 側 (lib/reviews/ingest-review-events) は event_id ごとに INSERT
+    // する fold 方式のため、 同一 card への複数回答は answer_events に複数行として
+    // 記録され、 順序ガードが `>=` (同時刻は逆転扱いしない) なのですべて applied になり
+    // FSRS へ適用される (= reps / study_days.review_count もその分だけ進む。 二重登録
+    // なしではない)。
     const isFirstSubmit = !submittedCardIds.has(cardId)
 
     // 1) Optimistic 即時 state 更新 (server 応答待ちなし)。

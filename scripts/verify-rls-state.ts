@@ -110,7 +110,7 @@ export type PolicyTuple = {
   with_check: string | null
 }
 
-/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 19 + users 3 = 22。 */
+/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 17 + users 3 = 20。 */
 export const EXPECTED_POLICIES: Record<string, PolicyTuple> = {}
 for (const table of COMMON_FORM_RLS_TABLES) {
   EXPECTED_POLICIES[`${table}|${table}_tenant`] = {

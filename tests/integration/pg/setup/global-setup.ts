@@ -111,11 +111,11 @@ export async function setup(): Promise<void> {
     const rlsEnableSql = readFileSync(RLS_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsEnableSql).simple()
 
-    // RLS-P3 Wave 1: P2 enable の直後に追加 8 表の policy を有効化 (同 owner client)。
+    // RLS-P3 Wave 1: P2 enable の直後に追加 7 表の policy を有効化 (同 owner client)。
     const rlsWave1EnableSql = readFileSync(RLS_WAVE1_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsWave1EnableSql).simple()
 
-    // RLS-P3 Wave 2: Wave 1 enable の直後に軽配線 5 表の policy を有効化 (同 owner client)。
+    // RLS-P3 Wave 2: Wave 1 enable の直後に軽配線 4 表の policy を有効化 (同 owner client)。
     const rlsWave2EnableSql = readFileSync(RLS_WAVE2_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsWave2EnableSql).simple()
 

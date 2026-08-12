@@ -164,6 +164,10 @@ spec §9.1-1 は flake 対策として「両接続が同一 snapshot を読ん�
 
 spec §4.1 は「Dexie v9 で store 再作成」と書くが、実装は **v9 で `answer_events: null`(drop)→ v10 で再作成**の 2 version に分割した。単一 version 内で「同名 store を drop して作り直す」は Dexie の宣言的 schema では表現できないため。代替案の「v9 単発 + `.upgrade(tx => tx.table('answer_events').clear())`」は store 定義を残したまま中身だけ消す形で、index 定義の変更が反映されない。
 
+### 7.4 spec §4.1 の `event_id` index は非-unique、実装は unique(`&event_id`)
+
+spec §4.1 は v10 の index を `'++local_id, event_id, [user_id+sync_status]'`(非-unique)と書くが、実装(`lib/client-db.ts` v10)は `'++local_id, &event_id, [user_id+sync_status]'` と `&` を付けて unique にしている。**強化方向なので採用**(挙動を弱める逸脱ではない): 同一 `event_id` の二重 `add` が `ConstraintError` で loud に落ちるようになり、冪等キーの一意性が store 側でも構造的に保証される。spec の非-unique 指定は誤りではなく単に厳格化されていない状態だったため、書き換えず本記録のみ残す。
+
 ## 8. PG bump 担当への申し送り
 
 `tests/integration/pg/answer-events-serialization.test.ts` の **schema contract readback は CHECK / PK / FK の定義文を PG17.10 の正規化テキストで直書き pin している**:
