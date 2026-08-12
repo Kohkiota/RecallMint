@@ -68,10 +68,10 @@ function healthyGrantRows(): GrantRow[] {
 }
 
 describe('期待カタログ自体の内部整合', () => {
-  it('RLS 20 表 / 非 RLS 5 表 / policy 22 本(rls-drift.test.ts と同一 oracle)', () => {
-    expect(EXPECTED_RLS_TABLES).toHaveLength(20)
+  it('RLS 18 表 / 非 RLS 5 表 / policy 20 本(rls-drift.test.ts と同一 oracle)', () => {
+    expect(EXPECTED_RLS_TABLES).toHaveLength(18)
     expect(EXPECTED_NON_RLS_TABLES).toHaveLength(5)
-    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(22)
+    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(20)
     // ②-4a の残る 2 表がカタログに載っていること(2026-08-04 の未適用検出の再発防止。
     // 3 表目は S-5 / migration 0032 で drop 済)。
     for (const t of ['upload_operations', 'asset_derivations']) {

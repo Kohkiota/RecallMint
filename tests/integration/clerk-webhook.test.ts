@@ -199,7 +199,7 @@ describe('POST /api/webhooks/clerk (real svix sign + verify)', () => {
     expect(db.update).toHaveBeenCalledTimes(1)
     // Group I 11 件のうち assets のみ soft-delete (deleting UPDATE) ゆえ物理 DELETE は 10 件:
     // exams + study_days + contact_messages + ai_usage_users + upload_records +
-    // user_settings + study_sessions + tombstones + entity_mutations + tag_categories
+    // user_settings + answer_events + tombstones + entity_mutations + tag_categories
     // (assets は W2 で明示 DELETE → deleting UPDATE に置換・R2 手掛かり保全 + GC 合流)
     // (entity_mutations は S-sync-1 で entity_id FK を撤廃したため、 cards cascade chain が
     //  なくなり Group I に昇格)

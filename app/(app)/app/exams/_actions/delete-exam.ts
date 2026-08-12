@@ -19,7 +19,7 @@ import type { ActionResult } from '@/lib/actions/result'
 //   1. exam 存在・owner 確認 SELECT → 0 行なら早期 return (idempotent)
 //   2. 配下 card id 列挙 (FK CASCADE で消える前に)
 //   3. tombstone 網羅 INSERT: exam(1件) + card(N件) を onConflictDoNothing で
-//   4. exams DELETE → FK CASCADE (source_documents/cards/reviews 連動削除)
+//   4. exams DELETE → FK CASCADE (source_documents/cards/card_tags 連動削除)
 //
 // 安全性: WHERE user_id = ? で他 user の exam を構造的に保護。
 // 不在 / 他 user の examId は silent success (idempotent、 double-click 対策)。
@@ -83,7 +83,8 @@ async function _deleteExam(examId: string): Promise<ActionResult> {
 
       await tx.insert(tombstones).values(tombstoneRows).onConflictDoNothing()
 
-      // §4-4: exams DELETE → FK CASCADE (source_documents/cards/reviews 連動削除)
+      // §4-4: exams DELETE → FK CASCADE (source_documents/cards/card_tags 連動削除)
+      // answer_events は card_id FK を持たないため波及しない (dangling が正規・spec §1.1)
       await tx
         .delete(exams)
         .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))

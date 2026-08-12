@@ -48,7 +48,7 @@ describe('RLS ghost (scrubbed user context)', () => {
       .where(eq(cards.userId, fixture.b.userId))
     expect(beforeCards.length).toBeGreaterThan(0)
 
-    // exam DELETE → FK cascade で cards / source_documents / reviews 等を落とす。
+    // exam DELETE → FK cascade で cards / source_documents / card_tags 等を落とす。
     await owner.delete(exams).where(eq(exams.userId, fixture.b.userId))
     // tombstones / study_days は users 直参照 (exam cascade 対象外) ゆえ明示 delete。
     await owner.delete(tombstones).where(eq(tombstones.userId, fixture.b.userId))

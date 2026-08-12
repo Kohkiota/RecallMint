@@ -1,10 +1,10 @@
--- RLS Phase 3 Wave 1: 配線ゼロ 8 表の policy 有効化。owner (postgres) 実行前提。
+-- RLS Phase 3 Wave 1: 配線ゼロ 7 表の policy 有効化。owner (postgres) 実行前提。
 -- app_current_user_id() は 0025 で定義済。FORCE RLS はしない (owner bypass で
 -- seed/migrate/operator を素通し)。(SELECT public.app_current_user_id()) 包みで
 -- initPlan 化 (per-row 評価回避)。
 --
 -- P2 (rls-p2-enable.sql) の「共通形 4 表」と完全同型: FOR ALL・USING=WITH CHECK=
--- user_id = (SELECT app_current_user_id())。8 表とも単純 tenant 表 (users のような
+-- user_id = (SELECT app_current_user_id())。7 表とも単純 tenant 表 (users のような
 -- lifecycle 特殊コマンド別建ては不要)。ai_usage_users は PK 複合 (user_id, date) だが
 -- policy 述語は user_id のみで足りる (Step 0 追補で read 経路が本表を読まないことを確認)。
 --
@@ -18,15 +18,12 @@
 -- rollback するのを DROP で構造的に封じる)。ENABLE ROW LEVEL SECURITY 自体は冪等 no-op。
 SET lock_timeout = '5s';
 
--- reviews (FSRS 評価履歴・append-only)
-ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS reviews_tenant ON reviews;
-CREATE POLICY reviews_tenant ON reviews FOR ALL TO recallmint_app
-  USING (user_id = (SELECT public.app_current_user_id()))
-  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
-
--- answer_events (回答イベント生ログ。event_id global UNIQUE は RLS 非適用 = ON CONFLICT
--- は従来どおり全 tenant 横断で衝突判定する。Step 0 §3.3 の nuance = 挙動不変)
+-- answer_events (復習の唯一の正本。event_id は PK = global UNIQUE ゆえ RLS 非適用で、
+-- ON CONFLICT は全 tenant 横断で衝突判定する。他 tenant の event_id との衝突は行が
+-- 見えないまま非新規になる = ingest 側が failed[] として扱う前提の挙動)
+-- FSRS 整合 Sprint A の migration 0035 で表を DROP/CREATE するため、policy と grant は
+-- 表と一緒に落ちる。migration → grants → 本 file を同一メンテ窓で連続実行すること
+-- (無防備窓を作らない。grants は base の blanket `ON ALL TABLES` が新表を拾う)。
 ALTER TABLE answer_events ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS answer_events_tenant ON answer_events;
 CREATE POLICY answer_events_tenant ON answer_events FOR ALL TO recallmint_app

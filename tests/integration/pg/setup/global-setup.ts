@@ -43,7 +43,7 @@ const RLS_ENABLE_FILE = path.resolve(
   '../../../../db/policies/rls-p2-enable.sql',
 )
 
-// RLS-P3 Wave 1: 追加 8 表 (reviews/answer_events/tag_categories/tag_options/card_tags/
+// RLS-P3 Wave 1: 追加 7 表 (answer_events/tag_categories/tag_options/card_tags/
 // entity_mutations/card_asset_refs/ai_usage_users) の policy 有効化 SQL。P2 と同機構で
 // grants → p2-enable の直後に owner client で適用する (test:iso は毎 run Wave 1 も RLS on)。
 const RLS_WAVE1_ENABLE_FILE = path.resolve(
@@ -51,7 +51,7 @@ const RLS_WAVE1_ENABLE_FILE = path.resolve(
   '../../../../db/policies/rls-p3-wave1-enable.sql',
 )
 
-// RLS-P3 Wave 2: 軽配線 5 表 (study_sessions/user_settings/assets/source_documents/
+// RLS-P3 Wave 2: 軽配線 4 表 (user_settings/assets/source_documents/
 // upload_records) の policy 有効化 SQL。Wave 1 と同機構で wave1-enable の直後に owner
 // client で適用する (test:iso は毎 run Wave 2 も RLS on)。
 const RLS_WAVE2_ENABLE_FILE = path.resolve(

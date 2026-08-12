@@ -4,8 +4,8 @@
 // 効き、off 表は従来どおり書け、かつ on 側違反時は tx 全体が原子的に rollback する」。
 // これは Phase 3 の wave 分割成立(= partial-RLS が安全)の behavioral 担保。
 // ※本 file は「移行期に tenant 表が一時的に off である安全性」や「off 側の tenant 隔離」は
-//   証明しない(off = global ゆえ隔離対象外)。Step 0 追補2 の想定 (study_sessions off × on) は
-//   Wave 2 が study_sessions を on 化するため無効化 → 恒久 off の global 表へ置換した。
+//   証明しない(off = global ゆえ隔離対象外)。Step 0 追補2 が想定していた tenant 表 off × on の
+//   組は Wave 2 で全て on 化されて成立しなくなったため、恒久 off の global 表へ置換した。
 //
 // 実経路: incrementAiUsage (lib/ai-usage-counter.ts) は 1 tenant tx (setTenantContext 済) で
 //   ai_usage(**off**・global・PK=date・user_id 無) + ai_usage_users(**on**・PK=user_id+date) を

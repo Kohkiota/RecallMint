@@ -1,6 +1,6 @@
-// RLS-P3 Wave 2 — 軽配線 5 表の RLS 単独防御 + WITH CHECK + loud + 配線経路 (DB 層)。
+// RLS-P3 Wave 2 — 軽配線 4 表の RLS 単独防御 + WITH CHECK + loud + 配線経路 (DB 層)。
 //
-// 対象 5 表: study_sessions / user_settings / assets / source_documents / upload_records。
+// 対象 4 表: user_settings / assets / source_documents / upload_records。
 // 各表の残存 raw getDb 経路を withTenantTx で context 下に入れた後に policy を張った
 // (Step 0 §5.3 Wave 2)。本 file は policy の behavioral 実効を Wave 1 (rls-wave1.test.ts) と
 // 同型に pin する:
@@ -25,13 +25,10 @@ import { closeDb, getDb } from '@/lib/db'
 import {
   assets,
   sourceDocuments,
-  studySessions,
   uploadRecords,
   userSettings,
-  type User,
 } from '@/lib/db/schema'
 import { getCurrentMonthOcrPages } from '@/lib/ai-usage-mcq'
-import { upsertSessionGuarded } from '@/lib/reviews/session-repository'
 
 import { asTenant } from './setup/as-tenant'
 import {
@@ -51,7 +48,7 @@ afterAll(async () => {
   await closeFixtureOwnerDb()
 })
 
-describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_documents/upload_records)', () => {
+describe('RLS Wave 2 single-defense (user_settings/assets/source_documents/upload_records)', () => {
   let fixture: TenantFixture
   // upload_records.id は TenantFixture に含まれないため owner で拾う (write 代表用)。
   let aUploadRecordId: string
@@ -75,15 +72,6 @@ describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_
 
   // ------------------------------------------------------------------ reads
   describe('read (SELECT with no user_id predicate): A sees own only, never B', () => {
-    it('study_sessions', async () => {
-      const rows = await asTenant(fixture.a.userId, (tx) =>
-        tx.select({ id: studySessions.sessionId, userId: studySessions.userId }).from(studySessions),
-      )
-      expect(rows.map((r) => r.id)).toContain(fixture.a.studySessionId)
-      expect(rows.map((r) => r.id)).not.toContain(fixture.b.studySessionId)
-      expect(rows.every((r) => r.userId === fixture.a.userId)).toBe(true)
-    })
-
     it('user_settings', async () => {
       const rows = await asTenant(fixture.a.userId, (tx) =>
         tx.select({ userId: userSettings.userId }).from(userSettings),
@@ -124,33 +112,6 @@ describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_
   // negative: B の行を A context から狙う → 0 行 (USING が不可視化)・owner で B 不変。
   // positive control: A 自身の行への write は成功する。
   describe('write (targeting B → 0 rows; A own → applied)', () => {
-    it('study_sessions UPDATE', async () => {
-      const owner = getFixtureOwnerDb()
-      const marker = new Date('2030-01-01T00:00:00.000Z')
-      const hack = await asTenant(fixture.a.userId, (tx) =>
-        tx
-          .update(studySessions)
-          .set({ completedAt: marker })
-          .where(eq(studySessions.sessionId, fixture.b.studySessionId))
-          .returning({ id: studySessions.sessionId }),
-      )
-      expect(hack).toHaveLength(0)
-      const bAfter = await owner
-        .select({ completedAt: studySessions.completedAt })
-        .from(studySessions)
-        .where(eq(studySessions.sessionId, fixture.b.studySessionId))
-      expect(bAfter[0]?.completedAt).toBeNull()
-
-      const ok = await asTenant(fixture.a.userId, (tx) =>
-        tx
-          .update(studySessions)
-          .set({ completedAt: marker })
-          .where(eq(studySessions.sessionId, fixture.a.studySessionId))
-          .returning({ id: studySessions.sessionId }),
-      )
-      expect(ok).toHaveLength(1)
-    })
-
     it('user_settings whole-table UPDATE hits only A (PK=user_id)', async () => {
       // user_settings は PK=user_id ゆえ B を「user_id 述語なし」で個別に狙えない。
       // where なし UPDATE を A context で撃つと USING が A の 1 行だけに scope する。
@@ -251,19 +212,6 @@ describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_
   // ------------------------------------------------------- WITH CHECK (42501)
   // user_id=B の insert / A 行を B へ付替える update は WITH CHECK 違反で 42501。
   describe('WITH CHECK: cross-tenant user_id write rejected (42501)', () => {
-    it('study_sessions insert userId=B → 42501', async () => {
-      await assertRejectsWithRlsViolation(() =>
-        asTenant(fixture.a.userId, (tx) =>
-          tx.insert(studySessions).values({
-            sessionId: randomUUID(),
-            userId: fixture.b.userId,
-            mode: 'smart',
-            startedAt: new Date('2026-07-18T00:00:00.000Z'),
-          }),
-        ),
-      )
-    })
-
     it('user_settings insert userId=B → 42501', async () => {
       await assertRejectsWithRlsViolation(() =>
         asTenant(fixture.a.userId, (tx) =>
@@ -337,10 +285,6 @@ describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_
   describe('loud on missing context (P0RLS) — read + write per table', () => {
     const decoyUser = '00000000-0000-4000-8000-0000000000ff'
 
-    it('study_sessions', async () => {
-      await assertRejectsWithP0RLS(() => getDb().select({ id: studySessions.sessionId }).from(studySessions))
-      await assertRejectsWithP0RLS(() => getDb().delete(studySessions).where(eq(studySessions.userId, decoyUser)))
-    })
     it('user_settings', async () => {
       await assertRejectsWithP0RLS(() => getDb().select({ userId: userSettings.userId }).from(userSettings))
       await assertRejectsWithP0RLS(() => getDb().delete(userSettings).where(eq(userSettings.userId, decoyUser)))
@@ -361,26 +305,6 @@ describe('RLS Wave 2 single-defense (study_sessions/user_settings/assets/source_
 
   // ------------------------------------------- 配線経路 (DB 層) が RLS-on 下で動く
   describe('wired paths work under RLS (DB layer)', () => {
-    it('upsertSessionGuarded: A の新規 session を context 下で insert → applied; owner が A 名義で観測', async () => {
-      const owner = getFixtureOwnerDb()
-      const newSessionId = randomUUID()
-      const result = await asTenant(fixture.a.userId, (tx) =>
-        upsertSessionGuarded(tx, { id: fixture.a.userId } as unknown as User, {
-          session_id: newSessionId,
-          mode: 'smart',
-          card_ids: [],
-          started_at: '2026-07-18T00:00:00.000Z',
-          status: 'active',
-        }),
-      )
-      expect(result.applied).toBe(true)
-      const row = await owner
-        .select({ userId: studySessions.userId })
-        .from(studySessions)
-        .where(eq(studySessions.sessionId, newSessionId))
-      expect(row[0]?.userId).toBe(fixture.a.userId)
-    })
-
     it('getCurrentMonthOcrPages: upload_records を context 下で SUM → A の当月 pages', async () => {
       const owner = getFixtureOwnerDb()
       // 当月 completed 行を A に 1 件追加 (fixture の seed 行は pagesProcessed=0)。

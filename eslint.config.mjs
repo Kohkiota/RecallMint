@@ -47,7 +47,7 @@ const DOMAIN_NO_INFRA_IMPORTS = {
 // Session domain purity: `lib/reviews/domain/**` is pure domain and must not
 // RUNTIME-import infra / orchestration modules (mirrors the Subscription block
 // above). `import type` is always allowed (allowTypeImports) and intra-domain
-// runtime imports (`./session-values` / `./session-aggregate`) are NOT listed,
+// runtime imports (`./session-aggregate`) are NOT listed,
 // so they pass — as do pure siblings (@/lib/cards/replay-card / @/lib/jst /
 // @/lib/fsrs). Forbidden runtime targets = infra (db / drizzle / logger /
 // server-only) + zod (domain is zod-free — spec §3, structural types defined

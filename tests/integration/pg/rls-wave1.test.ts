@@ -1,6 +1,6 @@
-// RLS-P3 Wave 1 — 配線ゼロ 8 表の RLS 単独防御 + loud + review-ingest 特有ケース。
+// RLS-P3 Wave 1 — 配線ゼロ 7 表の RLS 単独防御 + loud + review-ingest 特有ケース。
 //
-// 対象 8 表: reviews / answer_events / tag_categories / tag_options / card_tags /
+// 対象 7 表: answer_events / tag_categories / tag_options / card_tags /
 //   entity_mutations / card_asset_refs / ai_usage_users。全て write/read path が既に
 //   setTenantContext 済 (Step 0 §5.3 Wave 1)。本 file は policy 追加の behavioral 実効を
 //   P2 (rls-single-defense.test.ts / rls-context.test.ts) と同型に pin する:
@@ -15,8 +15,8 @@
 //   - entity-mutations/bulk 経路: card_asset_refs + entity_mutations が同 tx で RLS 下でも
 //     従来どおり書ける (cross-tenant user_id は WITH CHECK 42501)。
 //
-// mutating test ゆえ beforeEach で truncate→seed。TenantFixture に無い id (reviews /
-// answer_events / entity_mutations) は owner で拾う。
+// mutating test ゆえ beforeEach で truncate→seed。TenantFixture に無い id (answer_events /
+// entity_mutations) は owner で拾う。
 import { randomUUID } from 'node:crypto'
 
 import { and, eq } from 'drizzle-orm'
@@ -29,7 +29,6 @@ import {
   cardAssetRefs,
   cardTags,
   entityMutations,
-  reviews,
   tagCategories,
   tagOptions,
 } from '@/lib/db/schema'
@@ -54,14 +53,10 @@ afterAll(async () => {
 
 const SEED_DAY = '2026-07-18'
 
-describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
+describe('RLS Wave 1 single-defense (7 zero-wiring tables)', () => {
   let fixture: TenantFixture
   // TenantFixture に含まれない decoy id を owner で拾う (write 代表 + ON CONFLICT 用)。
-  let aReviewId: string
-  let bReviewId: string
-  let aAnswerEventId: string // answer_events.id (PK)
-  let bAnswerEventId: string
-  let aEventId: string // answer_events.event_id (global UNIQUE)
+  let aEventId: string // answer_events.event_id (PK・global UNIQUE)
   let bEventId: string
   let aEntityMutationId: string
   let bEntityMutationId: string
@@ -71,27 +66,14 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
     fixture = await seedTwoTenants()
     const owner = getFixtureOwnerDb()
 
-    const [aRev] = await owner
-      .select({ id: reviews.id })
-      .from(reviews)
-      .where(eq(reviews.userId, fixture.a.userId))
-    const [bRev] = await owner
-      .select({ id: reviews.id })
-      .from(reviews)
-      .where(eq(reviews.userId, fixture.b.userId))
-    aReviewId = aRev!.id
-    bReviewId = bRev!.id
-
     const [aAe] = await owner
-      .select({ id: answerEvents.id, eventId: answerEvents.eventId })
+      .select({ eventId: answerEvents.eventId })
       .from(answerEvents)
       .where(eq(answerEvents.userId, fixture.a.userId))
     const [bAe] = await owner
-      .select({ id: answerEvents.id, eventId: answerEvents.eventId })
+      .select({ eventId: answerEvents.eventId })
       .from(answerEvents)
       .where(eq(answerEvents.userId, fixture.b.userId))
-    aAnswerEventId = aAe!.id
-    bAnswerEventId = bAe!.id
     aEventId = aAe!.eventId
     bEventId = bAe!.eventId
 
@@ -109,15 +91,6 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
 
   // ------------------------------------------------------------------ reads
   describe('read (SELECT with no user_id predicate): A sees own only, never B', () => {
-    it('reviews', async () => {
-      const rows = await asTenant(fixture.a.userId, (tx) =>
-        tx.select({ userId: reviews.userId }).from(reviews),
-      )
-      expect(rows.length).toBeGreaterThan(0)
-      expect(rows.every((r) => r.userId === fixture.a.userId)).toBe(true)
-      expect(rows.map((r) => r.userId)).not.toContain(fixture.b.userId)
-    })
-
     it('answer_events', async () => {
       const rows = await asTenant(fixture.a.userId, (tx) =>
         tx.select({ userId: answerEvents.userId }).from(answerEvents),
@@ -186,43 +159,28 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
   // negative: B の行を A context から狙う → 0 行 (USING が不可視化)・owner で B 不変。
   // positive control: A 自身の行への write は成功する。
   describe('write (targeting B → 0 rows; A own → applied)', () => {
-    it('reviews UPDATE', async () => {
-      const owner = getFixtureOwnerDb()
-      const hack = await asTenant(fixture.a.userId, (tx) =>
-        tx.update(reviews).set({ rating: 1 }).where(eq(reviews.id, bReviewId)).returning({ id: reviews.id }),
-      )
-      expect(hack).toHaveLength(0)
-      const bAfter = await owner.select({ rating: reviews.rating }).from(reviews).where(eq(reviews.id, bReviewId))
-      expect(bAfter[0]?.rating).toBe(3)
-
-      const ok = await asTenant(fixture.a.userId, (tx) =>
-        tx.update(reviews).set({ rating: 1 }).where(eq(reviews.id, aReviewId)).returning({ id: reviews.id }),
-      )
-      expect(ok).toHaveLength(1)
-    })
-
     it('answer_events UPDATE', async () => {
       const owner = getFixtureOwnerDb()
       const hack = await asTenant(fixture.a.userId, (tx) =>
         tx
           .update(answerEvents)
           .set({ isCorrect: false })
-          .where(eq(answerEvents.id, bAnswerEventId))
-          .returning({ id: answerEvents.id }),
+          .where(eq(answerEvents.eventId, bEventId))
+          .returning({ eventId: answerEvents.eventId }),
       )
       expect(hack).toHaveLength(0)
       const bAfter = await owner
         .select({ isCorrect: answerEvents.isCorrect })
         .from(answerEvents)
-        .where(eq(answerEvents.id, bAnswerEventId))
+        .where(eq(answerEvents.eventId, bEventId))
       expect(bAfter[0]?.isCorrect).toBe(true)
 
       const ok = await asTenant(fixture.a.userId, (tx) =>
         tx
           .update(answerEvents)
           .set({ isCorrect: false })
-          .where(eq(answerEvents.id, aAnswerEventId))
-          .returning({ id: answerEvents.id }),
+          .where(eq(answerEvents.eventId, aEventId))
+          .returning({ eventId: answerEvents.eventId }),
       )
       expect(ok).toHaveLength(1)
     })
@@ -370,12 +328,8 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
   describe('loud on missing context (P0RLS) — read + write per table', () => {
     const decoyUser = '00000000-0000-4000-8000-0000000000ff'
 
-    it('reviews: SELECT + DELETE without context raise P0RLS', async () => {
-      await assertRejectsWithP0RLS(() => getDb().select({ id: reviews.id }).from(reviews))
-      await assertRejectsWithP0RLS(() => getDb().delete(reviews).where(eq(reviews.userId, decoyUser)))
-    })
     it('answer_events: SELECT + DELETE without context raise P0RLS', async () => {
-      await assertRejectsWithP0RLS(() => getDb().select({ id: answerEvents.id }).from(answerEvents))
+      await assertRejectsWithP0RLS(() => getDb().select({ eventId: answerEvents.eventId }).from(answerEvents))
       await assertRejectsWithP0RLS(() => getDb().delete(answerEvents).where(eq(answerEvents.userId, decoyUser)))
     })
     it('tag_categories: SELECT + DELETE without context raise P0RLS', async () => {
@@ -416,10 +370,13 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
             cardId: fixture.a.cardId,
             userId: fixture.a.userId,
             isCorrect: true,
+            rating: 3,
             answeredAt: new Date(SEED_DAY),
+            applied: true,
+            createdAt: new Date(SEED_DAY),
           })
           .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ id: answerEvents.id }),
+          .returning({ eventId: answerEvents.eventId }),
       )
       expect(dup).toHaveLength(0)
 
@@ -432,10 +389,13 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
             cardId: fixture.a.cardId,
             userId: fixture.a.userId,
             isCorrect: true,
+            rating: 3,
             answeredAt: new Date(SEED_DAY),
+            applied: true,
+            createdAt: new Date(SEED_DAY),
           })
           .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ id: answerEvents.id }),
+          .returning({ eventId: answerEvents.eventId }),
       )
       expect(fresh).toHaveLength(1)
     })
@@ -454,10 +414,13 @@ describe('RLS Wave 1 single-defense (8 zero-wiring tables)', () => {
             cardId: fixture.a.cardId,
             userId: fixture.a.userId,
             isCorrect: true,
+            rating: 3,
             answeredAt: new Date(SEED_DAY),
+            applied: true,
+            createdAt: new Date(SEED_DAY),
           })
           .onConflictDoNothing({ target: answerEvents.eventId })
-          .returning({ id: answerEvents.id }),
+          .returning({ eventId: answerEvents.eventId }),
       )
       expect(res).toHaveLength(0)
 

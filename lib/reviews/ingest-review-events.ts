@@ -1,233 +1,214 @@
 import 'server-only'
-// P2 時点の置き場。Learning context の最終形ではない(spec §3.1 条件 1 — replay-card は lib/cards/ に分散)。
-// A-2: selected_answer_ids は対象 card の options に実在する id のみを許容する(server 検証)。
+// 復習 ingest の orchestrator (spec §2.2 の 9 手順)。純粋 domain (session-aggregate) と
+// infra (session-repository) を単一 withTenantTx で束ねる。
+//
+// 受理可能な event は card 不在・option 不一致でも **すべて insert** し (applied=false)、
+// 200 応答で client は synced 化する = 再送が構造的に止まる。failed[] に載るのは
+// event_id 衝突 (所有権 or 内容不一致) だけ。
+// tx throw は握らず透過する (route が classifyBulkError で 503 / 400 に分岐する)。
 
 import { z } from 'zod'
 import { type User } from '@/lib/db/schema'
 import { withTenantTx } from '@/lib/db/tenant-tx'
-import { type ReplayCardState } from '@/lib/cards/replay-card'
-import { serializeDbError } from '@/lib/db/serialize-db-error'
-import { reportRlsContextFailure } from '@/lib/db/report-rls-context-failure'
+import { todayInJst } from '@/lib/jst'
 import { logger } from '@/lib/logger'
 import {
-  cardIdsSchema,
-  selectedAnswerIdsSchema,
-} from '@/lib/validation/review-session-bounds'
+  answerEventWireSchema,
+  type AnswerEventWire,
+} from '@/lib/sync/shared/answer-event-schema'
 import {
-  aggregateStudyDays,
-  admitEvents,
   buildCardOptionIndex,
-  planReplay,
-  replaySession,
+  foldSession,
+  planFold,
 } from '@/lib/reviews/domain/session-aggregate'
 import {
   applyCardFinalStates,
   insertAnswerEvents,
-  insertReviews,
-  loadCardReplayStates,
-  upsertStudyDays,
+  lockCardReplayStates,
+  markApplied,
+  recomputeStudyDays,
+  verifyEventCollisions,
+  type AnswerEventInsertRow,
 } from '@/lib/reviews/session-repository'
+import type { ReplayCardState } from '@/lib/cards/replay-card'
 
 // ---------------------------------------------------------------------------
-// Payload validation (zod)
+// Payload validation (zod) — event schema は client 送信前検証と共有 1 定義。
+// 1 回の flush で 1000 件超は実用上ないため上限を設けて巨大 payload を弾く。
 // ---------------------------------------------------------------------------
-
-// zod v4: top-level `z.uuid()` / `z.iso.datetime()` を使用 (旧 `z.string().uuid()` /
-// `z.string().datetime()` は deprecated)。
-const sessionSchema = z.object({
-  session_id: z.uuid(),
-  exam_id: z.uuid().optional(),
-  mode: z.enum(['smart', 'custom']),
-  card_ids: cardIdsSchema,
-  started_at: z.iso.datetime(),
-  completed_at: z.iso.datetime().optional(),
-  status: z.enum(['active', 'completed', 'abandoned']),
-})
-
-const eventSchema = z.object({
-  event_id: z.uuid(),
-  card_id: z.uuid(),
-  selected_answer_ids: selectedAnswerIdsSchema,
-  is_correct: z.boolean(),
-  answered_at: z.iso.datetime(),
-  elapsed_ms: z.number().int().nonnegative().optional(),
-  // FSRS rating (1=Again / 2=Hard / 3=Good / 4=Easy)。 未指定なら handler 側で
-  // is_correct から derive (route header 参照)。 z.union(literals) を使うのは
-  // numeric enum 厳格化 (z.number() より narrow、 type 上も RatingInt と整合)。
-  rating: z
-    .union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)])
-    .optional(),
-})
 
 const payloadSchema = z.object({
-  session: sessionSchema,
-  // 1 回の flush で 1000 件超は実用上ないため上限を設けて DoS 寄りの巨大 payload を弾く。
-  events: z.array(eventSchema).max(1000),
+  events: z.array(answerEventWireSchema).max(1000),
 })
 
-type BulkPayload = z.infer<typeof payloadSchema>
-type ParsedEvent = z.infer<typeof eventSchema>
-
-// deriveRating (FSRS rating の一元決定・P0 §A #7 凍結契約) と Phase 1-2f の
-// pure ロジックは lib/reviews/domain/session-aggregate.ts に、SQL は
-// lib/reviews/session-repository.ts に分離済 (R2)。processSession は両者を束ねる
-// orchestrator に縮退した。
+// 端末時計異常として拾う skew の下限。通常の NTP skew を大きく超える値のみを
+// 観測対象にする (それ以下はノイズ)。列は増やさず log だけ出す (spec §2.3)。
+const CLOCK_SKEW_WARN_MS = 60_000
 
 // ---------------------------------------------------------------------------
-// processSession — 単一 tx で全 events を処理し failed[] を返す
+// processAnswerEvents
 // ---------------------------------------------------------------------------
-// future: multi-session payload 対応の拡張ポイント。 今日は handler から 1 回だけ呼ぶ。
 
-async function processSession(
+export async function processAnswerEvents(
   user: User,
-  session: BulkPayload['session'],
-  events: ParsedEvent[],
+  events: AnswerEventWire[],
+  receivedAt: Date,
 ): Promise<{ failed: string[] }> {
-  // events が空の場合は tx に入らず即返却
-  if (events.length === 0) {
-    return { failed: [] }
+  // 手順 1: payload 内 event_id 重複は先勝ち dedupe。内容不一致の重複は監査痕跡を残す。
+  const deduped = new Map<string, AnswerEventWire>()
+  for (const ev of events) {
+    const first = deduped.get(ev.event_id)
+    if (first === undefined) {
+      deduped.set(ev.event_id, ev)
+      continue
+    }
+    if (!sameWireEvent(first, ev)) {
+      logger.warn({
+        event: 'review_events.bulk.duplicate_event_id_mismatch',
+        userId: user.id,
+        eventId: ev.event_id,
+      })
+    }
   }
 
-  // Phase 1: orphan exclusion に使う distinct card_id セット
-  const distinctCardIds = [...new Set(events.map((e) => e.card_id))]
+  // events が空 (or 全部 dedupe されて 0 件になることはない) なら tx に入らず即返却。
+  if (deduped.size === 0) return { failed: [] }
 
-  const orphanFailed: string[] = []
-  let txFailed: string[] = []
-
-  try {
-    // RLS-P3: withTenantTx が接続取得 + tenant tx + 冒頭 setTenantContext を担う。
-    // 内部 try/catch が rollback-on-throw を握って failed[] を組む契約を保つため、
-    // tx 境界はこの関数が withTenantTx で所有する (caller に tx を渡す形にすると
-    // throw を握った後に commit されてしまい partial write が残る)。
-    await withTenantTx(user.id, async (tx) => {
-      // ------------------------------------------------------------------
-      // Phase 1 — cards SELECT (owner-scoped) → cardStateMap + option index
-      // ------------------------------------------------------------------
-      // repo が raw rows を返す。cardStateMap (ReplayCardState を row から組む
-      // orchestrator glue) はここに残し、同 rows を domain の buildCardOptionIndex
-      // に渡す (A-2 検証用の option id Set)。
-      const cardRows = await loadCardReplayStates(tx, user.id, distinctCardIds)
-
-      // card_id → ReplayCardState マップを構築
-      const cardStateMap = new Map<string, ReplayCardState>()
-      for (const row of cardRows) {
-        cardStateMap.set(row.id, {
-          due: row.due,
-          stability: row.stability,
-          difficulty: row.difficulty,
-          elapsedDays: row.elapsedDays,
-          scheduledDays: row.scheduledDays,
-          reps: row.reps,
-          lapses: row.lapses,
-          state: row.state as 0 | 1 | 2 | 3,
-          learningSteps: row.learningSteps,
-          lastReview: row.lastReview,
-          answered: row.answered,
-          lastCorrect: row.lastCorrect,
-          currentStreak: row.currentStreak,
-        })
-      }
-      // card_id → 実在 option id の Set(A-2 検証用・fail-closed)。
-      const cardOptionIdMap = buildCardOptionIndex(cardRows)
-
-      // orphan exclusion + A-2: rejected は orphanFailed へ (現 wire failed[] と同形)。
-      const { applicable: applicableEvents, rejected } = admitEvents(
-        events,
-        cardOptionIdMap,
-      )
-      orphanFailed.push(...rejected)
-
-      // applicable events が 0 件なら write フェーズはスキップ
-      if (applicableEvents.length === 0) return
-
-      // ------------------------------------------------------------------
-      // Phase 2a — answer_events bulk INSERT (ON CONFLICT DO NOTHING)
-      // ------------------------------------------------------------------
-      // 実際に INSERT された event_id セットを返す (duplicate は除外される)。
-      const insertedEventIds = await insertAnswerEvents(
-        tx,
-        applicableEvents.map((ev) => ({
-          eventId: ev.event_id,
-          sessionId: session.session_id,
-          cardId: ev.card_id,
-          userId: user.id,
-          selectedAnswerIds: ev.selected_answer_ids,
-          isCorrect: ev.is_correct,
-          answeredAt: new Date(ev.answered_at),
-          elapsedMs: ev.elapsed_ms ?? null,
-        })),
-      )
-
-      // ------------------------------------------------------------------
-      // Phase 2b/2c — replay gating (dedup) + in-memory FSRS replay
-      // ------------------------------------------------------------------
-      // planReplay: insertedEventIds gating + intra-payload dedup + payload 順
-      // per-card group。replaySession: 各 group を replayCard で fold し finalStates
-      // と reviewRows を組む。groups (Map) の平坦化 = 現 eventsToApply と同 multiset
-      // (study_days 集計 = 順不同の加算ゆえ dayMap 値は不変)。
-      const groups = planReplay(applicableEvents, insertedEventIds)
-      const eventsToApply = [...groups.values()].flat()
-
-      if (eventsToApply.length === 0) return
-
-      const { finalStates, reviewRows } = replaySession(cardStateMap, groups)
-
-      // reviews 行の順序は group 順 (card_id 初出順)。 study_days は eventsToApply から
-      // 別途集計するため、 reviews INSERT 順は最終結果に影響しない。
-
-      // ------------------------------------------------------------------
-      // Phase 2d — reviews bulk INSERT
-      // ------------------------------------------------------------------
-      await insertReviews(
-        tx,
-        reviewRows.map((r) => ({
-          userId: user.id,
-          cardId: r.cardId,
-          rating: r.rating,
-          reviewedAt: r.reviewedAt,
-        })),
-      )
-
-      // ------------------------------------------------------------------
-      // Phase 2e — cards UPDATE (single VALUES UPDATE、owner-scoped)
-      // finalStates の全エントリを 1 round-trip で UPDATE。件数不一致は repo が throw。
-      // finalStates.size === 0 は repo 内で no-op。
-      // ------------------------------------------------------------------
-      await applyCardFinalStates(tx, user.id, finalStates)
-
-      // ------------------------------------------------------------------
-      // Phase 2f — study_days UPSERT (per JST day)
-      // ------------------------------------------------------------------
-      // eventsToApply を JST date でグループ化して count 集計 (domain)、
-      // distinct 集計 SELECT + per-day UPSERT は repo。
-      const dayMap = aggregateStudyDays(eventsToApply)
-
-      if (dayMap.size !== 0) {
-        await upsertStudyDays(tx, user.id, dayMap)
-      }
-    })
-  } catch (err) {
-    // tx 内部で予期しないエラー → rollback 済み。 applicable events を全て failed に。
-    // orphan は既に orphanFailed に積んでいる。
-    // [OBSERVABILITY A] native DB error を可視化するため serializeDbError で plain object 化。
-    // logger の expandError は Error instance を {name,message,stack} に潰すため、 そのまま
-    // 渡すと postgres-js の code/severity/detail/hint/constraint_name が消える。
-    logger.warn({
-      event: 'review_events.bulk.tx_failed',
-      sessionId: session.session_id,
+  // 手順 2: clamp。`eff = min(answered_at, receivedAt)` で未来時計を断ち、
+  // created_at と同一時刻源にして CHECK (answered_at <= created_at) を厳密成立させる。
+  // 下界 clamp はしない (過去 event はオフライン蓄積の正当ケース)。
+  const rows: AnswerEventInsertRow[] = []
+  const rawAnsweredAt = new Map<string, Date>()
+  for (const ev of deduped.values()) {
+    const raw = new Date(ev.answered_at)
+    const skewMs = raw.getTime() - receivedAt.getTime()
+    if (skewMs > CLOCK_SKEW_WARN_MS) {
+      logger.warn({
+        event: 'review_events.bulk.clock_skew',
+        userId: user.id,
+        eventId: ev.event_id,
+        skewMs,
+      })
+    }
+    rawAnsweredAt.set(ev.event_id, raw)
+    rows.push({
+      eventId: ev.event_id,
       userId: user.id,
-      err: serializeDbError(err, { cardIds: events.map((e) => e.card_id) }),
+      cardId: ev.card_id,
+      sessionId: ev.session_id ?? null,
+      selectedAnswerIds: ev.selected_answer_ids,
+      isCorrect: ev.is_correct,
+      rating: ev.rating,
+      answeredAt: skewMs > 0 ? receivedAt : raw,
+      elapsedMs: ev.elapsed_ms ?? null,
+      applied: false,
+      createdAt: receivedAt,
     })
-    // RLS-P3 Task 7: P0RLS (tenant context 未設定) なら台帳 + Discord へ loud alert。
-    // 非 P0RLS は short-circuit・記録経路の throw は内部で握る (failed[] 契約不変)。
-    await reportRlsContextFailure(err, { route: 'review-events/bulk', op: 'ingest' })
-    txFailed = events
-      .filter((ev) => !orphanFailed.includes(ev.event_id))
-      .map((ev) => ev.event_id)
   }
 
-  return { failed: [...orphanFailed, ...txFailed] }
+  return withTenantTx(user.id, async (tx) => {
+    // 手順 3: distinct card_id を ID 昇順で FOR UPDATE (同一 card の並走 flush を直列化)。
+    const sortedCardIds = [...new Set(rows.map((r) => r.cardId))].sort()
+    const cardRows = await lockCardReplayStates(tx, user.id, sortedCardIds)
+
+    const cardStates = new Map<string, ReplayCardState>()
+    for (const row of cardRows) {
+      cardStates.set(row.id, {
+        due: row.due,
+        stability: row.stability,
+        difficulty: row.difficulty,
+        elapsedDays: row.elapsedDays,
+        scheduledDays: row.scheduledDays,
+        reps: row.reps,
+        lapses: row.lapses,
+        state: row.state,
+        learningSteps: row.learningSteps,
+        lastReview: row.lastReview,
+        answered: row.answered,
+        lastCorrect: row.lastCorrect,
+        currentStreak: row.currentStreak,
+      })
+    }
+    const optionIndex = buildCardOptionIndex(cardRows)
+    const lockedCardIds = new Set(optionIndex.keys())
+
+    // 手順 4: 全 event を applied=false で INSERT → 非新規は 2 段検証で failed[] を組む。
+    const insertedEventIds = await insertAnswerEvents(tx, rows)
+    const failed = await verifyEventCollisions(
+      tx,
+      user.id,
+      rows
+        .filter((r) => !insertedEventIds.has(r.eventId))
+        .map((r) => ({
+          eventId: r.eventId,
+          cardId: r.cardId,
+          sessionId: r.sessionId,
+          selectedAnswerIds: r.selectedAnswerIds,
+          isCorrect: r.isCorrect,
+          rating: r.rating,
+          rawAnsweredAt: rawAnsweredAt.get(r.eventId)!,
+          elapsedMs: r.elapsedMs,
+        })),
+    )
+    if (failed.length > 0) {
+      logger.warn({
+        event: 'review_events.bulk.event_id_collision',
+        userId: user.id,
+        eventIds: failed,
+      })
+    }
+
+    // 手順 5: 新規 ∧ card ロック済み ∧ A-2 pass のみを per-card 整列して fold。
+    const newRows = rows.filter((r) => insertedEventIds.has(r.eventId))
+    const plan = planFold(newRows, lockedCardIds, optionIndex)
+    const { finalStates, appliedEventIds } = foldSession(cardStates, plan)
+
+    // 手順 6-7: cards UPDATE → applied 反転。
+    await applyCardFinalStates(tx, user.id, finalStates)
+    await markApplied(tx, user.id, [...appliedEventIds])
+
+    // 手順 8: 今回 applied になった event が跨る JST day を絶対値で再集計。
+    const appliedDays = new Set<string>()
+    for (const row of newRows) {
+      if (appliedEventIds.has(row.eventId)) {
+        appliedDays.add(todayInJst(row.answeredAt))
+      }
+    }
+    await recomputeStudyDays(tx, user.id, [...appliedDays])
+
+    // applied=false の理由を構造化 log に残す (order_gate = 厳密に古い event)。
+    const orderGateSkipped = newRows
+      .filter(
+        (r) =>
+          !appliedEventIds.has(r.eventId) &&
+          !plan.skipped.some((s) => s.eventId === r.eventId),
+      )
+      .map((r) => ({ eventId: r.eventId, cardId: r.cardId }))
+    if (plan.skipped.length > 0 || orderGateSkipped.length > 0) {
+      logger.warn({
+        event: 'review_events.bulk.not_applied',
+        userId: user.id,
+        skipped: plan.skipped,
+        orderGateSkipped,
+      })
+    }
+
+    return { failed }
+  })
 }
 
-export { payloadSchema, processSession }
-export type { BulkPayload, ParsedEvent }
+// payload 内 duplicate の内容一致判定。answered_at は ISO 表現差を吸収するため epoch ms 比較。
+function sameWireEvent(a: AnswerEventWire, b: AnswerEventWire): boolean {
+  return (
+    a.card_id === b.card_id &&
+    a.session_id === b.session_id &&
+    a.is_correct === b.is_correct &&
+    a.rating === b.rating &&
+    a.elapsed_ms === b.elapsed_ms &&
+    new Date(a.answered_at).getTime() === new Date(b.answered_at).getTime() &&
+    a.selected_answer_ids.length === b.selected_answer_ids.length &&
+    a.selected_answer_ids.every((id, i) => id === b.selected_answer_ids[i])
+  )
+}
+
+export { payloadSchema }

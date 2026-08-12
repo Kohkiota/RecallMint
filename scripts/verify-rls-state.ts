@@ -64,7 +64,7 @@ export const USERS_LIVE_PRED =
 
 /**
  * 共通形 RLS 表(各表ちょうど 1 policy `<table>_tenant`・FOR ALL・TO recallmint_app・
- * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 8 + Wave2 5 + ②-4a 2。
+ * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 7 + Wave2 4 + ②-4a 2。
  */
 export const COMMON_FORM_RLS_TABLES = [
   // P2 共通形 4
@@ -72,8 +72,7 @@ export const COMMON_FORM_RLS_TABLES = [
   'cards',
   'tombstones',
   'study_days',
-  // Wave 1 (8)
-  'reviews',
+  // Wave 1 (7)
   'answer_events',
   'tag_categories',
   'tag_options',
@@ -81,8 +80,7 @@ export const COMMON_FORM_RLS_TABLES = [
   'entity_mutations',
   'card_asset_refs',
   'ai_usage_users',
-  // Wave 2 (5)
-  'study_sessions',
+  // Wave 2 (4)
   'user_settings',
   'assets',
   'source_documents',

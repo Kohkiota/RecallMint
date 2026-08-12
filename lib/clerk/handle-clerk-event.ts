@@ -12,7 +12,7 @@ import {
   aiUsageUsers,
   uploadRecords,
   userSettings,
-  studySessions,
+  answerEvents,
   tombstones,
   entityMutations,
   tagCategories,
@@ -219,9 +219,10 @@ async function handleUserDeleted(
     //   users に cascade するテーブルのうち、 親 cascade chain がないもの。 うち 10 件は
     //   物理 DELETE、 assets のみ soft-delete (deleting UPDATE = 唯一の例外・下記)。
     //     exams / study_days / contact_messages / ai_usage_users / upload_records /
-    //     user_settings / study_sessions / tombstones / entity_mutations / tag_categories /
+    //     user_settings / answer_events / tombstones / entity_mutations / tag_categories /
     //     assets
-    //   (study_sessions は exam_id が set null = 非経路、 user_id のみが削除 path)
+    //   (answer_events は card_id / session_id とも FK なし = dangling 正規ゆえ親 chain が
+    //    存在せず、 user_id のみが削除 path・FSRS 整合 Sprint A spec §8)
     //   (assets は Group I だが唯一の soft-delete 例外 = 物理 DELETE せず status='deleting'
     //    へ UPDATE する。 理由 = R2 object への手掛かり (object_key) を保全し、 GC reconciler
     //    の優先 sweep (deletion 由来 = grace 非適用) に R2 実体 + 行の物理回収を委ねるため
@@ -233,9 +234,9 @@ async function handleUserDeleted(
     //    時にあった cards cascade chain がなくなり、 Group I に昇格)
     //   (tag_categories は Tag-1 で新設、 試験横断 master のため親 chain なし → Group I)
     // - **Group II (明示 DELETE しない、 親 cascade chain で連鎖)**: cards / source_documents
-    //   は exam_id cascade で exams DELETE 時に連鎖、 reviews / answer_events は cards
-    //   cascade (= exams chain) で連鎖、 tag_options は category_id cascade で tag_categories
-    //   経由で連鎖、 card_tags は card_id / option_id の双方 cascade で連鎖。 ここに二重に書かない。
+    //   は exam_id cascade で exams DELETE 時に連鎖、 tag_options は category_id cascade で
+    //   tag_categories 経由で連鎖、 card_tags は card_id / option_id の双方 cascade で連鎖。
+    //   ここに二重に書かない。
     // - 網羅性は invariant test (route.test.ts の「Group I − soft-delete 例外 (assets) が
     //   handler の明示 DELETE 集合と一致」 検証) が保証。 schema に user_id direct FK の
     //   新テーブルを追加すると invariant test が落ちて気づける (assets 以外は依然明示
@@ -272,7 +273,7 @@ async function handleUserDeleted(
         await tx.delete(aiUsageUsers).where(eq(aiUsageUsers.userId, internalUserId))
         await tx.delete(uploadRecords).where(eq(uploadRecords.userId, internalUserId))
         await tx.delete(userSettings).where(eq(userSettings.userId, internalUserId))
-        await tx.delete(studySessions).where(eq(studySessions.userId, internalUserId))
+        await tx.delete(answerEvents).where(eq(answerEvents.userId, internalUserId))
         await tx.delete(tombstones).where(eq(tombstones.userId, internalUserId))
         await tx.delete(entityMutations).where(eq(entityMutations.userId, internalUserId))
         await tx.delete(tagCategories).where(eq(tagCategories.userId, internalUserId))

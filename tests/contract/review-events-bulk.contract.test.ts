@@ -1,93 +1,43 @@
 /**
  * tests/contract/review-events-bulk.contract.test.ts
  *
- * Wire-contract snapshot for POST /api/review-events/bulk.
+ * Wire-contract snapshot for POST /api/review-events/bulk (FSRS 整合 Sprint A・spec §2)。
  *
- * Frozen faces (spec §3.2 review-events row + §A + P0 brief):
- *   1. { ok, failed } response shape
- *   2. Captured DB writes (extracted values, NOT raw Drizzle SQL):
- *      sessionUpsert, answerEvent INSERT, reviews INSERT, study_days UPSERT
- *   3. rating derive contract (§A #7):
- *      - answer_events INSERT has NO rating column (ratingPresent: false frozen)
- *      - reviews.rating and study_days.correct_count derived via deriveRating
- *      - correct_count = rating>=2, NOT is_correct
- *      - golden divergence case: rating=3 (Good) + is_correct=false
- *        → reviews.rating=3 AND correct_count=1 (rating>=2 wins over is_correct=false)
- *   4. Branch coverage (each frozen via snapshot):
- *      - duplicate event skip → absent from failed[], FSRS not applied
- *      - orphan event → event_id in failed[], HTTP 200
- *      - tx rollback → all applicable events in failed[], HTTP 200
- *      - 503 + Retry-After header value (hard-assert '30')
+ * Frozen faces:
+ *   1. request 形 = `{ events: [...] }`(session オブジェクトは廃止)
+ *   2. response 形 = 200 `{ ok, failed }` / 400 / 503 + Retry-After
+ *   3. 捕捉した DB write の値 (raw Drizzle SQL ではなく抽出値):
+ *      answer_events INSERT / cards UPDATE の per-card tuple / applied 反転 /
+ *      study_days の対象 day 確保
+ *   4. 正誤 2 本立て (spec §6): answer_events は is_correct と rating を **両方** 持ち、
+ *      統計列 (last_correct / current_streak) は is_correct 由来・scheduling は rating 由来
+ *   5. failed[] の意味 = event_id 衝突のみ。dangling / option 不一致は applied=false で
+ *      保存され failed には載らない (再送を構造的に止める終端設計)
  *
  * NOT frozen:
  *   - logger payloads (event/err fields implementation-fragile)
  *   - zod issues array shape (schema-version-fragile)
- *   - timing metrics
- *   - conflictSet SQL expressions (Drizzle AST-fragile)
+ *   - 再集計 SQL の AST (session-repository.test.ts が骨格を pin する)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// ── Hoisted state (runs before vi.mock factories, before module imports) ───────
-// Inlined to avoid import-before-hoisting issues; resetState() from fixtures is
-// called in beforeEach to restore to exactly this shape.
+// ── Hoisted state (runs before vi.mock factories, before module imports) ──────
 const { state } = vi.hoisted(() => ({
-  state: {
-    sessionUpsertCalls: [] as Array<{
-      values: Record<string, unknown>
-      conflictSet: Record<string, unknown>
-      conflictSetWhere: unknown
-    }>,
-    sessionUpsertShouldThrow: false,
-    sessionUpsertError: null as null | Error,
-    // G1: study_sessions row store (upsert merge semantics). resetState() reinits.
-    sessionRows: new Map<string, Record<string, unknown>>(),
-    answerEventInsertValues: null as null | Record<string, unknown>[],
-    duplicateEventIds: new Set<string>(),
-    cardRows: new Map<string, Record<string, unknown>>(),
-    bulkUpdateCapture: null as null | {
-      set: Record<string, unknown>
-      fromSql: unknown
-      where: unknown
-    },
-    bulkUpdateCallCount: 0,
-    bulkUpdateReturnOverride: null as null | Array<{ id: string }>,
-    reviewsInsertValues: null as null | Record<string, unknown>[],
-    studyDaysUpsertCalls: [] as Array<{
-      values: Record<string, unknown>
-      conflictSet: Record<string, unknown>
-    }>,
-    executeDistinctRowsOverride: [
-      { day: '2026-05-25', distinct_count: 1 },
-    ] as Array<{ day: string; distinct_count: number }>,
-    executeCallCount: 0,
-    executeCalls: [] as unknown[],
-    txShouldThrow: false,
-  },
+  state: {} as import('../fixtures/review-events').ReviewEventsState,
 }))
 
 // ── Mocks (all declared before route/fixture imports) ─────────────────────────
 
-vi.mock('@/lib/auth/ensure-user', () => ({
-  getCurrentUser: vi.fn(),
-}))
-
+vi.mock('@/lib/auth/ensure-user', () => ({ getCurrentUser: vi.fn() }))
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
-
-vi.mock('@/lib/db', () => ({
-  getDb: vi.fn(() => makeFakeDb(state)),
+vi.mock('@/lib/db/report-rls-context-failure', () => ({
+  reportRlsContextFailure: vi.fn(async () => {}),
 }))
-
-// RLS-P3 Wave2: Phase 0 の upsertSessionGuarded は withTenantTx で包まれた。RLS-P3
-// Task 2 で withTenantTx(userId, fn) 署名へ変更(getDb を内部取得)。pass-through stub で
-// fn(makeFakeDb(state)) を直呼びし、session upsert を従来どおり fakeDb.insert で処理させる
-// (state 共有ゆえ getDb 経由の processSession 側 fake と観測は同一)。
-// setTenantContext は processSession の実 tx が使うため importOriginal で実物を残す。
-vi.mock('@/lib/db/tenant-tx', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/db/tenant-tx')>()),
-  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) => fn(makeFakeDb(state)),
+vi.mock('@/lib/db/tenant-tx', () => ({
+  withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) => fn(makeFakeTx(state)),
 }))
 
 // ── Route under test ──────────────────────────────────────────────────────────
@@ -98,14 +48,16 @@ import { getCurrentUser } from '@/lib/auth/ensure-user'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 import {
-  resetState,
-  makeFakeDb,
+  addCardRow,
+  createState,
+  decodeValuesFromSql,
+  makeFakeTx,
   makeReq,
   makeValidPayload,
-  addCardRow,
+  resetState,
+  sqlParams,
   FAKE_USER,
   VALID_CARD_ID,
-  VALID_CARD_ID_2,
   VALID_EVENT_ID,
   VALID_EVENT_ID_2,
 } from '../fixtures/review-events'
@@ -113,114 +65,49 @@ import {
 // ── BULK_TRANSIENT_RETRY_SEC for Retry-After hard-assert ──────────────────────
 import { BULK_TRANSIENT_RETRY_SEC } from '@/lib/retry/classify-bulk-error'
 
+// handler 内で採取される receivedAt を固定する (clamp / created_at の決定性)。
+const RECEIVED_AT = new Date('2026-05-26T01:00:00.000Z')
+
 // ── Value extractors (no raw Drizzle SQL/AST objects in snapshots) ────────────
 
-/**
- * Extract serializable fields from a session upsert call.
- * Converts Date values to ISO strings; flags I-1 (cardIds absent from conflictSet)
- * and C-1 (setWhere defined).
- */
-function extractSessionUpsert(call: {
-  values: Record<string, unknown>
-  conflictSet: Record<string, unknown>
-  conflictSetWhere: unknown
-}) {
-  const { values, conflictSet } = call
-  return {
-    values: {
-      sessionId: values['sessionId'],
-      userId: values['userId'],
-      examId: values['examId'],
-      mode: values['mode'],
-      cardIds: values['cardIds'],
-      status: values['status'],
-      startedAt:
-        values['startedAt'] instanceof Date
-          ? values['startedAt'].toISOString()
-          : values['startedAt'],
-      completedAt:
-        values['completedAt'] instanceof Date
-          ? values['completedAt'].toISOString()
-          : (values['completedAt'] ?? null),
-    },
-    conflictSet: {
-      status: conflictSet['status'],
-      completedAt:
-        conflictSet['completedAt'] instanceof Date
-          ? conflictSet['completedAt'].toISOString()
-          : (conflictSet['completedAt'] ?? null),
-      // I-1: card_ids must NOT be in conflictSet (frozen: false)
-      cardIdsPresent: 'cardIds' in conflictSet,
-    },
-    // C-1: setWhere must be defined (cross-tenant write prevention)
-    setWhereDefined: call.conflictSetWhere !== undefined,
-  }
-}
-
-/**
- * Extract serializable fields from answer_events INSERT rows.
- * Converts answeredAt Date → ISO string.
- * Includes ratingPresent flag to freeze the contract that rating is ABSENT.
- */
 function extractAnswerEventRows(rows: Record<string, unknown>[]) {
   return rows.map((row) => ({
     eventId: row['eventId'],
-    sessionId: row['sessionId'],
-    cardId: row['cardId'],
     userId: row['userId'],
+    cardId: row['cardId'],
+    sessionId: row['sessionId'],
     selectedAnswerIds: row['selectedAnswerIds'],
     isCorrect: row['isCorrect'],
-    answeredAt:
-      row['answeredAt'] instanceof Date
-        ? (row['answeredAt'] as Date).toISOString()
-        : row['answeredAt'],
-    elapsedMs: row['elapsedMs'],
-    // rating MUST be absent from answer_events — this is the contract
-    ratingPresent: 'rating' in row,
-  }))
-}
-
-/**
- * Extract serializable fields from reviews INSERT rows.
- * Converts reviewedAt Date → ISO string.
- */
-function extractReviewRows(rows: Record<string, unknown>[]) {
-  return rows.map((row) => ({
-    userId: row['userId'],
-    cardId: row['cardId'],
     rating: row['rating'],
-    reviewedAt:
-      row['reviewedAt'] instanceof Date
-        ? (row['reviewedAt'] as Date).toISOString()
-        : row['reviewedAt'],
+    answeredAt: (row['answeredAt'] as Date).toISOString(),
+    elapsedMs: row['elapsedMs'],
+    applied: row['applied'],
+    createdAt: (row['createdAt'] as Date).toISOString(),
   }))
 }
 
-/**
- * Extract serializable fields from a study_days UPSERT call.
- * The INSERT values are all primitives. The conflictSet SQL expressions
- * (reviewCount += N, correctCount += N) are Drizzle SQL — not snapshotted.
- */
-function extractStudyDayCall(call: {
-  values: Record<string, unknown>
-  conflictSet: Record<string, unknown>
-}) {
+function extractCardUpdate() {
+  const capture = state.bulkUpdateCapture
+  if (!capture) return null
+  return decodeValuesFromSql(capture.fromSql).map((t) => ({
+    id: t.id,
+    reps: t.reps,
+    lapses: t.lapses,
+    state: t.state,
+    answered: t.answered,
+    lastCorrect: t.lastCorrect,
+    currentStreak: t.currentStreak,
+    lastReview: t.lastReview,
+  }))
+}
+
+function extractAppliedMark() {
+  if (state.markAppliedCalls.length === 0) return null
+  const params = sqlParams(state.markAppliedCalls[0].where) as string[]
   return {
-    // INSERT values: all primitives
-    values: {
-      userId: call.values['userId'],
-      day: call.values['day'],
-      reviewCount: call.values['reviewCount'],
-      correctCount: call.values['correctCount'],
-      distinctCardCount: call.values['distinctCardCount'],
-    },
-    // conflictSet: only distinctCardCount is a plain value (number)
-    // reviewCount/correctCount are Drizzle SQL expressions — presence only
-    conflictSet: {
-      distinctCardCount: call.conflictSet['distinctCardCount'],
-      reviewCountIsSql: typeof call.conflictSet['reviewCount'] === 'object',
-      correctCountIsSql: typeof call.conflictSet['correctCount'] === 'object',
-    },
+    set: state.markAppliedCalls[0].set,
+    userId: params[0],
+    eventIds: params.slice(1),
   }
 }
 
@@ -228,401 +115,177 @@ function extractStudyDayCall(call: {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(RECEIVED_AT)
+  Object.assign(state, createState())
   resetState(state)
-  // Override distinct rows to match our test day (2026-05-25, 1 distinct card)
-  state.executeDistinctRowsOverride = [{ day: '2026-05-25', distinct_count: 1 }]
-  // Default: VALID_CARD_ID exists (not orphan)
+  vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
   addCardRow(state, VALID_CARD_ID)
 })
 
 afterEach(() => {
-  vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('POST /api/review-events/bulk — wire contract', () => {
-
   // ── §1 Golden path: full DB write capture ─────────────────────────────────
 
-  it('golden: { ok, failed } + all DB writes captured (sessionUpsert + answerEvent + reviews + study_days)', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
+  it('golden: { ok, failed } + answer_events INSERT / cards UPDATE / applied / study_days', async () => {
     const res = await POST(makeReq(makeValidPayload()))
     expect(res.status).toBe(200)
 
-    // 1. Response shape { ok, failed }
-    const body = await res.json()
-    expect(body).toMatchSnapshot()
-
-    // 2. Session upsert (extracted values)
-    expect(state.sessionUpsertCalls).toHaveLength(1)
-    expect(extractSessionUpsert(state.sessionUpsertCalls[0]!)).toMatchSnapshot()
-
-    // 3. answer_events INSERT (extracted values — no rating column)
-    expect(state.answerEventInsertValues).not.toBeNull()
+    expect(await res.json()).toMatchSnapshot()
     expect(extractAnswerEventRows(state.answerEventInsertValues!)).toMatchSnapshot()
-
-    // 4. reviews INSERT (rating derived from is_correct=true → 3 Good)
-    expect(state.reviewsInsertValues).not.toBeNull()
-    expect(extractReviewRows(state.reviewsInsertValues!)).toMatchSnapshot()
-
-    // 5. study_days UPSERT (correct_count=1 because rating=3 >= 2)
-    expect(state.studyDaysUpsertCalls).toHaveLength(1)
-    expect(extractStudyDayCall(state.studyDaysUpsertCalls[0]!)).toMatchSnapshot()
+    expect(extractCardUpdate()).toMatchSnapshot()
+    expect(extractAppliedMark()).toMatchSnapshot()
+    expect(state.studyDaysInsertValues).toMatchSnapshot()
   })
 
-  // ── §2 rating derive contract ─────────────────────────────────────────────
+  // ── §2 正誤 2 本立て (spec §6) ─────────────────────────────────────────────
 
-  it('derive: answer_events INSERT has NO rating column — ratingPresent frozen as false', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
+  it('2 本立て: answer_events は is_correct と rating を両方保持する', async () => {
     await POST(makeReq(makeValidPayload()))
-
-    expect(state.answerEventInsertValues).not.toBeNull()
-    const extracted = extractAnswerEventRows(state.answerEventInsertValues!)
-    // Freeze: ratingPresent must be false (rating must never appear in answer_events)
-    expect(extracted[0]!.ratingPresent).toBe(false)
-    expect(extracted).toMatchSnapshot()
+    const row = extractAnswerEventRows(state.answerEventInsertValues!)[0]!
+    expect(row.isCorrect).toBe(true)
+    expect(row.rating).toBe(3)
   })
 
-  it('derive divergence: rating=3 (explicit) + is_correct=false → reviews.rating=3 AND study_days.correct_count=1 (rating>=2 wins)', async () => {
-    // THE KEY DIVERGENCE CASE (§A #7 / task brief):
-    // is_correct=false means the MCQ answer was wrong.
-    // rating=3 (Good) is explicitly provided by the client (FSRS rating).
-    // deriveRating returns 3 (explicit wins over is_correct fallback).
-    // study_days.correct_count uses (rating >= 2), NOT is_correct.
-    // So: isCorrect=false BUT correct_count=1 — intentional divergence from MCQ result.
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    const payload = makeValidPayload({
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['b'],
-          is_correct: false,   // MCQ wrong
-          answered_at: '2026-05-25T10:01:00.000Z',
-          rating: 3,           // explicit FSRS rating = Good (>= 2)
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect(body).toMatchSnapshot()
-
-    // answer_events: isCorrect=false preserved (raw MCQ result), no rating column
-    expect(state.answerEventInsertValues).not.toBeNull()
-    const answerRows = extractAnswerEventRows(state.answerEventInsertValues!)
-    expect(answerRows[0]!.isCorrect).toBe(false)       // MCQ result unchanged
-    expect(answerRows[0]!.ratingPresent).toBe(false)    // rating absent from answer_events
-    expect(answerRows).toMatchSnapshot()
-
-    // reviews: rating=3 (from explicit rating, NOT from is_correct=false→1 fallback)
-    expect(state.reviewsInsertValues).not.toBeNull()
-    const reviewRows = extractReviewRows(state.reviewsInsertValues!)
-    expect(reviewRows[0]!.rating).toBe(3)
-    expect(reviewRows).toMatchSnapshot()
-
-    // study_days: correct_count=1 because rating=3 >= 2 (even though is_correct=false)
-    expect(state.studyDaysUpsertCalls).toHaveLength(1)
-    const studyDayExtracted = extractStudyDayCall(state.studyDaysUpsertCalls[0]!)
-    expect(studyDayExtracted.values.correctCount).toBe(1)  // DIVERGENCE: is_correct=false but count=1
-    expect(studyDayExtracted).toMatchSnapshot()
-  })
-
-  // ── §3 Branch: duplicate event skip ──────────────────────────────────────
-
-  it('duplicate event skip: re-sent event_id → absent from failed[], FSRS not applied', async () => {
-    // ON CONFLICT DO NOTHING skips the INSERT for a duplicate event_id.
-    // The route must NOT add the duplicate to failed[] (silently skip it).
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.duplicateEventIds.add(VALID_EVENT_ID)
-
-    const res = await POST(makeReq(makeValidPayload()))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Frozen: { ok: true, failed: [] } — duplicate is NOT in failed
-    expect(body).toMatchSnapshot()
-
-    // Hard assert: duplicate is NOT in failed
-    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
-
-    // FSRS not applied (no reviews INSERT, no cards UPDATE)
-    expect(state.reviewsInsertValues).toBeNull()
-    expect(state.bulkUpdateCallCount).toBe(0)
-    // answer_events INSERT was attempted (conflict handled by DB)
-    expect(state.answerEventInsertValues).toHaveLength(1)
-  })
-
-  // ── §4 Branch: orphan event → failed[] ───────────────────────────────────
-
-  it('orphan: card not found (not in user cards) → event_id in failed[], HTTP 200', async () => {
-    // VALID_CARD_ID exists (added in beforeEach); VALID_CARD_ID_2 is NOT added → orphan.
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    const payload = makeValidPayload({
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a'],
-          is_correct: true,
-          answered_at: '2026-05-25T10:01:00.000Z',
-        },
-        {
-          event_id: VALID_EVENT_ID_2,
-          card_id: VALID_CARD_ID_2, // orphan — not in state.cardRows
-          selected_answer_ids: [],
-          is_correct: false,
-          answered_at: '2026-05-25T10:02:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Frozen: { ok: true, failed: [VALID_EVENT_ID_2] }
-    expect(body).toMatchSnapshot()
-
-    // Hard assert: only orphan event in failed, not the valid one
-    expect((body as { failed: string[] }).failed).toContain(VALID_EVENT_ID_2)
-    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
-  })
-
-  // ── §4b Branch: selected_answer_ids existence validation (Task 2 / A-2) ───
-
-  it('option existence (a): all selected ids exist on the card → applied (not in failed[])', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    const payload = makeValidPayload({
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a'], // 'a' exists on VALID_CARD_ID (fixture default)
-          is_correct: true,
-          answered_at: '2026-05-25T10:01:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect((body as { failed: string[] }).failed).toEqual([])
-    expect(state.answerEventInsertValues).toHaveLength(1)
-    expect(state.reviewsInsertValues).not.toBeNull()
-  })
-
-  it('option existence (b): unknown id mixed in → only that event fails, others in the same payload are applied', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    const payload = makeValidPayload({
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a'], // valid
-          is_correct: true,
-          answered_at: '2026-05-25T10:01:00.000Z',
-        },
-        {
-          event_id: VALID_EVENT_ID_2,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['does-not-exist'], // not in card options
-          is_correct: true,
-          answered_at: '2026-05-25T10:02:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
-    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
-
-    // Only the valid event reaches the answer_events INSERT.
-    expect(state.answerEventInsertValues).toHaveLength(1)
-    expect(state.answerEventInsertValues![0]!['eventId']).toBe(VALID_EVENT_ID)
-  })
-
-  it('option existence (c): id that exists on a different card → failed[] (cross-card id is not valid)', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    // VALID_CARD_ID_2 has its own distinct options ('x','y') — 'a' belongs to
-    // VALID_CARD_ID only, so selecting 'a' against VALID_CARD_ID_2 must fail.
-    addCardRow(state, VALID_CARD_ID_2, {
-      options: [
-        { id: 'x', text: 'Option X', is_correct: true },
-        { id: 'y', text: 'Option Y', is_correct: false },
-      ],
-    })
-
-    const payload = makeValidPayload({
-      session: { card_ids: [VALID_CARD_ID, VALID_CARD_ID_2] },
-      events: [
-        {
-          event_id: VALID_EVENT_ID_2,
-          card_id: VALID_CARD_ID_2,
-          selected_answer_ids: ['a'], // exists on VALID_CARD_ID, not on VALID_CARD_ID_2
-          is_correct: true,
-          answered_at: '2026-05-25T10:02:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
-    expect(state.reviewsInsertValues).toBeNull()
-  })
-
-  it('option existence (d): multi-select with all ids existing → applied', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    const payload = makeValidPayload({
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a', 'b'], // both exist on VALID_CARD_ID (fixture default)
-          is_correct: true,
-          answered_at: '2026-05-25T10:01:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    expect((body as { failed: string[] }).failed).toEqual([])
-    expect(state.answerEventInsertValues).toHaveLength(1)
-    expect(state.reviewsInsertValues).not.toBeNull()
-  })
-
-  it('option existence (e): malformed options on one card do not throw and do not fail other cards in the same payload (isolation)', async () => {
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    // VALID_CARD_ID_2 has a malformed options array (null element + an
-    // element missing `id`) — this must NOT throw inside the Phase 1 loop,
-    // which would otherwise roll back the whole tx and fail the healthy
-    // card's event too (the bug under test).
-    addCardRow(state, VALID_CARD_ID_2, {
-      options: [null, { text: 'no id here' }],
-    })
-
-    const payload = makeValidPayload({
-      session: { card_ids: [VALID_CARD_ID, VALID_CARD_ID_2] },
-      events: [
-        {
-          event_id: VALID_EVENT_ID,
-          card_id: VALID_CARD_ID,
-          selected_answer_ids: ['a'], // valid on the healthy card
-          is_correct: true,
-          answered_at: '2026-05-25T10:01:00.000Z',
-        },
-        {
-          event_id: VALID_EVENT_ID_2,
-          card_id: VALID_CARD_ID_2,
-          selected_answer_ids: ['a'], // malformed card has no valid ids → reject
-          is_correct: true,
-          answered_at: '2026-05-25T10:02:00.000Z',
-        },
-      ],
-    })
-
-    const res = await POST(makeReq(payload))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Only the malformed-card event fails; the healthy card's event is applied.
-    expect((body as { failed: string[] }).failed).toEqual([VALID_EVENT_ID_2])
-    expect((body as { failed: string[] }).failed).not.toContain(VALID_EVENT_ID)
-    expect(state.answerEventInsertValues).toHaveLength(1)
-    expect(state.answerEventInsertValues![0]!['eventId']).toBe(VALID_EVENT_ID)
-  })
-
-  // ── §5 Branch: tx rollback → all applicable events in failed[] ────────────
-
-  it('tx rollback: internal throw → all applicable events in failed[], HTTP 200 (rollback semantics)', async () => {
-    // txShouldThrow triggers a throw after answer_events INSERT inside the tx.
-    // The route catches it, logs it, and adds ALL applicable (non-orphan) events to failed[].
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.txShouldThrow = true
-
-    const res = await POST(makeReq(makeValidPayload()))
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Frozen: { ok: true, failed: [VALID_EVENT_ID] }
-    expect(body).toMatchSnapshot()
-
-    // Hard assert: applicable event is in failed
-    expect((body as { failed: string[] }).failed).toContain(VALID_EVENT_ID)
-  })
-
-  // ── §6 Branch: 503 + Retry-After on transient session upsert failure ──────
-
-  it('503 + Retry-After: session upsert failure → 503 with Retry-After header (hard-assert value)', async () => {
-    // Unknown DB error on session upsert → classifyBulkError defaults to transient
-    // → 503 + Retry-After header for client retry controller.
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-    state.sessionUpsertShouldThrow = true
-
-    const res = await POST(makeReq(makeValidPayload()))
-
-    // Hard assert status (not snapshot — must not drift to 200/500)
-    expect(res.status).toBe(503)
-
-    // Hard assert Retry-After header value = BULK_TRANSIENT_RETRY_SEC (30)
-    expect(res.headers.get('Retry-After')).toBe(String(BULK_TRANSIENT_RETRY_SEC))
-
-    const body = await res.json()
-    // Frozen: { error: 'session_upsert_failed' }
-    expect(body).toMatchSnapshot()
-
-    // Events never processed (session upsert failed before tx)
-    expect(state.answerEventInsertValues).toBeNull()
-  })
-
-  // ── §7 Branch: status regression clamp keeps the wire unchanged (F2 W) ─────
-
-  it('status regression clamp: completed→active blocked upsert still returns 200 { ok: true, failed: [] } (wire unchanged)', async () => {
-    // A blocked status write (terminal→earlier) is a normal applied:false, NOT
-    // an error — the wire (200 { ok, failed }) must be identical to a successful
-    // upsert. No new status code (409 etc). logger/DB-state asserts live in
-    // route.test; here we freeze the wire only.
-    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
-
-    // 1) seed a completed session (fresh insert)
-    await POST(
+  it('2 本立て divergence: rating=3 (前進) + is_correct=false → 統計は false / scheduling は rating', async () => {
+    // 統計列 (last_correct / current_streak) は is_correct だけを見る。
+    // scheduling (reps / lapses / due) は rating だけを見る。両者は独立に効く。
+    const res = await POST(
       makeReq(
         makeValidPayload({
-          events: [],
-          session: { status: 'completed', completed_at: '2026-05-25T10:10:00.000Z' },
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['b'],
+              is_correct: false,
+              rating: 3,
+              answered_at: '2026-05-25T10:01:00.000Z',
+            },
+          ],
         }),
       ),
     )
-
-    // 2) re-send an active payload → regression → clamp (applied:false)
-    const res = await POST(
-      makeReq(makeValidPayload({ events: [], session: { status: 'active' } })),
-    )
-
-    // Wire unchanged: 200 + { ok: true, failed: [] }, no Retry-After
     expect(res.status).toBe(200)
-    expect(res.headers.get('Retry-After')).toBeNull()
-    const body = await res.json()
-    expect(body).toEqual({ ok: true, failed: [] })
+    expect(extractAnswerEventRows(state.answerEventInsertValues!)).toMatchSnapshot()
+    expect(extractCardUpdate()).toMatchSnapshot()
+  })
+
+  // ── §3 終端設計: applied=false 降格は failed[] に載せない ──────────────────
+
+  it('dangling (card 不在) → applied=false で保存・failed[] は空・cards UPDATE なし', async () => {
+    state.cardRows.clear()
+    const res = await POST(makeReq(makeValidPayload()))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchSnapshot()
+    expect(extractAnswerEventRows(state.answerEventInsertValues!)).toMatchSnapshot()
+    expect(state.bulkUpdateCallCount).toBe(0)
+  })
+
+  it('option 不一致 (A-2) → 当該 event のみ降格・failed[] は空・他 event は適用', async () => {
+    const res = await POST(
+      makeReq(
+        makeValidPayload({
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['unknown-option'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-25T10:01:00.000Z',
+            },
+            {
+              event_id: VALID_EVENT_ID_2,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-25T10:02:00.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchSnapshot()
+    expect(extractAppliedMark()).toMatchSnapshot()
+  })
+
+  // ── §4 failed[] = event_id 衝突のみ ───────────────────────────────────────
+
+  it('event_id 衝突 (own-scope 不在 = 他 user の行) → failed[] に載る', async () => {
+    state.duplicateEventIds.add(VALID_EVENT_ID)
+    const res = await POST(makeReq(makeValidPayload()))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchSnapshot()
+  })
+
+  // ── §5 clamp ─────────────────────────────────────────────────────────────
+
+  it('clamp: 未来 answered_at は receivedAt に丸め created_at と同一時刻源になる', async () => {
+    const res = await POST(
+      makeReq(
+        makeValidPayload({
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-26T09:00:00.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    expect(res.status).toBe(200)
+    expect(extractAnswerEventRows(state.answerEventInsertValues!)).toMatchSnapshot()
+  })
+
+  // ── §6 error 応答 ────────────────────────────────────────────────────────
+
+  it('400: schema 不正 (rating 欠落) → invalid_payload、DB 未着手', async () => {
+    const res = await POST(
+      makeReq(
+        makeValidPayload({
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              answered_at: '2026-05-25T10:01:00.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('invalid_payload')
+    expect(state.answerEventInsertValues).toBeNull()
+  })
+
+  it('503 + Retry-After: tx throw (transient) → header 値を hard-assert', async () => {
+    state.txShouldThrow = true
+    const res = await POST(makeReq(makeValidPayload()))
+
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe(String(BULK_TRANSIENT_RETRY_SEC))
+    expect(await res.json()).toMatchSnapshot()
+  })
+
+  it('200 no-op: events=[] は tx を張らず { ok, failed: [] }', async () => {
+    const res = await POST(makeReq({ events: [] }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchSnapshot()
+    expect(state.cardLockCalls).toBe(0)
   })
 })

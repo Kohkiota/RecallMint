@@ -1,10 +1,10 @@
-// Drizzle schema — mcq-platform (26 tables; ②-4a Phase A Task 3 で asset_derivations 追加)
+// Drizzle schema — mcq-platform (23 tables; FSRS 整合 Sprint A で reviews / study_sessions を廃止)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
 // (GDPR / 個人情報保護法削除依頼) で全関連データを連動削除するため)。
 // All user_id FKs (exams / cards / source_documents / study_days /
-// user_settings / ai_usage_users / reviews / contact_messages) cascade on user deletion.
+// user_settings / ai_usage_users / answer_events / contact_messages) cascade on user deletion.
 // source_documents → cards uses SET NULL (OCR source deletion preserves
 // extracted cards).
 // Only users uses soft delete (deleted_at) for Stripe/audit retention;
@@ -140,34 +140,6 @@ export const users = pgTable('users', {
     .$onUpdate(() => new Date()),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
 })
-
-// ---------------------------------------------------------------------------
-// reviews (FSRS 評価履歴、append-only)
-// word_id → card_id (Sprint A-2)、 FK 先は cards.id、 onDelete cascade。
-// (user_id, reviewed_at) index = streak query、 (card_id, reviewed_at) index =
-// カード別履歴取得 (§2.8)。
-// ---------------------------------------------------------------------------
-export const reviews = pgTable(
-  'reviews',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    cardId: uuid('card_id')
-      .notNull()
-      .references(() => cards.id, { onDelete: 'cascade' }),
-    // 1=Again, 2=Hard, 3=Good, 4=Easy
-    rating: integer('rating').$type<1 | 2 | 3 | 4>().notNull(),
-    reviewedAt: timestamp('reviewed_at', { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (t) => [
-    index('reviews_user_reviewed_idx').on(t.userId, t.reviewedAt),
-    index('reviews_card_idx').on(t.cardId, t.reviewedAt),
-  ],
-)
 
 // ---------------------------------------------------------------------------
 // ai_usage (グローバル日次カウンタ、JST date) — 変更なし
@@ -492,7 +464,7 @@ export const uploadRecords = pgTable(
 
 // ---------------------------------------------------------------------------
 // study_days (学習日カレンダー、ユーザー単位、複合 PK)
-// reviews と独立で持つことで cards 削除の影響を受けない (§2.5.4)。
+// answer_events から再集計する派生値だが、cards 削除の影響を受けない独立表として持つ。
 // day は JST 日付 'YYYY-MM-DD'。
 // ---------------------------------------------------------------------------
 export const studyDays = pgTable(
@@ -567,97 +539,52 @@ export const contactMessages = pgTable(
 )
 
 // ---------------------------------------------------------------------------
-// study_sessions (S-cache-0 / §14.9 新設)
-// 演習セッションのメタ情報。 session_id は client (uuidv4) 採番、 PK。
-// answer_events.session_id の FK 参照先。 ライフサイクル: 演習開始で
-// 'active' 行を insert、 完了で 'completed' + completed_at 更新、 離脱/放置で
-// 'abandoned'。 server 側は bulk API 経由で受領した値を upsert する (client が
-// 真実 source)。
-// ---------------------------------------------------------------------------
-export const studySessions = pgTable(
-  'study_sessions',
-  {
-    sessionId: uuid('session_id').primaryKey(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    // exam_id は set null (非 cascade)、 user.deleted 削除経路は user_id のみ。
-    // users は soft delete のため user_id cascade も発火せず、 handler 明示 DELETE
-    // が必須 (handler 集約コメント参照、 invariant test で網羅性検証)。
-    examId: uuid('exam_id').references(() => exams.id, { onDelete: 'set null' }),
-    mode: text('mode').$type<'smart' | 'custom'>().notNull(),
-    cardIds: jsonb('card_ids')
-      .notNull()
-      .default(sql`'[]'::jsonb`)
-      .$type<string[]>(),
-    query: jsonb('query').$type<Record<string, unknown>>(),
-    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
-    completedAt: timestamp('completed_at', { withTimezone: true }),
-    status: text('status')
-      .$type<'active' | 'completed' | 'abandoned'>()
-      .notNull()
-      .default('active'),
-    createdAt: timestamp('created_at', { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    // §13.14 設計原則「updated_at 全テーブル (差分同期の基準)」 に整合。
-    // status / completed_at 等の遷移ごとに $onUpdate で自動更新され、
-    // last-write-wins な bulk upsert (§14.8) の判定 hook となる。
-    updatedAt: timestamp('updated_at', { withTimezone: true })
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
-  },
-  (t) => [
-    index('study_sessions_user_idx').on(t.userId, t.startedAt),
-    index('study_sessions_exam_idx').on(t.examId),
-  ],
-)
-
-// ---------------------------------------------------------------------------
-// answer_events (S-cache-0 / §14.9 新設)
-// 回答イベントの生ログ。 reviews (rating 履歴) とは別系統で並走、 選択肢ベース
-// 生ログを保持する。 event_id UNIQUE で bulk API の冪等化を担保。
-// session_id は study_sessions に SET NULL FK (session 行が消えても event は残す)。
+// answer_events (FSRS 整合 Sprint A・spec §1.1 — 復習の唯一の正本)
+// 全回答 event の恒久記録。reviews / study_sessions は本表に統合して廃止した。
+// PK = client 採番 event_id (冪等キーと PK の一本化・surrogate id 廃止)。
+// card_id は **FK を張らない**: 学習履歴はユーザーに帰属し、card 削除後も残る
+// dangling を正規状態とする (従来 cascade 設計の意図的 override)。session_id も
+// FK なしのラベル。よって削除経路は user_id だけになり、退会 handler の明示
+// DELETE (Group I) が必須 — 網羅性は invariant test が担保する。
 // ---------------------------------------------------------------------------
 export const answerEvents = pgTable(
   'answer_events',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    eventId: uuid('event_id').notNull().unique(),
-    // session_id は set null (非削除経路)。 削除は card_id → cards (exams 経由
-    // cascade) または user_id (users soft delete のため発火せず、 cards 経由が
-    // 実経路) で行われるため、 handler に answer_events を明示 DELETE しない
-    // (= Group II、 二重記述しない)。 集約コメントは handler 側、 網羅性は
-    // invariant test で担保。
-    sessionId: uuid('session_id').references(() => studySessions.sessionId, {
-      onDelete: 'set null',
-    }),
-    cardId: uuid('card_id')
-      .notNull()
-      .references(() => cards.id, { onDelete: 'cascade' }),
+    eventId: uuid('event_id').primaryKey(),
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    cardId: uuid('card_id').notNull(),
+    sessionId: uuid('session_id'),
     selectedAnswerIds: jsonb('selected_answer_ids')
       .notNull()
       .default(sql`'[]'::jsonb`)
       .$type<string[]>(),
+    // 統計・フィルタの正誤定義 (scheduling は rating・spec §6 の 2 本立て)。
     isCorrect: boolean('is_correct').notNull(),
+    // 1=Again, 2=Hard, 3=Good, 4=Easy。scheduling の正誤定義。
+    rating: integer('rating').$type<1 | 2 | 3 | 4>().notNull(),
+    // clamp 済み値 (min(raw, created_at))。raw は保存しない。
     answeredAt: timestamp('answered_at', { withTimezone: true }).notNull(),
     elapsedMs: integer('elapsed_ms'),
-    // server 側は受領確定のみを記録 (集計用途、 client の SyncStatus 4 値
-    // とは目的が異なる)。 .$type で 'synced' に narrow し、 bulk API 実装時に
-    // client SyncStatus を誤って書き込まないよう型 level で防ぐ。
-    syncStatus: text('sync_status').$type<'synced'>().notNull().default('synced'),
-    createdAt: timestamp('created_at', { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    // 順序ガードの結果。ingest 時点の判定で以後不変 (再評価しない)。
+    applied: boolean('applied').notNull(),
+    // server 受信時刻を app 層で明示 set する (clamp 上界と同一時刻源にして
+    // answered_at <= created_at の CHECK を厳密成立させるため DB now() を使わない)。
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   },
   (t) => [
+    // card_id 系 index は張らない (現読み手ゼロ・必要時に CREATE INDEX 一発)。
     index('answer_events_user_idx').on(t.userId, t.answeredAt),
-    index('answer_events_card_idx').on(t.cardId, t.answeredAt),
-    index('answer_events_session_idx').on(t.sessionId),
+    check('answer_events_rating_range', sql`${t.rating} BETWEEN 1 AND 4`),
+    check(
+      'answer_events_elapsed_ms_nonneg',
+      sql`${t.elapsedMs} IS NULL OR ${t.elapsedMs} >= 0`,
+    ),
+    check(
+      'answer_events_answered_at_le_created_at',
+      sql`${t.answeredAt} <= ${t.createdAt}`,
+    ),
   ],
 )
 
@@ -1002,8 +929,6 @@ export const assetDerivations = pgTable('asset_derivations', {
 // ---------------------------------------------------------------------------
 export type User = typeof users.$inferSelect
 export type NewUser = typeof users.$inferInsert
-export type Review = typeof reviews.$inferSelect
-export type NewReview = typeof reviews.$inferInsert
 export type AiUsage = typeof aiUsage.$inferSelect
 export type AiUsageUser = typeof aiUsageUsers.$inferSelect
 export type StripeEvent = typeof stripeEvents.$inferSelect
@@ -1025,8 +950,6 @@ export type UserSettings = typeof userSettings.$inferSelect
 export type NewUserSettings = typeof userSettings.$inferInsert
 export type ContactMessage = typeof contactMessages.$inferSelect
 export type NewContactMessage = typeof contactMessages.$inferInsert
-export type StudySession = typeof studySessions.$inferSelect
-export type NewStudySession = typeof studySessions.$inferInsert
 export type AnswerEvent = typeof answerEvents.$inferSelect
 export type NewAnswerEvent = typeof answerEvents.$inferInsert
 export type EntityMutation = typeof entityMutations.$inferSelect

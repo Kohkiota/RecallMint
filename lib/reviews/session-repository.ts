@@ -1,46 +1,38 @@
 import 'server-only'
-// Session aggregate の infra 層 (DB I/O)。 spec §3.3 の意図別 repository。
+// 復習 ingest の infra 層 (DB I/O)。純粋 domain (session-aggregate) と分離し、
+// orchestrator (ingest-review-events.ts の processAnswerEvents) が両者を束ねる。
 //
-// 各メソッドは Drizzle executor (db 直 or tx) を第 1 引数に取り、その上で
-// DB statement を実行する。 純粋 domain (session-aggregate / session-values) と
-// 分離し、orchestrator (ingest-review-events.ts の processSession) が両者を束ねる。
-//
-// 制約 (spec §3.3):
-// - repository は logger を呼ばない (serializeDbError warn は orchestrator に残す)。
-// - SQL は現 processSession から verbatim 移設 (owner-scope WHERE / ON CONFLICT /
-//   VALUES UPDATE / distinct SELECT / count-mismatch throw を一字一句保つ)。
-// - 挙動不変 (R phase)。既存 route.test + contract + G1-G5 が回帰の正。
+// 制約:
+// - repository は logger を呼ばない (構造化 log は orchestrator の責務)。
+// - RLS 下でも owner-scope の `user_id` 条件は query 側にも明示する。
+// - ロック順序の全 tx 共通規約は `cards`(ID 昇順)→ `study_days`(day 昇順)。
+//   ingest は全経路この順序でのみロックを取るため deadlock は生じない。
 
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import type { DB } from '@/lib/db'
-import {
-  answerEvents,
-  cards,
-  reviews,
-  studyDays,
-  studySessions,
-  type User,
-} from '@/lib/db/schema'
-import { inDateList } from '@/lib/db/in-date-list'
+import { answerEvents, cards, studyDays } from '@/lib/db/schema'
 import type { ReplayCardState } from '@/lib/cards/replay-card'
 import type { RatingInt } from '@/lib/fsrs'
+import { jstDayRange } from '@/lib/jst'
 
-// study_days の distinct 集計は tx.execute(sql`...`) を使うため、DbExecutor
+// study_days の再集計は tx.execute(sql`...`) を使うため、DbExecutor
 // (select/insert/update/delete) に execute を足した executor 型を用いる。
 // db 直 / tx いずれも PgDatabase 派生ゆえ両者が構造的に適合する。
 type SessionExecutor = DbExecutor & Pick<DB, 'execute'>
 
 // ---------------------------------------------------------------------------
-// loadCardReplayStates — Phase 1 SELECT (owner-scoped)。
-// raw rows (id + 全 ReplayCardState 列 + options) を返す。Set 化 / cardStateMap 化は
-// 呼ぶ側 (orchestrator + domain) の責務。ingest-review-events.ts:110-135 verbatim。
+// lockCardReplayStates — spec §2.2 手順 3。
+// distinct card_id を **ID 昇順** で FOR UPDATE ロックし、同一 card への並走 flush を
+// 直列化する。ORDER BY id は複数行ロックの取得順を固定して deadlock を防ぐ既存規律
+// (publish-prepared.ts と同型)。owner-scope により不在 / 他人 card は返らない
+// (= 呼ぶ側では applied=false 降格の判定材料になる)。
 // ---------------------------------------------------------------------------
 
-export function loadCardReplayStates(
+export function lockCardReplayStates(
   tx: DbExecutor,
   userId: string,
-  cardIds: string[],
+  sortedCardIds: string[],
 ) {
   return tx
     .select({
@@ -61,30 +53,29 @@ export function loadCardReplayStates(
       options: cards.options,
     })
     .from(cards)
-    .where(
-      and(
-        eq(cards.userId, userId),
-        // owner-scoped IN 絞り込み — orphan / 他 user cards は返らない
-        inArray(cards.id, cardIds),
-      ),
-    )
+    .where(and(eq(cards.userId, userId), inArray(cards.id, sortedCardIds)))
+    .orderBy(cards.id)
+    .for('update')
 }
 
 // ---------------------------------------------------------------------------
-// insertAnswerEvents — Phase 2a bulk INSERT (ON CONFLICT DO NOTHING)。
-// 実際に INSERT された event_id の Set を返す (duplicate は除外される)。
-// ingest-review-events.ts:204-219 (+ 222 の Set 化) verbatim。
+// insertAnswerEvents — spec §2.2 手順 4 前半。
+// 受理可能な event を **全件** applied=false で INSERT し、実 INSERT された
+// event_id の Set を返す (非新規 = 既存行あり → 呼ぶ側が衝突検証へ回す)。
 // ---------------------------------------------------------------------------
 
 export interface AnswerEventInsertRow {
   eventId: string
-  sessionId: string
-  cardId: string
   userId: string
+  cardId: string
+  sessionId: string | null
   selectedAnswerIds: string[]
   isCorrect: boolean
+  rating: RatingInt
   answeredAt: Date
   elapsedMs: number | null
+  applied: boolean
+  createdAt: Date
 }
 
 export async function insertAnswerEvents(
@@ -101,32 +92,133 @@ export async function insertAnswerEvents(
 }
 
 // ---------------------------------------------------------------------------
-// insertReviews — Phase 2d reviews bulk INSERT。
-// ingest-review-events.ts:282-289 verbatim。
+// verifyEventCollisions — spec §2.2 手順 4 後半の 2 段検証。
+//
+// ① 所有権: 非新規 event_id が own-scope SELECT に不在 = 他 user の行と衝突
+//    (RLS を迂回して owner を覗きに行かない。owner 情報は知り得ないし出さない)。
+// ② 内容一致: own 既存行と immutable fields を app 層で正規化比較する。
+//    - answered_at は `min(再送 raw, 既存行 created_at)` = 初回 insert と同じ clamp 式を
+//      既存行の受信時刻で再評価した値と比較する。正当な再送は raw が同一なので必ず
+//      一致し、初回に clamp された event の再送が受信時刻差で偽陽性にならない。
+//    - session_id / elapsed_ms は undefined ↔ NULL を正規化して比較する。
+//    - selected_answer_ids は配列順込みの等値。
+// 一致 = 正当な再送 (failed に載せない) / 不一致 = failed[] (既存行は不変 = 先勝ち)。
 // ---------------------------------------------------------------------------
 
-export interface ReviewInsertRow {
-  userId: string
+export interface CollisionCandidate {
+  eventId: string
   cardId: string
+  sessionId: string | null
+  selectedAnswerIds: string[]
+  isCorrect: boolean
   rating: RatingInt
-  reviewedAt: Date
+  /** clamp 前の raw answered_at (既存行の created_at で clamp し直して比較する)。 */
+  rawAnsweredAt: Date
+  elapsedMs: number | null
 }
 
-export async function insertReviews(
+export async function verifyEventCollisions(
   tx: DbExecutor,
-  rows: ReviewInsertRow[],
-): Promise<void> {
-  await tx.insert(reviews).values(rows)
+  userId: string,
+  candidates: CollisionCandidate[],
+): Promise<string[]> {
+  if (candidates.length === 0) return []
+
+  const existingRows = await tx
+    .select({
+      eventId: answerEvents.eventId,
+      cardId: answerEvents.cardId,
+      sessionId: answerEvents.sessionId,
+      selectedAnswerIds: answerEvents.selectedAnswerIds,
+      isCorrect: answerEvents.isCorrect,
+      rating: answerEvents.rating,
+      answeredAt: answerEvents.answeredAt,
+      elapsedMs: answerEvents.elapsedMs,
+      createdAt: answerEvents.createdAt,
+    })
+    .from(answerEvents)
+    .where(
+      and(
+        eq(answerEvents.userId, userId),
+        inArray(
+          answerEvents.eventId,
+          candidates.map((c) => c.eventId),
+        ),
+      ),
+    )
+  const ownRows = new Map(existingRows.map((r) => [r.eventId, r]))
+
+  const failed: string[] = []
+  for (const candidate of candidates) {
+    const existing = ownRows.get(candidate.eventId)
+    if (existing === undefined || !matchesExisting(candidate, existing)) {
+      failed.push(candidate.eventId)
+    }
+  }
+  return failed
+}
+
+type ExistingAnswerEventRow = {
+  cardId: string
+  sessionId: string | null
+  selectedAnswerIds: string[]
+  isCorrect: boolean
+  rating: number
+  answeredAt: Date
+  elapsedMs: number | null
+  createdAt: Date
+}
+
+function matchesExisting(
+  candidate: CollisionCandidate,
+  existing: ExistingAnswerEventRow,
+): boolean {
+  const clampedAnsweredAt = Math.min(
+    candidate.rawAnsweredAt.getTime(),
+    existing.createdAt.getTime(),
+  )
+  return (
+    candidate.cardId === existing.cardId &&
+    candidate.sessionId === existing.sessionId &&
+    candidate.isCorrect === existing.isCorrect &&
+    candidate.rating === existing.rating &&
+    candidate.elapsedMs === existing.elapsedMs &&
+    clampedAnsweredAt === existing.answeredAt.getTime() &&
+    candidate.selectedAnswerIds.length === existing.selectedAnswerIds.length &&
+    candidate.selectedAnswerIds.every(
+      (id, i) => id === existing.selectedAnswerIds[i],
+    )
+  )
 }
 
 // ---------------------------------------------------------------------------
-// applyCardFinalStates — Phase 2e cards UPDATE (single VALUES UPDATE、owner-scoped)。
-// RETURNING 件数 ≠ finalStates.size で count-mismatch を throw する安全網を内包。
-// finalStates.size === 0 は no-op。ingest-review-events.ts:297-351 verbatim。
+// markApplied — spec §2.2 手順 7。順序ガードを通った event を applied=true にする。
 // ---------------------------------------------------------------------------
 
-// timestamptz bind は ISO string 化してから embed する (Drizzle #5789 回避)。
-// null は維持。ingest-review-events.ts:79-81 verbatim。
+export async function markApplied(
+  tx: DbExecutor,
+  userId: string,
+  eventIds: string[],
+): Promise<void> {
+  if (eventIds.length === 0) return
+  await tx
+    .update(answerEvents)
+    .set({ applied: true })
+    .where(
+      and(
+        eq(answerEvents.userId, userId),
+        inArray(answerEvents.eventId, eventIds),
+      ),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// applyCardFinalStates — spec §2.2 手順 6 (single VALUES UPDATE、owner-scoped)。
+// RETURNING 件数 ≠ finalStates.size で count-mismatch を throw する安全網を内包。
+// finalStates.size === 0 は no-op。
+// ---------------------------------------------------------------------------
+
+// timestamptz bind は ISO string 化してから embed する (Drizzle #5789 回避)。null は維持。
 function toPgTimestamptz(d: Date | null): string | null {
   return d ? d.toISOString() : null
 }
@@ -140,16 +232,13 @@ export async function applyCardFinalStates(
     // per-card tuple リスト (VALUES 節用)
     // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
     // ::cast は静的リテラルのみ (安全)。
-    // timestamptz (due / last_review) は ISO string 化してから embed (Drizzle #5789、
-    // toPgTimestamptz 参照)。 数値 / boolean / uuid はそのまま bind 可。
     const rows = [...finalStates.entries()].map(([cardId, final]) =>
       sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::double precision, ${final.difficulty}::double precision, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
     )
     const valuesList = sql.join(rows, sql`, `)
 
     // RETURNING cards.id で実 update 件数を取得し、 finalStates と不一致なら throw
-    // (tx rollback → 上位 catch が serializeDbError で log)。 SQL 成功で 0 rows update を
-    // 黙って通す事故の安全網。
+    // (tx rollback)。 SQL 成功で 0 rows update を黙って通す事故の安全網。
     const updated = await tx
       .update(cards)
       .set({
@@ -172,9 +261,7 @@ export async function applyCardFinalStates(
       .from(
         sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
       )
-      .where(
-        and(eq(cards.userId, userId), sql`${cards.id} = v.id`),
-      )
+      .where(and(eq(cards.userId, userId), sql`${cards.id} = v.id`))
       .returning({ id: cards.id })
 
     const updatedIds = new Set(updated.map((r) => r.id))
@@ -194,141 +281,72 @@ export async function applyCardFinalStates(
 }
 
 // ---------------------------------------------------------------------------
-// upsertStudyDays — Phase 2f study_days UPSERT (per JST day)。
-// distinct 集計 SELECT (inDateList + AT TIME ZONE) + per-day UPSERT
-// (ON CONFLICT DO UPDATE・SUM increment + distinct 上書き)。dayMap.size === 0 は
-// 呼ぶ側で早期 return 済。ingest-review-events.ts:368-416 verbatim。
+// recomputeStudyDays — spec §5。対象 day を applied=true event から **絶対値で再集計**
+// する (加算意味論は廃止)。
+//
+// 手順:
+//   1. day 昇順に行を確保 (INSERT .. ON CONFLICT DO NOTHING)
+//   2. 同じ昇順で FOR UPDATE ロック
+//   3. VALUES CTE で対象 day のみ range scan して再集計 → 絶対値 UPDATE
+// 1-2 が必須なのは、card 行ロックが**同一 card しか直列化しない**ため。同一 user・
+// 異なる card・同一 day の 2 flush が並走すると、双方が相手の未 commit event を含まない
+// 集計値を後勝ちで上書きしうる (full 再集計でも消えない lost update)。day 行を先に
+// ロックすると後続 tx の再集計 SELECT は先行 commit 後に走り、正しい合計を読む。
+//
+// JST 境界は SQL の AT TIME ZONE ではなく jstDayRange() の timestamptz を bind する
+// (JS/SQL 二重実装の解消)。日付 param は個別 param + 明示 ::date cast で展開する —
+// 配列を単一 param で bind する経路は postgres-js の serializer 依存で壊れた前例がある。
 // ---------------------------------------------------------------------------
 
-export interface DayCount {
-  total: number
-  correct: number
-}
-
-export async function upsertStudyDays(
+export async function recomputeStudyDays(
   tx: SessionExecutor,
   userId: string,
-  dayMap: Map<string, DayCount>,
+  days: string[],
 ): Promise<void> {
-  // T-B2 #1a 再実装 (採用 X、 helper 化): per-day SELECT N+1 を
-  // `GROUP BY day` 1 文に集約。 inDateList helper で `IN ($1::date,
-  // $2::date, ...)` 形に個別 param 展開し、 driver 層挙動 (postgres-js
-  // Array serializer / Drizzle inArray 配列 binding) 依存を最小化する
-  // (a885199 stg 実機検証で X 形を確証、 lesson 2026-06-13 訂正
-  // section 参照)。 UPSERT は plan 制約「ON CONFLICT DO UPDATE」 構造
-  // 維持で per-day ループ (SUM increment + 累積 distinct 上書き)。
-  const days = [...dayMap.keys()]
-  const distinctRows = await tx.execute(sql`
-          SELECT (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date::text AS day,
-                 COUNT(DISTINCT card_id)::int AS distinct_count
-          FROM reviews
-          WHERE user_id = ${userId}::uuid
-            AND ${inDateList(sql`(reviewed_at AT TIME ZONE 'Asia/Tokyo')::date`, days)}
-          GROUP BY (reviewed_at AT TIME ZONE 'Asia/Tokyo')::date
-        `)
-  const distinctMap = new Map<string, number>()
-  for (const row of distinctRows as unknown as Array<{
-    day: string
-    distinct_count: unknown
-  }>) {
-    distinctMap.set(row.day, Number(row.distinct_count))
-  }
+  if (days.length === 0) return
+  const sortedDays = [...days].sort()
 
-  for (const [day, counts] of dayMap) {
-    // event tx 直後の reviews row 不在は実 DB では起きないが、 防御的に
-    // fallback (distinctMap.get ?? 0) で distinctCardCount=0 にする。
-    const distinct = distinctMap.get(day) ?? 0
+  await tx
+    .insert(studyDays)
+    .values(sortedDays.map((day) => ({ userId, day })))
+    .onConflictDoNothing({ target: [studyDays.userId, studyDays.day] })
 
-    await tx
-      .insert(studyDays)
-      .values({
-        userId,
-        day,
-        reviewCount: counts.total,
-        correctCount: counts.correct,
-        distinctCardCount: distinct,
-      })
-      .onConflictDoUpdate({
-        target: [studyDays.userId, studyDays.day],
-        set: {
-          reviewCount: sql`${studyDays.reviewCount} + ${counts.total}`,
-          correctCount: sql`${studyDays.correctCount} + ${counts.correct}`,
-          distinctCardCount: distinct,
-        },
-      })
-  }
-}
+  const dayList = sql.join(
+    sortedDays.map((day) => sql`${day}::date`),
+    sql`, `,
+  )
+  await tx
+    .select({ day: studyDays.day })
+    .from(studyDays)
+    .where(and(eq(studyDays.userId, userId), sql`${studyDays.day} IN (${dayList})`))
+    .orderBy(studyDays.day)
+    .for('update')
 
-// ---------------------------------------------------------------------------
-// upsertSessionGuarded — study_sessions upsert (W 形 — F2 Task6 ②status 遷移ガード)。
-// setWhere = tenant eq (C-1) AND status 遷移述語 (既存='active' OR 既存=送信) で、
-// terminal 済み行への後退遷移を DB 側で拒否する。.returning() の実書込行数から
-// applied を実計算 (1 行=true / 0 行=clamp or tenant no-op=false)。conflictSet は
-// {completedAt, status} のみ (card_ids insert-only / I-1)。canApplyStatusWrite
-// (session-values.ts) の TS 規則と 1:1 (下記 setWhere コメント参照)。
-// ---------------------------------------------------------------------------
-
-export interface SessionUpsertInput {
-  session_id: string
-  exam_id?: string
-  mode: 'smart' | 'custom'
-  card_ids: string[]
-  started_at: string
-  completed_at?: string
-  status: 'active' | 'completed' | 'abandoned'
-}
-
-export async function upsertSessionGuarded(
-  db: DbExecutor,
-  user: User,
-  session: SessionUpsertInput,
-): Promise<{ applied: boolean }> {
-  const rows = await db
-    .insert(studySessions)
-    .values({
-      sessionId: session.session_id,
-      userId: user.id,
-      examId: session.exam_id ?? null,
-      mode: session.mode,
-      cardIds: session.card_ids,
-      startedAt: new Date(session.started_at),
-      completedAt: session.completed_at
-        ? new Date(session.completed_at)
-        : null,
-      status: session.status,
-    })
-    .onConflictDoUpdate({
-      target: studySessions.sessionId,
-      // C-1 (S-cache-1 review) tenant 分離 + W (F2 Task6) status 遷移ガードの AND。
-      // 意味 = userId 一致 AND (既存行.status='active' OR 既存行.status=送信.status)。
-      // setWhere では **テーブル修飾列 (studySessions.status) = 既存行**、
-      // **excluded.status = 送信値**。よって terminal (completed/abandoned) 済み行への
-      // 後退遷移は述語 false = set 節全体が不発 (status も completed_at も書かれず、
-      // completed_at 巻き戻し (null 上書き) も同時に防止)。前進 (既存=active) と
-      // 冪等再送 (既存=送信) のみ通す。canApplyStatusWrite (session-values.ts) の
-      // TS 規則と 1:1。tenant 不一致でも述語 false = cross-tenant write 防止を維持。
-      setWhere: and(
-        eq(studySessions.userId, user.id),
-        or(
-          eq(studySessions.status, 'active'),
-          sql`${studySessions.status} = excluded.status`,
-        ),
-      ),
-      // I-1 (S-cache-1 review): card_ids は session 開始時に確定する不変値。
-      // conflict 上書き対象から外し (initial insert のみ書く)、 status と
-      // completed_at だけ最新値で更新する。 「同 session_id への再送で card_ids
-      // が空配列に倒れる」 client side race を構造的に防ぐ (§14.8 整合)。
-      set: {
-        completedAt: session.completed_at
-          ? new Date(session.completed_at)
-          : null,
-        status: session.status,
-      },
-    })
-    .returning({ sessionId: studySessions.sessionId })
-
-  // applied 実計算: fresh insert (conflict なし) or 述語 true (前進/冪等更新) は
-  // 1 行 → true。述語 false (後退 clamp) or tenant 不一致 は 0 行 → false。
-  // applied=false は throw しない正常戻り (route の DB error catch とは独立)。
-  return { applied: rows.length > 0 }
+  const dayTuples = sql.join(
+    sortedDays.map((day) => {
+      const { startAt, endAt } = jstDayRange(day)
+      return sql`(${day}::date, ${startAt.toISOString()}::timestamptz, ${endAt.toISOString()}::timestamptz)`
+    }),
+    sql`, `,
+  )
+  await tx.execute(sql`
+    WITH days(day, start_at, end_at) AS (VALUES ${dayTuples}),
+    agg AS (
+      SELECT d.day AS day,
+             count(*)::int AS review_count,
+             count(*) FILTER (WHERE ae.is_correct)::int AS correct_count,
+             count(DISTINCT ae.card_id)::int AS distinct_card_count
+      FROM days d
+      JOIN answer_events ae
+        ON ae.user_id = ${userId}::uuid AND ae.applied
+       AND ae.answered_at >= d.start_at AND ae.answered_at < d.end_at
+      GROUP BY d.day
+    )
+    UPDATE study_days sd
+       SET review_count = agg.review_count,
+           correct_count = agg.correct_count,
+           distinct_card_count = agg.distinct_card_count
+      FROM agg
+     WHERE sd.user_id = ${userId}::uuid AND sd.day = agg.day
+  `)
 }

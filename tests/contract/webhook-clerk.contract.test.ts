@@ -336,7 +336,7 @@ describe('Clerk webhook: user.created', () => {
 describe('Clerk webhook: user.deleted', () => {
   it('scrub via 関数 + assets deleting + 10 child-table DELETEs (W2: assets soft-delete 例外)', async () => {
     // Group I 11 テーブル: exams, studyDays, contactMessages, aiUsageUsers,
-    // uploadRecords, userSettings, studySessions, tombstones, entityMutations, tagCategories,
+    // uploadRecords, userSettings, answerEvents, tombstones, entityMutations, tagCategories,
     // assets. うち assets のみ W2 で物理 DELETE → status='deleting' UPDATE (soft-delete)。
     // RLS-P2: scrub は app_scrub_deleted_user 関数呼出に移行 (users を drizzle UPDATE しない)
     // ため drizzle update は assets deleting の 1 件のみ。物理 DELETE は 10 件。

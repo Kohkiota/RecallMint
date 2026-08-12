@@ -7,7 +7,7 @@
 // であることの regression として維持し、名称を実態に追従させる。
 // ※「partial-RLS(RLS 表 + off 表の混在 tx)が安全」の intentional な behavioral 証明は
 //   本 file から外れた(off 表を触らなくなったため)。その証明は Wave 2 で新設する
-//   (Step 0 factfinding 追補2 の follow-up 台帳・off 表 study_sessions 等 × RLS 表)。
+//   (Step 0 factfinding 追補2 の follow-up 台帳・恒久 off の global 表 × RLS 表)。
 //
 //  - bulk mutation: CARD_FIELD_HANDLERS.tag_option_ids は 1 tx で cards[RLS] の存在確認 +
 //    updated_at bump と、tag_options/tag_categories/card_tags[RLS] の検証・whole-set

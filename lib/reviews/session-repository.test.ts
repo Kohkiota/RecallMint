@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getTableName } from 'drizzle-orm'
+import { getTableName, SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 
 // session-repository.ts の infra メソッドの unit test。
 //
 // tx / db はモックオブジェクトとして渡す (実 DB / 実 API 不使用)。
 // owner-scope: 全 owner-scoped query の userId が eq() spy に渡ることを担保する
 // (apply-card-mutation.test.ts と同方式)。SQL AST は fragile なので、args-capture
-// (returning shape / count-mismatch throw / distinct SELECT 発行 / conflictSet) で
-// 契約を固定する。
+// (chain 形 / returning shape / count-mismatch throw / 描画 SQL の骨格) で契約を固定する。
 
 // ---------------------------------------------------------------------------
-// drizzle-orm eq/and/inArray/sql を spy でラップ (実実装は保持)
+// drizzle-orm eq/inArray を spy でラップ (実実装は保持)
 // ---------------------------------------------------------------------------
 
 const { mockEq, mockInArray } = vi.hoisted(() => ({
@@ -33,22 +33,22 @@ vi.mock('drizzle-orm', async (importActual) => {
   }
 })
 
-import { type User } from '@/lib/db/schema'
 import type { ReplayCardState } from '@/lib/cards/replay-card'
 import {
-  loadCardReplayStates,
+  lockCardReplayStates,
   insertAnswerEvents,
-  insertReviews,
+  verifyEventCollisions,
+  markApplied,
   applyCardFinalStates,
-  upsertStudyDays,
-  upsertSessionGuarded,
+  recomputeStudyDays,
   type AnswerEventInsertRow,
+  type CollisionCandidate,
 } from './session-repository'
 
 const USER_ID = '11111111-1111-4111-a111-111111111111'
 const CARD_ID = '44444444-4444-4444-a444-444444444444'
 const CARD_ID_2 = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
-const FAKE_USER = { id: USER_ID } as unknown as User
+const EVENT_ID = '55555555-5555-4555-a555-555555555555'
 
 /** [tableName, columnName, value] triples from the eq() spy calls. */
 function eqSignature() {
@@ -61,6 +61,10 @@ function eqSignature() {
     const tableName = col.table ? getTableName(col.table as never) : ''
     return [tableName, col.name, val] as [string, string, unknown]
   })
+}
+
+function renderSql(query: unknown): string {
+  return new PgDialect().sqlToQuery(query as SQL).sql
 }
 
 const INITIAL_STATE: ReplayCardState = {
@@ -79,59 +83,117 @@ const INITIAL_STATE: ReplayCardState = {
   currentStreak: 0,
 }
 
+const RECEIVED_AT = new Date('2026-05-25T10:05:00.000Z')
+
+function makeInsertRow(
+  overrides: Partial<AnswerEventInsertRow> = {},
+): AnswerEventInsertRow {
+  return {
+    eventId: EVENT_ID,
+    userId: USER_ID,
+    cardId: CARD_ID,
+    sessionId: null,
+    selectedAnswerIds: ['a'],
+    isCorrect: true,
+    rating: 3,
+    answeredAt: new Date('2026-05-25T10:01:00.000Z'),
+    elapsedMs: null,
+    applied: false,
+    createdAt: RECEIVED_AT,
+    ...overrides,
+  }
+}
+
+function makeCandidate(
+  overrides: Partial<CollisionCandidate> = {},
+): CollisionCandidate {
+  return {
+    eventId: EVENT_ID,
+    cardId: CARD_ID,
+    sessionId: null,
+    selectedAnswerIds: ['a'],
+    isCorrect: true,
+    rating: 3,
+    rawAnsweredAt: new Date('2026-05-25T10:01:00.000Z'),
+    elapsedMs: null,
+    ...overrides,
+  }
+}
+
+/** verifyEventCollisions が読む既存行の既定形 (candidate と一致する内容)。 */
+function makeExistingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    eventId: EVENT_ID,
+    cardId: CARD_ID,
+    sessionId: null,
+    selectedAnswerIds: ['a'],
+    isCorrect: true,
+    rating: 3,
+    answeredAt: new Date('2026-05-25T10:01:00.000Z'),
+    elapsedMs: null,
+    createdAt: RECEIVED_AT,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
 
 // ---------------------------------------------------------------------------
-// loadCardReplayStates
+// lockCardReplayStates
 // ---------------------------------------------------------------------------
 
-describe('loadCardReplayStates', () => {
-  it('owner-scoped SELECT: eq(cards.userId, userId) + inArray(cards.id, cardIds)', async () => {
-    const captured: { cols?: unknown; where?: unknown } = {}
-    const returnedRows = [{ id: CARD_ID }]
+describe('lockCardReplayStates', () => {
+  function makeTx(rows: unknown[]) {
+    const captured: {
+      cols?: Record<string, unknown>
+      orderBy?: unknown
+      lock?: string
+    } = {}
     const tx = {
-      select: (cols: unknown) => {
+      select: (cols: Record<string, unknown>) => {
         captured.cols = cols
         return {
-          from: (_table: unknown) => ({
-            where: (cond: unknown) => {
-              captured.where = cond
-              return Promise.resolve(returnedRows)
-            },
+          from: () => ({
+            where: () => ({
+              orderBy: (col: unknown) => {
+                captured.orderBy = col
+                return {
+                  for: (lock: string) => {
+                    captured.lock = lock
+                    return Promise.resolve(rows)
+                  },
+                }
+              },
+            }),
           }),
         }
       },
     } as never
+    return { tx, captured }
+  }
 
-    const rows = await loadCardReplayStates(tx, USER_ID, [CARD_ID, CARD_ID_2])
+  it('owner-scoped + ID 昇順 + FOR UPDATE (同一 card の並走 flush を直列化)', async () => {
+    const returnedRows = [{ id: CARD_ID }]
+    const { tx, captured } = makeTx(returnedRows)
 
-    // returns raw rows verbatim (Set 化・cardStateMap 化しない)
+    const rows = await lockCardReplayStates(tx, USER_ID, [CARD_ID, CARD_ID_2])
+
     expect(rows).toBe(returnedRows)
-
-    // owner WHERE: userId passed to eq
-    const eqCalls = eqSignature()
-    expect(eqCalls).toContainEqual(['cards', 'user_id', USER_ID])
-    // inArray on cards.id with the card id list
-    expect(mockInArray).toHaveBeenCalledTimes(1)
+    expect(eqSignature()).toContainEqual(['cards', 'user_id', USER_ID])
     const [inCol, inVals] = vi.mocked(mockInArray).mock.calls[0]!
     expect((inCol as { name: string }).name).toBe('id')
     expect(inVals).toEqual([CARD_ID, CARD_ID_2])
+    // ORDER BY cards.id (ロック取得順の固定 = deadlock 防止)
+    expect((captured.orderBy as { name: string }).name).toBe('id')
+    expect(captured.lock).toBe('update')
   })
 
-  it('selects the full ReplayCardState column set incl. options', async () => {
-    let captured: Record<string, unknown> | undefined
-    const tx = {
-      select: (cols: Record<string, unknown>) => {
-        captured = cols
-        return {
-          from: () => ({ where: () => Promise.resolve([]) }),
-        }
-      },
-    } as never
-    await loadCardReplayStates(tx, USER_ID, [CARD_ID])
-    expect(Object.keys(captured!).sort()).toEqual(
+  it('ReplayCardState の全列 + options を select する', async () => {
+    const { tx, captured } = makeTx([])
+    await lockCardReplayStates(tx, USER_ID, [CARD_ID])
+    expect(Object.keys(captured.cols!).sort()).toEqual(
       [
         'answered',
         'currentStreak',
@@ -165,7 +227,7 @@ describe('insertAnswerEvents', () => {
       returningCols?: unknown
     } = {}
     const tx = {
-      insert: (_table: unknown) => ({
+      insert: () => ({
         values: (vals: unknown) => {
           captured.values = vals
           return {
@@ -185,68 +247,167 @@ describe('insertAnswerEvents', () => {
     return { tx, captured }
   }
 
-  const rows: AnswerEventInsertRow[] = [
-    {
-      eventId: 'e1',
-      sessionId: 's1',
-      cardId: CARD_ID,
-      userId: USER_ID,
-      selectedAnswerIds: ['a'],
-      isCorrect: true,
-      answeredAt: new Date('2026-05-25T10:01:00Z'),
-      elapsedMs: null,
-    },
-    {
-      eventId: 'e2',
-      sessionId: 's1',
-      cardId: CARD_ID,
-      userId: USER_ID,
-      selectedAnswerIds: ['b'],
-      isCorrect: false,
-      answeredAt: new Date('2026-05-25T10:02:00Z'),
-      elapsedMs: 500,
-    },
+  const rows = [
+    makeInsertRow({ eventId: 'e1' }),
+    makeInsertRow({ eventId: 'e2', isCorrect: false, rating: 1, elapsedMs: 500 }),
   ]
 
-  it('returns a Set of inserted event_ids (duplicate excluded by returning)', async () => {
-    // returning omits e2 (conflict) → Set only has e1
+  it('RETURNING で新規 event_id だけを Set にして返す (既存は除外)', async () => {
     const { tx } = makeTx([{ eventId: 'e1' }])
     const inserted = await insertAnswerEvents(tx, rows)
     expect(inserted).toBeInstanceOf(Set)
     expect([...inserted]).toEqual(['e1'])
   })
 
-  it('passes rows to values + onConflictDoNothing target=eventId + returning({eventId})', async () => {
+  it('values + onConflictDoNothing target=event_id + returning({eventId})', async () => {
     const { tx, captured } = makeTx([{ eventId: 'e1' }, { eventId: 'e2' }])
     await insertAnswerEvents(tx, rows)
     expect(captured.values).toBe(rows)
-    // conflict target is the eventId column
     expect((captured.conflictTarget as { name: string }).name).toBe('event_id')
-    // returning shape = { eventId }
     expect(Object.keys(captured.returningCols as object)).toEqual(['eventId'])
+  })
+
+  it('applied=false / created_at を明示 set した行をそのまま渡す (DB default に頼らない)', async () => {
+    const { tx, captured } = makeTx([])
+    await insertAnswerEvents(tx, rows)
+    const passed = captured.values as AnswerEventInsertRow[]
+    expect(passed.every((r) => r.applied === false)).toBe(true)
+    expect(passed.every((r) => r.createdAt === RECEIVED_AT)).toBe(true)
   })
 })
 
 // ---------------------------------------------------------------------------
-// insertReviews
+// verifyEventCollisions — 2 段検証
 // ---------------------------------------------------------------------------
 
-describe('insertReviews', () => {
-  it('bulk INSERTs the given rows into reviews', async () => {
-    let captured: unknown
+describe('verifyEventCollisions', () => {
+  function makeTx(rows: unknown[]) {
+    let selectCalls = 0
     const tx = {
-      insert: (_table: unknown) => ({
-        values: (vals: unknown) => {
-          captured = vals
-          return Promise.resolve()
-        },
-      }),
+      select: () => {
+        selectCalls++
+        return { from: () => ({ where: () => Promise.resolve(rows) }) }
+      },
     } as never
-    const reviewRows = [
-      { userId: USER_ID, cardId: CARD_ID, rating: 3 as const, reviewedAt: new Date() },
-    ]
-    await insertReviews(tx, reviewRows)
-    expect(captured).toBe(reviewRows)
+    return { tx, getSelectCalls: () => selectCalls }
+  }
+
+  it('候補が空なら SELECT を発行せず空配列', async () => {
+    const { tx, getSelectCalls } = makeTx([])
+    expect(await verifyEventCollisions(tx, USER_ID, [])).toEqual([])
+    expect(getSelectCalls()).toBe(0)
+  })
+
+  it('own-scope SELECT に不在 = 不可視衝突 (他 user の行) → failed[]', async () => {
+    const { tx } = makeTx([])
+    const failed = await verifyEventCollisions(tx, USER_ID, [makeCandidate()])
+    expect(failed).toEqual([EVENT_ID])
+    // owner-scope 述語を query 側にも明示している (RLS 非迂回)
+    expect(eqSignature()).toContainEqual(['answer_events', 'user_id', USER_ID])
+  })
+
+  it('自分の既存行と内容一致 (正当な再送) → failed に載せない', async () => {
+    const { tx } = makeTx([makeExistingRow()])
+    expect(await verifyEventCollisions(tx, USER_ID, [makeCandidate()])).toEqual([])
+  })
+
+  it('初回に clamp された event の再送も一致判定になる (比較基準 = min(raw, 既存 created_at))', async () => {
+    // 初回: raw が created_at より未来 → answered_at は created_at に clamp されて保存済。
+    const existing = makeExistingRow({
+      answeredAt: RECEIVED_AT,
+      createdAt: RECEIVED_AT,
+    })
+    const resent = makeCandidate({
+      rawAnsweredAt: new Date('2026-05-25T23:00:00.000Z'), // 同じ raw を再送
+    })
+    const { tx } = makeTx([existing])
+    expect(await verifyEventCollisions(tx, USER_ID, [resent])).toEqual([])
+  })
+
+  it('answered_at の ISO 表現差は epoch 比較で吸収する', async () => {
+    const { tx } = makeTx([makeExistingRow()])
+    const resent = makeCandidate({
+      rawAnsweredAt: new Date('2026-05-25T10:01:00Z'), // ミリ秒表記なし
+    })
+    expect(await verifyEventCollisions(tx, USER_ID, [resent])).toEqual([])
+  })
+
+  it.each([
+    ['card_id', { cardId: CARD_ID_2 }],
+    ['is_correct', { isCorrect: false }],
+    ['rating', { rating: 4 as const }],
+    ['answered_at', { rawAnsweredAt: new Date('2026-05-25T09:00:00.000Z') }],
+    ['selected_answer_ids (要素)', { selectedAnswerIds: ['b'] }],
+    ['selected_answer_ids (長さ)', { selectedAnswerIds: ['a', 'b'] }],
+    ['session_id (NULL → 値)', { sessionId: 'ssssssss-ssss-4sss-asss-ssssssssssss' }],
+    ['elapsed_ms (NULL → 値)', { elapsedMs: 42 }],
+  ])('内容不一致 (%s) → failed[]', async (_label, overrides) => {
+    const { tx } = makeTx([makeExistingRow()])
+    const failed = await verifyEventCollisions(tx, USER_ID, [
+      makeCandidate(overrides as Partial<CollisionCandidate>),
+    ])
+    expect(failed).toEqual([EVENT_ID])
+  })
+
+  it('selected_answer_ids は配列順まで見る', async () => {
+    const { tx } = makeTx([makeExistingRow({ selectedAnswerIds: ['a', 'b'] })])
+    const failed = await verifyEventCollisions(tx, USER_ID, [
+      makeCandidate({ selectedAnswerIds: ['b', 'a'] }),
+    ])
+    expect(failed).toEqual([EVENT_ID])
+  })
+
+  it('複数候補のうち不一致だけを返す', async () => {
+    const other = '66666666-6666-4666-a666-666666666666'
+    const { tx } = makeTx([
+      makeExistingRow(),
+      makeExistingRow({ eventId: other, isCorrect: false }),
+    ])
+    const failed = await verifyEventCollisions(tx, USER_ID, [
+      makeCandidate(),
+      makeCandidate({ eventId: other, isCorrect: true }),
+    ])
+    expect(failed).toEqual([other])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// markApplied
+// ---------------------------------------------------------------------------
+
+describe('markApplied', () => {
+  function makeTx() {
+    const captured: { set?: Record<string, unknown> } = {}
+    let updateCalls = 0
+    const tx = {
+      update: () => {
+        updateCalls++
+        return {
+          set: (vals: Record<string, unknown>) => {
+            captured.set = vals
+            return { where: () => Promise.resolve() }
+          },
+        }
+      },
+    } as never
+    return { tx, captured, getUpdateCalls: () => updateCalls }
+  }
+
+  it('空配列なら UPDATE を発行しない', async () => {
+    const { tx, getUpdateCalls } = makeTx()
+    await markApplied(tx, USER_ID, [])
+    expect(getUpdateCalls()).toBe(0)
+  })
+
+  it('applied=true を owner-scope + event_id IN で 1 文更新する', async () => {
+    const { tx, captured, getUpdateCalls } = makeTx()
+    await markApplied(tx, USER_ID, ['e1', 'e2'])
+    expect(getUpdateCalls()).toBe(1)
+    expect(captured.set).toEqual({ applied: true })
+    expect(eqSignature()).toContainEqual(['answer_events', 'user_id', USER_ID])
+    const [inCol, inVals] = vi.mocked(mockInArray).mock.calls[0]!
+    expect((inCol as { name: string }).name).toBe('event_id')
+    expect(inVals).toEqual(['e1', 'e2'])
   })
 })
 
@@ -256,20 +417,16 @@ describe('insertReviews', () => {
 
 describe('applyCardFinalStates', () => {
   function makeTx(returnedIds: string[]) {
-    const captured: { fromSql?: unknown; where?: unknown } = {}
+    const captured: { fromSql?: unknown } = {}
     const tx = {
-      update: (_table: unknown) => ({
-        set: (_vals: unknown) => ({
+      update: () => ({
+        set: () => ({
           from: (fromSql: unknown) => {
             captured.fromSql = fromSql
             return {
-              where: (cond: unknown) => {
-                captured.where = cond
-                return {
-                  returning: (_cols: unknown) =>
-                    Promise.resolve(returnedIds.map((id) => ({ id }))),
-                }
-              },
+              where: () => ({
+                returning: () => Promise.resolve(returnedIds.map((id) => ({ id }))),
+              }),
             }
           },
         }),
@@ -283,7 +440,11 @@ describe('applyCardFinalStates', () => {
     const tx = {
       update: () => {
         updateCalled = true
-        return { set: () => ({ from: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) }) }) }
+        return {
+          set: () => ({
+            from: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) }),
+          }),
+        }
       },
     } as never
     await applyCardFinalStates(tx, USER_ID, new Map())
@@ -291,10 +452,17 @@ describe('applyCardFinalStates', () => {
   })
 
   it('owner-scoped UPDATE: eq(cards.userId, userId) in WHERE', async () => {
-    const finalStates = new Map([[CARD_ID, INITIAL_STATE]])
     const { tx } = makeTx([CARD_ID])
-    await applyCardFinalStates(tx, USER_ID, finalStates)
+    await applyCardFinalStates(tx, USER_ID, new Map([[CARD_ID, INITIAL_STATE]]))
     expect(eqSignature()).toContainEqual(['cards', 'user_id', USER_ID])
+  })
+
+  it('stability / difficulty は double precision で cast する (real 丸め回避)', async () => {
+    const { tx, captured } = makeTx([CARD_ID])
+    await applyCardFinalStates(tx, USER_ID, new Map([[CARD_ID, INITIAL_STATE]]))
+    const rendered = renderSql(captured.fromSql)
+    expect(rendered).toContain('::double precision')
+    expect(rendered).not.toContain('::real')
   })
 
   it('throws count-mismatch when RETURNING rows < finalStates.size', async () => {
@@ -302,7 +470,6 @@ describe('applyCardFinalStates', () => {
       [CARD_ID, INITIAL_STATE],
       [CARD_ID_2, INITIAL_STATE],
     ])
-    // returning only 1 of 2 → mismatch
     const { tx } = makeTx([CARD_ID])
     await expect(
       applyCardFinalStates(tx, USER_ID, finalStates),
@@ -327,165 +494,116 @@ describe('applyCardFinalStates', () => {
 })
 
 // ---------------------------------------------------------------------------
-// upsertStudyDays
+// recomputeStudyDays
 // ---------------------------------------------------------------------------
 
-describe('upsertStudyDays', () => {
-  function makeTx(distinctRows: Array<{ day: string; distinct_count: number }>) {
+describe('recomputeStudyDays', () => {
+  function makeTx() {
     const captured: {
+      insertValues?: Array<{ userId: string; day: string }>
+      conflictTarget?: unknown
+      lockOrderBy?: unknown
+      lockMode?: string
       executeCalls: unknown[]
-      upsertCalls: Array<{ values: Record<string, unknown>; set: Record<string, unknown> }>
-    } = { executeCalls: [], upsertCalls: [] }
+    } = { executeCalls: [] }
+    let insertCalls = 0
+    let selectCalls = 0
     const tx = {
+      insert: () => {
+        insertCalls++
+        return {
+          values: (vals: Array<{ userId: string; day: string }>) => {
+            captured.insertValues = vals
+            return {
+              onConflictDoNothing: (conf: { target: unknown }) => {
+                captured.conflictTarget = conf.target
+                return Promise.resolve()
+              },
+            }
+          },
+        }
+      },
+      select: () => {
+        selectCalls++
+        return {
+          from: () => ({
+            where: () => ({
+              orderBy: (col: unknown) => {
+                captured.lockOrderBy = col
+                return {
+                  for: (lock: string) => {
+                    captured.lockMode = lock
+                    return Promise.resolve([])
+                  },
+                }
+              },
+            }),
+          }),
+        }
+      },
       execute: (query: unknown) => {
         captured.executeCalls.push(query)
-        return Promise.resolve(distinctRows)
+        return Promise.resolve([])
       },
-      insert: (_table: unknown) => ({
-        values: (vals: Record<string, unknown>) => ({
-          onConflictDoUpdate: (conf: { set: Record<string, unknown> }) => {
-            captured.upsertCalls.push({ values: vals, set: conf.set })
-            return Promise.resolve()
-          },
-        }),
-      }),
     } as never
-    return { tx, captured }
+    return {
+      tx,
+      captured,
+      getInsertCalls: () => insertCalls,
+      getSelectCalls: () => selectCalls,
+    }
   }
 
-  it('issues one distinct-count SELECT then a per-day UPSERT', async () => {
-    const dayMap = new Map([
-      ['2026-05-25', { total: 3, correct: 2 }],
-      ['2026-05-26', { total: 1, correct: 0 }],
+  it('days が空なら何も発行しない', async () => {
+    const { tx, captured, getInsertCalls, getSelectCalls } = makeTx()
+    await recomputeStudyDays(tx, USER_ID, [])
+    expect(getInsertCalls()).toBe(0)
+    expect(getSelectCalls()).toBe(0)
+    expect(captured.executeCalls).toHaveLength(0)
+  })
+
+  it('day 昇順に行を確保してから FOR UPDATE でロックする (cross-card lost update 対策)', async () => {
+    const { tx, captured } = makeTx()
+    await recomputeStudyDays(tx, USER_ID, ['2026-05-26', '2026-05-25'])
+
+    // 1) 行確保は昇順 + ON CONFLICT DO NOTHING (複合 PK target)
+    expect(captured.insertValues).toEqual([
+      { userId: USER_ID, day: '2026-05-25' },
+      { userId: USER_ID, day: '2026-05-26' },
     ])
-    const { tx, captured } = makeTx([
-      { day: '2026-05-25', distinct_count: 2 },
-      { day: '2026-05-26', distinct_count: 1 },
-    ])
-    await upsertStudyDays(tx, USER_ID, dayMap)
-
-    // one distinct SELECT execute
-    expect(captured.executeCalls.length).toBe(1)
-    // per-day UPSERT (2 days)
-    expect(captured.upsertCalls.length).toBe(2)
-    expect(captured.upsertCalls[0]!.values).toMatchObject({
-      userId: USER_ID,
-      day: '2026-05-25',
-      reviewCount: 3,
-      correctCount: 2,
-      distinctCardCount: 2,
-    })
-    // set has reviewCount/correctCount/distinctCardCount keys
-    expect(Object.keys(captured.upsertCalls[0]!.set).sort()).toEqual(
-      ['correctCount', 'distinctCardCount', 'reviewCount'].sort(),
-    )
+    expect(
+      (captured.conflictTarget as Array<{ name: string }>).map((c) => c.name),
+    ).toEqual(['user_id', 'day'])
+    // 2) 同じ昇順で FOR UPDATE
+    expect((captured.lockOrderBy as { name: string }).name).toBe('day')
+    expect(captured.lockMode).toBe('update')
+    expect(eqSignature()).toContainEqual(['study_days', 'user_id', USER_ID])
   })
 
-  it('falls back to distinctCardCount=0 when the day is absent from the SELECT result', async () => {
-    const dayMap = new Map([['2026-05-25', { total: 1, correct: 1 }]])
-    const { tx, captured } = makeTx([]) // no distinct rows
-    await upsertStudyDays(tx, USER_ID, dayMap)
-    expect(captured.upsertCalls[0]!.values.distinctCardCount).toBe(0)
-    expect(captured.upsertCalls[0]!.set.distinctCardCount).toBe(0)
-  })
-})
+  it('再集計は VALUES CTE + 絶対値 UPDATE の 1 文 (day ごとの N+1 をしない)', async () => {
+    const { tx, captured } = makeTx()
+    await recomputeStudyDays(tx, USER_ID, ['2026-05-25', '2026-05-26'])
 
-// ---------------------------------------------------------------------------
-// upsertSessionGuarded (W 形 — F2 Task6 ②status 遷移ガード)
-// ---------------------------------------------------------------------------
-
-describe('upsertSessionGuarded', () => {
-  // returnRows = .returning() の返却 (実書込行数を模す)。 1 行 = applied true、
-  // [] = 述語不発 (clamp) or tenant 不一致 = applied false。
-  function makeDb(returnRows: Array<{ sessionId: string }> = [{ sessionId: 'x' }]) {
-    const captured: {
-      values?: Record<string, unknown>
-      conflictSet?: Record<string, unknown>
-      conflictTarget?: unknown
-      setWhere?: unknown
-    } = {}
-    const db = {
-      insert: (_table: unknown) => ({
-        values: (vals: Record<string, unknown>) => {
-          captured.values = vals
-          return {
-            onConflictDoUpdate: (conf: {
-              target: unknown
-              set: Record<string, unknown>
-              setWhere?: unknown
-            }) => {
-              captured.conflictTarget = conf.target
-              captured.conflictSet = conf.set
-              captured.setWhere = conf.setWhere
-              return {
-                returning: (_cols: unknown) => Promise.resolve(returnRows),
-              }
-            },
-          }
-        },
-      }),
-    } as never
-    return { db, captured }
-  }
-
-  const session = {
-    session_id: '22222222-2222-4222-a222-222222222222',
-    exam_id: '33333333-3333-4333-a333-333333333333',
-    mode: 'smart' as const,
-    card_ids: [CARD_ID],
-    started_at: '2026-05-25T10:00:00.000Z',
-    completed_at: '2026-05-25T10:05:00.000Z',
-    status: 'completed' as const,
-  }
-
-  it('W form: conflictSet = {completedAt, status} only, target = sessionId, applied = (rows > 0)', async () => {
-    const { db, captured } = makeDb([{ sessionId: session.session_id }])
-    const result = await upsertSessionGuarded(db, FAKE_USER, session)
-
-    // 実書込 1 行 → applied:true
-    expect(result).toEqual({ applied: true })
-    // conflict target on session_id PK
-    expect((captured.conflictTarget as { name: string }).name).toBe('session_id')
-    // conflictSet is ONLY completedAt + status (card_ids insert-only / I-1)
-    expect(Object.keys(captured.conflictSet!).sort()).toEqual(
-      ['completedAt', 'status'].sort(),
-    )
-    expect(captured.conflictSet!.status).toBe('completed')
-    // insert values carry full row incl. card_ids
-    expect(captured.values).toMatchObject({
-      sessionId: session.session_id,
-      userId: USER_ID,
-      mode: 'smart',
-      cardIds: [CARD_ID],
-      status: 'completed',
-    })
+    expect(captured.executeCalls).toHaveLength(1)
+    const rendered = renderSql(captured.executeCalls[0]).replace(/\s+/g, ' ')
+    // 対象 day のみを VALUES で列挙する (min〜max の連続 range にしない)
+    expect(rendered).toContain('WITH days(day, start_at, end_at) AS (VALUES')
+    // 絶対値 set (加算意味論の廃止)
+    expect(rendered).toContain('SET review_count = agg.review_count')
+    expect(rendered).not.toContain('review_count +')
+    // correct_count は is_correct 由来 (rating>=2 ではない)
+    expect(rendered).toContain('FILTER (WHERE ae.is_correct)')
+    // applied=true の event だけを母集合にする
+    expect(rendered).toContain('ae.applied')
+    // JST 境界は bind した timestamptz で比較する (SQL 側の AT TIME ZONE を使わない)
+    expect(rendered).not.toContain('AT TIME ZONE')
   })
 
-  it('applied:false when .returning() yields 0 rows (setWhere 述語不発 = clamp / tenant no-op)', async () => {
-    const { db } = makeDb([]) // 0 rows written
-    const result = await upsertSessionGuarded(db, FAKE_USER, session)
-    expect(result).toEqual({ applied: false })
-  })
-
-  it('setWhere = tenant eq AND status 遷移述語 (userId + status=active OR status=excluded)', async () => {
-    const { db } = makeDb()
-    await upsertSessionGuarded(db, FAKE_USER, session)
-    const eqCalls = eqSignature()
-    // tenant guard (C-1)
-    expect(eqCalls).toContainEqual(['study_sessions', 'user_id', USER_ID])
-    // W 遷移述語の左枝 (既存 status='active' の許可)
-    expect(eqCalls).toContainEqual(['study_sessions', 'status', 'active'])
-    // W 形は tenant eq + status='active' eq の 2 本 (右枝 excluded は raw sql)
-    expect(eqCalls.length).toBe(2)
-  })
-
-  it('null completed_at when session omits completed_at', async () => {
-    const { db, captured } = makeDb()
-    await upsertSessionGuarded(db, FAKE_USER, {
-      ...session,
-      completed_at: undefined,
-    })
-    expect(captured.values!.completedAt).toBeNull()
-    expect(captured.conflictSet!.completedAt).toBeNull()
+  it('JST day 境界を [00:00+09:00, 翌 00:00+09:00) の UTC instant で bind する', async () => {
+    const { tx, captured } = makeTx()
+    await recomputeStudyDays(tx, USER_ID, ['2026-05-25'])
+    const params = new PgDialect().sqlToQuery(captured.executeCalls[0] as SQL).params
+    expect(params).toContain('2026-05-24T15:00:00.000Z')
+    expect(params).toContain('2026-05-25T15:00:00.000Z')
   })
 })

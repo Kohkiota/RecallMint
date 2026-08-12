@@ -1,10 +1,10 @@
--- RLS Phase 3 Wave 2: 軽配線 5 表の policy 有効化。owner (postgres) 実行前提。
+-- RLS Phase 3 Wave 2: 軽配線 4 表の policy 有効化。owner (postgres) 実行前提。
 -- app_current_user_id() は 0025 で定義済。FORCE RLS はしない (owner bypass で
 -- seed/migrate/operator を素通し)。(SELECT public.app_current_user_id()) 包みで
 -- initPlan 化 (per-row 評価回避)。
 --
 -- Wave 1 (rls-p3-wave1-enable.sql) / P2 と完全同型: FOR ALL・USING=WITH CHECK=
--- user_id = (SELECT app_current_user_id())。5 表とも単純 tenant 表 (user_settings は
+-- user_id = (SELECT app_current_user_id())。4 表とも単純 tenant 表 (user_settings は
 -- PK=user_id 単独だが述語は user_id のみで同一・コマンド別分割不要)。各表の残存 raw
 -- getDb 経路を withTenantTx で context 下に入れた後に本 policy を張る (配線 → flip は
 -- per-table 不可分・Step 0 §5.3)。
@@ -18,13 +18,6 @@
 -- postgres-js .simple() は file 全体を 1 暗黙 tx で流すため途中の 42710 が ENABLE 群ごと
 -- rollback するのを DROP で構造的に封じる)。ENABLE ROW LEVEL SECURITY 自体は冪等 no-op。
 SET lock_timeout = '5s';
-
--- study_sessions (学習セッション・review ingest Phase 0 upsert)
-ALTER TABLE study_sessions ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS study_sessions_tenant ON study_sessions;
-CREATE POLICY study_sessions_tenant ON study_sessions FOR ALL TO recallmint_app
-  USING (user_id = (SELECT public.app_current_user_id()))
-  WITH CHECK (user_id = (SELECT public.app_current_user_id()));
 
 -- user_settings (学習設定・PK=user_id 単独)
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
