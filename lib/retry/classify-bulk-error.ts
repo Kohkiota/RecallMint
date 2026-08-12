@@ -2,7 +2,8 @@
 // transient / permanent-4xx / permanent-other に分類する server-side helper。
 //
 // 用途: caller (bulk route) が catch した envelope error を 503 (transient =
-// Retry-After 付き) / 400 (permanent zod 4xx) / 503 (unknown DB default) のいずれかに
+// Retry-After 付き) / 400 (permanent-4xx: zod validation error または PERMANENT_PG_CODES
+// の PostgreSQL SQLSTATE 5 種) / 503 (permanent-other: unknown DB default) のいずれかに
 // 振り分けるための共有 logic。 client retry controller (lib/retry/transient-error.ts) の
 // `isTransientError` は HTTP `\b(500|502|503|504)\b` で transient 判定するため、 503 を
 // 返す経路と整合する (audit §10.3 (b) #11)。
@@ -14,8 +15,11 @@
 // 列の育て方: 本 file の transient PG code list は spec §2.1 (H1) で OT 裁定確定した
 // 初期セット。 production logger 観測 (review_events.bulk.tx_failed /
 // entity_mutations.bulk.mutation_failed の serializeDbError 出力で発生 code を集計) で
-// 追加すべき code を見つけたら本 set に足す。 厳密 permanent 判定 (例: 23505
-// unique_violation) は将来分割の余地あり、 現状 default = transient で倒し続ける。
+// 追加すべき code を見つけたら本 set に足す。 permanent 判定は下記 PERMANENT_PG_CODES
+// (23514 / 23502 / 22P02 / 22001 / 22003 の 5 種) として実装済み(spec §2 H1 裁定)。
+// 23505 unique_violation のような DB 状態依存 code は意図的に含めず、 現状 default =
+// transient で倒し続ける(理由は PERMANENT_PG_CODES 直前の comment)。 それ以外の code を
+// permanent-4xx へ追加するかどうかは将来分割の余地あり。
 
 import { DrizzleQueryError } from 'drizzle-orm/errors'
 import { ZodError } from 'zod'
@@ -52,7 +56,7 @@ const TRANSIENT_POSTGRESJS_CONN_CODES: ReadonlySet<string> = new Set([
 // これらの DB 制約で落ちる = client/server 契約 drift バグの signal。
 // 42xxx (undefined_table 等の server/deploy 欠陥) や 23503/23505 (DB 状態依存) は
 // 意図的に含めない — retry で解消しうるため transient のまま倒す (spec §2 参照)。
-// 列の育て方は本 file 冒頭 comment (`:14-18`) の方針と同じ (production log 観測で追加)。
+// 列の育て方は本 file 冒頭 comment (`:15-22`) の方針と同じ (production log 観測で追加)。
 const PERMANENT_PG_CODES: ReadonlySet<string> = new Set([
   '23514', // check_violation
   '23502', // not_null_violation

@@ -142,12 +142,17 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     accessorFn: (row) => row.card.title,
     // T2/T3: side peek 起動button(カードを開く)は select 列(checkbox 隣接)へ移設済(常時表示化)。
     // title セルは InlineTextField のみ(他の text 列 = sort_key 等と同型)。
-    cell: ({ row }) => {
+    cell: ({ row, table }) => {
       const card = row.original.card
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId) — 編集対象 mirror 行の user_id は使わない
+      // (lib/sync/optimistic-mutation.ts:58-59 の絶対規則。 outbox 行を他 user 名義にすると
+      // 認可境界を迂回しうる)。 meta 不在時は cell 自体を描画しない(question/options/tags と同型)。
+      if (!meta) return null
       return (
         <InlineTextField
           cardId={card.id}
-          userId={card.user_id}
+          userId={meta.userId}
           field="title"
           initialValue={card.title}
           ariaLabel="タイトル 編集"
@@ -168,15 +173,20 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // sortLikeServer = 連番順(文字列辞書比較 + NULLS LAST + created_at tiebreak)。
     // TanStack desc 反転により昇順→null 末尾 / 降順→null 先頭 (継承挙動・意図的)。
     accessorFn: (row) => row.card.sort_key,
-    cell: ({ row }) => (
-      <InlineTextField
-        cardId={row.original.card.id}
-        userId={row.original.card.user_id}
-        field="sort_key"
-        initialValue={row.original.card.sort_key ?? null}
-        ariaLabel="ソートキー 編集"
-      />
-    ),
+    cell: ({ row, table }) => {
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId) — title セルと同型・同理由(:145-152 参照)。
+      if (!meta) return null
+      return (
+        <InlineTextField
+          cardId={row.original.card.id}
+          userId={meta.userId}
+          field="sort_key"
+          initialValue={row.original.card.sort_key ?? null}
+          ariaLabel="ソートキー 編集"
+        />
+      )
+    },
     enableSorting: true,
     sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
     // S4-1: テキストフィルタ。row.original.card.sort_key を直読み (nullable)。
@@ -194,27 +204,30 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId)。 編集対象 mirror 行の card.user_id は使わない
+      // (lib/sync/optimistic-mutation.ts:58-59 の絶対規則 — outbox 行を他 user 名義にすると
+      // 認可境界を迂回しうる)。 meta 不在時は outbox 行を作れない(空 user_id の孤児行を
+      // 生まないため)ので cell 自体を描画しない。
+      if (!meta) return null
       return (
         <>
           <InlineTextField
             cardId={card.id}
-            userId={card.user_id}
+            userId={meta.userId}
             field="question_text"
             initialValue={card.question_text}
             ariaLabel="問題文 編集"
             multiline
             displayClassName="text-sm md:min-h-6 md:py-0.5"
           />
-          {meta && (
-            <CardImageGallery
-              images={card.images}
-              target="question_text"
-              cardId={card.id}
-              userId={meta.userId}
-              compact
-              attachAriaLabel="問題文に画像を追加"
-            />
-          )}
+          <CardImageGallery
+            images={card.images}
+            target="question_text"
+            cardId={card.id}
+            userId={meta.userId}
+            compact
+            attachAriaLabel="問題文に画像を追加"
+          />
         </>
       )
     },
@@ -228,19 +241,21 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'options',
     size: 240,
     header: '選択肢',
-    cell: ({ row }) => {
+    cell: ({ row, table }) => {
       const card = row.original.card
-      // owner は編集対象 mirror 行の user_id から取る (兄弟 cell の InlineTextField と同源)。
-      // `meta?.userId ?? ''` の fallback は空 user_id の outbox 行を生み、 どの user の
-      // flush からも stale 隔離からも選別されない不滅行になるため使わない。
-      // cards mirror の読み経路は owner-scope (exam-card-table.tsx が
-      // `c.user_id === userId` で絞る・同 file の test で pin) ゆえ card.user_id = 認証主体。
+      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId) — 編集対象 mirror 行の user_id は使わない
+      // (lib/sync/optimistic-mutation.ts:58-59 の絶対規則。 outbox 行を他 user 名義にすると
+      // 認可境界を迂回しうる)。 `meta?.userId ?? ''` の fallback は空 user_id の outbox 行を
+      // 生み、 どの user の flush からも stale 隔離からも選別されない不滅行になるため使わない。
+      // 代わりに meta 不在時は cell 自体を描画しない (tags cell と同型)。
+      if (!meta) return null
       return (
         <CompactOptionsCell
           cardId={card.id}
           options={card.options}
           images={card.images}
-          userId={card.user_id}
+          userId={meta.userId}
         />
       )
     },
@@ -288,27 +303,27 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId) — question セルと同型・同理由(:196-211 参照)。
+      if (!meta) return null
       return (
         <>
           <InlineTextField
             cardId={card.id}
-            userId={card.user_id}
+            userId={meta.userId}
             field="explanation_text"
             initialValue={card.explanation_text ?? null}
             multiline
             ariaLabel="解説 編集"
             displayClassName="text-sm md:min-h-6 md:py-0.5"
           />
-          {meta && (
-            <CardImageGallery
-              images={card.images}
-              target="explanation_text"
-              cardId={card.id}
-              userId={meta.userId}
-              compact
-              attachAriaLabel="解説に画像を追加"
-            />
-          )}
+          <CardImageGallery
+            images={card.images}
+            target="explanation_text"
+            cardId={card.id}
+            userId={meta.userId}
+            compact
+            attachAriaLabel="解説に画像を追加"
+          />
         </>
       )
     },
@@ -323,27 +338,27 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は常に認証主体 (meta.userId) — question セルと同型・同理由(:196-211 参照)。
+      if (!meta) return null
       return (
         <>
           <InlineTextField
             cardId={card.id}
-            userId={card.user_id}
+            userId={meta.userId}
             field="memo"
             initialValue={card.memo ?? null}
             multiline
             ariaLabel="メモ 編集"
             displayClassName="text-sm md:min-h-6 md:py-0.5"
           />
-          {meta && (
-            <CardImageGallery
-              images={card.images}
-              target="memo"
-              cardId={card.id}
-              userId={meta.userId}
-              compact
-              attachAriaLabel="メモに画像を追加"
-            />
-          )}
+          <CardImageGallery
+            images={card.images}
+            target="memo"
+            cardId={card.id}
+            userId={meta.userId}
+            compact
+            attachAriaLabel="メモに画像を追加"
+          />
         </>
       )
     },

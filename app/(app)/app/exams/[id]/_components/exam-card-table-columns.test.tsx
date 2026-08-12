@@ -124,6 +124,11 @@ function makeRow(cardOverrides: Partial<ClientCard> = {}): ExamCardRow {
   }
 }
 
+// Sprint B Important-1: question / options cell は owner を meta.userId から取るよう
+// 変更され、`if (!meta) return null` を持つ (exam-card-table-columns.tsx)。meta を渡さない
+// renderCell 呼び出しは cell が丸ごと描画されなくなるため、内容を検証するテストは meta を渡す。
+const META: Partial<ExamCardTableMeta> = { userId: 'user-owner' }
+
 // ---------------------------------------------------------------------------
 // helpers: render specific column cell
 // ---------------------------------------------------------------------------
@@ -367,24 +372,24 @@ describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
   })
 
   it('cell renders InlineTextField with aria-label="問題文 編集" in display mode', () => {
-    const el = renderCell('question', makeRow({ question_text: 'テスト問題文テキスト' }))
+    const el = renderCell('question', makeRow({ question_text: 'テスト問題文テキスト' }), META)
     // InlineTextField の display mode は role="button" + aria-label を持つ div を描画する
     const btn = el.querySelector('[role="button"][aria-label="問題文 編集"]')
     expect(btn).not.toBeNull()
   })
 
   it('line-clamp-2 div は存在しない (全文表示・行高可変 = 他 editable text 列と一貫)', () => {
-    const el = renderCell('question', makeRow({ question_text: '問題文テキスト' }))
+    const el = renderCell('question', makeRow({ question_text: '問題文テキスト' }), META)
     expect(el.querySelector('.line-clamp-2')).toBeNull()
   })
 
   it('cell は initialValue として question_text を表示する', () => {
-    const el = renderCell('question', makeRow({ question_text: '2 + 2 = ?' }))
+    const el = renderCell('question', makeRow({ question_text: '2 + 2 = ?' }), META)
     expect(el.textContent).toContain('2 + 2 = ?')
   })
 
   it('screen.getByRole("button") で aria-label が取得できる', () => {
-    renderCell('question', makeRow({ question_text: 'テスト' }))
+    renderCell('question', makeRow({ question_text: 'テスト' }), META)
     // テスト内でレンダーされた button が screen からアクセスできる
     expect(screen.getByRole('button', { name: '問題文 編集' })).toBeInTheDocument()
   })
@@ -397,31 +402,31 @@ describe('Column: question (Edit-2 T3) — InlineTextField multiline', () => {
 describe('Edit-3 T1: question / explanation_text / memo に displayClassName="text-sm" が渡る', () => {
   // T1 Minor 2 fix: as HTMLElement cast → null safe + toContain(substring) → split+toContain(exact)
   it('question cell の display div に text-sm クラスが付与される', () => {
-    renderCell('question', makeRow({ question_text: 'テスト問題文' }))
+    renderCell('question', makeRow({ question_text: 'テスト問題文' }), META)
     const displayDiv = screen.getByRole('button', { name: '問題文 編集' })
     expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('explanation_text cell の display div に text-sm クラスが付与される', () => {
-    renderCell('explanation_text', makeRow({ explanation_text: '解説テキスト' }))
+    renderCell('explanation_text', makeRow({ explanation_text: '解説テキスト' }), META)
     const displayDiv = screen.getByRole('button', { name: '解説 編集' })
     expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('memo cell の display div に text-sm クラスが付与される', () => {
-    renderCell('memo', makeRow({ memo: 'メモテキスト' }))
+    renderCell('memo', makeRow({ memo: 'メモテキスト' }), META)
     const displayDiv = screen.getByRole('button', { name: 'メモ 編集' })
     expect(displayDiv.className.split(' ')).toContain('text-sm')
   })
 
   it('title cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    renderCell('title', makeRow({ title: 'タイトル' }))
+    renderCell('title', makeRow({ title: 'タイトル' }), META)
     const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
     expect(displayDiv.className.split(' ')).not.toContain('text-sm')
   })
 
   it('sort_key cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    renderCell('sort_key', makeRow({ sort_key: '0001' }))
+    renderCell('sort_key', makeRow({ sort_key: '0001' }), META)
     const displayDiv = screen.getByRole('button', { name: 'ソートキー 編集' })
     expect(displayDiv.className.split(' ')).not.toContain('text-sm')
   })
@@ -434,7 +439,7 @@ describe('Edit-3 T1: question / explanation_text / memo に displayClassName="te
 
 describe('Edit-3 T2: question / explanation_text / memo の display div に md:min-h-6 が付く', () => {
   it('question display div に md:min-h-6 が付き md:min-h-8 がない (twMerge 上書き)', () => {
-    renderCell('question', makeRow({ question_text: 'テスト' }))
+    renderCell('question', makeRow({ question_text: 'テスト' }), META)
     const displayDiv = screen.getByRole('button', { name: '問題文 編集' })
     const classes = displayDiv.className.split(' ')
     expect(classes).toContain('md:min-h-6')
@@ -442,7 +447,7 @@ describe('Edit-3 T2: question / explanation_text / memo の display div に md:m
   })
 
   it('explanation_text display div に md:min-h-6 が付き md:min-h-8 がない', () => {
-    renderCell('explanation_text', makeRow({ explanation_text: '解説' }))
+    renderCell('explanation_text', makeRow({ explanation_text: '解説' }), META)
     const displayDiv = screen.getByRole('button', { name: '解説 編集' })
     const classes = displayDiv.className.split(' ')
     expect(classes).toContain('md:min-h-6')
@@ -450,7 +455,7 @@ describe('Edit-3 T2: question / explanation_text / memo の display div に md:m
   })
 
   it('memo display div に md:min-h-6 が付き md:min-h-8 がない', () => {
-    renderCell('memo', makeRow({ memo: 'メモ' }))
+    renderCell('memo', makeRow({ memo: 'メモ' }), META)
     const displayDiv = screen.getByRole('button', { name: 'メモ 編集' })
     const classes = displayDiv.className.split(' ')
     expect(classes).toContain('md:min-h-6')
@@ -458,7 +463,7 @@ describe('Edit-3 T2: question / explanation_text / memo の display div に md:m
   })
 
   it('title display div には md:min-h-6 が付かない (displayClassName を渡さない列の回帰)', () => {
-    renderCell('title', makeRow({ title: 'タイトル' }))
+    renderCell('title', makeRow({ title: 'タイトル' }), META)
     const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
     const classes = displayDiv.className.split(' ')
     // title に displayClassName を渡さないので md:min-h-8 が残る
@@ -489,6 +494,7 @@ describe('Column: options (Edit-2 T3) — CompactOptionsCell', () => {
           { id: 'b', text: '選択肢B', is_correct: false },
         ],
       }),
+      META,
     )
     // CompactOptionsCell は常に "+ 選択肢を追加" add button を描画する
     const addBtn = Array.from(el.querySelectorAll('button')).find((b) =>
@@ -506,13 +512,14 @@ describe('Column: options (Edit-2 T3) — CompactOptionsCell', () => {
           { id: 'b', text: '選択肢B', is_correct: false },
         ],
       }),
+      META,
     )
     const deleteBtns = el.querySelectorAll('[aria-label="選択肢を削除"]')
     expect(deleteBtns.length).toBe(2)
   })
 
   it('screen.getByRole("button", { name: "\\+ 選択肢を追加" }) がアクセスできる', () => {
-    renderCell('options', makeRow({ options: [] }))
+    renderCell('options', makeRow({ options: [] }), META)
     expect(screen.getByRole('button', { name: '+ 選択肢を追加' })).toBeInTheDocument()
   })
 })
@@ -807,14 +814,14 @@ describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用
 
 describe('Column: title — 「カードを開く」button 移設後の構造不変', () => {
   it('① title cell はもう「カードを開く」button を描画しない(select 列へ移設済)', () => {
-    renderCell('title', makeRow(), { openCard: vi.fn(), activeCardId: null })
+    renderCell('title', makeRow(), { ...META, openCard: vi.fn(), activeCardId: null })
     expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
     // InlineTextField は引き続き描画される
     expect(screen.getByRole('button', { name: 'タイトル 編集' })).toBeInTheDocument()
   })
 
   it('② タイトル display div クリックで textbox が現れる (title cell の編集動線は不変)', () => {
-    renderCell('title', makeRow(), { openCard: vi.fn(), activeCardId: null })
+    renderCell('title', makeRow(), { ...META, openCard: vi.fn(), activeCardId: null })
     fireEvent.click(screen.getByRole('button', { name: 'タイトル 編集' }))
     expect(screen.getByRole('textbox', { name: 'タイトル 編集' })).toBeInTheDocument()
   })
@@ -968,7 +975,7 @@ describe('Column: select — 「カードを開く」button(checkbox 隣接・�
 // Sprint T T6 + add(2026-07-17 OT): テーブルビュー 画像 gallery 配線(question /
 // explanation_text / memo 列)= thumbnail + compact add affordance。userId は meta 経由。
 describe('Sprint T T6: テーブルビュー 画像 gallery 配線(thumbnail + add)', () => {
-  const META: Partial<ExamCardTableMeta> = { userId: 'user-owner' }
+  // META は module scope (renderCell helper の直後) で共有定義済み。
   const img = (target: string): ClientCardImage => ({
     key: '11111111-1111-4111-8111-111111111111',
     target,

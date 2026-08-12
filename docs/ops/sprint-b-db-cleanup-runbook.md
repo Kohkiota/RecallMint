@@ -175,7 +175,7 @@ UNION ALL
 SELECT 'source_documents.pages_total',        count(*) FILTER (WHERE pages_total         IS NULL),      count(*) FROM source_documents;
 ```
 
-> `users.plan` は NOT NULL(default `'free'`)、その他 24 本の対象列も NOT NULL のため、NULL 別掲は上記 3 列のみで足りる(`drizzle/migrations/meta/0035_snapshot.json` で確認)。
+> `users.plan` は NOT NULL(default `'free'`)、その他 23 本の対象列も NOT NULL のため(27 制約の対象列 27 本 − nullable 3 本 − `users.plan` = 23)、NULL 別掲は上記 3 列のみで足りる(`drizzle/migrations/meta/0035_snapshot.json` で確認)。
 
 ---
 
@@ -217,8 +217,8 @@ GROUP BY status;
 
 status が 0 でも、**行を書く前に落ちた invocation が生きている**可能性があるため、直近 deploy から Function の最大実行時間を待つ。
 
-- **`vercel.json` は upload 系 route の `maxDuration` を pin していない** — `functions` に載っているのは `app/api/webhooks/clerk/route.ts` と `app/api/webhooks/stripe/route.ts` の **60s だけ**(現物確認・2026-08-12)。したがって upload 経路の実効上限は **Vercel の project 設定**が決める。
-- 本 repo の他所(`CLAUDE.md`)は 900s と記録しているが、**この数値を信じて待たない**。**Vercel dashboard → Settings → Functions → Max Duration の現在値を見て、その値を待つ。**(runbook に数値を書き写すと、project 設定が変わった日に静かに嘘になる。)
+- **`vercel.json` は upload 系 route の `maxDuration` を pin していない** — `functions` に載っているのは `app/api/webhooks/clerk/route.ts` と `app/api/webhooks/stripe/route.ts` の **60s だけ**(現物確認・2026-08-12)。**しかしこれは「dashboard の現在値を読みに行く」根拠にはならない**: upload 系 route は Next.js の **route segment config** で自前の `maxDuration` を宣言しており(`app/(app)/app/upload/page.tsx:23` — `export const maxDuration = 720`)、route segment config は **dashboard の Function Max Duration を上書きする**(同 file `:19-20` のコメントに明記)。したがって upload 経路(同一 invocation 内で `publishPreparedUploadTx` も走るため publish 経路も同じ上限に入る)の実効上限は、dashboard の設定値に関わらず **720 秒**。`app/(app)/app/upload/_actions/submit-upload.test.ts` がこの literal と行の存在自体を pin しており、drift すればテストが落ちる。
+- **待つのは 720 秒**(`app/(app)/app/upload/page.tsx:23` を正とする — bump したらこの runbook も合わせて更新する)。**dashboard の Function Max Duration がこれより大きい値になっていた場合はその値を待つ**(route segment config が上書きするとはいえ、dashboard 側がより長い値を強制するケースを安全側で排除しないため — fail-closed に「長い方」を待つ)。dashboard を確認する目的はこの safety net のみで、720 秒を下回る根拠には使わない。
 
 ### Step 1' — **drain が終わらないときの分岐**(無期限に待たない)
 
@@ -253,11 +253,22 @@ DATABASE_URL_ADMIN='<owner 接続文字列>' pnpm tsx --conditions=react-server 
   scripts/gc-abandoned-operations.ts
 ```
 
-**この script は `upload_operations` しか触らない**(`status='terminal_failed'` + `prepared_payload=NULL` + `last_error_code`/`result_summary` 設定・現物確認)。対応する `source_documents` は `'processing'` のまま残る — それは `reconcileStaleProcessing`(exam 一覧 / `/api/exams/status` polling から発火・15 分超の stale を failed 化)が後で回収する。**0036 の適用条件は `upload_operations` 側なので、source doc の後追いを待つ必要はない。**
+**この script は `upload_operations` しか触らない**(`status='terminal_failed'` + `prepared_payload=NULL` + `last_error_code`/`result_summary` 設定・現物確認)。対応する `source_documents` は `'processing'` のまま残る — それは `reconcileStaleProcessing`(唯一の production 呼び出し元 = `/api/exams/status` の polling・`app/api/exams/status/route.ts:162`。exam 一覧 render からの呼び出しは S2.0.7 で撤去済 — `app/(app)/app/exams/page.tsx:9` の comment 参照・15 分超の stale を failed 化)が後で回収する。**0036 の適用条件は `upload_operations` 側なので、source doc の後追いを待つ必要はない。**
 
-**手動 SQL fallback**(script が動かせない場合のみ・owner):
+**手動 SQL fallback**(script が動かせない場合のみ・owner)。**上の script が `--dry-run` / `--user` で対象を絞れるのに対し、生 SQL は既定で全 user に効く** — この project の破壊操作の規律(確認 → 実行の 2 段分離・対象は個別指定)に合わせ、(a) 対象行を確認してから (b) を流す。`<uuid>` を埋めれば `--user` 相当に絞れる(既定はコメントアウトのまま = 全 user)。
 
 ```sql
+-- (a) 確認: (b) を流す前に対象行を目視する(script の --dry-run に相当)。
+SELECT id, user_id, status, created_at, lease_expires_at, attempt_count, last_error_code
+FROM upload_operations
+WHERE status IN ('prepared','processing')
+  AND NOT (lease_expires_at IS NOT NULL AND lease_expires_at > now())  -- live な行は触らない
+  -- AND user_id = '<uuid>'  -- 対象 user を絞る場合のみ有効化(script の --user に相当)
+ORDER BY created_at;
+```
+
+```sql
+-- (b) 実行: (a) で確認した行と一致することを確かめてから流す。WHERE は (a) と同一に保つ。
 UPDATE upload_operations
 SET status = 'terminal_failed',
     prepared_payload = NULL,
@@ -265,6 +276,7 @@ SET status = 'terminal_failed',
     result_summary = '{"reason":"abandoned_retention_exceeded"}'::jsonb
 WHERE status IN ('prepared','processing')
   AND NOT (lease_expires_at IS NOT NULL AND lease_expires_at > now())  -- live な行は触らない
+  -- AND user_id = '<uuid>'  -- (a) と同じ絞り込みを使うこと
 RETURNING id, user_id, status;
 ```
 
@@ -360,7 +372,7 @@ DB は適用前のまま(全体 1 tx)。エラーの SQLSTATE で原因が分か
 
 ## 3. 適用後照合 SQL(migrate 直後・owner・1 ブロック)
 
-**4 つの `SELECT` すべてが期待どおりであること。**
+**6 つの `SELECT` すべてが期待どおりであること。**
 
 ```sql
 -- 3.1 消えた 13 列 — 期待: 0 行
@@ -388,54 +400,66 @@ FROM pg_constraint
 WHERE conrelid='upload_operations'::regclass AND contype='f'
   AND conname='upload_operations_source_document_id_source_documents_id_fk';
 
--- 3.4 / 3.5 CHECK 27 本 — 期待した 27 個の名前を明示列挙して照合する。
+-- 3.4 / 3.5 CHECK 27 本 — 期待した 27 個の (名前, 表) の組を明示列挙して照合する。
 --     (名前 LIKE '%_nonneg' 等での抽出はしない: Sprint A の
---      answer_events_elapsed_ms_nonneg が混ざり件数がズレるため。)
-WITH expected(conname) AS (VALUES
-  ('users_plan_enum'),('users_subscription_status_enum'),('users_billing_interval_enum'),
-  ('source_documents_file_type_enum'),('source_documents_status_enum'),
-  ('upload_records_status_enum'),('contact_messages_status_enum'),
-  ('tag_categories_select_type_enum'),('tombstones_entity_type_enum'),
-  ('entity_mutations_entity_type_enum'),('entity_mutations_op_enum'),
-  ('assets_status_enum'),('upload_operations_status_enum'),
-  ('ai_usage_count_nonneg'),('ai_usage_users_count_nonneg'),('assets_byte_size_nonneg'),
-  ('source_documents_file_size_bytes_nonneg'),('source_documents_pages_processed_nonneg'),
-  ('source_documents_pages_total_nonneg'),
-  ('study_days_review_count_nonneg'),('study_days_correct_count_nonneg'),
-  ('study_days_distinct_card_count_nonneg'),
-  ('upload_operations_attempt_count_nonneg'),('upload_operations_expected_source_count_nonneg'),
-  ('upload_records_pages_processed_nonneg'),
-  ('assets_width_positive'),('assets_height_positive')
+--      answer_events_elapsed_ms_nonneg が混ざり件数がズレるため。表も突き合わせる理由:
+--      名前だけの一致だと、同名 CHECK が誤った表に付いていても found=27 / missing=0 と
+--      誤報告する — conrelid を e.tbl と突き合わせて初めて「正しい表に付いた 27 本」を保証する。)
+WITH expected(conname, tbl) AS (VALUES
+  ('users_plan_enum','users'),('users_subscription_status_enum','users'),('users_billing_interval_enum','users'),
+  ('source_documents_file_type_enum','source_documents'),('source_documents_status_enum','source_documents'),
+  ('upload_records_status_enum','upload_records'),('contact_messages_status_enum','contact_messages'),
+  ('tag_categories_select_type_enum','tag_categories'),('tombstones_entity_type_enum','tombstones'),
+  ('entity_mutations_entity_type_enum','entity_mutations'),('entity_mutations_op_enum','entity_mutations'),
+  ('assets_status_enum','assets'),('upload_operations_status_enum','upload_operations'),
+  ('ai_usage_count_nonneg','ai_usage'),('ai_usage_users_count_nonneg','ai_usage_users'),('assets_byte_size_nonneg','assets'),
+  ('source_documents_file_size_bytes_nonneg','source_documents'),('source_documents_pages_processed_nonneg','source_documents'),
+  ('source_documents_pages_total_nonneg','source_documents'),
+  ('study_days_review_count_nonneg','study_days'),('study_days_correct_count_nonneg','study_days'),
+  ('study_days_distinct_card_count_nonneg','study_days'),
+  ('upload_operations_attempt_count_nonneg','upload_operations'),('upload_operations_expected_source_count_nonneg','upload_operations'),
+  ('upload_records_pages_processed_nonneg','upload_records'),
+  ('assets_width_positive','assets'),('assets_height_positive','assets')
 )
 -- 3.4 サマリ — 期待: expected = 27 / found = 27 / missing = 0 / not_validated = 0
+--     conrelid = e.tbl::regclass を join 条件に含める(名前一致だけでは誤った表への付与を
+--     見逃す。上記コメント参照)。
 SELECT (SELECT count(*) FROM expected) AS expected,
        count(c.oid)                                        AS found,
        (SELECT count(*) FROM expected) - count(c.oid)      AS missing,
        count(*) FILTER (WHERE c.oid IS NOT NULL AND NOT c.convalidated) AS not_validated
 FROM expected e
 LEFT JOIN pg_constraint c
-  ON c.conname = e.conname AND c.contype='c' AND c.connamespace='public'::regnamespace;
+  ON c.conname = e.conname AND c.contype='c' AND c.connamespace='public'::regnamespace
+  AND c.conrelid = e.tbl::regclass;
 
--- 3.5 明細(定義文字列で許容値の取り違えを検出)— 期待: 27 行・def が全て NOT NULL
-WITH expected(conname) AS (VALUES
-  ('users_plan_enum'),('users_subscription_status_enum'),('users_billing_interval_enum'),
-  ('source_documents_file_type_enum'),('source_documents_status_enum'),
-  ('upload_records_status_enum'),('contact_messages_status_enum'),
-  ('tag_categories_select_type_enum'),('tombstones_entity_type_enum'),
-  ('entity_mutations_entity_type_enum'),('entity_mutations_op_enum'),
-  ('assets_status_enum'),('upload_operations_status_enum'),
-  ('ai_usage_count_nonneg'),('ai_usage_users_count_nonneg'),('assets_byte_size_nonneg'),
-  ('source_documents_file_size_bytes_nonneg'),('source_documents_pages_processed_nonneg'),
-  ('source_documents_pages_total_nonneg'),
-  ('study_days_review_count_nonneg'),('study_days_correct_count_nonneg'),
-  ('study_days_distinct_card_count_nonneg'),
-  ('upload_operations_attempt_count_nonneg'),('upload_operations_expected_source_count_nonneg'),
-  ('upload_records_pages_processed_nonneg'),
-  ('assets_width_positive'),('assets_height_positive')
+-- 3.5 明細 — 期待: 27 行・actual_tbl が expected_tbl と一致・def が全て NULL でない(found)。
+--     conrelid では絞らない(3.4 と違い、誤った表に付いていた場合に「見つからない」ではなく
+--     「actual_tbl が expected_tbl と食い違う行」として可視化するため)。
+--     def(許容値セットの実体)は自動照合しない — pg_get_constraintdef の正規化表記が
+--     書き手の想定表記と字面一致しない場合に false mismatch を出すリスクの方が、人手で
+--     migration(drizzle/migrations/0036_sprint_b_db_cleanup.sql)と読み比べる手間より高いと
+--     判断した。値セットの取り違えは def を migration 本文と目視突き合わせて確認すること。
+WITH expected(conname, tbl) AS (VALUES
+  ('users_plan_enum','users'),('users_subscription_status_enum','users'),('users_billing_interval_enum','users'),
+  ('source_documents_file_type_enum','source_documents'),('source_documents_status_enum','source_documents'),
+  ('upload_records_status_enum','upload_records'),('contact_messages_status_enum','contact_messages'),
+  ('tag_categories_select_type_enum','tag_categories'),('tombstones_entity_type_enum','tombstones'),
+  ('entity_mutations_entity_type_enum','entity_mutations'),('entity_mutations_op_enum','entity_mutations'),
+  ('assets_status_enum','assets'),('upload_operations_status_enum','upload_operations'),
+  ('ai_usage_count_nonneg','ai_usage'),('ai_usage_users_count_nonneg','ai_usage_users'),('assets_byte_size_nonneg','assets'),
+  ('source_documents_file_size_bytes_nonneg','source_documents'),('source_documents_pages_processed_nonneg','source_documents'),
+  ('source_documents_pages_total_nonneg','source_documents'),
+  ('study_days_review_count_nonneg','study_days'),('study_days_correct_count_nonneg','study_days'),
+  ('study_days_distinct_card_count_nonneg','study_days'),
+  ('upload_operations_attempt_count_nonneg','upload_operations'),('upload_operations_expected_source_count_nonneg','upload_operations'),
+  ('upload_records_pages_processed_nonneg','upload_records'),
+  ('assets_width_positive','assets'),('assets_height_positive','assets')
 )
 SELECT e.conname,
-       c.conrelid::regclass          AS tbl,
-       pg_get_constraintdef(c.oid)   AS def,
+       e.tbl                          AS expected_tbl,
+       c.conrelid::regclass           AS actual_tbl,
+       pg_get_constraintdef(c.oid)    AS def,
        c.convalidated
 FROM expected e
 LEFT JOIN pg_constraint c
