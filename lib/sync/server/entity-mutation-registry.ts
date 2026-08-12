@@ -86,12 +86,14 @@ export type EntityApplyFn<TPatch> = (
  * (delete のように audit 行を残さない設計)。
  *
  * cascadeLike=true の op は per-mutation tx 並列化対象から外す (Y-2 T-B3 #1b、 案 X)。
- * 強 cascade (= 配下 entity を巻き込む delete) と cross-entity read-modify-write
- * (= `exams.card_count ± 1`) を持つ op が該当し、 group helper 段で 1 件でも検出
- * されたら bulk 全体を serial fallback に倒す (= 並列化の新規リスクを「非 cascade
- * のみ」に閉じ込める)。 step 0 doc §1.2 / §4.2 で 4 件確定:
- *   - `card.create` (`exams.card_count += 1`、 OT 安全側判断)
- *   - `card.delete` (tombstone + DELETE + `exams.card_count -= 1`)
+ * 強 cascade (= 配下 entity を巻き込む delete) と cross-entity 書込 (= 対象 entity 以外の
+ * table にも書く) を持つ op が該当し、 group helper 段で 1 件でも検出されたら bulk 全体を
+ * serial fallback に倒す (= 並列化の新規リスクを「非 cascade のみ」に閉じ込める)。
+ * step 0 doc §1.2 / §4.2 で 4 件確定 (Sprint B (DB 全体掃除) T5 で card.create の根拠は
+ * 消滅・card.delete の根拠は card_count 言及を除いて自立、 各 entry 側 comment 参照):
+ *   - `card.create` (根拠だった `exams.card_count += 1` は Sprint B で消滅。 flag 撤去は
+ *     bulk 並列化の挙動変更 = scope 外のため並列化再検証まで保守的に維持、 spec §1.10-2)
+ *   - `card.delete` (tombstone INSERT + cards DELETE の cross-entity 書込)
  *   - `tag_category.delete` (配下 tag_options 巻き込み + FK CASCADE)
  *   - `tag_option.delete` (FK CASCADE で card_tags 巻き込み)
  * 残り 5 op (`card.update_field` / `tag_category.create|update_field` /
@@ -266,8 +268,10 @@ export const ENTITY_MUTATION_REGISTRY: Record<
     create: defineEntry({
       patch: cardCreatePatchSchema,
       apply: applyCardCreate,
-      // cross-entity read-modify-write (`exams.card_count += 1`) を含むため、
-      // 並列で確実に安全と言い切れない (OT 安全側判断、 §4.2)。
+      // 根拠だった cross-entity read-modify-write (`exams.card_count += 1`) は
+      // Sprint B (DB 全体掃除) T5 の bump 撤去で消滅した。 flag 撤去はバルク並列化の
+      // 挙動変更であり本 sprint の scope 外のため、 再検証するまで保守的に維持する
+      // (spec §1.10-2)。
       cascadeLike: true,
     }),
     delete: defineEntry({
@@ -277,8 +281,8 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       // 理由: 監査 log としての価値が低く、 再送 dedupe は tombstone + 自然冪等で
       // 担保するため (audit log として記録不要)。 従来 card 経路の挙動を維持する。
       skipLog: true,
-      // tombstone INSERT + cards DELETE + `exams.card_count -= 1` の cross-entity
-      // read-modify-write を伴うため並列化対象外 (§1.2 表)。
+      // tombstone INSERT + cards DELETE の cross-entity 書込を伴うため並列化対象外
+      // (§1.2 表)。
       cascadeLike: true,
     }),
   },

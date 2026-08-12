@@ -13,14 +13,13 @@
 // 本ファイルの applyCardX 群を card entry として呼ぶ。
 //
 // 制約: logic 不変。列・正規化・correct_answer_ids 再生成・
-// card_count 増減・tombstone onConflictDoNothing を一字一句保つ。
+// tombstone onConflictDoNothing を一字一句保つ。
 
 import { and, eq, sql } from 'drizzle-orm'
 import { cards, exams, tombstones, type CardOption } from '@/lib/db/schema'
 import type { DB } from '@/lib/db'
 import { deriveCorrectAnswerIds } from '@/lib/cards/domain/card-rules'
 import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
-import { bumpExamCardCount } from '@/lib/cards/card-count'
 
 // ---------------------------------------------------------------------------
 // DbExecutor 型: db (PostgresJsDatabase) と tx (PgTransaction) の共通 interface。
@@ -53,14 +52,13 @@ export type ApplyCardCreateWithIdResult =
   | { examNotFound: false; created: boolean } // created=false は ON CONFLICT skip
 
 /**
- * client 生成 cardId を PK に INSERT ON CONFLICT (id) DO NOTHING し、
- * 実 insert 時のみ exams.card_count += 1。
+ * client 生成 cardId を PK に INSERT ON CONFLICT (id) DO NOTHING する。
  *
  * 冪等化 (同 cardId 再送):
- *   ON CONFLICT DO NOTHING → RETURNING が空 → created=false → card_count 非加算。
+ *   ON CONFLICT DO NOTHING → RETURNING が空 → created=false。
  *
  * owner-scope 担保:
- *   exam owner 確認 → card INSERT に userId/examId → exams UPDATE に userId/examId。
+ *   exam owner 確認 → card INSERT に userId/examId。
  *
  * correct_answer_ids は client patch を信用せず options.is_correct から server 再生成
  * (buildSetClause の options 分岐と同方針、client 改竄耐性)。
@@ -111,11 +109,6 @@ export async function applyCardCreateWithId(
 
   const created = inserted.length > 0
 
-  // 4. 実 insert 時のみ card_count += 1 (ON CONFLICT skip 時は非加算 — 二重加算防止)
-  if (created) {
-    await bumpExamCardCount(tx, { examId, userId, delta: 1 })
-  }
-
   return { examNotFound: false, created }
 }
 
@@ -128,9 +121,7 @@ export async function applyCardCreateWithId(
  *   1. cards から cardId + userId で存在確認 (0 rows → idempotent 成功、tombstone スキップ)
  *   2. tombstones INSERT (.onConflictDoNothing() — re-delete 安全)
  *   3. cards DELETE (owner-scoped)
- *   4. exams.card_count -= 1 (GREATEST guard、 負にならない)
  *
- * updatedAt は card 増減で動かさない (create と同方針)。
  * owner-scope: cardId + userId 全 statement に含める。
  */
 export async function applyCardDelete(
@@ -138,9 +129,11 @@ export async function applyCardDelete(
   cardId: string,
   userId: string,
 ): Promise<void> {
-  // 1. card 取得: examId を得る (0 rows → idempotent return、tombstone スキップ)
+  // 1. card 存在確認 (0 rows → idempotent return、tombstone スキップ)。
+  // Sprint B T5: examId 取得は削除済 (exams.card_count bump 専用の read だったため、
+  // bump 撤去に伴い不要になった — 他の用途はない)。
   const rows = await tx
-    .select({ examId: cards.examId })
+    .select({ id: cards.id })
     .from(cards)
     .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
 
@@ -148,8 +141,6 @@ export async function applyCardDelete(
     // 不在 / 他 user の card → silent success (idempotent、tombstone も挿入しない)
     return
   }
-
-  const examId = rows[0]!.examId
 
   // 2. tombstone INSERT — mirror 削除反映の不変条件: この tombstone が無いと
   // client mirror から消えない（pull.ts 参照）
@@ -167,7 +158,4 @@ export async function applyCardDelete(
   await tx
     .delete(cards)
     .where(and(eq(cards.id, cardId), eq(cards.userId, userId)))
-
-  // 4. exams.card_count -= 1 (delta<0 → GREATEST 負ガード、helper 内で処理)
-  await bumpExamCardCount(tx, { examId, userId, delta: -1 })
 }

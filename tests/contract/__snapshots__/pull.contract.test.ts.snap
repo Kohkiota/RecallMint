@@ -71,12 +71,10 @@ exports[`GET /api/pull — wire contract > happy path: 6 stream keys + cursor as
   },
   "exams": [
     {
-      "card_count": 0,
       "content_version": 0,
       "created_at": "2026-05-01T00:00:00.000Z",
       "id": "exam-1",
       "name": "Test Exam",
-      "question_no_format": null,
       "updated_at": "2026-06-02T00:00:00.000Z",
       "user_id": "11111111-1111-4111-a111-111111111111",
     },

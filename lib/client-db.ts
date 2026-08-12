@@ -41,8 +41,6 @@ export type ClientExam = {
   id: string
   user_id: string
   name: string
-  question_no_format?: 'numeric' | 'hierarchical' | 'free' | null
-  card_count: number
   content_version: number
   created_at: string
   updated_at: string

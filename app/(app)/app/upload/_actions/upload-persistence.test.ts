@@ -1,18 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getTableName, Column, type SQL } from 'drizzle-orm'
-import { cards, exams } from '@/lib/db/schema'
+import { getTableName } from 'drizzle-orm'
+import { cards } from '@/lib/db/schema'
 
 // saveExtractedCards (upload-persistence.ts) の characterization golden (F3 G1)。
 //
 // 参照事実 A: applyOcrTags は vi.mock で差し替える (find-or-create 2 段 × 3 table を
-// executor fake で通すと fake が本体より複雑化し brittle。 G1 の pin 対象は card_count
-// 面のみで tag 分解は無関係)。 mock ゆえ「同 tx object で 1 回呼ばれる」ことと inserted
-// ids (zip 順) を引数で観測する。 rollback 経路 (applyOcrTags throw の tx 巻込) は mock
-// 化のため観測不能 = G1 対象外。
+// executor fake で通すと fake が本体より複雑化し brittle)。 mock ゆえ「同 tx object で
+// 1 回呼ばれる」ことと inserted ids (zip 順) を引数で観測する。 rollback 経路
+// (applyOcrTags throw の tx 巻込) は mock 化のため観測不能 = G1 対象外。
 //
 // 期待値は全て現 HEAD の実挙動を観測して pin したもの (spec から推測しない)。
-// SQL fragment は構造的観測 (render 文字列 pin はしない): sql object の queryChunks を
-// 走査し (a) 参照 column (b) 数値 chunk 値 (c) GREATEST 有無 で判定する。
+// Sprint B (DB 全体掃除) T5: card_count bump (exams.card_count += N) の pin は撤去し、
+// cards INSERT のみで exams UPDATE を発行しないことを pin する (置換 pin)。
 
 // ---------------------------------------------------------------------------
 // drizzle-orm の eq を spy ラップ (owner-scope WHERE の観測用)。apply-card-mutation.test
@@ -39,36 +38,10 @@ vi.mock('@/lib/tags/apply-ocr-tags', () => ({
 }))
 
 // ---------------------------------------------------------------------------
-// sql fragment の構造的観測 helper
-// ---------------------------------------------------------------------------
-
-// queryChunks 内の Column instance の .name を列挙 (参照 column)。
-function sqlColumnNames(frag: SQL): string[] {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks.filter((c): c is Column => c instanceof Column).map((c) => c.name)
-}
-
-// queryChunks 内の StringChunk の value を連結 (GREATEST / now() 等 SQL キーワードの有無検査用)。
-function sqlStaticText(frag: SQL): string {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks
-    .flatMap((c) => {
-      const v = (c as { value?: unknown }).value
-      return Array.isArray(v) ? (v as string[]) : []
-    })
-    .join('')
-}
-
-// queryChunks 内の raw number chunk を列挙 (`sql\`... + ${N}\`` の N は生 number chunk)。
-function sqlNumberChunks(frag: SQL): number[] {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks.filter((c): c is number => typeof c === 'number')
-}
-
-// ---------------------------------------------------------------------------
 // executor fake (apply-card-mutation.test:255-298 の型踏襲)
 // db = { transaction: (cb) => cb(tx) }。 tx は insert(cards).values().returning() で
-// rows を捕捉し zip した [{id, title}] を返す / update(exams).set().where() を捕捉。
+// rows を捕捉し zip した [{id, title}] を返す / update() が呼ばれた場合はそれも捕捉
+// する (呼ばれないことを pin する側の観測用、 Sprint B T5)。
 // ---------------------------------------------------------------------------
 
 type SaveArgs = Parameters<
@@ -168,7 +141,6 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     const cardRows = makeCardRows(3)
     await saveExtractedCards(makeDb(captured), {
       userId: 'user-1',
-      examId: 'exam-1',
       cardRows,
       customProps: [undefined, undefined, undefined],
     })
@@ -182,7 +154,6 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     const cardRows = makeCardRows(3)
     const result = await saveExtractedCards(makeDb(captured), {
       userId: 'user-1',
-      examId: 'exam-1',
       cardRows,
       customProps: [undefined, undefined, undefined],
     })
@@ -193,57 +164,21 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     ])
   })
 
-  it('set.cardCount fragment = exams.card_count 参照 + 数値 param N (現挙動: 素加算)', async () => {
-    const { saveExtractedCards } = await import('./upload-persistence')
-    const cardRows = makeCardRows(3)
-    await saveExtractedCards(makeDb(captured), {
-      userId: 'user-1',
-      examId: 'exam-1',
-      cardRows,
-      customProps: [undefined, undefined, undefined],
-    })
-    const cardCount = captured.updateSet!.cardCount as SQL
-    // (a) 参照 column = exams.card_count
-    expect(sqlColumnNames(cardCount)).toContain('card_count')
-    // (b) 数値 param = cardRows.length (= 3)
-    expect(sqlNumberChunks(cardCount)).toContain(3)
-    // (c) GREATEST は不在 (create/OCR path は素加算)
-    expect(sqlStaticText(cardCount)).not.toContain('GREATEST')
-  })
-
-  it('set.updatedAt = exams.updated_at 自己参照 (now() 不在 — card 増減で updatedAt を動かさない)', async () => {
+  // Sprint B (DB 全体掃除) T5 置換 pin: 旧 'set.cardCount fragment...' / 'set.updatedAt...'
+  // / 'exams UPDATE の WHERE...' の 3 test を置換。 saveExtractedCards は cards INSERT +
+  // applyOcrTags のみを行い、 exams table への UPDATE を一切発行しないことを mock tx の
+  // 呼出履歴で保証する。
+  it('cards INSERT のみを行い、 exams UPDATE を発行しない', async () => {
     const { saveExtractedCards } = await import('./upload-persistence')
     const cardRows = makeCardRows(2)
     await saveExtractedCards(makeDb(captured), {
       userId: 'user-1',
-      examId: 'exam-1',
       cardRows,
       customProps: [undefined, undefined],
     })
-    const updatedAt = captured.updateSet!.updatedAt as SQL
-    expect(sqlColumnNames(updatedAt)).toEqual(['updated_at'])
-    expect(sqlStaticText(updatedAt).toLowerCase()).not.toContain('now(')
-  })
-
-  it('exams UPDATE の WHERE に eq(exams.id, examId) + eq(exams.userId, userId)', async () => {
-    const { saveExtractedCards } = await import('./upload-persistence')
-    const cardRows = makeCardRows(1)
-    await saveExtractedCards(makeDb(captured), {
-      userId: 'user-1',
-      examId: 'exam-1',
-      cardRows,
-      customProps: [undefined],
-    })
-    expect(getTableName(captured.updateTable as never)).toBe(getTableName(exams))
-    const { eq } = await import('drizzle-orm')
-    const sig = (
-      vi.mocked(eq).mock.calls as [{ name?: string; table?: unknown }, unknown][]
-    ).map(([col, val]) => {
-      const tableName = col.table ? getTableName(col.table as never) : ''
-      return [tableName, col.name, val] as [string, string, unknown]
-    })
-    expect(sig).toContainEqual(['exams', 'id', 'exam-1'])
-    expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
+    expect(getTableName(captured.insertTable as never)).toBe(getTableName(cards))
+    expect(captured.updateTable).toBeNull()
+    expect(captured.updateSet).toBeNull()
   })
 
   it('applyOcrTags mock が「transaction callback の tx object」+ inserted ids (zip 順) で 1 回呼ばれる', async () => {
@@ -251,7 +186,6 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     const cardRows = makeCardRows(3)
     await saveExtractedCards(makeDb(captured), {
       userId: 'user-1',
-      examId: 'exam-1',
       cardRows,
       // ②-4a T12 §改修: 引数型が discriminated union 化したため
       // `SaveArgs['customProps']` は `Array<...> | undefined` になった。 legacy
@@ -280,7 +214,6 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
     const cardRows = makeCardRows(3)
     await saveExtractedCards(makeDb(captured), {
       userId: 'user-1',
-      examId: 'exam-1',
       cardRows,
       customPropsById: {
         // わざと cardRows と異なる key 順で定義し、 positional でなく id lookup で
@@ -300,43 +233,5 @@ describe('saveExtractedCards (F3 G1 characterization)', () => {
       { id: 'card-1', custom_props: { unit: ['a', 'b'] } },
       { id: 'card-2', custom_props: { year: '2026' } },
     ])
-  })
-
-  it('exams UPDATE は渡された tx 経由で発生する (tx identity)', async () => {
-    const { saveExtractedCards } = await import('./upload-persistence')
-    const cardRows = makeCardRows(1)
-    // update() を呼んだ tx の identity を捕捉し、 渡した tx と一致することを確認する。
-    let txUsedByUpdate: unknown = null
-    const tx: Record<string, unknown> = {}
-    tx.insert = (_table: unknown) => ({
-      values: (rows: SaveArgs['cardRows']) => ({
-        returning: () =>
-          Promise.resolve(
-            rows.map((r) => ({
-              id: (r as { id: string }).id,
-              title: (r as { title: string }).title,
-            })),
-          ),
-      }),
-    })
-    tx.update = (_table: unknown) => {
-      txUsedByUpdate = tx
-      return {
-        set: () => ({ where: () => Promise.resolve(undefined) }),
-      }
-    }
-
-    await saveExtractedCards(
-      tx as unknown as Parameters<
-        typeof import('./upload-persistence').saveExtractedCards
-      >[0],
-      {
-        userId: 'user-1',
-        examId: 'exam-1',
-        cardRows,
-        customProps: [undefined],
-      },
-    )
-    expect(txUsedByUpdate).toBe(tx)
   })
 })

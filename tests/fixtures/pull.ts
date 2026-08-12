@@ -123,8 +123,6 @@ export function fakeExam(overrides?: Partial<ClientExam>): ClientExam {
     id: 'exam-1',
     user_id: FIXED_USER_ID,
     name: 'Test Exam',
-    question_no_format: null,
-    card_count: 0,
     content_version: 0,
     created_at: '2026-05-01T00:00:00.000Z',
     updated_at: '2026-05-02T00:00:00.000Z',

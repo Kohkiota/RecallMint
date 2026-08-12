@@ -174,12 +174,6 @@ async function readOp(operationId: string) {
   return rows[0]!
 }
 
-async function readExamCardCount(examId: string): Promise<number> {
-  const owner = getFixtureOwnerDb()
-  const rows = await owner.select({ cardCount: exams.cardCount }).from(exams).where(eq(exams.id, examId))
-  return rows[0]!.cardCount
-}
-
 async function readSourceDoc(sourceDocumentId: string) {
   const owner = getFixtureOwnerDb()
   const rows = await owner
@@ -278,8 +272,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     // 保護 UPDATE が unreferencedAt を NULL 化。
     const assetRows = await owner.select().from(assets).where(eq(assets.id, cropAssetId))
     expect(assetRows[0]!.unreferencedAt).toBeNull()
-    // counter + finalize。
-    expect(await readExamCardCount(examId)).toBe(1)
+    // finalize。
     const op = await readOp(operationId)
     expect(op.status).toBe('completed')
     expect(op.preparedPayload).toBeNull()
@@ -368,7 +361,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     )
     expect(first).toEqual({ outcome: 'published' })
     expect(await countCards(userId)).toBe(1)
-    expect(await readExamCardCount(examId)).toBe(1)
 
     // 2 回目: op は completed(status !== 'prepared')ゆえ fencing で stale。
     const second = await withTenantTx(userId, (tx) =>
@@ -384,7 +376,6 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     )
     expect(second).toEqual({ outcome: 'stale' })
     expect(await countCards(userId)).toBe(1) // 増えない
-    expect(await readExamCardCount(examId)).toBe(1) // 増えない
   })
 
   it('cards に ON CONFLICT なし: 既存 card id と衝突すると loud fail(throw + rollback・他 card も未挿入)', async () => {

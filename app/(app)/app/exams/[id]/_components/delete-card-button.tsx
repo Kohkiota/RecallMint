@@ -7,9 +7,9 @@
 //
 // Task 4.3: server action 直叩き / router.refresh() を廃止し local-first 化。
 // mirror remove (楽観反映 → useLiveQuery が一覧から即座に消す) + outbox enqueue
-// (op='delete') + 即時 drain。 最後の 1 枚削除も許容 (guard なし)。 card_count は
+// (op='delete') + 即時 drain。 最後の 1 枚削除も許容 (guard なし)。 件数表示は
 // mirror の card 行数で算出するため、 remove がそのまま件数表示に反映される
-// (exam.card_count は別 decrement しない。 真の確定値は server 適用後の pull-back で収束)。
+// (Sprint B で exams.card_count bump 呼出は撤去済)。
 
 import { useState, useTransition } from 'react'
 import { getClientDb } from '@/lib/client-db'

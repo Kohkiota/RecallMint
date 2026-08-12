@@ -37,7 +37,7 @@ import { buildCardRows } from '../_lib/publish-prepared-plan'
 //   [pipeline] payload commit → 全 figure crop(tx 外・R2 I/O)→ publish 条件判定
 //     (planPublish・純粋)→ publishPreparedUploadTx(短い DB tx)
 //   [tx] fence → exam → source_document → 保護 asset UPDATE → cards/tags(saveExtractedCards)
-//     → refs → counter(bump)→ finalize(payload NULL + result_summary + completed)
+//     → refs → finalize(payload NULL + result_summary + completed)
 
 // ---------------------------------------------------------------------------
 // publishPreparedUploadTx — cards/tags/refs/counter/status を確定する短い DB tx。
@@ -104,9 +104,8 @@ export async function publishPreparedUploadTx(
   }
   const { examId, sourceDocumentId, expectedSourceCount } = op
 
-  // 2. exam を FOR UPDATE(ロック順 #2)。 存在・所有権をここで検証する — これが
-  //    後段 bumpExamCardCount の「affected row 検証」相当を、 書込前・ロック取得と
-  //    同時に、 より強く担保する(exam 不在/非所有なら以降を一切書かず throw)。
+  // 2. exam を FOR UPDATE(ロック順 #2)。 存在・所有権をここで検証する
+  //    (exam 不在/非所有なら以降を一切書かず throw)。
   const examRows = await tx
     .select({ id: exams.id })
     .from(exams)
@@ -199,9 +198,8 @@ export async function publishPreparedUploadTx(
   // 5. cards(ロック順 #5)+ tags(#6)を saveExtractedCards で確定する。 cards は
   //    ON CONFLICT を使わない(重複 card id は設計破綻 = loud fail・spec Global
   //    Constraint)。 custom_props は card ID で対応付ける(§改修)。 applyOcrTags は
-  //    §T13 の determinism 版。 exam は手順2で FOR UPDATE 済ゆえ、 saveExtractedCards
-  //    内の bumpExamCardCount(exam UPDATE)は既取得ロックへの書込で、 ロック取得
-  //    順(exam #2 を assets #4 より前に取得済)を崩さない。
+  //    §T13 の determinism 版。 saveExtractedCards は Sprint B の card_count bump
+  //    撤去後は cards INSERT + applyOcrTags のみを行い、 exams table には触れない。
   const cardRows = buildCardRows(cards, cardImagesByCardId, {
     userId,
     examId,
@@ -211,7 +209,7 @@ export async function publishPreparedUploadTx(
   const customPropsById: Record<string, PreparedCard['customProps']> = {}
   for (const card of cards) customPropsById[card.cardId] = card.customProps
 
-  await saveExtractedCards(tx, { userId, examId, cardRows, customPropsById })
+  await saveExtractedCards(tx, { userId, cardRows, customPropsById })
 
   // 6. refs(ロック順 #7)。 各 card の採用 image を card_asset_refs へ射影する
   //    (T11 の pure projection を共有)。 保護 UPDATE を通過した ready asset のみ

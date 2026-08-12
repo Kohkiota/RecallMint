@@ -139,12 +139,12 @@ describe('getExamsDelta', () => {
     expect(result.rows[0].updated_at.endsWith('Z')).toBe(true)
     expect(result.rows[1].updated_at).toBe('2026-05-10T12:00:01.000Z')
     // ClientExam shape の主要フィールド
+    // Sprint B (DB 全体掃除) T5: card_count / question_no_format は ClientExam から
+    // 撤去済 (toClientExam mapper がもう運ばない) のためここでは assert しない。
     expect(result.rows[0].id).toBe('exam-uuid-1')
     expect(result.rows[0].user_id).toBe('user-uuid')
     expect(result.rows[0].name).toBe('Exam One')
-    expect(result.rows[0].card_count).toBe(3)
     expect(result.rows[1].id).toBe('exam-uuid-2')
-    expect(result.rows[1].question_no_format).toBe('numeric')
   })
 
   it('(b) maxUpdatedAt = 2 行のうち新しい updated_at の ISO', async () => {

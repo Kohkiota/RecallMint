@@ -11,7 +11,8 @@ import type { ActionResult } from '@/lib/actions/result'
 //
 // 試験名を受け取り、 owner-scoped で exams に INSERT して examId を返す。
 // source_documents 行は作成しない (手動作成は OCR 出自なし)。
-// cardCount / contentVersion は DB default (0) を使用。
+// contentVersion は DB default (0) を使用。 cardCount 列は Sprint B で読み手・書き手とも
+// 撤去済の死蔵列(schema 上は残存、 削除は別 task)。
 //
 // revalidatePath: upload page の「投入先を選択」 dropdown が active exam 一覧に
 // 依存するため '/app/upload' を finally で revalidate する (delete-exam.ts と同様)。

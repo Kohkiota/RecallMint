@@ -48,10 +48,9 @@
 // 通常実行:
 //   - 「難易度」「分野」「年度」「形式」の 4 タグカテゴリを find-or-create
 //   - 各カテゴリの選択肢を find-or-create
-//   - [PERF-SEED] prefix + タイムスタンプ付き試験を INSERT (cardCount=0 初期)
+//   - [PERF-SEED] prefix + タイムスタンプ付き試験を INSERT
 //   - 300 件カードを chunk(50) で INSERT
 //   - 各カードに 4-7 個のタグを割り当て、 card_tags を chunk(100) で INSERT
-//   - exams.card_count を最終更新
 //
 // --cleanup:
 //   - 同 user の "[PERF-SEED]%" 試験を全削除 (FK CASCADE で cards/card_tags も削除)
@@ -82,7 +81,7 @@
 
 import 'dotenv/config'
 import { randomUUID } from 'node:crypto'
-import { and, eq, like, sql } from 'drizzle-orm'
+import { and, eq, like } from 'drizzle-orm'
 import { getAdminDb, closeDb } from '@/lib/db'
 import {
   exams,
@@ -487,7 +486,6 @@ async function main(): Promise<void> {
       .values({
         userId,
         name: examName,
-        cardCount: 0,
       })
       .returning({ id: exams.id })
     examId = insertedExam.id
@@ -565,7 +563,6 @@ async function main(): Promise<void> {
     console.log(
       `  [DRY-RUN] card_tags 約 ${totalTags} 件 INSERT 予定 (実際は random で変動)`,
     )
-    console.log(`  [DRY-RUN] exams.card_count = ${cardCount} UPDATE 予定`)
     if (withAnswersRatio !== undefined) {
       const answeredCount = pickAnsweredCount(cardCount, withAnswersRatio)
       console.log(
@@ -642,26 +639,13 @@ async function main(): Promise<void> {
   console.log('\n  card_tags INSERT 完了')
 
   // -------------------------------------------------------------------------
-  // Step 8: UPDATE exams.card_count
-  // -------------------------------------------------------------------------
-  console.log(`\n[seed-perf-exam] Step 8: exams.card_count = ${insertedCardIds.length} 更新...`)
-  await db
-    .update(exams)
-    .set({
-      cardCount: insertedCardIds.length,
-      // updatedAt を意図的に固定して試験一覧の並び順を乱さない (process.ts B1 と同方針)
-      updatedAt: sql`${exams.updatedAt}`,
-    })
-    .where(and(eq(exams.id, examId), eq(exams.userId, userId)))
-
-  // -------------------------------------------------------------------------
-  // Step 9: --with-answers: 一部カードの回答状態を synthetic UPDATE
+  // Step 8: --with-answers: 一部カードの回答状態を synthetic UPDATE
   // -------------------------------------------------------------------------
   let answeredCount = 0
   if (withAnswersRatio !== undefined) {
     answeredCount = pickAnsweredCount(insertedCardIds.length, withAnswersRatio)
     console.log(
-      `\n[seed-perf-exam] Step 9: --with-answers (ratio=${withAnswersRatio}): ${answeredCount}/${insertedCardIds.length} 件を回答済みに UPDATE...`,
+      `\n[seed-perf-exam] Step 8: --with-answers (ratio=${withAnswersRatio}): ${answeredCount}/${insertedCardIds.length} 件を回答済みに UPDATE...`,
     )
 
     if (answeredCount > 0) {

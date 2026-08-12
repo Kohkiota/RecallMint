@@ -6,13 +6,12 @@ import {
   uploadRecords,
 } from '@/lib/db/schema'
 import { applyOcrTags } from '@/lib/tags/apply-ocr-tags'
-import { bumpExamCardCount } from '@/lib/cards/card-count'
 import { logger } from '@/lib/logger'
 
 // custom_props の 1 card 分(applyOcrTags 入力の要素型)。
 type OcrCustomProps = Parameters<typeof applyOcrTags>[2][number]['custom_props']
 
-// 保存 apply: cards bulk INSERT + applyOcrTags (同 tx 採番) + exams.cardCount 加算。
+// 保存 apply: cards bulk INSERT + applyOcrTags (同 tx 採番)。
 // RLS-P3: caller が withTenantTx で tenant context 付き tx を張り、この関数はその tx
 // を受け取る (apply 層 = TenantTx 受領・tenant-tx.ts:6)。全操作は 1 tx = caller の
 // withTenantTx 境界に留まり、applyOcrTags も同 tx 採番 (競合安全の前提) が保たれる。
@@ -31,7 +30,6 @@ export async function saveExtractedCards(
   tx: TenantTx,
   args: {
     userId: string
-    examId: string
     cardRows: Array<typeof cards.$inferInsert>
   } & (
     | { customProps: Array<OcrCustomProps>; customPropsById?: undefined }
@@ -49,11 +47,6 @@ export async function saveExtractedCards(
       : // legacy 経路: positional zip(既存挙動・byte-for-byte 維持)。
         inserted.map((row, i) => ({ id: row.id, custom_props: args.customProps[i] }))
   await applyOcrTags(tx, args.userId, ocrCards)
-  await bumpExamCardCount(tx, {
-    examId: args.examId,
-    userId: args.userId,
-    delta: args.cardRows.length,
-  })
   return inserted
 }
 

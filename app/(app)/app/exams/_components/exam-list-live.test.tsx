@@ -53,7 +53,6 @@ function fakeExam(overrides?: Partial<ClientExam>): ClientExam {
     id: 'exam-1',
     user_id: 'user-1',
     name: 'テスト試験',
-    card_count: 0,
     content_version: 1,
     created_at: '2026-04-01T00:00:00.000Z',
     updated_at: '2026-04-10T00:00:00.000Z',
@@ -215,9 +214,7 @@ describe('ExamListLive (Dexie useLiveQuery)', () => {
   it('6. owner 分離: 他 user の exam/card は表示・件数に混入しない (CLAUDE.md 必須ガード)', async () => {
     const db = getClientDb()
     await db.exams.bulkPut([
-      // 自 user の exam。 server 非正規化列 card_count は意図的に誤値 (99) を入れ、
-      // component が exams.card_count を読まず cards mirror から集計することを証明する。
-      fakeExam({ id: 'mine', user_id: 'user-1', name: '自分の試験', card_count: 99 }),
+      fakeExam({ id: 'mine', user_id: 'user-1', name: '自分の試験' }),
       fakeExam({ id: 'theirs', user_id: 'user-2', name: '他人の試験' }),
     ])
     await db.cards.bulkPut([
@@ -235,10 +232,8 @@ describe('ExamListLive (Dexie useLiveQuery)', () => {
     })
     // 他 user の exam は出ない
     expect(screen.queryByText('他人の試験')).not.toBeInTheDocument()
-    // card_count は cards mirror の自 user 分のみ (2 件)。exams.card_count=99 でも
-    // 他 user card (tc1) でもなく、 user-1 の mc1/mc2 = 2 件。
+    // 件数は cards mirror の自 user 分のみ (2 件)。他 user card (tc1) を含まない。
     expect(screen.getByText(/カード 2 件/)).toBeInTheDocument()
-    expect(screen.queryByText(/カード 99 件/)).not.toBeInTheDocument()
     expect(screen.queryByText(/カード 3 件/)).not.toBeInTheDocument()
   })
 

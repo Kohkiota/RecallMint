@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { SQL, Column } from 'drizzle-orm'
+import { SQL } from 'drizzle-orm'
 import { PgDialect } from 'drizzle-orm/pg-core'
 
 // apply-card-mutation.ts の純関数 (applyCardCreateWithId / applyCardDelete) の unit test。
@@ -61,40 +61,11 @@ async function eqSignature() {
 }
 
 // ---------------------------------------------------------------------------
-// helper: sql fragment の構造的観測 (F3 G2 — render 文字列 pin 禁止)。
-// set.cardCount / set.updatedAt の sql object を queryChunks から判定する。
-// ---------------------------------------------------------------------------
-
-// Column instance の .name を列挙 (参照 column)。
-function sqlColumnNames(frag: SQL): string[] {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks.filter((c): c is Column => c instanceof Column).map((c) => c.name)
-}
-
-// StringChunk の value を連結 (GREATEST / now() 等キーワードの有無検査用)。
-function sqlStaticText(frag: SQL): string {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks
-    .flatMap((c) => {
-      const v = (c as { value?: unknown }).value
-      return Array.isArray(v) ? (v as string[]) : []
-    })
-    .join('')
-}
-
-// queryChunks 内の raw number chunk を列挙 (`sql\`... + ${N}\`` の N は生 number chunk)。
-function sqlNumberChunks(frag: SQL): number[] {
-  const chunks = (frag as unknown as { queryChunks?: unknown[] }).queryChunks ?? []
-  return chunks.filter((c): c is number => typeof c === 'number')
-}
-
-// ---------------------------------------------------------------------------
 // applyCardDelete
 // ---------------------------------------------------------------------------
 
 describe('applyCardDelete', () => {
   const store = {
-    exams: [] as { id: string; userId: string; cardCount: number }[],
     cards: [] as { id: string; examId: string; userId: string }[],
     tombstones: [] as {
       userId: string
@@ -107,9 +78,11 @@ describe('applyCardDelete', () => {
   }
   const captured = {
     tombstoneValues: null as Record<string, unknown> | null,
-    // G2: exams UPDATE の set 句を捕捉 (cardCount / updatedAt fragment の構造観測用)。
-    updateSet: null as Record<string, unknown> | null,
   }
+  // Sprint B (DB 全体掃除) T5 置換 pin: card_count bump (exams.card_count -= 1) 撤去の
+  // 証明。 apply-card-mutation.ts はもう tx.update を一切呼ばないため、 呼ばれたら
+  // 記録するだけの spy にして「呼ばれない」ことを assert する。
+  const updateCalls: unknown[] = []
 
   function makeTx() {
     const tx: Record<string, unknown> = {}
@@ -119,9 +92,7 @@ describe('applyCardDelete', () => {
         where: () => {
           const name = getTableName(table as never)
           if (name === getTableName(cards)) {
-            return Promise.resolve(
-              store.cards.map((c) => ({ examId: c.examId })),
-            )
+            return Promise.resolve(store.cards.map((c) => ({ id: c.id })))
           }
           return Promise.resolve([])
         },
@@ -154,19 +125,12 @@ describe('applyCardDelete', () => {
       },
     })
 
-    tx.update = (_table: unknown) => ({
-      set: (vals: Record<string, unknown>) => {
-        captured.updateSet = vals
-        return {
-          where: () => {
-            for (const e of store.exams) {
-              e.cardCount = Math.max(e.cardCount - 1, 0)
-            }
-            return Promise.resolve(undefined)
-          },
-        }
-      },
-    })
+    tx.update = (table: unknown) => {
+      updateCalls.push(table)
+      return {
+        set: () => ({ where: () => Promise.resolve(undefined) }),
+      }
+    }
 
     return tx as Parameters<
       typeof import('./apply-card-mutation').applyCardDelete
@@ -175,15 +139,14 @@ describe('applyCardDelete', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    store.exams = [{ id: 'exam-1', userId: 'user-1', cardCount: 1 }]
     store.cards = [{ id: 'card-1', examId: 'exam-1', userId: 'user-1' }]
     store.tombstones = []
     ctl.tombstoneAlreadyExists = false
     captured.tombstoneValues = null
-    captured.updateSet = null
+    updateCalls.length = 0
   })
 
-  it('正常削除: tombstone INSERT + card DELETE + cardCount -= 1', async () => {
+  it('正常削除: tombstone INSERT + card DELETE', async () => {
     const { applyCardDelete } = await import('./apply-card-mutation')
     await applyCardDelete(makeTx(), 'card-1', 'user-1')
     expect(store.tombstones.length).toBe(1)
@@ -193,7 +156,6 @@ describe('applyCardDelete', () => {
       entityId: 'card-1',
     })
     expect(store.cards.length).toBe(0)
-    expect(store.exams[0]!.cardCount).toBe(0)
   })
 
   it('void を返す (ActionResult は wrapper 側)', async () => {
@@ -202,13 +164,11 @@ describe('applyCardDelete', () => {
     expect(result).toBeUndefined()
   })
 
-  it('card 不在 → idempotent: tombstone なし / cardCount 不変', async () => {
+  it('card 不在 → idempotent: tombstone なし', async () => {
     store.cards = []
-    store.exams[0]!.cardCount = 0
     const { applyCardDelete } = await import('./apply-card-mutation')
     await applyCardDelete(makeTx(), 'card-nonexistent', 'user-1')
     expect(store.tombstones.length).toBe(0)
-    expect(store.exams[0]!.cardCount).toBe(0)
   })
 
   it('re-delete → insert().values().onConflictDoNothing() 経路に到達し tombstone は増えない', async () => {
@@ -226,22 +186,6 @@ describe('applyCardDelete', () => {
       entityType: 'card',
       entityId: 'card-1',
     })
-  })
-
-  it('GREATEST guard: cardCount が 0 でも負にならない', async () => {
-    store.exams[0]!.cardCount = 0
-    store.cards = [{ id: 'card-1', examId: 'exam-1', userId: 'user-1' }]
-    const { applyCardDelete } = await import('./apply-card-mutation')
-    await applyCardDelete(makeTx(), 'card-1', 'user-1')
-    expect(store.exams[0]!.cardCount).toBe(0)
-  })
-
-  it('spec §3.6 integrity: 削除後 cardCount === COUNT(cards WHERE exam_id)', async () => {
-    const { applyCardDelete } = await import('./apply-card-mutation')
-    await applyCardDelete(makeTx(), 'card-1', 'user-1')
-    const exam = store.exams.find((e) => e.id === 'exam-1')!
-    const actualCount = store.cards.filter((c) => c.examId === 'exam-1').length
-    expect(exam.cardCount).toBe(actualCount)
   })
 
   it('tombstone.deletedAt は DB クロック sql`now()` (増分 pull cursor 統一)', async () => {
@@ -262,29 +206,14 @@ describe('applyCardDelete', () => {
     expect(sig).toContainEqual(['cards', 'user_id', 'user-1'])
   })
 
-  it('exams.cardCount UPDATE の WHERE に eq(exams.id, examId) と eq(exams.userId, userId) が含まれる', async () => {
+  // Sprint B (DB 全体掃除) T5 置換 pin: 旧 'exams.cardCount UPDATE の WHERE...' + G2 ×2
+  // (card_count / updatedAt fragment 構造) を置換。 card 削除は cards DELETE +
+  // tombstone INSERT のみを行い、 exams table への UPDATE を一切発行しないことを
+  // mock tx の呼出履歴で保証する。
+  it('card 削除は cards DELETE + tombstone INSERT のみを行い、 exams UPDATE を発行しない', async () => {
     const { applyCardDelete } = await import('./apply-card-mutation')
     await applyCardDelete(makeTx(), 'card-1', 'user-1')
-    const sig = await eqSignature()
-    expect(sig).toContainEqual(['exams', 'id', 'exam-1'])
-    expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
-  })
-
-  // G2: card_count -1 fragment の構造 (delete = GREATEST guard) を現挙動として pin。
-  it('G2: set.cardCount = exams.card_count 参照 + GREATEST 有 (現挙動: -1 は GREATEST guard)', async () => {
-    const { applyCardDelete } = await import('./apply-card-mutation')
-    await applyCardDelete(makeTx(), 'card-1', 'user-1')
-    const cardCount = captured.updateSet!.cardCount as SQL
-    expect(sqlColumnNames(cardCount)).toContain('card_count')
-    expect(sqlStaticText(cardCount)).toContain('GREATEST')
-  })
-
-  it('G2: set.updatedAt = exams.updated_at 自己参照 (now() 不在)', async () => {
-    const { applyCardDelete } = await import('./apply-card-mutation')
-    await applyCardDelete(makeTx(), 'card-1', 'user-1')
-    const updatedAt = captured.updateSet!.updatedAt as SQL
-    expect(sqlColumnNames(updatedAt)).toEqual(['updated_at'])
-    expect(sqlStaticText(updatedAt).toLowerCase()).not.toContain('now(')
+    expect(updateCalls.length).toBe(0)
   })
 })
 
@@ -294,16 +223,18 @@ describe('applyCardDelete', () => {
 
 describe('applyCardCreateWithId', () => {
   const store = {
-    exams: [] as { id: string; userId: string; cardCount: number }[],
+    exams: [] as { id: string; userId: string }[],
     cards: [] as { id: string; examId: string; userId: string }[],
   }
   const ctl = {
     insertedValues: null as Record<string, unknown> | null,
     // ON CONFLICT: null = 実 insert, 'conflict' = skip (no returning row)
     insertConflict: false,
-    // G2: exams UPDATE の set 句を捕捉 (cardCount / updatedAt fragment の構造観測用)。
-    updateSet: null as Record<string, unknown> | null,
   }
+  // Sprint B (DB 全体掃除) T5 置換 pin: card_count bump (exams.card_count += 1) 撤去の
+  // 証明。 apply-card-mutation.ts はもう tx.update を一切呼ばないため、 呼ばれたら
+  // 記録するだけの spy にして「呼ばれない」ことを assert する。
+  const updateCalls: unknown[] = []
 
   function makeTx() {
     const tx: Record<string, unknown> = {}
@@ -336,17 +267,12 @@ describe('applyCardCreateWithId', () => {
       }),
     })
 
-    tx.update = () => ({
-      set: (vals: Record<string, unknown>) => {
-        ctl.updateSet = vals
-        return {
-          where: () => {
-            for (const e of store.exams) e.cardCount += 1
-            return Promise.resolve(undefined)
-          },
-        }
-      },
-    })
+    tx.update = (table: unknown) => {
+      updateCalls.push(table)
+      return {
+        set: () => ({ where: () => Promise.resolve(undefined) }),
+      }
+    }
 
     return tx as Parameters<
       typeof import('./apply-card-mutation').applyCardCreateWithId
@@ -369,11 +295,11 @@ describe('applyCardCreateWithId', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    store.exams = [{ id: 'exam-1', userId: 'user-1', cardCount: 0 }]
+    store.exams = [{ id: 'exam-1', userId: 'user-1' }]
     store.cards = []
     ctl.insertedValues = null
     ctl.insertConflict = false
-    ctl.updateSet = null
+    updateCalls.length = 0
   })
 
   it('正常: { examNotFound: false, created: true } を返す', async () => {
@@ -382,7 +308,7 @@ describe('applyCardCreateWithId', () => {
     expect(result).toEqual({ examNotFound: false, created: true })
   })
 
-  it('exam 不在 → { examNotFound: true, created: false }、card INSERT も card_count 更新もしない', async () => {
+  it('exam 不在 → { examNotFound: true, created: false }、card INSERT を行わない', async () => {
     store.exams = []
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     const result = await applyCardCreateWithId(makeTx(), 'user-1', { ...BASE_INPUT, examId: 'exam-x' })
@@ -427,22 +353,19 @@ describe('applyCardCreateWithId', () => {
     expect(v.correctAnswerIds).toEqual(['a', 'c'])
   })
 
-  it('実 insert 時: card_count += 1', async () => {
+  it('実 insert 時: card 行が作成される', async () => {
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
-    expect(store.exams[0]!.cardCount).toBe(1)
     expect(store.cards.length).toBe(1)
   })
 
-  it('ON CONFLICT skip (同 cardId 再送): { created: false }、card_count 非加算', async () => {
+  it('ON CONFLICT skip (同 cardId 再送): { created: false }', async () => {
     ctl.insertConflict = true
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     const result = await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
     expect(result).toEqual({ examNotFound: false, created: false })
     // INSERT は呼ばれた (insertedValues が記録される)
     expect(ctl.insertedValues).not.toBeNull()
-    // card_count は加算されない (二重加算防止)
-    expect(store.exams[0]!.cardCount).toBe(0)
     expect(store.cards.length).toBe(0)
   })
 
@@ -454,52 +377,13 @@ describe('applyCardCreateWithId', () => {
     expect(sig).toContainEqual(['exams', 'user_id', 'user-1'])
   })
 
-  it('owner-scope (exams UPDATE): 実 insert 時の card_count 更新 WHERE に eq(exams.id, examId) と eq(exams.userId, userId) が含まれる', async () => {
-    // exams SELECT (owner 確認) と exams UPDATE (card_count += 1) の両方で
-    // userId が WHERE に含まれることを assert する。
-    // SELECT owner-scope は上のテストで確認済み。ここでは UPDATE の owner-scope を担保。
+  // Sprint B (DB 全体掃除) T5 置換 pin: 旧 'owner-scope (exams UPDATE)...' + G2 ×2
+  // (card_count / updatedAt fragment 構造) を置換。 card 作成は cards INSERT のみを
+  // 行い、 exams table への UPDATE を一切発行しないことを mock tx の呼出履歴で保証する。
+  it('card 作成は cards INSERT のみを行い、 exams UPDATE を発行しない', async () => {
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
-    const sig = await eqSignature()
-    // exams.user_id = 'user-1' が eq spy に 1 回以上現れること
-    // (SELECT WHERE + UPDATE WHERE の両方が含まれるため、重複 containEqual で検証)
-    const examsUserIdCalls = sig.filter(
-      ([table, col, val]) => table === 'exams' && col === 'user_id' && val === 'user-1',
-    )
-    expect(examsUserIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
-    const examsIdCalls = sig.filter(
-      ([table, col, val]) => table === 'exams' && col === 'id' && val === 'exam-1',
-    )
-    expect(examsIdCalls.length).toBeGreaterThanOrEqual(2) // SELECT + UPDATE の両方
-  })
-
-  // G2: card_count +1 fragment の構造 (create = 素加算・GREATEST 不在) を pin。
-  // §3.5: R4 の helper 化で literal `card_count + 1` → param `card_count + $1` に正規化
-  // されるが計算は同値 (node 実測: params [1] を bind = card_count+1)。よって観測を
-  // form-agnostic な値 pin にする (増分 1 を literal 静的文字 or param number chunk の
-  // どちらでも許容) = G1 OCR (number pin) / G2 delete (GREATEST presence) と同型。
-  // literal 文字列 '+ 1' の直接 pin は §3.5 の param-binding 吸収方針と食い違うため撤去。
-  it('G2: set.cardCount = exams.card_count 参照 + 素加算 (GREATEST 不在・増分 1・form-agnostic)', async () => {
-    const { applyCardCreateWithId } = await import('./apply-card-mutation')
-    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
-    const cardCount = ctl.updateSet!.cardCount as SQL
-    expect(sqlColumnNames(cardCount)).toContain('card_count')
-    // create/OCR path = 素加算 (delete の GREATEST guard と区別)
-    expect(sqlStaticText(cardCount)).not.toContain('GREATEST')
-    // 加算方向 (+): literal 時 '+ 1' / param 時 '+ ' いずれも '+' を含む
-    expect(sqlStaticText(cardCount)).toContain('+')
-    // 増分値 1: literal 時は静的文字 '1' / param 時は number chunk 1 (どちらか一方)
-    expect(
-      sqlStaticText(cardCount).includes('1') || sqlNumberChunks(cardCount).includes(1),
-    ).toBe(true)
-  })
-
-  it('G2: set.updatedAt = exams.updated_at 自己参照 (now() 不在)', async () => {
-    const { applyCardCreateWithId } = await import('./apply-card-mutation')
-    await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
-    const updatedAt = ctl.updateSet!.updatedAt as SQL
-    expect(sqlColumnNames(updatedAt)).toEqual(['updated_at'])
-    expect(sqlStaticText(updatedAt).toLowerCase()).not.toContain('now(')
+    expect(updateCalls.length).toBe(0)
   })
 })
 

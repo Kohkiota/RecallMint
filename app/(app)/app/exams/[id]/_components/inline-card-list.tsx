@@ -355,9 +355,9 @@ export function InlineCardList({
   // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
   // rollback により mirror / outbox の lost write を構造的に排除する。 即時 drain は helper 内蔵。
   // 採番基準は現在の live cards (この exam の sort_key と件数)。
-  // card_count は exam list / 詳細 header いずれも mirror の card 行数で算出するため、
-  // mirror への insert がそのまま件数表示に反映される (exam.card_count は別 bump しない。
-  // 真の確定値は server 適用後の pull-back で収束)。
+  // 件数表示は exam list / 詳細 header いずれも mirror の card 行数を動的集計するため、
+  // mirror への insert がそのまま件数表示に反映される (Sprint B で exams.card_count
+  // bump 呼出は撤去済 — client はもともと card_count を参照していない)。
   const handleAddCard = async () => {
     setError(null)
     // id は helper await の前に sync で採番し、 `setNewCardIds(prev => add)` を同期的に
@@ -424,8 +424,8 @@ export function InlineCardList({
     <div className="space-y-3 md:space-y-2">
       {/* 見出し件数は live `cards` (リスト本体と同一の useLiveQuery 配列) の length。
           追加/削除直後も即時整合する (旧 SSR cards.length 由来の stale を解消、論点B)。
-          同一配列を数えるため double-count は構造的に発生しない (論点C: card_count
-          楽観更新は持たず cards mirror 計数に一本化)。 */}
+          同一配列を数えるため double-count は構造的に発生しない (論点C: cards mirror
+          計数に一本化、 exams.card_count 相当の別カウンタは持たない)。 */}
       <h2 className="text-lg font-bold">カード ({cards.length} 件)</h2>
       {cards.length === 0 && (
         <Card>
