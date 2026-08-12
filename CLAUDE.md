@@ -52,6 +52,12 @@ RecallMint(旧 mcq-platform): 学習資料を AI OCR で MCQ 化し FSRS で復�
 
 **ツール呼び出しのテキスト漏れ(既知 harness バグ)**: 稀にツール呼び出しがパースされず本文テキスト化して未実行になる(副作用ゼロ)。`.claude/hooks/detect-leaked-toolcall.sh`(Stop hook)が検出し 1 回だけ自動で言い直させる。言い直しは **prose を書かず、ツール呼び出し 1 件だけを応答の先頭要素**として出す。**同一セッションで 2 回以上再発したら復旧を試みず**(context 汚染で retry 自体が再発源)、作業状態を報告して停止(新セッション移行は OT 判断)。詳細: `docs/superpowers/lessons/2026-07-03-malformed-toolcall-leak-investigation.md`。
 
+### 調査規律(前提の現物確認)
+
+- spec/plan の前に、変更が必要という前提を現物で確認する。現状が既に要求を満たすなら実装せず終了する
+- 挙動・構造を調べるときはコメント・doc を手掛かりに留め、実コードの import・caller・実行経路まで確認する
+- 判断を左右する事実には確認した code location(file:symbol / file:line)を残し、関連コード変更後は再確認する
+
 ---
 
 ## Review と Commit(最重要)
