@@ -16,7 +16,8 @@
 //
 // 詳細: docs/superpowers/specs/2026-07-13-image-gc-normalized-refs-design.md §4.9
 
-export type AssetStatus = 'reserved' | 'ready' | 'deleting' | 'deleted'
+export const ASSET_STATUSES = ['reserved', 'ready', 'deleting', 'deleted'] as const
+export type AssetStatus = (typeof ASSET_STATUSES)[number]
 
 // ---------------------------------------------------------------------------
 // isSweepEligible — promote (reserved|ready → deleting) の適格判定。

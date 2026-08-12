@@ -1,6 +1,6 @@
 // get-session-cards — due card を全 exam 横断で取得する query。
 //
-// 全 exam 横断 (exam JOIN なし)。 archived_at 問わず。
+// 全 exam 横断 (exam JOIN なし)。
 // user_id で絞り込み (テナント分離必須)。
 // due ASC で返すことで、 最も期限切れの古い card から学習できる。
 

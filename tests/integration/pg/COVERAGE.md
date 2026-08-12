@@ -18,7 +18,7 @@
 |---|---|---|---|---|---|
 | 1 | pull / sync reads(6 delta + study_days) | `getCardsDelta` 等 / `getDeltaRows` | IN | YES(R2) | `WHERE eq(userId)[AND gte(cursor)]` の owner-scoped delta。A の `since` pull に B 行が混ざらない |
 | 2 | mutation ingest(outbox apply) | `processMutation` / registry dispatch | IN | YES(W1) | dedupe `eq(mutationId) AND eq(userId)`、apply は arg `user.id`。client は entity_id/patch のみ |
-| 2i | card_count bump | `bumpExamCardCount` | OUT:internal | NO | W1(card create/delete)経由で呼ばれる副作用。単独叩き不要 |
+| 2i | ~~card_count bump~~(Sprint B Task 5 で撤去) | ~~`bumpExamCardCount`~~(削除済) | OUT:internal | N/A | 対応 code path が消滅(card create/delete は card_count を更新しない)。行は経緯記録として残す |
 | 3 | cards CRUD(outbox 外 read) | `getCardsForExam` / `getCardsForSourceDocument` | IN | YES(R1) | owner-scoped read。B の card が A の一覧に出ない |
 | 3w | cards field write | `handleOptions` / `handleImages` | IN | YES(W1) | arg(auth)`user.id`、assets ready-check owner-scoped |
 | 4 | tags CRUD | `apply-tag-mutation` / `handleTagOptionIds` / `applyOcrTags` | IN | YES(W1) | 全 SELECT/INSERT/DELETE が `eq(tagCategories/tagOptions.userId)`、card_tags も user_id 保持 |

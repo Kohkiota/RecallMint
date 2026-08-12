@@ -1,10 +1,16 @@
 // Drizzle schema — mcq-platform (23 tables; FSRS 整合 Sprint A で reviews / study_sessions を廃止)
 //
 // FKs use CASCADE for user-owned data hierarchy
-// (Sprint A-2 で plan00 既定の NO ACTION から変更、 users 完全削除
-// (GDPR / 個人情報保護法削除依頼) で全関連データを連動削除するため)。
+// (Sprint A-2 で plan00 既定の NO ACTION から変更)。
+// ただし users は物理 DELETE されない soft delete 表 (`:10-16` 参照) のため、
+// user_id CASCADE は実運用では発火しない。 実際の全データ削除は退会時 webhook
+// handler (handleUserDeleted) が各表へ user_id 指定で明示 DELETE を発行し、
+// その配下は親子 cascade (例: exams の明示 DELETE → cards/source_documents が
+// exam_id CASCADE で追随) が担う。 user_id CASCADE は将来 users を物理削除方式
+// へ切り替える場合の defense として保持する (現状は不発)。
 // All user_id FKs (exams / cards / source_documents / study_days /
-// user_settings / ai_usage_users / answer_events / contact_messages) cascade on user deletion.
+// user_settings / ai_usage_users / answer_events / contact_messages) は
+// この defense の対象。
 // source_documents → cards uses SET NULL (OCR source deletion preserves
 // extracted cards).
 // Only users uses soft delete (deleted_at) for Stripe/audit retention;
@@ -152,6 +158,8 @@ export const aiUsage = pgTable('ai_usage', {
 // ---------------------------------------------------------------------------
 // ai_usage_users (ユーザー別日次カウンタ、複合 PK)
 // FK ON DELETE: NO ACTION → CASCADE (Sprint A-2、users hard delete 整合性確保)
+// abuse 対応台帳: app に読み手は無いが死列ではない。 濫用 user の特定・ban 判断は
+// 運用者が SQL で本表を直接引く。 書き手 = lib/ai-usage-counter.ts の UPSERT のみ。
 // ---------------------------------------------------------------------------
 export const aiUsageUsers = pgTable(
   'ai_usage_users',
@@ -168,6 +176,8 @@ export const aiUsageUsers = pgTable(
 // ---------------------------------------------------------------------------
 // stripe_events / clerk_events (Webhook idempotency) — 変更なし
 // ルール B 例外: idempotency table で event 単位、 user_id 持たず。
+// dedup は event_id (PK) 単独で完結する。 type 列は app の分岐に使わない forensic
+// 列 (どの event 種別が到達したかの事後調査用)。
 // ---------------------------------------------------------------------------
 export const stripeEvents = pgTable('stripe_events', {
   eventId: text('event_id').primaryKey(),
@@ -357,8 +367,11 @@ export const cards = pgTable(
 // source_documents (OCR アップロード元の管理、hard delete)
 // OCR ジョブの作業 / trace table。 exam とライフサイクルを共有し、 exam 削除で
 // FK CASCADE 連動削除される。 月次 quota 集計には使わない (S1.9.1 で upload_records
-// に分離)。 アップロードファイル自体は inline base64 で Gemini に渡すのみで永続化
-// しない (R2 非経由)。
+// に分離)。 アップロードファイル自体は画像なら inline base64 で Gemini に渡す
+// のみで永続化しない。 PDF は count/render phase のため `src/` prefix で R2 に
+// 一時ステージングされる (client presigned PUT、②-4b T8。upload-pipeline.ts が
+// パイプライン出口で明示 deleteObject し、 取りこぼしは R2 lifecycle rule
+// (`src/` maxAge 86400s) が受け皿になる)。
 // ---------------------------------------------------------------------------
 export const sourceDocuments = pgTable(
   'source_documents',
@@ -508,7 +521,7 @@ export const userSettings = pgTable('user_settings', {
 // ---------------------------------------------------------------------------
 // contact_messages (お問い合わせ、§2.3.7 仮構造 + Sprint A-2 確定)
 // user_id は nullable (未認証受付可、CASCADE で users hard delete に追随)。
-// 個人情報削除依頼対応のため hard delete。 DB INSERT 実装は Sprint A-3+。
+// 個人情報削除依頼対応のため hard delete。 DB INSERT 実装済み (lib/actions/contact.ts)。
 // ---------------------------------------------------------------------------
 export const contactMessages = pgTable(
   'contact_messages',
@@ -525,6 +538,8 @@ export const contactMessages = pgTable(
       .default('general'),
     subject: text('subject').notNull(),
     body: text('body').notNull(),
+    // 将来の管理 UI 用の状態列。 UI が無い間は運用者が SQL で直接更新する運用の
+    // ため、 'in_progress' / 'resolved' が app から到達不能なのは仕様(死列ではない)。
     status: text('status')
       .$type<'open' | 'in_progress' | 'resolved'>()
       .notNull()
@@ -755,8 +770,11 @@ export const tombstones = pgTable(
 // iOS/WebKit 修正の fallback で元 jpeg を直 PUT する際の拡張子。 R2 key の
 // 一意性を DB 側でも担保)。status / mime は DB CHECK を張らずアプリ層 invariant
 // とする (Sprint 2 integration_failures catalog 前例と同判断)。
-// reference_count / unreferenced_at は将来の orphan 掃除用の枠 (列のみ確保、
-// 本 phase のアプリコードは一切読み書きしない = dormant)。
+// unreferenced_at は画像 GC v2 の中核列に昇格済み (mark/promote/sweep の判定を
+// lib/media/domain/asset-state.ts が pure に表現し、 lib/storage/asset-gc.ts の
+// reconciler と app/(app)/app/upload/_actions/publish-prepared.ts が読み書きする)。
+// reference_count のみ将来の orphan 掃除用の枠のまま dormant (列のみ確保、
+// アプリコードは一切読み書きしない)。
 // pull 同期非対象 (学習データでない、client 側は Dexie media_assets が別途持つ)。
 // user 削除: cascade で台帳は消える (R2 object 自体の自動掃除は scope 外)。
 // 詳細: docs/superpowers/specs/2026-07-12-image-phase-a-design.md §2.1
@@ -779,7 +797,8 @@ export const assets = pgTable(
       .notNull()
       .defaultNow(),
     readyAt: timestamp('ready_at', { withTimezone: true }),
-    // dormant: 将来の orphan 掃除 (手動 SQL) 用の枠。アプリコードは読み書きしない。
+    // dormant: 将来の orphan 掃除 (手動 SQL) 用の枠。アプリコードは読み書きしない
+    // (unreferencedAt と異なり本列のみ dormant — 上記 table comment 参照)。
     referenceCount: integer('reference_count').notNull().default(0),
     unreferencedAt: timestamp('unreferenced_at', { withTimezone: true }),
   },
@@ -827,7 +846,8 @@ export const cardAssetRefs = pgTable(
 // processing → prepared → completed、失敗は terminal_failed。
 // lease_version/lease_expires_at は「この invocation が生存している」表明 (live-op
 // gate と pipeline の fenced CAS が読む)。source_document_id は旧経路が生成時点で
-// 未確定だった名残で nullable (単一 invocation 経路は sync tx で必ず確定させる)、
+// 未確定だった名残で今は nullable だが、単一 invocation 経路は sync tx で必ず
+// 確定させるため実質必須値 (本 sprint の後続 task で NOT NULL 化する予定)。
 // 以降 (lease_expires_at / last_error_code / prepared_schema_version /
 // prepared_hash / prepared_payload / result_summary / completed_at) も
 // 状態遷移が進むまで値を持たない nullable 列。UNIQUE(user_id, idempotency_key) で
@@ -835,8 +855,13 @@ export const cardAssetRefs = pgTable(
 // Realtime publication 非追加: 本 repo は Supabase realtime publication を管理して
 // いない (追加すべき対象が存在しない、意図的に何もしない)。
 // exam_id: exam cascade (この ledger は 1 exam に対する 1 回の upload 操作)。
-// source_document_id: source_document 削除後も操作記録は残したいため set null
-// (source_documents → cards の SET NULL 方針と同型、schema.ts 冒頭コメント参照)。
+// source_document_id: 現在は FK が ON DELETE SET NULL だが、NOT NULL 化と
+// 両立しないため本 sprint の後続 task で FK を ON DELETE CASCADE へ張り替える
+// (source_documents の単独 DELETE 経路が production に存在しない現物確認により、
+// cascade で失われる操作記録は無いと判断)。「削除後も操作記録は残す」という
+// 旧意図は単独削除経路が無いことで既に空洞化している。 将来 source_documents の
+// 単独 DELETE 経路を新設する場合は、この operation 保持方針 (cascade で消える)
+// を再判断すること。
 // 詳細: .superpowers/sdd/2026-07-30-ocr-2-4a-image-figure-crop/task-2-brief.md
 // ---------------------------------------------------------------------------
 export const uploadOperations = pgTable(
