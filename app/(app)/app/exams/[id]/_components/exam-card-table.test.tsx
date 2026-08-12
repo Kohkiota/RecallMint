@@ -2410,3 +2410,35 @@ describe('P3 Task0 ①: selection prune (HS-2) — selection ⊆ 可視集合', 
     expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked()
   })
 })
+
+// ===========================================================================
+// owner-scope pin (Sprint B): 別 user の card 行は描画されない
+//
+// なぜ必要か: exam-card-table-columns.tsx の cell は編集対象 mirror 行の `card.user_id` を
+// outbox 行の owner / flush の owner-scope 選別に使う。 これが「認証主体と一致する」 と
+// 言えるのは、 本 component の live query が `.filter((c) => c.user_id === userId)` で
+// 他 user の行を落としているからに他ならない。 その前提は別 file にあり、 filter を外しても
+// 何も落ちない状態だったので、 ここで pin する (共有ブラウザで前 user の cards 行が残った
+// 状況を模し、 描画されないことを assert する)。
+// ===========================================================================
+
+describe('ExamCardTable owner-scope: 別 user の card 行を描画しない', () => {
+  it('同 exam に別 user の card が mirror に残っていても行として現れない', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      makeCard(1),
+      // 共有ブラウザに残った別 user の行 (sign-out で Dexie を purge しないため起こりうる)。
+      { ...makeCard(2), id: 'card-foreign', user_id: 'other-user', title: 'Foreign Card' },
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
+    })
+    expect(screen.queryByTestId('row-card-foreign')).not.toBeInTheDocument()
+    expect(screen.queryByText('Foreign Card')).not.toBeInTheDocument()
+    // 描画された唯一の行は認証主体のもの = cell が読む card.user_id は必ず USER_ID。
+    expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+  })
+})

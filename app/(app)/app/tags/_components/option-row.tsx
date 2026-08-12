@@ -7,7 +7,7 @@
 //   role/tabIndex は付けない (右 panel に表示中の option は全 active 扱い)。
 // - 編集モード: Enter / blur で確定、 Esc / 空文字でキャンセル
 // - 確定値は `enqueueEntityMutation({entity_type:'tag_option', op:'update_field',
-//   patch:{field:'name', value}})` → `runGuardedEntityMutationFlush()` で同期
+//   patch:{field:'name', value}})` → `runGuardedEntityMutationFlush(userId)` で同期
 // - color pill click で ColorPalettePopover (Task 1) を開き、 選択で
 //   `update_field` patch field='color' を発行
 // - 「カテゴリ変更」 button click でカスタム controlled aria menu を開き、
@@ -46,6 +46,9 @@ import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
 import { ColorPalettePopover } from './color-palette-popover'
 
 type Props = {
+  // 認証主体 (server 解決値を OptionList から thread)。 outbox 行の owner と flush の
+  // owner-scope 選別の両方に使う (描画対象 `option.user_id` は使わない)。
+  userId: string
   option: ClientTagOption
   // カテゴリ変更 dropdown 用、 useLiveQuery 結果を親 (OptionList) から伝播。
   // 現カテゴリ以外を内部で filter する (props 時点では現カテゴリも含めて受ける)。
@@ -69,7 +72,7 @@ async function countSameNameInCategory(
     .count()
 }
 
-export function OptionRow({ option, allCategories, onDelete }: Props) {
+export function OptionRow({ userId, option, allCategories, onDelete }: Props) {
   const [editing, setEditing] = React.useState(false)
   const [value, setValue] = React.useState(option.name)
   const [renameError, setRenameError] = React.useState<string | null>(null)
@@ -137,6 +140,9 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
           : { category_id: option.category_id }),
     }
     void runOptimisticUpdate({
+      // owner は常に認証主体 (props の userId)。 `option.user_id` を載せてはいけない
+      // (理由は CategoryRow と同じ — 認可境界の迂回)。
+      userId,
       store: getClientDb().tag_options,
       rowKey: option.id,
       beforeValue,
@@ -156,7 +162,7 @@ export function OptionRow({ option, allCategories, onDelete }: Props) {
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     }, DEBOUNCE_MS)
   }
 

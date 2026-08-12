@@ -69,7 +69,7 @@ export default async function AppLayout({
             (createReviewFlushController) を deps 注入で entity-mutation 用に再利用
             (review-flush.ts 無変更)。 全 entity_type の pending を 1 回の汎用 flush で
             送信する (entity 別 trigger は持たない)。 UI なし、 失敗 silent。 */}
-        <EntityMutationFlushTrigger />
+        <EntityMutationFlushTrigger userId={user.id} />
         {/* 画像フェーズ A: 起動時 self-heal sweep trigger。 stale 'uploading'(1h 超)の
             後始末 + 中断デッキ DL job('downloading' 残骸)の掃除を mount 1 回 kick する
             (Web Lock 多重タブ排他は sweepStaleMedia 内部、 UI なし、 失敗 silent)。 */}

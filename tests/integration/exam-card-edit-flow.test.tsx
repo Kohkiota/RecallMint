@@ -144,7 +144,7 @@ describe('P3 Task0 ④: exam card edit flow — 編集 → mirror + outbox → f
     // (2) outbox (entity_mutations) に update_field patch が enqueue される。
     let pending: Awaited<ReturnType<typeof getPendingEntityMutations>> = []
     await vi.waitFor(async () => {
-      pending = await getPendingEntityMutations()
+      pending = await getPendingEntityMutations(USER_ID)
       expect(pending).toHaveLength(1)
     })
     const mutation = pending[0]
@@ -155,7 +155,7 @@ describe('P3 Task0 ④: exam card edit flow — 編集 → mirror + outbox → f
 
     // (3) mock BulkApiClient で flush を明示駆動 (drain timer は待たない)。
     const client = makeMockClient({ ok: true, status: 200, body: { ok: true, failed: [] } })
-    const results = await flushAllPendingEntityMutations(client)
+    const results = await flushAllPendingEntityMutations(USER_ID, client)
 
     // mock client に mutation が POST された (記録内容で assert)。
     expect(client.calls).toHaveLength(1)
@@ -176,6 +176,6 @@ describe('P3 Task0 ④: exam card edit flow — 編集 → mirror + outbox → f
     // flush 結果: 当該 mutation が synced 化し pending が 0 になる。
     expect(results).toHaveLength(1)
     expect(results[0].syncedEventIds).toContain(mutation.mutation_id)
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(USER_ID)).toHaveLength(0)
   })
 })

@@ -190,6 +190,7 @@ describe('OptionCreateForm — submit', () => {
     // existingSortKeys 未指定 → 起点 '0' で末尾採番 (Tag-4c-2b §4.7)
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: FIXED_ID,
         op: 'create',
@@ -219,6 +220,7 @@ describe('OptionCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: FIXED_ID,
         op: 'create',
@@ -250,6 +252,7 @@ describe('OptionCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: FIXED_ID,
         op: 'create',
@@ -278,6 +281,7 @@ describe('OptionCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: FIXED_ID,
         op: 'create',
@@ -361,6 +365,7 @@ describe('OptionCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: FIXED_ID,
         op: 'create',

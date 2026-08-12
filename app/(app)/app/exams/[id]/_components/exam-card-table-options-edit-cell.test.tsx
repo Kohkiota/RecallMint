@@ -180,6 +180,7 @@ describe('CompactOptionsCell — checkbox toggle', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option b を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-opt',
         entity_type: 'card',
         entity_id: CARD_ID,
         op: 'update_field',
@@ -279,6 +280,7 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-opt',
         entity_type: 'card',
         entity_id: CARD_ID,
         op: 'update_field',
@@ -311,6 +313,7 @@ describe('CompactOptionsCell — explanation click-to-edit', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-opt',
         entity_type: 'card',
         entity_id: CARD_ID,
         op: 'update_field',
@@ -471,6 +474,7 @@ describe('CompactOptionsCell — add / delete', () => {
     })
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-opt',
         entity_type: 'card',
         entity_id: CARD_ID,
         op: 'update_field',

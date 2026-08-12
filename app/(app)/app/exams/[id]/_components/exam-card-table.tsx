@@ -428,17 +428,21 @@ export function ExamCardTable({
   // するため、popover には常に定義済みの createOptionAndAssign が届く。
   const tagEditCallbacks: TagEditCallbacks = useMemo(
     () => ({
-      renameCategory: handleRenameCategory,
-      setCategoryColor: handleSetCategoryColor,
-      deleteCategory: handleDeleteCategory,
-      renameOption: handleRenameOption,
-      setOptionColor: handleSetOptionColor,
-      deleteOption: handleDeleteOption,
+      renameCategory: (categoryId: string, newName: string) =>
+        handleRenameCategory(userId, categoryId, newName),
+      setCategoryColor: (categoryId: string, color: string | null) =>
+        handleSetCategoryColor(userId, categoryId, color),
+      deleteCategory: (categoryId: string) => handleDeleteCategory(userId, categoryId),
+      renameOption: (optionId: string, newName: string) =>
+        handleRenameOption(userId, optionId, newName),
+      setOptionColor: (optionId: string, color: string | null) =>
+        handleSetOptionColor(userId, optionId, color),
+      deleteOption: (optionId: string) => handleDeleteOption(userId, optionId),
       countCategoryImpact,
       countOptionImpact,
       createCategory,
     }),
-    [createCategory],
+    [userId, createCategory],
   )
 
   // TanStack table instance。 columns は module スコープ参照 (再採番なし)。

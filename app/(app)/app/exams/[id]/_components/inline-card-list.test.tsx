@@ -423,6 +423,7 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-1',
         entity_type: 'card', entity_id: NEW_ID,
         op: 'create',
         patch: {

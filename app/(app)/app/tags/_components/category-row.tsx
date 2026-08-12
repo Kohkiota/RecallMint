@@ -9,7 +9,7 @@
 //   click と分離)。 編集モードでは pen icon を消し input のみ表示。
 // - rename 確定値は `enqueueEntityMutation({entity_type:'tag_category',
 //   op:'update_field', patch:{field:'name', value}})` →
-//   `runGuardedEntityMutationFlush()` で同期。 IDB は enqueue より先に
+//   `runGuardedEntityMutationFlush(userId)` で同期。 IDB は enqueue より先に
 //   `getClientDb().tag_categories.update(...)` で optimistic 更新する。
 // - select_type バッジは表示のみ (作成後 immutable、 spec §1.2)
 // - 行末「カテゴリ削除」 button は親 (CategoryList) に onDelete callback で委譲
@@ -34,6 +34,10 @@ import { colorToClass, type TagColorName } from '@/lib/tags/color-palette'
 import { ColorPalettePopover } from './color-palette-popover'
 
 type Props = {
+  // 認証主体 (server 解決値を CategoryList から thread)。 outbox 行の owner と flush の
+  // owner-scope 選別の両方に使う (描画対象 `category.user_id` は使わない — 上記 enqueueUpdate
+  // の comment / optimistic-mutation.ts 冒頭を参照)。
+  userId: string
   category: ClientTagCategory
   active: boolean
   onSelect: (id: string) => void
@@ -43,7 +47,7 @@ type Props = {
 
 const DEBOUNCE_MS = 500
 
-export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
+export function CategoryRow({ userId, category, active, onSelect, onDelete }: Props) {
   const [editing, setEditing] = React.useState(false)
   const [value, setValue] = React.useState(category.name)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
@@ -98,6 +102,11 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
         : { color: category.color ?? null }),
     }
     void runOptimisticUpdate({
+      // owner は常に認証主体 (props の userId)。 `category.user_id` を載せてはいけない —
+      // tag mirror は owner-scope で読まれず sign-out purge も無いため他人の行が描画され
+      // うるが、 その行 owner 名義にすると owner の session 経由で編集が着地してしまう
+      // (認可境界の迂回。 optimistic-mutation.ts 冒頭の owner comment 参照)。
+      userId,
       store: getClientDb().tag_categories,
       rowKey: category.id,
       beforeValue,
@@ -117,7 +126,7 @@ export function CategoryRow({ category, active, onSelect, onDelete }: Props) {
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     }, DEBOUNCE_MS)
   }
 

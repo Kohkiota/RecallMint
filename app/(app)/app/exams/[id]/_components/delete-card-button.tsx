@@ -53,6 +53,7 @@ export function DeleteCardButton({ cardId, userId }: Props) {
         // mirror delete も巻き戻り、 user 通知 (error UI) を維持するため throwOnError=true。
         // 即時 drain は helper 内蔵 fire-and-forget。
         await runOptimisticMutation({
+          userId,
           stores: [db.cards],
           mutate: () => db.cards.delete(cardId),
           mutations: [

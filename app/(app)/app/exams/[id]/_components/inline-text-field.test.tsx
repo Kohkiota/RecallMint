@@ -27,6 +27,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 import { InlineTextField } from './inline-text-field'
 
 const CARD_ID = '11111111-1111-4111-8111-111111111111'
+const USER_ID = 'user-1'
 
 // 各 test の前に cards mirror を clear し、 対象 card の base 行を 1 件 seed する
 // (mirror update の前提として行が存在している必要がある)。
@@ -83,6 +84,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="問題タイトル"
         ariaLabel="title 編集"
@@ -96,6 +98,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="sort_key"
         initialValue={null}
         ariaLabel="ソートキー 編集"
@@ -109,6 +112,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="問題タイトル"
         ariaLabel="title 編集"
@@ -124,6 +128,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -137,6 +142,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -151,6 +157,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -164,6 +171,7 @@ describe('InlineTextField — render / edit 基本', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -181,6 +189,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -203,6 +212,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -216,6 +226,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: { field: 'title', value: '新タイトル' },
@@ -228,6 +239,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -248,6 +260,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -268,6 +281,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={null}
         ariaLabel="memo 編集"
@@ -287,6 +301,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue="旧メモ"
         ariaLabel="memo 編集"
@@ -304,6 +319,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     // enqueue には raw '' が渡る (server 側 CARD_FIELD_HANDLERS[field] handler が
     // '' → null 正規化する。 lib/cards/card-field-handlers.ts 参照)。
     expect(mockEnqueue).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'card', entity_id: CARD_ID,
       op: 'update_field',
       patch: { field: 'memo', value: '' },
@@ -315,6 +331,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -334,6 +351,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={null}
         ariaLabel="memo 編集"
@@ -347,6 +365,7 @@ describe('InlineTextField — mirror write + outbox enqueue (Task 4.2)', () => {
     fireEvent.blur(screen.getByRole('textbox'))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: { field: 'memo', value: '初メモ' },
@@ -360,6 +379,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -375,6 +395,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -391,6 +412,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="複数行"
         ariaLabel="question 編集"
@@ -406,6 +428,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="短い"
         ariaLabel="question 編集"
@@ -427,6 +450,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="q"
         ariaLabel="question 編集"
@@ -453,6 +477,7 @@ describe('InlineTextField — auto-resize regression (S2.0b-2)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="t"
         ariaLabel="title 編集"
@@ -476,6 +501,7 @@ describe('InlineTextField — autoEditOnMount (S2.0b 「+ カードを追加」�
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="(問題文を入力してください)"
         ariaLabel="問題文 編集"
@@ -492,6 +518,7 @@ describe('InlineTextField — autoEditOnMount (S2.0b 「+ カードを追加」�
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="本文"
         ariaLabel="問題文 編集"
@@ -508,6 +535,7 @@ describe('InlineTextField — autoEditOnMount (S2.0b 「+ カードを追加」�
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="本文"
         ariaLabel="問題文 編集"
@@ -528,6 +556,7 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={'あ\n\n'}
         ariaLabel="メモ 編集"
@@ -545,6 +574,7 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={'あ\nい'}
         ariaLabel="メモ 編集"
@@ -560,6 +590,7 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={'あ\n'}
         ariaLabel="メモ 編集"
@@ -575,6 +606,7 @@ describe('InlineTextField — 末尾改行の display 補正 (<br>)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="memo"
         initialValue={'\n'}
         ariaLabel="メモ 編集"
@@ -608,6 +640,7 @@ describe('Edit-3 T2: displayClassName の md:min-h 上書き (cn 統一 + twMerg
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="テスト"
         ariaLabel="question 編集"
@@ -625,6 +658,7 @@ describe('Edit-3 T2: displayClassName の md:min-h 上書き (cn 統一 + twMerg
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue="テスト"
         ariaLabel="question 編集"
@@ -643,6 +677,7 @@ describe('Edit-3 T2: displayClassName の md:min-h 上書き (cn 統一 + twMerg
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="テスト"
         ariaLabel="title 編集"
@@ -660,6 +695,7 @@ describe('Edit-3 T2: displayClassName の md:min-h 上書き (cn 統一 + twMerg
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="テスト"
         ariaLabel="title 編集"
@@ -685,6 +721,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧タイトル"
         ariaLabel="title 編集"
@@ -701,6 +738,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="外部更新"
         ariaLabel="title 編集"
@@ -715,6 +753,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧タイトル"
         ariaLabel="title 編集"
@@ -724,6 +763,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="外部更新"
         ariaLabel="title 編集"
@@ -745,6 +785,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="server-old"
         ariaLabel="title 編集"
@@ -761,6 +802,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="server-new"
         ariaLabel="title 編集"
@@ -788,6 +830,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -797,6 +840,7 @@ describe('InlineTextField — 外部 prop 遷移と editing 状態の保護 (波
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="新"
         ariaLabel="title 編集"
@@ -827,6 +871,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     const { unmount } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -843,6 +888,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
       expect(row?.title).toBe('新タイトル')
     })
     expect(mockEnqueue).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'card', entity_id: CARD_ID,
       op: 'update_field',
       patch: { field: 'title', value: '新タイトル' },
@@ -854,6 +900,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     const { unmount } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -872,6 +919,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     const { unmount } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -898,6 +946,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     const { unmount } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -915,6 +964,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
       expect(mockEnqueue).toHaveBeenCalledTimes(1)
     })
     expect(mockEnqueue).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'card', entity_id: CARD_ID,
       op: 'update_field',
       patch: { field: 'title', value: '新タイトル' },
@@ -926,6 +976,7 @@ describe('InlineTextField — commit-on-unmount (Fix-3 Imp#1)', () => {
     const { unmount } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -963,6 +1014,7 @@ describe('Sprint T: MD 表 read-only 描画(display 枝 A)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue={TABLE_FREE}
         ariaLabel="question 編集"
@@ -976,6 +1028,7 @@ describe('Sprint T: MD 表 read-only 描画(display 枝 A)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue={WITH_TABLE}
         ariaLabel="question 編集"
@@ -989,6 +1042,7 @@ describe('Sprint T: MD 表 read-only 描画(display 枝 A)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue={WITH_TABLE}
         ariaLabel="question 編集"
@@ -1006,6 +1060,7 @@ describe('Sprint T: MD 表 read-only 描画(display 枝 A)', () => {
     render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="question_text"
         initialValue={WITH_TABLE}
         ariaLabel="question 編集"

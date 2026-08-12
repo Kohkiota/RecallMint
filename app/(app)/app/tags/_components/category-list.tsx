@@ -68,11 +68,13 @@ type PendingDelete = {
 // のみに spread (event 分離契約: row click / pen / 削除 button は通常 click のまま動作)。
 // `CategoryRow` 本体は完全無変更で内側に nested。
 function SortableCategoryRowWrapper({
+  userId,
   category,
   active,
   onSelect,
   onDelete,
 }: {
+  userId: string
   category: ClientTagCategory
   active: boolean
   onSelect: (id: string) => void
@@ -106,6 +108,7 @@ function SortableCategoryRowWrapper({
       </button>
       <div className="flex-1 min-w-0">
         <CategoryRow
+          userId={userId}
           category={category}
           active={active}
           onSelect={onSelect}
@@ -166,7 +169,7 @@ export function CategoryList({
     // exams / popover の rethrow → setLastError 経路用)。 enqueue throw で Dexie auto-rollback
     // により cascade purge も巻き戻り、 useLiveQuery が削除前の状態に戻る (案 a 取り直し =
     // 次回 pull で reconcile)。 UI 状態 (active 解除・confirm dialog・影響集計) は caller に残す。
-    void handleDeleteCategory(target.id, { throwOnError: false })
+    void handleDeleteCategory(userId, target.id, { throwOnError: false })
 
     // 削除対象が現 active なら active を解除。 server pull で IDB から消えた後に
     // 別カテゴリへの自動遷移は今回はしない (空 state へ落とすほうが意図明確)。
@@ -209,6 +212,7 @@ export function CategoryList({
     if (oldIndex === -1 || newIndex === -1) return
     const next = arrayMove(list, oldIndex, newIndex)
     void handleReorderCategories(
+      userId,
       list,
       next.map((c) => c.id),
     )
@@ -236,6 +240,7 @@ export function CategoryList({
               {list.map((category) => (
                 <SortableCategoryRowWrapper
                   key={category.id}
+                  userId={userId}
                   category={category}
                   active={category.id === activeCategoryId}
                   onSelect={onSelectCategory}
@@ -252,6 +257,7 @@ export function CategoryList({
           {list.map((category) => (
             <li key={category.id}>
               <CategoryRow
+                userId={userId}
                 category={category}
                 active={category.id === activeCategoryId}
                 onSelect={onSelectCategory}

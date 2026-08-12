@@ -3,15 +3,23 @@
 //
 // 役割境界:
 // - `enqueueEntityMutation`: 編集 trigger で呼び出す outbox write helper。
-//   (entity_type + entity_id + op + patch.field) キーで pending 行を coalesce する。
-//   同 entity の同 field への連続編集は pending 1 行に畳む (最新値で上書き)。
-// - `getPendingEntityMutations`: sync_status='pending' を返す (flush 対象)。
+//   (entity_type + entity_id + op + patch.field) キーで**自 user の** pending 行を
+//   coalesce する。 同 entity の同 field への連続編集は pending 1 行に畳む (最新値で上書き)。
+// - `getPendingEntityMutations`: 自 user の pending を返す (flush 対象)。
 // - `markEntityMutationsSynced`: 成功 mutation_id を 'synced' に。
 // - `markEntityMutationsAttempted`: flush 試行の last_attempted_at を打刻。
-// - `dropStalePendingEntityMutations`: 古すぎる pending を 'failed' に隔離。
-// - `flushAllPendingEntityMutations`: pending を 1 回の bulk POST で送信、
+// - `dropStalePendingEntityMutations`: 自 user の古すぎる pending を 'failed' に隔離。
+// - `flushAllPendingEntityMutations`: 自 user の pending を 1 回の bulk POST で送信、
 //   成功した mutation_id を 'synced' に、失敗分は pending 残置。
 //   in-flight 中の mutation_id は除外し並走 flush の二重送信を防ぐ。
+//
+// owner-scope (Sprint B・spec §5.3): 選別 / coalesce / stale 隔離は
+// `[user_id+sync_status]` の等値 query に閉じ、 synced / failed / attempted 化は
+// owner-scope select で確定した mutation_id 集合にのみ作用する (mark 系自体は user 述語を
+// 持たない — id は UUIDv4 で大域一意ゆえ owner-scope select を通った時点で閉じている。
+// answer_events と同設計)。 これは共有ブラウザでのアカウント切替中に別 user の pending へ
+// 作用しないための **client 側の誤送信防止** であり、 認可境界ではない — wire payload に
+// user_id は載せず、 server は従来どおり auth 由来の user.id のみを信頼する。
 //
 // 全 helper はブラウザ専用 (getClientDb が server で throw する)。
 
@@ -57,7 +65,7 @@ function coalesceKey(input: EnqueueEntityMutationInput): string {
 /**
  * entity mutation を Dexie outbox に enqueue する。
  *
- * coalesce 戦略 (pending 行のみ対象):
+ * coalesce 戦略 (**自 user の** pending 行のみ対象):
  * - 同 coalesce key (entity_type + entity_id + op [+ field]) の pending 行があれば、
  *   その行の patch / edited_at / mutation_id を最新値で上書きする。
  *   sync_status は 'pending' のまま保持。
@@ -66,20 +74,40 @@ function coalesceKey(input: EnqueueEntityMutationInput): string {
  * 'syncing'/'synced'/'failed' 行には絶対に上書きしない。
  * in-flight 中の mutation は coalesce 対象外 (flush 側 inFlightMutationIds で
  * 二重送信を防ぐ)。
+ *
+ * `user_id` は **常に認証主体** (その session で server に認可される user) を caller が供給する。
+ * 編集対象 mirror 行が持つ `user_id` を代わりに載せてはいけない。 flush の選別も同じ 1 値を
+ * 使う (answer_events と同じく owner は認証 identity の 1 本のみ)。
+ *
+ * 「編集対象行は必ず自分の行」 とは限らない: tag mirror (tag_categories / tag_options) の
+ * 読み経路は owner-scope でなく (`tag-crud.ts` の `toArray()` / `exam-card-table.tsx` /
+ * `custom-filter-form.tsx` 等)、 sign-out 時の Dexie purge も無いため、 共有ブラウザでは前
+ * user の行が現 user に描画され編集されうる (**「全 mirror が owner-scope だから他人の行は
+ * 編集できない」 は偽** — spec §5.3 の当初前提で、 Sprint B の review で反証済み)。
+ * 本 product に共有・共同編集は無いのでそれは常に不正な編集であり、 認証主体名義で送れば
+ * server の `WHERE id = ? AND user_id = ?` に弾かれて (`lib/tags/apply-tag-mutation.ts`)
+ * どの account のデータも変わらない。
+ *
+ * 逆に行 owner (B) 名義にすると **認可境界を迂回する**: その行は B が sign-in するまで
+ * pending に留まり、 B 自身の flush が B の session で送るため owner check を通過し、
+ * 他人の編集が B のデータに着地する。 ゆえに帰属を行 owner に寄せる変更をしてはいけない
+ * (詳細は `lib/sync/optimistic-mutation.ts` 冒頭の owner comment)。
+ * 不一致検査はここでは行わない (spec 確定 — server 側の owner check が唯一の認可点)。
  */
 export async function enqueueEntityMutation(
-  input: EnqueueEntityMutationInput,
+  input: EnqueueEntityMutationInput & { user_id: string },
 ): Promise<ClientEntityMutation> {
   const db = getClientDb()
   const now = input.edited_at ?? new Date().toISOString()
 
-  // pending 行をすべて取得し、coalesce 対象を in-memory で探す。
-  // entity_mutations table は shallow (1 user の outbox) のため full-scan でも実用上問題ない。
+  // 自 user の pending 行のみ取得し、coalesce 対象を in-memory で探す (別 owner の行は
+  // index で到達不能 = coalesce が owner を跨がない)。 1 user の outbox は shallow の
+  // ため、 絞り込み後の in-memory scan で実用上問題ない。
   // 'synced' / 'syncing' / 'failed' 行は絶対に上書きしない。
   const key = coalesceKey(input)
   const allPending = await db.entity_mutations
-    .where('sync_status')
-    .equals('pending')
+    .where('[user_id+sync_status]')
+    .equals([input.user_id, 'pending'])
     .toArray()
 
   const existing = allPending.find((row) => coalesceKey(row) === key)
@@ -127,11 +155,13 @@ export async function enqueueEntityMutation(
 // getPendingEntityMutations
 // ---------------------------------------------------------------------------
 
-/** sync_status==='pending' の entity mutations を返す (flush 対象)。 */
-export async function getPendingEntityMutations(): Promise<ClientEntityMutation[]> {
-  return getClientDb().entity_mutations
-    .where('sync_status')
-    .equals('pending')
+/** 自 user の pending entity mutations を enqueue 順 (local_id 昇順) で返す (flush 対象)。 */
+export async function getPendingEntityMutations(
+  userId: string,
+): Promise<ClientEntityMutation[]> {
+  return getClientDb()
+    .entity_mutations.where('[user_id+sync_status]')
+    .equals([userId, 'pending'])
     .toArray()
 }
 
@@ -141,7 +171,8 @@ export async function getPendingEntityMutations(): Promise<ClientEntityMutation[
 
 /**
  * bulk flush 成功後に呼ぶ。対象 mutation_id 行を 'synced' に遷移させる。
- * review-events.ts の markAnswerEventsSynced と同方針。
+ * review-events.ts の markAnswerEvents と同方針 (user 述語を持たないのは、 mutationIds が
+ * owner-scope select 由来かつ UUIDv4 で大域一意 = 既に owner に閉じているため)。
  */
 export async function markEntityMutationsSynced(
   mutationIds: string[],
@@ -170,19 +201,21 @@ export async function markEntityMutationsAttempted(
 // ---------------------------------------------------------------------------
 
 /**
- * 古すぎる pending mutation を 'failed' に隔離する (silent drop)。
+ * 自 user の古すぎる pending mutation を 'failed' に隔離する (silent drop)。
  * mount 時の古さ判定で呼ぶ (常駐監視はしない)。
  *
  * edited_at が `now - maxAgeMs` より**厳密に古い** pending を 'failed' に遷移させる。
- * 境界 (ちょうど maxAgeMs) は残す。
+ * 境界 (ちょうど maxAgeMs) は残す。 隔離対象は owner-scope select が確定した集合に閉じる
+ * (別 owner の古い pending は触らない)。
  *
  * @returns drop した mutation_id 配列 (呼出側の観測用)
  */
 export async function dropStalePendingEntityMutations(
+  userId: string,
   now: number,
   maxAgeMs: number,
 ): Promise<string[]> {
-  const pending = await getPendingEntityMutations()
+  const pending = await getPendingEntityMutations(userId)
   return dropStaleByKey({
     table: getClientDb().entity_mutations,
     keyCol: 'mutation_id',
@@ -250,10 +283,15 @@ export const inFlightMutationIds = new Set<string>()
 const defaultEntityMutationClient: BulkApiClient = createBulkApiClient(ENTITY_MUTATION_BULK_ENDPOINT)
 
 /**
- * 全 pending entity mutations を 1 回の bulk POST で送信する。
+ * 自 user の全 pending entity mutations を 1 回の bulk POST で送信する。
  *
  * entity-mutation には session grouping がないため全 pending を 1 batch にまとめる
  * (review 側 flush と同じく全 pending を 1 経路でまとめて送る形)。
+ *
+ * 先頭の owner-scope 選別で確定した集合が、 以降の attempted / synced 化の対象を閉じる
+ * (アカウント切替中に応答が返っても別 user の行に作用しない)。 送信 payload に user_id は
+ * 載せない — server の認可境界は auth 由来 user.id のまま不変で、 owner-scope は client
+ * 側の誤送信防止 (best-effort) にとどまる。
  *
  * 戻り値は FlushResult[] (0 または 1 要素)。
  * FlushResult は review-events.ts で定義された型を再利用する。
@@ -261,9 +299,10 @@ const defaultEntityMutationClient: BulkApiClient = createBulkApiClient(ENTITY_MU
  * *EventIds フィールドには mutation_id を保持する (フィールド名は event 由来だが流用)。
  */
 export async function flushAllPendingEntityMutations(
+  userId: string,
   client: BulkApiClient = defaultEntityMutationClient,
 ): Promise<FlushResult[]> {
-  const pendingAll = await getPendingEntityMutations()
+  const pendingAll = await getPendingEntityMutations(userId)
 
   // 画像フェーズ A Task 7: images mutation の全 uploading key が ready になるまで
   // 送信保留 (spec §3.2 flush gate)。 finalize が media_assets の status を ready 化

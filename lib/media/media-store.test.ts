@@ -51,13 +51,14 @@ beforeEach(async () => {
   ])
 })
 
-describe('ClientDb version(10)', () => {
+describe('ClientDb version(12)', () => {
   // v9 = 旧 answer_events / study_sessions の drop、 v10 = answer_events 再作成
-  // (FSRS 整合 Sprint A・spec §4.1)。 media 系 store は v8 のまま無変更。
-  it('db が最新 version (10) で open する', async () => {
+  // (FSRS 整合 Sprint A・spec §4.1)、 v11/v12 = user_settings drop + entity_mutations の
+  // owner-scope 再作成 (Sprint B・spec §5.3)。 media 系 store は v8 のまま無変更。
+  it('db が最新 version (12) で open する', async () => {
     const db = getClientDb()
     await db.open()
-    expect(db.verno).toBe(10)
+    expect(db.verno).toBe(12)
   })
 
   it('既存 store (cards) が引き続き定義されている(回帰なし)', () => {

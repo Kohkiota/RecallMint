@@ -94,6 +94,7 @@ describe('runOptimisticMutation — main path', () => {
     const cardId = newId()
 
     await runOptimisticMutation({
+      userId: TEST_USER_ID,
       stores: [db.cards],
       mutate: async () => {
         await db.cards.put(makeClientCard(cardId))
@@ -115,7 +116,7 @@ describe('runOptimisticMutation — main path', () => {
     expect(stored!.id).toBe(cardId)
 
     // outbox: 1 行 pending
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(TEST_USER_ID)
     expect(pending).toHaveLength(1)
     expect(pending[0].entity_id).toBe(cardId)
     expect(pending[0].patch).toEqual({ field: 'title', value: 'New title' })
@@ -141,6 +142,7 @@ describe('runOptimisticMutation — silent catch (既定 throwOnError=false)', (
 
     await expect(
       runOptimisticMutation({
+        userId: TEST_USER_ID,
         stores: [db.cards],
         mutate: async () => {
           await db.cards.put(makeClientCard(cardId))
@@ -161,7 +163,7 @@ describe('runOptimisticMutation — silent catch (既定 throwOnError=false)', (
     // mirror put は rollback
     expect(await db.cards.get(cardId)).toBeUndefined()
     // outbox にも残らない
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
 
     // logger.warn が event + context + err 付きで 1 回呼ばれた
     expect(warnSpy).toHaveBeenCalledTimes(1)
@@ -195,6 +197,7 @@ describe('runOptimisticMutation — throwOnError=true で rethrow', () => {
 
     await expect(
       runOptimisticMutation({
+        userId: TEST_USER_ID,
         stores: [db.cards],
         mutate: async () => {
           await db.cards.put(makeClientCard(cardId))
@@ -214,7 +217,7 @@ describe('runOptimisticMutation — throwOnError=true で rethrow', () => {
 
     // mirror put も rollback
     expect(await db.cards.get(cardId)).toBeUndefined()
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     // logger.warn は 1 回呼ばれる (rethrow 経路でも記録は残す)
     expect(warnSpy).toHaveBeenCalledTimes(1)
 
@@ -239,6 +242,7 @@ describe('runOptimisticMutation — multi-store rollback', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
     await runOptimisticMutation({
+      userId: TEST_USER_ID,
       stores: [db.cards, db.card_tags],
       mutate: async () => {
         await db.cards.put(makeClientCard(cardId))
@@ -263,7 +267,7 @@ describe('runOptimisticMutation — multi-store rollback', () => {
     // 両 store とも rollback で空のまま
     expect(await db.cards.get(cardId)).toBeUndefined()
     expect(await db.card_tags.get([cardId, optionId])).toBeUndefined()
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     expect(warnSpy).toHaveBeenCalledTimes(1)
 
     addSpy.mockRestore()
@@ -321,7 +325,7 @@ describe('runOptimisticCreate — main path', () => {
     expect(stored!.id).toBe(result.id)
 
     // outbox に 1 行 (create) + edited_at が一致
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(TEST_USER_ID)
     expect(pending).toHaveLength(1)
     expect(pending[0].entity_id).toBe(result.id)
     expect(pending[0].op).toBe('create')
@@ -374,7 +378,7 @@ describe('runOptimisticCreate — caller-provided id', () => {
     // mirror / outbox 双方の id も caller 採番 id
     const stored = await db.cards.get(CALLER_ID)
     expect(stored).toBeDefined()
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(TEST_USER_ID)
     expect(pending).toHaveLength(1)
     expect(pending[0].entity_id).toBe(CALLER_ID)
   })
@@ -399,6 +403,7 @@ describe('runOptimisticUpdate — revert 成功 (enqueue throw で auto-rollback
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardId,
         beforeValue: { title: '旧タイトル' },
@@ -418,7 +423,7 @@ describe('runOptimisticUpdate — revert 成功 (enqueue throw で auto-rollback
     const row = await db.cards.get(cardId)
     expect(row?.title).toBe('旧タイトル')
     // outbox は未反映。
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     // logger.warn は 1 回 (event + context + err)。
     expect(warnSpy).toHaveBeenCalledTimes(1)
     const call = warnSpy.mock.calls[0][0] as {
@@ -450,6 +455,7 @@ describe('runOptimisticUpdate — mirror update throw → silent + auto-rollback
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardId,
         beforeValue: { title: '元タイトル' },
@@ -467,7 +473,7 @@ describe('runOptimisticUpdate — mirror update throw → silent + auto-rollback
     // tx auto-rollback で mirror は元のまま (= 元タイトル)。
     const row = await db.cards.get(cardId)
     expect(row?.title).toBe('元タイトル')
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     // silent: logger.warn 1 行 (case a 取り直し経路)。
     expect(warnSpy).toHaveBeenCalledTimes(1)
     const call = warnSpy.mock.calls[0][0] as { event: string; err: unknown }
@@ -491,6 +497,7 @@ describe('runOptimisticUpdate — isNoop 早期 return (tx 張らず flush 呼�
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardId,
         beforeValue: { title: '同一' },
@@ -510,7 +517,7 @@ describe('runOptimisticUpdate — isNoop 早期 return (tx 張らず flush 呼�
     const row = await db.cards.get(cardId)
     expect(row?.title).toBe('同一')
     // outbox 不変。
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     // tx 自体張らない契約: update / enqueue の add は一切呼ばれない。
     expect(updateSpy).not.toHaveBeenCalled()
     expect(addSpy).not.toHaveBeenCalled()
@@ -539,6 +546,7 @@ describe('runOptimisticUpdate — throwOnError=true で rethrow', () => {
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardId,
         beforeValue: { title: '元タイトル' },
@@ -559,7 +567,7 @@ describe('runOptimisticUpdate — throwOnError=true で rethrow', () => {
     const row = await db.cards.get(cardId)
     expect(row?.title).toBe('元タイトル')
     // outbox は未反映。
-    expect(await getPendingEntityMutations()).toHaveLength(0)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(0)
     // logger.warn は rethrow 経路でも 1 回呼ばれる (記録は残す)。
     expect(warnSpy).toHaveBeenCalledTimes(1)
     const call = warnSpy.mock.calls[0][0] as {
@@ -590,6 +598,7 @@ describe('runOptimisticUpdate — skipInternalFlush 契約 (caller-side debounce
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardIdA,
         beforeValue: { title: '旧' },
@@ -607,7 +616,7 @@ describe('runOptimisticUpdate — skipInternalFlush 契約 (caller-side debounce
 
     // mirror / outbox は正常更新済。 内蔵 flush は skip された (二重 flush 回避)。
     expect((await db.cards.get(cardIdA))?.title).toBe('新')
-    expect(await getPendingEntityMutations()).toHaveLength(1)
+    expect(await getPendingEntityMutations(TEST_USER_ID)).toHaveLength(1)
     expect(mockGuardedFlush).not.toHaveBeenCalled()
 
     // --- 既定 (skipInternalFlush 省略 = false): 内蔵 flush が 1 回呼ばれる ---
@@ -616,6 +625,7 @@ describe('runOptimisticUpdate — skipInternalFlush 契約 (caller-side debounce
 
     await expect(
       runOptimisticUpdate({
+        userId: TEST_USER_ID,
         store: db.cards,
         rowKey: cardIdB,
         beforeValue: { title: '旧B' },
@@ -682,5 +692,111 @@ describe('runOptimisticCreate — userId="" fail-fast', () => {
     expect(await db.entity_mutations.toArray()).toHaveLength(0)
 
     errorSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// owner は認証主体の 1 本 (Sprint B・行 owner に寄せない)
+//
+// tag mirror は owner-scope で読まれず sign-out purge も無いため、 共有ブラウザでは他人の行が
+// 描画され編集されうる。 その編集を **行 owner 名義** で outbox に載せると、 行はその owner が
+// sign-in するまで pending に留まり、 owner 自身の flush が owner の session で送るため server
+// の `WHERE id = ? AND user_id = ?` を通過し、 他人のデータに着地する (認可境界の迂回)。
+// 認証主体名義なら server が弾き、 どの account のデータも変わらない。
+// helper が mirror 行の user_id を拾う実装に戻ったら落ちるよう、 mirror 行の owner と
+// 認証主体を別値にして pin する。
+// ---------------------------------------------------------------------------
+
+describe('runOptimistic* — outbox owner は常に認証主体 (mirror 行の owner を拾わない)', () => {
+  const AUTH_USER = 'auth-user'
+  const FOREIGN_OWNER = 'foreign-owner'
+
+  it('runOptimisticUpdate: 別 owner の mirror 行を編集しても outbox は認証主体名義', async () => {
+    const db = getClientDb()
+    const cardId = newId()
+    // 共有ブラウザに残った他人の行を模す (mirror 行の user_id ≠ 認証主体)。
+    await db.cards.put({ ...makeClientCard(cardId), user_id: FOREIGN_OWNER })
+
+    await runOptimisticUpdate({
+      userId: AUTH_USER,
+      store: db.cards,
+      rowKey: cardId,
+      beforeValue: { title: 'before' },
+      afterPatch: { title: 'after' },
+      mutation: {
+        entity_type: 'card',
+        entity_id: cardId,
+        op: 'update_field',
+        patch: { field: 'title', value: 'after' },
+      },
+      logEvent: 'test.owner_uniform_update',
+    })
+
+    // 行 owner 名義の outbox 行は 1 件も作られない (作ると owner の session 経由で着地する)。
+    expect(await getPendingEntityMutations(FOREIGN_OWNER)).toHaveLength(0)
+    const rows = await getPendingEntityMutations(AUTH_USER)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].user_id).toBe(AUTH_USER)
+
+    expect(mockGuardedFlush).toHaveBeenCalledWith(AUTH_USER)
+    expect(mockGuardedFlush).not.toHaveBeenCalledWith(FOREIGN_OWNER)
+  })
+
+  it('runOptimisticMutation: 別 owner の mirror 行を編集しても outbox は認証主体名義', async () => {
+    const db = getClientDb()
+    const cardId = newId()
+
+    await runOptimisticMutation({
+      userId: AUTH_USER,
+      stores: [db.cards],
+      mutate: async () => {
+        await db.cards.put({ ...makeClientCard(cardId), user_id: FOREIGN_OWNER })
+      },
+      mutations: [
+        {
+          entity_type: 'card',
+          entity_id: cardId,
+          op: 'update_field',
+          patch: { field: 'title', value: 'x' },
+        },
+      ],
+      logEvent: 'test.owner_uniform_mutation',
+    })
+
+    expect(await getPendingEntityMutations(FOREIGN_OWNER)).toHaveLength(0)
+    const rows = await getPendingEntityMutations(AUTH_USER)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].user_id).toBe(AUTH_USER)
+
+    expect(mockGuardedFlush).toHaveBeenCalledWith(AUTH_USER)
+    expect(mockGuardedFlush).not.toHaveBeenCalledWith(FOREIGN_OWNER)
+  })
+
+  it('runOptimisticCreate: outbox 行 / flush とも認証主体名義', async () => {
+    const db = getClientDb()
+
+    const { id } = await runOptimisticCreate({
+      userId: AUTH_USER,
+      mirrorStore: db.cards,
+      buildRow: (newCardId, nowIso) => ({
+        ...makeClientCard(newCardId),
+        user_id: FOREIGN_OWNER,
+        created_at: nowIso,
+      }),
+      buildMutation: (newCardId) =>
+        ({
+          entity_type: 'card',
+          entity_id: newCardId,
+          op: 'create',
+          patch: { exam_id: TEST_EXAM_ID, title: 'created' },
+        }) as unknown as EnqueueEntityMutationInput,
+      logEvent: 'test.owner_uniform_create',
+    })
+
+    expect(await getPendingEntityMutations(FOREIGN_OWNER)).toHaveLength(0)
+    const rows = await getPendingEntityMutations(AUTH_USER)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].entity_id).toBe(id)
+    expect(mockGuardedFlush).toHaveBeenCalledWith(AUTH_USER)
   })
 })

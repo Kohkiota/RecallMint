@@ -1186,7 +1186,7 @@ describe('removeImageFromCard', () => {
     const toRemove: ClientCardImage = { key: RESERVED_ASSET_ID, target: 'question_text', alt: '' }
     await seedCard([legacy, toRemove, other])
 
-    await removeImageFromCard({ cardId: CARD_ID, assetId: RESERVED_ASSET_ID })
+    await removeImageFromCard({ userId: USER_ID, cardId: CARD_ID, assetId: RESERVED_ASSET_ID })
 
     // RESERVED_ASSET_ID のみ消え、 legacy / 他 target は残る (canonical Minor1)。
     expect(await getCardImages()).toEqual([legacy, other])
@@ -1207,6 +1207,7 @@ describe('removeImageFromCard', () => {
     await seedCard([a, b])
 
     await removeImageFromCard({
+      userId: USER_ID,
       cardId: CARD_ID,
       assetId: '33333333-3333-4333-8333-333333333333',
     })
@@ -1224,7 +1225,7 @@ describe('removeImageFromCard', () => {
     })
 
     await expect(
-      removeImageFromCard({ cardId: CARD_ID, assetId: RESERVED_ASSET_ID }),
+      removeImageFromCard({ userId: USER_ID, cardId: CARD_ID, assetId: RESERVED_ASSET_ID }),
     ).resolves.toBeUndefined()
 
     // 非配列 → [] に正規化されるため後続 filter/commit が throw しない。

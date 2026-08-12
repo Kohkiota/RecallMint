@@ -297,6 +297,7 @@ describe('CategoryList — 削除フロー', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: 'cat-a',
         op: 'delete',

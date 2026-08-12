@@ -38,10 +38,12 @@ export type GuardedEntityMutationFlushDeps = {
 
 // entity-mutation flush の最外を Web Locks で囲んで実行する。
 // lock 取得失敗時は flush せず lock-busy を返す (review-flush の runGuardedFlush を忠実にミラー)。
+// userId は flush の owner-scope 選別に使う ((app) layout の認証済み値が起点)。
 export async function runGuardedEntityMutationFlush(
+  userId: string,
   deps: GuardedEntityMutationFlushDeps = {},
 ): Promise<FlushOutcome> {
-  const flushAll = deps.flushAll ?? (() => flushAllPendingEntityMutations())
+  const flushAll = deps.flushAll ?? (() => flushAllPendingEntityMutations(userId))
 
   return withWebLock<FlushOutcome>({
     lockName: ENTITY_MUTATION_FLUSH_LOCK_NAME,

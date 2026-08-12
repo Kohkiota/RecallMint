@@ -2,7 +2,7 @@
 // (docs/02-tech-spec.md §14)。 ブラウザ専用 module (server から import しない)。
 //
 // 役割:
-// - exams / cards / user_settings: server からの pull 結果を保持し、 演習 / 編集の
+// - exams / cards: server からの pull 結果を保持し、 演習 / 編集の
 //   読み出し source を Dexie に一元化 (§9.1 で旧 StaleWhileRevalidate キャッシュは
 //   廃止、 ここが正本)。
 // - answer_events: 演習中の回答確定で即時 insert (debounce なし、 §14.7.1)。
@@ -125,18 +125,6 @@ export type ClientCard = {
   sync_status: SyncStatus
 }
 
-// user_settings: 1 user 1 行。 PK = user_id。
-export type ClientUserSettings = {
-  user_id: string
-  // S2.3: server 側 session_limit は nullable 化済 (null = 上限なし)。 この mirror field は
-  // pull writer 不在で現状未使用 (Q-5: session 上限値は RSC server 読み、 Dexie からは引かない)。
-  // 将来 user_settings を pull 配線する際に number | null へ揃える (custom 上限は Q-5 により Dexie 非保持)。
-  session_limit: number
-  fsrs_mode: boolean
-  created_at: string
-  updated_at: string
-}
-
 // answer_events: FSRS 整合 Sprint A の新 wire (spec §1.1 / §4.1)。 local_id は Dexie
 // auto-increment、 event_id は冪等化キー。
 // - user_id: flush の owner-scope 選別 ([user_id+sync_status]) と、 synced / failed 化を
@@ -168,9 +156,16 @@ export type ClientAnswerEvent = {
 // discriminated union として narrow する (`lib/sync/shared/mutation-schemas.ts`)。
 // mutation_id / edited_at / sync_status / last_attempted_at / local_id は outbox metadata
 // として intersection で乗せる。
+//
+// user_id: flush の owner-scope 選別 ([user_id+sync_status]) と、 synced / failed /
+// attempted 化を閉じた scope に限定するための outbox metadata 列 (answer_events と同設計)。
+// 共有ブラウザでのアカウント切替中に別 user の pending へ作用しないための client 側
+// 誤送信防止であり、 認可境界ではない (wire payload には載せず、 server は auth 由来の
+// user.id のみを信頼する)。
 export type ClientEntityMutation = EntityMutationEnvelope & {
   local_id?: number
   mutation_id: string
+  user_id: string
   edited_at: string
   sync_status: SyncStatus
   last_attempted_at?: string | null
@@ -235,12 +230,9 @@ export type ClientStudyDay = {
 export class ClientDb extends Dexie {
   exams!: Table<ClientExam, string>
   cards!: Table<ClientCard, string>
-  user_settings!: Table<ClientUserSettings, string>
   answer_events!: Table<ClientAnswerEvent, number>
-  // S-sync-1: 旧 `card_mutations` を `entity_mutations` に汎用化。 entity_type +
-  // entity_id の複合 index で entity-scoped coalesce 検索を高速化する余地を持つ
-  // (現状の coalesce は sync_status 全 scan ベースで動くが、 将来 entity 数が増えた
-  // ときに `[entity_type+entity_id]` で取り出せるよう index を宣言)。
+  // S-sync-1: 旧 `card_mutations` を `entity_mutations` に汎用化 (Sprint B v11/v12 で
+  // owner-scope 化)。
   entity_mutations!: Table<ClientEntityMutation, number>
   sync_meta!: Table<ClientSyncMeta, string>
   // S-perf-3: server study_days を pull する mirror table (streak / todayCount 算出用)。
@@ -358,6 +350,30 @@ export class ClientDb extends Dexie {
     // card_id / session_id / 単独 sync_status の index は読み手が居ないため持たない。
     this.version(10).stores({
       answer_events: '++local_id, &event_id, [user_id+sync_status]',
+    })
+    // v11 (Sprint B DB 掃除): 死 store `user_settings` の drop (設定の現役読み経路は
+    // server RSC で、 この mirror には pull writer も reader も居ない) と、
+    // entity_mutations の drop を 1 version に同居させる。
+    // entity_mutations の旧行は user_id を持たないため、 index 変更 (= 行を保持する
+    // ALTER) ではなく store ごと drop して持ち越しを構造的に断つ (v9 の answer_events
+    // と同形)。 端末に残る未同期 mutation はこの upgrade で失われるが、 ユーザー 0
+    // 前提につき許容 (spec §5.3 裁定 5)。
+    this.version(11).stores({
+      user_settings: null,
+      entity_mutations: null,
+    })
+    // v12: entity_mutations を owner-scope schema で再作成 (空 store で start)。
+    // Dexie は 1 version 内で同名 store の drop + create を表現できないため、
+    // drop (v11) と create (v12) を 2 version に分ける (v9→v10 と同形)。
+    // index:
+    //   - &mutation_id: 冪等キーの一意性を store 側で強制。 modifyByKeys の
+    //     `where('mutation_id').anyOf(...)` の lookup 経路も兼ねる。
+    //   - [user_id+sync_status]: flush の owner-scope 選別 / coalesce scan / stale 隔離
+    //     (等値 2 列)。
+    // 旧 `[entity_type+entity_id]` は宣言のみで読み手が居らず (coalesce は in-memory
+    // scan)、 単独 `sync_status` は全 query が owner-scope 化で置換されるため持ち越さない。
+    this.version(12).stores({
+      entity_mutations: '++local_id, &mutation_id, [user_id+sync_status]',
     })
   }
 }

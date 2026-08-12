@@ -128,14 +128,14 @@ function CardTagsSectionInner({
   // を bind し useCallback で安定化、 CardTagAddPopover の standalone props として直接
   // 渡す (tagEditCallbacks 経由を drop し 1 経路化、 spec §4.7 反映)。
   const reorderCategories = useCallback(
-    (orderedIds: string[]) => handleReorderCategories(categories, orderedIds),
-    [categories],
+    (orderedIds: string[]) => handleReorderCategories(userId, categories, orderedIds),
+    [userId, categories],
   )
 
   const reorderOptions = useCallback(
     (categoryId: string, orderedIds: string[]) =>
-      handleReorderOptions(options, categoryId, orderedIds),
-    [options],
+      handleReorderOptions(userId, options, categoryId, orderedIds),
+    [userId, options],
   )
 
   // Tag-4c-1 + Tag-4c-2a: 6 handlers + 2 count helpers + 2 create handlers を単一
@@ -143,17 +143,21 @@ function CardTagsSectionInner({
   // deps 不要、 useCallback で安定化した create 系のみ deps に含める。 reorder 系は
   // Tag-4c-2b T7 M-C で popover の standalone props 1 経路に分離 (型から drop 済)。
   const tagEditCallbacks: TagEditCallbacks = useMemo(() => ({
-    renameCategory: handleRenameCategory,
-    setCategoryColor: handleSetCategoryColor,
-    deleteCategory: handleDeleteCategory,
-    renameOption: handleRenameOption,
-    setOptionColor: handleSetOptionColor,
-    deleteOption: handleDeleteOption,
+    renameCategory: (categoryId: string, newName: string) =>
+      handleRenameCategory(userId, categoryId, newName),
+    setCategoryColor: (categoryId: string, color: string | null) =>
+      handleSetCategoryColor(userId, categoryId, color),
+    deleteCategory: (categoryId: string) => handleDeleteCategory(userId, categoryId),
+    renameOption: (optionId: string, newName: string) =>
+      handleRenameOption(userId, optionId, newName),
+    setOptionColor: (optionId: string, color: string | null) =>
+      handleSetOptionColor(userId, optionId, color),
+    deleteOption: (optionId: string) => handleDeleteOption(userId, optionId),
     countCategoryImpact,
     countOptionImpact,
     createCategory,
     createOptionAndAssign,
-  }), [createCategory, createOptionAndAssign])
+  }), [userId, createCategory, createOptionAndAssign])
 
   // Grid-1 T2: toggle ロジックを useCardTagToggle hook に切り出し。
   // hook は table レベルで 1 回 instantiate し、 getCardContext で live data を渡す。

@@ -23,6 +23,9 @@
 //   次回 mount で回復するため await は不要 (await するとブラウザがページ破棄を妨げる恐れもある)。
 // - flush 成功時に pull-back を相乗り (server → Dexie mirror 同期)。
 //
+// userId は (app) layout の認証済み値を props で受ける (flush / stale 隔離の owner-scope・
+// ReviewFlushTrigger と同型)。
+//
 // controller の retry timer は closure scope (タブが開いている間のみ生存)。
 // unmount 時は stop() で予約 timer を解除し、 listener も外す。
 
@@ -38,7 +41,7 @@ import { logger } from '@/lib/logger'
 // 30d 超は将来 ops 通知の打鍵点として温存)。
 const PENDING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
-export function EntityMutationFlushTrigger() {
+export function EntityMutationFlushTrigger({ userId }: { userId: string }) {
   useEffect(() => {
     // review-flush-trigger と同じ controller を deps 注入で entity-mutation 用に再利用する。
     // - runGuarded を差し替えることで entity_mutations outbox を flush する。
@@ -47,7 +50,7 @@ export function EntityMutationFlushTrigger() {
     //   ('review_events.flush.*') を 'entity_mutations.flush.*' に振り替え、
     //   ログ観測時に review flush と entity-mutation flush を区別できるようにする。
     const controller = createReviewFlushController({
-      runGuarded: runGuardedEntityMutationFlush,
+      runGuarded: () => runGuardedEntityMutationFlush(userId),
       onFlushed: () => pullBack('entity-mutation-flush'),
       log: (event, extra) =>
         logger.info({
@@ -62,6 +65,7 @@ export function EntityMutationFlushTrigger() {
     void (async () => {
       try {
         const dropped = await dropStalePendingEntityMutations(
+          userId,
           Date.now(),
           PENDING_MAX_AGE_MS,
         )
@@ -90,7 +94,7 @@ export function EntityMutationFlushTrigger() {
     // 未送信 pending は Dexie に残り次回 mount の kick で回復される。
     // .catch(() => {}): ページ破棄前の best-effort なので失敗は silent でよい。
     const onPagehide = () => {
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     }
 
     document.addEventListener('visibilitychange', onVisibilityChange)
@@ -103,7 +107,7 @@ export function EntityMutationFlushTrigger() {
       window.removeEventListener('pagehide', onPagehide)
       controller.stop()
     }
-  }, [])
+  }, [userId])
 
   return null
 }

@@ -65,6 +65,8 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 // fixture helpers
 // ---------------------------------------------------------------------------
 
+const USER_ID = 'user-1'
+
 const cat = (
   id: string,
   name: string,
@@ -72,7 +74,7 @@ const cat = (
   createdAt: string = '2026-06-01T00:00:00.000Z',
 ): ClientTagCategory => ({
   id,
-  user_id: 'user-1',
+  user_id: USER_ID,
   name,
   select_type: selectType,
   color: null,
@@ -88,7 +90,7 @@ const opt = (
   createdAt: string = '2026-06-01T00:00:00.000Z',
 ): ClientTagOption => ({
   id,
-  user_id: 'user-1',
+  user_id: USER_ID,
   category_id: categoryId,
   name,
   color: null,
@@ -137,7 +139,7 @@ describe('handleReorderCategories', () => {
       { ...cat('c2', '分野B'), sort_key: '1' },
     ]
     // 逆順 (c2, c1) で並べ → c2 が 0、 c1 が 1
-    await handleReorderCategories(categories, ['c2', 'c1'])
+    await handleReorderCategories(USER_ID, categories, ['c2', 'c1'])
 
     expect(mockTransaction).toHaveBeenCalledTimes(1)
     // update / enqueue が各 2 回、 (update:c2 → enqueue:c2 → update:c1 → enqueue:c1) ペア順
@@ -149,12 +151,14 @@ describe('handleReorderCategories', () => {
     ])
     // enqueue の引数形 (op=update_field, patch.field='sort_key', value は新キー)
     expect(enqueueEntityMutation).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'tag_category',
       entity_id: 'c2',
       op: 'update_field',
       patch: { field: 'sort_key', value: '0' },
     })
     expect(enqueueEntityMutation).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'tag_category',
       entity_id: 'c1',
       op: 'update_field',
@@ -167,7 +171,7 @@ describe('handleReorderCategories', () => {
       { ...cat('c1', '分野A'), sort_key: '0' },
       { ...cat('c2', '分野B'), sort_key: '1' },
     ]
-    await handleReorderCategories(categories, ['c2', 'c1'])
+    await handleReorderCategories(USER_ID, categories, ['c2', 'c1'])
 
     // update 第 2 引数に { sort_key, updated_at } が入る (他列に触らない partial update)
     const updateCalls = mockTagCategoriesUpdate.mock.calls as unknown as [
@@ -194,7 +198,7 @@ describe('handleReorderCategories', () => {
 
     // handler catch で silent return (再 throw しない)
     await expect(
-      handleReorderCategories(categories, ['c2', 'c1']),
+      handleReorderCategories(USER_ID, categories, ['c2', 'c1']),
     ).resolves.toBeUndefined()
 
     // tx 自体は呼ばれている (中で enqueue が throw した)
@@ -210,7 +214,7 @@ describe('handleReorderCategories', () => {
       { ...cat('b', 'B'), sort_key: '1' },
       { ...cat('c', 'C'), sort_key: '2' },
     ]
-    await handleReorderCategories(categories, ['a', 'b', 'c'])
+    await handleReorderCategories(USER_ID, categories, ['a', 'b', 'c'])
 
     expect(mockTransaction).not.toHaveBeenCalled()
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
@@ -224,7 +228,7 @@ describe('handleReorderCategories', () => {
       { ...cat('c1', 'A'), sort_key: '0' },
       { ...cat('c2', 'B'), sort_key: '1' },
     ]
-    await handleReorderCategories(categories, ['c2', 'c1'])
+    await handleReorderCategories(USER_ID, categories, ['c2', 'c1'])
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
@@ -238,7 +242,7 @@ describe('handleReorderCategories', () => {
     ]
     // 'cat-zzz' は currentMap に存在しないため filter で落ち、 残る ['c1','c2'] は
     // 同順 → reindexSortKeys が空配列 → no-op (tx 自体張らない)
-    await handleReorderCategories(categories, ['c1', 'c2', 'cat-zzz'])
+    await handleReorderCategories(USER_ID, categories, ['c1', 'c2', 'cat-zzz'])
 
     expect(mockTransaction).not.toHaveBeenCalled()
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
@@ -252,7 +256,7 @@ describe('handleReorderCategories', () => {
       { ...cat('c1', 'A'), sort_key: '0' },
       { ...cat('c2', 'B'), sort_key: '1' },
     ]
-    await handleReorderCategories(categories, ['c2', 'c1', 'cat-zzz'])
+    await handleReorderCategories(USER_ID, categories, ['c2', 'c1', 'cat-zzz'])
 
     // c2 → '0', c1 → '1' の 2 更新のみ (cat-zzz は filter で除外)
     expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(2)
@@ -291,7 +295,7 @@ describe('handleReorderOptions', () => {
       { ...opt('o1', 'c1', 'A'), sort_key: '0' },
       { ...opt('o2', 'c1', 'B'), sort_key: '1' },
     ]
-    await handleReorderOptions(options, 'c1', ['o2', 'o1'])
+    await handleReorderOptions(USER_ID, options, 'c1', ['o2', 'o1'])
 
     expect(mockTransaction).toHaveBeenCalledTimes(1)
     expect(callOrder).toEqual([
@@ -301,12 +305,14 @@ describe('handleReorderOptions', () => {
       'enqueue:o1',
     ])
     expect(enqueueEntityMutation).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'tag_option',
       entity_id: 'o2',
       op: 'update_field',
       patch: { field: 'sort_key', value: '0' },
     })
     expect(enqueueEntityMutation).toHaveBeenCalledWith({
+      user_id: USER_ID,
       entity_type: 'tag_option',
       entity_id: 'o1',
       op: 'update_field',
@@ -319,7 +325,7 @@ describe('handleReorderOptions', () => {
       { ...opt('o1', 'c1', 'A'), sort_key: '0' },
       { ...opt('o2', 'c1', 'B'), sort_key: '1' },
     ]
-    await handleReorderOptions(options, 'c1', ['o2', 'o1'])
+    await handleReorderOptions(USER_ID, options, 'c1', ['o2', 'o1'])
 
     const updateCalls = mockTagOptionsUpdate.mock.calls as unknown as [
       string,
@@ -342,7 +348,7 @@ describe('handleReorderOptions', () => {
     ]
 
     await expect(
-      handleReorderOptions(options, 'c1', ['o2', 'o1']),
+      handleReorderOptions(USER_ID, options, 'c1', ['o2', 'o1']),
     ).resolves.toBeUndefined()
 
     expect(mockTransaction).toHaveBeenCalledTimes(1)
@@ -355,7 +361,7 @@ describe('handleReorderOptions', () => {
       { ...opt('o2', 'c1', 'B'), sort_key: '1' },
       { ...opt('o3', 'c1', 'C'), sort_key: '2' },
     ]
-    await handleReorderOptions(options, 'c1', ['o1', 'o2', 'o3'])
+    await handleReorderOptions(USER_ID, options, 'c1', ['o1', 'o2', 'o3'])
 
     expect(mockTransaction).not.toHaveBeenCalled()
     expect(mockTagOptionsUpdate).not.toHaveBeenCalled()
@@ -368,7 +374,7 @@ describe('handleReorderOptions', () => {
       { ...opt('o1', 'c1', 'A'), sort_key: '0' },
       { ...opt('o2', 'c1', 'B'), sort_key: '1' },
     ]
-    await handleReorderOptions(options, 'c1', ['o2', 'o1'])
+    await handleReorderOptions(USER_ID, options, 'c1', ['o2', 'o1'])
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
@@ -389,7 +395,7 @@ describe('handleReorderOptions', () => {
     // → o-c: '2' → '0' (差分あり)
     //    o-a: '0' → '1' (差分あり)
     //    o-b: '1' → '2' (差分あり)
-    await handleReorderOptions(options, 'cat-1', ['o-c', 'o-a', 'o-b'])
+    await handleReorderOptions(USER_ID, options, 'cat-1', ['o-c', 'o-a', 'o-b'])
 
     // 3 件全て差分 → 3 update + 3 enqueue
     expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(3)
@@ -425,7 +431,7 @@ describe('handleReorderOptions', () => {
     // cat-1 の reorder に cat-2 配下の `o-x` を混入させる
     // → defensive filter で o-x は currentMap (cat-1 配下のみ) に存在しないため落ち、
     //   残る ['o-c','o-a','o-b'] が cat-1 配下で reindex 対象 (3 件全て差分)
-    await handleReorderOptions(options, 'cat-1', ['o-c', 'o-a', 'o-b', 'o-x'])
+    await handleReorderOptions(USER_ID, options, 'cat-1', ['o-c', 'o-a', 'o-b', 'o-x'])
 
     // o-x の update は呼ばれない
     const updatedIds = (mockTagOptionsUpdate.mock.calls as unknown as [string, unknown][]).map(
@@ -446,5 +452,59 @@ describe('handleReorderOptions', () => {
     expect(enqueuedIds).not.toContain('o-y')
     expect(enqueuedIds).not.toContain('o-z')
     expect(enqueuedIds.sort()).toEqual(['o-a', 'o-b', 'o-c'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// owner は認証主体の 1 本 (Sprint B・行 owner に寄せない)
+//
+// tag mirror は owner-scope で読まれず sign-out purge も無いため、 共有ブラウザでは前 user の
+// 行が list に混ざって描画されうる。 その行を含む reorder を **行 owner 名義** で outbox に
+// 載せると、 行は owner が sign-in するまで pending に留まり、 owner の session で送られて
+// server の owner check を通過し、 **他人の account に並び順が書き込まれる** (認可境界の迂回)。
+// 認証主体名義なら server が `'failed'` を返し、 30 日 quarantine まで再送されるだけで
+// どの account のデータも変わらない — 意図的にそちらを選んでいる。
+// 行の user_id を認証主体と別値にした fixture で、 帰属が行 owner に落ちないことを pin する。
+// ---------------------------------------------------------------------------
+
+describe('reorder handlers — outbox owner は常に認証主体 (行の user_id を拾わない)', () => {
+  const FOREIGN_USER = 'other-user'
+
+  it('handleReorderCategories: 別 owner の行が混ざっても enqueue / flush とも認証主体名義', async () => {
+    // 描画 list に前 user の category が混ざった状態 (c2 のみ別 owner)。
+    const categories: ClientTagCategory[] = [
+      { ...cat('c1', '分野A'), sort_key: '0' },
+      { ...cat('c2', '分野B'), sort_key: '1', user_id: FOREIGN_USER },
+    ]
+    await handleReorderCategories(USER_ID, categories, ['c2', 'c1'])
+
+    const enqueuedOwners = (
+      enqueueEntityMutation as ReturnType<typeof vi.fn>
+    ).mock.calls.map((c) => (c[0] as { user_id: string }).user_id)
+    expect(enqueuedOwners).toHaveLength(2)
+    // 別 owner の行 (c2) も認証主体名義。 行 owner 名義は 1 件も作らない。
+    expect(enqueuedOwners.every((u) => u === USER_ID)).toBe(true)
+    expect(enqueuedOwners).not.toContain(FOREIGN_USER)
+
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalledWith(USER_ID)
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalledWith(FOREIGN_USER)
+  })
+
+  it('handleReorderOptions: 別 owner の行が混ざっても enqueue / flush とも認証主体名義', async () => {
+    const options: ClientTagOption[] = [
+      { ...opt('o-a', 'cat-1', 'A'), sort_key: '0' },
+      { ...opt('o-b', 'cat-1', 'B'), sort_key: '1', user_id: FOREIGN_USER },
+    ]
+    await handleReorderOptions(USER_ID, options, 'cat-1', ['o-b', 'o-a'])
+
+    const enqueuedOwners = (
+      enqueueEntityMutation as ReturnType<typeof vi.fn>
+    ).mock.calls.map((c) => (c[0] as { user_id: string }).user_id)
+    expect(enqueuedOwners).toHaveLength(2)
+    expect(enqueuedOwners.every((u) => u === USER_ID)).toBe(true)
+    expect(enqueuedOwners).not.toContain(FOREIGN_USER)
+
+    expect(runGuardedEntityMutationFlush).toHaveBeenCalledWith(USER_ID)
+    expect(runGuardedEntityMutationFlush).not.toHaveBeenCalledWith(FOREIGN_USER)
   })
 })

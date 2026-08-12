@@ -6,7 +6,7 @@
 // cell blur / checkbox toggle / add / delete の各 commit で即時に
 //   1. mirror 直書き  : getClientDb().cards.update(cardId, { options, correct_answer_ids })
 //   2. outbox enqueue : enqueueEntityMutation({ entity_type: 'card', op: 'update_field', patch: { field: 'options', value } })
-// を実行し、 server への実 drain は 500ms debounce 後に runGuardedEntityMutationFlush()
+// を実行し、 server への実 drain は 500ms debounce 後に runGuardedEntityMutationFlush(userId)
 // を 1 回叩く (送信遅延ではなく drain trigger の debounce)。
 // `value` は bulk endpoint の update_field/options が期待する camelCase ZodOption[]
 // (= lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS.options handler 内の
@@ -78,7 +78,7 @@ export function InlineOptionList({
     handleCheckboxToggle,
     handleAddOption,
     handleDeleteOption,
-  } = useCardOptions(cardId, serverOptions)
+  } = useCardOptions(cardId, serverOptions, userId)
 
   return (
     <div>

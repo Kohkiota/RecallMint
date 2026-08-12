@@ -96,6 +96,7 @@ describe('DeleteCardButton', () => {
     // outbox に delete mutation を enqueue
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'delete',
         patch: {},

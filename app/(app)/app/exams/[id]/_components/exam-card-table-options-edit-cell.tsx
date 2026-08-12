@@ -33,7 +33,7 @@ export function CompactOptionsCell({
     handleCheckboxToggle,
     handleAddOption,
     handleDeleteOption,
-  } = useCardOptions(cardId, serverOptions)
+  } = useCardOptions(cardId, serverOptions, userId)
 
   return (
     <div className="space-y-0.5">

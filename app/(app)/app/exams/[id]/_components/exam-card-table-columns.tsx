@@ -147,6 +147,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       return (
         <InlineTextField
           cardId={card.id}
+          userId={card.user_id}
           field="title"
           initialValue={card.title}
           ariaLabel="タイトル 編集"
@@ -170,6 +171,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     cell: ({ row }) => (
       <InlineTextField
         cardId={row.original.card.id}
+        userId={row.original.card.user_id}
         field="sort_key"
         initialValue={row.original.card.sort_key ?? null}
         ariaLabel="ソートキー 編集"
@@ -196,6 +198,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         <>
           <InlineTextField
             cardId={card.id}
+            userId={card.user_id}
             field="question_text"
             initialValue={card.question_text}
             ariaLabel="問題文 編集"
@@ -225,15 +228,19 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     id: 'options',
     size: 240,
     header: '選択肢',
-    cell: ({ row, table }) => {
+    cell: ({ row }) => {
       const card = row.original.card
-      const meta = table.options.meta as ExamCardTableMeta | undefined
+      // owner は編集対象 mirror 行の user_id から取る (兄弟 cell の InlineTextField と同源)。
+      // `meta?.userId ?? ''` の fallback は空 user_id の outbox 行を生み、 どの user の
+      // flush からも stale 隔離からも選別されない不滅行になるため使わない。
+      // cards mirror の読み経路は owner-scope (exam-card-table.tsx が
+      // `c.user_id === userId` で絞る・同 file の test で pin) ゆえ card.user_id = 認証主体。
       return (
         <CompactOptionsCell
           cardId={card.id}
           options={card.options}
           images={card.images}
-          userId={meta?.userId ?? ''}
+          userId={card.user_id}
         />
       )
     },
@@ -285,6 +292,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         <>
           <InlineTextField
             cardId={card.id}
+            userId={card.user_id}
             field="explanation_text"
             initialValue={card.explanation_text ?? null}
             multiline
@@ -319,6 +327,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         <>
           <InlineTextField
             cardId={card.id}
+            userId={card.user_id}
             field="memo"
             initialValue={card.memo ?? null}
             multiline

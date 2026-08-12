@@ -7,7 +7,7 @@
 //   1. mirror 直書き  : getClientDb().cards.update(cardId, { [field]: value })
 //   2. outbox enqueue : enqueueEntityMutation({ entity_type: 'card', op: 'update_field', patch: { field, value } })
 // を実行し (= 楽観反映は Dexie cards mirror が単一の真実 source)、 server への
-// 実 drain は 500ms debounce 後に runGuardedEntityMutationFlush() を 1 回叩くだけにする
+// 実 drain は 500ms debounce 後に runGuardedEntityMutationFlush(userId) を 1 回叩くだけにする
 // (送信遅延ではなく drain trigger の debounce)。 display は親 (InlineCardList) の
 // useLiveQuery が mirror から返す値が initialValue として降りてくるため、 component 側で
 // committedValue を二重に持たない。
@@ -49,6 +49,8 @@ type InlineTextFieldName =
 
 type InlineTextFieldProps = {
   cardId: string
+  // 編集対象 card (mirror 行) の owner。 outbox 行の user_id + flush の owner-scope 選別用。
+  userId: string
   field: InlineTextFieldName
   initialValue: string | null
   ariaLabel: string
@@ -68,6 +70,7 @@ const DEBOUNCE_MS = 500
 
 export function InlineTextField({
   cardId,
+  userId,
   field,
   initialValue,
   ariaLabel,
@@ -192,6 +195,7 @@ export function InlineTextField({
     const beforePatch: Partial<ClientCard> = { [field]: beforeMirrorValue }
     const afterPatch: Partial<ClientCard> = { [field]: mirrorValue }
     void runOptimisticUpdate({
+      userId,
       store: getClientDb().cards,
       rowKey: cardId,
       beforeValue: beforePatch as Record<string, unknown>,
@@ -219,7 +223,7 @@ export function InlineTextField({
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     }, DEBOUNCE_MS)
   }
 

@@ -96,6 +96,7 @@ describe('OptionRow — 表示', () => {
   it('option 名を表示する', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -107,6 +108,7 @@ describe('OptionRow — 表示', () => {
   it('color pill が render される (色変更ボタンの aria-label)', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -120,6 +122,7 @@ describe('OptionRow — 表示', () => {
   it('カテゴリ変更 button が render される', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -133,6 +136,7 @@ describe('OptionRow — 表示', () => {
   it('削除 button が render される', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -146,6 +150,7 @@ describe('OptionRow — 表示', () => {
   it('pen icon button (aria-label="編集") が render される (rename の明示 trigger)', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -157,6 +162,7 @@ describe('OptionRow — 表示', () => {
   it('editing=true 時は pen icon button が非表示 (input のみ)', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -177,6 +183,7 @@ describe('OptionRow — onDelete callback', () => {
     const onDelete = vi.fn()
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={onDelete}
@@ -191,6 +198,7 @@ describe('OptionRow — inline rename', () => {
   it('pen icon click で edit mode に入り input に現値がセットされる', () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -204,6 +212,7 @@ describe('OptionRow — inline rename', () => {
   it('値変更 + blur で update_field mutation を enqueue + drain', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -216,6 +225,7 @@ describe('OptionRow — inline rename', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: 'opt-1',
         op: 'update_field',
@@ -230,6 +240,7 @@ describe('OptionRow — inline rename', () => {
   it('値変更なし blur では enqueue / drain を呼ばない', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -247,6 +258,7 @@ describe('OptionRow — inline rename', () => {
   it('空文字確定では enqueue しない (元値復元)', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -265,6 +277,7 @@ describe('OptionRow — inline rename', () => {
   it('Esc でキャンセル → enqueue しない、 display 復帰 (元値表示)', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -290,6 +303,7 @@ describe('OptionRow — inline rename', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -310,6 +324,7 @@ describe('OptionRow — inline rename', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -330,6 +345,7 @@ describe('OptionRow — color 変更', () => {
   it('color pill click で palette popover が開き、 cell click で color update mutation を enqueue', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -342,6 +358,7 @@ describe('OptionRow — color 変更', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: 'opt-1',
         op: 'update_field',
@@ -356,6 +373,7 @@ describe('OptionRow — color 変更', () => {
   it('「色なし」 cell click で color: null update mutation を enqueue', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -367,6 +385,7 @@ describe('OptionRow — color 変更', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: 'opt-1',
         op: 'update_field',
@@ -380,6 +399,7 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
   it('「カテゴリ変更」 click で dropdown が開き、 現カテゴリ以外を列挙する', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -397,6 +417,7 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
   it('別カテゴリ menuitem 選択で update_field (category_id) mutation を enqueue', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -408,6 +429,7 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: 'opt-1',
         op: 'update_field',
@@ -429,6 +451,7 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -445,6 +468,7 @@ describe('OptionRow — カテゴリ変更 dropdown', () => {
   it('allCategories が現カテゴリ 1 件のみ → dropdown は menuitem ゼロ + 「他のカテゴリがありません」 表示', async () => {
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA]}
         onDelete={vi.fn()}
@@ -463,6 +487,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -488,6 +513,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -514,6 +540,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -536,6 +563,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -561,6 +589,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -583,6 +612,7 @@ describe('OptionRow — optimistic IDB update', () => {
 
     render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -614,6 +644,7 @@ describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 p
   it('editing=true (編集中) で option.name が外部変化しても input の value は保護される', () => {
     const { rerender } = render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -626,6 +657,7 @@ describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 p
     expect(input.value).toBe('ユーザ編集中')
     rerender(
       <OptionRow
+        userId={USER_ID}
         option={{ ...baseOption, name: '外部更新' }}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -638,6 +670,7 @@ describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 p
   it('editing=false (非編集) で option.name が外部変化したら display は新値に同期する', () => {
     const { rerender } = render(
       <OptionRow
+        userId={USER_ID}
         option={baseOption}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -646,6 +679,7 @@ describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 p
     expect(screen.getByText('高')).toBeInTheDocument()
     rerender(
       <OptionRow
+        userId={USER_ID}
         option={{ ...baseOption, name: '外部更新' }}
         allCategories={[categoryA, categoryB]}
         onDelete={vi.fn()}
@@ -655,5 +689,45 @@ describe('OptionRow — 外部 prop 遷移と editing 状態の保護 (波2 C1 p
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const inputAfter = screen.getByRole('textbox') as HTMLInputElement
     expect(inputAfter.value).toBe('外部更新')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// owner は認証主体の 1 本 (Sprint B・描画中の行の user_id を拾わない)
+// 理由は category-row.test.tsx の同名 describe を参照 (行 owner 名義にすると owner の
+// session 経由で編集が着地し、 server の認可境界を迂回する)。
+// ---------------------------------------------------------------------------
+
+describe('OptionRow — outbox owner / flush とも認証主体 (option.user_id を拾わない)', () => {
+  const FOREIGN_OWNER = 'other-user'
+
+  it('別 owner の行を rename → outbox も drain も認証主体名義で走る', async () => {
+    const foreignOption: ClientTagOption = { ...baseOption, user_id: FOREIGN_OWNER }
+    render(
+      <OptionRow
+        userId={USER_ID}
+        option={foreignOption}
+        allCategories={[categoryA, categoryB]}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '最高' } })
+    fireEvent.blur(input)
+
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ user_id: USER_ID, entity_id: baseOption.id }),
+      )
+    })
+    expect(mockEnqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: FOREIGN_OWNER }),
+    )
+
+    await vi.waitFor(() => {
+      expect(mockFlush).toHaveBeenCalledWith(USER_ID)
+    })
+    expect(mockFlush).not.toHaveBeenCalledWith(FOREIGN_OWNER)
   })
 })

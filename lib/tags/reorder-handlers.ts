@@ -38,8 +38,20 @@ import { reindexSortKeys } from '@/lib/tags/reindex-sort-keys'
  * - 当該 list 全件の sort_key を `'0','1',…,'N-1'` で正規化 (`reindexSortKeys` 純関数)。
  * - 差分が 0 件なら tx も flush も発火しない (no-op)。
  * - 失敗時 Dexie auto-rollback、 catch silent return (案 a 取り直し)。
+ *
+ * userId は**認証主体**(呼出元 component が server 解決済みの値を保持している)で、
+ * outbox 行の owner と flush の owner-scope 選別の**両方**に使う。 行の `user_id` は載せない。
+ *
+ * tag mirror は owner-scope で読まれず sign-out purge も無いため、 共有ブラウザでは前 user の
+ * 行が list に混ざりうる。 その行を含む reorder は認証主体名義で送られ、 server の
+ * `WHERE id = ? AND user_id = ?`(`apply-tag-mutation.ts`)に弾かれて `'failed'` になり、
+ * 該当行だけが 30 日 quarantine(`dropStalePendingEntityMutations`)まで pending 再送される。
+ * **この retry noise は意図的な選択**である — 行 owner に帰属させれば送信は成功するが、
+ * それは owner の session 経由で A の並び順を B の account に書き込むこと(認可境界の迂回)を
+ * 意味する。 データを変えない再送の方を選ぶ(optimistic-mutation.ts 冒頭の owner comment 参照)。
  */
 export async function handleReorderCategories(
+  userId: string,
   existingCategories: ClientTagCategory[],
   orderedIds: string[],
 ): Promise<void> {
@@ -57,6 +69,7 @@ export async function handleReorderCategories(
       for (const { id, sort_key } of updates) {
         await db.tag_categories.update(id, { sort_key, updated_at: nowIso })
         await enqueueEntityMutation({
+          user_id: userId,
           entity_type: 'tag_category',
           entity_id: id,
           op: 'update_field',
@@ -77,7 +90,7 @@ export async function handleReorderCategories(
     return
   }
   // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 }
 
 /**
@@ -86,6 +99,7 @@ export async function handleReorderCategories(
  * 巻き込まない不変条件)。 他は handleReorderCategories と同形。
  */
 export async function handleReorderOptions(
+  userId: string,
   existingOptions: ClientTagOption[],
   categoryId: string,
   orderedIds: string[],
@@ -109,6 +123,7 @@ export async function handleReorderOptions(
       for (const { id, sort_key } of updates) {
         await db.tag_options.update(id, { sort_key, updated_at: nowIso })
         await enqueueEntityMutation({
+          user_id: userId,
           entity_type: 'tag_option',
           entity_id: id,
           op: 'update_field',
@@ -125,5 +140,5 @@ export async function handleReorderOptions(
     })
     return
   }
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 }

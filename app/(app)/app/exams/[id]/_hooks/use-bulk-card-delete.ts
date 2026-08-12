@@ -82,6 +82,7 @@ export function useBulkCardDelete({ userId }: UseBulkCardDeleteArgs): BulkDelete
             : [],
         )
         await runOptimisticMutation({
+          userId,
           // card_tags は触らない (cascade purge は pull 駆動 = 単票と同じ)。
           stores: [db.cards],
           mutate: () => db.cards.bulkDelete(cardIds),

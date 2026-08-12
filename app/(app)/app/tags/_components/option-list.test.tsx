@@ -274,6 +274,7 @@ describe('OptionList — 削除フロー (Tag-4c-2c hotfix H2: 確認なし即�
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_option',
         entity_id: 'opt-1',
         op: 'delete',
@@ -582,6 +583,7 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
       // drag 経路と分離されていることは reorder mock 未呼出で示す。
       await waitFor(() => {
         expect(mockEnqueue).toHaveBeenCalledWith({
+          user_id: USER_ID,
           entity_type: 'tag_option',
           entity_id: 'opt-1',
           op: 'delete',

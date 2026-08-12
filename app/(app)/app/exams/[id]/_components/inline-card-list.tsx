@@ -129,6 +129,7 @@ function InlineCardRow({
           <div className="w-28 shrink-0">
             <InlineTextField
               cardId={card.id}
+              userId={userId}
               field="sort_key"
               initialValue={card.sortKey}
               ariaLabel="ソートキー 編集"
@@ -139,6 +140,7 @@ function InlineCardRow({
           <div className="flex-1 min-w-0">
             <InlineTextField
               cardId={card.id}
+              userId={userId}
               field="title"
               initialValue={card.title}
               ariaLabel="タイトル 編集"

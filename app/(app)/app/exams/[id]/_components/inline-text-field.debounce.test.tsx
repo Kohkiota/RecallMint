@@ -36,6 +36,7 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 import { InlineTextField } from './inline-text-field'
 
 const CARD_ID = '22222222-2222-4222-8222-222222222222'
+const USER_ID = 'user-1'
 
 async function flushPromises() {
   await act(async () => {
@@ -47,6 +48,7 @@ function renderField(initialValue: string | null = '旧') {
   return render(
     <InlineTextField
       cardId={CARD_ID}
+      userId={USER_ID}
       field="title"
       initialValue={initialValue}
       ariaLabel="title 編集"
@@ -96,7 +98,7 @@ describe('InlineTextField commit / debounced drain', () => {
     await flushPromises()
 
     // enqueue は即時 → pending 行が既に存在
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(USER_ID)
     expect(pending).toHaveLength(1)
     expect(pending[0]!.patch).toEqual({ field: 'title', value: '新' })
     // drain はまだ
@@ -136,7 +138,7 @@ describe('InlineTextField commit / debounced drain', () => {
     // Dexie に settle するのを待ってから次の編集に進む (coalesce を順序通りに観測)。
     const settle = async (expected: string) => {
       await vi.waitFor(async () => {
-        const pending = await getPendingEntityMutations()
+        const pending = await getPendingEntityMutations(USER_ID)
         expect(pending).toHaveLength(1)
         expect(pending[0]!.patch).toEqual({ field: 'title', value: expected })
       })
@@ -149,7 +151,7 @@ describe('InlineTextField commit / debounced drain', () => {
     await settle('C')
 
     // 最終的に pending は 1 行 (coalesce)、 value は最新 'C'。
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(USER_ID)
     expect(pending).toHaveLength(1)
     expect(pending[0]!.patch).toEqual({ field: 'title', value: 'C' })
   })
@@ -169,6 +171,7 @@ describe('InlineTextField dirty-guard / reconciliation', () => {
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -181,6 +184,7 @@ describe('InlineTextField dirty-guard / reconciliation', () => {
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="親更新"
         ariaLabel="title 編集"
@@ -194,6 +198,7 @@ describe('InlineTextField dirty-guard / reconciliation', () => {
     const { rerender } = render(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="旧"
         ariaLabel="title 編集"
@@ -205,6 +210,7 @@ describe('InlineTextField dirty-guard / reconciliation', () => {
     rerender(
       <InlineTextField
         cardId={CARD_ID}
+        userId={USER_ID}
         field="title"
         initialValue="server 確定"
         ariaLabel="title 編集"

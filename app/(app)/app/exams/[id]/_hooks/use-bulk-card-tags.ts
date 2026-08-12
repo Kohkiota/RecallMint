@@ -137,6 +137,7 @@ export function useBulkCardTags({ userId, getCardTags }: UseBulkCardTagsArgs): B
 
       try {
         await runOptimisticMutation({
+          userId,
           stores: [db.card_tags],
           mutate: async () => {
             for (const c of changes) {

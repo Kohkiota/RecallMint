@@ -65,10 +65,12 @@ type Props = {
 // / pen / カテゴリ移動 dropdown / 削除 × は通常 click のまま動作、 既存
 // stopPropagation 実装に依存)。 `OptionRow` 本体は完全無変更で内側に nested。
 function SortableOptionRowWrapper({
+  userId,
   option,
   allCategories,
   onDelete,
 }: {
+  userId: string
   option: ClientTagOption
   allCategories: ClientTagCategory[]
   onDelete: (option: ClientTagOption) => void
@@ -101,6 +103,7 @@ function SortableOptionRowWrapper({
       </button>
       <div className="flex-1 min-w-0">
         <OptionRow
+          userId={userId}
           option={option}
           allCategories={allCategories}
           onDelete={onDelete}
@@ -144,7 +147,7 @@ export function OptionList({ userId, activeCategoryId }: Props) {
   // 明示 (helper 既定 true は exams / popover の rethrow → setLastError 経路用)。 enqueue throw
   // で Dexie auto-rollback により cascade purge も巻き戻る (案 a 取り直し = 次回 pull で reconcile)。
   const handleDeleteImmediate = (option: ClientTagOption): void => {
-    void handleDeleteOption(option.id, { throwOnError: false })
+    void handleDeleteOption(userId, option.id, { throwOnError: false })
   }
 
   if (activeCategoryId === null) {
@@ -177,6 +180,7 @@ export function OptionList({ userId, activeCategoryId }: Props) {
     if (oldIndex === -1 || newIndex === -1) return
     const next = arrayMove(list, oldIndex, newIndex)
     void handleReorderOptions(
+      userId,
       list,
       activeCategoryId,
       next.map((o) => o.id),
@@ -206,6 +210,7 @@ export function OptionList({ userId, activeCategoryId }: Props) {
               {list.map((opt) => (
                 <SortableOptionRowWrapper
                   key={opt.id}
+                  userId={userId}
                   option={opt}
                   allCategories={allCategories}
                   onDelete={(o) => handleDeleteImmediate(o)}
@@ -219,6 +224,7 @@ export function OptionList({ userId, activeCategoryId }: Props) {
           {list.map((opt) => (
             <li key={opt.id}>
               <OptionRow
+                userId={userId}
                 option={opt}
                 allCategories={allCategories}
                 onDelete={(o) => handleDeleteImmediate(o)}

@@ -164,6 +164,7 @@ describe('sweepStaleMedia — stale uploading (card 参照なし)', () => {
     await seedCard([])
     // outbox には asset を参照する pending images mutation が残っている。
     await db.entity_mutations.add({
+      user_id: USER_ID,
       entity_type: 'card',
       entity_id: CARD_ID,
       op: 'update_field',

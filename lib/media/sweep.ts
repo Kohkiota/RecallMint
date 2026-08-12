@@ -33,7 +33,7 @@ async function findCardIdReferencingAsset(
   userId: string,
   assetId: string,
 ): Promise<string | undefined> {
-  const pending = await getPendingEntityMutations()
+  const pending = await getPendingEntityMutations(userId)
   for (const m of pending) {
     if (m.entity_type !== 'card' || m.op !== 'update_field') continue
     if (typeof m.patch !== 'object' || m.patch === null) continue
@@ -79,8 +79,7 @@ async function sweepStaleUploading(userId: string, now: number): Promise<void> {
       // mirror が pull で reset されていても、 outbox の pending images mutation が
       // asset を参照していれば cardId を得る (fallback)。
       const cardId =
-        cardFromMirror?.id ??
-        (await findCardIdReferencingAsset(asset.user_id, asset.id))
+        cardFromMirror?.id ?? (await findCardIdReferencingAsset(userId, asset.id))
       if (cardId) {
         // mirror or outbox が参照: abandonUpload が mirror 除去 + pending mutation の
         // coalesce 矯正 + cache/media_assets 削除 + flush を行う。
@@ -89,14 +88,17 @@ async function sweepStaleUploading(userId: string, now: number): Promise<void> {
           (await db.cards.get(cardId))?.images ??
           []
         await abandonUpload({
-          userId: asset.user_id,
+          // owner は認証主体を使う (mirror 行の user_id 由来にしない — abandonUpload は
+          // 内部で flush を叩くため、 行由来だと別 user の backlog を現 session で
+          // drain しうる)。 直上の filter で asset.user_id === userId は確定している。
+          userId,
           cardId,
           assetId: asset.id,
           currentImages,
         })
       } else {
         // mirror にも outbox にも参照なし = 真の orphan: 直接削除。
-        await deleteAssetBlob(asset.user_id, asset.id)
+        await deleteAssetBlob(userId, asset.id)
         await db.media_assets.delete(asset.id)
       }
     } catch {

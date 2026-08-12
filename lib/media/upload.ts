@@ -486,11 +486,13 @@ async function readCardImages(
 // 'uploading' の間 held するため、 helper 内蔵の即時 flush を skip し、 saga が
 // finalize→ready 後 / abandon 後に自前で trigger する)。
 async function commitImages(
+  userId: string,
   cardId: string,
   before: ClientCardImage[],
   after: ClientCardImage[],
 ): Promise<void> {
   await runOptimisticUpdate({
+    userId,
     store: getClientDb().cards,
     rowKey: cardId,
     beforeValue: { images: before },
@@ -717,7 +719,7 @@ async function attachImageToCardInner(
       hash: compressed.hash,
       created_at: new Date().toISOString(),
     })
-    await commitImages(cardId, currentImages, nextImages)
+    await commitImages(userId, cardId, currentImages, nextImages)
   } catch {
     return abandonAndFail('UPLOAD_FAILED')
   }
@@ -772,7 +774,7 @@ async function attachImageToCardInner(
     }
   }
   // flush trigger (uploading gate を外し held mutation を流す)。 fire-and-forget。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 
   return finishAttach({ ok: true, assetId }, t)
 }
@@ -802,14 +804,14 @@ async function abandonUploadInner(p: {
   // mirror の最新 images から該当 key のみ除去する (caller snapshot は fallback)。
   const latest = await readCardImages(cardId, currentImages)
   const nextImages = latest.filter((i) => i.key !== assetId)
-  await commitImages(cardId, latest, nextImages)
+  await commitImages(userId, cardId, latest, nextImages)
 
   await deleteAssetBlob(userId, assetId)
   await getClientDb().media_assets.delete(assetId)
 
   // commitImages は skipInternalFlush ゆえ、 除去後の最終値 (coalesce 済) を server へ
   // 反映するため放棄時は flush を明示 trigger する (fire-and-forget)。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 }
 
 export async function abandonUpload(p: {
@@ -836,16 +838,17 @@ export async function abandonUpload(p: {
  * entry も key 不一致で保持される。
  */
 export async function removeImageFromCard(p: {
+  userId: string
   cardId: string
   assetId: string
 }): Promise<void> {
-  const { cardId, assetId } = p
+  const { userId, cardId, assetId } = p
   await serializePerCard(cardId, async () => {
     const before = await readCardImages(cardId, [])
     const after = before.filter((i) => i.key !== assetId)
-    await commitImages(cardId, before, after)
+    await commitImages(userId, cardId, before, after)
   })
   // commitImages は skipInternalFlush ゆえ、 除去後の最終値を server へ反映するため
   // 明示 flush する (fire-and-forget)。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 }

@@ -72,10 +72,12 @@ const DEBOUNCE_MS = 500
 // mis-attach は構造的に不可能(cascade 失敗でも破損せず storage リークのみ = 衛生機構)。
 //
 // 呼出は commit() の永続集合 diff(serverCommittedRef=直近永続 と sanitized=今回永続 の
-// uid 差分)から。best-effort(fire-and-forget)。userId は card row(user_id)から導出。
+// uid 差分)から。best-effort(fire-and-forget)。userId は認証主体を hook 引数から受ける
+// (removeImageFromCard は内部で flush を叩くため、 mirror 行由来にしない)。
 // 除去は gallery `handleDelete` と同型の 2 段(removeImageFromCard → 成功分 reclaim)。
 // 複数画像/複数 uid は直列 for-await、部分失敗は assetId 単位 warn で残件を止めない。
 async function cascadeRemovedOptionImages(
+  userId: string,
   cardId: string,
   removedUids: string[],
 ): Promise<void> {
@@ -93,7 +95,7 @@ async function cascadeRemovedOptionImages(
   const removed: string[] = []
   for (const assetId of keys) {
     try {
-      await removeImageFromCard({ cardId, assetId })
+      await removeImageFromCard({ userId, cardId, assetId })
       removed.push(assetId)
     } catch {
       // 永続 option の変更は確定済ゆえ rollback せず記録のみ(client 側失敗記録は
@@ -106,7 +108,7 @@ async function cascadeRemovedOptionImages(
     }
   }
   if (removed.length > 0) {
-    void reclaimLocalAssetBlobs(row.user_id, removed)
+    void reclaimLocalAssetBlobs(userId, removed)
   }
 }
 
@@ -142,6 +144,7 @@ export type UseCardOptionsReturn = {
 export function useCardOptions(
   cardId: string,
   serverOptions: CardOption[],
+  userId: string,
 ): UseCardOptionsReturn {
   // 表示 + payload 構築の真実 source (全 row 共有、 ghost row を含む working-set)。
   const [options, setOptions] = useState<CardOption[]>(serverOptions)
@@ -201,7 +204,7 @@ export function useCardOptions(
     }
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     }, DEBOUNCE_MS)
   }
 
@@ -234,7 +237,7 @@ export function useCardOptions(
       .map((o) => o.uid)
       .filter((u): u is string => !!u && !afterUids.has(u))
     if (removedUids.length > 0) {
-      void cascadeRemovedOptionImages(cardId, removedUids).catch(() => {})
+      void cascadeRemovedOptionImages(userId, cardId, removedUids).catch(() => {})
     }
 
     // correct_answer_ids は is_correct から derive して同時 set (display 楽観反映用)。
@@ -262,6 +265,7 @@ export function useCardOptions(
     const payload: ZodOption[] = sanitized.map(toZodOption)
 
     void runOptimisticUpdate({
+      userId,
       store: getClientDb().cards,
       rowKey: cardId,
       beforeValue: beforePatch as Record<string, unknown>,
@@ -284,7 +288,7 @@ export function useCardOptions(
         clearTimeout(debounceTimerRef.current)
         debounceTimerRef.current = null
       }
-      void runGuardedEntityMutationFlush().catch(() => {})
+      void runGuardedEntityMutationFlush(userId).catch(() => {})
     } else {
       scheduleDrain()
     }

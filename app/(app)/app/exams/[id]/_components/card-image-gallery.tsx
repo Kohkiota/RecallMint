@@ -586,7 +586,7 @@ export function CardImageGallery({
     // 通す(props snapshot での full-array-replace が in-flight な attach の楽観追加と競合し
     // lost-update するのを防ぐ — Codex 指摘)。
     setError(null)
-    await removeImageFromCard({ cardId, assetId })
+    await removeImageFromCard({ userId, cardId, assetId })
     // ローカル Cache blob + media_assets 行を best-effort 掃除する(spec §4.7)。 R2/DB の
     // grace とは独立の disposable cache 掃除なので fire-and-forget(失敗しても削除 UX は
     // ブロックしない)。

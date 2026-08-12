@@ -19,7 +19,7 @@
 // - try/catch は tx 外 1 回のみ。 catch 後の既定動作は silent return + `logger.warn` 1 行
 //   (案 a 取り直し: 次回 pull が server 値で reconcile する経路)。
 // - `throwOnError: true` で caller に通知 (rename / color / delete 系で error UI を維持する経路)。
-// - flush は tx 外で fire-and-forget (`void runGuardedEntityMutationFlush().catch(() => {})`)。
+// - flush は tx 外で fire-and-forget (`void runGuardedEntityMutationFlush(userId).catch(() => {})`)。
 //   失敗しても outbox row は残り、 次回 trigger で再送される。
 // - `runOptimisticCreate` は `userId === ''` で即 fail-fast (`console.error` + throw)、
 //   placeholder 禁止 (CLAUDE.md §Clerk: 全 query は WHERE user_id = ?)。
@@ -51,7 +51,31 @@ type AnyTable = Table<any, any>
 // runOptimisticMutation — generic 楽観 mirror 書込 + outbox enqueue (multi mutation 対応)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// owner は常に「認証主体」 の 1 本 (Sprint B・分岐させない)
+//
+// `userId` = (app) layout / server page が解決した認証済み user。 outbox 行の `user_id` と
+// flush の owner-scope 選別の**両方**がこの 1 値を使う。 編集対象 mirror 行が持つ `user_id`
+// を代わりに載せてはいけない。
+//
+// 背景: tag mirror (tag_categories / tag_options) の読み経路は owner-scope でなく
+// (`tag-crud.ts` の `toArray()` / `exam-card-table.tsx` / `custom-filter-form.tsx` 等)、
+// sign-out 時の Dexie purge も無いため、 共有ブラウザでは前 user の行が現 user に描画され、
+// 編集対象になりうる。 本 product に共有・共同編集は無いので、 これは常に不正な編集である。
+//
+// なぜ行 owner に帰属させてはいけないか (**認可境界の迂回になる**): server は
+// `WHERE id = ? AND user_id = ?` で認可する (`lib/tags/apply-tag-mutation.ts`)。 outbox 行を
+// 他人 (B) 名義にすると、 その行は B が sign-in するまで pending に留まり、 **B 自身の flush が
+// B の session で送るため owner check を通過し、 A の編集が B のデータに着地する**。
+// 認証主体名義なら server が `'failed'` (update) / `'applied'` no-op (delete) を返し、
+// **どの account のデータも変わらない**。 update の pending は 30 日 quarantine
+// (`dropStalePendingEntityMutations`) が上限を与える — retry noise は許容し、
+// cross-account write は許容しない。 answer_events も同じく認証主体のみを owner にする。
+// ---------------------------------------------------------------------------
+
 export type OptimisticMutationOptions = {
+  /** 認証主体。 outbox 行の owner と flush 選別を兼ねる (上の comment 参照)。 */
+  userId: string
   /** Dexie rw tx に含める store (entity_mutations は helper が自動 append)。 */
   stores: readonly AnyTable[]
   /** tx 内で実行する mirror write の塊。 */
@@ -73,12 +97,13 @@ export type OptimisticMutationOptions = {
  * - 既定動作 (`throwOnError: false`): catch 後 silent return + `logger.warn({event, ...ctx, err})` 1 行。
  *   案 a 取り直し経路: 次回 pull が server 値で reconcile するため、 caller への明示通知は省略。
  * - `throwOnError: true`: catch 後 rethrow (caller が error UI 等を維持したい場合に使う)。
- * - flush は tx 外で fire-and-forget (`void runGuardedEntityMutationFlush().catch(() => {})`)。
+ * - flush は tx 外で fire-and-forget (`void runGuardedEntityMutationFlush(userId).catch(() => {})`)。
  */
 export async function runOptimisticMutation(
   options: OptimisticMutationOptions,
 ): Promise<void> {
   const {
+    userId,
     stores,
     mutate,
     mutations,
@@ -97,7 +122,7 @@ export async function runOptimisticMutation(
       await mutate()
       for (const m of mutations) {
         // tx 内 enqueue: throw すれば callback の await 経由で tx 全体 throw → rollback。
-        await enqueueEntityMutation(m)
+        await enqueueEntityMutation({ ...m, user_id: userId })
       }
     })
   } catch (err) {
@@ -107,7 +132,7 @@ export async function runOptimisticMutation(
     return
   }
   // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +140,8 @@ export async function runOptimisticMutation(
 // ---------------------------------------------------------------------------
 
 export type OptimisticCreateOptions<T> = {
-  /** 空文字なら fail-fast (console.error + 早期 throw)、 placeholder 禁止。 */
+  /** 空文字なら fail-fast (console.error + 早期 throw)、 placeholder 禁止。
+   *  outbox 行の owner と flush 選別を兼ねる (module 冒頭の owner comment 参照)。 */
   userId: string
   /** 任意: caller が事前採番した id を使う場合に指定。 未指定なら helper 内部で newId() を呼ぶ。
    *  caller が `setNewCardId(id)` 等の UI state 更新を helper await の前 (= sync) に
@@ -186,7 +212,7 @@ export async function runOptimisticCreate<T>(
     await db.transaction('rw', txTables, async () => {
       await mirrorStore.add(buildRow(id, nowIso))
       if (extraMirrorWrites) await extraMirrorWrites(id, nowIso)
-      await enqueueEntityMutation(buildMutation(id, nowIso))
+      await enqueueEntityMutation({ ...buildMutation(id, nowIso), user_id: userId })
     })
   } catch (err) {
     // tx auto-rollback 済。
@@ -196,7 +222,7 @@ export async function runOptimisticCreate<T>(
   }
 
   // flush は tx 外で best-effort。
-  void runGuardedEntityMutationFlush().catch(() => {})
+  void runGuardedEntityMutationFlush(userId).catch(() => {})
   return { id }
 }
 
@@ -208,6 +234,8 @@ export type OptimisticUpdateOptions<
   TKey,
   TPatch extends Record<string, unknown>,
 > = {
+  /** 認証主体。 outbox 行の owner と flush 選別を兼ねる (module 冒頭の owner comment 参照)。 */
+  userId: string
   /** mirror store (Table<row, primaryKey>)。 */
   store: Table<unknown, TKey>
   /** mirror 更新対象 row key。 */
@@ -225,7 +253,7 @@ export type OptimisticUpdateOptions<
   isNoop?: (before: TPatch, after: TPatch) => boolean
   /** 既定 false: catch 後 silent return + logger.warn 1 行。 true: catch 後 rethrow。 */
   throwOnError?: boolean
-  /** 既定 false: tx 成功後に `runGuardedEntityMutationFlush()` を内蔵 fire-and-forget で叩く。
+  /** 既定 false: tx 成功後に `runGuardedEntityMutationFlush(userId)` を内蔵 fire-and-forget で叩く。
    *  true: 内蔵 flush を skip (caller が独自 debounce drain を管理するケース、 e.g.
    *  inline-text-field.tsx の 500ms scheduleDrain)。 plan §全体ルール 3 = debounce drain は
    *  caller 側に保持。 */
@@ -253,6 +281,7 @@ export async function runOptimisticUpdate<
   TPatch extends Record<string, unknown>,
 >(options: OptimisticUpdateOptions<TKey, TPatch>): Promise<void> {
   const {
+    userId,
     store,
     rowKey,
     beforeValue,
@@ -276,7 +305,7 @@ export async function runOptimisticUpdate<
       // mirror update → enqueue 順。 enqueue throw で tx callback rethrow → Dexie
       // auto-rollback (mirror update も巻き戻る = revert 自動成立)。
       await store.update(rowKey, afterPatch as Partial<unknown>)
-      await enqueueEntityMutation(mutation)
+      await enqueueEntityMutation({ ...mutation, user_id: userId })
     })
   } catch (err) {
     // tx auto-rollback 済 (mirror update + outbox enqueue 共に未反映、 mirror は
@@ -288,6 +317,6 @@ export async function runOptimisticUpdate<
   // flush は tx 外で best-effort。 失敗しても outbox row は残り次回 trigger で再送される。
   // `skipInternalFlush=true` の場合は caller の debounce drain (e.g. scheduleDrain) に委任。
   if (!skipInternalFlush) {
-    void runGuardedEntityMutationFlush().catch(() => {})
+    void runGuardedEntityMutationFlush(userId).catch(() => {})
   }
 }

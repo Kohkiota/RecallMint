@@ -41,7 +41,11 @@ import { nextSortKey } from '@/lib/tags/next-sort-key'
  * カテゴリ名を変更する。 同名は no-op、 全ユーザースコープで同名衝突なら throw。
  * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
-export async function handleRenameCategory(categoryId: string, newName: string): Promise<void> {
+export async function handleRenameCategory(
+  userId: string,
+  categoryId: string,
+  newName: string,
+): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_categories.get(categoryId)
   if (!before) return
@@ -52,6 +56,7 @@ export async function handleRenameCategory(categoryId: string, newName: string):
     throw new Error('同名のカテゴリが既にあります')
   }
   await runOptimisticUpdate({
+    userId,
     store: db.tag_categories,
     rowKey: categoryId,
     beforeValue: { name: before.name, updated_at: before.updated_at },
@@ -73,7 +78,11 @@ export async function handleRenameCategory(categoryId: string, newName: string):
  * カテゴリ color を設定する (null でクリア)。 null → null は no-op。
  * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
-export async function handleSetCategoryColor(categoryId: string, color: string | null): Promise<void> {
+export async function handleSetCategoryColor(
+  userId: string,
+  categoryId: string,
+  color: string | null,
+): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_categories.get(categoryId)
   if (!before) return
@@ -81,6 +90,7 @@ export async function handleSetCategoryColor(categoryId: string, color: string |
   const beforeColor = before.color ?? null
   if (beforeColor === color) return // no-op
   await runOptimisticUpdate({
+    userId,
     store: db.tag_categories,
     rowKey: categoryId,
     beforeValue: { color: beforeColor, updated_at: before.updated_at },
@@ -102,7 +112,11 @@ export async function handleSetCategoryColor(categoryId: string, color: string |
  * オプション名を変更する。 同名は no-op、 同 category 内同名衝突なら throw。
  * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
-export async function handleRenameOption(optionId: string, newName: string): Promise<void> {
+export async function handleRenameOption(
+  userId: string,
+  optionId: string,
+  newName: string,
+): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_options.get(optionId)
   if (!before) return
@@ -113,6 +127,7 @@ export async function handleRenameOption(optionId: string, newName: string): Pro
     throw new Error('同名の option が既にあります')
   }
   await runOptimisticUpdate({
+    userId,
     store: db.tag_options,
     rowKey: optionId,
     beforeValue: { name: before.name, updated_at: before.updated_at },
@@ -134,7 +149,11 @@ export async function handleRenameOption(optionId: string, newName: string): Pro
  * オプション color を設定する (null でクリア)。 null → null は no-op。
  * 失敗時 Dexie auto-rollback via runOptimisticUpdate (throwOnError: true で caller UI に伝播)。
  */
-export async function handleSetOptionColor(optionId: string, color: string | null): Promise<void> {
+export async function handleSetOptionColor(
+  userId: string,
+  optionId: string,
+  color: string | null,
+): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_options.get(optionId)
   if (!before) return
@@ -142,6 +161,7 @@ export async function handleSetOptionColor(optionId: string, color: string | nul
   const beforeColor = before.color ?? null
   if (beforeColor === color) return // no-op
   await runOptimisticUpdate({
+    userId,
     store: db.tag_options,
     rowKey: optionId,
     beforeValue: { color: beforeColor, updated_at: before.updated_at },
@@ -169,12 +189,22 @@ export async function handleSetOptionColor(optionId: string, color: string | nul
  * ため `{ throwOnError: false }` を明示して呼ぶ (案 a 取り直し = 次回 pull で reconcile)。
  */
 export async function handleDeleteCategory(
+  userId: string,
   categoryId: string,
   opts?: { throwOnError?: boolean },
 ): Promise<void> {
   const db = getClientDb()
+  // owner は認証主体 `userId` (module 共通の規則。 tag-crud 全 handler で同一)。
+  // 共有ブラウザに残った他人の category / option が描画され、 それを削除しようとした場合、
+  // server は owner-scope の存在確認で不在扱いにして `'applied'` を返すため
+  // (`apply-tag-mutation.ts` の `applyTagCategoryDelete` / `applyTagOptionDelete`)、
+  // outbox 行は初回 flush で synced 化して消え、 **どの account のデータも変わらない**。
+  // 行 owner に帰属させ直してはいけない — その行は owner が sign-in するまで pending に
+  // 留まり、 その user の session で送られて owner check を通過し、 **他人のデータの実削除**
+  // になる (認可境界の迂回)。
   // tx 内 read (配下 option の列挙) は mutate callback 内で維持する。
   await runOptimisticMutation({
+    userId,
     stores: [db.card_tags, db.tag_options, db.tag_categories],
     mutate: async () => {
       const options = await db.tag_options.where('category_id').equals(categoryId).toArray()
@@ -208,11 +238,21 @@ export async function handleDeleteCategory(
  * ため `{ throwOnError: false }` を明示して呼ぶ (案 a 取り直し = 次回 pull で reconcile)。
  */
 export async function handleDeleteOption(
+  userId: string,
   optionId: string,
   opts?: { throwOnError?: boolean },
 ): Promise<void> {
   const db = getClientDb()
+  // owner は認証主体 `userId` (module 共通の規則。 tag-crud 全 handler で同一)。
+  // 共有ブラウザに残った他人の category / option が描画され、 それを削除しようとした場合、
+  // server は owner-scope の存在確認で不在扱いにして `'applied'` を返すため
+  // (`apply-tag-mutation.ts` の `applyTagCategoryDelete` / `applyTagOptionDelete`)、
+  // outbox 行は初回 flush で synced 化して消え、 **どの account のデータも変わらない**。
+  // 行 owner に帰属させ直してはいけない — その行は owner が sign-in するまで pending に
+  // 留まり、 その user の session で送られて owner check を通過し、 **他人のデータの実削除**
+  // になる (認可境界の迂回)。
   await runOptimisticMutation({
+    userId,
     stores: [db.card_tags, db.tag_options],
     mutate: async () => {
       await db.card_tags.where('option_id').equals(optionId).delete()
@@ -459,6 +499,7 @@ export async function handleCreateOptionAndAssign(
   // 2 mutations のため runOptimisticCreate ではなく runOptimisticMutation を使う。
   // enqueue 順は mutations 配列の順序で保持される: (1) tag_option create → (2) card update_field。
   await runOptimisticMutation({
+    userId,
     stores: [db.tag_options, db.card_tags],
     mutate: async () => {
       // 1) tag_options mirror put

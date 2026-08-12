@@ -108,6 +108,7 @@ export function ExamCardSidePeek({
                   <p className="text-xs font-medium text-slate-500">ソートキー</p>
                   <InlineTextField
                     cardId={row.card.id}
+                    userId={userId}
                     field="sort_key"
                     initialValue={row.card.sort_key ?? null}
                     ariaLabel="ソートキー 編集"
@@ -120,6 +121,7 @@ export function ExamCardSidePeek({
                   <p className="text-xs font-medium text-slate-500">タイトル</p>
                   <InlineTextField
                     cardId={row.card.id}
+                    userId={userId}
                     field="title"
                     initialValue={row.card.title}
                     ariaLabel="タイトル 編集"

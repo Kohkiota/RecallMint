@@ -32,6 +32,8 @@ vi.mock('@/lib/sync/entity-mutation-flush', () => ({
 
 import { CategoryRow } from './category-row'
 
+const USER_ID = 'user-1'
+
 const baseCategory: ClientTagCategory = {
   id: 'cat-1',
   user_id: 'user-1',
@@ -60,6 +62,7 @@ describe('CategoryRow — 表示', () => {
   it('カテゴリ名を表示する', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -72,6 +75,7 @@ describe('CategoryRow — 表示', () => {
   it('select_type icon (multi → CheckSquare) を表示する', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -88,6 +92,7 @@ describe('CategoryRow — 表示', () => {
   it('select_type icon (single → CircleDot) を表示する', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={{ ...baseCategory, select_type: 'single' }}
         active={false}
         onSelect={vi.fn()}
@@ -103,6 +108,7 @@ describe('CategoryRow — 表示', () => {
   it('「削除」 button が描画される', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -117,6 +123,7 @@ describe('CategoryRow — 表示', () => {
   it('pen icon button (aria-label="編集") が描画される (rename の明示 trigger)', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -129,6 +136,7 @@ describe('CategoryRow — 表示', () => {
   it('editing=true 時は pen icon button が非表示 (input のみ)', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -145,6 +153,7 @@ describe('CategoryRow — 表示', () => {
   it('active=true で背景クラス (bg-slate-100) を持つ', () => {
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={true}
         onSelect={vi.fn()}
@@ -158,6 +167,7 @@ describe('CategoryRow — 表示', () => {
   it('active=false で背景クラス (bg-slate-100) を持たない', () => {
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -174,6 +184,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
     const onSelect = vi.fn()
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -190,6 +201,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
   it('row 全体に role="button" + tabIndex=0 が付与される (a11y)', () => {
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -205,6 +217,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
     const onSelect = vi.fn()
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -220,6 +233,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
     const onSelect = vi.fn()
     const { container } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -236,6 +250,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
     const onDelete = vi.fn()
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -251,6 +266,7 @@ describe('CategoryRow — onSelect / onDelete callback', () => {
     const onSelect = vi.fn()
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -266,6 +282,7 @@ describe('CategoryRow — inline rename', () => {
   it('pen icon click で edit mode に入り input に現値がセットされる', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -281,6 +298,7 @@ describe('CategoryRow — inline rename', () => {
     const onSelect = vi.fn()
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -298,6 +316,7 @@ describe('CategoryRow — inline rename', () => {
   it('値変更 + blur で update_field mutation を enqueue + drain', async () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -311,6 +330,7 @@ describe('CategoryRow — inline rename', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-1',
         entity_type: 'tag_category',
         entity_id: 'cat-1',
         op: 'update_field',
@@ -325,6 +345,7 @@ describe('CategoryRow — inline rename', () => {
   it('値変更なし blur では enqueue / drain を呼ばない', async () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -344,6 +365,7 @@ describe('CategoryRow — inline rename', () => {
   it('空文字確定では enqueue しない (カテゴリ名 0 文字は不正、 元値復元)', async () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -365,6 +387,7 @@ describe('CategoryRow — inline rename', () => {
   it('Enter で確定 → enqueue + display 復帰', async () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -384,6 +407,7 @@ describe('CategoryRow — inline rename', () => {
   it('Esc でキャンセル → enqueue しない、 display 復帰 (元値表示)', async () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -410,6 +434,7 @@ describe('CategoryRow — optimistic IDB update (rename)', () => {
 
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -436,6 +461,7 @@ describe('CategoryRow — optimistic IDB update (rename)', () => {
 
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -464,6 +490,7 @@ describe('CategoryRow — optimistic IDB update (rename)', () => {
 
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -484,6 +511,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
   it('編集モード進入前から color swatch (popover trigger) が表示される', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -500,6 +528,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
   it('編集モード中も color swatch 表示を維持する', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -515,6 +544,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
   it('編集モード解除 (Esc) 後も color swatch 表示を維持する (常時表示)', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -536,6 +566,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
 
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -550,6 +581,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
 
     await waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: 'user-1',
         entity_type: 'tag_category',
         entity_id: 'cat-1',
         op: 'update_field',
@@ -564,6 +596,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
     const onSelect = vi.fn()
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={onSelect}
@@ -577,6 +610,7 @@ describe('CategoryRow — color swatch 常時表示 (Tag-4c-2c H7b)', () => {
   it('color swatch と select_type icon が並存する (H3 land の icon は無変更)', () => {
     render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -606,6 +640,7 @@ describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1
   it('editing=true (編集中) で category.name が外部変化しても input の value は保護される', () => {
     const { rerender } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -622,6 +657,7 @@ describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1
     // 外部 prop が変化 (server pull 反映を模す)。
     rerender(
       <CategoryRow
+        userId={USER_ID}
         category={{ ...baseCategory, name: '外部更新' }}
         active={false}
         onSelect={vi.fn()}
@@ -636,6 +672,7 @@ describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1
   it('editing=false (非編集) で category.name が外部変化したら display は新値に同期する', () => {
     const { rerender } = render(
       <CategoryRow
+        userId={USER_ID}
         category={baseCategory}
         active={false}
         onSelect={vi.fn()}
@@ -647,6 +684,7 @@ describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1
     // 外部 prop が変化 (server pull 反映を模す)。
     rerender(
       <CategoryRow
+        userId={USER_ID}
         category={{ ...baseCategory, name: '外部更新' }}
         active={false}
         onSelect={vi.fn()}
@@ -658,5 +696,56 @@ describe('CategoryRow — 外部 prop 遷移と editing 状態の保護 (波2 C1
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
     const inputAfter = screen.getByRole('textbox') as HTMLInputElement
     expect(inputAfter.value).toBe('外部更新')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// owner は認証主体の 1 本 (Sprint B・描画中の行の user_id を拾わない)
+//
+// tag mirror は owner-scope で読まれず sign-out purge も無いため、 共有ブラウザでは前 user の
+// category が現 user の manager に描画されうる。 その行を rename したときに **行 owner 名義**
+// で outbox に載せると、 行は owner が sign-in するまで pending に留まり、 owner の session で
+// 送られて server の owner check を通過し、 他人のデータに rename が着地する (認可境界の迂回)。
+// props の `userId` (認証主体) と `category.user_id` (行 owner) を別値にした fixture で、
+// 2 値のうち認証主体だけが outbox / flush の両方へ行くことを pin する。
+// ---------------------------------------------------------------------------
+
+describe('CategoryRow — outbox owner / flush とも認証主体 (category.user_id を拾わない)', () => {
+  const FOREIGN_OWNER = 'other-user'
+  const foreignCategory: ClientTagCategory = {
+    ...baseCategory,
+    user_id: FOREIGN_OWNER,
+  }
+
+  it('別 owner の行を rename → outbox も drain も認証主体名義で走る', async () => {
+    render(
+      <CategoryRow
+        userId={USER_ID}
+        category={foreignCategory}
+        active={false}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '優先度' } })
+    fireEvent.blur(input)
+
+    await vi.waitFor(() => {
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ user_id: USER_ID, entity_id: 'cat-1' }),
+      )
+    })
+    // 行 owner 名義の outbox 行を作ってはいけない (owner の session 経由で着地するため)。
+    expect(mockEnqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: FOREIGN_OWNER }),
+    )
+
+    await vi.waitFor(() => {
+      expect(mockFlush).toHaveBeenCalledWith(USER_ID)
+    })
+    // 行 owner で flush すると他人の backlog を現 session の cookie で drain してしまう。
+    expect(mockFlush).not.toHaveBeenCalledWith(FOREIGN_OWNER)
   })
 })

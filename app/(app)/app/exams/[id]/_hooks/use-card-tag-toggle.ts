@@ -98,6 +98,7 @@ export function useCardTagToggle({ userId, getCardContext }: UseCardTagToggleArg
       // silent return + logger.warn 1 行 — 旧 try/catch { return } と同じ「案 a 取り直し」経路
       // (次回 pull が server 値で reconcile)。flush は helper が tx 外で fire-and-forget。
       await runOptimisticMutation({
+        userId,
         stores: [db.card_tags],
         mutate: async () => {
           for (const id of toRemove) await db.card_tags.delete([cardId, id])

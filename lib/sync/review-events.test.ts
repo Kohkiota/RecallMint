@@ -31,7 +31,6 @@ beforeEach(async () => {
     db.sync_meta.clear(),
     db.cards.clear(),
     db.exams.clear(),
-    db.user_settings.clear(),
   ])
   inFlightEventIds.clear()
 })

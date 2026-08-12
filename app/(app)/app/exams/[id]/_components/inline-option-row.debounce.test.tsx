@@ -101,7 +101,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     expect(screen.getByText('選択肢A 改')).toBeInTheDocument()
 
     await vi.waitFor(async () => {
-      const pending = await getPendingEntityMutations()
+      const pending = await getPendingEntityMutations(TEST_USER_ID)
       expect(pending).toHaveLength(1)
       expect(pending[0]!.patch).toEqual({
         field: 'options',
@@ -141,7 +141,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     await flushPromises()
 
     await vi.waitFor(async () => {
-      const pending = await getPendingEntityMutations()
+      const pending = await getPendingEntityMutations(TEST_USER_ID)
       expect(pending).toHaveLength(1)
       expect(pending[0]!.patch).toEqual({
         field: 'options',
@@ -165,7 +165,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     renderList()
     const settle = async (expectedText: string) => {
       await vi.waitFor(async () => {
-        const pending = await getPendingEntityMutations()
+        const pending = await getPendingEntityMutations(TEST_USER_ID)
         expect(pending).toHaveLength(1)
         // T5: ClientEntityMutation は discriminated union。 本 test path は
         // op='update_field' branch 限定なので、 patch を { field, value } shape に cast。
@@ -181,7 +181,7 @@ describe('InlineOptionList commit / debounced drain', () => {
     fireEvent.blur(startTextEdit('三'))
     await settle('三')
 
-    const pending = await getPendingEntityMutations()
+    const pending = await getPendingEntityMutations(TEST_USER_ID)
     expect(pending).toHaveLength(1)
   })
 })

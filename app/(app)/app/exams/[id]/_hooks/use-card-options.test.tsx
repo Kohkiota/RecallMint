@@ -44,6 +44,7 @@ vi.mock('@/lib/logger', () => ({
 import { useCardOptions } from './use-card-options'
 
 const CARD_ID = '11111111-1111-4111-8111-111111111111'
+const USER_ID = 'user-1'
 
 // Sprint I W5: option は uid(内部不変 identity)を持ち、画像 target は option:<uid>。
 const UID_OPT_A = 'a0000000-0000-4000-8000-00000000000a'
@@ -59,7 +60,7 @@ beforeEach(() => {
 
 describe('useCardOptions — handlers が working-set を更新する', () => {
   it('handleCheckboxToggle → 対象 index の is_correct が更新される', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleCheckboxToggle(0, true)
     })
@@ -68,7 +69,7 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
   })
 
   it('handleAddOption → working-set に新規 option が末尾追加され autoEditOptionId が set される', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleAddOption()
     })
@@ -80,7 +81,7 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
   })
 
   it('handleDeleteOption → 対象 index の option が除去される', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -90,7 +91,7 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
 
   it('handleDeleteOption: options.length === 1 → no-op (削除しない)', () => {
     const single: CardOption[] = [{ id: 'a', text: 'A', is_correct: false }]
-    const { result } = renderHook(() => useCardOptions(CARD_ID, single))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, single, USER_ID))
     act(() => {
       result.current.handleDeleteOption(0)
     })
@@ -98,7 +99,7 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
   })
 
   it('handleCellSave → 対象 index の option が更新される', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleCellSave(0, { id: 'a', text: '更新A', is_correct: false })
     })
@@ -108,13 +109,13 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
   })
 
   it('canDelete: options > 1 → true', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     expect(result.current.canDelete).toBe(true)
   })
 
   it('canDelete: options === 1 → false', () => {
     const single: CardOption[] = [{ id: 'a', text: 'A', is_correct: false }]
-    const { result } = renderHook(() => useCardOptions(CARD_ID, single))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, single, USER_ID))
     expect(result.current.canDelete).toBe(false)
   })
 
@@ -124,14 +125,14 @@ describe('useCardOptions — handlers が working-set を更新する', () => {
       { id: 'b', text: 'B', is_correct: false },
       { id: 'c', text: 'C', is_correct: true },
     ]
-    const { result } = renderHook(() => useCardOptions(CARD_ID, opts))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, opts, USER_ID))
     expect(result.current.correctIds).toEqual(['a', 'c'])
   })
 })
 
 describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   it('handleCheckboxToggle → runOptimisticUpdate が呼ばれ entity_type / entity_id / field が正しい', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleCheckboxToggle(0, true)
     })
@@ -146,7 +147,7 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   })
 
   it('handleCheckboxToggle → immediateDrain で runGuardedEntityMutationFlush が呼ばれる', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleCheckboxToggle(0, true)
     })
@@ -156,7 +157,7 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   })
 
   it('handleCellSave で値変更あり → runOptimisticUpdate が呼ばれる', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleCellSave(0, { id: 'a', text: '更新A', is_correct: false })
     })
@@ -166,7 +167,7 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   })
 
   it('handleCellSave で値変更なし → runOptimisticUpdate は呼ばれない (no-op guard)', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       // baseOptions[0] と同値を渡す → shallowEqualOptions → no-op
       result.current.handleCellSave(0, { id: 'a', text: '選択肢A', is_correct: false })
@@ -177,7 +178,7 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   })
 
   it('handleDeleteOption → runOptimisticUpdate が呼ばれる (即時 drain)', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -187,7 +188,7 @@ describe('useCardOptions — commit が runOptimisticUpdate を呼ぶ', () => {
   })
 
   it('handleAddOption → commit は呼ばれない (ghost は sanitize 対象)', async () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleAddOption()
     })
@@ -209,7 +210,7 @@ describe('useCardOptions — handleCellUnmountSave (Sprint F W2)', () => {
       exam_id: 'exam-1',
       options: baseOptions,
     } as never)
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     // option 0 を unmount-save 経由で編集(存在 gate + commit は fire-and-forget)。
     await act(async () => {
       result.current.handleCellUnmountSave(0, {
@@ -280,12 +281,12 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
       { key: B_KEY, target: TARGET_B, alt: '' },
       { key: LEGACY_B, target: TARGET_B, alt: '' }, // legacy 非 UUID → 除去対象外
     ])
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1) // b を削除
     })
     await vi.waitFor(() => {
-      expect(mockRemoveImage).toHaveBeenCalledWith({ cardId: CARD_ID, assetId: B_KEY })
+      expect(mockRemoveImage).toHaveBeenCalledWith({ userId: USER_ID, cardId: CARD_ID, assetId: B_KEY })
     })
     // 除去要求された assetId 集合 = { B_KEY } のみ(Q/A/legacy は含まれない)
     const calledAssetIds = mockRemoveImage.mock.calls.map((c) => c[0].assetId)
@@ -294,7 +295,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
 
   it('reclaim: 除去成功分を reclaimLocalAssetBlobs(card の user_id, keys) でローカル掃除', async () => {
     await seedCardWithImages([{ key: B_KEY, target: TARGET_B, alt: '' }])
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -309,7 +310,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
       { key: B_KEY2, target: TARGET_B, alt: '' },
     ])
     mockRemoveImage.mockRejectedValueOnce(new Error('boom')) // B_KEY 除去だけ失敗
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -331,7 +332,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
   it('decouple: cascade 失敗でも選択肢削除の commit(options)は確定(削除を fallible 操作に gate しない)', async () => {
     await seedCardWithImages([{ key: B_KEY, target: TARGET_B, alt: '' }])
     mockRemoveImage.mockRejectedValueOnce(new Error('boom'))
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -345,7 +346,7 @@ describe('useCardOptions — 選択肢削除の画像 cascade (Sprint I W1)', ()
 
   it('option 画像が無い選択肢の削除では removeImageFromCard を呼ばない', async () => {
     await seedCardWithImages([{ key: Q_KEY, target: 'question_text', alt: '' }])
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleDeleteOption(1)
     })
@@ -381,7 +382,7 @@ describe('useCardOptions — uid + set-diff cascade (Sprint I W5)', () => {
   })
 
   it('handleAddOption は表示ラベル id と別に UUID の uid を mint する', () => {
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     act(() => {
       result.current.handleAddOption()
     })
@@ -395,7 +396,7 @@ describe('useCardOptions — uid + set-diff cascade (Sprint I W5)', () => {
 
   it('rename: option の id を変更しても uid 不変ゆえ画像は cascade されない(追随)', async () => {
     await seedCard(baseOptions, [{ key: IMG_B, target: `option:${UID_OPT_B}`, alt: '' }])
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     // option b(uid=B)の id を 'x' に rename(uid は据え置き = 実 cell の applyId と同じ)。
     act(() => {
       result.current.handleCellSave(1, {
@@ -412,7 +413,7 @@ describe('useCardOptions — uid + set-diff cascade (Sprint I W5)', () => {
 
   it('blank-text(sanitize 経路を実走): text を空にして commit → 消えた uid の画像を cascade 除去', async () => {
     await seedCard(baseOptions, [{ key: IMG_B, target: `option:${UID_OPT_B}`, alt: '' }])
-    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions))
+    const { result } = renderHook(() => useCardOptions(CARD_ID, baseOptions, USER_ID))
     // option b の text を空にして save。commit の sanitize が永続集合から b(uid=B)を除外し、
     // set-diff が「消えた uid=B」を検出して cascade する(配列から手で uid を消さない = 非空振り)。
     act(() => {
@@ -424,7 +425,7 @@ describe('useCardOptions — uid + set-diff cascade (Sprint I W5)', () => {
       })
     })
     await vi.waitFor(() => {
-      expect(mockRemoveImage).toHaveBeenCalledWith({ cardId: CARD_ID, assetId: IMG_B })
+      expect(mockRemoveImage).toHaveBeenCalledWith({ userId: USER_ID, cardId: CARD_ID, assetId: IMG_B })
     })
   })
 })

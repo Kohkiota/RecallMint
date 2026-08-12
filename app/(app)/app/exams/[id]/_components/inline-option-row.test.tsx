@@ -127,6 +127,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 id 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -173,6 +174,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -198,6 +200,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 解説 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -228,6 +231,7 @@ describe('InlineOptionList — cell edit → mirror + enqueue', () => {
     fireEvent.blur(screen.getByRole('textbox', { name: '選択肢 本文 編集' }))
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -295,6 +299,7 @@ describe('InlineOptionCell — blur 後 unmount で二重 commit しない (Spri
     )
     expect(mockEnqueue).toHaveBeenCalledTimes(1)
     expect(mockEnqueue).toHaveBeenCalledWith({
+      user_id: TEST_USER_ID,
       entity_type: 'card',
       entity_id: CARD_ID,
       op: 'update_field',
@@ -335,6 +340,7 @@ describe('InlineOptionCell — commit-on-unmount (Sprint F W2)', () => {
       ])
     })
     expect(mockEnqueue).toHaveBeenCalledWith({
+      user_id: TEST_USER_ID,
       entity_type: 'card',
       entity_id: CARD_ID,
       op: 'update_field',
@@ -424,6 +430,7 @@ describe('InlineOptionList — checkbox toggle', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option b を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -569,6 +576,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     fireEvent.blur(ta)
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -608,6 +616,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[1]!) // option B を ON
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {
@@ -631,6 +640,7 @@ describe('InlineOptionList — add / delete + ghost', () => {
     })
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: TEST_USER_ID,
         entity_type: 'card', entity_id: CARD_ID,
         op: 'update_field',
         patch: {

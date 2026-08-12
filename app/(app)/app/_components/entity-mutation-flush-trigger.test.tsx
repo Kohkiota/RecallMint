@@ -24,7 +24,9 @@ const {
     mockKick,
     mockStop,
     mockCreateController: vi.fn(() => ({ kick: mockKick, stop: mockStop })),
-    mockDropStale: vi.fn(async (_now: number, _maxAgeMs: number) => [] as string[]),
+    mockDropStale: vi.fn(
+      async (_userId: string, _now: number, _maxAgeMs: number) => [] as string[],
+    ),
     mockPullBack: vi.fn(),
     mockRunGuarded: vi.fn(async () => 'no-pending' as const),
     mockLoggerInfo: vi.fn(),
@@ -50,6 +52,9 @@ vi.mock('@/lib/logger', () => ({
 
 import { EntityMutationFlushTrigger } from './entity-mutation-flush-trigger'
 
+// (app) layout が渡す認証済み userId 相当。
+const USER_ID = 'user-a'
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -59,21 +64,23 @@ afterEach(() => {
 
 describe('EntityMutationFlushTrigger', () => {
   it('mount で 30d drop を走らせてから flush を kick("mount") する', async () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     expect(mockDropStale).toHaveBeenCalledTimes(1)
     // drop の maxAge は 30d (ms) — T-C1: 24h → 30d 延長 (隔離機構維持、
     // 30d 超は将来 ops 通知の打鍵点として温存)
-    expect(mockDropStale.mock.calls[0][1]).toBe(30 * 24 * 60 * 60 * 1000)
+    expect(mockDropStale.mock.calls[0][2]).toBe(30 * 24 * 60 * 60 * 1000)
+    // owner-scope: drop 対象は props の userId に限定される (別 user の pending を隔離しない)。
+    expect(mockDropStale.mock.calls[0][0]).toBe(USER_ID)
   })
 
   it('UI は何も描画しない (null)', () => {
-    const { container } = render(<EntityMutationFlushTrigger />)
+    const { container } = render(<EntityMutationFlushTrigger userId={USER_ID} />)
     expect(container.firstChild).toBeNull()
   })
 
   it('visibilitychange(visible) で kick("visibilitychange")', async () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     mockKick.mockClear()
     document.dispatchEvent(new Event('visibilitychange'))
@@ -83,7 +90,7 @@ describe('EntityMutationFlushTrigger', () => {
   })
 
   it('online イベントで kick("online")', async () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     mockKick.mockClear()
     window.dispatchEvent(new Event('online'))
@@ -91,16 +98,18 @@ describe('EntityMutationFlushTrigger', () => {
   })
 
   it('pagehide で runGuardedEntityMutationFlush を best-effort 呼出する', async () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     window.dispatchEvent(new Event('pagehide'))
     // fire-and-forget のため微小な非同期待機で十分
     await new Promise((r) => setTimeout(r, 0))
     expect(mockRunGuarded).toHaveBeenCalledTimes(1)
+    // owner-scope: pagehide の best-effort flush も props の userId で走る。
+    expect(mockRunGuarded).toHaveBeenCalledWith(USER_ID)
   })
 
   it('unmount で controller.stop() を呼び、 以降の online で kick しない', async () => {
-    const { unmount } = render(<EntityMutationFlushTrigger />)
+    const { unmount } = render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     unmount()
     expect(mockStop).toHaveBeenCalledTimes(1)
@@ -112,7 +121,7 @@ describe('EntityMutationFlushTrigger', () => {
   })
 
   it('unmount 後の pagehide で runGuardedEntityMutationFlush が呼ばれない', async () => {
-    const { unmount } = render(<EntityMutationFlushTrigger />)
+    const { unmount } = render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     unmount()
     mockRunGuarded.mockClear()
@@ -122,7 +131,7 @@ describe('EntityMutationFlushTrigger', () => {
   })
 
   it('visibilitychange(hidden) で kick されない', async () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     await waitFor(() => expect(mockKick).toHaveBeenCalledWith('mount'))
     mockKick.mockClear()
     // jsdom の visibilityState は 'visible' がデフォルトのため hidden に mock
@@ -141,7 +150,7 @@ describe('EntityMutationFlushTrigger', () => {
   })
 
   it('onFlushed が pull-back("entity-mutation-flush") を配線している', () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     // createReviewFlushController は onFlushed を含む deps オブジェクトで呼ばれる
     expect(mockCreateController).toHaveBeenCalledWith(
       expect.objectContaining({ onFlushed: expect.any(Function) }),
@@ -155,15 +164,21 @@ describe('EntityMutationFlushTrigger', () => {
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 
-  it('runGuarded deps に runGuardedEntityMutationFlush が配線されている', () => {
-    render(<EntityMutationFlushTrigger />)
+  it('runGuarded deps が props の userId 付きで runGuardedEntityMutationFlush を呼ぶ', () => {
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     expect(mockCreateController).toHaveBeenCalledWith(
-      expect.objectContaining({ runGuarded: mockRunGuarded }),
+      expect.objectContaining({ runGuarded: expect.any(Function) }),
     )
+    // controller に渡した closure を直接叩き、 owner-scope 引数の配線を確認する。
+    const deps = (mockCreateController.mock.calls[0] as unknown[])[0] as {
+      runGuarded: () => unknown
+    }
+    void deps.runGuarded()
+    expect(mockRunGuarded).toHaveBeenCalledWith(USER_ID)
   })
 
   it('log deps が渡されている (event 文字列の振替に使う)', () => {
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     expect(mockCreateController).toHaveBeenCalledWith(
       expect.objectContaining({ log: expect.any(Function) }),
     )
@@ -173,7 +188,7 @@ describe('EntityMutationFlushTrigger', () => {
     // createReviewFlushController に渡される log deps を取り出し、
     // 'review_events.flush.kick' を渡したとき logger.info が
     // event: 'entity_mutations.flush.kick' に振り替えて呼ばれることを assert する。
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     const deps = (mockCreateController.mock.calls[0] as unknown[])[0] as {
       log: (event: string, extra?: Record<string, unknown>) => void
     }
@@ -188,7 +203,7 @@ describe('EntityMutationFlushTrigger', () => {
 
   it('interval polling が無い (setInterval を呼ばない)', () => {
     const spyInterval = vi.spyOn(window, 'setInterval')
-    render(<EntityMutationFlushTrigger />)
+    render(<EntityMutationFlushTrigger userId={USER_ID} />)
     expect(spyInterval).not.toHaveBeenCalled()
     spyInterval.mockRestore()
   })

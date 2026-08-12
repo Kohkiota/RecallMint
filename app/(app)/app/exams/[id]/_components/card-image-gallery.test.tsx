@@ -259,7 +259,7 @@ describe('CardImageGallery attach', () => {
 // ---------------------------------------------------------------------------
 
 describe('CardImageGallery delete', () => {
-  it('× click → removeImageFromCard({cardId, assetId}) が呼ばれ、 abandonUpload / runOptimisticUpdate は使わない (直列化+fresh-read 経路)', async () => {
+  it('× click → removeImageFromCard({userId, cardId, assetId}) が呼ばれ、 abandonUpload / runOptimisticUpdate は使わない (直列化+fresh-read 経路)', async () => {
     const images: ClientCardImage[] = [
       { key: UUID_A, target: TARGET, alt: '' },
       { key: UUID_B, target: TARGET, alt: '' },
@@ -276,9 +276,10 @@ describe('CardImageGallery delete', () => {
     await waitFor(() => {
       expect(mockRemoveImageFromCard).toHaveBeenCalledTimes(1)
     })
-    // 削除する asset は 1 つ目 (UUID_A)。 removeImageFromCard は cardId + assetId のみ受ける
-    // (fresh-read + 直列化は upload.ts 側。 gallery は snapshot を渡さない)。
+    // 削除する asset は 1 つ目 (UUID_A)。 removeImageFromCard は owner + cardId + assetId
+    // のみ受ける (fresh-read + 直列化は upload.ts 側。 gallery は snapshot を渡さない)。
     expect(mockRemoveImageFromCard).toHaveBeenCalledWith({
+      userId: USER_ID,
       cardId: CARD_ID,
       assetId: UUID_A,
     })

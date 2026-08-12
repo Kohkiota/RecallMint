@@ -104,6 +104,7 @@ describe('CategoryCreateForm — submit', () => {
     // existingSortKeys 未指定 (or 空) → 起点 '0' で末尾採番
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
@@ -128,6 +129,7 @@ describe('CategoryCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
@@ -148,6 +150,7 @@ describe('CategoryCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
@@ -171,6 +174,7 @@ describe('CategoryCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',
@@ -264,6 +268,7 @@ describe('CategoryCreateForm — submit', () => {
 
     await vi.waitFor(() => {
       expect(mockEnqueue).toHaveBeenCalledWith({
+        user_id: USER_ID,
         entity_type: 'tag_category',
         entity_id: FIXED_ID,
         op: 'create',

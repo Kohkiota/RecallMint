@@ -86,6 +86,7 @@ export function CardEditorFields({
         </div>
         <InlineTextField
           cardId={cardId}
+          userId={userId}
           field="question_text"
           initialValue={questionText}
           ariaLabel="問題文 編集"
@@ -123,6 +124,7 @@ export function CardEditorFields({
         </div>
         <InlineTextField
           cardId={cardId}
+          userId={userId}
           field="explanation_text"
           initialValue={explanationText}
           ariaLabel="解説 編集"
@@ -148,6 +150,7 @@ export function CardEditorFields({
         </div>
         <InlineTextField
           cardId={cardId}
+          userId={userId}
           field="memo"
           initialValue={memo}
           ariaLabel="メモ 編集"

@@ -650,7 +650,7 @@ describe('handleRenameCategory', () => {
     }
     mockTagCategoriesGet.mockResolvedValueOnce(before)
 
-    await handleRenameCategory('cat-1', '新名')
+    await handleRenameCategory('user-1', 'cat-1', '新名')
 
     // get が cat-1 を引数で呼ばれた
     expect(mockTagCategoriesGet).toHaveBeenCalledWith('cat-1')
@@ -685,7 +685,7 @@ describe('handleRenameCategory', () => {
     }
     mockTagCategoriesGet.mockResolvedValueOnce(before)
 
-    await handleRenameCategory('cat-1', '同名')
+    await handleRenameCategory('user-1', 'cat-1', '同名')
 
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
@@ -713,7 +713,7 @@ describe('handleRenameCategory', () => {
     // helper の catch path で logger.warn が console.warn を 1 行吐くため抑止 (出力雑音回避)。
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await expect(handleRenameCategory('cat-1', '新名')).rejects.toThrow('enqueue failed')
+    await expect(handleRenameCategory('user-1', 'cat-1', '新名')).rejects.toThrow('enqueue failed')
 
     // update は forward 1 回のみ (revert は Dexie auto-rollback が担当 = 明示 call なし)
     expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(1)
@@ -729,7 +729,7 @@ describe('handleRenameCategory', () => {
   it('category が存在しない場合は何もしない', async () => {
     mockTagCategoriesGet.mockResolvedValueOnce(undefined)
 
-    await handleRenameCategory('nonexistent', '新名')
+    await handleRenameCategory('user-1', 'nonexistent', '新名')
 
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
@@ -760,7 +760,7 @@ describe('handleRenameCategory', () => {
     mockTagCategoriesGet.mockResolvedValueOnce(before)
     mockTagCategoriesToArray.mockResolvedValueOnce([before, existing])
 
-    await expect(handleRenameCategory('cat-1', '既存名')).rejects.toThrow('同名のカテゴリが既にあります')
+    await expect(handleRenameCategory('user-1', 'cat-1', '既存名')).rejects.toThrow('同名のカテゴリが既にあります')
 
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
@@ -785,7 +785,7 @@ describe('handleSetCategoryColor', () => {
     }
     mockTagCategoriesGet.mockResolvedValueOnce(before)
 
-    await handleSetCategoryColor('cat-1', 'red')
+    await handleSetCategoryColor('user-1', 'cat-1', 'red')
 
     expect(mockTagCategoriesUpdate).toHaveBeenCalledWith(
       'cat-1',
@@ -815,7 +815,7 @@ describe('handleSetCategoryColor', () => {
     }
     mockTagCategoriesGet.mockResolvedValueOnce(before)
 
-    await handleSetCategoryColor('cat-1', null)
+    await handleSetCategoryColor('user-1', 'cat-1', null)
 
     expect(mockTagCategoriesUpdate).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
@@ -842,7 +842,7 @@ describe('handleSetCategoryColor', () => {
     )
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await expect(handleSetCategoryColor('cat-1', 'red')).rejects.toThrow('enqueue failed')
+    await expect(handleSetCategoryColor('user-1', 'cat-1', 'red')).rejects.toThrow('enqueue failed')
 
     // forward update 1 回のみ (color: 'red' を書く)、 Dexie auto-rollback で巻き戻り。
     expect(mockTagCategoriesUpdate).toHaveBeenCalledTimes(1)
@@ -873,7 +873,7 @@ describe('handleRenameOption', () => {
     }
     mockTagOptionsGet.mockResolvedValueOnce(before)
 
-    await handleRenameOption('opt-1', '新名')
+    await handleRenameOption('user-1', 'opt-1', '新名')
 
     expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
       'opt-1',
@@ -909,7 +909,7 @@ describe('handleRenameOption', () => {
     )
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await expect(handleRenameOption('opt-1', '新名')).rejects.toThrow('enqueue failed')
+    await expect(handleRenameOption('user-1', 'opt-1', '新名')).rejects.toThrow('enqueue failed')
 
     expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(1)
     expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
@@ -939,7 +939,7 @@ describe('handleRenameOption', () => {
       { id: 'opt-2', category_id: 'cat-1', name: '衝突名' },
     ])
 
-    await expect(handleRenameOption('opt-1', '衝突名')).rejects.toThrow('同名の option が既にあります')
+    await expect(handleRenameOption('user-1', 'opt-1', '衝突名')).rejects.toThrow('同名の option が既にあります')
 
     expect(mockTagOptionsUpdate).not.toHaveBeenCalled()
     expect(enqueueEntityMutation).not.toHaveBeenCalled()
@@ -961,7 +961,7 @@ describe('handleRenameOption', () => {
     tagOptionsWhereImpl = () => makeWhereChain([before])
 
     // 別 category (cat-2) に「新名」 があっても衝突しない → throw しない
-    await expect(handleRenameOption('opt-1', '新名')).resolves.toBeUndefined()
+    await expect(handleRenameOption('user-1', 'opt-1', '新名')).resolves.toBeUndefined()
 
     expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
       'opt-1',
@@ -988,7 +988,7 @@ describe('handleSetOptionColor', () => {
     }
     mockTagOptionsGet.mockResolvedValueOnce(before)
 
-    await handleSetOptionColor('opt-1', 'blue')
+    await handleSetOptionColor('user-1', 'opt-1', 'blue')
 
     expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
       'opt-1',
@@ -1025,7 +1025,7 @@ describe('handleSetOptionColor', () => {
     )
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await expect(handleSetOptionColor('opt-1', 'red')).rejects.toThrow('enqueue failed')
+    await expect(handleSetOptionColor('user-1', 'opt-1', 'red')).rejects.toThrow('enqueue failed')
 
     expect(mockTagOptionsUpdate).toHaveBeenCalledTimes(1)
     expect(mockTagOptionsUpdate).toHaveBeenCalledWith(
@@ -1046,7 +1046,7 @@ describe('handleDeleteCategory', () => {
     // tag_options.where('category_id').equals(catId).toArray() が [] を返す
     tagOptionsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteCategory('cat-1')
+    await handleDeleteCategory('user-1', 'cat-1')
 
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
@@ -1062,7 +1062,7 @@ describe('handleDeleteCategory', () => {
   it('enqueue が op:delete で呼ばれる', async () => {
     tagOptionsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteCategory('cat-1')
+    await handleDeleteCategory('user-1', 'cat-1')
 
     expect(enqueueEntityMutation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1084,7 +1084,7 @@ describe('handleDeleteCategory', () => {
     const cardTagsChain = makeWhereChain(options)
     cardTagsWhereImpl = () => cardTagsChain
 
-    await handleDeleteCategory('cat-1')
+    await handleDeleteCategory('user-1', 'cat-1')
 
     expect(enqueueEntityMutation).toHaveBeenCalled()
     // tag_categories.delete が呼ばれた
@@ -1096,7 +1096,7 @@ describe('handleDeleteCategory', () => {
   it('flush は tx 完了後に呼ばれる', async () => {
     tagOptionsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteCategory('cat-1')
+    await handleDeleteCategory('user-1', 'cat-1')
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
@@ -1111,7 +1111,7 @@ describe('handleDeleteCategory', () => {
       new Error('enqueue failed'),
     )
 
-    await expect(handleDeleteCategory('cat-1')).rejects.toThrow('enqueue failed')
+    await expect(handleDeleteCategory('user-1', 'cat-1')).rejects.toThrow('enqueue failed')
 
     // reject 経路では tx 後段の flush へ到達しない。
     expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
@@ -1126,7 +1126,7 @@ describe('handleDeleteOption', () => {
   it('atomic tx: card_tags, tag_options, entity_mutations を rw lock する', async () => {
     cardTagsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteOption('opt-1')
+    await handleDeleteOption('user-1', 'opt-1')
 
     expect(mockTransaction).toHaveBeenCalled()
     const firstCall = mockTransaction.mock.calls[0]
@@ -1143,7 +1143,7 @@ describe('handleDeleteOption', () => {
   it('enqueue が op:delete で呼ばれ、 tag_options.delete が呼ばれる', async () => {
     cardTagsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteOption('opt-1')
+    await handleDeleteOption('user-1', 'opt-1')
 
     expect(mockTagOptionsDelete).toHaveBeenCalledWith('opt-1')
     expect(enqueueEntityMutation).toHaveBeenCalledWith(
@@ -1159,7 +1159,7 @@ describe('handleDeleteOption', () => {
   it('flush は tx 完了後に呼ばれる', async () => {
     cardTagsWhereImpl = () => makeWhereChain([])
 
-    await handleDeleteOption('opt-1')
+    await handleDeleteOption('user-1', 'opt-1')
 
     expect(runGuardedEntityMutationFlush).toHaveBeenCalled()
   })
@@ -1171,7 +1171,7 @@ describe('handleDeleteOption', () => {
       new Error('enqueue failed'),
     )
 
-    await expect(handleDeleteOption('opt-1')).rejects.toThrow('enqueue failed')
+    await expect(handleDeleteOption('user-1', 'opt-1')).rejects.toThrow('enqueue failed')
 
     expect(runGuardedEntityMutationFlush).not.toHaveBeenCalled()
   })
