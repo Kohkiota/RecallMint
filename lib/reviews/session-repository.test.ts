@@ -498,7 +498,9 @@ describe('applyCardFinalStates', () => {
 // ---------------------------------------------------------------------------
 
 describe('recomputeStudyDays', () => {
-  function makeTx() {
+  // lockedDays を渡すと FOR UPDATE がその day 行だけを返す (行数 postcondition の変異用)。
+  // 既定は直前の INSERT ... ON CONFLICT DO NOTHING が全 day を確保した実 DB の形。
+  function makeTx(lockedDays?: string[]) {
     const captured: {
       insertValues?: Array<{ userId: string; day: string }>
       conflictTarget?: unknown
@@ -533,7 +535,9 @@ describe('recomputeStudyDays', () => {
                 return {
                   for: (lock: string) => {
                     captured.lockMode = lock
-                    return Promise.resolve([])
+                    const days =
+                      lockedDays ?? (captured.insertValues ?? []).map((v) => v.day)
+                    return Promise.resolve(days.map((day) => ({ day })))
                   },
                 }
               },
@@ -605,5 +609,30 @@ describe('recomputeStudyDays', () => {
     const params = new PgDialect().sqlToQuery(captured.executeCalls[0] as SQL).params
     expect(params).toContain('2026-05-24T15:00:00.000Z')
     expect(params).toContain('2026-05-25T15:00:00.000Z')
+  })
+
+  // 行数 postcondition (applyCardFinalStates の count-mismatch throw と同型)。
+  // ロックが要求 day に届かないまま再集計 UPDATE を撃つと、その day は 1 行も
+  // マッチせず集計が黙って古いままになる (silent undercount)。
+  it('FOR UPDATE が要求 day 数に満たなければ throw して再集計を撃たない', async () => {
+    const { tx, captured } = makeTx(['2026-05-25'])
+    await expect(
+      recomputeStudyDays(tx, USER_ID, ['2026-05-25', '2026-05-26']),
+    ).rejects.toMatchObject({
+      message: 'study_days lock row count mismatch',
+      expected: 2,
+      locked: 1,
+      missingDays: ['2026-05-26'],
+    })
+    expect(captured.executeCalls).toHaveLength(0)
+  })
+
+  // 重複 day は throw でなく distinct 化で吸収する (再集計は絶対値ゆえ冪等)。
+  // postcondition は「ロック網羅性」だけを主張し、呼び側の重複と混同しない。
+  it('days の重複は distinct 化され 1 day 分だけ確保・ロック・再集計する', async () => {
+    const { tx, captured } = makeTx()
+    await recomputeStudyDays(tx, USER_ID, ['2026-05-25', '2026-05-25'])
+    expect(captured.insertValues).toEqual([{ userId: USER_ID, day: '2026-05-25' }])
+    expect(captured.executeCalls).toHaveLength(1)
   })
 })

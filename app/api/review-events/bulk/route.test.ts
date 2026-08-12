@@ -271,6 +271,30 @@ describe('POST /api/review-events/bulk — 正常系', () => {
     expect(state.executeCalls).toHaveLength(1)
   })
 
+  it('ロック取得順は cards → study_days (deadlock 回避の全 tx 共通規約)', async () => {
+    const res = await POST(
+      makeReq(
+        makeValidPayload({
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-25T10:01:00.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    expect(res.status).toBe(200)
+    // 表ごとのカウンタでは順序が逆でも同じ値になるため sequence 自体を pin する。
+    // 保証するのは「1 request 内での 2 表の FOR UPDATE 取得順」だけ — 実 DB の
+    // 待ち挙動 (別 tx との相互ブロック) は iso 側 (answer-events-serialization) が見る。
+    expect(state.lockSequence).toEqual(['cards', 'study_days'])
+  })
+
   it('session_id / elapsed_ms は指定どおり保存される', async () => {
     const res = await POST(
       makeReq(

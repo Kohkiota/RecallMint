@@ -157,6 +157,14 @@ export interface ReviewEventsState {
   studyDaysLockCalls: number
   executeCalls: unknown[]
 
+  /**
+   * FOR UPDATE を取った表名を取得順に積む共有 log。cards / study_days を別カウンタで
+   * 数えるだけでは「cards → study_days」というロック**順序**の不変条件 (deadlock 回避の
+   * 全 tx 共通規約) が pin されない (順序が逆でも両カウンタは 1 のまま) ため、
+   * 同一配列に記録して sequence そのものを検証できるようにする。
+   */
+  lockSequence: string[]
+
   /** answer_events INSERT 直後に throw させる (rollback テスト用)。 */
   txShouldThrow: boolean
   txError: null | Error
@@ -177,6 +185,7 @@ export function createState(): ReviewEventsState {
     studyDaysInsertValues: null,
     studyDaysLockCalls: 0,
     executeCalls: [],
+    lockSequence: [],
     txShouldThrow: false,
     txError: null,
   }
@@ -282,11 +291,19 @@ export function makeFakeTx(state: ReviewEventsState) {
               return lockableResult([...state.cardRows.values()], (col) => {
                 state.cardLockCalls++
                 state.cardLockOrderBy = col
+                state.lockSequence.push('cards')
               })
             }
             if (name === 'study_days') {
-              return lockableResult([], () => {
+              // 実 DB では直前の INSERT ... ON CONFLICT DO NOTHING が対象 day の行を
+              // 必ず確保するため、ロックは要求 day 数ぶん返る。fake でも同じ形を返す
+              // (返さないと recomputeStudyDays の行数 postcondition が常時 throw する)。
+              const rows = (state.studyDaysInsertValues ?? []).map((r) => ({
+                day: r.day,
+              }))
+              return lockableResult(rows, () => {
                 state.studyDaysLockCalls++
+                state.lockSequence.push('study_days')
               })
             }
             // answer_events: 衝突検証の own-scope SELECT (await で終端)

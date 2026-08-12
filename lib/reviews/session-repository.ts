@@ -304,7 +304,10 @@ export async function recomputeStudyDays(
   days: string[],
 ): Promise<void> {
   if (days.length === 0) return
-  const sortedDays = [...days].sort()
+  // 重複 day は静かに畳む。再集計は絶対値なので同じ day を 2 回並べても結果は変わらず、
+  // 呼び側の重複を throw に昇格させると client の再送ループを生むだけになる。
+  // (下の postcondition を「ロック網羅性」の主張だけに絞るためでもある)
+  const sortedDays = [...new Set(days)].sort()
 
   await tx
     .insert(studyDays)
@@ -315,12 +318,26 @@ export async function recomputeStudyDays(
     sortedDays.map((day) => sql`${day}::date`),
     sql`, `,
   )
-  await tx
+  const lockedRows = await tx
     .select({ day: studyDays.day })
     .from(studyDays)
     .where(and(eq(studyDays.userId, userId), sql`${studyDays.day} IN (${dayList})`))
     .orderBy(studyDays.day)
     .for('update')
+
+  // ロック行が要求 day 数に満たない = 直後の再集計 UPDATE が該当 day に一切マッチせず
+  // 黙って集計を取りこぼす (silent undercount)。applyCardFinalStates の
+  // count-mismatch throw と同型の loud fail に倒して tx を rollback させる。
+  const lockedDays = new Set(lockedRows.map((r) => r.day))
+  if (lockedDays.size !== sortedDays.length) {
+    const mismatch = new Error('study_days lock row count mismatch')
+    Object.assign(mismatch, {
+      expected: sortedDays.length,
+      locked: lockedDays.size,
+      missingDays: sortedDays.filter((d) => !lockedDays.has(d)),
+    })
+    throw mismatch
+  }
 
   const dayTuples = sql.join(
     sortedDays.map((day) => {
