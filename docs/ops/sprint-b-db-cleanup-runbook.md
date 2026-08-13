@@ -290,12 +290,70 @@ RETURNING id, user_id, status;
 
 | 環境 | 要否 |
 |---|---|
-| **prod** | **必須。かつ「restore 手順を一度実行して復元できることを確認済み」の backup であること**(取得済みなだけでは足りない — 詳細と理由は §5.2) |
+| **prod** | **必須**。`pg_dump -Fc` を取得し、`pg_restore --list` で TOC を確認するところまで(**現状の水準** — 実 restore 検証への格上げトリガーは §5.2) |
 | stg | 任意(取らずに進めてよい。ただし取らない判断をしたことを記録に残す) |
 
 - **取得タイミングはここ**(drain 完了後・migrate 直前)。窓の前に取ると、窓中に起きた変更が復元対象から漏れる。
-- 実体 = Supabase の PITR / 手動バックアップ、または owner 接続からの `pg_dump`。
-- **backup の識別子(スナップショット名 / タイムスタンプ)と restore 検証の結果を、Step 3 に進む前に記録に書く。**
+- **実体 = `pg_dump` の一択**。本 project の Supabase は **Free プラン**で、PITR も scheduled backup も**有料機能ゆえ存在しない**(dashboard 実測・2026-08-13)。「PITR があるはず」で進めないこと。
+  - 有料プランへ移行したら選択肢が増える。その時点で本節を書き直す。
+
+#### (a) 事前確認(1 回・毎回やる)
+
+```sh
+# client 版 >= server 版(major)であること。pg_dump は自分より新しい server を dump できない。
+pg_dump --version    # 期待: 17.x(devcontainer 実測 = 17.10)
+psql "$DATABASE_URL_ADMIN" -X -tAc "SHOW server_version;"   # 期待: 17.x
+```
+
+> devcontainer の `pg_dump` は `postgresql-17` package(`.devcontainer/pg-setup.sh` が `test:iso` 用 cluster のために install)の依存として入る `postgresql-client-17` が提供する。**rebuild しても post-create で再 install されるため追加の永続化は不要**。逆に言えば pg-setup.sh の PG major を上げたら client 版も一緒に動く — その時は上の突き合わせで気付く。
+> **server が client より新しい major になったら、その時点で dump は失敗する**(例: Supabase が PG18 へ移行 / client は 17 のまま)。エラーを見てから慌てないよう、この確認を毎回先に置く。
+
+#### (b) 取得
+
+```sh
+# 出力先は git 管理外(リポジトリ直下 backups/ は .gitignore 済み)。
+mkdir -p backups
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+DUMP="backups/prod-pre-0036-${STAMP}.dump"
+
+# direct 5432(owner)で取る。pooler(6543)は transaction mode ゆえ pg_dump に使わない。
+# -Fc = custom format(pg_restore で選択復元・並列復元ができる。素の SQL より復元時に強い)
+# --no-owner だけ付ける: 復元先の role 名が一致しない場合に備える。
+# **--no-privileges は付けない** — 付けると GRANT が dump から落ち、復元しても
+# recallmint_app が権限ゼロで復元後の app が動かない(RLS policy は schema の一部なので
+# dump に入るが、GRANT は privileges 側)。
+pg_dump "$DATABASE_URL_ADMIN" -Fc --no-owner -f "$DUMP"
+ls -lh "$DUMP"
+```
+
+> **復元する日に読むこと**: `--no-owner` で取っているため、復元後は object owner が復元実行 role になる。GRANT は dump に含まれるが、**復元先で role 名が違えば GRANT は当たらない**。その場合は `db/roles/recallmint_app-grants.sql` → `recallmint_app-grants-phase3.sql` → `db/policies/*-enable.sql` の順で再適用する(いずれも冪等)。
+
+#### (c) 検証(**現状はここまでで足りる**)
+
+```sh
+pg_restore --list "$DUMP" | head -40
+pg_restore --list "$DUMP" | wc -l                          # TOC entry 数(0 / 極端に少ない = 異常)
+pg_restore --list "$DUMP" | grep "TABLE DATA" | sort        # ← 実体はこれを目で見る
+```
+
+**判定は件数でなく「一覧に何が居るか」で行う**: `public` の 23 表(`lib/db/schema.ts` の `pgTable` 定義数と一致)が `TABLE DATA` に揃っていること。加えて `drizzle.__drizzle_migrations`(migration 履歴)も dump に含まれる — **これが無い dump から復元すると migration 履歴を失い、次の `db:migrate` が 0000 から流れる**ので、存在を必ず確認する。
+
+> 数値を 1 つ暗記して突き合わせる形にしないのは、表数が sprint ごとに動くため(本 migration 後は 23 のまま・列だけが減る)。**一覧を見て欠けが無いか**を見るほうが陳腐化しない。
+
+**なぜ TOC 確認で足りるか**(判断とトリガーを明示する): 現状は**実ユーザー 0**で、prod に守るべき利用者データが無い。この状況で守っているのは「OT 自身の検証データ」だけであり、失われた場合のコストは再投入の手間に留まる。よって「**dump が構造的に健全で、期待した表数のデータ section を含む**」ところまで確認すれば、費用対効果として十分と判断する。
+
+> **格上げトリガー = 実ユーザー獲得(公開)**。その時点で、この (c) を「空 DB へ実際に `pg_restore` して行数を突き合わせる」手順に差し替える。**復元できない backup は backup ではない**が、それが判明するのは 13 列が消えた後 — というリスクを、ユーザー 0 の間だけ意図的に受容している。
+
+#### (d) 記録(手順の一部・省略しない)
+
+**Step 3 に進む前に**、session doc(`docs/superpowers/sessions/`)へ次の 4 点を書く:
+
+1. dump ファイル名(= `prod-pre-0036-<UTC stamp>.dump`)
+2. 取得時刻(UTC)と取得先環境(prod / stg)
+3. ファイルサイズ
+4. `pg_restore --list` の確認結果(TOC entry 数 / `TABLE DATA` 数、および先頭数行)
+
+記録が無い backup は「取ったつもり」と区別できない。
 
 ### Step 3 — migrate(owner・inline 供給)
 
@@ -543,10 +601,15 @@ ORDER BY exam_id, created_at DESC;
 
 **手順上の位置 = §2 Step 2**(独立した step にしてある。migrate は Step 3)。ここは理由の説明。
 
-- **restore 手順を一度実行して検証済みの backup**。「backup が取れている」ではなく「**その backup から復元できることを確認済み**」が条件(spec §9・Codex r3 指摘 18)。未検証の backup は、13 列が消えた後の唯一の退路としては足りない — **復元できない backup は backup ではない**、が 13 列が消えてから分かる。
+- **実体は `pg_dump` の一択**。本 project の Supabase は **Free プラン**で PITR / scheduled backup を持たない(**有料機能・dashboard 実測 2026-08-13**)。spec §9 と本 runbook の旧版は「Supabase の PITR / 手動バックアップ、または pg_dump」と書いていたが、**前 2 者はこのプランでは存在しない選択肢**だった。手順の実体は §2 Step 2 (a)〜(d)。
 - 取得タイミングを drain 完了後にする理由: 窓の前に取ると、窓中に起きた変更が復元対象から漏れる。
-- 実体 = Supabase の PITR / 手動バックアップ、または owner 接続からの `pg_dump`。**stg は任意 / prod は必須**(spec §9)。
-- backup を取ったこと・その識別子・時刻・restore 検証の結果を、適用の記録(session doc)に残す。
+- **検証水準は現在「TOC 確認まで」**(`pg_restore --list`)。理由 = 実ユーザー 0 で、prod に守るべき利用者データが無いため、失われた場合のコストは OT の検証データ再投入に留まる。**格上げトリガー = 実ユーザー獲得(公開)** — その時点で「空 DB へ実 `pg_restore` して行数突合」へ差し替える。
+  - この受容が何を意味するかは正直に書いておく: **復元できない backup は backup ではない**。TOC 確認は「dump が構造的に健全で期待した表数のデータ section を持つ」ことしか言わず、実際に復元が通るかは保証しない。ユーザー 0 の間だけこの差分を許容している(spec §9・Codex r3 指摘 18 の水準からは意図的に一段下げた運用判断)。
+- backup ファイル名・取得時刻(UTC)・サイズ・`pg_restore --list` の結果を、適用の記録(session doc)に残す(§2 Step 2 (d))。
+- **dump の置き場所は git 管理外**(`backups/` / `*.dump` / `*.sql.gz` を `.gitignore` 済み・2026-08-13)。DB dump には全 user の PII が入るため、誤 commit は情報漏洩に直結する。
+- **client 版の前提**: `pg_dump` は自分より新しい major の server を dump できない。devcontainer の client は `postgresql-17`(`.devcontainer/pg-setup.sh` が `test:iso` 用に install)由来の **17.10**(実測)で、rebuild しても post-create で再取得されるため**別途の永続化は不要**。Supabase 側が PG18 以降へ上がった日に初めて壊れるので、§2 Step 2 (a) の版突合を毎回先に置いている。
+
+> **この節が「復元できる」と言っていない点に注意**。言っているのは「復元の材料が、構造的に健全な形で、記録つきで手元にある」ところまで。実 restore の保証は公開時に格上げする(上記トリガー)。
 
 ### 5.3 Dexie(client)側も一方通行
 

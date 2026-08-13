@@ -51,3 +51,8 @@ tsconfig.tsbuildinfo
 # 実教材は著作物/PII を含みうるため非 commit。応答 fixture は tests/fixtures/ocr/ に別途 commit。
 scripts/ai/ocr-samples/*
 !scripts/ai/ocr-samples/README.md
+
+# DB dump / backup(PII を含むため絶対に commit しない。運用手順 = docs/ops/sprint-b-db-cleanup-runbook.md §2 Step 2)
+backups/
+*.dump
+*.sql.gz
