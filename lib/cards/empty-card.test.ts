@@ -6,7 +6,7 @@ import type { CardOption } from '@/lib/db/schema'
 // Import schemas from validation and update-card-field
 import { optionSchema } from '@/lib/validation/card'
 
-// Replicate the title, questionText, and sortKey schemas from update-card-field.ts
+// Replicate the title / questionText schemas from update-card-field.ts
 const titleSchema = z
   .string()
   .trim()
@@ -18,18 +18,16 @@ const questionTextSchema = z
   .max(10000, '問題文は 10000 文字以内で入力してください')
   .refine((s) => s.trim().length > 0, { message: '問題文は必須です' })
 
-const sortKeySchema = z
-  .string()
-  .max(100, 'ソートキーは 100 文字以内で入力してください')
-  .nullable()
-
 describe('buildEmptyCard', () => {
   it('returns placeholder values for basic card creation', () => {
     const card = buildEmptyCard([], 0)
 
     expect(card).toEqual({
       title: '新規カード 1',
-      sortKey: '1',
+      // 番号ラベルは自動採番しない(紙面番号を持たない手動カードに機械的な番号を
+      // 付けない・spec 決定 5)。
+      questionLabel: null,
+      baseOrder: 1024,
       questionText: '(問題文を入力してください)',
       options: [
         {
@@ -49,9 +47,21 @@ describe('buildEmptyCard', () => {
     expect(card.title).toBe('新規カード 5')
   })
 
-  it('generates correct sortKey based on existing keys', () => {
-    const card = buildEmptyCard(['1', '2', '3'], 0)
-    expect(card.sortKey).toBe('4')
+  it('末尾採番: 既存 base_order の最大値 + stride を返す', () => {
+    const card = buildEmptyCard([1024, 2048, 3072], 0)
+    expect(card.baseOrder).toBe(4096)
+  })
+
+  it('空 exam は stride ちょうどから始まる', () => {
+    expect(buildEmptyCard([], 0).baseOrder).toBe(1024)
+  })
+
+  it('入力順に依らず最大値を基準にする(mirror は基準順で来る保証がない)', () => {
+    expect(buildEmptyCard([3072, 1024, 2048], 0).baseOrder).toBe(4096)
+  })
+
+  it('番号ラベルは常に null(自動採番しない)', () => {
+    expect(buildEmptyCard([1024], 3).questionLabel).toBeNull()
   })
 
   it('title parses successfully against edit schema', () => {
@@ -98,7 +108,7 @@ describe('buildEmptyCard', () => {
   })
 
   it('correctAnswerIds is always empty array', () => {
-    const card = buildEmptyCard(['1', '2'], 10)
+    const card = buildEmptyCard([1024, 2048], 10)
     expect(card.correctAnswerIds).toEqual([])
   })
 
@@ -107,20 +117,6 @@ describe('buildEmptyCard', () => {
     expect(card.options).toHaveLength(1)
     expect(card.options[0].text.trim().length).toBeGreaterThan(0)
     expect(card.options[0].is_correct).toBe(false)
-  })
-
-  it('works with various existingSortKeys inputs', () => {
-    // null and empty strings should be filtered out
-    const card1 = buildEmptyCard([null, '', '5'], 0)
-    expect(card1.sortKey).toBe('6')
-
-    // Numeric keys
-    const card2 = buildEmptyCard(['001', '002', '009'], 0)
-    expect(card2.sortKey).toBe('10')
-
-    // Mixed keys (fallback)
-    const card3 = buildEmptyCard(['03-02', '1'], 0)
-    expect(card3.sortKey).toBe('3')
   })
 
   it('works with various existingCount inputs', () => {
@@ -132,15 +128,11 @@ describe('buildEmptyCard', () => {
   })
 
   it('full validation pipeline: all fields pass respective schemas', () => {
-    const card = buildEmptyCard(['1', '2'], 5)
+    const card = buildEmptyCard([1024, 2048], 5)
 
     // Validate title
     const titleResult = titleSchema.safeParse(card.title)
     expect(titleResult.success).toBe(true)
-
-    // Validate sortKey
-    const sortKeyResult = sortKeySchema.safeParse(card.sortKey)
-    expect(sortKeyResult.success).toBe(true)
 
     // Validate questionText
     const qResult = questionTextSchema.safeParse(card.questionText)

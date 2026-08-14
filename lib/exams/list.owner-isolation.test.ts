@@ -147,7 +147,8 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
         {
           id: 'card-1',
           title: '問1',
-          sortKey: '001',
+          questionLabel: '001',
+          baseOrder: 2048,
           questionText: 'a'.repeat(120),
           options,
           explanationText: 'カード全体の解説',
@@ -163,7 +164,8 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
     expect(r[0]).toEqual({
       id: 'card-1',
       title: '問1',
-      sortKey: '001',
+      questionLabel: '001',
+      baseOrder: 2048,
       questionText: 'a'.repeat(120),
       options,
       explanationText: 'カード全体の解説',
@@ -178,7 +180,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
         {
           id: 'card-2',
           title: '問2',
-          sortKey: null,
+          questionLabel: null,
           questionText: '問題文2',
           options: [],
           explanationText: null,
@@ -192,13 +194,13 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
     expect(r[0]?.images).toEqual([])
   })
 
-  it('handles null sortKey + non-array options + null explanation + null memo defensively', async () => {
+  it('handles null questionLabel + non-array options + null explanation + null memo defensively', async () => {
     dbState.queue = [
       [
         {
           id: 'card-1',
           title: '問1',
-          sortKey: null,
+          questionLabel: null,
           questionText: 'short',
           options: null, // DB schema 上 NOT NULL だが防御コード経路の確認
           explanationText: null,
@@ -208,7 +210,7 @@ describe('getCardsForExam (owner isolation + full detail mapping)', () => {
     ]
     const { getCardsForExam } = await importModule()
     const r = await getCardsForExam('user-1', 'exam-A', getDb())
-    expect(r[0].sortKey).toBeNull()
+    expect(r[0].questionLabel).toBeNull()
     expect(r[0].options).toEqual([])
     expect(r[0].explanationText).toBeNull()
     expect(r[0].memo).toBeNull()
@@ -247,7 +249,8 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
         {
           id: 'card-1',
           title: '問1',
-          sortKey: '001',
+          questionLabel: '001',
+          baseOrder: 2048,
           questionText: 'a'.repeat(120),
           options: [
             { id: 'a', text: 'A', is_correct: true },
@@ -263,7 +266,7 @@ describe('getCardsForSourceDocument (owner isolation + snippet/keys derivation)'
     expect(r[0]).toMatchObject({
       id: 'card-1',
       title: '問1',
-      sortKey: '001',
+      questionLabel: '001',
       optionCount: 2,
     })
     expect(r[0].questionTextSnippet.endsWith('…')).toBe(true)

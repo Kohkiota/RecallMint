@@ -22,7 +22,7 @@ import {
 //   - 0 row (owner mismatch / 不在): 'failed'
 //   - owner-scope: WHERE に eq(cards.id, cardId) + eq(cards.userId, userId)
 //   - updatedAt bump: SET に sql`now()`
-//   - 正規化 (sort_key / explanation_text / memo): '' → null
+//   - 正規化 (question_label / explanation_text / memo): '' → null
 //   - options: correct_answer_ids を is_correct から再生成
 //
 // 観点 (dispatch):
@@ -215,10 +215,10 @@ describe('CARD_FIELD_HANDLERS.title', () => {
 })
 
 // ---------------------------------------------------------------------------
-// sort_key handler
+// question_label handler
 // ---------------------------------------------------------------------------
 
-describe('CARD_FIELD_HANDLERS.sort_key', () => {
+describe('CARD_FIELD_HANDLERS.question_label', () => {
   let state: TxState
 
   beforeEach(() => {
@@ -226,44 +226,44 @@ describe('CARD_FIELD_HANDLERS.sort_key', () => {
     state = freshState()
   })
 
-  it('正常: sortKey を SET、 applied', async () => {
+  it('正常: questionLabel を SET、 applied', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    const result = await CARD_FIELD_HANDLERS.sort_key(
+    const result = await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
       'Q-01',
     )
     expect(result).toBe('applied')
-    expect(state.setArg).toMatchObject({ sortKey: 'Q-01' })
+    expect(state.setArg).toMatchObject({ questionLabel: 'Q-01' })
   })
 
   it('空文字 → null に正規化', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    await CARD_FIELD_HANDLERS.sort_key(
+    await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
       '',
     )
-    expect(state.setArg?.sortKey).toBeNull()
+    expect(state.setArg?.questionLabel).toBeNull()
   })
 
   it('null をそのまま受け入れる', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    const result = await CARD_FIELD_HANDLERS.sort_key(
+    const result = await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
       null,
     )
     expect(result).toBe('applied')
-    expect(state.setArg?.sortKey).toBeNull()
+    expect(state.setArg?.questionLabel).toBeNull()
   })
 
   it('101 文字 → failed (100 文字 max)', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    const result = await CARD_FIELD_HANDLERS.sort_key(
+    const result = await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
@@ -276,7 +276,7 @@ describe('CARD_FIELD_HANDLERS.sort_key', () => {
   it('0 row → failed', async () => {
     state.returningRows = []
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    const result = await CARD_FIELD_HANDLERS.sort_key(
+    const result = await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
@@ -287,7 +287,7 @@ describe('CARD_FIELD_HANDLERS.sort_key', () => {
 
   it('updatedAt bump + owner-scope', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
-    await CARD_FIELD_HANDLERS.sort_key(
+    await CARD_FIELD_HANDLERS.question_label(
       makeTx(state),
       'card-1',
       'user-1',
@@ -1136,7 +1136,7 @@ describe('CARD_FIELD_HANDLERS dispatch', () => {
         'memo',
         'options',
         'question_text',
-        'sort_key',
+        'question_label',
         'tag_option_ids',
         'title',
       ].sort(),

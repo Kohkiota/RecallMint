@@ -38,7 +38,8 @@ async function seedCard(fields: Partial<Record<string, unknown>> = {}) {
     user_id: 'user-1',
     exam_id: 'exam-1',
     title: '',
-    sort_key: null,
+    question_label: null,
+    base_order: 1024,
     question_text: '',
     options: [],
     correct_answer_ids: [],
@@ -99,9 +100,9 @@ describe('InlineTextField — render / edit 基本', () => {
       <InlineTextField
         cardId={CARD_ID}
         userId={USER_ID}
-        field="sort_key"
+        field="question_label"
         initialValue={null}
-        ariaLabel="ソートキー 編集"
+        ariaLabel="番号 編集"
         placeholder="(クリックで追加)"
       />,
     )

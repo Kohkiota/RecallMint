@@ -5,6 +5,8 @@ import { type TenantTx } from '@/lib/db/tenant-tx'
 import {
   assets,
   cardAssetRefs,
+  // 引数名 `cards`(prepared payload の card 配列)と衝突するため table 側を別名にする。
+  cards as cardsTable,
   exams,
   sourceDocuments,
   uploadOperations,
@@ -179,11 +181,20 @@ export async function publishPreparedUploadTx(
   //    Constraint)。 custom_props は card ID で対応付ける(§改修)。 applyOcrTags は
   //    §T13 の determinism 版。 saveExtractedCards は Sprint B の card_count bump
   //    撤去後は cards INSERT + applyOcrTags のみを行い、 exams table には触れない。
+  //    採番は「対象 exam の既存 max の続き」(spec §5.3)。既存 exam への追加 upload が
+  //    あるため 0 起点ではなく、この tx 内で読む(cards INSERT と同一 tx・同一
+  //    user/exam 条件)。並走 publish で同値採番が起きうるのは設計上の許容
+  //    (id tiebreak が全順序を保つ・spec §2.1)。
+  const [{ max: maxBaseOrder }] = await tx
+    .select({ max: sql<number | null>`max(${cardsTable.baseOrder})` })
+    .from(cardsTable)
+    .where(and(eq(cardsTable.userId, userId), eq(cardsTable.examId, examId)))
   const cardRows = buildCardRows(cards, cardImagesByCardId, {
     userId,
     examId,
     sourceDocumentId,
     now: new Date(),
+    maxBaseOrder,
   })
   const customPropsById: Record<string, PreparedCard['customProps']> = {}
   for (const card of cards) customPropsById[card.cardId] = card.customProps

@@ -240,7 +240,8 @@ export function makeReq(payload: unknown): Request {
 export const VALID_CREATE_PATCH = {
   exam_id: VALID_EXAM_ID,
   title: 'New Card',
-  sort_key: 'Q-01',
+  question_label: 'Q-01',
+  base_order: 1024,
   question_text: '問題テキスト',
   options: [{ id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: false }],
   explanation_text: null,

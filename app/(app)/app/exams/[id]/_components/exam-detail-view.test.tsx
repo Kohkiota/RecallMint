@@ -267,7 +267,7 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
     })
 
     // S2-5 fix: view 変更で guard 付き永続 effect (deps [view, columnVisibility, columnPinning]) が 1 回
-    // 発火し、 自 columnVisibility state (初期 { sort_key: false }) から hiddenColumns=['sort_key']
+    // 発火し、 自 columnVisibility state (初期 { question_label: false }) から hiddenColumns=['question_label']
     // を書込む。 handleToggle は書かない (setView のみ) ため二重書込にならず書込は 1 回。
     // S5-2: 書込は V3 化 (pinnedBoundary: null = 固定なし初期値)。
     await waitFor(() => {
@@ -275,7 +275,7 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
     })
     expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 3, view: 'table', hiddenColumns: ['sort_key'], pinnedBoundary: null },
+      { version: 3, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null },
       examViewPrefsV3Schema,
     )
 
@@ -660,7 +660,7 @@ describe('ExamDetailView — Case ⑬ (S2-5): 列 toggle が view を破壊し�
 // Case ⑭ (S2-5 fix / R3): 永続 load-race — load 解決前の view 切替が saved を破壊しない
 // getJsonSyncMeta を deferred promise で mock し、 load 未解決のまま view を切替える。
 // 修正前 (handleToggle が非 guard で write) は default columnVisibility 由来の
-// hiddenColumns=['sort_key'] を書き saved (memo hidden) を上書き = 設定消失 (R3)。
+// hiddenColumns=['question_label'] を書き saved (memo hidden) を上書き = 設定消失 (R3)。
 // 修正後は永続が prefsLoadedRef guard 付き単一 effect に集約され、 pre-load write が
 // 起きず、 load 解決後に saved hiddenColumns が保持される。
 // ===========================================================================
@@ -688,7 +688,7 @@ describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で save
     })
 
     // 修正の核心: load 未完了 (prefsLoadedRef=false) ゆえ永続 write は 1 回も起きない。
-    // 修正前はここで handleToggle が hiddenColumns=['sort_key'] を書き RED になる。
+    // 修正前はここで handleToggle が hiddenColumns=['question_label'] を書き RED になる。
     expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
 
     // load を saved { view:'table', hiddenColumns:['memo'] } で解決
@@ -707,10 +707,10 @@ describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で save
       )
     })
 
-    // default 由来の ['sort_key'] で上書きした形跡がない (= saved 消失していない)
+    // default 由来の ['question_label'] で上書きした形跡がない (= saved 消失していない)
     expect(mockSetJsonSyncMeta).not.toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
-      expect.objectContaining({ hiddenColumns: ['sort_key'] }),
+      expect.objectContaining({ hiddenColumns: ['question_label'] }),
       expect.anything(),
     )
   })
@@ -761,7 +761,7 @@ describe('ExamDetailView — Case ⑮ (S2-5 fix2): pre-load view toggle が post
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        { version: 3, view: 'table', hiddenColumns: ['sort_key'], pinnedBoundary: null },
+        { version: 3, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null },
         examViewPrefsV3Schema,
       )
     })

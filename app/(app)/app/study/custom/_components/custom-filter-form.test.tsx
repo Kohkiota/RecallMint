@@ -166,6 +166,7 @@ function makePreviewRow(id: string): CardWithTags {
       id,
       user_id: 'user-1',
       exam_id: 'exam-1',
+      base_order: 1024,
       title: `Card ${id}`,
       question_text: `Q${id}`,
       options: [],

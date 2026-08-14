@@ -6,7 +6,7 @@
 //   1. Dexie からテナント cards 全件 + tag master + card_tags を読む
 //   2. joinCardTags で card × tags を結合
 //   3. 述語 AND (exam / tag / answerState / streak) で絞り込む
-//   4. 順序付け: sequential → sortLikeServer / random → Fisher-Yates(rng)
+//   4. 順序付け: sequential → compareByBaseOrderAcrossExams / random → Fisher-Yates(rng)
 //   5. limit cap (null = 全件)
 //   6. toCard で server Card 型に変換 (LAST ステップ)
 
@@ -19,7 +19,7 @@ import {
   matchesStreakFilter,
 } from '@/lib/cards/card-filter-predicates'
 import { toCard } from '@/lib/db/cards-mapper'
-import { sortLikeServer } from '@/lib/cards/sort-like-server'
+import { compareByBaseOrderAcrossExams } from '@/lib/cards/domain/card-order'
 import type { Card } from '@/lib/db/schema'
 import type { CustomSessionCriteria } from '@/lib/cards/custom-session-criteria'
 
@@ -82,7 +82,9 @@ export async function selectCustomSessionRows(
 
   // Step 4: 順序付け (CardWithTags[] ごと操作してタグを保持。 toCard は Step 6 まで行わない)
   if (c.order === 'sequential') {
-    filtered.sort((a, b) => sortLikeServer(a.card, b.card))
+    // 複数 exam 選択時は exam でグループ化してから各 exam 内を基準順にする
+    // (base_order は exam 内でしか意味を持たないため・spec §2.5)。
+    filtered.sort((a, b) => compareByBaseOrderAcrossExams(a.card, b.card))
   } else {
     shuffleInPlace(filtered, rng)
   }

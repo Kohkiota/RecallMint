@@ -21,7 +21,8 @@ const { mockRows } = vi.hoisted(() => {
     examId: string
     sourceDocumentId: string | null
     title: string
-    sortKey: string | null
+    questionLabel: string | null
+    baseOrder: number
     questionText: string
     options: { id: string; text: string; is_correct: boolean }[]
     correctAnswerIds: string[]
@@ -52,7 +53,8 @@ const { mockRows } = vi.hoisted(() => {
       examId: 'exam-uuid-1',
       sourceDocumentId: null,
       title: 'Card 1',
-      sortKey: null,
+      questionLabel: null,
+      baseOrder: 1024,
       questionText: 'Q1',
       options: [{ id: 'a', text: 'A', is_correct: true }],
       correctAnswerIds: ['a'],
@@ -82,7 +84,8 @@ const { mockRows } = vi.hoisted(() => {
       examId: 'exam-uuid-1',
       sourceDocumentId: null,
       title: 'Card 2',
-      sortKey: null,
+      questionLabel: null,
+      baseOrder: 1024,
       questionText: 'Q2',
       options: [{ id: 'b', text: 'B', is_correct: false }],
       correctAnswerIds: ['a'],
@@ -118,7 +121,8 @@ const CANNED_ROWS = [
     examId: 'exam-uuid-1',
     sourceDocumentId: null,
     title: 'Card 1',
-    sortKey: null,
+    questionLabel: null,
+    baseOrder: 1024,
     questionText: 'Q1',
     options: [{ id: 'a', text: 'A', is_correct: true }],
     correctAnswerIds: ['a'],
@@ -148,7 +152,8 @@ const CANNED_ROWS = [
     examId: 'exam-uuid-1',
     sourceDocumentId: null,
     title: 'Card 2',
-    sortKey: null,
+    questionLabel: null,
+    baseOrder: 1024,
     questionText: 'Q2',
     options: [{ id: 'b', text: 'B', is_correct: false }],
     correctAnswerIds: ['a'],

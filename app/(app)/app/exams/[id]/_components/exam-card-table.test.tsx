@@ -68,7 +68,8 @@ function makeCard(n: number): ClientCard {
     user_id: USER_ID,
     exam_id: EXAM_ID,
     title: `Card ${n}`,
-    sort_key: String(n).padStart(4, '0'),
+    question_label: String(n).padStart(4, '0'),
+    base_order: 1024,
     question_text: `Question text for card ${n}`,
     options: [],
     correct_answer_ids: [],
@@ -466,7 +467,7 @@ describe('Edit-3 T1: th/td padding density', () => {
 // ===========================================================================
 // Fix-3 T2: sticky 2列撤去 — select / title に sticky class / left が付与されないこと
 // (OT 方針: Notion 準拠で左端固定しない)。旧 smoke ⑦ (Edit-3 T3 sticky) を撤去し、
-// 撤去の非回帰 guard に置き換える。列順: select(0) / title(1) / sort_key(hidden) / question ...
+// 撤去の非回帰 guard に置き換える。列順: select(0) / title(1) / question_label(hidden) / question ...
 // ===========================================================================
 
 describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されない', () => {
@@ -520,13 +521,13 @@ describe('Fix-3 T2: sticky 2列撤去 — sticky class / left が付与されな
 // ここは ExamCardTable が受け取った columnVisibility prop に従って列を隠す/表示する
 // controlled 契約のみを固定する。
 //
-// harness は初期 { sort_key: false } を与えるため、 sort_key は既定 hidden。
-// initialColumnVisibility={} (= saved hiddenColumns:[] 相当) を渡すと sort_key が表示される
+// harness は初期 { question_label: false } を与えるため、 question_label は既定 hidden。
+// initialColumnVisibility={} (= saved hiddenColumns:[] 相当) を渡すと question_label が表示される
 // = 旧 mount-load round-trip の振る舞い等価 (所有者だけが detail-view に移動)。
 // ===========================================================================
 
 describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
-  it('columnVisibility={sort_key:false} (harness 既定) → sort_key ヘッダが hidden', async () => {
+  it('columnVisibility={question_label:false} (harness 既定) → question_label ヘッダが hidden', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
 
@@ -536,10 +537,10 @@ describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
     const headerTexts = Array.from(container.querySelectorAll('th')).map((th) =>
       (th as HTMLElement).textContent?.trim(),
     )
-    expect(headerTexts, '既定 { sort_key: false } → sort_key hidden').not.toContain('ソートキー')
+    expect(headerTexts, '既定 { question_label: false } → question_label hidden').not.toContain('番号')
   })
 
-  it('columnVisibility={} (saved hiddenColumns:[] 相当) → sort_key ヘッダが表示される', async () => {
+  it('columnVisibility={} (saved hiddenColumns:[] 相当) → question_label ヘッダが表示される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
 
@@ -551,11 +552,11 @@ describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
     const headerTexts = Array.from(container.querySelectorAll('th')).map((th) =>
       (th as HTMLElement).textContent?.trim(),
     )
-    // sort_key は S3-1 で enableSorting:true になりヘッダに glyph が付く ('ソートキー▾' 等)。
+    // question_label は S3-1 で enableSorting:true になりヘッダに glyph が付く ('番号▾' 等)。
     // 部分一致で存在確認する (正確な glyph 文字を pin しない)。
     expect(
-      headerTexts.some((t) => t?.includes('ソートキー')),
-      'hiddenColumns:[] 相当 → sort_key が表示される',
+      headerTexts.some((t) => t?.includes('番号')),
+      'hiddenColumns:[] 相当 → question_label が表示される',
     ).toBe(true)
   })
 
@@ -578,11 +579,11 @@ describe('S2-5: ExamCardTable controlled columnVisibility 契約', () => {
 })
 
 // ===========================================================================
-// smoke ⑧ (Edit-3 T4): sort_key default hidden + toggle UI + re-show
+// smoke ⑧ (Edit-3 T4): question_label default hidden + toggle UI + re-show
 // ===========================================================================
 
-describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
-  it('sort_key ヘッダが初期状態で DOM に存在しない (columnVisibility 初期値 { sort_key: false })', async () => {
+describe('ExamCardTable smoke ⑧ (Edit-3 T4): question_label default hidden', () => {
+  it('question_label ヘッダが初期状態で DOM に存在しない (columnVisibility 初期値 { question_label: false })', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -590,11 +591,11 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
 
     const allTh = container.querySelectorAll('th')
     const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
-    // sort_key の header 文字列「ソートキー」が DOM に存在しない
-    expect(headerTexts).not.toContain('ソートキー')
+    // question_label の header 文字列「番号」が DOM に存在しない
+    expect(headerTexts).not.toContain('番号')
   })
 
-  it('列 toggle popover に sort_key (ソートキー) が列挙され checkbox が unchecked (hidden 状態)', async () => {
+  it('列 toggle popover に question_label (番号) が列挙され checkbox が unchecked (hidden 状態)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -603,31 +604,31 @@ describe('ExamCardTable smoke ⑧ (Edit-3 T4): sort_key default hidden', () => {
     // 「列の表示・非表示」ボタンをクリックして popover を開く
     fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
 
-    // sort_key に対応する checkbox が unchecked で列挙される
+    // question_label に対応する checkbox が unchecked で列挙される
     await waitFor(() => {
-      const sortKeyCheckbox = screen.getByRole('checkbox', { name: '列表示: ソートキー' })
-      expect(sortKeyCheckbox).toBeInTheDocument()
-      expect(sortKeyCheckbox).not.toBeChecked()
+      const questionLabelCheckbox = screen.getByRole('checkbox', { name: '列表示: 番号' })
+      expect(questionLabelCheckbox).toBeInTheDocument()
+      expect(questionLabelCheckbox).not.toBeChecked()
     })
   })
 
-  it('toggle で sort_key を表示にすると ソートキー ヘッダが DOM に現れる (getCanHide() true)', async () => {
+  it('toggle で question_label を表示にすると 番号 ヘッダが DOM に現れる (getCanHide() true)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // popover を開いて sort_key を toggle (check)
+    // popover を開いて question_label を toggle (check)
     fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
-    const sortKeyCheckbox = await screen.findByRole('checkbox', { name: '列表示: ソートキー' })
-    fireEvent.click(sortKeyCheckbox)
+    const questionLabelCheckbox = await screen.findByRole('checkbox', { name: '列表示: 番号' })
+    fireEvent.click(questionLabelCheckbox)
 
-    // ソートキー header が DOM に出現する
-    // sort_key は S3-1 で enableSorting:true になりヘッダに glyph が付く ('ソートキー▾' 等)。
+    // 番号 header が DOM に出現する
+    // question_label は S3-1 で enableSorting:true になりヘッダに glyph が付く ('番号▾' 等)。
     await waitFor(() => {
       const allTh = container.querySelectorAll('th')
       const headerTexts = Array.from(allTh).map((th) => (th as HTMLElement).textContent?.trim())
-      expect(headerTexts.some((t) => t?.includes('ソートキー'))).toBe(true)
+      expect(headerTexts.some((t) => t?.includes('番号'))).toBe(true)
     })
   })
 })
@@ -733,30 +734,30 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     })
   })
 
-  it('[Fix-3 T1 回帰] sort_key toggle 後に <table> が --col-sort_key-size CSS 変数を持つ', async () => {
-    // fix 前: columnSizeVars の deps に columnVisibility が含まれないため、sort_key を
-    //   toggle で表示しても memo が再計算されず --col-sort_key-size が付与されない (FAIL)。
-    // fix 後: columnVisibility を deps に追加したため memo が再計算され --col-sort_key-size が
+  it('[Fix-3 T1 回帰] question_label toggle 後に <table> が --col-question_label-size CSS 変数を持つ', async () => {
+    // fix 前: columnSizeVars の deps に columnVisibility が含まれないため、question_label を
+    //   toggle で表示しても memo が再計算されず --col-question_label-size が付与されない (FAIL)。
+    // fix 後: columnVisibility を deps に追加したため memo が再計算され --col-question_label-size が
     //   emit される (PASS)。
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    // 初期状態: sort_key は hidden → --col-sort_key-size は <table> に付与されていない
+    // 初期状態: question_label は hidden → --col-question_label-size は <table> に付与されていない
     const tableEl = container.querySelector('table') as HTMLElement
-    expect(tableEl.style.getPropertyValue('--col-sort_key-size')).toBe('')
+    expect(tableEl.style.getPropertyValue('--col-question_label-size')).toBe('')
 
-    // popover を開いて sort_key を toggle (hidden → visible)
+    // popover を開いて question_label を toggle (hidden → visible)
     fireEvent.click(screen.getByRole('button', { name: '列の表示・非表示' }))
-    const sortKeyCheckbox = await screen.findByRole('checkbox', { name: '列表示: ソートキー' })
-    fireEvent.click(sortKeyCheckbox)
+    const questionLabelCheckbox = await screen.findByRole('checkbox', { name: '列表示: 番号' })
+    fireEvent.click(questionLabelCheckbox)
 
-    // sort_key が visible になった後、columnSizeVars が再計算されて --col-sort_key-size が <table> に付与される
+    // question_label が visible になった後、columnSizeVars が再計算されて --col-question_label-size が <table> に付与される
     await waitFor(() => {
-      const cssVar = tableEl.style.getPropertyValue('--col-sort_key-size')
-      expect(cssVar, '<table> に --col-sort_key-size が付与されている').not.toBe('')
-      expect(parseFloat(cssVar), '--col-sort_key-size が正の数値').toBeGreaterThan(0)
+      const cssVar = tableEl.style.getPropertyValue('--col-question_label-size')
+      expect(cssVar, '<table> に --col-question_label-size が付与されている').not.toBe('')
+      expect(parseFloat(cssVar), '--col-question_label-size が正の数値').toBeGreaterThan(0)
     })
   })
 })
@@ -1708,10 +1709,10 @@ describe('S2b-2: ScrollTopButton click → scrollTo 呼出', () => {
 // ===========================================================================
 // S5-2: column pinning 配線 (brief 完了条件 b / d)
 //
-// (b-1) menu を持つ 9 列(title/sort_key/question/tags/explanation_text/memo/
+// (b-1) menu を持つ 9 列(title/question_label/question/tags/explanation_text/memo/
 //        lastCorrect/currentStreak/lastReview)全てに「固定表示」項目が出る。
 // (b-2) tags で「固定表示」click → onColumnPinningChange が
-//        {left: ['select','title','sort_key','question','options','tags'], right: []} を受ける。
+//        {left: ['select','title','question_label','question','options','tags'], right: []} を受ける。
 // (b-3) boundary=tags 状態で tags menu が「固定を解除」 → click で {left: [], right: []} を受ける。
 // (b-4) boundary=tags 状態で title menu が「固定表示」 → click で {left: ['select','title'], right: []} を受ける。
 // (d)  boundary null 時 → th に sticky/z-/border-r などの pinning 由来クラスが付かない。
@@ -1727,7 +1728,7 @@ describe('S5-2 (b): column pinning menu 配線 — 9 列に固定項目', () => 
     // menu gate を持つ 9 列のラベルと対応するメニューボタン名
     const menuColumns = [
       'タイトル の列メニュー',
-      'ソートキー の列メニュー',
+      '番号 の列メニュー',
       '問題文 の列メニュー',
       'タグ の列メニュー',
       '解説 の列メニュー',
@@ -1777,7 +1778,7 @@ describe('S5-2 (b): column pinning menu 配線 — tags 固定・解除・境界
 
     // onColumnPinningChange が select~tags の 6 列を受ける
     expect(onPinningChange).toHaveBeenCalledWith({
-      left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'],
+      left: ['select', 'title', 'question_label', 'question', 'options', 'tags'],
       right: [],
     })
   })
@@ -1791,7 +1792,7 @@ describe('S5-2 (b): column pinning menu 配線 — tags 固定・解除・境界
       <ControlledExamCardTable
         examId={EXAM_ID}
         userId={USER_ID}
-        initialColumnPinning={{ left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'], right: [] }}
+        initialColumnPinning={{ left: ['select', 'title', 'question_label', 'question', 'options', 'tags'], right: [] }}
         onColumnPinningChange={onPinningChange}
       />,
     )
@@ -1817,7 +1818,7 @@ describe('S5-2 (b): column pinning menu 配線 — tags 固定・解除・境界
       <ControlledExamCardTable
         examId={EXAM_ID}
         userId={USER_ID}
-        initialColumnPinning={{ left: ['select', 'title', 'sort_key', 'question', 'options', 'tags'], right: [] }}
+        initialColumnPinning={{ left: ['select', 'title', 'question_label', 'question', 'options', 'tags'], right: [] }}
         onColumnPinningChange={onPinningChange}
       />,
     )
@@ -1878,7 +1879,7 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     )
     await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
 
-    // th 列順(default columnVisibility = { sort_key: false }):
+    // th 列順(default columnVisibility = { question_label: false }):
     //   allTh[0] = select, allTh[1] = title, allTh[2] = question
     const allTh = container.querySelectorAll('thead th')
     expect(allTh.length).toBeGreaterThan(2)
@@ -1948,29 +1949,29 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
 // ===========================================================================
 // S5-3 (b): hidden boundary → separator が最右可視 pinned 列へ移動
 //
-// boundary=sort_key で sort_key が hidden の場合:
-//   - visible pinned: select, title (sort_key は hidden で getHeaderGroups から除外)
+// boundary=question_label で question_label が hidden の場合:
+//   - visible pinned: select, title (question_label は hidden で getHeaderGroups から除外)
 //   - title が最右可視 pinned → border-r
-//   - sort_key の start var は emit されない (visible ではないため)
+//   - question_label の start var は emit されない (visible ではないため)
 // ===========================================================================
 
 describe('S5-3 (b): hidden boundary → separator が title (最右可視 pinned) へ移動', () => {
-  it('boundary=sort_key / sort_key hidden → title th に border-r が付き、 --col-sort_key-start は emit されない', async () => {
+  it('boundary=question_label / question_label hidden → title th に border-r が付き、 --col-question_label-start は emit されない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
-    // boundary=sort_key で sort_key を hidden にする
+    // boundary=question_label で question_label を hidden にする
     const { container } = render(
       <ControlledExamCardTable
         examId={EXAM_ID}
         userId={USER_ID}
-        initialColumnPinning={{ left: ['select', 'title', 'sort_key'], right: [] }}
-        initialColumnVisibility={{ sort_key: false }}
+        initialColumnPinning={{ left: ['select', 'title', 'question_label'], right: [] }}
+        initialColumnVisibility={{ question_label: false }}
       />,
     )
     await waitFor(() => expect(screen.getByTestId('row-card-1')).toBeInTheDocument())
 
     const allTh = container.querySelectorAll('thead th')
-    // sort_key hidden → th order: select(0), title(1), question(2)
+    // question_label hidden → th order: select(0), title(1), question(2)
     const selectTh = allTh[0] as HTMLElement
     const titleTh = allTh[1] as HTMLElement
 
@@ -1978,15 +1979,15 @@ describe('S5-3 (b): hidden boundary → separator が title (最右可視 pinned
     expect(selectTh.className, 'select th に sticky').toContain('sticky')
     expect(selectTh.className, 'select th に border-r なし').not.toContain('border-r')
 
-    // title: sticky + left + border-r (hidden sort_key を飛ばして最右可視 pinned)
+    // title: sticky + left + border-r (hidden question_label を飛ばして最右可視 pinned)
     expect(titleTh.className, 'title th に sticky').toContain('sticky')
     expect(titleTh.className, 'title th (最右可視 pinned) に border-r').toContain('border-r')
 
-    // <table> に --col-sort_key-start が emit されない (sort_key は visible ではないため)
+    // <table> に --col-question_label-start が emit されない (question_label は visible ではないため)
     const tableEl = container.querySelector('table') as HTMLElement
     expect(
-      tableEl.style.getPropertyValue('--col-sort_key-start'),
-      '--col-sort_key-start は emit されない (hidden column)',
+      tableEl.style.getPropertyValue('--col-question_label-start'),
+      '--col-question_label-start は emit されない (hidden column)',
     ).toBe('')
 
     // select/title の start vars は emit されている
@@ -2296,7 +2297,7 @@ describe('S5-3 (c): hover — pinned td の bg-background + group-hover + tr gro
     const dataRow = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
     expect(dataRow.className, 'data tr に group').toContain('group')
 
-    // td: sort_key hidden → select(0), title(1), question(2)
+    // td: question_label hidden → select(0), title(1), question(2)
     const cells = dataRow.querySelectorAll('td')
     const selectTd = cells[0] as HTMLElement
     const titleTd = cells[1] as HTMLElement

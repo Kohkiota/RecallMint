@@ -99,7 +99,8 @@ export type ClientCard = {
   exam_id: string
   source_document_id?: string | null
   title: string
-  sort_key?: string | null
+  question_label?: string | null
+  base_order: number
   question_text: string
   options: ClientCardOption[]
   correct_answer_ids: string[]

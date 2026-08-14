@@ -74,7 +74,7 @@ export async function getExamByIdForUser(
 export type CardListEntry = {
   id: string
   title: string
-  sortKey: string | null
+  questionLabel: string | null
   questionTextSnippet: string
   optionCount: number
 }
@@ -85,7 +85,10 @@ export type CardListEntry = {
 export type ExamDetailCard = {
   id: string
   title: string
-  sortKey: string | null
+  questionLabel: string | null
+  // 末尾採番 (手動追加) が SSR fallback 経由で読む。mirror 未 hydrate の窓でも
+  // exam 内の max を出せるようにするため表示用の型に載せている (spec §4.1 r3)。
+  baseOrder: number
   questionText: string
   options: CardOption[]
   explanationText: string | null
@@ -94,7 +97,8 @@ export type ExamDetailCard = {
 }
 
 // 試験詳細 page 用 cards 取得 (read-only、 owner-scoped)。
-// sort: sort_key (text) ASC NULLS LAST → created_at ASC で OCR 文書順を尊重。
+// sort: base_order ASC → id ASC (spec §2.1 の全順序。client comparator
+// compareByBaseOrder と同一結果になる契約)。
 export async function getCardsForExam(
   userId: string,
   examId: string,
@@ -105,7 +109,8 @@ export async function getCardsForExam(
     .select({
       id: cards.id,
       title: cards.title,
-      sortKey: cards.sortKey,
+      questionLabel: cards.questionLabel,
+      baseOrder: cards.baseOrder,
       questionText: cards.questionText,
       options: cards.options,
       explanationText: cards.explanationText,
@@ -114,11 +119,12 @@ export async function getCardsForExam(
     })
     .from(cards)
     .where(and(eq(cards.userId, userId), eq(cards.examId, examId)))
-    .orderBy(cards.sortKey, cards.createdAt)
+    .orderBy(cards.baseOrder, cards.id)
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
-    sortKey: r.sortKey,
+    questionLabel: r.questionLabel,
+    baseOrder: r.baseOrder,
     questionText: r.questionText,
     // options は schema 上 NOT NULL だが防御的に配列チェック。
     options: Array.isArray(r.options) ? r.options : [],
@@ -171,6 +177,11 @@ export async function getSourceDocumentForUser(
 // S1.9.2: OCR result page 用。 当該 source_document が抽出した cards 一覧。
 // snippet 表示型 CardListEntry を返す (S2.0 T7 で getCardsForExam は rich 型
 // ExamDetailCard に変更済、 本関数は upload result page 用に CardListEntry 据え置き)。
+//
+// base_order は exam 内でのみ意味を持つ (spec §2.1) ので、 この ORDER BY が意味を成すのは
+// 「1 source_document の cards は 1 exam に閉じる」 前提の上。 現状それは publish が単一 exam
+// へ INSERT し、 card の exam 間移動経路が存在しないことで成立している。 **Grid-3 で移動を
+// 入れたらこの前提は崩れる** ので、 その時点で order 定義を再裁定すること。
 export async function getCardsForSourceDocument(
   userId: string,
   sourceDocumentId: string,
@@ -181,7 +192,7 @@ export async function getCardsForSourceDocument(
     .select({
       id: cards.id,
       title: cards.title,
-      sortKey: cards.sortKey,
+      questionLabel: cards.questionLabel,
       questionText: cards.questionText,
       options: cards.options,
       createdAt: cards.createdAt,
@@ -193,11 +204,11 @@ export async function getCardsForSourceDocument(
         eq(cards.sourceDocumentId, sourceDocumentId),
       ),
     )
-    .orderBy(cards.sortKey, cards.createdAt)
+    .orderBy(cards.baseOrder, cards.id)
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
-    sortKey: r.sortKey,
+    questionLabel: r.questionLabel,
     questionTextSnippet: snippet(r.questionText, 80),
     optionCount: Array.isArray(r.options) ? r.options.length : 0,
   }))

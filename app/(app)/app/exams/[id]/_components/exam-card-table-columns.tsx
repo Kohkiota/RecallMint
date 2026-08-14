@@ -2,7 +2,7 @@
 
 // exam-card-table-columns — TanStack Table column defs for ExamCardTable。
 // module スコープで定義 (component 内 useMemo 不使用)。
-// 列順: [select, title, sort_key, question, options, tags,
+// 列順: [select, title, question_label, question, options, tags,
 //        explanation_text, memo, lastCorrect, currentStreak, lastReview]。
 // Fix-3 T2: 決め打ち sticky 固定は撤去(不変)。S5 でユーザー選択式の列固定(column pinning)を導入 — 固定境界は examViewPrefs V3 + TanStack columnPinning で管理。
 //
@@ -16,7 +16,7 @@ import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
 import { TagCell } from './exam-card-table-tag-cell'
 import { tagSortKey } from '../_lib/tag-sort-key'
-import { sortLikeServer } from './inline-card-list'
+import { compareByQuestionLabel } from '@/lib/cards/domain/card-order'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
 import { CardImageGallery } from './card-image-gallery'
 import {
@@ -63,7 +63,7 @@ const streakFilterFn: FilterFn<ExamCardRow> = (row, _columnId, filterValue) =>
   matchesStreakFilter(row.original.card.current_streak, filterValue as StreakFilterValue)
 
 // S4-1: テキストフィルタ factory。read(card) でセル値を取り出して matchesTextFilter に委譲。
-// 5 列 (title / sort_key / question / explanation_text / memo) に適用 (rule of three 充足)。
+// 5 列 (title / question_label / question / explanation_text / memo) に適用 (rule of three 充足)。
 // row.original 直読み — accessorFn / getValue とは独立 (sort と filter は別レイヤー)。
 const makeTextFilterFn = (
   read: (card: ClientCard) => string | null | undefined,
@@ -141,7 +141,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // sortingFn は row.original から直接読んで localeCompare('ja') で比較する。
     accessorFn: (row) => row.card.title,
     // T2/T3: side peek 起動button(カードを開く)は select 列(checkbox 隣接)へ移設済(常時表示化)。
-    // title セルは InlineTextField のみ(他の text 列 = sort_key 等と同型)。
+    // title セルは InlineTextField のみ(他の text 列 = question_label 等と同型)。
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
@@ -166,13 +166,14 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     filterFn: makeTextFilterFn((card) => card.title),
   },
   {
-    id: 'sort_key',
+    id: 'question_label',
     size: 100,
-    header: 'ソートキー',
+    header: '番号',
     // S3-1 D-2: accessorFn は getCanSort() を有効化するために必要 (TanStack v8 制約)。
-    // sortLikeServer = 連番順(文字列辞書比較 + NULLS LAST + created_at tiebreak)。
+    // compareByQuestionLabel = **表示専用**(ラベル文字列比較 + NULLS LAST、同値は
+    // (base_order, id) で解決)。既定順ではない — 既定順は base_order で別レイヤー。
     // TanStack desc 反転により昇順→null 末尾 / 降順→null 先頭 (継承挙動・意図的)。
-    accessorFn: (row) => row.card.sort_key,
+    accessorFn: (row) => row.card.question_label,
     cell: ({ row, table }) => {
       const meta = table.options.meta as ExamCardTableMeta | undefined
       // owner は常に認証主体 (meta.userId) — title セルと同型・同理由(:145-152 参照)。
@@ -181,16 +182,17 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         <InlineTextField
           cardId={row.original.card.id}
           userId={meta.userId}
-          field="sort_key"
-          initialValue={row.original.card.sort_key ?? null}
-          ariaLabel="ソートキー 編集"
+          field="question_label"
+          initialValue={row.original.card.question_label ?? null}
+          ariaLabel="番号 編集"
         />
       )
     },
     enableSorting: true,
-    sortingFn: (rowA, rowB) => sortLikeServer(rowA.original.card, rowB.original.card),
-    // S4-1: テキストフィルタ。row.original.card.sort_key を直読み (nullable)。
-    filterFn: makeTextFilterFn((card) => card.sort_key),
+    sortingFn: (rowA, rowB) =>
+      compareByQuestionLabel(rowA.original.card, rowB.original.card),
+    // S4-1: テキストフィルタ。row.original.card.question_label を直読み (nullable)。
+    filterFn: makeTextFilterFn((card) => card.question_label),
   },
   {
     id: 'question',
@@ -231,7 +233,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         </>
       )
     },
-    // S3-1: 問題文ソート撤去。連番順の役割は sort_key 列 sortingFn へ移管。
+    // S3-1: 問題文ソート撤去。連番順の役割は question_label 列 sortingFn へ移管。
     // 注意: 初期連番順(liveData の pre-sort)は別レイヤーで不変(exam-card-table.tsx)。
     enableSorting: false,
     // S4-1: テキストフィルタ。row.original.card.question_text を直読み。

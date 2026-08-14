@@ -1,7 +1,7 @@
 // exam-card-table-filter-editors.tsx — S1-3 / S4-3: filter editor registry.
 // 8 entries: lastCorrect (回答状態 select) / currentStreak (op+数値 input) /
 //   tags (CardTagAddPopover selectOnly) /
-//   title / sort_key / question / explanation_text / memo (共有 TextColumnEditor)。
+//   title / question_label / question / explanation_text / memo (共有 TextColumnEditor)。
 // Each editor component receives { column, ctx } and reads/writes column filter value directly.
 // Aria-labels preserved from exam-card-table-filter-bar.tsx for test asset reuse.
 //
@@ -295,14 +295,14 @@ function TextColumnEditor({
 // ---------------------------------------------------------------------------
 
 export const cardTableFilterEditors: Record<
-  'lastCorrect' | 'currentStreak' | 'tags' | 'title' | 'sort_key' | 'question' | 'explanation_text' | 'memo',
+  'lastCorrect' | 'currentStreak' | 'tags' | 'title' | 'question_label' | 'question' | 'explanation_text' | 'memo',
   React.FC<{ column: Column<ExamCardRow, unknown>; ctx: FilterEditorContext }>
 > = {
   lastCorrect: LastCorrectEditor,
   currentStreak: CurrentStreakEditor,
   tags: TagsEditor,
   title: TextColumnEditor,
-  sort_key: TextColumnEditor,
+  question_label: TextColumnEditor,
   question: TextColumnEditor,
   explanation_text: TextColumnEditor,
   memo: TextColumnEditor,

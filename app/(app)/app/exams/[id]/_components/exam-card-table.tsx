@@ -71,7 +71,7 @@ import { ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { getClientDb } from '@/lib/client-db'
-import { sortLikeServer } from './inline-card-list'
+import { compareByBaseOrder } from '@/lib/cards/domain/card-order'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
@@ -278,7 +278,7 @@ export function ExamCardTable({
   chromeRef,
 }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
-  // 初期ソート: 空配列 = sortLikeServer pre-sort (liveData:232) が連番順を担保するため不要。
+  // 初期ソート: 空配列 = compareByBaseOrder pre-sort (liveData:232) が連番順を担保するため不要。
   // ソートを全削除した時も自然に連番順へ戻る(バーシュリンクとも整合)。
   const [sorting, setSorting] = useState<SortingState>([])
   // Grid-2 T3: columnFilters は非永続 (examViewPrefs に保存しない、 リロードで初期化)。
@@ -319,7 +319,7 @@ export function ExamCardTable({
     ])
     const filteredCards = cardRows
       .filter((c) => c.user_id === userId)
-      .sort(sortLikeServer)
+      .sort(compareByBaseOrder)
     const pageCardIds = filteredCards.map((c) => c.id)
     const cardTags =
       pageCardIds.length === 0

@@ -89,6 +89,7 @@ async function seedReferencedAsset(userId: string): Promise<string> {
     userId,
     examId,
     title: 'GC oracle card',
+    baseOrder: 1024,
     questionText: 'Q?',
     options: [
       { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },
@@ -147,6 +148,7 @@ async function seedSharedAssetTwoCards(label: string): Promise<{
       userId,
       examId,
       title: `GC shared card ${cardId}`,
+      baseOrder: 1024,
       questionText: 'Q?',
       options: [
         { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },
@@ -416,6 +418,7 @@ describe('asset GC cron — Task 8: A/B shared-asset refs↔GC 整合 pin(実 SQ
       userId,
       examId,
       title: 'GC selfheal card',
+      baseOrder: 1024,
       questionText: 'Q?',
       options: [
         { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },

@@ -32,7 +32,7 @@ export const TEXT_OP_LABELS: Record<TextFilterOp, string> = {
 // S4-1: テキストフィルタ対象列 id 一覧 (S4-2 / S4-3 で共通参照)
 export const TEXT_FILTER_COLUMN_IDS = [
   'title',
-  'sort_key',
+  'question_label',
   'question',
   'explanation_text',
   'memo',

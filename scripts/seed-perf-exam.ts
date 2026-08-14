@@ -92,6 +92,7 @@ import {
 } from '@/lib/db/schema'
 import type { CardOption } from '@/lib/db/schema'
 import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
+import { BASE_ORDER_STRIDE } from '@/lib/cards/domain/card-order'
 
 // ---------------------------------------------------------------------------
 // CLI args parser (--key=value / --flag pattern)
@@ -501,7 +502,8 @@ async function main(): Promise<void> {
     userId: string
     examId: string
     title: string
-    sortKey: string
+    questionLabel: string
+    baseOrder: number
     questionText: string
     options: CardOption[]
     correctAnswerIds: string[]
@@ -537,7 +539,8 @@ async function main(): Promise<void> {
       userId,
       examId,
       title: `PERF-SEED カード ${cardNum}`,
-      sortKey: cardNum,
+      questionLabel: cardNum,
+      baseOrder: (i + 1) * BASE_ORDER_STRIDE,
       questionText,
       options: shuffledOpts,
       correctAnswerIds: [correctId],

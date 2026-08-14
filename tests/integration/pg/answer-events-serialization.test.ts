@@ -95,6 +95,7 @@ async function seedExtraCard(tenant: TenantIds): Promise<string> {
       examId: tenant.examId,
       sourceDocumentId: tenant.sourceDocumentId,
       title: 'Extra',
+      baseOrder: 1024,
       questionText: 'Q?',
       options: [
         { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },

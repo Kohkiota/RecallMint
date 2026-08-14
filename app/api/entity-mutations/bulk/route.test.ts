@@ -113,7 +113,7 @@ vi.mock('@/lib/cards/card-field-handlers', () => {
   return {
     CARD_FIELD_HANDLERS: {
       title: makeHandler('title'),
-      sort_key: makeHandler('sort_key'),
+      question_label: makeHandler('question_label'),
       question_text: makeHandler('question_text'),
       explanation_text: makeHandler('explanation_text'),
       memo: makeHandler('memo'),
@@ -301,7 +301,8 @@ const VALID_EXAM_ID = 'eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee'
 const VALID_CREATE_PATCH = {
   exam_id: VALID_EXAM_ID,
   title: 'New Card',
-  sort_key: 'Q-01',
+  question_label: 'Q-01',
+  base_order: 1024,
   question_text: '問題テキスト',
   options: [{ id: 'a', uid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', text: 'A', isCorrect: false }],
   explanation_text: null,
@@ -604,7 +605,7 @@ describe('POST /api/entity-mutations/bulk', () => {
     // registry dispatch: CARD_FIELD_HANDLERS.title が呼ばれた
     expect(vi.mocked(CARD_FIELD_HANDLERS.title)).toHaveBeenCalledTimes(1)
     // 他 field の handler は呼ばれていない
-    expect(vi.mocked(CARD_FIELD_HANDLERS.sort_key)).not.toHaveBeenCalled()
+    expect(vi.mocked(CARD_FIELD_HANDLERS.question_label)).not.toHaveBeenCalled()
     expect(vi.mocked(CARD_FIELD_HANDLERS.options)).not.toHaveBeenCalled()
 
     expect(state.cardFieldUpdateCalls).toHaveLength(1)
@@ -844,7 +845,7 @@ describe('POST /api/entity-mutations/bulk', () => {
     const badPatch = {
       exam_id: VALID_EXAM_ID,
       title: 'Title',
-      sort_key: null,
+      question_label: null,
       options: [{ id: 'a', text: 'A', isCorrect: false }],
       explanation_text: null,
       memo: null,
@@ -857,11 +858,11 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(state.cardCreateCalls).toHaveLength(0)
   })
 
-  it("create: sort_key='' / explanation_text='' / memo='' → applyCardCreateWithId に null で渡す (UPDATE path と同じ正規化)", async () => {
+  it("create: question_label='' / explanation_text='' / memo='' → applyCardCreateWithId に null で渡す (UPDATE path と同じ正規化)", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const patchWithEmpty = {
       ...VALID_CREATE_PATCH,
-      sort_key: '',
+      question_label: '',
       explanation_text: '',
       memo: '',
     }
@@ -873,7 +874,9 @@ describe('POST /api/entity-mutations/bulk', () => {
 
     expect(state.cardCreateCalls).toHaveLength(1)
     const input = state.cardCreateCalls[0]!.input
-    expect(input['sortKey']).toBeNull()
+    expect(input['questionLabel']).toBeNull()
+    // base_order は空文字正規化の対象外(数値列)。patch の値がそのまま届く。
+    expect(input['baseOrder']).toBe(1024)
     expect(input['explanationText']).toBeNull()
     expect(input['memo']).toBeNull()
   })

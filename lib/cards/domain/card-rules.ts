@@ -13,12 +13,12 @@ import type { CardOption } from '@/lib/db/schema'
 // ---------------------------------------------------------------------------
 
 // server (lib/cards/card-field-handlers.ts の CARD_FIELD_HANDLERS[field] handler、
-// sort_key / explanation_text / memo は handler 内で `r.data === '' ? null : r.data`
+// question_label / explanation_text / memo は handler 内で `r.data === '' ? null : r.data`
 // 正規化) が空文字を null に揃える nullable text 列。 mirror も同じ正規化をかけ、
 // 楽観値を server 確定値に一致させる (一致させないと次の pull-back で '' → null へ
 // 見た目が反転する)。 server zod は trim しないのでここも strict な === '' で揃える。
 export const NULLABLE_TEXT_FIELDS: ReadonlySet<string> = new Set([
-  'sort_key',
+  'question_label',
   'explanation_text',
   'memo',
 ])

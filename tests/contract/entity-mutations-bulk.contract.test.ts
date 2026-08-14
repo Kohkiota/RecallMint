@@ -78,7 +78,7 @@ vi.mock('@/lib/cards/card-field-handlers', () => {
   return {
     CARD_FIELD_HANDLERS: {
       title: makeHandler('title'),
-      sort_key: makeHandler('sort_key'),
+      question_label: makeHandler('question_label'),
       question_text: makeHandler('question_text'),
       explanation_text: makeHandler('explanation_text'),
       memo: makeHandler('memo'),

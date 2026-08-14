@@ -93,7 +93,7 @@ function openToggle() {
 }
 
 describe('ColumnVisibilityToggle: 列挙 + select 除外', () => {
-  it('hideable 列 (タイトル / メモ / ソートキー) が列挙され、 select は出ない', () => {
+  it('hideable 列 (タイトル / メモ / 番号) が列挙され、 select は出ない', () => {
     render(
       <ColumnVisibilityToggle columnVisibility={{}} onColumnVisibilityChange={vi.fn()} />,
     )
@@ -101,7 +101,7 @@ describe('ColumnVisibilityToggle: 列挙 + select 除外', () => {
 
     expect(screen.getByRole('checkbox', { name: '列表示: タイトル' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: '列表示: メモ' })).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: '列表示: ソートキー' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: '列表示: 番号' })).toBeInTheDocument()
     // select 列 (JSX header) は列挙されない
     expect(screen.queryByRole('checkbox', { name: /列表示: select/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: '列表示: 全選択' })).not.toBeInTheDocument()
@@ -112,14 +112,14 @@ describe('ColumnVisibilityToggle: checkbox が columnVisibility prop を反映',
   it('columnVisibility[id]===false の列は unchecked、 それ以外は checked', () => {
     render(
       <ColumnVisibilityToggle
-        columnVisibility={{ sort_key: false, memo: false }}
+        columnVisibility={{ question_label: false, memo: false }}
         onColumnVisibilityChange={vi.fn()}
       />,
     )
     openToggle()
 
     // hidden 列 (false) は unchecked
-    expect(screen.getByRole('checkbox', { name: '列表示: ソートキー' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: '列表示: 番号' })).not.toBeChecked()
     expect(screen.getByRole('checkbox', { name: '列表示: メモ' })).not.toBeChecked()
     // 未指定列 (可視) は checked
     expect(screen.getByRole('checkbox', { name: '列表示: タイトル' })).toBeChecked()
@@ -131,7 +131,7 @@ describe('ColumnVisibilityToggle: toggle で onColumnVisibilityChange が呼ば�
     const onChange = vi.fn()
     render(
       <ColumnVisibilityToggle
-        columnVisibility={{ sort_key: false }}
+        columnVisibility={{ question_label: false }}
         onColumnVisibilityChange={onChange}
       />,
     )
@@ -139,22 +139,22 @@ describe('ColumnVisibilityToggle: toggle で onColumnVisibilityChange が呼ば�
 
     // メモ (可視) を click で off
     fireEvent.click(screen.getByRole('checkbox', { name: '列表示: メモ' }))
-    expect(onChange).toHaveBeenCalledWith({ sort_key: false, memo: false })
+    expect(onChange).toHaveBeenCalledWith({ question_label: false, memo: false })
   })
 
   it('hidden 列を on → 当該 id=true を含む value で呼ばれる', () => {
     const onChange = vi.fn()
     render(
       <ColumnVisibilityToggle
-        columnVisibility={{ sort_key: false }}
+        columnVisibility={{ question_label: false }}
         onColumnVisibilityChange={onChange}
       />,
     )
     openToggle()
 
-    // ソートキー (hidden) を click で on
-    fireEvent.click(screen.getByRole('checkbox', { name: '列表示: ソートキー' }))
-    expect(onChange).toHaveBeenCalledWith({ sort_key: true })
+    // 番号 (hidden) を click で on
+    fireEvent.click(screen.getByRole('checkbox', { name: '列表示: 番号' }))
+    expect(onChange).toHaveBeenCalledWith({ question_label: true })
   })
 })
 

@@ -11,7 +11,7 @@
 //
 // leaf 境界値(文字数上限・必須/nullable・配列個数・uid v4 等)は
 // `lib/validation/card.ts` の既存 schema を**そのまま**(値のコピーでなく
-// 参照の共有)compose する — 再定義しない。card レベル(title/sortKey/
+// 参照の共有)compose する — 再定義しない。card レベル(title/questionLabel/
 // questionText/explanationText/memo)と option(id/uid/text/isCorrect/
 // explanation)は publisher の manual 編集 schema と完全に同一の schema object
 // を使う(drift が構造的に起きない)。figure(assetId/sourceId/box_2d/target/
@@ -28,7 +28,7 @@
 import { z } from 'zod'
 import {
   titleSchema,
-  sortKeySchema,
+  questionLabelSchema,
   questionTextSchema,
   explanationTextSchema,
   memoSchema,
@@ -132,10 +132,10 @@ export type CardExclusionReason = keyof CardExclusionTallies
 export const preparedCardSchema = z.object({
   cardId: uuidV4Schema,
   title: titleSchema,
-  // sortKeySchema は既に `.nullable()`(lib/validation/card.ts で manual 編集用
+  // questionLabelSchema は既に `.nullable()`(lib/validation/card.ts で manual 編集用
   // に確立済 — undefined でなく null が既存慣習。 spec §5.4 ①「既存 manual
   // schema と整合」はこの既存慣習をそのまま指す)。
-  sortKey: sortKeySchema,
+  questionLabel: questionLabelSchema,
   questionText: questionTextSchema,
   // 個数境界(1-50)+ id 一意 + uid 一意 + uid v4 shape を全て `optionsSchema`
   // 側で検証する(count/uniqueness/bounds の手書き再実装をしない — これが

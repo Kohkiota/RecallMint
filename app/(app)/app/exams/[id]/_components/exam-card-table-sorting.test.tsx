@@ -6,7 +6,7 @@
 //   3. lastCorrect ソートで null が末尾
 //   4. select 列がソート不可 (enableSorting: false)
 //   5. title 昇順/降順 (localeCompare 'ja') [S3-1 (a)]
-//   6. sort_key 昇順/降順 + NULLS LAST/FIRST [S3-1 (b)(e)]
+//   6. question_label 昇順/降順 + NULLS LAST/FIRST [S3-1 (b)(e)]
 //   7. question 列が getCanSort() === false [S3-1 (c)]
 //   8. 初期連番順 (pre-sort レイヤー回帰防止) [S3-1 (d)]
 //   9. tags 列 getCanSort()===true + localeCompare 昇降 + タグ無し末尾 + tiebreak [S3-2 (b)(c)]
@@ -47,7 +47,8 @@ function makeClientCard(overrides: Partial<ClientCard> = {}): ClientCard {
     user_id: 'u-test',
     exam_id: 'e-test',
     title: 'Test Card',
-    sort_key: '0001',
+    question_label: '0001',
+    base_order: 1024,
     question_text: 'Test question?',
     options: [],
     correct_answer_ids: [],
@@ -108,9 +109,9 @@ function getSortedIds(data: ExamCardRow[], sorting: SortingState): string[] {
 
 describe('Sorting: currentStreak', () => {
   const data = [
-    makeRow('card-a', { current_streak: 5, sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-b', { current_streak: 1, sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-c', { current_streak: 3, sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-a', { current_streak: 5, question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-b', { current_streak: 1, question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-c', { current_streak: 3, question_label: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('昇順ソートで current_streak 小→大に並ぶ', () => {
@@ -130,9 +131,9 @@ describe('Sorting: currentStreak', () => {
 
 describe('Sorting: lastReview null が末尾固定', () => {
   const data = [
-    makeRow('card-null', { last_review: null, sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-early', { last_review: '2024-03-01T00:00:00.000Z', sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-late', { last_review: '2024-06-01T00:00:00.000Z', sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-null', { last_review: null, question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-early', { last_review: '2024-03-01T00:00:00.000Z', question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-late', { last_review: '2024-06-01T00:00:00.000Z', question_label: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('昇順ソートで null が末尾に来る', () => {
@@ -158,9 +159,9 @@ describe('Sorting: lastReview null が末尾固定', () => {
 
 describe('Sorting: lastCorrect null が末尾固定', () => {
   const data = [
-    makeRow('card-null', { last_correct: null, sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-false', { last_correct: false, sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-true', { last_correct: true, sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-null', { last_correct: null, question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-false', { last_correct: false, question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-true', { last_correct: true, question_label: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('昇順ソートで null が末尾に来る', () => {
@@ -212,9 +213,9 @@ describe('Sorting: select 列は getCanSort() === false', () => {
 describe('Sorting: title 昇順/降順 [S3-1 (a)]', () => {
   // ASCII サンプルで direction を確認。exact collation は pin しない (環境差)。
   const data = [
-    makeRow('card-b', { title: 'B', sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-a', { title: 'A', sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-c', { title: 'C', sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-b', { title: 'B', question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-a', { title: 'A', question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-c', { title: 'C', question_label: '0003', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('昇順ソートで A→B→C 順', () => {
@@ -229,8 +230,8 @@ describe('Sorting: title 昇順/降順 [S3-1 (a)]', () => {
 
   it('かな2文字で昇順が正しい向き (あ→い)', () => {
     const kanaData = [
-      makeRow('card-i', { title: 'い', sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
-      makeRow('card-a', { title: 'あ', sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
+      makeRow('card-i', { title: 'い', question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }),
+      makeRow('card-a', { title: 'あ', question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }),
     ]
     const ids = getSortedIds(kanaData, [{ id: 'title', desc: false }])
     expect(ids[0]).toBe('card-a') // 'あ' < 'い'
@@ -238,35 +239,35 @@ describe('Sorting: title 昇順/降順 [S3-1 (a)]', () => {
 })
 
 // ---------------------------------------------------------------------------
-// case 6 / (b)(e): sort_key 昇順/降順 + NULLS LAST/FIRST [S3-1]
+// case 6 / (b)(e): question_label 昇順/降順 + NULLS LAST/FIRST [S3-1]
 // ---------------------------------------------------------------------------
 
-describe('Sorting: sort_key 昇順/降順 + null 位置 [S3-1 (b)(e)]', () => {
+describe('Sorting: question_label 昇順/降順 + null 位置 [S3-1 (b)(e)]', () => {
   const data = [
-    makeRow('card-2', { sort_key: '0002', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-null', { sort_key: null, created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-1', { sort_key: '0001', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-2', { question_label: '0002', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-null', { question_label: null, created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-1', { question_label: '0001', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('昇順ソートで連番順 (0001→0002→null)', () => {
-    const ids = getSortedIds(data, [{ id: 'sort_key', desc: false }])
+    const ids = getSortedIds(data, [{ id: 'question_label', desc: false }])
     expect(ids).toEqual(['card-1', 'card-2', 'card-null'])
   })
 
-  it('昇順ソートで sort_key null が末尾 (NULLS LAST)', () => {
-    const ids = getSortedIds(data, [{ id: 'sort_key', desc: false }])
+  it('昇順ソートで question_label null が末尾 (NULLS LAST)', () => {
+    const ids = getSortedIds(data, [{ id: 'question_label', desc: false }])
     expect(ids[ids.length - 1]).toBe('card-null')
   })
 
-  // (e): sortLikeServer + TanStack desc 反転 の継承挙動を明示 pin。
+  // (e): compareByQuestionLabel(ラベル列 sortingFn)+ TanStack desc 反転 の継承挙動を明示 pin。
   // "バグ" ではなく意図した挙動 — spec D-2 参照。
-  it('降順ソートで sort_key null が先頭 (inherited desc reversal)', () => {
-    const ids = getSortedIds(data, [{ id: 'sort_key', desc: true }])
+  it('降順ソートで question_label null が先頭 (inherited desc reversal)', () => {
+    const ids = getSortedIds(data, [{ id: 'question_label', desc: true }])
     expect(ids[0]).toBe('card-null')
   })
 
   it('降順ソートで非 null 行は 0002→0001 順', () => {
-    const ids = getSortedIds(data, [{ id: 'sort_key', desc: true }])
+    const ids = getSortedIds(data, [{ id: 'question_label', desc: true }])
     const nonNull = ids.filter((id) => id !== 'card-null')
     expect(nonNull).toEqual(['card-2', 'card-1'])
   })
@@ -301,13 +302,13 @@ describe('Sorting: question 列は getCanSort() === false [S3-1 (c)]', () => {
 // ---------------------------------------------------------------------------
 
 describe('Sorting: 初期連番順 pre-sort レイヤー回帰防止 [S3-1 (d)]', () => {
-  // exam-card-table.tsx の liveData pre-sort (sortLikeServer) により、
-  // テーブルに渡るデータは既に連番順 (sort_key ASC + created_at tiebreak)。
+  // exam-card-table.tsx の liveData pre-sort (compareByBaseOrder) により、
+  // テーブルに渡るデータは既に基準順 (base_order ASC + id tiebreak)。
   // sorting=[] では TanStack がデータ順を変えない = pre-sort 順が保たれる。
   const preSortedData = [
-    makeRow('card-1', { sort_key: '0001', title: 'C', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow('card-2', { sort_key: '0002', title: 'A', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow('card-3', { sort_key: '0003', title: 'B', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow('card-1', { question_label: '0001', title: 'C', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow('card-2', { question_label: '0002', title: 'A', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow('card-3', { question_label: '0003', title: 'B', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('sorting=[] では入力データ順 (pre-sort 順) を保持する', () => {
@@ -402,9 +403,9 @@ describe('Sorting: tags 代表値 localeCompare 昇降 [S3-2 (b)]', () => {
   const optZ = makeTagOption({ id: 'opt-z', name: 'おかき', sort_key: '3' })
 
   const data = [
-    makeTaggedRow('card-u', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: optU }]),
-    makeTaggedRow('card-z', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: optZ }]),
-    makeTaggedRow('card-a', { sort_key: '0003', created_at: '2024-01-03T00:00:00.000Z' }, [{ category: cat, option: optA }]),
+    makeTaggedRow('card-u', { question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: optU }]),
+    makeTaggedRow('card-z', { question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: optZ }]),
+    makeTaggedRow('card-a', { question_label: '0003', created_at: '2024-01-03T00:00:00.000Z' }, [{ category: cat, option: optA }]),
   ]
   // 代表値: card-u='カテゴリ: うえお', card-z='カテゴリ: おかき', card-a='カテゴリ: あいう'
   // 昇順: あいう < うえお < おかき → card-a, card-u, card-z
@@ -425,8 +426,8 @@ describe('Sorting: tags タグ無しカードが末尾 [S3-2 (b)(c)]', () => {
   const opt = makeTagOption({ id: 'opt-a', name: 'あ', sort_key: '1' })
 
   const data = [
-    makeTaggedRow('card-no-tag', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, []),
-    makeTaggedRow('card-tagged', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-no-tag', { question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }, []),
+    makeTaggedRow('card-tagged', { question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
   ]
 
   it('昇順ソートでタグ無しカードが末尾に来る (sortUndefined:last)', () => {
@@ -447,10 +448,11 @@ describe('Sorting: tags 同値 tiebreak = 連番順 (stable sort) [S3-2 (b)]', (
   // 同じ option を使い、代表値を同一にする
   const opt = makeTagOption({ id: 'opt-same', name: '同値', sort_key: '1' })
 
-  // pre-sort 順: card-1 (sort_key=0001) → card-2 (sort_key=0002)
+  // 両者とも makeClientCard 既定の base_order=1024(同値)。 pre-sort が配列順を保つ
+  // ことに依存した case で、順序は data の並び + stable sort で決まる。
   const data = [
-    makeTaggedRow('card-1', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
-    makeTaggedRow('card-2', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-1', { question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-2', { question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }, [{ category: cat, option: opt }]),
   ]
 
   it('代表値同値の 2 行は昇順で pre-sort 相対順 (card-1→card-2) を保つ', () => {
@@ -471,8 +473,8 @@ describe('Sorting: tags filterFn は accessorFn 追加後も機能 (sort/filter 
   const opt = makeTagOption({ id: 'opt-test', name: 'オプション', sort_key: '1' })
 
   const data = [
-    makeTaggedRow('card-tagged', { sort_key: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
-    makeTaggedRow('card-no-tag', { sort_key: '0002', created_at: '2024-01-02T00:00:00.000Z' }, []),
+    makeTaggedRow('card-tagged', { question_label: '0001', created_at: '2024-01-01T00:00:00.000Z' }, [{ category: cat, option: opt }]),
+    makeTaggedRow('card-no-tag', { question_label: '0002', created_at: '2024-01-02T00:00:00.000Z' }, []),
   ]
 
   it('tags filter が accessorFn 追加後も正しく機能する', () => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // InlineCardList client component の test。 試験詳細 page の card 一覧描画 +
-// 各 card の inline 編集 cell (sort_key / title / question / explanation / memo)
+// 各 card の inline 編集 cell (question_label / title / question / explanation / memo)
 // + 各 option の inline 編集 row (id / text / is_correct / explanation) が含まれる。
 // 「編集」 ボタンは廃止。
 //
@@ -75,7 +75,7 @@ const TEST_EXAM_ID = 'exam-1'
 
 // ExamDetailCard (server 形) を Dexie ClientCard (snake_case) に写像して mirror に
 // seed する。 created_at は配列 index で単調増加させ、 server sort
-// (sort_key ASC NULLS LAST → created_at ASC) 上で initialCards の並びを保つ。
+// (base_order ASC → id ASC) 上で initialCards の並びを保つ。
 function toClientCard(card: ExamDetailCard, idx: number): ClientCard {
   return {
     id: card.id,
@@ -83,7 +83,11 @@ function toClientCard(card: ExamDetailCard, idx: number): ClientCard {
     exam_id: TEST_EXAM_ID,
     source_document_id: null,
     title: card.title,
-    sort_key: card.sortKey,
+    question_label: card.questionLabel,
+    // 実列を素通しする(定数を置かない)。非同値化そのものは下の `cards` fixture
+    // (1024 / 5120) 側で行う — 全件同値だと mapper が定数を返していても末尾採番の
+    // assert が同じ値で通り、空振り test になる。
+    base_order: card.baseOrder,
     question_text: card.questionText,
     options: card.options,
     correct_answer_ids: [],
@@ -118,7 +122,8 @@ const cards: ExamDetailCard[] = [
   {
     id: 'card-1',
     title: '問1',
-    sortKey: '001',
+    questionLabel: '001',
+    baseOrder: 1024,
     questionText: '問題文 1',
     options: [
       // Sprint I W5: option は uid を持つ(gallery target=option:<uid> + gate 条件)。
@@ -132,7 +137,8 @@ const cards: ExamDetailCard[] = [
   {
     id: 'card-2',
     title: '問2',
-    sortKey: null,
+    questionLabel: null,
+    baseOrder: 5120,
     questionText: '問題文 2',
     options: [{ id: 'a', uid: 'cccc0000-0000-4000-8000-00000000000c', text: 'A', is_correct: true }],
     explanationText: null,
@@ -182,7 +188,7 @@ describe('InlineCardList', () => {
     expect(screen.getByText('メモ (クリックで追加)')).toBeInTheDocument()
   })
 
-  it('null sortKey / null explanationText の card も描画される (display 用 cell)', () => {
+  it('null questionLabel / null explanationText の card も描画される (display 用 cell)', () => {
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // 2 件目の card label が描画されているか
     expect(screen.getByText('問2')).toBeInTheDocument()
@@ -194,7 +200,7 @@ describe('InlineCardList', () => {
     ).toBeGreaterThan(0)
   })
 
-  it('inline 編集対象 cell (sort_key / title / question / explanation / memo + option 3 cell × N) を button として持つ', () => {
+  it('inline 編集対象 cell (question_label / title / question / explanation / memo + option 3 cell × N) を button として持つ', () => {
     render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
     // card-1: 5 card cells + 2 options × 3 option cell (id/text/explanation) = 11
     // card-2: 5 card cells + 1 option × 3 = 8
@@ -261,7 +267,8 @@ describe('InlineCardList', () => {
       {
         id: 'card-x',
         title: '問X',
-        sortKey: null,
+        questionLabel: null,
+        baseOrder: 1024,
         questionText: '問題文 X',
         options: [
           { id: 'a', text: 'A', is_correct: true },
@@ -283,7 +290,8 @@ describe('InlineCardList', () => {
       {
         id: 'card-y',
         title: '問Y',
-        sortKey: null,
+        questionLabel: null,
+        baseOrder: 1024,
         questionText: '問題文 Y',
         options: [
           { id: 'a', text: 'A', is_correct: false },
@@ -393,12 +401,16 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
       expect(await getClientDb().cards.get(NEW_ID)).toBeDefined()
     })
     const inserted = (await getClientDb().cards.get(NEW_ID))!
-    // content: buildEmptyCard 由来。 既存 sort_key は ['001', null] → null 除外後
-    // 全数字なので max(1)+1 = '2'。 count 2 → title は「新規カード 3」。
+    // content: buildEmptyCard 由来。 既存 2 枚は base_order=1024 / 5120 なので
+    // 末尾採番は max(5120)+1024 = 6144。 count 2 → title は「新規カード 3」。
+    // 番号ラベルは自動採番しない (null)。
+    // **非同値にしてあるのが要点**: 全件同値だと ClientCard→ExamDetailCard の mapper が
+    // 実列でなく定数を返していても同じ値で通り、末尾採番が壊れていても気付けない。
     expect(inserted.user_id).toBe('user-1')
     expect(inserted.exam_id).toBe('exam-1')
     expect(inserted.title).toBe('新規カード 3')
-    expect(inserted.sort_key).toBe('2')
+    expect(inserted.question_label).toBeNull()
+    expect(inserted.base_order).toBe(6144)
     expect(inserted.question_text).toBe('(問題文を入力してください)')
     expect(inserted.options).toEqual([
       // Sprint I W5: buildEmptyCard が option uid を mint(ランダム UUID)ゆえ型のみ検証。
@@ -411,6 +423,33 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
     expect(inserted.content_version).toBe(0)
     expect(inserted.images).toEqual([])
     expect(inserted.sync_status).toBe('pending')
+  })
+
+  // r3 の core pin: 末尾採番の母集団は **mirror(live)経路でも実 base_order** であること。
+  // ClientCard → ExamDetailCard の mapper が base_order を定数で返すと、live 経路の max が
+  // 固定され新カードが末尾に入らなくなる(canonical review Critical #1 の再発防止)。
+  // initialCards(max=5120)には無い mirror 専用カード(base_order=9216)を置き、
+  // その描画を待ってから click することで **live 経路であること自体を強制**する。
+  it('末尾採番の母集団は live mirror の実 base_order (SSR fallback 値ではない)', async () => {
+    const NEW_ID = '77777777-7777-4777-8777-777777777777'
+    captureNewId(NEW_ID)
+    await seedMirror(cards)
+    // mirror にのみ存在するカード。これが描画されたら liveData 解決済 = live 経路。
+    await getClientDb().cards.put({
+      ...toClientCard(cards[0]!, 9),
+      id: 'mirror-only',
+      title: 'mirror 専用',
+      base_order: 9216,
+    })
+    render(<InlineCardList initialCards={cards} examId="exam-1" userId="user-1" />)
+    await screen.findByText('mirror 専用')
+
+    fireEvent.click(screen.getByRole('button', { name: '＋ カードを追加' }))
+    await waitFor(async () => {
+      expect(await getClientDb().cards.get(NEW_ID)).toBeDefined()
+    })
+    // max(1024, 5120, 9216) + 1024 = 10240。SSR fallback だけを見ていると 6144 になる。
+    expect((await getClientDb().cards.get(NEW_ID))!.base_order).toBe(10240)
   })
 
   it('button click → create mutation を enqueue (snake_case patch + camelCase options) + drain', async () => {
@@ -429,7 +468,8 @@ describe('InlineCardList「＋ カードを追加」 (Task 4.3 local-first)', ()
         patch: {
           exam_id: 'exam-1',
           title: '新規カード 3',
-          sort_key: '2',
+          question_label: null,
+          base_order: 6144,
           question_text: '(問題文を入力してください)',
           options: [{ id: '1', uid: expect.any(String), text: '(選択肢1)', isCorrect: false }],
           explanation_text: null,
@@ -591,7 +631,8 @@ describe('InlineCardList — 仮想化 (Sprint F S)', () => {
     const many: ExamDetailCard[] = Array.from({ length: 100 }, (_, i) => ({
       id: `bulk-${String(i).padStart(3, '0')}`,
       title: `T${i}`,
-      sortKey: String(i).padStart(4, '0'),
+      questionLabel: String(i).padStart(4, '0'),
+      baseOrder: (i + 1) * 1024,
       questionText: `Q${i}`,
       options: [{ id: 'a', text: 'A', is_correct: false }],
       explanationText: null,

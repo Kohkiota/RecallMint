@@ -128,8 +128,8 @@ describe('normalizePrepared: happy path + 正規形', () => {
     const raw = { cards: [rawCard()] } // sort_key/explanation_text 未指定
     const result = normalizePrepared(raw, SRC1, makeUuidFactory())
     const card = result.cards[0]
-    expect('sortKey' in card).toBe(true)
-    expect(card.sortKey).toBeNull()
+    expect('questionLabel' in card).toBe(true)
+    expect(card.questionLabel).toBeNull()
     expect('explanationText' in card).toBe(true)
     expect(card.explanationText).toBeNull()
     expect('memo' in card).toBe(true)
@@ -142,7 +142,7 @@ describe('normalizePrepared: happy path + 正規形', () => {
     }
     const result = normalizePrepared(raw, SRC1, makeUuidFactory())
     const card = result.cards[0]
-    expect(card.sortKey).toBe('A-1')
+    expect(card.questionLabel).toBe('A-1')
     expect(card.explanationText).toBe('解説本文')
   })
 

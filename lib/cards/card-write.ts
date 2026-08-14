@@ -30,7 +30,8 @@ type OutboxCardOption = {
 export type NewCardMutationPatch = {
   exam_id: string
   title: string
-  sort_key: string
+  question_label: null
+  base_order: number
   question_text: string
   options: OutboxCardOption[]
   explanation_text: null
@@ -53,7 +54,8 @@ export function buildNewCardMutationPatch({
   return {
     exam_id: examId,
     title: empty.title,
-    sort_key: empty.sortKey,
+    question_label: empty.questionLabel,
+    base_order: empty.baseOrder,
     question_text: empty.questionText,
     options: empty.options.map((o) => ({
       id: o.id,

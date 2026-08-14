@@ -68,7 +68,8 @@ function makeCard(id: string, overrides: Partial<ClientCard> = {}): ClientCard {
     user_id: USER_ID,
     exam_id: EXAM_ID,
     title: 'テストタイトル',
-    sort_key: 'A0001',
+    question_label: 'A0001',
+    base_order: 1024,
     question_text: '問題文テスト',
     options: [
       { id: 'opt-1', text: '選択肢1', is_correct: true, explanation: '説明1' },
@@ -293,15 +294,15 @@ describe('ExamCardSidePeek ⑥: DeleteCardButton が存在しない', () => {
 // ===========================================================================
 
 describe('ExamCardSidePeek ⑦: card.id 変化で編集 state がリセット(remount)', () => {
-  it('ソートキー編集モード中に別 card に切替えると textbox が消える', () => {
+  it('番号編集モード中に別 card に切替えると textbox が消える', () => {
     const rowA = makeRow(CARD_ID_A)
-    const rowB = makeRow(CARD_ID_B, { sort_key: 'B0001', title: 'タイトルB' })
+    const rowB = makeRow(CARD_ID_B, { question_label: 'B0001', title: 'タイトルB' })
 
     const { rerender } = render(<ExamCardSidePeek {...defaultProps({ row: rowA })} />)
 
     // sort_key フィールドを edit mode にする (値は変えない → dirty=false → unmount 時も Dexie 不要)
-    const sortKeyBtn = screen.getByRole('button', { name: 'ソートキー 編集' })
-    fireEvent.click(sortKeyBtn)
+    const questionLabelBtn = screen.getByRole('button', { name: '番号 編集' })
+    fireEvent.click(questionLabelBtn)
     // edit mode: textbox が存在する
     expect(screen.getByRole('textbox')).toBeInTheDocument()
 

@@ -191,6 +191,7 @@ async function seedTenant(
     examId,
     sourceDocumentId,
     title: `Card ${label}`,
+    baseOrder: 1024,
     questionText: 'Q?',
     options: [
       { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },

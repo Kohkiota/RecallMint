@@ -17,7 +17,7 @@ function fakeRow(overrides?: Partial<CardRow>): CardRow {
     examId: 'exam-1',
     sourceDocumentId: null,
     title: '問1',
-    sortKey: null,
+    questionLabel: null,
     questionText: 'Q',
     options: [{ id: 'a', text: 'A', is_correct: true }],
     correctAnswerIds: ['a'],
@@ -67,7 +67,7 @@ describe('toClientCard', () => {
         userId: 'u',
         examId: 'e',
         sourceDocumentId: 'src',
-        sortKey: 'sk',
+        questionLabel: 'sk',
         questionText: 'q',
         correctAnswerIds: ['x'],
         explanationText: 'ex',
@@ -82,7 +82,7 @@ describe('toClientCard', () => {
     expect(out.user_id).toBe('u')
     expect(out.exam_id).toBe('e')
     expect(out.source_document_id).toBe('src')
-    expect(out.sort_key).toBe('sk')
+    expect(out.question_label).toBe('sk')
     expect(out.question_text).toBe('q')
     expect(out.correct_answer_ids).toEqual(['x'])
     expect(out.explanation_text).toBe('ex')
@@ -107,7 +107,8 @@ function fakeClient(overrides?: Partial<ClientCard>): ClientCard {
     exam_id: 'exam-1',
     source_document_id: null,
     title: 'Q',
-    sort_key: null,
+    question_label: null,
+    base_order: 1024,
     question_text: 'Q',
     options: [{ id: 'a', text: 'A', is_correct: true }],
     correct_answer_ids: ['a'],
@@ -156,7 +157,7 @@ describe('toCard (reverse mapper)', () => {
         user_id: 'u',
         exam_id: 'e',
         source_document_id: 'src',
-        sort_key: 'sk',
+        question_label: 'sk',
         question_text: 'q',
         correct_answer_ids: ['x'],
         explanation_text: 'ex',
@@ -171,7 +172,7 @@ describe('toCard (reverse mapper)', () => {
     expect(out.userId).toBe('u')
     expect(out.examId).toBe('e')
     expect(out.sourceDocumentId).toBe('src')
-    expect(out.sortKey).toBe('sk')
+    expect(out.questionLabel).toBe('sk')
     expect(out.questionText).toBe('q')
     expect(out.correctAnswerIds).toEqual(['x'])
     expect(out.explanationText).toBe('ex')

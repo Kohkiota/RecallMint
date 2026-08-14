@@ -5,7 +5,8 @@ import { buildNewCardMutationPatch } from './card-write'
 describe('buildNewCardMutationPatch', () => {
   const empty: EmptyCard = {
     title: '新しいカード',
-    sortKey: 'A-2',
+    questionLabel: null,
+    baseOrder: 4096,
     questionText: '(問題文を入力してください)',
     options: [
       { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', is_correct: false },
@@ -18,7 +19,8 @@ describe('buildNewCardMutationPatch', () => {
     expect(buildNewCardMutationPatch({ examId: 'exam-1', empty })).toEqual({
       exam_id: 'exam-1',
       title: '新しいカード',
-      sort_key: 'A-2',
+      question_label: null,
+      base_order: 4096,
       question_text: '(問題文を入力してください)',
       options: [
         { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', isCorrect: false },

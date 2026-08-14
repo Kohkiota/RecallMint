@@ -112,7 +112,8 @@ function makeCard(overrides?: Partial<Card>): Card {
     // default title は既存 test の questionText override 値 ('問1', '問2', ...) と
     // 衝突しないユニーク値。 title 表示テストで明示的に上書きする場合のみ '問1' 等を使う。
     title: 'カードタイトル既定',
-    sortKey: null,
+    questionLabel: null,
+    baseOrder: 1024,
     questionText: '問題文テキスト',
     options: [
       { id: 'a', text: '選択肢A', is_correct: false },

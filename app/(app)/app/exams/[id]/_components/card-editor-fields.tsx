@@ -4,7 +4,7 @@
 // inline-card-list(詳細 page の縦リスト)と exam-card-side-peek(テーブル行の side peek)が
 // 共有する near-verbatim な後段フィールド列を 1 箇所に集約する(P3 W4)。
 //
-// 縮小方針(spec §4.4-1 / task-5 brief): sort_key / title のヘッダ行は 2 caller で layout が
+// 縮小方針(spec §4.4-1 / task-5 brief): question_label / title のヘッダ行は 2 caller で layout が
 // 本質的に異なり(list = flex-wrap 1 行・field label なし・DeleteCardButton あり /
 // side-peek = 縦積み各 field に <p> label・delete なし)、共有すると layout variant / label /
 // showDelete の条件分岐だらけになるため**共有しない**。ヘッダと DeleteCardButton・

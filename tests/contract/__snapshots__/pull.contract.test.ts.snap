@@ -31,6 +31,7 @@ exports[`GET /api/pull — wire contract > happy path: 6 stream keys + cursor as
   "cards": [
     {
       "answered": false,
+      "base_order": 1024,
       "content_version": 0,
       "correct_answer_ids": [],
       "created_at": "2026-05-01T00:00:00.000Z",
@@ -48,10 +49,10 @@ exports[`GET /api/pull — wire contract > happy path: 6 stream keys + cursor as
       "learning_steps": 0,
       "memo": null,
       "options": [],
+      "question_label": null,
       "question_text": "Q",
       "reps": 0,
       "scheduled_days": 0,
-      "sort_key": null,
       "source_document_id": null,
       "stability": 0,
       "state": 0,

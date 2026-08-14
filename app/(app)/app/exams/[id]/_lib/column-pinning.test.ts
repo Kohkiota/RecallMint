@@ -28,7 +28,7 @@ import { computePinnedLeft, derivePinnedBoundary } from './column-pinning'
 const ALL_IDS = [
   'select',
   'title',
-  'sort_key',
+  'question_label',
   'question',
   'options',
   'tags',
@@ -48,7 +48,7 @@ describe('computePinnedLeft', () => {
     expect(computePinnedLeft('tags')).toEqual([
       'select',
       'title',
-      'sort_key',
+      'question_label',
       'question',
       'options',
       'tags',

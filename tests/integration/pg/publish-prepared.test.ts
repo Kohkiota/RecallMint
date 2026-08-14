@@ -143,7 +143,7 @@ function makePreparedCard(overrides: Partial<PreparedCard> = {}): PreparedCard {
   return {
     cardId: randomUUID(),
     title: 'T',
-    sortKey: null,
+    questionLabel: null,
     questionText: 'Q?',
     options: [
       { id: 'a', uid: randomUUID(), text: 'A', isCorrect: true },
@@ -381,6 +381,7 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
       userId,
       examId,
       title: 'pre-existing',
+      baseOrder: 1024,
       questionText: 'pre?',
       options: [{ id: 'a', uid: randomUUID(), text: 'A', is_correct: true }],
       correctAnswerIds: ['a'],

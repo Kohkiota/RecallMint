@@ -90,7 +90,8 @@ function makeClientCard(overrides: Partial<ClientCard> = {}): ClientCard {
     user_id: 'u-test',
     exam_id: 'e-test',
     title: 'Test Card Title',
-    sort_key: '0001',
+    question_label: '0001',
+    base_order: 1024,
     question_text: 'What is 2 + 2?',
     options: [],
     correct_answer_ids: [],
@@ -252,7 +253,7 @@ describe('T3: column sizing', () => {
     const sizeMap: Record<string, number> = {
       select: 64, // 行操作 button 常時表示化(iPad hover 不能環境対応)で checkbox 隣接に移設・拡幅
       title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
-      sort_key: 100,
+      question_label: 100,
       question: 320,
       options: 240,
       tags: 200,
@@ -280,7 +281,7 @@ describe('T5: final column order, sticky pin, and editable columns', () => {
     expect(ids).toEqual([
       'select',
       'title',
-      'sort_key',
+      'question_label',
       'question',
       'options',
       'tags',
@@ -306,7 +307,7 @@ describe('T5: final column order, sticky pin, and editable columns', () => {
   })
 
   it('title / sort_key / explanation_text / memo の 4 編集列が存在する', () => {
-    const editableIds = ['title', 'sort_key', 'explanation_text', 'memo']
+    const editableIds = ['title', 'question_label', 'explanation_text', 'memo']
     for (const id of editableIds) {
       const col = examCardTableColumns.find((c) => c.id === id)
       expect(col, `column "${id}" が存在する`).toBeDefined()
@@ -426,8 +427,8 @@ describe('Edit-3 T1: question / explanation_text / memo に displayClassName="te
   })
 
   it('sort_key cell の display div には text-sm が付与されない (対象外列の回帰)', () => {
-    renderCell('sort_key', makeRow({ sort_key: '0001' }), META)
-    const displayDiv = screen.getByRole('button', { name: 'ソートキー 編集' })
+    renderCell('question_label', makeRow({ question_label: '0001' }), META)
+    const displayDiv = screen.getByRole('button', { name: '番号 編集' })
     expect(displayDiv.className.split(' ')).not.toContain('text-sm')
   })
 })
@@ -535,11 +536,11 @@ describe('Edit-3 T4: title size 80 + sort_key getCanHide() 維持', () => {
   })
 
   it('sort_key column に enableHiding=false が設定されていない (getCanHide() === true を保証)', () => {
-    const sortKeyCol = examCardTableColumns.find((c) => c.id === 'sort_key')
-    expect(sortKeyCol).toBeDefined()
+    const questionLabelCol = examCardTableColumns.find((c) => c.id === 'question_label')
+    expect(questionLabelCol).toBeDefined()
     // enableHiding=false が設定されると getCanHide()===false になり toggle UI から除外される。
     // 再表示できなくなるため設定しない。
-    expect((sortKeyCol as unknown as Record<string, unknown>)?.['enableHiding']).not.toBe(false)
+    expect((questionLabelCol as unknown as Record<string, unknown>)?.['enableHiding']).not.toBe(false)
   })
 })
 
@@ -646,14 +647,14 @@ describe('S4-1: title 列 — contains フィルタ', () => {
 
 describe('S4-1: sort_key 列 — contains フィルタ', () => {
   const data = [
-    makeRow({ id: 'card-abc', sort_key: 'ABC-001' }),
-    makeRow({ id: 'card-xyz', sort_key: 'XYZ-002' }),
-    makeRow({ id: 'card-null', sort_key: null }),
+    makeRow({ id: 'card-abc', question_label: 'ABC-001' }),
+    makeRow({ id: 'card-xyz', question_label: 'XYZ-002' }),
+    makeRow({ id: 'card-null', question_label: null }),
   ]
 
   it('{op:contains, value:"abc"} で ABC-001 のみ pass (大文字小文字非区別)', () => {
     const filter: TextFilterValue = { op: 'contains', value: 'abc' }
-    const ids = getFilteredIds(data, [{ id: 'sort_key', value: filter }])
+    const ids = getFilteredIds(data, [{ id: 'question_label', value: filter }])
     expect(ids).toContain('card-abc')
     expect(ids).not.toContain('card-xyz')
     expect(ids).not.toContain('card-null')
@@ -711,13 +712,13 @@ describe('S4-1: memo 列 — contains フィルタ', () => {
 // ---------------------------------------------------------------------------
 
 describe('S4-1: nullable 3 列 (sort_key / explanation_text / memo) — empty op', () => {
-  it('sort_key: {op:empty} で null セル行のみ pass', () => {
+  it('question_label: {op:empty} で null セル行のみ pass', () => {
     const data = [
-      makeRow({ id: 'card-val', sort_key: '0001' }),
-      makeRow({ id: 'card-null', sort_key: null }),
+      makeRow({ id: 'card-val', question_label: '0001' }),
+      makeRow({ id: 'card-null', question_label: null }),
     ]
     const filter: TextFilterValue = { op: 'empty', value: '' }
-    const ids = getFilteredIds(data, [{ id: 'sort_key', value: filter }])
+    const ids = getFilteredIds(data, [{ id: 'question_label', value: filter }])
     expect(ids).toContain('card-null')
     expect(ids).not.toContain('card-val')
   })
@@ -750,7 +751,7 @@ describe('S4-1: nullable 3 列 (sort_key / explanation_text / memo) — empty op
 // ---------------------------------------------------------------------------
 
 describe('S4-1 (d): enableSorting 値が S3 時点と不変 (filterFn 追加後も変わらない)', () => {
-  const sortableIds = ['title', 'sort_key']
+  const sortableIds = ['title', 'question_label']
   const nonSortableIds = ['question', 'explanation_text', 'memo']
 
   for (const colId of sortableIds) {
@@ -777,9 +778,9 @@ describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用
   // filter: title contains 'a' → Apple ('a') / Banana ('a') pass、Cherry fail
   // sort: sort_key asc → pre-sort 順 Banana(0001), Cherry(0002), Apple(0003) → filter 後 Banana,Apple
   const data = [
-    makeRow({ id: 'card-apple', title: 'Apple', sort_key: '0003', created_at: '2024-01-01T00:00:00.000Z' }),
-    makeRow({ id: 'card-banana', title: 'Banana', sort_key: '0001', created_at: '2024-01-02T00:00:00.000Z' }),
-    makeRow({ id: 'card-cherry', title: 'Cherry', sort_key: '0002', created_at: '2024-01-03T00:00:00.000Z' }),
+    makeRow({ id: 'card-apple', title: 'Apple', question_label: '0003', created_at: '2024-01-01T00:00:00.000Z' }),
+    makeRow({ id: 'card-banana', title: 'Banana', question_label: '0001', created_at: '2024-01-02T00:00:00.000Z' }),
+    makeRow({ id: 'card-cherry', title: 'Cherry', question_label: '0002', created_at: '2024-01-03T00:00:00.000Z' }),
   ]
 
   it('title contains "a" でフィルタ → Apple と Banana が残り Cherry が除外される', () => {
@@ -799,7 +800,7 @@ describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用
     const ids = getFilteredSortedIds(
       data,
       [{ id: 'title', value: filter }],
-      [{ id: 'sort_key', desc: false }],
+      [{ id: 'question_label', desc: false }],
     )
     // Apple(0003) と Banana(0001) が残り、sort_key asc で Banana→Apple の順
     expect(ids).toEqual(['card-banana', 'card-apple'])

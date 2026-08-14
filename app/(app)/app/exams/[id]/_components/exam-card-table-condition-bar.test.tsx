@@ -54,7 +54,8 @@ function makeCard(n: number, overrides: Partial<ClientCard> = {}): ClientCard {
     user_id: USER_ID,
     exam_id: EXAM_ID,
     title: `Card ${n}`,
-    sort_key: String(n).padStart(4, '0'),
+    question_label: String(n).padStart(4, '0'),
+    base_order: 1024,
     question_text: `Question text for card ${n}`,
     options: [],
     correct_answer_ids: [],
@@ -948,9 +949,9 @@ describe('getFilterSummary: テキストフィルタ chip 文言', () => {
     ).toBe(`問題文: を含む ${exactlyTwentyFour}`)
   })
 
-  it('sort_key + eq → 「ソートキー: と一致 0001」', () => {
-    expect(getFilterSummary('sort_key', 'ソートキー', { op: 'eq', value: '0001' })).toBe(
-      'ソートキー: と一致 0001',
+  it('question_label + eq → 「番号: と一致 0001」', () => {
+    expect(getFilterSummary('question_label', '番号', { op: 'eq', value: '0001' })).toBe(
+      '番号: と一致 0001',
     )
   })
 

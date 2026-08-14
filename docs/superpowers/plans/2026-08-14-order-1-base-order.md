@@ -84,7 +84,9 @@
 
 実施順: **cards=0 確認 → stg migration 0037 → push / stg deploy → smoke**。
 
-1. **OT**: stg へ migration 0037 適用(`DATABASE_URL_ADMIN='...' pnpm db:migrate` — migrate 先行 → deploy の順、spec §9)。**適用直前に cards 件数を read-only 確認し、非ゼロなら中止して OT 相談**(空テーブル前提の運用検証 — Codex 独立 10 / 抜け 9 採用。CC が app role + tenant context で件数確認を代行可)→ push → stg deploy。
+1. **OT**: stg へ migration 0037 適用(`DATABASE_URL_ADMIN='...' pnpm db:migrate` — migrate 先行 → deploy の順、spec §9)。**適用直前に `SELECT count(*) FROM cards` を read-only 確認し、非ゼロなら中止**(空テーブル前提の運用検証 — Codex 独立 10 / 抜け 9 採用)。
+   **この件数確認は OT(owner 接続)でしか行えない**(r2 は「CC が app role + tenant context で代行可」と書いていたが**誤り** — `cards` は RLS 対象で app role は tenant 単位でしか数えられず「表が空か」を答えられない。2026-08-14 実測で確認)。CC が代行できるのは「特定 user の cards が 0」までで、全体の空判定ではない。
+   → push → stg deploy。
 2. **復旧方針**(Codex 独立 11 / 抜け 10 採用): 0037 適用後に deploy が失敗した場合は **forward-fix 一択**(migration rollback・旧 code への切戻しはしない — 旧 code は新 schema に 23502 で書けないため。ゼロユーザーゆえ許容、spec §9 と同根拠)。
 3. **CC smoke**(Playwright MCP・stg): ① 複数画像 upload → 試験詳細の並びが読み取り順(DB readback: app role + tenant context で `ORDER BY base_order, id` が 1024 刻み連番)② 同 exam へ追加 upload → 続き番号 ③ 手動追加が末尾 + ラベル空 ④ ラベル編集(inline)で行が動かない ⑤ ラベル列ソート ON/OFF ⑥ 回帰: pull 6-stream / entity-mutations 200・console error 0 ⑦ **EXPLAIN 観測 1 回**(getCardsForExam 相当の `WHERE user_id AND exam_id ORDER BY base_order, id` — Sort ノード有無を記録。iso での EXPLAIN pin は小規模 fixture の planner が seq scan を選び flaky なため stg 側で観測 — Sprint B と同裁定・Codex 抜け 11 の採用形)。
 

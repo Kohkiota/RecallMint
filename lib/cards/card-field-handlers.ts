@@ -28,7 +28,7 @@ import {
 } from '@/lib/db/schema'
 import {
   titleSchema,
-  sortKeySchema,
+  questionLabelSchema,
   questionTextSchema,
   explanationTextSchema,
   memoSchema,
@@ -116,12 +116,14 @@ const handleTitle: CardFieldHandler = async (tx, cardId, userId, value) => {
   return updateCardField(tx, cardId, userId, { title: r.data })
 }
 
-const handleSortKey: CardFieldHandler = async (tx, cardId, userId, value) => {
-  const r = sortKeySchema.safeParse(value)
+const handleQuestionLabel: CardFieldHandler = async (tx, cardId, userId, value) => {
+  const r = questionLabelSchema.safeParse(value)
   if (!r.success) return 'failed'
   // '' → null 正規化 (UI からの「クリア」操作と整合、 旧 buildSetClause 同等)
-  const normalized = normalizeNullableTextField('sort_key', r.data)
-  return updateCardField(tx, cardId, userId, { sortKey: normalized })
+  const normalized = normalizeNullableTextField('question_label', r.data)
+  // base_order には触れない: 番号ラベルの編集で行が動かないことは、この handler が
+  // 順序列を SET 句に含めないことで成立する (spec 決定 6)。
+  return updateCardField(tx, cardId, userId, { questionLabel: normalized })
 }
 
 const handleQuestionText: CardFieldHandler = async (tx, cardId, userId, value) => {
@@ -320,7 +322,7 @@ const handleTagOptionIds: CardFieldHandler = async (tx, cardId, userId, value) =
  */
 export const CARD_FIELD_HANDLERS = {
   title: handleTitle,
-  sort_key: handleSortKey,
+  question_label: handleQuestionLabel,
   question_text: handleQuestionText,
   explanation_text: handleExplanationText,
   memo: handleMemo,

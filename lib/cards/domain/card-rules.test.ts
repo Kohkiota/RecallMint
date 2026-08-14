@@ -8,13 +8,13 @@ import {
 
 describe('normalizeNullableTextField', () => {
   it('nullable 列は空文字を null にする', () => {
-    expect(normalizeNullableTextField('sort_key', '')).toBeNull()
+    expect(normalizeNullableTextField('question_label', '')).toBeNull()
     expect(normalizeNullableTextField('explanation_text', '')).toBeNull()
     expect(normalizeNullableTextField('memo', '')).toBeNull()
   })
 
   it('nullable 列でも非空値は素通し', () => {
-    expect(normalizeNullableTextField('sort_key', 'A-1')).toBe('A-1')
+    expect(normalizeNullableTextField('question_label', 'A-1')).toBe('A-1')
     expect(normalizeNullableTextField('memo', ' ')).toBe(' ') // trim しない (strict === '')
   })
 
@@ -28,11 +28,11 @@ describe('normalizeNullableTextField', () => {
     expect(normalizeNullableTextField('title', null)).toBeNull()
   })
 
-  it('NULLABLE_TEXT_FIELDS は sort_key / explanation_text / memo の 3 列', () => {
+  it('NULLABLE_TEXT_FIELDS は question_label / explanation_text / memo の 3 列', () => {
     expect([...NULLABLE_TEXT_FIELDS].sort()).toEqual([
       'explanation_text',
       'memo',
-      'sort_key',
+      'question_label',
     ])
   })
 })

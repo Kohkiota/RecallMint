@@ -39,7 +39,8 @@ export interface ApplyCardCreateWithIdInput {
   cardId: string
   examId: string
   title: string
-  sortKey: string | null
+  questionLabel: string | null
+  baseOrder: number
   questionText: string
   options: CardOption[]
   explanationText: string | null
@@ -68,7 +69,8 @@ export async function applyCardCreateWithId(
   userId: string,
   input: ApplyCardCreateWithIdInput,
 ): Promise<ApplyCardCreateWithIdResult> {
-  const { cardId, examId, title, sortKey, questionText, options, explanationText, memo } = input
+  const { cardId, examId, title, questionLabel, baseOrder, questionText, options, explanationText, memo } =
+    input
 
   // 1. exam owner 確認 (0 rows → INSERT しない、route 側に知らせる)
   const ownerRows = await tx
@@ -96,7 +98,8 @@ export async function applyCardCreateWithId(
       examId,
       sourceDocumentId: null,
       title,
-      sortKey,
+      questionLabel,
+      baseOrder,
       questionText,
       options,
       correctAnswerIds,

@@ -351,12 +351,17 @@ export function normalizePreparedCard(
   // 6. 候補を組み立て、 `preparedCardSchema` 1 個への safeParse で検証する
   //    (spec §5.4「実装条件」: parsed 結果でなく candidate を後続で使わない
   //    ため `result.data` を返す・candidate 自体は返さない)。
-  //    正規形(spec §5.4①): sortKey/explanationText はキー必須・値 null
+  //    正規形(spec §5.4①): questionLabel/explanationText はキー必須・値 null
   //    (undefined にしない)。 memo は OCR 抽出に無い概念のため常に null。
   const candidate: z.output<typeof preparedCardSchema> = {
     cardId,
     title: data.title,
-    sortKey: data.sort_key ?? null,
+    // **wire(sort_key)↔ app(questionLabel)の唯一の継ぎ目**。 Gemini 応答の field 名は
+    // 意図的に `sort_key` のまま据え置いてある(共有 schema builder / prompt の
+    // `q{sort_key}-img-N` 命名規則 / legacy 経路まで rename が波及するのに対し、
+    // モデルへの抽出意味論は変わらないため — spec §5.1 / D-8)。 app 側で `sort_key`
+    // を名乗ってよいのはこの 1 行より上流(wire 型)だけ。
+    questionLabel: data.sort_key ?? null,
     questionText: data.question_text,
     options,
     correctAnswerIds,

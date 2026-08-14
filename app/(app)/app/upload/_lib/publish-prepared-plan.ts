@@ -16,6 +16,7 @@
 import { cards, type CardImage, type CardOption } from '@/lib/db/schema'
 import { imagesSchema } from '@/lib/validation/card'
 import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
+import { nextBaseOrders } from '@/lib/cards/domain/card-order'
 import type { PreparedCard, PreparedPayloadV1 } from '@/lib/ocr/prepared-schema'
 
 // ---------------------------------------------------------------------------
@@ -208,18 +209,29 @@ function toCardOption(o: PreparedCard['options'][number]): CardOption {
 // now は呼出元が注入する(Task 3: FSRS 列の DB default 撤去に伴い、1 定義
 // initialFsrsState から明示 set する。純関数のまま保つため Date.now() を内部で
 // 呼ばない — initialFsrsState 自体の「now を引数注入」方針と揃える)。
+// maxBaseOrder は publish tx 内で読んだ対象 exam の既存最大値(空 exam は null)。
+// 採番式そのものは lib/cards/domain/card-order.ts の 1 定義に委ね、ここでは
+// **payload の配列順のまま**割り当てる(配列順 = モデルの読み取り順という契約・spec §5.3)。
 export function buildCardRows(
   preparedCards: readonly PreparedCard[],
   cardImagesByCardId: Record<string, CardImage[]>,
-  ctx: { userId: string; examId: string; sourceDocumentId: string; now: Date },
+  ctx: {
+    userId: string
+    examId: string
+    sourceDocumentId: string
+    now: Date
+    maxBaseOrder: number | null
+  },
 ): Array<typeof cards.$inferInsert> {
-  return preparedCards.map((card) => ({
+  const baseOrders = nextBaseOrders(ctx.maxBaseOrder, preparedCards.length)
+  return preparedCards.map((card, i) => ({
     id: card.cardId,
     userId: ctx.userId,
     examId: ctx.examId,
     sourceDocumentId: ctx.sourceDocumentId,
     title: card.title,
-    sortKey: card.sortKey,
+    questionLabel: card.questionLabel,
+    baseOrder: baseOrders[i]!,
     questionText: card.questionText,
     options: card.options.map(toCardOption),
     correctAnswerIds: card.correctAnswerIds,

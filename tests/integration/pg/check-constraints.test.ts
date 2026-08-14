@@ -98,6 +98,28 @@ function baseColumns(table: string): Record<string, string> {
         height: '1',
         hash: lit('probe-hash'),
       }
+    case 'cards':
+      // FSRS / 学習統計列は DB default が無い (Sprint A Task 3) ため probe でも全供給する。
+      // base_order は probe 対象列なので baseColumns には含めない。
+      return {
+        user_id: lit(ids.userId),
+        exam_id: lit(ids.examId),
+        title: lit('probe'),
+        question_text: lit('Q?'),
+        options: `'[]'::jsonb`,
+        correct_answer_ids: `'[]'::jsonb`,
+        answered: 'false',
+        current_streak: '0',
+        due: 'now()',
+        stability: '0',
+        difficulty: '0',
+        elapsed_days: '0',
+        scheduled_days: '0',
+        reps: '0',
+        lapses: '0',
+        state: '0',
+        learning_steps: '0',
+      }
     case 'upload_operations':
       return {
         user_id: lit(ids.userId),
@@ -337,6 +359,15 @@ const NONNEG_CASES: readonly CheckCase[] = [
 // 正 2 本: 0 も落ちる (寸法 0 の画像は存在しない・spec §5.2 承認済)。
 const POSITIVE_CASES: readonly CheckCase[] = [
   {
+    // 0 と負値は使わない (0 は位置挿入の仮想下界として予約・spec §2.2)。
+    constraint: 'cards_base_order_positive',
+    table: 'cards',
+    column: 'base_order',
+    legal: ['1'],
+    illegal: ['0', '-1'],
+    nullAllowed: false,
+  },
+  {
     constraint: 'assets_width_positive',
     table: 'assets',
     column: 'width',
@@ -396,14 +427,14 @@ beforeEach(async () => {
   ids = (await seedTwoTenants()).a
 })
 
-describe('migration 0036 CHECK constraints (27)', () => {
-  // 存在確認でなく **集合一致**。片側 (「期待した 31 本が有る」) だけでは spec 外の
-  // CHECK が増えても green のままで、file 冒頭の「27 本、かつ 27 本だけ」が嘘になる。
-  it('public schema の CHECK 集合 = spec §5.2 の 27 本 + 既存 4 本(過不足なし)', async () => {
+describe('migration 0036/0037 CHECK constraints (28)', () => {
+  // 存在確認でなく **集合一致**。片側 (「期待した 32 本が有る」) だけでは spec 外の
+  // CHECK が増えても green のままで、file 冒頭の「28 本、かつ 28 本だけ」が嘘になる。
+  it('public schema の CHECK 集合 = 定義済 28 本 + 既存 4 本(過不足なし)', async () => {
     const rows = await getFixtureOwnerDb().execute<{ conname: string }>(
       sql`SELECT conname FROM pg_constraint WHERE contype = 'c' AND connamespace = 'public'::regnamespace`,
     )
-    expect(ALL_CASES).toHaveLength(27)
+    expect(ALL_CASES).toHaveLength(28)
     const expected = [...ALL_CASES.map((c) => c.constraint), ...PRE_EXISTING_CHECKS].sort()
     expect(rows.map((r) => r.conname).sort()).toEqual(expected)
   })

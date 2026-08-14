@@ -105,14 +105,14 @@ export function ExamCardSidePeek({
             <div key={row.card.id} className="flex-1 min-h-0 overflow-y-auto">
               <div className="space-y-3 p-4">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">ソートキー</p>
+                  <p className="text-xs font-medium text-slate-500">番号</p>
                   <InlineTextField
                     cardId={row.card.id}
                     userId={userId}
-                    field="sort_key"
-                    initialValue={row.card.sort_key ?? null}
-                    ariaLabel="ソートキー 編集"
-                    placeholder="(キー)"
+                    field="question_label"
+                    initialValue={row.card.question_label ?? null}
+                    ariaLabel="番号 編集"
+                    placeholder="(番号)"
                     displayClassName="text-xs font-mono text-slate-600"
                   />
                 </div>

@@ -309,7 +309,17 @@ export const cards = pgTable(
     ),
     // コンテンツ
     title: text('title').notNull(),
-    sortKey: text('sort_key'),
+    // 紙面上の設問番号ラベル (OCR が読み取った元番号 / 手動作成は null)。表示・編集用の
+    // 自由テキストであって**順序の根拠ではない** — 重複も NULL も正常。順序は base_order。
+    questionLabel: text('question_label'),
+    // exam 内の基準順。全順序は (base_order ASC, id ASC) で、server の ORDER BY と
+    // client comparator (lib/cards/domain/card-order.ts) が同一結果を返す契約
+    // (spec 2026-08-14-order-1-base-order-design §2.1)。DB default を置かないのは、
+    // 全 INSERT 経路に明示供給を強制し供給漏れを 23502 で loud に出すため (§3.1)。
+    // 一意でない: 並走採番 (publish 同士 / publish と手動追加) で同値が起きうるのを
+    // 許容し、id tiebreak で全順序を保つ設計 (UNIQUE にすると衝突側の書込が
+    // 回復不能に失われる — §2.1)。
+    baseOrder: integer('base_order').notNull(),
     questionText: text('question_text').notNull(),
     options: jsonb('options').notNull().$type<CardOption[]>(),
     correctAnswerIds: jsonb('correct_answer_ids').notNull().$type<string[]>(),
@@ -355,7 +365,11 @@ export const cards = pgTable(
       .$onUpdate(() => new Date()),
   },
   (t) => [
-    index('cards_sort_idx').on(t.userId, t.examId, t.sortKey),
+    // 既定順 (getCardsForExam の ORDER BY base_order, id) の pathkey と一致させる
+    // 複合 index。全列 NOT NULL + 全 ASC ゆえ NULLS 位置のズレによる Sort ノード残存
+    // (Sprint B で実測した class) が構造的に起きない。publish 採番の max(base_order)
+    // も同 index の backward scan で解決する (spec §3.2)。
+    index('cards_order_idx').on(t.userId, t.examId, t.baseOrder, t.id),
     index('cards_due_idx').on(t.userId, t.due),
     index('cards_exam_idx').on(t.examId),
     // C1 (S2.0c): source_document_id は FK (ON DELETE SET NULL) だが index が
@@ -371,6 +385,9 @@ export const cards = pgTable(
     // FSRS 整合 Sprint A Task 3(spec §1.3): state は ts-fsrs の 4 状態(0-3)のみが
     // 有効値。DB default 撤去に合わせ、無効値の混入を DB 層でも塞ぐ。
     check('cards_state_range', sql`${t.state} BETWEEN 0 AND 3`),
+    // 0 と負値は使わない (0 は位置挿入計算の仮想下界として予約・spec §2.2/§2.3-2)。
+    // 上限 CHECK は張らない — int4 の範囲超過は 22003 で loud に落ちる。
+    check('cards_base_order_positive', sql`${t.baseOrder} >= 1`),
   ],
 )
 

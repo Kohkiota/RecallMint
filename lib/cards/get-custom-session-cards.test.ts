@@ -24,7 +24,8 @@ function fakeClient(overrides?: Partial<ClientCard>): ClientCard {
     exam_id: 'exam-1',
     source_document_id: null,
     title: `Q${_cardSeq}`,
-    sort_key: null,
+    question_label: null,
+    base_order: 1024,
     question_text: `question ${_cardSeq}`,
     options: [],
     correct_answer_ids: [],
@@ -226,16 +227,62 @@ describe('getCustomSessionCards', () => {
   // order = sequential
   // ---------------------------------------------------------------------------
 
-  it('order=sequential → sortLikeServer 順 (sort_key ASC NULLS LAST, created_at tiebreak)', async () => {
+  it('order=sequential → 基準順 (exam_id → base_order → id)。番号ラベルと created_at は順序に影響しない', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([
-      fakeClient({ id: 'null-newer', sort_key: null, created_at: '2026-01-03T00:00:00.000Z' }),
-      fakeClient({ id: 'key-002', sort_key: '002', created_at: '2026-01-01T00:00:00.000Z' }),
-      fakeClient({ id: 'null-older', sort_key: null, created_at: '2026-01-02T00:00:00.000Z' }),
-      fakeClient({ id: 'key-001', sort_key: '001', created_at: '2026-01-01T00:00:00.000Z' }),
+      // base_order を昇順の期待と食い違う順で投入し、ラベル / created_at が
+      // 順序に効かないことを同時に押さえる (ラベルは降順・created_at も降順)。
+      fakeClient({
+        id: 'c-3',
+        exam_id: 'exam-1',
+        base_order: 3072,
+        question_label: '001',
+        created_at: '2026-01-01T00:00:00.000Z',
+      }),
+      fakeClient({
+        id: 'c-1',
+        exam_id: 'exam-1',
+        base_order: 1024,
+        question_label: '003',
+        created_at: '2026-01-03T00:00:00.000Z',
+      }),
+      fakeClient({
+        id: 'c-2',
+        exam_id: 'exam-1',
+        base_order: 2048,
+        question_label: '002',
+        created_at: '2026-01-02T00:00:00.000Z',
+      }),
     ])
     const out = await getCustomSessionCards(baseCriteria({ order: 'sequential' }))
-    expect(out.map((c) => c.id)).toEqual(['key-001', 'key-002', 'null-older', 'null-newer'])
+    expect(out.map((c) => c.id)).toEqual(['c-1', 'c-2', 'c-3'])
+  })
+
+  it('order=sequential (複数 exam) → exam でグループ化し各 exam 内が基準順', async () => {
+    const db = getClientDb()
+    // base_order は exam 内でしか意味を持たないため、exam をまたぐ比較は
+    // exam_id が第 1 キーになる (spec §2.5)。'exam-1' < 'exam-2' の文字列順。
+    await db.cards.bulkPut([
+      fakeClient({ id: 'e2-b', exam_id: 'exam-2', base_order: 2048 }),
+      fakeClient({ id: 'e1-b', exam_id: 'exam-1', base_order: 2048 }),
+      fakeClient({ id: 'e2-a', exam_id: 'exam-2', base_order: 1024 }),
+      fakeClient({ id: 'e1-a', exam_id: 'exam-1', base_order: 1024 }),
+    ])
+    const out = await getCustomSessionCards(
+      baseCriteria({ order: 'sequential', examIds: ['exam-1', 'exam-2'] }),
+    )
+    expect(out.map((c) => c.id)).toEqual(['e1-a', 'e1-b', 'e2-a', 'e2-b'])
+  })
+
+  it('order=sequential: base_order 同値は id 昇順で決定的に解決する', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([
+      fakeClient({ id: 'zz', base_order: 1024 }),
+      fakeClient({ id: 'aa', base_order: 1024 }),
+      fakeClient({ id: 'mm', base_order: 1024 }),
+    ])
+    const out = await getCustomSessionCards(baseCriteria({ order: 'sequential' }))
+    expect(out.map((c) => c.id)).toEqual(['aa', 'mm', 'zz'])
   })
 
   // ---------------------------------------------------------------------------
@@ -269,9 +316,9 @@ describe('getCustomSessionCards', () => {
 
   it('limit: 指定件数に cap される', async () => {
     await getClientDb().cards.bulkPut([
-      fakeClient({ id: 'a', sort_key: '001' }),
-      fakeClient({ id: 'b', sort_key: '002' }),
-      fakeClient({ id: 'c', sort_key: '003' }),
+      fakeClient({ id: 'a', question_label: '001' }),
+      fakeClient({ id: 'b', question_label: '002' }),
+      fakeClient({ id: 'c', question_label: '003' }),
     ])
     const out = await getCustomSessionCards(baseCriteria({ limit: 2 }))
     expect(out).toHaveLength(2)
@@ -338,16 +385,15 @@ describe('selectCustomSessionRows', () => {
     expect(rows[0]!.tags).toEqual([])
   })
 
-  it('order=sequential → sortLikeServer 順 (CardWithTags[] の card で比較)', async () => {
+  it('order=sequential → 基準順 (CardWithTags[] の card で比較)', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([
-      fakeClient({ id: 'null-newer', sort_key: null, created_at: '2026-01-03T00:00:00.000Z' }),
-      fakeClient({ id: 'key-002', sort_key: '002', created_at: '2026-01-01T00:00:00.000Z' }),
-      fakeClient({ id: 'null-older', sort_key: null, created_at: '2026-01-02T00:00:00.000Z' }),
-      fakeClient({ id: 'key-001', sort_key: '001', created_at: '2026-01-01T00:00:00.000Z' }),
+      fakeClient({ id: 'c-3', base_order: 3072 }),
+      fakeClient({ id: 'c-1', base_order: 1024 }),
+      fakeClient({ id: 'c-2', base_order: 2048 }),
     ])
     const rows = await selectCustomSessionRows(baseCriteria({ order: 'sequential' }))
-    expect(rows.map((r) => r.card.id)).toEqual(['key-001', 'key-002', 'null-older', 'null-newer'])
+    expect(rows.map((r) => r.card.id)).toEqual(['c-1', 'c-2', 'c-3'])
   })
 
   it('order=random: 注入した決定論的 rng で確定的な順列を返す (tags 保持)', async () => {
@@ -382,9 +428,9 @@ describe('selectCustomSessionRows', () => {
 
   it('limit cap が CardWithTags[] に適用される', async () => {
     await getClientDb().cards.bulkPut([
-      fakeClient({ id: 'a', sort_key: '001' }),
-      fakeClient({ id: 'b', sort_key: '002' }),
-      fakeClient({ id: 'c', sort_key: '003' }),
+      fakeClient({ id: 'a', question_label: '001' }),
+      fakeClient({ id: 'b', question_label: '002' }),
+      fakeClient({ id: 'c', question_label: '003' }),
     ])
     const rows = await selectCustomSessionRows(baseCriteria({ limit: 2 }))
     expect(rows).toHaveLength(2)
@@ -394,9 +440,9 @@ describe('selectCustomSessionRows', () => {
   it('getCustomSessionCards の出力 id/順序 と一致する (regression)', async () => {
     // selectCustomSessionRows と getCustomSessionCards が同一 rng で同一順序を保証
     await getClientDb().cards.bulkPut([
-      fakeClient({ id: 'x1', sort_key: '001' }),
-      fakeClient({ id: 'x2', sort_key: '002' }),
-      fakeClient({ id: 'x3', sort_key: '003' }),
+      fakeClient({ id: 'x1', question_label: '001' }),
+      fakeClient({ id: 'x2', question_label: '002' }),
+      fakeClient({ id: 'x3', question_label: '003' }),
     ])
     const c = baseCriteria({ limit: 2, order: 'sequential' })
     const rows = await selectCustomSessionRows(c)

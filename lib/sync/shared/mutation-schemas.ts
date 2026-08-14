@@ -22,7 +22,7 @@
 import { z } from 'zod'
 import {
   titleSchema,
-  sortKeySchema,
+  questionLabelSchema,
   questionTextSchema,
   explanationTextSchema,
   memoSchema,
@@ -56,7 +56,9 @@ export const cardUpdateFieldPatchSchema = z.object({
 export const cardCreatePatchSchema = z.object({
   exam_id: z.uuid(),
   title: titleSchema,
-  sort_key: sortKeySchema,
+  question_label: questionLabelSchema,
+  // 全 INSERT 経路が明示供給する契約 (spec §3.1)。欠落は per-mutation failed。
+  base_order: z.number().int().min(1),
   question_text: questionTextSchema,
   options: optionsSchema,
   explanation_text: explanationTextSchema,

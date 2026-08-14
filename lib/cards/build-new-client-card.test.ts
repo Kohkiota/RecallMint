@@ -8,7 +8,8 @@ import type { EmptyCard } from './empty-card'
 
 const EMPTY: EmptyCard = {
   title: '新規カード 3',
-  sortKey: '3',
+  questionLabel: null,
+  baseOrder: 3072,
   questionText: '(問題文を入力してください)',
   options: [
     { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', is_correct: false },
@@ -29,7 +30,8 @@ describe('buildNewClientCard', () => {
     expect(card.user_id).toBe('user-1')
     expect(card.exam_id).toBe('exam-1')
     expect(card.title).toBe('新規カード 3')
-    expect(card.sort_key).toBe('3')
+    expect(card.question_label).toBeNull()
+    expect(card.base_order).toBe(3072)
     expect(card.question_text).toBe('(問題文を入力してください)')
     expect(card.options).toEqual([
       { id: '1', uid: '11111111-1111-4111-8111-111111111111', text: '(選択肢1)', is_correct: false },

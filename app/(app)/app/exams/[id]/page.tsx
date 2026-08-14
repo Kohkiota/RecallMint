@@ -6,7 +6,7 @@ import { formatRelativeJa } from '@/lib/exams/format'
 import { ExamDetailPullGate } from './_components/exam-detail-pull-gate'
 import { ExamDetailView } from './_components/exam-detail-view'
 
-// 試験詳細 page: 各 card の全情報 (sort_key / title / 問題文 / 選択肢 + 各解説 /
+// 試験詳細 page: 各 card の全情報 (question_label / title / 問題文 / 選択肢 + 各解説 /
 // 解説 / メモ) を inline 編集 cell として展開 (S2.0b-1 T3)。 旧 /app/cards/[id]
 // page は廃止済 (cache-fix roadmap ④-3)、 card 編集は全 inline で完結する。
 //

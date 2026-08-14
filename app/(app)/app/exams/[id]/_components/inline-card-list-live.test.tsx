@@ -6,7 +6,7 @@
 // - live 反映: Dexie mirror を seed → render で表示、 mirror を put 変更 → UI 追従
 // - exam filter: 別 exam_id の card は除外
 // - owner-scope: 別 user_id の card は除外
-// - sort: server (sort_key ASC NULLS LAST → created_at ASC) と一致
+// - sort: server (base_order ASC → id ASC) と一致
 // - SSR / 初期 fallback: useLiveQuery が undefined の間は initialCards を表示し、
 //   resolve 後は Dexie mirror が単一の真実 (initialCards に在って mirror に無い
 //   card は resolve 後に消える = length===0 永続 fallback でないことの証明)
@@ -74,7 +74,8 @@ function fakeClientCard(overrides?: Partial<ClientCard>): ClientCard {
     exam_id: 'exam-1',
     source_document_id: null,
     title: 'タイトル',
-    sort_key: null,
+    question_label: null,
+    base_order: 1024,
     question_text: '問題文',
     options: [],
     correct_answer_ids: [],
@@ -171,7 +172,7 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
         id: 'c1',
         title: '問1',
         question_text: '問題文 1',
-        sort_key: '001',
+        question_label: '001',
       }),
     ])
     render(
@@ -232,33 +233,37 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
     expect(screen.queryByText('他人の card')).not.toBeInTheDocument()
   })
 
-  it('sort: sort_key ASC NULLS LAST → created_at ASC で server と一致', async () => {
-    // 期待順: sort_key='001'(b) → sort_key='002'(a) → sort_key=null は末尾、
-    //         null 同士は created_at ASC で d → c
+  it('sort: base_order ASC → id ASC で server の ORDER BY と一致', async () => {
+    // 期待順: base_order 1024(b) → 2048(a) → 3072 同値は id ASC で c → d。
+    // 番号ラベル(降順に振ってある)と created_at(降順)は既定順に影響しない。
     await getClientDb().cards.bulkPut([
       fakeClientCard({
         id: 'a',
-        sort_key: '002',
+        base_order: 2048,
+        question_label: '003',
         title: 'A',
-        created_at: '2026-04-01T00:00:00.000Z',
-      }),
-      fakeClientCard({
-        id: 'b',
-        sort_key: '001',
-        title: 'B',
-        created_at: '2026-04-01T00:00:00.000Z',
-      }),
-      fakeClientCard({
-        id: 'c',
-        sort_key: null,
-        title: 'C',
         created_at: '2026-04-05T00:00:00.000Z',
       }),
       fakeClientCard({
-        id: 'd',
-        sort_key: null,
-        title: 'D',
+        id: 'b',
+        base_order: 1024,
+        question_label: '004',
+        title: 'B',
+        created_at: '2026-04-04T00:00:00.000Z',
+      }),
+      fakeClientCard({
+        id: 'c',
+        base_order: 3072,
+        question_label: '002',
+        title: 'C',
         created_at: '2026-04-03T00:00:00.000Z',
+      }),
+      fakeClientCard({
+        id: 'd',
+        base_order: 3072,
+        question_label: '001',
+        title: 'D',
+        created_at: '2026-04-01T00:00:00.000Z',
       }),
     ])
     render(
@@ -270,7 +275,7 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
     // title cell は aria-label「タイトル 編集」 の button。 DOM 出現順を取り出す。
     const titleCells = screen.getAllByRole('button', { name: 'タイトル 編集' })
     const order = titleCells.map((el) => el.textContent)
-    expect(order).toEqual(['B', 'A', 'D', 'C'])
+    expect(order).toEqual(['B', 'A', 'C', 'D'])
   })
 
   it('SSR/初期 fallback: useLiveQuery undefined の間は initialCards を表示', () => {
@@ -280,7 +285,8 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
       {
         id: 'ssr-1',
         title: 'SSR タイトル',
-        sortKey: '001',
+        questionLabel: '001',
+        baseOrder: 1024,
         questionText: 'SSR 問題文',
         options: [],
         explanationText: null,
@@ -306,7 +312,8 @@ describe('InlineCardList Dexie live-read (Task 4.1)', () => {
       {
         id: 'stale-1',
         title: 'server 残存 card',
-        sortKey: null,
+        questionLabel: null,
+        baseOrder: 1024,
         questionText: 'Q',
         options: [],
         explanationText: null,
@@ -387,7 +394,8 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
       {
         id: 'i1',
         title: 'A',
-        sortKey: null,
+        questionLabel: null,
+        baseOrder: 1024,
         questionText: 'Q',
         options: [],
         explanationText: null,
@@ -397,7 +405,8 @@ describe('InlineCardList 見出し件数 live 化 (論点B)', () => {
       {
         id: 'i2',
         title: 'B',
-        sortKey: null,
+        questionLabel: null,
+        baseOrder: 1024,
         questionText: 'Q',
         options: [],
         explanationText: null,

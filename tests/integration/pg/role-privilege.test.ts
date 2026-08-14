@@ -152,6 +152,7 @@ describe('role privilege (least-privilege structural proof)', () => {
           examId: fixture.a.examId,
           sourceDocumentId: fixture.a.sourceDocumentId,
           title: 'RLS-P1 probe card',
+          baseOrder: 1024,
           questionText: 'Q?',
           options: [
             { id: 'a', uid: randomUUID(), text: 'opt a', is_correct: true },

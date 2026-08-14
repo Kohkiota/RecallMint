@@ -66,7 +66,8 @@ const TEST_ROW: ExamCardRow = {
     user_id: 'u-test',
     exam_id: 'e-test',
     title: 'Test Card',
-    sort_key: '0001',
+    question_label: '0001',
+    base_order: 1024,
     question_text: 'Test?',
     options: [],
     correct_answer_ids: [],
@@ -169,7 +170,8 @@ function makeCard(): ClientCard {
     user_id: USER_ID,
     exam_id: EXAM_ID,
     title: 'Menu Test Card',
-    sort_key: '0001',
+    question_label: '0001',
+    base_order: 1024,
     question_text: 'Question?',
     options: [],
     correct_answer_ids: [],
@@ -355,11 +357,11 @@ describe('ColumnHeaderMenu ④: S4-3 menu gate — filter 有り列は非 canSor
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    // sort_key: 同上 (sort_key 列が表示されている)
-    fireEvent.click(screen.getByRole('button', { name: 'ソートキー の列メニュー' }))
+    // question_label: 同上 (sort_key 列が表示されている)
+    fireEvent.click(screen.getByRole('button', { name: '番号 の列メニュー' }))
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
     expect(screen.getByRole('button', { name: '昇順' })).toBeInTheDocument()
-    expect(screen.getByLabelText('ソートキー フィルタ演算子')).toBeInTheDocument()
+    expect(screen.getByLabelText('番号 フィルタ演算子')).toBeInTheDocument()
   })
 
   it('options 列(registry 外・非 canSort)は menu trigger が存在しない', async () => {

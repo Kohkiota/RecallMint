@@ -39,7 +39,8 @@ export function buildNewClientCard({
     source_document_id: null,
     // content (buildEmptyCard 由来)
     title: empty.title,
-    sort_key: empty.sortKey,
+    question_label: empty.questionLabel,
+    base_order: empty.baseOrder,
     question_text: empty.questionText,
     options: empty.options,
     correct_answer_ids: empty.correctAnswerIds,

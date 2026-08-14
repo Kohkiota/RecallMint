@@ -45,9 +45,9 @@ export const titleSchema = z
   .min(1, 'タイトルは必須です')
   .max(200, 'タイトルは 200 文字以内で入力してください')
 
-export const sortKeySchema = z
+export const questionLabelSchema = z
   .string()
-  .max(100, 'ソートキーは 100 文字以内で入力してください')
+  .max(100, '番号は 100 文字以内で入力してください')
   .nullable()
 
 export const questionTextSchema = z

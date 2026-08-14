@@ -68,6 +68,7 @@ function makeCard(id: string, images: ClientCard['images'] = []): ClientCard {
     id,
     user_id: 'user-1',
     exam_id: 'exam-1',
+    base_order: 1024,
     title: `card-${id}`,
     question_text: `q-${id}`,
     options: [{ id: 'a', text: 'a', is_correct: true }],

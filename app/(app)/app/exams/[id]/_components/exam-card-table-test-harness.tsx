@@ -20,7 +20,7 @@ import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 export function ControlledExamCardTable({
   examId,
   userId,
-  initialColumnVisibility = { sort_key: false },
+  initialColumnVisibility = { question_label: false },
   initialColumnPinning = { left: [], right: [] },
   onColumnPinningChange: externalOnColumnPinningChange,
 }: {

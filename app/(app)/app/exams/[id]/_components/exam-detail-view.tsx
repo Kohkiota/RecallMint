@@ -59,9 +59,9 @@ export function ExamDetailView({
   const chromeRef = useRef<HTMLDivElement>(null)
   // S2-5: columnVisibility state + examViewPrefs 永続を exam-detail-view に集約 (案 P)。
   // 旧 split-brain (view=detail-view / hiddenColumns=ExamCardTable) を単一所有へ。
-  // 初期 { sort_key: false } は saved record の無い新規ユーザーにのみ適用。 saved があれば
+  // 初期 { question_label: false } は saved record の無い新規ユーザーにのみ適用。 saved があれば
   // mount load が setColumnVisibility(map) で上書きする (hiddenColumns:[] = 全列表示)。
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ sort_key: false })
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ question_label: false })
   // S5-2: columnPinning state — handleColumnVisibilityChange と同型の controlled prop 化。
   // 初期 { left: [], right: [] } は「固定なし」。 mount load で pinnedBoundary を復元する。
   const [columnPinning, setColumnPinning] = useState<ColumnPinningState>({ left: [], right: [] })

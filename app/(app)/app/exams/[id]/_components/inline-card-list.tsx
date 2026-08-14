@@ -1,7 +1,7 @@
 'use client'
 
 // 試験詳細 page (/app/exams/[id]) の cards 一覧 + 各 card の inline 編集 UI。
-// sort_key / title / question_text / explanation_text / memo の 5 text field と
+// question_label / title / question_text / explanation_text / memo の 5 text field と
 // 各 option の id / text / is_correct / explanation 4 field を全て inline 編集
 // できる (T4)。 「編集」 ボタン / 別 page 遷移は廃止。
 
@@ -29,7 +29,7 @@ import {
 import { buildEmptyCard } from '@/lib/cards/empty-card'
 import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
 import { buildNewCardMutationPatch } from '@/lib/cards/card-write'
-import { sortLikeServer } from '@/lib/cards/sort-like-server'
+import { compareByBaseOrder } from '@/lib/cards/domain/card-order'
 import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
 import { newId } from '@/lib/sync/entity-mutations'
 import { Button } from '@/components/ui/button'
@@ -37,10 +37,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { DeleteCardButton } from './delete-card-button'
 import { CardEditorFields } from './card-editor-fields'
-
-// sortLikeServer は @/lib/cards/sort-like-server に抽出済 (S2.3 T3)。 既存 importer
-// (exam-card-table-columns / exam-card-table) の `from './inline-card-list'` 互換のため re-export。
-export { sortLikeServer }
 
 type InlineCardListProps = {
   // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
@@ -62,7 +58,8 @@ export function toExamDetailCard(c: ClientCard): ExamDetailCard {
   return {
     id: c.id,
     title: c.title,
-    sortKey: c.sort_key ?? null,
+    questionLabel: c.question_label ?? null,
+    baseOrder: c.base_order,
     questionText: c.question_text,
     options: Array.isArray(c.options) ? (c.options as CardOption[]) : [],
     explanationText: c.explanation_text ?? null,
@@ -83,7 +80,7 @@ const ESTIMATED_CARD_HEIGHT = 738
 // layout feedback loop が無い)ため hysteresis は不要で単純閾値で足りる。
 const SCROLL_TOP_VISIBLE_THRESHOLD = 400
 
-// 1 card 分の行 body(sort_key / title / delete + 後段フィールド列)を module scope の
+// 1 card 分の行 body(question_label / title / delete + 後段フィールド列)を module scope の
 // component に抽出(Sprint F W0)。抽出は verbatim 移動のみ(挙動不変)で、後続の W1
 // (mount 時 consume effect)と S(仮想化の measureElement/ data-index は親 map の <li>
 // に付与)の持ち場を用意する。閉包参照していた値(tagOptions / cardTags / autoEditOnMount)
@@ -130,10 +127,10 @@ function InlineCardRow({
             <InlineTextField
               cardId={card.id}
               userId={userId}
-              field="sort_key"
-              initialValue={card.sortKey}
-              ariaLabel="ソートキー 編集"
-              placeholder="(キー)"
+              field="question_label"
+              initialValue={card.questionLabel}
+              ariaLabel="番号 編集"
+              placeholder="(番号)"
               displayClassName="text-xs font-mono text-slate-600"
             />
           </div>
@@ -211,7 +208,7 @@ export function InlineCardList({
     ])
     const filteredCards = cardRows
       .filter((c) => c.user_id === userId)
-      .sort(sortLikeServer)
+      .sort(compareByBaseOrder)
     const cards = filteredCards.map(toExamDetailCard)
     // T-B5: card_tags は filteredCards の card_id 集合だけに絞って fetch (anyOf 経由)。
     // 空 page (= cards 0 件) は短絡で IDB query を発火しない。
@@ -356,7 +353,10 @@ export function InlineCardList({
   // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
   // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
   // rollback により mirror / outbox の lost write を構造的に排除する。 即時 drain は helper 内蔵。
-  // 採番基準は現在の live cards (この exam の sort_key と件数)。
+  // 採番基準は現在表示中の cards (この exam の base_order と件数)。 liveData はこの exam の
+  // 全 card (フィルタ非適用・pending create も楽観 insert 済で含む) なので末尾採番の母集団
+  // として正しく、 mirror 未 hydrate の窓では initialCards (SSR・同じ base_order 順) が
+  // 同じ役割を果たす (spec §4.1 r3 — この fallback のために ExamDetailCard が baseOrder を持つ)。
   // 件数表示は exam list / 詳細 header いずれも mirror の card 行数を動的集計するため、
   // mirror への insert がそのまま件数表示に反映される (Sprint B で exams.card_count
   // bump 呼出は撤去済 — client はもともと card_count を参照していない)。
@@ -374,7 +374,7 @@ export function InlineCardList({
     // (card id が最初の採番であることを保つ)。
     const cardId = newId()
     const empty = buildEmptyCard(
-      cards.map((c) => c.sortKey),
+      cards.map((c) => c.baseOrder),
       cards.length,
     )
     setNewCardIds((prev) => {

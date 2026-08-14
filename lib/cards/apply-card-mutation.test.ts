@@ -283,7 +283,8 @@ describe('applyCardCreateWithId', () => {
     cardId: 'card-client-1',
     examId: 'exam-1',
     title: '問1',
-    sortKey: 'Q-01',
+    questionLabel: 'Q-01',
+    baseOrder: 1024,
     questionText: '質問テキスト',
     options: [
       { id: 'a', text: 'A', is_correct: true },
@@ -327,12 +328,12 @@ describe('applyCardCreateWithId', () => {
     expect(v.sourceDocumentId).toBeNull()
   })
 
-  it('INSERT 値: title/sortKey/questionText/explanationText/memo が含まれる', async () => {
+  it('INSERT 値: title/questionLabel/baseOrder/questionText/explanationText/memo が含まれる', async () => {
     const { applyCardCreateWithId } = await import('./apply-card-mutation')
     await applyCardCreateWithId(makeTx(), 'user-1', BASE_INPUT)
     const v = ctl.insertedValues!
     expect(v.title).toBe('問1')
-    expect(v.sortKey).toBe('Q-01')
+    expect(v.questionLabel).toBe('Q-01')
     expect(v.questionText).toBe('質問テキスト')
     expect(v.explanationText).toBe('解説')
     expect(v.memo).toBe('メモ')

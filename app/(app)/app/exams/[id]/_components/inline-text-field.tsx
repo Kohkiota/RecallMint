@@ -38,10 +38,10 @@ import { runGuardedEntityMutationFlush } from '@/lib/sync/entity-mutation-flush'
 import { cn } from '@/lib/utils'
 import { SHARED_BOX_CHROME, useAutoResizeTextarea } from '../_lib/inline-edit-shared'
 
-// sort_key / title / question_text / explanation_text / memo は ClientCard の
+// question_label / title / question_text / explanation_text / memo は ClientCard の
 // snake_case 列名に 1:1 対応する (mirror patch のキーにそのまま使う)。
 type InlineTextFieldName =
-  | 'sort_key'
+  | 'question_label'
   | 'title'
   | 'question_text'
   | 'explanation_text'
@@ -174,7 +174,7 @@ export function InlineTextField({
   // flush と二重に走るが run-guarded 側で同時実行は弾かれる、 既存挙動同等)。
   //
   // なぜ正規化: nullable 列は server (lib/cards/card-field-handlers.ts の
-  // CARD_FIELD_HANDLERS[field] handler、 sort_key / explanation_text / memo は handler
+  // CARD_FIELD_HANDLERS[field] handler、 question_label / explanation_text / memo は handler
   // 内で `r.data === '' ? null : r.data` 正規化) が '' を null に揃えるため、 mirror にも
   // 同じ規則を適用して楽観値を server 確定値に一致させる (一致させないと次の pull-back で
   // '' → null へ見た目が反転する)。 server zod は trim しないのでここも strict な === '' で

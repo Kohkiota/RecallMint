@@ -391,7 +391,8 @@ describe('collectBlockedImageMutationIds', () => {
       patch: {
         exam_id: newId(),
         title: 'T',
-        sort_key: null,
+        question_label: null,
+        base_order: 1024,
         question_text: 'Q',
         options: [],
         explanation_text: null,
