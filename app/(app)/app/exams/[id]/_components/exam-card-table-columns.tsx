@@ -18,6 +18,7 @@ import { TagCell } from './exam-card-table-tag-cell'
 import { tagSortKey } from '../_lib/tag-sort-key'
 import { compareByQuestionLabel } from '@/lib/cards/domain/card-order'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
+import { ExamCardRowMenu, type PullIntoDispatch } from './exam-card-row-menu'
 import { CardImageGallery } from './card-image-gallery'
 import {
   matchesTagFilter,
@@ -46,6 +47,17 @@ export type ExamCardTableMeta = {
   // optional にすることで既存の `satisfies ExamCardTableMeta`(exam-card-table.tsx)を変更不要にする。
   activeCardId?: string | null
   openCard?: (cardId: string) => void
+  // Grid-3 §7.2: 行メニュー「ここに取り込む」。openCard と同じ optional 規約 —
+  // 配線されていない (単体 harness 等) なら trigger を描画しない。
+  rowMenu?: {
+    /** 取り込み先 = 現在表示中の exam。 */
+    currentExamId: string
+    /** ソート/フィルタ適用中 = menu 項目 disabled (§7.4)。 */
+    positionLocked: boolean
+    /** 移動の実行中 flag (一括バー / 切り出し / 取り込みで共有)。 */
+    pending: boolean
+    onPullInto: PullIntoDispatch
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +86,11 @@ const makeTextFilterFn = (
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    // チェックボックス実体 (~16px) + gap-1 (4px) + 「カードを開く」button (size-6=24px) +
-    // px-1 左右 合計 (8px) = 52px コンテンツ幅 → 常時表示化(iPad 横向き等 hover 不能環境でも
-    // 不可視にならない)に伴い title 列から本 button を移設したため余白込みで 64px に拡大。
-    size: 64,
+    // チェックボックス実体 (~16px) + gap-1 (4px) ×2 + 「カードを開く」button (size-6=24px) +
+    // 行メニュー trigger (size-6=24px) + px-1 左右 合計 (8px) = 80px コンテンツ幅。
+    // 常時表示化(iPad 横向き等 hover 不能環境でも不可視にならない)に伴い title 列から
+    // 本 button を移設し、Grid-3 §7.2 で行メニューを追加したため余白込みで 88px。
+    size: 88,
     header: ({ table }) => (
       <input
         type="checkbox"
@@ -125,6 +138,18 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             >
               <PanelRightOpen className="size-4" aria-hidden="true" />
             </button>
+          )}
+          {/* Grid-3 §7.2: 行メニュー (⋯) = 「ここに取り込む」。 配線済み (meta.rowMenu) の
+              ときだけ描画する (openCard と同規約)。 */}
+          {meta?.rowMenu && (
+            <ExamCardRowMenu
+              userId={meta.userId}
+              currentExamId={meta.rowMenu.currentExamId}
+              anchorCard={card}
+              positionLocked={meta.rowMenu.positionLocked}
+              pending={meta.rowMenu.pending}
+              onPullInto={meta.rowMenu.onPullInto}
+            />
           )}
         </div>
       )

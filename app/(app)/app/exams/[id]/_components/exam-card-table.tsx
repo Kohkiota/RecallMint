@@ -485,6 +485,109 @@ export function ExamCardTable({
     [userId, createCategory],
   )
 
+  // Grid-3 §7.1 / §7.2: 移動の実行核。 **table instance より前** に置く必要がある —
+  // 行メニュー (c) の dispatch は meta 経由で cell に配るため、useReactTable の引数を
+  // 組み立てる時点で束縛済みでなければならない (選択行に依存する onMove / onSplitOut は
+  // selectedIds が要るので table の後に残す)。
+  //
+  // toast state を **table が持つ** のが要件: 移動が成功すると対象 card が現 exam から
+  // 消え → prune effect で selection が空 → action bar が unmount するため、 bar 配下に
+  // 置くと成功 toast (= undo 素材) が即座に消える。 失敗時は移動していない = 選択が
+  // 残るので inline error は bar 側で良い。
+  const { moveCards, undoMove } = useMoveCards({ userId })
+  const [moveToast, setMoveToast] = useState<MoveToastState | null>(null)
+  const [undoPending, setUndoPending] = useState(false)
+  const [moveError, setMoveError] = useState<string | null>(null)
+  // 実行中 flag と「切り出しで作った exam」は **popover の外** に置く: popover は
+  // close で unmount されるため、中に持つと閉じ→開きで消えて二重 submit できてしまう。
+  const [movePending, setMovePending] = useState(false)
+  // 切り出しで作成済みだが移動が成立しなかった exam の id。次の切り出しは createExam を
+  // 飛ばしてこれを再利用する (失敗のたびに空の「無題の試験」が増えるのを防ぐ)。
+  // 移動が成立した時点で手放す。
+  const splitExamIdRef = useRef<string | null>(null)
+  // 切り出しの再入ガード (同期)。詳細は onSplitOut 冒頭。
+  const splitInFlightRef = useRef(false)
+  const toastSeqRef = useRef(0)
+
+  // ソート/フィルタ適用中は位置指定を禁じる (spec §7.4)。 一括バーの「直後」と
+  // 行メニュー項目の両方が同じ判定を使う。
+  const positionLocked = sorting.length > 0 || columnFilters.length > 0
+
+  const showMoveToast = useCallback((message: string, undo?: MoveSuccess) => {
+    toastSeqRef.current += 1
+    setMoveToast({ id: toastSeqRef.current, message, undo })
+  }, [])
+
+  // 移動の実行と結果の解釈 (成功 toast / 失敗 3 分岐 → 文言) を 1 箇所に置く。
+  // error の **表示先** は入口ごとに違う (一括バー = inline error 枠 / 行メニュー =
+  // picker dialog 内。行メニューは選択ゼロでも開けるため bar が mount されていない)
+  // ので、ここでは文言を返すだけにして表示は呼出側に委ねる。
+  const runMove = useCallback(
+    async (
+      cardIds: string[],
+      targetExamId: string,
+      placement: MovePlacement,
+    ): Promise<{ outcome: MoveDispatchOutcome; message: string | null }> => {
+      try {
+        const result = await moveCards({ cardIds, targetExamId, placement })
+        if (result.ok) {
+          showMoveToast(`${result.movedCount}枚を移動しました`, result)
+          return { outcome: 'moved', message: null }
+        }
+        switch (result.reason) {
+          // no-cards = mirror に対象が 1 枚も無い no-op。 error でも toast でもない
+          // (useMoveCards の契約: mutation を発行していない)。
+          case 'no-cards':
+            return { outcome: 'no-cards', message: null }
+          case 'target-exam-missing':
+            return {
+              outcome: 'target-exam-missing',
+              message: MOVE_TARGET_MISSING_MESSAGE,
+            }
+          // 未知の理由が増えたときに silent な no-op へ倒れないよう error 側で受ける。
+          default:
+            return { outcome: 'failed', message: MOVE_FAILED_MESSAGE }
+        }
+      } catch {
+        // tx 失敗は reject で来る (throwOnError: true)。 部分適用はない。
+        return { outcome: 'failed', message: MOVE_FAILED_MESSAGE }
+      }
+    },
+    [moveCards, showMoveToast],
+  )
+
+  // 一括バー (a) / 切り出し (b) 用の dispatch。 失敗文言は bar の inline error 枠に出す。
+  const dispatchMove = useCallback(
+    async (
+      cardIds: string[],
+      targetExamId: string,
+      placement: MovePlacement,
+    ): Promise<MoveDispatchOutcome> => {
+      setMoveError(null)
+      const { outcome, message } = await runMove(cardIds, targetExamId, placement)
+      if (message !== null) setMoveError(message)
+      return outcome
+    },
+    [runMove],
+  )
+
+  // 行メニュー「ここに取り込む」 (c) の dispatch (spec §7.2)。 取り込み先は常に現 exam、
+  // 位置は行 card の直後。 失敗文言は返り値で picker に渡す (bar の枠は使えない)。
+  // 実行中 flag は (a)(b) と同じ movePending を共有する — 移動は同時に 1 つだけ走る扱いにし、
+  // picker の確定 button も一括バーの実行系 button も同じ flag で塞ぐ。
+  const onPullInto = useCallback(
+    async (cardIds: string[], anchorId: string): Promise<string | null> => {
+      setMovePending(true)
+      try {
+        const { message } = await runMove(cardIds, examId, { kind: 'after', anchorId })
+        return message
+      } finally {
+        setMovePending(false)
+      }
+    },
+    [runMove, examId],
+  )
+
   // TanStack table instance。 columns は module スコープ参照 (再採番なし)。
   // enableRowSelection: true + getRowId で card.id を row id とする。
   // rowSelection は controlled state (useState) で持つ。
@@ -518,6 +621,9 @@ export function ExamCardTable({
       options: liveData?.options ?? [],
       activeCardId,
       openCard,
+      // Grid-3 §7.2: 行メニュー「ここに取り込む」。 examId / gating / dispatch は行に依らず
+      // 同一なので meta で 1 回配り、行固有の anchor は cell が row から取る。
+      rowMenu: { currentExamId: examId, positionLocked, pending: movePending, onPullInto },
     } satisfies ExamCardTableMeta,
   })
 
@@ -566,81 +672,24 @@ export function ExamCardTable({
     setLastBulkResult({ op: '削除', result: r })
   }, [bulkDelete, selectedIds])
 
-  // Grid-3 §7.1: 移動 (一括バー popover) の配線。
-  // toast state を **table が持つ** のが要件: 移動が成功すると対象 card が現 exam から
-  // 消え → prune effect で selection が空 → action bar が unmount するため、 bar 配下に
-  // 置くと成功 toast (= undo 素材) が即座に消える。 失敗時は移動していない = 選択が
-  // 残るので inline error は bar 側で良い。
-  const { moveCards, undoMove } = useMoveCards({ userId })
-  const [moveToast, setMoveToast] = useState<MoveToastState | null>(null)
-  const [undoPending, setUndoPending] = useState(false)
-  const [moveError, setMoveError] = useState<string | null>(null)
-  // 実行中 flag と「切り出しで作った exam」は **popover の外** に置く: popover は
-  // close で unmount されるため、中に持つと閉じ→開きで消えて二重 submit できてしまう。
-  const [movePending, setMovePending] = useState(false)
-  // 切り出しで作成済みだが移動が成立しなかった exam の id。次の切り出しは createExam を
-  // 飛ばしてこれを再利用する (失敗のたびに空の「無題の試験」が増えるのを防ぐ)。
-  // 移動が成立した時点で手放す。
-  const splitExamIdRef = useRef<string | null>(null)
-  // 切り出しの再入ガード (同期)。詳細は onSplitOut 冒頭。
-  const splitInFlightRef = useRef(false)
-  const toastSeqRef = useRef(0)
-
-  const showMoveToast = useCallback((message: string, undo?: MoveSuccess) => {
-    toastSeqRef.current += 1
-    setMoveToast({ id: toastSeqRef.current, message, undo })
-  }, [])
-
   // 選択が変わったら直前の失敗表示を捨てる (別の対象に対する stale な error を
   // 再マウントした bar に出さない)。
   useEffect(() => {
     setMoveError(null)
   }, [selectedIds])
 
-  const dispatchMove = useCallback(
-    async (
-      targetExamId: string,
-      placement: MovePlacement,
-    ): Promise<MoveDispatchOutcome> => {
-      setMoveError(null)
-      try {
-        const result = await moveCards({ cardIds: selectedIds, targetExamId, placement })
-        if (result.ok) {
-          showMoveToast(`${result.movedCount}枚を移動しました`, result)
-          return 'moved'
-        }
-        switch (result.reason) {
-          // no-cards = mirror に対象が 1 枚も無い no-op。 error でも toast でもない
-          // (useMoveCards の契約: mutation を発行していない)。
-          case 'no-cards':
-            return 'no-cards'
-          case 'target-exam-missing':
-            setMoveError(MOVE_TARGET_MISSING_MESSAGE)
-            return 'target-exam-missing'
-          // 未知の理由が増えたときに silent な no-op へ倒れないよう error 側で受ける。
-          default:
-            setMoveError(MOVE_FAILED_MESSAGE)
-            return 'failed'
-        }
-      } catch {
-        // tx 失敗は reject で来る (throwOnError: true)。 部分適用はない。
-        setMoveError(MOVE_FAILED_MESSAGE)
-        return 'failed'
-      }
-    },
-    [moveCards, selectedIds, showMoveToast],
-  )
-
+  // 一括バー (a) の移動発行。 対象 = 実行時点の選択行 (行メニュー (c) は picker で
+  // 選んだ card を渡すため、対象の決め方だけが違う)。
   const onMove = useCallback(
     async (targetExamId: string, placement: MovePlacement) => {
       setMovePending(true)
       try {
-        return await dispatchMove(targetExamId, placement)
+        return await dispatchMove(selectedIds, targetExamId, placement)
       } finally {
         setMovePending(false)
       }
     },
-    [dispatchMove],
+    [dispatchMove, selectedIds],
   )
 
   // 切り出し (b) = exam 作成 (server action) → pull → 末尾移動の逐次 3 段 (spec §6.1)。
@@ -683,7 +732,7 @@ export function ExamCardTable({
       // 戻り値は分岐に使わない: 上限に達しても従来どおり移動を試し、失敗分岐へ落とす。
       await waitForExamInMirror(examId, userId)
 
-      const outcome = await dispatchMove(examId, { kind: 'end' })
+      const outcome = await dispatchMove(selectedIds, examId, { kind: 'end' })
       if (outcome === 'moved') splitExamIdRef.current = null
       if (outcome === 'target-exam-missing') {
         if (pulled === 'ran') {
@@ -707,7 +756,7 @@ export function ExamCardTable({
       splitInFlightRef.current = false
       setMovePending(false)
     }
-  }, [dispatchMove, userId])
+  }, [dispatchMove, selectedIds, userId])
 
   const onUndoMove = useCallback(
     async (undo: MoveSuccess) => {
@@ -1042,7 +1091,7 @@ export function ExamCardTable({
           lastResult={lastBulkResult}
           userId={userId}
           examId={examId}
-          positionLocked={sorting.length > 0 || columnFilters.length > 0}
+          positionLocked={positionLocked}
           movePending={movePending}
           onMove={onMove}
           onSplitOut={onSplitOut}

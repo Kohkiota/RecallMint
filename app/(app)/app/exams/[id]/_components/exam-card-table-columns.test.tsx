@@ -251,7 +251,7 @@ describe('T3: column sizing', () => {
 
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
-      select: 64, // 行操作 button 常時表示化(iPad hover 不能環境対応)で checkbox 隣接に移設・拡幅
+      select: 88, // 行操作 button 常時表示化(iPad hover 不能環境対応)で checkbox 隣接に移設 + Grid-3 §7.2 の行メニュー trigger 追加で再拡幅
       title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
       question_label: 100,
       question: 320,
