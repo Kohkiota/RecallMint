@@ -840,6 +840,47 @@ describe('POST /api/entity-mutations/bulk', () => {
     expect(state.cardCreateCalls).toHaveLength(0)
   })
 
+  // Order-1 (spec §3.1 / §4.2): base_order は全 INSERT 経路が明示供給する契約。
+  // 欠落・0・負値・小数は wire で弾き、apply まで到達させない。
+  // (0 と負値は zod 上どちらも `.min(1)` の同一節だが、0 は spec §2.2 で位置挿入の
+  //  仮想下界として予約された値なので、意味の違う入力として別 case に残す。)
+  it.each([
+    ['欠落', undefined],
+    ['0(仮想下界として予約・CHECK >= 1)', 0],
+    ['負値', -1024],
+    ['小数', 1024.5],
+  ])('create: base_order が %s → per-mutation failed[]、applyCardCreateWithId 呼ばれない', async (_label, value) => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const patch: Record<string, unknown> = { ...VALID_CREATE_PATCH }
+    if (value === undefined) delete patch['base_order']
+    else patch['base_order'] = value
+
+    const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch })] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    expect(state.cardCreateCalls).toHaveLength(0)
+  })
+
+  // 拒否系の対。既存の成功系 test は question_label が非 null の case しか無いため、
+  // ここでは **question_label=null(手動追加の形)** と別の正値 base_order を通す。
+  it('create: 正値 base_order + question_label=null は applied で apply に素通しされる', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const patch = { ...VALID_CREATE_PATCH, base_order: 4096, question_label: null }
+
+    const res = await POST(makeReq({ mutations: [makeCreateMutation({ patch })] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    expect(state.cardCreateCalls).toHaveLength(1)
+    const input = state.cardCreateCalls[0]!.input
+    expect(input['baseOrder']).toBe(4096)
+    expect(input['questionLabel']).toBeNull()
+  })
+
   it('create: patch 不正 (question_text 欠如) → per-mutation failed[]', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const badPatch = {

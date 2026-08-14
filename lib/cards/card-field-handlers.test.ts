@@ -238,6 +238,16 @@ describe('CARD_FIELD_HANDLERS.question_label', () => {
     expect(state.setArg).toMatchObject({ questionLabel: 'Q-01' })
   })
 
+  // spec 決定 6: ラベル編集で行は動かない。既定順は base_order で決まるので、
+  // この handler が SET 句に順序列を含めないことが「動かない」の実体になる。
+  // (SET 句の形に依存する assert なので、仕様レベルの pin は iso 側にも置いてある。)
+  it('SET 句に base_order を含めない(ラベル編集で既定順が動かない・spec 決定 6)', async () => {
+    const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
+    await CARD_FIELD_HANDLERS.question_label(makeTx(state), 'card-1', 'user-1', 'Q-99')
+    expect(state.setArg).not.toHaveProperty('baseOrder')
+    expect(Object.keys(state.setArg ?? {}).sort()).toEqual(['questionLabel', 'updatedAt'])
+  })
+
   it('空文字 → null に正規化', async () => {
     const { CARD_FIELD_HANDLERS } = await import('./card-field-handlers')
     await CARD_FIELD_HANDLERS.question_label(

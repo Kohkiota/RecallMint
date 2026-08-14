@@ -19,7 +19,7 @@
 //
 // mutating test ゆえ beforeEach で truncate→seed。
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeDb } from '@/lib/db'
@@ -290,6 +290,106 @@ describe('publishPreparedUploadTx (T12) — fencing / lock-order / protective / 
     // 月次 quota SUM がこの行を数える(記帳の実効を pin・enforcement は ②-5)。
     const monthPages = await withTenantTx(userId, (tx) => getCurrentMonthOcrPages(userId, tx))
     expect(monthPages).toBe(1)
+  })
+
+  // Order-1 (spec §5.3): publish は「対象 exam の既存 max の続き」から **payload の配列順**で
+  // base_order を採番する。配列順 = モデルの読み取り順という契約で、番号ラベル
+  // (question_label) の値には一切依存しない。
+  //
+  // **保証の範囲は非並走時に限る**: 同一 exam への publish が並走した場合、両者が同じ
+  // max を読んで同値採番しうる(spec §2.1 が重複を容認し id tiebreak で全順序を保つ設計)。
+  // その並走後の状態が決定的であることは card-order-agreement.test.ts の重複ケースが
+  // 担保する — ここで pin するのは「1 publish 内の配列順が保たれること」だけ。
+  it('採番: 空 exam への publish は stride(1024)から配列順に振られる(非並走時)', async () => {
+    const userId = await seedUser()
+    const { examId, sourceDocumentId } = await seedExamAndSourceDoc(userId)
+    const operationId = await seedPreparedOperation(userId, examId, sourceDocumentId, {
+      leaseVersion: 2,
+    })
+    // 番号ラベルを **配列順と逆** に振る。base_order が配列順で決まる(ラベルを見ない)
+    // ことを、この逆順ラベルが偽装できないようにするため。
+    const cardsIn = [
+      makePreparedCard({ cardId: randomUUID(), questionLabel: '003' }),
+      makePreparedCard({ cardId: randomUUID(), questionLabel: '002' }),
+      makePreparedCard({ cardId: randomUUID(), questionLabel: '001' }),
+    ]
+
+    const result = await withTenantTx(userId, (tx) =>
+      publishPreparedUploadTx(tx, {
+        userId,
+        operationId,
+        leaseVersion: 2,
+        cards: cardsIn,
+        cardImagesByCardId: {},
+        resultSummary: {},
+      }),
+    )
+    expect(result).toEqual({ outcome: 'published' })
+
+    const rows = await getFixtureOwnerDb().execute<{ id: string; base_order: number }>(
+      sql`SELECT id, base_order FROM cards WHERE exam_id = ${examId} ORDER BY base_order, id`,
+    )
+    expect(rows.map((r) => r.base_order)).toEqual([1024, 2048, 3072])
+    // ORDER BY の結果が payload の配列順と一致する(= 読み取り順で並ぶ)。
+    expect(rows.map((r) => r.id)).toEqual(cardsIn.map((c) => c.cardId))
+  })
+
+  it('採番: 既存 cards がある exam への追加 publish は max の続きから振られる(非並走時)', async () => {
+    const userId = await seedUser()
+    const { examId, sourceDocumentId } = await seedExamAndSourceDoc(userId)
+    // 既存 2 枚(max = 2048)を先に置く。
+    const existing = [randomUUID(), randomUUID()]
+    // **同 user の別 exam** に桁違いの base_order を置く(decoy)。max SELECT の述語から
+    // exam 条件が落ちると、こちらの 1,000,000 に引きずられて採番が飛ぶ — 「**対象 exam の**
+    // 既存 max」という主張は、この decoy が無いと user scope だけでも通ってしまう。
+    const { examId: otherExamId } = await seedExamAndSourceDoc(userId)
+    const seedRow = (id: string, exam: string, baseOrder: number) => ({
+      id,
+      userId,
+      examId: exam,
+      title: 'existing',
+      questionLabel: null,
+      baseOrder,
+      questionText: 'Q?',
+      options: [],
+      correctAnswerIds: [],
+      ...initialFsrsState(new Date('2026-08-14T00:00:00.000Z')),
+    })
+    await getFixtureOwnerDb()
+      .insert(cards)
+      .values([
+        ...existing.map((id, i) => seedRow(id, examId, (i + 1) * 1024)),
+        seedRow(randomUUID(), otherExamId, 1_000_000),
+      ])
+
+    const operationId = await seedPreparedOperation(userId, examId, sourceDocumentId, {
+      leaseVersion: 2,
+    })
+    const cardsIn = [
+      makePreparedCard({ cardId: randomUUID() }),
+      makePreparedCard({ cardId: randomUUID() }),
+    ]
+    const result = await withTenantTx(userId, (tx) =>
+      publishPreparedUploadTx(tx, {
+        userId,
+        operationId,
+        leaseVersion: 2,
+        cards: cardsIn,
+        cardImagesByCardId: {},
+        resultSummary: {},
+      }),
+    )
+    expect(result).toEqual({ outcome: 'published' })
+
+    const rows = await getFixtureOwnerDb().execute<{ id: string; base_order: number }>(
+      sql`SELECT id, base_order FROM cards WHERE exam_id = ${examId} ORDER BY base_order, id`,
+    )
+    // 既存 1024 / 2048 の後ろに 3072 / 4096。既存を振り直さない(= 追加 upload で
+    // 既存カードの並びが動かない)。
+    expect(rows.map((r) => r.base_order)).toEqual([1024, 2048, 3072, 4096])
+    // 既存 2 行は id も位置も不変(「振り直さない」の実体。値だけ見ると入れ替わりを見逃す)。
+    expect(rows.slice(0, 2).map((r) => r.id)).toEqual(existing)
+    expect(rows.slice(2).map((r) => r.id)).toEqual(cardsIn.map((c) => c.cardId))
   })
 
   it('保護 UPDATE 期待未満(crop asset が deleting)→ throw + rollback(cards 0・op prepared)', async () => {
