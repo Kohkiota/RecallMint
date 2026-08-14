@@ -1,5 +1,6 @@
-# Order-1 — cards 順序キー再設計(base_order 導入 + sort_key → 番号ラベル転換)設計 spec(r2)
+# Order-1 — cards 順序キー再設計(base_order 導入 + sort_key → 番号ラベル転換)設計 spec(r3)
 
+- **r2 → r3(2026-08-14・実装中の OT 承認)**: §4.1 のみ訂正 — `ExamDetailCard` に `baseOrder` を追加し `getCardsForExam` の SELECT に含める。r2 が SELECT 追加を退けた理由(「行内で base_order を読む UI が無い」)が Task 2 の実装中に**実測で偽**と判明したため(詳細は §4.1 の r3 訂正注記)。他の節は不変。
 - 状態: **確定・凍結**(2026-08-14 OT 承認)。**§12 の確認点 7 件も承認済み**(凍結指示に含む)。r1 → r2 の差分 = OT 指示の文面修正 3 組(① §2.3-3 wire 表現の凍結境界の明確化 ② §5.3 並走説明を実 lock 構造(submit の user 単位 advisory xact lock は publish 段に及ばない)で訂正 ③ §2.1 UNIQUE 衝突時の挙動を実 error 経路(per-mutation failed[] → 再送ループ → stale 隔離 = silent lost write / publish は tx rollback)で訂正)。**以後、本 spec は実装フェーズで書き換えない** — 仕様判断が必要になった時点で停止し OT に相談する。実装 plan = `docs/superpowers/plans/2026-08-14-order-1-base-order.md`。
 - 位置づけ: **Order-1 → Grid-3(試験間移動)→ 行 DnD の 3 sprint の第 1 段**。本 spec が cards の順序の**正本契約**。Grid-3 / DnD は本契約(§2)を消費する — 挿入・再採番の**実装**は Grid-3 側だが、**契約の定義**は本 spec に置く。
 - 入力: OT kickoff(確定 8 決定・2026-08-14)+ 前提確認レポート 3 本(同日 chat: Grid-3 実装状況 / sort_key 実態 / 移動+順序再設計の前提確認)。事実の根拠 file:line は同レポートを正とし、本 spec では設計に効く箇所のみ再掲する。
@@ -112,8 +113,10 @@ CREATE INDEX cards_order_idx ON cards (user_id, exam_id, base_order, id);
 
 ### 4.1 ORDER BY 置換(2 箇所 — 決定 3 の全量)
 
-- `getCardsForExam`(`lib/exams/list.ts:117`)/ `getCardsForSourceDocument`(同 `:196`): `.orderBy(cards.sortKey, cards.createdAt)` → **`.orderBy(cards.baseOrder, cards.id)`**。SELECT 列に `baseOrder` は**追加しない**(SSR 初期データは並び済み配列として消費され、行内で base_order を読む UI が無い — YAGNI)。`sortKey` 列の SELECT は `questionLabel` に rename。
-- `ExamDetailCard` 型(list.ts)の `sortKey` → `questionLabel` rename。
+- `getCardsForExam`(`lib/exams/list.ts:117`)/ `getCardsForSourceDocument`(同 `:196`): `.orderBy(cards.sortKey, cards.createdAt)` → **`.orderBy(cards.baseOrder, cards.id)`**。`sortKey` 列の SELECT は `questionLabel` に rename。
+- `ExamDetailCard` 型(list.ts)の `sortKey` → `questionLabel` rename + **`baseOrder: number` 追加**、`getCardsForExam` の SELECT に `baseOrder` を含める。
+  - **r3 訂正(2026-08-14・OT 承認)**: r2 は「SSR SELECT に baseOrder を追加しない(行内で base_order を読む UI が無い — YAGNI)」としていたが、**その理由は実測で偽**だった — 手動追加の末尾採番は SSR fallback(`initialCards` = `ExamDetailCard`)経由で行の base_order を読む。Dexie mirror 未 hydrate の窓では max が不明になり採番が stride 先頭(1024)に落ちて既存カードと衝突する(実証: 追加 test を click 前に 50ms 待つ形にすると pass(2048)、待たない現行は fail(1024))。旧実装は `ExamDetailCard.sortKey` を持っていたため fallback でも正しく採番できており、非退行条件に該当する。
+  - `getCardsForSourceDocument`(`CardListEntry`)は**変更しない** — 採番の読み手ではない(OCR result page の snippet 表示専用)。追加するのは `getCardsForExam` の 1 経路のみ。
 
 ### 4.2 wire / apply
 
