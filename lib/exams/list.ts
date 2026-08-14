@@ -178,10 +178,13 @@ export async function getSourceDocumentForUser(
 // snippet 表示型 CardListEntry を返す (S2.0 T7 で getCardsForExam は rich 型
 // ExamDetailCard に変更済、 本関数は upload result page 用に CardListEntry 据え置き)。
 //
-// base_order は exam 内でのみ意味を持つ (spec §2.1) ので、 この ORDER BY が意味を成すのは
-// 「1 source_document の cards は 1 exam に閉じる」 前提の上。 現状それは publish が単一 exam
-// へ INSERT し、 card の exam 間移動経路が存在しないことで成立している。 **Grid-3 で移動を
-// 入れたらこの前提は崩れる** ので、 その時点で order 定義を再裁定すること。
+// 順序 = (exam_id, base_order, id)(Grid-3 spec §4.4 / D-10 で再裁定済)。
+// base_order は exam 内でのみ意味を持つ (spec §2.1)。 card_move による試験間移動の導入で
+// 「1 source_document の cards は 1 exam に閉じる」 前提が崩れた (1 publish の cards が
+// 後から複数 exam に散り得る) ため、 exam でグループ化してから各 exam 内を基準順に並べる
+// 形へ再定義した — Order-1 §2.5 のカスタム演習 sequential と同じ「グループ化 → 群内は
+// 基準順」パターン。 決定的で追加データ不要、単一 exam のときは exam_id が定数になるため
+// 移動前の挙動と完全同値。
 export async function getCardsForSourceDocument(
   userId: string,
   sourceDocumentId: string,
@@ -204,7 +207,7 @@ export async function getCardsForSourceDocument(
         eq(cards.sourceDocumentId, sourceDocumentId),
       ),
     )
-    .orderBy(cards.baseOrder, cards.id)
+    .orderBy(cards.examId, cards.baseOrder, cards.id)
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
