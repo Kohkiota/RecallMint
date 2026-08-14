@@ -20,8 +20,9 @@ import { logger } from '@/lib/logger'
 export type RlsAlertRoute =
   | 'entity-mutations/bulk'
   | 'delete-exam'
+  | 'rename-exam'
   | 'review-events/bulk'
-export type RlsAlertOp = 'mutation' | 'delete' | 'ingest'
+export type RlsAlertOp = 'mutation' | 'delete' | 'ingest' | 'update'
 
 /**
  * catch した error が P0RLS なら integration_failures 台帳 + Discord へ記録する。

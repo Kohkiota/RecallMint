@@ -28,6 +28,7 @@ import { InlineCardList } from './inline-card-list'
 import { ExamCardTable } from './exam-card-table'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { DeckDownloadButton } from './deck-download-button'
+import { ExamTitleInlineEdit } from './exam-title-inline-edit'
 
 type ExamDetailViewProps = {
   initialCards: ExamDetailCard[]
@@ -216,7 +217,13 @@ export function ExamDetailView({
           {/* card view: 現状 (page.tsx) 同等 = text-2xl bold タイトル + text-xs 日付。 視覚回帰ゼロ。 */}
           <AppContainer className="py-0">
             <header className="space-y-1">
-              <h1 className="text-2xl font-bold">{examName}</h1>
+              {/* Grid-3 §6.2: 試験名は inline 編集 (click → input)。 variant='card' が
+                  従来の h1 class (text-2xl font-bold・折り返しあり) を保持する。 */}
+              <ExamTitleInlineEdit
+                examId={examId}
+                examName={examName}
+                variant="card"
+              />
               <p className="text-xs text-slate-500">{dateText}</p>
             </header>
           </AppContainer>
@@ -259,7 +266,12 @@ export function ExamDetailView({
             <div className="min-h-0 overflow-hidden" inert={chromeCollapsed}>
               <div className="flex items-center justify-between gap-2 px-2 py-2 md:px-4">
                 <div className="min-w-0">
-                  <h1 className="truncate text-base font-bold">{examName}</h1>
+                  {/* Grid-3 §6.2: table view は compact variant (従来の truncate text-base font-bold)。 */}
+                  <ExamTitleInlineEdit
+                    examId={examId}
+                    examName={examName}
+                    variant="compact"
+                  />
                   <p className="truncate text-[11px] leading-tight text-slate-500">{dateText}</p>
                 </div>
                 {/* S2-5: view 切替と列ボタンを並べる (列ボタンは table view のみ)。 */}

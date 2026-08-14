@@ -81,6 +81,18 @@ vi.mock('./exam-card-table', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// モック: next/navigation — Grid-3 T4 で h1 が ExamTitleInlineEdit (useRouter を
+// 使う client component) に置き換わったため。 AppRouterContext 無しの render では
+// useRouter が invariant throw するので router stub を供給する。
+// (ExamTitleInlineEdit 自体は stub せず実体を描画する — Case ⑨/⑩ の視覚維持
+//  assertion が実 h1 に効き続けるようにするため)
+// ---------------------------------------------------------------------------
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}))
+
+// ---------------------------------------------------------------------------
 // モック: sync-meta — setJsonSyncMeta を spy しつつ実装は通す (部分 mock)
 // vi.hoisted で mockSetJsonSyncMeta を巻き上げ、vi.mock ファクトリより前に宣言。
 // モジュール解決後に actual 実装を impl として注入することで infinite recursion を回避。

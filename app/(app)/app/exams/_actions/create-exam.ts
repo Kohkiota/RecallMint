@@ -1,10 +1,10 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { z } from 'zod'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { exams } from '@/lib/db/schema'
+import { examNameSchema, firstExamNameError } from '@/lib/exams/exam-name'
 import type { ActionResult } from '@/lib/actions/result'
 
 // 試験手動作成 server action。
@@ -18,16 +18,8 @@ import type { ActionResult } from '@/lib/actions/result'
 // 依存するため '/app/upload' を finally で revalidate する (delete-exam.ts と同様)。
 // '/app/exams' は遷移先の詳細画面なので revalidate 不要 (通常 nav で再 fetch)。
 
-const nameSchema = z
-  .string()
-  .trim()
-  .min(1, '試験名は必須です')
-  .max(200, '試験名は 200 文字以内で入力してください')
-
-// zod safeParse の最初の issue.message を取り出す共通 helper。
-function firstError(error: z.ZodError<unknown>): string {
-  return error.issues[0]?.message ?? '入力内容が正しくありません'
-}
+// name の zod は rename-exam と共有 (`@/lib/exams/exam-name`)。 'use server' file は
+// async 関数以外を export できないため schema はここに置かない。
 
 export async function createExam(
   name: string,
@@ -45,8 +37,9 @@ async function _createExam(
   const user = await getCurrentUser()
   if (!user) return { ok: false, error: '認証が必要です' }
 
-  const parsed = nameSchema.safeParse(name)
-  if (!parsed.success) return { ok: false, error: firstError(parsed.error) }
+  const parsed = examNameSchema.safeParse(name)
+  if (!parsed.success)
+    return { ok: false, error: firstExamNameError(parsed.error) }
 
   // RLS-P2 §B: exams は RLS-on ゆえ WITH CHECK 対象。INSERT を withTenantTx で包み
   // tx 冒頭で tenant context (app.user_id GUC) を張る。
