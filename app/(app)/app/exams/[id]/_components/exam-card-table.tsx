@@ -69,20 +69,26 @@ import {
 } from '@tanstack/react-table'
 import { ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ActionToast } from '@/components/ui/action-toast'
 import { Button } from '@/components/ui/button'
 import { getClientDb } from '@/lib/client-db'
-import { compareByBaseOrder } from '@/lib/cards/domain/card-order'
+import { compareByBaseOrder, type MovePlacement } from '@/lib/cards/domain/card-order'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
+import { waitForExamInMirror } from '../_lib/wait-for-exam-mirror'
 import { ConditionBar } from './exam-card-table-condition-bar'
 import { cardTableFilterEditors } from './exam-card-table-filter-editors'
 import { ExamCardTableActionBar } from './exam-card-table-action-bar'
 import { ExamCardSidePeek } from './exam-card-side-peek'
+import { createExam } from '../../_actions/create-exam'
+import { runGuardedPull } from '@/lib/sync/pull'
+import type { MoveDispatchOutcome } from './exam-card-move-popover'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
 import { useBulkCardDelete } from '../_hooks/use-bulk-card-delete'
+import { useMoveCards, type MoveResult } from '../../_hooks/use-move-cards'
 import {
   handleRenameCategory,
   handleSetCategoryColor,
@@ -248,6 +254,40 @@ const MemoizedTableBody = memo(
   TableBody,
   (_prev, next) => next.isResizing,
 )
+
+// ---------------------------------------------------------------------------
+// Grid-3 §7.1 / §7.5: 移動の文言。 useMoveCards の失敗表現をそのまま UI 文言へ写す。
+// ---------------------------------------------------------------------------
+
+// tx 失敗 (reject)。 all-or-nothing なので「移動していない」と言い切れる。
+const MOVE_FAILED_MESSAGE = '移動に失敗しました。しばらくしてから再度お試しください。'
+// mutation 未発行 (mirror に移動先 exam が無い / 他 user のもの)。
+const MOVE_TARGET_MISSING_MESSAGE = '移動先の試験が見つかりません。選び直してください。'
+// 切り出し (b) で自動作成する exam 名 (spec §6.1)。
+const SPLIT_OUT_EXAM_NAME = '無題の試験'
+// createExam が failure / reject で返った場合の inline 文言 (server action の failure 文体)。
+const SPLIT_OUT_FAILED_MESSAGE =
+  '試験の作成に失敗しました。しばらくしてから再度お試しください。'
+// 作成した exam が mirror に届かないまま移動を試みた場合 (pull skip / pull 失敗)。
+// 汎用の「移動先の試験が見つかりません。選び直してください」は切り出しでは意味を
+// 成さない (ユーザーは移動先を選んでいない) ため、この経路だけ差し替える。
+const SPLIT_OUT_NOT_SYNCED_MESSAGE =
+  '作成した試験の同期が終わっていません。しばらくしてから再度お試しください。'
+// pull が走ったのに移動先が居ない = 作成した exam が削除されている (別端末等)。
+// 「同期待ち」ではないので案内を分ける (次のクリックは新しい exam を作り直す)。
+const SPLIT_OUT_TARGET_GONE_MESSAGE =
+  '切り出し先の試験が見つかりません。もう一度お試しください。'
+// undo が発行できなかった理由 → 文言 (spec §5.4)。
+const UNDO_FAILURE_MESSAGE = {
+  'source-exam-missing': '元の試験が削除されています',
+  'cards-missing': '移動したカードの一部が削除されています',
+} as const
+const UNDO_FAILED_MESSAGE = '元に戻せませんでした。しばらくしてから再度お試しください。'
+
+type MoveSuccess = MoveResult & { ok: true }
+// 単一 slot の toast state。 id は key に渡し、 同一文言の連続表示でも remount させる
+// (ActionToast の契約: message 同値だと auto-dismiss timer が再カウントされない)。
+type MoveToastState = { id: number; message: string; undo?: MoveSuccess }
 
 type ExamCardTableProps = {
   examId: string
@@ -526,6 +566,165 @@ export function ExamCardTable({
     setLastBulkResult({ op: '削除', result: r })
   }, [bulkDelete, selectedIds])
 
+  // Grid-3 §7.1: 移動 (一括バー popover) の配線。
+  // toast state を **table が持つ** のが要件: 移動が成功すると対象 card が現 exam から
+  // 消え → prune effect で selection が空 → action bar が unmount するため、 bar 配下に
+  // 置くと成功 toast (= undo 素材) が即座に消える。 失敗時は移動していない = 選択が
+  // 残るので inline error は bar 側で良い。
+  const { moveCards, undoMove } = useMoveCards({ userId })
+  const [moveToast, setMoveToast] = useState<MoveToastState | null>(null)
+  const [undoPending, setUndoPending] = useState(false)
+  const [moveError, setMoveError] = useState<string | null>(null)
+  // 実行中 flag と「切り出しで作った exam」は **popover の外** に置く: popover は
+  // close で unmount されるため、中に持つと閉じ→開きで消えて二重 submit できてしまう。
+  const [movePending, setMovePending] = useState(false)
+  // 切り出しで作成済みだが移動が成立しなかった exam の id。次の切り出しは createExam を
+  // 飛ばしてこれを再利用する (失敗のたびに空の「無題の試験」が増えるのを防ぐ)。
+  // 移動が成立した時点で手放す。
+  const splitExamIdRef = useRef<string | null>(null)
+  // 切り出しの再入ガード (同期)。詳細は onSplitOut 冒頭。
+  const splitInFlightRef = useRef(false)
+  const toastSeqRef = useRef(0)
+
+  const showMoveToast = useCallback((message: string, undo?: MoveSuccess) => {
+    toastSeqRef.current += 1
+    setMoveToast({ id: toastSeqRef.current, message, undo })
+  }, [])
+
+  // 選択が変わったら直前の失敗表示を捨てる (別の対象に対する stale な error を
+  // 再マウントした bar に出さない)。
+  useEffect(() => {
+    setMoveError(null)
+  }, [selectedIds])
+
+  const dispatchMove = useCallback(
+    async (
+      targetExamId: string,
+      placement: MovePlacement,
+    ): Promise<MoveDispatchOutcome> => {
+      setMoveError(null)
+      try {
+        const result = await moveCards({ cardIds: selectedIds, targetExamId, placement })
+        if (result.ok) {
+          showMoveToast(`${result.movedCount}枚を移動しました`, result)
+          return 'moved'
+        }
+        switch (result.reason) {
+          // no-cards = mirror に対象が 1 枚も無い no-op。 error でも toast でもない
+          // (useMoveCards の契約: mutation を発行していない)。
+          case 'no-cards':
+            return 'no-cards'
+          case 'target-exam-missing':
+            setMoveError(MOVE_TARGET_MISSING_MESSAGE)
+            return 'target-exam-missing'
+          // 未知の理由が増えたときに silent な no-op へ倒れないよう error 側で受ける。
+          default:
+            setMoveError(MOVE_FAILED_MESSAGE)
+            return 'failed'
+        }
+      } catch {
+        // tx 失敗は reject で来る (throwOnError: true)。 部分適用はない。
+        setMoveError(MOVE_FAILED_MESSAGE)
+        return 'failed'
+      }
+    },
+    [moveCards, selectedIds, showMoveToast],
+  )
+
+  const onMove = useCallback(
+    async (targetExamId: string, placement: MovePlacement) => {
+      setMovePending(true)
+      try {
+        return await dispatchMove(targetExamId, placement)
+      } finally {
+        setMovePending(false)
+      }
+    },
+    [dispatchMove],
+  )
+
+  // 切り出し (b) = exam 作成 (server action) → pull → 末尾移動の逐次 3 段 (spec §6.1)。
+  // exam は outbox に載せない (D-8) ため 1 op に畳まない。
+  //
+  // **pull は移動の前提**: useMoveCards は移動先 exam が mirror に居ることを検査して
+  // からでないと mutation を発行しない。runGuardedPull は inflight-skip / lock-busy を
+  // 通常経路で返す (直前の楽観 mutation が撃つ flush → pullBack と競合する) ため、
+  // 1 回引いた上で **mirror に exam 行が現れるのを上限付きで待つ** (即時 retry は同じ skip が
+  // 返るだけなので待機に置き換えた)。それでも届かなければ作成済み exam を ref に残し、
+  // 次のクリックで createExam を飛ばして再開する。
+  // ただし **pull が走った上で移動先が居ない場合は ref を破棄する** (削除された exam へ
+  // 恒久的に resume して切り出しが詰まるのを防ぐ)。
+  const onSplitOut = useCallback(async (): Promise<MoveDispatchOutcome> => {
+    // 二重 submit の **同期** ガード。`movePending` state は次の render まで反映されないため、
+    // 同一 tick に click が 2 発届くと両方が createExam に入り、空の「無題の試験」が 2 個
+    // できる (Task 4 I-1 と同 class)。ref は代入した瞬間に見えるので、最初の await より前に
+    // 立てて再入を弾く。state は表示 (button の disabled) 用としてそのまま残す。
+    // 再入時は何もせず 'failed' を返す (popover は開いたまま・error も出さない)。
+    if (splitInFlightRef.current) return 'failed'
+    splitInFlightRef.current = true
+    setMovePending(true)
+    try {
+      let examId = splitExamIdRef.current
+      if (examId === null) {
+        const created = await createExam(SPLIT_OUT_EXAM_NAME)
+        const createdId = created.ok ? created.data?.examId : undefined
+        if (createdId === undefined) {
+          setMoveError(created.ok ? SPLIT_OUT_FAILED_MESSAGE : created.error)
+          return 'failed'
+        }
+        examId = createdId
+        splitExamIdRef.current = createdId
+      }
+
+      const pulled = await runGuardedPull({ reason: 'exam-create' }).catch(() => null)
+      // pull の outcome ではなく **移動の実前提** (mirror に移動先 exam の行が居ること) を
+      // 上限付きで待つ。skip は別 pull 進行中の常態で即 retry しても同じ結果になるため、
+      // 進行中の pull が着地する時間を与える方が主操作 (1 回目の切り出し) が通る。
+      // 戻り値は分岐に使わない: 上限に達しても従来どおり移動を試し、失敗分岐へ落とす。
+      await waitForExamInMirror(examId, userId)
+
+      const outcome = await dispatchMove(examId, { kind: 'end' })
+      if (outcome === 'moved') splitExamIdRef.current = null
+      if (outcome === 'target-exam-missing') {
+        if (pulled === 'ran') {
+          // pull が実際に走った (mirror は取り込み済み) のに移動先が居ない = その exam は
+          // 「未同期」ではなく **消えている** (別端末で削除された等)。保持し続けると
+          // createExam が二度と走らず切り出しが恒久的に詰まるので手放し、次のクリックで
+          // 作り直す。文言も削除に対して同期を案内しないよう出し分ける。
+          splitExamIdRef.current = null
+          setMoveError(SPLIT_OUT_TARGET_GONE_MESSAGE)
+        } else {
+          // pull が skip された (lock-busy / inflight-skip) = mirror が古いだけかもしれない。
+          // exam は残して次のクリックで pull + 移動から再開する (orphan を増やさない)。
+          setMoveError(SPLIT_OUT_NOT_SYNCED_MESSAGE)
+        }
+      }
+      return outcome
+    } catch {
+      setMoveError(SPLIT_OUT_FAILED_MESSAGE)
+      return 'failed'
+    } finally {
+      splitInFlightRef.current = false
+      setMovePending(false)
+    }
+  }, [dispatchMove, userId])
+
+  const onUndoMove = useCallback(
+    async (undo: MoveSuccess) => {
+      setUndoPending(true)
+      try {
+        const result = await undoMove(undo)
+        // 失敗は同じ slot を error 文言の toast で置き換える (undo button は消える)。
+        showMoveToast(result.ok ? '元に戻しました' : UNDO_FAILURE_MESSAGE[result.reason])
+      } catch {
+        showMoveToast(UNDO_FAILED_MESSAGE)
+      } finally {
+        setUndoPending(false)
+      }
+    },
+    [undoMove, showMoveToast],
+  )
+
   // Fix-1 T2: action-bar 専用の bulk-bound createOptionAndAssign。
   // option を新規作成 (createOption) してから bulk add (onBulkTag) へ流す。
   // TagCell(meta) へ渡す tagEditCallbacks は不変 — action-bar のみに影響。
@@ -609,6 +808,9 @@ export function ExamCardTable({
   // S5-2: 固定境界 id を render 冒頭で 1 回導出し、menu を持つ全列の pinning prop に渡す。
   // derivePinnedBoundary は columnPinning.left 末尾 id を返す(末尾 'select' → null)。
   const pinnedBoundary = derivePinnedBoundary(columnPinning)
+
+  // undo 素材を optional chain 1 回で narrow しておく (JSX 側で非 null 断定を書かない)。
+  const moveToastUndo = moveToast?.undo
 
   return (
     // S2-2: app-shell 密封の flex 列。 親 (exam-detail-view の flex-1 min-h-0 スロット) を
@@ -838,6 +1040,26 @@ export function ExamCardTable({
           onBulkTag={onBulkTag}
           onBulkDelete={onBulkDelete}
           lastResult={lastBulkResult}
+          userId={userId}
+          examId={examId}
+          positionLocked={sorting.length > 0 || columnFilters.length > 0}
+          movePending={movePending}
+          onMove={onMove}
+          onSplitOut={onSplitOut}
+          moveError={moveError}
+        />
+      )}
+      {/* 移動 toast (§7.5)。 action bar の外に置くのは、 移動成功で selection が空になり
+          bar が unmount しても undo を残すため。 key = 操作 id で同一文言の連続表示でも
+          auto-dismiss timer を張り直す (ActionToast の契約)。 */}
+      {moveToast && (
+        <ActionToast
+          key={moveToast.id}
+          message={moveToast.message}
+          actionLabel={moveToastUndo ? '元に戻す' : undefined}
+          onAction={moveToastUndo ? () => void onUndoMove(moveToastUndo) : undefined}
+          actionPending={undoPending}
+          onClose={() => setMoveToast(null)}
         />
       )}
       {/* S2b-2: scroll-top ボタン。 collapsed かつ選択なし(action bar 非表示)の時のみ表示。

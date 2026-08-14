@@ -37,6 +37,14 @@ function renderBar(
     onBulkTag: vi.fn(async () => {}),
     onBulkDelete: vi.fn(async () => {}),
     lastResult: null,
+    // Grid-3 T6: 移動 popover の配線 prop (本 test は既存 3 操作の検証のみ)。
+    userId: 'user-1',
+    examId: 'exam-1',
+    positionLocked: false,
+    movePending: false,
+    onMove: vi.fn(async () => 'moved' as const),
+    onSplitOut: vi.fn(async () => 'moved' as const),
+    moveError: null,
     ...overrides,
   }
   render(<ExamCardTableActionBar {...props} />)
