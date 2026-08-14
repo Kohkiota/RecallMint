@@ -72,6 +72,15 @@ const { state } = vi.hoisted(() => ({
     // null = 既存挙動 (throw なし)、 非 null = envelope-level で throw する error。
     getDbError: null as null | Error,
 
+    // applyCardMove の呼出記録 (Grid-3: patch が apply へ素通しされることの観測点)
+    cardMoveCalls: [] as Array<{
+      userId: string
+      entityId: string
+      patch: unknown
+    }>,
+    // applyCardMove の戻り値制御 (exam 不在の擬似 = 'failed')
+    cardMoveResult: 'applied' as 'applied' | 'failed',
+
     // logger warn の記録
     loggerWarnCalls: [] as Array<Record<string, unknown>>,
     // T-A1 用: envelope-level error の log を観測する (logger.error 呼出)
@@ -143,6 +152,18 @@ vi.mock('@/lib/cards/apply-card-mutation', () => ({
       if (result !== undefined) return result
       // default: exam exists, card inserted successfully
       return { examNotFound: false, created: true }
+    },
+  ),
+}))
+
+// Grid-3: card_move.move は registry 経由で applyCardMove を呼ぶ。 patch 検証 (registry の
+// zod) と dispatch を route 視点で見るのが目的なので apply 本体は mock 化する
+// (apply 内部の SQL は lib/cards/apply-card-move.test.ts / iso が見る)。
+vi.mock('@/lib/cards/apply-card-move', () => ({
+  applyCardMove: vi.fn(
+    async (_tx: unknown, userId: string, entityId: string, patch: unknown) => {
+      state.cardMoveCalls.push({ userId, entityId, patch })
+      return state.cardMoveResult
     },
   ),
 }))
@@ -374,9 +395,40 @@ function makeCreateMutation(
   }
 }
 
+// Grid-3: card_move.move の envelope。 patch は「移動先 exam + 絶対値割当列」。
+const VALID_MOVE_ID = '88888888-8888-4888-a888-888888888888'
+const VALID_MOVE_PATCH = {
+  exam_id: VALID_EXAM_ID,
+  cards: [
+    { id: VALID_CARD_ID, base_order: 1024 },
+    { id: VALID_CARD_ID_2, base_order: 2048 },
+  ],
+}
+
+function makeMoveMutation(
+  overrides: Partial<{
+    mutation_id: string
+    entity_id: string
+    edited_at: string
+    patch: Record<string, unknown>
+  }> = {},
+) {
+  return {
+    mutation_id: overrides.mutation_id ?? VALID_MUTATION_ID,
+    entity_type: 'card_move',
+    // card の PK ではなく「移動操作 instance」の uuid (spec §2.1)
+    entity_id: overrides.entity_id ?? VALID_MOVE_ID,
+    op: 'move',
+    patch: overrides.patch ?? VALID_MOVE_PATCH,
+    edited_at: overrides.edited_at ?? '2026-05-30T10:00:00.000Z',
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   state.existingMutationIds = new Set()
+  state.cardMoveCalls = []
+  state.cardMoveResult = 'applied'
   state.mutationInsertValues = null
   state.mutationInsertConflictTarget = null
   state.cardFieldUpdateCalls = []
@@ -937,6 +989,152 @@ describe('POST /api/entity-mutations/bulk', () => {
 
   // --- 複数 mutations の独立処理 ---
 
+  // -------------------------------------------------------------------------
+  // card_move (Grid-3 spec §2.1 / §4.3 / §10-6)
+  // -------------------------------------------------------------------------
+
+  it('card_move 正常系: registry dispatch → applyCardMove に patch 素通し → log INSERT + applied:1', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const res = await POST(makeReq({ mutations: [makeMoveMutation()] }))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(body.failed).toHaveLength(0)
+
+    // entity_id は移動操作 instance の uuid のまま apply へ渡る (代表 card id ではない)
+    expect(state.cardMoveCalls).toHaveLength(1)
+    expect(state.cardMoveCalls[0]).toMatchObject({
+      userId: FAKE_USER.id,
+      entityId: VALID_MOVE_ID,
+      patch: VALID_MOVE_PATCH,
+    })
+
+    // skipLog なし = dedup log を書く (再送 skip の根拠)
+    expect(state.mutationInsertValues).toMatchObject({
+      entityType: 'card_move',
+      entityId: VALID_MOVE_ID,
+      op: 'move',
+      patch: VALID_MOVE_PATCH,
+    })
+  })
+
+  it('card_move: 冪等再送 (同 mutation_id 既存) → gate skip、 applyCardMove 呼ばれず applied:0', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.existingMutationIds.add(VALID_MUTATION_ID)
+
+    const res = await POST(makeReq({ mutations: [makeMoveMutation()] }))
+    const body = (await res.json()) as { applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toHaveLength(0)
+    expect(state.cardMoveCalls).toHaveLength(0)
+  })
+
+  it('card_move: apply が failed (移動先 exam 不在の擬似) → failed[]、 log INSERT なし', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    state.cardMoveResult = 'failed'
+
+    const res = await POST(makeReq({ mutations: [makeMoveMutation()] }))
+    const body = (await res.json()) as { applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
+  // wire 拒否 matrix (spec §10-6)。 いずれも per-mutation failed で、 apply まで到達させない。
+  // base_order 値の**重複は許容**する (undo が元値へ戻す際に重複しうる) ので拒否側に置かない
+  // — その正常系は下の accept case で押さえる。
+  it.each([
+    ['exam_id 欠落', { cards: VALID_MOVE_PATCH.cards }],
+    ['exam_id が非 uuid', { ...VALID_MOVE_PATCH, exam_id: 'not-a-uuid' }],
+    ['cards が空配列', { exam_id: VALID_EXAM_ID, cards: [] }],
+    [
+      'card id 重複',
+      {
+        exam_id: VALID_EXAM_ID,
+        cards: [
+          { id: VALID_CARD_ID, base_order: 1024 },
+          { id: VALID_CARD_ID, base_order: 2048 },
+        ],
+      },
+    ],
+    [
+      'base_order 0 (仮想下界として予約・CHECK >= 1)',
+      { exam_id: VALID_EXAM_ID, cards: [{ id: VALID_CARD_ID, base_order: 0 }] },
+    ],
+    [
+      'base_order 負値',
+      { exam_id: VALID_EXAM_ID, cards: [{ id: VALID_CARD_ID, base_order: -1024 }] },
+    ],
+    [
+      'base_order 小数',
+      { exam_id: VALID_EXAM_ID, cards: [{ id: VALID_CARD_ID, base_order: 1024.5 }] },
+    ],
+  ])(
+    'card_move: patch が %s → per-mutation failed[]、 applyCardMove 呼ばれない',
+    async (_label, patch) => {
+      vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+      const res = await POST(
+        makeReq({ mutations: [makeMoveMutation({ patch: patch as Record<string, unknown> })] }),
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { applied: number; failed: string[] }
+      expect(body.applied).toBe(0)
+      expect(body.failed).toContain(VALID_MUTATION_ID)
+      expect(state.cardMoveCalls).toHaveLength(0)
+    },
+  )
+
+  it('card_move: cards が 10,001 件 → per-mutation failed[] (DoS ガードの上限)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const cards = Array.from({ length: 10_001 }, (_, i) => ({
+      id: `${String(i).padStart(8, '0')}-0000-4000-a000-000000000000`,
+      base_order: i + 1,
+    }))
+
+    const res = await POST(
+      makeReq({ mutations: [makeMoveMutation({ patch: { exam_id: VALID_EXAM_ID, cards } })] }),
+    )
+    const body = (await res.json()) as { applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    expect(state.cardMoveCalls).toHaveLength(0)
+  })
+
+  it('card_move: base_order 値が重複する割当は受理される (undo の元値復元・Order-1 §2.1 の重複容認)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    const patch = {
+      exam_id: VALID_EXAM_ID,
+      cards: [
+        { id: VALID_CARD_ID, base_order: 1024 },
+        { id: VALID_CARD_ID_2, base_order: 1024 },
+      ],
+    }
+
+    const res = await POST(makeReq({ mutations: [makeMoveMutation({ patch })] }))
+    const body = (await res.json()) as { applied: number; failed: string[] }
+    expect(body.applied).toBe(1)
+    expect(state.cardMoveCalls).toHaveLength(1)
+  })
+
+  it("update_field: field='base_order' → dispatch miss で per-mutation failed (D-3: 書き手は card_move だけ)", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+
+    const res = await POST(
+      makeReq({
+        mutations: [makeUpdateFieldMutation({ field: 'base_order', value: 2048 })],
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { applied: number; failed: string[] }
+    expect(body.applied).toBe(0)
+    expect(body.failed).toContain(VALID_MUTATION_ID)
+    // どの handler も呼ばれない = base_order の update_field handler は存在しない
+    expect(state.cardFieldUpdateCalls).toHaveLength(0)
+    expect(state.mutationInsertValues).toBeNull()
+  })
+
   it('複数 mutations: update_field + delete が個別に処理される', async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
     const mutations = [
@@ -1211,7 +1409,7 @@ describe('POST /api/entity-mutations/bulk', () => {
   })
 
   // (b) cascade serial 倒れ (4 op subtest 網羅)
-  describe('T-B3 (b): cascade-like 1 件混在 → 全体 serial fallback (4 op 網羅)', () => {
+  describe('T-B3 (b): cascade-like 1 件混在 → 全体 serial fallback (5 op 網羅)', () => {
     const cascadeFixtures: Array<{
       label: string
       makeMutation: (mutationId: string) => Record<string, unknown>
@@ -1253,6 +1451,15 @@ describe('POST /api/entity-mutations/bulk', () => {
           patch: {},
           edited_at: '2026-05-30T10:00:00.000Z',
         }),
+      },
+      {
+        // Grid-3: 1 mutation が N 枚の card 行を書くため並列化対象外 (spec §2.6)
+        label: 'card_move.move',
+        makeMutation: (mutationId) =>
+          makeMoveMutation({
+            mutation_id: mutationId,
+            entity_id: 'cafe0000-0000-4000-a000-000000000005',
+          }),
       },
     ]
 

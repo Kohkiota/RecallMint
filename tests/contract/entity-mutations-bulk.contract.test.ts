@@ -13,7 +13,7 @@
  *   5. 200-failed semantics: unknown entity/op/invalid patch → failed[] + HTTP 200
  *   6. skipLog delete: card/tag_category/tag_option .delete → applied counted, NO INSERT
  *   7. Cascade serial fallback: card.create → serial path (Promise.allSettled not called)
- *   8. Op inventory drift guard: 9-pair (entity_type, op) + skipLog/cascadeLike flags
+ *   8. Op inventory drift guard: 10-pair (entity_type, op) + skipLog/cascadeLike flags
  *   9. Representative tag ops: tag_category.update_field + tag_option.create
  *
  * NOT frozen (§A-excluded):
@@ -514,7 +514,7 @@ describe('POST /api/entity-mutations/bulk — wire contract', () => {
   // This ensures that tag_* ops cannot break silently after a refactor
   // that only explicitly tests card ops.
 
-  it('op inventory drift guard: 9-pair (entity_type, op) matches HEAD registry + correct flags', () => {
+  it('op inventory drift guard: 10-pair (entity_type, op) matches HEAD registry + correct flags', () => {
     type FlagExpect = { skipLog: boolean; cascadeLike: boolean }
     const expected: Record<string, Record<string, FlagExpect>> = {
       card: {
@@ -531,6 +531,11 @@ describe('POST /api/entity-mutations/bulk — wire contract', () => {
         update_field: { skipLog: false, cascadeLike: false },
         create:       { skipLog: false, cascadeLike: false },
         delete:       { skipLog: true,  cascadeLike: true  },
+      },
+      // Grid-3: aggregate move op. Writes N card rows in one mutation, so it is
+      // cascadeLike (never parallelised) and keeps the dedup log (skipLog=false).
+      card_move: {
+        move:         { skipLog: false, cascadeLike: true  },
       },
     }
 

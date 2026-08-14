@@ -167,9 +167,10 @@ describe('groupMutationsByEntityKey — 順序破壊 regression self-guard', () 
 })
 
 // ---------------------------------------------------------------------------
-// case 4: cascade-like 入力 → serial fallback (4 件 subtest)
-// 4 件すべて (`card.create` / `card.delete` / `tag_category.delete` /
-// `tag_option.delete`) を 1 ケースずつ網羅 = flag 立て忘れ regression を物理的に塞ぐ。
+// case 4: cascade-like 入力 → serial fallback (5 件 subtest)
+// 5 件すべて (`card.create` / `card.delete` / `tag_category.delete` /
+// `tag_option.delete` / `card_move.move`) を 1 ケースずつ網羅 = flag 立て忘れ
+// regression を物理的に塞ぐ。
 // ---------------------------------------------------------------------------
 
 describe('groupMutationsByEntityKey — cascade-like 入力 → serial fallback', () => {
@@ -178,6 +179,10 @@ describe('groupMutationsByEntityKey — cascade-like 入力 → serial fallback'
     { entity_type: 'card', op: 'delete' },
     { entity_type: 'tag_category', op: 'delete' },
     { entity_type: 'tag_option', op: 'delete' },
+    // Grid-3: 1 mutation が N 枚の card 行を書く集約 op。 group key
+    // (`card_move:<op instance uuid>`) は対象 card を表現しないため、 同 batch 内の
+    // per-card update_field と並走させてはいけない (spec §2.6)。
+    { entity_type: 'card_move', op: 'move' },
   ]
 
   for (const { entity_type, op } of cascadeOps) {

@@ -5,9 +5,9 @@
 // EnqueueEntityMutationInput) + test (envelope reject) の 3 sink から共有される。
 //
 // 設計判断:
-// - 9 patch schema (card / tag_category / tag_option × create / update_field / delete)
-//   を 1 module に集約することで、 server registry と client outbox の wire 契約を
-//   single source of truth に固定する (drift 防止 = audit #13 解消)。
+// - 10 patch schema (card / tag_category / tag_option × create / update_field / delete
+//   + card_move.move) を 1 module に集約することで、 server registry と client outbox の
+//   wire 契約を single source of truth に固定する (drift 防止 = audit #13 解消)。
 // - envelope は `z.discriminatedUnion('entity_type', [...])` で entity_type を gate、
 //   その内側で `z.discriminatedUnion('op', [...])` で op を gate する 2 段構造。
 //   apply dispatch (registry) と outbox row (Dexie) の両方で「entity_type→op→patch」
@@ -112,6 +112,33 @@ export const tagOptionCreatePatchSchema = z.object({
 export const tagOptionDeletePatchSchema = z.record(z.string(), z.unknown())
 
 // ---------------------------------------------------------------------------
+// card_move entity — patch zod (Grid-3 spec §2.1)
+// ---------------------------------------------------------------------------
+
+// move の patch: 「card id → (exam_id, base_order) の絶対値割当」の集合。
+// exam_id は全 card 共通の移動先、 cards は client が計算済みの割当列で、 server は
+// 順序を計算せずこれをそのまま適用する (spec §2.2)。
+//
+// 上限 10,000 は「1000 枚級 move + 数千枚 exam の再採番」を包含する DoS ガード。
+// **card id の重複だけを拒否する** — 同一 card に 2 つの割当があると適用結果が
+// 入力順依存になるため。 逆に **base_order 値の重複は許容** する (Order-1 §2.1 の
+// 重複容認と同型: undo が元値へ戻すとき元値自体が重複していることがある)。
+export const cardMovePatchSchema = z
+  .object({
+    exam_id: z.uuid(),
+    cards: z
+      .array(z.object({ id: z.uuid(), base_order: z.number().int().min(1) }))
+      .min(1)
+      .max(10_000),
+  })
+  .refine(
+    (patch) => new Set(patch.cards.map((c) => c.id)).size === patch.cards.length,
+    { message: 'duplicate card id in patch.cards' },
+  )
+
+export type CardMovePatch = z.infer<typeof cardMovePatchSchema>
+
+// ---------------------------------------------------------------------------
 // envelope discriminated union
 // ---------------------------------------------------------------------------
 //
@@ -182,10 +209,22 @@ const tagOptionMutationEnvelope = z.discriminatedUnion('op', [
   }),
 ])
 
+// card_move は op が `move` 1 つだけなので内側 union を挟まない (単一 op の
+// discriminatedUnion は entity_type 側の narrowing と同義で、 層が 1 つ無駄になる)。
+// entity_id は他 entity と違い対象 entity の PK ではなく **移動操作 instance の uuid**
+// (schema.ts の entity_mutations comment / spec §2.1)。
+const cardMoveMutationEnvelope = z.object({
+  entity_type: z.literal('card_move'),
+  op: z.literal('move'),
+  entity_id: z.string(),
+  patch: cardMovePatchSchema,
+})
+
 export const entityMutationEnvelopeSchema = z.discriminatedUnion('entity_type', [
   cardMutationEnvelope,
   tagCategoryMutationEnvelope,
   tagOptionMutationEnvelope,
+  cardMoveMutationEnvelope,
 ])
 
 export type EntityMutationEnvelope = z.infer<typeof entityMutationEnvelopeSchema>

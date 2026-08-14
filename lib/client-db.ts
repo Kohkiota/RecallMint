@@ -148,10 +148,15 @@ export type ClientAnswerEvent = {
 }
 
 // entity_mutations (S-sync-1 で旧 card_mutations を汎用化): mutation-driven push の
-// 汎用 outbox row。 entity_type で対象 entity ('card' / 'tag_category' / 'tag_option') を
-// 識別し、 entity_id は対象 entity の PK。
+// 汎用 outbox row。 entity_type で対象 entity ('card' / 'tag_category' / 'tag_option' /
+// 'card_move') を識別し、 entity_id は対象 entity の PK。
 // op は registry (server) で定義される文字列、 card では 'update_field' | 'create' | 'delete'、
 // tag_category / tag_option も同 3 op (Tag-1)。
+// 例外は 'card_move' (Grid-3): この entity は **移動操作そのもの (op instance)** で、
+// entity_id は client 生成のその instance uuid (対象 card 群は patch.cards が持つ)、
+// op は 'move' の 1 つだけ。 coalesce key (`${entity_type}:${entity_id}:${op}`) が
+// instance ごとに別になるため、 連続する移動は潰し合わず enqueue 順に全件送られる
+// (schema.ts の entity_mutations comment と同じ裁定)。
 //
 // T5: entity_type / op / patch の 3-tuple を `EntityMutationEnvelope` 経由で
 // discriminated union として narrow する (`lib/sync/shared/mutation-schemas.ts`)。

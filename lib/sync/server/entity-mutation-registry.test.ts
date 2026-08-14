@@ -9,7 +9,10 @@
 
 import { describe, it, expect } from 'vitest'
 import { entityMutationEnvelopeSchema } from '@/lib/sync/shared/mutation-schemas'
-import { lookupRegistryEntry } from '@/lib/sync/server/entity-mutation-registry'
+import {
+  ENTITY_MUTATION_REGISTRY,
+  lookupRegistryEntry,
+} from '@/lib/sync/server/entity-mutation-registry'
 
 describe('entityMutationEnvelopeSchema — envelope reject', () => {
   it('envelope reject: untrusted entity_type → safeParse failure', () => {
@@ -19,6 +22,31 @@ describe('entityMutationEnvelopeSchema — envelope reject', () => {
       op: 'create',
       entity_id: 'abc',
       patch: {},
+    })
+    expect(result.success).toBe(false)
+  })
+
+  // Grid-3: card_move は entity_type union の新メンバー。 outbox row / apply dispatch の
+  // 両側で patch 型が narrow されることを、 accept / reject の対で確かめる。
+  it('envelope accept: card_move.move + 割当列の patch', () => {
+    const result = entityMutationEnvelopeSchema.safeParse({
+      entity_type: 'card_move',
+      op: 'move',
+      entity_id: '99999999-9999-4999-a999-999999999999',
+      patch: {
+        exam_id: 'eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee',
+        cards: [{ id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', base_order: 1024 }],
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('envelope reject: card_move に move 以外の op → safeParse failure', () => {
+    const result = entityMutationEnvelopeSchema.safeParse({
+      entity_type: 'card_move',
+      op: 'update_field',
+      entity_id: '99999999-9999-4999-a999-999999999999',
+      patch: { field: 'base_order', value: 1024 },
     })
     expect(result.success).toBe(false)
   })
@@ -35,9 +63,10 @@ describe('entityMutationEnvelopeSchema — envelope reject', () => {
   })
 })
 
-// Y-2 T-B3 #1b: cascadeLike flag を 9 件すべて enumerate して assert する。
+// Y-2 T-B3 #1b: cascadeLike flag を 10 件すべて enumerate して assert する。
 // step 0 doc §1.2 / §4.2 確定の 4 件 (= `card.create` / `card.delete` /
-// `tag_category.delete` / `tag_option.delete`) のみ true、 残り 5 件は undefined
+// `tag_category.delete` / `tag_option.delete`) + Grid-3 の `card_move.move`
+// (1 mutation が N 枚の card 行を書く) のみ true、 残り 5 件は undefined
 // (= false 同等)。 1 件でも漏れたら test 失敗 = 新 op 追加時に flag 立て忘れを
 // 物理的に検出する gate。
 describe('ENTITY_MUTATION_REGISTRY — cascadeLike flag (Y-2 T-B3 #1b)', () => {
@@ -45,7 +74,24 @@ describe('ENTITY_MUTATION_REGISTRY — cascadeLike flag (Y-2 T-B3 #1b)', () => {
     card: { create: true, update_field: false, delete: true },
     tag_category: { create: false, update_field: false, delete: true },
     tag_option: { create: false, update_field: false, delete: true },
+    card_move: { move: true },
   }
+
+  // 上の表は「列挙した entry の flag」しか見ない。 registry 側に op を足して表への
+  // 追記を忘れると素通りするため、 集合一致をここで別建てに pin する
+  // (= 新 op の enumerate 漏れ自体を落とす)。
+  it('registry の (entity_type, op) 集合が expected 表と一致する (10 件)', () => {
+    const flatten = (table: Record<string, Record<string, unknown> | undefined>) =>
+      Object.entries(table)
+        .flatMap(([entityType, ops]) =>
+          Object.keys(ops ?? {}).map((op) => `${entityType}.${op}`),
+        )
+        .sort()
+
+    const actual = flatten(ENTITY_MUTATION_REGISTRY)
+    expect(actual).toEqual(flatten(expected))
+    expect(actual).toHaveLength(10)
+  })
 
   for (const [entityType, ops] of Object.entries(expected)) {
     for (const [op, cascadeLike] of Object.entries(ops)) {

@@ -660,6 +660,11 @@ export const answerEvents = pgTable(
 // 再送安全性を担保。 entity_type で対象 entity (card / 将来 tag_category 等) を識別、
 // entity_id は対象 entity の PK。 entity_type ごとに参照先 table が異なるため
 // entity_id に FK は付けず、 app 層 (apply registry) で整合保証する。
+// 例外は `card_move` (Grid-3): この entity は **移動操作そのもの (op instance)** で、
+// entity_id は client 生成のその instance uuid (対象 card 群は patch.cards が持つ)。
+// 代表 card id を名乗らせないのは、 client の coalesce key
+// (`${entity_type}:${entity_id}:${op}`) が連続する別内容の移動を潰し合わないように
+// するため (spec 2026-08-14-grid-3-card-move-design §2.1)。
 // patch jsonb は client が確定した部分更新 payload で、 server 側 registry の
 // apply 関数が解釈する。
 //
@@ -693,9 +698,12 @@ export const entityMutations = pgTable(
     index('entity_mutations_user_idx').on(t.userId, t.editedAt),
     check(
       'entity_mutations_entity_type_enum',
-      sql`${t.entityType} IN ('card', 'tag_category', 'tag_option')`,
+      sql`${t.entityType} IN ('card', 'tag_category', 'tag_option', 'card_move')`,
     ),
-    check('entity_mutations_op_enum', sql`${t.op} IN ('create', 'update_field', 'delete')`),
+    check(
+      'entity_mutations_op_enum',
+      sql`${t.op} IN ('create', 'update_field', 'delete', 'move')`,
+    ),
   ],
 )
 

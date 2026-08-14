@@ -5,7 +5,7 @@
 //   per-mutation の (entity_type, op) ペアで本 registry を引いて apply 関数を呼ぶ。
 // - patch 検証 (zod) も entity_type × op ごとに本 registry に集約する
 //   (drift 防止: bulk endpoint の switch ではなく 1 ファイルで定義を完結)。
-// - 現在 entity_type='card' / 'tag_category' / 'tag_option' を登録。
+// - 現在 entity_type='card' / 'tag_category' / 'tag_option' / 'card_move' を登録。
 //
 // 設計判断:
 // - delete op は log INSERT を skip する (entity_mutations への audit 行を残さない)。
@@ -31,6 +31,7 @@ import {
   applyCardDelete,
   applyCardCreateWithId,
 } from '@/lib/cards/apply-card-mutation'
+import { applyCardMove } from '@/lib/cards/apply-card-move'
 import { CARD_FIELD_HANDLERS } from '@/lib/cards/card-field-handlers'
 import {
   applyTagCategoryCreate,
@@ -44,6 +45,7 @@ import {
   cardCreatePatchSchema,
   cardUpdateFieldPatchSchema,
   cardDeletePatchSchema,
+  cardMovePatchSchema,
   tagCategoryCreatePatchSchema,
   tagCategoryUpdateFieldPatchSchema,
   tagCategoryDeletePatchSchema,
@@ -90,16 +92,18 @@ export type EntityApplyFn<TPatch> = (
  * table にも書く) を持つ op が該当し、 group helper 段で 1 件でも検出されたら bulk 全体を
  * serial fallback に倒す (= 並列化の新規リスクを「非 cascade のみ」に閉じ込める)。
  * step 0 doc §1.2 / §4.2 で 4 件確定 (Sprint B (DB 全体掃除) T5 で card.create の根拠は
- * 消滅・card.delete の根拠は card_count 言及を除いて自立、 各 entry 側 comment 参照):
+ * 消滅・card.delete の根拠は card_count 言及を除いて自立、 各 entry 側 comment 参照)
+ * + Grid-3 で `card_move.move` を追加した計 5 件:
  *   - `card.create` (根拠だった `exams.card_count += 1` は Sprint B で消滅。 flag 撤去は
  *     bulk 並列化の挙動変更 = scope 外のため並列化再検証まで保守的に維持、 spec §1.10-2)
  *   - `card.delete` (tombstone INSERT + cards DELETE の cross-entity 書込)
  *   - `tag_category.delete` (配下 tag_options 巻き込み + FK CASCADE)
  *   - `tag_option.delete` (FK CASCADE で card_tags 巻き込み)
+ *   - `card_move.move` (1 mutation が N 枚の card 行を書く = 複数行書込)
  * 残り 5 op (`card.update_field` / `tag_category.create|update_field` /
  * `tag_option.create|update_field`) は本人 entity 内 self-contained のため flag を
  * 立てない (= undefined = false 同等)。 新 op 追加時の flag 立て忘れは
- * `entity-mutation-registry.test.ts` の 9 件 enumerate assert で gate する。
+ * `entity-mutation-registry.test.ts` の 10 件 enumerate assert で gate する。
  */
 export type RegistryEntry<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {
   patch: TSchema
@@ -321,6 +325,18 @@ export const ENTITY_MUTATION_REGISTRY: Record<
       skipLog: true,
       // tombstone INSERT + tag_options DELETE → FK CASCADE で card_tags を巻き込む
       // ため、 並列化対象外 (§1.2 表)。
+      cascadeLike: true,
+    }),
+  },
+  // card_move は「移動操作 instance」を entity とする集約 op (Grid-3 spec §2.1)。
+  // entity_id は対象 card の PK ではなく client 生成の op instance uuid。
+  card_move: {
+    move: defineEntry({
+      patch: cardMovePatchSchema,
+      apply: applyCardMove,
+      // 1 mutation が N 枚の card 行を書くため、 per-entity の group key
+      // (`${entity_type}:${entity_id}`) では同 batch 内の per-card update_field との
+      // 順序関係を表現できない。 該当 batch は全体 serial fallback に倒す (§2.6)。
       cascadeLike: true,
     }),
   },
