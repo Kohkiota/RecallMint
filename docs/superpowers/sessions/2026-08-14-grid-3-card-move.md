@@ -94,3 +94,39 @@ review は全 task で canonical(superpowers:requesting-code-review 既定経路
 3. push → stg deploy。
 4. CC smoke(plan の Deploy 節 ①〜⑫)。**⑪ の 1000 枚級実測は `scripts/seed-perf-exam.ts` を stg で実行して perf exam を作成してから**(全データ削除済みのため既存 seed なし)。
 5. prod 反映判断は smoke 結果を見て OT。
+
+---
+
+## 10. stg smoke 結果(2026-08-15・全 12 項目 PASS)
+
+前提: migration 0038 適用済み(CHECK 2 本に `card_move` / `move`)+ deploy 反映済みを DB / UI で確認してから開始。test user = `66fb6d00-526f-4264-9691-e2e036c656f7`。
+
+| 項目 | 結果 | 実測値 |
+|---|---|---|
+| ① 同一 exam 内移動 | PASS | 2 枚を「05」直後へ → **5461 / 5802**(A=5120, B=6144, k=2 → step=floor(1024/3)=341 と一致)。相対順保持 |
+| ② 試験間移動 | PASS | 末尾: 空 exam へ 1024 / 2048。先頭: A=0 仮想下界 → **512** |
+| ③ 切り出し | PASS | 「無題の試験」自動作成 + 移動(1024)。自動遷移なし |
+| ④ 行メニュー取り込み | PASS | 別 exam から「05」直後へ → **5461**(A=5120, B=5802, k=1 → step=341) |
+| ⑤ 結合 | PASS | 8874 / 9898(M=7850 + 1024/2048)。**元 exam は 0 件で残存**。0 件行は disabled |
+| ⑥ undo | PASS | 基本 = 絶対値で復元。**再採番ケース** = 1202 枚の同一 exam 内移動で終端規則が発火(全 1203 枚が 1024 の倍数へ)→ undo で**全 1207 枚が完全復元(差分 0)**。再採番された常駐(anchor)も復元 = spec §5.4 の反例を実証 |
+| ⑦ 不変条件 | PASS | 7 回の移動を通して FSRS 全列・本文・画像・content_version・source_document_id・answer_events が **bit 単位で不変**。card_tags も baseline 行の喪失ゼロ |
+| ⑧ ソート gating | PASS | 「直後」のみ disabled + 理由表示。**判別テスト**: 降順ソートで表示順と基準順が逆転する 2 枚 → **基準順で着地**(6826 → 7850) |
+| ⑨ 改名 → pull 反映 | PASS | inline 改名 → DB 反映 → reload 後も新名 |
+| ⑩ 回帰 | PASS | pull 6 cursor 200 / bulk 200 / **console error 0** / outbox 23 件すべて synced |
+| ⑪ 1000 枚級 | PASS | **1200 枚を 1 mutation・payload 79.6KB・往復 455ms**。採番 4096 → **1,231,872**、逆転/重複 0、タグ 6612 行不変 |
+| ⑫ 失敗系 | PASS | ① 連続 move で toast は常に 1 個(最新に置換)② 削除済みカードの undo = 理由表示 + mutation 未発行 ③ **offline → online 再送**(下記)|
+
+### ⑫-3 offline 再送の実測(OT 実機・DevTools)
+
+観測順: **bulk ERR ×2 → bulk 401 → tokens 200 → bulk 200 → pull 200**(リロードなし・自動再送のみ)。
+
+DB 側の決定的証拠:
+- 当該 mutation の **`edited_at` = 00:18:23.987(offline 時の操作)/ `applied_at` = 00:21:33.819(復帰後の適用)= 約 3 分 10 秒の差**。offline 中は outbox に滞留し、復帰で再送・適用されたことを時刻差が示す。
+- カード「問5」が `090550a7:5120` → `c676e09d:**1232896**`(= 移動先 max 1,231,872 + 1024 と一致)。exam 件数も 4→3 / 1203→1204。
+
+**副次的な収穫**: 復帰直後の 1 回目 bulk が **401 → token 再取得 → 再送で 200** という経路を通っており、**offline 中の session token 失効からの回復が data loss なしで機能する**ことが実測できた(この経路は unit / iso では踏めない)。
+
+### smoke で判明した非自明事項
+
+- **1200 枚の移動が 1 リクエスト 1 tx で 455ms**。`UPDATE ... FROM (VALUES)` の一括適用は分割不要と確認(plan の per-card loop 排除の判断が実測で裏付けられた)。
+- **トーストの 15 秒 auto-dismiss は DB readback と競合する**。undo を検証する smoke では「移動 → 即 undo → その後に readback」の順にしないと窓を逃す(今回 2 回逃した)。
