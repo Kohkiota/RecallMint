@@ -26,17 +26,13 @@ import {
   type ClientTagCategory,
   type ClientTagOption,
 } from '@/lib/client-db'
-import { buildEmptyCard } from '@/lib/cards/empty-card'
-import { buildNewClientCard } from '@/lib/cards/build-new-client-card'
-import { buildNewCardMutationPatch } from '@/lib/cards/card-write'
 import { compareByBaseOrder } from '@/lib/cards/domain/card-order'
-import { runOptimisticCreate } from '@/lib/sync/optimistic-mutation'
-import { newId } from '@/lib/sync/entity-mutations'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { InlineTextField } from './inline-text-field'
 import { DeleteCardButton } from './delete-card-button'
 import { CardEditorFields } from './card-editor-fields'
+import { useAddCard } from '../_hooks/use-add-card'
 
 type InlineCardListProps = {
   // SSR / Dexie mirror 未 hydrate の初期 (useLiveQuery が undefined) 期間のみ使う
@@ -350,73 +346,50 @@ export function InlineCardList({
     ? totalSize - (virtualItems[virtualItems.length - 1]!.end - scrollMargin)
     : 0
 
-  // local-first 追加: helper (`runOptimisticCreate`) 経由で id 採番 + mirror insert +
-  // outbox enqueue (op='create') を 1 Dexie rw tx に閉じ、 enqueue throw で Dexie auto-
-  // rollback により mirror / outbox の lost write を構造的に排除する。 即時 drain は helper 内蔵。
-  // 採番基準は現在表示中の cards (この exam の base_order と件数)。 liveData はこの exam の
-  // 全 card (フィルタ非適用・pending create も楽観 insert 済で含む) なので末尾採番の母集団
-  // として正しく、 mirror 未 hydrate の窓では initialCards (SSR・同じ base_order 順) が
-  // 同じ役割を果たす (spec §4.1 r3 — この fallback のために ExamDetailCard が baseOrder を持つ)。
-  // 件数表示は exam list / 詳細 header いずれも mirror の card 行数を動的集計するため、
-  // mirror への insert がそのまま件数表示に反映される (Sprint B で exams.card_count
-  // bump 呼出は撤去済 — client はもともと card_count を参照していない)。
+  // local-first 追加: 作成ロジック本体 (id 採番 + buildEmptyCard + mirror insert +
+  // outbox enqueue、非自明な実行順の契約込み) は useAddCard hook へ抽出済 (Row-UX
+  // sprint Task 3)。ここに残るのは呼出側の関心 (auto-edit marker の同期反映 / error
+  // UI) のみ。採番基準は現在表示中の cards (この exam の base_order と件数)。 liveData
+  // はこの exam の全 card (フィルタ非適用・pending create も楽観 insert 済で含む) なので
+  // 末尾採番の母集団として正しく、 mirror 未 hydrate の窓では initialCards (SSR・同じ
+  // base_order 順) が同じ役割を果たす (spec §4.1 r3 — この fallback のために
+  // ExamDetailCard が baseOrder を持つ)。 件数表示は exam list / 詳細 header いずれも
+  // mirror の card 行数を動的集計するため、 mirror への insert がそのまま件数表示に
+  // 反映される (Sprint B で exams.card_count bump 呼出は撤去済 — client はもともと
+  // card_count を参照していない)。
+  const { addCard } = useAddCard({ userId, examId })
   const handleAddCard = async () => {
     setError(null)
-    // id は helper await の前に sync で採番し、 `setNewCardIds(prev => add)` を同期的に
-    // 発火させる。 fa4aa7b で導入した sync 採番 → 先発火は維持しつつ、 Set + functional
-    // updater で複数 pending id を蓄積する: updater chain `prev → {id1} → {id1, id2}` で
-    // 両 id を追跡、 useLiveQuery 再評価後の cell mount 時に `newCardIds.has(id)` が
-    // true となり、 autoEditOnMount (one-shot useState 初期化子) が発火する。
-    // 実ブラウザでは button click による blur-commit で 1 枚目の編集状態は確定して
-    // 閉じ、 新カードのみが focus する (= 仕様、 詳細は上の Set 化コメント参照)。
-    // helper には id 引数で渡し、 helper 内 newId() の二重採番は起きない。
-    // Sprint I W5: card id を buildEmptyCard(option uid を newId で mint)より先に採番する
-    // (card id が最初の採番であることを保つ)。
-    const cardId = newId()
-    const empty = buildEmptyCard(
-      cards.map((c) => c.baseOrder),
-      cards.length,
-    )
-    setNewCardIds((prev) => {
-      const next = new Set(prev)
-      next.add(cardId)
-      return next
-    })
-
     try {
-      await runOptimisticCreate({
-        userId,
-        id: cardId,
-        mirrorStore: getClientDb().cards,
-        buildRow: (newCardId, now) =>
-          buildNewClientCard({ cardId: newCardId, userId, examId, empty, now }),
-        // outbox enqueue: snake_case create patch + camelCase options への写像は
-        // lib/cards/card-write.ts (buildNewCardMutationPatch) に移送済 (P3 W3)。
-        // server は options の is_correct から correct_answer_ids を再生成するため含めない。
-        buildMutation: (newCardId) => ({
-          entity_type: 'card',
-          entity_id: newCardId,
-          op: 'create',
-          patch: buildNewCardMutationPatch({ examId, empty }),
-        }),
-        logEvent: 'card_inline.add.tx_failed',
-        logContext: { examId, cardId },
-        // user-initiated create は failure を UI で通知する (= delete-card-button と同 pattern)。
-        // helper 既定 silent (案 a 取り直し) のままだと「追加ボタンを押したが何も起きない」
-        // 経験になり、 prior 動作からの UX regression を招く (Sync-fix-1 T1a canonical review
-        // Important #1)。 throwOnError: true で enqueue throw + userId='' fail-fast の双方を
-        // caller の catch に流し、 既存 error UI ('カードの追加に失敗しました。') を維持する。
-        throwOnError: true,
-      })
+      await addCard(
+        cards.map((c) => c.baseOrder),
+        cards.length,
+        {
+          // hook 内で最初の await (runOptimisticCreate) より前に同期発火する。
+          // Set + functional updater で複数 pending id を蓄積する: updater chain
+          // `prev → {id1} → {id1, id2}` で両 id を追跡、 useLiveQuery 再評価後の
+          // cell mount 時に `newCardIds.has(id)` が true となり、 autoEditOnMount
+          // (one-shot useState 初期化子) が発火する。実ブラウザでは button click に
+          // よる blur-commit で 1 枚目の編集状態は確定して閉じ、 新カードのみが
+          // focus する (= 仕様、 詳細は上の Set 化コメント参照)。
+          onIdMinted: (cardId) => {
+            setNewCardIds((prev) => {
+              const next = new Set(prev)
+              next.add(cardId)
+              return next
+            })
+          },
+        },
+      )
     } catch {
-      // helper が rethrow した場合のみ到達 (enqueue throw → Dexie auto-rollback 済、 もしくは
+      // hook が rethrow した場合のみ到達 (enqueue throw → Dexie auto-rollback 済、 もしくは
       // userId='' fail-fast)。 mirror は rollback 済 + outbox 未反映、 案 a 取り直し前提で
       // 次回 pull が server 値で reconcile。 user 通知のため inline error UI を表示する。
-      // 注: setNewCardIds は既に発火済 (sync 採番経路) だが、 mirror に該当 row が存在しない
-      // ため autoEditOnMount は描画上 no-op となる (該当 cell が render されない)。
-      // 失敗した id を Set から削除する bookkeeping は行わない: helper の catch 経路は
-      // Dexie auto-rollback 済で mirror に row が存在せず、 cell が render されないため
-      // `newCardIds.has(failed_id)` は呼ばれない (= 実害なし、 delete の手間を省く)。
+      // 注: setNewCardIds は既に発火済 (onIdMinted の同期発火経路) だが、 mirror に該当
+      // row が存在しないため autoEditOnMount は描画上 no-op となる (該当 cell が render
+      // されない)。 失敗した id を Set から削除する bookkeeping は行わない: hook の catch
+      // 経路は Dexie auto-rollback 済で mirror に row が存在せず、 cell が render されない
+      // ため `newCardIds.has(failed_id)` は呼ばれない (= 実害なし、 delete の手間を省く)。
       // 集合は max でも 1 view 中の add 回数分しか溜まらないため leak にもならない。
       setError('カードの追加に失敗しました。')
     }
