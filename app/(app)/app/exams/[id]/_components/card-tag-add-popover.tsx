@@ -33,6 +33,7 @@ import {
   DndContext,
   closestCenter,
   type DragEndEvent,
+  type UniqueIdentifier,
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -43,6 +44,7 @@ import {
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
+import { buildJaAnnouncements, SORTABLE_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 import {
   Popover,
   PopoverContent,
@@ -185,6 +187,18 @@ export function CardTagAddPopover({
     [categories],
   )
 
+  // row-dnd sprint task-2: SR (screen reader) 文言の日本語化 (stage1 = カテゴリ)。
+  // 不安定参照を DndContext に渡さないよう useCallback / useMemo で identity を安定化
+  // する (`lib/dnd/accessibility.ts` header コメント参照)。
+  const getCategoryLabel = React.useCallback(
+    (id: UniqueIdentifier) => sortedCategories.find((c) => c.id === id)?.name ?? '',
+    [sortedCategories],
+  )
+  const stage1Announcements = React.useMemo(
+    () => buildJaAnnouncements(getCategoryLabel),
+    [getCategoryLabel],
+  )
+
   const selectedCategory =
     stage === 'option' && selectedCategoryId !== null
       ? (categories.find((c) => c.id === selectedCategoryId) ?? null)
@@ -196,6 +210,17 @@ export function CardTagAddPopover({
       .filter((o) => o.category_id === selectedCategoryId)
       .sort(sortByKeyThenCreated)
   }, [options, selectedCategoryId])
+
+  // row-dnd sprint task-2: SR 文言の日本語化 (stage2 = option)。 stage1 と同じ理由で
+  // useCallback / useMemo で identity を安定化する。
+  const getOptionLabel = React.useCallback(
+    (id: UniqueIdentifier) => categoryOptions.find((o) => o.id === id)?.name ?? '',
+    [categoryOptions],
+  )
+  const stage2Announcements = React.useMemo(
+    () => buildJaAnnouncements(getOptionLabel),
+    [getOptionLabel],
+  )
 
   const selectedOptionIds = React.useMemo(
     () =>
@@ -417,6 +442,10 @@ export function CardTagAddPopover({
                 onDragEnd={(e) =>
                   handleStage1DragEnd(e, sortedCategories, onReorderCategories)
                 }
+                accessibility={{
+                  announcements: stage1Announcements,
+                  screenReaderInstructions: SORTABLE_SR_INSTRUCTIONS,
+                }}
               >
                 <SortableContext
                   items={sortedCategories.map((c) => c.id)}
@@ -520,6 +549,10 @@ export function CardTagAddPopover({
                       onReorderOptions,
                     )
                   }
+                  accessibility={{
+                    announcements: stage2Announcements,
+                    screenReaderInstructions: SORTABLE_SR_INSTRUCTIONS,
+                  }}
                 >
                   <SortableContext
                     items={categoryOptions.map((o) => o.id)}

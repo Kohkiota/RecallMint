@@ -20,6 +20,7 @@ import {
   DndContext,
   closestCenter,
   type DragEndEvent,
+  type UniqueIdentifier,
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -38,6 +39,7 @@ import { handleDeleteCategory } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderCategories } from '@/lib/tags/reorder-handlers'
 import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
+import { buildJaAnnouncements, SORTABLE_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 
 import { CategoryRow } from './category-row'
 import { CategoryCreateForm } from './category-create-form'
@@ -196,6 +198,21 @@ export function CategoryList({
   // `lib/dnd/use-sortable-sensors.ts` の header コメント)。
   const sensors = useSortableSensors()
 
+  // row-dnd sprint task-2: SR (screen reader) 文言の日本語化。 getLabel は categories
+  // (useLiveQuery 生値) から名前を引く lookup。 `list = categories ?? []` を dep に
+  // 使うと eslint-hooks が (`??` の右辺 `[]` の存在を理由に) 毎 render 不安定と誤検知
+  // するため、 生の `categories` を直接参照する (`list` と同じ実体、 `??` fallback は
+  // 未取得時のみ)。 不安定参照を DndContext に渡さないよう useCallback / useMemo で
+  // identity を安定化する (`lib/dnd/accessibility.ts` header コメント参照)。
+  const getCategoryLabel = React.useCallback(
+    (id: UniqueIdentifier) => categories?.find((c) => c.id === id)?.name ?? '',
+    [categories],
+  )
+  const announcements = React.useMemo(
+    () => buildJaAnnouncements(getCategoryLabel),
+    [getCategoryLabel],
+  )
+
   // 1 件以下は並べ替え不能 → DndContext を mount せず素の `<li>` で render (handle 非表示)。
   // 構造的に「並べ替えできない」 状態を保証 (spec §4.3)。
   const sortableEnabled = list.length >= 2
@@ -231,6 +248,7 @@ export function CategoryList({
           sensors={sensors}
           collisionDetection={closestCenter}
           onDragEnd={handleManagerDragEnd}
+          accessibility={{ announcements, screenReaderInstructions: SORTABLE_SR_INSTRUCTIONS }}
         >
           <SortableContext
             items={list.map((c) => c.id)}

@@ -35,6 +35,7 @@ vi.mock('@/components/ui/popover', async (importActual) => {
 
 import * as React from 'react'
 import { CardTagAddPopover } from './card-tag-add-popover'
+import { SORTABLE_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -2350,6 +2351,75 @@ describe('CardTagAddPopover — Tag-4c-2b T5: stage2 D&D 配線 (filter 空)', (
     expect(
       screen.queryByRole('button', { name: /optionを並べ替え:/ }),
     ).not.toBeInTheDocument()
+  })
+})
+
+// row-dnd sprint task-2 配線 pin (Codex 抜け 10 採用): factory unit test
+// (`lib/dnd/accessibility.test.ts`) だけでは DndContext への配線漏れを検出できない
+// ため、 実際に mount された DndContext の hidden instructions 要素
+// (dnd-kit `HiddenText`、 `display:none` の div) に日本語文言が実在することを stage1・
+// stage2 それぞれで pin する。
+describe('CardTagAddPopover — a11y 配線 pin (row-dnd sprint task-2)', () => {
+  it('stage1 DndContext mount 時に SORTABLE_SR_INSTRUCTIONS.draggable の実文言が hidden instructions 要素に存在する', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(
+      screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
+    ).toBeInTheDocument()
+  })
+
+  it('stage2 DndContext mount 時に SORTABLE_SR_INSTRUCTIONS.draggable の実文言が hidden instructions 要素に存在する', () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
+    ).toBeInTheDocument()
+  })
+
+  it('stage1 → stage2 遷移後も文言は 1 件のまま (stage1 が残留 mount しない裏取り)', () => {
+    // stage1・stage2 は排他表示 (どちらか一方の JSX しか render されない) ため、
+    // 「stage1 mount 中は 1 件」「stage2 遷移後も 1 件 (stage1 unmount + stage2 mount)」
+    // が正しい。 brief の「同一画面複数 DndContext は getAllByText 許容」 は将来 2 つの
+    // DndContext が同時 mount されるケース向けの許容であり、 本 popover は排他なので
+    // getAllByText で 1 件固定を pin することで、 その前提 (排他性) 自体も裏取りする。
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    expect(
+      screen.getAllByText(SORTABLE_SR_INSTRUCTIONS.draggable),
+    ).toHaveLength(1)
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    expect(
+      screen.getAllByText(SORTABLE_SR_INSTRUCTIONS.draggable),
+    ).toHaveLength(1)
   })
 })
 

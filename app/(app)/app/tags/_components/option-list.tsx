@@ -24,6 +24,7 @@ import {
   DndContext,
   closestCenter,
   type DragEndEvent,
+  type UniqueIdentifier,
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -42,6 +43,7 @@ import { handleDeleteOption } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderOptions } from '@/lib/tags/reorder-handlers'
 import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
+import { buildJaAnnouncements, SORTABLE_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 
 import { OptionRow } from './option-row'
 import { OptionCreateForm } from './option-create-form'
@@ -140,6 +142,20 @@ export function OptionList({ userId, activeCategoryId }: Props) {
   // 変わり 「Rendered more hooks than during the previous render」 で throw する。
   const sensors = useSortableSensors()
 
+  // row-dnd sprint task-2: SR (screen reader) 文言の日本語化。 getLabel は options
+  // (useLiveQuery 生値) から名前を引く lookup。 sensors と同じ理由 (hooks は早期 return
+  // より前で同数同順 invocation) でここに置く。 不安定参照を DndContext に渡さないよう
+  // useCallback / useMemo で identity を安定化する (`lib/dnd/accessibility.ts` header
+  // コメント参照)。
+  const getOptionLabel = React.useCallback(
+    (id: UniqueIdentifier) => options?.find((o) => o.id === id)?.name ?? '',
+    [options],
+  )
+  const announcements = React.useMemo(
+    () => buildJaAnnouncements(getOptionLabel),
+    [getOptionLabel],
+  )
+
   // Tag-4c-2c hotfix H2: ConfirmDialog 経路を撤去し即削除に統一 (popover Tag-4c-1-fix A-3
   // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 cascade purge + enqueue を 1 Dexie
   // rw tx に閉じる delete use-case へ委譲 (`lib/tags/tag-crud` handleDeleteOption、 exams
@@ -201,6 +217,7 @@ export function OptionList({ userId, activeCategoryId }: Props) {
           sensors={sensors}
           collisionDetection={closestCenter}
           onDragEnd={handleManagerDragEnd}
+          accessibility={{ announcements, screenReaderInstructions: SORTABLE_SR_INSTRUCTIONS }}
         >
           <SortableContext
             items={list.map((o) => o.id)}

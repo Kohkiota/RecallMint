@@ -54,6 +54,7 @@ vi.mock('@/lib/tags/reorder-handlers', () => ({
 }))
 
 import { CategoryList } from './category-list'
+import { SORTABLE_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 
 const USER_ID = 'user-1'
 
@@ -725,6 +726,32 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       // confirm dialog 開 (drag 起動せず)
       await screen.findByText(/カテゴリ.*A.*削除しますか/)
       expect(mockReorderCategories).not.toHaveBeenCalled()
+    })
+  })
+
+  // row-dnd sprint task-2 配線 pin (Codex 抜け 10 採用): factory unit test
+  // (`lib/dnd/accessibility.test.ts`) だけでは DndContext への配線漏れを検出できない
+  // ため、 実際に mount された DndContext の hidden instructions 要素
+  // (dnd-kit `HiddenText`、 `display:none` の div) に日本語文言が実在することを pin する。
+  describe('a11y 配線 pin (row-dnd sprint task-2)', () => {
+    it('DndContext mount 時に SORTABLE_SR_INSTRUCTIONS.draggable の実文言が hidden instructions 要素に存在する', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList
+          userId={USER_ID}
+          activeCategoryId={null}
+          onSelectCategory={vi.fn()}
+        />,
+      )
+      await screen.findByText('A')
+
+      expect(
+        screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
+      ).toBeInTheDocument()
     })
   })
 
