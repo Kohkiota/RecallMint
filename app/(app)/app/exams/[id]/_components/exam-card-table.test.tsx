@@ -2058,10 +2058,14 @@ function rowGrip(rowTestId: string): HTMLElement {
   return within(screen.getByTestId(rowTestId)).getByRole('button', { name: /^行の操作:/ })
 }
 
-/** 行の side peek を起動する (グリップ → menu の「開く」)。 */
+/**
+ * 行の side peek を起動する (グリップ → menu の詳細トグル項目)。 UI fix B: 項目の
+ * accessible name は開閉状態で「詳細を開く」/「詳細を閉じる」に切り替わるため、
+ * どちらの状態でも引けるよう正規表現で引く (呼出側は open/close どちらの意図でも使う)。
+ */
 async function clickOpenCard(rowTestId: string) {
   fireEvent.click(rowGrip(rowTestId))
-  fireEvent.click(await screen.findByRole('button', { name: '開く' }))
+  fireEvent.click(await screen.findByRole('button', { name: /^詳細を(開く|閉じる)$/ }))
 }
 
 describe('T3 ①: title トリガー click で peek に該当 card 内容表示', () => {
@@ -2208,7 +2212,7 @@ describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)
 })
 
 describe('T3 ⑦-b: peek 起動 2 click が行選択チェックボックスをトグルしない(逆方向・stopPropagation)', () => {
-  it('グリップ click と menu「開く」click のどちらも select td の onClick(行選択トグル)へ bubbling しない', async () => {
+  it('グリップ click と menu 詳細トグル click のどちらも select td の onClick(行選択トグル)へ bubbling しない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -2224,7 +2228,7 @@ describe('T3 ⑦-b: peek 起動 2 click が行選択チェックボックスを�
     await screen.findByTestId('exam-card-row-menu')
     expect(checkbox.checked).toBe(false)
 
-    fireEvent.click(screen.getByRole('button', { name: '開く' }))
+    fireEvent.click(screen.getByRole('button', { name: '詳細を開く' }))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
     expect(checkbox.checked).toBe(false)
@@ -2330,6 +2334,32 @@ describe('T3 ⑩: card 切替時の option 編集 commit 保証', () => {
     // card-2 のグリップ menu から開く → card 切替
     await clickOpenCard('row-card-2')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 2' })).toBeInTheDocument())
+  })
+})
+
+// UI fix B: meta.activeCardId (再導入) が行ごとの「開く」項目の aria-label/aria-pressed に
+// 正しく届いていることを end-to-end で pin する (columns.test.tsx の単体 wiring test だけでは
+// exam-card-table.tsx の meta 配線漏れを検出できない)。
+describe('UI fix B: 行メニュー「開く」項目が meta.activeCardId 配線で行ごとの開閉状態を表す', () => {
+  it('peek を開いた行は「詳細を閉じる」+ aria-pressed=true、他行は「詳細を開く」+ aria-pressed=false のまま', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2)])
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // card-1 の peek を開く (openCard 経由で activeCardId = card-1 になる)。
+    await clickOpenCard('row-card-1')
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
+
+    // card-1 の行メニューを再度開き、詳細トグル項目が開状態を表すことを見る。
+    fireEvent.click(rowGrip('row-card-1'))
+    const item1 = await screen.findByRole('button', { name: '詳細を閉じる' })
+    expect(item1).toHaveAttribute('aria-pressed', 'true')
+
+    // card-2 は開いていないので閉状態のまま。
+    fireEvent.click(rowGrip('row-card-2'))
+    const item2 = await screen.findByRole('button', { name: '詳細を開く' })
+    expect(item2).toHaveAttribute('aria-pressed', 'false')
   })
 })
 

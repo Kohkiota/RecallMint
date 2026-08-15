@@ -45,6 +45,11 @@ export type ExamCardTableMeta = {
   // T2: side peek trigger。optional — 配線されていない (単体 harness 等) なら
   // グリップ menu の「開く」項目を描画しない (row-ux §5)。
   openCard?: (cardId: string) => void
+  // UI fix B: 現在 side peek で開いている card id (再導入 — 「カードを開く」常設 button
+  // 撤去時に dead field として一度削除済)。 optional — 未配線 (単体 harness 等) では
+  // 行メニュー項目は closed 状態のアイコン/aria-label で描画する (openCard 自体の描画有無には
+  // 影響しない、あくまで開閉の視覚表現の入力)。
+  activeCardId?: string | null
   // Grid-3 §7.2 + row-ux §2: 行の二役グリップ (menu = 開く / ここに取り込む)。
   // openCard と同じ optional 規約 — 配線されていなければ trigger を描画しない。
   rowMenu?: {
@@ -145,6 +150,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
               pending={meta.rowMenu.pending}
               onPullInto={meta.rowMenu.onPullInto}
               openCard={meta.openCard}
+              isOpen={meta.activeCardId === card.id}
             />
           )}
           <input

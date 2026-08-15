@@ -266,28 +266,33 @@ afterEach(() => cleanup())
 // ===========================================================================
 
 describe('行メニュー', () => {
-  it('grip click で開き「開く」「ここに取り込む」の 2 項目がこの順で出る', async () => {
+  it('grip click で開き 詳細トグル(アイコンのみ)と「ここに取り込む」の 2 項目がこの順で出る', async () => {
     await openMenu()
 
     const menu = screen.getByTestId('exam-card-row-menu')
     const items = within(menu).getAllByRole('button')
     // 項目は 2 つだけ (row-ux §5: 将来の項目追加を先取りしない)。順序も契約。
-    expect(items.map((el) => el.textContent)).toEqual(['開く', 'ここに取り込む'])
-    expect(within(menu).getByRole('button', { name: 'ここに取り込む' })).toBeEnabled()
+    expect(items).toHaveLength(2)
+    // UI fix B: 「開く」項目は視覚テキストを持たない (既存サイドピークアイコンのみ)。
+    // accessible name は aria-label で維持する。
+    expect(items[0]).toHaveAccessibleName('詳細を開く')
+    expect(items[0]).toHaveTextContent('')
+    expect(items[1]).toHaveAccessibleName('ここに取り込む')
+    expect(items[1]).toBeEnabled()
   })
 
   it('openCard 未配線では「開く」項目を描画しない (「ここに取り込む」のみ)', async () => {
     await openMenu({ openCard: undefined })
 
     const menu = screen.getByTestId('exam-card-row-menu')
-    expect(within(menu).queryByRole('button', { name: '開く' })).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('button', { name: '詳細を開く' })).not.toBeInTheDocument()
     expect(within(menu).getAllByRole('button')).toHaveLength(1)
   })
 
-  it('「開く」click で openCard(card.id) が 1 回呼ばれ menu が閉じる', async () => {
+  it('「詳細を開く」click で openCard(card.id) が 1 回呼ばれ menu が閉じる', async () => {
     const props = await openMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: '開く' }))
+    fireEvent.click(screen.getByRole('button', { name: '詳細を開く' }))
 
     expect(props.openCard).toHaveBeenCalledTimes(1)
     expect(props.openCard).toHaveBeenCalledWith(ANCHOR_CARD)
@@ -330,6 +335,35 @@ describe('行メニュー', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('exam-card-row-menu')).not.toBeInTheDocument(),
     )
+  })
+})
+
+// ===========================================================================
+// 「開く」項目 — 開閉状態の視覚/aria 表現 (UI fix B)
+//
+// isOpen は meta.activeCardId との一致 (この行が今 peek で開いているか) を親から渡される
+// だけの純粋な表示入力。 動作 (openCard トグル契約) は isOpen に関わらず不変。
+// ===========================================================================
+
+describe('「開く」項目 — 開閉状態の視覚/aria 表現', () => {
+  it('isOpen:false (既定) は aria-label「詳細を開く」+ aria-pressed=false + 開くアイコン', async () => {
+    await openMenu({ isOpen: false })
+
+    const item = screen.getByRole('button', { name: '詳細を開く' })
+    expect(item).toHaveAttribute('aria-pressed', 'false')
+    expect(item.querySelector('svg.lucide-panel-right-open')).not.toBeNull()
+    expect(item.querySelector('svg.lucide-panel-right-close')).toBeNull()
+  })
+
+  it('isOpen:true は aria-label「詳細を閉じる」+ aria-pressed=true + 閉じるアイコンに切り替わる', async () => {
+    await openMenu({ isOpen: true })
+
+    const item = screen.getByRole('button', { name: '詳細を閉じる' })
+    expect(item).toHaveAttribute('aria-pressed', 'true')
+    expect(item.querySelector('svg.lucide-panel-right-close')).not.toBeNull()
+    expect(item.querySelector('svg.lucide-panel-right-open')).toBeNull()
+    // 旧状態の accessible name では引けない (aria-label が切り替わっている)。
+    expect(screen.queryByRole('button', { name: '詳細を開く' })).not.toBeInTheDocument()
   })
 })
 

@@ -25,7 +25,7 @@
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { GripVertical } from 'lucide-react'
+import { GripVertical, PanelRightClose, PanelRightOpen } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -46,7 +46,10 @@ export type PullIntoDispatch = (
 ) => Promise<string | null>
 
 const PULL_INTO_MENU_ITEM_LABEL = 'ここに取り込む'
-const OPEN_CARD_MENU_ITEM_LABEL = '開く'
+// UI fix B: 「開く」項目は視覚テキストを持たない (既存サイドピークアイコンのみ)。
+// SR には aria-label で開閉状態を伝える (無文言でも名前は要る)。
+const OPEN_CARD_ARIA_LABEL_CLOSED = '詳細を開く'
+const OPEN_CARD_ARIA_LABEL_OPEN = '詳細を閉じる'
 
 /**
  * checkbox リストを描画する上限 (spec §7.2「少数枚用」の具体化)。超過分は仮想化も検索も
@@ -76,6 +79,12 @@ export type ExamCardRowMenuProps = {
    * 描画しない — meta 経由 optional の既存規約と同型。
    */
   openCard?: (cardId: string) => void
+  /**
+   * この行の card が現在 side peek で開いているか (UI fix B)。 未配線 (単体 harness 等) では
+   * false 扱い — 「開く」項目のアイコン / aria-label / aria-pressed の初期状態を決めるだけで、
+   * 描画有無 (openCard の optional 規約) には影響しない。
+   */
+  isOpen?: boolean
 }
 
 export function ExamCardRowMenu({
@@ -86,6 +95,7 @@ export function ExamCardRowMenu({
   pending,
   onPullInto,
   openCard,
+  isOpen = false,
 }: ExamCardRowMenuProps) {
   const [menuOpen, setMenuOpen] = React.useState(false)
   const [pickerOpen, setPickerOpen] = React.useState(false)
@@ -174,7 +184,15 @@ export function ExamCardRowMenu({
             {openCard && (
               <button
                 type="button"
-                className="rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                // UI fix B: 文言なし・既存サイドピークアイコンのみ (視覚)。aria-label で
+                // 開閉状態を SR に伝え (無文言でも名前は要る)、aria-pressed でトグル button の
+                // 意味論を明示する。項目 = 独立 DOM (grip とは別 button) なので、
+                // dnd-kit が grip 側に自前で張る aria-pressed (isDragging 表現) とは衝突しない。
+                aria-label={isOpen ? OPEN_CARD_ARIA_LABEL_OPEN : OPEN_CARD_ARIA_LABEL_CLOSED}
+                aria-pressed={isOpen}
+                // 押しやすさ: 既存項目 (px-2 py-1.5) と同じ高さ・パディングを維持。flex-col 親の
+                // stretch でボタン幅は既に項目全幅 (アイコンのみでも hit area が痩せない)。
+                className="flex items-center rounded px-2 py-1.5 hover:bg-muted"
                 onClick={(e) => {
                   // PopoverContent は DOM 上は portal でも **React tree では行 cell の子** なので、
                   // ここで止めないと select td の onClick (行選択トグル) まで伝播する
@@ -185,7 +203,11 @@ export function ExamCardRowMenu({
                   openCard(anchorCard.id)
                 }}
               >
-                {OPEN_CARD_MENU_ITEM_LABEL}
+                {isOpen ? (
+                  <PanelRightClose className="size-4" aria-hidden="true" />
+                ) : (
+                  <PanelRightOpen className="size-4" aria-hidden="true" />
+                )}
               </button>
             )}
             <button

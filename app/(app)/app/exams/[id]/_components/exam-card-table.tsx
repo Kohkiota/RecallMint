@@ -683,6 +683,8 @@ export function ExamCardTable({
       categories: liveData?.categories ?? [],
       options: liveData?.options ?? [],
       openCard,
+      // UI fix B: 行メニュー「開く」項目の開閉アイコン/aria-label の入力 (再導入)。
+      activeCardId,
       // Grid-3 §7.2: 行メニュー「ここに取り込む」。 examId / gating / dispatch は行に依らず
       // 同一なので meta で 1 回配り、行固有の anchor は cell が row から取る。
       rowMenu: { currentExamId: examId, positionLocked, pending: movePending, onPullInto },

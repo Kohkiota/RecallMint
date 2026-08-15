@@ -1010,28 +1010,55 @@ describe('Column: select — 二役グリップ + checkbox の 2 要素', () => 
     expect(layout.className).toMatch(/gap-\d/)
   })
 
-  it('③ グリップ click で menu が開き「開く」「ここに取り込む」が出る', async () => {
+  it('③ グリップ click で menu が開き 詳細トグル(アイコンのみ)と「ここに取り込む」が出る', async () => {
     renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
     fireEvent.click(screen.getByRole('button', { name: gripName }))
 
     const menu = await screen.findByTestId('exam-card-row-menu')
-    expect(
-      within(menu)
-        .getAllByRole('button')
-        .map((el) => el.textContent),
-    ).toEqual(['開く', 'ここに取り込む'])
+    const items = within(menu).getAllByRole('button')
+    // UI fix B: 「開く」項目は視覚テキストを持たない (accessible name は aria-label 側)。
+    expect(items.map((el) => el.textContent)).toEqual(['', 'ここに取り込む'])
+    expect(items[0]).toHaveAccessibleName('詳細を開く')
   })
 
-  it('④ menu の「開く」click で meta.openCard(card.id) が呼ばれる', async () => {
+  it('④ menu の「詳細を開く」click で meta.openCard(card.id) が呼ばれる', async () => {
     const openCard = vi.fn()
     const row = makeRow({ id: 'card-peek-test' })
     renderSelectCellWithMeta(row, { ...ROW_MENU_META, openCard })
 
     fireEvent.click(screen.getByRole('button', { name: `行の操作: ${row.card.title}` }))
-    fireEvent.click(await screen.findByRole('button', { name: '開く' }))
+    fireEvent.click(await screen.findByRole('button', { name: '詳細を開く' }))
 
     expect(openCard).toHaveBeenCalledTimes(1)
     expect(openCard).toHaveBeenCalledWith('card-peek-test')
+  })
+
+  it('④-b meta.activeCardId が row の card.id と一致すると isOpen=true (詳細を閉じる) で配線される', async () => {
+    const row = makeRow({ id: 'card-peek-test' })
+    renderSelectCellWithMeta(row, {
+      ...ROW_MENU_META,
+      openCard: vi.fn(),
+      activeCardId: 'card-peek-test',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: `行の操作: ${row.card.title}` }))
+
+    const item = await screen.findByRole('button', { name: '詳細を閉じる' })
+    expect(item).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('④-c meta.activeCardId が別の card.id なら isOpen=false (詳細を開く) のまま', async () => {
+    const row = makeRow({ id: 'card-peek-test' })
+    renderSelectCellWithMeta(row, {
+      ...ROW_MENU_META,
+      openCard: vi.fn(),
+      activeCardId: 'card-other',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: `行の操作: ${row.card.title}` }))
+
+    const item = await screen.findByRole('button', { name: '詳細を開く' })
+    expect(item).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('⑤ meta 不在でグリップが描画されず crash しない(checkbox のみ描画)', () => {
@@ -1045,7 +1072,7 @@ describe('Column: select — 二役グリップ + checkbox の 2 要素', () => 
     expect(screen.queryByRole('button', { name: /行の操作:/ })).toBeNull()
   })
 
-  it('⑥ openCard 未配線のとき menu に「開く」項目が出ない(「ここに取り込む」は出る)', async () => {
+  it('⑥ openCard 未配線のとき menu に詳細トグル項目が出ない(「ここに取り込む」は出る)', async () => {
     renderSelectCellWithMeta(makeRow(), ROW_MENU_META)
     fireEvent.click(screen.getByRole('button', { name: gripName }))
 
