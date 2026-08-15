@@ -16,10 +16,11 @@ import { cn } from '@/lib/utils'
 import {
   SYNC_META_KEYS,
   examViewPrefsSchema,
-  examViewPrefsV3Schema,
-  examViewPrefsToV3,
+  examViewPrefsV4Schema,
+  examViewPrefsToV4,
   getJsonSyncMeta,
   setJsonSyncMeta,
+  PEEK_WIDTH_DEFAULT_VW,
 } from '@/lib/sync/sync-meta'
 import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { Button } from '@/components/ui/button'
@@ -66,6 +67,11 @@ export function ExamDetailView({
   // S5-2: columnPinning state — handleColumnVisibilityChange と同型の controlled prop 化。
   // 初期 { left: [], right: [] } は「固定なし」。 mount load で pinnedBoundary を復元する。
   const [columnPinning, setColumnPinning] = useState<ColumnPinningState>({ left: [], right: [] })
+  // UI fix C: side peek 幅(vw)。 columnVisibility/columnPinning と同型の単一所有 — state 所有 +
+  // examViewPrefs V4 永続はここに集約する(ExamCardSidePeek は presentational のまま、
+  // 第 2 の永続経路を作らない)。 初期値 PEEK_WIDTH_DEFAULT_VW(40) は saved record の無い
+  // 新規ユーザーにのみ適用(saved があれば mount load が上書きする)。
+  const [peekWidthVw, setPeekWidthVw] = useState<number>(PEEK_WIDTH_DEFAULT_VW)
   // 永続ガード (fix2): mount load 完了前に persist effect が初期 state を書込んで既存 record を
   // 壊すのを防ぐ (load 完了で true)。 ref ではなく state — load 完了で persist effect を再発火
   // させて pre-load の view 変更を replay する (fix1 の ref は再発火せず pre-load 変更が消失した)。
@@ -84,8 +90,10 @@ export function ExamDetailView({
     void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema).then((saved) => {
       if (cancelled) return
       if (saved) {
-        // S5-2: toV3 で V1/V2/V3 を正規化し pinnedBoundary を取得 (V1/V2 → null)。
-        const { view: savedView, hiddenColumns, pinnedBoundary } = examViewPrefsToV3(saved)
+        // UI fix C: toV4 で V1/V2/V3/V4 を正規化し pinnedBoundary + peekWidthVw を取得
+        // (V1/V2 → pinnedBoundary null、 V1/V2/V3 → peekWidthVw は既定値)。
+        const { view: savedView, hiddenColumns, pinnedBoundary, peekWidthVw: savedPeekWidthVw } =
+          examViewPrefsToV4(saved)
         if (savedView !== view) setView(savedView)
         const map: VisibilityState = {}
         for (const id of hiddenColumns) map[id] = false
@@ -93,6 +101,7 @@ export function ExamDetailView({
         // S5-2: pinnedBoundary → computePinnedLeft で left 配列を復元。
         // 未知 id は computePinnedLeft が [] に落とす(load 時無害化)。
         setColumnPinning({ left: computePinnedLeft(pinnedBoundary), right: [] })
+        setPeekWidthVw(savedPeekWidthVw)
       }
       setPrefsLoaded(true)
     })
@@ -134,6 +143,15 @@ export function ExamDetailView({
     setColumnPinning(updater)
   }
 
+  // UI fix C: side peek 幅変更 (ドラッグ確定 / 矢印キー) を wrap し userInteracted を立てる
+  // (handleColumnPinningChange と同型)。 mount load の setPeekWidthVw はこの wrap を通らないため
+  // spurious write なし。 ExamCardSidePeek はドラッグ中の中間値を持たずここへ確定値のみ渡す
+  // (第 2 の永続経路を作らない)。
+  const handlePeekWidthChange = (vw: number) => {
+    userInteractedRef.current = true
+    setPeekWidthVw(vw)
+  }
+
   // S2-5 fix: view / columnVisibility いずれの変更でも自 state から永続化 (fire-and-forget)。
   // 単一所有ゆえ view・hiddenColumns の両方が state にあり read-preserve dance は不要。
   // load 完了前 (prefsLoaded=false) は early-return: pre-load の default state 書込
@@ -143,18 +161,20 @@ export function ExamDetailView({
   useEffect(() => {
     if (!prefsLoaded) return
     if (!userInteractedRef.current) return
-    // S5-2: 書込を V3 に変更。pinnedBoundary を columnPinning から導出して付加する。
+    // UI fix C: 書込を V4 に変更。peekWidthVw を自 state から付加する
+    // (columnPinning からの pinnedBoundary 導出と同型)。
     void setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
       {
-        version: 3,
+        version: 4,
         view,
         hiddenColumns: deriveHiddenColumns(columnVisibility),
         pinnedBoundary: derivePinnedBoundary(columnPinning),
+        peekWidthVw,
       },
-      examViewPrefsV3Schema,
+      examViewPrefsV4Schema,
     ).catch(() => {})
-  }, [prefsLoaded, view, columnVisibility, columnPinning])
+  }, [prefsLoaded, view, columnVisibility, columnPinning, peekWidthVw])
 
   // S2-1 app-shell 骨格: table view を viewport 高の flex 列にする。 高さは固定 px 禁止
   // (spec Global) ゆえ shell の上端 offset を実測し height: calc(100dvh - <topOffset>px)。
@@ -299,6 +319,8 @@ export function ExamDetailView({
               onColumnPinningChange={handleColumnPinningChange}
               onCollapsedChange={setChromeCollapsed}
               chromeRef={chromeRef}
+              peekWidthVw={peekWidthVw}
+              onPeekWidthChange={handlePeekWidthChange}
             />
           </div>
         </div>

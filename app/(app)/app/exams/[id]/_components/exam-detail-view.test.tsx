@@ -17,7 +17,8 @@ import {
   examViewPrefsV1Schema,
   examViewPrefsV2Schema,
   examViewPrefsV3Schema,
-  examViewPrefsToV3,
+  examViewPrefsV4Schema,
+  examViewPrefsToV4,
   getJsonSyncMeta,
   setJsonSyncMeta as realSetJsonSyncMeta,
 } from '@/lib/sync/sync-meta'
@@ -42,6 +43,8 @@ vi.mock('./inline-card-list', () => ({
 // (scroll 伝播・chrome collapse の結合 test 用)。
 // S5-2: stub は columnPinning prop を data 属性で露出し、 pinning 配線を検証可能にする。
 //        stub-trigger-pin ボタンで onColumnPinningChange を注入できる (c-3 非 null path 用)。
+// UI fix C: stub は peekWidthVw prop を data 属性で露出し、 stub-trigger-peek-width ボタンで
+//        onPeekWidthChange を注入できる (columnPinning と同型の配線検証)。
 vi.mock('./exam-card-table', () => ({
   ExamCardTable: ({
     examId,
@@ -49,17 +52,22 @@ vi.mock('./exam-card-table', () => ({
     columnPinning,
     onCollapsedChange,
     onColumnPinningChange,
+    peekWidthVw,
+    onPeekWidthChange,
   }: {
     examId: string
     columnVisibility?: unknown
     columnPinning?: unknown
     onCollapsedChange?: (collapsed: boolean) => void
     onColumnPinningChange?: (pinning: { left: string[]; right: string[] }) => void
+    peekWidthVw?: number
+    onPeekWidthChange?: (vw: number) => void
   }) => (
     <div
       data-testid="exam-card-table-stub"
       data-colvis={JSON.stringify(columnVisibility ?? null)}
       data-pinning={JSON.stringify(columnPinning ?? null)}
+      data-peek-width={JSON.stringify(peekWidthVw ?? null)}
     >
       {/* S2b-1: collapse/expand を test から注入するトリガーボタン */}
       <button
@@ -74,6 +82,11 @@ vi.mock('./exam-card-table', () => ({
       <button
         data-testid="stub-trigger-pin"
         onClick={() => onColumnPinningChange?.({ left: ['select', 'title'], right: [] })}
+      />
+      {/* UI fix C: peek 幅変更(ドラッグ確定相当)を test から注入するトリガーボタン */}
+      <button
+        data-testid="stub-trigger-peek-width"
+        onClick={() => onPeekWidthChange?.(60)}
       />
       exam-card-table-{examId}
     </div>
@@ -281,14 +294,14 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
     // S2-5 fix: view 変更で guard 付き永続 effect (deps [view, columnVisibility, columnPinning]) が 1 回
     // 発火し、 自 columnVisibility state (初期 { question_label: false }) から hiddenColumns=['question_label']
     // を書込む。 handleToggle は書かない (setView のみ) ため二重書込にならず書込は 1 回。
-    // S5-2: 書込は V3 化 (pinnedBoundary: null = 固定なし初期値)。
+    // UI fix C: 書込は V4 化 (pinnedBoundary: null = 固定なし初期値・peekWidthVw: 40 = 既定値)。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledTimes(1)
     })
     expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
-      { version: 3, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null },
-      examViewPrefsV3Schema,
+      { version: 4, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null, peekWidthVw: 40 },
+      examViewPrefsV4Schema,
     )
 
     // ExamCardTable stub が render されている
@@ -334,12 +347,12 @@ describe('ExamDetailView — Case ④-b: view 切替が hiddenColumns を破壊�
 
     // 単一所有: view=card + hiddenColumns=[memo,tags] (自 state から導出、 view は消えず
     // hiddenColumns も消えない = 相互非破壊)。
-    // S5-2: 書込は V3 化 (pinnedBoundary: null = 固定なし)。
+    // UI fix C: 書込は V4 化 (pinnedBoundary: null = 固定なし・peekWidthVw: 40 = V2 record 由来の既定値)。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        { version: 3, view: 'card', hiddenColumns: ['memo', 'tags'], pinnedBoundary: null },
-        examViewPrefsV3Schema,
+        { version: 4, view: 'card', hiddenColumns: ['memo', 'tags'], pinnedBoundary: null, peekWidthVw: 40 },
+        examViewPrefsV4Schema,
       )
     })
   })
@@ -650,13 +663,13 @@ describe('ExamDetailView — Case ⑬ (S2-5): 列 toggle が view を破壊し�
     fireEvent.click(memoCheckbox)
 
     // 永続 record を stored から確認 (HARD GATE): view=table 保持 + memo が hiddenColumns。
-    // S5-2: 書込は V3 化。examViewPrefsToV3 で正規化して view / hiddenColumns を確認。
+    // UI fix C: 書込は V4 化。examViewPrefsToV4 で正規化して view / hiddenColumns を確認。
     await waitFor(async () => {
       const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
       expect(saved).toBeDefined()
-      const v3 = examViewPrefsToV3(saved!)
-      expect(v3.view, '列変更が view を消さない').toBe('table')
-      expect(v3.hiddenColumns).toContain('memo')
+      const v4 = examViewPrefsToV4(saved!)
+      expect(v4.view, '列変更が view を消さない').toBe('table')
+      expect(v4.hiddenColumns).toContain('memo')
     })
 
     // detail-view → table の controlled prop 配線: stub が memo:false を受ける
@@ -710,12 +723,12 @@ describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で save
     })
 
     // load 解決後の永続 write は saved hiddenColumns=['memo'] を保持する (clobber なし)。
-    // S5-2: 書込は V3 化 (pinnedBoundary: null = 固定なし)。
+    // UI fix C: 書込は V4 化 (pinnedBoundary: null = 固定なし・peekWidthVw: 40 = V2 record 由来の既定値)。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        { version: 3, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: null },
-        examViewPrefsV3Schema,
+        { version: 4, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: null, peekWidthVw: 40 },
+        examViewPrefsV4Schema,
       )
     })
 
@@ -769,12 +782,12 @@ describe('ExamDetailView — Case ⑮ (S2-5 fix2): pre-load view toggle が post
 
     // fix2 核心: load 完了で effect が再発火し、 userInteracted 済ゆえ current view(table) を
     // replay 書込する (fix1 では二度と発火せず消失していた = RED)。
-    // S5-2: 書込は V3 化 (pinnedBoundary: null = 固定なし初期値)。
+    // UI fix C: 書込は V4 化 (pinnedBoundary: null = 固定なし初期値・peekWidthVw: 40 = 既定値)。
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        { version: 3, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null },
-        examViewPrefsV3Schema,
+        { version: 4, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null, peekWidthVw: 40 },
+        examViewPrefsV4Schema,
       )
     })
   })
@@ -1079,14 +1092,14 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
 
     mockSetJsonSyncMeta.mockClear()
 
-    // view 切替で persist effect が発火 → V3 format + pinnedBoundary:null が書かれる (null path)
+    // view 切替で persist effect が発火 → V4 format + pinnedBoundary:null が書かれる (null path)
     fireEvent.click(screen.getByRole('button', { name: 'カード' }))
 
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        expect.objectContaining({ version: 3, pinnedBoundary: null }),
-        examViewPrefsV3Schema,
+        expect.objectContaining({ version: 4, pinnedBoundary: null }),
+        examViewPrefsV4Schema,
       )
     })
   })
@@ -1107,14 +1120,14 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
     mockSetJsonSyncMeta.mockClear()
 
     // stub-trigger-pin: onColumnPinningChange?.({ left: ['select','title'], right: [] }) を注入
-    // → ExamDetailView が columnPinning state を更新 → persist effect が V3 + pinnedBoundary:'title' を書く
+    // → ExamDetailView が columnPinning state を更新 → persist effect が V4 + pinnedBoundary:'title' を書く
     fireEvent.click(screen.getByTestId('stub-trigger-pin'))
 
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
-        expect.objectContaining({ version: 3, pinnedBoundary: 'title' }),
-        examViewPrefsV3Schema,
+        expect.objectContaining({ version: 4, pinnedBoundary: 'title' }),
+        examViewPrefsV4Schema,
       )
     })
   })
@@ -1167,5 +1180,162 @@ describe('ExamDetailView — S5-2 (c-5): 未知 boundary id → {left:[],right:[
       const pinning = JSON.parse(stub.getAttribute('data-pinning') ?? 'null')
       expect(pinning).toEqual({ left: [], right: [] })
     })
+  })
+})
+
+// ===========================================================================
+// UI fix C: peekWidthVw 配線 — load 復元 / persist / guard 回帰
+// columnPinning (S5-2) と同型の単一所有配線を pin する。
+// ===========================================================================
+
+describe('ExamDetailView — UI fix C (d-1): 新規ユーザー(saved なし) → stub に既定値 40 が渡る', () => {
+  it('sync_meta 空状態で render → table view 切替後 stub の data-peek-width が 40 になる', async () => {
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // stub (peekWidthVw を露出する) は table view のみ描画されるため切替える
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      expect(JSON.parse(stub.getAttribute('data-peek-width') ?? 'null')).toBe(40)
+    })
+  })
+})
+
+describe('ExamDetailView — UI fix C (d-2): V4 record load → stub の peekWidthVw に反映', () => {
+  it('V4 prefs (peekWidthVw:55) を seed → stub の data-peek-width が 55 になる', async () => {
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 4, view: 'table', hiddenColumns: [], pinnedBoundary: null, peekWidthVw: 55 },
+      examViewPrefsV4Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      expect(JSON.parse(stub.getAttribute('data-peek-width') ?? 'null')).toBe(55)
+    })
+  })
+})
+
+describe('ExamDetailView — UI fix C (d-3): V2 record (peekWidthVw 欄なし) load → 既定値 40 に migration', () => {
+  it('V2 prefs を seed → stub の data-peek-width が 40 (既定値) になる', async () => {
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      expect(JSON.parse(stub.getAttribute('data-peek-width') ?? 'null')).toBe(40)
+    })
+  })
+})
+
+describe('ExamDetailView — UI fix C (d-4): peek 幅変更 → persist effect が V4 + peekWidthVw を書く', () => {
+  it('stub-trigger-peek-width → V4 { peekWidthVw: 60 } で persist される', async () => {
+    // view=table で seed (stub が描画される状態にする)
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 2, view: 'table', hiddenColumns: [] },
+      examViewPrefsV2Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => expect(screen.getByTestId('exam-card-table-stub')).toBeInTheDocument())
+
+    mockSetJsonSyncMeta.mockClear()
+
+    // stub-trigger-peek-width: onPeekWidthChange?.(60) を注入
+    // → ExamDetailView が peekWidthVw state を更新 → persist effect が V4 + peekWidthVw:60 を書く
+    fireEvent.click(screen.getByTestId('stub-trigger-peek-width'))
+
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        expect.objectContaining({ version: 4, peekWidthVw: 60 }),
+        examViewPrefsV4Schema,
+      )
+    })
+
+    // stub 側の controlled prop にも反映される(単一所有の往復)
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      expect(JSON.parse(stub.getAttribute('data-peek-width') ?? 'null')).toBe(60)
+    })
+  })
+
+  it('peek 幅変更が view/hiddenColumns/pinnedBoundary を破壊しない(相互非破壊)', async () => {
+    await realSetJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      { version: 3, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: 'title' },
+      examViewPrefsV3Schema,
+    )
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      const stub = screen.getByTestId('exam-card-table-stub')
+      const pinning = JSON.parse(stub.getAttribute('data-pinning') ?? 'null')
+      expect(pinning).toEqual({ left: ['select', 'title'], right: [] })
+    })
+
+    mockSetJsonSyncMeta.mockClear()
+
+    fireEvent.click(screen.getByTestId('stub-trigger-peek-width'))
+
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        {
+          version: 4,
+          view: 'table',
+          hiddenColumns: ['memo'],
+          pinnedBoundary: 'title',
+          peekWidthVw: 60,
+        },
+        examViewPrefsV4Schema,
+      )
+    })
+  })
+})
+
+describe('ExamDetailView — UI fix C (d-5): 無操作 mount では peekWidthVw の write なし (userInteracted guard 回帰)', () => {
+  it('V4 seed + 無操作 → setJsonSyncMeta が一度も呼ばれない', async () => {
+    let resolveLoad!: (value: unknown) => void
+    const deferred = new Promise<unknown>((resolve) => {
+      resolveLoad = resolve
+    })
+    mockGetJsonSyncMeta.mockImplementationOnce(() => deferred)
+
+    render(<ExamDetailView {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // V4 record で load 解決 (無操作)
+    await act(async () => {
+      resolveLoad({
+        version: 4 as const,
+        view: 'table',
+        hiddenColumns: [],
+        pinnedBoundary: null,
+        peekWidthVw: 55,
+      })
+      await deferred
+    })
+
+    // 無操作 (userInteracted=false) ゆえ write なし (prefsLoaded 前 / 操作前の両 guard を通過していないことを pin)
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
   })
 })

@@ -133,37 +133,107 @@ export const examViewPrefsV3Schema = z
 
 export type ExamViewPrefsV3 = z.infer<typeof examViewPrefsV3Schema>
 
+// ---------------------------------------------------------------------------
+// ExamViewPrefsV4 schema (UI fix C: side peek 幅リサイズ + 永続化)
+// ---------------------------------------------------------------------------
+
 /**
- * 読み取り用 union schema。 v1 / v2 / v3 の全 record を accept する
- * (version discriminator で分岐)。 書込は examViewPrefsV3Schema を使うこと。
+ * side peek 幅(vw)の有効域 + 既定値。 UI(ドラッグ/矢印キー、exam-card-side-peek.tsx)と
+ * schema 正規化(下記 clampPeekWidthVw)の両方がこの定数を SSoT として共有する
+ * (範囲の二重管理を避ける)。
+ */
+export const PEEK_WIDTH_MIN_VW = 25
+export const PEEK_WIDTH_MAX_VW = 70
+export const PEEK_WIDTH_DEFAULT_VW = 40
+
+/**
+ * peekWidthVw を PEEK_WIDTH_MIN_VW〜PEEK_WIDTH_MAX_VW にクランプする。
+ *
+ * 決定 (UI fix C): 範囲外の値は reject でなく clamp する。 examViewPrefs は 1 record に
+ * view/hiddenColumns/pinnedBoundary/peekWidthVw を同居させる単一 JSON blob なので、
+ * peekWidthVw だけが範囲外(将来の仕様変更・手動編集等)でも union 読みで record 全体を
+ * 捨てて他 3 フィールドの設定まで失わせたくない(reject は他フィールドへの巻き添え損失が
+ * 大きく、clamp は無害に丸めるだけで実害がない)。 型として不正な値(非数値・NaN・Infinity)は
+ * examViewPrefsV4Schema の z.number() が引き続き reject する(zod 4 は z.number() が既定で
+ * NaN/Infinity を弾く。 fix round 1: 旧来の `.finite()` は zod 4.4.1 では no-op — installed
+ * 版で実証済 — なので付けない。 構造的不正は既存 V1〜V3 と同じ「union 読みで undefined」扱い)。
+ */
+export function clampPeekWidthVw(vw: number): number {
+  return Math.min(PEEK_WIDTH_MAX_VW, Math.max(PEEK_WIDTH_MIN_VW, vw))
+}
+
+/**
+ * 試験一覧 view preference の zod schema (version: 4)。
+ * v3 に peekWidthVw (side peek 幅・vw 単位) を追加。 書込は常に v4。
+ * peekWidthVw は number であることのみ構造検証し、 25〜70 の範囲検証はしない
+ * (範囲外は examViewPrefsToV4 が clamp する — 上記 clampPeekWidthVw のコメント参照)。
+ * fix round 1: z.number() は zod 4 で既定 NaN/Infinity を reject するため `.finite()` は
+ * 付けない(付けても no-op — 上記 clampPeekWidthVw のコメント参照)。
+ */
+export const examViewPrefsV4Schema = z
+  .object({
+    version: z.literal(4),
+    view: z.enum(['card', 'table']),
+    hiddenColumns: z.array(z.string()),
+    pinnedBoundary: z.string().nullable(),
+    peekWidthVw: z.number(),
+  })
+  .strict()
+
+export type ExamViewPrefsV4 = z.infer<typeof examViewPrefsV4Schema>
+
+/**
+ * 読み取り用 union schema。 v1 / v2 / v3 / v4 の全 record を accept する
+ * (version discriminator で分岐)。 書込は examViewPrefsV4Schema を使うこと。
  */
 export const examViewPrefsSchema = z.discriminatedUnion('version', [
   examViewPrefsV1Schema,
   examViewPrefsV2Schema,
   examViewPrefsV3Schema,
+  examViewPrefsV4Schema,
 ])
 
 export type ExamViewPrefs = z.infer<typeof examViewPrefsSchema>
 
 /**
- * v1 / v2 / v3 いずれの record も v3 working shape に正規化する (S5-1)。
- * v1 → hiddenColumns: [], pinnedBoundary: null
- * v2 → hiddenColumns を引き継ぎ, pinnedBoundary: null
- * v3 → そのまま passthrough
+ * v1 / v2 / v3 / v4 いずれの record も v4 working shape に正規化する (UI fix C)。
+ * v1 → hiddenColumns: [], pinnedBoundary: null, peekWidthVw: PEEK_WIDTH_DEFAULT_VW
+ * v2 → hiddenColumns を引き継ぎ, pinnedBoundary: null, peekWidthVw: PEEK_WIDTH_DEFAULT_VW
+ * v3 → hiddenColumns/pinnedBoundary を引き継ぎ, peekWidthVw: PEEK_WIDTH_DEFAULT_VW
+ * v4 → そのまま passthrough (peekWidthVw は clampPeekWidthVw で防御的に再クランプ)
  */
-export function examViewPrefsToV3(
+export function examViewPrefsToV4(
   prefs: ExamViewPrefs,
-): { view: 'card' | 'table'; hiddenColumns: string[]; pinnedBoundary: string | null } {
+): {
+  view: 'card' | 'table'
+  hiddenColumns: string[]
+  pinnedBoundary: string | null
+  peekWidthVw: number
+} {
+  if (prefs.version === 4) {
+    return {
+      view: prefs.view,
+      hiddenColumns: prefs.hiddenColumns,
+      pinnedBoundary: prefs.pinnedBoundary,
+      peekWidthVw: clampPeekWidthVw(prefs.peekWidthVw),
+    }
+  }
   if (prefs.version === 3) {
     return {
       view: prefs.view,
       hiddenColumns: prefs.hiddenColumns,
       pinnedBoundary: prefs.pinnedBoundary,
+      peekWidthVw: PEEK_WIDTH_DEFAULT_VW,
     }
   }
   if (prefs.version === 2) {
-    return { view: prefs.view, hiddenColumns: prefs.hiddenColumns, pinnedBoundary: null }
+    return {
+      view: prefs.view,
+      hiddenColumns: prefs.hiddenColumns,
+      pinnedBoundary: null,
+      peekWidthVw: PEEK_WIDTH_DEFAULT_VW,
+    }
   }
   // version === 1: hiddenColumns なし
-  return { view: prefs.view, hiddenColumns: [], pinnedBoundary: null }
+  return { view: prefs.view, hiddenColumns: [], pinnedBoundary: null, peekWidthVw: PEEK_WIDTH_DEFAULT_VW }
 }

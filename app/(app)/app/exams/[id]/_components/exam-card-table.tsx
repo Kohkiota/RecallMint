@@ -83,6 +83,7 @@ import { cn } from '@/lib/utils'
 import { ActionToast } from '@/components/ui/action-toast'
 import { Button } from '@/components/ui/button'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { PEEK_WIDTH_DEFAULT_VW } from '@/lib/sync/sync-meta'
 import { compareByBaseOrder, placementForRowDrop, type MovePlacement } from '@/lib/cards/domain/card-order'
 import { useSortableSensors, type SortableSensorOptions } from '@/lib/dnd/use-sortable-sensors'
 import { buildJaAnnouncements, ROW_DND_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
@@ -162,6 +163,12 @@ const ROW_DND_SENSOR_OPTIONS: SortableSensorOptions = {
   mouseActivationConstraint: { distance: 4 },
   keyboardCodes: { start: ['Space'], cancel: ['Escape'], end: ['Space', 'Enter', 'Tab'] },
 }
+
+// UI fix C: peekWidthVw/onPeekWidthChange は optional (columnVisibility/columnPinning と違い
+// exam-detail-view 以外の呼出元 — 単体 test の直接 render 等 — にまで必須化しない。 side peek の
+// 開閉自体 (activeCardId) も本 component のローカル state で非永続なのと同じ扱い)。 未配線時の
+// no-op は module スコープの安定参照にする(毎 render で新しい closure を作らない)。
+function noopPeekWidthChange(): void {}
 
 function TableBody({
   table,
@@ -355,7 +362,7 @@ type ExamCardTableProps = {
   columnVisibility: VisibilityState
   onColumnVisibilityChange: OnChangeFn<VisibilityState>
   // S5-2: columnPinning は controlled prop (handleColumnVisibilityChange と同型)。
-  // state 所有 + examViewPrefs V3 永続は exam-detail-view が単一所有する。
+  // state 所有 + examViewPrefs 永続(書込は最新版 — UI fix C 時点で V4)は exam-detail-view が単一所有する。
   columnPinning: ColumnPinningState
   onColumnPinningChange: OnChangeFn<ColumnPinningState>
   // S2b-1: scroll → collapsed 信号を exam-detail-view に通知し table-chrome を collapse。
@@ -363,6 +370,10 @@ type ExamCardTableProps = {
   // S2b-1: table-chrome の高さを実測するための ref (短コンテンツ guard 用)。
   // exam-detail-view が table-chrome 外側 wrapper の ref を渡す。
   chromeRef?: RefObject<HTMLElement | null>
+  // UI fix C: side peek 幅(vw)。 state 所有 + examViewPrefs V4 永続は exam-detail-view が単一
+  // 所有する。 optional — 未配線の呼出元(単体 test の直接 render 等)は既定幅で描画する。
+  peekWidthVw?: number
+  onPeekWidthChange?: (vw: number) => void
 }
 
 export function ExamCardTable({
@@ -374,6 +385,8 @@ export function ExamCardTable({
   onColumnPinningChange,
   onCollapsedChange,
   chromeRef,
+  peekWidthVw = PEEK_WIDTH_DEFAULT_VW,
+  onPeekWidthChange = noopPeekWidthChange,
 }: ExamCardTableProps) {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   // 初期ソート: 空配列 = compareByBaseOrder pre-sort (liveData:232) が連番順を担保するため不要。
@@ -1374,6 +1387,8 @@ export function ExamCardTable({
         options={liveData?.options ?? []}
         userId={userId}
         onClose={handleClosePeek}
+        widthVw={peekWidthVw}
+        onWidthChange={onPeekWidthChange}
       />
     </div>
   )

@@ -43,13 +43,18 @@ vi.mock('@/lib/media/get-asset', () => ({
   getAssetObjectURL: vi.fn(async () => null),
 }))
 
-import { ExamCardSidePeek } from './exam-card-side-peek'
+import {
+  ExamCardSidePeek,
+  computeDraggedPeekWidthVw,
+  PEEK_WIDTH_KEYBOARD_STEP_VW,
+} from './exam-card-side-peek'
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { Dialog as DialogPrimitive } from 'radix-ui'
+import { PEEK_WIDTH_MIN_VW, PEEK_WIDTH_MAX_VW } from '@/lib/sync/sync-meta'
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -148,6 +153,9 @@ function defaultProps(overrides: Partial<React.ComponentProps<typeof ExamCardSid
     options: [TAG_OPTION],
     userId: USER_ID,
     onClose: vi.fn(),
+    // UI fix C: widthVw/onWidthChange は required prop。 既定 40vw で全既存 test の視覚を不変に保つ。
+    widthVw: 40,
+    onWidthChange: vi.fn(),
     ...overrides,
   }
 }
@@ -470,5 +478,268 @@ describe('ExamCardSidePeek ⑩: Esc layering — Popover の Esc が peek を閉
     expect(screen.queryByText('ポップオーバー内容')).not.toBeInTheDocument()
     // peek は閉じていない(onClose 未呼び出し)
     expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// UI fix C: computeDraggedPeekWidthVw — pure 関数 unit test
+// ===========================================================================
+
+describe('computeDraggedPeekWidthVw', () => {
+  it('左へ引く(deltaPx 正)ほど幅が増える', () => {
+    // 1000px viewport で 100px 左へ引く → +10vw
+    expect(computeDraggedPeekWidthVw(40, 100, 1000)).toBe(50)
+  })
+
+  it('右へ押す(deltaPx 負)ほど幅が減る', () => {
+    expect(computeDraggedPeekWidthVw(40, -100, 1000)).toBe(30)
+  })
+
+  it('25vw 未満になる delta は 25 にクランプする', () => {
+    expect(computeDraggedPeekWidthVw(40, -500, 1000)).toBe(PEEK_WIDTH_MIN_VW)
+  })
+
+  it('70vw を超える delta は 70 にクランプする', () => {
+    expect(computeDraggedPeekWidthVw(40, 500, 1000)).toBe(PEEK_WIDTH_MAX_VW)
+  })
+
+  it('viewportWidthPx<=0(異常値)は startWidthVw をそのまま返す(クランプのみ適用)', () => {
+    expect(computeDraggedPeekWidthVw(40, 100, 0)).toBe(40)
+    expect(computeDraggedPeekWidthVw(10, 100, 0)).toBe(PEEK_WIDTH_MIN_VW)
+  })
+})
+
+// ===========================================================================
+// UI fix C: リサイズ handle — モバイル不壊 / aria / ドラッグ / 矢印キー
+// ===========================================================================
+
+/** Dialog.Content(role=dialog)直下の resize handle(role=separator)を取得する。 */
+function resizeHandle(): HTMLElement {
+  return screen.getByRole('separator', { name: 'パネル幅を変更' })
+}
+
+describe('ExamCardSidePeek UI fix C: モバイル不壊 — handle が hidden md:block(class ベース)', () => {
+  // fix round 1 (⑥): toContain の部分一致は 'md:hidden' のような class でも通ってしまう
+  // (誤検出を防げない)。toHaveClass の完全一致トークンで固定する。
+  // 本 test の保証範囲: handle の class token に 'hidden'/'md:block' が付与されていることまで。
+  // 実際に <md で非表示になる(display:none が効く)ことの担保は Tailwind の生成 CSS 側の責務で
+  // あり、本 test はそれを検証しない(jsdom はメディアクエリを評価しないため検証不可能)。
+  it('handle は既定で hidden(モバイル非表示)、md:block を持つ(誤タッチ防止をクラスで構造的に担保)', () => {
+    render(<ExamCardSidePeek {...defaultProps()} />)
+    const handle = resizeHandle()
+    expect(handle).toHaveClass('hidden', 'md:block')
+  })
+})
+
+describe('ExamCardSidePeek UI fix C fix round 1 (①): open 直後の初期 focus が「閉じる」に戻る', () => {
+  // radix FocusScope の mount autofocus は DOM 順で最初の tabbable 候補へ移る。 resize handle
+  // (tabIndex=0)が Dialog.Content の先頭子だった旧実装では open 直後の focus が handle に奪われる
+  // regression があった。 handle を最後の子に移した(実装側)ことで「閉じる」が最初の tabbable
+  // 候補に戻ることを pin する(この保証は fix round 1 以前は誰も持っていなかった)。
+  it('peek open 直後の document.activeElement は「閉じる」ボタンである(handle に focus が奪われない)', () => {
+    render(<ExamCardSidePeek {...defaultProps()} />)
+    const closeButton = screen.getByRole('button', { name: '閉じる' })
+    expect(document.activeElement).toBe(closeButton)
+  })
+})
+
+describe('ExamCardSidePeek UI fix C: handle の aria 属性', () => {
+  it('role=separator + aria-orientation=vertical + aria-valuenow/min/max が widthVw を反映する', () => {
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 45 })} />)
+    const handle = resizeHandle()
+    expect(handle).toHaveAttribute('aria-orientation', 'vertical')
+    expect(handle).toHaveAttribute('aria-valuenow', '45')
+    expect(handle).toHaveAttribute('aria-valuemin', String(PEEK_WIDTH_MIN_VW))
+    expect(handle).toHaveAttribute('aria-valuemax', String(PEEK_WIDTH_MAX_VW))
+  })
+})
+
+describe('ExamCardSidePeek UI fix C: panel 幅は widthVw prop を CSS 変数として反映する', () => {
+  it('Dialog.Content の --peek-width-vw が widthVw に一致する', () => {
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 52 })} />)
+    const content = document.querySelector('[role="dialog"]') as HTMLElement
+    expect(content.style.getPropertyValue('--peek-width-vw')).toBe('52vw')
+  })
+})
+
+describe('ExamCardSidePeek UI fix C: ドラッグ — pointerup で 1 回だけ確定値を通知', () => {
+  // window.innerWidth を固定値に stub する(vi.stubGlobal は S2b-1 の requestAnimationFrame stub
+  // と同じ既存 pattern。 afterEach で必ず戻す — 他 test への漏洩防止)。
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('pointerdown → pointermove(複数回)→ pointerup で onWidthChange が最終値で 1 回だけ呼ばれる', () => {
+    const onWidthChange = vi.fn()
+    vi.stubGlobal('innerWidth', 1000)
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    // 中間値: onWidthChange はまだ呼ばれない(commit は pointerup のみ)
+    fireEvent.pointerMove(window, { clientX: 450 }) // 左へ 50px → +5vw (45)
+    expect(onWidthChange).not.toHaveBeenCalled()
+
+    fireEvent.pointerMove(window, { clientX: 400 }) // 左へ 100px → +10vw (50)
+    expect(onWidthChange).not.toHaveBeenCalled()
+
+    fireEvent.pointerUp(window, { clientX: 400 })
+    expect(onWidthChange).toHaveBeenCalledTimes(1)
+    expect(onWidthChange).toHaveBeenCalledWith(50)
+  })
+
+  // fix round 1 (⑤): pointerdown 直後に handle 自身へ focus が移ることで、ドラッグ直後に
+  // 矢印キーで微調整できる(Tab で辿り直す必要がない)。
+  it('pointerdown で handle 自身に focus が移る(ドラッグ直後に矢印キー微調整できる)', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    expect(document.activeElement).toBe(handle)
+
+    fireEvent.pointerUp(window, { clientX: 500 })
+  })
+
+  it('ドラッグで 70vw を超えても onWidthChange は 70 にクランプされた値で呼ばれる', () => {
+    const onWidthChange = vi.fn()
+    vi.stubGlobal('innerWidth', 1000)
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    fireEvent.pointerMove(window, { clientX: -200 }) // 左へ 700px → +70vw (110 → clamp)
+    fireEvent.pointerUp(window, { clientX: -200 })
+
+    expect(onWidthChange).toHaveBeenCalledWith(PEEK_WIDTH_MAX_VW)
+  })
+
+  it('右ボタン(button!==0)の pointerdown はドラッグを開始しない', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 2, clientX: 500 })
+    fireEvent.pointerMove(window, { clientX: 300 })
+    fireEvent.pointerUp(window, { clientX: 300 })
+
+    expect(onWidthChange).not.toHaveBeenCalled()
+  })
+
+  // fix round 1 (③): OS ジェスチャ中断等で pointercancel が来た場合。
+  it('pointercancel は中断として扱われ onWidthChange を呼ばない、listener も外れる', () => {
+    const onWidthChange = vi.fn()
+    vi.stubGlobal('innerWidth', 1000)
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    fireEvent.pointerMove(window, { clientX: 400 }) // 委細確定していれば 50 になる量
+    fireEvent.pointerCancel(window)
+
+    expect(onWidthChange).not.toHaveBeenCalled()
+
+    // listener が実際に外れていること(cancel 後の pointerup が二次発火しない)を合わせて確認。
+    fireEvent.pointerUp(window, { clientX: 400 })
+    expect(onWidthChange).not.toHaveBeenCalled()
+  })
+
+  // fix round 1 (③): ドラッグ中に peek が閉じる(unmount)場合、window listener が残留しない
+  // ことを固定する。 残留すると、無関係な後続の pointerup(unmount 後の別操作等)まで
+  // onWidthChange を誤発火させ得る。
+  it('drag 中に unmount しても window listener が外れる(unmount 後の pointerup は無反応)', () => {
+    const onWidthChange = vi.fn()
+    vi.stubGlobal('innerWidth', 1000)
+    const { unmount } = render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    fireEvent.pointerMove(window, { clientX: 400 })
+
+    unmount()
+
+    fireEvent.pointerUp(window, { clientX: 400 })
+    expect(onWidthChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('ExamCardSidePeek UI fix C: 矢印キー — 1 打鍵 = 1 確定', () => {
+  it('ArrowLeft で幅が PEEK_WIDTH_KEYBOARD_STEP_VW だけ増える(確定 = onWidthChange 即時呼出)', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    fireEvent.keyDown(resizeHandle(), { key: 'ArrowLeft' })
+    expect(onWidthChange).toHaveBeenCalledTimes(1)
+    expect(onWidthChange).toHaveBeenCalledWith(40 + PEEK_WIDTH_KEYBOARD_STEP_VW)
+  })
+
+  it('ArrowRight で幅が PEEK_WIDTH_KEYBOARD_STEP_VW だけ減る', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    fireEvent.keyDown(resizeHandle(), { key: 'ArrowRight' })
+    expect(onWidthChange).toHaveBeenCalledTimes(1)
+    expect(onWidthChange).toHaveBeenCalledWith(40 - PEEK_WIDTH_KEYBOARD_STEP_VW)
+  })
+
+  it('境界付近の ArrowLeft は 70 にクランプされる(70 を超えない)', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 68, onWidthChange })} />)
+    fireEvent.keyDown(resizeHandle(), { key: 'ArrowLeft' })
+    expect(onWidthChange).toHaveBeenCalledWith(PEEK_WIDTH_MAX_VW)
+  })
+
+  it('矢印キー以外(Enter 等)は onWidthChange を呼ばない', () => {
+    const onWidthChange = vi.fn()
+    render(<ExamCardSidePeek {...defaultProps({ widthVw: 40, onWidthChange })} />)
+    fireEvent.keyDown(resizeHandle(), { key: 'Enter' })
+    expect(onWidthChange).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// UI fix C fix round 1 (②): setState updater 内で親の setState を呼ばない
+//
+// 実 owner(exam-detail-view.tsx)は widthVw/onWidthChange の owner として実際に state を
+// 持つ別 component。 ここでは同型の最小 owner(ParentOwner)を用意し、
+// React.StrictMode 下でドラッグを行う。 旧実装(setLiveDragWidthVw の updater 内で
+// onWidthChange = 親 setState を呼ぶ)は StrictMode の updater 二重呼出しにより
+// 「Cannot update a component (ParentOwner) while rendering a different component
+// (ExamCardSidePeek)」の console.error を実際に誘発することを事前に確認済み(修正前のコードで
+// 再現 → 修正後のコードで消失、を手元で個別に確認した— 恒久 test 化)。
+// ===========================================================================
+
+function ParentOwner() {
+  const [w, setW] = React.useState(40)
+  return (
+    <div>
+      <span data-testid="peek-owner-width">{w}</span>
+      <ExamCardSidePeek {...defaultProps({ widthVw: w, onWidthChange: setW })} />
+    </div>
+  )
+}
+
+describe('ExamCardSidePeek UI fix C fix round 1 (②): StrictMode ドラッグで setState-in-render 警告が出ない', () => {
+  it('StrictMode 下でドラッグしても console.error が呼ばれない(setState-in-render 警告なし)', () => {
+    const errors: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '))
+    })
+
+    render(
+      <React.StrictMode>
+        <ParentOwner />
+      </React.StrictMode>,
+    )
+    const handle = resizeHandle()
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 })
+    fireEvent.pointerMove(window, { clientX: 450 })
+    fireEvent.pointerUp(window, { clientX: 450 })
+
+    spy.mockRestore()
+
+    const setStateInRenderErrors = errors.filter((e) => e.includes('Cannot update a component'))
+    expect(setStateInRenderErrors).toEqual([])
+    // 実際に幅は反映されている(警告回避のために書込自体を握り潰していないことも確認)。
+    expect(screen.getByTestId('peek-owner-width').textContent).not.toBe('40')
   })
 })
