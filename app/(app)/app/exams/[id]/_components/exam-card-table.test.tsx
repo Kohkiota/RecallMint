@@ -418,11 +418,14 @@ describe('ExamCardTable smoke ⑥ (Edit-2 T3): question column renders InlineTex
 })
 
 // ===========================================================================
-// Edit-3 T1: th/td padding density (py-2 → py-1)
+// Edit-3 T1: th/td padding density (py-2 → py-1 → py-2)
+//
+// row-ux UI fix A-1 review F1: 内側 edit div の padding を 0 にした分、縦方向は td/th 側で
+// 補償する (py-1→py-2)。旧実効縦余白 (編集セルは md+ で 6〜8px) を下回らないための復元。
 // ===========================================================================
 
 describe('Edit-3 T1: th/td padding density', () => {
-  it('th が py-1 クラスを持ち py-2 を持たない', async () => {
+  it('th が py-2 クラスを持ち py-1 を持たない (review F1: 内側 padding 0 化の縦方向補償)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -434,16 +437,16 @@ describe('Edit-3 T1: th/td padding density', () => {
     for (const th of allTh) {
       expect(
         th.className,
-        `th "${th.textContent?.trim()}" は py-1 を持つ`,
-      ).toContain('py-1')
+        `th "${th.textContent?.trim()}" は py-2 を持つ`,
+      ).toContain('py-2')
       expect(
         th.className,
-        `th "${th.textContent?.trim()}" は py-2 を持たない`,
-      ).not.toContain('py-2')
+        `th "${th.textContent?.trim()}" は py-1 を持たない`,
+      ).not.toContain('py-1')
     }
   })
 
-  it('td が py-1 クラスを持ち py-2 を持たない', async () => {
+  it('td が py-2 クラスを持ち py-1 を持たない (review F1: 内側 padding 0 化の縦方向補償)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -455,8 +458,8 @@ describe('Edit-3 T1: th/td padding density', () => {
     const allTd = container.querySelectorAll('tbody td')
     expect(allTd.length).toBeGreaterThan(0)
     for (const td of allTd) {
-      expect(td.className, 'td は py-1 を持つ').toContain('py-1')
-      expect(td.className, 'td は py-2 を持たない').not.toContain('py-2')
+      expect(td.className, 'td は py-2 を持つ').toContain('py-2')
+      expect(td.className, 'td は py-1 を持たない').not.toContain('py-1')
     }
   })
 
@@ -1897,7 +1900,7 @@ describe('S5-2 (d): boundary null 時 — pinning 由来のクラスが th に�
 // select / title が left-pinned → th/td に sticky + left style。
 // title が最右可視 pinned → th/td に border-r。
 // question (非 pinned) → sticky / left / border-r なし。
-// <table> style に --col-select-start=0 / --col-title-start=72(select size=72) が emit される。
+// <table> style に --col-select-start=0 / --col-title-start=52(select size=52) が emit される。
 // boundary null → start 変数 emit なし + sticky class ゼロ (S5-2 (d) の回帰を兼用)。
 // ===========================================================================
 
@@ -1939,7 +1942,7 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(questionTh.className, 'question th に border-r なし').not.toContain('border-r')
   })
 
-  it('<table> style に --col-select-start=0 / --col-title-start=72 が emit される', async () => {
+  it('<table> style に --col-select-start=0 / --col-title-start=52 が emit される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(
@@ -1958,10 +1961,10 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(selectStart, '--col-select-start が emit されている').not.toBe('')
     expect(parseFloat(selectStart), '--col-select-start = 0 (select が先頭 pinned)').toBe(0)
 
-    // --col-title-start: title は select (size=72) の直後 → offset=72
+    // --col-title-start: title は select (size=52) の直後 → offset=52
     const titleStart = tableEl.style.getPropertyValue('--col-title-start')
     expect(titleStart, '--col-title-start が emit されている').not.toBe('')
-    expect(parseFloat(titleStart), '--col-title-start = 72 (select size 分 offset)').toBe(72)
+    expect(parseFloat(titleStart), '--col-title-start = 52 (select size 分 offset)').toBe(52)
   })
 
   it('boundary null → --col-select-start / --col-title-start が emit されず、th に sticky がない', async () => {

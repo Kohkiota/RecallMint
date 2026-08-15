@@ -262,8 +262,13 @@ function TableBody({
                   //    checkbox 直 click は input 側 stopPropagation で二重発火を防ぐ (net no-op 回避)。
                   // S5-3: pinned td = sticky z-[1] + 不透過背景(下を通過するセルの透け防止)。
                   // group-hover: 非 pinned の hover:bg-muted/50(半透明)と同色の不透過合成色(spec D-5)。
+                  // row-ux UI fix A-1 review F1: 内側 edit div の padding を 0 にした分、
+                  // 縦方向は td 側で補償する (py-1→py-2)。旧実効縦余白 (md+ で 6〜8px) を
+                  // 下回らないようにするため — 内側 0 化だけだと編集セルの縦余白が
+                  // 4px まで痩せ、複数行テキスト列 (question/explanation_text/memo) で
+                  // 視認性が下がる (未補償のまま red 化しない class-string test の穴)。
                   className={cn(
-                    'px-1 py-1 border-b border-border align-top',
+                    'px-1 py-2 border-b border-border align-top',
                     cell.column.id === 'select' && 'text-center cursor-pointer',
                     isPinnedCell && 'sticky z-[1] bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]',
                     isLastPinnedCell && 'border-r',
@@ -1151,9 +1156,10 @@ export function ExamCardTable({
                     // border-b を th に付与 (border-separate では tr border-b は効かない)。
                     // select 列のみ text-center align-middle で全選択チェックボックスを上下左右中央に揃える。
                     // S2-3: bg-background で不透明背景を付与 (thead sticky 時に tbody 行が透けないよう)。
+                    // row-ux UI fix A-1 review F1: td と縦の基準を揃える (py-1→py-2、上記 td 側コメント参照)。
                     className={cn(
                       isPinned ? 'sticky z-10' : 'relative',
-                      'px-1 py-1 font-medium text-muted-foreground border-b border-border bg-background',
+                      'px-1 py-2 font-medium text-muted-foreground border-b border-border bg-background',
                       h.column.id === 'select' ? 'text-center align-middle cursor-pointer' : 'text-left',
                       // S5-3: 最右可視 pinned 列にセパレータ (spec D-6)。
                       isLastPinned && 'border-r',

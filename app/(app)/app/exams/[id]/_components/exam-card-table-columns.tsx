@@ -81,27 +81,48 @@ const makeTextFilterFn = (
   (row, _columnId, filterValue) =>
     matchesTextFilter(read(row.original.card), filterValue as TextFilterValue)
 
+// row-ux UI fix A-1: SHARED_BOX_CHROME (inline-edit-shared.ts) の内側 padding (p-2 / md:py-1)
+// を直接書き換えるとカードビュー (inline-card-list.tsx / card-editor-fields.tsx 経由の
+// InlineTextField / InlineOptionCell) にも波及するため触らない。displayClassName は
+// InlineTextField/InlineOptionCell 側で cn()(twMerge)の最後の引数として渡され display div・
+// textarea・input の 3 箇所に効く(inline-edit-shared.ts:15 コメント参照)ので、テーブル列
+// 側だけで内側 padding を打ち消せる。 td 側 (px-1 py-1) へ余白を一本化するため全方向 0 にする
+// — base の p-0 だけでは SHARED_BOX_CHROME の md:py-1 を打ち消せない (twMerge は modifier ごと
+// に独立した衝突判定バケツを持つため)、md:py-0 を明示する。 min-h は不変
+// (display/edit の箱寸法一致を崩さない = 編集開始時の layout shift 防止)。
+const CELL_EDIT_FLUSH_PADDING = 'p-0 md:py-0'
+
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    // row-ux §6: グリップ (size-6=24px) + gap-1 (4px) + チェックボックス実体 (~16px) +
-    // px-1 左右 (8px) = 52px + 余裕 20px (checkbox の hit 補助・pinned 境界の窮屈回避)。
-    // 「カードを開く」常設 button と ⋯ 行メニューをグリップの menu に統合し 2 要素へ
-    // 減らしたため 112→72 に縮めた。
-    size: 72,
+    // row-ux UI fix A-2: グリップ (size-6=24px) + gap-1 (4px) + チェックボックス実体
+    // (review F2: h-4 w-4 で 16px に固定 — ブラウザ既定依存の推定値だったのを保証値にした) +
+    // px-1 左右 (td 側 8px) = 52px。旧 72px は「+20px の余裕」を持たせていたが、OT 判断で
+    // 最小幅まで詰める (72→52)。
+    size: 52,
     header: ({ table }) => (
-      <input
-        type="checkbox"
-        checked={table.getIsAllRowsSelected()}
-        ref={(el) => {
-          if (el) el.indeterminate = table.getIsSomeRowsSelected()
-        }}
-        onChange={table.getToggleAllRowsSelectedHandler()}
-        // B: th 全域が onClick で全選択トグルするため、checkbox 直 click の bubbling を止めて
-        //    二重発火 (onChange + th onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
-        onClick={(e) => e.stopPropagation()}
-        aria-label="全選択"
-      />
+      <div className="flex items-center justify-center gap-1">
+        {/* row-ux UI fix A-3: 行側のグリップ (size-6) と同じ幅の spacer を checkbox の前に
+            置き、全選択 checkbox の x 位置を行側 checkbox (グリップの右隣) と揃える。
+            focusable な要素を足さない (tab 順を増やさない) ため button/input ではなく span、
+            かつ aria-hidden で SR にも読ませない (spacer 自体に意味はない)。 */}
+        <span className="inline-block size-6 shrink-0" aria-hidden="true" />
+        <input
+          type="checkbox"
+          checked={table.getIsAllRowsSelected()}
+          ref={(el) => {
+            if (el) el.indeterminate = table.getIsSomeRowsSelected()
+          }}
+          onChange={table.getToggleAllRowsSelectedHandler()}
+          // B: th 全域が onClick で全選択トグルするため、checkbox 直 click の bubbling を止めて
+          //    二重発火 (onChange + th onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
+          onClick={(e) => e.stopPropagation()}
+          aria-label="全選択"
+          // row-ux UI fix A-2 review F2: 実寸を明示し select 列 52px の算術 (checkbox~16px 分) を
+          // 「仮定」から「保証」にする (既存前例: exam-card-table-options-edit-cell.tsx の h-4 w-4)。
+          className="h-4 w-4"
+        />
+      </div>
     ),
     // row-ux §2 / §6: select 列 = 二役グリップ + checkbox の 2 要素。「カードを開く」常設
     // button と ⋯ 行メニューはグリップの menu に統合済 (要素数を減らすのが本 sprint の主眼)。
@@ -135,7 +156,8 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             onClick={(e) => e.stopPropagation()}
             aria-label={`行選択: ${row.original.card.title}`}
             // row-ux §6: 基底 50% → 行 hover / 自 focus で通常表示。選択済みは常時通常表示。
-            className="opacity-50 group-hover:opacity-100 focus-visible:opacity-100 checked:opacity-100"
+            // row-ux UI fix A-2 review F2: h-4 w-4 で実寸を明示 (header checkbox と同理由)。
+            className="h-4 w-4 opacity-50 group-hover:opacity-100 focus-visible:opacity-100 checked:opacity-100"
           />
         </div>
       )
@@ -167,6 +189,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
           field="title"
           initialValue={card.title}
           ariaLabel="タイトル 編集"
+          displayClassName={CELL_EDIT_FLUSH_PADDING}
         />
       )
     },
@@ -196,6 +219,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
           field="question_label"
           initialValue={row.original.card.question_label ?? null}
           ariaLabel="番号 編集"
+          displayClassName={CELL_EDIT_FLUSH_PADDING}
         />
       )
     },
@@ -231,7 +255,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             initialValue={card.question_text}
             ariaLabel="問題文 編集"
             multiline
-            displayClassName="text-sm md:min-h-6 md:py-0.5"
+            displayClassName={`text-sm md:min-h-6 ${CELL_EDIT_FLUSH_PADDING}`}
           />
           <CardImageGallery
             images={card.images}
@@ -327,7 +351,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             initialValue={card.explanation_text ?? null}
             multiline
             ariaLabel="解説 編集"
-            displayClassName="text-sm md:min-h-6 md:py-0.5"
+            displayClassName={`text-sm md:min-h-6 ${CELL_EDIT_FLUSH_PADDING}`}
           />
           <CardImageGallery
             images={card.images}
@@ -362,7 +386,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             initialValue={card.memo ?? null}
             multiline
             ariaLabel="メモ 編集"
-            displayClassName="text-sm md:min-h-6 md:py-0.5"
+            displayClassName={`text-sm md:min-h-6 ${CELL_EDIT_FLUSH_PADDING}`}
           />
           <CardImageGallery
             images={card.images}

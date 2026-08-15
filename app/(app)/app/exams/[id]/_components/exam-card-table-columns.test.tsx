@@ -251,7 +251,7 @@ describe('T3: column sizing', () => {
 
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
-      select: 72, // row-ux §6: グリップ(24px)+ gap(4px)+ checkbox(16px)+ px-1(8px)= 52px + 余裕 20px。「カードを開く」button と ⋯ 行メニューをグリップの menu に統合し 2 要素へ減らしたため 112→72
+      select: 52, // row-ux UI fix A-2: グリップ(24px)+ gap(4px)+ checkbox(16px)+ px-1(td 側 8px)= 52px。最小幅まで詰めた(旧 72 は +20px の余裕込み)
       title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
       question_label: 100,
       question: 320,
@@ -463,13 +463,89 @@ describe('Edit-3 T2: question / explanation_text / memo の display div に md:m
     expect(classes).not.toContain('md:min-h-8')
   })
 
-  it('title display div には md:min-h-6 が付かない (displayClassName を渡さない列の回帰)', () => {
+  it('title display div には md:min-h-6 が付かない (対象外列の回帰)', () => {
     renderCell('title', makeRow({ title: 'タイトル' }), META)
     const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
     const classes = displayDiv.className.split(' ')
-    // title に displayClassName を渡さないので md:min-h-8 が残る
+    // row-ux UI fix A-1: title は CELL_EDIT_FLUSH_PADDING (p-0 md:py-0) を displayClassName
+    // として受け取るが、min-h グループには触れないため md:min-h-8 (既定) が残る。
     expect(classes).not.toContain('md:min-h-6')
     expect(classes).toContain('md:min-h-8')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// row-ux UI fix A-1: 編集セル (InlineTextField) の内側 display div padding を 0 にし、
+// td 側 (px-1 py-1) へ余白を一本化する。SHARED_BOX_CHROME の p-2 / md:py-1 が displayClassName
+// (CELL_EDIT_FLUSH_PADDING = 'p-0 md:py-0') で打ち消されていることを class 文字列レベルで pin する
+// (jsdom は実レイアウトを計算できないため)。5 列 (title/question_label/question/
+// explanation_text/memo) すべてで同じ実効 padding (0) になることを個別に検証する。
+// ---------------------------------------------------------------------------
+
+describe('row-ux UI fix A-1: 編集セルの内側 padding が 0 (td 側へ一本化)', () => {
+  it('title display div に p-0 / md:py-0 が付き、p-2 / md:py-1 が残らない', () => {
+    renderCell('title', makeRow({ title: 'タイトル' }), META)
+    const displayDiv = screen.getByRole('button', { name: 'タイトル 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes, 'title: p-0 を持つ').toContain('p-0')
+    expect(classes, 'title: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'title: p-2 が残っていない').not.toContain('p-2')
+    expect(classes, 'title: md:py-1 が残っていない').not.toContain('md:py-1')
+  })
+
+  it('question_label display div に p-0 / md:py-0 が付き、p-2 / md:py-1 が残らない', () => {
+    renderCell('question_label', makeRow({ question_label: '0001' }), META)
+    const displayDiv = screen.getByRole('button', { name: '番号 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes, 'question_label: p-0 を持つ').toContain('p-0')
+    expect(classes, 'question_label: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'question_label: p-2 が残っていない').not.toContain('p-2')
+    expect(classes, 'question_label: md:py-1 が残っていない').not.toContain('md:py-1')
+  })
+
+  it('question display div に p-0 / md:py-0 が付き、p-2 / md:py-1 / md:py-0.5 が残らない', () => {
+    renderCell('question', makeRow({ question_text: '問題文' }), META)
+    const displayDiv = screen.getByRole('button', { name: '問題文 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes, 'question: p-0 を持つ').toContain('p-0')
+    expect(classes, 'question: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'question: p-2 が残っていない').not.toContain('p-2')
+    expect(classes, 'question: md:py-1 が残っていない').not.toContain('md:py-1')
+    expect(classes, 'question: md:py-0.5 が残っていない (旧値)').not.toContain('md:py-0.5')
+  })
+
+  it('explanation_text display div に p-0 / md:py-0 が付き、p-2 / md:py-1 / md:py-0.5 が残らない', () => {
+    renderCell('explanation_text', makeRow({ explanation_text: '解説' }), META)
+    const displayDiv = screen.getByRole('button', { name: '解説 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes, 'explanation_text: p-0 を持つ').toContain('p-0')
+    expect(classes, 'explanation_text: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'explanation_text: p-2 が残っていない').not.toContain('p-2')
+    expect(classes, 'explanation_text: md:py-1 が残っていない').not.toContain('md:py-1')
+    expect(classes, 'explanation_text: md:py-0.5 が残っていない (旧値)').not.toContain('md:py-0.5')
+  })
+
+  it('memo display div に p-0 / md:py-0 が付き、p-2 / md:py-1 / md:py-0.5 が残らない', () => {
+    renderCell('memo', makeRow({ memo: 'メモ' }), META)
+    const displayDiv = screen.getByRole('button', { name: 'メモ 編集' })
+    const classes = displayDiv.className.split(' ')
+    expect(classes, 'memo: p-0 を持つ').toContain('p-0')
+    expect(classes, 'memo: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'memo: p-2 が残っていない').not.toContain('p-2')
+    expect(classes, 'memo: md:py-1 が残っていない').not.toContain('md:py-1')
+    expect(classes, 'memo: md:py-0.5 が残っていない (旧値)').not.toContain('md:py-0.5')
+  })
+
+  it('edit mode (textarea) にも同じ padding 上書きが効く (display/edit の箱寸法一致は崩さない)', () => {
+    renderCell('title', makeRow({ title: 'タイトル' }), META)
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル 編集' }))
+    const input = screen.getByRole('textbox', { name: 'タイトル 編集' })
+    const classes = input.className.split(' ')
+    expect(classes, 'edit input: p-0 を持つ').toContain('p-0')
+    expect(classes, 'edit input: md:py-0 を持つ').toContain('md:py-0')
+    expect(classes, 'edit input: p-2 が残っていない').not.toContain('p-2')
+    // 箱寸法 (min-h) は不変 — SHARED_BOX_CHROME の min-h-11 / md:min-h-8 が残る。
+    expect(classes, 'edit input: min-h-11 は不変').toContain('min-h-11')
   })
 })
 
@@ -1016,6 +1092,94 @@ describe('Column: select — 二役グリップ + checkbox の 2 要素', () => 
       true,
     )
     expect(gripClasses).toContain('group-hover:text-muted-foreground')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// row-ux UI fix A-3: select 列 header (全選択 checkbox) を行側 checkbox と同じ x 位置に揃える。
+// 行側は [グリップ(size-6) → gap-1 → checkbox] の順で並ぶため、header 側も
+// [spacer(size-6) → gap-1 → checkbox] にして x を一致させる。spacer は非 focusable + aria-hidden。
+// ---------------------------------------------------------------------------
+
+/** select 列の header renderer を fake table context で render するヘルパー。 */
+function renderSelectHeader(): HTMLElement {
+  const col = examCardTableColumns.find((c) => c.id === 'select')
+  if (!col) throw new Error('Column "select" not found')
+  if (!col.header) throw new Error('Column "select" has no header renderer')
+
+  const headerFn = col.header as unknown as (ctx: {
+    table: {
+      getIsAllRowsSelected: () => boolean
+      getIsSomeRowsSelected: () => boolean
+      getToggleAllRowsSelectedHandler: () => () => void
+    }
+  }) => React.ReactNode
+
+  const fakeTable = {
+    getIsAllRowsSelected: () => false,
+    getIsSomeRowsSelected: () => false,
+    getToggleAllRowsSelectedHandler: () => () => {},
+  }
+
+  function Wrapper() {
+    return <div data-testid="header-wrapper">{headerFn({ table: fakeTable })}</div>
+  }
+
+  const { container } = render(<Wrapper />)
+  return container.querySelector('[data-testid="header-wrapper"]') as HTMLElement
+}
+
+describe('row-ux UI fix A-3: select header の checkbox が行側 checkbox と同じ x 位置に揃う', () => {
+  it('spacer(SPAN) → checkbox(INPUT) の順で並ぶ(行側の grip → checkbox と同型)', () => {
+    const wrapper = renderSelectHeader()
+    const checkbox = screen.getByRole('checkbox', { name: '全選択' })
+    const layout = wrapper.querySelector('div') as HTMLElement
+    expect(Array.from(layout.children).map((c) => c.tagName)).toEqual(['SPAN', 'INPUT'])
+    expect(layout.children[1]).toBe(checkbox)
+    expect(layout.className, 'layout wrapper は flex + gap').toContain('flex')
+    expect(layout.className).toMatch(/gap-\d/)
+  })
+
+  it('spacer は aria-hidden="true" かつ tabindex を持たない (SR に読ませず tab 順を増やさない)', () => {
+    const wrapper = renderSelectHeader()
+    const layout = wrapper.querySelector('div') as HTMLElement
+    const spacer = layout.children[0] as HTMLElement
+    expect(spacer.tagName, 'spacer は button/input/a のような focusable 要素ではない').toBe('SPAN')
+    expect(spacer.getAttribute('aria-hidden')).toBe('true')
+    expect(spacer.hasAttribute('tabindex'), 'tabindex 未指定 = 既定で非 focusable').toBe(false)
+  })
+
+  it('spacer の幅クラス (size-6) が行側グリップ (size-6) と一致する', () => {
+    const wrapper = renderSelectHeader()
+    const layout = wrapper.querySelector('div') as HTMLElement
+    const spacer = layout.children[0] as HTMLElement
+    expect(spacer.className.split(' '), 'spacer は size-6 を持つ (グリップと同幅で x が揃う)').toContain(
+      'size-6',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// row-ux UI fix A-2 review F2: select 列 52px の算術 (grip24 + gap4 + checkbox16 + td-px8) の
+// 「checkbox16」がブラウザ既定依存の推定値のままだったため、既存前例
+// (exam-card-table-options-edit-cell.tsx の h-4 w-4)に倣い実寸を明示して保証にする。
+// ---------------------------------------------------------------------------
+
+describe('row-ux UI fix A-2 review F2: checkbox 実寸固定 (h-4 w-4)', () => {
+  it('header の全選択 checkbox が h-4 / w-4 を持つ', () => {
+    renderSelectHeader()
+    const checkbox = screen.getByRole('checkbox', { name: '全選択' })
+    const classes = checkbox.className.split(' ')
+    expect(classes, 'header checkbox: h-4 を持つ').toContain('h-4')
+    expect(classes, 'header checkbox: w-4 を持つ').toContain('w-4')
+  })
+
+  it('行の checkbox が h-4 / w-4 を持つ', () => {
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    const checkbox = screen.getByRole('checkbox')
+    const classes = checkbox.className.split(' ')
+    expect(classes, '行 checkbox: h-4 を持つ').toContain('h-4')
+    expect(classes, '行 checkbox: w-4 を持つ').toContain('w-4')
   })
 })
 
