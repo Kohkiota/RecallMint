@@ -19,6 +19,7 @@ import { tagSortKey } from '../_lib/tag-sort-key'
 import { compareByQuestionLabel } from '@/lib/cards/domain/card-order'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
 import { ExamCardRowMenu, type PullIntoDispatch } from './exam-card-row-menu'
+import { RowDragHandle } from './exam-card-row-dnd'
 import { CardImageGallery } from './card-image-gallery'
 import {
   matchesTagFilter,
@@ -90,6 +91,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // 行メニュー trigger (size-6=24px) + px-1 左右 合計 (8px) = 80px コンテンツ幅。
     // 常時表示化(iPad 横向き等 hover 不能環境でも不可視にならない)に伴い title 列から
     // 本 button を移設し、Grid-3 §7.2 で行メニューを追加したため余白込みで 88px。
+    // row-dnd task-3: 掴み手 (RowDragHandle) はここに配線するが provider 未配線
+    // (task-4 まで) は null 描画で幅を持たない。 handle が実際に見える幅拡張
+    // (88→112) は provider を配線する task-4 の責務(コントローラ裁定: 2026-08-15)。
     size: 88,
     header: ({ table }) => (
       <input
@@ -115,6 +119,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       const openCard = meta?.openCard
       return (
         <div className="flex items-center justify-center gap-1">
+          {/* row-dnd task-3: 行 D&D の掴み手。provider (RowDndContext) 未配線
+              (task-4 まで) は null 描画のため、この時点では視覚変化なし。 */}
+          <RowDragHandle cardTitle={card.title} />
           <input
             type="checkbox"
             checked={row.getIsSelected()}
