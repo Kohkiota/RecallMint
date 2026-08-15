@@ -97,9 +97,11 @@ feat/fix の canonical review は `superpowers:requesting-code-review` の**デ�
 
 `pr-review-toolkit` 専門エージェント配線は**撤去した**(`.claude/settings.json` の `enabledPlugins` から無効化済)。撤去理由: 6 体中 `code-simplifier` が指摘専用でなく Edit/Write で**能動的にコードを書き換える実装者**であり read-only レビュー枠と両立しない、残り 5 体も本体に書込抑止が無く厳格 prompt 依存(`comment-analyzer` のみ本体 read-only)で「想定=指摘のみ / 実体=書込可能」のズレを持つため。reviewer の多観点強化は **Codex 独立レビュー**(後述)で担保する。
 
-### Codex 協調レビュー(canonical 後 / commit 前)
+### Codex 協調レビュー(canonical と並列 / commit 前)
 
-canonical review(native reviewer)pass 後・`[reviewed]` commit 前に、Codex を独立レビュアーとして実行する: `scripts/ai/codex-review.sh <topic>`。reviewer の多観点強化はこの Codex で担保(pr-review-toolkit の代替)。
+`[reviewed]` commit 前に、Codex を独立レビュアーとして実行する: `scripts/ai/codex-review.sh <topic>`。reviewer の多観点強化はこの Codex で担保(pr-review-toolkit の代替)。
+
+**canonical と Codex は並列起動してよい**(2026-08-15 OT 裁定。旧文面は「canonical pass 後」の逐次だった)。規律の目的は **anchor 防止 = Codex に canonical の結論を見せないこと**であり、並列はこれを逐次より強く満たす。逐次に対する唯一のコストは「canonical が Critical で落ちる場合に Codex 実行が無駄になる」点で、これは受容する。**commit 前に両者の pass を揃える収束条件は不変**。
 
 - **対象** = HEAD に対する未 commit 変更一式(staged+unstaged+untracked。`codex exec review --uncommitted` がネイティブに拾う)。対象範囲は feat/fix の非自明変更のみ — chore/docs/ロジック不変 refactor は canonical 同様 skip 可、test-only は「必須経路」の増減分岐に準拠(増の簡易 review の担い手として Codex を使ってよい)。
 - **Codex = レビュー専用(指摘のみ)。修正主体は CC 本体**。Codex に canonical の結論を見せない(anchor 防止 — 独立に diff を見させる)。

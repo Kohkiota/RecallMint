@@ -3,7 +3,7 @@
 - spec: `docs/superpowers/specs/2026-08-14-grid-3-card-move-design.md`(確定・凍結)
 - plan: `docs/superpowers/plans/2026-08-14-grid-3-card-move.md`(r2 = Codex cross-check 反映済)
 - commit range: `117f728..cceabb7`(docs 3 / feat 8)/ 67 file・+11,519 −84
-- 状態: **実装完了・未 push**。次 = OT 報告確認 → stg migration 0038 → push / deploy → smoke。
+- 状態: **クローズ済み**(2026-08-15)。stg migration 0038 適用 → push → stg smoke **12/12 PASS**(§10)→ **prod 反映済み**(OT)→ `main` へ ff-merge。
 - 実装方式: `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 review)
 
 ## 1. 完了 gate(全 exit 0)
@@ -69,7 +69,7 @@ review は全 task で canonical(superpowers:requesting-code-review 既定経路
 ### 5.3 実行機構(SDD skill と CLAUDE.md の衝突)
 
 - **implementer は commit しない**(working tree で返す)— CLAUDE.md の「review pass → commit の一方向」が SDD skill の手順に優先。controller が review pass 後に `[reviewed]` で commit した。
-- **canonical と Codex を並列起動した** — CLAUDE.md の字面は「canonical pass 後に Codex」の逐次。規律の目的(anchor 防止・独立性)は並列で更に強く満たされ、コストは canonical が落ちる場合の Codex 実行が無駄になる点のみ。**OT 裁定を仰ぐ**(次 sprint で逐次に戻すか、規律の文面を並列許容に更新するか)。
+- **canonical と Codex を並列起動した** — 当時の CLAUDE.md の字面は「canonical pass 後に Codex」の逐次だった。規律の目的(anchor 防止・独立性)は並列で更に強く満たされ、コストは canonical が落ちる場合の Codex 実行が無駄になる点のみ。→ **2026-08-15 OT 裁定で「並列許容」が確定し、CLAUDE.md §Codex 協調レビューの文面を更新済み**(commit `5d045d4`)。
 
 ## 6. 教訓(次に同種の作業をする人へ)
 
@@ -87,13 +87,14 @@ review は全 task で canonical(superpowers:requesting-code-review 既定経路
 4. **同期 ref ガードを最初から入れる**(上記教訓 1)。drag 終了イベントの二重発火は click より起きやすい。
 5. **残余リスク 2 件**(spec §11)は未解決のまま: ① 移動先 exam の並走削除時の mirror 乖離 ② patch 10,000 件超。claude.ai todo に起票済み。
 
-## 8. 次の手順(OT)
+## 8. 反映の記録(完了)
 
-1. 本報告の確認。
-2. stg へ migration 0038 適用(`DATABASE_URL_ADMIN='...' pnpm db:migrate` — migrate 先行 → deploy、CHECK 拡張のみでデータ前提なし)。
-3. push → stg deploy。
-4. CC smoke(plan の Deploy 節 ①〜⑫)。**⑪ の 1000 枚級実測は `scripts/seed-perf-exam.ts` を stg で実行して perf exam を作成してから**(全データ削除済みのため既存 seed なし)。
-5. prod 反映判断は smoke 結果を見て OT。
+1. stg へ migration 0038 適用(migrate 先行 → deploy)→ push → stg deploy。
+2. CC smoke 12 項目を実施 → **全 PASS**(§10)。⑪ の 1000 枚級は OT が `scripts/seed-perf-exam.ts --cards=1200 --with-answers` を stg で実行して素材を用意。⑫-3 の offline 切替は OT 実機(Playwright MCP に offline API が無いため)。
+3. **prod 反映済み**(OT。migration → deploy の順)。
+4. `main` へ ff-merge(merge commit なし)。
+
+**次 sprint = 行 DnD**(§7 の handoff を参照)。
 
 ---
 
