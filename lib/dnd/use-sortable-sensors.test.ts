@@ -12,6 +12,10 @@
 // - Keyboard = KeyboardSensor は coordinateGetter 設定あり
 // これだけ pin しておけば「sensor 配線を間違えて PointerSensor に戻した」 「Touch から
 // delay を落とした」 等の regression は確実に検出できる。
+//
+// Row-UX task-1 追加分: SortableSensorOptions (mouseActivationConstraint / keyboardCodes) の
+// 透過と、 options 未指定 / 同一参照時の sensors 配列 identity 安定性 (呼出側の memo が
+// 無効化されない不変条件) を pin する。
 
 import { describe, it, expect } from 'vitest'
 import { renderHook } from '@testing-library/react'
@@ -22,7 +26,7 @@ import {
 } from '@dnd-kit/core'
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 
-import { useSortableSensors } from './use-sortable-sensors'
+import { useSortableSensors, type SortableSensorOptions } from './use-sortable-sensors'
 
 describe('useSortableSensors', () => {
   it('3 件の sensor descriptor を Mouse / Touch / Keyboard の順で返す', () => {
@@ -58,5 +62,58 @@ describe('useSortableSensors', () => {
     expect(
       (keyboard.options as { coordinateGetter?: unknown }).coordinateGetter,
     ).toBe(sortableKeyboardCoordinates)
+  })
+
+  it('mouseActivationConstraint を渡すと MouseSensor の options に透過する', () => {
+    const { result } = renderHook(() =>
+      useSortableSensors({ mouseActivationConstraint: { distance: 4 } }),
+    )
+    const mouse = result.current[0]
+    expect(
+      (mouse.options as { activationConstraint?: unknown }).activationConstraint,
+    ).toEqual({ distance: 4 })
+  })
+
+  it('keyboardCodes を渡すと KeyboardSensor の options に coordinateGetter と共存で透過する', () => {
+    const customCodes = { start: ['Space'], cancel: ['Escape'], end: ['Space'] }
+    const { result } = renderHook(() => useSortableSensors({ keyboardCodes: customCodes }))
+    const keyboard = result.current[2]
+    expect(
+      (keyboard.options as { keyboardCodes?: unknown }).keyboardCodes,
+    ).toBe(customCodes)
+    expect(
+      (keyboard.options as { coordinateGetter?: unknown }).coordinateGetter,
+    ).toBe(sortableKeyboardCoordinates)
+  })
+
+  it('options 未指定時は mouseActivationConstraint も keyboardCodes も透過しない (undefined)', () => {
+    const { result } = renderHook(() => useSortableSensors())
+    const mouse = result.current[0]
+    const keyboard = result.current[2]
+    expect(
+      (mouse.options as { activationConstraint?: unknown }).activationConstraint,
+    ).toBeUndefined()
+    expect((keyboard.options as { keyboardCodes?: unknown }).keyboardCodes).toBeUndefined()
+  })
+
+  it('options 未指定なら rerender 後も sensors 配列の identity が安定する', () => {
+    const { result, rerender } = renderHook(() => useSortableSensors())
+    const first = result.current
+    rerender()
+    expect(result.current).toBe(first)
+  })
+
+  it('同一 options 参照を渡し続ける限り rerender 後も sensors 配列の identity が安定する', () => {
+    const stableOptions: SortableSensorOptions = {
+      mouseActivationConstraint: { distance: 4 },
+      keyboardCodes: { start: ['Space'], cancel: ['Escape'], end: ['Space'] },
+    }
+    const { result, rerender } = renderHook(
+      (options: SortableSensorOptions) => useSortableSensors(options),
+      { initialProps: stableOptions },
+    )
+    const first = result.current
+    rerender(stableOptions)
+    expect(result.current).toBe(first)
   })
 })
