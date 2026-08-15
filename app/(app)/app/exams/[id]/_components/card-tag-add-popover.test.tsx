@@ -5,7 +5,15 @@
 // Tag-4c-1 Task 3: stage 拡張 (editCategory / editOption) + kebab + Esc 階層テスト追加。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import {
+  act,
+  render,
+  screen,
+  cleanup,
+  createEvent,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react'
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
@@ -2393,6 +2401,85 @@ describe('CardTagAddPopover — a11y 配線 pin (row-dnd sprint task-2)', () => 
     expect(
       screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
     ).toBeInTheDocument()
+  })
+
+  // 最終 review F2: screenReaderInstructions (上記 2 test) は pin 済だが、 実 drag 中に
+  // 読み上げられる `announcements` (buildJaAnnouncements / stage1Announcements /
+  // stage2Announcements) は DndContext へ配線を落として (instructions だけ残す) も
+  // 検出できなかった。 実 Space keydown で掴み、 dnd-kit の LiveRegion (role=status
+  // aria-live=assertive) の text が日本語 + 表示名になっていることを stage1 / stage2
+  // それぞれで見る (row DnD `exam-card-table-dnd.test.tsx` ⑭ の先例に倣う)。 dnd-kit 既定
+  // (announcements 未配線) は英語 + 生 id になる。
+  it('stage1: handle を Space で掴むと日本語 announcements (stage1Announcements) の読み上げが live region に出る (生 id は出ない)', async () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderCategories={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    const handle = screen.getByRole('button', { name: 'カテゴリを並べ替え: 分野' })
+
+    const space = createEvent.keyDown(handle, { code: 'Space', key: ' ' })
+    fireEvent(handle, space)
+
+    const liveRegion = await waitFor(() => {
+      const el = screen
+        .queryAllByRole('status')
+        .find((e) => e.getAttribute('aria-live') === 'assertive')
+      if (!el) throw new Error('dnd-kit LiveRegion not found yet')
+      return el
+    })
+    // 掴んだ直後は onDragStart(「分野 をつかみました…」)→ onDragOver(「分野 を N/M 番目
+    // に移動中です」)と連続して読み上げが差し替わる。 どちらでも成立する形
+    // (「分野 を」 始まり + 生 id 不在) で assert する。
+    await waitFor(() => expect(liveRegion.textContent).toMatch(/^分野 を/))
+    expect(liveRegion.textContent).not.toContain('cat-1')
+
+    // 掴んだ KeyboardSensor は document へ keydown listener を張る (setTimeout 経由) ため、
+    // 掴んだまま抜けると次の test の keydown まで拾う。 unmount 前に Escape で取り消す。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' })
+  })
+
+  it('stage2: handle を Space で掴むと日本語 announcements (stage2Announcements) の読み上げが live region に出る (生 id は出ない)', async () => {
+    render(
+      <CardTagAddPopover
+        categories={CATEGORIES}
+        options={OPTIONS}
+        allAssignedOptionIds={[]}
+        onToggle={vi.fn()}
+        tagEditCallbacks={mockTagEditCallbacks}
+        onReorderOptions={vi.fn(async () => undefined)}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '分野' }))
+    const handle = screen.getByRole('button', { name: 'optionを並べ替え: 循環器' })
+
+    const space = createEvent.keyDown(handle, { code: 'Space', key: ' ' })
+    fireEvent(handle, space)
+
+    const liveRegion = await waitFor(() => {
+      const el = screen
+        .queryAllByRole('status')
+        .find((e) => e.getAttribute('aria-live') === 'assertive')
+      if (!el) throw new Error('dnd-kit LiveRegion not found yet')
+      return el
+    })
+    await waitFor(() => expect(liveRegion.textContent).toMatch(/^循環器 を/))
+    expect(liveRegion.textContent).not.toContain('o1')
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' })
   })
 
   it('stage1 → stage2 遷移後も文言は 1 件のまま (stage1 が残留 mount しない裏取り)', () => {

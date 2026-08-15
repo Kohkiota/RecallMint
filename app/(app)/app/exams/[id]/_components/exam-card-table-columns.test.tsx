@@ -1004,6 +1004,18 @@ describe('Column: select — 二役グリップ + checkbox の 2 要素', () => 
     expect(checkbox.className).toContain('group-hover:opacity-100')
     expect(checkbox.className).toContain('focus-visible:opacity-100')
     expect(checkbox.className).toContain('checked:opacity-100')
+
+    // ⑧-b(最終 review F3): グリップ側は checkbox と非対称に未 pin だった
+    // (exam-card-row-menu.tsx の class 文字列全体を `text-foreground` に置換しても
+    // green のまま)。 濃度の数値そのもの(現状 `/50`)は spec §6 が 40-60 の調整域を
+    // 許すため厳密固定せず、「基底が muted 系であること」+「group-hover で(opacity 接尾辞
+    // のない = 通常濃度の)muted-foreground に強調されること」の 2 点で pin する。
+    const grip = screen.getByRole('button', { name: gripName })
+    const gripClasses = grip.className.split(/\s+/)
+    expect(gripClasses.some((c) => /^text-muted-foreground\/(4\d|5\d|60)$/.test(c))).toBe(
+      true,
+    )
+    expect(gripClasses).toContain('group-hover:text-muted-foreground')
   })
 })
 

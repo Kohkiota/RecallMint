@@ -15,6 +15,8 @@ import {
   render,
   screen,
   cleanup,
+  act,
+  createEvent,
   fireEvent,
   waitFor,
 } from '@testing-library/react'
@@ -752,6 +754,54 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
       expect(
         screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
       ).toBeInTheDocument()
+    })
+
+    // 最終 review F2: screenReaderInstructions (上記 test) は pin 済だが、 実 drag 中に
+    // 読み上げられる `announcements` (buildJaAnnouncements) は DndContext へ配線を落として
+    // (instructions だけ残す) も検出できなかった。 実 Space keydown で掴み、 dnd-kit の
+    // LiveRegion (role=status aria-live=assertive) の text が日本語 + 表示名になっている
+    // ことを見る (row DnD `exam-card-table-dnd.test.tsx` ⑭ の先例に倣う)。 dnd-kit 既定
+    // (announcements 未配線) は英語 + 生 id ("Picked up draggable item cat-a.") になる。
+    it('DndContext mount 時、 handle を Space で掴むと日本語 announcements (buildJaAnnouncements) の読み上げが live region に出る (生 id は出ない)', async () => {
+      await getClientDb().tag_categories.bulkPut([
+        makeCategory('cat-a', 'A', '2026-06-01T00:00:00.000Z'),
+        makeCategory('cat-b', 'B', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(
+        <CategoryList
+          userId={USER_ID}
+          activeCategoryId={null}
+          onSelectCategory={vi.fn()}
+        />,
+      )
+      const handleA = await screen.findByRole('button', {
+        name: 'カテゴリを並べ替え: A',
+      })
+
+      const space = createEvent.keyDown(handleA, { code: 'Space', key: ' ' })
+      fireEvent(handleA, space)
+
+      const liveRegion = await waitFor(() => {
+        const el = screen
+          .queryAllByRole('status')
+          .find((e) => e.getAttribute('aria-live') === 'assertive')
+        if (!el) throw new Error('dnd-kit LiveRegion not found yet')
+        return el
+      })
+      // 掴んだ直後は onDragStart(「A をつかみました…」)→ onDragOver(「A を 1/2 番目 に
+      // 移動中です」)と連続して読み上げが差し替わる (exam-card-table-dnd.test.tsx ⑭ と
+      // 同じ理由)。 どちらでも成立する形 (「A を」 始まり + 生 id 不在) で assert する。
+      await waitFor(() => expect(liveRegion.textContent).toMatch(/^A を/))
+      expect(liveRegion.textContent).not.toContain('cat-a')
+
+      // 掴んだ KeyboardSensor は document へ keydown listener を張る (setTimeout 経由) ため、
+      // 掴んだまま抜けると次の test の keydown まで拾う。 unmount 前に Escape で取り消す
+      // (exam-card-table-dnd.test.tsx ⑭ と同じ後始末)。
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' })
     })
   })
 

@@ -20,6 +20,7 @@ import {
   render,
   screen,
   cleanup,
+  createEvent,
   fireEvent,
   waitFor,
 } from '@testing-library/react'
@@ -614,6 +615,49 @@ describe('OptionList — Tag-4c-2c T3 D&D 配線', () => {
       expect(
         screen.getByText(SORTABLE_SR_INSTRUCTIONS.draggable),
       ).toBeInTheDocument()
+    })
+
+    // 最終 review F2: screenReaderInstructions (上記 test) は pin 済だが、 実 drag 中に
+    // 読み上げられる `announcements` (buildJaAnnouncements) は DndContext へ配線を落として
+    // (instructions だけ残す) も検出できなかった。 実 Space keydown で掴み、 dnd-kit の
+    // LiveRegion (role=status aria-live=assertive) の text が日本語 + 表示名になっている
+    // ことを見る (row DnD `exam-card-table-dnd.test.tsx` ⑭ の先例に倣う)。 dnd-kit 既定
+    // (announcements 未配線) は英語 + 生 id ("Draggable item opt-1 was moved over...") になる。
+    it('DndContext mount 時、 handle を Space で掴むと日本語 announcements (buildJaAnnouncements) の読み上げが live region に出る (生 id は出ない)', async () => {
+      const db = getClientDb()
+      await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+      await db.tag_options.bulkPut([
+        makeOption('opt-1', 'cat-a', '高', '2026-06-01T00:00:00.000Z'),
+        makeOption('opt-2', 'cat-a', '低', '2026-06-02T00:00:00.000Z'),
+      ])
+
+      render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
+      const handle1 = await screen.findByRole('button', {
+        name: 'option を並べ替え: 高',
+      })
+
+      const space = createEvent.keyDown(handle1, { code: 'Space', key: ' ' })
+      fireEvent(handle1, space)
+
+      const liveRegion = await waitFor(() => {
+        const el = screen
+          .queryAllByRole('status')
+          .find((e) => e.getAttribute('aria-live') === 'assertive')
+        if (!el) throw new Error('dnd-kit LiveRegion not found yet')
+        return el
+      })
+      // 掴んだ直後は onDragStart(「高 をつかみました…」)→ onDragOver(「高 を 1/2 番目 に
+      // 移動中です」)と連続して読み上げが差し替わる。 どちらでも成立する形
+      // (「高 を」 始まり + 生 id 不在) で assert する。
+      await waitFor(() => expect(liveRegion.textContent).toMatch(/^高 を/))
+      expect(liveRegion.textContent).not.toContain('opt-1')
+
+      // 掴んだ KeyboardSensor は document へ keydown listener を張る (setTimeout 経由) ため、
+      // 掴んだまま抜けると次の test の keydown まで拾う。 unmount 前に Escape で取り消す。
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' })
     })
   })
 

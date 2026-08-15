@@ -9,8 +9,10 @@
 //   - ② dataReady:false → disabled は、実 liveData 未解決状態でしか意味を持たないため
 //     table 統合 (exam-card-table.test.tsx「(a) liveData 解決前」) に委譲し、ここでは
 //     単体 test を持たない (props 直渡しの enabled/disabled 分岐は⑤で確認できる範囲)。
-//   - ④ movePending → disabled は plan の OT 修正2 によりこの task では test化しない
-//     (`disabled` 式の実装自体は不触ではなく実施済 — 3 項目目の OR 項として存在する)。
+//   - ④ movePending → disabled は plan の OT 修正 2(`docs/superpowers/plans/
+//     2026-08-15-row-ux.md:88`)が要求する項目(下記 describe で pin 済)。旧 comment は
+//     これを「test化しない」と誤って記していたが、OT 修正 2 は movePending を gate に
+//     足した裁定であって test を免除したものではない(2026-08-15 最終 review F1 で訂正)。
 //
 // ① の scope 注記 (実装時の発見・task-5-report.md 詳述): kickoff 決定 8 の契約は「呼出側
 // (exam-card-table.tsx) が data (基準順全件) から baseOrders/count を算出し、
@@ -107,6 +109,24 @@ describe('③ positionLocked: disabled + 理由表示', () => {
     const button = screen.getByRole('button', { name: '＋ カードを追加' })
     expect(button).not.toHaveAttribute('title')
     expect(screen.queryByText(ADD_CARD_LOCKED_REASON)).not.toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// ④ movePending: disabled(OT 修正 2 — card_move の snapshot 読取 → 再採番計算 → 書込の
+// 途中に並走 create が入ると新 card が assignment から漏れ「末尾追加」の不変条件が破れる
+// ため、gate 3 条件目として存在する。最終 review F1: 従来未 pin だった)
+// ===========================================================================
+
+describe('④ movePending: disabled', () => {
+  it('movePending=true で button disabled、click しても addCard は呼ばれない', () => {
+    renderFooter({ movePending: true })
+    const btn = screen.getByRole('button', { name: '＋ カードを追加' })
+    expect(btn).toBeDisabled()
+    act(() => {
+      fireEvent.click(btn)
+    })
+    expect(mockAddCard).not.toHaveBeenCalled()
   })
 })
 
