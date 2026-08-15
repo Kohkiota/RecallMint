@@ -5,6 +5,7 @@ import {
   compareByBaseOrderAcrossExams,
   compareByQuestionLabel,
   nextBaseOrders,
+  placementForRowDrop,
   planMoveAssignments,
   planUndoAssignments,
 } from './card-order'
@@ -788,5 +789,153 @@ describe('planUndoAssignments', () => {
     expect(
       orderOf(applyAssignments(moved, EXAM_TARGET, movedOnly), EXAM_TARGET),
     ).not.toEqual(before)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// placementForRowDrop (row DnD の drop → MovePlacement 変換, row-dnd sprint task-1)
+// ---------------------------------------------------------------------------
+
+describe('placementForRowDrop', () => {
+  // 5 枚の行。base_order を id 昇順と揃えてあるので、配列そのものが
+  // compareByBaseOrder 順 (= 呼出側契約である baseOrderIds の並び) になる。
+  const ROW = [1, 2, 3, 4, 5].map((n) => ({
+    base_order: n * BASE_ORDER_STRIDE,
+    id: cardId(n),
+  }))
+  const ROW_IDS = ROW.map((card) => card.id)
+
+  it('上→下 (active を後方の行へ drop): 最終列で over の直後になる', () => {
+    // arrayMove([1,2,3,4,5], fromIndex=1, toIndex=3) = [1,3,4,2,5]。
+    expect(placementForRowDrop(ROW_IDS, cardId(2), cardId(4))).toEqual({
+      kind: 'after',
+      anchorId: cardId(4),
+    })
+  })
+
+  it('下→上 (active を前方の行へ drop): 最終列で over の手前の要素の直後になる', () => {
+    // arrayMove([1,2,3,4,5], fromIndex=3, toIndex=1) = [1,4,2,3,5]。
+    expect(placementForRowDrop(ROW_IDS, cardId(4), cardId(2))).toEqual({
+      kind: 'after',
+      anchorId: cardId(1),
+    })
+  })
+
+  it('先頭の行へ drop すると kind: start になる', () => {
+    // arrayMove([1,2,3,4,5], fromIndex=2, toIndex=0) = [3,1,2,4,5] → active が index 0。
+    expect(placementForRowDrop(ROW_IDS, cardId(3), cardId(1))).toEqual({
+      kind: 'start',
+    })
+  })
+
+  it('末尾の行へ drop すると kind: after になる (end は使わず一様化する — spec D-f)', () => {
+    // arrayMove([1,2,3,4,5], fromIndex=1, toIndex=4) = [1,3,4,5,2] → active の
+    // 直前は最終列の末尾要素。
+    expect(placementForRowDrop(ROW_IDS, cardId(2), cardId(5))).toEqual({
+      kind: 'after',
+      anchorId: cardId(5),
+    })
+  })
+
+  it('隣接する行への drop (swap) は over の直後になる', () => {
+    // arrayMove([1,2,3,4,5], fromIndex=1, toIndex=2) = [1,3,2,4,5]。
+    expect(placementForRowDrop(ROW_IDS, cardId(2), cardId(3))).toEqual({
+      kind: 'after',
+      anchorId: cardId(3),
+    })
+  })
+
+  it('2 件列での入替えは先頭になる', () => {
+    const twoIds = [cardId(1), cardId(2)]
+    // arrayMove([1,2], fromIndex=1, toIndex=0) = [2,1] → active が index 0。
+    expect(placementForRowDrop(twoIds, cardId(2), cardId(1))).toEqual({
+      kind: 'start',
+    })
+  })
+
+  it('overId が null なら no-op (ドロップ先が無い)', () => {
+    expect(placementForRowDrop(ROW_IDS, cardId(2), null)).toBeNull()
+  })
+
+  it('activeId === overId なら no-op (自分自身への drop)', () => {
+    expect(placementForRowDrop(ROW_IDS, cardId(2), cardId(2))).toBeNull()
+  })
+
+  it('activeId が baseOrderIds に不在なら no-op', () => {
+    expect(placementForRowDrop(ROW_IDS, cardId(999), cardId(2))).toBeNull()
+  })
+
+  it('overId が baseOrderIds に不在なら no-op', () => {
+    expect(placementForRowDrop(ROW_IDS, cardId(2), cardId(999))).toBeNull()
+  })
+
+  it('baseOrderIds を破壊しない (PURE 制約)', () => {
+    const snapshot = [...ROW_IDS]
+    placementForRowDrop(ROW_IDS, cardId(2), cardId(4))
+    expect(ROW_IDS).toEqual(snapshot)
+  })
+
+  describe('planMoveAssignments 合成 round-trip', () => {
+    it('下方向 drop: 返した placement を適用すると arrayMove と同じ最終列になる', () => {
+      const activeId = cardId(2)
+      const overId = cardId(4)
+      const placement = placementForRowDrop(ROW_IDS, activeId, overId)
+      expect(placement).toEqual({ kind: 'after', anchorId: cardId(4) })
+
+      const activeCard = ROW.find((card) => card.id === activeId)!
+      let plan!: ReturnType<typeof planMoveAssignments>
+      expect(() => {
+        plan = planMoveAssignments({
+          movedCards: [activeCard],
+          targetCards: ROW,
+          placement: placement!,
+        })
+      }).not.toThrow()
+
+      const nextBase = new Map(plan.assignments.map((a) => [a.id, a.base_order]))
+      const applied = ROW.map((card) => ({
+        ...card,
+        base_order: nextBase.get(card.id) ?? card.base_order,
+      }))
+      // arrayMove([1,2,3,4,5], 1, 3) = [1,3,4,2,5] (上の it と同じ最終列) と一致する。
+      expect([...applied].sort(compareByBaseOrder).map((c) => c.id)).toEqual([
+        cardId(1),
+        cardId(3),
+        cardId(4),
+        cardId(2),
+        cardId(5),
+      ])
+    })
+
+    it('上方向 drop: 返した placement を適用すると arrayMove と同じ最終列になる', () => {
+      const activeId = cardId(4)
+      const overId = cardId(2)
+      const placement = placementForRowDrop(ROW_IDS, activeId, overId)
+      expect(placement).toEqual({ kind: 'after', anchorId: cardId(1) })
+
+      const activeCard = ROW.find((card) => card.id === activeId)!
+      let plan!: ReturnType<typeof planMoveAssignments>
+      expect(() => {
+        plan = planMoveAssignments({
+          movedCards: [activeCard],
+          targetCards: ROW,
+          placement: placement!,
+        })
+      }).not.toThrow()
+
+      const nextBase = new Map(plan.assignments.map((a) => [a.id, a.base_order]))
+      const applied = ROW.map((card) => ({
+        ...card,
+        base_order: nextBase.get(card.id) ?? card.base_order,
+      }))
+      // arrayMove([1,2,3,4,5], 3, 1) = [1,4,2,3,5] (上の it と同じ最終列) と一致する。
+      expect([...applied].sort(compareByBaseOrder).map((c) => c.id)).toEqual([
+        cardId(1),
+        cardId(4),
+        cardId(2),
+        cardId(3),
+        cardId(5),
+      ])
+    })
   })
 })

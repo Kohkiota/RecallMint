@@ -221,6 +221,78 @@ export function planUndoAssignments(
     .map((original) => ({ id: original.id, base_order: original.base_order }))
 }
 
+/**
+ * row DnD (dnd-kit) の「`activeId` の行を `overId` の行にドロップした」を
+ * `planMoveAssignments` が受け取れる `MovePlacement` に変換する (row-dnd sprint
+ * task-1 / spec §2)。
+ *
+ * 呼出側契約 (関数内で検証しない): `baseOrderIds` は対象 exam の**全**カードを表す
+ * **一意** id 列で、`compareByBaseOrder` 順に並んでいること。呼出元はこれを Dexie
+ * mirror の主キー読み出しから組み立てるため、重複 id は構造的に生じない —
+ * 本関数はこの前提の上で dedup を行わない (簡潔性規律: 起こりえない状態への
+ * 防御コードを書かない)。
+ *
+ * 変換の中心は dnd-kit sortable の `defaultNewIndexGetter` と同じ `arrayMove`:
+ * 入力列から `activeId` を抜き、`overId` が入力列で占めていた index に挿入し
+ * 直した列 (最終列) を作る。dnd-kit を import せず数行で自前実装する。
+ *
+ * 最終列における `activeId` の落ち着き先を placement に変換する:
+ * - index 0 → `{ kind: 'start' }`
+ * - それ以外 → `{ kind: 'after', anchorId: 最終列で activeId の直前の要素 }`
+ *   (末尾ドロップもここに一様化する。`end` は使わない — `planMoveAssignments`
+ *   上は `after: <末尾要素>` と等価であり、分岐を増やす理由がない)
+ *
+ * 最終列で `activeId` の直前に来る要素が `activeId` 自身になることは
+ * `arrayMove` の性質上あり得ない (自分の前に自分は来ない)。したがって
+ * `anchorId` は常に「移動対象でない」要素になる。これは `planMoveAssignments`
+ * が要求する契約 (anchor は常駐列 = 移動対象を除いた列に存在すること) を
+ * 満たすために必須の性質であり、破れていれば `planMoveAssignments` が throw
+ * して検出する。
+ *
+ * `null` を返す 4 ケース (呼出側は mutation もトーストも出さない no-op として
+ * 扱う):
+ * 1. `overId` が `null` (ドロップ先が無い = キャンセル)
+ * 2. `activeId === overId` (自分自身へのドロップ)
+ * 3. `activeId` / `overId` のどちらかが `baseOrderIds` に不在
+ * 4. 並べ替え後の列が入力列と要素ごとに一致 (実質移動していない)
+ *
+ * 条件 4 は `baseOrderIds` が一意という契約の下では条件 1〜3 に**包含される
+ * defensive invariant**(一意な列で `activeId !== overId` かつ両方が存在すれば
+ * `arrayMove` は必ず列を変える)。呼出側契約が破れていても関数を全域にする
+ * ためだけに残している。
+ */
+export function placementForRowDrop(
+  baseOrderIds: string[],
+  activeId: string,
+  overId: string | null,
+): MovePlacement | null {
+  if (overId === null) return null
+  if (activeId === overId) return null
+
+  const fromIndex = baseOrderIds.indexOf(activeId)
+  const toIndex = baseOrderIds.indexOf(overId)
+  if (fromIndex < 0 || toIndex < 0) return null
+
+  const reordered = arrayMove(baseOrderIds, fromIndex, toIndex)
+  // 条件 4 (defensive invariant): 一意契約下では条件 1〜3 を通過した時点で
+  // 必ず変化するはずだが、契約が破れた呼出側を no-op に倒すためだけに残す。
+  if (reordered.every((id, i) => id === baseOrderIds[i])) return null
+
+  const newIndex = reordered.indexOf(activeId)
+  if (newIndex === 0) return { kind: 'start' }
+  return { kind: 'after', anchorId: reordered[newIndex - 1] }
+}
+
+// dnd-kit sortable の arrayMove と同じ挙動を import なしで再現する (PURE 制約
+// で dnd-kit を import できないため)。copy に対して splice するので入力は
+// 破壊しない。
+function arrayMove<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list]
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  return next
+}
+
 // 常駐列のどこに挿入するか。返す index は「移動対象が占める先頭位置」。
 function resolveSplitIndex(
   residents: OrderedCard[],
