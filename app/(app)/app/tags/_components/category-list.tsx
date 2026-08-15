@@ -37,7 +37,7 @@ import { logger } from '@/lib/logger'
 import { handleDeleteCategory } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderCategories } from '@/lib/tags/reorder-handlers'
-import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
+import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
 
 import { CategoryRow } from './category-row'
 import { CategoryCreateForm } from './category-create-form'
@@ -193,8 +193,8 @@ export function CategoryList({
 
   // Tag-4c-2c T2 spec §4.3 / hotfix H4: dnd-kit sensors。 popover と同 hook を共有して
   // 並び替え UX を統一する (Mouse 即 / Touch long-press / Keyboard a11y、 詳細は
-  // `lib/tags/use-tag-sortable-sensors.ts` の header コメント)。
-  const sensors = useTagSortableSensors()
+  // `lib/dnd/use-sortable-sensors.ts` の header コメント)。
+  const sensors = useSortableSensors()
 
   // 1 件以下は並べ替え不能 → DndContext を mount せず素の `<li>` で render (handle 非表示)。
   // 構造的に「並べ替えできない」 状態を保証 (spec §4.3)。

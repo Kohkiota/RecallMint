@@ -9,8 +9,9 @@
 // - Keyboard (KeyboardSensor): sortableKeyboardCoordinates で a11y 経路を維持
 //   (Space で grab、 矢印で移動、 Space で confirm、 Esc で cancel)
 //
-// popover (card-tag-add-popover) / manager (category-list / option-list) の 3 site で
-// 同一構成を共有するため、 useSensors 構成を本 hook に切り出し drift を回避する。
+// popover (card-tag-add-popover) / manager (category-list / option-list) / 行 DnD
+// (exam table) の 4 site で同一構成を共有するため、 useSensors 構成を本 hook に切り出し
+// drift を回避する。
 // dep 追加なし: `@dnd-kit/core` v6.3.1 が MouseSensor / TouchSensor を export している
 // (`node_modules/@dnd-kit/core/dist/sensors/index.d.ts` 確認済)。
 
@@ -23,7 +24,7 @@ import {
 } from '@dnd-kit/core'
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 
-export function useTagSortableSensors() {
+export function useSortableSensors() {
   return useSensors(
     useSensor(MouseSensor),
     useSensor(TouchSensor, {

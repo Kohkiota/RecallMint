@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Tag-4c-2c hotfix H4: useTagSortableSensors の戻り値構造を pin する unit test。
+// Tag-4c-2c hotfix H4: useSortableSensors の戻り値構造を pin する unit test。
 //
 // jsdom で実 sensor の pointerdown→drag 挙動を末端まで pin するのは信頼性低 (dnd-kit が
 // 内部で扱う pointer/touch capture を jsdom が忠実には再現しない) ため、 本 test は hook
@@ -22,11 +22,11 @@ import {
 } from '@dnd-kit/core'
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 
-import { useTagSortableSensors } from './use-tag-sortable-sensors'
+import { useSortableSensors } from './use-sortable-sensors'
 
-describe('useTagSortableSensors', () => {
+describe('useSortableSensors', () => {
   it('3 件の sensor descriptor を Mouse / Touch / Keyboard の順で返す', () => {
-    const { result } = renderHook(() => useTagSortableSensors())
+    const { result } = renderHook(() => useSortableSensors())
     expect(result.current).toHaveLength(3)
     expect(result.current[0].sensor).toBe(MouseSensor)
     expect(result.current[1].sensor).toBe(TouchSensor)
@@ -34,7 +34,7 @@ describe('useTagSortableSensors', () => {
   })
 
   it('MouseSensor は activationConstraint なし (PC 即起動)', () => {
-    const { result } = renderHook(() => useTagSortableSensors())
+    const { result } = renderHook(() => useSortableSensors())
     const mouse = result.current[0]
     // options は MouseSensorOptions ({} 既定 + 任意 activationConstraint)。
     // 未指定なので activationConstraint は undefined であること。
@@ -44,7 +44,7 @@ describe('useTagSortableSensors', () => {
   })
 
   it('TouchSensor は { delay: 250, tolerance: 5 } で long-press 起動 + 誤発火抑制', () => {
-    const { result } = renderHook(() => useTagSortableSensors())
+    const { result } = renderHook(() => useSortableSensors())
     const touch = result.current[1]
     expect(
       (touch.options as { activationConstraint?: { delay?: number; tolerance?: number } })
@@ -53,7 +53,7 @@ describe('useTagSortableSensors', () => {
   })
 
   it('KeyboardSensor は sortableKeyboardCoordinates を coordinateGetter として配線', () => {
-    const { result } = renderHook(() => useTagSortableSensors())
+    const { result } = renderHook(() => useSortableSensors())
     const keyboard = result.current[2]
     expect(
       (keyboard.options as { coordinateGetter?: unknown }).coordinateGetter,

@@ -41,7 +41,7 @@ import {
 import { handleDeleteOption } from '@/lib/tags/tag-crud'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
 import { handleReorderOptions } from '@/lib/tags/reorder-handlers'
-import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
+import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
 
 import { OptionRow } from './option-row'
 import { OptionCreateForm } from './option-create-form'
@@ -133,12 +133,12 @@ export function OptionList({ userId, activeCategoryId }: Props) {
 
   // Tag-4c-2c T3 spec §4.3 / hotfix H4: dnd-kit sensors (popover / T2 と同 hook を共有、
   // Mouse 即 / Touch long-press / Keyboard a11y、 詳細は
-  // `lib/tags/use-tag-sortable-sensors.ts` の header コメント)。
+  // `lib/dnd/use-sortable-sensors.ts` の header コメント)。
   // Tag-4c-2c hotfix b02c072: 早期 return (`activeCategoryId === null`) より **前** に置く。
   // hooks は render の各 path で同数同順 invocation が必要 (React rules of hooks)、
   // 早期 return の後に置くと `activeCategoryId` の null → non-null 遷移で hook 数が
   // 変わり 「Rendered more hooks than during the previous render」 で throw する。
-  const sensors = useTagSortableSensors()
+  const sensors = useSortableSensors()
 
   // Tag-4c-2c hotfix H2: ConfirmDialog 経路を撤去し即削除に統一 (popover Tag-4c-1-fix A-3
   // 確定仕様 「option 削除 = 確認なし即削除」 と整合)。 cascade purge + enqueue を 1 Dexie

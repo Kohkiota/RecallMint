@@ -42,7 +42,7 @@ import {
 
 import type { ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import { sortByKeyThenCreated } from '@/lib/tags/sort-comparator'
-import { useTagSortableSensors } from '@/lib/tags/use-tag-sortable-sensors'
+import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
 import {
   Popover,
   PopoverContent,
@@ -160,11 +160,11 @@ export function CardTagAddPopover({
 
   // Tag-4c-2b T5 / Tag-4c-2c hotfix H4: dnd-kit sensors。 stage1/stage2 で共用。
   // 旧 PointerSensor 単独 (delay 250 / tolerance 5) は PC でも長押し要で違和感が出ていた
-  // ため、 共有 hook `useTagSortableSensors` で MouseSensor (PC 即起動) + TouchSensor
+  // ため、 共有 hook `useSortableSensors` で MouseSensor (PC 即起動) + TouchSensor
   // (delay 250 / tolerance 5 で long-press + scroll/tap 誤発火抑制) + KeyboardSensor
   // (sortableKeyboardCoordinates で a11y) の 3 sensor 構成に分割。 manager (category-list
   // / option-list) でも同 hook を使い drift を回避する (spec §4.4)。
-  const sensors = useTagSortableSensors()
+  const sensors = useSortableSensors()
 
   // selectOnly (フィルタ文脈) では作成導線を出さないため、検索ボックスの文言も
   // 「新規作成」を誘導しない検索専用文言へ切替える (作成導線本体は onCreateNew=undefined で
