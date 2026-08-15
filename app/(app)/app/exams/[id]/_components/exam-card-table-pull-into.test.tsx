@@ -127,6 +127,29 @@ beforeEach(async () => {
 
 afterEach(() => cleanup())
 
+// row-dnd task-4 の帰結: DndContext が常時 mount されるようになり、dnd-kit 自身の
+// アナウンス用 LiveRegion (role="status" aria-live="assertive") が常に 1 個存在する
+// ようになった。 ActionToast (role="status" aria-live="polite") と role が衝突するため、
+// aria-live で判別する (exam-card-table-move.test.tsx と同じ理由・同型)。
+function actionToastOrNull(): HTMLElement | null {
+  return (
+    screen.queryAllByRole('status').find((el) => el.getAttribute('aria-live') === 'polite') ??
+    null
+  )
+}
+function getActionToast(): HTMLElement {
+  const toast = actionToastOrNull()
+  if (!toast) throw new Error('ActionToast (role=status aria-live=polite) not found')
+  return toast
+}
+async function findActionToast(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const toast = actionToastOrNull()
+    if (!toast) throw new Error('ActionToast (role=status aria-live=polite) not found yet')
+    return toast
+  })
+}
+
 /** table を render し、指定行の行メニューから picker を開いてカードを 1 枚選ぶ。 */
 async function openPickerOnRow(rowCardId: string) {
   render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -170,14 +193,14 @@ describe('取り込みの成功経路', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('exam-card-pull-into-dialog')).not.toBeInTheDocument(),
     )
-    const toast = await screen.findByRole('status')
+    const toast = await findActionToast()
     // movedCount (要求枚数ではない) を文言に使う。
     expect(toast).toHaveTextContent('2枚を移動しました')
 
     fireEvent.click(within(toast).getByRole('button', { name: '元に戻す' }))
     await waitFor(() => expect(mockUndoMove).toHaveBeenCalledWith(MOVE_OK))
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('元に戻しました'),
+      expect(getActionToast()).toHaveTextContent('元に戻しました'),
     )
   })
 })
@@ -198,7 +221,7 @@ describe('取り込みの失敗 3 分岐', () => {
       expect(screen.getByTestId('pull-into-error')).toHaveTextContent('移動に失敗しました'),
     )
     expect(screen.getByTestId('exam-card-pull-into-dialog')).toBeInTheDocument()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 
   it('no-cards は no-op (error も toast も出さず picker を閉じる)', async () => {
@@ -212,7 +235,7 @@ describe('取り込みの失敗 3 分岐', () => {
       expect(screen.queryByTestId('exam-card-pull-into-dialog')).not.toBeInTheDocument(),
     )
     expect(screen.queryByTestId('pull-into-error')).not.toBeInTheDocument()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 
   it('target-exam-missing は移動先不在の inline error を出す', async () => {
@@ -227,7 +250,7 @@ describe('取り込みの失敗 3 分岐', () => {
         '移動先の試験が見つかりません',
       ),
     )
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 })
 

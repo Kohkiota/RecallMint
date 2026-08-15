@@ -169,6 +169,29 @@ function splitButton() {
   return screen.getByRole('button', { name: '新規試験へ切り出し' })
 }
 
+// row-dnd task-4 の帰結: DndContext が常時 mount されるようになり、dnd-kit 自身の
+// アナウンス用 LiveRegion (role="status" aria-live="assertive") が常に 1 個存在する
+// ようになった。 ActionToast (role="status" aria-live="polite") と role が衝突するため、
+// aria-live で判別する (dnd-kit 側は本 test の対象外で、常に存在し続ける)。
+function actionToastOrNull(): HTMLElement | null {
+  return (
+    screen.queryAllByRole('status').find((el) => el.getAttribute('aria-live') === 'polite') ??
+    null
+  )
+}
+function getActionToast(): HTMLElement {
+  const toast = actionToastOrNull()
+  if (!toast) throw new Error('ActionToast (role=status aria-live=polite) not found')
+  return toast
+}
+async function findActionToast(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const toast = actionToastOrNull()
+    if (!toast) throw new Error('ActionToast (role=status aria-live=polite) not found yet')
+    return toast
+  })
+}
+
 // ===========================================================================
 // 成功: moveCards 引数 + toast + undo
 // ===========================================================================
@@ -187,7 +210,7 @@ describe('移動の成功経路', () => {
       }),
     )
     // movedCount (要求枚数ではない) を文言に使う。
-    const toast = await screen.findByRole('status')
+    const toast = await findActionToast()
     expect(toast).toHaveTextContent('3枚を移動しました')
     expect(within(toast).getByRole('button', { name: '元に戻す' })).toBeInTheDocument()
     expect(screen.queryByTestId('action-bar-move-error')).not.toBeInTheDocument()
@@ -196,13 +219,13 @@ describe('移動の成功経路', () => {
   it('「元に戻す」で undoMove に移動結果を渡し、toast を「元に戻しました」に置換する', async () => {
     await openMovePopover()
     fireEvent.click(screen.getByRole('button', { name: '移動する' }))
-    const toast = await screen.findByRole('status')
+    const toast = await findActionToast()
 
     fireEvent.click(within(toast).getByRole('button', { name: '元に戻す' }))
 
     await waitFor(() => expect(mockUndoMove).toHaveBeenCalledWith(MOVE_OK))
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('元に戻しました'),
+      expect(getActionToast()).toHaveTextContent('元に戻しました'),
     )
     expect(screen.queryByRole('button', { name: '元に戻す' })).not.toBeInTheDocument()
   })
@@ -211,12 +234,12 @@ describe('移動の成功経路', () => {
     mockUndoMove.mockResolvedValue({ ok: false, reason: 'cards-missing' })
     await openMovePopover()
     fireEvent.click(screen.getByRole('button', { name: '移動する' }))
-    const toast = await screen.findByRole('status')
+    const toast = await findActionToast()
 
     fireEvent.click(within(toast).getByRole('button', { name: '元に戻す' }))
 
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(
+      expect(getActionToast()).toHaveTextContent(
         '移動したカードの一部が削除されています',
       ),
     )
@@ -226,12 +249,12 @@ describe('移動の成功経路', () => {
     mockUndoMove.mockResolvedValue({ ok: false, reason: 'source-exam-missing' })
     await openMovePopover()
     fireEvent.click(screen.getByRole('button', { name: '移動する' }))
-    const toast = await screen.findByRole('status')
+    const toast = await findActionToast()
 
     fireEvent.click(within(toast).getByRole('button', { name: '元に戻す' }))
 
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('元の試験が削除されています'),
+      expect(getActionToast()).toHaveTextContent('元の試験が削除されています'),
     )
   })
 })
@@ -252,7 +275,7 @@ describe('移動の失敗 3 分岐', () => {
         '移動に失敗しました',
       ),
     )
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 
   it('no-cards は no-op (error も toast も出さない)', async () => {
@@ -263,7 +286,7 @@ describe('移動の失敗 3 分岐', () => {
 
     await waitFor(() => expect(mockMoveCards).toHaveBeenCalledTimes(1))
     expect(screen.queryByTestId('action-bar-move-error')).not.toBeInTheDocument()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 
   it('未知の失敗理由は silent な no-op にせず inline error に倒す', async () => {
@@ -304,7 +327,7 @@ describe('移動の失敗 3 分岐', () => {
         '移動先の試験が見つかりません',
       ),
     )
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(actionToastOrNull()).toBeNull()
   })
 })
 
@@ -346,7 +369,7 @@ describe('新規試験へ切り出し', () => {
       placement: { kind: 'end' },
     })
     // 自動遷移しない (spec §6.1) = toast が出て現ビューに留まる。
-    expect(await screen.findByRole('status')).toHaveTextContent('3枚を移動しました')
+    expect(await findActionToast()).toHaveTextContent('3枚を移動しました')
   })
 
   it('実行中は実行系 button が disabled で、二重 submit しても createExam は 1 回', async () => {

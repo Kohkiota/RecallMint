@@ -40,6 +40,7 @@ export function computeCollapsed(
 //   - 両者を meta 経由で各 TagCell に配る (TanStack 標準 pattern)。
 
 import {
+  useId,
   useMemo,
   useRef,
   useState,
@@ -50,6 +51,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -67,15 +69,26 @@ import {
   type OnChangeFn,
   type Table,
 } from '@tanstack/react-table'
+import {
+  DndContext,
+  DragOverlay,
+  closestCenter,
+  type DragStartEvent,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ActionToast } from '@/components/ui/action-toast'
 import { Button } from '@/components/ui/button'
-import { getClientDb } from '@/lib/client-db'
-import { compareByBaseOrder, type MovePlacement } from '@/lib/cards/domain/card-order'
+import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { compareByBaseOrder, placementForRowDrop, type MovePlacement } from '@/lib/cards/domain/card-order'
+import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
+import { restrictToVerticalAxis } from '@/lib/dnd/restrict-to-vertical-axis'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
+import { SortableRow, RowDragPreview, ROW_DND_LOCKED_REASON } from './exam-card-row-dnd'
 import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { waitForExamInMirror } from '../_lib/wait-for-exam-mirror'
 import { ConditionBar } from './exam-card-table-condition-bar'
@@ -117,12 +130,27 @@ type TableBodyProps = {
   //   scrollMargin=listOffset(document 座標)で container 先頭へ re-base していたのと同一の
   //   基準を、 element 実装では container 自身が原点 = scrollMargin 0 で満たす (下記参照)。
   scrollElementRef: RefObject<HTMLDivElement | null>
+  // row-dnd task-4: SortableRow (spec §3.2 gating) へそのまま配る 3 値。
+  //   showHandle は table.getRowModel().rows (filter 後) ではなく **基準順全件 (data.length)**
+  //   由来 (ExamCardTable 側で算出) — フィルタで表示行が 1 件に絞られても並べ替え自体は
+  //   可能なため、表示行数で判定すると誤って handle が消える。
+  showHandle: boolean
+  locked: boolean
+  pending: boolean
+  lockedReasonId: string
 }
 
 // Fix-3 T2: 推定行高 (px)。実行高の中央値目安。過小でも measureElement が補正する。
 const ESTIMATED_ROW_HEIGHT = 120
 
-function TableBody({ table, scrollElementRef }: TableBodyProps) {
+function TableBody({
+  table,
+  scrollElementRef,
+  showHandle,
+  locked,
+  pending,
+  lockedReasonId,
+}: TableBodyProps) {
   const rows = table.getRowModel().rows
 
   // S2-2: 行仮想化を element virtualizer 化 (内部スクロール container が縦スクロール主体)。
@@ -187,12 +215,17 @@ function TableBody({ table, scrollElementRef }: TableBodyProps) {
         return (
           // S5-3: group を付与し、pinned td の group-hover 色合成を有効化(spec D-5)。
           // pinning なし時も group は inert(group-hover 子が存在しない)で視覚変化なし。
-          <tr
+          // row-dnd task-4: <tr> 自体は SortableRow (exam-card-row-dnd.tsx) が描画する
+          // (data-testid / data-index / measureElement ref 合成もそちら側に移った・verbatim 移送)。
+          <SortableRow
             key={row.id}
-            data-index={vi.index}
-            ref={rowVirtualizer.measureElement}
-            data-testid={`row-${row.original.card.id}`}
-            className="group hover:bg-muted/50"
+            cardId={row.original.card.id}
+            index={vi.index}
+            showHandle={showHandle}
+            locked={locked}
+            pending={pending}
+            lockedReasonId={lockedReasonId}
+            measureElement={rowVirtualizer.measureElement}
           >
             {row.getVisibleCells().map((cell) => {
               // S5-3: left-pinned 判定。
@@ -230,7 +263,7 @@ function TableBody({ table, scrollElementRef }: TableBodyProps) {
                 </td>
               )
             })}
-          </tr>
+          </SortableRow>
         )
       })}
       {paddingBottom > 0 && (
@@ -774,6 +807,100 @@ export function ExamCardTable({
     [undoMove, showMoveToast],
   )
 
+  // ---------------------------------------------------------------------------
+  // row DnD (dnd-kit) — row-dnd sprint task-4: spec §3.1/§3.5/§4/§5 の配線。
+  // popover / tag manager と同じ sensors 構成 (Mouse 即 / Touch long-press / Keyboard a11y)。
+  // ---------------------------------------------------------------------------
+  const sensors = useSortableSensors()
+  // SortableContext の items = 基準順 (data) 全件の id 列。 仮想化で非表示の行も
+  // dnd-kit sortable の index 計算には要るため、可視行 (virtualItems) だけでは不足する。
+  const sortableItemIds = useMemo(() => data.map((r) => r.card.id), [data])
+  // 掴み手の表示可否。 category-list の sortableEnabled (list.length >= 2) と同じ判定を
+  // 基準順全件 (data — columnFilters 非依存) に対して行う (TableBodyProps 冒頭コメント参照)。
+  const showDragHandle = data.length >= 2
+  const lockedReasonId = useId()
+  // ドラッグ中のプレビュー対象 card。 onDragStart で見つからなければ (stale id) null の
+  // ままにする = DragOverlay の中身が非表示になる (spec §3.5)。
+  const [activeDragCard, setActiveDragCard] = useState<ClientCard | null>(null)
+  // handleRowDragEnd の同期再入ガード。 setMovePending (React state) は次 render まで
+  // 反映されないため、 同一 tick に onDragEnd が 2 発届く経路を state だけでは弾けない
+  // (onSplitOut の splitInFlightRef と同じ理由・同 class)。
+  const dragCommitRef = useRef(false)
+
+  // id 正規化はここ (onDragStart 冒頭) の 1 箇所のみ。 dnd-kit の active.id は
+  // UniqueIdentifier (string | number) だが、以降 (data 検索) は string で扱う。
+  const handleRowDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const activeId = String(event.active.id)
+      setActiveDragCard(data.find((r) => r.card.id === activeId)?.card ?? null)
+    },
+    [data],
+  )
+
+  const handleRowDragCancel = useCallback(() => {
+    setActiveDragCard(null)
+  }, [])
+
+  // spec §5.1 の 6 手順(順序変更禁止)。 この順序は 2 つの制約を同時に満たすためにある:
+  //   - ①-④ は全て同期処理。 同一 tick に 2 発目の onDragEnd が届いても、 1 発目が ⑤ で
+  //     ref を立てた**後**にしか 2 発目の ① は評価されない (async 関数は最初の await
+  //     (⑥ 内) に到達するまで同期実行され、その間は他の呼出に割り込まれない) ため、
+  //     2 発目は必ず ① で弾ける。
+  //   - ref は ⑤ (最初の await の直前) で初めて立てる。 ①-④ の early return
+  //     (over 不在 / 自分自身 / id 不在 / 順序不変 / ソート・フィルタ適用中 / 他の移動が
+  //     進行中) は ref に一切触れないため、 no-op drop が続いても ref が true のまま
+  //     固まって以後の drag を恒久的にブロックする事故が構造的に起きない。
+  const handleRowDragEnd = useCallback(
+    async (event: DragEndEvent) => {
+      const { active, over } = event
+      const activeId = String(active.id)
+      const overId = over ? String(over.id) : null
+
+      // ① 再入検査 (読むだけ)。
+      if (dragCommitRef.current) return
+      // ② プレビューは結果に関わらずここで消す。
+      setActiveDragCard(null)
+      // ③ ソート/フィルタ適用中、または既に他の移動が進行中なら破棄 (spec §7.4 と同型)。
+      if (positionLocked || movePending) return
+      // ④ placement は **drop 時点の現行順** (= このコールバックが束縛している data、
+      //    spec §5.1-4) に対して解く。drag 中に並走 mutation で順序が変わっても
+      //    再計算しない (stale 検出はしない) — 「位置ずれのみで順序自体は決定的」という
+      //    Grid-3 §2.5 が受容した class であり、 null を返す 4 条件 (over 不在 / 自分自身 /
+      //    id 不在 / 順序不変) が凍結された契約 (placementForRowDrop 参照)。
+      const placement = placementForRowDrop(
+        data.map((r) => r.card.id),
+        activeId,
+        overId,
+      )
+      if (placement === null) return
+
+      // ⑤ 最初の await 直前でだけ ref を立てる (このブロック冒頭のコメント参照)。
+      dragCommitRef.current = true
+      setMovePending(true)
+      try {
+        const result = await moveCards({
+          cardIds: [activeId],
+          targetExamId: examId,
+          placement,
+        })
+        // ⑥ outcome ≠ ok は理由を問わず一律失敗扱い (undo なし・spec D-e)。
+        //    既存 runMove (3 分岐解釈 + 一括バー用文言) は使わない — DnD は文言も
+        //    表示先 (toast のみ) も別 (spec D-d)。
+        if (result.ok) {
+          showMoveToast('並び順を変更しました', result)
+        } else {
+          showMoveToast('並べ替えに失敗しました')
+        }
+      } catch {
+        showMoveToast('並べ替えに失敗しました')
+      } finally {
+        dragCommitRef.current = false
+        setMovePending(false)
+      }
+    },
+    [data, positionLocked, movePending, moveCards, examId, showMoveToast],
+  )
+
   // Fix-1 T2: action-bar 専用の bulk-bound createOptionAndAssign。
   // option を新規作成 (createOption) してから bulk add (onBulkTag) へ流す。
   // TagCell(meta) へ渡す tagEditCallbacks は不変 — action-bar のみに影響。
@@ -861,6 +988,13 @@ export function ExamCardTable({
   // undo 素材を optional chain 1 回で narrow しておく (JSX 側で非 null 断定を書かない)。
   const moveToastUndo = moveToast?.undo
 
+  // row-dnd task-4: DragOverlay 自体は常時 mount、子だけを条件描画する (activeDragCard が
+  // 無ければ null)。1 回だけ組み立て、portal するかどうかの分岐 (SSR/マウント前ガード)
+  // だけを JSX 側の三項に残す (PullIntoDialog の content 変数と同型)。
+  const dragOverlayNode = (
+    <DragOverlay>{activeDragCard ? <RowDragPreview card={activeDragCard} /> : null}</DragOverlay>
+  )
+
   return (
     // S2-2: app-shell 密封の flex 列。 親 (exam-detail-view の flex-1 min-h-0 スロット) を
     //   h-full で埋め、 [条件バー wrapper (flex-none)] + [table container (flex-1 overflow-auto)]
@@ -892,6 +1026,21 @@ export function ExamCardTable({
           </div>
         </div>
       </div>
+      {/* row-dnd task-4: DndContext は常時 mount する(条件 mount 禁止)。 型変化 tear-down で
+          tbody subtree が丸ごと remount するリークを Fix-3 T1.1 で根治した後なので、
+          provider の mount/unmount 切替で同じ class の事故を再導入しない。 並べ替え不能状態
+          (ソート/フィルタ中・1 件以下・移動中) は SortableRow 内の 3 層 gating
+          (locked/pending/showHandle → useSortable disabled) で表現し、 provider の
+          有無では表現しない。 DragOverlay は末尾で document.body へ portal する
+          (PullIntoDialog と同型の typeof document ガード)。 */}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis]}
+        onDragStart={handleRowDragStart}
+        onDragEnd={handleRowDragEnd}
+        onDragCancel={handleRowDragCancel}
+      >
       {/* S2-2: 内部スクロール主体の container。 flex-1 min-h-0 で残余高を埋め overflow-auto で
           縦横スクロールを内包 (旧 overflow-x-auto = document 縦スクロール前提から差替)。
           M3: 選択時は fixed action bar (~106px、 wrap で増) が最終行を occlude しないよう
@@ -903,12 +1052,21 @@ export function ExamCardTable({
         onScroll={handleScroll}
         className={cn('flex-1 min-h-0 overflow-auto', selectedIds.length > 0 && 'pb-32')}
       >
+        {/* row-dnd task-4: gating 理由 (ソート/フィルタ中) の sr-only 説明。 handle の
+            aria-describedby (exam-card-row-dnd.tsx) がこの id を参照する。 table レベルで 1 個。 */}
+        <p id={lockedReasonId} className="sr-only">
+          {ROW_DND_LOCKED_REASON}
+        </p>
         {/* T3: w-full 撤廃 → getTotalSize() で列幅合計を明示し overflow-x スクロールを発火させる。
             border-collapse → border-separate border-spacing-0 に倒し切る (条件分岐なし)。
             理由: sticky セルで border-collapse は border 消失が既知挙動。
             border-separate では <tr> の border-b が効かないため border を td/th 側に移譲。 */}
         {/* Fix-3 T1: columnSizeVars を spread して CSS 変数を <table> に付与。
             resize 中は MemoizedTableBody を使い tbody を凍結する (pointermove = CSS 変数のみ更新)。 */}
+        {/* row-dnd task-4: SortableContext は <table> の外側 (spec §3.1)。 items は基準順
+            全件 (data 由来の sortableItemIds) — 可視行のみだと dnd-kit の index 計算が
+            不足する。 */}
+        <SortableContext items={sortableItemIds} strategy={verticalListSortingStrategy}>
         <table
           className="text-sm border-separate border-spacing-0"
           style={{ ...columnSizeVars, width: table.getTotalSize() }}
@@ -1077,9 +1235,33 @@ export function ExamCardTable({
           table={table}
           isResizing={Boolean(table.getState().columnSizingInfo.isResizingColumn)}
           scrollElementRef={tableContainerRef}
+          showHandle={showDragHandle}
+          locked={positionLocked}
+          pending={movePending}
+          lockedReasonId={lockedReasonId}
         />
         </table>
+        </SortableContext>
       </div>
+      {/* 移動 toast (§7.5)。 action bar の外に置くのは、 移動成功で selection が空になり
+          bar が unmount しても undo を残すため。 key = 操作 id で同一文言の連続表示でも
+          auto-dismiss timer を張り直す (ActionToast の契約)。 */}
+      {moveToast && (
+        <ActionToast
+          key={moveToast.id}
+          message={moveToast.message}
+          actionLabel={moveToastUndo ? '元に戻す' : undefined}
+          onAction={moveToastUndo ? () => void onUndoMove(moveToastUndo) : undefined}
+          actionPending={undoPending}
+          onClose={() => setMoveToast(null)}
+        />
+      )}
+      {/* document.body へ portal する — PullIntoDialog (exam-card-row-menu.tsx) と同型の
+          SSR/マウント前ガード。 dropAnimation は既定のまま。 */}
+      {typeof document === 'undefined'
+        ? dragOverlayNode
+        : createPortal(dragOverlayNode, document.body)}
+      </DndContext>
       {selectedIds.length > 0 && (
         <ExamCardTableActionBar
           selectedIds={selectedIds}
@@ -1096,19 +1278,6 @@ export function ExamCardTable({
           onMove={onMove}
           onSplitOut={onSplitOut}
           moveError={moveError}
-        />
-      )}
-      {/* 移動 toast (§7.5)。 action bar の外に置くのは、 移動成功で selection が空になり
-          bar が unmount しても undo を残すため。 key = 操作 id で同一文言の連続表示でも
-          auto-dismiss timer を張り直す (ActionToast の契約)。 */}
-      {moveToast && (
-        <ActionToast
-          key={moveToast.id}
-          message={moveToast.message}
-          actionLabel={moveToastUndo ? '元に戻す' : undefined}
-          onAction={moveToastUndo ? () => void onUndoMove(moveToastUndo) : undefined}
-          actionPending={undoPending}
-          onClose={() => setMoveToast(null)}
         />
       )}
       {/* S2b-2: scroll-top ボタン。 collapsed かつ選択なし(action bar 非表示)の時のみ表示。

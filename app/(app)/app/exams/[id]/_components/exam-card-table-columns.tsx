@@ -87,14 +87,13 @@ const makeTextFilterFn = (
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    // チェックボックス実体 (~16px) + gap-1 (4px) ×2 + 「カードを開く」button (size-6=24px) +
-    // 行メニュー trigger (size-6=24px) + px-1 左右 合計 (8px) = 80px コンテンツ幅。
+    // チェックボックス実体 (~16px) + gap-1 (4px) ×3 + 「カードを開く」button (size-6=24px) +
+    // 行メニュー trigger (size-6=24px) + px-1 左右 合計 (8px) = 88px コンテンツ幅相当。
     // 常時表示化(iPad 横向き等 hover 不能環境でも不可視にならない)に伴い title 列から
-    // 本 button を移設し、Grid-3 §7.2 で行メニューを追加したため余白込みで 88px。
-    // row-dnd task-3: 掴み手 (RowDragHandle) はここに配線するが provider 未配線
-    // (task-4 まで) は null 描画で幅を持たない。 handle が実際に見える幅拡張
-    // (88→112) は provider を配線する task-4 の責務(コントローラ裁定: 2026-08-15)。
-    size: 88,
+    // 本 button を移設し、Grid-3 §7.2 で行メニューを追加したため余白込みで 88px だった。
+    // row-dnd task-4: 掴み手 (RowDragHandle) の provider (RowDndContext) を本 task で
+    // 配線し実描画になったため、掴み手分 (size-6=24px) を加算して 88→112 に再拡幅。
+    size: 112,
     header: ({ table }) => (
       <input
         type="checkbox"
@@ -119,8 +118,9 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
       const openCard = meta?.openCard
       return (
         <div className="flex items-center justify-center gap-1">
-          {/* row-dnd task-3: 行 D&D の掴み手。provider (RowDndContext) 未配線
-              (task-4 まで) は null 描画のため、この時点では視覚変化なし。 */}
+          {/* row-dnd task-4: 行 D&D の掴み手。provider (RowDndContext = SortableRow) は
+              ExamCardTable (task-4) が配線済み。 showHandle=false (data 1 件以下) では
+              RowDragHandle 内部で null 描画になる (event 分離契約は exam-card-row-dnd.tsx)。 */}
           <RowDragHandle cardTitle={card.title} />
           <input
             type="checkbox"
