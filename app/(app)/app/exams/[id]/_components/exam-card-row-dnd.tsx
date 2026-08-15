@@ -1,10 +1,10 @@
 // exam-card-row-dnd — row DnD (dnd-kit) の UI 部品一式 (row-dnd sprint task-3
 // spec §3.2〜§3.6 / §4.2)。
 //
-// この file 単体では **未配線**: SortableRow は TableBody (exam-card-table.tsx)
-// からまだ呼ばれておらず、その使用開始は task-4。RowDragHandle は provider
-// (RowDndContext) 不在時は null を描画する — この既定 (createContext(null)) により、
-// task-3 完了時点でアプリの見た目は変化しない。
+// 掴み手 (grip) の component は **ここには無い**: row-ux spec §2.2 で「ドラッグ =
+// 並べ替え / クリック = メニュー」の二役 button に統合され、実体は
+// exam-card-row-menu.tsx の trigger になった。この file は provider (SortableRow) と
+// consumer accessor (useRowDnd) と DragOverlay 用プレビューだけを持つ。
 //
 // 'use client' は付けない: 親 (exam-card-table-columns.tsx = 'use client') からのみ
 // import される子。file 自体に付けると Next.js TS plugin が function 型 prop を
@@ -20,24 +20,33 @@ import { cn } from '@/lib/utils'
 import type { ClientCard } from '@/lib/client-db'
 
 // ---------------------------------------------------------------------------
-// RowDndContext — SortableRow (provider) → RowDragHandle (consumer) の橋渡し。
-// select 列の cell (RowDragHandle) は <tr> (SortableRow) の子孫だが TanStack Table の
-// flexRender 経由で render されるため、 listeners/attributes を prop drilling せず
-// context で配る (category-list の wrapper 構造と違い、handle は tr の直接子ではない)。
-// 既定 null = provider 不在時は handle が非描画になる (task-3 完了時点の視覚不変を保証)。
+// RowDndContext — SortableRow (provider) → grip (consumer) の橋渡し。
+// select 列の cell (grip = ExamCardRowMenu の trigger) は <tr> (SortableRow) の子孫だが
+// TanStack Table の flexRender 経由で render されるため、 listeners/attributes を
+// prop drilling せず context で配る (category-list の wrapper 構造と違い、grip は tr の
+// 直接子ではない)。 既定 null = provider 不在 (単体 harness) では grip が menu 専用になる。
 // ---------------------------------------------------------------------------
 
 type RowDndValue = {
   listeners: DraggableSyntheticListeners
   attributes: DraggableAttributes
   setActivatorNodeRef: (el: HTMLElement | null) => void
-  showHandle: boolean
+  /** この試験で並べ替えが意味を持つか (基準順全件 >= 2 — 「今できるか」ではない)。 */
+  dragAvailable: boolean
   locked: boolean
   pending: boolean
   lockedReasonId: string
 }
 
 const RowDndContext = createContext<RowDndValue | null>(null)
+
+/**
+ * grip (exam-card-row-menu.tsx) が SortableRow の DnD 値を取る唯一の口。
+ * provider 不在 (単体 harness) は null = ドラッグ役なしの menu 専用 trigger。
+ */
+export function useRowDnd(): RowDndValue | null {
+  return useContext(RowDndContext)
+}
 
 // ソート/フィルタ適用中の並べ替え不能理由 (spec §7.4 と同型の gating 文言)。
 export const ROW_DND_LOCKED_REASON =
@@ -51,7 +60,7 @@ export const ROW_DND_LOCKED_REASON =
 export function SortableRow({
   cardId,
   index,
-  showHandle,
+  dragAvailable,
   locked,
   pending,
   lockedReasonId,
@@ -60,16 +69,18 @@ export function SortableRow({
 }: {
   cardId: string
   index: number
-  showHandle: boolean
+  dragAvailable: boolean
   locked: boolean
   pending: boolean
   lockedReasonId: string
   measureElement: (node: Element | null) => void
   children: ReactNode
 }) {
-  // spec §3.2: 位置指定 gating (ソート/フィルタ中) と楽観 pending の両方を disabled に
-  // 畳む。呼出側 (task-4) に同じ判定を重複させる別 prop は作らない。
-  const disabled = locked || pending
+  // spec §3.2 + row-ux §4: 位置指定 gating (ソート/フィルタ中)・楽観 pending・並べ替えが
+  // 意味を持たない試験 (1 枚) の 3 つを disabled に畳む。 grip は描画され続けるので
+  // (menu 役)、 ドラッグ役の無効化はここ 1 箇所 = dnd-kit が listeners を undefined で
+  // 返す形に一本化する。
+  const disabled = locked || pending || !dragAvailable
   const {
     attributes,
     listeners,
@@ -104,7 +115,7 @@ export function SortableRow({
     listeners,
     attributes,
     setActivatorNodeRef,
-    showHandle,
+    dragAvailable,
     locked,
     pending,
     lockedReasonId,
@@ -120,53 +131,6 @@ export function SortableRow({
     >
       <RowDndContext.Provider value={contextValue}>{children}</RowDndContext.Provider>
     </tr>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// RowDragHandle — select 列 (exam-card-table-columns.tsx) の checkbox 手前に置く
-// 掴み手。 listeners/attributes/touch-none は **この button のみ**に付与する
-// (tr / checkbox / 「カードを開く」/ 行メニューには付けない — event 分離契約)。
-// ---------------------------------------------------------------------------
-
-export function RowDragHandle({ cardTitle }: { cardTitle: string }) {
-  const ctx = useContext(RowDndContext)
-  // provider 不在 (task-4 配線前) または showHandle=false は非描画。
-  if (!ctx || !ctx.showHandle) return null
-
-  const { listeners, attributes, setActivatorNodeRef, locked, pending, lockedReasonId } = ctx
-  const disabled = locked || pending
-
-  // dnd-kit の attributes は自前の aria-describedby (SR 向け操作説明要素の id) を
-  // **既に持つ** (`node_modules/@dnd-kit/core/dist/core.esm.js:3432-3439` の
-  // `ariaDescribedById.draggable`)。 {...attributes} の後に素朴に
-  // `aria-describedby={lockedReasonId}` を書くと dnd-kit 側の id が消え、 逆順に書くと
-  // spread がこちらを上書きして消す — どちらの素朴な順序も片方の id を破壊する。
-  // 両者を空白区切りで明示的に合成する (2026-08-15 OT 承認修正)。 locked でなければ
-  // dnd-kit 側の id だけが残る。
-  const describedBy = [attributes['aria-describedby'], locked ? lockedReasonId : null]
-    .filter(Boolean)
-    .join(' ')
-
-  return (
-    <button
-      type="button"
-      ref={setActivatorNodeRef}
-      {...listeners}
-      {...attributes}
-      aria-describedby={describedBy || undefined}
-      disabled={disabled}
-      title={locked ? ROW_DND_LOCKED_REASON : undefined}
-      aria-label={`行を並べ替え: ${cardTitle}`}
-      // select td 全域の onClick (行選択トグル) への bubbling を止める
-      // (checkbox / 「カードを開く」/ 行メニューと同理由)。 td 側 handler は onClick のみ
-      // (exam-card-table.tsx:218-220) のため、 click 経路の遮断だけで mouse / keyboard /
-      // tap の全 activation 経路をカバーする。
-      onClick={(e) => e.stopPropagation()}
-      className="inline-flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <GripVertical className="size-4" aria-hidden="true" />
-    </button>
   )
 }
 

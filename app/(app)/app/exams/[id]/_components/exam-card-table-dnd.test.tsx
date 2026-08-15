@@ -22,7 +22,16 @@
 
 import * as React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor, within, act } from '@testing-library/react'
+import {
+  render,
+  screen,
+  cleanup,
+  createEvent,
+  fireEvent,
+  waitFor,
+  within,
+  act,
+} from '@testing-library/react'
 import type { DndContextProps, DragStartEvent, DragEndEvent, DragCancelEvent } from '@dnd-kit/core'
 
 type CapturedDndProps = {
@@ -73,6 +82,7 @@ vi.mock('@/lib/media/get-asset', () => ({
 
 import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
+import { ROW_DND_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 import { ROW_DND_LOCKED_REASON } from './exam-card-row-dnd'
 
 const USER_ID = 'user-dnd-table'
@@ -181,8 +191,17 @@ function dragCancelEvent(): DragCancelEvent {
   return {} as unknown as DragCancelEvent
 }
 
-function handleButton(title: string) {
-  return screen.getByRole('button', { name: `行を並べ替え: ${title}` })
+/** 行の二役グリップ (ドラッグ = 並べ替え / クリック = メニュー)。 */
+function grip(title: string) {
+  return screen.getByRole('button', { name: `行の操作: ${title}` })
+}
+
+/** aria-describedby の参照先要素の text を解決する (id の存在だけでは弱いため)。 */
+function describedByTexts(el: HTMLElement): string[] {
+  return (el.getAttribute('aria-describedby') ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? '')
 }
 
 // DndContext は自身のアナウンス用 LiveRegion (role="status" aria-live="assertive") を
@@ -194,6 +213,16 @@ function actionToastOrNull(): HTMLElement | null {
     null
   )
 }
+// dnd-kit 自身のアナウンス用 LiveRegion (@dnd-kit/accessibility の LiveRegion =
+// role="status" aria-live="assertive")。 ActionToast (polite) と役割で判別する。
+function dndLiveRegion(): HTMLElement {
+  const el = screen
+    .queryAllByRole('status')
+    .find((e) => e.getAttribute('aria-live') === 'assertive')
+  if (!el) throw new Error('dnd-kit LiveRegion (role=status aria-live=assertive) not found')
+  return el
+}
+
 async function findActionToast(): Promise<HTMLElement> {
   return waitFor(() => {
     const toast = actionToastOrNull()
@@ -370,7 +399,7 @@ describe('⑦ reject 後の再試行', () => {
 // ===========================================================================
 
 describe('⑧ sorting 適用中の gating', () => {
-  it('handle が disabled + aria-describedby を持ち、onDragEnd 手動発火は moveCards を発行しない', async () => {
+  it('grip は enabled のまま drag 役だけが落ち(roledescription 消滅 + 理由 describedby)、onDragEnd 手動発火は moveCards を発行しない', async () => {
     await renderTable(3)
 
     // 列メニューから昇順ソートを適用(exam-card-table-move.test.tsx の gating test と同型)。
@@ -378,18 +407,14 @@ describe('⑧ sorting 適用中の gating', () => {
     fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    const handle = handleButton('Card 1')
-    expect(handle).toBeDisabled()
-    // aria-describedby は dnd-kit 自前の id + lockedReasonId を空白区切りで合成する
-    // (exam-card-row-dnd.tsx:147) ため、非 null チェックだけでは dnd-kit 側の id だけでも
-    // 通ってしまい、table 側の sr-only <p id={lockedReasonId}> (exam-card-table.tsx) が
-    // 消えても検出できない。参照先を実際に解決し、ロック理由本文を持つ要素であることまで
-    // 確認する。
-    const describedByIds = (handle.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
-    const lockedReasonEl = describedByIds
-      .map((id) => document.getElementById(id))
-      .find((el) => el?.textContent === ROW_DND_LOCKED_REASON)
-    expect(lockedReasonEl).not.toBeUndefined()
+    // row-ux §4: grip は menu 役が生きているので native disabled にはしない。
+    // 落ちるのは drag 役だけ = dnd attributes を付けない。
+    expect(grip('Card 1')).toBeEnabled()
+    expect(grip('Card 1')).not.toHaveAttribute('aria-roledescription')
+    // describedby は lockedReasonId 単独 (dnd 側 id は同居しない)。id の存在だけでは
+    // table 側の sr-only <p id={lockedReasonId}> が消えても検出できないため、参照先を
+    // 解決してロック理由本文であることまで確認する。
+    expect(describedByTexts(grip('Card 1'))).toEqual([ROW_DND_LOCKED_REASON])
 
     await act(async () => {
       await captured().onDragEnd(dragEndEvent('card-1', 'card-2'))
@@ -403,9 +428,12 @@ describe('⑧ sorting 適用中の gating', () => {
 // ===========================================================================
 
 describe('⑨ data 1 件', () => {
-  it('カードが 1 件のとき掴み手(handle)は描画されない', async () => {
+  it('カードが 1 件でも grip は描画され(menu 役)、dnd attributes だけが付かない', async () => {
     await renderTable(1)
-    expect(screen.queryByRole('button', { name: /行を並べ替え:/ })).not.toBeInTheDocument()
+    // 1 枚の試験は並べ替えが意味を持たない (dragAvailable=false) が、menu 役は生きている。
+    expect(grip('Card 1')).toBeEnabled()
+    expect(grip('Card 1')).not.toHaveAttribute('aria-roledescription')
+    expect(grip('Card 1')).not.toHaveAttribute('aria-describedby')
   })
 })
 
@@ -464,8 +492,8 @@ describe('⑪ stale active id', () => {
 // ⑫ moveCards 未解決中 — handle disabled(movePending 反映)
 // ===========================================================================
 
-describe('⑫ 移動実行中の handle disabled', () => {
-  it('moveCards が未解決の間、handle は disabled になる', async () => {
+describe('⑫ 移動実行中の drag 役停止', () => {
+  it('moveCards が未解決の間、grip の dnd attributes が落ちる(native disabled にはしない)', async () => {
     let resolveMove: (v: typeof MOVE_OK) => void = () => {}
     mockMoveCards.mockImplementation(
       () =>
@@ -479,7 +507,10 @@ describe('⑫ 移動実行中の handle disabled', () => {
       void captured().onDragEnd(dragEndEvent('card-1', 'card-2'))
     })
 
-    await waitFor(() => expect(handleButton('Card 1')).toBeDisabled())
+    // pending 中は drag 役だけが落ちる。理由提示はしない (一時状態)。
+    await waitFor(() => expect(grip('Card 1')).not.toHaveAttribute('aria-roledescription'))
+    expect(grip('Card 1')).toBeEnabled()
+    expect(grip('Card 1')).not.toHaveAttribute('title')
 
     await act(async () => {
       resolveMove(MOVE_OK)
@@ -492,13 +523,60 @@ describe('⑫ 移動実行中の handle disabled', () => {
 // ===========================================================================
 
 describe('⑬ rows 動的変化', () => {
-  it('1 件のときは非表示、2 件目を mirror へ insert すると handle が出現する', async () => {
+  it('1 件では drag 役なし、2 件目を mirror へ insert すると drag 役が有効化する', async () => {
     await renderTable(1)
-    expect(screen.queryByRole('button', { name: /行を並べ替え:/ })).not.toBeInTheDocument()
+    expect(grip('Card 1')).not.toHaveAttribute('aria-roledescription')
 
     const db = getClientDb()
     await db.cards.put(makeCard(2))
 
-    await waitFor(() => expect(handleButton('Card 1')).toBeInTheDocument())
+    // dragAvailable は基準順全件 (data.length >= 2) 由来なので、行の増加で drag 役が復活する。
+    await waitFor(() =>
+      expect(grip('Card 1')).toHaveAttribute('aria-roledescription', 'sortable'),
+    )
+  })
+})
+
+// ===========================================================================
+// ⑭ a11y / sensor 配線 (table 側) — DndContext の accessibility と keyboardCodes
+//
+// この 2 つは exam-card-table.tsx の module 定数 / props としてしか存在せず、
+// 単体 harness (row-menu test) は同じ値を写して再現しているだけなので、production の
+// 配線そのものはここでしか観測できない。
+// ===========================================================================
+
+describe('⑭ a11y / sensor 配線', () => {
+  it('grip の aria-describedby が日本語の行 DnD instructions を指す', async () => {
+    await renderTable(3)
+
+    // dnd-kit 既定 (英語 + 生 id) のままだと文言が一致せず落ちる。
+    expect(describedByTexts(grip('Card 1'))).toEqual([ROW_DND_SR_INSTRUCTIONS.draggable])
+  })
+
+  it('Space keydown は掴みに取られ(preventDefault)、Enter は menu 役に残る', async () => {
+    await renderTable(3)
+
+    const enter = createEvent.keyDown(grip('Card 1'), { code: 'Enter', key: 'Enter' })
+    fireEvent(grip('Card 1'), enter)
+    // keyboardCodes.start から Enter を外していないと、ここで preventDefault される。
+    expect(enter.defaultPrevented).toBe(false)
+
+    const space = createEvent.keyDown(grip('Card 1'), { code: 'Space', key: ' ' })
+    fireEvent(grip('Card 1'), space)
+    expect(space.defaultPrevented).toBe(true)
+
+    // 掴んだ後の読み上げ = 日本語 + 表示名 (cardLabel = question_label 優先で '0001')。
+    // 既定の announcements のままだと英語 + 生 id ("Picked up draggable item card-1.")
+    // になるため、両方向 (表示名がある / 生 id が無い) を見る。 掴んだ直後は onDragStart →
+    // onDragOver と連続して読み上げが差し替わるので、どちらでも成立する形で assert する。
+    await waitFor(() => expect(dndLiveRegion().textContent).toMatch(/^0001 を/))
+    expect(dndLiveRegion().textContent).not.toContain('card-1')
+
+    // 掴んだ KeyboardSensor は document へ keydown listener を張る (setTimeout 経由) ため、
+    // 掴んだまま抜けると次の test の keydown まで拾う。 unmount 前に Escape で取り消す。
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    fireEvent.keyDown(document, { code: 'Escape', key: 'Escape' })
   })
 })

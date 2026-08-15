@@ -1,9 +1,11 @@
-// ExamCardRowMenu — 行メニュー「ここに取り込む」 (UI 入口 c) と取り込み picker。
-// Grid-3 spec §7.2 / §7.4 / D-9。
+// ExamCardRowMenu — 行の二役グリップ + 行メニュー (「開く」/「ここに取り込む」) と
+// 取り込み picker。 Grid-3 spec §7.2 / §7.4 / D-9 + row-ux spec §2 / §5。
 //
 // 構成:
-//   ExamCardRowMenu … select セル内の ⋯ trigger + Radix Popover の menu。項目は
-//     「ここに取り込む」1 つだけ (ColumnHeaderMenu と同じ Popover wrapper・同じ項目 markup)。
+//   ExamCardRowMenu … select セル内の **grip trigger** + Radix Popover の menu。grip は
+//     二役 (ドラッグ = 並べ替え / クリック = メニュー) で、drag 役は SortableRow が配る
+//     context (useRowDnd) から来る。項目は「開く」+「ここに取り込む」
+//     (ColumnHeaderMenu と同じ Popover wrapper・同じ項目 markup)。
 //   PullIntoDialog … 取り込み picker。ConfirmDialog の portal modal パターンを転用
 //     (backdrop click / role=dialog + aria-modal / Escape / focus 復帰)。menu を閉じてから
 //     開くので Popover の unmount に巻き込まれない。
@@ -23,13 +25,15 @@
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { MoreHorizontal } from 'lucide-react'
+import { GripVertical } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { compareByBaseOrder } from '@/lib/cards/domain/card-order'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
+import { cn } from '@/lib/utils'
 import { POSITION_LOCKED_REASON } from './exam-card-move-popover'
+import { ROW_DND_LOCKED_REASON, useRowDnd } from './exam-card-row-dnd'
 
 /**
  * 取り込みの確定 dispatch。返り値 = dialog に出す inline error 文言、`null` なら完了
@@ -42,6 +46,7 @@ export type PullIntoDispatch = (
 ) => Promise<string | null>
 
 const PULL_INTO_MENU_ITEM_LABEL = 'ここに取り込む'
+const OPEN_CARD_MENU_ITEM_LABEL = '開く'
 
 /**
  * checkbox リストを描画する上限 (spec §7.2「少数枚用」の具体化)。超過分は仮想化も検索も
@@ -66,6 +71,11 @@ export type ExamCardRowMenuProps = {
   /** 親が持つ移動の実行中 flag (一括バー / 切り出し / 取り込みで共有)。 */
   pending: boolean
   onPullInto: PullIntoDispatch
+  /**
+   * side peek のトグル (row-ux §5)。 未配線 (単体 harness 等) では「開く」項目を
+   * 描画しない — meta 経由 optional の既存規約と同型。
+   */
+  openCard?: (cardId: string) => void
 }
 
 export function ExamCardRowMenu({
@@ -75,6 +85,7 @@ export function ExamCardRowMenu({
   positionLocked,
   pending,
   onPullInto,
+  openCard,
 }: ExamCardRowMenuProps) {
   const [menuOpen, setMenuOpen] = React.useState(false)
   const [pickerOpen, setPickerOpen] = React.useState(false)
@@ -92,25 +103,91 @@ export function ExamCardRowMenu({
     triggerRef.current?.focus()
   }, [])
 
+  // row-ux §4: 2 つの gating を別概念として持つ。
+  //   dragAvailable = この試験で並べ替えが意味を持つか (行 2 枚以上)。
+  //   dragEnabled   = 今この瞬間ドラッグできるか (ソート/フィルタ中・移動中は false)。
+  // ctx null (provider 不在 = 単体 harness) は drag 役なし = menu 専用 trigger。
+  const rowDnd = useRowDnd()
+  const dragAvailable = rowDnd?.dragAvailable ?? false
+  const dragEnabled = dragAvailable && !rowDnd?.locked && !rowDnd?.pending
+  // 並べ替え可能な行が「今だけ」塞がれている状態 = 理由を提示する唯一の条件。
+  // dragAvailable でない行に「ソート/フィルタを解除すれば並べ替えられます」と言うのは誤り。
+  const lockedForDrag = dragAvailable && (rowDnd?.locked ?? false)
+
+  const setActivatorNodeRef = rowDnd?.setActivatorNodeRef
+  // trigger の ref は 2 者を束ねる: picker の focus 復帰先 (triggerRef) と dnd-kit の
+  // activator (KeyboardSensor の起動判定に使う)。 Radix 側の ref は PopoverTrigger asChild
+  // の Slot が child の ref と自動合成する (@radix-ui/react-slot useComposedRefs) ので
+  // ここでは扱わない。 inline arrow にすると毎 render で detach/attach が走るため
+  // useCallback で identity を固定する (SortableRow の merge ref と同規律)。
+  // activator は dragAvailable の間は locked / pending 中も付けたままにする — ドラッグ
+  // 可能な状況で ref を外すと KeyboardSensor の activator 判定が死ぬため。
+  const setTriggerRef = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      triggerRef.current = node
+      if (dragAvailable) setActivatorNodeRef?.(node)
+    },
+    [dragAvailable, setActivatorNodeRef],
+  )
+
   return (
     <>
       <Popover open={menuOpen} onOpenChange={setMenuOpen}>
         <PopoverTrigger asChild>
           <button
-            ref={triggerRef}
+            ref={setTriggerRef}
             type="button"
-            aria-label={`行メニュー: ${anchorCard.title}`}
+            // dnd-kit は disabled 時に listeners を undefined で返す
+            // (@dnd-kit/core core.esm.js:3446) ため、 自前の条件分岐は書かない。
+            {...rowDnd?.listeners}
+            // dnd の semantics (role / tabIndex / aria-roledescription / instructions への
+            // aria-describedby) は dragEnabled のときだけ付ける。 locked / pending / 1 枚 /
+            // provider 不在では「メニューを開く button」でしかないので、 SR に「Space で
+            // つかむ」と案内しない (row-ux §2.4)。
+            {...(dragEnabled ? rowDnd?.attributes : undefined)}
+            // menu 役は常に生きているので、 どの状態でも disabled を主張しない
+            // (dnd-kit の attributes は dragEnabled 時も aria-disabled="false" を出す)。
+            aria-disabled={undefined}
+            // dragEnabled 側は spread 済みの dnd 側 id をそのまま残す (ここで書くと消える)。
+            // 両状態は排他なので空白合成はしない。
+            {...(lockedForDrag ? { 'aria-describedby': rowDnd?.lockedReasonId } : {})}
+            aria-label={`行の操作: ${anchorCard.title}`}
+            title={lockedForDrag ? ROW_DND_LOCKED_REASON : undefined}
             // select td 全域の onClick (行選択トグル) への bubbling を止める
-            // (checkbox / 「カードを開く」と同理由)。Radix 自身の toggle は
-            // defaultPrevented を見るので stopPropagation では止まらない。
+            // (checkbox と同理由)。Radix 自身の toggle は defaultPrevented を見るので
+            // stopPropagation では止まらない (= menu は正常に開く)。
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+            className={cn(
+              'inline-flex size-6 shrink-0 touch-none items-center justify-center rounded',
+              // 常時表示の低コントラスト (row-ux §6): 基底は 50% で可視、 行 hover / 自
+              // focus で通常色、 direct hover で前景色。 基底を opacity-0 にはしない
+              // (hover 不能端末で永久不可視になる — spec §12 の NO-GO 記録)。
+              'text-muted-foreground/50 group-hover:text-muted-foreground focus-visible:text-muted-foreground hover:text-foreground',
+              dragEnabled && 'cursor-grab',
+            )}
           >
-            <MoreHorizontal className="size-4" aria-hidden="true" />
+            <GripVertical className="size-4" aria-hidden="true" />
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-64 p-1">
           <div className="flex flex-col" data-testid="exam-card-row-menu">
+            {openCard && (
+              <button
+                type="button"
+                className="rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                onClick={(e) => {
+                  // PopoverContent は DOM 上は portal でも **React tree では行 cell の子** なので、
+                  // ここで止めないと select td の onClick (行選択トグル) まで伝播する
+                  // (「ここに取り込む」項目と同理由・同順序)。
+                  e.stopPropagation()
+                  // menu を閉じてから発火する (項目 click 後は open state で閉じる規約)。
+                  setMenuOpen(false)
+                  openCard(anchorCard.id)
+                }}
+              >
+                {OPEN_CARD_MENU_ITEM_LABEL}
+              </button>
+            )}
             <button
               type="button"
               disabled={positionLocked}
@@ -365,8 +442,18 @@ function PullIntoDialog({
   return createPortal(content, document.body)
 }
 
-function cardLabel(card: ClientCard): string {
-  const raw = (card.question_label ?? card.title ?? '').trim()
-  const text = raw.length > 0 ? raw : '(無題)'
+/**
+ * カードの短い表示名 (picker の checkbox / DnD の読み上げ)。 question_label → title の順に
+ * **trim 後の最初の非空**を採り、どちらも空なら「(無題)」。 `??` 単独だと空白のみの
+ * question_label が左辺として選ばれ、title があるのに「(無題)」になる (空文字は編集経路が
+ * null 正規化するが、空白のみはすり抜ける — inline-text-field.tsx の commit 正規化)。
+ * 行 DnD の announcements (exam-card-table.tsx) も同じ文言で読み上げる必要があるので、
+ * 両者はこの 1 定義を import して共有する。
+ */
+export function cardLabel(card: ClientCard): string {
+  const text =
+    [card.question_label, card.title]
+      .map((value) => value?.trim() ?? '')
+      .find((value) => value.length > 0) ?? '(無題)'
   return text.length > CARD_LABEL_MAX ? `${text.slice(0, CARD_LABEL_MAX)}…` : text
 }

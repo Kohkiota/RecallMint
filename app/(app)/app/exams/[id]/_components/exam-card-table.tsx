@@ -75,6 +75,7 @@ import {
   closestCenter,
   type DragStartEvent,
   type DragEndEvent,
+  type UniqueIdentifier,
 } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { ChevronUp } from 'lucide-react'
@@ -83,7 +84,8 @@ import { ActionToast } from '@/components/ui/action-toast'
 import { Button } from '@/components/ui/button'
 import { getClientDb, type ClientCard } from '@/lib/client-db'
 import { compareByBaseOrder, placementForRowDrop, type MovePlacement } from '@/lib/cards/domain/card-order'
-import { useSortableSensors } from '@/lib/dnd/use-sortable-sensors'
+import { useSortableSensors, type SortableSensorOptions } from '@/lib/dnd/use-sortable-sensors'
+import { buildJaAnnouncements, ROW_DND_SR_INSTRUCTIONS } from '@/lib/dnd/accessibility'
 import { restrictToVerticalAxis } from '@/lib/dnd/restrict-to-vertical-axis'
 import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from './exam-card-table-columns'
 import { joinCardTags } from '@/lib/cards/join-card-tags'
@@ -98,6 +100,7 @@ import { ExamCardSidePeek } from './exam-card-side-peek'
 import { createExam } from '../../_actions/create-exam'
 import { runGuardedPull } from '@/lib/sync/pull'
 import type { MoveDispatchOutcome } from './exam-card-move-popover'
+import { cardLabel } from './exam-card-row-menu'
 import { useCardTagToggle } from '../_hooks/use-card-tag-toggle'
 import { useBulkCardTags, type BulkResult, type BulkTagOp } from '../_hooks/use-bulk-card-tags'
 import { useBulkCardDelete } from '../_hooks/use-bulk-card-delete'
@@ -131,13 +134,13 @@ type TableBodyProps = {
   //   基準を、 element 実装では container 自身が原点 = scrollMargin 0 で満たす (下記参照)。
   scrollElementRef: RefObject<HTMLDivElement | null>
   // row-dnd task-4: SortableRow (spec §3.2 gating) へそのまま配る 3 値。
-  //   showHandle は table.getRowModel().rows (filter 後) ではなく **基準順全件 (data.length)**
+  //   dragAvailable は table.getRowModel().rows (filter 後) ではなく **基準順全件 (data.length)**
   //   由来 (ExamCardTable 側で算出) — これは「この試験で並べ替えが意味を持つか」(カード
   //   1 件の試験は絶対に並べ替えられない) を問う判定で、「今この瞬間許可されているか」
   //   (= positionLocked、フィルタ適用中は disabled) とは別の関心事。表示行数で判定すると
-  //   フィルタの絞り込みに応じて handle が出たり消えたりしてしまい、disabled + 理由表示
+  //   フィルタの絞り込みに応じてドラッグ可否が出たり消えたりしてしまい、理由表示
   //   (spec D-c) より悪い挙動になる。
-  showHandle: boolean
+  dragAvailable: boolean
   locked: boolean
   pending: boolean
   lockedReasonId: string
@@ -146,10 +149,23 @@ type TableBodyProps = {
 // Fix-3 T2: 推定行高 (px)。実行高の中央値目安。過小でも measureElement が補正する。
 const ESTIMATED_ROW_HEIGHT = 120
 
+// row-ux §3: 行 DnD だけ sensor の起動条件を変える (グリップが「ドラッグ = 並べ替え /
+// クリック = メニュー」の二役のため)。
+//   - mouse: 4px 超で初めて起動 = しきい値以下の押下は native click として menu に届く
+//     (dnd-kit は activation しなかった押下に click 抑止を張らない)。 tolerance は付けない
+//     (超過で handleCancel に落ちるため)。
+//   - keyboard: Enter を start から外し menu 用に残す。 Space が掴む / 離す、 Escape が取消。
+// useSensor は options の参照で memo するため module スコープ定数にする (毎 render の
+// object literal だと memo が毎回無効化される — use-sortable-sensors.ts の安定参照規律)。
+const ROW_DND_SENSOR_OPTIONS: SortableSensorOptions = {
+  mouseActivationConstraint: { distance: 4 },
+  keyboardCodes: { start: ['Space'], cancel: ['Escape'], end: ['Space', 'Enter', 'Tab'] },
+}
+
 function TableBody({
   table,
   scrollElementRef,
-  showHandle,
+  dragAvailable,
   locked,
   pending,
   lockedReasonId,
@@ -224,7 +240,7 @@ function TableBody({
             key={row.id}
             cardId={row.original.card.id}
             index={vi.index}
-            showHandle={showHandle}
+            dragAvailable={dragAvailable}
             locked={locked}
             pending={pending}
             lockedReasonId={lockedReasonId}
@@ -655,7 +671,6 @@ export function ExamCardTable({
       tagEditCallbacks,
       categories: liveData?.categories ?? [],
       options: liveData?.options ?? [],
-      activeCardId,
       openCard,
       // Grid-3 §7.2: 行メニュー「ここに取り込む」。 examId / gating / dispatch は行に依らず
       // 同一なので meta で 1 回配り、行固有の anchor は cell が row から取る。
@@ -812,16 +827,31 @@ export function ExamCardTable({
 
   // ---------------------------------------------------------------------------
   // row DnD (dnd-kit) — row-dnd sprint task-4: spec §3.1/§3.5/§4/§5 の配線。
-  // popover / tag manager と同じ sensors 構成 (Mouse 即 / Touch long-press / Keyboard a11y)。
+  // sensors は tag 3 site と同じ hook を使うが、 起動条件だけ二役グリップ用に差し替える
+  // (ROW_DND_SENSOR_OPTIONS — Mouse は 4px 超 / Touch long-press は共通 / Keyboard は
+  // Enter を menu 用に残す)。
   // ---------------------------------------------------------------------------
-  const sensors = useSortableSensors()
+  const sensors = useSortableSensors(ROW_DND_SENSOR_OPTIONS)
   // SortableContext の items = 基準順 (data) 全件の id 列。 仮想化で非表示の行も
   // dnd-kit sortable の index 計算には要るため、可視行 (virtualItems) だけでは不足する。
   const sortableItemIds = useMemo(() => data.map((r) => r.card.id), [data])
-  // 掴み手の表示可否。 category-list の sortableEnabled (list.length >= 2) と同じ判定を
+  // 並べ替えが意味を持つか。 category-list の sortableEnabled (list.length >= 2) と同じ判定を
   // 基準順全件 (data — columnFilters 非依存) に対して行う (TableBodyProps 冒頭コメント参照)。
-  const showDragHandle = data.length >= 2
+  const dragAvailable = data.length >= 2
   const lockedReasonId = useId()
+  // 読み上げ用のカード名。 生 id を読ませないための lookup で、文言は picker の checkbox
+  // (row-menu の cardLabel) と同一定義を共有する。 data に無い id は空文字を返し、
+  // buildJaAnnouncements 側の総称 fallback に委ねる。
+  const getDragLabel = useCallback(
+    (id: UniqueIdentifier) => {
+      const card = data.find((r) => r.card.id === String(id))?.card
+      return card ? cardLabel(card) : ''
+    },
+    [data],
+  )
+  // DndContext の accessibility は announcements の参照で memo される
+  // (@dnd-kit/core の Accessibility → useDndMonitor)。 毎 render 新しい object を渡さない。
+  const dragAnnouncements = useMemo(() => buildJaAnnouncements(getDragLabel), [getDragLabel])
   // ドラッグ中のプレビュー対象 card。 onDragStart で見つからなければ (stale id) null の
   // ままにする = DragOverlay の中身が非表示になる (spec §3.5)。
   const [activeDragCard, setActiveDragCard] = useState<ClientCard | null>(null)
@@ -1033,7 +1063,7 @@ export function ExamCardTable({
           tbody subtree が丸ごと remount するリークを Fix-3 T1.1 で根治した後なので、
           provider の mount/unmount 切替で同じ class の事故を再導入しない。 並べ替え不能状態
           (ソート/フィルタ中・1 件以下・移動中) は SortableRow 内の 3 層 gating
-          (locked/pending/showHandle → useSortable disabled) で表現し、 provider の
+          (locked/pending/dragAvailable → useSortable disabled) で表現し、 provider の
           有無では表現しない。 DragOverlay は末尾で document.body へ portal する
           (PullIntoDialog と同型の typeof document ガード)。 */}
       <DndContext
@@ -1043,6 +1073,12 @@ export function ExamCardTable({
         onDragStart={handleRowDragStart}
         onDragEnd={handleRowDragEnd}
         onDragCancel={handleRowDragCancel}
+        // dnd-kit 既定は英語 + 生 card id を読み上げるため日本語版に差し替える
+        // (row-ux §7)。 instructions は行 DnD 専用 (Enter = メニュー) の文言。
+        accessibility={{
+          announcements: dragAnnouncements,
+          screenReaderInstructions: ROW_DND_SR_INSTRUCTIONS,
+        }}
       >
       {/* S2-2: 内部スクロール主体の container。 flex-1 min-h-0 で残余高を埋め overflow-auto で
           縦横スクロールを内包 (旧 overflow-x-auto = document 縦スクロール前提から差替)。
@@ -1238,7 +1274,7 @@ export function ExamCardTable({
           table={table}
           isResizing={Boolean(table.getState().columnSizingInfo.isResizingColumn)}
           scrollElementRef={tableContainerRef}
-          showHandle={showDragHandle}
+          dragAvailable={dragAvailable}
           locked={positionLocked}
           pending={movePending}
           lockedReasonId={lockedReasonId}

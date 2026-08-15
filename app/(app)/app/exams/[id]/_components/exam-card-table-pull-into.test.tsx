@@ -155,7 +155,7 @@ async function openPickerOnRow(rowCardId: string) {
   render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
   await waitFor(() => expect(screen.getAllByTestId(/^row-/)).toHaveLength(2))
 
-  fireEvent.click(screen.getByRole('button', { name: `行メニュー: Card ${rowCardId}` }))
+  fireEvent.click(screen.getByRole('button', { name: `行の操作: Card ${rowCardId}` }))
   fireEvent.click(await screen.findByRole('button', { name: 'ここに取り込む' }))
   await screen.findByTestId('exam-card-pull-into-dialog')
 
@@ -259,11 +259,11 @@ describe('取り込みの失敗 3 分岐', () => {
 // ===========================================================================
 
 describe('行メニューの配線', () => {
-  it('行メニューを開いても行選択はトグルしない (select td の click 分離)', async () => {
+  it('グリップから行メニューを開いても行選択はトグルしない (select td の click 分離)', async () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-/)).toHaveLength(2))
 
-    fireEvent.click(screen.getByRole('button', { name: '行メニュー: Card row-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '行の操作: Card row-1' }))
 
     await screen.findByRole('button', { name: 'ここに取り込む' })
     expect(screen.getByRole('checkbox', { name: '行選択: Card row-1' })).not.toBeChecked()
@@ -275,7 +275,7 @@ describe('行メニューの配線', () => {
     // PopoverContent は portal でも React tree では行 cell の子 = td の onClick へ伝播する。
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-/)).toHaveLength(2))
-    fireEvent.click(screen.getByRole('button', { name: '行メニュー: Card row-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '行の操作: Card row-1' }))
 
     fireEvent.click(await screen.findByRole('button', { name: 'ここに取り込む' }))
 
@@ -338,7 +338,7 @@ describe('行メニューの配線', () => {
     fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: '行メニュー: Card row-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '行の操作: Card row-1' }))
 
     const item = await screen.findByRole('button', { name: 'ここに取り込む' })
     expect(item).toBeDisabled()
@@ -370,7 +370,7 @@ describe('行メニューの配線', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: '行メニュー: Card row-1' }))
+    fireEvent.click(screen.getByRole('button', { name: '行の操作: Card row-1' }))
 
     const item = await screen.findByRole('button', { name: 'ここに取り込む' })
     expect(item).toBeDisabled()

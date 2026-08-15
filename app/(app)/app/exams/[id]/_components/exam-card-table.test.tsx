@@ -1861,7 +1861,7 @@ describe('S5-2 (d): boundary null 時 — pinning 由来のクラスが th に�
 // select / title が left-pinned → th/td に sticky + left style。
 // title が最右可視 pinned → th/td に border-r。
 // question (非 pinned) → sticky / left / border-r なし。
-// <table> style に --col-select-start=0 / --col-title-start=112(select size=112) が emit される。
+// <table> style に --col-select-start=0 / --col-title-start=72(select size=72) が emit される。
 // boundary null → start 変数 emit なし + sticky class ゼロ (S5-2 (d) の回帰を兼用)。
 // ===========================================================================
 
@@ -1903,7 +1903,7 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(questionTh.className, 'question th に border-r なし').not.toContain('border-r')
   })
 
-  it('<table> style に --col-select-start=0 / --col-title-start=112 が emit される', async () => {
+  it('<table> style に --col-select-start=0 / --col-title-start=72 が emit される', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     const { container } = render(
@@ -1922,10 +1922,10 @@ describe('S5-3 (a): boundary=title — pinned th に sticky + left style + セ�
     expect(selectStart, '--col-select-start が emit されている').not.toBe('')
     expect(parseFloat(selectStart), '--col-select-start = 0 (select が先頭 pinned)').toBe(0)
 
-    // --col-title-start: title は select (size=112) の直後 → offset=112
+    // --col-title-start: title は select (size=72) の直後 → offset=72
     const titleStart = tableEl.style.getPropertyValue('--col-title-start')
     expect(titleStart, '--col-title-start が emit されている').not.toBe('')
-    expect(parseFloat(titleStart), '--col-title-start = 112 (select size 分 offset)').toBe(112)
+    expect(parseFloat(titleStart), '--col-title-start = 72 (select size 分 offset)').toBe(72)
   })
 
   it('boundary null → --col-select-start / --col-title-start が emit されず、th に sticky がない', async () => {
@@ -2009,18 +2009,31 @@ describe('S5-3 (b): hidden boundary → separator が title (最右可視 pinned
 // ExamCardSidePeek は radix Dialog non-modal で Portal 描画。
 // open 時: getByRole('dialog') = DialogContent / getByRole('heading') = DialogTitle(sr-only h2)。
 // '閉じる' button は ExamCardSidePeek 専用(列メニュー popover との区別に使う)。
+//
+// row-ux §2 / §5: 起動導線は「グリップ click → menu の『開く』click」の 2 click に変わった
+// (旧「カードを開く」常設 button は撤去)。 期待挙動 (open/close/toggle/切替/prune) は不変。
 // ===========================================================================
 
+/** 行のグリップ (menu trigger)。 focus-steal 等で要素自体が要る場合に使う。 */
+function rowGrip(rowTestId: string): HTMLElement {
+  return within(screen.getByTestId(rowTestId)).getByRole('button', { name: /^行の操作:/ })
+}
+
+/** 行の side peek を起動する (グリップ → menu の「開く」)。 */
+async function clickOpenCard(rowTestId: string) {
+  fireEvent.click(rowGrip(rowTestId))
+  fireEvent.click(await screen.findByRole('button', { name: '開く' }))
+}
+
 describe('T3 ①: title トリガー click で peek に該当 card 内容表示', () => {
-  it('行の「カードを開く」をクリックすると peek が開き card タイトルが表示される', async () => {
+  it('行のグリップ menu「開く」をクリックすると peek が開き card タイトルが表示される', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
-    // card-1 の title セルにある「カードを開く」ボタンをクリック
-    const row1 = screen.getByTestId('row-card-1')
-    fireEvent.click(within(row1).getByRole('button', { name: 'カードを開く' }))
+    // card-1 の select セルのグリップ → menu の「開く」
+    await clickOpenCard('row-card-1')
 
     // ExamCardSidePeek が開き Dialog.Title (sr-only h2) に card タイトルが表示される
     await waitFor(() => {
@@ -2036,15 +2049,12 @@ describe('T3 ②: 同一行 再 click で close(toggle)', () => {
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    const row1 = screen.getByTestId('row-card-1')
-    const trigger = within(row1).getByRole('button', { name: 'カードを開く' })
-
     // 1 回目: open
-    fireEvent.click(trigger)
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
-    // 2 回目: close (toggle)
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    // 2 回目: close (toggle — openCard は同一 id で閉じる契約)
+    await clickOpenCard('row-card-1')
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Card 1' })).not.toBeInTheDocument()
     })
@@ -2059,11 +2069,11 @@ describe('T3 ③: 別行 click で card 切替', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // card-1 を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
-    // card-2 のトリガーをクリック
-    fireEvent.click(within(screen.getByTestId('row-card-2')).getByRole('button', { name: 'カードを開く' }))
+    // card-2 のグリップ menu から開く
+    await clickOpenCard('row-card-2')
 
     // peek が Card 2 に切り替わる
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 2' })).toBeInTheDocument())
@@ -2079,7 +2089,7 @@ describe('T3 ④: × で close', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
     // × ボタンで閉じる
@@ -2098,7 +2108,7 @@ describe('T3 ⑤: data から該当 card 消滅で自動 close', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // card-1 の peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
     // card-1 を DB から削除(削除相当の useLiveQuery 再評価トリガー)
@@ -2119,7 +2129,7 @@ describe('T3 ⑥: columnFilters で該当行が非表示になっても peek が
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // card-1 の peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
     // タイトル列メニューを開いて "Card 2" フィルタを適用(card-1 を非表示に)
@@ -2143,7 +2153,7 @@ describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
     // 行選択 → peek は開いたまま
@@ -2158,8 +2168,8 @@ describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)
   })
 })
 
-describe('T3 ⑦-b: 「カードを開く」button click が行選択チェックボックスをトグルしない(逆方向・stopPropagation)', () => {
-  it('select 列 td 全域は onClick で行選択トグルするが、button click は stopPropagation で bubbling を止めるため checkbox は unchecked のまま', async () => {
+describe('T3 ⑦-b: peek 起動 2 click が行選択チェックボックスをトグルしない(逆方向・stopPropagation)', () => {
+  it('グリップ click と menu「開く」click のどちらも select td の onClick(行選択トグル)へ bubbling しない', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -2168,9 +2178,14 @@ describe('T3 ⑦-b: 「カードを開く」button click が行選択チェッ�
     const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ }) as HTMLInputElement
     expect(checkbox.checked).toBe(false)
 
-    // 「カードを開く」button は select 列(checkbox 隣接)に配置済 — button click が
-    // 親 td の onClick(行選択トグル)へ bubbling しないことを検証する。
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    // 伝播遮断は 2 箇所に分かれている (grip の onClick と menu 項目の onClick — menu は
+    // portal でも React tree では select td の子)。 片方だけ pin すると保証が半分になるため
+    // 2 click それぞれの直後に checkbox を見る。
+    fireEvent.click(rowGrip('row-card-1'))
+    await screen.findByTestId('exam-card-row-menu')
+    expect(checkbox.checked).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '開く' }))
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
     expect(checkbox.checked).toBe(false)
@@ -2185,7 +2200,7 @@ describe('T3 ⑧: data の該当 card 更新が peek 表示に反映(live 追従
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
     // card-1 の peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
     // DB のカードタイトルを更新
@@ -2207,7 +2222,7 @@ describe('T3 ⑨: peek open 中に背面テーブルセル click → peek は開
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // card-1 の peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
     // card-2 の title セル(display mode ボタン)を取得
@@ -2247,7 +2262,7 @@ describe('T3 ⑩: card 切替時の option 編集 commit 保証', () => {
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
 
     // card-1 の peek を開く
-    fireEvent.click(within(screen.getByTestId('row-card-1')).getByRole('button', { name: 'カードを開く' }))
+    await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 1' })).toBeInTheDocument())
 
     // peek 内の option 本文セル(display mode)をクリックして edit mode に切替
@@ -2263,10 +2278,9 @@ describe('T3 ⑩: card 切替時の option 編集 commit 保証', () => {
     // 値を変更
     fireEvent.change(optionInput, { target: { value: 'OptionA Modified' } })
 
-    // card-2 のトリガーボタンを focus することで focus-steal → optionInput が blur → commit
-    const row2 = screen.getByTestId('row-card-2')
-    const card2Trigger = within(row2).getByRole('button', { name: 'カードを開く' })
-    act(() => { card2Trigger.focus() })
+    // card-2 のグリップを focus することで focus-steal → optionInput が blur → commit
+    const card2Grip = rowGrip('row-card-2')
+    act(() => { card2Grip.focus() })
 
     // blur → handleCellSave → db.cards.update が走り DB に値が保存される
     await waitFor(async () => {
@@ -2274,8 +2288,8 @@ describe('T3 ⑩: card 切替時の option 編集 commit 保証', () => {
       expect(updatedCard?.options?.[0]?.text).toBe('OptionA Modified')
     })
 
-    // card-2 のトリガーをクリック → card 切替
-    fireEvent.click(card2Trigger)
+    // card-2 のグリップ menu から開く → card 切替
+    await clickOpenCard('row-card-2')
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Card 2' })).toBeInTheDocument())
   })
 })

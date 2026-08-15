@@ -1,23 +1,20 @@
 // @vitest-environment jsdom
 //
-// exam-card-row-dnd (row-dnd sprint task-3) の unit test。
+// exam-card-row-dnd (row-dnd sprint task-3 / row-ux task-4) の unit test。
 //
-// この file は task-4 未配線 (SortableRow は TableBody からまだ呼ばれていない) を前提に、
-// 部品単体を **real DndContext / real SortableContext** の下で render する
-// (category-list.test.tsx:590- の event 分離契約 pin と同型)。 handle の
-// attributes/listeners は mock ではなく実物の dnd-kit 出力である必要があるため
-// (aria-describedby 合成 pin・aria-roledescription pin が実物でないと意味を持たない)。
+// 掴み手 button 自体はこの file の管轄外 (row-ux §2.2 で二役グリップに統合され、実体は
+// exam-card-row-menu.tsx の trigger — その test は exam-card-row-menu.test.tsx)。 ここでは
+// **provider (SortableRow) が consumer (useRowDnd) へ何を配るか** を **real DndContext /
+// real SortableContext** の下で検証する。 listeners の有無は dnd-kit が
+// `useSortable({disabled})` に応じて undefined を返す実挙動 (core.esm.js:3446) に依存する
+// ため、mock ではなく実物の出力でなければ意味を持たない。
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import { DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 
-import {
-  SortableRow,
-  RowDragHandle,
-  ROW_DND_LOCKED_REASON,
-} from './exam-card-row-dnd'
+import { SortableRow, useRowDnd } from './exam-card-row-dnd'
 
 afterEach(() => {
   cleanup()
@@ -26,26 +23,45 @@ afterEach(() => {
 const CARD_ID = 'card-1'
 const LOCKED_REASON_ID = 'locked-reason-test-id'
 
-// SortableRow は provider・RowDragHandle は select 列 cell 内に置かれる想定なので、
-// td でラップして本番の DOM 構造 (tr > td > handle) を再現する。outerOnClick は
-// select td の onClick (行選択トグル・exam-card-table.tsx:218-220) の代役。
+/**
+ * useRowDnd の戻り値を DOM 属性に写す consumer。 grip (row-menu) の代役で、
+ * 「provider が何を配ったか」だけを観測する。
+ */
+function RowDndProbe() {
+  const ctx = useRowDnd()
+  if (!ctx) return <span data-testid="probe" data-has-context="false" />
+  return (
+    <span
+      data-testid="probe"
+      data-has-context="true"
+      data-drag-available={String(ctx.dragAvailable)}
+      data-locked={String(ctx.locked)}
+      data-pending={String(ctx.pending)}
+      data-locked-reason-id={ctx.lockedReasonId}
+      // dnd-kit は disabled のとき listeners を undefined で返す (core.esm.js:3446)。
+      // = 「ドラッグ役が生きているか」の観測点。
+      data-has-listeners={String(ctx.listeners !== undefined)}
+    />
+  )
+}
+
+// SortableRow は provider・grip は select 列 cell 内に置かれる想定なので、td でラップして
+// 本番の DOM 構造 (tr > td > grip) を再現する。
 function Harness({
-  showHandle = true,
+  dragAvailable = true,
   locked = false,
   pending = false,
   lockedReasonId = LOCKED_REASON_ID,
   measureElement = vi.fn(),
-  outerOnClick,
 }: {
-  showHandle?: boolean
+  dragAvailable?: boolean
   locked?: boolean
   pending?: boolean
   lockedReasonId?: string
   measureElement?: (node: Element | null) => void
-  outerOnClick?: () => void
 }) {
   // sensors: DndContext 既定 (PointerSensor) で足りる — 本 test は実 pointer drag を
-  // 行わず、attributes/listeners の静的な出力だけを検証する。
+  // 行わず、context 値の静的な出力だけを検証する。
   const sensors = useSensors(useSensor(PointerSensor))
   return (
     <DndContext sensors={sensors}>
@@ -55,14 +71,14 @@ function Harness({
             <SortableRow
               cardId={CARD_ID}
               index={0}
-              showHandle={showHandle}
+              dragAvailable={dragAvailable}
               locked={locked}
               pending={pending}
               lockedReasonId={lockedReasonId}
               measureElement={measureElement}
             >
-              <td onClick={outerOnClick}>
-                <RowDragHandle cardTitle="カードA" />
+              <td>
+                <RowDndProbe />
               </td>
               <td>
                 <button type="button">他の行内 button</button>
@@ -75,85 +91,56 @@ function Harness({
   )
 }
 
-describe('SortableRow / RowDragHandle — event 分離契約', () => {
-  it('handle button のみが aria-roledescription (dnd-kit 標準 sortable) を持つ (tr / 他 button は持たない)', () => {
-    const { container } = render(<Harness />)
-    const handle = screen.getByRole('button', { name: '行を並べ替え: カードA' })
-    expect(handle).toHaveAttribute('aria-roledescription', 'sortable')
+function probe(): HTMLElement {
+  return screen.getByTestId('probe')
+}
 
-    const tr = container.querySelector('tr')
+describe('useRowDnd — provider の有無', () => {
+  it('provider 不在 (SortableRow 未経由) では null を返す', () => {
+    render(<RowDndProbe />)
+    expect(probe()).toHaveAttribute('data-has-context', 'false')
+  })
+
+  it('SortableRow 配下では gating 3 値と理由 id がそのまま配られる', () => {
+    render(<Harness dragAvailable locked pending lockedReasonId="reason-xyz" />)
+    expect(probe()).toHaveAttribute('data-has-context', 'true')
+    expect(probe()).toHaveAttribute('data-drag-available', 'true')
+    expect(probe()).toHaveAttribute('data-locked', 'true')
+    expect(probe()).toHaveAttribute('data-pending', 'true')
+    expect(probe()).toHaveAttribute('data-locked-reason-id', 'reason-xyz')
+  })
+})
+
+describe('SortableRow — useSortable disabled の 3 条件 (listeners の有無で観測)', () => {
+  it('dragAvailable かつ locked/pending でなければ listeners が配られる', () => {
+    render(<Harness />)
+    expect(probe()).toHaveAttribute('data-has-listeners', 'true')
+  })
+
+  it('dragAvailable:false (1 枚の試験) では listeners が配られない', () => {
+    render(<Harness dragAvailable={false} />)
+    expect(probe()).toHaveAttribute('data-has-listeners', 'false')
+  })
+
+  it('locked:true (ソート/フィルタ適用中) では listeners が配られない', () => {
+    render(<Harness locked />)
+    expect(probe()).toHaveAttribute('data-has-listeners', 'false')
+  })
+
+  it('pending:true (移動実行中) では listeners が配られない', () => {
+    render(<Harness pending />)
+    expect(probe()).toHaveAttribute('data-has-listeners', 'false')
+  })
+})
+
+describe('SortableRow — event 分離契約 (<tr> は drag 起点にならない)', () => {
+  it('<tr> に dnd の aria-roledescription / touch-none が付かない (grip のみが持つ)', () => {
+    const { container } = render(<Harness />)
+    const tr = container.querySelector('tr') as HTMLElement
     expect(tr).not.toHaveAttribute('aria-roledescription')
-
-    const otherButton = screen.getByRole('button', { name: '他の行内 button' })
-    expect(otherButton).not.toHaveAttribute('aria-roledescription')
-  })
-
-  it('`touch-none` class は handle button のみに付与される (tr / 他 button には付かない)', () => {
-    const { container } = render(<Harness />)
-    const touchNoneEls = container.querySelectorAll('[class~="touch-none"]')
-    expect(touchNoneEls.length).toBe(1)
-    expect(touchNoneEls[0].tagName).toBe('BUTTON')
-    expect(touchNoneEls[0]).toHaveAttribute('aria-label', '行を並べ替え: カードA')
-  })
-
-  it('handle click で外側 (select td) の onClick が発火しない (stopPropagation)', () => {
-    const outerOnClick = vi.fn()
-    render(<Harness outerOnClick={outerOnClick} />)
-    const handle = screen.getByRole('button', { name: '行を並べ替え: カードA' })
-    fireEvent.click(handle)
-    expect(outerOnClick).not.toHaveBeenCalled()
-  })
-})
-
-describe('RowDragHandle — provider 不在 / showHandle:false は非描画', () => {
-  it('RowDndContext provider 不在 (SortableRow 未経由) では handle は描画されない', () => {
-    render(<RowDragHandle cardTitle="単体カード" />)
-    expect(
-      screen.queryByRole('button', { name: /行を並べ替え:/ }),
-    ).not.toBeInTheDocument()
-  })
-
-  it('showHandle:false では provider 有りでも handle は描画されない', () => {
-    render(<Harness showHandle={false} />)
-    expect(
-      screen.queryByRole('button', { name: /行を並べ替え:/ }),
-    ).not.toBeInTheDocument()
-  })
-})
-
-describe('RowDragHandle — locked / pending の disabled + aria-describedby 合成', () => {
-  it('locked:true — disabled + title=ROW_DND_LOCKED_REASON + aria-describedby は lockedReasonId を含みつつ単独値ではない (dnd-kit 自前 id の温存 pin)', () => {
-    render(<Harness locked pending={false} />)
-    const handle = screen.getByRole('button', { name: '行を並べ替え: カードA' })
-    expect(handle).toBeDisabled()
-    expect(handle).toHaveAttribute('title', ROW_DND_LOCKED_REASON)
-
-    const describedBy = handle.getAttribute('aria-describedby')
-    expect(describedBy).not.toBeNull()
-    // 合成 pin: lockedReasonId を含む (locked 理由が消えていない)。
-    expect(describedBy).toContain(LOCKED_REASON_ID)
-    // 合成 pin: lockedReasonId 単独値ではない (dnd-kit 自前の aria-describedby が
-    // 生き残っている — 素朴な上書きだとここが lockedReasonId 単独値に潰れる)。
-    expect(describedBy).not.toBe(LOCKED_REASON_ID)
-  })
-
-  it('pending:true (locked:false) — disabled のみ。title 無し・aria-describedby は lockedReasonId を含まない', () => {
-    render(<Harness locked={false} pending />)
-    const handle = screen.getByRole('button', { name: '行を並べ替え: カードA' })
-    expect(handle).toBeDisabled()
-    expect(handle).not.toHaveAttribute('title')
-
-    const describedBy = handle.getAttribute('aria-describedby')
-    expect(describedBy).not.toContain(LOCKED_REASON_ID)
-  })
-
-  it('locked:false かつ pending:false — disabled ではなく、aria-describedby は dnd-kit 自前の id のみ (lockedReasonId を含まない)', () => {
-    render(<Harness locked={false} pending={false} />)
-    const handle = screen.getByRole('button', { name: '行を並べ替え: カードA' })
-    expect(handle).not.toBeDisabled()
-    const describedBy = handle.getAttribute('aria-describedby')
-    expect(describedBy).not.toBeNull()
-    expect(describedBy).not.toContain(LOCKED_REASON_ID)
+    expect(tr.className).not.toContain('touch-none')
+    // 行内の他の要素にも touch-none は無い (grip は本 file の外なのでゼロが正)。
+    expect(container.querySelectorAll('[class~="touch-none"]')).toHaveLength(0)
   })
 })
 

@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import {
   useReactTable,
   getCoreRowModel,
@@ -251,7 +251,7 @@ describe('T3: column sizing', () => {
 
   it('各列の size が仕様値と一致する', () => {
     const sizeMap: Record<string, number> = {
-      select: 112, // 行操作 button 常時表示化(iPad hover 不能環境対応)で checkbox 隣接に移設 + Grid-3 §7.2 の行メニュー trigger 追加で 88px。row-dnd task-4 で drag handle の provider を配線し実描画になったため掴み手分 (24px) を加算し 112px に再拡幅
+      select: 72, // row-ux §6: グリップ(24px)+ gap(4px)+ checkbox(16px)+ px-1(8px)= 52px + 余裕 20px。「カードを開く」button と ⋯ 行メニューをグリップの menu に統合し 2 要素へ減らしたため 112→72
       title: 80, // Edit-3 T4: ~80px 起点 (14px×4 + padding 24px)
       question_label: 100,
       question: 320,
@@ -808,21 +808,23 @@ describe('S4-1: sort × filter 独立 (title sort + title filter を同時適用
 })
 
 // ===========================================================================
-// title cell — side peek button は select 列(checkbox 隣接)へ移設済。
+// title cell — 行操作 UI は select 列に集約済(側 peek 起動は grip menu の「開く」)。
 // title 列は button 除去後の構造不変のみ検証する(構造検証は既存 renderCell ヘルパーで足りる —
 // title cell は row.original のみ参照し TanStack row メソッドを呼ばないため)。
 // ===========================================================================
 
-describe('Column: title — 「カードを開く」button 移設後の構造不変', () => {
-  it('① title cell はもう「カードを開く」button を描画しない(select 列へ移設済)', () => {
-    renderCell('title', makeRow(), { ...META, openCard: vi.fn(), activeCardId: null })
-    expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
-    // InlineTextField は引き続き描画される
-    expect(screen.getByRole('button', { name: 'タイトル 編集' })).toBeInTheDocument()
+describe('Column: title — 行操作 UI 移設後の構造不変', () => {
+  it('① title cell は編集 button 以外を描画しない(行操作 UI は select 列に集約)', () => {
+    renderCell('title', makeRow(), { ...META, openCard: vi.fn() })
+    // InlineTextField の display button のみ = 行操作 UI(旧「カードを開く」/ グリップ)が
+    // 混ざっていないことを件数で pin する。
+    const buttons = screen.getAllByRole('button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]).toHaveAccessibleName('タイトル 編集')
   })
 
   it('② タイトル display div クリックで textbox が現れる (title cell の編集動線は不変)', () => {
-    renderCell('title', makeRow(), { ...META, openCard: vi.fn(), activeCardId: null })
+    renderCell('title', makeRow(), { ...META, openCard: vi.fn() })
     fireEvent.click(screen.getByRole('button', { name: 'タイトル 編集' }))
     expect(screen.getByRole('textbox', { name: 'タイトル 編集' })).toBeInTheDocument()
   })
@@ -853,20 +855,29 @@ describe('Column: title — 「カードを開く」button 移設後の構造不
 })
 
 // ===========================================================================
-// select cell (checkbox 隣接): side peek 起動 button — 常時表示化(本タスク)
+// select cell: 二役グリップ + checkbox の 2 要素(row-ux §2 / §6)
 //
-// 変更理由: title 列の hover 隠し(md:opacity-0 md:group-hover/peek:opacity-100)は
-// md: 幅ブレークポイントを hover 能力の代理にしていた。iPad 横向きは md 以上に該当しつつ
-// hover が無いため不可視になる構造的欠陥だった。select 列(checkbox 隣接)へ移設し、
-// 幅/hover による分岐を一切残さず常時表示する。
+// 「カードを開く」常設 button と ⋯ 行メニューはグリップの menu に統合済。
+// 表示は常時表示の低コントラスト — hover で「出現」させる書き方(基底 opacity-0)は
+// hover 不能端末(iPad 横向き等)で永久不可視になるため使わない(spec §12 の NO-GO 記録)。
 // ===========================================================================
+
+const ROW_MENU_META: Partial<ExamCardTableMeta> = {
+  userId: 'user-owner',
+  rowMenu: {
+    currentExamId: 'e-test',
+    positionLocked: false,
+    pending: false,
+    onPullInto: vi.fn(async () => null),
+  },
+}
 
 /**
  * select cell を fake table context (meta 注入可) で render するヘルパー。
  * select cell(checkbox 部分)は row.getIsSelected() / row.getToggleSelectedHandler() という
  * 実 TanStack Row メソッドを呼ぶため、汎用 renderCell (row.original のみのフェイク row) では
  * stub 不足で crash する。 本 helper は selection 用の最小 stub を追加する
- * (isSelected は常に false 固定 — 本テストで検証したいのは「カードを開く」button の挙動であり
+ * (isSelected は常に false 固定 — 本テストで検証したいのは cell の構成と menu 動線であり
  * selection state 自体ではない。selection state 自体は exam-card-table.test.tsx の統合テストが担保)。
  */
 function renderSelectCellWithMeta(
@@ -904,72 +915,95 @@ function renderSelectCellWithMeta(
   return container.querySelector('[data-testid="cell-wrapper"]') as HTMLElement
 }
 
-describe('Column: select — 「カードを開く」button(checkbox 隣接・常時表示)', () => {
-  it('① select cell に checkbox + 「カードを開く」button が存在する (meta 有)', () => {
-    renderSelectCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+describe('Column: select — 二役グリップ + checkbox の 2 要素', () => {
+  const gripName = `行の操作: ${makeClientCard().title}`
+
+  it('① select cell はグリップと checkbox だけを持つ(この DOM 順)', () => {
+    const el = renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    expect(screen.getByRole('button', { name: gripName })).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'カードを開く' })).toBeInTheDocument()
-  })
 
-  it('② checkbox の直後(DOM順)に button が隣接配置される', () => {
-    const el = renderSelectCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
     const layout = el.querySelector('div') as HTMLElement
-    const children = Array.from(layout.children)
-    expect(children.map((c) => c.tagName)).toEqual(['INPUT', 'BUTTON'])
+    expect(Array.from(layout.children).map((c) => c.tagName)).toEqual(['BUTTON', 'INPUT'])
   })
 
-  it('③ layout wrapper が flex + gap レイアウトを持つ', () => {
-    const el = renderSelectCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
+  it('② layout wrapper が flex + gap レイアウトを持つ', () => {
+    const el = renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
     const layout = el.querySelector('div') as HTMLElement
     expect(layout.className).toContain('flex')
     expect(layout.className).toMatch(/gap-\d/)
   })
 
-  it('④ button click で meta.openCard(card.id) が呼ばれる', () => {
+  it('③ グリップ click で menu が開き「開く」「ここに取り込む」が出る', async () => {
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    fireEvent.click(screen.getByRole('button', { name: gripName }))
+
+    const menu = await screen.findByTestId('exam-card-row-menu')
+    expect(
+      within(menu)
+        .getAllByRole('button')
+        .map((el) => el.textContent),
+    ).toEqual(['開く', 'ここに取り込む'])
+  })
+
+  it('④ menu の「開く」click で meta.openCard(card.id) が呼ばれる', async () => {
     const openCard = vi.fn()
     const row = makeRow({ id: 'card-peek-test' })
-    renderSelectCellWithMeta(row, { openCard, activeCardId: null })
-    fireEvent.click(screen.getByRole('button', { name: 'カードを開く' }))
+    renderSelectCellWithMeta(row, { ...ROW_MENU_META, openCard })
+
+    fireEvent.click(screen.getByRole('button', { name: `行の操作: ${row.card.title}` }))
+    fireEvent.click(await screen.findByRole('button', { name: '開く' }))
+
     expect(openCard).toHaveBeenCalledTimes(1)
     expect(openCard).toHaveBeenCalledWith('card-peek-test')
   })
 
-  it('⑤ meta 不在で button が描画されず crash しない(checkbox のみ描画)', () => {
+  it('⑤ meta 不在でグリップが描画されず crash しない(checkbox のみ描画)', () => {
     renderSelectCellWithMeta(makeRow())
-    expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /行の操作:/ })).toBeNull()
     expect(screen.getByRole('checkbox')).toBeInTheDocument()
   })
 
-  it('⑤-b meta 有だが openCard 未定義のとき button が描画されない', () => {
-    // openCard が T3 で配線されるまでは meta に activeCardId のみ存在する状態を想定。
-    // button はハンドラが実際に配線された時だけ描画されるべき。
-    renderSelectCellWithMeta(makeRow(), { activeCardId: null })
-    expect(screen.queryByRole('button', { name: 'カードを開く' })).toBeNull()
+  it('⑤-b meta 有だが rowMenu 未配線のときグリップが描画されない', () => {
+    renderSelectCellWithMeta(makeRow(), { userId: 'user-owner', openCard: vi.fn() })
+    expect(screen.queryByRole('button', { name: /行の操作:/ })).toBeNull()
   })
 
-  it('⑥-a activeCardId === card.id のとき aria-pressed=true', () => {
-    const row = makeRow({ id: 'card-active' })
-    renderSelectCellWithMeta(row, { openCard: vi.fn(), activeCardId: 'card-active' })
-    const button = screen.getByRole('button', { name: 'カードを開く' })
-    expect(button).toHaveAttribute('aria-pressed', 'true')
+  it('⑥ openCard 未配線のとき menu に「開く」項目が出ない(「ここに取り込む」は出る)', async () => {
+    renderSelectCellWithMeta(makeRow(), ROW_MENU_META)
+    fireEvent.click(screen.getByRole('button', { name: gripName }))
+
+    const menu = await screen.findByTestId('exam-card-row-menu')
+    expect(
+      within(menu)
+        .getAllByRole('button')
+        .map((el) => el.textContent),
+    ).toEqual(['ここに取り込む'])
   })
 
-  it('⑥-b activeCardId が異なる id のとき aria-pressed=false', () => {
-    const row = makeRow({ id: 'card-inactive' })
-    renderSelectCellWithMeta(row, { openCard: vi.fn(), activeCardId: 'other-id' })
-    const button = screen.getByRole('button', { name: 'カードを開く' })
-    expect(button).toHaveAttribute('aria-pressed', 'false')
+  it('⑦ グリップ / checkbox に「出現」型の非表示 class が付かない(常時表示・分岐なし)', () => {
+    // 禁止: 基底 opacity-0 / md: 幅ブレークポイントを hover 能力の代理にする分岐。
+    // 常時表示を「非表示 class の不在」として operationalize する(spec §12 NO-GO の pin)。
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    for (const el of [
+      screen.getByRole('button', { name: gripName }),
+      screen.getByRole('checkbox'),
+    ]) {
+      expect(el.className).not.toContain('opacity-0 ')
+      expect(el.className).not.toMatch(/opacity-0$/)
+      expect(el.className).not.toContain('hidden')
+      expect(el.className).not.toContain('group-has')
+      expect(el.className).not.toContain('md:')
+    }
   })
 
-  it('⑦ button に幅/hover 依存の非表示 class が一切付与されない(常時表示・分岐なし)', () => {
-    // 撤去対象: md:opacity-0 / md:group-hover/peek:opacity-100 / group-has-[input]/peek:*。
-    // 常時表示を「非表示 class の不在」として operationalize する。
-    renderSelectCellWithMeta(makeRow(), { openCard: vi.fn(), activeCardId: null })
-    const button = screen.getByRole('button', { name: 'カードを開く' })
-    expect(button.className).not.toContain('opacity-0')
-    expect(button.className).not.toContain('group-hover')
-    expect(button.className).not.toContain('group-has')
-    expect(button.className).not.toContain('md:')
+  it('⑧ 低コントラスト基底 + 選択済みは常時通常表示(checkbox の class 契約)', () => {
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox.className).toContain('opacity-50')
+    expect(checkbox.className).toContain('group-hover:opacity-100')
+    expect(checkbox.className).toContain('focus-visible:opacity-100')
+    expect(checkbox.className).toContain('checked:opacity-100')
   })
 })
 

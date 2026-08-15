@@ -10,7 +10,6 @@
 // React component を含む場合は boundary が必要)。
 
 import type { ColumnDef, FilterFn } from '@tanstack/react-table'
-import { PanelRightOpen } from 'lucide-react'
 import type { ClientCard, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { TagEditCallbacks } from '@/lib/tags/tag-crud'
 import type { ToggleFn } from '../_hooks/use-card-tag-toggle'
@@ -19,7 +18,6 @@ import { tagSortKey } from '../_lib/tag-sort-key'
 import { compareByQuestionLabel } from '@/lib/cards/domain/card-order'
 import { CompactOptionsCell } from './exam-card-table-options-edit-cell'
 import { ExamCardRowMenu, type PullIntoDispatch } from './exam-card-row-menu'
-import { RowDragHandle } from './exam-card-row-dnd'
 import { CardImageGallery } from './card-image-gallery'
 import {
   matchesTagFilter,
@@ -44,12 +42,11 @@ export type ExamCardTableMeta = {
   tagEditCallbacks: TagEditCallbacks
   categories: ClientTagCategory[]
   options: ClientTagOption[]
-  // T2: side peek trigger。optional — T3 が配線するまでは undefined のまま。
-  // optional にすることで既存の `satisfies ExamCardTableMeta`(exam-card-table.tsx)を変更不要にする。
-  activeCardId?: string | null
+  // T2: side peek trigger。optional — 配線されていない (単体 harness 等) なら
+  // グリップ menu の「開く」項目を描画しない (row-ux §5)。
   openCard?: (cardId: string) => void
-  // Grid-3 §7.2: 行メニュー「ここに取り込む」。openCard と同じ optional 規約 —
-  // 配線されていない (単体 harness 等) なら trigger を描画しない。
+  // Grid-3 §7.2 + row-ux §2: 行の二役グリップ (menu = 開く / ここに取り込む)。
+  // openCard と同じ optional 規約 — 配線されていなければ trigger を描画しない。
   rowMenu?: {
     /** 取り込み先 = 現在表示中の exam。 */
     currentExamId: string
@@ -87,13 +84,11 @@ const makeTextFilterFn = (
 export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
   {
     id: 'select',
-    // チェックボックス実体 (~16px) + gap-1 (4px) ×3 + 「カードを開く」button (size-6=24px) +
-    // 行メニュー trigger (size-6=24px) + px-1 左右 合計 (8px) = 88px コンテンツ幅相当。
-    // 常時表示化(iPad 横向き等 hover 不能環境でも不可視にならない)に伴い title 列から
-    // 本 button を移設し、Grid-3 §7.2 で行メニューを追加したため余白込みで 88px だった。
-    // row-dnd task-4: 掴み手 (RowDragHandle) の provider (RowDndContext) を本 task で
-    // 配線し実描画になったため、掴み手分 (size-6=24px) を加算して 88→112 に再拡幅。
-    size: 112,
+    // row-ux §6: グリップ (size-6=24px) + gap-1 (4px) + チェックボックス実体 (~16px) +
+    // px-1 左右 (8px) = 52px + 余裕 20px (checkbox の hit 補助・pinned 境界の窮屈回避)。
+    // 「カードを開く」常設 button と ⋯ 行メニューをグリップの menu に統合し 2 要素へ
+    // 減らしたため 112→72 に縮めた。
+    size: 72,
     header: ({ table }) => (
       <input
         type="checkbox"
@@ -108,46 +103,18 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
         aria-label="全選択"
       />
     ),
-    // 行操作ボタン(カードを開く)の常時表示化: title 列 hover 隠しは md: 幅ブレークポイントを
-    // hover 能力の代理にしていたが、iPad 横向きは md 以上に該当しつつ hover が無く不可視になる
-    // 構造的欠陥だった。select 列(checkbox 隣接)へ移設し、幅/hover 分岐なしで常時表示する。
+    // row-ux §2 / §6: select 列 = 二役グリップ + checkbox の 2 要素。「カードを開く」常設
+    // button と ⋯ 行メニューはグリップの menu に統合済 (要素数を減らすのが本 sprint の主眼)。
+    // 基底は常時表示の低コントラスト — hover で「出現」させる書き方は hover 不能端末で
+    // 永久不可視になるため使わない (spec §12 の NO-GO 記録)。
     cell: ({ row, table }) => {
       const card = row.original.card
       const meta = table.options.meta as ExamCardTableMeta | undefined
-      // openCard が実際に配線された時だけボタンを描画する。T3 が配線するまでは undefined のため非表示。
-      const openCard = meta?.openCard
       return (
         <div className="flex items-center justify-center gap-1">
-          {/* row-dnd task-4: 行 D&D の掴み手。provider (RowDndContext = SortableRow) は
-              ExamCardTable (task-4) が配線済み。 showHandle=false (data 1 件以下) では
-              RowDragHandle 内部で null 描画になる (event 分離契約は exam-card-row-dnd.tsx)。 */}
-          <RowDragHandle cardTitle={card.title} />
-          <input
-            type="checkbox"
-            checked={row.getIsSelected()}
-            onChange={row.getToggleSelectedHandler()}
-            // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
-            //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
-            onClick={(e) => e.stopPropagation()}
-            aria-label={`行選択: ${row.original.card.title}`}
-          />
-          {openCard && (
-            <button
-              type="button"
-              aria-label="カードを開く"
-              aria-pressed={meta?.activeCardId === card.id}
-              onClick={(e) => {
-                // select td 全域の onClick(行選択トグル)への bubbling を止める(checkbox と同理由)。
-                e.stopPropagation()
-                openCard(card.id)
-              }}
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground aria-pressed:text-foreground"
-            >
-              <PanelRightOpen className="size-4" aria-hidden="true" />
-            </button>
-          )}
-          {/* Grid-3 §7.2: 行メニュー (⋯) = 「ここに取り込む」。 配線済み (meta.rowMenu) の
-              ときだけ描画する (openCard と同規約)。 */}
+          {/* Grid-3 §7.2 + row-ux §5: グリップ (ドラッグ = 並べ替え / クリック = メニュー)。
+              配線済み (meta.rowMenu) のときだけ描画する。 drag 役は SortableRow が配る
+              context 経由 (touch-none / dnd attributes はこの button のみ — event 分離契約)。 */}
           {meta?.rowMenu && (
             <ExamCardRowMenu
               userId={meta.userId}
@@ -156,8 +123,20 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
               positionLocked={meta.rowMenu.positionLocked}
               pending={meta.rowMenu.pending}
               onPullInto={meta.rowMenu.onPullInto}
+              openCard={meta.openCard}
             />
           )}
+          <input
+            type="checkbox"
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+            // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
+            //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
+            onClick={(e) => e.stopPropagation()}
+            aria-label={`行選択: ${row.original.card.title}`}
+            // row-ux §6: 基底 50% → 行 hover / 自 focus で通常表示。選択済みは常時通常表示。
+            className="opacity-50 group-hover:opacity-100 focus-visible:opacity-100 checked:opacity-100"
+          />
         </div>
       )
     },
@@ -172,7 +151,7 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
     // getSortedRowModel がフィルタアウトするため、title を非 null accessor で sortable 化。
     // sortingFn は row.original から直接読んで localeCompare('ja') で比較する。
     accessorFn: (row) => row.card.title,
-    // T2/T3: side peek 起動button(カードを開く)は select 列(checkbox 隣接)へ移設済(常時表示化)。
+    // T2/T3 + row-ux §2: side peek の起動は select 列のグリップ menu「開く」に集約済。
     // title セルは InlineTextField のみ(他の text 列 = question_label 等と同型)。
     cell: ({ row, table }) => {
       const card = row.original.card
