@@ -10,6 +10,7 @@
 //
 // Fix-1 T2 追記: bulk createOptionAndAssign 配線 (action-bar 限定、 TagCell 不変)。
 
+import * as React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { getClientDb, type ClientCard, type ClientTagCategory, type ClientTagOption } from '@/lib/client-db'
@@ -22,6 +23,34 @@ const { mockCreateOption, mockBulkTag } = vi.hoisted(() => ({
   mockCreateOption: vi.fn(async () => 'new-opt-fixed'),
   mockBulkTag: vi.fn(async () => ({ ok: true, succeeded: [] as string[], failed: [] as string[] })),
 }))
+
+// ---------------------------------------------------------------------------
+// row-ux Task 5 (c): ExamCardTableAddFooter capture wrapper。
+// exam-card-table-dnd.test.tsx の DndContext capture wrapper (line 43-73) と同型 —
+// props を ref へ保存しつつ実 component をそのまま描画する (pass-through)。
+// button は positionLocked 中は native disabled で click 不能 (=addCard 呼出を起点にした
+// 観測は構造的に不可能。詳細は task-5-report.md) だが、 親 (ExamCardTable) が算出した
+// baseOrders/count の値そのものは props 境界で捕捉できる。 このファイル内の他の render
+// (既存 (a)(b) 含む全 describe) も本 wrapper 経由になるが実 component を描画するため
+// 挙動は不変。
+// ---------------------------------------------------------------------------
+
+type CapturedFooterProps = { baseOrders: number[]; count: number }
+
+const { capturedFooterPropsRef } = vi.hoisted(() => ({
+  capturedFooterPropsRef: { current: null as null | CapturedFooterProps },
+}))
+
+vi.mock('./exam-card-table-add-footer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./exam-card-table-add-footer')>()
+  return {
+    ...actual,
+    ExamCardTableAddFooter: (props: Parameters<typeof actual.ExamCardTableAddFooter>[0]) => {
+      capturedFooterPropsRef.current = { baseOrders: props.baseOrders, count: props.count }
+      return React.createElement(actual.ExamCardTableAddFooter, props)
+    },
+  }
+})
 
 // Mock createOption from @/lib/tags/tag-crud; keep all other exports real.
 vi.mock('@/lib/tags/tag-crud', async (importActual) => {
@@ -53,6 +82,7 @@ vi.mock('@/lib/media/get-asset', () => ({
 
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
 import { ExamCardTable } from './exam-card-table'
+import { ADD_CARD_LOCKED_REASON } from './exam-card-table-add-footer'
 
 // ---------------------------------------------------------------------------
 // test fixtures
@@ -99,6 +129,7 @@ function makeCard(n: number): ClientCard {
 // ---------------------------------------------------------------------------
 
 beforeEach(async () => {
+  capturedFooterPropsRef.current = null
   const db = getClientDb()
   await db.cards.clear()
   await db.tag_categories.clear()
@@ -419,7 +450,9 @@ describe('Edit-3 T1: th/td padding density', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
-    const allTd = container.querySelectorAll('td')
+    // tbody 限定 (row-ux Task 5: tfoot の「+ カードを追加」summary td は colSpan で全列を
+    // 跨ぐ別物のため対象外 — この test の意図は per-column body td の密度)。
+    const allTd = container.querySelectorAll('tbody td')
     expect(allTd.length).toBeGreaterThan(0)
     for (const td of allTd) {
       expect(td.className, 'td は py-1 を持つ').toContain('py-1')
@@ -455,7 +488,8 @@ describe('Edit-3 T1: th/td padding density', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1)
     })
-    const allTd = container.querySelectorAll('td')
+    // tbody 限定 (row-ux Task 5: tfoot summary td は対象外、上の py-1/py-2 test と同理由)。
+    const allTd = container.querySelectorAll('tbody td')
     expect(allTd.length).toBeGreaterThan(0)
     for (const td of allTd) {
       expect(td.className, 'td は px-1 を持つ').toContain('px-1')
@@ -678,7 +712,9 @@ describe('Fix-3 T1: CSS 変数で列幅を配布 — <table> に CSS 変数 / th
     const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
     await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
 
-    const allTd = container.querySelectorAll('td')
+    // tbody 限定 (row-ux Task 5: tfoot summary td は colSpan で全列を跨ぐため
+    // per-column 幅 CSS 変数を参照しない — この test の意図は per-column body td の幅配布)。
+    const allTd = container.querySelectorAll('tbody td')
     expect(allTd.length).toBeGreaterThan(0)
     for (const td of allTd) {
       expect((td as HTMLElement).style.width, 'td は calc(var(--col-...)) 形式').toMatch(
@@ -2455,5 +2491,90 @@ describe('ExamCardTable owner-scope: 別 user の card 行を描画しない', (
     expect(screen.queryByText('Foreign Card')).not.toBeInTheDocument()
     // 描画された唯一の行は認証主体のもの = cell が読む card.user_id は必ず USER_ID。
     expect(screen.getByTestId('row-card-1')).toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// row-ux Task 5: footer「+ カードを追加」table 統合 (親 gate 算出の配線 pin)。
+// footer 本体の gating 3 条件 (dataReady / positionLocked / movePending) の詳細な
+// 出し分けロジックは exam-card-table-add-footer.test.tsx が prop 直渡しで pin する。
+// ここでは「親 (ExamCardTable) が実際にその gate を正しく算出して配線しているか」のみを
+// 実 liveData / 実 sort state で検証する。
+// ===========================================================================
+
+describe('row-ux Task 5: footer 「+ カードを追加」table 統合', () => {
+  it('(a) liveData 解決前 (useLiveQuery undefined) の実 render で footer button が disabled', async () => {
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    // render() は同期呼出。 useLiveQuery の querier (Dexie 非同期 query) はまだ 1 tick も
+    // 進んでいないため、 この時点で liveData は必ず undefined = dataReady gate が効いている。
+    const addButton = screen.getByRole('button', { name: '＋ カードを追加' })
+    expect(addButton, 'liveData 未解決の実 render 直後は dataReady=false で disabled').toBeDisabled()
+
+    // 後始末: liveData 解決 (0 件 → dataReady=true) まで進め、 pending promise を残さない。
+    await waitFor(() => expect(addButton).toBeEnabled())
+  })
+
+  it('(b) sort 適用 (header menu 経由) で footer disabled、 解除で enabled', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2)])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    const addButton = screen.getByRole('button', { name: '＋ カードを追加' })
+    expect(addButton, 'sort 適用前は enabled').toBeEnabled()
+
+    // 列メニューから昇順ソートを適用 (sorting.length > 0 → positionLocked)。
+    fireEvent.click(screen.getByLabelText('タイトル の列メニュー'))
+    fireEvent.click(await screen.findByRole('button', { name: '昇順' }))
+
+    await waitFor(() =>
+      expect(addButton, 'sort 適用中は positionLocked で disabled').toBeDisabled(),
+    )
+    expect(addButton).toHaveAttribute('title', ADD_CARD_LOCKED_REASON)
+
+    // condition bar の sort chip から解除。
+    fireEvent.click(screen.getByRole('button', { name: 'ソート解除: タイトル' }))
+
+    await waitFor(() =>
+      expect(addButton, 'sort 解除後は positionLocked が外れ enabled に戻る').toBeEnabled(),
+    )
+  })
+
+  it('(c) column filter 適用中でも footer へ渡る baseOrders/count は基準順全件 (getRowModel().rows の部分集合ではない・kickoff決定8)', async () => {
+    const db = getClientDb()
+    // base_order を distinct にした 3 件 (makeCard 既定は全件 base_order=1024 で固定のため上書き)。
+    await db.cards.bulkPut([
+      { ...makeCard(1), base_order: 1024 },
+      { ...makeCard(2), base_order: 2048 },
+      { ...makeCard(3), base_order: 3072 },
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(3))
+
+    // click 起点では positionLocked で button が disabled になり検証できない (report 参照) ため、
+    // 「フィルタで getRowModel().rows が data の真部分集合になる状態」を作った上で
+    // capture wrapper 経由で親から渡る props を直接検証する。
+    fireEvent.click(screen.getByRole('button', { name: 'タイトル の列メニュー' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('タイトル フィルタ値'), {
+      target: { value: 'Card 1' },
+    })
+    // 'Card 1' は 'Card 1' のみに部分一致 ('Card 2'/'Card 3' は含まない) → getRowModel().rows は
+    // data (3件) の真部分集合 (1件) になる。
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // red 検証対象 (task-5-report.md 追記分): exam-card-table.tsx の footerBaseOrders / count の
+    // 算出元を data (基準順全件) から table.getRowModel().rows (filter 後) に差し替えると、
+    // ここで [1024]/count=1 になり fail する。 kickoff 決定 8 の「getRowModel().rows 禁止」の
+    // 実効的 pin。
+    expect(capturedFooterPropsRef.current?.baseOrders, '基準順全件 (フィルタ非依存)').toEqual([
+      1024, 2048, 3072,
+    ])
+    expect(capturedFooterPropsRef.current?.count, '全件数 (フィルタ後の可視 1 件ではない)').toBe(3)
   })
 })

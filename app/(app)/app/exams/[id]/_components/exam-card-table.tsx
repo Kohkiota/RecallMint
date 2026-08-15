@@ -91,6 +91,7 @@ import { examCardTableColumns, type ExamCardRow, type ExamCardTableMeta } from '
 import { joinCardTags } from '@/lib/cards/join-card-tags'
 import { ColumnHeaderMenu } from './exam-card-table-header-menu'
 import { SortableRow, RowDragPreview, ROW_DND_LOCKED_REASON } from './exam-card-row-dnd'
+import { ExamCardTableAddFooter } from './exam-card-table-add-footer'
 import { computePinnedLeft, derivePinnedBoundary } from '../_lib/column-pinning'
 import { waitForExamInMirror } from '../_lib/wait-for-exam-mirror'
 import { ConditionBar } from './exam-card-table-condition-bar'
@@ -429,6 +430,11 @@ export function ExamCardTable({
     const { filteredCards, categories, options, cardTags } = liveData
     return joinCardTags(filteredCards, cardTags, categories, options)
   }, [liveData])
+
+  // Task 5: footer の dataReady gate。 liveData 未解決 (undefined) の間は data が []
+  // に畳まれている (直上の useMemo) — この一瞬に「+ カードを追加」を発火させると
+  // 空 baseOrders で先頭に採番されてしまうため、liveData 自体の有無で区別する。
+  const dataReady = liveData !== undefined
 
   // activeRow: columnFilters 非依存で data 全件から引く(spec §3.4)。
   // activeCardId が null の場合は null を返す(peek 非表示)。
@@ -835,6 +841,10 @@ export function ExamCardTable({
   // SortableContext の items = 基準順 (data) 全件の id 列。 仮想化で非表示の行も
   // dnd-kit sortable の index 計算には要るため、可視行 (virtualItems) だけでは不足する。
   const sortableItemIds = useMemo(() => data.map((r) => r.card.id), [data])
+  // Task 5: footer 「+ カードを追加」の buildEmptyCard 呼出契約 (lib/cards/empty-card.ts:22-23) —
+  // 基準順全件 (data) の base_order。 table.getRowModel().rows (sort/filter 適用後) は
+  // 渡してはならない (末尾でない位置に採番される)。
+  const footerBaseOrders = useMemo(() => data.map((r) => r.card.base_order), [data])
   // 並べ替えが意味を持つか。 category-list の sortableEnabled (list.length >= 2) と同じ判定を
   // 基準順全件 (data — columnFilters 非依存) に対して行う (TableBodyProps 冒頭コメント参照)。
   const dragAvailable = data.length >= 2
@@ -1278,6 +1288,19 @@ export function ExamCardTable({
           locked={positionLocked}
           pending={movePending}
           lockedReasonId={lockedReasonId}
+        />
+        {/* Task 5 (row-ux spec §8.1): footer は tbody の外 (tfoot) に置く — 仮想化 spacer の
+            高さ計算・MemoizedTableBody の memo 凍結・virtualizer count・SortableContext.items
+            のいずれとも無関係にするため。 0 件の exam でも描画する (有効化のみ dataReady 後)。 */}
+        <ExamCardTableAddFooter
+          userId={userId}
+          examId={examId}
+          baseOrders={footerBaseOrders}
+          count={data.length}
+          colSpan={table.getVisibleLeafColumns().length}
+          dataReady={dataReady}
+          positionLocked={positionLocked}
+          movePending={movePending}
         />
         </table>
         </SortableContext>
