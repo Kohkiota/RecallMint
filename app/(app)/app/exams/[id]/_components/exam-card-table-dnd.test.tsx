@@ -73,6 +73,7 @@ vi.mock('@/lib/media/get-asset', () => ({
 
 import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
 import { ControlledExamCardTable } from './exam-card-table-test-harness'
+import { ROW_DND_LOCKED_REASON } from './exam-card-row-dnd'
 
 const USER_ID = 'user-dnd-table'
 const EXAM_ID = 'exam-dnd-table'
@@ -379,7 +380,16 @@ describe('⑧ sorting 適用中の gating', () => {
 
     const handle = handleButton('Card 1')
     expect(handle).toBeDisabled()
-    expect(handle.getAttribute('aria-describedby')).not.toBeNull()
+    // aria-describedby は dnd-kit 自前の id + lockedReasonId を空白区切りで合成する
+    // (exam-card-row-dnd.tsx:147) ため、非 null チェックだけでは dnd-kit 側の id だけでも
+    // 通ってしまい、table 側の sr-only <p id={lockedReasonId}> (exam-card-table.tsx) が
+    // 消えても検出できない。参照先を実際に解決し、ロック理由本文を持つ要素であることまで
+    // 確認する。
+    const describedByIds = (handle.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+    const lockedReasonEl = describedByIds
+      .map((id) => document.getElementById(id))
+      .find((el) => el?.textContent === ROW_DND_LOCKED_REASON)
+    expect(lockedReasonEl).not.toBeUndefined()
 
     await act(async () => {
       await captured().onDragEnd(dragEndEvent('card-1', 'card-2'))

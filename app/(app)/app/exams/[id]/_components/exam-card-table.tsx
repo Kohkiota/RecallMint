@@ -132,8 +132,11 @@ type TableBodyProps = {
   scrollElementRef: RefObject<HTMLDivElement | null>
   // row-dnd task-4: SortableRow (spec §3.2 gating) へそのまま配る 3 値。
   //   showHandle は table.getRowModel().rows (filter 後) ではなく **基準順全件 (data.length)**
-  //   由来 (ExamCardTable 側で算出) — フィルタで表示行が 1 件に絞られても並べ替え自体は
-  //   可能なため、表示行数で判定すると誤って handle が消える。
+  //   由来 (ExamCardTable 側で算出) — これは「この試験で並べ替えが意味を持つか」(カード
+  //   1 件の試験は絶対に並べ替えられない) を問う判定で、「今この瞬間許可されているか」
+  //   (= positionLocked、フィルタ適用中は disabled) とは別の関心事。表示行数で判定すると
+  //   フィルタの絞り込みに応じて handle が出たり消えたりしてしまい、disabled + 理由表示
+  //   (spec D-c) より悪い挙動になる。
   showHandle: boolean
   locked: boolean
   pending: boolean
