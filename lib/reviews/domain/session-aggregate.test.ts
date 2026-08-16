@@ -253,3 +253,81 @@ describe('foldSession 順序ガード', () => {
     expect(finalStates.get(CARD_B)!.reps).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// foldSession — appliedLogs (R0 Task 2: review_logs 永続化向けの log 回収 pin)
+// ---------------------------------------------------------------------------
+
+describe('foldSession: appliedLogs (R0 Task 2)', () => {
+  it('⑤ appliedLogs の eventId 集合は appliedEventIds と一致する', () => {
+    const plan = planFold(
+      [
+        makeEvent({ eventId: 'a1', cardId: CARD_A }),
+        makeEvent({
+          eventId: 'a2',
+          cardId: CARD_A,
+          answeredAt: new Date('2026-05-25T11:00:00.000Z'),
+        }),
+        makeEvent({ eventId: 'b1', cardId: CARD_B }),
+      ],
+      LOCKED,
+      OPTION_INDEX,
+    )
+    const states = new Map([
+      [CARD_A, makeCardState()],
+      [CARD_B, makeCardState()],
+    ])
+
+    const { appliedEventIds, appliedLogs } = foldSession(states, plan)
+
+    expect(appliedLogs.length).toBe(appliedEventIds.size)
+    expect(new Set(appliedLogs.map((l) => l.eventId))).toEqual(appliedEventIds)
+  })
+
+  it('⑥ skip された event (card_not_locked / unknown_option / 順序ガード) は appliedLogs に出ない', () => {
+    const orphanCardId = 'cccccccc-cccc-4ccc-cccc-cccccccccccc'
+    const plan = planFold(
+      [
+        makeEvent({ eventId: 'orphan', cardId: orphanCardId }), // card_not_locked
+        makeEvent({ eventId: 'bad-option', selectedAnswerIds: ['zzz'] }), // unknown_option (A-2)
+        makeEvent({ eventId: 'stale', answeredAt: new Date('2026-05-25T08:00:00.000Z') }), // 順序ガード skip (foldSession 側)
+        makeEvent({ eventId: 'ok', answeredAt: new Date('2026-05-25T11:00:00.000Z') }),
+      ],
+      LOCKED,
+      OPTION_INDEX,
+    )
+    // 前提: planFold 側の降格が想定どおりであることを確認
+    expect(plan.skipped.map((s) => s.eventId).sort()).toEqual(['bad-option', 'orphan'])
+
+    const states = new Map([
+      [CARD_A, makeCardState({ lastReview: new Date('2026-05-25T10:00:00.000Z') })],
+    ])
+
+    const { appliedEventIds, appliedLogs } = foldSession(states, plan)
+
+    expect([...appliedEventIds]).toEqual(['ok'])
+    expect(appliedLogs.map((l) => l.eventId)).toEqual(['ok'])
+  })
+
+  it('⑦ 同 card 複数 event の連鎖: appliedLogs[n].after は appliedLogs[n+1].log の before 値と一致する', () => {
+    const plan = planFold(
+      [
+        makeEvent({ eventId: 'e1', answeredAt: new Date('2026-05-25T10:00:00.000Z') }),
+        makeEvent({ eventId: 'e2', answeredAt: new Date('2026-05-25T11:00:00.000Z') }),
+        makeEvent({ eventId: 'e3', answeredAt: new Date('2026-05-25T12:00:00.000Z') }),
+      ],
+      LOCKED,
+      OPTION_INDEX,
+    )
+    const states = new Map([[CARD_A, makeCardState()]])
+
+    const { appliedLogs } = foldSession(states, plan)
+
+    expect(appliedLogs.length).toBe(3)
+    for (let i = 0; i < appliedLogs.length - 1; i++) {
+      expect(appliedLogs[i].after.state).toBe(appliedLogs[i + 1].log.state)
+      expect(appliedLogs[i].after.stability).toBe(appliedLogs[i + 1].log.stability)
+      expect(appliedLogs[i].after.difficulty).toBe(appliedLogs[i + 1].log.difficulty)
+    }
+  })
+})

@@ -3,7 +3,7 @@
 // 呼び出し元 (ingest の foldSession) が fold 後の結果を bulk SQL で一括書き込みする
 // ためのコア計算を担当する。
 
-import type { Card as FsrsCard } from 'ts-fsrs'
+import type { Card as FsrsCard, ReviewLog as FsrsReviewLog } from 'ts-fsrs'
 import { rate, type RatingInt } from '@/lib/fsrs'
 
 // -----------------------------------------------------------------------
@@ -43,13 +43,21 @@ export interface ReplayEvent {
  * events を呼び出し元が確定した順 (answered_at 昇順) で initial state に fold する。
  * events が空の場合は initial のコピーを返す (no-op)。
  * initial は mutate しない。
+ *
+ * 戻り値の `logs` は ts-fsrs `rate()` (= `scheduler.next()`) が返す `RecordLogItem.log`
+ * を捨てずに回収したもの。**`logs[i]` は `events[i]` に対応する (同 index 1:1)** —
+ * events が空なら logs も空、events が n 件なら logs も n 件 (rate は event ごとに
+ * 必ず 1 log を返すため欠落しない)。呼び出し元 (foldSession) は event 1 件ごとに
+ * replayCard を呼ぶため実際には常に 0 or 1 要素になるが、契約自体は複数 event の
+ * batch 呼び出しでも成立する。
  */
 export function replayCard(
   initial: ReplayCardState,
   events: ReplayEvent[],
-): ReplayCardState {
+): { state: ReplayCardState; logs: FsrsReviewLog[] } {
   // working copy (initial を mutate しないため spread でコピー)
   let current: ReplayCardState = { ...initial }
+  const logs: FsrsReviewLog[] = []
 
   for (const event of events) {
     const { rating, isCorrect, answeredAt: now } = event
@@ -70,7 +78,8 @@ export function replayCard(
       last_review: current.lastReview ?? undefined,
     }
 
-    const next = rate(fsrsCard, rating, now).card
+    const { card: next, log } = rate(fsrsCard, rating, now)
+    logs.push(log)
 
     current = {
       due: next.due,
@@ -89,5 +98,5 @@ export function replayCard(
     }
   }
 
-  return current
+  return { state: current, logs }
 }

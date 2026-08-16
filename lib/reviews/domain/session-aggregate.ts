@@ -8,6 +8,7 @@
 
 import { replayCard, type ReplayCardState } from '@/lib/cards/replay-card'
 import type { RatingInt } from '@/lib/fsrs'
+import type { ReviewLog as FsrsReviewLog } from 'ts-fsrs'
 
 // ---------------------------------------------------------------------------
 // 入力型 — domain 内で最小 structural に定義 (zod infer 型に依存しない)。
@@ -106,6 +107,18 @@ export function planFold(
   return { groups, skipped }
 }
 
+// review_logs 永続化 (R0 Task 3) 向けに fold 過程で回収する 1 event 分の ReviewLog。
+// eventId/cardId は帰属、log は rate() の生 ReviewLog (before 値を含む)、after は
+// 適用直後の card state から抜いた 3 値 (spec §3.3 — 同時刻 event の導出曖昧性回避
+// のため log 自体からは after を導出せず fold 側で持つ)。
+// **Task 2 時点では消費者が存在しない過渡的な戻り値** (書込は Task 3)。
+export type AppliedReviewLog = {
+  eventId: string
+  cardId: string
+  log: FsrsReviewLog
+  after: { state: 0 | 1 | 2 | 3; stability: number; difficulty: number }
+}
+
 // ---------------------------------------------------------------------------
 // foldSession — 順序ガード付き FSRS fold (spec §2.2 手順 5 後半 / §2.4)。
 //
@@ -115,14 +128,22 @@ export function planFold(
 //
 // finalStates には **1 件以上適用された card のみ** を入れる (全 skip の card を
 // 入れると無変化 UPDATE を発行することになるため)。
+//
+// appliedLogs は適用された event と 1:1 (skip された event は入らない) —
+// replayCard を event 1 件ずつ呼ぶため logs[0] が常にその event の log になる。
 // ---------------------------------------------------------------------------
 
 export function foldSession(
   cardStates: Map<string, ReplayCardState>,
   plan: FoldPlan,
-): { finalStates: Map<string, ReplayCardState>; appliedEventIds: Set<string> } {
+): {
+  finalStates: Map<string, ReplayCardState>
+  appliedEventIds: Set<string>
+  appliedLogs: AppliedReviewLog[]
+} {
   const finalStates = new Map<string, ReplayCardState>()
   const appliedEventIds = new Set<string>()
+  const appliedLogs: AppliedReviewLog[] = []
 
   for (const [cardId, groupEvents] of plan.groups) {
     // planFold が lockedCardIds で絞った後なので cardStates には必ず存在する
@@ -136,14 +157,25 @@ export function foldSession(
       ) {
         continue
       }
-      current = replayCard(current, [
+      const result = replayCard(current, [
         { rating: ev.rating, isCorrect: ev.isCorrect, answeredAt: ev.answeredAt },
       ])
+      current = result.state
       appliedEventIds.add(ev.eventId)
+      appliedLogs.push({
+        eventId: ev.eventId,
+        cardId,
+        log: result.logs[0],
+        after: {
+          state: current.state,
+          stability: current.stability,
+          difficulty: current.difficulty,
+        },
+      })
       applied = true
     }
     if (applied) finalStates.set(cardId, current)
   }
 
-  return { finalStates, appliedEventIds }
+  return { finalStates, appliedEventIds, appliedLogs }
 }
