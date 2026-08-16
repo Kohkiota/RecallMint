@@ -3,6 +3,7 @@
 -- SECURITY は policy を削除せず即時に無効化するため、再度 ENABLE すれば同じ
 -- policy が復活する = 即時 rollback (再 enable は r0-review-logs-enable.sql が冪等
 -- なので policy 衝突なく通る)。DISABLE も ACCESS EXCLUSIVE lock を取るため
--- enable.sql と対称に lock_timeout を張る。既存 disable file と完全対称。
+-- enable.sql と対称に lock_timeout を張る。P2 / Wave 1 / Wave 2 / ②-4a disable と
+-- 完全対称 (先行 file が採る「対称元を名指しする」書式に揃える)。
 SET lock_timeout = '5s';
 ALTER TABLE review_logs DISABLE ROW LEVEL SECURITY;

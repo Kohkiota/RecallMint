@@ -587,6 +587,109 @@ R0(ReviewLog 持続化)の新設 tenant 表を **P2 / Wave1 / Wave2 / ②-4a と
 
 §12.2 の更新後の値と一致する: **共通形 18 表 / RLS 対象(users 込み)19 表 / policy 21 件**(`review_logs` は共通形 18 表のうちの 1 つ・対応 policy は `review_logs|review_logs_tenant` の 1 件)。
 
+### 14.4 適用手順と owner readback の期待値(2026-08-16 実測)
+
+§14.1〜14.3 が「何を・どの順で」を定めるのに対し、本節は**実コマンドと期待値**を置く。下記の期待値はすべて **local iso PG(PG17.10・migration 0039 + 全 policy 適用済)で実測**した値で、stg / prod でも同一になる。
+
+**⚠️ 本節の readback はすべて owner 接続での確認であり、「RLS が効いていること」の証明にはならない**(§14.2 / §13.2 — owner は policy を素通しするため false-green になる)。実効検証は必ず app role の `scripts/verify-rls-state.ts` で行う。
+
+#### Step 1 — migrate(owner・direct 5432)
+
+```bash
+DATABASE_URL_ADMIN='<owner(postgres)接続文字列・:5432>' pnpm db:migrate
+```
+
+`drizzle.config.ts` が `DATABASE_URL_ADMIN` を読む。**inline 供給が `.env.local` の値に優先する**(dotenv は既存 `process.env` を上書きしないため)。owner は pooler 6543 ではなく **direct 5432**(§1 の接続表)。
+
+```sql
+-- 期待: applied_migrations = 40
+SELECT count(*) AS applied_migrations,
+       to_timestamp(max(created_at)/1000) AT TIME ZONE 'Asia/Tokyo' AS last_applied_jst
+FROM drizzle.__drizzle_migrations;
+
+-- 期待: 6 行(PK 1 + FK 2 + CHECK 3)
+SELECT conname, contype
+FROM pg_constraint
+WHERE conrelid = 'public.review_logs'::regclass AND contype IN ('p','f','c')
+ORDER BY contype, conname;
+```
+
+`contype` を `p/f/c` に絞るのは、PG18 が NOT NULL を `contype='n'` にも記録するため(絞らないと PG bump だけで期待行数がズレる)。
+
+#### Step 2 — policy 適用と readback
+
+`db/policies/r0-review-logs-enable.sql` の全文を SQL Editor(owner)で実行(§14.1)。
+
+```sql
+-- RLS / FORCE / policy を 1 本で確認
+SELECT c.relname AS table_name, c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS force_rls,
+       p.polname, p.polcmd, p.polpermissive AS permissive,
+       (SELECT string_agg(pg_get_userbyid(r), ',') FROM unnest(p.polroles) r) AS roles,
+       pg_get_expr(p.polqual, p.polrelid)      AS using_expr,
+       pg_get_expr(p.polwithcheck, p.polrelid) AS with_check_expr
+FROM pg_class c LEFT JOIN pg_policy p ON p.polrelid = c.oid
+WHERE c.relname = 'review_logs';
+```
+
+期待値(実測):
+
+| 列 | 期待値 | 補足 |
+|---|---|---|
+| `rls_enabled` | `t` | |
+| `force_rls` | **`f`** | **非 FORCE が正**。FORCE を張ると owner(migrate / seed / operator)まで policy に縛られる。`scripts/verify-rls-state.ts` は `relforcerowsecurity = true` を**異常として finding に上げる**実装で、`rls-drift.test.ts` も全 public 表で false を pin している(`expect(forced).toEqual([])`)|
+| `polname` | `review_logs_tenant` | |
+| `polcmd` | **`*`**(= `FOR ALL`) | |
+| `permissive` | `t` | |
+| `roles` | `recallmint_app` | |
+| `using_expr` / `with_check_expr` | `(user_id = ( SELECT app_current_user_id() AS app_current_user_id))`(両方同一) | §12.2 の `TENANT_PRED` |
+
+**`answer_events` との同型確認**(親子関係にある 2 表が同じ守り方になっていることの確認。2026-08-16 実測で **cmd / permissive / roles / USING / WITH CHECK の 5 要素すべて一致**):
+
+```sql
+SELECT c.relname AS tbl, p.polname, p.polcmd, p.polpermissive AS permissive,
+       (SELECT string_agg(pg_get_userbyid(r), ',') FROM unnest(p.polroles) r) AS roles,
+       pg_get_expr(p.polqual, p.polrelid)      AS using_expr,
+       pg_get_expr(p.polwithcheck, p.polrelid) AS with_check_expr
+FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+WHERE c.relname IN ('review_logs','answer_events') ORDER BY c.relname;
+```
+
+なお **本 repo に「追記専用」を表現した policy は存在しない** — 19 表すべてが `FOR ALL` の共通形で、コマンド単位の絞り込みは policy ではなく **command-level GRANT の REVOKE**(`db/roles/recallmint_app-grants-phase3.sql`)で表現する設計。その適用対象は「RLS で守れない非 RLS 5 表」のみ。
+
+#### Step 3 — grants の期待値
+
+```sql
+-- 期待: 4 行(DELETE / INSERT / SELECT / UPDATE)
+SELECT privilege_type
+FROM information_schema.role_table_grants
+WHERE table_name = 'review_logs' AND grantee = 'recallmint_app'
+ORDER BY privilege_type;
+```
+
+**期待 = `SELECT, INSERT, UPDATE, DELETE` の 4 行**(RLS 19 表すべてが同じ 4 権限。`answer_events` / `study_days` などの追記系も 4 個で、追記系だから 2 個という運用にはなっていない)。
+
+由来は `db/roles/recallmint_app-grants.sql` の 2 文で、**enable SQL 側に GRANT 文は無い**(policy file と grants file の責務分離。既存 4 policy file も同様)。**新表は GRANT 文の有無に関係なく必ず 4 権限になる**が、由来は環境で分かれる:
+
+| 環境 | 由来 | 理由 |
+|---|---|---|
+| local iso | `GRANT ... ON ALL TABLES IN SCHEMA public` | `global-setup.ts` が **migrate → grants** の順で毎回流すため、grants 実行時点で表が既に存在する |
+| **stg / prod** | **`ALTER DEFAULT PRIVILEGES FOR ROLE postgres`** | grants file は過去に 1 度適用済みで、表はその後 owner が作るため default ACL が自動付与する |
+
+これが §14.1 の「migrate しただけで grant はフルで付く」の実体で、policy 適用が遅れると「表とフル権限はあるが tenant 境界が無い」窓が開く理由でもある。
+
+#### Step 4 — 全体カタログ
+
+```sql
+-- 期待: rls_tables = 19 / policies = 21 / force_tables = 0
+SELECT
+  (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity) AS rls_tables,
+  (SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid
+     JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public') AS policies,
+  (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity) AS force_tables;
+```
+
 ## 関連 doc
 
 - Wave 1 factfinding / wave 定義: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md`(§5.3 / 追補 / 追補2)
