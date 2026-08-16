@@ -5,7 +5,7 @@
 - plan: `docs/superpowers/plans/2026-08-16-tag-mirror-correctness-sprint.md`
 - 事実基盤: `docs/superpowers/sessions/2026-08-16-tag-mirror-writer-inventory-factfinding.md`(全書込点の棚卸し + Appendix A)
 - 実装方式: `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 canonical review + Codex 独立 review)
-- **status: 実装完了・未 push**(stg smoke 未実施)。最終 whole-branch review 収束済(§7a)
+- **status: 実装完了・最終 review 収束済(§7a)。stg smoke は PARTIAL PASS**(§10)— 実施 10 項目は全 PASS、**中核の A→B 切替 4 項目は user B の credential が無く未実施**
 
 ## 1. commit 一覧(実装のみ・全て `[reviewed]`)
 
