@@ -11,7 +11,7 @@ import 'server-only'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { DbExecutor } from '@/lib/cards/apply-card-mutation'
 import type { DB } from '@/lib/db'
-import { answerEvents, cards, studyDays } from '@/lib/db/schema'
+import { answerEvents, cards, reviewLogs, studyDays } from '@/lib/db/schema'
 import type { ReplayCardState } from '@/lib/cards/replay-card'
 import type { RatingInt } from '@/lib/fsrs'
 import { jstDayRange } from '@/lib/jst'
@@ -210,6 +210,42 @@ export async function markApplied(
         inArray(answerEvents.eventId, eventIds),
       ),
     )
+}
+
+// ---------------------------------------------------------------------------
+// insertReviewLogs — spec §5 手順 7.5 (markApplied 直後・recomputeStudyDays 前)。
+// 適用された event の ts-fsrs ReviewLog を bulk INSERT する (spec §3.1 の 17 列)。
+// plain INSERT (onConflict なし) — 同一 event の再適用は Sprint A の既存冪等 2 段
+// (payload 内 dedupe + onConflictDoNothing) が構造的に排除するため、23505 は
+// fold 二重適用という上流バグの loud 検出とする (spec §4)。
+// ---------------------------------------------------------------------------
+
+export interface ReviewLogInsertRow {
+  eventId: string
+  userId: string
+  cardId: string
+  rating: RatingInt
+  stateBefore: 0 | 1 | 2 | 3
+  dueBefore: Date
+  stabilityBefore: number
+  difficultyBefore: number
+  elapsedDays: number
+  lastElapsedDays: number
+  scheduledDays: number
+  learningSteps: number
+  review: Date
+  stateAfter: 0 | 1 | 2 | 3
+  stabilityAfter: number
+  difficultyAfter: number
+  createdAt: Date
+}
+
+export async function insertReviewLogs(
+  tx: DbExecutor,
+  rows: ReviewLogInsertRow[],
+): Promise<void> {
+  if (rows.length === 0) return
+  await tx.insert(reviewLogs).values(rows)
 }
 
 // ---------------------------------------------------------------------------

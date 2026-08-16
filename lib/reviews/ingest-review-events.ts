@@ -24,13 +24,16 @@ import {
 import {
   applyCardFinalStates,
   insertAnswerEvents,
+  insertReviewLogs,
   lockCardReplayStates,
   markApplied,
   recomputeStudyDays,
   verifyEventCollisions,
   type AnswerEventInsertRow,
+  type ReviewLogInsertRow,
 } from '@/lib/reviews/session-repository'
 import type { ReplayCardState } from '@/lib/cards/replay-card'
+import type { RatingInt } from '@/lib/fsrs'
 
 // ---------------------------------------------------------------------------
 // Payload validation (zod) — event schema は client 送信前検証と共有 1 定義。
@@ -161,11 +164,35 @@ export async function processAnswerEvents(
     // 手順 5: 新規 ∧ card ロック済み ∧ A-2 pass のみを per-card 整列して fold。
     const newRows = rows.filter((r) => insertedEventIds.has(r.eventId))
     const plan = planFold(newRows, lockedCardIds, optionIndex)
-    const { finalStates, appliedEventIds } = foldSession(cardStates, plan)
+    const { finalStates, appliedEventIds, appliedLogs } = foldSession(cardStates, plan)
 
     // 手順 6-7: cards UPDATE → applied 反転。
     await applyCardFinalStates(tx, user.id, finalStates)
     await markApplied(tx, user.id, [...appliedEventIds])
+
+    // 手順 7.5: 適用された event の ReviewLog を review_logs へ bulk INSERT
+    // (spec §5・§3.1)。rating/state は ts-fsrs の enum 値を DB 列の literal union へ
+    // 写像するだけ (replay-card.ts の next.state 変換と同型のキャスト)。
+    const reviewLogRows: ReviewLogInsertRow[] = appliedLogs.map((entry) => ({
+      eventId: entry.eventId,
+      userId: user.id,
+      cardId: entry.cardId,
+      rating: entry.log.rating as RatingInt,
+      stateBefore: entry.log.state as 0 | 1 | 2 | 3,
+      dueBefore: entry.log.due,
+      stabilityBefore: entry.log.stability,
+      difficultyBefore: entry.log.difficulty,
+      elapsedDays: entry.log.elapsed_days,
+      lastElapsedDays: entry.log.last_elapsed_days,
+      scheduledDays: entry.log.scheduled_days,
+      learningSteps: entry.log.learning_steps,
+      review: entry.log.review,
+      stateAfter: entry.after.state,
+      stabilityAfter: entry.after.stability,
+      difficultyAfter: entry.after.difficulty,
+      createdAt: receivedAt,
+    }))
+    await insertReviewLogs(tx, reviewLogRows)
 
     // 手順 8: 今回 applied になった event が跨る JST day を絶対値で再集計。
     const appliedDays = new Set<string>()

@@ -157,6 +157,10 @@ export interface ReviewEventsState {
   studyDaysLockCalls: number
   executeCalls: unknown[]
 
+  // review_logs bulk INSERT (R0 Task 3・手順 7.5)
+  reviewLogsInsertValues: null | Record<string, unknown>[]
+  reviewLogsInsertCallCount: number
+
   /**
    * FOR UPDATE を取った表名を取得順に積む共有 log。cards / study_days を別カウンタで
    * 数えるだけでは「cards → study_days」というロック**順序**の不変条件 (deadlock 回避の
@@ -185,6 +189,8 @@ export function createState(): ReviewEventsState {
     studyDaysInsertValues: null,
     studyDaysLockCalls: 0,
     executeCalls: [],
+    reviewLogsInsertValues: null,
+    reviewLogsInsertCallCount: 0,
     lockSequence: [],
     txShouldThrow: false,
     txError: null,
@@ -339,6 +345,14 @@ export function makeFakeTx(state: ReviewEventsState) {
           if (name === 'study_days') {
             state.studyDaysInsertValues = rows
             return { onConflictDoNothing: (_conf: unknown) => Promise.resolve() }
+          }
+
+          if (name === 'review_logs') {
+            // insertReviewLogs は plain INSERT (onConflictDoNothing なし・spec §4) —
+            // .values() を直接 await するだけの形をここでも再現する。
+            state.reviewLogsInsertCallCount++
+            state.reviewLogsInsertValues = rows
+            return Promise.resolve(undefined)
           }
 
           return { onConflictDoNothing: () => Promise.resolve() }

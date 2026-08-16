@@ -19,6 +19,16 @@ const { state } = vi.hoisted(() => ({
   state: {} as import('@/tests/fixtures/review-events').ReviewEventsState,
 }))
 
+// tx identity pin (R0 Task 3・test ③) 用の capture。session-repository の実装は
+// importActual で保持しつつ、insertReviewLogs / markApplied に渡された tx 引数の
+// 参照だけを記録する (同一 withTenantTx callback の tx で呼ばれているかを見る)。
+const { repoTxCapture } = vi.hoisted(() => ({
+  repoTxCapture: {
+    insertReviewLogsTx: [] as unknown[],
+    markAppliedTx: [] as unknown[],
+  },
+}))
+
 // ---------------------------------------------------------------------------
 // mocks
 // ---------------------------------------------------------------------------
@@ -33,9 +43,24 @@ vi.mock('@/lib/db/tenant-tx', () => ({
   withTenantTx: (_userId: string, fn: (tx: unknown) => unknown) =>
     fn(makeFakeTx(state)),
 }))
+vi.mock('@/lib/reviews/session-repository', async (importActual) => {
+  const real = await importActual<typeof import('@/lib/reviews/session-repository')>()
+  return {
+    ...real,
+    insertReviewLogs: (tx: unknown, rows: never) => {
+      repoTxCapture.insertReviewLogsTx.push(tx)
+      return real.insertReviewLogs(tx as never, rows)
+    },
+    markApplied: (tx: unknown, userId: string, eventIds: string[]) => {
+      repoTxCapture.markAppliedTx.push(tx)
+      return real.markApplied(tx as never, userId, eventIds)
+    },
+  }
+})
 
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { logger } from '@/lib/logger'
+import type { ReviewLogInsertRow } from '@/lib/reviews/session-repository'
 import {
   addCardRow,
   addExistingEventRow,
@@ -88,12 +113,23 @@ function warnedEvents(): string[] {
     .mock.calls.map((c) => (c[0] as { event?: string }).event ?? '')
 }
 
+/** review_logs INSERT rows から eventId で 1 行取り出す。 */
+function insertedReviewLog(eventId: string): ReviewLogInsertRow {
+  const rows = state.reviewLogsInsertValues
+  if (!rows) throw new Error('review_logs INSERT が呼ばれていない')
+  const found = rows.find((r) => r.eventId === eventId)
+  if (!found) throw new Error(`review_logs INSERT rows に ${eventId} がない`)
+  return found as unknown as ReviewLogInsertRow
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(RECEIVED_AT)
   Object.assign(state, createState())
   resetState(state)
+  repoTxCapture.insertReviewLogsTx = []
+  repoTxCapture.markAppliedTx = []
   vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
   addCardRow(state, VALID_CARD_ID)
 })
@@ -820,5 +856,100 @@ describe('tx throw の分類', () => {
     state.bulkUpdateReturnOverride = []
     const res = await POST(makeReq(makeValidPayload()))
     expect(res.status).toBe(503)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// review_logs 永続化 (R0 Task 3・手順 7.5) — spec §3.1 の 17 列写像 + 同一 tx 性
+// ---------------------------------------------------------------------------
+
+describe('review_logs 永続化 (手順 7.5)', () => {
+  it('適用された event 1 件 → review_logs へ 17 列すべてが spec §3.1 どおり写像される', async () => {
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(200)
+
+    expect(state.reviewLogsInsertCallCount).toBe(1)
+    const row = insertedReviewLog(VALID_EVENT_ID)
+    const tuple = cardTuple(VALID_CARD_ID)
+
+    // 帰属 3 列 + rating (event 由来)
+    expect(row.eventId).toBe(VALID_EVENT_ID)
+    expect(row.userId).toBe(FAKE_USER.id)
+    expect(row.cardId).toBe(VALID_CARD_ID)
+    expect(row.rating).toBe(3)
+
+    // before 4 値 (log 由来、addCardRow の初期 seed = state 0 / due 2026-05-25T00:00Z /
+    // stability 0 / difficulty 0 の未適用値と一致する — この card は初回 review)
+    expect(row.stateBefore).toBe(0)
+    expect(row.dueBefore).toEqual(new Date('2026-05-25T00:00:00Z'))
+    expect(row.stabilityBefore).toBe(0)
+    expect(row.difficultyBefore).toBe(0)
+
+    // deprecated 2 列 + scheduled_days / learning_steps (log 由来、初回 review は全て 0)
+    expect(row.elapsedDays).toBe(0)
+    expect(row.lastElapsedDays).toBe(0)
+    expect(row.scheduledDays).toBe(0)
+    expect(row.learningSteps).toBe(0)
+
+    // review = clamp 済 answered_at (log.review)。 answer_events.answered_at と同一値。
+    expect(row.review).toEqual(insertedRow(VALID_EVENT_ID).answeredAt)
+
+    // after 3 値 = cards UPDATE (手順 6) に載った最終 state と同一 (同じ fold 結果由来)。
+    expect(row.stateAfter).toBe(tuple.state)
+    expect(row.stabilityAfter).toBe(tuple.stability)
+    expect(row.difficultyAfter).toBe(tuple.difficulty)
+
+    // created_at = receivedAt (answer_events.created_at と同一時刻源・spec §3.1)
+    expect(row.createdAt).toEqual(RECEIVED_AT)
+  })
+
+  it('複数 event (同一 card 連鎖) → event ごとに 1 行、row n の after が row n+1 の before と連鎖する', async () => {
+    const res = await POST(
+      makeReq(
+        makeValidPayload({
+          events: [
+            {
+              event_id: VALID_EVENT_ID,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-25T10:01:00.000Z',
+            },
+            {
+              event_id: VALID_EVENT_ID_2,
+              card_id: VALID_CARD_ID,
+              selected_answer_ids: ['a'],
+              is_correct: true,
+              rating: 3,
+              answered_at: '2026-05-25T10:02:00.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    expect(res.status).toBe(200)
+    expect(state.reviewLogsInsertValues).toHaveLength(2)
+    const first = insertedReviewLog(VALID_EVENT_ID)
+    const second = insertedReviewLog(VALID_EVENT_ID_2)
+    expect(second.stateBefore).toBe(first.stateAfter)
+    expect(second.stabilityBefore).toBe(first.stabilityAfter)
+    expect(second.difficultyBefore).toBe(first.difficultyAfter)
+  })
+
+  it('全 event が適用対象外 (dangling card) → review_logs INSERT statement を発行しない', async () => {
+    state.cardRows.clear()
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(200)
+    expect(state.reviewLogsInsertCallCount).toBe(0)
+    expect(state.reviewLogsInsertValues).toBeNull()
+  })
+
+  it('insertReviewLogs は markApplied と同一の tx object で呼ばれる (同一 tx 性・red 変異 (c) の pin)', async () => {
+    const res = await POST(makeReq(makeValidPayload()))
+    expect(res.status).toBe(200)
+    expect(repoTxCapture.insertReviewLogsTx).toHaveLength(1)
+    expect(repoTxCapture.markAppliedTx).toHaveLength(1)
+    expect(repoTxCapture.insertReviewLogsTx[0]).toBe(repoTxCapture.markAppliedTx[0])
   })
 })

@@ -34,6 +34,7 @@ vi.mock('drizzle-orm', async (importActual) => {
 })
 
 import type { ReplayCardState } from '@/lib/cards/replay-card'
+import { reviewLogs } from '@/lib/db/schema'
 import {
   lockCardReplayStates,
   insertAnswerEvents,
@@ -41,8 +42,10 @@ import {
   markApplied,
   applyCardFinalStates,
   recomputeStudyDays,
+  insertReviewLogs,
   type AnswerEventInsertRow,
   type CollisionCandidate,
+  type ReviewLogInsertRow,
 } from './session-repository'
 
 const USER_ID = '11111111-1111-4111-a111-111111111111'
@@ -116,6 +119,31 @@ function makeCandidate(
     rating: 3,
     rawAnsweredAt: new Date('2026-05-25T10:01:00.000Z'),
     elapsedMs: null,
+    ...overrides,
+  }
+}
+
+function makeReviewLogRow(
+  overrides: Partial<ReviewLogInsertRow> = {},
+): ReviewLogInsertRow {
+  return {
+    eventId: EVENT_ID,
+    userId: USER_ID,
+    cardId: CARD_ID,
+    rating: 3,
+    stateBefore: 2,
+    dueBefore: new Date('2026-05-25T00:00:00Z'),
+    stabilityBefore: 1,
+    difficultyBefore: 2,
+    elapsedDays: 0,
+    lastElapsedDays: 0,
+    scheduledDays: 0,
+    learningSteps: 0,
+    review: new Date('2026-05-25T10:01:00.000Z'),
+    stateAfter: 2,
+    stabilityAfter: 1.5,
+    difficultyAfter: 2.1,
+    createdAt: RECEIVED_AT,
     ...overrides,
   }
 }
@@ -408,6 +436,51 @@ describe('markApplied', () => {
     const [inCol, inVals] = vi.mocked(mockInArray).mock.calls[0]!
     expect((inCol as { name: string }).name).toBe('event_id')
     expect(inVals).toEqual(['e1', 'e2'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// insertReviewLogs — spec §5 手順 7.5 (R0 Task 3)
+// ---------------------------------------------------------------------------
+
+describe('insertReviewLogs', () => {
+  function makeTx() {
+    const captured: { table?: unknown; values?: unknown } = {}
+    let insertCalls = 0
+    const tx = {
+      insert: (table: unknown) => {
+        insertCalls++
+        captured.table = table
+        return {
+          values: (vals: unknown) => {
+            captured.values = vals
+            return Promise.resolve(undefined)
+          },
+        }
+      },
+    } as never
+    return { tx, captured, getInsertCalls: () => insertCalls }
+  }
+
+  it('rows が空なら INSERT statement を発行しない (早期 return)', async () => {
+    const { tx, getInsertCalls } = makeTx()
+    await insertReviewLogs(tx, [])
+    expect(getInsertCalls()).toBe(0)
+  })
+
+  it('複数 rows を単一 bulk INSERT に渡す (行ごとの N+1 をせず、全列を素通しする)', async () => {
+    const rows = [
+      makeReviewLogRow({ eventId: 'e1' }),
+      makeReviewLogRow({ eventId: 'e2', cardId: CARD_ID_2 }),
+    ]
+    const { tx, captured, getInsertCalls } = makeTx()
+    await insertReviewLogs(tx, rows)
+
+    expect(getInsertCalls()).toBe(1)
+    expect(getTableName(captured.table as never)).toBe(getTableName(reviewLogs))
+    // plain INSERT (onConflictDoNothing を挟まず .values() を直接 await) — 素通しなので
+    // 17 列いずれも欠落・変形しない (参照同一で全列担保)。
+    expect(captured.values).toBe(rows)
   })
 })
 
