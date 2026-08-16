@@ -24,3 +24,29 @@ describe('page.tsx: S2b-2 戻るリンク撤去', () => {
     expect(pageSource).toContain('ExamDetailPullGate')
   })
 })
+
+describe('page.tsx: ExamDetailView に key={userId} を渡す (S-local-2 Task 3 fix round 1 / Critical fix)', () => {
+  it('<ExamDetailView> の JSX に key={userId} が付与されている', () => {
+    // userId が live に変わっても (remount なしの internal navigation。app/(app)/app/layout.tsx が
+    // persistent layout tree を remount しないため) 前 user の prefs state が新 user の sync_meta
+    // namespace に漏れないよう、instance を丸ごと作り直す key={userId} が必須 (canonical review 指摘)。
+    // <ExamDetailView> の JSX ブロックのみを切り出して assert する (ファイル全体 grep だと他箇所の
+    // "key={userId}" 文字列に誤って一致する可能性を排除するため)。
+    const start = pageSource.indexOf('<ExamDetailView')
+    expect(start, '<ExamDetailView の JSX が見つからない').toBeGreaterThan(-1)
+    const end = pageSource.indexOf('/>', start)
+    expect(end, '<ExamDetailView /> の閉じタグが見つからない').toBeGreaterThan(-1)
+    const block = pageSource.slice(start, end + 2)
+    // `//` 行コメントを除去してから判定する (JSX ブロック内の説明コメントが "key={userId}" と
+    // いう文字列そのものに言及していても、実際の prop 行だけを見て判定するため)。
+    const blockWithoutLineComments = block
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n')
+    expect(
+      blockWithoutLineComments,
+      'ExamDetailView に key={userId} が無いと、userId 変更時に mount-load effect (deps []) が' +
+        '再実行されず前 user の state のまま persist effect が新 user の sync_meta key に書いてしまう',
+    ).toContain('key={userId}')
+  })
+})

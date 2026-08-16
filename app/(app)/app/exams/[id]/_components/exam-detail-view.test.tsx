@@ -13,6 +13,7 @@ import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-libra
 import { getClientDb } from '@/lib/client-db'
 import {
   SYNC_META_KEYS,
+  scopedSyncMetaKey,
   examViewPrefsSchema,
   examViewPrefsV1Schema,
   examViewPrefsV2Schema,
@@ -196,6 +197,7 @@ describe('ExamDetailView — Case ②: saved table → useEffect 後 table 切�
     // 事前に sync_meta に { version: 1, view: 'table' } を seed
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 1, view: 'table' },
       examViewPrefsV1Schema,
     )
@@ -230,9 +232,14 @@ describe('ExamDetailView — Case ②: saved table → useEffect 後 table 切�
 
 describe('ExamDetailView — Case ③: saved 不正値 → card fallback', () => {
   it('不正 JSON を seed → getJsonSyncMeta が undefined を返し setState 走らず default card のまま', async () => {
-    // Dexie 直接書込で不正値を seed (schema mismatch → getJsonSyncMeta が undefined 返し)
+    // Dexie 直接書込で不正値を seed (schema mismatch → getJsonSyncMeta が undefined 返し)。
+    // key は scopedSyncMetaKey で userId 名前空間化 (Task 3) — defaultProps.userId と一致させないと
+    // 「key 欠損」経路 (Case ①) に化けて「不正 JSON」経路の pin が壊れる。
     const db = getClientDb()
-    await db.sync_meta.put({ key: 'exam_view_prefs', value: 'broken-json-{{{' })
+    await db.sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, defaultProps.userId),
+      value: 'broken-json-{{{',
+    })
 
     render(<ExamDetailView {...defaultProps} />)
 
@@ -249,6 +256,118 @@ describe('ExamDetailView — Case ③: saved 不正値 → card fallback', () =>
 
     // InlineCardList stub が render されている
     expect(screen.getByTestId('inline-card-list-stub')).toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
+// Case ③-b (S-local-2 Task 3): userId prop が getJsonSyncMeta/setJsonSyncMeta の
+// owner scope 引数として実際に配線されていることを pin する (component 層)。
+// 「値が isolate されるか」自体は helper 層の pin② (sync-meta.test.ts) で pin 済 —
+// ここでの関心は「ExamDetailView が自 userId prop を正しく渡しているか」という配線。
+// (final render state で 'card' のまま = default と一致する assertion は、 load 完了前の
+// 初期 render でも trivially 真になり waitFor が即通ってしまう vacuous pass になるため
+// 避け、 mock の呼出引数を直接 pin する)
+// ===========================================================================
+
+describe('ExamDetailView — Case ③-b (S-local-2 Task 3): userId prop が owner scope 引数に配線される', () => {
+  it('mount load は自 userId prop で getJsonSyncMeta を呼ぶ', async () => {
+    render(<ExamDetailView {...defaultProps} userId="user-2" />)
+
+    await waitFor(() => {
+      expect(mockGetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        'user-2',
+        examViewPrefsSchema,
+      )
+    })
+  })
+
+  it('view 切替の persist は自 userId prop で setJsonSyncMeta を呼ぶ', async () => {
+    render(<ExamDetailView {...defaultProps} userId="user-2" />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        'user-2',
+        expect.objectContaining({ version: 4 }),
+        examViewPrefsV4Schema,
+      )
+    })
+  })
+})
+
+// ===========================================================================
+// Case ③-c (S-local-2 Task 3 fix round 1 / Critical fix): live な userId 変更を
+// key={userId} 付き remount に変換すると、前 user の state が新 user の sync_meta
+// namespace に漏れないことを canonical review の repro パターンで pin する。
+//
+// 背景 (fix round 1): page.tsx は internal navigation で remount されない persistent
+// layout tree 内にあり、旧実装は <ExamDetailView> に key を渡していなかった。mount-load
+// effect は deps=[] で userId 変化に反応しないが、persist effect は deps に userId を
+// 含むため、userId だけ変わって remount しない場合は「旧 state を新 user の key に書く」
+// leak が起きる (canonical reviewer が実験で確認)。修正は page.tsx 側で
+// <ExamDetailView key={userId} .../> にすること(page.test.ts で pin 済)。
+//
+// 本 test はその「修正の前提となる mechanism」を component 層で直接検証する: RTL の
+// rerender で root 要素の key を明示的に変えると実際に unmount+remount が起きることを
+// 事前の実験で確認済み(同一 key での rerender は remount しない control も含めて確認)。
+// ゆえに本 test は vacuous ではない — key 変更を外せば(=page.tsx の fix が無い状態を
+// component 層で模せば)mount-load が再実行されず fresh load が起きなくなり red になる
+// (下記 red 実証で確認)。
+// ===========================================================================
+
+describe('ExamDetailView — Case ③-c (S-local-2 Task 3 fix round 1): key={userId} remount で前 user state が漏れない', () => {
+  it('user-1 で操作後、key={userId} 付きで userId=user-2 へ rerender すると fresh load が起き、旧 state は書かれない', async () => {
+    const { rerender } = render(<ExamDetailView {...defaultProps} key="user-1" userId="user-1" />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'カード' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    // user-1 として明示操作(view 切替)→ exam_view_prefs:user-1 に書込まれる
+    fireEvent.click(screen.getByRole('button', { name: 'テーブル' }))
+    await waitFor(() => {
+      expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        'user-1',
+        expect.objectContaining({ version: 4, view: 'table' }),
+        examViewPrefsV4Schema,
+      )
+    })
+
+    mockSetJsonSyncMeta.mockClear()
+    mockGetJsonSyncMeta.mockClear()
+
+    // page.tsx の fix (<ExamDetailView key={userId} .../>) を模し、userId と同時に key も
+    // 変えて rerender する(RTL は root 要素の key 変化を実 reconciliation として扱い
+    // unmount+remount を強制する — 事前実験で確認済み)。
+    rerender(<ExamDetailView {...defaultProps} key="user-2" userId="user-2" />)
+
+    // fresh instance は自分の userId (user-2) で load をやり直す
+    await waitFor(() => {
+      expect(mockGetJsonSyncMeta).toHaveBeenCalledWith(
+        SYNC_META_KEYS.examViewPrefs,
+        'user-2',
+        examViewPrefsSchema,
+      )
+    })
+
+    // 旧 user-1 の state (view=table) が user-2 の namespace に書かれていないこと。
+    // fresh mount は無操作 (userInteractedRef リセット済) なので spurious write 自体が
+    // 一度も起きない — leak していれば view='table' 付きで setJsonSyncMeta が呼ばれる。
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalledWith(
+      SYNC_META_KEYS.examViewPrefs,
+      'user-2',
+      expect.objectContaining({ view: 'table' }),
+      examViewPrefsV4Schema,
+    )
+    expect(mockSetJsonSyncMeta).not.toHaveBeenCalled()
   })
 })
 
@@ -300,6 +419,7 @@ describe('ExamDetailView — Case ④: toggle click → setState + sync_meta wri
     })
     expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 4, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null, peekWidthVw: 40 },
       examViewPrefsV4Schema,
     )
@@ -325,6 +445,7 @@ describe('ExamDetailView — Case ④-b: view 切替が hiddenColumns を破壊�
     // stub を render させる)。
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: ['memo', 'tags'] },
       examViewPrefsV2Schema,
     )
@@ -351,6 +472,7 @@ describe('ExamDetailView — Case ④-b: view 切替が hiddenColumns を破壊�
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         { version: 4, view: 'card', hiddenColumns: ['memo', 'tags'], pinnedBoundary: null, peekWidthVw: 40 },
         examViewPrefsV4Schema,
       )
@@ -617,6 +739,7 @@ describe('ExamDetailView — Case ⑫ (S2-5): mount-load で hiddenColumns が t
   it('saved hiddenColumns=[explanation_text] → stub の columnVisibility に反映される', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: ['explanation_text'] },
       examViewPrefsV2Schema,
     )
@@ -643,6 +766,7 @@ describe('ExamDetailView — Case ⑬ (S2-5): 列 toggle が view を破壊し�
     // view=table + hidden なし で seed (chrome + 列ボタンが出る状態)
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -665,7 +789,7 @@ describe('ExamDetailView — Case ⑬ (S2-5): 列 toggle が view を破壊し�
     // 永続 record を stored から確認 (HARD GATE): view=table 保持 + memo が hiddenColumns。
     // UI fix C: 書込は V4 化。examViewPrefsToV4 で正規化して view / hiddenColumns を確認。
     await waitFor(async () => {
-      const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+      const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'user-1', examViewPrefsSchema)
       expect(saved).toBeDefined()
       const v4 = examViewPrefsToV4(saved!)
       expect(v4.view, '列変更が view を消さない').toBe('table')
@@ -727,6 +851,7 @@ describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で save
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         { version: 4, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: null, peekWidthVw: 40 },
         examViewPrefsV4Schema,
       )
@@ -735,6 +860,7 @@ describe('ExamDetailView — Case ⑭ (S2-5 fix / R3): 永続 load-race で save
     // default 由来の ['question_label'] で上書きした形跡がない (= saved 消失していない)
     expect(mockSetJsonSyncMeta).not.toHaveBeenCalledWith(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       expect.objectContaining({ hiddenColumns: ['question_label'] }),
       expect.anything(),
     )
@@ -786,6 +912,7 @@ describe('ExamDetailView — Case ⑮ (S2-5 fix2): pre-load view toggle が post
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         { version: 4, view: 'table', hiddenColumns: ['question_label'], pinnedBoundary: null, peekWidthVw: 40 },
         examViewPrefsV4Schema,
       )
@@ -843,6 +970,7 @@ describe('ExamDetailView — Case ⑰ (S2 scroll-fix): root の pb-8 は card �
     // table に seed して view=table で render させる
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1037,6 +1165,7 @@ describe('ExamDetailView — S5-2 (c-1): V3 record (pinnedBoundary:title) → Ex
   it('V3 prefs を seed → stub の data-pinning が {left:[select,title],right:[]} になる', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 3, view: 'table', hiddenColumns: [], pinnedBoundary: 'title' },
       examViewPrefsV3Schema,
     )
@@ -1057,6 +1186,7 @@ describe('ExamDetailView — S5-2 (c-2): V2 record load → columnPinning = {lef
   it('V2 prefs を seed → stub の data-pinning が {left:[],right:[]} (pinnedBoundary=null) になる', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1077,6 +1207,7 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
     // view=table で seed (stub が描画される状態にする)
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1098,6 +1229,7 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         expect.objectContaining({ version: 4, pinnedBoundary: null }),
         examViewPrefsV4Schema,
       )
@@ -1108,6 +1240,7 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
     // view=table で seed (stub が描画される状態にする)
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1126,6 +1259,7 @@ describe('ExamDetailView — S5-2 (c-3): pinning 変更 → persist effect が V
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         expect.objectContaining({ version: 4, pinnedBoundary: 'title' }),
         examViewPrefsV4Schema,
       )
@@ -1168,6 +1302,7 @@ describe('ExamDetailView — S5-2 (c-5): 未知 boundary id → {left:[],right:[
   it('V3 pinnedBoundary="unknown-col" → computePinnedLeft が [] を返し stub に {left:[],right:[]} が渡る', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 3, view: 'table', hiddenColumns: [], pinnedBoundary: 'unknown-col-xyz' },
       examViewPrefsV3Schema,
     )
@@ -1210,6 +1345,7 @@ describe('ExamDetailView — UI fix C (d-2): V4 record load → stub の peekWid
   it('V4 prefs (peekWidthVw:55) を seed → stub の data-peek-width が 55 になる', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 4, view: 'table', hiddenColumns: [], pinnedBoundary: null, peekWidthVw: 55 },
       examViewPrefsV4Schema,
     )
@@ -1227,6 +1363,7 @@ describe('ExamDetailView — UI fix C (d-3): V2 record (peekWidthVw 欄なし) l
   it('V2 prefs を seed → stub の data-peek-width が 40 (既定値) になる', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1245,6 +1382,7 @@ describe('ExamDetailView — UI fix C (d-4): peek 幅変更 → persist effect �
     // view=table で seed (stub が描画される状態にする)
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 2, view: 'table', hiddenColumns: [] },
       examViewPrefsV2Schema,
     )
@@ -1262,6 +1400,7 @@ describe('ExamDetailView — UI fix C (d-4): peek 幅変更 → persist effect �
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         expect.objectContaining({ version: 4, peekWidthVw: 60 }),
         examViewPrefsV4Schema,
       )
@@ -1277,6 +1416,7 @@ describe('ExamDetailView — UI fix C (d-4): peek 幅変更 → persist effect �
   it('peek 幅変更が view/hiddenColumns/pinnedBoundary を破壊しない(相互非破壊)', async () => {
     await realSetJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'user-1',
       { version: 3, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: 'title' },
       examViewPrefsV3Schema,
     )
@@ -1296,6 +1436,7 @@ describe('ExamDetailView — UI fix C (d-4): peek 幅変更 → persist effect �
     await waitFor(() => {
       expect(mockSetJsonSyncMeta).toHaveBeenCalledWith(
         SYNC_META_KEYS.examViewPrefs,
+        'user-1',
         {
           version: 4,
           view: 'table',

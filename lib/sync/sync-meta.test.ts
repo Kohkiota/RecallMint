@@ -6,7 +6,7 @@ import { getClientDb } from '@/lib/client-db'
 import {
   SYNC_META_KEYS,
   getSyncMeta,
-  setSyncMeta,
+  scopedSyncMetaKey,
   getJsonSyncMeta,
   setJsonSyncMeta,
   examViewPrefsV1Schema,
@@ -37,6 +37,51 @@ describe('SYNC_META_KEYS', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// scopedSyncMetaKey (S-local-2 Task 3 — owner による空間的分離)
+// ---------------------------------------------------------------------------
+
+describe('scopedSyncMetaKey', () => {
+  it('pin①: base:userId 形式の文字列を返す', () => {
+    expect(scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, 'u1')).toBe('cards_cursor:u1')
+  })
+
+  it('pin①: 空 userId は throw する (fail-fast)', () => {
+    expect(() => scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, '')).toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getJsonSyncMeta / setJsonSyncMeta — owner による空間的分離 (pin②)
+// ---------------------------------------------------------------------------
+
+describe('getJsonSyncMeta / setJsonSyncMeta — owner 名前空間分離 (pin②)', () => {
+  it('pin②: setJsonSyncMeta(key, userId=A, ...) の実 key が exam_view_prefs:A になる', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      'A',
+      { version: 1, view: 'table' },
+      examViewPrefsV1Schema,
+    )
+    const row = await getClientDb().sync_meta.get('exam_view_prefs:A')
+    expect(row).toBeDefined()
+  })
+
+  it('pin②: userId=A が保存した値は userId=B で読むと undefined (共有ブラウザのアカウント切替で漏れない)', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.examViewPrefs,
+      'A',
+      { version: 1, view: 'table' },
+      examViewPrefsV1Schema,
+    )
+    const asB = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'B', examViewPrefsV1Schema)
+    expect(asB).toBeUndefined()
+    // A 自身は引き続き読める (漏れの反対 = 自分の書込は消えていないことも合わせて確認)
+    const asA = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'A', examViewPrefsV1Schema)
+    expect(asA).toEqual({ version: 1, view: 'table' })
+  })
+})
+
 describe('getSyncMeta', () => {
   it('未 set の key は undefined', async () => {
     const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
@@ -44,24 +89,21 @@ describe('getSyncMeta', () => {
   })
 
   it('set した value を取得できる', async () => {
-    await setSyncMeta(SYNC_META_KEYS.cardsCursor, '2026-05-26T01:23:45.000Z')
+    // setSyncMeta は削除済 (production caller ゼロ、Task 3)。 seed は raw put で行う
+    // (getSyncMeta 自体は userId 化していない — Task 4 で pull.ts と同時変更)。
+    await getClientDb().sync_meta.put({
+      key: SYNC_META_KEYS.cardsCursor,
+      value: '2026-05-26T01:23:45.000Z',
+    })
     const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
     expect(v).toBe('2026-05-26T01:23:45.000Z')
   })
 
   it('別 key は干渉しない', async () => {
-    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'cards-cursor-val')
-    await setSyncMeta(SYNC_META_KEYS.examsCursor, 'exams-cursor-val')
+    await getClientDb().sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: 'cards-cursor-val' })
+    await getClientDb().sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: 'exams-cursor-val' })
     expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('cards-cursor-val')
     expect(await getSyncMeta(SYNC_META_KEYS.examsCursor)).toBe('exams-cursor-val')
-  })
-})
-
-describe('setSyncMeta', () => {
-  it('上書き update で値が更新される', async () => {
-    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'v1')
-    await setSyncMeta(SYNC_META_KEYS.cardsCursor, 'v2')
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('v2')
   })
 })
 
@@ -74,11 +116,13 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
   it('正常 set→get で同値復元', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 1, view: 'table' },
       examViewPrefsV1Schema,
     )
     const result = await getJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       examViewPrefsV1Schema,
     )
     expect(result).toEqual({ version: 1, view: 'table' })
@@ -87,11 +131,12 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
   // case 2: 不正 JSON (壊れた string) → undefined
   it('不正 JSON は undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: 'not-a-json-{{{',
     })
     const result = await getJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       examViewPrefsV1Schema,
     )
     expect(result).toBeUndefined()
@@ -100,11 +145,12 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
   // case 3: schema mismatch → undefined (3a: version mismatch / 3b: view mismatch)
   it('schema mismatch (version: 2) は undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 2, view: 'table' }),
     })
     const result = await getJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       examViewPrefsV1Schema,
     )
     expect(result).toBeUndefined()
@@ -112,11 +158,12 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
 
   it('schema mismatch (view: kanban) は undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 1, view: 'kanban' }),
     })
     const result = await getJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       examViewPrefsV1Schema,
     )
     expect(result).toBeUndefined()
@@ -127,6 +174,7 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
     // beforeEach で clear 済のため table は空
     const result = await getJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       examViewPrefsV1Schema,
     )
     expect(result).toBeUndefined()
@@ -139,6 +187,7 @@ describe('getJsonSyncMeta / setJsonSyncMeta — ExamViewPrefsV1', () => {
     await expect(
       setJsonSyncMeta(
         SYNC_META_KEYS.examViewPrefs,
+        'u1',
         invalidValue,
         examViewPrefsV1Schema,
       ),
@@ -154,20 +203,20 @@ describe('examViewPrefs v2 schema / union', () => {
   // 不正値 (view: kanban) → union 読みは undefined (fallback)。
   it('不正な view 値の v2 record は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 2, view: 'kanban', hiddenColumns: [] }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
   // hiddenColumns 欠損の v2 record → union 読みは undefined (fallback)。
   it('hiddenColumns 欠損の v2 record は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 2, view: 'card' }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
@@ -180,7 +229,7 @@ describe('examViewPrefs v2 schema / union', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     await expect(
-      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, invalidValue, examViewPrefsV2Schema),
+      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', invalidValue, examViewPrefsV2Schema),
     ).rejects.toThrow()
   })
 })
@@ -194,10 +243,11 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
   it('v3 round-trip: hiddenColumns + pinnedBoundary を保持して復元し、peekWidthVw は既定値', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 3, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: 'tags' },
       examViewPrefsV3Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'table',
@@ -211,10 +261,11 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
   it('pinnedBoundary: null の v3 record を union で読み取る', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 3, view: 'card', hiddenColumns: [], pinnedBoundary: null },
       examViewPrefsV3Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'card',
@@ -228,10 +279,11 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
   it('toV4: v1 record → hiddenColumns=[], pinnedBoundary=null, peekWidthVw=既定値 に正規化する', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 1, view: 'table' },
       examViewPrefsV1Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'table',
@@ -245,10 +297,11 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
   it('toV4: v2 record → hiddenColumns を引き継ぎ, pinnedBoundary=null, peekWidthVw=既定値 に正規化する', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 2, view: 'card', hiddenColumns: ['tags', 'memo'] },
       examViewPrefsV2Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'card',
@@ -261,7 +314,7 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
   // 不正値 reject: pinnedBoundary が string でなく数値 → schema parse error → undefined
   it('不正値: pinnedBoundary が数値の v3 record は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 3,
         view: 'table',
@@ -269,24 +322,24 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
         pinnedBoundary: 123,
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
   // 不正値 reject: version:3 で pinnedBoundary フィールド欠落 → undefined
   it('不正値: version:3 で pinnedBoundary 欠落は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 3, view: 'card', hiddenColumns: [] }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
   // 不正値 reject: 余剰 key がある v3 record (.strict() による) → undefined
   it('不正値: 余剰 key のある v3 record は union 読みで undefined を返す (.strict())', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 3,
         view: 'table',
@@ -295,7 +348,7 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
         extraKey: 'should-be-rejected',
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
@@ -304,7 +357,7 @@ describe('examViewPrefs v3 schema / union / toV4 (UI fix C: toV3 → toV4 rename
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const invalidValue = { version: 3, view: 'table', hiddenColumns: [], pinnedBoundary: 999 } as any
     await expect(
-      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, invalidValue, examViewPrefsV3Schema),
+      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', invalidValue, examViewPrefsV3Schema),
     ).rejects.toThrow()
   })
 })
@@ -318,10 +371,11 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   it('v4 round-trip: hiddenColumns + pinnedBoundary + peekWidthVw を保持して復元する', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 4, view: 'table', hiddenColumns: ['memo'], pinnedBoundary: 'tags', peekWidthVw: 55 },
       examViewPrefsV4Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'table',
@@ -338,10 +392,11 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   it('決定: peekWidthVw=10(範囲外)の v4 record は union 読みで reject されず、toV4 が 25 にクランプする', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 4, view: 'table', hiddenColumns: [], pinnedBoundary: null, peekWidthVw: 10 },
       examViewPrefsV4Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     // 他フィールド (hiddenColumns/pinnedBoundary) が巻き添えで失われていないことも合わせて確認。
     expect(examViewPrefsToV4(saved!)).toEqual({
@@ -355,10 +410,11 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   it('決定: peekWidthVw=999(範囲外)の v4 record は union 読みで reject されず、toV4 が 70 にクランプする', async () => {
     await setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      'u1',
       { version: 4, view: 'card', hiddenColumns: [], pinnedBoundary: null, peekWidthVw: 999 },
       examViewPrefsV4Schema,
     )
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!)).toEqual({
       view: 'card',
@@ -371,7 +427,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   // 構造的不正(非数値)は引き続き union 読みで undefined を返す(V1〜V3 と同じ扱い)。
   it('不正値: peekWidthVw が文字列の v4 record は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 4,
         view: 'table',
@@ -380,7 +436,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
         peekWidthVw: 'wide',
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
@@ -391,7 +447,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   // (z.number() 自体の既定動作であり本 repo のコードで担保しているものではない)。
   it('不正値: peekWidthVw が null の v4 record は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 4,
         view: 'table',
@@ -400,24 +456,24 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
         peekWidthVw: null,
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
   // 不正値 reject: version:4 で peekWidthVw フィールド欠落 → undefined (V1〜V3 と同じ「構造不正は全体 reject」扱い)
   it('不正値: version:4 で peekWidthVw 欠落は union 読みで undefined を返す', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({ version: 4, view: 'card', hiddenColumns: [], pinnedBoundary: null }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
   // 不正値 reject: 余剰 key がある v4 record (.strict() による) → undefined
   it('不正値: 余剰 key のある v4 record は union 読みで undefined を返す (.strict())', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 4,
         view: 'table',
@@ -427,7 +483,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
         extraKey: 'should-be-rejected',
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeUndefined()
   })
 
@@ -442,7 +498,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     await expect(
-      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, invalidValue, examViewPrefsV4Schema),
+      setJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', invalidValue, examViewPrefsV4Schema),
     ).rejects.toThrow()
   })
 
@@ -450,7 +506,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
   // examViewPrefsToV4 が再クランプする(clampPeekWidthVw の再利用を pin する)。
   it('toV4: v4 record の peekWidthVw が範囲外でも防御的にクランプする', async () => {
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.examViewPrefs,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.examViewPrefs, 'u1'),
       value: JSON.stringify({
         version: 4,
         view: 'table',
@@ -459,7 +515,7 @@ describe('examViewPrefs v4 schema / union / toV4', () => {
         peekWidthVw: 5,
       }),
     })
-    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema)
+    const saved = await getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, 'u1', examViewPrefsSchema)
     expect(saved).toBeDefined()
     expect(examViewPrefsToV4(saved!).peekWidthVw).toBe(PEEK_WIDTH_MIN_VW)
   })

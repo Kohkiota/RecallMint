@@ -3,12 +3,14 @@
 //
 // 役割境界:
 // - SYNC_META_KEYS: 既知 key の定数集合。 新規 key 追加はここで型ごと宣言する。
-// - getSyncMeta / setSyncMeta: string value 限定 (本 sprint は ISO8601 cursor の
-//   みを想定。 将来 unknown を許す必要が出たら別 helper を用意し、 本 helper は
-//   string 専用のまま維持して呼出元を狭く保つ)。
+// - getSyncMeta: string value 限定 (本 sprint は ISO8601 cursor のみを想定)。
+//   userId 化は Task 4(唯一の reader = pull.ts と同時変更)。
 // - getJsonSyncMeta / setJsonSyncMeta: JSON + zod schema による型付き read/write helper
 //   (Grid-1 で導入)。 string helper と共存し、 JSON 値を扱う key 専用。
 //   将来 unknown を許す必要が出た場合の「別 helper」 としてここで実現している。
+//   S-local-2 Task 3: owner による空間的分離のため userId を必須化し、内部で
+//   scopedSyncMetaKey を通す (media cache の /__media/{userId}/{assetId} と同型 —
+//   lib/media/cache.ts:10-12)。 遅着 writer が自分の owner 領域にしか書けなくなる。
 
 import { z } from 'zod'
 import { getClientDb } from '@/lib/client-db'
@@ -36,27 +38,38 @@ export async function getSyncMeta(
   return typeof row.value === 'string' ? row.value : undefined
 }
 
-export async function setSyncMeta(
-  key: SyncMetaKey,
-  value: string,
-): Promise<void> {
-  await getClientDb().sync_meta.put({ key, value })
+// ---------------------------------------------------------------------------
+// scopedSyncMetaKey (S-local-2 Task 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * sync_meta の key を userId で名前空間化する (`${base}:${userId}`)。
+ * 遅着した非同期 writer が自分が capture した owner の領域にしか書かないことで、
+ * 共有ブラウザのアカウント切替時の race を時間的排他(lock)なしに無害化する
+ * (media cache の /__media/{userId}/{assetId} と同型 — lib/media/cache.ts:10-12)。
+ * 空 userId は呼出元のバグとして fail-fast する (未認証状態での誤用を早期検出)。
+ */
+export function scopedSyncMetaKey(base: SyncMetaKey, userId: string): string {
+  if (!userId) throw new Error('scopedSyncMetaKey: userId is required')
+  return `${base}:${userId}`
 }
 
 // ---------------------------------------------------------------------------
-// JSON helper (Grid-1)
+// JSON helper (Grid-1 / S-local-2 Task 3: userId 必須化)
 // ---------------------------------------------------------------------------
 
 /**
  * JSON + zod schema による型付き read helper。
  * row が存在しない / value が string でない / JSON.parse 失敗 / schema mismatch の
  * いずれかで undefined を返す (caller が存在確認できるよう例外は投げない)。
+ * key は scopedSyncMetaKey で userId 名前空間化する (owner スコープ分離)。
  */
 export async function getJsonSyncMeta<T>(
   key: SyncMetaKey,
+  userId: string,
   schema: z.ZodType<T>,
 ): Promise<T | undefined> {
-  const row = await getClientDb().sync_meta.get(key)
+  const row = await getClientDb().sync_meta.get(scopedSyncMetaKey(key, userId))
   if (!row || typeof row.value !== 'string') return undefined
   let parsed: unknown
   try {
@@ -72,14 +85,19 @@ export async function getJsonSyncMeta<T>(
  * JSON + zod schema による型付き write helper。
  * schema.parse で validate してから JSON.stringify して Dexie に put する。
  * invalid な value は schema.parse が throw する (caller のバグとして扱う)。
+ * key は scopedSyncMetaKey で userId 名前空間化する (owner スコープ分離)。
  */
 export async function setJsonSyncMeta<T>(
   key: SyncMetaKey,
+  userId: string,
   value: T,
   schema: z.ZodType<T>,
 ): Promise<void> {
   const parsed = schema.parse(value)
-  await getClientDb().sync_meta.put({ key, value: JSON.stringify(parsed) })
+  await getClientDb().sync_meta.put({
+    key: scopedSyncMetaKey(key, userId),
+    value: JSON.stringify(parsed),
+  })
 }
 
 // ---------------------------------------------------------------------------

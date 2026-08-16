@@ -87,7 +87,7 @@ export function ExamDetailView({
   // 不正値 / 欠損は getJsonSyncMeta が undefined 返し → setState せず default 維持。
   useEffect(() => {
     let cancelled = false
-    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, examViewPrefsSchema).then((saved) => {
+    void getJsonSyncMeta(SYNC_META_KEYS.examViewPrefs, userId, examViewPrefsSchema).then((saved) => {
       if (cancelled) return
       if (saved) {
         // UI fix C: toV4 で V1/V2/V3/V4 を正規化し pinnedBoundary + peekWidthVw を取得
@@ -165,6 +165,7 @@ export function ExamDetailView({
     // (columnPinning からの pinnedBoundary 導出と同型)。
     void setJsonSyncMeta(
       SYNC_META_KEYS.examViewPrefs,
+      userId,
       {
         version: 4,
         view,
@@ -174,7 +175,7 @@ export function ExamDetailView({
       },
       examViewPrefsV4Schema,
     ).catch(() => {})
-  }, [prefsLoaded, view, columnVisibility, columnPinning, peekWidthVw])
+  }, [prefsLoaded, view, columnVisibility, columnPinning, peekWidthVw, userId])
 
   // S2-1 app-shell 骨格: table view を viewport 高の flex 列にする。 高さは固定 px 禁止
   // (spec Global) ゆえ shell の上端 offset を実測し height: calc(100dvh - <topOffset>px)。

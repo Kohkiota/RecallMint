@@ -50,6 +50,14 @@ export default async function ExamDetailPage({
           chrome は client state 依存ゆえ client 側でしか組めない。 card view branch で
           現状同等スタイルを維持し視覚回帰ゼロ)。 */}
       <ExamDetailView
+        // Task 3 fix round 1 (Critical): userId が live に変わっても (remount なしの
+        // internal navigation) persistent layout tree はこの component instance を
+        // 使い回すため、 下記 key prop なしだと mount-load effect (deps []) は再実行されず
+        // 前 user の state のまま persist effect (deps に userId 追加済) が新 user の
+        // sync_meta namespace に書いてしまう。 userId を key に渡すことで userId 変化を
+        // instance の作り直しに変換し、 state/ref を丸ごとリセットする (列挙型の手動 reset
+        // より構造的に安全 — 簡潔性規律)。
+        key={userId}
         initialCards={cards}
         examId={id}
         userId={userId}
