@@ -24,6 +24,7 @@
 - migration / policy の適用は local iso(global-setup が毎 run 適用)のみ。**stg / prod への適用は OT**(deploy 順: migrate → policies enable(同一メンテ窓)→ code。spec §7)。
 - 完了 gate(Task 5): whole-repo `pnpm lint --max-warnings=0` / `pnpm test:iso` / `pnpm run audit` 全 exit 0。依存・Next 設定・lockfile は不触(追加 gate 非該当)。
 - 命名: 列は spec §3.1 の snake_case を Drizzle camelCase で(`stateBefore` 等)。CHECK 名 = `review_logs_rating_range` / `review_logs_state_before_range` / `review_logs_state_after_range`。
+- **各 task の完了条件に `pnpm test`(whole unit suite)を含める**(r3 追記・Task 1 の regression を受けた plan 欠陥の補正): 当初 Task 1 の完了条件は `pnpm test:iso` / lint / typecheck のみで、**unit 側の第二 oracle(`scripts/verify-rls-state.test.ts`)の追随漏れを検出できず red を commit した**。iso だけでは unit の期待カタログ整合を見ないため、両方を必ず回す。
 
 ---
 
