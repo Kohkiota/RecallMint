@@ -16,10 +16,11 @@
 - **key 形式(spec §4.1)**: `${base}:${userId}`。`SYNC_META_KEYS` 定数・`SyncMetaKey` 型・Dexie schema は不変。
 - **旧 key(userId なし)残骸は放置**(hygiene sprint 対象)。掃除コードを足さない(scope creep 禁止)。
 - 空 userId は fail-closed: `scopedSyncMetaKey` = throw / `pullDelta` `pullAllStudyDays` = fetch 前に FAIL 返却・network / Dexie 不触。
-- 全 pin は TDD(red → green を task 内で実証)。TypeScript strict / 簡潔性規律。
+- 全 pin は TDD(red → green を task 内で実証)。**red の手法を区別する**: 新規挙動の pin = テスト先行(実装前に fail を確認)。既存コードへの保証 pin(スコープ化を外す等の変異で fail 確認)は**変異の注入位置を session doc に記録**(変異は repo に残らないため — architecture.md:186 の既存前例と同形)。TypeScript strict / 簡潔性規律。
+- **rollback 安全性(記録)**: 新版→旧版へ戻すと旧 unscoped cursor(古い時点)からの delta 再開 = over-fetch 方向で idempotent(bulkPut upsert / tombstone 再適用は冪等)。取り逃し方向の欠落は起きない。
 - 各 task: 実装 + `pnpm typecheck` + 関連 vitest green + canonical/Codex review 収束 + commit(tag 規律)。データ保全に触れる fix ゆえ「重要 Fix の裏取り」適用 — push→stg smoke の順で [reviewed] amend 窓が閉じる場合は session doc を正記録(既存裁定)。
 - **既存 liveness(A の pull 実行中に B の mount pull が inflight-skip / lock-busy となり次 trigger まで遅れる)は correctness 非阻害として受容 — stg smoke に visibilitychange / online 相当の再 trigger 手順を含める**(OT 裁定)。
-- stg smoke(push 後・OT 指示で実施): spec §10 の手順 + 上記再 trigger。A 残骸の IDB 残存は仕様で、確認対象は「表示されないこと」。
+- stg smoke(push 後・OT 指示で実施): spec §10 の手順 + 上記再 trigger。A 残骸の IDB 残存は仕様で、確認対象は「表示されないこと」。dashboard の表示確認は「dashboard 読みは既に owner スコープ済(dashboard-track fact-finding §3: `[user_id+due]` / study_days user_id 読み)」の再確認として行う(本 sprint の変更対象外)。
 
 ---
 
@@ -27,7 +28,7 @@
 
 **Files:** Modify `lib/cards/get-custom-session-cards.ts:60-61` / `lib/tags/tag-crud.ts:50,54,87,121,158`。Test: 各既存 `.test.ts`。
 
-- 目的: `tag_categories` / `tag_options` の全店 `toArray()` を `.where('user_id').equals(userId).toArray()` へ(#1-3)。`tag-crud.ts` の rename / color 4 handler の `.get()` 直後に `if (!before || before.user_id !== userId) return` guard。
+- 目的: `tag_categories` / `tag_options` の全店 `toArray()` を `.where('user_id').equals(userId).toArray()` へ(#1-3)。guard 対象 4 handler は名指しで固定: `handleRenameCategory`(:50)/ `handleSetCategoryColor`(:87)/ `handleRenameOption`(:121)/ `handleSetOptionColor`(:158)— 各 `.get()` 直後に `if (!before || before.user_id !== userId) return`。
 - 制約: §3.3 の除外裁定(category_id / option_id / card_id-anyOf keyed 読み)には触れない。`countCategoryImpact` / `countOptionImpact` の signature 不変。挙動変化は「異 owner 行 = silent no-op」のみ。
 - pin(fake-indexeddb に 2 user seed): ① `selectCustomSessionRows`(user A)の結果に B の category / option / tag が現れない ② `handleRenameCategory` の同名 check が B の同名 category と衝突しない(throw しない)③ 4 handler に B の行 id を渡すと no-op(mirror 不変・outbox enqueue なし)。
 - 完了条件: 各 pin red(スコープ化を外す変異で fail)→ green。typecheck / 関連 test 通過。commit。
@@ -74,10 +75,10 @@
 
 **Files:** Modify `lib/sync/study-days.ts` / `lib/sync/pull-back.ts`(`pullAllStudyDays(userId)` + **header `:13-14` の「Web Locks は runGuardedPull 側が担う」を実体に合わせ修正**)/ `app/(app)/app/_components/pull-trigger.tsx:52`(userId 伝播)。Test: `study-days.test.ts` / `pull-back.test.ts` / `pull-trigger.test.tsx`。
 
-**Interfaces(Produces):** `pullAllStudyDays(userId: string, client?: PullApiClient): Promise<PullResult>` — 処理順: 空 userId は fetch 前に `{ok:false}`(Codex Minor 3)→ fetch → **payload 全行 `row.user_id === userId` 検証・1 行でも違反で batch 全体 reject(`{ok:false}`・Dexie 不変・log 1 行 `study_days.pull.owner_mismatch`)** → 単一 rw tx で `where('user_id').equals(userId).delete()` → `bulkPut`。
+**Interfaces(Produces):** `pullAllStudyDays(userId: string, client?: PullApiClient): Promise<PullResult>` — 処理順: 空 userId は fetch 前に `{ok:false}`(Codex Minor 3)→ fetch → **payload 全行 `row.user_id === userId` 検証・1 行でも違反で batch 全体 reject(`{ok:false}`・Dexie 不変・log 1 行 `study_days.pull.owner_mismatch` — event 名 + 件数のみ、userId / payload 内容はログに出さない)** → 単一 rw tx で `where('user_id').equals(userId).delete()` → `bulkPut`。**検証と書込は同一配列に対して行う**(検証後に別配列を組み立てて bulkPut しない — 同一性を pin で固定)。
 
 - 目的: 遅着 snapshot が自 owner の行だけを置換する形にし、「破壊的」writer を消す。
-- 制約: server は owner 単一を強制済(棚卸し Appendix A-3)— client 検証は defense-in-depth。既存の silent FAIL 契約(early return・次トリガー再試行)に整合。cursor は無関係(full snapshot)。
+- 制約: server は owner 単一を強制済(棚卸し Appendix A-3)— client 検証は defense-in-depth。既存の silent FAIL 契約(early return・次トリガー再試行)に整合。cursor は無関係(full snapshot)。**同一 owner の複数 pullAllStudyDays 並走で古い snapshot が後着し新しい snapshot を上書きする鮮度退行は、既存挙動として受容し本 sprint 非対象**(異 owner 漏えいではない。次トリガーで自然回復 — Codex 論点 5 の裁定)。
 - pin: ① 異 owner 生存 — A/B 両 seed 下で `pullAllStudyDays(B)` 後も A の行が全件不変 ② mixed reject — payload に A の行 1 件混入で `{ok:false}` + Dexie 完全不変(B の既存行も置換されない)③ 正常系 — B の行だけが新 snapshot に置換 ④ `pullAllStudyDays('')` = fetch 不呼・Dexie 不触(Codex Minor 3)。
 - 完了条件: pin red(検証 / owner 限定 delete を外す変異で各 fail)→ green。typecheck / 関連 test 通過。commit。
 
