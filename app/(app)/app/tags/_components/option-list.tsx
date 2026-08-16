@@ -126,12 +126,16 @@ export function OptionList({ userId, activeCategoryId }: Props) {
     return all.slice().sort(sortByKeyThenCreated)
   }, [activeCategoryId])
 
-  // 全カテゴリ (OptionRow のカテゴリ変更 dropdown 用)。 active 切替に追随する必要は
-  // ないが、 useLiveQuery を 1 つで済ます都合上 deps は不要。
+  // 全カテゴリ (OptionRow のカテゴリ変更 dropdown 用)。 共有ブラウザで前 user の
+  // tag_categories mirror 行が残っていても現 user の dropdown に混ざらないよう
+  // owner-scope で読む (tag-mirror-correctness sprint T2 #5)。
   const allCategories: ClientTagCategory[] =
     useLiveQuery(async () => {
-      return await getClientDb().tag_categories.toArray()
-    }, []) ?? []
+      return await getClientDb()
+        .tag_categories.where('user_id')
+        .equals(userId)
+        .toArray()
+    }, [userId]) ?? []
 
   // Tag-4c-2c T3 spec §4.3 / hotfix H4: dnd-kit sensors (popover / T2 と同 hook を共有、
   // Mouse 即 / Touch long-press / Keyboard a11y、 詳細は

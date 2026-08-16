@@ -428,10 +428,12 @@ export function ExamCardTable({
   // のみが生存 = 同時刻に 2 subscription にならない (OQ-5 案 S-A で構造的に保証)。
   const liveData = useLiveQuery(async () => {
     const db = getClientDb()
+    // 共有ブラウザで前 user の tag mirror 行が残っていても現 user のタグ列・popover に
+    // 混ざらないよう owner-scope で読む (tag-mirror-correctness sprint T2 #8/#9)。
     const [cardRows, categories, options] = await Promise.all([
       db.cards.where('exam_id').equals(examId).toArray(),
-      db.tag_categories.toArray(),
-      db.tag_options.toArray(),
+      db.tag_categories.where('user_id').equals(userId).toArray(),
+      db.tag_options.where('user_id').equals(userId).toArray(),
     ])
     const filteredCards = cardRows
       .filter((c) => c.user_id === userId)

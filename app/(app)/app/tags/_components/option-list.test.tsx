@@ -739,3 +739,39 @@ describe('OptionList — Tag-4c-2c hotfix hook order regression', () => {
     ).toBeInTheDocument()
   })
 })
+
+// ===========================================================================
+// tag-mirror-correctness sprint T2 #5: owner-scope read pin
+// ===========================================================================
+//
+// 共有ブラウザのアカウント切替で前 user の tag_categories mirror 行が IDB に残った
+// ケースを再現する fixture (user A + user B の category を同 IDB に共存させる)。
+// allCategories (OptionRow の「カテゴリ変更」 dropdown 用) は userId prop で owner-scope
+// read する契約を pin する。
+
+describe('OptionList — owner-scope (tag-mirror-correctness sprint T2 #5)', () => {
+  it('user A で描画したとき「カテゴリ変更」 dropdown に user B の category が現れない', async () => {
+    const db = getClientDb()
+    await db.tag_categories.bulkPut([
+      // opt-1 の現 category (dropdown からは「現 category」 として除外される)。
+      makeCategory('cat-a', '重要度'),
+      // 移動先候補になる別の自分の category。
+      makeCategory('cat-a2', '別カテゴリ'),
+      // 共有ブラウザに残った前 user (user-2) の行。 owner-scope read でなければ
+      // dropdown 候補に混ざって表示される。
+      { ...makeCategory('cat-b', '他人のカテゴリ'), user_id: 'user-2' },
+    ])
+    await db.tag_options.put(makeOption('opt-1', 'cat-a', '高'))
+
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
+    await screen.findByText('高')
+
+    fireEvent.click(screen.getByRole('button', { name: 'カテゴリ変更' }))
+    // 自分の別 category は候補に現れる (dropdown が機能していることの確認)
+    await screen.findByRole('menuitem', { name: '別カテゴリ' })
+
+    expect(
+      screen.queryByRole('menuitem', { name: '他人のカテゴリ' }),
+    ).not.toBeInTheDocument()
+  })
+})

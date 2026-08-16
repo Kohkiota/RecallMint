@@ -62,13 +62,15 @@ export function CustomFilterForm({ userId, customLimit, onStart }: CustomFilterF
     () => getClientDb().exams.where('user_id').equals(userId).toArray(),
     [userId],
   )
+  // 共有ブラウザで前 user の tag mirror 行が残っていても現 user の絞込候補に
+  // 混ざらないよう owner-scope で読む (tag-mirror-correctness sprint T2 #10/#11)。
   const categories = useLiveQuery(
-    () => getClientDb().tag_categories.toArray(),
-    [],
+    () => getClientDb().tag_categories.where('user_id').equals(userId).toArray(),
+    [userId],
   )
   const options = useLiveQuery(
-    () => getClientDb().tag_options.toArray(),
-    [],
+    () => getClientDb().tag_options.where('user_id').equals(userId).toArray(),
+    [userId],
   )
 
   // ---- local state ----

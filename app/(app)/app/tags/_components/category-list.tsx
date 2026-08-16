@@ -129,10 +129,15 @@ export function CategoryList({
   const [pendingDelete, setPendingDelete] =
     React.useState<PendingDelete | null>(null)
 
+  // 共有ブラウザで前 user の tag_categories mirror 行が残っていても現 user の一覧に
+  // 混ざらないよう owner-scope で読む (tag-mirror-correctness sprint T2 #4)。
   const categories = useLiveQuery(async () => {
-    const all = await getClientDb().tag_categories.toArray()
+    const all = await getClientDb()
+      .tag_categories.where('user_id')
+      .equals(userId)
+      .toArray()
     return all.slice().sort(sortByKeyThenCreated)
-  }, [])
+  }, [userId])
 
   // 削除 button click を受けて IDB から影響範囲を集計し、 確認 dialog を開く。
   // 集計は async (Dexie count) のため pending state を経由する。

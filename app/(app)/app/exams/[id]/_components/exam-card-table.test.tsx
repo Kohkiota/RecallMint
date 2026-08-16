@@ -2641,6 +2641,119 @@ describe('ExamCardTable owner-scope: 別 user の card 行を描画しない', (
 })
 
 // ===========================================================================
+// tag-mirror-correctness sprint T2 #8/#9: owner-scope read pin
+// ===========================================================================
+//
+// 共有ブラウザのアカウント切替で前 user の tag_categories/tag_options mirror 行が
+// IDB に残ったケースを再現する fixture (user A + user B の category を同 IDB に
+// 共存させる)。 TagCell の「タグを追加」 popover 候補一覧 (categories/options props)
+// は userId prop で owner-scope read する契約を pin する。
+
+describe('ExamCardTable owner-scope: タグ列 popover に他 user の tag master が混ざらない', () => {
+  it('user (USER_ID) で描画したとき「タグを追加」 popover のカテゴリ候補に他 user の category が現れない', async () => {
+    const db = getClientDb()
+    const card = makeCard(1)
+    await db.cards.put(card)
+    await db.tag_categories.bulkPut([
+      {
+        id: 'cat-1',
+        user_id: USER_ID,
+        name: '自分のカテゴリ',
+        select_type: 'single',
+        color: null,
+        sort_key: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      // 共有ブラウザに残った別 user の行。 owner-scope read でなければ popover 候補に
+      // 混ざって表示される。
+      {
+        id: 'cat-2',
+        user_id: 'other-user',
+        name: '他人のカテゴリ',
+        select_type: 'single',
+        color: null,
+        sort_key: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`row-${card.id}`)).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    await screen.findByRole('menuitem', { name: '自分のカテゴリ' })
+
+    expect(
+      screen.queryByRole('menuitem', { name: '他人のカテゴリ' }),
+    ).not.toBeInTheDocument()
+  })
+
+  // 上記 test は categories 単独の owner-scope しか pin しない (options が漏れていても、
+  // 他 user 単独 category に属す option は stage2 まで辿り着けないため検出できない)。
+  // options 側 (#9) を独立に pin するため、 「自分の category (cat-1) に紐づくが owner は
+  // 他 user」 という stale mirror 行を fixture 化する (共有ブラウザで前 user が同 category_id
+  // 配下に option を持っていた場合に起こりうる状態)。
+  it('自分の category 配下の option 選択画面に他 user 所有の option が現れない', async () => {
+    const db = getClientDb()
+    const card = makeCard(1)
+    await db.cards.put(card)
+    await db.tag_categories.put({
+      id: 'cat-1',
+      user_id: USER_ID,
+      name: '自分のカテゴリ',
+      select_type: 'multi',
+      color: null,
+      sort_key: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    await db.tag_options.bulkPut([
+      {
+        id: 'opt-own',
+        user_id: USER_ID,
+        category_id: 'cat-1',
+        name: '自分の option',
+        color: null,
+        sort_key: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      // owner-scope read でなければ stage2 の候補に混ざって表示される、 他 user 所有の
+      // stale option 行 (category_id は自分の category を指す)。
+      {
+        id: 'opt-leak',
+        user_id: 'other-user',
+        category_id: 'cat-1',
+        name: '他人の option',
+        color: null,
+        sort_key: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ])
+
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`row-${card.id}`)).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '自分のカテゴリ' }))
+    await screen.findByRole('menuitemcheckbox', { name: '自分の option' })
+
+    expect(
+      screen.queryByRole('menuitemcheckbox', { name: '他人の option' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+// ===========================================================================
 // row-ux Task 5: footer「+ カードを追加」table 統合 (親 gate 算出の配線 pin)。
 // footer 本体の gating 3 条件 (dataReady / positionLocked / movePending) の詳細な
 // 出し分けロジックは exam-card-table-add-footer.test.tsx が prop 直渡しで pin する。

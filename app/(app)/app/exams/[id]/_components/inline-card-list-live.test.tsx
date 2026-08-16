@@ -683,3 +683,72 @@ describe('InlineCardList T-B5 anyOf 化 regression (Y-2 Sub-plan B)', () => {
     expect(anyOfCardIds.has('other-exam-card')).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// tag-mirror-correctness sprint T2 #6/#7: owner-scope read pin
+// ---------------------------------------------------------------------------
+//
+// 共有ブラウザのアカウント切替で前 user の tag_categories/tag_options mirror 行が
+// IDB に残ったケースを再現する fixture (user A + user B の category/option を同 IDB
+// に共存させる)。 「タグを追加」 popover の候補一覧 (categories/options props) は
+// userId prop で owner-scope read する契約を pin する。
+describe('InlineCardList owner-scope: 「タグを追加」 popover に他 user の tag master が混ざらない (T2 #6/#7)', () => {
+  it('user-1 で描画したとき popover のカテゴリ候補に user-OTHER の category が現れない', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([fakeClientCard({ id: 'c1', user_id: 'user-1', title: '問1' })])
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-1', '自分のカテゴリ', 'multi', '2026-06-01T00:00:00.000Z'),
+      // 共有ブラウザに残った前 user (user-OTHER) の行。 owner-scope read でなければ
+      // popover 候補に混ざって表示される。
+      { ...makeCategory('cat-2', '他人のカテゴリ', 'multi', '2026-06-01T00:00:00.000Z'), user_id: 'user-OTHER' },
+    ])
+
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    await screen.findByRole('menuitem', { name: '自分のカテゴリ' })
+
+    expect(
+      screen.queryByRole('menuitem', { name: '他人のカテゴリ' }),
+    ).not.toBeInTheDocument()
+  })
+
+  // #6 (categories) が正しくスコープ化されていても #7 (options) が漏れていると
+  // 検出できない (自分の category しか popover に現れないため、 他 user 単独 category に
+  // 属す option は stage2 まで辿り着けない)。 #7 を独立に pin するため、 「自分の
+  // category (cat-1) に紐づくが owner は他 user」 という stale mirror 行を fixture 化する
+  // (共有ブラウザで前 user が同名/同 id の category を作っていた場合に起こりうる状態)。
+  it('user-1 で描画したとき、自分の category 配下の option 選択画面に user-OTHER 所有の option が現れない', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([fakeClientCard({ id: 'c1', user_id: 'user-1', title: '問1' })])
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-1', '自分のカテゴリ', 'multi', '2026-06-01T00:00:00.000Z'),
+    ])
+    await db.tag_options.bulkPut([
+      makeOption('opt-own', 'cat-1', '自分の option'),
+      // owner-scope read でなければ stage2 の候補に混ざって表示される、 他 user 所有の
+      // stale option 行 (category_id は自分の category を指す)。
+      { ...makeOption('opt-leak', 'cat-1', '他人の option'), user_id: 'user-OTHER' },
+    ])
+
+    render(
+      <InlineCardList initialCards={[]} examId="exam-1" userId="user-1" />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText('問1')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'タグを追加' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '自分のカテゴリ' }))
+    await screen.findByRole('menuitemcheckbox', { name: '自分の option' })
+
+    expect(
+      screen.queryByRole('menuitemcheckbox', { name: '他人の option' }),
+    ).not.toBeInTheDocument()
+  })
+})

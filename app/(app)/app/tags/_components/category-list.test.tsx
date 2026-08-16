@@ -839,3 +839,34 @@ describe('CategoryList — Tag-4c-2c T2 D&D 配線', () => {
     })
   })
 })
+
+// ===========================================================================
+// tag-mirror-correctness sprint T2 #4: owner-scope read pin
+// ===========================================================================
+//
+// 共有ブラウザのアカウント切替で前 user の tag_categories mirror 行が IDB に残った
+// ケースを再現する fixture (user A + user B の category を同 IDB に共存させる)。
+// CategoryList は userId prop を受け取り、 自 owner の行のみ描画する契約を pin する。
+
+describe('CategoryList — owner-scope (tag-mirror-correctness sprint T2 #4)', () => {
+  it('user A で描画したとき user B の category は一覧に現れない', async () => {
+    const db = getClientDb()
+    await db.tag_categories.bulkPut([
+      makeCategory('cat-a', '自分のカテゴリ', '2026-06-01T00:00:00.000Z'),
+      // 共有ブラウザに残った前 user (user-2) の行。 owner-scope read でなければ
+      // ここに混ざって表示される。
+      { ...makeCategory('cat-b', '他人のカテゴリ', '2026-06-01T00:00:00.000Z'), user_id: 'user-2' },
+    ])
+
+    render(
+      <CategoryList
+        userId={USER_ID}
+        activeCategoryId={null}
+        onSelectCategory={vi.fn()}
+      />,
+    )
+    await screen.findByText('自分のカテゴリ')
+
+    expect(screen.queryByText('他人のカテゴリ')).not.toBeInTheDocument()
+  })
+})
