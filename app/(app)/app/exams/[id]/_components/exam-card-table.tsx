@@ -283,6 +283,11 @@ function TableBody({
                   onClick={
                     cell.column.id === 'select' ? () => row.toggleSelected() : undefined
                   }
+                  // UI fix F: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+                  // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。意図の単位は「行を選択する操作」であり、
+                  // hit area = td 全体(上記 onClick と同じ範囲)なので checkbox 単体ではなく
+                  // td へ付ける(checkbox 直撃と余白 click とで挙動が割れないようにするため)。
+                  data-outside-close-exempt={cell.column.id === 'select' ? 'row-select' : undefined}
                   // Fix-3 T1: CSS 変数参照。resize 中は tbody が memo 凍結されているが
                   //   <table> 上の CSS 変数が更新されるため視覚幅はリアルタイムに追従する。
                   // S5-3: pinned td の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
@@ -1188,6 +1193,11 @@ export function ExamCardTable({
                         ? () => table.toggleAllRowsSelected()
                         : undefined
                     }
+                    // UI fix F: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+                    // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。意図の単位は「行を選択する操作」であり、
+                    // hit area = th 全体(上記 onClick と同じ範囲)なので checkbox 単体ではなく
+                    // th へ付ける(checkbox 直撃と余白 click とで挙動が割れないようにするため)。
+                    data-outside-close-exempt={h.column.id === 'select' ? 'row-select-all' : undefined}
                     // Fix-3 T1: CSS 変数参照に切替。th は memo 凍結対象外なのでリアルタイム更新される。
                     // S5-3: pinned th の left offset は CSS 変数参照(resize 中も追従・spec D-5)。
                     style={{

@@ -33,7 +33,8 @@
 // UI fix D (外側クリックで閉じる):
 // - 旧実装は onInteractOutside で一律 preventDefault し、外クリックでは閉じなかった。OT 指示で
 //   反転する: 既定は閉じる、例外(grip trigger / grip menu 本体 / PullIntoDialog の panel・
-//   backdrop / 行選択 checkbox・全選択 checkbox / PhotoSwipe lightbox)だけ閉じない。
+//   backdrop / 行選択・全選択の hit area(select 列の td・th 全体。UI fix F で checkbox 単体から
+//   広げた)/ PhotoSwipe lightbox)だけ閉じない。
 // - radix 実挙動を node_modules 実装(@radix-ui/react-dismissable-layer)を読んで確認した:
 //   DismissableLayerContext はモジュールスコープの単一 React.createContext(...) で、Dialog /
 //   Popover の全 layer インスタンスが同じ context を共有する。「外側」判定は各 layer が自分の
@@ -149,9 +150,11 @@ export const OUTSIDE_CLICK_EXEMPT_SELECTORS = [
   '[data-outside-close-exempt="pull-into-panel"]',
   // PullIntoDialog の backdrop(exam-card-row-menu.tsx)。
   '[data-outside-close-exempt="pull-into-backdrop"]',
-  // 行選択 checkbox(exam-card-table-columns.tsx)。
+  // 行選択の hit area(select 列の td 全体。exam-card-table.tsx)。 UI fix F: 付与先を
+  // checkbox 単体から td へ広げた — 意図の単位は「行を選択する操作」であり、hit area(td 全域
+  // click で行選択トグル)と一致させないと checkbox 直撃と余白 click とで挙動が割れるため。
   '[data-outside-close-exempt="row-select"]',
-  // ヘッダー全選択 checkbox(exam-card-table-columns.tsx)。
+  // ヘッダー全選択の hit area(select 列の th 全体。exam-card-table.tsx)。理由は row-select と同じ。
   '[data-outside-close-exempt="row-select-all"]',
   // PhotoSwipe の lightbox root(components/media/use-image-zoom.ts)。 PhotoSwipe の DOM は
   // createPortal ではなく document.body へ imperative に append されるため、このページで
@@ -310,8 +313,8 @@ export function ExamCardSidePeek({
           // UI fix D: pointer と focus を分けて扱う(file 冒頭 UI fix D 節参照)。
           onPointerDownOutside={(event) => {
             // 例外(OUTSIDE_CLICK_EXEMPT_SELECTORS の marker を持つ要素 — grip trigger / grip
-            // menu 本体 / PullIntoDialog panel・backdrop / 行選択・全選択 checkbox)だけ
-            // preventDefault で閉じない。 判定は明示 marker のみに依存する(自前 stopPropagation
+            // menu 本体 / PullIntoDialog panel・backdrop / 行選択・全選択の hit area(select 列の
+            // td・th 全体))だけ preventDefault で閉じない。 判定は明示 marker のみに依存する(自前 stopPropagation
             // が dispatch 自体を止めるという想定はしない — 本番と test で React root topology が
             // 異なり成立しないため。file 冒頭 UI fix D「前提訂正」節参照)。 それ以外は
             // preventDefault しない = radix 既定の onDismiss → 上の onOpenChange(false) に

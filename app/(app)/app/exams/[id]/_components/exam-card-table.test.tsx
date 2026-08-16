@@ -909,6 +909,73 @@ describe('Fix-3 cosmetic: select 列 中央揃え', () => {
 })
 
 // ===========================================================================
+// UI fix F: side peek 外側クリック除外 marker(実 td/th の marker 存在 pin)
+//
+// UI fix D では marker(`data-outside-close-exempt`)を checkbox の <input> 自身に付けていたが、
+// 選択の hit area は td/th 全体(上記「Fix-3 cosmetic」節の cursor-pointer / onClick と同じ範囲)
+// のため、checkbox 直撃と余白 click とで「外側クリック」判定が割れる bug があった。 本 fix は
+// 付与先を td/th 全体へ広げ、意図の単位を「行を選択する操作」に揃える(exam-card-side-peek.tsx
+// UI fix F 節参照)。 marker 存在の pin は「実 td/th を render する本 file」に置く
+// (exam-card-table-columns.test.tsx 側は cell/header 関数を素の div に render するだけで実
+// td/th を持たないため、そちらは checkbox 自身に marker が**無い**ことの負のガードのみ)。
+// isExemptFromOutsideClose がこの marker を true と判定することは
+// exam-card-side-peek.test.tsx「[data-outside-close-exempt="row-select"] の子孫は true」で pin 済。
+// ===========================================================================
+
+describe('UI fix F: side peek 外側クリック除外 marker(実 td/th の marker 存在 pin)', () => {
+  it('select th が data-outside-close-exempt="row-select-all" を持ち、他の th は持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const headerCheckbox = screen.getByRole('checkbox', { name: '全選択' })
+    const selectTh = headerCheckbox.closest('th') as HTMLElement
+    expect(selectTh).toHaveAttribute('data-outside-close-exempt', 'row-select-all')
+
+    const allTh = container.querySelectorAll('th')
+    for (let i = 1; i < allTh.length; i++) {
+      const th = allTh[i] as HTMLElement
+      expect(th, `th[${i}] "${th.textContent?.trim()}" は marker を持たない`).not.toHaveAttribute(
+        'data-outside-close-exempt',
+      )
+    }
+  })
+
+  it('select td が data-outside-close-exempt="row-select" を持ち、他の td は持たない', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    const { container } = render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    const bodyCheckbox = screen.getByRole('checkbox', { name: /行選択/ })
+    const selectTd = bodyCheckbox.closest('td') as HTMLElement
+    expect(selectTd).toHaveAttribute('data-outside-close-exempt', 'row-select')
+
+    const row = container.querySelector('[data-testid="row-card-1"]') as HTMLElement
+    const cells = row.querySelectorAll('td')
+    for (let i = 1; i < cells.length; i++) {
+      const td = cells[i] as HTMLElement
+      expect(td, `td[${i}] は marker を持たない`).not.toHaveAttribute('data-outside-close-exempt')
+    }
+  })
+
+  it('checkbox 自身(input)には marker が無い(input から撤去済 — td/th 側で closest() 経由で除外される)', async () => {
+    const db = getClientDb()
+    await db.cards.put(makeCard(1))
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(1))
+
+    expect(screen.getByRole('checkbox', { name: '全選択' })).not.toHaveAttribute(
+      'data-outside-close-exempt',
+    )
+    expect(screen.getByRole('checkbox', { name: /行選択/ })).not.toHaveAttribute(
+      'data-outside-close-exempt',
+    )
+  })
+})
+
+// ===========================================================================
 // B: checkbox セル全域クリックで選択トグル (checkbox 本体以外の余白も当たり判定)
 // ===========================================================================
 
@@ -2190,25 +2257,29 @@ describe('T3 ⑥: columnFilters で該当行が非表示になっても peek が
 
 // T3 ⑦(旧: 「checkbox による行選択・解除は peek の open/close に影響しない」を実 click
 // simulation で pin していた test)は**撤去した**。 契約自体(行選択(rowSelection)と peek の
-// open/close は直交 — side-peek sprint T3 統合 commit 4db2151 出典)は**checkbox 直 click に限り
-// 今も真**(marker は `<input>` 自身にのみ付与しており、select 列 52px の余白(grip と checkbox の
-// 間・td 側の padding)を click した場合は marker に当たらないため peek が閉じる — 行選択自体は
-// td 全域の onClick で独立にトグルするため、この場合「選択はされるが peek は閉じる」という
-// checkbox 直撃時とは異なる挙動になる。marker を td 側へ広げるかは別途 OT 判断)。 旧 test の
-// 検証方法が**本番では偽の前提**に依存していた: RTL(React Testing Library)は render root が
-// document ではない一時 div のため、checkbox 自身の stopPropagation がその node で祖先(=
-// document)への伝播を実際に止めてしまい、Radix の outside-click listener(document 上)へ
+// open/close は直交 — side-peek sprint T3 統合 commit 4db2151 出典)は UI fix D 時点では
+// **checkbox 直 click に限り真**だった(marker は `<input>` 自身にのみ付与しており、select 列
+// 52px の余白(grip と checkbox の間・td 側の padding)を click した場合は marker に当たらないため
+// peek が閉じる — 行選択自体は td 全域の onClick で独立にトグルするため、この場合「選択は
+// されるが peek は閉じる」という checkbox 直撃時とは異なる挙動になっていた)。
+// **UI fix F で解消済み**: marker の付与先を checkbox の `<input>` から select 列の td/th 全体へ
+// 広げたため、上記の非対称性(余白 click だけ peek が閉じる)は無くなり、契約は select 列の
+// hit area 全体(checkbox 直撃・余白どちらも)で真になった(marker 存在の実 pin =
+// exam-card-table.test.tsx「UI fix F: side peek 外側クリック除外 marker」節)。
+// 旧 test の検証方法が**本番では偽の前提**に依存していた: RTL(React Testing Library)は render
+// root が document ではない一時 div のため、checkbox 自身の stopPropagation がその node で祖先
+// (= document)への伝播を実際に止めてしまい、Radix の outside-click listener(document 上)へ
 // そもそも click が届かない。 これは「marker が効いて exempt 判定された」のではなく「test 環境の
 // topology 上、Radix に届く前に止まっていた」だけで、本番(React root = document)では同じ
 // stopPropagation は同一 node 上の listener を止められないため届いてしまう
 // (exam-card-side-peek.tsx の UI fix D「前提訂正」節参照)。 旧 test は marker の有無に関わらず
 // green のままになり得た(red 検証が成立しない)ため、production の保証として無効だった。
 // 代わりに **topology 非依存の pin** に置き換えた:
-//   - 行 checkbox / 全選択 checkbox が `data-outside-close-exempt` marker を持つこと
-//     (exam-card-table-columns.test.tsx「UI fix D: 外側クリック除外 marker」)
-//   - isExemptFromOutsideClose がその marker を持つ要素に true を返すこと
+//   - select td/th が `data-outside-close-exempt` marker を持つこと
+//     (exam-card-table.test.tsx「UI fix F: side peek 外側クリック除外 marker」)
+//   - isExemptFromOutsideClose がその marker を持つ要素(の子孫)に true を返すこと
 //     (exam-card-side-peek.test.tsx「isExemptFromOutsideClose」)
-// の 2 つを組み合わせれば、production での「checkbox click は外側クリック扱いされない」が
+// の 2 つを組み合わせれば、production での「select 列 click は外側クリック扱いされない」が
 // 導ける(jsdom で click の document 到達をシミュレートする必要がない)。
 
 describe('T3 ⑦-b: peek 起動 2 click が行選択チェックボックスをトグルしない(逆方向・stopPropagation)', () => {

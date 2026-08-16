@@ -845,15 +845,31 @@ describe('isExemptFromOutsideClose', () => {
     expect(isExemptFromOutsideClose(backdrop)).toBe(true)
   })
 
-  it('[data-outside-close-exempt="row-select"] の子孫は true(行選択 checkbox)', () => {
+  // UI fix F: marker の付与先を checkbox の <input> 自身から select td 全体へ広げた(意図の単位
+  // =「行を選択する操作」/ 余白 click と checkbox 直撃とで挙動が割れないため)。 本 test は
+  // marker が td 側にある前提で、td 配下の複数種の子孫(checkbox・grip・td/th 内の余白相当の
+  // 要素)いずれからも true が返ることを pin する — marker を input 単体に戻す変異(td から
+  // 剥がして input にだけ付け直す)をすると、input の兄弟である余白相当要素の判定が false に
+  // 落ちて red になる。
+  it('[data-outside-close-exempt="row-select"] の子孫は true(select td 配下の checkbox / grip / 余白相当のいずれも)', () => {
+    const td = document.createElement('td')
+    td.setAttribute('data-outside-close-exempt', 'row-select')
+    const grip = document.createElement('button') // 二役グリップ相当
     const checkbox = document.createElement('input')
-    checkbox.setAttribute('data-outside-close-exempt', 'row-select')
+    const padding = document.createElement('span') // grip と checkbox の間の余白相当(td 直下の非 focusable 領域)
+    td.append(grip, checkbox, padding)
+    expect(isExemptFromOutsideClose(grip)).toBe(true)
     expect(isExemptFromOutsideClose(checkbox)).toBe(true)
+    expect(isExemptFromOutsideClose(padding)).toBe(true)
   })
 
-  it('[data-outside-close-exempt="row-select-all"] の子孫は true(全選択 checkbox)', () => {
+  it('[data-outside-close-exempt="row-select-all"] の子孫は true(select th 配下の checkbox / spacer 余白のいずれも)', () => {
+    const th = document.createElement('th')
+    th.setAttribute('data-outside-close-exempt', 'row-select-all')
+    const spacer = document.createElement('span') // グリップ幅を揃える spacer(exam-card-table-columns.tsx)
     const checkbox = document.createElement('input')
-    checkbox.setAttribute('data-outside-close-exempt', 'row-select-all')
+    th.append(spacer, checkbox)
+    expect(isExemptFromOutsideClose(spacer)).toBe(true)
     expect(isExemptFromOutsideClose(checkbox)).toBe(true)
   })
 

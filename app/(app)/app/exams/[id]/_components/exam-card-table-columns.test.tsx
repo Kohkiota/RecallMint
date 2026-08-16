@@ -1211,26 +1211,35 @@ describe('row-ux UI fix A-2 review F2: checkbox 実寸固定 (h-4 w-4)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// UI fix D: side peek 外側クリック除外 marker(実 component render での marker 存在 pin)。
+// UI fix D/F: side peek 外側クリック除外 marker(実 component render での marker 存在 pin)。
 //
 // 本番事故(exam-card-side-peek.tsx の UI fix D「前提訂正」節参照)を受け、除外は明示 marker
 // のみに依存する設計へ改めた。 topology 非依存の保証は「marker が実 component に付いていること」
-// (本 test)と「isExemptFromOutsideClose がその marker を true と判定すること」
-// (exam-card-side-peek.test.tsx)の 2 つの組み合わせで成立する — jsdom で click の document
-// 到達をシミュレートする必要がない。
+// (本 test / exam-card-table.test.tsx)と「isExemptFromOutsideClose がその marker を true と
+// 判定すること」(exam-card-side-peek.test.tsx)の 2 つの組み合わせで成立する — jsdom で click の
+// document 到達をシミュレートする必要がない。
+//
+// UI fix F: 行選択・全選択の marker(`row-select` / `row-select-all`)は checkbox 単体から
+// select 列の td・th 全体(exam-card-table.tsx)へ付与先を広げた。 意図の単位が「行を選択する
+// 操作」であり、hit area(td/th 全域 click で選択トグル)と一致させる必要があるため — checkbox
+// 直撃と余白 click とで挙動が割れる旧 bug の再発防止。 本 file の render helper(
+// renderSelectCellWithMeta / renderSelectHeader)は cell/header 関数を素の div へ直接 render する
+// だけで実 td/th を持たないため、marker の存在 pin は実 td/th を render する
+// exam-card-table.test.tsx 側(describe('UI fix F: ...'))に置く。 本 file 側は「checkbox 自身には
+// 付いていない」ことだけを負のガードとして残す(input へ marker が復活する変異への pin)。
 // ---------------------------------------------------------------------------
 
-describe('UI fix D: side peek 外側クリック除外 marker(実 component の marker 存在 pin)', () => {
-  it('行選択 checkbox が data-outside-close-exempt="row-select" を持つ', () => {
+describe('UI fix D/F: side peek 外側クリック除外 marker(実 component の marker 存在 pin)', () => {
+  it('行選択 checkbox 自身は data-outside-close-exempt を持たない(付与先は select td 全体へ移した)', () => {
     renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
     const checkbox = screen.getByRole('checkbox')
-    expect(checkbox).toHaveAttribute('data-outside-close-exempt', 'row-select')
+    expect(checkbox).not.toHaveAttribute('data-outside-close-exempt')
   })
 
-  it('ヘッダー全選択 checkbox が data-outside-close-exempt="row-select-all" を持つ', () => {
+  it('ヘッダー全選択 checkbox 自身は data-outside-close-exempt を持たない(付与先は select th 全体へ移した)', () => {
     renderSelectHeader()
     const checkbox = screen.getByRole('checkbox', { name: '全選択' })
-    expect(checkbox).toHaveAttribute('data-outside-close-exempt', 'row-select-all')
+    expect(checkbox).not.toHaveAttribute('data-outside-close-exempt')
   })
 
   it('二役グリップ button が data-outside-close-exempt="grip-trigger" を持つ', () => {
