@@ -28,6 +28,8 @@ vi.mock('next/navigation', () => ({
 }))
 
 import { ExamStatusProvider } from './exam-status-live'
+
+const USER_A = 'user-a'
 import { requestOcrPoll } from '@/lib/exams/ocr-poll-signal'
 
 beforeEach(() => {
@@ -61,7 +63,7 @@ describe('ExamStatusProvider OCR 完了遷移 (既存)', () => {
     )
 
     render(
-      <ExamStatusProvider initialStatuses={{ 'exam-x': 'processing' }}>
+      <ExamStatusProvider initialStatuses={{ 'exam-x': 'processing' }} userId={USER_A}>
         <div data-testid="child">ok</div>
       </ExamStatusProvider>,
     )
@@ -76,7 +78,7 @@ describe('ExamStatusProvider OCR 完了遷移 (既存)', () => {
     })
 
     expect(mockRouterRefresh).toHaveBeenCalled()
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'ocr-complete' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'ocr-complete' })
   }, 20000)
 
   it('processing なし (initialStatuses={}) かつ signal 無し → runGuardedPull は呼ばれない / polling 起動しない', async () => {
@@ -86,7 +88,7 @@ describe('ExamStatusProvider OCR 完了遷移 (既存)', () => {
     })
 
     render(
-      <ExamStatusProvider initialStatuses={{}}>
+      <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -106,7 +108,7 @@ describe('ExamStatusProvider signal kick + grace', () => {
     mockFetchSequence(() => ({ statuses: {} }))
 
     render(
-      <ExamStatusProvider initialStatuses={{}}>
+      <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -149,7 +151,7 @@ describe('ExamStatusProvider signal kick + grace', () => {
     )
 
     render(
-      <ExamStatusProvider initialStatuses={{}}>
+      <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -163,7 +165,7 @@ describe('ExamStatusProvider signal kick + grace', () => {
       await vi.advanceTimersByTimeAsync(5000)
     })
 
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'ocr-pending' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'ocr-pending' })
   }, 20000)
 
   it('(c) kick → processing → completed で ocr-complete pull + router.refresh、その後停止', async () => {
@@ -174,7 +176,7 @@ describe('ExamStatusProvider signal kick + grace', () => {
     })
 
     render(
-      <ExamStatusProvider initialStatuses={{}}>
+      <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -190,8 +192,8 @@ describe('ExamStatusProvider signal kick + grace', () => {
       await vi.advanceTimersByTimeAsync(5000) // tick3: completed
     })
 
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'ocr-pending' })
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'ocr-complete' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'ocr-pending' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'ocr-complete' })
     expect(mockRouterRefresh).toHaveBeenCalled()
 
     const afterComplete = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.length
@@ -209,7 +211,7 @@ describe('ExamStatusProvider repeated-kick regression', () => {
     mockFetchSequence(() => ({ statuses: {} }))
 
     render(
-      <ExamStatusProvider initialStatuses={{}}>
+      <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -261,7 +263,7 @@ describe('ExamStatusProvider seed paths', () => {
     mockFetchSequence(() => ({ statuses: { 'exam-x': 'failed' } }))
 
     render(
-      <ExamStatusProvider initialStatuses={{ 'exam-x': 'failed' }}>
+      <ExamStatusProvider initialStatuses={{ 'exam-x': 'failed' }} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )
@@ -289,7 +291,7 @@ describe('ExamStatusProvider seed paths', () => {
     )
 
     render(
-      <ExamStatusProvider initialStatuses={{ 'exam-x': 'processing' }}>
+      <ExamStatusProvider initialStatuses={{ 'exam-x': 'processing' }} userId={USER_A}>
         <div>ok</div>
       </ExamStatusProvider>,
     )

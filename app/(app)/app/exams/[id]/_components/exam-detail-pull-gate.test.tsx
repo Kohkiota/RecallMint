@@ -28,6 +28,8 @@ vi.mock('@/lib/sync/ambient-pull-suppress', () => ({
 
 import { ExamDetailPullGate } from './exam-detail-pull-gate'
 
+const USER_A = 'user-a'
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockRunGuardedPull.mockResolvedValue('ran')
@@ -39,20 +41,20 @@ afterEach(() => {
 
 describe('ExamDetailPullGate', () => {
   it('(a) mount で runGuardedPull({reason:"exam-detail-mount"}) が 1 回呼ばれる', async () => {
-    render(<ExamDetailPullGate examId="exam-1" />)
+    render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-detail-mount' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'exam-detail-mount' })
   })
 
   it('(b) mount で suppressAmbientPull が 1 回呼ばれる', async () => {
-    render(<ExamDetailPullGate examId="exam-1" />)
+    render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
     expect(mockSuppressAmbientPull).toHaveBeenCalledTimes(1)
   })
 
   it('(c) kick → suppress の順序: runGuardedPull が suppressAmbientPull より先に呼ばれる', async () => {
-    render(<ExamDetailPullGate examId="exam-1" />)
+    render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
     expect(mockSuppressAmbientPull).toHaveBeenCalledTimes(1)
@@ -63,7 +65,7 @@ describe('ExamDetailPullGate', () => {
   })
 
   it('(d) unmount で resumeAmbientPull が呼ばれる', async () => {
-    const { unmount } = render(<ExamDetailPullGate examId="exam-1" />)
+    const { unmount } = render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
     expect(mockResumeAmbientPull).not.toHaveBeenCalled()
     unmount()
@@ -71,7 +73,7 @@ describe('ExamDetailPullGate', () => {
   })
 
   it('(e) examId 変化で cleanup(resume) → 再 effect(kick + suppress) が走る', async () => {
-    const { rerender } = render(<ExamDetailPullGate examId="exam-1" />)
+    const { rerender } = render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
 
     // exam-1 mount 後の状態
@@ -80,14 +82,14 @@ describe('ExamDetailPullGate', () => {
     expect(mockResumeAmbientPull).not.toHaveBeenCalled()
 
     // examId を exam-2 に変更 → cleanup(resume) + 再 effect(kick + suppress)
-    rerender(<ExamDetailPullGate examId="exam-2" />)
+    rerender(<ExamDetailPullGate examId="exam-2" userId={USER_A} />)
     await Promise.resolve()
 
     // cleanup で resume が 1 回走った
     expect(mockResumeAmbientPull).toHaveBeenCalledTimes(1)
     // 再 effect で kick + suppress が追加で走った
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(2)
-    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ reason: 'exam-detail-mount' })
+    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_A, reason: 'exam-detail-mount' })
     expect(mockSuppressAmbientPull).toHaveBeenCalledTimes(2)
 
     // examId 変化後も kick → suppress 順序が保たれる
@@ -97,13 +99,13 @@ describe('ExamDetailPullGate', () => {
   })
 
   it('(f) UI は何も render しない (return null)', () => {
-    const { container } = render(<ExamDetailPullGate examId="exam-1" />)
+    const { container } = render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     expect(container.firstChild).toBeNull()
   })
 
   it('(g) runGuardedPull が reject しても throw / UI 影響なし (fire-and-forget silent)', async () => {
     mockRunGuardedPull.mockRejectedValueOnce(new Error('network error'))
-    const { container } = render(<ExamDetailPullGate examId="exam-1" />)
+    const { container } = render(<ExamDetailPullGate examId="exam-1" userId={USER_A} />)
     await Promise.resolve()
     // suppress は依然として呼ばれ、エラーは伝播しない
     expect(mockSuppressAmbientPull).toHaveBeenCalledTimes(1)
@@ -117,7 +119,7 @@ describe('ExamDetailPullGate', () => {
     // 最終的に suppress が on (resume より suppress の呼出回数が多い) で終わることを確認。
     render(
       <StrictMode>
-        <ExamDetailPullGate examId="exam-1" />
+        <ExamDetailPullGate examId="exam-1" userId={USER_A} />
       </StrictMode>,
     )
     // microtask + StrictMode の同期 cleanup/re-run が落ち着くまで flush
@@ -132,6 +134,6 @@ describe('ExamDetailPullGate', () => {
     // suppress と resume の差し引きで suppress が勝っている (on 状態)
     expect(suppressCount).toBeGreaterThan(resumeCount)
     // kick は suppress の on/off に関わらず in-flight guard で吸収可能
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-detail-mount' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'exam-detail-mount' })
   })
 })

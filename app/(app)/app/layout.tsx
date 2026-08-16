@@ -48,7 +48,10 @@ export default async function AppLayout({
   const statusMap = await getExamStatusMap(user.id)
 
   return (
-    <ExamStatusProvider initialStatuses={Object.fromEntries(statusMap)}>
+    <ExamStatusProvider
+      initialStatuses={Object.fromEntries(statusMap)}
+      userId={user.id}
+    >
       <div className="min-h-screen flex flex-col">
         {/* BFCache 復元時（back/forward）の zombie state を防ぐ。
             pageshow event.persisted=true 検知 → server reload で
@@ -58,7 +61,7 @@ export default async function AppLayout({
             background pull する (cache-fix roadmap ④-1)。 layout 持続中の内部
             navigation では re-mount しないので重複発火しない。 deep link / reload /
             外部からの navigate でも 1 回 fire される。 UI なし、 失敗 silent。 */}
-        <PullTrigger />
+        <PullTrigger userId={user.id} />
         {/* 演習 push の保全 trigger。 演習画面を離れた後の未送信 pending を mount /
             フォーカス復帰 / 再接続時に回復 flush する (Web Locks 多タブ排他 + transient
             backoff retry は controller 側)。 UI なし、 失敗 silent。 */}

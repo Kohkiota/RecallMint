@@ -360,7 +360,7 @@ describe('新規試験へ切り出し', () => {
 
     await waitFor(() => expect(calls).toEqual(['createExam', 'pull', 'wait', 'move']))
     expect(mockCreateExam).toHaveBeenCalledWith('無題の試験')
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-create' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_ID, reason: 'exam-create' })
     // 待つ対象は pull の outcome ではなく「移動先 exam が mirror に居る」こと。
     expect(mockWaitForExam).toHaveBeenCalledWith('exam-new', USER_ID)
     expect(mockMoveCards).toHaveBeenCalledWith({

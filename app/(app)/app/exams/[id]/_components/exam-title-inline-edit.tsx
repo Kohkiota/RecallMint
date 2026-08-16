@@ -41,6 +41,7 @@ const COMMIT_REJECTED_MESSAGE =
 
 type ExamTitleInlineEditProps = {
   examId: string
+  userId: string
   // server render 値 (page.tsx → ExamDetailView 経由)。 非編集中はこれで表示を同期する。
   examName: string
   variant: keyof typeof VARIANT_CLASS
@@ -48,6 +49,7 @@ type ExamTitleInlineEditProps = {
 
 export function ExamTitleInlineEdit({
   examId,
+  userId,
   examName,
   variant,
 }: ExamTitleInlineEditProps) {
@@ -156,7 +158,7 @@ export function ExamTitleInlineEdit({
       setEditing(false)
       setPending(false)
       router.refresh()
-      void runGuardedPull({ reason: 'exam-rename' }).catch(() => {})
+      void runGuardedPull({ userId, reason: 'exam-rename' }).catch(() => {})
       // 成功 path では committingRef を戻さない: setEditing(false) は次の render まで
       // 反映されず、 その窓に届いた blur は古い closure (旧 displayName) を見て guard ②
       // も抜けてしまうため。 解除は startEdit (= 非編集 render 後) が行う。

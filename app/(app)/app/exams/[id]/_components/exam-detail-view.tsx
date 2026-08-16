@@ -242,6 +242,7 @@ export function ExamDetailView({
                   従来の h1 class (text-2xl font-bold・折り返しあり) を保持する。 */}
               <ExamTitleInlineEdit
                 examId={examId}
+                userId={userId}
                 examName={examName}
                 variant="card"
               />
@@ -290,6 +291,7 @@ export function ExamDetailView({
                   {/* Grid-3 §6.2: table view は compact variant (従来の truncate text-base font-bold)。 */}
                   <ExamTitleInlineEdit
                     examId={examId}
+                    userId={userId}
                     examName={examName}
                     variant="compact"
                   />

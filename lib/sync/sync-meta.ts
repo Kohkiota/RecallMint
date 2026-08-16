@@ -4,7 +4,7 @@
 // 役割境界:
 // - SYNC_META_KEYS: 既知 key の定数集合。 新規 key 追加はここで型ごと宣言する。
 // - getSyncMeta: string value 限定 (本 sprint は ISO8601 cursor のみを想定)。
-//   userId 化は Task 4(唯一の reader = pull.ts と同時変更)。
+//   S-local-2 Task 4: 唯一の reader である pull.ts と同時に userId 必須化した。
 // - getJsonSyncMeta / setJsonSyncMeta: JSON + zod schema による型付き read/write helper
 //   (Grid-1 で導入)。 string helper と共存し、 JSON 値を扱う key 専用。
 //   将来 unknown を許す必要が出た場合の「別 helper」 としてここで実現している。
@@ -30,10 +30,15 @@ export const SYNC_META_KEYS = {
 
 export type SyncMetaKey = (typeof SYNC_META_KEYS)[keyof typeof SYNC_META_KEYS]
 
+/**
+ * string value の read helper。 key は scopedSyncMetaKey で userId 名前空間化する
+ * (owner スコープ分離)。 空 userId は builder が throw する。
+ */
 export async function getSyncMeta(
   key: SyncMetaKey,
+  userId: string,
 ): Promise<string | undefined> {
-  const row = await getClientDb().sync_meta.get(key)
+  const row = await getClientDb().sync_meta.get(scopedSyncMetaKey(key, userId))
   if (!row) return undefined
   return typeof row.value === 'string' ? row.value : undefined
 }

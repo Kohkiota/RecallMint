@@ -1705,7 +1705,7 @@ describe('threshold flush', () => {
 
     await answerFirstOfTwo()
 
-    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('threshold-flush'))
+    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith(TEST_USER_ID, 'threshold-flush'))
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 
@@ -1727,7 +1727,7 @@ describe('セッション完了 flush', () => {
 
     await reachFinished()
 
-    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith('session-complete'))
+    await waitFor(() => expect(mockPullBack).toHaveBeenCalledWith(TEST_USER_ID, 'session-complete'))
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 

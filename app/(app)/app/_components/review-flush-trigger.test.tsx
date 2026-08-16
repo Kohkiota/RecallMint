@@ -99,7 +99,7 @@ describe('ReviewFlushTrigger', () => {
       onFlushed: () => void
     }
     deps.onFlushed()
-    expect(mockPullBack).toHaveBeenCalledWith('flush')
+    expect(mockPullBack).toHaveBeenCalledWith(USER_ID, 'flush')
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 })

@@ -28,6 +28,8 @@ vi.mock('next/navigation', () => ({
 
 import { CreateExamForm } from './create-exam-form'
 
+const USER_A = 'user-a'
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockCreateExam.mockResolvedValue({ ok: true, data: { examId: 'exam-new' } })
@@ -39,7 +41,7 @@ afterEach(() => {
 
 describe('CreateExamForm', () => {
   it('作成成功 → router.push() と runGuardedPull({reason:"exam-create"}) が呼ばれる', async () => {
-    render(<CreateExamForm />)
+    render(<CreateExamForm userId={USER_A} />)
 
     // 「＋ 手動で試験を作成」をクリックしてフォームを展開
     fireEvent.click(screen.getByRole('button', { name: /手動で試験を作成/ }))
@@ -58,13 +60,13 @@ describe('CreateExamForm', () => {
       expect(mockRouterPush).toHaveBeenCalledWith('/app/exams/exam-new')
     })
     await waitFor(() => {
-      expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-create' })
+      expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'exam-create' })
     })
   })
 
   it('作成失敗 → runGuardedPull は呼ばれない', async () => {
     mockCreateExam.mockResolvedValueOnce({ ok: false, error: '作成に失敗しました' })
-    render(<CreateExamForm />)
+    render(<CreateExamForm userId={USER_A} />)
 
     fireEvent.click(screen.getByRole('button', { name: /手動で試験を作成/ }))
     const input = await screen.findByRole('textbox', { name: '試験名' })

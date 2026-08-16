@@ -26,7 +26,7 @@ export function ReviewFlushTrigger({ userId }: { userId: string }) {
   useEffect(() => {
     const controller = createReviewFlushController({
       runGuarded: () => runGuardedAnswerEventFlush(userId),
-      onFlushed: () => pullBack('flush'),
+      onFlushed: () => pullBack(userId, 'flush'),
     })
 
     void controller.kick('mount')

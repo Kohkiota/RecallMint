@@ -51,7 +51,7 @@ export function EntityMutationFlushTrigger({ userId }: { userId: string }) {
     //   ログ観測時に review flush と entity-mutation flush を区別できるようにする。
     const controller = createReviewFlushController({
       runGuarded: () => runGuardedEntityMutationFlush(userId),
-      onFlushed: () => pullBack('entity-mutation-flush'),
+      onFlushed: () => pullBack(userId, 'entity-mutation-flush'),
       log: (event, extra) =>
         logger.info({
           ...extra,

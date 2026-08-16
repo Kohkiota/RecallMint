@@ -29,13 +29,13 @@ beforeEach(() => {
 })
 
 describe('pullBack', () => {
-  it('(1) 両 helper を呼ぶ + reason を runGuardedPull に伝播', async () => {
-    pullBack('flush')
+  it('(1) 両 helper を呼ぶ + userId / reason を runGuardedPull に伝播', async () => {
+    pullBack('user-a', 'flush')
     // fire-and-forget のため microtask を 1 tick 進める
     await Promise.resolve()
 
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'flush' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: 'user-a', reason: 'flush' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
   })
 
@@ -47,7 +47,7 @@ describe('pullBack', () => {
     mockPullAllStudyDays.mockRejectedValue(new Error('study-days error'))
 
     // void 戻り値の同期関数なので throw しない
-    expect(() => pullBack('x')).not.toThrow()
+    expect(() => pullBack('user-a', 'x')).not.toThrow()
 
     // microtask/macrotask を進めて両 reject を処理させる (test が落ちないこと自体が catch の傍証)
     await new Promise((r) => setTimeout(r, 0))

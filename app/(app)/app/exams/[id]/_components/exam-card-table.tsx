@@ -809,7 +809,7 @@ export function ExamCardTable({
         splitExamIdRef.current = createdId
       }
 
-      const pulled = await runGuardedPull({ reason: 'exam-create' }).catch(() => null)
+      const pulled = await runGuardedPull({ userId, reason: 'exam-create' }).catch(() => null)
       // pull の outcome ではなく **移動の実前提** (mirror に移動先 exam の行が居ること) を
       // 上限付きで待つ。skip は別 pull 進行中の常態で即 retry しても同じ結果になるため、
       // 進行中の pull が着地する時間を与える方が主操作 (1 回目の切り出し) が通る。

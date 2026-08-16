@@ -33,6 +33,9 @@ vi.mock('@/lib/sync/ambient-pull-suppress', () => ({
 
 import { PullTrigger } from './pull-trigger'
 
+const USER_A = 'user-a'
+const USER_B = 'user-b'
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockRunGuardedPull.mockResolvedValue('ran')
@@ -57,15 +60,15 @@ afterEach(() => {
 
 describe('PullTrigger', () => {
   it('(a) mount で runGuardedPull({ reason: "mount" }) / pullAllStudyDays が各 1 回呼ばれる', async () => {
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'mount' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'mount' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
   })
 
   it('(b) visibilitychange (visible) で runGuardedPull + pullAllStudyDays が追加 kick される', async () => {
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
 
     // mount 分のベースライン
@@ -77,12 +80,12 @@ describe('PullTrigger', () => {
     await Promise.resolve()
 
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(2)
-    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ reason: 'visibilitychange' })
+    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_A, reason: 'visibilitychange' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(2)
   })
 
   it('(c) visibilitychange (hidden) では追加 kick されない', async () => {
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
 
     // mount 分のベースライン
@@ -102,7 +105,7 @@ describe('PullTrigger', () => {
   })
 
   it('(d) online イベントで runGuardedPull + pullAllStudyDays が追加 kick される', async () => {
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
 
     // mount 分のベースライン
@@ -113,12 +116,12 @@ describe('PullTrigger', () => {
     await Promise.resolve()
 
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(2)
-    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ reason: 'online' })
+    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_A, reason: 'online' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(2)
   })
 
   it('(e) unmount 後は visibilitychange / online で追加 kick されない', async () => {
-    const { unmount } = render(<PullTrigger />)
+    const { unmount } = render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
 
     // mount 分のベースライン
@@ -141,15 +144,59 @@ describe('PullTrigger', () => {
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
   })
 
+  // S-local-2 Task 4 (pin ④): effect deps が [] のままだと userId が変わっても
+  // 再 kick されず、 listener が旧 userId を closure に抱えたまま残る
+  // (= 次 user の pull が前 user の cursor namespace に書かれる)。
+  it('(a-2) userId=A で mount → B に rerender すると B で再 kick される', async () => {
+    const { rerender } = render(<PullTrigger userId={USER_A} />)
+    await Promise.resolve()
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_A, reason: 'mount' })
+
+    rerender(<PullTrigger userId={USER_B} />)
+    await Promise.resolve()
+
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(2)
+    expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_B, reason: 'mount' })
+  })
+
+  it('(a-3) 同じ userId で rerender しても再 kick されない (deps が userId 変化にのみ反応)', async () => {
+    const { rerender } = render(<PullTrigger userId={USER_A} />)
+    await Promise.resolve()
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+
+    rerender(<PullTrigger userId={USER_A} />)
+    await Promise.resolve()
+
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+  })
+
+  it('(a-4) userId 変化後の visibilitychange は新 userId で kick される (listener 張り替え)', async () => {
+    const { rerender } = render(<PullTrigger userId={USER_A} />)
+    await Promise.resolve()
+    rerender(<PullTrigger userId={USER_B} />)
+    await Promise.resolve()
+    mockRunGuardedPull.mockClear()
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+
+    expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({
+      userId: USER_B,
+      reason: 'visibilitychange',
+    })
+  })
+
   it('(f-1) UI は何も render しない (return null)', () => {
-    const { container } = render(<PullTrigger />)
+    const { container } = render(<PullTrigger userId={USER_A} />)
     expect(container.firstChild).toBeNull()
   })
 
   it('(f-2) 2 helper のいずれかが reject しても throw / UI 影響なし、 他は独立に呼ばれる', async () => {
     mockRunGuardedPull.mockRejectedValueOnce(new Error('boom'))
     mockPullAllStudyDays.mockRejectedValueOnce(new Error('boom2'))
-    const { container } = render(<PullTrigger />)
+    const { container } = render(<PullTrigger userId={USER_A} />)
     // microtask 経過させて handler 内 promise を resolve させる
     await new Promise((r) => setTimeout(r, 0))
     expect(container.firstChild).toBeNull()
@@ -168,7 +215,7 @@ describe('PullTrigger — suppress フラグ', () => {
 
   it('(g-1) suppress on: mount kick が runGuardedPull / pullAllStudyDays を呼ばない', async () => {
     mockIsAmbientPullSuppressed.mockReturnValue(true)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).not.toHaveBeenCalled()
     expect(mockPullAllStudyDays).not.toHaveBeenCalled()
@@ -176,7 +223,7 @@ describe('PullTrigger — suppress フラグ', () => {
 
   it('(g-2) suppress on: visibilitychange (visible) kick が呼ばない', async () => {
     mockIsAmbientPullSuppressed.mockReturnValue(true)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     document.dispatchEvent(new Event('visibilitychange'))
     await Promise.resolve()
@@ -186,7 +233,7 @@ describe('PullTrigger — suppress フラグ', () => {
 
   it('(g-3) suppress on: online kick が呼ばない', async () => {
     mockIsAmbientPullSuppressed.mockReturnValue(true)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     window.dispatchEvent(new Event('online'))
     await Promise.resolve()
@@ -198,7 +245,7 @@ describe('PullTrigger — suppress フラグ', () => {
     // suppress on でイベントを発火 → suppress off に切替えてもイベントは再発火しない。
     // 「queue しない」= suppress 解除のタイミングで自動的に runGuardedPull が呼ばれないことを確認。
     mockIsAmbientPullSuppressed.mockReturnValue(true)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     document.dispatchEvent(new Event('visibilitychange'))
     window.dispatchEvent(new Event('online'))
@@ -214,10 +261,10 @@ describe('PullTrigger — suppress フラグ', () => {
 
   it('(g-5) suppress off: 通常通り呼ばれる (suppress フラグが動作を壊さないことの確認)', async () => {
     // suppress off (beforeEach で mockReturnValue(false) 設定済み)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'mount' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'mount' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
   })
 
@@ -226,7 +273,7 @@ describe('PullTrigger — suppress フラグ', () => {
     // runGuardedPull を直接呼ぶ経路は flag を参照しないため常に実行される。
     // この test は「PullTrigger 経由 vs 直呼びの差」を pin する。
     mockIsAmbientPullSuppressed.mockReturnValue(true)
-    render(<PullTrigger />)
+    render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     // PullTrigger 経由: 呼ばれない
     expect(mockRunGuardedPull).not.toHaveBeenCalled()

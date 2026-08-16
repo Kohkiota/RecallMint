@@ -35,7 +35,7 @@ import { runGuardedPull } from '@/lib/sync/pull'
 import { pullAllStudyDays } from '@/lib/sync/study-days'
 import { isAmbientPullSuppressed } from '@/lib/sync/ambient-pull-suppress'
 
-export function PullTrigger(): null {
+export function PullTrigger({ userId }: { userId: string }): null {
   useEffect(() => {
     const kick = (reason: string) => {
       // ambient kick を suppress フラグで抑止。
@@ -44,7 +44,7 @@ export function PullTrigger(): null {
       // (本 component の silent 契約 + ログ spam 回避)。
       if (isAmbientPullSuppressed()) return
 
-      void runGuardedPull({ reason }).catch(() => {
+      void runGuardedPull({ userId, reason }).catch(() => {
         // silent: guard outcome (inflight-skip / lock-busy) は正常系、
         // network error は次トリガで再試行
       })
@@ -69,6 +69,10 @@ export function PullTrigger(): null {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('online', onOnline)
     }
-  }, [])
+    // userId 依存: layout が remount しない内部 navigation でも userId が変われば
+    // effect を張り直し、新 owner で再 kick する。 deps [] のままだと listener が
+    // 旧 userId を closure に抱えたまま残り、次 user の pull を前 user の cursor
+    // namespace に書いてしまう (spec §5.1 capture 原則の入口側)。
+  }, [userId])
   return null
 }

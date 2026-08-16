@@ -201,7 +201,7 @@ export function ExamListLive({ userId }: { userId: string }) {
                     moveCards={moveCards}
                     onMerged={onMerged}
                   />
-                  <DeleteExamButton examId={exam.id} />
+                  <DeleteExamButton examId={exam.id} userId={userId} />
                 </div>
               </CardContent>
             </Card>

@@ -3,9 +3,16 @@
 // read し ?since_* で叩き、 1 tx で bulkPut upsert + tombstone bulkDelete + cursor write を
 // 適用する。
 //
+// owner による空間的分離 (S-local-2 / spec §5):
+// - cursor key は userId 名前空間 (`${base}:${userId}`)。 pullDelta は開始時に渡された
+//   userId を capture し、 read と write の両方に同じ値を使う。 「現在の user」 を表す
+//   mutable な状態を完了時に参照してはならない (遅着レスポンスが次 user の namespace を
+//   汚す race を再生産するため)。
+// - 応答は tx を開く前に owner 検証する (下記 §3a)。
+//
 // 失敗時の不変性:
-// - network throw / non-2xx / response body 不正のいずれも、 tx を開く前に return。
-//   Dexie cards / exams / sync_meta いずれも touch しない。
+// - network throw / non-2xx / response body 不正 / owner 検証違反のいずれも、 tx を
+//   開く前に return。 Dexie cards / exams / sync_meta いずれも touch しない。
 //
 // mirror 削除反映の不変条件:
 // clear() は使わず id-upsert のみ行うため、 mirror から card/exam を消す唯一の経路は
@@ -27,7 +34,7 @@ import {
   type ClientTagOption,
   type ClientCardTag,
 } from '@/lib/client-db'
-import { getSyncMeta, SYNC_META_KEYS } from './sync-meta'
+import { getSyncMeta, scopedSyncMetaKey, SYNC_META_KEYS } from './sync-meta'
 import { withWebLock, type MinimalLockManager } from './with-web-lock'
 import { logger } from '@/lib/logger'
 
@@ -40,6 +47,9 @@ const PULL_ENDPOINT = '/api/pull'
 // server /api/pull レスポンス形。 server の ClientTombstone を import せず inline 定義
 // (client/server は JSON 契約で疎結合、 U4 採択)。
 type PullResponse = {
+  // spec §5.1a: 応答の出所 (server が認証した user.id)。 client の capture 値と
+  // 突き合わせて全体 reject するための echo。
+  owner_user_id: string
   cards: ClientCard[]
   exams: ClientExam[]
   tombstones: {
@@ -114,9 +124,15 @@ const defaultClient: PullApiClient = {
 // ---------------------------------------------------------------------------
 
 export async function pullDelta(
+  userId: string,
   client: PullApiClient = defaultClient,
 ): Promise<PullDeltaResult> {
-  // §1: cursor read + URLSearchParams 構築 (存在分のみ set)
+  // §0: fail-closed。 空 userId は network にも Dexie にも触れずに FAIL
+  // (未認証状態からの誤 kick を無名前空間の書込に落とさない)。
+  if (!userId) return FAIL
+
+  // §1: cursor read + URLSearchParams 構築 (存在分のみ set)。
+  // key は capture した userId の名前空間 (B の cursor は A の pull から見えない)。
   const [
     sinceCards,
     sinceExams,
@@ -125,12 +141,12 @@ export async function pullDelta(
     sinceTagOptions,
     sinceCardTags,
   ] = await Promise.all([
-    getSyncMeta(SYNC_META_KEYS.cardsCursor),
-    getSyncMeta(SYNC_META_KEYS.examsCursor),
-    getSyncMeta(SYNC_META_KEYS.tombstoneCursor),
-    getSyncMeta(SYNC_META_KEYS.tagCategoriesCursor),
-    getSyncMeta(SYNC_META_KEYS.tagOptionsCursor),
-    getSyncMeta(SYNC_META_KEYS.cardTagsCursor),
+    getSyncMeta(SYNC_META_KEYS.cardsCursor, userId),
+    getSyncMeta(SYNC_META_KEYS.examsCursor, userId),
+    getSyncMeta(SYNC_META_KEYS.tombstoneCursor, userId),
+    getSyncMeta(SYNC_META_KEYS.tagCategoriesCursor, userId),
+    getSyncMeta(SYNC_META_KEYS.tagOptionsCursor, userId),
+    getSyncMeta(SYNC_META_KEYS.cardTagsCursor, userId),
   ])
 
   const params = new URLSearchParams()
@@ -161,6 +177,7 @@ export async function pullDelta(
 
   // §3: shape 検証 (tx を開く前に完了 → 失敗時不変性)
   const {
+    owner_user_id: ownerUserId,
     cards,
     exams,
     tombstones,
@@ -179,6 +196,40 @@ export async function pullDelta(
     typeof cursors !== 'object' ||
     cursors === null
   ) {
+    return FAIL
+  }
+
+  // §3a: owner 検証 (spec §5.1a)。 tx を開く前に済ませ、 違反時は mirror / cursor とも
+  // 一切書かずに FAIL を返す。 log は event 名 + 件数のみ (userId / payload 内容は出さない)。
+  const counts = {
+    cards: cards.length,
+    exams: exams.length,
+    tombstones: tombstones.length,
+    tagCategories: tagCategories.length,
+    tagOptions: tagOptions.length,
+    cardTags: cardTags.length,
+  }
+  // (a) owner echo。 field 欠落 (undefined) も不一致として reject する。
+  // tombstone は user_id を持たない (lib/db/tombstones-pull.ts の ClientTombstone) ため
+  // 行検証が原理的に不能で、 空 payload / tombstone-only 応答の owner 検証は
+  // この echo が単独で担う。
+  // 副次: /api/pull の emptyBody (sign-up race の静的リテラル) は owner_user_id を
+  // 構造上持てないため常にここで reject されるが、 payload 空 + cursors 全 null で
+  // 書くものが無く実害はない (特例分岐を設けず uniform な reject 規則を保つ)。
+  if (ownerUserId !== userId) {
+    logger.warn({ event: 'pull.owner_echo_mismatch', ...counts })
+    return FAIL
+  }
+  // (b) owner 列を持つ 5 stream の全行検証 (echo だけでは行単位の混入を捕まえられない)。
+  const ownedStreams: { user_id: string }[][] = [
+    cards,
+    exams,
+    tagCategories,
+    tagOptions,
+    cardTags,
+  ]
+  if (ownedStreams.some((rows) => rows.some((row) => row.user_id !== userId))) {
+    logger.warn({ event: 'pull.owner_row_mismatch', ...counts })
     return FAIL
   }
 
@@ -260,29 +311,37 @@ export async function pullDelta(
         await db.card_tags.where('card_id').anyOf(cardIds).delete()
       }
 
-      // (5) cursor write (非 null のみ。 null = 据え置き)
+      // (5) cursor write (非 null のみ。 null = 据え置き)。
+      // key は §1 の read と同じ capture 値 (userId) で構成する — 遅着した pull が
+      // 次 user の namespace に書かないための核心 (spec §5.1 capture 原則)。
       if (cursors.cards)
-        await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: cursors.cards })
+        await db.sync_meta.put({
+          key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, userId),
+          value: cursors.cards,
+        })
       if (cursors.exams)
-        await db.sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: cursors.exams })
+        await db.sync_meta.put({
+          key: scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, userId),
+          value: cursors.exams,
+        })
       if (cursors.tombstone)
         await db.sync_meta.put({
-          key: SYNC_META_KEYS.tombstoneCursor,
+          key: scopedSyncMetaKey(SYNC_META_KEYS.tombstoneCursor, userId),
           value: cursors.tombstone,
         })
       if (cursors.tag_categories)
         await db.sync_meta.put({
-          key: SYNC_META_KEYS.tagCategoriesCursor,
+          key: scopedSyncMetaKey(SYNC_META_KEYS.tagCategoriesCursor, userId),
           value: cursors.tag_categories,
         })
       if (cursors.tag_options)
         await db.sync_meta.put({
-          key: SYNC_META_KEYS.tagOptionsCursor,
+          key: scopedSyncMetaKey(SYNC_META_KEYS.tagOptionsCursor, userId),
           value: cursors.tag_options,
         })
       if (cursors.card_tags)
         await db.sync_meta.put({
-          key: SYNC_META_KEYS.cardTagsCursor,
+          key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, userId),
           value: cursors.card_tags,
         })
     },
@@ -309,6 +368,8 @@ export const PULL_LOCK_NAME = 'recallmint:pull'
 export type PullGuardOutcome = 'ran' | 'inflight-skip' | 'lock-busy'
 
 type GuardedPullDeps = {
+  // pullDelta へ渡す capture 値 (必須)。 呼出元は自身が保有する内部 userId を渡す。
+  userId: string
   reason?: string
   pull?: () => Promise<PullDeltaResult>
   locks?: MinimalLockManager<PullGuardOutcome> | undefined
@@ -323,14 +384,14 @@ let pullInFlight = false
 // Lock API の非同期コストを払わずに即 return できる。 lock wrap は共有 helper
 // (lib/sync/with-web-lock) に委譲、 fallback (locks なし) は helper が直接 run() を回す。
 //   多重 pull は server 側 cursor 更新の冪等性で吸収される。
-export async function runGuardedPull(deps: GuardedPullDeps = {}): Promise<PullGuardOutcome> {
+export async function runGuardedPull(deps: GuardedPullDeps): Promise<PullGuardOutcome> {
   if (pullInFlight) {
     logger.info({ event: 'pull.inflight_skip', reason: deps.reason })
     return 'inflight-skip'
   }
   pullInFlight = true
   try {
-    const pull = deps.pull ?? (() => pullDelta())
+    const pull = deps.pull ?? (() => pullDelta(deps.userId))
     return await withWebLock<PullGuardOutcome>({
       lockName: PULL_LOCK_NAME,
       run: async () => {

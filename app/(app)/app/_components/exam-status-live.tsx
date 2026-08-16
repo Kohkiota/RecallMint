@@ -49,9 +49,11 @@ const ExamStatusContext = createContext<ExamStatusMap>({})
 
 export function ExamStatusProvider({
   initialStatuses,
+  userId,
   children,
 }: {
   initialStatuses: ExamStatusMap
+  userId: string
   children: ReactNode
 }) {
   const router = useRouter()
@@ -110,13 +112,13 @@ export function ExamStatusProvider({
           // phase-1: 処理中行があれば mirror に取り込むため毎 tick pull する。
           // (phase-2 と同 tick で両方発火しても runGuardedPull の in-flight
           //  guard が単一 pull に dedupe するため特別扱い不要。)
-          void runGuardedPull({ reason: 'ocr-pending' }).catch(() => {})
+          void runGuardedPull({ userId, reason: 'ocr-pending' }).catch(() => {})
         }
 
         // phase-2: processing → completed/failed 遷移時のみ refresh + pull。
         if (hasCompletion(prevProcessing, nextProcessing)) {
           router.refresh()
-          void runGuardedPull({ reason: 'ocr-complete' }).catch(() => {})
+          void runGuardedPull({ userId, reason: 'ocr-complete' }).catch(() => {})
         }
         prevProcessing = nextProcessing
 
@@ -206,7 +208,10 @@ export function ExamStatusProvider({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       unsubscribe()
     }
-  }, [initialSnapshot, router])
+    // userId 依存: polling session が抱える runGuardedPull の capture 値ゆえ、
+    // userId が変わったら session を張り直す (旧 owner の cursor namespace に
+    // 書き続けないため)。
+  }, [initialSnapshot, router, userId])
 
   return (
     <ExamStatusContext.Provider value={statuses}>

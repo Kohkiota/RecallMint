@@ -46,6 +46,8 @@ vi.mock('@/app/(app)/app/exams/_actions/delete-exam', () => ({
 import { getClientDb, type ClientCard, type ClientExam } from '@/lib/client-db'
 import { ExamListLive } from './exam-list-live'
 import { ExamStatusProvider } from '../../_components/exam-status-live'
+
+const USER_A = 'user-a'
 import type { MoveResult } from '../_hooks/use-move-cards'
 
 global.fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) })
@@ -134,7 +136,7 @@ async function renderList() {
   ])
 
   render(
-    <ExamStatusProvider initialStatuses={{}}>
+    <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
       <ExamListLive userId={USER_ID} />
     </ExamStatusProvider>,
   )

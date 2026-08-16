@@ -31,7 +31,7 @@ export default async function ExamsListPage() {
         <h1 className="text-2xl font-bold">試験一覧</h1>
 
         {/* 手動作成導線 — 一覧上部に常時表示。クリックでインライン展開。 */}
-        <CreateExamForm />
+        <CreateExamForm userId={userId} />
 
         {/* list / 空状態 / skeleton は ExamListLive (client) が Dexie mirror から
             useLiveQuery で live 表示。 page.tsx (RSC) の DB SELECT を撤去。

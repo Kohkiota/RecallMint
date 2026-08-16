@@ -35,7 +35,10 @@ function parseSince(raw: string | null): Date | undefined {
 
 export const GET = withReadOnlyAuth(
   {
-    // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空レスポンス
+    // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空レスポンス。
+    // user 不在 path の静的リテラルゆえ owner_user_id を構造上持てない。 client は
+    // これを owner echo 不一致として reject するが、 payload 空 + cursors 全 null で
+    // 書くものが無く実害ゼロ (spec §5.1a: 特例分岐は設けず uniform な reject を保つ)。
     emptyBody: {
       cards: [],
       exams: [],
@@ -81,6 +84,10 @@ export const GET = withReadOnlyAuth(
       )
       return Response.json(
         {
+          // owner echo (spec §5.1a): client が capture した userId と突き合わせ、
+          // 別 user の応答を全体 reject するための出所表明。 tombstone は user_id を
+          // 持たないため行検証が効かず、この echo が唯一の owner 検証手段になる。
+          owner_user_id: user.id,
           cards: c.rows,
           exams: e.rows,
           tombstones: t.rows,

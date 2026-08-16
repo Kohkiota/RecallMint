@@ -84,26 +84,43 @@ describe('getJsonSyncMeta / setJsonSyncMeta — owner 名前空間分離 (pin②
 
 describe('getSyncMeta', () => {
   it('未 set の key は undefined', async () => {
-    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
+    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor, 'A')
     expect(v).toBeUndefined()
   })
 
   it('set した value を取得できる', async () => {
-    // setSyncMeta は削除済 (production caller ゼロ、Task 3)。 seed は raw put で行う
-    // (getSyncMeta 自体は userId 化していない — Task 4 で pull.ts と同時変更)。
+    // setSyncMeta は削除済 (production caller ゼロ、Task 3)。 seed は raw put で行う。
+    // Task 4: key は scopedSyncMetaKey で userId 名前空間化する。
     await getClientDb().sync_meta.put({
-      key: SYNC_META_KEYS.cardsCursor,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, 'A'),
       value: '2026-05-26T01:23:45.000Z',
     })
-    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor)
+    const v = await getSyncMeta(SYNC_META_KEYS.cardsCursor, 'A')
     expect(v).toBe('2026-05-26T01:23:45.000Z')
   })
 
   it('別 key は干渉しない', async () => {
-    await getClientDb().sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: 'cards-cursor-val' })
-    await getClientDb().sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: 'exams-cursor-val' })
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('cards-cursor-val')
-    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor)).toBe('exams-cursor-val')
+    await getClientDb().sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, 'A'), value: 'cards-cursor-val' })
+    await getClientDb().sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, 'A'), value: 'exams-cursor-val' })
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, 'A')).toBe('cards-cursor-val')
+    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor, 'A')).toBe('exams-cursor-val')
+  })
+
+  // Task 4 (spec §4.3): 同 base key でも userId が違えば独立に読み書きされる。
+  // これが「B の pull は B の cursor 不在 → 自然に full pull」 を成立させる。
+  it('同 base key でも userId が違えば干渉しない (namespace 分離)', async () => {
+    await getClientDb().sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, 'A'),
+      value: 'a-val',
+    })
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, 'A')).toBe('a-val')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, 'B')).toBeUndefined()
+  })
+
+  it('空 userId は throw する (scopedSyncMetaKey の fail-fast)', async () => {
+    await expect(getSyncMeta(SYNC_META_KEYS.cardsCursor, '')).rejects.toThrow(
+      'scopedSyncMetaKey: userId is required',
+    )
   })
 })
 

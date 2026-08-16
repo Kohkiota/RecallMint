@@ -19,9 +19,10 @@ type Phase = 'idle' | 'confirm' | 'deleting' | 'error'
 
 interface Props {
   examId: string
+  userId: string
 }
 
-export function DeleteExamButton({ examId }: Props) {
+export function DeleteExamButton({ examId, userId }: Props) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -39,7 +40,7 @@ export function DeleteExamButton({ examId }: Props) {
         // 側で revalidate)。 削除された exam 行ごと unmount されるため phase 更新は不要。
         router.refresh()
         // 一覧が Dexie 参照のため、exam 削除後に mirror を pull で最新化する。
-        void runGuardedPull({ reason: 'exam-delete' }).catch(() => {})
+        void runGuardedPull({ userId, reason: 'exam-delete' }).catch(() => {})
       } else {
         setErrorMsg(result.error)
         setPhase('error')

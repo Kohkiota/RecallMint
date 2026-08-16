@@ -3,6 +3,8 @@
 // 7 観点: upsert merge / tombstone bulkDelete / cursor read→path / cursor write /
 // cursor 据え置き / 失敗時不変性 / 0件全null。
 // + runGuardedPull 4 観点: lock granted / lock busy / fallback / in-flight coalesce。
+// + S-local-2 Task 4 (spec §5): cursor namespace (6 stream 全数) / userId capture /
+//   空 userId fail-closed / owner echo 4 観点。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
@@ -13,9 +15,13 @@ import {
   type ClientTagOption,
   type ClientCardTag,
 } from '@/lib/client-db'
-import { SYNC_META_KEYS, getSyncMeta } from './sync-meta'
+import { SYNC_META_KEYS, getSyncMeta, scopedSyncMetaKey, type SyncMetaKey } from './sync-meta'
 import { pullDelta, type PullApiClient, runGuardedPull, PULL_LOCK_NAME } from './pull'
 import type { PullDeltaResult, PullGuardOutcome } from './pull'
+
+// USER_A は fake factory の既定 user_id と同値 (owner 行検証を通すため)。
+const USER_A = 'user-1'
+const USER_B = 'user-2'
 
 // ---------------------------------------------------------------------------
 // Fake data factories
@@ -89,29 +95,31 @@ function fakeClientCardTag(overrides?: Partial<ClientCardTag>): ClientCardTag {
   }
 }
 
-function emptyResponse(
-  overrides?: Partial<{
-    cards: ClientCard[]
-    exams: ClientExam[]
-    tombstones: { entity_type: TombstoneEntityType; entity_id: string; deleted_at: string }[]
-    tag_categories: ClientTagCategory[]
-    tag_options: ClientTagOption[]
-    card_tags: ClientCardTag[]
-    cursors: Partial<{
-      cards: string | null
-      exams: string | null
-      tombstone: string | null
-      tag_categories: string | null
-      tag_options: string | null
-      card_tags: string | null
-    }>
-  }>,
-) {
+type EmptyResponseOverrides = Partial<{
+  owner_user_id: string
+  cards: ClientCard[]
+  exams: ClientExam[]
+  tombstones: { entity_type: TombstoneEntityType; entity_id: string; deleted_at: string }[]
+  tag_categories: ClientTagCategory[]
+  tag_options: ClientTagOption[]
+  card_tags: ClientCardTag[]
+  cursors: Partial<{
+    cards: string | null
+    exams: string | null
+    tombstone: string | null
+    tag_categories: string | null
+    tag_options: string | null
+    card_tags: string | null
+  }>
+}>
+
+function emptyResponse(overrides?: EmptyResponseOverrides) {
   const { cursors: cursorOverrides, ...rest } = overrides ?? {}
   return {
     ok: true as const,
     status: 200,
     body: {
+      owner_user_id: USER_A,
       cards: [] as ClientCard[],
       exams: [] as ClientExam[],
       tombstones: [] as {
@@ -180,7 +188,7 @@ describe('pullDelta', () => {
         cursors: { cards: '2026-05-27T01:00:00.000Z', exams: null, tombstone: null },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result).toEqual({ ok: true, cardCount: 2, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const rows = await db.cards.toArray()
@@ -207,7 +215,7 @@ describe('pullDelta', () => {
         cursors: { cards: null, exams: '2026-05-27T02:00:00.000Z', tombstone: null },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result).toEqual({ ok: true, cardCount: 0, examCount: 2, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const rows = await db.exams.toArray()
@@ -234,7 +242,7 @@ describe('pullDelta', () => {
         cursors: { cards: null, exams: null, tombstone: '2026-05-27T03:00:00.000Z' },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 2, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
 
     const cardIds = (await db.cards.toArray()).map((r) => r.id)
@@ -246,12 +254,12 @@ describe('pullDelta', () => {
   // 観点 3a: cursor read → since param 付き path
   it('sync_meta に 3 cursor あれば ?since_cards=..&since_exams=..&since_tombstone=.. を含む path で呼ばれる', async () => {
     const db = getClientDb()
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-10T00:00:00.000Z' })
-    await db.sync_meta.put({ key: SYNC_META_KEYS.examsCursor, value: '2026-05-11T00:00:00.000Z' })
-    await db.sync_meta.put({ key: SYNC_META_KEYS.tombstoneCursor, value: '2026-05-12T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-10T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, USER_A), value: '2026-05-11T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.tombstoneCursor, USER_A), value: '2026-05-12T00:00:00.000Z' })
 
     const client = mockClient(emptyResponse())
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
     const calledPath = (client.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     expect(calledPath).toContain('since_cards=2026-05-10T00%3A00%3A00.000Z')
@@ -262,7 +270,7 @@ describe('pullDelta', () => {
   // 観点 3b: cursor 全無し時は param 無し path
   it('sync_meta に cursor なければ param なし /api/pull で呼ばれる', async () => {
     const client = mockClient(emptyResponse())
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
     const calledPath = (client.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     expect(calledPath).toBe('/api/pull')
@@ -279,28 +287,28 @@ describe('pullDelta', () => {
         },
       }),
     )
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-27T10:00:00.000Z')
-    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor)).toBe('2026-05-27T11:00:00.000Z')
-    expect(await getSyncMeta(SYNC_META_KEYS.tombstoneCursor)).toBe('2026-05-27T12:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-27T10:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor, USER_A)).toBe('2026-05-27T11:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.tombstoneCursor, USER_A)).toBe('2026-05-27T12:00:00.000Z')
   })
 
   // 観点 5: cursor 据え置き null
   it('cardsCursor を put 済 + レスポンス cursors.cards=null → cardsCursor は旧値のまま', async () => {
     const db = getClientDb()
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-05T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-05T00:00:00.000Z' })
 
     const client = mockClient(
       emptyResponse({
         cursors: { cards: null, exams: '2026-05-27T11:00:00.000Z', tombstone: null },
       }),
     )
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-05T00:00:00.000Z')
-    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor)).toBe('2026-05-27T11:00:00.000Z')
-    expect(await getSyncMeta(SYNC_META_KEYS.tombstoneCursor)).toBeUndefined()
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-05T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.examsCursor, USER_A)).toBe('2026-05-27T11:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.tombstoneCursor, USER_A)).toBeUndefined()
   })
 
   // 観点 6a: 失敗時不変性 — client throw
@@ -308,36 +316,36 @@ describe('pullDelta', () => {
     const db = getClientDb()
     await db.cards.bulkPut([fakeClientCard({ id: 'keep-c' })])
     await db.exams.bulkPut([fakeClientExam({ id: 'keep-e' })])
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-01T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-01T00:00:00.000Z' })
 
     const client: PullApiClient = { get: vi.fn().mockRejectedValue(new Error('network')) }
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
 
     expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-01T00:00:00.000Z')
   })
 
   // 観点 6b: 失敗時不変性 — {ok:false,status:500,body:null}
   it('{ok:false,status:500,body:null}: {ok:false,...0}、全不変', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([fakeClientCard({ id: 'keep-c' })])
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-01T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-01T00:00:00.000Z' })
 
     const client = mockClient({ ok: false, status: 500, body: null })
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
 
     expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-01T00:00:00.000Z')
   })
 
   // 観点 6c: 失敗時不変性 — body.cards 非 array
   it('body.cards 非 array: {ok:false,...0}、全不変', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([fakeClientCard({ id: 'keep-c' })])
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-01T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-01T00:00:00.000Z' })
 
     const client = mockClient({
       ok: true,
@@ -349,11 +357,11 @@ describe('pullDelta', () => {
         cursors: { cards: null, exams: null, tombstone: null },
       } as never,
     })
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
 
     expect(result).toEqual({ ok: false, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-01T00:00:00.000Z')
   })
 
   // 観点 7: 0件全null — mirror 不変・cursor 不変・{ok:true,...0}
@@ -361,15 +369,15 @@ describe('pullDelta', () => {
     const db = getClientDb()
     await db.cards.bulkPut([fakeClientCard({ id: 'existing-c' })])
     await db.exams.bulkPut([fakeClientExam({ id: 'existing-e' })])
-    await db.sync_meta.put({ key: SYNC_META_KEYS.cardsCursor, value: '2026-05-01T00:00:00.000Z' })
+    await db.sync_meta.put({ key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A), value: '2026-05-01T00:00:00.000Z' })
 
     const client = mockClient(emptyResponse())
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
 
     expect(result).toEqual({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 })
     expect(await db.cards.count()).toBe(1)
     expect(await db.exams.count()).toBe(1)
-    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor)).toBe('2026-05-01T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-05-01T00:00:00.000Z')
   })
 
   // ===========================================================================
@@ -394,7 +402,7 @@ describe('pullDelta', () => {
         cursors: { card_tags: '2026-06-01T01:00:00.000Z' },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result.ok).toBe(true)
     expect(result.cardTagCount).toBe(1)
 
@@ -420,7 +428,7 @@ describe('pullDelta', () => {
         card_tags: [], // whole-set 空に置換
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result.ok).toBe(true)
 
     const c1Rows = await db.card_tags.where('card_id').equals('c1').toArray()
@@ -436,7 +444,7 @@ describe('pullDelta', () => {
     ])
 
     const client = mockClient(emptyResponse())
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result.ok).toBe(true)
 
     expect(await db.card_tags.count()).toBe(2)
@@ -457,7 +465,7 @@ describe('pullDelta', () => {
         cursors: { tombstone: '2026-06-01T02:00:00.000Z' },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result.ok).toBe(true)
 
     const rows = await db.card_tags.toArray()
@@ -480,7 +488,7 @@ describe('pullDelta', () => {
         cursors: { tombstone: '2026-06-01T03:00:00.000Z' },
       }),
     )
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
     expect(result.ok).toBe(true)
 
     const rows = await db.card_tags.toArray()
@@ -495,9 +503,9 @@ describe('pullDelta', () => {
         cursors: { card_tags: '2026-06-01T10:00:00.000Z' },
       }),
     )
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
-    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor, USER_A)).toBe(
       '2026-06-01T10:00:00.000Z',
     )
   })
@@ -506,14 +514,14 @@ describe('pullDelta', () => {
   it('cardTagsCursor を put 済 + cursors.card_tags=null → cardTagsCursor は旧値のまま', async () => {
     const db = getClientDb()
     await db.sync_meta.put({
-      key: SYNC_META_KEYS.cardTagsCursor,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, USER_A),
       value: '2026-05-01T00:00:00.000Z',
     })
 
     const client = mockClient(emptyResponse())
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
-    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor, USER_A)).toBe(
       '2026-05-01T00:00:00.000Z',
     )
   })
@@ -522,12 +530,12 @@ describe('pullDelta', () => {
   it('sync_meta に cardTagsCursor あれば ?since_card_tags=.. を含む path で呼ばれる', async () => {
     const db = getClientDb()
     await db.sync_meta.put({
-      key: SYNC_META_KEYS.cardTagsCursor,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, USER_A),
       value: '2026-05-20T00:00:00.000Z',
     })
 
     const client = mockClient(emptyResponse())
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
     const calledPath = (client.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     expect(calledPath).toContain('since_card_tags=2026-05-20T00%3A00%3A00.000Z')
@@ -538,7 +546,7 @@ describe('pullDelta', () => {
     const db = getClientDb()
     await db.card_tags.bulkPut([fakeClientCardTag({ card_id: 'keep', option_id: 'k' })])
     await db.sync_meta.put({
-      key: SYNC_META_KEYS.cardTagsCursor,
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, USER_A),
       value: '2026-05-01T00:00:00.000Z',
     })
 
@@ -562,7 +570,7 @@ describe('pullDelta', () => {
         },
       } as never,
     })
-    const result = await pullDelta(client)
+    const result = await pullDelta(USER_A, client)
 
     expect(result).toEqual({
       ok: false,
@@ -574,7 +582,7 @@ describe('pullDelta', () => {
       cardTagCount: 0,
     })
     expect(await db.card_tags.count()).toBe(1)
-    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor)).toBe(
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor, USER_A)).toBe(
       '2026-05-01T00:00:00.000Z',
     )
   })
@@ -597,10 +605,306 @@ describe('pullDelta', () => {
         ],
       }),
     )
-    await pullDelta(client)
+    await pullDelta(USER_A, client)
 
     const rows = await db.card_tags.where('card_id').equals('c1').toArray()
     expect(rows.map((r) => r.option_id)).toEqual(['o-new'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S-local-2 Task 4: cursor namespace / capture / fail-closed / owner echo
+// ---------------------------------------------------------------------------
+
+// 6 stream の (cursor base key, since query param 名, response cursors field) 対応表。
+// 全 stream 一括で pin することで「1 本だけ namespace 化し忘れる」 退行を捕まえる。
+const CURSOR_STREAMS: {
+  base: SyncMetaKey
+  since: string
+  responseKey: 'cards' | 'exams' | 'tombstone' | 'tag_categories' | 'tag_options' | 'card_tags'
+  seed: string
+  next: string
+}[] = [
+  { base: SYNC_META_KEYS.cardsCursor, since: 'since_cards', responseKey: 'cards', seed: '2026-05-01T00:00:00.000Z', next: '2026-06-01T00:00:00.000Z' },
+  { base: SYNC_META_KEYS.examsCursor, since: 'since_exams', responseKey: 'exams', seed: '2026-05-02T00:00:00.000Z', next: '2026-06-02T00:00:00.000Z' },
+  { base: SYNC_META_KEYS.tombstoneCursor, since: 'since_tombstone', responseKey: 'tombstone', seed: '2026-05-03T00:00:00.000Z', next: '2026-06-03T00:00:00.000Z' },
+  { base: SYNC_META_KEYS.tagCategoriesCursor, since: 'since_tag_categories', responseKey: 'tag_categories', seed: '2026-05-04T00:00:00.000Z', next: '2026-06-04T00:00:00.000Z' },
+  { base: SYNC_META_KEYS.tagOptionsCursor, since: 'since_tag_options', responseKey: 'tag_options', seed: '2026-05-05T00:00:00.000Z', next: '2026-06-05T00:00:00.000Z' },
+  { base: SYNC_META_KEYS.cardTagsCursor, since: 'since_card_tags', responseKey: 'card_tags', seed: '2026-05-06T00:00:00.000Z', next: '2026-06-06T00:00:00.000Z' },
+]
+
+// 6 stream すべての next-cursor を非 null で返す response 用 helper。
+function allNextCursors(): NonNullable<EmptyResponseOverrides['cursors']> {
+  return {
+    cards: CURSOR_STREAMS[0]!.next,
+    exams: CURSOR_STREAMS[1]!.next,
+    tombstone: CURSOR_STREAMS[2]!.next,
+    tag_categories: CURSOR_STREAMS[3]!.next,
+    tag_options: CURSOR_STREAMS[4]!.next,
+    card_tags: CURSOR_STREAMS[5]!.next,
+  }
+}
+
+async function seedAllCursorsFor(userId: string): Promise<void> {
+  const db = getClientDb()
+  for (const s of CURSOR_STREAMS) {
+    await db.sync_meta.put({ key: scopedSyncMetaKey(s.base, userId), value: s.seed })
+  }
+}
+
+function calledPathOf(client: PullApiClient): string {
+  return (client.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+}
+
+describe('pullDelta — cursor namespace (pin ①)', () => {
+  it('A の cursor 6 本 seed 下で pullDelta(A) は 6 本すべての since_* を送る', async () => {
+    await seedAllCursorsFor(USER_A)
+    const client = mockClient(emptyResponse())
+
+    await pullDelta(USER_A, client)
+
+    const path = calledPathOf(client)
+    for (const s of CURSOR_STREAMS) {
+      expect(path, `${s.since} が欠落`).toContain(`${s.since}=${encodeURIComponent(s.seed)}`)
+    }
+  })
+
+  it('A の cursor 6 本 seed 下で pullDelta(B) は since を 1 本も送らない (自然に full pull)', async () => {
+    await seedAllCursorsFor(USER_A)
+    const client = mockClient(emptyResponse({ owner_user_id: USER_B }))
+
+    await pullDelta(USER_B, client)
+
+    // B の namespace には cursor が無い = param なしの素の path になる。
+    expect(calledPathOf(client)).toBe('/api/pull')
+  })
+
+  it('pullDelta(B) の cursor write は 6 本とも B の namespace に行き、 A の 6 本は不変', async () => {
+    await seedAllCursorsFor(USER_A)
+    const db = getClientDb()
+    const client = mockClient(
+      emptyResponse({ owner_user_id: USER_B, cursors: allNextCursors() }),
+    )
+
+    await pullDelta(USER_B, client)
+
+    for (const s of CURSOR_STREAMS) {
+      expect(await getSyncMeta(s.base, USER_B), `${s.base} が B の namespace に書かれていない`).toBe(s.next)
+      expect(await getSyncMeta(s.base, USER_A), `${s.base} の A の値が上書きされた`).toBe(s.seed)
+    }
+    // 名前空間なしの旧 key に書き戻していないことも確認 (base 素キーは誰も読まない)。
+    for (const s of CURSOR_STREAMS) {
+      expect(await db.sync_meta.get(s.base)).toBeUndefined()
+    }
+  })
+})
+
+describe('pullDelta — userId capture (pin ②・spec §5.1 凍結)', () => {
+  it('A の fetch 解決前に B の pull を interleave しても、 A の invocation は A の key に書く', async () => {
+    const db = getClientDb()
+    // A の client: 解決を手動で遅延させる (pending 中に B を走らせるため)。
+    let resolveA!: (v: Awaited<ReturnType<PullApiClient['get']>>) => void
+    const pendingA = new Promise<Awaited<ReturnType<PullApiClient['get']>>>((resolve) => {
+      resolveA = resolve
+    })
+    const clientA: PullApiClient = { get: vi.fn(() => pendingA) }
+    const clientB = mockClient(
+      emptyResponse({
+        owner_user_id: USER_B,
+        cursors: { cards: '2026-07-02T00:00:00.000Z' },
+      }),
+    )
+
+    // A を開始 (fetch pending のまま) → B を完走させる。
+    const pA = pullDelta(USER_A, clientA)
+    await pullDelta(USER_B, clientB)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_B)).toBe('2026-07-02T00:00:00.000Z')
+
+    // 遅れて A の応答が着地する。
+    resolveA(emptyResponse({ cursors: { cards: '2026-07-01T00:00:00.000Z' } }))
+    await pA
+
+    // A は自分が capture した namespace にのみ書き、 B の値は汚れない。
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe('2026-07-01T00:00:00.000Z')
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_B)).toBe('2026-07-02T00:00:00.000Z')
+    expect(await db.sync_meta.get(SYNC_META_KEYS.cardsCursor)).toBeUndefined()
+  })
+})
+
+describe('pullDelta — 空 userId fail-closed (pin ③)', () => {
+  it("pullDelta('') は FAIL を返し client.get を呼ばず Dexie にも触れない", async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([fakeClientCard({ id: 'keep-c' })])
+    await db.sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A),
+      value: '2026-05-01T00:00:00.000Z',
+    })
+    const client = mockClient(emptyResponse())
+
+    const result = await pullDelta('', client)
+
+    expect(result).toEqual({
+      ok: false,
+      cardCount: 0,
+      examCount: 0,
+      tombstoneCount: 0,
+      tagCategoryCount: 0,
+      tagOptionCount: 0,
+      cardTagCount: 0,
+    })
+    expect(client.get).not.toHaveBeenCalled()
+    expect(await db.cards.count()).toBe(1)
+    expect(await db.sync_meta.count()).toBe(1)
+  })
+})
+
+describe('pullDelta — owner echo (pin ⑤・spec §5.1a)', () => {
+  // (a) echo 不一致 + payload 空: 行検証は素通りするので echo だけが reject 根拠になる。
+  it('(a) owner_user_id 不一致 + payload 空 → FAIL・cursor 不変', async () => {
+    await seedAllCursorsFor(USER_A)
+    const client = mockClient(
+      emptyResponse({
+        owner_user_id: USER_B,
+        cursors: { cards: '2026-07-10T00:00:00.000Z' },
+      }),
+    )
+
+    const result = await pullDelta(USER_A, client)
+
+    expect(result.ok).toBe(false)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe(
+      CURSOR_STREAMS[0]!.seed,
+    )
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_B)).toBeUndefined()
+  })
+
+  // (b) tombstone-only: ClientTombstone は user_id を持たず行検証が原理的に不能。
+  //     この経路を守れるのは echo だけであることの実証。
+  it('(b) tombstone-only 応答の owner_user_id 不一致 → FAIL・mirror / cursor 不変', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([fakeClientCard({ id: 'c-keep' })])
+    await db.sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.tombstoneCursor, USER_A),
+      value: '2026-05-03T00:00:00.000Z',
+    })
+    const client = mockClient(
+      emptyResponse({
+        owner_user_id: USER_B,
+        tombstones: [fakeTombstone('card', 'c-keep')],
+        cursors: { tombstone: '2026-07-11T00:00:00.000Z' },
+      }),
+    )
+
+    const result = await pullDelta(USER_A, client)
+
+    expect(result.ok).toBe(false)
+    // tombstone が適用されていない = mirror 不変。
+    expect(await db.cards.count()).toBe(1)
+    expect(await getSyncMeta(SYNC_META_KEYS.tombstoneCursor, USER_A)).toBe(
+      '2026-05-03T00:00:00.000Z',
+    )
+  })
+
+  // (c) field 欠落 (旧 server / emptyBody 相当) も不一致と同じく reject する。
+  it('(c) owner_user_id field 欠落 → FAIL・cursor 不変', async () => {
+    await seedAllCursorsFor(USER_A)
+    const base = emptyResponse({ cursors: { cards: '2026-07-12T00:00:00.000Z' } })
+    const { owner_user_id: _omit, ...bodyWithoutOwner } = base.body
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: bodyWithoutOwner as never,
+    })
+
+    const result = await pullDelta(USER_A, client)
+
+    expect(result.ok).toBe(false)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe(
+      CURSOR_STREAMS[0]!.seed,
+    )
+  })
+
+  // (d) echo は一致していても行に異 owner が混ざれば全体 reject。 owner 列を持つ
+  //     5 stream を全数 pin する (1 stream だけ検証を落とす退行を捕まえるため)。
+  const FOREIGN_ROW_CASES: { label: string; payload: EmptyResponseOverrides }[] = [
+    { label: 'cards', payload: { cards: [fakeClientCard({ id: 'x', user_id: USER_B })] } },
+    { label: 'exams', payload: { exams: [fakeClientExam({ id: 'x', user_id: USER_B })] } },
+    {
+      label: 'tag_categories',
+      payload: {
+        tag_categories: [
+          {
+            id: 'tc-x',
+            user_id: USER_B,
+            name: 'n',
+            select_type: 'single',
+            created_at: '2026-05-01T00:00:00.000Z',
+            updated_at: '2026-05-01T00:00:00.000Z',
+          },
+        ],
+      },
+    },
+    {
+      label: 'tag_options',
+      payload: {
+        tag_options: [
+          {
+            id: 'to-x',
+            user_id: USER_B,
+            category_id: 'tc-1',
+            name: 'n',
+            created_at: '2026-05-01T00:00:00.000Z',
+            updated_at: '2026-05-01T00:00:00.000Z',
+          },
+        ],
+      },
+    },
+    {
+      label: 'card_tags',
+      payload: { card_tags: [fakeClientCardTag({ card_id: 'cx', user_id: USER_B })] },
+    },
+  ]
+
+  for (const c of FOREIGN_ROW_CASES) {
+    it(`(d) ${c.label} に異 owner 行が 1 行混入 → FAIL・mirror 不変・cursor 不変`, async () => {
+      const db = getClientDb()
+      await seedAllCursorsFor(USER_A)
+      const client = mockClient(
+        emptyResponse({ ...c.payload, cursors: allNextCursors() }),
+      )
+
+      const result = await pullDelta(USER_A, client)
+
+      expect(result.ok).toBe(false)
+      // mirror は 5 store とも空のまま (bulkPut が 1 件も走っていない)。
+      expect(await db.cards.count()).toBe(0)
+      expect(await db.exams.count()).toBe(0)
+      expect(await db.tag_categories.count()).toBe(0)
+      expect(await db.tag_options.count()).toBe(0)
+      expect(await db.card_tags.count()).toBe(0)
+      // cursor 6 本も seed 値のまま。
+      for (const s of CURSOR_STREAMS) {
+        expect(await getSyncMeta(s.base, USER_A)).toBe(s.seed)
+      }
+    })
+  }
+
+  it('正常系: owner_user_id 一致 + 全行 self-owned なら従来どおり適用される', async () => {
+    const db = getClientDb()
+    const client = mockClient(
+      emptyResponse({
+        cards: [fakeClientCard({ id: 'c-ok', user_id: USER_A })],
+        cursors: { cards: '2026-07-20T00:00:00.000Z' },
+      }),
+    )
+
+    const result = await pullDelta(USER_A, client)
+
+    expect(result.ok).toBe(true)
+    expect(await db.cards.count()).toBe(1)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe(
+      '2026-07-20T00:00:00.000Z',
+    )
   })
 })
 
@@ -633,7 +937,7 @@ describe('runGuardedPull', () => {
     const pull = vi.fn(async () => pullResult)
     const locks = fakeLocks(true)
 
-    const outcome = await runGuardedPull({ pull, locks })
+    const outcome = await runGuardedPull({ userId: USER_A, pull, locks })
 
     expect(outcome).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(1)
@@ -645,7 +949,7 @@ describe('runGuardedPull', () => {
     const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 }))
     const locks = fakeLocks(false)
 
-    const outcome = await runGuardedPull({ pull, locks })
+    const outcome = await runGuardedPull({ userId: USER_A, pull, locks })
 
     expect(outcome).toBe('lock-busy')
     expect(pull).not.toHaveBeenCalled()
@@ -655,7 +959,7 @@ describe('runGuardedPull', () => {
   it('locks: undefined fallback → outcome "ran"、 pull 1 回', async () => {
     const pull = vi.fn(async (): Promise<PullDeltaResult> => ({ ok: true, cardCount: 0, examCount: 0, tombstoneCount: 0, tagCategoryCount: 0, tagOptionCount: 0, cardTagCount: 0 }))
 
-    const outcome = await runGuardedPull({ pull, locks: undefined })
+    const outcome = await runGuardedPull({ userId: USER_A, pull, locks: undefined })
 
     expect(outcome).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(1)
@@ -679,10 +983,10 @@ describe('runGuardedPull', () => {
     const locks = fakeLocks(true)
 
     // 1 本目: await せずに開始 (in-flight)
-    const p1 = runGuardedPull({ pull, locks })
+    const p1 = runGuardedPull({ userId: USER_A, pull, locks })
 
     // 2 本目: 1 本目の pull が pending の間に同期的に呼ぶ → inflight-skip
-    const outcome2 = await runGuardedPull({ pull, locks })
+    const outcome2 = await runGuardedPull({ userId: USER_A, pull, locks })
     expect(outcome2).toBe('inflight-skip')
     // pull は 1 回しか呼ばれていない
     expect(pull).toHaveBeenCalledTimes(1)
@@ -695,7 +999,7 @@ describe('runGuardedPull', () => {
 
     // pullInFlight が false に戻ったので 3 本目は 'ran'
     const locks2 = fakeLocks(true)
-    const outcome3 = await runGuardedPull({ pull, locks: locks2 })
+    const outcome3 = await runGuardedPull({ userId: USER_A, pull, locks: locks2 })
     expect(outcome3).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(2)
   })

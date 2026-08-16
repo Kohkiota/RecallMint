@@ -160,7 +160,7 @@ describe('EntityMutationFlushTrigger', () => {
       onFlushed: () => void
     }
     deps.onFlushed()
-    expect(mockPullBack).toHaveBeenCalledWith('entity-mutation-flush')
+    expect(mockPullBack).toHaveBeenCalledWith(USER_ID, 'entity-mutation-flush')
     expect(mockPullBack).toHaveBeenCalledTimes(1)
   })
 

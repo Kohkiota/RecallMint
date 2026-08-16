@@ -39,10 +39,11 @@ vi.mock('next/navigation', () => ({
 import { ExamTitleInlineEdit } from './exam-title-inline-edit'
 
 const EXAM_ID = 'exam-1'
+const USER_A = 'user-a'
 
 function renderTitle(name = '基本情報試験') {
   return render(
-    <ExamTitleInlineEdit examId={EXAM_ID} examName={name} variant="card" />,
+    <ExamTitleInlineEdit examId={EXAM_ID} userId={USER_A} examName={name} variant="card" />,
   )
 }
 
@@ -79,6 +80,7 @@ describe('ExamTitleInlineEdit — 表示', () => {
     render(
       <ExamTitleInlineEdit
         examId={EXAM_ID}
+        userId={USER_A}
         examName={'長い試験名'.repeat(20)}
         variant="card"
       />,
@@ -93,6 +95,7 @@ describe('ExamTitleInlineEdit — 表示', () => {
     render(
       <ExamTitleInlineEdit
         examId={EXAM_ID}
+        userId={USER_A}
         examName="基本情報試験"
         variant="compact"
       />,
@@ -140,7 +143,7 @@ describe('ExamTitleInlineEdit — commit', () => {
     await waitFor(() => {
       expect(mockRouterRefresh).toHaveBeenCalledTimes(1)
     })
-    expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-rename' })
+    expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'exam-rename' })
 
     // 表示は commit 成功値 (trim 済) に更新される (prop は未更新のまま)
     await waitFor(() => {
@@ -463,6 +466,7 @@ describe('ExamTitleInlineEdit — cancel / error', () => {
       <>
         <ExamTitleInlineEdit
           examId={EXAM_ID}
+          userId={USER_A}
           examName="基本情報試験"
           variant="card"
         />
@@ -518,6 +522,7 @@ describe('ExamTitleInlineEdit — prop 同期', () => {
     rerender(
       <ExamTitleInlineEdit
         examId={EXAM_ID}
+        userId={USER_A}
         examName="他端末で改名された名前"
         variant="card"
       />,
@@ -535,6 +540,7 @@ describe('ExamTitleInlineEdit — prop 同期', () => {
     rerender(
       <ExamTitleInlineEdit
         examId={EXAM_ID}
+        userId={USER_A}
         examName="他端末で改名された名前"
         variant="card"
       />,

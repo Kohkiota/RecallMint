@@ -59,6 +59,8 @@ import { GET } from './route'
 
 const FAKE_USER = { id: 'user-uuid-1' } as unknown as User
 
+// withReadOnlyAuth の emptyBody (users 行未 sync path)。 user 不在の静的リテラルゆえ
+// owner_user_id を持たない (spec §5.1a の既知副作用 — client 側は reject する)。
 const EMPTY_BODY = {
   cards: [],
   exams: [],
@@ -75,6 +77,9 @@ const EMPTY_BODY = {
     card_tags: null,
   },
 }
+
+// 認証済み path の 0 件応答。 emptyBody と違い owner echo (owner_user_id) が載る。
+const EMPTY_OWNED_BODY = { owner_user_id: 'user-uuid-1', ...EMPTY_BODY }
 
 function fakeCardsDelta(
   rows: ClientCard[] = [],
@@ -293,7 +298,32 @@ describe('GET /api/pull', () => {
     vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
     const res = await GET(makeReq())
     const body = await res.json()
-    expect(body).toEqual(EMPTY_BODY)
+    expect(body).toEqual(EMPTY_OWNED_BODY)
+  })
+
+  // -------------------------------------------------------------------------
+  // owner echo (spec §5.1a / pin ⑥)
+  // -------------------------------------------------------------------------
+  it('正常応答の top-level に owner_user_id: user.id が載る', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    vi.mocked(getCardsDelta).mockResolvedValue(
+      fakeCardsDelta([fakeCard({ id: 'c1' })], '2026-05-02T00:00:00.000Z'),
+    )
+    vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
+    vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+    vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+    vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
+
+    const res = await GET(makeReq())
+    const body = await res.json()
+    expect(body.owner_user_id).toBe('user-uuid-1')
+  })
+
+  it('emptyBody (users 行未 sync) には owner_user_id が載らない (静的リテラルの構造的帰結)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null)
+    const res = await GET(makeReq())
+    const body = await res.json()
+    expect(body).not.toHaveProperty('owner_user_id')
   })
 
   // -------------------------------------------------------------------------

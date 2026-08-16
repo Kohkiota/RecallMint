@@ -325,7 +325,8 @@ export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = '�
           // daily=threshold のとき threshold flush が実 sync を担う(session 完了 flush は残件 0 で skip)。
           // 実 sync 成功('ok')のときだけ pull-back して FSRS 値を mirror へ戻す。
           // lock-busy / no-pending / 失敗では不発。
-          if ((await runGuardedAnswerEventFlush(userId)) === 'ok') pullBack('threshold-flush')
+          if ((await runGuardedAnswerEventFlush(userId)) === 'ok')
+            pullBack(userId, 'threshold-flush')
         }
       } catch {
         // Dexie write / flush の background 失敗は UI に出さず、 次 trigger で再試行。
@@ -343,7 +344,8 @@ export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = '�
       try {
         // 通常復習はこの直叩き経路で queue を drain するため controller hook では拾えない。
         // flush 成功のときのみ pull-back: FSRS 再計算後のサーバー値を mirror へ戻す。
-        if ((await runGuardedAnswerEventFlush(userId)) === 'ok') pullBack('session-complete')
+        if ((await runGuardedAnswerEventFlush(userId)) === 'ok')
+          pullBack(userId, 'session-complete')
       } catch {}
     })()
   }, [phase, userId])

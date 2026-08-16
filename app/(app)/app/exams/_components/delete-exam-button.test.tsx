@@ -28,6 +28,8 @@ vi.mock('next/navigation', () => ({
 
 import { DeleteExamButton } from './delete-exam-button'
 
+const USER_A = 'user-a'
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockDeleteExam.mockResolvedValue({ ok: true })
@@ -39,7 +41,7 @@ afterEach(() => {
 
 describe('DeleteExamButton', () => {
   it('削除成功 → router.refresh() と runGuardedPull({reason:"exam-delete"}) が呼ばれる', async () => {
-    render(<DeleteExamButton examId="exam-x" />)
+    render(<DeleteExamButton examId="exam-x" userId={USER_A} />)
 
     // idle → confirm フェーズ
     fireEvent.click(screen.getByRole('button', { name: '削除' }))
@@ -53,13 +55,13 @@ describe('DeleteExamButton', () => {
       expect(mockRouterRefresh).toHaveBeenCalled()
     })
     await waitFor(() => {
-      expect(mockRunGuardedPull).toHaveBeenCalledWith({ reason: 'exam-delete' })
+      expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'exam-delete' })
     })
   })
 
   it('削除失敗 → runGuardedPull は呼ばれない', async () => {
     mockDeleteExam.mockResolvedValueOnce({ ok: false, error: '削除に失敗しました' })
-    render(<DeleteExamButton examId="exam-x" />)
+    render(<DeleteExamButton examId="exam-x" userId={USER_A} />)
 
     fireEvent.click(screen.getByRole('button', { name: '削除' }))
     fireEvent.click(await screen.findByRole('button', { name: '削除する' }))

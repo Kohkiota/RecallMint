@@ -32,9 +32,10 @@ import {
 
 type Props = {
   examId: string
+  userId: string
 }
 
-export function ExamDetailPullGate({ examId }: Props): null {
+export function ExamDetailPullGate({ examId, userId }: Props): null {
   useEffect(() => {
     // ① 入口 kick: suppress より先に発火 (suppress に弾かれないよう順序で担保)。
     //    fire-and-forget + silent (結果は観測しない。guard outcome は正常系)。
@@ -42,7 +43,7 @@ export function ExamDetailPullGate({ examId }: Props): null {
     //    意図的に含めない: 詳細画面は study_days を表示せず、詳細直ロード時に
     //    PullTrigger の mount kick が suppress で skip されても dashboard 鮮度は
     //    離脱後の次 ambient で回復するため (完全性目的で安易に足さないこと)。
-    void runGuardedPull({ reason: 'exam-detail-mount' }).catch(() => {})
+    void runGuardedPull({ userId, reason: 'exam-detail-mount' }).catch(() => {})
 
     // ② suppress on: 以降の ambient kick (mount/visibilitychange/online) を抑止。
     suppressAmbientPull()
@@ -54,7 +55,8 @@ export function ExamDetailPullGate({ examId }: Props): null {
       //   この経路が唯一の解除手段というわけではない。
       resumeAmbientPull()
     }
-  }, [examId])
+    // userId も依存に含める: owner が変われば入口 kick を新 owner で撃ち直す。
+  }, [examId, userId])
 
   return null
 }

@@ -42,6 +42,8 @@ vi.mock('@/app/(app)/app/exams/_actions/delete-exam', () => ({
 import { ExamListLive } from './exam-list-live'
 import { ExamStatusProvider } from '../../_components/exam-status-live'
 
+const USER_A = 'user-a'
+
 // fetch mock (ExamStatusProvider の polling が万一走っても失敗しないよう)
 global.fetch = vi.fn().mockResolvedValue({
   ok: false,
@@ -100,7 +102,7 @@ function fakeCard(overrides?: Partial<ClientCard>): ClientCard {
 // (ExamStatusBadge が ExamStatusContext を購読するため)
 function renderWithProvider(userId: string) {
   return render(
-    <ExamStatusProvider initialStatuses={{}}>
+    <ExamStatusProvider initialStatuses={{}} userId={USER_A}>
       <ExamListLive userId={userId} />
     </ExamStatusProvider>,
   )

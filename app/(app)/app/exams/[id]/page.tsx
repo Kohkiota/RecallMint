@@ -38,7 +38,7 @@ export default async function ExamDetailPage({
   return (
     <div className="w-full">
       {/* 詳細滞在中は ambient pull を抑止し、mount 時に入口 pull を kick する gate */}
-      <ExamDetailPullGate examId={id} />
+      <ExamDetailPullGate examId={id} userId={userId} />
 
       {/* ExamDetailView → InlineCardList (card view) / ExamCardTable (table view) の
           view 別 conditional unmount で表示を切り替える。 どちらの view でも内部の

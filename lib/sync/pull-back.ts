@@ -11,12 +11,17 @@
 //   スキップされてしまう。 失敗は silent に握り潰し、 次の pull トリガー (mount/visibility/
 //   online) で自然回復させる。
 // - in-flight guard / Web Locks は runGuardedPull 側が担うため、 pullBack を複数箇所から
-//   呼んでも二重 pull にならない。
+//   呼んでも cards/exams の二重 pull にはならない。 **pullAllStudyDays は guard の外**で、
+//   複数箇所から呼べば並走しうる (冪等な full snapshot 置換なので許容している)。
+//
+// userId (S-local-2 Task 4 / spec §5.2):
+// - 呼出元が保有する内部 userId をそのまま渡す。 pullDelta は開始時にこれを capture し
+//   cursor の read/write 両方に使う (「現在の user」 を完了時に参照しない)。
 
 import { runGuardedPull } from '@/lib/sync/pull'
 import { pullAllStudyDays } from '@/lib/sync/study-days'
 
-export function pullBack(reason: string): void {
-  void runGuardedPull({ reason }).catch(() => {})
+export function pullBack(userId: string, reason: string): void {
+  void runGuardedPull({ userId, reason }).catch(() => {})
   void pullAllStudyDays().catch(() => {})
 }

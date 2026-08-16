@@ -13,7 +13,7 @@ import { runGuardedPull } from '@/lib/sync/pull'
 
 type Phase = 'collapsed' | 'expanded' | 'submitting'
 
-export function CreateExamForm() {
+export function CreateExamForm({ userId }: { userId: string }) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('collapsed')
   const [name, setName] = useState('')
@@ -43,7 +43,7 @@ export function CreateExamForm() {
         // 一覧が Dexie 参照のため、exam 作成後に mirror を pull で最新化する。
         // router.push で詳細へ遷移後も runGuardedPull は module-scope で継続し
         // mirror に新 exam を取り込むため、一覧に戻った時点で反映済み (即時表示は不要)。
-        void runGuardedPull({ reason: 'exam-create' }).catch(() => {})
+        void runGuardedPull({ userId, reason: 'exam-create' }).catch(() => {})
       } else {
         setErrorMsg(result.error)
         setPhase('expanded')
