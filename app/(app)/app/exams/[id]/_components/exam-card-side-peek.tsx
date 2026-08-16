@@ -6,7 +6,7 @@
 //
 // 設計:
 // - open={row !== null} / modal={false} / onOpenChange 一元 close → Esc・× ともにここを通る。
-// - onInteractOutside は preventDefault → 外クリックでは閉じない(テーブルセル編集との共存)。
+// - UI fix D: 外クリックで閉じる(下記 UI fix D 節参照)。
 // - key={row.card.id} を Dialog.Content 直下 div に付与 → card 切替で編集 state をリセット。
 //   Dialog.Content 自体には key を付けない(スライドアニメ・focus 移動が破綻するため)。
 // - row/cardTags の card_id 整合は親(T3)責務。row=null 時は Dialog 非 open のため本文非描画。
@@ -29,6 +29,59 @@
 // - fix round 1: pointerup に加え pointercancel(OS ジェスチャ中断等)・unmount(peek が閉じる等)
 //   でも window listener を確実に外す。 cancel/unmount は「中断」= onWidthChange を呼ばない
 //   (確定は pointerup のみ)。
+//
+// UI fix D (外側クリックで閉じる):
+// - 旧実装は onInteractOutside で一律 preventDefault し、外クリックでは閉じなかった。OT 指示で
+//   反転する: 既定は閉じる、例外(grip menu の余白等・自前 onClick を持たない overlay 内 click)
+//   だけ閉じない。
+// - radix 実挙動を node_modules 実装(@radix-ui/react-dismissable-layer)を読んで確認した:
+//   DismissableLayerContext はモジュールスコープの単一 React.createContext(...) で、Dialog /
+//   Popover の全 layer インスタンスが同じ context を共有する。「外側」判定は各 layer が自分の
+//   React 部分木への capture(onPointerDownCapture / onFocusCapture)で isPointerInsideReactTreeRef
+//   を立てる方式で、この部分木は Portal 越しでも React tree で判定される。 grip の Popover /
+//   PullIntoDialog の DOM は peek の Dialog.Content の React 部分木の**外**(兄弟の row cell から
+//   portal されている)なので、そちらを click しても peek 側の isPointerInsideReactTreeRef は
+//   立たない。 除外を自動でやってくれる経路の 1 つが shouldHandlePointerDownOutside の
+//   `context.branches`(DismissableLayerBranch)だが、Popover/PullIntoDialog は branch 登録をしない
+//   (popover 側 source を grep — Branch 使用なし)。 よって branches 経由の自動除外は効かない。
+// - **fix round 1(review 指摘・要 file:line 裏取り): branches とは別に、Radix は「interception
+//   tracking」という独立の除外機構を持つ**(dismissable-layer/index.mjs の handleInteractionCapture
+//   / handleInteractionBubble / interceptedOutsideInteractionEventsRef、L205-238)。 document には
+//   pointerup/mousedown/mouseup/touchstart/touchend/click の 6 種を capture フェーズ **と** bubble
+//   フェーズの両方で listen しており、ある event type が capture では観測されたのに bubble では
+//   観測されなかった(= 経路の途中で stopPropagation された)場合、その type を「intercepted」と
+//   記録し、intercepted な type が 1 つでもあれば onPointerDownOutside の dispatch 自体を
+//   スキップする(index.mjs L212-254)。 **これは isExemptFromOutsideClose が呼ばれるより前に
+//   決着する** — marker 判定に到達しない。
+//   grip trigger(exam-card-row-menu.tsx:169)/ 行メニュー項目(:200, :223)/ PullIntoDialog の
+//   panel(:360)/ backdrop(:350)は**いずれも自前の onClick で e.stopPropagation() する**
+//   (select td の行選択トグルへの bubbling を防ぐため — 本 sprint と無関係な既存理由)。
+//   この stopPropagation が click イベントの bubble を document 到達前に止めるため、これらの
+//   click は interception tracking により **marker の有無に関わらず** dispatch されない。
+//   よって `[data-slot="popover-trigger"]` / `[role="dialog"]` / PullIntoDialog backdrop 用の
+//   marker は不要(当初はこれらを exempt selector に含めていたが、interception tracking を
+//   見落としており誤りだった。 branches 経由の自動除外が効かないことは正しく確認したが、
+//   もう 1 つの独立した除外機構を見落としていた)。
+//   **唯一 load-bearing なのは `[data-slot="popover-content"]`**: grip menu の wrapper div
+//   自体・padding 領域・position-locked の理由 `<p>` テキスト(exam-card-row-menu.tsx の
+//   `positionLocked` 分岐)は自前の onClick を持たないため、そこを click すると stopPropagation
+//   されず dispatch まで届く — この場合にのみ marker が必要になる(exam-card-table.test.tsx の
+//   実 Popover 統合 test で pin — UI fix D 節参照)。
+// - **この結合は暗黙**: grip / 行メニュー項目 / PullIntoDialog panel・backdrop の
+//   stopPropagation は「select td への行選択トグル伝播を防ぐ」という別目的で置かれたもので、
+//   peek の外側クリック除外を意図した guard ではない。 将来それらの stopPropagation を
+//   外す変更をすると、peek がそのクリックで閉じるようになる(黙って挙動が変わる)。
+// - 実測(jsdom + Popover 併置 harness で回帰確認 → 削除済 scratch test)で以下を確認:
+//   - grip trigger 自体を click → click で native focus が grip に移り、onFocusOutside
+//     経由で独立に閉じ得る(interception tracking は onPointerDownOutside 専用で
+//     onFocusOutside には効かない別経路 — これが onFocusOutside を常時 preventDefault に
+//     する設計理由)。
+// - radix Dialog は非 modal でも deferPointerDownOutside=true 固定(dialog 実装が
+//   DismissableLayer へ渡す固定値)。 これは pointerdown 単体では外側判定を dispatch せず、
+//   後続の click(pointerup 後にブラウザが発火する native click)まで遅延させる仕様
+//   (テキスト選択ドラッグ等を外側クリック扱いしないための挙動)。 test は pointerDown → click の
+//   順で 2 発火させないと dismiss 経路が発火しない(jsdom でも実測で確認)。
+// - 除外 marker は `[data-slot="popover-content"]` の 1 種のみ(理由は上記)。
 
 import * as React from 'react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
@@ -64,6 +117,31 @@ export function computeDraggedPeekWidthVw(
   if (viewportWidthPx <= 0) return clampPeekWidthVw(startWidthVw)
   const deltaVw = (deltaPx / viewportWidthPx) * 100
   return clampPeekWidthVw(startWidthVw + deltaVw)
+}
+
+// ---------------------------------------------------------------------------
+// UI fix D: 外側クリック除外判定 — jsdom で直接 unit test するため component から切り出す
+// (UI fix C の computeDraggedPeekWidthVw と同じ方針)。
+// ---------------------------------------------------------------------------
+
+/**
+ * 「外側クリック」として扱わない overlay の DOM marker(file 冒頭 UI fix D 節の実測根拠を参照)。
+ * grip trigger / 行メニュー項目 / PullIntoDialog の panel・backdrop は自前で stopPropagation
+ * するため radix の interception tracking により dispatch 自体が起きず、marker 不要(review で
+ * 指摘・裏取り済 — 当初はこれらも含めていたが誤りだった)。 `[data-slot="popover-content"]`
+ * だけが load-bearing(grip menu の wrapper div・padding・position-locked 理由テキスト等、
+ * 自前 onClick を持たない領域の click は stopPropagation されず dispatch まで届くため)。
+ */
+const OUTSIDE_CLICK_EXEMPT_SELECTOR = '[data-slot="popover-content"]'
+
+/**
+ * onPointerDownOutside の event.detail.originalEvent.target が grip menu(Popover)本体に
+ * 属するかを判定する。 grip trigger / PullIntoDialog は別機構(stopPropagation による
+ * interception tracking)で自然に除外されるためここでは扱わない(上記 marker の doc 参照)。
+ */
+export function isExemptFromOutsideClose(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  return target.closest(OUTSIDE_CLICK_EXEMPT_SELECTOR) !== null
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +278,25 @@ export function ExamCardSidePeek({
             'duration-200 motion-reduce:transition-none',
           )}
           style={{ '--peek-width-vw': `${displayWidthVw}vw` } as React.CSSProperties}
-          onInteractOutside={(event) => {
+          // UI fix D: pointer と focus を分けて扱う(file 冒頭 UI fix D 節参照)。
+          onPointerDownOutside={(event) => {
+            // 例外(grip menu の余白等・自前 onClick を持たない overlay 内 click)だけ
+            // preventDefault で閉じない。 grip trigger / PullIntoDialog は自前の stopPropagation
+            // で radix の dispatch 自体が起きないためここには来ない(marker 不要 — file 冒頭
+            // UI fix D 節参照)。 それ以外は preventDefault しない = radix 既定の onDismiss →
+            // 上の onOpenChange(false) にそのまま合流させる(第 2 の close 経路を作らない。
+            // テーブル側 click 本来の動作は妨げない — ここで止めているのは radix の合成 event
+            // であり元の DOM click ではない)。
+            if (isExemptFromOutsideClose(event.detail.originalEvent.target)) {
+              event.preventDefault()
+            }
+          }}
+          onFocusOutside={(event) => {
+            // 常に閉じない。 onPointerDownOutside と束ねる(onInteractOutside)と、Tab で
+            // テーブルへ focus 移動しただけで閉じてしまう(キーボード利用者に不合理)うえ、
+            // grip click に伴う native focus 移動でも独立に閉じ得る(実測確認済み。 stopPropagation
+            // による interception tracking は onPointerDownOutside 専用で onFocusOutside には
+            // 効かない別経路のため、ここは marker 判定なしで一律に抑止する)。
             event.preventDefault()
           }}
         >

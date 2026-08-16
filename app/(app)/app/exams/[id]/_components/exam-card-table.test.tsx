@@ -2189,7 +2189,27 @@ describe('T3 ⑥: columnFilters で該当行が非表示になっても peek が
 })
 
 describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)', () => {
-  it('checkbox による行選択・解除は peek の open/close に影響しない', async () => {
+  // **契約**: 行選択(rowSelection)と peek の open/close は直交する。 これは side-peek sprint の
+  // T3 統合 commit 4db2151(「activeCardId state(rowSelection と直交・examViewPrefs 非永続)」)で
+  // 意図的に定めた既存契約で、UI fix D(外クリックで閉じる導入)後もこの直交性は維持する
+  // (今回の要求も「テーブル側クリックが peek を閉じた場合も本来の動作を殺さない」という
+  // 条件文であり、全 table click が必ず閉じることは要求していない — checkbox は解釈が割れる
+  // 余地があるため最終判断は OT に上げ済、本 test は「挙動不変」の現裁定を pin する)。
+  //
+  // **機構**: 現状この直交性が成立しているのは、checkbox 自身の onClick が td 全域トグルとの
+  // 二重発火防止のため stopPropagation する(exam-card-table-columns.tsx:162、コメント
+  // 「B: td 全域が onClick で選択トグルするため…」)ことと、radix の deferred dispatch /
+  // interception tracking(exam-card-side-peek.tsx の UI fix D 節 doc comment 参照)が組み合わさった
+  // **副次的な結果**であり、直交性を意図して置かれた guard ではない。 stopPropagation は native
+  // event の bubble を checkbox 自身で止めるため、radix の interception tracking が「intercepted」
+  // と記録し onPointerDownOutside の dispatch 自体を skip する — isExemptFromOutsideClose の
+  // 例外リストとは無関係に、そもそも「外側クリック」として観測されない。 **将来 checkbox の
+  // stopPropagation を外すと、この直交性は(意図した guard ではないため)黙って壊れる**。
+  // なおヘッダーの全選択 checkbox(exam-card-table-columns.tsx:124)も同一の stopPropagation を
+  // 持つため同じ結論になる(未検証だが機構上同一)。
+  // pointerdown → click を実際に fire して(deferred dispatch に対応する T3 ⑨ と同じ理由)、
+  // この非到達を実測で pin する。
+  it('checkbox による行選択・解除は peek の open/close に影響しない(契約 = 直交・出典 4db2151。機構 = checkbox 自身の stopPropagation による副次効果)', async () => {
     const db = getClientDb()
     await db.cards.put(makeCard(1))
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -2199,14 +2219,18 @@ describe('T3 ⑦: rowSelection 操作が activeCardId に影響しない(直交)
     await clickOpenCard('row-card-1')
     await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
 
+    const checkbox = screen.getByRole('checkbox', { name: /行選択.*Card 1/ })
+
     // 行選択 → peek は開いたまま
-    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).toBeChecked())
+    fireEvent.pointerDown(checkbox, { button: 0 })
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(checkbox).toBeChecked())
     expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument()
 
     // 行選択解除 → peek は開いたまま
-    fireEvent.click(screen.getByRole('checkbox', { name: /行選択.*Card 1/ }))
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: /行選択.*Card 1/ })).not.toBeChecked())
+    fireEvent.pointerDown(checkbox, { button: 0 })
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(checkbox).not.toBeChecked())
     expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument()
   })
 })
@@ -2257,8 +2281,12 @@ describe('T3 ⑧: data の該当 card 更新が peek 表示に反映(live 追従
   })
 })
 
-describe('T3 ⑨: peek open 中に背面テーブルセル click → peek は開いたままかつセル inline 編集が起動', () => {
-  it('onInteractOutside preventDefault により peek は閉じず、テーブルのセル click-to-edit が起動する', async () => {
+describe('T3 ⑨: peek open 中に背面テーブルセル click → peek は閉じる かつ セル inline 編集も起動(両立)', () => {
+  // UI fix D: 外クリックで閉じる方針への反転。 radix の DismissableLayer は非 modal Dialog でも
+  // deferPointerDownOutside=true 固定のため、outside 判定の実 dispatch は pointerdown 単体では
+  // 走らず後続の click まで遅延する(node_modules 実装を読んで確認)。 実ブラウザの
+  // pointerdown→pointerup→click の順を模して両方 fire する。
+  it('テーブルのセル click で peek が閉じる(onOpenChange 経由)と同時に click-to-edit も起動する(片方が他方を握り潰さない)', async () => {
     const db = getClientDb()
     await db.cards.bulkPut([makeCard(1), makeCard(2)])
     render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
@@ -2272,22 +2300,58 @@ describe('T3 ⑨: peek open 中に背面テーブルセル click → peek は開
     const row2 = screen.getByTestId('row-card-2')
     const editButton = within(row2).getByRole('button', { name: 'タイトル 編集' })
 
-    // Radix DismissableLayer は pointerdown で onInteractOutside を発火させる(click ではない)。
-    // pointerDown を先に送ることで onInteractOutside→preventDefault が実際に実行され、
-    // テストが「preventDefault を外すと閉じる」ことを実証する本物のアサーションになる。
-    fireEvent.pointerDown(editButton)
-
-    // (a) onInteractOutside の preventDefault が peek を開いたまま保つ。
-    // preventDefault を exam-card-side-peek.tsx から削除するとここで失敗する。
-    expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument()
-
-    // click でセルの click-to-edit(InlineTextField startEdit)を起動
+    // pointerdown → click の順(deferPointerDownOutside の遅延 dispatch に対応)。
+    fireEvent.pointerDown(editButton, { button: 0 })
     fireEvent.click(editButton)
 
-    // (b) card-2 の title セルが edit mode に切替(textbox が出現)
+    // (a) peek が閉じる(exemption 対象外の通常セル click は「外側クリック」として扱われる)。
+    // isExemptFromOutsideClose のガードを外す/exam-card-side-peek.tsx から
+    // onPointerDownOutside の preventDefault 分岐を消す等の regression でここが変わる。
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '閉じる' })).not.toBeInTheDocument()
+    })
+
+    // (b) card-2 の title セルが edit mode に切替(textbox が出現)— peek を閉じる処理が
+    // セル本来の click-to-edit(InlineTextField startEdit)を握り潰していないことの証明。
     await waitFor(() => {
       expect(within(row2).getByRole('textbox')).toBeInTheDocument()
     })
+  })
+})
+
+describe('T3 UI fix D: grip menu(実 Popover)の余白 click では peek が開いたまま([data-slot="popover-content"] の実配線 pin)', () => {
+  // fix round 1(review 指摘): exam-card-side-peek.test.tsx の exemption test は marker 属性だけを
+  // 持つ合成要素で isExemptFromOutsideClose 自体の logic を pin していたが、実 grip trigger /
+  // 行メニュー項目は自前で stopPropagation する(exam-card-row-menu.tsx:169, :200, :223)ため
+  // radix の interception tracking により outside dispatch 自体が起きず、そちらは marker と無関係
+  // に閉じない。 唯一 marker が効くのは menu の wrapper div(自前 onClick を持たない = 余白相当)
+  // への click のときだけなので、実 ExamCardRowMenu を配線している本 file でそれを pin する。
+  it('grip で menu を開き、項目ボタンではなく menu wrapper(余白相当)を click しても peek は開いたまま', async () => {
+    const db = getClientDb()
+    await db.cards.bulkPut([makeCard(1), makeCard(2)])
+    render(<ControlledExamCardTable examId={EXAM_ID} userId={USER_ID} />)
+    await waitFor(() => expect(screen.getAllByTestId(/^row-card-/)).toHaveLength(2))
+
+    // card-1 の peek を開く
+    await clickOpenCard('row-card-1')
+    await waitFor(() => expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument())
+
+    // card-2 の grip を click して menu を開く(grip trigger 自身の stopPropagation により
+    // この click 単体では outside dispatch が起きないため peek は閉じない — marker とは無関係)。
+    fireEvent.click(rowGrip('row-card-2'))
+    const menu = await screen.findByTestId('exam-card-row-menu')
+
+    // menu の wrapper div(「開く」「ここに取り込む」の項目 button ではなく、それらを包む
+    // div 自体 = 余白相当)を pointerdown → click。 項目 button は自前で stopPropagation する
+    // ためこの wrapper には onClick が無く、click は stopPropagation されず outside dispatch
+    // まで届く。 ここで初めて isExemptFromOutsideClose の [data-slot="popover-content"] marker
+    // が効いて peek が開いたままになる(marker を exempt selector から外す変異で red になる —
+    // 唯一 load-bearing な marker の実配線 pin)。
+    fireEvent.pointerDown(menu, { button: 0 })
+    fireEvent.click(menu)
+
+    // peek は開いたまま。
+    expect(screen.getByRole('button', { name: '閉じる' })).toBeInTheDocument()
   })
 })
 

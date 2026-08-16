@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as React from 'react'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 
 import type { ClientCard, ClientCardTag, ClientTagCategory, ClientTagOption } from '@/lib/client-db'
 import type { ExamCardRow } from './exam-card-table-columns'
@@ -46,6 +46,7 @@ vi.mock('@/lib/media/get-asset', () => ({
 import {
   ExamCardSidePeek,
   computeDraggedPeekWidthVw,
+  isExemptFromOutsideClose,
   PEEK_WIDTH_KEYBOARD_STEP_VW,
 } from './exam-card-side-peek'
 import {
@@ -264,21 +265,56 @@ describe('ExamCardSidePeek ④: Esc keydown で onClose', () => {
 })
 
 // ===========================================================================
-// ⑤ パネル外要素への pointer interaction で onClose が呼ばれない
+// ⑤ UI fix D: パネル外要素への click で onClose が呼ばれる(反転)
+//
+// 旧実装は onInteractOutside 一律 preventDefault で外クリックでは閉じなかった。OT 指示で
+// 反転: 既定は閉じる(例外は下記 UI fix D 節)。
+//
+// radix Dialog は非 modal でも deferPointerDownOutside=true 固定のため、実際の dismiss 判定は
+// pointerdown 単体では走らず後続の click まで遅延する(node_modules 実装を読んで確認 — file 冒頭
+// UI fix D 節参照)。 pointerDown だけでは何も起きない(旧 test の前提は誤りだった — 後続の
+// tick() ヘルパー節で red 検証する)ため、実ブラウザの pointerdown→pointerup→click を模して
+// 両方 fire する。 また radix 側の外側判定リスナーは mount 後 setTimeout(0) で非同期登録される
+// ため、fire 前に 1 tick 待つ。
 // ===========================================================================
 
-describe('ExamCardSidePeek ⑤: 外 pointer interaction で onClose が呼ばれない', () => {
-  it('パネル外要素への pointerDown で onClose が呼ばれない', () => {
+/** radix DismissableLayer の pointerdown listener 登録(setTimeout(0))を待つ。 */
+async function tick() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+describe('ExamCardSidePeek ⑤: パネル外要素への click で onClose が呼ばれる(UI fix D)', () => {
+  it('パネル外要素への pointerDown → click で onClose がちょうど 1 回呼ばれる', async () => {
     const onClose = vi.fn()
     // 外部要素を含む wrapper でレンダリング
-    const { container } = render(
+    render(
       <div>
         <button type="button" data-testid="outside">外部ボタン</button>
         <ExamCardSidePeek {...defaultProps({ onClose })} />
       </div>,
     )
-    const outside = container.querySelector('[data-testid="outside"]')!
-    fireEvent.pointerDown(outside)
+    await tick()
+
+    const outside = screen.getByTestId('outside')
+    fireEvent.pointerDown(outside, { button: 0 })
+    fireEvent.click(outside)
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('pointerDown 単体(click なし)では onClose が呼ばれない(deferPointerDownOutside の遅延を実測 pin)', async () => {
+    const onClose = vi.fn()
+    render(
+      <div>
+        <button type="button" data-testid="outside">外部ボタン</button>
+        <ExamCardSidePeek {...defaultProps({ onClose })} />
+      </div>,
+    )
+    await tick()
+
+    fireEvent.pointerDown(screen.getByTestId('outside'), { button: 0 })
     expect(onClose).not.toHaveBeenCalled()
   })
 })
@@ -741,5 +777,130 @@ describe('ExamCardSidePeek UI fix C fix round 1 (②): StrictMode ドラッグ�
     expect(setStateInRenderErrors).toEqual([])
     // 実際に幅は反映されている(警告回避のために書込自体を握り潰していないことも確認)。
     expect(screen.getByTestId('peek-owner-width').textContent).not.toBe('40')
+  })
+})
+
+// ===========================================================================
+// UI fix D: isExemptFromOutsideClose(pure 関数)— jsdom で直接 unit test
+// ===========================================================================
+
+// fix round 1(review 指摘): 当初はここに [data-slot="popover-trigger"] / [role="dialog"] /
+// [data-testid="pull-into-backdrop"] の各 marker test もあったが、実 grip trigger / 行メニュー
+// 項目 / PullIntoDialog panel・backdrop はいずれも自前で stopPropagation するため radix の
+// interception tracking により onPointerDownOutside の dispatch 自体が起きず、marker 判定に
+// 到達しない(本 file 実装側の doc comment 参照)。 それらの marker を合成要素(stopPropagation
+// なし)で作って true を確認しても production の到達可能性を pin しない誤った test だったため
+// 削除した。 `[data-slot="popover-content"]` だけが load-bearing(grip menu の wrapper div・
+// padding・position-locked 理由テキスト等、自前 onClick を持たない領域の click はここを通る)。
+describe('isExemptFromOutsideClose', () => {
+  it('target が null なら false', () => {
+    expect(isExemptFromOutsideClose(null)).toBe(false)
+  })
+
+  it('target が Element でない(Document 等)なら false', () => {
+    expect(isExemptFromOutsideClose(document)).toBe(false)
+  })
+
+  it('[data-slot="popover-content"] の子孫は true(grip menu 本体)', () => {
+    const wrapper = document.createElement('div')
+    wrapper.setAttribute('data-slot', 'popover-content')
+    const child = document.createElement('button')
+    wrapper.appendChild(child)
+    expect(isExemptFromOutsideClose(child)).toBe(true)
+  })
+
+  it('いずれの marker も持たない要素は false(通常のテーブルセル等)', () => {
+    const cell = document.createElement('button')
+    expect(isExemptFromOutsideClose(cell)).toBe(false)
+  })
+})
+
+// ===========================================================================
+// UI fix D: [data-slot="popover-content"] 内の click(自前 onClick を持たない領域)は
+// onClose を呼ばない(唯一 load-bearing な例外 — 実装側 doc comment 参照)。
+//
+// grip menu(Popover)は ExamCardSidePeek 本体の外(兄弟 row cell から portal される別 DOM
+// 部分木)のため、component 単体 test では実物を mount せず、同じ DOM marker を持つ最小要素で
+// 代替する(⑤ の「外部ボタン」パターンと同型)。 実 Popover 配線での統合 test は
+// exam-card-table.test.tsx 側(実 grip 経由で menu を開き、marker が効いていることを pin)。
+// ===========================================================================
+
+describe('ExamCardSidePeek UI fix D: [data-slot="popover-content"] 内の click は onClose を呼ばない', () => {
+  it('[data-slot="popover-content"] 内の click では onClose が呼ばれない(padding 等・自前 onClick を持たない領域が対象。実 menu 項目 button は自前で stopPropagation するため別経路で除外される — この合成 button は「stopPropagation しない領域」の代替)', async () => {
+    const onClose = vi.fn()
+    render(
+      <div>
+        <div data-slot="popover-content">
+          <button type="button" data-testid="menu-content-area">padding 相当(stopPropagation なし)</button>
+        </div>
+        <ExamCardSidePeek {...defaultProps({ onClose })} />
+      </div>,
+    )
+    await tick()
+
+    const menuContentArea = screen.getByTestId('menu-content-area')
+    fireEvent.pointerDown(menuContentArea, { button: 0 })
+    fireEvent.click(menuContentArea)
+
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// UI fix D: focus outside(Tab 等)では閉じない — onPointerDownOutside とは独立に
+// onFocusOutside は常に preventDefault する。
+// ===========================================================================
+
+describe('ExamCardSidePeek UI fix D: focus outside では閉じない(onFocusOutside 常時 preventDefault)', () => {
+  it('パネル外要素へ focus が移っても onClose は呼ばれない(Tab でテーブルへ移動する想定)', async () => {
+    const onClose = vi.fn()
+    render(
+      <div>
+        <button type="button" data-testid="outside-focus-target">外部フォーカス先</button>
+        <ExamCardSidePeek {...defaultProps({ onClose })} />
+      </div>,
+    )
+    await tick()
+
+    const target = screen.getByTestId('outside-focus-target')
+    act(() => {
+      target.focus()
+    })
+
+    expect(document.activeElement).toBe(target)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// UI fix D: 両立 — 外側クリックで peek が閉じても、そのクリック本来の動作は実行される
+//
+// onPointerDownOutside の preventDefault/非 preventDefault は radix の合成 CustomEvent に対して
+// 行うものであり、元の DOM click イベントや React 側の onClick には触れない(stopPropagation も
+// preventDefault もしていない)ため、外部要素自身の click ハンドラは通常どおり発火する。
+// exam-card-table.test.tsx の T3 ⑨ / T3 ⑦ で実テーブルセル / checkbox の統合 test を持つため、
+// ここでは component 単体でこの契約(peek 側の処理が外部の click を握り潰さない)を pin する。
+// ===========================================================================
+
+describe('ExamCardSidePeek UI fix D: 両立 — 外側クリックで peek が閉じても外部要素自身の click は実行される', () => {
+  it('外部要素の click で peek の onClose と要素自身の onClick が両方発火する', async () => {
+    const onClose = vi.fn()
+    const outsideOnClick = vi.fn()
+    render(
+      <div>
+        <button type="button" data-testid="outside-actionable" onClick={outsideOnClick}>
+          外部アクション
+        </button>
+        <ExamCardSidePeek {...defaultProps({ onClose })} />
+      </div>,
+    )
+    await tick()
+
+    const target = screen.getByTestId('outside-actionable')
+    fireEvent.pointerDown(target, { button: 0 })
+    fireEvent.click(target)
+
+    expect(outsideOnClick).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   })
 })
