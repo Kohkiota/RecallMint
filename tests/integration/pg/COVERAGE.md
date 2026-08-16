@@ -270,3 +270,36 @@ owner(`getFixtureOwnerDb`)で policy を改変 → drift test が fail するこ
 ## 範囲の限界(runbook §12 が補完)
 
 **test:iso は「repo の enable SQL ↔ test DB」の整合のみ検出**。global-setup が毎 run enable SQL を適用した結果を照合するため、SQL 自体の変更ミス・適用漏れは捕まえるが、**stg/prod で operator 手動適用後に誰かが直接 policy をいじる「手動適用 drift」は検出できない**。それは `docs/ops/rls-p2-stg-runbook.md` §12 の operator 用 read-only 監査 SQL(同じ pg_policies / relrowsecurity 照合を実 DB へ)が担う。`app_current_user_id()` 関数本体の drift は `rls-functions.test.ts` が behavioral に担保(Codex#4.5)。
+
+---
+
+# 追随記録: R0(ReviewLog 持続化・2026-08-16)— `review_logs.test.ts` 新設
+
+起点: `docs/superpowers/specs/2026-08-16-r0-review-log-persistence-design.md`(凍結)§11 iso 5 項。ts-fsrs の `ReviewLog` を新表 `review_logs`(migration 0039・PK=`event_id`・FK 2 本 CASCADE・CHECK 3 本・RLS は `db/policies/r0-review-logs-{enable,disable}.sql`)へ永続化する ingest 手順 7.5(`insertReviewLogs`・`markApplied` 直後 / `recomputeStudyDays` 直前・同一 tx)の behavioral 実証。刺激 = `processAnswerEvents`(`withTenantTx`)/ 観測 = owner 接続(`answer-events-serialization.test.ts` と同型)。純関数の fold 規則(`appliedLogs` の eventId 集合一致・skip 除外・連鎖)は unit 側(`lib/reviews/domain/session-aggregate.test.ts` の「foldSession: appliedLogs (R0 Task 2)」describe)が担当済みで重複させない。
+
+## `review-logs.test.ts` の 7 pin
+
+| # | describe | pin する内容 |
+|---|---|---|
+| ① | 適用 1 event の永続化(17 列写像) | 適用 1 event = review_logs ちょうど 1 行(全表 delta も +1)。event_id/user_id/card_id/rating = event 値、state/due/stability/difficulty の before 4 列 = 実際に seed された cards 行(readCard ground truth)、deprecated 2 列 + scheduled_days + learning_steps = production と同じ純関数(`replayCard`)を同一入力で呼んだ出力、review = answer_events.answered_at(clamp 済 ground truth)、after 3 列 = 同呼出しの戻り state、created_at = answer_events.created_at |
+| ② | 冪等 | 同一 payload の再送 2 回目で review_logs 行数不変(23505 も発火しない = 上流 2 段冪等が log 側にもそのまま効く) |
+| ③ | applied=false の 3 経路 | card_not_locked(dangling card)/ unknown_option(A-2 不一致)/ 順序ガード skip(`>=` で厳密に古い event)のいずれも review_logs 0 行 |
+| ④ | 同 card 複数 event の連鎖 | 1 payload・3 event(payload 順は時系列と非一致)→ event ごとに 1 行、row n の state/stability/difficulty after = row n+1 の before(実 DB 往復後も fold の連鎖が保たれる) |
+| ⑤ | schema contract | `pg_constraint`(contype を p/f/c に絞る — PG18 の contype='n' 偽 red 回避)で PK(event_id)+ FK 2 本(event_id→answer_events CASCADE, user_id→users CASCADE)+ CHECK 3 本(rating_range/state_before_range/state_after_range)を定義文まで pin |
+| ⑥ | 失敗注入 rollback | owner 接続で `review_logs` に `CHECK (false) NOT VALID` を一時付与(NOT VALID でも新規 INSERT には効く)→ `processAnswerEvents` が throw → answer_events 0 行・cards 不変・study_days 不変(手順 4〜8 全体の tx 原子性・spec §6 の実証。finally で必ず制約 drop) |
+| ⑦ | 帰属整合の代替保証 | (a) 他 tenant 所有 event_id を含む payload → `insertAnswerEvents` の onConflict で非新規 → failed[] かつ相手の既存 review_logs 行が不変(複製もされない)。(b) 挿入された全 log 行の `user_id` が参照先 `answer_events.user_id` と一致(DB に複合 FK を張らない代替保証) |
+
+## red 検証(2 変異・R0 Task 4)
+
+working tree 上で `lib/reviews/ingest-review-events.ts` を個別に変異 → 確認後に元へ戻す(commit 前に production code 差分ゼロを確認済み)。
+
+| 変異 | 内容 | 結果 |
+|---|---|---|
+| (d) | `insertReviewLogs` 呼出を削除 | ① fail(delta 0 / 行 0)。②④⑦(b) も収集副作用で fail、⑥ は例外が発火しなくなり `rejects.toThrow()` が fail(= ⑥ が実際に review_logs 書込に依存している追加証跡) |
+| (e) | `reviewLogRows` を `appliedLogs` でなく `newRows` 全件(ダミー値)から構築(skip 無視) | ③ の 3 経路(a/b/c)全てが fail(skip されたはずの event にも 1 行生まれる)。① もダミー値との不一致で fail(副次) |
+
+両変異とも変異前は `pnpm test:iso` 全 green、変異後に対象 test が期待どおり fail、復元後に再度 green(`pnpm test:iso` 39 files / 451 tests)を確認。
+
+## RLS
+
+`review_logs` の RLS 有効化・policy 存在は Task 1 の `rls-drift.test.ts`(19 表 / 21 policy の期待カタログに統合済み)が自動被覆するため、本 file では重複 pin しない(spec §11-6 の指定どおり)。
