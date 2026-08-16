@@ -5,7 +5,7 @@
 - plan: `docs/superpowers/plans/2026-08-16-tag-mirror-correctness-sprint.md`
 - 事実基盤: `docs/superpowers/sessions/2026-08-16-tag-mirror-writer-inventory-factfinding.md`(全書込点の棚卸し + Appendix A)
 - 実装方式: `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 canonical review + Codex 独立 review)
-- **status: 実装完了・最終 review 収束済(§7a)。stg smoke は PARTIAL PASS**(§10)— 実施 10 項目は全 PASS、**中核の A→B 切替 4 項目は user B の credential が無く未実施**
+- **status: 実装完了・最終 review 収束済(§7a)。stg smoke = PASS**(§10 / §11 で A→B 切替を完走)
 
 ## 1. commit 一覧(実装のみ・全て `[reviewed]`)
 
@@ -187,7 +187,7 @@ Network(reload 直後):
 ```
 bare key の baseline 比較: `BARE_KEYS_UNCHANGED: true` / `drift: []`
 
-### 10.3 未実施(**blocker**): A→B 切替の中核 4 項目
+### 10.3 (当初の blocker — §11 で解消済)A→B 切替の中核 4 項目
 
 **原因**: 提供された credential が **1 アカウント分のみ**。`komail9server+clerk_test@gmail.com` / password `komail8server` / OTP 424242 は全て **user A** のもので、2 つ目のアカウントが無い。`komail8server+clerk_test@gmail.com` で sign-in を試行したが **"Couldn't find your account."**(存在しない)。Clerk sign-up は Turnstile で自動化不能のため **CC 側でアカウント B を作成できない**。
 
@@ -204,3 +204,52 @@ bare key の baseline 比較: `BARE_KEYS_UNCHANGED: true` / `drift: []`
 
 - user A の `exam_view_prefs:<A>` が `view: "table"` / `hiddenColumns: ["question_label"]` に変わった(手順 1 の操作そのもの)。無害・UI から戻せる。
 - A の scoped cursor を一度削除したため full pull が 1 回走った(1209 cards 再取得)。cursor は再生成済で定常状態に復帰。
+
+
+---
+
+## 11. A→B 切替の実測(2026-08-16 追試・**PASS**)
+
+user B の credential 受領により §10.3 の未実施項目を完走した。
+
+- user B = `komail9server+clerk_test1@gmail.com` → **内部 id `fe24e497-469e-4bfd-81e4-29810d85cadb`**
+- **B は完全に空のアカウント**(cards / exams / tag_categories / tag_options / card_tags すべて 0 件、cursors 全 null)。→ **A のデータが 1 件でも漏れれば即座に可視化される**理想条件。
+- 切替前 baseline: IDB に A のデータ(cards 1209 / tag_categories 4 / tag_options 19 / exams 4 / study_days 2)+ A の scoped key 7 本 + bare legacy key 7 本。
+
+### 11.1 結果(全 PASS)
+
+| # | 確認項目 | 結果 |
+|---|---|---|
+| 1 | **B の初回 pull が since 無し full pull** | `/api/study-days/pull` と `/api/pull` のみ。**`since_*` param ゼロ**(`has_any_since_param: false`)。IDB に A の cursor が全部残っている状態でこれ = **A の cursor を読んでいない**直接証拠 |
+| 2 | **`owner_user_id === B の内部 id`** | 応答 top-level `owner_user_id: "fe24e497-469e-4bfd-81e4-29810d85cadb"` = B。row_owners_in_payload は空(B は 0 件)|
+| 3 | **A の scoped cursor が無傷** | 切替・複数回 pull 後も A の scoped cursor 6 本が baseline と完全一致(`A_SCOPED_CURSORS_UNCHANGED: true` / drift 0)。**B の pull が A の namespace を汚していない** |
+| 4 | **bare legacy key も無傷** | `BARE_CURSORS_UNCHANGED: true` / drift 0 |
+| 5 | **`study_days` の owner 限定置換** | B の pull 後も **A の 2 行(2026-08-15 / 2026-08-16)が生存**。旧実装の `clear()` なら消えていた — **T5 fix の直接実証** |
+| 6 | **UI: A のデータが出ない** | 全画面で A のタグ 20 語・試験名 4 件を全文検索し **leak 0**(下表)|
+
+UI 検査の実測(B の画面):
+
+| 画面 | 表示 | A データの検出 |
+|---|---|---|
+| dashboard `/app` | 「今日の学習問題数 0 / 連続日数 **0 日** / **復習完了!**」(A は「2 日」「1209 件」)| — |
+| タグ管理 `/app/tags` | 「**カテゴリを選択してください**」= カテゴリ 0 件 | `A_TAG_LEAKED: []` |
+| カスタム演習 `/app/study/custom` | 「タグで絞り込み」空 / 「**条件一致 0 件 / 出題 0 件**」| `A_TAG_LEAKED: []` / `A_EXAM_LEAKED: []` |
+| 試験一覧 `/app/exams` | 「**まだ試験がありません。**」/ 詳細リンク 0 本 | `A_EXAM_LEAKED: []` |
+
+**この時点で IDB には A の cards 1209 行・tag_categories 4 行が残存**(`A_rows_survive`)。つまり「残骸は残っているが表示されない」という spec §7 の三層保証が**実機で成立**した。
+
+### 11.2 liveness 再 trigger(B 側)
+
+`visibilitychange`(hidden→visible)で pull 1 本、`online` でさらに 1 本(累計 1→2→3)。B は空アカウントで cursor が全 null のため、3 本とも `since_*` なし。
+
+### 11.3 仕様どおりだが手順文と差異が出た点(記録)
+
+**`cards_cursor:<B>` は作成されない**。B が空アカウントで server 応答の `cursors` が全 `null` のため、`if (cursors.cards)` の既存契約(null = 据え置き)により cursor が書かれない(`B_scoped_keys: []`)。
+
+→ smoke 手順 6 の「`cards_cursor:<A>` と `cards_cursor:<B>` が**併存**」は、**データを持つ B でなければ literal には観測できない**。本追試で確認できたのは「**A の namespace が B の pull に一切触られない**」(#3)であり、分離の主張としてはこちらが本質。手順文は「B がデータを持つ場合は併存、空アカウントなら B 側 key は作られない(null cursor 据え置き)」と補足するのが正確。
+
+### 11.4 総合判定
+
+**PASS**。§10 の 10 項目 + §11 の 6 項目、計 16 項目すべて PASS。未確認事項なし。
+
+§7b の既知 correctness hardening(`study_days` の空 payload で行検証が vacuous)は**本追試では顕在化しない経路**(B 自身の pull が B の 0 件を正しく置換しただけ)であり、hygiene sprint の先頭タスクとして据え置く判断に変更なし。
