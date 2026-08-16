@@ -80,10 +80,10 @@ describe('RLS policy drift-detection (versioned SQL ↔ test DB integrity)', () 
   })
 
   // 期待カタログ自体の内部整合を守る (この file の編集ミスで oracle が壊れるのを防ぐ)。
-  it('expected catalog is internally consistent (18 RLS tables, 20 policies)', () => {
-    expect(EXPECTED_RLS_TABLES).toHaveLength(18)
+  it('expected catalog is internally consistent (19 RLS tables, 21 policies)', () => {
+    expect(EXPECTED_RLS_TABLES).toHaveLength(19)
     expect(EXPECTED_NON_RLS_TABLES).toHaveLength(5)
-    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(20)
+    expect(Object.keys(EXPECTED_POLICIES)).toHaveLength(21)
   })
 
   // 1. relrowsecurity / relforcerowsecurity: RLS 対象 true / 非対象 false /

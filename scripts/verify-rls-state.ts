@@ -64,7 +64,7 @@ export const USERS_LIVE_PRED =
 
 /**
  * 共通形 RLS 表(各表ちょうど 1 policy `<table>_tenant`・FOR ALL・TO recallmint_app・
- * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 7 + Wave2 4 + ②-4a 2。
+ * USING = WITH CHECK = TENANT_PRED)。P2 4 + Wave1 7 + Wave2 4 + ②-4a 2 + R0 Task 1 1。
  */
 export const COMMON_FORM_RLS_TABLES = [
   // P2 共通形 4
@@ -88,6 +88,8 @@ export const COMMON_FORM_RLS_TABLES = [
   // ②-4a Phase A Task 2-3(Task 1 の 1 表は S-5 / migration 0032 で drop 済)
   'upload_operations',
   'asset_derivations',
+  // R0 Task 1 (ReviewLog 持続化): ts-fsrs ReviewLog 永続化表
+  'review_logs',
 ] as const
 
 /** RLS 対象表 = 共通形 + users(per-command 特殊)。 */
@@ -110,7 +112,7 @@ export type PolicyTuple = {
   with_check: string | null
 }
 
-/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 17 + users 3 = 20。 */
+/** 期待 policy カタログ: key = `${tablename}|${policyname}`。共通形 18 + users 3 = 21。 */
 export const EXPECTED_POLICIES: Record<string, PolicyTuple> = {}
 for (const table of COMMON_FORM_RLS_TABLES) {
   EXPECTED_POLICIES[`${table}|${table}_tenant`] = {

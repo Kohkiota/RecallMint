@@ -67,6 +67,14 @@ const RLS_OCR_2_4A_ENABLE_FILE = path.resolve(
   '../../../../db/policies/ocr-2-4a-enable.sql',
 )
 
+// R0 Task 1 (ReviewLog 持続化): 新設 review_logs 表の policy 有効化 SQL。②-4a enable
+// と同機構で ocr-2-4a-enable の直後に owner client で適用する (test:iso は毎 run
+// 本 SQL も RLS on で走る)。
+const RLS_R0_REVIEW_LOGS_ENABLE_FILE = path.resolve(
+  import.meta.dirname,
+  '../../../../db/policies/r0-review-logs-enable.sql',
+)
+
 // DROP/CREATE DATABASE は対象 DB 自身に接続していると不可能なため、 同 host/port/user の
 // maintenance DB (postgres) へ繋ぐ。 host/port は上の assertLocalTestDb で検証済 —
 // db 名のみ postgres へ差し替える (別 host を作らない)。
@@ -122,6 +130,10 @@ export async function setup(): Promise<void> {
     // ②-4a Phase A: Wave 2 enable の直後に新設 tenant 表の policy を有効化 (同 owner client)。
     const rlsOcr24aEnableSql = readFileSync(RLS_OCR_2_4A_ENABLE_FILE, 'utf8')
     await client.unsafe(rlsOcr24aEnableSql).simple()
+
+    // R0 Task 1: ocr-2-4a enable の直後に review_logs の policy を有効化 (同 owner client)。
+    const rlsR0ReviewLogsEnableSql = readFileSync(RLS_R0_REVIEW_LOGS_ENABLE_FILE, 'utf8')
+    await client.unsafe(rlsR0ReviewLogsEnableSql).simple()
   } finally {
     await client.end({ timeout: 5 })
   }

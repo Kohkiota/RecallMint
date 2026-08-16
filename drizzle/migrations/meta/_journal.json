@@ -274,6 +274,13 @@
       "when": 1786715198344,
       "tag": "0038_grid_3_card_move",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1786860733061,
+      "tag": "0039_r0_review_logs",
+      "breakpoints": true
     }
   ]
 }

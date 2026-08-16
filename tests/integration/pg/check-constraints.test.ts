@@ -399,6 +399,15 @@ const PRE_EXISTING_CHECKS = [
   'answer_events_answered_at_le_created_at',
 ]
 
+// R0 Task 1 (ReviewLog 持続化) で migration 0039 が追加した 3 本。本 file はカタログの
+// 集合一致のみ担保する — 個別の legal/illegal probe (schema contract readback) は
+// spec §11 のとおり後続 task の tests/integration/pg/review-logs.test.ts が担う。
+const R0_REVIEW_LOGS_CHECKS = [
+  'review_logs_rating_range',
+  'review_logs_state_before_range',
+  'review_logs_state_after_range',
+]
+
 // pg_get_constraintdef から許容値集合だけを取り出す (描画形式に依存しない)。
 function allowedLiteralsFromDef(def: string): string[] {
   return [...def.matchAll(/'((?:[^']|'')*)'/g)]
@@ -430,12 +439,16 @@ beforeEach(async () => {
 describe('migration 0036/0037 CHECK constraints (28)', () => {
   // 存在確認でなく **集合一致**。片側 (「期待した 32 本が有る」) だけでは spec 外の
   // CHECK が増えても green のままで、file 冒頭の「28 本、かつ 28 本だけ」が嘘になる。
-  it('public schema の CHECK 集合 = 定義済 28 本 + 既存 4 本(過不足なし)', async () => {
+  it('public schema の CHECK 集合 = 定義済 28 本 + 既存 4 本 + review_logs 3 本(過不足なし)', async () => {
     const rows = await getFixtureOwnerDb().execute<{ conname: string }>(
       sql`SELECT conname FROM pg_constraint WHERE contype = 'c' AND connamespace = 'public'::regnamespace`,
     )
     expect(ALL_CASES).toHaveLength(28)
-    const expected = [...ALL_CASES.map((c) => c.constraint), ...PRE_EXISTING_CHECKS].sort()
+    const expected = [
+      ...ALL_CASES.map((c) => c.constraint),
+      ...PRE_EXISTING_CHECKS,
+      ...R0_REVIEW_LOGS_CHECKS,
+    ].sort()
     expect(rows.map((r) => r.conname).sort()).toEqual(expected)
   })
 

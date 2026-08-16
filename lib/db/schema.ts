@@ -1,4 +1,4 @@
-// Drizzle schema — mcq-platform (23 tables; FSRS 整合 Sprint A で reviews / study_sessions を廃止)
+// Drizzle schema — mcq-platform (24 tables; R0 Task 1 で review_logs 追加)
 //
 // FKs use CASCADE for user-owned data hierarchy
 // (Sprint A-2 で plan00 既定の NO ACTION から変更)。
@@ -655,6 +655,66 @@ export const answerEvents = pgTable(
 )
 
 // ---------------------------------------------------------------------------
+// review_logs (R0 ReviewLog 持続化・spec 2026-08-16-r0-review-log-persistence-design §3)
+// ts-fsrs `rate()` が返す ReviewLog を applied event と 1:1 で永続化する L4 分析専用表
+// (True Retention 厳密版・校正曲線・将来のパラメタ最適化の原材料)。answer_events を
+// 置換も拡張もしない別表への追記のみ。消費 UI・分析 endpoint は本 sprint の scope 外。
+//
+// PK = event_id (answer_events.event_id への FK・ON DELETE CASCADE)。冪等キーを
+// answer_events 側の 2 段 (payload dedupe + onConflictDoNothing) にそのまま委譲する
+// ため、書込は ingest 手順 7.5 (lib/reviews/ingest-review-events.ts の markApplied 直後・
+// recomputeStudyDays 直前) からの plain INSERT のみ (onConflict なし)。「同一 event の
+// 再適用」は上流の冪等設計により構造的に不存在なので、23505 の発火は fold 二重適用と
+// いう上流バグの loud な検出であり、静かに握って隠さない (spec §4)。
+//
+// card_id は FK なし (answer_events と同じ dangling 正規 — card 削除後も履歴は残る)。
+// before 5 値 (state/due/stability/difficulty/elapsed_days) + deprecated 2 列
+// (elapsed_days は ReviewLog 由来と別名衝突するため上記に統合済み表記、実列は
+// elapsed_days / last_elapsed_days の 2 本。ts-fsrs v6 で削除予定だが本 sprint は
+// verbatim 保存する — spec §12-3) + scheduled_days / learning_steps + review
+// (= clamp 済 answered_at) + after 3 値 (state/stability/difficulty。導出可能だが同時刻
+// event でチェーンが曖昧化するため保持 — spec §3.3) + created_at (= receivedAt、
+// answer_events.created_at と同一時刻源)。
+//
+// index は PK のみ、追加ゼロ (意図的 — spec §3.2)。user_id index も張らない: 読み手
+// ゼロ / users は soft delete のみで cascade 不発 / answer_events からの cascade は
+// PK lookup。最初の消費者 (Dash-3) の spec で読み取り index を追加する。
+// ---------------------------------------------------------------------------
+export const reviewLogs = pgTable(
+  'review_logs',
+  {
+    eventId: uuid('event_id')
+      .primaryKey()
+      .references(() => answerEvents.eventId, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    cardId: uuid('card_id').notNull(),
+    rating: integer('rating').$type<1 | 2 | 3 | 4>().notNull(),
+    stateBefore: integer('state_before').notNull(),
+    dueBefore: timestamp('due_before', { withTimezone: true }).notNull(),
+    stabilityBefore: doublePrecision('stability_before').notNull(),
+    difficultyBefore: doublePrecision('difficulty_before').notNull(),
+    // @deprecated ts-fsrs v6 で削除予定。verbatim 保存 (spec §12-3)。
+    elapsedDays: integer('elapsed_days').notNull(),
+    // @deprecated ts-fsrs v6 で削除予定。verbatim 保存 (spec §12-3)。
+    lastElapsedDays: integer('last_elapsed_days').notNull(),
+    scheduledDays: integer('scheduled_days').notNull(),
+    learningSteps: integer('learning_steps').notNull(),
+    review: timestamp('review', { withTimezone: true }).notNull(),
+    stateAfter: integer('state_after').notNull(),
+    stabilityAfter: doublePrecision('stability_after').notNull(),
+    difficultyAfter: doublePrecision('difficulty_after').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    check('review_logs_rating_range', sql`${t.rating} BETWEEN 1 AND 4`),
+    check('review_logs_state_before_range', sql`${t.stateBefore} BETWEEN 0 AND 3`),
+    check('review_logs_state_after_range', sql`${t.stateAfter} BETWEEN 0 AND 3`),
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // entity_mutations (旧 card_mutations から汎用化、 S-sync-1)
 // mutation-driven push の汎用 outbox + 冪等化 dedupe ログ。 mutation_id UNIQUE で
 // 再送安全性を担保。 entity_type で対象 entity (card / 将来 tag_category 等) を識別、
@@ -1074,6 +1134,8 @@ export type ContactMessage = typeof contactMessages.$inferSelect
 export type NewContactMessage = typeof contactMessages.$inferInsert
 export type AnswerEvent = typeof answerEvents.$inferSelect
 export type NewAnswerEvent = typeof answerEvents.$inferInsert
+export type ReviewLog = typeof reviewLogs.$inferSelect
+export type NewReviewLog = typeof reviewLogs.$inferInsert
 export type EntityMutation = typeof entityMutations.$inferSelect
 export type NewEntityMutation = typeof entityMutations.$inferInsert
 export type TagCategory = typeof tagCategories.$inferSelect

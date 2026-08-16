@@ -80,6 +80,7 @@
   - ③ applied=false の 3 経路(card_not_locked / unknown_option / `>=` 順序ガード skip)→ log 0 行。
   - ④ 同 card 複数 event 1 payload → event ごと 1 行 + before/after 連鎖(row n の after = row n+1 の before)。
   - ⑤ schema contract readback: PK + FK 2 本(CASCADE 込み)+ CHECK 3 本を pg_constraint(contype p/f/c 絞り — PG18 の contype='n' 偽 red 回避は answer-events-serialization の既存注意書きどおり)で定義文まで pin。
+  - ⑦ **帰属整合の代替保証**(Task 1 で canonical・Codex が独立収束した Important の吸収・SDD Ruling R7。DB の複合 FK は `answer_events` への UNIQUE 追加を要し凍結契約に抵触するため、**test を代替の保証**とする): (a) 他 tenant 所有の `event_id` を含む payload → 当該 event は `insertAnswerEvents` の onConflict で非新規 → failed[] 扱い、かつ **review_logs に行が生まれない**(構造的不可達の pin)。(b) **挿入された全 log 行について `review_logs.user_id` = 参照先 `answer_events.user_id`**(帰属一致の invariant pin)。
   - ⑥ **失敗注入 rollback**(Codex 独立 8/抜け 4 採用): owner 接続で `ALTER TABLE review_logs ADD CONSTRAINT tmp_reject_all CHECK (false) NOT VALID` を一時付与(NOT VALID でも新規 INSERT には効く)→ `processAnswerEvents` が throw → **answer_events 0 行・cards 不変・study_days 不変**(= 手順 4〜8 全体の rollback)を owner readback で assert → 制約 drop(finally)。同一 tx 性の実 PG 実証で、unit の tx-identity pin(Task 3 ③)を補完する。
 - 制約: 純関数の fold 規則は unit 側(Task 2)の担当 — ここでは重複させない(実 PG でしか出ない性質のみ)。fixture の seed 行には依存せず test 内で自前 seed(truncate→reseed の既存 beforeEach 作法)。
 - **red 検証**(個別変異・commit message に記録): (d) ingest の `insertReviewLogs` 呼出を削除 → ① fail (e) rows を appliedLogs でなく `newRows` 全件から構築する変異 → ③ fail。

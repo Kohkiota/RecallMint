@@ -22,6 +22,7 @@ import {
   entityMutations,
   exams,
   integrationFailures,
+  reviewLogs,
   sourceDocuments,
   studyDays,
   tagCategories,
@@ -206,8 +207,9 @@ async function seedTenant(
 
   // --- tier3: tier2 を参照 ---
   await db.insert(cardTags).values({ cardId, optionId: tagOptionId, userId })
+  const answerEventId = randomUUID()
   await db.insert(answerEvents).values({
-    eventId: randomUUID(),
+    eventId: answerEventId,
     sessionId: randomUUID(),
     cardId,
     userId,
@@ -215,6 +217,29 @@ async function seedTenant(
     rating: 3,
     answeredAt: now,
     applied: true,
+    createdAt: now,
+  })
+  // review_logs (R0 Task 1): 親 answer_events 行と rating/card_id/user_id/時刻を一致させる
+  // (親は applied=true の 1 行なので log もちょうど 1 行が自然)。before は
+  // initialFsrsState(now) 相当 (直上 cards insert と同じ初期値)、after は Good 適用後
+  // として合法な値 (state 0→1 遷移・stability/difficulty とも正の値)。
+  await db.insert(reviewLogs).values({
+    eventId: answerEventId,
+    userId,
+    cardId,
+    rating: 3,
+    stateBefore: 0,
+    dueBefore: now,
+    stabilityBefore: 0,
+    difficultyBefore: 0,
+    elapsedDays: 0,
+    lastElapsedDays: 0,
+    scheduledDays: 0,
+    learningSteps: 0,
+    review: now,
+    stateAfter: 1,
+    stabilityAfter: 2.5,
+    difficultyAfter: 5.8,
     createdAt: now,
   })
   await db.insert(cardAssetRefs).values({
