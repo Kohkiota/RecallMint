@@ -29,7 +29,7 @@ beforeEach(() => {
 })
 
 describe('pullBack', () => {
-  it('(1) 両 helper を呼ぶ + userId / reason を runGuardedPull に伝播', async () => {
+  it('(1) 両 helper を呼ぶ + userId / reason を runGuardedPull に伝播、 userId を pullAllStudyDays にも伝播', async () => {
     pullBack('user-a', 'flush')
     // fire-and-forget のため microtask を 1 tick 進める
     await Promise.resolve()
@@ -37,6 +37,7 @@ describe('pullBack', () => {
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
     expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: 'user-a', reason: 'flush' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
+    expect(mockPullAllStudyDays).toHaveBeenCalledWith('user-a')
   })
 
   it('(2) 両 helper が reject しても pullBack は同期 throw せず、 両者を独立に呼ぶ', async () => {

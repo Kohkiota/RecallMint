@@ -49,7 +49,7 @@ export function PullTrigger({ userId }: { userId: string }): null {
         // network error は次トリガで再試行
       })
       // study_days は増分化せず旧 endpoint で並走 (別 helper・別 tx)
-      void pullAllStudyDays().catch(() => {
+      void pullAllStudyDays(userId).catch(() => {
         // silent: 次トリガで再試行
       })
     }

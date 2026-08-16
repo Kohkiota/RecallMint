@@ -12,16 +12,20 @@
 //   online) で自然回復させる。
 // - in-flight guard / Web Locks は runGuardedPull 側が担うため、 pullBack を複数箇所から
 //   呼んでも cards/exams の二重 pull にはならない。 **pullAllStudyDays は guard の外**で、
-//   複数箇所から呼べば並走しうる (冪等な full snapshot 置換なので許容している)。
+//   複数箇所から呼べば並走しうる (owner 限定の delete+bulkPut 置換なので許容している。
+//   同一 owner 内での鮮度退行 (古い応答が後着し新しい snapshot を上書き) は既存挙動として
+//   受容 — spec §6)。
 //
-// userId (S-local-2 Task 4 / spec §5.2):
+// userId (S-local-2 Task 4/5 / spec §5.2 / §6):
 // - 呼出元が保有する内部 userId をそのまま渡す。 pullDelta は開始時にこれを capture し
 //   cursor の read/write 両方に使う (「現在の user」 を完了時に参照しない)。
+// - pullAllStudyDays も同じ userId を受け取り、 delete/bulkPut を自 owner 分に限定する
+//   (cursor を持たない full snapshot のため capture 原則そのものは適用対象外)。
 
 import { runGuardedPull } from '@/lib/sync/pull'
 import { pullAllStudyDays } from '@/lib/sync/study-days'
 
 export function pullBack(userId: string, reason: string): void {
   void runGuardedPull({ userId, reason }).catch(() => {})
-  void pullAllStudyDays().catch(() => {})
+  void pullAllStudyDays(userId).catch(() => {})
 }

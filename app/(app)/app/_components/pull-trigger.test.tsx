@@ -59,12 +59,13 @@ afterEach(() => {
 })
 
 describe('PullTrigger', () => {
-  it('(a) mount で runGuardedPull({ reason: "mount" }) / pullAllStudyDays が各 1 回呼ばれる', async () => {
+  it('(a) mount で runGuardedPull({ reason: "mount" }) / pullAllStudyDays(userId) が各 1 回呼ばれる', async () => {
     render(<PullTrigger userId={USER_A} />)
     await Promise.resolve()
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(1)
     expect(mockRunGuardedPull).toHaveBeenCalledWith({ userId: USER_A, reason: 'mount' })
     expect(mockPullAllStudyDays).toHaveBeenCalledTimes(1)
+    expect(mockPullAllStudyDays).toHaveBeenCalledWith(USER_A)
   })
 
   it('(b) visibilitychange (visible) で runGuardedPull + pullAllStudyDays が追加 kick される', async () => {
@@ -158,6 +159,8 @@ describe('PullTrigger', () => {
 
     expect(mockRunGuardedPull).toHaveBeenCalledTimes(2)
     expect(mockRunGuardedPull).toHaveBeenLastCalledWith({ userId: USER_B, reason: 'mount' })
+    expect(mockPullAllStudyDays).toHaveBeenCalledTimes(2)
+    expect(mockPullAllStudyDays).toHaveBeenLastCalledWith(USER_B)
   })
 
   it('(a-3) 同じ userId で rerender しても再 kick されない (deps が userId 変化にのみ反応)', async () => {
