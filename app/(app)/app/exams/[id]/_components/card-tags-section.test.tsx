@@ -758,7 +758,10 @@ describe('handleRenameCategory', () => {
       updated_at: '2026-01-01T00:00:00.000Z',
     }
     mockTagCategoriesGet.mockResolvedValueOnce(before)
-    mockTagCategoriesToArray.mockResolvedValueOnce([before, existing])
+    // owner-scope guard (tag-mirror-correctness sprint T1 #3): 同名衝突 check は
+    // db.tag_categories.where('user_id').equals(userId).toArray() 経由になったため
+    // where チェーンで返す (旧: 全店 toArray() 直呼び)。
+    tagCategoriesWhereImpl = () => makeWhereChain([before, existing])
 
     await expect(handleRenameCategory('user-1', 'cat-1', '既存名')).rejects.toThrow('同名のカテゴリが既にあります')
 

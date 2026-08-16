@@ -48,10 +48,12 @@ export async function handleRenameCategory(
 ): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_categories.get(categoryId)
-  if (!before) return
+  // 共有ブラウザで前 user の行が描画されて渡された場合は silent no-op (owner-scope guard、
+  // tag-mirror-correctness sprint T1 #4)。
+  if (!before || before.user_id !== userId) return
   if (before.name === newName) return // no-op
-  // 同名衝突 check (自分自身を除外した全 category を検索)
-  const all = await db.tag_categories.toArray()
+  // 同名衝突 check (自分自身を除外した全 category を検索、 owner-scope で read: #3)
+  const all = await db.tag_categories.where('user_id').equals(userId).toArray()
   if (all.some((c) => c.id !== categoryId && c.name === newName)) {
     throw new Error('同名のカテゴリが既にあります')
   }
@@ -85,7 +87,8 @@ export async function handleSetCategoryColor(
 ): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_categories.get(categoryId)
-  if (!before) return
+  // owner-scope guard (tag-mirror-correctness sprint T1 #4)
+  if (!before || before.user_id !== userId) return
   // before.color ?? null で undefined → null 正規化 (空文字 / undefined に化けない比較)
   const beforeColor = before.color ?? null
   if (beforeColor === color) return // no-op
@@ -119,9 +122,11 @@ export async function handleRenameOption(
 ): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_options.get(optionId)
-  if (!before) return
+  // owner-scope guard (tag-mirror-correctness sprint T1 #4)
+  if (!before || before.user_id !== userId) return
   if (before.name === newName) return // no-op
-  // 同 category 内で同名衝突 check (自分自身を除外)
+  // 同 category 内で同名衝突 check (自分自身を除外、 category_id keyed read は除外裁定 §3.3 のため
+  // owner-scope化しない — before.user_id === userId 確定済のため同 category 内は同一 owner)
   const sameCat = await db.tag_options.where('category_id').equals(before.category_id).toArray()
   if (sameCat.some((o) => o.id !== optionId && o.name === newName)) {
     throw new Error('同名の option が既にあります')
@@ -156,7 +161,8 @@ export async function handleSetOptionColor(
 ): Promise<void> {
   const db = getClientDb()
   const before = await db.tag_options.get(optionId)
-  if (!before) return
+  // owner-scope guard (tag-mirror-correctness sprint T1 #4)
+  if (!before || before.user_id !== userId) return
   // before.color ?? null で undefined → null 正規化 (空文字 / undefined に化けない比較)
   const beforeColor = before.color ?? null
   if (beforeColor === color) return // no-op

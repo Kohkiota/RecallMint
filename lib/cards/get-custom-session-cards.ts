@@ -56,9 +56,11 @@ export async function selectCustomSessionRows(
   // Step 1: Dexie 読み込み (due gate なし — 全 exam 横断)
   const allCards = await db.cards.where('user_id').equals(c.userId).toArray()
 
+  // 共有ブラウザで前 user の tag mirror 行が残っていても現 user の選定に混ざらないよう
+  // owner-scope で読む (tag-mirror-correctness sprint T1 #1-2)。
   const [categories, options] = await Promise.all([
-    db.tag_categories.toArray(),
-    db.tag_options.toArray(),
+    db.tag_categories.where('user_id').equals(c.userId).toArray(),
+    db.tag_options.where('user_id').equals(c.userId).toArray(),
   ])
 
   // card_tags は対象 card_id 集合に絞る (T-B5 と同方針: 他 exam の card_tags を無駄読みしない)

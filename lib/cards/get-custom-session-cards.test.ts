@@ -138,6 +138,35 @@ describe('getCustomSessionCards', () => {
     expect(out[0]?.id).toBe('mine')
   })
 
+  // tag-mirror-correctness sprint T1 pin①: 共有ブラウザに前 user (user-2) の tag_categories /
+  // tag_options 行が残っていても、 user-1 の selectCustomSessionRows 結果に混ざらないことを pin。
+  // card-A の card_tags は user-2 の option を指す行を含む (共有ブラウザで前 user の option が
+  // 一時的に選択肢に描画され得た、 という sprint 前提のシナリオ) — owner-scope で options を
+  // 読めば joinCardTags が option 不在として skip し、 tags に現れない。
+  it('tenant isolation (tags): user-2 の category / option / tag が selectCustomSessionRows の結果に現れない', async () => {
+    const db = getClientDb()
+    await db.tag_categories.bulkPut([
+      { id: 'cat-1', user_id: 'user-1', name: 'Mine', select_type: 'single', created_at: '', updated_at: '' },
+      { id: 'cat-2', user_id: 'user-2', name: 'Theirs', select_type: 'single', created_at: '', updated_at: '' },
+    ])
+    await db.tag_options.bulkPut([
+      { id: 'opt-1', user_id: 'user-1', category_id: 'cat-1', name: 'A', created_at: '', updated_at: '' },
+      { id: 'opt-2', user_id: 'user-2', category_id: 'cat-2', name: 'B', created_at: '', updated_at: '' },
+    ])
+    await db.cards.bulkPut([fakeClient({ id: 'card-A', user_id: 'user-1' })])
+    await db.card_tags.bulkPut([
+      { card_id: 'card-A', option_id: 'opt-1', user_id: 'user-1', created_at: '' },
+      { card_id: 'card-A', option_id: 'opt-2', user_id: 'user-1', created_at: '' },
+    ])
+
+    const rows = await selectCustomSessionRows(baseCriteria({ userId: 'user-1' }))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tags).toHaveLength(1)
+    expect(rows[0]!.tags[0]!.option.id).toBe('opt-1')
+    expect(rows[0]!.tags.some((t) => t.option.id === 'opt-2')).toBe(false)
+    expect(rows[0]!.tags.some((t) => t.category.id === 'cat-2')).toBe(false)
+  })
+
   // ---------------------------------------------------------------------------
   // 述語 AND 絞り込み
   // ---------------------------------------------------------------------------
