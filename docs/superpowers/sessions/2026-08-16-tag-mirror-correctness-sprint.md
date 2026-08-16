@@ -138,3 +138,69 @@ docs commit(`5e58420` / `dc60fb0` / `8d55818` / `877fa8b` / `fee7535`)は各 tas
 | 4 | T3 Critical の修正は **`key={userId}`**(reviewer 提示の選択肢 1)を採用 | state と ref を**列挙せず構造的に**全リセットできる。選択肢 2(手動リセット)は「リセット対象の列挙」に依存し、r1〜r3 で繰り返し破綻した完全性主張と同型 | アカウント切替時に in-flight な UI state が破棄されるが、切替時はそれが望ましい |
 | 5 | Codex T4 の P1 を **park** | OT が plan 段階で明示裁定した liveness 受容事項と範囲が完全一致。Codex の対策案は Path C 転換時に撤回した bootstrap + queued lock 機構そのもの。correctness は毀損しない(旧 pull は owner echo で reject) | 切替直後に mirror が空に見える窓が残るが、次 trigger で回復し smoke で実測 |
 | 6 | 最終 review の **I-1 は fix / M-b・M-e は同 dispatch で同梱 / M-a は OT 裁定へ / M-c・M-d は記録のみ** | I-1 は sprint 中心的主張の未固定で最優先。M-a は spec 凍結事項ゆえ独断で patch しない。M-c・M-d は §3.3 裁定下で挙動が正しく scope 拡大に見合わない | M-a を放置した場合、異 session の空応答で自 owner の study_days が消える窓が残る(再 pull で回復) |
+
+---
+
+## 10. stg smoke 実施結果(2026-08-16・**PARTIAL PASS / 中核未実施**)
+
+- 環境: `https://stg.recallmint.nekotest.net`(deploy 反映済)/ Playwright MCP
+- user A = `komail9server+clerk_test@gmail.com` → **内部 id `66fb6d00-526f-4264-9691-e2e036c656f7`**(cards 1209 / exams 4 / tag_categories 4 / tag_options 19 / study_days 2)
+- **総合判定: 実施できた 10 項目は全て PASS。ただし中核の A→B 切替は credential 不足で未実施**(§10.3)。
+
+### 10.1 PASS した項目(実測値付き)
+
+| # | 確認項目 | 結果 |
+|---|---|---|
+| 1 | namespace key の生成 | テーブル表示に切替(user 操作)→ `exam_view_prefs:66fb6d00-…` が **新規作成**(`{"version":4,"view":"table",…}`)。同時に bare `exam_view_prefs` は **`{"version":3,"view":"card",…}` のまま不変** |
+| 2 | bare legacy key と scoped key の併存 | cursor 6 本すべてで併存を確認(`cards_cursor` と `cards_cursor:66fb6d00-…` 等)|
+| 3 | **legacy key が `since_*` に使われない** | scoped cursor 6 本のみ削除(bare は残置)→ reload → **`GET /api/pull`(query string なし)** = full pull。bare `cards_cursor` は `2026-08-16T12:19:12.611Z` を保持していたのに **since_\* は 1 本も送られていない** |
+| 4 | **legacy key が書き換えられない** | 上記 full pull 後に bare 7 key を baseline と byte 比較 → **drift 0**(`BARE_KEYS_UNCHANGED: true`)|
+| 5 | scoped cursor の再生成 | full pull 後に scoped cursor が **6/6 再生成** |
+| 6 | **`owner_user_id` echo** | `/api/pull` 応答 top-level に `owner_user_id` が存在し、値は **`66fb6d00-…` = 認証主体の内部 id と一致**。top-level keys = `[owner_user_id, cards, exams, tombstones, tag_categories, tag_options, card_tags, cursors]` |
+| 7 | scoped 値からの増分 pull | 再生成後の pull は `?since_cards=2026-08-16T12%3A19%3A12.611Z&…` の 6 本を送る(= scoped 値が read 元)|
+| 8 | **liveness 再 trigger** | `visibilitychange`(hidden→visible)で pull 1 本、`online` でさらに 1 本発火(累計 2→3→4)。OT 裁定で受容した gap の回復経路が実挙動で成立 |
+| 9 | sign-out 後の残骸 | sign-out 直後も cards 1209 / tag_categories 4 / cursor 全 key が残存 = **purge 不在の仕様どおり**(hygiene sprint 範囲)|
+| 10 | `/api/study-days/pull` の owner echo 不在 | 応答 top-level keys = `["studyDays"]` のみで **`owner_user_id` を持たない** → §7b の既知 correctness hardening 項目を実測で裏付け |
+
+**#3 が本 smoke で最も強い証拠**: bare legacy key が存在する状態で scoped だけを消すと `since_*` がゼロになる。もし legacy が read 元なら since が乗るはずで、乗らなかった以上 **read 元は scoped のみ**と結論できる。
+
+### 10.2 実測の生出力(抜粋)
+
+full pull 直前の IDB(scoped cursor 削除後・bare 残置):
+```
+remaining_keys: [card_tags_cursor, cards_cursor, exam_view_prefs,
+                 exam_view_prefs:66fb6d00-…, exams_cursor,
+                 tag_categories_cursor, tag_options_cursor, tombstone_cursor]
+```
+Network(reload 直後):
+```
+30. [GET] /api/study-days/pull => [200]
+31. [GET] /api/pull            => [200]     ← query string なし = full pull
+```
+再 trigger 後の URL 履歴:
+```
+/api/pull
+/api/pull
+/api/pull?since_cards=2026-08-16T12%3A19%3A12.611Z&since_exams=…&since_tombstone=…
+          &since_tag_categories=…&since_tag_options=…&since_card_tags=…
+/api/pull?since_… (同上)
+```
+bare key の baseline 比較: `BARE_KEYS_UNCHANGED: true` / `drift: []`
+
+### 10.3 未実施(**blocker**): A→B 切替の中核 4 項目
+
+**原因**: 提供された credential が **1 アカウント分のみ**。`komail9server+clerk_test@gmail.com` / password `komail8server` / OTP 424242 は全て **user A** のもので、2 つ目のアカウントが無い。`komail8server+clerk_test@gmail.com` で sign-in を試行したが **"Couldn't find your account."**(存在しない)。Clerk sign-up は Turnstile で自動化不能のため **CC 側でアカウント B を作成できない**。
+
+未実施項目:
+
+1. B の初回 pull の **`owner_user_id === B の内部 id`**(A については実測済 = #6)
+2. `cards_cursor:<A>` と `cards_cursor:<B>` の**併存**
+3. `study_days` に **A/B 両方の行が共存**
+4. **A のデータが B の UI のどこにも出ない**(タグ管理 / カスタム演習の絞込候補 / 試験表のタグ列 / dashboard)← **本 sprint の中心的主張**
+
+なお 1〜3 の機構は §10.1 #1〜#7 で「namespace が owner ごとに分離し、他 owner の key を読まない」ことまで実証できている。**残る未検証は「実際に別 owner が sign-in したときの end-to-end の表示分離」**で、これは unit pin(`lib/sync/pull.test.ts` / 各 component の owner-scope pin)では green だが実機では未確認。
+
+### 10.4 smoke で生じた副作用(記録)
+
+- user A の `exam_view_prefs:<A>` が `view: "table"` / `hiddenColumns: ["question_label"]` に変わった(手順 1 の操作そのもの)。無害・UI から戻せる。
+- A の scoped cursor を一度削除したため full pull が 1 回走った(1209 cards 再取得)。cursor は再生成済で定常状態に復帰。
