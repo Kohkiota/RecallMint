@@ -34,11 +34,11 @@ afterAll(async () => {
 })
 
 describe('user_id table three-way completeness', () => {
-  it('Drizzle schema introspect === expected 19', () => {
+  it('Drizzle schema introspect === expected 20', () => {
     expect(sorted(userIdTablesFromSchema())).toEqual(EXPECTED_SORTED)
   })
 
-  it('live PG catalog === expected 19', async () => {
+  it('live PG catalog === expected 20', async () => {
     const catalog = await userIdTablesFromCatalog(getDb())
     expect(sorted(catalog)).toEqual(EXPECTED_SORTED)
   })

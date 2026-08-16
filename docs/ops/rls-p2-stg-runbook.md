@@ -417,7 +417,7 @@ drift test の hardcoded 期待値と同一。qual/with_check は PostgreSQL が
 | users | `users_insert` | `{recallmint_app}` | INSERT | PERMISSIVE | (空) | `USERS_ID_PRED` |
 | users | `users_update` | `{recallmint_app}` | UPDATE | PERMISSIVE | `USERS_LIVE_PRED` | `USERS_ID_PRED` |
 
-※ 共通形 17 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `upload_operations` / `asset_derivations`(②-4a・§13)。各表ちょうど 1 policy。正本は `scripts/verify-rls-state.ts` の `COMMON_FORM_RLS_TABLES`(本表はその写し — 食い違ったら script 側が正)。**2026-08-11「FSRS 整合 Sprint A」で `reviews`(Wave1)/ `study_sessions`(Wave2)が表ごと DROP され 19 → 17 表**(RLS 対象 = 17 + users = 18 表 / policy = 17 + users 3 = 20 件)。**prod は本 sprint の migration 未適用**のため、prod へ本 script を向けると当面この 2 表が「カタログ外の表が RLS on」として finding に出るのが正常。
+※ 共通形 18 表 = `exams` / `cards` / `tombstones` / `study_days`(P2)+ `answer_events` / `tag_categories` / `tag_options` / `card_tags` / `entity_mutations` / `card_asset_refs` / `ai_usage_users`(Wave1)+ `user_settings` / `assets` / `source_documents` / `upload_records`(Wave2)+ `upload_operations` / `asset_derivations`(②-4a・§13)+ `review_logs`(R0・§14)。各表ちょうど 1 policy。正本は `scripts/verify-rls-state.ts` の `COMMON_FORM_RLS_TABLES`(本表はその写し — 食い違ったら script 側が正)。**2026-08-11「FSRS 整合 Sprint A」で `reviews`(Wave1)/ `study_sessions`(Wave2)が表ごと DROP され 19 → 17 表、2026-08-16「R0(ReviewLog 持続化)」で `review_logs` が新設され 17 → 18 表**(RLS 対象 = 18 + users = 19 表 / policy = 18 + users 3 = 21 件)。**prod は本 sprint の migration 未適用**のため、prod へ本 script を向けると当面この 2 表(`reviews`/`study_sessions`)が「カタログ外の表が RLS on」として finding に出て、かつ `review_logs` が「期待表なのに RLS off」として finding に出るのが正常。
 
 **users に DELETE policy が無いこと**(FOR ALL も FOR DELETE も不在 = app-role の users hard delete を構造的 deny)を (B) の users 行が 3 件(select/insert/update)ちょうどであることで確認する。**非対象 5 表**(`ai_usage` / `stripe_events` / `clerk_events` / `contact_messages` / `integration_failures`)は (B) に 1 行も出ないこと(policy ゼロ)+ (A) で relrowsecurity=false。
 
@@ -566,6 +566,27 @@ policy 一覧(§2 の 3 つ目の表)は tenant 20 表が各 1 policy(`<table>_t
 
 **この実行で分かった付随事実**: prod に `source_assets` は存在しない(= migration 0032 適用済み)。**inconclusive 0** ゆえ、0 行を「合格」に流した表は無い。
 
+## 14. R0 追記(review_logs・2026-08-16)
+
+R0(ReviewLog 持続化)の新設 tenant 表を **P2 / Wave1 / Wave2 / ②-4a と同一の共通形 policy** で RLS 化する。適用機構は §1.3 Step 3 と同一(Supabase SQL Editor・owner・冪等 `DROP POLICY IF EXISTS` 付)。
+
+- **対象表**: `review_logs`(1 表。ts-fsrs の ReviewLog を event 単位で永続化する新設 tenant 表)。
+- **前提 migration**: `drizzle/migrations/0039_r0_review_logs.sql`(適用済であること)。
+- **enable SQL**: `db/policies/r0-review-logs-enable.sql`(`ALTER TABLE review_logs ENABLE ROW LEVEL SECURITY` + `review_logs_tenant` policy 1 本・FOR ALL・USING=WITH CHECK=共通形 `TENANT_PRED`)。
+- **disable SQL**: `db/policies/r0-review-logs-disable.sql`(`DISABLE ROW LEVEL SECURITY` のみ・policy 定義は残置。§3.1 と同型の即時 rollback)。
+
+### 14.1 適用順序(§13.1 の恒久規律の適用インスタンス)
+
+§13.1 が定める「新しい tenant 表を追加する migration を適用したら、その同じ作業の中で対応する policy SQL を当てる(分けない)」を本表にも適用する。**適用順 = ① 0039 migrate → ② `r0-review-logs-enable.sql` policy enable → ③ code deploy**、を同一メンテ窓で連続実行し無防備窓を作らない。逆順(policy 未適用のまま code だけ先に deploy する等)にすると、§13.1 に記録された 2026-08-04 の事故(migrate 直後は「表あり / RLS off / policy なし / grant はフル」= `ALTER DEFAULT PRIVILEGES` により migrate しただけで grant はフルで付く)と同型の窓が `review_logs` にも開く。
+
+### 14.2 実効検証(§13.2 と同型・必須)
+
+**SQL Editor(owner)での readback は検証にならない**(§13.2 と同じ理由 — owner 接続は RLS を素通しするため、RLS が無効でも「見える」= false-green になる)。**実効検証は必ず app role(`recallmint_app`)接続で行い、その生出力を session doc / ledger に貼るまで「合格」と記録しない。** 検証手段は §13.2 と同一コマンド(`scripts/verify-rls-state.ts`)— `review_logs` が decisive 側(no-context probe で `P0RLS` を raise)に入ることを含めた生出力を証跡として残す。
+
+### 14.3 適用後の期待カタログ値
+
+§12.2 の更新後の値と一致する: **共通形 18 表 / RLS 対象(users 込み)19 表 / policy 21 件**(`review_logs` は共通形 18 表のうちの 1 つ・対応 policy は `review_logs|review_logs_tenant` の 1 件)。
+
 ## 関連 doc
 
 - Wave 1 factfinding / wave 定義: `docs/audit/2026-07-21-rls-phase3-step0-tx-boundary-factfinding.md`(§5.3 / 追補 / 追補2)
@@ -574,6 +595,7 @@ policy 一覧(§2 の 3 つ目の表)は tenant 20 表が各 1 policy(`<table>_t
 - plan: `docs/superpowers/plans/2026-07-20-rls-p2-representative-closure.md`
 - Perf-0b(before 数値): `docs/audit/2026-07-18-rls-performance-before-factfinding.md`
 - RLS-P1(app role 分離・env 分離の前提): `docs/superpowers/sessions/2026-07-18-rls-p1-app-role-separation-implementation.md`
+- R0(ReviewLog 持続化・§14)policy 正本: `db/policies/r0-review-logs-enable.sql` / `db/policies/r0-review-logs-disable.sql`。migration: `drizzle/migrations/0039_r0_review_logs.sql`。spec: `docs/superpowers/specs/2026-08-16-r0-review-log-persistence-design.md`
 - PERF-SEED 再投入手順: `docs/audit/2026-07-16-seed-perf-exam-reseed-procedure.md`
 - test:iso カバレッジ対応表: `tests/integration/pg/COVERAGE.md`
 - policy 正本: `db/policies/rls-p2-enable.sql` / `db/policies/rls-p2-disable.sql`
