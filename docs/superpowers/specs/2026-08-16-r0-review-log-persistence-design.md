@@ -1,6 +1,7 @@
 # R0: ReviewLog 持続化 design spec
 
-- 日付: 2026-08-16 / 状態: **凍結**(2026-08-16 OT 裁定 — §12 の 4 論点すべて確定。以後実装フェーズで書き換えない)
+- 日付: 2026-08-16 / 状態: **凍結(r2)**(2026-08-16 OT 裁定 — §12 の 4 論点 + r2 訂正 1 点、計 5 点確定。以後実装フェーズで書き換えない)
+- **r2 訂正(2026-08-16・同日)**: R0 最終 review で **Critical** 検出 — `due_before` に ReviewLog の `due` field を verbatim 保存すると、2 回目以降の全 review で「適用前 due」ではなく「前回 review 時刻」が保存される(ts-fsrs `buildLog()` の実装起因、詳細は §3.1 訂正箇所 + §12-5)。§3.1 の `due_before` 行と総括文、§12 に裁定を追記して訂正する。他 field への影響なし。
 - 前提 fact-finding: `docs/superpowers/sessions/2026-08-16-dashboard-track-factfinding.md` §11(生成点・挿入点の現物確認。本 spec はこれを正とする)
 - kickoff 確定決定 8 項(claude.ai 2026-08-16)を全て引き継ぐ。逸脱は §12 論点に明示。
 
@@ -27,7 +28,7 @@ ts-fsrs が answer 適用時に生成する `ReviewLog` を server 新テーブ�
 | `card_id` | uuid | NOT NULL, **FK なし** | — | answer_events と同じ dangling 正規(card 削除後も履歴は残る) |
 | `rating` | integer | NOT NULL, CHECK 1..4 | `rating` | grade 経路では Manual=0 は構造的に不可 |
 | `state_before` | integer | NOT NULL, CHECK 0..3 | `state` | 適用前 state |
-| `due_before` | timestamptz | NOT NULL | `due` | 適用前 due(True Retention の「期限到来していたか」判定) |
+| `due_before` | timestamptz | NOT NULL | fold `dueBefore`(**`due` ではない — r2 訂正**) | 適用前 due(True Retention の「期限到来していたか」判定)。出所 = fold 適用前の `card.due` スナップショット(`replayCard()` 直前の `current.due` を退避)。ReviewLog の `due` field は使わない(理由は表下の r2 注記) |
 | `stability_before` | double precision | NOT NULL | `stability` | |
 | `difficulty_before` | double precision | NOT NULL | `difficulty` | |
 | `elapsed_days` | integer | NOT NULL | `elapsed_days` | ts-fsrs v6 で削除予定(@deprecated)。本 sprint は verbatim 保存(NOT NULL)。v6 移行時の扱い(算出継続 / 列 deprecate)はその移行 spec で再裁定(§12-3) |
@@ -40,7 +41,9 @@ ts-fsrs が answer 適用時に生成する `ReviewLog` を server 新テーブ�
 | `difficulty_after` | double precision | NOT NULL | —(同 `.card.difficulty`) | |
 | `created_at` | timestamptz | NOT NULL | — | = `receivedAt`(answer_events.created_at と同一時刻源、app 層明示 set。DB now() 不使用も同方針) |
 
-ReviewLog 10 field を verbatim + 適用後 3 値 + 帰属 3 列 + created_at。session_id / is_correct / elapsed_ms / applied は**持たない**(event_id JOIN で answer_events から取れる値を二重化しない。card_id のみ「card 削除後も JOIN なしで per-card 系列を引ける」ため例外的に持つ — kickoff 指定列)。
+ReviewLog **9** field(`due` を除く)を verbatim + `due_before`(fold 由来・ReviewLog 非経由)+ 適用後 3 値 + 帰属 3 列 + created_at。session_id / is_correct / elapsed_ms / applied は**持たない**(event_id JOIN で answer_events から取れる値を二重化しない。card_id のみ「card 削除後も JOIN なしで per-card 系列を引ける」ため例外的に持つ — kickoff 指定列)。
+
+**r2 注記(`due_before` の出所訂正)**: ts-fsrs の `buildLog()`(`node_modules/ts-fsrs/dist/index.cjs`)は `due` field に `last_review || due` を返す実装になっている。したがって 2 回目以降の全 review(`last_review` が non-null)では ReviewLog.due は「適用前 due」ではなく「前回 review 時刻」になり、当初案(ReviewLog.due を verbatim 保存)は誤りだった。とりわけ learning / relearning 行では `scheduled_days = 0` により日単位の復元も不能で、完全に情報が失われる。一方、前回 review 時刻は保持済みの answer event / review 時系列から導出可能な値である。したがって R0 が優先して保存すべき「復元不能な情報」は ReviewLog.due ではなく**適用前 `card.due`** であり、これを fold 側(`replayCard()` 呼出直前の `current.due`)から直接退避して `due_before` に保存する。verbatim 原則は他の field(rating / state / stability / difficulty / elapsed_days / last_elapsed_days / scheduled_days / learning_steps / review の 9 field)では維持する。
 
 ### 3.2 CHECK / index / 命名
 
@@ -128,6 +131,7 @@ log INSERT の対象は `appliedEventIds`(⊆ 当該 tx で**新規 INSERT** さ
 2. **after 3 列の保持**(§3.3)— **裁定: 保持**。導出可能性はあるが同時刻 event で曖昧化するため。
 3. **deprecated 2 列(elapsed_days / last_elapsed_days)** — **裁定: 両列とも verbatim 保存(NOT NULL)**。「今日記録しないものは永久欠損」の premise 優先・int 2 列のコストは無視できる。**ts-fsrs v6 移行時の扱い(算出継続 / 列 deprecate)はその移行 spec で再裁定する**(本 spec は将来の裁定を先取りしない)。
 4. **event_id FK(→ answer_events)** — **裁定: 採用**。scrub が Group II 自動化(§8)・参照整合が DB 保証。代替(FK なし・Group I)は handler + invariant test 更新が増えるだけで利点がない。
+5. **`due_before` の保存元(r2・review 実施後の Critical fix)** — **裁定: (A) fold が保持する適用前 `card.due` を保存する**(ReviewLog の `due` field は使わない)。根拠 = ts-fsrs `buildLog()` が `due` に `last_review || due` を返す(dist 実装確認済)ため、2 回目以降の review では ReviewLog.due が「適用前 due」ではなく「前回 review 時刻」になり、learning / relearning 行(`scheduled_days = 0`)では日単位の復元すら不能になることが実証された。一方、前回 review 時刻は保持済みの answer event / review 時系列から導出可能である。したがって R0 が優先して保存すべき「復元不能な情報」は適用前 `card.due` であり、これを fold 側で保持して verbatim 原則の例外として直接保存する。他 field の verbatim 原則は維持。
 
 ## 13. 完了条件(sprint として)
 

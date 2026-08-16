@@ -331,3 +331,71 @@ describe('foldSession: appliedLogs (R0 Task 2)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// foldSession — dueBefore (R0 r2 Critical fix: log.due は「適用前 due」ではなく
+// 「前回 review 時刻」を返す — ts-fsrs buildLog() の `due: last_review || due`
+// 実装起因。dueBefore は fold が退避する真の「適用前 due」で、log.due とは別物
+// であることを pin する。spec 2026-08-16-r0-review-log-persistence-design.md §3.1
+// r2 訂正 / §12-5)。
+// ---------------------------------------------------------------------------
+
+describe('foldSession: dueBefore (R0 r2 Critical fix)', () => {
+  // due と lastReview を意図的に別値にする (両者が同値だと以下の pin が空振りする —
+  // pin ②③ が「たまたま一致」で偽陽性 pass しないためのシナリオ設計)。
+  const CARD_DUE = new Date('2026-05-20T00:00:00.000Z')
+  const CARD_LAST_REVIEW = new Date('2026-05-15T00:00:00.000Z')
+
+  it('① 前提ガード: シナリオの due と lastReview が異なる (退化していないこと)', () => {
+    expect(CARD_DUE.getTime()).not.toBe(CARD_LAST_REVIEW.getTime())
+  })
+
+  it('② ts-fsrs 自体の挙動 pin: log.due は due でなく lastReview を返す (last_review||due)', () => {
+    const plan = planFold([makeEvent({ eventId: 'e1' })], LOCKED, OPTION_INDEX)
+    const states = new Map([
+      [
+        CARD_A,
+        makeCardState({
+          due: CARD_DUE,
+          lastReview: CARD_LAST_REVIEW,
+          state: 2,
+          stability: 5,
+          difficulty: 5,
+          reps: 2,
+          scheduledDays: 5,
+          elapsedDays: 5,
+        }),
+      ],
+    ])
+
+    const { appliedLogs } = foldSession(states, plan)
+
+    expect(appliedLogs).toHaveLength(1)
+    expect(appliedLogs[0]!.log.due.getTime()).toBe(CARD_LAST_REVIEW.getTime())
+  })
+
+  it('④ dueBefore は log.due と異なり、真の適用前 due (fold が退避した card.due) と一致する', () => {
+    const plan = planFold([makeEvent({ eventId: 'e1' })], LOCKED, OPTION_INDEX)
+    const states = new Map([
+      [
+        CARD_A,
+        makeCardState({
+          due: CARD_DUE,
+          lastReview: CARD_LAST_REVIEW,
+          state: 2,
+          stability: 5,
+          difficulty: 5,
+          reps: 2,
+          scheduledDays: 5,
+          elapsedDays: 5,
+        }),
+      ],
+    ])
+
+    const { appliedLogs } = foldSession(states, plan)
+
+    expect(appliedLogs).toHaveLength(1)
+    expect(appliedLogs[0]!.dueBefore.getTime()).toBe(CARD_DUE.getTime())
+    expect(appliedLogs[0]!.dueBefore.getTime()).not.toBe(appliedLogs[0]!.log.due.getTime())
+  })
+})

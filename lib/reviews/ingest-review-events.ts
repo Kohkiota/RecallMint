@@ -179,7 +179,10 @@ export async function processAnswerEvents(
       cardId: entry.cardId,
       rating: entry.log.rating as RatingInt,
       stateBefore: entry.log.state as 0 | 1 | 2 | 3,
-      dueBefore: entry.log.due,
+      // log.due は使わない — ts-fsrs buildLog() は last_review||due を返すため
+      // 2 回目以降の review では「前回 review 時刻」になる (spec r2 §3.1)。
+      // dueBefore は fold が保持する適用前 due スナップショット。
+      dueBefore: entry.dueBefore,
       stabilityBefore: entry.log.stability,
       difficultyBefore: entry.log.difficulty,
       elapsedDays: entry.log.elapsed_days,

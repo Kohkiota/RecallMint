@@ -232,15 +232,26 @@ describe('① 適用 1 event の永続化 (17 列写像)', () => {
     const expectedLog = logs[0]!
 
     // before 4 値 = seed した cards 値。state/stability/difficulty は card の値を
-    // verbatim コピーするため initial と直接比較する。due だけは ts-fsrs の
-    // buildLog() 実装が `last_review || due` を返す仕様(last_review 設定時は
-    // last_review を優先する)ため、initial.due でなく expectedLog.due と比較する
-    // (lastReview が null だった旧シナリオでは due = card.due に一致していたため
-    // この差異が隠れていた)。
+    // verbatim コピーするため initial と直接比較する。due_before も同様に**適用前の
+    // 真の card.due**(initial.due)と比較する — R0 r2 Critical fix。ts-fsrs の
+    // buildLog() 実装は ReviewLog.due に `last_review || due` を返すため
+    // (last_review 設定時は last_review を優先する)、expectedLog.due は「適用前
+    // due」ではなく「前回 review 時刻」になる。旧版はこの expectedLog.due と比較
+    // していたため、due_before に前回 review 時刻が誤って保存される defect を
+    // 隠していた(spec r2 §3.1)。dueBefore は fold(session-aggregate.ts)が
+    // replayCard() 呼出直前に退避する card.due であり、initial.due と一致する。
     expect(row.stateBefore).toBe(initial.state)
-    expect(row.dueBefore.getTime()).toBe(expectedLog.due.getTime())
+    expect(row.dueBefore.getTime()).toBe(initial.due.getTime())
     expect(row.stabilityBefore).toBe(initial.stability)
     expect(row.difficultyBefore).toBe(initial.difficulty)
+
+    // pin ③④ (R0 r2): 永続化された due_before は「適用前の真の card.due」であり、
+    // ReviewLog.due (= 前回 review 時刻) とは一致しない。このシナリオは
+    // SEEDED_LAST_REVIEW ≠ SEEDED_DUE で構成しているため両者は必ず異なる
+    // (退化していれば以下の 2 assertion がともに空振りする)。
+    expect(initial.due.getTime()).not.toBe(SEEDED_LAST_REVIEW.getTime())
+    expect(expectedLog.due.getTime()).toBe(SEEDED_LAST_REVIEW.getTime())
+    expect(row.dueBefore.getTime()).not.toBe(expectedLog.due.getTime())
 
     // deprecated 2 列 + scheduled_days + learning_steps = rate() 出力。
     expect(row.elapsedDays).toBe(expectedLog.elapsed_days)
@@ -501,5 +512,76 @@ describe('⑦ 帰属整合の代替保証', () => {
     for (const log of logRows) {
       expect(log.userId).toBe(eventUserById.get(log.eventId))
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ⑧ learning/relearning かつ scheduled_days=0 の最悪ケース (R0 r2 Critical fix pin)
+//
+// この状態は「due_before が日単位ですら復元不能」な最悪ケース: scheduled_days
+// (= review_logs.scheduled_days の適用前値) 自体が 0 のため、万一 due_before を
+// 誤って保存しても scheduled_days から逆算での事後補正すら効かない。ここで
+// due_before が真の適用前 card.due (= 分単位の学習ステップ due) と一致すること、
+// かつ ReviewLog.due (= 前回 review 時刻) とは異なることを実 DB 永続化後の値で
+// 直接 pin する (spec r2 §3.1 / §12-5)。
+// ---------------------------------------------------------------------------
+
+const LEARNING_LAST_REVIEW = new Date('2026-08-01T00:00:00.000Z')
+const LEARNING_DUE = new Date('2026-08-01T00:10:00.000Z') // lastReview + 10分 (学習ステップ due)
+const LEARNING_ANSWERED_AT = new Date('2026-08-01T00:15:00.000Z') // due 到来後
+
+describe('⑧ learning/relearning かつ scheduled_days=0 の最悪ケース', () => {
+  it('due_before は分単位の学習ステップ due と一致し、ReviewLog.due (前回 review 時刻) とは異なる', async () => {
+    await getFixtureOwnerDb()
+      .update(cards)
+      .set({
+        state: 1, // Learning
+        due: LEARNING_DUE,
+        stability: 2.5,
+        difficulty: 5,
+        elapsedDays: 0,
+        scheduledDays: 0, // 最悪ケース: 適用前 scheduled_days が 0
+        learningSteps: 1,
+        reps: 1,
+        lapses: 0,
+        lastReview: LEARNING_LAST_REVIEW,
+        answered: true,
+        lastCorrect: true,
+        currentStreak: 1,
+      })
+      .where(eq(cards.id, fixture.a.cardId))
+
+    const beforeCard = await readCard(fixture.a.cardId)
+    const initial = toReplayState(beforeCard)
+    // 前提ガード (非退化): due と lastReview が異なること。
+    expect(initial.due.getTime()).not.toBe(initial.lastReview!.getTime())
+    expect(initial.state).toBe(1)
+    expect(initial.scheduledDays).toBe(0)
+
+    const ev = makeEvent(fixture.a.cardId, LEARNING_ANSWERED_AT, { rating: 3, is_correct: true })
+    const res = await processAnswerEvents(userA, [ev], RECEIVED_AT)
+    expect(res.failed).toEqual([])
+
+    const row = (await readReviewLog(ev.event_id))!
+    expect(row).not.toBeNull()
+
+    // production と同じ純関数を同じ入力で呼んだ ground truth。
+    const { logs } = replayCard(initial, [
+      { rating: 3, isCorrect: true, answeredAt: LEARNING_ANSWERED_AT },
+    ])
+    const expectedLog = logs[0]!
+
+    // scheduled_days column 自体が 0 (verbatim = 適用前値) — 逆算による事後補正が
+    // 効かない最悪ケースであることの確認。
+    expect(row.scheduledDays).toBe(0)
+    expect(expectedLog.scheduled_days).toBe(0)
+
+    // pin ③⑤: due_before は真の適用前 due (分単位の学習ステップ due) と一致する。
+    expect(row.dueBefore.getTime()).toBe(initial.due.getTime())
+    expect(row.dueBefore.getTime()).toBe(LEARNING_DUE.getTime())
+
+    // pin ④: ReviewLog.due (= 前回 review 時刻) とは異なる。
+    expect(expectedLog.due.getTime()).toBe(LEARNING_LAST_REVIEW.getTime())
+    expect(row.dueBefore.getTime()).not.toBe(expectedLog.due.getTime())
   })
 })

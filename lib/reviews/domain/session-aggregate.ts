@@ -112,10 +112,17 @@ export function planFold(
 // 適用直後の card state から抜いた 3 値 (spec §3.3 — 同時刻 event の導出曖昧性回避
 // のため log 自体からは after を導出せず fold 側で持つ)。
 // **Task 2 時点では消費者が存在しない過渡的な戻り値** (書込は Task 3)。
+//
+// dueBefore は log.due と**別**に持つ (spec r2 §3.1)。ts-fsrs の buildLog() は
+// `due: last_review || due` を返すため、2 回目以降の review (last_review が
+// non-null) では log.due は「適用前 due」ではなく「前回 review 時刻」になる
+// (dist/index.cjs 実装確認済)。fold 適用前の `current.due` を replayCard() 呼出
+// 直前に退避したものが dueBefore — こちらが真の「適用前 due」。
 export type AppliedReviewLog = {
   eventId: string
   cardId: string
   log: FsrsReviewLog
+  dueBefore: Date
   after: { state: 0 | 1 | 2 | 3; stability: number; difficulty: number }
 }
 
@@ -157,6 +164,8 @@ export function foldSession(
       ) {
         continue
       }
+      // replayCard() 呼出前の due を退避 (log.due は使えない — 型コメント参照)。
+      const dueBefore = current.due
       const result = replayCard(current, [
         { rating: ev.rating, isCorrect: ev.isCorrect, answeredAt: ev.answeredAt },
       ])
@@ -166,6 +175,7 @@ export function foldSession(
         eventId: ev.eventId,
         cardId,
         log: result.logs[0],
+        dueBefore,
         after: {
           state: current.state,
           stability: current.stability,
