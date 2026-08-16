@@ -238,3 +238,68 @@ working tree は本 doc 作成分を除き無変更(`git status --porcelain=v2` 
 ablation 計測(§2.2〜2.3)の結果に基づく follow-up 候補。**全文をそのまま claude.ai todo へ起票する**(CC は直接登録不可 — controller が chat で OT に渡す):
 
 > R0 の ReviewLog 書込は 1000 event flush(payload 上限)で +75.5ms のコストが実測された(典型の 5 件 flush では ≈ +0.4ms)。要因は未切り分けで、仮説は (i) event_id FK による 1000 回の FK 検査 (ii) 17 列 × 1000 行の bind parameter overhead。オフライン長期蓄積の解消時のみ効く最悪ケースであり R0 では受容したが、大量 flush が常態化する兆候が出た場合、または Dash-3 で書込量が増える場合に、FK 維持のまま COPY / 分割 INSERT に切り替えるか、FK 自体を再裁定するかを検討する。
+
+## 11. Critical fix(due_before)と stg 旧行の扱い(2026-08-16 追記)
+
+### 11.1 何が起きたか
+
+最終 whole-branch review が Critical を検出: **`review_logs.due_before` に「適用前 due」でなく「前回 review 時刻(`last_review`)」が保存されていた**。
+
+原因は ts-fsrs 5.4.1 の `buildLog`(`node_modules/ts-fsrs/dist/index.cjs:414-428`):
+
+```js
+buildLog(rating) {
+  const { last_review, due, elapsed_days } = this.last;
+  return { rating, state: this.current.state,
+    due: last_review || due,        // ← last_review があればそれを返す
+    ... };
+}
+```
+
+`this.last` は入力 card のクローンなので、**2 回目以降の全 review で `log.due` は `last_review`** になる。production は `dueBefore: entry.log.due` と verbatim コピーしていた。
+
+production の `replayCard` 経由での実測(learning state):
+
+```
+入力 card.due (真の適用前 due) : 2026-08-01T00:10:00.000Z
+入力 card.last_review          : 2026-08-01T00:00:00.000Z
+log.due (= due_before に保存)  : 2026-08-01T00:00:00.000Z
+log.scheduled_days             : 0   ← learning ゆえ日単位の近似復元も不能
+```
+
+**検出が遅れた経緯**(教訓): Task 4 の fix round で iso ① を非退化シナリオへ変えた際、`row.dueBefore` を `initial.due` と比較する assertion が実際に fail した。そこで **production の写像ではなく test 側の期待を `expectedLog.due` に緩めて green にした**(§7.2 に fail 出力が残っている)。当時の scoped re-reviewer は「test と production の内部整合」を検証して正当と判定しており、**列名・spec が宣言した意味との一致は誰も見ていなかった**。whole-branch pass が初めて拾った。
+
+### 11.2 修正(commit `37b76fa`・OT 裁定 (A) 案)
+
+fold が保持する適用前 `card.due` を保存する。`replayCard()` 呼出**直前**の `current.due` を `AppliedReviewLog.dueBefore` として退避し、ingest の写像で使う。**DB 変更ゼロ**(列定義・migration・型は不変)。spec は r2 として §3.1 と §12 を訂正。
+
+### 11.3 stg 旧行の記録(残置・L4 消費時は除外対象)
+
+fix 前の stg に書かれた行は**残置**する(削除しない)。L4 分析で消費する際に除外する。
+
+| 項目 | 値 | 出所 |
+|---|---|---|
+| 環境 | stg(`aws-1-ap-northeast-1.pooler.supabase.com` / DB `postgres`) | — |
+| `review_logs` INSERT 累計 / 現存行数 | **3 / 3** | `pg_stat_user_tables`(RLS 非適用の統計 view・2026-08-16 実測) |
+| `answer_events` INSERT 累計 / 現存行数 | 15 / 6 | 同上 |
+| 意味 | `due_before` は**適用前 due ではなく前回 review 時刻のエコー**(旧仕様) | §11.1 |
+| 対象 | fix(`37b76fa`)の deploy より前に書かれた全行 | — |
+
+**機械除外の述語**(event_id を列挙しなくても成立する形):
+
+```sql
+-- 旧仕様行 = fix deploy 時刻より前に作られた行。<FIX_DEPLOY_AT> は
+-- 37b76fa を含む deploy の完了時刻(UTC)を入れる。
+SELECT * FROM review_logs WHERE created_at < '<FIX_DEPLOY_AT>'::timestamptz;
+```
+
+`created_at` は server 受信時刻(`receivedAt`)なので、deploy 時刻との比較で新旧が決定的に分かれる。**この述語だけで除外が成立するため、event_id の列挙は必須ではない**。
+
+**未取得の識別子(OT 実行待ち)**: 3 行の `event_id` と `review` の時刻範囲は CC からは読めない — `review_logs` は RLS 配下で、tenant context に要る `users.id` が repo に無いため(記載があるのは `+clerk_testclock` = `bb68971d-…` のみで、その context では 0 行 = 3 行は別ユーザー所有)。`DATABASE_URL_ADMIN` も規約どおり `.env.local` 未設定。必要なら owner 接続で以下を実行して本節に追記する:
+
+```sql
+SELECT event_id, user_id, state_before, scheduled_days, due_before, review, created_at
+FROM review_logs ORDER BY review;
+```
+
+この出力は **Critical の stg 実データ実証**にも使える(`state_before ∈ {1,3}` かつ `scheduled_days = 0` の行で `due_before` が前回 review 時刻に一致していることの確認)。
