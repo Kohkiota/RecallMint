@@ -336,3 +336,20 @@ deploy = `origin/develop` `5efd454`(fix `37b76fa` 込み)。Playwright で stg �
 **console: 0 errors**。`answer_events.applied = true`(5 件とも)。
 
 **判定: PASS** — learning 行 2 件で `due_before` が「適用前 `card.due`」であることを実データで確認。fix(`37b76fa`)は stg で実効。
+
+### 11.5 prod 反映完了(2026-08-16)
+
+`main` を `2f1a51e` へ promote(`origin/main` 到達を確認)。適用順は spec §7 / runbook §14.1 どおり **migrate(0039)→ policies enable → code deploy** で、prod の表・policy は promote 前に適用済み。
+
+**prod readback(OT 実測 — CC は prod への接続手段を持たないため OT 実行分を正記録とする)**:
+
+| 項目 | 値 |
+|---|---|
+| `review_logs` 行数 | **27 行** |
+| fix の実証 | learning 行の `due_before` が **初回 review + 60s** と一致 = 適用前 `card.due` が保存されている(旧仕様なら `last_review` = 初回 review 時刻そのものになる)|
+
+これで stg(§11.4)と prod の両方で、`due_before` が「適用前 `card.due`」であることを実データで確認できた。R0 の蓄積は正しい意味で開始されている。
+
+**経緯(記録として残す)**: **main promote の前に claude.ai がクローズを誤宣言し、OT の `git log` 実測で発覚した**(実際には promote 未実施だった)。promote 後に prod 実データで再確認して本節の記録に至った。
+
+これは **教訓 28**(claude.ai 側の通し番号。repo の `docs/superpowers/lessons/` は日付-slug 形式で通し番号を持たないため、参照解決用に内容を併記する)の適用例 — **「完了」の宣言は、宣言そのものではなく実測(`git log` / DB readback)で裏を取るまで確定としない**。本 sprint では同じ型の事象が他にも 2 件起きている: ① Task 1 が `pnpm test` 未実行のまま red を同梱して `[reviewed]` 着地(§7.1)② Task 4 の iso ① が退化シナリオで検出力ゼロのまま「全 17 列 pin」と主張(§7.2)。いずれも**宣言と実測の乖離**で、実測に当たった時点で初めて発覚している。
