@@ -273,33 +273,66 @@ log.scheduled_days             : 0   ← learning ゆえ日単位の近似復元
 
 fold が保持する適用前 `card.due` を保存する。`replayCard()` 呼出**直前**の `current.due` を `AppliedReviewLog.dueBefore` として退避し、ingest の写像で使う。**DB 変更ゼロ**(列定義・migration・型は不変)。spec は r2 として §3.1 と §12 を訂正。
 
-### 11.3 stg 旧行の記録(残置・L4 消費時は除外対象)
+### 11.3 stg 旧行の記録(2026-08-16 re-smoke で確定)
 
 fix 前の stg に書かれた行は**残置**する(削除しない)。L4 分析で消費する際に除外する。
 
-| 項目 | 値 | 出所 |
-|---|---|---|
-| 環境 | stg(`aws-1-ap-northeast-1.pooler.supabase.com` / DB `postgres`) | — |
-| `review_logs` INSERT 累計 / 現存行数 | **3 / 3** | `pg_stat_user_tables`(RLS 非適用の統計 view・2026-08-16 実測) |
-| `answer_events` INSERT 累計 / 現存行数 | 15 / 6 | 同上 |
-| 意味 | `due_before` は**適用前 due ではなく前回 review 時刻のエコー**(旧仕様) | §11.1 |
-| 対象 | fix(`37b76fa`)の deploy より前に書かれた全行 | — |
+**確定値**(re-smoke 時に tenant context 付きで readback。§11.4 参照):
 
-**機械除外の述語**(event_id を列挙しなくても成立する形):
+| 項目 | 値 |
+|---|---|
+| 環境 | stg(`aws-1-ap-northeast-1.pooler.supabase.com` / DB `postgres`)|
+| 所有 user | `66fb6d00-526f-4264-9691-e2e036c656f7` |
+| **旧行数** | **5 行**(当初 3 行と記録したが、その後 OT が追加 smoke を実施して 5 行になった)|
+| `created_at`(= server 受信時刻)| `2026-08-16T09:28:39.216Z`(3 行)/ `2026-08-16T12:15:48.058Z`(2 行)|
+| `review` の時刻範囲 | `2026-08-16T09:28:24.552Z` 〜 `2026-08-16T12:15:38.232Z` |
+| 意味 | `due_before` は**適用前 due ではなく前回 review 時刻のエコー**(旧仕様)|
 
-```sql
--- 旧仕様行 = fix deploy 時刻より前に作られた行。<FIX_DEPLOY_AT> は
--- 37b76fa を含む deploy の完了時刻(UTC)を入れる。
-SELECT * FROM review_logs WHERE created_at < '<FIX_DEPLOY_AT>'::timestamptz;
+**旧行の `event_id`(5 件)**:
+
+```
+6a78a544-1b42-470b-a2a5-47dd11c4c8a0   review 2026-08-16T09:28:24.552Z
+2f2d9cb7-9cf7-4442-ae69-b30b9d69f027   review 2026-08-16T09:28:27.782Z
+6b07ae8c-eb8d-4e9d-a0ca-c114207fbfd6   review 2026-08-16T09:28:30.316Z
+868da653-08e4-4aff-b3b5-f923bca3a428   review 2026-08-16T12:15:33.338Z
+036d4539-73cf-4e22-83fe-bc6ab43260dd   review 2026-08-16T12:15:38.232Z
 ```
 
-`created_at` は server 受信時刻(`receivedAt`)なので、deploy 時刻との比較で新旧が決定的に分かれる。**この述語だけで除外が成立するため、event_id の列挙は必須ではない**。
-
-**未取得の識別子(OT 実行待ち)**: 3 行の `event_id` と `review` の時刻範囲は CC からは読めない — `review_logs` は RLS 配下で、tenant context に要る `users.id` が repo に無いため(記載があるのは `+clerk_testclock` = `bb68971d-…` のみで、その context では 0 行 = 3 行は別ユーザー所有)。`DATABASE_URL_ADMIN` も規約どおり `.env.local` 未設定。必要なら owner 接続で以下を実行して本節に追記する:
+**機械除外の述語(実測で分離を検証済み)**:
 
 ```sql
-SELECT event_id, user_id, state_before, scheduled_days, due_before, review, created_at
-FROM review_logs ORDER BY review;
+-- 旧仕様行(5 行)。新仕様行(created_at = 2026-08-16T12:19:12.603Z 以降)と
+-- created_at に 3.4 分の gap があり、境界はこの間の任意の時刻でよい。
+SELECT * FROM review_logs WHERE created_at < '2026-08-16T12:17:00Z'::timestamptz;
 ```
 
-この出力は **Critical の stg 実データ実証**にも使える(`state_before ∈ {1,3}` かつ `scheduled_days = 0` の行で `due_before` が前回 review 時刻に一致していることの確認)。
+実行結果: **旧 5 / 新 5 / 合計 10** — 述語が新旧を正しく分離することを実データで確認済み。
+
+**旧行に残る bug の実例**(stg 実データによる Critical の実証): `036d4539-…` は `state_before = 1`(learning)/ `scheduled_days = 0` で `due_before = 2026-08-14T23:47:55.610Z`。この環境の learning card は一貫して `due = last_review + 60s` の形を取る(§11.4 の回答前スナップショット参照)ため、真の適用前 due は `23:48:55.610Z` であり、**保存値は 60 秒前 = `last_review` そのもの**。日単位復元も `scheduled_days = 0` ゆえ効かない。
+
+### 11.4 re-smoke(fix 後・2026-08-16)= **PASS**
+
+deploy = `origin/develop` `5efd454`(fix `37b76fa` 込み)。Playwright で stg にログインし、スマート復習で 5 枚回答 → flush 閾値(5 件)到達 → server readback。
+
+**判別設計**: この環境の learning card は `due = last_review + 60,000ms` の形を取るため、`due_before` が `due` と `last_review` のどちらに一致するかで**新旧コードが決定的に判別できる**。回答前に server DB からスナップショットを取得してから回答した。
+
+**回答前スナップショット(server DB・`2026-08-16T12:18:49Z`)**
+
+| card | state | sched | `due`(真の適用前 due)| `last_review` | 乖離 |
+|---|---|---|---|---|---|
+| 第2問 `54849478-…` | 1 | 0 | `2026-08-14T23:48:03.598Z` | `2026-08-14T23:47:03.598Z` | 60,000ms |
+| 第3問 `a93de547-…` | 1 | 0 | `2026-08-14T23:48:04.703Z` | `2026-08-14T23:47:04.703Z` | 60,000ms |
+
+**結果(新規 5 行・`created_at = 2026-08-16T12:19:12.603Z`)**
+
+| # | card | state | sched | `due_before` | 判定 |
+|---|---|---|---|---|---|
+| 1 | 第2問 `54849478-…` | **1 → 1** | **0** | `2026-08-14T23:48:03.598Z` | **回答前 `due` と完全一致**(`last_review` とは 60,000ms 乖離)✅ |
+| 2 | 第3問 `a93de547-…` | **1 → 1** | **0** | `2026-08-14T23:48:04.703Z` | **回答前 `due` と完全一致** ✅ |
+| 3-5 | New 3 枚 | 0 → 1 | 0 | `2026-08-14T23:59:59.838Z` | `last_review` が NULL のため新旧同値(判別不能だが整合)|
+
+**17 列の検証(行 1)**: `event_id` / `user_id` / `card_id` は `answer_events` と一致。`rating=3`(通常モードで正解 → 3)/ `state_before=1` / `due_before` / `stability_before=0.212` / `difficulty_before=6.4133` / `scheduled_days=0` / `learning_steps=0` / `last_elapsed_days=0` はすべて**回答前スナップショットと一致**。`elapsed_days=2`(08-14 → 08-16)。`review = 12:19:00.512Z = answer_events.answered_at`。`created_at = 12:19:12.603Z`(5 行すべて同値 = batch 受信時刻で `review` とは別物)。after 3 値(`state_after=1` / `stability_after=2.4329485` / `difficulty_after=6.40211507`)は **`cards` の現在値と完全一致**。
+
+**console: 0 errors**。`answer_events.applied = true`(5 件とも)。
+
+**判定: PASS** — learning 行 2 件で `due_before` が「適用前 `card.due`」であることを実データで確認。fix(`37b76fa`)は stg で実効。
