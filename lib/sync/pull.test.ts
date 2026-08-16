@@ -6,7 +6,7 @@
 // + S-local-2 Task 4 (spec §5): cursor namespace (6 stream 全数) / userId capture /
 //   空 userId fail-closed / owner echo 4 観点。
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   getClientDb,
   type ClientCard,
@@ -1002,5 +1002,58 @@ describe('runGuardedPull', () => {
     const outcome3 = await runGuardedPull({ userId: USER_A, pull, locks: locks2 })
     expect(outcome3).toBe('ran')
     expect(pull).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// runGuardedPull → pullDelta の userId 受け渡し (pin ⑥・spec §5.1 capture 原則)
+// ---------------------------------------------------------------------------
+
+// 上の runGuardedPull 4 本は全て deps.pull を注入するため、 default 分岐
+// (`deps.pull ?? (() => pullDelta(deps.userId))`) が一度も実行されない。 そこは
+// pullDelta の唯一の production caller (11 箇所の runGuardedPull が全て通る) であり、
+// 誤った userId を渡す退行は typecheck (arity と string 性しか見ない) でも既存 test でも
+// 検出できない。 deps.pull を注入せず defaultClient (global fetch) 経由で走らせ、
+// cursor の read / write が共に deps.userId の namespace で起きることを固定する。
+describe('runGuardedPull — pullDelta への userId 受け渡し (pin ⑥)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('deps.pull 未注入時、 cursor は deps.userId (B) の namespace で read / write される', async () => {
+    const db = getClientDb()
+    const seedA = '2026-05-01T00:00:00.000Z'
+    const nextB = '2026-08-16T00:00:00.000Z'
+    // A の cursor だけ seed。 B の pull がこれを read/write に使ったら退行。
+    await db.sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, USER_A),
+      value: seedA,
+    })
+
+    let calledPath = ''
+    const fetchMock = vi.fn(async (input: string) => {
+      calledPath = input
+      const { body } = emptyResponse({
+        owner_user_id: USER_B,
+        cursors: { cards: nextB },
+      })
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const outcome = await runGuardedPull({ userId: USER_B, locks: fakeLocks(true) })
+
+    expect(outcome).toBe('ran')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // read: B の namespace に cursor は無い → since_* を 1 本も乗せない素の path。
+    // (A を capture していたら since_cards が乗る)
+    expect(calledPath).toBe('/api/pull')
+    // write: B の namespace にのみ着地し、 A の値は不変。
+    // (誤った userId を capture すると owner echo 不一致で FAIL → nextB が書かれない)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_B)).toBe(nextB)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBe(seedA)
   })
 })

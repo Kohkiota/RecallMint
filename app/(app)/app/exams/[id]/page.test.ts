@@ -32,6 +32,8 @@ describe('page.tsx: ExamDetailView に key={userId} を渡す (S-local-2 Task 3 
     // namespace に漏れないよう、instance を丸ごと作り直す key={userId} が必須 (canonical review 指摘)。
     // <ExamDetailView> の JSX ブロックのみを切り出して assert する (ファイル全体 grep だと他箇所の
     // "key={userId}" 文字列に誤って一致する可能性を排除するため)。
+    // この pin は source-text マッチであり key に渡る「値」までは検証できない (変数名 rename だけで
+    // false-fail しうる)。 remount 機構そのものの検証は exam-detail-view.test.tsx の Case ③-c が担う。
     const start = pageSource.indexOf('<ExamDetailView')
     expect(start, '<ExamDetailView の JSX が見つからない').toBeGreaterThan(-1)
     const end = pageSource.indexOf('/>', start)

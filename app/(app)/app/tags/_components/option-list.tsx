@@ -6,8 +6,8 @@
 //   - useLiveQuery で `db.tag_options.where('category_id').equals(activeCategoryId)
 //     .toArray()` → created_at ASC sort (tag_options index は category_id /
 //     updated_at のみ、 created_at は in-memory sort)
-//   - useLiveQuery で `db.tag_categories.toArray()` (OptionRow のカテゴリ変更
-//     dropdown 用に伝播)
+//   - useLiveQuery で `db.tag_categories.where('user_id').equals(userId).toArray()`
+//     (owner-scope 読み。 OptionRow のカテゴリ変更 dropdown 用に伝播)
 //   - OptionCreateForm + 各 OptionRow を render
 //   - 削除フロー: OptionRow から onDelete callback を受けて 確認なし即削除
 //     (Tag-4c-2c hotfix H2 / popover Tag-4c-1-fix A-3 確定仕様「option 削除 = 確認なし

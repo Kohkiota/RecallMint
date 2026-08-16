@@ -1,7 +1,8 @@
 'use client'
 
 // tag manager 左 column の orchestrator。
-// - useLiveQuery で db.tag_categories.toArray() → created_at ASC で sort
+// - useLiveQuery で `db.tag_categories.where('user_id').equals(userId).toArray()`
+//   (owner-scope 読み) → created_at ASC で sort
 //   (tag_categories index は `updated_at` のみ、 created_at は in-memory sort)
 // - CategoryCreateForm + 各 CategoryRow を render
 // - 削除フロー: CategoryRow から onDelete callback を受けて 影響範囲 count (配下
