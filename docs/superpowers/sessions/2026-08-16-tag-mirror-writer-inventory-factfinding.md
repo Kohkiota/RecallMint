@@ -363,3 +363,34 @@ CC 本体の cross-check でも 40 file / 91 occurrence / `useLiveQuery` 17 call
 3. **`sync_meta` を残る唯一の対象とするなら、その面は極小**(§6.8: 書き手 2 経路 + cursor 6 本 + prefs 1 本、読み手 2 file、schema 変更不要)。lock で守る / key を userId 名前空間化する / DB を分ける、のいずれでも触る量は Path B の 91 call site より 1〜2 桁小さい。
 4. **Path B の refactor 幅は 91 call site だが、依存の形が完全に均一**(無引数 `getClientDb()` を関数内で呼ぶ・instance を引き回さない・module scope に保持しない)なので機械的変換自体は素直。真のリスクは §6.4 の liveQuery 再購読挙動と §6.6 の DB 列挙 API で、**いずれも repo 内に根拠が無く外部検証が要る**。Path A/B の裁定前にこの 2 点を実験で潰すかが分岐点。
 5. **直列化機構が 3 種併存している**(§1.8)点は Path A の隠れコスト。Web Locks を持たない module-level chain / in-flight guard の経路を同じ lock に載せ替える作業が付随する(ただし §4 の結論により、要保護 2 点に関係する経路だけで済む可能性が高い)。
+
+---
+
+## Appendix A(2026-08-16 追記)— Codex review による訂正 4 点(採用済・CC 現物確認済)
+
+本文は原文のまま保持し、以下の 4 点は**本 appendix が正**。いずれも Codex の fact-finding review 指摘を CC が生出力で裏取りした上で採用した。
+
+### A-1. §6.8 の変更面は過小(訂正)
+
+§6.8 の「触る面は helper 2 関数 + cursor 6 本 + prefs 1 本」は **key の面だけ**を数えており過小。cursor key を userId namespace 化するには、**pull 実行時に「どの user の cursor か」を知る必要があり、pullDelta への userId 伝播が必須**:
+
+- `pullDelta` は userId 引数を持たない(`lib/sync/pull.ts:116`)。
+- `PullTrigger` は userId prop を持たない(§5 の表のとおり)。
+- `runGuardedPull` の直呼びは 9 call site / 8 file(`pull-trigger.tsx:47` / `pull-back.ts:20` / `exam-status-live.tsx:113,119` / `exam-title-inline-edit.tsx:159` / `create-exam-form.tsx:46` / `delete-exam-button.tsx:42` / `exam-detail-pull-gate.tsx:45` / `exam-card-table.tsx:810`)で、**userId を既に持つのは exam-card-table のみ**(残り 5 component は userId token 自体が file に無い — CC grep 実測)。
+- → Path C(namespace 化)の実変更面 = helper + key 7 本 **+ pull 入口の userId 伝播一式**(pullDelta / runGuardedPull / pullBack / PullTrigger + 入口 component 群)。親 RSC は全て内部 userId を保有済(§7.1 の 11 経路)のため、伝播は prop drilling のみで新しい auth 解決は不要。
+
+### A-2. §4 の「回収可能」の保証水準(訂正)
+
+§4 の「owner 列あり = 既存 sweep で回収可能」は**即時回収と誤読しうる**。正しくは **eventual(次回 sweep 実行時に回収可能)**: sweep は mount 時の fire-and-forget 一回であり、**sweep 完了後に着地した遅着 writer の残骸は次回 mount まで残る**。表示保証は読みスコープ(spec §3)が担い、sweep はあくまで at-rest 衛生という層設計の帰結そのもの。
+
+### A-3. §10-2 の「外部検証要」は解消(追加事実)
+
+`/api/study-days/pull` の payload owner 単一性は **repo 現物で確定**:
+
+- `app/api/study-days/pull/route.ts:24`(`withReadOnlyAuth` の handler)が **認証由来の `user.id`** を `withTenantTx(user.id, ...)` と `getAllStudyDaysForUser(user.id, tx)` の両方に渡す。
+- `lib/db/study-days-pull.ts:50` `getAllStudyDaysForUser` が `WHERE eq(studyDays.userId, userId)`(`:57-60`)を強制。
+- → payload 全行の owner は常に認証主体単一。§10-2 の「server payload 契約の確認が要る」は解消され、**study_days の owner 限定置換(clear → owner スコープ delete)は成立する**。
+
+### A-4. §1.4「タグ系(12)」は 13 件(minor)
+
+§1.4 のタグ系は列挙どおり **13 件**(component 4 + `tag-crud.ts` 9)。ラベルの「(12)」が誤記。23 件の総数は正しい(7 + 2 + 13 + 1 = 23)。
