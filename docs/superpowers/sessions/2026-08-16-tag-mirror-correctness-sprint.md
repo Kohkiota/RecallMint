@@ -24,7 +24,7 @@ docs commit(`5e58420` / `dc60fb0` / `8d55818` / `877fa8b` / `fee7535`)は各 tas
 
 | gate | 結果 |
 |---|---|
-| whole-repo `pnpm vitest run` | **5252 passed / 298 files** |
+| whole-repo `pnpm vitest run` | **5253 passed / 298 files**(最終 fix `092d9de` 適用後・HEAD `de66e11` の clean tree で再実測)|
 | `pnpm lint --max-warnings=0` | exit 0 |
 | `pnpm typecheck` | exit 0 |
 | `pnpm run audit` | exit 0(prod high/critical 0) |
@@ -66,7 +66,7 @@ docs commit(`5e58420` / `dc60fb0` / `8d55818` / `877fa8b` / `fee7535`)は各 tas
 ## 7. stg smoke 手順(push 後・OT 指示で実施)
 
 1. user A で sign-in → タグ操作 + 試験表の列表示変更(cursor / prefs を生成)
-2. **IDB readback**: `cards_cursor:<A の内部 id>` が存在し、**bare `cards_cursor` が無い**こと
+2. **IDB readback**: `cards_cursor:<A の内部 id>` が存在すること。**bare な legacy key(`cards_cursor` など userId なし)は absent でも残存でもよい** — 旧 unscoped key は設計上掃除せず残置する(物理削除は hygiene sprint)。残存していた場合は、それが **request の `since_*` に使われないこと**と **書き換えられないこと**(値が改修前のまま不変)を確認する
 3. user B へ切替(OTP 424242)
 4. **Network**: B の初回 `/api/pull` に **`since_*` param が 1 本も無い**(= full pull)/ 応答 top-level の `owner_user_id` が **B の内部 id**
 5. **UI**: B の画面に **A のタグが出ない**(タグ管理 / カスタム演習の絞込候補 / 試験表のタグ列 / card popover)
@@ -80,7 +80,7 @@ docs commit(`5e58420` / `dc60fb0` / `8d55818` / `877fa8b` / `fee7535`)は各 tas
 
 ### I-1(修正済)— capture 原則が production 入口で未固定だった
 
-`lib/sync/pull.ts` の `deps.pull ?? (() => pullDelta(deps.userId))` は **`pullDelta` の唯一の production caller**(11 箇所の `runGuardedPull` が全て通る)なのに **pin がゼロ**だった。reviewer が `pullDelta('MUTANT-WRONG-OWNER')` に変異させて whole-repo 5252 tests を回し、**全 green のまま**であることを実証。
+`lib/sync/pull.ts` の `deps.pull ?? (() => pullDelta(deps.userId))` は **`pullDelta` の唯一の production caller**(11 箇所の `runGuardedPull` が全て通る)なのに **pin がゼロ**だった。reviewer が `pullDelta('MUTANT-WRONG-OWNER')` に変異させて whole-repo 5252 tests(**本 pin 追加前の件数** — §2 の 5253 はこの pin を足した後の値)を回し、**全 green のまま**であることを実証。
 
 原因: `runGuardedPull` の既存 test は全て `deps.pull` を注入するため **default 分岐が一度も実行されず**、`pull-trigger.test` は `runGuardedPull` を丸ごと mock。typecheck は arity と `string` 性しか見ず「どの string か」は守らない。
 
@@ -103,18 +103,28 @@ docs commit(`5e58420` / `dc60fb0` / `8d55818` / `877fa8b` / `fee7535`)は各 tas
 
 同じく triage で覆った認識: `git ls-files` ベースの audit は **index を読むので `git add` 済み file は対象内**。盲点は「一度も stage されていない file」だけで、それは定義上 commit もできない。`architecture.md` の限界記述は**安全側に保守的**。
 
-## 7b. OT 裁定が要る事項(1 件)
+## 7b. 既知の correctness hardening(OT 裁定済 = deferred 採用)
+
+**分類**: hygiene sprint の中の **correctness follow-up** であり、単なる衛生項目ではない。**hygiene sprint の先頭タスクに固定**する。本 sprint では deferred(OT 承認済)。
 
 **`study_days` の空 payload で owner 行検証が vacuous になる**(`lib/sync/study-days.ts` の `studyDays.some(row => row.user_id !== userId)` は `[]` に対して `false`)。
 
 - 具体例: tab が A として render 済 → `pullAllStudyDays(A)` 発火 → session は既に B → server は B の snapshot を返す → **B の study_days が 0 件なら `{studyDays: []}`** → 検証を素通り → `where('user_id').equals(A).delete()` で **A のローカル行が消える**。`/api/study-days/pull` の sign-up race `emptyBody: { studyDays: [] }` も同型。
 - **severity は Minor**: 異 owner データの露出は無い(非空の異 owner payload は正しく reject される)、失うのは再 pull 可能な server mirror、改修前の `clear()` は厳密により多くを壊していた。本 sprint の保証を弱めない。
 - **ただし spec §5.1a の根拠が不正確**: 「study_days は owner echo 不要 … §6 の全行 `user_id` 検証で完結する」と書いたが、**`/api/pull` に echo を導入した理由(行検証だけでは空 payload を検証できない)と同じ class の穴**を、もう一方の endpoint に持ち越していなかった。
-- **spec は凍結ゆえ本 sprint では patch しない**。選択肢 = ① hygiene sprint で `/api/study-days/pull` にも `owner_user_id` echo を追加 ② 受容として明示記録。**OT 裁定事項**。
+- **spec は凍結ゆえ本 sprint では patch しない**。**裁定(OT 承認済)= deferred 採用**。対応は hygiene sprint の**先頭タスク**として `/api/study-days/pull` にも `owner_user_id` echo を追加し、`/api/pull` と同じ「echo + 行検証」の 2 段にそろえる(空 payload / 全行が owner を持たない応答を echo が単独で捕まえる形)。
+- 併せて hygiene sprint 側の spec で **§5.1a の「study_days は owner echo 不要」という根拠の訂正**を明記する(本 doc がその訂正の正記録)。
 
 ## 8. 後続へ
 
-- **hygiene sprint**(別 spec): sign-out purge / 異 owner sweep / Cache API cleanup / **旧 key(userId なし)と旧 `exam_view_prefs` の物理削除** / outbox synced 削除。本 sprint の非スコープ列挙(spec §2)がその入力。
+- **hygiene sprint**(別 spec)の入力:
+  1. **先頭タスク(correctness follow-up・§7b)**: `/api/study-days/pull` への `owner_user_id` echo 追加 + spec §5.1a の根拠訂正。衛生項目より先に置く。
+  2. sign-out purge / 異 owner sweep / Cache API cleanup
+  3. **旧 key(userId なし)と旧 `exam_view_prefs` の物理削除**(それまでは残置が正 — smoke でも absent / 残存どちらも許容。§7 手順 2)
+  4. outbox synced 削除
+  5. §7a の M-c(`option-list.tsx:123` の scope 非対称)
+  
+  本 sprint の非スコープ列挙(spec §2)も併せて入力とする。
 - **pending / failed outbox の at-rest 残置**と flush-before-signout は別裁定(claude.ai todo)。
 - deferred minor の triage 結果は §7a に記録済(ledger は scratch のため破棄)。
 
