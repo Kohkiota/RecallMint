@@ -275,6 +275,14 @@ export function useImageZoom(): {
       window.addEventListener('keydown', onEscape, true);
       escapeHandlerRef.current = onEscape;
       pswp.init();
+      // side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+      // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。 PhotoSwipe の DOM(`.pswp`)は React の
+      // createPortal ではなく document.body へ imperative に append される(photoswipe.esm.js)
+      // ため、このページで唯一 Radix の React-tree ベースの isPointerInsideReactTreeRef 判定に
+      // 乗らない overlay。 側 peek の上から画像を開くと、× / 拡大縮小 / 矢印 / 画像タップの
+      // click が document まで届いて peek を閉じ、CardEditorFields の unmount 経由でこの
+      // instance の cleanup(destroy)まで連鎖してしまうため、明示 marker で除外する。
+      pswp.element?.setAttribute('data-outside-close-exempt', 'image-zoom')
       // fixed 固定は focus 前に行う(focus によるページスクロールを抑止)。
       lockBodyScroll(scrollLockRef);
       focusCloseButton(pswp);

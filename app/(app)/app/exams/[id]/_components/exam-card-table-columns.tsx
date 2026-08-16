@@ -122,6 +122,11 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
           // B: th 全域が onClick で全選択トグルするため、checkbox 直 click の bubbling を止めて
           //    二重発火 (onChange + th onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
           onClick={(e) => e.stopPropagation()}
+          // UI fix D: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+          // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。この checkbox 自身の stopPropagation(上記)は
+          // 別目的(二重発火防止)であり、peek の除外判定はそれに依存しない — 明示 marker のみで
+          // 判定する。
+          data-outside-close-exempt="row-select-all"
           aria-label="全選択"
           // row-ux UI fix A-2 review F2: 実寸を明示し select 列 52px の算術 (checkbox~16px 分) を
           // 「仮定」から「保証」にする (既存前例: exam-card-table-options-edit-cell.tsx の h-4 w-4)。
@@ -160,6 +165,11 @@ export const examCardTableColumns: ColumnDef<ExamCardRow>[] = [
             // B: td 全域が onClick で選択トグルするため、checkbox 直 click の bubbling を止めて
             //    二重発火 (onChange + td onClick) による net no-op を防ぐ。onChange は温存 (Space キー不変)。
             onClick={(e) => e.stopPropagation()}
+            // UI fix D: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+            // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。この checkbox 自身の stopPropagation(上記)は
+            // 別目的(二重発火防止)であり、peek の除外判定はそれに依存しない — 明示 marker のみで
+            // 判定する。
+            data-outside-close-exempt="row-select"
             aria-label={`行選択: ${row.original.card.title}`}
             // row-ux §6: 基底 50% → 行 hover / 自 focus で通常表示。選択済みは常時通常表示。
             // row-ux UI fix A-2 review F2: h-4 w-4 で実寸を明示 (header checkbox と同理由)。

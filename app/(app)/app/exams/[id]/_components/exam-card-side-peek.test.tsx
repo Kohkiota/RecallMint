@@ -47,6 +47,7 @@ import {
   ExamCardSidePeek,
   computeDraggedPeekWidthVw,
   isExemptFromOutsideClose,
+  OUTSIDE_CLICK_EXEMPT_SELECTORS,
   PEEK_WIDTH_KEYBOARD_STEP_VW,
 } from './exam-card-side-peek'
 import {
@@ -782,16 +783,22 @@ describe('ExamCardSidePeek UI fix C fix round 1 (②): StrictMode ドラッグ�
 
 // ===========================================================================
 // UI fix D: isExemptFromOutsideClose(pure 関数)— jsdom で直接 unit test
-// ===========================================================================
-
-// fix round 1(review 指摘): 当初はここに [data-slot="popover-trigger"] / [role="dialog"] /
-// [data-testid="pull-into-backdrop"] の各 marker test もあったが、実 grip trigger / 行メニュー
-// 項目 / PullIntoDialog panel・backdrop はいずれも自前で stopPropagation するため radix の
-// interception tracking により onPointerDownOutside の dispatch 自体が起きず、marker 判定に
-// 到達しない(本 file 実装側の doc comment 参照)。 それらの marker を合成要素(stopPropagation
-// なし)で作って true を確認しても production の到達可能性を pin しない誤った test だったため
-// 削除した。 `[data-slot="popover-content"]` だけが load-bearing(grip menu の wrapper div・
-// padding・position-locked 理由テキスト等、自前 onClick を持たない領域の click はここを通る)。
+//
+// fix round 1(review 指摘)は「grip trigger / 行メニュー項目 / PullIntoDialog panel・backdrop は
+// 自前で stopPropagation するため radix の interception tracking により dispatch 自体が起きず、
+// marker 判定に到達しない」と判断してこれらの marker test を削除したが、これは**本番では偽の
+// 前提**だった(fix round 2 で判明・実装側 doc comment「前提訂正」節参照)。 前提が誤りだった
+// 核心 = Next App Router では React root = document で、Radix の DismissableLayer も document に
+// listener を張るため、**自前 stopPropagation は同一 node(document)上の listener を止められない**
+// (stopPropagation は祖先ノードへの伝播だけを止める。 RTL は render root が document ではない
+// 一時 div のため、その node で stopPropagation が実際に祖先=document への伝播を止めてしまい、
+// テスト環境でだけ「到達しない」ように見えていた)。
+//
+// この教訓を反映し、本 pin は **jsdom の click 伝播シミュレーションに依存しない** 形にする:
+// isExemptFromOutsideClose は純粋な DOM marker 判定関数なので、jsdom で合成要素に marker を
+// 付けて `target.closest()` の結果を確認するだけで、production の topology に関わらず成立する
+// (「document へ届くか」を模す必要が一切ない)。 marker 一覧は OUTSIDE_CLICK_EXEMPT_SELECTORS
+// (実装側で export)と 1:1 対応させ、増減した場合はこの test の件数 pin が diff を可視化する。
 describe('isExemptFromOutsideClose', () => {
   it('target が null なら false', () => {
     expect(isExemptFromOutsideClose(null)).toBe(false)
@@ -799,6 +806,11 @@ describe('isExemptFromOutsideClose', () => {
 
   it('target が Element でない(Document 等)なら false', () => {
     expect(isExemptFromOutsideClose(document)).toBe(false)
+  })
+
+  it('いずれの marker も持たない要素は false(通常のテーブルセル等)', () => {
+    const cell = document.createElement('button')
+    expect(isExemptFromOutsideClose(cell)).toBe(false)
   })
 
   it('[data-slot="popover-content"] の子孫は true(grip menu 本体)', () => {
@@ -809,24 +821,101 @@ describe('isExemptFromOutsideClose', () => {
     expect(isExemptFromOutsideClose(child)).toBe(true)
   })
 
-  it('いずれの marker も持たない要素は false(通常のテーブルセル等)', () => {
-    const cell = document.createElement('button')
-    expect(isExemptFromOutsideClose(cell)).toBe(false)
+  it('[data-outside-close-exempt="grip-trigger"] の子孫は true(二役グリップ button)', () => {
+    const grip = document.createElement('button')
+    grip.setAttribute('data-outside-close-exempt', 'grip-trigger')
+    // svg は HTML namespace の createElement では HTMLUnknownElement になる(実 DOM と乖離)。
+    // GripVertical(lucide-react)は実 SVGElement のため createElementNS で正しい namespace にする。
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    grip.appendChild(icon)
+    expect(isExemptFromOutsideClose(icon)).toBe(true)
+  })
+
+  it('[data-outside-close-exempt="pull-into-panel"] の子孫は true(PullIntoDialog panel)', () => {
+    const panel = document.createElement('div')
+    panel.setAttribute('data-outside-close-exempt', 'pull-into-panel')
+    const child = document.createElement('h2')
+    panel.appendChild(child)
+    expect(isExemptFromOutsideClose(child)).toBe(true)
+  })
+
+  it('[data-outside-close-exempt="pull-into-backdrop"] の子孫は true(PullIntoDialog backdrop)', () => {
+    const backdrop = document.createElement('div')
+    backdrop.setAttribute('data-outside-close-exempt', 'pull-into-backdrop')
+    expect(isExemptFromOutsideClose(backdrop)).toBe(true)
+  })
+
+  it('[data-outside-close-exempt="row-select"] の子孫は true(行選択 checkbox)', () => {
+    const checkbox = document.createElement('input')
+    checkbox.setAttribute('data-outside-close-exempt', 'row-select')
+    expect(isExemptFromOutsideClose(checkbox)).toBe(true)
+  })
+
+  it('[data-outside-close-exempt="row-select-all"] の子孫は true(全選択 checkbox)', () => {
+    const checkbox = document.createElement('input')
+    checkbox.setAttribute('data-outside-close-exempt', 'row-select-all')
+    expect(isExemptFromOutsideClose(checkbox)).toBe(true)
+  })
+
+  it('[data-outside-close-exempt="image-zoom"] の子孫は true(PhotoSwipe lightbox root)', () => {
+    // PhotoSwipe の DOM は document.body へ imperative に append される(createPortal ではない)
+    // ため、このページで唯一 React tree の外にある overlay(use-image-zoom.ts 参照)。
+    const pswpRoot = document.createElement('div')
+    pswpRoot.setAttribute('data-outside-close-exempt', 'image-zoom')
+    const closeBtn = document.createElement('button')
+    pswpRoot.appendChild(closeBtn)
+    expect(isExemptFromOutsideClose(closeBtn)).toBe(true)
+  })
+
+  it('data-outside-close-exempt の未登録値は false(値ベースの selector — 属性の存在だけでは exempt にならない)', () => {
+    // OUTSIDE_CLICK_EXEMPT_SELECTORS の各エントリは `[data-outside-close-exempt="<値>"]` という
+    // 値付き selector であり `[data-outside-close-exempt]`(存在のみ)ではない。 したがって
+    // 登録済み以外の任意の値は自動的には exempt にならない(fail-closed)。 これを取り違えて
+    // 「marker 属性さえ付ければ除外される」と誤解し未登録の値(例: 将来 action bar に
+    // 安易に同名 marker を付けた場合)を使うと、除外されないのに気づけない regression になる
+    // ため、明示的に false を pin する。
+    const el = document.createElement('div')
+    el.setAttribute('data-outside-close-exempt', 'unregistered-value')
+    expect(isExemptFromOutsideClose(el)).toBe(false)
+  })
+})
+
+// ===========================================================================
+// UI fix D: OUTSIDE_CLICK_EXEMPT_SELECTORS の網羅 pin — 過不足なく 7 件
+//
+// marker を足す/減らす変更をすると、この件数 assert が diff として可視化され、上記
+// isExemptFromOutsideClose test 群や実 component 側の marker 付与漏れに気付ける。
+// ===========================================================================
+
+describe('OUTSIDE_CLICK_EXEMPT_SELECTORS: 除外 selector が過不足なく 7 件', () => {
+  it('7 件(popover-content / grip-trigger / pull-into-panel / pull-into-backdrop / row-select / row-select-all / image-zoom)', () => {
+    expect(OUTSIDE_CLICK_EXEMPT_SELECTORS).toHaveLength(7)
+    expect(OUTSIDE_CLICK_EXEMPT_SELECTORS).toEqual([
+      '[data-slot="popover-content"]',
+      '[data-outside-close-exempt="grip-trigger"]',
+      '[data-outside-close-exempt="pull-into-panel"]',
+      '[data-outside-close-exempt="pull-into-backdrop"]',
+      '[data-outside-close-exempt="row-select"]',
+      '[data-outside-close-exempt="row-select-all"]',
+      '[data-outside-close-exempt="image-zoom"]',
+    ])
   })
 })
 
 // ===========================================================================
 // UI fix D: [data-slot="popover-content"] 内の click(自前 onClick を持たない領域)は
-// onClose を呼ばない(唯一 load-bearing な例外 — 実装側 doc comment 参照)。
+// onClose を呼ばない(OUTSIDE_CLICK_EXEMPT_SELECTORS の 1 件 — 実装側 doc comment 参照)。
 //
 // grip menu(Popover)は ExamCardSidePeek 本体の外(兄弟 row cell から portal される別 DOM
 // 部分木)のため、component 単体 test では実物を mount せず、同じ DOM marker を持つ最小要素で
-// 代替する(⑤ の「外部ボタン」パターンと同型)。 実 Popover 配線での統合 test は
+// 代替する(⑤ の「外部ボタン」パターンと同型)。 対象要素(menu-content-area)は自前 onClick を
+// 持たないため、click は topology に関わらず自然に document まで伝播する(stopPropagation の
+// 有無に依存しない、topology 非依存な pin)。 実 Popover 配線での統合 test は
 // exam-card-table.test.tsx 側(実 grip 経由で menu を開き、marker が効いていることを pin)。
 // ===========================================================================
 
 describe('ExamCardSidePeek UI fix D: [data-slot="popover-content"] 内の click は onClose を呼ばない', () => {
-  it('[data-slot="popover-content"] 内の click では onClose が呼ばれない(padding 等・自前 onClick を持たない領域が対象。実 menu 項目 button は自前で stopPropagation するため別経路で除外される — この合成 button は「stopPropagation しない領域」の代替)', async () => {
+  it('[data-slot="popover-content"] 内の click では onClose が呼ばれない(padding 等・自前 onClick を持たない領域が対象。実 menu 項目 button も同じ [data-slot="popover-content"] marker の子孫として exempt になるが、項目 button 自身の onClick は setMenuOpen(false) 等の副作用を持つため、ここでは副作用の無い合成領域だけを対象に marker 判定を切り出して pin する)', async () => {
     const onClose = vi.fn()
     render(
       <div>
@@ -878,8 +967,11 @@ describe('ExamCardSidePeek UI fix D: focus outside では閉じない(onFocusOut
 // onPointerDownOutside の preventDefault/非 preventDefault は radix の合成 CustomEvent に対して
 // 行うものであり、元の DOM click イベントや React 側の onClick には触れない(stopPropagation も
 // preventDefault もしていない)ため、外部要素自身の click ハンドラは通常どおり発火する。
-// exam-card-table.test.tsx の T3 ⑨ / T3 ⑦ で実テーブルセル / checkbox の統合 test を持つため、
-// ここでは component 単体でこの契約(peek 側の処理が外部の click を握り潰さない)を pin する。
+// exam-card-table.test.tsx の T3 ⑨ で実テーブルセルの統合 test を持つため、ここでは component
+// 単体でこの契約(peek 側の処理が外部の click を握り潰さない)を pin する。checkbox 側は
+// isExemptFromOutsideClose の判定と checkbox 自身の onChange が完全に独立した経路(前者は
+// Radix の onPointerDownOutside callback 内、後者は React の通常 onChange)なので、統合 test
+// 無しでも構造的に両立する(T3 ⑦ 撤去の経緯は exam-card-table.test.tsx 側の comment 参照)。
 // ===========================================================================
 
 describe('ExamCardSidePeek UI fix D: 両立 — 外側クリックで peek が閉じても外部要素自身の click は実行される', () => {

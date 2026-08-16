@@ -613,6 +613,39 @@ describe('取り込みの確定', () => {
 })
 
 // ===========================================================================
+// UI fix D: side peek 外側クリック除外 marker(実 component の marker 存在 pin)。
+//
+// 本番事故(exam-card-side-peek.tsx の UI fix D「前提訂正」節参照)を受け、除外は明示 marker
+// のみに依存する設計へ改めた。 topology 非依存の保証は「marker が実 component に付いていること」
+// (本 test)と「isExemptFromOutsideClose がその marker を true と判定すること」
+// (exam-card-side-peek.test.tsx)の組み合わせで成立する — jsdom で click の document 到達を
+// シミュレートする必要がない。
+// ===========================================================================
+
+describe('UI fix D: side peek 外側クリック除外 marker', () => {
+  it('grip trigger が data-outside-close-exempt="grip-trigger" を持つ', () => {
+    renderMenu()
+    expect(grip()).toHaveAttribute('data-outside-close-exempt', 'grip-trigger')
+  })
+
+  it('PullIntoDialog の backdrop が data-outside-close-exempt="pull-into-backdrop" を持つ', async () => {
+    await openPicker()
+    expect(screen.getByTestId('pull-into-backdrop')).toHaveAttribute(
+      'data-outside-close-exempt',
+      'pull-into-backdrop',
+    )
+  })
+
+  it('PullIntoDialog の panel が data-outside-close-exempt="pull-into-panel" を持つ', async () => {
+    await openPicker()
+    expect(screen.getByTestId('exam-card-pull-into-dialog')).toHaveAttribute(
+      'data-outside-close-exempt',
+      'pull-into-panel',
+    )
+  })
+})
+
+// ===========================================================================
 // 二役グリップ (row-ux §2 / §4) — drag 役の gating と menu 役の生存
 //
 // dragAvailable = この試験で並べ替えが意味を持つか / dragEnabled = 今ドラッグできるか。

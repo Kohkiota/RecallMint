@@ -167,6 +167,10 @@ export function ExamCardRowMenu({
             // (checkbox と同理由)。Radix 自身の toggle は defaultPrevented を見るので
             // stopPropagation では止まらない (= menu は正常に開く)。
             onClick={(e) => e.stopPropagation()}
+            // UI fix D: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+            // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。この button 自身の stopPropagation(上記)は
+            // 別目的であり、peek の除外判定はそれに依存しない — 明示 marker のみで判定する。
+            data-outside-close-exempt="grip-trigger"
             className={cn(
               'inline-flex size-6 shrink-0 touch-none items-center justify-center rounded',
               // 常時表示の低コントラスト (row-ux §6): 基底は 50% で可視、 行 hover / 自
@@ -350,6 +354,10 @@ function PullIntoDialog({
         e.stopPropagation()
         onClose()
       }}
+      // UI fix D: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+      // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。backdrop 自身の stopPropagation(上記)は
+      // 別目的であり、peek の除外判定はそれに依存しない — 明示 marker のみで判定する。
+      data-outside-close-exempt="pull-into-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     >
       <div
@@ -358,6 +366,10 @@ function PullIntoDialog({
         aria-labelledby={titleId}
         data-testid="exam-card-pull-into-dialog"
         onClick={(e) => e.stopPropagation()}
+        // UI fix D: side peek の外側クリック除外 marker(exam-card-side-peek.tsx の
+        // OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。panel 自身の stopPropagation(上記)は
+        // 別目的であり、peek の除外判定はそれに依存しない — 明示 marker のみで判定する。
+        data-outside-close-exempt="pull-into-panel"
         className="flex max-h-[80vh] w-full max-w-md flex-col rounded-xl border border-border bg-background p-6 shadow-xl"
       >
         <h2 id={titleId} className="text-lg font-bold text-foreground">

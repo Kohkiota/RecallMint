@@ -162,6 +162,18 @@ describe('useImageZoom', () => {
     expect(firstInstance().init).toHaveBeenCalledTimes(1);
   });
 
+  // side peek review fix round 1(Critical): PhotoSwipe の DOM は document.body へ imperative に
+  // append され(createPortal ではない)、Radix の React-tree ベースの isPointerInsideReactTreeRef
+  // 判定に乗らない唯一の overlay。 明示 marker が無いと peek 内から画像を開いた際、×・拡大縮小・
+  // 矢印・画像タップの click が document まで届いて peek を閉じてしまう
+  // (exam-card-side-peek.tsx の OUTSIDE_CLICK_EXEMPT_SELECTORS 参照)。
+  it('init 後に pswp.element へ data-outside-close-exempt="image-zoom" marker を付与する', async () => {
+    const { result } = renderHook(() => useImageZoom());
+    await openWith(result.current.open);
+
+    expect(firstInstance().element).toHaveAttribute('data-outside-close-exempt', 'image-zoom');
+  });
+
   it('OPTS の各キーを個別に pin する(要件対応表 = §3.4)', async () => {
     const { result } = renderHook(() => useImageZoom());
     await openWith(result.current.open);

@@ -1210,6 +1210,36 @@ describe('row-ux UI fix A-2 review F2: checkbox 実寸固定 (h-4 w-4)', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// UI fix D: side peek 外側クリック除外 marker(実 component render での marker 存在 pin)。
+//
+// 本番事故(exam-card-side-peek.tsx の UI fix D「前提訂正」節参照)を受け、除外は明示 marker
+// のみに依存する設計へ改めた。 topology 非依存の保証は「marker が実 component に付いていること」
+// (本 test)と「isExemptFromOutsideClose がその marker を true と判定すること」
+// (exam-card-side-peek.test.tsx)の 2 つの組み合わせで成立する — jsdom で click の document
+// 到達をシミュレートする必要がない。
+// ---------------------------------------------------------------------------
+
+describe('UI fix D: side peek 外側クリック除外 marker(実 component の marker 存在 pin)', () => {
+  it('行選択 checkbox が data-outside-close-exempt="row-select" を持つ', () => {
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox).toHaveAttribute('data-outside-close-exempt', 'row-select')
+  })
+
+  it('ヘッダー全選択 checkbox が data-outside-close-exempt="row-select-all" を持つ', () => {
+    renderSelectHeader()
+    const checkbox = screen.getByRole('checkbox', { name: '全選択' })
+    expect(checkbox).toHaveAttribute('data-outside-close-exempt', 'row-select-all')
+  })
+
+  it('二役グリップ button が data-outside-close-exempt="grip-trigger" を持つ', () => {
+    renderSelectCellWithMeta(makeRow(), { ...ROW_MENU_META, openCard: vi.fn() })
+    const grip = screen.getByRole('button', { name: `行の操作: ${makeClientCard().title}` })
+    expect(grip).toHaveAttribute('data-outside-close-exempt', 'grip-trigger')
+  })
+})
+
 // Sprint T T6 + add(2026-07-17 OT): テーブルビュー 画像 gallery 配線(question /
 // explanation_text / memo 列)= thumbnail + compact add affordance。userId は meta 経由。
 describe('Sprint T T6: テーブルビュー 画像 gallery 配線(thumbnail + add)', () => {
