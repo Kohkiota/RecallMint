@@ -89,15 +89,25 @@ describe('HygieneSweepTrigger', () => {
 // (repo 教訓「唯一の caller が未 pin」/ sign-out-purge.test.tsx と同型)。
 //
 // **これは source-text マッチによる pin**。 layout は async server component で
-// getCurrentUser() / DB を巻き込むため RTL render は採らない。 JSX の表記
-// (self-closing / 属性 / import 経路)を変えると偽陰性になりうるので、 mount の
-// 書き方を変えるときは本 pin も更新すること。
+// getCurrentUser() / DB を巻き込むため RTL render は採らない。 **判定前に JSX
+// コメント(`{/* ... */}`)を除去する**(修正3・sign-out-purge.test.tsx と同型):
+// 除去しないと `{/* <HygieneSweepTrigger .../> */}` のようにコメントアウトされた
+// mount も toContain が green を返してしまう。 これによりコメントアウトは検出できる。
+// 依然として JSX の表記(self-closing / 属性 / import 経路)を変えると偽陰性に
+// なりうるので、 mount の書き方を変えるときは本 pin も更新すること。
+
+// JSX コメント `{/* ... */}` を除去した source を返す(コメントアウトされた mount を
+// toContain が「存在する」と誤判定しないようにする)。
+function stripJsxComments(source: string): string {
+  return source.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+}
 
 describe('(app)/app/layout.tsx への mount(source-text pin)', () => {
-  const layoutSource = readFileSync(
+  const layoutSourceRaw = readFileSync(
     path.resolve(import.meta.dirname, '../layout.tsx'),
     'utf8',
   )
+  const layoutSource = stripJsxComments(layoutSourceRaw)
 
   it('layout が HygieneSweepTrigger を import して user.id 付きで mount している', () => {
     expect(layoutSource).toContain("from './_components/hygiene-sweep-trigger'")

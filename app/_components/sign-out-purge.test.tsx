@@ -106,13 +106,23 @@ describe('SignOutPurge', () => {
 //
 // **これは source-text マッチによる pin**(sync-meta-access-audit.test.ts と同型)。
 // RootLayout の RTL render は ClerkProvider / next/font を巻き込むため採らない。
-// JSX の表記(self-closing / 属性追加 / import 経路)を変えると偽陰性になりうるので、
-// mount の書き方を変えるときは本 pin も更新すること。
+// **判定前に JSX コメント(`{/* ... */}`)を除去する**(修正3): 除去しないと
+// `{/* <SignOutPurge /> */}` のようにコメントアウトされた mount も toContain が
+// green を返してしまう(表記変更より危険な検出漏れ)。 これによりコメントアウトは
+// 検出できる。 依然として JSX の表記(self-closing / 属性追加 / import 経路)を
+// 変えると偽陰性になりうるので、 mount の書き方を変えるときは本 pin も更新すること。
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 
+// JSX コメント `{/* ... */}` を除去した source を返す(コメントアウトされた mount を
+// toContain / indexOf が「存在する」と誤判定しないようにする)。
+function stripJsxComments(source: string): string {
+  return source.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+}
+
 describe('app/layout.tsx への mount(source-text pin)', () => {
-  const layoutSource = readFileSync(path.join(ROOT, 'app/layout.tsx'), 'utf8')
+  const layoutSourceRaw = readFileSync(path.join(ROOT, 'app/layout.tsx'), 'utf8')
+  const layoutSource = stripJsxComments(layoutSourceRaw)
 
   it('root layout が SignOutPurge を import して mount している', () => {
     expect(layoutSource).toContain(

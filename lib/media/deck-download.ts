@@ -56,6 +56,11 @@ const FETCH_TIMEOUT_MS = 60_000
 
 // success gate: deck 全 key の blob 現存を確認する (存在確認のみ・本体は読まない)。
 // cleanup との交差で 1 件でも欠けていたら false (呼出側が両成功出口を支配する)。
+//
+// bound (M-3): この gate は「return した時点で blob が揃っていたこと」しか保証しない。
+// return 後の blob 永続性は保証しない — sign-out purge / sign-in sweep が gate 通過後
+// (= 呼出元へ結果が返った後) に不可侵集合外の blob を消すことは spec §4.2 が受容済み
+// (sign-out による意図的な全消去であり契約違反ではない)。
 async function verifyDeckBlobs(userId: string, keys: string[]): Promise<boolean> {
   for (const key of keys) {
     if (!(await hasAssetBlob(userId, key))) return false

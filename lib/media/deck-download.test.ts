@@ -21,6 +21,8 @@
 //   ①(全件 hit)/ DL 本体経路の hit 分②・added 分③ を個別に検証する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { ClientCardImage } from '@/lib/client-db'
 
 // ---------------------------------------------------------------------------
@@ -557,5 +559,33 @@ describe('downloadDeckImages — DL success gate (cleanup 交差 / spec §4.2)',
     expect(await getClientDb().media_download_jobs.get([USER_ID, EXAM_ID])).toBeUndefined()
     // hit 分 (KEY_A) は rollback の対象外で保全される。
     expect(await matchAssetBlob(USER_ID, KEY_A)).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// success gate — 出口数の source-text pin(spec §4.2「両成功出口を支配する」の完全性主張)
+// ---------------------------------------------------------------------------
+// header comment (deck-download.ts:18-25) は「ok:true を返す出口は 2 つあり、両方とも
+// verifyDeckBlobs で支配される」と主張する。 現状 2 出口 (:172 / :249) はどちらも実際に
+// gate を通るが、 将来 3 つ目の早期 ok:true が足されても gate 呼出漏れは他の pin では
+// 検出できない (それぞれの出口 pin は「既存の出口が gate を通る」ことしか見ない)。
+// 出口の**個数**を pin することで、 新しい出口が足された時点で機械的に落ちる
+// (= 追加者に「この出口も gate を通すべきか」の確認を強制する)。
+//
+// **これは source-text マッチによる pin**(sign-out-purge.test.tsx の mount pin と同型)。
+// 検出するもの: 「return { ok: true,」の出現数が増減した(= ok:true を返す出口が増減した)
+// こと。
+// 検出しないもの: ① 出口数が変わらないまま gate 呼出だけが外された regression(表記だけを
+// 見るため。 これは既存の DL success gate describe の変異 pin が個別に担う)② 表記変更
+// (改行位置 / スペース有無 / `ok:true` のような詰め表記への変更)には弱い — 変更時は
+// 本 pin もあわせて更新すること。
+describe('downloadDeckImages — success gate 出口数の source-text pin(修正 1)', () => {
+  it('ok:true を返す return 文は 2 個である(早期出口 + DL 本体経路)', () => {
+    const source = readFileSync(
+      path.resolve(import.meta.dirname, 'deck-download.ts'),
+      'utf8',
+    )
+    const matches = source.match(/return \{ ok: true,/g) ?? []
+    expect(matches.length).toBe(2)
   })
 })

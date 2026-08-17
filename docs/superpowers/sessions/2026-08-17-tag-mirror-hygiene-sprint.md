@@ -20,11 +20,11 @@
 
 全 6 commit が `[reviewed]`。docs commit(`3e48132` / `9c95a14` / `2616e7e` / `61a9f83` / `bcfb1f3` / `fe23705`)は各 task の Codex raw findings 永続化。
 
-## 2. sprint 完了 gate(全 exit 0 / 実測値・HEAD `fe23705`)
+## 2. sprint 完了 gate(全 exit 0 / 実測値・最終 fix wave 適用後に再測定)
 
 | gate | 結果 |
 |---|---|
-| whole-repo `pnpm vitest run` | **5343 passed / 301 files** |
+| whole-repo `pnpm vitest run` | **5344 passed / 301 files** |
 | `pnpm lint --max-warnings=0` | exit 0 |
 | `pnpm typecheck` | exit 0 |
 | `pnpm run audit` | exit 0 |
@@ -55,7 +55,8 @@ Appendix B として棚卸し doc に追記済(`2026-08-16-tag-mirror-writer-inv
 
 - **T4 で Important 1 件を検出**: `<SignOutPurge />` の layout mount が**全く pin されていなかった**。mount を削除しても unit / typecheck / lint / build が全 green のまま通る = 成果物が丸ごと死んでも検出できない状態。**repo の教訓「唯一の caller が未 pin」の再演**で、fix round 1 で source-grep pin 2 本(mount + ClerkProvider 配下)+ red 実証を追加。T5 の trigger にも同型 pin を最初から要求した。
 - **Codex が T3 で P1 を 1 件**: 「gate 通過後〜return までに cleanup が消せば `ok:true` + 欠け」。**凍結 spec §4.2 が受容済みの残余窓**であり、提案対策(共有 lock)は §0 が再導入を禁じた機構そのもの → 不採用裁定(§6)。canonical は同点を defect として挙げていない。
-- **red 実証の総計**: T1 3 変異 / T2 5 / T3 2 / T4 19 + 5 / T5 19 / T6 2。いずれも 1 箇所ずつ個別注入(まとめ壊し無効の規律)。
+- **whole-branch review で Important 2 件**(task 単位 review 6 回 + Codex 6 回を通過してもなお残った類): ① **「両成功出口を支配する」完全性主張が未 pin**(3 つ目の `ok:true` を足しても全 gate green)= 教訓「完全性主張は無言で偽になる」の再演。同 sprint が mount で 2 回 source-text pin を使っている以上、不在は判断でなく一貫性の欠如 ② **異 owner の中断 DL 残骸に回収機構が無い**(`sweep.ts:119` が自 owner scope)のに doc の語感が一時的残置と読める。fix wave で両方 close(出口数の source-text pin + red 実証 / doc 1 文追記)。同 wave で mount pin が**コメントアウトを検出しない**穴も塞いだ(判定前に JSX コメントを除去)。
+- **red 実証の総計**: T1 3 変異 / T2 5 / T3 2 / T4 19 + 5 / T5 19 / T6 2 / final fix wave 3。いずれも 1 箇所ずつ個別注入(まとめ壊し無効の規律)。
 - T5 は API 529(infra 障害)で RED 作成直後に中断 → 状態を実測して同一 agent を resume。canonical が「529 中断による半端な残骸なし」を全変異点の復元確認で保証。
 
 ## 6. 実行中に下した裁定(ruling)一覧
@@ -84,7 +85,7 @@ Appendix B として棚卸し doc に追記済(`2026-08-16-tag-mirror-writer-inv
 
 ## 8. spec 準拠だが記録しておく挙動
 
-**異 owner の `'downloading'` job に属する added asset は `'ready'` 行なので、sweep / purge は行を削除し job と blob は温存する** — 異 owner 側の all-or-nothing DL が orphan blob 付きで着地しうる。不可侵集合の列挙が「job 行 + added blob」で asset 行を含まないため。purge も同一挙動で **spec 準拠**(凍結 spec の seam)。
+**異 owner の `'downloading'` job に属する added asset の `media_assets` 行の有無は経由で変わる**(final fix wave で訂正 — 元記述は「常に `'ready'` 行がある」という一方向の前提で、凍結 spec §4.2 の「行は存在しない」と逆に読める書き方だった)。**両方とも起こりうる**: asset 行を**作る**のは `lib/media/upload.ts:711`(`media_assets.put`)の 1 箇所のみ(`:768` は同行の status を `'ready'` へ **update** するもので作成ではない — 最終 re-review の指摘で訂正)のため、別 device で添付された asset を本 device で DL する経路では行は存在しない(**凍結 spec §4.2 の記述はこの別 device 経路について正しい**)。一方、**同一 device で Cache eviction が起きると**、`'ready'` 行を持つ key が cache miss に戻って DL 対象(miss / `added_asset_ids`)に載るため、この経路では `'ready'` 行が存在する。**実装はどちらでも安全**: 不可侵集合の保護は `media_download_jobs` の行 + `job.added_asset_ids` の blob を基準にしており、`media_assets` 行の有無を見ていない — ゆえに行の有無いずれでも sweep / purge は job と blob を温存する。結果として異 owner 側の all-or-nothing DL が orphan blob 付きで着地しうる。purge も同一挙動で **spec 準拠**(凍結 spec の seam)。
 
 ## 9. stg smoke 手順(push 後・OT 指示で実施)
 
@@ -105,3 +106,4 @@ correctness sprint の A/B アカウント(`+clerk_test` / `+clerk_test1`・OTP 
 3. **sign-out のたびに次回 sign-in が full pull になり、`exam_view_prefs` が消える**(受容済コスト)。
 4. **purge の発火集合は「sign-out」より広い**: 匿名 visitor の marketing page 訪問(`Dexie.exists` guard で Dexie 部 no-op)や auth 初期化境界での一時的 signed-out 観測を含む。
 5. **[reviewed] の正記録は本 doc**(データ保全に触れる fix で push→smoke の順ゆえ commit tag の amend 窓が構造的に閉じるため。既存裁定どおり)。
+6. **異 owner の `'downloading'` job + added blob は恒久的に残りうる**(final fix wave で追記): 既存 sweeper(`sweepStaleMedia`)は自 owner scope(`lib/media/sweep.ts:119` の `j.user_id === userId` filter)のため、異 owner の `'downloading'` job を触らない。purge も hygiene sweep も不可侵集合として温存するため、当該 owner が再 sign-in しない限り共有ブラウザに残り続ける(一時的な残置ではない — `docs/architecture.md` 残余リスク行に同事実を反映済)。
