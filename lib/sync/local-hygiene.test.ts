@@ -1,11 +1,12 @@
-// local-hygiene の sign-out purge test(tag mirror hygiene sprint Task 4 / spec §4)。
+// local-hygiene の test(tag mirror hygiene sprint Task 4 = sign-out purge / spec §4、
+// Task 5 = sign-in 異 owner sweep / spec §5)。
 //
 // getClientDb() は fake-indexeddb 経由の実 Dexie(vitest.setup.ts が auto shim)。
 // Cache API は Map-backed stub(cache.test.ts と同型)を global.caches に注入し、
-// lib/media/cache.ts の実 helper 経由で purge の Cache 部を実走させる(parse / 列挙 /
-// 削除の配線ごと検証するため mock しない)。
+// lib/media/cache.ts の実 helper 経由で purge / sweep の Cache 部を実走させる(parse /
+// 列挙 / 削除の配線ごと検証するため mock しない)。
 //
-// 観点:
+// 観点(purge):
 // - 分類表 HYGIENE_STORE_RULES の中身(陽形の削除条件)と ClientDb 全 store の網羅
 // - 実走: mirror / sync_meta 全消・synced outbox 削除・不可侵集合(pending/syncing/
 //   failed outbox・非 'ready' assets・'downloading' jobs)の生存(自 + 異 owner)
@@ -13,6 +14,16 @@
 // - Cache: 保護 blob 生存 / malformed 含む非保護 key 削除 / per-key 失敗続行 /
 //   cache 不在時に新規作成しない / Dexie 部 skip でも Cache 部は実行
 // - in-flight guard: 並走は 1 実行 / settle 後(成功・失敗の双方)は次回が新規実行
+//
+// 観点(sweep):
+// - sync_meta 分類(pure): allowlist リテラル 7 本・分類強制・bare 削除・scoped の
+//   self 温存 / other 削除・malformed suffix 削除・未知 key / prefix 類似の温存
+// - 実走: 異 owner の synced / 'ready' / 'done' のみ削除、 不可侵集合(自 + 異 owner)と
+//   自 owner の全行は生存、 sync_meta は分類どおり
+// - 空 userId: Dexie / Cache とも一切触らない(fail-closed)
+// - tx 原子性(sweep は purge と別 query 群のため独立に必要)
+// - Cache: 自 namespace 温存 / 異 owner 削除 / malformed 削除 / 保護 blob は owner 不問で
+//   生存 / per-key 失敗後も残りの削除が続行
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Dexie from 'dexie'
@@ -30,7 +41,15 @@ import {
   type SyncStatus,
 } from '@/lib/client-db'
 import { putAssetBlob } from '@/lib/media/cache'
-import { HYGIENE_STORE_RULES, purgeAllLocalData } from './local-hygiene'
+import { SYNC_META_KEYS } from './sync-meta'
+import {
+  HYGIENE_STORE_RULES,
+  SWEEP_EXEMPT_BASES,
+  SWEEP_SYNC_META_BASES,
+  classifySyncMetaKeyForSweep,
+  purgeAllLocalData,
+  sweepForeignLocalData,
+} from './local-hygiene'
 
 const SELF = 'user-self'
 const OTHER = 'user-other'
@@ -680,5 +699,343 @@ describe('purgeAllLocalData — in-flight guard', () => {
     // 2 回目が Dexie 部・Cache 部とも実走したことを、それぞれの削除対象で観測する。
     expect(await getClientDb().exams.count()).toBe(0)
     expect(await cachedUrls()).not.toContain(blobUrl(SELF, 'asset-self-ready'))
+  })
+})
+
+// ===========================================================================
+// Task 5: sign-in 異 owner sweep(spec §5)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// sweep 専用 fixture
+// ---------------------------------------------------------------------------
+// seedAll(purge 側 pin の期待値の基準)は変更せず、 sweep 固有に必要な行だけを足す:
+// - 異 owner の 'done' job + その added blob(異 owner かつ 'done' が消える対)
+// - sync_meta の bare 7 本 + parser 境界 + prefix 類似 + 未知 scoped key
+async function seedSweepExtras(): Promise<void> {
+  const db = getClientDb()
+
+  await db.media_download_jobs.put({
+    exam_id: 'exam-dl-other-done',
+    user_id: OTHER,
+    status: 'done',
+    total: 1,
+    done_count: 1,
+    added_asset_ids: ['dl-other-done-added'],
+    started_at: '2026-01-01T00:00:00.000Z',
+  })
+  await putAssetBlob(OTHER, 'dl-other-done-added', new Blob(['j']))
+
+  await db.sync_meta.bulkPut([
+    // bare legacy key 7 本(cursor 6 + 旧 exam_view_prefs)。
+    ...SWEEP_SYNC_META_BASES.map((base) => ({ key: base, value: 'legacy' })),
+    { key: `exam_view_prefs:${SELF}`, value: '{}' },
+    { key: `exam_view_prefs:${OTHER}`, value: '{}' },
+    // 未知 base の scoped key(将来 key の silent 誤削除を防ぐ側)。
+    { key: `future_key:${SELF}`, value: 'x' },
+    // prefix 類似の未知 base。
+    { key: 'cards_cursor_v2', value: 'x' },
+    // 既知 base の malformed suffix。
+    { key: 'cards_cursor:', value: 'x' },
+    { key: 'cards_cursor:a:b', value: 'x' },
+  ])
+}
+
+async function seedForSweep(): Promise<void> {
+  await seedAll()
+  await seedSweepExtras()
+}
+
+/** 全 store の件数 snapshot(不変を主張する pin で「どこか 1 つでも動いたら落ちる」形にする)。 */
+async function tableCounts(): Promise<Record<string, number>> {
+  const db = getClientDb()
+  const entries = await Promise.all(
+    db.tables.map(async (t) => [t.name, await t.count()] as const),
+  )
+  return Object.fromEntries(entries)
+}
+
+async function syncMetaKeys(): Promise<string[]> {
+  return (await getClientDb().sync_meta.toArray()).map((r) => r.key).sort()
+}
+
+// sweep 後に生存すべき Cache key: 自 namespace 全部(Dexie 行の無い orphan も含む)+
+// 異 owner でも保護集合(非 'ready' assets / 'downloading' job の added)に載るもの。
+const SWEEP_SURVIVING_URLS = [
+  blobUrl(SELF, 'asset-self-ready'),
+  blobUrl(SELF, 'asset-self-uploading'),
+  blobUrl(SELF, 'dl-self-added'),
+  blobUrl(SELF, 'dl-done-added'),
+  blobUrl(SELF, 'orphan-asset'),
+  blobUrl(OTHER, 'asset-other-failed'),
+  blobUrl(OTHER, 'dl-other-added'),
+].sort()
+
+// ---------------------------------------------------------------------------
+// sync_meta 分類(pure)
+// ---------------------------------------------------------------------------
+
+describe('classifySyncMetaKeyForSweep(sync_meta 分類)', () => {
+  it('allowlist は明示リテラル 7 本(cursor 6 + 旧 exam_view_prefs)', () => {
+    expect([...SWEEP_SYNC_META_BASES].sort()).toEqual([
+      'card_tags_cursor',
+      'cards_cursor',
+      'exam_view_prefs',
+      'exams_cursor',
+      'tag_categories_cursor',
+      'tag_options_cursor',
+      'tombstone_cursor',
+    ])
+  })
+
+  it('分類強制: SYNC_META_KEYS の全値が allowlist ∪ 明示除外 list に現れる', () => {
+    const classified = new Set<string>([
+      ...SWEEP_SYNC_META_BASES,
+      ...SWEEP_EXEMPT_BASES,
+    ])
+    const unclassified = Object.values(SYNC_META_KEYS).filter(
+      (key) => !classified.has(key),
+    )
+
+    expect(
+      unclassified,
+      `sync_meta key を追加したら sweep 対象か否かを明示すること(SWEEP_SYNC_META_BASES または SWEEP_EXEMPT_BASES): ${unclassified.join(', ')}`,
+    ).toEqual([])
+  })
+
+  it('bare key(旧 key 7 本)は削除', () => {
+    for (const base of SWEEP_SYNC_META_BASES) {
+      expect(classifySyncMetaKeyForSweep(base, SELF)).toBe('delete')
+    }
+  })
+
+  it('base:<self> は温存 / base:<other> は削除', () => {
+    for (const base of SWEEP_SYNC_META_BASES) {
+      expect(classifySyncMetaKeyForSweep(`${base}:${SELF}`, SELF)).toBe('keep')
+      expect(classifySyncMetaKeyForSweep(`${base}:${OTHER}`, SELF)).toBe(
+        'delete',
+      )
+    }
+  })
+
+  it('未知 key は bare / scoped とも温存(将来 key の silent 誤削除を防ぐ)', () => {
+    expect(classifySyncMetaKeyForSweep('future_key', SELF)).toBe('keep')
+    expect(classifySyncMetaKeyForSweep(`future_key:${SELF}`, SELF)).toBe('keep')
+    expect(classifySyncMetaKeyForSweep(`future_key:${OTHER}`, SELF)).toBe('keep')
+  })
+
+  it('既知 base の malformed suffix(空 / 複数 colon)は削除', () => {
+    expect(classifySyncMetaKeyForSweep('cards_cursor:', SELF)).toBe('delete')
+    expect(classifySyncMetaKeyForSweep('cards_cursor:a:b', SELF)).toBe('delete')
+    expect(classifySyncMetaKeyForSweep(`cards_cursor:${SELF}:x`, SELF)).toBe(
+      'delete',
+    )
+  })
+
+  it('prefix 類似の未知 base は温存(cards_cursor_v2)', () => {
+    expect(classifySyncMetaKeyForSweep('cards_cursor_v2', SELF)).toBe('keep')
+    expect(classifySyncMetaKeyForSweep(`cards_cursor_v2:${SELF}`, SELF)).toBe(
+      'keep',
+    )
+    expect(classifySyncMetaKeyForSweep(`cards_cursor_v2:${OTHER}`, SELF)).toBe(
+      'keep',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// sweep: Dexie 部
+// ---------------------------------------------------------------------------
+
+describe('sweepForeignLocalData — Dexie 部', () => {
+  it('mirror 6 store は異 owner 行のみ消え、自 owner 行は生存する', async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    const db = getClientDb()
+    expect((await db.exams.toArray()).map((r) => r.user_id)).toEqual([SELF])
+    expect((await db.cards.toArray()).map((r) => r.user_id)).toEqual([SELF])
+    expect((await db.study_days.toArray()).map((r) => r.user_id)).toEqual([SELF])
+    expect((await db.tag_categories.toArray()).map((r) => r.user_id)).toEqual([
+      SELF,
+    ])
+    expect((await db.tag_options.toArray()).map((r) => r.user_id)).toEqual([
+      SELF,
+    ])
+    expect((await db.card_tags.toArray()).map((r) => r.user_id)).toEqual([SELF])
+  })
+
+  it("outbox 2 store は異 owner の 'synced' のみ消え、異 owner の pending / syncing / failed と自 owner 全行は生存する(不可侵)", async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    const db = getClientDb()
+    expect((await db.answer_events.toArray()).map((e) => e.event_id).sort()).toEqual(
+      [
+        `ev-${SELF}-pending`,
+        `ev-${SELF}-syncing`,
+        `ev-${SELF}-synced`,
+        `ev-${SELF}-failed`,
+        `ev-${OTHER}-pending`,
+        `ev-${OTHER}-syncing`,
+        `ev-${OTHER}-failed`,
+      ].sort(),
+    )
+    expect(
+      (await db.entity_mutations.toArray()).map((m) => m.mutation_id).sort(),
+    ).toEqual(
+      [
+        `mut-${SELF}-pending`,
+        `mut-${SELF}-syncing`,
+        `mut-${SELF}-synced`,
+        `mut-${SELF}-failed`,
+        `mut-${OTHER}-pending`,
+        `mut-${OTHER}-syncing`,
+        `mut-${OTHER}-failed`,
+      ].sort(),
+    )
+  })
+
+  it("media_assets は異 owner の 'ready' のみ消え、異 owner の非 'ready' 行と自 owner 全行は生存する(flush gate の根拠を壊さない)", async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    const assets = await getClientDb().media_assets.toArray()
+    expect(assets.map((a) => a.id).sort()).toEqual(
+      ['asset-self-ready', 'asset-self-uploading', 'asset-other-failed'].sort(),
+    )
+  })
+
+  it("media_download_jobs は異 owner の 'done' のみ消え、異 owner の 'downloading' と自 owner 全行は生存する(all-or-nothing 維持)", async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    const jobs = await getClientDb().media_download_jobs.toArray()
+    expect(jobs.map((j) => j.exam_id).sort()).toEqual(
+      ['exam-dl-self', 'exam-dl-other', 'exam-dl-done'].sort(),
+    )
+  })
+
+  it('sync_meta は bare + base:<other> + malformed suffix のみ消え、base:<self> と未知 key は生存する', async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    expect(await syncMetaKeys()).toEqual(
+      [
+        `cards_cursor:${SELF}`,
+        `exam_view_prefs:${SELF}`,
+        'future_key',
+        `future_key:${SELF}`,
+        'cards_cursor_v2',
+      ].sort(),
+    )
+  })
+
+  it('空 userId では Dexie / Cache を一切触らない(fail-closed)', async () => {
+    await seedForSweep()
+    const before = await tableCounts()
+    const beforeUrls = await cachedUrls()
+    // 前提の非 vacuous 確認: 異 owner 行が実在する状態で呼ぶ。
+    expect(before.exams).toBe(2)
+    expect(beforeUrls.length).toBe(10)
+
+    const txSpy = vi.spyOn(getClientDb(), 'transaction')
+    const hasSpy = vi.spyOn(globalThis.caches, 'has')
+    const openSpy = vi.spyOn(globalThis.caches, 'open')
+
+    await sweepForeignLocalData('')
+
+    expect(txSpy).not.toHaveBeenCalled()
+    expect(hasSpy).not.toHaveBeenCalled()
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(mockLoggerInfo).not.toHaveBeenCalled()
+    expect(await tableCounts()).toEqual(before)
+    expect(await cachedUrls()).toEqual(beforeUrls)
+  })
+
+  it('tx 原子性: tx 内 1 操作が throw すると全 store が変更前のまま(部分実行が観測できない)', async () => {
+    await seedForSweep()
+    const db = getClientDb()
+    const before = await tableCounts()
+    const beforeUrls = await cachedUrls()
+
+    // 先行 store の削除が済んだ後で落ちることを担保する(先頭で落ちると
+    // 「完了済み作業の巻き戻し」を検証したことにならない)。
+    const names = Object.keys(HYGIENE_STORE_RULES)
+    expect(names.indexOf('sync_meta')).toBeGreaterThan(0)
+
+    // production に failure hook を足さず、test 側の spy で throw を注入する。
+    vi.spyOn(db.sync_meta, 'filter').mockImplementation(() => {
+      throw new Error('injected tx failure')
+    })
+
+    await expect(sweepForeignLocalData(SELF)).rejects.toThrow(
+      'injected tx failure',
+    )
+
+    expect(await tableCounts()).toEqual(before)
+    // Dexie 部が失敗した時点で保護集合が確定しないため Cache 部は走らない。
+    expect(await cachedUrls()).toEqual(beforeUrls)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// sweep: Cache 部
+// ---------------------------------------------------------------------------
+
+describe('sweepForeignLocalData — Cache 部', () => {
+  it('自 namespace は温存 / 異 owner と malformed は削除 / 保護 blob は owner 不問で生存', async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    expect(await cachedUrls()).toEqual(SWEEP_SURVIVING_URLS)
+  })
+
+  it('per-key の削除失敗は残り(異 owner / malformed)の削除を止めない', async () => {
+    await seedForSweep()
+    const cache = await mediaCache()
+    cache.failDeleteFor = blobUrl(OTHER, 'asset-other-ready')
+
+    await sweepForeignLocalData(SELF)
+
+    expect(await cachedUrls()).toEqual(
+      [...SWEEP_SURVIVING_URLS, blobUrl(OTHER, 'asset-other-ready')].sort(),
+    )
+  })
+
+  it('cache が存在しない環境では cache を新規作成しない', async () => {
+    const openSpy = vi.spyOn(globalThis.caches, 'open')
+
+    await sweepForeignLocalData(SELF)
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(await globalThis.caches.has(CACHE_NAME)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// sweep: log
+// ---------------------------------------------------------------------------
+
+describe('sweepForeignLocalData — log', () => {
+  it('完了時に event 名 + 件数のみを 1 行 log する(userId / key / row 内容を出さない)', async () => {
+    await seedForSweep()
+
+    await sweepForeignLocalData(SELF)
+
+    expect(mockLoggerInfo).toHaveBeenCalledTimes(1)
+    // toEqual の完全一致で「余計な field を足していない」ことまで pin する。
+    expect(mockLoggerInfo.mock.calls[0][0]).toEqual({
+      event: 'local_hygiene.sweep',
+      // seed は cache 10 件 = 生存 7 + 削除 3(malformed 1 本を含む)。
+      cache_deleted: 3,
+      cache_kept: 7,
+    })
   })
 })

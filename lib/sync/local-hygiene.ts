@@ -1,5 +1,6 @@
 // local-hygiene — 共有ブラウザに残るローカル残骸の掃除(tag mirror hygiene sprint /
-// spec §4)。 client 専用 module(getClientDb / Cache API 依存)。
+// spec §4 = sign-out purge・§5 = sign-in 異 owner sweep)。 client 専用 module
+// (getClientDb / Cache API 依存)。
 //
 // 保証水準は **eventual hygiene**(best-effort): 発火保証・順序保証・完了待ちなし、
 // 失敗は silent で次回実行が回収する。 表示保証(異 owner のデータを見せない)は
@@ -167,6 +168,96 @@ async function applyPurgeRule(
 }
 
 // ---------------------------------------------------------------------------
+// sync_meta の sweep 分類(spec §5.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * sweep が bare / scoped 判定に使う base 名(cursor 6 + 旧 `exam_view_prefs`)。
+ * **`SYNC_META_KEYS` から自動導出しない**: 導出にすると key を足すたび sweep 対象が
+ * 黙って増え、 将来 key を silent に消し続ける regression 源になる。 key 追加時に
+ * 「sweep 対象か否か」の判断を明示的に踏ませ、 その強制は分類 pin(`SYNC_META_KEYS`
+ * の全値が本 list ∪ `SWEEP_EXEMPT_BASES` に現れる)が担う。
+ */
+export const SWEEP_SYNC_META_BASES = [
+  'cards_cursor',
+  'exams_cursor',
+  'tombstone_cursor',
+  'tag_categories_cursor',
+  'tag_options_cursor',
+  'card_tags_cursor',
+  'exam_view_prefs',
+] as const satisfies readonly string[]
+
+/**
+ * sweep 対象外と**明示的に判断した** base(分類 pin が参照する除外 list)。 現状は空。
+ * sweep させたくない key を `SYNC_META_KEYS` に足すときはここに載せる(pin を黙らせる
+ * ためだけに足さない — 判断の記録である)。
+ */
+export const SWEEP_EXEMPT_BASES: readonly string[] = []
+
+/**
+ * sweep における sync_meta key の分類(spec §5.1 の厳密規則)。 各 base B について:
+ * key === B(bare = owner 空間分離より前の旧 key)→ delete / key が `B:` 始まりなら
+ * suffix が userId と完全一致で keep、 それ以外(空 suffix・複数 colon 等の malformed
+ * 含む)は既知 base の namespace 内の残骸として delete / どの base にも該当しない key
+ * (prefix 類似の `cards_cursor_v2` や未知 key)→ keep。
+ *
+ * 未知 key を**温存**するのは Cache blob と逆向きの fail-safe: sync_meta は機能状態で
+ * 誤削除 = 機能破壊、 Cache blob は再取得可能(spec §4.1 の規約)。
+ *
+ * userId が非空であることは caller(`sweepForeignLocalData`)が保証する。
+ */
+export function classifySyncMetaKeyForSweep(
+  key: string,
+  userId: string,
+): 'delete' | 'keep' {
+  for (const base of SWEEP_SYNC_META_BASES) {
+    if (key === base) return 'delete'
+    if (key.startsWith(`${base}:`)) {
+      return key.slice(base.length + 1) === userId ? 'keep' : 'delete'
+    }
+  }
+  return 'keep'
+}
+
+async function applySweepRule(
+  table: Table,
+  rule: HygieneSweepRule,
+  userId: string,
+): Promise<void> {
+  switch (rule.kind) {
+    case 'foreign-owner':
+      await table.where('user_id').notEqual(userId).delete()
+      return
+    case 'foreign-owner-and-status':
+      // 陽形(削除する status を列挙)。 単独 status index が無い store があるため
+      // 全 store 一律で filter 走査に揃える(purge 側と同じ判断)。
+      await table
+        .filter(
+          (row: Record<string, unknown>) =>
+            row.user_id !== userId && row[rule.field] === rule.value,
+        )
+        .delete()
+      return
+    case 'sync-meta-classify':
+      // key が string でない行は分類できないため温存(sync_meta の fail-safe は温存側)。
+      await table
+        .filter(
+          (row: Record<string, unknown>) =>
+            typeof row.key === 'string' &&
+            classifySyncMetaKeyForSweep(row.key, userId) === 'delete',
+        )
+        .delete()
+      return
+    default: {
+      // 網羅チェック(applyPurgeRule と同趣旨 — 未処理 kind の silent no-op を防ぐ)。
+      const exhaustive: never = rule
+      throw new Error(`unhandled sweep rule: ${JSON.stringify(exhaustive)}`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 保護 blob 集合(Dexie tx 後に算出 — Task 5 の sweep も同じ手順で再利用する)
 // ---------------------------------------------------------------------------
 
@@ -291,4 +382,80 @@ export function purgeAllLocalData(): Promise<void> {
     purgeInFlight = null
   })
   return purgeInFlight
+}
+
+// ---------------------------------------------------------------------------
+// sign-in 異 owner sweep(spec §5)
+// ---------------------------------------------------------------------------
+
+async function sweepCacheBlobs(
+  userId: string,
+  protectedKeys: ReadonlySet<string>,
+): Promise<{ deleted: number; kept: number }> {
+  let deleted = 0
+  let kept = 0
+  for (const request of await listMediaCacheRequests()) {
+    const parsed = parseMediaCacheKey(request.url)
+    // 自 namespace は温存(sign-in した本人の blob)/ 保護 blob は **owner を問わず**
+    // 温存(異 owner の進行中 DL / 非 'ready' asset に紐づく blob も不可侵)/
+    // 規約外・malformed key は削除(再取得可能ゆえ fail-safe は削除側 — spec §4.1)。
+    if (
+      parsed &&
+      (parsed.userId === userId ||
+        protectedKeys.has(blobProtectionKey(parsed.userId, parsed.assetId)))
+    ) {
+      kept += 1
+      continue
+    }
+    try {
+      await deleteMediaCacheRequest(request)
+      deleted += 1
+    } catch {
+      // best-effort: 1 key の失敗が残りの掃除を止めない(purge 部と同規約)。
+    }
+  }
+  return { deleted, kept }
+}
+
+/**
+ * sign-in 時に、 共有ブラウザへ残った**異 owner の残骸だけ**を回収する(spec §5)。
+ * 触るのは異 owner 行と sync_meta の bare / `base:<other>` のみで、 自分の pull が
+ * 読み書きする `base:<self>` namespace とは集合が交わらない(§5.2)。 purge と同じく
+ * 不可侵集合(pending / syncing / failed の outbox・非 'ready' assets + blob・
+ * 'downloading' jobs + added blob)は **owner を問わず** 残る。
+ *
+ * best-effort・fire-and-forget(失敗は caller が握り潰す前提)。 発火は mount 1 回で
+ * 並走しないため purge のような in-flight guard は持たない。 purge の `Dexie.exists`
+ * guard も持たない — 本関数の発火点は認証済み `(app)/app` 配下で、 同 layout の
+ * PullTrigger が同じ DB をどのみち作るため「空 DB を作らない」意味がない。
+ */
+export async function sweepForeignLocalData(userId: string): Promise<void> {
+  // fail-closed: 空 userId では Dexie / Cache とも一切触らない。
+  // `where('user_id').notEqual('')` は **ほぼ全 owner の行を「異 owner」と判定** する
+  // ため、 userId 未確定での誤呼出が全消去に化ける。
+  if (!userId) return
+
+  const db = getClientDb()
+  const tables = hygieneTables(db)
+  const names = Object.keys(HYGIENE_STORE_RULES) as HygieneStoreName[]
+
+  await db.transaction('rw', Object.values(tables), async () => {
+    for (const name of names) {
+      await applySweepRule(
+        tables[name],
+        HYGIENE_STORE_RULES[name].sweep,
+        userId,
+      )
+    }
+  })
+
+  // 保護集合は tx 後の残存行から算出する(purge と同一手順 — 削除条件を再記述しない)。
+  const cache = await sweepCacheBlobs(userId, await collectProtectedBlobKeys(db))
+  // 発火の実挙動を stg smoke で確定させるための 1 行(purge と同規律: event 名 +
+  // 件数のみ / userId・cache key・row 内容は出さない / 失敗時は log しない)。
+  logger.info({
+    event: 'local_hygiene.sweep',
+    cache_deleted: cache.deleted,
+    cache_kept: cache.kept,
+  })
 }

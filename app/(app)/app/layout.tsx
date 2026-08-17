@@ -6,6 +6,7 @@ import { PullTrigger } from './_components/pull-trigger'
 import { ReviewFlushTrigger } from './_components/review-flush-trigger'
 import { EntityMutationFlushTrigger } from './_components/entity-mutation-flush-trigger'
 import { MediaSweepTrigger } from './_components/media-sweep-trigger'
+import { HygieneSweepTrigger } from './_components/hygiene-sweep-trigger'
 import { ExamStatusProvider } from './_components/exam-status-live'
 import { getExamStatusMap } from '@/lib/exams/source-doc-status'
 
@@ -77,6 +78,12 @@ export default async function AppLayout({
             後始末 + 中断デッキ DL job('downloading' 残骸)の掃除を mount 1 回 kick する
             (Web Lock 多重タブ排他は sweepStaleMedia 内部、 UI なし、 失敗 silent)。 */}
         <MediaSweepTrigger userId={user.id} />
+        {/* hygiene sprint: 共有ブラウザに残る **異 owner** のローカル残骸(mirror /
+            異 owner の synced outbox / 'ready' assets / 'done' jobs / bare + 異 owner の
+            sync_meta / 異 owner の Cache blob)を mount 1 回 kick で回収する。 自 owner の
+            データと不可侵集合(pending 系 outbox・非 'ready' assets・'downloading' jobs)は
+            owner を問わず触らない。 UI なし、 失敗 silent。 */}
+        <HygieneSweepTrigger userId={user.id} />
         <AppHeader />
         <main className="flex-1 w-full">
           {children}
