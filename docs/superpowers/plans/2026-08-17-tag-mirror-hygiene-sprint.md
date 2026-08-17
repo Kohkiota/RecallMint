@@ -52,7 +52,7 @@
 - 目的: cursor 読取〜apply tx の network 窓に purge / sweep が挟まった遅着 delta の silent 欠落を自壊検知で防ぐ(purge / sweep が存在してよいための前提)。
 - 制約: Global「CAS の境界」。correctness sprint の凍結 pin(capture / validate-before-tx / owner echo)を一切退行させない — Task 完了時に `pull.test.ts` 全件 green を確認。
 - pin(spec §9-2): client mock の fetch 解決を遅延 → 窓中に ① cursor 削除(消失)② 別値へ更新(前進)③ snapshot 全 undefined の full pull 中に cursor 再生成(出現)— 各 variant で abort・mirror / cursor 不変・`{ok: false}`。④ abort が例外として外へ漏れず FAIL に正規化 ⑤ 消失 variant の続きで再 pull が since 無し full になる。red = CAS 検証を外す変異で各 variant が個別に fail。
-- 完了条件: pin red → green。typecheck / `pull.test.ts` 全 green(既存凍結 pin 含む)。commit。
+- 完了条件: pin red → green。typecheck / `pull.test.ts` 全 green — **task 報告に capture / validate-before-tx / owner echo / I-1 caller pin の個別 green 確認を明記**(凍結 pin 退行なしの証跡)。commit。
 
 ### Task 3: DL success gate(spec §4.2)
 
@@ -75,29 +75,29 @@
 - `lib/media/cache.ts`: `parseMediaCacheKey(url: string): { userId: string; assetId: string } | null`(pathname 厳密 `/__media/<userId>/<assetId>` 3 segment・query なし。malformed = null。key 形式の正本 `cacheKey` の隣に置く)/ `listMediaCacheRequests(): Promise<readonly Request[]>`(`typeof caches === 'undefined'` または `!(await caches.has(CACHE_NAME))` なら `[]` — **cache を新規作成しない**)/ `deleteMediaCacheRequest(req: Request): Promise<void>`。
 - `lib/sync/local-hygiene.ts`:
   - `purgeAllLocalData(): Promise<void>` — 手順: (1) module 変数 `purgeInFlight` で並走 dedup(実行中なら既存 Promise を返す)(2) Dexie 部: `Dexie.exists('recallmint') === false` なら skip(空 DB を作らない。exists→open の race は受容)。単一 rw tx(全 11 store)で: mirror 6 store `clear()` / `media_assets` は `'ready'` のみ削除 / `media_download_jobs` は `'done'` のみ削除 / `sync_meta` `clear()`(未知 key 含む)/ outbox 2 store は `'synced'` のみ削除(filter 走査)(3) 保護 blob 集合を tx 後に算出(生存した非 `'ready'` assets の id + `'downloading'` jobs の `added_asset_ids`)(4) Cache 部(**Dexie skip とは独立に実行**): 全 Request を列挙し、`parseMediaCacheKey` が保護集合に該当するもの以外(malformed 含む)を per-key try/catch で削除。全体 fire-and-forget・失敗 silent。
-  - `HYGIENE_STORE_NAMES: readonly string[]`(purge / sweep が扱う store 名の明示 list。網羅 pin 用)。
+  - `HYGIENE_STORE_RULES` — **store 名 → {purge 規則, sweep 規則} の宣言的分類表**(正確な型は実装で確定)。**purge / sweep の実行体はこの同じ表を消費する**(テスト専用の別 pure 実装を作らない — 判定と実削除の乖離を構造的に防ぐ)。sweep 列は本 task で完成形を定義し Task 5 が消費(Task 5 での表の作り直し禁止)。
 - `app/_components/sign-out-purge.tsx`: `'use client'`。`useAuth()` の `isLoaded && !isSignedIn` 観測ごとに `void purgeAllLocalData().catch(() => {})`(dedup は module 側)。UI なし・`SignOutPurge()` は null 返却。
 
 - 目的: sign-out での at-rest 残骸消去(best-effort)。発火は状態駆動 — useAuth は repo 初使用・cross-tab 反映未検証だが**保証にしない**(不発は次 sign-in の sweep が回収)。
-- 制約: Global「4 条件」「陽形」「fail-safe 規約」。実行時 auth 再検証・lock・queued 化はしない(遅走 purge の実害は spec §7 で bound 済)。DDD: ビジネス規則でなく同期基盤の衛生 — domain 層新設なし。
-- pin: ① 分類(spec §9-8): 削除規則を pure に切った判定の table-driven unit + fake-indexeddb 実走で「synced 消・pending/syncing/failed 生存(自 + 異 owner)・非 `'ready'` assets + blob 生存・`'downloading'` jobs + added blob 生存・`'ready'` / `'done'` 消・sync_meta 全消」(spec §9-3 の purge 側)② **網羅**: `new ClientDb().tables` の全名が `HYGIENE_STORE_NAMES` に現れる(store 追加で fail)③ **tx 原子性**(spec §9-5): tx 内 1 操作を throw させる注入 → 全 store 変更前のまま ④ Cache(spec §9-9 purge 側): malformed key 削除・保護 blob 生存・per-key 失敗続行・cache 不在時に新規作成しない ⑤ trigger(spec §9-7): signed-out で発火 / signed-in で不発火 / 並走 dedup / `Dexie.exists` false で Dexie 部 skip + Cache 部実行。
+- 制約: Global「4 条件」「陽形」「fail-safe 規約」。実行時 auth 再検証・lock・queued 化はしない(遅走 purge の実害は spec §7 で bound 済)。**命名・log・コメントで「完全消去」を主張しない**(不可侵集合が残る — Codex risk 指摘)。DDD: ビジネス規則でなく同期基盤の衛生 — domain 層新設なし。
+- pin: ① 分類(spec §9-8): `HYGIENE_STORE_RULES` の table-driven unit + fake-indexeddb 実走で「synced 消・pending/syncing/failed 生存(自 + 異 owner)・非 `'ready'` assets 行 + blob 生存・`'downloading'` jobs 行 + added blob 生存・`'ready'` / `'done'` 消・sync_meta 全消」(spec §9-3 の purge 側)② **網羅**: `new ClientDb().tables` の全名が `HYGIENE_STORE_RULES`(または明示除外 list)に**分類として**現れる(store 名の追加だけでは通らない — purge / sweep 両規則の宣言を強制)③ **tx 原子性**(spec §9-5): tx 内 1 操作を test 側 spy で throw させる(**production に failure hook を足さない**)→ 全 store 変更前のまま ④ Cache(spec §9-9 purge 側): malformed key 削除・保護 blob 生存・per-key 失敗続行・cache 不在時に新規作成しない ⑤ trigger(spec §9-7): signed-out で発火 / signed-in で不発火 / 並走 dedup / `Dexie.exists` false で Dexie 部 skip + Cache 部実行。
 - 完了条件: pin red(規則・gate 個別変異)→ green。typecheck / 上記 test + audit test 通過。commit。
 
 ### Task 5: sign-in 異 owner sweep + 旧 key 物理削除(spec §5)
 
 **Files:** Modify `lib/sync/local-hygiene.ts`。Create `app/(app)/app/_components/hygiene-sweep-trigger.tsx`。Modify `app/(app)/app/layout.tsx`(trigger 兄弟に追加)。Test: `lib/sync/local-hygiene.test.ts` / `app/(app)/app/_components/hygiene-sweep-trigger.test.tsx`。
 
-**Interfaces(Consumes):** Task 4 の `parseMediaCacheKey` / `listMediaCacheRequests` / `deleteMediaCacheRequest` / `HYGIENE_STORE_NAMES`。
+**Interfaces(Consumes):** Task 4 の `parseMediaCacheKey` / `listMediaCacheRequests` / `deleteMediaCacheRequest` / `HYGIENE_STORE_RULES`(sweep 列)+ 保護 blob 集合の算出 helper(Task 4 と同一手順 — Dexie tx 後・**owner 不問**の残存 非 `'ready'` assets + `'downloading'` jobs から算出)。
 
 **Interfaces(Produces):**
 - `SWEEP_SYNC_META_BASES: readonly string[]` — **明示リテラル 7 本**(`'cards_cursor'`, `'exams_cursor'`, `'tombstone_cursor'`, `'tag_categories_cursor'`, `'tag_options_cursor'`, `'card_tags_cursor'`, `'exam_view_prefs'`)。`SYNC_META_KEYS` から導出**しない**。`SWEEP_EXEMPT_BASES: readonly string[] = []`(分類強制 pin 用の明示除外 list)。
 - `classifySyncMetaKeyForSweep(key: string, userId: string): 'delete' | 'keep'` — spec §5.1 厳密規則: 各 base B に対し key === B(bare)→ delete / key が `B:` 始まりで suffix === userId → keep・それ以外(空 suffix・colon 入り)→ delete / どの base にも非該当(prefix 類似含む)→ keep。
-- `sweepForeignLocalData(userId: string): Promise<void>` — 単一 rw tx: mirror 6 store `where('user_id').notEqual(userId).delete()` / assets = 異 owner かつ `'ready'` / jobs = 異 owner かつ `'done'` / outbox = 異 owner かつ `'synced'`(filter 走査)/ sync_meta = 全 key を `classifySyncMetaKeyForSweep` で判定し delete 分を一括削除。tx 後 Cache 部: malformed → 削除 / well-formed で userId ≠ self → 保護 blob 除き削除 / 自 namespace → 温存。fire-and-forget・失敗 silent。
+- `sweepForeignLocalData(userId: string): Promise<void>` — **空 userId は即 return(Dexie / Cache とも不変・fail-closed。`notEqual('')` が全 owner を foreign 判定する事故を構造的に防ぐ — Codex Critical 指摘)**。単一 rw tx(`HYGIENE_STORE_RULES` の sweep 列を消費): mirror 6 store `where('user_id').notEqual(userId).delete()` / assets = 異 owner かつ `'ready'` / jobs = 異 owner かつ `'done'` / outbox = 異 owner かつ `'synced'`(filter 走査)/ sync_meta = 全 key を `classifySyncMetaKeyForSweep` で判定し delete 分を一括削除。tx 後 Cache 部: malformed → 削除 / well-formed で userId ≠ self → 保護 blob 除き削除 / 自 namespace → 温存。fire-and-forget・失敗 silent。
 - `HygieneSweepTrigger({ userId }: { userId: string })` — `MediaSweepTrigger` precedent(mount 1 回 `useEffect` / `[userId]` deps / fire-and-forget / UI なし)。
 
 - 目的: sign-in 時の異 owner 残骸回収。**bare legacy key 7 本(cursor 6 + 旧 `exam_view_prefs`)の物理削除はこの分類が吸収**(独立 task なし — OT 裁定 2)。
 - 制約: Global 準拠。自分の pull と非干渉(異 owner + bare のみ触る)。将来 key の判断は allowlist 追加を明示的に踏む(分類強制 pin が機械強制)。
-- pin: ① allowlist / parser(spec §9-4): bare 7 本削除・`base:<other>` 削除・`base:<self>` 温存・未知 key(`future_key` / `future_key:<self>`)温存・空 suffix / 複数 colon 削除・`cards_cursor_v2` 温存 ② **分類強制**: `SYNC_META_KEYS` 全値 ∈ `SWEEP_SYNC_META_BASES ∪ SWEEP_EXEMPT_BASES` ③ sweep 側の不可侵 + 異 owner 分類(spec §9-3: 異 owner synced 消・異 owner pending 生存・自 owner 全生存・非 `'ready'` / `'downloading'` 生存)④ Cache(spec §9-9 sweep 側): 異 owner key 削除・malformed 削除・自 namespace 温存・保護 blob 生存 ⑤ trigger: mount kick + userId 変化で再 kick。
+- pin: ① allowlist / parser(spec §9-4): bare 7 本削除・`base:<other>` 削除・`base:<self>` 温存・未知 key(`future_key` / `future_key:<self>`)温存・空 suffix / 複数 colon 削除・`cards_cursor_v2` 温存 ② **分類強制**: `SYNC_META_KEYS` 全値 ∈ `SWEEP_SYNC_META_BASES ∪ SWEEP_EXEMPT_BASES` ③ sweep 側の不可侵 + 異 owner 分類(spec §9-3・**全列挙**): 異 owner の pending / syncing / failed **全状態**生存・自 / 異 owner 双方の非 `'ready'` assets **行 + 対応 blob** 生存・自 / 異 owner 双方の `'downloading'` jobs **行 + added blob** 生存・対になる異 owner の synced / `'ready'` / `'done'` は削除・自 owner は全生存 ④ **空 userId**: Dexie / Cache とも不変 ⑤ **tx 原子性**(spec §9-5 の sweep 側 — purge とは別 query 群のため独立に必要): tx 内 1 操作を test 側 spy で throw → 全 store 変更前のまま ⑥ Cache(spec §9-9 sweep 側): 異 owner key 削除・malformed 削除・自 namespace 温存・保護 blob 生存・**per-key 失敗後も残り(異 owner / malformed)の削除が続行** ⑦ trigger: mount kick + userId 変化で再 kick。
 - 完了条件: pin red → green。typecheck / 関連 test 通過。commit。
 
 ### Task 6: M-c — option-list 一覧 read の owner-scope 化(spec §6)
@@ -115,7 +115,7 @@
 
 - 目的: ① architecture.md に hygiene 層の不変条件(purge / sweep = 単一 tx + 不可侵集合 + best-effort / pull apply = cursor CAS 自壊検知 / sync_meta sweep = リテラル allowlist + 分類強制 pin / DL success gate)+ 残余リスク行を「at-rest 残骸 = eventual 回収・pending / failed 残置のみ公開前トラックへ」に更新 ② 棚卸し doc へ Appendix 追記: media flush-gate hazard + DL blob 完全性 TOCTOU(spec §4.2)を新規発見として記録。
 - 制約: correctness spec r5 は凍結のまま改稿しない(§5.1a 訂正の正記録 = session doc §7b + hygiene spec §2)。docs commit は `docs(_)` + `[no-review]` で即 commit。
-- 完了条件(sprint 完了 gate・報告 chat に各 1 行明記): whole-repo `pnpm vitest run` 全 green(**correctness 凍結 pin 含む**)/ `pnpm lint --max-warnings=0` exit 0 / `pnpm typecheck` exit 0 / `pnpm test:iso` green / `pnpm run audit` exit 0 / `pnpm build`(postbuild 連結)PASS。
+- 完了条件(sprint 完了 gate・報告 chat に各 1 行明記)。**区分**: spec / CLAUDE.md 必須 = `pnpm lint --max-warnings=0` exit 0 / `pnpm test:iso` green / `pnpm run audit` exit 0。追加 gate(デプロイ前チェック由来)= whole-repo `pnpm vitest run` 全 green(**correctness 凍結 pin 含む — 退行なしの証跡**)/ `pnpm typecheck` exit 0 / `pnpm build`(postbuild 連結)PASS。追加 gate の失敗は「本 sprint 起因か既存か」を切り分けて報告し、無関係な既存失敗の修正へ scope を広げない(OT 判断)。
 
 ---
 

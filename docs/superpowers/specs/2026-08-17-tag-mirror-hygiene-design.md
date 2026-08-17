@@ -1,6 +1,6 @@
 # tag mirror hygiene sprint — at-rest 衛生 + correctness follow-up(spec)
 
-- 日付: 2026-08-17(r4 draft・OT spec review 待ち)
+- 日付: 2026-08-17(**r4 凍結** — OT 承認・Codex re-review GO / Critical 0 / Important 0)
 - 状態: 設計裁定は確定済 — OT 裁定 5 件(purge 発火点 / sync_meta 非対称 / media 不可侵 / M-c 例外化 / 受容コスト維持)+ Codex 事前指摘 4 件(cursor CAS / downloading jobs 不可侵 / purge の Dexie・Cache 分離 / allowlist リテラル固定)を全採用して織込済。r2 = Codex spec cross-check(`docs/codex/2026-08-17-plan-tag-mirror-hygiene-spec.md`)の採用分を反映: 不可侵集合の snapshot 意味論 / 削除条件の陽形化 + store 網羅 pin(§4.1・§9)/ CAS の失敗契約と回復 2 分岐(§3)/ purge 発火単位の定義(§4.3)/ sync_meta parser 厳密規則(§5.1)。**r3 = Codex review の Important 4 件(全採用・OT の r2 承認撤回を受けた改訂)**: ① 進行中 DL の TOCTOU は受容でなく契約違反 → DL 完了時検証で構造的に閉じる(§4.2)② CAS「出現」ケースの独立 pin(§9-2)③ sweep の未知 Cache key は温存でなく削除 + fail-safe 方向の規約(§4.1)④ 保証開始条件を「pre-hygiene writer 不在」まで強化(§8-4)。**r4 = Codex r3 review の Important 1 件(残余)**: DL 検証を「`'done'` 確定直前」から**全成功出口を支配する success gate**へ(`misses === 0` の早期 `ok:true` 出口が未支配だった — §4.2・§9-10)。
 - 入力(正): correctness sprint session doc(`docs/superpowers/sessions/2026-08-16-tag-mirror-correctness-sprint.md` §7b・§8)/ correctness spec r5(`2026-08-16-tag-mirror-owner-scope-and-signout-purge-design.md` §2 非スコープ列挙・§7 三層)/ 棚卸し doc(`2026-08-16-tag-mirror-writer-inventory-factfinding.md`・Appendix A 含む)。store 分類の出発点は r3(`addb3f5`)§4.1 の purge / sweep 列(**r5 に同表は無い** — r4 改稿で削除済。bootstrap reset 列は廃止)。
 - 背景: correctness sprint(Path C・prod 反映済)で「異 owner データが表示されない」は構造保証済。本 sprint は公開前 gate ★ の残り(at-rest 衛生)+ correctness follow-up 1 件(§7b)を閉じる。
@@ -67,14 +67,14 @@ purge / sweep 自体は **best-effort**: 発火保証・順序保証・完了待
 
 ### 4.1 store 分類(r3 §4.1 の purge / sweep 列を出発点に、不可侵集合で改訂)
 
-| store 群 | purge(sign-out・全 owner 対象) | sweep(sign-in・異 owner のみ) |
-|---|---|---|
-| mirror 6(exams / cards / study_days / tag_categories / tag_options / card_tags) | `clear()` | `where('user_id').notEqual(userId).delete()` |
-| media_assets | **`status === 'ready'` の行のみ削除**(非 `'ready'` は不可侵) | 異 owner **かつ** `'ready'` のみ削除 |
-| media_download_jobs | **`status === 'done'` の行のみ削除** | 異 owner **かつ** `'done'` のみ削除 |
-| sync_meta | **全消し(未知 key 含む)** | §5.1 の非対称規則(bare + `base:<other>` 削除 / `base:<self>` + 未知 key 温存) |
-| outbox 2(answer_events / entity_mutations) | **synced のみ削除**(pending / syncing / failed 不可侵 — r1 承認済・不変) | 異 owner の synced のみ削除 |
-| Cache API(`recallmint-media`) | 保護 blob(§4.2)以外の全 key 削除 | 異 owner namespace(`/__media/<other>/…`)+ malformed / 規則外 key を削除、保護 blob 除く |
+| store 群                                                                        | purge(sign-out・全 owner 対象)                                           | sweep(sign-in・異 owner のみ)                                                           |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| mirror 6(exams / cards / study_days / tag_categories / tag_options / card_tags) | `clear()`                                                                | `where('user_id').notEqual(userId).delete()`                                            |
+| media_assets                                                                    | **`status === 'ready'` の行のみ削除**(非 `'ready'` は不可侵)             | 異 owner **かつ** `'ready'` のみ削除                                                    |
+| media_download_jobs                                                             | **`status === 'done'` の行のみ削除**                                     | 異 owner **かつ** `'done'` のみ削除                                                     |
+| sync_meta                                                                       | **全消し(未知 key 含む)**                                                | §5.1 の非対称規則(bare + `base:<other>` 削除 / `base:<self>` + 未知 key 温存)           |
+| outbox 2(answer_events / entity_mutations)                                      | **synced のみ削除**(pending / syncing / failed 不可侵 — r1 承認済・不変) | 異 owner の synced のみ削除                                                             |
+| Cache API(`recallmint-media`)                                                   | 保護 blob(§4.2)以外の全 key 削除                                         | 異 owner namespace(`/__media/<other>/…`)+ malformed / 規則外 key を削除、保護 blob 除く |
 
 **削除条件は陽形(positive)で書く**(Codex cross-check 採用): media_assets = `'ready'` のみ / media_download_jobs = `'done'` のみ / outbox = `'synced'` のみ。否定形(`status !== 'downloading'` 等)は将来追加された status を silent に削除対象へ入れる regression 源のため使わない。store の側も同様に、purge / sweep が扱う store 一覧は明示 list とし、`ClientDb` への store 追加時に分類判断を強制する網羅 pin を置く(§9-8)。
 
@@ -150,17 +150,17 @@ sweep と purge で sync_meta の扱いを**意図的に非対称**にする:
 
 ## 7. correctness 非毀損の論証(失敗モード列挙)
 
-| 失敗モード | 帰結 | 表示保証への影響 |
-|---|---|---|
-| purge / sweep が**不発**(tab close・useAuth 不発火) | 残骸が残る | なし — 表示保証は読み層(r5 §3-6)が担う。次回実行で回収 |
-| Dexie tx が**途中失敗** | 全 store 巻き戻し(単一 tx) | なし — 「mirror 消・cursor 残」の部分状態が存在しない |
-| Cache 部だけ失敗 / blob だけ先に消えた | blob 欠落 | なし — 表示解決が server から再 fetch(既存経路) |
-| purge / sweep が pull の network 窓に**挟まる** | 遅着 apply が CAS abort | なし — 次 trigger の pull(cursor 消失なら full / 前進なら現在値から delta)で回復 |
-| 保護集合算出後に **upload** が開始(Cache TOCTOU) | 新規 blob が cleanup に巻き込まれうる | なし — PUT source は in-memory blob・行は生存し gate 不変・表示は再 fetch で回復(§4.2) |
-| cleanup が**進行中 DL** の blob(hit 分 / snapshot 後の added 分)を消す | 全成功出口の success gate が欠けを検知 → `{ok: false}`(DL 本体経路は rollback 合流 / 全件 hit の早期経路は返すのみ) | なし — all-or-nothing 契約は維持(実害 = DL 失敗・再実行可)。検証通過後の削除は sign-out の意図的消去で契約違反でない(§4.2) |
-| purge が新 session 開始後に**遅走** | 新 session の mirror / cursor が消える | 一時的に mirror 空(correctness sprint で受容済の liveness gap と同型)— 次 pull full で回復。pending 不可侵ゆえデータ喪失なし |
-| **二重実行** | 冪等 | なし |
-| 遅着 `putAssetBlob` が purge 後に着地 | Cache に残骸 | なし — userId namespace で読み経路が到達しない。次回 sweep で回収 |
+| 失敗モード                                                             | 帰結                                                                                                                | 表示保証への影響                                                                                                             |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| purge / sweep が**不発**(tab close・useAuth 不発火)                    | 残骸が残る                                                                                                          | なし — 表示保証は読み層(r5 §3-6)が担う。次回実行で回収                                                                       |
+| Dexie tx が**途中失敗**                                                | 全 store 巻き戻し(単一 tx)                                                                                          | なし — 「mirror 消・cursor 残」の部分状態が存在しない                                                                        |
+| Cache 部だけ失敗 / blob だけ先に消えた                                 | blob 欠落                                                                                                           | なし — 表示解決が server から再 fetch(既存経路)                                                                              |
+| purge / sweep が pull の network 窓に**挟まる**                        | 遅着 apply が CAS abort                                                                                             | なし — 次 trigger の pull(cursor 消失なら full / 前進なら現在値から delta)で回復                                             |
+| 保護集合算出後に **upload** が開始(Cache TOCTOU)                       | 新規 blob が cleanup に巻き込まれうる                                                                               | なし — PUT source は in-memory blob・行は生存し gate 不変・表示は再 fetch で回復(§4.2)                                       |
+| cleanup が**進行中 DL** の blob(hit 分 / snapshot 後の added 分)を消す | 全成功出口の success gate が欠けを検知 → `{ok: false}`(DL 本体経路は rollback 合流 / 全件 hit の早期経路は返すのみ) | なし — all-or-nothing 契約は維持(実害 = DL 失敗・再実行可)。検証通過後の削除は sign-out の意図的消去で契約違反でない(§4.2)   |
+| purge が新 session 開始後に**遅走**                                    | 新 session の mirror / cursor が消える                                                                              | 一時的に mirror 空(correctness sprint で受容済の liveness gap と同型)— 次 pull full で回復。pending 不可侵ゆえデータ喪失なし |
+| **二重実行**                                                           | 冪等                                                                                                                | なし                                                                                                                         |
+| 遅着 `putAssetBlob` が purge 後に着地                                  | Cache に残骸                                                                                                        | なし — userId namespace で読み経路が到達しない。次回 sweep で回収                                                            |
 
 ## 8. 運用注意・受容事項
 
