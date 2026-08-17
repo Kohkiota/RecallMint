@@ -3,7 +3,7 @@
 - **spec**: `docs/superpowers/specs/2026-08-17-card-tags-delta-completeness-design.md`(r3 凍結 + 同日 erratum)
 - **plan**: `docs/superpowers/plans/2026-08-17-card-tags-delta-completeness.md`
 - **fact-finding(正)**: `docs/superpowers/sessions/2026-08-17-card-tags-delta-loss-factfinding.md`
-- **状態**: **Task 1〜4 完了・未 push**。Task 5(deploy 確認 + stg smoke + rollout gate)は OT push 後。
+- **状態**: **Task 1〜5 完了**。stg smoke **総合 PASS**(§7a)。残 = prod 反映判断(spec §7-5 の prod 未リリース確認)。
 - 実装方式 = `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 review)
 
 ---
@@ -108,6 +108,103 @@ server は 2 file のみ。client は無変更(I-5)。
 - **手順 1 は差分試験ではない**。cursor を消した直後の pull は *full* pull で、I-4(b) により新分岐を skip する(= IDB は既に正しい)。続く delta pull が fix を実際に踏むのは、**cards に載った card が `created_at < since_card_tags` のタグを 1 つ以上持つ**場合だけ。Fault-A の境界集合がたまたま空なら、**手順 1 は未修正コードでも同じく PASS する**。
   → **fix の証拠は手順 2 に乗っている**。加えて delta 応答を開いて「返った `card_tags` に `created_at < since_card_tags` の行が 1 つ以上ある」= by-card が実際に寄与したことを確認する。手順 4 の projection 行数は**非ゼロであること + cursor との比較**まで報告して初めてこの役を果たす。
 - **楽観的タグ編集と outbox flush の間に pull が挟まった時の挙動が変わった**。修正前はその pull が当該 card の local タグを*空にしていた*が、修正後は server 集合に復元する。手順 3 の `remove x` → `S` 確認で、flush 前に pull が着地すると IDB は `S ∪ {x}` を示し **FAIL に見える**。**手順 3 は flush 完了を確認してから IDB を読む**こと。regression ではなく収束が改善した結果だが、中間観測の意味が変わる。
+
+---
+
+## 7a. stg smoke 実施結果(2026-08-17・**総合 PASS**)
+
+- 環境: `https://stg.recallmint.nekotest.net` / Playwright MCP / user A = `66fb6d00-526f-4264-9691-e2e036c656f7`
+- **deploy 対象 = `04a20ee`**(origin/develop)。**注記: 最終 commit `3b7632d` は smoke 実施時点で未 push**。差分は comment/docs のみで非コメント行の差分ゼロ(機械確認済)= 挙動同一のため、本 smoke は `3b7632d` に対しても有効。
+- **deploy SHA の直接照合は不能**(repo が `VERCEL_GIT_COMMIT_SHA` をどこにも露出していないため。既知の制約)。代わりに**機能面で新コードの稼働を実証**した(下記 §7a-0)。
+
+### 7a-0. deploy 反映の機能的実証(SHA 照合の代替)
+
+初回 delta 応答(reqid `hnd1::hnd1::8dmbx-1787010524295-823d6adb661d`):
+
+| 指標 | 実測 | 旧コードなら |
+|---|---|---|
+| `cards.length` | 5 | 5(同じ) |
+| `card_tags.length` | 30 | 10 |
+| **変更 card への projection 行数** | **20** | 0 |
+| **`created_at < since_card_tags` の行数** | **20** | **0** |
+| `cursors.card_tags` | `2026-08-15T00:00:01.169Z`(= 送った cursor と同値・**逆行なし**) | 同左 |
+
+`since_card_tags` = `2026-08-15T00:00:01.169Z` に対し、応答に `2026-08-14T23:49:43.358Z` 等の**より古い行が 20 件**含まれる = **by-card read が実際に寄与している**直接証拠。旧コードではこの数は原理的に 0。加えて、応答に古い行が混ざっているのに **cursor は増分由来のまま前進も後退もしていない** = I-2 が本番で成立。
+
+### 7a-1. 手順 1(cursor 削除 → full pull → delta pull)= **PASS**
+
+**本データでは手順 1 も差分試験として機能した**(§7 の注意は「境界集合が空なら差分にならない」であり、実測の境界集合は非空 = 5 card / 20 タグ・全て増分に載らない)。
+
+| 段階 | IDB `card_tags` | 境界 5 card の pair 数 |
+|---|---|---|
+| 初期 | 6612 | 20 |
+| cursor 削除 → reload(**full pull**) | 6612 | — |
+| reload(**delta pull**・reqid の since 6 本を確認) | **6612** | **20** |
+
+**旧挙動は 6612 → 6592(−20)**。DB SQL readback との `(card_id, option_id)` 集合比較 = **完全一致(`diff` 差分ゼロ・20/20)**。
+
+### 7a-2. 手順 2(復習 → delta pull)= **PASS**(fix の主証拠)
+
+スマート復習で 5 枚回答 → threshold flush(pending 5 件)→ server 反映を確認。
+
+- 復習された 5 card の `updated_at` = `2026-08-17 23:53:33.527992+00`(同一 tx ゆえ同値)
+- **5 card のタグ計 28 件が全て `card_tags` cursor より古い** = 旧バグの発火条件を完全に満たす
+- delta pull 後の IDB: **28/28 保持**(per-card: 5 / 6 / 6 / 7 / 4 — DB と一致)、総数 **6612 不変**
+- DB SQL readback との集合比較 = **完全一致(`diff` 差分ゼロ・28/28)**
+
+旧コードなら、この 5 card のタグ 28 件は local から全消しされ 0 件に戻らなかった。
+
+### 7a-3. 手順 3(server 非破壊・`S → S∪{x} → S`)= **PASS**
+
+対象 = **手順 2 で復習した同じ card** `0127c978-1045-4214-b6ac-19b9b74b4983`(exam `c676e09d…` / タイトル `PERF-SEED カード 0070`)。`S` = 7 件。`x` = 分野「化学」(`9ec801af…`・未割当・multi カテゴリ)。UI(テーブルビューのタグバッジ → popover)から実操作。
+
+| 段階 | outbox | server 集合 | IDB 集合 | user 総数 |
+|---|---|---|---|---|
+| 事前 | — | 7(S) | 7 | 6612 |
+| add x(**flush 完了を待って読取**) | `update_field` `synced` / `value_len=8` | **8 = S∪{x}** | 8 | **6613** |
+| remove x(同上) | `update_field` `synced` / `value_len=7` | **7 = S** | 7 | **6612** |
+
+server / IDB とも `diff` 差分ゼロで一致。**意図した差分以外の server 行削除はゼロ**(総数が 6612 → 6613 → 6612 と対称に戻る)= Critical 伝播経路が閉じていることの実地確認。
+
+`§7` の注意どおり、各段階で **outbox の `pending`/`syncing` が消えるまで待ってから** IDB / server を読んだ。
+
+### 7a-4. 実測記録(rollout 判断の入力)
+
+手順 3 完了後の delta 応答(reqid `hnd1::hnd1::z7mfk-1787011057381-751fc3ff0c29`):
+
+| 指標 | 実測 |
+|---|---|
+| `cards.length` | 5 |
+| `card_tags.length` | 38 |
+| **変更 card への projection 行数** | **28**(非ゼロ) |
+| `created_at < since_card_tags` の行数 | 21 |
+| 応答 byte | 15,541 |
+| latency | 196 ms(初回計測は 263 ms) |
+
+規模感: 変更 card 5 件 / by-card 28 行で応答 15 KB・200 ms 前後。**full pull(6612 行)より 2 桁小さい**ため、spec §5 の量的互換の主張は実測でも成立。
+
+### 7a-5. smoke で新たに判明した事実
+
+**タグ操作は whole-set replace ゆえ、その card の全 card_tags 行を再 INSERT する** — `handleTagOptionIds` は DELETE→INSERT なので、`x` を remove した後の 7 行は `created_at` が**全て操作時刻(`2026-08-17 23:56:59.307565+00`)に更新**される。帰結:
+
+- タグ操作した card の全タグは、その直後の増分 stream に**必ず載る**(= by-card の寄与なしでも復元される)
+- ゆえに **`card_tags` cursor はタグ操作のたびに前進する**(実測: `2026-08-15T00:00:01.169Z` → `2026-08-17T23:56:59.307Z`)
+- 逆に言えば、**by-card read が本質的に効くのは「タグを触っていないが `updated_at` が動いた card」**(= 復習・本文編集・card 移動)。手順 2 がまさにその形で、fix の主証拠がそこに乗る理由を裏付ける
+
+### 7a-6. smoke で生じた副作用(記録)
+
+- A の 5 card を実際に復習した(`reps` 0→1・`due` 前進)。テストアカウントの学習状態であり実害なし
+- A の cursor を検証のため一度削除 → full pull 1 回(cursor は再生成済)
+- 対象 card `0127c978…` の card_tags 7 行は `created_at` が smoke 実施時刻に更新された(whole-set replace の仕様どおり・集合は不変)
+- 前回 hygiene smoke 由来の合成 fixture(`answer_events` の `failed` 1 行 / `entity_mutations` の `syncing`・`failed` 3 行)は**不可侵集合ゆえ残置**。今回の flush 判定では pending に数えられず無害だった
+
+### 7a-7. 総合判定
+
+**PASS**(手順 1 / 2 / 3 の全項目 + 実測記録)。spec §7-4「stg smoke PASS」を充足。**本節が rollout の正記録**。
+
+残る rollout gate = spec §7-5(prod 未リリースの OT 確認)。
+
+---
 
 ## 8. 受容・記録のみ(修正しない)
 
