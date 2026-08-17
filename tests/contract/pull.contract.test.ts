@@ -43,8 +43,13 @@ vi.mock('@/lib/db/tag-categories-pull', () => ({
 vi.mock('@/lib/db/tag-options-pull', () => ({
   getOptionsDelta: vi.fn(),
 }))
+// route は同 module から getCardTagsByCardIds も import する (変更 card の
+// authoritative 集合の取り直し)。 factory に足さないと、 since_card_tags 付きの
+// case を将来足した瞬間 route の try/catch が TypeError を握って 500 になり、
+// 原因が見えない形で contract が落ちる。
 vi.mock('@/lib/db/card-tags-pull', () => ({
   getCardTagsDelta: vi.fn(),
+  getCardTagsByCardIds: vi.fn(),
 }))
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },

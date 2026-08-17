@@ -34,6 +34,7 @@ vi.mock('@/lib/db/tag-options-pull', () => ({
 }))
 vi.mock('@/lib/db/card-tags-pull', () => ({
   getCardTagsDelta: vi.fn(),
+  getCardTagsByCardIds: vi.fn(),
 }))
 vi.mock('@/lib/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -54,7 +55,11 @@ import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
 import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
 import { getOptionsDelta } from '@/lib/db/tag-options-pull'
-import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
+import {
+  getCardTagsDelta,
+  getCardTagsByCardIds,
+} from '@/lib/db/card-tags-pull'
+import { logger } from '@/lib/logger'
 import { GET } from './route'
 
 const FAKE_USER = { id: 'user-uuid-1' } as unknown as User
@@ -200,6 +205,11 @@ beforeEach(() => {
   // 書かなくて済むよう beforeEach で default mock を入れる (空配列 + null cursor)。
   // 個別 test が必要なら test 内で上書き mock 可能。
   vi.mocked(getCardTagsDelta).mockResolvedValue(fakeCardTagsDelta())
+  // vi.clearAllMocks() は呼出履歴だけを消し implementation は残る (config も
+  // mockReset/clearMocks を設定していない)。 default を毎 test 入れておかないと
+  // describe をまたいで前の mockResolvedValue が漏れ、 branch を踏む test が
+  // 気付かず他 describe の rows を受け取る。
+  vi.mocked(getCardTagsByCardIds).mockResolvedValue([])
 })
 
 describe('GET /api/pull', () => {
@@ -549,5 +559,178 @@ describe('GET /api/pull', () => {
     expect(body.card_tags).toEqual([])
     expect(body.cursors.card_tags).toBeNull()
     expect(getCardTagsDelta).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// card_tags authoritative replace (spec 2026-08-17-card-tags-delta-completeness)
+// ---------------------------------------------------------------------------
+
+// 応答 card_tags の比較は常に (card_id, option_id) の集合で行う (spec §4-8):
+// 配列順は契約でなく、件数一致だけの assert は欠落と重複追加が相殺して偽陰性になる。
+function pairSet(rows: ClientCardTag[]): string[] {
+  return rows.map((r) => `${r.card_id}:${r.option_id}`).sort()
+}
+
+// card_tags 以外の 5 stream を空にし、認証済みにする共通 arrange。
+function arrangeOtherStreams(cards: ClientCard[] = []) {
+  vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+  vi.mocked(getCardsDelta).mockResolvedValue(
+    fakeCardsDelta(cards, '2026-05-02T00:00:00.000Z'),
+  )
+  vi.mocked(getExamsDelta).mockResolvedValue(fakeExamsDelta())
+  vi.mocked(getTombstonesDelta).mockResolvedValue(fakeTombstonesDelta())
+  vi.mocked(getCategoriesDelta).mockResolvedValue(fakeCategoriesDelta())
+  vi.mocked(getOptionsDelta).mockResolvedValue(fakeOptionsDelta())
+}
+
+const SINCE_CT_URL =
+  'http://x/api/pull?since_card_tags=2026-06-01T00%3A00%3A00.000Z'
+
+// 増分の最大 created_at。 replace で落ちる c1:o_old が持つ値なので、
+// cursor を「応答 rows から再計算」する実装では絶対に再現できない (I-2 の red 材料)。
+const INCREMENTAL_MAX = '2026-06-05T00:00:00.000Z'
+
+// 増分 = 変更 card c1 の (削除済かもしれない) 旧行 + 非変更 card c2 の行。
+function incrementalRows(): ClientCardTag[] {
+  return [
+    fakeCardTag({
+      card_id: 'c1',
+      option_id: 'o_old',
+      created_at: INCREMENTAL_MAX,
+    }),
+    fakeCardTag({
+      card_id: 'c2',
+      option_id: 'o_x',
+      created_at: '2026-06-02T00:00:00.000Z',
+    }),
+  ]
+}
+
+describe('GET /api/pull — 変更 card の card_tags を authoritative 集合で置換 (spec §4-1)', () => {
+  // by-card は since より古い created_at の行を返す = 増分 query では原理的に
+  // 取得できない行。 これが client の「全削除 → delta で再構築」で恒久欠落していた。
+  const byCardRows: ClientCardTag[] = [
+    fakeCardTag({
+      card_id: 'c1',
+      option_id: 'o_new',
+      created_at: '2026-05-01T00:00:00.000Z',
+    }),
+  ]
+
+  // maxCreatedAt = null variant は「増分 rows があるのに cursor が null」という
+  // mock 固有の組合せ。 route が cursor を素通しする (再計算しない) ことの pin。
+  describe.each([
+    { label: 'cursor=null', maxCreatedAt: null },
+    { label: `cursor=${INCREMENTAL_MAX}`, maxCreatedAt: INCREMENTAL_MAX },
+  ])('$label', ({ maxCreatedAt }) => {
+    beforeEach(() => {
+      arrangeOtherStreams([fakeCard({ id: 'c1' })])
+      vi.mocked(getCardTagsDelta).mockResolvedValue(
+        fakeCardTagsDelta(incrementalRows(), maxCreatedAt),
+      )
+      vi.mocked(getCardTagsByCardIds).mockResolvedValue(byCardRows)
+    })
+
+    it('① by-card 由来の行 (増分に載らない旧タグ) が応答に載る', async () => {
+      const res = await GET(makeReq(SINCE_CT_URL))
+      const body = await res.json()
+      expect(pairSet(body.card_tags)).toContain('c1:o_new')
+    })
+
+    it('② cursors.card_tags は増分由来の値のまま (応答 rows から再計算しない)', async () => {
+      const res = await GET(makeReq(SINCE_CT_URL))
+      const body = await res.json()
+      expect(body.cursors.card_tags).toBe(maxCreatedAt)
+    })
+
+    it('③ replace: 変更 card は by-card のみ採用し増分の当該 card 行は捨てる / 非変更 card の増分行は残る', async () => {
+      const res = await GET(makeReq(SINCE_CT_URL))
+      const body = await res.json()
+      expect(pairSet(body.card_tags)).toEqual(['c1:o_new', 'c2:o_x'])
+      expect(pairSet(body.card_tags)).not.toContain('c1:o_old')
+    })
+  })
+})
+
+describe('GET /api/pull — by-card SELECT の発行条件 (spec §4-2 / I-4)', () => {
+  it('(a) cards delta 0 件 → getCardTagsByCardIds は呼ばれない', async () => {
+    arrangeOtherStreams([])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    const res = await GET(makeReq(SINCE_CT_URL))
+    expect(res.status).toBe(200)
+    expect(getCardTagsByCardIds).not.toHaveBeenCalled()
+  })
+
+  it('(b) since_card_tags 欠落 → 不呼出 + 応答は増分 rows そのまま (filter も適用しない)', async () => {
+    arrangeOtherStreams([fakeCard({ id: 'c1' })])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    const res = await GET(makeReq())
+    const body = await res.json()
+    expect(getCardTagsByCardIds).not.toHaveBeenCalled()
+    // 変更 card c1 の増分行が残る = skip 時に replace の filter を適用していない。
+    expect(pairSet(body.card_tags)).toEqual(['c1:o_old', 'c2:o_x'])
+  })
+
+  it("(b') since_card_tags が不正 ISO → parseSince が undefined に落とすため (b) と同じ", async () => {
+    arrangeOtherStreams([fakeCard({ id: 'c1' })])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    const res = await GET(makeReq('http://x/api/pull?since_card_tags=bad'))
+    const body = await res.json()
+    expect(getCardTagsByCardIds).not.toHaveBeenCalled()
+    expect(pairSet(body.card_tags)).toEqual(['c1:o_old', 'c2:o_x'])
+  })
+
+  // 本 fix が存在する主目的の shape (spec §0 / §2.3): 変更 card の authoritative 集合が
+  // 空 (ユーザーが全タグを外した) 場合。 by-card に当該 card の行が 1 本も無いので、
+  // 「by-card の結果から置換対象を決める」実装だと増分の stale 行が生き残り、
+  // client が削除済 tag を復活 → whole-set replace op で server へ戻る (I-1 の Critical 経路)。
+  // 置換対象は必ず changedCardIds 側から決まることを pin する。
+  it('変更 card の authoritative 集合が空 → 増分の当該 card 行も落ちる (非変更 card の行は残る)', async () => {
+    arrangeOtherStreams([fakeCard({ id: 'c1' })])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    vi.mocked(getCardTagsByCardIds).mockResolvedValue([])
+    const res = await GET(makeReq(SINCE_CT_URL))
+    const body = await res.json()
+    expect(pairSet(body.card_tags)).toEqual(['c2:o_x'])
+  })
+
+  it('(c) 両条件成立 → (user.id, tx, changedCardIds) で 1 回だけ呼ばれる', async () => {
+    arrangeOtherStreams([fakeCard({ id: 'c1' }), fakeCard({ id: 'c2' })])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    vi.mocked(getCardTagsByCardIds).mockResolvedValue([])
+    await GET(makeReq(SINCE_CT_URL))
+    expect(getCardTagsByCardIds).toHaveBeenCalledTimes(1)
+    expect(getCardTagsByCardIds).toHaveBeenCalledWith(
+      'user-uuid-1',
+      expect.anything(),
+      ['c1', 'c2'],
+    )
+  })
+})
+
+describe('GET /api/pull — by-card SELECT の失敗は部分成功にならない', () => {
+  it('getCardTagsByCardIds が throw → 500 + api.pull.failed log + payload/cursors を返さない', async () => {
+    arrangeOtherStreams([fakeCard({ id: 'c1' })])
+    vi.mocked(getCardTagsDelta).mockResolvedValue(
+      fakeCardTagsDelta(incrementalRows(), INCREMENTAL_MAX),
+    )
+    vi.mocked(getCardTagsByCardIds).mockRejectedValue(new Error('neon down'))
+    const res = await GET(makeReq(SINCE_CT_URL))
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'internal' })
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'api.pull.failed' }),
+    )
   })
 })

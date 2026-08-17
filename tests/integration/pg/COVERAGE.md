@@ -16,7 +16,7 @@
 
 | # | 経路群(factfinding §1.2) | 代表関数 | 分類 | behavioral で叩く | 備考 / OUT 理由 |
 |---|---|---|---|---|---|
-| 1 | pull / sync reads(6 delta + study_days) | `getCardsDelta` 等 / `getDeltaRows` | IN | YES(R2) | `WHERE eq(userId)[AND gte(cursor)]` の owner-scoped delta。A の `since` pull に B 行が混ざらない |
+| 1 | pull / sync reads(6 delta + card_tags by-card + study_days) | `getCardsDelta` 等 / `getDeltaRows` / `getCardTagsByCardIds` | IN | YES(R2) | `WHERE eq(userId)[AND gte(cursor)]` の owner-scoped delta。A の `since` pull に B 行が混ざらない。7 本目 = `/api/pull` が変更 card 分の card_tags を authoritative 集合で取り直す by-card read(`eq(userId) AND inArray(cardId)`・cursor 条件なし・2026-08-17 追加) |
 | 2 | mutation ingest(outbox apply) | `processMutation` / registry dispatch | IN | YES(W1) | dedupe `eq(mutationId) AND eq(userId)`、apply は arg `user.id`。client は entity_id/patch のみ |
 | 2i | ~~card_count bump~~(Sprint B Task 5 で撤去) | ~~`bumpExamCardCount`~~(削除済) | OUT:internal | N/A | 対応 code path が消滅(card create/delete は card_count を更新しない)。行は経緯記録として残す |
 | 3 | cards CRUD(outbox 外 read) | `getCardsForExam` / `getCardsForSourceDocument` | IN | YES(R1) | owner-scoped read。B の card が A の一覧に出ない |

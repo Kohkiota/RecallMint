@@ -20,7 +20,10 @@ import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
 import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
 import { getOptionsDelta } from '@/lib/db/tag-options-pull'
-import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
+import {
+  getCardTagsDelta,
+  getCardTagsByCardIds,
+} from '@/lib/db/card-tags-pull'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -67,10 +70,11 @@ export const GET = withReadOnlyAuth(
     const sct = parseSince(u.get('since_card_tags'))
 
     try {
-      // 6 stream を 1 tenant tx に包み、tx 冒頭で app.user_id を張る (RLS-P2)。
-      // 単一 tx = 単一接続のため Promise.all の並列は接続競合を招く → 6 直列 await。
+      // 6 stream + card_tags の補完 read を 1 tenant tx に包み、tx 冒頭で
+      // app.user_id を張る (RLS-P2)。単一 tx = 単一接続のため Promise.all の並列は
+      // 接続競合を招く → 計 7 本を直列 await。
       // wire (response の cards/cursors 等) は不変。
-      const { c, e, t, tc, to, ct } = await withTenantTx(
+      const { c, e, t, tc, to, ct, cardTagRows } = await withTenantTx(
         user.id,
         async (tx) => {
           const c = await getCardsDelta(user.id, tx, sc)
@@ -79,7 +83,34 @@ export const GET = withReadOnlyAuth(
           const tc = await getCategoriesDelta(user.id, tx, stc)
           const to = await getOptionsDelta(user.id, tx, sto)
           const ct = await getCardTagsDelta(user.id, tx, sct)
-          return { c, e, t, tc, to, ct }
+          // 変更 card の card_tags は by-card SELECT 時点の集合だけを正とする
+          // (authoritative replace)。 増分側の当該 card 行は、別 tx が commit 済の
+          // 削除を反映していない stale の可能性があり、union で残すと client が
+          // 削除済 tag を再投入 → whole-set replace op で server へ戻る (spec I-1)。
+          // 非発行の 2 条件 (spec I-4)。 どちらも応答は増分 rows のまま = filter も
+          // 適用しない:
+          //   (a) 変更 card 0 件 → 置換対象が無い。
+          //   (b) since_card_tags 欠落 → card_tags stream は全件 fallback。 全件
+          //       SELECT は単一 statement snapshot で owner の全行を返すため、それ
+          //       自体が authoritative (どの card への projection もその時点の真値)。
+          //       この前提は全件 query に LIMIT / pagination / owner 以外の filter が
+          //       無いことに依存する — 入れるとこの分岐が壊れる (iso の full-stream
+          //       contract pin が機械検出する)。
+          const changedCardIds = c.rows.map((r) => r.id)
+          let cardTagRows = ct.rows
+          if (sct !== undefined && changedCardIds.length > 0) {
+            const byCard = await getCardTagsByCardIds(
+              user.id,
+              tx,
+              changedCardIds,
+            )
+            const changed = new Set(changedCardIds)
+            cardTagRows = [
+              ...ct.rows.filter((r) => !changed.has(r.card_id)),
+              ...byCard,
+            ]
+          }
+          return { c, e, t, tc, to, ct, cardTagRows }
         },
       )
       return Response.json(
@@ -93,7 +124,7 @@ export const GET = withReadOnlyAuth(
           tombstones: t.rows,
           tag_categories: tc.rows,
           tag_options: to.rows,
-          card_tags: ct.rows,
+          card_tags: cardTagRows,
           cursors: {
             cards: c.maxUpdatedAt,
             exams: e.maxUpdatedAt,
