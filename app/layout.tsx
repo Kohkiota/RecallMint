@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { ClerkProvider } from '@clerk/nextjs'
+import { SignOutPurge } from '@/app/_components/sign-out-purge'
 import './globals.css'
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
@@ -91,7 +92,12 @@ export default function RootLayout({
       }}
     >
       <html lang="ja" className={cn("font-sans", geist.variable)}>
-        <body>{children}</body>
+        <body>
+          {/* signed-out 状態の観測でローカル残骸を掃除する (UI なし・best-effort)。
+              ClerkProvider 配下でなければ useAuth が使えないためここに置く。 */}
+          <SignOutPurge />
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   )

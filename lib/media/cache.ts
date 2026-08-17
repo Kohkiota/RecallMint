@@ -11,6 +11,50 @@ function cacheKey(userId: string, assetId: string): string {
   return `/__media/${userId}/${assetId}`
 }
 
+// cacheKey の逆写像 (hygiene sprint Task 4 / spec §4.1)。 purge / sweep は Cache に
+// 残る key から owner を判定する必要があるため、 key 形式の正本である cacheKey の
+// 隣に置く (片方だけ変わる drift を防ぐ)。
+// 厳密規則: pathname が `/__media/<userId>/<assetId>` の 3 segment、 query なし。
+// 判定できない key (malformed / 規則外) は null を返し、 呼出側は「保護対象と識別
+// できない = 削除」 に倒す (fail-safe の向きは対象の性質で決める — spec §4.1: Cache の
+// blob は再取得可能ゆえ削除側)。
+// Cache.keys() が返す Request.url は常に絶対 URL のため base なしで parse する。
+export function parseMediaCacheKey(
+  url: string,
+): { userId: string; assetId: string } | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.search !== '') return null
+  // pathname は '/' 始まりゆえ split の先頭は空文字。 厳密 3 segment のみ受理する。
+  const segments = parsed.pathname.split('/')
+  if (segments.length !== 4) return null
+  const [, prefix, userId, assetId] = segments
+  if (prefix !== '__media' || userId === '' || assetId === '') return null
+  return { userId, assetId }
+}
+
+/**
+ * Cache 内の全 key を Request として列挙する (hygiene の掃除対象の列挙経路)。
+ * cache が無い環境 / 未作成なら `[]` — **`caches.open` を呼ばない**ことで、
+ * 未訪問 visitor に空 cache を新規作成しない (Dexie 側 `Dexie.exists` guard と同趣旨)。
+ */
+export async function listMediaCacheRequests(): Promise<readonly Request[]> {
+  if (typeof caches === 'undefined') return []
+  if (!(await caches.has(CACHE_NAME))) return []
+  const cache = await caches.open(CACHE_NAME)
+  return await cache.keys()
+}
+
+/** listMediaCacheRequests で列挙した Request を削除する (key 文字列を再構成しない)。 */
+export async function deleteMediaCacheRequest(req: Request): Promise<void> {
+  const cache = await caches.open(CACHE_NAME)
+  await cache.delete(req)
+}
+
 export async function putAssetBlob(
   userId: string,
   assetId: string,

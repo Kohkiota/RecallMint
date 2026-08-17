@@ -20,7 +20,14 @@ const ROOT = path.resolve(import.meta.dirname, '../..')
 // 許可 file(2026-08-16 実装時点で全 repo grep して確定 — 他に `.sync_meta` へ直接
 // access する production file は無い)。 新規に直接 access が必要になった場合は
 // 本 list を明示更新すること(暗黙の拡大を防ぐため追加理由をコミットに残す)。
-const ALLOWED_FILES = new Set(['lib/sync/sync-meta.ts', 'lib/sync/pull.ts'])
+// hygiene sprint Task 4: local-hygiene.ts を追加。 purge / sweep は sync_meta を
+// 「mirror と同一 tx で消す」 ことが要件(部分実行を作らない — spec §0 条件 1)ゆえ、
+// key 単位 helper では表現できず table を直接掴む正当な writer。
+const ALLOWED_FILES = new Set([
+  'lib/sync/sync-meta.ts',
+  'lib/sync/pull.ts',
+  'lib/sync/local-hygiene.ts',
+])
 
 // production コードのみ対象。 test file(*.test.ts(x))と tests/** 配下は audit 対象外
 // (check-review.sh の test-only 判定と同じ境界に揃える)。
