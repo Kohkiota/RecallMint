@@ -116,9 +116,11 @@ server は 2 file のみ。client は無変更(I-5)。
 - `const db = dbc` の no-op alias は `pull-delta.ts:41` に倣ったもの(既存パターン踏襲)。
 - `inArray` の bind 数上限は spec §2.1 の台帳どおり受容(test で exercise しない)。
 
-## 9. 本 sprint で修正しなかった既知の偽記述(**OT 判断待ち**)
+## 9. client header の偽記述 — **解消済み**(OT 裁定)
 
-- **`lib/sync/pull.ts:31-35`**: 「(3) で card_tags **増分** の bulkPut で新集合を upsert する」— I-1 導入後は偽(payload の当該 card 分は増分でなく全集合)。**凍結 spec の I-5「client コードは一切変更しない」に抵触するため触っていない**。comment-only の修正だが spec の文言に反するため OT 承認が要る。Task 3 で `pull.test.ts` 側には契約を明記済なので、production comment だけが取り残されている状態。
+`lib/sync/pull.ts:31-35` の「(3) で card_tags **増分** の bulkPut で新集合を upsert する」は I-1 導入後は偽だった(応答の当該 card 分は増分でなく全集合)。CC は凍結 spec の I-5「client コードは一切変更しない」に抵触すると判断して保留したが、**OT 裁定: コメント訂正は I-5 に非抵触**(I-5 が禁じるのは client の挙動変更であり、真でなくなった記述の訂正はこれに当たらない)。
+
+→ 本 sprint 内で修正済(comment-only)。(3) が正しい理由が server 契約 I-1 にあること、契約が無かった間に恒久欠落が起きていたことを header に明記し、fact-finding へのポインタを置いた。Task 3 で `pull.test.ts` 側に入れた契約記述と対になる。
 
 ## 10. follow-up(claude.ai todo へ・全文は checkpoint 報告に記載)
 
@@ -127,4 +129,5 @@ server は 2 file のみ。client は無変更(I-5)。
 3. **tx timestamp 由来の取りこぼし hazard + µs 切り捨て**(fact-finding §6-2 / spec §6-③・案④ 含む)。
 4. **`check-review.sh` は `Stop` にのみ登録され `SubagentStop` では発火しない** — subagent が打つ tagless な feat/fix commit を hook が止められない(本 sprint で実地確認)。CLAUDE.md「重要 Fix の裏取り」と tag が 2 状態を区別できない件と併せて整合化。
 5. **`docs/architecture.md` に I-1 の不変条件行が無い** — CLAUDE.md は設計不変条件の恒久置き場を architecture.md と定めている。1 行追加の要否。
-6. **`lib/sync/pull.ts` の偽コメント**(§9)— I-5 の凍結解除 or 次 sprint での修正。
+
+(旧項目 6「`lib/sync/pull.ts` の偽コメント」は OT 裁定により本 sprint で解消 — §9。follow-up は 5 件。)

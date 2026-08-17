@@ -32,7 +32,14 @@
 //   card_tags 単体の cursor は created_at base なので「関連付けのみ外す `[A,B] → []`」 の
 //   ような whole-set 縮小は増分に乗らない。 書込側は cards.updated_at を bump する規約
 //   を持ち、 本 pull は cards 増分 (1) で変更カードを検知 → (2) で当該カードの card_tags を
-//   IDB から全削除 → (3) で card_tags 増分の bulkPut で新集合を upsert する順序を保つ。
+//   IDB から全削除 → (3) で応答の card_tags を bulkPut して再構築する順序を保つ。
+//
+//   (3) が正しいのは server 契約 I-1 があるため (spec 2026-08-17-card-tags-delta-
+//   completeness-design): 「cards に載った card について、 応答 card_tags のその card への
+//   projection は by-card SELECT 時点の authoritative 集合と *一致* する」。 つまり応答の
+//   当該カード分は増分ではなく全集合であり、 だから全削除 → bulkPut が成立する。
+//   この契約が server に無かった間、 変更カードの古いタグは (2) で消えたまま復活せず
+//   恒久欠落していた (sessions/2026-08-17-card-tags-delta-loss-factfinding.md)。
 
 import {
   getClientDb,
