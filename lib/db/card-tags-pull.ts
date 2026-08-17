@@ -15,6 +15,8 @@
 
 import 'server-only'
 
+import { and, eq, inArray } from 'drizzle-orm'
+
 import { cardTags } from './schema'
 import type { ClientCardTag } from '@/lib/client-db'
 import { getDeltaRows } from './pull-delta'
@@ -49,4 +51,23 @@ export async function getCardTagsDelta(
     since,
   )
   return { rows, maxCreatedAt: max }
+}
+
+// 変更 card の authoritative な card_tags 集合を返す (cursor 条件なし)。
+// 返り値に cursor 材料 (max) を持たせないのは I-2 の構造的表現: cursors.card_tags は
+// 増分 query の rows のみから算出し、この結果からは算出させない。
+// eq(cardTags.userId, userId) は I-3 の第 1 層 (RLS は第 2 層であり省略の理由にならない)。
+// cardIds が空でないことは caller の precondition (route は I-4(a) でそもそも呼ばない)。
+// getDeltaRows は使わない: cursor 列を持たない別形の query。
+export async function getCardTagsByCardIds(
+  userId: string,
+  dbc: TenantDb,
+  cardIds: string[],
+): Promise<ClientCardTag[]> {
+  const db = dbc
+  const rows = await db
+    .select()
+    .from(cardTags)
+    .where(and(eq(cardTags.userId, userId), inArray(cardTags.cardId, cardIds)))
+  return rows.map(toClientCardTag)
 }
