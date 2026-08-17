@@ -1,7 +1,7 @@
 # tag mirror hygiene sprint — at-rest 衛生 + correctness follow-up(spec)
 
-- 日付: 2026-08-17(r2 draft・OT spec review 待ち)
-- 状態: 設計裁定は確定済 — OT 裁定 5 件(purge 発火点 / sync_meta 非対称 / media 不可侵 / M-c 例外化 / 受容コスト維持)+ Codex 事前指摘 4 件(cursor CAS / downloading jobs 不可侵 / purge の Dexie・Cache 分離 / allowlist リテラル固定)を全採用して織込済。r2 = Codex spec cross-check(`docs/codex/2026-08-17-plan-tag-mirror-hygiene-spec.md`)の採用分を反映: 不可侵集合の snapshot 意味論 + Cache TOCTOU の実害 bound(§4.2)/ 削除条件の陽形化 + store 網羅 pin(§4.1・§9)/ CAS の失敗契約と回復 2 分岐(§3)/ purge 発火単位の定義(§4.3)/ sync_meta parser 厳密規則(§5.1)。
+- 日付: 2026-08-17(r3 draft・OT spec review 待ち)
+- 状態: 設計裁定は確定済 — OT 裁定 5 件(purge 発火点 / sync_meta 非対称 / media 不可侵 / M-c 例外化 / 受容コスト維持)+ Codex 事前指摘 4 件(cursor CAS / downloading jobs 不可侵 / purge の Dexie・Cache 分離 / allowlist リテラル固定)を全採用して織込済。r2 = Codex spec cross-check(`docs/codex/2026-08-17-plan-tag-mirror-hygiene-spec.md`)の採用分を反映: 不可侵集合の snapshot 意味論 / 削除条件の陽形化 + store 網羅 pin(§4.1・§9)/ CAS の失敗契約と回復 2 分岐(§3)/ purge 発火単位の定義(§4.3)/ sync_meta parser 厳密規則(§5.1)。**r3 = Codex review の Important 4 件(全採用・OT の r2 承認撤回を受けた改訂)**: ① 進行中 DL の TOCTOU は受容でなく契約違反 → DL 完了時検証で構造的に閉じる(§4.2)② CAS「出現」ケースの独立 pin(§9-2)③ sweep の未知 Cache key は温存でなく削除 + fail-safe 方向の規約(§4.1)④ 保証開始条件を「pre-hygiene writer 不在」まで強化(§8-4)。
 - 入力(正): correctness sprint session doc(`docs/superpowers/sessions/2026-08-16-tag-mirror-correctness-sprint.md` §7b・§8)/ correctness spec r5(`2026-08-16-tag-mirror-owner-scope-and-signout-purge-design.md` §2 非スコープ列挙・§7 三層)/ 棚卸し doc(`2026-08-16-tag-mirror-writer-inventory-factfinding.md`・Appendix A 含む)。store 分類の出発点は r3(`addb3f5`)§4.1 の purge / sweep 列(**r5 に同表は無い** — r4 改稿で削除済。bootstrap reset 列は廃止)。
 - 背景: correctness sprint(Path C・prod 反映済)で「異 owner データが表示されない」は構造保証済。本 sprint は公開前 gate ★ の残り(at-rest 衛生)+ correctness follow-up 1 件(§7b)を閉じる。
 
@@ -9,11 +9,12 @@
 
 本 sprint の保証は **eventual hygiene**(r5 §7 三層の第 3 層)。表示保証(第 1 層)は correctness sprint で完結しており、本 sprint はそれを**毀損しないこと**が最上位の制約。
 
-**correctness 非毀損の 3 条件(凍結)**:
+**correctness / 既存契約 非毀損の 4 条件(凍結)**:
 
 1. **単一 rw tx**: purge / sweep の Dexie 削除は、触る全 store(mirror + sync_meta + outbox + media)を跨ぐ**単一 rw tx** で行う。「mirror だけ消えて cursor が残る」部分実行状態(同一 owner の再 sign-in で delta pull が silent 欠落を起こす)を構造的に禁じる。
 2. **cursor CAS**(§3): pull の cursor 読取と apply tx の間の network 窓に purge / sweep が挟まった場合、apply tx が自壊検知して abort する。tx 直列化だけではこの時間窓を閉じられない(Codex 事前指摘)。
 3. **不可侵集合**(§4.2): pending / syncing / failed outbox 全行(owner 不問)・非 `'ready'` の `media_assets` 行 + 対応 Cache blob・`'downloading'` の `media_download_jobs` 行 + `added_asset_ids` blob は、purge / sweep とも**触らない**。
+4. **既存契約の保全 — deck DL の all-or-nothing**(§4.2・r3): cleanup と進行中 DL の交差で「DL が ok:true を返しながら blob 欠け」が成立しない — DL 完了時の blob 現存検証で構造的に閉じる(受容ではない)。
 
 purge / sweep 自体は **best-effort**: 発火保証・順序保証・完了待ちなし。失敗 silent・次回実行で回収。遅着 writer との race は「次回実行で回収」の eventual 保証で足りる。**eventual は条件付き**: 「次回実行機会(sign-in の sweep / signed-out 表示の purge)があれば収束する」の意味であり、時間上限のある無条件回収保証ではない。**lock / marker / bootstrap / 直列化機構は使わない**(r1〜r3 で撤回済・再導入禁止)。直列化・完了待ち・順序保証を要求する設計が必要になったら Path C の趣旨に反する — 設計を疑い OT に上げる。
 
@@ -25,7 +26,7 @@ purge / sweep 自体は **best-effort**: 発火保証・順序保証・完了待
 
 1. §2 `/api/study-days/pull` の owner echo(correctness follow-up・session doc §7b)
 2. §3 pull cursor CAS(purge / sweep が安全に存在できるための前提)
-3. §4 sign-out purge(`<SignOutPurge />` + `purgeAllLocalData`)
+3. §4 sign-out purge(`<SignOutPurge />` + `purgeAllLocalData`)。**§4.2 の DL 完了時検証(`deck-download.ts`)を含む**(cleanup が存在してよいための前提ガード — r3)
 4. §5 sign-in 異 owner sweep(`sweepForeignLocalData` + trigger)。**旧 key 物理削除(bare cursor 6 本 + 旧 `exam_view_prefs`)はここに統合**(独立 task を立てない — OT 裁定 2)
 5. §6 M-c の解消(`option-list.tsx:123` の scope 非対称)
 
@@ -73,13 +74,15 @@ purge / sweep 自体は **best-effort**: 発火保証・順序保証・完了待
 | media_download_jobs | **`status === 'done'` の行のみ削除** | 異 owner **かつ** `'done'` のみ削除 |
 | sync_meta | **全消し(未知 key 含む)** | §5.1 の非対称規則(bare + `base:<other>` 削除 / `base:<self>` + 未知 key 温存) |
 | outbox 2(answer_events / entity_mutations) | **synced のみ削除**(pending / syncing / failed 不可侵 — r1 承認済・不変) | 異 owner の synced のみ削除 |
-| Cache API(`recallmint-media`) | 保護 blob(§4.2)以外の全 key 削除 | 異 owner namespace(`/__media/<other>/…`)の key のみ、保護 blob 除く |
+| Cache API(`recallmint-media`) | 保護 blob(§4.2)以外の全 key 削除 | 異 owner namespace(`/__media/<other>/…`)+ malformed / 規則外 key を削除、保護 blob 除く |
 
 **削除条件は陽形(positive)で書く**(Codex cross-check 採用): media_assets = `'ready'` のみ / media_download_jobs = `'done'` のみ / outbox = `'synced'` のみ。否定形(`status !== 'downloading'` 等)は将来追加された status を silent に削除対象へ入れる regression 源のため使わない。store の側も同様に、purge / sweep が扱う store 一覧は明示 list とし、`ClientDb` への store 追加時に分類判断を強制する網羅 pin を置く(§9-8)。
 
 Dexie 部は上記全 store を跨ぐ**単一 rw tx**(§0 条件 1)。Cache 部は tx 外・Dexie tx の後に best-effort(Cache は tx に載らない。blob だけ先に消えても表示解決の再 fetch(`get-asset.ts:73`)が回復経路になるため順序は正確性に効かないが、Dexie 先行を既定とする)。Cache の削除は per-key try/catch で続行(1 key の失敗が残りを止めない — `sweepStaleMedia` と同じ規約)。outbox の synced 選別は単独 `sync_status` index が無いため filter 走査(sign-out / sign-in 時の一回走査で許容 — r3 承認済と同じ判断)。
 
-**Cache key の判定規則(spec で固定 — 削除安全性の中心)**: key を URL として parse し、pathname が厳密に `/__media/<userId>/<assetId>` の 3 segment(query なし)である場合のみ分類対象。**malformed / 規則外の key は purge では削除**(全消し方針と整合)/ **sweep では温存**(未知形式の fail-safe — sync_meta の未知 key 温存と同じ思想)。
+**Cache key の判定規則(spec で固定 — 削除安全性の中心)**: key を URL として parse し、pathname が厳密に `/__media/<userId>/<assetId>` の 3 segment(query なし)である場合のみ userId 帰属を判定できる。**malformed / 規則外の key は purge / sweep とも削除**(r3 改訂 — r2 の「sweep では温存」を反転。保護 blob は well-formed key でしか識別されないため、malformed が保護対象と衝突することはない)。
+
+**規約(fail-safe の向きは対象の性質で決める — r3)**: sync_meta の未知 key は**機能状態**(誤削除 = 機能破壊)ゆえ温存(§5.1)/ Cache の未知 key は**再取得可能な画像 blob**(PII 濃度最高・掃除対象そのもの)ゆえ削除。同じ「未知」でも fail-safe の向きを揃えない。
 
 ### 4.2 不可侵集合と media hazard(OT 裁定 3 + Codex 事前指摘 7)
 
@@ -91,10 +94,13 @@ Dexie 部は上記全 store を跨ぐ**単一 rw tx**(§0 条件 1)。Cache 部�
 2. 非 `'ready'`(= `'uploading'` / `'failed'`)の `media_assets` 行 + 対応 Cache blob
 3. `'downloading'` の `media_download_jobs` 行 + その `added_asset_ids` の Cache blob
 
-**不可侵は snapshot 意味論**(Codex cross-check 採用): Cache と IndexedDB を跨ぐ原子的 snapshot は存在しないため、保護集合は「Dexie tx 後に観測された行」から算出し、**算出後に開始した upload / DL の blob が cleanup に巻き込まれる TOCTOU は受容**する。受容できる根拠(現物確認済):
+**不可侵は snapshot 意味論 + レーン別の閉じ方**(r3 改訂 — r2 の「TOCTOU 一律受容」を撤回): Cache と IndexedDB を跨ぐ原子的 snapshot は存在しないため、保護集合は「Dexie tx 後に観測された行」から算出する。算出後に開始した writer の blob が cleanup に巻き込まれる TOCTOU は、**レーンの既存契約**で扱いを分ける:
 
-- **upload は壊れない**: R2 への PUT の source は in-memory blob(`lib/media/upload.ts:733` `body: compressed.blob`)であり Cache entry を読まない。blob 誤削除の最悪影響は表示 cache miss → 表示解決の再 fetch で回復。flush gate の根拠である `media_assets` **行**は purge tx 完了後の新規作成ゆえ巻き込まれない(gate は開かない)。
-- **DL の added_asset_ids に対応する `media_assets` 行は存在しない**: `deck-download.ts` は blob + job 行のみ書き、media_assets 行を作らない(同 device の ready 資産は cache hit で misses / added に載らない)。ゆえに「added の行が purge されて all-or-nothing が壊れる」経路は無い — 行の保護拡張は不要と検証済。
+- **upload レーン = 受容(実害 bound・現物確認済)**: R2 への PUT の source は in-memory blob(`lib/media/upload.ts:733` `body: compressed.blob`)であり Cache entry を読まない。blob 誤削除の最悪影響は表示 cache miss → 表示解決の再 fetch で回復。attach の契約に blob の local 完全性は含まれない。flush gate の根拠である `media_assets` **行**は purge tx 完了後の新規作成ゆえ巻き込まれない(gate は開かない)。
+- **DL レーン = 受容不可 → 完了時検証で構造的に閉じる**(Codex Important 1): deck DL の既存契約は **all-or-nothing のオフライン保証**であり、blob 集合の完全性が契約の一部。cleanup が preflight hit 分 / snapshot 後に追加された added 分の blob を消すと、DL が `ok:true` のまま blob 欠けが成立し「表示時再 fetch」ではオフライン契約を守れない。**設計 = 候補 (b) DL 側の完了時検証**: bulk DL は `'done'` 確定の直前に **deck 全 key(hit 分含む = `allKeyList`)の blob 現存を確認**し、1 件でも欠けていれば既存 rollback 経路に合流する(added blob + job row 削除・`{ok:false}`。`'failed'` status は新設しない — 既存 status 集合を変えない。検証は cache.match の存在確認のみで blob 本体を読まない — 実装形は plan)。既存 try 内・per-exam DL lock 内に収まり、lock / 完了待ちの新規導入なし。
+  - **候補 (a)(cleanup 側で `'downloading'` 再読 → Cache 部 skip)を採らない理由**: ① purge = その user の sign-out であり、進行中 DL の保全は方向が逆(DL の失敗が正しい帰結)② 再読と削除の間に窓が残り load-bearing にできない ③ sweep は異 owner namespace のみで自 DL と交わらない。
+  - **残る窓と bound**: 検証通過後(`'done'` 確定前後)の削除は「sign-out による意図的な全消去」そのもので契約違反ではない(`ok:true` は完了時点で真 — sign-out は local データ全体の放棄)。切替前 tab の stale な異 owner DL が sweep と交差した場合も、検証が欠けを検知して rollback する(正しい帰結・eventual)。
+- **DL の added_asset_ids に対応する `media_assets` 行は存在しない**(検証済・r2 から不変): `deck-download.ts` は blob + job 行のみ書き、media_assets 行を作らない(同 device の ready 資産は cache hit で misses / added に載らない)。ゆえに「added の行が purge されて壊れる」経路は無い — 行の保護拡張は不要。
 
 非 `'ready'` 残骸の後始末は既存の `sweepStaleMedia`(stale `'uploading'` 1h 超を `abandonUpload` で outbox ごと矯正)が正規経路であり、hygiene sweep はこれを複製しない(YAGNI)。
 
@@ -150,7 +156,8 @@ sweep と purge で sync_meta の扱いを**意図的に非対称**にする:
 | Dexie tx が**途中失敗** | 全 store 巻き戻し(単一 tx) | なし — 「mirror 消・cursor 残」の部分状態が存在しない |
 | Cache 部だけ失敗 / blob だけ先に消えた | blob 欠落 | なし — 表示解決が server から再 fetch(既存経路) |
 | purge / sweep が pull の network 窓に**挟まる** | 遅着 apply が CAS abort | なし — 次 trigger の pull(cursor 消失なら full / 前進なら現在値から delta)で回復 |
-| 保護集合算出後に upload / DL が**開始**(Cache TOCTOU) | 新規 blob が cleanup に巻き込まれうる | なし — PUT source は in-memory blob・行は生存し gate 不変・表示は再 fetch で回復(§4.2) |
+| 保護集合算出後に **upload** が開始(Cache TOCTOU) | 新規 blob が cleanup に巻き込まれうる | なし — PUT source は in-memory blob・行は生存し gate 不変・表示は再 fetch で回復(§4.2) |
+| cleanup が**進行中 DL** の blob(hit 分 / snapshot 後の added 分)を消す | DL 完了時検証が欠けを検知 → rollback + `{ok: false}` | なし — all-or-nothing 契約は維持(実害 = DL 失敗・再実行可)。検証通過後の削除は sign-out の意図的消去で契約違反でない(§4.2) |
 | purge が新 session 開始後に**遅走** | 新 session の mirror / cursor が消える | 一時的に mirror 空(correctness sprint で受容済の liveness gap と同型)— 次 pull full で回復。pending 不可侵ゆえデータ喪失なし |
 | **二重実行** | 冪等 | なし |
 | 遅着 `putAssetBlob` が purge 後に着地 | Cache に残骸 | なし — userId namespace で読み経路が到達しない。次回 sweep で回収 |
@@ -160,7 +167,7 @@ sweep と purge で sync_meta の扱いを**意図的に非対称**にする:
 1. **server 単独 rollback 不可の非対称が `/api/study-days/pull` にも増える**(§2 の帰結): echo を戻すと新 client が study_days の全 pull を silent reject し、mirror が更新されなくなる(UI にエラーは出ない)。`/api/pull` と同型 — roll-forward 原則(r5 §7a)の適用範囲に本 endpoint を加える。
 2. **受容コスト維持**(OT 裁定 5): sign-out のたびに ① 次回 sign-in が full pull(sync_meta 全消しの帰結)② `exam_view_prefs` が消える。r3 承認済の判断を引き継ぐ。
 3. **`useAuth` の cross-tab 反映は未検証のまま**: purge の発火性を保証にしない設計(§4.3)によって blocking でなくなった。実測は smoke の観測項目に留める(不発でも FAIL にしない)。
-4. **保証開始点**: correctness sprint と同じく、本 sprint の bundle を実行している tab に限る。旧 bundle tab は保証外。
+4. **保証開始条件(r3 強化)**: 「本 sprint の bundle を実行している tab に限る」では不十分 — **pre-hygiene writer(旧 bundle tab)が存在しないこと**まで要求する。旧 bundle tab の pull は CAS に参加せず共有 IDB(cursor / mirror)を汚染でき、CAS は開始時点の既存不整合を修復しない(§3 に明記した限界)。実運用の含意: **deploy 後に全 tab の reload が前提**(実質ユーザー 0 の現状では OT の tab 閉じで充足)。
 5. **残置の明示**: pending / failed の at-rest 残置は本 sprint 後も残る(公開前トラックで flush-before-signout と併せ再裁定)。
 6. **pending を残して mirror を消す帰結**(Codex cross-check 採用): 同一 user が再 sign-in すると mirror は server snapshot に戻り、未 flush の楽観編集は**表示上一時的に消える**(pending 行は生存し、後続 flush → pullBack で server 側へ確定・表示へ再収束)。表示保証(異 owner 非表示)とは別軸の一時的 UX 劣化として受容。images mutation の flush gate は不可侵集合(§4.2)が維持する。
 7. **echo の型不正**: `owner_user_id` が string 以外の応答は厳密等価比較で自然に reject される(fail-closed — 特例分岐なし)。
@@ -170,14 +177,15 @@ sweep と purge で sync_meta の扱いを**意図的に非対称**にする:
 Vitest + fake-indexeddb(既存パターン)。red 実証は gate を 1 つずつ個別変異(repo 教訓)。**correctness sprint の凍結 pin(capture 原則 / validate-before-tx 順序 / owner echo 4 pin / I-1 caller pin 含む)が全 green のままであること自体を完了条件に含める**。
 
 1. **study-days echo pin 群**(§2): ① echo 不一致 +**空 payload** で reject・Dexie 不変(vacuous 穴の閉鎖を直接 pin)② field 欠落で reject ③ echo 一致 + 行 mismatch で reject(2 段の独立性)④ echo 一致 + 空 payload の正常系(自 owner 行の正当な全削除)。
-2. **CAS pin**(§3): fetch 解決を遅延させ、その間に purge(または cursor 直接削除)を挟む → apply が abort し mirror / cursor 不変・`{ok: false}`。続く再 pull が since 無し full になるまでを pin。**cursor 前進 variant**(窓中に別値へ更新)でも abort する pin。**abort が例外として外へ漏れず `{ok: false}` に正規化される** pin。値変化・消失の両変異で red 実証。
+2. **CAS pin**(§3): fetch 解決を遅延させ、その間に purge(または cursor 直接削除)を挟む → apply が abort し mirror / cursor 不変・`{ok: false}`。続く再 pull が since 無し full になるまでを pin。**cursor 前進 variant**(窓中に別値へ更新)でも abort する pin。**出現 variant(r3・Codex Important 2)**: purge 後に開始した full pull(snapshot = 全 undefined)の apply までに別の full pull が完了して cursor を再生成した状況(snapshot = 不在 → 現在値あり)で abort する独立 pin。**abort が例外として外へ漏れず `{ok: false}` に正規化される** pin。値変化・消失・出現の 3 態それぞれの変異で red 実証。
 3. **不可侵集合の生存 pin**(§4.2): purge / sweep それぞれで、pending / syncing / failed outbox 行(自 + 異 owner)・非 `'ready'` assets 行 + blob・`'downloading'` job 行 + added blob が生存し、synced / `'ready'` assets / `'done'` jobs が消えることを対で pin。
 4. **allowlist pin**(§5.1): sweep が bare 7 本 + `base:<other>` を消し、`base:<self>` + **未知 key**(`future_key` / `future_key:<self>` の fixture)を温存する pin。**parser 境界 pin**: 空 suffix(`cards_cursor:`)・複数 colon(`cards_cursor:a:b`)は削除、prefix 類似の未知 base(`cards_cursor_v2`)は温存。**分類強制 pin**: `SYNC_META_KEYS` の全値が「sweep allowlist ∪ 明示除外 list」に現れることを assert(新 key 追加で test が落ち、分類判断を明示的に踏ませる)。
 5. **tx 原子性 pin**(§0 条件 1): tx 途中の失敗を注入し、mirror / sync_meta / outbox が全て変更前のままである(部分実行が観測できない)ことを pin。
 6. **M-c 一覧 surface pin**(§6)。
 7. **SignOutPurge trigger pin**: `isLoaded && !isSignedIn` で発火 / signed-in で不発火 / 並走 dedup(in-flight 中の再観測が二重実行しない)/ `Dexie.exists` false で Dexie 部 skip + Cache 部は実行(Codex 事前指摘 8 の pin)。
 8. **purge / sweep の分類 pin + store 網羅 pin**: §4.1 の表を pure 判定関数の unit として直接 pin(store × 条件の table-driven)。加えて fake-indexeddb の実 DB で purge / sweep を実走させ表どおりの結果になる統合 pin(pure 関数と実削除 query の乖離検出)。**網羅 pin**: `ClientDb` の全 table 名が「purge / sweep の扱い list ∪ 明示除外 list」に現れることを assert(store 追加時に分類判断を強制 — §4.1 の陽形規約とセット)。
-9. **Cache 掃除の pin**: malformed key の purge 削除 / sweep 温存(§4.1 の判定規則)・per-key 失敗が残りを止めない・cache 不在時に新規作成しない。
+9. **Cache 掃除の pin**: malformed / 規則外 key が **purge / sweep とも削除**される(§4.1 の r3 判定規則)・per-key 失敗が残りを止めない・cache 不在時に新規作成しない。
+10. **DL 完了時検証 pin**(§4.2・r3): `'done'` 確定直前に blob を 1 件消す fixture(hit 分・added 分の両 variant)→ rollback(added blob + job row 消滅)+ `{ok: false}`。red 実証 = 検証を外す変異で blob 欠けのまま `ok: true` が成立すること。
 
 ## 10. stg smoke 方針(詳細は plan)+ 完了条件
 
@@ -187,9 +195,9 @@ Vitest + fake-indexeddb(既存パターン)。red 実証は gate を 1 つずつ
 
 **完了条件**:
 
-1. §2〜§6 の実装 + §9 のテスト green(red 実証込み。§9 の 1〜5 は凍結条件)+ correctness sprint の既存凍結 pin 全 green。
+1. §2〜§6 の実装 + §9 のテスト green(red 実証込み。§9 の 1〜5 と 10 は凍結条件)+ correctness sprint の既存凍結 pin 全 green。
 2. canonical + Codex review 収束(Critical 0 / Important 0)、`[reviewed]`。削除(データ保全)に触れるため「重要 Fix の裏取り」規律に従う — stg smoke を要するため session doc を [reviewed] の正記録とする既存裁定に従う。
 3. sprint 完了 gate: whole-repo lint exit 0 / `pnpm test:iso` green / `pnpm run audit` exit 0。
 4. `docs/architecture.md` 更新: ① hygiene 層の不変条件(purge / sweep は単一 tx + 不可侵集合 + best-effort、pull apply は cursor CAS で自壊検知、sync_meta sweep はリテラル allowlist)② 残余リスク行を「at-rest 残骸は eventual 回収(hygiene sprint)・pending / failed 残置のみ公開前トラックへ」と正確に更新。
-5. **棚卸し doc へ Appendix 追記**(OT 裁定 3): media flush-gate hazard(§4.2)を新規発見として記録。
+5. **棚卸し doc へ Appendix 追記**(OT 裁定 3 + r3): media flush-gate hazard と DL blob 完全性の TOCTOU(いずれも §4.2)を新規発見として記録。
 6. r5 spec は凍結のまま改稿しない(§5.1a の訂正の正記録は session doc §7b + 本 spec §2)。
