@@ -384,8 +384,13 @@ describe('pullDelta', () => {
   // Tag-2b: card_tags 取り直し経路 (案 a)
   // ===========================================================================
 
-  // 観点 8a: 取り直し経路 — c1 の旧 card_tags が削除され、 新集合で置換される
-  it('cards 増分に c1 → c1 の旧 card_tags 全削除 + 新集合 bulkPut。 他 card は不変', async () => {
+  // 観点 8a: 取り直し経路 — c1 の旧 card_tags が削除され、 新集合で置換される。
+  // 本 test の前提 = server 契約 I-1 (spec 2026-08-17-card-tags-delta-completeness-design):
+  // 「cards に載った card について、 応答 card_tags のその card への projection は
+  //  by-card SELECT 時点の authoritative 集合と *一致* する」。 payload の c1 分は
+  //  増分ではなく c1 の全集合であり、 だから (2) の全削除 → (3) の bulkPut が正しい。
+  //  この契約が無い間、 delta は変更 card の古いタグを含まず恒久欠落を起こしていた。
+  it('cards 増分に c1 → c1 の旧 card_tags 全削除 + payload の authoritative 集合で置換。 他 card は不変', async () => {
     const db = getClientDb()
     await db.card_tags.bulkPut([
       fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
@@ -414,8 +419,9 @@ describe('pullDelta', () => {
     expect(pairs).toEqual(['c1:o3', 'c2:o3'])
   })
 
-  // 観点 8b: 空集合化 (案 a の核心) — server が card_tags=[] を返す whole-set 縮小
-  it('cards 増分に c1 + card_tags=[] → c1 の card_tags 0 件 (空集合化)', async () => {
+  // 観点 8b: 空集合化 (案 a の核心) — server が card_tags=[] を返す whole-set 縮小。
+  // I-1 の下で「c1 の authoritative 集合が空」を意味する (増分が空なのではない)。
+  it('cards 増分に c1 + card_tags=[] (c1 の authoritative 集合が空) → c1 の card_tags 0 件', async () => {
     const db = getClientDb()
     await db.card_tags.bulkPut([
       fakeClientCardTag({ card_id: 'c1', option_id: 'o1' }),
