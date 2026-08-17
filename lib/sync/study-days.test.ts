@@ -37,7 +37,7 @@ describe('pullAllStudyDays', () => {
     const client = mockClient({
       ok: true,
       status: 200,
-      body: { studyDays: [] },
+      body: { owner_user_id: USER_A, studyDays: [] },
     })
     const result = await pullAllStudyDays(USER_A, client)
     expect(result).toEqual({ ok: true, count: 0 })
@@ -49,6 +49,7 @@ describe('pullAllStudyDays', () => {
       ok: true,
       status: 200,
       body: {
+        owner_user_id: USER_A,
         studyDays: [
           fakeStudyDay({ day: '2026-05-25' }),
           fakeStudyDay({ day: '2026-05-26' }),
@@ -71,6 +72,7 @@ describe('pullAllStudyDays', () => {
       ok: true,
       status: 200,
       body: {
+        owner_user_id: USER_A,
         studyDays: [
           fakeStudyDay({ day: '2026-05-24' }),
           fakeStudyDay({ day: '2026-05-25' }),
@@ -133,6 +135,7 @@ describe('pullAllStudyDays — owner 限定置換 (S-local-2 Task 5 / spec §6)'
       ok: true,
       status: 200,
       body: {
+        owner_user_id: USER_B,
         studyDays: [
           fakeStudyDay({ user_id: USER_B, day: '2026-05-10' }),
           fakeStudyDay({ user_id: USER_B, day: '2026-05-11' }),
@@ -159,6 +162,7 @@ describe('pullAllStudyDays — owner 限定置換 (S-local-2 Task 5 / spec §6)'
       ok: true,
       status: 200,
       body: {
+        owner_user_id: USER_B,
         studyDays: [
           fakeStudyDay({ user_id: USER_B, day: '2026-05-20' }),
           fakeStudyDay({ user_id: USER_A, day: '2026-05-21' }), // 混入
@@ -186,6 +190,7 @@ describe('pullAllStudyDays — owner 限定置換 (S-local-2 Task 5 / spec §6)'
       ok: true,
       status: 200,
       body: {
+        owner_user_id: USER_B,
         studyDays: [fakeStudyDay({ user_id: USER_B, day: '2026-05-30' })],
       },
     })
@@ -216,7 +221,7 @@ describe('pullAllStudyDays — owner 限定置換 (S-local-2 Task 5 / spec §6)'
     const client = mockClient({
       ok: true,
       status: 200,
-      body: { studyDays },
+      body: { owner_user_id: USER_B, studyDays },
     })
     const bulkPutSpy = vi.spyOn(db.study_days, 'bulkPut')
     await pullAllStudyDays(USER_B, client)
@@ -224,5 +229,77 @@ describe('pullAllStudyDays — owner 限定置換 (S-local-2 Task 5 / spec §6)'
     // 参照同一性 (検証後に別配列を組み立てて bulkPut しない)
     expect(bulkPutSpy.mock.calls[0][0]).toBe(studyDays)
     bulkPutSpy.mockRestore()
+  })
+})
+
+describe('pullAllStudyDays — owner echo (tag mirror hygiene sprint task 1 / spec §2, §9-1)', () => {
+  it('① echo 不一致 + 空 payload: reject + Dexie 不変 (vacuous 穴の直接 pin)', async () => {
+    const db = getClientDb()
+    await db.study_days.bulkPut([fakeStudyDay({ user_id: USER_A, day: '2026-05-01' })])
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: { owner_user_id: USER_B, studyDays: [] },
+    })
+    const result = await pullAllStudyDays(USER_A, client)
+    expect(result).toEqual({ ok: false, count: 0 })
+    const rows = await db.study_days.where('user_id').equals(USER_A).toArray()
+    expect(rows.map((r) => r.day)).toEqual(['2026-05-01'])
+  })
+
+  it('② owner_user_id field 欠落: reject (undefined !== userId) + Dexie 不変', async () => {
+    const db = getClientDb()
+    await db.study_days.bulkPut([fakeStudyDay({ user_id: USER_A, day: '2026-05-01' })])
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: {
+        studyDays: [fakeStudyDay({ user_id: USER_A, day: '2026-06-01' })],
+      },
+    })
+    const result = await pullAllStudyDays(USER_A, client)
+    expect(result).toEqual({ ok: false, count: 0 })
+    const rows = await db.study_days.toArray()
+    expect(rows.map((r) => r.day)).toEqual(['2026-05-01'])
+  })
+
+  it('③ echo 一致 + 行 mismatch: reject (2 段の独立性 — echo 一致だけでは行検証を免れない)', async () => {
+    const db = getClientDb()
+    await db.study_days.bulkPut([
+      fakeStudyDay({ user_id: USER_A, day: '2026-05-01' }),
+      fakeStudyDay({ user_id: USER_B, day: '2026-05-01' }),
+    ])
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: {
+        owner_user_id: USER_B,
+        studyDays: [
+          fakeStudyDay({ user_id: USER_B, day: '2026-05-20' }),
+          fakeStudyDay({ user_id: USER_A, day: '2026-05-21' }), // 混入
+        ],
+      },
+    })
+    const result = await pullAllStudyDays(USER_B, client)
+    expect(result).toEqual({ ok: false, count: 0 })
+    const rows = await db.study_days.toArray()
+    expect(rows.map((r) => `${r.user_id}:${r.day}`).sort()).toEqual([
+      `${USER_A}:2026-05-01`,
+      `${USER_B}:2026-05-01`,
+    ])
+  })
+
+  it('④ echo 一致 + 空 payload: 正常系 (自 owner 行の正当な全削除)', async () => {
+    const db = getClientDb()
+    await db.study_days.bulkPut([fakeStudyDay({ user_id: USER_A, day: '2026-05-01' })])
+    const client = mockClient({
+      ok: true,
+      status: 200,
+      body: { owner_user_id: USER_A, studyDays: [] },
+    })
+    const result = await pullAllStudyDays(USER_A, client)
+    expect(result).toEqual({ ok: true, count: 0 })
+    const rows = await db.study_days.where('user_id').equals(USER_A).toArray()
+    expect(rows).toHaveLength(0)
   })
 })

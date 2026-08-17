@@ -108,4 +108,22 @@ describe('GET /api/study-days/pull', () => {
     expect(await res.json()).toEqual({ error: 'internal' })
     expect(res.headers.get('Cache-Control')).toContain('no-store')
   })
+
+  // ---------------------------------------------------------------------------
+  // owner echo (tag mirror hygiene sprint task 1 / spec §2, §9-1 pin ⑤)
+  // ---------------------------------------------------------------------------
+  it('正常応答の top-level に owner_user_id: user.id が載る', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(FAKE_USER)
+    vi.mocked(getAllStudyDaysForUser).mockResolvedValue([])
+    const res = await GET()
+    const body = (await res.json()) as { owner_user_id?: string }
+    expect(body.owner_user_id).toBe('user-uuid-1')
+  })
+
+  it('emptyBody (users 行未 sync) には owner_user_id が載らない (静的リテラルの構造的帰結)', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null)
+    const res = await GET()
+    const body = await res.json()
+    expect(body).not.toHaveProperty('owner_user_id')
+  })
 })

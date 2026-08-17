@@ -28,6 +28,8 @@ export type PullApiClient = {
     ok: boolean
     status: number
     body: {
+      // owner echo (spec §2, /api/pull と同型): server が認証した user.id。
+      owner_user_id?: string
       studyDays?: ClientStudyDay[]
       error?: string
     } | null
@@ -44,7 +46,7 @@ const defaultClient: PullApiClient = {
     try {
       const res = await fetch(path, { method: 'GET' })
       let body:
-        | { studyDays?: ClientStudyDay[]; error?: string }
+        | { owner_user_id?: string; studyDays?: ClientStudyDay[]; error?: string }
         | null = null
       try {
         body = (await res.json()) as typeof body
@@ -75,14 +77,24 @@ export async function pullAllStudyDays(
   if (!response.ok || !response.body) {
     return { ok: false, count: 0 }
   }
-  const { studyDays } = response.body
+  const { owner_user_id: ownerUserId, studyDays } = response.body
   if (!Array.isArray(studyDays)) {
     return { ok: false, count: 0 }
   }
 
-  // owner 検証: tx を開く前に完了し、 違反があれば batch 全体を reject する
-  // (部分書込なし)。 検証した配列 (studyDays) をそのまま bulkPut に渡す
-  // (検証後に別配列を組み立てない)。 log は event 名 + 件数のみ。
+  // owner 検証 (2 段・tx を開く前に完了し、違反があれば batch 全体を reject する
+  // = 部分書込なし。log は event 名 + 件数のみ):
+  // (a) owner echo (spec §2, /api/pull §3a と同型)。field 欠落 (undefined) も
+  // 不一致として reject する。空 payload では行検証 (b) が vacuous (空配列は
+  // .some が常に false) になるため、この echo が単独で owner 不一致を検知する
+  // 唯一の手段 (session doc §7b の穴対策)。
+  if (ownerUserId !== userId) {
+    logger.warn({ event: 'study_days.pull.owner_echo_mismatch', count: studyDays.length })
+    return { ok: false, count: 0 }
+  }
+  // (b) 行単位の owner 検証 (echo だけでは行単位の混入を捕まえられない)。
+  // 検証した配列 (studyDays) をそのまま bulkPut に渡す (検証後に別配列を
+  // 組み立てない)。
   if (studyDays.some((row) => row.user_id !== userId)) {
     logger.warn({ event: 'study_days.pull.owner_mismatch', count: studyDays.length })
     return { ok: false, count: 0 }

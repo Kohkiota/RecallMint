@@ -26,7 +26,13 @@ export const GET = withReadOnlyAuth(
       const studyDays = await withTenantTx(user.id, (tx) =>
         getAllStudyDaysForUser(user.id, tx),
       )
-      return Response.json({ studyDays }, { status: 200, headers })
+      return Response.json(
+        // owner echo (spec §2, /api/pull と同型): client が capture した userId と
+        // 突き合わせ、別 user の応答を全体 reject するための出所表明。空 payload でも
+        // echo 単独で owner 不一致を検知できる (session doc §7b の vacuous 穴対策)。
+        { owner_user_id: user.id, studyDays },
+        { status: 200, headers },
+      )
     } catch (err) {
       logger.warn({
         event: 'api.study_days.pull.failed',
