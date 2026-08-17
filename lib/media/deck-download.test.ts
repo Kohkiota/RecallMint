@@ -15,6 +15,10 @@
 // - persist() best-effort: reject でも DL は続行。
 // - lock-busy: 他タブ DL 中 → no-op ({ok:false})。
 // - 非配列 card.images はガード (crash しない)。
+// - DL success gate (spec §4.2・r3/r4): cleanup (後続 sprint) との交差を模し、 hasAssetBlob
+//   の返り値だけを選択的に差し替えて「gate 直前に blob が消えた」を決定的に再現する
+//   (matchAssetBlob は実 cache を見るため preflight の hit/miss 判定はそのまま)。 早期出口
+//   ①(全件 hit)/ DL 本体経路の hit 分②・added 分③ を個別に検証する。
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ClientCardImage } from '@/lib/client-db'
@@ -56,11 +60,13 @@ class FakeCacheStorage {
 // putAssetBlob を一時的に失敗させるため)。
 type PutFn = (userId: string, assetId: string, blob: Blob) => Promise<void>
 type DelFn = (userId: string, assetId: string) => Promise<void>
+type HasFn = (userId: string, assetId: string) => Promise<boolean>
 
 const { spies } = vi.hoisted(() => ({
   spies: {
     put: vi.fn<PutFn>(),
     del: vi.fn<DelFn>(),
+    has: vi.fn<HasFn>(),
   },
 }))
 
@@ -68,10 +74,12 @@ vi.mock('@/lib/media/cache', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/media/cache')>()
   spies.put.mockImplementation(actual.putAssetBlob)
   spies.del.mockImplementation(actual.deleteAssetBlob)
+  spies.has.mockImplementation(actual.hasAssetBlob)
   return {
     ...actual,
     putAssetBlob: (u: string, a: string, b: Blob) => spies.put(u, a, b),
     deleteAssetBlob: (u: string, a: string) => spies.del(u, a),
+    hasAssetBlob: (u: string, a: string) => spies.has(u, a),
   }
 })
 
@@ -92,6 +100,9 @@ let originalCaches: typeof globalThis.caches | undefined
 let originalPersist: (() => Promise<boolean>) | undefined
 let mockPersist: ReturnType<typeof vi.fn<() => Promise<boolean>>>
 let mockFetch: ReturnType<typeof vi.fn<(url: string) => Promise<Response>>>
+// gate test が「特定 key だけ hasAssetBlob を false に差し替え、 他 key は実装へ委譲する」
+// 選択的 override を書くための実装参照 (beforeEach で再取得)。
+let cacheActual: typeof import('@/lib/media/cache')
 
 // navigator.storage.persist を差し替える (存在しない環境で define する)。
 function installStoragePersist(fn: () => Promise<boolean>) {
@@ -143,12 +154,13 @@ function img(key: string): ClientCardImage {
 beforeEach(async () => {
   vi.clearAllMocks()
 
-  // clearAllMocks は cache spy の実装も消すため、 実 put/delete を再注入する
+  // clearAllMocks は cache spy の実装も消すため、 実 put/delete/has を再注入する
   // (round-trip test は実 Cache stub の書込/削除に依存する)。
-  const cacheActual =
+  cacheActual =
     await vi.importActual<typeof import('@/lib/media/cache')>('@/lib/media/cache')
   spies.put.mockImplementation(cacheActual.putAssetBlob)
   spies.del.mockImplementation(cacheActual.deleteAssetBlob)
+  spies.has.mockImplementation(cacheActual.hasAssetBlob)
 
   originalCaches = globalThis.caches
   globalThis.caches = new FakeCacheStorage() as unknown as CacheStorage
@@ -478,5 +490,72 @@ describe('downloadDeckImages — 非配列 images ガード', () => {
 
     // 非配列 card は skip し、 正常 card の KEY_A のみ DL。
     expect(result).toEqual({ ok: true, total: 1, downloaded: 1 })
+  })
+})
+
+describe('downloadDeckImages — DL success gate (cleanup 交差 / spec §4.2)', () => {
+  it('① 全件 preflight hit → 検証前に blob 1 件削除 → {ok:false}・job row 未生成', async () => {
+    await seedCard('c1', [img(KEY_A), img(KEY_B)])
+    await putAssetBlob(USER_ID, KEY_A, new Blob(['a'], { type: 'image/webp' }))
+    await putAssetBlob(USER_ID, KEY_B, new Blob(['b'], { type: 'image/webp' }))
+
+    // gate (hasAssetBlob) だけ KEY_B を「欠け」として観測させる (cleanup が検証直前に
+    // 削除したことを模す)。 preflight (matchAssetBlob) は実 cache を見るため hit のまま
+    // (misses.length === 0 = 早期出口を通る)。
+    spies.has.mockImplementation(async (userId: string, assetId: string) => {
+      if (assetId === KEY_B) return false
+      return cacheActual.hasAssetBlob(userId, assetId)
+    })
+
+    const resolveAssetUrls = makeResolve([])
+    const result = await downloadDeckImages(USER_ID, EXAM_ID, { resolveAssetUrls })
+
+    expect(result).toEqual({ ok: false, total: 2, downloaded: 0 })
+    // 早期出口 gate は job 未生成のため rollback を呼ばない — resolve も呼ばれない。
+    expect(resolveAssetUrls).not.toHaveBeenCalled()
+    expect(await getClientDb().media_download_jobs.get([USER_ID, EXAM_ID])).toBeUndefined()
+  })
+
+  it('② mixed hit/miss → hit 分 blob 1 件削除 → rollback (added blob + job row 消滅) + {ok:false}', async () => {
+    await seedCard('c1', [img(KEY_A), img(KEY_B)])
+    // KEY_A は事前 Cache 済み (hit 分、 本 DL では触らない)。 KEY_B は miss (DL 対象)。
+    await putAssetBlob(USER_ID, KEY_A, new Blob(['a'], { type: 'image/webp' }))
+
+    // gate だけ KEY_A (hit 分) を「欠け」として観測させる。
+    spies.has.mockImplementation(async (userId: string, assetId: string) => {
+      if (assetId === KEY_A) return false
+      return cacheActual.hasAssetBlob(userId, assetId)
+    })
+
+    const resolveAssetUrls = makeResolve([KEY_B])
+    const result = await downloadDeckImages(USER_ID, EXAM_ID, { resolveAssetUrls })
+
+    expect(result.ok).toBe(false)
+    // DL 本体経路を通った証拠 (早期出口ではない)。
+    expect(resolveAssetUrls).toHaveBeenCalledTimes(1)
+    // rollback: added 分 (KEY_B) は Cache から削除される。
+    expect(await matchAssetBlob(USER_ID, KEY_B)).toBeUndefined()
+    expect(await getClientDb().media_download_jobs.get([USER_ID, EXAM_ID])).toBeUndefined()
+  })
+
+  it('③ mixed hit/miss → added 分 blob 1 件削除 → rollback (added blob + job row 消滅) + {ok:false}', async () => {
+    await seedCard('c1', [img(KEY_A), img(KEY_B)])
+    await putAssetBlob(USER_ID, KEY_A, new Blob(['a'], { type: 'image/webp' })) // hit 分
+
+    // gate だけ KEY_B (added 分・本 DL で新規 put) を「欠け」として観測させる。
+    spies.has.mockImplementation(async (userId: string, assetId: string) => {
+      if (assetId === KEY_B) return false
+      return cacheActual.hasAssetBlob(userId, assetId)
+    })
+
+    const resolveAssetUrls = makeResolve([KEY_B])
+    const result = await downloadDeckImages(USER_ID, EXAM_ID, { resolveAssetUrls })
+
+    expect(result.ok).toBe(false)
+    // rollback: added 分 (KEY_B) の削除が best-effort で試みられる。
+    expect(spies.del).toHaveBeenCalledWith(USER_ID, KEY_B)
+    expect(await getClientDb().media_download_jobs.get([USER_ID, EXAM_ID])).toBeUndefined()
+    // hit 分 (KEY_A) は rollback の対象外で保全される。
+    expect(await matchAssetBlob(USER_ID, KEY_A)).toBeDefined()
   })
 })

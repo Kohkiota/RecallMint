@@ -14,12 +14,21 @@
 // server action (resolveAssetUrls) は ESLint Block A が lib→app import を禁ずるため
 // get-asset.ts / upload.ts と同じ DI 前例で構造型注入する (呼出側 client component が
 // 実 action をそのまま渡す)。
+//
+// success gate (spec §4.2・r3/r4): 後続 sprint で導入する sign-out purge / sign-in
+// sweep (Cache API blob の cleanup) が進行中 DL の blob を消すと、 all-or-nothing の
+// オフライン契約 (blob 集合の完全性) が「ok:true + blob 欠け」で破れる。 これを cleanup
+// 側の受容にせず DL 側で構造的に閉じるため、 **両方の成功出口**(① job 未生成の早期
+// ok:true / ② 'done' 確定直前の ok:true)を deck 全 key (allKeyList = preflight hit
+// 分を含む) の blob 現存検証 (verifyDeckBlobs) で支配する。 早期出口は job row / added
+// blob とも未生成のため rollback 対象なし (fail は結果を返すのみ)、 DL 本体経路は既存
+// rollback に合流する (added blob + job row 削除)。 'failed' status は新設しない。
 
 import type { ActionResult } from '@/lib/actions/result'
 import { getClientDb } from '@/lib/client-db'
 import { isAssetKey } from '@/lib/validation/card'
 import { withWebLock } from '@/lib/sync/with-web-lock'
-import { putAssetBlob, matchAssetBlob, deleteAssetBlob } from '@/lib/media/cache'
+import { putAssetBlob, matchAssetBlob, deleteAssetBlob, hasAssetBlob } from '@/lib/media/cache'
 
 export type ResolveAssetUrlsFn = (
   assetIds: string[],
@@ -44,6 +53,15 @@ const RESOLVE_BATCH_SIZE = 50
 // 画像 GET の timeout。 表示用 GET と同じく 60s で hang を防ぐ (upload の PUT より小さい
 // image bytes ゆえ余裕を持たせつつ無限待ちを避ける)。
 const FETCH_TIMEOUT_MS = 60_000
+
+// success gate: deck 全 key の blob 現存を確認する (存在確認のみ・本体は読まない)。
+// cleanup との交差で 1 件でも欠けていたら false (呼出側が両成功出口を支配する)。
+async function verifyDeckBlobs(userId: string, keys: string[]): Promise<boolean> {
+  for (const key of keys) {
+    if (!(await hasAssetBlob(userId, key))) return false
+  }
+  return true
+}
 
 /**
  * exam 配下 cards の添付画像を一括で先行キャッシュする (all-or-nothing)。
@@ -143,8 +161,14 @@ async function runDownload(
     // 実 DL 対象 (misses) のみ = 進捗バーの分母 (既にある分は進捗に数えない)。
     deckTotal = allKeyList.length
 
-    // miss ゼロ = 全て既にキャッシュ済み。 job row を作らず即返す。
+    // miss ゼロ = 全て既にキャッシュ済み。 job row を作らず即返す — が、 その前に success
+    // gate①: 全 key の blob 現存を確認する (cleanup が全件 hit 中に blob を消すと ok:true
+    // のまま欠けが成立しうるため)。 job row / added blob とも未生成で rollback 対象が無い
+    // ので、 fail 時は結果を返すのみ (rollback() は呼ばない)。
     if (misses.length === 0) {
+      if (!(await verifyDeckBlobs(userId, allKeyList))) {
+        return { ok: false, total: deckTotal, downloaded: 0 }
+      }
       return { ok: true, total: deckTotal, downloaded: 0 }
     }
 
@@ -205,10 +229,18 @@ async function runDownload(
       }
     }
 
-    // ⑥ 全件成功: job を 'done' に確定 (done_count = miss 分)。 この最終 update が失敗して
-    //    も all-or-nothing を保つため try 内に置き catch→rollback へ流す (job を 'downloading'
-    //    のまま残すと後続 sweep が cache 済みデッキを消しかねない + 呼出側が throw を受ける
-    //    ため。 rollback で job row を消し {ok:false} に正規化する・Codex 指摘)。
+    // ⑥ 全件成功: job を 'done' に確定する前に success gate②。 deck 全 key (allKeyList =
+    //    pre-cached だった hit 分 + 本 DL で added した分) の blob 現存を確認する — cleanup
+    //    が (added 完了後〜'done' 確定までの間に) hit 分・added 分いずれかの blob を消して
+    //    いたら fail とし、 既存 rollback (added blob + job row 削除) に合流する。
+    if (!(await verifyDeckBlobs(userId, allKeyList))) {
+      return await rollback()
+    }
+
+    // 全件成功: job を 'done' に確定 (done_count = miss 分)。 この最終 update が失敗して
+    // も all-or-nothing を保つため try 内に置き catch→rollback へ流す (job を 'downloading'
+    // のまま残すと後続 sweep が cache 済みデッキを消しかねない + 呼出側が throw を受ける
+    // ため。 rollback で job row を消し {ok:false} に正規化する・Codex 指摘)。
     await db.media_download_jobs.update([userId, examId], {
       status: 'done',
       done_count: missTotal,

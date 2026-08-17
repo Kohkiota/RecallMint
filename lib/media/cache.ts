@@ -29,6 +29,18 @@ export async function matchAssetBlob(
   return res ? await res.blob() : undefined
 }
 
+// 存在確認専用 (blob 本体は読まない)。 deck-download の success gate (spec §4.2) が
+// 大量 key を検証する用途向け — matchAssetBlob は res.blob() まで読むため、 存在確認だけ
+// で済む呼出には不要な body 読取コストが乗る。
+export async function hasAssetBlob(
+  userId: string,
+  assetId: string,
+): Promise<boolean> {
+  const cache = await caches.open(CACHE_NAME)
+  const res = await cache.match(cacheKey(userId, assetId))
+  return res !== undefined
+}
+
 export async function deleteAssetBlob(
   userId: string,
   assetId: string,

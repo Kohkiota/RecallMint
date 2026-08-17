@@ -2,10 +2,11 @@
 // vitest (node environment) には Cache API が無いため、 Map-backed な最小 stub を
 // global.caches に注入して unit する (spec §2.4 / brief 制約)。
 // 観点: put→match round-trip(同一 bytes) / delete 後 match が undefined /
-// userId 名前空間分離(user-1 で put した asset を user-2 で match しても undefined)。
+// userId 名前空間分離(user-1 で put した asset を user-2 で match しても undefined)/
+// hasAssetBlob の存在確認(round-trip・未 put・delete 後・namespace 分離・body 非読取)。
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { putAssetBlob, matchAssetBlob, deleteAssetBlob } from './cache'
+import { putAssetBlob, matchAssetBlob, deleteAssetBlob, hasAssetBlob } from './cache'
 
 // ---------------------------------------------------------------------------
 // Map-backed Cache / CacheStorage stub
@@ -90,5 +91,40 @@ describe('media/cache', () => {
     )
 
     expect(matchedByOtherUser).toBeUndefined()
+  })
+
+  describe('hasAssetBlob', () => {
+    it('put 済みの asset に対し true を返す', async () => {
+      await putAssetBlob('user-1', 'asset-4', new Blob(['x'], { type: 'image/webp' }))
+
+      expect(await hasAssetBlob('user-1', 'asset-4')).toBe(true)
+    })
+
+    it('未 put の asset に対し false を返す', async () => {
+      expect(await hasAssetBlob('user-1', 'unknown-asset')).toBe(false)
+    })
+
+    it('deleteAssetBlob 後は false を返す', async () => {
+      await putAssetBlob('user-1', 'asset-5', new Blob(['y'], { type: 'image/png' }))
+      await deleteAssetBlob('user-1', 'asset-5')
+
+      expect(await hasAssetBlob('user-1', 'asset-5')).toBe(false)
+    })
+
+    it('userId 名前空間: user-1 で put した asset は user-2 から false', async () => {
+      await putAssetBlob('user-1', 'asset-shared-id-2', new Blob(['z'], { type: 'image/webp' }))
+
+      expect(await hasAssetBlob('user-2', 'asset-shared-id-2')).toBe(false)
+    })
+
+    it('blob 本体を読まない (後続 matchAssetBlob が body を読める — FakeCache は同一 Response instance を返すため body 消費があれば検出できる)', async () => {
+      await putAssetBlob('user-1', 'asset-6', new Blob(['body-untouched'], { type: 'image/webp' }))
+
+      const exists = await hasAssetBlob('user-1', 'asset-6')
+      expect(exists).toBe(true)
+
+      const matched = await matchAssetBlob('user-1', 'asset-6')
+      expect(await matched?.text()).toBe('body-untouched')
+    })
   })
 })
