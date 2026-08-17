@@ -394,3 +394,34 @@ CC 本体の cross-check でも 40 file / 91 occurrence / `useLiveQuery` 17 call
 ### A-4. §1.4「タグ系(12)」は 13 件(minor)
 
 §1.4 のタグ系は列挙どおり **13 件**(component 4 + `tag-crud.ts` 9)。ラベルの「(12)」が誤記。23 件の総数は正しい(7 + 2 + 13 + 1 = 23)。
+
+---
+
+## Appendix B(2026-08-17 追記)— hygiene sprint で新たに判明した hazard 2 件
+
+本文・Appendix A は原文のまま保持。以下 2 件は本 sprint(tag mirror hygiene sprint・spec `docs/superpowers/specs/2026-08-17-tag-mirror-hygiene-design.md` §4.2 が正記録)で新たに判明した hazard で、§4 の分類作業では見落としていたもの。
+
+### B-1. media flush-gate hazard(§4 の分類軸に無かった「行が他機構の gate 根拠になる」結合)
+
+`lib/sync/entity-mutations.ts:242`(`collectBlockedImageMutationIds` の定義)/ `:315-320`(`flushAllPendingEntityMutations` 内で `media_assets.where('status').equals('uploading')` の行 id 集合を作り `collectBlockedImageMutationIds(pendingAll, uploadingAssetIds)` に渡す)は、**`media_assets` の `'uploading'` 行の存在を根拠に pending images mutation の flush を保留する**(画像フェーズ A Task 7 の flush gate)。
+
+hygiene sweep / purge が「回収可能」と判定して非 `'ready'`(= `'uploading'` / `'failed'`)の `media_assets` 行を消すと、**gate が開き、実体の無い image key を server に確定させる**(server は該当 key の実体を持たないまま mutation が `synced` 化しうる)。これが、非 `'ready'` の `media_assets` 行 + 対応 Cache blob を purge / sweep 共通の不可侵集合に入れた根拠(hygiene spec §4.2)。
+
+**§4 の 3 分類(回収可能 / 無害 / 名前空間済)は行の owner 列だけを見ており、行が他の機構(flush gate)の gate 根拠になっている結合を見ていなかった** — owner 列があり見た目上「回収可能」に分類できる行でも、削除の可否は他の writer との結合を確認しないと判定できないことを示す反例。同原則をレーン横断で適用し、`media_download_jobs` の `'downloading'` 行 + `added_asset_ids` の Cache blob(進行中デッキ DL の all-or-nothing の根拠)も不可侵集合に加えた(→ B-2)。
+
+裏取り: `lib/sync/entity-mutations.ts:242`(`collectBlockedImageMutationIds` 定義)/ `:315-316`(`'uploading'` 行 query)/ `:320`(gate 呼出)。
+
+### B-2. DL blob 完全性の TOCTOU(§4 の分類作業では対象外だった all-or-nothing 契約)
+
+deck DL(`downloadDeckImages` / `lib/media/deck-download.ts`)の既存契約は **all-or-nothing のオフライン保証**で、契約は job row の完了状態だけでなく **blob 集合の完全性を含む**。hygiene cleanup の保護 blob 集合は「Dexie tx 後に観測された行」から算出するため、算出後に開始した / 進行中の DL が使う blob(preflight hit 分・本 DL で追加した added 分)が cleanup に巻き込まれると、**`ok:true` を返しながら blob が欠けた状態が成立しうる**(TOCTOU)。
+
+これは DL 側の **success gate**(`verifyDeckBlobs`)で構造的に閉じた: 両方の成功出口(① `misses.length === 0` の早期 `ok:true` / ② `'done'` 確定を経た `ok:true`)の直前で、deck 全 key(hit 分を含む `allKeyList`)の blob 現存を確認する。1 件でも欠けていれば `{ok:false}`(早期出口は job row / added blob とも未生成のため rollback 対象なし・DL 本体経路は既存 rollback(added blob + job row 削除)に合流)。
+
+裏取り:
+- success gate①(早期出口): `lib/media/deck-download.ts:168-173`(`misses.length === 0` 直後に `verifyDeckBlobs(userId, allKeyList)` を確認し、fail なら `{ok:false, total:deckTotal, downloaded:0}`)。
+- success gate②(`'done'` 確定前): `lib/media/deck-download.ts:236-238`(`'done'` update 直前に同じ `verifyDeckBlobs` を確認し、fail なら `rollback()`)。
+- `verifyDeckBlobs` 定義: `lib/media/deck-download.ts:59-64`(`hasAssetBlob` で全 key の存在確認のみ・本体は読まない)。
+
+なお `deck-download.ts` は `added_asset_ids` の更新を `putAssetBlob` より**前**に行うため、**crash-consistency 上 `added ⊇ cached` が成立する**(added に記録済 = 実 Cache に入った asset の superset であり、記録漏れの blob は存在しない):
+- 記録: `lib/media/deck-download.ts:206-210`(`added.push(assetId)` → `db.media_download_jobs.update(..., { added_asset_ids: [...added] })`。`:206` のコメント「★ 記録を put より前に行う(crash 時 added ⊇ cached を保証)」)。
+- put: `lib/media/deck-download.ts:222`(`await putAssetBlob(userId, assetId, await res.blob())`、記録の後)。
