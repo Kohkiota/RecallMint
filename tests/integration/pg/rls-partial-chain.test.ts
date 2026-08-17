@@ -3,8 +3,8 @@
 // 旧: RLS-P2 Task 9 item (6) = partial 残余の連鎖回帰(RLS 表 + 非 RLS の tag 3 表を跨ぐ
 // mixed chain)。RLS-P3 Wave 1 で tag_categories/tag_options/card_tags も RLS 化されたため、
 // 下記 2 経路は **全表 RLS** となり mixed(partial)ではなくなった。assertion は不変
-// (隔離: A の行のみ・B 非混在)ゆえ、pull 全経路 + tag mutation が全表 RLS 下でも挙動不変
-// であることの regression として維持し、名称を実態に追従させる。
+// (隔離: A の行のみ・B 非混在)ゆえ、pull の 6 delta + tag mutation が全表 RLS 下でも
+// 挙動不変であることの regression として維持し、名称を実態に追従させる。
 // ※「partial-RLS(RLS 表 + off 表の混在 tx)が安全」の intentional な behavioral 証明は
 //   本 file から外れた(off 表を触らなくなったため)。その証明は Wave 2 で新設する
 //   (Step 0 factfinding 追補2 の follow-up 台帳・恒久 off の global 表 × RLS 表)。
@@ -12,9 +12,13 @@
 //  - bulk mutation: CARD_FIELD_HANDLERS.tag_option_ids は 1 tx で cards[RLS] の存在確認 +
 //    updated_at bump と、tag_options/tag_categories/card_tags[RLS] の検証・whole-set
 //    replace を行う。A の mutation は正常適用・B は不変。
-//  - pull 6 stream: /api/pull の withTenantTx ブロックと同型に 6 delta を asTenant(A) で
-//    引く。cards/exams/tombstones + tag_categories/tag_options/card_tags[全て RLS] の
+//  - pull 6 delta: /api/pull の withTenantTx ブロックのうち **6 delta ぶん**を asTenant(A)
+//    で引く。cards/exams/tombstones + tag_categories/tag_options/card_tags[全て RLS] の
 //    全 stream が A の行を返し B は 1 行も混ざらない。
+//    ※ 同ブロックの read は 2026-08-17 以降 7 本(6 delta + 変更 card ぶんの
+//      getCardTagsByCardIds)。7 本目の隔離は delta-isolation.test.ts の
+//      「getCardTagsByCardIds」3 describe(owner 接続 = RLS bypass / asTenant / RLS
+//      backstop)が pin 済ゆえ、本 file には足さない(同じ隔離の二重 pin を避ける)。
 //
 // mutating (bulk) を含むため beforeEach で truncate→seed。
 import { eq } from 'drizzle-orm'
@@ -108,7 +112,8 @@ describe('RLS isolation: pull 6-stream + tag-mutation (all RLS after Wave 1)', (
     })
   })
 
-  describe('pull 6-stream (asTenant, mirrors /api/pull withTenantTx block; all RLS)', () => {
+  // 7 本目の by-card read は含まない(冒頭 header 参照 — delta-isolation.test.ts が pin)。
+  describe('pull 6-stream (asTenant, /api/pull withTenantTx block の 6 delta ぶん; all RLS)', () => {
     const since = new Date('2020-01-01T00:00:00.000Z')
 
     it('every stream returns A rows and excludes B (all RLS tables)', async () => {

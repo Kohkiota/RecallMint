@@ -9,9 +9,11 @@
  *   - Delta builders: fake*Delta (wrap rows + cursor into the shape getXxxDelta returns)
  *   - EMPTY_PULL_BODY (zero-rows response shape for snapshot baseline)
  *
- * The pull route has no DB writes — mocking getCurrentUser + the six
- * delta functions is sufficient to call the handler deterministically.
- * No fake-tx/fakeDb builder needed for this route.
+ * The pull route has no DB writes, so no fake-tx/fakeDb builder is needed.
+ * Mocking getCurrentUser + the six delta functions covers the handler only
+ * while since_card_tags is absent; with since_card_tags + non-empty cards the
+ * route also calls getCardTagsByCardIds (authoritative replace), which must be
+ * mocked *and* given a resolved value or the route 500s.
  */
 
 import type {

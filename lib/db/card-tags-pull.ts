@@ -1,17 +1,18 @@
 // card-tags-pull — server card_tags テーブルから client (Dexie) 用の
-// ClientCardTag shape (snake_case + ISO8601 文字列) に変換した差分を取得する
-// server-only module。 統合 `/api/pull` の delta 入口を提供する (Tag-2b)。
+// ClientCardTag shape (snake_case + ISO8601 文字列) に変換して返す server-only
+// module。 統合 `/api/pull` の card_tags read はすべてここを通る (Tag-2b)。
 //
-// 役割境界:
-// - getCardTagsDelta: tenant 絞り込み + Drizzle SELECT の唯一の入口
-//   (tag-categories-pull / tag-options-pull と同 pattern)。
-//   card_tags は updated_at を持たない junction なので cursor は created_at base。
+// read は 2 種 (役割が違う):
+// - getCardTagsDelta: cursor 増分。 card_tags は updated_at を持たない junction ゆえ
+//   cursor は created_at base (他 pull module と cursor 列だけ非対称)。
+// - getCardTagsByCardIds: 変更 card ぶんの authoritative 集合 (cursor 条件なし)。
 //
-// 同期穴の補完 (案 a):
-//   関連付けのみ外す `[A,B] → []` の場合、 card_tags 増分には何も載らない。
-//   このギャップは pull 側で「cards.updated_at bump 起点の取り直し」 で塞ぐ
-//   (書込側が cards.updated_at を bump → pull 経路が変更カードの旧 card_tags を
-//   削除してから当該カードぶんの新集合を upsert する)。 本 file は単純な増分のみ。
+// 2 種要る理由: 関連付けのみ外す `[A,B] → []` は増分に何も載らないため、 client は
+// cards.updated_at bump 起点で「変更 card の card_tags を全削除 → 応答で再構築」する。
+// 削除する集合 (card 単位) と復元する集合 (cursor 単位) が別述語だと、 cursor より古い
+// 行が恒久欠落する。 塞ぐのは route 側の合成で、 変更 card ぶんは増分側を捨てて by-card
+// 側で置換する (union でなく replace)。 契約の正本 =
+// docs/superpowers/specs/2026-08-17-card-tags-delta-completeness-design.md の I-1。
 
 import 'server-only'
 

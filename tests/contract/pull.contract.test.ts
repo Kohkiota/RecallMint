@@ -44,9 +44,12 @@ vi.mock('@/lib/db/tag-options-pull', () => ({
   getOptionsDelta: vi.fn(),
 }))
 // route は同 module から getCardTagsByCardIds も import する (変更 card の
-// authoritative 集合の取り直し)。 factory に足さないと、 since_card_tags 付きの
-// case を将来足した瞬間 route の try/catch が TypeError を握って 500 になり、
-// 原因が見えない形で contract が落ちる。
+// authoritative 集合の取り直し)。 factory の entry が買うのはここまで =
+// 「No "getCardTagsByCardIds" export is defined on the mock」の解決エラー回避のみで、
+// これだけでは足りない: 解決値が未設定 (undefined) なら route の replace 合成が
+// spread で TypeError になる。 どちらの失敗も route の try/catch が握って
+// {error:'internal'} 500 になり原因が見えないため、 beforeEach の default 解決値
+// (空配列) と対で初めて since_card_tags 付き case が書ける。
 vi.mock('@/lib/db/card-tags-pull', () => ({
   getCardTagsDelta: vi.fn(),
   getCardTagsByCardIds: vi.fn(),
@@ -73,7 +76,10 @@ import { getExamsDelta } from '@/lib/db/exams-pull'
 import { getTombstonesDelta } from '@/lib/db/tombstones-pull'
 import { getCategoriesDelta } from '@/lib/db/tag-categories-pull'
 import { getOptionsDelta } from '@/lib/db/tag-options-pull'
-import { getCardTagsDelta } from '@/lib/db/card-tags-pull'
+import {
+  getCardTagsDelta,
+  getCardTagsByCardIds,
+} from '@/lib/db/card-tags-pull'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 import {
@@ -136,6 +142,10 @@ beforeEach(() => {
   )
   // Default: card_tags stream empty (matches existing unit test pattern)
   vi.mocked(getCardTagsDelta).mockResolvedValue(fakeCardTagsDelta())
+  // by-card 取り直しの default 解決値。 上の factory entry だけでは解決値が
+  // undefined のままで、 since_card_tags 付き case が TypeError → 500 に化ける
+  // (app/api/pull/route.test.ts と同じ理由・同じ default)。
+  vi.mocked(getCardTagsByCardIds).mockResolvedValue([])
 })
 
 afterEach(() => {

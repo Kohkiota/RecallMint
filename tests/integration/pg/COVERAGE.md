@@ -105,7 +105,7 @@
 | **answer_events** | review ingest tx(C10・ON CONFLICT DO NOTHING) | — | `userId` 値 | 内部 setTenantContext | rls-wave1 + event_id ON CONFLICT 不変 pin |
 | **tag_categories** | upload persist(C4)/ entity-mut(C9)/ 退会(C12) | pull delta(getCategoriesDelta) | `eq(userId)` | withTenantTx / per-mutation | rls-wave1 + rls-partial-chain(pull) |
 | **tag_options** | C4 / C9 / 退会 | pull delta / applyTagOptionUpdate | `eq(userId)` | withTenantTx / per-mutation | rls-wave1 + write-isolation(applyTagOptionUpdate)+ rls-partial-chain |
-| **card_tags** | C4 / C9(whole-set replace)/ 退会 | pull delta(getCardTagsDelta) | `eq(userId)` / `userId` 値 | withTenantTx / per-mutation | rls-wave1 + rls-partial-chain |
+| **card_tags** | C4 / C9(whole-set replace)/ 退会 | pull delta(getCardTagsDelta)/ 変更 card ぶんの by-card 取り直し(getCardTagsByCardIds・2026-08-17 追加) | `eq(userId)` / `userId` 値 | withTenantTx / per-mutation | rls-wave1 + rls-partial-chain(delta のみ)+ delta-isolation(by-card: owner 接続 / asTenant / RLS backstop) |
 | **entity_mutations** | entity-mut per-mutation tx(C9・log INSERT + dedupe SELECT) | C9 dedupe pre-check | `eq(mutationId) AND eq(userId)` / `userId` 値 | per-mutation setTenantContext | rls-wave1 + dual-table pin |
 | **card_asset_refs** | entity-mut images field(C9・DELETE+INSERT) | handleImages 内 | `userId` 値 | per-mutation setTenantContext | rls-wave1 + dual-table pin |
 | **ai_usage_users** | incrementAiUsage(C8・UPSERT)/ 退会(C12) | **無**(上限判定は global `ai_usage`) | `userId` PK 値 | withTenantTx(内部 setTenantContext) | rls-wave1(read/write/loud) |
