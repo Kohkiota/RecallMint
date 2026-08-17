@@ -909,6 +909,183 @@ describe('pullDelta — owner echo (pin ⑤・spec §5.1a)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// cursor CAS (spec §3)
+// ---------------------------------------------------------------------------
+
+// fetch の解決を手動制御する client。 pending の間に sync_meta を書き換えることで、
+// 「cursor 読取 (§1) → network → apply tx」 の窓に purge / sweep が挟まる状況を作る。
+function deferredClient(): {
+  client: PullApiClient
+  resolve: (v: Awaited<ReturnType<PullApiClient['get']>>) => void
+} {
+  let resolve!: (v: Awaited<ReturnType<PullApiClient['get']>>) => void
+  const pending = new Promise<Awaited<ReturnType<PullApiClient['get']>>>((r) => {
+    resolve = r
+  })
+  return { client: { get: vi.fn(() => pending) }, resolve }
+}
+
+// client.get 到達 = §1 の cursor snapshot 採取済。 これを待ってから sync_meta を
+// 動かすことで「窓の中で動いた」 ことを (競合順序に依存せず) 確定させる。
+async function awaitFetchStarted(client: PullApiClient): Promise<void> {
+  await vi.waitFor(() => expect(client.get).toHaveBeenCalled())
+}
+
+// CAS 検証用の apply payload。 CAS が無ければ cards 1 件が mirror に載り cursor 6 本が
+// next へ前進する = abort 時の「mirror / cursor 不変」 assertion が vacuous にならない。
+function casApplyResponse() {
+  return emptyResponse({
+    cards: [fakeClientCard({ id: 'cas-c', user_id: USER_A })],
+    cursors: allNextCursors(),
+  })
+}
+
+describe('pullDelta — cursor CAS (pin ⑦・spec §3)', () => {
+  // (a) 消失: purge / sweep が窓中に sync_meta を消した場合。 ここで apply すると
+  //     空になった mirror に旧 cursor 由来の delta が乗り、 新 cursor で delta 継続に
+  //     なる = purge で消えた行が永続的に silent 欠落する。
+  it('(a) 窓中に cursor 6 本が purge される (消失) → abort・mirror 不変・cursor 再生成なし', async () => {
+    const db = getClientDb()
+    await seedAllCursorsFor(USER_A)
+    const { client, resolve } = deferredClient()
+
+    const pending = pullDelta(USER_A, client)
+    await awaitFetchStarted(client)
+    // snapshot は purge 前の seed 値で採られている (送信 path がその証拠)。
+    expect(calledPathOf(client)).toContain(
+      `since_cards=${encodeURIComponent(CURSOR_STREAMS[0]!.seed)}`,
+    )
+    await db.sync_meta.clear()
+
+    resolve(casApplyResponse())
+    const result = await pending
+
+    expect(result.ok).toBe(false)
+    expect(await db.cards.count()).toBe(0)
+    // cursor は 1 本も再生成されない (next が着地すると欠落が永続化する)。
+    expect(await db.sync_meta.count()).toBe(0)
+  })
+
+  // (b) 変化: 6 stream を全数 pin する (1 本だけ CAS 比較を落とす退行を捕まえるため。
+  //     owner 行検証の 5 stream 全数 pin と同じ趣旨)。
+  for (const s of CURSOR_STREAMS) {
+    it(`(b) 窓中に ${s.base} が別値へ前進 (変化) → abort・mirror / cursor 不変`, async () => {
+      const db = getClientDb()
+      await seedAllCursorsFor(USER_A)
+      const moved = '2026-07-31T00:00:00.000Z'
+      const { client, resolve } = deferredClient()
+
+      const pending = pullDelta(USER_A, client)
+      await awaitFetchStarted(client)
+      await db.sync_meta.put({ key: scopedSyncMetaKey(s.base, USER_A), value: moved })
+
+      resolve(casApplyResponse())
+      const result = await pending
+
+      expect(result.ok).toBe(false)
+      expect(await db.cards.count()).toBe(0)
+      // 動いた 1 本は窓中の値のまま、 残り 5 本は seed のまま = next が 1 本も書かれない。
+      for (const other of CURSOR_STREAMS) {
+        expect(
+          await getSyncMeta(other.base, USER_A),
+          `${other.base} が上書きされた`,
+        ).toBe(other.base === s.base ? moved : other.seed)
+      }
+    })
+  }
+
+  // (c) 出現: purge 直後に始まった full pull (snapshot 全 undefined) の窓中に、 別の
+  //     full pull が完走して cursor を再生成した状況。 snapshot 側が undefined でも
+  //     「不在 → 現在値あり」 は不一致として扱う。
+  it('(c) full pull (snapshot 全 undefined) の窓中に cursor が再生成される (出現) → abort・mirror 不変', async () => {
+    const db = getClientDb()
+    const appeared = '2026-08-01T00:00:00.000Z'
+    const { client, resolve } = deferredClient()
+
+    const pending = pullDelta(USER_A, client)
+    await awaitFetchStarted(client)
+    // snapshot が全 undefined であることの証拠 (since_* を 1 本も送っていない)。
+    expect(calledPathOf(client)).toBe('/api/pull')
+    await db.sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, USER_A),
+      value: appeared,
+    })
+
+    resolve(casApplyResponse())
+    const result = await pending
+
+    expect(result.ok).toBe(false)
+    expect(await db.cards.count()).toBe(0)
+    // 出現した 1 本は窓中の値のまま、 他 5 本は不在のまま。
+    expect(await getSyncMeta(SYNC_META_KEYS.cardTagsCursor, USER_A)).toBe(appeared)
+    expect(await getSyncMeta(SYNC_META_KEYS.cardsCursor, USER_A)).toBeUndefined()
+    expect(await db.sync_meta.count()).toBe(1)
+  })
+
+  // (d) abort は tx 例外で実現されるが、 既存の silent FAIL 契約へ正規化される
+  //     (caller へ reject が漏れない + 件数は 0 に潰れる)。
+  it('(d) abort は例外として外へ漏れず FAIL (全 count 0) へ正規化される', async () => {
+    const db = getClientDb()
+    await seedAllCursorsFor(USER_A)
+    const { client, resolve } = deferredClient()
+
+    const pending = pullDelta(USER_A, client)
+    await awaitFetchStarted(client)
+    await db.sync_meta.delete(scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, USER_A))
+
+    // CAS が無ければ {ok:true, cardCount:1, ...} になる payload。
+    resolve(casApplyResponse())
+
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      cardCount: 0,
+      examCount: 0,
+      tombstoneCount: 0,
+      tagCategoryCount: 0,
+      tagOptionCount: 0,
+      cardTagCount: 0,
+    })
+  })
+
+  // (e) 回復分岐 ①: 消失で abort した後、 次 trigger は cursor 不在ゆえ自然に full pull。
+  it('(e) 消失 abort の後続 pull は since 無しの full pull になる', async () => {
+    const db = getClientDb()
+    await seedAllCursorsFor(USER_A)
+    const { client, resolve } = deferredClient()
+
+    const pending = pullDelta(USER_A, client)
+    await awaitFetchStarted(client)
+    await db.sync_meta.clear()
+    resolve(casApplyResponse())
+    expect((await pending).ok).toBe(false)
+
+    const nextClient = mockClient(emptyResponse())
+    const nextResult = await pullDelta(USER_A, nextClient)
+
+    expect(nextResult.ok).toBe(true)
+    expect(calledPathOf(nextClient)).toBe('/api/pull')
+  })
+
+  // (f) CAS 以外の tx 例外まで FAIL へ丸めない (IndexedDB 障害が無音化すると
+  //     mirror 破損の検知経路が消える)。 CAS 導入前からの挙動の据え置き pin。
+  it('(f) CAS 以外の tx 例外は FAIL に丸めず caller へ伝播する', async () => {
+    const db = getClientDb()
+    const boom = new Error('idb failure')
+    const spy = vi.spyOn(db.cards, 'bulkPut').mockImplementation(() => {
+      throw boom
+    })
+    try {
+      const client = mockClient(
+        emptyResponse({ cards: [fakeClientCard({ id: 'c-x', user_id: USER_A })] }),
+      )
+      await expect(pullDelta(USER_A, client)).rejects.toBe(boom)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // runGuardedPull テスト
 // ---------------------------------------------------------------------------
 

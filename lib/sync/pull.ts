@@ -14,6 +14,14 @@
 // - network throw / non-2xx / response body 不正 / owner 検証違反のいずれも、 tx を
 //   開く前に return。 Dexie cards / exams / sync_meta いずれも touch しない。
 //
+// cursor CAS (spec §3):
+// - §1 の cursor read と §4 の apply tx の間には network 窓があり、 その間に
+//   sign-out purge / sign-in sweep が sync_meta を消しうる。 空になった mirror へ
+//   旧 cursor 由来の delta を apply して新 cursor を書くと、 次回 pull が delta 継続に
+//   なり purge で消えた行が永続的に silent 欠落する。 これを防ぐため apply tx の
+//   先頭 (§4-(0)) で cursor 6 本を tx 内再読し、 §1 の snapshot と全一致しなければ
+//   tx ごと abort する。
+//
 // mirror 削除反映の不変条件:
 // clear() は使わず id-upsert のみ行うため、 mirror から card/exam を消す唯一の経路は
 // tombstone bulkDelete (下記 §tx)。 サーバー側で card/exam を物理削除する経路は
@@ -96,6 +104,16 @@ const FAIL: PullDeltaResult = {
   tagCategoryCount: 0,
   tagOptionCount: 0,
   cardTagCount: 0,
+}
+
+// apply tx 先頭の cursor CAS 不一致を表す module-private sentinel (spec §3)。
+// Dexie の tx abort は例外でしか起こせないため、 この型で abort 理由を識別し、
+// 呼出側で silent FAIL 契約 ({ok:false}) へ正規化する。 export しない = 外部から
+// この経路を throw / catch できない (誤って通常の IDB 障害と混同させないため)。
+class CursorCasMismatchError extends Error {
+  constructor() {
+    super('pull: cursor CAS mismatch')
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,119 +251,153 @@ export async function pullDelta(
     return FAIL
   }
 
-  // §4: 1 tx で upsert + tombstone 削除 + cursor write
+  // §4: 1 tx で cursor CAS + upsert + tombstone 削除 + cursor write
   // Tag-2b 案 a の取り直し経路を含む。 順序は厳守 (本 file 冒頭コメント参照):
+  //   0. cursor CAS 再読        // 不一致なら何も書かずに tx ごと abort
   //   1. cards.bulkPut          // 既存
   //   2. 変更カード分の card_tags 全削除  // ★案 a の核心 (空集合化対応)
   //   3. card_tags.bulkPut      // 新集合の上書き
   //   4. tombstone bulkDelete (cards/exams/tag_categories/tag_options/card_tags cascade)
   //   5. cursor write
   const db = getClientDb()
-  await db.transaction(
-    'rw',
-    [
-      db.cards,
-      db.exams,
-      db.tag_categories,
-      db.tag_options,
-      db.card_tags,
-      db.sync_meta,
-    ],
-    async () => {
-      // (1) cards upsert (clear なし = id-upsert のみ)
-      if (cards.length) await db.cards.bulkPut(cards)
-      if (exams.length) await db.exams.bulkPut(exams)
-      // Tag-1: tag マスタの upsert は tombstone 適用 *前* に行う。
-      // 同 pull 内で「同 id の create + delete」 が同居しても、 後段の tombstone
-      // bulkDelete で正しく消える順序を保証する。
-      if (tagCategories.length) await db.tag_categories.bulkPut(tagCategories)
-      if (tagOptions.length) await db.tag_options.bulkPut(tagOptions)
+  try {
+    await db.transaction(
+      'rw',
+      [
+        db.cards,
+        db.exams,
+        db.tag_categories,
+        db.tag_options,
+        db.card_tags,
+        db.sync_meta,
+      ],
+      async () => {
+        // (0) cursor CAS (spec §3)。 §1 で読んだ 6 値と tx 内再読を厳密比較し、 1 本でも
+        // 動いていたら (値変化 / 消失 / 出現) 何も書かずに abort する。 undefined
+        // (cursor 不在) も比較対象の値であり、 不在 → 値ありも不一致として扱う。
+        // これは owner 検証 (§3a) とは別物: owner 検証は「誰のデータか」 を tx を開く前に
+        // 確定させる規律 (validate-before-tx・凍結) で、 CAS は「読取から tx までに store が
+        // 動いたか」 を見る並行性検証ゆえ tx 内でしか意味を持たない。 役割が違うので
+        // 「検証は tx の前」 の規律とは矛盾しない。
+        const casPairs = [
+          [SYNC_META_KEYS.cardsCursor, sinceCards],
+          [SYNC_META_KEYS.examsCursor, sinceExams],
+          [SYNC_META_KEYS.tombstoneCursor, sinceTombstone],
+          [SYNC_META_KEYS.tagCategoriesCursor, sinceTagCategories],
+          [SYNC_META_KEYS.tagOptionsCursor, sinceTagOptions],
+          [SYNC_META_KEYS.cardTagsCursor, sinceCardTags],
+        ] as const
+        for (const [key, captured] of casPairs) {
+          // key は §1 の read / §4-(5) の write と同じ capture 値 (userId) で構成する。
+          if ((await getSyncMeta(key, userId)) !== captured) {
+            throw new CursorCasMismatchError()
+          }
+        }
 
-      // (2) 変更カード分の旧 card_tags 全削除 (Tag-2b 案 a)。
-      // server が card_tags=[] を返す「whole-set 縮小」 ケースでも、 変更カードの
-      // 旧行を消してから (3) で空 bulkPut することで IDB 側に旧行が残らない。
-      // changedCardIds.length === 0 のときは delete スキップ (no-op、 衝突回避)。
-      const changedCardIds = cards.map((c) => c.id)
-      if (changedCardIds.length) {
-        await db.card_tags
-          .where('card_id')
-          .anyOf(changedCardIds)
-          .delete()
-      }
-      // (3) card_tags upsert (新集合の bulkPut)。 length 0 は no-op。
-      if (cardTags.length) await db.card_tags.bulkPut(cardTags)
+        // (1) cards upsert (clear なし = id-upsert のみ)
+        if (cards.length) await db.cards.bulkPut(cards)
+        if (exams.length) await db.exams.bulkPut(exams)
+        // Tag-1: tag マスタの upsert は tombstone 適用 *前* に行う。
+        // 同 pull 内で「同 id の create + delete」 が同居しても、 後段の tombstone
+        // bulkDelete で正しく消える順序を保証する。
+        if (tagCategories.length) await db.tag_categories.bulkPut(tagCategories)
+        if (tagOptions.length) await db.tag_options.bulkPut(tagOptions)
 
-      // (4) tombstone bulkDelete — mirror 削除反映の唯一経路。
-      // サーバー側で card/exam/tag_category/tag_option を物理削除する経路は必ず
-      // tombstone を INSERT すること (さもないと mirror が stale 化する)。
-      // 不変条件は delete-card.ts / delete-exam.ts / tag apply 関数 (registry) 参照。
-      const cardIds = tombstones
-        .filter((t) => t.entity_type === 'card')
-        .map((t) => t.entity_id)
-      const examIds = tombstones
-        .filter((t) => t.entity_type === 'exam')
-        .map((t) => t.entity_id)
-      const tagCategoryIds = tombstones
-        .filter((t) => t.entity_type === 'tag_category')
-        .map((t) => t.entity_id)
-      const tagOptionIds = tombstones
-        .filter((t) => t.entity_type === 'tag_option')
-        .map((t) => t.entity_id)
-      if (cardIds.length) await db.cards.bulkDelete(cardIds)
-      if (examIds.length) await db.exams.bulkDelete(examIds)
-      if (tagCategoryIds.length) await db.tag_categories.bulkDelete(tagCategoryIds)
-      if (tagOptionIds.length) await db.tag_options.bulkDelete(tagOptionIds)
-      // Tag-2b: card_tags cascade purge (option 削除 / card 削除起点)。
-      // server cascade で物理削除済の card_tags は cursor に乗らない (DELETE は
-      // SELECT 増分に出ない) ため、 client 側で tombstone から導出して purge する。
-      // user_id は idempotent (どの user も自分の owner-scoped 行のみ持つ)、
-      // idempotent な (2)/(3) 経路とも衝突しない (option_id / card_id ベースの
-      // 別 index で別行を消す)。
-      if (tagOptionIds.length) {
-        await db.card_tags
-          .where('option_id')
-          .anyOf(tagOptionIds)
-          .delete()
-      }
-      if (cardIds.length) {
-        await db.card_tags.where('card_id').anyOf(cardIds).delete()
-      }
+        // (2) 変更カード分の旧 card_tags 全削除 (Tag-2b 案 a)。
+        // server が card_tags=[] を返す「whole-set 縮小」 ケースでも、 変更カードの
+        // 旧行を消してから (3) で空 bulkPut することで IDB 側に旧行が残らない。
+        // changedCardIds.length === 0 のときは delete スキップ (no-op、 衝突回避)。
+        const changedCardIds = cards.map((c) => c.id)
+        if (changedCardIds.length) {
+          await db.card_tags
+            .where('card_id')
+            .anyOf(changedCardIds)
+            .delete()
+        }
+        // (3) card_tags upsert (新集合の bulkPut)。 length 0 は no-op。
+        if (cardTags.length) await db.card_tags.bulkPut(cardTags)
 
-      // (5) cursor write (非 null のみ。 null = 据え置き)。
-      // key は §1 の read と同じ capture 値 (userId) で構成する — 遅着した pull が
-      // 次 user の namespace に書かないための核心 (spec §5.1 capture 原則)。
-      if (cursors.cards)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, userId),
-          value: cursors.cards,
-        })
-      if (cursors.exams)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, userId),
-          value: cursors.exams,
-        })
-      if (cursors.tombstone)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.tombstoneCursor, userId),
-          value: cursors.tombstone,
-        })
-      if (cursors.tag_categories)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.tagCategoriesCursor, userId),
-          value: cursors.tag_categories,
-        })
-      if (cursors.tag_options)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.tagOptionsCursor, userId),
-          value: cursors.tag_options,
-        })
-      if (cursors.card_tags)
-        await db.sync_meta.put({
-          key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, userId),
-          value: cursors.card_tags,
-        })
-    },
-  )
+        // (4) tombstone bulkDelete — mirror 削除反映の唯一経路。
+        // サーバー側で card/exam/tag_category/tag_option を物理削除する経路は必ず
+        // tombstone を INSERT すること (さもないと mirror が stale 化する)。
+        // 不変条件は delete-card.ts / delete-exam.ts / tag apply 関数 (registry) 参照。
+        const cardIds = tombstones
+          .filter((t) => t.entity_type === 'card')
+          .map((t) => t.entity_id)
+        const examIds = tombstones
+          .filter((t) => t.entity_type === 'exam')
+          .map((t) => t.entity_id)
+        const tagCategoryIds = tombstones
+          .filter((t) => t.entity_type === 'tag_category')
+          .map((t) => t.entity_id)
+        const tagOptionIds = tombstones
+          .filter((t) => t.entity_type === 'tag_option')
+          .map((t) => t.entity_id)
+        if (cardIds.length) await db.cards.bulkDelete(cardIds)
+        if (examIds.length) await db.exams.bulkDelete(examIds)
+        if (tagCategoryIds.length) await db.tag_categories.bulkDelete(tagCategoryIds)
+        if (tagOptionIds.length) await db.tag_options.bulkDelete(tagOptionIds)
+        // Tag-2b: card_tags cascade purge (option 削除 / card 削除起点)。
+        // server cascade で物理削除済の card_tags は cursor に乗らない (DELETE は
+        // SELECT 増分に出ない) ため、 client 側で tombstone から導出して purge する。
+        // user_id は idempotent (どの user も自分の owner-scoped 行のみ持つ)、
+        // idempotent な (2)/(3) 経路とも衝突しない (option_id / card_id ベースの
+        // 別 index で別行を消す)。
+        if (tagOptionIds.length) {
+          await db.card_tags
+            .where('option_id')
+            .anyOf(tagOptionIds)
+            .delete()
+        }
+        if (cardIds.length) {
+          await db.card_tags.where('card_id').anyOf(cardIds).delete()
+        }
+
+        // (5) cursor write (非 null のみ。 null = 据え置き)。
+        // key は §1 の read と同じ capture 値 (userId) で構成する — 遅着した pull が
+        // 次 user の namespace に書かないための核心 (spec §5.1 capture 原則)。
+        if (cursors.cards)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.cardsCursor, userId),
+            value: cursors.cards,
+          })
+        if (cursors.exams)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.examsCursor, userId),
+            value: cursors.exams,
+          })
+        if (cursors.tombstone)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.tombstoneCursor, userId),
+            value: cursors.tombstone,
+          })
+        if (cursors.tag_categories)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.tagCategoriesCursor, userId),
+            value: cursors.tag_categories,
+          })
+        if (cursors.tag_options)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.tagOptionsCursor, userId),
+            value: cursors.tag_options,
+          })
+        if (cursors.card_tags)
+          await db.sync_meta.put({
+            key: scopedSyncMetaKey(SYNC_META_KEYS.cardTagsCursor, userId),
+            value: cursors.card_tags,
+          })
+      },
+    )
+  } catch (err) {
+    // CAS abort だけを既存の silent FAIL 契約へ正規化する (log は event 名のみ)。
+    // それ以外 (IndexedDB 障害等) は CAS 導入前と同じく caller へ伝播させる —
+    // 握り潰すと mirror 破損が無音化するため、 catch 範囲は sentinel に限定する。
+    if (err instanceof CursorCasMismatchError) {
+      logger.warn({ event: 'pull.cursor_cas_mismatch' })
+      return FAIL
+    }
+    throw err
+  }
 
   return {
     ok: true,
