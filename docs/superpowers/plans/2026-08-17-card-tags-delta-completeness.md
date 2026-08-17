@@ -28,7 +28,7 @@
 
 **Files:**
 - Modify: `lib/db/card-tags-pull.ts`(helper 追加。既存 `getCardTagsDelta` / `toClientCardTag` は無変更)
-- Modify: `tests/integration/pg/delta-isolation.test.ts`(describe 3 本追加。既存 fixture `seedTwoTenants` / `asTenant` / `getFixtureOwnerDb` を再利用)
+- Modify: `tests/integration/pg/delta-isolation.test.ts`(describe 4 本追加 = Step 1 の 4 pin。既存 fixture `seedTwoTenants` / `asTenant` / `getFixtureOwnerDb` を再利用)
 
 **Interfaces(Produces — Task 2 が消費):**
 
@@ -64,7 +64,7 @@ export async function getCardTagsByCardIds(
 
 **Files:**
 - Modify: `app/api/pull/route.ts`(withTenantTx 内 7 本目 + 合成。~12 行)
-- Modify: `app/api/pull/route.test.ts`(mock に `getCardTagsByCardIds` 追加 + describe 2 本)
+- Modify: `app/api/pull/route.test.ts`(mock に `getCardTagsByCardIds` 追加 + describe 3 本 = Step 1 の regression / 発行条件 / failure 伝播)
 
 **Interfaces(Consumes)**: Task 1 の `getCardTagsByCardIds(userId, dbc, cardIds)`。
 
