@@ -5,7 +5,7 @@
 - plan(凍結): `docs/superpowers/plans/2026-08-17-tag-mirror-hygiene-sprint.md`(r3・Codex plan review GO)
 - 前提 sprint: `2026-08-16-tag-mirror-correctness-sprint.md`(Path C / prod 反映済)
 - 実装方式: `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 canonical review + Codex 独立 review)
-- **status: 実装完了・全 gate green・未 push。stg smoke 未実施(push 後に OT 指示で実施)**
+- **status: 実装完了・全 gate green・push 済(`f95574a`)。stg smoke = PASS(§11)。prod 反映判断待ち**
 
 ## 1. commit 一覧
 
@@ -80,7 +80,7 @@ Appendix B として棚卸し doc に追記済(`2026-08-16-tag-mirror-writer-inv
 | M-3 | DL success gate が「return 後の永続性」を保証しない旨の bound が code comment に無い(Codex P1 の誤読が起きた事実自体が示す) | T3 |
 | M-4 | `local-hygiene.ts` の `typeof row.key === 'string'` guard が到達不能・未 pin(過剰防御) | T5 canonical |
 | M-5 | sweep trigger の `.catch(() => {})` gate が**個別変異されていない**(kick 行ごと除去で 4 pin 同時 red = 個別変異規律を満たさない) | T5 canonical |
-| M-6 | sweep が全 page load で 11 store の rw lock + 全走査を取り、`PullTrigger` の tx がその後ろに並ぶ(correctness 非影響)| T5 canonical |
+| M-6 | sweep が全 page load で 11 store の rw lock + 全走査を取り、`PullTrigger` の tx がその後ろに並ぶ(correctness 非影響)| T5 canonical(**§11.4 で実測 = cards 1209 / card_tags 6.6k では ~380 ms・体感ブロックなし → 今回の規模では非 blocking と確定**)|
 | M-7 | `casApplyResponse()` が cards stream のみを exercise(mirror 不変 assert が 5 store 中 1)| T2 canonical |
 
 ## 8. spec 準拠だが記録しておく挙動
@@ -107,3 +107,86 @@ correctness sprint の A/B アカウント(`+clerk_test` / `+clerk_test1`・OTP 
 4. **purge の発火集合は「sign-out」より広い**: 匿名 visitor の marketing page 訪問(`Dexie.exists` guard で Dexie 部 no-op)や auth 初期化境界での一時的 signed-out 観測を含む。
 5. **[reviewed] の正記録は本 doc**(データ保全に触れる fix で push→smoke の順ゆえ commit tag の amend 窓が構造的に閉じるため。既存裁定どおり)。
 6. **異 owner の `'downloading'` job + added blob は恒久的に残りうる**(final fix wave で追記): 既存 sweeper(`sweepStaleMedia`)は自 owner scope(`lib/media/sweep.ts:119` の `j.user_id === userId` filter)のため、異 owner の `'downloading'` job を触らない。purge も hygiene sweep も不可侵集合として温存するため、当該 owner が再 sign-in しない限り共有ブラウザに残り続ける(一時的な残置ではない — `docs/architecture.md` 残余リスク行に同事実を反映済)。
+
+---
+
+## 11. stg smoke 実施結果(2026-08-17・**PASS**)
+
+- 環境: `https://stg.recallmint.nekotest.net`(deploy 反映済 = `f95574a`)/ Playwright MCP
+- user A = `komail9server+clerk_test@gmail.com` → 内部 id `66fb6d00-526f-4264-9691-e2e036c656f7`(cards 1209 / card_tags 6612 / exams 4 / tag_categories 4 / tag_options 19 / study_days 2)
+- user B = 内部 id `fe24e497-469e-4bfd-81e4-29810d85cadb`(空アカウント)
+- **総合判定: PASS**(手順 1〜5 の全項目)。加えて **本 sprint と無関係の既存 bug を 1 件検出**(§11.5)
+
+### 11.0 開始時の偶発観測(hygiene の実地初回発火)
+
+smoke 開始時、browser profile には前回 smoke(correctness sprint)の状態が残っており **B が sign-in 済 + A の残骸**という条件だった。hygiene deploy 後の初回 load で **sweep が自動発火して A の残骸を回収済み**だった(`local_hygiene.sweep` `cache_deleted:3`・IDB 全 store 0 件・sync_meta 空)。意図した観測ではないが、**実データの異 owner 残骸に対して sweep が実際に働いた初の実地例**。
+
+### 11.1 手順 3 — `/api/study-days/pull` の owner echo(**correctness smoke §10.1 #10 の反転**)
+
+| 実行時 | 応答 top-level keys | `owner_user_id` |
+|---|---|---|
+| B session | `["owner_user_id","studyDays"]` | `fe24e497-469e-4bfd-81e4-29810d85cadb` = B |
+| A session | `["owner_user_id","studyDays"]` | `66fb6d00-526f-4264-9691-e2e036c656f7` = A |
+
+correctness smoke では「`["studyDays"]` のみで echo 無し」だった。**反転を実測 = PASS**。
+
+### 11.2 手順 1 — sign-out purge(fixture 注入 → sign-out → readback)
+
+`local_hygiene.purge` log: `{"dexie_skipped":false,"cache_deleted":4,"cache_kept":3}`
+
+| 対象 | 期待 | 実測 |
+|---|---|---|
+| mirror 6 store | 全消し | cards 0 / exams 0 / tag_categories 0 / tag_options 0 / card_tags 0 / study_days 0 ✅ |
+| `sync_meta` | **未知 key 含め全消し** | **0 件**(seed した bare 2 + scoped 2 + 未知 2 + malformed 2 が全消滅)✅ |
+| outbox | `'synced'` のみ削除 | entity_mutations = `m-syncing:syncing` / `m-failed:failed` のみ残存(synced 2 件消滅)/ answer_events = `failed` のみ残存 ✅ |
+| `media_assets` | `'ready'` のみ削除 | `ma-uploading:uploading` / `ma-failed:failed` 残存・ready 2 件消滅 ✅ |
+| `media_download_jobs` | `'done'` のみ削除 | `exam-foreign:downloading` 残存・done 消滅 ✅ |
+| Cache | 保護 blob 以外削除(**malformed 含む**)| 削除 4(ready 2 + `/__media/malformed` + `/not-media-key`)/ 保持 3(uploading・failed・downloading job の added)✅ |
+
+**bare legacy key の消滅** = correctness smoke 手順 2「bare は残置が正」の**反転を実測**。
+
+### 11.3 手順 2 — sign-in 異 owner sweep(A で sign-in 中に B の fixture を注入 → reload)
+
+`local_hygiene.sweep` log: `{"cache_deleted":3,"cache_kept":4}`
+
+| 対象 | 期待 | 実測 |
+|---|---|---|
+| mirror の異 owner 行 | 削除 | cards/tag_categories/tag_options/study_days の B 行が **全て 0 件**(A の 1209/4/19/2 は無傷)✅ |
+| 異 owner outbox | `synced` のみ削除・**pending 系は異 owner でも不可侵** | `m-B-synced` 消滅 / **`m-B-syncing` 残存** / `e-B-synced` 消滅 ✅ |
+| 異 owner media | `'ready'` / `'done'` のみ削除 | `ma-B-ready` 消滅 / **`ma-B-uploading` 残存** / `exam-B-done` 消滅 / **`exam-B:downloading` 残存** ✅ |
+| `sync_meta` | 厳密規則 | bare 7 本(cursor 6 + `exam_view_prefs`)**全削除** / `cards_cursor:<B>` 削除 / `cards_cursor:`(空 suffix)・`cards_cursor:a:b`(複数 colon)削除 / **`cards_cursor_v2`(prefix 類似)温存** / **`future_key`・`future_key:<A>`(未知)温存** / A の scoped 6 本温存 ✅ |
+| Cache | 異 owner + malformed 削除・保護 blob は owner 不問で温存 | 削除 3(`ma-B-ready` + `/__media/broken` + `/__media/x/y/z`)/ 保持 4(A の 2 + **B の uploading** + **B の downloading job added**)✅ |
+| UI | A の画面に B が出ない | `/app/tags` = A の 4 カテゴリのみ(`Bのカテゴリ` / `Bのタグ` の全文検索 = **0 hit**)✅ |
+
+**fail-safe の向き規約が実機で成立**: 同じ「未知」でも sync_meta は温存・Cache は削除。
+
+### 11.4 手順 4・5 — 発火観測と性能実測
+
+**useAuth 発火(手順 4)**: 実測で **2 回発火**。① sign-out 直後 ② **sign-in ページ表示中**(signed-out 状態の観測)— `{"cache_deleted":0,"cache_kept":3}` で冪等に no-op。spec §4.3「発火集合は sign-out より広い」が実挙動で確認された(不発ではなく過剰発火側であり、いずれも無害)。
+
+**sweep 性能(手順 5・prod 判断の入力)**: A の実データ(cards 1209 / card_tags 6592)で計測。
+
+| 指標 | 実測 |
+|---|---|
+| navigation 開始 → `local_hygiene.sweep` 完了 log | **456 ms** / **620 ms**(2 サンプル) |
+| 同 load の DOMContentLoaded | 207 ms / 364 ms |
+| 11 store 横断 rw tx(同形の全走査)の proxy 実測 | **377.1 ms** |
+
+→ sweep は DOMContentLoaded の **約 250〜410 ms 後**に完了。体感上のブロックは観測されず(dashboard は即描画・1209 件のリンクも通常表示)。**この規模(cards 1209 / card_tags 6.6k)では prod 反映の阻害要因にならないと判断できる**。ただし tx は 11 store の rw を ~380 ms 保持するため、**データ量が一桁増えた場合は再測定が要る**(deferred minor M-6 の位置づけは「今回の規模では非 blocking」で確定)。
+
+### 11.5 **新規発見(本 sprint と無関係の既存 bug)— delta pull で card_tags が 20 行消える**
+
+smoke 中に `card_tags` が 6612 → 6592 に減る事象を観測し、切り分けた結果 **hygiene とは無関係の既存 bug** と確定:
+
+- **sweep は無罪**: 消えた 20 行は**全て A 自身の所有**(server payload の owner histogram = A 6612 件のみ)で、sweep は異 owner 行しか削除しない。full pull 後の load でも sweep は走っており、その時点の count は 6612 のまま
+- **決定論的に再現**: cursor 削除 → reload(**full pull**)→ **6612** → もう一度 reload(**delta pull**)→ **6592**
+- **機序**: delta が返す cards 5 件は `updated_at` が `since_cards` と**完全一致する境界行**(cursor が inclusive のため毎回返る)。client は「変更 card の card_tags を全削除 → delta の card_tags を bulkPut」する(Tag-2b 案 a)が、当該 card の card_tags は `created_at` が `since_card_tags` より古く **delta に含まれない** → 削除されたまま復活しない
+- **実害**: server に存在するタグ紐付けが local に無い = タグ列の表示欠落。**full pull で回復**するが、次の delta で再発する
+- 本 sprint が purge で cursor を消すため full ⇄ delta の往復が起きやすくなり**顕在化しやすくなった**とは言えるが、原因は既存設計にある
+- → **claude.ai todo へ**(修正方針の候補: cursor 境界を exclusive にする / 変更 card の card_tags 再取得を delta cursor に依らせない)
+
+### 11.6 smoke で生じた副作用(記録)
+
+- A の `exam_view_prefs` が消えた(purge の受容済コスト。UI から再設定可能)
+- A の cursor を検証のため一度削除したため full pull が 1 回走った(cursor は再生成済)
+- A 名義の非 `'ready'` media_assets 2 行 + 対応 blob 2 件、`syncing`/`failed` outbox 3 行が fixture 由来で残存(**いずれも不可侵集合ゆえ設計どおり**。実データではない合成行のため、気になる場合は OT が DevTools で削除可)
