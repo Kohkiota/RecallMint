@@ -4,6 +4,7 @@
 - **入力(正)**: `docs/superpowers/sessions/2026-08-17-card-tags-delta-loss-factfinding.md`(`94084eb`)
 - **OT 裁定済(2026-08-17)**: 案② 採用 / **hotfix 級**(Dash-0 より優先・品質 gate は通常どおり)/ 案① 不採用(実測反証済)/ 案④ 非スコープ(**不採用ではない** — §6-③ へ)/ fact-finding §3.5・§6-1 は follow-up 起票のみ
 - 凍結後は実装フェーズで書き換えない(既存規律)
+- **改訂履歴**: 2026-08-17 **erratum**(OT 承認・狭い docs-only の凍結例外)— §1 I-1 の「時点の限定」で `updated_at` 前進を「次回 delta での再送・再構築を**保証する**」と書いていたのを「通常は候補になる / §6-③ hazard により絶対保証はしない」に訂正。経緯 = **plan 段階 cross-check の正確性指摘**(`docs/codex/2026-08-17-plan-card-tags-delta-completeness-plan.md` 独立論点 1)。設計・実装・テストへの影響なし(保証の記述精度のみ)。
 
 ## 0. 問題(要約のみ・詳細は fact-finding)
 
@@ -13,7 +14,7 @@ client の pull apply(Tag-2b 案 a)は「cards delta に載った card の card_
 
 - **I-1(完全性 = 一致・r3 で強化)**: pull 応答の cards に載った当該 user 所有の各 card について、**応答 card_tags の当該 card への projection が、by-card SELECT 実行時点のその card の authoritative 集合と一致する**(「含む」ではなく「一致」— 含む、では stale 行の混入を許す)。タグ 0 件は空集合として成立し、同一 `(card_id, option_id)` は応答内で高々 1 行。= 「client が削除の根拠にする payload と、復元の材料にする payload は同一応答で完結する」(fact-finding §2.1 の判定基準の回復)。
   - **union では I-1 を満たせない(r3 凍結 blocker)**: READ COMMITTED では ① 増分 SELECT が `c1:o_old` を取得 → ② 別 tx が `c1:o_old` を削除し commit → ③ by-card SELECT は `o_old` を含まない最新集合、という競合列がありえる。pair 単位の union は ④ 古い増分行 `o_old` を応答に残し ⑤ client が削除後に再投入する。次回 pull 前にタグ操作が起きると **stale 行が whole-set replace op で server に再追加されうる**。ゆえに合成は union でなく **authoritative replace**(§2.2)でなければならない。
-  - **時点の限定(Codex 論点 3)**: 同一 `withTenantTx` は接続と RLS 文脈の共有であって、**応答全 stream の snapshot 一致の主張ではない**(READ COMMITTED では SELECT ごとに snapshot が進みうる)。by-card SELECT が cards SELECT より新しい状態を見ても損失にならない: 新しい集合はより新しい server 真値であり、当該 card の `updated_at` 前進は次回 delta での再送・再構築を保証する。tx 内配置を snapshot consistency の根拠に転用しない。
+  - **時点の限定(Codex 論点 3)**: 同一 `withTenantTx` は接続と RLS 文脈の共有であって、**応答全 stream の snapshot 一致の主張ではない**(READ COMMITTED では SELECT ごとに snapshot が進みうる)。by-card SELECT が cards SELECT より新しい状態を見ても損失にならない: 新しい集合はより新しい server 真値であり、当該 card の `updated_at` 前進により**通常は次回 delta の候補になる。ただし §6-③ の hazard(`now()` = tx 開始時刻ゆえ commit 順 ≠ timestamp 順)により delivery / 収束を絶対保証しない**〔erratum・下記改訂履歴参照〕。tx 内配置を snapshot consistency の根拠に転用しない。
   - 「次回収束」が依存する bump 契約は writer 全数で確認済(r3 Codex 残余指摘 1 の閉鎖): server 側 card_tags writer は ① `handleTagOptionIds`(同一 tx で bump — `card-field-handlers.ts:304-307`)② `apply-ocr-tags.ts:321`(OCR **新規作成 card** への INSERT のみ・既存 card 不可触 = 新規 card は cards delta に必ず載る)の 2 経路のみ。
 - **I-2(cursor 非影響)**: `cursors.card_tags` は**増分 query の rows のみ**から算出する。by-card rows はもちろん、**replace 後の応答 rows からも算出しない**(古い `created_at` の混入で cursor が逆行し delta が肥大・振動するため。増分側の変更 card 行が replace で応答から落ちても、cursor 算出の入力は増分 rows 全体のまま)。
   - 単調性の残り半分は既存 client 契約が担う(Codex 論点 2 への応答): 増分空 → `maxCreatedAt = null` → client は cursor 据え置き(`pull.ts:384` の `if (cursors.card_tags)`・既存 pin `pull.test.ts:514`)。null での上書き退行は既に構造とテストで塞がっている。

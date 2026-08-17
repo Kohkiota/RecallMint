@@ -15,8 +15,8 @@
 - **hotfix 級だが品質 gate は通常どおり**(OT 裁定)。simplicity 規律・DDD 方針は既定どおり。
 - **不変条件 I-1〜I-5(spec §1)が完了条件の柱**。特に: I-2(cursor は増分 rows のみから算出 — 応答 rows から再計算しない)/ I-3(明示 `eq(cardTags.userId, userId)` 必須)/ I-4(skip 条件は (a) 変更 card 0 件 (b) `since_card_tags` 欠落のみ・**skip 時は filter も不適用**)/ I-5(client コード無変更・既存凍結 pin 全 green 維持、退行 = Critical)。
 - **red 規律**: gate は 1 つずつ個別変異(まとめ壊し不可)。test 追加を含む commit は message に「red 検証」記録行。
-- **review**: 各 fix commit 前に canonical(`superpowers:requesting-code-review` 既定経路)+ Codex(`scripts/ai/codex-review.sh`)収束(Critical 0 / Important 0)。**Codex は working tree が clean(変異注入なし)のタイミングで先に単独実行**(教訓: canonical 側の変異注入が Codex clean detector に偽陽性)。
-- **[reviewed] の扱い**: review 収束後に tag 付き commit。**tag = code review 完了の意味のみで rollout-ready を意味しない** — データ保全 fix の実機実証は push 後 stg smoke(Task 5)で行い **session doc を正記録**とする(spec §5・既存裁定)。rollout 可否は Task 5 の gate(spec §7-4/7-5)。
+- **review**: 各 fix commit 前に canonical(`superpowers:requesting-code-review` 既定経路)+ Codex(`scripts/ai/codex-review.sh`)収束(Critical 0 / Important 0)。**Codex を先に単独実行し、その時点の working tree は「temporary RED 変異をすべて revert 済みで、意図した未 commit task diff だけが残る状態」にする**(`codex exec review --uncommitted` の対象 = その task diff。review 前 commit 禁止と両立)。この条件は Codex clean detector の偽陽性(canonical 側の変異注入が混入する既知事象)を避けるためのもので、**未 commit diff を消すことではない**。
+- **[reviewed] の扱い(今回限りの例外・OT 承認済)**: Task 1/2 の `[reviewed]` は **code review 完了のみ**を意味し **rollout-ready ではない**(smoke pending)。両 commit の message に **smoke pending を 1 行明記**する。**rollout の正記録は Task 5 後の session doc**(spec §5・既存裁定)。CLAUDE.md「重要 Fix の裏取り」と `check-review.sh` の不整合(tag が 2 つの状態を区別できない)の整合化は **follow-up として claude.ai todo へ**(本 sprint では扱わない)。
 - assert は `(card_id, option_id)` の**集合**比較(配列順序・件数のみの assert 禁止 — spec §4-8)。
 - subagent dispatch は foreground のみ(`run_in_background` 禁止)。
 
@@ -50,7 +50,7 @@ export async function getCardTagsByCardIds(
   - **RLS backstop(第 2 層の独立証明・Codex plan 指摘 1)**: `asTenant(a.userId)` 内で **`getCardTagsByCardIds(b.userId, tx, [b.cardId])` → 空**。predicate は B 行を候補にする(userId=B)が、tenant context = A の RLS が遮断する — predicate にマスクされない第 2 層単独の pin。RLS policy の存在自体は既存 rls-drift / rls-single-defense が pin 済みのため、この pin の red は policy 無効化変異でなく「predicate を B に向けても漏れない」構成自体で担保(変異注入は行わない)。
   - **full-stream contract(I-4(b) 機械化)**: **専用 describe**(共有 fixture への追加 seed の副作用を避ける — Codex plan 指摘 10)内で owner 接続から A に 2 本目の tag_option + card_tag を追加 seed → 同一 test 内で owner ground-truth read と `getCardTagsDelta(a.userId, tx, undefined)` の rows を**集合一致**で比較(両 read が同 test 内 = describe 間の順序非依存)。pin するのは「静的データに対する全件・無 LIMIT 契約」であって snapshot 同時性ではない(コメントに明記)。
 - [ ] **Step 2**: helper 実装(上記 Interfaces どおり・~15 行)→ `pnpm test:iso` green
-- [ ] **Step 3(red 実証・個別変異)**: ① `eq(cardTags.userId, userId)` を外す変異 → 第 1 層 pin が fail(通常経路 pin は RLS で通る = 層の役割差が実証される)② `getDeltaRows` に `.limit(1)` を入れる変異 → full-stream pin が fail。各変異は単独適用 → revert。
+- [ ] **Step 3(red 実証・個別変異)**: ① `eq(cardTags.userId, userId)` を外す変異 → 第 1 層 pin が fail(通常経路 pin は RLS で通る = 層の役割差が実証される)② `getDeltaRows` に `.limit(1)` を入れる変異 → full-stream pin が fail ③ **RLS backstop の red(OT 裁定 2)**: policy は無効化せず、backstop pin の呼出を**一時的に owner DB(`getFixtureOwnerDb()`)へ差し替える**変異 → RLS が効かないため B 行が返り assert が fail することを確認(= この pin が RLS を実際に見ていることの実証)。各変異は単独適用 → revert。
 - [ ] **Step 4**: Codex 単独実行(clean tree)→ canonical review dispatch → 収束後 commit
   - `fix(pull): card_tags by-card 取得 + owner-scope 2 層 / full-stream contract の iso pin(spec §2.1/§4-3..5)`+ red 検証記録行 + `[reviewed]`
 
@@ -115,8 +115,9 @@ if (sct !== undefined && changedCardIds.length > 0) {
 - [ ] **Step 4**: stop checkpoint 報告(chat)→ **停止**(push は OT)。報告に含める:
   - gate 3 行明記(whole-repo lint exit 0 / test:iso green / pnpm run audit exit 0)
   - follow-up 3 件(spec §6-①②③)の全文を claude.ai todo へ
-  - **OT 裁定依頼 2 件**: ① prod 未リリース確認(spec §7-5 — Task 5 の rollout hard gate)② **stg A の既発生実損の扱い**(fact-finding §5.3 — 放置 / 調査 / 手動修復のいずれか)
+  - **OT 裁定依頼 2 件**: ① prod 未リリース確認(spec §7-5 — Task 5 の rollout hard gate)② **stg A の既発生実損の扱い**(fact-finding §5.3)。選択肢は **放置 / fixture reset / 既知 baseline がある場合のみ復元** の 3 択 —**「調査」は選択肢にしない**(個体履歴を保存しない非要件確定により forensics 不能・OT 裁定 4)
   - observability 追加なしの判断明記(新規 metrics / log は入れない — hotfix 変更面積の抑制。異常検知は既存 `api.pull.failed` log、実測は Task 5 で session doc に記録)
+  - `[reviewed]` 例外の適用状況(Task 1/2 は code review 完了のみ・smoke pending)+ **CLAUDE.md / check-review.sh 整合化の follow-up**(4 件目)を claude.ai todo へ
 
 **完了条件**: 全 gate exit 0 / whole-branch review 収束 / session doc commit 済 / checkpoint 報告で停止。**この時点は「実装完了」であって spec §7-4/7-5(smoke / rollout)は未充足 — sprint 完了は Task 5**。
 
@@ -134,7 +135,7 @@ if (sct !== undefined && changedCardIds.length > 0) {
   - ② card 1 枚復習 → pull 後も当該 card の集合一致
   - ③ ②と同じ card で S → add x → `S∪{x}` → remove x → `S`(server / IDB 双方)
   - **失敗時の復旧手順**: x が残存したら remove を再実行 → なお不一致なら**そこで停止**し、現状の server / IDB readback を session doc に証拠保全して OT へ(追加操作をしない)。①②の不一致は読み取りのみで破壊なし — 即停止・報告
-  - **実測記録**(Codex plan 指摘 11): delta 応答の card_tags 行数 / 応答 byte / latency を session doc に記録
+  - **実測記録**(Codex plan 指摘 11 + OT 裁定 3): delta 応答の **`cards.length`** / **変更 card への projection 行数**(= by-card 由来の行数)/ card_tags 総行数 / 応答 byte / latency を session doc に記録(新規 metrics は入れない代わりの観測)
 - [ ] **Step 3**: session doc に smoke 結果を追記([reviewed] 正記録の確定)→ `docs(sessions): ... [no-review]` commit → 報告
 - [ ] **Step 4**: rollout gate — **prod 反映は「prod 未リリースの OT 確認」が取れるまで blocked**(spec §7-5)。確認できない場合は強制 full pull / cursor migration の裁定を OT に上げ、裁定完了まで prod 反映しない
 
