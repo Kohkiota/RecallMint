@@ -775,3 +775,60 @@ describe('OptionList — owner-scope (tag-mirror-correctness sprint T2 #5)', () 
     ).not.toBeInTheDocument()
   })
 })
+
+// ===========================================================================
+// tag-mirror-hygiene sprint Task 6 (M-c): options 一覧 read の owner-scope pin
+// ===========================================================================
+//
+// r5 §3.3 除外裁定下でも挙動は現状正しい (owner 由来 UUID である activeCategoryId
+// を key にした読みは、 入口が owner-scope なら異 owner 行へ到達経路が無い)。
+// 本 pin は挙動 fix ではなく検証面の一貫性 (同 file の allCategories owner-scope
+// pin と surface を揃える) のために張る、 §3.3 除外からの唯一の例外。
+
+describe('OptionList — options 一覧 owner-scope (tag-mirror-hygiene sprint M-c)', () => {
+  it('self の category 配下に異 owner の option 行が fixture 混入していても一覧に描画されない (自分の option は描画される)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.bulkPut([
+      makeOption('opt-mine', 'cat-a', '自分の option'),
+      // 共有ブラウザに残った前 user (user-2) の option 行が同じ category_id を
+      // 指す adversarial fixture (自然発生しない想定。 §3.3 除外裁定の検証面
+      // 一貫性のため一覧 surface にも owner-scope pin を張る)。
+      { ...makeOption('opt-theirs', 'cat-a', '他人の option'), user_id: 'user-2' },
+    ])
+
+    render(<OptionList userId={USER_ID} activeCategoryId="cat-a" />)
+    await screen.findByText('自分の option')
+
+    expect(screen.queryByText('他人の option')).not.toBeInTheDocument()
+  })
+
+  // Codex r2 Important 2: 表示 pin だけでは deps 漏れ (useLiveQuery の deps から
+  // userId が抜けている状態) を検出できない。 activeCategoryId を固定したまま
+  // userId を A→B に rerender し、 deps が反応して A の option が消え B の option
+  // のみ表示されることを直接 pin する (教訓「React の deps 漏れは表示 pin だけでは
+  // 捕まらない」 の再演防止)。
+  it('activeCategoryId 固定のまま userId を A→B に rerender すると A の option が消え B の option のみ表示される (deps 反応性 pin)', async () => {
+    const db = getClientDb()
+    await db.tag_categories.put(makeCategory('cat-a', '重要度'))
+    await db.tag_options.bulkPut([
+      { ...makeOption('opt-a', 'cat-a', 'A の option'), user_id: 'user-a' },
+      { ...makeOption('opt-b', 'cat-a', 'B の option'), user_id: 'user-b' },
+    ])
+
+    const { rerender } = render(
+      <OptionList userId="user-a" activeCategoryId="cat-a" />,
+    )
+    await screen.findByText('A の option')
+    expect(screen.queryByText('B の option')).not.toBeInTheDocument()
+
+    await act(async () => {
+      rerender(<OptionList userId="user-b" activeCategoryId="cat-a" />)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('A の option')).not.toBeInTheDocument()
+    })
+    expect(await screen.findByText('B の option')).toBeInTheDocument()
+  })
+})

@@ -4,8 +4,10 @@
 // - activeCategoryId=null: 「カテゴリを選択してください」 placeholder のみ表示
 // - activeCategoryId 指定:
 //   - useLiveQuery で `db.tag_options.where('category_id').equals(activeCategoryId)
-//     .toArray()` → created_at ASC sort (tag_options index は category_id /
-//     updated_at のみ、 created_at は in-memory sort)
+//     .and(o => o.user_id === userId).toArray()` → created_at ASC sort
+//     (tag_options index は category_id / updated_at のみ、 created_at は
+//     in-memory sort。 owner filter は tag-mirror-hygiene sprint M-c、 詳細は
+//     options useLiveQuery 直前のコメント参照)
 //   - useLiveQuery で `db.tag_categories.where('user_id').equals(userId).toArray()`
 //     (owner-scope 読み。 OptionRow のカテゴリ変更 dropdown 用に伝播)
 //   - OptionCreateForm + 各 OptionRow を render
@@ -117,14 +119,21 @@ function SortableOptionRowWrapper({
 
 export function OptionList({ userId, activeCategoryId }: Props) {
   // active カテゴリ配下の options。 activeCategoryId が null の間は空配列扱い。
+  // owner filter (`.and`) + deps への userId 追加は tag-mirror-correctness sprint
+  // r5 §3.3 除外裁定 (owner 由来 UUID を key にした読みは、 入口が owner-scope なら
+  // 異 owner 行へ到達経路が無いため挙動は現状も正しい) からの 1 件だけの例外
+  // (tag-mirror-hygiene sprint M-c)。 挙動 fix ではなく検証面の一貫性が目的 —
+  // 同 file の allCategories (下記、 owner-scope pin 済) と一覧 surface の pin
+  // 対象を揃える。
   const options = useLiveQuery(async () => {
     if (activeCategoryId === null) return []
     const all = await getClientDb()
       .tag_options.where('category_id')
       .equals(activeCategoryId)
+      .and((o) => o.user_id === userId)
       .toArray()
     return all.slice().sort(sortByKeyThenCreated)
-  }, [activeCategoryId])
+  }, [activeCategoryId, userId])
 
   // 全カテゴリ (OptionRow のカテゴリ変更 dropdown 用)。 共有ブラウザで前 user の
   // tag_categories mirror 行が残っていても現 user の dropdown に混ざらないよう
