@@ -16,8 +16,9 @@
 // - in-flight guard: 並走は 1 実行 / settle 後(成功・失敗の双方)は次回が新規実行
 //
 // 観点(sweep):
-// - sync_meta 分類(pure): allowlist リテラル 7 本・分類強制・bare 削除・scoped の
-//   self 温存 / other 削除・malformed suffix 削除・未知 key / prefix 類似の温存
+// - sync_meta 分類(pure): allowlist リテラル 8 本(Dash-1 Home v1 Task 5 で
+//   selected_exam 追加)・分類強制・bare 削除・scoped の self 温存 / other 削除・
+//   malformed suffix 削除・未知 key / prefix 類似の温存
 // - 実走: 異 owner の synced / 'ready' / 'done' のみ削除、 不可侵集合(自 + 異 owner)と
 //   自 owner の全行は生存、 sync_meta は分類どおり
 // - 空 userId: Dexie / Cache とも一切触らない(fail-closed)
@@ -711,7 +712,7 @@ describe('purgeAllLocalData — in-flight guard', () => {
 // ---------------------------------------------------------------------------
 // seedAll(purge 側 pin の期待値の基準)は変更せず、 sweep 固有に必要な行だけを足す:
 // - 異 owner の 'done' job + その added blob(異 owner かつ 'done' が消える対)
-// - sync_meta の bare 7 本 + parser 境界 + prefix 類似 + 未知 scoped key
+// - sync_meta の bare 8 本 + parser 境界 + prefix 類似 + 未知 scoped key
 async function seedSweepExtras(): Promise<void> {
   const db = getClientDb()
 
@@ -727,10 +728,15 @@ async function seedSweepExtras(): Promise<void> {
   await putAssetBlob(OTHER, 'dl-other-done-added', new Blob(['j']))
 
   await db.sync_meta.bulkPut([
-    // bare legacy key 7 本(cursor 6 + 旧 exam_view_prefs)。
+    // bare legacy key 8 本(cursor 6 + 旧 exam_view_prefs + selected_exam)。
     ...SWEEP_SYNC_META_BASES.map((base) => ({ key: base, value: 'legacy' })),
     { key: `exam_view_prefs:${SELF}`, value: '{}' },
     { key: `exam_view_prefs:${OTHER}`, value: '{}' },
+    // selected_exam も exam_view_prefs と同型で scoped 自/異 owner を明示的に seed し、
+    // sweep の実射程を「表への追加」だけでなく実削除/温存の挙動で確認する
+    // (Dash-1 Home v1 Task 5: bare 経由の暗黙カバレッジに留めない)。
+    { key: `selected_exam:${SELF}`, value: '{}' },
+    { key: `selected_exam:${OTHER}`, value: '{}' },
     // 未知 base の scoped key(将来 key の silent 誤削除を防ぐ側)。
     { key: `future_key:${SELF}`, value: 'x' },
     // prefix 類似の未知 base。
@@ -776,12 +782,13 @@ const SWEEP_SURVIVING_URLS = [
 // ---------------------------------------------------------------------------
 
 describe('classifySyncMetaKeyForSweep(sync_meta 分類)', () => {
-  it('allowlist は明示リテラル 7 本(cursor 6 + 旧 exam_view_prefs)', () => {
+  it('allowlist は明示リテラル 8 本(cursor 6 + 旧 exam_view_prefs + selected_exam)', () => {
     expect([...SWEEP_SYNC_META_BASES].sort()).toEqual([
       'card_tags_cursor',
       'cards_cursor',
       'exam_view_prefs',
       'exams_cursor',
+      'selected_exam',
       'tag_categories_cursor',
       'tag_options_cursor',
       'tombstone_cursor',
@@ -929,6 +936,7 @@ describe('sweepForeignLocalData — Dexie 部', () => {
       [
         `cards_cursor:${SELF}`,
         `exam_view_prefs:${SELF}`,
+        `selected_exam:${SELF}`,
         'future_key',
         `future_key:${SELF}`,
         'cards_cursor_v2',

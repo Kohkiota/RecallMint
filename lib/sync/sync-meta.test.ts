@@ -19,6 +19,7 @@ import {
   PEEK_WIDTH_MIN_VW,
   PEEK_WIDTH_MAX_VW,
   PEEK_WIDTH_DEFAULT_VW,
+  selectedExamSchema,
 } from './sync-meta'
 
 beforeEach(async () => {
@@ -34,6 +35,10 @@ describe('SYNC_META_KEYS', () => {
 
   it('examViewPrefs の定数を持つ', () => {
     expect(SYNC_META_KEYS.examViewPrefs).toBe('exam_view_prefs')
+  })
+
+  it('selectedExam の定数を持つ(Dash-1 Home v1 Task 5)', () => {
+    expect(SYNC_META_KEYS.selectedExam).toBe('selected_exam')
   })
 })
 
@@ -560,5 +565,83 @@ describe('clampPeekWidthVw', () => {
   it('70 超は 70 にクランプする', () => {
     expect(clampPeekWidthVw(999)).toBe(PEEK_WIDTH_MAX_VW)
     expect(clampPeekWidthVw(70.1)).toBe(PEEK_WIDTH_MAX_VW)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// selectedExamSchema (Dash-1 Home v1 Task 5) — exam_view_prefs V1 と同型の pin
+// ---------------------------------------------------------------------------
+
+describe('getJsonSyncMeta / setJsonSyncMeta — selectedExamSchema', () => {
+  it('正常 set→get で同値復元', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.selectedExam,
+      'u1',
+      { exam_id: '11111111-1111-4111-8111-111111111111' },
+      selectedExamSchema,
+    )
+    const result = await getJsonSyncMeta(
+      SYNC_META_KEYS.selectedExam,
+      'u1',
+      selectedExamSchema,
+    )
+    expect(result).toEqual({ exam_id: '11111111-1111-4111-8111-111111111111' })
+  })
+
+  it('不正 JSON は undefined を返す', async () => {
+    await getClientDb().sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.selectedExam, 'u1'),
+      value: 'not-a-json-{{{',
+    })
+    const result = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'u1', selectedExamSchema)
+    expect(result).toBeUndefined()
+  })
+
+  it('exam_id が uuid でない record は undefined を返す', async () => {
+    await getClientDb().sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.selectedExam, 'u1'),
+      value: JSON.stringify({ exam_id: 'not-a-uuid' }),
+    })
+    const result = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'u1', selectedExamSchema)
+    expect(result).toBeUndefined()
+  })
+
+  it('余剰 key のある record は undefined を返す(.strict())', async () => {
+    await getClientDb().sync_meta.put({
+      key: scopedSyncMetaKey(SYNC_META_KEYS.selectedExam, 'u1'),
+      value: JSON.stringify({
+        exam_id: '11111111-1111-4111-8111-111111111111',
+        extraKey: 'should-be-rejected',
+      }),
+    })
+    const result = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'u1', selectedExamSchema)
+    expect(result).toBeUndefined()
+  })
+
+  it('key 欠損は undefined を返す', async () => {
+    const result = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'u1', selectedExamSchema)
+    expect(result).toBeUndefined()
+  })
+
+  it('setJsonSyncMeta に invalid value を渡すと throw する', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const invalidValue = { exam_id: 'not-a-uuid' } as any
+    await expect(
+      setJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'u1', invalidValue, selectedExamSchema),
+    ).rejects.toThrow()
+  })
+
+  // owner 名前空間分離(pin② と同型): userId=A の保存値は userId=B から読めない。
+  it('userId=A が保存した値は userId=B で読むと undefined(共有ブラウザのアカウント切替で漏れない)', async () => {
+    await setJsonSyncMeta(
+      SYNC_META_KEYS.selectedExam,
+      'A',
+      { exam_id: '11111111-1111-4111-8111-111111111111' },
+      selectedExamSchema,
+    )
+    const asB = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'B', selectedExamSchema)
+    expect(asB).toBeUndefined()
+    const asA = await getJsonSyncMeta(SYNC_META_KEYS.selectedExam, 'A', selectedExamSchema)
+    expect(asA).toEqual({ exam_id: '11111111-1111-4111-8111-111111111111' })
   })
 })

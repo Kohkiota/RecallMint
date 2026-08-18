@@ -172,7 +172,8 @@ async function applyPurgeRule(
 // ---------------------------------------------------------------------------
 
 /**
- * sweep が bare / scoped 判定に使う base 名(cursor 6 + 旧 `exam_view_prefs`)。
+ * sweep が bare / scoped 判定に使う base 名(cursor 6 + 旧 `exam_view_prefs` +
+ * `selected_exam`)。
  * **`SYNC_META_KEYS` から自動導出しない**: 導出にすると key を足すたび sweep 対象が
  * 黙って増え、 将来 key を silent に消し続ける regression 源になる。 key 追加時に
  * 「sweep 対象か否か」の判断を明示的に踏ませ、 その強制は分類 pin(`SYNC_META_KEYS`
@@ -186,6 +187,9 @@ export const SWEEP_SYNC_META_BASES = [
   'tag_options_cursor',
   'card_tags_cursor',
   'exam_view_prefs',
+  // Dash-1 Home v1 Task 5: 選択中試験。exam_view_prefs と同型の owner scope 単一 key
+  // なので同じ sweep 規則(bare 削除 / base:<self> 温存 / base:<other> 削除)に載せる。
+  'selected_exam',
 ] as const satisfies readonly string[]
 
 /**

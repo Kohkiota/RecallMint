@@ -26,6 +26,9 @@ export const SYNC_META_KEYS = {
   cardTagsCursor: 'card_tags_cursor',
   // Grid-1: 試験一覧 view preference (card / table)。 グローバル / 全試験共通 / 単一 key。
   examViewPrefs: 'exam_view_prefs',
+  // Dash-1 Home v1 Task 5: 選択中試験 (spec §6)。 home / smart / quick の 3 入口が
+  // resolveSelectedExam 経由で共有する owner scope 単一 key。
+  selectedExam: 'selected_exam',
 } as const
 
 export type SyncMetaKey = (typeof SYNC_META_KEYS)[keyof typeof SYNC_META_KEYS]
@@ -204,6 +207,24 @@ export const examViewPrefsV4Schema = z
   .strict()
 
 export type ExamViewPrefsV4 = z.infer<typeof examViewPrefsV4Schema>
+
+// ---------------------------------------------------------------------------
+// SelectedExam schema (Dash-1 Home v1 Task 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * 選択中試験の zod schema(spec §6)。 exam_view_prefs と異なりバージョン分岐は
+ * 持たない — spec が凍結する形状は `{ exam_id: <uuid> }` の 1 つのみで、 将来
+ * フィールドが増える場面が来たら examViewPrefs と同様に Vn schema を新設する
+ * (先取りして version field を足さない — 簡潔性規律の YAGNI)。
+ */
+export const selectedExamSchema = z
+  .object({
+    exam_id: z.uuid(),
+  })
+  .strict()
+
+export type SelectedExam = z.infer<typeof selectedExamSchema>
 
 /**
  * 読み取り用 union schema。 v1 / v2 / v3 / v4 の全 record を accept する
