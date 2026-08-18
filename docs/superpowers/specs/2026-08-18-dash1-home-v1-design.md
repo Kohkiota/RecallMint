@@ -1,6 +1,6 @@
 # Dash-1: Home v1 design spec
 
-- 日付: 2026-08-18 / 状態: **ドラフト**(Codex spec review → OT レビュー待ち)
+- 日付: 2026-08-18 / 状態: **凍結**(2026-08-18 OT 承認 — §15 の 7 点全承認 + 条件 2 件反映済: origin 正規化の観測 event 名(§11.3)/ 「明日は約◯問」不採用の Dash-0 erratum 記録。以後実装フェーズで書き換えない — 仕様変更が必要なら停止して OT 相談)
 - 入力(正): `docs/superpowers/specs/2026-08-17-dashboard-metric-definitions.md`(**Dash-0 r3 凍結**。以下「定義 doc」。指標の意味は全てそちらが正 — 本 spec は再定義しない)/ 分析 doc v2 §4.3(供給経路)・§4.4(design tokens)・§5(ホーム v1)/ 定義 doc §6 の引き継ぎのうち Dash-1 対象(①実装・②実装・③表示詳細・④・⑥・⑧残・⑨・⑪)
 - 消費先: writing-plans(実装 plan)
 
@@ -207,7 +207,7 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 ### 11.3 schema / wire
 
 - DB: `answer_events.origin` **text nullable・CHECK なし**。CHECK を張らない理由: origin は分析ラベルで整合保証の対象でなく、語彙拡張のたびに DB CHECK + iso 追随 + deploy 順序制約(entity_type の前例)を払うコストに見合わない。
-- wire(`answer-event-schema.ts`): `origin: z.string().max(64).optional()`。**enum reject にしない** — 未知値で 400 にすると、分析ラベル 1 つが回答 batch 全体の同期を止める(rollback・server/client の version 共存・長期滞留 outbox で現実に起きる)。**server ingest が既知集合(shared 定数 `ORIGIN_VALUES` — client/server 同一 import)で判定し、未知値は null に正規化して保存**(+ `logger.warn` 1 行で観測可能に)。語彙の正は `ORIGIN_VALUES` の 1 箇所。
+- wire(`answer-event-schema.ts`): `origin: z.string().max(64).optional()`。**enum reject にしない** — 未知値で 400 にすると、分析ラベル 1 つが回答 batch 全体の同期を止める(rollback・server/client の version 共存・長期滞留 outbox で現実に起きる)。**server ingest が既知集合(shared 定数 `ORIGIN_VALUES` — client/server 同一 import)で判定し、未知値は null に正規化して保存**。正規化の発生は既存慣例の event 名 **`review_events.bulk.origin_normalized`**(`review_events.bulk.*` の既存系列)で `logger.warn` に 1 行残す(受信値・件数。回答内容は載せない)— OT 承認条件。語彙の正は `ORIGIN_VALUES` の 1 箇所。
 - 互換: 旧 client → origin 無し(optional)。新 client → 旧 server(rolling 共存の瞬間)は zod object の unknown key strip で無害に落ちる。どの順でも回答同期は止まらない。
 - Dexie `ClientAnswerEvent`: `origin?:`(index 追加なし → **version bump 不要**。保存済み旧行は field 欠落 = 送信時 undefined で自然互換)。
 
@@ -281,7 +281,7 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 - `daily_new_target` の null 意味論 = **「未設定 = その時点の既定に追従」**(意図的 — `user_settings.session_limit` の既存前例と同じ。既定 `DAILY_NEW_DEFAULT` を将来変えると null の全試験に波及するのは仕様)。
 - stg には未適用スタック 0036〜0039 が積まれている — 0040 は後続として通常順。
 
-## 15. OT 承認ポイント(spec レビューで明示裁定を求める設計判断)
+## 15. OT 承認ポイント(**全 7 点 OT 承認済 2026-08-18**。条件 = 4 の観測 event 名〈§11.3 反映済〉+ 7 の Dash-0 erratum 記録〈反映済〉)
 
 1. **daily-new-limit = soft limit で確定**(§8.3): server は超過回答を拒否しない。flush 前の並行セッション・複数端末で一時的に K を超えうる(収束後は残枠 0)。hard limit(server 予約契約)は v1 で作らない。
 2. **導出型 u の帰結**(§8.3): カード削除で当日枠が戻る / 試験間移動は移動先の枠を消費。「現存カードで数える」意味論の受容。
