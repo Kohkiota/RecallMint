@@ -10,8 +10,9 @@
 
 1. `git log --oneline e1740c3..HEAD` で 5 commit(Task 1〜5)を確認。**すべて未 push**。
 2. `git status` に Task 6 の**未 commit 変更**がある(下記 §3)。**`git clean -fdx` / `git checkout -- .` を実行しない**。scratch(`.superpowers/`)も同時に消える。
-3. Task 6 は実装 + Codex Critical 修正まで完了し、**canonical review が未完**(中断時に API 障害で再実行中だった)。再開時は canonical review から。
-4. canonical pass → commit(`[reviewed]`)→ Task 7 以降へ。
+3. Task 6 は実装 + Codex Critical 修正まで完了。**canonical review は中断後に到着済**(結果は §3.1)。再開時は **§3.1 の Important 2 件の fix round から**。
+4. fix → scoped re-review → **Codex 再実行**(§3.1 M-4)→ commit(`[reviewed]`)→ Task 7 以降へ。
+5. **§3.1 の I-2 は spec の誤りで OT 裁定が要る**(task 内では直せない)。
 
 ## 2. 完了 task(全て review clean・未 push)
 
@@ -37,8 +38,19 @@ selectSessionPool<T extends SessionPoolCard>(input: {
 }): { pool: T[]; reviewCount: number; newCount: number; nextAvailableAt: Date | null }
 ```
 
-**状態**: 4 gate 全 green(`pnpm test` 5533 / `test:iso` 471 / typecheck 0 / lint 0)。Codex Critical 1 件を修正済み(下記)。**canonical review 未完**。
+**状態**: 4 gate 全 green(`pnpm test` 5533 / `test:iso` 471 / typecheck 0 / lint 0)。Codex Critical 1 件を修正済み。
 report / commit message は `.superpowers/sdd/2026-08-18-dash1-home-v1/task-6-{report,commit-msg}.md|txt`。
+
+### 3.1 canonical review の結果(中断後に到着・未対応)
+
+**Spec ✅ / Task quality: Changes requested**(Critical 0 / Important 2 / Minor 4)。契約 15 項目すべて met、test 書き換え対応表も検証済(**契約変更と無関係な保証は全て存置**: テナント分離・型変換・limit 挙動・空入力・now 既定)。
+
+- **I-1(要 fix)**: 選定キー `${resolvedExamId}|${server cards 到着有無}` が **同一試験での 2 回目の選定を許す**。`?exam=` 無しで入ると boolean が false→true に変わるため、① Dexie から選定し `SessionRunner` を mount → ② URL 正規化の RSC 往復で server cards が届き **回答中に pool が差し替わる**。`SessionRunner` は `cards` を snapshot せず live 参照する(`cards[idx]` / `cards.length` / `n / total` 表示)ため、`idx=1` の利用者に別カードが出て 1 枚飛び、カウンタも飛ぶ。`SessionLauncher` の `sessionId` は lazy `useState` なので remount による `idx` reset も起きない。**「1 session = 1 選定」を documenting しているコメント自体が偽**になる。未 pin(bookmark 再選定 test は「空の初回選定」からしか始まらないため、「既に非空の選定を置き換えない」が未 assert)。
+- **I-2(OT 裁定事項・spec の誤り)**: spec §8.5 は「`/app/study/smart` への導線は home の `DashboardActions` のみ・nav からのリンクは grep 0 件」と書いているが、**`app/(app)/app/_components/app-header.tsx:50-51` に恒久の `<Link href="/app/study/smart">`(exam なし・origin なし)が存在**し、W2 置換後も残る。帰結: (a) I-1 の往復が bookmark の縁ケースではなく**主要導線**で常時起きる (b) nav クリックごとに RSC 往復 + `router.replace` のコスト (c) これらの session の origin が `smart` になるのは §8.5 上正しいが、棚卸し漏れの結果ではなく意識的な判断であるべき。**spec 凍結ルールにより task 内で直せない**。選択肢 = header link に `?exam=` を付ける / 現状維持して I-1 を締める。
+- **M-1**: Dexie が選択試験の全 row を full record で materialize(旧経路は最大 `session_limit` 件)。state 分割・`base_order` 順・`u` は due range で表現できないため設計上妥当だが、**Y-2 subplan B の記録済み教訓と同型**。report の緩和論(Home と 1 回走査を共有)は `/app` の話で、このページには当てはまらない。大きい試験での実測を prod 前に。
+- **M-2**: `reviewCount` / `newCount` は現時点 consumer ゼロ(T11 が消費予定)。
+- **M-3**: server が 0 件を返し、その後 mirror が埋まる経路では再選定されない。**変更前と同挙動で退行ではない**が、コメントの「正しくなった入力には追随する」を完全と読ませないこと。
+- **M-4**: **fix round 後の Codex 再実行が未記録**。CLAUDE.md の収束条件(保存 md で Critical 0 / Important 0)上、`[reviewed]` 前に 1 回必要。
 
 ## 4. レビューが捕まえた実バグ(記録)
 
