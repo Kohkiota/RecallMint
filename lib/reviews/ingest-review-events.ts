@@ -10,6 +10,10 @@ import 'server-only'
 import { z } from 'zod'
 import { type User } from '@/lib/db/schema'
 import { withTenantTx } from '@/lib/db/tenant-tx'
+import {
+  normalizeOriginValue,
+  type OriginValue,
+} from '@/lib/dashboard/domain/origin-values'
 import { todayInJst } from '@/lib/jst'
 import { logger } from '@/lib/logger'
 import {
@@ -49,6 +53,55 @@ const payloadSchema = z.object({
 const CLOCK_SKEW_WARN_MS = 60_000
 
 // ---------------------------------------------------------------------------
+// origin 正規化 + batch 観測ログの組み立て (spec §11.3 / §11.4)。
+//
+// row 組み立ては返り値の normalizeOrigin を唯一の入口とする (`ev.origin ?? null` の
+// 直書き禁止)。正規化 (既知集合判定 + 未知値 null・ORIGIN_VALUES 経由) と観測 (未知値の
+// 収集) を 1 関数に閉じることで、型の抜け道で raw 値がログなしに素通りする call site を
+// 作れなくする。
+//
+// normalizeOrigin 自体は logger を呼ばない: batch 内で複数 event が未知値を持つ場合に
+// 呼出のたびに logger.warn すると「batch につき 1 行」契約 (§11.3) に反して 1 event =
+// 1 行になってしまう。収集だけ行い、buildLog() が batch 終端で 1 payload
+// (未知値ゼロなら null) を返し、呼出側 (processAnswerEvents) がそれを 1 回だけ
+// logger.warn する。
+//
+// values の上限 (spec §11.3 の高カーディナリティ懸念は回答内容だけでなく未知値
+// distinct 数にも及ぶ — batch は最大 1000 event ゆえ、1000 distinct な未知ラベルを
+// そのまま並べると単一 log 行が ~64KB になりうる)。count は切り詰めず総観測数を
+// 正確に保つ (何件あったかは分かる。何であったかは先頭 N 件のみ)。
+export const MAX_LOGGED_ORIGIN_VALUES = 20
+
+export function createOriginNormalizer(): {
+  normalizeOrigin: (raw: string | undefined) => OriginValue | null
+  buildLog: (
+    userId: string,
+  ) => { event: string; userId: string; count: number; values: string[] } | null
+} {
+  const unknownValues = new Set<string>()
+  let unknownCount = 0
+  return {
+    normalizeOrigin(raw) {
+      const normalized = normalizeOriginValue(raw)
+      if (normalized === null && raw !== undefined) {
+        unknownValues.add(raw)
+        unknownCount += 1
+      }
+      return normalized
+    },
+    buildLog(userId) {
+      if (unknownCount === 0) return null
+      return {
+        event: 'review_events.bulk.origin_normalized',
+        userId,
+        count: unknownCount,
+        values: [...unknownValues].slice(0, MAX_LOGGED_ORIGIN_VALUES),
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // processAnswerEvents
 // ---------------------------------------------------------------------------
 
@@ -82,6 +135,7 @@ export async function processAnswerEvents(
   // 下界 clamp はしない (過去 event はオフライン蓄積の正当ケース)。
   const rows: AnswerEventInsertRow[] = []
   const rawAnsweredAt = new Map<string, Date>()
+  const { normalizeOrigin, buildLog } = createOriginNormalizer()
   for (const ev of deduped.values()) {
     const raw = new Date(ev.answered_at)
     const skewMs = raw.getTime() - receivedAt.getTime()
@@ -104,10 +158,13 @@ export async function processAnswerEvents(
       rating: ev.rating,
       answeredAt: skewMs > 0 ? receivedAt : raw,
       elapsedMs: ev.elapsed_ms ?? null,
+      origin: normalizeOrigin(ev.origin),
       applied: false,
       createdAt: receivedAt,
     })
   }
+  const originLog = buildLog(user.id)
+  if (originLog) logger.warn(originLog)
 
   return withTenantTx(user.id, async (tx) => {
     // 手順 3: distinct card_id を ID 昇順で FOR UPDATE (同一 card の並走 flush を直列化)。

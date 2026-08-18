@@ -49,6 +49,10 @@ export type RecordAnswerEventInput = {
   // FSRS rating (1=Again / 2=Hard / 3=Good / 4=Easy)。 scheduling の唯一の入力。
   rating: 1 | 2 | 3 | 4
   elapsed_ms?: number
+  // セッション開始入口の分析ラベル (Dash-1 Home v1 spec §11.4)。session launcher 系の
+  // props chain から渡る (UI 側は現状 origin を必ず渡すが、 型は wire schema の
+  // optional と同じ形にしておく — 正規化は server ingest 側の責務)。
+  origin?: string
   event_id?: string // 未指定なら newId() で採番
   answered_at?: string // 未指定なら now
 }
@@ -67,6 +71,8 @@ export async function recordAnswerEvent(
     answered_at: input.answered_at ?? new Date().toISOString(),
     // 計測不能時に `elapsed_ms: undefined` を持つ行を作らない (optional 列の欠落で表す)。
     ...(input.elapsed_ms !== undefined ? { elapsed_ms: input.elapsed_ms } : {}),
+    // origin も同様に未指定時は key ごと欠落させる (elapsed_ms と同じ idiom)。
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
     sync_status: 'pending',
   }
   await getClientDb().answer_events.add(row)
@@ -151,6 +157,7 @@ function toWireInput(row: ClientAnswerEvent): unknown {
     rating: row.rating,
     answered_at: row.answered_at,
     ...(row.elapsed_ms !== undefined ? { elapsed_ms: row.elapsed_ms } : {}),
+    ...(row.origin !== undefined ? { origin: row.origin } : {}),
   }
 }
 

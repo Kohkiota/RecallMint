@@ -88,6 +88,7 @@ describe('SessionLauncher', () => {
         cards={[]}
         fsrsMode={false}
         userId="user-1"
+        origin="smart"
         heading="スマート復習"
         emptyState={<div>カードなし</div>}
       />,
@@ -105,6 +106,7 @@ describe('SessionLauncher', () => {
         cards={cards}
         fsrsMode={false}
         userId="user-xyz"
+        origin="smart"
         heading="スマート復習"
         emptyState={<div>カードなし</div>}
       />,
@@ -130,6 +132,7 @@ describe('SessionLauncher', () => {
         cards={[fakeCard({ id: 'c1' })]}
         fsrsMode={false}
         userId="user-1"
+        origin="smart"
         heading="スマート復習"
         emptyState={<div>カードなし</div>}
       />,
@@ -146,6 +149,7 @@ describe('SessionLauncher', () => {
     const props = {
       fsrsMode: false as const,
       userId: 'user-1',
+      origin: 'smart',
       heading: 'スマート復習',
       emptyState: <div>カードなし</div>,
     }

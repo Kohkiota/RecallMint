@@ -24,6 +24,9 @@ type SessionLauncherProps = {
   fsrsMode: boolean
   // flush の owner-scope 用 (RSC の認証済み値が props chain で降りてくる・spec §4.6)。
   userId: string
+  // セッション開始入口の分析ラベル (Dash-1 Home v1 spec §11.1/§11.4)。呼出側 (host) が
+  // 自分の入口に応じた固定値を渡し、そのまま SessionRunner へ透過する。
+  origin: string
   heading: string
   emptyState: React.ReactNode
 }
@@ -32,6 +35,7 @@ export function SessionLauncher({
   cards,
   fsrsMode,
   userId,
+  origin,
   heading,
   emptyState,
 }: SessionLauncherProps) {
@@ -48,6 +52,7 @@ export function SessionLauncher({
       fsrsMode={fsrsMode}
       userId={userId}
       sessionId={sessionId}
+      origin={origin}
       heading={heading}
     />
   )

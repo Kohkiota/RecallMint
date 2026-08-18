@@ -18,11 +18,12 @@
 import { randomUUID } from 'node:crypto'
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { initialFsrsState } from '@/lib/cards/domain/initial-fsrs-state'
 import { closeDb } from '@/lib/db'
 import { answerEvents, cards, studyDays, type User } from '@/lib/db/schema'
+import { logger } from '@/lib/logger'
 import { processAnswerEvents } from '@/lib/reviews/ingest-review-events'
 import { recomputeStudyDays } from '@/lib/reviews/session-repository'
 import type { AnswerEventWire } from '@/lib/sync/shared/answer-event-schema'
@@ -394,6 +395,95 @@ describe('event_id 衝突', () => {
 
     expect(res.failed).toEqual([])
     expect(await readEvent(ev.event_id)).toEqual(before)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5.5. origin 列 (Dash-1 Home v1 spec §11)
+// ---------------------------------------------------------------------------
+
+describe('origin: 未知値の正規化・先着固定・collision 対象外 (Dash-1 Home v1 spec §11)', () => {
+  it('(a) 未知の origin は null に正規化され、batch は失敗しない (可用性 pin — 未知の分析ラベル 1 つが同期を止めない)', async () => {
+    const ev = makeEvent(fixture.a.cardId, T1, { origin: 'totally_unrecognized_label' })
+    const res = await processAnswerEvents(userA, [ev], RECEIVED_AT)
+
+    expect(res.failed).toEqual([])
+    const row = (await readEvent(ev.event_id))!
+    expect(row.origin).toBeNull()
+  })
+
+  it('(b) 既知の origin はそのまま保存される', async () => {
+    const ev = makeEvent(fixture.a.cardId, T1, { origin: 'home_today' })
+    const res = await processAnswerEvents(userA, [ev], RECEIVED_AT)
+
+    expect(res.failed).toEqual([])
+    const row = (await readEvent(ev.event_id))!
+    expect(row.origin).toBe('home_today')
+  })
+
+  it('(c) 再送は既存行の origin を更新も補完もしない (先着固定・冪等の単純さを優先)', async () => {
+    const ev = makeEvent(fixture.a.cardId, T1, { origin: 'home_today' })
+    await processAnswerEvents(userA, [ev], RECEIVED_AT)
+    const before = (await readEvent(ev.event_id))!
+    expect(before.origin).toBe('home_today')
+
+    // 内容一致 (origin だけ異なる) の再送 → matchesExisting は origin を比較しないので
+    // 正当な再送として扱われ、既存行 (origin 含む) は不変のまま。
+    await processAnswerEvents(userA, [{ ...ev, origin: 'custom' }], RECEIVED_AT)
+    expect(await readEvent(ev.event_id)).toEqual(before)
+
+    // origin 欠落 (旧 client 相当) の再送でも null 補完されない。
+    const { origin: _omit, ...evWithoutOrigin } = ev
+    await processAnswerEvents(userA, [evWithoutOrigin], RECEIVED_AT)
+    expect(await readEvent(ev.event_id)).toEqual(before)
+
+    // null → present (§11.4「null 行への後付け補完もしない」の方向。初回 origin 無しで
+    // 記録した既存行に、再送で origin が付いても書き込まれてはいけない — 最も
+    // 回帰しやすい向き: `UPDATE … SET origin = $1 WHERE origin IS NULL` のような
+    // 「null だけ埋める」 実装は (c) の非 null ケースを壊さず通過してしまう)。
+    const evNullFirst = makeEvent(fixture.a.cardId, T2) // origin 省略 → undefined → null 正規化
+    await processAnswerEvents(userA, [evNullFirst], RECEIVED_AT)
+    const beforeNull = (await readEvent(evNullFirst.event_id))!
+    expect(beforeNull.origin).toBeNull()
+
+    await processAnswerEvents(userA, [{ ...evNullFirst, origin: 'home_today' }], RECEIVED_AT)
+    expect(await readEvent(evNullFirst.event_id)).toEqual(beforeNull)
+  })
+
+  it('(d) origin 違いのみの再送は collision にならない (CollisionCandidate は origin を比較対象に含めない)', async () => {
+    const ev = makeEvent(fixture.a.cardId, T1, { origin: 'home_today' })
+    await processAnswerEvents(userA, [ev], RECEIVED_AT)
+
+    const res = await processAnswerEvents(userA, [{ ...ev, origin: 'smart' }], RECEIVED_AT)
+
+    expect(res.failed).toEqual([])
+  })
+
+  // log 契約 (spec §11.3): review_events.bulk.origin_normalized は「batch につき 1 行」
+  // — createOriginNormalizer 単体の unit test (lib/reviews/ingest-review-events.test.ts)
+  // は集約ロジック (buildLog が返す payload の中身) しか見ておらず、実際に
+  // processAnswerEvents が logger.warn を呼ぶ回数 (呼出 site の性質) はここでしか
+  // 検証できない。real PG + real logger 経由でこの回数を直接 pin する。
+  it('(log 契約) 複数の未知 origin を含む batch でも logger.warn は正確に 1 回だけ発火する', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn')
+    const card2 = await seedExtraCard(fixture.a)
+    const ev1 = makeEvent(fixture.a.cardId, T1, { origin: 'bogus_a' })
+    const ev2 = makeEvent(card2, T2, { origin: 'bogus_b' })
+
+    const res = await processAnswerEvents(userA, [ev1, ev2], RECEIVED_AT)
+    expect(res.failed).toEqual([])
+
+    const originLogCalls = warnSpy.mock.calls.filter(
+      ([payload]) =>
+        (payload as { event?: string }).event === 'review_events.bulk.origin_normalized',
+    )
+    expect(originLogCalls).toHaveLength(1)
+    expect(originLogCalls[0]![0]).toMatchObject({
+      event: 'review_events.bulk.origin_normalized',
+      userId: fixture.a.userId,
+      count: 2,
+    })
+    warnSpy.mockRestore()
   })
 })
 

@@ -82,4 +82,25 @@ describe('answerEventWireSchema', () => {
     )
     expect(result.success).toBe(false)
   })
+
+  it('accepts origin at the 64-char upper bound', () => {
+    const result = answerEventWireSchema.safeParse(
+      validEvent({ origin: 'x'.repeat(64) }),
+    )
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects origin one over the 64-char upper bound', () => {
+    const result = answerEventWireSchema.safeParse(
+      validEvent({ origin: 'x'.repeat(65) }),
+    )
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts an unrecognized origin string (spec §11.3: wire never rejects on vocabulary — unknown-value handling is server ingest normalization, not schema rejection)', () => {
+    const result = answerEventWireSchema.safeParse(
+      validEvent({ origin: 'totally_unknown_label' }),
+    )
+    expect(result.success).toBe(true)
+  })
 })

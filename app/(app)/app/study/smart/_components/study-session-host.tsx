@@ -94,6 +94,7 @@ export function StudySessionHost({
       cards={resolvedCards}
       fsrsMode={fsrsMode}
       userId={userId}
+      origin="smart"
       heading="スマート復習"
       emptyState={emptyUI}
     />

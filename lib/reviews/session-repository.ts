@@ -77,6 +77,10 @@ export interface AnswerEventInsertRow {
   rating: RatingInt
   answeredAt: Date
   elapsedMs: number | null
+  // セッション開始入口の分析ラベル (Dash-1 Home v1 spec §11.4)。normalizeOrigin
+  // (ingest-review-events.ts) を経由済みの値のみが渡る前提 — ここでは raw 値を
+  // 受け取らない。
+  origin: string | null
   applied: boolean
   createdAt: Date
 }

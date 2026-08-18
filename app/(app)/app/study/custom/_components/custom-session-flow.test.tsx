@@ -54,6 +54,7 @@ vi.mock('./custom-filter-form', () => ({
 const lastLauncherProps: {
   cards?: unknown[]
   userId?: string
+  origin?: string
   heading?: string
   fsrsMode?: boolean
   emptyState?: React.ReactNode
@@ -62,6 +63,7 @@ vi.mock('../../_components/session-launcher', () => ({
   SessionLauncher: (props: {
     cards: unknown[]
     userId: string
+    origin: string
     heading: string
     fsrsMode: boolean
     emptyState: React.ReactNode
@@ -69,6 +71,7 @@ vi.mock('../../_components/session-launcher', () => ({
     // props を記録
     lastLauncherProps.cards = props.cards
     lastLauncherProps.userId = props.userId
+    lastLauncherProps.origin = props.origin
     lastLauncherProps.heading = props.heading
     lastLauncherProps.fsrsMode = props.fsrsMode
     lastLauncherProps.emptyState = props.emptyState
@@ -163,6 +166,8 @@ describe('CustomSessionFlow — onStart → 選定 → SessionLauncher', () => {
 
     // userId は flush の owner-scope 供給 (spec §4.6)
     expect(lastLauncherProps.userId).toBe('user-1')
+    // origin="custom" は custom flow の固定値 (Dash-1 Home v1 spec §11.4)
+    expect(lastLauncherProps.origin).toBe('custom')
     expect(lastLauncherProps.heading).toBe('カスタム演習')
     expect(lastLauncherProps.cards).toHaveLength(CARDS.length)
   })

@@ -95,6 +95,10 @@ type SessionRunnerProps = {
   // 演習開始時に呼出 client (SessionLauncher) が uuidv4 で発行する session_id。
   // 親表は無く、 各 answer_event に載せる label 列 (spec §4.4)。
   sessionId: string
+  // セッション開始入口の分析ラベル (Dash-1 Home v1 spec §11.1/§11.4)。sessionId と
+  // 同じ props chain (session-launcher.tsx ← 各 host) で降りてくるセッション定数。
+  // 現時点の host は固定値 ('smart' / 'custom') を渡す (動的化は後続 task)。
+  origin: string
   // セッション見出し。 省略時は 'スマート復習'。 custom mode など呼出側が差し替え可能。
   heading?: string
 }
@@ -147,7 +151,7 @@ function rateButtonClass(rating: Rating, selected: boolean): string {
   return `${RATE_BUTTON_BASE} ${selected ? variant.selected : variant.idle}`
 }
 
-export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = 'スマート復習' }: SessionRunnerProps) {
+export function SessionRunner({ cards, fsrsMode, userId, sessionId, origin, heading = 'スマート復習' }: SessionRunnerProps) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('selecting')
   const [idx, setIdx] = useState(0)
@@ -318,6 +322,7 @@ export function SessionRunner({ cards, fsrsMode, userId, sessionId, heading = '�
           is_correct: correctSnapshot,
           rating,
           answered_at: new Date().toISOString(),
+          origin,
           ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
         })
         const pending = await countPendingAnswerEvents(userId)

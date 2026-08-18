@@ -60,6 +60,7 @@ type SentPayload = {
     session_id?: string
     rating: number
     elapsed_ms?: number
+    origin?: string
   }>
 }
 
@@ -118,6 +119,18 @@ describe('recordAnswerEvent', () => {
     const event = await recordAnswerEvent(makeInput())
     const stored = await getClientDb().answer_events.where('event_id').equals(event.event_id).first()
     expect(Object.prototype.hasOwnProperty.call(stored!, 'elapsed_ms')).toBe(false)
+  })
+
+  it('origin 指定時はそのまま保持される (Dash-1 Home v1 spec §11.4)', async () => {
+    const event = await recordAnswerEvent(makeInput({ origin: 'home_today' }))
+    const stored = await getClientDb().answer_events.where('event_id').equals(event.event_id).first()
+    expect(stored!.origin).toBe('home_today')
+  })
+
+  it('origin 未指定なら行に key を持たない (elapsed_ms と同じ idiom)', async () => {
+    const event = await recordAnswerEvent(makeInput())
+    const stored = await getClientDb().answer_events.where('event_id').equals(event.event_id).first()
+    expect(Object.prototype.hasOwnProperty.call(stored!, 'origin')).toBe(false)
   })
 })
 
@@ -208,6 +221,18 @@ describe('flushPendingAnswerEvents — owner-scope 選別', () => {
     const [withElapsed, without] = sentEvents(client)[0]
     expect(withElapsed.elapsed_ms).toBe(4_200)
     expect(Object.prototype.hasOwnProperty.call(without, 'elapsed_ms')).toBe(false)
+  })
+
+  it('origin は指定時のみ payload に載る (elapsed_ms と同じ idiom・spec §11.4)', async () => {
+    await recordAnswerEvent(makeInput({ origin: 'custom' }))
+    await recordAnswerEvent(makeInput())
+
+    const client = makeMockClient()
+    await flushPendingAnswerEvents(USER_A, client)
+
+    const [withOrigin, without] = sentEvents(client)[0]
+    expect(withOrigin.origin).toBe('custom')
+    expect(Object.prototype.hasOwnProperty.call(without, 'origin')).toBe(false)
   })
 
   it('pending 0 件では POST しない', async () => {

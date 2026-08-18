@@ -93,6 +93,7 @@ export function CustomSessionFlow({ userId, customLimit, fsrsMode }: Props) {
         cards={phase.cards}
         fsrsMode={fsrsMode}
         userId={userId}
+        origin="custom"
         heading="カスタム演習"
         emptyState={emptyUI}
       />

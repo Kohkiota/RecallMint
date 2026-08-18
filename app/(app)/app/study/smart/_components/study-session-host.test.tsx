@@ -178,6 +178,23 @@ describe('StudySessionHost (S-local-3 hybrid)', () => {
     )
   })
 
+  it('origin="smart" を SessionLauncher に渡す (Dash-1 Home v1 spec §11.4 — smart host 固定値)', async () => {
+    render(
+      <StudySessionHost
+        cards={[fakeCard()]}
+        fsrsMode={false}
+        userId="user-xyz"
+        sessionLimit={20}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(mockSessionLauncher).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: 'smart' }),
+      ),
+    )
+  })
+
   // -------------------------------------------------------------------------
   // S-local-4 (Phase γ): Dexie + server 両方 0 件 → empty UI 表示。 旧 page.tsx の
   // 「ありません」 page を host 内に集約 (offline で server fetch fail → cards=[]

@@ -102,6 +102,7 @@ function makeInsertRow(
     rating: 3,
     answeredAt: new Date('2026-05-25T10:01:00.000Z'),
     elapsedMs: null,
+    origin: null,
     applied: false,
     createdAt: RECEIVED_AT,
     ...overrides,
