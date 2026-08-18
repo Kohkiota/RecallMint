@@ -1,6 +1,7 @@
 # Dash-1: Home v1 design spec
 
-- 日付: 2026-08-18 / 状態: **凍結**(2026-08-18 OT 承認 — §15 の 7 点全承認 + 条件 2 件反映済: origin 正規化の観測 event 名(§11.3)/ 「明日は約◯問」不採用の Dash-0 erratum 記録。以後実装フェーズで書き換えない — 仕様変更が必要なら停止して OT 相談)
+- 日付: 2026-08-18 / 状態: **凍結(r2)**(2026-08-18 OT 承認 — §15 の 7 点全承認 + 条件 2 件反映。**r2 = Codex plan review 由来の修正必須 5 件 + 運用 2 件を OT 全採用で追記** — 各節に r2 履歴を明示。以後実装フェーズで書き換えない — 仕様変更が必要なら停止して OT 相談)
+- **r2(2026-08-18)**: ① W2 実プール 0 の案内仕様(§4 W2 / §8.5 / §13.2)② origin 成功指標を分母なし件数へ・mixed-origin 規則・§11.4 型面整合・normalizeOrigin 経由(§11.2 / §11.4)③ W4 索引を 0040 に同梱(§10 / §14)④ migration 現況の訂正(§14 — stg は 0039 まで適用済・実測)⑤ soft limit / first_reviewed_at の契約文精密化(§8.3)
 - 入力(正): `docs/superpowers/specs/2026-08-17-dashboard-metric-definitions.md`(**Dash-0 r3 凍結**。以下「定義 doc」。指標の意味は全てそちらが正 — 本 spec は再定義しない)/ 分析 doc v2 §4.3(供給経路)・§4.4(design tokens)・§5(ホーム v1)/ 定義 doc §6 の引き継ぎのうち Dash-1 対象(①実装・②実装・③表示詳細・④・⑥・⑧残・⑨・⑪)
 - 消費先: writing-plans(実装 plan)
 
@@ -63,7 +64,7 @@ R 計算(定義 doc §4-M)は v1 非消費のため**作らない**(§7.1 の mo
 | W | component(新設) | 読み元 | 表示 |
 |---|---|---|---|
 | W1 | `home-header.tsx` | Dexie `exams`(owner scope) | 試験名 + 切替 dropdown。「あと◯日」は描画しない(Dash-2) |
-| W2 | `today-study.tsx` | Dexie `cards`(`[user_id+exam_id]`)+ ローカル `answer_events`(N 標本) | 「残り y 問・約◯分」+ primary CTA「学習を始める」+ 内訳「復習 n(持ち越し m 含む)・新規 k」。**k は残り枠であり 1 セッションで全件出るとは限らない**(§8.5)。y===0 → 「いま解く対象はありません」(副導線 = クイック演習へ。「明日は約◯問」は**出さない** — 定義 doc W2-e を「出さない」で確定。見込み値の定義がなく、誤った約束を避ける) |
+| W2 | `today-study.tsx` | Dexie `cards`(`[user_id+exam_id]`)+ ローカル `answer_events`(N 標本) | 「残り y 問・約◯分」+ primary CTA「学習を始める」+ 内訳「復習 n(持ち越し m 含む)・新規 k」。**k は残り枠であり 1 セッションで全件出るとは限らない**(§8.5)。**y > 0 かつ実プール 0**(§8.5 r2)→ CTA を無効化し「いま出題できる問題はありません。次の復習は◯時頃です」(◯時 = §8.5 の nextAvailableAt・ローカル計算)。y===0 → 「いま解く対象はありません」(副導線 = クイック演習へ。「明日は約◯問」は**出さない** — 定義 doc W2-e を「出さない」で確定。見込み値の定義がなく、誤った約束を避ける) |
 | W3 | `state-summary.tsx` | Dexie `cards` | 3 状態を横並びカウンタ、持ち越しは**下段に別行**(「持ち越し ◯件」+ 演習導線)— 「3 + 別段」の実装形 |
 | W4 | `weak-tags.tsx` | `GET /api/stats/summary`(§10) | 診断文 1 行 + 3 行(タグ名〈カテゴリ名添え〉・復習正答率・対象問数〈「◯問」〉)+ 「この分野を 10 問」ボタン。候補 0 → widget 非表示 / fetch 失敗 → **非表示ではなく**「読み込めませんでした」1 行(§3.8 の失敗区別。陳腐表示は実装しない — 定義 doc の保守側裁定を採用)。**fetch race**: 応答に載せた exam_id と現在の選択試験を突き合わせ、不一致の遅着応答は捨てる(試験切替時の誤表示防止) |
 | W5 | `quick-practice.tsx` | Dexie `cards`(+ N) | 5 ボタン(間違い / 未出題 / 苦手 / 10分 / カスタム)。母集合 0 → disable |
@@ -124,14 +125,14 @@ R 計算(定義 doc §4-M)は v1 非消費のため**作らない**(§7.1 の mo
 ### 8.3 u の永続化 = **`cards.first_reviewed_at` 列(server 契約の新設を提案)**
 
 - **提案**: `cards.first_reviewed_at`(timestamptz nullable)を追加し、**fold が state 0 → 非 0 の遷移時に、その遷移を起こした applied event の `answered_at` を一度だけ書く**(以後不変)。
-- u の導出(client・オフライン可): `count(Dexie cards where exam_id = selected && first_reviewed_at != null && todayInJst(first_reviewed_at) === today)`。
+- u の導出(client・**最終同期 snapshot で利用可** — r2 訂正: 「オフライン可」は不正確。オフライン中も計算はできるが値は最後に pull した mirror の鮮度に依存し、自端末の未 flush 導入分を含まない): `count(Dexie cards where exam_id = selected && first_reviewed_at != null && todayInJst(first_reviewed_at) === today)`。
 - **選定理由**(代替との比較):
   - (a) 本案 — 端末間整合は**既存 pull がそのまま運ぶ**(fold は cards.updated_at を bump するので増分に自動で乗る)。専用カウンタ表・専用同期なし。カード移動 = exam_id 現在値で数える(タグ集計 §3.5 と同じ現在状態意味論 — 移動先の枠を消費)。削除 = 行ごと消えて枠が戻る。account-wide の一貫性は server の cards 行が単一の真実であることから従属的に得られる(**新しい server 契約は「fold がこの列を 1 回書く」の 1 点のみ**)
   - (b) `sync_meta` ローカルカウンタ — 端末間不整合(2 端末で各 K 件導入できる)・リセット規則の自作が必要 → 不採用
   - (c) `review_logs`(`state_before = 0`)からの server 集計 — オフライン不可・読み取り index 追加が必要・W2 が L3 依存になる → 不採用
 - **書込契約(一意化)**: fold は増分適用(現 DB 行からの fold・全履歴 replay ではない)。`first_reviewed_at` は **tx 内で `initial.state === 0 && final.state !== 0` の遷移が起きたときだけ**、その遷移を起こした最初の applied event の `answered_at`(clamp 済)で 1 回設定し、**以後どのイベントでも書き換えない(処理順の先着固定)**。遅延到着した過去イベントは (a) card が既に非 New なら遷移が起きないので触らない (b) `>=` 順序ガードで skip された event は fold に入らないので影響しない。「歴史上最古のイベントの時刻」への遡及修正は**しない**(不変性 > 履歴再構成 — R0 の verbatim 主義と同型)。
 - **日界の時刻源** = `answered_at`(clamp 済)を `todayInJst` に通す — **`study_days` と同一の時刻源・同一の日界**(二重定義しない)。client 時計の過去方向ずれは study_days 同様に受容(未来方向は clamp 済)。
-- **保証レベル = soft limit(明示)**: server は超過回答を**拒否しない**(Sprint A の全受理設計と衝突するため hard limit は不採用 — 回答を分析上の枠制御で落とさない)。強制点は**選定時のみ**(§8.5)。したがって flush 前の連続セッション・複数端末・複数タブでは一時的に K を超えて導入できるが、mirror 収束後は remainingBudget = 0 に戻り以後選ばれない。account-wide の hard 保証が必要になったら server 側の予約契約が要る — v1 では作らない(YAGNI)。
+- **保証レベル = soft limit(明示・r2 で精密化)**: server は超過回答を**拒否しない**(Sprint A の全受理設計と衝突するため hard limit は不採用 — 回答を分析上の枠制御で落とさない)。強制点は**選定時のみ**(§8.5)。帰結を正確に書く: (a) flush 前の連続セッション・複数端末・複数タブに加え、**オフラインでの反復セッションでは mirror が更新されないため K を任意回数超えうる**(「一時的」ではなく同期するまで無制限)。(b) **過去の超過は巻き戻さない** — 収束後は `remainingBudget = max(K − u, 0) = 0` になり**将来の選定枠が 0 になるだけ**で、導入済みカードはそのまま学習が続く。account-wide の hard 保証が必要になったら server 側の予約契約が要る — v1 では作らない(YAGNI)。
 - **導出型 u の帰結(承認ポイント)**: カード削除 → 行ごと消えて**当日枠が戻る**。試験間移動 → **移動先の試験の当日枠を消費**(現在状態意味論 — タグ集計 §3.5 と同型)。「その日に実際に導入した累計」ではなく「現存カードで数える」設計であり、通常期待とずれうるため OT 承認事項として明示する。
 - 既存行の backfill = **null のまま**(「導入日不明」→ 今日ではない扱い = 枠を消費しない。稼働初日だけ上限が甘くなりうるが、ユーザー実質 0 のため受容)。Dexie の保存済み旧行も field 欠落 = null 扱い(optional・mapper で自然互換)。
 - 触点(P-8): `schema.ts` + migration 0040(8.1 と同一 migration)/ `ReplayCardState` に `firstReviewedAt: Date | null` を追加し `replayCard` が遷移時に設定(pure のまま)/ `applyCardFinalStates` の VALUES 列 +1 / `cards-mapper.ts:toClientCard` / `ClientCard` 型(index 不要 → Dexie bump 不要)/ `initialFsrsState` に `firstReviewedAt: null` / client 楽観更新(`runOptimistic*` 系で回答時に設定するか)は**しない** — u の即時性は pull-back(flush 後の cards 引き直し)で足り、二重実装を避ける(遅延は flush 間隔ぶん。W2 の k が数問ぶん遅れて減る UX は受容し、session 内の強制(§8.5)は session 開始時の選定で担保する)。
@@ -150,6 +151,7 @@ R 計算(定義 doc §4-M)は v1 非消費のため**作らない**(§7.1 の mo
   - **Learning / Relearning(state 1/3)**: `due <= now` のまま — **分〜時間単位の短期 step を前倒ししない**(step 間隔は FSRS の短期記憶スケジュールそのものであり、朝に夜の step を出すと壊れる)。step 時刻が来れば CTA 再押下 / 次セッションで自然に入る
   - 並びは due ASC(部内)
 - **n(表示)とプールの既知の微小差**: 定義 doc W2 の n は state 1/2/3 一律「今日の終わりまで」で凍結済み。プールは上記のとおり Learning/Relearning の未到来 step を含まないため、**その分だけ一時的に プール件数 < n になる**(対象は通常数分〜数時間後に解消する短期 step のみ)。y は「今日やる量」の表示として正しく、プールは「いま出せるもの」— この差は仕様として受容し、UI で「◯問はまもなく出題可能」等の補足はしない(v1)。
+- **実プール 0 の扱い(r2 追記)**: y > 0 でも実プール(Review 前倒し分 + 出題可能な Learning/Relearning + 新規 k)が 0 になりうる(n の残りが全て未到来の短期 step で k = 0 のとき)。このとき **W2 の CTA を無効化**し、「いま出題できる問題はありません。次の復習は◯時頃です」を表示する(「現在の対象なし」〈y===0〉とは別状態)。**◯時 = `nextAvailableAt`** — プール外に残った候補(未到来 Learning/Relearning)の最小 `due` をローカル計算した時刻。空セッションへの遷移はさせない。
 - これにより (1) 新規は k 件で打ち切られ(daily-new-limit の選定時強制)、(2) Review の later-due が処方と一致し、(3) 新規部の順序が教材順に確定する。
 - **新規の位置づけ = 上限であって目標ではない**: 復習部が `session_limit` 以上ある日は、cap により**当該セッションに新規が 1 件も出ない**。これは「復習が溜まっている日は新規を始めない」という FSRS 運用として意図どおり(復習を消化してセッションを重ねれば同日中に新規に到達する)。W2 の内訳 k は「プール上の残り枠」であり 1 セッションで全件出るとは限らない — W2 に 1 行注記する(§4)。
 - 現行との差分: `due <= now` 1 本 → 上記 2 部 3 条件、New 無制限混入 → k 件制限 + 順序分離、**exam 横断 → 選択試験スコープ**(W2 が試験主体である以上 CTA も選択試験に絞る。全試験をまとめて回す動線は他試験 1 行から各試験へ)。
@@ -181,6 +183,7 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
   - 同率順位の `option_id` 昇順 = **uuid の text 表現の昇順**(`ORDER BY option_id::text`)— client 側 JS 比較と同じ順序系に固定
   - タグ母集合は現存 cards ⋈ card_tags(削除カードは自然に落ちる — §3.3a)。option / category の name は応答時点の現在値
   - 閾値・順位・同率は shared 定数 / 規則(§3.2 の domain module)を import(SQL に数値を直書きしない)
+  - **索引(r2 追記)**: 本集計は全履歴を card 単位で rank する**初の恒常 consumer**であり、migration 0040 に `answer_events_user_card_answered_idx (user_id, card_id, answered_at, event_id)` を同梱してこれを使う(§14)。EXPLAIN で索引利用を確認する(plan Task 8)
 - 分析ページ用の拡張はしない(肥大化禁止 — Dash-3 は別 endpoint)。
 - client: `weak-tags.tsx` が mount 時 + 試験切替時に fetch。owner echo 検証(study-days.ts と同型の reject)+ exam_id echo で遅着応答破棄。再取得ボタンは付けない(再訪で再 fetch)。
 
@@ -202,7 +205,9 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 
 ### 11.2 集計単位と成功指標
 
-成功指標②(推奨演習の実行率)の分子 = **「1 問以上回答したセッション」= 当該 origin の applied event が 1 件以上ある distinct `session_id`**。クリック(遷移)は数えない — 回答 0 のセッションは event が server に届かず構造的に数えられず、これが意図と一致する。session_id null の event(理論上 wire optional)は集計から除外。origin 混在 session(規約違反)は `distinct (session_id, origin)` で数え、混在自体は検証しない(分析ラベルであり整合保証の対象でない)。v1 では**集計 UI は作らない**(SQL 手動集計で足りる — 蓄積の開始が目的。「今日記録しないものは永久欠損」)。
+成功指標は **origin 別の「実行セッション件数」(分母なし・r2 改称 — 「実行率」は廃止)**。「実行セッション」= 当該 origin の applied event が 1 件以上ある distinct `session_id`。クリック(遷移)は数えない — 回答 0 のセッションは event が server に届かず構造的に数えられず、これが意図と一致する。**率(分母)を定義する場合は Dash-3 の分析設計で行う**(表示イベント計測が前提になるため)。
+
+**mixed-origin の二重計上防止(r2 追記)**: client 規約として **origin はセッション開始時に 1 つ確定し、途中の演習切替で変更しない**(props chain の根 = launcher mount 時に固定)。集計は **session_id ごとに最初の applied event(`answered_at ASC, event_id ASC`)の origin で 1 回だけ数える** — 規約違反で混在しても 1 session は 1 件にしか数えない。session_id null の event(理論上 wire optional)は集計から除外。v1 では**集計 UI は作らない**(SQL 手動集計で足りる — 蓄積の開始が目的。「今日記録しないものは永久欠損」)。
 
 ### 11.3 schema / wire
 
@@ -216,11 +221,11 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 | 層 | file:symbol | 変更 |
 |---|---|---|
 | DB | `lib/db/schema.ts:answerEvents` + migration 0040 | 列追加(nullable・CHECK なし・index なし) |
-| wire | `lib/sync/shared/answer-event-schema.ts` | `origin` optional enum 追加 |
+| wire | `lib/sync/shared/answer-event-schema.ts` | `origin` を **optional bounded string**(`z.string().max(64)`)で追加(r2 訂正 — §11.3 のとおり enum reject にしない。型面もこれに統一) |
 | client 型 | `lib/client-db.ts:ClientAnswerEvent` | `origin?` 追加 |
 | client write | `lib/sync/review-events.ts`(`RecordAnswerEventInput` / `recordAnswerEvent` / `toWireInput`) | 3 箇所に透過 |
 | UI 経路 | `session-runner.tsx`(recordAnswerEvent 呼出)← `SessionRunnerProps` ← `session-launcher.tsx` ← `study-session-host.tsx` / `custom-session-flow.tsx` / 新 quick host | sessionId と同じ props chain。各 host が自分の origin 値を確定 |
-| ingest | `lib/reviews/ingest-review-events.ts`(row 組み立て) | `origin: ev.origin ?? null` |
+| ingest | `lib/reviews/ingest-review-events.ts`(row 組み立て) | **`origin: normalizeOrigin(ev.origin)` 経由のみ**(r2 訂正 — `ev.origin ?? null` の直書き禁止。正規化〈既知集合判定 + 未知値 null〉と観測 event の発火を 1 関数に閉じ、型の抜け道で素通りさせない) |
 | repo | `session-repository.ts:AnswerEventInsertRow` / `insertAnswerEvents` | 列 +1 |
 | **collision** | `CollisionCandidate` / `verifyEventCollisions` | **比較に含めない**(P-4 の現行 8 field を維持)。理由: origin は回答内容でなく metadata であり、client 更新前後の再送(旧 client の再送に origin が無い)で内容一致比較が偽陽性の collision を出すのを避ける。**先着固定 — 既存行の origin は再送で更新も補完もしない**(null 行への後付け補完もしない。冪等の単純さ > 導入期の計測欠損。欠損は origin 導入後の新規セッションで自然に解消する) |
 | review_logs | — | 変更なし(origin は持たない — event_id JOIN で取れる値を二重化しない・R0 方針) |
@@ -263,6 +268,7 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 
 - **daily-new-limit**: fold が `first_reviewed_at` を初回のみ書き 2 回目以降不変(iso)/ **遅延到着した過去 event で書き換わらない**(iso — 先着固定の pin)/ u 導出の日界(unit)/ 出題プールが「復習部 → 新規 k 件」で k 超の New を含まない(unit・red 検証は k+1 件目の混入変異)/ **Learning/Relearning の未到来 step がプールに入らず、Review の当日 later-due は入る**(unit — §8.5 の state 別条件)/ K=0 で新規 0(unit)。
 - **client/server 選定同値性**: 同一 fixture(JST 境界・later-due・New 混在・cap)で Dexie 経路と server fallback のプールが一致(unit ×2 経路 + iso)。
+- **実プール 0 の案内(r2)**: y > 0 かつ実プール 0 の fixture(未到来 Learning のみ・k=0)で、CTA が無効化され案内(nextAvailableAt)が表示され、**空セッションへ遷移しない**(component test)。
 - **origin**: wire 透過(unit)/ ingest で**未知値が null に正規化され batch は 200**(iso — 可用性 pin)/ 既知値は保存(iso)/ collision 比較に**入らない**(unit — origin 違いの再送が collision にならない pin)/ 再送で既存行の origin が更新・補完されない(iso)/ props chain の各 host が正しい値を渡す(component test)。
 - **選択中試験**: 解決順 4 段 + 削除 ID 破棄 + URL 正規化(unit)/ sign-out purge で消える(既存 hygiene test の対象 key 一覧へ追加)。
 - **summary**: owner echo / exam_id echo / 認証 401 / 400 系 / 他 owner exam → 空 200(route unit + iso)。
@@ -276,10 +282,10 @@ u は導出値なので「リセット」は存在しない — `todayInJst` が
 
 ## 14. migration / deploy 順
 
-- **migration 0040 一本**: `exams.daily_new_target` + `cards.first_reviewed_at` + `answer_events.origin`(いずれも nullable / additive。CHECK は `exams_daily_new_target_nonneg` の 1 本のみ)。RLS: 既存表への列追加のみで policy 変更なし(期待カタログ不変)。**一本にする理由**: 3 列とも additive nullable で個別 rollback の実益がなく(削れば戻る)、repo 慣例も sprint 1 migration。段階リリースが必要になる規模ではない。
+- **migration 0040 一本**: `exams.daily_new_target` + `cards.first_reviewed_at` + `answer_events.origin`(いずれも nullable / additive。CHECK は `exams_daily_new_target_nonneg` の 1 本のみ)+ **`answer_events_user_card_answered_idx (user_id, card_id, answered_at, event_id)`**(r2 追記 — §10 の rank 集計用。index は additive で挙動不変)。RLS: 既存表への列追加のみで policy 変更なし(期待カタログ不変)。**一本にする理由**: 3 列 + 1 index とも additive で個別 rollback の実益がなく(削れば戻る)、repo 慣例も sprint 1 migration。段階リリースが必要になる規模ではない。
 - deploy 順: **migrate 先行 → code deploy**(旧 code は新列に触れない additive)。rolling 共存(旧 server × 新 client / 新 server × 旧 client)は §11.3 のとおりどの組合せでも回答同期が止まらない(unknown key strip / optional / 未知値 null 正規化)。
 - `daily_new_target` の null 意味論 = **「未設定 = その時点の既定に追従」**(意図的 — `user_settings.session_limit` の既存前例と同じ。既定 `DAILY_NEW_DEFAULT` を将来変えると null の全試験に波及するのは仕様)。
-- stg には未適用スタック 0036〜0039 が積まれている — 0040 は後続として通常順。
+- **stg の現況(r2 訂正)**: r1 の「未適用スタック 0036〜0039」は**偽** — 2026-08-18 に stg 実測で **0036〜0039 は全て適用済み**(0036 = study_days 非負 CHECK / 0037 = cards.base_order / 0038 = entity_type CHECK に card_move / 0039 = review_logs、いずれも実在確認)。**0040 が次の 1 本**。prod の適用状況は CC 未確認(operator 手動適用 — 未確認であって未適用ではない)。0001〜0040 の連続適用検証は **fresh DB gate**として構造的に担保される(iso 基盤の global-setup が毎回 fresh PG に全 migration を通し適用する — `pnpm test:iso` green がその実証)。
 
 ## 15. OT 承認ポイント(**全 7 点 OT 承認済 2026-08-18**。条件 = 4 の観測 event 名〈§11.3 反映済〉+ 7 の Dash-0 erratum 記録〈反映済〉)
 

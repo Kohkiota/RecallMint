@@ -138,35 +138,35 @@
 
 ## リスク / 対立しうる設計判断
 
-- **soft limit vs hard limit**  
+- **soft limit vs hard limit**
   local-firstで回答を止めないことと、account-wide daily limitの厳密保証は両立しにくい。現案はsoft limitとしては成立するが、hard limitとは呼べない。
 
-- **server正規化時刻 vs client回答時刻**  
+- **server正規化時刻 vs client回答時刻**
   server時刻は不正・時計ずれに強いが、offlineで実際に回答したJST日とずれる。client `answered_at` はユーザー体験に沿うが改変・時計ずれに弱い。
 
-- **初回日時の不変性 vs replay決定性**  
+- **初回日時の不変性 vs replay決定性**
   先着値固定は運用上安定する一方、遅延イベントを含む履歴から再構築した結果と一致しない。履歴上の最古値へ修正すると「一度だけ」の契約を崩す。
 
-- **復習優先 vs 新規導入目標**  
+- **復習優先 vs 新規導入目標**
   復習を完全優先すると安全だが、新規 k は長期間出ない可能性がある。daily targetを「最大値」とするか「できるだけ達成する目標」とするかで混合順序が変わる。
 
-- **later-due前倒し vs FSRS間隔尊重**  
+- **later-due前倒し vs FSRS間隔尊重**
   W2件数とCTA件数を一致させるほど、時刻ベースのLearning stepを前倒しする。表示整合とスケジューラ忠実性のトレードオフ。
 
-- **origin厳格enum vs回答同期の可用性**  
+- **origin厳格enum vs回答同期の可用性**
   厳格rejectは分析品質を上げるが、未知の分析値だけで学習回答が同期不能になる。未知値をnull化すれば回答は守れるが、計測欠損が増える。
 
-- **origin先着固定 vs metadata補完**  
+- **origin先着固定 vs metadata補完**
   冪等性を単純化するなら先着固定。導入期の計測欠損を減らすなら null→非null の限定補完が必要だが、更新競合契約が増える。
 
-- **server-only W4 vs完全local-first Home**  
+- **server-only W4 vs完全local-first Home**
   server集計は正確で軽量なclientを実現するが、Home内でW4だけoffline不能・鮮度特性が異なる。
 
-- **snapshotの単純性 vs即時表示**  
+- **snapshotの単純性 vs即時表示**
   `study_days` 全置換は整合しやすいが、未flush回答やpull失敗時に表示が遅れる。local eventを合成すると即時性は上がるが二重計上防止が複雑になる。
 
-- **nullable動的既定値 vs値の固定**  
+- **nullable動的既定値 vs値の固定**
   `daily_new_target = null` をグローバル既定値として解釈すると将来の既定変更が全既存試験へ波及する。作成時に実値を保存すれば挙動は安定するが、既定値の一括改善が難しい。
 
-- **単一migration vs段階的リリース**  
+- **単一migration vs段階的リリース**
   一本化は実装が簡潔だが、3機構のリリース・rollbackが結合する。特にdaily limitの意味論が未確定なままoriginまで巻き込むリスクがある。
