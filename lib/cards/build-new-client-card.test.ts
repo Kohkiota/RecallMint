@@ -60,6 +60,11 @@ describe('buildNewClientCard', () => {
     expect(card.state).toBe(0)
     expect(card.learning_steps).toBe(0)
     expect(card.last_review).toBeNull()
+    // Dash-1 Home v1(canonical review Minor 2): initialFsrsState 由来の新 field。
+    // 省略される(キー欠落のまま)と daily-new-limit の u 導出が新規カードを
+    // 誤判定しうるため、他の nullable FSRS field と同様に明示 null を pin する。
+    expect(card.first_reviewed_at).toBeNull()
+    expect('first_reviewed_at' in card).toBe(true)
     expect(card.content_version).toBe(0)
   })
 

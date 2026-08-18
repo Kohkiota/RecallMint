@@ -438,7 +438,7 @@ describe('schema contract: answer_events を実 PG から readback', () => {
     expect(rows.filter((r) => r.contype === 'f')).toHaveLength(1)
   })
 
-  it('index は pkey + (user_id, answered_at) の 2 本のみ (card_id 系は張らない)', async () => {
+  it('index は pkey + (user_id, answered_at) + (user_id, card_id, answered_at, event_id) の 3 本のみ (Dash-1 Home v1 §10・migration 0040)', async () => {
     const rows = await getFixtureOwnerDb().execute<{
       indexname: string
       indexdef: string
@@ -448,9 +448,13 @@ describe('schema contract: answer_events を実 PG から readback', () => {
     `)
     expect(rows.map((r) => r.indexname)).toEqual([
       'answer_events_pkey',
+      'answer_events_user_card_answered_idx',
       'answer_events_user_idx',
     ])
     expect(rows[1]!.indexdef).toBe(
+      'CREATE INDEX answer_events_user_card_answered_idx ON public.answer_events USING btree (user_id, card_id, answered_at, event_id)',
+    )
+    expect(rows[2]!.indexdef).toBe(
       'CREATE INDEX answer_events_user_idx ON public.answer_events USING btree (user_id, answered_at)',
     )
   })

@@ -129,6 +129,7 @@ function makeCard(id: string): Card {
     state: 0,
     learningSteps: 0,
     lastReview: null,
+    firstReviewedAt: null,
     contentVersion: 0,
     createdAt: new Date('2020-01-01'),
     updatedAt: new Date('2020-01-01'),

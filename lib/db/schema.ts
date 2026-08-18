@@ -269,6 +269,10 @@ export const exams = pgTable(
     // mutation 適用時に +1 する楽観ロック相当の数値。 client は受領済 version を
     // 保持し、 push 時に比較に使う。
     contentVersion: integer('content_version').notNull().default(0),
+    // Dash-1 Home v1 §8.1: K(新規/日の上限)の置き場。null = 既定
+    // `DAILY_NEW_DEFAULT` に追従(user_settings.session_limit と同じ「未設定=既定
+    // 追従」の null 意味論)。0 = 新規を出さない。migration 0040。
+    dailyNewTarget: integer('daily_new_target'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -283,6 +287,11 @@ export const exams = pgTable(
     // から range scan にする複合 index。 列順は user_id 等価 → updated_at 範囲 →
     // id (将来の keyset pagination 前方互換、 cards と同方針)。
     index('exams_user_updated_id_idx').on(t.userId, t.updatedAt, t.id),
+    // Dash-1 Home v1 §8.1: null は既定追従を意味するため式に含める(NULL 許容明示)。
+    check(
+      'exams_daily_new_target_nonneg',
+      sql`${t.dailyNewTarget} IS NULL OR ${t.dailyNewTarget} >= 0`,
+    ),
   ],
 )
 
@@ -353,6 +362,11 @@ export const cards = pgTable(
     state: integer('state').$type<0 | 1 | 2 | 3>().notNull(),
     learningSteps: integer('learning_steps').notNull(),
     lastReview: timestamp('last_review', { withTimezone: true }),
+    // Dash-1 Home v1 §8.3: u(当日導入数)永続化列。fold が state 0→非0 の遷移を
+    // 起こした applied event の answered_at(clamp 済)で一度だけ書き、以後不変
+    // (先着固定・巻き戻し無し)。既存行は null のまま backfill しない(「導入日
+    // 不明」= 今日ではない扱い)。migration 0040。書込は本 task の対象外(Task 3)。
+    firstReviewedAt: timestamp('first_reviewed_at', { withTimezone: true }),
     // S-cache-0 (§14.9): local-first 同期用の version 列 (exams と同様)。
     contentVersion: integer('content_version').notNull().default(0),
     // 監査
@@ -638,10 +652,27 @@ export const answerEvents = pgTable(
     // server 受信時刻を app 層で明示 set する (clamp 上界と同一時刻源にして
     // answered_at <= created_at の CHECK を厳密成立させるため DB now() を使わない)。
     createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    // Dash-1 Home v1 §11: セッション開始入口の分析ラベル(session 定数・event
+    // ごとに不変)。text nullable・CHECK なし(意図的 — §11.3。分析ラベルの語彙
+    // 拡張のたびに DB CHECK + iso 追随を払わない。未知値の正規化は server
+    // ingest 側 = ORIGIN_VALUES 判定〈Task 3/4/9〉)。migration 0040。
+    origin: text('origin'),
   },
   (t) => [
-    // card_id 系 index は張らない (現読み手ゼロ・必要時に CREATE INDEX 一発)。
+    // card_id 系単独の絞り込み用 index は張らない (現読み手ゼロ・必要時に CREATE
+    // INDEX 一発)。 Dash-1 Home v1 §10(migration 0040)で追加する下記 index は
+    // この方針の破棄ではなく例外 — 先頭列は user_id のまま tenant scope を保つ
+    // 複合 index で、card_id 単独の絞り込み用途ではない(実消費者(summary endpoint
+    // の card 単位 rank 集計)が現れたための追加)。
     index('answer_events_user_idx').on(t.userId, t.answeredAt),
+    // Dash-1 Home v1 §10(migration 0040): summary endpoint の card 単位 rank 集計
+    // (全履歴・answered_at ASC, event_id ASC で番号付け)向け複合 index。
+    index('answer_events_user_card_answered_idx').on(
+      t.userId,
+      t.cardId,
+      t.answeredAt,
+      t.eventId,
+    ),
     check('answer_events_rating_range', sql`${t.rating} BETWEEN 1 AND 4`),
     check(
       'answer_events_elapsed_ms_nonneg',

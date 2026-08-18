@@ -18,6 +18,7 @@ describe('initialFsrsState', () => {
       state: 0,
       learningSteps: 0,
       lastReview: null,
+      firstReviewedAt: null,
       answered: false,
       lastCorrect: null,
       currentStreak: 0,

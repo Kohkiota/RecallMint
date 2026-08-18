@@ -41,6 +41,9 @@ export type ClientExam = {
   id: string
   user_id: string
   name: string
+  // Dash-1 Home v1 §8.1: K(新規/日の上限)。null/undefined = 既定 DAILY_NEW_DEFAULT
+  // に追従(user_settings.session_limit と同じ null 意味論)。
+  daily_new_target?: number | null
   content_version: number
   created_at: string
   updated_at: string
@@ -120,6 +123,9 @@ export type ClientCard = {
   state: 0 | 1 | 2 | 3
   learning_steps: number
   last_review?: string | null
+  // Dash-1 Home v1 §8.3: u(当日導入数)永続化列の mirror。fold が state 0→非0
+  // 遷移で一度だけ書く server 値、以後不変。既存行は欠落 = null 扱い(自然互換)。
+  first_reviewed_at?: string | null
   content_version: number
   created_at: string
   updated_at: string
@@ -144,6 +150,9 @@ export type ClientAnswerEvent = {
   rating: 1 | 2 | 3 | 4
   answered_at: string
   elapsed_ms?: number
+  // Dash-1 Home v1 §11: セッション開始入口の分析ラベル(session 定数)。書込配線は
+  // Task 3/4/9 の担当 — 本 task は型のみ追加。
+  origin?: string
   sync_status: SyncStatus
 }
 

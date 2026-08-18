@@ -14,6 +14,7 @@ export function toClientExam(row: ExamRow): ClientExam {
     id: row.id,
     user_id: row.userId,
     name: row.name,
+    daily_new_target: row.dailyNewTarget,
     content_version: row.contentVersion,
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),

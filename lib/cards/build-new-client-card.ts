@@ -62,6 +62,11 @@ export function buildNewClientCard({
     state: fsrs.state,
     learning_steps: fsrs.learningSteps,
     last_review: fsrs.lastReview,
+    // Dash-1 Home v1(canonical review Minor 2): 他の nullable FSRS field と同じ
+    // 「常に明示キーを出す」convention を維持する。省略すると optimistic insert
+    // 直後の Dexie 行が pull 到達までキー欠落のままになり、first_reviewed_at !== null
+    // を前提にする述語(daily-new-limit の u 導出等)が新規カードを誤判定しうる。
+    first_reviewed_at: fsrs.firstReviewedAt,
     content_version: 0,
     // 監査
     created_at: now,

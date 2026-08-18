@@ -120,6 +120,8 @@ function baseColumns(table: string): Record<string, string> {
         state: '0',
         learning_steps: '0',
       }
+    case 'exams':
+      return { user_id: lit(ids.userId), name: lit('probe exam') }
     case 'upload_operations':
       return {
         user_id: lit(ids.userId),
@@ -321,7 +323,7 @@ const ENUM_CASES: readonly CheckCase[] = [
   },
 ]
 
-// 非負 12 本: 境界 0 が通り -1 が落ちる。
+// 非負 13 本: 境界 0 が通り -1 が落ちる。
 const nonneg = (
   constraint: string,
   table: string,
@@ -354,6 +356,9 @@ const NONNEG_CASES: readonly CheckCase[] = [
     'upload_operations',
     'expected_source_count',
   ),
+  // Dash-1 Home v1 §8.1 (migration 0040): null は「既定 DAILY_NEW_DEFAULT に追従」を
+  // 意味するため NULL 許容 — 制約式は `col IS NULL OR col >= 0`。
+  nonneg('exams_daily_new_target_nonneg', 'exams', 'daily_new_target', true),
 ]
 
 // 正 2 本: 0 も落ちる (寸法 0 の画像は存在しない・spec §5.2 承認済)。
@@ -436,14 +441,14 @@ beforeEach(async () => {
   ids = (await seedTwoTenants()).a
 })
 
-describe('migration 0036/0037 CHECK constraints (28)', () => {
+describe('migration 0036/0037/0040 CHECK constraints (29)', () => {
   // 存在確認でなく **集合一致**。片側 (「期待した 32 本が有る」) だけでは spec 外の
-  // CHECK が増えても green のままで、file 冒頭の「28 本、かつ 28 本だけ」が嘘になる。
-  it('public schema の CHECK 集合 = 定義済 28 本 + 既存 4 本 + review_logs 3 本(過不足なし)', async () => {
+  // CHECK が増えても green のままで、file 冒頭の「29 本、かつ 29 本だけ」が嘘になる。
+  it('public schema の CHECK 集合 = 定義済 29 本 + 既存 4 本 + review_logs 3 本(過不足なし)', async () => {
     const rows = await getFixtureOwnerDb().execute<{ conname: string }>(
       sql`SELECT conname FROM pg_constraint WHERE contype = 'c' AND connamespace = 'public'::regnamespace`,
     )
-    expect(ALL_CASES).toHaveLength(28)
+    expect(ALL_CASES).toHaveLength(29)
     const expected = [
       ...ALL_CASES.map((c) => c.constraint),
       ...PRE_EXISTING_CHECKS,

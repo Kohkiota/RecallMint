@@ -13,6 +13,7 @@ function fakeRow(overrides?: Partial<ExamRow>): ExamRow {
     id: 'exam-1',
     userId: 'user-1',
     name: 'Test Exam',
+    dailyNewTarget: null,
     contentVersion: 0,
     createdAt: new Date('2026-05-01T00:00:00.000Z'),
     updatedAt: new Date('2026-05-02T00:00:00.000Z'),
@@ -36,6 +37,15 @@ describe('toClientExam', () => {
     )
     expect(out.user_id).toBe('u')
     expect(out.content_version).toBe(4)
+  })
+
+  // Dash-1 Home v1 Task 1(canonical review Important 1 対応): daily_new_target は
+  // migration 0040 の新列で、旧 mapper には存在しなかった。null / 非 null の
+  // 両方が値のまま透過することを pin する(欠落 or ハードコード null だとどちらか
+  // 一方が red で検出できるようにする)。
+  it('daily_new_target は null を null のまま、非 null は値そのまま透過する', () => {
+    expect(toClientExam(fakeRow()).daily_new_target).toBeNull()
+    expect(toClientExam(fakeRow({ dailyNewTarget: 5 })).daily_new_target).toBe(5)
   })
 
   // Sprint B (DB 全体掃除) 置換 pin: card_count / question_no_format は両側 dead

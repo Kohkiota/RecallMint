@@ -61,6 +61,16 @@ describe('toClientCard', () => {
     expect(out.last_review).toBe('2026-05-25T05:00:00.000Z')
   })
 
+  // Dash-1 Home v1 Task 1(canonical review Important 1 対応): 全 fixture が
+  // firstReviewedAt: null だと ISO 文字列変換の分岐が一度も通らず、
+  // ハードコード null な実装でも green になってしまう。非 null 値で変換を exercise する。
+  it('firstReviewedAt が Date のとき ISO8601 文字列化', () => {
+    const out = toClientCard(
+      fakeRow({ firstReviewedAt: new Date('2026-05-20T00:00:00.000Z') }),
+    )
+    expect(out.first_reviewed_at).toBe('2026-05-20T00:00:00.000Z')
+  })
+
   it('camelCase → snake_case の field rename を verify', () => {
     const out = toClientCard(
       fakeRow({
@@ -128,6 +138,11 @@ function fakeClient(overrides?: Partial<ClientCard>): ClientCard {
     state: 0,
     learning_steps: 0,
     last_review: null,
+    // Dash-1 Home v1 Task 1: toClientCard は他の nullable 列 (last_review 等) と
+    // 同じ convention で first_reviewed_at も無条件にキーを出す (省略しない)。
+    // fixture の既定形もそれに合わせて明示 null を持つ (省略した ClientCard の
+    // 挙動は round-trip test 側で別途 pin する)。
+    first_reviewed_at: null,
     content_version: 0,
     created_at: '2026-05-01T00:00:00.000Z',
     updated_at: '2026-05-02T00:00:00.000Z',
@@ -149,6 +164,13 @@ describe('toCard (reverse mapper)', () => {
   it('last_review が ISO 文字列なら Date に復元', () => {
     const out = toCard(fakeClient({ last_review: '2026-05-25T05:00:00.000Z' }))
     expect(out.lastReview).toEqual(new Date('2026-05-25T05:00:00.000Z'))
+  })
+
+  // Dash-1 Home v1 Task 1(canonical review Important 1 対応): toCard 方向も
+  // 非 null 値で ISO 文字列 → Date 復元を exercise する(toClientCard 側と対称)。
+  it('first_reviewed_at が ISO 文字列なら Date に復元', () => {
+    const out = toCard(fakeClient({ first_reviewed_at: '2026-05-20T00:00:00.000Z' }))
+    expect(out.firstReviewedAt).toEqual(new Date('2026-05-20T00:00:00.000Z'))
   })
 
   it('snake_case → camelCase の field rename', () => {
@@ -194,5 +216,29 @@ describe('toCard (reverse mapper)', () => {
     })
     const roundTripped = toClientCard(toCard(original))
     expect(roundTripped).toEqual(original)
+  })
+
+  // Dash-1 Home v1 Task 1(Codex P1 の指摘対応): ClientCard.first_reviewed_at は
+  // optional なので「キー省略」と「値 null」は別状態(migration 前に作られた
+  // 既存 Dexie 行はキー自体が無い)。 toClientCard は他の nullable 列と同じ
+  // convention で常にキーを出す(lib/db/cards-mapper.ts:toClientCard 本体で
+  // 観察できる convention — last_review 等と同型)ため、 省略入力は round-trip で
+  // 明示 null に正規化される — この正規化を意図的な契約として pin する
+  // (original と厳密一致ではなく、正規化後の形と一致することを確認する)。
+  //
+  // withKey.first_reviewed_at を非 null にしておく(canonical review 指摘対応):
+  // 値が最初から null だと下の `{ ...withKey, first_reviewed_at: null }` が
+  // no-op になり、「省略 → 正規化」を実際には検証しない偽陽性の pin になる。
+  // 非 null にすることで override が意味を持つ(withKey とは異なる期待値になる)。
+  it('round-trip: first_reviewed_at を省略した ClientCard(migration 前の既存行)は明示 null に正規化される', () => {
+    const withKey = fakeClient({
+      last_review: '2026-05-25T05:00:00.000Z',
+      first_reviewed_at: '2026-05-20T00:00:00.000Z',
+    })
+    const { first_reviewed_at: _omitted, ...omittedFirstReviewedAt } = withKey
+    expect('first_reviewed_at' in omittedFirstReviewedAt).toBe(false)
+
+    const roundTripped = toClientCard(toCard(omittedFirstReviewedAt as ClientCard))
+    expect(roundTripped).toEqual({ ...withKey, first_reviewed_at: null })
   })
 })

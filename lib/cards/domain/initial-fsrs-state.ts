@@ -17,6 +17,7 @@ export function initialFsrsState(now: Date): {
   state: 0
   learningSteps: number
   lastReview: null
+  firstReviewedAt: null
   answered: false
   lastCorrect: null
   currentStreak: 0
@@ -32,6 +33,7 @@ export function initialFsrsState(now: Date): {
     state: 0,
     learningSteps: 0,
     lastReview: null,
+    firstReviewedAt: null,
     answered: false,
     lastCorrect: null,
     currentStreak: 0,
