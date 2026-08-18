@@ -13,11 +13,22 @@
 
 import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
 import { todayInJst } from '@/lib/jst'
-import { computeStreak, addDays } from '@/lib/streak-core'
+import {
+  addDays,
+  computeStreak,
+  formatStreakDisplay,
+  STREAK_WINDOW_DAYS,
+} from '@/lib/streak-core'
 
-// streak 用 window: server と同じ 61 日 (today + 過去 60 日)。 60 日 streak の境界
-// 安全マージン 1 日込み。
-const STREAK_WINDOW_DAYS = 61
+// STREAK_WINDOW_DAYS / formatStreakDisplay: fix round 1/5 I-3(controller 裁定)で
+// `lib/streak-core.ts` へ移設した(元はこの file の private const + 追加関数だった)。
+// この file は Dexie(`@/lib/client-db`)に依存するため、`lib/dashboard/domain/`
+// (server からも import される pure layer)がこの定数だけを参照しようとすると Dexie
+// 依存が伝播する罠になる — streak-core.ts は import ゼロで server/client 双方の
+// streak SSoT(定義 doc §4-O/§7.1)なので、そちらに置けば同じ性質を保ったまま両側から
+// 参照できる。ここでは `lowerBound` 計算(下記)向けに import し、`formatStreakDisplay`
+// は client 側の既存 import 経路(`./streak`)を壊さないよう re-export する。
+export { formatStreakDisplay, STREAK_WINDOW_DAYS }
 
 export type StreakStats = {
   todayCardCount: number

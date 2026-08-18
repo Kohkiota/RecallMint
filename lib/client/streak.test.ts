@@ -157,3 +157,8 @@ describe('getStreakStatsFromDexie', () => {
     expect(res.streak).toBe(0)
   })
 })
+
+// formatStreakDisplay / STREAK_WINDOW_DAYS の pin(定義 doc §4-O・pin 12)は
+// fix round 1/5 I-3 で lib/streak-core.ts へ移設したため、そちらの colocated test
+// (lib/streak-core.test.ts)に移した。この file は `./streak` の re-export 経由でも
+// 引き続き参照できるが、pin の正本は定義元に置く(二重 pin を避ける)。

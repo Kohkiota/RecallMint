@@ -176,6 +176,51 @@ const MEDIA_DOMAIN_NO_INFRA_IMPORTS = {
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard domain purity (Dash-1 Home v1 Task 2 fix round 1/5 I-4, controller
+// ruling): `lib/dashboard/domain/**` is pure domain and must not RUNTIME-import
+// infra / framework modules (mirrors the Media block above — same shape,
+// deliberately not inventing a different restriction set). `import type` is
+// always allowed (allowTypeImports). No orchestration back-flow deny is added
+// (unlike Card/Tag/Media): there is no known lib/dashboard orchestration module
+// yet to name — later tasks add one if needed, mirroring this pattern. Forbidden
+// runtime targets = infra (db / drizzle / logger / server-only) + zod +
+// framework (next / next/*). Every module in this domain (metric-constants /
+// card-classification / event-order / estimate / weekly) is imported by BOTH
+// client and server code, so Dexie is equally forbidden — but `@/lib/client-db`
+// is not a distinct npm package/alias root the same way `drizzle-orm` is (it is
+// reached only via `@/lib/client-db` or relative import), so it is not listed
+// as a separate deny here: no file in this domain currently imports it, and the
+// generic `@/lib/db*` / `drizzle-orm` denies below already block the far more
+// likely accidental infra pull-in. If a future task needs a Dexie-specific
+// deny, add `@/lib/client-db` to `paths` then (same pattern as the entries
+// below).
+// ---------------------------------------------------------------------------
+const DASHBOARD_DOMAIN_NO_INFRA_IMPORTS = {
+  paths: [
+    { name: '@/lib/db', allowTypeImports: true, message: 'Dashboard domain must not runtime-import infra (@/lib/db).' },
+    { name: 'drizzle-orm', allowTypeImports: true, message: 'Dashboard domain must not runtime-import infra (drizzle-orm).' },
+    { name: '@/lib/logger', allowTypeImports: true, message: 'Dashboard domain must not runtime-import infra (@/lib/logger).' },
+    { name: 'server-only', allowTypeImports: true, message: 'Dashboard domain must stay environment-agnostic (no server-only).' },
+    { name: 'zod', allowTypeImports: true, message: 'Dashboard domain must not runtime-import zod; define structural types in-domain.' },
+  ],
+  patterns: [
+    {
+      group: ['next', 'next/*'],
+      allowTypeImports: true,
+      message: 'Dashboard domain must not runtime-import framework (next / next/*).',
+    },
+    // `paths: '@/lib/db'` above only matches the exact source string, so a runtime
+    // `import { x } from '@/lib/db/schema'` (subpath) would slip through — same gap
+    // the Media block above closes. Mirrored here.
+    {
+      group: ['@/lib/db/*'],
+      allowTypeImports: true,
+      message: 'Dashboard domain must not runtime-import infra subpaths (@/lib/db/*); import type only.',
+    },
+  ],
+}
+
+// ---------------------------------------------------------------------------
 // Shared no-restricted-imports pattern groups (composed per files-scope below).
 // NOTE on matching semantics: `no-restricted-imports` `group` patterns match the
 // IMPORT SOURCE STRING (not a filesystem path). In that matcher `(app)` / `[id]`
@@ -471,6 +516,30 @@ const config = [
         {
           paths: [...MEDIA_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
           patterns: [LIB_NO_APP_IMPORTS, ...MEDIA_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
+        },
+      ],
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Block A'''''': Dashboard domain purity guard (Dash-1 Home v1 Task 2 fix round
+  // 1/5 I-4). Same structure/rationale as Block A''''' (Media) above but scoped to
+  // `lib/dashboard/domain/**` — must come AFTER Block A so it wins for those files.
+  // Flat-config rule options REPLACE (not merge) per file, so this re-includes
+  // Block A's LIB_NO_APP_IMPORTS pattern to keep the app/-layer boundary, then
+  // layers the Dashboard domain infra/framework deny (paths + next/* + @/lib/db/*
+  // patterns) on top. Scope excludes *.test.ts (domain tests import vitest — not
+  // the runtime-purity concern). The `lib/dashboard/domain/**` glob has no route
+  // group / dynamic segment → no `\\(...\\)` / `\\[...\\]` escaping needed.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['lib/dashboard/domain/**/*.ts'],
+    ignores: ['lib/dashboard/domain/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [...DASHBOARD_DOMAIN_NO_INFRA_IMPORTS.paths, ...GETDB_BAN.paths],
+          patterns: [LIB_NO_APP_IMPORTS, ...DASHBOARD_DOMAIN_NO_INFRA_IMPORTS.patterns, ...GETDB_BAN.patterns],
         },
       ],
     },
