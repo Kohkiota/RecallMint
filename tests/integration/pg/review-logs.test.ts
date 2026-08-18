@@ -139,6 +139,7 @@ function toReplayState(card: {
   state: 0 | 1 | 2 | 3
   learningSteps: number
   lastReview: Date | null
+  firstReviewedAt: Date | null
   answered: boolean
   lastCorrect: boolean | null
   currentStreak: number
@@ -154,6 +155,7 @@ function toReplayState(card: {
     state: card.state,
     learningSteps: card.learningSteps,
     lastReview: card.lastReview,
+    firstReviewedAt: card.firstReviewedAt,
     answered: card.answered,
     lastCorrect: card.lastCorrect,
     currentStreak: card.currentStreak,

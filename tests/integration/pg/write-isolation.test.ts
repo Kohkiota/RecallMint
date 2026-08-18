@@ -177,6 +177,7 @@ describe('write isolation (W1)', () => {
       state: 2,
       learningSteps: 0,
       lastReview: new Date('2026-07-18T00:00:00.000Z'),
+      firstReviewedAt: null,
       answered: true,
       lastCorrect: true,
       currentStreak: 2,

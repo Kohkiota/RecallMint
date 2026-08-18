@@ -26,12 +26,13 @@ import { FIXED_USER_ID } from './common'
 // として格納する (Param ラッパーなし)。StringChunk はクエリテキスト部分なので除外。
 // SQL インスタンスと sql.join の結果は再帰展開する。
 //
-// 各 tuple のフィールド順 (session-repository.ts と同一, 14 列):
+// 各 tuple のフィールド順 (session-repository.ts と同一, 15 列):
 //   [0] id, [1] due, [2] stability, [3] difficulty, [4] elapsedDays,
 //   [5] scheduledDays, [6] reps, [7] lapses, [8] state, [9] learningSteps,
-//   [10] lastReview, [11] answered, [12] lastCorrect, [13] currentStreak
+//   [10] lastReview, [11] firstReviewedAt, [12] answered, [13] lastCorrect,
+//   [14] currentStreak
 
-const VALUES_COLS_PER_ROW = 14
+const VALUES_COLS_PER_ROW = 15
 
 type DecodedCardTuple = {
   id: string
@@ -45,6 +46,7 @@ type DecodedCardTuple = {
   state: unknown
   learningSteps: unknown
   lastReview: unknown
+  firstReviewedAt: unknown
   answered: unknown
   lastCorrect: unknown
   currentStreak: unknown
@@ -100,9 +102,10 @@ export function decodeValuesFromSql(fromSql: unknown): DecodedCardTuple[] {
       state: params[i + 8],
       learningSteps: params[i + 9],
       lastReview: params[i + 10],
-      answered: params[i + 11],
-      lastCorrect: params[i + 12],
-      currentStreak: params[i + 13],
+      firstReviewedAt: params[i + 11],
+      answered: params[i + 12],
+      lastCorrect: params[i + 13],
+      currentStreak: params[i + 14],
     })
   }
   return tuples
@@ -225,6 +228,7 @@ export function addCardRow(
     state: 0,
     learningSteps: 0,
     lastReview: null,
+    firstReviewedAt: null,
     answered: false,
     lastCorrect: null,
     currentStreak: 0,

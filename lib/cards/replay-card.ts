@@ -22,6 +22,11 @@ export interface ReplayCardState {
   state: 0 | 1 | 2 | 3
   learningSteps: number
   lastReview: Date | null
+  /**
+   * state 0 → 非 0 の遷移を起こした最初の applied event の answered_at (以後不変)。
+   * daily-new-limit の u (当日導入数) の唯一の永続化点 (spec §8.3)。
+   */
+  firstReviewedAt: Date | null
   answered: boolean
   lastCorrect: boolean | null
   currentStreak: number
@@ -81,6 +86,14 @@ export function replayCard(
     const { card: next, log } = rate(fsrsCard, rating, now)
     logs.push(log)
 
+    // spec §8.3: 「初見 (state 0) を実際に学習した瞬間」を 1 回だけ刻む。
+    // 先着固定 = 既に値があれば絶対に書き換えない (?? が左優先)。遅延到着した過去
+    // event は card が既に非 New なら遷移条件を満たさず触らない。歴史上最古への
+    // 遡及修正はしない (不変性 > 履歴再構成)。
+    const firstReviewedAt =
+      current.firstReviewedAt ??
+      (current.state === 0 && next.state !== 0 ? now : null)
+
     current = {
       due: next.due,
       stability: next.stability,
@@ -92,6 +105,7 @@ export function replayCard(
       lapses: next.lapses,
       state: next.state as 0 | 1 | 2 | 3,
       lastReview: next.last_review ?? now,
+      firstReviewedAt,
       answered: true,
       lastCorrect: isCorrect,
       currentStreak: isCorrect ? current.currentStreak + 1 : 0,

@@ -81,6 +81,7 @@ const INITIAL_STATE: ReplayCardState = {
   state: 0,
   learningSteps: 0,
   lastReview: null,
+  firstReviewedAt: null,
   answered: false,
   lastCorrect: null,
   currentStreak: 0,
@@ -228,6 +229,9 @@ describe('lockCardReplayStates', () => {
         'difficulty',
         'due',
         'elapsedDays',
+        // Dash-1 Task 3: 明示列 SELECT なので落とすと initial が常に null になり
+        // 先着固定が壊れる (spec §8.3) — 列集合の drift をここで pin する。
+        'firstReviewedAt',
         'id',
         'lapses',
         'lastCorrect',

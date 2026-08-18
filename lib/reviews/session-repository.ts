@@ -47,6 +47,9 @@ export function lockCardReplayStates(
       state: cards.state,
       learningSteps: cards.learningSteps,
       lastReview: cards.lastReview,
+      // 明示列 SELECT なので列を落とすと initial が常に null になり、fold が
+      // 「未 review」と誤認して既存値を null で上書きしうる (spec §8.3 の先着固定が壊れる)。
+      firstReviewedAt: cards.firstReviewedAt,
       answered: cards.answered,
       lastCorrect: cards.lastCorrect,
       currentStreak: cards.currentStreak,
@@ -269,7 +272,7 @@ export async function applyCardFinalStates(
     // 各値はバインドパラメータ (${...}) 経由 — 文字列結合は一切しない。
     // ::cast は静的リテラルのみ (安全)。
     const rows = [...finalStates.entries()].map(([cardId, final]) =>
-      sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::double precision, ${final.difficulty}::double precision, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
+      sql`(${cardId}::uuid, ${toPgTimestamptz(final.due)}::timestamptz, ${final.stability}::double precision, ${final.difficulty}::double precision, ${final.elapsedDays}::int, ${final.scheduledDays}::int, ${final.reps}::int, ${final.lapses}::int, ${final.state}::int, ${final.learningSteps}::int, ${toPgTimestamptz(final.lastReview)}::timestamptz, ${toPgTimestamptz(final.firstReviewedAt)}::timestamptz, ${final.answered}::boolean, ${final.lastCorrect}::boolean, ${final.currentStreak}::int)`,
     )
     const valuesList = sql.join(rows, sql`, `)
 
@@ -288,6 +291,11 @@ export async function applyCardFinalStates(
         state: sql`v.state`,
         learningSteps: sql`v.learning_steps`,
         lastReview: sql`v.last_review`,
+        // 先着固定を SQL 側でも担保する (spec §8.3)。FOR UPDATE 直列化に加えた
+        // defense-in-depth — initial の読み落とし等で v 側が null になっても
+        // 設定済みの値を null 上書きしない。UPDATE の SET 右辺で target 表を
+        // 修飾参照すると **更新前の値** を読む (PostgreSQL)。
+        firstReviewedAt: sql`COALESCE(${cards.firstReviewedAt}, v.first_reviewed_at)`,
         answered: sql`v.answered`,
         lastCorrect: sql`v.last_correct`,
         currentStreak: sql`v.current_streak`,
@@ -295,7 +303,7 @@ export async function applyCardFinalStates(
         updatedAt: sql`now()`,
       })
       .from(
-        sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, answered, last_correct, current_streak)`,
+        sql`(VALUES ${valuesList}) AS v(id, due, stability, difficulty, elapsed_days, scheduled_days, reps, lapses, state, learning_steps, last_review, first_reviewed_at, answered, last_correct, current_streak)`,
       )
       .where(and(eq(cards.userId, userId), sql`${cards.id} = v.id`))
       .returning({ id: cards.id })

@@ -24,6 +24,7 @@ function makeInitialState(overrides: Partial<ReplayCardState> = {}): ReplayCardS
     state: 0,
     learningSteps: 0,
     lastReview: null,
+    firstReviewedAt: null,
     answered: false,
     lastCorrect: null,
     currentStreak: 0,
@@ -148,6 +149,83 @@ describe('replayCard: ケース C (events 空)', () => {
   it('final(state) は initial とは別のオブジェクト参照 (non-mutation guard)', () => {
     const initial = makeInitialState()
     expect(replayCard(initial, []).state).not.toBe(initial)
+  })
+})
+
+// -----------------------------------------------------------------------
+// firstReviewedAt (Dash-1 Task 3) — spec §8.3 の書込契約。
+// state 0 → 非 0 の遷移を起こした event の answeredAt を 1 回だけ設定し、
+// 以後どの event でも書き換えない (先着固定)。
+// -----------------------------------------------------------------------
+describe('replayCard: firstReviewedAt (spec §8.3)', () => {
+  it('state 0 → 非 0 の遷移で、遷移を起こした event の answeredAt が設定される', () => {
+    const initial = makeInitialState() // state 0 / firstReviewedAt null
+    const at = new Date('2026-05-28T10:00:00Z')
+
+    const { state: final } = replayCard(initial, [
+      { rating: 3, isCorrect: true, answeredAt: at },
+    ])
+
+    // 前提ガード: 実際に 0 → 非 0 の遷移が起きていること (退化していれば空振り)。
+    expect(initial.state).toBe(0)
+    expect(final.state).not.toBe(0)
+    expect(final.firstReviewedAt).toEqual(at)
+  })
+
+  it('複数 event を一括 fold しても、値は **最初の** event の answeredAt (2 件目以降ではない)', () => {
+    const initial = makeInitialState()
+    const events = makeEvents([3, 3, 3]) // 1 分間隔
+
+    const { state: final } = replayCard(initial, events)
+
+    expect(final.firstReviewedAt).toEqual(events[0].answeredAt)
+    expect(final.firstReviewedAt).not.toEqual(events[1].answeredAt)
+  })
+
+  it('既に非 0 state の card (遷移なし) では null のまま変わらない', () => {
+    // firstReviewedAt が null のまま非 0 state という組合せは migration 前の既存行
+    // (backfill しない = null 据置・spec §8.3)。ここで値が湧かないことを pin する。
+    const initial = makeInitialState({
+      state: 2,
+      stability: 10,
+      difficulty: 5,
+      reps: 3,
+      lastReview: new Date('2026-05-20T10:00:00Z'),
+      answered: true,
+      firstReviewedAt: null,
+    })
+    const at = new Date('2026-05-28T10:00:00Z')
+
+    const { state: final } = replayCard(initial, [
+      { rating: 3, isCorrect: true, answeredAt: at },
+    ])
+
+    expect(initial.state).not.toBe(0)
+    expect(final.firstReviewedAt).toBeNull()
+  })
+
+  it('設定済みの値は後続 event で書き換わらない (先着固定)', () => {
+    const already = new Date('2026-05-01T00:00:00Z')
+    const initial = makeInitialState({
+      state: 2,
+      stability: 10,
+      difficulty: 5,
+      reps: 3,
+      lastReview: new Date('2026-05-20T10:00:00Z'),
+      answered: true,
+      firstReviewedAt: already,
+    })
+
+    const { state: final } = replayCard(initial, makeEvents([3, 1, 4]))
+
+    expect(final.firstReviewedAt).toEqual(already)
+  })
+
+  it('events 空なら initial の値をそのまま引き継ぐ (no-op)', () => {
+    const already = new Date('2026-05-01T00:00:00Z')
+    const initial = makeInitialState({ firstReviewedAt: already })
+
+    expect(replayCard(initial, []).state.firstReviewedAt).toEqual(already)
   })
 })
 

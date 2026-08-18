@@ -127,6 +127,7 @@ export async function processAnswerEvents(
         state: row.state,
         learningSteps: row.learningSteps,
         lastReview: row.lastReview,
+        firstReviewedAt: row.firstReviewedAt,
         answered: row.answered,
         lastCorrect: row.lastCorrect,
         currentStreak: row.currentStreak,
