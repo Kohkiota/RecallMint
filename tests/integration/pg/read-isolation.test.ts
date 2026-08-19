@@ -99,23 +99,32 @@ describe('read isolation (R1)', () => {
     })
   })
 
-  // --- 非 RED・best-effort: eq(cards.userId, userId) AND lte(cards.due, now)。
-  // due<=now decoy 適格性は beforeAll で A/B とも過去に固定済。
+  // --- 非 RED・best-effort: eq(cards.userId, userId) AND eq(cards.examId, examId)。
+  // Dash-1 Home v1 §8.5 で選定が試験スコープ + 出題プール契約に変わったため、A/B の
+  // card は state=0 (fixture の initialFsrsState) = 新規部で拾われる経路で見る
+  // (due 固定は残るが、新規部は due 条件を持たないので decoy 適格性には効かない)。
   describe('getSessionCards', () => {
     const now = new Date('2026-07-18T12:00:00.000Z')
 
-    it('returns tenant A own due card (positive control)', async () => {
+    it('returns tenant A own card (positive control)', async () => {
       const rows = await asTenant(fixture.a.userId, (tx) =>
-        getSessionCards(fixture.a.userId, null, tx, now),
+        getSessionCards(fixture.a.userId, fixture.a.examId, null, tx, now),
       )
       expect(rows.map((r) => r.id)).toContain(fixture.a.cardId)
     })
 
-    it('does not leak tenant B due card into tenant A result (negative)', async () => {
+    it('does not leak tenant B card into tenant A result (negative)', async () => {
       const rows = await asTenant(fixture.a.userId, (tx) =>
-        getSessionCards(fixture.a.userId, null, tx, now),
+        getSessionCards(fixture.a.userId, fixture.a.examId, null, tx, now),
       )
       expect(rows.map((r) => r.id)).not.toContain(fixture.b.cardId)
+    })
+
+    it('returns empty when A supplies B examId (negative, non-leak via shadowing)', async () => {
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getSessionCards(fixture.a.userId, fixture.b.examId, null, tx, now),
+      )
+      expect(rows).toHaveLength(0)
     })
   })
 

@@ -65,7 +65,12 @@ vi.mock('@/lib/db/tenant-tx', () => ({
 // `cards` / `fsrsMode` を従来の SessionRunner mock と同じ shape で受けて
 // 既存 assertion (`mockSessionRunner.mock.calls[0][0]` 等) を維持できる。
 vi.mock('./_components/study-session-host', () => ({
-  StudySessionHost: (props: { cards: Card[]; fsrsMode: boolean }) => {
+  StudySessionHost: (props: {
+    cards: Card[]
+    fsrsMode: boolean
+    examId: string | undefined
+    origin: string
+  }) => {
     mockSessionRunner(props)
     return (
       <div data-testid="session-runner-mock">
@@ -147,15 +152,21 @@ afterEach(() => {
   cleanup()
 })
 
-async function renderPage() {
-  const ui = await SmartStudyPage()
+// Dash-1 Home v1 §8.5: exam / origin を searchParams から読むようになったため、
+// 既定では「W2 CTA と同じ形」(exam あり) で render する。
+const EXAM = '11111111-2222-3333-4444-555555555555'
+
+async function renderPage(
+  searchParams: { [k: string]: string | string[] | undefined } = { exam: EXAM },
+) {
+  const ui = await SmartStudyPage({ searchParams: Promise.resolve(searchParams) })
   render(ui)
 }
 
 describe('SmartStudyPage', () => {
   it('未認証 (getCurrentUser → null) → null を返し render 不発火', async () => {
     mockGetCurrentUser.mockResolvedValueOnce(null)
-    const ui = await SmartStudyPage()
+    const ui = await SmartStudyPage({ searchParams: Promise.resolve({}) })
     expect(ui).toBeNull()
     expect(mockGetSessionCards).not.toHaveBeenCalled()
   })
@@ -197,9 +208,10 @@ describe('SmartStudyPage', () => {
     settingsRowsState.rows = []
     mockGetSessionCards.mockResolvedValueOnce([makeCard('c1')])
     await renderPage()
-    // getSessionCards に limit=20 が渡る (dbc = withTenantTx の tx)
+    // getSessionCards に examId + limit=20 が渡る (dbc = withTenantTx の tx)
     expect(mockGetSessionCards).toHaveBeenCalledWith(
       'user-1',
+      EXAM,
       20,
       expect.anything(),
     )
@@ -214,6 +226,7 @@ describe('SmartStudyPage', () => {
     await renderPage()
     expect(mockGetSessionCards).toHaveBeenCalledWith(
       'user-1',
+      EXAM,
       50,
       expect.anything(),
     )
@@ -225,5 +238,66 @@ describe('SmartStudyPage', () => {
     await renderPage()
     const props = mockSessionRunner.mock.calls[0][0]
     expect(props.fsrsMode).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dash-1 Home v1 §8.5 / §6: exam scope
+// ---------------------------------------------------------------------------
+describe('SmartStudyPage — exam の受け渡し(§8.5)', () => {
+  it('?exam=<uuid> を getSessionCards と host の examId prop に渡す', async () => {
+    await renderPage({ exam: EXAM })
+    expect(mockGetSessionCards).toHaveBeenCalledWith(
+      'user-1',
+      EXAM,
+      20,
+      expect.anything(),
+    )
+    expect(mockSessionRunner.mock.calls[0][0].examId).toBe(EXAM)
+  })
+
+  it('exam 不在 (bookmark 直行) → server 取得を行わず、examId=undefined で host に委ねる', async () => {
+    // 試験の解決は Dexie(保存値 / 1 件自動)を要するため client の共通 resolver の
+    // 責務。ここで別の解決手段を持たない = server 取得はしない。
+    await renderPage({})
+    expect(mockGetSessionCards).not.toHaveBeenCalled()
+    const props = mockSessionRunner.mock.calls[0][0]
+    expect(props.examId).toBeUndefined()
+    expect(props.cards).toEqual([])
+  })
+
+  it('?exam=a&exam=b (配列) → 先頭のみ採用', async () => {
+    await renderPage({ exam: [EXAM, 'other'] })
+    expect(mockSessionRunner.mock.calls[0][0].examId).toBe(EXAM)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dash-1 Home v1 §11: origin の正規化(query を信頼しない)
+// ---------------------------------------------------------------------------
+describe('SmartStudyPage — origin の正規化(§11.3 / Task 4 Ruling 12)', () => {
+  it('?origin=home_today は通す', async () => {
+    await renderPage({ exam: EXAM, origin: 'home_today' })
+    expect(mockSessionRunner.mock.calls[0][0].origin).toBe('home_today')
+  })
+
+  it('未知値は smart に落とす', async () => {
+    await renderPage({ exam: EXAM, origin: 'home_todayy' })
+    expect(mockSessionRunner.mock.calls[0][0].origin).toBe('smart')
+  })
+
+  it('64 文字超の値は smart に落とす(wire schema 違反 = 回答 event の恒久破棄を防ぐ)', async () => {
+    await renderPage({ exam: EXAM, origin: 'x'.repeat(65) })
+    expect(mockSessionRunner.mock.calls[0][0].origin).toBe('smart')
+  })
+
+  it('origin 不在は smart(§11.1 の既定)', async () => {
+    await renderPage({ exam: EXAM })
+    expect(mockSessionRunner.mock.calls[0][0].origin).toBe('smart')
+  })
+
+  it('home_today 以外の既知値 (custom 等) も smart に落とす(この入口の値ではない)', async () => {
+    await renderPage({ exam: EXAM, origin: 'custom' })
+    expect(mockSessionRunner.mock.calls[0][0].origin).toBe('smart')
   })
 })
