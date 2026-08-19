@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // updateDailyNewTarget server action の test (Dash-1 Home v1 spec §8.1)。
-// auth / zod 境界 (0..999 整数 + null) / owner-scope WHERE / 「UPDATE は
-// daily_new_target 列のみ」/ 0 行更新 (他 owner) → failure / DB throw → failure +
-// P0RLS alert を検証。 rename-exam.test.ts と同型の mock 構成。
+// auth / zod 境界 (0..999 整数 + null) / owner-scope WHERE / 「UPDATE の SET は
+// daily_new_target + content_version の 2 列」/ 0 行更新 (他 owner) → failure /
+// DB throw → failure + P0RLS alert を検証。 rename-exam.test.ts と同型の mock 構成。
 //
 // 0 は明示値であり null (既定追従) とは別 — `??` 前提の契約が `||` に化けていないかを
 // 「setValues.dailyNewTarget を strict に 0 と比較する」形で pin する (falsy 実装だと
@@ -167,10 +167,22 @@ describe('updateDailyNewTarget', () => {
     expect(dbState.updateTables).toHaveLength(0)
   })
 
-  it('UPDATE の SET は daily_new_target 列のみ (updated_at は $onUpdate 任せ)', async () => {
+  it('UPDATE の SET は daily_new_target と content_version の 2 列 (updated_at は $onUpdate 任せ)', async () => {
+    // 契約変更 (2026-08-19 OT 裁定): spec §8.1 は content_version / updated_at の
+    // 両 bump を要求している。 旧 pin は「daily_new_target 列のみ」を固定しており
+    // spec 違反側を守っていた。 updated_at を SET に足さない点は不変
+    // ($onUpdate 任せ — 明示 SET すると 2 経路になる)。
     const { updateDailyNewTarget } = await importAction()
     await updateDailyNewTarget('exam-uuid', 20)
-    expect(Object.keys(dbState.setValues ?? {})).toEqual(['dailyNewTarget'])
+    expect(Object.keys(dbState.setValues ?? {}).sort()).toEqual([
+      'contentVersion',
+      'dailyNewTarget',
+    ])
+    expect(Object.keys(dbState.setValues ?? {})).not.toContain('updatedAt')
+    // 値まで見る: 定数代入 (contentVersion: 1) は全 exam の版数を 1 に潰すが、
+    // key の有無だけの pin だと通ってしまう。 現在値からの相対 (SQL 式) を要求する。
+    const { SQL } = await import('drizzle-orm')
+    expect(dbState.setValues?.contentVersion).toBeInstanceOf(SQL)
   })
 
   it('owner-scope: WHERE に eq(exams.id, examId) と eq(exams.userId, user.id) が入る', async () => {

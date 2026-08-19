@@ -677,6 +677,10 @@ describe('ExamDetailView — Case ⑩: table view app-shell 骨格 (S2-1)', () =
     // chrome 内に view 切替 button が描画される
     const toggleGroup = screen.getByRole('group', { name: '表示モード切替' })
     expect(chrome.contains(toggleGroup)).toBe(true)
+    // Dash-1 §8.1 (OT 裁定 2026-08-19): 新規/日の設定面は card / table の両 view から
+    // 到達できること。 table view では chrome 内に出る。
+    const dailyNewTarget = screen.getByRole('spinbutton', { name: '新規/日の上限' })
+    expect(chrome.contains(dailyNewTarget)).toBe(true)
   })
 
   it('table view branch は密封しない (S2-2 の責務): container の overflow を変えない', async () => {

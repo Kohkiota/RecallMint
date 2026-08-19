@@ -119,6 +119,21 @@ describe('DailyNewTargetField — 初期表示', () => {
     })
   })
 
+  it('compact variant では既定値の説明文を出さない (table chrome は密度優先)', async () => {
+    await seedExam({ daily_new_target: null })
+    render(<DailyNewTargetField examId={EXAM_ID} userId={USER_A} variant="compact" />)
+    await waitFor(() => {
+      expect(
+        screen.getByRole('spinbutton', { name: '新規/日の上限' }),
+      ).toBeInTheDocument()
+    })
+    expect(screen.queryByText(`空欄で既定 ${DAILY_NEW_DEFAULT} 問`)).toBeNull()
+    // 空欄の意味は placeholder が担う (説明文を消したぶんの代替)。
+    expect(
+      screen.getByRole('spinbutton', { name: '新規/日の上限' }),
+    ).toHaveAttribute('placeholder', String(DAILY_NEW_DEFAULT))
+  })
+
   it('既定値を明示する説明文を表示する', async () => {
     await seedExam({ daily_new_target: null })
     renderField()
@@ -127,6 +142,52 @@ describe('DailyNewTargetField — 初期表示', () => {
         screen.getByText(`空欄で既定 ${DAILY_NEW_DEFAULT} 問`),
       ).toBeInTheDocument()
     })
+  })
+})
+
+describe('DailyNewTargetField — mirror 読込中', () => {
+  it('読込中は保存できない (空欄のまま保存して server の K を潰さない)', () => {
+    // useLiveQuery の初回 render は必ず undefined (= 読込中)。 この時点の表示は
+    // 「空欄 = 既定へ戻す」に見えるため、 保存できると既存 K を null で上書きする。
+    // seed していないので、 解決後は「行不在」— 読込中と行不在の区別が要る所以。
+    renderField()
+    const button = screen.getByRole('button', { name: '保存' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(mockUpdateDailyNewTarget).not.toHaveBeenCalled()
+  })
+
+  it('検出器: 読込が終われば保存できる', async () => {
+    await seedExam({ daily_new_target: 30 })
+    renderField()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
+  })
+
+  it('行が mirror に無い間は (query 解決後も) 保存できない', async () => {
+    // 実害が大きいのはこちら: fresh browser / IndexedDB クリア / 詳細への deep link では
+    // 行が届く前に画面が出る。 現在の K を知らないまま空欄で保存すると server の K を潰す。
+    // 初回 pull の settle は「成功/失敗を問わない終了」なので、 pull 失敗端末では
+    // 行が無いまま立つ = 条件に使えない (Codex r2 P1)。
+    renderField() // seed しない = 行が来ていない状態
+    // 下の対照 test は同じ待ち時間で有効化されるので、 ここでの無効は
+    // 「まだ query が解決していないから」ではない。
+    await new Promise((r) => setTimeout(r, 30))
+    const button = screen.getByRole('button', { name: '保存' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(mockUpdateDailyNewTarget).not.toHaveBeenCalled()
+  })
+
+  it('検出器: 行が届けば保存できる', async () => {
+    await seedExam({ daily_new_target: null })
+    renderField()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(mockUpdateDailyNewTarget).toHaveBeenCalled())
   })
 })
 
@@ -149,6 +210,10 @@ describe('DailyNewTargetField — 保存', () => {
     await seedExam({ daily_new_target: null })
     renderField()
     const input = await screen.findByRole('spinbutton', { name: '新規/日の上限' })
+    // findBy は「要素の存在」で解決するため、 読込完了 (= 保存可能) まで明示的に待つ。
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
 
     fireEvent.change(input, { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
@@ -166,6 +231,10 @@ describe('DailyNewTargetField — 保存', () => {
     await seedExam({ daily_new_target: null })
     renderField()
     const input = await screen.findByRole('spinbutton', { name: '新規/日の上限' })
+    // findBy は「要素の存在」で解決するため、 読込完了 (= 保存可能) まで明示的に待つ。
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
 
     fireEvent.change(input, { target: { value: '30' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
@@ -187,6 +256,10 @@ describe('DailyNewTargetField — 保存', () => {
     await seedExam({ daily_new_target: null })
     renderField()
     const input = await screen.findByRole('spinbutton', { name: '新規/日の上限' })
+    // findBy は「要素の存在」で解決するため、 読込完了 (= 保存可能) まで明示的に待つ。
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
 
     fireEvent.change(input, { target: { value: '30' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
@@ -203,6 +276,10 @@ describe('DailyNewTargetField — 保存', () => {
     await seedExam({ daily_new_target: null })
     renderField()
     const input = await screen.findByRole('spinbutton', { name: '新規/日の上限' })
+    // findBy は「要素の存在」で解決するため、 読込完了 (= 保存可能) まで明示的に待つ。
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '保存' })).toBeEnabled(),
+    )
 
     fireEvent.change(input, { target: { value: '30' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))

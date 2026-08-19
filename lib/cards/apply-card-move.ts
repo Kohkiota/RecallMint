@@ -8,8 +8,10 @@
 //
 // 不変条件 (kickoff 決定 8): SET 句は exam_id / base_order / updated_at の 3 列のみ。
 // FSRS 列・answered / current_streak・card_tags・answer_events・images・本文・
-// source_document_id・content_version には一切触れない。 content_version を bump
-// しないのは全既存書込経路と同じ (伝播は updated_at bump が担う = pull cursor の基点)。
+// source_document_id・content_version には一切触れない。 content_version を bump しない
+// のは cards の全書込経路と同じ (伝播は updated_at bump が担う = pull cursor の基点)。
+// なお exams 側は Dash-1 T9 追い込みで `update-daily-new-target` だけが bump する
+// (spec §8.1 の要求)。 cards の規律とは別軸。
 
 import 'server-only'
 

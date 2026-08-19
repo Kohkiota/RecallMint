@@ -21,11 +21,11 @@
 //   変えた場合) だけ、 その端末の表示は自分の保存値に留まる。 この時 mirror 追従は
 //   一瞬でなく **その component の残り lifetime の間** 止まる (value と lastMirror が
 //   二度と一致しないため)。 単一端末では pull が保存値を運んだ時点で追従が回復する。
-// - mirror hydrate 前 (useLiveQuery が undefined の窓) は保存済 K があっても空欄 +
-//   placeholder 20 に見え、 その窓で保存すると null (既定追従) を書く。 SSR fallback を
-//   足せば消せるが ExamDetail の型・select・owner-isolation test まで広がるため取らない
-//   (`undefined` 単体では「読込中」と「行が無い」を区別できない — Task 5 の pull settle
-//   信号が要る)。 IndexedDB は再読込を跨いで残るので実害の窓は初回 deep link のみ。
+// - 保存済 K が読めていない間 (Dexie query 未解決 / 行が mirror に無い) は入力・保存とも
+//   無効にする。 空欄は「既定へ戻す」を意味するため、 現在値を知らないままの保存は
+//   server の K を潰すのと同じだから。
+//   受容: pull が届かない端末ではこの field が無効のまま残る (K を読めない以上、
+//   触らせない方が安全)。 詳細ページは mount 時に pull を kick するので通常は即解ける。
 
 import { useId, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
@@ -48,16 +48,39 @@ function toDisplay(v: number | null): string {
 type DailyNewTargetFieldProps = {
   examId: string
   userId: string
+  // compact = table view の 1 行 chrome (密度優先ゆえ既定値の説明文を出さない。
+  // 空欄の意味は placeholder が担う)。 ExamTitleInlineEdit と同じ variant の切り方。
+  variant?: 'card' | 'compact'
 }
 
-export function DailyNewTargetField({ examId, userId }: DailyNewTargetFieldProps) {
+export function DailyNewTargetField({
+  examId,
+  userId,
+  variant = 'card',
+}: DailyNewTargetFieldProps) {
   const inputId = useId()
   const errorId = useId()
 
-  // exams mirror read-only レーン。 undefined (mount 直後 / mirror 未 hydrate) と
-  // null (明示既定追従) は「既定に従う」で同義 — `??` で畳む (`||` は 0 を潰すため不可)。
-  const exam = useLiveQuery(() => getClientDb().exams.get(examId), [examId])
-  const savedTarget = exam?.daily_new_target ?? null
+  // exams mirror read-only レーン。
+  // **useLiveQuery の undefined は「読込中」と「行が無い」の両方を意味する**ので、
+  // 結果を 1 段包んで両者を分ける (包みが undefined = 読込中 / 包みの exam が
+  // undefined = 行不在)。 読込中に既定表示 (空欄) のまま保存されると、 server の
+  // 既存 K が null で上書きされる。
+  const snapshot = useLiveQuery(
+    async () => ({ exam: await getClientDb().exams.get(examId) }),
+    [examId],
+  )
+  // **現在の K が読めていない間は保存させない**。 空欄は「既定へ戻す」を意味するので、
+  // 現在値を知らないまま保存すると server の既存 K を null で潰す。
+  // 読めていない = ① Dexie query が未解決、または ② 行が mirror に無い
+  // (未 pull の deep link / IndexedDB クリア / 他端末で削除済)。
+  // **初回 pull の settle シグナルは使えない**: あれは「成功/失敗を問わない終了」なので、
+  // pull が失敗した端末では行が無いまま settle が立ち、②の窓が再び開く
+  // (Codex r2 P1)。 行の実在そのものを条件にすれば両方の窓が閉じる。
+  const notLoaded = snapshot === undefined || snapshot.exam === undefined
+  // 行不在 (未 pull) と null (明示的な既定追従) は表示上は同義 — `??` で畳む
+  // (`||` は 0 を潰すため不可)。
+  const savedTarget = snapshot?.exam?.daily_new_target ?? null
 
   const [value, setValue] = useState<string>(() => toDisplay(savedTarget))
   // **最後に観測した mirror 値**。 表示中の確定値ではない (兼用にしてはいけない —
@@ -126,16 +149,23 @@ export function DailyNewTargetField({ examId, userId }: DailyNewTargetFieldProps
           setValue(e.target.value)
           if (message) setMessage(null)
         }}
-        disabled={pending}
+        disabled={pending || notLoaded}
         className="w-20 py-1"
         aria-label="新規/日の上限"
         aria-invalid={message?.kind === 'err' ? true : undefined}
         aria-describedby={message?.kind === 'err' ? errorId : undefined}
       />
-      <span className="text-xs text-slate-500">
-        空欄で既定 {DAILY_NEW_DEFAULT} 問
-      </span>
-      <Button type="button" size="sm" onClick={() => void handleSave()} disabled={pending}>
+      {variant === 'card' ? (
+        <span className="text-xs text-slate-500">
+          {notLoaded ? '読み込み中' : `空欄で既定 ${DAILY_NEW_DEFAULT} 問`}
+        </span>
+      ) : null}
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => void handleSave()}
+        disabled={pending || notLoaded}
+      >
         保存
       </Button>
       {message && (

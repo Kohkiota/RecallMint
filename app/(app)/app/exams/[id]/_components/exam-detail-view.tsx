@@ -249,8 +249,7 @@ export function ExamDetailView({
               />
               <p className="text-xs text-slate-500">{dateText}</p>
               {/* Dash-1 Home v1 §8.1: 新規/日上限 (K) の設定面。 rename の隣 (直下) に配置。
-                  DeckDownloadButton と同じく card view のみに出す (table view は密度優先の
-                  app-shell chrome ゆえ設定系の入口を置かない)。 */}
+                  OT 裁定 (2026-08-19) で table view からも到達可能にした (下の chrome を参照)。 */}
               <DailyNewTargetField examId={examId} userId={userId} />
             </header>
           </AppContainer>
@@ -301,6 +300,14 @@ export function ExamDetailView({
                     variant="compact"
                   />
                   <p className="truncate text-[11px] leading-tight text-slate-500">{dateText}</p>
+                  {/* Dash-1 §8.1 (OT 裁定 2026-08-19): 設定面は card / table の
+                      両 view から到達できること。 chrome は密度優先なので compact
+                      variant (説明文なし) で出す。 */}
+                  <DailyNewTargetField
+                    examId={examId}
+                    userId={userId}
+                    variant="compact"
+                  />
                 </div>
                 {/* S2-5: view 切替と列ボタンを並べる (列ボタンは table view のみ)。 */}
                 <div className="flex items-center gap-2">

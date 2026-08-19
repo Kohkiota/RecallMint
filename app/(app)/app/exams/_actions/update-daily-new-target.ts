@@ -1,6 +1,6 @@
 'use server'
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { getCurrentUser } from '@/lib/auth/ensure-user'
 import { withTenantTx } from '@/lib/db/tenant-tx'
 import { exams } from '@/lib/db/schema'
@@ -21,8 +21,11 @@ import type { ActionResult } from '@/lib/actions/result'
 // null = 既定 DAILY_NEW_DEFAULT に追従、 0 = 新規を出さない明示値
 // (dailyNewTargetSchema 側のコメント参照)。
 //
-// UPDATE は daily_new_target 列のみ。 updated_at は drizzle の $onUpdate が bump し、
-// 増分 pull の cursor がその値を拾って mirror へ伝播する (明示 SET しない)。
+// UPDATE は daily_new_target + content_version。 updated_at は drizzle の $onUpdate が
+// bump し、 増分 pull の cursor がその値を拾って mirror へ伝播する (明示 SET しない)。
+// content_version は spec §8.1 の要求どおり同時に +1 する。 exams の content_version は
+// 現状 pull で mirror へ運ばれるだけで比較する consumer は無い (exams は outbox に載らない
+// ため楽観ロックの対象外 — cards 側とは別軸)。 それでも spec の要求どおり bump する。
 //
 // rename-exam.ts と異なり revalidatePath は呼ばない: daily_new_target を server render
 // する RSC surface が現状存在しない (grep 済 — upload page の投入先 dropdown は exam 名
@@ -45,7 +48,10 @@ export async function updateDailyNewTarget(
     const updated = await withTenantTx(user.id, (tx) =>
       tx
         .update(exams)
-        .set({ dailyNewTarget: parsed.data })
+        .set({
+          dailyNewTarget: parsed.data,
+          contentVersion: sql`${exams.contentVersion} + 1`,
+        })
         .where(and(eq(exams.id, examId), eq(exams.userId, user.id)))
         .returning({ id: exams.id }),
     )
