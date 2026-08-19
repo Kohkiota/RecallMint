@@ -754,6 +754,24 @@ W2 の新規表示が **3 → 1** へ。`first_reviewed_at` 由来の残枠計�
    影響: Home 上で「未学習 1192」と「未出題 596」が同時に見える。**OT 判断事項**(定義 doc の erratum + どちらの語を使うかの UX 判断)。
 2. **stale bundle で旧 UI が描画される**(§15.0)。deploy 直後の確認は cache-bust して行う。
 
+### 15.4b 未検証 2 件の裁定(OT・2026-08-19)
+
+| # | 項目 | 裁定 |
+|---|---|---|
+| 7 | Review later-due 包含 | **unit / iso の pin で足れり**(`session-pool.test.ts` / `session-pool-equivalence.test.ts` / `get-session-cards.test.ts`)。stg にデータを仕込んでまで再現しない。**prod の実利用で state=2(Review)のカードが自然に到達した時点で 1 回だけ目視**する |
+| 11 | W4 実応答(苦手タグ 3 行) | 同上。候補条件(`WEAK_TAG_MIN_CARDS=8` かつ `WEAK_TAG_MIN_REVIEWS=15`)を満たすタグが**自然に発生した時点で 1 回だけ目視**。endpoint 契約(200 の形 / echo 2 本 / 不正 exam_id の 400 / 失敗表示)は §15.1 で検証済 |
+
+**この裁定の含意**: 上記 2 つは「今は見ていない」ことを明示した上で prod へ進む。**目視の契機は自然到達**なので、
+到達を待つ間に回帰しても検出は unit / iso のみに依存する。
+
+### 15.4c 定義 doc の erratum(2026-08-19・OT 指示で反映済)
+
+§15.4-1 の「未学習 = 未出題」は **Dash-0 定義 doc 側の erratum として訂正済**
+(`docs/superpowers/specs/2026-08-17-dashboard-metric-definitions.md` — header の erratum 行 + R-10 + §4-A + §4-F + §4-I)。
+**UI は両語併存で確定**(W3 = 未学習 / quick preset = 未出題)。
+**成立する向きは `F ⊆ A`**(未出題は必ず New。stg 実測で `state<>0 かつ answered=false` は 0 件)で、偽なのは逆向きのみ。
+よって Dash-1 spec §7 の「未出題(= 全カード state=0)は base_order 昇順」は真のままで**実装への影響なし**。
+
 ### 15.5 smoke で stg データに加えた変更(記録)
 
 - `daily_new_target`: 移動先A = **3** / アップロード = **0** / TG-web苦手問題 = **0**(いずれも smoke 前は null)。

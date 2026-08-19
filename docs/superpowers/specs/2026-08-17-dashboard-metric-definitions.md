@@ -2,6 +2,7 @@
 
 - 日付: 2026-08-17 / 状態: **凍結(r3)**(2026-08-18 OT 裁定 6 件 + 内部矛盾 2 件反映 → Codex 差分確認(§8.3)反映 → **r3 訂正**。以後 Dash-1 実装フェーズで書き換えない — 仕様変更が必要なら停止して OT 相談)
 - **r3(2026-08-18・OT 指示)**: (1) lapses の凍結定義を全箇所統一 —「**評価直前の FSRS state が Review の回答を Again と評価した回数**」。UI 文言 = 「復習段階で 2 回以上忘れたカード」、「定着後」「学習中」は定義語(B/C)と衝突するため使用禁止(§4-H)。(2) W2 の k を生の上限値から**残り枠**(`min(max(K-u,0), New数)`)に修正 — u の永続化は §6-⑥ へ。(3) §6 の状態列に Dash-1 非対象の判別を明示(⑩⑬ = Dash-3 / ⑫ = 較正データ待ち / ⑭ = Home v1 非消費)
+- **erratum(2026-08-19・stg 実測 + OT 裁定)**: **R-10「`state = New` ⟺ `answered = false`」は偽**と判明したため、A(未学習)/ F(未出題)/ I(着手率)の「同値」記述を訂正。**A と F は別集合**(A = FSRS state が New / F = 回答履歴なし)。stg 実測で **`state=0` かつ `answered=true` が 596 件**存在し(`reps=0` / `answer_events` 0 件 = FSRS を通らない旧回答経路・非 applied 演習の痕跡)、UI 上「未学習 1,192 / 未出題 596」が同時に出る。**UI は両語併存で確定**(W3 = 未学習 / quick preset = 未出題 — OT 裁定 2026-08-19)。**成立する向き**: `F ⊆ A`(未出題は必ず New — stg 実測で `state<>0 かつ answered=false` は 0 件)。**偽なのは逆向き**(`A ⊆ F`)。よって Dash-1 spec §7 の「未出題(= 全カード state=0)は base_order 昇順」は**真のまま**(影響なし)。**定義そのものの変更ではなく事実記述の訂正**(実装は各定義どおりで正しい)。詳細な実測は `docs/superpowers/sessions/2026-08-18-dash1-home-v1-implementation.md` §15.4
 - **erratum(2026-08-18・Dash-1 裁定の反映)**: Dash-1 に委ねていた「明日は約◯問」の扱いが **「出さない」で確定**(Dash-1 spec §4 W2・OT 承認)。§3.7 / W2 残未確定 e / §6-⑧ の該当箇所を解消済みに更新(凍結 doc 間の矛盾を残さないための狭い訂正 — 定義の変更なし)
 - **r2(2026-08-18)**: OT 裁定 6 件を反映 — ① 前提解釈 = 事実の記述(daily-new-limit 未実装)② W2 は進捗バーを外して再設計・W7/streak は「全試験」明記 ③ D は `state !== 0` 確定 + 「復習の持ち越し」に改称 ④ 苦手 = 案 1(lapses)確定 ⑤ 選択中試験の方式裁定(URL 正 + owner-scoped sync_meta)⑥ 週 delta = 先週同期間比。内部矛盾 2 件(§4-N 順序キー / §4-M と pin 7 の整合)も修正
 - 種別: **定義のみ**。実装・schema 変更・UI 設計・endpoint 形はすべて非スコープ
@@ -72,7 +73,7 @@ fact-finding 以降に R0 / tag mirror correctness / tag mirror hygiene / card_t
 | R-7 | 演習の件数指定 UI は無い(`user_settings.session_limit` / `custom_session_limit` の cap のみ)。**時間指定は存在しない** | 「間違い10」「10分」の数値は現行の仕組みに載っていない(§6-④) — fact-finding §5 |
 | R-8 | `answer_events` に**下り(pull)が無い**。ローカル分は端末固有で無限成長(TTL / sweep なし) | `elapsed_ms` 由来の指標を client で出すと**端末間で値が食い違う**(§4-N) — fact-finding §2 / §7 |
 | R-9 | `card_tags` は**現在状態のみ**(タグ付けの履歴を持たない) | タグ別の過去集計は「**現在のタグ付けで過去イベントを再分類**」する。タグを付け替えると過去の数値も動く(§3.5) |
-| R-10 | `state = New` ⟺ `answered = false`。`rate()` は必ず state を 1 以上にし `answered = true` を立てる。`forget()` は未使用で state が New に戻る経路が無い | カバー率の分子は state / answered のどちらでも同値。**canonical は `state`** に統一する(§4-I) — `lib/cards/replay-card.ts:84-98` |
+| R-10 | ~~`state = New` ⟺ `answered = false`~~ → **erratum(2026-08-19)。同値ではない**。`rate()` が state を 1 以上にし `answered = true` を立てるのは正しいが、**`answered = true` を立てる経路は `rate()` だけではない** — FSRS を通らない旧回答経路・非 applied 演習の痕跡として **`state=0` かつ `answered=true`** が実在する(stg 実測 596 件 / `reps=0` / `answer_events` 0 件)。`forget()` 未使用は変わらない | **state と answered は別の母集合**。カバー率(§4-I)は **`state` を canonical** とする(この結論は不変)。**A(未学習)と F(未出題)は別集合**として扱う — `lib/cards/replay-card.ts:84-98` |
 | R-11 | **「選択中の試験」という永続概念が存在しない**。`sync_meta` の既知 key は cursor 6 本 + `exam_view_prefs`(card/table の view 種別のみ)。`currentExamId` は `/app/exams/[id]` の route param 由来 | Home v1 の主体そのものが未実装。方式は r2 裁定済・実装は Dash-1(§6-②) — `lib/sync/sync-meta.ts:16-31` |
 | R-12 | 現行ホームの実ラベルは **「今日の学習問題数」/「連続日数」**(fact-finding の「今日 x 問 / 連続 y 日」は表記ゆれ) | 名称列は実ラベルを基準に確定する(§4) |
 | R-13 | `GET /api/dashboard/stats` は **caller ゼロのまま** | 裁定は Dash-1 へ引き継ぎ(OT 指示済み) |
@@ -211,7 +212,7 @@ r2 裁定(OT 裁定 2)で扱いを確定:
 - **定義**: `card.state === 0`(New)
 - **データ源**: L1 / client(Dexie `cards`)
 - **空状態**: 総カード 0 のときウィジェットごと非表示(§3.7)。未学習 0 は「0」を表示してよい(意味のある 0)
-- **備考**: R-10 により `answered === false` と同値。canonical は `state`
+- **備考**: canonical は `state`。~~R-10 により `answered === false` と同値~~ → **erratum(2026-08-19)**: **F(未出題)とは別集合**。`state=0` かつ `answered=true`(旧回答経路・非 applied 演習)が実在するため、A ⊋ F になりうる(stg 実測: A=1,192 / F=596)。**W3「カードの状態」は A(state)で数える**
 
 ### B. 学習中
 
@@ -254,10 +255,14 @@ r2 裁定(OT 裁定 2)で扱いを確定:
 ### F. 未出題
 
 - **名称**: 未出題
-- **定義**: `card.answered === false`(= A 未学習と同値)
+- **定義**: `card.answered === false`(**A 未学習とは別集合** — erratum 2026-08-19)
 - **データ源**: L1 / client
 - **空状態**: E に同じ
-- **備考**: 既存カスタム演習の `answerState='unanswered'` と同一。クイック演習の「未出題」母集合。**「未学習」と同じ集合を指すが UI 文脈が違う**(状態サマリでは「未学習」、演習ボタンでは「未出題」)。名称を分けたまま定義は 1 つにする
+- **備考**: 既存カスタム演習の `answerState='unanswered'` と同一。クイック演習の「未出題」母集合。
+  ~~「未学習」と同じ集合を指すが UI 文脈が違う~~ → **erratum(2026-08-19・stg 実測)**: **同じ集合ではない**。
+  未学習(A)= FSRS state が New / 未出題(F)= 回答履歴なし であり、**New かつ回答済み**(旧回答経路・非 applied 演習)が実在する。
+  **UI は両語併存で確定**(OT 裁定 2026-08-19): 状態サマリ W3 = 「未学習」(A)、クイック演習ボタン = 「未出題」(F)。
+  **定義は 1 つにまとめない**(母集合が違うため、まとめると片方の数字が誤る)
 
 ### G. 連続正解数
 
@@ -287,7 +292,7 @@ r2 裁定(OT 裁定 2)で扱いを確定:
 - **定義**: `count(card.state !== 0) / count(全カード)`(§3.3 のスコープ内)
 - **データ源**: L1 / client
 - **空状態**: 分母 0 → 非表示
-- **備考**: R-10 により `answered === true` の比率と同値。**Home v1 の 7 ウィジェットには含まれない**(分析ページ B 節向け)。定義だけ凍結する。名称は「カバー率」より「着手率」が UI 語として明確 — 裁定は §6-⑭(軽微・引き継ぎ)
+- **備考**: ~~R-10 により `answered === true` の比率と同値~~ → **erratum(2026-08-19)**: 同値ではない(`state=0` かつ `answered=true` が実在)。**分子は `state !== 0` が canonical**(上の定義どおり)で、`answered` に置き換えてはいけない。**Home v1 の 7 ウィジェットには含まれない**(分析ページ B 節向け)。定義だけ凍結する。名称は「カバー率」より「着手率」が UI 語として明確 — 裁定は §6-⑭(軽微・引き継ぎ)
 
 ### J. 定着率
 
