@@ -43,6 +43,17 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* Dash-1 追加分。既存 alias の形 (--color-N: var(--N)) にそのまま倣う。
+       生成元の並びを崩さないよう、追加は末尾へまとめる。 */
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
+    --color-warn: var(--warn);
+    --color-warn-foreground: var(--warn-foreground);
+    --color-carryover: var(--carryover);
+    --color-maturity-1: var(--maturity-1);
+    --color-maturity-2: var(--maturity-2);
+    --color-maturity-3: var(--maturity-3);
+    --color-chart-6: var(--chart-6);
 }
 
 :root {
@@ -78,6 +89,27 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+
+    /* Dash-1 (spec §12)。既存 shadcn 変数系への追加のみで、新体系は作らない。
+       彩度で緊急度を分ける: 最高彩度の --destructive (障害) が頂点、状態色はその下に置く。
+       定着度は brand の mint 軸 (h=168) 上の順序尺度で、L 降順 + C 昇順の二重符号ゆえ
+       グレースケールでも順序が読める。danger は --destructive を使い別名を作らない。
+       --carryover は定着度と直交する横断指標なので同一尺度に載せず、色相 (h=265) と
+       輝度の両方で尺度の外側 (light では最も暗い塗り) に置く。
+       全値は背景に対し 4.5:1 以上を実測済 (数値は session doc)。
+       dark 値は置かない: 本 repo は基底 token (background / foreground / card / chart-1..5)
+       に dark 値が無く、`@custom-variant dark` も無いため Tailwind v4 既定の dark variant は
+       prefers-color-scheme に載る。ここだけ dark 値を足すと明背景に暗色パレットが混ざる。
+       dark 対応は基底 token ごと入れる時に一括で行う (spec §12 の「.dark 慣例」は erratum)。 */
+    --success: oklch(0.52 0.095 168);
+    --success-foreground: oklch(0.985 0 0);
+    --warn: oklch(0.54 0.105 70);
+    --warn-foreground: oklch(0.985 0 0);
+    --carryover: oklch(0.42 0.155 265);
+    --maturity-1: oklch(0.562 0.012 168);
+    --maturity-2: oklch(0.515 0.055 168);
+    --maturity-3: oklch(0.465 0.088 168);
+    --chart-6: oklch(0.179 0 0);
 }
 
 @layer base {
