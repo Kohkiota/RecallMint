@@ -21,6 +21,7 @@ export type RlsAlertRoute =
   | 'entity-mutations/bulk'
   | 'delete-exam'
   | 'rename-exam'
+  | 'update-daily-new-target'
   | 'review-events/bulk'
 export type RlsAlertOp = 'mutation' | 'delete' | 'ingest' | 'update'
 

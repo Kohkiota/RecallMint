@@ -30,6 +30,7 @@ import { ExamCardTable } from './exam-card-table'
 import { ColumnVisibilityToggle } from './exam-card-table-column-toggle'
 import { DeckDownloadButton } from './deck-download-button'
 import { ExamTitleInlineEdit } from './exam-title-inline-edit'
+import { DailyNewTargetField } from './daily-new-target-field'
 
 type ExamDetailViewProps = {
   initialCards: ExamDetailCard[]
@@ -247,6 +248,10 @@ export function ExamDetailView({
                 variant="card"
               />
               <p className="text-xs text-slate-500">{dateText}</p>
+              {/* Dash-1 Home v1 §8.1: 新規/日上限 (K) の設定面。 rename の隣 (直下) に配置。
+                  DeckDownloadButton と同じく card view のみに出す (table view は密度優先の
+                  app-shell chrome ゆえ設定系の入口を置かない)。 */}
+              <DailyNewTargetField examId={examId} userId={userId} />
             </header>
           </AppContainer>
           {/* ViewToggle + 一括 DL 入口 (画像フェーズ A Task 12 / spec §6): card view header に配置。
