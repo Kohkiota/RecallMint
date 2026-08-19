@@ -227,3 +227,157 @@ sign-in は Clerk **dev instance**(`recall-mint-dev`)で stg と同じアカウ�
 
 - **RLS policy 経路**(§10.2 の限界)。tenant context を張らない接続での挙動は iso 側の担保に依存。
 - **stg 上での動作**(§10.1 により 0040 適用まで不可)。
+
+---
+
+## 11. Task 10 — design token の恒久記録
+
+### 11.1 **spec §12 の「現行 `.dark` ブロックの慣例」は erratum — dark 値は入れない**
+
+spec §12 / plan Task 10 は「ダーク対応は**現行 `.dark` ブロックの慣例**に従い両方に定義」と書くが、
+着手時点の repo に `.dark` ブロックは**存在しなかった**(実測 2026-08-19):
+
+- `app/globals.css` に `.dark` なし / repo 全体で CSS は `app/globals.css` の 1 本のみ
+- `@custom-variant dark` の宣言なし(shadcn init が通常入れるもの)。よって Tailwind v4 の `dark:`
+  utility は既定の `prefers-color-scheme` で発火する一方、**色 token 側は light 値のまま**
+- `next-themes` 等の theme provider なし。`<html>` に `dark` class を付ける経路が存在しない
+  (`app/layout.tsx:94` は `cn("font-sans", geist.variable)` のみ)
+- 基底 token(`--background` / `--foreground` / `--card` / `--chart-1..5` / `--destructive`)に
+  dark 値が 1 つも無い
+
+→ **本 repo は実質 light 単一 theme**。実装 agent は spec の字面どおり `.dark` block を新設したが、
+**controller 判断で除去した**(commit には含めない)。理由は 3 つ:
+
+1. `.dark` class を付ける経路が無いので**不活性**(dead code を出荷しない — 簡潔性規律)。
+2. **そもそも `.dark` は本 repo の hook ではない**。`@custom-variant dark` が repo にも
+   `node_modules/shadcn/dist/tailwind.css` にも無く(実測 grep 0 件)、Tailwind v4 既定の
+   `dark` variant は `prefers-color-scheme` に載る。既存 shadcn component の `dark:` utility は
+   **OS が dark なら既に発火している**(色 token は light のまま)。`.dark` を足すとこの事実を
+   誤って固定化する。
+3. 追加分 9 token にだけ dark 値を置くと、基底が light のまま**明背景 + 暗色パレットの混在**に
+   なる。dark 対応は基底 token(`--background` / `--foreground` / `--card` / `--chart-1..5` /
+   `--destructive`)ごと一括で入れる作業で、9 token を先出ししても総量は減らない。
+
+**この erratum は事実記述の誤りであって contract の誤りではない**ため、Ruling 17 と同じく
+erratum 扱いで続行(spec は凍結のまま書き換えない)。**OT 判断事項として残置**: dark theme を
+提供するか(提供するなら別 sprint で基底 token ごと)。
+
+### 11.2 採用値と実測コントラスト比
+
+算出は使い捨て script(oklch → oklab → linear sRGB → gamma → WCAG 相対輝度)。
+**色域外(sRGB clip)の値は不採用**とし、clip 後の実表示色で測っている。
+**canonical reviewer が CSS Color 4 の行列から独立に再計算し、hex 完全一致・比の差 ≤ 0.04(8bit 量子化の有無)で一致**。
+
+**出荷するのは light の 9 対のみ**(下の dark 表は参考値)。全対 AA 4.5:1 以上・色域外 0。
+
+**light**(背景 = `--background` / `--card` = `oklch(1 0 0)`)
+
+| token | 値 | hex | 対比対象 | 比 |
+|---|---|---|---|---|
+| `--success` | `oklch(0.52 0.095 168)` | #1e7a5e | 背景 | 5.24:1 |
+| `--success-foreground` | `oklch(0.985 0 0)` | #fafafa | `--success` | 5.02:1 |
+| `--warn` | `oklch(0.54 0.105 70)` | #95621c | 背景 | 5.18:1 |
+| `--warn-foreground` | `oklch(0.985 0 0)` | #fafafa | `--warn` | 4.96:1 |
+| `--carryover` | `oklch(0.42 0.155 265)` | #2244a0 | 背景 | 8.76:1 |
+| `--maturity-1` | `oklch(0.562 0.012 168)` | #6f7774 | 背景 | 4.59:1 |
+| `--maturity-2` | `oklch(0.515 0.055 168)` | #477261 | 背景 | 5.46:1 |
+| `--maturity-3` | `oklch(0.465 0.088 168)` | #126950 | 背景 | 6.65:1 |
+| `--chart-6` | `oklch(0.179 0 0)` | #111111 | 背景 | 18.84:1 |
+
+**dark — 参考値(出荷していない。§11.1 で除去)**。dark 対応を入れる時の候補と、その時の測定前提
+(仮定背景 = shadcn 既定 dark の `oklch(0.145 0 0)` / card `oklch(0.205 0 0)`。比は**厳しい側の card**)。
+仮定が変われば測り直しになる。
+
+| token | 値 | hex | 対比対象 | 比 |
+|---|---|---|---|---|
+| `--success` | `oklch(0.78 0.13 168)` | #50d2a7 | card | 9.46:1 |
+| `--success-foreground` | `oklch(0.205 0 0)` | #171717 | `--success` | 9.46:1 |
+| `--warn` | `oklch(0.8 0.13 70)` | #f3ae58 | card | 9.39:1 |
+| `--warn-foreground` | `oklch(0.205 0 0)` | #171717 | `--warn` | 9.39:1 |
+| `--carryover` | `oklch(0.86 0.06 265)` | #bed1f9 | card | 11.68:1 |
+| `--maturity-1` | `oklch(0.62 0.012 168)` | #808985 | card | 4.95:1 |
+| `--maturity-2` | `oklch(0.7 0.07 168)` | #72ad96 | card | 6.93:1 |
+| `--maturity-3` | `oklch(0.8 0.13 168)` | #58d8ae | card | 10.13:1 |
+| `--chart-6` | `oklch(0.93 0 0)` | #e8e8e8 | card | 14.58:1 |
+
+**基線**(比較用の実測): `--destructive` 4.76:1 / `--muted-foreground` 4.73:1 — 既存 shadcn 系も
+4.7 前後に居る。新規 token を同じ帯に置いたのは「既存より重く見せない」ため。
+なお `--destructive: oklch(0.577 0.245 27.325)` は **sRGB 色域外**で #e7000b に clip される
+(shadcn 既定値そのもの・本 task では触っていない)。
+
+### 11.2b alias 結線の実測(silent failure 対策)
+
+`@theme inline` の alias は**綴りを間違えても lint / typecheck / test のいずれも落ちない**(utility が
+生えないだけ)。ESLint glob の escape 漏れと同じ silent failure の型なので、**実際に Tailwind へ
+かけて生成物を見る**ところまでやる:
+
+```
+# postcss / @tailwindcss/postcss は直接依存でないため .pnpm の実体を絶対 path で import する
+node <script> <globals.css の copy + @source 指定> <base> <out.css>
+```
+
+結果(2026-08-19 実測): `bg-success` / `text-success-foreground` / `bg-warn` /
+`text-warn-foreground` / `bg-carryover` / `bg-maturity-1..3` / `bg-chart-6` の **9 本すべてが
+`var(--<token>)` を参照する utility として生成**。同じ生成物で `dark:bg-success` が
+**`@media (prefers-color-scheme: dark)`** に載ることも確認(= §11.1 の「`.dark` は hook ではない」の
+コンパイル出力による裏取り。`.dark` を祖先セレクタに持つ規則は 0 本)。
+
+### 11.3 設計判断(なぜこの色か)
+
+1. **彩度が緊急度を符号化する**。既存系は `--destructive` 以外すべて無彩色(`--chart-1..5` すら
+   グレースケール)。最高彩度 = 障害という既存の階層を壊さないため、状態色の C は 0.06〜0.155 に
+   抑えた(destructive の 0.245 より必ず下)。
+2. **定着度は brand の mint 軸(h=168)上の順序尺度**。3 段は L 降順(0.562 → 0.515 → 0.465)
+   かつ C 昇順(0.012 → 0.055 → 0.088)の**二重符号**なので、色を落としても順序が読める。
+   `--success` を同じ h=168 に置いたのは「定着 = success」という意味の一致を色でも保つため
+   (別 hue にすると同じ概念が 2 色になる)。
+3. **`--carryover` は尺度の外側**。定着度と直交する横断指標(spec §12)なので、hue を 97° 離した
+   h=265 に置き、さらに**輝度でも尺度の外**(light では全塗りの中で最も暗く、dark では最も明るい)
+   へ出した。青-緑の対は最も多い型の色覚特性でも分離が残る組。
+4. **`--chart-6` は既存グレースケール ramp の延長**。`--chart-1..5` = 0.87 / 0.556 / 0.439 /
+   0.371 / 0.269 で、刻みは一定でなく末尾ほど詰まる(0.314 / 0.117 / 0.068 / 0.102)。その**末尾の
+   刻み ≈0.09 をもう 1 段**伸ばして 0.179 にした(ramp 全体の等間隔化ではない)。chart 系だけ有彩色を足すと
+   意味色と競合するため無彩のまま。
+5. **spacing / radius / type scale は追加しない**(spec §12)。既存 Tailwind 既定 + `--radius` 系で足りる。
+
+### 11.4 Task 11 への申し送り(実使用時の制約)
+
+- **`--carryover` に foreground 対は無い**(spec が意図的に定義していない)。塗り + その上に文字、
+  という使い方をしない(塗り / 罫 / bar segment 専用)。dark 候補値(§11.2 参考表)では淡い青に
+  なるため白文字が読めないことを preview で確認済 — dark を入れる時にこの制約が効く。
+- **`--success` と `--warn` は色相だけで区別しない**。両者は輝度がほぼ同じ(比 1.01)で、
+  最も多い型の色覚特性の simulation では `#696960` vs `#747415`(deutan)まで寄る
+  (`--warn` と `--destructive` も同様に近い)。並置するならアイコンかテキストを必ず添える。
+  一方 `--carryover` と maturity 系は simulation でも分離が残る(canonical reviewer が Viénot 1999 で検証)。
+- **W6 のバーは色だけに依存させない**(spec §12)。塗り同士の輝度比は light で
+  maturity-1↔2 = 1.19 / 2↔3 = 1.22、maturity-3↔carryover = 1.32 と小さい。**分割位置または
+  パターン + テキスト代替が必須**で、色は補助にしかならない。
+- **dark 値は 1 つも無い**(新 token も基底 token も)。`dark:` utility は使わないこと — 発火条件が
+  `prefers-color-scheme` なのに色 token が light のままで、OS dark の端末でだけ表示が壊れる。
+
+### 11.4b slot の空判定(Codex 指摘・review で修正)
+
+`delta ? ... : null` は **`delta={0}`(増減なし)を消す**。slot は `React.ReactNode` ゆえ 0 も "" も
+有効な内容で、Task 9 の `daily_new_target = 0` と同じ「0 は falsy だが有効値」の型。
+`!= null` へ変更し、`delta={0}` が描画されること / 未指定では span が出ないことを pin(単独変異で
+red 実証)。
+
+**受容した限界**: `action` にも同じ規則を適用したが**こちらは pin していない**(`action={0}` は
+実在しない入力で、合成 pin の価値が薄いと判断)。実測でも action 側を truthiness に戻す変異は
+red にならない。規則は component 内コメントで担保している。
+
+### 11.5 検証しなかったこと(明示)
+
+- **実 Home 画面での目視**。W2〜W7 は Task 11 で作るため、本 task 時点で `WidgetCard` を描画する
+  surface が repo に存在しない。目視は**使い捨ての preview route を一時的に立てて**行い
+  (local dev + Playwright、light / dark / 375px の 3 枚)、確認後に route を削除した。
+  よって「Home 上での見え方」は未検証で、Task 11 の mobile view 確認で改めて見る必要がある。
+  なお dark の 1 枚は §11.1 で除去した `.dark` block を `classList.add('dark')` で有効化して
+  撮ったもの — **出荷物の検証ではなく参考値の検証**。
+- **token 値そのものを pin する test は無い**。値の保証は上記の実測コントラストのみで、
+  値を書き換えても test は落ちない(値の変更は目視 + 再計測で守る、という前提)。
+- **`pnpm build` / `pnpm run audit` は未実行**(本 task の gate set 外。依存も Next 設定も触らない
+  CSS + component 変更のため。両者は Task 13 の sprint 完了 gate で走る)。
+- **plan の完了条件「両 theme の目視」は充足していない**。§11.1 で `.dark` を出荷しない判断をした
+  結果、見るべき second theme が存在しないため。**OT 裁定待ち**(推奨 = v1 は light 単一で確定し、
+  dark は基底 token ごと別 sprint)。撮った dark screenshot は出荷しない参考値の確認。
