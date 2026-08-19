@@ -7,7 +7,7 @@ type CacheHeaders = { 'Cache-Control': string }
 
 /**
  * Handler receives the authed user, no-store headers, and the original request.
- * Handlers that don't need the request (dashboard/stats, study-days/pull,
+ * Handlers that don't need the request (study-days/pull,
  * exams/status) may omit the third parameter — TypeScript allows functions with
  * fewer params to be assigned to function types with more params.
  */

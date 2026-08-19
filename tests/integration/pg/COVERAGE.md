@@ -27,7 +27,7 @@
 | 5o | **OCR completion / failure** | `completeUploadTx` / `markFailed` | IN | YES(O1) | **`WHERE source_documents.id` のみ(user_id 述語なし)**の逸脱 2 write。provenance 依存(sourceDocumentId は owner guard tx 由来・client 非受領)を仕様として pin し、A の sourceDoc を B が完了/失敗させられないことを確認 |
 | 5g | upload guard / OCR persist / stale reconcile / status poll | `runUploadGuardTx` / `saveExtractedCards` / `reconcileStaleProcessing` | IN | YES(W1/R1) | owner-scoped(advisory lock `hashtext(user.id)` / arg `user.id` / owner WHERE) |
 | 6 | review events / FSRS | `processSession` / `upsertSessionGuarded` | IN | YES(W1/W2) | 全 repo call が `user.id`、session upsert が `and(eq(userId),…)` で client session_id の cross-tenant を封鎖 |
-| 7 | dashboard / study reads | `getReviewStatsForUser` / `getSessionCards` / `canRunOcr` / `incrementAiUsage` | IN | YES(R1) | raw `WHERE user_id = ${userId}::uuid` 含む owner-scoped read/count |
+| 7 | dashboard / study reads | `getAllStudyDaysForUser` / `getSessionCards` / `canRunOcr` / `incrementAiUsage` | IN | YES(R1) | owner-scoped read/count(旧 `getReviewStatsForUser` は Dash-1 T12 の dead route 削除で消滅 — R1 の study_days 隔離 assertion は live 経路 `/api/study-days/pull` の `getAllStudyDaysForUser` へ移設) |
 | 8 | settings writes | `saveSessionLimit` / `saveCustomSessionLimit` / `saveFsrsMode` | IN | YES(W1) | user_settings UPSERT `userId:user.id`(PK=user_id) |
 | 9 | assets(image saga) | `reserveAsset` / `finalizeAsset` / `resolveAssetUrls` | IN | YES(W1/R1) | 全 `eq(assets.userId)`、objectKey `users/{user.id}/…` |
 | 10 | GDPR account delete | `handleUserDeleted`(Clerk webhook 駆動) | OUT:webhook | NO | 専用 export endpoint 無。tenant は svix 検証済 event 由来。`webhooks/clerk/route.test.ts` が delete-set + scrub invariant を pin |
@@ -52,7 +52,7 @@
 |---|---|---|---|---|---|
 | SOURCE | getCurrentUser の null/throw/User 契約 | `lib/auth/ensure-user.ts` | claim+行→User / ghost→null / 未同期→null / no-session→throw | **`tests/integration/pg/lifecycle-null-contract.test.ts`(新規・実 PG RLS on)** + `lib/auth/ensure-user.test.ts`(unit・DB mock で claim 呼分け) | 担保 |
 | 1 | provisioning 表示(SyncingPage) | `app/(app)/app/layout.tsx:34-39`(route-group layout。root `app/layout.tsx` ではない) | `<SyncingPage/>` render・children 非 render | — | **未担保**(layout 単体 test 無。FF §2.2 が SSR gate の defensive path と明記) |
-| 2 | 200 + 空 body | withReadOnlyAuth 4 route | 空 stats/statuses/delta/配列 + DB 未着手 | `app/api/dashboard/stats/route.test.ts:48` / `app/api/exams/status/route.test.ts:80` / `app/api/pull/route.test.ts` / `app/api/study-days/pull/route.test.ts:60`(+ contract 群) | 担保 |
+| 2 | 200 + 空 body | withReadOnlyAuth 3 route | 空 statuses/delta/配列 + DB 未着手 | `app/api/exams/status/route.test.ts:80` / `app/api/pull/route.test.ts` / `app/api/study-days/pull/route.test.ts:60`(+ contract 群) | 担保(dashboard/stats は Dash-1 T12 で削除) |
 | 3 | 401 + `user_not_synced` | review-events/bulk・entity-mutations/bulk | `{ error: 'user_not_synced' }` 401・DB 未着手 | `app/api/review-events/bulk/route.test.ts:579` / `app/api/entity-mutations/bulk/route.test.ts:396`(+ `tests/contract/*bulk*.contract.test.ts`) | 担保 |
 | 4 | ActionResult エラー | settings 3 `_action` / create-exam / delete-exam / asset-actions | `{ ok:false, error:'認証が必要です' }` | `save-fsrs-mode.test.ts` / `save-session-limit.test.ts` / `save-custom-session-limit.test.ts` / `create-exam.test.ts` / `delete-exam.test.ts` / `asset-actions.test.ts` | 担保 |
 | 5 | throw(error boundary) | settings/actions / upgrade/actions | `Error('USER_NOT_SYNCED')` throw | `app/(app)/app/settings/actions.test.ts:41` / `app/(app)/app/upgrade/actions.test.ts` | 担保 |

@@ -2,8 +2,9 @@
 // pin 12)。fix round 1/5 I-3(controller 裁定)で lib/client/streak.ts から移設した
 // (Dexie を import する module に置くと、server 側の将来消費者が Dexie を server
 // graph に引き込む罠になるため)。computeStreak / addDays の pin は既存どおり
-// lib/client/streak.test.ts(client 側の消費経路を通した検証)/ lib/db/streak.test.ts
-// (server 側)に残る — 本 file はこの 2 定数の pin のみを持つ。
+// lib/client/streak.test.ts(client 側の消費経路を通した検証)に残る — 本 file は
+// この 2 定数の pin のみを持つ。 server 側の消費経路 (lib/db/streak.test.ts) は
+// Dash-1 T12 の dead route 削除で消滅した。
 
 import { describe, it, expect } from 'vitest'
 import { formatStreakDisplay, STREAK_WINDOW_DAYS } from './streak-core'

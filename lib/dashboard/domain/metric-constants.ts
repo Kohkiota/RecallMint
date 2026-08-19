@@ -49,9 +49,9 @@ export const DAILY_NEW_DEFAULT = 20
 
 // streak window(61 日)はここに置かない: `lib/streak-core.ts` の
 // `STREAK_WINDOW_DAYS` が唯一の定義(fix round 1/5 I-3・controller 裁定で
-// `lib/client/streak.ts` から移設済み。server 側 `lib/db/streak.ts` が同じ 61 を
-// `addDays(today, -60)` として独立に持つ既存の重複はあるが、それは本 task の範囲外
-// — 収斂させない)。ここへ再定義すると数値が 2 箇所化するため意図的に置かない —
+// `lib/client/streak.ts` から移設済み。同じ 61 を独立に持っていた server 側
+// `lib/db/streak.ts` は Dash-1 T12 で削除され、重複は解消した)。
+// ここへ再定義すると数値が 2 箇所化するため意図的に置かない —
 // 61 頭打ちの表記が必要な場合は `lib/streak-core.ts` の `STREAK_WINDOW_DAYS` /
 // `formatStreakDisplay` を直接 import する(`lib/streak-core.ts` は import ゼロの
 // pure module であり、dashboard/domain から import しても Dexie 依存は伝播しない)。

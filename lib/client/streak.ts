@@ -8,8 +8,9 @@
 //   (server / client 双方に反映される)。
 // - getStreakStatsFromDexie: Dexie study_days を tenant 絞りで読み、 今日 JST 行の
 //   distinct_card_count と過去 61 日 (review_count > 0) の day 集合 → computeStreak
-//   で連続日数を算出。 server 版 getReviewStatsForUser (`lib/db/streak.ts:67-97`)
-//   と同じ window / 同じ filter / 同じ return shape (`{ todayCardCount, streak }`)。
+//   で連続日数を算出。 かつて対になっていた server 版 getReviewStatsForUser
+//   (`lib/db/streak.ts`) は Dash-1 T12 で唯一の caller (`/api/dashboard/stats`) ごと
+//   削除済み — 現在 streak の算出経路は本 file の 1 本のみ。
 
 import { getClientDb, type ClientStudyDay } from '@/lib/client-db'
 import { todayInJst } from '@/lib/jst'

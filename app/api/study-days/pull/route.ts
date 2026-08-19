@@ -17,7 +17,7 @@ export const runtime = 'nodejs'
 export const GET = withReadOnlyAuth(
   {
     // Clerk session はあるが users 行が未 sync (sign-up race) → 200 で空配列を返す
-    // (cards/pull / dashboard/stats と同 「安全側 0 件」 挙動)。
+    // (cards/pull と同 「安全側 0 件」 挙動)。
     emptyBody: { studyDays: [] },
     authFailEvent: 'api.study_days.pull.auth_failed',
   },

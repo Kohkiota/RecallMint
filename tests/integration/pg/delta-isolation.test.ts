@@ -242,7 +242,7 @@ describe('delta isolation (R2)', () => {
   })
 
   // --- 非 RED・best-effort: getDeltaRows を経由しない別 endpoint(cursor 無・90 日窓)。
-  // rows は user_id を直接持つため、R1 の getReviewStatsForUser と違い decoy 差分
+  // rows は user_id を直接持つため、R1 の study_days read と違い decoy 差分
   // 設定は不要(id 直接比較で足りる)。---
   describe('getAllStudyDaysForUser', () => {
     // todayInJst(now) = '2026-07-18'(fixture の study_days.day と一致させる)。

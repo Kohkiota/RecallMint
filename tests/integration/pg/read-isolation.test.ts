@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { closeDb } from '@/lib/db'
 import { cards, studyDays } from '@/lib/db/schema'
 import { getSessionCards } from '@/lib/cards/get-session-cards'
-import { getReviewStatsForUser } from '@/lib/db/streak'
+import { getAllStudyDaysForUser } from '@/lib/db/study-days-pull'
 import { getActiveExamsForUser, getCardsForExam } from '@/lib/exams/list'
 
 import { asTenant } from './setup/as-tenant'
@@ -49,7 +49,7 @@ describe('read isolation (R1)', () => {
       .set({ due: new Date('2020-01-01T00:00:00.000Z') })
       .where(inArray(cards.id, [fixture.a.cardId, fixture.b.cardId]))
 
-    // getReviewStatsForUser decoy 適格性: study_days は fixture で
+    // study_days read の decoy 適格性: study_days は fixture で
     // distinct_card_count=0 / review_count=0 のまま挿入される(既定値)ため、positive
     // control(A 自身の既知値が返る)も negative(B の既知値と別)も空振りする。
     // A/B に別々の既知値を入れて初めて「効いている」assertion になる。
@@ -128,25 +128,31 @@ describe('read isolation (R1)', () => {
     })
   })
 
-  // --- 非 RED・best-effort: raw SQL `WHERE user_id = ...` (study_days)。B の
-  // 既知値(distinct_card_count=9 / review_count=5)が A の結果に混ざらないことを検証。
-  describe('getReviewStatsForUser', () => {
-    // todayInJst(now) = '2026-07-18'(fixture の study_days.day と一致させる)。
+  // --- 非 RED・best-effort: study_days の owner-scoped read。B の既知値
+  // (distinct_card_count=9 / review_count=5)が A の結果に混ざらないことを検証。
+  // Dash-1 T12 で `getReviewStatsForUser` を dead route ごと削除したため、同じ表を
+  // 読む **live な経路**(`/api/study-days/pull`)の `getAllStudyDaysForUser` へ
+  // 移した(隔離の保証は維持。むしろ本番経路を守る pin になった)。
+  describe('getAllStudyDaysForUser', () => {
+    // todayInJst(now) = '2026-07-18'(fixture の study_days.day と一致させる —
+    // 90 日 window の下限がこの日を含むようにするため now を固定する)。
     const now = new Date('2026-07-18T12:00:00.000Z')
 
-    it('returns tenant A own known stats (positive control)', async () => {
-      const stats = await asTenant(fixture.a.userId, (tx) =>
-        getReviewStatsForUser(fixture.a.userId, tx, now),
+    it('returns tenant A own known study day (positive control)', async () => {
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getAllStudyDaysForUser(fixture.a.userId, tx, now),
       )
-      expect(stats.todayCardCount).toBe(3)
-      expect(stats.streak).toBe(1)
+      expect(rows.map((r) => r.distinct_card_count)).toContain(3)
+      expect(rows.map((r) => r.review_count)).toContain(2)
     })
 
-    it('does not mix tenant B known stats into tenant A result (negative)', async () => {
-      const stats = await asTenant(fixture.a.userId, (tx) =>
-        getReviewStatsForUser(fixture.a.userId, tx, now),
+    it('does not mix tenant B known study day into tenant A result (negative)', async () => {
+      const rows = await asTenant(fixture.a.userId, (tx) =>
+        getAllStudyDaysForUser(fixture.a.userId, tx, now),
       )
-      expect(stats.todayCardCount).not.toBe(9)
+      expect(rows.every((r) => r.user_id === fixture.a.userId)).toBe(true)
+      expect(rows.map((r) => r.distinct_card_count)).not.toContain(9)
+      expect(rows.map((r) => r.review_count)).not.toContain(5)
     })
   })
 })

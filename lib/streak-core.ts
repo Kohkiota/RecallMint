@@ -47,8 +47,9 @@ export function addDays(ymd: string, delta: number): string {
 // 元々 `lib/client/streak.ts` の private const だったが、そこは `@/lib/client-db`
 // (Dexie)を import する module であり、`lib/dashboard/domain/**`(server からも
 // import される pure layer)からこの定数だけを参照しようとすると Dexie 依存が
-// 伝播してしまう。この file は import ゼロで既に server(`lib/db/streak.ts`)/
-// client(`lib/client/streak.ts`)双方が `computeStreak` を import する唯一の SSoT
+// 伝播してしまう。この file は import ゼロで、`computeStreak` を import する唯一の
+// SSoT(server 側の消費者 `lib/db/streak.ts` は Dash-1 T12 で削除。現在は
+// `lib/client/streak.ts` が唯一の消費者)
 // (定義 doc §4-O/§7.1)なので、streak window の定数もここに置けば同じ性質(pure・
 // 両側 import 可)を保てる。`lib/client/streak.ts` はここから import する
 // (内部の `lowerBound` 計算で実使用)。
