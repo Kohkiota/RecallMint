@@ -97,10 +97,12 @@
        --carryover は定着度と直交する横断指標なので同一尺度に載せず、色相 (h=265) と
        輝度の両方で尺度の外側 (light では最も暗い塗り) に置く。
        全値は背景に対し 4.5:1 以上を実測済 (数値は session doc)。
-       dark 値は置かない: 本 repo は基底 token (background / foreground / card / chart-1..5)
-       に dark 値が無く、`@custom-variant dark` も無いため Tailwind v4 既定の dark variant は
-       prefers-color-scheme に載る。ここだけ dark 値を足すと明背景に暗色パレットが混ざる。
-       dark 対応は基底 token ごと入れる時に一括で行う (spec §12 の「.dark 慣例」は erratum)。 */
+       dark 値は置かない: 本 repo は **light 単一 theme** (OT 裁定 2026-08-19)。基底 token
+       (background / foreground / card / chart-1..5) に dark 値が無く、`@custom-variant dark`
+       も無いため Tailwind v4 既定の dark variant は prefers-color-scheme に載る — 一部だけ
+       dark 値があると OS が dark の端末でだけ明背景に暗色が混ざる。同裁定で shadcn 由来の
+       `dark:` utility 24 個も剥がした (components/ui/{button,input,tabs,textarea})。
+       dark 対応は基底 token ごと別 sprint で一括投入する (spec §12 の「.dark 慣例」は erratum)。 */
     --success: oklch(0.52 0.095 168);
     --success-foreground: oklch(0.985 0 0);
     --warn: oklch(0.54 0.105 70);
