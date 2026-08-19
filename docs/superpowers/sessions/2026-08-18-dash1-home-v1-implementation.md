@@ -677,3 +677,87 @@ card variant では無効の理由が分かるよう「読み込み中」を出�
 既存シグナルの契約と噛み合っておらず、**別レビュアー(Codex)が実装後にそれを捕まえた**。
 canonical → 修正 → **Codex 再走**という順序がこの検出を生んだ(片方だけなら通っていた)。
 → [[feedback_verify_external_review_against_repo]] の実例。
+
+---
+
+## 15. stg smoke 実施記録(2026-08-19・0040 適用 + push 後)
+
+環境: `https://stg.recallmint.nekotest.net` / Playwright MCP / viewport **375x812 固定**(項目 15 を全操作で兼ねる)/
+アカウント A `komail9server+clerk_test@gmail.com`(cards 1,242)・B `komail9server+clerk_test1@gmail.com`(空)。
+
+### 15.0 前提の確認(実測)
+
+- **migration 0040 適用済**: `exams.daily_new_target`(integer, nullable)/ `cards.first_reviewed_at`(timestamptz, nullable)/
+  `answer_events.origin`(text, nullable)/ `answer_events_user_card_answered_idx (user_id, card_id, answered_at, event_id)` /
+  CHECK `exams_daily_new_target_nonneg` — **全て実在**(`information_schema` / `pg_indexes` / `pg_constraint` 直読み)。
+- **`/api/pull` = 200**(0040 未適用時に出ていた `first_reviewed_at` 不在の 500 は解消)。
+- **deploy 反映の確認**: 削除済 `/api/dashboard/stats` が **404**。
+  **注意**: 最初の `/app` 読み込みでは **旧 UI(DashboardStats/DashboardActions)が描画された** — stale な client bundle が
+  disk cache から復帰したため。cache-bust して再読込すると新 UI。**stg smoke では「1 回目の描画」を deploy 反映の根拠にしない**。
+
+### 15.1 結果(16 項目)
+
+| # | 項目 | 結果 | 実測の要点 |
+|---|---|---|---|
+| 1 | 7 ウィジェット表示 | **PASS** | h2 の DOM 順 = 今日の学習 → カードの状態 →(W4)→ さっと演習 → 今後 7 日 → 今週(全試験)。spec §3.1 の構成順どおり。W4 は候補 0 で非表示(§4 の契約) |
+| 2 | 試験切替 | **PASS** | `?exam=` が書き換わり h1 と W2/W3/W5/W6 の数値が切替先のものへ(33 問 ⇄ 1204 問) |
+| 3 | 他試験行 | **PASS** | 「他の試験: 復習 12 件」等。DB の他試験 due 件数と一致(下表) |
+| 4 | K 強制 | **PASS** | K=3 保存 → W2「復習 12(持ち越し 12)/新規 3」→ スマート復習の pool が **1 / 15**(= 12 + 3) |
+| 5 | K=0 | **PASS** | K=0 保存 → DB は `0`(`IS NULL` = false)/ W2「新規 0」/ セッション **3 枚**(未学習 2 件があっても New を出さない) |
+| 6 | Learning 未到来除外 | **PASS** | 3 問回答 → due = +1 分(未到来)→ プールから除外(前倒ししない)。y には残る |
+| 7 | Review later-due 包含 | **未検証** | **アカウント A に state=2(Review)のカードが 0 件**(state 分布 = 0:1225 / 1:17)。実データで構成不能 — unit / iso の pin(`session-pool.test.ts` / `session-pool-equivalence.test.ts`)に委ねる |
+| 8 | 実プール 0 の案内 | **PASS** | y=3 のまま CTA が **disabled button**・`a[href^="/app/study/smart"]` **不在**(空セッションへ遷移しない)・「いま出題できる問題はありません。次の復習は 22 時頃です。」 |
+| 9 | quick 4 preset | **PASS** | 間違い(166)/ 未出題(596)/ 10分 は link + `preset=` 付き、**苦手(0)は disabled**。起動時の pool = 未出題 1/10・間違い 1/10・10分 1/14 |
+| 10 | 不正 preset | **PASS** | `?preset=bogus` → **Home へリダイレクト**(`/app?exam=…`)・console error 0 |
+| 11 | W4 実応答 | **未検証** | 候補条件 = `WEAK_TAG_MIN_CARDS=8` かつ `WEAK_TAG_MIN_REVIEWS=15` に対し、A の **復習イベント(seq>=2)は全試験で 3 件**。3 試験とも `weak_tags: []` の 200。**endpoint 契約は検証済**(echo 2 本あり / 不正 exam_id は **400 `invalid_exam_id`**) |
+| 12 | W4 失敗表示 | **PASS** | `fetch` を patch して summary を 500 に → W4 が「優先して復習 / **読み込めませんでした**」で表示(非表示にならない = 候補 0 と区別できている) |
+| 13 | origin の DB 着地 | **PASS** | server 側 `answer_events.origin` = `home_today` 2 / `home_quick_unanswered` 1 / `home_quick_mistakes` 1 / `home_quick_10min` 1、**既存 18 件は null のまま**(遡及補完なし)。`home_weak_tags` は項目 11 が未検証のため未取得 |
+| 14 | 空状態 4 種 | **PASS** | ① 試験 0(アカウント B)= hero CTA のみ ② 試験あり・カード 0 = W2 のみ差し替え、他ウィジェット非表示 ③ y=0 =「いま解く対象はありません。/ さっと演習を選ぶ」+ 他は通常描画 ④ W6 母集合 0 = W6 ごと非表示。加えて **前段制御状態「試験未選択」**(`/app` を `?exam=` 無しで開く)も観測 |
+| 15 | mobile 375px | **PASS** | Home / 試験詳細(card・table 両 view)/ スマート復習 / quick の全画面で `documentElement.scrollWidth === 375`(**横スクロールなし**)。table chrome に「新規/日」が増えても崩れなし |
+| 16 | pull 中の liveQuery 再評価 | **記録** | §15.3 |
+
+### 15.2 表示値と定義の照合(アカウント A・移動先A = 1,204 cards)
+
+UI(Dexie mirror 由来)と stg DB(SQL 直読み)を突き合わせた結果 **全項目一致**。
+
+| 指標 | UI | DB(定義どおりの述語) |
+|---|---|---|
+| W3 総数 / 未学習 / 学習中 / 定着 | 1204 / 1192 / 12 / 0 | 1204 / `state=0`=1192 / `state IN (1,3) OR (state=2 AND S<21)`=12 / `state=2 AND S>=21`=0 |
+| W2 復習 n / 持ち越し m / 新規 k | 12 / 12 / 20 | `state<>0 AND due<=endOfToday`=12 / `state<>0 AND due<todayStart`=12 / K=null → 既定 20 |
+| W5 間違い / 未出題 / 苦手 | 166 / 596 / 0 | `answered AND NOT last_correct`=166 / `NOT answered`=596 / `lapses>=2 AND NOT mature`=0 |
+| W6 今日 | 12 | 12(持ち越し合算の注記も表示) |
+| W7 今週 / 学習日数 | 5 問 / 1 日 | `study_days` 今週合計 5 / 1 日 |
+| 他の試験 | 3 件 | 他試験の今日 due(state<>0)= 3 |
+
+**u(当日導入数)の実証**: K=3 の状態で新規を 2 件回答 → `cards.first_reviewed_at` が今日の行 = **2**、
+W2 の新規表示が **3 → 1** へ。`first_reviewed_at` 由来の残枠計算が stg で稼働している。
+**既に非 New だったカードを回答しても `first_reviewed_at` は NULL のまま**(遡及補完なし)も実測。
+
+**W7 の当日値**: 本 smoke で 8 問回答 → W7「今日 8 問 / 学習日数 2 日 / 連続 2 日」。回答数と一致。
+
+### 15.3 項目 16: pull 中の負荷(記録)
+
+- **Home mount(mirror 1,242 行 + 未取込 delta 200 行)**: long task **1 件 / 70ms**(開始 1,454ms)、DOMContentLoaded 249ms。
+- **開いたまま ambient pull**: 25 秒の観測窓では `/api/pull` が 1 回発火したが、**DOM mutation 0 / long task 0**。
+  更新した列が表示値に影響しない delta(`updated_at` のみ 300 行)だったため、再評価は起きても可視変化が無い。
+- **測定法の限界**: `useLiveQuery` の再評価回数そのものは外から数えられない。上記は
+  「MutationObserver の batch 数(= 可視変化)」と「longtask(= main thread 負荷)」による近似で、**再評価回数の直接計測ではない**。
+  §12.2 の materialize コスト(7,000 行で 134.8ms)と合わせて読むこと。
+
+### 15.4 検出した問題(prod 判断の入力)
+
+1. **凍結 spec(Dash-0 r3)§4-A / §4-F の「未学習と未出題は同じ集合」は実データで偽**。
+   A の移動先A で **未学習(state=0)= 1,192 / 未出題(answered=false)= 596**。差分 596 件は
+   **`state=0` かつ `answered=true`**(内訳: `reps=0` / `last_review` 有 / `first_reviewed_at` NULL / **answer_events 0 件**)=
+   FSRS を通らない旧回答経路のデータ。
+   **実装は各述語の定義どおりで正しい**(W3 は state、W5 は answered)。誤っているのは **定義 doc の「同値」という事実記述**。
+   影響: Home 上で「未学習 1192」と「未出題 596」が同時に見える。**OT 判断事項**(定義 doc の erratum + どちらの語を使うかの UX 判断)。
+2. **stale bundle で旧 UI が描画される**(§15.0)。deploy 直後の確認は cache-bust して行う。
+
+### 15.5 smoke で stg データに加えた変更(記録)
+
+- `daily_new_target`: 移動先A = **3** / アップロード = **0** / TG-web苦手問題 = **0**(いずれも smoke 前は null)。
+- 回答 8 問(移動先A 2 + quick 3 + アップロード 3)。当該カードは Learning へ遷移し `answer_events` に origin 付きで着地。
+- 空試験 **`smoke-空カード試験-2026-08-19`**(id `eb9fdca5-571e-4c38-9cb7-8372be3fb996`)を作成・**残置**(削除は任意)。
+- 負荷計測のため移動先A の **500 行の `updated_at`** と **200 行(state=0)の `due`** を更新。
+  新規の選出順は `base_order` 昇順(spec §8.5)なので出題順への影響は無いが、**due の旧値は復元していない**。
