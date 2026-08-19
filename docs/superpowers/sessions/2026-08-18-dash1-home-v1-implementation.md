@@ -30,19 +30,19 @@
 
 ## 3. Task 9(未 commit・**未レビュー**)の扱い
 
-実装 agent が走行中に停止したため、**gate 実行・report・commit message・レビューのいずれも未了**。
+実装 agent は**完走した**(停止指示の後に報告が到着)。実装・test・4 gate は完了、**レビュー(Codex / canonical)と commit のみ未了**。
 
-変更されている file:
-- 新規: `app/(app)/app/exams/_actions/update-daily-new-target.ts`(+test)/ `app/(app)/app/exams/[id]/_components/daily-new-target-field.tsx`(+test)/ `lib/exams/daily-new-target.ts`
-- 変更: `app/(app)/app/exams/[id]/_components/exam-detail-view.tsx` / **`lib/db/report-rls-context-failure.ts`**
+変更 file:
+- 新規: `lib/exams/daily-new-target.ts` / `app/(app)/app/exams/_actions/update-daily-new-target.ts`(+test)/ `app/(app)/app/exams/[id]/_components/daily-new-target-field.tsx`(+test)
+- 変更: `app/(app)/app/exams/[id]/_components/exam-detail-view.tsx` / `lib/db/report-rls-context-failure.ts`
 
-**再開時に必ず確認すること**:
-- `lib/db/report-rls-context-failure.ts` の変更は **Task 9 の範囲外に見える**。意図的な追随か scope creep かを判定し、後者なら戻す。
-- 実装が半端に適用されていないか(4 gate 実走 = `pnpm test` / `pnpm typecheck` / `pnpm test:iso` / `pnpm lint --max-warnings=0`)。
-- **`0` を falsy として扱っていないか**(`||` と `??` の取り違え・form の falsy チェック)。`0` = 「新規を出さない」という有効値であり、`null` = 「既定に追従」。ここを取り違えると設定が静かに無効化される。これが Task 9 最重要の pin。
-- 他 owner の試験を更新できないことが、型ではなく **tenant scoping で** 担保されているか。
+**停止時に「要検証」としていた 2 点は controller が実測して解決済**:
+1. `lib/db/report-rls-context-failure.ts` の変更は **scope creep ではない**。差分は `RlsAlertRoute` union への `'update-daily-new-target'` **1 行追加のみ**で、既存の `rename-exam` / `delete-exam` と同じ登録。`reportRlsContextFailure` は action の `:71` で**実際に呼ばれている**(停止時の diagnostics「未使用」は red 検証 A6 の変異中に採取された stale)。
+2. UI の置き場が brief の「試験一覧の行メニュー(rename の隣)」と違うのは **brief 側が現物と食い違っていた**ため。rename は行メニューではなく試験詳細ページのタイトル(`exam-title-inline-edit.tsx`)にしか存在せず、実装者は新しい一覧 UI を発明せず詳細ページに置いた。**判断として妥当**だが、意図した配置かは OT 確認の余地あり。
 
-判断: **やり直すより現物を検証して続ける方が安い**(実装は概ね揃っている)。ただし report と commit message は新規に書かせること。
+自己申告の gate/red: `pnpm test` 5640 / `test:iso` 489 / typecheck 0 / lint 0。red 検証 10 件(A1 認証 guard / A2 owner-scope WHERE / A3 保存時の `|| null` で 0 が null 化 / A4 上限 off-by-one / A5 整数チェック / A6 RLS alert / U1 初期表示の `||` / U2 保存 parse の `||` / U3 失敗の握り潰し / U4 既定値表示)。**`0` を falsy 扱いしない pin が A3・U1・U2 の 3 経路で立っている**のは要件どおり。
+
+**再開時の手順**: 現物を信用せず 4 gate を実走 → Codex → canonical → fix ループ → commit。report は `.superpowers/sdd/2026-08-18-dash1-home-v1/task-9-report.md`(scratch)。**commit message は未作成なので新規に書かせること**。
 
 ## 4. レビューが捕まえた実バグ(全て独立レビュー由来・実装者の自己申告ではゼロ)
 
