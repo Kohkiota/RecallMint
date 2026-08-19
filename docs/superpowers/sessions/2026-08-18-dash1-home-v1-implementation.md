@@ -381,3 +381,88 @@ red にならない。規則は component 内コメントで担保している�
 - **plan の完了条件「両 theme の目視」は充足していない**。§11.1 で `.dark` を出荷しない判断をした
   結果、見るべき second theme が存在しないため。**OT 裁定待ち**(推奨 = v1 は light 単一で確定し、
   dark は基底 token ごと別 sprint)。撮った dark screenshot は出荷しない参考値の確認。
+
+---
+
+## 12. Task 11 — Home 刷新の恒久記録
+
+### 12.1 spec §3.1「構成順」の逸脱を戻した(review 指摘)
+
+実装は W3 と W6 を `grid sm:grid-cols-2` で並べており、DOM 順が **W1→W2→W3→W6→W4→W5→W7** になっていた
+(mobile は単一カラムなので、そのまま表示順の入れ替え)。spec §3.1 は
+**W1→W2→W3→W4→W5→W6→W7** を凍結している。**spec 順へ戻し、2 カラム化は v1 では行わない**
+(順序を保ったまま密度を上げるには隣接ペアを組む必要があり、W4 / W6 は条件付きで消えるため
+片翼だけ残る形が常態化する)。**OT 判断事項**: desktop の密度を上げたい場合は「構成順」の変更に
+なるので spec 側の裁定が要る。
+
+### 12.2 owner-scoped 読みの実測(逸脱の代償の定量化)
+
+`home-dashboard.tsx` は `cards.where('user_id').equals(userId).toArray()` で**全試験のカードを
+materialize** する。spec §3.1 の字面(「選択試験の cards を 1 回読み」)からの逸脱だが、同じ §3.1 が
+要求する「他の試験: 復習 n 件」は exam-scoped では出せず、旧 `[user_id+due].count()` でも出せない
+(state=0 の新規カードは due = 作成時刻なので混ざる)。**逸脱の向きは妥当**と判断。
+
+**代償は実測した**(local dev / devcontainer・Chrome・mirror は実 pull 済み行 + その複製):
+
+| mirror 行数 | owner-scoped `getAll` | exam-scoped `getAll` | `[user_id+due]` index `count` |
+|---|---|---|---|
+| 3,046 | **55.1ms**(3,046 行) | 41.9ms(2,046 行) | — |
+| 7,000 | **134.8ms**(7,000 行) | 86.7ms(4,706 行) | **5.1ms**(279 件) |
+
+- materialize はほぼ**行数線形**(≈19µs/行)。index count は同条件で **26 倍安い**
+  (Y-2 T-B6 が 45x を出したのと同じ構造 — 本 task はその逆方向へ動いた)。
+- **`[user_id+due]` index は本 task 以降 production consumer が 0**(`lib/client-db.ts` の schema と
+  `get-dexie-session-cards.ts` のコメントのみ)。
+- **未測定の増幅要因**: `useLiveQuery` は cards への書込ごとに再評価するため、**Home を開いたまま
+  pull が走ると 1 batch ごとに上表のコストが再発生する**。回数は測っていない。
+- 判断: v1 は現状で進める。**prod 反映判断の前に、実利用規模(万件級)での Home mount を測る**
+  (T6 deferred の測定と同じ機会に実施)。悪化が実測されたら、選択試験は `[user_id+exam_id]`、
+  他試験行は `[user_id+due]` の範囲 count に分ける 2 クエリ案へ落とす(review が提示した案 b)。
+
+### 12.3 review が捕まえた検証の穴(pin が「効いていなかった」2 件)
+
+| # | 内容 | 処置 |
+|---|---|---|
+| 9 | **spec §13.2 の「空セッションへ遷移しない」が caller で未 pin**。leaf(`today-study.test.tsx`)は props 注入で pin していたが、root が `poolSize` に何を渡すかは無検査。canonical が変異 `poolSize={pool.pool.length}` → `{y + k}` を実走し **166 test 全て green のまま**であることを実証(この変異は pool 0 分岐を**構造的に到達不能**にする = ユーザーが空セッションに入る) | `home-dashboard.test.tsx` に Dexie fixture(未到来 Learning のみ + K=0)で caller pin 3 件を追加。両変異が red になることを実測 |
+| 10 | **abort guard の red 検証(報告の G4)が成立していなかった**。試験切替で観測しようとすると鍵不一致が先に stale を捨てるため、guard を消しても test は通る | **StrictMode の二重 mount**(同じ鍵のまま abort が起きる唯一の経路・本番も `reactStrictMode: true`)で pin し直し。変異で red を実測 |
+
+**教訓(§8 に追加)**: pin の fixture を **props 注入で作った場合、同じ変異を 1 階層上(caller)でも実走する**。
+leaf が green でも caller が別の値を渡していれば保証は無い。→ [[lesson_task_review_misses_caller_pins]] の再演。
+
+### 12.4 遅着応答が新しい結果を消す経路(review Minor → 実害ありと判断して修正)
+
+試験切替後に**前の試験の echo 無し 200** が遅着すると、`setResult` が古い鍵で `failed` を書き、
+鍵不一致で `state = null` に化けて **W4 が丸ごと消える**(再取得の契機も無い)。
+`setState` の先頭に `if (controller.signal.aborted) return` を置き、成功・失敗を問わず abort 済みの
+応答を捨てる形に集約した(catch 側の個別 guard は廃止)。pin 2 件がこの 1 行を守る。
+
+### 12.5 撤去した test と置換先(保証減の申告)
+
+- `dashboard-stats.test.tsx`(6 件)= **保証減なし**。streak 系は `lib/client/streak.test.ts` が現存し
+  W7 が同じ関数を使う。表示側は新 component test が持つ。
+- `dashboard-actions.test.tsx`(12 件)= **保証減 3 件**:
+  1. skeleton 中の partial CTA 挙動 — その挙動自体が消えた(§5 の前段 2 制御状態へ置換)
+  2. **`[user_id+due]` index count の構造 pin** — コードごと消滅。**Home の materialize コストは
+     現在どの test でも pin されていない**(§12.2 の実測が唯一の根拠)
+  3. Dexie `.between` の `includeUpper` の罠 — 経路から消えた([[feedback_dexie_between_includeupper_default]] は他経路で有効)
+
+### 12.6 記録のみ(修正しない)
+
+- **`state-summary.tsx` の「まとめて復習」導線が `origin=home_today` を再利用**している。§11.1 では
+  `home_today` = W2 CTA の入口。専用値が無いため実用上の再利用だが、**origin 分析で
+  「CTA を押した」と「まとめて復習を押した」が分離できない**。分析時に注意。
+- `home-header.tsx` の「他の試験」行は `exams.length > 1` でないと `<select>` が無く、押しても何も
+  起きない(mirror に無い試験を cards が参照する場合のみ到達)。
+- W5 の「10分」だけ母集合でなく目標件数(`min(tenMinCount, pool.length)`)を出しており、
+  `session_limit` が小さいと実際の出題数より大きく見える(Home は DB を読まない = S-perf-3 の帰結)。
+- 「試験 0」分岐では `?exam=` の URL 正規化が走らない(`ResolvedHome` より前に return するため)。
+- `week-forecast.tsx` の `aria-label` は plain `<div>` に付いており多くの AT が無視する(可視テキストで
+  同じ情報が出ているため実害なし)。
+- forecast の day 1〜6 の境界は未 pin(day 0 の 23:59 / 翌 0:00 のみ pin)。
+
+### 12.7 検証しなかったこと(明示)
+
+- **stg での動作**(§10.1 のとおり 0040 未適用)。
+- **RLS policy 経路**(local は superuser 接続)。
+- **実機 mobile**(DevTools 375px のみ)。
+- **Home mount のコストの実利用規模**(§12.2 の測定は 7,000 行まで。pull 中の再評価回数も未測定)。
