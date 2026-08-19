@@ -10,9 +10,9 @@
 // - preset の enum 検証(tag 不在時のみ)。不正なら Dexie を待たず即 home 送還。
 // - 試験解決は home/smart と共通の `useSelectedExam`(URL → 保存値 → 1 件自動)。
 // - cold-mirror gate(Task 6 の教訓): `useLiveQuery() === undefined` は「query
-//   未完了」しか意味せず「まだ同期していない」ことは示さない。study-session-host
-//   と同じ emptyMirrorConfirmed パターンで、settle 後に実際に 0 件かを読み直して
-//   から resolver へ渡す(でないと有効な `?exam=` を「試験 0」と誤判定して剥がす)。
+//   未完了」しか意味せず「まだ同期していない」ことは示さない。判定は home / smart と
+//   共有する `use-owner-exams.ts` に 1 定義してあり、確定するまで resolver を
+//   mount しない(でないと有効な `?exam=` を「試験 0」と誤判定して剥がす)。
 // - 試験解決後に 1 回だけ `getQuickPresetCardsFromDexie` を呼び、選定結果を
 //   固定する(appliedKeyRef — 同一 exam/preset/tag では再選定しない。SessionRunner
 //   が `cards[idx]` を live に読むため、回答中に母集合が変わる述語〈間違い/苦手は
@@ -26,10 +26,8 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useLiveQuery } from 'dexie-react-hooks'
 import type { Card } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
-import { getClientDb } from '@/lib/client-db'
 import {
   getQuickPresetCardsFromDexie,
   type QuickSelectionOutcome,
@@ -40,7 +38,7 @@ import {
   type QuickPreset,
 } from '@/lib/cards/domain/quick-preset-selection'
 import { useSelectedExam } from '@/lib/dashboard/use-selected-exam'
-import { useFirstPullSettled } from '@/app/(app)/app/_components/pull-settle-context'
+import { useOwnerExams } from '@/app/(app)/app/_components/use-owner-exams'
 import { SessionLauncher } from '../../_components/session-launcher'
 
 type QuickSessionHostProps = {
@@ -146,45 +144,12 @@ export function QuickSessionHost(props: QuickSessionHostProps) {
     !isQuickPreset(props.preset ?? '')
 
   // spec §5 の前段制御状態「初回 pull 未 settle」をこの入口にも適用する
-  // (study-session-host.tsx と同じ gate — Home 専用ではない)。
-  const firstPullSettled = useFirstPullSettled()
-  const examIds = useLiveQuery(
-    async () => {
-      const rows = await getClientDb()
-        .exams.where('user_id')
-        .equals(props.userId)
-        .toArray()
-      return rows.map((row) => row.id)
-    },
-    [props.userId],
-  )
-
-  // 「空 mirror が確定情報か」の判定(study-session-host.tsx と同一パターン)。
-  const [emptyMirrorConfirmed, setEmptyMirrorConfirmed] = useState(false)
-  useEffect(() => {
-    if (!firstPullSettled) return
-    if (examIds === undefined || examIds.length > 0) return
-    let cancelled = false
-    void getClientDb()
-      .exams.where('user_id')
-      .equals(props.userId)
-      .count()
-      .then((count) => {
-        if (!cancelled && count === 0) setEmptyMirrorConfirmed(true)
-      })
-      .catch(() => {
-        // 読めない (DatabaseClosedError 等) ときに Loading で固めない
-        // (study-session-host.tsx と同じ受容 — 詳細は同 file のコメント参照)。
-        if (!cancelled) setEmptyMirrorConfirmed(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [firstPullSettled, examIds, props.userId])
+  // (home / smart と同じ gate — 実装は `use-owner-exams.ts` に 1 定義)。
+  const { examIds } = useOwnerExams(props.userId)
 
   if (earlyInvalid) return <RedirectHome />
 
-  if (examIds === undefined || (examIds.length === 0 && !emptyMirrorConfirmed)) {
+  if (examIds === undefined) {
     return <LoadingView />
   }
   return <ResolvedQuickSessionHost {...props} examIds={examIds} />

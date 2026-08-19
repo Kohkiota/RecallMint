@@ -34,12 +34,14 @@ export type QuickSelectionOutcome =
 
 /**
  * 自 owner の `answer_events` を local_id 降順(= 新しい順・定義 doc §4-N)で読む。
+ * export しているのは Home(W2 の「約◯分」/ W5 の 10分件数)が同じ標本を要るため —
+ * 標本の取り方(順序キー・走査上限・owner 絞り)を 2 箇所に書かない。
  * `answer_events` に user_id 単体 index が無いため(`[user_id+sync_status]` のみ)、
  * primary key(local_id)の逆走査 + filter で絞る。`limit` は
  * `ESTIMATE_SCAN_LIMIT`(estimateMedianMs 自身が内部でも同じ上限を再適用するため
  * 二重適用は無害)で無限成長する table の全件走査を避ける。
  */
-async function getRecentElapsedMsSamples(
+export async function getRecentElapsedMsSamples(
   userId: string,
 ): Promise<(number | undefined)[]> {
   const rows = await getClientDb()

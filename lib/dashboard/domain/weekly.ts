@@ -106,3 +106,35 @@ export function weeklyDelta(
 export function thirtyDayWindowStart(now: Date): Date {
   return jstDayRange(addDays(todayInJst(now), -29)).startAt
 }
+
+export interface WeeklySummary {
+  /** 今週(月曜〜今日)の回答数 = sum(review_count)。 */
+  answers: number
+  /** 今週の学習日数 = count(review_count > 0)。 */
+  studyDays: number
+  /** 先週同期間比 delta。出さない条件(月曜 / 先週同期間に行なし)は null。 */
+  delta: number | null
+}
+
+/**
+ * W7「今週」の 3 値(定義 doc §4-Q)。週起点(月曜)と delta 規則を再実装させない
+ * ための 1 関数 — 呼出側(component)は rows を渡すだけで、期間の切り方を持たない。
+ * `study_days` は user 全体(= 全試験)の mirror なので、この値も全試験の合計になる。
+ */
+export function weeklySummary(
+  rows: readonly StudyDayRow[],
+  now: Date,
+): WeeklySummary {
+  const monday = mondayOfWeek(now)
+  const today = todayInJst(now)
+
+  let answers = 0
+  let studyDays = 0
+  for (const r of rows) {
+    if (r.day < monday || r.day > today) continue
+    answers += r.review_count
+    if (r.review_count > 0) studyDays += 1
+  }
+
+  return { answers, studyDays, delta: weeklyDelta(rows, now) }
+}

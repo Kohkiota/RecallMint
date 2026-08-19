@@ -10,6 +10,7 @@ import {
   mondayOfWeek,
   thirtyDayWindowStart,
   weeklyDelta,
+  weeklySummary,
   type StudyDayRow,
 } from './weekly'
 
@@ -104,4 +105,49 @@ describe('thirtyDayWindowStart (定義 doc §4-P・pin 17 の pure 部分)', () 
   // (pin 2, 17)| iso: summary endpoint に fixture(…30 日境界の前後)」と明示的に
   // iso 層(summary endpoint・後続 task)に割り当てている — この pure module の
   // 責務ではなく、ここで模造の pin を残さない。
+})
+
+describe('weeklySummary (定義 doc §4-Q: 今週の回答数 / 学習日数 + delta)', () => {
+  // 木曜(2026-08-20)基準。今週 = 月〜今日、完了分 = 月〜昨日(水)。
+  const now = new Date('2026-08-20T12:00:00+09:00')
+  const rows: StudyDayRow[] = [
+    { day: '2026-08-10', review_count: 30 }, // 先週月
+    { day: '2026-08-11', review_count: 20 }, // 先週火
+    { day: '2026-08-12', review_count: 10 }, // 先週水
+    { day: '2026-08-13', review_count: 99 }, // 先週木(同期間比の対象外)
+    { day: '2026-08-17', review_count: 40 }, // 今週月
+    { day: '2026-08-18', review_count: 0 }, // 今週火(行はあるが 0)
+    { day: '2026-08-19', review_count: 25 }, // 今週水
+    { day: '2026-08-20', review_count: 5 }, // 今日
+  ]
+
+  it('回答数は今週(月〜今日)の review_count 合計', () => {
+    expect(weeklySummary(rows, now).answers).toBe(70)
+  })
+
+  it('学習日数は review_count > 0 の日数(0 の行は数えない)', () => {
+    expect(weeklySummary(rows, now).studyDays).toBe(3)
+  })
+
+  it('delta は weeklyDelta と同値(先週同期間比)', () => {
+    expect(weeklySummary(rows, now).delta).toBe(weeklyDelta(rows, now))
+    // 今週 月〜水 = 65、先週 月〜水 = 60 → +5
+    expect(weeklySummary(rows, now).delta).toBe(5)
+  })
+
+  it('先週の行が無ければ delta は null(回答数・学習日数は出す)', () => {
+    const thisWeekOnly = rows.filter((r) => r.day >= '2026-08-17')
+    const summary = weeklySummary(thisWeekOnly, now)
+    expect(summary.delta).toBeNull()
+    expect(summary.answers).toBe(70)
+  })
+
+  it('今週の行が 1 件も無ければ 0 / 0(意味のある 0)', () => {
+    const summary = weeklySummary(
+      rows.filter((r) => r.day < '2026-08-17'),
+      now,
+    )
+    expect(summary.answers).toBe(0)
+    expect(summary.studyDays).toBe(0)
+  })
 })

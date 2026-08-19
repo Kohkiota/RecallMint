@@ -28,13 +28,11 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useLiveQuery } from 'dexie-react-hooks'
 import type { Card } from '@/lib/db/schema'
 import { Button } from '@/components/ui/button'
-import { getClientDb } from '@/lib/client-db'
 import { getDueCardsFromDexie } from '@/lib/cards/get-dexie-session-cards'
 import { useSelectedExam } from '@/lib/dashboard/use-selected-exam'
-import { useFirstPullSettled } from '@/app/(app)/app/_components/pull-settle-context'
+import { useOwnerExams } from '@/app/(app)/app/_components/use-owner-exams'
 import { SessionLauncher } from '../../_components/session-launcher'
 
 type StudySessionHostProps = {
@@ -60,71 +58,14 @@ function LoadingView() {
 export function StudySessionHost(props: StudySessionHostProps) {
   // spec §5 の前段制御状態「初回 pull 未 settle」をこの入口にも適用する
   // (Home 専用ではない — 試験解決は home / smart / quick で同じ前提に立つ)。
-  const firstPullSettled = useFirstPullSettled()
-  const examIds = useLiveQuery(
-    async () => {
-      const rows = await getClientDb()
-        .exams.where('user_id')
-        .equals(props.userId)
-        .toArray()
-      return rows.map((row) => row.id)
-    },
-    [props.userId],
-  )
+  // gate の中身(空 mirror を「試験 0 件」と確定しない理由・読み直し失敗時の扱い)は
+  // `use-owner-exams.ts` に 1 定義。home / smart / quick の 3 入口が共有する。
+  const { examIds } = useOwnerExams(props.userId)
 
-  // 「空 mirror が確定情報か」の判定。settle は必要条件だが十分条件ではない:
-  // settle の state 更新と Dexie liveQuery の配信は別経路なので、pull が書き込んだ
-  // 直後に settle だけが先に届くと、**pull 前に読まれた空 snapshot** を握ったまま
-  // 「試験 0 件」と確定してしまう。そこで settle 後に mirror を 1 度だけ読み直し、
-  // 実際に 0 件だったときにだけ確定扱いにする(resolver は増やさない — mirror の
-  // 読み直しであって解決経路の二重化ではない)。
-  const [emptyMirrorConfirmed, setEmptyMirrorConfirmed] = useState(false)
-  useEffect(() => {
-    if (!firstPullSettled) return
-    if (examIds === undefined || examIds.length > 0) return
-    let cancelled = false
-    void getClientDb()
-      .exams.where('user_id')
-      .equals(props.userId)
-      .count()
-      .then((count) => {
-        if (!cancelled && count === 0) setEmptyMirrorConfirmed(true)
-      })
-      .catch(() => {
-        // 読めない (DatabaseClosedError 等) ときに Loading で固めない: このまま
-        // 待っても再試行の契機は無く、reload するまで page が動かなくなる —
-        // 本変更前には存在しなかった状態を作ってしまう。spec §6 の「pull 失敗で
-        // settle した場合は mirror 現状で判定」と同じ扱いにし、今の mirror で
-        // resolver に判断させる (陳腐でも動く > 無限 skeleton)。
-        //
-        // 受容している代償 (**消さないこと**): 「exams に書込が入ったが liveQuery が
-        // まだ再配信しておらず、かつこの直読み `count()` だけが失敗した」複合条件
-        // では、stale な `[]` を確定扱いにして resolver に渡すため、有効な
-        // `?exam=X` を落としうる (fix round 3/5 で閉じた Critical と同じ class を、
-        // 単一要因でなく複合要因で踏む形)。ここに URL 保護条件を足すと「無限
-        // Loading を作らない」性質と衝突するため、トレードとして受容する。
-        // 発生確率を下げているのは (a) 上の `cancelled` (unmount / deps 変化で
-        // 遅れて着地した結果を適用しない) と (b) 2 つの読みが同じ table を叩くので
-        // 通常は共倒れになること — どちらも「簡略化」で消さない。
-        if (!cancelled) setEmptyMirrorConfirmed(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [firstPullSettled, examIds, props.userId])
-
-  // 下位(= resolver)を mount してよいのは「判定材料が揃った」ときだけ。2 条件ある:
-  // ① `undefined` = Dexie query がまだ完了していない
-  // ② `[]` が確定情報でない = **まだ同期していないから空**(fix round 3/5)。
-  //    ここを通すと resolver は URL の `?exam=X` を「実在しない試験」として捨て、
-  //    保存値も 1 件自動も無いので selection-required に落ち、さらに URL から
-  //    `exam` を剥がす。server は既にその試験のカードを持って来ているのに空
-  //    セッションになり、共有された deep link は初回訪問で自壊する。
-  //    `useLiveQuery() === undefined` は query の完了しか意味せず同期の有無を語らない
-  //    ため、①だけでは②を検出できない(pull-settle-context.tsx の存在理由そのもの)。
-  // 確定した `[]`(settle 済 + 読み直しても 0 件)は「本当に試験 0 件」なので通す
-  // — その先の判定は resolver の責務。
-  if (examIds === undefined || (examIds.length === 0 && !emptyMirrorConfirmed)) {
+  // 下位(= resolver)を mount してよいのは「判定材料が揃った」ときだけ。空の
+  // examIds を渡すと resolver は URL の `?exam=X` を「実在しない試験」として捨て、
+  // さらに URL から `exam` を剥がす(共有された deep link が初回訪問で自壊する)。
+  if (examIds === undefined) {
     return <LoadingView />
   }
   return <ResolvedStudySessionHost {...props} examIds={examIds} />

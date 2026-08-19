@@ -63,8 +63,14 @@ function currentExamParam(): string | undefined {
   return new URL(window.location.href).searchParams.get('exam') ?? undefined
 }
 
-/** URL の `exam` param のみを書き換え、他の query param(billing 等)を保持する。 */
-function buildExamUrl(examId: string | undefined): string | undefined {
+/**
+ * URL の `exam` param のみを書き換え、他の query param(billing 等)を保持する。
+ *
+ * export する理由(Home task): W1 dropdown の明示切替も **同じ URL 生成**を通す。
+ * 「他 param を保つ」規約(spec §6)を呼出側が書き直すと、切替のときだけ billing 等が
+ * 落ちる非対称が生まれる。副作用(router.replace)は呼出側が持つ。
+ */
+export function buildExamUrl(examId: string | undefined): string | undefined {
   if (typeof window === 'undefined') return undefined
   const url = new URL(window.location.href)
   if (examId) {
