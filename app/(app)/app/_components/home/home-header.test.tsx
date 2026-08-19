@@ -116,3 +116,37 @@ describe('HomeHeader', () => {
     expect(document.activeElement).toBe(screen.getByRole('combobox'))
   })
 })
+
+describe('HomeHeader — 他の試験行の押下可能性', () => {
+  it('切替先があるときは button で、押すと select に focus が移る (showPicker 未対応環境の fallback)', () => {
+    render(
+      <HomeHeader
+        exams={EXAMS}
+        examId={EXAMS[0].id}
+        otherExamsReviewDueToday={4}
+        onSelectExam={vi.fn()}
+      />,
+    )
+    const row = screen.getByTestId('other-exams')
+    expect(row.tagName).toBe('BUTTON')
+    fireEvent.click(row)
+    // showPicker() 未実装の jsdom では focus に落ちる (fallback が効いている証拠)。
+    expect(document.activeElement).toBe(
+      screen.getByRole('combobox', { name: '試験を切り替える' }),
+    )
+  })
+
+  it('切替先が無いときは押せる見た目にしない(死んだ click を作らない)', () => {
+    render(
+      <HomeHeader
+        exams={[EXAMS[0]]}
+        examId={EXAMS[0].id}
+        otherExamsReviewDueToday={4}
+        onSelectExam={vi.fn()}
+      />,
+    )
+    const row = screen.getByTestId('other-exams')
+    expect(row.tagName).not.toBe('BUTTON')
+    expect(row).toHaveTextContent('他の試験: 復習 4 件')
+  })
+})

@@ -55,14 +55,36 @@ export function HomeHeader({
         ) : null}
       </div>
       {otherExamsReviewDueToday > 0 ? (
-        <button
-          type="button"
-          data-testid="other-exams"
-          onClick={() => selectRef.current?.focus()}
-          className="text-sm text-muted-foreground underline underline-offset-4"
-        >
-          他の試験: 復習 {otherExamsReviewDueToday} 件
-        </button>
+        // 切替先が無い (mirror に試験が 1 件しか無い) 時は select 自体が無いので、
+        // 押せる見た目にしない — 押しても何も起きない導線を作らない。
+        exams.length > 1 ? (
+          <button
+            type="button"
+            data-testid="other-exams"
+            onClick={() => {
+              const el = selectRef.current
+              if (!el) return
+              // 選択肢を直接開ける環境では開く。 未対応 / user activation 無し等で
+              // 例外になる場合は focus に落とす (Safari 等)。
+              if (typeof el.showPicker === 'function') {
+                try {
+                  el.showPicker()
+                  return
+                } catch {
+                  // fallthrough
+                }
+              }
+              el.focus()
+            }}
+            className="text-sm text-muted-foreground underline underline-offset-4"
+          >
+            他の試験: 復習 {otherExamsReviewDueToday} 件
+          </button>
+        ) : (
+          <p data-testid="other-exams" className="text-sm text-muted-foreground">
+            他の試験: 復習 {otherExamsReviewDueToday} 件
+          </p>
+        )
       ) : null}
     </header>
   )
