@@ -1,6 +1,6 @@
 # Dash-1 Home v1 実装 — 引継ぎ記録(最終更新 2026-08-19)
 
-- 状態: **Task 8/13 完了(全て review clean・commit 済)。Task 9 が未 commit・未レビューで作業ツリーに存在**。コンテキスト逼迫のため OT 指示で停止。
+- 状態: **Task 9/13 完了(全て review clean・commit 済・未 push)**。次は Task 10。
 - plan: `docs/superpowers/plans/2026-08-18-dash1-home-v1.md`(r2)
 - spec(凍結): `docs/superpowers/specs/2026-08-18-dash1-home-v1-design.md`(r2)/ 定義 doc `2026-08-17-dashboard-metric-definitions.md`(r3)
 - 実行方式: `superpowers:subagent-driven-development`(task 単位 fresh subagent + task 間 review)
@@ -28,7 +28,11 @@
 | 7 | `edec219` | `/app/study/quick` preset route |
 | 8 | `ce24591` | `GET /api/stats/summary`(W4 用・sprint 唯一の server 集計) |
 
-## 3. Task 9(未 commit・**未レビュー**)の扱い
+## 3. Task 9(**完了** — commit `8ef12d3`)
+
+実装 agent の成果を controller が引き取り、4 gate 実走 → Codex → canonical → fix → commit まで完了。以下は当時の記録(実装 agent の成果物の性質)+ §10 に review で出た事実を追記。
+
+### 3.0 当時の扱い(履歴)
 
 実装 agent は**完走した**(停止指示の後に報告が到着)。実装・test・4 gate は完了、**レビュー(Codex / canonical)と commit のみ未了**。
 
@@ -86,7 +90,7 @@
 
 ## 7. 残 task(9〜13)
 
-9 K 設定面(**進行中**・§3)/ 10 design tokens + widget-card / 11 Home 刷新 / 12 dead route 削除(**Ruling 3 で保留**)/ 13 完了 gate + smoke 手順 session doc 化。
+9 K 設定面(**完了** `8ef12d3`・§3 / §10)/ 10 design tokens + widget-card / 11 Home 刷新 / 12 dead route 削除(**Ruling 3 で保留**)/ 13 完了 gate + smoke 手順 session doc 化。
 
 **T10 への申し送り**: `frontend-design` skill を起動して値を決める。追加色の実コントラスト比を算出して記録(AA 4.5:1)。
 **T11 への必須申し送り**:
@@ -159,3 +163,67 @@ Execution Time: 24.235 ms
 
 - **カード削除(§3.3a)**: `card_tags.card_id` が `ON DELETE CASCADE` なので、削除で集計から落ちる主因は schema の cascade であり、query 側の変異では red にならない。ただし cascade が効く限り「除外を落とす regression の形」は存在しないため穴ではない。**唯一の盲点は `cards` が soft delete 化された場合** — §3.3a が壊れるのに iso は green のまま通る(本番の削除が hard DELETE であることの根拠 = `lib/cards/apply-card-mutation.ts:161-163`)。
 - **`tag_options` / `tag_categories` の owner 絞り、`cards.user_id` 絞り**: RLS(tenant tx)との二層防御なので、片方だけ外しても red にならない。単層変異が green なことを欠陥と読まない。
+
+---
+
+## 10. Task 9 — K 設定面の恒久記録(commit `8ef12d3`)
+
+### 10.1 **migration 0040 は stg DB に未適用**(2026-08-19 実測・push 計画に直接効く)
+
+`.env.local` の `DATABASE_URL_APP`(= stg)へ local dev を向けると `/api/pull` が **500** で落ちる:
+
+```
+Failed query: select ..., "first_reviewed_at", ... from "cards" where "cards"."user_id" = $1
+```
+
+→ **Dash-1 の UI smoke(Task 9/10/11)は stg では 0040 適用まで構造的に実行できない**。memory の「stg は 0036〜0039 適用済」は正しく、0040 は Task 1 で新規作成した分ゆえ未適用。
+**push 順序への含意**: push → stg deploy しても 0040 未適用なら Dash-1 画面は動かない。**0040 の適用(OT)を stg smoke の前提として Task 13 の手順に含めること**。
+
+### 10.2 local PG による full-stack smoke(stg が使えない間の代替・再現手順)
+
+devcontainer 常駐 PG17(test:iso の乗り物)に別 DB を立てれば CC 単独で実機相当の smoke ができる。**`recallmint_test` は globalSetup が drop/create するので使わない**(別名にする)。
+
+```bash
+export PGPASSWORD=postgres
+psql -h 127.0.0.1 -U postgres -d postgres -c "CREATE DATABASE recallmint_devlocal;"
+DATABASE_URL_ADMIN="postgresql://postgres:postgres@127.0.0.1:5432/recallmint_devlocal" npx drizzle-kit migrate
+# users 行は Clerk webhook 同期ゆえ local には来ない → 手で入れる。
+# clerk_id は stg から読める: psql "$DATABASE_URL_APP" -c "SET app.user_id='<内部 id>'; SELECT clerk_id FROM users WHERE id='<内部 id>';"
+#   テスト A: 内部 id 66fb6d00-526f-4264-9691-e2e036c656f7 / clerk_id user_3HtMzBoNw6HNGXKg5LJ2p5TjtXx
+# 起動は env 差し替えのみ(role は postgres = superuser ゆえ RLS を bypass する点に注意)
+DATABASE_URL_APP="postgresql://postgres:postgres@127.0.0.1:5432/recallmint_devlocal" \
+DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/recallmint_devlocal" pnpm dev
+```
+
+sign-in は Clerk **dev instance**(`recall-mint-dev`)で stg と同じアカウントが使える(`komail9server+clerk_test@gmail.com` / `komail8server` / 2FA OTP `424242`)。
+**限界**: 接続 role が superuser なので **RLS policy の検証にはならない**(policy 検証は `pnpm test:iso` 側)。あくまで UI / 経路 / mobile view 用。
+
+### 10.3 mobile view 実測(375px・spec の完了条件)
+
+| 項目 | 実測 |
+|---|---|
+| 設定行のレイアウト | 1 行(343×38px)。wrap なし・`documentElement.scrollWidth` 375 = viewport(横スクロールなし) |
+| 初期表示 | mirror の `daily_new_target = 35` を表示 |
+| `0` 保存 | DB に **0**(`IS NULL` = false)/ 表示は "0" のまま(**巻き戻らない**)/ `role=status` に「保存しました」 |
+| 空欄保存 | DB **null** / 入力は空欄 + placeholder 20 |
+| 他 owner の試験 URL | **404**(RSC guard) |
+
+### 10.4 レビューが捕まえた実バグ(§4 の続き)
+
+| # | 検出 | 内容 |
+|---|---|---|
+| 8 | Codex(T9) | mirror 追従 state が「表示中の確定値」と「最後に観測した mirror 値」を兼用 → **保存成功直後に保存値が旧 mirror 値へ巻き戻る**。`ExamDetailPullGate` が本ページ滞在中の ambient pull を抑止するため、これは稀ケースではない |
+
+**pin の教訓(§8 に追加すべき実例)**: 「上書きしない」のような**不在の主張は、そもそも変更が届いたことを観測しないと pin にならない**。初版の dirty guard test は `waitFor` が即時解決して伝播前に通っており、変異(guard 削除)で red にならなかった。**未編集の 2 個目を同時 render して伝播の検出器に使う**形で解決。
+
+### 10.5 記録のみ(canonical Minor・修正しない)
+
+- **M-4**: `<label>新規/日</label>` と `aria-label="新規/日の上限"` が競合し label が装飾化(WCAG 2.5.3 は通る)。修正すると test 14 箇所の query を書き換えるため見送り。
+- **M-5**: 初期表示 pin 群と mirror 追従 pin 群は**同じ render guard 分岐**を通る(独立な証拠ではない)。「8 本 pin がある」と数えないこと。
+- **M-7**: `withTenantTx` を passthrough mock しているため「tenant tx 内で走ること」は pin されていない(`rename-exam.test.ts` と同じ既知の穴)。runtime は RLS で backstop。
+- **M-8**: 二重送信 guard が ref でなく state(`disabled={pending}`)。rename と違い結果が冪等なので実害なし。
+
+### 10.6 検証しなかったこと(明示)
+
+- **RLS policy 経路**(§10.2 の限界)。tenant context を張らない接続での挙動は iso 側の担保に依存。
+- **stg 上での動作**(§10.1 により 0040 適用まで不可)。
