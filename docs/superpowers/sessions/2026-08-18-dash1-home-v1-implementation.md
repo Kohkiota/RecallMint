@@ -466,3 +466,87 @@ leaf が green でも caller が別の値を渡していれば保証は無い。
 - **RLS policy 経路**(local は superuser 接続)。
 - **実機 mobile**(DevTools 375px のみ)。
 - **Home mount のコストの実利用規模**(§12.2 の測定は 7,000 行まで。pull 中の再評価回数も未測定)。
+
+---
+
+## 13. Task 13 — sprint 完了 gate と stg smoke 手順
+
+### 13.1 完了 gate(2026-08-19 実走・全 exit 0)
+
+| gate | 結果 |
+|---|---|
+| `pnpm install --frozen-lockfile` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm lint --max-warnings=0`(whole-repo) | exit 0 |
+| `pnpm test` | exit 0 — 330 files / **5,744 tests** |
+| `pnpm test:iso` | exit 0 — 41 files / **489 tests** |
+| `pnpm run audit` | exit 0(prod high/critical 0) |
+| `pnpm build`(+ postbuild の pdfium packaging 検証) | exit 0 / PASS |
+
+**0001〜0040 の連続適用は fresh DB gate で担保**: iso 基盤の global-setup が毎回 fresh PG に全
+migration を通し適用するため、`pnpm test:iso` green がそのまま連続適用の実証になる。
+**stg 側は 0040 単発の通常適用**(0036〜0039 は適用済 — §10.1 も参照)。
+
+### 13.2 spec 節 → task → pin の対照表(トレーサビリティ)
+
+「主な」pin であって網羅リストではない(1 節が複数 test に分散する箇所がある)。
+
+| spec 節 | task | 主な実装 | 主な pin |
+|---|---|---|---|
+| §3.1 ページ構造 / 共有集計 | T11 | `home/home-dashboard.tsx` | `home-dashboard.test.tsx` |
+| §3.2 shared domain | T2 | `lib/dashboard/domain/*` | `card-classification` / `estimate` / `event-order` / `metric-constants` / `weekly` の各 `.test.ts` |
+| §4 W1 ヘッダ | T11 | `home/home-header.tsx` | `home-header.test.tsx` |
+| §4 W2 今日の学習 | T6 / T11 | `home/today-study.tsx` + `lib/cards/domain/session-pool.ts` | `today-study.test.tsx` / `home-dashboard.test.tsx`(caller)/ `session-pool.test.ts` / `session-pool-equivalence.test.ts` |
+| §4 W3 状態サマリ | T11 | `home/state-summary.tsx` | `state-summary.test.tsx` / `card-classification.test.ts` |
+| §4 W4 苦手タグ | T8 / T11 | `home/weak-tags.tsx` + `app/api/stats/summary` | `weak-tags.test.tsx` / `route.test.ts` / `tests/integration/pg/weak-tags-summary.test.ts` |
+| §4 W5 クイック演習 | T7 / T11 | `home/quick-practice.tsx` + `/app/study/quick` | `quick-practice.test.tsx` / `study/quick/page.test.tsx` / `quick-session-host.test.tsx` / `quick-preset-selection.test.ts` |
+| §4 W6 今後 7 日 | T11 | `home/week-forecast.tsx` | `week-forecast.test.tsx` / `home-aggregate.test.ts` |
+| §4 W7 今週 | T11 | `home/week-activity.tsx` | `week-activity.test.tsx` / `weekly.test.ts` / `lib/client/streak.test.ts` |
+| §5 空状態 | T11 | `home/home-dashboard.tsx` | `home-dashboard.test.tsx` |
+| §6 選択試験 / pull settle | T5 | `lib/dashboard/selected-exam.ts` / `use-selected-exam.ts` / `pull-settle-context.tsx` | `selected-exam.test.ts` / `use-selected-exam.test.ts` / `pull-settle-context.test.tsx` / `pull-trigger.test.tsx` |
+| §7 quick 受け渡し | T7 | `/app/study/quick` | `study/quick/page.test.tsx` / `session-launcher.test.tsx` |
+| §8.1 K 設定面 | T9 | `update-daily-new-target.ts` / `daily-new-target-field.tsx` | `update-daily-new-target.test.ts` / `daily-new-target-field.test.tsx` |
+| §8.3 u / `first_reviewed_at` | T3 | fold(replay / apply) | `replay-card.test.ts` / `tests/integration/pg/first-reviewed-at.test.ts` |
+| §8.5 出題プール | T6 | `session-pool.ts` / `get-session-cards.ts` / `get-dexie-session-cards.ts` | `session-pool.test.ts` / `get-session-cards.test.ts` / `get-dexie-session-cards.test.ts` / `session-pool-equivalence.test.ts` |
+| §10 summary endpoint | T8 | `lib/db/weak-tags-summary.ts` + route | `route.test.ts` / `weak-tags-summary.test.ts`(iso)/ EXPLAIN は §9.1 |
+| §11 origin | T4 | `origin-values.ts` / ingest / wire schema | `origin-values.test.ts` / `ingest-review-events.test.ts` / `answer-event-schema.test.ts` / `answer-events-serialization.test.ts`(iso) |
+| §12 design tokens / WidgetCard | T10 | `app/globals.css` / `widget-card.tsx` | `widget-card.test.tsx` + コントラスト実測(§11.2)+ alias 結線実測(§11.2b) |
+| §14 migration 0040 | T1 | `drizzle/migrations/0040_*` | `check-constraints.test.ts` / `cards-pull.test.ts` / `exams-pull.test.ts` / 連続適用は `test:iso`(fresh DB) |
+
+### 13.3 stg smoke 手順(push 後・OT 指示で CC が実行)
+
+**前提(必須・これが無いと全項目が実行不能)**: **stg DB へ migration 0040 を適用**(OT 作業)。
+未適用のまま push すると `/api/pull` が `first_reviewed_at` 不在で **500**(§10.1 で実測)。
+deploy 順は spec §14 のとおり **migrate 先行 → code deploy**。
+
+環境: `https://stg.recallmint.nekotest.net` / Playwright MCP / テストアカウント A
+`komail9server+clerk_test@gmail.com`(pw `komail8server` / 2FA OTP `424242`)。
+
+| # | 項目 | 手順 | 期待 |
+|---|---|---|---|
+| 1 | 7 ウィジェット表示 | `/app` を開く | W1〜W7 が spec §3.1 の順(W1→W2→W3→W4→W5→W6→W7)で出る。W4 は候補があれば表示 |
+| 2 | 試験切替 | ヘッダの試験切替で別試験を選ぶ | URL の `?exam=` が書き換わり、W2/W3/W5/W6 の数字が切替先のものになる |
+| 3 | 他試験行 | 選択中以外に復習がある状態で `/app` | 「他の試験: 復習 n 件」が出る(0 なら非表示) |
+| 4 | **K 強制** | 試験詳細で「新規/日」を 3 に保存 → `/app` の CTA からスマート復習 | セッション内の New が **3 件で止まる** |
+| 5 | **K=0** | 「新規/日」を 0 で保存 → スマート復習 | New が **1 件も出ない**(空欄=既定 20 と区別できていること) |
+| 6 | Learning 未到来除外 | 未到来 step の Learning がある状態で W2 の内訳とプールを見る | 未到来 Learning は**出題されない**(前倒ししない) |
+| 7 | Review later-due 包含 | 今日中の later-due Review がある状態 | **出題される**(endOfToday まで前倒し) |
+| 8 | 実プール 0 の案内 | 6 の状態で新規も 0 | CTA が**無効**・「次の復習は◯時頃」が出る・**空セッションに入らない** |
+| 9 | quick 4 preset | W5 の 間違い / 未出題 / 苦手 / 10分 を順に起動 | それぞれ母集合どおりに出題。0 件の preset は disabled |
+| 10 | 不正 preset | `/app/study/quick?preset=bogus` を直接開く | 落ちずに既定の扱い(§7 の契約どおり) |
+| 11 | W4 実応答 | 復習履歴のある試験で `/app` | 苦手タグ 3 行 + 「この分野を 10 問」。押すと `?exam=…&tag=…` の quick に入る |
+| 12 | W4 失敗表示 | DevTools で `/api/stats/summary` を offline/500 にする | **「読み込めませんでした」**が出る(非表示にならない = 候補 0 と区別できている) |
+| 13 | **origin の DB 着地** | 4 / 9 / 11 の各入口で 1 問ずつ回答 → 同期後に stg DB を読む | `answer_events.origin` に `home_today` / `home_quick_*` / `home_weak_tags` が入る(未知値は null) |
+| 14 | 空状態 4 種 | 試験 0 / 試験あり・カード 0 / y=0 / W6 母集合 0 を作る | §5 の 4 分岐がそれぞれ出る(fetch 失敗と混同しない) |
+| 15 | mobile | 375px で 1〜14 の主要画面 | 横スクロールなし・CTA が親指届く位置 |
+
+**void になった項目**: spec §13.3 の「dark theme」。**本 repo に dark theme は存在せず、本 sprint でも
+出荷しない**(§11.1 の erratum)。dark を提供する判断が出た時に、基底 token ごと別 sprint で smoke する。
+
+**CC で実行困難 → OT 依頼**: 実機 mobile での 15(DevTools 375px は CC が実施済)。
+
+### 13.4 残 task と停止
+
+- **Task 12(dead route 削除)= Ruling 3 で保留**(OT の外部利用確認が未充足)。`app/api/dashboard/stats/route.ts` は
+  現在 caller 0 だが、外部利用の確認が取れるまで消さない。確認後に通常レビュー経路で 1 commit。
+- 本 sprint はここで **停止**。push・stg smoke は OT 指示による(CLAUDE.md の標準フロー)。
