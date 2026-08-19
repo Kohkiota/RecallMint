@@ -61,7 +61,9 @@ function toDate(value: Date | string): Date {
 
 // 復習部の全順序 `(due ASC, id ASC)`。id の tiebreak が無いと Dexie の行順(PK 順)と
 // server の行順(SQL 未指定順)で結果が変わりうる = 同値性 pin が守れない。
-function compareByDue(a: SessionPoolCard, b: SessionPoolCard): number {
+// export: クイック演習(§4 W5)の並び順(due ASC・id tiebreak)は本関数と同一契約
+// なので `lib/cards/domain/quick-preset-selection.ts` が再利用する(二重実装回避)。
+export function compareByDue(a: SessionPoolCard, b: SessionPoolCard): number {
   const aDue = toDate(a.due).getTime()
   const bDue = toDate(b.due).getTime()
   if (aDue !== bDue) return aDue - bDue
