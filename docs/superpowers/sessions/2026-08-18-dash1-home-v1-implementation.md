@@ -66,7 +66,7 @@
 
 | # | 裁定 | 誤りのコスト |
 |---|---|---|
-| 3 | **T12(dead route 削除)は OT の外部利用確認が未充足のため保留**。他 task は継続 | 後続で commit 1 本 |
+| 3 | ~~T12(dead route 削除)は OT の外部利用確認が未充足のため保留~~ → **2026-08-19 に OT が外部利用なしを確認し実行済**(§14.5) | — |
 | 4 | `selectSessionPool` の返り値を T11 が再計算せず消費する | 署名変更 1 箇所 |
 | 5 | worktree を作らず `develop` 上で実装(本 repo の確立運用) | commit の付け替え |
 | 6 | **implementer は commit せず unstage で返す**。controller が Codex + canonical → pass 後に `[reviewed]` で commit(`codex exec review --uncommitted` は commit 済みを見ない + CLAUDE.md の「review pass → commit」順序) | commit 1 本の巻き戻し |
@@ -90,7 +90,7 @@
 
 ## 7. 残 task(9〜13)
 
-9 K 設定面(**完了** `8ef12d3`・§3 / §10)/ 10 design tokens + widget-card / 11 Home 刷新 / 12 dead route 削除(**Ruling 3 で保留**)/ 13 完了 gate + smoke 手順 session doc 化。
+9 K 設定面(**完了** `8ef12d3`・§3 / §10 / 追い込みは §14)/ 10 design tokens + widget-card / 11 Home 刷新 / 12 dead route 削除(**Ruling 3 で保留**)/ 13 完了 gate + smoke 手順 session doc 化。
 
 **T10 への申し送り**: `frontend-design` skill を起動して値を決める。追加色の実コントラスト比を算出して記録(AA 4.5:1)。
 **T11 への必須申し送り**:
@@ -538,15 +538,142 @@ deploy 順は spec §14 のとおり **migrate 先行 → code deploy**。
 | 12 | W4 失敗表示 | DevTools で `/api/stats/summary` を offline/500 にする | **「読み込めませんでした」**が出る(非表示にならない = 候補 0 と区別できている) |
 | 13 | **origin の DB 着地** | 4 / 9 / 11 の各入口で 1 問ずつ回答 → 同期後に stg DB を読む | `answer_events.origin` に `home_today` / `home_quick_*` / `home_weak_tags` が入る(未知値は null) |
 | 14 | 空状態 4 種 | 試験 0 / 試験あり・カード 0 / y=0 / W6 母集合 0 を作る | §5 の 4 分岐がそれぞれ出る(fetch 失敗と混同しない) |
-| 15 | mobile | 375px で 1〜14 の主要画面 | 横スクロールなし・CTA が親指届く位置 |
+| 15 | mobile | 375px で 1〜14 の主要画面 + **試験詳細の table view**(chrome に「新規/日」が増えたため) | 横スクロールなし・CTA が親指届く位置・table chrome が過度に伸びない |
+| 16 | **pull 中の liveQuery 再評価回数** | Home を開いたまま別端末で回答 → pull を走らせ、DevTools Performance か `console.count` 相当で Home の共有 `useLiveQuery` が何回再評価されたかを記録 | **回数を記録すること自体が目的**(合否判定は置かない)。§12.2 の materialize コスト × この回数が pull 中の実負荷。数値は本 doc へ追記する |
 
-**void になった項目**: spec §13.3 の「dark theme」。**本 repo に dark theme は存在せず、本 sprint でも
-出荷しない**(§11.1 の erratum)。dark を提供する判断が出た時に、基底 token ごと別 sprint で smoke する。
+**void になった項目**: spec §13.3 の「dark theme」。**light 単一 theme で確定**(OT 裁定 2026-08-19)。
+plan Task 10 の完了条件「両 theme の目視」は **「light のみ」へ erratum**。dark theme は backlog
+(基底 token ごと一括で入れる別 sprint)。§14.3 も参照。
 
 **CC で実行困難 → OT 依頼**: 実機 mobile での 15(DevTools 375px は CC が実施済)。
 
 ### 13.4 残 task と停止
 
-- **Task 12(dead route 削除)= Ruling 3 で保留**(OT の外部利用確認が未充足)。`app/api/dashboard/stats/route.ts` は
-  現在 caller 0 だが、外部利用の確認が取れるまで消さない。確認後に通常レビュー経路で 1 commit。
-- 本 sprint はここで **停止**。push・stg smoke は OT 指示による(CLAUDE.md の標準フロー)。
+- ~~Task 12(dead route 削除)= Ruling 3 で保留~~ → **§14.5 で実行済**(2026-08-19 に OT が外部利用なしを確認)。
+- 本 sprint はここで **停止**……だったが、push 前の追い込み 8 件(§14)を実施した。**停止条件は変わらない** —
+  push・stg smoke は OT 指示による(CLAUDE.md の標準フロー)。
+
+---
+
+## 14. push 前の追い込み(2026-08-19・OT 指示の 8 件)
+
+Codex の実装 review 5 件 + OT 裁定 3 件。全て通常レビュー経路(canonical + Codex)を通した。
+
+### 14.1 K 設定面: 読込中と行不在の区別(P1)
+
+`useLiveQuery` の `undefined` は **「読込中」と「行が無い」の両方**を意味する。区別せずに初期表示
+(空欄 = 既定追従)のまま保存できると、**server の既存 K が null で上書きされる**。
+結果を 1 段包んで(`{ exam }`)両者を分け、**読込中は入力・保存とも無効**にした。
+pin =「読込中は保存できない」+ 検出器「読込が終われば保存できる」。単独変異 2 種
+(`loading` を常に false / 包みを外して行不在と同一視)で red を実測。
+
+### 14.2 `content_version` の bump(P2・実装修正で確定)
+
+spec §8.1 は `content_version` / `updated_at` の両 bump を要求している。実装は
+`daily_new_target` のみを SET しており、**既存 pin が「daily_new_target 列のみ」を固定して
+spec 違反側を守っていた**。OT 裁定により **erratum ではなく実装修正**:
+SET に `contentVersion = content_version + 1` を追加し、**pin を新契約へ書き換えた**
+(= 契約変更。`updated_at` を SET に足さない点は不変 — `$onUpdate` 任せ)。
+**rename-exam は今も bump しない**(本裁定は K 設定面に対するもの。rename 側の是正は別途)。
+
+### 14.3 設定 UI の配置(P2・plan Task 9 からの変更)
+
+plan Task 9 は「試験一覧の行メニュー」を指していたが、現物の rename は試験詳細にしか無く、
+Task 9 は詳細ページへ置いた。**OT 裁定で「試験詳細で確定」+「card / table 両 view から到達可能」**。
+table view の chrome は密度優先なので `variant="compact"`(既定値の説明文を出さない。空欄の意味は
+placeholder が担う)で出す — `ExamTitleInlineEdit` と同じ variant の切り方。
+
+### 14.4 「他の試験」行(軽微・修正した)
+
+`showPicker()` があれば選択肢を直接開き、未対応 / 例外時は `focus()` に落とす。あわせて
+**切替先が無い(mirror の試験が 1 件)ときは button にしない**(押しても何も起きない導線を作らない)。
+pin 2 件。
+
+### 14.5 Task 12: dead route 削除(OT が外部利用なしを確認済)
+
+`app/api/dashboard/stats/`(route + test)を削除。唯一の consumer だった `lib/db/streak.ts`
+(+ test)も削除した。
+
+**削除前に見落としていた caller が 1 つあった**: `tests/integration/pg/read-isolation.test.ts` が
+`getReviewStatsForUser` を **study_days の tenant 隔離 assertion**(非 RED・best-effort)に使っていた
+(最初の grep は `app` / `lib` / `components` しか見ておらず `tests/` を見ていなかった)。
+そのまま消すと隔離の保証が 1 本減るので、**同じ表を読む live な経路**
+(`/api/study-days/pull` の `getAllStudyDaysForUser`)へ assertion を移した。
+→ 保証は維持、むしろ**本番経路を守る pin になった**(旧 pin は dead code を守っていた)。
+
+**教訓**: 「caller 0 だから消せる」の grep は **`tests/` を含めて**取る。production caller 0 でも
+test caller があるなら、消すのは「保証を落とす」判断になる。
+
+### 14.6 dark 除去(裁定維持)
+
+`components/ui/{button,input,tabs,textarea}.tsx` の `dark:` utility **24 個**を剥がし、
+**light 単一 theme**に揃えた(Tailwind v4 既定の dark variant は `prefers-color-scheme` に載るため、
+色 token が light のまま utility だけ残ると **OS が dark の端末でだけ表示が壊れる**)。
+`app/globals.css` の token コメントにも裁定を明記。plan Task 10 の「両 theme 目視」は
+**「light のみ」へ erratum**(§13.3 の smoke 項目も void 化済)。dark theme 本体は **backlog**
+(基底 token ごと一括で入れる)。
+
+**残っている `dark:` の言及**: `lib/tags/color-palette.ts:37-38` は**未採用案の説明コメント**で
+コードではない(そのまま残置)。**新しい `dark:` の混入を機械的に止める仕組みは無い**
+(shadcn component を追加すると再び入る)。eslint で ban する案は follow-up(§14.7)。
+
+### 14.7 follow-up(実施しない・発動条件つきで記録)
+
+1. **Home 読み取りの 2 クエリ案**。選択試験を `[user_id+exam_id]` で読み、他試験行は
+   `[user_id+due]` の範囲 count に分ける(§12.2 の案 b)。**発動条件 = 実データ量が一桁増える**
+   (万件級)**か、canonical M-6 相当の指摘が再発した時**。今は §12.2 の実測(7,000 行で 134.8ms)で
+   足りると判断。
+2. **大規模化後の index 追加は `CREATE INDEX CONCURRENTLY` を別手順で**。テーブルが大きくなってから
+   通常の `CREATE INDEX` を migration に入れると、その間 write が止まる。drizzle の migration runner は
+   1 tx で流すため `CONCURRENTLY` は同居できない — **migration とは別の運用手順(runbook)として実行する**。
+3. **`dark:` utility の混入 ban を eslint に入れる**案(light 単一 theme を機械強制する)。
+   本 sprint では入れていない — 「単一 theme」は現状 **doc の主張でしかなく機械強制が無い**。
+   **発動条件 = 次に `components/ui/` へ component を追加する時**(shadcn の貼り付けで `dark:` が
+   再び入るため、その時に ban ごと入れる)。
+
+### 14.8 gate(2026-08-19・追い込み後の再走)
+
+`pnpm typecheck` 0 / `pnpm lint --max-warnings=0` 0 / `pnpm test` **5,727** / `pnpm test:iso` **489** /
+`pnpm run audit` 0 / `pnpm build` 0。
+(test 数の内訳: 5,744 − 21(削除 = dead route 5 + `lib/db/streak.ts` 16)+ 追加 = 5,727。
+追い込みで足した `it()` は §14 全体で 8 本。)
+
+### 14.9 canonical review の反映(Important 4 件)
+
+| # | 指摘 | 処置 |
+|---|---|---|
+| I1 | 冒頭コメントの「受容した限界」が修正後の実装と矛盾(「その窓で保存すると null を書く」は既に偽) | 実態へ書き換え。残余(settle 済で本当に行が無い場合)を同じ文で明記 |
+| I2 | **窓を半分しか塞げていない**。`loading` は Dexie query の窓(ミリ秒)だけで、**行が未 pull の窓**(fresh browser / IndexedDB クリア / deep link — RTT、offline なら無期限)では空欄 + 有効な保存ボタンが出て server の K を潰す | **行が mirror に在ることを条件**にした(§14.10 参照。当初は settle シグナル併用で塞いだが、Codex r2 がその欠陥を検出) |
+| I3 | OT 裁定の「card / table 両 view から到達可能」に **pin が無い**(unit も smoke も) | `exam-detail-view.test.tsx` の chrome test に到達性 assertion を追加 + compact variant の挙動 pin を追加。両方とも変異で red 実測。smoke §13.3 の 15 にも table view を名指し |
+| I4 | `tests/integration/pg/COVERAGE.md` が削除済 function / 削除済 route file を証拠として引用(件数も 4→3 にずれ) | 証拠台帳を現況へ更新(row 7 の関数名 / withReadOnlyAuth の route 数と citation) |
+
+Minor は M1〜M10 のうち **M1〜M5・M8〜M10 を処置**(stale 参照 3 件の追加修正 / 定数代入を殺す値の pin /
+test の暗黙の順序依存の除去 / test 名の是正 / doc の矛盾と数え方)。M6・M7 は doc 側の記述として反映済。
+
+**教訓(§8 追記)**: 「窓を塞いだ」と書く時は **窓の全長を数える**。今回の第 1 版は
+「query が解決するまで」というミリ秒の窓だけを塞ぎ、実害の大きい「データが届くまで」の窓
+(ネットワーク RTT〜無期限)を開けたまま「塞いだ」と doc に書いていた。
+→ [[lesson_single_point_claims_decay]] と同じ型(完全性の主張は適用範囲を同じ文に書く)。
+
+### 14.10 Codex r2 が canonical の修正案の欠陥を捕まえた(P1)
+
+canonical I2 の推奨は `useFirstPullSettled()` の併用だった。**これは不十分**:
+settle は **「成功/失敗を問わない終了」**(`pull-settle-context.tsx` の契約)なので、
+**初回 pull が失敗した端末では行が無いまま settle が立ち**、空欄 + 有効な保存ボタンが再び出る。
+そこで server action が通る程度に回線が復帰していれば、既存 K が null で潰れる。
+
+**採った形**: settle に依存せず、**「行が mirror に在る」ことそのものを保存の条件**にする。
+
+```
+const notLoaded = snapshot === undefined || snapshot.exam === undefined
+```
+
+これで ①query 未解決 ②未 pull ③他端末で削除済 の 3 つが同じ条件で閉じ、**cross-module の依存も減った**
+(pull-settle-context への import を追加せずに済んだ)。
+**受容**: pull が届かない端末ではこの field が無効のまま残る(現在の K を読めない以上、触らせない方が安全)。
+card variant では無効の理由が分かるよう「読み込み中」を出す。
+
+**教訓**: **レビュアーの推奨修正も現物確認を経てから採る**。今回は canonical(強い reviewer)の具体案が
+既存シグナルの契約と噛み合っておらず、**別レビュアー(Codex)が実装後にそれを捕まえた**。
+canonical → 修正 → **Codex 再走**という順序がこの検出を生んだ(片方だけなら通っていた)。
+→ [[feedback_verify_external_review_against_repo]] の実例。
